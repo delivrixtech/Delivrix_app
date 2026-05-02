@@ -1,0 +1,26 @@
+[
+  {
+    "id": "sender_webdock_bridge_001",
+    "label": "Webdock bridge node 1",
+    "hostname": "webdock-bridge-1.example.local",
+    "ipAddress": "203.0.113.10",
+    "dailyLimit": 50,
+    "warmupDay": 1
+  },
+  {
+    "id": "sender_webdock_bridge_002",
+    "label": "Webdock bridge node 2",
+    "hostname": "webdock-bridge-2.example.local",
+    "ipAddress": "203.0.113.11",
+    "dailyLimit": 50,
+    "warmupDay": 1
+  },
+  {
+    "id": "sender_webdock_bridge_003",
+    "label": "Webdock bridge node 3",
+    "hostname": "webdock-bridge-3.example.local",
+    "ipAddress": "203.0.113.12",
+    "dailyLimit": 50,
+    "warmupDay": 1
+  }
+]

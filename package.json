@@ -1,0 +1,19 @@
+{
+  "name": "delivrix-mailops",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Delivrix MailOps platform architecture base.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test packages/domain/src/*.test.ts",
+    "dev:gateway": "node apps/gateway-api/src/main.ts",
+    "dev:worker": "node apps/worker/src/main.ts"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}
