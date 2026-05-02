@@ -8,10 +8,13 @@ import {
   buildOperationalSummary,
   evaluateSenderNodeHealth,
   evaluateKillSwitch,
+  evaluateSenderNodeManualControl,
+  isSenderNodeManualAction,
   requestRateLimitRules,
   type RegisterSenderNodeInput,
   type SuppressionReason,
   type SendRequest,
+  type SenderNodeManualAction,
   type StuckJobRecoveryAction
 } from "../../../packages/domain/src/index.ts";
 import {
@@ -324,6 +327,88 @@ const server = createServer(async (request, response) => {
       });
     }
 
+    const senderNodeControlRoute = parseSenderNodeControlRoute(request);
+
+    if (request.method === "POST" && senderNodeControlRoute) {
+      if (!isSenderNodeManualAction(senderNodeControlRoute.action)) {
+        return json(response, 422, {
+          error: "invalid_sender_node_manual_action",
+          message: "action must be pause, reactivate, degrade, or quarantine."
+        });
+      }
+
+      const body = await readJson<{
+        reason?: string;
+        actorId?: string;
+      }>(request);
+      const nodes = await senderNodeRegistry.list();
+      const node = nodes.find((candidate) => candidate.id === senderNodeControlRoute.senderNodeId);
+
+      if (!node) {
+        return json(response, 404, {
+          error: "sender_node_not_found",
+          message: `Sender node not found: ${senderNodeControlRoute.senderNodeId}`
+        });
+      }
+
+      const decision = evaluateSenderNodeManualControl({
+        node,
+        action: senderNodeControlRoute.action,
+        reason: body.reason
+      });
+      const actorId = body.actorId?.trim() || "local-operator";
+
+      if (!decision.allowed || !decision.nextStatus) {
+        await auditLog.append({
+          actorType: "operator",
+          actorId,
+          action: decision.auditAction,
+          targetType: "sender_node",
+          targetId: node.id,
+          riskLevel: decision.riskLevel,
+          metadata: {
+            action: decision.action,
+            reason: decision.reason ?? body.reason,
+            currentStatus: decision.currentStatus,
+            code: decision.code,
+            message: decision.message,
+            smtpEnabled: false
+          }
+        });
+
+        return json(response, 422, {
+          allowed: false,
+          decision
+        });
+      }
+
+      const updatedNode = await senderNodeRegistry.updateStatus(node.id, decision.nextStatus);
+
+      await auditLog.append({
+        actorType: "operator",
+        actorId,
+        action: decision.auditAction,
+        targetType: "sender_node",
+        targetId: node.id,
+        riskLevel: decision.riskLevel,
+        metadata: {
+          action: decision.action,
+          reason: decision.reason,
+          previousStatus: node.status,
+          currentStatus: updatedNode.status,
+          provider: node.provider,
+          smtpEnabled: false,
+          sideEffects: "local-state-only"
+        }
+      });
+
+      return json(response, 200, {
+        allowed: true,
+        node: updatedNode,
+        decision
+      });
+    }
+
     if (request.method === "POST" && request.url === "/v1/sender-nodes") {
       const body = await readJson<RegisterSenderNodeInput>(request);
       const node = await senderNodeRegistry.register(body);
@@ -576,4 +661,20 @@ function parseStaleAfterMs(value: string | number | null | undefined, fallback: 
 
 function isStuckJobRecoveryAction(value: unknown): value is StuckJobRecoveryAction {
   return value === "fail" || value === "requeue";
+}
+
+function parseSenderNodeControlRoute(request: IncomingMessage): {
+  senderNodeId: string;
+  action: SenderNodeManualAction | string;
+} | null {
+  const parts = requestUrl(request).pathname.split("/").filter(Boolean);
+
+  if (parts.length !== 4 || parts[0] !== "v1" || parts[1] !== "sender-nodes") {
+    return null;
+  }
+
+  return {
+    senderNodeId: decodeURIComponent(parts[2] ?? ""),
+    action: parts[3] ?? ""
+  };
 }

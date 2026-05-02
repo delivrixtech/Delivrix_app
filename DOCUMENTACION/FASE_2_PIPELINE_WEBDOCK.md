@@ -60,8 +60,9 @@ Hito 2.9 completado en `DOCUMENTACION/FASE_2_HEALTH_CHECKS.md`.
 Hito 2.10 completado en `DOCUMENTACION/FASE_2_ADMIN_OVERVIEW.md`.
 Hito 2.11 completado en `DOCUMENTACION/FASE_2_STUCK_JOB_RECOVERY.md`.
 Hito 2.12 completado en `DOCUMENTACION/FASE_2_KILL_SWITCH.md`.
+Hito 2.13 completado en `DOCUMENTACION/FASE_2_SENDER_NODE_MANUAL_CONTROLS.md`.
 
-Siguiente hito recomendado: **Hito 2.13 controles manuales de sender nodes**.
+Siguiente hito recomendado: **Hito 2.14 ingestion mock de bounces y complaints**.
 
 Antes de cualquier envio real, faltan:
 

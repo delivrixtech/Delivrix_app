@@ -120,6 +120,18 @@ curl -s -X POST http://127.0.0.1:3000/v1/sender-node-health/reconcile
 
 `reconcile` aplica cambios locales auditados como `degraded` o `quarantined`; no toca infraestructura real.
 
+## Sender node manual controls
+
+Endpoints locales:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/v1/sender-nodes/sender_webdock_bridge_001/pause \
+  -H 'content-type: application/json' \
+  -d '{"reason":"Provider maintenance","actorId":"operator_local"}'
+```
+
+Acciones disponibles: `pause`, `reactivate`, `degrade`, `quarantine`. Todas requieren `reason` y quedan auditadas. No ejecutan SSH, SMTP ni cambios reales en Webdock.
+
 ## Admin overview
 
 Endpoint local:

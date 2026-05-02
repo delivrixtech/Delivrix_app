@@ -7,6 +7,7 @@ export * from "./operational-summary.ts";
 export * from "./rate-limit.ts";
 export * from "./repositories.ts";
 export * from "./sender-node-registry.ts";
+export * from "./sender-node-manual-control.ts";
 export * from "./sender-node-health.ts";
 export * from "./send-result-simulator.ts";
 export * from "./send-queue.ts";
