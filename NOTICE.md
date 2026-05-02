@@ -2,7 +2,7 @@
 
 Copyright (c) 2026 Delivrix LLC. Todos los derechos reservados.
 
-Desarrollador: Ject.
+Desarrollado por JECT.
 
 Este repositorio, su documentacion, arquitectura, codigo fuente, modelos operativos, adaptadores, flujos, scripts y materiales relacionados pertenecen a Delivrix LLC, salvo que exista un acuerdo escrito que indique lo contrario.
 

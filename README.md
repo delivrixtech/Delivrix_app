@@ -5,7 +5,7 @@ Base tecnica inicial para la plataforma propia de mailing autorizado de Delivrix
 ## Propiedad intelectual
 
 Copyright (c) 2026 Delivrix LLC. Todos los derechos reservados.  
-Desarrollador: Ject.
+Desarrollado por JECT.
 
 Ver `NOTICE.md`.
 
