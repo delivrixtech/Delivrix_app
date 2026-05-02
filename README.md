@@ -2,6 +2,13 @@
 
 Base tecnica inicial para la plataforma propia de mailing autorizado de Delivrix.
 
+## Propiedad intelectual
+
+Copyright (c) 2026 Delivrix LLC. Todos los derechos reservados.  
+Desarrollador: Ject.
+
+Ver `NOTICE.md`.
+
 La arquitectura nace con tres reglas:
 
 1. Ningun envio entra a cola sin pasar por el `mail-policy-engine`.

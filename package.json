@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Delivrix MailOps platform architecture base.",
+  "author": "Ject",
+  "license": "UNLICENSED",
+  "copyright": "Copyright (c) 2026 Delivrix LLC. Desarrollador: Ject.",
   "engines": {
     "node": ">=24"
   },
