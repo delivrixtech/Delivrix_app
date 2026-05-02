@@ -109,6 +109,18 @@ curl -s http://127.0.0.1:3000/v1/send-results
 
 El Worker genera resultados simulados usando `metadata.simulatedResult` o patrones en el email del destinatario.
 
+## Mock ingestion de resultados externos
+
+Endpoint local:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/v1/send-results/ingest \
+  -H 'content-type: application/json' \
+  -d '{"sendJobId":"sendjob_x","status":"complaint","complaintSource":"mock-fbl","actorId":"operator_local"}'
+```
+
+Registra `bounce`, `complaint`, `deferred` o `failed` como eventos externos simulados. Las complaints y hard bounces agregan suppression entries locales.
+
 ## Sender node health
 
 Endpoints locales:

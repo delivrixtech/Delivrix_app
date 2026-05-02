@@ -9,12 +9,14 @@ import {
   evaluateSenderNodeHealth,
   evaluateKillSwitch,
   evaluateSenderNodeManualControl,
+  evaluateSendResultIngestion,
   isSenderNodeManualAction,
   requestRateLimitRules,
   type RegisterSenderNodeInput,
   type SuppressionReason,
   type SendRequest,
   type SenderNodeManualAction,
+  type SendResultStatus,
   type StuckJobRecoveryAction
 } from "../../../packages/domain/src/index.ts";
 import {
@@ -84,6 +86,112 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/v1/send-results") {
       return json(response, 200, {
         results: await sendResultStore.list()
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/send-results/ingest") {
+      const body = await readJson<{
+        sendJobId?: string;
+        senderNodeId?: string;
+        status?: SendResultStatus;
+        smtpResponse?: string;
+        bounceCode?: string;
+        complaintSource?: string;
+        source?: string;
+        actorId?: string;
+        metadata?: Record<string, unknown>;
+      }>(request);
+
+      if (!body.sendJobId?.trim() || !body.status) {
+        return json(response, 422, {
+          error: "invalid_send_result_ingestion_payload",
+          message: "sendJobId and status are required."
+        });
+      }
+
+      const jobs = await sendQueue.list();
+      const senderNodes = await senderNodeRegistry.list();
+      const job = jobs.find((candidate) => candidate.id === body.sendJobId);
+      const resolvedSenderNodeId = body.senderNodeId ?? job?.senderNodeId;
+      const senderNode = resolvedSenderNodeId
+        ? senderNodes.find((candidate) => candidate.id === resolvedSenderNodeId)
+        : undefined;
+      const decision = evaluateSendResultIngestion({
+        sendJobId: body.sendJobId,
+        senderNodeId: body.senderNodeId,
+        status: body.status,
+        smtpResponse: body.smtpResponse,
+        bounceCode: body.bounceCode,
+        complaintSource: body.complaintSource,
+        source: body.source,
+        metadata: body.metadata
+      }, {
+        job,
+        senderNode
+      });
+      const actorId = body.actorId?.trim() || "mock-ingestion";
+
+      if (!decision.allowed || !decision.normalizedStatus || !decision.senderNodeId) {
+        await auditLog.append({
+          actorType: body.actorId ? "operator" : "system",
+          actorId,
+          action: "send_result.ingestion_rejected",
+          targetType: "send_job",
+          targetId: body.sendJobId,
+          riskLevel: decision.riskLevel,
+          metadata: {
+            decision,
+            payloadStatus: body.status,
+            smtpEnabled: false
+          }
+        });
+
+        return json(response, 422, {
+          allowed: false,
+          decision
+        });
+      }
+
+      const result = await sendResultStore.create({
+        sendJobId: decision.sendJobId,
+        senderNodeId: decision.senderNodeId,
+        status: decision.normalizedStatus,
+        smtpResponse: body.smtpResponse,
+        bounceCode: body.bounceCode,
+        complaintSource: body.complaintSource,
+        metadata: {
+          ...(body.metadata ?? {}),
+          ingested: true,
+          source: body.source ?? "mock-ingestion"
+        }
+      });
+      const suppressionEntry = decision.suppression
+        ? await suppressionList.add(decision.suppression)
+        : undefined;
+
+      await auditLog.append({
+        actorType: body.actorId ? "operator" : "system",
+        actorId,
+        action: "send_result.ingested",
+        targetType: "send_result",
+        targetId: result.id,
+        riskLevel: decision.riskLevel,
+        metadata: {
+          decision,
+          sendJobId: result.sendJobId,
+          senderNodeId: result.senderNodeId,
+          status: result.status,
+          suppressionEntry,
+          smtpEnabled: false,
+          sideEffects: "local-state-only"
+        }
+      });
+
+      return json(response, 201, {
+        allowed: true,
+        result,
+        suppressionEntry,
+        decision
       });
     }
 

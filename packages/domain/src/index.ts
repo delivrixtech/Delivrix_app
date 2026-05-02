@@ -9,6 +9,7 @@ export * from "./repositories.ts";
 export * from "./sender-node-registry.ts";
 export * from "./sender-node-manual-control.ts";
 export * from "./sender-node-health.ts";
+export * from "./send-result-ingestion.ts";
 export * from "./send-result-simulator.ts";
 export * from "./send-queue.ts";
 export * from "./stuck-job-recovery.ts";

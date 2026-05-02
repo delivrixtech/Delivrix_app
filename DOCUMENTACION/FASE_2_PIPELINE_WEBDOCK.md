@@ -61,8 +61,9 @@ Hito 2.10 completado en `DOCUMENTACION/FASE_2_ADMIN_OVERVIEW.md`.
 Hito 2.11 completado en `DOCUMENTACION/FASE_2_STUCK_JOB_RECOVERY.md`.
 Hito 2.12 completado en `DOCUMENTACION/FASE_2_KILL_SWITCH.md`.
 Hito 2.13 completado en `DOCUMENTACION/FASE_2_SENDER_NODE_MANUAL_CONTROLS.md`.
+Hito 2.14 completado en `DOCUMENTACION/FASE_2_MOCK_INGESTION_BOUNCES_COMPLAINTS.md`.
 
-Siguiente hito recomendado: **Hito 2.14 ingestion mock de bounces y complaints**.
+Siguiente hito recomendado: **Hito 2.15 runbook operativo de Fase 2**.
 
 Antes de cualquier envio real, faltan:
 
