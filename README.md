@@ -45,6 +45,7 @@ Tambien usa almacenamiento local para auditoria y suppression list:
 - `runtime/sender-nodes.json`
 - `runtime/rate-limit-counters.json`
 - `runtime/send-results.json`
+- `runtime/kill-switch.json`
 
 ## Infraestructura local preparada
 
@@ -141,3 +142,16 @@ curl -s -X POST http://127.0.0.1:3000/v1/stuck-jobs/recover \
 ```
 
 Detecta jobs que quedaron en `processing` mas tiempo que `STUCK_JOB_THRESHOLD_MS` y permite recuperarlos con auditoria. No envia correo ni reintenta infraestructura real.
+
+## Kill switch operativo
+
+Endpoints locales:
+
+```bash
+curl -s http://127.0.0.1:3000/v1/kill-switch
+curl -s -X POST http://127.0.0.1:3000/v1/kill-switch \
+  -H 'content-type: application/json' \
+  -d '{"enabled":true,"reason":"Manual incident response","actorId":"operator_local"}'
+```
+
+Cuando esta activo, el Gateway no encola nuevas solicitudes y el Worker no reclama jobs. Cada cambio y bloqueo queda auditado.

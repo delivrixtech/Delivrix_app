@@ -1,12 +1,14 @@
 import {
   RateLimitService,
   SenderNodeRegistry,
+  evaluateKillSwitch,
   requestRateLimitRules,
   senderNodeRateLimitRule,
   simulateSendResult
 } from "../../../packages/domain/src/index.ts";
 import {
   LocalFileAuditLog,
+  LocalFileKillSwitchStore,
   LocalFileRateLimitStore,
   LocalFileSendResultStore,
   LocalFileSenderNodeStore
@@ -15,6 +17,7 @@ import { LocalFileSendQueue } from "../../../packages/queue/src/index.ts";
 
 const queue = new LocalFileSendQueue();
 const auditLog = new LocalFileAuditLog();
+const killSwitchStore = new LocalFileKillSwitchStore();
 const sendResultStore = new LocalFileSendResultStore();
 const senderNodeRegistry = new SenderNodeRegistry(new LocalFileSenderNodeStore());
 const rateLimitService = new RateLimitService(new LocalFileRateLimitStore());
@@ -23,10 +26,30 @@ const requestRateLimitProfile = {
   senderDomainDailyLimit: Number(process.env.RATE_LIMIT_SENDER_DOMAIN_DAILY ?? 300),
   recipientDomainDailyLimit: Number(process.env.RATE_LIMIT_RECIPIENT_DOMAIN_DAILY ?? 100)
 };
-const job = await queue.claimNext();
-
 console.log("worker ready");
-console.log("phase=base-1 mode=safe-no-smtp");
+console.log("phase=base-2 mode=safe-no-smtp");
+
+const killSwitchDecision = evaluateKillSwitch(await killSwitchStore.get(), "claim_send_job");
+
+if (!killSwitchDecision.allowed) {
+  await auditLog.append({
+    actorType: "system",
+    actorId: "worker",
+    action: "worker.blocked_by_kill_switch",
+    targetType: "operation",
+    targetId: "claim_send_job",
+    riskLevel: "critical",
+    metadata: {
+      decision: killSwitchDecision,
+      smtpEnabled: false
+    }
+  });
+  console.log(killSwitchDecision.message);
+  console.log("No job was claimed.");
+  process.exit(0);
+}
+
+const job = await queue.claimNext();
 
 if (!job) {
   console.log("No queued jobs found.");

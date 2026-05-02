@@ -42,6 +42,26 @@ test("builds healthy overview with nominal alert when no risks exist", () => {
   assert.equal(overview.alerts[0]?.id, "system_nominal");
 });
 
+test("builds critical overview when kill switch is active", () => {
+  const overview = buildAdminOverview({
+    summary: summaryFixture({}),
+    health: [
+      healthDecision("sender_healthy", "healthy")
+    ],
+    killSwitch: {
+      enabled: true,
+      reason: "Manual incident response",
+      updatedAt: "2026-05-02T12:00:00.000Z",
+      updatedBy: "operator_001"
+    },
+    auditEvents: []
+  });
+
+  assert.equal(overview.state, "critical");
+  assert.equal(overview.alerts[0]?.id, "kill_switch_active");
+  assert.equal(overview.killSwitch?.enabled, true);
+});
+
 function summaryFixture(overrides: {
   complaints?: number;
   bounces?: number;

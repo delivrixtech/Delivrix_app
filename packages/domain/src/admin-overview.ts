@@ -1,4 +1,5 @@
 import type { AuditEvent } from "./audit-log.ts";
+import type { KillSwitchState } from "./kill-switch.ts";
 import type { OperationalSummary } from "./operational-summary.ts";
 import type { SenderNodeHealthDecision } from "./sender-node-health.ts";
 
@@ -18,6 +19,7 @@ export interface AdminOverview {
   state: AdminOperationalState;
   summary: OperationalSummary;
   health: SenderNodeHealthDecision[];
+  killSwitch?: KillSwitchState;
   alerts: AdminAlert[];
   recentAuditEvents: AuditEvent[];
 }
@@ -26,27 +28,47 @@ export interface AdminOverviewInput {
   summary: OperationalSummary;
   health: SenderNodeHealthDecision[];
   auditEvents: AuditEvent[];
+  killSwitch?: KillSwitchState;
   recentAuditLimit?: number;
   now?: Date;
 }
 
 export function buildAdminOverview(input: AdminOverviewInput): AdminOverview {
-  const alerts = buildAdminAlerts(input.summary, input.health);
+  const alerts = buildAdminAlerts(input.summary, input.health, input.killSwitch);
 
   return {
     generatedAt: (input.now ?? new Date()).toISOString(),
     state: stateFromAlerts(alerts),
     summary: input.summary,
     health: input.health,
+    killSwitch: input.killSwitch,
     alerts,
     recentAuditEvents: recentAuditEvents(input.auditEvents, input.recentAuditLimit ?? 10)
   };
 }
 
-function buildAdminAlerts(summary: OperationalSummary, health: SenderNodeHealthDecision[]): AdminAlert[] {
+function buildAdminAlerts(
+  summary: OperationalSummary,
+  health: SenderNodeHealthDecision[],
+  killSwitch: KillSwitchState | undefined
+): AdminAlert[] {
   const alerts: AdminAlert[] = [];
   const criticalHealth = health.filter((decision) => decision.severity === "critical");
   const warningHealth = health.filter((decision) => decision.severity === "warning");
+
+  if (killSwitch?.enabled) {
+    alerts.push({
+      id: "kill_switch_active",
+      severity: "critical",
+      title: "Kill switch active",
+      message: "The send pipeline is paused by the operational kill switch.",
+      metadata: {
+        reason: killSwitch.reason,
+        updatedAt: killSwitch.updatedAt,
+        updatedBy: killSwitch.updatedBy
+      }
+    });
+  }
 
   if (criticalHealth.length > 0) {
     alerts.push({

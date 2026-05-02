@@ -59,8 +59,9 @@ Hito 2.8 completado en `DOCUMENTACION/FASE_2_RESULTADOS_SIMULADOS.md`.
 Hito 2.9 completado en `DOCUMENTACION/FASE_2_HEALTH_CHECKS.md`.
 Hito 2.10 completado en `DOCUMENTACION/FASE_2_ADMIN_OVERVIEW.md`.
 Hito 2.11 completado en `DOCUMENTACION/FASE_2_STUCK_JOB_RECOVERY.md`.
+Hito 2.12 completado en `DOCUMENTACION/FASE_2_KILL_SWITCH.md`.
 
-Siguiente hito recomendado: **Hito 2.12 kill switch operativo local**.
+Siguiente hito recomendado: **Hito 2.13 controles manuales de sender nodes**.
 
 Antes de cualquier envio real, faltan:
 

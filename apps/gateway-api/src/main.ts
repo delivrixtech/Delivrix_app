@@ -7,6 +7,7 @@ import {
   buildAdminOverview,
   buildOperationalSummary,
   evaluateSenderNodeHealth,
+  evaluateKillSwitch,
   requestRateLimitRules,
   type RegisterSenderNodeInput,
   type SuppressionReason,
@@ -15,6 +16,7 @@ import {
 } from "../../../packages/domain/src/index.ts";
 import {
   LocalFileAuditLog,
+  LocalFileKillSwitchStore,
   LocalFileRateLimitStore,
   LocalFileSendResultStore,
   LocalFileSenderNodeStore,
@@ -26,6 +28,7 @@ const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
 
 const auditLog = new LocalFileAuditLog();
+const killSwitchStore = new LocalFileKillSwitchStore();
 const sendResultStore = new LocalFileSendResultStore();
 const suppressionList = new LocalFileSuppressionList();
 const sendQueue = new LocalFileSendQueue();
@@ -44,6 +47,8 @@ const requestRateLimitProfile = {
 const server = createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/health") {
+      const killSwitch = await killSwitchStore.get();
+
       return json(response, 200, {
         status: "ok",
         service: "gateway-api",
@@ -52,7 +57,12 @@ const server = createServer(async (request, response) => {
         suppressionList: "local-file",
         senderNodes: "local-file",
         rateLimits: "local-file",
-        phase: "base-1"
+        killSwitch: {
+          enabled: killSwitch.enabled,
+          updatedAt: killSwitch.updatedAt,
+          updatedBy: killSwitch.updatedBy
+        },
+        phase: "base-2"
       });
     }
 
@@ -112,6 +122,7 @@ const server = createServer(async (request, response) => {
       const auditEvents = await auditLog.list();
       const senderNodes = await senderNodeRegistry.list();
       const rateLimitCounters = await rateLimitStore.list();
+      const killSwitch = await killSwitchStore.get();
       const summary = buildOperationalSummary({
         jobs,
         sendResults,
@@ -123,11 +134,65 @@ const server = createServer(async (request, response) => {
       const overview = buildAdminOverview({
         summary,
         health,
-        auditEvents
+        auditEvents,
+        killSwitch
       });
 
       return json(response, 200, {
         overview
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/kill-switch") {
+      return json(response, 200, {
+        killSwitch: await killSwitchStore.get()
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/kill-switch") {
+      const body = await readJson<{
+        enabled?: unknown;
+        reason?: string;
+        actorId?: string;
+      }>(request);
+
+      if (typeof body.enabled !== "boolean") {
+        return json(response, 422, {
+          error: "invalid_kill_switch_payload",
+          message: "enabled must be a boolean."
+        });
+      }
+
+      if (body.enabled && !body.reason?.trim()) {
+        return json(response, 422, {
+          error: "kill_switch_reason_required",
+          message: "reason is required when enabling kill switch."
+        });
+      }
+
+      const previous = await killSwitchStore.get();
+      const killSwitch = await killSwitchStore.update({
+        enabled: body.enabled,
+        reason: body.reason,
+        updatedBy: body.actorId ?? "gateway-api"
+      });
+
+      await auditLog.append({
+        actorType: body.actorId ? "operator" : "system",
+        actorId: body.actorId ?? "gateway-api",
+        action: killSwitch.enabled ? "kill_switch.activated" : "kill_switch.deactivated",
+        targetType: "operation",
+        targetId: "global_send_pipeline",
+        riskLevel: killSwitch.enabled ? "critical" : "high",
+        metadata: {
+          previous,
+          current: killSwitch,
+          smtpEnabled: false
+        }
+      });
+
+      return json(response, 200, {
+        killSwitch
       });
     }
 
@@ -354,6 +419,31 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && request.url === "/v1/send-requests") {
       const body = await readJson<SendRequest>(request);
+      const killSwitchDecision = evaluateKillSwitch(await killSwitchStore.get(), "accept_send_request");
+
+      if (!killSwitchDecision.allowed) {
+        await auditLog.append({
+          actorType: "system",
+          actorId: "gateway-api",
+          action: "send_request.blocked_by_kill_switch",
+          targetType: "campaign",
+          targetId: body.campaignId ?? "unknown",
+          riskLevel: "critical",
+          metadata: {
+            recipient: body.recipient?.email,
+            decision: killSwitchDecision,
+            smtpEnabled: false
+          }
+        });
+
+        return json(response, 423, {
+          allowed: false,
+          reason: "kill_switch_active",
+          message: killSwitchDecision.message,
+          killSwitch: killSwitchDecision.state
+        });
+      }
+
       const decision = await policyEngine.evaluate(body);
 
       if (!decision.allowed) {
