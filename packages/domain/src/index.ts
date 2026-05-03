@@ -1,5 +1,6 @@
 export * from "./audit-log.ts";
 export * from "./admin-overview.ts";
+export * from "./admin-panel-workflow.ts";
 export * from "./backup-plan.ts";
 export * from "./ids.ts";
 export * from "./ip-reputation.ts";

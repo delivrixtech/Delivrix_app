@@ -63,6 +63,7 @@ El panel solo consume:
 | --- | --- |
 | `GET /health` | estado del Gateway, OpenClaw y safety |
 | `GET /v1/admin/overview` | resumen operativo, alertas, health y auditoria |
+| `GET /v1/admin/workflow` | ruta operacional que debe seguir el panel |
 | `GET /v1/operating-north` | gates, acciones permitidas y bloqueadas |
 | `GET /v1/kill-switch` | estado del kill switch |
 
@@ -117,6 +118,7 @@ node --test apps/admin-panel/src/shared/api/client.test.mjs apps/admin-panel/src
 - `node --test apps/admin-panel/src/shared/api/client.test.mjs apps/admin-panel/src/shared/lib/formatters.test.mjs`.
 - `GET http://127.0.0.1:5173/health` responde desde Gateway via proxy.
 - `GET http://127.0.0.1:5173/v1/admin/overview` responde desde Gateway via proxy.
+- `GET http://127.0.0.1:5173/v1/admin/workflow` responde desde Gateway via proxy.
 - `POST http://127.0.0.1:5173/v1/kill-switch` responde `405`.
 
 ## Gates
@@ -138,3 +140,7 @@ Cuando el entorno tenga package manager:
 - agregar TanStack Router;
 - agregar TanStack Table para tablas densas;
 - mantener exactamente la misma frontera `GET-only` mientras no exista autenticacion y auditoria de mutaciones.
+
+Siguiente ajuste implementado:
+
+- `HITO_5_4B_ADMIN_PANEL_WORKFLOW.md`.

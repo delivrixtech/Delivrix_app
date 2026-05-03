@@ -185,6 +185,10 @@ h3 {
 }
 
 .nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   width: 100%;
   min-height: 38px;
   border: 1px solid transparent;
@@ -194,6 +198,26 @@ h3 {
   color: var(--text-muted);
   text-align: left;
   cursor: pointer;
+}
+
+.nav-status {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--text-muted);
+}
+
+.nav-status-success {
+  background: var(--green);
+}
+
+.nav-status-warning {
+  background: var(--amber);
+}
+
+.nav-status-critical {
+  background: var(--red);
 }
 
 .nav-item:hover,
@@ -458,6 +482,10 @@ h3 {
   gap: 8px;
 }
 
+.token-grid-spaced {
+  margin-top: 12px;
+}
+
 .result-item {
   display: grid;
   min-width: 140px;
@@ -543,6 +571,86 @@ h3 {
 
 .notice-warning {
   border-color: #ead9a6;
+}
+
+.workflow-list {
+  display: grid;
+  gap: 12px;
+}
+
+.workflow-step {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 14px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.workflow-success {
+  border-left-color: var(--green);
+}
+
+.workflow-warning {
+  border-left-color: var(--amber);
+}
+
+.workflow-critical {
+  border-left-color: var(--red);
+}
+
+.workflow-step-index {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  font-weight: 800;
+}
+
+.workflow-step-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.workflow-step-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workflow-step-head p,
+.workflow-purpose,
+.workflow-reason {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.workflow-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.workflow-token-group {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.workflow-token-group strong {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: uppercase;
 }
 
 .definition-row {
@@ -648,9 +756,15 @@ h3 {
   }
 
   .page-title-row,
-  .notice {
+  .notice,
+  .workflow-step-head {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .workflow-step,
+  .workflow-grid {
+    grid-template-columns: 1fr;
   }
 
   .status-row {

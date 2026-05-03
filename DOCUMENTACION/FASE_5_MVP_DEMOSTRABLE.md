@@ -154,6 +154,7 @@ Gate:
 Subhito implementado:
 
 - `HITO_5_4A_ADMIN_PANEL_READ_ONLY.md`: primer panel local, separado del backend, con proxy `GET-only`.
+- `HITO_5_4B_ADMIN_PANEL_WORKFLOW.md`: workflow operativo expuesto por backend para evitar rutas hardcodeadas en frontend.
 
 ## Criterio de salida de Fase 5
 

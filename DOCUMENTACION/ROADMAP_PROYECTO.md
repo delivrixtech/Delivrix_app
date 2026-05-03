@@ -316,6 +316,10 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - proxy `GET-only`.
   - vistas overview, OpenClaw, sender nodes, auditoria, reportes y seguridad.
   - sin mutaciones desde UI.
+- Hito 5.4B:
+  - workflow operativo del panel desde backend.
+  - endpoint `GET /v1/admin/workflow`.
+  - README compactado para reducir repeticion.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

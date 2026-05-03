@@ -6,18 +6,30 @@ import { renderOpenClaw } from "../features/openclaw/openclaw.js";
 import { renderOverview } from "../features/overview/overview.js";
 import { renderReports } from "../features/reports/reports.js";
 import { renderSafety } from "../features/settings/settings.js";
+import { renderWorkflow } from "../features/workflow/workflow.js";
 
-const routes = [
-  { id: "overview", label: "Overview", render: renderOverview },
-  { id: "openclaw", label: "OpenClaw", render: renderOpenClaw },
-  { id: "fleet", label: "Sender nodes", render: renderFleet },
-  { id: "audit", label: "Auditoria", render: renderAudit },
-  { id: "reports", label: "Reportes", render: renderReports },
-  { id: "safety", label: "Seguridad", render: renderSafety }
+const routeRenderers = {
+  workflow: renderWorkflow,
+  overview: renderOverview,
+  openclaw: renderOpenClaw,
+  fleet: renderFleet,
+  audit: renderAudit,
+  reports: renderReports,
+  safety: renderSafety
+};
+
+const fallbackSteps = [
+  { id: "workflow", navLabel: "Ruta", status: "ready" },
+  { id: "overview", navLabel: "Overview", status: "ready" },
+  { id: "openclaw", navLabel: "OpenClaw", status: "ready" },
+  { id: "fleet", navLabel: "Sender nodes", status: "ready" },
+  { id: "audit", navLabel: "Auditoria", status: "ready" },
+  { id: "reports", navLabel: "Reportes", status: "needs_review" },
+  { id: "safety", navLabel: "Seguridad", status: "ready" }
 ];
 
 const state = {
-  activeRouteId: "overview",
+  activeRouteId: "workflow",
   data: undefined,
   error: undefined,
   loading: true
@@ -64,13 +76,17 @@ function renderHeader() {
 }
 
 function renderSidebar() {
+  const steps = navigationSteps();
+
   return el("aside", { className: "sidebar" }, [
-    el("nav", { className: "nav-list", attrs: { "aria-label": "Admin panel sections" } }, routes.map((route) => {
+    el("nav", { className: "nav-list", attrs: { "aria-label": "Admin panel sections" } }, steps.map((route) => {
       const button = el("button", {
         className: route.id === state.activeRouteId ? "nav-item nav-item-active" : "nav-item",
-        text: route.label,
         attrs: { type: "button" }
-      });
+      }, [
+        el("span", { text: route.navLabel }),
+        el("span", { className: `nav-status nav-status-${toneFor(route.status)}` })
+      ]);
 
       button.addEventListener("click", () => {
         state.activeRouteId = route.id;
@@ -105,10 +121,16 @@ function renderMain() {
     ]);
   }
 
-  const route = routes.find((candidate) => candidate.id === state.activeRouteId) ?? routes[0];
+  const steps = navigationSteps();
+  const route = steps.find((candidate) => candidate.id === state.activeRouteId) ?? steps[0];
+  const renderer = routeRenderers[route.id] ?? renderWorkflow;
   return el("main", { className: "content" }, [
-    route.render(state.data, { refreshButton })
+    renderer(state.data, { refreshButton, step: route })
   ]);
+}
+
+function navigationSteps() {
+  return state.data?.workflow?.steps ?? fallbackSteps;
 }
 
 function renderSkeleton() {

@@ -10,6 +10,7 @@ test("admin panel exposes only the initial GET endpoints", () => {
   assert.deepEqual(listReadEndpoints().sort(), [
     "/health",
     "/v1/admin/overview",
+    "/v1/admin/workflow",
     "/v1/kill-switch",
     "/v1/operating-north"
   ]);

@@ -330,3 +330,5 @@ Siguiente incremento sugerido:
 Ese incremento debe crear `apps/admin-panel`, conectar solo endpoints read-only del Gateway y levantar el primer dashboard local sin mutaciones.
 
 Estado: implementado en `HITO_5_4A_ADMIN_PANEL_READ_ONLY.md`.
+
+Ajuste posterior: `HITO_5_4B_ADMIN_PANEL_WORKFLOW.md` mueve la ruta operacional del panel a un contrato backend `GET /v1/admin/workflow`.

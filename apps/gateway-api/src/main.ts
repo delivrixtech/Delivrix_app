@@ -10,6 +10,7 @@ import {
   RateLimitService,
   SenderNodeRegistry,
   buildAdminOverview,
+  buildAdminPanelWorkflow,
   buildBackupPlan,
   buildOperationalSummary,
   buildDelivrixMvpDemoRunReport,
@@ -1528,6 +1529,38 @@ const server = createServer(async (request, response) => {
 
       return json(response, 200, {
         overview
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/admin/workflow") {
+      const jobs = await sendQueue.list();
+      const sendResults = await sendResultStore.list();
+      const auditEvents = await auditLog.list();
+      const senderNodes = await senderNodeRegistry.list();
+      const rateLimitCounters = await rateLimitStore.list();
+      const killSwitch = await killSwitchStore.get();
+      const summary = buildOperationalSummary({
+        jobs,
+        sendResults,
+        auditEvents,
+        senderNodes,
+        rateLimitCounters
+      });
+      const health = evaluateSenderNodeHealth(senderNodes, sendResults);
+      const overview = buildAdminOverview({
+        summary,
+        health,
+        auditEvents,
+        killSwitch
+      });
+      const workflow = buildAdminPanelWorkflow({
+        overview,
+        operatingNorth: getOperatingNorthSnapshot(),
+        killSwitch
+      });
+
+      return json(response, 200, {
+        workflow
       });
     }
 

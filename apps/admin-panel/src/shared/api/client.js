@@ -1,6 +1,7 @@
 export const READ_ENDPOINTS = Object.freeze({
   health: "/health",
   adminOverview: "/v1/admin/overview",
+  adminWorkflow: "/v1/admin/workflow",
   operatingNorth: "/v1/operating-north",
   killSwitch: "/v1/kill-switch"
 });
@@ -10,9 +11,10 @@ export function listReadEndpoints() {
 }
 
 export async function loadDashboardData() {
-  const [health, adminOverview, operatingNorth, killSwitch] = await Promise.all([
+  const [health, adminOverview, adminWorkflow, operatingNorth, killSwitch] = await Promise.all([
     getJson(READ_ENDPOINTS.health),
     getJson(READ_ENDPOINTS.adminOverview),
+    getJson(READ_ENDPOINTS.adminWorkflow),
     getJson(READ_ENDPOINTS.operatingNorth),
     getJson(READ_ENDPOINTS.killSwitch)
   ]);
@@ -20,6 +22,7 @@ export async function loadDashboardData() {
   return {
     health,
     overview: adminOverview.overview,
+    workflow: adminWorkflow.workflow,
     operatingNorth,
     killSwitch: killSwitch.killSwitch
   };
