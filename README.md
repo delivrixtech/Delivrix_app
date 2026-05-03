@@ -16,6 +16,7 @@ La arquitectura nace con tres reglas:
 3. La Fase 1 no envia correo real; valida, audita y encola de forma controlada.
 
 Estandares de ingenieria: ver `DOCUMENTACION/ESTANDARES_INGENIERIA.md`.
+Runbook operativo Fase 2: ver `DOCUMENTACION/FASE_2_RUNBOOK_OPERATIVO.md`.
 
 ## Estructura
 

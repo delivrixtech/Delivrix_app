@@ -62,13 +62,14 @@ Hito 2.11 completado en `DOCUMENTACION/FASE_2_STUCK_JOB_RECOVERY.md`.
 Hito 2.12 completado en `DOCUMENTACION/FASE_2_KILL_SWITCH.md`.
 Hito 2.13 completado en `DOCUMENTACION/FASE_2_SENDER_NODE_MANUAL_CONTROLS.md`.
 Hito 2.14 completado en `DOCUMENTACION/FASE_2_MOCK_INGESTION_BOUNCES_COMPLAINTS.md`.
+Hito 2.15 completado en `DOCUMENTACION/FASE_2_RUNBOOK_OPERATIVO.md`.
 
-Siguiente hito recomendado: **Hito 2.15 runbook operativo de Fase 2**.
+Siguiente hito recomendado: **Hito 3.1 ProxmoxAdapter mock e interfaz estable**.
 
 Antes de cualquier envio real, faltan:
 
 - Credenciales seguras.
 - Confirmacion del proveedor y condiciones operativas.
-- Bounce/complaint ingestion.
-- Kill switch operativo.
+- Bounce/complaint ingestion real.
+- Kill switch operativo en entorno productivo.
 - Modo supervised antes de cualquier efecto externo.
