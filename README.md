@@ -18,6 +18,7 @@ La arquitectura nace con tres reglas:
 Estandares de ingenieria: ver `DOCUMENTACION/ESTANDARES_INGENIERIA.md`.
 Runbook operativo Fase 2: ver `DOCUMENTACION/FASE_2_RUNBOOK_OPERATIVO.md`.
 Runbook Fase 3: ver `DOCUMENTACION/FASE_3_INFRAESTRUCTURA_PROPIA.md`.
+Documento Fase 4/OpenClaw + NFC: ver `DOCUMENTACION/FASE_4_OPENCLAW_NFC_INTEGRACION.md`.
 
 ## Estructura
 

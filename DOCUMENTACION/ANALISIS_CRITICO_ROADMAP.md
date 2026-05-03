@@ -102,7 +102,22 @@ Correccion al roadmap:
 
 Gate: OpenClaw no modifica DNS, nodos ni envio hasta tener audit log, dry-run, verificacion, rollback y kill switch probados.
 
-### 8. La politica de "rotar IPs degradadas" debe reformularse
+### 8. La integracion con NFC debe ser por capacidad, no por envio paralelo
+
+Riesgo: despues de leer los repos NFC, queda claro que ese sistema ya tiene gateway, worker, providers, colas, webhooks y envio real. Si Delivrix intenta enviar emails por su cuenta en paralelo durante Fase 4, se duplica responsabilidad, se rompen metricas y aumenta el riesgo reputacional.
+
+Correccion: Delivrix/OpenClaw debe proveer infraestructura, capacidad, health, warming y reputacion. NFC debe conservar el motor de envio mientras se define un contrato formal.
+
+Hallazgos tecnicos a bloquear por gate:
+
+- posible mismatch en `email_providers`: gateway elimina `workerInstanceId`, pero worker todavia lo declara;
+- posibles secretos o strings sensibles en documentacion interna de repos de referencia;
+- acciones SSH de alto impacto en NFC deben quedar fuera de autonomia inicial;
+- credenciales SMTP en texto plano no deben ser aceptadas en produccion.
+
+Gate: antes de escribir en NFC o registrar providers reales, debe existir contrato versionado, bridge mock probado, auditoria y aprobacion humana.
+
+### 9. La politica de "rotar IPs degradadas" debe reformularse
 
 Riesgo: rotar IPs para seguir enviando cuando una IP se degrada puede parecer evasion de reputacion. Eso expone legal, reputacional y contractualmente.
 
@@ -110,7 +125,7 @@ Correccion: si una IP se degrada, la accion principal debe ser pausar, diagnosti
 
 Gate: ninguna rotacion automatica para sostener volumen ante complaints o blacklists. La respuesta automatica debe ser reducir o detener envio.
 
-### 9. Falta explicitar observabilidad de entregabilidad
+### 10. Falta explicitar observabilidad de entregabilidad
 
 Riesgo: medir solo "enviado" no sirve. La plataforma necesita trazabilidad por dominio, IP, campana, lista, bounce code, deferred reason, complaint source y opt-out.
 
@@ -118,7 +133,7 @@ Correccion: llevar Gmail Postmaster Tools, Microsoft SNDS/JMRP cuando aplique, b
 
 Gate: no escalar por encima de bajo volumen sin metricas por dominio receptor.
 
-### 10. Single point of failure: servidor fisico unico en Popayan
+### 11. Single point of failure: servidor fisico unico en Popayan
 
 Riesgo: la estrategia reduce dependencia de proveedores, pero concentra riesgo en un servidor antiguo, una ubicacion, un ISP, energia local, cooling y tunel de red.
 
@@ -220,4 +235,3 @@ No buscaria "100% seguridad" prometida; buscaria "no hay avance sin evidencia". 
 - Junio debe validar operacion limitada y reputacion.
 - Julio y agosto deben ser meses de escalamiento por evidencia.
 - Septiembre solo debe apuntar a 1M/dia si los gates anteriores se cumplieron sin excepciones.
-

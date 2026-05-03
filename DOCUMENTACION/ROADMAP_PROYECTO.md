@@ -167,12 +167,39 @@ Preparar la plataforma para operar sender nodes propios sobre Proxmox o, si el s
 
 Periodo sugerido: 2026-05-25 a 2026-05-31
 
+Documento operativo de fase: `FASE_4_OPENCLAW_NFC_INTEGRACION.md`.
+
 ### Objetivo
 
-Construir la primera version de OpenClaw como operador autonomo nivel 2 con permisos acotados.
+Construir la primera version de OpenClaw como operador autonomo nivel 2 con permisos acotados, empezando en modo read-only/dry-run y alineado con el sistema NFC ya existente.
+
+Ajuste tras lectura de repos NFC:
+
+- NFC conserva el motor de envio actual.
+- Delivrix/OpenClaw no reemplaza el envio en esta fase.
+- Delivrix/OpenClaw provisiona, planifica y gobierna capacidad de infraestructura.
+- La integracion inicial debe ser un bridge/API para registrar capacidad compatible con NFC, no un sender paralelo.
 
 ### Entregables tecnicos
 
+- Contrato NFC read-only:
+  - mapa `nfc-gateway`, `nfc-worker`, `nfc-frontend`.
+  - contrato `email_providers`.
+  - contrato `smtp_servers`.
+  - mapeo de capacidad, limites, reputacion y warming.
+- Onboarding inteligente:
+  - servidor fisico.
+  - Proxmox.
+  - pools de IP.
+  - dominios.
+  - DNS.
+  - Postfix/OpenDKIM/TLS.
+  - warming inicial.
+- Cluster topology planner:
+  - plan de VPS/LXC.
+  - asignacion IP/dominio.
+  - limites por nodo/provider.
+  - plan de riesgos.
 - Scheduler:
   - health check cada 5 minutos.
   - fleet analysis cada 15 minutos.
@@ -190,10 +217,16 @@ Construir la primera version de OpenClaw como operador autonomo nivel 2 con perm
 - Audit log inmutable para toda accion autonoma.
 - Presupuesto diario de IA.
 - Kill switch probado.
+- NFC bridge mock:
+  - payload provider SMTP.
+  - payload SMTP server.
+  - health/reputation sync en simulacion.
 
 ### Criterio de salida
 
-- OpenClaw detecta problemas simulados, propone o ejecuta acciones permitidas, registra auditoria, verifica resultado y genera reporte diario.
+- OpenClaw detecta problemas simulados, propone acciones permitidas, registra auditoria, verifica resultado y genera reporte diario.
+- Existe un contrato NFC documentado y un bridge mock que no envia emails ni escribe en produccion.
+- El onboarding inteligente puede generar un plan de clusters/VPS sin tocar infraestructura real.
 
 ## Fase 5: MVP demostrable
 

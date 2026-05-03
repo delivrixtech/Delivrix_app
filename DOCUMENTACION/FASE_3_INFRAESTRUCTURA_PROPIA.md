@@ -242,7 +242,15 @@ Fase 3 se considera lista para pasar a Fase 4 cuando:
 
 ## Siguiente fase
 
-La siguiente fase es OpenClaw MVP:
+La siguiente fase es OpenClaw MVP con integracion NFC documentada en `FASE_4_OPENCLAW_NFC_INTEGRACION.md`.
+
+Correccion de alcance:
+
+- NFC mantiene el envio real por ahora.
+- Delivrix/OpenClaw construye onboarding inteligente, planner de clusters/VPS y bridge de capacidad.
+- No se activa SMTP real ni se escribe en NFC produccion sin contrato, dry-run, auditoria y aprobacion humana.
+
+Hitos principales:
 
 - scheduler.
 - skills iniciales.

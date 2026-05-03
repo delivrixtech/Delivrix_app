@@ -59,6 +59,29 @@ Razones principales:
    - Webdock mantiene operacion durante transicion.
    - Plan C con proveedor VPS alternativo si se activan triggers.
 
+## Lectura complementaria de repos NFC
+
+El 2026-05-02 se clonaron como referencia local los repos:
+
+- `National-Filing-Corporation/nfc-gateway`
+- `National-Filing-Corporation/nfc-worker`
+- `National-Filing-Corporation/nfc-frontend`
+
+La lectura ajusta el entendimiento operativo:
+
+- NFC ya tiene gateway, worker y frontend para operar campanas, proveedores, colas, registros, webhooks y envio.
+- Delivrix no debe duplicar ni reemplazar ese envio en la Fase 4.
+- OpenClaw debe enfocarse en onboarding inteligente, provision de clusters/VPS, configuracion segura de infraestructura SMTP y monitoreo.
+- La integracion correcta es un bridge/API para registrar capacidad creada por Delivrix como providers/SMTP servers compatibles con NFC.
+- El documento operativo de este ajuste es `FASE_4_OPENCLAW_NFC_INTEGRACION.md`.
+
+Riesgos detectados en la referencia NFC:
+
+- posible presencia de secretos en documentacion interna, que deben rotarse/removerse si son reales;
+- contrato `email_providers` posiblemente desalineado entre gateway y worker por `workerInstanceId`;
+- acciones SSH de alto impacto existen y no deben ser invocadas por OpenClaw sin aprobacion humana;
+- fallback de credenciales SMTP en texto plano no debe permitirse en produccion.
+
 ## Modulos de software a desarrollar
 
 - `gateway-api`: recibe solicitudes, valida autorizacion, politicas, presupuesto, limites y compliance.
