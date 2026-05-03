@@ -226,6 +226,9 @@ Ajuste de foco tras la revision:
   - asignacion IP/dominio.
   - limites por nodo/provider.
   - plan de riesgos.
+  - presupuesto CPU/RAM/storage/IP.
+  - decision `plan_ready`, `needs_review` o `blocked`.
+  - endpoint `POST /v1/openclaw/topology/plan`.
 - Scheduler:
   - health check cada 5 minutos.
   - fleet analysis cada 15 minutos.

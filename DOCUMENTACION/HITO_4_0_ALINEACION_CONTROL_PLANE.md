@@ -30,7 +30,7 @@ Expone:
 Este contrato fue ampliado en Hito 4.1 y actualmente declara:
 
 - `delivrixRole = control_plane`
-- `openClawRole = intelligent_onboarding_then_supervised_operator`
+- `openClawRole = intelligent_onboarding_topology_then_supervised_operator`
 - `nfcRole = future_optional_external_integration`
 - `delivrixSendsRealEmail = false`
 - `nfcSendsRealEmail = false`

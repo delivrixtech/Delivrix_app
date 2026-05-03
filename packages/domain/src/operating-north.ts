@@ -1,5 +1,6 @@
 export type OperatingAction =
   | "evaluate_openclaw_onboarding"
+  | "build_cluster_topology_plan"
   | "build_capacity_plan"
   | "build_nfc_bridge_payload"
   | "ingest_observed_result"
@@ -31,10 +32,10 @@ export interface OperatingActionGateDecision {
 
 export interface OperatingNorthSnapshot {
   sourceOfTruth: "NORTE_OPERATIVO_DELIVRIX.md";
-  phase: "4.1-openclaw-intelligent-onboarding";
+  phase: "4.2-cluster-topology-planner";
   delivrixRole: "control_plane";
   nfcRole: "future_optional_external_integration";
-  openClawRole: "intelligent_onboarding_then_supervised_operator";
+  openClawRole: "intelligent_onboarding_topology_then_supervised_operator";
   delivrixSendsRealEmail: false;
   nfcSendsRealEmail: false;
   liveInfrastructureWritesEnabled: false;
@@ -46,6 +47,7 @@ export interface OperatingNorthSnapshot {
 
 const allowedActions: OperatingAction[] = [
   "evaluate_openclaw_onboarding",
+  "build_cluster_topology_plan",
   "build_capacity_plan",
   "build_nfc_bridge_payload",
   "ingest_observed_result",
@@ -66,10 +68,10 @@ const blockedActions: OperatingAction[] = [
 export function getOperatingNorthSnapshot(): OperatingNorthSnapshot {
   return {
     sourceOfTruth: "NORTE_OPERATIVO_DELIVRIX.md",
-    phase: "4.1-openclaw-intelligent-onboarding",
+    phase: "4.2-cluster-topology-planner",
     delivrixRole: "control_plane",
     nfcRole: "future_optional_external_integration",
-    openClawRole: "intelligent_onboarding_then_supervised_operator",
+    openClawRole: "intelligent_onboarding_topology_then_supervised_operator",
     delivrixSendsRealEmail: false,
     nfcSendsRealEmail: false,
     liveInfrastructureWritesEnabled: false,
@@ -79,6 +81,7 @@ export function getOperatingNorthSnapshot(): OperatingNorthSnapshot {
     gates: [
       "no_real_email_from_delivrix",
       "openclaw_onboarding_before_topology_planner",
+      "topology_plan_before_provisioning_dry_run",
       "no_nfc_production_write_without_contract_and_approval",
       "no_real_ssh_without_human_approval",
       "no_live_dns_change_without_dry_run_and_approval",
@@ -97,7 +100,7 @@ export function evaluateOperatingActionGate(
     return {
       allowed: true,
       requiresHumanApproval: false,
-      reason: "Action is inside the Delivrix control-plane boundary for Hito 4.1.",
+      reason: "Action is inside the Delivrix control-plane boundary for Hito 4.2.",
       blockedBy: [],
       riskLevel: "low"
     };
@@ -117,8 +120,8 @@ export function evaluateOperatingActionGate(
     return {
       allowed: false,
       requiresHumanApproval: true,
-      reason: "Action is outside Hito 4.1. Delivrix may not perform real sending, live infrastructure mutation, or NFC production writes yet.",
-      blockedBy: ["north_operating_boundary", "phase_4_1_gate"],
+      reason: "Action is outside Hito 4.2. Delivrix may not perform real sending, live infrastructure mutation, or NFC production writes yet.",
+      blockedBy: ["north_operating_boundary", "phase_4_2_gate"],
       riskLevel: "critical"
     };
   }

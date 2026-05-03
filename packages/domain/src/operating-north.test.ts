@@ -5,12 +5,12 @@ import {
   getOperatingNorthSnapshot
 } from "./operating-north.ts";
 
-test("defines Delivrix as control plane and OpenClaw onboarding as current phase", () => {
+test("defines Delivrix as control plane and topology planning as current phase", () => {
   const snapshot = getOperatingNorthSnapshot();
 
-  assert.equal(snapshot.phase, "4.1-openclaw-intelligent-onboarding");
+  assert.equal(snapshot.phase, "4.2-cluster-topology-planner");
   assert.equal(snapshot.delivrixRole, "control_plane");
-  assert.equal(snapshot.openClawRole, "intelligent_onboarding_then_supervised_operator");
+  assert.equal(snapshot.openClawRole, "intelligent_onboarding_topology_then_supervised_operator");
   assert.equal(snapshot.nfcRole, "future_optional_external_integration");
   assert.equal(snapshot.delivrixSendsRealEmail, false);
   assert.equal(snapshot.nfcSendsRealEmail, false);
@@ -20,6 +20,16 @@ test("defines Delivrix as control plane and OpenClaw onboarding as current phase
 test("allows OpenClaw onboarding evaluation in dry-run mode", () => {
   const decision = evaluateOperatingActionGate({
     action: "evaluate_openclaw_onboarding",
+    mode: "dry_run"
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.riskLevel, "low");
+});
+
+test("allows cluster topology planning in dry-run mode", () => {
+  const decision = evaluateOperatingActionGate({
+    action: "build_cluster_topology_plan",
     mode: "dry_run"
   });
 
@@ -37,7 +47,7 @@ test("allows dry-run bridge payload generation", () => {
   assert.equal(decision.riskLevel, "low");
 });
 
-test("blocks real email sending in Hito 4.1", () => {
+test("blocks real email sending in Hito 4.2", () => {
   const decision = evaluateOperatingActionGate({
     action: "send_email_real",
     mode: "live",
@@ -46,5 +56,5 @@ test("blocks real email sending in Hito 4.1", () => {
 
   assert.equal(decision.allowed, false);
   assert.equal(decision.riskLevel, "critical");
-  assert.deepEqual(decision.blockedBy, ["north_operating_boundary", "phase_4_1_gate"]);
+  assert.deepEqual(decision.blockedBy, ["north_operating_boundary", "phase_4_2_gate"]);
 });

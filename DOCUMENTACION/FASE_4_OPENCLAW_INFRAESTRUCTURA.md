@@ -159,6 +159,8 @@ Gate:
 
 ### Hito 4.2: Cluster topology planner
 
+Estado: implementado. Detalle operativo en `HITO_4_2_CLUSTER_TOPOLOGY_PLANNER.md`.
+
 Objetivo:
 
 - convertir el onboarding en un plan tecnico de VPS/LXC.
@@ -171,6 +173,8 @@ Entregables:
 - orden de provisioning;
 - limites iniciales;
 - riesgos por recurso.
+- endpoint `POST /v1/openclaw/topology/plan`;
+- auditoria `openclaw_topology.plan_created`.
 
 Gate:
 

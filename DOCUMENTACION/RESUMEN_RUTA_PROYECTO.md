@@ -12,6 +12,7 @@ La tesis no describe solamente una aplicacion web. Describe un sistema operativo
 Norte operativo: `NORTE_OPERATIVO_DELIVRIX.md`.
 Hito de alineacion: `HITO_4_0_ALINEACION_CONTROL_PLANE.md`.
 Hito OpenClaw onboarding: `HITO_4_1_OPENCLAW_ONBOARDING.md`.
+Hito topology planner: `HITO_4_2_CLUSTER_TOPOLOGY_PLANNER.md`.
 
 Regla principal: en la fase actual, Delivrix/OpenClaw prepara infraestructura propia de mailing sobre servidor fisico. NFC u otros sistemas externos quedan como integraciones futuras opcionales, no como dependencia del MVP.
 
@@ -152,6 +153,7 @@ Riesgos detectados en la referencia NFC:
 ### Semana 4: OpenClaw MVP
 
 - Onboarding inteligente con preguntas guiadas, validadores y decision Go/No-Go.
+- Topology planner para convertir onboarding en plan de clusters/VPS/LXC.
 - Scheduler.
 - Skills iniciales: fleet-ops, alert-ops, report-ops.
 - LLM router.

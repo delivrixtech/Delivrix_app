@@ -126,12 +126,16 @@ Resultado esperado al cierre del hito:
 
 - 69 pruebas pasando.
 
-## Que queda para Hito 4.2
+## Hito 4.2 posterior
 
-- Convertir un onboarding `go` o `needs_review` en topology plan.
-- Calcular cantidad inicial de VPS/LXC.
-- Proponer sizing por nodo.
-- Asignar IP/dominio/hostname.
-- Definir orden de provisioning.
-- Generar riesgos por recurso.
-- Mantener todo en dry-run.
+El Hito 4.2 queda documentado en `HITO_4_2_CLUSTER_TOPOLOGY_PLANNER.md`.
+
+Ese hito construye:
+
+- conversion de onboarding `go` o `needs_review` en topology plan;
+- cantidad inicial de VPS/LXC;
+- sizing por nodo;
+- asignacion IP/dominio/hostname;
+- orden de provisioning;
+- riesgos por recurso;
+- dry-run sin efectos externos.

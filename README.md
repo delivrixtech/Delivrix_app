@@ -22,6 +22,7 @@ Runbook Fase 3: ver `DOCUMENTACION/FASE_3_INFRAESTRUCTURA_PROPIA.md`.
 Documento Fase 4/OpenClaw infraestructura: ver `DOCUMENTACION/FASE_4_OPENCLAW_INFRAESTRUCTURA.md`.
 Hito 4.0/alineacion control plane: ver `DOCUMENTACION/HITO_4_0_ALINEACION_CONTROL_PLANE.md`.
 Hito 4.1/OpenClaw onboarding: ver `DOCUMENTACION/HITO_4_1_OPENCLAW_ONBOARDING.md`.
+Hito 4.2/topology planner: ver `DOCUMENTACION/HITO_4_2_CLUSTER_TOPOLOGY_PLANNER.md`.
 
 ## Estructura
 
@@ -234,3 +235,15 @@ curl -s -X POST http://127.0.0.1:3000/v1/openclaw/onboarding/evaluate \
 ```
 
 La evaluacion genera un snapshot dry-run con decision `go`, `needs_review` o `no_go`. No toca Proxmox, SSH, DNS, SMTP, NFC ni infraestructura real.
+
+## Hito 4.2: Cluster topology planner
+
+Endpoint local:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/v1/openclaw/topology/plan \
+  -H 'content-type: application/json' \
+  -d '{"actorId":"operator_local","onboarding":{"server":{"model":"IBM System x3630 M4"}}}'
+```
+
+El planner convierte onboarding en un plan de clusters/VPS/LXC cuando los gates lo permiten. Si el onboarding esta incompleto, responde `blocked`. Si genera plan, sigue siendo dry-run: no toca Proxmox, SSH, DNS, SMTP, NFC ni infraestructura real.

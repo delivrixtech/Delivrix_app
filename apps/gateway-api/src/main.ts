@@ -21,6 +21,7 @@ import {
   evaluateOpenClawOnboarding,
   isSenderNodeManualAction,
   buildNfcBridgeCapacityPlan,
+  buildOpenClawTopologyPlan,
   getOpenClawOnboardingQuestionnaire,
   getOperatingNorthSnapshot,
   requestRateLimitRules,
@@ -30,6 +31,7 @@ import {
   type BackupResourceSnapshot,
   type IpReputationExternalSignal,
   type OpenClawOnboardingInput,
+  type OpenClawTopologyPlannerInput,
   type RegisterSenderNodeInput,
   type SuppressionReason,
   type SendRequest,
@@ -105,8 +107,9 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "4.1-openclaw-intelligent-onboarding",
+          currentMilestone: "4.2-cluster-topology-planner",
           onboardingEnabled: true,
+          topologyPlannerEnabled: true,
           liveActionsEnabled: false
         },
         nfcBridge: {
@@ -156,6 +159,39 @@ const server = createServer(async (request, response) => {
 
       return json(response, 200, {
         snapshot
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/openclaw/topology/plan") {
+      const body = await readJson<OpenClawTopologyPlannerInput>(request);
+      const plan = buildOpenClawTopologyPlan(body);
+
+      await auditLog.append({
+        actorType: body.actorId ? "operator" : "system",
+        actorId: plan.actorId,
+        action: "openclaw_topology.plan_created",
+        targetType: "openclaw_topology",
+        targetId: plan.id,
+        riskLevel: plan.decision.riskLevel,
+        metadata: {
+          phase: plan.phase,
+          strategy: plan.strategy,
+          decision: plan.decision,
+          summary: plan.summary,
+          risks: plan.risks,
+          dryRun: plan.dryRun,
+          sideEffects: plan.sideEffects,
+          liveInfrastructureWritesEnabled: false,
+          proxmoxApiEnabled: false,
+          sshEnabled: false,
+          smtpEnabled: false,
+          dnsLiveChangesEnabled: false,
+          nfcWritesEnabled: false
+        }
+      });
+
+      return json(response, 200, {
+        plan
       });
     }
 
