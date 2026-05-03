@@ -12,3 +12,4 @@ yarn-error.log*
 .turbo/
 .cache/
 runtime/
+clonado/
