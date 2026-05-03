@@ -1,17 +1,30 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { WebdockAdapter, type WebdockBridgeNodeConfig } from "../../../packages/adapters/src/index.ts";
+import {
+  ProxmoxAdapter,
+  WebdockAdapter,
+  type ProxmoxMockNodeConfig,
+  type WebdockBridgeNodeConfig
+} from "../../../packages/adapters/src/index.ts";
 import {
   MailPolicyEngine,
   RateLimitService,
   SenderNodeRegistry,
   buildAdminOverview,
+  buildBackupPlan,
   buildOperationalSummary,
   evaluateSenderNodeHealth,
+  evaluateIpReputation,
   evaluateKillSwitch,
   evaluateSenderNodeManualControl,
+  evaluateSenderNodeRetirementApproval,
   evaluateSendResultIngestion,
   isSenderNodeManualAction,
   requestRateLimitRules,
+  simulateBackup,
+  type BackupPlanInput,
+  type BackupResource,
+  type BackupResourceSnapshot,
+  type IpReputationExternalSignal,
   type RegisterSenderNodeInput,
   type SuppressionReason,
   type SendRequest,
@@ -21,7 +34,10 @@ import {
 } from "../../../packages/domain/src/index.ts";
 import {
   LocalFileAuditLog,
+  LocalFileBackupSimulationStore,
+  LocalFileIpReputationReportStore,
   LocalFileKillSwitchStore,
+  LocalFileProvisioningRunStore,
   LocalFileRateLimitStore,
   LocalFileSendResultStore,
   LocalFileSenderNodeStore,
@@ -42,6 +58,10 @@ const senderNodeRegistry = new SenderNodeRegistry(new LocalFileSenderNodeStore()
 const rateLimitStore = new LocalFileRateLimitStore();
 const rateLimitService = new RateLimitService(rateLimitStore);
 const webdockAdapter = new WebdockAdapter();
+const proxmoxAdapter = new ProxmoxAdapter();
+const provisioningRunStore = new LocalFileProvisioningRunStore();
+const ipReputationReportStore = new LocalFileIpReputationReportStore();
+const backupSimulationStore = new LocalFileBackupSimulationStore();
 const defaultStuckJobThresholdMs = Number(process.env.STUCK_JOB_THRESHOLD_MS ?? 5 * 60 * 1000);
 const requestRateLimitProfile = {
   campaignDailyLimit: Number(process.env.RATE_LIMIT_CAMPAIGN_DAILY ?? 100),
@@ -62,12 +82,15 @@ const server = createServer(async (request, response) => {
         suppressionList: "local-file",
         senderNodes: "local-file",
         rateLimits: "local-file",
+        provisioningRuns: "local-file",
+        ipReputationReports: "local-file",
+        backupSimulations: "local-file",
         killSwitch: {
           enabled: killSwitch.enabled,
           updatedAt: killSwitch.updatedAt,
           updatedBy: killSwitch.updatedBy
         },
-        phase: "base-2"
+        phase: "base-3"
       });
     }
 
@@ -207,6 +230,33 @@ const server = createServer(async (request, response) => {
       });
     }
 
+    if (request.method === "GET" && request.url === "/v1/provisioning-runs") {
+      return json(response, 200, {
+        runs: await provisioningRunStore.list()
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/ip-reputation/reports") {
+      return json(response, 200, {
+        reports: evaluateIpReputation(
+          await senderNodeRegistry.list(),
+          await sendResultStore.list()
+        )
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/ip-reputation/history") {
+      return json(response, 200, {
+        reports: await ipReputationReportStore.list()
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/backups/simulations") {
+      return json(response, 200, {
+        simulations: await backupSimulationStore.list()
+      });
+    }
+
     if (request.method === "GET" && request.url === "/v1/rate-limit-counters") {
       return json(response, 200, {
         counters: await rateLimitStore.list()
@@ -251,6 +301,37 @@ const server = createServer(async (request, response) => {
 
       return json(response, 200, {
         overview
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/admin/phase-3-overview") {
+      const senderNodes = await senderNodeRegistry.list();
+      const sendResults = await sendResultStore.list();
+
+      return json(response, 200, {
+        overview: {
+          generatedAt: new Date().toISOString(),
+          phase: "infraestructura-propia-piloto",
+          proxmox: proxmoxAdapter.describeCapabilities(),
+          provisioningRuns: await provisioningRunStore.list(),
+          currentIpReputation: evaluateIpReputation(senderNodes, sendResults),
+          ipReputationHistory: await ipReputationReportStore.list(),
+          backupSimulations: await backupSimulationStore.list(),
+          humanActions: [
+            "pause",
+            "reactivate",
+            "degrade",
+            "quarantine",
+            "approve-retirement",
+            "activate-kill-switch"
+          ],
+          safety: {
+            smtpEnabled: false,
+            proxmoxApiEnabled: false,
+            sshEnabled: false,
+            sideEffects: "local-state-only"
+          }
+        }
       });
     }
 
@@ -435,6 +516,136 @@ const server = createServer(async (request, response) => {
       });
     }
 
+    if (request.method === "POST" && request.url === "/v1/ip-reputation/reconcile") {
+      const body = await readOptionalJson<{
+        actorId?: string;
+        signals?: IpReputationExternalSignal[];
+        apply?: boolean;
+      }>(request);
+      const actorId = body?.actorId?.trim() || "gateway-api";
+      const reports = evaluateIpReputation(
+        await senderNodeRegistry.list(),
+        await sendResultStore.list(),
+        Array.isArray(body?.signals) ? body.signals : []
+      );
+      await ipReputationReportStore.appendMany(reports);
+
+      const applied = [];
+      const shouldApply = body?.apply !== false;
+
+      if (shouldApply) {
+        for (const report of reports) {
+          if (report.currentStatus === report.recommendedStatus) {
+            continue;
+          }
+
+          const node = await senderNodeRegistry.updateStatus(report.senderNodeId, report.recommendedStatus);
+          applied.push({
+            senderNodeId: node.id,
+            previousStatus: report.currentStatus,
+            currentStatus: node.status,
+            state: report.state,
+            recommendedAction: report.recommendedAction,
+            signals: report.signals
+          });
+        }
+      }
+
+      await auditLog.append({
+        actorType: body?.actorId ? "operator" : "system",
+        actorId,
+        action: "ip_reputation.reconciled",
+        targetType: "sender_node",
+        targetId: "all",
+        riskLevel: applied.some((item) => item.currentStatus === "quarantined") ? "critical" : applied.length > 0 ? "high" : "low",
+        metadata: {
+          reportsGenerated: reports.length,
+          appliedCount: applied.length,
+          applied,
+          apply: shouldApply,
+          sideEffects: "local-state-only",
+          smtpEnabled: false
+        }
+      });
+
+      return json(response, 200, {
+        applied,
+        reports
+      });
+    }
+
+    const retirementApprovalRoute = parseSenderNodeRetirementApprovalRoute(request);
+
+    if (request.method === "POST" && retirementApprovalRoute) {
+      const body = await readJson<{
+        reason?: string;
+        actorId?: string;
+      }>(request);
+      const nodes = await senderNodeRegistry.list();
+      const node = nodes.find((candidate) => candidate.id === retirementApprovalRoute.senderNodeId);
+
+      if (!node) {
+        return json(response, 404, {
+          error: "sender_node_not_found",
+          message: `Sender node not found: ${retirementApprovalRoute.senderNodeId}`
+        });
+      }
+
+      const decision = evaluateSenderNodeRetirementApproval({
+        node,
+        reason: body.reason
+      });
+      const actorId = body.actorId?.trim() || "local-operator";
+
+      if (!decision.allowed || !decision.nextStatus) {
+        await auditLog.append({
+          actorType: "operator",
+          actorId,
+          action: decision.auditAction,
+          targetType: "sender_node",
+          targetId: node.id,
+          riskLevel: decision.riskLevel,
+          metadata: {
+            reason: decision.reason ?? body.reason,
+            currentStatus: decision.currentStatus,
+            code: decision.code,
+            message: decision.message,
+            smtpEnabled: false
+          }
+        });
+
+        return json(response, 422, {
+          allowed: false,
+          decision
+        });
+      }
+
+      const updatedNode = await senderNodeRegistry.updateStatus(node.id, decision.nextStatus);
+
+      await auditLog.append({
+        actorType: "operator",
+        actorId,
+        action: decision.auditAction,
+        targetType: "sender_node",
+        targetId: node.id,
+        riskLevel: decision.riskLevel,
+        metadata: {
+          reason: decision.reason,
+          previousStatus: node.status,
+          currentStatus: updatedNode.status,
+          provider: node.provider,
+          smtpEnabled: false,
+          sideEffects: "local-state-only"
+        }
+      });
+
+      return json(response, 200, {
+        allowed: true,
+        node: updatedNode,
+        decision
+      });
+    }
+
     const senderNodeControlRoute = parseSenderNodeControlRoute(request);
 
     if (request.method === "POST" && senderNodeControlRoute) {
@@ -576,6 +787,215 @@ const server = createServer(async (request, response) => {
 
       return json(response, 201, {
         nodes
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/proxmox/provisioning-plan") {
+      const body = await readJson<ProxmoxMockNodeConfig & { actorId?: string }>(request);
+      const actorId = body.actorId?.trim() || "gateway-api";
+      const plan = tryBuild(response, () => proxmoxAdapter.planProvisioning(body));
+
+      if (!plan) {
+        return;
+      }
+
+      await auditLog.append({
+        actorType: body.actorId ? "operator" : "system",
+        actorId,
+        action: "proxmox.provisioning_plan_created",
+        targetType: "sender_node",
+        targetId: plan.targetSenderNode.id,
+        riskLevel: "medium",
+        metadata: {
+          planId: plan.id,
+          provider: "proxmox",
+          dryRun: plan.dryRun,
+          sideEffects: plan.sideEffects,
+          blockedOperations: plan.blockedOperations,
+          smtpEnabled: false,
+          proxmoxApiEnabled: false,
+          sshEnabled: false
+        }
+      });
+
+      return json(response, 201, {
+        plan,
+        capabilities: proxmoxAdapter.describeCapabilities()
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/proxmox/provisioning-runs/simulate") {
+      const body = await readJson<{
+        node?: ProxmoxMockNodeConfig;
+        registerSenderNode?: boolean;
+        actorId?: string;
+      } & ProxmoxMockNodeConfig>(request);
+      const config = body.node ?? body;
+      const actorId = body.actorId?.trim() || "gateway-api";
+      const plan = tryBuild(response, () => proxmoxAdapter.planProvisioning(config));
+
+      if (!plan) {
+        return;
+      }
+
+      const shouldRegisterSenderNode = body.registerSenderNode !== false;
+      const node = shouldRegisterSenderNode
+        ? await senderNodeRegistry.register(plan.targetSenderNode)
+        : undefined;
+      const run = await provisioningRunStore.append(
+        proxmoxAdapter.simulateProvisioning(plan, node?.id)
+      );
+
+      await auditLog.append({
+        actorType: body.actorId ? "operator" : "system",
+        actorId,
+        action: "proxmox.provisioning_run_simulated",
+        targetType: "sender_node",
+        targetId: plan.targetSenderNode.id,
+        riskLevel: "medium",
+        metadata: {
+          runId: run.id,
+          planId: plan.id,
+          registeredSenderNodeId: node?.id,
+          completedSteps: run.summary.completedSteps,
+          sideEffects: run.sideEffects,
+          smtpEnabled: false,
+          proxmoxApiEnabled: false,
+          sshEnabled: false
+        }
+      });
+
+      return json(response, 201, {
+        run,
+        node: node
+          ? {
+            ...node,
+            capabilities: proxmoxAdapter.describeCapabilities(node)
+          }
+          : undefined
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/proxmox/mock-nodes/seed") {
+      const body = await readJson<{
+        nodes?: ProxmoxMockNodeConfig[];
+        actorId?: string;
+      } | ProxmoxMockNodeConfig[]>(request);
+      const configs = Array.isArray(body) ? body : body.nodes;
+      const actorId = Array.isArray(body) ? "gateway-api" : body.actorId?.trim() || "gateway-api";
+
+      if (!Array.isArray(configs)) {
+        return json(response, 422, {
+          error: "invalid_proxmox_seed_payload",
+          message: "Expected an array or an object with a nodes array."
+        });
+      }
+
+      const nodes = [];
+      const runs = [];
+
+      for (const config of configs) {
+        const plan = tryBuild(response, () => proxmoxAdapter.planProvisioning(config));
+
+        if (!plan) {
+          return;
+        }
+
+        const node = await senderNodeRegistry.register(plan.targetSenderNode);
+        const run = await provisioningRunStore.append(
+          proxmoxAdapter.simulateProvisioning(plan, node.id)
+        );
+
+        nodes.push({
+          ...node,
+          capabilities: proxmoxAdapter.describeCapabilities(node)
+        });
+        runs.push(run);
+      }
+
+      await auditLog.append({
+        actorType: Array.isArray(body) ? "system" : body.actorId ? "operator" : "system",
+        actorId,
+        action: "proxmox_mock_nodes.seeded",
+        targetType: "sender_node",
+        targetId: "proxmox",
+        riskLevel: "medium",
+        metadata: {
+          count: nodes.length,
+          runIds: runs.map((run) => run.id),
+          sideEffects: "local-state-only",
+          smtpEnabledByPlatform: false,
+          proxmoxApiEnabled: false,
+          sshEnabled: false
+        }
+      });
+
+      return json(response, 201, {
+        nodes,
+        runs
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/backups/plan") {
+      const body = await readOptionalJson<BackupPlanInput>(request);
+      const plan = tryBuild(response, () => buildBackupPlan(body ?? {}));
+
+      if (!plan) {
+        return;
+      }
+
+      await auditLog.append({
+        actorType: "system",
+        actorId: "gateway-api",
+        action: "backup.plan_created",
+        targetType: "backup",
+        targetId: plan.id,
+        riskLevel: "medium",
+        metadata: {
+          target: plan.target,
+          resources: plan.resources,
+          dryRun: plan.dryRun,
+          sideEffects: plan.sideEffects,
+          blockedOperations: plan.blockedOperations
+        }
+      });
+
+      return json(response, 201, {
+        plan
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/backups/simulate") {
+      const body = await readOptionalJson<BackupPlanInput>(request);
+      const plan = tryBuild(response, () => buildBackupPlan(body ?? {}));
+
+      if (!plan) {
+        return;
+      }
+
+      const simulation = await backupSimulationStore.append(
+        simulateBackup(plan, await backupSnapshots(plan.resources))
+      );
+
+      await auditLog.append({
+        actorType: "system",
+        actorId: "gateway-api",
+        action: "backup.simulated",
+        targetType: "backup",
+        targetId: simulation.id,
+        riskLevel: simulation.status === "blocked" ? "high" : "medium",
+        metadata: {
+          planId: plan.id,
+          status: simulation.status,
+          snapshots: simulation.snapshots,
+          warnings: simulation.warnings,
+          dryRun: simulation.dryRun,
+          sideEffects: simulation.sideEffects
+        }
+      });
+
+      return json(response, 201, {
+        simulation
       });
     }
 
@@ -767,8 +1187,88 @@ function parseStaleAfterMs(value: string | number | null | undefined, fallback: 
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function tryBuild<T>(response: ServerResponse, factory: () => T): T | undefined {
+  try {
+    return factory();
+  } catch (error) {
+    json(response, 422, {
+      error: "validation_error",
+      message: error instanceof Error ? error.message : "Invalid request payload."
+    });
+    return undefined;
+  }
+}
+
+async function backupSnapshots(resources: BackupResource[]): Promise<BackupResourceSnapshot[]> {
+  const snapshots: BackupResourceSnapshot[] = [];
+
+  for (const resource of resources) {
+    snapshots.push({
+      resource,
+      count: await countBackupResource(resource),
+      source: sourceForBackupResource(resource)
+    });
+  }
+
+  return snapshots;
+}
+
+async function countBackupResource(resource: BackupResource): Promise<number> {
+  if (resource === "audit_events") {
+    return (await auditLog.list()).length;
+  }
+
+  if (resource === "sender_nodes") {
+    return (await senderNodeRegistry.list()).length;
+  }
+
+  if (resource === "send_jobs") {
+    return (await sendQueue.list()).length;
+  }
+
+  if (resource === "send_results") {
+    return (await sendResultStore.list()).length;
+  }
+
+  if (resource === "suppression_entries") {
+    return (await suppressionList.list()).length;
+  }
+
+  if (resource === "rate_limit_counters") {
+    return (await rateLimitStore.list()).length;
+  }
+
+  if (resource === "provisioning_runs") {
+    return (await provisioningRunStore.list()).length;
+  }
+
+  if (resource === "ip_reputation_reports") {
+    return (await ipReputationReportStore.list()).length;
+  }
+
+  return 0;
+}
+
+function sourceForBackupResource(resource: BackupResource): string {
+  return `local-file:${resource}`;
+}
+
 function isStuckJobRecoveryAction(value: unknown): value is StuckJobRecoveryAction {
   return value === "fail" || value === "requeue";
+}
+
+function parseSenderNodeRetirementApprovalRoute(request: IncomingMessage): {
+  senderNodeId: string;
+} | null {
+  const parts = requestUrl(request).pathname.split("/").filter(Boolean);
+
+  if (parts.length !== 4 || parts[0] !== "v1" || parts[1] !== "sender-nodes" || parts[3] !== "approve-retirement") {
+    return null;
+  }
+
+  return {
+    senderNodeId: decodeURIComponent(parts[2] ?? "")
+  };
 }
 
 function parseSenderNodeControlRoute(request: IncomingMessage): {

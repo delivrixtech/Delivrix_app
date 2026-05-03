@@ -60,7 +60,7 @@ node apps/worker/src/main.ts
 Tests de dominio:
 
 ```bash
-node --test packages/domain/src/*.test.ts
+node --test packages/domain/src/*.test.ts packages/adapters/src/*.test.ts
 ```
 
 Checks de sintaxis:

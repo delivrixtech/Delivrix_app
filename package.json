@@ -11,7 +11,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test packages/domain/src/*.test.ts",
+    "test": "node --test packages/domain/src/*.test.ts packages/adapters/src/*.test.ts",
     "dev:gateway": "node apps/gateway-api/src/main.ts",
     "dev:worker": "node apps/worker/src/main.ts"
   },

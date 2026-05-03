@@ -80,10 +80,10 @@ export function evaluateSenderNodeManualControl(
     });
   }
 
-  if (input.node.status === "retired_pending_approval") {
+  if (input.node.status === "retired_pending_approval" || input.node.status === "retired") {
     return blockedDecision(input, {
       code: "manual_control_retired_node_blocked",
-      message: "Retired pending approval sender nodes cannot be changed by manual operational controls.",
+      message: "Retired sender nodes cannot be changed by manual operational controls.",
       riskLevel: "high",
       reason
     });

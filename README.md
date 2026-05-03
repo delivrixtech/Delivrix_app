@@ -13,10 +13,11 @@ La arquitectura nace con tres reglas:
 
 1. Ningun envio entra a cola sin pasar por el `mail-policy-engine`.
 2. Toda decision queda registrada en `audit-log`.
-3. La Fase 1 no envia correo real; valida, audita y encola de forma controlada.
+3. La plataforma local no envia correo real; valida, audita, simula y encola de forma controlada.
 
 Estandares de ingenieria: ver `DOCUMENTACION/ESTANDARES_INGENIERIA.md`.
 Runbook operativo Fase 2: ver `DOCUMENTACION/FASE_2_RUNBOOK_OPERATIVO.md`.
+Runbook Fase 3: ver `DOCUMENTACION/FASE_3_INFRAESTRUCTURA_PROPIA.md`.
 
 ## Estructura
 
@@ -30,7 +31,7 @@ Runbook operativo Fase 2: ver `DOCUMENTACION/FASE_2_RUNBOOK_OPERATIVO.md`.
 
 ```bash
 node --test packages/domain/src/mail-policy.engine.test.ts
-node --test packages/domain/src/*.test.ts
+node --test packages/domain/src/*.test.ts packages/adapters/src/*.test.ts
 node apps/gateway-api/src/main.ts
 node apps/worker/src/main.ts
 ```
@@ -47,6 +48,9 @@ Tambien usa almacenamiento local para auditoria y suppression list:
 - `runtime/rate-limit-counters.json`
 - `runtime/send-results.json`
 - `runtime/kill-switch.json`
+- `runtime/provisioning-runs.json`
+- `runtime/ip-reputation-reports.json`
+- `runtime/backup-simulations.json`
 
 ## Infraestructura local preparada
 
@@ -180,3 +184,21 @@ curl -s -X POST http://127.0.0.1:3000/v1/kill-switch \
 ```
 
 Cuando esta activo, el Gateway no encola nuevas solicitudes y el Worker no reclama jobs. Cada cambio y bloqueo queda auditado.
+
+## Proxmox mock y Fase 3
+
+Endpoints locales:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/v1/proxmox/provisioning-plan \
+  -H 'content-type: application/json' \
+  -d '{"id":"sender_proxmox_001","label":"Proxmox Sender 001"}'
+
+curl -s -X POST http://127.0.0.1:3000/v1/proxmox/provisioning-runs/simulate \
+  -H 'content-type: application/json' \
+  -d '{"node":{"id":"sender_proxmox_001","label":"Proxmox Sender 001"},"registerSenderNode":true}'
+
+curl -s http://127.0.0.1:3000/v1/admin/phase-3-overview
+```
+
+El adapter Proxmox actual es mock: no usa API real, SSH, Postfix, OpenDKIM, DNS, SMTP ni S3. Sirve para validar provisioning, reputacion IP, cuarentena local, acciones humanas y backups simulados.

@@ -79,13 +79,13 @@ function evaluateOneNode(
     reasons.push("within_thresholds");
   }
 
-  if (node.status === "retired_pending_approval") {
+  if (node.status === "retired_pending_approval" || node.status === "retired") {
     return {
       senderNodeId: node.id,
       currentStatus: node.status,
       recommendedStatus: node.status,
-      severity: "critical",
-      reasons: ["node_retirement_requires_human_approval"],
+      severity: node.status === "retired" ? "healthy" : "critical",
+      reasons: [node.status === "retired" ? "node_retired" : "node_retirement_requires_human_approval"],
       metrics
     };
   }

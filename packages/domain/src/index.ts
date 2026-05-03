@@ -1,6 +1,8 @@
 export * from "./audit-log.ts";
 export * from "./admin-overview.ts";
+export * from "./backup-plan.ts";
 export * from "./ids.ts";
+export * from "./ip-reputation.ts";
 export * from "./kill-switch.ts";
 export * from "./mail-policy.engine.ts";
 export * from "./operational-summary.ts";
@@ -9,6 +11,8 @@ export * from "./repositories.ts";
 export * from "./sender-node-registry.ts";
 export * from "./sender-node-manual-control.ts";
 export * from "./sender-node-health.ts";
+export * from "./sender-node-provisioning.ts";
+export * from "./sender-node-retirement-approval.ts";
 export * from "./send-result-ingestion.ts";
 export * from "./send-result-simulator.ts";
 export * from "./send-queue.ts";

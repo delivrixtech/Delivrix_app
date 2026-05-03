@@ -52,7 +52,8 @@ const senderNodeStatuses: SenderNodeStatus[] = [
   "paused",
   "quarantined",
   "degraded",
-  "retired_pending_approval"
+  "retired_pending_approval",
+  "retired"
 ];
 
 export function buildOperationalSummary(input: OperationalSummaryInput): OperationalSummary {

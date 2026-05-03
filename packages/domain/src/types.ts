@@ -6,7 +6,8 @@ export type SenderNodeStatus =
   | "paused"
   | "quarantined"
   | "degraded"
-  | "retired_pending_approval";
+  | "retired_pending_approval"
+  | "retired";
 
 export type SendJobStatus = "queued" | "processing" | "completed" | "failed" | "blocked";
 export type SendResultStatus = "sent" | "bounce" | "complaint" | "deferred" | "failed";
