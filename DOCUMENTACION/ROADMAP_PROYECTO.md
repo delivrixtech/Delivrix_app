@@ -241,6 +241,14 @@ Ajuste de foco tras la revision:
 - LLM router con modo degradado sin LLM.
 - Action executor.
 - Dry-run para acciones sensibles.
+- Provisioning dry-run:
+  - plan Proxmox.
+  - plan Postfix.
+  - plan OpenDKIM.
+  - plan TLS.
+  - plan DNS.
+  - plan warming.
+  - endpoint `POST /v1/openclaw/provisioning/dry-run`.
 - Verificacion post-ejecucion.
 - Rollback de acciones reversibles.
 - Audit log inmutable para toda accion autonoma.

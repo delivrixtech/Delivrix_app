@@ -157,10 +157,14 @@ Resultado esperado al cierre del hito:
 
 - 75 pruebas pasando.
 
-## Que queda para Hito 4.3
+## Hito 4.3 posterior
 
-- Convertir el topology plan en provisioning dry-run.
-- Generar planes Proxmox por sender node.
-- Generar planes Postfix, OpenDKIM, TLS, DNS y warming.
-- Mantener SSH, DNS live changes, SMTP y Proxmox API real apagados.
-- Requerir aprobacion humana antes de cualquier accion real.
+El Hito 4.3 queda documentado en `HITO_4_3_PROVISIONING_DRY_RUN.md`.
+
+Ese hito construye:
+
+- conversion de topology plan en provisioning dry-run;
+- planes Proxmox por sender node;
+- planes Postfix, OpenDKIM, TLS, DNS y warming;
+- SSH, DNS live changes, SMTP y Proxmox API real apagados;
+- aprobacion humana antes de cualquier accion real.

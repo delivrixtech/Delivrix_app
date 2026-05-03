@@ -7,6 +7,7 @@ export * from "./kill-switch.ts";
 export * from "./mail-policy.engine.ts";
 export * from "./nfc-bridge.ts";
 export * from "./openclaw-onboarding.ts";
+export * from "./openclaw-provisioning-dry-run.ts";
 export * from "./openclaw-topology-planner.ts";
 export * from "./operating-north.ts";
 export * from "./operational-summary.ts";

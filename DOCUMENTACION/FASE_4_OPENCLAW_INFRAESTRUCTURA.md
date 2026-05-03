@@ -182,6 +182,8 @@ Gate:
 
 ### Hito 4.3: Provisioning dry-run executor
 
+Estado: implementado. Detalle operativo en `HITO_4_3_PROVISIONING_DRY_RUN.md`.
+
 Objetivo:
 
 - convertir el topology plan en acciones dry-run.
@@ -194,6 +196,8 @@ Entregables:
 - plan TLS;
 - plan DNS;
 - plan warming.
+- endpoint `POST /v1/openclaw/provisioning/dry-run`;
+- auditoria `openclaw_provisioning.dry_run_created`.
 
 Gate:
 

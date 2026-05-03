@@ -21,6 +21,7 @@ import {
   evaluateOpenClawOnboarding,
   isSenderNodeManualAction,
   buildNfcBridgeCapacityPlan,
+  buildOpenClawProvisioningDryRun,
   buildOpenClawTopologyPlan,
   getOpenClawOnboardingQuestionnaire,
   getOperatingNorthSnapshot,
@@ -31,6 +32,7 @@ import {
   type BackupResourceSnapshot,
   type IpReputationExternalSignal,
   type OpenClawOnboardingInput,
+  type OpenClawProvisioningDryRunInput,
   type OpenClawTopologyPlannerInput,
   type RegisterSenderNodeInput,
   type SuppressionReason,
@@ -107,9 +109,10 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "4.2-cluster-topology-planner",
+          currentMilestone: "4.3-provisioning-dry-run-executor",
           onboardingEnabled: true,
           topologyPlannerEnabled: true,
+          provisioningDryRunEnabled: true,
           liveActionsEnabled: false
         },
         nfcBridge: {
@@ -186,6 +189,41 @@ const server = createServer(async (request, response) => {
           sshEnabled: false,
           smtpEnabled: false,
           dnsLiveChangesEnabled: false,
+          nfcWritesEnabled: false
+        }
+      });
+
+      return json(response, 200, {
+        plan
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/openclaw/provisioning/dry-run") {
+      const body = await readJson<OpenClawProvisioningDryRunInput>(request);
+      const plan = buildOpenClawProvisioningDryRun(body);
+
+      await auditLog.append({
+        actorType: body.actorId ? "operator" : "system",
+        actorId: plan.actorId,
+        action: "openclaw_provisioning.dry_run_created",
+        targetType: "openclaw_provisioning",
+        targetId: plan.id,
+        riskLevel: plan.decision.riskLevel,
+        metadata: {
+          phase: plan.phase,
+          decision: plan.decision,
+          summary: plan.summary,
+          risks: plan.risks,
+          dryRun: plan.dryRun,
+          sideEffects: plan.sideEffects,
+          liveInfrastructureWritesEnabled: false,
+          proxmoxApiEnabled: false,
+          sshEnabled: false,
+          postfixLiveApplyEnabled: false,
+          openDkimLiveKeyGenerationEnabled: false,
+          tlsLiveCertificateRequestEnabled: false,
+          dnsLiveChangesEnabled: false,
+          smtpEnabled: false,
           nfcWritesEnabled: false
         }
       });
