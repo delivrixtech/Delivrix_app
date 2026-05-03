@@ -38,6 +38,19 @@ Un hito no se considera cerrado si no cumple:
 - Infraestructura declarativa cuando aplique.
 - Sin acoplar reglas de negocio a frameworks.
 
+## Separacion frontend/backend
+
+El panel visual debe respetar estas reglas:
+
+- El frontend consume endpoints versionados del Gateway; no lee archivos locales ni stores internos.
+- El frontend no importa servicios de dominio ejecutables, adaptadores, colas ni persistencia.
+- Las reglas de compliance, reputacion, kill switch, permisos OpenClaw y readiness viven en backend/dominio.
+- TanStack Query maneja server state; React state maneja solo estado visual local.
+- Las mutaciones desde UI requieren autenticacion, autorizacion, motivo humano, auditoria y pruebas E2E.
+- Los contratos API deben ser estables, tipados y versionados antes de escalar el panel.
+- Los errores deben incluir codigo, razon y severidad para que la UI no adivine.
+- El panel inicia read-only hasta que los gates de seguridad esten implementados.
+
 ## Orden de construccion
 
 1. Dominio y contratos.

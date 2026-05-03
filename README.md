@@ -31,10 +31,12 @@ Hito 5.0/demo blueprint y revision de patrones: ver `DOCUMENTACION/HITO_5_0_DEMO
 Hito 5.1/demo runner local: ver `DOCUMENTACION/HITO_5_1_DEMO_RUNNER_LOCAL.md`.
 Hito 5.2/OpenClaw incidente simulado: ver `DOCUMENTACION/HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md`.
 Hito 5.3/demo report final: ver `DOCUMENTACION/HITO_5_3_DEMO_REPORT_FINAL.md`.
+Hito 5.4/admin panel visual MVP: ver `DOCUMENTACION/HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
 
 ## Estructura
 
 - `apps/gateway-api`: API HTTP minima para recibir solicitudes.
+- `apps/admin-panel`: panel visual planificado como frontend separado del backend.
 - `apps/worker`: worker seguro de Fase 1, sin SMTP real.
 - `packages/domain`: contratos, politicas, auditoria, suppression list y modelos.
 - `packages/adapters`: adaptadores externos en modo seguro.
@@ -339,3 +341,20 @@ curl -s -X POST http://127.0.0.1:3000/v1/demo/mvp/final-report \
 ```
 
 El reporte final empaqueta evidencia de auditoria de 5.0, 5.1 y 5.2, genera una salida ejecutiva para sponsor, lista riesgos residuales y deja claro que produccion limitada, envio real, infraestructura live, SSH, DNS live y NFC production writes siguen deshabilitados.
+
+## Hito 5.4: Admin panel visual MVP
+
+Documento:
+
+- `DOCUMENTACION/HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`
+
+El panel visual queda definido como una app frontend separada:
+
+- `apps/admin-panel`;
+- Vite + React + TypeScript;
+- Tailwind CSS + shadcn/ui + Radix UI;
+- TanStack Query, Router y Table;
+- Recharts para metricas MVP;
+- Vitest y Playwright para pruebas.
+
+Regla principal: el frontend no decide operaciones criticas, no lee `runtime/`, no importa stores/adaptadores y no ejecuta mutaciones sin autenticacion, autorizacion, aprobacion humana y auditoria. El primer panel debe iniciar read-only consumiendo Gateway API.

@@ -304,6 +304,13 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - endpoint `POST /v1/demo/mvp/final-report`.
   - evidencia de auditoria 5.0/5.1/5.2.
   - riesgos residuales y gates hacia produccion limitada.
+- Hito 5.4:
+  - arquitectura del admin panel visual MVP.
+  - stack frontend recomendado.
+  - separacion frontend/backend.
+  - estructura `apps/admin-panel`.
+  - panel inicial read-only.
+  - gates antes de mutaciones.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

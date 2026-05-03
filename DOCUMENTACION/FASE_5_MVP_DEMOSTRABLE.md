@@ -130,6 +130,27 @@ Gate:
 
 - no prometer volumen, solo capacidad gobernada y condicionada por reputacion/warming.
 
+### Hito 5.4: Admin panel visual MVP
+
+Estado: documentado. Detalle operativo en `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
+
+Objetivo:
+
+- definir el panel visual antes de implementarlo, con separacion estricta entre frontend y backend.
+
+Entregables:
+
+- stack frontend recomendado;
+- estructura propuesta para `apps/admin-panel`;
+- reglas de separacion frontend/backend;
+- endpoints iniciales del Gateway;
+- pantallas MVP;
+- gates de seguridad, compliance y auditoria.
+
+Gate:
+
+- el panel inicia read-only y no puede ejecutar mutaciones sin autenticacion, autorizacion, aprobacion humana y auditoria.
+
 ## Criterio de salida de Fase 5
 
 Fase 5 queda lista si:
@@ -140,4 +161,5 @@ Fase 5 queda lista si:
 - el kill switch detiene procesamiento;
 - la demo no depende de NFC;
 - no hay envio real;
+- el panel visual tiene arquitectura documentada y no mezcla UI con reglas de dominio;
 - queda clara la ruta hacia ejecucion limitada futura.

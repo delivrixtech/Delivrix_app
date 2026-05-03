@@ -21,6 +21,7 @@ Hito demo blueprint: `HITO_5_0_DEMO_BLUEPRINT_REVISION_PATRONES.md`.
 Hito demo runner local: `HITO_5_1_DEMO_RUNNER_LOCAL.md`.
 Hito OpenClaw incidente simulado: `HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md`.
 Hito demo report final: `HITO_5_3_DEMO_REPORT_FINAL.md`.
+Hito admin panel visual: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
 
 Regla principal: en la fase actual, Delivrix/OpenClaw prepara infraestructura propia de mailing sobre servidor fisico. NFC u otros sistemas externos quedan como integraciones futuras opcionales, no como dependencia del MVP.
 
@@ -127,6 +128,31 @@ Riesgos detectados en la referencia NFC:
 - `openclaw-agent`: scheduler, skills, LLM router, executor, reportes y escalamiento.
 - `observability`: Prometheus/Grafana, logs, metricas de envio, alertas y backups.
 
+## Admin panel visual
+
+El panel visual debe construirse como frontend separado del backend.
+
+Decision base:
+
+- `apps/admin-panel` como aplicacion Vite + React + TypeScript;
+- Tailwind CSS + shadcn/ui + Radix UI para componentes;
+- TanStack Query para server state;
+- TanStack Router para rutas tipadas;
+- TanStack Table para tablas operativas;
+- Recharts para graficas MVP y Apache ECharts si la analitica crece;
+- React Hook Form + Zod para formularios futuros;
+- Vitest y Playwright para pruebas.
+
+Regla critica:
+
+- el frontend no calcula decisiones de negocio ni permisos;
+- el frontend no lee `runtime/` ni importa stores/adaptadores;
+- el frontend consume contratos `/v1/...` del Gateway;
+- el backend conserva policy engine, audit log, kill switch, OpenClaw runbook y gates;
+- las primeras pantallas son read-only hasta tener autenticacion, autorizacion, aprobacion humana y auditoria.
+
+Documento operativo: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
+
 ## Ruta MVP de 30 dias
 
 ### Semana 1: base tecnica
@@ -176,6 +202,7 @@ Riesgos detectados en la referencia NFC:
 - Demo runner Hito 5.1 que ejecuta esa ruta en estado local, con auditoria enlazada por `demoRunId`.
 - Demo OpenClaw Hito 5.2 que detecta un incidente simulado, propone cuarentena/degradacion local y prueba runbook, aprobacion humana y kill switch.
 - Demo report Hito 5.3 que empaqueta evidencia para sponsor, riesgos residuales y gates hacia produccion limitada sin prometer volumen.
+- Admin panel visual Hito 5.4 que documenta el frontend separado del backend, su stack y los gates antes de cualquier mutacion desde UI.
 
 ## Ruta meses 2-5
 
