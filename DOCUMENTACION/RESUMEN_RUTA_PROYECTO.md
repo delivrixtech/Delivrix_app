@@ -149,7 +149,8 @@ Regla critica:
 - el frontend no lee `runtime/` ni importa stores/adaptadores;
 - el frontend consume contratos `/v1/...` del Gateway;
 - el backend conserva policy engine, audit log, kill switch, OpenClaw runbook y gates;
-- las primeras pantallas son read-only hasta tener autenticacion, autorizacion, aprobacion humana y auditoria.
+- las primeras pantallas son `GET-only` hasta tener autenticacion, autorizacion, aprobacion humana y auditoria;
+- ningun `POST` debe ejecutarse automaticamente al cargar el panel.
 
 Documento operativo: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
 

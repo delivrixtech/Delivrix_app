@@ -149,7 +149,7 @@ Entregables:
 
 Gate:
 
-- el panel inicia read-only y no puede ejecutar mutaciones sin autenticacion, autorizacion, aprobacion humana y auditoria.
+- el panel inicia `GET-only`; no puede ejecutar mutaciones ni `POST` automaticos sin autenticacion, autorizacion, aprobacion humana y auditoria.
 
 ## Criterio de salida de Fase 5
 

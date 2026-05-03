@@ -49,7 +49,8 @@ El panel visual debe respetar estas reglas:
 - Las mutaciones desde UI requieren autenticacion, autorizacion, motivo humano, auditoria y pruebas E2E.
 - Los contratos API deben ser estables, tipados y versionados antes de escalar el panel.
 - Los errores deben incluir codigo, razon y severidad para que la UI no adivine.
-- El panel inicia read-only hasta que los gates de seguridad esten implementados.
+- El panel inicia `GET-only`; ningun `POST` debe ejecutarse automaticamente al cargar una pagina.
+- Las mutaciones futuras deben vivir separadas de las queries de lectura y pasar por gates de seguridad.
 
 ## Orden de construccion
 

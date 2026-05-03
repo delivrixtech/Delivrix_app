@@ -9,6 +9,15 @@ Documento rector: `NORTE_OPERATIVO_DELIVRIX.md`.
 Documento de fase: `FASE_5_MVP_DEMOSTRABLE.md`.
 Hito anterior: `HITO_5_3_DEMO_REPORT_FINAL.md`.
 
+## Decision ejecutiva
+
+- El panel vive en `apps/admin-panel`, separado de Gateway, Worker, dominio, stores y adaptadores.
+- El primer panel es `GET-only`: no debe hacer `POST`, `PUT`, `PATCH` ni `DELETE` desde UI.
+- El frontend consume solamente contratos HTTP versionados del Gateway.
+- Las decisiones de negocio, permisos, gates, auditoria y kill switch viven en backend/dominio.
+- El MVP visual no habilita envio real, infraestructura live, SSH, DNS live, SMTP real ni NFC writes.
+- Las mutaciones desde UI quedan para un hito posterior con autenticacion, autorizacion, motivo humano y auditoria.
+
 ## Objetivo
 
 Definir la arquitectura del panel visual de Delivrix antes de implementarlo.
@@ -25,9 +34,9 @@ El frontend:
 
 - muestra estado;
 - permite explorar evidencia;
-- prepara solicitudes;
+- prepara solicitudes futuras sin ejecutarlas en el MVP;
 - muestra gates, alertas y decisiones;
-- exige confirmacion humana cuando aplique.
+- exige confirmacion humana cuando existan mutaciones futuras.
 
 El backend:
 
@@ -39,6 +48,8 @@ El backend:
 - aplica kill switch;
 - controla adaptadores;
 - mantiene dry-run o live mode segun permisos.
+
+En el MVP visual, `live mode` debe mostrarse como bloqueado, no como un interruptor editable.
 
 ## Stack recomendado
 
@@ -121,15 +132,20 @@ apps/
 
 ## Contratos API
 
-El panel visual MVP debe iniciar con endpoints existentes:
+El panel visual MVP debe iniciar con endpoints existentes de lectura:
 
 | Vista | Endpoint inicial | Modo |
 | --- | --- | --- |
 | Health | `GET /health` | read-only |
 | Overview operativo | `GET /v1/admin/overview` | read-only |
 | Norte operativo | `GET /v1/operating-north` | read-only |
-| Demo final | `POST /v1/demo/mvp/final-report` | genera reporte local auditado |
 | Kill switch | `GET /v1/kill-switch` | read-only inicial |
+
+Regla de implementacion:
+
+- ningun `POST` debe ejecutarse automaticamente al cargar el panel;
+- el reporte final MVP puede mostrarse desde un contrato `GET` futuro o generarse manualmente fuera del panel inicial;
+- si mas adelante se permite generar el reporte desde UI, debe tratarse como mutacion auditada.
 
 Antes de habilitar mutaciones desde UI, deben existir:
 
@@ -208,13 +224,14 @@ El frontend puede traducir y presentar el error, pero no debe reinterpretar la d
 - reporte final MVP;
 - evidencia 5.0, 5.1 y 5.2;
 - riesgos residuales;
-- gates hacia produccion limitada.
+- gates hacia produccion limitada;
+- estado `not_generated` si no existe un contrato de lectura todavia.
 
 ### 7. Configuracion segura
 
 - entorno;
 - API base URL;
-- modo dry-run/live;
+- modo dry-run/live visible como estado, no editable en MVP;
 - integraciones externas visibles como apagadas o mock.
 
 ## Buenas practicas de componentes
@@ -287,6 +304,7 @@ El panel visual no puede considerarse listo si:
 - reimplementa reglas de negocio;
 - oculta estados bloqueados;
 - permite mutaciones sin autenticacion y auditoria;
+- ejecuta `POST` automaticamente al cargar una pagina;
 - promete envio real o volumen;
 - trata NFC como dependencia del MVP;
 - permite acciones OpenClaw fuera del runbook.

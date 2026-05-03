@@ -357,4 +357,4 @@ El panel visual queda definido como una app frontend separada:
 - Recharts para metricas MVP;
 - Vitest y Playwright para pruebas.
 
-Regla principal: el frontend no decide operaciones criticas, no lee `runtime/`, no importa stores/adaptadores y no ejecuta mutaciones sin autenticacion, autorizacion, aprobacion humana y auditoria. El primer panel debe iniciar read-only consumiendo Gateway API.
+Regla principal: el frontend no decide operaciones criticas, no lee `runtime/`, no importa stores/adaptadores y no ejecuta mutaciones sin autenticacion, autorizacion, aprobacion humana y auditoria. El primer panel debe iniciar `GET-only` consumiendo Gateway API; ningun `POST` debe ejecutarse automaticamente al cargar la UI.
