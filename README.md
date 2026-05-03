@@ -1,6 +1,6 @@
 # Delivrix MailOps Platform
 
-Base tecnica inicial para el control plane de mailing autorizado de Delivrix: infraestructura, reputacion, compliance, auditoria, sender nodes, OpenClaw y bridge con NFC.
+Base tecnica inicial para el control plane de mailing autorizado de Delivrix: infraestructura, reputacion, compliance, auditoria, sender nodes, onboarding inteligente con OpenClaw e integraciones futuras opcionales.
 
 ## Propiedad intelectual
 
@@ -19,7 +19,7 @@ Norte operativo: ver `DOCUMENTACION/NORTE_OPERATIVO_DELIVRIX.md`.
 Estandares de ingenieria: ver `DOCUMENTACION/ESTANDARES_INGENIERIA.md`.
 Runbook operativo Fase 2: ver `DOCUMENTACION/FASE_2_RUNBOOK_OPERATIVO.md`.
 Runbook Fase 3: ver `DOCUMENTACION/FASE_3_INFRAESTRUCTURA_PROPIA.md`.
-Documento Fase 4/OpenClaw + NFC: ver `DOCUMENTACION/FASE_4_OPENCLAW_NFC_INTEGRACION.md`.
+Documento Fase 4/OpenClaw infraestructura: ver `DOCUMENTACION/FASE_4_OPENCLAW_INFRAESTRUCTURA.md`.
 Hito 4.0/alineacion control plane: ver `DOCUMENTACION/HITO_4_0_ALINEACION_CONTROL_PLANE.md`.
 
 ## Estructura
@@ -206,7 +206,7 @@ curl -s http://127.0.0.1:3000/v1/admin/phase-3-overview
 
 El adapter Proxmox actual es mock: no usa API real, SSH, Postfix, OpenDKIM, DNS, SMTP ni S3. Sirve para validar provisioning, reputacion IP, cuarentena local, acciones humanas y backups simulados.
 
-## Hito 4.0: norte operativo y NFC bridge mock
+## Hito 4.0: norte operativo e integraciones opcionales
 
 Endpoints locales:
 
@@ -218,4 +218,4 @@ curl -s -X POST http://127.0.0.1:3000/v1/nfc/bridge/capacity-plan \
   -d '{"actorId":"operator_local"}'
 ```
 
-El bridge NFC actual solo genera payloads dry-run e inactivos para `email_providers` y `smtp_servers`. No escribe en NFC, no guarda secretos, no activa providers y no envia correo.
+El bridge externo mock queda como referencia futura para NFC: solo genera payloads dry-run e inactivos para `email_providers` y `smtp_servers`. No escribe en NFC, no guarda secretos, no activa providers y no envia correo. El MVP se enfoca en OpenClaw, onboarding inteligente y preparacion de infraestructura propia.

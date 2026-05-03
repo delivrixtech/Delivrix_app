@@ -3,7 +3,7 @@
 Fecha: 2026-05-01  
 Base: `ROADMAP_PROYECTO.md`, tesis v3.4 y verificacion puntual de fuentes externas.
 
-Norte operativo: `NORTE_OPERATIVO_DELIVRIX.md`. Este analisis debe leerse bajo esa frontera: Delivrix gobierna infraestructura/capacidad y NFC conserva el envio real en la fase actual.
+Norte operativo: `NORTE_OPERATIVO_DELIVRIX.md`. Este analisis debe leerse bajo esa frontera: Delivrix/OpenClaw primero prepara infraestructura propia de mailing sobre servidor fisico; NFC u otros sistemas externos quedan como integraciones futuras opcionales.
 
 ## Veredicto ejecutivo
 
@@ -104,11 +104,11 @@ Correccion al roadmap:
 
 Gate: OpenClaw no modifica DNS, nodos ni envio hasta tener audit log, dry-run, verificacion, rollback y kill switch probados.
 
-### 8. La integracion con NFC debe ser por capacidad, no por envio paralelo
+### 8. NFC no debe ser camino critico del MVP
 
-Riesgo: despues de leer los repos NFC, queda claro que ese sistema ya tiene gateway, worker, providers, colas, webhooks y envio real. Si Delivrix intenta enviar emails por su cuenta en paralelo durante Fase 4, se duplica responsabilidad, se rompen metricas y aumenta el riesgo reputacional.
+Riesgo: despues de leer los repos NFC, queda claro que ese sistema ya tiene gateway, worker, providers, colas, webhooks y envio real. Si Delivrix intenta depender de NFC o enviar emails por su cuenta en paralelo durante Fase 4, se duplica responsabilidad, se rompe el foco del MVP y aumenta el riesgo reputacional.
 
-Correccion: Delivrix/OpenClaw debe proveer infraestructura, capacidad, health, warming y reputacion. NFC debe conservar el motor de envio mientras se define un contrato formal.
+Correccion: Delivrix/OpenClaw debe enfocarse en onboarding inteligente, servidor fisico, clusters, VPS/LXC, sender nodes, health, warming y reputacion. NFC queda como integracion futura opcional, apagada o mock, hasta que exista contrato formal.
 
 Hallazgos tecnicos a bloquear por gate:
 
@@ -117,7 +117,7 @@ Hallazgos tecnicos a bloquear por gate:
 - acciones SSH de alto impacto en NFC deben quedar fuera de autonomia inicial;
 - credenciales SMTP en texto plano no deben ser aceptadas en produccion.
 
-Gate: antes de escribir en NFC o registrar providers reales, debe existir contrato versionado, bridge mock probado, auditoria y aprobacion humana.
+Gate: antes de escribir en NFC o registrar providers reales, debe existir contrato versionado, modo supervised, bridge probado, auditoria y aprobacion humana. Esto no bloquea la Fase 4 porque Fase 4 no depende de NFC.
 
 ### 9. La politica de "rotar IPs degradadas" debe reformularse
 

@@ -9,9 +9,10 @@ Documento rector: `NORTE_OPERATIVO_DELIVRIX.md`.
 Alinear el codigo y la documentacion al nuevo contexto operativo:
 
 - Delivrix gobierna infraestructura, capacidad, reputacion, compliance y auditoria.
-- NFC conserva campanas, colas y envio real.
+- OpenClaw sera la IA operativa para onboarding inteligente, clusters y preparacion de infraestructura propia.
 - OpenClaw empieza como read-only/supervised.
 - Ningun componente Delivrix debe parecer un sender paralelo en esta fase.
+- NFC queda como integracion futura opcional, apagada o mock.
 
 ## Cambios implementados
 
@@ -45,7 +46,7 @@ Tambien bloquea acciones fuera de fase:
 - purga de colas remotas.
 - activacion de providers NFC.
 
-### 2. Bridge NFC mock
+### 2. Bridge externo mock
 
 Archivo:
 
@@ -55,6 +56,8 @@ Expone:
 
 - `buildNfcBridgeCapacityPlan`
 - `evaluateNfcBridgeReadiness`
+
+Este modulo usa NFC como referencia tecnica porque ya existia un sistema externo revisado, pero en el MVP funciona solo como puerta futura apagada/mock. No es dependencia operativa.
 
 El bridge:
 
@@ -84,7 +87,7 @@ curl -s -X POST http://127.0.0.1:3000/v1/nfc/bridge/capacity-plan \
 El endpoint `capacity-plan`:
 
 - lee sender nodes locales.
-- genera un plan mock para NFC.
+- genera un plan mock de referencia para una futura integracion NFC.
 - audita `nfc_bridge.capacity_plan_generated`.
 - no ejecuta llamadas externas.
 - no crea providers reales.
@@ -94,8 +97,7 @@ El endpoint `capacity-plan`:
 - rol `delivrix-control-plane`.
 - Fase `4.0-control-plane-alignment`.
 - Delivrix no envia correo real.
-- NFC es el pipeline de envio real.
-- NFC bridge en modo `mock`.
+- bridge externo/NFC en modo `mock` como integracion futura opcional.
 
 ### 4. Worker reencuadrado
 
@@ -113,14 +115,15 @@ Hito 4.0 queda cerrado si:
 
 - el norte operativo existe como contrato de dominio;
 - el gateway lo expone por API;
-- el bridge NFC genera payloads dry-run/inactivos;
+- el bridge externo mock genera payloads dry-run/inactivos;
 - el worker local se identifica como worker operativo/control plane;
 - las pruebas nuevas validan que Delivrix no envia correo real ni escribe en NFC;
 - la documentacion principal apunta a este hito.
 
 ## Que queda para Hito 4.1
 
-- Inventario mas profundo de tablas/endpoints NFC.
-- Resolver o documentar el mismatch `workerInstanceId`.
-- Definir contrato versionado Delivrix -> NFC.
-- Preparar adapter `NfcBridge` para usar API real solo en modo supervised futuro.
+- Construir schema de onboarding inteligente para servidor fisico, Proxmox, IPs, dominios, DNS, limites y permisos.
+- Implementar preguntas guiadas y validadores de datos criticos.
+- Generar snapshot auditable de infraestructura.
+- Entregar reporte de faltantes y decision Go/No-Go.
+- Mantener cualquier integracion externa apagada o mock.

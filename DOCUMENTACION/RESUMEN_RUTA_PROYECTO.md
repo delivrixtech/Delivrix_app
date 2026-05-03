@@ -5,14 +5,14 @@ Documento base: `Tesis_Delivrix_v3.4_BUSINESS_PLAN_MVP.pdf`, version 3.4, 24 abr
 
 ## Lectura ejecutiva
 
-Delivrix plantea construir un control plane propio para mailing autorizado: infraestructura, reputacion, compliance, auditoria, sender nodes, bridge con NFC y automatizacion segura con OpenClaw.
+Delivrix plantea construir un control plane propio para mailing autorizado: infraestructura, reputacion, compliance, auditoria, sender nodes, onboarding inteligente y automatizacion segura con OpenClaw.
 
 La tesis no describe solamente una aplicacion web. Describe un sistema operativo completo: infraestructura fisica, virtualizacion, API de orquestacion, base de datos, sender nodes, DNS, reputacion, observabilidad, backups, agente autonomo, compliance y plan de continuidad.
 
 Norte operativo: `NORTE_OPERATIVO_DELIVRIX.md`.
 Hito de alineacion: `HITO_4_0_ALINEACION_CONTROL_PLANE.md`.
 
-Regla principal: en la fase actual, Delivrix no reemplaza el envio de NFC. Delivrix gobierna capacidad e infraestructura; NFC conserva el pipeline de campanas y envio real.
+Regla principal: en la fase actual, Delivrix/OpenClaw prepara infraestructura propia de mailing sobre servidor fisico. NFC u otros sistemas externos quedan como integraciones futuras opcionales, no como dependencia del MVP.
 
 ## Como debe funcionar
 
@@ -23,9 +23,9 @@ Regla principal: en la fase actual, Delivrix no reemplaza el envio de NFC. Deliv
 5. OpenClaw observa, reporta y propone acciones.
 6. Un humano aprueba cualquier accion real.
 7. Delivrix registra capacidad y estado operativo.
-8. El bridge/API sincroniza capacidad compatible con NFC.
-9. NFC ejecuta el envio desde su worker actual.
-10. Delivrix monitorea resultados y aplica gates: pause, degrade, quarantine, kill switch o recomendacion.
+8. Delivrix monitorea resultados simulados o autorizados.
+9. Delivrix aplica gates: pause, degrade, quarantine, kill switch o recomendacion.
+10. Una API/bridge futura puede exponer capacidad a sistemas externos aprobados, apagada por defecto en el MVP.
 
 ## Complejidad
 
@@ -66,7 +66,7 @@ Razones principales:
    - TLS.
    - SPF/DKIM/DMARC/PTR.
    - Warming, limites y reputacion.
-   - Resultados, bounces y complaints observados desde NFC o webhooks compatibles.
+   - Resultados, bounces y complaints observados desde webhooks compatibles, simulacion o integraciones aprobadas.
 
 4. Servicios de soporte
    - AWS Route 53 para DNS programatico cuando aplique.
@@ -78,7 +78,7 @@ Razones principales:
    - Webdock mantiene operacion durante transicion.
    - Plan C con proveedor VPS alternativo si se activan triggers.
 
-## Lectura complementaria de repos NFC
+## Contexto externo: repos NFC
 
 El 2026-05-02 se clonaron como referencia local los repos:
 
@@ -86,13 +86,13 @@ El 2026-05-02 se clonaron como referencia local los repos:
 - `National-Filing-Corporation/nfc-worker`
 - `National-Filing-Corporation/nfc-frontend`
 
-La lectura ajusta el entendimiento operativo:
+La lectura sirve como contexto para una integracion futura. No cambia el camino critico del MVP.
 
 - NFC ya tiene gateway, worker y frontend para operar campanas, proveedores, colas, registros, webhooks y envio.
 - Delivrix no debe duplicar ni reemplazar ese envio en la Fase 4.
 - OpenClaw debe enfocarse en onboarding inteligente, provision de clusters/VPS, configuracion segura de infraestructura SMTP y monitoreo.
-- La integracion correcta es un bridge/API para registrar capacidad creada por Delivrix como providers/SMTP servers compatibles con NFC.
-- El documento operativo de este ajuste es `FASE_4_OPENCLAW_NFC_INTEGRACION.md`.
+- Si mas adelante se conecta NFC, la integracion correcta debe ser un bridge/API supervisado para exponer capacidad creada por Delivrix.
+- El documento operativo de Fase 4 es `FASE_4_OPENCLAW_INFRAESTRUCTURA.md`.
 
 Riesgos detectados en la referencia NFC:
 
@@ -104,7 +104,7 @@ Riesgos detectados en la referencia NFC:
 ## Modulos de software a desarrollar
 
 - `gateway-api`: recibe solicitudes operativas, valida autorizacion, politicas, presupuesto, limites y compliance.
-- `worker`: procesa jobs internos desde BullMQ, asigna sender nodes en simulacion/control y no reemplaza el envio real de NFC en la fase actual.
+- `worker`: procesa jobs internos desde BullMQ, asigna sender nodes en simulacion/control y no envia correo real en la fase actual.
 - `sender-node-registry`: inventario de VPS, IPs, dominios, estado, reputacion, capacidad y etapa de warming.
 - `mail-policy-engine`: limites por dominio/IP/campana, opt-out, suppression list, CAN-SPAM checks y autorizacion.
 - `webdock-adapter`: puente con VPS actuales durante transicion.
@@ -161,10 +161,10 @@ Riesgos detectados en la referencia NFC:
 
 ## Ruta meses 2-5
 
-- Mes 2: habilitar 30% de capacidad propia para NFC si las metricas lo permiten, 30 VPS aproximados.
+- Mes 2: habilitar 30% de capacidad propia si las metricas lo permiten, 30 VPS aproximados.
 - Mes 3: 100 VPS y 400k-600k correos/dia de capacidad operacional.
 - Mes 4: 200 VPS y 700k-800k correos/dia de capacidad operacional.
-- Mes 5: 300 VPS y capacidad operacional para 1M correos/dia, ejecutados por el pipeline NFC, con Webdock como respaldo minimo.
+- Mes 5: 300 VPS y capacidad operacional para 1M correos/dia, consumible por el pipeline de envio autorizado que se apruebe, con Webdock como respaldo minimo.
 
 ## Decisiones y dependencias pendientes
 

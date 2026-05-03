@@ -6,17 +6,17 @@ Este documento es la fuente de verdad para entender como debe funcionar el siste
 
 ## Definicion corta
 
-Delivrix es un control plane de infraestructura, reputacion, compliance, auditoria y automatizacion para mailing autorizado.
+Delivrix es un control plane para preparar y gobernar infraestructura propia de mailing autorizado: servidor fisico, clusters, VPS/LXC, sender nodes, reputacion, compliance, auditoria y automatizacion.
 
-NFC es el sistema que hoy opera campanas, proveedores, colas, registros y envio.
+OpenClaw es la IA operativa de Delivrix. Su primer trabajo es hacer onboarding inteligente, analizar el servidor fisico, proponer clusters y preparar planes seguros para VPS/sender nodes.
 
-OpenClaw es el operador asistido por IA que observa, planifica, propone y, solo por etapas, ejecuta acciones permitidas.
+NFC es un sistema externo de referencia que podria conectarse mas adelante por API/bridge. No dirige el MVP actual.
 
 ## Regla principal
 
-En la fase actual, Delivrix no reemplaza el envio de NFC.
+Lo primero es OpenClaw: una IA que actua como operador tecnico para preparar infraestructura propia de mailing desde un servidor fisico.
 
-Delivrix crea y gobierna capacidad de infraestructura. NFC decide y ejecuta el envio usando su pipeline actual.
+En el MVP actual, Delivrix no envia correo real. Delivrix valida, planifica, simula, audita y gobierna capacidad. Cualquier sistema externo de envio queda fuera del camino critico y solo se conecta en una fase posterior con contrato seguro.
 
 ## Que debe hacer Delivrix
 
@@ -27,16 +27,18 @@ Delivrix crea y gobierna capacidad de infraestructura. NFC decide y ejecuta el e
 - Aplicar gates de compliance, suppression, opt-out, bounces, complaints, blacklists y kill switch.
 - Auditar acciones humanas y autonomas.
 - Producir reportes y recomendaciones operativas.
-- Exponer un bridge/API para sincronizar capacidad con NFC cuando el contrato sea seguro.
+- Dejar preparada una puerta API/bridge futura para sistemas externos, apagada por defecto.
 
-## Que debe hacer NFC
+## Integraciones futuras
 
-- Mantener el flujo actual de campanas.
-- Administrar recipients, templates, email registries, orders, webhooks y resultados.
-- Cargar providers activos.
-- Ejecutar envio real desde `nfc-worker`.
-- Aplicar sus limites internos de provider, cola y worker.
-- Recibir, cuando este aprobado, capacidad provisionada por Delivrix como `email_providers` y `smtp_servers`.
+NFC se conserva como contexto externo porque puede consumir la capacidad de Delivrix mas adelante. Para el MVP:
+
+- no se escribe en NFC;
+- no se llama API real de NFC;
+- no se crean providers reales;
+- no se activan SMTP servers externos;
+- no se depende del desarrollador de NFC para completar Fase 4;
+- cualquier bridge queda `disabled` o `mock`.
 
 ## Que debe hacer OpenClaw
 
@@ -56,9 +58,9 @@ OpenClaw nunca debe empezar con autonomia plena.
 5. OpenClaw analiza el plan y genera riesgos, recomendaciones y acciones propuestas.
 6. Un humano aprueba cualquier accion real.
 7. Delivrix registra sender nodes y reputacion en su inventario.
-8. El bridge NFC genera payloads compatibles para registrar capacidad como providers/SMTP servers.
-9. NFC usa esa capacidad desde su worker cuando este habilitada.
-10. Delivrix observa bounces, complaints, blacklists, colas, warming y resultados para pausar, degradar o recomendar cambios.
+8. Delivrix observa bounces, complaints, blacklists, colas, warming y resultados simulados o autorizados.
+9. OpenClaw recomienda pausar, degradar, cuarentenar o ajustar capacidad segun gates auditados.
+10. En una fase posterior, una API/bridge opcional puede exponer capacidad a un sistema externo aprobado.
 
 ## Diagrama operativo
 
@@ -71,18 +73,25 @@ flowchart TD
   E --> F["OpenClaw read-only / supervised"]
   F --> G["Aprobacion humana"]
   G --> H["Sender node registry Delivrix"]
-  H --> I["NFC bridge/API"]
-  I --> J["nfc-gateway: providers / smtp servers"]
-  J --> K["nfc-worker: envio real"]
-  K --> L["Resultados, bounces, complaints, reputation"]
-  L --> H
+  H --> I["Warming / reputacion / reportes"]
+  I --> J["Pausar / degradar / cuarentena / recomendaciones"]
+  J --> H
+  H -. futuro opcional .-> K["Bridge/API externo disabled o mock"]
 ```
 
-## Contratos de integracion
+## Puerta futura de integracion
 
-El bridge Delivrix -> NFC debe priorizar API. Escritura directa en base de datos solo se considera si no existe endpoint seguro y queda aprobada explicitamente.
+La integracion con NFC u otro sistema externo no es requisito del MVP. Cuando se active, debe priorizar API. Escritura directa en base de datos queda prohibida salvo aprobacion explicita, contrato versionado y auditoria.
 
-Contratos minimos:
+Modos permitidos:
+
+```txt
+NFC_BRIDGE_MODE=disabled   # default MVP
+NFC_BRIDGE_MODE=mock       # solo payloads de referencia
+NFC_BRIDGE_MODE=supervised # futuro, con API real y aprobacion humana
+```
+
+Contratos minimos para una fase futura:
 
 - Provider SMTP compatible con `email_providers`.
 - SMTP server compatible con `smtp_servers`.
@@ -94,8 +103,8 @@ Contratos minimos:
 
 ## Gates no negociables
 
-- No hay envio real desde Delivrix en la fase actual.
-- No hay escritura en NFC produccion sin contrato aprobado.
+- No hay envio real desde Delivrix en el MVP.
+- No hay escritura en sistemas externos de produccion sin contrato aprobado.
 - No hay SSH real sin aprobacion humana.
 - No hay cambios DNS reales sin dry-run y aprobacion.
 - No hay aumento de volumen sin warming saludable.
@@ -109,9 +118,9 @@ Contratos minimos:
 1. Fase 1: nucleo seguro local, policy engine, audit log y cola simulada.
 2. Fase 2: Webdock bridge seguro para continuidad y visibilidad.
 3. Fase 3: Proxmox/provisioning mock, reputacion, cuarentena y backups simulados.
-4. Hito 4.0: alineacion control plane, frontera de acciones y NFC bridge mock.
-5. Fase 4: OpenClaw read-only/supervised, onboarding, topology planner y contrato NFC.
-6. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad; NFC envia.
+4. Hito 4.0: alineacion control plane y frontera de acciones.
+5. Fase 4: OpenClaw onboarding inteligente, topology planner, provisioning dry-run y permisos.
+6. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
 7. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
 
 ## Criterio de claridad

@@ -5,11 +5,11 @@ Base documental: `Tesis_Delivrix_v3.4_BUSINESS_PLAN_MVP.pdf` y `RESUMEN_RUTA_PRO
 
 Nota critica: este roadmap debe leerse junto con `ANALISIS_CRITICO_ROADMAP.md`. El calendario no autoriza avanzar por si solo; cada fase requiere cumplir gates tecnicos, legales, reputacionales y operativos.
 
-Norte operativo obligatorio: `NORTE_OPERATIVO_DELIVRIX.md`. Este roadmap queda subordinado a ese documento. La regla principal es que Delivrix gobierna infraestructura/capacidad y NFC conserva el envio real en la fase actual.
+Norte operativo obligatorio: `NORTE_OPERATIVO_DELIVRIX.md`. Este roadmap queda subordinado a ese documento. La regla principal es que Delivrix/OpenClaw primero prepara infraestructura propia de mailing sobre servidor fisico; cualquier integracion externa queda fuera del camino critico del MVP.
 
 ## Objetivo
 
-Construir un control plane propio para mailing autorizado: infraestructura, reputacion, compliance, auditoria, sender nodes, bridge con NFC y automatizacion segura con OpenClaw.
+Construir un control plane propio para mailing autorizado: infraestructura, reputacion, compliance, auditoria, sender nodes, onboarding inteligente y automatizacion segura con OpenClaw.
 
 El MVP de 30 dias debe demostrar control operativo, no volumen. La ruta progresiva hacia mayor capacidad solo puede avanzar cuando se cumplan gates de infraestructura, reputacion, compliance y seguridad.
 
@@ -23,10 +23,10 @@ El roadmap se organiza en fases verificables. Cada fase debe dejar un entregable
 4. Delivrix simula provisioning de Proxmox, Postfix, OpenDKIM, TLS, DNS y warming.
 5. OpenClaw observa, analiza, reporta y propone acciones.
 6. Un humano aprueba cualquier accion real.
-7. Delivrix registra capacidad en su inventario y expone un bridge/API compatible con NFC.
-8. NFC usa esa capacidad desde su gateway/worker actual para ejecutar el envio real.
-9. Delivrix monitorea bounces, complaints, blacklists, colas, warming y reputacion.
-10. Delivrix pausa, degrada, cuarentena o recomienda cambios segun gates auditados.
+7. Delivrix registra capacidad preparada en su inventario.
+8. Delivrix monitorea bounces, complaints, blacklists, colas, warming y reputacion simulada o autorizada.
+9. Delivrix pausa, degrada, cuarentena o recomienda cambios segun gates auditados.
+10. Una API/bridge futura puede exponer capacidad a un sistema externo aprobado, apagada por defecto en el MVP.
 
 ## Principios de ejecucion
 
@@ -47,7 +47,7 @@ El proyecto no debe aumentar volumen ni autonomia si falla alguno de estos gates
 - Gate infraestructura: pruebas de carga por lote antes de pasar de 30 a 100, de 100 a 200 y de 200 a 300 sender nodes.
 - Gate seguridad: secretos rotados, tokens con scope minimo, audit log append-only, rollback probado y kill switch validado.
 - Gate OpenClaw: primero read-only, luego supervised, luego autonomia limitada; no ejecutar acciones masivas sin etapa de observacion previa.
-- Gate NFC: no escribir en NFC produccion ni registrar providers reales hasta tener contrato versionado, bridge mock probado y aprobacion humana.
+- Gate integraciones externas: no escribir en NFC ni en ningun sistema externo de produccion, ni registrar providers reales, hasta tener contrato versionado, modo supervised, auditoria y aprobacion humana.
 
 ## Ruta critica
 
@@ -58,9 +58,9 @@ El proyecto no debe aumentar volumen ni autonomia si falla alguno de estos gates
 5. Implementar politicas de envio autorizado y reputacion.
 6. Agregar admin panel con visibilidad y kill switch.
 7. Preparar onboarding inteligente y topology planner para Proxmox/sender nodes.
-8. Construir bridge NFC en modo mock para sincronizar capacidad, no envio.
-9. Construir OpenClaw con permisos acotados, dry-run, verificacion y rollback.
-10. Escalar por lotes con warming, metricas y gates de reputacion.
+8. Construir provisioning dry-run para Proxmox, Postfix, OpenDKIM, TLS, DNS y warming.
+9. Construir OpenClaw con permisos acotados, scheduler, skills, verificacion y rollback.
+10. Escalar por lotes con warming, metricas y gates de reputacion; bridges externos quedan como futuro opcional.
 
 ## Fase 0: Preparacion y decisiones
 
@@ -186,34 +186,29 @@ Preparar la plataforma para operar sender nodes propios sobre Proxmox o, si el s
 
 Periodo sugerido: 2026-05-25 a 2026-05-31
 
-Documento operativo de fase: `FASE_4_OPENCLAW_NFC_INTEGRACION.md`.
+Documento operativo de fase: `FASE_4_OPENCLAW_INFRAESTRUCTURA.md`.
 
 Hito previo obligatorio: `HITO_4_0_ALINEACION_CONTROL_PLANE.md`.
 
 ### Objetivo
 
-Construir la primera version de OpenClaw como operador autonomo nivel 2 con permisos acotados, empezando en modo read-only/dry-run y alineado con el sistema NFC ya existente.
+Construir la primera version de OpenClaw como operador tecnico asistido por IA, con permisos acotados, empezando en modo read-only/dry-run, para guiar el onboarding inteligente y preparar clusters/VPS/sender nodes sobre infraestructura propia.
 
-Ajuste tras lectura de repos NFC:
+Ajuste de foco tras la revision:
 
-- NFC conserva el motor de envio actual.
-- Delivrix/OpenClaw no reemplaza el envio en esta fase.
-- Delivrix/OpenClaw provisiona, planifica y gobierna capacidad de infraestructura.
-- La integracion inicial debe ser un bridge/API para registrar capacidad compatible con NFC, no un sender paralelo.
+- OpenClaw es primero onboarding, diagnostico, topology planner y provisioning dry-run.
+- Delivrix/OpenClaw no envia correo real en esta fase.
+- Delivrix/OpenClaw provisiona, planifica y gobierna capacidad de infraestructura preparada.
+- NFC queda como integracion futura opcional, apagada o mock; no es dependencia del MVP.
 
 ### Entregables tecnicos
 
 - Hito 4.0:
   - contrato de norte operativo en dominio.
   - endpoint `GET /v1/operating-north`.
-  - bridge NFC mock para planes de capacidad.
+  - frontera de integraciones externas en modo seguro/mock.
   - endpoint `POST /v1/nfc/bridge/capacity-plan`.
   - worker local reencuadrado como control-worker.
-- Contrato NFC read-only:
-  - mapa `nfc-gateway`, `nfc-worker`, `nfc-frontend`.
-  - contrato `email_providers`.
-  - contrato `smtp_servers`.
-  - mapeo de capacidad, limites, reputacion y warming.
 - Onboarding inteligente:
   - servidor fisico.
   - Proxmox.
@@ -244,16 +239,16 @@ Ajuste tras lectura de repos NFC:
 - Audit log inmutable para toda accion autonoma.
 - Presupuesto diario de IA.
 - Kill switch probado.
-- NFC bridge mock:
-  - payload provider SMTP.
-  - payload SMTP server.
-  - health/reputation sync en simulacion.
+- Bridge/API externo opcional:
+  - apagado por defecto.
+  - mock solamente para referencia.
+  - sin llamadas reales ni escritura productiva.
 
 ### Criterio de salida
 
 - OpenClaw detecta problemas simulados, propone acciones permitidas, registra auditoria, verifica resultado y genera reporte diario.
-- Existe un contrato NFC documentado y un bridge mock que no envia emails ni escribe en produccion.
 - El onboarding inteligente puede generar un plan de clusters/VPS sin tocar infraestructura real.
+- NFC queda documentado como integracion futura opcional, no como dependencia de Fase 4.
 
 ## Fase 5: MVP demostrable
 
@@ -282,7 +277,7 @@ Periodo sugerido: junio 2026
 
 ### Objetivo
 
-Habilitar gradualmente hasta 30% de capacidad propia para que NFC pueda usarla si las metricas lo permiten.
+Habilitar gradualmente hasta 30% de capacidad propia para que un sistema de envio autorizado pueda consumirla si las metricas lo permiten.
 
 ### Metas
 
@@ -326,7 +321,7 @@ Periodo sugerido: agosto 2026
 
 ### Objetivo
 
-Escalar a 200 sender nodes y habilitar 80% de capacidad propia para el pipeline NFC.
+Escalar a 200 sender nodes y habilitar 80% de capacidad propia para el pipeline de envio autorizado que se apruebe.
 
 ### Metas
 
@@ -347,7 +342,7 @@ Periodo sugerido: septiembre 2026
 
 ### Objetivo
 
-Alcanzar capacidad operacional para 1,000,000 correos diarios sostenidos, ejecutados por el pipeline NFC y soportados por 300 sender nodes gobernados por Delivrix, con Webdock como respaldo minimo.
+Alcanzar capacidad operacional para 1,000,000 correos diarios sostenidos, soportados por 300 sender nodes gobernados por Delivrix y consumidos por el pipeline de envio autorizado que se apruebe, con Webdock como respaldo minimo.
 
 ### Metas
 
