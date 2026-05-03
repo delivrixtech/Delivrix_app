@@ -5,6 +5,7 @@ export * from "./ids.ts";
 export * from "./ip-reputation.ts";
 export * from "./kill-switch.ts";
 export * from "./mail-policy.engine.ts";
+export * from "./mvp-demo-blueprint.ts";
 export * from "./nfc-bridge.ts";
 export * from "./openclaw-onboarding.ts";
 export * from "./openclaw-provisioning-dry-run.ts";

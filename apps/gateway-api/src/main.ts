@@ -20,6 +20,7 @@ import {
   evaluateSendResultIngestion,
   evaluateOpenClawOnboarding,
   isSenderNodeManualAction,
+  buildDelivrixMvpDemoBlueprint,
   buildNfcBridgeCapacityPlan,
   buildOpenClawOperationalRunbook,
   buildOpenClawProvisioningDryRun,
@@ -33,6 +34,7 @@ import {
   type BackupResource,
   type BackupResourceSnapshot,
   type IpReputationExternalSignal,
+  type DelivrixMvpDemoBlueprintInput,
   type OpenClawOnboardingInput,
   type OpenClawProvisioningDryRunInput,
   type OpenClawRunbookInput,
@@ -113,12 +115,13 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "4.5-runbook-permissions-kill-switch",
+          currentMilestone: "5.0-mvp-demo-blueprint-pattern-review",
           onboardingEnabled: true,
           topologyPlannerEnabled: true,
           provisioningDryRunEnabled: true,
           schedulerEnabled: true,
           runbookEnabled: true,
+          demoBlueprintEnabled: true,
           killSwitchProofEnabled: true,
           llmLiveCallsEnabled: false,
           liveActionsEnabled: false
@@ -134,6 +137,50 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && request.url === "/v1/operating-north") {
       return json(response, 200, getOperatingNorthSnapshot());
+    }
+
+    if (request.method === "POST" && request.url === "/v1/demo/mvp/blueprint") {
+      const body = await readOptionalJson<DelivrixMvpDemoBlueprintInput>(request);
+      const killSwitch = await killSwitchStore.get();
+      const blueprint = buildDelivrixMvpDemoBlueprint({
+        ...body,
+        killSwitch: body?.killSwitch ?? killSwitch
+      });
+
+      await auditLog.append({
+        actorType: body?.actorId ? "operator" : "system",
+        actorId: blueprint.actorId,
+        action: "demo.mvp_blueprint_created",
+        targetType: "mvp_demo",
+        targetId: blueprint.id,
+        riskLevel: blueprint.decision.status === "blocked" ? "high" : blueprint.decision.status === "needs_review" ? "medium" : "low",
+        metadata: {
+          phase: blueprint.phase,
+          decision: blueprint.decision,
+          route: blueprint.pipeline.route,
+          patternReview: blueprint.patternReview.map((item) => ({
+            pattern: item.pattern,
+            status: item.status
+          })),
+          openClaw: {
+            onboardingDecision: blueprint.openClaw.onboarding.decision.status,
+            topologyDecision: blueprint.openClaw.topology.decision.status,
+            provisioningDecision: blueprint.openClaw.provisioning.decision.status,
+            schedulerDecision: blueprint.openClaw.scheduler.decision.status,
+            runbookDecision: blueprint.openClaw.runbook.decision.status
+          },
+          dryRun: blueprint.dryRun,
+          sideEffects: blueprint.sideEffects,
+          liveEmailSendingEnabled: false,
+          liveInfrastructureWritesEnabled: false,
+          nfcProductionWritesEnabled: false,
+          localStateOnlyForPipelineDemo: blueprint.safety.localStateOnlyForPipelineDemo
+        }
+      });
+
+      return json(response, 200, {
+        blueprint
+      });
     }
 
     if (request.method === "GET" && request.url === "/v1/openclaw/onboarding/questionnaire") {

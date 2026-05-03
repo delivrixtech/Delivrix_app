@@ -26,6 +26,8 @@ Hito 4.2/topology planner: ver `DOCUMENTACION/HITO_4_2_CLUSTER_TOPOLOGY_PLANNER.
 Hito 4.3/provisioning dry-run: ver `DOCUMENTACION/HITO_4_3_PROVISIONING_DRY_RUN.md`.
 Hito 4.4/OpenClaw scheduler y skills: ver `DOCUMENTACION/HITO_4_4_OPENCLAW_SCHEDULER_SKILLS.md`.
 Hito 4.5/runbook, permisos y kill switch: ver `DOCUMENTACION/HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md`.
+Fase 5/MVP demostrable: ver `DOCUMENTACION/FASE_5_MVP_DEMOSTRABLE.md`.
+Hito 5.0/demo blueprint y revision de patrones: ver `DOCUMENTACION/HITO_5_0_DEMO_BLUEPRINT_REVISION_PATRONES.md`.
 
 ## Estructura
 
@@ -286,3 +288,15 @@ curl -s -X POST http://127.0.0.1:3000/v1/openclaw/runbook/evaluate \
 ```
 
 El runbook define la matriz de permisos de OpenClaw, acciones permitidas, acciones supervisadas, acciones futuras bloqueadas y acciones prohibidas. Tambien prueba que el kill switch bloquea acciones OpenClaw, acciones locales supervisadas, live infrastructure y procesamiento de cola. La produccion limitada sigue apagada.
+
+## Hito 5.0: Demo blueprint y revision de patrones
+
+Endpoint local:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/v1/demo/mvp/blueprint \
+  -H 'content-type: application/json' \
+  -d '{"actorId":"operator_local"}'
+```
+
+El blueprint compone onboarding, topology planner, provisioning dry-run, scheduler, runbook y la ruta Gateway -> Policy -> Queue -> Worker -> Sender Node -> Result Tracking -> Reputation -> Admin/OpenClaw. Tambien revisa patrones de arquitectura para reforzar que el software avance de forma inteligente, auditable y sin adivinar datos faltantes.

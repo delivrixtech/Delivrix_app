@@ -248,3 +248,5 @@ Resultado esperado:
 Fase 5: demo end-to-end.
 
 La demo debe mostrar Delivrix gobernando capacidad preparada en dry-run/control, con OpenClaw reportando y proponiendo bajo permisos, auditoria y kill switch.
+
+Hito 5.0 quedo documentado en `HITO_5_0_DEMO_BLUEPRINT_REVISION_PATRONES.md`.

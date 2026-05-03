@@ -16,6 +16,8 @@ Hito topology planner: `HITO_4_2_CLUSTER_TOPOLOGY_PLANNER.md`.
 Hito provisioning dry-run: `HITO_4_3_PROVISIONING_DRY_RUN.md`.
 Hito scheduler y skills: `HITO_4_4_OPENCLAW_SCHEDULER_SKILLS.md`.
 Hito runbook, permisos y kill switch: `HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md`.
+Fase MVP demostrable: `FASE_5_MVP_DEMOSTRABLE.md`.
+Hito demo blueprint: `HITO_5_0_DEMO_BLUEPRINT_REVISION_PATRONES.md`.
 
 Regla principal: en la fase actual, Delivrix/OpenClaw prepara infraestructura propia de mailing sobre servidor fisico. NFC u otros sistemas externos quedan como integraciones futuras opcionales, no como dependencia del MVP.
 
@@ -167,6 +169,7 @@ Riesgos detectados en la referencia NFC:
 - Runbook 4.5 con matriz de permisos y prueba de kill switch.
 - Reporte diario.
 - Demo end-to-end de control operativo en dry-run.
+- Blueprint Hito 5.0 que revisa patrones y declara la ruta Gateway -> Queue -> Worker -> Sender Node -> Result Tracking.
 
 ## Ruta meses 2-5
 

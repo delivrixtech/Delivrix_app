@@ -276,12 +276,19 @@ Ajuste de foco tras la revision:
 
 Periodo sugerido: 2026-06-01 a 2026-06-07
 
+Documento operativo de fase: `FASE_5_MVP_DEMOSTRABLE.md`.
+
 ### Objetivo
 
 Cerrar el MVP como sistema demostrable end-to-end.
 
 ### Entregables
 
+- Hito 5.0:
+  - blueprint MVP end-to-end.
+  - revision de patrones inteligentes.
+  - endpoint `POST /v1/demo/mvp/blueprint`.
+  - auditoria `demo.mvp_blueprint_created`.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Demo OpenClaw con incidentes simulados.
