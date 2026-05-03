@@ -234,6 +234,8 @@ Ajuste de foco tras la revision:
   - fleet analysis cada 15 minutos.
   - IP reputation check cada 6 horas.
   - reporte diario.
+  - endpoint `POST /v1/openclaw/scheduler/run`.
+  - auditoria `openclaw_scheduler.run_simulated`.
 - Skills iniciales:
   - fleet-ops.
   - alert-ops.

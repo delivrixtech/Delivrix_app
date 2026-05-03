@@ -22,6 +22,7 @@ import {
   isSenderNodeManualAction,
   buildNfcBridgeCapacityPlan,
   buildOpenClawProvisioningDryRun,
+  runOpenClawScheduler,
   buildOpenClawTopologyPlan,
   getOpenClawOnboardingQuestionnaire,
   getOperatingNorthSnapshot,
@@ -33,6 +34,7 @@ import {
   type IpReputationExternalSignal,
   type OpenClawOnboardingInput,
   type OpenClawProvisioningDryRunInput,
+  type OpenClawSchedulerInput,
   type OpenClawTopologyPlannerInput,
   type RegisterSenderNodeInput,
   type SuppressionReason,
@@ -109,10 +111,12 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "4.3-provisioning-dry-run-executor",
+          currentMilestone: "4.4-openclaw-scheduler-and-skills",
           onboardingEnabled: true,
           topologyPlannerEnabled: true,
           provisioningDryRunEnabled: true,
+          schedulerEnabled: true,
+          llmLiveCallsEnabled: false,
           liveActionsEnabled: false
         },
         nfcBridge: {
@@ -230,6 +234,64 @@ const server = createServer(async (request, response) => {
 
       return json(response, 200, {
         plan
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/openclaw/scheduler/run") {
+      const body = await readOptionalJson<OpenClawSchedulerInput>(request);
+      const run = runOpenClawScheduler(body ?? {});
+
+      await auditLog.append({
+        actorType: body?.actorId ? "operator" : "system",
+        actorId: run.actorId,
+        action: "openclaw_scheduler.run_simulated",
+        targetType: "openclaw_scheduler",
+        targetId: run.id,
+        riskLevel: run.decision.riskLevel,
+        metadata: {
+          phase: run.phase,
+          decision: run.decision,
+          sourceProvisioningId: run.sourceProvisioningId,
+          llmRouter: run.llmRouter,
+          tasks: run.tasks.map((task) => ({
+            name: task.name,
+            skill: task.skill,
+            cadence: task.cadence,
+            due: task.due,
+            sideEffects: task.sideEffects,
+            liveActionsEnabled: task.liveActionsEnabled
+          })),
+          skills: run.skills.map((skill) => ({
+            name: skill.name,
+            status: skill.status,
+            proposedActions: skill.proposedActions.length
+          })),
+          dailyReport: {
+            humanReviewRequired: run.dailyReport.humanReviewRequired,
+            plannedSenderNodes: run.dailyReport.fleet.plannedSenderNodes,
+            provisioningDecision: run.dailyReport.fleet.provisioningDecision,
+            alerts: {
+              critical: run.dailyReport.alerts.critical,
+              high: run.dailyReport.alerts.high,
+              medium: run.dailyReport.alerts.medium,
+              low: run.dailyReport.alerts.low
+            }
+          },
+          dryRun: run.dryRun,
+          sideEffects: run.sideEffects,
+          liveInfrastructureWritesEnabled: false,
+          llmLiveCallsEnabled: false,
+          actionExecutorLiveEnabled: false,
+          proxmoxApiEnabled: false,
+          sshEnabled: false,
+          smtpEnabled: false,
+          dnsLiveChangesEnabled: false,
+          nfcWritesEnabled: false
+        }
+      });
+
+      return json(response, 200, {
+        run
       });
     }
 

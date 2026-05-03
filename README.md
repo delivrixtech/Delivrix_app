@@ -24,6 +24,7 @@ Hito 4.0/alineacion control plane: ver `DOCUMENTACION/HITO_4_0_ALINEACION_CONTRO
 Hito 4.1/OpenClaw onboarding: ver `DOCUMENTACION/HITO_4_1_OPENCLAW_ONBOARDING.md`.
 Hito 4.2/topology planner: ver `DOCUMENTACION/HITO_4_2_CLUSTER_TOPOLOGY_PLANNER.md`.
 Hito 4.3/provisioning dry-run: ver `DOCUMENTACION/HITO_4_3_PROVISIONING_DRY_RUN.md`.
+Hito 4.4/OpenClaw scheduler y skills: ver `DOCUMENTACION/HITO_4_4_OPENCLAW_SCHEDULER_SKILLS.md`.
 
 ## Estructura
 
@@ -260,3 +261,15 @@ curl -s -X POST http://127.0.0.1:3000/v1/openclaw/provisioning/dry-run \
 ```
 
 El executor convierte topology plan en planes Proxmox, Postfix, OpenDKIM, TLS, DNS y warming. Si el topology plan esta bloqueado, responde `blocked`. Si genera planes, siguen siendo dry-run y no ejecutan acciones reales.
+
+## Hito 4.4: OpenClaw scheduler y skills
+
+Endpoint local:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/v1/openclaw/scheduler/run \
+  -H 'content-type: application/json' \
+  -d '{"actorId":"operator_local"}'
+```
+
+El scheduler ejecuta un ciclo observador con tareas `health-check`, `fleet-analysis`, `ip-reputation-check` y `daily-report`. Corre skills `fleet-ops`, `alert-ops` y `report-ops`, usa router LLM en modo `disabled` por defecto y genera reporte diario. No ejecuta SSH, Proxmox live, DNS live, SMTP real ni escrituras NFC.

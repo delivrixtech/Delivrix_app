@@ -163,7 +163,11 @@ Resultado esperado al cierre del hito:
 
 - 80 pruebas pasando.
 
-## Que queda para Hito 4.4
+## Hito posterior implementado
+
+Hito 4.4 quedo documentado en `HITO_4_4_OPENCLAW_SCHEDULER_SKILLS.md`.
+
+Incluye:
 
 - Crear scheduler inicial de OpenClaw.
 - Crear skills `fleet-ops`, `alert-ops`, `report-ops`.

@@ -205,6 +205,8 @@ Gate:
 
 ### Hito 4.4: OpenClaw scheduler y skills
 
+Estado: implementado. Detalle operativo en `HITO_4_4_OPENCLAW_SCHEDULER_SKILLS.md`.
+
 Objetivo:
 
 - crear el loop operativo inicial de OpenClaw.
@@ -218,6 +220,8 @@ Entregables:
 - LLM router;
 - modo sin LLM;
 - reporte diario.
+- endpoint `POST /v1/openclaw/scheduler/run`;
+- auditoria `openclaw_scheduler.run_simulated`.
 
 Gate:
 
@@ -264,6 +268,9 @@ Estado:
 - Generar planes de clusters.
 - Generar planes de provisioning.
 - Generar planes de warming.
+- Ejecutar scheduler OpenClaw en modo observador.
+- Ejecutar skills `fleet-ops`, `alert-ops` y `report-ops` en dry-run.
+- Generar reporte diario.
 - Detectar riesgos.
 - Proponer acciones.
 - Simular acciones.

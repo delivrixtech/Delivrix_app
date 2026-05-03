@@ -122,9 +122,10 @@ Contratos minimos para una fase futura:
 5. Hito 4.1: OpenClaw intelligent onboarding con decision Go/No-Go.
 6. Hito 4.2: Cluster topology planner con plan VPS/LXC en dry-run.
 7. Hito 4.3: Provisioning dry-run executor para Proxmox/Postfix/OpenDKIM/TLS/DNS/warming.
-8. Fase 4: OpenClaw scheduler, skills y permisos.
-9. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
-10. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
+8. Hito 4.4: OpenClaw scheduler, skills, LLM router sin LLM y reporte diario.
+9. Hito 4.5: runbook, permisos y kill switch antes de cualquier ejecucion limitada.
+10. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
+11. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
 
 ## Criterio de claridad
 
