@@ -3,11 +3,13 @@
 Fecha: 2026-05-01  
 Base: `ROADMAP_PROYECTO.md`, tesis v3.4 y verificacion puntual de fuentes externas.
 
+Norte operativo: `NORTE_OPERATIVO_DELIVRIX.md`. Este analisis debe leerse bajo esa frontera: Delivrix gobierna infraestructura/capacidad y NFC conserva el envio real en la fase actual.
+
 ## Veredicto ejecutivo
 
 El roadmap es correcto como direccion estrategica, pero aun no es suficientemente seguro para ejecutarse como calendario rigido. Debe convertirse en un roadmap por gates: se avanza solo cuando se cumplen condiciones verificables, no simplemente porque llego la fecha.
 
-La meta de MVP en 30 dias es viable si el MVP se define como plataforma controlada, auditable y de bajo volumen. No es viable interpretar el MVP como capacidad productiva amplia. La meta de 1M correos/dia en septiembre puede ser posible solo si se resuelven de forma comprobada estos cinco frentes:
+La meta de MVP en 30 dias es viable si el MVP se define como control plane auditable, seguro y de bajo impacto. No es viable interpretar el MVP como capacidad productiva amplia. La meta de 1M correos/dia en septiembre puede ser posible solo si se resuelven de forma comprobada estos cinco frentes:
 
 1. Compliance y autorizacion de destinatarios.
 2. Infraestructura fisica real bajo carga.

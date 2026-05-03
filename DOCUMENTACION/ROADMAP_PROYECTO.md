@@ -5,11 +5,28 @@ Base documental: `Tesis_Delivrix_v3.4_BUSINESS_PLAN_MVP.pdf` y `RESUMEN_RUTA_PRO
 
 Nota critica: este roadmap debe leerse junto con `ANALISIS_CRITICO_ROADMAP.md`. El calendario no autoriza avanzar por si solo; cada fase requiere cumplir gates tecnicos, legales, reputacionales y operativos.
 
+Norte operativo obligatorio: `NORTE_OPERATIVO_DELIVRIX.md`. Este roadmap queda subordinado a ese documento. La regla principal es que Delivrix gobierna infraestructura/capacidad y NFC conserva el envio real en la fase actual.
+
 ## Objetivo
 
-Construir una plataforma propia de mailing autorizado para Delivrix, con MVP funcional en 30 dias y ruta progresiva hacia 1,000,000 correos diarios sostenidos en septiembre de 2026.
+Construir un control plane propio para mailing autorizado: infraestructura, reputacion, compliance, auditoria, sender nodes, bridge con NFC y automatizacion segura con OpenClaw.
+
+El MVP de 30 dias debe demostrar control operativo, no volumen. La ruta progresiva hacia mayor capacidad solo puede avanzar cuando se cumplan gates de infraestructura, reputacion, compliance y seguridad.
 
 El roadmap se organiza en fases verificables. Cada fase debe dejar un entregable usable, medible y auditable.
+
+## Como debe funcionar el sistema
+
+1. Delivrix recibe datos de onboarding: servidor fisico, Proxmox, IPs, dominios, DNS, limites y permisos.
+2. Delivrix valida esos datos contra compliance, seguridad, reputacion y capacidad.
+3. Delivrix genera un topology plan de clusters/VPS/LXC y sender nodes.
+4. Delivrix simula provisioning de Proxmox, Postfix, OpenDKIM, TLS, DNS y warming.
+5. OpenClaw observa, analiza, reporta y propone acciones.
+6. Un humano aprueba cualquier accion real.
+7. Delivrix registra capacidad en su inventario y expone un bridge/API compatible con NFC.
+8. NFC usa esa capacidad desde su gateway/worker actual para ejecutar el envio real.
+9. Delivrix monitorea bounces, complaints, blacklists, colas, warming y reputacion.
+10. Delivrix pausa, degrada, cuarentena o recomienda cambios segun gates auditados.
 
 ## Principios de ejecucion
 
@@ -30,18 +47,20 @@ El proyecto no debe aumentar volumen ni autonomia si falla alguno de estos gates
 - Gate infraestructura: pruebas de carga por lote antes de pasar de 30 a 100, de 100 a 200 y de 200 a 300 sender nodes.
 - Gate seguridad: secretos rotados, tokens con scope minimo, audit log append-only, rollback probado y kill switch validado.
 - Gate OpenClaw: primero read-only, luego supervised, luego autonomia limitada; no ejecutar acciones masivas sin etapa de observacion previa.
+- Gate NFC: no escribir en NFC produccion ni registrar providers reales hasta tener contrato versionado, bridge mock probado y aprobacion humana.
 
 ## Ruta critica
 
 1. Aprobar o confirmar decisiones pendientes: internet empresarial, IP leasing, ARIN.
 2. Inicializar repo y arquitectura de software.
-3. Construir Gateway, Worker, PostgreSQL, Redis/BullMQ y audit log.
+3. Construir nucleo seguro: policy engine, audit log, queue, sender-node registry y suppression list.
 4. Registrar Webdock como sender bridge para continuidad.
 5. Implementar politicas de envio autorizado y reputacion.
 6. Agregar admin panel con visibilidad y kill switch.
-7. Integrar Proxmox/sender nodes cuando el servidor fisico este listo.
-8. Construir OpenClaw con permisos acotados, dry-run, verificacion y rollback.
-9. Escalar por lotes con warming, metricas y gates de reputacion.
+7. Preparar onboarding inteligente y topology planner para Proxmox/sender nodes.
+8. Construir bridge NFC en modo mock para sincronizar capacidad, no envio.
+9. Construir OpenClaw con permisos acotados, dry-run, verificacion y rollback.
+10. Escalar por lotes con warming, metricas y gates de reputacion.
 
 ## Fase 0: Preparacion y decisiones
 
@@ -238,7 +257,7 @@ Cerrar el MVP como sistema demostrable end-to-end.
 
 ### Entregables
 
-- Demo Gateway -> Queue -> Worker -> Sender node -> Result tracking.
+- Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Demo OpenClaw con incidentes simulados.
 - Runbook operativo inicial.
@@ -255,13 +274,13 @@ Periodo sugerido: junio 2026
 
 ### Objetivo
 
-Mover gradualmente hasta 30% del trafico al servidor propio si las metricas lo permiten.
+Habilitar gradualmente hasta 30% de capacidad propia para que NFC pueda usarla si las metricas lo permiten.
 
 ### Metas
 
 - Aproximadamente 30 sender nodes.
 - 100,000 a 200,000 correos/dia como capacidad objetivo.
-- Webdock conserva 70% del trafico.
+- Webdock conserva 70% de la capacidad operativa.
 
 ### Gates de avance
 
@@ -278,7 +297,7 @@ Periodo sugerido: julio 2026
 
 ### Objetivo
 
-Escalar a 100 sender nodes y repartir trafico 50/50 entre Webdock y plataforma propia.
+Escalar a 100 sender nodes y repartir capacidad 50/50 entre Webdock y sender nodes propios gobernados por Delivrix.
 
 ### Metas
 
@@ -299,7 +318,7 @@ Periodo sugerido: agosto 2026
 
 ### Objetivo
 
-Escalar a 200 sender nodes y mover 80% del trafico al servidor propio.
+Escalar a 200 sender nodes y habilitar 80% de capacidad propia para el pipeline NFC.
 
 ### Metas
 
@@ -320,19 +339,19 @@ Periodo sugerido: septiembre 2026
 
 ### Objetivo
 
-Alcanzar 1,000,000 correos diarios sostenidos con 300 sender nodes y Webdock como respaldo minimo.
+Alcanzar capacidad operacional para 1,000,000 correos diarios sostenidos, ejecutados por el pipeline NFC y soportados por 300 sender nodes gobernados por Delivrix, con Webdock como respaldo minimo.
 
 ### Metas
 
 - 300 VPS/LXC sender nodes.
-- 95-100% trafico en plataforma propia.
+- 95-100% capacidad desde sender nodes propios.
 - Webdock 0-5% como respaldo.
 - Reportes mensuales al sponsor.
 - Runbook de continuidad completo.
 
 ### Criterio de salida
 
-- La plataforma sostiene volumen objetivo con reputacion saludable, compliance operativo, auditoria completa, backups y respuesta automatizada.
+- El sistema sostiene capacidad objetivo con reputacion saludable, compliance operativo, auditoria completa, backups y respuesta automatizada.
 
 ## Plan C
 

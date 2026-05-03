@@ -1,6 +1,6 @@
 # Delivrix MailOps Platform
 
-Base tecnica inicial para la plataforma propia de mailing autorizado de Delivrix.
+Base tecnica inicial para el control plane de mailing autorizado de Delivrix: infraestructura, reputacion, compliance, auditoria, sender nodes, OpenClaw y bridge con NFC.
 
 ## Propiedad intelectual
 
@@ -13,8 +13,9 @@ La arquitectura nace con tres reglas:
 
 1. Ningun envio entra a cola sin pasar por el `mail-policy-engine`.
 2. Toda decision queda registrada en `audit-log`.
-3. La plataforma local no envia correo real; valida, audita, simula y encola de forma controlada.
+3. La plataforma local no envia correo real; valida, audita, simula y gobierna capacidad de forma controlada.
 
+Norte operativo: ver `DOCUMENTACION/NORTE_OPERATIVO_DELIVRIX.md`.
 Estandares de ingenieria: ver `DOCUMENTACION/ESTANDARES_INGENIERIA.md`.
 Runbook operativo Fase 2: ver `DOCUMENTACION/FASE_2_RUNBOOK_OPERATIVO.md`.
 Runbook Fase 3: ver `DOCUMENTACION/FASE_3_INFRAESTRUCTURA_PROPIA.md`.

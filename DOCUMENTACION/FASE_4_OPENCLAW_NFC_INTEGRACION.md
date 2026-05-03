@@ -2,6 +2,10 @@
 
 Fecha: 2026-05-02
 
+Documento rector: `NORTE_OPERATIVO_DELIVRIX.md`.
+
+Resumen: Fase 4 construye OpenClaw, onboarding inteligente, topology planner y bridge NFC en modo seguro. No activa envio real desde Delivrix.
+
 ## Contexto
 
 Despues de cerrar Fase 3, se revisaron como referencia local los tres repositorios privados del sistema NFC:

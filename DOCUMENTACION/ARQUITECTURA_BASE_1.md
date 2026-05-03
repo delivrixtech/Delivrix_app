@@ -8,6 +8,8 @@ Crear el primer esqueleto ejecutable de la plataforma Delivrix sin depender toda
 
 Gateway -> Policy Engine -> Audit Log -> Queue -> Worker seguro.
 
+Esta base debe leerse bajo `NORTE_OPERATIVO_DELIVRIX.md`: el Gateway/Worker local valida contratos, politicas, auditoria y simulacion. No reemplaza el envio real de NFC en la fase actual.
+
 ## Decisiones tomadas
 
 - El nucleo de dominio queda en `packages/domain`.

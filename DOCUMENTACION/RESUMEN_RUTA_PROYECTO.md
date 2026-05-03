@@ -5,9 +5,26 @@ Documento base: `Tesis_Delivrix_v3.4_BUSINESS_PLAN_MVP.pdf`, version 3.4, 24 abr
 
 ## Lectura ejecutiva
 
-Delivrix plantea construir una plataforma propia de automatizacion de mailing sobre infraestructura controlada por la empresa. La meta documentada es llegar a 1,000,000 correos diarios sostenidos en septiembre de 2026, con un MVP funcional en 30 dias que opere 30-50 VPS virtualizados y un agente operativo llamado OpenClaw.
+Delivrix plantea construir un control plane propio para mailing autorizado: infraestructura, reputacion, compliance, auditoria, sender nodes, bridge con NFC y automatizacion segura con OpenClaw.
 
-La tesis no describe solamente una aplicacion web. Describe un sistema operativo completo: infraestructura fisica, virtualizacion, API de orquestacion, colas, base de datos, nodos de envio, DNS, reputacion, observabilidad, backups, agente autonomo, compliance y plan de continuidad.
+La tesis no describe solamente una aplicacion web. Describe un sistema operativo completo: infraestructura fisica, virtualizacion, API de orquestacion, base de datos, sender nodes, DNS, reputacion, observabilidad, backups, agente autonomo, compliance y plan de continuidad.
+
+Norte operativo: `NORTE_OPERATIVO_DELIVRIX.md`.
+
+Regla principal: en la fase actual, Delivrix no reemplaza el envio de NFC. Delivrix gobierna capacidad e infraestructura; NFC conserva el pipeline de campanas y envio real.
+
+## Como debe funcionar
+
+1. Delivrix guia el onboarding de servidor fisico, Proxmox, IPs, dominios, DNS, limites y permisos.
+2. Delivrix valida compliance, reputacion, seguridad y capacidad.
+3. Delivrix genera un plan de clusters/VPS/LXC y sender nodes.
+4. Delivrix simula provisioning de Postfix, OpenDKIM, TLS, DNS y warming.
+5. OpenClaw observa, reporta y propone acciones.
+6. Un humano aprueba cualquier accion real.
+7. Delivrix registra capacidad y estado operativo.
+8. El bridge/API sincroniza capacidad compatible con NFC.
+9. NFC ejecuta el envio desde su worker actual.
+10. Delivrix monitorea resultados y aplica gates: pause, degrade, quarantine, kill switch o recomendacion.
 
 ## Complejidad
 
@@ -36,18 +53,19 @@ Razones principales:
 2. Servidor fisico en Popayan
    - Ubuntu Server 24.04 LTS.
    - Proxmox VE 8.
-   - Gateway API.
-   - Worker.
+   - Gateway API Delivrix para control operativo.
+   - Worker Delivrix para jobs internos, simulacion y operaciones auditadas.
    - PostgreSQL.
    - Redis/BullMQ.
    - Pool de VPS/LXC sender nodes.
 
-3. Capa de envio
+3. Capa de capacidad SMTP / sender nodes
    - Postfix.
    - OpenDKIM.
    - TLS.
    - SPF/DKIM/DMARC/PTR.
-   - Registro de exitos, bounces, complaints y tiempos.
+   - Warming, limites y reputacion.
+   - Resultados, bounces y complaints observados desde NFC o webhooks compatibles.
 
 4. Servicios de soporte
    - AWS Route 53 para DNS programatico cuando aplique.
@@ -84,8 +102,8 @@ Riesgos detectados en la referencia NFC:
 
 ## Modulos de software a desarrollar
 
-- `gateway-api`: recibe solicitudes, valida autorizacion, politicas, presupuesto, limites y compliance.
-- `worker`: procesa jobs desde BullMQ y asigna sender nodes.
+- `gateway-api`: recibe solicitudes operativas, valida autorizacion, politicas, presupuesto, limites y compliance.
+- `worker`: procesa jobs internos desde BullMQ, asigna sender nodes en simulacion/control y no reemplaza el envio real de NFC en la fase actual.
 - `sender-node-registry`: inventario de VPS, IPs, dominios, estado, reputacion, capacidad y etapa de warming.
 - `mail-policy-engine`: limites por dominio/IP/campana, opt-out, suppression list, CAN-SPAM checks y autorizacion.
 - `webdock-adapter`: puente con VPS actuales durante transicion.
@@ -138,14 +156,14 @@ Riesgos detectados en la referencia NFC:
 - Dry-run, verificacion post-ejecucion y rollback para acciones reversibles.
 - Kill switch.
 - Reporte diario.
-- Demo end-to-end.
+- Demo end-to-end de control operativo en dry-run.
 
 ## Ruta meses 2-5
 
-- Mes 2: mover 30% del trafico al servidor propio, 30 VPS aproximados.
-- Mes 3: 100 VPS y 400k-600k correos/dia.
-- Mes 4: 200 VPS y 700k-800k correos/dia.
-- Mes 5: 300 VPS y 1M correos/dia, con Webdock como respaldo minimo.
+- Mes 2: habilitar 30% de capacidad propia para NFC si las metricas lo permiten, 30 VPS aproximados.
+- Mes 3: 100 VPS y 400k-600k correos/dia de capacidad operacional.
+- Mes 4: 200 VPS y 700k-800k correos/dia de capacidad operacional.
+- Mes 5: 300 VPS y capacidad operacional para 1M correos/dia, ejecutados por el pipeline NFC, con Webdock como respaldo minimo.
 
 ## Decisiones y dependencias pendientes
 
