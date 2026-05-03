@@ -165,6 +165,6 @@ Resultado esperado:
 
 ## Que sigue
 
-Hito 5.2: Demo OpenClaw con incidente simulado.
+Hito 5.2: Demo OpenClaw con incidente simulado. Detalle en `HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md`.
 
 Ese hito debe usar `bounce`, `complaint`, `deferred` o `failed` para mostrar a OpenClaw detectando riesgo, proponiendo accion y respetando runbook/kill switch.

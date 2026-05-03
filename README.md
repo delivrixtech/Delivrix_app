@@ -29,6 +29,7 @@ Hito 4.5/runbook, permisos y kill switch: ver `DOCUMENTACION/HITO_4_5_RUNBOOK_PE
 Fase 5/MVP demostrable: ver `DOCUMENTACION/FASE_5_MVP_DEMOSTRABLE.md`.
 Hito 5.0/demo blueprint y revision de patrones: ver `DOCUMENTACION/HITO_5_0_DEMO_BLUEPRINT_REVISION_PATRONES.md`.
 Hito 5.1/demo runner local: ver `DOCUMENTACION/HITO_5_1_DEMO_RUNNER_LOCAL.md`.
+Hito 5.2/OpenClaw incidente simulado: ver `DOCUMENTACION/HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md`.
 
 ## Estructura
 
@@ -313,3 +314,15 @@ curl -s -X POST http://127.0.0.1:3000/v1/demo/mvp/run \
 ```
 
 El runner ejecuta la demo en estado local: registra sender node demo, valida policy/rate limits, encola job, reclama el job por id, asigna sender node, registra resultado simulado, evalua health/reputation y genera operational summary. La decision del demo se basa en el sender node usado por esa ejecucion, aunque el reporte mantenga contexto global. Todos los eventos quedan enlazados por `demoRunId`. SMTP, SSH, DNS live, Proxmox live y NFC siguen apagados.
+
+## Hito 5.2: OpenClaw incidente simulado
+
+Endpoint local:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/v1/demo/openclaw/incident \
+  -H 'content-type: application/json' \
+  -d '{"actorId":"operator_local","incidentStatus":"complaint"}'
+```
+
+OpenClaw ejecuta la demo de incidente con `alert-ops`: detecta una `complaint`, propone cuarentena local, prueba que sin humano no actua, prueba que el kill switch activo bloquea y aplica solo estado local si existe aprobacion humana. SMTP, SSH, DNS live, Proxmox live y NFC siguen apagados.

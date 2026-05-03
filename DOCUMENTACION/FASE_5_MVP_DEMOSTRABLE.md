@@ -87,17 +87,22 @@ Gate:
 
 ### Hito 5.2: Demo OpenClaw con incidente simulado
 
+Estado: implementado. Detalle operativo en `HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md`.
+
 Objetivo:
 
 - mostrar OpenClaw detectando riesgo y proponiendo accion.
 
-Entregables esperados:
+Entregables:
 
-- escenario de bounce/complaint/deferred;
+- escenario de bounce/complaint/deferred/failed;
 - alert-ops propone accion;
 - runbook evalua permiso;
 - humano aprueba solo cambio local;
 - kill switch bloquea cuando esta activo.
+- endpoint `POST /v1/demo/openclaw/incident`;
+- reporte `5.2-openclaw-incident-demo`;
+- accion local de `quarantine` o `degrade` sobre sender node cuando corresponde.
 
 Gate:
 

@@ -14,6 +14,7 @@ import {
   buildOperationalSummary,
   buildDelivrixMvpDemoRunReport,
   createId,
+  buildOpenClawIncidentDemoReport,
   evaluateSenderNodeHealth,
   evaluateIpReputation,
   evaluateKillSwitch,
@@ -119,7 +120,7 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "5.1-demo-runner-local-state",
+          currentMilestone: "5.2-openclaw-incident-demo",
           onboardingEnabled: true,
           topologyPlannerEnabled: true,
           provisioningDryRunEnabled: true,
@@ -127,6 +128,7 @@ const server = createServer(async (request, response) => {
           runbookEnabled: true,
           demoBlueprintEnabled: true,
           demoRunnerEnabled: true,
+          incidentDemoEnabled: true,
           killSwitchProofEnabled: true,
           llmLiveCallsEnabled: false,
           liveActionsEnabled: false
@@ -502,6 +504,474 @@ const server = createServer(async (request, response) => {
         operationalSummary,
         auditEventIds,
         blockedReason
+      });
+
+      return json(response, 200, {
+        report
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/demo/openclaw/incident") {
+      const body = await readOptionalJson<DelivrixMvpDemoBlueprintInput & {
+        incidentDemoId?: string;
+        demoRunId?: string;
+        incidentStatus?: SendResultStatus;
+        humanApproved?: boolean;
+        applyLocalAction?: boolean;
+      }>(request);
+      const requestedStatus = body?.incidentStatus ?? body?.simulatedResultStatus ?? "complaint";
+
+      if (
+        requestedStatus !== "bounce"
+        && requestedStatus !== "complaint"
+        && requestedStatus !== "deferred"
+        && requestedStatus !== "failed"
+      ) {
+        return json(response, 422, {
+          error: "invalid_openclaw_incident_status",
+          message: "incidentStatus must be bounce, complaint, deferred, or failed."
+        });
+      }
+
+      const killSwitch = await killSwitchStore.get();
+      const actorId = body?.actorId?.trim() || "operator_local";
+      const incidentDemoId = body?.incidentDemoId?.trim() || createId("openclaw_incident_demo");
+      const demoRunId = body?.demoRunId?.trim() || createId("demo_run");
+      const humanApproved = body?.humanApproved ?? true;
+      const shouldApplyLocalAction = body?.applyLocalAction !== false;
+      const blueprint = buildDelivrixMvpDemoBlueprint({
+        ...body,
+        actorId,
+        simulatedResultStatus: requestedStatus,
+        killSwitch: body?.killSwitch ?? killSwitch
+      });
+      const auditEventIds: string[] = [];
+      const appendIncidentAudit = async (event: Parameters<typeof auditLog.append>[0]) => {
+        const auditEvent = await auditLog.append({
+          ...event,
+          metadata: {
+            ...event.metadata,
+            incidentDemoId,
+            demoRunId,
+            blueprintId: blueprint.id,
+            smtpEnabled: false,
+            liveInfrastructureWritesEnabled: false,
+            nfcProductionWritesEnabled: false
+          }
+        });
+        auditEventIds.push(auditEvent.id);
+        return auditEvent;
+      };
+      let senderNode = undefined;
+      let appliedSenderNode = undefined;
+      let job = undefined;
+      let result = undefined;
+      let blockedReason = undefined;
+
+      if (blueprint.decision.status !== "ready_for_demo") {
+        blockedReason = `Blueprint is ${blueprint.decision.status}: ${blueprint.decision.reason}`;
+        await appendIncidentAudit({
+          actorType: body?.actorId ? "operator" : "system",
+          actorId,
+          action: "demo.openclaw_incident.blocked_by_blueprint",
+          targetType: "mvp_demo",
+          targetId: incidentDemoId,
+          riskLevel: "high",
+          metadata: {
+            decision: blueprint.decision
+          }
+        });
+      } else {
+        const killSwitchDecision = evaluateKillSwitch(killSwitch, "apply_supervised_local_action");
+
+        if (!killSwitchDecision.allowed) {
+          blockedReason = killSwitchDecision.message;
+          await appendIncidentAudit({
+            actorType: body?.actorId ? "operator" : "system",
+            actorId,
+            action: "demo.openclaw_incident.blocked_by_kill_switch",
+            targetType: "mvp_demo",
+            targetId: incidentDemoId,
+            riskLevel: "critical",
+            metadata: {
+              decision: killSwitchDecision
+            }
+          });
+        } else {
+          senderNode = await senderNodeRegistry.register(blueprint.pipeline.senderNode);
+          await appendIncidentAudit({
+            actorType: body?.actorId ? "operator" : "system",
+            actorId,
+            action: "demo.openclaw_incident.sender_node_seeded",
+            targetType: "sender_node",
+            targetId: senderNode.id,
+            riskLevel: "medium",
+            metadata: {
+              provider: senderNode.provider,
+              status: senderNode.status,
+              dailyLimit: senderNode.dailyLimit,
+              sideEffects: "local-state-only"
+            }
+          });
+
+          const policyDecision = await policyEngine.evaluate(blueprint.pipeline.sendRequest);
+
+          if (!policyDecision.allowed) {
+            blockedReason = "Policy rejected the OpenClaw incident demo request.";
+            await appendIncidentAudit({
+              actorType: "system",
+              actorId: "gateway-api",
+              action: "demo.openclaw_incident.send_request_rejected",
+              targetType: "campaign",
+              targetId: blueprint.pipeline.sendRequest.campaignId,
+              riskLevel: "medium",
+              metadata: {
+                violations: policyDecision.violations,
+                warnings: policyDecision.warnings
+              }
+            });
+          } else {
+            const gatewayRateLimitDecision = await rateLimitService.check(
+              requestRateLimitRules(blueprint.pipeline.sendRequest, requestRateLimitProfile)
+            );
+
+            if (!gatewayRateLimitDecision.allowed) {
+              blockedReason = "Rate limit rejected the OpenClaw incident demo request at Gateway.";
+              await appendIncidentAudit({
+                actorType: "system",
+                actorId: "gateway-api",
+                action: "demo.openclaw_incident.send_request_rate_limited",
+                targetType: "campaign",
+                targetId: blueprint.pipeline.sendRequest.campaignId,
+                riskLevel: "medium",
+                metadata: {
+                  violations: gatewayRateLimitDecision.violations
+                }
+              });
+            } else {
+              job = await sendQueue.add(blueprint.pipeline.sendRequest);
+              await appendIncidentAudit({
+                actorType: "system",
+                actorId: "gateway-api",
+                action: "demo.openclaw_incident.send_request_accepted",
+                targetType: "send_job",
+                targetId: job.id,
+                riskLevel: "low",
+                metadata: {
+                  campaignId: job.request.campaignId,
+                  recipient: job.request.recipient.email,
+                  classification: job.request.classification,
+                  expectedIncidentStatus: requestedStatus
+                }
+              });
+
+              const claimedJob = await sendQueue.claim(job.id);
+
+              if (!claimedJob) {
+                blockedReason = "OpenClaw incident demo job could not be claimed from the local queue.";
+                await appendIncidentAudit({
+                  actorType: "system",
+                  actorId: "demo-runner",
+                  action: "demo.openclaw_incident.send_job_claim_failed",
+                  targetType: "send_job",
+                  targetId: job.id,
+                  riskLevel: "high",
+                  metadata: {
+                    reason: blockedReason
+                  }
+                });
+              } else {
+                job = claimedJob;
+                await appendIncidentAudit({
+                  actorType: "system",
+                  actorId: "demo-runner",
+                  action: "demo.openclaw_incident.send_job_claimed",
+                  targetType: "send_job",
+                  targetId: job.id,
+                  riskLevel: "low",
+                  metadata: {
+                    recipient: job.request.recipient.email,
+                    campaignId: job.request.campaignId
+                  }
+                });
+
+                await sendQueue.assignSenderNode(job.id, senderNode.id);
+                job = {
+                  ...job,
+                  senderNodeId: senderNode.id
+                };
+                await appendIncidentAudit({
+                  actorType: "system",
+                  actorId: "demo-runner",
+                  action: "demo.openclaw_incident.sender_node_assigned",
+                  targetType: "send_job",
+                  targetId: job.id,
+                  riskLevel: "low",
+                  metadata: {
+                    senderNodeId: senderNode.id,
+                    provider: senderNode.provider,
+                    status: senderNode.status
+                  }
+                });
+
+                const workerRateLimitDecision = await rateLimitService.consume([
+                  ...requestRateLimitRules(job.request, requestRateLimitProfile),
+                  senderNodeRateLimitRule(senderNode)
+                ]);
+
+                if (!workerRateLimitDecision.allowed) {
+                  blockedReason = "Rate limit exceeded during OpenClaw incident demo worker enforcement.";
+                  await sendQueue.markBlocked(job.id, blockedReason);
+                  job = {
+                    ...job,
+                    status: "blocked",
+                    failureReason: blockedReason,
+                    completedAt: new Date().toISOString()
+                  };
+                  await appendIncidentAudit({
+                    actorType: "system",
+                    actorId: "demo-runner",
+                    action: "demo.openclaw_incident.send_job_rate_limited",
+                    targetType: "send_job",
+                    targetId: job.id,
+                    riskLevel: "medium",
+                    metadata: {
+                      violations: workerRateLimitDecision.violations,
+                      senderNodeId: senderNode.id
+                    }
+                  });
+                } else {
+                  const simulatedResult = simulateSendResult(job);
+                  result = await sendResultStore.create({
+                    sendJobId: job.id,
+                    senderNodeId: senderNode.id,
+                    ...simulatedResult,
+                    metadata: {
+                      ...simulatedResult.metadata,
+                      incidentDemoId,
+                      demoRunId,
+                      blueprintId: blueprint.id,
+                      smtpEnabled: false
+                    }
+                  });
+
+                  if (result.status === "failed") {
+                    await sendQueue.markFailed(job.id, "Simulated OpenClaw incident result failed.");
+                    job = {
+                      ...job,
+                      status: "failed",
+                      failureReason: "Simulated OpenClaw incident result failed.",
+                      completedAt: new Date().toISOString()
+                    };
+                  } else {
+                    await sendQueue.markCompleted(job.id);
+                    job = {
+                      ...job,
+                      status: "completed",
+                      completedAt: new Date().toISOString()
+                    };
+                  }
+
+                  await appendIncidentAudit({
+                    actorType: "system",
+                    actorId: "demo-runner",
+                    action: "demo.openclaw_incident.result_simulated",
+                    targetType: "send_result",
+                    targetId: result.id,
+                    riskLevel: result.status === "complaint" ? "critical" : "medium",
+                    metadata: {
+                      sendJobId: job.id,
+                      senderNodeId: senderNode.id,
+                      status: result.status,
+                      sideEffects: "local-state-only"
+                    }
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      let jobs = await sendQueue.list();
+      let senderNodes = await senderNodeRegistry.list();
+      const sendResults = await sendResultStore.list();
+      let auditEvents = await auditLog.list();
+      const healthDecisions = evaluateSenderNodeHealth(senderNodes, sendResults);
+      let operationalSummary = buildOperationalSummary({
+        jobs,
+        sendResults,
+        auditEvents,
+        senderNodes,
+        rateLimitCounters: await rateLimitStore.list()
+      });
+      job = job ? jobs.find((candidate) => candidate.id === job?.id) ?? job : undefined;
+      const demoRun = buildDelivrixMvpDemoRunReport({
+        id: demoRunId,
+        actorId,
+        blueprint,
+        senderNode,
+        job,
+        result,
+        healthDecisions,
+        operationalSummary,
+        auditEventIds,
+        blockedReason
+      });
+      const draftIncidentReport = buildOpenClawIncidentDemoReport({
+        id: incidentDemoId,
+        actorId,
+        demoRun,
+        killSwitch,
+        humanApproved,
+        auditEventIds
+      });
+
+      await appendIncidentAudit({
+        actorType: "openclaw",
+        actorId: "alert-ops",
+        action: draftIncidentReport.detection.detected
+          ? "demo.openclaw_incident.detected"
+          : "demo.openclaw_incident.not_detected",
+        targetType: "send_result",
+        targetId: draftIncidentReport.detection.sendResultId ?? "missing",
+        riskLevel: draftIncidentReport.detection.severity === "critical" ? "critical" : draftIncidentReport.detection.detected ? "medium" : "low",
+        metadata: {
+          detection: draftIncidentReport.detection
+        }
+      });
+
+      await appendIncidentAudit({
+        actorType: "openclaw",
+        actorId: "alert-ops",
+        action: draftIncidentReport.proposal.action
+          ? "demo.openclaw_incident.action_proposed"
+          : "demo.openclaw_incident.no_action_required",
+        targetType: "sender_node",
+        targetId: draftIncidentReport.proposal.targetSenderNodeId ?? "none",
+        riskLevel: draftIncidentReport.proposal.manualAction === "quarantine" ? "critical" : draftIncidentReport.proposal.manualAction ? "high" : "low",
+        metadata: {
+          proposal: draftIncidentReport.proposal
+        }
+      });
+
+      await appendIncidentAudit({
+        actorType: "system",
+        actorId: "openclaw-runbook",
+        action: "demo.openclaw_incident.permission_evaluated",
+        targetType: "sender_node",
+        targetId: draftIncidentReport.proposal.targetSenderNodeId ?? "none",
+        riskLevel: draftIncidentReport.permissionChecks.withHumanApproval?.riskLevel ?? "low",
+        metadata: {
+          humanApproved,
+          permissionChecks: draftIncidentReport.permissionChecks
+        }
+      });
+
+      if (
+        shouldApplyLocalAction
+        && humanApproved
+        && senderNode
+        && draftIncidentReport.permissionChecks.withHumanApproval?.allowed
+        && draftIncidentReport.localAction.decision?.allowed
+        && draftIncidentReport.localAction.decision.nextStatus
+      ) {
+        appliedSenderNode = await senderNodeRegistry.updateStatus(
+          senderNode.id,
+          draftIncidentReport.localAction.decision.nextStatus
+        );
+        await appendIncidentAudit({
+          actorType: "operator",
+          actorId,
+          action: "demo.openclaw_incident.local_action_applied",
+          targetType: "sender_node",
+          targetId: senderNode.id,
+          riskLevel: draftIncidentReport.localAction.decision.riskLevel,
+          metadata: {
+            humanApproved,
+            action: draftIncidentReport.localAction.decision.action,
+            previousStatus: senderNode.status,
+            currentStatus: appliedSenderNode.status,
+            reason: draftIncidentReport.localAction.decision.reason,
+            sideEffects: "local-state-only"
+          }
+        });
+      } else {
+        await appendIncidentAudit({
+          actorType: humanApproved ? "system" : "operator",
+          actorId: humanApproved ? "openclaw-runbook" : actorId,
+          action: "demo.openclaw_incident.local_action_not_applied",
+          targetType: "sender_node",
+          targetId: senderNode?.id ?? "none",
+          riskLevel: draftIncidentReport.permissionChecks.withHumanApproval?.allowed === false ? "critical" : "medium",
+          metadata: {
+            humanApproved,
+            shouldApplyLocalAction,
+            permission: draftIncidentReport.permissionChecks.withHumanApproval,
+            localAction: draftIncidentReport.localAction
+          }
+        });
+      }
+
+      jobs = await sendQueue.list();
+      senderNodes = await senderNodeRegistry.list();
+      auditEvents = await auditLog.list();
+      operationalSummary = buildOperationalSummary({
+        jobs,
+        sendResults,
+        auditEvents,
+        senderNodes,
+        rateLimitCounters: await rateLimitStore.list()
+      });
+      const finalDemoRun = buildDelivrixMvpDemoRunReport({
+        id: demoRunId,
+        actorId,
+        blueprint,
+        senderNode,
+        job,
+        result,
+        healthDecisions,
+        operationalSummary,
+        auditEventIds,
+        blockedReason
+      });
+      const finalDraftReport = buildOpenClawIncidentDemoReport({
+        id: incidentDemoId,
+        actorId,
+        demoRun: finalDemoRun,
+        killSwitch,
+        humanApproved,
+        appliedSenderNode,
+        auditEventIds
+      });
+
+      await appendIncidentAudit({
+        actorType: body?.actorId ? "operator" : "system",
+        actorId,
+        action: finalDraftReport.decision.status === "blocked"
+          ? "demo.openclaw_incident.blocked"
+          : finalDraftReport.decision.status === "needs_review"
+            ? "demo.openclaw_incident.needs_review"
+            : "demo.openclaw_incident.completed",
+        targetType: "mvp_demo",
+        targetId: incidentDemoId,
+        riskLevel: finalDraftReport.decision.status === "blocked" ? "high" : finalDraftReport.decision.status === "needs_review" ? "medium" : "low",
+        metadata: {
+          decision: finalDraftReport.decision,
+          detection: finalDraftReport.detection,
+          proposal: finalDraftReport.proposal,
+          localAction: finalDraftReport.localAction
+        }
+      });
+
+      const report = buildOpenClawIncidentDemoReport({
+        id: incidentDemoId,
+        actorId,
+        demoRun: finalDemoRun,
+        killSwitch,
+        humanApproved,
+        appliedSenderNode,
+        auditEventIds
       });
 
       return json(response, 200, {

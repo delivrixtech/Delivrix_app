@@ -5,12 +5,12 @@ import {
   getOperatingNorthSnapshot
 } from "./operating-north.ts";
 
-test("defines Delivrix as control plane and local demo runner as current phase", () => {
+test("defines Delivrix as control plane and OpenClaw incident demo as current phase", () => {
   const snapshot = getOperatingNorthSnapshot();
 
-  assert.equal(snapshot.phase, "5.1-demo-runner-local-state");
+  assert.equal(snapshot.phase, "5.2-openclaw-incident-demo");
   assert.equal(snapshot.delivrixRole, "control_plane");
-  assert.equal(snapshot.openClawRole, "intelligent_demo_runner_guarded_operator");
+  assert.equal(snapshot.openClawRole, "intelligent_incident_operator_guarded_by_runbook");
   assert.equal(snapshot.nfcRole, "future_optional_external_integration");
   assert.equal(snapshot.delivrixSendsRealEmail, false);
   assert.equal(snapshot.nfcSendsRealEmail, false);
@@ -87,6 +87,16 @@ test("allows MVP local demo runner in dry-run mode", () => {
   assert.equal(decision.riskLevel, "low");
 });
 
+test("allows OpenClaw incident demo in dry-run mode", () => {
+  const decision = evaluateOperatingActionGate({
+    action: "run_openclaw_incident_demo",
+    mode: "dry_run"
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.riskLevel, "low");
+});
+
 test("allows dry-run bridge payload generation", () => {
   const decision = evaluateOperatingActionGate({
     action: "build_nfc_bridge_payload",
@@ -97,7 +107,7 @@ test("allows dry-run bridge payload generation", () => {
   assert.equal(decision.riskLevel, "low");
 });
 
-test("blocks real email sending in Hito 5.1", () => {
+test("blocks real email sending in Hito 5.2", () => {
   const decision = evaluateOperatingActionGate({
     action: "send_email_real",
     mode: "live",
@@ -106,5 +116,5 @@ test("blocks real email sending in Hito 5.1", () => {
 
   assert.equal(decision.allowed, false);
   assert.equal(decision.riskLevel, "critical");
-  assert.deepEqual(decision.blockedBy, ["north_operating_boundary", "phase_5_1_gate"]);
+  assert.deepEqual(decision.blockedBy, ["north_operating_boundary", "phase_5_2_gate"]);
 });

@@ -9,6 +9,7 @@ export * from "./mvp-demo-blueprint.ts";
 export * from "./mvp-demo-runner.ts";
 export * from "./nfc-bridge.ts";
 export * from "./openclaw-onboarding.ts";
+export * from "./openclaw-incident-demo.ts";
 export * from "./openclaw-provisioning-dry-run.ts";
 export * from "./openclaw-runbook.ts";
 export * from "./openclaw-scheduler.ts";

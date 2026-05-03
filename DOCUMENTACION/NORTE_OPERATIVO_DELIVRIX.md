@@ -1,6 +1,6 @@
 # Norte operativo Delivrix
 
-Fecha: 2026-05-02
+Fecha: 2026-05-03
 
 Este documento es la fuente de verdad para entender como debe funcionar el sistema. Si otro documento parece contradecir este norte, se debe corregir ese documento o leerlo como historico.
 
@@ -126,8 +126,9 @@ Contratos minimos para una fase futura:
 9. Hito 4.5: runbook, permisos y kill switch antes de cualquier ejecucion limitada.
 10. Hito 5.0: blueprint de demo MVP y revision de patrones inteligentes.
 11. Hito 5.1: demo runner local-state-only con auditoria enlazada.
-12. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
-13. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
+12. Hito 5.2: OpenClaw detecta incidente simulado, propone accion, respeta runbook/kill switch y aplica solo estado local aprobado.
+13. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
+14. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
 
 ## Criterio de claridad
 
