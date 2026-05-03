@@ -61,6 +61,8 @@ Gate:
 
 ### Hito 5.1: Demo runner local
 
+Estado: implementado. Detalle operativo en `HITO_5_1_DEMO_RUNNER_LOCAL.md`.
+
 Objetivo:
 
 - ejecutar una demo local-state-only del recorrido Gateway -> Queue -> Worker -> Sender Node -> Result Tracking.
@@ -75,6 +77,9 @@ Entregables esperados:
 - reputacion/health evaluada;
 - resumen operativo;
 - auditoria enlazada por `demoRunId`.
+- endpoint `POST /v1/demo/mvp/run`;
+- reporte `5.1-demo-runner-local-state`.
+- decision de demo basada en el sender node usado por el demo, sin contaminarse por incidentes historicos de otros nodos.
 
 Gate:
 

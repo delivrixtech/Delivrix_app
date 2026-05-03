@@ -28,6 +28,7 @@ Hito 4.4/OpenClaw scheduler y skills: ver `DOCUMENTACION/HITO_4_4_OPENCLAW_SCHED
 Hito 4.5/runbook, permisos y kill switch: ver `DOCUMENTACION/HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md`.
 Fase 5/MVP demostrable: ver `DOCUMENTACION/FASE_5_MVP_DEMOSTRABLE.md`.
 Hito 5.0/demo blueprint y revision de patrones: ver `DOCUMENTACION/HITO_5_0_DEMO_BLUEPRINT_REVISION_PATRONES.md`.
+Hito 5.1/demo runner local: ver `DOCUMENTACION/HITO_5_1_DEMO_RUNNER_LOCAL.md`.
 
 ## Estructura
 
@@ -300,3 +301,15 @@ curl -s -X POST http://127.0.0.1:3000/v1/demo/mvp/blueprint \
 ```
 
 El blueprint compone onboarding, topology planner, provisioning dry-run, scheduler, runbook y la ruta Gateway -> Policy -> Queue -> Worker -> Sender Node -> Result Tracking -> Reputation -> Admin/OpenClaw. Tambien revisa patrones de arquitectura para reforzar que el software avance de forma inteligente, auditable y sin adivinar datos faltantes.
+
+## Hito 5.1: Demo runner local
+
+Endpoint local:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/v1/demo/mvp/run \
+  -H 'content-type: application/json' \
+  -d '{"actorId":"operator_local"}'
+```
+
+El runner ejecuta la demo en estado local: registra sender node demo, valida policy/rate limits, encola job, reclama el job por id, asigna sender node, registra resultado simulado, evalua health/reputation y genera operational summary. La decision del demo se basa en el sender node usado por esa ejecucion, aunque el reporte mantenga contexto global. Todos los eventos quedan enlazados por `demoRunId`. SMTP, SSH, DNS live, Proxmox live y NFC siguen apagados.

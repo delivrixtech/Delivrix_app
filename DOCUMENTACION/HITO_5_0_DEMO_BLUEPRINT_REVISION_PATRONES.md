@@ -158,3 +158,5 @@ Resultado esperado:
 Hito 5.1: Demo runner local.
 
 Ese hito debe ejecutar el recorrido local-state-only y enlazar auditoria, job, sender node, resultado simulado y resumen operativo.
+
+Hito 5.1 quedo documentado en `HITO_5_1_DEMO_RUNNER_LOCAL.md`.

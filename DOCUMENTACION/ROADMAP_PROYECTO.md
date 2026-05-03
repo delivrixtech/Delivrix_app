@@ -289,6 +289,11 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - revision de patrones inteligentes.
   - endpoint `POST /v1/demo/mvp/blueprint`.
   - auditoria `demo.mvp_blueprint_created`.
+- Hito 5.1:
+  - demo runner local-state-only.
+  - endpoint `POST /v1/demo/mvp/run`.
+  - sender node demo, queue job y resultado simulado.
+  - auditoria enlazada por `demoRunId`.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Demo OpenClaw con incidentes simulados.

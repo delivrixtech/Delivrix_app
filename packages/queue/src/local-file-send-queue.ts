@@ -29,6 +29,7 @@ export interface SendJobQueue {
   add(request: SendRequest): Promise<SendJob>;
   list(): Promise<SendJob[]>;
   claimNext(): Promise<SendJob | null>;
+  claim(jobId: string): Promise<SendJob | null>;
   assignSenderNode(jobId: string, senderNodeId: string): Promise<void>;
   markBlocked(jobId: string, reason: string): Promise<void>;
   markCompleted(jobId: string): Promise<void>;
@@ -65,6 +66,20 @@ export class LocalFileSendQueue implements SendJobQueue {
   async claimNext(): Promise<SendJob | null> {
     const jobs = await this.readJobs();
     const job = jobs.find((candidate) => candidate.status === "queued");
+
+    if (!job) {
+      return null;
+    }
+
+    job.status = "processing";
+    job.processingStartedAt = new Date().toISOString();
+    await this.writeJobs(jobs);
+    return job;
+  }
+
+  async claim(jobId: string): Promise<SendJob | null> {
+    const jobs = await this.readJobs();
+    const job = jobs.find((candidate) => candidate.id === jobId && candidate.status === "queued");
 
     if (!job) {
       return null;

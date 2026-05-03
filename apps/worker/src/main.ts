@@ -30,7 +30,7 @@ const requestRateLimitProfile = {
 const operatingNorth = getOperatingNorthSnapshot();
 console.log("control-worker ready");
 console.log(`phase=${operatingNorth.phase} mode=control-plane-safe-no-smtp`);
-console.log("role=delivrix-internal-ops-worker nfc_sends_real_email=true");
+console.log("role=delivrix-internal-ops-worker delivrix_smtp_enabled=false external_bridges=disabled_or_mock");
 
 const killSwitchDecision = evaluateKillSwitch(await killSwitchStore.get(), "claim_send_job");
 

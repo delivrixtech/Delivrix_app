@@ -12,6 +12,8 @@ import {
   buildAdminOverview,
   buildBackupPlan,
   buildOperationalSummary,
+  buildDelivrixMvpDemoRunReport,
+  createId,
   evaluateSenderNodeHealth,
   evaluateIpReputation,
   evaluateKillSwitch,
@@ -29,7 +31,9 @@ import {
   getOpenClawOnboardingQuestionnaire,
   getOperatingNorthSnapshot,
   requestRateLimitRules,
+  senderNodeRateLimitRule,
   simulateBackup,
+  simulateSendResult,
   type BackupPlanInput,
   type BackupResource,
   type BackupResourceSnapshot,
@@ -115,13 +119,14 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "5.0-mvp-demo-blueprint-pattern-review",
+          currentMilestone: "5.1-demo-runner-local-state",
           onboardingEnabled: true,
           topologyPlannerEnabled: true,
           provisioningDryRunEnabled: true,
           schedulerEnabled: true,
           runbookEnabled: true,
           demoBlueprintEnabled: true,
+          demoRunnerEnabled: true,
           killSwitchProofEnabled: true,
           llmLiveCallsEnabled: false,
           liveActionsEnabled: false
@@ -180,6 +185,327 @@ const server = createServer(async (request, response) => {
 
       return json(response, 200, {
         blueprint
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/demo/mvp/run") {
+      const body = await readOptionalJson<DelivrixMvpDemoBlueprintInput & { demoRunId?: string }>(request);
+      const killSwitch = await killSwitchStore.get();
+      const actorId = body?.actorId?.trim() || "operator_local";
+      const demoRunId = body?.demoRunId?.trim() || createId("demo_run");
+      const blueprint = buildDelivrixMvpDemoBlueprint({
+        ...body,
+        actorId,
+        killSwitch: body?.killSwitch ?? killSwitch
+      });
+      const auditEventIds: string[] = [];
+      const appendDemoAudit = async (event: Parameters<typeof auditLog.append>[0]) => {
+        const auditEvent = await auditLog.append({
+          ...event,
+          metadata: {
+            ...event.metadata,
+            demoRunId,
+            blueprintId: blueprint.id,
+            smtpEnabled: false,
+            liveInfrastructureWritesEnabled: false,
+            nfcProductionWritesEnabled: false
+          }
+        });
+        auditEventIds.push(auditEvent.id);
+        return auditEvent;
+      };
+      let senderNode = undefined;
+      let job = undefined;
+      let result = undefined;
+      let blockedReason = undefined;
+
+      if (blueprint.decision.status !== "ready_for_demo") {
+        blockedReason = `Blueprint is ${blueprint.decision.status}: ${blueprint.decision.reason}`;
+        await appendDemoAudit({
+          actorType: body?.actorId ? "operator" : "system",
+          actorId,
+          action: "demo.mvp_run.blocked_by_blueprint",
+          targetType: "mvp_demo",
+          targetId: demoRunId,
+          riskLevel: "high",
+          metadata: {
+            decision: blueprint.decision
+          }
+        });
+      } else {
+        const killSwitchDecision = evaluateKillSwitch(killSwitch, "apply_supervised_local_action");
+
+        if (!killSwitchDecision.allowed) {
+          blockedReason = killSwitchDecision.message;
+          await appendDemoAudit({
+            actorType: body?.actorId ? "operator" : "system",
+            actorId,
+            action: "demo.mvp_run.blocked_by_kill_switch",
+            targetType: "mvp_demo",
+            targetId: demoRunId,
+            riskLevel: "critical",
+            metadata: {
+              decision: killSwitchDecision
+            }
+          });
+        } else {
+          senderNode = await senderNodeRegistry.register(blueprint.pipeline.senderNode);
+          await appendDemoAudit({
+            actorType: body?.actorId ? "operator" : "system",
+            actorId,
+            action: "demo.sender_node.seeded",
+            targetType: "sender_node",
+            targetId: senderNode.id,
+            riskLevel: "medium",
+            metadata: {
+              provider: senderNode.provider,
+              status: senderNode.status,
+              dailyLimit: senderNode.dailyLimit,
+              sideEffects: "local-state-only"
+            }
+          });
+
+          const policyDecision = await policyEngine.evaluate(blueprint.pipeline.sendRequest);
+
+          if (!policyDecision.allowed) {
+            blockedReason = "Policy rejected the demo request.";
+            await appendDemoAudit({
+              actorType: "system",
+              actorId: "gateway-api",
+              action: "demo.send_request.rejected",
+              targetType: "campaign",
+              targetId: blueprint.pipeline.sendRequest.campaignId,
+              riskLevel: "medium",
+              metadata: {
+                violations: policyDecision.violations,
+                warnings: policyDecision.warnings
+              }
+            });
+          } else {
+            const gatewayRateLimitDecision = await rateLimitService.check(
+              requestRateLimitRules(blueprint.pipeline.sendRequest, requestRateLimitProfile)
+            );
+
+            if (!gatewayRateLimitDecision.allowed) {
+              blockedReason = "Rate limit rejected the demo request at Gateway.";
+              await appendDemoAudit({
+                actorType: "system",
+                actorId: "gateway-api",
+                action: "demo.send_request.rate_limited",
+                targetType: "campaign",
+                targetId: blueprint.pipeline.sendRequest.campaignId,
+                riskLevel: "medium",
+                metadata: {
+                  violations: gatewayRateLimitDecision.violations
+                }
+              });
+            } else {
+              job = await sendQueue.add(blueprint.pipeline.sendRequest);
+              await appendDemoAudit({
+                actorType: "system",
+                actorId: "gateway-api",
+                action: "demo.send_request.accepted",
+                targetType: "send_job",
+                targetId: job.id,
+                riskLevel: "low",
+                metadata: {
+                  campaignId: job.request.campaignId,
+                  recipient: job.request.recipient.email,
+                  classification: job.request.classification
+                }
+              });
+
+              const claimedJob = await sendQueue.claim(job.id);
+
+              if (!claimedJob) {
+                blockedReason = "Demo job could not be claimed from the local queue.";
+                await appendDemoAudit({
+                  actorType: "system",
+                  actorId: "demo-runner",
+                  action: "demo.send_job.claim_failed",
+                  targetType: "send_job",
+                  targetId: job.id,
+                  riskLevel: "high",
+                  metadata: {
+                    reason: blockedReason
+                  }
+                });
+              } else {
+                job = claimedJob;
+                await appendDemoAudit({
+                  actorType: "system",
+                  actorId: "demo-runner",
+                  action: "demo.send_job.claimed",
+                  targetType: "send_job",
+                  targetId: job.id,
+                  riskLevel: "low",
+                  metadata: {
+                    recipient: job.request.recipient.email,
+                    campaignId: job.request.campaignId
+                  }
+                });
+
+                await sendQueue.assignSenderNode(job.id, senderNode.id);
+                job = {
+                  ...job,
+                  senderNodeId: senderNode.id
+                };
+                await appendDemoAudit({
+                  actorType: "system",
+                  actorId: "demo-runner",
+                  action: "demo.send_job.sender_node_assigned",
+                  targetType: "send_job",
+                  targetId: job.id,
+                  riskLevel: "low",
+                  metadata: {
+                    senderNodeId: senderNode.id,
+                    provider: senderNode.provider,
+                    status: senderNode.status
+                  }
+                });
+
+                const workerRateLimitDecision = await rateLimitService.consume([
+                  ...requestRateLimitRules(job.request, requestRateLimitProfile),
+                  senderNodeRateLimitRule(senderNode)
+                ]);
+
+                if (!workerRateLimitDecision.allowed) {
+                  blockedReason = "Rate limit exceeded during demo worker enforcement.";
+                  await sendQueue.markBlocked(job.id, blockedReason);
+                  job = {
+                    ...job,
+                    status: "blocked",
+                    failureReason: blockedReason,
+                    completedAt: new Date().toISOString()
+                  };
+                  await appendDemoAudit({
+                    actorType: "system",
+                    actorId: "demo-runner",
+                    action: "demo.send_job.rate_limited",
+                    targetType: "send_job",
+                    targetId: job.id,
+                    riskLevel: "medium",
+                    metadata: {
+                      violations: workerRateLimitDecision.violations,
+                      senderNodeId: senderNode.id
+                    }
+                  });
+                } else {
+                  const simulatedResult = simulateSendResult(job);
+                  result = await sendResultStore.create({
+                    sendJobId: job.id,
+                    senderNodeId: senderNode.id,
+                    ...simulatedResult,
+                    metadata: {
+                      ...simulatedResult.metadata,
+                      demoRunId,
+                      blueprintId: blueprint.id,
+                      smtpEnabled: false
+                    }
+                  });
+
+                  if (result.status === "failed") {
+                    await sendQueue.markFailed(job.id, "Simulated demo result failed.");
+                    job = {
+                      ...job,
+                      status: "failed",
+                      failureReason: "Simulated demo result failed.",
+                      completedAt: new Date().toISOString()
+                    };
+                  } else {
+                    await sendQueue.markCompleted(job.id);
+                    job = {
+                      ...job,
+                      status: "completed",
+                      completedAt: new Date().toISOString()
+                    };
+                  }
+
+                  await appendDemoAudit({
+                    actorType: "system",
+                    actorId: "demo-runner",
+                    action: "demo.send_result.simulated",
+                    targetType: "send_result",
+                    targetId: result.id,
+                    riskLevel: result.status === "complaint" || result.status === "bounce" ? "medium" : "low",
+                    metadata: {
+                      sendJobId: job.id,
+                      senderNodeId: senderNode.id,
+                      status: result.status,
+                      sideEffects: "local-state-only"
+                    }
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      const jobs = await sendQueue.list();
+      const senderNodes = await senderNodeRegistry.list();
+      const sendResults = await sendResultStore.list();
+      let auditEvents = await auditLog.list();
+      const healthDecisions = evaluateSenderNodeHealth(senderNodes, sendResults);
+      let operationalSummary = buildOperationalSummary({
+        jobs,
+        sendResults,
+        auditEvents,
+        senderNodes,
+        rateLimitCounters: await rateLimitStore.list()
+      });
+      job = job ? jobs.find((candidate) => candidate.id === job?.id) ?? job : undefined;
+      const draftReport = buildDelivrixMvpDemoRunReport({
+        id: demoRunId,
+        actorId,
+        blueprint,
+        senderNode,
+        job,
+        result,
+        healthDecisions,
+        operationalSummary,
+        auditEventIds,
+        blockedReason
+      });
+
+      await appendDemoAudit({
+        actorType: body?.actorId ? "operator" : "system",
+        actorId,
+        action: draftReport.decision.status === "blocked" ? "demo.mvp_run.blocked" : "demo.mvp_run.completed",
+        targetType: "mvp_demo",
+        targetId: demoRunId,
+        riskLevel: draftReport.decision.status === "blocked" ? "high" : draftReport.decision.status === "needs_review" ? "medium" : "low",
+        metadata: {
+          decision: draftReport.decision,
+          artifacts: draftReport.artifacts,
+          route: draftReport.route
+        }
+      });
+
+      auditEvents = await auditLog.list();
+      operationalSummary = buildOperationalSummary({
+        jobs,
+        sendResults,
+        auditEvents,
+        senderNodes,
+        rateLimitCounters: await rateLimitStore.list()
+      });
+
+      const report = buildDelivrixMvpDemoRunReport({
+        id: demoRunId,
+        actorId,
+        blueprint,
+        senderNode,
+        job,
+        result,
+        healthDecisions,
+        operationalSummary,
+        auditEventIds,
+        blockedReason
+      });
+
+      return json(response, 200, {
+        report
       });
     }
 

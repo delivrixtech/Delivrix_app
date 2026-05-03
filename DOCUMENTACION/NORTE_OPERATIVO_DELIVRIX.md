@@ -125,8 +125,9 @@ Contratos minimos para una fase futura:
 8. Hito 4.4: OpenClaw scheduler, skills, LLM router sin LLM y reporte diario.
 9. Hito 4.5: runbook, permisos y kill switch antes de cualquier ejecucion limitada.
 10. Hito 5.0: blueprint de demo MVP y revision de patrones inteligentes.
-11. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
-12. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
+11. Hito 5.1: demo runner local-state-only con auditoria enlazada.
+12. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
+13. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
 
 ## Criterio de claridad
 
