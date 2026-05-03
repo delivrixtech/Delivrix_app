@@ -1,7 +1,9 @@
 export const READ_ENDPOINTS = Object.freeze({
   health: "/health",
+  adminClusters: "/v1/admin/clusters",
   adminOverview: "/v1/admin/overview",
   adminWorkflow: "/v1/admin/workflow",
+  openClawLearningPlan: "/v1/openclaw/learning-plan",
   operatingNorth: "/v1/operating-north",
   killSwitch: "/v1/kill-switch"
 });
@@ -11,18 +13,30 @@ export function listReadEndpoints() {
 }
 
 export async function loadDashboardData() {
-  const [health, adminOverview, adminWorkflow, operatingNorth, killSwitch] = await Promise.all([
+  const [
+    health,
+    adminClusters,
+    adminOverview,
+    adminWorkflow,
+    openClawLearningPlan,
+    operatingNorth,
+    killSwitch
+  ] = await Promise.all([
     getJson(READ_ENDPOINTS.health),
+    getJson(READ_ENDPOINTS.adminClusters),
     getJson(READ_ENDPOINTS.adminOverview),
     getJson(READ_ENDPOINTS.adminWorkflow),
+    getJson(READ_ENDPOINTS.openClawLearningPlan),
     getJson(READ_ENDPOINTS.operatingNorth),
     getJson(READ_ENDPOINTS.killSwitch)
   ]);
 
   return {
     health,
+    clusters: adminClusters.clusterOverview,
     overview: adminOverview.overview,
     workflow: adminWorkflow.workflow,
+    learningPlan: openClawLearningPlan.learningPlan,
     operatingNorth,
     killSwitch: killSwitch.killSwitch
   };

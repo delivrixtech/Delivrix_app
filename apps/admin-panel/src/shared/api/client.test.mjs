@@ -6,12 +6,14 @@ import {
   READ_ENDPOINTS
 } from "./client.js";
 
-test("admin panel exposes only the initial GET endpoints", () => {
+test("admin panel exposes only approved GET endpoints", () => {
   assert.deepEqual(listReadEndpoints().sort(), [
     "/health",
+    "/v1/admin/clusters",
     "/v1/admin/overview",
     "/v1/admin/workflow",
     "/v1/kill-switch",
+    "/v1/openclaw/learning-plan",
     "/v1/operating-north"
   ]);
 });

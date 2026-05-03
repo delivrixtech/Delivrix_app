@@ -137,7 +137,10 @@ El panel visual MVP debe iniciar con endpoints existentes de lectura:
 | Vista | Endpoint inicial | Modo |
 | --- | --- | --- |
 | Health | `GET /health` | read-only |
+| Clusters/VPS | `GET /v1/admin/clusters` | read-only |
 | Overview operativo | `GET /v1/admin/overview` | read-only |
+| Workflow operativo | `GET /v1/admin/workflow` | read-only |
+| Aprendizaje OpenClaw | `GET /v1/openclaw/learning-plan` | read-only |
 | Norte operativo | `GET /v1/operating-north` | read-only |
 | Kill switch | `GET /v1/kill-switch` | read-only inicial |
 
@@ -332,3 +335,5 @@ Ese incremento debe crear `apps/admin-panel`, conectar solo endpoints read-only 
 Estado: implementado en `HITO_5_4A_ADMIN_PANEL_READ_ONLY.md`.
 
 Ajuste posterior: `HITO_5_4B_ADMIN_PANEL_WORKFLOW.md` mueve la ruta operacional del panel a un contrato backend `GET /v1/admin/workflow`.
+
+Ajuste posterior: `HITO_5_4C_ADMIN_CLUSTERS_OPENCLAW_LEARNING.md` agrega contratos backend para clusters/VPS y aprendizaje supervisado.

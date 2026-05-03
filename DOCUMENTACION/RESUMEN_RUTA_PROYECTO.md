@@ -24,6 +24,7 @@ Hito demo report final: `HITO_5_3_DEMO_REPORT_FINAL.md`.
 Hito admin panel visual: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
 Hito admin panel read-only: `HITO_5_4A_ADMIN_PANEL_READ_ONLY.md`.
 Hito admin panel workflow: `HITO_5_4B_ADMIN_PANEL_WORKFLOW.md`.
+Hito admin clusters/aprendizaje: `HITO_5_4C_ADMIN_CLUSTERS_OPENCLAW_LEARNING.md`.
 
 Regla principal: en la fase actual, Delivrix/OpenClaw prepara infraestructura propia de mailing sobre servidor fisico. NFC u otros sistemas externos quedan como integraciones futuras opcionales, no como dependencia del MVP.
 
@@ -150,6 +151,7 @@ Regla critica:
 - el frontend no calcula decisiones de negocio ni permisos;
 - el frontend no lee `runtime/` ni importa stores/adaptadores;
 - el frontend consume contratos `/v1/...` del Gateway;
+- las rutas operativas, clusters/VPS y aprendizaje OpenClaw deben venir de contratos backend;
 - el backend conserva policy engine, audit log, kill switch, OpenClaw runbook y gates;
 - las primeras pantallas son `GET-only` hasta tener autenticacion, autorizacion, aprobacion humana y auditoria;
 - ningun `POST` debe ejecutarse automaticamente al cargar el panel.
@@ -208,6 +210,7 @@ Documento operativo: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
 - Admin panel visual Hito 5.4 que documenta el frontend separado del backend, su stack y los gates antes de cualquier mutacion desde UI.
 - Admin panel read-only Hito 5.4A que crea `apps/admin-panel`, consume solo endpoints `GET` y bloquea metodos de escritura en el proxy local.
 - Admin panel workflow Hito 5.4B que expone desde backend la ruta operacional que debe seguir la UI.
+- Admin panel clusters/aprendizaje Hito 5.4C que expone `GET /v1/admin/clusters` y `GET /v1/openclaw/learning-plan` para reducir hardcoding en frontend.
 
 ## Ruta meses 2-5
 

@@ -320,6 +320,12 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - workflow operativo del panel desde backend.
   - endpoint `GET /v1/admin/workflow`.
   - README compactado para reducir repeticion.
+- Hito 5.4C:
+  - contratos backend para administrar lectura de clusters/VPS.
+  - endpoint `GET /v1/admin/clusters`.
+  - aprendizaje supervisado OpenClaw por evidencia curada.
+  - endpoint `GET /v1/openclaw/learning-plan`.
+  - UI consume rutas desde Gateway y no guarda reglas de dominio.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

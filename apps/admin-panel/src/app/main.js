@@ -1,6 +1,8 @@
 import { loadDashboardData } from "../shared/api/client.js";
 import { clear, el } from "../shared/ui/dom.js";
 import { renderAudit } from "../features/audit-log/audit-log.js";
+import { renderClusters } from "../features/clusters/clusters.js";
+import { renderLearning } from "../features/learning/learning.js";
 import { renderFleet } from "../features/sender-nodes/sender-nodes.js";
 import { renderOpenClaw } from "../features/openclaw/openclaw.js";
 import { renderOverview } from "../features/overview/overview.js";
@@ -12,8 +14,10 @@ const routeRenderers = {
   workflow: renderWorkflow,
   overview: renderOverview,
   openclaw: renderOpenClaw,
+  clusters: renderClusters,
   fleet: renderFleet,
   audit: renderAudit,
+  learning: renderLearning,
   reports: renderReports,
   safety: renderSafety
 };
@@ -22,8 +26,10 @@ const fallbackSteps = [
   { id: "workflow", navLabel: "Ruta", status: "ready" },
   { id: "overview", navLabel: "Overview", status: "ready" },
   { id: "openclaw", navLabel: "OpenClaw", status: "ready" },
+  { id: "clusters", navLabel: "Clusters", status: "ready" },
   { id: "fleet", navLabel: "Sender nodes", status: "ready" },
   { id: "audit", navLabel: "Auditoria", status: "ready" },
+  { id: "learning", navLabel: "Aprendizaje", status: "needs_review" },
   { id: "reports", navLabel: "Reportes", status: "needs_review" },
   { id: "safety", navLabel: "Seguridad", status: "ready" }
 ];

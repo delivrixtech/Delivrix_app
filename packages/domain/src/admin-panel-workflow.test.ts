@@ -18,8 +18,12 @@ test("builds the admin panel workflow as a GET-only route contract", () => {
   assert.deepEqual(workflow.readBoundary.allowedMethods, ["GET"]);
   assert.deepEqual(workflow.readBoundary.blockedMethods, ["POST", "PUT", "PATCH", "DELETE"]);
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/admin/workflow"));
+  assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/admin/clusters"));
+  assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/openclaw/learning-plan"));
   assert.equal(workflow.steps[0]?.id, "workflow");
   assert.equal(workflow.steps.at(-1)?.id, "safety");
+  assert.ok(workflow.steps.some((step) => step.id === "clusters"));
+  assert.ok(workflow.steps.some((step) => step.id === "learning"));
 });
 
 test("marks workflow sections blocked when overview has critical state", () => {
@@ -129,10 +133,10 @@ function overviewFixture(state: AdminOverview["state"]): AdminOverview {
 function northFixture(): OperatingNorthSnapshot {
   return {
     sourceOfTruth: "NORTE_OPERATIVO_DELIVRIX.md",
-    phase: "5.3-final-demo-report",
+    phase: "5.4C-admin-cluster-learning-contracts",
     delivrixRole: "control_plane",
     nfcRole: "future_optional_external_integration",
-    openClawRole: "intelligent_demo_evidence_reporter",
+    openClawRole: "intelligent_cluster_operator_read_only",
     delivrixSendsRealEmail: false,
     nfcSendsRealEmail: false,
     liveInfrastructureWritesEnabled: false,

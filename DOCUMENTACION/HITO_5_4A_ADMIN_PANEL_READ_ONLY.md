@@ -62,8 +62,10 @@ El panel solo consume:
 | Endpoint | Uso |
 | --- | --- |
 | `GET /health` | estado del Gateway, OpenClaw y safety |
+| `GET /v1/admin/clusters` | lectura de clusters/VPS y acciones propuestas |
 | `GET /v1/admin/overview` | resumen operativo, alertas, health y auditoria |
 | `GET /v1/admin/workflow` | ruta operacional que debe seguir el panel |
+| `GET /v1/openclaw/learning-plan` | aprendizaje supervisado y gates de evaluacion |
 | `GET /v1/operating-north` | gates, acciones permitidas y bloqueadas |
 | `GET /v1/kill-switch` | estado del kill switch |
 
@@ -80,8 +82,10 @@ El panel no llama:
 
 - Overview.
 - OpenClaw.
+- Clusters.
 - Sender nodes.
 - Auditoria reciente.
+- Aprendizaje OpenClaw.
 - Reportes.
 - Seguridad operacional.
 
@@ -117,8 +121,10 @@ node --test apps/admin-panel/src/shared/api/client.test.mjs apps/admin-panel/src
 - `find apps/admin-panel/src -name '*.js' -exec node --check {} \;`.
 - `node --test apps/admin-panel/src/shared/api/client.test.mjs apps/admin-panel/src/shared/lib/formatters.test.mjs`.
 - `GET http://127.0.0.1:5173/health` responde desde Gateway via proxy.
+- `GET http://127.0.0.1:5173/v1/admin/clusters` responde desde Gateway via proxy.
 - `GET http://127.0.0.1:5173/v1/admin/overview` responde desde Gateway via proxy.
 - `GET http://127.0.0.1:5173/v1/admin/workflow` responde desde Gateway via proxy.
+- `GET http://127.0.0.1:5173/v1/openclaw/learning-plan` responde desde Gateway via proxy.
 - `POST http://127.0.0.1:5173/v1/kill-switch` responde `405`.
 
 ## Gates

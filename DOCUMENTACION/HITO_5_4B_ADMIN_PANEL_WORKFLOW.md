@@ -34,10 +34,14 @@ El workflow actual guia al operador asi:
 1. Ruta operativa.
 2. Overview.
 3. OpenClaw.
-4. Sender nodes.
-5. Auditoria.
-6. Reportes.
-7. Seguridad operacional.
+4. Clusters y VPS.
+5. Sender nodes.
+6. Auditoria.
+7. Aprendizaje OpenClaw.
+8. Reportes.
+9. Seguridad operacional.
+
+Actualizacion: el detalle de clusters/VPS y aprendizaje supervisado vive en `HITO_5_4C_ADMIN_CLUSTERS_OPENCLAW_LEARNING.md`.
 
 ## Separacion de responsabilidades
 

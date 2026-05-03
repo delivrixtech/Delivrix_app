@@ -14,7 +14,9 @@ test("compactLabel converts backend vocabulary for display", () => {
 test("stateTone maps operational states", () => {
   assert.equal(stateTone("critical"), "critical");
   assert.equal(stateTone("degraded"), "warning");
+  assert.equal(stateTone("needs_evidence"), "warning");
   assert.equal(stateTone("healthy"), "success");
+  assert.equal(stateTone("dry_run_ready"), "success");
   assert.equal(stateTone("unknown"), "neutral");
 });
 

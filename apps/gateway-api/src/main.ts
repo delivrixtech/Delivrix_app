@@ -10,12 +10,14 @@ import {
   RateLimitService,
   SenderNodeRegistry,
   buildAdminOverview,
+  buildAdminClusterOverview,
   buildAdminPanelWorkflow,
   buildBackupPlan,
   buildOperationalSummary,
   buildDelivrixMvpDemoRunReport,
   createId,
   buildOpenClawIncidentDemoReport,
+  buildOpenClawLearningPlan,
   buildMvpFinalDemoReport,
   evaluateSenderNodeHealth,
   evaluateIpReputation,
@@ -122,7 +124,9 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "5.3-final-demo-report",
+          currentMilestone: "5.4C-admin-cluster-learning-contracts",
+          adminClusterOverviewEnabled: true,
+          learningPlanEnabled: true,
           onboardingEnabled: true,
           topologyPlannerEnabled: true,
           provisioningDryRunEnabled: true,
@@ -1561,6 +1565,34 @@ const server = createServer(async (request, response) => {
 
       return json(response, 200, {
         workflow
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/admin/clusters") {
+      const senderNodes = await senderNodeRegistry.list();
+      const sendResults = await sendResultStore.list();
+      const health = evaluateSenderNodeHealth(senderNodes, sendResults);
+      const clusterOverview = buildAdminClusterOverview({
+        senderNodes,
+        health,
+        provisioningRuns: await provisioningRunStore.list(),
+        killSwitch: await killSwitchStore.get()
+      });
+
+      return json(response, 200, {
+        clusterOverview
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/openclaw/learning-plan") {
+      const learningPlan = buildOpenClawLearningPlan({
+        auditEvents: await auditLog.list(),
+        provisioningRuns: await provisioningRunStore.list(),
+        sendResults: await sendResultStore.list()
+      });
+
+      return json(response, 200, {
+        learningPlan
       });
     }
 

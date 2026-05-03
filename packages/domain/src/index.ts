@@ -1,4 +1,5 @@
 export * from "./audit-log.ts";
+export * from "./admin-cluster-overview.ts";
 export * from "./admin-overview.ts";
 export * from "./admin-panel-workflow.ts";
 export * from "./backup-plan.ts";
@@ -12,6 +13,7 @@ export * from "./mvp-demo-runner.ts";
 export * from "./nfc-bridge.ts";
 export * from "./openclaw-onboarding.ts";
 export * from "./openclaw-incident-demo.ts";
+export * from "./openclaw-learning-plan.ts";
 export * from "./openclaw-provisioning-dry-run.ts";
 export * from "./openclaw-runbook.ts";
 export * from "./openclaw-scheduler.ts";

@@ -12,8 +12,10 @@ const staticRoot = __dirname;
 
 const allowedProxyPaths = new Set([
   "/health",
+  "/v1/admin/clusters",
   "/v1/admin/overview",
   "/v1/admin/workflow",
+  "/v1/openclaw/learning-plan",
   "/v1/operating-north",
   "/v1/kill-switch"
 ]);

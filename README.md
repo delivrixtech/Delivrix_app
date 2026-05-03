@@ -62,8 +62,10 @@ http://127.0.0.1:5173
 El panel vive separado del backend y consume solo contratos `GET`:
 
 - `GET /health`
+- `GET /v1/admin/clusters`
 - `GET /v1/admin/overview`
 - `GET /v1/admin/workflow`
+- `GET /v1/openclaw/learning-plan`
 - `GET /v1/operating-north`
 - `GET /v1/kill-switch`
 
@@ -74,6 +76,7 @@ Documentos:
 - `DOCUMENTACION/HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`
 - `DOCUMENTACION/HITO_5_4A_ADMIN_PANEL_READ_ONLY.md`
 - `DOCUMENTACION/HITO_5_4B_ADMIN_PANEL_WORKFLOW.md`
+- `DOCUMENTACION/HITO_5_4C_ADMIN_CLUSTERS_OPENCLAW_LEARNING.md`
 
 ## Documentacion principal
 

@@ -26,7 +26,10 @@ http://127.0.0.1:5173
 The local server serves static frontend files and proxies only `GET` requests to Gateway:
 
 - `GET /health`
+- `GET /v1/admin/clusters`
 - `GET /v1/admin/overview`
+- `GET /v1/admin/workflow`
+- `GET /v1/openclaw/learning-plan`
 - `GET /v1/operating-north`
 - `GET /v1/kill-switch`
 

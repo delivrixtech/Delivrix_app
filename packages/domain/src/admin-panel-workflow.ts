@@ -6,8 +6,10 @@ export type AdminPanelWorkflowStepId =
   | "workflow"
   | "overview"
   | "openclaw"
+  | "clusters"
   | "fleet"
   | "audit"
+  | "learning"
   | "reports"
   | "safety";
 
@@ -29,7 +31,7 @@ export interface AdminPanelWorkflowStep {
 
 export interface AdminPanelWorkflow {
   generatedAt: string;
-  phase: "5.4B-admin-panel-workflow";
+  phase: "5.4C-admin-panel-workflow";
   mode: "read_only";
   title: "Ruta operativa del panel Delivrix";
   summary: string;
@@ -51,7 +53,9 @@ export interface AdminPanelWorkflowInput {
 const allowedEndpoints = [
   "/health",
   "/v1/admin/overview",
+  "/v1/admin/clusters",
   "/v1/admin/workflow",
+  "/v1/openclaw/learning-plan",
   "/v1/operating-north",
   "/v1/kill-switch"
 ];
@@ -112,11 +116,31 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
       statusReason: input.operatingNorth.liveInfrastructureWritesEnabled
         ? "Live infrastructure writes are enabled and violate MVP visual boundary."
         : "Live infrastructure writes remain blocked.",
+      nextStepId: "clusters"
+    },
+    {
+      id: "clusters",
+      order: 4,
+      navLabel: "Clusters",
+      title: "Clusters y VPS",
+      operatorQuestion: "Que clusters/VPS debe administrar OpenClaw en modo supervisado?",
+      purpose: "Mostrar inventario, capacidad y frontera de administracion de infraestructura.",
+      dataSources: ["/v1/admin/clusters"],
+      evidenceToShow: [
+        "clusters",
+        "sender nodes por proveedor",
+        "provisioning dry-runs",
+        "acciones propuestas"
+      ],
+      status: input.operatingNorth.liveInfrastructureWritesEnabled ? "blocked" : fleetStatus(input.overview),
+      statusReason: input.operatingNorth.liveInfrastructureWritesEnabled
+        ? "Live infrastructure writes are enabled and violate MVP boundary."
+        : fleetStatusReason(input.overview),
       nextStepId: "fleet"
     },
     {
       id: "fleet",
-      order: 4,
+      order: 5,
       navLabel: "Sender nodes",
       title: "Sender nodes",
       operatorQuestion: "Que nodos requieren atencion antes de cualquier escalamiento?",
@@ -134,7 +158,7 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
     },
     {
       id: "audit",
-      order: 5,
+      order: 6,
       navLabel: "Auditoria",
       title: "Auditoria reciente",
       operatorQuestion: "Que evidencia explica el estado actual?",
@@ -151,11 +175,31 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
       statusReason: input.overview.recentAuditEvents.length > 0
         ? "Recent audit evidence is available."
         : "No recent audit events are available in admin overview.",
+      nextStepId: "learning"
+    },
+    {
+      id: "learning",
+      order: 7,
+      navLabel: "Aprendizaje",
+      title: "Aprendizaje OpenClaw",
+      operatorQuestion: "Como OpenClaw aprende sin auto-entrenarse ni ejecutar acciones reales?",
+      purpose: "Definir evidencia, feedback humano y evals para mejorar recomendaciones.",
+      dataSources: ["/v1/openclaw/learning-plan", "/v1/admin/overview"],
+      evidenceToShow: [
+        "fuentes permitidas",
+        "fuentes excluidas",
+        "etapas",
+        "gates de evaluacion"
+      ],
+      status: input.overview.recentAuditEvents.length > 0 ? "ready" : "needs_review",
+      statusReason: input.overview.recentAuditEvents.length > 0
+        ? "Audit evidence exists for supervised learning loop."
+        : "OpenClaw needs curated audit evidence before learning recommendations.",
       nextStepId: "reports"
     },
     {
       id: "reports",
-      order: 6,
+      order: 8,
       navLabel: "Reportes",
       title: "Reportes y evidencia MVP",
       operatorQuestion: "Que puede mostrarse sin generar nuevos efectos desde UI?",
@@ -172,7 +216,7 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
     },
     {
       id: "safety",
-      order: 7,
+      order: 9,
       navLabel: "Seguridad",
       title: "Seguridad operacional",
       operatorQuestion: "Que sigue apagado por diseno?",
@@ -192,7 +236,7 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
 
   return {
     generatedAt: (input.now ?? new Date()).toISOString(),
-    phase: "5.4B-admin-panel-workflow",
+    phase: "5.4C-admin-panel-workflow",
     mode: "read_only",
     title: "Ruta operativa del panel Delivrix",
     summary: "El panel guia al operador desde estado general hasta gates de seguridad, sin ejecutar mutaciones desde UI.",

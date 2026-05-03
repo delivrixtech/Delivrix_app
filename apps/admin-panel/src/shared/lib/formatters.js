@@ -33,11 +33,21 @@ export function stateTone(value) {
     return "critical";
   }
 
-  if (["warning", "degraded", "processing", "deferred", "bounce", "paused", "needs_review"].includes(normalized)) {
+  if ([
+    "warning",
+    "degraded",
+    "processing",
+    "deferred",
+    "bounce",
+    "paused",
+    "needs_review",
+    "needs_evidence",
+    "needs_onboarding"
+  ].includes(normalized)) {
     return "warning";
   }
 
-  if (["healthy", "ok", "active", "warming", "completed", "sent", "ready"].includes(normalized)) {
+  if (["healthy", "ok", "active", "warming", "completed", "sent", "ready", "dry_run_ready"].includes(normalized)) {
     return "success";
   }
 
