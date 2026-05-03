@@ -328,3 +328,5 @@ Siguiente incremento sugerido:
 `Hito 5.4A: scaffolding admin-panel read-only`.
 
 Ese incremento debe crear `apps/admin-panel`, conectar solo endpoints read-only del Gateway y levantar el primer dashboard local sin mutaciones.
+
+Estado: implementado en `HITO_5_4A_ADMIN_PANEL_READ_ONLY.md`.

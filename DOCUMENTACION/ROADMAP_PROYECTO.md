@@ -311,6 +311,11 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - estructura `apps/admin-panel`.
   - panel inicial read-only.
   - gates antes de mutaciones.
+- Hito 5.4A:
+  - primer admin panel local.
+  - proxy `GET-only`.
+  - vistas overview, OpenClaw, sender nodes, auditoria, reportes y seguridad.
+  - sin mutaciones desde UI.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

@@ -32,6 +32,7 @@ Hito 5.1/demo runner local: ver `DOCUMENTACION/HITO_5_1_DEMO_RUNNER_LOCAL.md`.
 Hito 5.2/OpenClaw incidente simulado: ver `DOCUMENTACION/HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md`.
 Hito 5.3/demo report final: ver `DOCUMENTACION/HITO_5_3_DEMO_REPORT_FINAL.md`.
 Hito 5.4/admin panel visual MVP: ver `DOCUMENTACION/HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
+Hito 5.4A/admin panel read-only: ver `DOCUMENTACION/HITO_5_4A_ADMIN_PANEL_READ_ONLY.md`.
 
 ## Estructura
 
@@ -47,8 +48,10 @@ Hito 5.4/admin panel visual MVP: ver `DOCUMENTACION/HITO_5_4_ADMIN_PANEL_VISUAL_
 ```bash
 node --test packages/domain/src/mail-policy.engine.test.ts
 node --test packages/domain/src/*.test.ts packages/adapters/src/*.test.ts
+node --test apps/admin-panel/src/shared/api/client.test.mjs apps/admin-panel/src/shared/lib/formatters.test.mjs
 node apps/gateway-api/src/main.ts
 node apps/worker/src/main.ts
+node apps/admin-panel/server.mjs
 ```
 
 La migracion a NestJS, PostgreSQL, Redis/BullMQ y adaptadores reales queda preparada como siguiente incremento.
@@ -358,3 +361,26 @@ El panel visual queda definido como una app frontend separada:
 - Vitest y Playwright para pruebas.
 
 Regla principal: el frontend no decide operaciones criticas, no lee `runtime/`, no importa stores/adaptadores y no ejecuta mutaciones sin autenticacion, autorizacion, aprobacion humana y auditoria. El primer panel debe iniciar `GET-only` consumiendo Gateway API; ningun `POST` debe ejecutarse automaticamente al cargar la UI.
+
+## Hito 5.4A: Admin panel read-only local
+
+URL local:
+
+```txt
+http://127.0.0.1:5173
+```
+
+Comando:
+
+```bash
+node apps/admin-panel/server.mjs
+```
+
+El server del panel sirve archivos estaticos y proxya solo estos `GET` hacia Gateway:
+
+- `GET /health`
+- `GET /v1/admin/overview`
+- `GET /v1/operating-north`
+- `GET /v1/kill-switch`
+
+Cualquier metodo no GET desde el proxy del panel responde `405`.

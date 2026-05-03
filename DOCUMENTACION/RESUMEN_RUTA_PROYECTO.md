@@ -22,6 +22,7 @@ Hito demo runner local: `HITO_5_1_DEMO_RUNNER_LOCAL.md`.
 Hito OpenClaw incidente simulado: `HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md`.
 Hito demo report final: `HITO_5_3_DEMO_REPORT_FINAL.md`.
 Hito admin panel visual: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
+Hito admin panel read-only: `HITO_5_4A_ADMIN_PANEL_READ_ONLY.md`.
 
 Regla principal: en la fase actual, Delivrix/OpenClaw prepara infraestructura propia de mailing sobre servidor fisico. NFC u otros sistemas externos quedan como integraciones futuras opcionales, no como dependencia del MVP.
 
@@ -204,6 +205,7 @@ Documento operativo: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
 - Demo OpenClaw Hito 5.2 que detecta un incidente simulado, propone cuarentena/degradacion local y prueba runbook, aprobacion humana y kill switch.
 - Demo report Hito 5.3 que empaqueta evidencia para sponsor, riesgos residuales y gates hacia produccion limitada sin prometer volumen.
 - Admin panel visual Hito 5.4 que documenta el frontend separado del backend, su stack y los gates antes de cualquier mutacion desde UI.
+- Admin panel read-only Hito 5.4A que crea `apps/admin-panel`, consume solo endpoints `GET` y bloquea metodos de escritura en el proxy local.
 
 ## Ruta meses 2-5
 

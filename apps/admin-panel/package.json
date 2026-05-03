@@ -1,0 +1,13 @@
+{
+  "name": "@delivrix/admin-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only Delivrix admin panel shell.",
+  "author": "JECT",
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "node server.mjs",
+    "check": "node --check server.mjs && node --test src/shared/api/client.test.mjs src/shared/lib/formatters.test.mjs"
+  }
+}

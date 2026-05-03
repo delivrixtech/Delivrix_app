@@ -151,6 +151,10 @@ Gate:
 
 - el panel inicia `GET-only`; no puede ejecutar mutaciones ni `POST` automaticos sin autenticacion, autorizacion, aprobacion humana y auditoria.
 
+Subhito implementado:
+
+- `HITO_5_4A_ADMIN_PANEL_READ_ONLY.md`: primer panel local, separado del backend, con proxy `GET-only`.
+
 ## Criterio de salida de Fase 5
 
 Fase 5 queda lista si:
