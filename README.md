@@ -30,6 +30,7 @@ Fase 5/MVP demostrable: ver `DOCUMENTACION/FASE_5_MVP_DEMOSTRABLE.md`.
 Hito 5.0/demo blueprint y revision de patrones: ver `DOCUMENTACION/HITO_5_0_DEMO_BLUEPRINT_REVISION_PATRONES.md`.
 Hito 5.1/demo runner local: ver `DOCUMENTACION/HITO_5_1_DEMO_RUNNER_LOCAL.md`.
 Hito 5.2/OpenClaw incidente simulado: ver `DOCUMENTACION/HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md`.
+Hito 5.3/demo report final: ver `DOCUMENTACION/HITO_5_3_DEMO_REPORT_FINAL.md`.
 
 ## Estructura
 
@@ -326,3 +327,15 @@ curl -s -X POST http://127.0.0.1:3000/v1/demo/openclaw/incident \
 ```
 
 OpenClaw ejecuta la demo de incidente con `alert-ops`: detecta una `complaint`, propone cuarentena local, prueba que sin humano no actua, prueba que el kill switch activo bloquea y aplica solo estado local si existe aprobacion humana. SMTP, SSH, DNS live, Proxmox live y NFC siguen apagados.
+
+## Hito 5.3: Demo report final
+
+Endpoint local:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/v1/demo/mvp/final-report \
+  -H 'content-type: application/json' \
+  -d '{"actorId":"operator_local"}'
+```
+
+El reporte final empaqueta evidencia de auditoria de 5.0, 5.1 y 5.2, genera una salida ejecutiva para sponsor, lista riesgos residuales y deja claro que produccion limitada, envio real, infraestructura live, SSH, DNS live y NFC production writes siguen deshabilitados.

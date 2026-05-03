@@ -146,6 +146,6 @@ Resultado esperado:
 
 ## Que sigue
 
-Hito 5.3: Demo report final.
+Hito 5.3: Demo report final. Detalle en `HITO_5_3_DEMO_REPORT_FINAL.md`.
 
 Ese hito debe empaquetar la evidencia de 5.0, 5.1 y 5.2 en un reporte ejecutivo para sponsor: que se vio, que quedo probado, que sigue bloqueado y cual es la ruta segura hacia una produccion limitada futura.

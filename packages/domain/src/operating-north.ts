@@ -7,6 +7,7 @@ export type OperatingAction =
   | "build_mvp_demo_blueprint"
   | "run_mvp_demo_local"
   | "run_openclaw_incident_demo"
+  | "build_mvp_final_demo_report"
   | "build_capacity_plan"
   | "build_nfc_bridge_payload"
   | "ingest_observed_result"
@@ -38,10 +39,10 @@ export interface OperatingActionGateDecision {
 
 export interface OperatingNorthSnapshot {
   sourceOfTruth: "NORTE_OPERATIVO_DELIVRIX.md";
-  phase: "5.2-openclaw-incident-demo";
+  phase: "5.3-final-demo-report";
   delivrixRole: "control_plane";
   nfcRole: "future_optional_external_integration";
-  openClawRole: "intelligent_incident_operator_guarded_by_runbook";
+  openClawRole: "intelligent_demo_evidence_reporter";
   delivrixSendsRealEmail: false;
   nfcSendsRealEmail: false;
   liveInfrastructureWritesEnabled: false;
@@ -60,6 +61,7 @@ const allowedActions: OperatingAction[] = [
   "build_mvp_demo_blueprint",
   "run_mvp_demo_local",
   "run_openclaw_incident_demo",
+  "build_mvp_final_demo_report",
   "build_capacity_plan",
   "build_nfc_bridge_payload",
   "ingest_observed_result",
@@ -80,10 +82,10 @@ const blockedActions: OperatingAction[] = [
 export function getOperatingNorthSnapshot(): OperatingNorthSnapshot {
   return {
     sourceOfTruth: "NORTE_OPERATIVO_DELIVRIX.md",
-    phase: "5.2-openclaw-incident-demo",
+    phase: "5.3-final-demo-report",
     delivrixRole: "control_plane",
     nfcRole: "future_optional_external_integration",
-    openClawRole: "intelligent_incident_operator_guarded_by_runbook",
+    openClawRole: "intelligent_demo_evidence_reporter",
     delivrixSendsRealEmail: false,
     nfcSendsRealEmail: false,
     liveInfrastructureWritesEnabled: false,
@@ -103,6 +105,8 @@ export function getOperatingNorthSnapshot(): OperatingNorthSnapshot {
       "openclaw_incident_demo_requires_simulated_incident",
       "openclaw_incident_demo_requires_runbook_permission",
       "openclaw_incident_demo_requires_human_approval_for_local_state",
+      "final_demo_report_must_not_promise_volume",
+      "final_demo_report_must_show_residual_risks",
       "no_nfc_production_write_without_contract_and_approval",
       "no_real_ssh_without_human_approval",
       "no_live_dns_change_without_dry_run_and_approval",
@@ -121,7 +125,7 @@ export function evaluateOperatingActionGate(
     return {
       allowed: true,
       requiresHumanApproval: false,
-      reason: "Action is inside the Delivrix control-plane boundary for Hito 5.2.",
+      reason: "Action is inside the Delivrix control-plane boundary for Hito 5.3.",
       blockedBy: [],
       riskLevel: "low"
     };
@@ -141,8 +145,8 @@ export function evaluateOperatingActionGate(
     return {
       allowed: false,
       requiresHumanApproval: true,
-      reason: "Action is outside Hito 5.2. Delivrix may not perform real sending, live infrastructure mutation, or NFC production writes yet.",
-      blockedBy: ["north_operating_boundary", "phase_5_2_gate"],
+      reason: "Action is outside Hito 5.3. Delivrix may not perform real sending, live infrastructure mutation, or NFC production writes yet.",
+      blockedBy: ["north_operating_boundary", "phase_5_3_gate"],
       riskLevel: "critical"
     };
   }

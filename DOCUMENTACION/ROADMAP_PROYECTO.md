@@ -299,6 +299,11 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - endpoint `POST /v1/demo/openclaw/incident`.
   - `alert-ops` propone cuarentena o degradacion local.
   - runbook prueba aprobacion humana y kill switch.
+- Hito 5.3:
+  - demo report final sponsor-ready.
+  - endpoint `POST /v1/demo/mvp/final-report`.
+  - evidencia de auditoria 5.0/5.1/5.2.
+  - riesgos residuales y gates hacia produccion limitada.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

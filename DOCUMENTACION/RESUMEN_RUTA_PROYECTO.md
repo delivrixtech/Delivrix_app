@@ -20,6 +20,7 @@ Fase MVP demostrable: `FASE_5_MVP_DEMOSTRABLE.md`.
 Hito demo blueprint: `HITO_5_0_DEMO_BLUEPRINT_REVISION_PATRONES.md`.
 Hito demo runner local: `HITO_5_1_DEMO_RUNNER_LOCAL.md`.
 Hito OpenClaw incidente simulado: `HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md`.
+Hito demo report final: `HITO_5_3_DEMO_REPORT_FINAL.md`.
 
 Regla principal: en la fase actual, Delivrix/OpenClaw prepara infraestructura propia de mailing sobre servidor fisico. NFC u otros sistemas externos quedan como integraciones futuras opcionales, no como dependencia del MVP.
 
@@ -174,6 +175,7 @@ Riesgos detectados en la referencia NFC:
 - Blueprint Hito 5.0 que revisa patrones y declara la ruta Gateway -> Queue -> Worker -> Sender Node -> Result Tracking.
 - Demo runner Hito 5.1 que ejecuta esa ruta en estado local, con auditoria enlazada por `demoRunId`.
 - Demo OpenClaw Hito 5.2 que detecta un incidente simulado, propone cuarentena/degradacion local y prueba runbook, aprobacion humana y kill switch.
+- Demo report Hito 5.3 que empaqueta evidencia para sponsor, riesgos residuales y gates hacia produccion limitada sin prometer volumen.
 
 ## Ruta meses 2-5
 

@@ -15,6 +15,7 @@ import {
   buildDelivrixMvpDemoRunReport,
   createId,
   buildOpenClawIncidentDemoReport,
+  buildMvpFinalDemoReport,
   evaluateSenderNodeHealth,
   evaluateIpReputation,
   evaluateKillSwitch,
@@ -120,7 +121,7 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "5.2-openclaw-incident-demo",
+          currentMilestone: "5.3-final-demo-report",
           onboardingEnabled: true,
           topologyPlannerEnabled: true,
           provisioningDryRunEnabled: true,
@@ -129,6 +130,7 @@ const server = createServer(async (request, response) => {
           demoBlueprintEnabled: true,
           demoRunnerEnabled: true,
           incidentDemoEnabled: true,
+          finalDemoReportEnabled: true,
           killSwitchProofEnabled: true,
           llmLiveCallsEnabled: false,
           liveActionsEnabled: false
@@ -972,6 +974,90 @@ const server = createServer(async (request, response) => {
         humanApproved,
         appliedSenderNode,
         auditEventIds
+      });
+
+      return json(response, 200, {
+        report
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/demo/mvp/final-report") {
+      const body = await readOptionalJson<{
+        actorId?: string;
+        reportId?: string;
+      }>(request);
+      const actorId = body?.actorId?.trim() || "operator_local";
+      const reportId = body?.reportId?.trim() || createId("mvp_final_demo_report");
+      const killSwitch = await killSwitchStore.get();
+      const jobs = await sendQueue.list();
+      const senderNodes = await senderNodeRegistry.list();
+      const sendResults = await sendResultStore.list();
+      let auditEvents = await auditLog.list();
+      const healthDecisions = evaluateSenderNodeHealth(senderNodes, sendResults);
+      let operationalSummary = buildOperationalSummary({
+        jobs,
+        sendResults,
+        auditEvents,
+        senderNodes,
+        rateLimitCounters: await rateLimitStore.list()
+      });
+      let adminOverview = buildAdminOverview({
+        summary: operationalSummary,
+        health: healthDecisions,
+        auditEvents,
+        killSwitch
+      });
+      const draftReport = buildMvpFinalDemoReport({
+        id: reportId,
+        actorId,
+        auditEvents,
+        operationalSummary,
+        adminOverview,
+        operatingNorth: getOperatingNorthSnapshot()
+      });
+
+      await auditLog.append({
+        actorType: body?.actorId ? "operator" : "system",
+        actorId,
+        action: "demo.mvp_final_report_generated",
+        targetType: "mvp_demo",
+        targetId: reportId,
+        riskLevel: draftReport.decision.status === "blocked" ? "high" : draftReport.decision.status === "needs_review" ? "medium" : "low",
+        metadata: {
+          phase: draftReport.phase,
+          decision: draftReport.decision,
+          evidence: draftReport.evidence,
+          limitedProductionGates: draftReport.limitedProductionGates,
+          residualRisks: draftReport.residualRisks,
+          safety: draftReport.safety,
+          smtpEnabled: false,
+          liveInfrastructureWritesEnabled: false,
+          nfcProductionWritesEnabled: false
+        }
+      });
+
+      auditEvents = await auditLog.list();
+      operationalSummary = buildOperationalSummary({
+        jobs,
+        sendResults,
+        auditEvents,
+        senderNodes,
+        rateLimitCounters: await rateLimitStore.list()
+      });
+      adminOverview = buildAdminOverview({
+        summary: operationalSummary,
+        health: healthDecisions,
+        auditEvents,
+        killSwitch
+      });
+
+      const report = buildMvpFinalDemoReport({
+        id: reportId,
+        actorId,
+        auditEvents,
+        operationalSummary,
+        adminOverview,
+        operatingNorth: getOperatingNorthSnapshot()
       });
 
       return json(response, 200, {

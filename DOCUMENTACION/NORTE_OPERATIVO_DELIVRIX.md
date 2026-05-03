@@ -127,8 +127,9 @@ Contratos minimos para una fase futura:
 10. Hito 5.0: blueprint de demo MVP y revision de patrones inteligentes.
 11. Hito 5.1: demo runner local-state-only con auditoria enlazada.
 12. Hito 5.2: OpenClaw detecta incidente simulado, propone accion, respeta runbook/kill switch y aplica solo estado local aprobado.
-13. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
-14. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
+13. Hito 5.3: reporte final sponsor-ready con evidencia, riesgos residuales y ruta condicionada a produccion limitada.
+14. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
+15. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
 
 ## Criterio de claridad
 

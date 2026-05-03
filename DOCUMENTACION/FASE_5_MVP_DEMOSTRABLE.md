@@ -110,17 +110,21 @@ Gate:
 
 ### Hito 5.3: Demo report final
 
+Estado: implementado. Detalle operativo en `HITO_5_3_DEMO_REPORT_FINAL.md`.
+
 Objetivo:
 
 - empaquetar una salida ejecutiva para sponsor.
 
-Entregables esperados:
+Entregables:
 
 - reporte end-to-end;
 - evidencia de auditoria;
 - riesgos pendientes;
 - ruta a produccion limitada;
 - checklist de avance.
+- endpoint `POST /v1/demo/mvp/final-report`;
+- decision `ready_for_sponsor`, `needs_review` o `blocked`.
 
 Gate:
 
