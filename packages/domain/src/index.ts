@@ -6,6 +6,7 @@ export * from "./ip-reputation.ts";
 export * from "./kill-switch.ts";
 export * from "./mail-policy.engine.ts";
 export * from "./nfc-bridge.ts";
+export * from "./openclaw-onboarding.ts";
 export * from "./operating-north.ts";
 export * from "./operational-summary.ts";
 export * from "./rate-limit.ts";

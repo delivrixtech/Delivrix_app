@@ -119,9 +119,10 @@ Contratos minimos para una fase futura:
 2. Fase 2: Webdock bridge seguro para continuidad y visibilidad.
 3. Fase 3: Proxmox/provisioning mock, reputacion, cuarentena y backups simulados.
 4. Hito 4.0: alineacion control plane y frontera de acciones.
-5. Fase 4: OpenClaw onboarding inteligente, topology planner, provisioning dry-run y permisos.
-6. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
-7. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
+5. Hito 4.1: OpenClaw intelligent onboarding con decision Go/No-Go.
+6. Fase 4: OpenClaw topology planner, provisioning dry-run y permisos.
+7. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
+8. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
 
 ## Criterio de claridad
 

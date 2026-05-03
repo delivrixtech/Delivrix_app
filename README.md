@@ -21,6 +21,7 @@ Runbook operativo Fase 2: ver `DOCUMENTACION/FASE_2_RUNBOOK_OPERATIVO.md`.
 Runbook Fase 3: ver `DOCUMENTACION/FASE_3_INFRAESTRUCTURA_PROPIA.md`.
 Documento Fase 4/OpenClaw infraestructura: ver `DOCUMENTACION/FASE_4_OPENCLAW_INFRAESTRUCTURA.md`.
 Hito 4.0/alineacion control plane: ver `DOCUMENTACION/HITO_4_0_ALINEACION_CONTROL_PLANE.md`.
+Hito 4.1/OpenClaw onboarding: ver `DOCUMENTACION/HITO_4_1_OPENCLAW_ONBOARDING.md`.
 
 ## Estructura
 
@@ -219,3 +220,17 @@ curl -s -X POST http://127.0.0.1:3000/v1/nfc/bridge/capacity-plan \
 ```
 
 El bridge externo mock queda como referencia futura para NFC: solo genera payloads dry-run e inactivos para `email_providers` y `smtp_servers`. No escribe en NFC, no guarda secretos, no activa providers y no envia correo. El MVP se enfoca en OpenClaw, onboarding inteligente y preparacion de infraestructura propia.
+
+## Hito 4.1: OpenClaw intelligent onboarding
+
+Endpoints locales:
+
+```bash
+curl -s http://127.0.0.1:3000/v1/openclaw/onboarding/questionnaire
+
+curl -s -X POST http://127.0.0.1:3000/v1/openclaw/onboarding/evaluate \
+  -H 'content-type: application/json' \
+  -d '{"actorId":"operator_local","server":{"model":"IBM System x3630 M4"}}'
+```
+
+La evaluacion genera un snapshot dry-run con decision `go`, `needs_review` o `no_go`. No toca Proxmox, SSH, DNS, SMTP, NFC ni infraestructura real.

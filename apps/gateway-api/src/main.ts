@@ -18,8 +18,10 @@ import {
   evaluateSenderNodeManualControl,
   evaluateSenderNodeRetirementApproval,
   evaluateSendResultIngestion,
+  evaluateOpenClawOnboarding,
   isSenderNodeManualAction,
   buildNfcBridgeCapacityPlan,
+  getOpenClawOnboardingQuestionnaire,
   getOperatingNorthSnapshot,
   requestRateLimitRules,
   simulateBackup,
@@ -27,6 +29,7 @@ import {
   type BackupResource,
   type BackupResourceSnapshot,
   type IpReputationExternalSignal,
+  type OpenClawOnboardingInput,
   type RegisterSenderNodeInput,
   type SuppressionReason,
   type SendRequest,
@@ -101,6 +104,11 @@ const server = createServer(async (request, response) => {
           nfcProductionWritesEnabled: operatingNorth.nfcProductionWritesEnabled,
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
+        openClaw: {
+          currentMilestone: "4.1-openclaw-intelligent-onboarding",
+          onboardingEnabled: true,
+          liveActionsEnabled: false
+        },
         nfcBridge: {
           mode: "mock",
           liveWritesEnabled: false,
@@ -112,6 +120,43 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && request.url === "/v1/operating-north") {
       return json(response, 200, getOperatingNorthSnapshot());
+    }
+
+    if (request.method === "GET" && request.url === "/v1/openclaw/onboarding/questionnaire") {
+      return json(response, 200, getOpenClawOnboardingQuestionnaire());
+    }
+
+    if (request.method === "POST" && request.url === "/v1/openclaw/onboarding/evaluate") {
+      const body = await readOptionalJson<OpenClawOnboardingInput>(request);
+      const snapshot = evaluateOpenClawOnboarding(body ?? {});
+
+      await auditLog.append({
+        actorType: body?.actorId ? "operator" : "system",
+        actorId: snapshot.actorId,
+        action: "openclaw_onboarding.evaluated",
+        targetType: "openclaw_onboarding",
+        targetId: snapshot.id,
+        riskLevel: snapshot.decision.riskLevel,
+        metadata: {
+          phase: snapshot.phase,
+          decision: snapshot.decision,
+          readiness: snapshot.readiness,
+          blockers: snapshot.blockers,
+          warnings: snapshot.warnings,
+          missingCriticalFields: snapshot.missingCriticalFields,
+          dryRun: snapshot.dryRun,
+          sideEffects: snapshot.sideEffects,
+          liveInfrastructureWritesEnabled: false,
+          sshEnabled: false,
+          smtpEnabled: false,
+          dnsLiveChangesEnabled: false,
+          nfcWritesEnabled: false
+        }
+      });
+
+      return json(response, 200, {
+        snapshot
+      });
     }
 
     if (request.method === "POST" && request.url === "/v1/nfc/bridge/capacity-plan") {

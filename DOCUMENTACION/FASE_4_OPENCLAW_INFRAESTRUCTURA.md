@@ -135,6 +135,8 @@ El conocimiento de NFC se conserva porque mas adelante Delivrix puede conectarse
 
 ### Hito 4.1: OpenClaw intelligent onboarding
 
+Estado: implementado. Detalle operativo en `HITO_4_1_OPENCLAW_ONBOARDING.md`.
+
 Objetivo:
 
 - construir el flujo de onboarding inteligente para infraestructura propia.
@@ -147,6 +149,9 @@ Entregables:
 - snapshot auditable;
 - reporte de faltantes;
 - decision Go/No-Go.
+- endpoint `GET /v1/openclaw/onboarding/questionnaire`;
+- endpoint `POST /v1/openclaw/onboarding/evaluate`;
+- auditoria `openclaw_onboarding.evaluated`.
 
 Gate:
 

@@ -27,12 +27,13 @@ Expone:
 - `getOperatingNorthSnapshot`
 - `evaluateOperatingActionGate`
 
-Este contrato declara:
+Este contrato fue ampliado en Hito 4.1 y actualmente declara:
 
 - `delivrixRole = control_plane`
-- `nfcRole = campaign_and_real_send_pipeline`
+- `openClawRole = intelligent_onboarding_then_supervised_operator`
+- `nfcRole = future_optional_external_integration`
 - `delivrixSendsRealEmail = false`
-- `nfcSendsRealEmail = true`
+- `nfcSendsRealEmail = false`
 - `nfcProductionWritesEnabled = false`
 - `liveInfrastructureWritesEnabled = false`
 
@@ -95,7 +96,7 @@ El endpoint `capacity-plan`:
 `GET /health` ahora declara:
 
 - rol `delivrix-control-plane`.
-- Fase `4.0-control-plane-alignment`.
+- fase actual del norte operativo.
 - Delivrix no envia correo real.
 - bridge externo/NFC en modo `mock` como integracion futura opcional.
 
@@ -120,10 +121,14 @@ Hito 4.0 queda cerrado si:
 - las pruebas nuevas validan que Delivrix no envia correo real ni escribe en NFC;
 - la documentacion principal apunta a este hito.
 
-## Que queda para Hito 4.1
+## Hito 4.1 posterior
 
-- Construir schema de onboarding inteligente para servidor fisico, Proxmox, IPs, dominios, DNS, limites y permisos.
-- Implementar preguntas guiadas y validadores de datos criticos.
-- Generar snapshot auditable de infraestructura.
-- Entregar reporte de faltantes y decision Go/No-Go.
-- Mantener cualquier integracion externa apagada o mock.
+El Hito 4.1 queda documentado en `HITO_4_1_OPENCLAW_ONBOARDING.md`.
+
+Ese hito construye:
+
+- schema de onboarding inteligente para servidor fisico, Proxmox, IPs, dominios, DNS, limites y permisos;
+- preguntas guiadas y validadores de datos criticos;
+- snapshot auditable de infraestructura;
+- reporte de faltantes y decision Go/No-Go;
+- integraciones externas apagadas o mock.

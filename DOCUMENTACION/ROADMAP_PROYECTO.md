@@ -217,6 +217,10 @@ Ajuste de foco tras la revision:
   - DNS.
   - Postfix/OpenDKIM/TLS.
   - warming inicial.
+  - preguntas guiadas.
+  - validadores criticos.
+  - snapshot auditable.
+  - decision Go/No-Go.
 - Cluster topology planner:
   - plan de VPS/LXC.
   - asignacion IP/dominio.
