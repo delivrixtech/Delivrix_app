@@ -15,6 +15,7 @@ Hito OpenClaw onboarding: `HITO_4_1_OPENCLAW_ONBOARDING.md`.
 Hito topology planner: `HITO_4_2_CLUSTER_TOPOLOGY_PLANNER.md`.
 Hito provisioning dry-run: `HITO_4_3_PROVISIONING_DRY_RUN.md`.
 Hito scheduler y skills: `HITO_4_4_OPENCLAW_SCHEDULER_SKILLS.md`.
+Hito runbook, permisos y kill switch: `HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md`.
 
 Regla principal: en la fase actual, Delivrix/OpenClaw prepara infraestructura propia de mailing sobre servidor fisico. NFC u otros sistemas externos quedan como integraciones futuras opcionales, no como dependencia del MVP.
 
@@ -163,6 +164,7 @@ Riesgos detectados en la referencia NFC:
 - Action executor con permisos acotados.
 - Dry-run, verificacion post-ejecucion y rollback para acciones reversibles.
 - Kill switch.
+- Runbook 4.5 con matriz de permisos y prueba de kill switch.
 - Reporte diario.
 - Demo end-to-end de control operativo en dry-run.
 

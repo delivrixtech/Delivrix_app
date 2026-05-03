@@ -25,6 +25,7 @@ Hito 4.1/OpenClaw onboarding: ver `DOCUMENTACION/HITO_4_1_OPENCLAW_ONBOARDING.md
 Hito 4.2/topology planner: ver `DOCUMENTACION/HITO_4_2_CLUSTER_TOPOLOGY_PLANNER.md`.
 Hito 4.3/provisioning dry-run: ver `DOCUMENTACION/HITO_4_3_PROVISIONING_DRY_RUN.md`.
 Hito 4.4/OpenClaw scheduler y skills: ver `DOCUMENTACION/HITO_4_4_OPENCLAW_SCHEDULER_SKILLS.md`.
+Hito 4.5/runbook, permisos y kill switch: ver `DOCUMENTACION/HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md`.
 
 ## Estructura
 
@@ -273,3 +274,15 @@ curl -s -X POST http://127.0.0.1:3000/v1/openclaw/scheduler/run \
 ```
 
 El scheduler ejecuta un ciclo observador con tareas `health-check`, `fleet-analysis`, `ip-reputation-check` y `daily-report`. Corre skills `fleet-ops`, `alert-ops` y `report-ops`, usa router LLM en modo `disabled` por defecto y genera reporte diario. No ejecuta SSH, Proxmox live, DNS live, SMTP real ni escrituras NFC.
+
+## Hito 4.5: Runbook, permisos y kill switch
+
+Endpoint local:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/v1/openclaw/runbook/evaluate \
+  -H 'content-type: application/json' \
+  -d '{"actorId":"operator_local"}'
+```
+
+El runbook define la matriz de permisos de OpenClaw, acciones permitidas, acciones supervisadas, acciones futuras bloqueadas y acciones prohibidas. Tambien prueba que el kill switch bloquea acciones OpenClaw, acciones locales supervisadas, live infrastructure y procesamiento de cola. La produccion limitada sigue apagada.

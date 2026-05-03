@@ -256,6 +256,11 @@ Ajuste de foco tras la revision:
 - Audit log inmutable para toda accion autonoma.
 - Presupuesto diario de IA.
 - Kill switch probado.
+- Runbook Hito 4.5:
+  - matriz de permisos OpenClaw.
+  - acciones permitidas, supervisadas, futuras y prohibidas.
+  - endpoint `POST /v1/openclaw/runbook/evaluate`.
+  - prueba de kill switch contra acciones OpenClaw y cola.
 - Bridge/API externo opcional:
   - apagado por defecto.
   - mock solamente para referencia.

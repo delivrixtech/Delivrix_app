@@ -227,10 +227,15 @@ Resultado esperado al cierre del hito:
 
 - pruebas de dominio y adaptadores pasando.
 
-## Que queda para Hito 4.5
+## Hito posterior implementado
 
-- Runbook operativo.
-- Matriz de permisos.
-- Lista de acciones permitidas, supervisadas y prohibidas.
-- Kill switch probado contra acciones del scheduler.
-- Checklist para produccion limitada.
+Hito 4.5 quedo documentado en `HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md`.
+
+Incluye:
+
+- runbook operativo;
+- matriz de permisos;
+- lista de acciones permitidas, supervisadas, futuras y prohibidas;
+- kill switch probado contra acciones OpenClaw y cola;
+- checklist para produccion limitada;
+- endpoint auditado `POST /v1/openclaw/runbook/evaluate`.

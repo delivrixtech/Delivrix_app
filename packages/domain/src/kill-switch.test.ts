@@ -29,6 +29,20 @@ test("blocks operations when kill switch is active", () => {
   assert.equal(decision.state.updatedBy, "operator_001");
 });
 
+test("blocks OpenClaw proposed actions when kill switch is active", () => {
+  const state = buildKillSwitchState({
+    enabled: true,
+    reason: "Operator stop",
+    updatedBy: "operator_001",
+    now: new Date("2026-05-02T10:00:00.000Z")
+  });
+  const decision = evaluateKillSwitch(state, "execute_openclaw_proposed_action");
+
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.operation, "execute_openclaw_proposed_action");
+  assert.equal(decision.code, "kill_switch_active");
+});
+
 test("requires a reason when enabling kill switch", () => {
   assert.throws(() => {
     buildKillSwitchState({

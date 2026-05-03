@@ -21,6 +21,7 @@ import {
   evaluateOpenClawOnboarding,
   isSenderNodeManualAction,
   buildNfcBridgeCapacityPlan,
+  buildOpenClawOperationalRunbook,
   buildOpenClawProvisioningDryRun,
   runOpenClawScheduler,
   buildOpenClawTopologyPlan,
@@ -34,6 +35,7 @@ import {
   type IpReputationExternalSignal,
   type OpenClawOnboardingInput,
   type OpenClawProvisioningDryRunInput,
+  type OpenClawRunbookInput,
   type OpenClawSchedulerInput,
   type OpenClawTopologyPlannerInput,
   type RegisterSenderNodeInput,
@@ -111,11 +113,13 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "4.4-openclaw-scheduler-and-skills",
+          currentMilestone: "4.5-runbook-permissions-kill-switch",
           onboardingEnabled: true,
           topologyPlannerEnabled: true,
           provisioningDryRunEnabled: true,
           schedulerEnabled: true,
+          runbookEnabled: true,
+          killSwitchProofEnabled: true,
           llmLiveCallsEnabled: false,
           liveActionsEnabled: false
         },
@@ -292,6 +296,50 @@ const server = createServer(async (request, response) => {
 
       return json(response, 200, {
         run
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/openclaw/runbook/evaluate") {
+      const body = await readOptionalJson<OpenClawRunbookInput>(request);
+      const currentKillSwitch = await killSwitchStore.get();
+      const runbook = buildOpenClawOperationalRunbook({
+        ...body,
+        killSwitch: body?.killSwitch ?? currentKillSwitch
+      });
+
+      await auditLog.append({
+        actorType: body?.actorId ? "operator" : "system",
+        actorId: runbook.actorId,
+        action: "openclaw_runbook.evaluated",
+        targetType: "openclaw_runbook",
+        targetId: runbook.id,
+        riskLevel: runbook.decision.riskLevel,
+        metadata: {
+          phase: runbook.phase,
+          decision: runbook.decision,
+          permissionMatrixItems: runbook.permissionMatrix.length,
+          checklist: runbook.checklist,
+          killSwitchProof: {
+            currentState: runbook.killSwitchProof.currentState,
+            blocksOpenClawProposedActions: runbook.killSwitchProof.blocksOpenClawProposedActions,
+            blocksSupervisedLocalActions: runbook.killSwitchProof.blocksSupervisedLocalActions,
+            blocksLiveInfrastructureActions: runbook.killSwitchProof.blocksLiveInfrastructureActions,
+            blocksQueueProcessing: runbook.killSwitchProof.blocksQueueProcessing
+          },
+          dryRun: runbook.dryRun,
+          sideEffects: runbook.sideEffects,
+          liveInfrastructureWritesEnabled: false,
+          liveEmailSendingEnabled: false,
+          nfcProductionWritesEnabled: false,
+          sshEnabled: false,
+          dnsLiveChangesEnabled: false,
+          proxmoxApiEnabled: false,
+          llmAutonomousExecutionEnabled: false
+        }
+      });
+
+      return json(response, 200, {
+        runbook
       });
     }
 

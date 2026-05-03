@@ -44,7 +44,7 @@ NFC se conserva como contexto externo porque puede consumir la capacidad de Deli
 
 - Fase inicial: leer, analizar y reportar.
 - Fase supervised: proponer acciones y esperar aprobacion humana.
-- Fase limitada: ejecutar solo acciones reversibles, acotadas y auditadas.
+- Fase limitada: ejecutar solo acciones reversibles, acotadas y auditadas despues de runbook, permisos, aprobacion humana y kill switch probado.
 - Fase avanzada: ampliar autonomia solo si los gates operativos demuestran estabilidad.
 
 OpenClaw nunca debe empezar con autonomia plena.

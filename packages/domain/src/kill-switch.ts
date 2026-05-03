@@ -1,4 +1,9 @@
-export type KillSwitchOperation = "accept_send_request" | "claim_send_job";
+export type KillSwitchOperation =
+  | "accept_send_request"
+  | "claim_send_job"
+  | "execute_openclaw_proposed_action"
+  | "apply_supervised_local_action"
+  | "apply_live_infrastructure_action";
 
 export interface KillSwitchState {
   enabled: boolean;

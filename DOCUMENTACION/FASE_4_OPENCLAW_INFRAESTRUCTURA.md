@@ -229,6 +229,8 @@ Gate:
 
 ### Hito 4.5: Runbook, permisos y kill switch
 
+Estado: implementado. Detalle operativo en `HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md`.
+
 Objetivo:
 
 - cerrar Fase 4 con reglas operativas claras.
@@ -242,6 +244,8 @@ Entregables:
 - kill switch probado;
 - runbook operativo;
 - checklist de produccion limitada.
+- endpoint `POST /v1/openclaw/runbook/evaluate`;
+- auditoria `openclaw_runbook.evaluated`.
 
 Gate:
 
@@ -271,6 +275,7 @@ Estado:
 - Ejecutar scheduler OpenClaw en modo observador.
 - Ejecutar skills `fleet-ops`, `alert-ops` y `report-ops` en dry-run.
 - Generar reporte diario.
+- Evaluar runbook y permisos de OpenClaw en dry-run.
 - Detectar riesgos.
 - Proponer acciones.
 - Simular acciones.
@@ -299,4 +304,6 @@ Fase 4 queda lista cuando:
 - OpenClaw registra auditoria;
 - los gates bloquean acciones peligrosas;
 - el kill switch esta probado;
+- la matriz de permisos de OpenClaw esta definida;
+- el runbook 4.5 deja produccion limitada apagada;
 - NFC queda documentado como integracion futura opcional, no como dependencia MVP.
