@@ -2,6 +2,7 @@ import {
   RateLimitService,
   SenderNodeRegistry,
   evaluateKillSwitch,
+  getOperatingNorthSnapshot,
   requestRateLimitRules,
   senderNodeRateLimitRule,
   simulateSendResult
@@ -26,8 +27,10 @@ const requestRateLimitProfile = {
   senderDomainDailyLimit: Number(process.env.RATE_LIMIT_SENDER_DOMAIN_DAILY ?? 300),
   recipientDomainDailyLimit: Number(process.env.RATE_LIMIT_RECIPIENT_DOMAIN_DAILY ?? 100)
 };
-console.log("worker ready");
-console.log("phase=base-2 mode=safe-no-smtp");
+const operatingNorth = getOperatingNorthSnapshot();
+console.log("control-worker ready");
+console.log(`phase=${operatingNorth.phase} mode=control-plane-safe-no-smtp`);
+console.log("role=delivrix-internal-ops-worker nfc_sends_real_email=true");
 
 const killSwitchDecision = evaluateKillSwitch(await killSwitchStore.get(), "claim_send_job");
 

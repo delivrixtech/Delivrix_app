@@ -10,6 +10,7 @@ Delivrix plantea construir un control plane propio para mailing autorizado: infr
 La tesis no describe solamente una aplicacion web. Describe un sistema operativo completo: infraestructura fisica, virtualizacion, API de orquestacion, base de datos, sender nodes, DNS, reputacion, observabilidad, backups, agente autonomo, compliance y plan de continuidad.
 
 Norte operativo: `NORTE_OPERATIVO_DELIVRIX.md`.
+Hito de alineacion: `HITO_4_0_ALINEACION_CONTROL_PLANE.md`.
 
 Regla principal: en la fase actual, Delivrix no reemplaza el envio de NFC. Delivrix gobierna capacidad e infraestructura; NFC conserva el pipeline de campanas y envio real.
 

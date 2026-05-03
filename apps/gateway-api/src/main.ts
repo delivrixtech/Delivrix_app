@@ -19,6 +19,8 @@ import {
   evaluateSenderNodeRetirementApproval,
   evaluateSendResultIngestion,
   isSenderNodeManualAction,
+  buildNfcBridgeCapacityPlan,
+  getOperatingNorthSnapshot,
   requestRateLimitRules,
   simulateBackup,
   type BackupPlanInput,
@@ -73,10 +75,12 @@ const server = createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/health") {
       const killSwitch = await killSwitchStore.get();
+      const operatingNorth = getOperatingNorthSnapshot();
 
       return json(response, 200, {
         status: "ok",
         service: "gateway-api",
+        role: "delivrix-control-plane",
         queue: "local-file",
         auditLog: "local-file",
         suppressionList: "local-file",
@@ -90,8 +94,73 @@ const server = createServer(async (request, response) => {
           updatedAt: killSwitch.updatedAt,
           updatedBy: killSwitch.updatedBy
         },
-        phase: "base-3"
+        operatingNorth: {
+          sourceOfTruth: operatingNorth.sourceOfTruth,
+          delivrixSendsRealEmail: operatingNorth.delivrixSendsRealEmail,
+          nfcSendsRealEmail: operatingNorth.nfcSendsRealEmail,
+          nfcProductionWritesEnabled: operatingNorth.nfcProductionWritesEnabled,
+          liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
+        },
+        nfcBridge: {
+          mode: "mock",
+          liveWritesEnabled: false,
+          providersActivatedByDefault: false
+        },
+        phase: operatingNorth.phase
       });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/operating-north") {
+      return json(response, 200, getOperatingNorthSnapshot());
+    }
+
+    if (request.method === "POST" && request.url === "/v1/nfc/bridge/capacity-plan") {
+      const body = await readOptionalJson<{
+        senderNodeIds?: string[];
+        actorId?: string;
+        providerNamePrefix?: string;
+        emailFromName?: string;
+        emailsPerMinute?: number;
+      }>(request);
+      const nodes = await senderNodeRegistry.list();
+      const selectedNodeIds = body?.senderNodeIds?.filter(Boolean) ?? [];
+      const selectedNodes = selectedNodeIds.length > 0
+        ? nodes.filter((node) => selectedNodeIds.includes(node.id))
+        : nodes;
+      const missingNodeIds = selectedNodeIds.filter((id) => !nodes.some((node) => node.id === id));
+
+      if (missingNodeIds.length > 0) {
+        return json(response, 422, {
+          error: "unknown_sender_nodes",
+          missingNodeIds
+        });
+      }
+
+      const plan = buildNfcBridgeCapacityPlan({
+        senderNodes: selectedNodes,
+        actorId: body?.actorId,
+        providerNamePrefix: body?.providerNamePrefix,
+        emailFromName: body?.emailFromName,
+        emailsPerMinute: body?.emailsPerMinute
+      });
+
+      await auditLog.append({
+        actorType: "operator",
+        actorId: plan.actorId,
+        action: "nfc_bridge.capacity_plan_generated",
+        targetType: "nfc_bridge_plan",
+        targetId: plan.id,
+        riskLevel: plan.summary.blocked > 0 || plan.summary.needsReview > 0 ? "medium" : "low",
+        metadata: {
+          dryRun: true,
+          nfcProductionWritesEnabled: false,
+          providersToCreate: plan.summary.providersToCreate,
+          smtpServersToCreate: plan.summary.smtpServersToCreate,
+          blockedOperations: plan.blockedOperations
+        }
+      });
+
+      return json(response, 200, plan);
     }
 
     if (request.method === "GET" && request.url === "/v1/audit-events") {

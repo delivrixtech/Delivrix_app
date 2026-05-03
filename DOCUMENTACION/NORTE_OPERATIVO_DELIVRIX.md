@@ -109,9 +109,10 @@ Contratos minimos:
 1. Fase 1: nucleo seguro local, policy engine, audit log y cola simulada.
 2. Fase 2: Webdock bridge seguro para continuidad y visibilidad.
 3. Fase 3: Proxmox/provisioning mock, reputacion, cuarentena y backups simulados.
-4. Fase 4: OpenClaw read-only/supervised, onboarding, topology planner y NFC bridge mock.
-5. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad; NFC envia.
-6. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
+4. Hito 4.0: alineacion control plane, frontera de acciones y NFC bridge mock.
+5. Fase 4: OpenClaw read-only/supervised, onboarding, topology planner y contrato NFC.
+6. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad; NFC envia.
+7. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
 
 ## Criterio de claridad
 

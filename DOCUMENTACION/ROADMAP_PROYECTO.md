@@ -188,6 +188,8 @@ Periodo sugerido: 2026-05-25 a 2026-05-31
 
 Documento operativo de fase: `FASE_4_OPENCLAW_NFC_INTEGRACION.md`.
 
+Hito previo obligatorio: `HITO_4_0_ALINEACION_CONTROL_PLANE.md`.
+
 ### Objetivo
 
 Construir la primera version de OpenClaw como operador autonomo nivel 2 con permisos acotados, empezando en modo read-only/dry-run y alineado con el sistema NFC ya existente.
@@ -201,6 +203,12 @@ Ajuste tras lectura de repos NFC:
 
 ### Entregables tecnicos
 
+- Hito 4.0:
+  - contrato de norte operativo en dominio.
+  - endpoint `GET /v1/operating-north`.
+  - bridge NFC mock para planes de capacidad.
+  - endpoint `POST /v1/nfc/bridge/capacity-plan`.
+  - worker local reencuadrado como control-worker.
 - Contrato NFC read-only:
   - mapa `nfc-gateway`, `nfc-worker`, `nfc-frontend`.
   - contrato `email_providers`.
