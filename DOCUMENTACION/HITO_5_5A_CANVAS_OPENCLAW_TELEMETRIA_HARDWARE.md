@@ -277,9 +277,13 @@ Luego el frontend React puede renderizar:
 - dominio para hardware inventory;
 - dominio para telemetry snapshot;
 - dominio para OpenClaw canvas graph;
+- contratos ML/readiness signals;
+- contrato DevOps collector status;
 - endpoints `GET`;
 - datos mock seguros;
 - tests.
+
+Detalle: `HITO_5_6_CONTRATOS_CANVAS_HARDWARE_ML_DEVOPS.md`.
 
 ### Hito 5.7: UI React base con canvas
 

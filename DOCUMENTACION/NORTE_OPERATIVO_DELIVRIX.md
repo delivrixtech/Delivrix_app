@@ -12,6 +12,8 @@ OpenClaw es la IA operativa de Delivrix. Su primer trabajo es hacer onboarding i
 
 Su aprendizaje inicial es supervisado: evidencia curada, auditoria, dry-runs, evaluaciones y feedback humano. No hay auto-entrenamiento ni promocion automatica de capacidades en el MVP.
 
+El frontend debe poder mostrar a OpenClaw en modo silencioso o en canvas vivo, pero siempre consumiendo contratos del Gateway. La UI no mide hardware, no ejecuta comandos y no decide permisos.
+
 NFC es un sistema externo de referencia que podria conectarse mas adelante por API/bridge. No dirige el MVP actual.
 
 ## Regla principal
@@ -131,8 +133,9 @@ Contratos minimos para una fase futura:
 12. Hito 5.2: OpenClaw detecta incidente simulado, propone accion, respeta runbook/kill switch y aplica solo estado local aprobado.
 13. Hito 5.3: reporte final sponsor-ready con evidencia, riesgos residuales y ruta condicionada a produccion limitada.
 14. Hito 5.4A-5.4C: panel read-only, workflow backend, clusters/VPS y aprendizaje OpenClaw desde contratos del Gateway.
-15. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
-16. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
+15. Hito 5.5-5.6: auditoria frontend, canvas vivo, telemetria hardware y contratos ML/DevOps read-only.
+16. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
+17. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
 
 ## Criterio de claridad
 

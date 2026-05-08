@@ -336,6 +336,11 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - telemetria de servidor fisico: CPU, RAM, storage, red, energia y sensores disponibles.
   - contratos read-only para hardware/canvas.
   - OpenClaw visible o silencioso, siempre sin live actions en MVP.
+- Hito 5.6:
+  - contratos read-only versionados para hardware, telemetria, canvas, onboarding/provisioning state, readiness ML y collector DevOps.
+  - DTOs con `schemaVersion`, `source`, `quality`, `safety`, `unknown` y `stale`.
+  - endpoints `GET` consumibles por frontend sin reglas de dominio en UI.
+  - base para React Flow, TanStack Query, ML explanations y observabilidad DevOps.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

@@ -27,6 +27,7 @@ Hito admin panel workflow: `HITO_5_4B_ADMIN_PANEL_WORKFLOW.md`.
 Hito admin clusters/aprendizaje: `HITO_5_4C_ADMIN_CLUSTERS_OPENCLAW_LEARNING.md`.
 Hito auditoria frontend/UI: `HITO_5_5_AUDITORIA_FRONTEND_UI_PROCESOS.md`.
 Hito canvas/telemetria: `HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md`.
+Hito contratos canvas/hardware/ML/DevOps: `HITO_5_6_CONTRATOS_CANVAS_HARDWARE_ML_DEVOPS.md`.
 
 Regla principal: en la fase actual, Delivrix/OpenClaw prepara infraestructura propia de mailing sobre servidor fisico. NFC u otros sistemas externos quedan como integraciones futuras opcionales, no como dependencia del MVP.
 
@@ -215,6 +216,7 @@ Documento operativo: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
 - Admin panel clusters/aprendizaje Hito 5.4C que expone `GET /v1/admin/clusters` y `GET /v1/openclaw/learning-plan` para reducir hardcoding en frontend.
 - Auditoria frontend Hito 5.5 que define procesos UI, brechas y migracion profesional a React/Vite/TypeScript.
 - Canvas/telemetria Hito 5.5A que define OpenClaw visible en vivo y medicion read-only de hardware del servidor fisico.
+- Contratos Hito 5.6 que conectan frontend, dominio, OpenClaw/ML y DevOps collector con DTOs versionados y seguros.
 
 ## Ruta meses 2-5
 
