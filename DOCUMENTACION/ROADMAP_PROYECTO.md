@@ -326,6 +326,11 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - aprendizaje supervisado OpenClaw por evidencia curada.
   - endpoint `GET /v1/openclaw/learning-plan`.
   - UI consume rutas desde Gateway y no guarda reglas de dominio.
+- Hito 5.5:
+  - auditoria frontend por procesos.
+  - mapa de pantallas primera version.
+  - diagnostico de deuda UI actual.
+  - ruta de migracion a React/Vite/TypeScript sin romper contratos backend.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

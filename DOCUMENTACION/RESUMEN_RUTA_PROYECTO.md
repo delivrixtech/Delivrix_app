@@ -25,6 +25,7 @@ Hito admin panel visual: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
 Hito admin panel read-only: `HITO_5_4A_ADMIN_PANEL_READ_ONLY.md`.
 Hito admin panel workflow: `HITO_5_4B_ADMIN_PANEL_WORKFLOW.md`.
 Hito admin clusters/aprendizaje: `HITO_5_4C_ADMIN_CLUSTERS_OPENCLAW_LEARNING.md`.
+Hito auditoria frontend/UI: `HITO_5_5_AUDITORIA_FRONTEND_UI_PROCESOS.md`.
 
 Regla principal: en la fase actual, Delivrix/OpenClaw prepara infraestructura propia de mailing sobre servidor fisico. NFC u otros sistemas externos quedan como integraciones futuras opcionales, no como dependencia del MVP.
 
@@ -211,6 +212,7 @@ Documento operativo: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
 - Admin panel read-only Hito 5.4A que crea `apps/admin-panel`, consume solo endpoints `GET` y bloquea metodos de escritura en el proxy local.
 - Admin panel workflow Hito 5.4B que expone desde backend la ruta operacional que debe seguir la UI.
 - Admin panel clusters/aprendizaje Hito 5.4C que expone `GET /v1/admin/clusters` y `GET /v1/openclaw/learning-plan` para reducir hardcoding en frontend.
+- Auditoria frontend Hito 5.5 que define procesos UI, brechas y migracion profesional a React/Vite/TypeScript.
 
 ## Ruta meses 2-5
 
