@@ -157,6 +157,7 @@ Subhito implementado:
 - `HITO_5_4B_ADMIN_PANEL_WORKFLOW.md`: workflow operativo expuesto por backend para evitar rutas hardcodeadas en frontend.
 - `HITO_5_4C_ADMIN_CLUSTERS_OPENCLAW_LEARNING.md`: contratos backend para clusters/VPS y aprendizaje supervisado OpenClaw, consumidos por el panel.
 - `HITO_5_5_AUDITORIA_FRONTEND_UI_PROCESOS.md`: auditoria senior de UI por procesos y ruta de migracion frontend profesional.
+- `HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md`: canvas vivo OpenClaw y telemetria de servidor fisico como requisito de UI/producto.
 
 ## Criterio de salida de Fase 5
 
@@ -171,4 +172,5 @@ Fase 5 queda lista si:
 - el panel visual tiene arquitectura documentada y no mezcla UI con reglas de dominio;
 - el panel lee clusters/VPS y aprendizaje OpenClaw desde contratos backend;
 - la primera version frontend tiene mapa de procesos, brechas y ruta tecnica clara;
+- el onboarding visual contempla canvas OpenClaw y telemetria hardware read-only;
 - queda clara la ruta hacia ejecucion limitada futura.

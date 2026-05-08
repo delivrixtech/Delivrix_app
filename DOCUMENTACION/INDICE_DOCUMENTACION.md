@@ -34,6 +34,7 @@ Para evitar confusion, leer en este orden:
 - `HITO_5_4B_ADMIN_PANEL_WORKFLOW.md`
 - `HITO_5_4C_ADMIN_CLUSTERS_OPENCLAW_LEARNING.md`
 - `HITO_5_5_AUDITORIA_FRONTEND_UI_PROCESOS.md`
+- `HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md`
 
 ## Politica anti-repeticion
 

@@ -331,6 +331,11 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - mapa de pantallas primera version.
   - diagnostico de deuda UI actual.
   - ruta de migracion a React/Vite/TypeScript sin romper contratos backend.
+- Hito 5.5A:
+  - canvas vivo para OpenClaw.
+  - telemetria de servidor fisico: CPU, RAM, storage, red, energia y sensores disponibles.
+  - contratos read-only para hardware/canvas.
+  - OpenClaw visible o silencioso, siempre sin live actions en MVP.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

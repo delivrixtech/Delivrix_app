@@ -36,8 +36,11 @@ Pero aun no cumple el estandar frontend final:
 - no hay contratos tipados/schemas compartidos para DTO frontend;
 - no hay pruebas visuales desktop/mobile;
 - faltan pantallas dedicadas para Jobs, Warming/Reputation y Onboarding.
+- falta una pantalla de canvas vivo OpenClaw con telemetria del servidor fisico y progreso de configuracion.
 
 Decision: conservar el panel actual como prototipo validado y planear una migracion controlada a frontend profesional.
+
+Complemento obligatorio: `HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md` define el canvas vivo, la telemetria de hardware y como OpenClaw debe mostrarse trabajando por debajo o visualmente.
 
 ## Mapa de procesos de la primera version
 
@@ -46,7 +49,9 @@ Decision: conservar el panel actual como prototipo validado y planear una migrac
 | Ruta operativa | Que debo revisar primero? | Command center con secuencia, estado y siguiente paso | Implementado basico |
 | Overview | El sistema esta sano o critico? | KPIs, alertas, distribuciones, resumen ejecutivo | Implementado basico |
 | OpenClaw | Que puede observar/proponer la IA? | Capacidades, gates, permisos, modo actual | Implementado basico |
+| Canvas OpenClaw | Que esta configurando o analizando ahora? | Grafo vivo, timeline, evidencia, bloqueos y aprobaciones | Falta pantalla |
 | Onboarding | Que datos faltan del servidor fisico? | Checklist inteligente, readiness, preguntas y bloqueos | Falta pantalla |
+| Hardware | Como esta el servidor fisico? | CPU, RAM, storage, red, energia, sensores, capacidad disponible | Falta pantalla |
 | Clusters/VPS | Que infraestructura administrara OpenClaw? | Clusters, VPS/LXC, capacidad, gates, acciones propuestas | Implementado basico |
 | Sender nodes | Que nodos requieren accion? | Tabla densa, health, warming, reputacion, recomendaciones | Implementado basico |
 | Jobs/resultados | Que esta en cola y que resultados hay? | Cola, estados, resultados simulados, errores | Falta pantalla dedicada |
@@ -313,14 +318,16 @@ Orden principal:
 2. Overview.
 3. OpenClaw.
 4. Onboarding.
-5. Clusters/VPS.
-6. Sender Nodes.
-7. Jobs.
-8. Reputation/Warming.
-9. Audit.
-10. Learning/Evals.
-11. Reports.
-12. Safety.
+5. Canvas OpenClaw.
+6. Hardware.
+7. Clusters/VPS.
+8. Sender Nodes.
+9. Jobs.
+10. Reputation/Warming.
+11. Audit.
+12. Learning/Evals.
+13. Reports.
+14. Safety.
 
 ### Layout
 
