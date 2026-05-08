@@ -161,6 +161,7 @@ Subhito implementado:
 - `HITO_5_6_CONTRATOS_CANVAS_HARDWARE_ML_DEVOPS.md`: contratos read-only para canvas, hardware, ML/OpenClaw y DevOps collector.
 - `HITO_5_7_ADMIN_PANEL_REACT_CANVAS.md`: migracion del panel a React/Vite/TypeScript y render de canvas/hardware desde contratos 5.6.
 - `HITO_5_8_COLLECTOR_SUPERVISADO_READ_ONLY.md`: collector supervisado read-only con fuentes, permisos, frescura, auditoria y seccion UI dedicada.
+- `HITO_5_9_INGESTA_MANUAL_SNAPSHOT_UX.md`: ingesta manual auditada de snapshot redaccionado, hash, parser seguro y UX contract-first sin `POST` desde el panel.
 
 ## Criterio de salida de Fase 5
 
@@ -179,4 +180,6 @@ Fase 5 queda lista si:
 - existen contratos claros para que frontend consuma hardware/canvas/ML/DevOps sin inventar estado;
 - el panel React renderiza canvas y hardware desde Gateway con frontera `GET-only`;
 - el collector supervisado declara fuentes y bloqueos antes de reemplazar mocks por evidencia real;
+- la ingesta manual de snapshots queda auditada, redaccionada y fuera de la UI de escritura;
+- las mejoras UX se hacen desde contratos backend, no con estado hardcodeado;
 - queda clara la ruta hacia ejecucion limitada futura.

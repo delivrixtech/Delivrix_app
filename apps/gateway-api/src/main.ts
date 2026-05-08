@@ -14,6 +14,7 @@ import {
   buildAdminPanelWorkflow,
   buildBackupPlan,
   buildDevOpsCollectorStatus,
+  buildManualCollectorSnapshotIngestionContract,
   buildHardwareTelemetryHistory,
   buildHardwareTelemetrySnapshot,
   buildOperationalSummary,
@@ -34,6 +35,8 @@ import {
   evaluateSenderNodeRetirementApproval,
   evaluateSendResultIngestion,
   evaluateOpenClawOnboarding,
+  evaluateOperatingActionGate,
+  ingestManualCollectorSnapshot,
   isSenderNodeManualAction,
   buildDelivrixMvpDemoBlueprint,
   buildNfcBridgeCapacityPlan,
@@ -133,7 +136,7 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "5.8-supervised-collector-read-only",
+          currentMilestone: "5.9-manual-snapshot-ingestion-ux",
           adminClusterOverviewEnabled: true,
           learningPlanEnabled: true,
           physicalHostContractEnabled: true,
@@ -144,6 +147,8 @@ const server = createServer(async (request, response) => {
           readinessSignalsEnabled: true,
           devOpsCollectorStatusEnabled: true,
           supervisedCollectorPlanEnabled: true,
+          manualSnapshotIngestionContractEnabled: true,
+          manualSnapshotIngestionEnabled: true,
           onboardingEnabled: true,
           topologyPlannerEnabled: true,
           provisioningDryRunEnabled: true,
@@ -1357,6 +1362,46 @@ const server = createServer(async (request, response) => {
         supervisedCollector: buildSupervisedCollectorPlan({
           now: new Date()
         })
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/devops/collector/snapshot-ingestion") {
+      return json(response, 200, {
+        snapshotIngestion: buildManualCollectorSnapshotIngestionContract({
+          now: new Date()
+        })
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/devops/collector/manual-snapshots/ingest") {
+      const body = await readOptionalJson<{
+        actorId?: string;
+        humanApproved?: boolean;
+        snapshot?: unknown;
+      }>(request);
+      const gate = evaluateOperatingActionGate({
+        action: "ingest_manual_collector_snapshot",
+        mode: "supervised",
+        humanApproved: body?.humanApproved === true
+      });
+
+      if (!gate.allowed) {
+        return json(response, 403, {
+          error: "manual_snapshot_ingestion_blocked",
+          gate
+        });
+      }
+
+      const ingestion = ingestManualCollectorSnapshot({
+        actorId: body?.actorId?.trim() || "operator_local",
+        rawSnapshot: body && "snapshot" in body ? body.snapshot : body,
+        now: new Date()
+      });
+      const auditEvent = await auditLog.append(ingestion.auditEventCandidate);
+
+      return json(response, ingestion.status === "rejected" ? 422 : 202, {
+        ingestion,
+        auditEvent
       });
     }
 

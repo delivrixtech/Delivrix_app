@@ -275,8 +275,10 @@ function HardwareSection({ data }: { data: DashboardData }) {
 
 function CollectorSection({ data }: { data: DashboardData }) {
   const collector = data.supervisedCollector;
+  const ingestion = data.snapshotIngestion;
   const blockedSources = collector.sources.filter((source) => source.status === "blocked").length;
   const reviewSources = collector.sources.filter((source) => source.status === "needs_review").length;
+  const requiredFields = ingestion.acceptedFieldPaths.filter((field) => field.requiredFor !== "optional");
 
   return (
     <section className="page-stack">
@@ -285,7 +287,7 @@ function CollectorSection({ data }: { data: DashboardData }) {
         <MetricCard label="Estado" value={compactLabel(collector.status)} tone={stateTone(collector.status)} meta="readiness plan" />
         <MetricCard label="Fuentes" value={formatNumber(collector.sources.length)} tone="neutral" meta={`${formatNumber(blockedSources)} bloqueadas`} />
         <MetricCard label="Fresh" value={formatNumber(collector.freshness.freshSources)} tone={collector.freshness.freshSources > 0 ? "success" : "warning"} meta={`${formatNumber(collector.freshness.unknownSources)} unknown`} />
-        <MetricCard label="Writes" value={collector.ingestionPolicy.acceptsLiveMutation ? "enabled" : "disabled"} tone={collector.ingestionPolicy.acceptsLiveMutation ? "critical" : "success"} meta="read-only gate" />
+        <MetricCard label="UI POST" value={ingestion.uiPolicy.adminPanelCanPost ? "enabled" : "disabled"} tone={ingestion.uiPolicy.adminPanelCanPost ? "critical" : "success"} meta="admin boundary" />
       </section>
       <section className="collector-grid">
         <section className="panel collector-main-panel">
@@ -331,6 +333,35 @@ function CollectorSection({ data }: { data: DashboardData }) {
           <TokenGroup title="Next safe actions" items={collector.nextSafeActions} />
           <TokenGroup title="Blocked actions" items={collector.blockedActions} />
         </aside>
+      </section>
+      <section className="panel">
+        <PanelHeader title="Snapshot manual" badge={ingestion.snapshotSchemaVersion} />
+        <section className="snapshot-contract-grid">
+          <div className="snapshot-contract-column">
+            <DefinitionGrid rows={[
+              ["Endpoint", `${ingestion.manualEndpoint.method} ${ingestion.manualEndpoint.path}`],
+              ["Visible en panel", ingestion.manualEndpoint.exposedInAdminPanel ? "yes" : "no"],
+              ["Aprobacion", ingestion.manualEndpoint.requiresHumanApproval ? "required" : "not required"],
+              ["Raw payload", ingestion.manualEndpoint.storesRawPayload ? "stored" : "not stored"],
+              ["UI mode", ingestion.uiPolicy.adminPanelShowsContractOnly ? "contract only" : "interactive"]
+            ]} />
+            <TokenGroup title="Required signals" items={requiredFields.map((field) => `${field.path} -> ${field.mapsTo}`)} />
+          </div>
+          <div className="snapshot-contract-column">
+            <DefinitionGrid rows={[
+              ["Redact before hash", ingestion.redactionPolicy.redactsBeforeHash ? "yes" : "no"],
+              ["Stores raw secrets", ingestion.redactionPolicy.storesRawSecrets ? "yes" : "no"],
+              ["Parser outputs", ingestion.parserOutputs.join(", ")],
+              ["Panel methods", ingestion.uiPolicy.allowedPanelMethods.join(", ")]
+            ]} />
+            <TokenGroup title="Rejected keys" items={ingestion.redactionPolicy.rejectedKeys} />
+          </div>
+          <div className="snapshot-contract-column">
+            <TokenGroup title="Gates" items={ingestion.gates} />
+            <TokenGroup title="Next safe actions" items={ingestion.nextSafeActions} />
+            <TokenGroup title="Blocked actions" items={ingestion.blockedActions} />
+          </div>
+        </section>
       </section>
     </section>
   );

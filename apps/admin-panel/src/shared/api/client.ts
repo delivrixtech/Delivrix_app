@@ -445,6 +445,44 @@ export interface SupervisedCollectorPayload {
   };
 }
 
+export interface SnapshotIngestionPayload {
+  snapshotIngestion: ContractBase & {
+    status: ContractStatus;
+    snapshotSchemaVersion: string;
+    manualEndpoint: {
+      method: "POST";
+      path: string;
+      exposedInAdminPanel: boolean;
+      requiresHumanApproval: boolean;
+      storesRawPayload: boolean;
+    };
+    uiPolicy: {
+      adminPanelCanPost: boolean;
+      adminPanelCanUploadFiles: boolean;
+      adminPanelShowsContractOnly: boolean;
+      allowedPanelMethods: string[];
+      manualIngestionRequiresExternalOperatorAction: boolean;
+    };
+    acceptedFieldPaths: Array<{
+      path: string;
+      type: string;
+      mapsTo: string;
+      requiredFor: string;
+    }>;
+    redactionPolicy: {
+      rejectsSecretLikeKeys: boolean;
+      storesRawSecrets: boolean;
+      rejectedKeys: string[];
+      rejectedKeyPatterns: string[];
+      redactsBeforeHash: boolean;
+    };
+    parserOutputs: string[];
+    gates: string[];
+    nextSafeActions: string[];
+    blockedActions: string[];
+  };
+}
+
 export interface DashboardData {
   health: HealthPayload;
   operatingNorth: OperatingNorthPayload;
@@ -462,6 +500,7 @@ export interface DashboardData {
   readinessSignals: ReadinessSignalsPayload["signals"];
   collector: CollectorStatusPayload["collector"];
   supervisedCollector: SupervisedCollectorPayload["supervisedCollector"];
+  snapshotIngestion: SnapshotIngestionPayload["snapshotIngestion"];
 }
 
 export async function loadDashboardData(): Promise<DashboardData> {
@@ -470,6 +509,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
     adminClusters,
     adminOverview,
     adminWorkflow,
+    collectorSnapshotIngestion,
     collectorStatus,
     collectorSupervisedPlan,
     hardwarePhysicalHost,
@@ -487,6 +527,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
     getJson<ClusterOverviewPayload>(READ_ENDPOINTS.adminClusters),
     getJson<AdminOverviewPayload>(READ_ENDPOINTS.adminOverview),
     getJson<WorkflowPayload>(READ_ENDPOINTS.adminWorkflow),
+    getJson<SnapshotIngestionPayload>(READ_ENDPOINTS.collectorSnapshotIngestion),
     getJson<CollectorStatusPayload>(READ_ENDPOINTS.collectorStatus),
     getJson<SupervisedCollectorPayload>(READ_ENDPOINTS.collectorSupervisedPlan),
     getJson<PhysicalHostPayload>(READ_ENDPOINTS.hardwarePhysicalHost),
@@ -506,6 +547,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
     clusters: adminClusters.clusterOverview,
     overview: adminOverview.overview,
     workflow: adminWorkflow.workflow,
+    snapshotIngestion: collectorSnapshotIngestion.snapshotIngestion,
     collector: collectorStatus.collector,
     supervisedCollector: collectorSupervisedPlan.supervisedCollector,
     physicalHost: hardwarePhysicalHost.physicalHost,

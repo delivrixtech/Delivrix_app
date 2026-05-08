@@ -2,6 +2,7 @@ export type OperatingAction =
   | "build_admin_cluster_overview"
   | "build_openclaw_learning_plan"
   | "read_devops_collector_status"
+  | "read_collector_snapshot_ingestion_contract"
   | "read_supervised_collector_plan"
   | "read_hardware_telemetry_contract"
   | "read_openclaw_live_canvas"
@@ -20,6 +21,7 @@ export type OperatingAction =
   | "build_capacity_plan"
   | "build_nfc_bridge_payload"
   | "ingest_observed_result"
+  | "ingest_manual_collector_snapshot"
   | "register_local_sender_node"
   | "simulate_provisioning"
   | "activate_nfc_provider"
@@ -48,7 +50,7 @@ export interface OperatingActionGateDecision {
 
 export interface OperatingNorthSnapshot {
   sourceOfTruth: "NORTE_OPERATIVO_DELIVRIX.md";
-  phase: "5.8-supervised-collector-read-only";
+  phase: "5.9-manual-snapshot-ingestion-ux";
   delivrixRole: "control_plane";
   nfcRole: "future_optional_external_integration";
   openClawRole: "intelligent_cluster_operator_read_only";
@@ -65,6 +67,7 @@ const allowedActions: OperatingAction[] = [
   "build_admin_cluster_overview",
   "build_openclaw_learning_plan",
   "read_devops_collector_status",
+  "read_collector_snapshot_ingestion_contract",
   "read_supervised_collector_plan",
   "read_hardware_telemetry_contract",
   "read_openclaw_live_canvas",
@@ -83,6 +86,7 @@ const allowedActions: OperatingAction[] = [
   "build_capacity_plan",
   "build_nfc_bridge_payload",
   "ingest_observed_result",
+  "ingest_manual_collector_snapshot",
   "register_local_sender_node",
   "simulate_provisioning"
 ];
@@ -100,7 +104,7 @@ const blockedActions: OperatingAction[] = [
 export function getOperatingNorthSnapshot(): OperatingNorthSnapshot {
   return {
     sourceOfTruth: "NORTE_OPERATIVO_DELIVRIX.md",
-    phase: "5.8-supervised-collector-read-only",
+    phase: "5.9-manual-snapshot-ingestion-ux",
     delivrixRole: "control_plane",
     nfcRole: "future_optional_external_integration",
     openClawRole: "intelligent_cluster_operator_read_only",
@@ -119,6 +123,8 @@ export function getOperatingNorthSnapshot(): OperatingNorthSnapshot {
       "devops_collector_must_declare_source_freshness",
       "supervised_collector_sources_require_read_only_scope",
       "collector_snapshots_must_be_redacted_and_audited",
+      "manual_snapshot_ingestion_requires_supervised_human_approval",
+      "admin_panel_must_not_post_manual_snapshots",
       "ml_readiness_signals_must_not_self_promote",
       "openclaw_onboarding_before_topology_planner",
       "topology_plan_before_provisioning_dry_run",
@@ -147,11 +153,31 @@ export function getOperatingNorthSnapshot(): OperatingNorthSnapshot {
 export function evaluateOperatingActionGate(
   input: OperatingActionGateInput
 ): OperatingActionGateDecision {
+  if (input.action === "ingest_manual_collector_snapshot") {
+    if (input.mode === "supervised" && input.humanApproved) {
+      return {
+        allowed: true,
+        requiresHumanApproval: true,
+        reason: "Manual collector snapshot ingestion is allowed only as a supervised operator action with audit and redaction.",
+        blockedBy: [],
+        riskLevel: "medium"
+      };
+    }
+
+    return {
+      allowed: false,
+      requiresHumanApproval: true,
+      reason: "Manual collector snapshot ingestion requires supervised mode and explicit human approval.",
+      blockedBy: ["human_approval_required", "manual_snapshot_ingestion_gate"],
+      riskLevel: "medium"
+    };
+  }
+
   if (allowedActions.includes(input.action) && (input.mode === "read_only" || input.mode === "dry_run")) {
     return {
       allowed: true,
       requiresHumanApproval: false,
-      reason: "Action is inside the Delivrix control-plane boundary for Hito 5.8.",
+      reason: "Action is inside the Delivrix control-plane boundary for Hito 5.9.",
       blockedBy: [],
       riskLevel: "low"
     };
@@ -171,8 +197,8 @@ export function evaluateOperatingActionGate(
     return {
       allowed: false,
       requiresHumanApproval: true,
-    reason: "Action is outside Hito 5.8. Delivrix may not perform real sending, live infrastructure mutation, or NFC production writes yet.",
-    blockedBy: ["north_operating_boundary", "phase_5_8_gate"],
+      reason: "Action is outside Hito 5.9. Delivrix may not perform real sending, live infrastructure mutation, or NFC production writes yet.",
+      blockedBy: ["north_operating_boundary", "phase_5_9_gate"],
       riskLevel: "critical"
     };
   }

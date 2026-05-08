@@ -353,6 +353,12 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - politica de ingestion/auditoria para snapshots redaccionados.
   - seccion `Collector` en admin panel para ver frescura, bloqueos, gates y siguientes acciones seguras.
   - sigue sin SSH automatico, Proxmox writes, DNS live, SMTP real ni NFC writes.
+- Hito 5.9:
+  - contrato `GET /v1/devops/collector/snapshot-ingestion`.
+  - endpoint manual backend `POST /v1/devops/collector/manual-snapshots/ingest`, no expuesto en el admin panel.
+  - redaccion de secretos antes de hash y auditoria.
+  - parser seguro hacia contratos `physicalHost` y `telemetry`.
+  - guia UX contract-first para mejorar visualmente sin hardcoding ni reglas de negocio en frontend.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

@@ -30,6 +30,8 @@ Hito canvas/telemetria: `HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md`.
 Hito contratos canvas/hardware/ML/DevOps: `HITO_5_6_CONTRATOS_CANVAS_HARDWARE_ML_DEVOPS.md`.
 Hito admin panel React/canvas: `HITO_5_7_ADMIN_PANEL_REACT_CANVAS.md`.
 Hito collector supervisado read-only: `HITO_5_8_COLLECTOR_SUPERVISADO_READ_ONLY.md`.
+Hito ingesta manual snapshot/UX: `HITO_5_9_INGESTA_MANUAL_SNAPSHOT_UX.md`.
+Guia frontend contract-first: `FRONTEND_UX_CONTRACT_GUIDE.md`.
 
 Regla principal: en la fase actual, Delivrix/OpenClaw prepara infraestructura propia de mailing sobre servidor fisico. NFC u otros sistemas externos quedan como integraciones futuras opcionales, no como dependencia del MVP.
 
@@ -221,6 +223,7 @@ Documento operativo: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
 - Contratos Hito 5.6 que conectan frontend, dominio, OpenClaw/ML y DevOps collector con DTOs versionados, endpoints `GET` y proxy read-only.
 - Admin panel React Hito 5.7 que migra la UI a React/Vite/TypeScript y renderiza canvas/hardware consumiendo contratos 5.6.
 - Collector supervisado Hito 5.8 que declara fuentes local/Proxmox/Prometheus/IPMI, permisos read-only, frescura, auditoria y UI propia sin live writes.
+- Ingesta manual Hito 5.9 que permite snapshot local redaccionado, hash SHA-256, parser a `physicalHost`/`telemetry`, auditoria append-only y panel UX contract-first sin `POST`.
 
 ## Ruta meses 2-5
 

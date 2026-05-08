@@ -184,7 +184,7 @@ Hito 5.8 queda cerrado si:
 
 ## Que sigue
 
-Hito 5.9 recomendado:
+Hito 5.9 implementado en `HITO_5_9_INGESTA_MANUAL_SNAPSHOT_UX.md`:
 
 - ingestion manual auditada de un snapshot local redaccionado;
 - hash y audit event del snapshot;

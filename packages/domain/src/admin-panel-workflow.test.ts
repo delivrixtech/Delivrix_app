@@ -14,7 +14,7 @@ test("builds the admin panel workflow as a GET-only route contract", () => {
   });
 
   assert.equal(workflow.generatedAt, "2026-05-03T20:00:00.000Z");
-  assert.equal(workflow.phase, "5.8-supervised-collector-read-only");
+  assert.equal(workflow.phase, "5.9-manual-snapshot-ingestion-ux");
   assert.equal(workflow.mode, "read_only");
   assert.deepEqual(workflow.readBoundary.allowedMethods, ["GET"]);
   assert.deepEqual(workflow.readBoundary.blockedMethods, ["POST", "PUT", "PATCH", "DELETE"]);
@@ -23,6 +23,7 @@ test("builds the admin panel workflow as a GET-only route contract", () => {
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/hardware/physical-host"));
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/openclaw/live-canvas"));
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/devops/collector/status"));
+  assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/devops/collector/snapshot-ingestion"));
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/devops/collector/supervised-plan"));
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/openclaw/learning-plan"));
   assert.ok(workflow.steps.find((step) => step.id === "openclaw")?.dataSources.includes("/v1/openclaw/readiness-signals"));
@@ -140,7 +141,7 @@ function overviewFixture(state: AdminOverview["state"]): AdminOverview {
 function northFixture(): OperatingNorthSnapshot {
   return {
     sourceOfTruth: "NORTE_OPERATIVO_DELIVRIX.md",
-    phase: "5.8-supervised-collector-read-only",
+    phase: "5.9-manual-snapshot-ingestion-ux",
     delivrixRole: "control_plane",
     nfcRole: "future_optional_external_integration",
     openClawRole: "intelligent_cluster_operator_read_only",

@@ -134,8 +134,9 @@ Contratos minimos para una fase futura:
 13. Hito 5.3: reporte final sponsor-ready con evidencia, riesgos residuales y ruta condicionada a produccion limitada.
 14. Hito 5.4A-5.4C: panel read-only, workflow backend, clusters/VPS y aprendizaje OpenClaw desde contratos del Gateway.
 15. Hito 5.5-5.6: auditoria frontend, canvas vivo, telemetria hardware y contratos ML/DevOps read-only.
-16. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
-17. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
+16. Hito 5.7-5.9: panel React contract-first, collector supervisado e ingesta manual auditada sin mutaciones desde UI.
+17. Fase 5: demo end-to-end sin ambiguedad: Delivrix gobierna capacidad preparada.
+18. Fases posteriores: ejecucion real gradual, siempre por gates y evidencia.
 
 ## Criterio de claridad
 

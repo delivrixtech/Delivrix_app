@@ -5,10 +5,10 @@ import {
   getOperatingNorthSnapshot
 } from "./operating-north.ts";
 
-test("defines Delivrix as control plane and Hito 5.8 collector as current phase", () => {
+test("defines Delivrix as control plane and Hito 5.9 snapshot ingestion as current phase", () => {
   const snapshot = getOperatingNorthSnapshot();
 
-  assert.equal(snapshot.phase, "5.8-supervised-collector-read-only");
+  assert.equal(snapshot.phase, "5.9-manual-snapshot-ingestion-ux");
   assert.equal(snapshot.delivrixRole, "control_plane");
   assert.equal(snapshot.openClawRole, "intelligent_cluster_operator_read_only");
   assert.equal(snapshot.nfcRole, "future_optional_external_integration");
@@ -25,6 +25,7 @@ test("allows canvas, hardware, ML and collector contracts in read-only mode", ()
     "read_openclaw_state_contracts",
     "read_openclaw_readiness_signals",
     "read_devops_collector_status",
+    "read_collector_snapshot_ingestion_contract",
     "read_supervised_collector_plan"
   ] as const;
 
@@ -153,7 +154,26 @@ test("allows dry-run bridge payload generation", () => {
   assert.equal(decision.riskLevel, "low");
 });
 
-test("blocks real email sending in Hito 5.8", () => {
+test("manual collector snapshot ingestion requires supervised human approval", () => {
+  const blockedDecision = evaluateOperatingActionGate({
+    action: "ingest_manual_collector_snapshot",
+    mode: "read_only"
+  });
+  const approvedDecision = evaluateOperatingActionGate({
+    action: "ingest_manual_collector_snapshot",
+    mode: "supervised",
+    humanApproved: true
+  });
+
+  assert.equal(blockedDecision.allowed, false);
+  assert.equal(blockedDecision.requiresHumanApproval, true);
+  assert.deepEqual(blockedDecision.blockedBy, ["human_approval_required", "manual_snapshot_ingestion_gate"]);
+  assert.equal(approvedDecision.allowed, true);
+  assert.equal(approvedDecision.requiresHumanApproval, true);
+  assert.equal(approvedDecision.riskLevel, "medium");
+});
+
+test("blocks real email sending in Hito 5.9", () => {
   const decision = evaluateOperatingActionGate({
     action: "send_email_real",
     mode: "live",
@@ -162,5 +182,5 @@ test("blocks real email sending in Hito 5.8", () => {
 
   assert.equal(decision.allowed, false);
   assert.equal(decision.riskLevel, "critical");
-  assert.deepEqual(decision.blockedBy, ["north_operating_boundary", "phase_5_8_gate"]);
+  assert.deepEqual(decision.blockedBy, ["north_operating_boundary", "phase_5_9_gate"]);
 });

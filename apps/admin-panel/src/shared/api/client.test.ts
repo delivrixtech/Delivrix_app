@@ -12,6 +12,7 @@ test("admin panel exposes only approved GET endpoints", () => {
     "/v1/admin/clusters",
     "/v1/admin/overview",
     "/v1/admin/workflow",
+    "/v1/devops/collector/snapshot-ingestion",
     "/v1/devops/collector/status",
     "/v1/devops/collector/supervised-plan",
     "/v1/hardware/physical-host",
@@ -41,5 +42,6 @@ test("admin panel has no write endpoint constants", () => {
     assert.ok(!endpoint.includes("seed"));
     assert.ok(!endpoint.includes("evaluate"));
     assert.ok(!endpoint.includes("dry-run"));
+    assert.ok(!endpoint.includes("manual-snapshots"));
   }
 });

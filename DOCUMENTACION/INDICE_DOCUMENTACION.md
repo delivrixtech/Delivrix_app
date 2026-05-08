@@ -38,6 +38,8 @@ Para evitar confusion, leer en este orden:
 - `HITO_5_6_CONTRATOS_CANVAS_HARDWARE_ML_DEVOPS.md`
 - `HITO_5_7_ADMIN_PANEL_REACT_CANVAS.md`
 - `HITO_5_8_COLLECTOR_SUPERVISADO_READ_ONLY.md`
+- `HITO_5_9_INGESTA_MANUAL_SNAPSHOT_UX.md`
+- `FRONTEND_UX_CONTRACT_GUIDE.md`
 
 ## Politica anti-repeticion
 

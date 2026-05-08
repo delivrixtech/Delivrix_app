@@ -32,7 +32,7 @@ export interface AdminPanelWorkflowStep {
 
 export interface AdminPanelWorkflow {
   generatedAt: string;
-  phase: "5.8-supervised-collector-read-only";
+  phase: "5.9-manual-snapshot-ingestion-ux";
   mode: "read_only";
   title: "Ruta operativa del panel Delivrix";
   summary: string;
@@ -57,6 +57,7 @@ const allowedEndpoints = [
   "/v1/admin/clusters",
   "/v1/admin/workflow",
   "/v1/devops/collector/status",
+  "/v1/devops/collector/snapshot-ingestion",
   "/v1/devops/collector/supervised-plan",
   "/v1/hardware/physical-host",
   "/v1/hardware/telemetry/latest",
@@ -123,6 +124,7 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
         "/v1/openclaw/provisioning/state",
         "/v1/openclaw/readiness-signals",
         "/v1/devops/collector/status",
+        "/v1/devops/collector/snapshot-ingestion",
         "/v1/devops/collector/supervised-plan"
       ],
       evidenceToShow: [
@@ -151,6 +153,7 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
       purpose: "Exponer fuentes, permisos minimos, frescura, redaccion y auditoria del collector.",
       dataSources: [
         "/v1/devops/collector/status",
+        "/v1/devops/collector/snapshot-ingestion",
         "/v1/devops/collector/supervised-plan",
         "/v1/hardware/physical-host",
         "/v1/hardware/telemetry/latest"
@@ -160,6 +163,9 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
         "permisos read-only",
         "frescura por fuente",
         "blockedBy por fuente",
+        "contrato de snapshot manual",
+        "schema de campos aceptados",
+        "reporte de redaccion y hash",
         "politica de auditoria",
         "acciones bloqueadas"
       ],
@@ -289,10 +295,10 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
 
   return {
     generatedAt: (input.now ?? new Date()).toISOString(),
-    phase: "5.8-supervised-collector-read-only",
+    phase: "5.9-manual-snapshot-ingestion-ux",
     mode: "read_only",
     title: "Ruta operativa del panel Delivrix",
-    summary: "El panel guia al operador desde canvas/hardware y collector supervisado hasta gates de seguridad, sin ejecutar mutaciones desde UI.",
+    summary: "El panel guia al operador desde canvas/hardware y collector supervisado hasta ingesta manual auditada, sin ejecutar mutaciones desde UI.",
     readBoundary: {
       allowedMethods: ["GET"],
       blockedMethods: ["POST", "PUT", "PATCH", "DELETE"],
