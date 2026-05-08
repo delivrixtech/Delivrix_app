@@ -1,6 +1,6 @@
 # Delivrix Admin Panel
 
-Read-only frontend shell for the Delivrix control plane.
+React/Vite read-only frontend for the Delivrix control plane.
 
 ## Boundary
 
@@ -9,12 +9,13 @@ Read-only frontend shell for the Delivrix control plane.
 - The panel never reads `runtime/` files.
 - The panel never imports backend domain services.
 - The panel does not send email, run SSH, mutate DNS, mutate Proxmox or write to NFC.
+- Runtime data comes from Gateway contracts. The frontend does not calculate readiness, permissions or safety gates.
 
 ## Local run
 
 ```bash
-node apps/gateway-api/src/main.ts
-node apps/admin-panel/server.mjs
+npm run dev:gateway
+npm run dev:admin
 ```
 
 Open:
@@ -23,20 +24,25 @@ Open:
 http://127.0.0.1:5173
 ```
 
-The local server serves static frontend files and proxies only `GET` requests to Gateway:
+Vite serves the React app and proxies only approved `GET` requests to Gateway. The approved boundary lives in:
 
-- `GET /health`
-- `GET /v1/admin/clusters`
-- `GET /v1/admin/overview`
-- `GET /v1/admin/workflow`
-- `GET /v1/openclaw/learning-plan`
-- `GET /v1/operating-north`
-- `GET /v1/kill-switch`
+```txt
+src/shared/api/read-boundary.ts
+```
 
 Any non-GET request through the panel proxy returns `405`.
+
+## Build and serve
+
+```bash
+npm --workspace @delivrix/admin-panel run build
+npm run serve:admin
+```
+
+`server.mjs` serves the built `dist/` bundle and keeps the same `GET-only` proxy boundary.
 
 ## Check
 
 ```bash
-node --test apps/admin-panel/src/shared/api/client.test.mjs apps/admin-panel/src/shared/lib/formatters.test.mjs
+npm --workspace @delivrix/admin-panel run check
 ```

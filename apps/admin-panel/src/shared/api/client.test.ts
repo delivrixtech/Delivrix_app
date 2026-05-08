@@ -4,7 +4,7 @@ import {
   assertReadEndpoint,
   listReadEndpoints,
   READ_ENDPOINTS
-} from "./client.js";
+} from "./client.ts";
 
 test("admin panel exposes only approved GET endpoints", () => {
   assert.deepEqual(listReadEndpoints().sort(), [
@@ -38,5 +38,7 @@ test("admin panel has no write endpoint constants", () => {
     assert.ok(!endpoint.includes("final-report"));
     assert.ok(!endpoint.includes("recover"));
     assert.ok(!endpoint.includes("seed"));
+    assert.ok(!endpoint.includes("evaluate"));
+    assert.ok(!endpoint.includes("dry-run"));
   }
 });

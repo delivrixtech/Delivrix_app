@@ -12,10 +12,11 @@
   },
   "scripts": {
     "test": "node --test packages/domain/src/*.test.ts packages/adapters/src/*.test.ts",
-    "test:admin": "node --test apps/admin-panel/src/shared/api/client.test.mjs apps/admin-panel/src/shared/lib/formatters.test.mjs",
+    "test:admin": "npm --workspace @delivrix/admin-panel run check",
     "dev:gateway": "node apps/gateway-api/src/main.ts",
     "dev:worker": "node apps/worker/src/main.ts",
-    "dev:admin": "node apps/admin-panel/server.mjs"
+    "dev:admin": "npm --workspace @delivrix/admin-panel run dev",
+    "serve:admin": "npm --workspace @delivrix/admin-panel run serve"
   },
   "workspaces": [
     "apps/*",

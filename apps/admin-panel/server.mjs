@@ -1,4 +1,4 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -8,7 +8,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.ADMIN_PANEL_PORT ?? 5173);
 const host = process.env.ADMIN_PANEL_HOST ?? "127.0.0.1";
 const gatewayOrigin = process.env.ADMIN_PANEL_GATEWAY_ORIGIN ?? "http://127.0.0.1:3000";
-const staticRoot = __dirname;
+const distRoot = path.join(__dirname, "dist");
+const staticRoot = existsSync(path.join(distRoot, "index.html")) ? distRoot : __dirname;
 
 const allowedProxyPaths = new Set([
   "/health",
@@ -48,6 +49,7 @@ const server = createServer(async (request, response) => {
 server.listen(port, host, () => {
   console.log(`admin-panel listening on http://${host}:${port}`);
   console.log(`admin-panel proxying GET requests to ${gatewayOrigin}`);
+  console.log(`admin-panel serving static files from ${staticRoot}`);
 });
 
 async function proxyGatewayGet(request, response, requestUrl) {

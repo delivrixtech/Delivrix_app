@@ -341,6 +341,12 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - DTOs con `schemaVersion`, `source`, `quality`, `safety`, `unknown` y `stale`.
   - endpoints `GET` consumibles por frontend sin reglas de dominio en UI.
   - base para React Flow, TanStack Query, ML explanations y observabilidad DevOps.
+- Hito 5.7:
+  - migracion del admin panel a React, Vite y TypeScript.
+  - TanStack Query para server state.
+  - React Flow para renderizar el canvas vivo desde `GET /v1/openclaw/live-canvas`.
+  - vista hardware consumiendo contratos `physical-host`, `telemetry/latest` y `collector/status`.
+  - proxy y cliente mantienen frontera `GET-only`.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

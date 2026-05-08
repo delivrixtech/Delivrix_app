@@ -235,6 +235,12 @@ h3 {
   font-weight: 700;
 }
 
+.nav-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .sidebar-foot {
   display: grid;
   gap: 10px;
@@ -275,6 +281,35 @@ h3 {
   border-color: var(--blue);
   color: var(--blue);
   outline: none;
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.icon-button:hover,
+.icon-button:focus-visible {
+  border-color: var(--blue);
+  color: var(--blue);
+  outline: none;
+}
+
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .metric-grid {
@@ -656,6 +691,7 @@ h3 {
 .definition-row {
   display: inline-flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   min-height: 32px;
   padding: 4px 8px;
@@ -667,6 +703,151 @@ h3 {
 .definition-row span {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.definition-row strong {
+  color: var(--text);
+  font-size: 12px;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.canvas-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 12px;
+  min-height: 620px;
+}
+
+.flow-panel,
+.side-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.flow-panel {
+  min-width: 0;
+  min-height: 620px;
+  overflow: hidden;
+}
+
+.flow-panel .react-flow {
+  min-height: 620px;
+}
+
+.side-panel {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  padding: 16px;
+}
+
+.flow-node {
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.flow-node-success {
+  border-color: #bfe5ca;
+}
+
+.flow-node-warning {
+  border-color: #ead9a6;
+}
+
+.flow-node-critical {
+  border-color: #e8c2bd;
+}
+
+.flow-node-card {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding: 10px;
+  color: var(--text);
+}
+
+.flow-node-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.flow-node-card p {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.flow-metrics {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.timeline-list,
+.signal-list {
+  display: grid;
+  gap: 10px;
+}
+
+.timeline-item,
+.signal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  min-height: 58px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border-strong);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.timeline-success,
+.signal-success {
+  border-left-color: var(--green);
+}
+
+.timeline-warning,
+.signal-warning {
+  border-left-color: var(--amber);
+}
+
+.timeline-critical,
+.signal-critical {
+  border-left-color: var(--red);
+}
+
+.timeline-item p,
+.signal-row p,
+.empty-inline {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.signal-row span {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.blocker-box {
+  display: grid;
+  gap: 8px;
+}
+
+.react-flow__attribution {
+  display: none;
 }
 
 .skeleton-grid {
@@ -704,8 +885,13 @@ h3 {
 
 @media (max-width: 1040px) {
   .metric-grid,
-  .two-column {
+  .two-column,
+  .canvas-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .canvas-layout {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -751,8 +937,18 @@ h3 {
 
   .metric-grid,
   .two-column,
+  .canvas-layout,
   .skeleton-grid {
     grid-template-columns: 1fr;
+  }
+
+  .flow-panel,
+  .canvas-layout {
+    min-height: 540px;
+  }
+
+  .flow-panel .react-flow {
+    min-height: 540px;
   }
 
   .page-title-row,
