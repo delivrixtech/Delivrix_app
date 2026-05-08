@@ -14,12 +14,17 @@ test("builds the admin panel workflow as a GET-only route contract", () => {
   });
 
   assert.equal(workflow.generatedAt, "2026-05-03T20:00:00.000Z");
+  assert.equal(workflow.phase, "5.6-canvas-hardware-ml-devops-contracts");
   assert.equal(workflow.mode, "read_only");
   assert.deepEqual(workflow.readBoundary.allowedMethods, ["GET"]);
   assert.deepEqual(workflow.readBoundary.blockedMethods, ["POST", "PUT", "PATCH", "DELETE"]);
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/admin/workflow"));
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/admin/clusters"));
+  assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/hardware/physical-host"));
+  assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/openclaw/live-canvas"));
+  assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/devops/collector/status"));
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/openclaw/learning-plan"));
+  assert.ok(workflow.steps.find((step) => step.id === "openclaw")?.dataSources.includes("/v1/openclaw/readiness-signals"));
   assert.equal(workflow.steps[0]?.id, "workflow");
   assert.equal(workflow.steps.at(-1)?.id, "safety");
   assert.ok(workflow.steps.some((step) => step.id === "clusters"));
@@ -133,7 +138,7 @@ function overviewFixture(state: AdminOverview["state"]): AdminOverview {
 function northFixture(): OperatingNorthSnapshot {
   return {
     sourceOfTruth: "NORTE_OPERATIVO_DELIVRIX.md",
-    phase: "5.4C-admin-cluster-learning-contracts",
+    phase: "5.6-canvas-hardware-ml-devops-contracts",
     delivrixRole: "control_plane",
     nfcRole: "future_optional_external_integration",
     openClawRole: "intelligent_cluster_operator_read_only",

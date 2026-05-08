@@ -31,7 +31,7 @@ export interface AdminPanelWorkflowStep {
 
 export interface AdminPanelWorkflow {
   generatedAt: string;
-  phase: "5.4C-admin-panel-workflow";
+  phase: "5.6-canvas-hardware-ml-devops-contracts";
   mode: "read_only";
   title: "Ruta operativa del panel Delivrix";
   summary: string;
@@ -55,7 +55,15 @@ const allowedEndpoints = [
   "/v1/admin/overview",
   "/v1/admin/clusters",
   "/v1/admin/workflow",
+  "/v1/devops/collector/status",
+  "/v1/hardware/physical-host",
+  "/v1/hardware/telemetry/latest",
+  "/v1/hardware/telemetry/history",
   "/v1/openclaw/learning-plan",
+  "/v1/openclaw/live-canvas",
+  "/v1/openclaw/onboarding/state",
+  "/v1/openclaw/provisioning/state",
+  "/v1/openclaw/readiness-signals",
   "/v1/operating-north",
   "/v1/kill-switch"
 ];
@@ -104,10 +112,23 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
       navLabel: "OpenClaw",
       title: "OpenClaw y gates",
       operatorQuestion: "Que puede observar o proponer OpenClaw sin ejecutar acciones reales?",
-      purpose: "Exponer capacidades, bloqueos y gates del operador inteligente.",
-      dataSources: ["/health", "/v1/operating-north"],
+      purpose: "Exponer canvas, capacidades, bloqueos y gates del operador inteligente.",
+      dataSources: [
+        "/health",
+        "/v1/operating-north",
+        "/v1/openclaw/live-canvas",
+        "/v1/openclaw/onboarding/state",
+        "/v1/openclaw/provisioning/state",
+        "/v1/openclaw/readiness-signals",
+        "/v1/devops/collector/status"
+      ],
       evidenceToShow: [
         "fase actual",
+        "canvas vivo",
+        "estado onboarding",
+        "estado provisioning",
+        "senales ML/readiness",
+        "frescura collector",
         "acciones permitidas",
         "acciones bloqueadas",
         "gates"
@@ -125,8 +146,10 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
       title: "Clusters y VPS",
       operatorQuestion: "Que clusters/VPS debe administrar OpenClaw en modo supervisado?",
       purpose: "Mostrar inventario, capacidad y frontera de administracion de infraestructura.",
-      dataSources: ["/v1/admin/clusters"],
+      dataSources: ["/v1/admin/clusters", "/v1/hardware/physical-host", "/v1/hardware/telemetry/latest"],
       evidenceToShow: [
+        "servidor fisico",
+        "telemetria hardware",
         "clusters",
         "sender nodes por proveedor",
         "provisioning dry-runs",
@@ -236,10 +259,10 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
 
   return {
     generatedAt: (input.now ?? new Date()).toISOString(),
-    phase: "5.4C-admin-panel-workflow",
+    phase: "5.6-canvas-hardware-ml-devops-contracts",
     mode: "read_only",
     title: "Ruta operativa del panel Delivrix",
-    summary: "El panel guia al operador desde estado general hasta gates de seguridad, sin ejecutar mutaciones desde UI.",
+    summary: "El panel guia al operador desde canvas/hardware hasta gates de seguridad, sin ejecutar mutaciones desde UI.",
     readBoundary: {
       allowedMethods: ["GET"],
       blockedMethods: ["POST", "PUT", "PATCH", "DELETE"],

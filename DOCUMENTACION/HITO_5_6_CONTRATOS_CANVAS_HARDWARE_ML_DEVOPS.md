@@ -128,6 +128,26 @@ GET /v1/devops/collector/status
 
 Todos deben estar disponibles primero con datos mock/local seguros.
 
+## Estado de implementacion
+
+Implementado en codigo:
+
+- contratos base con `schemaVersion`, `generatedAt`, `mode`, `source`, `quality` y `safety`;
+- builders puros para physical host, telemetry latest/history, live canvas, onboarding state, provisioning state, readiness signals y collector status;
+- endpoints `GET` en Gateway para los ocho contratos del hito;
+- proxy read-only del admin panel actualizado para permitir solo esos endpoints;
+- pruebas de dominio que validan estados `unknown/stale/mock`, seguridad apagada, ausencia de self-promotion ML y canvas sin acciones live.
+
+Estado operacional:
+
+- modo actual: `mock/read_only`;
+- sin SSH automatico;
+- sin Proxmox live mutation;
+- sin DNS live changes;
+- sin SMTP real;
+- sin escrituras NFC;
+- sin auto-entrenamiento.
+
 ## Contrato: physical host
 
 `GET /v1/hardware/physical-host`

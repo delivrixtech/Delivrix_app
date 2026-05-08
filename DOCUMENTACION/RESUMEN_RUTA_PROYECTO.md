@@ -216,7 +216,7 @@ Documento operativo: `HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`.
 - Admin panel clusters/aprendizaje Hito 5.4C que expone `GET /v1/admin/clusters` y `GET /v1/openclaw/learning-plan` para reducir hardcoding en frontend.
 - Auditoria frontend Hito 5.5 que define procesos UI, brechas y migracion profesional a React/Vite/TypeScript.
 - Canvas/telemetria Hito 5.5A que define OpenClaw visible en vivo y medicion read-only de hardware del servidor fisico.
-- Contratos Hito 5.6 que conectan frontend, dominio, OpenClaw/ML y DevOps collector con DTOs versionados y seguros.
+- Contratos Hito 5.6 que conectan frontend, dominio, OpenClaw/ML y DevOps collector con DTOs versionados, endpoints `GET` y proxy read-only.
 
 ## Ruta meses 2-5
 

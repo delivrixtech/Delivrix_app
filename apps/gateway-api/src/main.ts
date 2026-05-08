@@ -13,12 +13,20 @@ import {
   buildAdminClusterOverview,
   buildAdminPanelWorkflow,
   buildBackupPlan,
+  buildDevOpsCollectorStatus,
+  buildHardwareTelemetryHistory,
+  buildHardwareTelemetrySnapshot,
   buildOperationalSummary,
   buildDelivrixMvpDemoRunReport,
   createId,
+  buildOpenClawLiveCanvas,
   buildOpenClawIncidentDemoReport,
   buildOpenClawLearningPlan,
   buildMvpFinalDemoReport,
+  buildOpenClawOnboardingState,
+  buildOpenClawProvisioningState,
+  buildOpenClawReadinessSignals,
+  buildPhysicalHostSnapshot,
   evaluateSenderNodeHealth,
   evaluateIpReputation,
   evaluateKillSwitch,
@@ -124,9 +132,16 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "5.4C-admin-cluster-learning-contracts",
+          currentMilestone: "5.6-canvas-hardware-ml-devops-contracts",
           adminClusterOverviewEnabled: true,
           learningPlanEnabled: true,
+          physicalHostContractEnabled: true,
+          hardwareTelemetryContractEnabled: true,
+          liveCanvasContractEnabled: true,
+          onboardingStateContractEnabled: true,
+          provisioningStateContractEnabled: true,
+          readinessSignalsEnabled: true,
+          devOpsCollectorStatusEnabled: true,
           onboardingEnabled: true,
           topologyPlannerEnabled: true,
           provisioningDryRunEnabled: true,
@@ -1274,6 +1289,95 @@ const server = createServer(async (request, response) => {
 
       return json(response, 200, {
         runbook
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/hardware/physical-host") {
+      return json(response, 200, {
+        physicalHost: buildPhysicalHostSnapshot()
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/hardware/telemetry/latest") {
+      return json(response, 200, {
+        telemetry: buildHardwareTelemetrySnapshot()
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/hardware/telemetry/history") {
+      return json(response, 200, {
+        history: buildHardwareTelemetryHistory()
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/openclaw/onboarding/state") {
+      const now = new Date();
+      const snapshot = evaluateOpenClawOnboarding({
+        actorId: "openclaw-read-model"
+      }, now);
+
+      return json(response, 200, {
+        onboardingState: buildOpenClawOnboardingState({
+          snapshot,
+          now
+        })
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/openclaw/provisioning/state") {
+      return json(response, 200, {
+        provisioningState: buildOpenClawProvisioningState()
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/openclaw/readiness-signals") {
+      const now = new Date();
+      const physicalHost = buildPhysicalHostSnapshot({ now });
+      const telemetry = buildHardwareTelemetrySnapshot({ now });
+
+      return json(response, 200, {
+        signals: buildOpenClawReadinessSignals({
+          physicalHost,
+          telemetry,
+          now
+        })
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/devops/collector/status") {
+      return json(response, 200, {
+        collector: buildDevOpsCollectorStatus()
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/openclaw/live-canvas") {
+      const now = new Date();
+      const physicalHost = buildPhysicalHostSnapshot({ now });
+      const telemetry = buildHardwareTelemetrySnapshot({ now });
+      const onboardingState = buildOpenClawOnboardingState({
+        snapshot: evaluateOpenClawOnboarding({
+          actorId: "openclaw-read-model"
+        }, now),
+        now
+      });
+      const provisioningState = buildOpenClawProvisioningState({ now });
+      const readinessSignals = buildOpenClawReadinessSignals({
+        physicalHost,
+        telemetry,
+        now
+      });
+      const collector = buildDevOpsCollectorStatus({ now });
+
+      return json(response, 200, {
+        canvas: buildOpenClawLiveCanvas({
+          physicalHost,
+          telemetry,
+          onboardingState,
+          provisioningState,
+          readinessSignals,
+          collector,
+          now
+        })
       });
     }
 

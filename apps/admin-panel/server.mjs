@@ -15,7 +15,15 @@ const allowedProxyPaths = new Set([
   "/v1/admin/clusters",
   "/v1/admin/overview",
   "/v1/admin/workflow",
+  "/v1/devops/collector/status",
+  "/v1/hardware/physical-host",
+  "/v1/hardware/telemetry/history",
+  "/v1/hardware/telemetry/latest",
   "/v1/openclaw/learning-plan",
+  "/v1/openclaw/live-canvas",
+  "/v1/openclaw/onboarding/state",
+  "/v1/openclaw/provisioning/state",
+  "/v1/openclaw/readiness-signals",
   "/v1/operating-north",
   "/v1/kill-switch"
 ]);
