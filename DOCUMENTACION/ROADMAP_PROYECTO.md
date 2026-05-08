@@ -359,6 +359,11 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - redaccion de secretos antes de hash y auditoria.
   - parser seguro hacia contratos `physicalHost` y `telemetry`.
   - guia UX contract-first para mejorar visualmente sin hardcoding ni reglas de negocio en frontend.
+- Hito 5.10:
+  - Claude actua como senior frontend owner para UX/UI profesional.
+  - Codex conserva rol de full stack gatekeeper para arquitectura, contratos, seguridad, tests, documentacion y GitHub.
+  - rama recomendada `claude/hito-5-10-frontend-ux`, nunca directo sobre `main`.
+  - mejoras visuales solo contract-first, sin hardcoding operativo ni mutaciones desde UI.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

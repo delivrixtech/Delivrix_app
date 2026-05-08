@@ -162,6 +162,7 @@ Subhito implementado:
 - `HITO_5_7_ADMIN_PANEL_REACT_CANVAS.md`: migracion del panel a React/Vite/TypeScript y render de canvas/hardware desde contratos 5.6.
 - `HITO_5_8_COLLECTOR_SUPERVISADO_READ_ONLY.md`: collector supervisado read-only con fuentes, permisos, frescura, auditoria y seccion UI dedicada.
 - `HITO_5_9_INGESTA_MANUAL_SNAPSHOT_UX.md`: ingesta manual auditada de snapshot redaccionado, hash, parser seguro y UX contract-first sin `POST` desde el panel.
+- `HITO_5_10_FRONTEND_UX_CLAUDE.md`: colaboracion Codex/Claude para que Claude actue como senior frontend owner y Codex preserve arquitectura, contratos, seguridad y validacion.
 
 ## Criterio de salida de Fase 5
 
@@ -182,4 +183,5 @@ Fase 5 queda lista si:
 - el collector supervisado declara fuentes y bloqueos antes de reemplazar mocks por evidencia real;
 - la ingesta manual de snapshots queda auditada, redaccionada y fuera de la UI de escritura;
 - las mejoras UX se hacen desde contratos backend, no con estado hardcodeado;
+- la colaboracion Codex/Claude queda documentada para mejorar UI sin romper contratos ni flujo de GitHub;
 - queda clara la ruta hacia ejecucion limitada futura.

@@ -4,6 +4,8 @@ Fecha: 2026-05-08
 
 Objetivo: permitir mejoras visuales profesionales del admin panel sin hardcodear datos, permisos, estados ni decisiones de dominio.
 
+Documento de colaboracion Codex/Claude: `HITO_5_10_FRONTEND_UX_CLAUDE.md`.
+
 ## Regla principal
 
 El frontend muestra y organiza informacion. El backend decide.
@@ -167,6 +169,7 @@ No agregar botones de accion real hasta tener:
 Antes de proponer cambios visuales:
 
 - leer `RESUMEN_RUTA_PROYECTO.md`;
+- leer `HITO_5_10_FRONTEND_UX_CLAUDE.md`;
 - leer este documento;
 - leer `client.ts` y `read-boundary.ts`;
 - no agregar datos constantes de negocio en componentes;
