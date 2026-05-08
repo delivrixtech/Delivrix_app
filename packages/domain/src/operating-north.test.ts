@@ -5,10 +5,10 @@ import {
   getOperatingNorthSnapshot
 } from "./operating-north.ts";
 
-test("defines Delivrix as control plane and Hito 5.6 contracts as current phase", () => {
+test("defines Delivrix as control plane and Hito 5.8 collector as current phase", () => {
   const snapshot = getOperatingNorthSnapshot();
 
-  assert.equal(snapshot.phase, "5.6-canvas-hardware-ml-devops-contracts");
+  assert.equal(snapshot.phase, "5.8-supervised-collector-read-only");
   assert.equal(snapshot.delivrixRole, "control_plane");
   assert.equal(snapshot.openClawRole, "intelligent_cluster_operator_read_only");
   assert.equal(snapshot.nfcRole, "future_optional_external_integration");
@@ -24,7 +24,8 @@ test("allows canvas, hardware, ML and collector contracts in read-only mode", ()
     "read_openclaw_live_canvas",
     "read_openclaw_state_contracts",
     "read_openclaw_readiness_signals",
-    "read_devops_collector_status"
+    "read_devops_collector_status",
+    "read_supervised_collector_plan"
   ] as const;
 
   for (const action of actions) {
@@ -152,7 +153,7 @@ test("allows dry-run bridge payload generation", () => {
   assert.equal(decision.riskLevel, "low");
 });
 
-test("blocks real email sending in Hito 5.6", () => {
+test("blocks real email sending in Hito 5.8", () => {
   const decision = evaluateOperatingActionGate({
     action: "send_email_real",
     mode: "live",
@@ -161,5 +162,5 @@ test("blocks real email sending in Hito 5.6", () => {
 
   assert.equal(decision.allowed, false);
   assert.equal(decision.riskLevel, "critical");
-  assert.deepEqual(decision.blockedBy, ["north_operating_boundary", "phase_5_6_gate"]);
+  assert.deepEqual(decision.blockedBy, ["north_operating_boundary", "phase_5_8_gate"]);
 });

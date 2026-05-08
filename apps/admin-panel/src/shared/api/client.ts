@@ -391,6 +391,60 @@ export interface CollectorStatusPayload {
   };
 }
 
+export interface SupervisedCollectorPayload {
+  supervisedCollector: ContractBase & {
+    collectorMode: "supervised_read_only";
+    status: ContractStatus;
+    sources: Array<{
+      id: string;
+      kind: string;
+      label: string;
+      purpose: string;
+      status: ContractStatus;
+      readOnly: boolean;
+      minimumPermission: string;
+      expectedSignals: string[];
+      safeCollection: {
+        transport: string;
+        requiresSecret: boolean;
+        writesEnabled: boolean;
+        commandPreview: string | null;
+        endpoint: string | null;
+      };
+      freshness: {
+        lastCollectedAt: string | null;
+        maxAgeSeconds: number;
+        stale: boolean;
+      };
+      blockedBy: string[];
+    }>;
+    ingestionPolicy: {
+      acceptsManualSnapshot: boolean;
+      acceptsLiveMutation: boolean;
+      requiresOperatorApprovalForSourceChange: boolean;
+      storesRawSecrets: boolean;
+      snapshotSchemaVersion: string;
+    };
+    auditPolicy: {
+      appendOnly: boolean;
+      redactsSecrets: boolean;
+      snapshotHashRequired: boolean;
+      retainedFields: string[];
+      rejectedFields: string[];
+    };
+    freshness: {
+      freshSources: number;
+      staleSources: number;
+      unknownSources: number;
+      lastCollectedAt: string | null;
+      staleAfterSeconds: number;
+    };
+    gates: string[];
+    nextSafeActions: string[];
+    blockedActions: string[];
+  };
+}
+
 export interface DashboardData {
   health: HealthPayload;
   operatingNorth: OperatingNorthPayload;
@@ -407,6 +461,7 @@ export interface DashboardData {
   provisioningState: OpenClawProvisioningStatePayload["provisioningState"];
   readinessSignals: ReadinessSignalsPayload["signals"];
   collector: CollectorStatusPayload["collector"];
+  supervisedCollector: SupervisedCollectorPayload["supervisedCollector"];
 }
 
 export async function loadDashboardData(): Promise<DashboardData> {
@@ -416,6 +471,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
     adminOverview,
     adminWorkflow,
     collectorStatus,
+    collectorSupervisedPlan,
     hardwarePhysicalHost,
     hardwareTelemetryHistory,
     hardwareTelemetryLatest,
@@ -432,6 +488,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
     getJson<AdminOverviewPayload>(READ_ENDPOINTS.adminOverview),
     getJson<WorkflowPayload>(READ_ENDPOINTS.adminWorkflow),
     getJson<CollectorStatusPayload>(READ_ENDPOINTS.collectorStatus),
+    getJson<SupervisedCollectorPayload>(READ_ENDPOINTS.collectorSupervisedPlan),
     getJson<PhysicalHostPayload>(READ_ENDPOINTS.hardwarePhysicalHost),
     getJson<HardwareTelemetryHistoryPayload>(READ_ENDPOINTS.hardwareTelemetryHistory),
     getJson<HardwareTelemetryPayload>(READ_ENDPOINTS.hardwareTelemetryLatest),
@@ -450,6 +507,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
     overview: adminOverview.overview,
     workflow: adminWorkflow.workflow,
     collector: collectorStatus.collector,
+    supervisedCollector: collectorSupervisedPlan.supervisedCollector,
     physicalHost: hardwarePhysicalHost.physicalHost,
     telemetryHistory: hardwareTelemetryHistory.history,
     telemetry: hardwareTelemetryLatest.telemetry,

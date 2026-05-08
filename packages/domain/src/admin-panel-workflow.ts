@@ -6,6 +6,7 @@ export type AdminPanelWorkflowStepId =
   | "workflow"
   | "overview"
   | "openclaw"
+  | "collector"
   | "clusters"
   | "fleet"
   | "audit"
@@ -31,7 +32,7 @@ export interface AdminPanelWorkflowStep {
 
 export interface AdminPanelWorkflow {
   generatedAt: string;
-  phase: "5.6-canvas-hardware-ml-devops-contracts";
+  phase: "5.8-supervised-collector-read-only";
   mode: "read_only";
   title: "Ruta operativa del panel Delivrix";
   summary: string;
@@ -56,6 +57,7 @@ const allowedEndpoints = [
   "/v1/admin/clusters",
   "/v1/admin/workflow",
   "/v1/devops/collector/status",
+  "/v1/devops/collector/supervised-plan",
   "/v1/hardware/physical-host",
   "/v1/hardware/telemetry/latest",
   "/v1/hardware/telemetry/history",
@@ -120,7 +122,8 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
         "/v1/openclaw/onboarding/state",
         "/v1/openclaw/provisioning/state",
         "/v1/openclaw/readiness-signals",
-        "/v1/devops/collector/status"
+        "/v1/devops/collector/status",
+        "/v1/devops/collector/supervised-plan"
       ],
       evidenceToShow: [
         "fase actual",
@@ -137,11 +140,38 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
       statusReason: input.operatingNorth.liveInfrastructureWritesEnabled
         ? "Live infrastructure writes are enabled and violate MVP visual boundary."
         : "Live infrastructure writes remain blocked.",
+      nextStepId: "collector"
+    },
+    {
+      id: "collector",
+      order: 4,
+      navLabel: "Collector",
+      title: "Collector supervisado",
+      operatorQuestion: "Que evidencia read-only falta antes de reemplazar mocks?",
+      purpose: "Exponer fuentes, permisos minimos, frescura, redaccion y auditoria del collector.",
+      dataSources: [
+        "/v1/devops/collector/status",
+        "/v1/devops/collector/supervised-plan",
+        "/v1/hardware/physical-host",
+        "/v1/hardware/telemetry/latest"
+      ],
+      evidenceToShow: [
+        "fuentes locales/proxmox/prometheus/ipmi",
+        "permisos read-only",
+        "frescura por fuente",
+        "blockedBy por fuente",
+        "politica de auditoria",
+        "acciones bloqueadas"
+      ],
+      status: input.operatingNorth.liveInfrastructureWritesEnabled ? "blocked" : "needs_review",
+      statusReason: input.operatingNorth.liveInfrastructureWritesEnabled
+        ? "Live infrastructure writes are enabled and violate collector boundary."
+        : "Supervised collector is ready as a read-only plan but still needs real source evidence.",
       nextStepId: "clusters"
     },
     {
       id: "clusters",
-      order: 4,
+      order: 5,
       navLabel: "Clusters",
       title: "Clusters y VPS",
       operatorQuestion: "Que clusters/VPS debe administrar OpenClaw en modo supervisado?",
@@ -163,7 +193,7 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
     },
     {
       id: "fleet",
-      order: 5,
+      order: 6,
       navLabel: "Sender nodes",
       title: "Sender nodes",
       operatorQuestion: "Que nodos requieren atencion antes de cualquier escalamiento?",
@@ -181,7 +211,7 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
     },
     {
       id: "audit",
-      order: 6,
+      order: 7,
       navLabel: "Auditoria",
       title: "Auditoria reciente",
       operatorQuestion: "Que evidencia explica el estado actual?",
@@ -202,7 +232,7 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
     },
     {
       id: "learning",
-      order: 7,
+      order: 8,
       navLabel: "Aprendizaje",
       title: "Aprendizaje OpenClaw",
       operatorQuestion: "Como OpenClaw aprende sin auto-entrenarse ni ejecutar acciones reales?",
@@ -222,7 +252,7 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
     },
     {
       id: "reports",
-      order: 8,
+      order: 9,
       navLabel: "Reportes",
       title: "Reportes y evidencia MVP",
       operatorQuestion: "Que puede mostrarse sin generar nuevos efectos desde UI?",
@@ -239,7 +269,7 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
     },
     {
       id: "safety",
-      order: 9,
+      order: 10,
       navLabel: "Seguridad",
       title: "Seguridad operacional",
       operatorQuestion: "Que sigue apagado por diseno?",
@@ -259,10 +289,10 @@ export function buildAdminPanelWorkflow(input: AdminPanelWorkflowInput): AdminPa
 
   return {
     generatedAt: (input.now ?? new Date()).toISOString(),
-    phase: "5.6-canvas-hardware-ml-devops-contracts",
+    phase: "5.8-supervised-collector-read-only",
     mode: "read_only",
     title: "Ruta operativa del panel Delivrix",
-    summary: "El panel guia al operador desde canvas/hardware hasta gates de seguridad, sin ejecutar mutaciones desde UI.",
+    summary: "El panel guia al operador desde canvas/hardware y collector supervisado hasta gates de seguridad, sin ejecutar mutaciones desde UI.",
     readBoundary: {
       allowedMethods: ["GET"],
       blockedMethods: ["POST", "PUT", "PATCH", "DELETE"],

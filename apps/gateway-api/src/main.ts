@@ -41,6 +41,7 @@ import {
   buildOpenClawProvisioningDryRun,
   runOpenClawScheduler,
   buildOpenClawTopologyPlan,
+  buildSupervisedCollectorPlan,
   getOpenClawOnboardingQuestionnaire,
   getOperatingNorthSnapshot,
   requestRateLimitRules,
@@ -132,7 +133,7 @@ const server = createServer(async (request, response) => {
           liveInfrastructureWritesEnabled: operatingNorth.liveInfrastructureWritesEnabled
         },
         openClaw: {
-          currentMilestone: "5.6-canvas-hardware-ml-devops-contracts",
+          currentMilestone: "5.8-supervised-collector-read-only",
           adminClusterOverviewEnabled: true,
           learningPlanEnabled: true,
           physicalHostContractEnabled: true,
@@ -142,6 +143,7 @@ const server = createServer(async (request, response) => {
           provisioningStateContractEnabled: true,
           readinessSignalsEnabled: true,
           devOpsCollectorStatusEnabled: true,
+          supervisedCollectorPlanEnabled: true,
           onboardingEnabled: true,
           topologyPlannerEnabled: true,
           provisioningDryRunEnabled: true,
@@ -1347,6 +1349,14 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/v1/devops/collector/status") {
       return json(response, 200, {
         collector: buildDevOpsCollectorStatus()
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/devops/collector/supervised-plan") {
+      return json(response, 200, {
+        supervisedCollector: buildSupervisedCollectorPlan({
+          now: new Date()
+        })
       });
     }
 

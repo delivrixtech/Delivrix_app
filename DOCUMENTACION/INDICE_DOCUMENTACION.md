@@ -37,6 +37,7 @@ Para evitar confusion, leer en este orden:
 - `HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md`
 - `HITO_5_6_CONTRATOS_CANVAS_HARDWARE_ML_DEVOPS.md`
 - `HITO_5_7_ADMIN_PANEL_REACT_CANVAS.md`
+- `HITO_5_8_COLLECTOR_SUPERVISADO_READ_ONLY.md`
 
 ## Politica anti-repeticion
 

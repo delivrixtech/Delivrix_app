@@ -36,7 +36,7 @@ import {
   type Tone
 } from "../shared/lib/formatters.ts";
 
-type SectionId = "canvas" | "hardware" | "workflow" | "clusters" | "learning" | "safety";
+type SectionId = "canvas" | "hardware" | "collector" | "workflow" | "clusters" | "learning" | "safety";
 
 interface SectionItem {
   id: SectionId;
@@ -47,6 +47,7 @@ interface SectionItem {
 const sections: SectionItem[] = [
   { id: "canvas", label: "Canvas", icon: GitBranch },
   { id: "hardware", label: "Hardware", icon: Cpu },
+  { id: "collector", label: "Collector", icon: Activity },
   { id: "workflow", label: "Ruta", icon: Workflow },
   { id: "clusters", label: "Clusters", icon: Boxes },
   { id: "learning", label: "Aprendizaje", icon: BrainCircuit },
@@ -90,6 +91,7 @@ function Topbar({
 }) {
   const overviewState = data?.overview.state ?? "unknown";
   const telemetryState = data?.telemetry.summary.stale ? "stale" : data?.telemetry.summary.status ?? "unknown";
+  const collectorState = data?.supervisedCollector.status ?? "unknown";
   const killSwitchState = data?.killSwitch.enabled ? "active_true" : "inactive";
 
   return (
@@ -105,6 +107,7 @@ function Topbar({
         <StatusPill label="Gateway" value={data?.health.status ?? "loading"} />
         <StatusPill label="Operacion" value={overviewState} />
         <StatusPill label="Telemetry" value={telemetryState} />
+        <StatusPill label="Collector" value={collectorState} />
         <StatusPill label="Kill switch" value={killSwitchState} />
         <button className="icon-button" type="button" onClick={onRefresh} aria-label="Actualizar datos">
           <RefreshCw size={16} className={isFetching ? "spin" : ""} />
@@ -155,6 +158,7 @@ function Sidebar({
 function SectionView({ section, data }: { section: SectionId; data: DashboardData }) {
   if (section === "canvas") return <CanvasSection data={data} />;
   if (section === "hardware") return <HardwareSection data={data} />;
+  if (section === "collector") return <CollectorSection data={data} />;
   if (section === "workflow") return <WorkflowSection data={data} />;
   if (section === "clusters") return <ClustersSection data={data} />;
   if (section === "learning") return <LearningSection data={data} />;
@@ -264,6 +268,69 @@ function HardwareSection({ data }: { data: DashboardData }) {
           <DefinitionRow label="Proxmox writes" value={collector.permissions.proxmoxApiWriteEnabled ? "enabled" : "disabled"} />
         </div>
         <TokenList items={collector.unknownCapabilities} tone="neutral" empty="Sin campos pendientes" />
+      </section>
+    </section>
+  );
+}
+
+function CollectorSection({ data }: { data: DashboardData }) {
+  const collector = data.supervisedCollector;
+  const blockedSources = collector.sources.filter((source) => source.status === "blocked").length;
+  const reviewSources = collector.sources.filter((source) => source.status === "needs_review").length;
+
+  return (
+    <section className="page-stack">
+      <TitleRow eyebrow="DevOps" title="Collector supervisado" badge={collector.collectorMode} />
+      <section className="metric-grid">
+        <MetricCard label="Estado" value={compactLabel(collector.status)} tone={stateTone(collector.status)} meta="readiness plan" />
+        <MetricCard label="Fuentes" value={formatNumber(collector.sources.length)} tone="neutral" meta={`${formatNumber(blockedSources)} bloqueadas`} />
+        <MetricCard label="Fresh" value={formatNumber(collector.freshness.freshSources)} tone={collector.freshness.freshSources > 0 ? "success" : "warning"} meta={`${formatNumber(collector.freshness.unknownSources)} unknown`} />
+        <MetricCard label="Writes" value={collector.ingestionPolicy.acceptsLiveMutation ? "enabled" : "disabled"} tone={collector.ingestionPolicy.acceptsLiveMutation ? "critical" : "success"} meta="read-only gate" />
+      </section>
+      <section className="collector-grid">
+        <section className="panel collector-main-panel">
+          <PanelHeader title="Fuentes read-only" badge={`${reviewSources + blockedSources}`} />
+          <div className="source-grid">
+            {collector.sources.map((source) => (
+              <article key={source.id} className={`source-card source-${stateTone(source.status)}`}>
+                <div className="source-card-head">
+                  <div>
+                    <strong>{source.label}</strong>
+                    <p>{compactLabel(source.kind)} / {compactLabel(source.safeCollection.transport)}</p>
+                  </div>
+                  <Badge tone={stateTone(source.status)}>{compactLabel(source.status)}</Badge>
+                </div>
+                <p>{source.purpose}</p>
+                <DefinitionGrid rows={[
+                  ["Permiso", compactLabel(source.minimumPermission)],
+                  ["Secreto", source.safeCollection.requiresSecret ? "required" : "not required"],
+                  ["Writes", source.safeCollection.writesEnabled ? "enabled" : "disabled"],
+                  ["Fresh", source.freshness.lastCollectedAt ? formatDateTime(source.freshness.lastCollectedAt) : "unknown"]
+                ]} />
+                {source.safeCollection.commandPreview ? (
+                  <code className="inline-code">{source.safeCollection.commandPreview}</code>
+                ) : null}
+                {source.safeCollection.endpoint ? (
+                  <code className="inline-code">{source.safeCollection.endpoint}</code>
+                ) : null}
+                <TokenList items={source.blockedBy} tone={source.status === "blocked" ? "critical" : "warning"} empty="Sin bloqueos" />
+              </article>
+            ))}
+          </div>
+        </section>
+        <aside className="panel collector-side-panel">
+          <PanelHeader title="Ingestion auditada" badge={collector.ingestionPolicy.snapshotSchemaVersion} />
+          <DefinitionGrid rows={[
+            ["Manual snapshot", collector.ingestionPolicy.acceptsManualSnapshot ? "enabled" : "disabled"],
+            ["Live mutation", collector.ingestionPolicy.acceptsLiveMutation ? "enabled" : "disabled"],
+            ["Source changes", collector.ingestionPolicy.requiresOperatorApprovalForSourceChange ? "approval required" : "open"],
+            ["Raw secrets", collector.ingestionPolicy.storesRawSecrets ? "stored" : "rejected"],
+            ["Snapshot hash", collector.auditPolicy.snapshotHashRequired ? "required" : "optional"]
+          ]} />
+          <TokenGroup title="Gates" items={collector.gates} />
+          <TokenGroup title="Next safe actions" items={collector.nextSafeActions} />
+          <TokenGroup title="Blocked actions" items={collector.blockedActions} />
+        </aside>
       </section>
     </section>
   );
@@ -569,6 +636,7 @@ function toneForSection(section: SectionId, data: DashboardData | undefined): To
   if (!data) return "neutral";
   if (section === "canvas") return stateTone(data.canvas.nodes.find((node) => node.id === data.canvas.currentStepId)?.status);
   if (section === "hardware") return data.telemetry.summary.stale ? "warning" : stateTone(data.telemetry.summary.status);
+  if (section === "collector") return stateTone(data.supervisedCollector.status);
   if (section === "workflow") return "success";
   if (section === "clusters") return stateTone(data.clusters.clusters[0]?.managementState ?? "unknown");
   if (section === "learning") return stateTone(data.readinessSignals.scores.provisioningReadiness?.status ?? "unknown");

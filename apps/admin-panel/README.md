@@ -2,6 +2,13 @@
 
 React/Vite read-only frontend for the Delivrix control plane.
 
+Current UI scope:
+
+- OpenClaw canvas from Gateway contracts.
+- Hardware and telemetry read models.
+- Supervised collector plan for local, Proxmox, Prometheus and IPMI sources.
+- Workflow, clusters, learning and safety gates.
+
 ## Boundary
 
 - The panel is separate from Gateway, Worker, domain, stores and adapters.
@@ -10,6 +17,7 @@ React/Vite read-only frontend for the Delivrix control plane.
 - The panel never imports backend domain services.
 - The panel does not send email, run SSH, mutate DNS, mutate Proxmox or write to NFC.
 - Runtime data comes from Gateway contracts. The frontend does not calculate readiness, permissions or safety gates.
+- Collector screens show evidence gaps and safe next actions, but do not ingest snapshots or execute commands.
 
 ## Local run
 

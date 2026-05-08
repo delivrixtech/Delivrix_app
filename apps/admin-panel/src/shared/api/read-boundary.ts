@@ -4,6 +4,7 @@ export const READ_ENDPOINTS = Object.freeze({
   adminOverview: "/v1/admin/overview",
   adminWorkflow: "/v1/admin/workflow",
   collectorStatus: "/v1/devops/collector/status",
+  collectorSupervisedPlan: "/v1/devops/collector/supervised-plan",
   hardwarePhysicalHost: "/v1/hardware/physical-host",
   hardwareTelemetryHistory: "/v1/hardware/telemetry/history",
   hardwareTelemetryLatest: "/v1/hardware/telemetry/latest",

@@ -160,6 +160,7 @@ Subhito implementado:
 - `HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md`: canvas vivo OpenClaw y telemetria de servidor fisico como requisito de UI/producto.
 - `HITO_5_6_CONTRATOS_CANVAS_HARDWARE_ML_DEVOPS.md`: contratos read-only para canvas, hardware, ML/OpenClaw y DevOps collector.
 - `HITO_5_7_ADMIN_PANEL_REACT_CANVAS.md`: migracion del panel a React/Vite/TypeScript y render de canvas/hardware desde contratos 5.6.
+- `HITO_5_8_COLLECTOR_SUPERVISADO_READ_ONLY.md`: collector supervisado read-only con fuentes, permisos, frescura, auditoria y seccion UI dedicada.
 
 ## Criterio de salida de Fase 5
 
@@ -177,4 +178,5 @@ Fase 5 queda lista si:
 - el onboarding visual contempla canvas OpenClaw y telemetria hardware read-only;
 - existen contratos claros para que frontend consuma hardware/canvas/ML/DevOps sin inventar estado;
 - el panel React renderiza canvas y hardware desde Gateway con frontera `GET-only`;
+- el collector supervisado declara fuentes y bloqueos antes de reemplazar mocks por evidencia real;
 - queda clara la ruta hacia ejecucion limitada futura.

@@ -347,6 +347,12 @@ Cerrar el MVP como sistema demostrable end-to-end.
   - React Flow para renderizar el canvas vivo desde `GET /v1/openclaw/live-canvas`.
   - vista hardware consumiendo contratos `physical-host`, `telemetry/latest` y `collector/status`.
   - proxy y cliente mantienen frontera `GET-only`.
+- Hito 5.8:
+  - contrato `GET /v1/devops/collector/supervised-plan`.
+  - fuentes local, Proxmox read-only, Prometheus/Node Exporter e IPMI/Redfish declaradas con permisos minimos.
+  - politica de ingestion/auditoria para snapshots redaccionados.
+  - seccion `Collector` en admin panel para ver frescura, bloqueos, gates y siguientes acciones seguras.
+  - sigue sin SSH automatico, Proxmox writes, DNS live, SMTP real ni NFC writes.
 - Demo Delivrix dry-run/control: Gateway -> Queue -> Worker -> Sender node -> Result tracking.
 - Demo admin panel.
 - Runbook operativo inicial.

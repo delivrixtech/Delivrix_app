@@ -143,7 +143,7 @@ Hito 5.7 queda cerrado si:
 
 ## Que sigue
 
-Hito 5.8:
+Hito 5.8 implementado en `HITO_5_8_COLLECTOR_SUPERVISADO_READ_ONLY.md`:
 
 - collector supervisado read-only para hardware/Proxmox/IPMI/Prometheus;
 - ingestion auditada de snapshots;

@@ -39,4 +39,5 @@ export * from "./send-result-simulator.ts";
 export * from "./send-queue.ts";
 export * from "./stuck-job-recovery.ts";
 export * from "./suppression-list.ts";
+export * from "./supervised-collector-plan.ts";
 export * from "./types.ts";
