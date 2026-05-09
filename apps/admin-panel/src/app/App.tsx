@@ -4,13 +4,15 @@ import {
   BrainCircuit,
   Cpu,
   GitBranch,
+  Moon,
   RefreshCw,
   ShieldCheck,
   Server,
+  Sun,
   Workflow,
   Zap
 } from "lucide-react";
-import { useMemo, useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Background,
@@ -38,6 +40,37 @@ import {
 
 type SectionId = "canvas" | "hardware" | "collector" | "workflow" | "clusters" | "learning" | "safety";
 
+type Theme = "dark" | "light";
+
+const THEME_STORAGE_KEY = "delivrix-admin-theme";
+
+function readInitialTheme(): Theme {
+  if (typeof document === "undefined") {
+    return "dark";
+  }
+  const attr = document.documentElement.getAttribute("data-theme");
+  if (attr === "light" || attr === "dark") {
+    return attr;
+  }
+  return "dark";
+}
+
+function useTheme(): [Theme, () => void] {
+  const [theme, setTheme] = useState<Theme>(readInitialTheme);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // ignore: private mode or storage disabled
+    }
+  }, [theme]);
+
+  const toggle = () => setTheme((current) => (current === "dark" ? "light" : "dark"));
+  return [theme, toggle];
+}
+
 interface SectionItem {
   id: SectionId;
   label: string;
@@ -56,6 +89,7 @@ const sections: SectionItem[] = [
 
 export function App() {
   const [activeSection, setActiveSection] = useState<SectionId>("canvas");
+  const [theme, toggleTheme] = useTheme();
   const dashboard = useQuery({
     queryKey: ["admin-panel", "dashboard"],
     queryFn: loadDashboardData,
@@ -65,7 +99,13 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <Topbar data={dashboard.data} isFetching={dashboard.isFetching} onRefresh={() => void dashboard.refetch()} />
+      <Topbar
+        data={dashboard.data}
+        isFetching={dashboard.isFetching}
+        onRefresh={() => void dashboard.refetch()}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
       <div className="app-body">
         <Sidebar activeSection={activeSection} onSelect={setActiveSection} data={dashboard.data} />
         <main className="content">
@@ -83,16 +123,21 @@ export function App() {
 function Topbar({
   data,
   isFetching,
-  onRefresh
+  onRefresh,
+  theme,
+  onToggleTheme
 }: {
   data: DashboardData | undefined;
   isFetching: boolean;
   onRefresh: () => void;
+  theme: Theme;
+  onToggleTheme: () => void;
 }) {
   const overviewState = data?.overview.state ?? "unknown";
   const telemetryState = data?.telemetry.summary.stale ? "stale" : data?.telemetry.summary.status ?? "unknown";
   const collectorState = data?.supervisedCollector.status ?? "unknown";
   const killSwitchState = data?.killSwitch.enabled ? "active_true" : "inactive";
+  const themeLabel = theme === "dark" ? "Cambiar a tema claro" : "Cambiar a tema oscuro";
 
   return (
     <header className="topbar">
@@ -109,6 +154,15 @@ function Topbar({
         <StatusPill label="Telemetry" value={telemetryState} />
         <StatusPill label="Collector" value={collectorState} />
         <StatusPill label="Kill switch" value={killSwitchState} />
+        <button
+          className="icon-button"
+          type="button"
+          onClick={onToggleTheme}
+          aria-label={themeLabel}
+          title={themeLabel}
+        >
+          {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+        </button>
         <button className="icon-button" type="button" onClick={onRefresh} aria-label="Actualizar datos">
           <RefreshCw size={16} className={isFetching ? "spin" : ""} />
         </button>
