@@ -1,0 +1,300 @@
+/* Delivrix admin panel design tokens. Source of truth for color, type, spacing, radii, shadows.
+   Default theme is dark (control plane operativo). Light is opt-in via [data-theme="light"].
+   Reference: DOCUMENTACION/FRONTEND_DESIGN_SYSTEM.md */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --color-bg: #0b0d10;
+  --color-surface: #12161b;
+  --color-surface-raised: #181d23;
+  --color-surface-sunken: #080a0d;
+  --color-surface-overlay: #1d232b;
+
+  /* Borders */
+  --color-border: #232932;
+  --color-border-strong: #2f3742;
+  --color-border-focus: #7c6cff;
+
+  /* Text */
+  --color-text-primary: #e6ebf2;
+  --color-text-secondary: #aab3c0;
+  --color-text-tertiary: #6c7686;
+  --color-text-disabled: #4a525e;
+  --color-text-inverse: #0b0d10;
+
+  /* Brand accent (OpenClaw identity) */
+  --color-accent: #7c6cff;
+  --color-accent-hover: #8d7eff;
+  --color-accent-soft: #2a2547;
+  --color-accent-fg: #e6e1ff;
+
+  /* Semantic states. Each has solid + soft (bg) + border (line) + fg (text). */
+  --color-success: #3ecf8e;
+  --color-success-soft: #11281e;
+  --color-success-border: #1f4533;
+  --color-success-fg: #6fe0a8;
+
+  --color-info: #4aa8ff;
+  --color-info-soft: #0d2538;
+  --color-info-border: #1f4565;
+  --color-info-fg: #7dc4ff;
+
+  --color-warning: #f7b955;
+  --color-warning-soft: #2c2010;
+  --color-warning-border: #4a3820;
+  --color-warning-fg: #f7c777;
+
+  --color-critical: #ff5d6c;
+  --color-critical-soft: #321319;
+  --color-critical-border: #5a2630;
+  --color-critical-fg: #ff8590;
+
+  --color-unknown: #8a7fb8;
+  --color-unknown-soft: #1c1a2a;
+  --color-unknown-border: #322d4a;
+  --color-unknown-fg: #a89fce;
+
+  --color-stale: #b08968;
+  --color-stale-soft: #261d14;
+  --color-stale-border: #44351f;
+  --color-stale-fg: #c4a283;
+
+  --color-neutral: #6c7686;
+  --color-neutral-soft: #1a1e24;
+  --color-neutral-border: #2a3038;
+  --color-neutral-fg: #aab3c0;
+
+  /* Shadows tuned for dark surfaces (heavier alpha, no blur halos). */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-focus: 0 0 0 2px rgba(124, 108, 255, 0.4);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --color-bg: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-surface-raised: #f8f9fb;
+  --color-surface-sunken: #eef1f5;
+  --color-surface-overlay: #ffffff;
+
+  --color-border: #d9e0e7;
+  --color-border-strong: #b8c3cf;
+  --color-border-focus: #6d5bd0;
+
+  --color-text-primary: #1d252d;
+  --color-text-secondary: #4a5662;
+  --color-text-tertiary: #65717d;
+  --color-text-disabled: #9aa3ad;
+  --color-text-inverse: #ffffff;
+
+  --color-accent: #6d5bd0;
+  --color-accent-hover: #5a48c0;
+  --color-accent-soft: #ece9fc;
+  --color-accent-fg: #4a3aa8;
+
+  --color-success: #198754;
+  --color-success-soft: #eef8f1;
+  --color-success-border: #bfe5ca;
+  --color-success-fg: #146c44;
+
+  --color-info: #2563eb;
+  --color-info-soft: #eef4ff;
+  --color-info-border: #b8c8ef;
+  --color-info-fg: #1d4fc4;
+
+  --color-warning: #b7791f;
+  --color-warning-soft: #fff8e8;
+  --color-warning-border: #ead9a6;
+  --color-warning-fg: #92611a;
+
+  --color-critical: #c2413a;
+  --color-critical-soft: #fff1ef;
+  --color-critical-border: #e8c2bd;
+  --color-critical-fg: #9b342e;
+
+  --color-unknown: #7d6ea8;
+  --color-unknown-soft: #f1eff8;
+  --color-unknown-border: #d4cee8;
+  --color-unknown-fg: #5e528a;
+
+  --color-stale: #8a6e4a;
+  --color-stale-soft: #f5efe6;
+  --color-stale-border: #d9c8b0;
+  --color-stale-fg: #6b552f;
+
+  --color-neutral: #65717d;
+  --color-neutral-soft: #f4f6f8;
+  --color-neutral-border: #cfd8e3;
+  --color-neutral-fg: #4a5662;
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 8px 24px rgba(18, 28, 45, 0.08);
+  --shadow-focus: 0 0 0 2px rgba(109, 91, 208, 0.35);
+}
+
+:root {
+  /* Typography */
+  --font-sans:
+    "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", "Fira Code",
+    Menlo, Consolas, monospace;
+
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 15px;
+  --text-xl: 16px;
+  --text-2xl: 18px;
+  --text-3xl: 20px;
+  --text-4xl: 24px;
+  --text-5xl: 28px;
+  --text-display: 32px;
+
+  --line-tight: 1.15;
+  --line-snug: 1.3;
+  --line-base: 1.45;
+  --line-loose: 1.6;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --weight-heavy: 800;
+
+  /* Spacing */
+  --space-0: 0;
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 10px;
+  --space-6: 12px;
+  --space-7: 14px;
+  --space-8: 16px;
+  --space-9: 20px;
+  --space-10: 24px;
+  --space-11: 28px;
+  --space-12: 32px;
+  --space-13: 40px;
+  --space-14: 48px;
+
+  /* Radii */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* Motion */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+
+  /* Layout dimensions */
+  --topbar-height: 56px;
+  --sidebar-width: 236px;
+  --sidebar-width-collapsed: 64px;
+  --content-max-width: 1440px;
+  --content-padding: var(--space-10);
+}
+
+/* Legacy aliases. styles.css still references these names. Kept until full migration. */
+:root,
+[data-theme="dark"],
+[data-theme="light"] {
+  --bg: var(--color-bg);
+  --surface: var(--color-surface);
+  --surface-muted: var(--color-surface-raised);
+  --border: var(--color-border);
+  --border-strong: var(--color-border-strong);
+  --text: var(--color-text-primary);
+  --text-muted: var(--color-text-secondary);
+  --blue: var(--color-info);
+  --green: var(--color-success);
+  --amber: var(--color-warning);
+  --red: var(--color-critical);
+  --violet: var(--color-accent);
+  --shadow: var(--shadow-md);
+}
+
+/* Honor user OS preference only when no explicit theme is set on document root. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+
+    --color-bg: #f6f7f9;
+    --color-surface: #ffffff;
+    --color-surface-raised: #f8f9fb;
+    --color-surface-sunken: #eef1f5;
+    --color-surface-overlay: #ffffff;
+
+    --color-border: #d9e0e7;
+    --color-border-strong: #b8c3cf;
+    --color-border-focus: #6d5bd0;
+
+    --color-text-primary: #1d252d;
+    --color-text-secondary: #4a5662;
+    --color-text-tertiary: #65717d;
+    --color-text-disabled: #9aa3ad;
+    --color-text-inverse: #ffffff;
+
+    --color-accent: #6d5bd0;
+    --color-accent-hover: #5a48c0;
+    --color-accent-soft: #ece9fc;
+    --color-accent-fg: #4a3aa8;
+
+    --color-success: #198754;
+    --color-success-soft: #eef8f1;
+    --color-success-border: #bfe5ca;
+    --color-success-fg: #146c44;
+
+    --color-info: #2563eb;
+    --color-info-soft: #eef4ff;
+    --color-info-border: #b8c8ef;
+    --color-info-fg: #1d4fc4;
+
+    --color-warning: #b7791f;
+    --color-warning-soft: #fff8e8;
+    --color-warning-border: #ead9a6;
+    --color-warning-fg: #92611a;
+
+    --color-critical: #c2413a;
+    --color-critical-soft: #fff1ef;
+    --color-critical-border: #e8c2bd;
+    --color-critical-fg: #9b342e;
+
+    --color-unknown: #7d6ea8;
+    --color-unknown-soft: #f1eff8;
+    --color-unknown-border: #d4cee8;
+    --color-unknown-fg: #5e528a;
+
+    --color-stale: #8a6e4a;
+    --color-stale-soft: #f5efe6;
+    --color-stale-border: #d9c8b0;
+    --color-stale-fg: #6b552f;
+
+    --color-neutral: #65717d;
+    --color-neutral-soft: #f4f6f8;
+    --color-neutral-border: #cfd8e3;
+    --color-neutral-fg: #4a5662;
+
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+    --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
+    --shadow-lg: 0 8px 24px rgba(18, 28, 45, 0.08);
+    --shadow-focus: 0 0 0 2px rgba(109, 91, 208, 0.35);
+  }
+}
