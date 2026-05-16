@@ -1,3 +1,4 @@
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import type { ServerResponse } from "node:http";
 import { defineConfig, type Plugin } from "vite";
@@ -7,7 +8,7 @@ const gatewayOrigin = process.env.ADMIN_PANEL_GATEWAY_ORIGIN ?? "http://127.0.0.
 const allowedProxyPaths = new Set(Object.values(READ_ENDPOINTS));
 
 export default defineConfig({
-  plugins: [readOnlyProxyBoundary(), react()],
+  plugins: [readOnlyProxyBoundary(), tailwindcss(), react()],
   server: {
     host: "127.0.0.1",
     port: 5173,

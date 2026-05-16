@@ -4,15 +4,11 @@ import {
   BrainCircuit,
   Cpu,
   GitBranch,
-  Moon,
   RefreshCw,
   ShieldCheck,
-  Server,
-  Sun,
-  Workflow,
-  Zap
+  Workflow
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
+import { useMemo, useState, type ComponentType, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Background,
@@ -33,63 +29,60 @@ import {
   formatDateTime,
   formatMetricValue,
   formatNumber,
-  percent,
   stateTone,
   type Tone
 } from "../shared/lib/formatters.ts";
+import {
+  Badge as UiBadge,
+  BrandBlock,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Eyebrow,
+  FreshnessTag,
+  MetricCard as UiMetricCard,
+  ModeBadge,
+  PageHeader,
+  Separator,
+  ThemeToggle,
+  Tooltip,
+  TooltipProvider
+} from "../shared/ui/index.ts";
+import { cn } from "../shared/lib/cn.ts";
 
 type SectionId = "canvas" | "hardware" | "collector" | "workflow" | "clusters" | "learning" | "safety";
 
-type Theme = "dark" | "light";
-
-const THEME_STORAGE_KEY = "delivrix-admin-theme";
-
-function readInitialTheme(): Theme {
-  if (typeof document === "undefined") {
-    return "dark";
-  }
-  const attr = document.documentElement.getAttribute("data-theme");
-  if (attr === "light" || attr === "dark") {
-    return attr;
-  }
-  return "dark";
-}
-
-function useTheme(): [Theme, () => void] {
-  const [theme, setTheme] = useState<Theme>(readInitialTheme);
-
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
-    } catch {
-      // ignore: private mode or storage disabled
-    }
-  }, [theme]);
-
-  const toggle = () => setTheme((current) => (current === "dark" ? "light" : "dark"));
-  return [theme, toggle];
-}
+type SectionGroup = "live" | "process" | "guardrails";
 
 interface SectionItem {
   id: SectionId;
   label: string;
+  group: SectionGroup;
   icon: ComponentType<{ size?: number; strokeWidth?: number }>;
 }
 
 const sections: SectionItem[] = [
-  { id: "canvas", label: "Canvas", icon: GitBranch },
-  { id: "hardware", label: "Hardware", icon: Cpu },
-  { id: "collector", label: "Collector", icon: Activity },
-  { id: "workflow", label: "Ruta", icon: Workflow },
-  { id: "clusters", label: "Clusters", icon: Boxes },
-  { id: "learning", label: "Aprendizaje", icon: BrainCircuit },
-  { id: "safety", label: "Seguridad", icon: ShieldCheck }
+  { id: "canvas", label: "Canvas", group: "live", icon: GitBranch },
+  { id: "hardware", label: "Hardware", group: "live", icon: Cpu },
+  { id: "collector", label: "Collector", group: "live", icon: Activity },
+  { id: "workflow", label: "Ruta", group: "process", icon: Workflow },
+  { id: "clusters", label: "Clusters", group: "process", icon: Boxes },
+  { id: "learning", label: "Aprendizaje", group: "process", icon: BrainCircuit },
+  { id: "safety", label: "Seguridad", group: "guardrails", icon: ShieldCheck }
 ];
+
+const sectionGroupLabels: Record<SectionGroup, string> = {
+  live: "Estado vivo",
+  process: "Procesos",
+  guardrails: "Barandillas"
+};
+
+const sectionGroupOrder: SectionGroup[] = ["live", "process", "guardrails"];
 
 export function App() {
   const [activeSection, setActiveSection] = useState<SectionId>("canvas");
-  const [theme, toggleTheme] = useTheme();
   const dashboard = useQuery({
     queryKey: ["admin-panel", "dashboard"],
     queryFn: loadDashboardData,
@@ -98,74 +91,64 @@ export function App() {
   });
 
   return (
-    <div className="app-shell">
-      <Topbar
-        data={dashboard.data}
-        isFetching={dashboard.isFetching}
-        onRefresh={() => void dashboard.refetch()}
-        theme={theme}
-        onToggleTheme={toggleTheme}
-      />
-      <div className="app-body">
-        <Sidebar activeSection={activeSection} onSelect={setActiveSection} data={dashboard.data} />
-        <main className="content">
-          {dashboard.isLoading ? <LoadingState /> : null}
-          {dashboard.isError ? <ErrorState message={errorMessage(dashboard.error)} onRefresh={() => void dashboard.refetch()} /> : null}
-          {dashboard.data && !dashboard.isLoading && !dashboard.isError ? (
-            <SectionView section={activeSection} data={dashboard.data} />
-          ) : null}
-        </main>
+    <TooltipProvider delayDuration={200}>
+      <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text-primary)]">
+        <Topbar
+          data={dashboard.data}
+          isFetching={dashboard.isFetching}
+          lastFetchedAt={dashboard.dataUpdatedAt || null}
+          onRefresh={() => void dashboard.refetch()}
+        />
+        <div className="grid grid-cols-[240px_minmax(0,1fr)] min-h-[calc(100vh-57px)] max-md:grid-cols-1">
+          <Sidebar activeSection={activeSection} onSelect={setActiveSection} data={dashboard.data} />
+          <main className="min-w-0 px-6 py-6 md:px-8 md:py-8">
+            {dashboard.isLoading ? <LoadingState /> : null}
+            {dashboard.isError ? (
+              <ErrorState message={errorMessage(dashboard.error)} onRefresh={() => void dashboard.refetch()} />
+            ) : null}
+            {dashboard.data && !dashboard.isLoading && !dashboard.isError ? (
+              <SectionView section={activeSection} data={dashboard.data} />
+            ) : null}
+          </main>
+        </div>
       </div>
-    </div>
+    </TooltipProvider>
   );
 }
 
 function Topbar({
   data,
   isFetching,
-  onRefresh,
-  theme,
-  onToggleTheme
+  lastFetchedAt,
+  onRefresh
 }: {
   data: DashboardData | undefined;
   isFetching: boolean;
+  lastFetchedAt: number | null;
   onRefresh: () => void;
-  theme: Theme;
-  onToggleTheme: () => void;
 }) {
-  const overviewState = data?.overview.state ?? "unknown";
-  const telemetryState = data?.telemetry.summary.stale ? "stale" : data?.telemetry.summary.status ?? "unknown";
-  const collectorState = data?.supervisedCollector.status ?? "unknown";
-  const killSwitchState = data?.killSwitch.enabled ? "active_true" : "inactive";
-  const themeLabel = theme === "dark" ? "Cambiar a tema claro" : "Cambiar a tema oscuro";
+  const operatingNorth = data?.operatingNorth;
 
   return (
-    <header className="topbar">
-      <div className="brand-block">
-        <div className="brand-mark">D</div>
-        <div>
-          <p className="eyebrow">Delivrix Control Plane</p>
-          <h1>Admin Panel</h1>
-        </div>
-      </div>
-      <div className="topbar-status">
-        <StatusPill label="Gateway" value={data?.health.status ?? "loading"} />
-        <StatusPill label="Operacion" value={overviewState} />
-        <StatusPill label="Telemetry" value={telemetryState} />
-        <StatusPill label="Collector" value={collectorState} />
-        <StatusPill label="Kill switch" value={killSwitchState} />
-        <button
-          className="icon-button"
-          type="button"
-          onClick={onToggleTheme}
-          aria-label={themeLabel}
-          title={themeLabel}
-        >
-          {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-        </button>
-        <button className="icon-button" type="button" onClick={onRefresh} aria-label="Actualizar datos">
-          <RefreshCw size={16} className={isFetching ? "spin" : ""} />
-        </button>
+    <header className="sticky top-0 z-40 flex items-center justify-between gap-6 px-6 md:px-8 h-14 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
+      <BrandBlock />
+      <div className="flex items-center gap-3">
+        {operatingNorth ? (
+          <ModeBadge
+            liveInfrastructureWritesEnabled={operatingNorth.liveInfrastructureWritesEnabled}
+            delivrixSendsRealEmail={operatingNorth.delivrixSendsRealEmail}
+            nfcProductionWritesEnabled={operatingNorth.nfcProductionWritesEnabled}
+          />
+        ) : (
+          <UiBadge tone="neutral">Mode loading</UiBadge>
+        )}
+        <FreshnessTag lastFetchedAt={lastFetchedAt} isFetching={isFetching} />
+        <Tooltip hint="Actualizar datos">
+          <Button variant="ghost" size="icon" aria-label="Actualizar datos" onClick={onRefresh}>
+            <RefreshCw size={15} strokeWidth={1.75} className={isFetching ? "animate-spin" : ""} aria-hidden="true" />
+          </Button>
+        </Tooltip>
+        <ThemeToggle />
       </div>
     </header>
   );
@@ -181,29 +164,56 @@ function Sidebar({
   data: DashboardData | undefined;
 }) {
   return (
-    <aside className="sidebar">
-      <nav className="nav-list" aria-label="Secciones del panel">
-        {sections.map((section) => {
-          const Icon = section.icon;
+    <aside className="flex flex-col justify-between gap-6 p-4 border-r border-[var(--color-border)] bg-[var(--color-surface)] max-md:border-r-0 max-md:border-b">
+      <nav className="flex flex-col gap-5" aria-label="Secciones del panel">
+        {sectionGroupOrder.map((group) => {
+          const items = sections.filter((section) => section.group === group);
           return (
-            <button
-              key={section.id}
-              type="button"
-              className={section.id === activeSection ? "nav-item nav-item-active" : "nav-item"}
-              onClick={() => onSelect(section.id)}
-            >
-              <span className="nav-label">
-                <Icon size={16} strokeWidth={2} />
-                <span>{section.label}</span>
-              </span>
-              <span className={`nav-status nav-status-${toneForSection(section.id, data)}`} />
-            </button>
+            <div key={group} className="flex flex-col gap-1.5">
+              <Eyebrow className="px-2">{sectionGroupLabels[group]}</Eyebrow>
+              {items.map((section) => {
+                const Icon = section.icon;
+                const active = section.id === activeSection;
+                const tone = toneForSection(section.id, data);
+                return (
+                  <button
+                    key={section.id}
+                    type="button"
+                    onClick={() => onSelect(section.id)}
+                    className={cn(
+                      "flex items-center justify-between gap-2 rounded-[var(--radius-md)] px-2 py-1.5 text-[13px] transition-colors",
+                      active
+                        ? "bg-[var(--color-accent-soft)] text-[var(--color-accent-fg)] font-medium"
+                        : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-sunken)] hover:text-[var(--color-text-primary)]"
+                    )}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Icon size={14} strokeWidth={1.75} aria-hidden="true" />
+                      {section.label}
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "block h-1.5 w-1.5 rounded-full",
+                        tone === "success" && "bg-[var(--color-success)]",
+                        tone === "warning" && "bg-[var(--color-warning)]",
+                        tone === "critical" && "bg-[var(--color-critical)]",
+                        tone === "neutral" && "bg-[var(--color-text-tertiary)]"
+                      )}
+                    />
+                  </button>
+                );
+              })}
+            </div>
           );
         })}
       </nav>
-      <div className="sidebar-foot">
-        <Badge tone="neutral">GET-only</Badge>
-        <p>Delivrix LLC - Desarrollado por JECT</p>
+      <div className="flex flex-col gap-2 px-2">
+        <Separator />
+        <UiBadge tone="outline" className="self-start">Read-only</UiBadge>
+        <p className="m-0 text-[11px] leading-relaxed text-[var(--color-text-tertiary)]">
+          Delivrix LLC · Desarrollado por JECT
+        </p>
       </div>
     </aside>
   );
@@ -527,26 +537,164 @@ function LearningSection({ data }: { data: DashboardData }) {
 }
 
 function SafetySection({ data }: { data: DashboardData }) {
+  const killSwitchOn = data.killSwitch.enabled;
+  const liveWritesOn = data.operatingNorth.liveInfrastructureWritesEnabled;
+  const smtpRealOn = data.operatingNorth.delivrixSendsRealEmail;
+  const nfcWritesOn = data.operatingNorth.nfcProductionWritesEnabled;
+  const allBoundariesHeld = !liveWritesOn && !smtpRealOn && !nfcWritesOn;
+  const gates = data.operatingNorth.gates ?? [];
+
   return (
-    <section className="page-stack">
-      <TitleRow eyebrow="Safety" title="Frontera operacional" badge={data.killSwitch.enabled ? "kill_switch_on" : "kill_switch_off"} />
-      <section className="metric-grid">
-        <MetricCard label="Infra writes" value={data.operatingNorth.liveInfrastructureWritesEnabled ? "enabled" : "disabled"} tone={data.operatingNorth.liveInfrastructureWritesEnabled ? "critical" : "success"} meta="operatingNorth" />
-        <MetricCard label="SMTP real" value={data.operatingNorth.delivrixSendsRealEmail ? "enabled" : "disabled"} tone={data.operatingNorth.delivrixSendsRealEmail ? "critical" : "success"} meta="operatingNorth" />
-        <MetricCard label="NFC writes" value={data.operatingNorth.nfcProductionWritesEnabled ? "enabled" : "disabled"} tone={data.operatingNorth.nfcProductionWritesEnabled ? "critical" : "success"} meta="operatingNorth" />
-        <MetricCard label="Kill switch" value={data.killSwitch.enabled ? "active" : "inactive"} tone={data.killSwitch.enabled ? "critical" : "success"} meta={data.killSwitch.updatedBy} />
-      </section>
-      <section className="two-column">
-        <section className="panel">
-          <PanelHeader title="Allowed actions" badge={`${data.operatingNorth.allowedActions.length}`} />
-          <TokenList items={data.operatingNorth.allowedActions} tone="success" empty="Sin acciones permitidas" />
-        </section>
-        <section className="panel">
-          <PanelHeader title="Blocked actions" badge={`${data.operatingNorth.blockedActions.length}`} />
-          <TokenList items={data.operatingNorth.blockedActions} tone="critical" empty="Sin acciones bloqueadas" />
-        </section>
-      </section>
+    <section className="flex flex-col gap-5 max-w-[1200px]">
+      <PageHeader
+        eyebrow="Barandillas"
+        title="Seguridad operacional"
+        description={
+          allBoundariesHeld
+            ? "Las cuatro fronteras del norte operativo estan respetadas. El panel no ejecuta acciones reales: ningun write a infra, SMTP, NFC ni cola productiva."
+            : "Hay al menos una frontera operativa habilitada. Revisar antes de continuar."
+        }
+        badge={{
+          label: killSwitchOn ? "Kill switch on" : "Kill switch off",
+          tone: killSwitchOn ? "critical" : "success"
+        }}
+        endpoint="GET /v1/operating-north"
+      />
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <UiMetricCard
+          label="Infra writes"
+          value={liveWritesOn ? "Enabled" : "Disabled"}
+          microcopy={liveWritesOn ? "Riesgo: writes en vivo" : "Solo dry-run en MVP"}
+          microcopyTone={liveWritesOn ? "critical" : "success"}
+        />
+        <UiMetricCard
+          label="SMTP real"
+          value={smtpRealOn ? "Enabled" : "Disabled"}
+          microcopy={smtpRealOn ? "Esta enviando correo real" : "Solo simulacion"}
+          microcopyTone={smtpRealOn ? "critical" : "success"}
+        />
+        <UiMetricCard
+          label="NFC writes"
+          value={nfcWritesOn ? "Enabled" : "Disabled"}
+          microcopy={nfcWritesOn ? "Productivo" : "Bridge en mock"}
+          microcopyTone={nfcWritesOn ? "critical" : "success"}
+        />
+        <UiMetricCard
+          label="Kill switch"
+          value={killSwitchOn ? "Active" : "Inactive"}
+          microcopy={
+            killSwitchOn
+              ? `Activado por ${data.killSwitch.updatedBy || "system"}`
+              : "Listo para activar si hace falta"
+          }
+          microcopyTone={killSwitchOn ? "critical" : "success"}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <Card>
+          <CardHeader>
+            <div className="flex items-baseline justify-between gap-3">
+              <CardTitle>Acciones permitidas</CardTitle>
+              <UiBadge tone="success">{formatNumber(data.operatingNorth.allowedActions.length)}</UiBadge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ActionTokenList
+              items={data.operatingNorth.allowedActions}
+              tone="success"
+              empty="Sin acciones permitidas configuradas."
+            />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <div className="flex items-baseline justify-between gap-3">
+              <CardTitle>Acciones bloqueadas</CardTitle>
+              <UiBadge tone="critical">{formatNumber(data.operatingNorth.blockedActions.length)}</UiBadge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ActionTokenList
+              items={data.operatingNorth.blockedActions}
+              tone="critical"
+              empty="Sin acciones bloqueadas explicitamente."
+            />
+          </CardContent>
+        </Card>
+      </div>
+
+      {gates.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <div className="flex items-baseline justify-between gap-3">
+              <CardTitle>Gates por cumplir</CardTitle>
+              <UiBadge tone="warning">{formatNumber(gates.length)}</UiBadge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <p className="m-0 mb-3 text-[13px] leading-relaxed text-[var(--color-text-secondary)]">
+              Lista de gates declarados por el norte operativo. Subir volumen o autonomia exige cumplir
+              cada gate y dejarlo auditado.
+            </p>
+            <ActionTokenList items={gates} tone="warning" empty="Sin gates pendientes." />
+          </CardContent>
+        </Card>
+      ) : null}
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-baseline justify-between gap-3">
+            <CardTitle>Roles del norte operativo</CardTitle>
+            <UiBadge tone="outline">read-only</UiBadge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <dl className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <RoleField label="Delivrix" value={compactLabel(data.operatingNorth.delivrixRole)} />
+            <RoleField label="OpenClaw" value={compactLabel(data.operatingNorth.openClawRole)} />
+            <RoleField label="NFC" value={compactLabel(data.operatingNorth.nfcRole)} />
+          </dl>
+        </CardContent>
+      </Card>
     </section>
+  );
+}
+
+function ActionTokenList({
+  items,
+  tone,
+  empty
+}: {
+  items: string[];
+  tone: "success" | "warning" | "critical" | "neutral";
+  empty: string;
+}) {
+  if (items.length === 0) {
+    return (
+      <p className="m-0 text-[13px] text-[var(--color-text-tertiary)]">{empty}</p>
+    );
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {items.map((item) => (
+        <UiBadge key={item} tone={tone}>
+          {compactLabel(item)}
+        </UiBadge>
+      ))}
+    </div>
+  );
+}
+
+function RoleField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col gap-1 rounded-[var(--radius-md)] bg-[var(--color-surface-sunken)] px-3 py-2.5">
+      <dt className="m-0 text-[11px] uppercase tracking-[0.04em] text-[var(--color-text-tertiary)]">
+        {label}
+      </dt>
+      <dd className="m-0 text-[13px] text-[var(--color-text-primary)]">{value}</dd>
+    </div>
   );
 }
 

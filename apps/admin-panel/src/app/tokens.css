@@ -1,152 +1,153 @@
 /* Delivrix admin panel design tokens. Source of truth for color, type, spacing, radii, shadows.
-   Default theme is dark (control plane operativo). Light is opt-in via [data-theme="light"].
-   Reference: DOCUMENTACION/FRONTEND_DESIGN_SYSTEM.md */
+   Default theme is light (Stripe/Notion premium product). Dark is opt-in via [data-theme="dark"].
+   Updated 2026-05-16 for Hito 5.10 Fase B: light default + system font stack.
+   Reference: DOCUMENTACION/HITO_5_10_REDISENO_BLUEPRINT_2026-05-16.md */
 
 :root,
-[data-theme="dark"] {
-  color-scheme: dark;
-
-  /* Surfaces */
-  --color-bg: #0b0d10;
-  --color-surface: #12161b;
-  --color-surface-raised: #181d23;
-  --color-surface-sunken: #080a0d;
-  --color-surface-overlay: #1d232b;
-
-  /* Borders */
-  --color-border: #232932;
-  --color-border-strong: #2f3742;
-  --color-border-focus: #7c6cff;
-
-  /* Text */
-  --color-text-primary: #e6ebf2;
-  --color-text-secondary: #aab3c0;
-  --color-text-tertiary: #6c7686;
-  --color-text-disabled: #4a525e;
-  --color-text-inverse: #0b0d10;
-
-  /* Brand accent (OpenClaw identity) */
-  --color-accent: #7c6cff;
-  --color-accent-hover: #8d7eff;
-  --color-accent-soft: #2a2547;
-  --color-accent-fg: #e6e1ff;
-
-  /* Semantic states. Each has solid + soft (bg) + border (line) + fg (text). */
-  --color-success: #3ecf8e;
-  --color-success-soft: #11281e;
-  --color-success-border: #1f4533;
-  --color-success-fg: #6fe0a8;
-
-  --color-info: #4aa8ff;
-  --color-info-soft: #0d2538;
-  --color-info-border: #1f4565;
-  --color-info-fg: #7dc4ff;
-
-  --color-warning: #f7b955;
-  --color-warning-soft: #2c2010;
-  --color-warning-border: #4a3820;
-  --color-warning-fg: #f7c777;
-
-  --color-critical: #ff5d6c;
-  --color-critical-soft: #321319;
-  --color-critical-border: #5a2630;
-  --color-critical-fg: #ff8590;
-
-  --color-unknown: #8a7fb8;
-  --color-unknown-soft: #1c1a2a;
-  --color-unknown-border: #322d4a;
-  --color-unknown-fg: #a89fce;
-
-  --color-stale: #b08968;
-  --color-stale-soft: #261d14;
-  --color-stale-border: #44351f;
-  --color-stale-fg: #c4a283;
-
-  --color-neutral: #6c7686;
-  --color-neutral-soft: #1a1e24;
-  --color-neutral-border: #2a3038;
-  --color-neutral-fg: #aab3c0;
-
-  /* Shadows tuned for dark surfaces (heavier alpha, no blur halos). */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
-  --shadow-focus: 0 0 0 2px rgba(124, 108, 255, 0.4);
-}
-
 [data-theme="light"] {
   color-scheme: light;
 
-  --color-bg: #f6f7f9;
+  /* Surfaces */
+  --color-bg: #fafaf7;
   --color-surface: #ffffff;
-  --color-surface-raised: #f8f9fb;
-  --color-surface-sunken: #eef1f5;
+  --color-surface-raised: #ffffff;
+  --color-surface-sunken: #f4f4f0;
   --color-surface-overlay: #ffffff;
 
-  --color-border: #d9e0e7;
-  --color-border-strong: #b8c3cf;
-  --color-border-focus: #6d5bd0;
+  /* Borders */
+  --color-border: #e5e5df;
+  --color-border-strong: #d4d4ce;
+  --color-border-focus: #534ab7;
 
-  --color-text-primary: #1d252d;
-  --color-text-secondary: #4a5662;
-  --color-text-tertiary: #65717d;
-  --color-text-disabled: #9aa3ad;
+  /* Text */
+  --color-text-primary: #191919;
+  --color-text-secondary: #5f5f5a;
+  --color-text-tertiary: #8a8a82;
+  --color-text-disabled: #b8b8b0;
   --color-text-inverse: #ffffff;
 
-  --color-accent: #6d5bd0;
-  --color-accent-hover: #5a48c0;
-  --color-accent-soft: #ece9fc;
-  --color-accent-fg: #4a3aa8;
+  /* Brand accent (Delivrix purple) */
+  --color-accent: #534ab7;
+  --color-accent-hover: #443a9e;
+  --color-accent-soft: #eeedfe;
+  --color-accent-fg: #26215c;
 
-  --color-success: #198754;
-  --color-success-soft: #eef8f1;
-  --color-success-border: #bfe5ca;
-  --color-success-fg: #146c44;
+  /* Semantic states. Each has solid + soft (bg) + border (line) + fg (text). */
+  --color-success: #0f6e56;
+  --color-success-soft: #eaf3de;
+  --color-success-border: #c0dd97;
+  --color-success-fg: #173404;
 
-  --color-info: #2563eb;
-  --color-info-soft: #eef4ff;
-  --color-info-border: #b8c8ef;
-  --color-info-fg: #1d4fc4;
+  --color-info: #185fa5;
+  --color-info-soft: #e6f1fb;
+  --color-info-border: #b5d4f4;
+  --color-info-fg: #042c53;
 
-  --color-warning: #b7791f;
-  --color-warning-soft: #fff8e8;
-  --color-warning-border: #ead9a6;
-  --color-warning-fg: #92611a;
+  --color-warning: #854f0b;
+  --color-warning-soft: #faeeda;
+  --color-warning-border: #fac775;
+  --color-warning-fg: #412402;
 
-  --color-critical: #c2413a;
-  --color-critical-soft: #fff1ef;
-  --color-critical-border: #e8c2bd;
-  --color-critical-fg: #9b342e;
+  --color-critical: #a32d2d;
+  --color-critical-soft: #fcebeb;
+  --color-critical-border: #f7c1c1;
+  --color-critical-fg: #501313;
 
-  --color-unknown: #7d6ea8;
-  --color-unknown-soft: #f1eff8;
-  --color-unknown-border: #d4cee8;
-  --color-unknown-fg: #5e528a;
+  --color-unknown: #5f5e5a;
+  --color-unknown-soft: #f1efe8;
+  --color-unknown-border: #d3d1c7;
+  --color-unknown-fg: #2c2c2a;
 
-  --color-stale: #8a6e4a;
-  --color-stale-soft: #f5efe6;
-  --color-stale-border: #d9c8b0;
-  --color-stale-fg: #6b552f;
+  --color-stale: #712b13;
+  --color-stale-soft: #faece7;
+  --color-stale-border: #f5c4b3;
+  --color-stale-fg: #4a1b0c;
 
-  --color-neutral: #65717d;
-  --color-neutral-soft: #f4f6f8;
-  --color-neutral-border: #cfd8e3;
-  --color-neutral-fg: #4a5662;
+  --color-neutral: #5f5e5a;
+  --color-neutral-soft: #f1efe8;
+  --color-neutral-border: #d3d1c7;
+  --color-neutral-fg: #2c2c2a;
 
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
-  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
-  --shadow-lg: 0 8px 24px rgba(18, 28, 45, 0.08);
-  --shadow-focus: 0 0 0 2px rgba(109, 91, 208, 0.35);
+  /* Shadows tuned for light surfaces (subtle, no glow). */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.04);
+  --shadow-lg: 0 6px 16px rgba(16, 24, 40, 0.06), 0 2px 4px rgba(16, 24, 40, 0.04);
+  --shadow-focus: 0 0 0 3px rgba(83, 74, 183, 0.18);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-bg: #0e0e10;
+  --color-surface: #17171a;
+  --color-surface-raised: #1c1c1f;
+  --color-surface-sunken: #1f1f23;
+  --color-surface-overlay: #1c1c1f;
+
+  --color-border: #2a2a2f;
+  --color-border-strong: #3a3a40;
+  --color-border-focus: #7f77dd;
+
+  --color-text-primary: #f5f5f2;
+  --color-text-secondary: #a3a39c;
+  --color-text-tertiary: #6e6e68;
+  --color-text-disabled: #4a4a45;
+  --color-text-inverse: #0e0e10;
+
+  --color-accent: #7f77dd;
+  --color-accent-hover: #9089e6;
+  --color-accent-soft: #26215c;
+  --color-accent-fg: #cecbf6;
+
+  --color-success: #5dcaa5;
+  --color-success-soft: #04342c;
+  --color-success-border: #085041;
+  --color-success-fg: #9fe1cb;
+
+  --color-info: #85b7eb;
+  --color-info-soft: #042c53;
+  --color-info-border: #0c447c;
+  --color-info-fg: #b5d4f4;
+
+  --color-warning: #ef9f27;
+  --color-warning-soft: #412402;
+  --color-warning-border: #633806;
+  --color-warning-fg: #fac775;
+
+  --color-critical: #e24b4a;
+  --color-critical-soft: #501313;
+  --color-critical-border: #791f1f;
+  --color-critical-fg: #f7c1c1;
+
+  --color-unknown: #888780;
+  --color-unknown-soft: #2c2c2a;
+  --color-unknown-border: #444441;
+  --color-unknown-fg: #b4b2a9;
+
+  --color-stale: #f0997b;
+  --color-stale-soft: #4a1b0c;
+  --color-stale-border: #712b13;
+  --color-stale-fg: #f5c4b3;
+
+  --color-neutral: #888780;
+  --color-neutral-soft: #2c2c2a;
+  --color-neutral-border: #444441;
+  --color-neutral-fg: #b4b2a9;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-focus: 0 0 0 3px rgba(127, 119, 221, 0.35);
 }
 
 :root {
-  /* Typography */
+  /* Typography - system stack, no external fonts (Hito 5.10 decision 2026-05-16) */
   --font-sans:
-    "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
+    ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
   --font-mono:
-    "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", "Fira Code",
-    Menlo, Consolas, monospace;
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
 
   --text-2xs: 10px;
   --text-xs: 11px;
@@ -170,7 +171,6 @@
   --weight-medium: 500;
   --weight-semibold: 600;
   --weight-bold: 700;
-  --weight-heavy: 800;
 
   /* Spacing */
   --space-0: 0;
@@ -206,19 +206,19 @@
 
   /* Layout dimensions */
   --topbar-height: 56px;
-  --sidebar-width: 236px;
+  --sidebar-width: 240px;
   --sidebar-width-collapsed: 64px;
   --content-max-width: 1440px;
   --content-padding: var(--space-10);
 }
 
-/* Legacy aliases. styles.css still references these names. Kept until full migration. */
+/* Legacy aliases. styles.css still references these names while screens migrate to Tailwind. */
 :root,
 [data-theme="dark"],
 [data-theme="light"] {
   --bg: var(--color-bg);
   --surface: var(--color-surface);
-  --surface-muted: var(--color-surface-raised);
+  --surface-muted: var(--color-surface-sunken);
   --border: var(--color-border);
   --border-strong: var(--color-border-strong);
   --text: var(--color-text-primary);
@@ -231,70 +231,70 @@
   --shadow: var(--shadow-md);
 }
 
-/* Honor user OS preference only when no explicit theme is set on document root. */
-@media (prefers-color-scheme: light) {
+/* Honor OS preference when no explicit theme is set. */
+@media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    color-scheme: light;
+    color-scheme: dark;
 
-    --color-bg: #f6f7f9;
-    --color-surface: #ffffff;
-    --color-surface-raised: #f8f9fb;
-    --color-surface-sunken: #eef1f5;
-    --color-surface-overlay: #ffffff;
+    --color-bg: #0e0e10;
+    --color-surface: #17171a;
+    --color-surface-raised: #1c1c1f;
+    --color-surface-sunken: #1f1f23;
+    --color-surface-overlay: #1c1c1f;
 
-    --color-border: #d9e0e7;
-    --color-border-strong: #b8c3cf;
-    --color-border-focus: #6d5bd0;
+    --color-border: #2a2a2f;
+    --color-border-strong: #3a3a40;
+    --color-border-focus: #7f77dd;
 
-    --color-text-primary: #1d252d;
-    --color-text-secondary: #4a5662;
-    --color-text-tertiary: #65717d;
-    --color-text-disabled: #9aa3ad;
-    --color-text-inverse: #ffffff;
+    --color-text-primary: #f5f5f2;
+    --color-text-secondary: #a3a39c;
+    --color-text-tertiary: #6e6e68;
+    --color-text-disabled: #4a4a45;
+    --color-text-inverse: #0e0e10;
 
-    --color-accent: #6d5bd0;
-    --color-accent-hover: #5a48c0;
-    --color-accent-soft: #ece9fc;
-    --color-accent-fg: #4a3aa8;
+    --color-accent: #7f77dd;
+    --color-accent-hover: #9089e6;
+    --color-accent-soft: #26215c;
+    --color-accent-fg: #cecbf6;
 
-    --color-success: #198754;
-    --color-success-soft: #eef8f1;
-    --color-success-border: #bfe5ca;
-    --color-success-fg: #146c44;
+    --color-success: #5dcaa5;
+    --color-success-soft: #04342c;
+    --color-success-border: #085041;
+    --color-success-fg: #9fe1cb;
 
-    --color-info: #2563eb;
-    --color-info-soft: #eef4ff;
-    --color-info-border: #b8c8ef;
-    --color-info-fg: #1d4fc4;
+    --color-info: #85b7eb;
+    --color-info-soft: #042c53;
+    --color-info-border: #0c447c;
+    --color-info-fg: #b5d4f4;
 
-    --color-warning: #b7791f;
-    --color-warning-soft: #fff8e8;
-    --color-warning-border: #ead9a6;
-    --color-warning-fg: #92611a;
+    --color-warning: #ef9f27;
+    --color-warning-soft: #412402;
+    --color-warning-border: #633806;
+    --color-warning-fg: #fac775;
 
-    --color-critical: #c2413a;
-    --color-critical-soft: #fff1ef;
-    --color-critical-border: #e8c2bd;
-    --color-critical-fg: #9b342e;
+    --color-critical: #e24b4a;
+    --color-critical-soft: #501313;
+    --color-critical-border: #791f1f;
+    --color-critical-fg: #f7c1c1;
 
-    --color-unknown: #7d6ea8;
-    --color-unknown-soft: #f1eff8;
-    --color-unknown-border: #d4cee8;
-    --color-unknown-fg: #5e528a;
+    --color-unknown: #888780;
+    --color-unknown-soft: #2c2c2a;
+    --color-unknown-border: #444441;
+    --color-unknown-fg: #b4b2a9;
 
-    --color-stale: #8a6e4a;
-    --color-stale-soft: #f5efe6;
-    --color-stale-border: #d9c8b0;
-    --color-stale-fg: #6b552f;
+    --color-stale: #f0997b;
+    --color-stale-soft: #4a1b0c;
+    --color-stale-border: #712b13;
+    --color-stale-fg: #f5c4b3;
 
-    --color-neutral: #65717d;
-    --color-neutral-soft: #f4f6f8;
-    --color-neutral-border: #cfd8e3;
-    --color-neutral-fg: #4a5662;
+    --color-neutral: #888780;
+    --color-neutral-soft: #2c2c2a;
+    --color-neutral-border: #444441;
+    --color-neutral-fg: #b4b2a9;
 
-    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
-    --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.08);
-    --shadow-lg: 0 8px 24px rgba(18, 28, 45, 0.08);
-    --shadow-focus: 0 0 0 2px rgba(109, 91, 208, 0.35);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --shadow-focus: 0 0 0 3px rgba(127, 119, 221, 0.35);
   }
 }
