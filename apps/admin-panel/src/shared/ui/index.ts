@@ -21,3 +21,7 @@ export { Eyebrow } from "./eyebrow.tsx";
 export { MetricCard } from "./metric-card.tsx";
 export { ThemeToggle } from "./theme-toggle.tsx";
 export { PageHeader } from "./page-header.tsx";
+export { Tabs, TabsContent, TabsList, TabsTrigger } from "./tabs.tsx";
+export { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "./accordion.tsx";
+export { NoticeBanner } from "./notice-banner.tsx";
+export { DefinitionList, type DefinitionRow as DefinitionRowItem } from "./definition-list.tsx";
