@@ -169,14 +169,19 @@ export interface ClusterOverviewPayload {
 export interface LearningPlanPayload {
   learningPlan: {
     generatedAt: string;
-    mode: "read_only";
-    modelGovernance: Record<string, unknown>;
+    mode: string;
+    modelGovernance?: Record<string, unknown>;
     stages: Array<{
       id: string;
       order: number;
-      label: string;
+      /** Domain field is `title`. Older drafts used `label` — kept optional for safety. */
+      title: string;
+      label?: string;
       status: ContractStatus;
-      gates: string[];
+      goal?: string;
+      evidence?: string[];
+      exitGate?: string;
+      gates?: string[];
     }>;
   };
 }

@@ -29,6 +29,7 @@ import {
   formatDateTime,
   formatMetricValue,
   formatNumber,
+  humanize,
   stateTone,
   type Tone
 } from "../shared/lib/formatters.ts";
@@ -308,7 +309,7 @@ function HardwareSection({ data }: { data: DashboardData }) {
             ["Proxmox", data.physicalHost.identity.proxmoxVersion],
             ["Ubicacion", data.physicalHost.identity.location]
           ]} />
-          <TokenList items={data.physicalHost.quality.unknownFields} tone="warning" empty="Inventario completo" />
+          <TokenList items={data.physicalHost.quality.unknownFields.map(humanize)} tone="warning" empty="Inventario completo" />
         </section>
         <section className="panel">
           <PanelHeader title="Telemetry latest" badge={telemetry.summary.stale ? "stale" : telemetry.summary.status} />
@@ -320,18 +321,18 @@ function HardwareSection({ data }: { data: DashboardData }) {
             ["Network RX/TX", `${formatMetricValue(telemetry.network.rxMbps, "Mbps")} / ${formatMetricValue(telemetry.network.txMbps, "Mbps")}`],
             ["Power", formatMetricValue(telemetry.power.watts as number | null, "W")]
           ]} />
-          <TokenList items={telemetry.quality.unknownFields} tone="warning" empty="Telemetry completa" />
+          <TokenList items={telemetry.quality.unknownFields.map(humanize)} tone="warning" empty="Telemetry completa" />
         </section>
       </section>
       <section className="panel">
-        <PanelHeader title="Collector DevOps" badge={collector.collectorMode} />
+        <PanelHeader title="Collector DevOps" badge={compactLabel(collector.status)} />
         <div className="definition-grid">
           <DefinitionRow label="Status" value={compactLabel(collector.status)} />
           <DefinitionRow label="Version" value={collector.collectorVersion} />
           <DefinitionRow label="SSH" value={collector.permissions.sshEnabled ? "enabled" : "disabled"} />
           <DefinitionRow label="Proxmox writes" value={collector.permissions.proxmoxApiWriteEnabled ? "enabled" : "disabled"} />
         </div>
-        <TokenList items={collector.unknownCapabilities} tone="neutral" empty="Sin campos pendientes" />
+        <TokenList items={collector.unknownCapabilities.map(humanize)} tone="neutral" empty="Sin campos pendientes" />
       </section>
     </section>
   );
@@ -471,7 +472,7 @@ function ClustersSection({ data }: { data: DashboardData }) {
       <TitleRow eyebrow="Infraestructura" title="Clusters y VPS" badge={data.clusters.mode} />
       <section className="metric-grid">
         {Object.entries(data.clusters.totals).slice(0, 4).map(([key, value]) => (
-          <MetricCard key={key} label={compactLabel(key)} value={formatNumber(value)} tone="neutral" meta="clusterOverview.totals" />
+          <MetricCard key={key} label={humanize(key)} value={formatNumber(value)} tone="neutral" meta="clusterOverview.totals" />
         ))}
       </section>
       <section className="workflow-list">
@@ -496,14 +497,17 @@ function ClustersSection({ data }: { data: DashboardData }) {
 }
 
 function LearningSection({ data }: { data: DashboardData }) {
+  const canSelfPromote = data.readinessSignals.modelGovernance.canSelfPromote;
+  const requiresHumanApproval = data.readinessSignals.modelGovernance.requiresHumanApproval;
+
   return (
     <section className="page-stack">
       <TitleRow eyebrow="OpenClaw" title="Aprendizaje supervisado" badge={data.learningPlan.mode} />
       <section className="metric-grid metric-grid-compact">
         <MetricCard label="Stages" value={formatNumber(data.learningPlan.stages.length)} tone="neutral" meta="learningPlan.stages" />
         <MetricCard label="Signals" value={formatNumber(Object.keys(data.readinessSignals.scores).length)} tone="neutral" meta="readinessSignals.scores" />
-        <MetricCard label="Self promote" value={data.readinessSignals.modelGovernance.canSelfPromote ? "enabled" : "blocked"} tone="critical" meta="modelGovernance" />
-        <MetricCard label="Human approval" value={data.readinessSignals.modelGovernance.requiresHumanApproval ? "required" : "optional"} tone="warning" meta="modelGovernance" />
+        <MetricCard label="Self promote" value={canSelfPromote ? "enabled" : "blocked"} tone={canSelfPromote ? "critical" : "success"} meta="modelGovernance" />
+        <MetricCard label="Human approval" value={requiresHumanApproval ? "required" : "optional"} tone={requiresHumanApproval ? "success" : "critical"} meta="modelGovernance" />
       </section>
       <section className="two-column">
         <section className="panel">
@@ -512,7 +516,7 @@ function LearningSection({ data }: { data: DashboardData }) {
             {Object.entries(data.readinessSignals.scores).map(([key, score]) => (
               <article key={key} className={`signal-row signal-${stateTone(score.status)}`}>
                 <div>
-                  <strong>{compactLabel(key)}</strong>
+                  <strong>{humanize(key)}</strong>
                   <p>{compactLabel(score.reason)}</p>
                 </div>
                 <span>{score.score === null ? "unknown" : `${Math.round(score.score * 100)}%`}</span>
@@ -526,7 +530,7 @@ function LearningSection({ data }: { data: DashboardData }) {
             {data.learningPlan.stages.map((stage) => (
               <div key={stage.id} className="action-row">
                 <Badge tone={stateTone(stage.status)}>{stage.order}</Badge>
-                <span>{stage.label}</span>
+                <span>{stage.title ?? stage.label ?? humanize(stage.id)}</span>
               </div>
             ))}
           </div>
