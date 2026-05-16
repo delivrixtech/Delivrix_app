@@ -13,6 +13,32 @@ export function compactLabel(value: string | number | boolean | null | undefined
     .trim();
 }
 
+/**
+ * Display-friendly version of a backend identifier. Splits camelCase, replaces
+ * dots between letters with spaces, and normalizes whitespace. Preserves
+ * existing capitalization for already-spaced words and keeps version numbers
+ * intact (digit-flanked dots are not split).
+ *
+ * Examples:
+ *   humanize("senderNodes")          // "sender nodes"
+ *   humanize("identity.cpuCores")    // "identity cpu cores"
+ *   humanize("Delivrix Demo 5.1")    // "Delivrix Demo 5.1"
+ *   humanize("needs_review")         // "needs review"
+ */
+export function humanize(value: string | number | boolean | null | undefined): string {
+  if (value === null || value === undefined || value === "") {
+    return "unknown";
+  }
+
+  return String(value)
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/([a-zA-Z])\.([a-zA-Z])/g, "$1 $2")
+    .replace(/([a-z0-9])([A-Z])/g, (_match, a, b: string) => `${a} ${b.toLowerCase()}`)
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) {
     return "unknown";
