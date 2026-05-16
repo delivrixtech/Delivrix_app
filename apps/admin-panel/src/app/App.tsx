@@ -175,7 +175,7 @@ function Sidebar({
   data: DashboardData | undefined;
 }) {
   return (
-    <aside className="flex flex-col justify-between gap-6 p-4 border-r border-[var(--color-border)] bg-[var(--color-surface)] max-md:border-r-0 max-md:border-b">
+    <aside className="sticky top-14 self-start h-[calc(100vh-3.5rem)] overflow-y-auto flex flex-col justify-between gap-6 p-4 border-r border-[var(--color-border)] bg-[var(--color-surface)] max-md:static max-md:h-auto max-md:overflow-visible max-md:border-r-0 max-md:border-b">
       <nav className="flex flex-col gap-5" aria-label="Secciones del panel">
         {sectionGroupOrder.map((group) => {
           const items = sections.filter((section) => section.group === group);
@@ -1753,113 +1753,63 @@ function CanvasNodeLabel({ node }: { node: OpenClawCanvasPayload["canvas"]["node
   );
 }
 
-function TitleRow({ eyebrow, title, badge }: { eyebrow: string; title: string; badge: string }) {
-  return (
-    <div className="page-title-row">
-      <div>
-        <p className="eyebrow">{eyebrow}</p>
-        <h2>{title}</h2>
-      </div>
-      <Badge tone="neutral">{compactLabel(badge)}</Badge>
-    </div>
-  );
-}
-
-function PanelHeader({ title, badge }: { title: string; badge: string }) {
-  return (
-    <div className="panel-heading">
-      <h3>{title}</h3>
-      <Badge tone={stateTone(badge)}>{compactLabel(badge)}</Badge>
-    </div>
-  );
-}
-
-function MetricCard({ label, value, tone, meta }: { label: string; value: string; tone: Tone; meta: string }) {
-  return (
-    <article className={`metric-card metric-${tone}`}>
-      <span className="metric-label">{label}</span>
-      <strong className="metric-value metric-value-small">{value}</strong>
-      <span className="metric-meta">{meta}</span>
-    </article>
-  );
-}
-
-function Badge({ tone, children }: { tone: Tone; children: ReactNode }) {
-  return <span className={`badge badge-${tone}`}>{children}</span>;
-}
-
-function StatusPill({ label, value }: { label: string; value: ContractStatus }) {
-  const tone = stateTone(value);
-  return (
-    <span className={`status-pill status-${tone}`}>
-      <span className="status-dot" />
-      <span>{label}</span>
-      <strong>{compactLabel(value)}</strong>
-    </span>
-  );
-}
-
-function TokenGroup({ title, items }: { title: string; items: string[] }) {
-  return (
-    <div className="workflow-token-group">
-      <strong>{title}</strong>
-      <TokenList items={items} tone="neutral" empty="Sin datos" />
-    </div>
-  );
-}
-
-function TokenList({ items, tone, empty }: { items: string[]; tone: Tone; empty: string }) {
-  if (items.length === 0) {
-    return <p className="empty-inline">{empty}</p>;
-  }
-
-  return (
-    <div className="token-grid">
-      {items.map((item) => (
-        <Badge key={item} tone={tone}>{compactLabel(item)}</Badge>
-      ))}
-    </div>
-  );
-}
-
-function DefinitionGrid({ rows }: { rows: Array<[string, string]> }) {
-  return (
-    <div className="definition-grid">
-      {rows.map(([label, value]) => <DefinitionRow key={label} label={label} value={value} />)}
-    </div>
-  );
-}
-
-function DefinitionRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="definition-row">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
 function LoadingState() {
   return (
-    <section className="skeleton-grid">
-      <div className="skeleton skeleton-wide" />
-      <div className="skeleton" />
-      <div className="skeleton" />
-      <div className="skeleton skeleton-table" />
+    <section className="flex flex-col gap-5 max-w-[1200px]">
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-3 w-24" />
+        <Skeleton className="h-7 w-64" />
+        <Skeleton className="h-4 w-[460px] max-w-full" />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {[0, 1, 2, 3].map((i) => (
+          <Skeleton key={i} className="h-[86px] rounded-[var(--radius-md)]" />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <Skeleton className="h-64 rounded-[var(--radius-lg)]" />
+        <Skeleton className="h-64 rounded-[var(--radius-lg)]" />
+      </div>
     </section>
+  );
+}
+
+function Skeleton({ className }: { className?: string }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={cn(
+        "bg-[var(--color-surface-sunken)] animate-pulse",
+        className
+      )}
+    />
   );
 }
 
 function ErrorState({ message, onRefresh }: { message: string; onRefresh: () => void }) {
   return (
-    <section className="notice notice-critical">
-      <div>
-        <h2>Gateway no disponible</h2>
-        <p>{message}</p>
-      </div>
-      <button className="button button-secondary" type="button" onClick={onRefresh}>
-        Actualizar
-      </button>
+    <section className="flex flex-col gap-5 max-w-[720px]">
+      <NoticeBanner
+        tone="critical"
+        title="Gateway no disponible"
+        description={message}
+        action={
+          <Button variant="default" size="sm" onClick={onRefresh}>
+            <RefreshCw size={14} strokeWidth={1.75} aria-hidden="true" />
+            Reintentar
+          </Button>
+        }
+      />
+      <Card>
+        <CardContent className="px-5 py-4">
+          <p className="m-0 text-[12px] leading-relaxed text-[var(--color-text-secondary)]">
+            El admin panel sirve solo lecturas desde el control plane. Si el gateway esta
+            apagado, ninguna pantalla puede renderizar datos vivos. Verifica que el
+            proceso <code className="font-mono">npm run dev:gateway</code> este arriba en
+            el puerto 3000.
+          </p>
+        </CardContent>
+      </Card>
     </section>
   );
 }
@@ -1869,7 +1819,16 @@ function toneForSection(section: SectionId, data: DashboardData | undefined): To
   if (section === "canvas") return stateTone(data.canvas.nodes.find((node) => node.id === data.canvas.currentStepId)?.status);
   if (section === "hardware") return data.telemetry.summary.stale ? "warning" : stateTone(data.telemetry.summary.status);
   if (section === "collector") return stateTone(data.supervisedCollector.status);
-  if (section === "workflow") return "success";
+  if (section === "workflow") {
+    const worst = data.workflow.steps.reduce<Tone>((acc, step) => {
+      const tone = stateTone(step.status);
+      if (acc === "critical" || tone === "critical") return "critical";
+      if (acc === "warning" || tone === "warning") return "warning";
+      if (acc === "success" || tone === "success") return acc === "neutral" ? "success" : acc;
+      return acc;
+    }, "neutral");
+    return worst;
+  }
   if (section === "clusters") return stateTone(data.clusters.clusters[0]?.managementState ?? "unknown");
   if (section === "learning") return stateTone(data.readinessSignals.scores.provisioningReadiness?.status ?? "unknown");
   return data.operatingNorth.liveInfrastructureWritesEnabled || data.killSwitch.enabled ? "critical" : "success";
