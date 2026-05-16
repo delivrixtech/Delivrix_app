@@ -1,0 +1,112 @@
+/* Tailwind 4 entry. Wires the design tokens from tokens.css into Tailwind's @theme
+   so utilities like bg-surface, text-primary, border-strong resolve to the active theme. */
+
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme inline {
+  --color-bg: var(--color-bg);
+  --color-surface: var(--color-surface);
+  --color-surface-raised: var(--color-surface-raised);
+  --color-surface-sunken: var(--color-surface-sunken);
+  --color-surface-overlay: var(--color-surface-overlay);
+
+  --color-border-subtle: var(--color-border);
+  --color-border-strong: var(--color-border-strong);
+  --color-border-focus: var(--color-border-focus);
+
+  --color-fg: var(--color-text-primary);
+  --color-fg-muted: var(--color-text-secondary);
+  --color-fg-subtle: var(--color-text-tertiary);
+  --color-fg-disabled: var(--color-text-disabled);
+  --color-fg-inverse: var(--color-text-inverse);
+
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-accent-soft: var(--color-accent-soft);
+  --color-accent-fg: var(--color-accent-fg);
+
+  --color-success: var(--color-success);
+  --color-success-soft: var(--color-success-soft);
+  --color-success-border: var(--color-success-border);
+  --color-success-fg: var(--color-success-fg);
+
+  --color-info: var(--color-info);
+  --color-info-soft: var(--color-info-soft);
+  --color-info-border: var(--color-info-border);
+  --color-info-fg: var(--color-info-fg);
+
+  --color-warning: var(--color-warning);
+  --color-warning-soft: var(--color-warning-soft);
+  --color-warning-border: var(--color-warning-border);
+  --color-warning-fg: var(--color-warning-fg);
+
+  --color-critical: var(--color-critical);
+  --color-critical-soft: var(--color-critical-soft);
+  --color-critical-border: var(--color-critical-border);
+  --color-critical-fg: var(--color-critical-fg);
+
+  --color-unknown: var(--color-unknown);
+  --color-unknown-soft: var(--color-unknown-soft);
+  --color-unknown-border: var(--color-unknown-border);
+  --color-unknown-fg: var(--color-unknown-fg);
+
+  --color-stale: var(--color-stale);
+  --color-stale-soft: var(--color-stale-soft);
+  --color-stale-border: var(--color-stale-border);
+  --color-stale-fg: var(--color-stale-fg);
+
+  --color-neutral: var(--color-neutral);
+  --color-neutral-soft: var(--color-neutral-soft);
+  --color-neutral-border: var(--color-neutral-border);
+  --color-neutral-fg: var(--color-neutral-fg);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --radius-xs: var(--radius-xs);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --radius-pill: var(--radius-pill);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-focus: var(--shadow-focus);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    font-family: var(--font-sans);
+    background-color: var(--color-bg);
+    color: var(--color-text-primary);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "cv11", "ss03", "ss04";
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+  }
+
+  /* Tabular numerics for operational metrics. */
+  .tnum,
+  .metric-value,
+  [class*="metric-value"] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Reset focus rings to use the Delivrix focus token. */
+  :focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-focus);
+  }
+}
