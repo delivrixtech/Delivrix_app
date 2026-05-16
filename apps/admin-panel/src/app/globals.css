@@ -110,3 +110,48 @@
     box-shadow: var(--shadow-focus);
   }
 }
+
+/* Canvas node styling for ReactFlow nodes built with the new design system. */
+.delivrix-node {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.delivrix-node.selected,
+.delivrix-node:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: var(--shadow-focus);
+}
+
+.delivrix-node-success {
+  border-color: var(--color-success-border);
+}
+
+.delivrix-node-warning {
+  border-color: var(--color-warning-border);
+}
+
+.delivrix-node-critical {
+  border-color: var(--color-critical-border);
+}
+
+/* Hide the wrapper div ReactFlow injects so our padding controls layout. */
+.react-flow__node.delivrix-node .react-flow__handle {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+/* Truncated text helper for canvas summaries. */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
