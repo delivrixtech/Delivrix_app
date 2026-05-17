@@ -1,21 +1,20 @@
 /**
- * Section manifest del admin panel (Fase H, 2026-05-17).
+ * Section manifest del admin panel — 8 secciones alineadas con Pencil
+ * (`Panel Front End.pen` sidebar).
  *
- * Re-arquitectura para alinear con `Panel Front End.pen`: 5 secciones top-level
- * (era 7 antes). Canvas / Workflow / Aprendizaje se diluyen como paneles
- * dentro de Overview Dashboard. Safety se unifica con Clusters en una sola
- * pantalla con tabs internas.
- *
- * Cada entrada describe: id, label sidebar, agrupacion, icono, eyebrow,
- * title y descripcion para PageHeader, y el endpoint principal que consume.
+ * Items en orden: Vista general / Onboarding / Canvas / Hardware / Recolector /
+ * Clústeres / Aprendizaje / Seguridad.
  */
 
 import {
   Compass,
   Cpu,
   Database,
+  GraduationCap,
   LayoutDashboard,
   Server,
+  ShieldCheck,
+  Workflow,
   type LucideIcon
 } from "lucide-react";
 import { READ_ENDPOINTS } from "../shared/api/read-boundary.ts";
@@ -23,9 +22,12 @@ import { READ_ENDPOINTS } from "../shared/api/read-boundary.ts";
 export type SectionId =
   | "overview"
   | "onboarding"
+  | "canvas"
   | "hardware"
   | "collector"
-  | "clusters-security";
+  | "clusters"
+  | "learning"
+  | "safety";
 
 export type SectionGroup = "estado" | "operacion" | "barandillas";
 
@@ -47,9 +49,9 @@ export const sections: SectionDescriptor[] = [
     group: "estado",
     icon: LayoutDashboard,
     eyebrow: "Inicio operativo",
-    title: "Capacidad preparada, sin envios reales.",
+    title: "Capacidad preparada, sin envíos reales.",
     description:
-      "Panel de control: nodos preparados, IPs en warming, reputacion observada, aprobaciones pendientes y eventos recientes. Toda lectura, sin acciones reales.",
+      "Delivrix gobierna infraestructura de correo autorizada en modo solo lectura. OpenClaw observa, valida y propone — los humanos aprueban cada acción real.",
     endpoint: READ_ENDPOINTS.adminOverview
   },
   {
@@ -57,21 +59,32 @@ export const sections: SectionDescriptor[] = [
     navLabel: "Onboarding",
     group: "operacion",
     icon: Compass,
-    eyebrow: "Practica · Onboarding",
-    title: "Onboarding del servidor de envio",
+    eyebrow: "Práctica · Onboarding",
+    title: "Onboarding del servidor de envío",
     description:
-      "El operador captura y valida el servidor fisico, sus IPs, dominios e interfaces. OpenClaw observa y recomienda; el panel solo lee snapshots redactados.",
+      "El asistente captura y valida el servidor físico, sus IPs, dominios, DNS, límites y permisos antes de pedir el visto bueno humano. OpenClaw observa la evidencia y recomienda.",
     endpoint: READ_ENDPOINTS.openClawOnboardingState
+  },
+  {
+    id: "canvas",
+    navLabel: "Canvas",
+    group: "operacion",
+    icon: Workflow,
+    eyebrow: "OpenClaw · Canvas",
+    title: "Topología en vivo",
+    description:
+      "Grafo del control plane: nodos OpenClaw, dependencias, blockedBy por categoría y timeline reciente. El panel sólo lee snapshots redactados.",
+    endpoint: READ_ENDPOINTS.openClawLiveCanvas
   },
   {
     id: "hardware",
     navLabel: "Hardware",
     group: "operacion",
     icon: Cpu,
-    eyebrow: "Servidor fisico",
-    title: "Hardware y telemetria",
+    eyebrow: "Servidor físico",
+    title: "Hardware y telemetría",
     description:
-      "Inventario y telemetria del host. Datos del snapshot read-only ingestado por el collector supervisado — sin live polling.",
+      "Inventario y telemetría del host físico ingestado por el collector supervisado. Sin live polling — todo viene de snapshots auditados.",
     endpoint: READ_ENDPOINTS.hardwarePhysicalHost
   },
   {
@@ -82,19 +95,41 @@ export const sections: SectionDescriptor[] = [
     eyebrow: "DevOps",
     title: "Recolector y captura manual",
     description:
-      "Fuentes supervisadas read-only y contrato de la ingesta manual. El panel jamas postea snapshots; el endpoint manual vive en CLI fuera de la UI.",
+      "Fuentes supervisadas read-only y contrato de la ingesta manual. El panel jamás postea snapshots; el endpoint manual vive en CLI fuera de la UI.",
     endpoint: READ_ENDPOINTS.collectorSupervisedPlan
   },
   {
-    id: "clusters-security",
+    id: "clusters",
     navLabel: "Clústeres",
     group: "barandillas",
     icon: Server,
-    eyebrow: "Infraestructura · Seguridad",
-    title: "Clusters y nodos de envio",
+    eyebrow: "Infraestructura",
+    title: "Clústeres y nodos de envío",
     description:
-      "Inventario de clusters de sender nodes, su salud y reputacion, mas la frontera operativa (kill switch, acciones permitidas, gates pendientes, roles del norte).",
+      "Inventario de clústeres de sender nodes, su salud y reputación. Plan dry-run y acciones siguientes salen directo del contrato.",
     endpoint: READ_ENDPOINTS.adminClusters
+  },
+  {
+    id: "learning",
+    navLabel: "Aprendizaje",
+    group: "barandillas",
+    icon: GraduationCap,
+    eyebrow: "OpenClaw · Aprendizaje supervisado",
+    title: "Plan de aprendizaje y readiness",
+    description:
+      "Stages del plan de aprendizaje supervisado, signals de readiness por capacidad y gobierno del modelo. Promoción y entrenamientos requieren aprobación humana.",
+    endpoint: READ_ENDPOINTS.openClawLearningPlan
+  },
+  {
+    id: "safety",
+    navLabel: "Seguridad",
+    group: "barandillas",
+    icon: ShieldCheck,
+    eyebrow: "Norte operativo · Barandillas",
+    title: "Seguridad y frontera operativa",
+    description:
+      "Kill switch, acciones permitidas y bloqueadas, gates pendientes y roles del norte. Todo lectura desde el contrato del operating-north.",
+    endpoint: READ_ENDPOINTS.operatingNorth
   }
 ];
 
@@ -104,7 +139,7 @@ export const sectionsById: Record<SectionId, SectionDescriptor> = Object.fromEnt
 
 export const sectionGroupLabels: Record<SectionGroup, string> = {
   estado: "Estado",
-  operacion: "Operacion",
+  operacion: "Operación",
   barandillas: "Barandillas"
 };
 
