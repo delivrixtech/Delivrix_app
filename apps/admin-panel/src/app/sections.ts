@@ -11,11 +11,11 @@
  */
 
 import {
-  Activity,
+  Compass,
   Cpu,
+  Database,
   LayoutDashboard,
-  ShieldCheck,
-  Sparkles,
+  Server,
   type LucideIcon
 } from "lucide-react";
 import { READ_ENDPOINTS } from "../shared/api/read-boundary.ts";
@@ -56,7 +56,7 @@ export const sections: SectionDescriptor[] = [
     id: "onboarding",
     navLabel: "Onboarding",
     group: "operacion",
-    icon: Sparkles,
+    icon: Compass,
     eyebrow: "Practica · Onboarding",
     title: "Onboarding del servidor de envio",
     description:
@@ -78,7 +78,7 @@ export const sections: SectionDescriptor[] = [
     id: "collector",
     navLabel: "Recolector",
     group: "operacion",
-    icon: Activity,
+    icon: Database,
     eyebrow: "DevOps",
     title: "Recolector y captura manual",
     description:
@@ -87,9 +87,9 @@ export const sections: SectionDescriptor[] = [
   },
   {
     id: "clusters-security",
-    navLabel: "Clusters y seguridad",
+    navLabel: "Clústeres",
     group: "barandillas",
-    icon: ShieldCheck,
+    icon: Server,
     eyebrow: "Infraestructura · Seguridad",
     title: "Clusters y nodos de envio",
     description:
