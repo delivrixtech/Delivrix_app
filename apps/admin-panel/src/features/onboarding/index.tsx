@@ -1,415 +1,599 @@
 /**
- * Onboarding feature — wizard del servidor de envio.
+ * Onboarding Wizard — port 1:1 desde Pencil frame `T9osf` / `GygQG`.
  *
- * Pencil frame `T9osf` (Onboarding Wizard). Estructura:
- *   1. PageHeader (eyebrow + title + description).
- *   2. Stepper horizontal de 6 pasos (servidor / IPs / identidad / conexion /
- *      DNS / lanzamiento) tone'd por `onboardingState.readinessByCategory`.
- *   3. Trio de Cards de inventario read-only:
- *      - Hardware del servidor (de `physicalHost.identity` + `capacity`).
- *      - Inventario de campos (de `pendingQuestions`).
- *      - Interfaces de red (de `physicalHost.capacity.networkInterfaces`).
- *   4. OpenClawPromptPanel (un mensaje guiado por `blockers`/`warnings`).
- *   5. Trio de status cards (cumplimiento / TPS / SDR) consumiendo
- *      `operatingNorth.allowedActions` y `gates` cuando aplica.
+ * Estructura literal:
+ *   PageHeader (M5gN0)  ·  Stepper de 6 pasos horizontales (cL78x)
+ *   WizardBody (uqjXO):
+ *     · Form (IZ1we) — 3 SectionCards con field rows (Identidad, Inventario, Red)
+ *     · OpenClawColumn (vBXlY, 360w) — gradient prompt card + meta card
+ *   GatesHead + GatesStrip (3 gate cards horizontales)
+ *   ActionBar — save + tooltip + back + submit
  *
- * El frontend NO decide cuando esta listo un paso — solo lee
- * `readinessByCategory` (un map<categoria, 0..1>) y mapea a status.
+ * Valores literales: padding, color, gap exactos del .pen.
  */
 
-import { AlertTriangle, ArrowUpRight, CheckCircle2, ShieldAlert } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowUp,
+  Info,
+  KeyRound,
+  Lock,
+  Save,
+  Send,
+  ShieldAlert,
+  ShieldX,
+  Sparkles,
+  WandSparkles
+} from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
-import {
-  compactLabel,
-  formatMetricValue,
-  formatNumber,
-  humanize,
-  stateTone,
-  type Tone
-} from "../../shared/lib/formatters.ts";
-import {
-  Badge as UiBadge,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  DefinitionList,
-  Eyebrow,
-  NoticeBanner,
-  OpenClawPromptPanel,
-  PageHeader,
-  Stepper,
-  type StepStatus,
-  type StepperStep
-} from "../../shared/ui/index.ts";
-import { formatEndpointBadge, getSection } from "../../app/sections.ts";
+import { compactLabel, formatNumber, humanize } from "../../shared/lib/formatters.ts";
 
-/**
- * Pasos canonicos del onboarding. El orden y los kickers son del frontend
- * (UX), el status se deriva del payload (`readinessByCategory`).
- */
-interface CanonicalStep {
-  category: string;
-  kicker: string;
-  title: string;
-  description: string;
-}
+/* --------------------------------------------------------------------------
+ * Canonical steps (Pencil cL78x)
+ * ------------------------------------------------------------------------ */
+const STEPS = [
+  { kicker: "PASO 1", title: "Servidor", category: "server" },
+  { kicker: "PASO 2", title: "IPs y dominios", category: "network" },
+  { kicker: "PASO 3", title: "DNS", category: "dns" },
+  { kicker: "PASO 4", title: "Límites", category: "limits" },
+  { kicker: "PASO 5", title: "Cumplimiento", category: "compliance" },
+  { kicker: "PASO 6", title: "Revisión", category: "review" }
+] as const;
 
-const CANONICAL_STEPS: CanonicalStep[] = [
-  {
-    category: "server",
-    kicker: "Paso 1",
-    title: "Servidor",
-    description: "Identidad y capacidad del host fisico."
-  },
-  {
-    category: "ips",
-    kicker: "Paso 2",
-    title: "IPs",
-    description: "Pool dedicado y reputacion inicial."
-  },
-  {
-    category: "identity",
-    kicker: "Paso 3",
-    title: "Identidad",
-    description: "Marca, dominios y senders permitidos."
-  },
-  {
-    category: "network",
-    kicker: "Paso 4",
-    title: "Conexion",
-    description: "Interfaces de red e ingreso supervisado."
-  },
-  {
-    category: "dns",
-    kicker: "Paso 5",
-    title: "DNS",
-    description: "Registros SPF / DKIM / DMARC validados."
-  },
-  {
-    category: "launch",
-    kicker: "Paso 6",
-    title: "Lanzamiento",
-    description: "Gate del norte operativo y compromiso humano."
-  }
-];
+type StepStatus = "active" | "ready" | "pending" | "blocked";
 
-function readinessToStatus(score: number | undefined, hasBlocker: boolean): StepStatus {
-  if (hasBlocker) return "blocked";
-  if (score === undefined) return "pending";
-  if (score >= 1) return "ready";
-  if (score > 0) return "in_progress";
+function deriveStepStatus(
+  category: string,
+  readinessByCategory: Record<string, number>,
+  blockers: string[]
+): StepStatus {
+  const normalized = category.toLowerCase();
+  const blocker = blockers.some((b) => b.toLowerCase().includes(normalized));
+  if (blocker) return "blocked";
+  const readiness = Object.entries(readinessByCategory).find(
+    ([k]) => k.toLowerCase().includes(normalized)
+  )?.[1];
+  if (readiness === undefined) return "pending";
+  if (readiness >= 1) return "ready";
+  if (readiness > 0) return "active";
   return "pending";
 }
 
-/** Match laxo: la categoria del payload puede llegar como `server`, `Server`,
- *  `hardware.server`, etc. Compara minusculas y prefijos. */
-function findReadinessFor(category: string, readinessByCategory: Record<string, number>): number | undefined {
-  const normalized = category.toLowerCase();
-  for (const [key, value] of Object.entries(readinessByCategory)) {
-    if (key.toLowerCase() === normalized) return value;
-    if (key.toLowerCase().includes(normalized)) return value;
-  }
-  return undefined;
-}
-
-function blockersForCategory(category: string, blockers: string[]): string[] {
-  const normalized = category.toLowerCase();
-  return blockers.filter((blocker) => blocker.toLowerCase().includes(normalized));
-}
-
+/* --------------------------------------------------------------------------
+ * Main section
+ * ------------------------------------------------------------------------ */
 export function OnboardingSection({ data }: { data: DashboardData }) {
   const onboarding = data.onboardingState;
-  const physicalHost = data.physicalHost;
-  const operatingNorth = data.operatingNorth;
-  const identity = physicalHost.identity;
-  const capacity = physicalHost.capacity;
-  const pendingQuestions = onboarding.pendingQuestions;
-  const blockers = onboarding.blockers;
-  const warnings = onboarding.warnings;
-  const canGenerate = onboarding.canGenerateTopologyPlan;
-
-  const steps: StepperStep[] = CANONICAL_STEPS.map((step, index) => {
-    const readiness = findReadinessFor(step.category, onboarding.readinessByCategory);
-    const hasBlocker = blockersForCategory(step.category, blockers).length > 0;
-    return {
-      id: step.category,
-      order: index + 1,
-      kicker: step.kicker,
-      title: step.title,
-      description: step.description,
-      status: readinessToStatus(readiness, hasBlocker)
-    };
-  });
-
-  const hardwareFields: Array<{ label: string; value: string }> = [
-    { label: "Host", value: identity.label || "unknown" },
-    { label: "Vendor", value: identity.vendor || "unknown" },
-    { label: "Modelo", value: identity.model || "unknown" },
-    { label: "CPU cores", value: formatMetricValue(capacity.cpuCores, "cores") },
-    { label: "Memoria", value: formatMetricValue(capacity.memoryGb, "GB") },
-    { label: "Storage", value: formatMetricValue(capacity.storageUsableGb, "GB") }
-  ];
-
-  const knownInputCount = Object.keys(onboarding.knownInputs).length;
-  const pendingCount = pendingQuestions.length;
-  const totalFields = knownInputCount + pendingCount;
-  const fieldsCompleteness = totalFields === 0 ? 0 : Math.round((knownInputCount / totalFields) * 100);
+  const blockers = onboarding.blockers ?? [];
+  const warnings = onboarding.warnings ?? [];
+  const stepStatuses = STEPS.map((step) =>
+    deriveStepStatus(step.category, onboarding.readinessByCategory, blockers)
+  );
+  const activeIndex = Math.max(0, stepStatuses.findIndex((s) => s === "active" || s === "pending" || s === "blocked"));
 
   return (
-    <section className="flex flex-col gap-6 max-w-[1280px]">
-      <PageHeader
-        eyebrow={getSection("onboarding").eyebrow}
-        title={getSection("onboarding").title}
-        description={getSection("onboarding").description}
-        badge={{
-          label: canGenerate ? "topology plan ready" : "topology plan pending",
-          tone: canGenerate ? "success" : "warning"
-        }}
-        endpoint={formatEndpointBadge(getSection("onboarding").endpoint)}
-      />
+    <section className="flex flex-col gap-5" style={{ maxWidth: 1352 }}>
+      <PageHeader activeIndex={activeIndex} />
+      <Stepper statuses={stepStatuses} activeIndex={activeIndex} />
 
-      {blockers.length > 0 ? (
-        <NoticeBanner
-          tone="critical"
-          title={`${formatNumber(blockers.length)} bloqueos en el onboarding`}
-          description="Resolverlos antes de generar el plan de topologia. Cada uno detiene OpenClaw."
-        />
-      ) : warnings.length > 0 ? (
-        <NoticeBanner
-          tone="warning"
-          title={`${formatNumber(warnings.length)} advertencias del onboarding`}
-          description="No bloquean, pero conviene revisar antes de avanzar al gate de lanzamiento."
-        />
-      ) : null}
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-baseline justify-between gap-3 flex-wrap">
-            <CardTitle>Pasos del wizard</CardTitle>
-            <span className="text-[11px] font-[family-name:var(--font-caption)] uppercase tracking-[0.06em] text-[var(--color-text-tertiary)]">
-              {steps.filter((s) => s.status === "ready").length} / {steps.length} listos
-            </span>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <Stepper steps={steps} />
-        </CardContent>
-      </Card>
-
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-3 items-start">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <Card>
-            <CardHeader>
-              <Eyebrow>Inventario</Eyebrow>
-              <CardTitle className="mt-1">Hardware del servidor</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <DefinitionList density="compact" rows={hardwareFields} />
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <Eyebrow>Inventario</Eyebrow>
-              <CardTitle className="mt-1">Campos pendientes</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="m-0 mb-2 text-[12px] text-[var(--color-text-secondary)]">
-                {formatNumber(knownInputCount)} capturados / {formatNumber(pendingCount)} faltan
-                <span className="ml-1.5 text-[var(--color-text-tertiary)]">({fieldsCompleteness}%)</span>
-              </p>
-              {pendingQuestions.length === 0 ? (
-                <p className="m-0 text-[13px] text-[var(--color-text-tertiary)]">
-                  Inventario completo, sin preguntas abiertas.
-                </p>
-              ) : (
-                <ul className="m-0 p-0 list-none flex flex-col gap-1.5">
-                  {pendingQuestions.slice(0, 5).map((question) => (
-                    <li
-                      key={question.id}
-                      className="flex items-start gap-2 rounded-[var(--radius-md)] bg-[var(--color-surface-sunken)] px-2.5 py-2 text-[12px]"
-                    >
-                      <UiBadge
-                        size="sm"
-                        tone={question.priority === "high" ? "critical" : question.priority === "low" ? "neutral" : "warning"}
-                      >
-                        {compactLabel(question.priority)}
-                      </UiBadge>
-                      <div className="flex flex-col min-w-0">
-                        <code className="m-0 text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)] truncate">
-                          {question.fieldPath}
-                        </code>
-                        <span className="text-[11px] text-[var(--color-text-tertiary)]">
-                          {humanize(question.category)}
-                        </span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <Eyebrow>Inventario</Eyebrow>
-              <CardTitle className="mt-1">Interfaces de red</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <DefinitionList
-                density="compact"
-                rows={[
-                  {
-                    label: "Interfaces",
-                    value: formatNumber(capacity.networkInterfaces ?? 0)
-                  },
-                  {
-                    label: "IP pool",
-                    value: formatMetricValue(capacity.ipPoolSize, "IPs")
-                  },
-                  {
-                    label: "Ubicacion",
-                    value: identity.location || "unknown"
-                  }
-                ]}
-              />
-              <p className="m-0 mt-3 text-[11px] text-[var(--color-text-tertiary)]">
-                Detalle por interface vive en la pantalla Hardware.
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-
-        <OpenClawPromptPanel
-          subtitle="Supervised AI operator"
-          message={
-            blockers.length > 0
-              ? `Tengo ${formatNumber(blockers.length)} bloqueos pendientes en el onboarding. Te paso el siguiente con mas impacto?`
-              : warnings.length > 0
-                ? `Tengo ${formatNumber(warnings.length)} advertencias activas. Las priorizo o las dejamos para despues del gate?`
-                : canGenerate
-                  ? "Inventario completo. Puedo proponer el plan de topologia para revisar humanamente."
-                  : "Avanzando el inventario sin bloqueos. Cuando completes los campos abiertos genero el plan."
-          }
-          placeholder="Responde a OpenClaw…"
-          ctaLabel="Sugerir siguiente paso"
-        />
+      <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] items-start">
+        <Form data={data} />
+        <OpenClawColumn blockers={blockers} warnings={warnings} canGenerate={onboarding.canGenerateTopologyPlan} />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <StatusCard
-          tone={blockers.length > 0 ? "critical" : "success"}
-          icon={blockers.length > 0 ? AlertTriangle : CheckCircle2}
-          title="Cumplimiento"
-          headline={blockers.length === 0 ? "Sin bloqueos" : `${formatNumber(blockers.length)} bloqueos`}
-          microcopy={
-            blockers.length === 0
-              ? "Norte operativo en read-only — barandillas sostenidas."
-              : "Resolver para habilitar generacion de topologia."
-          }
-          chips={blockers.slice(0, 3)}
-        />
-        <StatusCard
-          tone={canGenerate ? "success" : "warning"}
-          icon={canGenerate ? CheckCircle2 : AlertTriangle}
-          title="TPS"
-          headline={canGenerate ? "Validado" : "No validado"}
-          microcopy={
-            canGenerate
-              ? "El plan de topologia puede generarse cuando el operador autorice."
-              : "Capturar los campos pendientes para validar TPS supervisado."
-          }
-          chips={warnings.slice(0, 3)}
-        />
-        <StatusCard
-          tone={operatingNorth.delivrixSendsRealEmail ? "warning" : "neutral"}
-          icon={operatingNorth.delivrixSendsRealEmail ? ShieldAlert : ArrowUpRight}
-          title="SDR / autorizacion"
-          headline={operatingNorth.delivrixSendsRealEmail ? "Real send enabled" : "Pendiente"}
-          microcopy={
-            operatingNorth.delivrixSendsRealEmail
-              ? "Operador autorizo el envio real. Lanzamiento bajo human-in-the-loop."
-              : "El gate sigue cerrado: panel mantiene read-only y SMTP simulado."
-          }
-          chips={operatingNorth.gates?.slice(0, 3) ?? []}
-        />
+      <GatesHead />
+      <GatesStrip data={data} />
+      <ActionBar />
+    </section>
+  );
+}
+
+/* --------------------------------------------------------------------------
+ * PageHeader (M5gN0)
+ * ------------------------------------------------------------------------ */
+function PageHeader({ activeIndex }: { activeIndex: number }) {
+  const stepNum = activeIndex + 1;
+  const stepTitle = STEPS[activeIndex]?.title ?? STEPS[0].title;
+  return (
+    <header className="flex flex-col gap-2.5">
+      <span
+        className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#EA580C]"
+        style={{ letterSpacing: "1.2px" }}
+      >
+        PASO {stepNum} DE 6 · {stepTitle.toUpperCase()}
+      </span>
+      <h1
+        className="m-0 text-[32px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[#1A1410]"
+        style={{ letterSpacing: "-0.4px" }}
+      >
+        Onboarding del servidor de envío
+      </h1>
+      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
+        El asistente captura y valida el servidor físico, sus IPs, dominios, DNS, límites y permisos
+        antes de pedir el visto bueno humano. OpenClaw observa la evidencia y recomienda, pero nunca
+        ejecuta cambios por su cuenta.
+      </p>
+    </header>
+  );
+}
+
+/* --------------------------------------------------------------------------
+ * Stepper (cL78x): 6 steps con conectores horizontales
+ * ------------------------------------------------------------------------ */
+function Stepper({ statuses, activeIndex }: { statuses: StepStatus[]; activeIndex: number }) {
+  return (
+    <ol
+      className="m-0 p-0 list-none flex items-center rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF]"
+      style={{ padding: "16px 20px", gap: 14, boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+    >
+      {STEPS.map((step, i) => {
+        const status = statuses[i];
+        const isActive = i === activeIndex;
+        const isReady = status === "ready";
+        const isBlocked = status === "blocked";
+        const circleBg = isActive ? "#F59E0B" : isReady ? "#15803D" : isBlocked ? "#FEE2E2" : "#FFFBF5";
+        const circleFg = isActive || isReady ? "#FFFBF5" : isBlocked ? "#B91C1C" : "#8A8073";
+        const circleBorder = !isActive && !isReady ? "#EAE0CE" : "transparent";
+        const kickerColor = isActive ? "#EA580C" : isReady ? "#15803D" : isBlocked ? "#B91C1C" : "#8A8073";
+        const titleColor = isActive || isReady ? "#1A1410" : "#5C544A";
+        const titleWeight = isActive || isReady ? 600 : 500;
+
+        return (
+          <li key={step.kicker} className="flex items-center min-w-0" style={{ gap: 10 }}>
+            <div className="flex items-center" style={{ gap: 10 }}>
+              <span
+                aria-hidden="true"
+                className="grid place-items-center rounded-full text-[13px] font-[family-name:var(--font-mono)]"
+                style={{
+                  width: 32,
+                  height: 32,
+                  background: circleBg,
+                  color: circleFg,
+                  fontWeight: isActive || isReady ? 700 : 600,
+                  boxShadow: circleBorder !== "transparent" ? `inset 0 0 0 1px ${circleBorder}` : undefined
+                }}
+              >
+                {isReady ? "✓" : i + 1}
+              </span>
+              <div className="flex flex-col gap-0.5">
+                <span
+                  className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
+                  style={{ color: kickerColor, letterSpacing: "1px" }}
+                >
+                  {step.kicker}
+                </span>
+                <span
+                  className="text-[13px] font-[family-name:var(--font-sans)] leading-tight"
+                  style={{ color: titleColor, fontWeight: titleWeight }}
+                >
+                  {step.title}
+                </span>
+              </div>
+            </div>
+            {i < STEPS.length - 1 ? (
+              <span aria-hidden="true" className="block h-px flex-1 bg-[#EAE0CE]" style={{ minWidth: 24 }} />
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/* --------------------------------------------------------------------------
+ * Form (IZ1we): 3 SectionCards
+ * ------------------------------------------------------------------------ */
+function Form({ data }: { data: DashboardData }) {
+  const identity = data.physicalHost.identity;
+  const capacity = data.physicalHost.capacity;
+  const onboarding = data.onboardingState;
+  const known = onboarding.knownInputs;
+  const knownStr = (key: string): string => {
+    const v = known[key];
+    if (v === undefined || v === null || v === "") return "—";
+    return String(v);
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Sección 1 — Identidad */}
+      <SectionCard
+        eyebrow="SECCIÓN 1"
+        title="Identidad del servidor"
+        pillTone="neutral"
+        pillText={`${formatNumber(Object.keys(known).length)} campos`}
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Field label="Hostname" value={identity.label || knownStr("hostname") || "unknown"} mono />
+          <Field label="Centro de datos" value={identity.location || knownStr("datacenter") || "unknown"} />
+          <Field
+            label="Rol"
+            value={knownStr("role") !== "—" ? knownStr("role") : "primario"}
+          />
+          <Field
+            label="Entorno"
+            value={knownStr("environment") !== "—" ? knownStr("environment") : "mvp.local"}
+          />
+        </div>
+      </SectionCard>
+
+      {/* Sección 2 — Inventario */}
+      <SectionCard
+        eyebrow="SECCIÓN 2"
+        title="Inventario físico"
+        pillTone="info"
+        pillText="hardware snapshot"
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Field label="CPU" value={capacity.cpuCores ? `${capacity.cpuCores} cores` : "unknown"} />
+          <Field label="RAM" value={capacity.memoryGb ? `${capacity.memoryGb} GB` : "unknown"} />
+          <Field label="Storage" value={capacity.storageUsableGb ? `${capacity.storageUsableGb} GB` : "unknown"} />
+          <Field label="Link" value={capacity.networkInterfaces ? `${capacity.networkInterfaces} ifaces` : "unknown"} />
+        </div>
+      </SectionCard>
+
+      {/* Sección 3 — Red */}
+      <SectionCard
+        eyebrow="SECCIÓN 3"
+        title="Red e identidad de envío"
+        pillTone="success"
+        pillText={`${formatNumber(capacity.ipPoolSize ?? 0)} IPs`}
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Field label="eth0" value={knownStr("eth0") !== "—" ? knownStr("eth0") : "—"} mono />
+          <Field label="eth1" value={knownStr("eth1") !== "—" ? knownStr("eth1") : "—"} mono />
+          <Field label="IPMI" value={knownStr("ipmi") !== "—" ? knownStr("ipmi") : "—"} mono />
+          <Field label="Dominios" value={knownStr("domains") !== "—" ? knownStr("domains") : "—"} />
+        </div>
+      </SectionCard>
+    </div>
+  );
+}
+
+function SectionCard({
+  eyebrow,
+  title,
+  pillTone,
+  pillText,
+  children
+}: {
+  eyebrow: string;
+  title: string;
+  pillTone: "neutral" | "info" | "success";
+  pillText: string;
+  children: React.ReactNode;
+}) {
+  const pillBg = pillTone === "neutral" ? "#F5F5F4" : pillTone === "info" ? "#DBEAFE" : "#DCFCE7";
+  const pillFg = pillTone === "neutral" ? "#5C544A" : pillTone === "info" ? "#1D4ED8" : "#15803D";
+  return (
+    <section
+      className="flex flex-col gap-4 rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF]"
+      style={{ padding: 20, boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+    >
+      <header className="flex items-center justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <span
+            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+            style={{ letterSpacing: "1.2px" }}
+          >
+            {eyebrow}
+          </span>
+          <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+            {title}
+          </h3>
+        </div>
+        <span
+          className="inline-block rounded-[4px] px-2 py-1 text-[10px] font-[family-name:var(--font-caption)] font-bold"
+          style={{ background: pillBg, color: pillFg }}
+        >
+          {pillText}
+        </span>
+      </header>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * Field row Pencil: label small Inter + valor en input-like read-only.
+ */
+function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span
+        className="text-[11px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[#8A8073]"
+        style={{ letterSpacing: "0.4px" }}
+      >
+        {label}
+      </span>
+      <div
+        className="rounded-[6px] border border-[#EAE0CE] bg-[#F7F2EA] px-3 py-2.5"
+        aria-readonly="true"
+      >
+        <span
+          className={`text-[12px] ${mono ? "font-[family-name:var(--font-mono)]" : "font-[family-name:var(--font-sans)]"} text-[#1A1410]`}
+        >
+          {value}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------------------
+ * OpenClaw column (vBXlY, 360w)
+ * ------------------------------------------------------------------------ */
+function OpenClawColumn({
+  blockers,
+  warnings,
+  canGenerate
+}: {
+  blockers: string[];
+  warnings: string[];
+  canGenerate: boolean;
+}) {
+  const message =
+    blockers.length > 0
+      ? `Detecté ${formatNumber(blockers.length)} bloqueos pendientes. ¿Resumimos el siguiente con mayor impacto?`
+      : warnings.length > 0
+        ? `Hay ${formatNumber(warnings.length)} advertencias activas. Podemos priorizar antes del gate de lanzamiento.`
+        : canGenerate
+          ? "Inventario completo. Puedo proponer el plan de topología cuando lo autorices."
+          : "Avanzando el inventario sin bloqueos. Al completar los campos abiertos genero el plan.";
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div
+        className="rounded-[12px] p-[2px]"
+        style={{
+          background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
+          boxShadow: "0 8px 24px rgba(26, 20, 16, 0.13)"
+        }}
+      >
+        <div className="flex flex-col gap-4 rounded-[10px] bg-[#FFFBF5]" style={{ padding: 20 }}>
+          <div className="flex items-center gap-2.5">
+            <span
+              aria-hidden="true"
+              className="grid h-8 w-8 place-items-center rounded-[8px] text-[#FFFBF5]"
+              style={{
+                background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)"
+              }}
+            >
+              <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
+            </span>
+            <div className="flex flex-col leading-tight">
+              <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+                OpenClaw
+              </span>
+              <span
+                className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]"
+                style={{ letterSpacing: "0.4px" }}
+              >
+                Operador supervisado
+              </span>
+            </div>
+          </div>
+
+          <div
+            className="rounded-[8px] border border-[#EAE0CE] bg-[#F7F2EA] px-3.5 py-3.5"
+          >
+            <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.45] text-[#1A1410]">
+              {message}
+            </p>
+          </div>
+
+          <div
+            aria-hidden="true"
+            className="flex items-center gap-2 rounded-[6px] border border-[#EAE0CE] bg-[#FFFBF5] px-3 py-3"
+          >
+            <span className="flex-1 text-[12px] font-[family-name:var(--font-sans)] text-[#8A8073]">
+              Responde a OpenClaw…
+            </span>
+            <ArrowUp size={14} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              disabled
+              className="inline-flex items-center justify-center gap-1.5 rounded-[6px] bg-[#1A1410] px-3 py-2.5 text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5] disabled:cursor-default disabled:opacity-100"
+            >
+              <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
+              Sugerir siguiente paso
+            </button>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073] text-center">
+              interacción real vive fuera del panel
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div
+        className="flex flex-col gap-2 rounded-[8px] border border-[#EAE0CE] bg-[#F7F2EA]"
+        style={{ padding: 14 }}
+      >
+        <div className="flex items-center gap-2">
+          <Info size={13} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
+          <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+            Por qué OpenClaw observa aquí
+          </span>
+        </div>
+        <p className="m-0 text-[11px] font-[family-name:var(--font-caption)] leading-[1.45] text-[#5C544A]">
+          El onboarding requiere validación humana en cada gate. OpenClaw correlaciona la evidencia
+          capturada y propone próximos pasos, pero no escribe en producción.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------------------
+ * Gates head + strip
+ * ------------------------------------------------------------------------ */
+function GatesHead() {
+  return (
+    <header className="flex flex-col gap-1.5">
+      <span
+        className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+        style={{ letterSpacing: "1.2px" }}
+      >
+        VALIDACIONES Y GATES
+      </span>
+      <h2 className="m-0 text-[13px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+        Pendientes humanas antes de habilitar el servidor para envío
+      </h2>
+    </header>
+  );
+}
+
+function GatesStrip({ data }: { data: DashboardData }) {
+  const blockers = data.onboardingState.blockers ?? [];
+  const operatingNorth = data.operatingNorth;
+
+  // Pencil cards estáticas; las renderizo cuando aplique según contrato.
+  const cards: Array<{
+    iconBg: string;
+    iconColor: string;
+    pillBg: string;
+    pillFg: string;
+    icon: React.ReactNode;
+    title: string;
+    pillText: string;
+    desc: string;
+  }> = [];
+
+  if (blockers.length > 0) {
+    cards.push({
+      iconBg: "#FEF3C7",
+      iconColor: "#B45309",
+      pillBg: "#FEF3C7",
+      pillFg: "#B45309",
+      icon: <ShieldAlert size={18} strokeWidth={1.75} aria-hidden="true" />,
+      title: "Cumplimiento pendiente",
+      pillText: `${formatNumber(blockers.length)} bloqueos`,
+      desc:
+        "A la espera de que un revisor humano firme el cumplimiento de políticas y registre la evidencia."
+    });
+  }
+
+  if (!operatingNorth.delivrixSendsRealEmail || blockers.some((b) => b.toLowerCase().includes("dns"))) {
+    cards.push({
+      iconBg: "#FEE2E2",
+      iconColor: "#B91C1C",
+      pillBg: "#FEE2E2",
+      pillFg: "#B91C1C",
+      icon: <ShieldX size={18} strokeWidth={1.75} aria-hidden="true" />,
+      title: "DNS no validado",
+      pillText: "crítico",
+      desc:
+        "Las zonas y registros aún no se verifican contra los resolvers internos del clúster de envío."
+    });
+  }
+
+  cards.push({
+    iconBg: "#EDE9FE",
+    iconColor: "#7C3AED",
+    pillBg: "#EDE9FE",
+    pillFg: "#7C3AED",
+    icon: <KeyRound size={18} strokeWidth={1.75} aria-hidden="true" />,
+    title: "SSH no autorizado",
+    pillText: "manual",
+    desc:
+      "OpenClaw no tiene credenciales para acceder por SSH. Necesita autorización manual del operador con rol elevado."
+  });
+
+  return (
+    <div className="grid gap-3.5 grid-cols-1 md:grid-cols-3">
+      {cards.slice(0, 3).map((card) => (
+        <article
+          key={card.title}
+          className="flex gap-3.5 rounded-[6px] border border-[#EAE0CE] bg-[#FFFFFF]"
+          style={{ padding: 16 }}
+        >
+          <span
+            aria-hidden="true"
+            className="grid shrink-0 place-items-center rounded-[4px]"
+            style={{
+              width: 36,
+              height: 36,
+              background: card.iconBg,
+              color: card.iconColor
+            }}
+          >
+            {card.icon}
+          </span>
+          <div className="flex flex-col gap-1 min-w-0 flex-1">
+            <header className="flex items-center justify-between gap-2">
+              <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+                {card.title}
+              </h3>
+              <span
+                className="inline-block rounded-full px-2 py-0.5 text-[10px] font-[family-name:var(--font-caption)] font-bold"
+                style={{ background: card.pillBg, color: card.pillFg }}
+              >
+                {card.pillText}
+              </span>
+            </header>
+            <p className="m-0 text-[12px] font-[family-name:var(--font-caption)] leading-[1.45] text-[#5C544A]">
+              {card.desc}
+            </p>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------------------
+ * Action bar
+ * ------------------------------------------------------------------------ */
+function ActionBar() {
+  return (
+    <section
+      className="flex items-center justify-between gap-3 rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF]"
+      style={{ padding: "14px 18px", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+    >
+      <button
+        type="button"
+        disabled
+        className="inline-flex items-center gap-2 rounded-[6px] px-3 py-2.5 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#5C544A] disabled:cursor-default disabled:opacity-100"
+      >
+        <Save size={14} strokeWidth={1.75} aria-hidden="true" />
+        Guardar borrador
+      </button>
+
+      <div className="flex items-center gap-3.5">
+        <span
+          className="inline-flex items-center gap-1.5 rounded-[6px] border border-[#B45309] bg-[#FEF3C7] px-3 py-2"
+          aria-label="tooltip"
+        >
+          <Lock size={12} strokeWidth={1.75} className="text-[#B45309]" aria-hidden="true" />
+          <span className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#B45309]">
+            Requiere validación humana del gate de cumplimiento
+          </span>
+        </span>
+        <button
+          type="button"
+          disabled
+          className="inline-flex items-center gap-2 rounded-[6px] border border-[#EAE0CE] bg-[#FFFBF5] px-4 py-2.5 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410] disabled:cursor-default disabled:opacity-100"
+        >
+          <ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />
+          Volver
+        </button>
+        <button
+          type="button"
+          disabled
+          className="inline-flex items-center gap-2 rounded-[6px] border border-[#EAE0CE] bg-[#F5F5F4] px-5 py-2.5 text-[13px] font-[family-name:var(--font-sans)] font-bold text-[#8A8073] disabled:cursor-default disabled:opacity-100"
+          style={{ opacity: 0.55 }}
+        >
+          <Send size={14} strokeWidth={1.75} aria-hidden="true" />
+          Enviar para aprobación
+        </button>
       </div>
     </section>
   );
 }
 
-function StatusCard({
-  tone,
-  icon: Icon,
-  title,
-  headline,
-  microcopy,
-  chips
-}: {
-  tone: Tone;
-  icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string; "aria-hidden"?: boolean }>;
-  title: string;
-  headline: string;
-  microcopy: string;
-  chips: string[];
-}) {
-  const toneStyle = stateTone(tone === "neutral" ? null : tone === "success" ? "success" : tone);
-  void toneStyle;
-  return (
-    <Card tone={tone === "neutral" ? "neutral" : tone}>
-      <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <span
-              aria-hidden="true"
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-[var(--radius-sm)]"
-              style={{
-                background:
-                  tone === "success"
-                    ? "var(--color-success-soft)"
-                    : tone === "warning"
-                      ? "var(--color-warning-soft)"
-                      : tone === "critical"
-                        ? "var(--color-critical-soft)"
-                        : "var(--color-surface-sunken)",
-                color:
-                  tone === "success"
-                    ? "var(--color-success-fg)"
-                    : tone === "warning"
-                      ? "var(--color-warning-fg)"
-                      : tone === "critical"
-                        ? "var(--color-critical-fg)"
-                        : "var(--color-text-secondary)"
-              }}
-            >
-              <Icon size={14} strokeWidth={1.75} aria-hidden />
-            </span>
-            <CardTitle>{title}</CardTitle>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <p className="m-0 text-[18px] font-[family-name:var(--font-heading)] font-semibold text-[var(--color-text-primary)] leading-tight">
-          {headline}
-        </p>
-        <p className="m-0 mt-1.5 text-[12px] leading-relaxed text-[var(--color-text-secondary)]">
-          {microcopy}
-        </p>
-        {chips.length > 0 ? (
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {chips.map((chip) => (
-              <UiBadge
-                key={chip}
-                size="sm"
-                tone={tone === "neutral" ? "outline" : tone}
-              >
-                {compactLabel(chip)}
-              </UiBadge>
-            ))}
-          </div>
-        ) : null}
-      </CardContent>
-    </Card>
-  );
-}
+/* Silence unused import */
+void humanize;
+void compactLabel;
