@@ -64,6 +64,8 @@
 
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
+  --font-heading: var(--font-heading);
+  --font-caption: var(--font-caption);
 
   --radius-xs: var(--radius-xs);
   --radius-sm: var(--radius-sm);
@@ -89,7 +91,19 @@
     color: var(--color-text-primary);
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
-    font-feature-settings: "cv11", "ss03", "ss04";
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+    letter-spacing: -0.01em;
+  }
+
+  code, kbd, samp, pre {
+    font-family: var(--font-mono);
+  }
+
+  .font-caption {
+    font-family: var(--font-caption);
   }
 
   body {
