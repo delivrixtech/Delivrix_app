@@ -29,9 +29,12 @@ import {
 } from "./sections.ts";
 import { OverviewSection } from "../features/overview/index.tsx";
 import { OnboardingSection } from "../features/onboarding/index.tsx";
+import { CanvasSection } from "../features/canvas/index.tsx";
 import { HardwareSection } from "../features/hardware/index.tsx";
 import { CollectorSection } from "../features/collector/index.tsx";
-import { ClustersSecuritySection } from "../features/clusters-security/index.tsx";
+import { ClustersSection } from "../features/clusters/index.tsx";
+import { LearningSection } from "../features/learning/index.tsx";
+import { SafetySection } from "../features/safety/index.tsx";
 
 export function App() {
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
@@ -339,12 +342,18 @@ function SectionView({ section, data }: { section: SectionId; data: DashboardDat
       return <OverviewSection data={data} />;
     case "onboarding":
       return <OnboardingSection data={data} />;
+    case "canvas":
+      return <CanvasSection data={data} />;
     case "hardware":
       return <HardwareSection data={data} />;
     case "collector":
       return <CollectorSection data={data} />;
-    case "clusters-security":
-      return <ClustersSecuritySection data={data} />;
+    case "clusters":
+      return <ClustersSection data={data} />;
+    case "learning":
+      return <LearningSection data={data} />;
+    case "safety":
+      return <SafetySection data={data} />;
     default: {
       const _exhaustive: never = section;
       void _exhaustive;
@@ -410,14 +419,31 @@ function toneForSection(section: SectionId, data: DashboardData | undefined): To
       if (data.onboardingState.blockers.length > 0) return "critical";
       if (data.onboardingState.warnings.length > 0) return "warning";
       return data.onboardingState.canGenerateTopologyPlan ? "success" : "neutral";
+    case "canvas":
+      if (data.canvas.blockedBy.length > 0) return "critical";
+      if (data.canvas.requiresHumanApproval.length > 0) return "warning";
+      return "success";
     case "hardware":
       return data.telemetry.summary.stale ? "warning" : stateTone(data.telemetry.summary.status);
     case "collector":
       return stateTone(data.supervisedCollector.status);
-    case "clusters-security":
-      if (data.operatingNorth.liveInfrastructureWritesEnabled || data.killSwitch.enabled)
-        return "critical";
+    case "clusters":
       return stateTone(data.clusters.clusters[0]?.managementState ?? "unknown");
+    case "learning": {
+      const blocked = data.learningPlan.stages.some((s) => stateTone(s.status) === "critical");
+      if (blocked) return "critical";
+      if (data.readinessSignals.modelGovernance.canSelfPromote) return "warning";
+      return "success";
+    }
+    case "safety":
+      if (data.killSwitch.enabled) return "critical";
+      if (
+        data.operatingNorth.liveInfrastructureWritesEnabled ||
+        data.operatingNorth.delivrixSendsRealEmail ||
+        data.operatingNorth.nfcProductionWritesEnabled
+      )
+        return "warning";
+      return "success";
     default: {
       const _exhaustive: never = section;
       void _exhaustive;
