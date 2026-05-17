@@ -1,9 +1,8 @@
 /**
- * Admin panel shell: topbar, sidebar, section router y estados loading/error.
+ * Admin panel shell — Fase H (2026-05-17, rebrand Pencil + 5 secciones).
  *
  * Cada SectionView vive en su feature folder (src/features/<name>/index.tsx).
- * Este archivo se mantiene chico a proposito; cualquier renderizado pesado
- * de una pantalla debe ir a su feature.
+ * Este archivo se mantiene chico: shell + router + loading/error.
  */
 
 import { RefreshCw } from "lucide-react";
@@ -22,7 +21,6 @@ import {
   FreshnessTag,
   ModeBadge,
   NoticeBanner,
-  PageHeader,
   Separator,
   ThemeToggle,
   Tooltip,
@@ -34,16 +32,14 @@ import {
   sections,
   type SectionId
 } from "./sections.ts";
-import { CanvasSection } from "../features/canvas/index.tsx";
+import { OverviewSection } from "../features/overview/index.tsx";
+import { OnboardingSection } from "../features/onboarding/index.tsx";
 import { HardwareSection } from "../features/hardware/index.tsx";
 import { CollectorSection } from "../features/collector/index.tsx";
-import { WorkflowSection } from "../features/workflow/index.tsx";
-import { ClustersSection } from "../features/clusters/index.tsx";
-import { LearningSection } from "../features/learning/index.tsx";
-import { SafetySection } from "../features/safety/index.tsx";
+import { ClustersSecuritySection } from "../features/clusters-security/index.tsx";
 
 export function App() {
-  const [activeSection, setActiveSection] = useState<SectionId>("canvas");
+  const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const dashboard = useQuery({
     queryKey: ["admin-panel", "dashboard"],
     queryFn: loadDashboardData,
@@ -129,6 +125,7 @@ function Sidebar({
       <nav className="flex flex-col gap-5" aria-label="Secciones del panel">
         {sectionGroupOrder.map((group) => {
           const items = sections.filter((section) => section.group === group);
+          if (items.length === 0) return null;
           return (
             <div key={group} className="flex flex-col gap-1.5">
               <Eyebrow className="px-2">{sectionGroupLabels[group]}</Eyebrow>
@@ -182,20 +179,16 @@ function Sidebar({
 
 function SectionView({ section, data }: { section: SectionId; data: DashboardData }) {
   switch (section) {
-    case "canvas":
-      return <CanvasSection data={data} />;
+    case "overview":
+      return <OverviewSection data={data} />;
+    case "onboarding":
+      return <OnboardingSection data={data} />;
     case "hardware":
       return <HardwareSection data={data} />;
     case "collector":
       return <CollectorSection data={data} />;
-    case "workflow":
-      return <WorkflowSection data={data} />;
-    case "clusters":
-      return <ClustersSection data={data} />;
-    case "learning":
-      return <LearningSection data={data} />;
-    case "safety":
-      return <SafetySection data={data} />;
+    case "clusters-security":
+      return <ClustersSecuritySection data={data} />;
     default: {
       const _exhaustive: never = section;
       void _exhaustive;
@@ -229,10 +222,7 @@ function Skeleton({ className }: { className?: string }) {
   return (
     <div
       aria-hidden="true"
-      className={cn(
-        "bg-[var(--color-surface-sunken)] animate-pulse",
-        className
-      )}
+      className={cn("bg-[var(--color-surface-sunken)] animate-pulse", className)}
     />
   );
 }
@@ -268,26 +258,19 @@ function ErrorState({ message, onRefresh }: { message: string; onRefresh: () => 
 function toneForSection(section: SectionId, data: DashboardData | undefined): Tone {
   if (!data) return "neutral";
   switch (section) {
-    case "canvas":
-      return stateTone(data.canvas.nodes.find((node) => node.id === data.canvas.currentStepId)?.status);
+    case "overview":
+      return stateTone(data.overview.state);
+    case "onboarding":
+      if (data.onboardingState.blockers.length > 0) return "critical";
+      if (data.onboardingState.warnings.length > 0) return "warning";
+      return data.onboardingState.canGenerateTopologyPlan ? "success" : "neutral";
     case "hardware":
       return data.telemetry.summary.stale ? "warning" : stateTone(data.telemetry.summary.status);
     case "collector":
       return stateTone(data.supervisedCollector.status);
-    case "workflow":
-      return data.workflow.steps.reduce<Tone>((acc, step) => {
-        const tone = stateTone(step.status);
-        if (acc === "critical" || tone === "critical") return "critical";
-        if (acc === "warning" || tone === "warning") return "warning";
-        if (acc === "success" || tone === "success") return acc === "neutral" ? "success" : acc;
-        return acc;
-      }, "neutral");
-    case "clusters":
+    case "clusters-security":
+      if (data.operatingNorth.liveInfrastructureWritesEnabled || data.killSwitch.enabled) return "critical";
       return stateTone(data.clusters.clusters[0]?.managementState ?? "unknown");
-    case "learning":
-      return stateTone(data.readinessSignals.scores.provisioningReadiness?.status ?? "unknown");
-    case "safety":
-      return data.operatingNorth.liveInfrastructureWritesEnabled || data.killSwitch.enabled ? "critical" : "success";
     default: {
       const _exhaustive: never = section;
       void _exhaustive;
