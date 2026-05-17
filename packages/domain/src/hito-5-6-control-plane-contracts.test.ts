@@ -25,6 +25,12 @@ test("physical host contract starts unknown, safe, and redacted", () => {
   assert.equal(physicalHost.identity.serialNumber, "redacted_or_unknown");
   assert.equal(physicalHost.readiness.status, "unknown");
   assert.ok(physicalHost.readiness.blockers.includes("hardware_capacity_unknown"));
+  assert.equal(physicalHost.readiness.primaryBlocker, "hardware_capacity_unknown");
+  assert.deepEqual(physicalHost.readiness.recommendedNextStep, {
+    label: "Ingestar snapshot manual",
+    endpoint: "POST /v1/devops/collector/manual-snapshots/ingest",
+    severity: "warning"
+  });
   assert.ok(physicalHost.quality.unknownFields.includes("capacity.cpuCores"));
   assert.equal(physicalHost.safety.liveInfrastructureWritesEnabled, false);
   assert.equal(physicalHost.safety.sshEnabled, false);
@@ -61,6 +67,8 @@ test("physical host contract can become ready only with explicit capacity eviden
   assert.equal(physicalHost.source.freshness, "fresh");
   assert.equal(physicalHost.readiness.status, "ready");
   assert.deepEqual(physicalHost.readiness.blockers, []);
+  assert.equal(physicalHost.readiness.primaryBlocker, undefined);
+  assert.equal(physicalHost.readiness.recommendedNextStep, undefined);
   assert.deepEqual(physicalHost.quality.unknownFields, []);
 });
 
@@ -192,7 +200,13 @@ test("OpenClaw live canvas composes the graph without embedding sensitive operat
   assert.ok(canvas.nodes.some((node) => node.id === "prepared_capacity" && node.status === "disabled_by_mvp"));
   assert.ok(canvas.edges.some((edge) => edge.from === "proxmox_host" && edge.to === "cluster_plan"));
   assert.ok(canvas.timeline.some((event) => event.actor === "openclaw"));
-  assert.ok(canvas.blockedBy.includes("hardware_capacity_unknown"));
+  assert.ok(canvas.blockedBy.some((blocker) => blocker.code === "hardware_capacity_unknown"));
+  assert.ok(canvas.blockedBy.some((blocker) =>
+    blocker.code === "hardware_capacity_unknown"
+    && blocker.label === "hardware capacity unknown"
+    && blocker.category === "hardware"
+    && blocker.severity === "critical"
+  ));
   assert.ok(canvas.requiresHumanApproval.includes("smtp_activation_approval"));
   assert.equal(canvas.safety.liveInfrastructureWritesEnabled, false);
   assert.equal(JSON.stringify(canvas).includes("private_key"), false);

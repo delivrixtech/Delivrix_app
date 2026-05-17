@@ -35,6 +35,14 @@ export interface PhysicalHostReadiness {
   blockers: string[];
   warnings: string[];
   requiredHumanInputs: string[];
+  primaryBlocker?: string;
+  recommendedNextStep?: PhysicalHostRecommendedNextStep;
+}
+
+export interface PhysicalHostRecommendedNextStep {
+  label: string;
+  endpoint: string;
+  severity: "info" | "warning" | "critical";
 }
 
 export interface PhysicalHostSnapshot extends ControlPlaneContractBase {
@@ -123,12 +131,58 @@ function buildReadiness(
     requiredHumanInputs.push("ip_pool_size");
   }
 
+  const resolvedBlockers = input?.blockers ?? blockers;
+  const resolvedWarnings = input?.warnings ?? warnings;
+  const resolvedRequiredHumanInputs = input?.requiredHumanInputs ?? requiredHumanInputs;
+  const primaryBlocker = input?.primaryBlocker ?? primaryBlockerFor(resolvedBlockers, resolvedWarnings);
+
   return {
-    status: blockers.length > 0 ? "unknown" : warnings.length > 0 ? "needs_review" : "ready",
-    blockers,
-    warnings,
-    requiredHumanInputs,
-    ...input
+    status: input?.status ?? (resolvedBlockers.length > 0 ? "unknown" : resolvedWarnings.length > 0 ? "needs_review" : "ready"),
+    blockers: resolvedBlockers,
+    warnings: resolvedWarnings,
+    requiredHumanInputs: resolvedRequiredHumanInputs,
+    ...(primaryBlocker ? { primaryBlocker } : {}),
+    ...(input?.recommendedNextStep
+      ? { recommendedNextStep: input.recommendedNextStep }
+      : recommendedNextStepFor(primaryBlocker))
+  };
+}
+
+function primaryBlockerFor(blockers: string[], warnings: string[]): string | undefined {
+  return blockers[0] ?? warnings[0];
+}
+
+function recommendedNextStepFor(primaryBlocker: string | undefined): Partial<Pick<PhysicalHostReadiness, "recommendedNextStep">> {
+  if (!primaryBlocker) {
+    return {};
+  }
+
+  if (primaryBlocker === "hardware_capacity_unknown") {
+    return {
+      recommendedNextStep: {
+        label: "Ingestar snapshot manual",
+        endpoint: "POST /v1/devops/collector/manual-snapshots/ingest",
+        severity: "warning"
+      }
+    };
+  }
+
+  if (primaryBlocker === "ip_pool_size_unknown") {
+    return {
+      recommendedNextStep: {
+        label: "Confirmar tamano del pool de IPs",
+        endpoint: "POST /v1/devops/collector/manual-snapshots/ingest",
+        severity: "info"
+      }
+    };
+  }
+
+  return {
+    recommendedNextStep: {
+      label: "Completar evidencia del host fisico",
+      endpoint: "POST /v1/devops/collector/manual-snapshots/ingest",
+      severity: "warning"
+    }
   };
 }
 
