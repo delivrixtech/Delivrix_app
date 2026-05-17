@@ -15,7 +15,8 @@ export const READ_ENDPOINTS = Object.freeze({
   openClawProvisioningState: "/v1/openclaw/provisioning/state",
   openClawReadinessSignals: "/v1/openclaw/readiness-signals",
   operatingNorth: "/v1/operating-north",
-  killSwitch: "/v1/kill-switch"
+  killSwitch: "/v1/kill-switch",
+  auditEvents: "/v1/audit-events"
 } as const);
 
 export type ReadEndpoint = (typeof READ_ENDPOINTS)[keyof typeof READ_ENDPOINTS];

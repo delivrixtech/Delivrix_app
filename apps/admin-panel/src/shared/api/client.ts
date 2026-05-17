@@ -461,6 +461,33 @@ export interface SupervisedCollectorPayload {
   };
 }
 
+export type AuditActorType =
+  | "operator"
+  | "system"
+  | "openclaw"
+  | "collector"
+  | "scheduler"
+  | "external"
+  | string;
+
+export type AuditRiskLevel = "info" | "low" | "medium" | "high" | "critical" | string;
+
+export interface AuditEvent {
+  id: string;
+  occurredAt: string;
+  actorType: AuditActorType;
+  actorId: string;
+  action: string;
+  targetType: string;
+  targetId: string;
+  riskLevel: AuditRiskLevel;
+  metadata: Record<string, unknown>;
+}
+
+export interface AuditEventsPayload {
+  events: AuditEvent[];
+}
+
 export interface SnapshotIngestionPayload {
   snapshotIngestion: ContractBase & {
     status: ContractStatus;
@@ -517,6 +544,7 @@ export interface DashboardData {
   collector: CollectorStatusPayload["collector"];
   supervisedCollector: SupervisedCollectorPayload["supervisedCollector"];
   snapshotIngestion: SnapshotIngestionPayload["snapshotIngestion"];
+  auditEvents: AuditEvent[];
 }
 
 export async function loadDashboardData(): Promise<DashboardData> {
@@ -537,7 +565,8 @@ export async function loadDashboardData(): Promise<DashboardData> {
     openClawProvisioningState,
     openClawReadinessSignals,
     operatingNorth,
-    killSwitch
+    killSwitch,
+    auditEvents
   ] = await Promise.all([
     getJson<HealthPayload>(READ_ENDPOINTS.health),
     getJson<ClusterOverviewPayload>(READ_ENDPOINTS.adminClusters),
@@ -555,7 +584,8 @@ export async function loadDashboardData(): Promise<DashboardData> {
     getJson<OpenClawProvisioningStatePayload>(READ_ENDPOINTS.openClawProvisioningState),
     getJson<ReadinessSignalsPayload>(READ_ENDPOINTS.openClawReadinessSignals),
     getJson<OperatingNorthPayload>(READ_ENDPOINTS.operatingNorth),
-    getJson<KillSwitchPayload>(READ_ENDPOINTS.killSwitch)
+    getJson<KillSwitchPayload>(READ_ENDPOINTS.killSwitch),
+    getJson<AuditEventsPayload>(READ_ENDPOINTS.auditEvents)
   ]);
 
   return {
@@ -575,7 +605,8 @@ export async function loadDashboardData(): Promise<DashboardData> {
     provisioningState: openClawProvisioningState.provisioningState,
     readinessSignals: openClawReadinessSignals.signals,
     operatingNorth,
-    killSwitch: killSwitch.killSwitch
+    killSwitch: killSwitch.killSwitch,
+    auditEvents: auditEvents.events ?? []
   };
 }
 

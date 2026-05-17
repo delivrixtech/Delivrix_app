@@ -1,4 +1,4 @@
-import type { ContractStatus } from "../api/client.ts";
+import type { AuditEvent, ContractStatus } from "../api/client.ts";
 
 export type Tone = "success" | "warning" | "critical" | "neutral";
 
@@ -78,6 +78,53 @@ export function percent(value: number | null | undefined): string {
   }
 
   return `${Math.round(value)}%`;
+}
+
+/**
+ * Filtra audit events por sección de la UI matcheando keywords contra
+ * targetType / action / actorType. Ordenados de más reciente a más viejo.
+ */
+export function filterAuditEvents(
+  events: AuditEvent[],
+  keywords: string[],
+  limit = 6
+): AuditEvent[] {
+  if (events.length === 0) return [];
+  const lower = keywords.map((k) => k.toLowerCase());
+  const matches = events.filter((e) => {
+    const blob = `${e.actorType} ${e.action} ${e.targetType} ${e.targetId}`.toLowerCase();
+    return lower.some((k) => blob.includes(k));
+  });
+  // Si no hay matches específicos, caemos a los últimos N globales para no quedar vacíos.
+  const pool = matches.length > 0 ? matches : events;
+  return [...pool]
+    .sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime())
+    .slice(0, limit);
+}
+
+/** Formatea un timestamp ISO como "HH:MM:SS" en local. */
+export function formatTimeOnly(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+/** Formatea un timestamp ISO como "YYYY-MM-DD HH:MM:SS" para tablas largas. */
+export function formatDateTimeIso(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const date = d.toLocaleDateString("es-CO");
+  const time = d.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return `${date} ${time}`;
+}
+
+/** Pseudo-hash visual (sha:abcd…123) desde un ID del audit event. */
+export function shortAuditHash(id: string): string {
+  const clean = id.replace(/[^a-z0-9]/gi, "");
+  if (clean.length <= 7) return `sha:${clean}`;
+  return `sha:${clean.slice(0, 4)}…${clean.slice(-3)}`;
 }
 
 export function stateTone(value: ContractStatus | boolean | null | undefined): Tone {

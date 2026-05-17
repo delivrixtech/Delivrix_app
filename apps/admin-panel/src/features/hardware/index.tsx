@@ -25,6 +25,7 @@ import {
   Triangle
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
+import { filterAuditEvents } from "../../shared/lib/formatters.ts";
 
 export function HardwareSection({ data }: { data: DashboardData }) {
   return (
@@ -32,7 +33,7 @@ export function HardwareSection({ data }: { data: DashboardData }) {
       <Hero data={data} />
       <TwoColumn data={data} />
       <UnknownsRow data={data} />
-      <AuditFooter />
+      <AuditFooter data={data} />
     </section>
   );
 }
@@ -885,76 +886,68 @@ function DatosFaltantes({ count }: { count: number }) {
 /* ============================================================
  * AuditFooter — 6 rows literales Pencil
  * ============================================================ */
-const AUDIT_ROWS = [
-  {
-    ts: "2026-05-16 09:14:22",
-    actor: "operador@delivrix",
-    action: "snapshot.manual",
-    detail: "nodo-04 · campo storage.smart.wearout_remaining",
-    sourceText: "manual",
-    sourceBg: "#F7F2EA",
-    sourceFg: "#5C544A",
-    sourceBorder: "#EAE0CE",
-    rowBg: "transparent"
-  },
-  {
-    ts: "2026-05-16 09:08:51",
-    actor: "system.collector",
-    action: "contract.evaluate",
-    detail: "nodo-04 · 4 campos sin valor detectados",
-    sourceText: "contract",
-    sourceBg: "#DBEAFE",
-    sourceFg: "#1D4ED8",
-    sourceBorder: "#DBEAFE",
-    rowBg: "#F7F2EA"
-  },
-  {
-    ts: "2026-05-16 08:55:14",
-    actor: "system.warming",
-    action: "advance_stage",
-    detail: "nodo-04 → día 7 del ciclo de aprendizaje",
-    sourceText: "warming",
-    sourceBg: "#DCFCE7",
-    sourceFg: "#15803D",
-    sourceBorder: "#DCFCE7",
-    rowBg: "transparent"
-  },
-  {
-    ts: "2026-05-16 08:42:07",
-    actor: "openclaw.agent",
-    action: "insight.propose",
-    detail: "CPU sostenido alto · sugerir revisión clúster A",
-    sourceText: "openclaw",
-    sourceBg: "#EDE9FE",
-    sourceFg: "#7C3AED",
-    sourceBorder: "#EDE9FE",
-    rowBg: "#F7F2EA"
-  },
-  {
-    ts: "2026-05-16 08:31:48",
-    actor: "system.collector",
-    action: "inventory.refresh",
-    detail: "nodo-04 · 7 componentes verificados · hash actualizado",
-    sourceText: "contract",
-    sourceBg: "#DBEAFE",
-    sourceFg: "#1D4ED8",
-    sourceBorder: "#DBEAFE",
-    rowBg: "transparent"
-  },
-  {
-    ts: "2026-05-16 08:20:11",
-    actor: "operador@delivrix",
-    action: "contract.review",
-    detail: "abrir vista hardware · sólo lectura",
-    sourceText: "review",
-    sourceBg: "#FFFFFF",
-    sourceFg: "#5C544A",
-    sourceBorder: "#EAE0CE",
-    rowBg: "#F7F2EA"
-  }
-];
+/** Estilo del badge "fuente" derivado del actorType del audit event. */
+function auditSourceStyle(actorType: string): {
+  text: string;
+  bg: string;
+  fg: string;
+  border: string;
+} {
+  const t = actorType.toLowerCase();
+  if (t.includes("openclaw")) return { text: "openclaw", bg: "#EDE9FE", fg: "#7C3AED", border: "#EDE9FE" };
+  if (t.includes("collector") || t.includes("system.collector"))
+    return { text: "contract", bg: "#DBEAFE", fg: "#1D4ED8", border: "#DBEAFE" };
+  if (t.includes("warming")) return { text: "warming", bg: "#DCFCE7", fg: "#15803D", border: "#DCFCE7" };
+  if (t.includes("operador") || t.includes("operator"))
+    return { text: "manual", bg: "#F7F2EA", fg: "#5C544A", border: "#EAE0CE" };
+  return { text: t.split(".")[0] || "system", bg: "#FFFFFF", fg: "#5C544A", border: "#EAE0CE" };
+}
 
-function AuditFooter() {
+function buildHardwareAuditRows(events: import("../../shared/api/client.ts").AuditEvent[]) {
+  return events.map((e, i) => {
+    const src = auditSourceStyle(e.actorType);
+    return {
+      ts: new Date(e.occurredAt).toLocaleString("es-CO", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      }),
+      actor: `${e.actorType}${e.actorId ? `@${e.actorId}` : ""}`,
+      action: e.action,
+      detail: `${e.targetType} · ${e.targetId}`,
+      sourceText: src.text,
+      sourceBg: src.bg,
+      sourceFg: src.fg,
+      sourceBorder: src.border,
+      rowBg: i % 2 === 1 ? "#F7F2EA" : "transparent"
+    };
+  });
+}
+
+function AuditFooter({ data }: { data: DashboardData }) {
+  const events = filterAuditEvents(
+    data.auditEvents,
+    ["physical-host", "hardware", "telemetry", "snapshot", "manual_snapshot", "collector"],
+    6
+  );
+  const AUDIT_ROWS = events.length > 0
+    ? buildHardwareAuditRows(events)
+    : [
+        {
+          ts: "—",
+          actor: "audit log vacío",
+          action: "el contrato /v1/audit-events no ha registrado eventos de hardware",
+          detail: "Wave 2 — backend logging por host pendiente",
+          sourceText: "todavía",
+          sourceBg: "#F7F2EA",
+          sourceFg: "#8A8073",
+          sourceBorder: "#EAE0CE",
+          rowBg: "transparent" as const
+        }
+      ];
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"

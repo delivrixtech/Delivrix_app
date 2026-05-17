@@ -23,6 +23,7 @@ import {
   WandSparkles
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
+import { filterAuditEvents } from "../../shared/lib/formatters.ts";
 
 export function ClustersSection({ data }: { data: DashboardData }) {
   return (
@@ -795,8 +796,13 @@ function TooltipCard() {
 }
 
 function AuditLogCard({ data }: { data: DashboardData }) {
-  const recents = data.overview.recentAuditEvents ?? [];
-  const rows = recents.slice(0, 4).map((e) => ({
+  const events = filterAuditEvents(
+    data.auditEvents,
+    ["cluster", "sender_node", "provisioning", "topology", "warming", "reputation"],
+    4
+  );
+  const pool = events.length > 0 ? events : data.auditEvents.slice(0, 4);
+  const rows = pool.map((e) => ({
     ts: new Date(e.occurredAt).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
     actor: `${e.actorType}.${e.actorId}`.slice(0, 24),
     action: e.action,
