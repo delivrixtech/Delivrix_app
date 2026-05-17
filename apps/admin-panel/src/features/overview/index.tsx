@@ -582,7 +582,56 @@ function BottomRow({ data }: { data: DashboardData }) {
 }
 
 function ApprovalsCard({ data }: { data: DashboardData }) {
-  const count = data.canvas.requiresHumanApproval?.length ?? 0;
+  const approvalIds = data.canvas.requiresHumanApproval ?? [];
+  const count = approvalIds.length;
+  // Mapping de IDs → metadata visual. Pencil tiene 3 ejemplos canónicos;
+  // se asignan por keyword del ID; los que no matchean caen al genérico.
+  const VARIANTS = [
+    {
+      key: "warming",
+      iconBg: "#FEF3C7",
+      iconColor: "#B45309",
+      pillBg: "#FEF3C7",
+      pillFg: "#B45309",
+      pillText: "warming",
+      desc: "OpenClaw propone avanzar el ciclo de calentamiento. Vigilancia de reputación activa.",
+      meta1: "contrato · /v1/warming/plan"
+    },
+    {
+      key: "dns",
+      iconBg: "#FEE2E2",
+      iconColor: "#B91C1C",
+      pillBg: "#FEE2E2",
+      pillFg: "#B91C1C",
+      pillText: "dns",
+      desc: "Drift SPF/DKIM/DMARC detectado · plan dry-run listo, no se realizó escritura real.",
+      meta1: "contrato · /v1/dns/plan"
+    },
+    {
+      key: "ssh",
+      iconBg: "#EDE9FE",
+      iconColor: "#7C3AED",
+      pillBg: "#EDE9FE",
+      pillFg: "#7C3AED",
+      pillText: "ssh",
+      desc: "Alcance del permiso desconocido hasta firmar la regla de 2 personas. SSH desactivado por defecto.",
+      meta1: "runbook · ssh-gate.md"
+    },
+    {
+      key: "generic",
+      iconBg: "#F7F2EA",
+      iconColor: "#5C544A",
+      pillBg: "#F7F2EA",
+      pillFg: "#5C544A",
+      pillText: "humano",
+      desc: "Acción que requiere autorización humana antes de avanzar.",
+      meta1: "contrato · /v1/openclaw/queue"
+    }
+  ];
+  const pickVariant = (id: string) => {
+    const lower = id.toLowerCase();
+    return VARIANTS.find((v) => v.key !== "generic" && lower.includes(v.key)) ?? VARIANTS[3];
+  };
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -618,46 +667,42 @@ function ApprovalsCard({ data }: { data: DashboardData }) {
         </span>
       </header>
 
-      {/* acList — 3 Approval rows literales */}
-      <ApprovalRow
-        iconBg="#FEF3C7"
-        iconColor="#B45309"
-        icon={<Flame size={18} strokeWidth={1.75} />}
-        title="Plan de calentamiento · Clúster A"
-        pillBg="#FEF3C7"
-        pillFg="#B45309"
-        pillText="warming"
-        desc="OpenClaw propone subir al día 10. Vigilancia de reputación activa."
-        meta1="contrato · /v1/warming/plan"
-        meta2="hace 2 min"
-        showBorder
-      />
-      <ApprovalRow
-        iconBg="#FEE2E2"
-        iconColor="#B91C1C"
-        icon={<ShieldAlert size={18} strokeWidth={1.75} />}
-        title="Validación DNS · zona delivrix.io"
-        pillBg="#FEE2E2"
-        pillFg="#B91C1C"
-        pillText="dns"
-        desc="Drift SPF/DKIM/DMARC detectado · plan dry-run listo, no se realizó escritura real."
-        meta1="contrato · /v1/dns/plan"
-        meta2="hace 18 min"
-        showBorder
-      />
-      <ApprovalRow
-        iconBg="#EDE9FE"
-        iconColor="#7C3AED"
-        icon={<Info size={18} strokeWidth={1.75} />}
-        title="Adaptador SSH · nodo-envio-04"
-        pillBg="#EDE9FE"
-        pillFg="#7C3AED"
-        pillText="ssh"
-        desc="Alcance del permiso desconocido hasta firmar la regla de 2 personas. SSH desactivado por defecto."
-        meta1="runbook · ssh-gate.md"
-        meta2="hace 1 h"
-        showBorder={false}
-      />
+      {/* acList — derivado de canvas.requiresHumanApproval */}
+      {count === 0 ? (
+        <div style={{ padding: "14px 18px" }}>
+          <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+            Cola de aprobaciones vacía. Todas las acciones supervisadas están autorizadas o no
+            requieren intervención humana.
+          </p>
+        </div>
+      ) : (
+        approvalIds.slice(0, 3).map((id, i) => {
+          const v = pickVariant(id);
+          const icon = v.key === "warming"
+            ? <Flame size={18} strokeWidth={1.75} />
+            : v.key === "dns"
+              ? <ShieldAlert size={18} strokeWidth={1.75} />
+              : v.key === "ssh"
+                ? <Info size={18} strokeWidth={1.75} />
+                : <Info size={18} strokeWidth={1.75} />;
+          return (
+            <ApprovalRow
+              key={id}
+              iconBg={v.iconBg}
+              iconColor={v.iconColor}
+              icon={icon}
+              title={id.replace(/_/g, " ")}
+              pillBg={v.pillBg}
+              pillFg={v.pillFg}
+              pillText={v.pillText}
+              desc={v.desc}
+              meta1={v.meta1}
+              meta2="pendiente"
+              showBorder={i < Math.min(approvalIds.length, 3) - 1}
+            />
+          );
+        })
+      )}
     </section>
   );
 }
@@ -754,23 +799,43 @@ function ApprovalRow({
 function SidePane({ data }: { data: DashboardData }) {
   return (
     <div className="flex flex-col" style={{ gap: 16 }}>
-      <GatesCard />
+      <GatesCard data={data} />
       <SystemHealthDark data={data} />
     </div>
   );
 }
 
-/* Gates no negociables — 7 items literales Pencil */
-function GatesCard() {
-  const gates = [
+/* Gates no negociables — base canónica + gates reales de operatingNorth */
+function GatesCard({ data }: { data: DashboardData }) {
+  const ks = data.killSwitch;
+  const live = data.operatingNorth.liveInfrastructureWritesEnabled;
+  const nfc = data.operatingNorth.nfcProductionWritesEnabled;
+  const base: Array<{ kind: "ok" | "warn" | "bad" | "off"; label: string; note: string }> = [
     { kind: "ok", label: "Log de auditoría append-only", note: "verificado" },
-    { kind: "ok", label: "Interruptor probado", note: "hace 14 min" },
+    {
+      kind: ks.enabled ? "bad" : "ok",
+      label: "Interruptor probado",
+      note: ks.updatedAt ? new Date(ks.updatedAt).toLocaleDateString("es-CO") : "sin uso"
+    },
     { kind: "ok", label: "Dry-run antes de escribir", note: "verificado" },
     { kind: "ok", label: "Panel solo GET", note: "verificado" },
-    { kind: "warn", label: "Autorización por rol", note: "revisión pendiente" },
-    { kind: "bad", label: "Definiciones de rollback", note: "3 faltantes" },
-    { kind: "off", label: "Puente NFC", note: "deshabilitado" }
-  ] as const;
+    {
+      kind: live ? "warn" : "ok",
+      label: "Live infrastructure writes",
+      note: live ? "enabled · revisar" : "disabled"
+    },
+    {
+      kind: nfc ? "warn" : "off",
+      label: "Puente NFC",
+      note: nfc ? "enabled" : "deshabilitado"
+    }
+  ];
+  // gates específicos del operating-north
+  const opGates = (data.operatingNorth.gates ?? []).map(
+    (g) => ({ kind: "warn" as const, label: g, note: "revisión pendiente" })
+  );
+  const gates = [...base, ...opGates];
+  const okCount = gates.filter((g) => g.kind === "ok").length;
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -789,7 +854,7 @@ function GatesCard() {
         </h2>
         <span className="flex-1" aria-hidden="true" />
         <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold text-[#5C544A]">
-          5/9
+          {okCount}/{gates.length}
         </span>
       </header>
 
@@ -835,15 +900,56 @@ function GateRow({ kind, label, note }: { kind: "ok" | "warn" | "bad" | "off"; l
   );
 }
 
-/* System health (dark) — 5 rows literales Pencil */
+/* System health (dark) — alimentado por data.health.operatingNorth real */
 function SystemHealthDark({ data }: { data: DashboardData }) {
-  void data; // valores literales Pencil; cuando el contrato exponga métricas live, conectarlas aquí.
+  const on = data.health.operatingNorth;
+  const sched = data.health.openClaw["scheduler"];
+  const fresh = data.supervisedCollector.freshness.lastCollectedAt;
+  const freshAge = fresh
+    ? (() => {
+        const t = new Date(fresh).getTime();
+        const diff = Math.max(0, Date.now() - t);
+        if (diff < 60_000) return `${Math.round(diff / 1000)}s`;
+        if (diff < 3_600_000) return `${Math.round(diff / 60_000)} min`;
+        return `${Math.round(diff / 3_600_000)} h`;
+      })()
+    : "sin datos";
   const rows = [
-    { label: "API Gateway", value: "p95 142ms", valueColor: "#15803D" },
-    { label: "Cola del worker", value: "6 jobs · 0 atascados", valueColor: "#15803D" },
-    { label: "Frescura recolector", value: "14s", valueColor: "#15803D" },
-    { label: "Scheduler OpenClaw", value: "supervisado", valueColor: "#FACC15" },
-    { label: "Puente NFC", value: "deshabilitado", valueColor: "#8A8073" }
+    {
+      label: "Gateway",
+      value: data.health.status === "ok" ? "OK" : data.health.status,
+      valueColor: data.health.status === "ok" ? "#15803D" : "#F87171"
+    },
+    {
+      label: "Phase",
+      value: data.health.phase,
+      valueColor: "#FACC15"
+    },
+    {
+      label: "Frescura recolector",
+      value: freshAge,
+      valueColor: data.supervisedCollector.freshness.staleSources > 0 ? "#FACC15" : "#15803D"
+    },
+    {
+      label: "Scheduler OpenClaw",
+      value: sched ? String(sched) : "no reportado",
+      valueColor: "#FACC15"
+    },
+    {
+      label: "Infra writes",
+      value: on.liveInfrastructureWritesEnabled ? "enabled · revisar" : "disabled",
+      valueColor: on.liveInfrastructureWritesEnabled ? "#F87171" : "#15803D"
+    },
+    {
+      label: "SMTP real",
+      value: on.delivrixSendsRealEmail ? "enabled" : "simulación",
+      valueColor: on.delivrixSendsRealEmail ? "#F87171" : "#15803D"
+    },
+    {
+      label: "Puente NFC",
+      value: on.nfcProductionWritesEnabled ? "enabled" : "deshabilitado",
+      valueColor: on.nfcProductionWritesEnabled ? "#F87171" : "#8A8073"
+    }
   ];
   return (
     <section

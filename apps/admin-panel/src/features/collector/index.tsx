@@ -26,16 +26,15 @@ import {
 import type { DashboardData } from "../../shared/api/client.ts";
 
 export function CollectorSection({ data }: { data: DashboardData }) {
-  void data;
   return (
     <section className="flex flex-col" style={{ gap: 24, maxWidth: 1352 }}>
       <Hero />
-      <Tabs />
-      <SourcesRow />
-      <OpenClawPromptWrap />
-      <AcceptedFieldsSection />
-      <AuditSection />
-      <ExplainerSplit />
+      <Tabs sourcesCount={data.supervisedCollector.sources.length} />
+      <SourcesRow data={data} />
+      <OpenClawPromptWrap data={data} />
+      <AcceptedFieldsSection data={data} />
+      <AuditSection data={data} />
+      <ExplainerSplit data={data} />
     </section>
   );
 }
@@ -66,7 +65,7 @@ function Hero() {
 /* ============================================================
  * Tabs (yKT6P)
  * ============================================================ */
-function Tabs() {
+function Tabs({ sourcesCount }: { sourcesCount: number }) {
   return (
     <div
       className="flex items-end"
@@ -94,7 +93,7 @@ function Tabs() {
             border: "1px solid #EAE0CE"
           }}
         >
-          4
+          {sourcesCount}
         </span>
       </div>
       <div className="inline-flex items-center" style={{ gap: 8, padding: "14px 18px" }}>
@@ -123,63 +122,79 @@ function Tabs() {
 /* ============================================================
  * SourcesRow (KFzUx) — 4 source cards
  * ============================================================ */
-const SOURCES = [
-  {
-    name: "Archivo local",
-    icon: <Folder size={16} strokeWidth={1.75} aria-hidden="true" />,
-    state: "LISTO",
-    stateBg: "#DCFCE7",
-    stateFg: "#15803D",
-    confidence: 98,
-    confidenceColor: "#15803D",
-    endpoint: "SSH · /var/lib/delivrix/snapshots",
-    mode: "solo lectura",
-    lastSeen: "hace 14s"
-  },
-  {
-    name: "Proxmox",
-    icon: <Server size={16} strokeWidth={1.75} aria-hidden="true" />,
-    state: "LISTO",
-    stateBg: "#DCFCE7",
-    stateFg: "#15803D",
-    confidence: 94,
-    confidenceColor: "#15803D",
-    endpoint: "HTTPS · /api2/json/nodes",
-    mode: "solo lectura",
-    lastSeen: "hace 22s"
-  },
-  {
-    name: "Prometheus",
-    icon: <Cpu size={16} strokeWidth={1.75} aria-hidden="true" style={{ color: "#B45309" }} />,
-    state: "DESACTUALIZADO",
-    stateBg: "#FEF3C7",
-    stateFg: "#B45309",
-    confidence: 41,
-    confidenceColor: "#B45309",
-    endpoint: "HTTP · /api/v1/query",
-    mode: "solo lectura",
-    lastSeen: "hace 6 min"
-  },
-  {
-    name: "IPMI",
-    icon: <Cpu size={16} strokeWidth={1.75} aria-hidden="true" style={{ color: "#7C3AED" }} />,
-    state: "DESCONOCIDO",
-    stateBg: "#EDE9FE",
-    stateFg: "#7C3AED",
-    confidence: 0,
-    confidenceColor: "#7C3AED",
-    endpoint: "SSH · ipmitool sdr",
-    mode: "solo lectura",
-    lastSeen: "sin datos"
-  }
-];
+function statusStyle(status: string): {
+  state: string;
+  stateBg: string;
+  stateFg: string;
+  confidenceColor: string;
+  confidence: number;
+} {
+  const t = status.toLowerCase();
+  if (t === "ready" || t === "ok" || t === "fresh")
+    return { state: "LISTO", stateBg: "#DCFCE7", stateFg: "#15803D", confidenceColor: "#15803D", confidence: 95 };
+  if (t === "needs_review" || t === "stale")
+    return {
+      state: "DESACTUALIZADO",
+      stateBg: "#FEF3C7",
+      stateFg: "#B45309",
+      confidenceColor: "#B45309",
+      confidence: 45
+    };
+  if (t === "blocked" || t === "critical")
+    return { state: "BLOQUEADO", stateBg: "#FEE2E2", stateFg: "#B91C1C", confidenceColor: "#B91C1C", confidence: 15 };
+  if (t === "unknown")
+    return { state: "DESCONOCIDO", stateBg: "#EDE9FE", stateFg: "#7C3AED", confidenceColor: "#7C3AED", confidence: 0 };
+  return { state: status.toUpperCase(), stateBg: "#F5F5F4", stateFg: "#5C544A", confidenceColor: "#5C544A", confidence: 50 };
+}
 
-function SourcesRow() {
+function sourceIcon(kind: string): React.ReactNode {
+  const t = kind.toLowerCase();
+  if (t.includes("file") || t.includes("local")) return <Folder size={16} strokeWidth={1.75} aria-hidden="true" />;
+  if (t.includes("proxmox") || t.includes("api")) return <Server size={16} strokeWidth={1.75} aria-hidden="true" />;
+  if (t.includes("prometheus") || t.includes("metric"))
+    return <Cpu size={16} strokeWidth={1.75} aria-hidden="true" style={{ color: "#B45309" }} />;
+  if (t.includes("ipmi") || t.includes("sensor"))
+    return <Cpu size={16} strokeWidth={1.75} aria-hidden="true" style={{ color: "#7C3AED" }} />;
+  return <Database size={16} strokeWidth={1.75} aria-hidden="true" />;
+}
+
+function relativeAge(iso: string | null | undefined): string {
+  if (!iso) return "sin datos";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "sin datos";
+  const diff = Math.max(0, Date.now() - t);
+  if (diff < 60_000) return `hace ${Math.round(diff / 1000)}s`;
+  if (diff < 3_600_000) return `hace ${Math.round(diff / 60_000)} min`;
+  if (diff < 86_400_000) return `hace ${Math.round(diff / 3_600_000)} h`;
+  return `hace ${Math.round(diff / 86_400_000)} d`;
+}
+
+function SourcesRow({ data }: { data: DashboardData }) {
+  const sources = data.supervisedCollector.sources ?? [];
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4" style={{ gap: 14 }}>
-      {SOURCES.map((s) => (
-        <SourceCard key={s.name} {...s} />
-      ))}
+      {sources.map((s) => {
+        const style = statusStyle(s.status);
+        return (
+          <SourceCard
+            key={s.id}
+            name={s.label}
+            icon={sourceIcon(s.kind)}
+            state={style.state}
+            stateBg={style.stateBg}
+            stateFg={style.stateFg}
+            confidence={style.confidence}
+            confidenceColor={style.confidenceColor}
+            endpoint={
+              s.safeCollection.endpoint
+                ? `${s.safeCollection.transport.toUpperCase()} · ${s.safeCollection.endpoint}`
+                : s.safeCollection.commandPreview || s.safeCollection.transport
+            }
+            mode={s.readOnly ? "solo lectura" : "rw"}
+            lastSeen={relativeAge(s.freshness.lastCollectedAt)}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -195,7 +210,18 @@ function SourceCard({
   endpoint,
   mode,
   lastSeen
-}: typeof SOURCES[number]) {
+}: {
+  name: string;
+  icon: React.ReactNode;
+  state: string;
+  stateBg: string;
+  stateFg: string;
+  confidence: number;
+  confidenceColor: string;
+  endpoint: string;
+  mode: string;
+  lastSeen: string;
+}) {
   return (
     <article
       className="flex flex-col bg-[#FFFFFF]"
@@ -291,7 +317,59 @@ function SourceCard({
 /* ============================================================
  * OpenClaw Prompt Wrap (a6nRY) — thin gradient border
  * ============================================================ */
-function OpenClawPromptWrap() {
+function OpenClawPromptWrap({ data }: { data: DashboardData }) {
+  // Derivar mensaje desde el state real de las fuentes
+  const stale = data.supervisedCollector.sources.find(
+    (s) => s.status === "needs_review" || s.freshness.stale
+  );
+  const blocked = data.supervisedCollector.sources.find((s) => s.status === "blocked");
+  const unknown = data.supervisedCollector.sources.find((s) => s.status === "unknown");
+  let message = "Todas las fuentes están dentro del umbral de frescura. Puedo proponer el próximo ciclo de captura.";
+  let avisoBg = "#DCFCE7";
+  let avisoFg = "#15803D";
+  let aviso = "ok";
+  let metaSource = "";
+  let metaTime = "";
+  if (blocked) {
+    message = `${blocked.label} está bloqueado: ${blocked.blockedBy[0] ?? "sin contexto"}. ¿Quieres que abra el runbook?`;
+    avisoBg = "#FEE2E2";
+    avisoFg = "#B91C1C";
+    aviso = "crítico";
+    metaSource = `fuente · ${blocked.label}`;
+    metaTime = relativeAge(blocked.freshness.lastCollectedAt);
+  } else if (stale) {
+    message = `${stale.label} no se ha refrescado en ${relativeAge(stale.freshness.lastCollectedAt)}. ¿Quieres que investigue?`;
+    avisoBg = "#FEF3C7";
+    avisoFg = "#B45309";
+    aviso = "aviso";
+    metaSource = `fuente · ${stale.label}`;
+    metaTime = relativeAge(stale.freshness.lastCollectedAt);
+  } else if (unknown) {
+    message = `${unknown.label} aún sin datos. Coordina con el operador para activar el snapshot inicial.`;
+    avisoBg = "#EDE9FE";
+    avisoFg = "#7C3AED";
+    aviso = "sin datos";
+    metaSource = `fuente · ${unknown.label}`;
+    metaTime = relativeAge(unknown.freshness.lastCollectedAt);
+  }
+  return <OpenClawPromptInner message={message} avisoBg={avisoBg} avisoFg={avisoFg} aviso={aviso} metaSource={metaSource} metaTime={metaTime} />;
+}
+
+function OpenClawPromptInner({
+  message,
+  avisoBg,
+  avisoFg,
+  aviso,
+  metaSource,
+  metaTime
+}: {
+  message: string;
+  avisoBg: string;
+  avisoFg: string;
+  aviso: string;
+  metaSource: string;
+  metaTime: string;
+}) {
   return (
     <div
       style={{
@@ -334,24 +412,26 @@ function OpenClawPromptWrap() {
               style={{
                 padding: "2px 8px",
                 borderRadius: 4,
-                background: "#FEF3C7",
-                color: "#B45309",
+                background: avisoBg,
+                color: avisoFg,
                 letterSpacing: "0.4px"
               }}
             >
-              aviso
+              {aviso}
             </span>
           </header>
           <p className="m-0 text-[15px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
-            Prometheus no se ha refrescado en 6 minutos. ¿Quieres que investigue?
+            {message}
           </p>
-          <div className="flex items-center" style={{ gap: 8 }}>
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
-              fuente · Prometheus · /api/v1/query
-            </span>
-            <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: 999, background: "#8A8073" }} />
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">hace 6 min</span>
-          </div>
+          {metaSource ? (
+            <div className="flex items-center" style={{ gap: 8 }}>
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+                {metaSource}
+              </span>
+              <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: 999, background: "#8A8073" }} />
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">{metaTime}</span>
+            </div>
+          ) : null}
         </div>
 
         <div className="flex flex-col" style={{ gap: 10, width: 240 }}>
@@ -386,70 +466,68 @@ function OpenClawPromptWrap() {
 /* ============================================================
  * AcceptedFieldsSection (t0dbV) — tabla 6 columnas
  * ============================================================ */
-const ACCEPTED_FIELDS = [
-  {
-    path: "physical_host.identity.hostname",
-    type: "string",
-    source: "Archivo local",
-    sourceBg: "#DCFCE7",
-    sourceFg: "#15803D",
-    mapsTo: "physical_host.identity.label",
-    requiredFor: "topology",
-    rowState: "validado"
-  },
-  {
-    path: "physical_host.capacity.cpu_cores",
-    type: "integer",
-    source: "Proxmox",
-    sourceBg: "#DCFCE7",
-    sourceFg: "#15803D",
-    mapsTo: "capacity.cpuCores",
-    requiredFor: "warming",
-    rowState: "validado"
-  },
-  {
-    path: "physical_host.capacity.memory_gb",
-    type: "integer",
-    source: "Proxmox",
-    sourceBg: "#DCFCE7",
-    sourceFg: "#15803D",
-    mapsTo: "capacity.memoryGb",
-    requiredFor: "warming",
-    rowState: "validado"
-  },
-  {
-    path: "telemetry.cpu.usage_percent",
-    type: "float",
-    source: "Prometheus",
-    sourceBg: "#FEF3C7",
-    sourceFg: "#B45309",
-    mapsTo: "telemetry.cpu.usagePercent",
-    requiredFor: "alerting",
-    rowState: "desactualizado"
-  },
-  {
-    path: "telemetry.memory.usage_percent",
-    type: "float",
-    source: "Prometheus",
-    sourceBg: "#FEF3C7",
-    sourceFg: "#B45309",
-    mapsTo: "telemetry.memory.usagePercent",
-    requiredFor: "alerting",
-    rowState: "desactualizado"
-  },
-  {
-    path: "sensors.ipmi.cpu0.thermal_margin",
-    type: "float",
-    source: "IPMI",
-    sourceBg: "#EDE9FE",
-    sourceFg: "#7C3AED",
-    mapsTo: "telemetry.cpu.thermalStatus",
-    requiredFor: "safety",
-    rowState: "sin valor"
-  }
-];
+function sourceStylePill(kind: string): { bg: string; fg: string } {
+  const t = kind.toLowerCase();
+  if (t.includes("file") || t.includes("local") || t.includes("proxmox") || t === "manual")
+    return { bg: "#DCFCE7", fg: "#15803D" };
+  if (t.includes("prometheus") || t.includes("http")) return { bg: "#FEF3C7", fg: "#B45309" };
+  if (t.includes("ipmi") || t.includes("sensor")) return { bg: "#EDE9FE", fg: "#7C3AED" };
+  return { bg: "#DBEAFE", fg: "#1D4ED8" };
+}
 
-function AcceptedFieldsSection() {
+function AcceptedFieldsSection({ data }: { data: DashboardData }) {
+  const fields = data.snapshotIngestion.acceptedFieldPaths ?? [];
+  const schemaVersion = data.snapshotIngestion.snapshotSchemaVersion;
+  const requiredCount = fields.filter((f) => f.requiredFor !== "optional").length;
+  const rows = fields.map((f) => {
+    const matchingSource = data.supervisedCollector.sources.find((s) =>
+      f.path.toLowerCase().includes(s.kind.toLowerCase())
+    );
+    const sourceName = matchingSource ? matchingSource.label : "contrato";
+    const sourcePill = sourceStylePill(matchingSource?.kind || "contrato");
+    const sourceStatus = matchingSource?.status ?? "ready";
+    const rowState =
+      sourceStatus === "blocked"
+        ? "sin valor"
+        : sourceStatus === "needs_review"
+          ? "desactualizado"
+          : sourceStatus === "unknown"
+            ? "sin valor"
+            : "validado";
+    return {
+      path: f.path,
+      type: f.type,
+      source: sourceName,
+      sourceBg: sourcePill.bg,
+      sourceFg: sourcePill.fg,
+      mapsTo: f.mapsTo,
+      requiredFor: f.requiredFor,
+      rowState
+    };
+  });
+  void requiredCount;
+  return <AcceptedFieldsTable rows={rows} schemaVersion={schemaVersion} requiredCount={requiredCount} />;
+}
+
+function AcceptedFieldsTable({
+  rows,
+  schemaVersion,
+  requiredCount
+}: {
+  rows: Array<{
+    path: string;
+    type: string;
+    source: string;
+    sourceBg: string;
+    sourceFg: string;
+    mapsTo: string;
+    requiredFor: string;
+    rowState: string;
+  }>;
+  schemaVersion: string;
+  requiredCount: number;
+}) {
+  const ACCEPTED_FIELDS = rows;
   return (
     <section className="flex flex-col" style={{ gap: 12 }}>
       <header className="flex items-end justify-between" style={{ gap: 16 }}>
@@ -472,7 +550,7 @@ function AcceptedFieldsSection() {
               border: "1px solid #EAE0CE"
             }}
           >
-            schema · 5.10.0
+            schema · {schemaVersion}
           </span>
           <span
             className="inline-flex items-center text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]"
@@ -484,7 +562,7 @@ function AcceptedFieldsSection() {
               border: "1px solid #EAE0CE"
             }}
           >
-            6 / 6 requeridos
+            {requiredCount} / {ACCEPTED_FIELDS.length} requeridos
           </span>
         </div>
       </header>
@@ -591,15 +669,46 @@ function AcceptedFieldsSection() {
 /* ============================================================
  * AuditSection
  * ============================================================ */
-const AUDIT_ROWS = [
-  ["09:18:42", "operador@delivrix", "snapshot.manual", "nodo-04 · field storage.smart.wearout_remaining", "8c41…b2d"],
-  ["09:14:21", "system.collector", "contract.evaluate", "nodo-04 · 4 campos sin valor detectados", "4f7a…1c9"],
-  ["09:04:11", "openclaw.agent", "insight.propose", "CPU sostenido alto · sugerir revisión clúster A", "7d41…f1a"],
-  ["08:55:14", "system.warming", "advance_stage", "nodo-04 → día 7 del ciclo de aprendizaje", "a2c0…b91"],
-  ["08:42:09", "operador@delivrix", "contract.review", "abrir vista recolector · sólo lectura", "c54f…908"]
-];
+function shortTimestamp(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
 
-function AuditSection() {
+function buildAuditRows(data: DashboardData): Array<[string, string, string, string, string]> {
+  const sources = data.supervisedCollector.sources ?? [];
+  const overview = data.overview;
+  const baseRows: Array<[string, string, string, string, string]> = sources.slice(0, 4).map((s, i) => [
+    shortTimestamp(s.freshness.lastCollectedAt) || `—`,
+    s.kind,
+    s.status === "ready" ? "source.fresh" : s.status === "needs_review" ? "source.stale" : `source.${s.status}`,
+    `${s.label} · ${s.purpose}`,
+    `sha:${(s.id || `${i}`).slice(0, 4)}…${(s.id || `${i}`).slice(-3)}`
+  ]);
+  // Anclar al menos un audit del Overview cuando exista
+  if (overview.recentAuditEvents && overview.recentAuditEvents.length > 0) {
+    const e = overview.recentAuditEvents[0];
+    baseRows.push([
+      shortTimestamp(e.occurredAt),
+      `${e.actorType}.${e.actorId}`,
+      e.action,
+      `${e.targetType} · ${e.targetId}`,
+      `sha:${e.id.slice(0, 4)}…${e.id.slice(-3)}`
+    ]);
+  }
+  return baseRows.length > 0
+    ? baseRows
+    : [["—", "—", "sin audit log", "el contrato aún no expone audit log del recolector", "—"]];
+}
+
+function AuditSection({ data }: { data: DashboardData }) {
+  const rows = buildAuditRows(data);
+  return <AuditTable rows={rows} />;
+}
+
+function AuditTable({ rows }: { rows: Array<[string, string, string, string, string]> }) {
+  const AUDIT_ROWS = rows;
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -683,16 +792,24 @@ function AuditSection() {
 /* ============================================================
  * ExplainerSplit
  * ============================================================ */
-function ExplainerSplit() {
+function ExplainerSplit({ data }: { data: DashboardData }) {
   return (
     <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-      <ExplainerText />
+      <ExplainerText data={data} />
       <CliSnippet />
     </div>
   );
 }
 
-function ExplainerText() {
+function ExplainerText({ data }: { data: DashboardData }) {
+  const outputs =
+    data.snapshotIngestion.parserOutputs?.slice(0, 4) ??
+    [
+      "physical_host.identity.* → tabla physical_hosts",
+      "physical_host.capacity.* → tabla capacities",
+      "telemetry.* → series timescaled · 60 s",
+      "sensors.ipmi.* → tabla sensors"
+    ];
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -707,12 +824,7 @@ function ExplainerText() {
         norte operativo y evita un POST cliente que pudiera ser comprometido.
       </p>
       <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 6 }}>
-        {[
-          "physical_host.identity.* → tabla physical_hosts",
-          "physical_host.capacity.* → tabla capacities",
-          "telemetry.* → series timescaled · 60 s",
-          "sensors.ipmi.* → tabla sensors"
-        ].map((l) => (
+        {outputs.map((l) => (
           <li
             key={l}
             className="inline-flex items-center"

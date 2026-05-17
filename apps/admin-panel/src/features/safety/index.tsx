@@ -29,14 +29,13 @@ import type { DashboardData } from "../../shared/api/client.ts";
 import { formatDateTime } from "../../shared/lib/formatters.ts";
 
 export function SafetySection({ data }: { data: DashboardData }) {
-  void data;
   return (
     <section className="flex flex-col" style={{ gap: 20, maxWidth: 1352 }}>
-      <Hero />
-      <KpiRow />
-      <TwoCol />
-      <Audit />
-      <ComplianceRow />
+      <Hero data={data} />
+      <KpiRow data={data} />
+      <TwoCol data={data} />
+      <Audit data={data} />
+      <ComplianceRow data={data} />
       <Footer />
     </section>
   );
@@ -45,11 +44,11 @@ export function SafetySection({ data }: { data: DashboardData }) {
 /* ============================================================
  * Hero (r3cIV0)
  * ============================================================ */
-function Hero() {
+function Hero({ data }: { data: DashboardData }) {
   return (
     <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_440px] items-start">
       <HeroLeft />
-      <OpenClawPrompt />
+      <OpenClawPrompt data={data} />
     </div>
   );
 }
@@ -83,7 +82,24 @@ function HeroLeft() {
   );
 }
 
-function OpenClawPrompt() {
+function OpenClawPrompt({ data }: { data: DashboardData }) {
+  const gates = data.operatingNorth.gates ?? [];
+  const live = data.operatingNorth.liveInfrastructureWritesEnabled;
+  const smtp = data.operatingNorth.delivrixSendsRealEmail;
+  const ks = data.killSwitch;
+  const message =
+    gates.length > 0
+      ? `${gates.length} gate${gates.length === 1 ? "" : "s"} faltan validación. ${live || smtp ? "Detecté frontera abierta en infra/SMTP — " : ""}preparé el plan dry-run.`
+      : ks.enabled
+        ? `Kill switch activo: ${ks.reason || "sin razón registrada"}. Confirmar protocolo antes de re-armar.`
+        : "Sin gates pendientes. Las barandillas están firmes.";
+  const aviso = ks.enabled ? "kill switch" : gates.length > 0 ? "aviso" : "ok";
+  const avisoBg = ks.enabled ? "#FEE2E2" : gates.length > 0 ? "#FEF3C7" : "#DCFCE7";
+  const avisoFg = ks.enabled ? "#B91C1C" : gates.length > 0 ? "#B45309" : "#15803D";
+  return <OpenClawPromptInner message={message} aviso={aviso} avisoBg={avisoBg} avisoFg={avisoFg} />;
+}
+
+function OpenClawPromptInner({ message, aviso, avisoBg, avisoFg }: { message: string; aviso: string; avisoBg: string; avisoFg: string }) {
   return (
     <div
       style={{
@@ -125,17 +141,16 @@ function OpenClawPrompt() {
             style={{
               padding: "2px 8px",
               borderRadius: 4,
-              background: "#FEF3C7",
-              color: "#B45309",
+              background: avisoBg,
+              color: avisoFg,
               letterSpacing: "0.4px"
             }}
           >
-            aviso
+            {aviso}
           </span>
         </header>
         <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.45] text-[#1A1410]">
-          3 gates faltan validación de rollback. Detecté drift en SPF/DMARC del dominio
-          delivrix.io — preparé el plan dry-run.
+          {message}
         </p>
         <div className="flex items-center" style={{ gap: 8 }}>
           <button
@@ -158,13 +173,70 @@ function OpenClawPrompt() {
 /* ============================================================
  * KPI row (aJ1TH)
  * ============================================================ */
-function KpiRow() {
+function KpiRow({ data }: { data: DashboardData }) {
+  const allowed = data.operatingNorth.allowedActions?.length ?? 0;
+  const blocked = data.operatingNorth.blockedActions?.length ?? 0;
+  const gates = data.operatingNorth.gates?.length ?? 0;
+  const totalGates = gates + allowed; // proxy: cuántos gates vigentes
+  void totalGates;
+  const ks = data.killSwitch;
+  const criticalEvents = (data.overview.alerts ?? []).filter(
+    (a) => a.severity === "critical" || a.severity === "blocked"
+  ).length;
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4" style={{ gap: 14 }}>
-      <Kpi label="Gates aprobados" value="6" unit="/ 9 verificados" iconColor="#15803D" icon={<ShieldCheck size={12} strokeWidth={1.75} />} detail="3 pendientes" detailColor="#B45309" endpoint="/v1/security/gates" pillBg="#DCFCE7" pillFg="#15803D" pillText="6 de 9" />
-      <Kpi label="Roles activos" value="4" unit="roles" iconColor="#1D4ED8" icon={<Users size={12} strokeWidth={1.75} />} detail="12 usuarios mapeados" detailColor="#5C544A" endpoint="/v1/iam/roles" pillBg="#DBEAFE" pillFg="#1D4ED8" pillText="rbac" />
-      <Kpi label="Sesiones activas" value="3" unit="operadores" iconColor="#5C544A" icon={<Laptop size={12} strokeWidth={1.75} />} detail="1 ext · 2 internos" detailColor="#5C544A" endpoint="/v1/iam/sessions" pillBg="#DCFCE7" pillFg="#15803D" pillText="ok" />
-      <Kpi label="Eventos críticos 24h" value="2" unit="alertas" iconColor="#B45309" icon={<TriangleAlert size={12} strokeWidth={1.75} />} detail="drift DNS · login fallido" detailColor="#B45309" endpoint="/v1/security/events" pillBg="#FEF3C7" pillFg="#B45309" pillText="atención" />
+      <Kpi
+        label="Acciones permitidas"
+        value={String(allowed)}
+        unit={`/ ${allowed + blocked} totales`}
+        iconColor="#15803D"
+        icon={<ShieldCheck size={12} strokeWidth={1.75} />}
+        detail={`${blocked} bloqueadas`}
+        detailColor={blocked > 0 ? "#B91C1C" : "#15803D"}
+        endpoint="/v1/operating-north"
+        pillBg="#DCFCE7"
+        pillFg="#15803D"
+        pillText={`${allowed} ok`}
+      />
+      <Kpi
+        label="Roles del norte"
+        value="3"
+        unit="roles"
+        iconColor="#1D4ED8"
+        icon={<Users size={12} strokeWidth={1.75} />}
+        detail={`${data.operatingNorth.delivrixRole} · ${data.operatingNorth.openClawRole}`}
+        detailColor="#5C544A"
+        endpoint="/v1/operating-north"
+        pillBg="#DBEAFE"
+        pillFg="#1D4ED8"
+        pillText="rbac"
+      />
+      <Kpi
+        label="Kill switch"
+        value={ks.enabled ? "ACTIVO" : "ARMADO"}
+        unit={ks.updatedBy || "sin uso"}
+        iconColor={ks.enabled ? "#B91C1C" : "#15803D"}
+        icon={<Laptop size={12} strokeWidth={1.75} />}
+        detail={ks.reason || "sin razón"}
+        detailColor={ks.enabled ? "#B91C1C" : "#5C544A"}
+        endpoint="/v1/safety/kill-switch"
+        pillBg={ks.enabled ? "#FEE2E2" : "#DCFCE7"}
+        pillFg={ks.enabled ? "#B91C1C" : "#15803D"}
+        pillText={ks.enabled ? "corte real" : "ok"}
+      />
+      <Kpi
+        label="Alertas críticas"
+        value={String(criticalEvents)}
+        unit="alertas"
+        iconColor="#B45309"
+        icon={<TriangleAlert size={12} strokeWidth={1.75} />}
+        detail={`${gates} gates abiertos`}
+        detailColor={gates > 0 ? "#B45309" : "#15803D"}
+        endpoint="/v1/admin/overview"
+        pillBg={criticalEvents > 0 ? "#FEF3C7" : "#DCFCE7"}
+        pillFg={criticalEvents > 0 ? "#B45309" : "#15803D"}
+        pillText={criticalEvents > 0 ? "atención" : "ok"}
+      />
     </div>
   );
 }
@@ -248,25 +320,31 @@ function Kpi({
 /* ============================================================
  * Two col (H69HQS): Kill switch grande + Gates / Roles + Sesiones + Secrets
  * ============================================================ */
-function TwoCol() {
+function TwoCol({ data }: { data: DashboardData }) {
   return (
     <div className="grid gap-4 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] items-start">
-      <Left />
-      <Right />
+      <Left data={data} />
+      <Right data={data} />
     </div>
   );
 }
 
-function Left() {
+function Left({ data }: { data: DashboardData }) {
   return (
     <div className="flex flex-col" style={{ gap: 16 }}>
-      <KillSwitchGrande />
-      <GatesCard />
+      <KillSwitchGrande data={data} />
+      <GatesCard data={data} />
     </div>
   );
 }
 
-function KillSwitchGrande() {
+function KillSwitchGrande({ data }: { data: DashboardData }) {
+  const ks = data.killSwitch;
+  const armed = !ks.enabled;
+  const ksTitle = armed ? `Armado · listo para activar` : `Activado · ${ks.reason || "intervención manual"}`;
+  const ksSubtitle = ks.updatedAt
+    ? `Actualizado · ${new Date(ks.updatedAt).toLocaleString("es-CO")}`
+    : "Sin movimientos registrados";
   return (
     <section
       className="flex flex-col overflow-hidden"
@@ -304,10 +382,10 @@ function KillSwitchGrande() {
             className="m-0 text-[20px] font-[family-name:var(--font-heading)] font-bold leading-tight"
             style={{ color: "#FFFBF5" }}
           >
-            Armado · probado hace 14 min
+            {ksTitle}
           </h2>
           <span className="text-[12px] font-[family-name:var(--font-sans)]" style={{ color: "rgba(255, 251, 245, 0.7)" }}>
-            Requiere regla de dos personas y log auditado en cada activación.
+            {ksSubtitle} · regla de dos personas exigida en cada activación.
           </span>
         </div>
         <span
@@ -316,13 +394,13 @@ function KillSwitchGrande() {
             gap: 6,
             padding: "6px 12px",
             borderRadius: 999,
-            background: "rgba(220, 252, 231, 0.16)",
-            color: "#86EFAC",
+            background: armed ? "rgba(220, 252, 231, 0.16)" : "rgba(254, 226, 226, 0.16)",
+            color: armed ? "#86EFAC" : "#FCA5A5",
             letterSpacing: "0.6px"
           }}
         >
-          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: "#4ADE80" }} />
-          ARMADO
+          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: armed ? "#4ADE80" : "#F87171" }} />
+          {armed ? "ARMADO" : "ACTIVO"}
         </span>
       </div>
       <div
@@ -335,9 +413,9 @@ function KillSwitchGrande() {
           borderTop: "1px solid rgba(255, 251, 245, 0.08)"
         }}
       >
-        <KillStat label="responsables" value="sre-01 · sre-02" />
-        <KillStat label="prueba dry-run" value="cada 24 h" />
-        <KillStat label="último uso real" value="nunca" />
+        <KillStat label="responsable" value={ks.updatedBy || "sin asignar"} />
+        <KillStat label="fase del norte" value={data.operatingNorth.phase || "—"} />
+        <KillStat label="último uso real" value={ks.enabled ? "ahora" : "nunca"} />
       </div>
     </section>
   );
@@ -359,19 +437,55 @@ function KillStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-const GATE_ROWS = [
-  { check: true, label: "Log de auditoría append-only", state: "verificado", tone: "#15803D" },
-  { check: true, label: "Dry-run obligatorio antes de escribir", state: "verificado", tone: "#15803D" },
-  { check: true, label: "Panel solo lectura · GET-only", state: "verificado", tone: "#15803D" },
-  { check: true, label: "Kill switch probado", state: "hace 14 min", tone: "#15803D" },
-  { check: "warn", label: "Definiciones de rollback firmadas", state: "3 faltantes", tone: "#B45309" },
-  { check: "warn", label: "Autorización por rol", state: "revisión pendiente", tone: "#B45309" },
-  { check: "bad", label: "Drift DNS SPF/DMARC", state: "alerta abierta", tone: "#B91C1C" },
-  { check: "off", label: "Puente NFC", state: "deshabilitado", tone: "#8A8073" },
-  { check: true, label: "Sesión externa con MFA", state: "verificado", tone: "#15803D" }
-] as const;
+function buildSafetyGates(data: DashboardData) {
+  const ks = data.killSwitch;
+  const live = data.operatingNorth.liveInfrastructureWritesEnabled;
+  const smtp = data.operatingNorth.delivrixSendsRealEmail;
+  const nfc = data.operatingNorth.nfcProductionWritesEnabled;
+  const base: Array<{ check: true | "warn" | "bad" | "off"; label: string; state: string; tone: string }> = [
+    { check: true, label: "Log de auditoría append-only", state: "verificado", tone: "#15803D" },
+    { check: true, label: "Dry-run obligatorio antes de escribir", state: "verificado", tone: "#15803D" },
+    { check: true, label: "Panel solo lectura · GET-only", state: "verificado", tone: "#15803D" },
+    {
+      check: ks.enabled ? "bad" : true,
+      label: "Kill switch probado",
+      state: ks.updatedAt ? new Date(ks.updatedAt).toLocaleDateString("es-CO") : "sin uso",
+      tone: ks.enabled ? "#B91C1C" : "#15803D"
+    },
+    {
+      check: live ? "warn" : true,
+      label: "Live infrastructure writes",
+      state: live ? "enabled · revisar" : "disabled",
+      tone: live ? "#B45309" : "#15803D"
+    },
+    {
+      check: smtp ? "warn" : true,
+      label: "SMTP envía correo real",
+      state: smtp ? "envío real activo" : "simulación",
+      tone: smtp ? "#B45309" : "#15803D"
+    },
+    {
+      check: nfc ? "warn" : "off",
+      label: "Puente NFC",
+      state: nfc ? "enabled" : "deshabilitado",
+      tone: nfc ? "#B45309" : "#8A8073"
+    }
+  ];
+  const opGates = (data.operatingNorth.gates ?? []).map(
+    (g) =>
+      ({
+        check: "warn" as const,
+        label: g,
+        state: "revisión pendiente",
+        tone: "#B45309"
+      })
+  );
+  return [...base, ...opGates];
+}
 
-function GatesCard() {
+function GatesCard({ data }: { data: DashboardData }) {
+  const GATE_ROWS = buildSafetyGates(data);
+  const okCount = GATE_ROWS.filter((g) => g.check === true).length;
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -394,7 +508,7 @@ function GatesCard() {
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
           style={{ padding: "3px 8px", borderRadius: 4, background: "#DCFCE7", color: "#15803D" }}
         >
-          6 / 9
+          {okCount} / {GATE_ROWS.length}
         </span>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
@@ -429,7 +543,8 @@ function GatesCard() {
   );
 }
 
-function Right() {
+function Right({ data }: { data: DashboardData }) {
+  void data;
   return (
     <div className="flex flex-col" style={{ gap: 16 }}>
       <RolesCard />
@@ -584,7 +699,39 @@ const AUDIT_ROWS = [
   { ts: "07:58:55", actor: "sistema", actorColor: "#5C544A", action: "Rechazó login externo", resource: "IP 200.93.x.x fuera de rango VPN", hash: "9bb2…ee4", result: "bloqueo", resultBg: "#FEE2E2", resultFg: "#B91C1C" }
 ];
 
-function Audit() {
+function Audit({ data }: { data: DashboardData }) {
+  const recents = data.overview.recentAuditEvents ?? [];
+  const rows: typeof AUDIT_ROWS = recents.slice(0, 6).map((e) => ({
+    ts: new Date(e.occurredAt).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+    actor: `${e.actorType}.${e.actorId}`.slice(0, 28),
+    actorColor: e.actorType.includes("openclaw") ? "#EA580C" : e.actorType.includes("collector") ? "#1D4ED8" : "#1A1410",
+    action: e.action,
+    resource: `${e.targetType} · ${e.targetId}`,
+    hash: `${e.id.slice(0, 4)}…${e.id.slice(-3)}`,
+    result: e.riskLevel,
+    resultBg:
+      e.riskLevel === "critical" || e.riskLevel === "blocked"
+        ? "#FEE2E2"
+        : e.riskLevel === "warning"
+          ? "#FEF3C7"
+          : e.riskLevel === "info"
+            ? "#DBEAFE"
+            : "#DCFCE7",
+    resultFg:
+      e.riskLevel === "critical" || e.riskLevel === "blocked"
+        ? "#B91C1C"
+        : e.riskLevel === "warning"
+          ? "#B45309"
+          : e.riskLevel === "info"
+            ? "#1D4ED8"
+            : "#15803D"
+  }));
+  const finalRows = rows.length > 0 ? rows : AUDIT_ROWS;
+  return <AuditTable rows={finalRows} />;
+}
+
+function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
+  const AUDIT_ROWS_LOCAL = rows;
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -711,7 +858,8 @@ function Audit() {
 /* ============================================================
  * Compliance row (DQeL9) — 3 cards
  * ============================================================ */
-function ComplianceRow() {
+function ComplianceRow({ data }: { data: DashboardData }) {
+  void data; // backend aún no expone GDPR/compliance live; mantener spec Pencil
   return (
     <div className="grid grid-cols-1 md:grid-cols-3" style={{ gap: 14 }}>
       <ComplianceCard
