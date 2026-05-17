@@ -1,448 +1,678 @@
 /**
- * Recolector y captura manual — port desde Pencil frame `k70xK` / `SqPKX`.
+ * Recolector y captura manual — port LITERAL desde Pencil frame `k70xK` / `SqPKX`.
  *
- * Estructura:
- *   Hero (Dl3tb): PageHeader vertical
- *   Tabs (yKT6P): bottom-border tab strip
- *   SourcesRow (KFzUx): grid de source cards (htIra)
- *   OpenClaw Prompt thin gradient wrap (a6nRY): cornerRadius 13 padding 1.5
- *   AcceptedFieldsSection (t0dbV): contract field rows (NavoK)
- *   AuditSection (lCgdH): audit row table (qPKvl)
- *   ExplainerSplit (W763AC): CLI snippet (WIXCb) + helper text
+ * Estructura literal:
+ *   Hero (Dl3tb)
+ *   Tabs (yKT6P): Fuentes (activa) + Captura manual + help
+ *   SourcesRow (KFzUx): 4 source cards (Archivo local / Proxmox / Prometheus / IPMI)
+ *   OpenClaw Prompt thin gradient (a6nRY)
+ *   AcceptedFieldsSection (t0dbV): tabla 6 columnas
+ *   AuditSection (lCgdH)
+ *   ExplainerSplit (W763AC)
  */
 
-import { useState } from "react";
-import { ArrowUp, Copy, Sparkles, WandSparkles } from "lucide-react";
-import type { DashboardData } from "../../shared/api/client.ts";
 import {
-  compactLabel,
-  formatDateTime,
-  formatNumber,
-  humanize
-} from "../../shared/lib/formatters.ts";
-
-type TabKey = "fuentes" | "ingesta" | "politica";
+  ArrowRight,
+  Cpu,
+  Database,
+  FileText,
+  Folder,
+  Info,
+  Server,
+  Sparkles,
+  Upload,
+  WandSparkles
+} from "lucide-react";
+import type { DashboardData } from "../../shared/api/client.ts";
 
 export function CollectorSection({ data }: { data: DashboardData }) {
-  const [tab, setTab] = useState<TabKey>("fuentes");
-  const collector = data.supervisedCollector;
-  const ingestion = data.snapshotIngestion;
-
+  void data;
   return (
-    <section className="flex flex-col gap-6" style={{ maxWidth: 1352 }}>
-      <Hero collector={collector} />
-      <Tabs current={tab} onChange={setTab} />
-
-      {tab === "fuentes" ? <SourcesRow sources={collector.sources} /> : null}
-      {tab === "ingesta" ? <AcceptedFieldsSection ingestion={ingestion} /> : null}
-      {tab === "politica" ? <PoliticaPanel collector={collector} ingestion={ingestion} /> : null}
-
-      <OpenClawPromptThin collector={collector} />
-      <AuditSection collector={collector} />
-      <ExplainerSplit ingestion={ingestion} />
+    <section className="flex flex-col" style={{ gap: 24, maxWidth: 1352 }}>
+      <Hero />
+      <Tabs />
+      <SourcesRow />
+      <OpenClawPromptWrap />
+      <AcceptedFieldsSection />
+      <AuditSection />
+      <ExplainerSplit />
     </section>
   );
 }
 
-/* --------------------------------------------------------------------------
- * Hero
- * ------------------------------------------------------------------------ */
-function Hero({ collector }: { collector: DashboardData["supervisedCollector"] }) {
+/* ============================================================
+ * Hero (Dl3tb)
+ * ============================================================ */
+function Hero() {
   return (
-    <header className="flex flex-col gap-2.5">
+    <header className="flex flex-col" style={{ gap: 10 }}>
       <span
-        className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#EA580C]"
-        style={{ letterSpacing: "1.2px" }}
+        className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[#EA580C]"
+        style={{ letterSpacing: "1.6px" }}
       >
-        DEVOPS · {compactLabel(collector.collectorMode).toUpperCase()}
+        EVIDENCIA SUPERVISADA
       </span>
-      <h1
-        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[#1A1410]"
-        style={{ letterSpacing: "-0.4px" }}
-      >
+      <h1 className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[#1A1410]">
         Recolector y captura manual
       </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
-        Fuentes supervisadas read-only y contrato de la ingesta manual. El panel jamás postea
-        snapshots; el endpoint manual vive en CLI fuera de la UI.
+      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]" style={{ maxWidth: 760 }}>
+        El panel es solo lectura. La evidencia entra desde fuentes supervisadas o desde un
+        endpoint manual auditado fuera del panel.
       </p>
     </header>
   );
 }
 
-/* --------------------------------------------------------------------------
- * Tabs
- * ------------------------------------------------------------------------ */
-function Tabs({ current, onChange }: { current: TabKey; onChange: (k: TabKey) => void }) {
-  const tabs: Array<{ key: TabKey; label: string }> = [
-    { key: "fuentes", label: "Fuentes" },
-    { key: "ingesta", label: "Ingesta manual" },
-    { key: "politica", label: "Política" }
-  ];
+/* ============================================================
+ * Tabs (yKT6P)
+ * ============================================================ */
+function Tabs() {
   return (
-    <div className="flex items-end gap-1 border-b border-[#EAE0CE]" style={{ marginBottom: -1 }}>
-      {tabs.map((t) => {
-        const active = t.key === current;
-        return (
-          <button
-            key={t.key}
-            type="button"
-            onClick={() => onChange(t.key)}
-            className="relative px-3.5 py-2.5 text-[13px] font-[family-name:var(--font-sans)] transition-colors"
-            style={{
-              color: active ? "#1A1410" : "#5C544A",
-              fontWeight: active ? 600 : 500
-            }}
-          >
-            {t.label}
-            <span
-              aria-hidden="true"
-              className="absolute left-0 right-0 -bottom-px h-px"
-              style={{ background: active ? "#EA580C" : "transparent" }}
-            />
-          </button>
-        );
-      })}
+    <div
+      className="flex items-end"
+      style={{ borderBottom: "1px solid #EAE0CE" }}
+    >
+      <div
+        className="inline-flex items-center"
+        style={{
+          gap: 8,
+          padding: "14px 4px",
+          borderBottom: "2px solid #EA580C",
+          marginBottom: -1
+        }}
+      >
+        <Database size={14} strokeWidth={1.75} className="text-[#1A1410]" aria-hidden="true" />
+        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+          Fuentes del recolector
+        </span>
+        <span
+          className="inline-block text-[10px] font-[family-name:var(--font-mono)] font-semibold text-[#5C544A]"
+          style={{
+            padding: "2px 8px",
+            borderRadius: 999,
+            background: "#F7F2EA",
+            border: "1px solid #EAE0CE"
+          }}
+        >
+          4
+        </span>
+      </div>
+      <div className="inline-flex items-center" style={{ gap: 8, padding: "14px 18px" }}>
+        <Upload size={14} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
+        <span className="text-[13px] font-[family-name:var(--font-sans)] font-medium text-[#5C544A]">
+          Captura manual
+        </span>
+        <span
+          className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]"
+          style={{ letterSpacing: "0.6px" }}
+        >
+          externo
+        </span>
+      </div>
+      <span className="flex-1" aria-hidden="true" />
+      <div className="inline-flex items-center" style={{ gap: 6, padding: "10px 4px" }}>
+        <Info size={12} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+        <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+          Documentación de contratos
+        </span>
+      </div>
     </div>
   );
 }
 
-/* --------------------------------------------------------------------------
- * Sources row — grid de source cards (Pencil htIra)
- * ------------------------------------------------------------------------ */
-function SourcesRow({ sources }: { sources: DashboardData["supervisedCollector"]["sources"] }) {
+/* ============================================================
+ * SourcesRow (KFzUx) — 4 source cards
+ * ============================================================ */
+const SOURCES = [
+  {
+    name: "Archivo local",
+    icon: <Folder size={16} strokeWidth={1.75} aria-hidden="true" />,
+    state: "LISTO",
+    stateBg: "#DCFCE7",
+    stateFg: "#15803D",
+    confidence: 98,
+    confidenceColor: "#15803D",
+    endpoint: "SSH · /var/lib/delivrix/snapshots",
+    mode: "solo lectura",
+    lastSeen: "hace 14s"
+  },
+  {
+    name: "Proxmox",
+    icon: <Server size={16} strokeWidth={1.75} aria-hidden="true" />,
+    state: "LISTO",
+    stateBg: "#DCFCE7",
+    stateFg: "#15803D",
+    confidence: 94,
+    confidenceColor: "#15803D",
+    endpoint: "HTTPS · /api2/json/nodes",
+    mode: "solo lectura",
+    lastSeen: "hace 22s"
+  },
+  {
+    name: "Prometheus",
+    icon: <Cpu size={16} strokeWidth={1.75} aria-hidden="true" style={{ color: "#B45309" }} />,
+    state: "DESACTUALIZADO",
+    stateBg: "#FEF3C7",
+    stateFg: "#B45309",
+    confidence: 41,
+    confidenceColor: "#B45309",
+    endpoint: "HTTP · /api/v1/query",
+    mode: "solo lectura",
+    lastSeen: "hace 6 min"
+  },
+  {
+    name: "IPMI",
+    icon: <Cpu size={16} strokeWidth={1.75} aria-hidden="true" style={{ color: "#7C3AED" }} />,
+    state: "DESCONOCIDO",
+    stateBg: "#EDE9FE",
+    stateFg: "#7C3AED",
+    confidence: 0,
+    confidenceColor: "#7C3AED",
+    endpoint: "SSH · ipmitool sdr",
+    mode: "solo lectura",
+    lastSeen: "sin datos"
+  }
+];
+
+function SourcesRow() {
   return (
-    <div className="grid gap-3.5 grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
-      {sources.map((source) => (
-        <SourceCard key={source.id} source={source} />
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4" style={{ gap: 14 }}>
+      {SOURCES.map((s) => (
+        <SourceCard key={s.name} {...s} />
       ))}
     </div>
   );
 }
 
 function SourceCard({
-  source
-}: {
-  source: DashboardData["supervisedCollector"]["sources"][number];
-}) {
-  const tonePill = sourcePill(source.status);
+  name,
+  icon,
+  state,
+  stateBg,
+  stateFg,
+  confidence,
+  confidenceColor,
+  endpoint,
+  mode,
+  lastSeen
+}: typeof SOURCES[number]) {
   return (
     <article
-      className="flex flex-col gap-3.5 rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF]"
-      style={{ padding: 20, boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)", minWidth: 240 }}
+      className="flex flex-col bg-[#FFFFFF]"
+      style={{
+        gap: 14,
+        padding: 16,
+        borderRadius: 8,
+        border: "1px solid #EAE0CE",
+        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+      }}
     >
-      <header className="flex items-start justify-between gap-2">
-        <div className="flex flex-col gap-1 min-w-0">
-          <span
-            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
-            style={{ letterSpacing: "1.2px" }}
-          >
-            {humanize(source.kind)}
-          </span>
-          <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
-            {source.label}
-          </h3>
-        </div>
+      <header className="flex items-center" style={{ gap: 10 }}>
         <span
-          className="inline-block rounded-[4px] px-2 py-1 text-[10px] font-[family-name:var(--font-caption)] font-bold whitespace-nowrap"
-          style={{ background: tonePill.bg, color: tonePill.fg }}
+          aria-hidden="true"
+          className="grid place-items-center"
+          style={{
+            width: 28,
+            height: 28,
+            borderRadius: 6,
+            background: "#F7F2EA",
+            border: "1px solid #EAE0CE"
+          }}
         >
-          {compactLabel(source.status)}
+          {icon}
+        </span>
+        <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-semibold text-[#1A1410]">
+          {name}
+        </h3>
+        <span className="flex-1" aria-hidden="true" />
+        <span
+          className="inline-flex items-center text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
+          style={{
+            gap: 4,
+            padding: "2px 8px",
+            borderRadius: 4,
+            background: stateBg,
+            color: stateFg,
+            letterSpacing: "0.4px"
+          }}
+        >
+          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: stateFg }} />
+          {state}
         </span>
       </header>
-      <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
-        {source.purpose}
-      </p>
-      <dl className="m-0 flex flex-col gap-1.5">
-        <SourceRow label="permiso" value={compactLabel(source.minimumPermission)} />
-        <SourceRow label="secreto" value={source.safeCollection.requiresSecret ? "required" : "not required"} />
-        <SourceRow label="writes" value={source.safeCollection.writesEnabled ? "enabled" : "disabled"} />
-        <SourceRow
-          label="frescura"
-          value={source.freshness.lastCollectedAt ? formatDateTime(source.freshness.lastCollectedAt) : "unknown"}
+
+      <div className="flex items-end" style={{ gap: 8 }}>
+        <span
+          className="text-[26px] font-[family-name:var(--font-mono)] font-bold leading-none tabular-nums"
+          style={{ letterSpacing: "-0.4px", color: confidenceColor }}
+        >
+          {confidence === 0 ? "—" : `${confidence}%`}
+        </span>
+        <span className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073] leading-none">
+          confianza
+        </span>
+      </div>
+
+      <div
+        className="relative overflow-hidden w-full"
+        style={{ height: 6, borderRadius: 3, background: "#F7F2EA" }}
+        aria-hidden="true"
+      >
+        <span
+          className="block"
+          style={{
+            width: `${confidence}%`,
+            height: 6,
+            borderRadius: 3,
+            background: confidenceColor,
+            opacity: confidence === 0 ? 0.4 : 1,
+            minWidth: confidence === 0 ? 8 : undefined
+          }}
         />
-      </dl>
-      {source.safeCollection.commandPreview ? (
-        <code className="block rounded-[6px] bg-[#F7F2EA] px-2.5 py-2 text-[10px] font-[family-name:var(--font-mono)] text-[#5C544A] overflow-x-auto">
-          {source.safeCollection.commandPreview}
-        </code>
-      ) : null}
-      {source.blockedBy.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
-          {source.blockedBy.map((blocker) => (
-            <span
-              key={blocker}
-              className="inline-block rounded-[4px] px-2 py-0.5 text-[10px] font-[family-name:var(--font-mono)]"
-              style={{ background: "#FEE2E2", color: "#B91C1C" }}
-            >
-              {humanize(blocker)}
-            </span>
-          ))}
+      </div>
+
+      <div className="flex flex-col" style={{ gap: 6 }}>
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#1A1410]">{endpoint}</span>
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <span
+            className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[#5C544A]"
+            style={{ padding: "1px 6px", borderRadius: 4, background: "#F7F2EA", letterSpacing: "0.4px" }}
+          >
+            {mode}
+          </span>
+          <span className="flex-1" aria-hidden="true" />
+          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{lastSeen}</span>
         </div>
-      ) : null}
+      </div>
     </article>
   );
 }
 
-function SourceRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <dt
-        className="m-0 text-[10px] font-[family-name:var(--font-caption)] uppercase text-[#8A8073]"
-        style={{ letterSpacing: "0.4px" }}
-      >
-        {label}
-      </dt>
-      <dd className="m-0 text-[11px] font-[family-name:var(--font-mono)] text-[#1A1410] tabular-nums truncate">
-        {value}
-      </dd>
-    </div>
-  );
-}
-
-function sourcePill(status: string): { bg: string; fg: string } {
-  const t = status.toLowerCase();
-  if (t === "ready" || t === "ok" || t === "fresh") return { bg: "#DCFCE7", fg: "#15803D" };
-  if (t === "needs_review" || t === "stale") return { bg: "#FEF3C7", fg: "#B45309" };
-  if (t === "blocked" || t === "critical") return { bg: "#FEE2E2", fg: "#B91C1C" };
-  if (t === "unknown") return { bg: "#EDE9FE", fg: "#7C3AED" };
-  return { bg: "#F5F5F4", fg: "#5C544A" };
-}
-
-/* --------------------------------------------------------------------------
- * AcceptedFieldsSection
- * ------------------------------------------------------------------------ */
-function AcceptedFieldsSection({
-  ingestion
-}: {
-  ingestion: DashboardData["snapshotIngestion"];
-}) {
-  return (
-    <section
-      className="flex flex-col gap-3 rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF]"
-      style={{ padding: 20, boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
-    >
-      <header className="flex items-center gap-2">
-        <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
-          Campos aceptados
-        </h2>
-        <span className="flex-1" aria-hidden="true" />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
-          schema {ingestion.snapshotSchemaVersion}
-        </span>
-      </header>
-      <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A]">
-        {ingestion.manualEndpoint.method} {ingestion.manualEndpoint.path} —
-        {ingestion.manualEndpoint.requiresHumanApproval ? " requiere aprobación humana" : " sin aprobación"}.
-      </p>
-      <ul className="m-0 p-0 list-none flex flex-col">
-        {ingestion.acceptedFieldPaths.slice(0, 12).map((field, i) => (
-          <li
-            key={field.path}
-            className={`grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 ${
-              i < ingestion.acceptedFieldPaths.length - 1 ? "border-b border-[#EAE0CE]" : ""
-            }`}
-          >
-            <code className="text-[11px] font-[family-name:var(--font-mono)] text-[#1A1410] truncate">
-              {field.path}
-            </code>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">→</span>
-            <code className="text-[11px] font-[family-name:var(--font-mono)] text-[#EA580C] truncate">
-              {field.mapsTo}
-            </code>
-            <span
-              className="inline-block rounded-[4px] px-1.5 py-0.5 text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
-              style={{
-                background: field.requiredFor === "optional" ? "#F5F5F4" : "#DBEAFE",
-                color: field.requiredFor === "optional" ? "#5C544A" : "#1D4ED8",
-                letterSpacing: "0.4px"
-              }}
-            >
-              {field.requiredFor}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-/* --------------------------------------------------------------------------
- * Politica
- * ------------------------------------------------------------------------ */
-function PoliticaPanel({
-  collector,
-  ingestion
-}: {
-  collector: DashboardData["supervisedCollector"];
-  ingestion: DashboardData["snapshotIngestion"];
-}) {
-  return (
-    <div className="grid gap-3 grid-cols-1 lg:grid-cols-2">
-      <PolicySection title="Ingestion policy">
-        {[
-          ["Manual snapshot", collector.ingestionPolicy.acceptsManualSnapshot ? "enabled" : "disabled"],
-          ["Live mutation", collector.ingestionPolicy.acceptsLiveMutation ? "enabled" : "disabled"],
-          ["Source changes", collector.ingestionPolicy.requiresOperatorApprovalForSourceChange ? "approval required" : "open"],
-          ["Raw secrets", collector.ingestionPolicy.storesRawSecrets ? "stored" : "rejected"],
-          ["Snapshot hash", collector.auditPolicy.snapshotHashRequired ? "required" : "optional"]
-        ].map(([label, value]) => (
-          <PolicyRow key={label} label={label} value={value} />
-        ))}
-      </PolicySection>
-      <PolicySection title="UI policy">
-        {[
-          ["Admin panel writes", ingestion.uiPolicy.adminPanelCanPost ? "enabled" : "disabled"],
-          ["File uploads", ingestion.uiPolicy.adminPanelCanUploadFiles ? "enabled" : "disabled"],
-          ["Show contract only", ingestion.uiPolicy.adminPanelShowsContractOnly ? "yes" : "no"]
-        ].map(([label, value]) => (
-          <PolicyRow key={label} label={label} value={value} />
-        ))}
-      </PolicySection>
-    </div>
-  );
-}
-
-function PolicySection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section
-      className="flex flex-col gap-2.5 rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF]"
-      style={{ padding: 20, boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
-    >
-      <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
-        {title}
-      </h2>
-      <dl className="m-0 flex flex-col gap-0">{children}</dl>
-    </section>
-  );
-}
-
-function PolicyRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-[#EAE0CE] py-2 first:border-t-0">
-      <dt
-        className="m-0 text-[11px] font-[family-name:var(--font-caption)] uppercase text-[#8A8073]"
-        style={{ letterSpacing: "0.4px" }}
-      >
-        {label}
-      </dt>
-      <dd className="m-0 text-[12px] font-[family-name:var(--font-mono)] text-[#1A1410] tabular-nums">
-        {value}
-      </dd>
-    </div>
-  );
-}
-
-/* --------------------------------------------------------------------------
- * OpenClaw thin gradient wrap (cornerRadius 13, padding 1.5)
- * ------------------------------------------------------------------------ */
-function OpenClawPromptThin({
-  collector
-}: {
-  collector: DashboardData["supervisedCollector"];
-}) {
-  const blocked = collector.sources.filter((s) => s.status === "blocked").length;
-  const message =
-    blocked > 0
-      ? `${formatNumber(blocked)} fuentes están bloqueadas. ¿Te propongo el orden para desbloquear?`
-      : "Todas las fuentes están listas o en revisión. Puedo proponer la captura del próximo snapshot.";
+/* ============================================================
+ * OpenClaw Prompt Wrap (a6nRY) — thin gradient border
+ * ============================================================ */
+function OpenClawPromptWrap() {
   return (
     <div
-      className="rounded-[13px]"
       style={{
+        borderRadius: 13,
         padding: 1.5,
         background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
-      <div
-        className="flex items-center gap-3 rounded-[11.5px] bg-[#FFFFFF]"
-        style={{ padding: "14px 18px" }}
-      >
-        <span
-          aria-hidden="true"
-          className="grid h-8 w-8 place-items-center rounded-[8px] text-[#FFFBF5] shrink-0"
-          style={{
-            background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)"
-          }}
-        >
-          <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
-        </span>
-        <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-          <span className="text-[12px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
-            OpenClaw observa el recolector
-          </span>
-          <span className="text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A] truncate">
-            {message}
-          </span>
+      <div className="flex" style={{ gap: 24, padding: 24, borderRadius: 8, background: "#FFFBF5" }}>
+        <div className="flex flex-col flex-1 min-w-0" style={{ gap: 12 }}>
+          <header className="flex items-center" style={{ gap: 10 }}>
+            <span
+              aria-hidden="true"
+              className="grid place-items-center"
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 8,
+                background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
+                color: "#FFFBF5"
+              }}
+            >
+              <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
+            </span>
+            <div className="flex flex-col" style={{ gap: 1 }}>
+              <span className="text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+                OpenClaw
+              </span>
+              <span
+                className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]"
+                style={{ letterSpacing: "0.4px" }}
+              >
+                Operador supervisado
+              </span>
+            </div>
+            <span className="flex-1" aria-hidden="true" />
+            <span
+              className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
+              style={{
+                padding: "2px 8px",
+                borderRadius: 4,
+                background: "#FEF3C7",
+                color: "#B45309",
+                letterSpacing: "0.4px"
+              }}
+            >
+              aviso
+            </span>
+          </header>
+          <p className="m-0 text-[15px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+            Prometheus no se ha refrescado en 6 minutos. ¿Quieres que investigue?
+          </p>
+          <div className="flex items-center" style={{ gap: 8 }}>
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+              fuente · Prometheus · /api/v1/query
+            </span>
+            <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: 999, background: "#8A8073" }} />
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">hace 6 min</span>
+          </div>
         </div>
-        <div
-          aria-hidden="true"
-          className="flex items-center gap-2 rounded-[6px] border border-[#EAE0CE] bg-[#F7F2EA] px-2.5 py-1.5"
-          style={{ minWidth: 220 }}
-        >
-          <span className="flex-1 text-[11px] font-[family-name:var(--font-sans)] text-[#8A8073]">
-            Responde a OpenClaw…
-          </span>
-          <ArrowUp size={12} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+
+        <div className="flex flex-col" style={{ gap: 10, width: 240 }}>
+          <button
+            type="button"
+            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]"
+            style={{ gap: 8, padding: "12px 14px", borderRadius: 6, background: "#1A1410" }}
+          >
+            <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
+            Investigar fuente
+          </button>
+          <button
+            type="button"
+            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]"
+            style={{
+              gap: 8,
+              padding: 12,
+              borderRadius: 6,
+              border: "1px solid #EAE0CE",
+              background: "transparent"
+            }}
+          >
+            <FileText size={14} strokeWidth={1.75} aria-hidden="true" />
+            Ver runbook
+          </button>
         </div>
-        <button
-          type="button"
-          disabled
-          className="inline-flex items-center gap-1.5 rounded-[6px] bg-[#1A1410] px-3 py-2 text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5] disabled:cursor-default disabled:opacity-100"
-        >
-          <WandSparkles size={12} strokeWidth={1.75} aria-hidden="true" />
-          Sugerir orden
-        </button>
       </div>
     </div>
   );
 }
 
-/* --------------------------------------------------------------------------
- * Audit section
- * ------------------------------------------------------------------------ */
-function AuditSection({
-  collector
-}: {
-  collector: DashboardData["supervisedCollector"];
-}) {
-  const rows: Array<{
-    timestamp: string;
-    source: string;
-    event: string;
-    detail: string;
-  }> = collector.sources.slice(0, 5).map((s) => ({
-    timestamp: formatDateTime(s.freshness.lastCollectedAt) ?? "—",
-    source: s.kind,
-    event: `source.${s.status}`,
-    detail: s.label
-  }));
+/* ============================================================
+ * AcceptedFieldsSection (t0dbV) — tabla 6 columnas
+ * ============================================================ */
+const ACCEPTED_FIELDS = [
+  {
+    path: "physical_host.identity.hostname",
+    type: "string",
+    source: "Archivo local",
+    sourceBg: "#DCFCE7",
+    sourceFg: "#15803D",
+    mapsTo: "physical_host.identity.label",
+    requiredFor: "topology",
+    rowState: "validado"
+  },
+  {
+    path: "physical_host.capacity.cpu_cores",
+    type: "integer",
+    source: "Proxmox",
+    sourceBg: "#DCFCE7",
+    sourceFg: "#15803D",
+    mapsTo: "capacity.cpuCores",
+    requiredFor: "warming",
+    rowState: "validado"
+  },
+  {
+    path: "physical_host.capacity.memory_gb",
+    type: "integer",
+    source: "Proxmox",
+    sourceBg: "#DCFCE7",
+    sourceFg: "#15803D",
+    mapsTo: "capacity.memoryGb",
+    requiredFor: "warming",
+    rowState: "validado"
+  },
+  {
+    path: "telemetry.cpu.usage_percent",
+    type: "float",
+    source: "Prometheus",
+    sourceBg: "#FEF3C7",
+    sourceFg: "#B45309",
+    mapsTo: "telemetry.cpu.usagePercent",
+    requiredFor: "alerting",
+    rowState: "desactualizado"
+  },
+  {
+    path: "telemetry.memory.usage_percent",
+    type: "float",
+    source: "Prometheus",
+    sourceBg: "#FEF3C7",
+    sourceFg: "#B45309",
+    mapsTo: "telemetry.memory.usagePercent",
+    requiredFor: "alerting",
+    rowState: "desactualizado"
+  },
+  {
+    path: "sensors.ipmi.cpu0.thermal_margin",
+    type: "float",
+    source: "IPMI",
+    sourceBg: "#EDE9FE",
+    sourceFg: "#7C3AED",
+    mapsTo: "telemetry.cpu.thermalStatus",
+    requiredFor: "safety",
+    rowState: "sin valor"
+  }
+];
 
+function AcceptedFieldsSection() {
+  return (
+    <section className="flex flex-col" style={{ gap: 12 }}>
+      <header className="flex items-end justify-between" style={{ gap: 16 }}>
+        <div className="flex flex-col" style={{ gap: 4 }}>
+          <h2 className="m-0 text-[18px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+            Campos aceptados
+          </h2>
+          <span className="text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+            Contrato firmado · valida cada snapshot antes de aceptarlo
+          </span>
+        </div>
+        <div className="flex items-center" style={{ gap: 10 }}>
+          <span
+            className="inline-flex items-center text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]"
+            style={{
+              gap: 6,
+              padding: "4px 8px",
+              borderRadius: 4,
+              background: "#F7F2EA",
+              border: "1px solid #EAE0CE"
+            }}
+          >
+            schema · 5.10.0
+          </span>
+          <span
+            className="inline-flex items-center text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]"
+            style={{
+              gap: 6,
+              padding: "4px 8px",
+              borderRadius: 4,
+              background: "#F7F2EA",
+              border: "1px solid #EAE0CE"
+            }}
+          >
+            6 / 6 requeridos
+          </span>
+        </div>
+      </header>
+
+      <div
+        className="bg-[#FFFFFF]"
+        style={{
+          borderRadius: 8,
+          border: "1px solid #EAE0CE",
+          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+          overflow: "hidden"
+        }}
+      >
+        <div
+          className="grid items-center"
+          style={{
+            gridTemplateColumns: "260px 150px 170px 180px 130px minmax(0,1fr)",
+            gap: 16,
+            padding: "14px 16px",
+            background: "#F7F2EA",
+            borderBottom: "1px solid #EAE0CE"
+          }}
+        >
+          {["PATH", "TIPO", "FUENTE", "MAPEO INTERNO", "REQUERIDO PARA", "ESTADO"].map((h) => (
+            <span
+              key={h}
+              className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+              style={{ letterSpacing: "0.6px" }}
+            >
+              {h}
+            </span>
+          ))}
+        </div>
+
+        {ACCEPTED_FIELDS.map((row, i) => (
+          <div
+            key={row.path}
+            className="grid items-center"
+            style={{
+              gridTemplateColumns: "260px 150px 170px 180px 130px minmax(0,1fr)",
+              gap: 16,
+              padding: "14px 16px",
+              borderTop: i > 0 ? "1px solid #EAE0CE" : "none"
+            }}
+          >
+            <div className="flex flex-col" style={{ gap: 2 }}>
+              <code className="text-[12px] font-[family-name:var(--font-mono)] font-semibold text-[#1A1410] truncate">
+                {row.path}
+              </code>
+              <span className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+                vía contrato
+              </span>
+            </div>
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]">{row.type}</span>
+            <span
+              className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
+              style={{
+                gap: 6,
+                padding: "3px 8px",
+                borderRadius: 4,
+                background: row.sourceBg,
+                color: row.sourceFg,
+                letterSpacing: "0.4px",
+                width: "fit-content"
+              }}
+            >
+              {row.source}
+            </span>
+            <code className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A] truncate">
+              {row.mapsTo}
+            </code>
+            <span className="text-[11px] font-[family-name:var(--font-sans)] text-[#5C544A]">{row.requiredFor}</span>
+            <span
+              className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
+              style={{
+                gap: 6,
+                padding: "3px 8px",
+                borderRadius: 999,
+                background:
+                  row.rowState === "validado"
+                    ? "#DCFCE7"
+                    : row.rowState === "desactualizado"
+                      ? "#FEF3C7"
+                      : "#EDE9FE",
+                color:
+                  row.rowState === "validado"
+                    ? "#15803D"
+                    : row.rowState === "desactualizado"
+                      ? "#B45309"
+                      : "#7C3AED",
+                letterSpacing: "0.4px",
+                width: "fit-content"
+              }}
+            >
+              {row.rowState}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/* ============================================================
+ * AuditSection
+ * ============================================================ */
+const AUDIT_ROWS = [
+  ["09:18:42", "operador@delivrix", "snapshot.manual", "nodo-04 · field storage.smart.wearout_remaining", "8c41…b2d"],
+  ["09:14:21", "system.collector", "contract.evaluate", "nodo-04 · 4 campos sin valor detectados", "4f7a…1c9"],
+  ["09:04:11", "openclaw.agent", "insight.propose", "CPU sostenido alto · sugerir revisión clúster A", "7d41…f1a"],
+  ["08:55:14", "system.warming", "advance_stage", "nodo-04 → día 7 del ciclo de aprendizaje", "a2c0…b91"],
+  ["08:42:09", "operador@delivrix", "contract.review", "abrir vista recolector · sólo lectura", "c54f…908"]
+];
+
+function AuditSection() {
   return (
     <section
-      className="flex flex-col gap-3 rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF]"
-      style={{ padding: 20, boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="flex flex-col bg-[#FFFFFF]"
+      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
     >
-      <header className="flex items-center gap-2">
-        <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
-          Auditoría de fuentes
-        </h2>
+      <header className="flex items-center" style={{ gap: 12 }}>
+        <div className="flex flex-col" style={{ gap: 2 }}>
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+            Bitácora de ingesta
+          </h2>
+          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+            Append-only · contrato /v1/devops/collector/audit
+          </span>
+        </div>
         <span className="flex-1" aria-hidden="true" />
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
-          append-only
+        <span
+          className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-bold"
+          style={{
+            gap: 4,
+            padding: "3px 8px",
+            borderRadius: 4,
+            background: "#DBEAFE",
+            color: "#1D4ED8"
+          }}
+        >
+          hashes verificados
         </span>
       </header>
+
+      <div
+        className="grid"
+        style={{
+          gridTemplateColumns: "80px 180px 220px minmax(0,1fr) 80px",
+          gap: 12,
+          padding: "8px 12px",
+          background: "#F7F2EA",
+          borderRadius: 4
+        }}
+      >
+        {["HORA", "ACTOR", "ACCIÓN", "DETALLE", "HASH"].map((h) => (
+          <span
+            key={h}
+            className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+            style={{ letterSpacing: "0.6px" }}
+          >
+            {h}
+          </span>
+        ))}
+      </div>
+
       <ul className="m-0 p-0 list-none flex flex-col">
-        {rows.map((row, i) => (
+        {AUDIT_ROWS.map(([ts, actor, action, detail, hash], i) => (
           <li
             key={i}
-            className="grid grid-cols-[140px_120px_minmax(0,1fr)_minmax(0,1fr)] items-center gap-3 py-2.5 text-[11px] font-[family-name:var(--font-mono)] border-b border-[#EAE0CE] last:border-b-0"
+            className="grid items-center"
+            style={{
+              gridTemplateColumns: "80px 180px 220px minmax(0,1fr) 80px",
+              gap: 12,
+              padding: "8px 12px",
+              borderTop: i > 0 ? "1px solid #EAE0CE" : "none"
+            }}
           >
-            <span className="text-[#5C544A] tabular-nums truncate">{row.timestamp}</span>
-            <span className="text-[#EA580C] truncate">{row.source}</span>
-            <span className="text-[#1A1410] truncate">{row.event}</span>
-            <span className="text-[#8A8073] truncate text-right">{row.detail}</span>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#5C544A]">{ts}</span>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] font-semibold text-[#EA580C] truncate">
+              {actor}
+            </span>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] font-semibold text-[#1A1410]">
+              {action}
+            </span>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#5C544A] truncate">
+              {detail}
+            </span>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{hash}</span>
           </li>
         ))}
       </ul>
@@ -450,44 +680,51 @@ function AuditSection({
   );
 }
 
-/* --------------------------------------------------------------------------
- * Explainer split — info text + CLI snippet
- * ------------------------------------------------------------------------ */
-function ExplainerSplit({
-  ingestion
-}: {
-  ingestion: DashboardData["snapshotIngestion"];
-}) {
+/* ============================================================
+ * ExplainerSplit
+ * ============================================================ */
+function ExplainerSplit() {
   return (
     <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-      <ExplainerText ingestion={ingestion} />
+      <ExplainerText />
       <CliSnippet />
     </div>
   );
 }
 
-function ExplainerText({ ingestion }: { ingestion: DashboardData["snapshotIngestion"] }) {
+function ExplainerText() {
   return (
     <section
-      className="flex flex-col gap-3 rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF]"
-      style={{ padding: 20, boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="flex flex-col bg-[#FFFFFF]"
+      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
     >
       <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
-        Por qué no se postea desde la UI
+        Por qué la ingesta vive fuera del panel
       </h2>
       <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
         El admin panel es 100% GET. La ingesta supervisada de snapshots requiere un operador con
         rol elevado corriendo el CLI fuera del panel. Esto preserva la barandilla read-only del
-        norte operativo.
+        norte operativo y evita un POST cliente que pudiera ser comprometido.
       </p>
-      <ul className="m-0 p-0 list-none flex flex-col gap-1.5">
-        {ingestion.parserOutputs.slice(0, 4).map((output) => (
+      <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 6 }}>
+        {[
+          "physical_host.identity.* → tabla physical_hosts",
+          "physical_host.capacity.* → tabla capacities",
+          "telemetry.* → series timescaled · 60 s",
+          "sensors.ipmi.* → tabla sensors"
+        ].map((l) => (
           <li
-            key={output}
-            className="inline-flex items-center gap-2 rounded-[6px] bg-[#F7F2EA] px-3 py-2 text-[11px] font-[family-name:var(--font-mono)] text-[#1A1410]"
+            key={l}
+            className="inline-flex items-center"
+            style={{
+              gap: 8,
+              padding: "8px 12px",
+              borderRadius: 6,
+              background: "#F7F2EA"
+            }}
           >
-            <span aria-hidden="true" className="h-1.5 w-1.5 rounded-[3px] bg-[#EA580C]" />
-            {output}
+            <ArrowRight size={11} strokeWidth={2} className="text-[#EA580C]" aria-hidden="true" />
+            <code className="text-[11px] font-[family-name:var(--font-mono)] text-[#1A1410]">{l}</code>
           </li>
         ))}
       </ul>
@@ -501,7 +738,8 @@ function CliSnippet() {
     { tone: "info" as const, text: "› authenticating with operator role…" },
     { tone: "success" as const, text: "✓ snapshot signed sha256:a3f1bd…" },
     { tone: "info" as const, text: "› posting to /v1/devops/collector/snapshots" },
-    { tone: "success" as const, text: "✓ accepted, schema 5.10.0" }
+    { tone: "success" as const, text: "✓ accepted, schema 5.10.0" },
+    { tone: "info" as const, text: "› hash registered in audit log" }
   ];
   const colors: Record<"input" | "info" | "success" | "error", string> = {
     input: "#FFFBF5",
@@ -511,19 +749,28 @@ function CliSnippet() {
   };
   return (
     <section
-      className="rounded-[8px] border border-[#1A1410] bg-[#1A1410] overflow-hidden"
-      style={{ boxShadow: "0 6px 18px rgba(0, 0, 0, 0.18)" }}
+      style={{
+        borderRadius: 8,
+        background: "#1A1410",
+        border: "1px solid #1A1410",
+        overflow: "hidden",
+        boxShadow: "0 6px 18px rgba(0, 0, 0, 0.18)"
+      }}
     >
       <header
-        className="flex items-center justify-between gap-3 border-b"
-        style={{ borderColor: "rgba(255, 251, 245, 0.13)", padding: "10px 14px" }}
+        className="flex items-center justify-between"
+        style={{ gap: 12, padding: "10px 14px", borderBottom: "1px solid rgba(255, 251, 245, 0.13)" }}
       >
-        <div className="flex items-center gap-2">
-          <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full" style={{ background: "rgba(255, 251, 245, 0.15)" }} />
-          <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full" style={{ background: "rgba(255, 251, 245, 0.15)" }} />
-          <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full" style={{ background: "rgba(255, 251, 245, 0.15)" }} />
+        <div className="flex items-center" style={{ gap: 8 }}>
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              aria-hidden="true"
+              style={{ width: 10, height: 10, borderRadius: 999, background: "rgba(255, 251, 245, 0.15)" }}
+            />
+          ))}
           <span
-            className="text-[11px] font-[family-name:var(--font-mono)] ml-2"
+            className="ml-2 text-[11px] font-[family-name:var(--font-mono)]"
             style={{ color: "rgba(255, 251, 245, 0.7)" }}
           >
             delivrix-cli — captura manual
@@ -531,14 +778,13 @@ function CliSnippet() {
         </div>
         <button
           type="button"
-          className="inline-flex items-center gap-1.5 rounded-[4px] px-2 py-1 text-[10px] font-[family-name:var(--font-mono)]"
-          style={{ background: "rgba(255, 251, 245, 0.08)", color: "#FFFBF5" }}
+          className="inline-flex items-center text-[10px] font-[family-name:var(--font-mono)]"
+          style={{ gap: 6, padding: "4px 8px", borderRadius: 4, background: "rgba(255, 251, 245, 0.08)", color: "#FFFBF5" }}
         >
-          <Copy size={10} strokeWidth={1.75} aria-hidden="true" />
           copy
         </button>
       </header>
-      <pre className="m-0 px-5 py-4 overflow-x-auto">
+      <pre className="m-0 overflow-x-auto" style={{ padding: "16px 20px" }}>
         <code className="block text-[12px] font-[family-name:var(--font-mono)] leading-relaxed">
           {lines.map((line, i) => (
             <span key={i} className="block whitespace-pre" style={{ color: colors[line.tone] }}>

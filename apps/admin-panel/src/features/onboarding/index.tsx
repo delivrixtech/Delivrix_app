@@ -1,23 +1,24 @@
 /**
- * Onboarding Wizard — port 1:1 desde Pencil frame `T9osf` / `GygQG`.
+ * Onboarding Wizard — port LITERAL desde Pencil frame `T9osf` / `GygQG`.
  *
- * Estructura literal:
- *   PageHeader (M5gN0)  ·  Stepper de 6 pasos horizontales (cL78x)
- *   WizardBody (uqjXO):
- *     · Form (IZ1we) — 3 SectionCards con field rows (Identidad, Inventario, Red)
- *     · OpenClawColumn (vBXlY, 360w) — gradient prompt card + meta card
- *   GatesHead + GatesStrip (3 gate cards horizontales)
- *   ActionBar — save + tooltip + back + submit
- *
- * Valores literales: padding, color, gap exactos del .pen.
+ * Cada texto, color, padding e icono viene del .pen. Los campos del formulario
+ * muestran los placeholders literales (hostname `vps-edge-01.delivrix.io`,
+ * datacenter `mad-2 · Madrid Norte`, etc.) tal como Pencil los dibuja.
  */
 
 import {
   ArrowLeft,
   ArrowUp,
+  CheckCircle2,
+  Cpu,
+  Eye,
+  FileSearch,
   Info,
   KeyRound,
+  Link as LinkIcon,
   Lock,
+  MessageSquare,
+  Network,
   Save,
   Send,
   ShieldAlert,
@@ -26,413 +27,489 @@ import {
   WandSparkles
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
-import { compactLabel, formatNumber, humanize } from "../../shared/lib/formatters.ts";
 
-/* --------------------------------------------------------------------------
- * Canonical steps (Pencil cL78x)
- * ------------------------------------------------------------------------ */
-const STEPS = [
-  { kicker: "PASO 1", title: "Servidor", category: "server" },
-  { kicker: "PASO 2", title: "IPs y dominios", category: "network" },
-  { kicker: "PASO 3", title: "DNS", category: "dns" },
-  { kicker: "PASO 4", title: "Límites", category: "limits" },
-  { kicker: "PASO 5", title: "Cumplimiento", category: "compliance" },
-  { kicker: "PASO 6", title: "Revisión", category: "review" }
-] as const;
-
-type StepStatus = "active" | "ready" | "pending" | "blocked";
-
-function deriveStepStatus(
-  category: string,
-  readinessByCategory: Record<string, number>,
-  blockers: string[]
-): StepStatus {
-  const normalized = category.toLowerCase();
-  const blocker = blockers.some((b) => b.toLowerCase().includes(normalized));
-  if (blocker) return "blocked";
-  const readiness = Object.entries(readinessByCategory).find(
-    ([k]) => k.toLowerCase().includes(normalized)
-  )?.[1];
-  if (readiness === undefined) return "pending";
-  if (readiness >= 1) return "ready";
-  if (readiness > 0) return "active";
-  return "pending";
-}
-
-/* --------------------------------------------------------------------------
- * Main section
- * ------------------------------------------------------------------------ */
 export function OnboardingSection({ data }: { data: DashboardData }) {
-  const onboarding = data.onboardingState;
-  const blockers = onboarding.blockers ?? [];
-  const warnings = onboarding.warnings ?? [];
-  const stepStatuses = STEPS.map((step) =>
-    deriveStepStatus(step.category, onboarding.readinessByCategory, blockers)
-  );
-  const activeIndex = Math.max(0, stepStatuses.findIndex((s) => s === "active" || s === "pending" || s === "blocked"));
-
+  void data;
   return (
-    <section className="flex flex-col gap-5" style={{ maxWidth: 1352 }}>
-      <PageHeader activeIndex={activeIndex} />
-      <Stepper statuses={stepStatuses} activeIndex={activeIndex} />
-
-      <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] items-start">
-        <Form data={data} />
-        <OpenClawColumn blockers={blockers} warnings={warnings} canGenerate={onboarding.canGenerateTopologyPlan} />
-      </div>
-
+    <section className="flex flex-col" style={{ gap: 20, maxWidth: 1352 }}>
+      <PageHeader />
+      <Stepper />
+      <WizardBody />
       <GatesHead />
-      <GatesStrip data={data} />
+      <GatesStrip />
       <ActionBar />
     </section>
   );
 }
 
-/* --------------------------------------------------------------------------
+/* ============================================================
  * PageHeader (M5gN0)
- * ------------------------------------------------------------------------ */
-function PageHeader({ activeIndex }: { activeIndex: number }) {
-  const stepNum = activeIndex + 1;
-  const stepTitle = STEPS[activeIndex]?.title ?? STEPS[0].title;
+ * ============================================================ */
+function PageHeader() {
   return (
-    <header className="flex flex-col gap-2.5">
+    <header className="flex flex-col" style={{ gap: 10 }}>
       <span
         className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#EA580C]"
         style={{ letterSpacing: "1.2px" }}
       >
-        PASO {stepNum} DE 6 · {stepTitle.toUpperCase()}
+        PASO 1 DE 6 · INVENTARIO FÍSICO
       </span>
       <h1
         className="m-0 text-[32px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[#1A1410]"
-        style={{ letterSpacing: "-0.4px" }}
       >
         Onboarding del servidor de envío
       </h1>
       <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
-        El asistente captura y valida el servidor físico, sus IPs, dominios, DNS, límites y permisos
-        antes de pedir el visto bueno humano. OpenClaw observa la evidencia y recomienda, pero nunca
-        ejecuta cambios por su cuenta.
+        El asistente captura y valida el servidor físico, sus IPs, dominios, DNS, límites y
+        permisos antes de pedir el visto bueno humano. OpenClaw observa la evidencia y
+        recomienda, pero nunca ejecuta cambios por su cuenta.
       </p>
     </header>
   );
 }
 
-/* --------------------------------------------------------------------------
- * Stepper (cL78x): 6 steps con conectores horizontales
- * ------------------------------------------------------------------------ */
-function Stepper({ statuses, activeIndex }: { statuses: StepStatus[]; activeIndex: number }) {
+/* ============================================================
+ * Stepper (cL78x) — 6 pasos con conectores horizontales
+ * ============================================================ */
+const STEPS = [
+  { kicker: "PASO 1", title: "Servidor", active: true },
+  { kicker: "PASO 2", title: "IPs y dominios", active: false },
+  { kicker: "PASO 3", title: "DNS", active: false },
+  { kicker: "PASO 4", title: "Límites", active: false },
+  { kicker: "PASO 5", title: "Cumplimiento", active: false },
+  { kicker: "PASO 6", title: "Revisión", active: false }
+] as const;
+
+function Stepper() {
   return (
     <ol
-      className="m-0 p-0 list-none flex items-center rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF]"
-      style={{ padding: "16px 20px", gap: 14, boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="m-0 p-0 list-none flex items-center bg-[#FFFFFF]"
+      style={{
+        gap: 14,
+        padding: "16px 20px",
+        borderRadius: 8,
+        border: "1px solid #EAE0CE",
+        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+      }}
     >
-      {STEPS.map((step, i) => {
-        const status = statuses[i];
-        const isActive = i === activeIndex;
-        const isReady = status === "ready";
-        const isBlocked = status === "blocked";
-        const circleBg = isActive ? "#F59E0B" : isReady ? "#15803D" : isBlocked ? "#FEE2E2" : "#FFFBF5";
-        const circleFg = isActive || isReady ? "#FFFBF5" : isBlocked ? "#B91C1C" : "#8A8073";
-        const circleBorder = !isActive && !isReady ? "#EAE0CE" : "transparent";
-        const kickerColor = isActive ? "#EA580C" : isReady ? "#15803D" : isBlocked ? "#B91C1C" : "#8A8073";
-        const titleColor = isActive || isReady ? "#1A1410" : "#5C544A";
-        const titleWeight = isActive || isReady ? 600 : 500;
-
-        return (
-          <li key={step.kicker} className="flex items-center min-w-0" style={{ gap: 10 }}>
-            <div className="flex items-center" style={{ gap: 10 }}>
+      {STEPS.map((step, i) => (
+        <li key={step.kicker} className="flex items-center min-w-0" style={{ gap: 10 }}>
+          <div className="flex items-center" style={{ gap: 10 }}>
+            <span
+              aria-hidden="true"
+              className="grid place-items-center"
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 999,
+                background: step.active ? "#F59E0B" : "#FFFBF5",
+                color: step.active ? "#FFFBF5" : "#8A8073",
+                fontFamily: "var(--font-mono)",
+                fontSize: 13,
+                fontWeight: step.active ? 700 : 600,
+                boxShadow: !step.active ? "inset 0 0 0 1px #EAE0CE" : undefined
+              }}
+            >
+              {i + 1}
+            </span>
+            <div className="flex flex-col" style={{ gap: 2 }}>
               <span
-                aria-hidden="true"
-                className="grid place-items-center rounded-full text-[13px] font-[family-name:var(--font-mono)]"
+                className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
                 style={{
-                  width: 32,
-                  height: 32,
-                  background: circleBg,
-                  color: circleFg,
-                  fontWeight: isActive || isReady ? 700 : 600,
-                  boxShadow: circleBorder !== "transparent" ? `inset 0 0 0 1px ${circleBorder}` : undefined
+                  color: step.active ? "#EA580C" : "#8A8073",
+                  letterSpacing: "1px"
                 }}
               >
-                {isReady ? "✓" : i + 1}
+                {step.kicker}
               </span>
-              <div className="flex flex-col gap-0.5">
-                <span
-                  className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
-                  style={{ color: kickerColor, letterSpacing: "1px" }}
-                >
-                  {step.kicker}
-                </span>
-                <span
-                  className="text-[13px] font-[family-name:var(--font-sans)] leading-tight"
-                  style={{ color: titleColor, fontWeight: titleWeight }}
-                >
-                  {step.title}
-                </span>
-              </div>
+              <span
+                className="text-[13px] font-[family-name:var(--font-sans)]"
+                style={{
+                  color: step.active ? "#1A1410" : "#5C544A",
+                  fontWeight: step.active ? 600 : 500
+                }}
+              >
+                {step.title}
+              </span>
             </div>
-            {i < STEPS.length - 1 ? (
-              <span aria-hidden="true" className="block h-px flex-1 bg-[#EAE0CE]" style={{ minWidth: 24 }} />
-            ) : null}
-          </li>
-        );
-      })}
+          </div>
+          {i < STEPS.length - 1 ? (
+            <span
+              aria-hidden="true"
+              className="block"
+              style={{ height: 1, flex: 1, minWidth: 16, background: "#EAE0CE" }}
+            />
+          ) : null}
+        </li>
+      ))}
     </ol>
   );
 }
 
-/* --------------------------------------------------------------------------
- * Form (IZ1we): 3 SectionCards
- * ------------------------------------------------------------------------ */
-function Form({ data }: { data: DashboardData }) {
-  const identity = data.physicalHost.identity;
-  const capacity = data.physicalHost.capacity;
-  const onboarding = data.onboardingState;
-  const known = onboarding.knownInputs;
-  const knownStr = (key: string): string => {
-    const v = known[key];
-    if (v === undefined || v === null || v === "") return "—";
-    return String(v);
-  };
-
+/* ============================================================
+ * WizardBody (uqjXO) — Form (3 cards) + OpenClawColumn (360w)
+ * ============================================================ */
+function WizardBody() {
   return (
-    <div className="flex flex-col gap-4">
+    <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] items-start">
+      <Form />
+      <OpenClawColumn />
+    </div>
+  );
+}
+
+function Form() {
+  return (
+    <div className="flex flex-col" style={{ gap: 16 }}>
       {/* Sección 1 — Identidad */}
       <SectionCard
-        eyebrow="SECCIÓN 1"
+        iconBg="#FEF3C7"
+        iconColor="#B45309"
+        icon={<ShieldAlert size={16} strokeWidth={1.75} aria-hidden="true" />}
+        kicker="SECCIÓN 1"
         title="Identidad del servidor"
-        pillTone="neutral"
-        pillText={`${formatNumber(Object.keys(known).length)} campos`}
+        pillBg="#FEF3C7"
+        pillFg="#B45309"
+        pillDot="#B45309"
+        pillText="campos requeridos"
       >
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Field label="Hostname" value={identity.label || knownStr("hostname") || "unknown"} mono />
-          <Field label="Centro de datos" value={identity.location || knownStr("datacenter") || "unknown"} />
-          <Field
-            label="Rol"
-            value={knownStr("role") !== "—" ? knownStr("role") : "primario"}
-          />
-          <Field
-            label="Entorno"
-            value={knownStr("environment") !== "—" ? knownStr("environment") : "mvp.local"}
-          />
-        </div>
+        <FieldRow label="HOSTNAME" value="vps-edge-01.delivrix.io" />
+        <FieldRow label="DATACENTER" value="mad-2 · Madrid Norte" />
+        <FieldRow label="ROL" value="sender-edge · zona caliente" />
+        <FieldRow label="ENTORNO" value="mvp.local · staging" />
       </SectionCard>
 
-      {/* Sección 2 — Inventario */}
+      {/* Sección 2 — Inventario de cómputo */}
       <SectionCard
-        eyebrow="SECCIÓN 2"
-        title="Inventario físico"
-        pillTone="info"
-        pillText="hardware snapshot"
+        iconBg="#DBEAFE"
+        iconColor="#1D4ED8"
+        icon={<Cpu size={16} strokeWidth={1.75} aria-hidden="true" />}
+        kicker="SECCIÓN 2"
+        title="Inventario de cómputo"
+        pillBg="#DBEAFE"
+        pillFg="#1D4ED8"
+        pillDot="#1D4ED8"
+        pillText="detectado por el recolector"
       >
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Field label="CPU" value={capacity.cpuCores ? `${capacity.cpuCores} cores` : "unknown"} />
-          <Field label="RAM" value={capacity.memoryGb ? `${capacity.memoryGb} GB` : "unknown"} />
-          <Field label="Storage" value={capacity.storageUsableGb ? `${capacity.storageUsableGb} GB` : "unknown"} />
-          <Field label="Link" value={capacity.networkInterfaces ? `${capacity.networkInterfaces} ifaces` : "unknown"} />
-        </div>
+        <FieldRow label="CPU" value="AMD EPYC 7763 · 2×64 núcleos" badge="DETECTADO" />
+        <FieldRow label="MEMORIA RAM" value="512 GB · DDR4 ECC" badge="DETECTADO" />
+        <FieldRow label="ALMACENAMIENTO" value="4 × 3.84 TB NVMe RAID-10" badge="DETECTADO" />
+        <FieldRow label="ENLACE PRIMARIO" value="25 GbE · LACP bond0" badge="DETECTADO" />
       </SectionCard>
 
-      {/* Sección 3 — Red */}
+      {/* Sección 3 — Interfaces de red */}
       <SectionCard
-        eyebrow="SECCIÓN 3"
-        title="Red e identidad de envío"
-        pillTone="success"
-        pillText={`${formatNumber(capacity.ipPoolSize ?? 0)} IPs`}
+        iconBg="#DCFCE7"
+        iconColor="#15803D"
+        icon={<Network size={16} strokeWidth={1.75} aria-hidden="true" />}
+        kicker="SECCIÓN 3"
+        title="Interfaces de red"
+        pillBg="#DCFCE7"
+        pillFg="#15803D"
+        pillDot="#15803D"
+        pillText="3 interfaces declaradas"
       >
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Field label="eth0" value={knownStr("eth0") !== "—" ? knownStr("eth0") : "—"} mono />
-          <Field label="eth1" value={knownStr("eth1") !== "—" ? knownStr("eth1") : "—"} mono />
-          <Field label="IPMI" value={knownStr("ipmi") !== "—" ? knownStr("ipmi") : "—"} mono />
-          <Field label="Dominios" value={knownStr("domains") !== "—" ? knownStr("domains") : "—"} />
-        </div>
+        <FieldRow label="BOND0 · ENVÍO" value="10.42.7.21/24 · vlan 102" />
+        <FieldRow label="ETH2 · GESTIÓN" value="10.99.0.21/24 · vlan 901" />
+        <FieldRow label="IPMI · FUERA DE BANDA" value="172.20.4.21 · ACL restringida" badge="DETECTADO" />
+        <FieldRow label="DOMINIO PÚBLICO" value="send.delivrix.io · A + PTR" />
       </SectionCard>
     </div>
   );
 }
 
 function SectionCard({
-  eyebrow,
+  iconBg,
+  iconColor,
+  icon,
+  kicker,
   title,
-  pillTone,
+  pillBg,
+  pillFg,
+  pillDot,
   pillText,
   children
 }: {
-  eyebrow: string;
+  iconBg: string;
+  iconColor: string;
+  icon: React.ReactNode;
+  kicker: string;
   title: string;
-  pillTone: "neutral" | "info" | "success";
+  pillBg: string;
+  pillFg: string;
+  pillDot: string;
   pillText: string;
   children: React.ReactNode;
 }) {
-  const pillBg = pillTone === "neutral" ? "#F5F5F4" : pillTone === "info" ? "#DBEAFE" : "#DCFCE7";
-  const pillFg = pillTone === "neutral" ? "#5C544A" : pillTone === "info" ? "#1D4ED8" : "#15803D";
   return (
     <section
-      className="flex flex-col gap-4 rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF]"
-      style={{ padding: 20, boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="flex flex-col bg-[#FFFFFF]"
+      style={{
+        gap: 18,
+        padding: 20,
+        borderRadius: 8,
+        border: "1px solid #EAE0CE",
+        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+      }}
     >
-      <header className="flex items-center justify-between gap-3">
-        <div className="flex flex-col gap-1">
+      {/* SecHead */}
+      <header className="flex items-center justify-between" style={{ gap: 10 }}>
+        <div className="flex items-center" style={{ gap: 10 }}>
           <span
-            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
-            style={{ letterSpacing: "1.2px" }}
+            aria-hidden="true"
+            className="grid place-items-center"
+            style={{ width: 32, height: 32, borderRadius: 6, background: iconBg, color: iconColor }}
           >
-            {eyebrow}
+            {icon}
           </span>
-          <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
-            {title}
-          </h3>
+          <div className="flex flex-col" style={{ gap: 2 }}>
+            <span
+              className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+              style={{ letterSpacing: "1.2px" }}
+            >
+              {kicker}
+            </span>
+            <h3 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-semibold text-[#1A1410]">
+              {title}
+            </h3>
+          </div>
         </div>
         <span
-          className="inline-block rounded-[4px] px-2 py-1 text-[10px] font-[family-name:var(--font-caption)] font-bold"
-          style={{ background: pillBg, color: pillFg }}
+          className="inline-flex items-center text-[11px] font-[family-name:var(--font-caption)] font-semibold"
+          style={{
+            gap: 6,
+            padding: "4px 10px",
+            borderRadius: 4,
+            background: pillBg,
+            color: pillFg,
+            letterSpacing: "0.4px"
+          }}
         >
+          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: pillDot }} />
           {pillText}
         </span>
       </header>
-      {children}
+
+      {/* Field rows in 2 columns */}
+      <div className="grid grid-cols-1 sm:grid-cols-2" style={{ gap: 16 }}>
+        {children}
+      </div>
     </section>
   );
 }
 
-/**
- * Field row Pencil: label small Inter + valor en input-like read-only.
- */
-function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function FieldRow({ label, value, badge }: { label: string; value: string; badge?: string }) {
   return (
-    <div className="flex flex-col gap-1.5">
-      <span
-        className="text-[11px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[#8A8073]"
-        style={{ letterSpacing: "0.4px" }}
-      >
-        {label}
-      </span>
-      <div
-        className="rounded-[6px] border border-[#EAE0CE] bg-[#F7F2EA] px-3 py-2.5"
-        aria-readonly="true"
-      >
+    <div className="flex flex-col" style={{ gap: 6 }}>
+      <div className="flex items-center" style={{ gap: 8 }}>
         <span
-          className={`text-[12px] ${mono ? "font-[family-name:var(--font-mono)]" : "font-[family-name:var(--font-sans)]"} text-[#1A1410]`}
+          className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[#8A8073]"
+          style={{ letterSpacing: "0.4px" }}
         >
-          {value}
+          {label}
         </span>
+        {badge ? (
+          <span
+            className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
+            style={{
+              padding: "1px 6px",
+              borderRadius: 4,
+              background: "#DCFCE7",
+              color: "#15803D",
+              letterSpacing: "0.4px"
+            }}
+          >
+            {badge}
+          </span>
+        ) : null}
       </div>
-    </div>
-  );
-}
-
-/* --------------------------------------------------------------------------
- * OpenClaw column (vBXlY, 360w)
- * ------------------------------------------------------------------------ */
-function OpenClawColumn({
-  blockers,
-  warnings,
-  canGenerate
-}: {
-  blockers: string[];
-  warnings: string[];
-  canGenerate: boolean;
-}) {
-  const message =
-    blockers.length > 0
-      ? `Detecté ${formatNumber(blockers.length)} bloqueos pendientes. ¿Resumimos el siguiente con mayor impacto?`
-      : warnings.length > 0
-        ? `Hay ${formatNumber(warnings.length)} advertencias activas. Podemos priorizar antes del gate de lanzamiento.`
-        : canGenerate
-          ? "Inventario completo. Puedo proponer el plan de topología cuando lo autorices."
-          : "Avanzando el inventario sin bloqueos. Al completar los campos abiertos genero el plan.";
-
-  return (
-    <div className="flex flex-col gap-4">
       <div
-        className="rounded-[12px] p-[2px]"
+        className="bg-[#FFFFFF]"
         style={{
-          background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
-          boxShadow: "0 8px 24px rgba(26, 20, 16, 0.13)"
+          padding: "12px 10px",
+          borderRadius: 6,
+          border: "1px solid #EAE0CE"
         }}
       >
-        <div className="flex flex-col gap-4 rounded-[10px] bg-[#FFFBF5]" style={{ padding: 20 }}>
-          <div className="flex items-center gap-2.5">
-            <span
-              aria-hidden="true"
-              className="grid h-8 w-8 place-items-center rounded-[8px] text-[#FFFBF5]"
-              style={{
-                background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)"
-              }}
-            >
-              <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
-            </span>
-            <div className="flex flex-col leading-tight">
-              <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
-                OpenClaw
-              </span>
-              <span
-                className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]"
-                style={{ letterSpacing: "0.4px" }}
-              >
-                Operador supervisado
-              </span>
-            </div>
-          </div>
-
-          <div
-            className="rounded-[8px] border border-[#EAE0CE] bg-[#F7F2EA] px-3.5 py-3.5"
-          >
-            <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.45] text-[#1A1410]">
-              {message}
-            </p>
-          </div>
-
-          <div
-            aria-hidden="true"
-            className="flex items-center gap-2 rounded-[6px] border border-[#EAE0CE] bg-[#FFFBF5] px-3 py-3"
-          >
-            <span className="flex-1 text-[12px] font-[family-name:var(--font-sans)] text-[#8A8073]">
-              Responde a OpenClaw…
-            </span>
-            <ArrowUp size={14} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              disabled
-              className="inline-flex items-center justify-center gap-1.5 rounded-[6px] bg-[#1A1410] px-3 py-2.5 text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5] disabled:cursor-default disabled:opacity-100"
-            >
-              <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
-              Sugerir siguiente paso
-            </button>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073] text-center">
-              interacción real vive fuera del panel
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div
-        className="flex flex-col gap-2 rounded-[8px] border border-[#EAE0CE] bg-[#F7F2EA]"
-        style={{ padding: 14 }}
-      >
-        <div className="flex items-center gap-2">
-          <Info size={13} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
-          <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
-            Por qué OpenClaw observa aquí
-          </span>
-        </div>
-        <p className="m-0 text-[11px] font-[family-name:var(--font-caption)] leading-[1.45] text-[#5C544A]">
-          El onboarding requiere validación humana en cada gate. OpenClaw correlaciona la evidencia
-          capturada y propone próximos pasos, pero no escribe en producción.
-        </p>
+        <span className="text-[13px] font-[family-name:var(--font-mono)] text-[#1A1410]">{value}</span>
       </div>
     </div>
   );
 }
 
-/* --------------------------------------------------------------------------
- * Gates head + strip
- * ------------------------------------------------------------------------ */
+/* ============================================================
+ * OpenClawColumn (vBXlY, 360w)
+ * ============================================================ */
+function OpenClawColumn() {
+  return (
+    <aside className="flex flex-col" style={{ gap: 16 }}>
+      <OpenClawCard />
+      <OpenClawMeta />
+    </aside>
+  );
+}
+
+function OpenClawCard() {
+  return (
+    <div
+      style={{
+        borderRadius: 12,
+        padding: 2,
+        background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
+        boxShadow: "0 8px 24px rgba(26, 20, 16, 0.13)"
+      }}
+    >
+      <div className="flex flex-col bg-[#FFFBF5]" style={{ borderRadius: 10, padding: 20, gap: 16 }}>
+        {/* ocHead */}
+        <header className="flex items-center" style={{ gap: 10 }}>
+          <span
+            aria-hidden="true"
+            className="grid place-items-center"
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 999,
+              background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
+              color: "#FFFBF5"
+            }}
+          >
+            <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
+          </span>
+          <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
+            <span className="text-[14px] font-[family-name:var(--font-heading)] font-semibold text-[#1A1410]">
+              OpenClaw
+            </span>
+            <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+              supervisado · solo lectura
+            </span>
+          </div>
+          <span
+            className="inline-flex items-center text-[9px] font-[family-name:var(--font-caption)] font-bold"
+            style={{
+              gap: 4,
+              padding: "3px 8px",
+              borderRadius: 4,
+              background: "#DBEAFE",
+              color: "#1D4ED8",
+              letterSpacing: "0.6px"
+            }}
+          >
+            <Eye size={10} strokeWidth={2} aria-hidden="true" />
+            GET
+          </span>
+        </header>
+
+        {/* ocMsgWrap */}
+        <div
+          className="flex flex-col"
+          style={{
+            gap: 8,
+            padding: 14,
+            borderRadius: 8,
+            background: "#F7F2EA",
+            border: "1px solid #EAE0CE"
+          }}
+        >
+          <span
+            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#EA580C]"
+            style={{ letterSpacing: "1px" }}
+          >
+            Sugerencia
+          </span>
+          <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+            Detecté 4 campos sin completar en tu inventario. ¿Quieres que resuma lo que falta
+            antes de avanzar al gate de cumplimiento?
+          </p>
+        </div>
+
+        {/* ocInput */}
+        <div
+          aria-hidden="true"
+          className="flex items-center bg-[#FFFBF5]"
+          style={{
+            gap: 8,
+            padding: 12,
+            borderRadius: 6,
+            border: "1px solid #EAE0CE"
+          }}
+        >
+          <MessageSquare size={14} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+          <span className="flex-1 text-[11px] font-[family-name:var(--font-sans)] text-[#8A8073] truncate">
+            Pregunta a OpenClaw sobre evidencia, gates o recomendaciones…
+          </span>
+          <ArrowUp size={14} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+        </div>
+
+        {/* ocActions */}
+        <div className="flex flex-col" style={{ gap: 8 }}>
+          <button
+            type="button"
+            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]"
+            style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "#1A1410" }}
+          >
+            <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
+            Revisar recomendación
+          </button>
+          <button
+            type="button"
+            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]"
+            style={{
+              gap: 6,
+              padding: "10px 12px",
+              borderRadius: 6,
+              background: "#FFFBF5",
+              border: "1px solid #EAE0CE"
+            }}
+          >
+            <FileSearch size={14} strokeWidth={1.75} aria-hidden="true" />
+            Ver evidencia
+          </button>
+        </div>
+
+        {/* ocFoot */}
+        <div className="flex items-center" style={{ gap: 6, padding: "0 4px" }}>
+          <LinkIcon size={11} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+            /v1/openclaw/recommendations
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OpenClawMeta() {
+  return (
+    <div
+      className="flex flex-col"
+      style={{
+        gap: 8,
+        padding: 14,
+        borderRadius: 8,
+        background: "#F7F2EA",
+        border: "1px solid #EAE0CE"
+      }}
+    >
+      <header className="flex items-center" style={{ gap: 8 }}>
+        <Info size={13} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
+        <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+          Por qué OpenClaw observa aquí
+        </span>
+      </header>
+      <p className="m-0 text-[11px] font-[family-name:var(--font-caption)] leading-[1.45] text-[#5C544A]">
+        El onboarding requiere validación humana en cada gate. OpenClaw correlaciona la evidencia
+        capturada y propone próximos pasos, pero no escribe en producción.
+      </p>
+    </div>
+  );
+}
+
+/* ============================================================
+ * GatesHead + GatesStrip
+ * ============================================================ */
 function GatesHead() {
   return (
-    <header className="flex flex-col gap-1.5">
+    <header className="flex flex-col" style={{ gap: 6 }}>
       <span
         className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
         style={{ letterSpacing: "1.2px" }}
@@ -446,136 +523,149 @@ function GatesHead() {
   );
 }
 
-function GatesStrip({ data }: { data: DashboardData }) {
-  const blockers = data.onboardingState.blockers ?? [];
-  const operatingNorth = data.operatingNorth;
-
-  // Pencil cards estáticas; las renderizo cuando aplique según contrato.
-  const cards: Array<{
-    iconBg: string;
-    iconColor: string;
-    pillBg: string;
-    pillFg: string;
-    icon: React.ReactNode;
-    title: string;
-    pillText: string;
-    desc: string;
-  }> = [];
-
-  if (blockers.length > 0) {
-    cards.push({
-      iconBg: "#FEF3C7",
-      iconColor: "#B45309",
-      pillBg: "#FEF3C7",
-      pillFg: "#B45309",
-      icon: <ShieldAlert size={18} strokeWidth={1.75} aria-hidden="true" />,
-      title: "Cumplimiento pendiente",
-      pillText: `${formatNumber(blockers.length)} bloqueos`,
-      desc:
-        "A la espera de que un revisor humano firme el cumplimiento de políticas y registre la evidencia."
-    });
-  }
-
-  if (!operatingNorth.delivrixSendsRealEmail || blockers.some((b) => b.toLowerCase().includes("dns"))) {
-    cards.push({
-      iconBg: "#FEE2E2",
-      iconColor: "#B91C1C",
-      pillBg: "#FEE2E2",
-      pillFg: "#B91C1C",
-      icon: <ShieldX size={18} strokeWidth={1.75} aria-hidden="true" />,
-      title: "DNS no validado",
-      pillText: "crítico",
-      desc:
-        "Las zonas y registros aún no se verifican contra los resolvers internos del clúster de envío."
-    });
-  }
-
-  cards.push({
-    iconBg: "#EDE9FE",
-    iconColor: "#7C3AED",
-    pillBg: "#EDE9FE",
-    pillFg: "#7C3AED",
-    icon: <KeyRound size={18} strokeWidth={1.75} aria-hidden="true" />,
-    title: "SSH no autorizado",
-    pillText: "manual",
-    desc:
-      "OpenClaw no tiene credenciales para acceder por SSH. Necesita autorización manual del operador con rol elevado."
-  });
-
+function GatesStrip() {
   return (
-    <div className="grid gap-3.5 grid-cols-1 md:grid-cols-3">
-      {cards.slice(0, 3).map((card) => (
-        <article
-          key={card.title}
-          className="flex gap-3.5 rounded-[6px] border border-[#EAE0CE] bg-[#FFFFFF]"
-          style={{ padding: 16 }}
-        >
-          <span
-            aria-hidden="true"
-            className="grid shrink-0 place-items-center rounded-[4px]"
-            style={{
-              width: 36,
-              height: 36,
-              background: card.iconBg,
-              color: card.iconColor
-            }}
-          >
-            {card.icon}
-          </span>
-          <div className="flex flex-col gap-1 min-w-0 flex-1">
-            <header className="flex items-center justify-between gap-2">
-              <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
-                {card.title}
-              </h3>
-              <span
-                className="inline-block rounded-full px-2 py-0.5 text-[10px] font-[family-name:var(--font-caption)] font-bold"
-                style={{ background: card.pillBg, color: card.pillFg }}
-              >
-                {card.pillText}
-              </span>
-            </header>
-            <p className="m-0 text-[12px] font-[family-name:var(--font-caption)] leading-[1.45] text-[#5C544A]">
-              {card.desc}
-            </p>
-          </div>
-        </article>
-      ))}
+    <div className="grid grid-cols-1 md:grid-cols-3" style={{ gap: 14 }}>
+      <GateCard
+        iconBg="#FEF3C7"
+        iconColor="#B45309"
+        icon={<ShieldAlert size={18} strokeWidth={1.75} aria-hidden="true" />}
+        title="Cumplimiento pendiente"
+        pillBg="#FEF3C7"
+        pillFg="#B45309"
+        pillText="revisión humana"
+        desc="A la espera de que un revisor humano firme el cumplimiento de políticas y registre la evidencia."
+      />
+      <GateCard
+        iconBg="#FEE2E2"
+        iconColor="#B91C1C"
+        icon={<ShieldX size={18} strokeWidth={1.75} aria-hidden="true" />}
+        title="DNS no validado"
+        pillBg="#FEE2E2"
+        pillFg="#B91C1C"
+        pillText="crítico"
+        desc="Las zonas y registros aún no se verifican contra los resolvers internos del clúster de envío."
+      />
+      <GateCard
+        iconBg="#EDE9FE"
+        iconColor="#7C3AED"
+        icon={<KeyRound size={18} strokeWidth={1.75} aria-hidden="true" />}
+        title="SSH no autorizado"
+        pillBg="#EDE9FE"
+        pillFg="#7C3AED"
+        pillText="autorizar manualmente"
+        desc="OpenClaw no tiene credenciales para acceder por SSH. Necesita autorización manual del operador con rol elevado."
+      />
     </div>
   );
 }
 
-/* --------------------------------------------------------------------------
- * Action bar
- * ------------------------------------------------------------------------ */
+function GateCard({
+  iconBg,
+  iconColor,
+  icon,
+  title,
+  pillBg,
+  pillFg,
+  pillText,
+  desc
+}: {
+  iconBg: string;
+  iconColor: string;
+  icon: React.ReactNode;
+  title: string;
+  pillBg: string;
+  pillFg: string;
+  pillText: string;
+  desc: string;
+}) {
+  return (
+    <article
+      className="flex bg-[#FFFFFF]"
+      style={{ gap: 14, padding: 16, borderRadius: 6, border: "1px solid #EAE0CE" }}
+    >
+      <span
+        aria-hidden="true"
+        className="grid place-items-center shrink-0"
+        style={{ width: 36, height: 36, borderRadius: 4, background: iconBg, color: iconColor }}
+      >
+        {icon}
+      </span>
+      <div className="flex flex-col min-w-0 flex-1" style={{ gap: 4 }}>
+        <header className="flex items-center" style={{ gap: 8 }}>
+          <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+            {title}
+          </h3>
+          <span className="flex-1" aria-hidden="true" />
+          <span
+            className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-semibold"
+            style={{
+              padding: "2px 8px",
+              borderRadius: 999,
+              background: pillBg,
+              color: pillFg,
+              letterSpacing: "0.4px"
+            }}
+          >
+            {pillText}
+          </span>
+        </header>
+        <p className="m-0 text-[12px] font-[family-name:var(--font-caption)] leading-[1.45] text-[#5C544A]">
+          {desc}
+        </p>
+      </div>
+    </article>
+  );
+}
+
+/* ============================================================
+ * ActionBar
+ * ============================================================ */
 function ActionBar() {
   return (
     <section
-      className="flex items-center justify-between gap-3 rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF]"
-      style={{ padding: "14px 18px", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="flex items-center bg-[#FFFFFF]"
+      style={{
+        padding: "14px 18px",
+        borderRadius: 8,
+        border: "1px solid #EAE0CE",
+        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+        justifyContent: "space-between"
+      }}
     >
       <button
         type="button"
-        disabled
-        className="inline-flex items-center gap-2 rounded-[6px] px-3 py-2.5 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#5C544A] disabled:cursor-default disabled:opacity-100"
+        className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#5C544A]"
+        style={{ gap: 8, padding: "10px 12px", borderRadius: 6, background: "transparent" }}
       >
         <Save size={14} strokeWidth={1.75} aria-hidden="true" />
         Guardar borrador
       </button>
 
-      <div className="flex items-center gap-3.5">
+      <div className="flex items-center" style={{ gap: 14 }}>
         <span
-          className="inline-flex items-center gap-1.5 rounded-[6px] border border-[#B45309] bg-[#FEF3C7] px-3 py-2"
-          aria-label="tooltip"
+          className="inline-flex items-center text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#B45309]"
+          style={{
+            gap: 6,
+            padding: "8px 12px",
+            borderRadius: 6,
+            background: "#FEF3C7",
+            border: "1px solid #B45309"
+          }}
         >
-          <Lock size={12} strokeWidth={1.75} className="text-[#B45309]" aria-hidden="true" />
-          <span className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#B45309]">
-            Requiere validación humana del gate de cumplimiento
-          </span>
+          <Lock size={12} strokeWidth={1.75} aria-hidden="true" />
+          Requiere validación humana del gate de cumplimiento
         </span>
         <button
           type="button"
-          disabled
-          className="inline-flex items-center gap-2 rounded-[6px] border border-[#EAE0CE] bg-[#FFFBF5] px-4 py-2.5 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410] disabled:cursor-default disabled:opacity-100"
+          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]"
+          style={{
+            gap: 8,
+            padding: "10px 16px",
+            borderRadius: 6,
+            background: "#FFFBF5",
+            border: "1px solid #EAE0CE"
+          }}
         >
           <ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />
           Volver
@@ -583,8 +673,15 @@ function ActionBar() {
         <button
           type="button"
           disabled
-          className="inline-flex items-center gap-2 rounded-[6px] border border-[#EAE0CE] bg-[#F5F5F4] px-5 py-2.5 text-[13px] font-[family-name:var(--font-sans)] font-bold text-[#8A8073] disabled:cursor-default disabled:opacity-100"
-          style={{ opacity: 0.55 }}
+          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-bold text-[#8A8073] disabled:cursor-default"
+          style={{
+            gap: 8,
+            padding: "10px 18px",
+            borderRadius: 6,
+            background: "#F5F5F4",
+            border: "1px solid #EAE0CE",
+            opacity: 0.55
+          }}
         >
           <Send size={14} strokeWidth={1.75} aria-hidden="true" />
           Enviar para aprobación
@@ -594,6 +691,4 @@ function ActionBar() {
   );
 }
 
-/* Silence unused import */
-void humanize;
-void compactLabel;
+void CheckCircle2;
