@@ -80,12 +80,22 @@ export interface OpenClawCanvasTimelineEvent {
   evidenceRefs: string[];
 }
 
+export type OpenClawCanvasBlockerCategory = "hardware" | "openclaw" | "network" | "provider" | "other";
+export type OpenClawCanvasBlockerSeverity = "warning" | "critical";
+
+export interface OpenClawCanvasBlocker {
+  code: string;
+  label: string;
+  category: OpenClawCanvasBlockerCategory;
+  severity: OpenClawCanvasBlockerSeverity;
+}
+
 export interface OpenClawLiveCanvasSnapshot extends ControlPlaneContractBase {
   currentStepId: string;
   nodes: OpenClawCanvasNode[];
   edges: OpenClawCanvasEdge[];
   timeline: OpenClawCanvasTimelineEvent[];
-  blockedBy: string[];
+  blockedBy: OpenClawCanvasBlocker[];
   requiresHumanApproval: string[];
 }
 
@@ -128,7 +138,7 @@ export function buildOpenClawLiveCanvas(
   };
 }
 
-function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: string[]): OpenClawCanvasNode[] {
+function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanvasBlocker[]): OpenClawCanvasNode[] {
   const physicalHostStatus = mapReadinessStatus(input.physicalHost?.readiness.status ?? "unknown");
   const telemetryStatus = mapTelemetryStatus(input.telemetry);
   const onboardingStatus = mapOnboardingStatus(input.onboardingState);
@@ -205,7 +215,7 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: string[]): O
       label: "Proxmox host",
       status: onboardingStatus,
       progressPercent: progressFor(onboardingStatus),
-      riskLevel: blockedBy.includes("missing_or_unknown_proxmox_status") ? "high" : "unknown",
+      riskLevel: hasBlocker(blockedBy, "missing_or_unknown_proxmox_status") ? "high" : "unknown",
       summary: "Proxmox se valida por onboarding antes de cualquier accion real.",
       metrics: [
         metric("proxmox_readiness", "Readiness", input.onboardingState?.readinessByCategory.infrastructure ?? null, "%")
@@ -357,7 +367,7 @@ function buildEdges(nodes: OpenClawCanvasNode[]): OpenClawCanvasEdge[] {
 function buildTimeline(
   now: Date,
   input: BuildOpenClawLiveCanvasInput,
-  blockedBy: string[]
+  blockedBy: OpenClawCanvasBlocker[]
 ): OpenClawCanvasTimelineEvent[] {
   const occurredAt = now.toISOString();
   const timeline: OpenClawCanvasTimelineEvent[] = [
@@ -390,14 +400,14 @@ function buildTimeline(
   return timeline;
 }
 
-function collectBlockers(input: BuildOpenClawLiveCanvasInput): string[] {
+function collectBlockers(input: BuildOpenClawLiveCanvasInput): OpenClawCanvasBlocker[] {
   return dedupe([
     ...(input.physicalHost?.readiness.blockers ?? ["physical_host_contract_missing"]),
     ...(input.telemetry?.summary.stale ? ["telemetry_stale"] : []),
     ...(input.telemetry ? [] : ["hardware_telemetry_missing"]),
     ...(input.onboardingState?.blockers ?? ["onboarding_state_missing"]),
     ...(input.provisioningState?.blockedActions ?? ["provisioning_state_missing"])
-  ]);
+  ]).map(buildBlocker);
 }
 
 function collectHumanApprovals(provisioningState: OpenClawProvisioningState | undefined): string[] {
@@ -525,6 +535,59 @@ function metric(
     unit,
     quality: value === null ? "unknown" : "mock"
   };
+}
+
+function hasBlocker(blockedBy: OpenClawCanvasBlocker[], code: string): boolean {
+  return blockedBy.some((blocker) => blocker.code === code);
+}
+
+function buildBlocker(code: string): OpenClawCanvasBlocker {
+  return {
+    code,
+    label: labelForBlocker(code),
+    category: categoryForBlocker(code),
+    severity: severityForBlocker(code)
+  };
+}
+
+function labelForBlocker(code: string): string {
+  return code
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function categoryForBlocker(code: string): OpenClawCanvasBlockerCategory {
+  const normalized = code.toLowerCase();
+
+  if (/cpu|ram|memory|storage|smart|power|fan|chassis|thermal|hardware|temperature|psu|ups|uptime|kernel|model|server|capacity|physical_host/.test(normalized)) {
+    return "hardware";
+  }
+
+  if (/openclaw|readiness|learning|plan|stage|signal|evidence|onboarding|topology|provisioning|scheduler|skill|llm/.test(normalized)) {
+    return "openclaw";
+  }
+
+  if (/network|ip_pool|ip_type|uplink|dns|interface|rx_mbps|tx_mbps|latency|ptr|dkim|tls|telemetry/.test(normalized)) {
+    return "network";
+  }
+
+  if (/provider|isp|webdock|proxmox|ipmi|prometheus|bmc|ssh|hostinger|aws|approval|operator/.test(normalized)) {
+    return "provider";
+  }
+
+  return "other";
+}
+
+function severityForBlocker(code: string): OpenClawCanvasBlockerSeverity {
+  const normalized = code.toLowerCase();
+
+  if (/stale|warning|review/.test(normalized)) {
+    return "warning";
+  }
+
+  return "critical";
 }
 
 function dedupe(values: string[]): string[] {
