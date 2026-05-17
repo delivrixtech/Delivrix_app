@@ -26,7 +26,12 @@ import {
   WandSparkles
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
-import { formatDateTime } from "../../shared/lib/formatters.ts";
+import {
+  filterAuditEvents,
+  formatDateTime,
+  formatTimeOnly,
+  shortAuditHash
+} from "../../shared/lib/formatters.ts";
 
 export function SafetySection({ data }: { data: DashboardData }) {
   return (
@@ -700,29 +705,40 @@ const AUDIT_ROWS = [
 ];
 
 function Audit({ data }: { data: DashboardData }) {
-  const recents = data.overview.recentAuditEvents ?? [];
-  const rows: typeof AUDIT_ROWS = recents.slice(0, 6).map((e) => ({
-    ts: new Date(e.occurredAt).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+  // Audit log de seguridad: prefiere events relacionados con kill switch, gates, autorización
+  // y permisos. Cae al feed completo cuando no hay matches.
+  const events = filterAuditEvents(
+    data.auditEvents,
+    ["kill_switch", "kill-switch", "operating_north", "gate", "role", "permission", "approval", "denied"],
+    6
+  );
+  const pool = events.length > 0 ? events : data.auditEvents.slice(0, 6);
+  const rows: typeof AUDIT_ROWS = pool.map((e) => ({
+    ts: formatTimeOnly(e.occurredAt),
     actor: `${e.actorType}.${e.actorId}`.slice(0, 28),
-    actorColor: e.actorType.includes("openclaw") ? "#EA580C" : e.actorType.includes("collector") ? "#1D4ED8" : "#1A1410",
+    actorColor: e.actorType.includes("openclaw")
+      ? "#EA580C"
+      : e.actorType.includes("collector")
+        ? "#1D4ED8"
+        : "#1A1410",
     action: e.action,
     resource: `${e.targetType} · ${e.targetId}`,
-    hash: `${e.id.slice(0, 4)}…${e.id.slice(-3)}`,
+    hash: shortAuditHash(e.id).replace("sha:", ""),
     result: e.riskLevel,
     resultBg:
       e.riskLevel === "critical" || e.riskLevel === "blocked"
         ? "#FEE2E2"
-        : e.riskLevel === "warning"
+        : e.riskLevel === "high" || e.riskLevel === "warning"
           ? "#FEF3C7"
-          : e.riskLevel === "info"
+          : e.riskLevel === "info" || e.riskLevel === "medium"
             ? "#DBEAFE"
             : "#DCFCE7",
     resultFg:
       e.riskLevel === "critical" || e.riskLevel === "blocked"
         ? "#B91C1C"
-        : e.riskLevel === "warning"
+        : e.riskLevel === "high" || e.riskLevel === "warning"
           ? "#B45309"
-          : e.riskLevel === "info"
+          : e.riskLevel === "info" || e.riskLevel === "medium"
             ? "#1D4ED8"
             : "#15803D"
   }));

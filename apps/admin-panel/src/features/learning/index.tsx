@@ -22,7 +22,12 @@ import {
   WandSparkles
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
-import { formatDateTime } from "../../shared/lib/formatters.ts";
+import {
+  filterAuditEvents,
+  formatDateTime,
+  formatTimeOnly,
+  shortAuditHash
+} from "../../shared/lib/formatters.ts";
 
 export function LearningSection({ data }: { data: DashboardData }) {
   return (
@@ -907,41 +912,24 @@ function FeedbackRow({
 /* ============================================================
  * Audit strip (dark) — 5 audit rows con sha256 hashes
  * ============================================================ */
-const AUDIT_LINES = [
-  {
-    ts: "09:02:17",
-    action: "curated_lesson_added",
-    body: "operador · IP 185.243.12.031 etiquetada como transactional EU",
-    hash: "sha256:fa07…"
-  },
-  {
-    ts: "08:55:38",
-    action: "skill_evaluation_queued",
-    body: "openclaw-eval · regla de pausa enviada a panel de revisión humana",
-    hash: "sha256:33de…"
-  },
-  {
-    ts: "08:42:09",
-    action: "feedback_recorded",
-    body: "operador · marca evidencia DNS como ‘pendiente de propagación’",
-    hash: "sha256:b0f1…"
-  },
-  {
-    ts: "08:34:21",
-    action: "lesson_promoted",
-    body: "openclaw-auto · habilidad ‘Detectar drift DNS’ actualiza umbral a 87%",
-    hash: "sha256:7e44…"
-  },
-  {
-    ts: "08:21:47",
-    action: "skill_promotion_requested",
-    body: "openclaw-eval · pide promover ‘Recomendar degradación’ a producción supervisada",
-    hash: "sha256:1c92…"
-  }
-];
+function buildLearningAuditLines(data: DashboardData) {
+  const events = filterAuditEvents(
+    data.auditEvents,
+    ["openclaw", "learning", "lesson", "skill", "evaluation", "feedback", "promote"],
+    5
+  );
+  if (events.length === 0) return [];
+  return events.map((e) => ({
+    ts: formatTimeOnly(e.occurredAt),
+    action: e.action,
+    body: `${e.actorType}${e.actorId ? `.${e.actorId}` : ""} · ${e.targetType} ${e.targetId}`,
+    hash: shortAuditHash(e.id).replace("sha:", "sha256:")
+  }));
+}
 
 function AuditStrip({ data }: { data: DashboardData }) {
-  void data; // backend aún no expone audit log de aprendizaje; mantener líneas del .pen
+  const AUDIT_LINES = buildLearningAuditLines(data);
+  const hasEvents = AUDIT_LINES.length > 0;
   return (
     <section
       className="flex flex-col"
@@ -963,6 +951,16 @@ function AuditStrip({ data }: { data: DashboardData }) {
           contrato · /v1/openclaw/audit
         </span>
       </header>
+
+      {!hasEvents ? (
+        <p
+          className="m-0 text-[11px] font-[family-name:var(--font-mono)]"
+          style={{ color: "rgba(255, 251, 245, 0.5)" }}
+        >
+          El contrato /v1/audit-events no registró eventos de aprendizaje todavía. Wave 2 — pendiente
+          backend logging de skills/lessons.
+        </p>
+      ) : null}
 
       <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 4 }}>
         {AUDIT_LINES.map((a, i) => (

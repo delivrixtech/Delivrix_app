@@ -24,6 +24,7 @@ import {
   WandSparkles
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
+import { filterAuditEvents, formatTimeOnly, shortAuditHash } from "../../shared/lib/formatters.ts";
 
 export function CollectorSection({ data }: { data: DashboardData }) {
   return (
@@ -669,37 +670,22 @@ function AcceptedFieldsTable({
 /* ============================================================
  * AuditSection
  * ============================================================ */
-function shortTimestamp(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
 function buildAuditRows(data: DashboardData): Array<[string, string, string, string, string]> {
-  const sources = data.supervisedCollector.sources ?? [];
-  const overview = data.overview;
-  const baseRows: Array<[string, string, string, string, string]> = sources.slice(0, 4).map((s, i) => [
-    shortTimestamp(s.freshness.lastCollectedAt) || `—`,
-    s.kind,
-    s.status === "ready" ? "source.fresh" : s.status === "needs_review" ? "source.stale" : `source.${s.status}`,
-    `${s.label} · ${s.purpose}`,
-    `sha:${(s.id || `${i}`).slice(0, 4)}…${(s.id || `${i}`).slice(-3)}`
-  ]);
-  // Anclar al menos un audit del Overview cuando exista
-  if (overview.recentAuditEvents && overview.recentAuditEvents.length > 0) {
-    const e = overview.recentAuditEvents[0];
-    baseRows.push([
-      shortTimestamp(e.occurredAt),
-      `${e.actorType}.${e.actorId}`,
-      e.action,
-      `${e.targetType} · ${e.targetId}`,
-      `sha:${e.id.slice(0, 4)}…${e.id.slice(-3)}`
-    ]);
+  const events = filterAuditEvents(
+    data.auditEvents,
+    ["collector", "snapshot", "source", "manual_snapshot", "ingestion", "supervised"],
+    5
+  );
+  if (events.length === 0) {
+    return [["—", "—", "sin audit", "el contrato no registró eventos de ingesta todavía", "—"]];
   }
-  return baseRows.length > 0
-    ? baseRows
-    : [["—", "—", "sin audit log", "el contrato aún no expone audit log del recolector", "—"]];
+  return events.map((e) => [
+    formatTimeOnly(e.occurredAt),
+    `${e.actorType}${e.actorId ? `.${e.actorId}` : ""}`.slice(0, 28),
+    e.action,
+    `${e.targetType} · ${e.targetId}`,
+    shortAuditHash(e.id)
+  ]);
 }
 
 function AuditSection({ data }: { data: DashboardData }) {
