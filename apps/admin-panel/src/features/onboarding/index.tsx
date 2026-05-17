@@ -29,14 +29,13 @@ import {
 import type { DashboardData } from "../../shared/api/client.ts";
 
 export function OnboardingSection({ data }: { data: DashboardData }) {
-  void data;
   return (
     <section className="flex flex-col" style={{ gap: 20, maxWidth: 1352 }}>
       <PageHeader />
-      <Stepper />
-      <WizardBody />
+      <Stepper data={data} />
+      <WizardBody data={data} />
       <GatesHead />
-      <GatesStrip />
+      <GatesStrip data={data} />
       <ActionBar />
     </section>
   );
@@ -72,15 +71,32 @@ function PageHeader() {
  * Stepper (cL78x) — 6 pasos con conectores horizontales
  * ============================================================ */
 const STEPS = [
-  { kicker: "PASO 1", title: "Servidor", active: true },
-  { kicker: "PASO 2", title: "IPs y dominios", active: false },
-  { kicker: "PASO 3", title: "DNS", active: false },
-  { kicker: "PASO 4", title: "Límites", active: false },
-  { kicker: "PASO 5", title: "Cumplimiento", active: false },
-  { kicker: "PASO 6", title: "Revisión", active: false }
+  { kicker: "PASO 1", title: "Servidor", category: "server" },
+  { kicker: "PASO 2", title: "IPs y dominios", category: "network" },
+  { kicker: "PASO 3", title: "DNS", category: "dns" },
+  { kicker: "PASO 4", title: "Límites", category: "limits" },
+  { kicker: "PASO 5", title: "Cumplimiento", category: "compliance" },
+  { kicker: "PASO 6", title: "Revisión", category: "review" }
 ] as const;
 
-function Stepper() {
+/**
+ * Deriva el paso activo desde `onboardingState.readinessByCategory` + blockers.
+ * Primer paso con readiness <1 o con blocker = activo.
+ */
+function activeStepIndex(data: DashboardData): number {
+  const r = data.onboardingState.readinessByCategory ?? {};
+  const b = data.onboardingState.blockers ?? [];
+  for (let i = 0; i < STEPS.length; i++) {
+    const cat = STEPS[i].category.toLowerCase();
+    const score = Object.entries(r).find(([k]) => k.toLowerCase().includes(cat))?.[1];
+    const blocked = b.some((x) => x.toLowerCase().includes(cat));
+    if (blocked || score === undefined || score < 1) return i;
+  }
+  return 0;
+}
+
+function Stepper({ data }: { data: DashboardData }) {
+  const activeIdx = activeStepIndex(data);
   return (
     <ol
       className="m-0 p-0 list-none flex items-center bg-[#FFFFFF]"
@@ -92,7 +108,9 @@ function Stepper() {
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
-      {STEPS.map((step, i) => (
+      {STEPS.map((step, i) => {
+        const active = i === activeIdx;
+        return (
         <li key={step.kicker} className="flex items-center min-w-0" style={{ gap: 10 }}>
           <div className="flex items-center" style={{ gap: 10 }}>
             <span
@@ -102,12 +120,12 @@ function Stepper() {
                 width: 32,
                 height: 32,
                 borderRadius: 999,
-                background: step.active ? "#F59E0B" : "#FFFBF5",
-                color: step.active ? "#FFFBF5" : "#8A8073",
+                background: active ? "#F59E0B" : "#FFFBF5",
+                color: active ? "#FFFBF5" : "#8A8073",
                 fontFamily: "var(--font-mono)",
                 fontSize: 13,
-                fontWeight: step.active ? 700 : 600,
-                boxShadow: !step.active ? "inset 0 0 0 1px #EAE0CE" : undefined
+                fontWeight: active ? 700 : 600,
+                boxShadow: !active ? "inset 0 0 0 1px #EAE0CE" : undefined
               }}
             >
               {i + 1}
@@ -116,7 +134,7 @@ function Stepper() {
               <span
                 className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
                 style={{
-                  color: step.active ? "#EA580C" : "#8A8073",
+                  color: active ? "#EA580C" : "#8A8073",
                   letterSpacing: "1px"
                 }}
               >
@@ -125,8 +143,8 @@ function Stepper() {
               <span
                 className="text-[13px] font-[family-name:var(--font-sans)]"
                 style={{
-                  color: step.active ? "#1A1410" : "#5C544A",
-                  fontWeight: step.active ? 600 : 500
+                  color: active ? "#1A1410" : "#5C544A",
+                  fontWeight: active ? 600 : 500
                 }}
               >
                 {step.title}
@@ -141,7 +159,8 @@ function Stepper() {
             />
           ) : null}
         </li>
-      ))}
+        );
+      })}
     </ol>
   );
 }
@@ -149,19 +168,36 @@ function Stepper() {
 /* ============================================================
  * WizardBody (uqjXO) — Form (3 cards) + OpenClawColumn (360w)
  * ============================================================ */
-function WizardBody() {
+function WizardBody({ data }: { data: DashboardData }) {
   return (
     <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] items-start">
-      <Form />
-      <OpenClawColumn />
+      <Form data={data} />
+      <OpenClawColumn data={data} />
     </div>
   );
 }
 
-function Form() {
+function Form({ data }: { data: DashboardData }) {
+  const ph = data.physicalHost;
+  const cap = ph.capacity;
+  const on = data.operatingNorth;
+  const known = data.onboardingState.knownInputs as Record<string, unknown>;
+  const knownStr = (k: string, fb: string): string => {
+    const v = known[k];
+    return v !== undefined && v !== null && v !== "" ? String(v) : fb;
+  };
+
+  // Helpers para mostrar capacidad real desde el contrato o '—' si null.
+  const cpuLine = cap.cpuCores
+    ? `${cap.cpuCores} cores${cap.cpuThreads ? ` · ${cap.cpuThreads} threads` : ""}`
+    : "—";
+  const ramLine = cap.memoryGb ? `${cap.memoryGb} GB` : "—";
+  const storageLine = cap.storageUsableGb ? `${cap.storageUsableGb} GB usables` : "—";
+  const linkLine = cap.networkInterfaces ? `${cap.networkInterfaces} interfaces` : "—";
+
   return (
     <div className="flex flex-col" style={{ gap: 16 }}>
-      {/* Sección 1 — Identidad */}
+      {/* Sección 1 — Identidad (datos reales de physicalHost.identity + operatingNorth) */}
       <SectionCard
         iconBg="#FEF3C7"
         iconColor="#B45309"
@@ -173,13 +209,13 @@ function Form() {
         pillDot="#B45309"
         pillText="campos requeridos"
       >
-        <FieldRow label="HOSTNAME" value="vps-edge-01.delivrix.io" />
-        <FieldRow label="DATACENTER" value="mad-2 · Madrid Norte" />
-        <FieldRow label="ROL" value="sender-edge · zona caliente" />
-        <FieldRow label="ENTORNO" value="mvp.local · staging" />
+        <FieldRow label="HOSTNAME" value={ph.identity.label || knownStr("hostname", "—")} />
+        <FieldRow label="DATACENTER" value={ph.identity.location || knownStr("datacenter", "—")} />
+        <FieldRow label="ROL" value={on.delivrixRole || knownStr("role", "—")} />
+        <FieldRow label="ENTORNO" value={data.health.phase || knownStr("environment", "—")} />
       </SectionCard>
 
-      {/* Sección 2 — Inventario de cómputo */}
+      {/* Sección 2 — Inventario de cómputo (capacidad real desde el contrato) */}
       <SectionCard
         iconBg="#DBEAFE"
         iconColor="#1D4ED8"
@@ -191,13 +227,13 @@ function Form() {
         pillDot="#1D4ED8"
         pillText="detectado por el recolector"
       >
-        <FieldRow label="CPU" value="AMD EPYC 7763 · 2×64 núcleos" badge="DETECTADO" />
-        <FieldRow label="MEMORIA RAM" value="512 GB · DDR4 ECC" badge="DETECTADO" />
-        <FieldRow label="ALMACENAMIENTO" value="4 × 3.84 TB NVMe RAID-10" badge="DETECTADO" />
-        <FieldRow label="ENLACE PRIMARIO" value="25 GbE · LACP bond0" badge="DETECTADO" />
+        <FieldRow label="CPU" value={cpuLine} badge={cap.cpuCores ? "DETECTADO" : undefined} />
+        <FieldRow label="MEMORIA RAM" value={ramLine} badge={cap.memoryGb ? "DETECTADO" : undefined} />
+        <FieldRow label="ALMACENAMIENTO" value={storageLine} badge={cap.storageUsableGb ? "DETECTADO" : undefined} />
+        <FieldRow label="ENLACE PRIMARIO" value={linkLine} badge={cap.networkInterfaces ? "DETECTADO" : undefined} />
       </SectionCard>
 
-      {/* Sección 3 — Interfaces de red */}
+      {/* Sección 3 — Interfaces de red (knownInputs cuando exista; placeholder cuando falte) */}
       <SectionCard
         iconBg="#DCFCE7"
         iconColor="#15803D"
@@ -207,12 +243,19 @@ function Form() {
         pillBg="#DCFCE7"
         pillFg="#15803D"
         pillDot="#15803D"
-        pillText="3 interfaces declaradas"
+        pillText={`${cap.networkInterfaces ?? 0} interfaces declaradas`}
       >
-        <FieldRow label="BOND0 · ENVÍO" value="10.42.7.21/24 · vlan 102" />
-        <FieldRow label="ETH2 · GESTIÓN" value="10.99.0.21/24 · vlan 901" />
-        <FieldRow label="IPMI · FUERA DE BANDA" value="172.20.4.21 · ACL restringida" badge="DETECTADO" />
-        <FieldRow label="DOMINIO PÚBLICO" value="send.delivrix.io · A + PTR" />
+        <FieldRow label="BOND0 · ENVÍO" value={knownStr("interface_primary", "—")} />
+        <FieldRow label="ETH2 · GESTIÓN" value={knownStr("interface_management", "—")} />
+        <FieldRow
+          label="IPMI · FUERA DE BANDA"
+          value={knownStr("interface_ipmi", "—")}
+          badge={known["interface_ipmi"] ? "DETECTADO" : undefined}
+        />
+        <FieldRow
+          label="DOMINIO PÚBLICO"
+          value={knownStr("public_domain", cap.ipPoolSize ? `${cap.ipPoolSize} IPs · pool` : "—")}
+        />
       </SectionCard>
     </div>
   );
@@ -340,16 +383,20 @@ function FieldRow({ label, value, badge }: { label: string; value: string; badge
 /* ============================================================
  * OpenClawColumn (vBXlY, 360w)
  * ============================================================ */
-function OpenClawColumn() {
+function OpenClawColumn({ data }: { data: DashboardData }) {
+  const unknownsCount =
+    (data.physicalHost.quality.unknownFields?.length ?? 0) +
+    (data.telemetry.quality.unknownFields?.length ?? 0);
+  const blockers = data.onboardingState.blockers?.length ?? 0;
   return (
     <aside className="flex flex-col" style={{ gap: 16 }}>
-      <OpenClawCard />
+      <OpenClawCard unknownsCount={unknownsCount} blockers={blockers} />
       <OpenClawMeta />
     </aside>
   );
 }
 
-function OpenClawCard() {
+function OpenClawCard({ unknownsCount, blockers }: { unknownsCount: number; blockers: number }) {
   return (
     <div
       style={{
@@ -417,8 +464,11 @@ function OpenClawCard() {
             Sugerencia
           </span>
           <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
-            Detecté 4 campos sin completar en tu inventario. ¿Quieres que resuma lo que falta
-            antes de avanzar al gate de cumplimiento?
+            {blockers > 0
+              ? `Tengo ${blockers} bloqueo${blockers === 1 ? "" : "s"} pendiente${blockers === 1 ? "" : "s"} en el onboarding. ¿Quieres que resuma el más crítico antes del gate?`
+              : unknownsCount > 0
+                ? `Detecté ${unknownsCount} campo${unknownsCount === 1 ? "" : "s"} sin completar en tu inventario. ¿Quieres que resuma lo que falta antes de avanzar al gate de cumplimiento?`
+                : "Inventario completo. Puedo proponer el plan de topología cuando lo autorices."}
           </p>
         </div>
 
@@ -523,7 +573,11 @@ function GatesHead() {
   );
 }
 
-function GatesStrip() {
+function GatesStrip({ data }: { data: DashboardData }) {
+  const blockers = data.onboardingState.blockers ?? [];
+  const blockersCount = blockers.length;
+  const dnsBlocker = blockers.some((b) => b.toLowerCase().includes("dns"));
+  const sshBlocker = blockers.some((b) => b.toLowerCase().includes("ssh"));
   return (
     <div className="grid grid-cols-1 md:grid-cols-3" style={{ gap: 14 }}>
       <GateCard
@@ -533,17 +587,17 @@ function GatesStrip() {
         title="Cumplimiento pendiente"
         pillBg="#FEF3C7"
         pillFg="#B45309"
-        pillText="revisión humana"
+        pillText={blockersCount > 0 ? `${blockersCount} bloqueos` : "revisión humana"}
         desc="A la espera de que un revisor humano firme el cumplimiento de políticas y registre la evidencia."
       />
       <GateCard
-        iconBg="#FEE2E2"
-        iconColor="#B91C1C"
+        iconBg={dnsBlocker ? "#FEE2E2" : "#FEF3C7"}
+        iconColor={dnsBlocker ? "#B91C1C" : "#B45309"}
         icon={<ShieldX size={18} strokeWidth={1.75} aria-hidden="true" />}
         title="DNS no validado"
-        pillBg="#FEE2E2"
-        pillFg="#B91C1C"
-        pillText="crítico"
+        pillBg={dnsBlocker ? "#FEE2E2" : "#FEF3C7"}
+        pillFg={dnsBlocker ? "#B91C1C" : "#B45309"}
+        pillText={dnsBlocker ? "crítico" : "pendiente"}
         desc="Las zonas y registros aún no se verifican contra los resolvers internos del clúster de envío."
       />
       <GateCard
@@ -553,7 +607,7 @@ function GatesStrip() {
         title="SSH no autorizado"
         pillBg="#EDE9FE"
         pillFg="#7C3AED"
-        pillText="autorizar manualmente"
+        pillText={sshBlocker ? "ssh bloqueado" : "autorizar manualmente"}
         desc="OpenClaw no tiene credenciales para acceder por SSH. Necesita autorización manual del operador con rol elevado."
       />
     </div>

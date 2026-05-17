@@ -28,11 +28,11 @@ export function LearningSection({ data }: { data: DashboardData }) {
   return (
     <section className="flex flex-col" style={{ gap: 20, maxWidth: 1352 }}>
       <Header generatedAt={data.learningPlan.generatedAt} />
-      <KpiRow />
-      <PlanAndSkills />
+      <KpiRow data={data} />
+      <PlanAndSkills data={data} />
       <EvidenciaCurada />
       <ColaRetroalimentacion />
-      <AuditStrip />
+      <AuditStrip data={data} />
     </section>
   );
 }
@@ -173,13 +173,20 @@ function OpenClawPrompt() {
 /* ============================================================
  * KPI row — 4 cards (Habilidades / Lecciones / Precisión / Pendientes)
  * ============================================================ */
-function KpiRow() {
+function KpiRow({ data }: { data: DashboardData }) {
+  const stagesTotal = data.learningPlan.stages.length;
+  const stagesReady = data.learningPlan.stages.filter((s) => s.status === "ready" || s.status === "ok").length;
+  const signalsTotal = Object.keys(data.readinessSignals.scores).length;
+  const signalsBlocked = Object.values(data.readinessSignals.scores).filter(
+    (s) => s.status === "blocked" || s.status === "critical"
+  ).length;
+  const requiresApproval = data.canvas.requiresHumanApproval?.length ?? 0;
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4" style={{ gap: 14 }}>
-      <KpiHabilidades />
-      <KpiLecciones />
-      <KpiPrecision />
-      <KpiPendientes />
+      <KpiHabilidades total={stagesTotal} ready={stagesReady} />
+      <KpiLecciones signals={signalsTotal} />
+      <KpiPrecision blocked={signalsBlocked} total={signalsTotal} />
+      <KpiPendientes count={requiresApproval} />
     </div>
   );
 }
@@ -201,11 +208,16 @@ function KpiShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function KpiHabilidades() {
+function KpiHabilidades({ total, ready }: { total: number; ready: number }) {
   return (
     <KpiShell>
-      <KpiHead label="Habilidades supervisadas" pillBg="#DCFCE7" pillFg="#15803D" pillText="todas activas" />
-      <KpiValue value="6" />
+      <KpiHead
+        label="Habilidades supervisadas"
+        pillBg="#DCFCE7"
+        pillFg="#15803D"
+        pillText={`${ready} / ${total} listos`}
+      />
+      <KpiValue value={String(total)} />
       <KpiDetail
         icon={<Sparkles size={12} strokeWidth={1.75} />}
         text="todas supervisadas"
@@ -227,11 +239,11 @@ function KpiHabilidades() {
   );
 }
 
-function KpiLecciones() {
+function KpiLecciones({ signals }: { signals: number }) {
   return (
     <KpiShell>
-      <KpiHead label="Lecciones curadas" pillBg="#DBEAFE" pillFg="#1D4ED8" pillText="+12 esta semana" />
-      <KpiValue value="142" />
+      <KpiHead label="Signals de readiness" pillBg="#DBEAFE" pillFg="#1D4ED8" pillText={`${signals} capacidades`} />
+      <KpiValue value={String(signals)} />
       <KpiDetail
         icon={<BookOpen size={12} strokeWidth={1.75} />}
         text="+12 esta semana"
@@ -257,11 +269,17 @@ function KpiLecciones() {
   );
 }
 
-function KpiPrecision() {
+function KpiPrecision({ blocked, total }: { blocked: number; total: number }) {
+  const pct = total === 0 ? 0 : ((total - blocked) / total) * 100;
   return (
     <KpiShell>
-      <KpiHead label="Tasa de precisión" pillBg="#FEF3C7" pillFg="#B45309" pillText="objetivo ≥ 90%" />
-      <KpiValue value="92,4%" unit="objetivo ≥ 90%" />
+      <KpiHead
+        label="Signals saludables"
+        pillBg={blocked === 0 ? "#DCFCE7" : "#FEF3C7"}
+        pillFg={blocked === 0 ? "#15803D" : "#B45309"}
+        pillText={blocked === 0 ? "todas ok" : `${blocked} bloqueadas`}
+      />
+      <KpiValue value={`${pct.toFixed(1).replace(".", ",")}%`} unit={`${total - blocked} / ${total}`} />
       <KpiDetail
         icon={<TrendingUp size={12} strokeWidth={1.75} />}
         text="+1,8 vs sem prev"
@@ -279,11 +297,16 @@ function KpiPrecision() {
   );
 }
 
-function KpiPendientes() {
+function KpiPendientes({ count }: { count: number }) {
   return (
     <KpiShell>
-      <KpiHead label="Pendientes de revisión" pillBg="#FEE2E2" pillFg="#B91C1C" pillText="esperan humano" />
-      <KpiValue value="3" />
+      <KpiHead
+        label="Pendientes de revisión"
+        pillBg={count === 0 ? "#DCFCE7" : "#FEE2E2"}
+        pillFg={count === 0 ? "#15803D" : "#B91C1C"}
+        pillText={count === 0 ? "cola vacía" : "esperan humano"}
+      />
+      <KpiValue value={String(count)} />
       <KpiDetail
         icon={<ShieldAlert size={12} strokeWidth={1.75} />}
         text="esperan humano"
@@ -371,11 +394,11 @@ function KpiDetail({
 /* ============================================================
  * Plan + Skills (F8tXWx)
  * ============================================================ */
-function PlanAndSkills() {
+function PlanAndSkills({ data }: { data: DashboardData }) {
   return (
     <div className="grid gap-4 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] items-start">
-      <PlanCard />
-      <SkillsCard />
+      <PlanCard data={data} />
+      <SkillsCard data={data} />
     </div>
   );
 }
@@ -419,7 +442,26 @@ const PLAN_MILESTONES = [
   }
 ];
 
-function PlanCard() {
+function statusToPill(status: string): { bg: string; fg: string; text: string } {
+  const t = status.toLowerCase();
+  if (t === "ready" || t === "ok") return { bg: "#DCFCE7", fg: "#15803D", text: "completado" };
+  if (t === "needs_review" || t === "warning" || t === "active_true")
+    return { bg: "#FEF3C7", fg: "#B45309", text: "en curso" };
+  if (t === "blocked" || t === "critical")
+    return { bg: "#FEE2E2", fg: "#B91C1C", text: "bloqueado" };
+  if (t === "requires_approval") return { bg: "#EDE9FE", fg: "#7C3AED", text: "aprobación" };
+  return { bg: "#F5F5F4", fg: "#5C544A", text: status };
+}
+
+function PlanCard({ data }: { data: DashboardData }) {
+  const stages = data.learningPlan.stages ?? [];
+  const headlinePill = (() => {
+    if (stages.some((s) => s.status === "blocked" || s.status === "critical"))
+      return { bg: "#FEE2E2", fg: "#B91C1C", text: "bloqueado por gate" };
+    if (stages.some((s) => s.status === "needs_review" || s.status === "active_true"))
+      return { bg: "#FEF3C7", fg: "#B45309", text: "en curso" };
+    return { bg: "#DCFCE7", fg: "#15803D", text: "al día" };
+  })();
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -442,24 +484,27 @@ function PlanCard() {
             Plan de aprendizaje
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
-            4 hitos · cada gate humano queda en bitácora
+            {stages.length} hitos · cada gate humano queda en bitácora
           </span>
         </div>
         <span className="flex-1" aria-hidden="true" />
         <span
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-          style={{ padding: "3px 8px", borderRadius: 4, background: "#FEF3C7", color: "#B45309" }}
+          style={{ padding: "3px 8px", borderRadius: 4, background: headlinePill.bg, color: headlinePill.fg }}
         >
-          en curso
+          {headlinePill.text}
         </span>
       </header>
 
       <ol className="m-0 p-0 list-none flex flex-col" style={{ padding: "8px 20px 18px 20px" }}>
-        {PLAN_MILESTONES.map((m) => (
+        {stages.map((stage, i) => {
+          const pill = statusToPill(stage.status);
+          const order = String(stage.order ?? i + 1).padStart(2, "0");
+          return (
           <li
-            key={m.order}
+            key={stage.id}
             className="flex items-start"
-            style={{ gap: 14, padding: "14px 0", borderBottom: "1px solid #EAE0CE" }}
+            style={{ gap: 14, padding: "14px 0", borderBottom: i < stages.length - 1 ? "1px solid #EAE0CE" : "none" }}
           >
             <span
               aria-hidden="true"
@@ -468,40 +513,47 @@ function PlanCard() {
                 width: 32,
                 height: 32,
                 borderRadius: 8,
-                background: m.stateBg,
-                color: m.stateFg,
+                background: pill.bg,
+                color: pill.fg,
                 fontFamily: "var(--font-mono)",
                 fontSize: 13,
                 fontWeight: 700
               }}
             >
-              {m.order}
+              {order}
             </span>
             <div className="flex flex-col flex-1 min-w-0" style={{ gap: 4 }}>
               <div className="flex items-center" style={{ gap: 8 }}>
                 <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
-                  {m.title}
+                  {stage.title}
                 </h3>
                 <span
                   className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
                   style={{
                     padding: "2px 6px",
                     borderRadius: 4,
-                    background: m.stateBg,
-                    color: m.stateFg,
+                    background: pill.bg,
+                    color: pill.fg,
                     letterSpacing: "0.4px"
                   }}
                 >
-                  {m.state}
+                  {pill.text}
                 </span>
               </div>
-              <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[#5C544A]">
-                {m.body}
-              </p>
-              <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{m.meta}</span>
+              {stage.goal ? (
+                <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[#5C544A]">
+                  {stage.goal}
+                </p>
+              ) : null}
+              {stage.exitGate ? (
+                <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+                  gate de salida · {stage.exitGate}
+                </span>
+              ) : null}
             </div>
           </li>
-        ))}
+          );
+        })}
       </ol>
     </section>
   );
@@ -516,7 +568,14 @@ const SKILLS = [
   { title: "Auto-promoción habilidades", state: "bloqueada", stateBg: "#FEE2E2", stateFg: "#B91C1C", endpoint: "/v1/openclaw/skills/auto-promote" }
 ];
 
-function SkillsCard() {
+function SkillsCard({ data }: { data: DashboardData }) {
+  const recs = data.readinessSignals.recommendations ?? [];
+  const skills = recs.slice(0, 6).map((r) => {
+    const pill = statusToPill(r.status);
+    return { title: r.label, state: pill.text, stateBg: pill.bg, stateFg: pill.fg, endpoint: r.id };
+  });
+  const total = skills.length;
+  void total;
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -543,18 +602,18 @@ function SkillsCard() {
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
           style={{ padding: "3px 8px", borderRadius: 4, background: "#DCFCE7", color: "#15803D" }}
         >
-          6 / 6
+          {skills.length} / {skills.length}
         </span>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
-        {SKILLS.map((s, i) => (
+        {(skills.length > 0 ? skills : SKILLS).map((s, i, arr) => (
           <li
             key={s.title}
             className="flex flex-col"
             style={{
               gap: 6,
               padding: "12px 18px",
-              borderBottom: i < SKILLS.length - 1 ? "1px solid #EAE0CE" : "none"
+              borderBottom: i < arr.length - 1 ? "1px solid #EAE0CE" : "none"
             }}
           >
             <div className="flex items-center" style={{ gap: 8 }}>
@@ -881,7 +940,8 @@ const AUDIT_LINES = [
   }
 ];
 
-function AuditStrip() {
+function AuditStrip({ data }: { data: DashboardData }) {
+  void data; // backend aún no expone audit log de aprendizaje; mantener líneas del .pen
   return (
     <section
       className="flex flex-col"

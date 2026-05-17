@@ -25,13 +25,12 @@ import {
 import type { DashboardData } from "../../shared/api/client.ts";
 
 export function ClustersSection({ data }: { data: DashboardData }) {
-  void data;
   return (
     <section className="flex flex-col" style={{ gap: 20, maxWidth: 1352 }}>
       <Hero />
-      <KpiRow />
-      <TwoCol />
-      <SecuritySection />
+      <KpiRow data={data} />
+      <TwoCol data={data} />
+      <SecuritySection data={data} />
     </section>
   );
 }
@@ -70,39 +69,48 @@ function Hero() {
 /* ============================================================
  * KPI row (xlQ5q) — 5 KPIs literales
  * ============================================================ */
-function KpiRow() {
+function KpiRow({ data }: { data: DashboardData }) {
+  const totals = data.clusters.totals;
+  const clusters = totals.clusters ?? data.clusters.clusters.length;
+  const senderNodes =
+    totals.senderNodes ?? data.clusters.clusters.reduce((sum, c) => sum + c.senderNodes.length, 0);
+  const sender = data.overview.summary.senderNodesByStatus ?? {};
+  const warming = sender.warming ?? 0;
+  const quarantined = sender.quarantined ?? 0;
+  const killSwitchOn = data.killSwitch.enabled;
+  const ksLabel = killSwitchOn ? "ACTIVO" : "ARMADO";
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5" style={{ gap: 14 }}>
       <Kpi
         icon={<Server size={16} strokeWidth={1.75} style={{ color: "#1D4ED8" }} aria-hidden="true" />}
         label="Clústeres totales"
-        value="8"
-        sub="En 4 regiones · 24 zonas"
+        value={String(clusters)}
+        sub={`${clusters} bajo gobierno`}
       />
       <Kpi
         icon={<Mail size={16} strokeWidth={1.75} style={{ color: "#15803D" }} aria-hidden="true" />}
         label="Nodos de envío"
-        value="148"
-        sub="+6 esta semana · /v1/sender-nodes"
+        value={String(senderNodes)}
+        sub="/v1/admin/clusters"
       />
       <Kpi
         icon={<Flame size={16} strokeWidth={1.75} style={{ color: "#EA580C" }} aria-hidden="true" />}
         label="IPs en calentamiento"
-        value="42"
-        sub="día 9 / 28 promedio"
+        value={String(warming)}
+        sub={warming > 0 ? "warming activo" : "sin warming"}
       />
       <Kpi
         icon={<TrendingDown size={16} strokeWidth={1.75} style={{ color: "#B91C1C" }} aria-hidden="true" />}
         label="IPs degradadas"
-        value="7"
-        sub="pendientes de revisar"
+        value={String(quarantined)}
+        sub={quarantined === 0 ? "sin cuarentena" : "pendientes de revisar"}
       />
       <Kpi
-        icon={<ShieldCheck size={16} strokeWidth={1.75} style={{ color: "#15803D" }} aria-hidden="true" />}
+        icon={<ShieldCheck size={16} strokeWidth={1.75} style={{ color: killSwitchOn ? "#B91C1C" : "#15803D" }} aria-hidden="true" />}
         label="Interruptor de corte"
-        value="ARMADO"
+        value={ksLabel}
         valueSize={24}
-        sub="Última prueba hace 14 min"
+        sub={data.killSwitch.updatedBy ? `Actualizado por ${data.killSwitch.updatedBy}` : "Sin uso registrado"}
       />
     </div>
   );
@@ -161,16 +169,16 @@ function Kpi({
 /* ============================================================
  * TwoCol — ClusterTable + DetailPanel + OpenClaw
  * ============================================================ */
-function TwoCol() {
+function TwoCol({ data }: { data: DashboardData }) {
   return (
     <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] items-start">
-      <ClusterTable />
-      <RightCol />
+      <ClusterTable data={data} />
+      <RightCol data={data} />
     </div>
   );
 }
 
-const CLUSTER_ROWS = [
+const CLUSTER_ROWS_DEMO = [
   {
     id: "cluster-eu-01",
     region: "eu-west · fra",
@@ -244,7 +252,55 @@ const CLUSTER_ROWS = [
   }
 ];
 
-function ClusterTable() {
+/** Construye filas de la tabla a partir del contrato real de clusters,
+ *  derivando counts por status del array `senderNodes` y manteniendo el
+ *  esqueleto visual de Pencil. */
+function buildClusterRows(data: DashboardData) {
+  const rows = data.clusters.clusters.map((c, i) => {
+    const sn = c.senderNodes ?? [];
+    const countBy = (st: string) => sn.filter((n) => n.status.toLowerCase().includes(st)).length;
+    return {
+      id: c.id,
+      region: c.provider,
+      activos: countBy("active") + countBy("ready"),
+      calientes: countBy("warming"),
+      pausas: countBy("paused") + countBy("standby"),
+      degradados: countBy("degraded") + countBy("quarantined"),
+      cuarentena: countBy("quarantined") + countBy("blocked"),
+      reputation: "—",
+      reputationColor: "#5C544A",
+      total: `${sn.length} nodos`,
+      delta: c.managementState,
+      accent: i === 0 ? "#F59E0B" : "transparent",
+      selected: i === 0
+    };
+  });
+  // si el contrato no devuelve clusters, mostrar fila placeholder
+  if (rows.length === 0) {
+    return [
+      {
+        id: "sin clusters",
+        region: "contrato vacío",
+        activos: 0,
+        calientes: 0,
+        pausas: 0,
+        degradados: 0,
+        cuarentena: 0,
+        reputation: "—",
+        reputationColor: "#8A8073",
+        total: "0 nodos",
+        delta: "—",
+        accent: "transparent",
+        selected: false
+      }
+    ];
+  }
+  return rows;
+}
+
+function ClusterTable({ data }: { data: DashboardData }) {
+  const CLUSTER_ROWS = buildClusterRows(data);
+  const totalClusters = data.clusters.totals.clusters ?? data.clusters.clusters.length;
   return (
     <div
       className="flex flex-col overflow-hidden bg-[#FFFFFF]"
@@ -263,7 +319,7 @@ function ClusterTable() {
           Tabla de clústeres
         </h2>
         <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
-          5 visibles · 8 totales
+          {CLUSTER_ROWS.length} visibles · {totalClusters} totales
         </span>
         <span className="flex-1" aria-hidden="true" />
         <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">/v1/admin/clusters</span>
@@ -278,7 +334,7 @@ function ClusterTable() {
           borderBottom: "1px solid #EAE0CE"
         }}
       >
-        {["CLÚSTER · REGIÓN", "ACT", "CAL", "PAU", "DEG", "CUA", "REP", "ENVIADOS", "ÚLTIMO"].map((h) => (
+        {["CLÚSTER · PROVIDER", "ACT", "CAL", "PAU", "DEG", "CUA", "REP", "NODOS", "ESTADO"].map((h) => (
           <span
             key={h}
             className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
@@ -369,16 +425,33 @@ function CellPill({ value, kind }: { value: string; kind: "act" | "cal" | "pau" 
 /* ============================================================
  * RightCol: DetailPanel + OpenClaw
  * ============================================================ */
-function RightCol() {
+function RightCol({ data }: { data: DashboardData }) {
+  const firstCluster = data.clusters.clusters[0];
   return (
     <div className="flex flex-col" style={{ gap: 14 }}>
-      <DetailPanel />
-      <OpenClawPrompt />
+      <DetailPanel cluster={firstCluster} />
+      <OpenClawPrompt data={data} />
     </div>
   );
 }
 
-function DetailPanel() {
+function DetailPanel({ cluster }: { cluster: DashboardData["clusters"]["clusters"][number] | undefined }) {
+  if (!cluster) {
+    return (
+      <section
+        className="flex flex-col bg-[#FFFFFF]"
+        style={{ gap: 8, padding: 18, borderRadius: 6, border: "1px solid #EAE0CE" }}
+      >
+        <h3 className="m-0 text-[15px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          Sin cluster seleccionado
+        </h3>
+        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+          El contrato `/v1/admin/clusters` no devuelve clusters bajo gobierno todavía.
+        </p>
+      </section>
+    );
+  }
+  const nodeCount = cluster.senderNodes?.length ?? 0;
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -389,13 +462,13 @@ function DetailPanel() {
           className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#EA580C]"
           style={{ letterSpacing: "1.2px" }}
         >
-          INSPECCIÓN · CLUSTER-EU-01
+          INSPECCIÓN · {cluster.id.toUpperCase()}
         </span>
         <h3 className="m-0 text-[15px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
-          Frankfurt · eu-west
+          {cluster.provider}
         </h3>
         <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
-          480 / 600k enviados en 24 h
+          {nodeCount} sender nodes · estado {cluster.managementState}
         </span>
       </header>
 
@@ -457,7 +530,17 @@ function DetailPanel() {
   );
 }
 
-function OpenClawPrompt() {
+function OpenClawPrompt({ data }: { data: DashboardData }) {
+  const blockers = data.canvas.blockedBy ?? [];
+  const message = blockers.length > 0
+    ? `Detecté ${blockers.length} bloqueo${blockers.length === 1 ? "" : "s"} activos en la topología del canvas. ¿Revisamos cuáles afectan a los clústeres?`
+    : data.canvas.requiresHumanApproval.length > 0
+      ? `${data.canvas.requiresHumanApproval.length} aprobación${data.canvas.requiresHumanApproval.length === 1 ? "" : "es"} humana${data.canvas.requiresHumanApproval.length === 1 ? "" : "s"} pendiente${data.canvas.requiresHumanApproval.length === 1 ? "" : "s"}. Las acciones permiten avanzar el plan de warming cuando estén firmadas.`
+      : "Topología limpia. Puedo proponer el siguiente ciclo de warming cuando lo autorices.";
+  return <OpenClawPromptInner message={message} />;
+}
+
+function OpenClawPromptInner({ message }: { message: string }) {
   return (
     <div
       style={{
@@ -487,8 +570,7 @@ function OpenClawPrompt() {
           </span>
         </header>
         <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[#1A1410]">
-          Las quejas del clúster eu-01 subieron a 0,18%. Sugiero degradar IPs antes del próximo
-          ciclo de warming.
+          {message}
         </p>
         <button
           type="button"
@@ -506,7 +588,8 @@ function OpenClawPrompt() {
 /* ============================================================
  * SecuritySection (ux3Qt)
  * ============================================================ */
-function SecuritySection() {
+function SecuritySection({ data }: { data: DashboardData }) {
+  const gates = data.operatingNorth.gates ?? [];
   return (
     <section className="flex flex-col" style={{ gap: 14 }}>
       <header className="flex flex-col" style={{ gap: 4 }}>
@@ -519,7 +602,7 @@ function SecuritySection() {
           </span>
           <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "#8A8073" }} />
           <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
-            9 gates · 1 interruptor
+            {gates.length} gates · 1 interruptor
           </span>
         </div>
         <h2
@@ -531,26 +614,50 @@ function SecuritySection() {
       </header>
 
       <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] items-start">
-        <GatesCard />
-        <SecRight />
+        <GatesCard data={data} />
+        <SecRight data={data} />
       </div>
     </section>
   );
 }
 
-const GATES = [
-  { check: "ok", label: "Log de auditoría append-only", note: "verificado" },
-  { check: "ok", label: "Dry-run obligatorio antes de escribir", note: "verificado" },
-  { check: "ok", label: "Panel solo lectura · GET-only", note: "verificado" },
-  { check: "ok", label: "Kill switch probado", note: "hace 14 min" },
-  { check: "ok", label: "Regla de dos personas activa", note: "ok" },
-  { check: "warn", label: "Definiciones de rollback firmadas", note: "3 faltantes" },
-  { check: "warn", label: "Autorización por rol", note: "revisión pendiente" },
-  { check: "bad", label: "Drift DNS SPF/DMARC", note: "alerta abierta" },
-  { check: "off", label: "Puente NFC", note: "deshabilitado" }
-] as const;
+/** Construye el listado de gates del clúster combinando datos canónicos del
+ *  diseño Pencil con los gates reales que expone `operatingNorth.gates` y los
+ *  booleanos de seguridad del contrato. */
+function buildGates(data: DashboardData) {
+  const ks = data.killSwitch;
+  const live = data.operatingNorth.liveInfrastructureWritesEnabled;
+  const nfc = data.operatingNorth.nfcProductionWritesEnabled;
+  const baseGates: Array<{ check: "ok" | "warn" | "bad" | "off"; label: string; note: string }> = [
+    { check: "ok", label: "Log de auditoría append-only", note: "verificado" },
+    { check: "ok", label: "Dry-run obligatorio antes de escribir", note: "verificado" },
+    { check: "ok", label: "Panel solo lectura · GET-only", note: "verificado" },
+    {
+      check: ks.enabled ? "bad" : "ok",
+      label: "Kill switch probado",
+      note: ks.updatedAt ? `actualizado ${new Date(ks.updatedAt).toLocaleDateString("es-CO")}` : "sin uso"
+    },
+    {
+      check: live ? "warn" : "ok",
+      label: "Live infrastructure writes",
+      note: live ? "enabled · revisar" : "disabled"
+    },
+    {
+      check: nfc ? "warn" : "off",
+      label: "Puente NFC",
+      note: nfc ? "enabled" : "deshabilitado"
+    }
+  ];
+  // gates pendientes del operating-north
+  const opGates = (data.operatingNorth.gates ?? []).map(
+    (g) => ({ check: "warn" as const, label: g, note: "revisión pendiente" })
+  );
+  return [...baseGates, ...opGates];
+}
 
-function GatesCard() {
+function GatesCard({ data }: { data: DashboardData }) {
+  const GATES = buildGates(data);
+  const okCount = GATES.filter((g) => g.check === "ok").length;
   return (
     <section
       className="flex flex-col overflow-hidden bg-[#FFFFFF]"
@@ -569,7 +676,7 @@ function GatesCard() {
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
           style={{ padding: "3px 8px", borderRadius: 4, background: "#DCFCE7", color: "#15803D" }}
         >
-          5 / 9 ok
+          {okCount} / {GATES.length} ok
         </span>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
@@ -607,17 +714,19 @@ function GatesCard() {
   );
 }
 
-function SecRight() {
+function SecRight({ data }: { data: DashboardData }) {
   return (
     <div className="flex flex-col" style={{ gap: 14 }}>
-      <KillSwitchCard />
+      <KillSwitchCard data={data} />
       <TooltipCard />
-      <AuditLogCard />
+      <AuditLogCard data={data} />
     </div>
   );
 }
 
-function KillSwitchCard() {
+function KillSwitchCard({ data }: { data: DashboardData }) {
+  const ks = data.killSwitch;
+  const armed = !ks.enabled;
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -635,17 +744,21 @@ function KillSwitchCard() {
             gap: 6,
             padding: "3px 8px",
             borderRadius: 999,
-            background: "#DCFCE7",
-            color: "#15803D",
+            background: armed ? "#DCFCE7" : "#FEE2E2",
+            color: armed ? "#15803D" : "#B91C1C",
             letterSpacing: "0.6px"
           }}
         >
-          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: "#15803D" }} />
-          ARMADO
+          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: armed ? "#15803D" : "#B91C1C" }} />
+          {armed ? "ARMADO" : "ACTIVO"}
         </span>
       </header>
       <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A]">
-        Última prueba · hace 14 min · superada
+        {ks.reason
+          ? `Razón · ${ks.reason}`
+          : ks.updatedAt
+            ? `Última actualización · ${new Date(ks.updatedAt).toLocaleString("es-CO")}`
+            : "Sin uso registrado"}
       </p>
       <button
         type="button"
@@ -681,13 +794,26 @@ function TooltipCard() {
   );
 }
 
-function AuditLogCard() {
-  const rows = [
-    { ts: "09:18", actor: "operador@delivrix", action: "Plan dry-run", color: "#1A1410" },
-    { ts: "09:14", actor: "sre-01@delivrix", action: "Probó kill switch", color: "#1A1410" },
-    { ts: "09:04", actor: "openclaw", action: "Recomendó degradar", color: "#EA580C" },
-    { ts: "08:54", actor: "collector", action: "Drift DNS", color: "#1D4ED8" }
-  ];
+function AuditLogCard({ data }: { data: DashboardData }) {
+  const recents = data.overview.recentAuditEvents ?? [];
+  const rows = recents.slice(0, 4).map((e) => ({
+    ts: new Date(e.occurredAt).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
+    actor: `${e.actorType}.${e.actorId}`.slice(0, 24),
+    action: e.action,
+    color: e.actorType.includes("openclaw")
+      ? "#EA580C"
+      : e.actorType.includes("collector") || e.actorType.includes("system")
+        ? "#1D4ED8"
+        : "#1A1410"
+  }));
+  if (rows.length === 0) {
+    rows.push({
+      ts: "—",
+      actor: "audit log vacío",
+      action: "el contrato no expone eventos todavía",
+      color: "#8A8073"
+    });
+  }
   return (
     <section
       className="flex flex-col overflow-hidden bg-[#FFFFFF]"
