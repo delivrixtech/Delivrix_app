@@ -222,6 +222,12 @@ export interface PhysicalHostPayload {
       blockers: string[];
       warnings: string[];
       requiredHumanInputs: string[];
+      primaryBlocker?: string;
+      recommendedNextStep?: {
+        label: string;
+        endpoint: string;
+        severity: "info" | "warning" | "critical";
+      };
     };
   };
 }
@@ -307,7 +313,12 @@ export interface OpenClawCanvasPayload {
       status: ContractStatus;
       evidenceRefs: string[];
     }>;
-    blockedBy: string[];
+    blockedBy: Array<{
+      code: string;
+      label: string;
+      category: "hardware" | "openclaw" | "network" | "provider" | "other";
+      severity: "warning" | "critical";
+    }>;
     requiresHumanApproval: string[];
   };
 }
