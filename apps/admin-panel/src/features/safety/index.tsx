@@ -30,12 +30,13 @@ import {
   filterAuditEvents,
   formatDateTime,
   formatTimeOnly,
+  humanize,
   shortAuditHash
 } from "../../shared/lib/formatters.ts";
 
 export function SafetySection({ data }: { data: DashboardData }) {
   return (
-    <section className="flex flex-col" style={{ gap: 20, maxWidth: 1352 }}>
+    <section className="flex flex-col" style={{ gap: 20 }}>
       <Hero data={data} />
       <KpiRow data={data} />
       <TwoCol data={data} />
@@ -476,16 +477,16 @@ function buildSafetyGates(data: DashboardData) {
       tone: nfc ? "#B45309" : "#8A8073"
     }
   ];
-  const opGates = (data.operatingNorth.gates ?? []).map(
-    (g) =>
-      ({
-        check: "warn" as const,
-        label: g,
-        state: "revisión pendiente",
-        tone: "#B45309"
-      })
-  );
-  return [...base, ...opGates];
+  const opGates = (data.operatingNorth.gates ?? []).map((g) => ({
+    check: "warn" as const,
+    label: humanize(g),
+    rawLabel: g,
+    state: "revisión pendiente",
+    tone: "#B45309"
+  }));
+  // El subset de base no tiene rawLabel, agregamos uno igual al label para uniformar
+  const baseWithRaw = base.map((b) => ({ ...b, rawLabel: b.label }));
+  return [...baseWithRaw, ...opGates];
 }
 
 function GatesCard({ data }: { data: DashboardData }) {
@@ -519,26 +520,32 @@ function GatesCard({ data }: { data: DashboardData }) {
       <ul className="m-0 p-0 list-none flex flex-col">
         {GATE_ROWS.map((row, i) => (
           <li
-            key={row.label}
-            className="flex items-center"
+            key={`${i}-${row.rawLabel}`}
+            className="flex items-center min-w-0"
             style={{
               gap: 12,
               padding: "10px 20px",
               borderBottom: i < GATE_ROWS.length - 1 ? "1px solid #EAE0CE" : "none"
             }}
+            title={row.rawLabel}
           >
             <span
               aria-hidden="true"
-              className="grid place-items-center text-[#FFFBF5] text-[10px]"
+              className="grid place-items-center text-[#FFFBF5] text-[10px] shrink-0"
               style={{ width: 16, height: 16, borderRadius: 999, background: row.tone, fontWeight: 700 }}
             >
               {row.check === true ? "✓" : row.check === "warn" ? "!" : row.check === "bad" ? "×" : "−"}
             </span>
-            <span className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[#1A1410]">
+            <span
+              className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[#1A1410] truncate"
+              style={{ flex: "1 1 auto", minWidth: 0 }}
+            >
               {row.label}
             </span>
-            <span className="flex-1" aria-hidden="true" />
-            <span className="text-[10px] font-[family-name:var(--font-mono)]" style={{ color: row.tone }}>
+            <span
+              className="text-[10px] font-[family-name:var(--font-mono)] shrink-0"
+              style={{ color: row.tone, whiteSpace: "nowrap" }}
+            >
               {row.state}
             </span>
           </li>
@@ -549,23 +556,32 @@ function GatesCard({ data }: { data: DashboardData }) {
 }
 
 function Right({ data }: { data: DashboardData }) {
-  void data;
   return (
     <div className="flex flex-col" style={{ gap: 16 }}>
-      <RolesCard />
-      <SesionesCard />
+      <RolesCard roles={data.iamRoles} />
+      <SesionesCard sessions={data.iamSessions} />
       <SecretsCard />
     </div>
   );
 }
 
-function RolesCard() {
-  const roles = [
-    { name: "Operador", count: 4, color: "#1D4ED8" },
-    { name: "SRE", count: 2, color: "#15803D" },
-    { name: "Auditor externo", count: 1, color: "#7C3AED" },
-    { name: "Sólo lectura", count: 5, color: "#5C544A" }
-  ];
+function roleColorHex(c: string): string {
+  if (c === "blue") return "#1D4ED8";
+  if (c === "green") return "#15803D";
+  if (c === "violet") return "#7C3AED";
+  if (c === "amber") return "#EA580C";
+  return "#5C544A";
+}
+
+function RolesCard({ roles: contractRoles }: { roles: DashboardData["iamRoles"] }) {
+  const roles =
+    contractRoles.length > 0
+      ? contractRoles.map((r) => ({
+          name: r.name,
+          count: r.userCount,
+          color: roleColorHex(r.color)
+        }))
+      : [{ name: "Sin roles del contrato", count: 0, color: "#5C544A" }];
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -606,12 +622,25 @@ function RolesCard() {
   );
 }
 
-function SesionesCard() {
-  const sessions = [
-    { actor: "operador@delivrix", from: "Madrid · VPN", time: "ahora" },
-    { actor: "sre-01@delivrix", from: "iad-01 · interno", time: "hace 12 m" },
-    { actor: "auditor-ext@delivrix", from: "Berlín · MFA", time: "hace 38 m" }
-  ];
+function relativeAgeShort(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "—";
+  const diff = Math.max(0, Date.now() - t);
+  if (diff < 60_000) return "ahora";
+  if (diff < 3_600_000) return `hace ${Math.round(diff / 60_000)} m`;
+  if (diff < 86_400_000) return `hace ${Math.round(diff / 3_600_000)} h`;
+  return `hace ${Math.round(diff / 86_400_000)} d`;
+}
+
+function SesionesCard({ sessions: contractSessions }: { sessions: DashboardData["iamSessions"] }) {
+  const sessions =
+    contractSessions.length > 0
+      ? contractSessions.map((s) => ({
+          actor: s.actor,
+          from: `${s.location} · ${s.transport.toUpperCase()}`,
+          time: relativeAgeShort(s.lastSeenAt)
+        }))
+      : [{ actor: "Sin sesiones del contrato", from: "—", time: "—" }];
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -874,52 +903,83 @@ function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
 /* ============================================================
  * Compliance row (DQeL9) — 3 cards
  * ============================================================ */
+function complianceVisual(state: string): {
+  iconBg: string;
+  iconColor: string;
+  icon: React.ReactNode;
+  pillBg: string;
+  pillFg: string;
+  pillText: string;
+} {
+  if (state === "ok")
+    return {
+      iconBg: "#DCFCE7",
+      iconColor: "#15803D",
+      icon: <ShieldCheck size={14} strokeWidth={1.75} />,
+      pillBg: "#DCFCE7",
+      pillFg: "#15803D",
+      pillText: "ok"
+    };
+  if (state === "warning")
+    return {
+      iconBg: "#FEF3C7",
+      iconColor: "#B45309",
+      icon: <Shield size={14} strokeWidth={1.75} />,
+      pillBg: "#FEF3C7",
+      pillFg: "#B45309",
+      pillText: "atención"
+    };
+  if (state === "critical")
+    return {
+      iconBg: "#FEE2E2",
+      iconColor: "#B91C1C",
+      icon: <ShieldAlert size={14} strokeWidth={1.75} />,
+      pillBg: "#FEE2E2",
+      pillFg: "#B91C1C",
+      pillText: "crítico"
+    };
+  return {
+    iconBg: "#F5F5F4",
+    iconColor: "#5C544A",
+    icon: <ShieldAlert size={14} strokeWidth={1.75} />,
+    pillBg: "#F5F5F4",
+    pillFg: "#5C544A",
+    pillText: "info"
+  };
+}
+
 function ComplianceRow({ data }: { data: DashboardData }) {
-  void data; // backend aún no expone GDPR/compliance live; mantener spec Pencil
+  const controls = data.complianceControls;
+  if (controls.length === 0) {
+    return (
+      <section
+        className="flex items-center bg-[#FFFFFF]"
+        style={{ gap: 8, padding: "14px 16px", borderRadius: 8, border: "1px solid #EAE0CE" }}
+      >
+        <p className="m-0 text-[12px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+          El contrato /v1/compliance/status no devuelve controles todavía.
+        </p>
+      </section>
+    );
+  }
   return (
     <div className="grid grid-cols-1 md:grid-cols-3" style={{ gap: 14 }}>
-      <ComplianceCard
-        iconBg="#DCFCE7"
-        iconColor="#15803D"
-        icon={<ShieldCheck size={14} strokeWidth={1.75} />}
-        title="Cumplimiento GDPR"
-        pillBg="#DCFCE7"
-        pillFg="#15803D"
-        pillText="ok"
-        lines={[
-          "DPA firmado con Anthropic · 2026-03-11",
-          "Datos almacenados sólo en EU-WEST-1",
-          "Solicitudes de borrado vía privacy@delivrix.io"
-        ]}
-      />
-      <ComplianceCard
-        iconBg="#DBEAFE"
-        iconColor="#1D4ED8"
-        icon={<Shield size={14} strokeWidth={1.75} />}
-        title="Cumplimiento operativo"
-        pillBg="#FEF3C7"
-        pillFg="#B45309"
-        pillText="3 abiertos"
-        lines={[
-          "Rollback definitions · 3 faltantes",
-          "Pruebas DR · trimestrales",
-          "Encriptación en tránsito · TLS 1.3"
-        ]}
-      />
-      <ComplianceCard
-        iconBg="#F5F5F4"
-        iconColor="#5C544A"
-        icon={<ShieldAlert size={14} strokeWidth={1.75} />}
-        title="Sin acciones reales"
-        pillBg="#F5F5F4"
-        pillFg="#5C544A"
-        pillText="MVP"
-        lines={[
-          "0 envíos reales en producción",
-          "0 mutaciones a infraestructura externa",
-          "Toda escritura supervisada por humano"
-        ]}
-      />
+      {controls.slice(0, 3).map((c) => {
+        const v = complianceVisual(c.state);
+        return (
+          <ComplianceCard
+            key={c.id}
+            iconBg={v.iconBg}
+            iconColor={v.iconColor}
+            icon={v.icon}
+            title={c.title}
+            pillBg={v.pillBg}
+            pillFg={v.pillFg}
+            pillText={v.pillText}
+            lines={c.lines}
+          />
+        );
+      })}
     </div>
   );
 }
