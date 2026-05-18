@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DelivrixOpenClawInvokeBedrockModels",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6-*",
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-*",
+        "arn:aws:bedrock:us-east-1:397450413307:inference-profile/us.anthropic.claude-sonnet-4-6-*",
+        "arn:aws:bedrock:us-east-1:397450413307:inference-profile/us.anthropic.claude-haiku-4-5-*"
+      ]
+    },
+    {
+      "Sid": "DelivrixOpenClawListBedrockModels",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:ListFoundationModels",
+        "bedrock:GetFoundationModel",
+        "bedrock:ListInferenceProfiles",
+        "bedrock:GetInferenceProfile"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
