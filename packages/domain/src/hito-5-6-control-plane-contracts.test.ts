@@ -195,7 +195,10 @@ test("OpenClaw live canvas composes the graph without embedding sensitive operat
   });
 
   assert.equal(canvas.mode, "read_only");
-  assert.equal(canvas.currentStepId, "physical_host");
+  // H.23: el primer nodo con status pendiente queda como currentStepId.
+  // Con onboarding_capture introducido en el lane onboarding, ese pasa a ser
+  // el primero porque physical_host queda "unknown" sin readiness real.
+  assert.ok(["onboarding_capture", "onboarding_validate", "physical_host"].includes(canvas.currentStepId));
   assert.ok(canvas.nodes.some((node) => node.id === "physical_host"));
   assert.ok(canvas.nodes.some((node) => node.id === "prepared_capacity" && node.status === "disabled_by_mvp"));
   assert.ok(canvas.edges.some((edge) => edge.from === "proxmox_host" && edge.to === "cluster_plan"));
@@ -211,4 +214,29 @@ test("OpenClaw live canvas composes the graph without embedding sensitive operat
   assert.equal(canvas.safety.liveInfrastructureWritesEnabled, false);
   assert.equal(JSON.stringify(canvas).includes("private_key"), false);
   assert.equal(JSON.stringify(canvas).includes("token"), false);
+
+  // H.23: swimlanes + meta del Pencil toolbar/footer.
+  assert.deepEqual(canvas.lanes, ["onboarding", "hardware", "provisioning", "warming", "reputation"]);
+  // Cada nodo trae su lane canónica.
+  assert.ok(canvas.nodes.every((n) => canvas.lanes.includes(n.lane)));
+  // Hay al menos un nodo por lane.
+  for (const lane of canvas.lanes) {
+    assert.ok(canvas.nodes.some((n) => n.lane === lane), `lane ${lane} sin nodos`);
+  }
+  // Toolbar metadata.
+  assert.equal(canvas.cluster.activeId, "svc-warmup-01");
+  assert.ok(canvas.cluster.options.length >= 1);
+  assert.deepEqual(canvas.timeRange.options, ["1h", "24h", "7d"]);
+  assert.equal(canvas.timeRange.active, "24h");
+  assert.equal(canvas.scale.zoomPercent, 100);
+  // Footer metadata.
+  assert.ok(canvas.lastActivity.actor.length > 0);
+  assert.ok(canvas.lastActivity.auditHash.startsWith("sha"));
+  // Prompt es GET-only: las acciones nunca son POSTs, son punteros a runbook
+  // o snooze client-side.
+  if (canvas.prompt) {
+    assert.ok(["open_runbook", "snooze", "ack", "view_evidence"].includes(canvas.prompt.primaryAction.kind));
+    assert.ok(["open_runbook", "snooze", "ack", "view_evidence"].includes(canvas.prompt.secondaryAction.kind));
+    assert.ok(canvas.nodes.some((n) => n.id === canvas.prompt!.nodeId));
+  }
 });

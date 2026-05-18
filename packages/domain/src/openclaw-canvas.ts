@@ -35,7 +35,24 @@ export type OpenClawCanvasNodeKind =
   | "dns"
   | "warming"
   | "reputation"
-  | "capacity";
+  | "capacity"
+  | "onboarding";
+
+/**
+ * H.23 — Swimlanes Pencil literal. 5 carriles operacionales con colores
+ * canónicos del .pen (NO inventar fuera de este set):
+ *   onboarding     #15803D
+ *   hardware       #1D4ED8
+ *   provisioning   #EA580C
+ *   warming        #B45309
+ *   reputation     #57534E
+ */
+export type OpenClawCanvasLane =
+  | "onboarding"
+  | "hardware"
+  | "provisioning"
+  | "warming"
+  | "reputation";
 
 export interface OpenClawCanvasDrilldown {
   endpoint: string;
@@ -53,6 +70,8 @@ export interface OpenClawCanvasMetric {
 export interface OpenClawCanvasNode {
   id: string;
   kind: OpenClawCanvasNodeKind;
+  /** H.23: en qué carril del swimlane se dibuja. */
+  lane: OpenClawCanvasLane;
   label: string;
   status: OpenClawCanvasNodeStatus;
   progressPercent: number;
@@ -90,6 +109,61 @@ export interface OpenClawCanvasBlocker {
   severity: OpenClawCanvasBlockerSeverity;
 }
 
+/**
+ * H.23 — Selector de clúster del Pencil toolbar. El operador escoge sobre qué
+ * clúster ver el canvas. Los IDs son canónicos del MVP (svc-warmup-01 es el
+ * cluster A de pruebas supervisadas).
+ */
+export interface OpenClawCanvasClusterOption {
+  id: string;
+  label: string;
+}
+
+export interface OpenClawCanvasClusterState {
+  activeId: string;
+  options: OpenClawCanvasClusterOption[];
+}
+
+export type OpenClawCanvasTimeRangeId = "1h" | "24h" | "7d";
+
+export interface OpenClawCanvasTimeRangeState {
+  active: OpenClawCanvasTimeRangeId;
+  options: OpenClawCanvasTimeRangeId[];
+}
+
+export interface OpenClawCanvasScaleState {
+  zoomPercent: number;
+}
+
+export interface OpenClawCanvasLastActivity {
+  actor: string;
+  occurredAt: string;
+  auditHash: string;
+}
+
+/**
+ * H.23 — Card de propuesta de OpenClaw debajo del canvas. El bundle es
+ * GET-only; el `primaryAction` y `secondaryAction` solo describen el call to
+ * action que el operador ejecuta FUERA del panel. `runbookRef` apunta al .md
+ * con los pasos firmados. No hay POST detrás.
+ */
+export interface OpenClawCanvasPromptAction {
+  label: string;
+  runbookRef?: string;
+  kind: "open_runbook" | "snooze" | "ack" | "view_evidence";
+}
+
+export interface OpenClawCanvasPromptCard {
+  /** Nodo en el que se ancla visualmente la propuesta (border gradient + shadow). */
+  nodeId: string;
+  headline: string;
+  body: string;
+  primaryAction: OpenClawCanvasPromptAction;
+  secondaryAction: OpenClawCanvasPromptAction;
+  /** Hashes de evidencia que justifican esta propuesta (ver Detail panel sec3). */
+  evidenceRefs: string[];
+}
+
 export interface OpenClawLiveCanvasSnapshot extends ControlPlaneContractBase {
   currentStepId: string;
   nodes: OpenClawCanvasNode[];
@@ -97,6 +171,16 @@ export interface OpenClawLiveCanvasSnapshot extends ControlPlaneContractBase {
   timeline: OpenClawCanvasTimelineEvent[];
   blockedBy: OpenClawCanvasBlocker[];
   requiresHumanApproval: string[];
+  /** H.23 — orden literal de carriles del Pencil. */
+  lanes: OpenClawCanvasLane[];
+  cluster: OpenClawCanvasClusterState;
+  timeRange: OpenClawCanvasTimeRangeState;
+  scale: OpenClawCanvasScaleState;
+  lastActivity: OpenClawCanvasLastActivity;
+  /** Nodo enfocado en el Detail panel; null si nada está seleccionado. */
+  selectedNodeId: string | null;
+  /** Propuesta visible de OpenClaw o null si no hay nada pendiente. */
+  prompt: OpenClawCanvasPromptCard | null;
 }
 
 export interface BuildOpenClawLiveCanvasInput {
@@ -126,16 +210,90 @@ export function buildOpenClawLiveCanvas(
   const nodes = buildNodes(input, blockedBy);
   const edges = buildEdges(nodes);
   const unknownFields = collectUnknownFields(input);
+  const prompt = buildPromptCard(nodes, blockedBy);
+  const currentStepId = resolveCurrentStepId(nodes);
 
   return {
     ...buildContractBase(now, mockSource(), qualityFromUnknownFields(unknownFields, unknownFields.length === 0 ? 0.6 : 0)),
-    currentStepId: resolveCurrentStepId(nodes),
+    currentStepId,
     nodes,
     edges,
     timeline: buildTimeline(now, input, blockedBy),
     blockedBy,
-    requiresHumanApproval
+    requiresHumanApproval,
+    lanes: ["onboarding", "hardware", "provisioning", "warming", "reputation"],
+    cluster: buildClusterState(),
+    timeRange: { active: "24h", options: ["1h", "24h", "7d"] },
+    scale: { zoomPercent: 100 },
+    lastActivity: buildLastActivity(now),
+    selectedNodeId: prompt?.nodeId ?? currentStepId,
+    prompt
   };
+}
+
+function buildClusterState(): OpenClawCanvasClusterState {
+  return {
+    activeId: "svc-warmup-01",
+    options: [
+      { id: "svc-warmup-01", label: "svc-warmup-01" },
+      { id: "svc-warmup-02", label: "svc-warmup-02" },
+      { id: "svc-prod-eu-01", label: "svc-prod-eu-01" }
+    ]
+  };
+}
+
+function buildLastActivity(now: Date): OpenClawCanvasLastActivity {
+  return {
+    actor: "operador@delivrix",
+    occurredAt: new Date(now.getTime() - 14_000).toISOString(),
+    auditHash: "sha256:4f1a-canvas"
+  };
+}
+
+/**
+ * H.23 — Construye la card de propuesta. Solo aparece cuando hay al menos un
+ * nodo que requiere revisión humana o aprobación. El bundle frontend es
+ * GET-only: las acciones describen el camino para aprobar afuera, nunca
+ * mutan estado desde el panel.
+ */
+function buildPromptCard(
+  nodes: OpenClawCanvasNode[],
+  blockedBy: OpenClawCanvasBlocker[]
+): OpenClawCanvasPromptCard | null {
+  // Priorizar el primer nodo que necesita revisión humana en el orden
+  // canónico de lanes (warming antes que reputation, etc).
+  const candidate =
+    nodes.find((node) => node.status === "needs_review" || node.status === "requires_approval") ??
+    nodes.find((node) => node.status === "blocked");
+  if (!candidate) return null;
+
+  const evidenceRefs = blockedBy
+    .slice(0, 3)
+    .map((b) => `evidence:${b.code}`);
+
+  return {
+    nodeId: candidate.id,
+    headline: `${candidate.label}: revisión humana pendiente`,
+    body: `${candidate.summary} Revisa la evidencia y los gates antes de continuar.`,
+    primaryAction: {
+      kind: "open_runbook",
+      label: "Revisar plan dry-run",
+      runbookRef: runbookForLane(candidate.lane)
+    },
+    secondaryAction: {
+      kind: "snooze",
+      label: "Posponer"
+    },
+    evidenceRefs
+  };
+}
+
+function runbookForLane(lane: OpenClawCanvasLane): string {
+  if (lane === "onboarding") return "openclaw-onboarding-runbook.md";
+  if (lane === "hardware") return "hardware-readiness-runbook.md";
+  if (lane === "provisioning") return "provisioning-dry-run-runbook.md";
+  if (lane === "warming") return "warming-plan-runbook.md";
+  return "reputation-gates-runbook.md";
 }
 
 function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanvasBlocker[]): OpenClawCanvasNode[] {
@@ -145,12 +303,62 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
   const provisioningStatus = mapProvisioningStatus(input.provisioningState);
   const readinessStatus = mapReadinessStatus(input.readinessSignals?.scores.provisioningReadiness.status ?? "needs_review");
   const collectorStatus = input.collector?.status === "ready" ? "ready" : input.collector?.status === "degraded" ? "needs_review" : "unknown";
+  const captureStatus = onboardingStatus === "ready" ? "ready" : onboardingStatus === "blocked" ? "blocked" : "needs_review";
+  const validateStatus = onboardingStatus === "ready" ? "ready" : "needs_review";
 
   return [
+    /* ===== onboarding lane (2 nodos: Captura + Validaciones) ===== */
+    {
+      id: "onboarding_capture",
+      kind: "onboarding",
+      lane: "onboarding",
+      label: "Captura",
+      status: captureStatus,
+      progressPercent: progressFor(captureStatus),
+      riskLevel: captureStatus === "blocked" ? "high" : "low",
+      summary: input.onboardingState
+        ? `Operador capturó ${Object.keys(input.onboardingState.knownInputs).length} insumos del onboarding.`
+        : "Esperando captura inicial del operador.",
+      metrics: [
+        metric(
+          "pending_questions",
+          "Preguntas pendientes",
+          input.onboardingState?.pendingQuestions.length ?? null,
+          "count"
+        )
+      ],
+      badges: ["operator_input", "supervised"],
+      drilldown: {
+        endpoint: "/v1/openclaw/onboarding/state",
+        label: "Ver onboarding"
+      }
+    },
+    {
+      id: "onboarding_validate",
+      kind: "onboarding",
+      lane: "onboarding",
+      label: "Validaciones",
+      status: validateStatus,
+      progressPercent: progressFor(validateStatus),
+      riskLevel: validateStatus === "needs_review" ? "medium" : "low",
+      summary: input.onboardingState?.canGenerateTopologyPlan
+        ? "Validaciones completas. OpenClaw puede sugerir topología."
+        : "OpenClaw valida coherencia de datos del onboarding antes de proponer plan.",
+      metrics: [
+        metric("warnings", "Avisos", input.onboardingState?.warnings.length ?? null, "count")
+      ],
+      badges: ["human_gate"],
+      drilldown: {
+        endpoint: "/v1/openclaw/onboarding/state",
+        label: "Ver validaciones"
+      }
+    },
+    /* ===== hardware lane (2 nodos: Telemetría + Inventario) ===== */
     {
       id: "physical_host",
       kind: "hardware",
-      label: "Servidor fisico",
+      lane: "hardware",
+      label: "Inventario del servidor",
       status: physicalHostStatus,
       progressPercent: progressFor(physicalHostStatus),
       riskLevel: physicalHostStatus === "blocked" ? "high" : "unknown",
@@ -171,6 +379,7 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
     {
       id: "hardware_telemetry",
       kind: "telemetry",
+      lane: "hardware",
       label: "Hardware telemetry",
       status: telemetryStatus,
       progressPercent: progressFor(telemetryStatus),
@@ -192,6 +401,7 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
     {
       id: "devops_collector",
       kind: "telemetry",
+      lane: "hardware",
       label: "DevOps collector",
       status: collectorStatus,
       progressPercent: progressFor(collectorStatus),
@@ -209,9 +419,11 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
         label: "Ver collector"
       }
     },
+    /* ===== provisioning lane (4 nodos: Proxmox + Cluster + VPS + DNS) ===== */
     {
       id: "proxmox_host",
       kind: "virtualization",
+      lane: "provisioning",
       label: "Proxmox host",
       status: onboardingStatus,
       progressPercent: progressFor(onboardingStatus),
@@ -229,6 +441,7 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
     {
       id: "cluster_plan",
       kind: "planning",
+      lane: "provisioning",
       label: "Cluster plan",
       status: readinessStatus,
       progressPercent: progressFor(readinessStatus),
@@ -247,6 +460,7 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
     {
       id: "vps_lxc_plan",
       kind: "planning",
+      lane: "provisioning",
       label: "VPS/LXC plan",
       status: provisioningStatus,
       progressPercent: progressFor(provisioningStatus),
@@ -263,8 +477,26 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
       }
     },
     {
+      id: "dns_identity",
+      kind: "dns",
+      lane: "provisioning",
+      label: "DNS / PTR / DKIM / TLS",
+      status: "requires_approval",
+      progressPercent: 0,
+      riskLevel: "medium",
+      summary: "Cambios DNS reales quedan bloqueados en MVP y requieren aprobación.",
+      metrics: [],
+      badges: ["dns_live_disabled", "secrets_required"],
+      drilldown: {
+        endpoint: "/v1/openclaw/provisioning/state",
+        label: "Ver DNS plan"
+      }
+    },
+    /* ===== warming lane (3 nodos: Sender nodes + Plan + Rampa) ===== */
+    {
       id: "sender_nodes",
       kind: "sender_node",
+      lane: "warming",
       label: "Sender nodes",
       status: "not_started",
       progressPercent: 0,
@@ -278,29 +510,18 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
       }
     },
     {
-      id: "dns_identity",
-      kind: "dns",
-      label: "DNS / PTR / DKIM / TLS",
-      status: "requires_approval",
-      progressPercent: 0,
-      riskLevel: "medium",
-      summary: "Cambios DNS reales quedan bloqueados en MVP y requieren aprobacion.",
-      metrics: [],
-      badges: ["dns_live_disabled", "secrets_required"],
-      drilldown: {
-        endpoint: "/v1/openclaw/provisioning/state",
-        label: "Ver DNS plan"
-      }
-    },
-    {
-      id: "warming",
+      id: "warming_plan",
       kind: "warming",
-      label: "Warming",
-      status: "not_started",
-      progressPercent: 0,
+      lane: "warming",
+      label: "Plan de calentamiento",
+      status: "needs_review",
+      progressPercent: 50,
       riskLevel: "medium",
-      summary: "El calentamiento depende de nodos preparados, reputacion y limites conservadores.",
-      metrics: [],
+      summary: "OpenClaw propone elevar warming al día 10 con quejas bajo 0.18%. Necesita aprobación humana.",
+      metrics: [
+        metric("complaint_rate", "Quejas", 0.18, "%"),
+        metric("day_target", "Día objetivo", 10, "día")
+      ],
       badges: ["rate_limits", "human_gate"],
       drilldown: {
         endpoint: "/v1/admin/workflow",
@@ -308,8 +529,26 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
       }
     },
     {
+      id: "warming_ramp",
+      kind: "warming",
+      lane: "warming",
+      label: "Rampa supervisada",
+      status: "not_started",
+      progressPercent: 0,
+      riskLevel: "medium",
+      summary: "La rampa real solo arranca tras aprobación humana del plan dry-run.",
+      metrics: [],
+      badges: ["dry_run", "smtp_disabled"],
+      drilldown: {
+        endpoint: "/v1/admin/workflow",
+        label: "Ver rampa"
+      }
+    },
+    /* ===== reputation lane (3 nodos: Gates + Escalación + Capacidad) ===== */
+    {
       id: "reputation_gates",
       kind: "reputation",
+      lane: "reputation",
       label: "Reputation gates",
       status: "not_started",
       progressPercent: 0,
@@ -323,8 +562,25 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
       }
     },
     {
+      id: "reputation_escalation",
+      kind: "reputation",
+      lane: "reputation",
+      label: "Escalación supervisada",
+      status: "not_started",
+      progressPercent: 0,
+      riskLevel: "medium",
+      summary: "OpenClaw escala alertas a panel humano cuando los gates de reputación se tensionan.",
+      metrics: [],
+      badges: ["audit_required", "human_gate"],
+      drilldown: {
+        endpoint: "/v1/admin/overview",
+        label: "Ver alertas"
+      }
+    },
+    {
       id: "prepared_capacity",
       kind: "capacity",
+      lane: "reputation",
       label: "Capacidad preparada",
       status: "disabled_by_mvp",
       progressPercent: 0,
@@ -343,16 +599,27 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
 function buildEdges(nodes: OpenClawCanvasNode[]): OpenClawCanvasEdge[] {
   const statusById = new Map(nodes.map((node) => [node.id, node.status]));
   const pairs: Array<[string, string, string, string]> = [
+    /* onboarding lane */
+    ["capture_to_validate", "onboarding_capture", "onboarding_validate", "validación humana"],
+    /* hardware lane */
     ["physical_to_telemetry", "physical_host", "hardware_telemetry", "observabilidad base"],
     ["telemetry_to_collector", "hardware_telemetry", "devops_collector", "fuente y frescura"],
+    /* hardware → provisioning */
     ["collector_to_proxmox", "devops_collector", "proxmox_host", "lectura segura"],
-    ["proxmox_to_cluster", "proxmox_host", "cluster_plan", "base para topologia"],
-    ["cluster_to_vps", "cluster_plan", "vps_lxc_plan", "plan de virtualizacion"],
-    ["vps_to_sender", "vps_lxc_plan", "sender_nodes", "preparacion de nodos"],
-    ["sender_to_dns", "sender_nodes", "dns_identity", "identidad SMTP"],
-    ["dns_to_warming", "dns_identity", "warming", "calentamiento gradual"],
-    ["warming_to_reputation", "warming", "reputation_gates", "monitoreo de reputacion"],
-    ["reputation_to_capacity", "reputation_gates", "prepared_capacity", "capacidad autorizada"]
+    /* provisioning lane */
+    ["proxmox_to_cluster", "proxmox_host", "cluster_plan", "base para topología"],
+    ["cluster_to_vps", "cluster_plan", "vps_lxc_plan", "plan de virtualización"],
+    ["vps_to_dns", "vps_lxc_plan", "dns_identity", "identidad SMTP"],
+    /* provisioning → warming */
+    ["dns_to_sender", "dns_identity", "sender_nodes", "preparación de nodos"],
+    /* warming lane */
+    ["sender_to_warming", "sender_nodes", "warming_plan", "plan de calentamiento"],
+    ["warming_plan_to_ramp", "warming_plan", "warming_ramp", "rampa supervisada"],
+    /* warming → reputation */
+    ["warming_to_reputation", "warming_ramp", "reputation_gates", "monitoreo de reputación"],
+    /* reputation lane */
+    ["reputation_to_escalation", "reputation_gates", "reputation_escalation", "escalación humana"],
+    ["escalation_to_capacity", "reputation_escalation", "prepared_capacity", "capacidad autorizada"]
   ];
 
   return pairs.map(([id, from, to, label]) => ({

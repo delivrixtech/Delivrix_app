@@ -274,12 +274,39 @@ export interface HardwareTelemetryHistoryPayload {
   };
 }
 
+/** H.23: 5 lanes literales del Pencil swimlane. */
+export type OpenClawCanvasLane =
+  | "onboarding"
+  | "hardware"
+  | "provisioning"
+  | "warming"
+  | "reputation";
+
+export type OpenClawCanvasTimeRangeId = "1h" | "24h" | "7d";
+
+export interface OpenClawCanvasPromptAction {
+  label: string;
+  runbookRef?: string;
+  kind: "open_runbook" | "snooze" | "ack" | "view_evidence";
+}
+
+export interface OpenClawCanvasPromptCard {
+  nodeId: string;
+  headline: string;
+  body: string;
+  primaryAction: OpenClawCanvasPromptAction;
+  secondaryAction: OpenClawCanvasPromptAction;
+  evidenceRefs: string[];
+}
+
 export interface OpenClawCanvasPayload {
   canvas: ContractBase & {
     currentStepId: string;
     nodes: Array<{
       id: string;
       kind: string;
+      /** H.23: en qué carril del swimlane se dibuja. */
+      lane: OpenClawCanvasLane;
       label: string;
       status: ContractStatus;
       progressPercent: number;
@@ -320,6 +347,24 @@ export interface OpenClawCanvasPayload {
       severity: "warning" | "critical";
     }>;
     requiresHumanApproval: string[];
+    /** H.23: meta del Pencil. */
+    lanes: OpenClawCanvasLane[];
+    cluster: {
+      activeId: string;
+      options: Array<{ id: string; label: string }>;
+    };
+    timeRange: {
+      active: OpenClawCanvasTimeRangeId;
+      options: OpenClawCanvasTimeRangeId[];
+    };
+    scale: { zoomPercent: number };
+    lastActivity: {
+      actor: string;
+      occurredAt: string;
+      auditHash: string;
+    };
+    selectedNodeId: string | null;
+    prompt: OpenClawCanvasPromptCard | null;
   };
 }
 
