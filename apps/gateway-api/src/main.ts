@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import {
   ProxmoxAdapter,
   WebdockAdapter,
+  WebdockRealAdapter,
   type ProxmoxMockNodeConfig,
   type WebdockBridgeNodeConfig
 } from "../../../packages/adapters/src/index.ts";
@@ -32,6 +33,8 @@ import {
   buildOpenClawProvisioningState,
   buildOpenClawReadinessSignals,
   buildOpenClawSkillsAudit,
+  buildWebdockInventoryContract,
+  evaluateWebdockDrift,
   buildPhysicalHostSnapshot,
   evaluateSenderNodeHealth,
   evaluateIpReputation,
@@ -99,6 +102,7 @@ const senderNodeRegistry = new SenderNodeRegistry(new LocalFileSenderNodeStore()
 const rateLimitStore = new LocalFileRateLimitStore();
 const rateLimitService = new RateLimitService(rateLimitStore);
 const webdockAdapter = new WebdockAdapter();
+const webdockRealAdapter = new WebdockRealAdapter();
 const proxmoxAdapter = new ProxmoxAdapter();
 const provisioningRunStore = new LocalFileProvisioningRunStore();
 const ipReputationReportStore = new LocalFileIpReputationReportStore();
@@ -198,6 +202,40 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && request.url === "/v1/openclaw/evidence") {
       return json(response, 200, buildOpenClawEvidence());
+    }
+
+    if (request.method === "GET" && request.url === "/v1/webdock/inventory") {
+      const result = await webdockRealAdapter.listServers();
+      const senderNodes = await senderNodeRegistry.list();
+      const drift = evaluateWebdockDrift({
+        webdockServers: result.servers,
+        senderNodes
+      });
+      const contract = buildWebdockInventoryContract({
+        servers: result.servers,
+        source: result.source
+      });
+
+      await auditLog.append({
+        actorType: "system",
+        actorId: "webdock_collector",
+        action: "webdock_inventory_polled",
+        targetType: "webdock_inventory",
+        targetId: result.source.kind,
+        riskLevel: result.source.responseOk ? "low" : "medium",
+        metadata: {
+          serverCount: contract.summary.total,
+          driftProposals: drift.proposals.length,
+          sourceKind: result.source.kind,
+          responseOk: result.source.responseOk,
+          errorMessage: result.source.errorMessage
+        }
+      });
+
+      return json(response, 200, {
+        inventory: contract,
+        drift
+      });
     }
 
     if (request.method === "POST" && request.url === "/v1/demo/mvp/blueprint") {

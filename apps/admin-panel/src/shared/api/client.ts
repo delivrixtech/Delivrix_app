@@ -753,6 +753,88 @@ export interface OpenClawEvidencePayload {
   curated: OpenClawEvidenceItem[];
 }
 
+/* Hito 5.11.A — Webdock READ + OpenClaw rules-based drift */
+
+export type WebdockServerStatus =
+  | "running"
+  | "stopped"
+  | "suspended"
+  | "provisioning"
+  | "reinstalling"
+  | "rebooting"
+  | "deleting"
+  | "error"
+  | "unknown"
+  | string;
+
+export interface WebdockInventoryServer {
+  slug: string;
+  name: string;
+  ipv4: string;
+  ipv6?: string;
+  status: WebdockServerStatus;
+  profileSlug?: string;
+  location?: string;
+  creationDate?: string;
+  lastDataReceived?: string;
+  imageSlug?: string;
+  description?: string;
+  snapshotRunTime?: number;
+}
+
+export interface WebdockInventorySummary {
+  total: number;
+  running: number;
+  stopped: number;
+  suspended: number;
+  other: number;
+}
+
+export interface WebdockInventorySourceInfo {
+  kind: "live" | "mock";
+  apiBase: string;
+  fetchedAt: string;
+  responseOk: boolean;
+  errorMessage?: string;
+}
+
+export interface WebdockInventoryContract {
+  schemaVersion: string;
+  generatedAt: string;
+  mode: "read_only";
+  source: WebdockInventorySourceInfo;
+  summary: WebdockInventorySummary;
+  servers: WebdockInventoryServer[];
+}
+
+export type OpenClawDriftSeverity = "low" | "medium" | "high";
+export type OpenClawDriftCategory =
+  | "node_resume_proposed"
+  | "node_pause_proposed"
+  | "node_register_proposed"
+  | "node_orphan_warning"
+  | string;
+
+export interface OpenClawDriftProposal {
+  id: string;
+  category: OpenClawDriftCategory;
+  severity: OpenClawDriftSeverity;
+  headline: string;
+  body: string;
+  evidenceRefs: string[];
+  runbookRef: string;
+  targetRef: string;
+}
+
+export interface WebdockInventoryPayload {
+  inventory: WebdockInventoryContract;
+  drift: {
+    proposals: OpenClawDriftProposal[];
+    unmatchedWebdockSlugs: string[];
+    unmatchedSenderNodeIds: string[];
+  };
+}
+
 export interface SnapshotIngestionPayload {
   snapshotIngestion: ContractBase & {
     status: ContractStatus;
@@ -820,6 +902,8 @@ export interface DashboardData {
   complianceControls: ComplianceControl[];
   openClawSkillsAudit: OpenClawSkillsAuditEvent[];
   openClawEvidence: OpenClawEvidenceItem[];
+  webdockInventory: WebdockInventoryContract;
+  webdockDrift: WebdockInventoryPayload["drift"];
 }
 
 export async function loadDashboardData(): Promise<DashboardData> {
@@ -851,7 +935,8 @@ export async function loadDashboardData(): Promise<DashboardData> {
     iamSessions,
     complianceStatus,
     openClawSkillsAudit,
-    openClawEvidence
+    openClawEvidence,
+    webdockInventory
   ] = await Promise.all([
     getJson<HealthPayload>(READ_ENDPOINTS.health),
     getJson<ClusterOverviewPayload>(READ_ENDPOINTS.adminClusters),
@@ -880,7 +965,8 @@ export async function loadDashboardData(): Promise<DashboardData> {
     getJson<IamSessionsPayload>(READ_ENDPOINTS.iamSessions),
     getJson<ComplianceStatusPayload>(READ_ENDPOINTS.complianceStatus),
     getJson<OpenClawSkillsAuditPayload>(READ_ENDPOINTS.openClawSkillsAudit),
-    getJson<OpenClawEvidencePayload>(READ_ENDPOINTS.openClawEvidence)
+    getJson<OpenClawEvidencePayload>(READ_ENDPOINTS.openClawEvidence),
+    getJson<WebdockInventoryPayload>(READ_ENDPOINTS.webdockInventory)
   ]);
 
   return {
@@ -911,7 +997,9 @@ export async function loadDashboardData(): Promise<DashboardData> {
     iamSessions: iamSessions.sessions ?? [],
     complianceControls: complianceStatus.controls ?? [],
     openClawSkillsAudit: openClawSkillsAudit.events ?? [],
-    openClawEvidence: openClawEvidence.curated ?? []
+    openClawEvidence: openClawEvidence.curated ?? [],
+    webdockInventory: webdockInventory.inventory,
+    webdockDrift: webdockInventory.drift
   };
 }
 
