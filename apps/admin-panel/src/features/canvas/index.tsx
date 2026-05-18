@@ -120,6 +120,8 @@ export function CanvasSection({ data }: { data: DashboardData }) {
     <section className="grid gap-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] items-stretch">
       <CanvasWrap
         canvas={canvas}
+        webdockInventory={data.webdockInventory}
+        webdockDrift={data.webdockDrift}
         timeRange={timeRange}
         zoom={zoom}
         onTimeRangeChange={setTimeRange}
@@ -141,6 +143,8 @@ export function CanvasSection({ data }: { data: DashboardData }) {
  * ============================================================ */
 function CanvasWrap({
   canvas,
+  webdockInventory,
+  webdockDrift,
   timeRange,
   zoom,
   onTimeRangeChange,
@@ -150,6 +154,8 @@ function CanvasWrap({
   onPrimaryPromptAction
 }: {
   canvas: CanvasData;
+  webdockInventory: DashboardData["webdockInventory"];
+  webdockDrift: DashboardData["webdockDrift"];
   timeRange: OpenClawCanvasTimeRangeId;
   zoom: number;
   onTimeRangeChange: (id: OpenClawCanvasTimeRangeId) => void;
@@ -160,7 +166,13 @@ function CanvasWrap({
 }) {
   return (
     <div className="flex flex-col bg-[#FFFBF5] min-w-0">
-      <Hero canvas={canvas} />
+      <Hero canvas={canvas} webdockInventory={webdockInventory} />
+      <WebdockLiveBanner inventory={webdockInventory} drift={webdockDrift} />
+      <StartHereBanner
+        canvas={canvas}
+        onOpenRunbook={onPrimaryPromptAction}
+        onSelectNode={onSelectNode}
+      />
       <Toolbar
         cluster={canvas.cluster}
         timeRange={timeRange}
@@ -187,11 +199,140 @@ function CanvasWrap({
 }
 
 /* ============================================================
+ * StartHereBanner — orienta al operador.
+ *
+ * H.23 UX fix: la pantalla anterior mostraba 15 nodos sin decirle al
+ * operador "haz esto primero". Este banner detecta el primer nodo que
+ * requiere intervención humana y deja claro: cuál es, por qué, y dónde
+ * está el runbook. Sin esto, el Canvas se siente como un panel técnico
+ * abstracto en vez de una guía operativa.
+ *
+ * Lógica:
+ *   - Si el contrato trae un `prompt`, ese es el siguiente paso → CTA
+ *     "Revisar plan dry-run" abre el modal de runbook.
+ *   - Si no hay prompt pero hay algún nodo `blocked | needs_review |
+ *     requires_approval`, ese es el siguiente paso → CTA selecciona el
+ *     nodo en el detail panel.
+ *   - Si todo está limpio, se oculta (no estorba).
+ * ============================================================ */
+function StartHereBanner({
+  canvas,
+  onOpenRunbook,
+  onSelectNode
+}: {
+  canvas: CanvasData;
+  onOpenRunbook: () => void;
+  onSelectNode: (id: string) => void;
+}) {
+  const targetNode = canvas.prompt
+    ? canvas.nodes.find((n) => n.id === canvas.prompt!.nodeId) ?? null
+    : canvas.nodes.find(
+        (n) =>
+          n.status === "blocked" ||
+          n.status === "needs_review" ||
+          n.status === "requires_approval"
+      ) ?? null;
+
+  if (!targetNode) return null;
+
+  const hasPrompt = canvas.prompt !== null && canvas.prompt.nodeId === targetNode.id;
+  const laneColor = LANE_COLOR[targetNode.lane];
+  const ctaLabel = hasPrompt
+    ? canvas.prompt!.primaryAction.label
+    : `Inspeccionar "${targetNode.label}"`;
+  const reason = hasPrompt
+    ? canvas.prompt!.body
+    : targetNode.summary;
+
+  return (
+    <div
+      className="flex items-center"
+      style={{
+        gap: 14,
+        padding: "14px 28px",
+        background: "linear-gradient(90deg, rgba(250, 204, 21, 0.08) 0%, rgba(234, 88, 12, 0.05) 100%), #FFFBF5",
+        borderTop: "1px solid #EAE0CE",
+        borderBottom: "1px solid #EAE0CE",
+        borderLeft: `4px solid ${laneColor}`
+      }}
+    >
+      <span
+        aria-hidden="true"
+        className="grid place-items-center shrink-0"
+        style={{
+          width: 36,
+          height: 36,
+          borderRadius: 10,
+          background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
+          color: "#FFFBF5"
+        }}
+      >
+        <Sparkles size={17} strokeWidth={1.75} aria-hidden="true" />
+      </span>
+      <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
+        <div className="inline-flex items-center" style={{ gap: 8 }}>
+          <span
+            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#EA580C]"
+            style={{ letterSpacing: "1.2px" }}
+          >
+            Empieza aquí
+          </span>
+          <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "#8A8073" }} />
+          <span
+            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
+            style={{ color: laneColor, letterSpacing: "0.8px" }}
+          >
+            {LANE_LABEL[targetNode.lane]} · {targetNode.label}
+          </span>
+        </div>
+        <p
+          className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.4] text-[#1A1410]"
+          style={{ overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}
+        >
+          {reason}
+        </p>
+      </div>
+      <div className="inline-flex items-center shrink-0" style={{ gap: 8 }}>
+        {!hasPrompt ? (
+          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073] hidden sm:inline">
+            sin propuesta automática
+          </span>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => {
+            onSelectNode(targetNode.id);
+            if (hasPrompt) onOpenRunbook();
+          }}
+          className="inline-flex items-center bg-[#1A1410]"
+          style={{ gap: 6, padding: "9px 14px", borderRadius: 6 }}
+        >
+          <WandSparkles size={13} strokeWidth={1.75} className="text-[#FFFBF5]" aria-hidden="true" />
+          <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]">
+            {ctaLabel}
+          </span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
  * Hero (frame VqpXu) — eyebrow + titular + lead
  * ============================================================ */
-function Hero({ canvas }: { canvas: CanvasData }) {
-  const blocked = canvas.blockedBy.length;
-  const approvals = canvas.requiresHumanApproval.length;
+function Hero({
+  canvas,
+  webdockInventory
+}: {
+  canvas: CanvasData;
+  webdockInventory: DashboardData["webdockInventory"];
+}) {
+  const totalNodes = canvas.nodes.length;
+  const readyNodes = canvas.nodes.filter((n) => n.status === "ready").length;
+  const blockedNodes = canvas.nodes.filter(
+    (n) => n.status === "blocked" || n.status === "needs_review" || n.status === "requires_approval"
+  ).length;
+  const liveBadge = webdockInventory.source.kind === "live" ? "Webdock vivo" : "Webdock mock";
   return (
     <header
       className="flex flex-col bg-[#FFFBF5]"
@@ -206,21 +347,97 @@ function Hero({ canvas }: { canvas: CanvasData }) {
         </span>
         <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "#8A8073" }} />
         <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
-          contrato · /v1/openclaw/live-canvas
+          {readyNodes} / {totalNodes} pasos listos · {blockedNodes} esperan tu revisión
+        </span>
+        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "#8A8073" }} />
+        <span
+          className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
+          style={{
+            padding: "2px 6px",
+            borderRadius: 4,
+            background: webdockInventory.source.kind === "live" ? "#DCFCE7" : "#FEF3C7",
+            color: webdockInventory.source.kind === "live" ? "#15803D" : "#B45309"
+          }}
+        >
+          {liveBadge}
         </span>
       </div>
       <h1
         className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[#1A1410]"
         style={{ letterSpacing: "-0.4px" }}
       >
-        Flujo supervisado de OpenClaw.
+        El viaje del servidor a infraestructura de envío.
       </h1>
       <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
-        Pipeline GET-only desde el servidor físico hasta la reputación. {blocked} bloqueo
-        {blocked === 1 ? "" : "s"} activo{blocked === 1 ? "" : "s"} · {approvals} aprobación
-        {approvals === 1 ? "" : "es"} humana{approvals === 1 ? "" : "s"} requerida{approvals === 1 ? "" : "s"}.
+        OpenClaw te muestra cada paso del provisioning supervisado: del servidor físico
+        en Popayán hasta que las IPs estén calentadas y la reputación firme. El panel
+        es solo lectura — las aprobaciones se firman afuera con regla de dos personas.
       </p>
     </header>
+  );
+}
+
+/* ============================================================
+ * WebdockLiveBanner — Hito 5.11.A.
+ *
+ * Muestra el estado del collector Webdock + las propuestas de drift que el
+ * rules engine de OpenClaw produjo. Cuando todo está alineado, se oculta.
+ * ============================================================ */
+function WebdockLiveBanner({
+  inventory,
+  drift
+}: {
+  inventory: DashboardData["webdockInventory"];
+  drift: DashboardData["webdockDrift"];
+}) {
+  const isLive = inventory.source.kind === "live";
+  const proposalCount = drift.proposals.length;
+  if (isLive && proposalCount === 0) return null;
+
+  const tone: "info" | "warning" | "critical" = isLive
+    ? proposalCount > 0
+      ? "warning"
+      : "info"
+    : "info";
+  const palette = {
+    info: { bg: "#DBEAFE", fg: "#1D4ED8", border: "#1D4ED8" },
+    warning: { bg: "#FEF3C7", fg: "#B45309", border: "#B45309" },
+    critical: { bg: "#FEE2E2", fg: "#B91C1C", border: "#B91C1C" }
+  }[tone];
+
+  const message = !isLive
+    ? `Webdock collector en modo mock — configura WEBDOCK_API_KEY para leer servidores reales. ${inventory.summary.total} servidor${inventory.summary.total === 1 ? "" : "es"} de muestra cargado${inventory.summary.total === 1 ? "" : "s"}.`
+    : `OpenClaw detectó ${proposalCount} drift${proposalCount === 1 ? "" : "s"} entre Webdock vivo y tus sender_nodes locales. Revisa la propuesta principal abajo.`;
+
+  return (
+    <div
+      className="flex items-center"
+      style={{
+        gap: 12,
+        padding: "10px 28px",
+        background: palette.bg,
+        borderTop: `1px solid ${palette.border}33`,
+        borderBottom: `1px solid ${palette.border}33`
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{ width: 6, height: 6, borderRadius: 999, background: palette.fg }}
+      />
+      <span
+        className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
+        style={{ color: palette.fg, letterSpacing: "0.8px" }}
+      >
+        {isLive ? "Webdock vivo" : "Webdock mock"}
+      </span>
+      <span aria-hidden="true" style={{ width: 4, height: 4, borderRadius: 2, background: palette.fg, opacity: 0.5 }} />
+      <span className="text-[12px] font-[family-name:var(--font-sans)] text-[#1A1410] flex-1">
+        {message}
+      </span>
+      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#5C544A]">
+        {inventory.summary.running} corriendo · {inventory.summary.stopped} apagados · {inventory.summary.suspended} suspendidos
+      </span>
+    </div>
   );
 }
 

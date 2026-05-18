@@ -26,7 +26,8 @@ export const READ_ENDPOINTS = Object.freeze({
   iamSessions: "/v1/iam/sessions",
   complianceStatus: "/v1/compliance/status",
   openClawSkillsAudit: "/v1/openclaw/skills/audit",
-  openClawEvidence: "/v1/openclaw/evidence"
+  openClawEvidence: "/v1/openclaw/evidence",
+  webdockInventory: "/v1/webdock/inventory"
 } as const);
 
 export type ReadEndpoint = (typeof READ_ENDPOINTS)[keyof typeof READ_ENDPOINTS];
