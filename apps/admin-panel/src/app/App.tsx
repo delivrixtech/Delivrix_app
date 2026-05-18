@@ -48,7 +48,7 @@ export function App() {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="min-h-screen bg-[#FFFBF5] text-[#1A1410]">
-        <div className="grid grid-cols-[240px_minmax(0,1fr)] min-h-screen max-md:grid-cols-1">
+        <div className="grid min-h-screen grid-cols-1 md:grid-cols-[200px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]">
           <Sidebar
             activeSection={activeSection}
             onSelect={setActiveSection}
@@ -60,17 +60,19 @@ export function App() {
               isFetching={dashboard.isFetching}
               onRefresh={() => void dashboard.refetch()}
             />
-            <main className="min-w-0 flex-1 px-7 py-6 max-md:px-5">
-              {dashboard.isLoading ? <LoadingState /> : null}
-              {dashboard.isError ? (
-                <ErrorState
-                  message={errorMessage(dashboard.error)}
-                  onRefresh={() => void dashboard.refetch()}
-                />
-              ) : null}
-              {dashboard.data && !dashboard.isLoading && !dashboard.isError ? (
-                <SectionView section={activeSection} data={dashboard.data} />
-              ) : null}
+            <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-6 md:px-7 lg:px-10 xl:px-14 2xl:px-16">
+              <div className="mx-auto w-full" style={{ maxWidth: 1680 }}>
+                {dashboard.isLoading ? <LoadingState /> : null}
+                {dashboard.isError ? (
+                  <ErrorState
+                    message={errorMessage(dashboard.error)}
+                    onRefresh={() => void dashboard.refetch()}
+                  />
+                ) : null}
+                {dashboard.data && !dashboard.isLoading && !dashboard.isError ? (
+                  <SectionView section={activeSection} data={dashboard.data} />
+                ) : null}
+              </div>
             </main>
           </div>
         </div>
@@ -96,8 +98,7 @@ function Topbar({
   const section = sectionsById[activeSection];
   return (
     <header
-      className="flex items-center gap-4 border-b border-[#EAE0CE] bg-[#FFFBF5] px-7 max-md:px-5"
-      style={{ paddingTop: 16, paddingBottom: 16 }}
+      className="flex flex-wrap items-center gap-3 border-b border-[#EAE0CE] bg-[#FFFBF5] px-4 py-3 sm:flex-nowrap sm:gap-4 sm:px-5 sm:py-4 md:px-6 lg:px-7"
     >
       {/* Breadcrumb */}
       <nav aria-label="Breadcrumb" className="flex items-center gap-2 min-w-0">
@@ -177,8 +178,7 @@ function Sidebar({
 }) {
   return (
     <aside
-      className="sticky top-0 self-start flex h-screen flex-col gap-6 overflow-y-auto border-r border-[#EAE0CE] bg-[#F7F2EA] px-4 py-5 max-md:static max-md:h-auto max-md:overflow-visible max-md:border-r-0 max-md:border-b"
-      style={{ width: 240 }}
+      className="sticky top-0 self-start flex h-screen w-full flex-col gap-6 overflow-y-auto border-r border-[#EAE0CE] bg-[#F7F2EA] px-3 py-5 max-md:static max-md:h-auto max-md:overflow-visible max-md:border-r-0 max-md:border-b md:px-3 lg:px-4"
     >
       {/* sbBrand */}
       <div className="flex items-center gap-2.5 pb-4 pt-1 pl-1 pr-1">
