@@ -488,6 +488,226 @@ export interface AuditEventsPayload {
   events: AuditEvent[];
 }
 
+/* ============================================================
+ * Wave 2B: contratos del gateway que el panel cablea para
+ * eliminar slots hardcoded en Clústeres y Overview.
+ * ============================================================ */
+
+export type SenderNodeProvider = "webdock" | "proxmox" | "racknerd" | "manual" | string;
+
+export type SenderNodeStatusContract =
+  | "active"
+  | "warming"
+  | "paused"
+  | "quarantined"
+  | "degraded"
+  | "retired_pending_approval"
+  | "retired"
+  | string;
+
+export interface SenderNodeContract {
+  id: string;
+  label: string;
+  provider: SenderNodeProvider;
+  status: SenderNodeStatusContract;
+  ipAddress?: string;
+  hostname?: string;
+  dailyLimit: number;
+  warmupDay: number;
+}
+
+export interface SenderNodesPayload {
+  nodes: SenderNodeContract[];
+}
+
+export type IpReputationState = "healthy" | "watch" | "critical" | string;
+export type IpReputationRecommendedAction =
+  | "continue"
+  | "pause"
+  | "degrade"
+  | "quarantine"
+  | string;
+
+export interface IpReputationReport {
+  id: string;
+  generatedAt: string;
+  senderNodeId: string;
+  provider: SenderNodeProvider;
+  ipAddress?: string;
+  currentStatus: SenderNodeStatusContract;
+  recommendedStatus: SenderNodeStatusContract;
+  recommendedAction: IpReputationRecommendedAction;
+  state: IpReputationState;
+  score: number;
+  metrics: {
+    totalResults: number;
+    sentRate: number;
+    bounceRate: number;
+    deferredRate: number;
+    failedCount: number;
+    complaintCount: number;
+  };
+  signals: Array<{ kind: string; severity: ContractStatus; message: string }>;
+  thresholds: Record<string, number>;
+}
+
+export interface IpReputationReportsPayload {
+  reports: IpReputationReport[];
+}
+
+export type SendJobStatusContract = "queued" | "processing" | "completed" | "failed" | "blocked" | string;
+export type SendResultStatusContract =
+  | "sent"
+  | "delivered"
+  | "bounce"
+  | "complaint"
+  | "deferred"
+  | "failed"
+  | string;
+
+export interface SendResult {
+  id: string;
+  sendJobId: string;
+  senderNodeId?: string;
+  status: SendResultStatusContract;
+  smtpResponse?: string;
+  bounceCode?: string;
+  complaintSource?: string;
+  metadata: Record<string, unknown>;
+  occurredAt: string;
+}
+
+export interface SendResultsPayload {
+  results: SendResult[];
+}
+
+export interface StuckJob {
+  id: string;
+  status: SendJobStatusContract;
+  createdAt: string;
+  processingStartedAt?: string;
+  senderNodeId?: string;
+  failureReason?: string;
+}
+
+export interface StuckJobsPayload {
+  generatedAt: string;
+  staleAfterMs: number;
+  count: number;
+  stuckJobs: StuckJob[];
+}
+
+export interface CountByKey {
+  key: string;
+  count: number;
+}
+
+export interface OperationalSummary {
+  generatedAt: string;
+  totals: {
+    jobs: number;
+    auditEvents: number;
+    senderNodes: number;
+    sendResults: number;
+  };
+  jobsByStatus: Record<string, number>;
+  sendResultsByStatus: Record<string, number>;
+  senderNodesByStatus: Record<string, number>;
+  jobsByCampaign: CountByKey[];
+  sendResultsByCampaign: CountByKey[];
+  jobsBySenderNode: CountByKey[];
+  sendResultsBySenderNode: CountByKey[];
+  jobsBySenderDomain: CountByKey[];
+  jobsByRecipientDomain: CountByKey[];
+  auditActions: CountByKey[];
+  rateLimitCounters: Array<{
+    key: string;
+    windowSeconds: number;
+    count: number;
+    limit: number;
+  }>;
+}
+
+export interface OperationalSummaryPayload {
+  summary: OperationalSummary;
+}
+
+/* Wave 3A: contratos mock del backend para Seguridad + Aprendizaje */
+
+export type IamRoleColor = "amber" | "green" | "blue" | "violet" | "neutral";
+
+export interface IamRole {
+  id: string;
+  name: string;
+  color: IamRoleColor;
+  userCount: number;
+  permissions: string[];
+}
+
+export interface IamRolesPayload {
+  roles: IamRole[];
+}
+
+export type IamSessionTransport = "vpn" | "internal" | "mfa" | string;
+export type IamSessionRisk = "low" | "medium" | "high" | string;
+
+export interface IamSession {
+  actor: string;
+  location: string;
+  transport: IamSessionTransport;
+  startedAt: string;
+  lastSeenAt: string;
+  risk: IamSessionRisk;
+}
+
+export interface IamSessionsPayload {
+  sessions: IamSession[];
+}
+
+export type ComplianceControlState = "ok" | "warning" | "info" | "critical" | string;
+
+export interface ComplianceControl {
+  id: string;
+  title: string;
+  state: ComplianceControlState;
+  lines: string[];
+  runbookRef?: string;
+}
+
+export interface ComplianceStatusPayload {
+  controls: ComplianceControl[];
+}
+
+export interface OpenClawSkillsAuditEvent {
+  id: string;
+  occurredAt: string;
+  action: string;
+  actor: string;
+  body: string;
+  skillId?: string;
+  lessonId?: string;
+}
+
+export interface OpenClawSkillsAuditPayload {
+  events: OpenClawSkillsAuditEvent[];
+}
+
+export type OpenClawEvidenceImpact = "alto" | "medio" | "bajo" | string;
+
+export interface OpenClawEvidenceItem {
+  snapshotId: string;
+  type: string;
+  description: string;
+  actor: string;
+  capturedAt: string;
+  mode: "get-only" | string;
+  impact: OpenClawEvidenceImpact;
+}
+
+export interface OpenClawEvidencePayload {
+  curated: OpenClawEvidenceItem[];
+}
+
 export interface SnapshotIngestionPayload {
   snapshotIngestion: ContractBase & {
     status: ContractStatus;
@@ -545,6 +765,16 @@ export interface DashboardData {
   supervisedCollector: SupervisedCollectorPayload["supervisedCollector"];
   snapshotIngestion: SnapshotIngestionPayload["snapshotIngestion"];
   auditEvents: AuditEvent[];
+  senderNodes: SenderNodeContract[];
+  ipReputationReports: IpReputationReport[];
+  sendResults: SendResult[];
+  stuckJobs: StuckJobsPayload;
+  operationalSummary: OperationalSummary;
+  iamRoles: IamRole[];
+  iamSessions: IamSession[];
+  complianceControls: ComplianceControl[];
+  openClawSkillsAudit: OpenClawSkillsAuditEvent[];
+  openClawEvidence: OpenClawEvidenceItem[];
 }
 
 export async function loadDashboardData(): Promise<DashboardData> {
@@ -566,7 +796,17 @@ export async function loadDashboardData(): Promise<DashboardData> {
     openClawReadinessSignals,
     operatingNorth,
     killSwitch,
-    auditEvents
+    auditEvents,
+    senderNodes,
+    ipReputationReports,
+    sendResults,
+    stuckJobs,
+    operationalSummary,
+    iamRoles,
+    iamSessions,
+    complianceStatus,
+    openClawSkillsAudit,
+    openClawEvidence
   ] = await Promise.all([
     getJson<HealthPayload>(READ_ENDPOINTS.health),
     getJson<ClusterOverviewPayload>(READ_ENDPOINTS.adminClusters),
@@ -585,7 +825,17 @@ export async function loadDashboardData(): Promise<DashboardData> {
     getJson<ReadinessSignalsPayload>(READ_ENDPOINTS.openClawReadinessSignals),
     getJson<OperatingNorthPayload>(READ_ENDPOINTS.operatingNorth),
     getJson<KillSwitchPayload>(READ_ENDPOINTS.killSwitch),
-    getJson<AuditEventsPayload>(READ_ENDPOINTS.auditEvents)
+    getJson<AuditEventsPayload>(READ_ENDPOINTS.auditEvents),
+    getJson<SenderNodesPayload>(READ_ENDPOINTS.senderNodes),
+    getJson<IpReputationReportsPayload>(READ_ENDPOINTS.ipReputationReports),
+    getJson<SendResultsPayload>(READ_ENDPOINTS.sendResults),
+    getJson<StuckJobsPayload>(READ_ENDPOINTS.stuckJobs),
+    getJson<OperationalSummaryPayload>(READ_ENDPOINTS.operationalSummary),
+    getJson<IamRolesPayload>(READ_ENDPOINTS.iamRoles),
+    getJson<IamSessionsPayload>(READ_ENDPOINTS.iamSessions),
+    getJson<ComplianceStatusPayload>(READ_ENDPOINTS.complianceStatus),
+    getJson<OpenClawSkillsAuditPayload>(READ_ENDPOINTS.openClawSkillsAudit),
+    getJson<OpenClawEvidencePayload>(READ_ENDPOINTS.openClawEvidence)
   ]);
 
   return {
@@ -606,7 +856,17 @@ export async function loadDashboardData(): Promise<DashboardData> {
     readinessSignals: openClawReadinessSignals.signals,
     operatingNorth,
     killSwitch: killSwitch.killSwitch,
-    auditEvents: auditEvents.events ?? []
+    auditEvents: auditEvents.events ?? [],
+    senderNodes: senderNodes.nodes ?? [],
+    ipReputationReports: ipReputationReports.reports ?? [],
+    sendResults: sendResults.results ?? [],
+    stuckJobs,
+    operationalSummary: operationalSummary.summary,
+    iamRoles: iamRoles.roles ?? [],
+    iamSessions: iamSessions.sessions ?? [],
+    complianceControls: complianceStatus.controls ?? [],
+    openClawSkillsAudit: openClawSkillsAudit.events ?? [],
+    openClawEvidence: openClawEvidence.curated ?? []
   };
 }
 

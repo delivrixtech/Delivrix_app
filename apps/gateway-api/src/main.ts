@@ -13,7 +13,10 @@ import {
   buildAdminClusterOverview,
   buildAdminPanelWorkflow,
   buildBackupPlan,
+  buildComplianceStatus,
   buildDevOpsCollectorStatus,
+  buildIamRoles,
+  buildIamSessions,
   buildManualCollectorSnapshotIngestionContract,
   buildHardwareTelemetryHistory,
   buildHardwareTelemetrySnapshot,
@@ -24,9 +27,11 @@ import {
   buildOpenClawIncidentDemoReport,
   buildOpenClawLearningPlan,
   buildMvpFinalDemoReport,
+  buildOpenClawEvidence,
   buildOpenClawOnboardingState,
   buildOpenClawProvisioningState,
   buildOpenClawReadinessSignals,
+  buildOpenClawSkillsAudit,
   buildPhysicalHostSnapshot,
   evaluateSenderNodeHealth,
   evaluateIpReputation,
@@ -173,6 +178,26 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && request.url === "/v1/operating-north") {
       return json(response, 200, getOperatingNorthSnapshot());
+    }
+
+    if (request.method === "GET" && request.url === "/v1/iam/roles") {
+      return json(response, 200, buildIamRoles());
+    }
+
+    if (request.method === "GET" && request.url === "/v1/iam/sessions") {
+      return json(response, 200, buildIamSessions());
+    }
+
+    if (request.method === "GET" && request.url === "/v1/compliance/status") {
+      return json(response, 200, buildComplianceStatus());
+    }
+
+    if (request.method === "GET" && request.url === "/v1/openclaw/skills/audit") {
+      return json(response, 200, buildOpenClawSkillsAudit());
+    }
+
+    if (request.method === "GET" && request.url === "/v1/openclaw/evidence") {
+      return json(response, 200, buildOpenClawEvidence());
     }
 
     if (request.method === "POST" && request.url === "/v1/demo/mvp/blueprint") {

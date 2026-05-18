@@ -16,7 +16,17 @@ export const READ_ENDPOINTS = Object.freeze({
   openClawReadinessSignals: "/v1/openclaw/readiness-signals",
   operatingNorth: "/v1/operating-north",
   killSwitch: "/v1/kill-switch",
-  auditEvents: "/v1/audit-events"
+  auditEvents: "/v1/audit-events",
+  senderNodes: "/v1/sender-nodes",
+  ipReputationReports: "/v1/ip-reputation/reports",
+  sendResults: "/v1/send-results",
+  stuckJobs: "/v1/stuck-jobs",
+  operationalSummary: "/v1/operational-summary",
+  iamRoles: "/v1/iam/roles",
+  iamSessions: "/v1/iam/sessions",
+  complianceStatus: "/v1/compliance/status",
+  openClawSkillsAudit: "/v1/openclaw/skills/audit",
+  openClawEvidence: "/v1/openclaw/evidence"
 } as const);
 
 export type ReadEndpoint = (typeof READ_ENDPOINTS)[keyof typeof READ_ENDPOINTS];

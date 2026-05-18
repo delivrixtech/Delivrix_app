@@ -31,11 +31,11 @@ import {
 
 export function LearningSection({ data }: { data: DashboardData }) {
   return (
-    <section className="flex flex-col" style={{ gap: 20, maxWidth: 1352 }}>
+    <section className="flex flex-col" style={{ gap: 20 }}>
       <Header generatedAt={data.learningPlan.generatedAt} />
       <KpiRow data={data} />
       <PlanAndSkills data={data} />
-      <EvidenciaCurada />
+      <EvidenciaCurada data={data} />
       <ColaRetroalimentacion />
       <AuditStrip data={data} />
     </section>
@@ -47,7 +47,7 @@ export function LearningSection({ data }: { data: DashboardData }) {
  * ============================================================ */
 function Header({ generatedAt }: { generatedAt: string }) {
   return (
-    <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,598px)_minmax(0,523px)] items-start">
+    <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-start">
       <Welcome generatedAt={generatedAt} />
       <OpenClawPrompt />
     </div>
@@ -648,9 +648,11 @@ function SkillsCard({ data }: { data: DashboardData }) {
 }
 
 /* ============================================================
- * Evidencia curada — tabla 7 columnas
+ * Evidencia curada — tabla 7 columnas (cableada a /v1/openclaw/evidence)
  * ============================================================ */
-const EVIDENCE_ROWS = [
+type EvidenceRow = readonly [string, string, string, string, string, string, string];
+
+const EVIDENCE_FALLBACK: readonly EvidenceRow[] = [
   ["snap-7f2a91c4", "DNS drift", "Zona delivrix.io con SPF/DKIM en derivación", "operador@delivrix", "2026-05-14", "GET-only", "alto"],
   ["snap-7e44ab21", "Promo skill", "Habilidad 'Recomendar degradación' propone reducir warming", "openclaw-eval", "2026-05-14", "GET-only", "alto"],
   ["snap-b0f1ad12", "Evidencia humana", "Operador marca DNS como 'pendiente de propagación'", "operador@delivrix", "2026-05-14", "GET-only", "medio"],
@@ -659,7 +661,28 @@ const EVIDENCE_ROWS = [
   ["snap-fa07b3c2", "Curated lesson", "IP 185.243.12.031 etiquetada como transactional EU", "operador@delivrix", "2026-05-12", "GET-only", "bajo"]
 ];
 
-function EvidenciaCurada() {
+function modeLabel(mode: string): string {
+  if (mode === "get-only" || mode === "GET-only") return "GET-only";
+  return mode;
+}
+
+function buildEvidenceRows(data: DashboardData): readonly EvidenceRow[] {
+  if (data.openClawEvidence.length === 0) return EVIDENCE_FALLBACK;
+  return data.openClawEvidence.map(
+    (e) => [
+      e.snapshotId,
+      e.type,
+      e.description,
+      e.actor,
+      e.capturedAt,
+      modeLabel(e.mode),
+      e.impact
+    ] as const
+  );
+}
+
+function EvidenciaCurada({ data }: { data: DashboardData }) {
+  const rows = buildEvidenceRows(data);
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -724,15 +747,15 @@ function EvidenciaCurada() {
       </div>
 
       <div className="flex flex-col">
-        {EVIDENCE_ROWS.map((row, i) => (
+        {rows.map((row, i) => (
           <div
-            key={i}
+            key={`${row[0]}-${i}`}
             className="grid items-center"
             style={{
               gridTemplateColumns: "120px 140px minmax(0,1fr) 110px 120px 120px 80px",
               gap: 12,
               padding: "12px 20px",
-              borderBottom: i < EVIDENCE_ROWS.length - 1 ? "1px solid #EAE0CE" : "none"
+              borderBottom: i < rows.length - 1 ? "1px solid #EAE0CE" : "none"
             }}
           >
             <code className="text-[11px] font-[family-name:var(--font-mono)] text-[#1A1410]">{row[0]}</code>
@@ -913,6 +936,16 @@ function FeedbackRow({
  * Audit strip (dark) — 5 audit rows con sha256 hashes
  * ============================================================ */
 function buildLearningAuditLines(data: DashboardData) {
+  // Preferir el contrato dedicado /v1/openclaw/skills/audit cuando trae datos.
+  if (data.openClawSkillsAudit.length > 0) {
+    return data.openClawSkillsAudit.map((e) => ({
+      ts: formatTimeOnly(e.occurredAt),
+      action: e.action,
+      body: `${e.actor} · ${e.body}`,
+      hash: e.id
+    }));
+  }
+  // Fallback: filtrar el audit log genérico.
   const events = filterAuditEvents(
     data.auditEvents,
     ["openclaw", "learning", "lesson", "skill", "evaluation", "feedback", "promote"],
