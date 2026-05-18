@@ -1,0 +1,8 @@
+{
+  "IamActionDefinition": {
+    "PolicyArn": "arn:aws:iam::397450413307:policy/DelivrixOpenClawBedrockDeny",
+    "Users": [
+      "delivrix-openclaw-prod"
+    ]
+  }
+}

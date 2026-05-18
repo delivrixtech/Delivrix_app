@@ -13,3 +13,6 @@ yarn-error.log*
 .cache/
 runtime/
 clonado/
+.aws-secrets/
+.venv-awscli/
+.audit/*.txt
