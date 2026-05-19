@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
   ProxmoxAdapter,
@@ -53,8 +54,13 @@ import {
   runOpenClawScheduler,
   buildOpenClawTopologyPlan,
   buildSupervisedCollectorPlan,
+  executePauseIpRunbook,
+  executeQuarantineRunbook,
+  executeRegisterSenderNodeRunbook,
+  executeWarmingStepRunbook,
   getOpenClawOnboardingQuestionnaire,
   getOperatingNorthSnapshot,
+  revertRunbook,
   requestRateLimitRules,
   senderNodeRateLimitRule,
   simulateBackup,
@@ -65,11 +71,15 @@ import {
   type IpReputationExternalSignal,
   type DelivrixMvpDemoBlueprintInput,
   type OpenClawOnboardingInput,
+  type OpenClawCanvasPromptCard,
   type OpenClawProvisioningDryRunInput,
   type OpenClawRunbookInput,
   type OpenClawSchedulerInput,
   type OpenClawTopologyPlannerInput,
+  type QuarantineRevertTargetStatus,
   type RegisterSenderNodeInput,
+  type RunbookContext,
+  type RunbookId,
   type SuppressionReason,
   type SendRequest,
   type SenderNodeManualAction,
@@ -77,6 +87,7 @@ import {
   type StuckJobRecoveryAction
 } from "../../../packages/domain/src/index.ts";
 import {
+  InvalidAuditEventError,
   LocalFileAuditLog,
   LocalFileBackupSimulationStore,
   LocalFileIpReputationReportStore,
@@ -88,6 +99,25 @@ import {
   LocalFileSuppressionList
 } from "../../../packages/local-store/src/index.ts";
 import { LocalFileSendQueue } from "../../../packages/queue/src/index.ts";
+import {
+  cleanupApprovalNonces,
+  issueApprovalToken,
+  listApprovalNoncesForTarget,
+  reconstructApprovalToken,
+  validateApprovalToken
+} from "./security/approval-token.ts";
+import {
+  resolveBusinessHoursQuorum,
+  resolveGatewayNow,
+  type QuorumResolution
+} from "./security/business-hours.ts";
+import { validateOpenClawHmac } from "./security/hmac.ts";
+import {
+  consumeRollbackSnapshot,
+  getRollbackSnapshot,
+  listRollbackSnapshots,
+  persistRollbackSnapshot
+} from "./security/rollback-snapshot.ts";
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
@@ -113,6 +143,170 @@ const requestRateLimitProfile = {
   senderDomainDailyLimit: Number(process.env.RATE_LIMIT_SENDER_DOMAIN_DAILY ?? 300),
   recipientDomainDailyLimit: Number(process.env.RATE_LIMIT_RECIPIENT_DOMAIN_DAILY ?? 100)
 };
+
+interface AgentProposal {
+  id: string;
+  category: string;
+  severity: "low" | "medium" | "high" | "critical";
+  headline: string;
+  body: string;
+  evidenceRefs: string[];
+  runbookRef: string;
+  targetRef: string;
+  delivrix_actions_required: string[];
+}
+
+interface AgentProposalRequest {
+  proposal?: Partial<AgentProposal>;
+  audit?: {
+    skillSlug?: string;
+    modelVersion?: string;
+    promptVersion?: string;
+    tokensUsed?: number;
+  };
+  schemaVersion?: string;
+}
+
+interface AuditBatchRequest {
+  batchId?: string;
+  events?: Array<Record<string, unknown> & {
+    id?: string;
+    prevHash?: string;
+    hash?: string;
+  }>;
+}
+
+interface RunbookExecuteRequest {
+  proposalId?: string;
+  runbookId?: string;
+  input?: unknown;
+}
+
+interface RunbookRevertRequest {
+  rollbackToken?: string;
+  reason?: string;
+  metadata?: {
+    targetStatus?: string;
+  };
+}
+
+interface StoredProposal extends AgentProposal {
+  receivedAt: string;
+  expiresAt: string;
+  status: "pending" | "resolved" | "expired";
+  requiresApproval: boolean;
+  requiredApprovals: number;
+  resolution?: {
+    decision: "allow" | "reject";
+    resolvedAt: string;
+    approverIds?: string[];
+  };
+  quorumResolution?: (QuorumResolution | { requiredApprovals: number; mode: "static" });
+  execution?: {
+    executedAt: string;
+    runbookId: RunbookId;
+    rollbackToken: string;
+    rollbackExpiresAt: string;
+    newState: unknown;
+  };
+}
+
+type AgentPermissionCategory =
+  | "allowed_read_only"
+  | "allowed_dry_run"
+  | "supervised_local_state"
+  | "future_live_requires_new_phase"
+  | "prohibited";
+
+type AgentPermissionRejectReason =
+  | "unknown_action"
+  | "prohibited_action"
+  | "live_blocked_hito_5_11_b"
+  | "human_approval_missing"
+  | "kill_switch_armed"
+  | "schema_mismatch";
+
+interface AgentPermissionEntry {
+  actionId: string;
+  category: AgentPermissionCategory;
+}
+
+const proposalsStore: StoredProposal[] = [];
+const executedProposalIds = new Set<string>();
+const proposalTtlMs = 60 * 60 * 1000;
+const agentPermissionMatrix: AgentPermissionEntry[] = [
+  permission("read_health", "allowed_read_only"),
+  permission("read_admin_clusters", "allowed_read_only"),
+  permission("read_admin_overview", "allowed_read_only"),
+  permission("read_admin_workflow", "allowed_read_only"),
+  permission("read_collector_snapshot_ingestion", "allowed_read_only"),
+  permission("read_collector_status", "allowed_read_only"),
+  permission("read_collector_supervised_plan", "allowed_read_only"),
+  permission("read_hardware_physical_host", "allowed_read_only"),
+  permission("read_hardware_telemetry_history", "allowed_read_only"),
+  permission("read_hardware_telemetry_latest", "allowed_read_only"),
+  permission("read_openclaw_learning_plan", "allowed_read_only"),
+  permission("read_openclaw_live_canvas", "allowed_read_only"),
+  permission("read_openclaw_onboarding_state", "allowed_read_only"),
+  permission("read_openclaw_provisioning_state", "allowed_read_only"),
+  permission("read_openclaw_readiness_signals", "allowed_read_only"),
+  permission("read_operating_north", "allowed_read_only"),
+  permission("read_kill_switch", "allowed_read_only"),
+  permission("read_audit_events", "allowed_read_only"),
+  permission("read_sender_nodes", "allowed_read_only"),
+  permission("read_ip_reputation_reports", "allowed_read_only"),
+  permission("read_send_results", "allowed_read_only"),
+  permission("read_stuck_jobs", "allowed_read_only"),
+  permission("read_operational_summary", "allowed_read_only"),
+  permission("read_iam_roles", "allowed_read_only"),
+  permission("read_iam_sessions", "allowed_read_only"),
+  permission("read_compliance_status", "allowed_read_only"),
+  permission("read_openclaw_skills_audit", "allowed_read_only"),
+  permission("read_openclaw_evidence", "allowed_read_only"),
+  permission("read_webdock_inventory", "allowed_read_only"),
+  permission("propose_warming_step", "allowed_dry_run"),
+  permission("propose_pause_ip", "allowed_dry_run"),
+  permission("propose_rotate_dns", "allowed_dry_run"),
+  permission("propose_register_sender_node", "allowed_dry_run"),
+  permission("propose_quarantine", "allowed_dry_run"),
+  permission("propose_postfix_config", "allowed_dry_run"),
+  permission("propose_topology_plan", "allowed_dry_run"),
+  permission("propose_provisioning_plan", "allowed_dry_run"),
+  permission("generate_daily_report", "allowed_dry_run"),
+  permission("evaluate_webdock_drift", "allowed_dry_run"),
+  permission("register_sender_node_local", "supervised_local_state"),
+  permission("update_sender_node_metadata", "supervised_local_state"),
+  permission("mark_evidence_curated", "supervised_local_state"),
+  permission("snooze_proposal", "supervised_local_state"),
+  permission("record_human_decision", "supervised_local_state"),
+  permission("proxmox_live_create_vps", "future_live_requires_new_phase"),
+  permission("proxmox_live_destroy_vps", "future_live_requires_new_phase"),
+  permission("webdock_create_server", "future_live_requires_new_phase"),
+  permission("webdock_destroy_server", "future_live_requires_new_phase"),
+  permission("webdock_snapshot_restore", "future_live_requires_new_phase"),
+  permission("dns_live_change", "future_live_requires_new_phase"),
+  permission("dns_record_delete", "future_live_requires_new_phase"),
+  permission("smtp_send_real_email", "future_live_requires_new_phase"),
+  permission("postfix_apply_live_config", "future_live_requires_new_phase"),
+  permission("tls_cert_renew_live", "future_live_requires_new_phase"),
+  permission("ssh_root_access", "future_live_requires_new_phase"),
+  permission("ssh_exec_command", "future_live_requires_new_phase"),
+  permission("smtp_send_to_unconfirmed_recipient", "prohibited"),
+  permission("nfc_production_write", "prohibited"),
+  permission("nfc_activate_bridge", "prohibited"),
+  permission("ip_rotation_to_sustain_volume_after_reputation_event", "prohibited"),
+  permission("plaintext_smtp_credentials_in_production", "prohibited"),
+  permission("write_secrets_to_repo", "prohibited"),
+  permission("bypass_kill_switch", "prohibited"),
+  permission("export_pii_outside_audit", "prohibited"),
+  permission("auto_self_promote_ml_model", "prohibited"),
+  permission("purge_remote_queue", "prohibited")
+];
+const agentPermissionByAction = new Map(
+  agentPermissionMatrix.map((entry) => [entry.actionId, entry])
+);
+
+setInterval(() => cleanupApprovalNonces(), 60_000).unref();
 
 const server = createServer(async (request, response) => {
   try {
@@ -1468,6 +1662,728 @@ const server = createServer(async (request, response) => {
       });
     }
 
+    if (request.method === "POST" && request.url === "/v1/agent/proposals") {
+      const { raw, body } = await readRawBodyAndJson<AgentProposalRequest>(request);
+      const hmac = validateOpenClawHmac(request.headers, raw);
+
+      if (!hmac.ok) {
+        await auditLog.append({
+          actorType: "openclaw",
+          actorId: "openclaw-hostinger-prod",
+          action: "oc.hmac.validated.fail",
+          targetType: "agent_request",
+          targetId: "proposals",
+          riskLevel: "medium",
+          metadata: {
+            rejectReason: hmac.rejectReason
+          }
+        });
+
+        return json(response, 401, {
+          rejectReason: hmac.rejectReason
+        });
+      }
+
+      await auditLog.append({
+        actorType: "openclaw",
+        actorId: "openclaw-hostinger-prod",
+        action: "oc.hmac.validated.ok",
+        targetType: "agent_request",
+        targetId: "proposals",
+        riskLevel: "low",
+        metadata: {
+          timestamp: request.headers["x-openclaw-timestamp"]
+        }
+      });
+
+      if (!body) {
+        return json(response, 400, {
+          rejectReason: "schema_mismatch",
+          details: "Invalid JSON payload."
+        });
+      }
+
+      const proposal = normalizeAgentProposal(body.proposal);
+      const audit = body.audit;
+
+      if (
+        body.schemaVersion !== "2026-05-18.v1" ||
+        !proposal ||
+        !audit ||
+        !isNonEmptyString(audit.skillSlug) ||
+        !isNonEmptyString(audit.modelVersion) ||
+        !isNonEmptyString(audit.promptVersion)
+      ) {
+        return json(response, 400, {
+          rejectReason: "schema_mismatch",
+          details: "Missing proposal, audit, or schemaVersion fields."
+        });
+      }
+
+      const permissions = proposal.delivrix_actions_required.map((actionId) =>
+        evaluateAgentActionPermission(actionId, {
+          humanApproved: false,
+          killSwitchEnabled: false,
+          schemaVersion: body.schemaVersion
+        })
+      );
+      const terminalRejection = permissions.find(
+        (decision) => decision.decision === "reject" && decision.rejectReason !== "human_approval_missing"
+      );
+
+      if (terminalRejection && terminalRejection.rejectReason) {
+        await auditLog.append({
+          actorType: "openclaw",
+          actorId: "openclaw-hostinger-prod",
+          action: "oc.permission.rejected",
+          targetType: "proposal",
+          targetId: proposal.id,
+          riskLevel: "high",
+          metadata: {
+            actionId: terminalRejection.actionId,
+            rejectReason: terminalRejection.rejectReason,
+            skillSlug: audit.skillSlug,
+            category: proposal.category,
+            targetRef: proposal.targetRef
+          }
+        });
+
+        return json(response, httpStatusForPermissionReject(terminalRejection.rejectReason), {
+          rejectReason: terminalRejection.rejectReason,
+          details: `Action ${terminalRejection.actionId} blocked by matrix`
+        });
+      }
+
+      const now = new Date();
+      pruneExpiredProposals(now);
+
+      const hash = hashProposal(proposal);
+      const existing = findPendingProposalByHash(hash, now);
+      const requiresApproval = permissions.some(
+        (decision) => decision.category === "supervised_local_state"
+      );
+
+      if (existing) {
+        return json(response, 200, {
+          proposalId: existing.id,
+          injectedIntoCanvas: true,
+          duplicate: true,
+          requiresApproval: existing.requiresApproval,
+          requiredApprovals: existing.requiredApprovals
+        });
+      }
+
+      const stored: StoredProposal = {
+        ...proposal,
+        receivedAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + proposalTtlMs).toISOString(),
+        status: "pending",
+        requiresApproval,
+        requiredApprovals: getRequiredApprovalsForRunbook(getRunbookIdForProposal(proposal))
+      };
+      proposalsStore.push(stored);
+
+      await auditLog.append({
+        actorType: "openclaw",
+        actorId: "openclaw-hostinger-prod",
+        action: "oc.proposal.submitted",
+        targetType: "proposal",
+        targetId: proposal.id,
+        riskLevel: riskLevelFromProposalSeverity(proposal.severity),
+        metadata: {
+          category: proposal.category,
+          severity: proposal.severity,
+          requiresApproval,
+          targetRef: proposal.targetRef,
+          proposalHash: hash,
+          runbookRef: proposal.runbookRef,
+          skillSlug: audit.skillSlug,
+          modelVersion: audit.modelVersion,
+          promptVersion: audit.promptVersion,
+          tokensUsed: audit.tokensUsed
+        }
+      });
+
+      return json(response, 200, {
+        proposalId: proposal.id,
+        injectedIntoCanvas: true,
+        duplicate: false,
+        requiresApproval,
+        requiredApprovals: stored.requiredApprovals
+      });
+    }
+
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/agent/audit/batch") {
+      const { raw, body } = await readRawBodyAndJson<AuditBatchRequest>(request);
+      const hmac = validateOpenClawHmac(request.headers, raw);
+
+      if (!hmac.ok) {
+        return json(response, 401, {
+          rejectReason: hmac.rejectReason
+        });
+      }
+
+      if (!body || !Array.isArray(body.events) || body.events.length === 0) {
+        return json(response, 400, {
+          rejectReason: "schema_mismatch"
+        });
+      }
+
+      if (body.events.length > 50) {
+        return json(response, 400, {
+          rejectReason: "batch_too_large",
+          max: 50
+        });
+      }
+
+      const batchId = isUuid(body.batchId) ? body.batchId : randomUUID();
+      const accepted: string[] = [];
+      const rejected: Array<{ id: string; reason: string }> = [];
+
+      await auditLog.append({
+        actorType: "system",
+        actorId: "gateway-api",
+        action: "oc.audit.batch_received",
+        targetType: "audit_batch",
+        targetId: batchId,
+        riskLevel: "low",
+        decision: "n/a",
+        metadata: {
+          eventCount: body.events.length,
+          sourceActor: "openclaw-hostinger-prod"
+        }
+      });
+
+      for (const incoming of body.events) {
+        try {
+          const expectedPrev = auditLog.getLastHashSync();
+          if (typeof incoming.prevHash === "string" && incoming.prevHash && incoming.prevHash !== expectedPrev) {
+            await auditLog.append({
+              actorType: "system",
+              actorId: "gateway-api",
+              action: "oc.audit.chain_continuity_drift",
+              targetType: "audit_event",
+              targetId: typeof incoming.id === "string" ? incoming.id : "unknown",
+              riskLevel: "medium",
+              decision: "n/a",
+              metadata: {
+                expectedPrev,
+                agentClaimedPrev: incoming.prevHash,
+                note: "Gateway recalcula prevHash; el del agente es referencial."
+              }
+            });
+          }
+
+          const { prevHash: _prevHash, hash: _hash, ...eventWithoutChain } = incoming;
+          const persisted = await auditLog.append(eventWithoutChain as Parameters<typeof auditLog.append>[0]);
+          accepted.push(persisted.id);
+        } catch (error) {
+          const reason = error instanceof InvalidAuditEventError ? "schema_mismatch" : "gateway_internal_error";
+          rejected.push({
+            id: typeof incoming.id === "string" ? incoming.id : "unknown",
+            reason
+          });
+        }
+      }
+
+      await auditLog.append({
+        actorType: "system",
+        actorId: "gateway-api",
+        action: "oc.audit.batch_persisted",
+        targetType: "audit_batch",
+        targetId: batchId,
+        riskLevel: rejected.length > 0 ? "medium" : "low",
+        decision: "n/a",
+        metadata: {
+          acceptedCount: accepted.length,
+          rejectedCount: rejected.length,
+          rejectedDetails: rejected
+        }
+      });
+
+      return json(response, 200, {
+        batchId,
+        accepted,
+        rejected
+      });
+    }
+
+    const approveMatch = request.url?.match(/^\/v1\/agent\/proposals\/([^/]+)\/approve$/);
+
+    if (request.method === "POST" && approveMatch) {
+      const proposalId = decodeURIComponent(approveMatch[1] ?? "");
+      const operatorId = request.headers["x-operator-id"];
+
+      if (!isNonEmptyString(operatorId) || !operatorId.startsWith("op-")) {
+        return json(response, 401, {
+          rejectReason: "operator_unauthenticated"
+        });
+      }
+
+      const proposal = proposalsStore.find((candidate) => candidate.id === proposalId);
+
+      if (!proposal) {
+        return json(response, 404, {
+          rejectReason: "proposal_not_found"
+        });
+      }
+
+      if (proposal.status !== "pending") {
+        return json(response, 409, {
+          rejectReason: "proposal_not_pending",
+          currentStatus: proposal.status
+        });
+      }
+
+      if (!proposal.requiresApproval) {
+        return json(response, 400, {
+          rejectReason: "proposal_does_not_require_approval"
+        });
+      }
+
+      const runbookId = getRunbookIdForProposal(proposal);
+      const quorumResolution = resolveQuorumForProposal(proposal, resolveGatewayNow());
+      proposal.requiredApprovals = quorumResolution.requiredApprovals;
+
+      const supervisedAction = proposal.delivrix_actions_required.find(
+        (actionId) => matrixCategoryOf(actionId) === "supervised_local_state"
+      );
+
+      if (!supervisedAction) {
+        return json(response, 400, {
+          rejectReason: "proposal_has_no_supervised_action"
+        });
+      }
+
+      const killSwitch = await killSwitchStore.get();
+      const decision = evaluateAgentActionPermission(supervisedAction, {
+        humanApproved: true,
+        killSwitchEnabled: killSwitch.enabled,
+        schemaVersion: "2026-05-18.v1"
+      });
+
+      if (decision.decision === "reject" && decision.rejectReason) {
+        await auditLog.append({
+          actorType: "operator",
+          actorId: operatorId,
+          action: "oc.permission.rejected",
+          targetType: "proposal",
+          targetId: proposal.id,
+          riskLevel: "high",
+          metadata: {
+            actionId: supervisedAction,
+            rejectReason: decision.rejectReason,
+            targetRef: proposal.targetRef
+          }
+        });
+
+        return json(response, httpStatusForPermissionReject(decision.rejectReason), {
+          rejectReason: decision.rejectReason
+        });
+      }
+
+      cleanupApprovalNonces();
+      const existingIssued = listApprovalNoncesForTarget({
+        actionId: supervisedAction,
+        targetType: "proposal",
+        targetId: proposal.targetRef,
+        status: "issued"
+      });
+
+      if (existingIssued.some((row) => row.approverId === operatorId)) {
+        return json(response, 409, {
+          rejectReason: "approver_already_signed",
+          quorum: approvalQuorumForRows(existingIssued, proposal.requiredApprovals, quorumResolution)
+        });
+      }
+
+      const token = issueApprovalToken({
+        actionId: supervisedAction,
+        targetType: "proposal",
+        targetId: proposal.targetRef,
+        approverId: operatorId
+      });
+      if (runbookId === "incident-quarantine" && !proposal.quorumResolution) {
+        proposal.quorumResolution = quorumResolution;
+        await auditLog.append({
+          actorType: "system",
+          actorId: "gateway-api",
+          action: "oc.approval.quorum_resolved",
+          targetType: "proposal",
+          targetId: proposal.id,
+          riskLevel: "medium",
+          decision: "n/a",
+          metadata: {
+            runbookId,
+            mode: "mode" in quorumResolution ? quorumResolution.mode : "static",
+            requiredApprovals: quorumResolution.requiredApprovals,
+            serverTime: "serverTime" in quorumResolution ? quorumResolution.serverTime : null,
+            operatorLocalHour: "operatorLocalHour" in quorumResolution ? quorumResolution.operatorLocalHour : null
+          }
+        });
+      } else {
+        proposal.quorumResolution ??= quorumResolution;
+      }
+      const issued = listApprovalNoncesForTarget({
+        actionId: supervisedAction,
+        targetType: "proposal",
+        targetId: proposal.targetRef,
+        status: "issued"
+      });
+      const quorum = approvalQuorumForRows(issued, proposal.requiredApprovals, quorumResolution);
+
+      await auditLog.append({
+        actorType: "operator",
+        actorId: operatorId,
+        action: "oc.proposal.approved",
+        targetType: "proposal",
+        targetId: proposal.id,
+        riskLevel: "medium",
+        metadata: {
+          approvalTokenId: token.tokenId,
+          actionId: supervisedAction,
+          targetRef: proposal.targetRef
+        }
+      });
+      await auditLog.append({
+        actorType: "system",
+        actorId: "gateway-api",
+        action: "oc.approval_token.issued",
+        targetType: "approval_token",
+        targetId: token.tokenId,
+        riskLevel: "medium",
+        metadata: {
+          actionId: supervisedAction,
+          approverId: operatorId,
+          expiresAt: token.expiresAt
+        }
+      });
+
+      if (quorum.reached) {
+        const resolvedAt = new Date().toISOString();
+        proposal.status = "resolved";
+        proposal.resolution = {
+          decision: "allow",
+          resolvedAt,
+          approverIds: quorum.approverIds
+        };
+
+        await auditLog.append({
+          actorType: "system",
+          actorId: "gateway-api",
+          action: "oc.approval.quorum_reached",
+          targetType: "proposal",
+          targetId: proposal.id,
+          riskLevel: "medium",
+          decision: "allow",
+          humanApproved: true,
+          approverIds: quorum.approverIds,
+          metadata: {
+            requiredApprovals: proposal.requiredApprovals,
+            currentApprovals: quorum.current,
+            runbookId,
+            targetRef: proposal.targetRef
+          }
+        });
+      }
+
+      return json(response, 200, {
+        approvalToken: token,
+        quorum
+      });
+    }
+
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/agent/runbook/execute") {
+      const { raw, body } = await readRawBodyAndJson<RunbookExecuteRequest>(request);
+      const auth = validateRunbookExecuteAuthorization(request, raw);
+
+      if (!auth.ok) {
+        return json(response, 401, {
+          rejectReason: auth.rejectReason
+        });
+      }
+
+      if (!body || !isNonEmptyString(body.proposalId) || !isNonEmptyString(body.runbookId)) {
+        return json(response, 400, {
+          rejectReason: "schema_mismatch"
+        });
+      }
+
+      const proposal = proposalsStore.find((candidate) => candidate.id === body.proposalId);
+
+      if (!proposal) {
+        return json(response, 404, {
+          rejectReason: "proposal_not_found"
+        });
+      }
+
+      if (proposal.status !== "resolved") {
+        return json(response, 409, {
+          rejectReason: "proposal_not_resolved",
+          currentStatus: proposal.status
+        });
+      }
+
+      if (proposal.execution) {
+        return json(response, 409, {
+          rejectReason: "proposal_already_executed",
+          execution: proposal.execution
+        });
+      }
+
+      const runbookId = normalizeRunbookId(body.runbookId);
+      const expectedRunbookId = getRunbookIdForProposal(proposal);
+
+      if (!runbookId || runbookId !== expectedRunbookId) {
+        return json(response, 400, {
+          rejectReason: "unknown_runbook",
+          runbookId: body.runbookId,
+          expectedRunbookId
+        });
+      }
+
+      const supervisedAction = supervisedActionForProposal(proposal);
+
+      if (!supervisedAction) {
+        return json(response, 400, {
+          rejectReason: "proposal_has_no_supervised_action"
+        });
+      }
+
+      cleanupApprovalNonces();
+      const issued = listApprovalNoncesForTarget({
+        actionId: supervisedAction,
+        targetType: "proposal",
+        targetId: proposal.targetRef,
+        status: "issued"
+      });
+      const quorum = approvalQuorumForRows(issued, proposal.requiredApprovals);
+
+      if (!quorum.reached) {
+        return json(response, 401, {
+          rejectReason: "human_approval_missing",
+          quorum
+        });
+      }
+
+      const tokenRows = selectTokenRowsForQuorum(issued, proposal.requiredApprovals);
+
+      for (const row of tokenRows) {
+        const validation = validateApprovalToken(
+          reconstructApprovalToken(row),
+          {
+            actionId: supervisedAction,
+            targetType: "proposal",
+            targetId: proposal.targetRef
+          }
+        );
+
+        if (!validation.ok) {
+          return json(response, 401, {
+            rejectReason: validation.rejectReason,
+            tokenId: row.tokenId
+          });
+        }
+      }
+
+      const killSwitch = await killSwitchStore.get();
+      const occurredAt = new Date().toISOString();
+      const result = await dispatchRunbook(runbookId, body.input, proposal, {
+        proposalId: proposal.id,
+        approverIds: quorum.approverIds,
+        killSwitchState: killSwitch.enabled ? "active" : "armed",
+        occurredAt,
+        repository: senderNodeRegistry,
+        executedProposalIds,
+        persistRollbackSnapshot: (input) => persistRollbackSnapshot(input).rollbackToken
+      });
+
+      if (!result.ok) {
+        await auditLog.append({
+          actorType: "system",
+          actorId: "gateway-api",
+          action: result.rejectReason === "preconditions_failed"
+            ? "oc.runbook.preconditions_failed"
+            : `oc.runbook.${auditSlugForRunbook(runbookId)}.failed_partial`,
+          targetType: "runbook",
+          targetId: runbookId,
+          riskLevel: "high",
+          decision: "reject",
+          humanApproved: true,
+          approverIds: quorum.approverIds,
+          killSwitchState: killSwitch.enabled ? "active" : "armed",
+          metadata: {
+            proposalId: proposal.id,
+            detail: result.detail,
+            rejectReason: result.rejectReason
+          }
+        });
+
+        return json(response, 409, {
+          rejectReason: result.rejectReason,
+          detail: result.detail
+        });
+      }
+
+      const rollbackSnapshot = getRollbackSnapshot(result.rollbackToken);
+      const rollbackExpiresAt = rollbackSnapshot?.expiresAt ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      proposal.execution = {
+        executedAt: occurredAt,
+        runbookId,
+        rollbackToken: result.rollbackToken,
+        rollbackExpiresAt,
+        newState: result.newState
+      };
+
+      await auditLog.append({
+        actorType: "system",
+        actorId: "gateway-api",
+        action: result.auditAction,
+        targetType: "runbook",
+        targetId: runbookId,
+        riskLevel: runbookId === "pause-ip" || runbookId === "incident-quarantine" ? "high" : "medium",
+        decision: "allow",
+        humanApproved: true,
+        approverIds: quorum.approverIds,
+        killSwitchState: killSwitch.enabled ? "active" : "armed",
+        rollbackToken: result.rollbackToken,
+        metadata: {
+          proposalId: proposal.id,
+          targetRef: proposal.targetRef,
+          prevState: result.prevState,
+          newState: result.newState,
+          rollbackExpiresAt
+        }
+      });
+
+      if (runbookId === "incident-quarantine" && !process.env.NOTION_API_KEY) {
+        await auditLog.append({
+          actorType: "system",
+          actorId: "gateway-api",
+          action: "oc.quarantine.notion_skipped",
+          targetType: "runbook",
+          targetId: runbookId,
+          riskLevel: "medium",
+          decision: "n/a",
+          metadata: {
+            reason: "NOTION_API_KEY ausente; tarjeta critica Notion omitida.",
+            decisionFile: ".audit/decision-skip-notion-side-effect.md",
+            proposalId: proposal.id,
+            nodeId: isRecord(body.input) && isNonEmptyString(body.input.nodeId) ? body.input.nodeId : proposal.targetRef
+          }
+        });
+      }
+
+      return json(response, 200, {
+        runbookId,
+        rollbackToken: result.rollbackToken,
+        rollbackExpiresAt,
+        newState: result.newState
+      });
+    }
+
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/agent/runbook/revert") {
+      const operatorId = request.headers["x-operator-id"];
+
+      if (!isNonEmptyString(operatorId) || !operatorId.startsWith("op-")) {
+        return json(response, 401, {
+          rejectReason: "operator_unauthenticated"
+        });
+      }
+
+      const { body } = await readRawBodyAndJson<RunbookRevertRequest>(request);
+
+      if (!body || !isNonEmptyString(body.rollbackToken) || !isNonEmptyString(body.reason)) {
+        return json(response, 400, {
+          rejectReason: "schema_mismatch"
+        });
+      }
+
+      const snapshot = getRollbackSnapshot(body.rollbackToken);
+
+      if (!snapshot) {
+        return json(response, 404, {
+          rejectReason: "rollback_token_not_found"
+        });
+      }
+
+      if (snapshot.status !== "available") {
+        return json(response, 409, {
+          rejectReason: snapshot.status === "expired" ? "rollback_token_expired" : "rollback_token_consumed"
+        });
+      }
+
+      const targetStatus = normalizeQuarantineTargetStatus(body.metadata?.targetStatus);
+      const defaultedTargetStatus = snapshot.runbookId === "incident-quarantine" && !body.metadata?.targetStatus;
+      if (snapshot.runbookId === "incident-quarantine" && body.metadata?.targetStatus && !targetStatus) {
+        return json(response, 400, {
+          rejectReason: "invalid_target_status",
+          validValues: ["active", "retired", "quarantined"]
+        });
+      }
+      const nodeBeforeRevert = await senderNodeRegistry.get(snapshot.targetId);
+      const revertSnapshot = nodeBeforeRevert
+        ? persistRollbackSnapshot({
+            runbookId: `${snapshot.runbookId}-revert`,
+            targetType: "sender_node",
+            targetId: snapshot.targetId,
+            prevStateJson: JSON.stringify({
+              status: nodeBeforeRevert.status,
+              warmupDay: nodeBeforeRevert.warmupDay,
+              dailyLimit: nodeBeforeRevert.dailyLimit
+            })
+          })
+        : null;
+      const result = await revertRunbook({
+        snapshot,
+        repository: senderNodeRegistry,
+        metadata: snapshot.runbookId === "incident-quarantine" ? { targetStatus: targetStatus ?? undefined } : undefined
+      });
+
+      if (!result.ok) {
+        return json(response, 409, {
+          rejectReason: result.rejectReason,
+          detail: result.detail
+        });
+      }
+
+      if (!consumeRollbackSnapshot(body.rollbackToken)) {
+        return json(response, 409, {
+          rejectReason: "rollback_token_replay_detected"
+        });
+      }
+
+      await auditLog.append({
+        actorType: "operator",
+        actorId: operatorId,
+        action: `oc.runbook.${auditSlugForRunbook(snapshot.runbookId)}.reverted`,
+        targetType: "sender_node",
+        targetId: snapshot.targetId,
+        riskLevel: "high",
+        decision: "allow",
+        humanApproved: true,
+        approverIds: [operatorId],
+        rollbackToken: body.rollbackToken,
+        metadata: {
+          reason: body.reason,
+          restoredState: result.restoredState,
+          newState: result.newState,
+          rollbackToken: body.rollbackToken,
+          revertRollbackToken: revertSnapshot?.rollbackToken ?? null,
+          targetStatus: snapshot.runbookId === "incident-quarantine" ? targetStatus ?? "active" : null,
+          defaultedTargetStatus,
+          newStatus: isRecord(result.newState) && typeof result.newState.status === "string" ? result.newState.status : null
+        }
+      });
+
+      return json(response, 200, {
+        reverted: true,
+        restoredState: result.restoredState,
+        newState: result.newState,
+        revertRollbackToken: revertSnapshot?.rollbackToken ?? null
+      });
+    }
+
     if (request.method === "GET" && request.url === "/v1/openclaw/live-canvas") {
       const now = new Date();
       const physicalHost = buildPhysicalHostSnapshot({ now });
@@ -1494,6 +2410,7 @@ const server = createServer(async (request, response) => {
           provisioningState,
           readinessSignals,
           collector,
+          promptOverride: getActiveAgentProposalPrompt(now),
           now
         })
       });
@@ -1548,9 +2465,12 @@ const server = createServer(async (request, response) => {
       return json(response, 200, plan);
     }
 
-    if (request.method === "GET" && request.url === "/v1/audit-events") {
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/audit-events") {
+      const url = requestUrl(request);
+      const limit = Number(url.searchParams.get("limit"));
+      const events = await auditLog.list();
       return json(response, 200, {
-        events: await auditLog.list()
+        events: Number.isFinite(limit) && limit > 0 ? events.slice(-limit) : events
       });
     }
 
@@ -2655,6 +3575,464 @@ server.listen(port, host, () => {
   console.log(`gateway-api listening on http://${host}:${port}`);
 });
 
+function permission(actionId: string, category: AgentPermissionCategory): AgentPermissionEntry {
+  return { actionId, category };
+}
+
+function matrixCategoryOf(actionId: string): AgentPermissionCategory | undefined {
+  return agentPermissionByAction.get(actionId)?.category;
+}
+
+function evaluateAgentActionPermission(
+  actionId: string,
+  context: {
+    humanApproved: boolean;
+    killSwitchEnabled: boolean;
+    schemaVersion: string | undefined;
+  }
+): {
+  decision: "allow" | "reject";
+  actionId: string;
+  category: AgentPermissionCategory | "unknown";
+  rejectReason?: AgentPermissionRejectReason;
+} {
+  if (context.schemaVersion !== "2026-05-18.v1") {
+    return {
+      decision: "reject",
+      actionId,
+      category: "unknown",
+      rejectReason: "schema_mismatch"
+    };
+  }
+
+  const entry = agentPermissionByAction.get(actionId);
+
+  if (!entry) {
+    return {
+      decision: "reject",
+      actionId,
+      category: "unknown",
+      rejectReason: "unknown_action"
+    };
+  }
+
+  if (entry.category === "prohibited") {
+    return {
+      decision: "reject",
+      actionId,
+      category: entry.category,
+      rejectReason: "prohibited_action"
+    };
+  }
+
+  if (entry.category === "future_live_requires_new_phase") {
+    return {
+      decision: "reject",
+      actionId,
+      category: entry.category,
+      rejectReason: "live_blocked_hito_5_11_b"
+    };
+  }
+
+  if (entry.category === "supervised_local_state") {
+    if (context.killSwitchEnabled) {
+      return {
+        decision: "reject",
+        actionId,
+        category: entry.category,
+        rejectReason: "kill_switch_armed"
+      };
+    }
+
+    if (!context.humanApproved) {
+      return {
+        decision: "reject",
+        actionId,
+        category: entry.category,
+        rejectReason: "human_approval_missing"
+      };
+    }
+  }
+
+  return {
+    decision: "allow",
+    actionId,
+    category: entry.category
+  };
+}
+
+function httpStatusForPermissionReject(reason: AgentPermissionRejectReason): number {
+  if (reason === "schema_mismatch") return 400;
+  if (reason === "unknown_action") return 400;
+  if (reason === "human_approval_missing") return 401;
+  if (reason === "kill_switch_armed") return 423;
+  return 403;
+}
+
+function pruneExpiredProposals(now: Date): void {
+  for (const proposal of proposalsStore) {
+    if (proposal.status === "pending" && Date.parse(proposal.expiresAt) <= now.getTime()) {
+      proposal.status = "expired";
+    }
+  }
+}
+
+function findPendingProposalByHash(hash: string, now: Date): StoredProposal | undefined {
+  return proposalsStore.find(
+    (proposal) =>
+      proposal.status === "pending" &&
+      Date.parse(proposal.expiresAt) > now.getTime() &&
+      hashProposal(proposal) === hash
+  );
+}
+
+function getActiveAgentProposalPrompt(now: Date): OpenClawCanvasPromptCard | null {
+  pruneExpiredProposals(now);
+
+  const proposal = proposalsStore
+    .filter((candidate) => candidate.status !== "expired" && Date.parse(candidate.expiresAt) > now.getTime())
+    .sort((a, b) => Date.parse(b.receivedAt) - Date.parse(a.receivedAt))[0];
+
+  return proposal ? mapStoredProposalToPromptCard(proposal) : null;
+}
+
+function mapStoredProposalToPromptCard(proposal: StoredProposal): OpenClawCanvasPromptCard {
+  const approval = approvalStateForProposal(proposal);
+  return {
+    proposalId: proposal.id,
+    nodeId: nodeIdForProposal(proposal),
+    headline: proposal.headline,
+    body: proposal.body,
+    severity: proposal.severity,
+    requiresApproval: proposal.requiresApproval,
+    runbookId: getRunbookIdForProposal(proposal),
+    targetRef: proposal.targetRef,
+    requiredApprovals: proposal.requiredApprovals,
+    currentApprovals: approval.current,
+    quorumReached: approval.reached,
+    quorumResolution: proposal.quorumResolution,
+    signedByOperatorIds: approval.approverIds,
+    rollbackToken: proposal.execution?.rollbackToken,
+    rollbackExpiresAt: proposal.execution?.rollbackExpiresAt,
+    primaryAction: {
+      kind: "open_runbook",
+      label: "Revisar plan dry-run",
+      runbookRef: proposal.runbookRef
+    },
+    secondaryAction: {
+      kind: "snooze",
+      label: "Posponer"
+    },
+    evidenceRefs: proposal.evidenceRefs
+  };
+}
+
+function nodeIdForProposal(proposal: AgentProposal): string {
+  if (proposal.category.includes("register") || proposal.category.includes("orphan")) {
+    return "sender_nodes";
+  }
+
+  if (proposal.category.includes("pause") || proposal.category.includes("quarantine")) {
+    return "reputation_escalation";
+  }
+
+  if (proposal.category.includes("warming")) {
+    return "warming_plan";
+  }
+
+  return "onboarding_validate";
+}
+
+function getRunbookIdForProposal(proposal: Pick<AgentProposal, "runbookRef">): RunbookId {
+  return normalizeRunbookId(proposal.runbookRef) ?? "register-sender-node-local";
+}
+
+function normalizeRunbookId(value: string): RunbookId | null {
+  const normalized = value.toLowerCase();
+
+  if (normalized.includes("register-sender-node")) {
+    return "register-sender-node-local";
+  }
+
+  if (normalized.includes("warming-step")) {
+    return "warming-step";
+  }
+
+  if (normalized.includes("pause-ip")) {
+    return "pause-ip";
+  }
+
+  if (normalized.includes("incident-quarantine")) {
+    return "incident-quarantine";
+  }
+
+  return null;
+}
+
+function getRequiredApprovalsForRunbook(runbookId: RunbookId): number {
+  return runbookId === "warming-step" ? 2 : 1;
+}
+
+function resolveQuorumForProposal(
+  proposal: Pick<AgentProposal, "runbookRef"> & { quorumResolution?: StoredProposal["quorumResolution"] },
+  now: Date
+): QuorumResolution | { requiredApprovals: number; mode: "static" } {
+  if (proposal.quorumResolution) {
+    return proposal.quorumResolution;
+  }
+
+  const runbookId = getRunbookIdForProposal(proposal);
+
+  if (runbookId === "incident-quarantine") {
+    return resolveBusinessHoursQuorum(now, runbookId);
+  }
+
+  return {
+    requiredApprovals: getRequiredApprovalsForRunbook(runbookId),
+    mode: "static"
+  };
+}
+
+function supervisedActionForProposal(proposal: AgentProposal): string | null {
+  return proposal.delivrix_actions_required.find(
+    (actionId) => matrixCategoryOf(actionId) === "supervised_local_state"
+  ) ?? null;
+}
+
+function approvalStateForProposal(proposal: StoredProposal): {
+  current: number;
+  required: number;
+  reached: boolean;
+  approverIds: string[];
+} {
+  if (proposal.resolution?.approverIds?.length) {
+    const approverIds = [...new Set(proposal.resolution.approverIds)];
+    return {
+      current: approverIds.length,
+      required: proposal.requiredApprovals,
+      reached: approverIds.length >= proposal.requiredApprovals,
+      approverIds
+    };
+  }
+
+  const supervisedAction = supervisedActionForProposal(proposal);
+
+  if (!supervisedAction) {
+    return {
+      current: 0,
+      required: proposal.requiredApprovals,
+      reached: false,
+      approverIds: []
+    };
+  }
+
+  return approvalQuorumForRows(
+    listApprovalNoncesForTarget({
+      actionId: supervisedAction,
+      targetType: "proposal",
+      targetId: proposal.targetRef,
+      status: "issued"
+    }),
+    proposal.requiredApprovals,
+    proposal.quorumResolution
+  );
+}
+
+function approvalQuorumForRows(
+  rows: Array<{ approverId: string }>,
+  requiredApprovals: number,
+  resolution?: QuorumResolution | { mode: "static"; requiredApprovals: number }
+): {
+  current: number;
+  required: number;
+  reached: boolean;
+  approverIds: string[];
+  mode?: "business_hours" | "off_hours" | "static";
+  serverTime?: string;
+  operatorLocalHour?: number;
+} {
+  const approverIds = [...new Set(rows.map((row) => row.approverId))];
+
+  return {
+    current: approverIds.length,
+    required: requiredApprovals,
+    reached: approverIds.length >= requiredApprovals,
+    approverIds,
+    mode: resolution?.mode,
+    serverTime: resolution && "serverTime" in resolution ? resolution.serverTime : undefined,
+    operatorLocalHour: resolution && "operatorLocalHour" in resolution ? resolution.operatorLocalHour : undefined
+  };
+}
+
+function selectTokenRowsForQuorum<T extends { approverId: string }>(
+  rows: T[],
+  requiredApprovals: number
+): T[] {
+  const selected = new Map<string, T>();
+
+  for (const row of rows) {
+    if (!selected.has(row.approverId)) {
+      selected.set(row.approverId, row);
+    }
+
+    if (selected.size >= requiredApprovals) {
+      break;
+    }
+  }
+
+  return [...selected.values()];
+}
+
+async function dispatchRunbook(
+  runbookId: RunbookId,
+  input: unknown,
+  proposal: StoredProposal,
+  ctx: RunbookContext
+) {
+  if (runbookId === "register-sender-node-local") {
+    return executeRegisterSenderNodeRunbook(input as RegisterSenderNodeInput, ctx);
+  }
+
+  if (runbookId === "warming-step") {
+    const runbookInput = isRecord(input) && isNonEmptyString(input.nodeId)
+      ? { nodeId: input.nodeId }
+      : { nodeId: proposal.targetRef };
+    return executeWarmingStepRunbook(runbookInput, ctx);
+  }
+
+  if (runbookId === "incident-quarantine") {
+    const runbookInput = isRecord(input)
+      ? {
+          nodeId: isNonEmptyString(input.nodeId) ? input.nodeId : proposal.targetRef,
+          reason: typeof input.reason === "string" ? input.reason : proposal.body,
+          evidenceRefs: Array.isArray(input.evidenceRefs)
+            ? input.evidenceRefs.filter((item): item is string => typeof item === "string")
+            : proposal.evidenceRefs
+        }
+      : {
+          nodeId: proposal.targetRef,
+          reason: proposal.body,
+          evidenceRefs: proposal.evidenceRefs
+        };
+    return executeQuarantineRunbook(runbookInput, ctx);
+  }
+
+  const runbookInput = isRecord(input) && isNonEmptyString(input.nodeId)
+    ? { nodeId: input.nodeId, reason: typeof input.reason === "string" ? input.reason : undefined }
+    : { nodeId: proposal.targetRef };
+  return executePauseIpRunbook(runbookInput, ctx);
+}
+
+function auditSlugForRunbook(runbookId: RunbookId): string {
+  return runbookId === "incident-quarantine" ? "quarantine" : runbookId.replace(/-/g, "_");
+}
+
+function normalizeQuarantineTargetStatus(value: unknown): QuarantineRevertTargetStatus | null {
+  if (value === "active" || value === "retired" || value === "quarantined") {
+    return value;
+  }
+
+  return null;
+}
+
+function validateRunbookExecuteAuthorization(
+  request: IncomingMessage,
+  raw: string
+): { ok: true } | { ok: false; rejectReason: string } {
+  if (isInternalPanelRunbookRequest(request)) {
+    return { ok: true };
+  }
+
+  return validateOpenClawHmac(request.headers, raw);
+}
+
+function isInternalPanelRunbookRequest(request: IncomingMessage): boolean {
+  const operatorId = request.headers["x-operator-id"];
+
+  if (!isNonEmptyString(operatorId) || !operatorId.startsWith("op-")) {
+    return false;
+  }
+
+  return [request.headers.origin, request.headers.referer, request.headers.host]
+    .flatMap((value) => Array.isArray(value) ? value : [value])
+    .some((value) => typeof value === "string" && /(^|\/\/)(127\.0\.0\.1|localhost)(:|\/|$)/.test(value));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hashProposal(proposal: Pick<AgentProposal, "category" | "targetRef">): string {
+  return createHash("sha256")
+    .update(`${proposal.category}|${proposal.targetRef}`)
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function normalizeAgentProposal(value: Partial<AgentProposal> | undefined): AgentProposal | null {
+  if (!value) {
+    return null;
+  }
+
+  if (
+    !isNonEmptyString(value.id) ||
+    !isNonEmptyString(value.category) ||
+    !isAgentProposalSeverity(value.severity) ||
+    !isNonEmptyString(value.headline) ||
+    !isNonEmptyString(value.body) ||
+    !isNonEmptyString(value.runbookRef) ||
+    !isNonEmptyString(value.targetRef) ||
+    !Array.isArray(value.delivrix_actions_required) ||
+    value.delivrix_actions_required.length === 0
+  ) {
+    return null;
+  }
+
+  const actions = value.delivrix_actions_required.filter(isNonEmptyString);
+
+  if (actions.length !== value.delivrix_actions_required.length) {
+    return null;
+  }
+
+  return {
+    id: value.id.trim(),
+    category: value.category.trim(),
+    severity: value.severity,
+    headline: value.headline.trim(),
+    body: value.body.trim(),
+    evidenceRefs: Array.isArray(value.evidenceRefs)
+      ? value.evidenceRefs.filter(isNonEmptyString)
+      : [],
+    runbookRef: value.runbookRef.trim(),
+    targetRef: value.targetRef.trim(),
+    delivrix_actions_required: actions.map((action) => action.trim())
+  };
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function isAgentProposalSeverity(value: unknown): value is AgentProposal["severity"] {
+  return value === "low" || value === "medium" || value === "high" || value === "critical";
+}
+
+function riskLevelFromProposalSeverity(severity: AgentProposal["severity"]): "low" | "medium" | "high" {
+  if (severity === "critical" || severity === "high") {
+    return "high";
+  }
+
+  if (severity === "medium") {
+    return "medium";
+  }
+
+  return "low";
+}
+
 async function readJson<T>(request: IncomingMessage): Promise<T> {
   const raw = await readBody(request);
 
@@ -2673,6 +4051,20 @@ async function readOptionalJson<T>(request: IncomingMessage): Promise<T | undefi
   }
 
   return JSON.parse(raw) as T;
+}
+
+async function readRawBodyAndJson<T>(request: IncomingMessage): Promise<{ raw: string; body: T | null }> {
+  const raw = await readBody(request);
+
+  if (!raw) {
+    return { raw, body: null };
+  }
+
+  try {
+    return { raw, body: JSON.parse(raw) as T };
+  } catch {
+    return { raw, body: null };
+  }
 }
 
 async function readBody(request: IncomingMessage): Promise<string> {

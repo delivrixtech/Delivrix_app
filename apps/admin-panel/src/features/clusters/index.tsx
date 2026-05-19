@@ -23,11 +23,11 @@ import {
   WandSparkles
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
-import { filterAuditEvents } from "../../shared/lib/formatters.ts";
+import { filterAuditEvents, humanize } from "../../shared/lib/formatters.ts";
 
 export function ClustersSection({ data }: { data: DashboardData }) {
   return (
-    <section className="flex flex-col" style={{ gap: 20, maxWidth: 1352 }}>
+    <section className="flex flex-col" style={{ gap: 20 }}>
       <Hero />
       <KpiRow data={data} />
       <TwoCol data={data} />
@@ -73,11 +73,15 @@ function Hero() {
 function KpiRow({ data }: { data: DashboardData }) {
   const totals = data.clusters.totals;
   const clusters = totals.clusters ?? data.clusters.clusters.length;
+  // Prioriza el contrato /v1/sender-nodes (lista real) sobre el totals del
+  // overview que en mock puede llegar derivado.
   const senderNodes =
-    totals.senderNodes ?? data.clusters.clusters.reduce((sum, c) => sum + c.senderNodes.length, 0);
-  const sender = data.overview.summary.senderNodesByStatus ?? {};
-  const warming = sender.warming ?? 0;
-  const quarantined = sender.quarantined ?? 0;
+    data.senderNodes.length ||
+    totals.senderNodes ||
+    data.clusters.clusters.reduce((sum, c) => sum + c.senderNodes.length, 0);
+  const summary = data.operationalSummary.senderNodesByStatus ?? {};
+  const warming = summary.warming ?? data.overview.summary.senderNodesByStatus?.warming ?? 0;
+  const quarantined = summary.quarantined ?? data.overview.summary.senderNodesByStatus?.quarantined ?? 0;
   const killSwitchOn = data.killSwitch.enabled;
   const ksLabel = killSwitchOn ? "ACTIVO" : "ARMADO";
   return (
@@ -254,12 +258,46 @@ const CLUSTER_ROWS_DEMO = [
 ];
 
 /** Construye filas de la tabla a partir del contrato real de clusters,
- *  derivando counts por status del array `senderNodes` y manteniendo el
- *  esqueleto visual de Pencil. */
+ *  derivando counts por status del array `senderNodes` y promediando
+ *  reputation score desde `ipReputationReports` cuando hay reports
+ *  asociados a los sender nodes del cluster. */
 function buildClusterRows(data: DashboardData) {
+  const reports = data.ipReputationReports ?? [];
+  const reportBySender = new Map(reports.map((r) => [r.senderNodeId, r]));
+  const sendResults = data.sendResults ?? [];
+  // Pre-agrupar sendResults por senderNodeId para sumas O(1)
+  const sentBySender = new Map<string, number>();
+  for (const r of sendResults) {
+    if (!r.senderNodeId) continue;
+    const ok = r.status === "sent" || r.status === "delivered";
+    if (!ok) continue;
+    sentBySender.set(r.senderNodeId, (sentBySender.get(r.senderNodeId) ?? 0) + 1);
+  }
+
   const rows = data.clusters.clusters.map((c, i) => {
     const sn = c.senderNodes ?? [];
     const countBy = (st: string) => sn.filter((n) => n.status.toLowerCase().includes(st)).length;
+    // Reputation: promedio de scores de los reports asociados al cluster.
+    const clusterScores = sn
+      .map((n) => reportBySender.get(n.id)?.score)
+      .filter((s): s is number => typeof s === "number");
+    const avgScore =
+      clusterScores.length > 0
+        ? clusterScores.reduce((a, b) => a + b, 0) / clusterScores.length
+        : null;
+    const reputationStr = avgScore !== null ? avgScore.toFixed(1) : "—";
+    const reputationColor =
+      avgScore === null
+        ? "#5C544A"
+        : avgScore >= 95
+          ? "#15803D"
+          : avgScore >= 90
+            ? "#1A1410"
+            : "#B45309";
+    // Total enviado: suma de sendResults por sender node del cluster.
+    const sentCount = sn.reduce((acc, node) => acc + (sentBySender.get(node.id) ?? 0), 0);
+    const dailyCap = sn.reduce((acc, _node) => acc + 1, 0) * 50_000; // proxy hasta endpoint dailyLimit
+    void dailyCap;
     return {
       id: c.id,
       region: c.provider,
@@ -268,9 +306,9 @@ function buildClusterRows(data: DashboardData) {
       pausas: countBy("paused") + countBy("standby"),
       degradados: countBy("degraded") + countBy("quarantined"),
       cuarentena: countBy("quarantined") + countBy("blocked"),
-      reputation: "—",
-      reputationColor: "#5C544A",
-      total: `${sn.length} nodos`,
+      reputation: reputationStr,
+      reputationColor,
+      total: sentCount > 0 ? `${sentCount} envíos` : `${sn.length} nodos`,
       delta: c.managementState,
       accent: i === 0 ? "#F59E0B" : "transparent",
       selected: i === 0
@@ -649,11 +687,15 @@ function buildGates(data: DashboardData) {
       note: nfc ? "enabled" : "deshabilitado"
     }
   ];
-  // gates pendientes del operating-north
-  const opGates = (data.operatingNorth.gates ?? []).map(
-    (g) => ({ check: "warn" as const, label: g, note: "revisión pendiente" })
-  );
-  return [...baseGates, ...opGates];
+  // gates pendientes del operating-north — humanize IDs largos
+  const opGates = (data.operatingNorth.gates ?? []).map((g) => ({
+    check: "warn" as const,
+    label: humanize(g),
+    rawLabel: g,
+    note: "revisión pendiente"
+  }));
+  const baseWithRaw = baseGates.map((b) => ({ ...b, rawLabel: b.label }));
+  return [...baseWithRaw, ...opGates];
 }
 
 function GatesCard({ data }: { data: DashboardData }) {
@@ -685,26 +727,32 @@ function GatesCard({ data }: { data: DashboardData }) {
           const color = g.check === "ok" ? "#15803D" : g.check === "warn" ? "#B45309" : g.check === "bad" ? "#B91C1C" : "#8A8073";
           return (
             <li
-              key={g.label}
-              className="flex items-center"
+              key={`${i}-${g.rawLabel}`}
+              className="flex items-center min-w-0"
               style={{
                 gap: 12,
                 padding: "12px 16px",
                 borderTop: i > 0 ? "1px solid #EAE0CE" : "none"
               }}
+              title={g.rawLabel}
             >
               <span
                 aria-hidden="true"
-                className="grid place-items-center text-[#FFFBF5] text-[10px]"
+                className="grid place-items-center text-[#FFFBF5] text-[10px] shrink-0"
                 style={{ width: 18, height: 18, borderRadius: 999, background: color, fontWeight: 700 }}
               >
                 {g.check === "ok" ? "✓" : g.check === "warn" ? "!" : g.check === "bad" ? "×" : "−"}
               </span>
-              <span className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[#1A1410]">
+              <span
+                className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[#1A1410] truncate"
+                style={{ flex: "1 1 auto", minWidth: 0 }}
+              >
                 {g.label}
               </span>
-              <span className="flex-1" aria-hidden="true" />
-              <span className="text-[10px] font-[family-name:var(--font-mono)]" style={{ color }}>
+              <span
+                className="text-[10px] font-[family-name:var(--font-mono)] shrink-0"
+                style={{ color, whiteSpace: "nowrap" }}
+              >
                 {g.note}
               </span>
             </li>

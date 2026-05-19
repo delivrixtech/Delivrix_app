@@ -37,8 +37,16 @@ function readOnlyProxyBoundary(): Plugin {
       server.middlewares.use((request, response, next) => {
         const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1:5173");
         const isProxyPath = requestUrl.pathname === "/health" || requestUrl.pathname.startsWith("/v1/");
+        const isApprovalWrite =
+          request.method === "POST" &&
+          /^\/v1\/agent\/proposals\/[^/]+\/approve$/.test(requestUrl.pathname);
 
         if (!isProxyPath) {
+          next();
+          return;
+        }
+
+        if (isApprovalWrite) {
           next();
           return;
         }

@@ -30,7 +30,7 @@ import type { DashboardData } from "../../shared/api/client.ts";
 
 export function OnboardingSection({ data }: { data: DashboardData }) {
   return (
-    <section className="flex flex-col" style={{ gap: 20, maxWidth: 1352 }}>
+    <section className="flex flex-col" style={{ gap: 20 }}>
       <PageHeader />
       <Stepper data={data} />
       <WizardBody data={data} />

@@ -1,0 +1,58 @@
+slug: delivrix-publish-proposal
+version: 1.0.0
+source: openclaw-managed
+trigger_phrases:
+  - publicar propuesta
+  - submit proposal
+  - enviar propuesta al gateway
+  - proponer pausa
+  - proponer warming
+  - proponer quarantine
+inputs:
+  type: object
+  required:
+    - runbook_id
+    - target_ref
+  properties:
+    runbook_id:
+      type: string
+      enum:
+        - register-sender-node-local
+        - warming-step
+        - pause-ip
+        - incident-quarantine
+    target_ref:
+      type: string
+      minLength: 1
+    headline:
+      type: string
+      maxLength: 120
+    body:
+      type: string
+      maxLength: 2000
+    severity:
+      type: string
+      enum: [low, medium, high, critical]
+    category:
+      type: string
+    actions:
+      type: array
+      items:
+        type: string
+    evidence_refs:
+      type: array
+      items:
+        type: string
+outputs:
+  type: object
+  properties:
+    status:
+      type: string
+    httpStatus:
+      type: integer
+    proposalId:
+      type: string
+    requiredApprovals:
+      type: integer
+    injectedIntoCanvas:
+      type: boolean

@@ -1,0 +1,467 @@
+{
+  "metadata": {
+    "recall_at_5": 0.9333,
+    "hits": 28,
+    "totalQueries": 30,
+    "misses": [
+      {
+        "query": "qué pasa en cuarentena de incidente",
+        "expected": [
+          "runbooks/incident-quarantine-runbook.md"
+        ],
+        "got": [
+          "HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md",
+          "HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md",
+          "HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md",
+          "FASE_5_MVP_DEMOSTRABLE.md",
+          "skills/delivrix-alert-ops/SKILL.md"
+        ]
+      },
+      {
+        "query": "cómo se valida un approval token",
+        "expected": [
+          "OPENCLAW_PERMISSIONS_MATRIX.md"
+        ],
+        "got": [
+          "OPENCLAW_RUNBOOKS_OPERATIONAL.md",
+          "HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md",
+          "OPENCLAW_RUNBOOKS_OPERATIONAL.md",
+          "runbooks/warming-step-runbook.md",
+          "OPENCLAW_SYSTEM_PROMPT.md"
+        ]
+      }
+    ],
+    "latency_avg_ms": 5.564,
+    "latency_p95_ms": 2.004,
+    "chunks_total": 936,
+    "status": "PASS"
+  },
+  "results": [
+    {
+      "query": "qué dice el norte sobre SMTP real",
+      "expected": [
+        "NORTE_OPERATIVO_DELIVRIX.md"
+      ],
+      "top5": [
+        "HITO_5_1_DEMO_RUNNER_LOCAL.md",
+        "FASE_5_MVP_DEMOSTRABLE.md",
+        "FASE_2_METRICAS_BASICAS.md",
+        "FASE_2_RESULTADOS_SIMULADOS.md",
+        "NORTE_OPERATIVO_DELIVRIX.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cómo funciona el kill switch",
+      "expected": [
+        "FASE_2_KILL_SWITCH.md",
+        "HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md"
+      ],
+      "top5": [
+        "skills/delivrix-alert-ops/SKILL.md",
+        "FASE_2_KILL_SWITCH.md",
+        "FASE_2_KILL_SWITCH.md",
+        "FASE_2_KILL_SWITCH.md",
+        "skills/delivrix-alert-ops/SKILL.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué pasos tiene el warming step runbook",
+      "expected": [
+        "runbooks/warming-step-runbook.md"
+      ],
+      "top5": [
+        "runbooks/warming-step-runbook.md",
+        "runbooks/warming-step-runbook.md",
+        "runbooks/warming-step-runbook.md",
+        "runbooks/warming-step-runbook.md",
+        "runbooks/warming-step-runbook.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cuántas firmas necesita pausar una IP",
+      "expected": [
+        "runbooks/pause-ip-runbook.md"
+      ],
+      "top5": [
+        "OPENCLAW_RUNBOOKS_OPERATIONAL.md",
+        "skills/delivrix-alert-ops/SKILL.md",
+        "runbooks/pause-ip-runbook.md",
+        "ESTANDARES_INGENIERIA.md",
+        "runbooks/rotate-dns-record-runbook.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué hace la skill drift-monitor",
+      "expected": [
+        "skills/drift-monitor/SKILL.md"
+      ],
+      "top5": [
+        "skills/drift-monitor/SKILL.md",
+        "skills/drift-monitor/SKILL.md",
+        "skills/drift-monitor/SKILL.md",
+        "skills/drift-monitor/SKILL.md",
+        "skills/drift-monitor/SKILL.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué categorías tiene la permissions matrix",
+      "expected": [
+        "OPENCLAW_PERMISSIONS_MATRIX.md"
+      ],
+      "top5": [
+        "OPENCLAW_KNOWLEDGE_BASE_INDEX.md",
+        "HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md",
+        "NORTE_OPERATIVO_DELIVRIX.md",
+        "HITO_5_3_DEMO_REPORT_FINAL.md",
+        "OPENCLAW_PERMISSIONS_MATRIX.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cuál es el formato del audit event",
+      "expected": [
+        "OPENCLAW_AUDIT_INTEGRATION.md"
+      ],
+      "top5": [
+        "skills/delivrix-alert-ops/SKILL.md",
+        "ARQUITECTURA_BASE_1.md",
+        "OPENCLAW_AUDIT_INTEGRATION.md",
+        "HITO_5_5_AUDITORIA_FRONTEND_UI_PROCESOS.md",
+        "OPENCLAW_AUDIT_INTEGRATION.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué endpoints expone el contrato API",
+      "expected": [
+        "OPENCLAW_DELIVRIX_API_CONTRACT.md"
+      ],
+      "top5": [
+        "OPENCLAW_SKILLS_CATALOG.md",
+        "OPENCLAW_DELIVRIX_API_CONTRACT.md",
+        "OPENCLAW_DELIVRIX_API_CONTRACT.md",
+        "OPENCLAW_DELIVRIX_API_CONTRACT.md",
+        "OPENCLAW_DELIVRIX_API_CONTRACT.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cómo se cargan los docs al system prompt",
+      "expected": [
+        "OPENCLAW_KNOWLEDGE_BASE_INDEX.md"
+      ],
+      "top5": [
+        "OPENCLAW_SYSTEM_PROMPT.md",
+        "OPENCLAW_SYSTEM_PROMPT.md",
+        "OPENCLAW_KNOWLEDGE_BASE_INDEX.md",
+        "OPENCLAW_SYSTEM_PROMPT.md",
+        "OPENCLAW_SYSTEM_PROMPT.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué hace fleet-ops",
+      "expected": [
+        "skills/delivrix-fleet-ops/SKILL.md",
+        "OPENCLAW_SKILLS_CATALOG.md"
+      ],
+      "top5": [
+        "skills/delivrix-fleet-ops/SKILL.md",
+        "skills/delivrix-fleet-ops/SKILL.md",
+        "skills/delivrix-fleet-ops/SKILL.md",
+        "skills/delivrix-fleet-ops/SKILL.md",
+        "skills/delivrix-fleet-ops/SKILL.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cómo se aprueba una acción supervised_local_state",
+      "expected": [
+        "OPENCLAW_PERMISSIONS_MATRIX.md"
+      ],
+      "top5": [
+        "OPENCLAW_PERMISSIONS_MATRIX.md",
+        "OPENCLAW_SKILLS_CATALOG.md",
+        "OPENCLAW_PERMISSIONS_MATRIX.md",
+        "HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md",
+        "OPENCLAW_PERMISSIONS_MATRIX.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué retorna delivrix-alert-ops",
+      "expected": [
+        "skills/delivrix-alert-ops/SKILL.md",
+        "OPENCLAW_SKILLS_CATALOG.md"
+      ],
+      "top5": [
+        "skills/delivrix-alert-ops/SKILL.md",
+        "OPENCLAW_KNOWLEDGE_BASE_INDEX.md",
+        "OPENCLAW_SKILLS_CATALOG.md",
+        "skills/delivrix-report-ops/SKILL.md",
+        "skills/delivrix-alert-ops/SKILL.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué pasa con rotate-dns en hito 5.11.B",
+      "expected": [
+        "runbooks/rotate-dns-record-runbook.md"
+      ],
+      "top5": [
+        "runbooks/rotate-dns-record-runbook.md",
+        "runbooks/rotate-dns-record-runbook.md",
+        "runbooks/rotate-dns-record-runbook.md",
+        "runbooks/rotate-dns-record-runbook.md",
+        "runbooks/rotate-dns-record-runbook.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cuál es el cronograma del hito 5.11.B",
+      "expected": [
+        "HITO_5_11_OPENCLAW_AGENT_HOSTINGER.md"
+      ],
+      "top5": [
+        "HITO_5_11_OPENCLAW_AGENT_HOSTINGER.md",
+        "HITO_5_11_OPENCLAW_AGENT_HOSTINGER.md",
+        "HITO_5_11_OPENCLAW_AGENT_HOSTINGER.md",
+        "HITO_5_11_OPENCLAW_AGENT_HOSTINGER.md",
+        "RESUMEN_RUTA_PROYECTO.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué dice el bloque 8 del system prompt",
+      "expected": [
+        "OPENCLAW_SYSTEM_PROMPT.md"
+      ],
+      "top5": [
+        "OPENCLAW_SYSTEM_PROMPT.md",
+        "HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md",
+        "OPENCLAW_SYSTEM_PROMPT.md",
+        "OPENCLAW_SYSTEM_PROMPT.md",
+        "OPENCLAW_SYSTEM_PROMPT.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cómo se replica el audit log al gateway",
+      "expected": [
+        "OPENCLAW_AUDIT_INTEGRATION.md"
+      ],
+      "top5": [
+        "OPENCLAW_RUNBOOKS_OPERATIONAL.md",
+        "ARQUITECTURA_BASE_1.md",
+        "ARQUITECTURA_BASE_1.md",
+        "runbooks/daily-report-runbook.md",
+        "OPENCLAW_AUDIT_INTEGRATION.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué hace el daily report runbook",
+      "expected": [
+        "runbooks/daily-report-runbook.md"
+      ],
+      "top5": [
+        "runbooks/daily-report-runbook.md",
+        "runbooks/daily-report-runbook.md",
+        "OPENCLAW_RUNBOOKS_OPERATIONAL.md",
+        "runbooks/daily-report-runbook.md",
+        "runbooks/daily-report-runbook.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cómo se mide recall del RAG",
+      "expected": [
+        "OPENCLAW_KNOWLEDGE_BASE_INDEX.md"
+      ],
+      "top5": [
+        "skills/drift-monitor/SKILL.md",
+        "OPENCLAW_KNOWLEDGE_BASE_INDEX.md",
+        "OPENCLAW_RUNBOOKS_OPERATIONAL.md",
+        "NORTE_OPERATIVO_DELIVRIX.md",
+        "OPENCLAW_KNOWLEDGE_BASE_INDEX.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué pasa en cuarentena de incidente",
+      "expected": [
+        "runbooks/incident-quarantine-runbook.md"
+      ],
+      "top5": [
+        "HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md",
+        "HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md",
+        "HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md",
+        "FASE_5_MVP_DEMOSTRABLE.md",
+        "skills/delivrix-alert-ops/SKILL.md"
+      ],
+      "hit": false
+    },
+    {
+      "query": "cuál es el flujo onboarding OpenClaw",
+      "expected": [
+        "HITO_4_1_OPENCLAW_ONBOARDING.md"
+      ],
+      "top5": [
+        "FASE_4_OPENCLAW_INFRAESTRUCTURA.md",
+        "HITO_4_1_OPENCLAW_ONBOARDING.md",
+        "HITO_4_1_OPENCLAW_ONBOARDING.md",
+        "HITO_4_1_OPENCLAW_ONBOARDING.md",
+        "HITO_4_1_OPENCLAW_ONBOARDING.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cómo se genera el topology plan",
+      "expected": [
+        "HITO_4_2_CLUSTER_TOPOLOGY_PLANNER.md"
+      ],
+      "top5": [
+        "HITO_4_3_PROVISIONING_DRY_RUN.md",
+        "NORTE_OPERATIVO_DELIVRIX.md",
+        "HITO_4_3_PROVISIONING_DRY_RUN.md",
+        "HITO_4_2_CLUSTER_TOPOLOGY_PLANNER.md",
+        "OPENCLAW_KNOWLEDGE_BASE_INDEX.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cuáles son las acciones prohibidas en fase 4",
+      "expected": [
+        "FASE_4_OPENCLAW_INFRAESTRUCTURA.md",
+        "NORTE_OPERATIVO_DELIVRIX.md"
+      ],
+      "top5": [
+        "FASE_4_OPENCLAW_INFRAESTRUCTURA.md",
+        "FASE_4_OPENCLAW_INFRAESTRUCTURA.md",
+        "FASE_4_OPENCLAW_INFRAESTRUCTURA.md",
+        "HITO_4_4_OPENCLAW_SCHEDULER_SKILLS.md",
+        "HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cómo funciona el scheduler de OpenClaw",
+      "expected": [
+        "HITO_4_4_OPENCLAW_SCHEDULER_SKILLS.md"
+      ],
+      "top5": [
+        "FASE_4_OPENCLAW_INFRAESTRUCTURA.md",
+        "HITO_5_4C_ADMIN_CLUSTERS_OPENCLAW_LEARNING.md",
+        "FASE_4_OPENCLAW_INFRAESTRUCTURA.md",
+        "runbooks/daily-report-runbook.md",
+        "HITO_4_4_OPENCLAW_SCHEDULER_SKILLS.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cuál es la matriz de permisos del runbook 4.5",
+      "expected": [
+        "HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md",
+        "OPENCLAW_PERMISSIONS_MATRIX.md"
+      ],
+      "top5": [
+        "HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md",
+        "HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md",
+        "HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md",
+        "FASE_4_OPENCLAW_INFRAESTRUCTURA.md",
+        "OPENCLAW_RUNBOOKS_OPERATIONAL.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué tiene el canvas operativo",
+      "expected": [
+        "HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md"
+      ],
+      "top5": [
+        "HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md",
+        "OPENCLAW_RUNBOOKS_OPERATIONAL.md",
+        "HITO_5_9_INGESTA_MANUAL_SNAPSHOT_UX.md",
+        "FASE_5_MVP_DEMOSTRABLE.md",
+        "HITO_5_4B_ADMIN_PANEL_WORKFLOW.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cómo registra un sender node nuevo",
+      "expected": [
+        "runbooks/register-sender-node-local-runbook.md"
+      ],
+      "top5": [
+        "runbooks/register-sender-node-local-runbook.md",
+        "FASE_2_SENDER_NODE_MANUAL_CONTROLS.md",
+        "FASE_2_SENDER_NODE_MANUAL_CONTROLS.md",
+        "FASE_2_SENDER_NODE_MANUAL_CONTROLS.md",
+        "ROADMAP_PROYECTO.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "qué hace webdock-inventory-sync",
+      "expected": [
+        "skills/webdock-inventory-sync/SKILL.md",
+        "OPENCLAW_SKILLS_CATALOG.md"
+      ],
+      "top5": [
+        "skills/webdock-inventory-sync/SKILL.md",
+        "OPENCLAW_SKILLS_CATALOG.md",
+        "skills/webdock-inventory-sync/SKILL.md",
+        "skills/webdock-inventory-sync/SKILL.md",
+        "skills/webdock-inventory-sync/SKILL.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cómo se valida un approval token",
+      "expected": [
+        "OPENCLAW_PERMISSIONS_MATRIX.md"
+      ],
+      "top5": [
+        "OPENCLAW_RUNBOOKS_OPERATIONAL.md",
+        "HITO_5_2_OPENCLAW_INCIDENTE_SIMULADO.md",
+        "OPENCLAW_RUNBOOKS_OPERATIONAL.md",
+        "runbooks/warming-step-runbook.md",
+        "OPENCLAW_SYSTEM_PROMPT.md"
+      ],
+      "hit": false
+    },
+    {
+      "query": "qué metadata trae cada chunk",
+      "expected": [
+        "OPENCLAW_KNOWLEDGE_BASE_INDEX.md"
+      ],
+      "top5": [
+        "OPENCLAW_KNOWLEDGE_BASE_INDEX.md",
+        "OPENCLAW_SKILLS_CATALOG.md",
+        "FASE_2_STUCK_JOB_RECOVERY.md",
+        "HITO_5_5_AUDITORIA_FRONTEND_UI_PROCESOS.md",
+        "FASE_2_MOCK_INGESTION_BOUNCES_COMPLAINTS.md"
+      ],
+      "hit": true
+    },
+    {
+      "query": "cuál es el handshake WebSocket",
+      "expected": [
+        "OPENCLAW_DELIVRIX_API_CONTRACT.md"
+      ],
+      "top5": [
+        "OPENCLAW_DELIVRIX_API_CONTRACT.md",
+        "OPENCLAW_DELIVRIX_API_CONTRACT.md",
+        "OPENCLAW_DELIVRIX_API_CONTRACT.md",
+        "OPENCLAW_DELIVRIX_API_CONTRACT.md",
+        "OPENCLAW_DELIVRIX_API_CONTRACT.md"
+      ],
+      "hit": true
+    }
+  ]
+}

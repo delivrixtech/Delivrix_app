@@ -291,9 +291,26 @@ export interface OpenClawCanvasPromptAction {
 }
 
 export interface OpenClawCanvasPromptCard {
+  proposalId?: string;
   nodeId: string;
   headline: string;
   body: string;
+  severity?: "low" | "medium" | "high" | "critical";
+  requiresApproval?: boolean;
+  runbookId?: string;
+  targetRef?: string;
+  requiredApprovals?: number;
+  currentApprovals?: number;
+  quorumReached?: boolean;
+  quorumResolution?: {
+    requiredApprovals: number;
+    mode: "static" | "business_hours" | "off_hours";
+    serverTime?: string;
+    operatorLocalHour?: number;
+  };
+  signedByOperatorIds?: string[];
+  rollbackToken?: string;
+  rollbackExpiresAt?: string;
   primaryAction: OpenClawCanvasPromptAction;
   secondaryAction: OpenClawCanvasPromptAction;
   evidenceRefs: string[];

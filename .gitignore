@@ -15,4 +15,5 @@ runtime/
 clonado/
 .aws-secrets/
 .venv-awscli/
+.gateway.pid
 .audit/*.txt

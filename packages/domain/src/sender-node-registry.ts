@@ -32,6 +32,26 @@ export class SenderNodeRegistry {
     return this.store.list();
   }
 
+  async get(senderNodeId: string): Promise<SenderNode | null> {
+    const nodes = await this.store.list();
+    return nodes.find((candidate) => candidate.id === senderNodeId) ?? null;
+  }
+
+  async exists(senderNodeId: string): Promise<boolean> {
+    return (await this.get(senderNodeId)) !== null;
+  }
+
+  async existsByIp(ipAddress: string | undefined): Promise<boolean> {
+    const ip = ipAddress?.trim();
+
+    if (!ip) {
+      return false;
+    }
+
+    const nodes = await this.store.list();
+    return nodes.some((candidate) => candidate.ipAddress === ip);
+  }
+
   async findAvailableFor(_request: SendRequest): Promise<SenderNode | null> {
     const nodes = await this.store.list();
     return selectSenderNode(nodes);
@@ -48,6 +68,23 @@ export class SenderNodeRegistry {
     return this.store.upsert({
       ...node,
       status
+    });
+  }
+
+  async updateMetadata(
+    senderNodeId: string,
+    patch: Partial<Pick<SenderNode, "status" | "dailyLimit" | "warmupDay" | "ipAddress" | "hostname" | "label">>
+  ): Promise<SenderNode> {
+    const nodes = await this.store.list();
+    const node = nodes.find((candidate) => candidate.id === senderNodeId);
+
+    if (!node) {
+      throw new Error(`Sender node not found: ${senderNodeId}`);
+    }
+
+    return this.store.upsert({
+      ...node,
+      ...patch
     });
   }
 }

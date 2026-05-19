@@ -154,10 +154,33 @@ export interface OpenClawCanvasPromptAction {
 }
 
 export interface OpenClawCanvasPromptCard {
+  /** ID de la propuesta del agente cuando el prompt viene del Gateway store. */
+  proposalId?: string;
   /** Nodo en el que se ancla visualmente la propuesta (border gradient + shadow). */
   nodeId: string;
   headline: string;
   body: string;
+  severity?: "low" | "medium" | "high" | "critical";
+  /** D+4 AM: true si la matriz clasificó la acción como supervised_local_state. */
+  requiresApproval?: boolean;
+  /** D+5 PM: runbook concreto que se ejecuta cuando el quorum humano queda firmado. */
+  runbookId?: string;
+  /** D+5 PM: target operativo de la propuesta, normalmente un sender node. */
+  targetRef?: string;
+  /** D+5 PM: estado de firmas humanas requeridas por el runbook. */
+  requiredApprovals?: number;
+  currentApprovals?: number;
+  quorumReached?: boolean;
+  quorumResolution?: {
+    requiredApprovals: number;
+    mode: "static" | "business_hours" | "off_hours";
+    serverTime?: string;
+    operatorLocalHour?: number;
+  };
+  signedByOperatorIds?: string[];
+  /** D+5 PM: rollback disponible tras execute local. */
+  rollbackToken?: string;
+  rollbackExpiresAt?: string;
   primaryAction: OpenClawCanvasPromptAction;
   secondaryAction: OpenClawCanvasPromptAction;
   /** Hashes de evidencia que justifican esta propuesta (ver Detail panel sec3). */
@@ -190,6 +213,7 @@ export interface BuildOpenClawLiveCanvasInput {
   provisioningState?: OpenClawProvisioningState;
   readinessSignals?: OpenClawReadinessSignals;
   collector?: DevOpsCollectorStatus;
+  promptOverride?: OpenClawCanvasPromptCard | null;
   now?: Date;
 }
 
@@ -210,7 +234,7 @@ export function buildOpenClawLiveCanvas(
   const nodes = buildNodes(input, blockedBy);
   const edges = buildEdges(nodes);
   const unknownFields = collectUnknownFields(input);
-  const prompt = buildPromptCard(nodes, blockedBy);
+  const prompt = input.promptOverride ?? buildPromptCard(nodes, blockedBy);
   const currentStepId = resolveCurrentStepId(nodes);
 
   return {
