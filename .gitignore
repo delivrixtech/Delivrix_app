@@ -17,3 +17,8 @@ clonado/
 .venv-awscli/
 .gateway.pid
 .audit/*.txt
+
+# Local workspace/tooling state
+.claude/
+.sync-backups/
+~$*.docx
