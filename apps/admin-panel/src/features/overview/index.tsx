@@ -23,11 +23,11 @@ import {
   X
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
-import { formatDateTime, formatNumber } from "../../shared/lib/formatters.ts";
+import { formatDateTime, formatNumber, humanize } from "../../shared/lib/formatters.ts";
 
 export function OverviewSection({ data }: { data: DashboardData }) {
   return (
-    <section className="flex flex-col gap-5" style={{ maxWidth: 1352 }}>
+    <section className="flex flex-col gap-5" style={{ width: "100%" }}>
       <HeaderRow data={data} />
       <KpiRow data={data} />
       <Pipeline />
@@ -41,7 +41,7 @@ export function OverviewSection({ data }: { data: DashboardData }) {
  * ============================================================ */
 function HeaderRow({ data }: { data: DashboardData }) {
   return (
-    <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,598px)_minmax(0,523px)] items-start">
+    <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-start">
       <Welcome generatedAt={data.overview.generatedAt} />
       <OpenClawPrompt />
     </div>
@@ -184,13 +184,16 @@ function OpenClawPrompt() {
  * KPI row — 4 cards literales Pencil
  * ============================================================ */
 function KpiRow({ data }: { data: DashboardData }) {
-  const summary = data.overview.summary;
-  const sender = summary.senderNodesByStatus ?? {};
-  const senderTotal = Object.values(sender).reduce((a, b) => a + b, 0);
+  // Preferir /v1/operational-summary cuando exista (ya agrega audit, jobs y
+  // sendResults). Caer a data.overview cuando el endpoint nuevo está vacío.
+  const opSummary = data.operationalSummary;
+  const sender = opSummary.senderNodesByStatus ?? data.overview.summary.senderNodesByStatus ?? {};
+  const senderTotal = data.senderNodes.length || Object.values(sender).reduce((a, b) => a + b, 0);
   const ipsWarming = sender.warming ?? 0;
-  const sendResults = summary.sendResultsByStatus ?? {};
-  const totalSends = Object.values(sendResults).reduce((a, b) => a + b, 0);
-  const acceptedOk = sendResults.sent ?? sendResults.delivered ?? 0;
+  const sendResultsByStatus =
+    opSummary.sendResultsByStatus ?? data.overview.summary.sendResultsByStatus ?? {};
+  const totalSends = Object.values(sendResultsByStatus).reduce((a, b) => a + b, 0);
+  const acceptedOk = sendResultsByStatus.sent ?? sendResultsByStatus.delivered ?? 0;
   const reputation = totalSends === 0 ? null : Math.round((acceptedOk / totalSends) * 1000) / 10;
   const gatesOpen = data.operatingNorth.gates?.length ?? 0;
 
@@ -830,10 +833,15 @@ function GatesCard({ data }: { data: DashboardData }) {
       note: nfc ? "enabled" : "deshabilitado"
     }
   ];
-  // gates específicos del operating-north
-  const opGates = (data.operatingNorth.gates ?? []).map(
-    (g) => ({ kind: "warn" as const, label: g, note: "revisión pendiente" })
-  );
+  // gates específicos del operating-north — humanize() convierte
+  // `admin_panel_reads_canvas_and_hardware_from_backend_contracts` en
+  // "admin panel reads canvas and hardware from backend contracts".
+  const opGates = (data.operatingNorth.gates ?? []).map((g) => ({
+    kind: "warn" as const,
+    label: humanize(g),
+    rawLabel: g,
+    note: "revisión pendiente"
+  }));
   const gates = [...base, ...opGates];
   const okCount = gates.filter((g) => g.kind === "ok").length;
   return (
@@ -860,15 +868,34 @@ function GatesCard({ data }: { data: DashboardData }) {
 
       {/* gateList */}
       <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 8 }}>
-        {gates.map((g) => (
-          <GateRow key={g.label} kind={g.kind} label={g.label} note={g.note} />
-        ))}
+        {gates.map((g, i) => {
+          const raw = "rawLabel" in g && typeof g.rawLabel === "string" ? g.rawLabel : g.label;
+          return (
+            <GateRow
+              key={`${i}-${raw}`}
+              kind={g.kind}
+              label={g.label}
+              rawLabel={raw}
+              note={g.note}
+            />
+          );
+        })}
       </ul>
     </section>
   );
 }
 
-function GateRow({ kind, label, note }: { kind: "ok" | "warn" | "bad" | "off"; label: string; note: string }) {
+function GateRow({
+  kind,
+  label,
+  rawLabel,
+  note
+}: {
+  kind: "ok" | "warn" | "bad" | "off";
+  label: string;
+  rawLabel: string;
+  note: string;
+}) {
   const dot =
     kind === "ok"
       ? { bg: "#15803D", icon: <Check size={10} strokeWidth={2} aria-hidden="true" /> }
@@ -881,7 +908,7 @@ function GateRow({ kind, label, note }: { kind: "ok" | "warn" | "bad" | "off"; l
     kind === "ok" ? "#15803D" : kind === "warn" ? "#B45309" : kind === "bad" ? "#B91C1C" : "#8A8073";
 
   return (
-    <li className="flex items-center" style={{ gap: 8 }}>
+    <li className="flex items-center min-w-0" style={{ gap: 8 }} title={rawLabel}>
       <span
         aria-hidden="true"
         className="grid place-items-center text-[#FFFBF5]"
@@ -889,11 +916,16 @@ function GateRow({ kind, label, note }: { kind: "ok" | "warn" | "bad" | "off"; l
       >
         {dot.icon}
       </span>
-      <span className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[#1A1410]">
+      <span
+        className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[#1A1410] truncate"
+        style={{ flex: "1 1 auto", minWidth: 0 }}
+      >
         {label}
       </span>
-      <span className="flex-1" aria-hidden="true" />
-      <span className="text-[10px] font-[family-name:var(--font-mono)]" style={{ color: noteColor }}>
+      <span
+        className="text-[10px] font-[family-name:var(--font-mono)]"
+        style={{ color: noteColor, whiteSpace: "nowrap", flexShrink: 0 }}
+      >
         {note}
       </span>
     </li>
@@ -914,11 +946,18 @@ function SystemHealthDark({ data }: { data: DashboardData }) {
         return `${Math.round(diff / 3_600_000)} h`;
       })()
     : "sin datos";
+  const jobsTotal = data.operationalSummary.totals.jobs;
+  const stuckCount = data.stuckJobs.count;
   const rows = [
     {
       label: "Gateway",
       value: data.health.status === "ok" ? "OK" : data.health.status,
       valueColor: data.health.status === "ok" ? "#15803D" : "#F87171"
+    },
+    {
+      label: "Cola del worker",
+      value: `${jobsTotal} jobs · ${stuckCount} atascados`,
+      valueColor: stuckCount === 0 ? "#15803D" : "#FACC15"
     },
     {
       label: "Phase",

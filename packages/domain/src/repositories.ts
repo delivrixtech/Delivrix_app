@@ -1,9 +1,9 @@
-import type { AuditEvent } from "./audit-log.ts";
+import type { AuditEvent, AuditEventInput } from "./audit-log.ts";
 import type { SendJob, SendRequest, SenderNode } from "./types.ts";
 import type { SuppressionEntry } from "./suppression-list.ts";
 
 export interface AuditEventRepository {
-  append(event: Omit<AuditEvent, "id" | "occurredAt">): Promise<AuditEvent>;
+  append(event: AuditEventInput): Promise<AuditEvent>;
   listRecent(limit: number): Promise<AuditEvent[]>;
 }
 

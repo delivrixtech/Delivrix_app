@@ -29,7 +29,7 @@ import { filterAuditEvents } from "../../shared/lib/formatters.ts";
 
 export function HardwareSection({ data }: { data: DashboardData }) {
   return (
-    <section className="flex flex-col" style={{ gap: 20, maxWidth: 1352 }}>
+    <section className="flex flex-col" style={{ gap: 20 }}>
       <Hero data={data} />
       <TwoColumn data={data} />
       <UnknownsRow data={data} />

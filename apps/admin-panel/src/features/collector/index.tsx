@@ -28,7 +28,7 @@ import { filterAuditEvents, formatTimeOnly, shortAuditHash } from "../../shared/
 
 export function CollectorSection({ data }: { data: DashboardData }) {
   return (
-    <section className="flex flex-col" style={{ gap: 24, maxWidth: 1352 }}>
+    <section className="flex flex-col" style={{ gap: 24 }}>
       <Hero />
       <Tabs sourcesCount={data.supervisedCollector.sources.length} />
       <SourcesRow data={data} />

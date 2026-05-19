@@ -18,8 +18,8 @@
  * para que el operador vea la propuesta de OpenClaw y los cambios de estado
  * con latencia <= 5s sin abrir WebSocket.
  *
- * GET-only: el prompt strip muestra propuestas y los botones abren modales con
- * instrucciones del runbook, nunca POSTean al backend.
+ * D+5 PM: el prompt strip permite aprobaciones locales supervisadas. El bundle
+ * sigue sin tocar infraestructura live; solo llama endpoints Gateway auditados.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -836,6 +836,11 @@ function PromptStrip({
   prompt: CanvasData["prompt"];
   onPrimary: () => void;
 }) {
+  const [pending, setPending] = useState<"approve" | "execute" | "revert" | null>(null);
+  const [signed, setSigned] = useState(false);
+  const [execution, setExecution] = useState<{ rollbackToken?: string; rollbackExpiresAt?: string } | null>(null);
+  const [destinationOpen, setDestinationOpen] = useState(false);
+
   if (!prompt) {
     return (
       <div className="flex flex-col" style={{ padding: "12px 28px" }}>
@@ -856,14 +861,70 @@ function PromptStrip({
       </div>
     );
   }
+  const operatorId = getCurrentOperatorId();
+  const signedByOperator = signed || (prompt.signedByOperatorIds ?? []).includes(operatorId);
+  const requiredApprovals = prompt.requiredApprovals ?? 1;
+  const currentApprovals = Math.max(prompt.currentApprovals ?? 0, signedByOperator ? 1 : 0);
+  const quorumReached = prompt.quorumReached === true || currentApprovals >= requiredApprovals;
+  const rollbackToken = execution?.rollbackToken ?? prompt.rollbackToken;
+  const rollbackExpiresAt = execution?.rollbackExpiresAt ?? prompt.rollbackExpiresAt;
+  const isQuarantinePrompt = prompt.runbookId === "incident-quarantine" || prompt.severity === "critical";
+  const quorumMode = prompt.quorumResolution?.mode;
+  const quorumModeCopy = quorumMode === "business_hours"
+    ? "Modo: business_hours (1 firma)"
+    : quorumMode === "off_hours"
+      ? "Modo: off_hours (2 firmas)"
+      : null;
+
+  async function approveAndMaybeExecute() {
+    if (!prompt?.proposalId || signedByOperator) {
+      return;
+    }
+
+    setPending("approve");
+    const approval = await approveProposal(prompt.proposalId);
+    setSigned(true);
+
+    if (approval.quorum.reached && prompt.runbookId) {
+      setPending("execute");
+      const result = await executeRunbook({
+        proposalId: prompt.proposalId,
+        runbookId: prompt.runbookId,
+        input: buildRunbookInput(prompt)
+      });
+      setExecution({
+        rollbackToken: result.rollbackToken,
+        rollbackExpiresAt: result.rollbackExpiresAt
+      });
+    }
+
+    setPending(null);
+  }
+
+  async function revertExecutedRunbook(targetStatus?: "active" | "retired" | "quarantined") {
+    if (!rollbackToken) {
+      return;
+    }
+
+    setPending("revert");
+    await revertRunbook(rollbackToken, "operator_revert_from_canvas", targetStatus);
+    setExecution(null);
+    setDestinationOpen(false);
+    setPending(null);
+  }
+
   return (
     <div className="flex flex-col" style={{ padding: "12px 28px" }}>
       <div
         style={{
           padding: 2,
           borderRadius: 10,
-          background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
-          boxShadow: "0 6px 18px rgba(146, 64, 14, 0.13)"
+          background: isQuarantinePrompt
+            ? "linear-gradient(135deg, #DC2626 0%, #991B1B 100%)"
+            : "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
+          boxShadow: isQuarantinePrompt
+            ? "0 6px 18px rgba(153, 27, 27, 0.18)"
+            : "0 6px 18px rgba(146, 64, 14, 0.13)"
         }}
       >
         <div
@@ -877,7 +938,9 @@ function PromptStrip({
               width: 30,
               height: 30,
               borderRadius: 8,
-              background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
+              background: isQuarantinePrompt
+                ? "linear-gradient(135deg, #DC2626 0%, #991B1B 100%)"
+                : "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
               color: "#FFFBF5"
             }}
           >
@@ -887,9 +950,34 @@ function PromptStrip({
             <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
               {prompt.headline}
             </span>
+            {isQuarantinePrompt ? (
+              <span
+                className="inline-flex w-fit text-[10px] font-[family-name:var(--font-mono)] font-semibold"
+                style={{
+                  padding: "2px 7px",
+                  borderRadius: 999,
+                  background: "#FEE2E2",
+                  color: "#991B1B"
+                }}
+              >
+                Crítico
+              </span>
+            ) : null}
             <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.4] text-[#1A1410]">
               {prompt.body}
             </p>
+            {prompt.requiresApproval ? (
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]">
+                Firmas: {Math.min(currentApprovals, requiredApprovals)}/{requiredApprovals}
+                {quorumReached ? " · quorum listo" : ""}
+                {quorumModeCopy ? ` · ${quorumModeCopy}` : ""}
+              </span>
+            ) : null}
+            {rollbackToken ? (
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]">
+                Rollback disponible hasta {rollbackExpiresAt ? formatDateTime(rollbackExpiresAt) : "7d"}
+              </span>
+            ) : null}
           </div>
           <div className="flex items-center shrink-0" style={{ gap: 8 }}>
             <button
@@ -906,6 +994,66 @@ function PromptStrip({
                 {prompt.secondaryAction.label}
               </span>
             </button>
+            {prompt.requiresApproval && prompt.proposalId ? (
+              <button
+                type="button"
+                onClick={() => void approveAndMaybeExecute()}
+                disabled={signedByOperator || pending !== null}
+                className="inline-flex items-center"
+                style={{
+                  gap: 6,
+                  padding: "8px 14px",
+                  borderRadius: 6,
+                  background: signedByOperator ? "#EAE0CE" : isQuarantinePrompt ? "#DC2626" : "#F59E0B"
+                }}
+              >
+                <span
+                  className="text-[11px] font-[family-name:var(--font-sans)] font-semibold"
+                  style={{ color: isQuarantinePrompt && !signedByOperator ? "#FFFFFF" : "#1A1410" }}
+                >
+                  {signedByOperator
+                    ? "Ya firmaste"
+                    : pending === "approve"
+                      ? "Firmando"
+                      : isQuarantinePrompt ? "Cuarentena urgente" : "Aprobar"}
+                </span>
+              </button>
+            ) : null}
+            {rollbackToken && isQuarantinePrompt ? (
+              <button
+                type="button"
+                onClick={() => setDestinationOpen(true)}
+                disabled={pending !== null}
+                className="inline-flex items-center bg-transparent"
+                style={{
+                  gap: 6,
+                  padding: "8px 12px",
+                  borderRadius: 6,
+                  border: "1px solid #B91C1C"
+                }}
+              >
+                <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[#B91C1C]">
+                  Decidir destino
+                </span>
+              </button>
+            ) : rollbackToken ? (
+              <button
+                type="button"
+                onClick={() => void revertExecutedRunbook()}
+                disabled={pending !== null}
+                className="inline-flex items-center bg-transparent"
+                style={{
+                  gap: 6,
+                  padding: "8px 12px",
+                  borderRadius: 6,
+                  border: "1px solid #B91C1C"
+                }}
+              >
+                <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[#B91C1C]">
+                  {pending === "revert" ? "Revirtiendo" : "Revertir"}
+                </span>
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={onPrimary}
@@ -924,8 +1072,167 @@ function PromptStrip({
           </div>
         </div>
       </div>
+      {destinationOpen && rollbackToken ? (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 grid place-items-center"
+          style={{ background: "rgba(26, 20, 16, 0.36)" }}
+        >
+          <div
+            className="flex flex-col bg-[#FFFFFF]"
+            style={{
+              width: 340,
+              gap: 10,
+              padding: 16,
+              borderRadius: 8,
+              border: "1px solid #EAE0CE",
+              boxShadow: "0 18px 45px rgba(26, 20, 16, 0.22)"
+            }}
+          >
+            <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+              Destino de cuarentena
+            </span>
+            <div className="grid grid-cols-1" style={{ gap: 8 }}>
+              {[
+                ["active", "Reactivar"],
+                ["retired", "Retirar"],
+                ["quarantined", "Mantener cuarentena"]
+              ].map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => void revertExecutedRunbook(value as "active" | "retired" | "quarantined")}
+                  className="inline-flex items-center justify-between bg-[#FFFBF5]"
+                  style={{
+                    padding: "9px 10px",
+                    borderRadius: 6,
+                    border: "1px solid #D4C5A8"
+                  }}
+                >
+                  <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+                    {label}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setDestinationOpen(false)}
+              className="inline-flex items-center justify-center bg-transparent"
+              style={{
+                padding: "8px 10px",
+                borderRadius: 6,
+                border: "1px solid #EAE0CE"
+              }}
+            >
+              <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[#5C544A]">
+                Cancelar
+              </span>
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+async function approveProposal(proposalId: string) {
+  const response = await fetch(`/v1/agent/proposals/${encodeURIComponent(proposalId)}/approve`, {
+    method: "POST",
+    headers: {
+      "X-Operator-Id": getCurrentOperatorId()
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Approval failed with HTTP ${response.status}.`);
+  }
+
+  return response.json() as Promise<{
+    approvalToken: unknown;
+    quorum: { current: number; required: number; reached: boolean; approverIds: string[] };
+  }>;
+}
+
+async function executeRunbook(params: {
+  proposalId: string;
+  runbookId: string;
+  input: unknown;
+}) {
+  const response = await fetch("/v1/agent/runbook/execute", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Operator-Id": getCurrentOperatorId()
+    },
+    body: JSON.stringify(params)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Runbook execute failed with HTTP ${response.status}.`);
+  }
+
+  return response.json() as Promise<{
+    runbookId: string;
+    rollbackToken: string;
+    rollbackExpiresAt: string;
+    newState: unknown;
+  }>;
+}
+
+async function revertRunbook(
+  rollbackToken: string,
+  reason: string,
+  targetStatus?: "active" | "retired" | "quarantined"
+) {
+  const response = await fetch("/v1/agent/runbook/revert", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Operator-Id": getCurrentOperatorId()
+    },
+    body: JSON.stringify({
+      rollbackToken,
+      reason,
+      metadata: targetStatus ? { targetStatus } : undefined
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Runbook revert failed with HTTP ${response.status}.`);
+  }
+
+  return response.json() as Promise<{ reverted: true; restoredState: unknown; newState: unknown }>;
+}
+
+function getCurrentOperatorId(): string {
+  return "op-juanes-a";
+}
+
+function buildRunbookInput(prompt: NonNullable<CanvasData["prompt"]>): unknown {
+  if (prompt.runbookId === "register-sender-node-local") {
+    return {
+      id: prompt.targetRef,
+      label: prompt.targetRef ?? "Sender node",
+      provider: "webdock",
+      status: "warming",
+      dailyLimit: 50,
+      warmupDay: 1
+    };
+  }
+
+  if (prompt.runbookId === "incident-quarantine") {
+    return {
+      nodeId: prompt.targetRef,
+      reason: prompt.body,
+      evidenceRefs: prompt.evidenceRefs
+    };
+  }
+
+  return {
+    nodeId: prompt.targetRef
+  };
 }
 
 /* ============================================================
