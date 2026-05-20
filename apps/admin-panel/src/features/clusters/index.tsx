@@ -44,23 +44,23 @@ function Hero() {
     <header className="flex flex-col" style={{ gap: 6 }}>
       <div className="flex items-center" style={{ gap: 8 }}>
         <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[#EA580C]"
+          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
           style={{ letterSpacing: "1.2px" }}
         >
           FLOTA SUPERVISADA
         </span>
-        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "#8A8073" }} />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
+        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           Actualizado hace 14s
         </span>
       </div>
       <h1
-        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[#1A1410]"
+        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
         style={{ letterSpacing: "-0.4px" }}
       >
         Clústeres y nodos de envío
       </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
+      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
         Capacidad preparada, observada y gobernada por gates humanos. Sin envíos reales en el MVP.
       </p>
     </header>
@@ -87,31 +87,31 @@ function KpiRow({ data }: { data: DashboardData }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5" style={{ gap: 14 }}>
       <Kpi
-        icon={<Server size={16} strokeWidth={1.75} style={{ color: "#1D4ED8" }} aria-hidden="true" />}
+        icon={<Server size={16} strokeWidth={1.75} style={{ color: "var(--color-info)" }} aria-hidden="true" />}
         label="Clústeres totales"
         value={String(clusters)}
         sub={`${clusters} bajo gobierno`}
       />
       <Kpi
-        icon={<Mail size={16} strokeWidth={1.75} style={{ color: "#15803D" }} aria-hidden="true" />}
+        icon={<Mail size={16} strokeWidth={1.75} style={{ color: "var(--color-success)" }} aria-hidden="true" />}
         label="Nodos de envío"
         value={String(senderNodes)}
         sub="/v1/admin/clusters"
       />
       <Kpi
-        icon={<Flame size={16} strokeWidth={1.75} style={{ color: "#EA580C" }} aria-hidden="true" />}
+        icon={<Flame size={16} strokeWidth={1.75} style={{ color: "var(--color-accent-tertiary)" }} aria-hidden="true" />}
         label="IPs en calentamiento"
         value={String(warming)}
         sub={warming > 0 ? "warming activo" : "sin warming"}
       />
       <Kpi
-        icon={<TrendingDown size={16} strokeWidth={1.75} style={{ color: "#B91C1C" }} aria-hidden="true" />}
+        icon={<TrendingDown size={16} strokeWidth={1.75} style={{ color: "var(--color-critical)" }} aria-hidden="true" />}
         label="IPs degradadas"
         value={String(quarantined)}
         sub={quarantined === 0 ? "sin cuarentena" : "pendientes de revisar"}
       />
       <Kpi
-        icon={<ShieldCheck size={16} strokeWidth={1.75} style={{ color: killSwitchOn ? "#B91C1C" : "#15803D" }} aria-hidden="true" />}
+        icon={<ShieldCheck size={16} strokeWidth={1.75} style={{ color: killSwitchOn ? "var(--color-critical)" : "var(--color-success)" }} aria-hidden="true" />}
         label="Interruptor de corte"
         value={ksLabel}
         valueSize={24}
@@ -136,12 +136,12 @@ function Kpi({
 }) {
   return (
     <article
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 8,
         padding: 16,
         borderRadius: 6,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)"
       }}
     >
@@ -149,24 +149,24 @@ function Kpi({
         <span
           aria-hidden="true"
           className="grid place-items-center"
-          style={{ width: 28, height: 28, borderRadius: 6, background: "#F7F2EA", border: "1px solid #EAE0CE" }}
+          style={{ width: 28, height: 28, borderRadius: 6, background: "var(--color-surface-sunken)", border: "1px solid var(--color-border)" }}
         >
           {icon}
         </span>
         <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#5C544A]"
+          className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]"
           style={{ letterSpacing: "0.4px" }}
         >
           {label}
         </span>
       </header>
       <span
-        className="font-[family-name:var(--font-mono)] font-bold leading-none text-[#1A1410] tabular-nums"
+        className="font-[family-name:var(--font-mono)] font-bold leading-none text-[var(--color-text-primary)] tabular-nums"
         style={{ fontSize: valueSize, letterSpacing: "-0.6px" }}
       >
         {value}
       </span>
-      <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">{sub}</span>
+      <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{sub}</span>
     </article>
   );
 }
@@ -193,10 +193,10 @@ const CLUSTER_ROWS_DEMO = [
     degradados: 1,
     cuarentena: 0,
     reputation: "94.2",
-    reputationColor: "#1A1410",
+    reputationColor: "var(--color-text-primary)",
     total: "480 / 600k",
     delta: "+50k · 09:14",
-    accent: "#F59E0B",
+    accent: "var(--color-accent)",
     selected: true
   },
   {
@@ -208,7 +208,7 @@ const CLUSTER_ROWS_DEMO = [
     degradados: 0,
     cuarentena: 1,
     reputation: "96.7",
-    reputationColor: "#1A1410",
+    reputationColor: "var(--color-text-primary)",
     total: "720 / 900k",
     delta: "snapshot · 09:18",
     accent: "transparent"
@@ -222,7 +222,7 @@ const CLUSTER_ROWS_DEMO = [
     degradados: 0,
     cuarentena: 0,
     reputation: "92.4",
-    reputationColor: "#B45309",
+    reputationColor: "var(--color-warning)",
     total: "380 / 500k",
     delta: "recal · 08:55",
     accent: "transparent"
@@ -236,7 +236,7 @@ const CLUSTER_ROWS_DEMO = [
     degradados: 1,
     cuarentena: 0,
     reputation: "95.1",
-    reputationColor: "#1A1410",
+    reputationColor: "var(--color-text-primary)",
     total: "220 / 300k",
     delta: "+20k · 09:02",
     accent: "transparent"
@@ -250,7 +250,7 @@ const CLUSTER_ROWS_DEMO = [
     degradados: 0,
     cuarentena: 0,
     reputation: "97.8",
-    reputationColor: "#15803D",
+    reputationColor: "var(--color-success)",
     total: "180 / 240k",
     delta: "snapshot · 09:11",
     accent: "transparent"
@@ -288,12 +288,12 @@ function buildClusterRows(data: DashboardData) {
     const reputationStr = avgScore !== null ? avgScore.toFixed(1) : "—";
     const reputationColor =
       avgScore === null
-        ? "#5C544A"
+        ? "var(--color-text-secondary)"
         : avgScore >= 95
-          ? "#15803D"
+          ? "var(--color-success)"
           : avgScore >= 90
-            ? "#1A1410"
-            : "#B45309";
+            ? "var(--color-text-primary)"
+            : "var(--color-warning)";
     // Total enviado: suma de sendResults por sender node del cluster.
     const sentCount = sn.reduce((acc, node) => acc + (sentBySender.get(node.id) ?? 0), 0);
     const dailyCap = sn.reduce((acc, _node) => acc + 1, 0) * 50_000; // proxy hasta endpoint dailyLimit
@@ -310,7 +310,7 @@ function buildClusterRows(data: DashboardData) {
       reputationColor,
       total: sentCount > 0 ? `${sentCount} envíos` : `${sn.length} nodos`,
       delta: c.managementState,
-      accent: i === 0 ? "#F59E0B" : "transparent",
+      accent: i === 0 ? "var(--color-accent)" : "transparent",
       selected: i === 0
     };
   });
@@ -326,7 +326,7 @@ function buildClusterRows(data: DashboardData) {
         degradados: 0,
         cuarentena: 0,
         reputation: "—",
-        reputationColor: "#8A8073",
+        reputationColor: "var(--color-text-tertiary)",
         total: "0 nodos",
         delta: "—",
         accent: "transparent",
@@ -342,26 +342,26 @@ function ClusterTable({ data }: { data: DashboardData }) {
   const totalClusters = data.clusters.totals.clusters ?? data.clusters.clusters.length;
   return (
     <div
-      className="flex flex-col overflow-hidden bg-[#FFFFFF]"
-      style={{ borderRadius: 6, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
+      className="flex flex-col overflow-hidden bg-[var(--color-surface)]"
+      style={{ borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
     >
       <header
         className="flex items-center"
         style={{
           gap: 10,
           padding: "14px 16px",
-          background: "#F7F2EA",
-          borderBottom: "1px solid #EAE0CE"
+          background: "var(--color-surface-sunken)",
+          borderBottom: "1px solid var(--color-border)"
         }}
       >
-        <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+        <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
           Tabla de clústeres
         </h2>
-        <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+        <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
           {CLUSTER_ROWS.length} visibles · {totalClusters} totales
         </span>
         <span className="flex-1" aria-hidden="true" />
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">/v1/admin/clusters</span>
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">/v1/admin/clusters</span>
       </header>
       <div
         className="grid"
@@ -369,14 +369,14 @@ function ClusterTable({ data }: { data: DashboardData }) {
           gridTemplateColumns: "minmax(0,1.4fr) 60px 60px 60px 60px 60px 70px 110px 120px",
           gap: 10,
           padding: "10px 14px",
-          background: "#F7F2EA",
-          borderBottom: "1px solid #EAE0CE"
+          background: "var(--color-surface-sunken)",
+          borderBottom: "1px solid var(--color-border)"
         }}
       >
         {["CLÚSTER · PROVIDER", "ACT", "CAL", "PAU", "DEG", "CUA", "REP", "NODOS", "ESTADO"].map((h) => (
           <span
             key={h}
-            className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+            className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
             style={{ letterSpacing: "0.6px" }}
           >
             {h}
@@ -392,23 +392,23 @@ function ClusterTable({ data }: { data: DashboardData }) {
               gridTemplateColumns: "minmax(0,1.4fr) 60px 60px 60px 60px 60px 70px 110px 120px",
               gap: 10,
               padding: "12px 14px",
-              borderTop: i > 0 ? "1px solid #EAE0CE" : "none",
-              borderLeft: row.selected ? "2px solid #F59E0B" : "none",
-              background: row.selected ? "#FFFBF5" : "transparent"
+              borderTop: i > 0 ? "1px solid var(--color-border)" : "none",
+              borderLeft: row.selected ? "2px solid var(--color-accent)" : "none",
+              background: row.selected ? "var(--color-bg)" : "transparent"
             }}
           >
             <div className="flex flex-col" style={{ gap: 2 }}>
               <div className="flex items-center" style={{ gap: 6 }}>
                 {row.selected ? (
-                  <ChevronDown size={12} strokeWidth={1.75} className="text-[#EA580C]" aria-hidden="true" />
+                  <ChevronDown size={12} strokeWidth={1.75} className="text-[var(--color-accent-tertiary)]" aria-hidden="true" />
                 ) : (
                   <span aria-hidden="true" style={{ width: 12 }} />
                 )}
-                <code className="text-[12px] font-[family-name:var(--font-mono)] font-semibold text-[#1A1410]">
+                <code className="text-[12px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-primary)]">
                   {row.id}
                 </code>
               </div>
-              <span className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]" style={{ paddingLeft: 18 }}>
+              <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]" style={{ paddingLeft: 18 }}>
                 {row.region}
               </span>
             </div>
@@ -423,8 +423,8 @@ function ClusterTable({ data }: { data: DashboardData }) {
             >
               {row.reputation}
             </span>
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]">{row.total}</span>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{row.delta}</span>
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">{row.total}</span>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{row.delta}</span>
           </li>
         ))}
       </ul>
@@ -435,14 +435,14 @@ function ClusterTable({ data }: { data: DashboardData }) {
 function CellPill({ value, kind }: { value: string; kind: "act" | "cal" | "pau" | "deg" | "cua" }) {
   const style =
     kind === "act"
-      ? { bg: "#DCFCE7", fg: "#15803D" }
+      ? { bg: "var(--color-success-soft)", fg: "var(--color-success)" }
       : kind === "cal"
-        ? { bg: "#FEF3C7", fg: "#B45309" }
+        ? { bg: "var(--color-warning-soft)", fg: "var(--color-warning)" }
         : kind === "pau"
-          ? { bg: "#F7F2EA", fg: "#5C544A" }
+          ? { bg: "var(--color-surface-sunken)", fg: "var(--color-text-secondary)" }
           : kind === "deg"
-            ? { bg: "#FEE2E2", fg: "#B91C1C" }
-            : { bg: "#EDE9FE", fg: "#7C3AED" };
+            ? { bg: "var(--color-critical-soft)", fg: "var(--color-critical)" }
+            : { bg: "var(--color-unknown-soft)", fg: "var(--color-unknown)" };
   return (
     <span
       className="inline-flex items-center text-[10px] font-[family-name:var(--font-mono)] font-bold"
@@ -451,7 +451,7 @@ function CellPill({ value, kind }: { value: string; kind: "act" | "cal" | "pau" 
         padding: "2px 6px",
         borderRadius: 4,
         background: value === "00" ? "transparent" : style.bg,
-        color: value === "00" ? "#8A8073" : style.fg,
+        color: value === "00" ? "var(--color-text-tertiary)" : style.fg,
         width: "fit-content"
       }}
     >
@@ -478,13 +478,13 @@ function DetailPanel({ cluster }: { cluster: DashboardData["clusters"]["clusters
   if (!cluster) {
     return (
       <section
-        className="flex flex-col bg-[#FFFFFF]"
-        style={{ gap: 8, padding: 18, borderRadius: 6, border: "1px solid #EAE0CE" }}
+        className="flex flex-col bg-[var(--color-surface)]"
+        style={{ gap: 8, padding: 18, borderRadius: 6, border: "1px solid var(--color-border)" }}
       >
-        <h3 className="m-0 text-[15px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+        <h3 className="m-0 text-[15px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
           Sin cluster seleccionado
         </h3>
-        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
           El contrato `/v1/admin/clusters` no devuelve clusters bajo gobierno todavía.
         </p>
       </section>
@@ -493,30 +493,30 @@ function DetailPanel({ cluster }: { cluster: DashboardData["clusters"]["clusters
   const nodeCount = cluster.senderNodes?.length ?? 0;
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
-      style={{ gap: 14, padding: 18, borderRadius: 6, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
+      className="flex flex-col bg-[var(--color-surface)]"
+      style={{ gap: 14, padding: 18, borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
     >
       <header className="flex flex-col" style={{ gap: 4 }}>
         <span
-          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#EA580C]"
+          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
           style={{ letterSpacing: "1.2px" }}
         >
           INSPECCIÓN · {cluster.id.toUpperCase()}
         </span>
-        <h3 className="m-0 text-[15px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+        <h3 className="m-0 text-[15px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
           {cluster.provider}
         </h3>
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           {nodeCount} sender nodes · estado {cluster.managementState}
         </span>
       </header>
 
       <div
         className="flex flex-col"
-        style={{ gap: 8, padding: 12, borderRadius: 4, background: "#F7F2EA", border: "1px solid #EAE0CE" }}
+        style={{ gap: 8, padding: 12, borderRadius: 4, background: "var(--color-surface-sunken)", border: "1px solid var(--color-border)" }}
       >
         <span
-          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#5C544A]"
+          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-secondary)]"
           style={{ letterSpacing: "0.6px" }}
         >
           REPUTACIÓN · 24 H
@@ -526,37 +526,37 @@ function DetailPanel({ cluster }: { cluster: DashboardData["clusters"]["clusters
             <span
               key={i}
               className="flex-1"
-              style={{ height: h, borderRadius: 2, background: i === 6 ? "#EA580C" : "#F59E0B", opacity: 0.6 + i * 0.03 }}
+              style={{ height: h, borderRadius: 2, background: i === 6 ? "var(--color-accent-tertiary)" : "var(--color-accent)", opacity: 0.6 + i * 0.03 }}
               aria-hidden="true"
             />
           ))}
         </div>
         <div className="flex items-center justify-between">
-          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">00:00</span>
-          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#1A1410]">94.2</span>
-          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">ahora</span>
+          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">00:00</span>
+          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">94.2</span>
+          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">ahora</span>
         </div>
       </div>
 
       <div
         className="flex flex-col"
-        style={{ gap: 8, padding: 12, borderRadius: 4, background: "#F7F2EA", border: "1px solid #EAE0CE" }}
+        style={{ gap: 8, padding: 12, borderRadius: 4, background: "var(--color-surface-sunken)", border: "1px solid var(--color-border)" }}
       >
         <span
-          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#5C544A]"
+          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-secondary)]"
           style={{ letterSpacing: "0.6px" }}
         >
           PLAN WARMING
         </span>
         <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 6 }}>
           {[
-            { label: "Día 9 · 50k/d", state: "actual", color: "#EA580C" },
-            { label: "Día 10 · 75k/d", state: "propuesto", color: "#B45309" },
-            { label: "Día 14 · 200k/d", state: "humano gate", color: "#7C3AED" }
+            { label: "Día 9 · 50k/d", state: "actual", color: "var(--color-accent-tertiary)" },
+            { label: "Día 10 · 75k/d", state: "propuesto", color: "var(--color-warning)" },
+            { label: "Día 14 · 200k/d", state: "humano gate", color: "var(--color-unknown)" }
           ].map((s) => (
             <li key={s.label} className="flex items-center" style={{ gap: 6 }}>
               <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: s.color }} />
-              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#1A1410]">{s.label}</span>
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{s.label}</span>
               <span className="flex-1" aria-hidden="true" />
               <span className="text-[10px] font-[family-name:var(--font-caption)]" style={{ color: s.color }}>
                 {s.state}
@@ -585,11 +585,11 @@ function OpenClawPromptInner({ message }: { message: string }) {
       style={{
         borderRadius: 12,
         padding: 2,
-        background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
+        background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
         boxShadow: "0 6px 18px rgba(146, 64, 14, 0.13)"
       }}
     >
-      <div className="flex flex-col bg-[#FFFFFF]" style={{ borderRadius: 10, padding: 16, gap: 12 }}>
+      <div className="flex flex-col bg-[var(--color-surface)]" style={{ borderRadius: 10, padding: 16, gap: 12 }}>
         <header className="flex items-center" style={{ gap: 10 }}>
           <span
             aria-hidden="true"
@@ -598,23 +598,23 @@ function OpenClawPromptInner({ message }: { message: string }) {
               width: 28,
               height: 28,
               borderRadius: 8,
-              background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
-              color: "#FFFBF5"
+              background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
+              color: "var(--color-bg)"
             }}
           >
             <Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />
           </span>
-          <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             OpenClaw recomienda
           </span>
         </header>
-        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[#1A1410]">
+        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-primary)]">
           {message}
         </p>
         <button
           type="button"
-          className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]"
-          style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "#1A1410" }}
+          className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
+          style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "var(--color-text-primary)" }}
         >
           <WandSparkles size={13} strokeWidth={1.75} aria-hidden="true" />
           Revisar plan de degradación
@@ -634,18 +634,18 @@ function SecuritySection({ data }: { data: DashboardData }) {
       <header className="flex flex-col" style={{ gap: 4 }}>
         <div className="flex items-center" style={{ gap: 8 }}>
           <span
-            className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[#EA580C]"
+            className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
             style={{ letterSpacing: "1.2px" }}
           >
             GOBIERNO
           </span>
-          <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "#8A8073" }} />
-          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+          <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
+          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
             {gates.length} gates · 1 interruptor
           </span>
         </div>
         <h2
-          className="m-0 text-[22px] font-[family-name:var(--font-heading)] font-bold leading-tight text-[#1A1410]"
+          className="m-0 text-[22px] font-[family-name:var(--font-heading)] font-bold leading-tight text-[var(--color-text-primary)]"
           style={{ letterSpacing: "-0.2px" }}
         >
           Seguridad e interruptor de corte
@@ -703,28 +703,28 @@ function GatesCard({ data }: { data: DashboardData }) {
   const okCount = GATES.filter((g) => g.check === "ok").length;
   return (
     <section
-      className="flex flex-col overflow-hidden bg-[#FFFFFF]"
-      style={{ borderRadius: 6, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
+      className="flex flex-col overflow-hidden bg-[var(--color-surface)]"
+      style={{ borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
     >
       <header
         className="flex items-center"
-        style={{ gap: 10, padding: "14px 16px", background: "#F7F2EA", borderBottom: "1px solid #EAE0CE" }}
+        style={{ gap: 10, padding: "14px 16px", background: "var(--color-surface-sunken)", borderBottom: "1px solid var(--color-border)" }}
       >
-        <Shield size={14} strokeWidth={1.75} className="text-[#1D4ED8]" aria-hidden="true" />
-        <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+        <Shield size={14} strokeWidth={1.75} className="text-[var(--color-info)]" aria-hidden="true" />
+        <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
           Gates de la flota
         </h3>
         <span className="flex-1" aria-hidden="true" />
         <span
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-          style={{ padding: "3px 8px", borderRadius: 4, background: "#DCFCE7", color: "#15803D" }}
+          style={{ padding: "3px 8px", borderRadius: 4, background: "var(--color-success-soft)", color: "var(--color-success)" }}
         >
           {okCount} / {GATES.length} ok
         </span>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
         {GATES.map((g, i) => {
-          const color = g.check === "ok" ? "#15803D" : g.check === "warn" ? "#B45309" : g.check === "bad" ? "#B91C1C" : "#8A8073";
+          const color = g.check === "ok" ? "var(--color-success)" : g.check === "warn" ? "var(--color-warning)" : g.check === "bad" ? "var(--color-critical)" : "var(--color-text-tertiary)";
           return (
             <li
               key={`${i}-${g.rawLabel}`}
@@ -732,19 +732,19 @@ function GatesCard({ data }: { data: DashboardData }) {
               style={{
                 gap: 12,
                 padding: "12px 16px",
-                borderTop: i > 0 ? "1px solid #EAE0CE" : "none"
+                borderTop: i > 0 ? "1px solid var(--color-border)" : "none"
               }}
               title={g.rawLabel}
             >
               <span
                 aria-hidden="true"
-                className="grid place-items-center text-[#FFFBF5] text-[10px] shrink-0"
+                className="grid place-items-center text-[var(--color-bg)] text-[10px] shrink-0"
                 style={{ width: 18, height: 18, borderRadius: 999, background: color, fontWeight: 700 }}
               >
                 {g.check === "ok" ? "✓" : g.check === "warn" ? "!" : g.check === "bad" ? "×" : "−"}
               </span>
               <span
-                className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[#1A1410] truncate"
+                className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-primary)] truncate"
                 style={{ flex: "1 1 auto", minWidth: 0 }}
               >
                 {g.label}
@@ -778,12 +778,12 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
   const armed = !ks.enabled;
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
-      style={{ gap: 12, padding: 18, borderRadius: 6, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
+      className="flex flex-col bg-[var(--color-surface)]"
+      style={{ gap: 12, padding: 18, borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
     >
       <header className="flex items-center" style={{ gap: 8 }}>
-        <ShieldCheck size={14} strokeWidth={1.75} className="text-[#15803D]" aria-hidden="true" />
-        <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+        <ShieldCheck size={14} strokeWidth={1.75} className="text-[var(--color-success)]" aria-hidden="true" />
+        <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
           Interruptor de corte
         </h3>
         <span className="flex-1" aria-hidden="true" />
@@ -793,16 +793,16 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
             gap: 6,
             padding: "3px 8px",
             borderRadius: 999,
-            background: armed ? "#DCFCE7" : "#FEE2E2",
-            color: armed ? "#15803D" : "#B91C1C",
+            background: armed ? "var(--color-success-soft)" : "var(--color-critical-soft)",
+            color: armed ? "var(--color-success)" : "var(--color-critical)",
             letterSpacing: "0.6px"
           }}
         >
-          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: armed ? "#15803D" : "#B91C1C" }} />
+          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: armed ? "var(--color-success)" : "var(--color-critical)" }} />
           {armed ? "ARMADO" : "ACTIVO"}
         </span>
       </header>
-      <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+      <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
         {ks.reason
           ? `Razón · ${ks.reason}`
           : ks.updatedAt
@@ -811,12 +811,12 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
       </p>
       <button
         type="button"
-        className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]"
-        style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "#1A1410" }}
+        className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
+        style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "var(--color-text-primary)" }}
       >
         Activar interruptor de corte
       </button>
-      <span className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+      <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
         Requiere rol elevado + regla de 2 personas
       </span>
     </section>
@@ -831,12 +831,12 @@ function TooltipCard() {
         gap: 8,
         padding: "8px 12px",
         borderRadius: 6,
-        background: "#FEF3C7",
-        border: "1px solid #B45309"
+        background: "var(--color-warning-soft)",
+        border: "1px solid var(--color-warning)"
       }}
     >
-      <Eye size={12} strokeWidth={1.75} className="text-[#B45309]" aria-hidden="true" />
-      <span className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#B45309]">
+      <Eye size={12} strokeWidth={1.75} className="text-[var(--color-warning)]" aria-hidden="true" />
+      <span className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-warning)]">
         Aprobación humana requerida para tocar el switch
       </span>
     </div>
@@ -855,33 +855,33 @@ function AuditLogCard({ data }: { data: DashboardData }) {
     actor: `${e.actorType}.${e.actorId}`.slice(0, 24),
     action: e.action,
     color: e.actorType.includes("openclaw")
-      ? "#EA580C"
+      ? "var(--color-accent-tertiary)"
       : e.actorType.includes("collector") || e.actorType.includes("system")
-        ? "#1D4ED8"
-        : "#1A1410"
+        ? "var(--color-info)"
+        : "var(--color-text-primary)"
   }));
   if (rows.length === 0) {
     rows.push({
       ts: "—",
       actor: "audit log vacío",
       action: "el contrato no expone eventos todavía",
-      color: "#8A8073"
+      color: "var(--color-text-tertiary)"
     });
   }
   return (
     <section
-      className="flex flex-col overflow-hidden bg-[#FFFFFF]"
-      style={{ borderRadius: 6, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
+      className="flex flex-col overflow-hidden bg-[var(--color-surface)]"
+      style={{ borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
     >
       <header
         className="flex items-center"
-        style={{ gap: 8, padding: "12px 14px", background: "#F7F2EA", borderBottom: "1px solid #EAE0CE" }}
+        style={{ gap: 8, padding: "12px 14px", background: "var(--color-surface-sunken)", borderBottom: "1px solid var(--color-border)" }}
       >
-        <h3 className="m-0 text-[12px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+        <h3 className="m-0 text-[12px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
           Audit log · clúster
         </h3>
         <span className="flex-1" aria-hidden="true" />
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">/v1/audit</span>
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">/v1/audit</span>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
         {rows.map((r, i) => (
@@ -892,14 +892,14 @@ function AuditLogCard({ data }: { data: DashboardData }) {
               gridTemplateColumns: "50px minmax(0,1fr) auto",
               gap: 8,
               padding: "10px 14px",
-              borderTop: i > 0 ? "1px solid #EAE0CE" : "none"
+              borderTop: i > 0 ? "1px solid var(--color-border)" : "none"
             }}
           >
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{r.ts}</span>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{r.ts}</span>
             <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold truncate" style={{ color: r.color }}>
               {r.actor}
             </span>
-            <span className="text-[10px] font-[family-name:var(--font-sans)] text-[#5C544A]">{r.action}</span>
+            <span className="text-[10px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">{r.action}</span>
           </li>
         ))}
       </ul>
