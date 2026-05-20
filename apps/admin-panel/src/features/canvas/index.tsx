@@ -5,13 +5,13 @@
  *   Body horizontal split:
  *     Canvas wrap (flex):
  *       Hero (padding 20/28/16/28)
- *       Toolbar (padding 10/28, fill #F7F2EA, borders arriba/abajo):
+ *       Toolbar (padding 10/28, fill var(--color-surface-sunken), borders arriba/abajo):
  *         csel | trange (1h/24h/7d) | zoom (-/100%/+) | fit | (spacer) | legend
  *       Canvas inner (padding 20/28):
  *         Swimlanes (5 carriles verticales con colores literales)
  *       Prompt strip (padding 12/28): gradient border 2px + 2 botones
- *       Footer (padding 10/28/14/28, fill #F7F2EA): 4 quick facts
- *     Detail panel 360w right (fill #F7F2EA, border-left):
+ *       Footer (padding 10/28/14/28, fill var(--color-surface-sunken)): 4 quick facts
+ *     Detail panel 360w right (fill var(--color-surface-sunken), border-left):
  *       dpHead (white) + dpBody con 5 secciones verticales
  *
  * En vivo: useQuery con refetchInterval 5_000 sobre /v1/openclaw/live-canvas
@@ -55,11 +55,11 @@ type CanvasNode = CanvasData["nodes"][number];
 
 /** Paleta literal Pencil de cada lane (NO inventar fuera de este map). */
 const LANE_COLOR: Record<OpenClawCanvasLane, string> = {
-  onboarding: "#15803D",
-  hardware: "#1D4ED8",
-  provisioning: "#EA580C",
-  warming: "#B45309",
-  reputation: "#57534E"
+  onboarding: "var(--color-success)",
+  hardware: "var(--color-info)",
+  provisioning: "var(--color-accent-tertiary)",
+  warming: "var(--color-warning)",
+  reputation: "var(--color-neutral)"
 };
 
 const LANE_LABEL: Record<OpenClawCanvasLane, string> = {
@@ -165,7 +165,7 @@ function CanvasWrap({
   onPrimaryPromptAction: () => void;
 }) {
   return (
-    <div className="flex flex-col bg-[#FFFBF5] min-w-0">
+    <div className="flex flex-col bg-[var(--color-bg)] min-w-0">
       <Hero canvas={canvas} webdockInventory={webdockInventory} />
       <WebdockLiveBanner inventory={webdockInventory} drift={webdockDrift} />
       <StartHereBanner
@@ -250,9 +250,9 @@ function StartHereBanner({
       style={{
         gap: 14,
         padding: "14px 28px",
-        background: "linear-gradient(90deg, rgba(250, 204, 21, 0.08) 0%, rgba(234, 88, 12, 0.05) 100%), #FFFBF5",
-        borderTop: "1px solid #EAE0CE",
-        borderBottom: "1px solid #EAE0CE",
+        background: "linear-gradient(90deg, rgba(250, 204, 21, 0.08) 0%, rgba(234, 88, 12, 0.05) 100%), var(--color-bg)",
+        borderTop: "1px solid var(--color-border)",
+        borderBottom: "1px solid var(--color-border)",
         borderLeft: `4px solid ${laneColor}`
       }}
     >
@@ -263,8 +263,8 @@ function StartHereBanner({
           width: 36,
           height: 36,
           borderRadius: 10,
-          background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
-          color: "#FFFBF5"
+          background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
+          color: "var(--color-bg)"
         }}
       >
         <Sparkles size={17} strokeWidth={1.75} aria-hidden="true" />
@@ -272,12 +272,12 @@ function StartHereBanner({
       <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
         <div className="inline-flex items-center" style={{ gap: 8 }}>
           <span
-            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#EA580C]"
+            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
             style={{ letterSpacing: "1.2px" }}
           >
             Empieza aquí
           </span>
-          <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "#8A8073" }} />
+          <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
           <span
             className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
             style={{ color: laneColor, letterSpacing: "0.8px" }}
@@ -286,7 +286,7 @@ function StartHereBanner({
           </span>
         </div>
         <p
-          className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.4] text-[#1A1410]"
+          className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.4] text-[var(--color-text-primary)]"
           style={{ overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}
         >
           {reason}
@@ -294,7 +294,7 @@ function StartHereBanner({
       </div>
       <div className="inline-flex items-center shrink-0" style={{ gap: 8 }}>
         {!hasPrompt ? (
-          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073] hidden sm:inline">
+          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)] hidden sm:inline">
             sin propuesta automática
           </span>
         ) : null}
@@ -304,11 +304,11 @@ function StartHereBanner({
             onSelectNode(targetNode.id);
             if (hasPrompt) onOpenRunbook();
           }}
-          className="inline-flex items-center bg-[#1A1410]"
+          className="inline-flex items-center bg-[var(--color-text-primary)]"
           style={{ gap: 6, padding: "9px 14px", borderRadius: 6 }}
         >
-          <WandSparkles size={13} strokeWidth={1.75} className="text-[#FFFBF5]" aria-hidden="true" />
-          <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]">
+          <WandSparkles size={13} strokeWidth={1.75} className="text-[var(--color-bg)]" aria-hidden="true" />
+          <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]">
             {ctaLabel}
           </span>
         </button>
@@ -335,40 +335,40 @@ function Hero({
   const liveBadge = webdockInventory.source.kind === "live" ? "Webdock vivo" : "Webdock mock";
   return (
     <header
-      className="flex flex-col bg-[#FFFBF5]"
+      className="flex flex-col bg-[var(--color-bg)]"
       style={{ gap: 6, padding: "20px 28px 16px 28px" }}
     >
       <div className="flex items-center" style={{ gap: 8 }}>
         <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[#EA580C]"
+          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
           style={{ letterSpacing: "1.2px" }}
         >
           CANVAS OPERATIVO
         </span>
-        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "#8A8073" }} />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
+        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           {readyNodes} / {totalNodes} pasos listos · {blockedNodes} esperan tu revisión
         </span>
-        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "#8A8073" }} />
+        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
         <span
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
           style={{
             padding: "2px 6px",
             borderRadius: 4,
-            background: webdockInventory.source.kind === "live" ? "#DCFCE7" : "#FEF3C7",
-            color: webdockInventory.source.kind === "live" ? "#15803D" : "#B45309"
+            background: webdockInventory.source.kind === "live" ? "var(--color-success-soft)" : "var(--color-warning-soft)",
+            color: webdockInventory.source.kind === "live" ? "var(--color-success)" : "var(--color-warning)"
           }}
         >
           {liveBadge}
         </span>
       </div>
       <h1
-        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[#1A1410]"
+        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
         style={{ letterSpacing: "-0.4px" }}
       >
         El viaje del servidor a infraestructura de envío.
       </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
+      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
         OpenClaw te muestra cada paso del provisioning supervisado: del servidor físico
         en Popayán hasta que las IPs estén calentadas y la reputación firme. El panel
         es solo lectura — las aprobaciones se firman afuera con regla de dos personas.
@@ -400,9 +400,9 @@ function WebdockLiveBanner({
       : "info"
     : "info";
   const palette = {
-    info: { bg: "#DBEAFE", fg: "#1D4ED8", border: "#1D4ED8" },
-    warning: { bg: "#FEF3C7", fg: "#B45309", border: "#B45309" },
-    critical: { bg: "#FEE2E2", fg: "#B91C1C", border: "#B91C1C" }
+    info: { bg: "var(--color-info-soft)", fg: "var(--color-info)", border: "var(--color-info)" },
+    warning: { bg: "var(--color-warning-soft)", fg: "var(--color-warning)", border: "var(--color-warning)" },
+    critical: { bg: "var(--color-critical-soft)", fg: "var(--color-critical)", border: "var(--color-critical)" }
   }[tone];
 
   const message = !isLive
@@ -431,10 +431,10 @@ function WebdockLiveBanner({
         {isLive ? "Webdock vivo" : "Webdock mock"}
       </span>
       <span aria-hidden="true" style={{ width: 4, height: 4, borderRadius: 2, background: palette.fg, opacity: 0.5 }} />
-      <span className="text-[12px] font-[family-name:var(--font-sans)] text-[#1A1410] flex-1">
+      <span className="text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-primary)] flex-1">
         {message}
       </span>
-      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#5C544A]">
+      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">
         {inventory.summary.running} corriendo · {inventory.summary.stopped} apagados · {inventory.summary.suspended} suspendidos
       </span>
     </div>
@@ -464,39 +464,39 @@ function Toolbar({
   const activeOption = cluster.options.find((o) => o.id === cluster.activeId);
   return (
     <div
-      className="flex items-center bg-[#F7F2EA]"
+      className="flex items-center bg-[var(--color-surface-sunken)]"
       style={{
         gap: 10,
         padding: "10px 28px",
-        borderTop: "1px solid #EAE0CE",
-        borderBottom: "1px solid #EAE0CE"
+        borderTop: "1px solid var(--color-border)",
+        borderBottom: "1px solid var(--color-border)"
       }}
     >
       {/* csel — cluster selector (caja blanca con icon box) */}
       <button
         type="button"
-        className="inline-flex items-center bg-[#FFFFFF]"
+        className="inline-flex items-center bg-[var(--color-surface)]"
         style={{
           gap: 8,
           padding: "7px 12px",
           borderRadius: 6,
-          border: "1px solid #EAE0CE"
+          border: "1px solid var(--color-border)"
         }}
       >
-        <Box size={13} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
-        <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+        <Box size={13} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
+        <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
           Clúster:
         </span>
-        <span className="text-[12px] font-[family-name:var(--font-mono)] font-semibold text-[#1A1410]">
+        <span className="text-[12px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-primary)]">
           {activeOption?.label ?? cluster.activeId}
         </span>
-        <ChevronDown size={13} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+        <ChevronDown size={13} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
       </button>
 
       {/* trange — time range 1h/24h/7d */}
       <div
-        className="inline-flex bg-[#FFFFFF]"
-        style={{ padding: 2, borderRadius: 6, border: "1px solid #EAE0CE" }}
+        className="inline-flex bg-[var(--color-surface)]"
+        style={{ padding: 2, borderRadius: 6, border: "1px solid var(--color-border)" }}
       >
         {timeRangeOptions.map((opt) => {
           const active = opt === timeRange;
@@ -509,13 +509,13 @@ function Toolbar({
               style={{
                 padding: "5px 10px",
                 borderRadius: 4,
-                background: active ? "#1A1410" : "transparent"
+                background: active ? "var(--color-text-primary)" : "transparent"
               }}
             >
               <span
                 className="text-[11px] font-[family-name:var(--font-mono)]"
                 style={{
-                  color: active ? "#FFFBF5" : "#5C544A",
+                  color: active ? "var(--color-bg)" : "var(--color-text-secondary)",
                   fontWeight: active ? 600 : "normal"
                 }}
               >
@@ -528,8 +528,8 @@ function Toolbar({
 
       {/* zoom — minus / 100% / plus */}
       <div
-        className="inline-flex items-stretch bg-[#FFFFFF]"
-        style={{ padding: 2, borderRadius: 6, border: "1px solid #EAE0CE" }}
+        className="inline-flex items-stretch bg-[var(--color-surface)]"
+        style={{ padding: 2, borderRadius: 6, border: "1px solid var(--color-border)" }}
       >
         <button
           type="button"
@@ -538,10 +538,10 @@ function Toolbar({
           style={{ width: 28, height: 24, borderRadius: 4 }}
           aria-label="Reducir zoom"
         >
-          <Minus size={13} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
+          <Minus size={13} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
         </button>
         <span
-          className="grid place-items-center text-[11px] font-[family-name:var(--font-mono)] font-semibold text-[#1A1410]"
+          className="grid place-items-center text-[11px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-primary)]"
           style={{ width: 46, height: 24 }}
         >
           {zoom}%
@@ -553,7 +553,7 @@ function Toolbar({
           style={{ width: 28, height: 24, borderRadius: 4 }}
           aria-label="Aumentar zoom"
         >
-          <Plus size={13} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
+          <Plus size={13} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
         </button>
       </div>
 
@@ -561,11 +561,11 @@ function Toolbar({
       <button
         type="button"
         onClick={() => onZoomChange(100)}
-        className="inline-flex items-center bg-[#FFFFFF]"
-        style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid #EAE0CE" }}
+        className="inline-flex items-center bg-[var(--color-surface)]"
+        style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border)" }}
       >
-        <Maximize size={12} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
-        <span className="text-[11px] font-[family-name:var(--font-sans)] font-medium text-[#5C544A]">
+        <Maximize size={12} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
+        <span className="text-[11px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-secondary)]">
           Ajustar
         </span>
       </button>
@@ -575,7 +575,7 @@ function Toolbar({
       {/* legend — Etapas */}
       <div className="inline-flex items-center" style={{ gap: 10 }}>
         <span
-          className="text-[10px] font-[family-name:var(--font-caption)] font-bold text-[#8A8073]"
+          className="text-[10px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-text-tertiary)]"
           style={{ letterSpacing: "0.6px" }}
         >
           Etapas
@@ -586,7 +586,7 @@ function Toolbar({
               aria-hidden="true"
               style={{ width: 8, height: 8, borderRadius: 4, background: LANE_COLOR[lane] }}
             />
-            <span className="text-[10px] font-[family-name:var(--font-caption)] text-[#5C544A]">
+            <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">
               {LANE_LEGEND_LABEL[lane]}
             </span>
           </span>
@@ -617,10 +617,10 @@ function Swimlanes({
   const scale = zoomPercent / 100;
   return (
     <div
-      className="overflow-hidden bg-[#F7F2EA]"
+      className="overflow-hidden bg-[var(--color-surface-sunken)]"
       style={{
         borderRadius: 10,
-        border: "1px solid #EAE0CE"
+        border: "1px solid var(--color-border)"
       }}
     >
       <div
@@ -670,7 +670,7 @@ function SwimlaneRow({
     <div
       className="flex items-stretch"
       style={{
-        borderBottom: isLast ? "none" : "1px solid #EAE0CE"
+        borderBottom: isLast ? "none" : "1px solid var(--color-border)"
       }}
     >
       {/* Lane label sidebar 120w */}
@@ -711,7 +711,7 @@ function SwimlaneRow({
               <ChevronRight
                 size={14}
                 strokeWidth={1.75}
-                className="text-[#8A8073] shrink-0"
+                className="text-[var(--color-text-tertiary)] shrink-0"
                 aria-hidden="true"
               />
             ) : null}
@@ -746,12 +746,12 @@ function NodeCard({
           padding: 2,
           width: 184,
           borderRadius: 10,
-          background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
+          background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
           boxShadow: "0 6px 14px rgba(146, 64, 14, 0.2)"
         }}
       >
         <div
-          className="flex flex-col bg-[#FFFFFF]"
+          className="flex flex-col bg-[var(--color-surface)]"
           style={{ gap: 6, padding: 12, borderRadius: 8 }}
         >
           <NodeCardBody node={node} />
@@ -770,9 +770,9 @@ function NodeCard({
         width: 172,
         borderRadius: 8,
         background: selected
-          ? "linear-gradient(135deg, rgba(250, 204, 21, 0.14) 0%, rgba(234, 88, 12, 0.14) 100%), #FFFFFF"
-          : "#FFFFFF",
-        border: selected ? `1px solid ${laneColor}` : "1px solid #EAE0CE",
+          ? "linear-gradient(135deg, rgba(250, 204, 21, 0.14) 0%, rgba(234, 88, 12, 0.14) 100%), var(--color-surface)"
+          : "var(--color-surface)",
+        border: selected ? `1px solid ${laneColor}` : "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
@@ -797,16 +797,16 @@ function NodeCardBody({ node }: { node: CanvasNode }) {
           {statusVisual.label}
         </span>
       </div>
-      <span className="text-[12.5px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410] leading-tight">
+      <span className="text-[12.5px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] leading-tight">
         {node.label}
       </span>
       {node.metrics.length > 0 && node.metrics[0]!.value !== null ? (
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           {node.metrics[0]!.label}: {node.metrics[0]!.value}
           {node.metrics[0]!.unit ? ` ${node.metrics[0]!.unit}` : ""}
         </span>
       ) : (
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           progreso {node.progressPercent}%
         </span>
       )}
@@ -815,15 +815,15 @@ function NodeCardBody({ node }: { node: CanvasNode }) {
 }
 
 function statusToVisual(status: string): { dot: string; fg: string; label: string } {
-  if (status === "ready") return { dot: "#15803D", fg: "#15803D", label: "listo" };
-  if (status === "needs_review") return { dot: "#B45309", fg: "#B45309", label: "revisar" };
-  if (status === "requires_approval") return { dot: "#7C3AED", fg: "#7C3AED", label: "aprobación" };
-  if (status === "blocked") return { dot: "#B91C1C", fg: "#B91C1C", label: "bloqueado" };
-  if (status === "collecting") return { dot: "#1D4ED8", fg: "#1D4ED8", label: "midiendo" };
-  if (status === "disabled_by_mvp") return { dot: "#8A8073", fg: "#8A8073", label: "apagado" };
-  if (status === "error") return { dot: "#B91C1C", fg: "#B91C1C", label: "error" };
-  if (status === "not_started") return { dot: "#8A8073", fg: "#8A8073", label: "pendiente" };
-  return { dot: "#8A8073", fg: "#8A8073", label: "desconocido" };
+  if (status === "ready") return { dot: "var(--color-success)", fg: "var(--color-success)", label: "listo" };
+  if (status === "needs_review") return { dot: "var(--color-warning)", fg: "var(--color-warning)", label: "revisar" };
+  if (status === "requires_approval") return { dot: "var(--color-unknown)", fg: "var(--color-unknown)", label: "aprobación" };
+  if (status === "blocked") return { dot: "var(--color-critical)", fg: "var(--color-critical)", label: "bloqueado" };
+  if (status === "collecting") return { dot: "var(--color-info)", fg: "var(--color-info)", label: "midiendo" };
+  if (status === "disabled_by_mvp") return { dot: "var(--color-text-tertiary)", fg: "var(--color-text-tertiary)", label: "apagado" };
+  if (status === "error") return { dot: "var(--color-critical)", fg: "var(--color-critical)", label: "error" };
+  if (status === "not_started") return { dot: "var(--color-text-tertiary)", fg: "var(--color-text-tertiary)", label: "pendiente" };
+  return { dot: "var(--color-text-tertiary)", fg: "var(--color-text-tertiary)", label: "desconocido" };
 }
 
 /* ============================================================
@@ -845,16 +845,16 @@ function PromptStrip({
     return (
       <div className="flex flex-col" style={{ padding: "12px 28px" }}>
         <div
-          className="flex items-center bg-[#FFFFFF]"
+          className="flex items-center bg-[var(--color-surface)]"
           style={{
             gap: 10,
             padding: "12px 14px",
             borderRadius: 8,
-            border: "1px solid #EAE0CE"
+            border: "1px solid var(--color-border)"
           }}
         >
-          <Sparkles size={14} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
-          <span className="text-[12px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+          <Sparkles size={14} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+          <span className="text-[12px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
             OpenClaw sin propuestas pendientes. Bitácora limpia.
           </span>
         </div>
@@ -920,15 +920,15 @@ function PromptStrip({
           padding: 2,
           borderRadius: 10,
           background: isQuarantinePrompt
-            ? "linear-gradient(135deg, #DC2626 0%, #991B1B 100%)"
-            : "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
+            ? "linear-gradient(135deg, var(--color-critical) 0%, var(--color-critical-border) 100%)"
+            : "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
           boxShadow: isQuarantinePrompt
             ? "0 6px 18px rgba(153, 27, 27, 0.18)"
             : "0 6px 18px rgba(146, 64, 14, 0.13)"
         }}
       >
         <div
-          className="flex items-start bg-[#FFFFFF]"
+          className="flex items-start bg-[var(--color-surface)]"
           style={{ gap: 14, padding: "12px 14px", borderRadius: 8 }}
         >
           <span
@@ -939,15 +939,15 @@ function PromptStrip({
               height: 30,
               borderRadius: 8,
               background: isQuarantinePrompt
-                ? "linear-gradient(135deg, #DC2626 0%, #991B1B 100%)"
-                : "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
-              color: "#FFFBF5"
+                ? "linear-gradient(135deg, var(--color-critical) 0%, var(--color-critical-border) 100%)"
+                : "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
+              color: "var(--color-bg)"
             }}
           >
             <Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />
           </span>
           <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
-            <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+            <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
               {prompt.headline}
             </span>
             {isQuarantinePrompt ? (
@@ -956,25 +956,25 @@ function PromptStrip({
                 style={{
                   padding: "2px 7px",
                   borderRadius: 999,
-                  background: "#FEE2E2",
-                  color: "#991B1B"
+                  background: "var(--color-critical-soft)",
+                  color: "var(--color-critical-border)"
                 }}
               >
                 Crítico
               </span>
             ) : null}
-            <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.4] text-[#1A1410]">
+            <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.4] text-[var(--color-text-primary)]">
               {prompt.body}
             </p>
             {prompt.requiresApproval ? (
-              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]">
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">
                 Firmas: {Math.min(currentApprovals, requiredApprovals)}/{requiredApprovals}
                 {quorumReached ? " · quorum listo" : ""}
                 {quorumModeCopy ? ` · ${quorumModeCopy}` : ""}
               </span>
             ) : null}
             {rollbackToken ? (
-              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]">
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">
                 Rollback disponible hasta {rollbackExpiresAt ? formatDateTime(rollbackExpiresAt) : "7d"}
               </span>
             ) : null}
@@ -987,10 +987,10 @@ function PromptStrip({
                 gap: 6,
                 padding: "8px 12px",
                 borderRadius: 6,
-                border: "1px solid #D4C5A8"
+                border: "1px solid var(--color-border-strong)"
               }}
             >
-              <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+              <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
                 {prompt.secondaryAction.label}
               </span>
             </button>
@@ -1004,12 +1004,12 @@ function PromptStrip({
                   gap: 6,
                   padding: "8px 14px",
                   borderRadius: 6,
-                  background: signedByOperator ? "#EAE0CE" : isQuarantinePrompt ? "#DC2626" : "#F59E0B"
+                  background: signedByOperator ? "var(--color-border)" : isQuarantinePrompt ? "var(--color-critical)" : "var(--color-accent)"
                 }}
               >
                 <span
                   className="text-[11px] font-[family-name:var(--font-sans)] font-semibold"
-                  style={{ color: isQuarantinePrompt && !signedByOperator ? "#FFFFFF" : "#1A1410" }}
+                  style={{ color: isQuarantinePrompt && !signedByOperator ? "var(--color-surface)" : "var(--color-text-primary)" }}
                 >
                   {signedByOperator
                     ? "Ya firmaste"
@@ -1029,10 +1029,10 @@ function PromptStrip({
                   gap: 6,
                   padding: "8px 12px",
                   borderRadius: 6,
-                  border: "1px solid #B91C1C"
+                  border: "1px solid var(--color-critical)"
                 }}
               >
-                <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[#B91C1C]">
+                <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-critical)]">
                   Decidir destino
                 </span>
               </button>
@@ -1046,10 +1046,10 @@ function PromptStrip({
                   gap: 6,
                   padding: "8px 12px",
                   borderRadius: 6,
-                  border: "1px solid #B91C1C"
+                  border: "1px solid var(--color-critical)"
                 }}
               >
-                <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[#B91C1C]">
+                <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-critical)]">
                   {pending === "revert" ? "Revirtiendo" : "Revertir"}
                 </span>
               </button>
@@ -1057,15 +1057,15 @@ function PromptStrip({
             <button
               type="button"
               onClick={onPrimary}
-              className="inline-flex items-center bg-[#1A1410]"
+              className="inline-flex items-center bg-[var(--color-text-primary)]"
               style={{
                 gap: 6,
                 padding: "8px 14px",
                 borderRadius: 6
               }}
             >
-              <WandSparkles size={12} strokeWidth={1.75} className="text-[#FFFBF5]" aria-hidden="true" />
-              <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]">
+              <WandSparkles size={12} strokeWidth={1.75} className="text-[var(--color-bg)]" aria-hidden="true" />
+              <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]">
                 {prompt.primaryAction.label}
               </span>
             </button>
@@ -1080,17 +1080,17 @@ function PromptStrip({
           style={{ background: "rgba(26, 20, 16, 0.36)" }}
         >
           <div
-            className="flex flex-col bg-[#FFFFFF]"
+            className="flex flex-col bg-[var(--color-surface)]"
             style={{
               width: 340,
               gap: 10,
               padding: 16,
               borderRadius: 8,
-              border: "1px solid #EAE0CE",
+              border: "1px solid var(--color-border)",
               boxShadow: "0 18px 45px rgba(26, 20, 16, 0.22)"
             }}
           >
-            <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+            <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
               Destino de cuarentena
             </span>
             <div className="grid grid-cols-1" style={{ gap: 8 }}>
@@ -1103,14 +1103,14 @@ function PromptStrip({
                   key={value}
                   type="button"
                   onClick={() => void revertExecutedRunbook(value as "active" | "retired" | "quarantined")}
-                  className="inline-flex items-center justify-between bg-[#FFFBF5]"
+                  className="inline-flex items-center justify-between bg-[var(--color-bg)]"
                   style={{
                     padding: "9px 10px",
                     borderRadius: 6,
-                    border: "1px solid #D4C5A8"
+                    border: "1px solid var(--color-border-strong)"
                   }}
                 >
-                  <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+                  <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
                     {label}
                   </span>
                 </button>
@@ -1123,10 +1123,10 @@ function PromptStrip({
               style={{
                 padding: "8px 10px",
                 borderRadius: 6,
-                border: "1px solid #EAE0CE"
+                border: "1px solid var(--color-border)"
               }}
             >
-              <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[#5C544A]">
+              <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-secondary)]">
                 Cancelar
               </span>
             </button>
@@ -1242,38 +1242,38 @@ function Footer({ canvas }: { canvas: CanvasData }) {
   const ageSeconds = Math.max(0, Math.floor((Date.now() - new Date(canvas.lastActivity.occurredAt).getTime()) / 1000));
   return (
     <div
-      className="flex items-center bg-[#F7F2EA]"
+      className="flex items-center bg-[var(--color-surface-sunken)]"
       style={{
         gap: 14,
         padding: "10px 28px 14px 28px",
-        borderTop: "1px solid #EAE0CE"
+        borderTop: "1px solid var(--color-border)"
       }}
     >
       <div className="inline-flex items-center" style={{ gap: 6 }}>
         <span
           aria-hidden="true"
-          style={{ width: 6, height: 6, borderRadius: 3, background: "#15803D" }}
+          style={{ width: 6, height: 6, borderRadius: 3, background: "var(--color-success)" }}
         />
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#5C544A]">
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">
           Actualizado hace {ageSeconds}s
         </span>
       </div>
       <div className="inline-flex items-center" style={{ gap: 6 }}>
-        <Maximize2 size={11} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <Maximize2 size={11} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           escala {canvas.scale.zoomPercent}%
         </span>
       </div>
       <div className="inline-flex items-center" style={{ gap: 6 }}>
-        <User size={11} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <User size={11} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           última: {canvas.lastActivity.actor}
         </span>
       </div>
       <span className="flex-1" aria-hidden="true" />
       <div className="inline-flex items-center" style={{ gap: 6 }}>
-        <Hash size={11} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <Hash size={11} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           audit · {canvas.lastActivity.auditHash}
         </span>
       </div>
@@ -1295,16 +1295,16 @@ function DetailPanel({
   const visual = statusToVisual(node.status);
   return (
     <aside
-      className="flex flex-col bg-[#F7F2EA] min-w-0"
+      className="flex flex-col bg-[var(--color-surface-sunken)] min-w-0"
       style={{
-        borderLeft: "1px solid #EAE0CE",
+        borderLeft: "1px solid var(--color-border)",
         width: "100%"
       }}
     >
       {/* dpHead */}
       <header
-        className="flex flex-col bg-[#FFFFFF]"
-        style={{ gap: 6, padding: "20px 20px 16px 20px", borderBottom: "1px solid #EAE0CE" }}
+        className="flex flex-col bg-[var(--color-surface)]"
+        style={{ gap: 6, padding: "20px 20px 16px 20px", borderBottom: "1px solid var(--color-border)" }}
       >
         <div className="inline-flex items-center" style={{ gap: 8 }}>
           <span
@@ -1319,13 +1319,13 @@ function DetailPanel({
           </span>
         </div>
         <h2
-          className="m-0 text-[18px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]"
+          className="m-0 text-[18px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]"
           style={{ letterSpacing: "-0.2px" }}
         >
           Revisión OpenClaw
         </h2>
         <div className="inline-flex items-center" style={{ gap: 8 }}>
-          <span className="text-[12px] font-[family-name:var(--font-mono)] text-[#5C544A]">
+          <span className="text-[12px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">
             {node.label}
           </span>
         </div>
@@ -1346,7 +1346,7 @@ function DetailPanel({
       {/* dpBody — 5 secciones */}
       <div className="flex flex-col overflow-y-auto">
         <DetailSection title="Resumen">
-          <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[#5C544A]">
+          <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-secondary)]">
             {node.summary}
           </p>
           <div className="flex flex-wrap" style={{ gap: 6 }}>
@@ -1357,9 +1357,9 @@ function DetailPanel({
                 style={{
                   padding: "2px 8px",
                   borderRadius: 4,
-                  background: "#F7F2EA",
-                  border: "1px solid #EAE0CE",
-                  color: "#5C544A"
+                  background: "var(--color-surface-sunken)",
+                  border: "1px solid var(--color-border)",
+                  color: "var(--color-text-secondary)"
                 }}
               >
                 {b}
@@ -1370,7 +1370,7 @@ function DetailPanel({
 
         <DetailSection title="Métricas observadas">
           {node.metrics.length === 0 ? (
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
               Sin métricas para este nodo (contrato vacío).
             </span>
           ) : (
@@ -1381,11 +1381,11 @@ function DetailPanel({
                   className="flex items-center"
                   style={{ gap: 8 }}
                 >
-                  <span className="text-[11px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+                  <span className="text-[11px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
                     {m.label}
                   </span>
                   <span className="flex-1" aria-hidden="true" />
-                  <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold text-[#1A1410]">
+                  <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-primary)]">
                     {m.value === null ? "—" : `${m.value}${m.unit ? ` ${m.unit}` : ""}`}
                   </span>
                   <span
@@ -1393,8 +1393,8 @@ function DetailPanel({
                     style={{
                       padding: "1px 5px",
                       borderRadius: 3,
-                      background: "#F7F2EA",
-                      color: "#8A8073",
+                      background: "var(--color-surface-sunken)",
+                      color: "var(--color-text-tertiary)",
                       letterSpacing: "0.4px"
                     }}
                   >
@@ -1408,7 +1408,7 @@ function DetailPanel({
 
         <DetailSection title="Bloqueos y dependencias">
           {canvas.blockedBy.length === 0 ? (
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
               Sin bloqueos activos en este momento.
             </span>
           ) : (
@@ -1427,14 +1427,14 @@ function DetailPanel({
                       height: 6,
                       marginTop: 6,
                       borderRadius: 3,
-                      background: b.severity === "critical" ? "#B91C1C" : "#B45309"
+                      background: b.severity === "critical" ? "var(--color-critical)" : "var(--color-warning)"
                     }}
                   />
                   <div className="flex flex-col" style={{ gap: 2 }}>
-                    <span className="text-[11px] font-[family-name:var(--font-sans)] text-[#1A1410]">
+                    <span className="text-[11px] font-[family-name:var(--font-sans)] text-[var(--color-text-primary)]">
                       {b.label}
                     </span>
-                    <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+                    <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
                       {b.category} · {b.severity}
                     </span>
                   </div>
@@ -1446,7 +1446,7 @@ function DetailPanel({
 
         <DetailSection title="Aprobaciones humanas">
           {canvas.requiresHumanApproval.length === 0 ? (
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
               No hay aprobaciones pendientes.
             </span>
           ) : (
@@ -1457,8 +1457,8 @@ function DetailPanel({
                   className="inline-flex items-center"
                   style={{ gap: 6 }}
                 >
-                  <FileText size={11} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
-                  <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]">
+                  <FileText size={11} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+                  <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">
                     {a.replaceAll("_", " ")}
                   </span>
                 </li>
@@ -1472,7 +1472,7 @@ function DetailPanel({
             {canvas.timeline.slice(0, 4).map((t) => (
               <li key={t.id} className="flex flex-col" style={{ gap: 2 }}>
                 <div className="inline-flex items-center" style={{ gap: 6 }}>
-                  <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+                  <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
                     {formatDateTime(t.occurredAt)}
                   </span>
                   <span
@@ -1480,15 +1480,15 @@ function DetailPanel({
                     style={{
                       padding: "1px 6px",
                       borderRadius: 3,
-                      background: "#F7F2EA",
-                      color: "#5C544A",
+                      background: "var(--color-surface-sunken)",
+                      color: "var(--color-text-secondary)",
                       letterSpacing: "0.4px"
                     }}
                   >
                     {t.actor}
                   </span>
                 </div>
-                <span className="text-[11px] font-[family-name:var(--font-sans)] text-[#1A1410]">
+                <span className="text-[11px] font-[family-name:var(--font-sans)] text-[var(--color-text-primary)]">
                   {t.action}
                 </span>
               </li>
@@ -1515,11 +1515,11 @@ function DetailSection({
       style={{
         gap: 8,
         padding: last ? "16px 20px 20px 20px" : "16px 20px",
-        borderBottom: last ? "none" : "1px solid #EAE0CE"
+        borderBottom: last ? "none" : "1px solid var(--color-border)"
       }}
     >
       <h3
-        className="m-0 text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+        className="m-0 text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
         style={{ letterSpacing: "0.8px" }}
       >
         {title}
@@ -1532,12 +1532,12 @@ function DetailSection({
 }
 
 function pillBg(status: string): string {
-  if (status === "ready") return "#DCFCE7";
-  if (status === "needs_review") return "#FEF3C7";
-  if (status === "requires_approval") return "#EDE9FE";
-  if (status === "blocked" || status === "error") return "#FEE2E2";
-  if (status === "collecting") return "#DBEAFE";
-  return "#F7F2EA";
+  if (status === "ready") return "var(--color-success-soft)";
+  if (status === "needs_review") return "var(--color-warning-soft)";
+  if (status === "requires_approval") return "var(--color-unknown-soft)";
+  if (status === "blocked" || status === "error") return "var(--color-critical-soft)";
+  if (status === "collecting") return "var(--color-info-soft)";
+  return "var(--color-surface-sunken)";
 }
 
 /* ============================================================
@@ -1567,19 +1567,19 @@ function RunbookModal({
       onClick={onClose}
     >
       <div
-        className="flex flex-col bg-[#FFFBF5]"
+        className="flex flex-col bg-[var(--color-bg)]"
         style={{
           width: "min(540px, 100%)",
           maxHeight: "min(720px, 90vh)",
           borderRadius: 12,
-          border: "1px solid #EAE0CE",
+          border: "1px solid var(--color-border)",
           boxShadow: "0 24px 60px rgba(26, 20, 16, 0.3)"
         }}
         onClick={(e) => e.stopPropagation()}
       >
         <header
           className="flex items-start"
-          style={{ gap: 12, padding: "20px 22px 16px 22px", borderBottom: "1px solid #EAE0CE" }}
+          style={{ gap: 12, padding: "20px 22px 16px 22px", borderBottom: "1px solid var(--color-border)" }}
         >
           <span
             aria-hidden="true"
@@ -1588,22 +1588,22 @@ function RunbookModal({
               width: 36,
               height: 36,
               borderRadius: 10,
-              background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
-              color: "#FFFBF5"
+              background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
+              color: "var(--color-bg)"
             }}
           >
             <Sparkles size={18} strokeWidth={1.75} aria-hidden="true" />
           </span>
           <div className="flex flex-col flex-1" style={{ gap: 2 }}>
             <span
-              className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#EA580C]"
+              className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
               style={{ letterSpacing: "0.8px" }}
             >
               Aprobar fuera del panel
             </span>
             <h2
               id="runbook-title"
-              className="m-0 text-[18px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]"
+              className="m-0 text-[18px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]"
               style={{ letterSpacing: "-0.2px" }}
             >
               {prompt.headline}
@@ -1616,7 +1616,7 @@ function RunbookModal({
             className="grid place-items-center"
             style={{ width: 28, height: 28, borderRadius: 6 }}
           >
-            <X size={16} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
+            <X size={16} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
           </button>
         </header>
 
@@ -1624,13 +1624,13 @@ function RunbookModal({
           className="flex flex-col overflow-y-auto"
           style={{ padding: "16px 22px 20px 22px", gap: 16 }}
         >
-          <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+          <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
             {prompt.body}
           </p>
 
           <section className="flex flex-col" style={{ gap: 8 }}>
             <h3
-              className="m-0 text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+              className="m-0 text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
               style={{ letterSpacing: "0.8px" }}
             >
               Pasos siguientes (fuera del panel)
@@ -1639,33 +1639,33 @@ function RunbookModal({
               className="m-0 flex flex-col"
               style={{ gap: 6, paddingLeft: 18 }}
             >
-              <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+              <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
                 Abre el runbook{" "}
                 <code
                   className="text-[11px] font-[family-name:var(--font-mono)]"
                   style={{
                     padding: "1px 6px",
                     borderRadius: 4,
-                    background: "#F7F2EA",
-                    border: "1px solid #EAE0CE",
-                    color: "#1A1410"
+                    background: "var(--color-surface-sunken)",
+                    border: "1px solid var(--color-border)",
+                    color: "var(--color-text-primary)"
                   }}
                 >
                   {prompt.primaryAction.runbookRef ?? "runbook.md"}
                 </code>{" "}
                 en el repositorio.
               </li>
-              <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+              <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
                 Verifica la evidencia firmada (hashes abajo).
               </li>
-              <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+              <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
                 Solicita la firma de la segunda persona autorizada (regla de
                 dos personas).
               </li>
-              <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+              <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
                 Ejecuta el paso en modo dry-run primero. Solo después aplica.
               </li>
-              <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+              <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
                 Registra el commit con el hash del audit log.
               </li>
             </ol>
@@ -1673,13 +1673,13 @@ function RunbookModal({
 
           <section className="flex flex-col" style={{ gap: 8 }}>
             <h3
-              className="m-0 text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+              className="m-0 text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
               style={{ letterSpacing: "0.8px" }}
             >
               Evidencia
             </h3>
             {prompt.evidenceRefs.length === 0 ? (
-              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
                 Sin evidencia adicional adjunta.
               </span>
             ) : (
@@ -1690,14 +1690,14 @@ function RunbookModal({
                     className="inline-flex items-center"
                     style={{ gap: 6 }}
                   >
-                    <Hash size={11} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+                    <Hash size={11} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
                     <code
-                      className="text-[11px] font-[family-name:var(--font-mono)] text-[#1A1410]"
+                      className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]"
                       style={{
                         padding: "1px 6px",
                         borderRadius: 4,
-                        background: "#F7F2EA",
-                        border: "1px solid #EAE0CE"
+                        background: "var(--color-surface-sunken)",
+                        border: "1px solid var(--color-border)"
                       }}
                     >
                       {e}
@@ -1714,16 +1714,16 @@ function RunbookModal({
               gap: 6,
               padding: 12,
               borderRadius: 8,
-              background: "#FEF3C7",
-              border: "1px solid #FCD34D"
+              background: "var(--color-warning-soft)",
+              border: "1px solid var(--color-warning-border)"
             }}
           >
-            <span className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#B45309]"
+            <span className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-warning)]"
               style={{ letterSpacing: "0.6px" }}
             >
               Importante
             </span>
-            <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[#78350F]">
+            <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-warning-fg)]">
               Este botón no ejecuta nada. El panel es GET-only. La acción se
               aprueba y aplica fuera, siguiendo el runbook y la regla de dos
               personas firmada.
@@ -1733,7 +1733,7 @@ function RunbookModal({
 
         <footer
           className="flex items-center"
-          style={{ gap: 8, padding: "14px 22px", borderTop: "1px solid #EAE0CE" }}
+          style={{ gap: 8, padding: "14px 22px", borderTop: "1px solid var(--color-border)" }}
         >
           <span className="flex-1" aria-hidden="true" />
           <button
@@ -1744,10 +1744,10 @@ function RunbookModal({
               gap: 6,
               padding: "8px 14px",
               borderRadius: 6,
-              border: "1px solid #D4C5A8"
+              border: "1px solid var(--color-border-strong)"
             }}
           >
-            <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+            <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
               Entendido
             </span>
           </button>
@@ -1755,11 +1755,11 @@ function RunbookModal({
             href={`https://github.com/delivrix/delivrix/blob/main/DOCUMENTACION/${prompt.primaryAction.runbookRef ?? ""}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center bg-[#1A1410]"
+            className="inline-flex items-center bg-[var(--color-text-primary)]"
             style={{ gap: 6, padding: "8px 14px", borderRadius: 6, textDecoration: "none" }}
           >
-            <ExternalLink size={12} strokeWidth={1.75} className="text-[#FFFBF5]" aria-hidden="true" />
-            <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]">
+            <ExternalLink size={12} strokeWidth={1.75} className="text-[var(--color-bg)]" aria-hidden="true" />
+            <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]">
               Abrir runbook
             </span>
           </a>
