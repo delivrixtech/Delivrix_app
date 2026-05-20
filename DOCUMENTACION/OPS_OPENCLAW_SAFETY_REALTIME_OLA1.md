@@ -158,17 +158,35 @@ Los componentes React de Safety ya consumen los endpoints vía `READ_ENDPOINTS`.
 - Smoke manual: `curl http://localhost:3000/v1/compliance/status | jq` debe mostrar `meta.dataSource` poblado.
 - `verify-chain.ts` debe seguir verde después de implementar.
 
-## 8. Trabajo paralelo de Pencil (Juanes / Claude con Pencil tools)
+## 8. Trabajo de Pencil — COMPLETADO 2026-05-20
 
-Estados visuales nuevos que necesitan frames Pencil antes del port al panel:
+Los 5 estados visuales están diseñados en `DOCUMENTACION/diseño/Panel_Front_End.pen`. Codex debe portar 1:1 estos componentes (regla `port 1:1 no interpretacion`).
 
-1. **Stale data warning** — banner amarillo en card "Última actualización: hace 12 m" cuando `meta.dataSource === "cached"`.
-2. **Fallback warning** — banner gris claro "Mostrando valores de respaldo" cuando `dataSource === "fallback"`.
-3. **Loading skeleton** — shimmer en cards mientras polling 30s espera primera respuesta.
-4. **Tick / refresh animation** — sutil pulse cuando un valor cambia entre polls (especialmente `userCount` en IAM y `state` en compliance).
-5. **Empty state IAM sessions** — cuando `sessions: []`, mostrar mensaje "Sin sesiones activas en últimos 15 min" en vez de tabla vacía.
+**Library** (`u10Bpu` "Componentes / Estados Real-Time" en `x=7045, y=3253`):
 
-Esfuerzo estimado Pencil: ~1.5 h de diseño. No bloquea el backend de Codex.
+| Pencil ID | Componente | React target (sugerencia) | Cuándo se usa |
+|---|---|---|---|
+| `JeXwj` | Component / Stale Data Badge | `<StaleBadge minutesAgo={n} />` | corner card cuando `meta.dataSource === "cached"` |
+| `GVCBF` | Component / Fallback Banner | `<FallbackBanner />` (full width) | encima de Main, debajo de Topbar, cuando `meta.dataSource === "fallback"` |
+| `uDAHQ` | Component / Skeleton KPI Card | `<SkeletonKpiCard />` (220×100) | reemplaza KPI card mientras primera respuesta del polling 30s está en vuelo |
+| `hlLkJ` | Component / Realtime Tick | `<RealtimeTick />` o animación CSS 200ms pulse + fade | adyacente al número del KPI cuando cambia entre polls |
+| `ZXqFn` | Component / Empty Sessions Card | `<EmptySessionsCard />` (360 wide) | reemplaza tabla cuando `/v1/iam/sessions` devuelve `sessions: []` |
+
+**Tokens usados (todos preexistentes en el .pen):**
+- Colores: `$state-warning`, `$state-warning-bg`, `$state-success`, `$state-neutral-bg`, `$state-critical`, `$state-critical-bg`, `$surface-tertiary`, `$border-subtle`, `$foreground-primary`, `$foreground-secondary`, `$foreground-tertiary`
+- Tipografía: `$font-heading` (Funnel Sans), `$font-caption` (Inter), `$font-data` (IBM Plex Mono)
+- Espaciado: `$radius-sm` (4), `$radius-md` (6)
+- Modo dual Light/Dark: todos los tokens incluyen ambas variantes
+
+**Frame de anatomía** (`Gcf2v` "Anatomía / Estados Real-Time Safety" en `x=1520, y=6120`):
+Spec visual con captions explicando dónde va cada componente en el panel Seguridad (`fAJG6`). Codex puede tomar screenshot de este frame durante implementación para verificar fidelity 1:1.
+
+**Acción para Codex:**
+1. Inspeccionar los 5 componentes Pencil via `mcp__pencil-desktop__batch_get` con los IDs de arriba.
+2. Portar a React respetando dimensiones, tokens, jerarquía visual.
+3. Generar componentes en `apps/admin-panel/src/shared/ui/` (mismo patrón que `openclaw-prompt-panel.tsx`).
+4. Cablear consumiendo `meta.dataSource` y `meta.staleSinceMs` del payload nuevo de Safety (§4).
+5. Tomar screenshot del frame `Gcf2v` con `get_screenshot` y comparar con bundle render para verificar.
 
 ## 9. Restricciones para Codex
 
