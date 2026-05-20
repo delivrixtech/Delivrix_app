@@ -120,23 +120,23 @@ function HeroLeft() {
     <header className="flex flex-col" style={{ gap: 6 }}>
       <div className="flex items-center" style={{ gap: 8 }}>
         <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[#EA580C]"
+          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
           style={{ letterSpacing: "1.2px" }}
         >
           SEGURIDAD Y GOBIERNO
         </span>
-        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "#8A8073" }} />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
+        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           Actualizado hace 14s
         </span>
       </div>
       <h1
-        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[#1A1410]"
+        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
         style={{ letterSpacing: "-0.4px" }}
       >
         Sin acciones reales, con todas las barandillas.
       </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
+      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
         El panel es GET-only. Toda acción operativa requiere aprobación humana, dry-run previo,
         log auditable y kill switch probado.
       </p>
@@ -156,8 +156,8 @@ function OpenClawPrompt({ data }: { data: DashboardData }) {
         ? `Kill switch activo: ${ks.reason || "sin razón registrada"}. Confirmar protocolo antes de re-armar.`
         : "Sin gates pendientes. Las barandillas están firmes.";
   const aviso = ks.enabled ? "kill switch" : gates.length > 0 ? "aviso" : "ok";
-  const avisoBg = ks.enabled ? "#FEE2E2" : gates.length > 0 ? "#FEF3C7" : "#DCFCE7";
-  const avisoFg = ks.enabled ? "#B91C1C" : gates.length > 0 ? "#B45309" : "#15803D";
+  const avisoBg = ks.enabled ? "var(--color-critical-soft)" : gates.length > 0 ? "var(--color-warning-soft)" : "var(--color-success-soft)";
+  const avisoFg = ks.enabled ? "var(--color-critical)" : gates.length > 0 ? "var(--color-warning)" : "var(--color-success)";
   return <OpenClawPromptInner message={message} aviso={aviso} avisoBg={avisoBg} avisoFg={avisoFg} />;
 }
 
@@ -167,11 +167,11 @@ function OpenClawPromptInner({ message, aviso, avisoBg, avisoFg }: { message: st
       style={{
         borderRadius: 12,
         padding: 2,
-        background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
+        background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
         boxShadow: "0 6px 18px rgba(146, 64, 14, 0.13)"
       }}
     >
-      <div className="flex flex-col bg-[#FFFFFF]" style={{ borderRadius: 10, padding: 16, gap: 12 }}>
+      <div className="flex flex-col bg-[var(--color-surface)]" style={{ borderRadius: 10, padding: 16, gap: 12 }}>
         <header className="flex items-center" style={{ gap: 10 }}>
           <span
             aria-hidden="true"
@@ -180,18 +180,18 @@ function OpenClawPromptInner({ message, aviso, avisoBg, avisoFg }: { message: st
               width: 32,
               height: 32,
               borderRadius: 8,
-              background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
-              color: "#FFFBF5"
+              background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
+              color: "var(--color-bg)"
             }}
           >
             <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
           </span>
           <div className="flex flex-col leading-tight">
-            <span className="text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+            <span className="text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
               OpenClaw
             </span>
             <span
-              className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]"
+              className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
               style={{ letterSpacing: "0.4px" }}
             >
               Operador supervisado
@@ -211,19 +211,19 @@ function OpenClawPromptInner({ message, aviso, avisoBg, avisoFg }: { message: st
             {aviso}
           </span>
         </header>
-        <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.45] text-[#1A1410]">
+        <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-primary)]">
           {message}
         </p>
         <div className="flex items-center" style={{ gap: 8 }}>
           <button
             type="button"
-            className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]"
-            style={{ gap: 6, padding: "10px 14px", borderRadius: 6, background: "#1A1410" }}
+            className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
+            style={{ gap: 6, padding: "10px 14px", borderRadius: 6, background: "var(--color-text-primary)" }}
           >
             <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
             Revisar plan dry-run
           </button>
-          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
             ejecución fuera del panel
           </span>
         </div>
@@ -251,52 +251,52 @@ function KpiRow({ data }: { data: DashboardData }) {
         label="Acciones permitidas"
         value={String(allowed)}
         unit={`/ ${allowed + blocked} totales`}
-        iconColor="#15803D"
+        iconColor="var(--color-success)"
         icon={<ShieldCheck size={12} strokeWidth={1.75} />}
         detail={`${blocked} bloqueadas`}
-        detailColor={blocked > 0 ? "#B91C1C" : "#15803D"}
+        detailColor={blocked > 0 ? "var(--color-critical)" : "var(--color-success)"}
         endpoint="/v1/operating-north"
-        pillBg="#DCFCE7"
-        pillFg="#15803D"
+        pillBg="var(--color-success-soft)"
+        pillFg="var(--color-success)"
         pillText={`${allowed} ok`}
       />
       <Kpi
         label="Roles del norte"
         value="3"
         unit="roles"
-        iconColor="#1D4ED8"
+        iconColor="var(--color-info)"
         icon={<Users size={12} strokeWidth={1.75} />}
         detail={`${data.operatingNorth.delivrixRole} · ${data.operatingNorth.openClawRole}`}
-        detailColor="#5C544A"
+        detailColor="var(--color-text-secondary)"
         endpoint="/v1/operating-north"
-        pillBg="#DBEAFE"
-        pillFg="#1D4ED8"
+        pillBg="var(--color-info-soft)"
+        pillFg="var(--color-info)"
         pillText="rbac"
       />
       <Kpi
         label="Kill switch"
         value={ks.enabled ? "ACTIVO" : "ARMADO"}
         unit={ks.updatedBy || "sin uso"}
-        iconColor={ks.enabled ? "#B91C1C" : "#15803D"}
+        iconColor={ks.enabled ? "var(--color-critical)" : "var(--color-success)"}
         icon={<Laptop size={12} strokeWidth={1.75} />}
         detail={ks.reason || "sin razón"}
-        detailColor={ks.enabled ? "#B91C1C" : "#5C544A"}
+        detailColor={ks.enabled ? "var(--color-critical)" : "var(--color-text-secondary)"}
         endpoint="/v1/safety/kill-switch"
-        pillBg={ks.enabled ? "#FEE2E2" : "#DCFCE7"}
-        pillFg={ks.enabled ? "#B91C1C" : "#15803D"}
+        pillBg={ks.enabled ? "var(--color-critical-soft)" : "var(--color-success-soft)"}
+        pillFg={ks.enabled ? "var(--color-critical)" : "var(--color-success)"}
         pillText={ks.enabled ? "corte real" : "ok"}
       />
       <Kpi
         label="Alertas críticas"
         value={String(criticalEvents)}
         unit="alertas"
-        iconColor="#B45309"
+        iconColor="var(--color-warning)"
         icon={<TriangleAlert size={12} strokeWidth={1.75} />}
         detail={`${gates} gates abiertos`}
-        detailColor={gates > 0 ? "#B45309" : "#15803D"}
+        detailColor={gates > 0 ? "var(--color-warning)" : "var(--color-success)"}
         endpoint="/v1/admin/overview"
-        pillBg={criticalEvents > 0 ? "#FEF3C7" : "#DCFCE7"}
-        pillFg={criticalEvents > 0 ? "#B45309" : "#15803D"}
+        pillBg={criticalEvents > 0 ? "var(--color-warning-soft)" : "var(--color-success-soft)"}
+        pillFg={criticalEvents > 0 ? "var(--color-warning)" : "var(--color-success)"}
         pillText={criticalEvents > 0 ? "atención" : "ok"}
       />
     </div>
@@ -330,18 +330,18 @@ function Kpi({
 }) {
   return (
     <article
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 12,
         padding: 16,
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
       <div className="flex items-center" style={{ gap: 8 }}>
         <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#5C544A]"
+          className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]"
           style={{ letterSpacing: "0.4px" }}
         >
           {label}
@@ -356,12 +356,12 @@ function Kpi({
       </div>
       <div className="flex items-end" style={{ gap: 8 }}>
         <span
-          className="text-[32px] font-[family-name:var(--font-mono)] font-bold leading-none text-[#1A1410] tabular-nums"
+          className="text-[32px] font-[family-name:var(--font-mono)] font-bold leading-none text-[var(--color-text-primary)] tabular-nums"
           style={{ letterSpacing: "-0.6px" }}
         >
           {value}
         </span>
-        <span className="text-[12px] font-[family-name:var(--font-mono)] text-[#8A8073] leading-none">
+        <span className="text-[12px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)] leading-none">
           {unit}
         </span>
       </div>
@@ -373,7 +373,7 @@ function Kpi({
           {detail}
         </span>
         <span className="flex-1" aria-hidden="true" />
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{endpoint}</span>
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{endpoint}</span>
       </div>
     </article>
   );
@@ -420,7 +420,7 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
       className="flex flex-col overflow-hidden"
       style={{
         borderRadius: 10,
-        background: "#1A1410",
+        background: "var(--color-text-primary)",
         boxShadow: "0 6px 18px rgba(0, 0, 0, 0.13)"
       }}
     >
@@ -435,8 +435,8 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
             width: 48,
             height: 48,
             borderRadius: 999,
-            background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
-            color: "#1A1410"
+            background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
+            color: "var(--color-text-primary)"
           }}
         >
           <Power size={22} strokeWidth={2} aria-hidden="true" />
@@ -450,7 +450,7 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
           </span>
           <h2
             className="m-0 text-[20px] font-[family-name:var(--font-heading)] font-bold leading-tight"
-            style={{ color: "#FFFBF5" }}
+            style={{ color: "var(--color-bg)" }}
           >
             {ksTitle}
           </h2>
@@ -465,11 +465,11 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
             padding: "6px 12px",
             borderRadius: 999,
             background: armed ? "rgba(220, 252, 231, 0.16)" : "rgba(254, 226, 226, 0.16)",
-            color: armed ? "#86EFAC" : "#FCA5A5",
+            color: armed ? "var(--color-success-border)" : "var(--color-critical-border)",
             letterSpacing: "0.6px"
           }}
         >
-          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: armed ? "#4ADE80" : "#F87171" }} />
+          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: armed ? "var(--color-success)" : "var(--color-critical)" }} />
           {armed ? "ARMADO" : "ACTIVO"}
         </span>
       </div>
@@ -479,7 +479,7 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
           gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)",
           gap: 16,
           padding: "14px 24px",
-          background: "#0A0805",
+          background: "var(--color-surface-inverse)",
           borderTop: "1px solid rgba(255, 251, 245, 0.08)"
         }}
       >
@@ -500,7 +500,7 @@ function KillStat({ label, value }: { label: string; value: string }) {
       >
         {label}
       </span>
-      <span className="text-[12px] font-[family-name:var(--font-mono)]" style={{ color: "#FACC15" }}>
+      <span className="text-[12px] font-[family-name:var(--font-mono)]" style={{ color: "var(--color-accent-secondary)" }}>
         {value}
       </span>
     </div>
@@ -513,32 +513,32 @@ function buildSafetyGates(data: DashboardData) {
   const smtp = data.operatingNorth.delivrixSendsRealEmail;
   const nfc = data.operatingNorth.nfcProductionWritesEnabled;
   const base: Array<{ check: true | "warn" | "bad" | "off"; label: string; state: string; tone: string }> = [
-    { check: true, label: "Log de auditoría append-only", state: "verificado", tone: "#15803D" },
-    { check: true, label: "Dry-run obligatorio antes de escribir", state: "verificado", tone: "#15803D" },
-    { check: true, label: "Panel solo lectura · GET-only", state: "verificado", tone: "#15803D" },
+    { check: true, label: "Log de auditoría append-only", state: "verificado", tone: "var(--color-success)" },
+    { check: true, label: "Dry-run obligatorio antes de escribir", state: "verificado", tone: "var(--color-success)" },
+    { check: true, label: "Panel solo lectura · GET-only", state: "verificado", tone: "var(--color-success)" },
     {
       check: ks.enabled ? "bad" : true,
       label: "Kill switch probado",
       state: ks.updatedAt ? new Date(ks.updatedAt).toLocaleDateString("es-CO") : "sin uso",
-      tone: ks.enabled ? "#B91C1C" : "#15803D"
+      tone: ks.enabled ? "var(--color-critical)" : "var(--color-success)"
     },
     {
       check: live ? "warn" : true,
       label: "Live infrastructure writes",
       state: live ? "enabled · revisar" : "disabled",
-      tone: live ? "#B45309" : "#15803D"
+      tone: live ? "var(--color-warning)" : "var(--color-success)"
     },
     {
       check: smtp ? "warn" : true,
       label: "SMTP envía correo real",
       state: smtp ? "envío real activo" : "simulación",
-      tone: smtp ? "#B45309" : "#15803D"
+      tone: smtp ? "var(--color-warning)" : "var(--color-success)"
     },
     {
       check: nfc ? "warn" : "off",
       label: "Puente NFC",
       state: nfc ? "enabled" : "deshabilitado",
-      tone: nfc ? "#B45309" : "#8A8073"
+      tone: nfc ? "var(--color-warning)" : "var(--color-text-tertiary)"
     }
   ];
   const opGates = (data.operatingNorth.gates ?? []).map((g) => ({
@@ -546,7 +546,7 @@ function buildSafetyGates(data: DashboardData) {
     label: humanize(g),
     rawLabel: g,
     state: "revisión pendiente",
-    tone: "#B45309"
+    tone: "var(--color-warning)"
   }));
   // El subset de base no tiene rawLabel, agregamos uno igual al label para uniformar
   const baseWithRaw = base.map((b) => ({ ...b, rawLabel: b.label }));
@@ -558,25 +558,25 @@ function GatesCard({ data }: { data: DashboardData }) {
   const okCount = GATE_ROWS.filter((g) => g.check === true).length;
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
-      style={{ borderRadius: 8, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="flex flex-col bg-[var(--color-surface)]"
+      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
     >
       <header
         className="flex items-center"
-        style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid #EAE0CE" }}
+        style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid var(--color-border)" }}
       >
         <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Gates de seguridad
           </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
             Estado de los gates no negociables del MVP
           </span>
         </div>
         <span className="flex-1" aria-hidden="true" />
         <span
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-          style={{ padding: "3px 8px", borderRadius: 4, background: "#DCFCE7", color: "#15803D" }}
+          style={{ padding: "3px 8px", borderRadius: 4, background: "var(--color-success-soft)", color: "var(--color-success)" }}
         >
           {okCount} / {GATE_ROWS.length}
         </span>
@@ -589,19 +589,19 @@ function GatesCard({ data }: { data: DashboardData }) {
             style={{
               gap: 12,
               padding: "10px 20px",
-              borderBottom: i < GATE_ROWS.length - 1 ? "1px solid #EAE0CE" : "none"
+              borderBottom: i < GATE_ROWS.length - 1 ? "1px solid var(--color-border)" : "none"
             }}
             title={row.rawLabel}
           >
             <span
               aria-hidden="true"
-              className="grid place-items-center text-[#FFFBF5] text-[10px] shrink-0"
+              className="grid place-items-center text-[var(--color-bg)] text-[10px] shrink-0"
               style={{ width: 16, height: 16, borderRadius: 999, background: row.tone, fontWeight: 700 }}
             >
               {row.check === true ? "✓" : row.check === "warn" ? "!" : row.check === "bad" ? "×" : "−"}
             </span>
             <span
-              className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[#1A1410] truncate"
+              className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-primary)] truncate"
               style={{ flex: "1 1 auto", minWidth: 0 }}
             >
               {row.label}
@@ -646,11 +646,11 @@ function Right({
 }
 
 function roleColorHex(c: string): string {
-  if (c === "blue") return "#1D4ED8";
-  if (c === "green") return "#15803D";
-  if (c === "violet") return "#7C3AED";
-  if (c === "amber") return "#EA580C";
-  return "#5C544A";
+  if (c === "blue") return "var(--color-info)";
+  if (c === "green") return "var(--color-success)";
+  if (c === "violet") return "var(--color-unknown)";
+  if (c === "amber") return "var(--color-accent-tertiary)";
+  return "var(--color-text-secondary)";
 }
 
 function RolesCard({
@@ -671,24 +671,24 @@ function RolesCard({
           color: roleColorHex(r.color),
           derivedFrom: r.countDerivedFrom
         }))
-      : [{ name: "Sin roles del contrato", count: 0, color: "#5C544A" }];
+      : [{ name: "Sin roles del contrato", count: 0, color: "var(--color-text-secondary)" }];
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
-      style={{ borderRadius: 8, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="flex flex-col bg-[var(--color-surface)]"
+      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
     >
       <header
         className="flex items-center"
-        style={{ gap: 8, padding: "14px 16px 12px 16px", borderBottom: "1px solid #EAE0CE" }}
+        style={{ gap: 8, padding: "14px 16px 12px 16px", borderBottom: "1px solid var(--color-border)" }}
       >
-        <Users size={13} strokeWidth={1.75} className="text-[#1D4ED8]" aria-hidden="true" />
-        <h3 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+        <Users size={13} strokeWidth={1.75} className="text-[var(--color-info)]" aria-hidden="true" />
+        <h3 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
           Roles
         </h3>
         <span className="flex-1" aria-hidden="true" />
         <RealtimeTick active={pulseActive} />
         {stale}
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">/v1/iam/roles</span>
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">/v1/iam/roles</span>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
         {roles.map((r, i) => (
@@ -698,13 +698,13 @@ function RolesCard({
             style={{
               gap: 8,
               padding: "10px 16px",
-              borderBottom: i < roles.length - 1 ? "1px solid #EAE0CE" : "none"
+              borderBottom: i < roles.length - 1 ? "1px solid var(--color-border)" : "none"
             }}
           >
             <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: r.color }} />
-            <span className="text-[12px] font-[family-name:var(--font-sans)] text-[#1A1410]">{r.name}</span>
+            <span className="text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-primary)]">{r.name}</span>
             <span className="flex-1" aria-hidden="true" />
-            <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold text-[#5C544A]">
+            <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-secondary)]">
               {r.count}
             </span>
           </li>
@@ -746,7 +746,7 @@ function SesionesCard({
         <div className="flex items-center justify-end" style={{ gap: 8 }}>
           <RealtimeTick active={pulseActive} />
           {stale}
-          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">/v1/iam/sessions</span>
+          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">/v1/iam/sessions</span>
         </div>
         <EmptySessionsCard />
       </div>
@@ -755,21 +755,21 @@ function SesionesCard({
 
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
-      style={{ borderRadius: 8, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="flex flex-col bg-[var(--color-surface)]"
+      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
     >
       <header
         className="flex items-center"
-        style={{ gap: 8, padding: "14px 16px 12px 16px", borderBottom: "1px solid #EAE0CE" }}
+        style={{ gap: 8, padding: "14px 16px 12px 16px", borderBottom: "1px solid var(--color-border)" }}
       >
-        <Laptop size={13} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
-        <h3 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+        <Laptop size={13} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
+        <h3 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
           Sesiones activas
         </h3>
         <span className="flex-1" aria-hidden="true" />
         <RealtimeTick active={pulseActive} />
         {stale}
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">/v1/iam/sessions</span>
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">/v1/iam/sessions</span>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
         {sessions.map((s, i) => (
@@ -779,17 +779,17 @@ function SesionesCard({
             style={{
               gap: 2,
               padding: "10px 16px",
-              borderBottom: i < sessions.length - 1 ? "1px solid #EAE0CE" : "none"
+              borderBottom: i < sessions.length - 1 ? "1px solid var(--color-border)" : "none"
             }}
           >
             <div className="flex items-center" style={{ gap: 8 }}>
-              <span className="text-[12px] font-[family-name:var(--font-mono)] font-semibold text-[#1A1410] truncate">
+              <span className="text-[12px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-primary)] truncate">
                 {s.actor}
               </span>
               <span className="flex-1" aria-hidden="true" />
-              <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{s.time}</span>
+              <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{s.time}</span>
             </div>
-            <span className="text-[10px] font-[family-name:var(--font-caption)] text-[#5C544A]">{s.from}</span>
+            <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">{s.from}</span>
           </li>
         ))}
       </ul>
@@ -805,29 +805,29 @@ function SecretsCard() {
   ];
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 10,
         padding: 16,
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
       <header className="flex items-center" style={{ gap: 8 }}>
-        <Lock size={13} strokeWidth={1.75} className="text-[#7C3AED]" aria-hidden="true" />
-        <h3 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+        <Lock size={13} strokeWidth={1.75} className="text-[var(--color-unknown)]" aria-hidden="true" />
+        <h3 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
           Secrets management
         </h3>
       </header>
-      <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.4] text-[#5C544A]">
+      <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.4] text-[var(--color-text-secondary)]">
         AWS Secrets Manager activo · 0 secretos en repo · todos los SMTP cifrados.
       </p>
       <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 6 }}>
         {lines.map((l) => (
           <li key={l} className="flex items-center" style={{ gap: 6 }}>
-            <ShieldCheck size={11} strokeWidth={1.75} className="text-[#15803D]" aria-hidden="true" />
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#1A1410]">{l}</span>
+            <ShieldCheck size={11} strokeWidth={1.75} className="text-[var(--color-success)]" aria-hidden="true" />
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{l}</span>
           </li>
         ))}
       </ul>
@@ -839,12 +839,12 @@ function SecretsCard() {
  * Audit (McVRn) — 6 audit rows literales
  * ============================================================ */
 const AUDIT_ROWS = [
-  { ts: "09:18:42", actor: "operador@delivrix", actorColor: "#1A1410", action: "Solicitó plan dry-run", resource: "plan_warming · cluster-eu-01", hash: "4f1a…0c8", result: "ok", resultBg: "#DCFCE7", resultFg: "#15803D" },
-  { ts: "09:14:21", actor: "sre-01@delivrix", actorColor: "#1A1410", action: "Probó kill switch", resource: "killswitch · simulado", hash: "a09c…b32", result: "ok", resultBg: "#DCFCE7", resultFg: "#15803D" },
-  { ts: "09:04:11", actor: "openclaw", actorColor: "#EA580C", action: "Recomendó degradar", resource: "cluster-eu-01 · quejas 0,18%", hash: "7d41…f1a", result: "supervisado", resultBg: "#EDE9FE", resultFg: "#7C3AED" },
-  { ts: "08:54:33", actor: "collector", actorColor: "#1D4ED8", action: "Detectó drift DNS", resource: "zone delivrix.io · SPF/DMARC", hash: "3e89…2bd", result: "alerta", resultBg: "#FEF3C7", resultFg: "#B45309" },
-  { ts: "08:42:09", actor: "auditor-ext@delivrix", actorColor: "#1A1410", action: "Vio log", resource: "audit · últimas 24 h", hash: "c54f…908", result: "lectura", resultBg: "#DBEAFE", resultFg: "#1D4ED8" },
-  { ts: "07:58:55", actor: "sistema", actorColor: "#5C544A", action: "Rechazó login externo", resource: "IP 200.93.x.x fuera de rango VPN", hash: "9bb2…ee4", result: "bloqueo", resultBg: "#FEE2E2", resultFg: "#B91C1C" }
+  { ts: "09:18:42", actor: "operador@delivrix", actorColor: "var(--color-text-primary)", action: "Solicitó plan dry-run", resource: "plan_warming · cluster-eu-01", hash: "4f1a…0c8", result: "ok", resultBg: "var(--color-success-soft)", resultFg: "var(--color-success)" },
+  { ts: "09:14:21", actor: "sre-01@delivrix", actorColor: "var(--color-text-primary)", action: "Probó kill switch", resource: "killswitch · simulado", hash: "a09c…b32", result: "ok", resultBg: "var(--color-success-soft)", resultFg: "var(--color-success)" },
+  { ts: "09:04:11", actor: "openclaw", actorColor: "var(--color-accent-tertiary)", action: "Recomendó degradar", resource: "cluster-eu-01 · quejas 0,18%", hash: "7d41…f1a", result: "supervisado", resultBg: "var(--color-unknown-soft)", resultFg: "var(--color-unknown)" },
+  { ts: "08:54:33", actor: "collector", actorColor: "var(--color-info)", action: "Detectó drift DNS", resource: "zone delivrix.io · SPF/DMARC", hash: "3e89…2bd", result: "alerta", resultBg: "var(--color-warning-soft)", resultFg: "var(--color-warning)" },
+  { ts: "08:42:09", actor: "auditor-ext@delivrix", actorColor: "var(--color-text-primary)", action: "Vio log", resource: "audit · últimas 24 h", hash: "c54f…908", result: "lectura", resultBg: "var(--color-info-soft)", resultFg: "var(--color-info)" },
+  { ts: "07:58:55", actor: "sistema", actorColor: "var(--color-text-secondary)", action: "Rechazó login externo", resource: "IP 200.93.x.x fuera de rango VPN", hash: "9bb2…ee4", result: "bloqueo", resultBg: "var(--color-critical-soft)", resultFg: "var(--color-critical)" }
 ];
 
 function Audit({ data }: { data: DashboardData }) {
@@ -860,30 +860,30 @@ function Audit({ data }: { data: DashboardData }) {
     ts: formatTimeOnly(e.occurredAt),
     actor: `${e.actorType}.${e.actorId}`.slice(0, 28),
     actorColor: e.actorType.includes("openclaw")
-      ? "#EA580C"
+      ? "var(--color-accent-tertiary)"
       : e.actorType.includes("collector")
-        ? "#1D4ED8"
-        : "#1A1410",
+        ? "var(--color-info)"
+        : "var(--color-text-primary)",
     action: e.action,
     resource: `${e.targetType} · ${e.targetId}`,
     hash: shortAuditHash(e.id).replace("sha:", ""),
     result: e.riskLevel,
     resultBg:
       e.riskLevel === "critical" || e.riskLevel === "blocked"
-        ? "#FEE2E2"
+        ? "var(--color-critical-soft)"
         : e.riskLevel === "high" || e.riskLevel === "warning"
-          ? "#FEF3C7"
+          ? "var(--color-warning-soft)"
           : e.riskLevel === "info" || e.riskLevel === "medium"
-            ? "#DBEAFE"
-            : "#DCFCE7",
+            ? "var(--color-info-soft)"
+            : "var(--color-success-soft)",
     resultFg:
       e.riskLevel === "critical" || e.riskLevel === "blocked"
-        ? "#B91C1C"
+        ? "var(--color-critical)"
         : e.riskLevel === "high" || e.riskLevel === "warning"
-          ? "#B45309"
+          ? "var(--color-warning)"
           : e.riskLevel === "info" || e.riskLevel === "medium"
-            ? "#1D4ED8"
-            : "#15803D"
+            ? "var(--color-info)"
+            : "var(--color-success)"
   }));
   const finalRows = rows.length > 0 ? rows : AUDIT_ROWS;
   return <AuditTable rows={finalRows} />;
@@ -893,25 +893,25 @@ function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
   const AUDIT_ROWS_LOCAL = rows;
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
-      style={{ borderRadius: 8, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="flex flex-col bg-[var(--color-surface)]"
+      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
     >
       <header
         className="flex items-center"
-        style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid #EAE0CE" }}
+        style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid var(--color-border)" }}
       >
         <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Log de auditoría
           </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
             Append-only · hash encadenado SHA-256 · contrato /v1/audit
           </span>
         </div>
         <span className="flex-1" aria-hidden="true" />
         <div
           className="flex items-center"
-          style={{ padding: 2, borderRadius: 6, background: "#F7F2EA", border: "1px solid #EAE0CE", gap: 0 }}
+          style={{ padding: 2, borderRadius: 6, background: "var(--color-surface-sunken)", border: "1px solid var(--color-border)", gap: 0 }}
         >
           {["Todos", "Críticos", "Operador"].map((f, i) => (
             <span
@@ -920,8 +920,8 @@ function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
               style={{
                 padding: "5px 10px",
                 borderRadius: 4,
-                background: i === 0 ? "#1A1410" : "transparent",
-                color: i === 0 ? "#FFFBF5" : "#5C544A"
+                background: i === 0 ? "var(--color-text-primary)" : "transparent",
+                color: i === 0 ? "var(--color-bg)" : "var(--color-text-secondary)"
               }}
             >
               {f}
@@ -930,8 +930,8 @@ function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
         </div>
         <button
           type="button"
-          className="inline-flex items-center text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]"
-          style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid #D4C5A8", background: "transparent" }}
+          className="inline-flex items-center text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
+          style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-strong)", background: "transparent" }}
         >
           <Download size={12} strokeWidth={1.75} aria-hidden="true" />
           Exportar
@@ -944,14 +944,14 @@ function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
           gridTemplateColumns: "84px 128px 160px minmax(0,1fr) 96px 80px",
           gap: 12,
           padding: "8px 20px",
-          background: "#F7F2EA",
-          borderBottom: "1px solid #EAE0CE"
+          background: "var(--color-surface-sunken)",
+          borderBottom: "1px solid var(--color-border)"
         }}
       >
         {["Hora", "Actor", "Acción", "Recurso", "Hash", "Resultado"].map((h) => (
           <span
             key={h}
-            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
             style={{ letterSpacing: "0.6px" }}
           >
             {h}
@@ -968,23 +968,23 @@ function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
               gridTemplateColumns: "84px 128px 160px minmax(0,1fr) 96px 80px",
               gap: 12,
               padding: "10px 20px",
-              borderBottom: i < AUDIT_ROWS.length - 1 ? "1px solid #EAE0CE" : "none"
+              borderBottom: i < AUDIT_ROWS.length - 1 ? "1px solid var(--color-border)" : "none"
             }}
           >
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]">{row.ts}</span>
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">{row.ts}</span>
             <span
               className="text-[11px] font-[family-name:var(--font-mono)] font-semibold truncate"
               style={{ color: row.actorColor }}
             >
               {row.actor}
             </span>
-            <span className="text-[11.5px] font-[family-name:var(--font-sans)] text-[#1A1410] truncate">
+            <span className="text-[11.5px] font-[family-name:var(--font-sans)] text-[var(--color-text-primary)] truncate">
               {row.action}
             </span>
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A] truncate">
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] truncate">
               {row.resource}
             </span>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{row.hash}</span>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{row.hash}</span>
             <span
               className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
               style={{
@@ -1005,7 +1005,7 @@ function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
       <div className="flex items-center justify-center" style={{ padding: "10px 12px 12px 12px" }}>
         <button
           type="button"
-          className="text-[11.5px] font-[family-name:var(--font-sans)] font-semibold text-[#5C544A]"
+          className="text-[11.5px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-secondary)]"
         >
           Mostrar 24 entradas más
         </button>
@@ -1027,37 +1027,37 @@ function complianceVisual(state: string): {
 } {
   if (state === "ok")
     return {
-      iconBg: "#DCFCE7",
-      iconColor: "#15803D",
+      iconBg: "var(--color-success-soft)",
+      iconColor: "var(--color-success)",
       icon: <ShieldCheck size={14} strokeWidth={1.75} />,
-      pillBg: "#DCFCE7",
-      pillFg: "#15803D",
+      pillBg: "var(--color-success-soft)",
+      pillFg: "var(--color-success)",
       pillText: "ok"
     };
   if (state === "warning")
     return {
-      iconBg: "#FEF3C7",
-      iconColor: "#B45309",
+      iconBg: "var(--color-warning-soft)",
+      iconColor: "var(--color-warning)",
       icon: <Shield size={14} strokeWidth={1.75} />,
-      pillBg: "#FEF3C7",
-      pillFg: "#B45309",
+      pillBg: "var(--color-warning-soft)",
+      pillFg: "var(--color-warning)",
       pillText: "atención"
     };
   if (state === "critical")
     return {
-      iconBg: "#FEE2E2",
-      iconColor: "#B91C1C",
+      iconBg: "var(--color-critical-soft)",
+      iconColor: "var(--color-critical)",
       icon: <ShieldAlert size={14} strokeWidth={1.75} />,
-      pillBg: "#FEE2E2",
-      pillFg: "#B91C1C",
+      pillBg: "var(--color-critical-soft)",
+      pillFg: "var(--color-critical)",
       pillText: "crítico"
     };
   return {
-    iconBg: "#F5F5F4",
-    iconColor: "#5C544A",
+    iconBg: "var(--color-neutral-soft)",
+    iconColor: "var(--color-text-secondary)",
     icon: <ShieldAlert size={14} strokeWidth={1.75} />,
-    pillBg: "#F5F5F4",
-    pillFg: "#5C544A",
+    pillBg: "var(--color-neutral-soft)",
+    pillFg: "var(--color-text-secondary)",
     pillText: "info"
   };
 }
@@ -1068,10 +1068,10 @@ function ComplianceRow({ data, pulseActive }: { data: DashboardData; pulseActive
   if (controls.length === 0) {
     return (
       <section
-        className="flex items-center bg-[#FFFFFF]"
-        style={{ gap: 8, padding: "14px 16px", borderRadius: 8, border: "1px solid #EAE0CE" }}
+        className="flex items-center bg-[var(--color-surface)]"
+        style={{ gap: 8, padding: "14px 16px", borderRadius: 8, border: "1px solid var(--color-border)" }}
       >
-        <p className="m-0 text-[12px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <p className="m-0 text-[12px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           El contrato /v1/compliance/status no devuelve controles todavía.
         </p>
       </section>
@@ -1126,8 +1126,8 @@ function ComplianceCard({
 }) {
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
-      style={{ gap: 10, padding: 16, borderRadius: 8, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="flex flex-col bg-[var(--color-surface)]"
+      style={{ gap: 10, padding: 16, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
     >
       <header className="flex items-center" style={{ gap: 8 }}>
         <span
@@ -1138,7 +1138,7 @@ function ComplianceCard({
           {icon}
         </span>
         <div className="flex flex-col flex-1" style={{ gap: 1 }}>
-          <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+          <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             {title}
           </h3>
         </div>
@@ -1154,8 +1154,8 @@ function ComplianceCard({
       <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 5 }}>
         {lines.map((l) => (
           <li key={l} className="flex items-center" style={{ gap: 6 }}>
-            <span aria-hidden="true" style={{ width: 4, height: 4, borderRadius: 999, background: "#8A8073" }} />
-            <span className="text-[11px] font-[family-name:var(--font-sans)] text-[#5C544A]">{l}</span>
+            <span aria-hidden="true" style={{ width: 4, height: 4, borderRadius: 999, background: "var(--color-text-tertiary)" }} />
+            <span className="text-[11px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">{l}</span>
           </li>
         ))}
       </ul>
@@ -1173,13 +1173,13 @@ function Footer() {
       style={{ gap: 16, padding: "12px 0 0 0" }}
     >
       <span className="inline-flex items-center" style={{ gap: 8 }}>
-        <ShieldCheck size={12} strokeWidth={1.75} className="text-[#15803D]" aria-hidden="true" />
-        <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#5C544A]">
+        <ShieldCheck size={12} strokeWidth={1.75} className="text-[var(--color-success)]" aria-hidden="true" />
+        <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">
           Panel GET-only · ningún POST/PUT/PATCH/DELETE en el bundle frontend
         </span>
       </span>
       <span className="flex-1" aria-hidden="true" />
-      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
         runbook · security-runbook.md
       </span>
     </footer>
