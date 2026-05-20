@@ -10,13 +10,13 @@
 
 ## 1. Por qué v2
 
-La v1 pedía a Codex leer los 5 componentes vía `mcp__pencil-desktop__batch_get` apuntando a `DOCUMENTACION/diseño/Panel_Front_End.pen`. La MCP de Codex no encontraba los IDs aunque estaban en el archivo en disco y en git HEAD (verificado por grep + `git show HEAD:archivo | grep`). Causa más probable: la **ñ** en el path (`diseño`) rompe el manejo en su MCP, o su Pencil cacheó una versión vieja.
+La v1 pedía a Codex leer los 5 componentes vía `mcp__pencil-desktop__batch_get` apuntando a la ruta antigua con `ñ` (normalizada a `DOCUMENTACION/design/Panel_Front_End.pen` tras el rename). La MCP de Codex no encontraba los IDs aunque estaban en el archivo en disco y en git HEAD (verificado por grep + `git show HEAD:archivo | grep`). Causa más probable: la **ñ** que tenía el path rompe el manejo en su MCP, o su Pencil cacheó una versión vieja.
 
-**Fix permanente paralelo:** renombrar la carpeta `DOCUMENTACION/diseño/` → `DOCUMENTACION/design/` (ver §10). Mientras tanto, esta v2 incluye la spec inline para desbloquear ya.
+**Fix permanente paralelo:** renombrar la carpeta antigua a `DOCUMENTACION/design/` (ver §10). Mientras tanto, esta v2 incluye la spec inline para desbloquear ya.
 
 ## 2. Componentes a portar (spec JSON literal)
 
-Las siguientes specs fueron leídas por Claude vía `mcp__pencil-desktop__batch_get` (filePath=`DOCUMENTACION/diseño/Panel_Front_End.pen`, readDepth=3). **Son la fuente de verdad para el port 1:1.**
+Las siguientes specs fueron leídas por Claude vía `mcp__pencil-desktop__batch_get` (filePath=`DOCUMENTACION/design/Panel_Front_End.pen`, readDepth=3). **Son la fuente de verdad para el port 1:1.**
 
 ### 2.1 `JeXwj` — Component / Stale Data Badge
 
@@ -325,7 +325,7 @@ Disparar al cambio entre polls (key prop o useEffect comparando prev vs current)
 Para evitar este tipo de bug en el futuro, **renombrar la carpeta** (la ñ rompe paths en algunas MCPs/herramientas):
 
 ```bash
-git mv DOCUMENTACION/diseño DOCUMENTACION/design
+git mv <ruta-antigua-con-n> DOCUMENTACION/design
 git commit -m "chore(design): rename diseño/ to design/ for path portability"
 git push
 ```
@@ -361,6 +361,6 @@ next action: <"operator review" | "blocker reported">
 ## 13. Referencias
 
 - Backend spec: `DOCUMENTACION/OPS_OPENCLAW_SAFETY_REALTIME_OLA1.md` (ya implementada en `9d31d7d`)
-- Pencil source: `DOCUMENTACION/diseño/Panel_Front_End.pen` (o `DOCUMENTACION/design/` tras §10)
+- Pencil source: `DOCUMENTACION/design/Panel_Front_End.pen`
 - Feedback memory: `port 1:1 no interpretacion` (Hito 5.10)
 - v1 spec: `DOCUMENTACION/OPS_OPENCLAW_SAFETY_REALTIME_OLA1_PORT_REACT.md` (superseded por este v2)

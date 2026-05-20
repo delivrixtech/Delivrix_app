@@ -21,7 +21,7 @@ El frontend hoy renderiza el happy path (data live). Faltan 5 componentes nuevos
 
 ## 3. Componentes Pencil a portar
 
-Archivo: `/Users/juanescanar/Documents/delivrix app/DOCUMENTACION/diseño/Panel_Front_End.pen`
+Archivo: `/Users/juanescanar/Documents/delivrix app/DOCUMENTACION/design/Panel_Front_End.pen`
 
 Leer con `mcp__pencil-desktop__batch_get` (filePath + nodeIds + readDepth 3 + resolveVariables true) para tener dimensiones, tokens resueltos y estructura:
 
@@ -179,6 +179,6 @@ next action: <"operator review" | "blocker reported">
 ## 13. Referencias
 
 - Spec backend (ya implementada): `DOCUMENTACION/OPS_OPENCLAW_SAFETY_REALTIME_OLA1.md` §8 (con IDs Pencil)
-- Pencil source: `DOCUMENTACION/diseño/Panel_Front_End.pen`
+- Pencil source: `DOCUMENTACION/design/Panel_Front_End.pen`
 - Feedback memory rule: `port 1:1 no interpretacion` (Hito 5.10)
 - Sub-hito sucesor: Ola 2 — Learning (`/v1/openclaw/skills/audit`, `/v1/openclaw/evidence`)
