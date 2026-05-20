@@ -6,10 +6,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer, type ViteDevServer } from "vite";
 
 type RealtimeModule = {
+  EmptyEventsCard: ComponentType<{ pollIntervalSeconds?: number }>;
+  EmptyEvidenceCard: ComponentType<{ pollIntervalSeconds?: number }>;
   EmptySessionsCard: ComponentType<{ pollIntervalSeconds?: number }>;
   FallbackBanner: ComponentType;
   RealtimeTick: ComponentType<{ active: boolean }>;
   SkeletonKpiCard: ComponentType;
+  SkeletonRow: ComponentType;
   StaleBadge: ComponentType<{ minutesAgo: number }>;
   formatStaleBadgeLabel: (minutesAgo: number) => string;
   isCachedMeta: (meta: unknown) => boolean;
@@ -36,10 +39,13 @@ after(async () => {
 
 test("realtime components render the literal degraded-state labels", async () => {
   const {
+    EmptyEventsCard,
+    EmptyEvidenceCard,
     EmptySessionsCard,
     FallbackBanner,
     RealtimeTick,
     SkeletonKpiCard,
+    SkeletonRow,
     StaleBadge
   } = await loadRealtimeModule();
 
@@ -57,6 +63,12 @@ test("realtime components render the literal degraded-state labels", async () =>
   assert.match(skeleton, /width:60px/);
   assert.match(skeleton, /width:120px/);
 
+  const rowSkeleton = renderToStaticMarkup(React.createElement(SkeletonRow));
+  assert.match(rowSkeleton, /Cargando fila/);
+  assert.match(rowSkeleton, /width:80px/);
+  assert.match(rowSkeleton, /width:160px/);
+  assert.match(rowSkeleton, /width:60px/);
+
   const idleTick = renderToStaticMarkup(React.createElement(RealtimeTick, { active: false }));
   const activeTick = renderToStaticMarkup(React.createElement(RealtimeTick, { active: true }));
   assert.doesNotMatch(idleTick, /realtime-tick-halo/);
@@ -66,6 +78,16 @@ test("realtime components render the literal degraded-state labels", async () =>
   assert.match(empty, /Sin sesiones activas/);
   assert.match(empty, /Sin actividad de operador en los últimos 15 minutos/);
   assert.match(empty, /Refresca cada 30 s/);
+
+  const emptyEvents = renderToStaticMarkup(React.createElement(EmptyEventsCard, { pollIntervalSeconds: 30 }));
+  assert.match(emptyEvents, /Sin eventos del agente/);
+  assert.match(emptyEvents, /OpenClaw no registró actividad nueva en los últimos 30 minutos/);
+  assert.match(emptyEvents, /Refresca cada 30 s/);
+
+  const emptyEvidence = renderToStaticMarkup(React.createElement(EmptyEvidenceCard, { pollIntervalSeconds: 30 }));
+  assert.match(emptyEvidence, /Sin evidencia curada/);
+  assert.match(emptyEvidence, /OpenClaw no ha promovido lecciones nuevas/);
+  assert.match(emptyEvidence, /Refresca cada 30 s/);
 });
 
 test("realtime meta helpers map cached and fallback states", async () => {
