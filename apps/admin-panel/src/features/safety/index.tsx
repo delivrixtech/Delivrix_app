@@ -25,7 +25,8 @@ import {
   Users,
   WandSparkles
 } from "lucide-react";
-import type { DashboardData } from "../../shared/api/client.ts";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import type { DashboardData, RealTimeMeta } from "../../shared/api/client.ts";
 import {
   filterAuditEvents,
   formatDateTime,
@@ -33,18 +34,73 @@ import {
   humanize,
   shortAuditHash
 } from "../../shared/lib/formatters.ts";
+import {
+  EmptySessionsCard,
+  FallbackBanner,
+  RealtimeTick,
+  StaleBadge,
+  isCachedMeta,
+  isFallbackMeta,
+  staleMinutesFromMeta
+} from "../../shared/ui/realtime/index.ts";
 
 export function SafetySection({ data }: { data: DashboardData }) {
+  const hasFallback = [
+    data.safetyRealtime.complianceStatus,
+    data.safetyRealtime.iamRoles,
+    data.safetyRealtime.iamSessions
+  ].some(isFallbackMeta);
+  const rolesPulse = useRealtimePulse(roleSignature(data.iamRoles));
+  const sessionsPulse = useRealtimePulse(sessionSignature(data.iamSessions));
+  const compliancePulse = useRealtimePulse(complianceSignature(data.complianceControls));
+
   return (
     <section className="flex flex-col" style={{ gap: 20 }}>
+      {hasFallback ? <FallbackBanner /> : null}
       <Hero data={data} />
       <KpiRow data={data} />
-      <TwoCol data={data} />
+      <TwoCol data={data} rolesPulse={rolesPulse} sessionsPulse={sessionsPulse} />
       <Audit data={data} />
-      <ComplianceRow data={data} />
+      <ComplianceRow data={data} pulseActive={compliancePulse} />
       <Footer />
     </section>
   );
+}
+
+function useRealtimePulse(signature: string): boolean {
+  const previousSignature = useRef<string | null>(null);
+  const [active, setActive] = useState(false);
+
+  useEffect(() => {
+    if (previousSignature.current !== null && previousSignature.current !== signature) {
+      setActive(true);
+      const timeout = setTimeout(() => setActive(false), 200);
+      previousSignature.current = signature;
+      return () => clearTimeout(timeout);
+    }
+
+    previousSignature.current = signature;
+    return undefined;
+  }, [signature]);
+
+  return active;
+}
+
+function roleSignature(roles: DashboardData["iamRoles"]): string {
+  return roles.map((role) => `${role.id}:${role.userCount}`).join("|");
+}
+
+function sessionSignature(sessions: DashboardData["iamSessions"]): string {
+  return sessions.map((session) => `${session.actor}:${session.lastSeenAt}:${session.risk}`).join("|");
+}
+
+function complianceSignature(controls: DashboardData["complianceControls"]): string {
+  return controls.map((control) => `${control.id}:${control.state}:${control.lines.join(",")}`).join("|");
+}
+
+function staleBadgeFor(meta: RealTimeMeta | null): ReactNode {
+  if (!isCachedMeta(meta)) return null;
+  return <StaleBadge minutesAgo={staleMinutesFromMeta(meta)} />;
 }
 
 /* ============================================================
@@ -263,7 +319,7 @@ function Kpi({
   label: string;
   value: string;
   unit: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   iconColor: string;
   detail: string;
   detailColor: string;
@@ -326,11 +382,19 @@ function Kpi({
 /* ============================================================
  * Two col (H69HQS): Kill switch grande + Gates / Roles + Sesiones + Secrets
  * ============================================================ */
-function TwoCol({ data }: { data: DashboardData }) {
+function TwoCol({
+  data,
+  rolesPulse,
+  sessionsPulse
+}: {
+  data: DashboardData;
+  rolesPulse: boolean;
+  sessionsPulse: boolean;
+}) {
   return (
     <div className="grid gap-4 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] items-start">
       <Left data={data} />
-      <Right data={data} />
+      <Right data={data} rolesPulse={rolesPulse} sessionsPulse={sessionsPulse} />
     </div>
   );
 }
@@ -555,11 +619,27 @@ function GatesCard({ data }: { data: DashboardData }) {
   );
 }
 
-function Right({ data }: { data: DashboardData }) {
+function Right({
+  data,
+  rolesPulse,
+  sessionsPulse
+}: {
+  data: DashboardData;
+  rolesPulse: boolean;
+  sessionsPulse: boolean;
+}) {
   return (
     <div className="flex flex-col" style={{ gap: 16 }}>
-      <RolesCard roles={data.iamRoles} />
-      <SesionesCard sessions={data.iamSessions} />
+      <RolesCard
+        roles={data.iamRoles}
+        meta={data.safetyRealtime.iamRoles}
+        pulseActive={rolesPulse}
+      />
+      <SesionesCard
+        sessions={data.iamSessions}
+        meta={data.safetyRealtime.iamSessions}
+        pulseActive={sessionsPulse}
+      />
       <SecretsCard />
     </div>
   );
@@ -573,13 +653,23 @@ function roleColorHex(c: string): string {
   return "#5C544A";
 }
 
-function RolesCard({ roles: contractRoles }: { roles: DashboardData["iamRoles"] }) {
+function RolesCard({
+  roles: contractRoles,
+  meta,
+  pulseActive
+}: {
+  roles: DashboardData["iamRoles"];
+  meta: RealTimeMeta | null;
+  pulseActive: boolean;
+}) {
+  const stale = staleBadgeFor(meta);
   const roles =
     contractRoles.length > 0
       ? contractRoles.map((r) => ({
           name: r.name,
           count: r.userCount,
-          color: roleColorHex(r.color)
+          color: roleColorHex(r.color),
+          derivedFrom: r.countDerivedFrom
         }))
       : [{ name: "Sin roles del contrato", count: 0, color: "#5C544A" }];
   return (
@@ -596,6 +686,8 @@ function RolesCard({ roles: contractRoles }: { roles: DashboardData["iamRoles"] 
           Roles
         </h3>
         <span className="flex-1" aria-hidden="true" />
+        <RealtimeTick active={pulseActive} />
+        {stale}
         <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">/v1/iam/roles</span>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
@@ -632,15 +724,35 @@ function relativeAgeShort(iso: string): string {
   return `hace ${Math.round(diff / 86_400_000)} d`;
 }
 
-function SesionesCard({ sessions: contractSessions }: { sessions: DashboardData["iamSessions"] }) {
-  const sessions =
-    contractSessions.length > 0
-      ? contractSessions.map((s) => ({
-          actor: s.actor,
-          from: `${s.location} · ${s.transport.toUpperCase()}`,
-          time: relativeAgeShort(s.lastSeenAt)
-        }))
-      : [{ actor: "Sin sesiones del contrato", from: "—", time: "—" }];
+function SesionesCard({
+  sessions: contractSessions,
+  meta,
+  pulseActive
+}: {
+  sessions: DashboardData["iamSessions"];
+  meta: RealTimeMeta | null;
+  pulseActive: boolean;
+}) {
+  const stale = staleBadgeFor(meta);
+  const sessions = contractSessions.map((s) => ({
+    actor: s.actor,
+    from: `${s.location} · ${s.transport.toUpperCase()}`,
+    time: relativeAgeShort(s.lastSeenAt)
+  }));
+
+  if (sessions.length === 0) {
+    return (
+      <div className="flex flex-col" style={{ gap: 8 }}>
+        <div className="flex items-center justify-end" style={{ gap: 8 }}>
+          <RealtimeTick active={pulseActive} />
+          {stale}
+          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">/v1/iam/sessions</span>
+        </div>
+        <EmptySessionsCard />
+      </div>
+    );
+  }
+
   return (
     <section
       className="flex flex-col bg-[#FFFFFF]"
@@ -655,6 +767,8 @@ function SesionesCard({ sessions: contractSessions }: { sessions: DashboardData[
           Sesiones activas
         </h3>
         <span className="flex-1" aria-hidden="true" />
+        <RealtimeTick active={pulseActive} />
+        {stale}
         <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">/v1/iam/sessions</span>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
@@ -906,7 +1020,7 @@ function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
 function complianceVisual(state: string): {
   iconBg: string;
   iconColor: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   pillBg: string;
   pillFg: string;
   pillText: string;
@@ -948,8 +1062,9 @@ function complianceVisual(state: string): {
   };
 }
 
-function ComplianceRow({ data }: { data: DashboardData }) {
+function ComplianceRow({ data, pulseActive }: { data: DashboardData; pulseActive: boolean }) {
   const controls = data.complianceControls;
+  const stale = staleBadgeFor(data.safetyRealtime.complianceStatus);
   if (controls.length === 0) {
     return (
       <section
@@ -977,6 +1092,8 @@ function ComplianceRow({ data }: { data: DashboardData }) {
             pillFg={v.pillFg}
             pillText={v.pillText}
             lines={c.lines}
+            stale={stale}
+            pulseActive={pulseActive}
           />
         );
       })}
@@ -992,16 +1109,20 @@ function ComplianceCard({
   pillBg,
   pillFg,
   pillText,
-  lines
+  lines,
+  stale,
+  pulseActive
 }: {
   iconBg: string;
   iconColor: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   title: string;
   pillBg: string;
   pillFg: string;
   pillText: string;
   lines: string[];
+  stale: ReactNode;
+  pulseActive: boolean;
 }) {
   return (
     <section
@@ -1021,6 +1142,8 @@ function ComplianceCard({
             {title}
           </h3>
         </div>
+        <RealtimeTick active={pulseActive} />
+        {stale}
         <span
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
           style={{ padding: "2px 6px", borderRadius: 4, background: pillBg, color: pillFg, letterSpacing: "0.4px" }}

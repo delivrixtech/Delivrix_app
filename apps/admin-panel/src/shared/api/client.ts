@@ -696,6 +696,14 @@ export interface OperationalSummaryPayload {
 
 /* Wave 3A: contratos mock del backend para Seguridad + Aprendizaje */
 
+export type RealTimeDataSource = "live" | "cached" | "fallback";
+
+export interface RealTimeMeta {
+  dataSource: RealTimeDataSource;
+  staleSinceMs: number | null;
+  evaluatedAt: string;
+}
+
 export type IamRoleColor = "amber" | "green" | "blue" | "violet" | "neutral";
 
 export interface IamRole {
@@ -704,10 +712,12 @@ export interface IamRole {
   color: IamRoleColor;
   userCount: number;
   permissions: string[];
+  countDerivedFrom?: string;
 }
 
 export interface IamRolesPayload {
   roles: IamRole[];
+  meta?: RealTimeMeta;
 }
 
 export type IamSessionTransport = "vpn" | "internal" | "mfa" | string;
@@ -724,6 +734,7 @@ export interface IamSession {
 
 export interface IamSessionsPayload {
   sessions: IamSession[];
+  meta?: RealTimeMeta;
 }
 
 export type ComplianceControlState = "ok" | "warning" | "info" | "critical" | string;
@@ -734,10 +745,19 @@ export interface ComplianceControl {
   state: ComplianceControlState;
   lines: string[];
   runbookRef?: string;
+  evaluatedAt?: string;
+  metrics?: Record<string, boolean | number | string>;
 }
 
 export interface ComplianceStatusPayload {
   controls: ComplianceControl[];
+  meta?: RealTimeMeta;
+}
+
+export interface DashboardSafetyRealtimeMeta {
+  iamRoles: RealTimeMeta | null;
+  iamSessions: RealTimeMeta | null;
+  complianceStatus: RealTimeMeta | null;
 }
 
 export interface OpenClawSkillsAuditEvent {
@@ -917,6 +937,7 @@ export interface DashboardData {
   iamRoles: IamRole[];
   iamSessions: IamSession[];
   complianceControls: ComplianceControl[];
+  safetyRealtime: DashboardSafetyRealtimeMeta;
   openClawSkillsAudit: OpenClawSkillsAuditEvent[];
   openClawEvidence: OpenClawEvidenceItem[];
   webdockInventory: WebdockInventoryContract;
@@ -1013,6 +1034,11 @@ export async function loadDashboardData(): Promise<DashboardData> {
     iamRoles: iamRoles.roles ?? [],
     iamSessions: iamSessions.sessions ?? [],
     complianceControls: complianceStatus.controls ?? [],
+    safetyRealtime: {
+      iamRoles: iamRoles.meta ?? null,
+      iamSessions: iamSessions.meta ?? null,
+      complianceStatus: complianceStatus.meta ?? null
+    },
     openClawSkillsAudit: openClawSkillsAudit.events ?? [],
     openClawEvidence: openClawEvidence.curated ?? [],
     webdockInventory: webdockInventory.inventory,
