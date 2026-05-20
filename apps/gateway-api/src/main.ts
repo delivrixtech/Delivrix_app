@@ -65,6 +65,7 @@ import {
   senderNodeRateLimitRule,
   simulateBackup,
   simulateSendResult,
+  type AuditEvent,
   type BackupPlanInput,
   type BackupResource,
   type BackupResourceSnapshot,
@@ -118,6 +119,8 @@ import {
   listRollbackSnapshots,
   persistRollbackSnapshot
 } from "./security/rollback-snapshot.ts";
+import { computeAuditHash, GENESIS_PREV_HASH } from "./audit/hash-chain.ts";
+import { SafetyRealtimeCache } from "./safety-realtime-cache.ts";
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
@@ -137,6 +140,7 @@ const proxmoxAdapter = new ProxmoxAdapter();
 const provisioningRunStore = new LocalFileProvisioningRunStore();
 const ipReputationReportStore = new LocalFileIpReputationReportStore();
 const backupSimulationStore = new LocalFileBackupSimulationStore();
+const safetyRealtimeCache = new SafetyRealtimeCache();
 const defaultStuckJobThresholdMs = Number(process.env.STUCK_JOB_THRESHOLD_MS ?? 5 * 60 * 1000);
 const requestRateLimitProfile = {
   campaignDailyLimit: Number(process.env.RATE_LIMIT_CAMPAIGN_DAILY ?? 100),
@@ -379,15 +383,36 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && request.url === "/v1/iam/roles") {
-      return json(response, 200, buildIamRoles());
+      const payload = await safetyRealtimeCache.resolve(
+        "/v1/iam/roles",
+        async (now) => buildIamRoles({
+          auditEvents: await auditLog.list(),
+          now
+        }),
+        (now) => buildIamRoles({ now })
+      );
+      return json(response, 200, payload);
     }
 
     if (request.method === "GET" && request.url === "/v1/iam/sessions") {
-      return json(response, 200, buildIamSessions());
+      const payload = await safetyRealtimeCache.resolve(
+        "/v1/iam/sessions",
+        async (now) => buildIamSessions({
+          auditEvents: await auditLog.list(),
+          now
+        }),
+        (now) => buildIamSessions({ now })
+      );
+      return json(response, 200, payload);
     }
 
     if (request.method === "GET" && request.url === "/v1/compliance/status") {
-      return json(response, 200, buildComplianceStatus());
+      const payload = await safetyRealtimeCache.resolve(
+        "/v1/compliance/status",
+        async (now) => buildLiveComplianceStatus(now),
+        (now) => buildComplianceStatus({ now })
+      );
+      return json(response, 200, payload);
     }
 
     if (request.method === "GET" && request.url === "/v1/openclaw/skills/audit") {
@@ -3574,6 +3599,39 @@ const server = createServer(async (request, response) => {
 server.listen(port, host, () => {
   console.log(`gateway-api listening on http://${host}:${port}`);
 });
+
+async function buildLiveComplianceStatus(now: Date) {
+  const [auditEvents, killSwitch] = await Promise.all([
+    auditLog.list(),
+    killSwitchStore.get()
+  ]);
+
+  return buildComplianceStatus({
+    auditEvents,
+    chainOk: verifyAuditChain(auditEvents),
+    killSwitchArmed: !killSwitch.enabled,
+    now
+  });
+}
+
+function verifyAuditChain(events: AuditEvent[]): boolean {
+  let prevHash = GENESIS_PREV_HASH;
+
+  for (const event of events) {
+    if (event.prevHash !== prevHash) {
+      return false;
+    }
+
+    const expectedHash = computeAuditHash(event as unknown as Record<string, unknown>, prevHash);
+    if (event.hash !== expectedHash) {
+      return false;
+    }
+
+    prevHash = event.hash ?? prevHash;
+  }
+
+  return true;
+}
 
 function permission(actionId: string, category: AgentPermissionCategory): AgentPermissionEntry {
   return { actionId, category };

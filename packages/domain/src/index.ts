@@ -33,6 +33,7 @@ export * from "./openclaw-topology-planner.ts";
 export * from "./operating-north.ts";
 export * from "./operational-summary.ts";
 export * from "./rate-limit.ts";
+export * from "./realtime-meta.ts";
 export * from "./repositories.ts";
 export * from "./runbooks/types.ts";
 export * from "./runbooks/register-sender-node.ts";
