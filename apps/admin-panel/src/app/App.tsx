@@ -9,8 +9,8 @@
  * - Branding vive en el sidebar, no en el topbar.
  */
 
-import { ChevronRight, Eye, FlaskConical, Power, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { ChevronRight, Eye, FlaskConical, MessageSquare, Power, RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { loadDashboardData, type DashboardData } from "../shared/api/client.ts";
 import { stateTone, type Tone } from "../shared/lib/formatters.ts";
@@ -19,6 +19,7 @@ import {
   Button,
   NoticeBanner,
   SkeletonKpiCard,
+  Tooltip,
   TooltipProvider
 } from "../shared/ui/index.ts";
 import {
@@ -36,15 +37,23 @@ import { CollectorSection } from "../features/collector/index.tsx";
 import { ClustersSection } from "../features/clusters/index.tsx";
 import { LearningSection } from "../features/learning/index.tsx";
 import { SafetySection } from "../features/safety/index.tsx";
+import { ChatWidget } from "../features/chat/ChatWidget.tsx";
+
+const chatOpenStorageKey = "delivrix.openclaw.chat.open";
 
 export function App() {
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
+  const [chatOpen, setChatOpen] = useState(readChatOpenPreference);
   const dashboard = useQuery({
     queryKey: ["admin-panel", "dashboard"],
     queryFn: loadDashboardData,
     refetchInterval: 30_000,
     staleTime: 10_000
   });
+
+  useEffect(() => {
+    localStorage.setItem(chatOpenStorageKey, chatOpen ? "1" : "0");
+  }, [chatOpen]);
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -60,6 +69,8 @@ export function App() {
               activeSection={activeSection}
               isFetching={dashboard.isFetching}
               onRefresh={() => void dashboard.refetch()}
+              chatOpen={chatOpen}
+              onToggleChat={() => setChatOpen((value) => !value)}
             />
             <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-6 md:px-7 lg:px-10 xl:px-14 2xl:px-16">
               <div className="mx-auto w-full" style={{ maxWidth: 1680 }}>
@@ -77,6 +88,7 @@ export function App() {
             </main>
           </div>
         </div>
+        <ChatWidget open={chatOpen} onClose={() => setChatOpen(false)} />
       </div>
     </TooltipProvider>
   );
@@ -90,11 +102,15 @@ export function App() {
 function Topbar({
   activeSection,
   isFetching,
-  onRefresh
+  onRefresh,
+  chatOpen,
+  onToggleChat
 }: {
   activeSection: SectionId;
   isFetching: boolean;
   onRefresh: () => void;
+  chatOpen: boolean;
+  onToggleChat: () => void;
 }) {
   const section = sectionsById[activeSection];
   return (
@@ -142,6 +158,19 @@ function Topbar({
           operador
         </span>
       </span>
+
+      <Tooltip hint={chatOpen ? "Cerrar chat" : "Abrir chat"} side="bottom">
+        <Button
+          variant={chatOpen ? "default" : "ghost"}
+          size="icon"
+          aria-label={chatOpen ? "Cerrar chat con OpenClaw" : "Abrir chat con OpenClaw"}
+          aria-pressed={chatOpen}
+          onClick={onToggleChat}
+          className={chatOpen ? "text-[var(--color-accent-tertiary)]" : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"}
+        >
+          <MessageSquare size={14} strokeWidth={1.75} aria-hidden="true" />
+        </Button>
+      </Tooltip>
 
       {/* Refresh — utilidad ghost; el panel es GET vivo aunque Pencil no lo dibuja */}
       <Button
@@ -455,4 +484,11 @@ function toneForSection(section: SectionId, data: DashboardData | undefined): To
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "No se pudo cargar el panel.";
+}
+
+function readChatOpenPreference(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return window.localStorage.getItem(chatOpenStorageKey) === "1";
 }
