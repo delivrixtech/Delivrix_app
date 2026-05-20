@@ -640,20 +640,24 @@ function PlanCard({ data }: { data: DashboardData }) {
   );
 }
 
-const SKILLS_FALLBACK = [
-  { title: "Recomendaciones de readiness", state: "esperando datos", stateBg: "var(--color-neutral-soft)", stateFg: "var(--color-text-secondary)", endpoint: READ_ENDPOINTS.openClawReadinessSignals },
-  { title: "Bitácora de aprendizaje", state: "GET-only", stateBg: "var(--color-info-soft)", stateFg: "var(--color-info)", endpoint: READ_ENDPOINTS.openClawSkillsAudit },
-  { title: "Evidencia curada", state: "GET-only", stateBg: "var(--color-info-soft)", stateFg: "var(--color-info)", endpoint: READ_ENDPOINTS.openClawEvidence }
-];
+export interface SkillRow {
+  title: string;
+  state: string;
+  stateBg: string;
+  stateFg: string;
+  endpoint: string;
+}
 
-function SkillsCard({ data }: { data: DashboardData }) {
-  const recs = data.readinessSignals.recommendations ?? [];
-  const skills = recs.slice(0, 6).map((r) => {
+export function buildSkillRows(readinessSignals: DashboardData["readinessSignals"]): SkillRow[] {
+  const recs = readinessSignals.recommendations ?? [];
+  return recs.slice(0, 6).map((r) => {
     const pill = statusToPill(r.status);
     return { title: r.label, state: pill.text, stateBg: pill.bg, stateFg: pill.fg, endpoint: r.id };
   });
-  const total = skills.length;
-  void total;
+}
+
+function SkillsCard({ data }: { data: DashboardData }) {
+  const skills = buildSkillRows(data.readinessSignals);
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
@@ -680,43 +684,63 @@ function SkillsCard({ data }: { data: DashboardData }) {
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
           style={{ padding: "3px 8px", borderRadius: 4, background: "var(--color-success-soft)", color: "var(--color-success)" }}
         >
-          {skills.length} / {skills.length}
+          {skills.length} reales
         </span>
       </header>
-      <ul className="m-0 p-0 list-none flex flex-col">
-        {(skills.length > 0 ? skills : SKILLS_FALLBACK).map((s, i, arr) => (
-          <li
-            key={s.title}
-            className="flex flex-col"
-            style={{
-              gap: 6,
-              padding: "12px 18px",
-              borderBottom: i < arr.length - 1 ? "1px solid var(--color-border)" : "none"
-            }}
-          >
-            <div className="flex items-center" style={{ gap: 8 }}>
-              <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-                {s.title}
-              </span>
-              <span className="flex-1" aria-hidden="true" />
-              <span
-                className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
-                style={{
-                  padding: "2px 6px",
-                  borderRadius: 4,
-                  background: s.stateBg,
-                  color: s.stateFg,
-                  letterSpacing: "0.4px"
-                }}
-              >
-                {s.state}
-              </span>
-            </div>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{s.endpoint}</span>
-          </li>
-        ))}
-      </ul>
+      {skills.length > 0 ? (
+        <ul className="m-0 p-0 list-none flex flex-col">
+          {skills.map((s, i, arr) => (
+            <li
+              key={s.title}
+              className="flex flex-col"
+              style={{
+                gap: 6,
+                padding: "12px 18px",
+                borderBottom: i < arr.length - 1 ? "1px solid var(--color-border)" : "none"
+              }}
+            >
+              <div className="flex items-center" style={{ gap: 8 }}>
+                <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
+                  {s.title}
+                </span>
+                <span className="flex-1" aria-hidden="true" />
+                <span
+                  className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
+                  style={{
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    background: s.stateBg,
+                    color: s.stateFg,
+                    letterSpacing: "0.4px"
+                  }}
+                >
+                  {s.state}
+                </span>
+              </div>
+              <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{s.endpoint}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <SkillsEmptyState />
+      )}
     </section>
+  );
+}
+
+function SkillsEmptyState() {
+  return (
+    <div className="flex flex-col" style={{ gap: 6, padding: "18px" }}>
+      <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
+        Sin recomendaciones de readiness
+      </span>
+      <span className="text-[11px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-secondary)]">
+        El contrato no devolvió recomendaciones activas para OpenClaw.
+      </span>
+      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
+        {READ_ENDPOINTS.openClawReadinessSignals}
+      </span>
+    </div>
   );
 }
 
