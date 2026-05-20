@@ -9,6 +9,7 @@ los 7 docs subordinados de esta familia (`OPENCLAW_*.md`).
 
 - **v1.0** — Scope, criterio de cierre cualitativo, reparto.
 - **v2.0** — Cronograma con milestones por día, métricas de éxito cuantitativas con umbrales.
+- **v3.0 (2026-05-19)** — Reformulación del criterio §4.2. La versión anterior pedía "OpenClaw responde listando los 31 gates correctos del norte" pero la lista canónica de 31 nunca existió en ningún doc fuente (`NORTE_OPERATIVO_DELIVRIX.md` §Gates no negociables tiene 9 bullets, `OPENCLAW_SYSTEM_PROMPT.md` §[2] tiene 5, `OPENCLAW_PERMISSIONS_MATRIX.md` tiene 5 categorías + ~40 acciones). Sin ground truth, el criterio era inverificable. El nuevo §4.2 enumera explícitamente las fuentes y exige citación. Decisión tomada durante el cierre D+7 (2026-05-19) por el operador. No afecta otros criterios ni el cronograma ya ejecutado.
 
 ## 1. Por qué este hito existe
 
@@ -63,7 +64,7 @@ contratos y como fallback si el agente remoto cae.
 Hito 5.11.B queda cerrado si:
 
 1. Los 8 documentos `OPENCLAW_*.md` están firmados por el operador.
-2. OpenClaw responde a "¿qué gates tiene el MVP?" listando los 31 gates correctos del norte.
+2. OpenClaw responde a "¿qué gates tiene el MVP?" enumerando (a) los 9 gates no negociables del norte literalmente (`NORTE_OPERATIVO_DELIVRIX.md` §"Gates no negociables"), (b) las 5 categorías de la permissions matrix (`OPENCLAW_PERMISSIONS_MATRIX.md`), y (c) citando archivo fuente para cada gate. Cero hallucinations verificadas con grep contra los docs. Ver Changelog v3.0 para historia.
 3. Las 3 skills mínimas (`delivrix-fleet-ops`, `delivrix-alert-ops`, `delivrix-report-ops`) están instaladas y testeadas con caso real.
 4. El contrato HTTP entre Delivrix Gateway y OpenClaw está cableado y auditado.
 5. El audit log del agente remoto se replica al de Delivrix con hash chain verificable.
