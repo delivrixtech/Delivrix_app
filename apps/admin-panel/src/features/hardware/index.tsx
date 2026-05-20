@@ -79,22 +79,22 @@ function HostCard({ data }: { data: DashboardData }) {
   const readinessOk = ph.readiness.status === "ready";
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 16,
         padding: 20,
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
       <header className="flex items-center" style={{ gap: 16 }}>
         <div className="flex flex-col flex-1" style={{ gap: 4 }}>
-          <h2 className="m-0 text-[20px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h2 className="m-0 text-[20px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             {hostName} · {role}
           </h2>
           <span
-            className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]"
+            className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
             style={{ letterSpacing: "0.4px" }}
           >
             Identidad de host · plano de control {ph.schemaVersion}
@@ -106,14 +106,14 @@ function HostCard({ data }: { data: DashboardData }) {
             gap: 6,
             padding: "4px 10px",
             borderRadius: 4,
-            background: readinessOk ? "#DCFCE7" : "#FEF3C7",
-            color: readinessOk ? "#15803D" : "#B45309",
+            background: readinessOk ? "var(--color-success-soft)" : "var(--color-warning-soft)",
+            color: readinessOk ? "var(--color-success)" : "var(--color-warning)",
             letterSpacing: "0.6px"
           }}
         >
           <span
             aria-hidden="true"
-            style={{ width: 6, height: 6, borderRadius: 999, background: readinessOk ? "#15803D" : "#B45309" }}
+            style={{ width: 6, height: 6, borderRadius: 999, background: readinessOk ? "var(--color-success)" : "var(--color-warning)" }}
           />
           {(readinessOk ? "LISTO" : ph.readiness.status?.toUpperCase()) || "PENDIENTE"}
         </span>
@@ -123,14 +123,14 @@ function HostCard({ data }: { data: DashboardData }) {
         <Chip icon={<MapPin size={12} strokeWidth={1.75} aria-hidden="true" />} text={`datacenter · ${dc}`} />
         <Chip icon={<Layers size={12} strokeWidth={1.75} aria-hidden="true" />} text={`rol · ${role}`} />
         <Chip
-          icon={<Radio size={12} strokeWidth={1.75} aria-hidden="true" style={{ color: data.telemetry.summary.stale ? "#B45309" : "#15803D" }} />}
+          icon={<Radio size={12} strokeWidth={1.75} aria-hidden="true" style={{ color: data.telemetry.summary.stale ? "var(--color-warning)" : "var(--color-success)" }} />}
           text={`Telemetría ${data.telemetry.summary.stale ? "desactualizada" : "actualizada"} ${lastSeen}`}
           mono
         />
         <Chip
           icon={<Hash size={12} strokeWidth={1.75} aria-hidden="true" />}
           text={`hash · ${hash}`}
-          color="#8A8073"
+          color="var(--color-text-tertiary)"
           mono
         />
       </div>
@@ -142,7 +142,7 @@ function Chip({
   icon,
   text,
   mono,
-  color = "#5C544A"
+  color = "var(--color-text-secondary)"
 }: {
   icon: React.ReactNode;
   text: string;
@@ -156,8 +156,8 @@ function Chip({
         gap: 6,
         padding: "4px 10px",
         borderRadius: 4,
-        background: "#F7F2EA",
-        border: "1px solid #EAE0CE",
+        background: "var(--color-surface-sunken)",
+        border: "1px solid var(--color-border)",
         color
       }}
     >
@@ -182,8 +182,8 @@ function OpenClawPrompt({ data }: { data: DashboardData }) {
       ? "Telemetría stale en el snapshot más reciente. ¿Quieres que coordine una nueva captura supervisada?"
       : "Telemetría dentro del umbral. Puedo proponer la próxima ventana de calentamiento.";
   const tone = high || data.telemetry.summary.stale ? "AVISO" : "OK";
-  const toneFg = high || data.telemetry.summary.stale ? "#B45309" : "#15803D";
-  const toneBg = high || data.telemetry.summary.stale ? "#FEF3C7" : "#DCFCE7";
+  const toneFg = high || data.telemetry.summary.stale ? "var(--color-warning)" : "var(--color-success)";
+  const toneBg = high || data.telemetry.summary.stale ? "var(--color-warning-soft)" : "var(--color-success-soft)";
   void tone;
   void toneFg;
   void toneBg;
@@ -198,11 +198,11 @@ function OpenClawPromptInner({ message, avisoBg, avisoFg, avisoText }: { message
         gap: 14,
         padding: 18,
         borderRadius: 8,
-        background: "#FFFFFF",
+        background: "var(--color-surface)",
         boxShadow: "0 8px 24px rgba(0, 0, 0, 0.13)",
         border: "2px solid transparent",
         backgroundImage:
-          "linear-gradient(#FFFFFF, #FFFFFF), linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
+          "linear-gradient(var(--color-surface), var(--color-surface)), linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
         backgroundOrigin: "border-box",
         backgroundClip: "padding-box, border-box"
       }}
@@ -215,17 +215,17 @@ function OpenClawPromptInner({ message, avisoBg, avisoFg, avisoText }: { message
             width: 28,
             height: 28,
             borderRadius: 999,
-            background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
-            color: "#FFFBF5"
+            background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
+            color: "var(--color-bg)"
           }}
         >
           <Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />
         </span>
         <div className="flex flex-col flex-1" style={{ gap: 1 }}>
-          <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+          <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             OpenClaw
           </span>
-          <span className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+          <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
             Operador IA supervisado
           </span>
         </div>
@@ -245,7 +245,7 @@ function OpenClawPromptInner({ message, avisoBg, avisoFg, avisoText }: { message
         </span>
       </header>
 
-      <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+      <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
         {message}
       </p>
 
@@ -255,35 +255,35 @@ function OpenClawPromptInner({ message, avisoBg, avisoFg, avisoText }: { message
           gap: 8,
           padding: "8px 10px",
           borderRadius: 6,
-          background: "#F7F2EA",
-          border: "1px solid #EAE0CE"
+          background: "var(--color-surface-sunken)",
+          border: "1px solid var(--color-border)"
         }}
       >
-        <FileText size={12} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
-        <span className="flex-1 text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A] truncate">
+        <FileText size={12} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+        <span className="flex-1 text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] truncate">
           evidencia · snap-7f2a91c4
         </span>
-        <ChevronRight size={12} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+        <ChevronRight size={12} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
       </div>
 
       <div className="flex" style={{ gap: 8 }}>
         <button
           type="button"
-          className="flex-1 inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]"
-          style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "#1A1410" }}
+          className="flex-1 inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
+          style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "var(--color-text-primary)" }}
         >
           <Siren size={14} strokeWidth={1.75} aria-hidden="true" />
           Ver incidente
         </button>
         <button
           type="button"
-          className="flex-1 inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]"
+          className="flex-1 inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
           style={{
             gap: 6,
             padding: "10px 12px",
             borderRadius: 6,
-            background: "#FFFFFF",
-            border: "1px solid #EAE0CE"
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border)"
           }}
         >
           <Activity size={14} strokeWidth={1.75} aria-hidden="true" />
@@ -322,8 +322,8 @@ function buildInventoryRows(data: DashboardData) {
       detail: cap.cpuCores ? `${cap.cpuCores} cores` : "—",
       sub: cap.cpuThreads ? `${cap.cpuThreads} threads` : "topología por detectar",
       source: ph.source.kind,
-      sourceBg: "#DBEAFE",
-      sourceFg: "#1D4ED8",
+      sourceBg: "var(--color-info-soft)",
+      sourceFg: "var(--color-info)",
       hash: shortHash(ph.source.collectedAt, "#cpu—")
     },
     {
@@ -331,8 +331,8 @@ function buildInventoryRows(data: DashboardData) {
       detail: cap.memoryGb ? `${cap.memoryGb} GB` : "—",
       sub: "DDR4 ECC",
       source: ph.source.kind,
-      sourceBg: "#DBEAFE",
-      sourceFg: "#1D4ED8",
+      sourceBg: "var(--color-info-soft)",
+      sourceFg: "var(--color-info)",
       hash: shortHash(ph.generatedAt, "#ram—")
     },
     {
@@ -340,8 +340,8 @@ function buildInventoryRows(data: DashboardData) {
       detail: cap.storageUsableGb ? `${cap.storageUsableGb} GB usables` : "—",
       sub: "snapshot supervisado",
       source: "/proc",
-      sourceBg: "#F5F5F4",
-      sourceFg: "#57534E",
+      sourceBg: "var(--color-neutral-soft)",
+      sourceFg: "var(--color-neutral)",
       hash: shortHash(ph.source.collectedAt, "#dsk—")
     },
     {
@@ -349,8 +349,8 @@ function buildInventoryRows(data: DashboardData) {
       detail: `${cap.networkInterfaces ?? 0} interfaces`,
       sub: cap.ipPoolSize ? `${cap.ipPoolSize} IPs en pool` : "—",
       source: ph.source.kind,
-      sourceBg: "#DBEAFE",
-      sourceFg: "#1D4ED8",
+      sourceBg: "var(--color-info-soft)",
+      sourceFg: "var(--color-info)",
       hash: shortHash(ph.generatedAt, "#nic—")
     },
     {
@@ -358,8 +358,8 @@ function buildInventoryRows(data: DashboardData) {
       detail: idem.model || "—",
       sub: idem.vendor || "vendor desconocido",
       source: "manifest",
-      sourceBg: "#EDE9FE",
-      sourceFg: "#7C3AED",
+      sourceBg: "var(--color-unknown-soft)",
+      sourceFg: "var(--color-unknown)",
       hash: shortHash(ph.source.collectedAt, "#mdl—")
     },
     {
@@ -367,8 +367,8 @@ function buildInventoryRows(data: DashboardData) {
       detail: idem.serialNumber || "—",
       sub: idem.operatingSystem || "OS desconocido",
       source: "manifest",
-      sourceBg: "#EDE9FE",
-      sourceFg: "#7C3AED",
+      sourceBg: "var(--color-unknown-soft)",
+      sourceFg: "var(--color-unknown)",
       hash: shortHash(ph.generatedAt, "#srl—")
     },
     {
@@ -376,8 +376,8 @@ function buildInventoryRows(data: DashboardData) {
       detail: idem.proxmoxVersion || "—",
       sub: idem.kernelVersion || "kernel desconocido",
       source: "/proc",
-      sourceBg: "#F5F5F4",
-      sourceFg: "#57534E",
+      sourceBg: "var(--color-neutral-soft)",
+      sourceFg: "var(--color-neutral)",
       hash: shortHash(ph.generatedAt, "#krn—")
     }
   ];
@@ -388,21 +388,21 @@ function Inventario({ data }: { data: DashboardData }) {
   const unknownCount = data.physicalHost.quality.unknownFields?.length ?? 0;
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 14,
         padding: 20,
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
       <header className="flex items-center" style={{ gap: 12 }}>
         <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Inventario
           </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
             {INVENTORY_ROWS.length} componentes verificados contra el contrato
           </span>
         </div>
@@ -412,8 +412,8 @@ function Inventario({ data }: { data: DashboardData }) {
             gap: 4,
             padding: "4px 8px",
             borderRadius: 4,
-            background: unknownCount === 0 ? "#DCFCE7" : "#FEF3C7",
-            color: unknownCount === 0 ? "#15803D" : "#B45309"
+            background: unknownCount === 0 ? "var(--color-success-soft)" : "var(--color-warning-soft)",
+            color: unknownCount === 0 ? "var(--color-success)" : "var(--color-warning)"
           }}
         >
           <CheckCircle size={11} strokeWidth={1.75} aria-hidden="true" />
@@ -429,13 +429,13 @@ function Inventario({ data }: { data: DashboardData }) {
           gap: 12,
           padding: "6px 12px",
           borderRadius: 4,
-          background: "#F7F2EA"
+          background: "var(--color-surface-sunken)"
         }}
       >
         {["COMPONENTE", "DETALLE", "FUENTE", "EVIDENCIA"].map((h, i) => (
           <span
             key={h}
-            className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[#8A8073]"
+            className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-tertiary)]"
             style={{ letterSpacing: "0.6px", textAlign: i === 3 ? "right" : "left" }}
           >
             {h}
@@ -453,18 +453,18 @@ function Inventario({ data }: { data: DashboardData }) {
               gap: 12,
               padding: "10px 12px",
               borderRadius: 4,
-              border: "1px solid #EAE0CE"
+              border: "1px solid var(--color-border)"
             }}
           >
             <div className="flex flex-col" style={{ gap: 2 }}>
-              <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+              <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
                 {row.component}
               </span>
-              <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#5C544A]">
+              <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">
                 {row.detail}
               </span>
             </div>
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]">{row.sub}</span>
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">{row.sub}</span>
             <span
               className="inline-flex items-center justify-center text-[10px] font-[family-name:var(--font-mono)]"
               style={{
@@ -478,7 +478,7 @@ function Inventario({ data }: { data: DashboardData }) {
               {row.source}
             </span>
             <span
-              className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073] text-right"
+              className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)] text-right"
             >
               {row.hash}
             </span>
@@ -496,31 +496,31 @@ function Historial({ data }: { data: DashboardData }) {
   const tempSeries = series.find((s) => s.metric.toLowerCase().includes("temp"));
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 16,
         padding: 20,
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
       <header className="flex items-center" style={{ gap: 8 }}>
         <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Historial de telemetría
           </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
             {series.length > 0 ? `${series.length} series · ventana ${data.telemetryHistory.window}` : "Sin series disponibles"}
           </span>
         </div>
         <span
-          className="inline-block text-[10px] font-[family-name:var(--font-mono)] text-[#5C544A]"
+          className="inline-block text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]"
           style={{
             padding: "4px 8px",
             borderRadius: 4,
-            background: "#F7F2EA",
-            border: "1px solid #EAE0CE"
+            background: "var(--color-surface-sunken)",
+            border: "1px solid var(--color-border)"
           }}
         >
           {data.telemetryHistory.window || "ventana —"}
@@ -573,8 +573,8 @@ function ChartFromSeries({
     <ChartShell
       title={title}
       pillText={`${lastValue.toFixed(1)}${pillSuffix}`}
-      pillBg="#FEF3C7"
-      pillFg="#B45309"
+      pillBg="var(--color-warning-soft)"
+      pillFg="var(--color-warning)"
       bars={normalized}
       axis={axis}
       highlightedIndex={highlightedIndex}
@@ -606,13 +606,13 @@ function ChartShell({
         gap: 10,
         padding: 14,
         borderRadius: 6,
-        background: "#FFFBF5",
-        border: "1px solid #EAE0CE"
+        background: "var(--color-bg)",
+        border: "1px solid var(--color-border)"
       }}
     >
       <header className="flex items-center justify-between" style={{ gap: 8 }}>
         <span
-          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
           style={{ letterSpacing: "0.6px" }}
         >
           {title}
@@ -634,8 +634,8 @@ function ChartShell({
               borderRadius: 2,
               background:
                 i === highlightedIndex
-                  ? "linear-gradient(180deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)"
-                  : "#F59E0B"
+                  ? "linear-gradient(180deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)"
+                  : "var(--color-accent)"
             }}
             aria-hidden="true"
           />
@@ -643,7 +643,7 @@ function ChartShell({
       </div>
       <div className="flex items-center justify-between">
         {axis.map((a) => (
-          <span key={a} className="text-[9px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+          <span key={a} className="text-[9px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
             {a}
           </span>
         ))}
@@ -698,19 +698,19 @@ function CamposDesconocidos({
   if (rows.length === 0) {
     return (
       <section
-        className="flex flex-col bg-[#FFFFFF]"
+        className="flex flex-col bg-[var(--color-surface)]"
         style={{
           gap: 14,
           padding: 20,
           borderRadius: 8,
-          border: "1px solid #EAE0CE",
+          border: "1px solid var(--color-border)",
           boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
         }}
       >
-        <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+        <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
           Campos desconocidos
         </h2>
-        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
           El contrato no reporta campos sin valor en el snapshot actual.
         </p>
       </section>
@@ -718,27 +718,27 @@ function CamposDesconocidos({
   }
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 14,
         padding: 20,
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
       <header className="flex items-center" style={{ gap: 12 }}>
         <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Campos desconocidos
           </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
             El contrato no devolvió valor en 4 campos · ordenados por prioridad
           </span>
         </div>
         <span
           className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-semibold"
-          style={{ gap: 4, padding: "4px 8px", borderRadius: 4, background: "#EDE9FE", color: "#7C3AED" }}
+          style={{ gap: 4, padding: "4px 8px", borderRadius: 4, background: "var(--color-unknown-soft)", color: "var(--color-unknown)" }}
         >
           <Info size={11} strokeWidth={1.75} aria-hidden="true" />
           4 sin valor
@@ -754,18 +754,18 @@ function CamposDesconocidos({
               gap: 12,
               padding: "12px 14px",
               borderRadius: 4,
-              background: "#EDE9FE",
-              border: "1px solid #7C3AED"
+              background: "var(--color-unknown-soft)",
+              border: "1px solid var(--color-unknown)"
             }}
           >
             <span
               aria-hidden="true"
-              className="grid place-items-center text-[#FFFBF5] tabular-nums shrink-0"
+              className="grid place-items-center text-[var(--color-bg)] tabular-nums shrink-0"
               style={{
                 width: 32,
                 height: 32,
                 borderRadius: 4,
-                background: "#7C3AED",
+                background: "var(--color-unknown)",
                 fontFamily: "var(--font-mono)",
                 fontSize: 12,
                 fontWeight: 700
@@ -775,18 +775,18 @@ function CamposDesconocidos({
             </span>
             <div className="flex flex-col flex-1" style={{ gap: 4 }}>
               <div className="flex items-center" style={{ gap: 8 }}>
-                <code className="text-[12px] font-[family-name:var(--font-mono)] text-[#1A1410]">
+                <code className="text-[12px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">
                   {row.path}
                 </code>
                 <span className="flex-1" aria-hidden="true" />
                 <span
-                  className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#7C3AED]"
+                  className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-unknown)]"
                   style={{ letterSpacing: "0.4px" }}
                 >
                   sin valor
                 </span>
               </div>
-              <p className="m-0 text-[11px] font-[family-name:var(--font-caption)] leading-[1.45] text-[#5C544A]">
+              <p className="m-0 text-[11px] font-[family-name:var(--font-caption)] leading-[1.45] text-[var(--color-text-secondary)]">
                 {row.desc}
               </p>
             </div>
@@ -806,50 +806,50 @@ function DatosFaltantes({ count }: { count: number }) {
         gap: 14,
         padding: 20,
         borderRadius: 8,
-        background: count === 0 ? "#DCFCE7" : "#FEF3C7",
-        border: `1px solid ${count === 0 ? "#15803D" : "#B45309"}`
+        background: count === 0 ? "var(--color-success-soft)" : "var(--color-warning-soft)",
+        border: `1px solid ${count === 0 ? "var(--color-success)" : "var(--color-warning)"}`
       }}
     >
       <header className="flex items-center" style={{ gap: 10 }}>
         <span
           aria-hidden="true"
           className="grid place-items-center"
-          style={{ width: 32, height: 32, borderRadius: 8, background: count === 0 ? "#15803D" : "#B45309", color: "#FFFBF5" }}
+          style={{ width: 32, height: 32, borderRadius: 8, background: count === 0 ? "var(--color-success)" : "var(--color-warning)", color: "var(--color-bg)" }}
         >
           <Triangle size={16} strokeWidth={1.75} aria-hidden="true" />
         </span>
         <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Datos faltantes
           </h3>
-          <span className="text-[10px] font-[family-name:var(--font-caption)] text-[#5C544A]">
+          <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">
             {count === 0 ? "0 campos · snapshot completo" : `${count} campos · pendientes de captura`}
           </span>
         </div>
       </header>
 
-      <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+      <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
         {count === 0
           ? "Snapshot completo. No hay campos sin valor en el ciclo actual del recolector supervisado."
           : "Los campos sin valor bloquean el cálculo del puntaje de salud. OpenClaw recomienda iniciar un snapshot manual antes del próximo ciclo de aprendizaje."}
       </p>
 
       <div
-        className="flex flex-col bg-[#FFFFFF]"
+        className="flex flex-col bg-[var(--color-surface)]"
         style={{
           gap: 6,
           padding: "10px 12px",
           borderRadius: 4,
-          border: "1px solid #EAE0CE"
+          border: "1px solid var(--color-border)"
         }}
       >
         <div className="flex items-center justify-between">
-          <span className="text-[10px] font-[family-name:var(--font-caption)] font-semibold text-[#5C544A]">
+          <span className="text-[10px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]">
             impacto en puntaje
           </span>
           <span
             className="text-[12px] font-[family-name:var(--font-mono)] font-semibold"
-            style={{ color: count === 0 ? "#15803D" : "#B45309" }}
+            style={{ color: count === 0 ? "var(--color-success)" : "var(--color-warning)" }}
           >
             {count === 0 ? "sin impacto" : `-${impact} puntos`}
           </span>
@@ -857,7 +857,7 @@ function DatosFaltantes({ count }: { count: number }) {
         <div
           aria-hidden="true"
           className="overflow-hidden"
-          style={{ height: 6, borderRadius: 3, background: "#EAE0CE" }}
+          style={{ height: 6, borderRadius: 3, background: "var(--color-border)" }}
         >
           <span
             style={{
@@ -865,7 +865,7 @@ function DatosFaltantes({ count }: { count: number }) {
               width: `${(impact / 50) * 100}%`,
               height: 6,
               borderRadius: 3,
-              background: count === 0 ? "#15803D" : "#B45309"
+              background: count === 0 ? "var(--color-success)" : "var(--color-warning)"
             }}
           />
         </div>
@@ -873,8 +873,8 @@ function DatosFaltantes({ count }: { count: number }) {
 
       <button
         type="button"
-        className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]"
-        style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "#1A1410" }}
+        className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
+        style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "var(--color-text-primary)" }}
       >
         <Camera size={14} strokeWidth={1.75} aria-hidden="true" />
         Solicitar snapshot manual
@@ -894,13 +894,13 @@ function auditSourceStyle(actorType: string): {
   border: string;
 } {
   const t = actorType.toLowerCase();
-  if (t.includes("openclaw")) return { text: "openclaw", bg: "#EDE9FE", fg: "#7C3AED", border: "#EDE9FE" };
+  if (t.includes("openclaw")) return { text: "openclaw", bg: "var(--color-unknown-soft)", fg: "var(--color-unknown)", border: "var(--color-unknown-soft)" };
   if (t.includes("collector") || t.includes("system.collector"))
-    return { text: "contract", bg: "#DBEAFE", fg: "#1D4ED8", border: "#DBEAFE" };
-  if (t.includes("warming")) return { text: "warming", bg: "#DCFCE7", fg: "#15803D", border: "#DCFCE7" };
+    return { text: "contract", bg: "var(--color-info-soft)", fg: "var(--color-info)", border: "var(--color-info-soft)" };
+  if (t.includes("warming")) return { text: "warming", bg: "var(--color-success-soft)", fg: "var(--color-success)", border: "var(--color-success-soft)" };
   if (t.includes("operador") || t.includes("operator"))
-    return { text: "manual", bg: "#F7F2EA", fg: "#5C544A", border: "#EAE0CE" };
-  return { text: t.split(".")[0] || "system", bg: "#FFFFFF", fg: "#5C544A", border: "#EAE0CE" };
+    return { text: "manual", bg: "var(--color-surface-sunken)", fg: "var(--color-text-secondary)", border: "var(--color-border)" };
+  return { text: t.split(".")[0] || "system", bg: "var(--color-surface)", fg: "var(--color-text-secondary)", border: "var(--color-border)" };
 }
 
 function buildHardwareAuditRows(events: import("../../shared/api/client.ts").AuditEvent[]) {
@@ -922,7 +922,7 @@ function buildHardwareAuditRows(events: import("../../shared/api/client.ts").Aud
       sourceBg: src.bg,
       sourceFg: src.fg,
       sourceBorder: src.border,
-      rowBg: i % 2 === 1 ? "#F7F2EA" : "transparent"
+      rowBg: i % 2 === 1 ? "var(--color-surface-sunken)" : "transparent"
     };
   });
 }
@@ -942,35 +942,35 @@ function AuditFooter({ data }: { data: DashboardData }) {
           action: "el contrato /v1/audit-events no ha registrado eventos de hardware",
           detail: "Wave 2 — backend logging por host pendiente",
           sourceText: "todavía",
-          sourceBg: "#F7F2EA",
-          sourceFg: "#8A8073",
-          sourceBorder: "#EAE0CE",
+          sourceBg: "var(--color-surface-sunken)",
+          sourceFg: "var(--color-text-tertiary)",
+          sourceBorder: "var(--color-border)",
           rowBg: "transparent" as const
         }
       ];
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 12,
         padding: 20,
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
       <header className="flex items-center" style={{ gap: 12 }}>
         <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Registro de auditoría
           </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
             Últimas 6 acciones · trazabilidad sólo lectura
           </span>
         </div>
         <span
           className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-semibold"
-          style={{ gap: 4, padding: "4px 8px", borderRadius: 4, background: "#DBEAFE", color: "#1D4ED8" }}
+          style={{ gap: 4, padding: "4px 8px", borderRadius: 4, background: "var(--color-info-soft)", color: "var(--color-info)" }}
         >
           <Shield size={11} strokeWidth={1.75} aria-hidden="true" />
           hashes verificados
@@ -985,13 +985,13 @@ function AuditFooter({ data }: { data: DashboardData }) {
           gap: 8,
           padding: "6px 10px",
           borderRadius: 4,
-          background: "#F7F2EA"
+          background: "var(--color-surface-sunken)"
         }}
       >
         {["TIMESTAMP", "ACTOR", "ACCIÓN", "DETALLE", "FUENTE"].map((h, i) => (
           <span
             key={h}
-            className="text-[9px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[#8A8073]"
+            className="text-[9px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-tertiary)]"
             style={{ letterSpacing: "0.6px", textAlign: i === 4 ? "right" : "left" }}
           >
             {h}
@@ -1012,14 +1012,14 @@ function AuditFooter({ data }: { data: DashboardData }) {
               background: row.rowBg
             }}
           >
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{row.ts}</span>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] font-medium text-[#EA580C] truncate">
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{row.ts}</span>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] font-medium text-[var(--color-accent-tertiary)] truncate">
               {row.actor}
             </span>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] font-semibold text-[#1A1410] truncate">
+            <span className="text-[10px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-primary)] truncate">
               {row.action}
             </span>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#5C544A] truncate">
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] truncate">
               {row.detail}
             </span>
             <span
