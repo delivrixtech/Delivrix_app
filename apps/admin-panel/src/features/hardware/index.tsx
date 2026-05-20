@@ -933,7 +933,7 @@ function AuditFooter({ data }: { data: DashboardData }) {
     ["physical-host", "hardware", "telemetry", "snapshot", "manual_snapshot", "collector"],
     6
   );
-  const AUDIT_ROWS = events.length > 0
+  const auditRows = events.length > 0
     ? buildHardwareAuditRows(events)
     : [
         {
@@ -1000,7 +1000,7 @@ function AuditFooter({ data }: { data: DashboardData }) {
       </div>
 
       <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 2 }}>
-        {AUDIT_ROWS.map((row, i) => (
+        {auditRows.map((row, i) => (
           <li
             key={i}
             className="grid items-center"

@@ -838,7 +838,7 @@ function SecretsCard() {
 /* ============================================================
  * Audit (McVRn) — 6 audit rows literales
  * ============================================================ */
-const AUDIT_ROWS = [
+const AUDIT_ROWS_FALLBACK = [
   { ts: "09:18:42", actor: "operador@delivrix", actorColor: "var(--color-text-primary)", action: "Solicitó plan dry-run", resource: "plan_warming · cluster-eu-01", hash: "4f1a…0c8", result: "ok", resultBg: "var(--color-success-soft)", resultFg: "var(--color-success)" },
   { ts: "09:14:21", actor: "sre-01@delivrix", actorColor: "var(--color-text-primary)", action: "Probó kill switch", resource: "killswitch · simulado", hash: "a09c…b32", result: "ok", resultBg: "var(--color-success-soft)", resultFg: "var(--color-success)" },
   { ts: "09:04:11", actor: "openclaw", actorColor: "var(--color-accent-tertiary)", action: "Recomendó degradar", resource: "cluster-eu-01 · quejas 0,18%", hash: "7d41…f1a", result: "supervisado", resultBg: "var(--color-unknown-soft)", resultFg: "var(--color-unknown)" },
@@ -846,6 +846,8 @@ const AUDIT_ROWS = [
   { ts: "08:42:09", actor: "auditor-ext@delivrix", actorColor: "var(--color-text-primary)", action: "Vio log", resource: "audit · últimas 24 h", hash: "c54f…908", result: "lectura", resultBg: "var(--color-info-soft)", resultFg: "var(--color-info)" },
   { ts: "07:58:55", actor: "sistema", actorColor: "var(--color-text-secondary)", action: "Rechazó login externo", resource: "IP 200.93.x.x fuera de rango VPN", hash: "9bb2…ee4", result: "bloqueo", resultBg: "var(--color-critical-soft)", resultFg: "var(--color-critical)" }
 ];
+
+type AuditRow = (typeof AUDIT_ROWS_FALLBACK)[number];
 
 function Audit({ data }: { data: DashboardData }) {
   // Audit log de seguridad: prefiere events relacionados con kill switch, gates, autorización
@@ -856,7 +858,7 @@ function Audit({ data }: { data: DashboardData }) {
     6
   );
   const pool = events.length > 0 ? events : data.auditEvents.slice(0, 6);
-  const rows: typeof AUDIT_ROWS = pool.map((e) => ({
+  const rows: AuditRow[] = pool.map((e) => ({
     ts: formatTimeOnly(e.occurredAt),
     actor: `${e.actorType}.${e.actorId}`.slice(0, 28),
     actorColor: e.actorType.includes("openclaw")
@@ -885,12 +887,11 @@ function Audit({ data }: { data: DashboardData }) {
             ? "var(--color-info)"
             : "var(--color-success)"
   }));
-  const finalRows = rows.length > 0 ? rows : AUDIT_ROWS;
+  const finalRows = rows.length > 0 ? rows : AUDIT_ROWS_FALLBACK;
   return <AuditTable rows={finalRows} />;
 }
 
-function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
-  const AUDIT_ROWS_LOCAL = rows;
+function AuditTable({ rows }: { rows: AuditRow[] }) {
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
@@ -960,7 +961,7 @@ function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
       </div>
 
       <ul className="m-0 p-0 list-none flex flex-col">
-        {AUDIT_ROWS.map((row, i) => (
+        {rows.map((row, i) => (
           <li
             key={i}
             className="grid items-center"
@@ -968,7 +969,7 @@ function AuditTable({ rows }: { rows: typeof AUDIT_ROWS }) {
               gridTemplateColumns: "84px 128px 160px minmax(0,1fr) 96px 80px",
               gap: 12,
               padding: "10px 20px",
-              borderBottom: i < AUDIT_ROWS.length - 1 ? "1px solid var(--color-border)" : "none"
+              borderBottom: i < rows.length - 1 ? "1px solid var(--color-border)" : "none"
             }}
           >
             <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">{row.ts}</span>
