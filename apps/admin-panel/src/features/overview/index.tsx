@@ -53,23 +53,23 @@ function Welcome({ generatedAt }: { generatedAt: string }) {
     <header className="flex flex-col" style={{ gap: 6 }}>
       <div className="flex items-center" style={{ gap: 8 }}>
         <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[#EA580C]"
+          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
           style={{ letterSpacing: "1.2px" }}
         >
           INICIO OPERATIVO
         </span>
-        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "#8A8073" }} />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
+        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           Actualizado {formatDateTime(generatedAt)}
         </span>
       </div>
       <h1
-        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[#1A1410]"
+        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
         style={{ letterSpacing: "-0.4px" }}
       >
         Capacidad preparada, sin envíos reales.
       </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
+      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
         Delivrix gobierna infraestructura de correo autorizada en modo solo lectura. OpenClaw
         observa, valida y propone — los humanos aprueban cada acción real.
       </p>
@@ -84,11 +84,11 @@ function OpenClawPrompt() {
         borderRadius: 12,
         padding: 2,
         background:
-          "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
+          "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
         boxShadow: "0 6px 18px rgba(146, 64, 14, 0.13)"
       }}
     >
-      <div className="flex flex-col bg-[#FFFFFF]" style={{ borderRadius: 10, padding: 16, gap: 12 }}>
+      <div className="flex flex-col bg-[var(--color-surface)]" style={{ borderRadius: 10, padding: 16, gap: 12 }}>
         {/* ocHead */}
         <header className="flex items-center" style={{ gap: 10 }}>
           <span
@@ -98,18 +98,18 @@ function OpenClawPrompt() {
               width: 32,
               height: 32,
               borderRadius: 8,
-              background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
-              color: "#FFFBF5"
+              background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
+              color: "var(--color-bg)"
             }}
           >
             <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
           </span>
           <div className="flex flex-col leading-tight">
-            <span className="text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+            <span className="text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
               OpenClaw
             </span>
             <span
-              className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]"
+              className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
               style={{ letterSpacing: "0.4px" }}
             >
               Operador supervisado
@@ -121,9 +121,9 @@ function OpenClawPrompt() {
             style={{
               padding: "2px 8px",
               borderRadius: 4,
-              background: "#F7F2EA",
-              border: "1px solid #EAE0CE",
-              color: "#5C544A",
+              background: "var(--color-surface-sunken)",
+              border: "1px solid var(--color-border)",
+              color: "var(--color-text-secondary)",
               letterSpacing: "0.4px"
             }}
           >
@@ -132,7 +132,7 @@ function OpenClawPrompt() {
         </header>
 
         {/* Message — literal Pencil */}
-        <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.45] text-[#1A1410]">
+        <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-primary)]">
           2 clústeres de envío esperan aprobación humana. Las quejas del clúster A superaron
           0,18% en los últimos 4 snapshots — preparé un plan de degradación.
         </p>
@@ -145,14 +145,14 @@ function OpenClawPrompt() {
             gap: 8,
             padding: "10px 12px",
             borderRadius: 8,
-            background: "#F7F2EA",
-            border: "1px solid #EAE0CE"
+            background: "var(--color-surface-sunken)",
+            border: "1px solid var(--color-border)"
           }}
         >
-          <span className="flex-1 text-[12px] font-[family-name:var(--font-sans)] text-[#8A8073]">
+          <span className="flex-1 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-tertiary)]">
             Responde a OpenClaw…
           </span>
-          <ArrowUp size={14} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+          <ArrowUp size={14} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
         </div>
 
         {/* ocActions */}
@@ -160,18 +160,18 @@ function OpenClawPrompt() {
           <button
             type="button"
             disabled
-            className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5] disabled:cursor-default disabled:opacity-100"
+            className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)] disabled:cursor-default disabled:opacity-100"
             style={{
               gap: 6,
               padding: "10px 14px",
               borderRadius: 6,
-              background: "#1A1410"
+              background: "var(--color-text-primary)"
             }}
           >
             <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
             Sugerir siguiente paso
           </button>
-          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
             interacción real vive fuera del panel
           </span>
         </div>
@@ -210,12 +210,12 @@ function KpiRow({ data }: { data: DashboardData }) {
 function KpiShell({ children }: { children: React.ReactNode }) {
   return (
     <article
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 12,
         padding: 16,
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
@@ -228,7 +228,7 @@ function KpiHead({ label, pillBg, pillFg, pillText }: { label: string; pillBg: s
   return (
     <div className="flex items-center" style={{ gap: 8 }}>
       <span
-        className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#5C544A]"
+        className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]"
         style={{ letterSpacing: "0.4px" }}
       >
         {label}
@@ -248,13 +248,13 @@ function KpiValue({ value, unit }: { value: string; unit?: string }) {
   return (
     <div className="flex items-end" style={{ gap: 8 }}>
       <span
-        className="text-[32px] font-[family-name:var(--font-mono)] font-bold leading-none text-[#1A1410] tabular-nums"
+        className="text-[32px] font-[family-name:var(--font-mono)] font-bold leading-none text-[var(--color-text-primary)] tabular-nums"
         style={{ letterSpacing: "-0.6px" }}
       >
         {value}
       </span>
       {unit ? (
-        <span className="text-[14px] font-[family-name:var(--font-mono)] text-[#8A8073] leading-none">
+        <span className="text-[14px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)] leading-none">
           {unit}
         </span>
       ) : null}
@@ -282,7 +282,7 @@ function KpiDetail({
         {text}
       </span>
       <span className="flex-1" aria-hidden="true" />
-      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{endpoint}</span>
+      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{endpoint}</span>
     </div>
   );
 }
@@ -290,23 +290,23 @@ function KpiDetail({
 /* K1 — Nodos de envío (literal Pencil) */
 function KpiSenderNodes({ total }: { total: number }) {
   const bars = [
-    { h: 18, op: 0.35, color: "#FACC15" },
-    { h: 24, op: 0.45, color: "#FACC15" },
-    { h: 20, op: 0.4, color: "#FACC15" },
-    { h: 28, op: 0.55, color: "#F59E0B" },
-    { h: 30, op: 0.7, color: "#F59E0B" },
-    { h: 24, op: 0.6, color: "#F59E0B" },
-    { h: 32, op: 0.8, color: "#EA580C" },
-    { h: 36, op: 1.0, color: "#EA580C" }
+    { h: 18, op: 0.35, color: "var(--color-accent-secondary)" },
+    { h: 24, op: 0.45, color: "var(--color-accent-secondary)" },
+    { h: 20, op: 0.4, color: "var(--color-accent-secondary)" },
+    { h: 28, op: 0.55, color: "var(--color-accent)" },
+    { h: 30, op: 0.7, color: "var(--color-accent)" },
+    { h: 24, op: 0.6, color: "var(--color-accent)" },
+    { h: 32, op: 0.8, color: "var(--color-accent-tertiary)" },
+    { h: 36, op: 1.0, color: "var(--color-accent-tertiary)" }
   ];
   return (
     <KpiShell>
-      <KpiHead label="Nodos de envío" pillBg="#DCFCE7" pillFg="#15803D" pillText="+6 esta semana" />
+      <KpiHead label="Nodos de envío" pillBg="var(--color-success-soft)" pillFg="var(--color-success)" pillText="+6 esta semana" />
       <KpiValue value={formatNumber(total)} />
       <KpiDetail
         icon={<TrendingUp size={12} strokeWidth={1.75} />}
         text="+6 esta semana"
-        color="#15803D"
+        color="var(--color-success)"
         endpoint="/v1/sender-nodes"
       />
       <div className="flex items-end w-full" style={{ gap: 3, height: 36 }}>
@@ -327,17 +327,17 @@ function KpiSenderNodes({ total }: { total: number }) {
 function KpiWarming({ value }: { value: number }) {
   return (
     <KpiShell>
-      <KpiHead label="IPs en calentamiento" pillBg="#DBEAFE" pillFg="#1D4ED8" pillText="día 9 / 28 prom" />
+      <KpiHead label="IPs en calentamiento" pillBg="var(--color-info-soft)" pillFg="var(--color-info)" pillText="día 9 / 28 prom" />
       <KpiValue value={formatNumber(value)} />
       <KpiDetail
         icon={<Flame size={12} strokeWidth={1.75} />}
         text="día 9 / 28 prom"
-        color="#EA580C"
+        color="var(--color-accent-tertiary)"
         endpoint="/v1/warming"
       />
       <div
         className="relative w-full overflow-hidden"
-        style={{ height: 6, borderRadius: 3, background: "#F7F2EA" }}
+        style={{ height: 6, borderRadius: 3, background: "var(--color-surface-sunken)" }}
         aria-hidden="true"
       >
         <div className="flex h-full" style={{ gap: 4 }}>
@@ -348,7 +348,7 @@ function KpiWarming({ value }: { value: number }) {
                 width: 48,
                 height: "100%",
                 borderRadius: 3,
-                background: "linear-gradient(90deg, #FACC15 0%, #EA580C 100%)"
+                background: "linear-gradient(90deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)"
               }}
             />
           ))}
@@ -364,22 +364,22 @@ function KpiReputation({ value }: { value: number | null }) {
   const pct = value === null ? 0 : Math.max(0, Math.min(100, value));
   return (
     <KpiShell>
-      <KpiHead label="Índice de reputación" pillBg="#FEF3C7" pillFg="#B45309" pillText="warning" />
+      <KpiHead label="Índice de reputación" pillBg="var(--color-warning-soft)" pillFg="var(--color-warning)" pillText="warning" />
       <KpiValue value={display} unit="/ 100" />
       <KpiDetail
         icon={<TrendingDown size={12} strokeWidth={1.75} />}
         text="-1,4 vs 24h"
-        color="#B45309"
+        color="var(--color-warning)"
         endpoint="/v1/reputation"
       />
       <div
         className="relative w-full overflow-hidden"
-        style={{ height: 6, borderRadius: 3, background: "#F7F2EA" }}
+        style={{ height: 6, borderRadius: 3, background: "var(--color-surface-sunken)" }}
         aria-hidden="true"
       >
         <span
           className="block"
-          style={{ width: `${pct}%`, height: 8, borderRadius: 3, background: "#B45309" }}
+          style={{ width: `${pct}%`, height: 8, borderRadius: 3, background: "var(--color-warning)" }}
         />
       </div>
     </KpiShell>
@@ -390,12 +390,12 @@ function KpiReputation({ value }: { value: number | null }) {
 function KpiGates({ value, gates }: { value: number; gates: string[] }) {
   return (
     <KpiShell>
-      <KpiHead label="Gates abiertos" pillBg="#FEE2E2" pillFg="#B91C1C" pillText="espera aprobación" />
+      <KpiHead label="Gates abiertos" pillBg="var(--color-critical-soft)" pillFg="var(--color-critical)" pillText="espera aprobación" />
       <KpiValue value={formatNumber(value)} />
       <KpiDetail
         icon={<ShieldAlert size={12} strokeWidth={1.75} />}
         text="espera aprobación"
-        color="#B91C1C"
+        color="var(--color-critical)"
         endpoint="/v1/gates"
       />
       <div className="flex flex-wrap" style={{ gap: 6 }}>
@@ -403,7 +403,7 @@ function KpiGates({ value, gates }: { value: number; gates: string[] }) {
           <span
             key={g}
             className="inline-block text-[10px] font-[family-name:var(--font-mono)]"
-            style={{ padding: "3px 8px", borderRadius: 4, background: "#FEE2E2", color: "#B91C1C" }}
+            style={{ padding: "3px 8px", borderRadius: 4, background: "var(--color-critical-soft)", color: "var(--color-critical)" }}
           >
             {g.replace(/_/g, " ")}
           </span>
@@ -419,21 +419,21 @@ function KpiGates({ value, gates }: { value: number; gates: string[] }) {
 function Pipeline() {
   return (
     <section
-      className="bg-[#FFFFFF]"
+      className="bg-[var(--color-surface)]"
       style={{
         borderRadius: 8,
         padding: 20,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
       {/* pipeHead */}
       <header className="flex items-center" style={{ gap: 12, marginBottom: 16 }}>
         <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Flujo operativo
           </h2>
-          <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+          <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
             Onboarding → planificación → provisionamiento dry-run → calentamiento → reputación.
             Cada transición tiene un gate humano.
           </p>
@@ -441,8 +441,8 @@ function Pipeline() {
         <span className="flex-1" aria-hidden="true" />
         <button
           type="button"
-          className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]"
-          style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid #D4C5A8", background: "transparent" }}
+          className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
+          style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-strong)", background: "transparent" }}
         >
           Abrir canvas
           <ArrowRight size={13} strokeWidth={1.75} aria-hidden="true" />
@@ -519,16 +519,16 @@ function StageCard({
         minWidth: 0
       }}
     >
-      <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+      <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
         {title}
       </span>
-      <p className="m-0 text-[11px] font-[family-name:var(--font-sans)] leading-[1.4] text-[#1A1410]">
+      <p className="m-0 text-[11px] font-[family-name:var(--font-sans)] leading-[1.4] text-[var(--color-text-primary)]">
         {body}
       </p>
       {variant === "in_progress" && progress !== undefined ? (
         <div
           className="overflow-hidden"
-          style={{ height: 5, borderRadius: 3, background: "#FFFFFF" }}
+          style={{ height: 5, borderRadius: 3, background: "var(--color-surface)" }}
           aria-hidden="true"
         >
           <span
@@ -536,7 +536,7 @@ function StageCard({
             style={{
               width: `${progress}%`,
               height: "100%",
-              background: "linear-gradient(90deg, #FACC15 0%, #EA580C 100%)"
+              background: "linear-gradient(90deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)"
             }}
           />
         </div>
@@ -553,23 +553,23 @@ function StageCard({
 function StageConnector() {
   return (
     <div className="grid place-items-center" style={{ width: 18, height: 22 }}>
-      <ArrowRight size={14} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+      <ArrowRight size={14} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
     </div>
   );
 }
 
 function stageStyle(variant: StageVariant) {
   if (variant === "success")
-    return { bg: "#DCFCE7", border: "#15803D", footerFg: "#5C544A" };
+    return { bg: "var(--color-success-soft)", border: "var(--color-success)", footerFg: "var(--color-text-secondary)" };
   if (variant === "in_progress")
     return {
       bg: "linear-gradient(135deg, rgba(250, 204, 21, 0.2) 0%, rgba(234, 88, 12, 0.2) 100%)",
-      border: "#EA580C",
-      footerFg: "#EA580C"
+      border: "var(--color-accent-tertiary)",
+      footerFg: "var(--color-accent-tertiary)"
     };
   if (variant === "warning")
-    return { bg: "#FEF3C7", border: "#B45309", footerFg: "#B45309" };
-  return { bg: "#F5F5F4", border: "#EAE0CE", footerFg: "#8A8073" };
+    return { bg: "var(--color-warning-soft)", border: "var(--color-warning)", footerFg: "var(--color-warning)" };
+  return { bg: "var(--color-neutral-soft)", border: "var(--color-border)", footerFg: "var(--color-text-tertiary)" };
 }
 
 /* ============================================================
@@ -592,40 +592,40 @@ function ApprovalsCard({ data }: { data: DashboardData }) {
   const VARIANTS = [
     {
       key: "warming",
-      iconBg: "#FEF3C7",
-      iconColor: "#B45309",
-      pillBg: "#FEF3C7",
-      pillFg: "#B45309",
+      iconBg: "var(--color-warning-soft)",
+      iconColor: "var(--color-warning)",
+      pillBg: "var(--color-warning-soft)",
+      pillFg: "var(--color-warning)",
       pillText: "warming",
       desc: "OpenClaw propone avanzar el ciclo de calentamiento. Vigilancia de reputación activa.",
       meta1: "contrato · /v1/warming/plan"
     },
     {
       key: "dns",
-      iconBg: "#FEE2E2",
-      iconColor: "#B91C1C",
-      pillBg: "#FEE2E2",
-      pillFg: "#B91C1C",
+      iconBg: "var(--color-critical-soft)",
+      iconColor: "var(--color-critical)",
+      pillBg: "var(--color-critical-soft)",
+      pillFg: "var(--color-critical)",
       pillText: "dns",
       desc: "Drift SPF/DKIM/DMARC detectado · plan dry-run listo, no se realizó escritura real.",
       meta1: "contrato · /v1/dns/plan"
     },
     {
       key: "ssh",
-      iconBg: "#EDE9FE",
-      iconColor: "#7C3AED",
-      pillBg: "#EDE9FE",
-      pillFg: "#7C3AED",
+      iconBg: "var(--color-unknown-soft)",
+      iconColor: "var(--color-unknown)",
+      pillBg: "var(--color-unknown-soft)",
+      pillFg: "var(--color-unknown)",
       pillText: "ssh",
       desc: "Alcance del permiso desconocido hasta firmar la regla de 2 personas. SSH desactivado por defecto.",
       meta1: "runbook · ssh-gate.md"
     },
     {
       key: "generic",
-      iconBg: "#F7F2EA",
-      iconColor: "#5C544A",
-      pillBg: "#F7F2EA",
-      pillFg: "#5C544A",
+      iconBg: "var(--color-surface-sunken)",
+      iconColor: "var(--color-text-secondary)",
+      pillBg: "var(--color-surface-sunken)",
+      pillFg: "var(--color-text-secondary)",
       pillText: "humano",
       desc: "Acción que requiere autorización humana antes de avanzar.",
       meta1: "contrato · /v1/openclaw/queue"
@@ -637,10 +637,10 @@ function ApprovalsCard({ data }: { data: DashboardData }) {
   };
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
@@ -650,21 +650,21 @@ function ApprovalsCard({ data }: { data: DashboardData }) {
         style={{
           gap: 12,
           padding: "16px 18px 14px 18px",
-          borderBottom: "1px solid #EAE0CE"
+          borderBottom: "1px solid var(--color-border)"
         }}
       >
         <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Aprobaciones pendientes
           </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
             Cada acción que un humano debe validar
           </span>
         </div>
         <span className="flex-1" aria-hidden="true" />
         <span
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-          style={{ padding: "3px 8px", borderRadius: 4, background: "#FEE2E2", color: "#B91C1C" }}
+          style={{ padding: "3px 8px", borderRadius: 4, background: "var(--color-critical-soft)", color: "var(--color-critical)" }}
         >
           {formatNumber(count)} pendientes
         </span>
@@ -673,7 +673,7 @@ function ApprovalsCard({ data }: { data: DashboardData }) {
       {/* acList — derivado de canvas.requiresHumanApproval */}
       {count === 0 ? (
         <div style={{ padding: "14px 18px" }}>
-          <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+          <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
             Cola de aprobaciones vacía. Todas las acciones supervisadas están autorizadas o no
             requieren intervención humana.
           </p>
@@ -741,7 +741,7 @@ function ApprovalRow({
       style={{
         gap: 12,
         padding: "14px 18px",
-        borderBottom: showBorder ? "1px solid #EAE0CE" : "none"
+        borderBottom: showBorder ? "1px solid var(--color-border)" : "none"
       }}
     >
       <span
@@ -760,7 +760,7 @@ function ApprovalRow({
       </span>
       <div className="flex flex-col min-w-0 flex-1" style={{ gap: 2 }}>
         <div className="flex items-center" style={{ gap: 8 }}>
-          <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410] truncate">
+          <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] truncate">
             {title}
           </span>
           <span
@@ -770,23 +770,23 @@ function ApprovalRow({
             {pillText}
           </span>
         </div>
-        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.4] text-[#5C544A]">
+        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.4] text-[var(--color-text-secondary)]">
           {desc}
         </p>
         <div className="flex items-center" style={{ gap: 8 }}>
-          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{meta1}</span>
-          <span aria-hidden="true" className="rounded-[1.5px]" style={{ width: 3, height: 3, background: "#8A8073" }} />
-          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{meta2}</span>
+          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{meta1}</span>
+          <span aria-hidden="true" className="rounded-[1.5px]" style={{ width: 3, height: 3, background: "var(--color-text-tertiary)" }} />
+          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{meta2}</span>
         </div>
       </div>
       <button
         type="button"
-        className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]"
+        className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
         style={{
           gap: 6,
           padding: "7px 12px",
           borderRadius: 6,
-          border: "1px solid #D4C5A8",
+          border: "1px solid var(--color-border-strong)",
           background: "transparent",
           flexShrink: 0
         }}
@@ -846,22 +846,22 @@ function GatesCard({ data }: { data: DashboardData }) {
   const okCount = gates.filter((g) => g.kind === "ok").length;
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 12,
         padding: 18,
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
       {/* gHead */}
       <header className="flex items-center" style={{ gap: 8 }}>
-        <h2 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+        <h2 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
           Gates no negociables
         </h2>
         <span className="flex-1" aria-hidden="true" />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold text-[#5C544A]">
+        <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-secondary)]">
           {okCount}/{gates.length}
         </span>
       </header>
@@ -898,26 +898,26 @@ function GateRow({
 }) {
   const dot =
     kind === "ok"
-      ? { bg: "#15803D", icon: <Check size={10} strokeWidth={2} aria-hidden="true" /> }
+      ? { bg: "var(--color-success)", icon: <Check size={10} strokeWidth={2} aria-hidden="true" /> }
       : kind === "warn"
-        ? { bg: "#B45309", icon: <TriangleAlert size={10} strokeWidth={2} aria-hidden="true" /> }
+        ? { bg: "var(--color-warning)", icon: <TriangleAlert size={10} strokeWidth={2} aria-hidden="true" /> }
         : kind === "bad"
-          ? { bg: "#B91C1C", icon: <X size={10} strokeWidth={2} aria-hidden="true" /> }
-          : { bg: "#57534E", icon: <Minus size={10} strokeWidth={2} aria-hidden="true" /> };
+          ? { bg: "var(--color-critical)", icon: <X size={10} strokeWidth={2} aria-hidden="true" /> }
+          : { bg: "var(--color-neutral)", icon: <Minus size={10} strokeWidth={2} aria-hidden="true" /> };
   const noteColor =
-    kind === "ok" ? "#15803D" : kind === "warn" ? "#B45309" : kind === "bad" ? "#B91C1C" : "#8A8073";
+    kind === "ok" ? "var(--color-success)" : kind === "warn" ? "var(--color-warning)" : kind === "bad" ? "var(--color-critical)" : "var(--color-text-tertiary)";
 
   return (
     <li className="flex items-center min-w-0" style={{ gap: 8 }} title={rawLabel}>
       <span
         aria-hidden="true"
-        className="grid place-items-center text-[#FFFBF5]"
+        className="grid place-items-center text-[var(--color-bg)]"
         style={{ width: 16, height: 16, borderRadius: 8, background: dot.bg, flexShrink: 0 }}
       >
         {dot.icon}
       </span>
       <span
-        className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[#1A1410] truncate"
+        className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-primary)] truncate"
         style={{ flex: "1 1 auto", minWidth: 0 }}
       >
         {label}
@@ -952,42 +952,42 @@ function SystemHealthDark({ data }: { data: DashboardData }) {
     {
       label: "Gateway",
       value: data.health.status === "ok" ? "OK" : data.health.status,
-      valueColor: data.health.status === "ok" ? "#15803D" : "#F87171"
+      valueColor: data.health.status === "ok" ? "var(--color-success)" : "var(--color-critical)"
     },
     {
       label: "Cola del worker",
       value: `${jobsTotal} jobs · ${stuckCount} atascados`,
-      valueColor: stuckCount === 0 ? "#15803D" : "#FACC15"
+      valueColor: stuckCount === 0 ? "var(--color-success)" : "var(--color-accent-secondary)"
     },
     {
       label: "Phase",
       value: data.health.phase,
-      valueColor: "#FACC15"
+      valueColor: "var(--color-accent-secondary)"
     },
     {
       label: "Frescura recolector",
       value: freshAge,
-      valueColor: data.supervisedCollector.freshness.staleSources > 0 ? "#FACC15" : "#15803D"
+      valueColor: data.supervisedCollector.freshness.staleSources > 0 ? "var(--color-accent-secondary)" : "var(--color-success)"
     },
     {
       label: "Scheduler OpenClaw",
       value: sched ? String(sched) : "no reportado",
-      valueColor: "#FACC15"
+      valueColor: "var(--color-accent-secondary)"
     },
     {
       label: "Infra writes",
       value: on.liveInfrastructureWritesEnabled ? "enabled · revisar" : "disabled",
-      valueColor: on.liveInfrastructureWritesEnabled ? "#F87171" : "#15803D"
+      valueColor: on.liveInfrastructureWritesEnabled ? "var(--color-critical)" : "var(--color-success)"
     },
     {
       label: "SMTP real",
       value: on.delivrixSendsRealEmail ? "enabled" : "simulación",
-      valueColor: on.delivrixSendsRealEmail ? "#F87171" : "#15803D"
+      valueColor: on.delivrixSendsRealEmail ? "var(--color-critical)" : "var(--color-success)"
     },
     {
       label: "Puente NFC",
       value: on.nfcProductionWritesEnabled ? "enabled" : "deshabilitado",
-      valueColor: on.nfcProductionWritesEnabled ? "#F87171" : "#8A8073"
+      valueColor: on.nfcProductionWritesEnabled ? "var(--color-critical)" : "var(--color-text-tertiary)"
     }
   ];
   return (
@@ -997,22 +997,22 @@ function SystemHealthDark({ data }: { data: DashboardData }) {
         gap: 14,
         padding: 18,
         borderRadius: 8,
-        background: "#1A1410",
+        background: "var(--color-text-primary)",
         boxShadow: "0 6px 18px rgba(0, 0, 0, 0.13)"
       }}
     >
       {/* shHead */}
       <header className="flex items-center" style={{ gap: 8 }}>
         <span
-          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
           style={{ letterSpacing: "1.2px" }}
         >
           SISTEMA
         </span>
         <span className="flex-1" aria-hidden="true" />
-        <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 4, background: "#15803D" }} />
+        <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 4, background: "var(--color-success)" }} />
         <span
-          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#15803D]"
+          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-success)]"
           style={{ letterSpacing: "1.2px" }}
         >
           OPERATIVO
@@ -1020,7 +1020,7 @@ function SystemHealthDark({ data }: { data: DashboardData }) {
       </header>
 
       <h2
-        className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-semibold leading-tight text-[#FFFBF5]"
+        className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-semibold leading-tight text-[var(--color-bg)]"
         style={{ letterSpacing: "-0.2px" }}
       >
         Todos los gateways responden.
@@ -1030,7 +1030,7 @@ function SystemHealthDark({ data }: { data: DashboardData }) {
       <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 8 }}>
         {rows.map((r) => (
           <li key={r.label} className="flex items-center" style={{ gap: 8 }}>
-            <span className="text-[12px] font-[family-name:var(--font-sans)] text-[#FFFBF5]" style={{ opacity: 0.8 }}>
+            <span className="text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-bg)]" style={{ opacity: 0.8 }}>
               {r.label}
             </span>
             <span className="flex-1" aria-hidden="true" />
