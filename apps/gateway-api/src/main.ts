@@ -126,6 +126,7 @@ import {
   OpenClawChatProxy,
   type ChatSendRequest
 } from "./openclaw-chat.ts";
+import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
@@ -463,21 +464,23 @@ const server = createServer(async (request, response) => {
         source: result.source
       });
 
-      await auditLog.append({
-        actorType: "system",
-        actorId: "webdock_collector",
-        action: "oc.webdock.inventory_polled",
-        targetType: "webdock_inventory",
-        targetId: result.source.kind,
-        riskLevel: result.source.responseOk ? "low" : "medium",
-        metadata: {
-          serverCount: contract.summary.total,
-          driftProposals: drift.proposals.length,
-          sourceKind: result.source.kind,
-          responseOk: result.source.responseOk,
-          errorMessage: result.source.errorMessage
-        }
-      });
+      if (shouldAuditWebdockInventoryPoll(request.headers)) {
+        await auditLog.append({
+          actorType: "openclaw",
+          actorId: "delivrix-fleet-ops",
+          action: "oc.webdock.inventory_polled",
+          targetType: "webdock_inventory",
+          targetId: result.source.kind,
+          riskLevel: result.source.responseOk ? "low" : "medium",
+          metadata: {
+            serverCount: contract.summary.total,
+            driftProposals: drift.proposals.length,
+            sourceKind: result.source.kind,
+            responseOk: result.source.responseOk,
+            errorMessage: result.source.errorMessage
+          }
+        });
+      }
 
       return json(response, 200, {
         inventory: contract,
