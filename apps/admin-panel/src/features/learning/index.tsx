@@ -21,26 +21,140 @@ import {
   TrendingUp,
   WandSparkles
 } from "lucide-react";
-import type { DashboardData } from "../../shared/api/client.ts";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import {
+  getJson,
+  type DashboardData,
+  type OpenClawEvidenceItem,
+  type OpenClawEvidencePayload,
+  type OpenClawSkillsAuditEvent,
+  type OpenClawSkillsAuditPayload,
+  type RealTimeMeta
+} from "../../shared/api/client.ts";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
 import {
-  filterAuditEvents,
   formatDateTime,
-  formatTimeOnly,
-  shortAuditHash
+  formatTimeOnly
 } from "../../shared/lib/formatters.ts";
+import {
+  EmptyEventsCard,
+  EmptyEvidenceCard,
+  FallbackBanner,
+  RealtimeTick,
+  SkeletonRow,
+  StaleBadge,
+  isCachedMeta,
+  isFallbackMeta,
+  staleMinutesFromMeta
+} from "../../shared/ui/realtime/index.ts";
+
+const LEARNING_POLL_INTERVAL_MS = 30_000;
+const LEARNING_POLL_INTERVAL_SECONDS = LEARNING_POLL_INTERVAL_MS / 1_000;
 
 export function LearningSection({ data }: { data: DashboardData }) {
+  const skillsAuditQuery = useQuery({
+    queryKey: ["openclaw", "skills-audit"],
+    queryFn: () => getJson<OpenClawSkillsAuditPayload>(READ_ENDPOINTS.openClawSkillsAudit),
+    refetchInterval: LEARNING_POLL_INTERVAL_MS
+  });
+  const evidenceQuery = useQuery({
+    queryKey: ["openclaw", "evidence"],
+    queryFn: () => getJson<OpenClawEvidencePayload>(READ_ENDPOINTS.openClawEvidence),
+    refetchInterval: LEARNING_POLL_INTERVAL_MS
+  });
+  const skillsAuditPayload = learningSkillsAuditPayload(data, skillsAuditQuery.data, skillsAuditQuery.isLoading);
+  const evidencePayload = learningEvidencePayload(data, evidenceQuery.data, evidenceQuery.isLoading);
+  const skillsPulse = useRealtimePulse(skillsAuditSignature(skillsAuditPayload.events));
+  const evidencePulse = useRealtimePulse(evidenceSignature(evidencePayload.curated));
+  const hasFallback = [
+    skillsAuditPayload.meta,
+    evidencePayload.meta
+  ].some(isFallbackMeta) || skillsAuditQuery.isError || evidenceQuery.isError;
+
   return (
     <section className="flex flex-col" style={{ gap: 20 }}>
+      {hasFallback ? (
+        <FallbackBanner
+          message={skillsAuditQuery.isError || evidenceQuery.isError ? "Mostrando último snapshot disponible" : undefined}
+        />
+      ) : null}
       <Header generatedAt={data.learningPlan.generatedAt} />
       <KpiRow data={data} />
       <PlanAndSkills data={data} />
-      <EvidenciaCurada data={data} />
+      <EvidenciaCurada
+        items={evidencePayload.curated}
+        isLoading={evidenceQuery.isLoading}
+        meta={evidencePayload.meta}
+        pulseActive={evidencePulse}
+      />
       <ColaRetroalimentacion />
-      <AuditStrip data={data} />
+      <AuditStrip
+        events={skillsAuditPayload.events}
+        isLoading={skillsAuditQuery.isLoading}
+        meta={skillsAuditPayload.meta}
+        pulseActive={skillsPulse}
+      />
     </section>
   );
+}
+
+function learningSkillsAuditPayload(
+  data: DashboardData,
+  payload: OpenClawSkillsAuditPayload | undefined,
+  isLoading: boolean
+): OpenClawSkillsAuditPayload {
+  if (payload) return payload;
+  if (isLoading) return { events: [] };
+  return {
+    events: data.openClawSkillsAudit,
+    meta: data.learningRealtime.openClawSkillsAudit ?? null
+  };
+}
+
+function learningEvidencePayload(
+  data: DashboardData,
+  payload: OpenClawEvidencePayload | undefined,
+  isLoading: boolean
+): OpenClawEvidencePayload {
+  if (payload) return payload;
+  if (isLoading) return { curated: [] };
+  return {
+    curated: data.openClawEvidence,
+    meta: data.learningRealtime.openClawEvidence ?? null
+  };
+}
+
+function useRealtimePulse(signature: string): boolean {
+  const previousSignature = useRef<string | null>(null);
+  const [active, setActive] = useState(false);
+
+  useEffect(() => {
+    if (previousSignature.current !== null && previousSignature.current !== signature) {
+      setActive(true);
+      const timeout = setTimeout(() => setActive(false), 200);
+      previousSignature.current = signature;
+      return () => clearTimeout(timeout);
+    }
+
+    previousSignature.current = signature;
+    return undefined;
+  }, [signature]);
+
+  return active;
+}
+
+function skillsAuditSignature(events: OpenClawSkillsAuditEvent[]): string {
+  return events.map((event) => `${event.id}:${event.occurredAt}:${event.action}`).join("|");
+}
+
+function evidenceSignature(items: OpenClawEvidenceItem[]): string {
+  return items.map((item) => `${item.snapshotId}:${item.capturedAt}:${item.impact}`).join("|");
+}
+
+function staleBadgeFor(meta: RealTimeMeta | null | undefined): ReactNode {
+  if (!isCachedMeta(meta)) return null;
+  return <StaleBadge minutesAgo={staleMinutesFromMeta(meta)} />;
 }
 
 /* ============================================================
@@ -197,7 +311,7 @@ function KpiRow({ data }: { data: DashboardData }) {
   );
 }
 
-function KpiShell({ children }: { children: React.ReactNode }) {
+function KpiShell({ children }: { children: ReactNode }) {
   return (
     <article
       className="flex flex-col bg-[var(--color-surface)]"
@@ -378,7 +492,7 @@ function KpiDetail({
   color,
   endpoint
 }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   text: string;
   color: string;
   endpoint: string;
@@ -611,23 +725,13 @@ function SkillsCard({ data }: { data: DashboardData }) {
  * ============================================================ */
 type EvidenceRow = readonly [string, string, string, string, string, string, string];
 
-const EVIDENCE_FALLBACK: readonly EvidenceRow[] = [
-  ["snap-7f2a91c4", "DNS drift", "Zona delivrix.io con SPF/DKIM en derivación", "operador@delivrix", "2026-05-14", "GET-only", "alto"],
-  ["snap-7e44ab21", "Promo skill", "Habilidad 'Recomendar degradación' propone reducir warming", "openclaw-eval", "2026-05-14", "GET-only", "alto"],
-  ["snap-b0f1ad12", "Evidencia humana", "Operador marca DNS como 'pendiente de propagación'", "operador@delivrix", "2026-05-14", "GET-only", "medio"],
-  ["snap-1c92cd03", "Promoción", "Detectar drift DNS actualiza umbral a 87%", "openclaw-auto", "2026-05-13", "GET-only", "medio"],
-  ["snap-33de44ef", "Evaluación", "Regla de pausa enviada a panel de revisión humana", "openclaw-eval", "2026-05-13", "GET-only", "bajo"],
-  ["snap-fa07b3c2", "Curated lesson", "IP 185.243.12.031 etiquetada como transactional EU", "operador@delivrix", "2026-05-12", "GET-only", "bajo"]
-];
-
 function modeLabel(mode: string): string {
   if (mode === "get-only" || mode === "GET-only") return "GET-only";
   return mode;
 }
 
-function buildEvidenceRows(data: DashboardData): readonly EvidenceRow[] {
-  if (data.openClawEvidence.length === 0) return EVIDENCE_FALLBACK;
-  return data.openClawEvidence.map(
+function buildEvidenceRows(items: OpenClawEvidenceItem[]): readonly EvidenceRow[] {
+  return items.map(
     (e) => [
       e.snapshotId,
       e.type,
@@ -640,11 +744,22 @@ function buildEvidenceRows(data: DashboardData): readonly EvidenceRow[] {
   );
 }
 
-function EvidenciaCurada({ data }: { data: DashboardData }) {
-  const rows = buildEvidenceRows(data);
+function EvidenciaCurada({
+  items,
+  isLoading,
+  meta,
+  pulseActive
+}: {
+  items: OpenClawEvidenceItem[];
+  isLoading: boolean;
+  meta: RealTimeMeta | null | undefined;
+  pulseActive: boolean;
+}) {
+  const rows = buildEvidenceRows(items);
+  const stale = staleBadgeFor(meta);
   return (
     <section
-      className="flex flex-col bg-[var(--color-surface)]"
+      className="flex min-w-0 flex-col bg-[var(--color-surface)]"
       style={{
         borderRadius: 8,
         border: "1px solid var(--color-border)",
@@ -664,6 +779,8 @@ function EvidenciaCurada({ data }: { data: DashboardData }) {
           </span>
         </div>
         <span className="flex-1" aria-hidden="true" />
+        <RealtimeTick active={pulseActive} />
+        {stale}
         <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           contrato · /v1/openclaw/evidence
         </span>
@@ -683,6 +800,17 @@ function EvidenciaCurada({ data }: { data: DashboardData }) {
         </span>
       </header>
 
+      {isLoading ? (
+        <div className="flex flex-col" style={{ gap: 8, padding: 16 }}>
+          {Array.from({ length: 5 }).map((_, i) => (
+            <SkeletonRow key={i} />
+          ))}
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="flex justify-center" style={{ padding: 20 }}>
+          <EmptyEvidenceCard pollIntervalSeconds={LEARNING_POLL_INTERVAL_SECONDS} />
+        </div>
+      ) : (
       <div className="overflow-x-auto">
         <div className="min-w-[760px]">
           {/* header row */}
@@ -719,7 +847,10 @@ function EvidenciaCurada({ data }: { data: DashboardData }) {
                   borderBottom: i < rows.length - 1 ? "1px solid var(--color-border)" : "none"
                 }}
               >
-                <code className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{row[0]}</code>
+                <span className="flex min-w-0 items-center" style={{ gap: 8 }}>
+                  <RealtimeTick active={pulseActive && i === 0} />
+                  <code className="truncate text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{row[0]}</code>
+                </span>
                 <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-accent-tertiary)]">
                   {row[1]}
                 </span>
@@ -761,6 +892,7 @@ function EvidenciaCurada({ data }: { data: DashboardData }) {
           </div>
         </div>
       </div>
+      )}
     </section>
   );
 }
@@ -896,36 +1028,39 @@ function FeedbackRow({
 }
 
 /* ============================================================
- * Audit strip (dark) — 5 audit rows con sha256 hashes
+ * Audit strip (dark) — cableado a /v1/openclaw/skills/audit
  * ============================================================ */
-function buildLearningAuditLines(data: DashboardData) {
-  // Preferir el contrato dedicado /v1/openclaw/skills/audit cuando trae datos.
-  if (data.openClawSkillsAudit.length > 0) {
-    return data.openClawSkillsAudit.map((e) => ({
-      ts: formatTimeOnly(e.occurredAt),
-      action: e.action,
-      body: `${e.actor} · ${e.body}`,
-      hash: e.id
-    }));
-  }
-  // Fallback: filtrar el audit log genérico.
-  const events = filterAuditEvents(
-    data.auditEvents,
-    ["openclaw", "learning", "lesson", "skill", "evaluation", "feedback", "promote"],
-    5
-  );
-  if (events.length === 0) return [];
-  return events.map((e) => ({
-    ts: formatTimeOnly(e.occurredAt),
-    action: e.action,
-    body: `${e.actorType}${e.actorId ? `.${e.actorId}` : ""} · ${e.targetType} ${e.targetId}`,
-    hash: shortAuditHash(e.id).replace("sha:", "sha256:")
+type LearningAuditLine = {
+  id: string;
+  ts: string;
+  action: string;
+  body: string;
+  hash: string;
+};
+
+function buildLearningAuditLines(events: OpenClawSkillsAuditEvent[]): LearningAuditLine[] {
+  return events.map((event) => ({
+    id: event.id,
+    ts: formatTimeOnly(event.occurredAt),
+    action: event.action,
+    body: `${event.actor} · ${event.body}`,
+    hash: event.id
   }));
 }
 
-function AuditStrip({ data }: { data: DashboardData }) {
-  const AUDIT_LINES = buildLearningAuditLines(data);
-  const hasEvents = AUDIT_LINES.length > 0;
+function AuditStrip({
+  events,
+  isLoading,
+  meta,
+  pulseActive
+}: {
+  events: OpenClawSkillsAuditEvent[];
+  isLoading: boolean;
+  meta: RealTimeMeta | null | undefined;
+  pulseActive: boolean;
+}) {
+  const auditLines = buildLearningAuditLines(events);
+  const stale = staleBadgeFor(meta);
   return (
     <section
       className="flex min-w-0 flex-col"
@@ -943,37 +1078,44 @@ function AuditStrip({ data }: { data: DashboardData }) {
           Bitácora del aprendizaje
         </span>
         <span className="flex-1" aria-hidden="true" />
+        <RealtimeTick active={pulseActive} />
+        {stale}
         <span className="min-w-0 truncate text-[10px] font-[family-name:var(--font-mono)]" style={{ color: "rgba(255, 251, 245, 0.4)" }}>
-          contrato · /v1/openclaw/audit
+          contrato · /v1/openclaw/skills/audit
         </span>
       </header>
 
-      {!hasEvents ? (
-        <p
-          className="m-0 text-[11px] font-[family-name:var(--font-mono)]"
-          style={{ color: "rgba(255, 251, 245, 0.5)" }}
-        >
-          El contrato /v1/audit-events no registró eventos de aprendizaje todavía. Wave 2 — pendiente
-          backend logging de skills/lessons.
-        </p>
-      ) : null}
-
+      {isLoading ? (
+        <div className="flex flex-col" style={{ gap: 8 }}>
+          {Array.from({ length: 5 }).map((_, i) => (
+            <SkeletonRow key={i} />
+          ))}
+        </div>
+      ) : auditLines.length === 0 ? (
+        <div className="flex justify-center" style={{ padding: "10px 0 2px" }}>
+          <EmptyEventsCard pollIntervalSeconds={LEARNING_POLL_INTERVAL_SECONDS} />
+        </div>
+      ) : (
       <ul className="m-0 p-0 list-none flex min-w-0 flex-col" style={{ gap: 4 }}>
-        {AUDIT_LINES.map((a, i) => (
+        {auditLines.map((a, i) => (
           <li
-            key={i}
+            key={a.id}
             className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 md:grid-cols-[80px_220px_minmax(0,1fr)_minmax(80px,auto)] md:gap-[14px]"
             style={{
               padding: "6px 0"
             }}
           >
             <span
-              className="text-[11px] font-[family-name:var(--font-mono)]"
-              style={{ color: "rgba(255, 251, 245, 0.4)" }}
+              className="flex min-w-0 items-center text-[11px] font-[family-name:var(--font-mono)]"
+              style={{ gap: 6, color: "rgba(255, 251, 245, 0.4)" }}
             >
+              <RealtimeTick active={pulseActive && i === 0} />
               {a.ts}
             </span>
-            <span className="min-w-0 truncate text-[11px] font-[family-name:var(--font-mono)] font-bold" style={{ color: "var(--color-accent-secondary)" }}>
+            <span
+              className="min-w-0 truncate text-[11px] font-[family-name:var(--font-mono)] font-bold"
+              style={{ color: "var(--color-accent-secondary)" }}
+            >
               {a.action}
             </span>
             <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-bg)] truncate">
@@ -988,6 +1130,7 @@ function AuditStrip({ data }: { data: DashboardData }) {
           </li>
         ))}
       </ul>
+      )}
     </section>
   );
 }
