@@ -48,7 +48,7 @@ export function App() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="min-h-screen bg-[#FFFBF5] text-[#1A1410]">
+      <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text-primary)]">
         <div className="grid min-h-screen grid-cols-1 md:grid-cols-[200px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]">
           <Sidebar
             activeSection={activeSection}
@@ -83,8 +83,8 @@ export function App() {
 }
 
 /**
- * Topbar Pencil (frame `U7pIqs`): fill #FFFBF5, padding [16,28], gap 16,
- * border-bottom #EAE0CE 1px. Contiene breadcrumb + read-only badge + env chip
+ * Topbar Pencil (frame `U7pIqs`): fill var(--color-bg), padding [16,28], gap 16,
+ * border-bottom var(--color-border) 1px. Contiene breadcrumb + read-only badge + env chip
  * + user chip. El refresh queda como acción ghost para no perder utilidad GET.
  */
 function Topbar({
@@ -99,15 +99,15 @@ function Topbar({
   const section = sectionsById[activeSection];
   return (
     <header
-      className="flex flex-wrap items-center gap-3 border-b border-[#EAE0CE] bg-[#FFFBF5] px-4 py-3 sm:flex-nowrap sm:gap-4 sm:px-5 sm:py-4 md:px-6 lg:px-7"
+      className="flex flex-wrap items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 sm:flex-nowrap sm:gap-4 sm:px-5 sm:py-4 md:px-6 lg:px-7"
     >
       {/* Breadcrumb */}
       <nav aria-label="Breadcrumb" className="flex items-center gap-2 min-w-0">
-        <span className="text-[12px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+        <span className="text-[12px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
           Operar
         </span>
-        <ChevronRight size={12} strokeWidth={1.75} className="text-[#8A8073] shrink-0" aria-hidden="true" />
-        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410] truncate">
+        <ChevronRight size={12} strokeWidth={1.75} className="text-[var(--color-text-tertiary)] shrink-0" aria-hidden="true" />
+        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] truncate">
           {section.navLabel}
         </span>
       </nav>
@@ -115,30 +115,30 @@ function Topbar({
       <span className="flex-1" aria-hidden="true" />
 
       {/* Read-only badge */}
-      <span className="inline-flex items-center gap-1.5 rounded-[4px] bg-[#DBEAFE] px-2.5 py-1.5">
-        <Eye size={12} strokeWidth={1.75} className="text-[#1D4ED8]" aria-hidden="true" />
-        <span className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#1D4ED8]">
+      <span className="inline-flex items-center gap-1.5 rounded-[4px] bg-[var(--color-info-soft)] px-2.5 py-1.5">
+        <Eye size={12} strokeWidth={1.75} className="text-[var(--color-info)]" aria-hidden="true" />
+        <span className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-info)]">
           Solo lectura · GET-only
         </span>
       </span>
 
       {/* Env chip */}
-      <span className="inline-flex items-center gap-1.5 rounded-[4px] border border-[#EAE0CE] bg-[#F7F2EA] px-2.5 py-1.5">
-        <FlaskConical size={12} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]">
+      <span className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface-sunken)] px-2.5 py-1.5">
+        <FlaskConical size={12} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
+        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">
           mvp.local
         </span>
       </span>
 
       {/* User chip */}
-      <span className="inline-flex items-center gap-2 rounded-[18px] border border-[#EAE0CE] bg-[#F7F2EA] pl-1 pr-2.5 py-1">
+      <span className="inline-flex items-center gap-2 rounded-[18px] border border-[var(--color-border)] bg-[var(--color-surface-sunken)] pl-1 pr-2.5 py-1">
         <span
           aria-hidden="true"
-          className="grid h-6 w-6 place-items-center rounded-full bg-[#EA580C] text-[11px] font-[family-name:var(--font-heading)] font-bold text-[#FFFBF5]"
+          className="grid h-6 w-6 place-items-center rounded-full bg-[var(--color-accent-tertiary)] text-[11px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-bg)]"
         >
           J
         </span>
-        <span className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[#1A1410]">
+        <span className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-primary)]">
           operador
         </span>
       </span>
@@ -149,7 +149,7 @@ function Topbar({
         size="icon"
         aria-label="Actualizar datos"
         onClick={onRefresh}
-        className="text-[#8A8073] hover:text-[#1A1410]"
+        className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
       >
         <RefreshCw
           size={14}
@@ -163,8 +163,8 @@ function Topbar({
 }
 
 /**
- * Sidebar Pencil (frame `jEU4h` / `BWD3g` reusable). 240w, fill #F7F2EA,
- * padding [20, 16], gap 24, border-right #EAE0CE 1.
+ * Sidebar Pencil (frame `jEU4h` / `BWD3g` reusable). 240w, fill var(--color-surface-sunken),
+ * padding [20, 16], gap 24, border-right var(--color-border) 1.
  *
  * Estructura: sbBrand (mark + text) → sbNav (group labels + items) → sbKillSwitch.
  */
@@ -179,26 +179,26 @@ function Sidebar({
 }) {
   return (
     <aside
-      className="sticky top-0 self-start flex h-screen w-full flex-col gap-6 overflow-y-auto border-r border-[#EAE0CE] bg-[#F7F2EA] px-3 py-5 max-md:static max-md:h-auto max-md:overflow-visible max-md:border-r-0 max-md:border-b md:px-3 lg:px-4"
+      className="sticky top-0 self-start flex h-screen w-full flex-col gap-6 overflow-y-auto border-r border-[var(--color-border)] bg-[var(--color-surface-sunken)] px-3 py-5 max-md:static max-md:h-auto max-md:overflow-visible max-md:border-r-0 max-md:border-b md:px-3 lg:px-4"
     >
       {/* sbBrand */}
       <div className="flex items-center gap-2.5 pb-4 pt-1 pl-1 pr-1">
         <span
           aria-hidden="true"
-          className="grid h-8 w-8 place-items-center rounded-[8px] text-[18px] font-[family-name:var(--font-heading)] font-bold text-[#FFFBF5]"
+          className="grid h-8 w-8 place-items-center rounded-[8px] text-[18px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-bg)]"
           style={{
             background:
-              "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)"
+              "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)"
           }}
         >
           D
         </span>
         <div className="flex flex-col">
-          <span className="text-[16px] font-[family-name:var(--font-heading)] font-bold leading-tight text-[#1A1410]">
+          <span className="text-[16px] font-[family-name:var(--font-heading)] font-bold leading-tight text-[var(--color-text-primary)]">
             Delivrix
           </span>
           <span
-            className="text-[11px] font-[family-name:var(--font-caption)] leading-tight text-[#8A8073]"
+            className="text-[11px] font-[family-name:var(--font-caption)] leading-tight text-[var(--color-text-tertiary)]"
             style={{ letterSpacing: "0.4px" }}
           >
             plataforma de control
@@ -214,7 +214,7 @@ function Sidebar({
           return (
             <div key={group} className="flex flex-col gap-1">
               <span
-                className="px-3 pt-1 text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[#8A8073]"
+                className="px-3 pt-1 text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-tertiary)]"
                 style={{ letterSpacing: "1.2px" }}
               >
                 {sectionGroupLabels[group]}
@@ -231,22 +231,22 @@ function Sidebar({
                     className={cn(
                       "flex items-center gap-2.5 rounded-[6px] px-3 py-2.5 text-left transition-colors",
                       active
-                        ? "border border-[#EAE0CE] bg-[#FFFFFF]"
-                        : "hover:bg-[#FFFFFF]/40"
+                        ? "border border-[var(--color-border)] bg-[var(--color-surface)]"
+                        : "hover:bg-[var(--color-surface)]/40"
                     )}
                   >
                     <Icon
                       size={16}
                       strokeWidth={1.75}
                       aria-hidden="true"
-                      className={active ? "text-[#EA580C]" : "text-[#5C544A]"}
+                      className={active ? "text-[var(--color-accent-tertiary)]" : "text-[var(--color-text-secondary)]"}
                     />
                     <span
                       className={cn(
                         "flex-1 text-[13px] font-[family-name:var(--font-sans)]",
                         active
-                          ? "font-semibold text-[#1A1410]"
-                          : "font-medium text-[#5C544A]"
+                          ? "font-semibold text-[var(--color-text-primary)]"
+                          : "font-medium text-[var(--color-text-secondary)]"
                       )}
                     >
                       {section.navLabel}
@@ -255,16 +255,16 @@ function Sidebar({
                       aria-hidden="true"
                       className={cn(
                         "block h-1.5 w-1.5 rounded-[3px]",
-                        active && tone === "success" && "bg-[#15803D]",
-                        active && tone === "warning" && "bg-[#B45309]",
-                        active && tone === "critical" && "bg-[#B91C1C]",
+                        active && tone === "success" && "bg-[var(--color-success)]",
+                        active && tone === "warning" && "bg-[var(--color-warning)]",
+                        active && tone === "critical" && "bg-[var(--color-critical)]",
                         active && (tone === "neutral" || tone === "success" || tone === "warning" || tone === "critical")
                           ? ""
                           : "opacity-0"
                       )}
                       style={
                         active && tone === "neutral"
-                          ? { background: "#F59E0B" }
+                          ? { background: "var(--color-accent)" }
                           : undefined
                       }
                     />
@@ -285,8 +285,8 @@ function Sidebar({
 }
 
 /**
- * Kill switch card Pencil (`z0dLBo`). cornerRadius 8 fill #FFFFFF padding 14
- * gap 10 border #EAE0CE 1 shadow. Lee `data.killSwitch.enabled` y muestra el
+ * Kill switch card Pencil (`z0dLBo`). cornerRadius 8 fill var(--color-surface) padding 14
+ * gap 10 border var(--color-border) 1 shadow. Lee `data.killSwitch.enabled` y muestra el
  * estado real ARMADO / ACTIVO.
  */
 function KillSwitchCard({ data }: { data: DashboardData | undefined }) {
@@ -297,17 +297,17 @@ function KillSwitchCard({ data }: { data: DashboardData | undefined }) {
   return (
     <section
       aria-label="Interruptor de corte"
-      className="flex flex-col gap-2.5 rounded-[8px] border border-[#EAE0CE] bg-[#FFFFFF] px-3.5 py-3.5"
+      className="flex flex-col gap-2.5 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3.5"
       style={{ boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
     >
       <div className="flex items-center gap-2">
         <Power
           size={14}
           strokeWidth={1.75}
-          className={armed ? "text-[#15803D]" : "text-[#B91C1C]"}
+          className={armed ? "text-[var(--color-success)]" : "text-[var(--color-critical)]"}
           aria-hidden="true"
         />
-        <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+        <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Interruptor de corte
         </span>
       </div>
@@ -315,22 +315,22 @@ function KillSwitchCard({ data }: { data: DashboardData | undefined }) {
         <span
           className="inline-block rounded-[4px] px-1.5 py-0.5 text-[9px] font-[family-name:var(--font-caption)] font-bold"
           style={{
-            background: armed ? "#DCFCE7" : "#FEE2E2",
-            color: armed ? "#15803D" : "#B91C1C",
+            background: armed ? "var(--color-success-soft)" : "var(--color-critical-soft)",
+            color: armed ? "var(--color-success)" : "var(--color-critical)",
             letterSpacing: "0.6px"
           }}
         >
           {armed ? "ARMADO" : "ACTIVO"}
         </span>
         <span className="flex-1" aria-hidden="true" />
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           {data ? "actualizado" : "sin datos"}
         </span>
       </div>
-      <p className="m-0 text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+      <p className="m-0 text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
         Prueba en modo simulado
       </p>
-      <p className="m-0 text-[10px] font-[family-name:var(--font-caption)] text-[#5C544A]">
+      <p className="m-0 text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">
         Requiere regla de 2 personas
       </p>
     </section>
@@ -388,7 +388,7 @@ function Skeleton({ className }: { className?: string }) {
   return (
     <div
       aria-hidden="true"
-      className={cn("bg-[#F7F2EA] animate-pulse", className)}
+      className={cn("bg-[var(--color-surface-sunken)] animate-pulse", className)}
     />
   );
 }
