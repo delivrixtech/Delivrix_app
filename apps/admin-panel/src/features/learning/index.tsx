@@ -767,10 +767,10 @@ function EvidenciaCurada({
       }}
     >
       <header
-        className="flex items-center"
+        className="flex min-w-0 flex-wrap items-start sm:items-center"
         style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid var(--color-border)" }}
       >
-        <div className="flex flex-col" style={{ gap: 2 }}>
+        <div className="flex min-w-[220px] flex-1 flex-col" style={{ gap: 2 }}>
           <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Evidencia curada por OpenClaw
           </h2>
@@ -778,10 +778,9 @@ function EvidenciaCurada({
             Snapshots, notas y anotaciones humanas que alimentan cada habilidad
           </span>
         </div>
-        <span className="flex-1" aria-hidden="true" />
         <RealtimeTick active={pulseActive} />
         {stale}
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
+        <span className="min-w-0 max-w-full truncate text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           contrato · /v1/openclaw/evidence
         </span>
         <span
