@@ -160,7 +160,7 @@ Los componentes React de Safety ya consumen los endpoints vía `READ_ENDPOINTS`.
 
 ## 8. Trabajo de Pencil — COMPLETADO 2026-05-20
 
-Los 5 estados visuales están diseñados en `DOCUMENTACION/diseño/Panel_Front_End.pen`. Codex debe portar 1:1 estos componentes (regla `port 1:1 no interpretacion`).
+Los 5 estados visuales están diseñados en `DOCUMENTACION/design/Panel_Front_End.pen`. Codex debe portar 1:1 estos componentes (regla `port 1:1 no interpretacion`).
 
 **Library** (`u10Bpu` "Componentes / Estados Real-Time" en `x=7045, y=3253`):
 
