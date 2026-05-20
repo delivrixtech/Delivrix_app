@@ -18,6 +18,7 @@ import { cn } from "../shared/lib/cn.ts";
 import {
   Button,
   NoticeBanner,
+  SkeletonKpiCard,
   TooltipProvider
 } from "../shared/ui/index.ts";
 import {
@@ -372,7 +373,7 @@ function LoadingState() {
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[0, 1, 2, 3].map((i) => (
-          <Skeleton key={i} className="h-[86px] rounded-[8px]" />
+          <SkeletonKpiCard key={i} />
         ))}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
