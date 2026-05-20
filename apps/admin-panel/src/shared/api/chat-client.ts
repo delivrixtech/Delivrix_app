@@ -1,0 +1,389 @@
+import { useSyncExternalStore } from "react";
+
+export type ChatConnection = "connected" | "reconnecting" | "offline";
+export type ChatRole = "user" | "assistant";
+export type ChatMessageStatus = "sent" | "pending" | "failed";
+
+export interface ChatMessage {
+  msgId: string;
+  role: ChatRole;
+  content: string;
+  timestamp: string;
+  status: ChatMessageStatus;
+}
+
+export interface ChatStreamingState {
+  msgId: string;
+  deltaSoFar: string;
+}
+
+export interface ChatState {
+  messages: ChatMessage[];
+  streaming: ChatStreamingState | null;
+  connection: ChatConnection;
+  lastError: string | null;
+  queuedCount: number;
+}
+
+export type ChatStreamEvent =
+  | { type: "HEARTBEAT"; at: string }
+  | { type: "ASSISTANT_DELTA"; msgId: string; delta: string }
+  | {
+      type: "ASSISTANT_DONE";
+      msgId: string;
+      content: string;
+      audit?: { skillsInvoked: string[]; tokensUsed?: number; durationMs?: number };
+      proposals?: unknown[];
+    }
+  | { type: "ERROR"; msgId?: string; error: string }
+  | { type: "AGENT_OFFLINE" };
+
+export interface ChatClientLike {
+  connect(): void;
+  disconnect(): void;
+  sendMessage(content: string): Promise<void>;
+  getSnapshot(): ChatState;
+  subscribe(listener: () => void): () => void;
+}
+
+interface QueuedMessage {
+  msgId: string;
+  content: string;
+}
+
+interface ChatClientOptions {
+  fetchImpl?: typeof fetch;
+  webSocketCtor?: typeof WebSocket;
+  streamUrl?: string;
+  sendUrl?: string;
+  now?: () => Date;
+  idFactory?: () => string;
+  reconnectDelay?: (attempt: number) => number;
+  initialState?: Partial<ChatState>;
+}
+
+const initialState: ChatState = {
+  messages: [],
+  streaming: null,
+  connection: "offline",
+  lastError: null,
+  queuedCount: 0
+};
+
+export class ChatClient implements ChatClientLike {
+  private state: ChatState;
+  private readonly listeners = new Set<() => void>();
+  private readonly queue: QueuedMessage[] = [];
+  private readonly inFlight = new Set<string>();
+  private socket: WebSocket | null = null;
+  private reconnectTimer: number | null = null;
+  private reconnectAttempt = 0;
+  private closedByClient = false;
+  private readonly fetchImpl: typeof fetch;
+  private readonly webSocketCtor: typeof WebSocket | undefined;
+  private readonly sendUrl: string;
+  private readonly streamUrl: string;
+  private readonly now: () => Date;
+  private readonly idFactory: () => string;
+  private readonly reconnectDelay: (attempt: number) => number;
+
+  constructor(options: ChatClientOptions = {}) {
+    this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
+    this.webSocketCtor = options.webSocketCtor ?? globalThis.WebSocket;
+    this.sendUrl = options.sendUrl ?? "/v1/openclaw/chat/send";
+    this.streamUrl = options.streamUrl ?? resolveChatStreamUrl();
+    this.now = options.now ?? (() => new Date());
+    this.idFactory = options.idFactory ?? createMessageId;
+    this.reconnectDelay = options.reconnectDelay ?? chatReconnectDelayMs;
+    this.state = {
+      ...initialState,
+      ...options.initialState,
+      messages: options.initialState?.messages ?? []
+    };
+    this.syncQueuedCount();
+  }
+
+  connect(): void {
+    if (this.socket || this.reconnectTimer !== null || !this.webSocketCtor) {
+      return;
+    }
+
+    this.closedByClient = false;
+    this.setState({ connection: "reconnecting" });
+    const socket = new this.webSocketCtor(this.streamUrl);
+    this.socket = socket;
+
+    socket.addEventListener("open", () => {
+      this.reconnectAttempt = 0;
+      this.setState({ connection: "connected", lastError: null });
+      void this.flushQueue();
+    });
+
+    socket.addEventListener("message", (message) => {
+      const event = parseStreamEvent(message.data);
+      if (!event) return;
+      this.applyStreamEvent(event);
+    });
+
+    socket.addEventListener("close", () => {
+      this.socket = null;
+      if (!this.closedByClient) {
+        this.scheduleReconnect();
+      }
+    });
+
+    socket.addEventListener("error", () => {
+      this.socket = null;
+      this.setState({ connection: "reconnecting", lastError: "Conexión de chat interrumpida." });
+      if (!this.closedByClient) {
+        this.scheduleReconnect();
+      }
+    });
+  }
+
+  disconnect(): void {
+    this.closedByClient = true;
+    if (this.reconnectTimer !== null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.socket?.close();
+    this.socket = null;
+    this.setState({ connection: "offline" });
+  }
+
+  async sendMessage(content: string): Promise<void> {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    const msgId = this.idFactory();
+    this.queue.push({ msgId, content: trimmed });
+    this.state = addOrUpdateMessage(this.state, {
+      msgId,
+      role: "user",
+      content: trimmed,
+      timestamp: this.now().toISOString(),
+      status: this.state.connection === "connected" ? "sent" : "pending"
+    });
+    this.syncQueuedCount();
+    this.emit();
+
+    if (this.state.connection === "connected") {
+      await this.flushQueue();
+    }
+  }
+
+  getSnapshot(): ChatState {
+    return this.state;
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  applyStreamEvent(event: ChatStreamEvent): void {
+    this.state = reduceChatState(this.state, event, this.now());
+    this.emit();
+
+    if (event.type === "HEARTBEAT") {
+      void this.flushQueue();
+    }
+  }
+
+  private async flushQueue(): Promise<void> {
+    if (this.state.connection !== "connected") {
+      return;
+    }
+
+    for (const item of [...this.queue]) {
+      if (this.inFlight.has(item.msgId)) {
+        continue;
+      }
+
+      this.inFlight.add(item.msgId);
+      try {
+        const response = await this.fetchImpl(this.sendUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json"
+          },
+          body: JSON.stringify({ msgId: item.msgId, message: item.content })
+        });
+
+        if (!response.ok) {
+          throw new Error(`chat.send failed with ${response.status}`);
+        }
+
+        this.removeQueued(item.msgId);
+        this.state = updateMessageStatus(this.state, item.msgId, "sent");
+      } catch (error) {
+        this.state = updateMessageStatus(this.state, item.msgId, "pending");
+        this.setState({
+          connection: "offline",
+          lastError: error instanceof Error ? error.message : "No se pudo enviar el mensaje."
+        }, false);
+        break;
+      } finally {
+        this.inFlight.delete(item.msgId);
+        this.syncQueuedCount();
+        this.emit();
+      }
+    }
+  }
+
+  private removeQueued(msgId: string): void {
+    const index = this.queue.findIndex((item) => item.msgId === msgId);
+    if (index >= 0) {
+      this.queue.splice(index, 1);
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer !== null) {
+      return;
+    }
+
+    this.reconnectAttempt += 1;
+    this.setState({ connection: "reconnecting" });
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, this.reconnectDelay(this.reconnectAttempt));
+  }
+
+  private setState(next: Partial<ChatState>, emit = true): void {
+    this.state = { ...this.state, ...next };
+    this.syncQueuedCount();
+    if (emit) {
+      this.emit();
+    }
+  }
+
+  private syncQueuedCount(): void {
+    this.state = {
+      ...this.state,
+      queuedCount: this.queue.length
+    };
+  }
+
+  private emit(): void {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
+}
+
+export const chatClient = new ChatClient();
+
+export function useChatStream(client: ChatClientLike = chatClient): ChatState {
+  return useSyncExternalStore(
+    client.subscribe.bind(client),
+    client.getSnapshot.bind(client),
+    client.getSnapshot.bind(client)
+  );
+}
+
+export function reduceChatState(state: ChatState, event: ChatStreamEvent, now = new Date()): ChatState {
+  if (event.type === "HEARTBEAT") {
+    return { ...state, connection: "connected", lastError: null };
+  }
+
+  if (event.type === "AGENT_OFFLINE") {
+    return { ...state, connection: "offline", lastError: "OpenClaw no está disponible." };
+  }
+
+  if (event.type === "ERROR") {
+    return { ...state, lastError: event.error };
+  }
+
+  if (event.type === "ASSISTANT_DELTA") {
+    const current = state.streaming?.msgId === event.msgId ? state.streaming.deltaSoFar : "";
+    return {
+      ...state,
+      connection: "connected",
+      streaming: {
+        msgId: event.msgId,
+        deltaSoFar: current + event.delta
+      },
+      lastError: null
+    };
+  }
+
+  return addOrUpdateMessage({
+    ...state,
+    connection: "connected",
+    streaming: state.streaming?.msgId === event.msgId ? null : state.streaming,
+    lastError: null
+  }, {
+    msgId: event.msgId,
+    role: "assistant",
+    content: event.content,
+    timestamp: now.toISOString(),
+    status: "sent"
+  });
+}
+
+export function chatReconnectDelayMs(attempt: number): number {
+  if (attempt <= 1) return 1_000;
+  if (attempt === 2) return 2_000;
+  if (attempt === 3) return 4_000;
+  if (attempt === 4) return 8_000;
+  return 30_000;
+}
+
+function addOrUpdateMessage(state: ChatState, message: ChatMessage): ChatState {
+  const existing = state.messages.findIndex((item) => item.msgId === message.msgId && item.role === message.role);
+  if (existing < 0) {
+    return { ...state, messages: [...state.messages, message] };
+  }
+
+  const messages = [...state.messages];
+  messages[existing] = message;
+  return { ...state, messages };
+}
+
+function updateMessageStatus(state: ChatState, msgId: string, status: ChatMessageStatus): ChatState {
+  return {
+    ...state,
+    messages: state.messages.map((message) => (
+      message.msgId === msgId && message.role === "user"
+        ? { ...message, status }
+        : message
+    ))
+  };
+}
+
+function resolveChatStreamUrl(): string {
+  if (typeof window === "undefined") {
+    return "ws://127.0.0.1:5173/v1/openclaw/chat/stream";
+  }
+
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/v1/openclaw/chat/stream`;
+}
+
+function parseStreamEvent(raw: unknown): ChatStreamEvent | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<ChatStreamEvent>;
+    return typeof parsed.type === "string" ? parsed as ChatStreamEvent : null;
+  } catch {
+    return null;
+  }
+}
+
+function createMessageId(): string {
+  if (globalThis.crypto && "randomUUID" in globalThis.crypto) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `chat-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
