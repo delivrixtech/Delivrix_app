@@ -121,6 +121,11 @@ import {
 } from "./security/rollback-snapshot.ts";
 import { computeAuditHash, GENESIS_PREV_HASH } from "./audit/hash-chain.ts";
 import { SafetyRealtimeCache } from "./safety-realtime-cache.ts";
+import {
+  handleChatSendHttp,
+  OpenClawChatProxy,
+  type ChatSendRequest
+} from "./openclaw-chat.ts";
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
@@ -142,6 +147,7 @@ const ipReputationReportStore = new LocalFileIpReputationReportStore();
 const backupSimulationStore = new LocalFileBackupSimulationStore();
 const safetyRealtimeCache = new SafetyRealtimeCache();
 const learningRealtimeCache = new SafetyRealtimeCache();
+const openClawChatProxy = new OpenClawChatProxy(auditLog);
 const defaultStuckJobThresholdMs = Number(process.env.STUCK_JOB_THRESHOLD_MS ?? 5 * 60 * 1000);
 const requestRateLimitProfile = {
   campaignDailyLimit: Number(process.env.RATE_LIMIT_CAMPAIGN_DAILY ?? 100),
@@ -377,6 +383,11 @@ const server = createServer(async (request, response) => {
         },
         phase: operatingNorth.phase
       });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/openclaw/chat/send") {
+      const body = await readJson<ChatSendRequest>(request);
+      return handleChatSendHttp(openClawChatProxy, body, response);
     }
 
     if (request.method === "GET" && request.url === "/v1/operating-north") {
@@ -3611,6 +3622,16 @@ const server = createServer(async (request, response) => {
       message: error instanceof Error ? error.message : "Unknown error"
     });
   }
+});
+
+server.on("upgrade", (request, socket, head) => {
+  const url = requestUrl(request);
+  if (request.method === "GET" && url.pathname === "/v1/openclaw/chat/stream") {
+    openClawChatProxy.acceptPanelSocket(request, socket, head);
+    return;
+  }
+
+  socket.destroy();
 });
 
 server.listen(port, host, () => {

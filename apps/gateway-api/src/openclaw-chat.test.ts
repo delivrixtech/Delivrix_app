@@ -1,0 +1,143 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { AuditEventInput } from "../../../packages/domain/src/index.ts";
+import {
+  normalizeAgentChatEvent,
+  OpenClawChatProxy,
+  openClawChatReconnectDelayMs,
+  type ChatStreamEvent,
+  type OpenClawChatPanelClient
+} from "./openclaw-chat.ts";
+
+class MemoryAudit {
+  readonly events: AuditEventInput[] = [];
+
+  async append(event: AuditEventInput): Promise<void> {
+    this.events.push(event);
+  }
+}
+
+class MemoryPanelClient implements OpenClawChatPanelClient {
+  readonly events: ChatStreamEvent[] = [];
+  closed = false;
+
+  sendJson(event: ChatStreamEvent): void {
+    this.events.push(event);
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+}
+
+test("OpenClaw chat send proxies with gateway token and audits operator message", async () => {
+  const audit = new MemoryAudit();
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  const proxy = new OpenClawChatProxy(audit, {
+    agentHttpUrl: "http://openclaw.test:61175",
+    gatewayToken: "secret-gateway-token",
+    readBoundaryToken: "read-token",
+    delivrixBaseUrl: "http://gateway.test:3000",
+    fetchImpl: fetchImpl as typeof fetch
+  });
+
+  const result = await proxy.sendOperatorMessage({
+    msgId: "018f7b54-7d4d-7cc2-9c90-df7486c5a333",
+    message: "¿qué gates tiene el MVP?"
+  });
+
+  assert.deepEqual(result, {
+    msgId: "018f7b54-7d4d-7cc2-9c90-df7486c5a333",
+    queued: true
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://openclaw.test:61175/api/chat.send");
+  assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Bearer secret-gateway-token");
+
+  const body = JSON.parse(String(calls[0].init.body));
+  assert.equal(body.sessionKey, "agent:main:operator");
+  assert.equal(body.context.delivrix_endpoint_token, "read-token");
+  assert.equal(body.message.content, "¿qué gates tiene el MVP?");
+
+  assert.equal(audit.events.length, 1);
+  assert.equal(audit.events[0].action, "oc.chat.operator_message");
+  assert.equal(audit.events[0].actorType, "operator");
+  assert.equal(audit.events[0].targetId, "agent:main:operator");
+  assert.deepEqual(audit.events[0].metadata, {
+    msgId: "018f7b54-7d4d-7cc2-9c90-df7486c5a333",
+    sessionKey: "agent:main:operator",
+    length: "¿qué gates tiene el MVP?".length
+  });
+});
+
+test("OpenClaw chat stream normalizes, multiplexes, and audits assistant completion", async () => {
+  const audit = new MemoryAudit();
+  const proxy = new OpenClawChatProxy(audit, {
+    gatewayToken: "",
+    webSocketCtor: undefined
+  });
+  const a = new MemoryPanelClient();
+  const b = new MemoryPanelClient();
+  proxy.addPanelClient(a);
+  proxy.addPanelClient(b);
+
+  const event = await proxy.handleAgentMessage({
+    type: "ASSISTANT_DONE",
+    msgId: "reply-1",
+    assistant: {
+      content: "Respuesta completa",
+      skillsInvoked: ["delivrix-fleet-ops"],
+      proposals: [{ category: "node_pause_proposed" }],
+      audit: { tokensUsed: 45, duration_ms: 321 }
+    }
+  });
+
+  assert.deepEqual(event, {
+    type: "ASSISTANT_DONE",
+    msgId: "reply-1",
+    content: "Respuesta completa",
+    audit: {
+      skillsInvoked: ["delivrix-fleet-ops"],
+      tokensUsed: 45,
+      durationMs: 321
+    },
+    proposals: [{ category: "node_pause_proposed" }]
+  });
+  assert.equal(a.events.at(-1)?.type, "ASSISTANT_DONE");
+  assert.deepEqual(a.events.at(-1), b.events.at(-1));
+  assert.equal(audit.events.length, 1);
+  assert.equal(audit.events[0].action, "oc.chat.agent_response");
+  assert.equal(audit.events[0].actorType, "openclaw");
+  assert.equal(audit.events[0].riskLevel, "medium");
+  assert.deepEqual(audit.events[0].metadata, {
+    msgId: "reply-1",
+    sessionKey: "agent:main:operator",
+    contentLength: "Respuesta completa".length,
+    skillsInvoked: ["delivrix-fleet-ops"],
+    tokensUsed: 45,
+    durationMs: 321,
+    proposalsCount: 1
+  });
+});
+
+test("OpenClaw chat event parser supports stream delta and backoff schedule", () => {
+  assert.deepEqual(normalizeAgentChatEvent({
+    type: "ASSISTANT_DELTA",
+    msgId: "m1",
+    delta: "hola"
+  }), {
+    type: "ASSISTANT_DELTA",
+    msgId: "m1",
+    delta: "hola"
+  });
+
+  assert.equal(openClawChatReconnectDelayMs(1), 1_000);
+  assert.equal(openClawChatReconnectDelayMs(2), 2_000);
+  assert.equal(openClawChatReconnectDelayMs(3), 4_000);
+  assert.equal(openClawChatReconnectDelayMs(4), 8_000);
+  assert.equal(openClawChatReconnectDelayMs(5), 30_000);
+});
