@@ -9,8 +9,8 @@
  * - Branding vive en el sidebar, no en el topbar.
  */
 
-import { ChevronRight, Eye, FlaskConical, MessageSquare, Power, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronRight, Eye, FlaskConical, Menu, MessageSquare, Power, RefreshCw, X } from "lucide-react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { loadDashboardData, type DashboardData } from "../shared/api/client.ts";
 import { stateTone, type Tone } from "../shared/lib/formatters.ts";
@@ -29,21 +29,22 @@ import {
   sectionsById,
   type SectionId
 } from "./sections.ts";
-import { OverviewSection } from "../features/overview/index.tsx";
-import { OnboardingSection } from "../features/onboarding/index.tsx";
-import { CanvasSection } from "../features/canvas/index.tsx";
-import { HardwareSection } from "../features/hardware/index.tsx";
-import { CollectorSection } from "../features/collector/index.tsx";
-import { ClustersSection } from "../features/clusters/index.tsx";
-import { LearningSection } from "../features/learning/index.tsx";
-import { SafetySection } from "../features/safety/index.tsx";
-import { ChatWidget } from "../features/chat/ChatWidget.tsx";
 
 const chatOpenStorageKey = "delivrix.openclaw.chat.open";
+const OverviewSection = lazy(async () => ({ default: (await import("../features/overview/index.tsx")).OverviewSection }));
+const OnboardingSection = lazy(async () => ({ default: (await import("../features/onboarding/index.tsx")).OnboardingSection }));
+const CanvasSection = lazy(async () => ({ default: (await import("../features/canvas/index.tsx")).CanvasSection }));
+const HardwareSection = lazy(async () => ({ default: (await import("../features/hardware/index.tsx")).HardwareSection }));
+const CollectorSection = lazy(async () => ({ default: (await import("../features/collector/index.tsx")).CollectorSection }));
+const ClustersSection = lazy(async () => ({ default: (await import("../features/clusters/index.tsx")).ClustersSection }));
+const LearningSection = lazy(async () => ({ default: (await import("../features/learning/index.tsx")).LearningSection }));
+const SafetySection = lazy(async () => ({ default: (await import("../features/safety/index.tsx")).SafetySection }));
+const ChatWidget = lazy(async () => ({ default: (await import("../features/chat/ChatWidget.tsx")).ChatWidget }));
 
 export function App() {
   const [activeSection, setActiveSection] = useState<SectionId>("overview");
   const [chatOpen, setChatOpen] = useState(readChatOpenPreference);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const dashboard = useQuery({
     queryKey: ["admin-panel", "dashboard"],
     queryFn: loadDashboardData,
@@ -55,13 +56,46 @@ export function App() {
     localStorage.setItem(chatOpenStorageKey, chatOpen ? "1" : "0");
   }, [chatOpen]);
 
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileNavOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [mobileNavOpen]);
+
+  const selectSection = (section: SectionId) => {
+    setActiveSection(section);
+    setMobileNavOpen(false);
+  };
+
   return (
     <TooltipProvider delayDuration={200}>
       <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text-primary)]">
         <div className="grid min-h-screen grid-cols-1 md:grid-cols-[200px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]">
+          {mobileNavOpen ? (
+            <button
+              type="button"
+              aria-label="Cerrar navegación"
+              className="fixed inset-0 z-30 bg-[rgba(0,0,0,0.28)] md:hidden"
+              onClick={() => setMobileNavOpen(false)}
+            />
+          ) : null}
           <Sidebar
             activeSection={activeSection}
-            onSelect={setActiveSection}
+            onSelect={selectSection}
+            mobileOpen={mobileNavOpen}
+            onCloseMobile={() => setMobileNavOpen(false)}
             data={dashboard.data}
           />
           <div className="flex flex-col min-w-0">
@@ -69,6 +103,8 @@ export function App() {
               activeSection={activeSection}
               isFetching={dashboard.isFetching}
               onRefresh={() => void dashboard.refetch()}
+              mobileNavOpen={mobileNavOpen}
+              onToggleMobileNav={() => setMobileNavOpen((value) => !value)}
               chatOpen={chatOpen}
               onToggleChat={() => setChatOpen((value) => !value)}
             />
@@ -88,7 +124,11 @@ export function App() {
             </main>
           </div>
         </div>
-        <ChatWidget open={chatOpen} onClose={() => setChatOpen(false)} />
+        {chatOpen ? (
+          <Suspense fallback={<ChatWidgetLoadingState />}>
+            <ChatWidget open={chatOpen} onClose={() => setChatOpen(false)} />
+          </Suspense>
+        ) : null}
       </div>
     </TooltipProvider>
   );
@@ -103,12 +143,16 @@ function Topbar({
   activeSection,
   isFetching,
   onRefresh,
+  mobileNavOpen,
+  onToggleMobileNav,
   chatOpen,
   onToggleChat
 }: {
   activeSection: SectionId;
   isFetching: boolean;
   onRefresh: () => void;
+  mobileNavOpen: boolean;
+  onToggleMobileNav: () => void;
   chatOpen: boolean;
   onToggleChat: () => void;
 }) {
@@ -117,6 +161,23 @@ function Topbar({
     <header
       className="flex flex-wrap items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 sm:flex-nowrap sm:gap-4 sm:px-5 sm:py-4 md:px-6 lg:px-7"
     >
+      <Tooltip hint={mobileNavOpen ? "Cerrar navegación" : "Abrir navegación"} side="bottom">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={mobileNavOpen ? "Cerrar navegación del panel" : "Abrir navegación del panel"}
+          aria-expanded={mobileNavOpen}
+          onClick={onToggleMobileNav}
+          className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] md:hidden"
+        >
+          {mobileNavOpen ? (
+            <X size={16} strokeWidth={1.75} aria-hidden="true" />
+          ) : (
+            <Menu size={16} strokeWidth={1.75} aria-hidden="true" />
+          )}
+        </Button>
+      </Tooltip>
+
       {/* Breadcrumb */}
       <nav aria-label="Breadcrumb" className="flex items-center gap-2 min-w-0">
         <span className="text-[12px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -200,15 +261,22 @@ function Topbar({
 function Sidebar({
   activeSection,
   onSelect,
+  mobileOpen,
+  onCloseMobile,
   data
 }: {
   activeSection: SectionId;
   onSelect: (section: SectionId) => void;
+  mobileOpen: boolean;
+  onCloseMobile: () => void;
   data: DashboardData | undefined;
 }) {
   return (
     <aside
-      className="sticky top-0 self-start flex h-screen w-full flex-col gap-6 overflow-y-auto border-r border-[var(--color-border)] bg-[var(--color-surface-sunken)] px-3 py-5 max-md:static max-md:h-auto max-md:overflow-visible max-md:border-r-0 max-md:border-b md:px-3 lg:px-4"
+      className={cn(
+        "fixed inset-y-0 left-0 z-40 flex h-screen w-[min(82vw,300px)] max-w-[300px] flex-col gap-6 overflow-y-auto border-r border-[var(--color-border)] bg-[var(--color-surface-sunken)] px-3 py-5 shadow-[0_18px_48px_rgba(0,0,0,0.18)] transition-transform duration-200 ease-out md:sticky md:top-0 md:z-auto md:h-screen md:w-full md:max-w-none md:translate-x-0 md:self-start md:shadow-none lg:px-4",
+        mobileOpen ? "translate-x-0" : "-translate-x-full"
+      )}
     >
       {/* sbBrand */}
       <div className="flex items-center gap-2.5 pb-4 pt-1 pl-1 pr-1">
@@ -233,6 +301,16 @@ function Sidebar({
             plataforma de control
           </span>
         </div>
+        <span className="flex-1 md:hidden" aria-hidden="true" />
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Cerrar navegación"
+          onClick={onCloseMobile}
+          className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] md:hidden"
+        >
+          <X size={16} strokeWidth={1.75} aria-hidden="true" />
+        </Button>
       </div>
 
       {/* sbNav */}
@@ -369,21 +447,21 @@ function KillSwitchCard({ data }: { data: DashboardData | undefined }) {
 function SectionView({ section, data }: { section: SectionId; data: DashboardData }) {
   switch (section) {
     case "overview":
-      return <OverviewSection data={data} />;
+      return <Suspense fallback={<SectionLoadingState />}><OverviewSection data={data} /></Suspense>;
     case "onboarding":
-      return <OnboardingSection data={data} />;
+      return <Suspense fallback={<SectionLoadingState />}><OnboardingSection data={data} /></Suspense>;
     case "canvas":
-      return <CanvasSection data={data} />;
+      return <Suspense fallback={<SectionLoadingState />}><CanvasSection data={data} /></Suspense>;
     case "hardware":
-      return <HardwareSection data={data} />;
+      return <Suspense fallback={<SectionLoadingState />}><HardwareSection data={data} /></Suspense>;
     case "collector":
-      return <CollectorSection data={data} />;
+      return <Suspense fallback={<SectionLoadingState />}><CollectorSection data={data} /></Suspense>;
     case "clusters":
-      return <ClustersSection data={data} />;
+      return <Suspense fallback={<SectionLoadingState />}><ClustersSection data={data} /></Suspense>;
     case "learning":
-      return <LearningSection data={data} />;
+      return <Suspense fallback={<SectionLoadingState />}><LearningSection data={data} /></Suspense>;
     case "safety":
-      return <SafetySection data={data} />;
+      return <Suspense fallback={<SectionLoadingState />}><SafetySection data={data} /></Suspense>;
     default: {
       const _exhaustive: never = section;
       void _exhaustive;
@@ -410,6 +488,31 @@ function LoadingState() {
         <Skeleton className="h-64 rounded-[8px]" />
       </div>
     </section>
+  );
+}
+
+function SectionLoadingState() {
+  return (
+    <section aria-label="Cargando sección" className="flex flex-col gap-4 max-w-[1200px]">
+      <Skeleton className="h-6 w-48 rounded-[6px]" />
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <Skeleton className="h-36 rounded-[8px]" />
+        <Skeleton className="h-36 rounded-[8px]" />
+        <Skeleton className="h-36 rounded-[8px]" />
+      </div>
+      <Skeleton className="h-64 rounded-[8px]" />
+    </section>
+  );
+}
+
+function ChatWidgetLoadingState() {
+  return (
+    <aside
+      aria-label="Cargando chat con OpenClaw"
+      className="fixed bottom-4 right-4 z-50 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-secondary)] shadow-[0_18px_48px_rgba(0,0,0,0.18)]"
+    >
+      Cargando chat...
+    </aside>
   );
 }
 

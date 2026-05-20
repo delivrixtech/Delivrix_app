@@ -8,6 +8,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5173",
+    "dev:force": "VITE_FORCE_OPTIMIZE=1 vite --host 127.0.0.1 --port 5173 --force",
     "build": "tsc --noEmit && vite build",
     "serve": "node server.mjs",
     "check": "tsc --noEmit && node --check server.mjs && node --test src/shared/api/client.test.ts src/shared/lib/formatters.test.ts src/shared/lib/domain-state-copy.test.ts src/shared/ui/realtime/realtime.test.ts src/features/cleanup-fallbacks.test.ts src/features/chat/ChatWidget.test.ts && vite build"
