@@ -48,17 +48,17 @@ function PageHeader() {
   return (
     <header className="flex flex-col" style={{ gap: 10 }}>
       <span
-        className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#EA580C]"
+        className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-accent-tertiary)]"
         style={{ letterSpacing: "1.2px" }}
       >
         PASO 1 DE 6 · INVENTARIO FÍSICO
       </span>
       <h1
-        className="m-0 text-[32px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[#1A1410]"
+        className="m-0 text-[32px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
       >
         Onboarding del servidor de envío
       </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
+      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
         El asistente captura y valida el servidor físico, sus IPs, dominios, DNS, límites y
         permisos antes de pedir el visto bueno humano. OpenClaw observa la evidencia y
         recomienda, pero nunca ejecuta cambios por su cuenta.
@@ -99,12 +99,12 @@ function Stepper({ data }: { data: DashboardData }) {
   const activeIdx = activeStepIndex(data);
   return (
     <ol
-      className="m-0 p-0 list-none flex items-center bg-[#FFFFFF]"
+      className="m-0 p-0 list-none flex items-center bg-[var(--color-surface)]"
       style={{
         gap: 14,
         padding: "16px 20px",
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
@@ -120,12 +120,12 @@ function Stepper({ data }: { data: DashboardData }) {
                 width: 32,
                 height: 32,
                 borderRadius: 999,
-                background: active ? "#F59E0B" : "#FFFBF5",
-                color: active ? "#FFFBF5" : "#8A8073",
+                background: active ? "var(--color-accent)" : "var(--color-bg)",
+                color: active ? "var(--color-bg)" : "var(--color-text-tertiary)",
                 fontFamily: "var(--font-mono)",
                 fontSize: 13,
                 fontWeight: active ? 700 : 600,
-                boxShadow: !active ? "inset 0 0 0 1px #EAE0CE" : undefined
+                boxShadow: !active ? "inset 0 0 0 1px var(--color-border)" : undefined
               }}
             >
               {i + 1}
@@ -134,7 +134,7 @@ function Stepper({ data }: { data: DashboardData }) {
               <span
                 className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
                 style={{
-                  color: active ? "#EA580C" : "#8A8073",
+                  color: active ? "var(--color-accent-tertiary)" : "var(--color-text-tertiary)",
                   letterSpacing: "1px"
                 }}
               >
@@ -143,7 +143,7 @@ function Stepper({ data }: { data: DashboardData }) {
               <span
                 className="text-[13px] font-[family-name:var(--font-sans)]"
                 style={{
-                  color: active ? "#1A1410" : "#5C544A",
+                  color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)",
                   fontWeight: active ? 600 : 500
                 }}
               >
@@ -155,7 +155,7 @@ function Stepper({ data }: { data: DashboardData }) {
             <span
               aria-hidden="true"
               className="block"
-              style={{ height: 1, flex: 1, minWidth: 16, background: "#EAE0CE" }}
+              style={{ height: 1, flex: 1, minWidth: 16, background: "var(--color-border)" }}
             />
           ) : null}
         </li>
@@ -199,14 +199,14 @@ function Form({ data }: { data: DashboardData }) {
     <div className="flex flex-col" style={{ gap: 16 }}>
       {/* Sección 1 — Identidad (datos reales de physicalHost.identity + operatingNorth) */}
       <SectionCard
-        iconBg="#FEF3C7"
-        iconColor="#B45309"
+        iconBg="var(--color-warning-soft)"
+        iconColor="var(--color-warning)"
         icon={<ShieldAlert size={16} strokeWidth={1.75} aria-hidden="true" />}
         kicker="SECCIÓN 1"
         title="Identidad del servidor"
-        pillBg="#FEF3C7"
-        pillFg="#B45309"
-        pillDot="#B45309"
+        pillBg="var(--color-warning-soft)"
+        pillFg="var(--color-warning)"
+        pillDot="var(--color-warning)"
         pillText="campos requeridos"
       >
         <FieldRow label="HOSTNAME" value={ph.identity.label || knownStr("hostname", "—")} />
@@ -217,14 +217,14 @@ function Form({ data }: { data: DashboardData }) {
 
       {/* Sección 2 — Inventario de cómputo (capacidad real desde el contrato) */}
       <SectionCard
-        iconBg="#DBEAFE"
-        iconColor="#1D4ED8"
+        iconBg="var(--color-info-soft)"
+        iconColor="var(--color-info)"
         icon={<Cpu size={16} strokeWidth={1.75} aria-hidden="true" />}
         kicker="SECCIÓN 2"
         title="Inventario de cómputo"
-        pillBg="#DBEAFE"
-        pillFg="#1D4ED8"
-        pillDot="#1D4ED8"
+        pillBg="var(--color-info-soft)"
+        pillFg="var(--color-info)"
+        pillDot="var(--color-info)"
         pillText="detectado por el recolector"
       >
         <FieldRow label="CPU" value={cpuLine} badge={cap.cpuCores ? "DETECTADO" : undefined} />
@@ -235,14 +235,14 @@ function Form({ data }: { data: DashboardData }) {
 
       {/* Sección 3 — Interfaces de red (knownInputs cuando exista; placeholder cuando falte) */}
       <SectionCard
-        iconBg="#DCFCE7"
-        iconColor="#15803D"
+        iconBg="var(--color-success-soft)"
+        iconColor="var(--color-success)"
         icon={<Network size={16} strokeWidth={1.75} aria-hidden="true" />}
         kicker="SECCIÓN 3"
         title="Interfaces de red"
-        pillBg="#DCFCE7"
-        pillFg="#15803D"
-        pillDot="#15803D"
+        pillBg="var(--color-success-soft)"
+        pillFg="var(--color-success)"
+        pillDot="var(--color-success)"
         pillText={`${cap.networkInterfaces ?? 0} interfaces declaradas`}
       >
         <FieldRow label="BOND0 · ENVÍO" value={knownStr("interface_primary", "—")} />
@@ -286,12 +286,12 @@ function SectionCard({
 }) {
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 18,
         padding: 20,
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
@@ -307,12 +307,12 @@ function SectionCard({
           </span>
           <div className="flex flex-col" style={{ gap: 2 }}>
             <span
-              className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+              className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
               style={{ letterSpacing: "1.2px" }}
             >
               {kicker}
             </span>
-            <h3 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-semibold text-[#1A1410]">
+            <h3 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-semibold text-[var(--color-text-primary)]">
               {title}
             </h3>
           </div>
@@ -346,7 +346,7 @@ function FieldRow({ label, value, badge }: { label: string; value: string; badge
     <div className="flex flex-col" style={{ gap: 6 }}>
       <div className="flex items-center" style={{ gap: 8 }}>
         <span
-          className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[#8A8073]"
+          className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-tertiary)]"
           style={{ letterSpacing: "0.4px" }}
         >
           {label}
@@ -357,8 +357,8 @@ function FieldRow({ label, value, badge }: { label: string; value: string; badge
             style={{
               padding: "1px 6px",
               borderRadius: 4,
-              background: "#DCFCE7",
-              color: "#15803D",
+              background: "var(--color-success-soft)",
+              color: "var(--color-success)",
               letterSpacing: "0.4px"
             }}
           >
@@ -367,14 +367,14 @@ function FieldRow({ label, value, badge }: { label: string; value: string; badge
         ) : null}
       </div>
       <div
-        className="bg-[#FFFFFF]"
+        className="bg-[var(--color-surface)]"
         style={{
           padding: "12px 10px",
           borderRadius: 6,
-          border: "1px solid #EAE0CE"
+          border: "1px solid var(--color-border)"
         }}
       >
-        <span className="text-[13px] font-[family-name:var(--font-mono)] text-[#1A1410]">{value}</span>
+        <span className="text-[13px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{value}</span>
       </div>
     </div>
   );
@@ -402,11 +402,11 @@ function OpenClawCard({ unknownsCount, blockers }: { unknownsCount: number; bloc
       style={{
         borderRadius: 12,
         padding: 2,
-        background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
+        background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
         boxShadow: "0 8px 24px rgba(26, 20, 16, 0.13)"
       }}
     >
-      <div className="flex flex-col bg-[#FFFBF5]" style={{ borderRadius: 10, padding: 20, gap: 16 }}>
+      <div className="flex flex-col bg-[var(--color-bg)]" style={{ borderRadius: 10, padding: 20, gap: 16 }}>
         {/* ocHead */}
         <header className="flex items-center" style={{ gap: 10 }}>
           <span
@@ -416,17 +416,17 @@ function OpenClawCard({ unknownsCount, blockers }: { unknownsCount: number; bloc
               width: 32,
               height: 32,
               borderRadius: 999,
-              background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
-              color: "#FFFBF5"
+              background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
+              color: "var(--color-bg)"
             }}
           >
             <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
           </span>
           <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
-            <span className="text-[14px] font-[family-name:var(--font-heading)] font-semibold text-[#1A1410]">
+            <span className="text-[14px] font-[family-name:var(--font-heading)] font-semibold text-[var(--color-text-primary)]">
               OpenClaw
             </span>
-            <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+            <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
               supervisado · solo lectura
             </span>
           </div>
@@ -436,8 +436,8 @@ function OpenClawCard({ unknownsCount, blockers }: { unknownsCount: number; bloc
               gap: 4,
               padding: "3px 8px",
               borderRadius: 4,
-              background: "#DBEAFE",
-              color: "#1D4ED8",
+              background: "var(--color-info-soft)",
+              color: "var(--color-info)",
               letterSpacing: "0.6px"
             }}
           >
@@ -453,17 +453,17 @@ function OpenClawCard({ unknownsCount, blockers }: { unknownsCount: number; bloc
             gap: 8,
             padding: 14,
             borderRadius: 8,
-            background: "#F7F2EA",
-            border: "1px solid #EAE0CE"
+            background: "var(--color-surface-sunken)",
+            border: "1px solid var(--color-border)"
           }}
         >
           <span
-            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#EA580C]"
+            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
             style={{ letterSpacing: "1px" }}
           >
             Sugerencia
           </span>
-          <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+          <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
             {blockers > 0
               ? `Tengo ${blockers} bloqueo${blockers === 1 ? "" : "s"} pendiente${blockers === 1 ? "" : "s"} en el onboarding. ¿Quieres que resuma el más crítico antes del gate?`
               : unknownsCount > 0
@@ -475,40 +475,40 @@ function OpenClawCard({ unknownsCount, blockers }: { unknownsCount: number; bloc
         {/* ocInput */}
         <div
           aria-hidden="true"
-          className="flex items-center bg-[#FFFBF5]"
+          className="flex items-center bg-[var(--color-bg)]"
           style={{
             gap: 8,
             padding: 12,
             borderRadius: 6,
-            border: "1px solid #EAE0CE"
+            border: "1px solid var(--color-border)"
           }}
         >
-          <MessageSquare size={14} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
-          <span className="flex-1 text-[11px] font-[family-name:var(--font-sans)] text-[#8A8073] truncate">
+          <MessageSquare size={14} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+          <span className="flex-1 text-[11px] font-[family-name:var(--font-sans)] text-[var(--color-text-tertiary)] truncate">
             Pregunta a OpenClaw sobre evidencia, gates o recomendaciones…
           </span>
-          <ArrowUp size={14} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
+          <ArrowUp size={14} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
         </div>
 
         {/* ocActions */}
         <div className="flex flex-col" style={{ gap: 8 }}>
           <button
             type="button"
-            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]"
-            style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "#1A1410" }}
+            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
+            style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "var(--color-text-primary)" }}
           >
             <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
             Revisar recomendación
           </button>
           <button
             type="button"
-            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]"
+            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
             style={{
               gap: 6,
               padding: "10px 12px",
               borderRadius: 6,
-              background: "#FFFBF5",
-              border: "1px solid #EAE0CE"
+              background: "var(--color-bg)",
+              border: "1px solid var(--color-border)"
             }}
           >
             <FileSearch size={14} strokeWidth={1.75} aria-hidden="true" />
@@ -518,8 +518,8 @@ function OpenClawCard({ unknownsCount, blockers }: { unknownsCount: number; bloc
 
         {/* ocFoot */}
         <div className="flex items-center" style={{ gap: 6, padding: "0 4px" }}>
-          <LinkIcon size={11} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
-          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+          <LinkIcon size={11} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
             /v1/openclaw/recommendations
           </span>
         </div>
@@ -536,17 +536,17 @@ function OpenClawMeta() {
         gap: 8,
         padding: 14,
         borderRadius: 8,
-        background: "#F7F2EA",
-        border: "1px solid #EAE0CE"
+        background: "var(--color-surface-sunken)",
+        border: "1px solid var(--color-border)"
       }}
     >
       <header className="flex items-center" style={{ gap: 8 }}>
-        <Info size={13} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
-        <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+        <Info size={13} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
+        <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Por qué OpenClaw observa aquí
         </span>
       </header>
-      <p className="m-0 text-[11px] font-[family-name:var(--font-caption)] leading-[1.45] text-[#5C544A]">
+      <p className="m-0 text-[11px] font-[family-name:var(--font-caption)] leading-[1.45] text-[var(--color-text-secondary)]">
         El onboarding requiere validación humana en cada gate. OpenClaw correlaciona la evidencia
         capturada y propone próximos pasos, pero no escribe en producción.
       </p>
@@ -561,12 +561,12 @@ function GatesHead() {
   return (
     <header className="flex flex-col" style={{ gap: 6 }}>
       <span
-        className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+        className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
         style={{ letterSpacing: "1.2px" }}
       >
         VALIDACIONES Y GATES
       </span>
-      <h2 className="m-0 text-[13px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+      <h2 className="m-0 text-[13px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
         Pendientes humanas antes de habilitar el servidor para envío
       </h2>
     </header>
@@ -581,32 +581,32 @@ function GatesStrip({ data }: { data: DashboardData }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-3" style={{ gap: 14 }}>
       <GateCard
-        iconBg="#FEF3C7"
-        iconColor="#B45309"
+        iconBg="var(--color-warning-soft)"
+        iconColor="var(--color-warning)"
         icon={<ShieldAlert size={18} strokeWidth={1.75} aria-hidden="true" />}
         title="Cumplimiento pendiente"
-        pillBg="#FEF3C7"
-        pillFg="#B45309"
+        pillBg="var(--color-warning-soft)"
+        pillFg="var(--color-warning)"
         pillText={blockersCount > 0 ? `${blockersCount} bloqueos` : "revisión humana"}
         desc="A la espera de que un revisor humano firme el cumplimiento de políticas y registre la evidencia."
       />
       <GateCard
-        iconBg={dnsBlocker ? "#FEE2E2" : "#FEF3C7"}
-        iconColor={dnsBlocker ? "#B91C1C" : "#B45309"}
+        iconBg={dnsBlocker ? "var(--color-critical-soft)" : "var(--color-warning-soft)"}
+        iconColor={dnsBlocker ? "var(--color-critical)" : "var(--color-warning)"}
         icon={<ShieldX size={18} strokeWidth={1.75} aria-hidden="true" />}
         title="DNS no validado"
-        pillBg={dnsBlocker ? "#FEE2E2" : "#FEF3C7"}
-        pillFg={dnsBlocker ? "#B91C1C" : "#B45309"}
+        pillBg={dnsBlocker ? "var(--color-critical-soft)" : "var(--color-warning-soft)"}
+        pillFg={dnsBlocker ? "var(--color-critical)" : "var(--color-warning)"}
         pillText={dnsBlocker ? "crítico" : "pendiente"}
         desc="Las zonas y registros aún no se verifican contra los resolvers internos del clúster de envío."
       />
       <GateCard
-        iconBg="#EDE9FE"
-        iconColor="#7C3AED"
+        iconBg="var(--color-unknown-soft)"
+        iconColor="var(--color-unknown)"
         icon={<KeyRound size={18} strokeWidth={1.75} aria-hidden="true" />}
         title="SSH no autorizado"
-        pillBg="#EDE9FE"
-        pillFg="#7C3AED"
+        pillBg="var(--color-unknown-soft)"
+        pillFg="var(--color-unknown)"
         pillText={sshBlocker ? "ssh bloqueado" : "autorizar manualmente"}
         desc="OpenClaw no tiene credenciales para acceder por SSH. Necesita autorización manual del operador con rol elevado."
       />
@@ -635,8 +635,8 @@ function GateCard({
 }) {
   return (
     <article
-      className="flex bg-[#FFFFFF]"
-      style={{ gap: 14, padding: 16, borderRadius: 6, border: "1px solid #EAE0CE" }}
+      className="flex bg-[var(--color-surface)]"
+      style={{ gap: 14, padding: 16, borderRadius: 6, border: "1px solid var(--color-border)" }}
     >
       <span
         aria-hidden="true"
@@ -647,7 +647,7 @@ function GateCard({
       </span>
       <div className="flex flex-col min-w-0 flex-1" style={{ gap: 4 }}>
         <header className="flex items-center" style={{ gap: 8 }}>
-          <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+          <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             {title}
           </h3>
           <span className="flex-1" aria-hidden="true" />
@@ -664,7 +664,7 @@ function GateCard({
             {pillText}
           </span>
         </header>
-        <p className="m-0 text-[12px] font-[family-name:var(--font-caption)] leading-[1.45] text-[#5C544A]">
+        <p className="m-0 text-[12px] font-[family-name:var(--font-caption)] leading-[1.45] text-[var(--color-text-secondary)]">
           {desc}
         </p>
       </div>
@@ -678,18 +678,18 @@ function GateCard({
 function ActionBar() {
   return (
     <section
-      className="flex items-center bg-[#FFFFFF]"
+      className="flex items-center bg-[var(--color-surface)]"
       style={{
         padding: "14px 18px",
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
         justifyContent: "space-between"
       }}
     >
       <button
         type="button"
-        className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#5C544A]"
+        className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-secondary)]"
         style={{ gap: 8, padding: "10px 12px", borderRadius: 6, background: "transparent" }}
       >
         <Save size={14} strokeWidth={1.75} aria-hidden="true" />
@@ -698,13 +698,13 @@ function ActionBar() {
 
       <div className="flex items-center" style={{ gap: 14 }}>
         <span
-          className="inline-flex items-center text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[#B45309]"
+          className="inline-flex items-center text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-warning)]"
           style={{
             gap: 6,
             padding: "8px 12px",
             borderRadius: 6,
-            background: "#FEF3C7",
-            border: "1px solid #B45309"
+            background: "var(--color-warning-soft)",
+            border: "1px solid var(--color-warning)"
           }}
         >
           <Lock size={12} strokeWidth={1.75} aria-hidden="true" />
@@ -712,13 +712,13 @@ function ActionBar() {
         </span>
         <button
           type="button"
-          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]"
+          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
           style={{
             gap: 8,
             padding: "10px 16px",
             borderRadius: 6,
-            background: "#FFFBF5",
-            border: "1px solid #EAE0CE"
+            background: "var(--color-bg)",
+            border: "1px solid var(--color-border)"
           }}
         >
           <ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />
@@ -727,13 +727,13 @@ function ActionBar() {
         <button
           type="button"
           disabled
-          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-bold text-[#8A8073] disabled:cursor-default"
+          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-bold text-[var(--color-text-tertiary)] disabled:cursor-default"
           style={{
             gap: 8,
             padding: "10px 18px",
             borderRadius: 6,
-            background: "#F5F5F4",
-            border: "1px solid #EAE0CE",
+            background: "var(--color-neutral-soft)",
+            border: "1px solid var(--color-border)",
             opacity: 0.55
           }}
         >
