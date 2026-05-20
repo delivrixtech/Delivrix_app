@@ -48,10 +48,10 @@ const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? `${host}:${port}`}`);
 
     if (requestUrl.pathname === "/health" || requestUrl.pathname.startsWith("/v1/")) {
-      return proxyGatewayGet(request, response, requestUrl);
+      return await proxyGatewayGet(request, response, requestUrl);
     }
 
-    return serveStatic(response, requestUrl.pathname);
+    return await serveStatic(response, requestUrl.pathname);
   } catch (error) {
     return json(response, 500, {
       error: "admin_panel_server_error",
@@ -82,12 +82,20 @@ async function proxyGatewayGet(request, response, requestUrl) {
   }
 
   const upstreamUrl = new URL(requestUrl.pathname, gatewayOrigin);
-  const upstreamResponse = await fetch(upstreamUrl, {
-    method: "GET",
-    headers: {
-      accept: "application/json"
-    }
-  });
+  let upstreamResponse;
+  try {
+    upstreamResponse = await fetch(upstreamUrl, {
+      method: "GET",
+      headers: {
+        accept: "application/json"
+      }
+    });
+  } catch (error) {
+    return json(response, 502, {
+      error: "gateway_unavailable",
+      message: error instanceof Error ? error.message : "Gateway unavailable."
+    });
+  }
 
   const body = await upstreamResponse.text();
   response.writeHead(upstreamResponse.status, {

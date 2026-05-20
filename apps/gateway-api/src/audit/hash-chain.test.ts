@@ -78,6 +78,34 @@ test("validateAuditEvent accepts a canonical chained event", () => {
   assert.doesNotThrow(() => validateAuditEvent(event));
 });
 
+test("validateAuditEvent accepts namespaced Webdock inventory action", () => {
+  const event = {
+    id: "018f7b54-7d4d-7cc2-9c90-df7486c5a112",
+    occurredAt: "2026-05-19T00:00:00.000Z",
+    actorType: "system",
+    actorId: "webdock_collector",
+    action: "oc.webdock.inventory_polled",
+    targetType: "webdock_inventory",
+    targetId: "mock",
+    riskLevel: "low",
+    decision: "n/a",
+    rejectReason: null,
+    humanApproved: false,
+    approverIds: [],
+    killSwitchState: "armed",
+    rollbackToken: null,
+    schemaVersion: "2026-05-18.v1",
+    promptVersion: null,
+    modelVersion: null,
+    evidenceRefs: [],
+    metadata: {},
+    prevHash: "GENESIS",
+    hash: ""
+  };
+  event.hash = computeAuditHash(event, event.prevHash);
+  assert.doesNotThrow(() => validateAuditEvent(event));
+});
+
 test("validateAuditEvent rejects malformed action id", () => {
   const event = {
     id: "018f7b54-7d4d-7cc2-9c90-df7486c5a111",

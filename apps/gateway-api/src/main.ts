@@ -438,7 +438,7 @@ const server = createServer(async (request, response) => {
       await auditLog.append({
         actorType: "system",
         actorId: "webdock_collector",
-        action: "webdock_inventory_polled",
+        action: "oc.webdock.inventory_polled",
         targetType: "webdock_inventory",
         targetId: result.source.kind,
         riskLevel: result.source.responseOk ? "low" : "medium",
