@@ -6,6 +6,8 @@ import { READ_ENDPOINTS, type ReadEndpoint } from "./src/shared/api/read-boundar
 
 const gatewayOrigin = process.env.ADMIN_PANEL_GATEWAY_ORIGIN ?? "http://127.0.0.1:3000";
 const allowedProxyPaths = new Set(Object.values(READ_ENDPOINTS));
+const chatSendPath = "/v1/openclaw/chat/send";
+const chatStreamPath = "/v1/openclaw/chat/stream";
 
 export default defineConfig({
   plugins: [readOnlyProxyBoundary(), tailwindcss(), react()],
@@ -20,7 +22,8 @@ export default defineConfig({
       },
       "/v1": {
         target: gatewayOrigin,
-        changeOrigin: false
+        changeOrigin: false,
+        ws: true
       }
     }
   },
@@ -40,13 +43,19 @@ function readOnlyProxyBoundary(): Plugin {
         const isApprovalWrite =
           request.method === "POST" &&
           /^\/v1\/agent\/proposals\/[^/]+\/approve$/.test(requestUrl.pathname);
+        const isChatSend =
+          request.method === "POST" &&
+          requestUrl.pathname === chatSendPath;
+        const isChatStream =
+          request.method === "GET" &&
+          requestUrl.pathname === chatStreamPath;
 
         if (!isProxyPath) {
           next();
           return;
         }
 
-        if (isApprovalWrite) {
+        if (isApprovalWrite || isChatSend || isChatStream) {
           next();
           return;
         }
