@@ -47,15 +47,15 @@ function Hero() {
   return (
     <header className="flex flex-col" style={{ gap: 10 }}>
       <span
-        className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[#EA580C]"
+        className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
         style={{ letterSpacing: "1.6px" }}
       >
         EVIDENCIA SUPERVISADA
       </span>
-      <h1 className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[#1A1410]">
+      <h1 className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]">
         Recolector y captura manual
       </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]" style={{ maxWidth: 760 }}>
+      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]" style={{ maxWidth: 760 }}>
         El panel es solo lectura. La evidencia entra desde fuentes supervisadas o desde un
         endpoint manual auditado fuera del panel.
       </p>
@@ -70,40 +70,40 @@ function Tabs({ sourcesCount }: { sourcesCount: number }) {
   return (
     <div
       className="flex items-end"
-      style={{ borderBottom: "1px solid #EAE0CE" }}
+      style={{ borderBottom: "1px solid var(--color-border)" }}
     >
       <div
         className="inline-flex items-center"
         style={{
           gap: 8,
           padding: "14px 4px",
-          borderBottom: "2px solid #EA580C",
+          borderBottom: "2px solid var(--color-accent-tertiary)",
           marginBottom: -1
         }}
       >
-        <Database size={14} strokeWidth={1.75} className="text-[#1A1410]" aria-hidden="true" />
-        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]">
+        <Database size={14} strokeWidth={1.75} className="text-[var(--color-text-primary)]" aria-hidden="true" />
+        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Fuentes del recolector
         </span>
         <span
-          className="inline-block text-[10px] font-[family-name:var(--font-mono)] font-semibold text-[#5C544A]"
+          className="inline-block text-[10px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-secondary)]"
           style={{
             padding: "2px 8px",
             borderRadius: 999,
-            background: "#F7F2EA",
-            border: "1px solid #EAE0CE"
+            background: "var(--color-surface-sunken)",
+            border: "1px solid var(--color-border)"
           }}
         >
           {sourcesCount}
         </span>
       </div>
       <div className="inline-flex items-center" style={{ gap: 8, padding: "14px 18px" }}>
-        <Upload size={14} strokeWidth={1.75} className="text-[#5C544A]" aria-hidden="true" />
-        <span className="text-[13px] font-[family-name:var(--font-sans)] font-medium text-[#5C544A]">
+        <Upload size={14} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
+        <span className="text-[13px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-secondary)]">
           Captura manual
         </span>
         <span
-          className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]"
+          className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
           style={{ letterSpacing: "0.6px" }}
         >
           externo
@@ -111,8 +111,8 @@ function Tabs({ sourcesCount }: { sourcesCount: number }) {
       </div>
       <span className="flex-1" aria-hidden="true" />
       <div className="inline-flex items-center" style={{ gap: 6, padding: "10px 4px" }}>
-        <Info size={12} strokeWidth={1.75} className="text-[#8A8073]" aria-hidden="true" />
-        <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+        <Info size={12} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+        <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
           Documentación de contratos
         </span>
       </div>
@@ -132,20 +132,20 @@ function statusStyle(status: string): {
 } {
   const t = status.toLowerCase();
   if (t === "ready" || t === "ok" || t === "fresh")
-    return { state: "LISTO", stateBg: "#DCFCE7", stateFg: "#15803D", confidenceColor: "#15803D", confidence: 95 };
+    return { state: "LISTO", stateBg: "var(--color-success-soft)", stateFg: "var(--color-success)", confidenceColor: "var(--color-success)", confidence: 95 };
   if (t === "needs_review" || t === "stale")
     return {
       state: "DESACTUALIZADO",
-      stateBg: "#FEF3C7",
-      stateFg: "#B45309",
-      confidenceColor: "#B45309",
+      stateBg: "var(--color-warning-soft)",
+      stateFg: "var(--color-warning)",
+      confidenceColor: "var(--color-warning)",
       confidence: 45
     };
   if (t === "blocked" || t === "critical")
-    return { state: "BLOQUEADO", stateBg: "#FEE2E2", stateFg: "#B91C1C", confidenceColor: "#B91C1C", confidence: 15 };
+    return { state: "BLOQUEADO", stateBg: "var(--color-critical-soft)", stateFg: "var(--color-critical)", confidenceColor: "var(--color-critical)", confidence: 15 };
   if (t === "unknown")
-    return { state: "DESCONOCIDO", stateBg: "#EDE9FE", stateFg: "#7C3AED", confidenceColor: "#7C3AED", confidence: 0 };
-  return { state: status.toUpperCase(), stateBg: "#F5F5F4", stateFg: "#5C544A", confidenceColor: "#5C544A", confidence: 50 };
+    return { state: "DESCONOCIDO", stateBg: "var(--color-unknown-soft)", stateFg: "var(--color-unknown)", confidenceColor: "var(--color-unknown)", confidence: 0 };
+  return { state: status.toUpperCase(), stateBg: "var(--color-neutral-soft)", stateFg: "var(--color-text-secondary)", confidenceColor: "var(--color-text-secondary)", confidence: 50 };
 }
 
 function sourceIcon(kind: string): React.ReactNode {
@@ -153,9 +153,9 @@ function sourceIcon(kind: string): React.ReactNode {
   if (t.includes("file") || t.includes("local")) return <Folder size={16} strokeWidth={1.75} aria-hidden="true" />;
   if (t.includes("proxmox") || t.includes("api")) return <Server size={16} strokeWidth={1.75} aria-hidden="true" />;
   if (t.includes("prometheus") || t.includes("metric"))
-    return <Cpu size={16} strokeWidth={1.75} aria-hidden="true" style={{ color: "#B45309" }} />;
+    return <Cpu size={16} strokeWidth={1.75} aria-hidden="true" style={{ color: "var(--color-warning)" }} />;
   if (t.includes("ipmi") || t.includes("sensor"))
-    return <Cpu size={16} strokeWidth={1.75} aria-hidden="true" style={{ color: "#7C3AED" }} />;
+    return <Cpu size={16} strokeWidth={1.75} aria-hidden="true" style={{ color: "var(--color-unknown)" }} />;
   return <Database size={16} strokeWidth={1.75} aria-hidden="true" />;
 }
 
@@ -225,12 +225,12 @@ function SourceCard({
 }) {
   return (
     <article
-      className="flex flex-col bg-[#FFFFFF]"
+      className="flex flex-col bg-[var(--color-surface)]"
       style={{
         gap: 14,
         padding: 16,
         borderRadius: 8,
-        border: "1px solid #EAE0CE",
+        border: "1px solid var(--color-border)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
@@ -242,13 +242,13 @@ function SourceCard({
             width: 28,
             height: 28,
             borderRadius: 6,
-            background: "#F7F2EA",
-            border: "1px solid #EAE0CE"
+            background: "var(--color-surface-sunken)",
+            border: "1px solid var(--color-border)"
           }}
         >
           {icon}
         </span>
-        <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-semibold text-[#1A1410]">
+        <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-semibold text-[var(--color-text-primary)]">
           {name}
         </h3>
         <span className="flex-1" aria-hidden="true" />
@@ -275,14 +275,14 @@ function SourceCard({
         >
           {confidence === 0 ? "—" : `${confidence}%`}
         </span>
-        <span className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073] leading-none">
+        <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)] leading-none">
           confianza
         </span>
       </div>
 
       <div
         className="relative overflow-hidden w-full"
-        style={{ height: 6, borderRadius: 3, background: "#F7F2EA" }}
+        style={{ height: 6, borderRadius: 3, background: "var(--color-surface-sunken)" }}
         aria-hidden="true"
       >
         <span
@@ -299,16 +299,16 @@ function SourceCard({
       </div>
 
       <div className="flex flex-col" style={{ gap: 6 }}>
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#1A1410]">{endpoint}</span>
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{endpoint}</span>
         <div className="flex items-center" style={{ gap: 8 }}>
           <span
-            className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[#5C544A]"
-            style={{ padding: "1px 6px", borderRadius: 4, background: "#F7F2EA", letterSpacing: "0.4px" }}
+            className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-secondary)]"
+            style={{ padding: "1px 6px", borderRadius: 4, background: "var(--color-surface-sunken)", letterSpacing: "0.4px" }}
           >
             {mode}
           </span>
           <span className="flex-1" aria-hidden="true" />
-          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{lastSeen}</span>
+          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{lastSeen}</span>
         </div>
       </div>
     </article>
@@ -326,29 +326,29 @@ function OpenClawPromptWrap({ data }: { data: DashboardData }) {
   const blocked = data.supervisedCollector.sources.find((s) => s.status === "blocked");
   const unknown = data.supervisedCollector.sources.find((s) => s.status === "unknown");
   let message = "Todas las fuentes están dentro del umbral de frescura. Puedo proponer el próximo ciclo de captura.";
-  let avisoBg = "#DCFCE7";
-  let avisoFg = "#15803D";
+  let avisoBg = "var(--color-success-soft)";
+  let avisoFg = "var(--color-success)";
   let aviso = "ok";
   let metaSource = "";
   let metaTime = "";
   if (blocked) {
     message = `${blocked.label} está bloqueado: ${blocked.blockedBy[0] ?? "sin contexto"}. ¿Quieres que abra el runbook?`;
-    avisoBg = "#FEE2E2";
-    avisoFg = "#B91C1C";
+    avisoBg = "var(--color-critical-soft)";
+    avisoFg = "var(--color-critical)";
     aviso = "crítico";
     metaSource = `fuente · ${blocked.label}`;
     metaTime = relativeAge(blocked.freshness.lastCollectedAt);
   } else if (stale) {
     message = `${stale.label} no se ha refrescado en ${relativeAge(stale.freshness.lastCollectedAt)}. ¿Quieres que investigue?`;
-    avisoBg = "#FEF3C7";
-    avisoFg = "#B45309";
+    avisoBg = "var(--color-warning-soft)";
+    avisoFg = "var(--color-warning)";
     aviso = "aviso";
     metaSource = `fuente · ${stale.label}`;
     metaTime = relativeAge(stale.freshness.lastCollectedAt);
   } else if (unknown) {
     message = `${unknown.label} aún sin datos. Coordina con el operador para activar el snapshot inicial.`;
-    avisoBg = "#EDE9FE";
-    avisoFg = "#7C3AED";
+    avisoBg = "var(--color-unknown-soft)";
+    avisoFg = "var(--color-unknown)";
     aviso = "sin datos";
     metaSource = `fuente · ${unknown.label}`;
     metaTime = relativeAge(unknown.freshness.lastCollectedAt);
@@ -376,11 +376,11 @@ function OpenClawPromptInner({
       style={{
         borderRadius: 13,
         padding: 1.5,
-        background: "linear-gradient(135deg, #FACC15 0%, #F59E0B 50%, #EA580C 100%)",
+        background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
-      <div className="flex" style={{ gap: 24, padding: 24, borderRadius: 8, background: "#FFFBF5" }}>
+      <div className="flex" style={{ gap: 24, padding: 24, borderRadius: 8, background: "var(--color-bg)" }}>
         <div className="flex flex-col flex-1 min-w-0" style={{ gap: 12 }}>
           <header className="flex items-center" style={{ gap: 10 }}>
             <span
@@ -390,18 +390,18 @@ function OpenClawPromptInner({
                 width: 32,
                 height: 32,
                 borderRadius: 8,
-                background: "linear-gradient(135deg, #FACC15 0%, #EA580C 100%)",
-                color: "#FFFBF5"
+                background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
+                color: "var(--color-bg)"
               }}
             >
               <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
             </span>
             <div className="flex flex-col" style={{ gap: 1 }}>
-              <span className="text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+              <span className="text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
                 OpenClaw
               </span>
               <span
-                className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]"
+                className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
                 style={{ letterSpacing: "0.4px" }}
               >
                 Operador supervisado
@@ -421,16 +421,16 @@ function OpenClawPromptInner({
               {aviso}
             </span>
           </header>
-          <p className="m-0 text-[15px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#1A1410]">
+          <p className="m-0 text-[15px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
             {message}
           </p>
           {metaSource ? (
             <div className="flex items-center" style={{ gap: 8 }}>
-              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
                 {metaSource}
               </span>
-              <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: 999, background: "#8A8073" }} />
-              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#8A8073]">{metaTime}</span>
+              <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: 999, background: "var(--color-text-tertiary)" }} />
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{metaTime}</span>
             </div>
           ) : null}
         </div>
@@ -438,20 +438,20 @@ function OpenClawPromptInner({
         <div className="flex flex-col" style={{ gap: 10, width: 240 }}>
           <button
             type="button"
-            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#FFFBF5]"
-            style={{ gap: 8, padding: "12px 14px", borderRadius: 6, background: "#1A1410" }}
+            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
+            style={{ gap: 8, padding: "12px 14px", borderRadius: 6, background: "var(--color-text-primary)" }}
           >
             <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
             Investigar fuente
           </button>
           <button
             type="button"
-            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[#1A1410]"
+            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
             style={{
               gap: 8,
               padding: 12,
               borderRadius: 6,
-              border: "1px solid #EAE0CE",
+              border: "1px solid var(--color-border)",
               background: "transparent"
             }}
           >
@@ -470,10 +470,10 @@ function OpenClawPromptInner({
 function sourceStylePill(kind: string): { bg: string; fg: string } {
   const t = kind.toLowerCase();
   if (t.includes("file") || t.includes("local") || t.includes("proxmox") || t === "manual")
-    return { bg: "#DCFCE7", fg: "#15803D" };
-  if (t.includes("prometheus") || t.includes("http")) return { bg: "#FEF3C7", fg: "#B45309" };
-  if (t.includes("ipmi") || t.includes("sensor")) return { bg: "#EDE9FE", fg: "#7C3AED" };
-  return { bg: "#DBEAFE", fg: "#1D4ED8" };
+    return { bg: "var(--color-success-soft)", fg: "var(--color-success)" };
+  if (t.includes("prometheus") || t.includes("http")) return { bg: "var(--color-warning-soft)", fg: "var(--color-warning)" };
+  if (t.includes("ipmi") || t.includes("sensor")) return { bg: "var(--color-unknown-soft)", fg: "var(--color-unknown)" };
+  return { bg: "var(--color-info-soft)", fg: "var(--color-info)" };
 }
 
 function AcceptedFieldsSection({ data }: { data: DashboardData }) {
@@ -533,34 +533,34 @@ function AcceptedFieldsTable({
     <section className="flex flex-col" style={{ gap: 12 }}>
       <header className="flex items-end justify-between" style={{ gap: 16 }}>
         <div className="flex flex-col" style={{ gap: 4 }}>
-          <h2 className="m-0 text-[18px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h2 className="m-0 text-[18px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Campos aceptados
           </h2>
-          <span className="text-[12px] font-[family-name:var(--font-sans)] text-[#5C544A]">
+          <span className="text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
             Contrato firmado · valida cada snapshot antes de aceptarlo
           </span>
         </div>
         <div className="flex items-center" style={{ gap: 10 }}>
           <span
-            className="inline-flex items-center text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]"
+            className="inline-flex items-center text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]"
             style={{
               gap: 6,
               padding: "4px 8px",
               borderRadius: 4,
-              background: "#F7F2EA",
-              border: "1px solid #EAE0CE"
+              background: "var(--color-surface-sunken)",
+              border: "1px solid var(--color-border)"
             }}
           >
             schema · {schemaVersion}
           </span>
           <span
-            className="inline-flex items-center text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]"
+            className="inline-flex items-center text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]"
             style={{
               gap: 6,
               padding: "4px 8px",
               borderRadius: 4,
-              background: "#F7F2EA",
-              border: "1px solid #EAE0CE"
+              background: "var(--color-surface-sunken)",
+              border: "1px solid var(--color-border)"
             }}
           >
             {requiredCount} / {ACCEPTED_FIELDS.length} requeridos
@@ -569,10 +569,10 @@ function AcceptedFieldsTable({
       </header>
 
       <div
-        className="bg-[#FFFFFF]"
+        className="bg-[var(--color-surface)]"
         style={{
           borderRadius: 8,
-          border: "1px solid #EAE0CE",
+          border: "1px solid var(--color-border)",
           boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
           overflow: "hidden"
         }}
@@ -583,14 +583,14 @@ function AcceptedFieldsTable({
             gridTemplateColumns: "260px 150px 170px 180px 130px minmax(0,1fr)",
             gap: 16,
             padding: "14px 16px",
-            background: "#F7F2EA",
-            borderBottom: "1px solid #EAE0CE"
+            background: "var(--color-surface-sunken)",
+            borderBottom: "1px solid var(--color-border)"
           }}
         >
           {["PATH", "TIPO", "FUENTE", "MAPEO INTERNO", "REQUERIDO PARA", "ESTADO"].map((h) => (
             <span
               key={h}
-              className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+              className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
               style={{ letterSpacing: "0.6px" }}
             >
               {h}
@@ -606,18 +606,18 @@ function AcceptedFieldsTable({
               gridTemplateColumns: "260px 150px 170px 180px 130px minmax(0,1fr)",
               gap: 16,
               padding: "14px 16px",
-              borderTop: i > 0 ? "1px solid #EAE0CE" : "none"
+              borderTop: i > 0 ? "1px solid var(--color-border)" : "none"
             }}
           >
             <div className="flex flex-col" style={{ gap: 2 }}>
-              <code className="text-[12px] font-[family-name:var(--font-mono)] font-semibold text-[#1A1410] truncate">
+              <code className="text-[12px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-primary)] truncate">
                 {row.path}
               </code>
-              <span className="text-[10px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+              <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
                 vía contrato
               </span>
             </div>
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A]">{row.type}</span>
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">{row.type}</span>
             <span
               className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
               style={{
@@ -632,10 +632,10 @@ function AcceptedFieldsTable({
             >
               {row.source}
             </span>
-            <code className="text-[11px] font-[family-name:var(--font-mono)] text-[#5C544A] truncate">
+            <code className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] truncate">
               {row.mapsTo}
             </code>
-            <span className="text-[11px] font-[family-name:var(--font-sans)] text-[#5C544A]">{row.requiredFor}</span>
+            <span className="text-[11px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">{row.requiredFor}</span>
             <span
               className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
               style={{
@@ -644,16 +644,16 @@ function AcceptedFieldsTable({
                 borderRadius: 999,
                 background:
                   row.rowState === "validado"
-                    ? "#DCFCE7"
+                    ? "var(--color-success-soft)"
                     : row.rowState === "desactualizado"
-                      ? "#FEF3C7"
-                      : "#EDE9FE",
+                      ? "var(--color-warning-soft)"
+                      : "var(--color-unknown-soft)",
                 color:
                   row.rowState === "validado"
-                    ? "#15803D"
+                    ? "var(--color-success)"
                     : row.rowState === "desactualizado"
-                      ? "#B45309"
-                      : "#7C3AED",
+                      ? "var(--color-warning)"
+                      : "var(--color-unknown)",
                 letterSpacing: "0.4px",
                 width: "fit-content"
               }}
@@ -697,15 +697,15 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
   const AUDIT_ROWS = rows;
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
-      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="flex flex-col bg-[var(--color-surface)]"
+      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
     >
       <header className="flex items-center" style={{ gap: 12 }}>
         <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
             Bitácora de ingesta
           </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[#8A8073]">
+          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
             Append-only · contrato /v1/devops/collector/audit
           </span>
         </div>
@@ -716,8 +716,8 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
             gap: 4,
             padding: "3px 8px",
             borderRadius: 4,
-            background: "#DBEAFE",
-            color: "#1D4ED8"
+            background: "var(--color-info-soft)",
+            color: "var(--color-info)"
           }}
         >
           hashes verificados
@@ -730,14 +730,14 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
           gridTemplateColumns: "80px 180px 220px minmax(0,1fr) 80px",
           gap: 12,
           padding: "8px 12px",
-          background: "#F7F2EA",
+          background: "var(--color-surface-sunken)",
           borderRadius: 4
         }}
       >
         {["HORA", "ACTOR", "ACCIÓN", "DETALLE", "HASH"].map((h) => (
           <span
             key={h}
-            className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[#8A8073]"
+            className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
             style={{ letterSpacing: "0.6px" }}
           >
             {h}
@@ -754,20 +754,20 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
               gridTemplateColumns: "80px 180px 220px minmax(0,1fr) 80px",
               gap: 12,
               padding: "8px 12px",
-              borderTop: i > 0 ? "1px solid #EAE0CE" : "none"
+              borderTop: i > 0 ? "1px solid var(--color-border)" : "none"
             }}
           >
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#5C544A]">{ts}</span>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] font-semibold text-[#EA580C] truncate">
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">{ts}</span>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-accent-tertiary)] truncate">
               {actor}
             </span>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] font-semibold text-[#1A1410]">
+            <span className="text-[10px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-primary)]">
               {action}
             </span>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#5C544A] truncate">
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] truncate">
               {detail}
             </span>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[#8A8073]">{hash}</span>
+            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{hash}</span>
           </li>
         ))}
       </ul>
@@ -798,13 +798,13 @@ function ExplainerText({ data }: { data: DashboardData }) {
     ];
   return (
     <section
-      className="flex flex-col bg-[#FFFFFF]"
-      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid #EAE0CE", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      className="flex flex-col bg-[var(--color-surface)]"
+      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
     >
-      <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[#1A1410]">
+      <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
         Por qué la ingesta vive fuera del panel
       </h2>
-      <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[#5C544A]">
+      <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
         El admin panel es 100% GET. La ingesta supervisada de snapshots requiere un operador con
         rol elevado corriendo el CLI fuera del panel. Esto preserva la barandilla read-only del
         norte operativo y evita un POST cliente que pudiera ser comprometido.
@@ -818,11 +818,11 @@ function ExplainerText({ data }: { data: DashboardData }) {
               gap: 8,
               padding: "8px 12px",
               borderRadius: 6,
-              background: "#F7F2EA"
+              background: "var(--color-surface-sunken)"
             }}
           >
-            <ArrowRight size={11} strokeWidth={2} className="text-[#EA580C]" aria-hidden="true" />
-            <code className="text-[11px] font-[family-name:var(--font-mono)] text-[#1A1410]">{l}</code>
+            <ArrowRight size={11} strokeWidth={2} className="text-[var(--color-accent-tertiary)]" aria-hidden="true" />
+            <code className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{l}</code>
           </li>
         ))}
       </ul>
@@ -840,17 +840,17 @@ function CliSnippet() {
     { tone: "info" as const, text: "› hash registered in audit log" }
   ];
   const colors: Record<"input" | "info" | "success" | "error", string> = {
-    input: "#FFFBF5",
-    info: "#FACC15",
-    success: "#86EFAC",
-    error: "#F87171"
+    input: "var(--color-bg)",
+    info: "var(--color-accent-secondary)",
+    success: "var(--color-success-border)",
+    error: "var(--color-critical)"
   };
   return (
     <section
       style={{
         borderRadius: 8,
-        background: "#1A1410",
-        border: "1px solid #1A1410",
+        background: "var(--color-text-primary)",
+        border: "1px solid var(--color-text-primary)",
         overflow: "hidden",
         boxShadow: "0 6px 18px rgba(0, 0, 0, 0.18)"
       }}
@@ -877,7 +877,7 @@ function CliSnippet() {
         <button
           type="button"
           className="inline-flex items-center text-[10px] font-[family-name:var(--font-mono)]"
-          style={{ gap: 6, padding: "4px 8px", borderRadius: 4, background: "rgba(255, 251, 245, 0.08)", color: "#FFFBF5" }}
+          style={{ gap: 6, padding: "4px 8px", borderRadius: 4, background: "rgba(255, 251, 245, 0.08)", color: "var(--color-bg)" }}
         >
           copy
         </button>
