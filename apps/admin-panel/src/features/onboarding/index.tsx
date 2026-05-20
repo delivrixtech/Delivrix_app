@@ -27,6 +27,7 @@ import {
   WandSparkles
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
+import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
 
 export function OnboardingSection({ data }: { data: DashboardData }) {
   return (
@@ -70,33 +71,135 @@ function PageHeader() {
 /* ============================================================
  * Stepper (cL78x) — 6 pasos con conectores horizontales
  * ============================================================ */
-const ONBOARDING_STEPS_FALLBACK = [
-  { kicker: "PASO 1", title: "Servidor", category: "server" },
-  { kicker: "PASO 2", title: "IPs y dominios", category: "network" },
-  { kicker: "PASO 3", title: "DNS", category: "dns" },
-  { kicker: "PASO 4", title: "Límites", category: "limits" },
-  { kicker: "PASO 5", title: "Cumplimiento", category: "compliance" },
-  { kicker: "PASO 6", title: "Revisión", category: "review" }
-] as const;
+interface OnboardingStepConfig {
+  title: string;
+  category: string;
+  readinessKeys: string[];
+  questionCategories: string[];
+  blockerTerms: string[];
+}
+
+export interface OnboardingStep {
+  kicker: string;
+  title: string;
+  category: string;
+  score: number | null;
+  pendingQuestions: number;
+  blockers: number;
+}
+
+const ONBOARDING_STEP_CONFIG: OnboardingStepConfig[] = [
+  {
+    title: "Servidor",
+    category: "server",
+    readinessKeys: ["infrastructure"],
+    questionCategories: ["server", "proxmox"],
+    blockerTerms: ["server", "cpu", "ram", "storage", "proxmox"]
+  },
+  {
+    title: "IPs y dominios",
+    category: "network",
+    readinessKeys: ["network"],
+    questionCategories: ["network", "ip_pool", "domains"],
+    blockerTerms: ["network", "uplink", "ip", "pool", "provider", "ptr", "domain"]
+  },
+  {
+    title: "DNS",
+    category: "dns",
+    readinessKeys: ["dns"],
+    questionCategories: ["dns"],
+    blockerTerms: ["dns"]
+  },
+  {
+    title: "Límites",
+    category: "limits",
+    readinessKeys: [],
+    questionCategories: ["limits"],
+    blockerTerms: ["limit", "warmup", "volume", "sender_node", "node"]
+  },
+  {
+    title: "Cumplimiento",
+    category: "compliance",
+    readinessKeys: ["compliance"],
+    questionCategories: ["compliance"],
+    blockerTerms: ["compliance", "physical_address", "opt_out", "suppression", "consent", "authorization"]
+  },
+  {
+    title: "Revisión",
+    category: "review",
+    readinessKeys: ["security", "autonomy"],
+    questionCategories: ["security", "autonomy"],
+    blockerTerms: ["security", "secret", "audit", "kill_switch", "autonomy", "human_approval"]
+  }
+];
 
 /**
- * Deriva el paso activo desde `onboardingState.readinessByCategory` + blockers.
- * Primer paso con readiness <1 o con blocker = activo.
+ * Deriva el stepper desde `onboardingState`: readiness, preguntas pendientes y blockers.
+ * Si el contrato no trae señales, no se inventan pasos de demostración.
  */
-function activeStepIndex(data: DashboardData): number {
-  const r = data.onboardingState.readinessByCategory ?? {};
-  const b = data.onboardingState.blockers ?? [];
-  for (let i = 0; i < ONBOARDING_STEPS_FALLBACK.length; i++) {
-    const cat = ONBOARDING_STEPS_FALLBACK[i].category.toLowerCase();
-    const score = Object.entries(r).find(([k]) => k.toLowerCase().includes(cat))?.[1];
-    const blocked = b.some((x) => x.toLowerCase().includes(cat));
-    if (blocked || score === undefined || score < 1) return i;
+export function buildOnboardingSteps(onboardingState: DashboardData["onboardingState"]): OnboardingStep[] {
+  const readiness = onboardingState.readinessByCategory ?? {};
+  const questions = onboardingState.pendingQuestions ?? [];
+  const blockers = onboardingState.blockers ?? [];
+
+  return ONBOARDING_STEP_CONFIG
+    .map((config) => {
+      const score = averageReadiness(config.readinessKeys, readiness);
+      const pendingQuestions = questions.filter((question) =>
+        config.questionCategories.includes(question.category.toLowerCase())
+      ).length;
+      const matchedBlockers = blockers.filter((blocker) =>
+        config.blockerTerms.some((term) => blocker.toLowerCase().includes(term))
+      ).length;
+
+      return {
+        title: config.title,
+        category: config.category,
+        score,
+        pendingQuestions,
+        blockers: matchedBlockers
+      };
+    })
+    .filter((step) => step.score !== null || step.pendingQuestions > 0 || step.blockers > 0)
+    .map((step, index) => ({
+      ...step,
+      kicker: `PASO ${index + 1}`
+    }));
+}
+
+export function activeStepIndex(steps: OnboardingStep[]): number {
+  if (steps.length === 0) {
+    return 0;
   }
-  return 0;
+
+  const activeIndex = steps.findIndex((step) => {
+    if (step.blockers > 0 || step.pendingQuestions > 0) return true;
+    return step.score === null || step.score < 1;
+  });
+
+  return activeIndex >= 0 ? activeIndex : steps.length - 1;
+}
+
+function averageReadiness(keys: string[], readiness: Record<string, number>): number | null {
+  const values = keys
+    .map((key) => readiness[key])
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
+  if (values.length === 0) {
+    return null;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
 function Stepper({ data }: { data: DashboardData }) {
-  const activeIdx = activeStepIndex(data);
+  const steps = buildOnboardingSteps(data.onboardingState);
+  const activeIdx = activeStepIndex(steps);
+
+  if (steps.length === 0) {
+    return <OnboardingStepsEmptyState />;
+  }
+
   return (
     <ol
       className="m-0 p-0 list-none flex items-center bg-[var(--color-surface)]"
@@ -108,7 +211,7 @@ function Stepper({ data }: { data: DashboardData }) {
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
-      {ONBOARDING_STEPS_FALLBACK.map((step, i) => {
+      {steps.map((step, i) => {
         const active = i === activeIdx;
         return (
         <li key={step.kicker} className="flex items-center min-w-0" style={{ gap: 10 }}>
@@ -151,7 +254,7 @@ function Stepper({ data }: { data: DashboardData }) {
               </span>
             </div>
           </div>
-          {i < ONBOARDING_STEPS_FALLBACK.length - 1 ? (
+          {i < steps.length - 1 ? (
             <span
               aria-hidden="true"
               className="block"
@@ -162,6 +265,31 @@ function Stepper({ data }: { data: DashboardData }) {
         );
       })}
     </ol>
+  );
+}
+
+function OnboardingStepsEmptyState() {
+  return (
+    <section
+      className="flex flex-col bg-[var(--color-surface)]"
+      style={{
+        gap: 6,
+        padding: "16px 20px",
+        borderRadius: 8,
+        border: "1px solid var(--color-border)",
+        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+      }}
+    >
+      <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
+        Sin pasos de onboarding disponibles
+      </span>
+      <span className="text-[11px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-secondary)]">
+        El contrato no devolvió categorías de readiness ni preguntas pendientes.
+      </span>
+      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
+        {READ_ENDPOINTS.openClawOnboardingState}
+      </span>
+    </section>
   );
 }
 
