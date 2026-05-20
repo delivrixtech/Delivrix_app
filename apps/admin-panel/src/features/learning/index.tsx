@@ -431,7 +431,7 @@ function PlanCard({ data }: { data: DashboardData }) {
   })();
   return (
     <section
-      className="flex flex-col bg-[var(--color-surface)]"
+      className="flex min-w-0 flex-col bg-[var(--color-surface)]"
       style={{
         borderRadius: 8,
         border: "1px solid var(--color-border)",
@@ -683,79 +683,83 @@ function EvidenciaCurada({ data }: { data: DashboardData }) {
         </span>
       </header>
 
-      {/* header row */}
-      <div
-        className="grid"
-        style={{
-          gridTemplateColumns: "120px 140px minmax(0,1fr) 110px 120px 120px 80px",
-          gap: 12,
-          padding: "10px 20px",
-          background: "var(--color-surface-sunken)",
-          borderBottom: "1px solid var(--color-border)"
-        }}
-      >
-        {["EVIDENCIA", "TIPO", "DESCRIPCIÓN", "ACTOR", "FECHA", "MODO", "IMPACTO"].map((h) => (
-          <span
-            key={h}
-            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
-            style={{ letterSpacing: "0.6px" }}
-          >
-            {h}
-          </span>
-        ))}
-      </div>
-
-      <div className="flex flex-col">
-        {rows.map((row, i) => (
+      <div className="overflow-x-auto">
+        <div className="min-w-[760px]">
+          {/* header row */}
           <div
-            key={`${row[0]}-${i}`}
-            className="grid items-center"
+            className="grid"
             style={{
               gridTemplateColumns: "120px 140px minmax(0,1fr) 110px 120px 120px 80px",
               gap: 12,
-              padding: "12px 20px",
-              borderBottom: i < rows.length - 1 ? "1px solid var(--color-border)" : "none"
+              padding: "10px 20px",
+              background: "var(--color-surface-sunken)",
+              borderBottom: "1px solid var(--color-border)"
             }}
           >
-            <code className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{row[0]}</code>
-            <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-accent-tertiary)]">
-              {row[1]}
-            </span>
-            <span className="text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)] truncate">
-              {row[2]}
-            </span>
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] truncate">
-              {row[3]}
-            </span>
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{row[4]}</span>
-            <span
-              className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-              style={{
-                padding: "2px 6px",
-                borderRadius: 4,
-                background: "var(--color-info-soft)",
-                color: "var(--color-info)",
-                width: "fit-content"
-              }}
-            >
-              {row[5]}
-            </span>
-            <span
-              className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
-              style={{
-                padding: "2px 8px",
-                borderRadius: 999,
-                background:
-                  row[6] === "alto" ? "var(--color-critical-soft)" : row[6] === "medio" ? "var(--color-warning-soft)" : "var(--color-success-soft)",
-                color: row[6] === "alto" ? "var(--color-critical)" : row[6] === "medio" ? "var(--color-warning)" : "var(--color-success)",
-                letterSpacing: "0.4px",
-                width: "fit-content"
-              }}
-            >
-              {row[6]}
-            </span>
+            {["EVIDENCIA", "TIPO", "DESCRIPCIÓN", "ACTOR", "FECHA", "MODO", "IMPACTO"].map((h) => (
+              <span
+                key={h}
+                className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
+                style={{ letterSpacing: "0.6px" }}
+              >
+                {h}
+              </span>
+            ))}
           </div>
-        ))}
+
+          <div className="flex flex-col">
+            {rows.map((row, i) => (
+              <div
+                key={`${row[0]}-${i}`}
+                className="grid items-center"
+                style={{
+                  gridTemplateColumns: "120px 140px minmax(0,1fr) 110px 120px 120px 80px",
+                  gap: 12,
+                  padding: "12px 20px",
+                  borderBottom: i < rows.length - 1 ? "1px solid var(--color-border)" : "none"
+                }}
+              >
+                <code className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{row[0]}</code>
+                <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-accent-tertiary)]">
+                  {row[1]}
+                </span>
+                <span className="text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)] truncate">
+                  {row[2]}
+                </span>
+                <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] truncate">
+                  {row[3]}
+                </span>
+                <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{row[4]}</span>
+                <span
+                  className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
+                  style={{
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    background: "var(--color-info-soft)",
+                    color: "var(--color-info)",
+                    width: "fit-content"
+                  }}
+                >
+                  {row[5]}
+                </span>
+                <span
+                  className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
+                  style={{
+                    padding: "2px 8px",
+                    borderRadius: 999,
+                    background:
+                      row[6] === "alto" ? "var(--color-critical-soft)" : row[6] === "medio" ? "var(--color-warning-soft)" : "var(--color-success-soft)",
+                    color: row[6] === "alto" ? "var(--color-critical)" : row[6] === "medio" ? "var(--color-warning)" : "var(--color-success)",
+                    letterSpacing: "0.4px",
+                    width: "fit-content"
+                  }}
+                >
+                  {row[6]}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -924,7 +928,7 @@ function AuditStrip({ data }: { data: DashboardData }) {
   const hasEvents = AUDIT_LINES.length > 0;
   return (
     <section
-      className="flex flex-col"
+      className="flex min-w-0 flex-col"
       style={{
         gap: 10,
         padding: "14px 18px",
@@ -933,13 +937,13 @@ function AuditStrip({ data }: { data: DashboardData }) {
         boxShadow: "0 6px 18px rgba(0, 0, 0, 0.13)"
       }}
     >
-      <header className="flex items-center" style={{ gap: 8 }}>
+      <header className="flex min-w-0 flex-wrap items-center" style={{ gap: 8 }}>
         <History size={14} strokeWidth={1.75} aria-hidden="true" style={{ color: "var(--color-accent-secondary)" }} />
         <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-bg)]">
           Bitácora del aprendizaje
         </span>
         <span className="flex-1" aria-hidden="true" />
-        <span className="text-[10px] font-[family-name:var(--font-mono)]" style={{ color: "rgba(255, 251, 245, 0.4)" }}>
+        <span className="min-w-0 truncate text-[10px] font-[family-name:var(--font-mono)]" style={{ color: "rgba(255, 251, 245, 0.4)" }}>
           contrato · /v1/openclaw/audit
         </span>
       </header>
@@ -954,14 +958,12 @@ function AuditStrip({ data }: { data: DashboardData }) {
         </p>
       ) : null}
 
-      <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 4 }}>
+      <ul className="m-0 p-0 list-none flex min-w-0 flex-col" style={{ gap: 4 }}>
         {AUDIT_LINES.map((a, i) => (
           <li
             key={i}
-            className="grid items-center"
+            className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 md:grid-cols-[80px_220px_minmax(0,1fr)_minmax(80px,auto)] md:gap-[14px]"
             style={{
-              gridTemplateColumns: "80px 220px minmax(0,1fr) auto",
-              gap: 14,
               padding: "6px 0"
             }}
           >
@@ -971,14 +973,14 @@ function AuditStrip({ data }: { data: DashboardData }) {
             >
               {a.ts}
             </span>
-            <span className="text-[11px] font-[family-name:var(--font-mono)] font-bold" style={{ color: "var(--color-accent-secondary)" }}>
+            <span className="min-w-0 truncate text-[11px] font-[family-name:var(--font-mono)] font-bold" style={{ color: "var(--color-accent-secondary)" }}>
               {a.action}
             </span>
             <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-bg)] truncate">
               {a.body}
             </span>
             <span
-              className="text-[11px] font-[family-name:var(--font-mono)]"
+              className="col-span-2 min-w-0 truncate text-[11px] font-[family-name:var(--font-mono)] md:col-span-1 md:text-right"
               style={{ color: "rgba(255, 251, 245, 0.4)" }}
             >
               {a.hash}
