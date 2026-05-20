@@ -836,29 +836,27 @@ function SecretsCard() {
 }
 
 /* ============================================================
- * Audit (McVRn) — 6 audit rows literales
+ * Audit (McVRn) — audit rows desde /v1/audit-events
  * ============================================================ */
-const AUDIT_ROWS_FALLBACK = [
-  { ts: "09:18:42", actor: "operador@delivrix", actorColor: "var(--color-text-primary)", action: "Solicitó plan dry-run", resource: "plan_warming · cluster-eu-01", hash: "4f1a…0c8", result: "ok", resultBg: "var(--color-success-soft)", resultFg: "var(--color-success)" },
-  { ts: "09:14:21", actor: "sre-01@delivrix", actorColor: "var(--color-text-primary)", action: "Probó kill switch", resource: "killswitch · simulado", hash: "a09c…b32", result: "ok", resultBg: "var(--color-success-soft)", resultFg: "var(--color-success)" },
-  { ts: "09:04:11", actor: "openclaw", actorColor: "var(--color-accent-tertiary)", action: "Recomendó degradar", resource: "cluster-eu-01 · quejas 0,18%", hash: "7d41…f1a", result: "supervisado", resultBg: "var(--color-unknown-soft)", resultFg: "var(--color-unknown)" },
-  { ts: "08:54:33", actor: "collector", actorColor: "var(--color-info)", action: "Detectó drift DNS", resource: "zone delivrix.io · SPF/DMARC", hash: "3e89…2bd", result: "alerta", resultBg: "var(--color-warning-soft)", resultFg: "var(--color-warning)" },
-  { ts: "08:42:09", actor: "auditor-ext@delivrix", actorColor: "var(--color-text-primary)", action: "Vio log", resource: "audit · últimas 24 h", hash: "c54f…908", result: "lectura", resultBg: "var(--color-info-soft)", resultFg: "var(--color-info)" },
-  { ts: "07:58:55", actor: "sistema", actorColor: "var(--color-text-secondary)", action: "Rechazó login externo", resource: "IP 200.93.x.x fuera de rango VPN", hash: "9bb2…ee4", result: "bloqueo", resultBg: "var(--color-critical-soft)", resultFg: "var(--color-critical)" }
-];
+interface AuditRow {
+  ts: string;
+  actor: string;
+  actorColor: string;
+  action: string;
+  resource: string;
+  hash: string;
+  result: string;
+  resultBg: string;
+  resultFg: string;
+}
 
-type AuditRow = (typeof AUDIT_ROWS_FALLBACK)[number];
-
-function Audit({ data }: { data: DashboardData }) {
-  // Audit log de seguridad: prefiere events relacionados con kill switch, gates, autorización
-  // y permisos. Cae al feed completo cuando no hay matches.
+export function buildSafetyAuditRows(data: DashboardData): AuditRow[] {
   const events = filterAuditEvents(
     data.auditEvents,
     ["kill_switch", "kill-switch", "operating_north", "gate", "role", "permission", "approval", "denied"],
     6
   );
-  const pool = events.length > 0 ? events : data.auditEvents.slice(0, 6);
-  const rows: AuditRow[] = pool.map((e) => ({
+  return events.map((e) => ({
     ts: formatTimeOnly(e.occurredAt),
     actor: `${e.actorType}.${e.actorId}`.slice(0, 28),
     actorColor: e.actorType.includes("openclaw")
@@ -882,13 +880,16 @@ function Audit({ data }: { data: DashboardData }) {
       e.riskLevel === "critical" || e.riskLevel === "blocked"
         ? "var(--color-critical)"
         : e.riskLevel === "high" || e.riskLevel === "warning"
-          ? "var(--color-warning)"
-          : e.riskLevel === "info" || e.riskLevel === "medium"
-            ? "var(--color-info)"
-            : "var(--color-success)"
+        ? "var(--color-warning)"
+        : e.riskLevel === "info" || e.riskLevel === "medium"
+          ? "var(--color-info)"
+          : "var(--color-success)"
   }));
-  const finalRows = rows.length > 0 ? rows : AUDIT_ROWS_FALLBACK;
-  return <AuditTable rows={finalRows} />;
+}
+
+function Audit({ data }: { data: DashboardData }) {
+  const rows = buildSafetyAuditRows(data);
+  return <AuditTable rows={rows} />;
 }
 
 function AuditTable({ rows }: { rows: AuditRow[] }) {
@@ -906,7 +907,7 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
             Log de auditoría
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-            Append-only · hash encadenado SHA-256 · contrato /v1/audit
+            Append-only · hash encadenado SHA-256 · contrato /v1/audit-events
           </span>
         </div>
         <span className="flex-1" aria-hidden="true" />
@@ -960,58 +961,80 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
         ))}
       </div>
 
-      <ul className="m-0 p-0 list-none flex flex-col">
-        {rows.map((row, i) => (
-          <li
-            key={i}
-            className="grid items-center"
-            style={{
-              gridTemplateColumns: "84px 128px 160px minmax(0,1fr) 96px 80px",
-              gap: 12,
-              padding: "10px 20px",
-              borderBottom: i < rows.length - 1 ? "1px solid var(--color-border)" : "none"
-            }}
-          >
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">{row.ts}</span>
-            <span
-              className="text-[11px] font-[family-name:var(--font-mono)] font-semibold truncate"
-              style={{ color: row.actorColor }}
-            >
-              {row.actor}
-            </span>
-            <span className="text-[11.5px] font-[family-name:var(--font-sans)] text-[var(--color-text-primary)] truncate">
-              {row.action}
-            </span>
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] truncate">
-              {row.resource}
-            </span>
-            <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{row.hash}</span>
-            <span
-              className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
+      {rows.length > 0 ? (
+        <ul className="m-0 p-0 list-none flex flex-col">
+          {rows.map((row, i) => (
+            <li
+              key={`${row.hash}-${i}`}
+              className="grid items-center"
               style={{
-                padding: "2px 8px",
-                borderRadius: 4,
-                background: row.resultBg,
-                color: row.resultFg,
-                letterSpacing: "0.4px",
-                width: "fit-content"
+                gridTemplateColumns: "84px 128px 160px minmax(0,1fr) 96px 80px",
+                gap: 12,
+                padding: "10px 20px",
+                borderBottom: i < rows.length - 1 ? "1px solid var(--color-border)" : "none"
               }}
             >
-              {row.result}
-            </span>
-          </li>
-        ))}
-      </ul>
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">{row.ts}</span>
+              <span
+                className="text-[11px] font-[family-name:var(--font-mono)] font-semibold truncate"
+                style={{ color: row.actorColor }}
+              >
+                {row.actor}
+              </span>
+              <span className="text-[11.5px] font-[family-name:var(--font-sans)] text-[var(--color-text-primary)] truncate">
+                {row.action}
+              </span>
+              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] truncate">
+                {row.resource}
+              </span>
+              <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{row.hash}</span>
+              <span
+                className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
+                style={{
+                  padding: "2px 8px",
+                  borderRadius: 4,
+                  background: row.resultBg,
+                  color: row.resultFg,
+                  letterSpacing: "0.4px",
+                  width: "fit-content"
+                }}
+              >
+                {row.result}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <AuditEmptyState />
+      )}
 
-      <div className="flex items-center justify-center" style={{ padding: "10px 12px 12px 12px" }}>
+      {rows.length > 0 ? (
+        <div className="flex items-center justify-center" style={{ padding: "10px 12px 12px 12px" }}>
         <button
           type="button"
           className="text-[11.5px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-secondary)]"
         >
           Mostrar 24 entradas más
         </button>
-      </div>
+        </div>
+      ) : null}
     </section>
+  );
+}
+
+function AuditEmptyState() {
+  return (
+    <div className="flex flex-col" style={{ gap: 6, padding: "18px 20px" }}>
+      <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
+        Sin eventos de auditoría
+      </span>
+      <span className="text-[11px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-secondary)]">
+        El contrato no devolvió eventos para la tabla de seguridad.
+      </span>
+      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
+        /v1/audit-events
+      </span>
+    </div>
   );
 }
 
