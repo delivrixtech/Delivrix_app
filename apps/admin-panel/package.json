@@ -10,7 +10,7 @@
     "dev": "vite --host 127.0.0.1 --port 5173",
     "build": "tsc --noEmit && vite build",
     "serve": "node server.mjs",
-    "check": "tsc --noEmit && node --check server.mjs && node --test src/shared/api/client.test.ts src/shared/lib/formatters.test.ts src/shared/lib/domain-state-copy.test.ts src/shared/ui/realtime/realtime.test.ts src/features/cleanup-fallbacks.test.ts && vite build"
+    "check": "tsc --noEmit && node --check server.mjs && node --test src/shared/api/client.test.ts src/shared/lib/formatters.test.ts src/shared/lib/domain-state-copy.test.ts src/shared/ui/realtime/realtime.test.ts src/features/cleanup-fallbacks.test.ts src/features/chat/ChatWidget.test.ts && vite build"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",
