@@ -760,6 +760,11 @@ export interface DashboardSafetyRealtimeMeta {
   complianceStatus: RealTimeMeta | null;
 }
 
+export interface DashboardLearningRealtimeMeta {
+  openClawSkillsAudit: RealTimeMeta | null;
+  openClawEvidence: RealTimeMeta | null;
+}
+
 export interface OpenClawSkillsAuditEvent {
   id: string;
   occurredAt: string;
@@ -772,6 +777,7 @@ export interface OpenClawSkillsAuditEvent {
 
 export interface OpenClawSkillsAuditPayload {
   events: OpenClawSkillsAuditEvent[];
+  meta?: RealTimeMeta | null;
 }
 
 export type OpenClawEvidenceImpact = "alto" | "medio" | "bajo" | string;
@@ -788,6 +794,7 @@ export interface OpenClawEvidenceItem {
 
 export interface OpenClawEvidencePayload {
   curated: OpenClawEvidenceItem[];
+  meta?: RealTimeMeta | null;
 }
 
 /* Hito 5.11.A — Webdock READ + OpenClaw rules-based drift */
@@ -938,6 +945,7 @@ export interface DashboardData {
   iamSessions: IamSession[];
   complianceControls: ComplianceControl[];
   safetyRealtime: DashboardSafetyRealtimeMeta;
+  learningRealtime: DashboardLearningRealtimeMeta;
   openClawSkillsAudit: OpenClawSkillsAuditEvent[];
   openClawEvidence: OpenClawEvidenceItem[];
   webdockInventory: WebdockInventoryContract;
@@ -1038,6 +1046,10 @@ export async function loadDashboardData(): Promise<DashboardData> {
       iamRoles: iamRoles.meta ?? null,
       iamSessions: iamSessions.meta ?? null,
       complianceStatus: complianceStatus.meta ?? null
+    },
+    learningRealtime: {
+      openClawSkillsAudit: openClawSkillsAudit.meta ?? null,
+      openClawEvidence: openClawEvidence.meta ?? null
     },
     openClawSkillsAudit: openClawSkillsAudit.events ?? [],
     openClawEvidence: openClawEvidence.curated ?? [],
