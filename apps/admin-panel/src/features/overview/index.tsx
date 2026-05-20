@@ -450,41 +450,51 @@ function Pipeline() {
       </header>
 
       {/* Stages row */}
-      <div className="flex items-stretch">
-        <StageCard
-          title="Onboarding"
-          body="Servidor, IPs y dominios capturados"
-          footer="100% · 6/6 pasos"
-          variant="success"
-        />
-        <StageConnector />
-        <StageCard
-          title="Planificación"
-          body="Plan de topología generado dry-run"
-          footer="contrato · /v1/clusters/plan"
-          variant="success"
-        />
-        <StageConnector />
-        <StageCard
-          title="Provisionamiento"
-          body="Dry-run · Postfix, DKIM, TLS, DNS, plan de calentamiento"
-          footer={null}
-          variant="in_progress"
-          progress={62}
-        />
-        <StageConnector />
-        <StageCard
-          title="Calentamiento"
-          body="42 IPs en calentamiento · espera aprobación"
-          footer="requiere aprobación humana"
-          variant="warning"
-        />
-        <StageConnector />
-        <StageCard
-          title="Reputación"
-          body="Observadores listos · tráfico simulado"
-          footer="sin envíos reales en el MVP"
-          variant="neutral"
+      <div className="relative">
+        <div
+          aria-label="Pipeline operativo"
+          className="flex snap-x snap-mandatory items-stretch gap-3 overflow-x-auto pb-2 md:gap-0 md:overflow-visible md:pb-0"
+        >
+          <StageCard
+            title="Onboarding"
+            body="Servidor, IPs y dominios capturados"
+            footer="100% · 6/6 pasos"
+            variant="success"
+          />
+          <StageConnector />
+          <StageCard
+            title="Planificación"
+            body="Plan de topología generado dry-run"
+            footer="contrato · /v1/clusters/plan"
+            variant="success"
+          />
+          <StageConnector />
+          <StageCard
+            title="Provisionamiento"
+            body="Dry-run · Postfix, DKIM, TLS, DNS, plan de calentamiento"
+            footer={null}
+            variant="in_progress"
+            progress={62}
+          />
+          <StageConnector />
+          <StageCard
+            title="Calentamiento"
+            body="42 IPs en calentamiento · espera aprobación"
+            footer="requiere aprobación humana"
+            variant="warning"
+          />
+          <StageConnector />
+          <StageCard
+            title="Reputación"
+            body="Observadores listos · tráfico simulado"
+            footer="sin envíos reales en el MVP"
+            variant="neutral"
+          />
+        </div>
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0 right-0 w-8 md:hidden"
+          style={{ background: "linear-gradient(90deg, transparent 0%, var(--color-surface) 100%)" }}
         />
       </div>
     </section>
@@ -509,14 +519,13 @@ function StageCard({
   const style = stageStyle(variant);
   return (
     <div
-      className="flex-1 flex flex-col"
+      className="flex min-w-[280px] flex-[0_0_280px] snap-start flex-col md:min-w-0 md:flex-1"
       style={{
         gap: 10,
         padding: 14,
         borderRadius: 8,
         background: style.bg,
-        border: `1px solid ${style.border}`,
-        minWidth: 0
+        border: `1px solid ${style.border}`
       }}
     >
       <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
@@ -552,7 +561,7 @@ function StageCard({
 
 function StageConnector() {
   return (
-    <div className="grid place-items-center" style={{ width: 18, height: 22 }}>
+    <div className="hidden place-items-center md:grid" style={{ width: 18, height: 22 }}>
       <ArrowRight size={14} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
     </div>
   );
