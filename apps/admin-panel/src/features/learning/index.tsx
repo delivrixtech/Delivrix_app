@@ -22,6 +22,7 @@ import {
   WandSparkles
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
+import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
 import {
   filterAuditEvents,
   formatDateTime,
@@ -408,45 +409,6 @@ function PlanAndSkills({ data }: { data: DashboardData }) {
   );
 }
 
-const PLAN_MILESTONES = [
-  {
-    order: "01",
-    title: "Curar evidencia DNS drift",
-    state: "En curso",
-    stateBg: "var(--color-warning-soft)",
-    stateFg: "var(--color-warning)",
-    body: "OpenClaw etiqueta 9 incidentes nuevos. El operador revisa antes de proponer el ajuste de umbral.",
-    meta: "responsable · operador · ETA 14:00"
-  },
-  {
-    order: "02",
-    title: "Dry-run habilidad ‘pausar IP caliente’",
-    state: "Listo para revisión",
-    stateBg: "var(--color-info-soft)",
-    stateFg: "var(--color-info)",
-    body: "10 ejecuciones sintéticas estables · escenario clúster A · log auditable.",
-    meta: "evidencia · run-2026-05-14-04"
-  },
-  {
-    order: "03",
-    title: "Evaluación humana de precisión",
-    state: "Programado",
-    stateBg: "var(--color-unknown-soft)",
-    stateFg: "var(--color-unknown)",
-    body: "Mañana 09:00 · panel humano firma desbloqueo si precisión ≥ 90% sin regresiones.",
-    meta: "panel · 4 revisores"
-  },
-  {
-    order: "04",
-    title: "Promoción supervisada",
-    state: "Bloqueado por gate",
-    stateBg: "var(--color-critical-soft)",
-    stateFg: "var(--color-critical)",
-    body: "Requiere que rollback definitions estén firmados antes del despliegue.",
-    meta: "gate · definiciones rollback"
-  }
-];
-
 function statusToPill(status: string): { bg: string; fg: string; text: string } {
   const t = status.toLowerCase();
   if (t === "ready" || t === "ok") return { bg: "var(--color-success-soft)", fg: "var(--color-success)", text: "completado" };
@@ -564,13 +526,10 @@ function PlanCard({ data }: { data: DashboardData }) {
   );
 }
 
-const SKILLS = [
-  { title: "Recomendar degradación", state: "supervisada", stateBg: "var(--color-success-soft)", stateFg: "var(--color-success)", endpoint: "/v1/openclaw/skills/degradation" },
-  { title: "Detectar drift DNS", state: "supervisada", stateBg: "var(--color-success-soft)", stateFg: "var(--color-success)", endpoint: "/v1/openclaw/skills/dns-drift" },
-  { title: "Pausar IP caliente", state: "dry-run", stateBg: "var(--color-info-soft)", stateFg: "var(--color-info)", endpoint: "/v1/openclaw/skills/pause-ip" },
-  { title: "Curar evidencia", state: "supervisada", stateBg: "var(--color-success-soft)", stateFg: "var(--color-success)", endpoint: "/v1/openclaw/skills/curate" },
-  { title: "Sugerir runbook SSH", state: "en evaluación", stateBg: "var(--color-unknown-soft)", stateFg: "var(--color-unknown)", endpoint: "/v1/openclaw/skills/ssh-runbook" },
-  { title: "Auto-promoción habilidades", state: "bloqueada", stateBg: "var(--color-critical-soft)", stateFg: "var(--color-critical)", endpoint: "/v1/openclaw/skills/auto-promote" }
+const SKILLS_FALLBACK = [
+  { title: "Recomendaciones de readiness", state: "esperando datos", stateBg: "var(--color-neutral-soft)", stateFg: "var(--color-text-secondary)", endpoint: READ_ENDPOINTS.openClawReadinessSignals },
+  { title: "Bitácora de aprendizaje", state: "GET-only", stateBg: "var(--color-info-soft)", stateFg: "var(--color-info)", endpoint: READ_ENDPOINTS.openClawSkillsAudit },
+  { title: "Evidencia curada", state: "GET-only", stateBg: "var(--color-info-soft)", stateFg: "var(--color-info)", endpoint: READ_ENDPOINTS.openClawEvidence }
 ];
 
 function SkillsCard({ data }: { data: DashboardData }) {
@@ -611,7 +570,7 @@ function SkillsCard({ data }: { data: DashboardData }) {
         </span>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
-        {(skills.length > 0 ? skills : SKILLS).map((s, i, arr) => (
+        {(skills.length > 0 ? skills : SKILLS_FALLBACK).map((s, i, arr) => (
           <li
             key={s.title}
             className="flex flex-col"

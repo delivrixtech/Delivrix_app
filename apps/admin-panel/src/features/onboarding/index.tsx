@@ -70,7 +70,7 @@ function PageHeader() {
 /* ============================================================
  * Stepper (cL78x) — 6 pasos con conectores horizontales
  * ============================================================ */
-const STEPS = [
+const ONBOARDING_STEPS_FALLBACK = [
   { kicker: "PASO 1", title: "Servidor", category: "server" },
   { kicker: "PASO 2", title: "IPs y dominios", category: "network" },
   { kicker: "PASO 3", title: "DNS", category: "dns" },
@@ -86,8 +86,8 @@ const STEPS = [
 function activeStepIndex(data: DashboardData): number {
   const r = data.onboardingState.readinessByCategory ?? {};
   const b = data.onboardingState.blockers ?? [];
-  for (let i = 0; i < STEPS.length; i++) {
-    const cat = STEPS[i].category.toLowerCase();
+  for (let i = 0; i < ONBOARDING_STEPS_FALLBACK.length; i++) {
+    const cat = ONBOARDING_STEPS_FALLBACK[i].category.toLowerCase();
     const score = Object.entries(r).find(([k]) => k.toLowerCase().includes(cat))?.[1];
     const blocked = b.some((x) => x.toLowerCase().includes(cat));
     if (blocked || score === undefined || score < 1) return i;
@@ -108,7 +108,7 @@ function Stepper({ data }: { data: DashboardData }) {
         boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
       }}
     >
-      {STEPS.map((step, i) => {
+      {ONBOARDING_STEPS_FALLBACK.map((step, i) => {
         const active = i === activeIdx;
         return (
         <li key={step.kicker} className="flex items-center min-w-0" style={{ gap: 10 }}>
@@ -151,7 +151,7 @@ function Stepper({ data }: { data: DashboardData }) {
               </span>
             </div>
           </div>
-          {i < STEPS.length - 1 ? (
+          {i < ONBOARDING_STEPS_FALLBACK.length - 1 ? (
             <span
               aria-hidden="true"
               className="block"

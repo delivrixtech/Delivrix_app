@@ -694,7 +694,6 @@ function AuditSection({ data }: { data: DashboardData }) {
 }
 
 function AuditTable({ rows }: { rows: Array<[string, string, string, string, string]> }) {
-  const AUDIT_ROWS = rows;
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
@@ -746,7 +745,7 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
       </div>
 
       <ul className="m-0 p-0 list-none flex flex-col">
-        {AUDIT_ROWS.map(([ts, actor, action, detail, hash], i) => (
+        {rows.map(([ts, actor, action, detail, hash], i) => (
           <li
             key={i}
             className="grid items-center"
