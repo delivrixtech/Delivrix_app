@@ -141,6 +141,7 @@ const provisioningRunStore = new LocalFileProvisioningRunStore();
 const ipReputationReportStore = new LocalFileIpReputationReportStore();
 const backupSimulationStore = new LocalFileBackupSimulationStore();
 const safetyRealtimeCache = new SafetyRealtimeCache();
+const learningRealtimeCache = new SafetyRealtimeCache();
 const defaultStuckJobThresholdMs = Number(process.env.STUCK_JOB_THRESHOLD_MS ?? 5 * 60 * 1000);
 const requestRateLimitProfile = {
   campaignDailyLimit: Number(process.env.RATE_LIMIT_CAMPAIGN_DAILY ?? 100),
@@ -416,11 +417,27 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && request.url === "/v1/openclaw/skills/audit") {
-      return json(response, 200, buildOpenClawSkillsAudit());
+      const payload = await learningRealtimeCache.resolve(
+        "/v1/openclaw/skills/audit",
+        async (now) => buildOpenClawSkillsAudit({
+          auditEvents: await auditLog.list(),
+          now
+        }),
+        (now) => buildOpenClawSkillsAudit({ now })
+      );
+      return json(response, 200, payload);
     }
 
     if (request.method === "GET" && request.url === "/v1/openclaw/evidence") {
-      return json(response, 200, buildOpenClawEvidence());
+      const payload = await learningRealtimeCache.resolve(
+        "/v1/openclaw/evidence",
+        async (now) => buildOpenClawEvidence({
+          auditEvents: await auditLog.list(),
+          now
+        }),
+        (now) => buildOpenClawEvidence({ now })
+      );
+      return json(response, 200, payload);
     }
 
     if (request.method === "GET" && request.url === "/v1/webdock/inventory") {
