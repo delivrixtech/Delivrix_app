@@ -63651,6 +63651,623 @@
           ]
         }
       ]
+    },
+    {
+      "type": "frame",
+      "id": "u10Bpu",
+      "x": 7045,
+      "y": 3253,
+      "name": "Componentes / Estados Real-Time",
+      "width": 560,
+      "fill": "$surface-secondary",
+      "cornerRadius": "$radius-md",
+      "stroke": {
+        "align": "inside",
+        "thickness": 1,
+        "fill": "$border-subtle"
+      },
+      "layout": "vertical",
+      "gap": 24,
+      "padding": 32,
+      "children": [
+        {
+          "type": "text",
+          "id": "FOTte",
+          "fill": "$foreground-primary",
+          "textGrowth": "fixed-width",
+          "width": "fill_container",
+          "content": "Estados Real-Time · Safety",
+          "fontFamily": "$font-heading",
+          "fontSize": 18,
+          "fontWeight": "600"
+        },
+        {
+          "type": "text",
+          "id": "W3OgC",
+          "fill": "$foreground-secondary",
+          "textGrowth": "fixed-width",
+          "width": "fill_container",
+          "content": "Componentes para indicar dataSource = cached | fallback, loading inicial, cambios entre polls y ausencia de sesiones IAM.",
+          "fontFamily": "$font-caption",
+          "fontSize": 12,
+          "fontWeight": "normal"
+        },
+        {
+          "type": "frame",
+          "id": "JeXwj",
+          "name": "Component / Stale Data Badge",
+          "reusable": true,
+          "fill": "$state-warning-bg",
+          "cornerRadius": "$radius-sm",
+          "gap": 6,
+          "padding": [
+            4,
+            10
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon_font",
+              "id": "f8b6dG",
+              "width": 12,
+              "height": 12,
+              "iconFontName": "schedule",
+              "iconFontFamily": "Material Symbols Rounded",
+              "fill": "$state-warning"
+            },
+            {
+              "type": "text",
+              "id": "B2v1el",
+              "fill": "$state-warning",
+              "content": "Hace 12 min",
+              "fontFamily": "$font-data",
+              "fontSize": 11,
+              "fontWeight": "normal"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "GVCBF",
+          "name": "Component / Fallback Banner",
+          "reusable": true,
+          "width": 480,
+          "fill": "$state-warning-bg",
+          "cornerRadius": "$radius-md",
+          "stroke": {
+            "align": "inside",
+            "thickness": {
+              "left": 3
+            },
+            "fill": "$state-warning"
+          },
+          "gap": 12,
+          "padding": [
+            12,
+            16
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon_font",
+              "id": "mpCn1",
+              "width": 20,
+              "height": 20,
+              "iconFontName": "warning",
+              "iconFontFamily": "Material Symbols Rounded",
+              "fill": "$state-warning"
+            },
+            {
+              "type": "frame",
+              "id": "WDFWI",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 2,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "PBxNk",
+                  "fill": "$state-warning",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Mostrando valores de respaldo",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 12,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "s1BJJ",
+                  "fill": "$foreground-secondary",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Agente no disponible · datos pueden estar desactualizados",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "uDAHQ",
+          "name": "Component / Skeleton KPI Card",
+          "reusable": true,
+          "width": 220,
+          "fill": "$surface-tertiary",
+          "cornerRadius": "$radius-md",
+          "stroke": {
+            "align": "inside",
+            "thickness": 1,
+            "fill": "$border-subtle"
+          },
+          "layout": "vertical",
+          "gap": 12,
+          "padding": [
+            16,
+            20
+          ],
+          "children": [
+            {
+              "type": "rectangle",
+              "cornerRadius": "$radius-sm",
+              "id": "CtVRW",
+              "fill": "$state-neutral-bg",
+              "width": 80,
+              "height": 10
+            },
+            {
+              "type": "rectangle",
+              "cornerRadius": "$radius-sm",
+              "id": "hC7eh",
+              "fill": "$state-neutral-bg",
+              "width": 60,
+              "height": 24
+            },
+            {
+              "type": "rectangle",
+              "cornerRadius": "$radius-sm",
+              "id": "ebu75",
+              "fill": "$state-neutral-bg",
+              "width": 120,
+              "height": 8
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "hlLkJ",
+          "name": "Component / Realtime Tick",
+          "reusable": true,
+          "width": 440,
+          "fill": "$surface-tertiary",
+          "cornerRadius": "$radius-md",
+          "stroke": {
+            "align": "inside",
+            "thickness": 1,
+            "fill": "$border-subtle"
+          },
+          "gap": 20,
+          "padding": [
+            16,
+            20
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "frame",
+              "id": "AIx1w",
+              "layout": "vertical",
+              "gap": 6,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "ellipse",
+                  "id": "N0zOyv",
+                  "fill": "$state-success",
+                  "width": 6,
+                  "height": 6
+                },
+                {
+                  "type": "text",
+                  "id": "CphkO",
+                  "fill": "$foreground-tertiary",
+                  "content": "idle",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 10,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "gwYhX",
+              "layout": "vertical",
+              "gap": 6,
+              "alignItems": "center",
+              "children": [
+                {
+                  "type": "frame",
+                  "id": "UHEyq",
+                  "width": 14,
+                  "height": 14,
+                  "layout": "none",
+                  "children": [
+                    {
+                      "type": "ellipse",
+                      "id": "f3eKG",
+                      "x": 0,
+                      "y": 0,
+                      "opacity": 0.25,
+                      "fill": "$state-success",
+                      "width": 14,
+                      "height": 14
+                    },
+                    {
+                      "type": "ellipse",
+                      "id": "F7ccco",
+                      "x": 3,
+                      "y": 3,
+                      "fill": "$state-success",
+                      "width": 8,
+                      "height": 8
+                    }
+                  ]
+                },
+                {
+                  "type": "text",
+                  "id": "P4A1sT",
+                  "fill": "$foreground-tertiary",
+                  "content": "tick 200ms",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 10,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "u2NjrW",
+              "width": "fill_container",
+              "layout": "vertical",
+              "gap": 4,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "yBLYH",
+                  "fill": "$foreground-primary",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Realtime tick",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 12,
+                  "fontWeight": "600"
+                },
+                {
+                  "type": "text",
+                  "id": "l0Jqy",
+                  "fill": "$foreground-secondary",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Pulse suave en valores que cambian entre polls",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 10,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "ZXqFn",
+          "name": "Component / Empty Sessions Card",
+          "reusable": true,
+          "width": 360,
+          "fill": "$surface-tertiary",
+          "cornerRadius": "$radius-md",
+          "stroke": {
+            "align": "inside",
+            "thickness": 1,
+            "fill": "$border-subtle"
+          },
+          "layout": "vertical",
+          "gap": 12,
+          "padding": [
+            24,
+            20
+          ],
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "icon_font",
+              "id": "R5LaL",
+              "width": 32,
+              "height": 32,
+              "iconFontName": "person_off",
+              "iconFontFamily": "Material Symbols Rounded",
+              "fill": "$foreground-tertiary"
+            },
+            {
+              "type": "text",
+              "id": "JtdTX",
+              "fill": "$foreground-primary",
+              "content": "Sin sesiones activas",
+              "fontFamily": "$font-heading",
+              "fontSize": 16,
+              "fontWeight": "600"
+            },
+            {
+              "type": "text",
+              "id": "p8Gtp",
+              "fill": "$foreground-secondary",
+              "textGrowth": "fixed-width",
+              "width": "fill_container",
+              "content": "Sin actividad de operador en los últimos 15 minutos",
+              "textAlign": "center",
+              "fontFamily": "$font-caption",
+              "fontSize": 12,
+              "fontWeight": "normal"
+            },
+            {
+              "type": "text",
+              "id": "yM9CV",
+              "fill": "$foreground-tertiary",
+              "content": "Refresca cada 30 s",
+              "fontFamily": "$font-data",
+              "fontSize": 10,
+              "fontWeight": "normal"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "frame",
+      "id": "Gcf2v",
+      "x": 1520,
+      "y": 6120,
+      "name": "Anatomía / Estados Real-Time Safety",
+      "width": 1440,
+      "fill": "$surface-primary",
+      "cornerRadius": "$radius-md",
+      "stroke": {
+        "align": "inside",
+        "thickness": 1,
+        "fill": "$border-subtle"
+      },
+      "layout": "vertical",
+      "gap": 40,
+      "padding": 48,
+      "children": [
+        {
+          "type": "frame",
+          "id": "brjEZ",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 8,
+          "children": [
+            {
+              "type": "text",
+              "id": "c0dZD",
+              "fill": "$foreground-primary",
+              "textGrowth": "fixed-width",
+              "width": "fill_container",
+              "content": "Estados Real-Time Safety · anatomía",
+              "fontFamily": "$font-heading",
+              "fontSize": 28,
+              "fontWeight": "600"
+            },
+            {
+              "type": "text",
+              "id": "wNpHk",
+              "fill": "$foreground-secondary",
+              "textGrowth": "fixed-width",
+              "width": "fill_container",
+              "content": "Cómo se aplican los 5 componentes del estado degradado al panel Seguridad. Cada bloque muestra el componente real + dónde va en el screen Seguridad (fAJG6).",
+              "fontFamily": "$font-caption",
+              "fontSize": 14,
+              "fontWeight": "normal"
+            }
+          ]
+        },
+        {
+          "type": "frame",
+          "id": "wwLTt",
+          "width": "fill_container",
+          "gap": 32,
+          "children": [
+            {
+              "type": "frame",
+              "id": "x1ULVu",
+              "width": 280,
+              "layout": "vertical",
+              "gap": 12,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "bZwfD",
+                  "fill": "$foreground-primary",
+                  "content": "Loading inicial",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 12,
+                  "fontWeight": "600"
+                },
+                {
+                  "id": "xklsy",
+                  "type": "ref",
+                  "ref": "uDAHQ"
+                },
+                {
+                  "type": "text",
+                  "id": "Z0ulpB",
+                  "fill": "$foreground-secondary",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Reemplaza cada KPI card mientras la primera respuesta del polling 30 s está en vuelo. Misma dimensión 220×100 que la KPI real.",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "t4dLv",
+              "width": 280,
+              "layout": "vertical",
+              "gap": 12,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "cCIEP",
+                  "fill": "$foreground-primary",
+                  "content": "Stale badge en cards",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 12,
+                  "fontWeight": "600"
+                },
+                {
+                  "id": "PKruc",
+                  "type": "ref",
+                  "ref": "JeXwj"
+                },
+                {
+                  "type": "text",
+                  "id": "t3FkY",
+                  "fill": "$foreground-secondary",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Corner superior derecho de cada KPI card o GateRow cuando meta.dataSource = 'cached'. Aparece sin tocar el resto del layout.",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
+            },
+            {
+              "type": "frame",
+              "id": "r2nrWS",
+              "width": 480,
+              "layout": "vertical",
+              "gap": 12,
+              "children": [
+                {
+                  "type": "text",
+                  "id": "Y8OjR",
+                  "fill": "$foreground-primary",
+                  "content": "Realtime tick",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 12,
+                  "fontWeight": "600"
+                },
+                {
+                  "id": "oyk2H",
+                  "type": "ref",
+                  "ref": "hlLkJ"
+                },
+                {
+                  "type": "text",
+                  "id": "mA5IT",
+                  "fill": "$foreground-secondary",
+                  "textGrowth": "fixed-width",
+                  "width": "fill_container",
+                  "content": "Adyacente al número del KPI cuando cambia entre polls. 200 ms de pulse + fade. Sin sonido, sin distracción adicional.",
+                  "fontFamily": "$font-caption",
+                  "fontSize": 11,
+                  "fontWeight": "normal"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "rectangle",
+          "id": "eiC9V",
+          "fill": "$border-subtle",
+          "width": "fill_container",
+          "height": 1
+        },
+        {
+          "type": "frame",
+          "id": "QEY9M",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 12,
+          "children": [
+            {
+              "type": "text",
+              "id": "W59qqd",
+              "fill": "$foreground-primary",
+              "content": "Banner de fallback",
+              "fontFamily": "$font-caption",
+              "fontSize": 12,
+              "fontWeight": "600"
+            },
+            {
+              "id": "SdC4V",
+              "type": "ref",
+              "ref": "GVCBF"
+            },
+            {
+              "type": "text",
+              "id": "T0Gu4l",
+              "fill": "$foreground-secondary",
+              "textGrowth": "fixed-width",
+              "width": "fill_container",
+              "content": "Encima de Main, debajo del Topbar, cuando meta.dataSource = 'fallback' en cualquiera de los 3 endpoints de Safety. Persistente hasta que el agente vuelva. No dismissible para evitar que el operador asuma datos válidos.",
+              "fontFamily": "$font-caption",
+              "fontSize": 11,
+              "fontWeight": "normal"
+            }
+          ]
+        },
+        {
+          "type": "rectangle",
+          "id": "M0xWJP",
+          "fill": "$border-subtle",
+          "width": "fill_container",
+          "height": 1
+        },
+        {
+          "type": "frame",
+          "id": "cdEX4",
+          "width": "fill_container",
+          "layout": "vertical",
+          "gap": 12,
+          "alignItems": "center",
+          "children": [
+            {
+              "type": "text",
+              "id": "lqNPb",
+              "fill": "$foreground-primary",
+              "content": "Sin sesiones IAM",
+              "fontFamily": "$font-caption",
+              "fontSize": 12,
+              "fontWeight": "600"
+            },
+            {
+              "id": "t89Vl",
+              "type": "ref",
+              "ref": "ZXqFn"
+            },
+            {
+              "type": "text",
+              "id": "zOK2B",
+              "fill": "$foreground-secondary",
+              "textGrowth": "fixed-width",
+              "width": 600,
+              "content": "Reemplaza la tabla de IAM sessions cuando el endpoint /v1/iam/sessions devuelve sessions: [] (sin actividad de operador en últimos 15 min). Voz amigable, no error. Footer informa el ciclo de polling.",
+              "textAlign": "center",
+              "fontFamily": "$font-caption",
+              "fontSize": 11,
+              "fontWeight": "normal"
+            }
+          ]
+        }
+      ]
     }
   ],
   "themes": {
