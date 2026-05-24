@@ -1,7 +1,7 @@
 # OPS — Verificacion OpenClaw container chat endpoints
 
 Fecha: 2026-05-24  
-Estado: bloqueado por credenciales locales faltantes  
+Estado: bloqueado por credencial SSH faltante  
 Scope: verificar que el container Hostinger expone `POST /api/chat.send` y `WSS /api/chat.stream`.
 
 ## Resultado ejecutivo
@@ -12,13 +12,13 @@ No se pudo completar la verificacion interna por SSH porque la llave esperada no
 ~/.ssh/openclaw-hostinger: no existe
 ```
 
-Tambien falta el token requerido para probar el flujo autenticado:
+Actualizacion 2026-05-24: `OPENCLAW_GATEWAY_TOKEN` ya existe en `.env.local` de la raiz local y mide 64 caracteres hex. El valor no se imprime, no se documenta y no se commitea.
 
 ```txt
-OPENCLAW_GATEWAY_TOKEN: no encontrado en .env.local de raiz
+OPENCLAW_GATEWAY_TOKEN=<redacted> len=64
 ```
 
-Se encontro un `.env.local` dentro de `.claude/worktrees/youthful-mirzakhani-c517de/`, pero solo contiene variables `DELIVRIX_OPENCLAW_TOKEN` y `OPENCLAW_HMAC_SECRET`; no contiene `OPENCLAW_GATEWAY_TOKEN` ni ruta SSH.
+La sincronizacion del token al `.env` del container sigue pendiente porque no hay acceso SSH valido.
 
 ## Evidencia obtenida sin SSH
 
@@ -86,10 +86,10 @@ root@2.24.223.240: Permission denied (publickey,password).
 
 ## Criterio de cierre
 
-La tarea queda cerrada cuando un operador provea una de estas dos opciones:
+La tarea queda cerrada cuando un operador provea acceso SSH valido:
 
 1. Llave SSH valida en `~/.ssh/openclaw-hostinger` o ruta alternativa aprobada.
-2. `OPENCLAW_GATEWAY_TOKEN` local para probar los endpoints publicos autenticados.
+2. Permiso para copiar el `OPENCLAW_GATEWAY_TOKEN` local al `.env` del container y reiniciar el container OpenClaw.
 
 Con acceso disponible, ejecutar:
 
@@ -100,4 +100,3 @@ ssh -i ~/.ssh/openclaw-hostinger root@2.24.223.240 'docker exec openclaw-dtsf-op
 ```
 
 Si `POST /api/chat.send` devuelve `404` o HTML de login tambien desde dentro del container, implementar el endpoint en el container antes de usar el ChatWidget del panel.
-

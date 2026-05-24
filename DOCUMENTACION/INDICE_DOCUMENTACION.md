@@ -1,6 +1,6 @@
 # Índice de documentación · Delivrix
 
-> Última actualización: **2026-05-19** · Día **21/30** del MVP
+> Última actualización: **2026-05-24** · Día **26/30** del MVP
 > Hito activo: **5.11.B — OpenClaw Hostinger Agent** (13/14 milestones cerrados)
 > Próximo hito: **5.12 — Multi-provider inventory MVP** (arranca D+8 si 5.11.B cierra limpio)
 
@@ -129,6 +129,12 @@ Orden estricto de lectura para entender el agente:
 
 - `decision-skip-notion-side-effect.md` — Notion diferido a Hito 5.13+ por permisos Workspace Owner
 - `decision-multi-approver-placeholder.md` — `op-juanes-a/b` en lugar de OIDC real (MVP-only)
+
+## Configuración local sensible
+
+- `.env.local` existe en la raíz del repo local, está cubierto por `.gitignore` y contiene `OPENCLAW_GATEWAY_TOKEN`.
+- El valor de `OPENCLAW_GATEWAY_TOKEN` nunca se documenta ni se commitea.
+- Sincronización pendiente: copiar el mismo token al `.env` del container OpenClaw Hostinger y reiniciar el container cuando esté disponible la llave SSH `~/.ssh/openclaw-hostinger`.
 
 ## Documentos de fase (referencia histórica)
 
