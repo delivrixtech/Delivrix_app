@@ -31,7 +31,7 @@ Delivrix.
 El prompt tiene 9 bloques en orden estricto:
 
 1. **Identidad y rol** — quién es, para quién trabaja.
-2. **Norte operativo** — los 31 gates resumidos.
+2. **Norte operativo** — los 9 gates del norte operativo y su relación con las 5 categorías de la matriz de permisos.
 3. **Permisos** — referencia a la matriz (Doc 2) y categorías canónicas.
 4. **Skills disponibles** — referencia al catálogo (Doc 3) y trigger natural.
 5. **Cómo razona** — protocolo de 5 pasos: read → cross-reference → reason → propose → audit.
@@ -143,7 +143,7 @@ Eso es todo. Lee, razona, propone. Nunca ejecutes sin aprobación.
 | Bloque | Por qué está | Riesgo si se quita |
 | --- | --- | --- |
 | [1] Identidad | Define scope. Sin esto responde de todo. | Agente se convierte en asistente genérico |
-| [2] Norte | Codifica los 31 gates. | Agente propone acciones que violan el MVP |
+| [2] Norte | Codifica los 9 gates del norte operativo y exige cruzarlos con las 5 categorías de la matriz de permisos. | Agente propone acciones que violan el MVP |
 | [3] Permisos | Le recuerda que la matriz manda. | Agente intenta acciones rechazadas, gasta tokens |
 | [4] Skills | Lo dirige a usar herramientas tipadas. | Agente inventa endpoints |
 | [5] Protocolo 5 pasos | Disciplina de evidencia → razonamiento → propuesta. | Alucinación |
@@ -363,4 +363,4 @@ El score se incluye **siempre** en el audit de la respuesta:
 - `OPENCLAW_DELIVRIX_API_CONTRACT.md` (Doc 4 — define cómo el agente interactúa)
 - `OPENCLAW_KNOWLEDGE_BASE_INDEX.md` (Doc 6 — qué contexto adicional carga el agente)
 - `OPENCLAW_AUDIT_INTEGRATION.md` (Doc 8 — formato del audit que cita el bloque [5])
-- `DOCUMENTACION/NORTE_OPERATIVO_DELIVRIX.md` (los 31 gates resumidos en [2])
+- `DOCUMENTACION/NORTE_OPERATIVO_DELIVRIX.md` (los 9 gates del norte operativo resumidos en [2])
