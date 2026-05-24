@@ -324,6 +324,8 @@ export interface OpenClawCanvasPayload {
       kind: string;
       /** H.23: en qué carril del swimlane se dibuja. */
       lane: OpenClawCanvasLane;
+      x?: number;
+      y?: number;
       label: string;
       status: ContractStatus;
       progressPercent: number;
