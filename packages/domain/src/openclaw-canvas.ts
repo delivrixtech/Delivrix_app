@@ -54,6 +54,10 @@ export type OpenClawCanvasLane =
   | "warming"
   | "reputation";
 
+const OPENCLAW_CANVAS_LANES: OpenClawCanvasLane[] = ["onboarding", "hardware", "provisioning", "warming", "reputation"];
+const OPENCLAW_CANVAS_NODE_X_GAP = 240;
+const OPENCLAW_CANVAS_NODE_Y_GAP = 160;
+
 export interface OpenClawCanvasDrilldown {
   endpoint: string;
   label: string;
@@ -72,6 +76,9 @@ export interface OpenClawCanvasNode {
   kind: OpenClawCanvasNodeKind;
   /** H.23: en qué carril del swimlane se dibuja. */
   lane: OpenClawCanvasLane;
+  /** Posición sugerida para renderers con auto-layout opcional. */
+  x?: number;
+  y?: number;
   label: string;
   status: OpenClawCanvasNodeStatus;
   progressPercent: number;
@@ -247,7 +254,7 @@ export function buildOpenClawLiveCanvas(
     timeline: buildTimeline(now, input, blockedBy),
     blockedBy,
     requiresHumanApproval,
-    lanes: ["onboarding", "hardware", "provisioning", "warming", "reputation"],
+    lanes: OPENCLAW_CANVAS_LANES,
     cluster: buildClusterState(),
     timeRange: { active: "24h", options: ["1h", "24h", "7d"] },
     scale: { zoomPercent: 100 },
@@ -332,7 +339,7 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
   const captureStatus = onboardingStatus === "ready" ? "ready" : onboardingStatus === "blocked" ? "blocked" : "needs_review";
   const validateStatus = onboardingStatus === "ready" ? "ready" : "needs_review";
 
-  return [
+  return withNodePositions([
     /* ===== onboarding lane (2 nodos: Captura + Validaciones) ===== */
     {
       id: "onboarding_capture",
@@ -619,7 +626,23 @@ function buildNodes(input: BuildOpenClawLiveCanvasInput, blockedBy: OpenClawCanv
         label: "Ver norte"
       }
     }
-  ];
+  ]);
+}
+
+function withNodePositions(nodes: OpenClawCanvasNode[]): OpenClawCanvasNode[] {
+  const laneCounts = new Map<OpenClawCanvasLane, number>();
+
+  return nodes.map((node) => {
+    const laneIndex = OPENCLAW_CANVAS_LANES.indexOf(node.lane);
+    const indexWithinLane = laneCounts.get(node.lane) ?? 0;
+    laneCounts.set(node.lane, indexWithinLane + 1);
+
+    return {
+      ...node,
+      x: indexWithinLane * OPENCLAW_CANVAS_NODE_X_GAP,
+      y: Math.max(laneIndex, 0) * OPENCLAW_CANVAS_NODE_Y_GAP
+    };
+  });
 }
 
 function buildEdges(nodes: OpenClawCanvasNode[]): OpenClawCanvasEdge[] {

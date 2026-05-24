@@ -238,6 +238,17 @@ test("OpenClaw live canvas composes the graph without embedding sensitive operat
   assert.deepEqual(canvas.lanes, ["onboarding", "hardware", "provisioning", "warming", "reputation"]);
   // Cada nodo trae su lane canónica.
   assert.ok(canvas.nodes.every((n) => canvas.lanes.includes(n.lane)));
+  // El backend entrega posiciones sugeridas estables para evitar re-layouts.
+  for (const lane of canvas.lanes) {
+    const laneIndex = canvas.lanes.indexOf(lane);
+    const laneNodes = canvas.nodes.filter((n) => n.lane === lane);
+    laneNodes.forEach((node, index) => {
+      assert.equal(typeof node.x, "number");
+      assert.equal(typeof node.y, "number");
+      assert.equal(node.x, index * 240);
+      assert.equal(node.y, laneIndex * 160);
+    });
+  }
   // Hay al menos un nodo por lane.
   for (const lane of canvas.lanes) {
     assert.ok(canvas.nodes.some((n) => n.lane === lane), `lane ${lane} sin nodos`);
