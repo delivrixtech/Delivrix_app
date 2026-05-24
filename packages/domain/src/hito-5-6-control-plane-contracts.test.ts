@@ -202,6 +202,25 @@ test("OpenClaw live canvas composes the graph without embedding sensitive operat
   assert.ok(canvas.nodes.some((node) => node.id === "physical_host"));
   assert.ok(canvas.nodes.some((node) => node.id === "prepared_capacity" && node.status === "disabled_by_mvp"));
   assert.ok(canvas.edges.some((edge) => edge.from === "proxmox_host" && edge.to === "cluster_plan"));
+  assert.ok(canvas.edges.length >= 8);
+  for (const edge of canvas.edges) {
+    assert.equal(typeof edge.id, "string");
+    assert.equal(typeof edge.from, "string");
+    assert.equal(typeof edge.to, "string");
+    assert.equal(typeof edge.label, "string");
+    assert.ok(edge.label.length > 0);
+    const sourceNode = canvas.nodes.find((node) => node.id === edge.from);
+    assert.ok(sourceNode, `missing source node for edge ${edge.id}`);
+    assert.ok(["ready", "in_progress", "blocked"].includes(edge.status));
+    assert.equal(
+      edge.status,
+      sourceNode.status === "ready"
+        ? "ready"
+        : sourceNode.status === "blocked" || sourceNode.status === "error" || sourceNode.status === "disabled_by_mvp"
+          ? "blocked"
+          : "in_progress"
+    );
+  }
   assert.ok(canvas.timeline.some((event) => event.actor === "openclaw"));
   assert.ok(canvas.blockedBy.some((blocker) => blocker.code === "hardware_capacity_unknown"));
   assert.ok(canvas.blockedBy.some((blocker) =>
