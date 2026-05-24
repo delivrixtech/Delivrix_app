@@ -86,9 +86,11 @@ export interface OpenClawCanvasEdge {
   id: string;
   from: string;
   to: string;
-  status: OpenClawCanvasNodeStatus;
+  status: OpenClawCanvasEdgeStatus;
   label: string;
 }
+
+export type OpenClawCanvasEdgeStatus = "ready" | "in_progress" | "blocked";
 
 export interface OpenClawCanvasTimelineEvent {
   id: string;
@@ -650,9 +652,15 @@ function buildEdges(nodes: OpenClawCanvasNode[]): OpenClawCanvasEdge[] {
     id,
     from,
     to,
-    status: statusById.get(to) ?? "unknown",
+    status: edgeStatusFromSource(statusById.get(from)),
     label
   }));
+}
+
+function edgeStatusFromSource(status: OpenClawCanvasNodeStatus | undefined): OpenClawCanvasEdgeStatus {
+  if (status === "ready") return "ready";
+  if (status === "blocked" || status === "error" || status === "disabled_by_mvp") return "blocked";
+  return "in_progress";
 }
 
 function buildTimeline(
