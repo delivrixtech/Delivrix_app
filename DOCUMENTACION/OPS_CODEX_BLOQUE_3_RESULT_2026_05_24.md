@@ -22,7 +22,7 @@ Restriccion respetada: no se parcheo `/hostinger/server.mjs` dentro del containe
 ## T2 - Backend `GET /v1/infrastructure/inventory`
 
 **Estado:** implementado.
-**Commit:** `14f681e feat(gateway): expose infrastructure inventory`.
+**Commit backend:** `c972b15 feat(gateway): expose infrastructure inventory`.
 
 Cambios:
 
