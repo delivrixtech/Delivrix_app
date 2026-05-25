@@ -7,6 +7,7 @@ const defaultSshPort = 22;
 const defaultSshUser = "root";
 const defaultContainerId = "openclaw-dtsf-openclaw-1";
 const defaultTimeoutMs = 30_000;
+const defaultHistoryTimeoutMs = 180_000;
 const defaultPollIntervalMs = 500;
 const defaultSessionKey = "agent:main:operator";
 
@@ -19,6 +20,7 @@ export interface OpenClawSshBridgeConfig {
   sshKeyPath?: string;
   containerId?: string;
   timeoutMs?: number;
+  historyTimeoutMs?: number;
   pollIntervalMs?: number;
   sessionKey?: string;
   commandRunner?: OpenClawSshCommandRunner;
@@ -60,6 +62,7 @@ export class OpenClawSshBridge {
   private readonly sshKeyPath: string | undefined;
   private readonly containerId: string;
   private readonly timeoutMs: number;
+  private readonly historyTimeoutMs: number;
   private readonly pollIntervalMs: number;
   private readonly sessionKey: string;
   private readonly commandRunner: OpenClawSshCommandRunner;
@@ -86,6 +89,7 @@ export class OpenClawSshBridge {
     this.sshKeyPath = expandHome(config.sshKeyPath ?? config.sshKey);
     this.containerId = containerId;
     this.timeoutMs = config.timeoutMs ?? defaultTimeoutMs;
+    this.historyTimeoutMs = config.historyTimeoutMs ?? defaultHistoryTimeoutMs;
     this.pollIntervalMs = config.pollIntervalMs ?? defaultPollIntervalMs;
     this.sessionKey = config.sessionKey ?? defaultSessionKey;
     this.commandRunner = config.commandRunner ?? runSshCommand;
@@ -111,7 +115,7 @@ export class OpenClawSshBridge {
       );
     }
 
-    const sentAtMs = Date.now();
+    const sentAtMs = this.now().getTime();
     const output = await this.callOpenClaw("chat.send", {
       sessionKey: this.sessionKey,
       message,
@@ -131,14 +135,14 @@ export class OpenClawSshBridge {
   }
 
   async streamHistory(msgId: string, callbacks: OpenClawSshHistoryCallbacks): Promise<void> {
-    const timeoutMs = callbacks.timeoutMs ?? this.timeoutMs;
+    const timeoutMs = callbacks.timeoutMs ?? this.historyTimeoutMs;
     const pollIntervalMs = callbacks.pollIntervalMs ?? this.pollIntervalMs;
-    const startedAt = Date.now();
+    const startedAt = this.now().getTime();
     let emittedTyping = false;
     let emittedContent = "";
     let lastError: Error | null = null;
 
-    while (Date.now() - startedAt <= timeoutMs) {
+    while (this.now().getTime() - startedAt <= timeoutMs) {
       if (callbacks.signal?.aborted) {
         return;
       }
@@ -259,7 +263,9 @@ export function createOpenClawSshBridgeFromEnv(
     sshPort: parsePort(env.OPENCLAW_SSH_PORT) ?? defaultSshPort,
     sshKeyPath: normalizeEnvValue(env.OPENCLAW_SSH_KEY_PATH),
     containerId: normalizeEnvValue(env.OPENCLAW_CONTAINER_ID) ?? defaultContainerId,
-    timeoutMs: parsePositiveInt(env.OPENCLAW_SSH_TIMEOUT_MS) ?? defaultTimeoutMs
+    timeoutMs: parsePositiveInt(env.OPENCLAW_SSH_TIMEOUT_MS) ?? defaultTimeoutMs,
+    historyTimeoutMs: parsePositiveInt(env.OPENCLAW_SSH_HISTORY_TIMEOUT_MS) ?? defaultHistoryTimeoutMs,
+    pollIntervalMs: parsePositiveInt(env.OPENCLAW_SSH_POLL_INTERVAL_MS) ?? defaultPollIntervalMs
   });
 }
 

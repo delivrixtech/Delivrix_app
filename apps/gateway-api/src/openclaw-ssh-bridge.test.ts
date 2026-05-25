@@ -108,3 +108,45 @@ test("OpenClawSshBridge streamHistory emits typing, delta, and assistant done", 
     }
   });
 });
+
+test("OpenClawSshBridge streamHistory uses dedicated history timeout", async () => {
+  let nowMs = 0;
+  let historyPolls = 0;
+  const runner: OpenClawSshCommandRunner = async (_file, args) => {
+    assert.ok((args.at(-1) ?? "").includes("'chat.history'"));
+    historyPolls += 1;
+    return {
+      stdout: JSON.stringify({ messages: [] }),
+      stderr: "",
+      exitCode: 0
+    };
+  };
+  const bridge = new OpenClawSshBridge({
+    sshHost: "2.24.223.240",
+    timeoutMs: 30,
+    historyTimeoutMs: 100,
+    pollIntervalMs: 50,
+    commandRunner: runner,
+    sleep: async (ms) => {
+      nowMs += ms;
+    },
+    now: () => new Date(nowMs)
+  });
+  const events: ChatStreamEvent[] = [];
+
+  await bridge.streamHistory("slow-msg", {
+    onTyping: (event) => events.push(event),
+    onBlocked: (event) => events.push(event)
+  });
+
+  assert.equal(historyPolls, 3);
+  assert.deepEqual(events.map((event) => event.type), [
+    "ASSISTANT_TYPING",
+    "ASSISTANT_BLOCKED"
+  ]);
+  assert.deepEqual(events.at(-1), {
+    type: "ASSISTANT_BLOCKED",
+    msgId: "slow-msg",
+    reason: "ssh_history_timeout"
+  });
+});
