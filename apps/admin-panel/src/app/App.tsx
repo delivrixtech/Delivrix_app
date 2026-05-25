@@ -10,7 +10,7 @@
  */
 
 import { ChevronRight, Eye, FlaskConical, Menu, MessageSquare, Power, RefreshCw, Search, X } from "lucide-react";
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { loadDashboardData, type DashboardData } from "../shared/api/client.ts";
 import { stateTone, type Tone } from "../shared/lib/formatters.ts";
@@ -51,8 +51,26 @@ const InfrastructureSection = lazy(async () => ({ default: (await import("../fea
 const DomainsSection = lazy(async () => ({ default: (await import("../features/domains/index.tsx")).DomainsSection }));
 const ChatWidget = lazy(async () => ({ default: (await import("../features/chat/ChatWidget.tsx")).ChatWidget }));
 
+function readInitialSection(): SectionId {
+  return readSectionFromLocation();
+}
+
+function readSectionFromLocation(): SectionId {
+  if (typeof window === "undefined") return "overview";
+  const slug = window.location.pathname.split("/").filter(Boolean)[0];
+  if (slug && slug in sectionsById) return slug as SectionId;
+  return "overview";
+}
+
+function writeSectionToHistory(section: SectionId) {
+  if (typeof window === "undefined") return;
+  const nextPath = section === "overview" ? "/" : `/${section}`;
+  if (window.location.pathname === nextPath) return;
+  window.history.pushState(null, "", nextPath);
+}
+
 export function App() {
-  const [activeSection, setActiveSection] = useState<SectionId>("overview");
+  const [activeSection, setActiveSection] = useState<SectionId>(readInitialSection);
   const [chatOpen, setChatOpen] = useState(readChatOpenPreference);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const dashboard = useQuery({
@@ -65,6 +83,15 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(chatOpenStorageKey, chatOpen ? "1" : "0");
   }, [chatOpen]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setActiveSection(readSectionFromLocation());
+      setMobileNavOpen(false);
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   useEffect(() => {
     if (!mobileNavOpen) return;
@@ -86,6 +113,7 @@ export function App() {
 
   const selectSection = (section: SectionId) => {
     setActiveSection(section);
+    writeSectionToHistory(section);
     setMobileNavOpen(false);
   };
 
@@ -178,16 +206,20 @@ export function App() {
                   />
                 ) : null}
                 {dashboard.data && !dashboard.isLoading && !dashboard.isError ? (
-                  <SectionView section={activeSection} data={dashboard.data} onNavigate={selectSection} />
+                  <PanelErrorBoundary resetKey={activeSection} title="No pude abrir esta sección">
+                    <SectionView section={activeSection} data={dashboard.data} onNavigate={selectSection} />
+                  </PanelErrorBoundary>
                 ) : null}
               </div>
             </main>
           </div>
         </div>
         {chatOpen ? (
-          <Suspense fallback={<ChatWidgetLoadingState />}>
-            <ChatWidget open={chatOpen} onClose={() => setChatOpen(false)} />
-          </Suspense>
+          <PanelErrorBoundary resetKey="chat" title="No pude abrir el chat">
+            <Suspense fallback={<ChatWidgetLoadingState />}>
+              <ChatWidget open={chatOpen} onClose={() => setChatOpen(false)} />
+            </Suspense>
+          </PanelErrorBoundary>
         ) : null}
       </div>
       </CommandPaletteProvider>
@@ -619,6 +651,47 @@ function SectionView({
       void _exhaustive;
       return null;
     }
+  }
+}
+
+class PanelErrorBoundary extends Component<
+  { children: ReactNode; resetKey: string; title: string },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error(error);
+  }
+
+  componentDidUpdate(prevProps: { resetKey: string }) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+
+    return (
+      <section className="flex flex-col gap-5 max-w-[720px]">
+        <NoticeBanner
+          tone="critical"
+          title={this.props.title}
+          description={this.state.error.message || "Error cargando el módulo del panel."}
+          action={
+            <Button variant="default" size="sm" onClick={() => window.location.reload()}>
+              <RefreshCw size={14} strokeWidth={1.75} aria-hidden="true" />
+              Recargar
+            </Button>
+          }
+        />
+      </section>
+    );
   }
 }
 
