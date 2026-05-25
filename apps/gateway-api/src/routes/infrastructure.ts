@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http";
 import type {
+  AwsRoute53DomainsInventoryResult,
+  AwsRoute53DomainSummary,
   IonosDnsInventoryResult,
   IonosDnsRecord,
   IonosDnsZone,
@@ -36,6 +38,7 @@ export interface InfrastructureInventoryRouteDependencies {
   response: ServerResponse;
   auditLog: AuditSink;
   webdockListServers: () => Promise<WebdockAccountInventoryResult[]>;
+  awsRoute53DomainsListInventory?: () => Promise<AwsRoute53DomainsInventoryResult>;
   ionosListDnsInventory?: () => Promise<IonosDnsInventoryResult>;
   ionosListDomainsInventory?: () => Promise<IonosDomainsInventoryResult>;
   awsBedrockSetupLogPath?: string;
@@ -53,6 +56,7 @@ export interface BuildInfrastructureInventoryPayloadInput {
   webdockAccounts?: WebdockAccountInventoryResult[] | null;
   /** Compat legacy para tests/consumidores internos previos a multi-cuenta. */
   webdock?: WebdockInventoryResult | null;
+  awsRoute53Domains?: AwsRoute53DomainsInventoryResult | null;
   ionosDns?: IonosDnsInventoryResult | null;
   ionosDomains?: IonosDomainsInventoryResult | null;
   awsBedrockSetupLogPath?: string | null;
@@ -78,8 +82,12 @@ export async function handleInfrastructureInventoryHttp(
   const ionosDomains = deps.ionosListDomainsInventory
     ? await deps.ionosListDomainsInventory()
     : null;
+  const awsRoute53Domains = deps.awsRoute53DomainsListInventory
+    ? await deps.awsRoute53DomainsListInventory()
+    : null;
   const payload = await buildInfrastructureInventoryPayload({
     webdockAccounts,
+    awsRoute53Domains,
     ionosDns,
     ionosDomains,
     awsBedrockSetupLogPath: deps.awsBedrockSetupLogPath,
@@ -114,6 +122,7 @@ export async function buildInfrastructureInventoryPayload(
 
   if (input.includeStaticProviders ?? true) {
     providers.push(await buildAwsBedrockProvider(input.awsBedrockSetupLogPath ?? ".audit/openclaw-bedrock-setup.jsonl"));
+    providers.push(buildAwsRoute53DomainsProvider(input.env ?? process.env, input.awsRoute53Domains));
     providers.push(buildIonosCloudDnsProvider(input.env ?? process.env, input.ionosDns));
     providers.push(buildIonosDomainsProvider(input.env ?? process.env, input.ionosDomains));
     providers.push(buildPhysicalServerProvider());
@@ -217,6 +226,44 @@ async function buildAwsBedrockProvider(setupLogPath: string): Promise<Provider> 
   };
 }
 
+function buildAwsRoute53DomainsProvider(
+  env: Record<string, string | undefined>,
+  awsRoute53Domains?: AwsRoute53DomainsInventoryResult | null
+): Provider {
+  if (awsRoute53Domains) {
+    const status = resolveAwsRoute53DomainsStatus(awsRoute53Domains);
+    const errorReason = awsRoute53Domains.source.responseOk
+      ? undefined
+      : awsRoute53Domains.source.errorMessage ?? "aws_route53_domains_unavailable";
+    return {
+      id: "aws-route53-domains",
+      displayName: "AWS Route 53 Domains",
+      kind: "domain-registrar",
+      status,
+      itemCount: awsRoute53Domains.domains.length,
+      lastFetched: awsRoute53Domains.source.fetchedAt,
+      fetchSourceKind: awsRoute53Domains.source.kind,
+      ...(errorReason ? { errorReason } : {}),
+      capabilities: awsRoute53DomainsCapabilities(env),
+      items: awsRoute53Domains.domains.map(awsRoute53DomainToInventoryItem)
+    };
+  }
+
+  const hasCreds = hasAwsRoute53DomainsCreds(env);
+  return {
+    id: "aws-route53-domains",
+    displayName: "AWS Route 53 Domains",
+    kind: "domain-registrar",
+    status: hasCreds ? "error" : "planned",
+    itemCount: 0,
+    lastFetched: null,
+    fetchSourceKind: "mock",
+    errorReason: hasCreds ? "adapter_pending" : "creds_not_configured",
+    capabilities: awsRoute53DomainsCapabilities(env),
+    items: []
+  };
+}
+
 function buildIonosCloudDnsProvider(
   env: Record<string, string | undefined>,
   ionosDns?: IonosDnsInventoryResult | null
@@ -261,6 +308,27 @@ function buildIonosCloudDnsProvider(
     ],
     items: []
   };
+}
+
+function hasAwsRoute53DomainsCreds(env: Record<string, string | undefined>): boolean {
+  return Boolean(
+    (env.AWS_ROUTE53_DOMAINS_ACCESS_KEY_ID || env.AWS_ROUTE53_ACCESS_KEY_ID || env.AWS_ACCESS_KEY_ID) &&
+    (env.AWS_ROUTE53_DOMAINS_SECRET_ACCESS_KEY || env.AWS_ROUTE53_SECRET_ACCESS_KEY || env.AWS_SECRET_ACCESS_KEY)
+  );
+}
+
+function awsRoute53DomainsCapabilities(env: Record<string, string | undefined>): string[] {
+  const capabilities = [
+    "list_registered_domains",
+    "check_domain_availability",
+    "get_domain_suggestions",
+    "list_domain_prices",
+    "draft_domain_purchase_proposal"
+  ];
+  if (env.AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE === "true" || env.AWS_ROUTE53_ENABLE_PURCHASE === "true") {
+    capabilities.push("register_domain_requires_approval");
+  }
+  return capabilities;
 }
 
 function buildIonosDomainsProvider(
@@ -384,6 +452,20 @@ function webdockServerToInventoryItem(server: WebdockServer): InventoryItem {
   };
 }
 
+function awsRoute53DomainToInventoryItem(domain: AwsRoute53DomainSummary): InventoryItem {
+  return {
+    id: domain.domainName,
+    kind: "aws_route53_domain",
+    displayName: domain.domainName,
+    status: "active",
+    detail: {
+      autoRenew: domain.autoRenew ?? null,
+      transferLock: domain.transferLock ?? null,
+      expiry: domain.expiry ?? null
+    }
+  };
+}
+
 function ionosZoneToInventoryItem(zone: IonosDnsZone): InventoryItem {
   const status = normalizeIonosState(zone.state, zone.enabled);
   return {
@@ -455,6 +537,18 @@ function resolveWebdockProviderStatus(webdock: WebdockInventoryResult): Provider
     return "active";
   }
   return "paused";
+}
+
+function resolveAwsRoute53DomainsStatus(
+  awsRoute53Domains: AwsRoute53DomainsInventoryResult
+): ProviderStatus {
+  if (!awsRoute53Domains.source.responseOk) {
+    return "error";
+  }
+  if (awsRoute53Domains.domains.length === 0) {
+    return "planned";
+  }
+  return "active";
 }
 
 function resolveIonosProviderStatus(ionosDns: IonosDnsInventoryResult): ProviderStatus {

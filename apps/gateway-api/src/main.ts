@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
+  AwsRoute53DomainsAdapter,
   createWebdockAdaptersFromEnv,
   IonosDnsAdapter,
   IonosDomainsAdapter,
@@ -130,6 +131,17 @@ import {
   type ChatSendRequest
 } from "./openclaw-chat.ts";
 import { createOpenClawSshBridgeFromEnv } from "./openclaw-ssh-bridge.ts";
+import {
+  handleAwsDomainDiscoveryError,
+  handleAwsDomainDiscoveryHttp
+} from "./routes/aws-domain-discovery.ts";
+import {
+  handleDomainAvailabilityHttp,
+  handleDomainDiscoverError,
+  handleDomainPricesHttp,
+  handleDomainSuggestionsHttp,
+  handleOwnedDomainsHttp
+} from "./routes/domains.ts";
 import { handleInfrastructureInventoryHttp } from "./routes/infrastructure.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 
@@ -148,6 +160,7 @@ const rateLimitService = new RateLimitService(rateLimitStore);
 const webdockAdapter = new WebdockAdapter();
 const webdockRealAdapter = new WebdockRealAdapter();
 const webdockAccountAdapters = createWebdockAdaptersFromEnv();
+const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
 const ionosDnsAdapter = new IonosDnsAdapter();
 const ionosDomainsAdapter = new IonosDomainsAdapter();
 const proxmoxAdapter = new ProxmoxAdapter();
@@ -515,7 +528,67 @@ const server = createServer(async (request, response) => {
           ),
         ionosListDnsInventory: () => ionosDnsAdapter.listInventory(),
         ionosListDomainsInventory: () => ionosDomainsAdapter.listInventory(),
+        awsRoute53DomainsListInventory: () => awsRoute53DomainsAdapter.listInventory(),
         env: process.env
+      });
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/infrastructure/domain-discovery")) {
+      try {
+        return await handleAwsDomainDiscoveryHttp({
+          request,
+          response,
+          auditLog,
+          discoverDomains: (input) => awsRoute53DomainsAdapter.discoverDomains(input)
+        });
+      } catch (error) {
+        if (handleAwsDomainDiscoveryError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/domains/availability")) {
+      try {
+        return await handleDomainAvailabilityHttp({
+          request,
+          response,
+          auditLog,
+          adapter: awsRoute53DomainsAdapter
+        });
+      } catch (error) {
+        if (handleDomainDiscoverError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/domains/suggestions")) {
+      return await handleDomainSuggestionsHttp({
+        request,
+        response,
+        auditLog,
+        adapter: awsRoute53DomainsAdapter
+      });
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/domains/prices")) {
+      return await handleDomainPricesHttp({
+        request,
+        response,
+        auditLog,
+        adapter: awsRoute53DomainsAdapter
+      });
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/domains/owned")) {
+      return await handleOwnedDomainsHttp({
+        request,
+        response,
+        auditLog,
+        adapter: awsRoute53DomainsAdapter
       });
     }
 
