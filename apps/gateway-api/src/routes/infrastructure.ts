@@ -268,14 +268,10 @@ function buildIonosDomainsProvider(
   ionosDomains?: IonosDomainsInventoryResult | null
 ): Provider {
   if (ionosDomains) {
-    const hasApiKey = hasIonosDomainsApiKey(env);
-    const missingTenant = hasApiKey && !ionosDomains.source.tenantConfigured;
-    const status = missingTenant ? "error" : resolveIonosDomainsProviderStatus(ionosDomains);
-    const errorReason = missingTenant
-      ? "tenant_not_configured"
-      : ionosDomains.source.responseOk
-        ? undefined
-        : ionosDomains.source.errorMessage ?? "ionos_domains_unavailable";
+    const status = resolveIonosDomainsProviderStatus(ionosDomains);
+    const errorReason = ionosDomains.source.responseOk
+      ? undefined
+      : ionosDomains.source.errorMessage ?? "ionos_domains_unavailable";
     return {
       id: "ionos-domains",
       displayName: "IONOS Domains",
@@ -302,11 +298,11 @@ function buildIonosDomainsProvider(
     id: "ionos-domains",
     displayName: "IONOS Domains",
     kind: "domain-registrar",
-    status: hasApiKey && !hasTenant ? "error" : "planned",
+    status: hasApiKey ? "error" : "planned",
     itemCount: 0,
     lastFetched: null,
     fetchSourceKind: "mock",
-    errorReason: hasApiKey && !hasTenant ? "tenant_not_configured" : "creds_not_configured",
+    errorReason: hasApiKey && !hasTenant ? "adapter_pending" : "creds_not_configured",
     capabilities: [
       "list_domains",
       "read_domain_nameservers",
@@ -320,6 +316,7 @@ function buildIonosDomainsProvider(
 
 function hasIonosDomainsApiKey(env: Record<string, string | undefined>): boolean {
   return Boolean(
+    env.IONOS_DNS_API_KEY ||
     env.IONOS_DOMAINS_API_KEY ||
     env.IONOS_HOSTING_API_KEY ||
     env.IONOS_DEVELOPER_API_KEY

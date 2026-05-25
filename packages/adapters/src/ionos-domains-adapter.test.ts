@@ -23,7 +23,7 @@ test("IonosDomainsAdapter returns mock empty inventory when credentials are miss
   });
 });
 
-test("IonosDomainsAdapter lists domains and nameservers from API shape", async () => {
+test("IonosDomainsAdapter lists domains and nameservers without tenant header", async () => {
   const calls: Array<{ url: string; headers: HeadersInit | undefined }> = [];
   const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), headers: init?.headers });
@@ -61,7 +61,6 @@ test("IonosDomainsAdapter lists domains and nameservers from API shape", async (
   };
   const adapter = new IonosDomainsAdapter({
     apiKey: "public.secret",
-    tenantId: "tenant-1",
     fetchImpl: fetchImpl as typeof fetch,
     now: () => new Date("2026-05-25T15:00:00.000Z")
   });
@@ -74,10 +73,10 @@ test("IonosDomainsAdapter lists domains and nameservers from API shape", async (
     "https://api.hosting.ionos.com/domains/v1/domainitems/domain-1/nameservers"
   ]);
   assert.equal((calls[0].headers as Record<string, string>)["x-api-key"], "public.secret");
-  assert.equal((calls[0].headers as Record<string, string>)["x-tenant-id"], "tenant-1");
+  assert.equal((calls[0].headers as Record<string, string>)["x-tenant-id"], undefined);
   assert.equal(result.source.kind, "live");
   assert.equal(result.source.responseOk, true);
-  assert.equal(result.source.tenantConfigured, true);
+  assert.equal(result.source.tenantConfigured, false);
   assert.equal(result.domains.length, 1);
   assert.equal(result.domains[0].name, "delivrix.io");
   assert.equal(result.domains[0].type, "DOMAIN");
@@ -90,6 +89,25 @@ test("IonosDomainsAdapter lists domains and nameservers from API shape", async (
     ipV4Addresses: ["203.0.113.53"],
     ipV6Addresses: undefined
   }]);
+});
+
+test("IonosDomainsAdapter sends tenant header when configured", async () => {
+  const calls: HeadersInit[] = [];
+  const adapter = new IonosDomainsAdapter({
+    apiKey: "public.secret",
+    tenantId: "tenant-1",
+    fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push(init?.headers ?? {});
+      return jsonResponse({ domains: [] });
+    }) as typeof fetch,
+    now: () => new Date("2026-05-25T15:00:00.000Z")
+  });
+
+  const result = await adapter.listInventory();
+
+  assert.equal((calls[0] as Record<string, string>)["x-api-key"], "public.secret");
+  assert.equal((calls[0] as Record<string, string>)["x-tenant-id"], "tenant-1");
+  assert.equal(result.source.tenantConfigured, true);
 });
 
 test("IonosDomainsAdapter reports live error when tenant or key is rejected", async () => {

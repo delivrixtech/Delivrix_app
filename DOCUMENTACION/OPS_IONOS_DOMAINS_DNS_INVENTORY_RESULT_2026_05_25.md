@@ -31,10 +31,11 @@ La integración es read-only. OpenClaw puede leer el inventario completo y propo
 
 ### IONOS Domains API
 
-- Env: `IONOS_DOMAINS_API_KEY` y `IONOS_DOMAINS_TENANT_ID`.
-- Fallback key env: `IONOS_HOSTING_API_KEY` o `IONOS_DEVELOPER_API_KEY`.
+- Env: `IONOS_DOMAINS_API_KEY`.
+- Fallback key env: `IONOS_DNS_API_KEY`, `IONOS_HOSTING_API_KEY` o `IONOS_DEVELOPER_API_KEY`.
+- Optional tenant env: `IONOS_DOMAINS_TENANT_ID`.
 - Fallback tenant env: `IONOS_TENANT_ID`.
-- Auth: headers `X-Api-Key` y `X-Tenant-Id`.
+- Auth: header `X-Api-Key`; `X-Tenant-Id` se envía solo si está configurado. La cuenta validada el 2026-05-25 respondió read-only sin tenant.
 - Base: `https://api.hosting.ionos.com/domains`.
 - Endpoints usados:
   - `GET /v1/domainitems`
@@ -61,7 +62,7 @@ Resultado del 2026-05-25:
 - `webdock-primary`: `active`, `itemCount: 4`, `fetchSourceKind: "live"`
 - `aws-bedrock-us-east-1`: `active`, `itemCount: 1`, `fetchSourceKind: "live"`
 - `ionos-cloud-dns`: `planned`, `itemCount: 0`, `fetchSourceKind: "mock"` porque no hay credenciales IONOS locales aún.
-- `ionos-domains`: `planned`, `itemCount: 0`, `fetchSourceKind: "mock"` porque no hay credenciales IONOS locales aún.
+- `ionos-domains`: `active`, `itemCount: 16`, `fetchSourceKind: "live"` cuando `IONOS_DNS_API_KEY` está configurado.
 - `physical-medellin`: `planned`
 
 Tres polls sin header OpenClaw dejaron `.audit/audit-events.jsonl` estable en 222 líneas.
