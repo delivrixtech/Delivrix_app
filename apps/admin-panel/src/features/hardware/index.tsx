@@ -665,7 +665,7 @@ function CamposDesconocidos({
           >
             <span
               aria-hidden="true"
-              className="grid place-items-center text-[var(--color-bg)] tabular-nums shrink-0"
+              className="grid place-items-center text-[var(--color-on-dark-strong)] tabular-nums shrink-0"
               style={{
                 width: 32,
                 height: 32,
@@ -719,7 +719,7 @@ function DatosFaltantes({ count }: { count: number }) {
         <span
           aria-hidden="true"
           className="grid place-items-center"
-          style={{ width: 32, height: 32, borderRadius: 8, background: count === 0 ? "var(--color-success)" : "var(--color-warning)", color: "var(--color-bg)" }}
+          style={{ width: 32, height: 32, borderRadius: 8, background: count === 0 ? "var(--color-success)" : "var(--color-warning)", color: "var(--color-on-dark-strong)" }}
         >
           <Triangle size={16} strokeWidth={1.75} aria-hidden="true" />
         </span>
@@ -778,8 +778,16 @@ function DatosFaltantes({ count }: { count: number }) {
 
       <button
         type="button"
-        className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
-        style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "var(--color-text-primary)" }}
+        className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+        style={{
+          gap: 6,
+          padding: "9px 12px",
+          borderRadius: 6,
+          background: "var(--color-surface-inverse)",
+          color: "var(--color-on-dark-strong)",
+          border: "1px solid var(--color-on-dark-hint)",
+          cursor: "pointer"
+        }}
       >
         <Camera size={14} strokeWidth={1.75} aria-hidden="true" />
         Solicitar snapshot manual
