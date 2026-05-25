@@ -173,6 +173,42 @@ test("OpenClaw chat send falls back to HTTP after consecutive SSH bridge failure
   assert.equal(audit.events[1].decision, "n/a");
 });
 
+test("OpenClaw chat send accepts text alias and non-UUID smoke msgId for SSH bridge", async () => {
+  const audit = new MemoryAudit();
+  const bridge: OpenClawChatSshBridge = {
+    async sendMessage(input) {
+      assert.deepEqual(input, {
+        msgId: "smoke-002",
+        actor: "smoke",
+        text: "hola desde el gateway",
+        message: "hola desde el gateway"
+      });
+      return { msgId: "smoke-002", queued: true };
+    },
+    async streamHistory() {
+      throw new Error("not reached without panel clients");
+    }
+  };
+  const proxy = new OpenClawChatProxy(audit, {
+    bridgeKind: "ssh",
+    sshBridge: bridge
+  });
+
+  const result = await proxy.sendOperatorMessage({
+    msgId: "smoke-002",
+    actor: "smoke",
+    text: "hola desde el gateway"
+  });
+
+  assert.deepEqual(result, {
+    msgId: "smoke-002",
+    queued: true
+  });
+  assert.equal(audit.events.length, 1);
+  assert.equal(audit.events[0].metadata.msgId, "smoke-002");
+  assert.equal(audit.events[0].metadata.bridge, "ssh");
+});
+
 test("OpenClaw chat stream normalizes, multiplexes, and audits assistant completion", async () => {
   const audit = new MemoryAudit();
   const proxy = new OpenClawChatProxy(audit, {

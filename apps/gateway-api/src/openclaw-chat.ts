@@ -27,6 +27,8 @@ export type ChatStreamEvent =
 
 export interface ChatSendRequest {
   message?: unknown;
+  text?: unknown;
+  actor?: unknown;
   msgId?: unknown;
 }
 
@@ -130,12 +132,22 @@ export class OpenClawChatProxy {
   }
 
   async sendOperatorMessage(input: ChatSendRequest): Promise<ChatSendResponse> {
-    if (typeof input.message !== "string" || !input.message.trim()) {
+    const rawMessage =
+      typeof input.message === "string"
+        ? input.message
+        : typeof input.text === "string"
+          ? input.text
+          : "";
+
+    if (!rawMessage.trim()) {
       throw new ChatProxyError(400, "invalid_message", "message is required.");
     }
 
-    const message = input.message.trim();
-    const msgId = typeof input.msgId === "string" && isUuid(input.msgId) ? input.msgId : randomUUID();
+    const message = rawMessage.trim();
+    const msgId =
+      typeof input.msgId === "string" && isSafeChatMessageId(input.msgId)
+        ? input.msgId
+        : randomUUID();
 
     if (this.shouldUseSshBridge()) {
       const result = await this.sendOperatorMessageViaSsh({ ...input, msgId, message }, msgId, message);
@@ -765,6 +777,6 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+function isSafeChatMessageId(value: string): boolean {
+  return /^[A-Za-z0-9._:-]{1,128}$/.test(value);
 }
