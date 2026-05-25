@@ -55,6 +55,7 @@ import {
   type OpenClawCanvasPayload
 } from "../../shared/api/client.ts";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
+import { MarkdownText, useConsumeIntentOnMount, useOpenClawIntent, useToast } from "../../shared/ui/v2/index.ts";
 import { CanvasFlow } from "./canvas-flow.tsx";
 
 /* ============================================================
@@ -421,11 +422,8 @@ function CanvasTopbar({
 
       <span className="flex-1" />
 
-      <ClusterChip />
-      <ThinkingChip />
       {/* ThinkingChip reactivo se renderiza dentro del componente vía useChatStream */}
-      <PauseBtn />
-      <IconBtn icon={<Settings2 size={13} strokeWidth={1.75} />} />
+      <ThinkingChip />
     </header>
   );
 }
@@ -461,32 +459,6 @@ function LivePill({ connection }: { connection?: ChatConnection } = {}) {
         {tone.label}
       </span>
     </span>
-  );
-}
-
-function ClusterChip() {
-  return (
-    <button
-      type="button"
-      className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)]"
-      style={{
-        gap: 6,
-        padding: "6px 10px",
-        borderRadius: 8,
-        background: "var(--color-surface-sunken)",
-        border: "1px solid var(--color-border)",
-        cursor: "pointer"
-      }}
-    >
-      <Box size={12} strokeWidth={1.75} style={{ color: "var(--color-text-tertiary)" }} />
-      <span
-        className="font-[family-name:var(--font-mono)] font-semibold"
-        style={{ fontSize: 11, color: "var(--color-text-primary)" }}
-      >
-        svc-warmup-01
-      </span>
-      <ChevronDown size={12} strokeWidth={1.75} style={{ color: "var(--color-text-tertiary)" }} />
-    </button>
   );
 }
 
@@ -552,50 +524,6 @@ function ThinkingChip() {
   );
 }
 
-function PauseBtn() {
-  return (
-    <button
-      type="button"
-      className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)]"
-      style={{
-        gap: 6,
-        padding: "6px 10px",
-        borderRadius: 8,
-        background: "var(--color-surface-sunken)",
-        border: "1px solid var(--color-border)",
-        cursor: "pointer"
-      }}
-    >
-      <Pause size={12} strokeWidth={1.75} style={{ color: "var(--color-text-secondary)" }} />
-      <span
-        className="font-[family-name:var(--font-body)] font-semibold"
-        style={{ fontSize: 11, color: "var(--color-text-secondary)" }}
-      >
-        Pausar
-      </span>
-    </button>
-  );
-}
-
-function IconBtn({ icon }: { icon: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      className="grid place-items-center transition-colors hover:bg-[var(--color-surface-sunken)]"
-      style={{
-        width: 32,
-        height: 32,
-        borderRadius: 8,
-        background: "var(--color-surface-sunken)",
-        border: "1px solid var(--color-border)",
-        color: "var(--color-text-secondary)",
-        cursor: "pointer"
-      }}
-    >
-      {icon}
-    </button>
-  );
-}
 
 /* ============================================================
  * ChatPanel (mock)
@@ -730,6 +658,10 @@ function AssistantMessage({
   timeAgo: string;
   streaming?: boolean;
 }) {
+  // Si children es string, renderiza con MarkdownText (OpenClaw devuelve
+  // markdown via Bedrock). Si es otro tipo (ReactNode complejo, mocks), deja
+  // pasar tal cual para no romper.
+  const isString = typeof children === "string";
   return (
     <article className="flex flex-col" style={{ gap: 6 }}>
       <header className="flex items-center" style={{ gap: 8 }}>
@@ -776,11 +708,15 @@ function AssistantMessage({
           </span>
         ) : null}
       </header>
-      <p
-        className="m-0 font-[family-name:var(--font-body)]"
+      <div
+        className="font-[family-name:var(--font-body)]"
         style={{ fontSize: 14, lineHeight: 1.55, color: "var(--color-text-primary)" }}
       >
-        {children}
+        {isString ? (
+          <MarkdownText fontSize={14}>{children as string}</MarkdownText>
+        ) : (
+          children
+        )}
         {streaming ? (
           <span
             aria-hidden="true"
@@ -794,7 +730,7 @@ function AssistantMessage({
             }}
           />
         ) : null}
-      </p>
+      </div>
     </article>
   );
 }
@@ -873,6 +809,8 @@ function ProposalCard({
   quorum: { current: number; required: number; mode: string };
   rollbackMinutes: number;
 }) {
+  const { toast } = useToast();
+  const intent = useOpenClawIntent();
   const sevTone =
     severity === "critical" || severity === "high"
       ? { fg: "var(--color-critical)", bg: "var(--color-critical-soft)", border: "var(--color-critical-border)" }
@@ -978,13 +916,21 @@ function ProposalCard({
       <div className="flex items-center" style={{ gap: 8 }}>
         <button
           type="button"
-          className="inline-flex items-center transition-opacity hover:opacity-90"
+          onClick={() => {
+            const prompt = `Por favor procede a aprobar el dry-run de la propuesta:\n\n· Título: ${title}\n· Subtítulo: ${subtitle}\n· Severidad: ${severity}\n· Quorum actual: ${quorum.current}/${quorum.required} (${quorum.mode})\n\nDescripción: ${body}\n\nEjecuta el skill correspondiente y reporta el audit event.`;
+            intent.sendIntent(prompt, `proposal:approve-dry-run`);
+            toast.info("Aprobación enviada a OpenClaw", {
+              description: "Revisa el prompt en el chat y confirma con Enter.",
+              duration: 2500
+            });
+          }}
+          className="inline-flex items-center transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
           style={{
             gap: 6,
             padding: "9px 14px",
             borderRadius: 8,
             background: "var(--color-accent-tertiary)",
-            color: "#e6edf3",
+            color: "var(--color-on-dark-strong)",
             cursor: "pointer",
             fontSize: 13,
             fontWeight: 600
@@ -995,7 +941,11 @@ function ProposalCard({
         </button>
         <button
           type="button"
-          className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)]"
+          onClick={() => {
+            const prompt = `Muéstrame el diff completo de la propuesta "${title}". Incluye archivos afectados, hunks con line numbers, y riesgo de cada cambio.`;
+            intent.sendIntent(prompt, `proposal:view-diff`);
+          }}
+          className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
           style={{
             gap: 6,
             padding: "9px 14px",
@@ -1013,10 +963,15 @@ function ProposalCard({
         <span className="flex-1" />
         <button
           type="button"
-          className="inline-flex items-center"
+          onClick={() => {
+            const prompt = `Pospón la propuesta "${title}" hasta la próxima ventana de revisión. Mantén la propuesta en la cola y agrega un audit event con el motivo de la posposición.`;
+            intent.sendIntent(prompt, `proposal:postpone`);
+          }}
+          className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
           style={{
             gap: 4,
             padding: "9px 8px",
+            borderRadius: 6,
             background: "transparent",
             color: "var(--color-text-tertiary)",
             cursor: "pointer",
@@ -1033,6 +988,34 @@ function ProposalCard({
 function ChatInput() {
   const [draft, setDraft] = useState("");
   const state = useChatStream(chatClient);
+  const { toast } = useToast();
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Auto-resize del textarea: ajusta height al scrollHeight cada vez que el
+  // draft cambia. min 24px (1 línea), max ~220px (≈10 líneas) y después
+  // permite scroll interno.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, 220);
+    el.style.height = `${Math.max(24, next)}px`;
+  }, [draft]);
+
+  // Consume el intent pendiente disparado desde otro botón del panel
+  // (banners OpenClaw, cards de propuestas, etc.) y pre-llena el textarea.
+  useConsumeIntentOnMount((prompt) => {
+    setDraft(prompt);
+    // Pequeño delay para que el textarea esté en el DOM antes del focus.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(prompt.length, prompt.length);
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+  });
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1074,6 +1057,7 @@ function ChatInput() {
         }}
       >
         <textarea
+          ref={textareaRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKey}
@@ -1084,15 +1068,24 @@ function ChatInput() {
           style={{
             fontFamily: "var(--font-body)",
             fontSize: 14,
+            lineHeight: 1.5,
             color: "var(--color-text-primary)",
             border: "none",
+            overflow: "auto",
+            transition: "height 80ms ease-out",
             minHeight: 24
           }}
         />
         <div className="flex items-center" style={{ gap: 8 }}>
           <button
             type="button"
-            className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)]"
+            onClick={() =>
+              toast.info("Adjuntar evidencia", {
+                description: "Para adjuntar un snapshot o evidencia, usa la sección Recolector → Captura manual.",
+                duration: 4000
+              })
+            }
+            className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
             style={{
               gap: 4,
               padding: "4px 8px",
@@ -1109,7 +1102,8 @@ function ChatInput() {
           </button>
           <button
             type="button"
-            className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)]"
+            onClick={() => setDraft((current) => (current.startsWith("/") ? current : `/${current}`))}
+            className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
             style={{
               gap: 4,
               padding: "4px 8px",
@@ -1673,6 +1667,7 @@ function ActionHeader({
 }
 
 function ReadCard({ action }: { action: ReadAction }) {
+  const { toast } = useToast();
   return (
     <article className="flex flex-col v4-slide-in v4-hoverable" style={{ gap: 8 }}>
       <ActionHeader
@@ -1711,9 +1706,17 @@ function ReadCard({ action }: { action: ReadAction }) {
       </div>
       <button
         type="button"
-        className="inline-flex items-center self-start transition-colors hover:text-[var(--color-text-primary)]"
+        onClick={() =>
+          toast.info(`Archivo · ${action.path}`, {
+            description: `${action.totalLines} líneas. Cambia al tab 'Files' del viewport para ver el árbol completo y agrupar lecturas por path.`,
+            duration: 4500
+          })
+        }
+        className="inline-flex items-center self-start transition-colors hover:text-[var(--color-text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
         style={{
           gap: 4,
+          padding: "4px 6px",
+          borderRadius: 4,
           background: "transparent",
           color: "var(--color-text-secondary)",
           cursor: "pointer",
@@ -1832,6 +1835,7 @@ function HttpCard({ action }: { action: HttpAction }) {
 }
 
 function DiffCard({ action }: { action: DiffAction }) {
+  const { toast } = useToast();
   return (
     <article className="flex flex-col v4-slide-in v4-hoverable" style={{ gap: 8 }}>
       <ActionHeader
@@ -1882,13 +1886,19 @@ function DiffCard({ action }: { action: DiffAction }) {
       <div className="flex items-center" style={{ gap: 8 }}>
         <button
           type="button"
-          className="inline-flex items-center transition-opacity hover:opacity-90"
+          onClick={() =>
+            toast.info("Aplicar dry-run del diff", {
+              description: `Backend POST /v1/agent/diffs/${action.hashShort}/apply (pendiente). Cuando exista, ejecuta el diff sin tocar producción y muestra el resultado.`,
+              duration: 4500
+            })
+          }
+          className="inline-flex items-center transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
           style={{
             gap: 6,
             padding: "6px 12px",
             borderRadius: 6,
             background: "var(--color-accent-tertiary)",
-            color: "#e6edf3",
+            color: "var(--color-on-dark-strong)",
             cursor: "pointer",
             fontFamily: "var(--font-body)",
             fontSize: 11,
@@ -1900,7 +1910,13 @@ function DiffCard({ action }: { action: DiffAction }) {
         </button>
         <button
           type="button"
-          className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)]"
+          onClick={() =>
+            toast.info(`Diff completo · ${action.hashShort}`, {
+              description: "Cambia al tab 'Diff' del viewport derecho para ver todos los hunks con syntax highlight.",
+              duration: 4000
+            })
+          }
+          className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
           style={{
             gap: 6,
             padding: "6px 12px",
@@ -2043,13 +2059,21 @@ function AwaitCard({ action }: { action: AwaitAction }) {
       </span>
       <button
         type="button"
-        className="inline-flex items-center transition-opacity hover:opacity-90"
+        onClick={() => {
+          // Scrollea al input del chat para que el operador pueda responder.
+          const textarea = document.querySelector<HTMLTextAreaElement>('textarea[placeholder*="OpenClaw"]');
+          if (textarea) {
+            textarea.focus();
+            textarea.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        }}
+        className="inline-flex items-center transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
         style={{
           gap: 4,
           padding: "6px 12px",
           borderRadius: 6,
           background: "var(--color-warning)",
-          color: "#e6edf3",
+          color: "var(--color-on-dark-strong)",
           cursor: "pointer",
           fontFamily: "var(--font-body)",
           fontSize: 11,

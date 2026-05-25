@@ -48,7 +48,7 @@ import {
   isFallbackMeta,
   staleMinutesFromMeta
 } from "../../shared/ui/realtime/index.ts";
-import { BannerOpenClawV2 } from "../../shared/ui/v2/index.ts";
+import { BannerOpenClawV2, useToast } from "../../shared/ui/v2/index.ts";
 
 const LEARNING_POLL_INTERVAL_MS = 30_000;
 const LEARNING_POLL_INTERVAL_SECONDS = LEARNING_POLL_INTERVAL_MS / 1_000;
@@ -908,6 +908,16 @@ function ColaRetroalimentacion() {
   );
 }
 
+function useFeedbackToast() {
+  const { toast } = useToast();
+  return (title: string, meta: string) => {
+    toast.info(`Revisar · ${title}`, {
+      description: `Sección informativa (roadmap). Las acciones reales sobre evidencia viven en la tabla "Evidencia curada" arriba. ${meta}`,
+      duration: 5000
+    });
+  };
+}
+
 function FeedbackRow({
   iconBg,
   iconColor,
@@ -925,6 +935,7 @@ function FeedbackRow({
   showBorder?: boolean;
   last?: boolean;
 }) {
+  const notify = useFeedbackToast();
   return (
     <div
       className="flex items-center"
@@ -954,13 +965,15 @@ function FeedbackRow({
       <div className="flex flex-col" style={{ gap: 6 }}>
         <button
           type="button"
-          className="inline-flex items-center text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
+          onClick={() => notify(title, meta)}
+          className="inline-flex items-center text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
           style={{
             gap: 6,
             padding: "6px 12px",
             borderRadius: 6,
             border: "1px solid var(--color-border-strong)",
-            background: "transparent"
+            background: "transparent",
+            cursor: "pointer"
           }}
         >
           Revisar

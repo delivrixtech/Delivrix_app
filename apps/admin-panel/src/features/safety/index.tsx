@@ -44,7 +44,8 @@ import {
 import {
   BannerOpenClawV2,
   LiveIndicator,
-  SectionDivider
+  SectionDivider,
+  useToast
 } from "../../shared/ui/v2/index.ts";
 
 export function SafetySection({ data }: { data: DashboardData }) {
@@ -860,7 +861,53 @@ function Audit({ data }: { data: DashboardData }) {
   return <AuditTable rows={rows} />;
 }
 
+const AUDIT_INITIAL_VISIBLE = 24;
+const AUDIT_PAGE_SIZE = 24;
+
 function AuditTable({ rows }: { rows: AuditRow[] }) {
+  const { toast } = useToast();
+  const [visibleCount, setVisibleCount] = useState(AUDIT_INITIAL_VISIBLE);
+
+  // Paginación cliente: ocultamos rows excedentes y damos botón para cargar más.
+  // Si nuevos polls llegan, conservamos el visibleCount actual.
+  const visibleRows = rows.slice(0, visibleCount);
+  const hasMore = visibleCount < rows.length;
+  const remaining = rows.length - visibleCount;
+
+  const handleExport = () => {
+    try {
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        rowCount: rows.length,
+        rows: rows.map((r) => ({
+          ts: r.ts,
+          actor: r.actor,
+          action: r.action,
+          resource: r.resource,
+          hash: r.hash,
+          result: r.result
+        }))
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `delivrix-audit-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success("Auditoría exportada", {
+        description: `${rows.length} eventos en JSON.`,
+        duration: 2500
+      });
+    } catch (e) {
+      toast.error("No se pudo exportar la auditoría", {
+        description: e instanceof Error ? e.message : "Error desconocido"
+      });
+    }
+  };
+
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
@@ -900,8 +947,10 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
         </div>
         <button
           type="button"
-          className="inline-flex items-center text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
-          style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-strong)", background: "transparent" }}
+          onClick={handleExport}
+          disabled={rows.length === 0}
+          className="inline-flex items-center text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed disabled:opacity-55"
+          style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-strong)", background: "transparent", cursor: rows.length === 0 ? "not-allowed" : "pointer" }}
         >
           <Download size={12} strokeWidth={1.75} aria-hidden="true" />
           Exportar
@@ -931,9 +980,9 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
         ))}
       </div>
 
-      {rows.length > 0 ? (
+      {visibleRows.length > 0 ? (
         <ul className="m-0 p-0 list-none flex flex-col">
-          {rows.map((row, i) => (
+          {visibleRows.map((row, i) => (
             <li
               key={`${row.hash}-${i}`}
               className="grid items-center"
@@ -942,7 +991,7 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
                 minWidth: 720,
                 gap: 12,
                 padding: "10px 20px",
-                borderBottom: i < rows.length - 1 ? "1px solid var(--color-border)" : "none"
+                borderBottom: i < visibleRows.length - 1 ? "1px solid var(--color-border)" : "none"
               }}
             >
               <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">{row.ts}</span>
@@ -980,14 +1029,25 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
       )}
       </div>
 
-      {rows.length > 0 ? (
+      {hasMore ? (
         <div className="flex items-center justify-center" style={{ padding: "10px 12px 12px 12px" }}>
-        <button
-          type="button"
-          className="text-[11.5px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-secondary)]"
-        >
-          Mostrar 24 entradas más
-        </button>
+          <button
+            type="button"
+            onClick={() => setVisibleCount((c) => Math.min(c + AUDIT_PAGE_SIZE, rows.length))}
+            className="inline-flex items-center text-[11.5px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+            style={{ gap: 6, padding: "8px 14px", borderRadius: 6, background: "transparent", border: "1px solid var(--color-border)", cursor: "pointer" }}
+          >
+            Mostrar {Math.min(AUDIT_PAGE_SIZE, remaining)} entradas más
+            <span className="text-[10px] font-[family-name:var(--font-mono)]" style={{ color: "var(--color-text-tertiary)" }}>
+              {visibleCount}/{rows.length}
+            </span>
+          </button>
+        </div>
+      ) : rows.length > 0 ? (
+        <div className="flex items-center justify-center" style={{ padding: "10px 12px 12px 12px" }}>
+          <span className="text-[10px] font-[family-name:var(--font-mono)]" style={{ color: "var(--color-text-tertiary)" }}>
+            {rows.length} {rows.length === 1 ? "entrada" : "entradas"} · todas visibles
+          </span>
         </div>
       ) : null}
     </section>
