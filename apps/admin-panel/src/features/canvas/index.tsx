@@ -49,6 +49,8 @@ import {
   type OpenClawCanvasTimeRangeId
 } from "../../shared/api/client.ts";
 import { formatDateTime } from "../../shared/lib/formatters.ts";
+import { LiveIndicator } from "../../shared/ui/v2/index.ts";
+import { CanvasFlow } from "./canvas-flow.tsx";
 
 type CanvasData = OpenClawCanvasPayload["canvas"];
 type CanvasNode = CanvasData["nodes"][number];
@@ -91,6 +93,7 @@ export function CanvasSection({ data }: { data: DashboardData }) {
   });
 
   const canvas = liveCanvas.data?.canvas ?? data.canvas;
+  const liveUpdatedAt = liveCanvas.dataUpdatedAt || Date.now();
 
   // Estado UI local: nodo seleccionado, time range, zoom, runbook modal.
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -129,6 +132,7 @@ export function CanvasSection({ data }: { data: DashboardData }) {
         onSelectNode={setSelectedId}
         selectedId={selectedId}
         onPrimaryPromptAction={() => setRunbookOpen(true)}
+        liveUpdatedAt={liveUpdatedAt}
       />
       <DetailPanel selected={selectedNode} canvas={canvas} />
       {runbookOpen && canvas.prompt ? (
@@ -151,7 +155,8 @@ function CanvasWrap({
   onZoomChange,
   onSelectNode,
   selectedId,
-  onPrimaryPromptAction
+  onPrimaryPromptAction,
+  liveUpdatedAt
 }: {
   canvas: CanvasData;
   webdockInventory: DashboardData["webdockInventory"];
@@ -163,10 +168,11 @@ function CanvasWrap({
   onSelectNode: (id: string) => void;
   selectedId: string | null;
   onPrimaryPromptAction: () => void;
+  liveUpdatedAt: number;
 }) {
   return (
     <div className="flex flex-col bg-[var(--color-bg)] min-w-0">
-      <Hero canvas={canvas} webdockInventory={webdockInventory} />
+      <Hero canvas={canvas} webdockInventory={webdockInventory} liveUpdatedAt={liveUpdatedAt} />
       <WebdockLiveBanner inventory={webdockInventory} drift={webdockDrift} />
       <StartHereBanner
         canvas={canvas}
@@ -183,16 +189,28 @@ function CanvasWrap({
         lanes={canvas.lanes}
       />
       <div className="flex flex-col" style={{ padding: "20px 28px 0 28px" }}>
-        <Swimlanes
-          lanes={canvas.lanes}
-          nodes={canvas.nodes}
+        <CanvasFlow
+          canvas={canvas}
           selectedId={selectedId}
-          promptNodeId={canvas.prompt?.nodeId ?? null}
-          zoomPercent={zoom}
-          onSelect={onSelectNode}
+          onSelectNode={onSelectNode}
         />
       </div>
-      <PromptStrip prompt={canvas.prompt} onPrimary={onPrimaryPromptAction} />
+      {/* PromptStrip sticky bottom — Fix P0 AUDIT_CANVAS_DEEP §4:
+          el CTA principal (operador aprueba lo que OpenClaw propone) ya no se
+          entierra abajo del swimlanes. backdrop-filter para no tapar el contexto. */}
+      <div
+        style={{
+          position: "sticky",
+          bottom: 0,
+          zIndex: 10,
+          background: "color-mix(in srgb, var(--color-bg) 88%, transparent)",
+          backdropFilter: "blur(10px)",
+          WebkitBackdropFilter: "blur(10px)",
+          borderTop: "1px solid var(--color-border)"
+        }}
+      >
+        <PromptStrip prompt={canvas.prompt} onPrimary={onPrimaryPromptAction} />
+      </div>
       <Footer canvas={canvas} />
     </div>
   );
@@ -322,10 +340,12 @@ function StartHereBanner({
  * ============================================================ */
 function Hero({
   canvas,
-  webdockInventory
+  webdockInventory,
+  liveUpdatedAt
 }: {
   canvas: CanvasData;
   webdockInventory: DashboardData["webdockInventory"];
+  liveUpdatedAt: number;
 }) {
   const totalNodes = canvas.nodes.length;
   const readyNodes = canvas.nodes.filter((n) => n.status === "ready").length;
@@ -335,44 +355,49 @@ function Hero({
   const liveBadge = webdockInventory.source.kind === "live" ? "Webdock vivo" : "Webdock mock";
   return (
     <header
-      className="flex flex-col bg-[var(--color-bg)]"
-      style={{ gap: 6, padding: "20px 28px 16px 28px" }}
+      className="flex bg-[var(--color-bg)]"
+      style={{ gap: 16, padding: "20px 28px 16px 28px", alignItems: "flex-start" }}
     >
-      <div className="flex items-center" style={{ gap: 8 }}>
-        <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
-          style={{ letterSpacing: "1.2px" }}
+      <div className="flex flex-col min-w-0 flex-1" style={{ gap: 6 }}>
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <span
+            className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
+            style={{ letterSpacing: "1.2px" }}
+          >
+            CANVAS OPERATIVO
+          </span>
+          <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
+          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
+            {readyNodes} / {totalNodes} pasos listos · {blockedNodes} esperan tu revisión
+          </span>
+          <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
+          <span
+            className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
+            style={{
+              padding: "2px 6px",
+              borderRadius: 4,
+              background: webdockInventory.source.kind === "live" ? "var(--color-success-soft)" : "var(--color-warning-soft)",
+              color: webdockInventory.source.kind === "live" ? "var(--color-success)" : "var(--color-warning)"
+            }}
+          >
+            {liveBadge}
+          </span>
+        </div>
+        <h1
+          className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
+          style={{ letterSpacing: "-0.4px" }}
         >
-          CANVAS OPERATIVO
-        </span>
-        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-          {readyNodes} / {totalNodes} pasos listos · {blockedNodes} esperan tu revisión
-        </span>
-        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
-        <span
-          className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-          style={{
-            padding: "2px 6px",
-            borderRadius: 4,
-            background: webdockInventory.source.kind === "live" ? "var(--color-success-soft)" : "var(--color-warning-soft)",
-            color: webdockInventory.source.kind === "live" ? "var(--color-success)" : "var(--color-warning)"
-          }}
-        >
-          {liveBadge}
-        </span>
+          El viaje del servidor a infraestructura de envío.
+        </h1>
+        <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
+          OpenClaw te muestra cada paso del provisioning supervisado: del servidor físico
+          en Popayán hasta que las IPs estén calentadas y la reputación firme. El panel
+          es solo lectura — las aprobaciones se firman afuera con regla de dos personas.
+        </p>
       </div>
-      <h1
-        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
-        style={{ letterSpacing: "-0.4px" }}
-      >
-        El viaje del servidor a infraestructura de envío.
-      </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
-        OpenClaw te muestra cada paso del provisioning supervisado: del servidor físico
-        en Popayán hasta que las IPs estén calentadas y la reputación firme. El panel
-        es solo lectura — las aprobaciones se firman afuera con regla de dos personas.
-      </p>
+      <div className="shrink-0">
+        <LiveIndicator pollIntervalSec={5} lastUpdateAt={liveUpdatedAt} tone="success" />
+      </div>
     </header>
   );
 }
@@ -596,223 +621,6 @@ function Toolbar({
   );
 }
 
-/* ============================================================
- * Swimlanes (frame md4va) — 5 carriles horizontales
- * ============================================================ */
-function Swimlanes({
-  lanes,
-  nodes,
-  selectedId,
-  promptNodeId,
-  zoomPercent,
-  onSelect
-}: {
-  lanes: OpenClawCanvasLane[];
-  nodes: CanvasNode[];
-  selectedId: string | null;
-  promptNodeId: string | null;
-  zoomPercent: number;
-  onSelect: (id: string) => void;
-}) {
-  const scale = zoomPercent / 100;
-  return (
-    <div
-      className="overflow-hidden bg-[var(--color-surface-sunken)]"
-      style={{
-        borderRadius: 10,
-        border: "1px solid var(--color-border)"
-      }}
-    >
-      <div
-        style={{
-          transform: `scale(${scale})`,
-          transformOrigin: "top left",
-          width: scale !== 1 ? `${100 / scale}%` : "100%"
-        }}
-      >
-        {lanes.map((lane, idx) => {
-          const laneNodes = nodes.filter((n) => n.lane === lane);
-          if (laneNodes.length === 0) return null;
-          return (
-            <SwimlaneRow
-              key={lane}
-              lane={lane}
-              nodes={laneNodes}
-              selectedId={selectedId}
-              promptNodeId={promptNodeId}
-              onSelect={onSelect}
-              isLast={idx === lanes.length - 1}
-            />
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function SwimlaneRow({
-  lane,
-  nodes,
-  selectedId,
-  promptNodeId,
-  onSelect,
-  isLast
-}: {
-  lane: OpenClawCanvasLane;
-  nodes: CanvasNode[];
-  selectedId: string | null;
-  promptNodeId: string | null;
-  onSelect: (id: string) => void;
-  isLast: boolean;
-}) {
-  const color = LANE_COLOR[lane];
-  return (
-    <div
-      className="flex items-stretch"
-      style={{
-        borderBottom: isLast ? "none" : "1px solid var(--color-border)"
-      }}
-    >
-      {/* Lane label sidebar 120w */}
-      <div
-        className="flex items-center shrink-0"
-        style={{
-          gap: 6,
-          padding: "16px 12px 16px 16px",
-          width: 120
-        }}
-      >
-        <span
-          aria-hidden="true"
-          style={{ width: 6, height: 6, borderRadius: 3, background: color }}
-        />
-        <span
-          className="text-[9px] font-[family-name:var(--font-caption)] font-bold"
-          style={{ color, letterSpacing: "0.8px" }}
-        >
-          {LANE_LABEL[lane]}
-        </span>
-      </div>
-      {/* Lane row con nodos horizontales separados por chevrons */}
-      <div
-        className="flex items-center flex-1 overflow-x-auto"
-        style={{ gap: 14, padding: "14px 16px 14px 8px" }}
-      >
-        {nodes.map((node, i) => (
-          <div key={node.id} className="flex items-center" style={{ gap: 14 }}>
-            <NodeCard
-              node={node}
-              selected={node.id === selectedId}
-              hasPrompt={node.id === promptNodeId}
-              laneColor={color}
-              onSelect={() => onSelect(node.id)}
-            />
-            {i < nodes.length - 1 ? (
-              <ChevronRight
-                size={14}
-                strokeWidth={1.75}
-                className="text-[var(--color-text-tertiary)] shrink-0"
-                aria-hidden="true"
-              />
-            ) : null}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function NodeCard({
-  node,
-  selected,
-  hasPrompt,
-  laneColor,
-  onSelect
-}: {
-  node: CanvasNode;
-  selected: boolean;
-  hasPrompt: boolean;
-  laneColor: string;
-  onSelect: () => void;
-}) {
-  if (hasPrompt) {
-    // Estilo especial: gradient border 2px + shadow grande (frame T1iIlE).
-    return (
-      <button
-        type="button"
-        onClick={onSelect}
-        className="text-left shrink-0"
-        style={{
-          padding: 2,
-          width: 184,
-          borderRadius: 10,
-          background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-          boxShadow: "0 6px 14px rgba(146, 64, 14, 0.2)"
-        }}
-      >
-        <div
-          className="flex flex-col bg-[var(--color-surface)]"
-          style={{ gap: 6, padding: 12, borderRadius: 8 }}
-        >
-          <NodeCardBody node={node} />
-        </div>
-      </button>
-    );
-  }
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className="flex flex-col shrink-0 text-left"
-      style={{
-        gap: 6,
-        padding: 12,
-        width: 172,
-        borderRadius: 8,
-        background: selected
-          ? "linear-gradient(135deg, rgba(250, 204, 21, 0.14) 0%, rgba(234, 88, 12, 0.14) 100%), var(--color-surface)"
-          : "var(--color-surface)",
-        border: selected ? `1px solid ${laneColor}` : "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
-      }}
-    >
-      <NodeCardBody node={node} />
-    </button>
-  );
-}
-
-function NodeCardBody({ node }: { node: CanvasNode }) {
-  const statusVisual = statusToVisual(node.status);
-  return (
-    <>
-      <div className="flex items-center" style={{ gap: 6 }}>
-        <span
-          aria-hidden="true"
-          style={{ width: 6, height: 6, borderRadius: 999, background: statusVisual.dot }}
-        />
-        <span
-          className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
-          style={{ color: statusVisual.fg, letterSpacing: "0.4px" }}
-        >
-          {statusVisual.label}
-        </span>
-      </div>
-      <span className="text-[12.5px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] leading-tight">
-        {node.label}
-      </span>
-      {node.metrics.length > 0 && node.metrics[0]!.value !== null ? (
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-          {node.metrics[0]!.label}: {node.metrics[0]!.value}
-          {node.metrics[0]!.unit ? ` ${node.metrics[0]!.unit}` : ""}
-        </span>
-      ) : (
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-          progreso {node.progressPercent}%
-        </span>
-      )}
-    </>
-  );
-}
 
 function statusToVisual(status: string): { dot: string; fg: string; label: string } {
   if (status === "ready") return { dot: "var(--color-success)", fg: "var(--color-success)", label: "listo" };
@@ -1087,7 +895,7 @@ function PromptStrip({
               padding: 16,
               borderRadius: 8,
               border: "1px solid var(--color-border)",
-              boxShadow: "0 18px 45px rgba(26, 20, 16, 0.22)"
+              boxShadow: "var(--shadow-lg)"
             }}
           >
             <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
@@ -1553,6 +1361,26 @@ function RunbookModal({
   prompt: NonNullable<CanvasData["prompt"]>;
   onClose: () => void;
 }) {
+  // Escape trap + body scroll lock + restore focus on close.
+  // Fix P0 AUDIT_CANVAS_DEEP — modal sin atrapar Escape ni focus.
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
+      previouslyFocused?.focus?.();
+    };
+  }, [onClose]);
+
   return (
     <div
       role="dialog"
@@ -1573,7 +1401,7 @@ function RunbookModal({
           maxHeight: "min(720px, 90vh)",
           borderRadius: 12,
           border: "1px solid var(--color-border)",
-          boxShadow: "0 24px 60px rgba(26, 20, 16, 0.3)"
+          boxShadow: "var(--shadow-lg)"
         }}
         onClick={(e) => e.stopPropagation()}
       >
