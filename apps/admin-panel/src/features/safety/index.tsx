@@ -908,10 +908,12 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
         </button>
       </header>
 
+      <div className="overflow-x-auto">
       <div
         className="grid"
         style={{
           gridTemplateColumns: "84px 128px 160px minmax(0,1fr) 96px 80px",
+          minWidth: 720,
           gap: 12,
           padding: "8px 20px",
           background: "var(--color-surface-sunken)",
@@ -937,6 +939,7 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
               className="grid items-center"
               style={{
                 gridTemplateColumns: "84px 128px 160px minmax(0,1fr) 96px 80px",
+                minWidth: 720,
                 gap: 12,
                 padding: "10px 20px",
                 borderBottom: i < rows.length - 1 ? "1px solid var(--color-border)" : "none"
@@ -975,6 +978,7 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
       ) : (
         <AuditEmptyState />
       )}
+      </div>
 
       {rows.length > 0 ? (
         <div className="flex items-center justify-center" style={{ padding: "10px 12px 12px 12px" }}>

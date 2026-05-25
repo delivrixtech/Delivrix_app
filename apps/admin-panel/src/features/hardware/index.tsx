@@ -326,11 +326,13 @@ function Inventario({ data }: { data: DashboardData }) {
         </span>
       </header>
 
-      {/* colHeader */}
+      {/* colHeader — wrap en overflow-x-auto para scroll lateral en mobile */}
+      <div className="overflow-x-auto">
       <div
         className="grid items-center"
         style={{
           gridTemplateColumns: "180px 180px 80px minmax(0,1fr)",
+          minWidth: 540,
           gap: 12,
           padding: "6px 12px",
           borderRadius: 4,
@@ -348,13 +350,14 @@ function Inventario({ data }: { data: DashboardData }) {
         ))}
       </div>
 
-      <div className="flex flex-col" style={{ gap: 6 }}>
+      <div className="flex flex-col" style={{ gap: 6, marginTop: 6 }}>
         {INVENTORY_ROWS.map((row) => (
           <div
             key={row.hash}
             className="grid items-center"
             style={{
               gridTemplateColumns: "180px 180px 80px minmax(0,1fr)",
+              minWidth: 540,
               gap: 12,
               padding: "10px 12px",
               borderRadius: 4,
@@ -389,6 +392,7 @@ function Inventario({ data }: { data: DashboardData }) {
             </span>
           </div>
         ))}
+      </div>
       </div>
     </section>
   );
@@ -890,11 +894,13 @@ function AuditFooter({ data }: { data: DashboardData }) {
         </span>
       </header>
 
-      {/* colHeader */}
+      {/* colHeader — wrap en overflow-x-auto para scroll lateral en mobile */}
+      <div className="overflow-x-auto">
       <div
         className="grid items-center"
         style={{
           gridTemplateColumns: "160px 140px 200px minmax(0,1fr) 120px",
+          minWidth: 820,
           gap: 8,
           padding: "6px 10px",
           borderRadius: 4,
@@ -912,13 +918,14 @@ function AuditFooter({ data }: { data: DashboardData }) {
         ))}
       </div>
 
-      <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 2 }}>
+      <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 2, marginTop: 4 }}>
         {auditRows.map((row, i) => (
           <li
             key={i}
             className="grid items-center"
             style={{
               gridTemplateColumns: "160px 140px 200px minmax(0,1fr) 120px",
+              minWidth: 820,
               gap: 8,
               padding: "8px 10px",
               borderRadius: 4,
@@ -951,6 +958,7 @@ function AuditFooter({ data }: { data: DashboardData }) {
           </li>
         ))}
       </ul>
+      </div>
     </section>
   );
 }

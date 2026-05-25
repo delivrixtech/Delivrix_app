@@ -291,10 +291,12 @@ function ClusterTable({ data }: { data: DashboardData }) {
         <span className="flex-1" aria-hidden="true" />
         <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">/v1/admin/clusters</span>
       </header>
+      <div className="overflow-x-auto">
       <div
         className="grid"
         style={{
           gridTemplateColumns: "minmax(0,1.4fr) 60px 60px 60px 60px 60px 70px 110px 120px",
+          minWidth: 880,
           gap: 10,
           padding: "10px 14px",
           background: "var(--color-surface-sunken)",
@@ -318,6 +320,7 @@ function ClusterTable({ data }: { data: DashboardData }) {
             className="grid items-center"
             style={{
               gridTemplateColumns: "minmax(0,1.4fr) 60px 60px 60px 60px 60px 70px 110px 120px",
+              minWidth: 880,
               gap: 10,
               padding: "12px 14px",
               borderTop: i > 0 ? "1px solid var(--color-border)" : "none",
@@ -356,6 +359,7 @@ function ClusterTable({ data }: { data: DashboardData }) {
           </li>
         ))}
       </ul>
+      </div>
     </div>
   );
 }
