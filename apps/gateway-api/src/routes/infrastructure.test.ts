@@ -46,11 +46,15 @@ test("Infrastructure inventory degrades gracefully when AWS cache exists and ION
       name: "svc-warmup-01",
       ipv4: "185.243.12.31",
       status: "running",
-      location: "fi-hel-2"
+      location: "fi-hel-2",
+      accountId: "default",
+      accountLabel: "Webdock"
     }],
     source: {
       kind: "live",
       apiBase: "https://api.webdock.io/v1",
+      accountId: "default",
+      accountLabel: "Webdock",
       fetchedAt: "2026-05-24T17:59:30.000Z",
       responseOk: true
     }
@@ -65,7 +69,7 @@ test("Infrastructure inventory degrades gracefully when AWS cache exists and ION
 
   assert.equal(payload.providers.length, 4);
   assert.deepEqual(payload.providers.map((provider) => [provider.id, provider.status]), [
-    ["webdock-bridge", "active"],
+    ["webdock-default", "active"],
     ["aws-bedrock-us-east-1", "active"],
     ["ionos-cloud-dns", "error"],
     ["physical-medellin", "planned"]
@@ -74,6 +78,79 @@ test("Infrastructure inventory degrades gracefully when AWS cache exists and ION
   assert.equal(payload.providers[0].itemCount, 1);
   assert.equal(payload.providers[1].items?.[0]?.id, "us.anthropic.claude-sonnet-4-6");
   assert.equal(payload.providers[2].errorReason, "adapter_pending");
+});
+
+test("Infrastructure inventory exposes three Webdock accounts as distinct providers", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [
+      webdockAccount("primary", "Webdock Primary", ["running", "stopped"]),
+      webdockAccount("secondary", "Webdock Secondary", ["running"]),
+      webdockAccount("tertiary", "Webdock Tertiary", ["running", "running", "stopped"])
+    ],
+    now: fixedNow
+  });
+
+  assert.deepEqual(payload.providers.map((provider) => ({
+    id: provider.id,
+    displayName: provider.displayName,
+    status: provider.status,
+    itemCount: provider.itemCount
+  })), [
+    {
+      id: "webdock-primary",
+      displayName: "Webdock Primary",
+      status: "active",
+      itemCount: 2
+    },
+    {
+      id: "webdock-secondary",
+      displayName: "Webdock Secondary",
+      status: "active",
+      itemCount: 1
+    },
+    {
+      id: "webdock-tertiary",
+      displayName: "Webdock Tertiary",
+      status: "active",
+      itemCount: 3
+    }
+  ]);
+  assert.equal(payload.providers[0].items?.[0]?.detail?.accountId, "primary");
+  assert.equal(payload.providers[1].items?.[0]?.detail?.accountLabel, "Webdock Secondary");
+});
+
+test("Infrastructure inventory preserves legacy Webdock default account shape", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [webdockAccount("default", "Webdock", ["running"])],
+    now: fixedNow
+  });
+
+  assert.equal(payload.providers.length, 1);
+  assert.equal(payload.providers[0].id, "webdock-default");
+  assert.equal(payload.providers[0].displayName, "Webdock");
+  assert.equal(payload.providers[0].status, "active");
+});
+
+test("Infrastructure inventory marks a failed Webdock account without hiding healthy accounts", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [
+      webdockAccount("primary", "Webdock Primary", ["running"]),
+      webdockAccount("secondary", "Webdock Secondary", [], {
+        responseOk: false,
+        errorMessage: "Webdock API returned 401 Unauthorized"
+      })
+    ],
+    now: fixedNow
+  });
+
+  assert.deepEqual(payload.providers.map((provider) => [provider.id, provider.status]), [
+    ["webdock-primary", "active"],
+    ["webdock-secondary", "error"]
+  ]);
+  assert.equal(payload.providers[1].errorReason, "Webdock API returned 401 Unauthorized");
 });
 
 test("Infrastructure inventory audit is explicit, privacy-preserving, and keeps hash chain valid", async () => {
@@ -93,6 +170,8 @@ test("Infrastructure inventory audit is explicit, privacy-preserving, and keeps 
       source: {
         kind: "mock",
         apiBase: "https://api.webdock.io/v1",
+        accountId: "default",
+        accountLabel: "Webdock",
         fetchedAt: "2026-05-24T17:59:30.000Z",
         responseOk: true
       }
@@ -125,3 +204,35 @@ test("Infrastructure inventory audit is explicit, privacy-preserving, and keeps 
   assert.equal(metadataJson.includes("smtp-out-01"), false);
   assert.equal(metadataJson.includes("svc-private-01"), false);
 });
+
+function webdockAccount(
+  accountId: string,
+  accountLabel: string,
+  statuses: string[],
+  source?: Partial<WebdockInventoryResult["source"]>
+) {
+  return {
+    accountId,
+    accountLabel,
+    result: {
+      servers: statuses.map((status, index) => ({
+        slug: `svc-${accountId}-${index + 1}`,
+        name: `svc-${accountId}-${index + 1}`,
+        ipv4: `185.243.12.${index + 31}`,
+        status,
+        location: "fi-hel-2",
+        accountId,
+        accountLabel
+      })),
+      source: {
+        kind: "live" as const,
+        apiBase: "https://api.webdock.io/v1",
+        accountId,
+        accountLabel,
+        fetchedAt: "2026-05-24T17:59:30.000Z",
+        responseOk: true,
+        ...source
+      }
+    }
+  };
+}

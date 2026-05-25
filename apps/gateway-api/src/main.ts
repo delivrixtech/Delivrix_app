@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
+  createWebdockAdaptersFromEnv,
   ProxmoxAdapter,
   WebdockAdapter,
   WebdockRealAdapter,
@@ -143,6 +144,7 @@ const rateLimitStore = new LocalFileRateLimitStore();
 const rateLimitService = new RateLimitService(rateLimitStore);
 const webdockAdapter = new WebdockAdapter();
 const webdockRealAdapter = new WebdockRealAdapter();
+const webdockAccountAdapters = createWebdockAdaptersFromEnv();
 const proxmoxAdapter = new ProxmoxAdapter();
 const provisioningRunStore = new LocalFileProvisioningRunStore();
 const ipReputationReportStore = new LocalFileIpReputationReportStore();
@@ -494,7 +496,14 @@ const server = createServer(async (request, response) => {
         request,
         response,
         auditLog,
-        webdockListServers: () => webdockRealAdapter.listServers(),
+        webdockListServers: async () =>
+          Promise.all(
+            webdockAccountAdapters.map(async (account) => ({
+              accountId: account.id,
+              accountLabel: account.label,
+              result: await account.adapter.listServers()
+            }))
+          ),
         env: process.env
       });
     }

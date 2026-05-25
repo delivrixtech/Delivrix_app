@@ -27,13 +27,21 @@ export interface InfrastructureInventoryRouteDependencies {
   request: IncomingMessage;
   response: ServerResponse;
   auditLog: AuditSink;
-  webdockListServers: () => Promise<WebdockInventoryResult>;
+  webdockListServers: () => Promise<WebdockAccountInventoryResult[]>;
   awsBedrockSetupLogPath?: string;
   env?: Record<string, string | undefined>;
   now?: () => Date;
 }
 
+export interface WebdockAccountInventoryResult {
+  accountId: string;
+  accountLabel: string;
+  result: WebdockInventoryResult;
+}
+
 export interface BuildInfrastructureInventoryPayloadInput {
+  webdockAccounts?: WebdockAccountInventoryResult[] | null;
+  /** Compat legacy para tests/consumidores internos previos a multi-cuenta. */
   webdock?: WebdockInventoryResult | null;
   awsBedrockSetupLogPath?: string | null;
   env?: Record<string, string | undefined>;
@@ -51,9 +59,9 @@ interface AwsBedrockSetupSummary {
 export async function handleInfrastructureInventoryHttp(
   deps: InfrastructureInventoryRouteDependencies
 ): Promise<void> {
-  const webdock = await deps.webdockListServers();
+  const webdockAccounts = await deps.webdockListServers();
   const payload = await buildInfrastructureInventoryPayload({
-    webdock,
+    webdockAccounts,
     awsBedrockSetupLogPath: deps.awsBedrockSetupLogPath,
     env: deps.env,
     now: deps.now?.() ?? new Date()
@@ -70,9 +78,18 @@ export async function buildInfrastructureInventoryPayload(
   input: BuildInfrastructureInventoryPayloadInput = {}
 ): Promise<InfrastructureInventoryResponse> {
   const providers: Provider[] = [];
+  const webdockAccounts =
+    input.webdockAccounts ??
+    (input.webdock
+      ? [{
+          accountId: input.webdock.source.accountId ?? "default",
+          accountLabel: input.webdock.source.accountLabel ?? "Webdock",
+          result: input.webdock
+        }]
+      : []);
 
-  if (input.webdock) {
-    providers.push(buildWebdockProvider(input.webdock));
+  for (const account of webdockAccounts) {
+    providers.push(buildWebdockProvider(account));
   }
 
   if (input.includeStaticProviders ?? true) {
@@ -122,12 +139,13 @@ export async function auditInfrastructureInventoryFetch(
   });
 }
 
-function buildWebdockProvider(webdock: WebdockInventoryResult): Provider {
+function buildWebdockProvider(account: WebdockAccountInventoryResult): Provider {
+  const webdock = account.result;
   const status = resolveWebdockProviderStatus(webdock);
   const errorReason = webdock.source.responseOk ? undefined : webdock.source.errorMessage ?? "webdock_unavailable";
   return {
-    id: "webdock-bridge",
-    displayName: "Webdock bridge",
+    id: `webdock-${sanitizeProviderId(account.accountId)}`,
+    displayName: account.accountLabel,
     kind: "compute",
     status,
     itemCount: webdock.servers.length,
@@ -246,6 +264,8 @@ function webdockServerToInventoryItem(server: WebdockServer): InventoryItem {
       location: server.location ?? null,
       profileSlug: server.profileSlug ?? null,
       imageSlug: server.imageSlug ?? null,
+      accountId: server.accountId ?? null,
+      accountLabel: server.accountLabel ?? null,
       createdAt: server.creationDate ?? null,
       lastDataReceived: server.lastDataReceived ?? null,
       snapshotRunTime: server.snapshotRunTime ?? null
@@ -264,6 +284,11 @@ function resolveWebdockProviderStatus(webdock: WebdockInventoryResult): Provider
     return "active";
   }
   return "paused";
+}
+
+function sanitizeProviderId(id: string): string {
+  const normalized = id.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+  return normalized.length > 0 ? normalized : "default";
 }
 
 function summarizeBy<T extends string>(
