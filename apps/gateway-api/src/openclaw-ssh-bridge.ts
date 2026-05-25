@@ -65,6 +65,7 @@ export class OpenClawSshBridge {
   private readonly commandRunner: OpenClawSshCommandRunner;
   private readonly now: () => Date;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  private readonly pendingMessages = new Map<string, { message: string; sentAtMs: number }>();
 
   constructor(config: OpenClawSshBridgeConfig) {
     if (!config.sshHost.trim()) {
@@ -96,7 +97,12 @@ export class OpenClawSshBridge {
     const msgId = typeof input.msgId === "string" && input.msgId.length > 0
       ? input.msgId
       : "";
-    const message = typeof input.message === "string" ? input.message.trim() : "";
+    const message =
+      typeof input.message === "string"
+        ? input.message.trim()
+        : typeof input.text === "string"
+          ? input.text.trim()
+          : "";
 
     if (!msgId || !message) {
       throw new OpenClawSshBridgeError(
@@ -105,13 +111,10 @@ export class OpenClawSshBridge {
       );
     }
 
+    const sentAtMs = Date.now();
     const output = await this.callOpenClaw("chat.send", {
       sessionKey: this.sessionKey,
-      msgId,
-      actor: "admin-panel",
-      text: message,
-      message: { role: "user", content: message },
-      context: { bridge: "ssh", gateway: "delivrix-gateway" },
+      message,
       idempotencyKey: msgId
     });
     const parsed = parseJsonFromStdout(output.stdout);
@@ -123,6 +126,7 @@ export class OpenClawSshBridge {
       );
     }
 
+    this.pendingMessages.set(msgId, { message, sentAtMs });
     return { msgId, queued: true };
   }
 
@@ -151,11 +155,14 @@ export class OpenClawSshBridge {
       try {
         const output = await this.callOpenClaw("chat.history", {
           sessionKey: this.sessionKey,
-          msgId,
           limit: 20
         }, callbacks.signal);
         const parsed = parseJsonFromStdout(output.stdout);
-        const completion = extractAssistantCompletion(parsed, msgId);
+        const completion = extractAssistantCompletion(
+          parsed,
+          msgId,
+          this.pendingMessages.get(msgId)?.sentAtMs
+        );
 
         if (completion) {
           const delta = completion.content.startsWith(emittedContent)
@@ -172,6 +179,7 @@ export class OpenClawSshBridge {
             ...(completion.audit ? { audit: completion.audit } : {}),
             ...(completion.proposals ? { proposals: completion.proposals } : {})
           });
+          this.pendingMessages.delete(msgId);
           return;
         }
       } catch (error) {
@@ -186,6 +194,7 @@ export class OpenClawSshBridge {
       msgId,
       reason: lastError ? "ssh_history_error" : "ssh_history_timeout"
     });
+    this.pendingMessages.delete(msgId);
   }
 
   private callOpenClaw(
@@ -212,18 +221,20 @@ export class OpenClawSshBridge {
       "-o",
       "StrictHostKeyChecking=accept-new",
       `${this.sshUser}@${this.sshHost}`,
-      "docker",
-      "exec",
-      this.containerId,
-      "openclaw",
-      "gateway",
-      "call",
-      command,
-      "--json",
-      "--timeout",
-      String(Math.ceil(this.timeoutMs / 1000)),
-      "--params",
-      JSON.stringify(params)
+      shellQuoteArgs([
+        "docker",
+        "exec",
+        this.containerId,
+        "openclaw",
+        "gateway",
+        "call",
+        command,
+        "--json",
+        "--timeout",
+        String(Math.ceil(this.timeoutMs / 1000)),
+        "--params",
+        JSON.stringify(params)
+      ])
     );
     return args;
   }
@@ -331,7 +342,8 @@ async function runSshCommand(
 
 function extractAssistantCompletion(
   raw: unknown,
-  msgId: string
+  msgId: string,
+  sentAtMs?: number
 ): {
   content: string;
   audit?: Extract<ChatStreamEvent, { type: "ASSISTANT_DONE" }>["audit"];
@@ -341,7 +353,11 @@ function extractAssistantCompletion(
   const assistantMessages = messages.filter((message) => {
     const role = stringValue(message.role) ?? stringValue(message.type);
     const content = contentFromMessage(message);
-    return Boolean(content) && (role === "assistant" || role === "ASSISTANT_DONE");
+    if (!content || (role !== "assistant" && role !== "ASSISTANT_DONE")) {
+      return false;
+    }
+    const timestamp = numberValue(message.timestamp);
+    return sentAtMs === undefined || timestamp === undefined || timestamp >= sentAtMs;
   });
 
   const preferred = [...assistantMessages]
@@ -393,6 +409,14 @@ function contentFromMessage(message: Record<string, unknown>): string | null {
   const direct = stringValue(message.content) ?? stringValue(message.text);
   if (direct !== null) {
     return direct;
+  }
+  if (Array.isArray(message.content)) {
+    const text = message.content
+      .filter(isRecord)
+      .map((block) => stringValue(block.text))
+      .filter((blockText): blockText is string => blockText !== null)
+      .join("");
+    return text.length > 0 ? text : null;
   }
   if (isRecord(message.message)) {
     return stringValue(message.message.content) ?? stringValue(message.message.text);
@@ -496,6 +520,14 @@ function numberValue(value: unknown): number | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function shellQuoteArgs(args: string[]): string {
+  return args.map(shellQuote).join(" ");
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

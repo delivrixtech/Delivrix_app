@@ -32,21 +32,23 @@ test("OpenClawSshBridge sendMessage parses status=started ACK from CLI", async (
   assert.deepEqual(result, { msgId: "msg-1", queued: true });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].file, "ssh");
-  assert.ok(calls[0].args.includes("docker"));
-  assert.ok(calls[0].args.includes("exec"));
-  assert.ok(calls[0].args.includes("chat.send"));
+  const remoteCommand = calls[0].args.at(-1) ?? "";
+  assert.ok(remoteCommand.includes("'docker'"));
+  assert.ok(remoteCommand.includes("'exec'"));
+  assert.ok(remoteCommand.includes("'chat.send'"));
 
-  const params = JSON.parse(calls[0].args.at(-1) ?? "{}");
+  const params = JSON.parse(remoteCommand.match(/'--params' '([^']+)'$/)?.[1] ?? "{}");
   assert.equal(params.sessionKey, "agent:main:operator");
-  assert.equal(params.msgId, "msg-1");
-  assert.equal(params.text, "hola");
-  assert.equal(params.message.content, "hola");
+  assert.equal(params.idempotencyKey, "msg-1");
+  assert.equal(params.message, "hola");
+  assert.equal("msgId" in params, false);
+  assert.equal("text" in params, false);
 });
 
 test("OpenClawSshBridge streamHistory emits typing, delta, and assistant done", async () => {
   let historyPolls = 0;
   const runner: OpenClawSshCommandRunner = async (_file, args) => {
-    assert.ok(args.includes("chat.history"));
+    assert.ok((args.at(-1) ?? "").includes("'chat.history'"));
     historyPolls += 1;
     return {
       stdout: JSON.stringify(historyPolls === 1
@@ -55,7 +57,7 @@ test("OpenClawSshBridge streamHistory emits typing, delta, and assistant done", 
             messages: [{
               role: "assistant",
               msgId: "msg-2",
-              content: "respuesta final",
+              content: [{ type: "text", text: "respuesta final" }],
               skillsInvoked: ["delivrix-fleet-ops"],
               audit: { tokensUsed: 12, duration_ms: 345 }
             }]
