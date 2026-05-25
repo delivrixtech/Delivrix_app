@@ -9,6 +9,24 @@ const allowedProxyPaths = new Set(Object.values(READ_ENDPOINTS));
 const chatSendPath = "/v1/openclaw/chat/send";
 const chatStreamPath = "/v1/openclaw/chat/stream";
 
+/**
+ * Write endpoints permitidos desde el admin panel. El panel administrativo
+ * necesita ejecutar acciones operativas P0 (kill switch, snapshot ingest,
+ * solicitar evaluación). Las protecciones reales viven en el backend:
+ * - Audit append-only obligatorio en cada acción.
+ * - Reason + actorId requeridos por contrato.
+ * - humanApproved=true para snapshot ingest.
+ * - Regla de 2 personas para kill switch.
+ *
+ * Otros POST (proposals, scheduler, runbook evaluate, demo, etc.) siguen
+ * bloqueados para que solo OpenClaw/CLI los disparen.
+ */
+const allowedWritePaths = new Set<string>([
+  "/v1/kill-switch",
+  "/v1/openclaw/onboarding/evaluate",
+  "/v1/devops/collector/manual-snapshots/ingest"
+]);
+
 export default defineConfig({
   plugins: [readOnlyProxyBoundary(), tailwindcss(), react()],
   server: {
@@ -70,13 +88,16 @@ function readOnlyProxyBoundary(): Plugin {
         const isChatStream =
           request.method === "GET" &&
           requestUrl.pathname === chatStreamPath;
+        const isAllowedWrite =
+          request.method === "POST" &&
+          allowedWritePaths.has(requestUrl.pathname);
 
         if (!isProxyPath) {
           next();
           return;
         }
 
-        if (isApprovalWrite || isChatSend || isChatStream) {
+        if (isApprovalWrite || isChatSend || isChatStream || isAllowedWrite) {
           next();
           return;
         }
@@ -84,7 +105,8 @@ function readOnlyProxyBoundary(): Plugin {
         if (request.method !== "GET") {
           writeJson(response, 405, {
             error: "method_not_allowed",
-            message: "Admin panel proxy is GET-only."
+            message:
+              "Admin panel proxy bloquea esta acción. Si necesita estar disponible para el operador, añadirla a allowedWritePaths en vite.config.ts con audit + gate backend."
           });
           return;
         }
