@@ -152,6 +152,19 @@ export class OpenClawChatProxy {
       throw new ChatProxyError(502, "openclaw_chat_send_rejected", `OpenClaw rejected chat.send with ${upstreamResponse.status}.`);
     }
 
+    const upstreamAck = await readUpstreamChatSendAck(upstreamResponse);
+    if (!isValidUpstreamChatSendAck(upstreamAck, msgId)) {
+      await this.auditOperatorMessage(msgId, message, "reject", "gateway_internal_error", {
+        upstreamStatus: upstreamResponse.status,
+        upstreamResponse: "invalid_chat_send_ack"
+      });
+      throw new ChatProxyError(
+        502,
+        "openclaw_chat_send_invalid_response",
+        "OpenClaw chat.send returned an invalid acknowledgement."
+      );
+    }
+
     await this.auditOperatorMessage(msgId, message, "n/a", null);
     return { msgId, queued: true };
   }
@@ -594,6 +607,18 @@ function parseJson(raw: string): unknown {
   } catch {
     return null;
   }
+}
+
+async function readUpstreamChatSendAck(response: Response): Promise<Record<string, unknown> | null> {
+  const parsed = parseJson(await response.text());
+  return isRecord(parsed) ? parsed : null;
+}
+
+function isValidUpstreamChatSendAck(ack: Record<string, unknown> | null, msgId: string): boolean {
+  if (!ack || ack.queued !== true) {
+    return false;
+  }
+  return typeof ack.msgId === "undefined" || ack.msgId === msgId;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
