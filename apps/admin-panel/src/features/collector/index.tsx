@@ -454,18 +454,18 @@ function AcceptedFieldsTable({
       </header>
 
       <div
-        className="bg-[var(--color-surface)]"
+        className="bg-[var(--color-surface)] overflow-x-auto"
         style={{
           borderRadius: 8,
           border: "1px solid var(--color-border)",
-          boxShadow: "var(--shadow-sm)",
-          overflow: "hidden"
+          boxShadow: "var(--shadow-sm)"
         }}
       >
         <div
           className="grid items-center"
           style={{
             gridTemplateColumns: "260px 150px 170px 180px 130px minmax(0,1fr)",
+            minWidth: 1050,
             gap: 16,
             padding: "14px 16px",
             background: "var(--color-surface-sunken)",
@@ -489,6 +489,7 @@ function AcceptedFieldsTable({
             className="grid items-center"
             style={{
               gridTemplateColumns: "260px 150px 170px 180px 130px minmax(0,1fr)",
+              minWidth: 1050,
               gap: 16,
               padding: "14px 16px",
               borderTop: i > 0 ? "1px solid var(--color-border)" : "none"

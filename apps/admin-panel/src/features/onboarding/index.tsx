@@ -203,7 +203,7 @@ function Stepper({ data }: { data: DashboardData }) {
 
   return (
     <ol
-      className="m-0 p-0 list-none flex items-center bg-[var(--color-surface)]"
+      className="m-0 p-0 list-none flex items-center overflow-x-auto snap-x snap-mandatory bg-[var(--color-surface)] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       style={{
         gap: 14,
         padding: "16px 20px",
@@ -215,7 +215,7 @@ function Stepper({ data }: { data: DashboardData }) {
       {steps.map((step, i) => {
         const active = i === activeIdx;
         return (
-        <li key={step.kicker} className="flex items-center min-w-0" style={{ gap: 10 }}>
+        <li key={step.kicker} className="flex items-center shrink-0 snap-start" style={{ gap: 10 }}>
           <div className="flex items-center" style={{ gap: 10 }}>
             <span
               aria-hidden="true"
