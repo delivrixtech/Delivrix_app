@@ -12,6 +12,7 @@ export type ChatConnectionState = "connected" | "reconnecting" | "offline";
 
 export type ChatStreamEvent =
   | { type: "HEARTBEAT"; at: string }
+  | { type: "ASSISTANT_TYPING"; msgId: string; ts?: string }
   | { type: "ASSISTANT_DELTA"; msgId: string; delta: string }
   | {
       type: "ASSISTANT_DONE";
@@ -20,6 +21,7 @@ export type ChatStreamEvent =
       audit?: { skillsInvoked: string[]; tokensUsed?: number; durationMs?: number };
       proposals?: unknown[];
     }
+  | { type: "ASSISTANT_BLOCKED"; msgId: string; reason: string }
   | { type: "ERROR"; msgId?: string; error: string }
   | { type: "AGENT_OFFLINE" };
 
@@ -44,10 +46,27 @@ export interface OpenClawChatPanelClient {
 
 type FetchLike = typeof fetch;
 type WebSocketConstructor = new (url: string) => WebSocket;
+type ChatBridgeKind = "http" | "ssh";
+
+export interface OpenClawChatSshBridge {
+  sendMessage(input: ChatSendRequest): Promise<ChatSendResponse>;
+  streamHistory(
+    msgId: string,
+    callbacks: {
+      onTyping?: (event: Extract<ChatStreamEvent, { type: "ASSISTANT_TYPING" }>) => void;
+      onDelta?: (event: Extract<ChatStreamEvent, { type: "ASSISTANT_DELTA" }>) => void;
+      onDone?: (event: Extract<ChatStreamEvent, { type: "ASSISTANT_DONE" }>) => void;
+      onBlocked?: (event: Extract<ChatStreamEvent, { type: "ASSISTANT_BLOCKED" }>) => void;
+    }
+  ): Promise<void>;
+}
 
 export interface OpenClawChatConfig {
   agentHttpUrl?: string;
   agentWsUrl?: string;
+  bridgeKind?: ChatBridgeKind;
+  sshBridge?: OpenClawChatSshBridge | null;
+  sshBridgeFailureThreshold?: number;
   gatewayToken?: string;
   readBoundaryToken?: string;
   delivrixBaseUrl?: string;
@@ -68,12 +87,16 @@ export class OpenClawChatProxy {
   private readonly sessionKey: string;
   private readonly fetchImpl: FetchLike;
   private readonly webSocketCtor: WebSocketConstructor | undefined;
+  private readonly bridgeKind: ChatBridgeKind;
+  private readonly sshBridge: OpenClawChatSshBridge | null;
+  private readonly sshBridgeFailureThreshold: number;
   private readonly now: () => Date;
   private readonly reconnectDelay: (attempt: number) => number;
   private agentSocket: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private reconnectAttempt = 0;
+  private sshBridgeFailureCount = 0;
   private transportDegradedAudited = false;
   private state: ChatConnectionState = "offline";
   private readonly auditLog: AuditSink;
@@ -91,6 +114,9 @@ export class OpenClawChatProxy {
     this.sessionKey = config.sessionKey ?? OPENCLAW_CHAT_SESSION_KEY;
     this.fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
     this.webSocketCtor = config.webSocketCtor ?? globalThis.WebSocket;
+    this.bridgeKind = config.bridgeKind ?? (process.env.OPENCLAW_BRIDGE_KIND === "ssh" ? "ssh" : "http");
+    this.sshBridge = config.sshBridge ?? null;
+    this.sshBridgeFailureThreshold = config.sshBridgeFailureThreshold ?? 3;
     this.now = config.now ?? (() => new Date());
     this.reconnectDelay = config.reconnectDelay ?? openClawChatReconnectDelayMs;
   }
@@ -111,6 +137,29 @@ export class OpenClawChatProxy {
     const message = input.message.trim();
     const msgId = typeof input.msgId === "string" && isUuid(input.msgId) ? input.msgId : randomUUID();
 
+    if (this.shouldUseSshBridge()) {
+      const result = await this.sendOperatorMessageViaSsh({ ...input, msgId, message }, msgId, message);
+      if (result) {
+        return result;
+      }
+    }
+
+    return this.sendOperatorMessageViaHttp(msgId, message);
+  }
+
+  private shouldUseSshBridge(): boolean {
+    return (
+      this.bridgeKind === "ssh" &&
+      this.sshBridge !== null &&
+      this.sshBridgeFailureThreshold > 0 &&
+      this.sshBridgeFailureCount < this.sshBridgeFailureThreshold
+    );
+  }
+
+  private async sendOperatorMessageViaHttp(
+    msgId: string,
+    message: string
+  ): Promise<ChatSendResponse> {
     if (!this.gatewayToken) {
       await this.auditOperatorMessage(msgId, message, "reject", "gateway_internal_error");
       throw new ChatProxyError(503, "openclaw_gateway_token_missing", "OPENCLAW_GATEWAY_TOKEN is not configured.");
@@ -169,6 +218,38 @@ export class OpenClawChatProxy {
     return { msgId, queued: true };
   }
 
+  private async sendOperatorMessageViaSsh(
+    input: ChatSendRequest,
+    msgId: string,
+    message: string
+  ): Promise<ChatSendResponse | null> {
+    try {
+      const result = await this.sshBridge!.sendMessage(input);
+      this.sshBridgeFailureCount = 0;
+      await this.auditOperatorMessage(msgId, message, "n/a", null, {
+        bridge: "ssh"
+      });
+      this.startSshHistoryStream(msgId);
+      return result;
+    } catch (error) {
+      this.sshBridgeFailureCount += 1;
+      if (this.sshBridgeFailureCount >= this.sshBridgeFailureThreshold) {
+        return null;
+      }
+
+      await this.auditOperatorMessage(msgId, message, "reject", "gateway_timeout", {
+        bridge: "ssh",
+        consecutiveFailures: this.sshBridgeFailureCount,
+        bridgeError: error instanceof Error ? error.message : "OpenClaw SSH bridge failed."
+      });
+      throw new ChatProxyError(
+        502,
+        "openclaw_ssh_bridge_failed",
+        error instanceof Error ? error.message : "OpenClaw SSH bridge failed."
+      );
+    }
+  }
+
   acceptPanelSocket(request: IncomingMessage, socket: Socket, head?: Buffer): void {
     if (!isWebSocketUpgrade(request)) {
       socket.destroy();
@@ -206,6 +287,11 @@ export class OpenClawChatProxy {
 
   addPanelClient(client: OpenClawChatPanelClient): void {
     this.clients.add(client);
+    if (this.bridgeKind === "ssh" && this.sshBridge) {
+      this.state = "connected";
+      client.sendJson({ type: "HEARTBEAT", at: this.now().toISOString() });
+      return;
+    }
     if (this.state !== "connected") {
       client.sendJson({ type: "AGENT_OFFLINE" });
     }
@@ -258,6 +344,11 @@ export class OpenClawChatProxy {
 
   private ensureAgentConnection(): void {
     if (this.agentSocket || this.reconnectTimer) {
+      return;
+    }
+
+    if (this.bridgeKind === "ssh" && this.sshBridge) {
+      this.state = "connected";
       return;
     }
 
@@ -365,6 +456,23 @@ export class OpenClawChatProxy {
     }
   }
 
+  private startSshHistoryStream(msgId: string): void {
+    if (!this.sshBridge || this.clients.size === 0) {
+      return;
+    }
+
+    void this.sshBridge.streamHistory(msgId, {
+      onTyping: (event) => this.broadcast(event),
+      onDelta: (event) => this.broadcast(event),
+      onDone: (event) => {
+        void this.handleAgentMessage(event);
+      },
+      onBlocked: (event) => this.broadcast(event)
+    }).catch(() => {
+      this.broadcast({ type: "ASSISTANT_BLOCKED", msgId, reason: "ssh_history_error" });
+    });
+  }
+
   private async auditOperatorMessage(
     msgId: string,
     message: string,
@@ -442,6 +550,26 @@ export function normalizeAgentChatEvent(raw: unknown): ChatStreamEvent | null {
     const delta = stringValue(raw.delta);
     if (!msgId || delta === null) return null;
     return { type: "ASSISTANT_DELTA", msgId, delta };
+  }
+
+  if (raw.type === "ASSISTANT_TYPING") {
+    const msgId = stringValue(raw.msgId);
+    if (!msgId) return null;
+    return {
+      type: "ASSISTANT_TYPING",
+      msgId,
+      ...(typeof raw.ts === "string" ? { ts: raw.ts } : {})
+    };
+  }
+
+  if (raw.type === "ASSISTANT_BLOCKED") {
+    const msgId = stringValue(raw.msgId);
+    if (!msgId) return null;
+    return {
+      type: "ASSISTANT_BLOCKED",
+      msgId,
+      reason: stringValue(raw.reason) ?? "openclaw_assistant_blocked"
+    };
   }
 
   if (raw.type === "ASSISTANT_DONE") {
