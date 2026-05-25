@@ -126,6 +126,7 @@ import {
   OpenClawChatProxy,
   type ChatSendRequest
 } from "./openclaw-chat.ts";
+import { handleInfrastructureInventoryHttp } from "./routes/infrastructure.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
@@ -485,6 +486,16 @@ const server = createServer(async (request, response) => {
       return json(response, 200, {
         inventory: contract,
         drift
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/infrastructure/inventory") {
+      return handleInfrastructureInventoryHttp({
+        request,
+        response,
+        auditLog,
+        webdockListServers: () => webdockRealAdapter.listServers(),
+        env: process.env
       });
     }
 
