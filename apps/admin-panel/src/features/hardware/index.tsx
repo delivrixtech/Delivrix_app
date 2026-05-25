@@ -24,8 +24,10 @@ import {
   Sparkles,
   Triangle
 } from "lucide-react";
+import { useCallback, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { DashboardData } from "../../shared/api/client.ts";
-import { BannerOpenClawV2 } from "../../shared/ui/v2/index.ts";
+import { BannerOpenClawV2, useToast } from "../../shared/ui/v2/index.ts";
 import { filterAuditEvents } from "../../shared/lib/formatters.ts";
 
 export function HardwareSection({ data }: { data: DashboardData }) {
@@ -780,8 +782,31 @@ function DatosFaltantes({ count }: { count: number }) {
         </div>
       </div>
 
+      <ManualSnapshotButton />
+    </section>
+  );
+}
+
+/* ============================================================
+ * AuditFooter — 6 rows literales Pencil
+ * ============================================================ */
+/**
+ * ManualSnapshotButton — botón + modal para ingestar snapshot manual.
+ *
+ * Flujo:
+ * 1. El operador ejecuta `delivrix-cli capture` localmente y obtiene un JSON.
+ * 2. Hace click "Solicitar snapshot manual" → modal con textarea.
+ * 3. Pega el JSON + Confirma → POST /v1/devops/collector/manual-snapshots/ingest
+ *    con humanApproved=true.
+ * 4. Toast feedback. Si OK, invalida dashboard query → datos hardware refrescan.
+ */
+function ManualSnapshotButton() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
       <button
         type="button"
+        onClick={() => setOpen(true)}
         className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
         style={{
           gap: 6,
@@ -796,13 +821,230 @@ function DatosFaltantes({ count }: { count: number }) {
         <Camera size={14} strokeWidth={1.75} aria-hidden="true" />
         Solicitar snapshot manual
       </button>
-    </section>
+      {open ? <ManualSnapshotModal onClose={() => setOpen(false)} /> : null}
+    </>
   );
 }
 
-/* ============================================================
- * AuditFooter — 6 rows literales Pencil
- * ============================================================ */
+function ManualSnapshotModal({ onClose }: { onClose: () => void }) {
+  const [rawJson, setRawJson] = useState("");
+  const [actorId, setActorId] = useState("");
+  const [parseError, setParseError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  const mutation = useMutation({
+    mutationFn: async (payload: { actorId: string; snapshot: unknown }) => {
+      const res = await fetch("/v1/devops/collector/manual-snapshots/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          actorId: payload.actorId,
+          humanApproved: true,
+          snapshot: payload.snapshot
+        })
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}${text ? ` · ${text.slice(0, 160)}` : ""}`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast.success("Snapshot ingestado", {
+        description: "Backend procesó el snapshot. Hardware refrescando…"
+      });
+      void queryClient.invalidateQueries({ queryKey: ["admin-panel", "dashboard"] });
+      onClose();
+    },
+    onError: (error) => {
+      toast.error("No se pudo ingestar el snapshot", {
+        description: error instanceof Error ? error.message : "Error desconocido"
+      });
+    }
+  });
+
+  const handleSubmit = useCallback(() => {
+    setParseError(null);
+    if (!actorId.trim()) {
+      setParseError("Operador requerido.");
+      return;
+    }
+    if (rawJson.trim().length < 2) {
+      setParseError("Pega el JSON del snapshot.");
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawJson);
+    } catch (e) {
+      setParseError(`JSON inválido: ${e instanceof Error ? e.message : "parse error"}`);
+      return;
+    }
+    mutation.mutate({ actorId: actorId.trim(), snapshot: parsed });
+  }, [rawJson, actorId, mutation]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="snapshot-modal-title"
+      className="fixed inset-0 z-[9990] flex items-center justify-center px-4"
+      style={{
+        background: "color-mix(in srgb, var(--color-text-primary) 35%, transparent)",
+        backdropFilter: "blur(4px)"
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !mutation.isPending) onClose();
+      }}
+    >
+      <div
+        className="flex w-full max-w-[640px] flex-col"
+        style={{
+          background: "var(--color-surface-overlay)",
+          border: "1px solid var(--color-border)",
+          borderRadius: "var(--radius-lg)",
+          boxShadow: "var(--shadow-lg)",
+          overflow: "hidden",
+          maxHeight: "85vh"
+        }}
+      >
+        <header
+          className="flex items-center"
+          style={{
+            gap: 10,
+            padding: "16px 20px",
+            borderBottom: "1px solid var(--color-border)",
+            background: "var(--color-info-soft)"
+          }}
+        >
+          <span
+            aria-hidden="true"
+            className="grid place-items-center"
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              background: "var(--color-info)",
+              color: "var(--color-on-dark-strong)"
+            }}
+          >
+            <Camera size={16} strokeWidth={2} />
+          </span>
+          <div className="flex flex-col" style={{ gap: 2 }}>
+            <h2
+              id="snapshot-modal-title"
+              className="m-0 text-[15px] font-[family-name:var(--font-sans)] font-semibold leading-tight"
+              style={{ color: "var(--color-info-fg)", letterSpacing: "var(--tracking-tight)" }}
+            >
+              Ingestar snapshot manual
+            </h2>
+            <span className="text-[11px] font-[family-name:var(--font-caption)]" style={{ color: "var(--color-info-fg)", opacity: 0.85 }}>
+              Ejecuta delivrix-cli capture localmente y pega el JSON aquí.
+            </span>
+          </div>
+        </header>
+
+        <div className="flex flex-col" style={{ gap: 14, padding: "16px 20px", overflowY: "auto" }}>
+          <label className="flex flex-col" style={{ gap: 6 }}>
+            <span
+              className="text-[11px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+              style={{ letterSpacing: "var(--tracking-widest)", color: "var(--color-text-tertiary)" }}
+            >
+              Operador <span style={{ color: "var(--color-critical)" }}>*</span>
+            </span>
+            <input
+              type="text"
+              value={actorId}
+              onChange={(e) => setActorId(e.target.value)}
+              placeholder="op-juanes-a / op-mariana-b / ..."
+              disabled={mutation.isPending}
+              autoFocus
+            />
+          </label>
+
+          <label className="flex flex-col" style={{ gap: 6 }}>
+            <span
+              className="text-[11px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+              style={{ letterSpacing: "var(--tracking-widest)", color: "var(--color-text-tertiary)" }}
+            >
+              JSON del snapshot <span style={{ color: "var(--color-critical)" }}>*</span>
+            </span>
+            <textarea
+              value={rawJson}
+              onChange={(e) => setRawJson(e.target.value)}
+              placeholder='{ "hostId": "...", "identity": {...}, "capacity": {...}, ... }'
+              rows={10}
+              disabled={mutation.isPending}
+              style={{
+                resize: "vertical",
+                minHeight: 180,
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                lineHeight: 1.5
+              }}
+            />
+            <span className="text-[10px] font-[family-name:var(--font-caption)]" style={{ color: "var(--color-text-tertiary)" }}>
+              El backend valida estructura y rechaza con HTTP 422 si falta algún campo crítico del contrato.
+            </span>
+          </label>
+
+          {parseError ? (
+            <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold" style={{ color: "var(--color-critical)" }}>
+              {parseError}
+            </span>
+          ) : null}
+        </div>
+
+        <footer
+          className="flex items-center justify-end"
+          style={{
+            gap: 8,
+            padding: "12px 20px",
+            background: "var(--color-surface-sunken)",
+            borderTop: "1px solid var(--color-border)"
+          }}
+        >
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={mutation.isPending}
+            className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:bg-[var(--color-surface)] disabled:cursor-not-allowed disabled:opacity-60"
+            style={{
+              padding: "8px 14px",
+              borderRadius: 6,
+              background: "transparent",
+              color: "var(--color-text-secondary)",
+              border: "1px solid var(--color-border)",
+              cursor: mutation.isPending ? "not-allowed" : "pointer"
+            }}
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={mutation.isPending}
+            className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+            style={{
+              gap: 6,
+              padding: "8px 14px",
+              borderRadius: 6,
+              background: "var(--color-accent)",
+              color: "var(--color-on-dark-strong)",
+              border: "none",
+              cursor: mutation.isPending ? "not-allowed" : "pointer"
+            }}
+          >
+            <Camera size={12} strokeWidth={2} aria-hidden="true" />
+            {mutation.isPending ? "Ingestando…" : "Ingestar snapshot"}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 /** Estilo del badge "fuente" derivado del actorType del audit event. */
 function auditSourceStyle(actorType: string): {
   text: string;

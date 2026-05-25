@@ -10,19 +10,25 @@
  * apropiado. Sin datos quemados.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
   Cloud,
   Database,
   Globe,
   HardDrive,
-  Loader,
   RefreshCw,
   Server,
   TriangleAlert
 } from "lucide-react";
-import { LiveIndicator, SectionDivider } from "../../shared/ui/v2/index.ts";
+import { getJson } from "../../shared/api/client.ts";
+import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
+import {
+  LiveIndicator,
+  SectionDivider,
+  SkeletonKpiGrid
+} from "../../shared/ui/v2/index.ts";
 
 /* ============================================================
  * Tipos del contrato Hito 5.12 § 2.3.
@@ -72,50 +78,46 @@ export interface InfrastructureInventoryResponse {
 }
 
 /* ============================================================
- * Hook que consume el endpoint unificado
+ * Hook que consume el endpoint unificado vía react-query.
+ *
+ * Beneficios sobre el fetch manual previo:
+ * - Cache automático compartido entre componentes.
+ * - Background refetch coordinado con el resto del panel.
+ * - Dedup de requests si el componente re-monta.
+ * - Devtools visibles en react-query.
  * ============================================================ */
+
+const POLL_MS = 30_000;
 
 type FetchState =
   | { status: "loading" }
   | { status: "ok"; payload: InfrastructureInventoryResponse; lastUpdateAt: number }
   | { status: "error"; message: string };
 
-function useInventory(pollMs = 30_000): FetchState {
-  const [state, setState] = useState<FetchState>({ status: "loading" });
+function useInventory(): FetchState {
+  const query = useQuery({
+    queryKey: ["infrastructure", "inventory"],
+    queryFn: () => getJson<InfrastructureInventoryResponse>(READ_ENDPOINTS.infrastructureInventory),
+    refetchInterval: POLL_MS,
+    refetchIntervalInBackground: false,
+    staleTime: POLL_MS / 2
+  });
 
-  useEffect(() => {
-    let cancelled = false;
-    let timer: number | undefined;
-
-    async function tick() {
-      try {
-        const res = await fetch("/v1/infrastructure/inventory", { headers: { accept: "application/json" } });
-        if (cancelled) return;
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-        const payload = (await res.json()) as InfrastructureInventoryResponse;
-        if (cancelled) return;
-        setState({ status: "ok", payload, lastUpdateAt: Date.now() });
-      } catch (e) {
-        if (cancelled) return;
-        setState({
-          status: "error",
-          message: e instanceof Error ? e.message : "no se pudo obtener el inventario"
-        });
-      } finally {
-        if (!cancelled) timer = window.setTimeout(tick, pollMs);
-      }
-    }
-
-    void tick();
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
+  if (query.isLoading) return { status: "loading" };
+  if (query.isError) {
+    return {
+      status: "error",
+      message: query.error instanceof Error ? query.error.message : "no se pudo obtener el inventario"
     };
-  }, [pollMs]);
-
-  return state;
+  }
+  if (query.data) {
+    return {
+      status: "ok",
+      payload: query.data,
+      lastUpdateAt: query.dataUpdatedAt
+    };
+  }
+  return { status: "loading" };
 }
 
 /* ============================================================
@@ -123,7 +125,7 @@ function useInventory(pollMs = 30_000): FetchState {
  * ============================================================ */
 
 export function InfrastructureSection() {
-  const state = useInventory(30_000);
+  const state = useInventory();
   const lastUpdate = state.status === "ok" ? state.lastUpdateAt : Date.now();
 
   return (
@@ -182,18 +184,12 @@ function Body({ state }: { state: FetchState }) {
  * ============================================================ */
 
 function LoadingState() {
+  // Skeleton placeholder con la misma estructura que ProvidersGrid: 4 cards
+  // de tamaño KPI. Evita CLS cuando llega el payload real.
   return (
-    <div
-      className="flex flex-col items-center justify-center"
-      style={{ padding: 48, gap: 12, color: "var(--color-text-tertiary)" }}
-    >
-      <Loader size={32} strokeWidth={1.25} style={{ animation: "spin 1.4s linear infinite" }} />
-      <span
-        className="font-[family-name:var(--font-body)]"
-        style={{ fontSize: 13, color: "var(--color-text-secondary)" }}
-      >
-        Cargando inventario del gateway…
-      </span>
+    <div className="flex flex-col" style={{ gap: 16 }}>
+      <SkeletonKpiGrid count={4} />
+      <span className="sr-only">Cargando inventario del gateway…</span>
     </div>
   );
 }
@@ -313,6 +309,46 @@ const KIND_META: Record<ProviderKind, { label: string; icon: typeof Server }> = 
   physical: { label: "Físico", icon: HardDrive }
 };
 
+/**
+ * Resuelve el nombre del proveedor real (brand) a partir del slug del provider.
+ * Antes la card mostraba el account label (`Claude · DK`) como title primary,
+ * confundiendo al usuario que cree que "Claude" es el provider. Ahora la card
+ * usa el brand name (Webdock / AWS / IONOS / Físico) como primary y el account
+ * label como sufijo secundario.
+ */
+function brandName(provider: Provider): string {
+  const id = provider.id.toLowerCase();
+  if (id.startsWith("webdock")) return "Webdock";
+  if (id.startsWith("aws-")) return "AWS";
+  if (id.startsWith("ionos-")) return "IONOS";
+  if (id.startsWith("physical-")) return "Servidor físico";
+  // fallback: si el backend usa otro slug, intentar inferir del displayName.
+  const dn = provider.displayName.toLowerCase();
+  if (dn.includes("webdock")) return "Webdock";
+  if (dn.includes("aws")) return "AWS";
+  if (dn.includes("ionos")) return "IONOS";
+  if (dn.includes("físico") || dn.includes("fisico")) return "Servidor físico";
+  return provider.displayName;
+}
+
+/**
+ * Devuelve el "account label" como sufijo cuando difiere del brand name.
+ * Ej: brand="Webdock", displayName="Claude · DK" → sufijo "Claude · DK".
+ *     brand="AWS", displayName="AWS Bedrock us-east-1" → sufijo "Bedrock us-east-1".
+ * Si el displayName ES el brand name, no devuelve nada (evita duplicación).
+ */
+function accountSuffix(provider: Provider): string {
+  const brand = brandName(provider);
+  const dn = provider.displayName.trim();
+  if (dn === brand) return "";
+  // Si el displayName empieza con el brand, mostrar solo lo que sigue.
+  if (dn.toLowerCase().startsWith(brand.toLowerCase())) {
+    const rest = dn.slice(brand.length).trim().replace(/^[·:\-—]+/, "").trim();
+    return rest;
+  }
+  return dn;
+}
+
 const STATUS_META: Record<ProviderStatus, { label: string; bg: string; fg: string }> = {
   active: {
     label: "activo",
@@ -377,14 +413,27 @@ function ProviderCard({
           <Icon size={18} strokeWidth={1.75} />
         </span>
         <div className="flex flex-col min-w-0" style={{ gap: 2 }}>
+          {/* Jerarquía: brand (Webdock/AWS/IONOS/Físico) primary, account label
+              secondary, kind + slug en mono. Antes mostraba el account label
+              como primary y confundía: "Claude · DK" parecía ser el provider. */}
+          <div className="flex items-center min-w-0" style={{ gap: 6 }}>
+            <span
+              className="font-[family-name:var(--font-sans)] font-semibold truncate"
+              style={{ fontSize: 14, color: "var(--color-text-primary)", letterSpacing: "var(--tracking-tight)" }}
+            >
+              {brandName(provider)}
+            </span>
+            {accountSuffix(provider) ? (
+              <span
+                className="font-[family-name:var(--font-sans)] truncate"
+                style={{ fontSize: 12, color: "var(--color-text-secondary)" }}
+              >
+                · {accountSuffix(provider)}
+              </span>
+            ) : null}
+          </div>
           <span
-            className="font-[family-name:var(--font-heading)] font-semibold truncate"
-            style={{ fontSize: 14, color: "var(--color-text-primary)" }}
-          >
-            {provider.displayName}
-          </span>
-          <span
-            className="font-[family-name:var(--font-mono)]"
+            className="font-[family-name:var(--font-mono)] truncate"
             style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
           >
             {kind.label} · {provider.id}
@@ -484,8 +533,8 @@ function ProviderDrilldown({ provider }: { provider: Provider }) {
             className="font-[family-name:var(--font-mono)]"
             style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}
           >
-            Sin items en {provider.displayName}. El drilldown completo lo cabea Codex en el endpoint
-            con query <code>?provider_id={provider.id}</code>.
+            Sin items en {brandName(provider)}{accountSuffix(provider) ? ` · ${accountSuffix(provider)}` : ""}.
+            {provider.status === "planned" ? " Proveedor aún no online." : ""}
           </span>
         </div>
       </div>
@@ -500,54 +549,166 @@ function ProviderDrilldown({ provider }: { provider: Provider }) {
         border: "1px solid var(--color-border)"
       }}
     >
-      <header className="flex items-center" style={{ gap: 8, marginBottom: 12 }}>
+      <header className="flex flex-wrap items-center" style={{ gap: 8, marginBottom: 12 }}>
         <span
-          className="font-[family-name:var(--font-heading)] font-semibold"
+          className="font-[family-name:var(--font-sans)] font-semibold"
           style={{ fontSize: 13, color: "var(--color-text-primary)" }}
         >
-          Items de {provider.displayName}
+          {brandName(provider)}
+          {accountSuffix(provider) ? (
+            <span style={{ color: "var(--color-text-secondary)", fontWeight: 400 }}>
+              {" · "}{accountSuffix(provider)}
+            </span>
+          ) : null}
         </span>
         <span
           className="font-[family-name:var(--font-mono)]"
           style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
         >
-          {provider.items.length} entradas
+          {provider.items.length} {provider.items.length === 1 ? "item" : "items"}
         </span>
+        <span className="flex-1" aria-hidden="true" />
+        {provider.lastFetched ? (
+          <span
+            className="font-[family-name:var(--font-mono)]"
+            style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
+          >
+            últ. fetch · {formatRelativeOrIso(provider.lastFetched)}
+          </span>
+        ) : null}
       </header>
-      <ul className="m-0 list-none p-0 flex flex-col" style={{ gap: 4 }}>
-        {provider.items.map((it) => (
-          <li
-            key={it.id}
-            className="flex items-center"
+
+      <div className="overflow-x-auto">
+        <div style={{ minWidth: 720 }}>
+          {/* Header de columnas */}
+          <div
+            className="grid items-center"
             style={{
+              gridTemplateColumns: "minmax(0,1.5fr) 120px 110px 90px 130px",
               gap: 12,
-              padding: "8px 12px",
-              borderRadius: 6,
+              padding: "6px 12px",
+              borderRadius: 4,
               background: "var(--color-surface-sunken)"
             }}
           >
-            <span
-              className="font-[family-name:var(--font-mono)]"
-              style={{ fontSize: 11, color: "var(--color-text-primary)", fontWeight: 600 }}
-            >
-              {it.displayName}
-            </span>
-            <span style={{ flex: 1 }} />
-            <span
-              className="font-[family-name:var(--font-mono)]"
-              style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
-            >
-              {it.kind}
-            </span>
-            <span
-              className="font-[family-name:var(--font-caption)] font-semibold"
-              style={{ fontSize: 10, color: "var(--color-text-secondary)" }}
-            >
-              {it.status}
-            </span>
-          </li>
-        ))}
-      </ul>
+            {["Servidor", "Estado", "Región", "Plan", "Último visto"].map((h, i) => (
+              <span
+                key={h}
+                className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-tertiary)]"
+                style={{ letterSpacing: "var(--tracking-wider)", textAlign: i === 4 ? "right" : "left" }}
+              >
+                {h}
+              </span>
+            ))}
+          </div>
+
+          <ul className="m-0 list-none p-0 flex flex-col" style={{ gap: 2, marginTop: 4 }}>
+            {provider.items.map((it) => {
+              const detail = (it.detail ?? {}) as Record<string, unknown>;
+              const location = stringOrDash(detail.location);
+              const plan = stringOrDash(detail.profileSlug);
+              const image = stringOrDash(detail.imageSlug);
+              const lastSeen = stringOrDash(detail.lastDataReceived) || stringOrDash(detail.createdAt);
+              const statusKind = resolveItemStatusKind(it.status);
+              return (
+                <li
+                  key={it.id}
+                  className="grid items-center"
+                  style={{
+                    gridTemplateColumns: "minmax(0,1.5fr) 120px 110px 90px 130px",
+                    gap: 12,
+                    padding: "10px 12px",
+                    borderRadius: 4,
+                    background: "var(--color-surface)",
+                    border: "1px solid var(--color-border)"
+                  }}
+                >
+                  <div className="flex flex-col min-w-0" style={{ gap: 2 }}>
+                    <span
+                      className="font-[family-name:var(--font-sans)] font-semibold truncate"
+                      style={{ fontSize: 12, color: "var(--color-text-primary)" }}
+                    >
+                      {it.displayName}
+                    </span>
+                    <code
+                      className="font-[family-name:var(--font-mono)] truncate"
+                      style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
+                    >
+                      {it.id}
+                      {image !== "—" ? ` · ${image}` : ""}
+                    </code>
+                  </div>
+                  <span
+                    className="inline-flex items-center font-[family-name:var(--font-caption)] font-semibold uppercase"
+                    style={{
+                      gap: 6,
+                      padding: "2px 8px",
+                      borderRadius: 999,
+                      background: statusKind.bg,
+                      color: statusKind.fg,
+                      letterSpacing: "var(--tracking-wider)",
+                      fontSize: 9,
+                      width: "fit-content"
+                    }}
+                  >
+                    <span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: 999, background: statusKind.fg }} />
+                    {it.status}
+                  </span>
+                  <span
+                    className="font-[family-name:var(--font-mono)] truncate"
+                    style={{ fontSize: 11, color: "var(--color-text-secondary)" }}
+                  >
+                    {location}
+                  </span>
+                  <span
+                    className="font-[family-name:var(--font-mono)] truncate"
+                    style={{ fontSize: 11, color: "var(--color-text-secondary)" }}
+                  >
+                    {plan}
+                  </span>
+                  <span
+                    className="font-[family-name:var(--font-mono)] truncate text-right"
+                    style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
+                  >
+                    {lastSeen === "—" ? "—" : formatRelativeOrIso(lastSeen)}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      </div>
     </div>
   );
+}
+
+function stringOrDash(value: unknown): string {
+  return typeof value === "string" && value.length > 0 ? value : "—";
+}
+
+function resolveItemStatusKind(status: string): { bg: string; fg: string } {
+  const lower = status.toLowerCase();
+  if (lower === "running" || lower === "active") {
+    return { bg: "var(--color-success-soft)", fg: "var(--color-success)" };
+  }
+  if (lower === "stopped" || lower === "paused" || lower === "suspended") {
+    return { bg: "var(--color-warning-soft)", fg: "var(--color-warning)" };
+  }
+  if (lower === "error" || lower === "deleting") {
+    return { bg: "var(--color-critical-soft)", fg: "var(--color-critical)" };
+  }
+  // provisioning, reinstalling, rebooting, planned, unknown
+  return { bg: "var(--color-info-soft)", fg: "var(--color-info)" };
+}
+
+function formatRelativeOrIso(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return iso;
+  const diffMs = Date.now() - t;
+  if (diffMs < 0) return new Date(iso).toLocaleString("es-CO");
+  if (diffMs < 60_000) return `hace ${Math.round(diffMs / 1000)}s`;
+  if (diffMs < 3_600_000) return `hace ${Math.round(diffMs / 60_000)} min`;
+  if (diffMs < 86_400_000) return `hace ${Math.round(diffMs / 3_600_000)} h`;
+  if (diffMs < 86_400_000 * 30) return `hace ${Math.round(diffMs / 86_400_000)} d`;
+  return new Date(iso).toLocaleDateString("es-CO", { day: "2-digit", month: "short" });
 }

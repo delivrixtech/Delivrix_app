@@ -27,8 +27,9 @@ import {
   LiveIndicator,
   SectionDivider
 } from "../../shared/ui/v2/index.ts";
+import { Tooltip } from "../../shared/ui/tooltip.tsx";
 
-export function OverviewSection({ data }: { data: DashboardData }) {
+export function OverviewSection({ data, onNavigate }: { data: DashboardData; onNavigate?: (section: string) => void }) {
   return (
     <section className="flex flex-col gap-5" style={{ width: "100%" }}>
       <HeaderRow data={data} />
@@ -43,7 +44,7 @@ export function OverviewSection({ data }: { data: DashboardData }) {
         caption="onboarding → planificación → provisionamiento → calentamiento → reputación"
         countTone="success"
       />
-      <Pipeline />
+      <Pipeline onNavigate={onNavigate} />
       <BottomRow data={data} />
     </section>
   );
@@ -128,20 +129,40 @@ function KpiRow({ data }: { data: DashboardData }) {
   );
 }
 
-function KpiShell({ children }: { children: React.ReactNode }) {
-  return (
+/**
+ * KpiShell — contenedor de KPI card.
+ *
+ * `tooltipHint` opcional: si se provee, la card entera se vuelve trigger del
+ * Tooltip al hover. Convención: pasar un fragmento con structure
+ * source / endpoint / lastFetch / calculation.
+ */
+function KpiShell({
+  children,
+  tooltipHint
+}: {
+  children: React.ReactNode;
+  tooltipHint?: React.ReactNode;
+}) {
+  const card = (
     <article
-      className="flex flex-col bg-[var(--color-surface)]"
+      className="flex flex-col bg-[var(--color-surface)] transition-shadow hover:shadow-[var(--shadow-md)]"
       style={{
         gap: 12,
         padding: 16,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
+        boxShadow: "var(--shadow-sm)",
+        cursor: tooltipHint ? "help" : "default"
       }}
     >
       {children}
     </article>
+  );
+  if (!tooltipHint) return card;
+  return (
+    <Tooltip hint={tooltipHint} side="bottom" delayMs={400}>
+      {card}
+    </Tooltip>
   );
 }
 
@@ -208,6 +229,53 @@ function KpiDetail({
   );
 }
 
+/**
+ * KpiTooltipHint — contenido estructurado del tooltip de una KPI card.
+ * Muestra fuente (endpoint), última actualización y método de cálculo.
+ */
+function KpiTooltipHint({
+  endpoint,
+  source,
+  calculation,
+  lastFetch
+}: {
+  endpoint: string;
+  source: string;
+  calculation: string;
+  lastFetch?: string;
+}) {
+  return (
+    <div className="flex flex-col" style={{ gap: 6, maxWidth: 280 }}>
+      <span
+        className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+        style={{ letterSpacing: "var(--tracking-widest)", color: "var(--color-text-tertiary)" }}
+      >
+        Fuente
+      </span>
+      <code className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">
+        {endpoint}
+      </code>
+      <p className="m-0 text-[11px] font-[family-name:var(--font-sans)] leading-snug text-[var(--color-text-secondary)]">
+        {source}
+      </p>
+      <span
+        className="text-[10px] font-[family-name:var(--font-caption)] font-medium uppercase"
+        style={{ letterSpacing: "var(--tracking-wider)", color: "var(--color-text-tertiary)", marginTop: 2 }}
+      >
+        Cálculo
+      </span>
+      <p className="m-0 text-[11px] font-[family-name:var(--font-sans)] leading-snug text-[var(--color-text-secondary)]">
+        {calculation}
+      </p>
+      {lastFetch ? (
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]" style={{ marginTop: 2 }}>
+          últ. fetch · {lastFetch}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 /* K1 — Nodos de envío (literal Pencil) */
 function KpiSenderNodes({ total }: { total: number }) {
   const bars = [
@@ -221,13 +289,26 @@ function KpiSenderNodes({ total }: { total: number }) {
     { h: 36, op: 1.0, color: "var(--color-accent-tertiary)" }
   ];
   return (
-    <KpiShell>
-      <KpiHead label="Nodos de envío" pillBg="var(--color-success-soft)" pillFg="var(--color-success)" pillText="+6 esta semana" />
+    <KpiShell
+      tooltipHint={
+        <KpiTooltipHint
+          endpoint="GET /v1/sender-nodes"
+          source="Lista activa de IPs/dominios autorizados para envío."
+          calculation="total = length(data.senderNodes)"
+        />
+      }
+    >
+      <KpiHead
+        label="Nodos de envío"
+        pillBg={total > 0 ? "var(--color-success-soft)" : "var(--color-neutral-soft)"}
+        pillFg={total > 0 ? "var(--color-success)" : "var(--color-text-tertiary)"}
+        pillText={total > 0 ? "activos" : "sin nodos"}
+      />
       <KpiValue value={formatNumber(total)} />
       <KpiDetail
         icon={<TrendingUp size={12} strokeWidth={1.75} />}
-        text="+6 esta semana"
-        color="var(--color-success)"
+        text={total === 0 ? "ningún nodo registrado" : `${total} ${total === 1 ? "nodo registrado" : "nodos registrados"}`}
+        color={total > 0 ? "var(--color-success)" : "var(--color-text-tertiary)"}
         endpoint="/v1/sender-nodes"
       />
       <div className="flex items-end w-full" style={{ gap: 3, height: 36 }}>
@@ -247,14 +328,27 @@ function KpiSenderNodes({ total }: { total: number }) {
 /* K2 — IPs en calentamiento (literal Pencil) */
 function KpiWarming({ value }: { value: number }) {
   return (
-    <KpiShell>
-      <KpiHead label="IPs en calentamiento" pillBg="var(--color-info-soft)" pillFg="var(--color-info)" pillText="día 9 / 28 prom" />
+    <KpiShell
+      tooltipHint={
+        <KpiTooltipHint
+          endpoint="GET /v1/sender-nodes ?status=warming"
+          source="IPs en fase de calentamiento (warming) controlado para reputación."
+          calculation="value = senderNodesByStatus.warming ?? 0"
+        />
+      }
+    >
+      <KpiHead
+        label="IPs en calentamiento"
+        pillBg={value > 0 ? "var(--color-info-soft)" : "var(--color-neutral-soft)"}
+        pillFg={value > 0 ? "var(--color-info)" : "var(--color-text-tertiary)"}
+        pillText={value > 0 ? "en curso" : "ninguna"}
+      />
       <KpiValue value={formatNumber(value)} />
       <KpiDetail
         icon={<Flame size={12} strokeWidth={1.75} />}
-        text="día 9 / 28 prom"
-        color="var(--color-accent-tertiary)"
-        endpoint="/v1/warming"
+        text={value === 0 ? "sin ciclos de warming activos" : `${value} ${value === 1 ? "IP" : "IPs"} en warming`}
+        color={value > 0 ? "var(--color-accent-tertiary)" : "var(--color-text-tertiary)"}
+        endpoint="/v1/sender-nodes"
       />
       <div
         className="relative w-full overflow-hidden"
@@ -279,19 +373,38 @@ function KpiWarming({ value }: { value: number }) {
   );
 }
 
-/* K3 — Índice de reputación (literal Pencil) */
+/* K3 — Índice de reputación */
 function KpiReputation({ value }: { value: number | null }) {
   const display = value === null ? "—" : value.toFixed(1).replace(".", ",");
   const pct = value === null ? 0 : Math.max(0, Math.min(100, value));
+  // Clasificación semántica del nivel actual de reputación.
+  const tone =
+    value === null
+      ? { label: "sin datos", bg: "var(--color-neutral-soft)", fg: "var(--color-text-tertiary)", barFg: "var(--color-border-strong)" }
+      : value >= 95
+        ? { label: "excelente", bg: "var(--color-success-soft)", fg: "var(--color-success)", barFg: "var(--color-success)" }
+        : value >= 85
+          ? { label: "estable", bg: "var(--color-info-soft)", fg: "var(--color-info)", barFg: "var(--color-info)" }
+          : value >= 70
+            ? { label: "vigilancia", bg: "var(--color-warning-soft)", fg: "var(--color-warning)", barFg: "var(--color-warning)" }
+            : { label: "crítico", bg: "var(--color-critical-soft)", fg: "var(--color-critical)", barFg: "var(--color-critical)" };
   return (
-    <KpiShell>
-      <KpiHead label="Índice de reputación" pillBg="var(--color-warning-soft)" pillFg="var(--color-warning)" pillText="warning" />
+    <KpiShell
+      tooltipHint={
+        <KpiTooltipHint
+          endpoint="GET /v1/send-results · /v1/ip-reputation/reports"
+          source="Ratio agregado de envíos aceptados sobre total de envíos."
+          calculation="reputation = (accepted ÷ totalSends) × 100, redondeo 1 decimal"
+        />
+      }
+    >
+      <KpiHead label="Índice de reputación" pillBg={tone.bg} pillFg={tone.fg} pillText={tone.label} />
       <KpiValue value={display} unit="/ 100" />
       <KpiDetail
         icon={<TrendingDown size={12} strokeWidth={1.75} />}
-        text="-1,4 vs 24h"
-        color="var(--color-warning)"
-        endpoint="/v1/reputation"
+        text={value === null ? "Esperando primeras métricas" : `${pct.toFixed(1)} de 100 puntos`}
+        color={tone.fg}
+        endpoint="/v1/send-results"
       />
       <div
         className="relative w-full overflow-hidden"
@@ -300,24 +413,37 @@ function KpiReputation({ value }: { value: number | null }) {
       >
         <span
           className="block"
-          style={{ width: `${pct}%`, height: 8, borderRadius: 3, background: "var(--color-warning)" }}
+          style={{ width: `${pct}%`, height: 8, borderRadius: 3, background: tone.barFg }}
         />
       </div>
     </KpiShell>
   );
 }
 
-/* K4 — Gates abiertos (literal Pencil) */
+/* K4 — Gates abiertos */
 function KpiGates({ value, gates }: { value: number; gates: string[] }) {
   return (
-    <KpiShell>
-      <KpiHead label="Gates abiertos" pillBg="var(--color-critical-soft)" pillFg="var(--color-critical)" pillText="espera aprobación" />
+    <KpiShell
+      tooltipHint={
+        <KpiTooltipHint
+          endpoint="GET /v1/operating-north"
+          source="Gates de aprobación humana pendientes antes de tocar producción."
+          calculation="value = length(operatingNorth.gates ?? [])"
+        />
+      }
+    >
+      <KpiHead
+        label="Gates abiertos"
+        pillBg={value === 0 ? "var(--color-success-soft)" : "var(--color-critical-soft)"}
+        pillFg={value === 0 ? "var(--color-success)" : "var(--color-critical)"}
+        pillText={value === 0 ? "todo verde" : "esperan aprobación"}
+      />
       <KpiValue value={formatNumber(value)} />
       <KpiDetail
         icon={<ShieldAlert size={12} strokeWidth={1.75} />}
-        text="espera aprobación"
-        color="var(--color-critical)"
-        endpoint="/v1/gates"
+        text={value === 0 ? "sin gates pendientes" : `${value} ${value === 1 ? "gate pendiente" : "gates pendientes"}`}
+        color={value === 0 ? "var(--color-success)" : "var(--color-critical)"}
+        endpoint="/v1/operating-north"
       />
       <div className="flex flex-wrap" style={{ gap: 6 }}>
         {gates.slice(0, 3).map((g) => (
@@ -337,7 +463,7 @@ function KpiGates({ value, gates }: { value: number; gates: string[] }) {
 /* ============================================================
  * Pipeline — 5 stages literales Pencil + chevron entre cada uno
  * ============================================================ */
-function Pipeline() {
+function Pipeline({ onNavigate }: { onNavigate?: (section: string) => void }) {
   return (
     <section
       className="bg-[var(--color-surface)]"
@@ -356,8 +482,10 @@ function Pipeline() {
         <span className="flex-1" aria-hidden="true" />
         <button
           type="button"
-          className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
-          style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-strong)", background: "transparent" }}
+          onClick={() => onNavigate?.("canvas")}
+          disabled={!onNavigate}
+          className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed disabled:opacity-55"
+          style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-strong)", background: "transparent", cursor: onNavigate ? "pointer" : "not-allowed" }}
         >
           Abrir canvas
           <ArrowRight size={13} strokeWidth={1.75} aria-hidden="true" />

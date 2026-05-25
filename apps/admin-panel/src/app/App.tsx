@@ -9,8 +9,8 @@
  * - Branding vive en el sidebar, no en el topbar.
  */
 
-import { ChevronRight, Eye, FlaskConical, Menu, MessageSquare, Power, RefreshCw, X } from "lucide-react";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { ChevronRight, Eye, FlaskConical, Menu, MessageSquare, Power, RefreshCw, Search, X } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { loadDashboardData, type DashboardData } from "../shared/api/client.ts";
 import { stateTone, type Tone } from "../shared/lib/formatters.ts";
@@ -22,6 +22,14 @@ import {
   Tooltip,
   TooltipProvider
 } from "../shared/ui/index.ts";
+import {
+  CommandPaletteProvider,
+  OpenClawIntentProvider,
+  ToastProvider,
+  useCommandPalette,
+  useToast,
+  type PaletteCommand
+} from "../shared/ui/v2/index.ts";
 import {
   sectionGroupLabels,
   sectionGroupOrder,
@@ -80,8 +88,53 @@ export function App() {
     setMobileNavOpen(false);
   };
 
+  /**
+   * Comandos del palette cmd+k. Cada sección + acciones globales.
+   * useMemo para no recrear el array en cada render (rompería el provider).
+   */
+  const paletteCommands = useMemo<PaletteCommand[]>(() => {
+    const sectionCmds: PaletteCommand[] = sections.map((s) => ({
+      id: `nav:${s.id}`,
+      label: `Ir a ${s.navLabel}`,
+      group: "Navegación",
+      keywords: [s.id, s.navLabel.toLowerCase()],
+      action: (close) => {
+        selectSection(s.id);
+        close();
+      }
+    }));
+    const actionCmds: PaletteCommand[] = [
+      {
+        id: "action:refresh",
+        label: "Actualizar datos del panel",
+        group: "Acciones",
+        kbd: "r",
+        keywords: ["refresh", "reload", "actualizar"],
+        action: (close) => {
+          void dashboard.refetch();
+          close();
+        }
+      },
+      {
+        id: "action:chat-toggle",
+        label: chatOpen ? "Cerrar chat con OpenClaw" : "Abrir chat con OpenClaw",
+        group: "Acciones",
+        keywords: ["chat", "openclaw", "mensaje"],
+        action: (close) => {
+          setChatOpen((v) => !v);
+          close();
+        }
+      }
+    ];
+    return [...sectionCmds, ...actionCmds];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatOpen]);
+
   return (
     <TooltipProvider delayDuration={200}>
+      <ToastProvider>
+      <OpenClawIntentProvider onNavigate={(s) => selectSection(s as SectionId)}>
+      <CommandPaletteProvider commands={paletteCommands}>
       <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text-primary)]">
         <div className="grid min-h-screen grid-cols-1 md:grid-cols-[200px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]">
           {mobileNavOpen ? (
@@ -103,7 +156,12 @@ export function App() {
             <Topbar
               activeSection={activeSection}
               isFetching={dashboard.isFetching}
-              onRefresh={() => void dashboard.refetch()}
+              onRefresh={async () => {
+                const result = await dashboard.refetch();
+                if (result.isError) {
+                  throw result.error instanceof Error ? result.error : new Error("refresh failed");
+                }
+              }}
               mobileNavOpen={mobileNavOpen}
               onToggleMobileNav={() => setMobileNavOpen((value) => !value)}
               chatOpen={chatOpen}
@@ -119,7 +177,7 @@ export function App() {
                   />
                 ) : null}
                 {dashboard.data && !dashboard.isLoading && !dashboard.isError ? (
-                  <SectionView section={activeSection} data={dashboard.data} />
+                  <SectionView section={activeSection} data={dashboard.data} onNavigate={selectSection} />
                 ) : null}
               </div>
             </main>
@@ -131,6 +189,9 @@ export function App() {
           </Suspense>
         ) : null}
       </div>
+      </CommandPaletteProvider>
+      </OpenClawIntentProvider>
+      </ToastProvider>
     </TooltipProvider>
   );
 }
@@ -151,13 +212,28 @@ function Topbar({
 }: {
   activeSection: SectionId;
   isFetching: boolean;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void>;
   mobileNavOpen: boolean;
   onToggleMobileNav: () => void;
   chatOpen: boolean;
   onToggleChat: () => void;
 }) {
   const section = sectionsById[activeSection];
+  const { toast } = useToast();
+  const palette = useCommandPalette();
+  const handleRefresh = async () => {
+    try {
+      await onRefresh();
+      toast.success("Datos actualizados", {
+        description: "Snapshot vigente del backend.",
+        duration: 2500
+      });
+    } catch (error) {
+      toast.error("No pude refrescar los datos", {
+        description: error instanceof Error ? error.message : "Reintenta en unos segundos."
+      });
+    }
+  };
   return (
     <header
       className="flex flex-wrap items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 sm:flex-nowrap sm:gap-4 sm:px-5 sm:py-4 md:px-6 lg:px-7"
@@ -191,6 +267,43 @@ function Topbar({
       </nav>
 
       <span className="flex-1" aria-hidden="true" />
+
+      {/* Command palette trigger */}
+      <Tooltip hint="Paleta de comandos (⌘K)" side="bottom">
+        <button
+          type="button"
+          onClick={palette.open}
+          aria-label="Abrir paleta de comandos"
+          className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)]"
+          style={{
+            gap: 8,
+            padding: "5px 10px",
+            border: "1px solid var(--color-border)",
+            borderRadius: 6,
+            background: "var(--color-surface)",
+            color: "var(--color-text-tertiary)",
+            cursor: "pointer"
+          }}
+        >
+          <Search size={11} strokeWidth={2} aria-hidden="true" />
+          <span className="hidden text-[11px] font-[family-name:var(--font-sans)] sm:inline">
+            Buscar
+          </span>
+          <kbd
+            className="hidden font-[family-name:var(--font-mono)] sm:inline"
+            style={{
+              padding: "1px 5px",
+              fontSize: 10,
+              border: "1px solid var(--color-border)",
+              borderRadius: 3,
+              background: "var(--color-surface-sunken)",
+              color: "var(--color-text-tertiary)"
+            }}
+          >
+            ⌘K
+          </kbd>
+        </button>
+      </Tooltip>
 
       {/* Read-only badge — texto colapsa a icono en mobile (tooltip) */}
       <Tooltip hint="Solo lectura · GET-only" side="bottom">
@@ -243,7 +356,7 @@ function Topbar({
         variant="ghost"
         size="icon"
         aria-label="Actualizar datos"
-        onClick={onRefresh}
+        onClick={() => void handleRefresh()}
         className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
       >
         <RefreshCw
@@ -391,26 +504,37 @@ function Sidebar({
       <span className="flex-1" aria-hidden="true" />
 
       {/* sbKillSwitch */}
-      <KillSwitchCard data={data} />
+      <KillSwitchCard data={data} onNavigate={onSelect} />
     </aside>
   );
 }
 
 /**
- * Kill switch card Pencil (`z0dLBo`). cornerRadius 8 fill var(--color-surface) padding 14
- * gap 10 border var(--color-border) 1 shadow. Lee `data.killSwitch.enabled` y muestra el
- * estado real ARMADO / ACTIVO.
+ * Kill switch card del sidebar — read-only at-a-glance del estado global.
+ *
+ * Click navega a Clusters (donde vive el modal completo para activar/rearmar).
+ * El click es solo navegación, NO ejecuta acción directa: la acción real
+ * requiere reason + actorId + regla de 2 personas, que solo se puede capturar
+ * desde el modal de Clusters.
  */
-function KillSwitchCard({ data }: { data: DashboardData | undefined }) {
+function KillSwitchCard({
+  data,
+  onNavigate
+}: {
+  data: DashboardData | undefined;
+  onNavigate?: (section: SectionId) => void;
+}) {
   const enabled = data?.killSwitch.enabled ?? false;
   // Cuando enabled=true significa que el kill switch fue ACTIVADO (corte real).
   // El "ARMADO" verde de Pencil corresponde a !enabled (listo para apretar).
   const armed = !enabled;
   return (
-    <section
-      aria-label="Interruptor de corte"
-      className="flex flex-col gap-2.5 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3.5"
-      style={{ boxShadow: "var(--shadow-sm)" }}
+    <button
+      type="button"
+      onClick={() => onNavigate?.("clusters")}
+      aria-label="Interruptor de corte · abrir gestión en Clústeres"
+      className="flex flex-col gap-2.5 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3.5 text-left transition-colors hover:bg-[var(--color-surface-sunken)] hover:border-[var(--color-border-strong)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+      style={{ boxShadow: "var(--shadow-sm)", cursor: "pointer" }}
     >
       <div className="flex items-center gap-2">
         <Power
@@ -453,16 +577,24 @@ function KillSwitchCard({ data }: { data: DashboardData | undefined }) {
         Prueba en modo simulado
       </p>
       <p className="m-0 text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">
-        Requiere regla de 2 personas
+        Click para gestionar · regla de 2 personas
       </p>
-    </section>
+    </button>
   );
 }
 
-function SectionView({ section, data }: { section: SectionId; data: DashboardData }) {
+function SectionView({
+  section,
+  data,
+  onNavigate
+}: {
+  section: SectionId;
+  data: DashboardData;
+  onNavigate: (section: SectionId) => void;
+}) {
   switch (section) {
     case "overview":
-      return <Suspense fallback={<SectionLoadingState />}><OverviewSection data={data} /></Suspense>;
+      return <Suspense fallback={<SectionLoadingState />}><OverviewSection data={data} onNavigate={(s) => onNavigate(s as SectionId)} /></Suspense>;
     case "onboarding":
       return <Suspense fallback={<SectionLoadingState />}><OnboardingSection data={data} /></Suspense>;
     case "canvas":

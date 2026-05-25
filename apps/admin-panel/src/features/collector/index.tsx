@@ -23,20 +23,33 @@ import {
   Upload,
   WandSparkles
 } from "lucide-react";
+import { useCallback, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { DashboardData } from "../../shared/api/client.ts";
 import { filterAuditEvents, formatTimeOnly, shortAuditHash } from "../../shared/lib/formatters.ts";
-import { BannerOpenClawV2 } from "../../shared/ui/v2/index.ts";
+import { BannerOpenClawV2, useToast } from "../../shared/ui/v2/index.ts";
 
 export function CollectorSection({ data }: { data: DashboardData }) {
+  const [activeTab, setActiveTab] = useState<"sources" | "manual">("sources");
   return (
     <section className="flex flex-col" style={{ gap: 24 }}>
       <Hero />
-      <Tabs sourcesCount={data.supervisedCollector.sources.length} />
-      <SourcesRow data={data} />
-      <OpenClawPromptWrap data={data} />
-      <AcceptedFieldsSection data={data} />
-      <AuditSection data={data} />
-      <ExplainerSplit data={data} />
+      <Tabs
+        activeTab={activeTab}
+        onChange={setActiveTab}
+        sourcesCount={data.supervisedCollector.sources.length}
+      />
+      {activeTab === "sources" ? (
+        <>
+          <SourcesRow data={data} />
+          <OpenClawPromptWrap data={data} />
+          <AcceptedFieldsSection data={data} />
+          <AuditSection data={data} />
+          <ExplainerSplit data={data} />
+        </>
+      ) : (
+        <ManualCaptureTab />
+      )}
     </section>
   );
 }
@@ -67,23 +80,52 @@ function Hero() {
 /* ============================================================
  * Tabs (yKT6P)
  * ============================================================ */
-function Tabs({ sourcesCount }: { sourcesCount: number }) {
+/**
+ * Tabs reales (antes solo etiquetas estáticas). Click cambia entre vista
+ * "Fuentes" (live del recolector supervisado) y "Captura manual" (formulario
+ * para ingestar JSON manual via /v1/devops/collector/manual-snapshots/ingest).
+ */
+function Tabs({
+  activeTab,
+  onChange,
+  sourcesCount
+}: {
+  activeTab: "sources" | "manual";
+  onChange: (tab: "sources" | "manual") => void;
+  sourcesCount: number;
+}) {
+  const tabBase =
+    "inline-flex items-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] cursor-pointer bg-transparent border-0";
   return (
     <div
       className="flex items-end"
       style={{ borderBottom: "1px solid var(--color-border)" }}
     >
-      <div
-        className="inline-flex items-center"
+      <button
+        type="button"
+        onClick={() => onChange("sources")}
+        className={tabBase}
         style={{
           gap: 8,
           padding: "14px 4px",
-          borderBottom: "2px solid var(--color-accent-tertiary)",
+          marginRight: 14,
+          borderBottom: activeTab === "sources" ? "2px solid var(--color-accent-tertiary)" : "2px solid transparent",
           marginBottom: -1
         }}
       >
-        <Database size={14} strokeWidth={1.75} className="text-[var(--color-text-primary)]" aria-hidden="true" />
-        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
+        <Database
+          size={14}
+          strokeWidth={1.75}
+          className={activeTab === "sources" ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-secondary)]"}
+          aria-hidden="true"
+        />
+        <span
+          className="text-[13px] font-[family-name:var(--font-sans)]"
+          style={{
+            fontWeight: activeTab === "sources" ? 600 : 500,
+            color: activeTab === "sources" ? "var(--color-text-primary)" : "var(--color-text-secondary)"
+          }}
+        >
           Fuentes del recolector
         </span>
         <span
@@ -97,10 +139,31 @@ function Tabs({ sourcesCount }: { sourcesCount: number }) {
         >
           {sourcesCount}
         </span>
-      </div>
-      <div className="inline-flex items-center" style={{ gap: 8, padding: "14px 18px" }}>
-        <Upload size={14} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
-        <span className="text-[13px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-secondary)]">
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("manual")}
+        className={tabBase}
+        style={{
+          gap: 8,
+          padding: "14px 4px",
+          borderBottom: activeTab === "manual" ? "2px solid var(--color-accent-tertiary)" : "2px solid transparent",
+          marginBottom: -1
+        }}
+      >
+        <Upload
+          size={14}
+          strokeWidth={1.75}
+          className={activeTab === "manual" ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-secondary)]"}
+          aria-hidden="true"
+        />
+        <span
+          className="text-[13px] font-[family-name:var(--font-sans)]"
+          style={{
+            fontWeight: activeTab === "manual" ? 600 : 500,
+            color: activeTab === "manual" ? "var(--color-text-primary)" : "var(--color-text-secondary)"
+          }}
+        >
           Captura manual
         </span>
         <span
@@ -109,7 +172,7 @@ function Tabs({ sourcesCount }: { sourcesCount: number }) {
         >
           externo
         </span>
-      </div>
+      </button>
       <span className="flex-1" aria-hidden="true" />
       <div className="inline-flex items-center" style={{ gap: 6, padding: "10px 4px" }}>
         <Info size={12} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
@@ -118,6 +181,178 @@ function Tabs({ sourcesCount }: { sourcesCount: number }) {
         </span>
       </div>
     </div>
+  );
+}
+
+/**
+ * ManualCaptureTab — formulario inline para ingestar snapshots manuales.
+ *
+ * Vive en el tab "Captura manual". Permite al operador pegar el JSON producido
+ * por `delivrix-cli capture` y enviarlo al endpoint protegido del backend.
+ * Mismo contrato que el modal de Hardware "Solicitar snapshot manual" pero
+ * inline (sin modal) porque aquí el contexto es operación dedicada.
+ */
+function ManualCaptureTab() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [actorId, setActorId] = useState("");
+  const [rawJson, setRawJson] = useState("");
+  const [parseError, setParseError] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: async (payload: { actorId: string; snapshot: unknown }) => {
+      const res = await fetch("/v1/devops/collector/manual-snapshots/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          actorId: payload.actorId,
+          humanApproved: true,
+          snapshot: payload.snapshot
+        })
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}${text ? ` · ${text.slice(0, 160)}` : ""}`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast.success("Snapshot ingestado", {
+        description: "Backend procesó el snapshot. Hardware refrescando…"
+      });
+      void queryClient.invalidateQueries({ queryKey: ["admin-panel", "dashboard"] });
+      setRawJson("");
+    },
+    onError: (error) => {
+      toast.error("No se pudo ingestar el snapshot", {
+        description: error instanceof Error ? error.message : "Error desconocido"
+      });
+    }
+  });
+
+  const handleSubmit = useCallback(() => {
+    setParseError(null);
+    if (!actorId.trim()) {
+      setParseError("Operador requerido.");
+      return;
+    }
+    if (rawJson.trim().length < 2) {
+      setParseError("Pega el JSON del snapshot.");
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawJson);
+    } catch (e) {
+      setParseError(`JSON inválido: ${e instanceof Error ? e.message : "parse error"}`);
+      return;
+    }
+    mutation.mutate({ actorId: actorId.trim(), snapshot: parsed });
+  }, [actorId, rawJson, mutation]);
+
+  return (
+    <section
+      className="flex flex-col bg-[var(--color-surface)]"
+      style={{
+        gap: 16,
+        padding: 20,
+        borderRadius: 8,
+        border: "1px solid var(--color-border)",
+        boxShadow: "var(--shadow-sm)"
+      }}
+    >
+      <header className="flex items-start" style={{ gap: 12 }}>
+        <span
+          aria-hidden="true"
+          className="grid place-items-center"
+          style={{ width: 36, height: 36, borderRadius: 8, background: "var(--color-info-soft)", color: "var(--color-info)" }}
+        >
+          <Upload size={18} strokeWidth={1.75} />
+        </span>
+        <div className="flex flex-col" style={{ gap: 4 }}>
+          <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
+            Captura manual auditada
+          </h2>
+          <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]" style={{ maxWidth: 640 }}>
+            Ejecuta <code className="font-[family-name:var(--font-mono)]">delivrix-cli capture</code> en el servidor target,
+            copia el JSON resultante aquí y firma la captura con tu identificador. El backend valida estructura, escribe
+            audit event y descarta si el contrato no se cumple.
+          </p>
+        </div>
+      </header>
+
+      <label className="flex flex-col" style={{ gap: 6, maxWidth: 360 }}>
+        <span
+          className="text-[11px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+          style={{ letterSpacing: "var(--tracking-widest)", color: "var(--color-text-tertiary)" }}
+        >
+          Operador <span style={{ color: "var(--color-critical)" }}>*</span>
+        </span>
+        <input
+          type="text"
+          value={actorId}
+          onChange={(e) => setActorId(e.target.value)}
+          placeholder="op-juanes-a / op-mariana-b"
+          disabled={mutation.isPending}
+        />
+      </label>
+
+      <label className="flex flex-col" style={{ gap: 6 }}>
+        <span
+          className="text-[11px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+          style={{ letterSpacing: "var(--tracking-widest)", color: "var(--color-text-tertiary)" }}
+        >
+          JSON del snapshot <span style={{ color: "var(--color-critical)" }}>*</span>
+        </span>
+        <textarea
+          value={rawJson}
+          onChange={(e) => setRawJson(e.target.value)}
+          placeholder='{ "hostId": "...", "identity": {...}, "capacity": {...}, ... }'
+          rows={14}
+          disabled={mutation.isPending}
+          style={{
+            resize: "vertical",
+            minHeight: 240,
+            fontFamily: "var(--font-mono)",
+            fontSize: 11,
+            lineHeight: 1.55
+          }}
+        />
+        <span className="text-[10px] font-[family-name:var(--font-caption)]" style={{ color: "var(--color-text-tertiary)" }}>
+          El backend devuelve HTTP 422 si falta algún campo del schema. Tip: pasa el JSON por <code className="font-[family-name:var(--font-mono)]">jq .</code> antes de pegarlo para validar formato.
+        </span>
+      </label>
+
+      {parseError ? (
+        <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold" style={{ color: "var(--color-critical)" }}>
+          {parseError}
+        </span>
+      ) : null}
+
+      <div className="flex items-center" style={{ gap: 10 }}>
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={mutation.isPending}
+          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed disabled:opacity-60"
+          style={{
+            gap: 8,
+            padding: "10px 18px",
+            borderRadius: 6,
+            background: "var(--color-accent)",
+            color: "var(--color-on-dark-strong)",
+            border: "none",
+            cursor: mutation.isPending ? "not-allowed" : "pointer"
+          }}
+        >
+          <Upload size={14} strokeWidth={2} aria-hidden="true" />
+          {mutation.isPending ? "Ingestando…" : "Ingestar snapshot"}
+        </button>
+        <span className="text-[11px] font-[family-name:var(--font-caption)]" style={{ color: "var(--color-text-tertiary)" }}>
+          Endpoint <code className="font-[family-name:var(--font-mono)]">/v1/devops/collector/manual-snapshots/ingest</code>
+        </span>
+      </div>
+    </section>
   );
 }
 
@@ -720,6 +955,7 @@ function ExplainerText({ data }: { data: DashboardData }) {
 }
 
 function CliSnippet() {
+  const { toast } = useToast();
   const lines = [
     { tone: "input" as const, text: "$ delivrix collector capture --source proxmox" },
     { tone: "info" as const, text: "› authenticating with operator role…" },
@@ -728,6 +964,20 @@ function CliSnippet() {
     { tone: "success" as const, text: "✓ accepted, schema 5.10.0" },
     { tone: "info" as const, text: "› hash registered in audit log" }
   ];
+  const handleCopy = async () => {
+    const text = lines.map((l) => l.text).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Copiado al portapapeles", {
+        description: `${lines.length} líneas del snippet CLI.`,
+        duration: 2000
+      });
+    } catch (e) {
+      toast.error("No se pudo copiar", {
+        description: e instanceof Error ? e.message : "Permiso del navegador denegado."
+      });
+    }
+  };
   const colors: Record<"input" | "info" | "success" | "error", string> = {
     input: "var(--color-on-dark-strong)",
     info: "var(--color-accent-secondary)",
@@ -765,8 +1015,9 @@ function CliSnippet() {
         </div>
         <button
           type="button"
-          className="inline-flex items-center text-[10px] font-[family-name:var(--font-mono)]"
-          style={{ gap: 6, padding: "4px 8px", borderRadius: 4, background: "var(--color-on-dark-hint)", color: "var(--color-on-dark-strong)" }}
+          onClick={handleCopy}
+          className="inline-flex items-center text-[10px] font-[family-name:var(--font-mono)] transition-colors hover:bg-[var(--color-on-dark-faint)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+          style={{ gap: 6, padding: "4px 8px", borderRadius: 4, background: "var(--color-on-dark-hint)", color: "var(--color-on-dark-strong)", border: "none", cursor: "pointer" }}
         >
           copy
         </button>

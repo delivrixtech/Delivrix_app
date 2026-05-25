@@ -22,10 +22,11 @@ import {
   TrendingDown,
   WandSparkles
 } from "lucide-react";
-import { useRef } from "react";
+import { useCallback, useRef, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { DashboardData } from "../../shared/api/client.ts";
 import { filterAuditEvents, humanize } from "../../shared/lib/formatters.ts";
-import { BannerOpenClawV2, LiveIndicator } from "../../shared/ui/v2/index.ts";
+import { BannerOpenClawV2, LiveIndicator, useToast } from "../../shared/ui/v2/index.ts";
 
 export function ClustersSection({ data }: { data: DashboardData }) {
   return (
@@ -676,61 +677,318 @@ function SecRight({ data }: { data: DashboardData }) {
   );
 }
 
+/**
+ * KillSwitchCard con cableado real a POST /v1/kill-switch.
+ *
+ * Flujo:
+ * 1. Click "Activar" → abre KillSwitchModal.
+ * 2. Modal pide razón obligatoria + operador (regla de 2 personas).
+ * 3. Confirm → POST /v1/kill-switch { enabled: !current, reason, actorId }.
+ * 4. Backend escribe audit event automático (kill_switch.activated/.deactivated).
+ * 5. Toast feedback + invalidate dashboard query → refetch → UI actualizada.
+ */
 function KillSwitchCard({ data }: { data: DashboardData }) {
   const ks = data.killSwitch;
   const armed = !ks.enabled;
+  const [modalOpen, setModalOpen] = useState(false);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  const mutation = useMutation({
+    mutationFn: async (payload: { enabled: boolean; reason: string; actorId: string }) => {
+      const res = await fetch("/v1/kill-switch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", accept: "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}${text ? ` · ${text.slice(0, 120)}` : ""}`);
+      }
+      return res.json() as Promise<{ killSwitch: { enabled: boolean } }>;
+    },
+    onSuccess: (result) => {
+      const nowEnabled = result.killSwitch.enabled;
+      toast.success(
+        nowEnabled
+          ? "Interruptor de corte ACTIVADO"
+          : "Interruptor de corte rearmado",
+        {
+          description: nowEnabled
+            ? "Pipeline de envío bloqueado. Audit event escrito."
+            : "Pipeline disponible. Audit event escrito."
+        }
+      );
+      void queryClient.invalidateQueries({ queryKey: ["admin-panel", "dashboard"] });
+      setModalOpen(false);
+    },
+    onError: (error) => {
+      toast.error("No se pudo cambiar el interruptor de corte", {
+        description: error instanceof Error ? error.message : "Error desconocido"
+      });
+    }
+  });
+
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{ gap: 12, padding: 18, borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
-    >
-      <header className="flex items-center" style={{ gap: 8 }}>
-        <ShieldCheck size={14} strokeWidth={1.75} className="text-[var(--color-success)]" aria-hidden="true" />
-        <h3 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-          Interruptor de corte
-        </h3>
-        <span className="flex-1" aria-hidden="true" />
-        <span
-          className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+    <>
+      <section
+        className="flex flex-col bg-[var(--color-surface)]"
+        style={{ gap: 12, padding: 18, borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
+      >
+        <header className="flex items-center" style={{ gap: 8 }}>
+          <ShieldCheck size={14} strokeWidth={1.75} className={armed ? "text-[var(--color-success)]" : "text-[var(--color-critical)]"} aria-hidden="true" />
+          <h3 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
+            Interruptor de corte
+          </h3>
+          <span className="flex-1" aria-hidden="true" />
+          <span
+            className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+            style={{
+              gap: 6,
+              padding: "3px 8px",
+              borderRadius: 999,
+              background: armed ? "var(--color-success-soft)" : "var(--color-critical-soft)",
+              color: armed ? "var(--color-success)" : "var(--color-critical)",
+              letterSpacing: "var(--tracking-wider)"
+            }}
+          >
+            <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: armed ? "var(--color-success)" : "var(--color-critical)" }} />
+            {armed ? "Armado" : "Activo"}
+          </span>
+        </header>
+        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
+          {ks.reason
+            ? `Razón · ${ks.reason}`
+            : ks.updatedAt
+              ? `Última actualización · ${new Date(ks.updatedAt).toLocaleString("es-CO")}`
+              : "Sin uso registrado"}
+        </p>
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          disabled={mutation.isPending}
+          className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed disabled:opacity-60"
           style={{
             gap: 6,
-            padding: "3px 8px",
-            borderRadius: 999,
-            background: armed ? "var(--color-success-soft)" : "var(--color-critical-soft)",
-            color: armed ? "var(--color-success)" : "var(--color-critical)",
-            letterSpacing: "var(--tracking-wider)"
+            padding: "9px 12px",
+            borderRadius: 6,
+            background: armed ? "var(--color-critical)" : "var(--color-surface-inverse)",
+            color: "var(--color-on-dark-strong)",
+            border: armed ? "1px solid var(--color-critical)" : "1px solid var(--color-on-dark-hint)",
+            cursor: mutation.isPending ? "wait" : "pointer"
           }}
         >
-          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: armed ? "var(--color-success)" : "var(--color-critical)" }} />
-          {armed ? "Armado" : "Activo"}
+          {mutation.isPending
+            ? "Procesando…"
+            : armed
+              ? "Activar interruptor de corte"
+              : "Rearmar interruptor"}
+        </button>
+        <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
+          Requiere rol elevado + regla de 2 personas. Cada acción queda en audit chain.
         </span>
-      </header>
-      <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
-        {ks.reason
-          ? `Razón · ${ks.reason}`
-          : ks.updatedAt
-            ? `Última actualización · ${new Date(ks.updatedAt).toLocaleString("es-CO")}`
-            : "Sin uso registrado"}
-      </p>
-      <button
-        type="button"
-        className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+      </section>
+      {modalOpen ? (
+        <KillSwitchModal
+          armed={armed}
+          isPending={mutation.isPending}
+          onCancel={() => setModalOpen(false)}
+          onConfirm={(reason, actorId) => mutation.mutate({ enabled: armed, reason, actorId })}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Modal de confirmación KillSwitch.
+ *
+ * Implementa la regla de 2 personas pidiendo:
+ * - reason: requerido si se activa (backend lo valida).
+ * - actorId: identifica al operador. En el MVP se pega manualmente; cuando
+ *   exista IAM real se reemplaza por session.userId.
+ *
+ * Diseño Linear-style: backdrop blur, modal centrado, validación inline.
+ */
+function KillSwitchModal({
+  armed,
+  isPending,
+  onCancel,
+  onConfirm
+}: {
+  armed: boolean;
+  isPending: boolean;
+  onCancel: () => void;
+  onConfirm: (reason: string, actorId: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [actorId, setActorId] = useState("");
+
+  const activating = armed; // si está armed=true (sin activar), el click va a activar=true
+  const reasonValid = !activating || reason.trim().length >= 4;
+  const actorValid = actorId.trim().length >= 2;
+  const canSubmit = reasonValid && actorValid && !isPending;
+
+  const handleSubmit = useCallback(() => {
+    if (!canSubmit) return;
+    onConfirm(reason.trim(), actorId.trim());
+  }, [canSubmit, reason, actorId, onConfirm]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="killswitch-modal-title"
+      className="fixed inset-0 z-[9990] flex items-center justify-center px-4"
+      style={{
+        background: "color-mix(in srgb, var(--color-text-primary) 35%, transparent)",
+        backdropFilter: "blur(4px)"
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !isPending) onCancel();
+      }}
+    >
+      <div
+        className="flex w-full max-w-[460px] flex-col"
         style={{
-          gap: 6,
-          padding: "9px 12px",
-          borderRadius: 6,
-          background: "var(--color-surface-inverse)",
-          color: "var(--color-on-dark-strong)",
-          border: "1px solid var(--color-on-dark-hint)",
-          cursor: "pointer"
+          background: "var(--color-surface-overlay)",
+          border: "1px solid var(--color-border)",
+          borderRadius: "var(--radius-lg)",
+          boxShadow: "var(--shadow-lg)",
+          overflow: "hidden"
         }}
       >
-        Activar interruptor de corte
-      </button>
-      <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-        Requiere rol elevado + regla de 2 personas
-      </span>
-    </section>
+        <header
+          className="flex items-center"
+          style={{
+            gap: 10,
+            padding: "16px 20px",
+            borderBottom: "1px solid var(--color-border)",
+            background: activating ? "var(--color-critical-soft)" : "var(--color-success-soft)"
+          }}
+        >
+          <span
+            aria-hidden="true"
+            className="grid place-items-center"
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              background: activating ? "var(--color-critical)" : "var(--color-success)",
+              color: "var(--color-on-dark-strong)"
+            }}
+          >
+            <ShieldCheck size={16} strokeWidth={2} />
+          </span>
+          <div className="flex flex-col" style={{ gap: 2 }}>
+            <h2
+              id="killswitch-modal-title"
+              className="m-0 text-[15px] font-[family-name:var(--font-sans)] font-semibold leading-tight"
+              style={{ color: activating ? "var(--color-critical-fg)" : "var(--color-success-fg)", letterSpacing: "var(--tracking-tight)" }}
+            >
+              {activating ? "Activar interruptor de corte" : "Rearmar interruptor"}
+            </h2>
+            <span
+              className="text-[11px] font-[family-name:var(--font-caption)]"
+              style={{ color: activating ? "var(--color-critical-fg)" : "var(--color-success-fg)", opacity: 0.85 }}
+            >
+              {activating
+                ? "Bloqueará el pipeline de envío. Acción reversible pero auditada."
+                : "Restaurará el pipeline. Audit event escrito."}
+            </span>
+          </div>
+        </header>
+
+        <div className="flex flex-col" style={{ gap: 14, padding: "16px 20px" }}>
+          {activating ? (
+            <label className="flex flex-col" style={{ gap: 6 }}>
+              <span
+                className="text-[11px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+                style={{ letterSpacing: "var(--tracking-widest)", color: "var(--color-text-tertiary)" }}
+              >
+                Razón <span style={{ color: "var(--color-critical)" }}>*</span>
+              </span>
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder="Ej: pico de quejas detectado en cluster A; protocolo de degradación dry-run no resolvió."
+                rows={3}
+                disabled={isPending}
+                style={{ resize: "vertical", minHeight: 70 }}
+              />
+              {!reasonValid && reason.length > 0 ? (
+                <span className="text-[11px] font-[family-name:var(--font-sans)]" style={{ color: "var(--color-critical)" }}>
+                  Mínimo 4 caracteres.
+                </span>
+              ) : null}
+            </label>
+          ) : null}
+
+          <label className="flex flex-col" style={{ gap: 6 }}>
+            <span
+              className="text-[11px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+              style={{ letterSpacing: "var(--tracking-widest)", color: "var(--color-text-tertiary)" }}
+            >
+              Operador (regla de 2 personas) <span style={{ color: "var(--color-critical)" }}>*</span>
+            </span>
+            <input
+              type="text"
+              value={actorId}
+              onChange={(e) => setActorId(e.target.value)}
+              placeholder="op-juanes-a / op-mariana-b / ..."
+              disabled={isPending}
+              autoFocus
+            />
+            <span className="text-[10px] font-[family-name:var(--font-caption)]" style={{ color: "var(--color-text-tertiary)" }}>
+              ID del operador que ejecuta la acción. Audit chain registra quién hizo qué.
+            </span>
+          </label>
+        </div>
+
+        <footer
+          className="flex items-center justify-end"
+          style={{
+            gap: 8,
+            padding: "12px 20px",
+            background: "var(--color-surface-sunken)",
+            borderTop: "1px solid var(--color-border)"
+          }}
+        >
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isPending}
+            className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:bg-[var(--color-surface)] disabled:cursor-not-allowed disabled:opacity-60"
+            style={{
+              padding: "8px 14px",
+              borderRadius: 6,
+              background: "transparent",
+              color: "var(--color-text-secondary)",
+              border: "1px solid var(--color-border)",
+              cursor: isPending ? "not-allowed" : "pointer"
+            }}
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+            style={{
+              padding: "8px 14px",
+              borderRadius: 6,
+              background: activating ? "var(--color-critical)" : "var(--color-success)",
+              color: "var(--color-on-dark-strong)",
+              border: "none",
+              cursor: canSubmit ? "pointer" : "not-allowed"
+            }}
+          >
+            {isPending ? "Procesando…" : activating ? "Confirmar activación" : "Confirmar rearmado"}
+          </button>
+        </footer>
+      </div>
+    </div>
   );
 }
 

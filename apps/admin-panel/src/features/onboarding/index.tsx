@@ -26,8 +26,10 @@ import {
   Sparkles,
   WandSparkles
 } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { DashboardData } from "../../shared/api/client.ts";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
+import { useToast } from "../../shared/ui/v2/index.ts";
 import { BannerOpenClawV2 } from "../../shared/ui/v2/index.ts";
 
 export function OnboardingSection({ data }: { data: DashboardData }) {
@@ -38,7 +40,7 @@ export function OnboardingSection({ data }: { data: DashboardData }) {
       <WizardBody data={data} />
       <GatesHead />
       <GatesStrip data={data} />
-      <ActionBar />
+      <ActionBar data={data} />
     </section>
   );
 }
@@ -696,11 +698,95 @@ function GateCard({
 /* ============================================================
  * ActionBar
  * ============================================================ */
-function ActionBar() {
+/**
+ * ActionBar — acciones reales sobre el estado de onboarding.
+ *
+ * NOTA: el wizard NO es editable (los FieldRow son display-only del estado
+ * que ya vive en el backend). Por eso las 3 acciones son operativas:
+ *
+ * - "Exportar snapshot" → descarga JSON del onboardingState actual al disco.
+ *   Útil para auditoría manual / handoff entre operadores.
+ * - "Refrescar estado" → invalida la dashboard query y refetchea.
+ * - "Solicitar evaluación OpenClaw" → POST /v1/openclaw/onboarding/evaluate.
+ *   Backend escribe audit event `openclaw_onboarding.evaluated`. Disabled
+ *   cuando hay blockers porque no tiene sentido pedir evaluación sin info.
+ */
+function ActionBar({ data }: { data: DashboardData }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const blockers = data.onboardingState.blockers?.length ?? 0;
+  const unknowns = (data.physicalHost.quality.unknownFields?.length ?? 0) +
+    (data.telemetry.quality.unknownFields?.length ?? 0);
+  const canEvaluate = blockers === 0;
+
+  // Action 1: descargar snapshot del estado actual.
+  const handleExport = () => {
+    try {
+      const snapshot = {
+        capturedAt: new Date().toISOString(),
+        physicalHost: data.physicalHost,
+        operatingNorth: data.operatingNorth,
+        onboardingState: data.onboardingState,
+        telemetry: data.telemetry
+      };
+      const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `delivrix-onboarding-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success("Snapshot exportado", {
+        description: "Archivo JSON descargado en el sistema.",
+        duration: 2500
+      });
+    } catch (e) {
+      toast.error("No se pudo exportar", {
+        description: e instanceof Error ? e.message : "Error desconocido"
+      });
+    }
+  };
+
+  // Action 2: refrescar dashboard query.
+  const handleRefresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["admin-panel", "dashboard"] });
+    toast.success("Estado refrescado", { duration: 1800 });
+  };
+
+  // Action 3: solicitar evaluación al backend.
+  const evaluateMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/v1/openclaw/onboarding/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ actorId: "panel-operator" })
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}${text ? ` · ${text.slice(0, 120)}` : ""}`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast.success("Evaluación enviada a OpenClaw", {
+        description: "Audit event escrito · espera la decisión humana del gate."
+      });
+      void queryClient.invalidateQueries({ queryKey: ["admin-panel", "dashboard"] });
+    },
+    onError: (error) => {
+      toast.error("Falló la solicitud de evaluación", {
+        description: error instanceof Error ? error.message : "Error desconocido"
+      });
+    }
+  });
+
   return (
     <section
-      className="flex items-center bg-[var(--color-surface)]"
+      className="flex flex-wrap items-center bg-[var(--color-surface)]"
       style={{
+        gap: 12,
         padding: "14px 18px",
         borderRadius: 8,
         border: "1px solid var(--color-border)",
@@ -710,60 +796,79 @@ function ActionBar() {
     >
       <button
         type="button"
-        className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-secondary)]"
-        style={{ gap: 8, padding: "10px 12px", borderRadius: 6, background: "transparent" }}
+        onClick={handleExport}
+        className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+        style={{ gap: 8, padding: "10px 12px", borderRadius: 6, background: "transparent", cursor: "pointer" }}
       >
         <Save size={14} strokeWidth={1.75} aria-hidden="true" />
-        Guardar borrador
+        Exportar snapshot
       </button>
 
-      <div className="flex items-center" style={{ gap: 14 }}>
-        <span
-          className="inline-flex items-center text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-warning)]"
-          style={{
-            gap: 6,
-            padding: "8px 12px",
-            borderRadius: 6,
-            background: "var(--color-warning-soft)",
-            border: "1px solid var(--color-warning)"
-          }}
-        >
-          <Lock size={12} strokeWidth={1.75} aria-hidden="true" />
-          Requiere validación humana del gate de cumplimiento
-        </span>
+      <div className="flex flex-wrap items-center" style={{ gap: 12 }}>
+        {blockers > 0 ? (
+          <span
+            className="inline-flex items-center text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-warning)]"
+            style={{
+              gap: 6,
+              padding: "8px 12px",
+              borderRadius: 6,
+              background: "var(--color-warning-soft)",
+              border: "1px solid var(--color-warning)"
+            }}
+          >
+            <Lock size={12} strokeWidth={1.75} aria-hidden="true" />
+            {blockers} bloqueo{blockers === 1 ? "" : "s"} · {unknowns} campo{unknowns === 1 ? "" : "s"} sin completar
+          </span>
+        ) : (
+          <span
+            className="inline-flex items-center text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-success)]"
+            style={{
+              gap: 6,
+              padding: "8px 12px",
+              borderRadius: 6,
+              background: "var(--color-success-soft)",
+              border: "1px solid var(--color-success)"
+            }}
+          >
+            <CheckCircle2 size={12} strokeWidth={1.75} aria-hidden="true" />
+            Sin bloqueos · listo para evaluación
+          </span>
+        )}
         <button
           type="button"
-          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
+          onClick={() => void handleRefresh()}
+          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
           style={{
             gap: 8,
             padding: "10px 16px",
             borderRadius: 6,
             background: "var(--color-bg)",
-            border: "1px solid var(--color-border)"
+            border: "1px solid var(--color-border)",
+            cursor: "pointer"
           }}
         >
           <ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />
-          Volver
+          Refrescar estado
         </button>
         <button
           type="button"
-          disabled
-          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-bold text-[var(--color-text-tertiary)] disabled:cursor-default"
+          onClick={() => evaluateMutation.mutate()}
+          disabled={!canEvaluate || evaluateMutation.isPending}
+          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed disabled:opacity-55"
           style={{
             gap: 8,
             padding: "10px 18px",
             borderRadius: 6,
-            background: "var(--color-neutral-soft)",
-            border: "1px solid var(--color-border)",
-            opacity: 0.55
+            background: canEvaluate ? "var(--color-accent)" : "var(--color-neutral-soft)",
+            color: canEvaluate ? "var(--color-on-dark-strong)" : "var(--color-text-tertiary)",
+            border: canEvaluate ? "1px solid var(--color-accent)" : "1px solid var(--color-border)",
+            cursor: canEvaluate && !evaluateMutation.isPending ? "pointer" : "not-allowed"
           }}
         >
           <Send size={14} strokeWidth={1.75} aria-hidden="true" />
-          Enviar para aprobación
+          {evaluateMutation.isPending ? "Enviando…" : "Solicitar evaluación a OpenClaw"}
         </button>
       </div>
     </section>
   );
 }
-
-void CheckCircle2;
