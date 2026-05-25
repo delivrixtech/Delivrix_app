@@ -28,7 +28,12 @@ export const READ_ENDPOINTS = Object.freeze({
   openClawSkillsAudit: "/v1/openclaw/skills/audit",
   openClawEvidence: "/v1/openclaw/evidence",
   webdockInventory: "/v1/webdock/inventory",
-  infrastructureInventory: "/v1/infrastructure/inventory"
+  infrastructureInventory: "/v1/infrastructure/inventory",
+  awsDomainDiscovery: "/v1/infrastructure/domain-discovery",
+  domainAvailability: "/v1/domains/availability",
+  domainSuggestions: "/v1/domains/suggestions",
+  domainPrices: "/v1/domains/prices",
+  ownedDomains: "/v1/domains/owned"
 } as const);
 
 export type ReadEndpoint = (typeof READ_ENDPOINTS)[keyof typeof READ_ENDPOINTS];

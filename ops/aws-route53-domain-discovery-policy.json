@@ -1,0 +1,48 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowRoute53DomainsDiscoveryOnly",
+      "Effect": "Allow",
+      "Action": [
+        "route53domains:CheckDomainAvailability",
+        "route53domains:GetDomainSuggestions",
+        "route53domains:ListPrices",
+        "route53domains:ListDomains",
+        "route53domains:GetOperationDetail"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowRoute53HostedZonesRead",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListHostedZones",
+        "route53:GetHostedZone",
+        "route53:ListResourceRecordSets"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ExplicitlyDenyDomainPurchaseAndMutation",
+      "Effect": "Deny",
+      "Action": [
+        "route53domains:RegisterDomain",
+        "route53domains:TransferDomain",
+        "route53domains:RenewDomain",
+        "route53domains:DeleteDomain",
+        "route53domains:UpdateDomainContact",
+        "route53domains:UpdateDomainContactPrivacy",
+        "route53domains:UpdateDomainNameservers",
+        "route53domains:RetrieveDomainAuthCode",
+        "route53domains:EnableDomainAutoRenew",
+        "route53domains:DisableDomainAutoRenew",
+        "route53domains:EnableDomainTransferLock",
+        "route53domains:DisableDomainTransferLock",
+        "route53:CreateHostedZone",
+        "route53:ChangeResourceRecordSets"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

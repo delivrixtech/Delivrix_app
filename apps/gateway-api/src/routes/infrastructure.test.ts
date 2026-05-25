@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import type {
+  AwsRoute53DomainsInventoryResult,
   IonosDnsInventoryResult,
   IonosDomainsInventoryResult,
   WebdockInventoryResult
@@ -71,10 +72,11 @@ test("Infrastructure inventory degrades gracefully when AWS cache exists and ION
     now: fixedNow
   });
 
-  assert.equal(payload.providers.length, 5);
+  assert.equal(payload.providers.length, 6);
   assert.deepEqual(payload.providers.map((provider) => [provider.id, provider.status]), [
     ["webdock-default", "active"],
     ["aws-bedrock-us-east-1", "active"],
+    ["aws-route53-domains", "planned"],
     ["ionos-cloud-dns", "error"],
     ["ionos-domains", "planned"],
     ["physical-medellin", "planned"]
@@ -82,8 +84,9 @@ test("Infrastructure inventory degrades gracefully when AWS cache exists and ION
   assert.equal(payload.providers[0].fetchSourceKind, "live");
   assert.equal(payload.providers[0].itemCount, 1);
   assert.equal(payload.providers[1].items?.[0]?.id, "us.anthropic.claude-sonnet-4-6");
-  assert.equal(payload.providers[2].errorReason, "adapter_pending");
-  assert.equal(payload.providers[3].errorReason, "creds_not_configured");
+  assert.equal(payload.providers[2].errorReason, "creds_not_configured");
+  assert.equal(payload.providers[3].errorReason, "adapter_pending");
+  assert.equal(payload.providers[4].errorReason, "creds_not_configured");
 });
 
 test("Infrastructure inventory exposes three Webdock accounts as distinct providers", async () => {
@@ -137,6 +140,43 @@ test("Infrastructure inventory preserves legacy Webdock default account shape", 
   assert.equal(payload.providers[0].id, "webdock-default");
   assert.equal(payload.providers[0].displayName, "Webdock");
   assert.equal(payload.providers[0].status, "active");
+});
+
+test("Infrastructure inventory exposes AWS Route 53 Domains as discovery-only registrar", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: true,
+    awsRoute53Domains: awsRoute53DomainsInventory({
+      domains: [{
+        domainName: "delivrix.io",
+        autoRenew: true,
+        transferLock: true,
+        expiry: "2027-05-25T00:00:00Z"
+      }]
+    }),
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl"),
+    env: {},
+    now: fixedNow
+  });
+
+  const provider = payload.providers.find((item) => item.id === "aws-route53-domains");
+
+  assert.equal(provider?.kind, "domain-registrar");
+  assert.equal(provider?.status, "active");
+  assert.equal(provider?.itemCount, 1);
+  assert.equal(provider?.fetchSourceKind, "live");
+  assert.deepEqual(provider?.capabilities, [
+    "list_registered_domains",
+    "check_domain_availability",
+    "get_domain_suggestions",
+    "list_domain_prices",
+    "draft_domain_purchase_proposal"
+  ]);
+  assert.equal(provider?.items?.[0]?.displayName, "delivrix.io");
+  assert.deepEqual(provider?.items?.[0]?.detail, {
+    autoRenew: true,
+    transferLock: true,
+    expiry: "2027-05-25T00:00:00Z"
+  });
 });
 
 test("Infrastructure inventory marks a failed Webdock account without hiding healthy accounts", async () => {
@@ -392,7 +432,7 @@ test("Infrastructure inventory audit is explicit, privacy-preserving, and keeps 
   for (let i = 0; i < events.length; i += 1) {
     const event = events[i];
     assert.equal(event.action, "oc.infrastructure.inventory.fetch");
-    assert.equal(event.metadata.providerCount, 5);
+    assert.equal(event.metadata.providerCount, 6);
     assert.equal(event.metadata.itemTotal, 1);
     assert.equal(event.prevHash, i === 0 ? "GENESIS" : events[i - 1].hash);
     assert.equal(event.hash, computeAuditHash(event as unknown as Record<string, unknown>, event.prevHash ?? "GENESIS"));
@@ -447,6 +487,24 @@ function ionosDnsInventory(input: {
       kind: "live",
       apiKind: "cloud-dns",
       apiBase: "https://dns.de-fra.ionos.com",
+      fetchedAt: "2026-05-24T17:59:30.000Z",
+      responseOk: input.responseOk ?? true,
+      ...(input.errorMessage ? { errorMessage: input.errorMessage } : {})
+    }
+  };
+}
+
+function awsRoute53DomainsInventory(input: {
+  domains: AwsRoute53DomainsInventoryResult["domains"];
+  responseOk?: boolean;
+  errorMessage?: string;
+}): AwsRoute53DomainsInventoryResult {
+  return {
+    domains: input.domains,
+    source: {
+      kind: "live",
+      region: "us-east-1",
+      apiBase: "https://route53domains.us-east-1.amazonaws.com",
       fetchedAt: "2026-05-24T17:59:30.000Z",
       responseOk: input.responseOk ?? true,
       ...(input.errorMessage ? { errorMessage: input.errorMessage } : {})

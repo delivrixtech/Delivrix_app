@@ -7,6 +7,7 @@ export * from "./collector-snapshot-ingestion.ts";
 export * from "./compliance-status.ts";
 export * from "./control-plane-contract.ts";
 export * from "./devops-collector-status.ts";
+export * from "./domains-discover.ts";
 export * from "./hardware-inventory.ts";
 export * from "./hardware-telemetry.ts";
 export * from "./iam-supervised.ts";
