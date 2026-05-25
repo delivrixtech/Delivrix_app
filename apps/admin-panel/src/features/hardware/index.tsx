@@ -25,6 +25,7 @@ import {
   Triangle
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
+import { BannerOpenClawV2 } from "../../shared/ui/v2/index.ts";
 import { filterAuditEvents } from "../../shared/lib/formatters.ts";
 
 export function HardwareSection({ data }: { data: DashboardData }) {
@@ -85,7 +86,7 @@ function HostCard({ data }: { data: DashboardData }) {
         padding: 20,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header className="flex items-center" style={{ gap: 16 }}>
@@ -95,7 +96,7 @@ function HostCard({ data }: { data: DashboardData }) {
           </h2>
           <span
             className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
-            style={{ letterSpacing: "0.4px" }}
+            style={{ letterSpacing: "var(--tracking-wide)" }}
           >
             Identidad de host · plano de control {ph.schemaVersion}
           </span>
@@ -108,7 +109,7 @@ function HostCard({ data }: { data: DashboardData }) {
             borderRadius: 4,
             background: readinessOk ? "var(--color-success-soft)" : "var(--color-warning-soft)",
             color: readinessOk ? "var(--color-success)" : "var(--color-warning)",
-            letterSpacing: "0.6px"
+            letterSpacing: "var(--tracking-wider)"
           }}
         >
           <span
@@ -174,123 +175,27 @@ function Chip({
 }
 
 function OpenClawPrompt({ data }: { data: DashboardData }) {
+  // Migrado a BannerOpenClawV2 — eliminadas ~120 LOC duplicadas (gradient borde + Sparkles + 2 CTAs)
   const cpuPct = typeof data.telemetry.cpu.usagePercent === "number" ? data.telemetry.cpu.usagePercent : null;
   const high = cpuPct !== null && cpuPct >= 75;
+  const stale = data.telemetry.summary.stale;
   const message = high
     ? `CPU al ${cpuPct.toFixed(1)}% en el último snapshot. ¿Revisamos el clúster activo?`
-    : data.telemetry.summary.stale
+    : stale
       ? "Telemetría stale en el snapshot más reciente. ¿Quieres que coordine una nueva captura supervisada?"
       : "Telemetría dentro del umbral. Puedo proponer la próxima ventana de calentamiento.";
-  const tone = high || data.telemetry.summary.stale ? "AVISO" : "OK";
-  const toneFg = high || data.telemetry.summary.stale ? "var(--color-warning)" : "var(--color-success)";
-  const toneBg = high || data.telemetry.summary.stale ? "var(--color-warning-soft)" : "var(--color-success-soft)";
-  void tone;
-  void toneFg;
-  void toneBg;
-  return <OpenClawPromptInner message={message} avisoBg={toneBg} avisoFg={toneFg} avisoText={tone} />;
-}
-
-function OpenClawPromptInner({ message, avisoBg, avisoFg, avisoText }: { message: string; avisoBg: string; avisoFg: string; avisoText: string }) {
+  const title = high
+    ? "CPU sobre umbral"
+    : stale
+      ? "Telemetría stale"
+      : "Telemetría OK";
   return (
-    <aside
-      className="flex flex-col"
-      style={{
-        gap: 14,
-        padding: 18,
-        borderRadius: 8,
-        background: "var(--color-surface)",
-        boxShadow: "0 8px 24px rgba(0, 0, 0, 0.13)",
-        border: "2px solid transparent",
-        backgroundImage:
-          "linear-gradient(var(--color-surface), var(--color-surface)), linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
-        backgroundOrigin: "border-box",
-        backgroundClip: "padding-box, border-box"
-      }}
-    >
-      <header className="flex items-center" style={{ gap: 10 }}>
-        <span
-          aria-hidden="true"
-          className="grid place-items-center"
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: 999,
-            background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-            color: "var(--color-bg)"
-          }}
-        >
-          <Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />
-        </span>
-        <div className="flex flex-col flex-1" style={{ gap: 1 }}>
-          <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-            OpenClaw
-          </span>
-          <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-            Operador IA supervisado
-          </span>
-        </div>
-        <span
-          className="inline-flex items-center text-[9px] font-[family-name:var(--font-caption)] font-bold"
-          style={{
-            gap: 4,
-            padding: "2px 6px",
-            borderRadius: 4,
-            background: avisoBg,
-            color: avisoFg,
-            letterSpacing: "0.4px"
-          }}
-        >
-          <Triangle size={10} strokeWidth={2} aria-hidden="true" />
-          {avisoText}
-        </span>
-      </header>
-
-      <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
-        {message}
-      </p>
-
-      <div
-        className="flex items-center"
-        style={{
-          gap: 8,
-          padding: "8px 10px",
-          borderRadius: 6,
-          background: "var(--color-surface-sunken)",
-          border: "1px solid var(--color-border)"
-        }}
-      >
-        <FileText size={12} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
-        <span className="flex-1 text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] truncate">
-          evidencia · snap-7f2a91c4
-        </span>
-        <ChevronRight size={12} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
-      </div>
-
-      <div className="flex" style={{ gap: 8 }}>
-        <button
-          type="button"
-          className="flex-1 inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
-          style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "var(--color-text-primary)" }}
-        >
-          <Siren size={14} strokeWidth={1.75} aria-hidden="true" />
-          Ver incidente
-        </button>
-        <button
-          type="button"
-          className="flex-1 inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
-          style={{
-            gap: 6,
-            padding: "10px 12px",
-            borderRadius: 6,
-            background: "var(--color-surface)",
-            border: "1px solid var(--color-border)"
-          }}
-        >
-          <Activity size={14} strokeWidth={1.75} aria-hidden="true" />
-          Ver gráficas
-        </button>
-      </div>
-    </aside>
+    <BannerOpenClawV2
+      title={title}
+      body={message}
+      primaryCta="Ver incidente"
+      secondaryCta="Ver gráficas"
+    />
   );
 }
 
@@ -394,12 +299,12 @@ function Inventario({ data }: { data: DashboardData }) {
         padding: 20,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header className="flex items-center" style={{ gap: 12 }}>
         <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Inventario
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -436,7 +341,7 @@ function Inventario({ data }: { data: DashboardData }) {
           <span
             key={h}
             className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-tertiary)]"
-            style={{ letterSpacing: "0.6px", textAlign: i === 3 ? "right" : "left" }}
+            style={{ letterSpacing: "var(--tracking-wider)", textAlign: i === 3 ? "right" : "left" }}
           >
             {h}
           </span>
@@ -502,12 +407,12 @@ function Historial({ data }: { data: DashboardData }) {
         padding: 20,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header className="flex items-center" style={{ gap: 8 }}>
         <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Historial de telemetría
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -613,7 +518,7 @@ function ChartShell({
       <header className="flex items-center justify-between" style={{ gap: 8 }}>
         <span
           className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
-          style={{ letterSpacing: "0.6px" }}
+          style={{ letterSpacing: "var(--tracking-wider)" }}
         >
           {title}
         </span>
@@ -704,10 +609,10 @@ function CamposDesconocidos({
           padding: 20,
           borderRadius: 8,
           border: "1px solid var(--color-border)",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+          boxShadow: "var(--shadow-sm)"
         }}
       >
-        <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+        <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Campos desconocidos
         </h2>
         <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
@@ -724,12 +629,12 @@ function CamposDesconocidos({
         padding: 20,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header className="flex items-center" style={{ gap: 12 }}>
         <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Campos desconocidos
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -781,7 +686,7 @@ function CamposDesconocidos({
                 <span className="flex-1" aria-hidden="true" />
                 <span
                   className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-unknown)]"
-                  style={{ letterSpacing: "0.4px" }}
+                  style={{ letterSpacing: "var(--tracking-wide)" }}
                 >
                   sin valor
                 </span>
@@ -819,7 +724,7 @@ function DatosFaltantes({ count }: { count: number }) {
           <Triangle size={16} strokeWidth={1.75} aria-hidden="true" />
         </span>
         <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h3 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Datos faltantes
           </h3>
           <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">
@@ -956,12 +861,12 @@ function AuditFooter({ data }: { data: DashboardData }) {
         padding: 20,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header className="flex items-center" style={{ gap: 12 }}>
         <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Registro de auditoría
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -992,7 +897,7 @@ function AuditFooter({ data }: { data: DashboardData }) {
           <span
             key={h}
             className="text-[9px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-tertiary)]"
-            style={{ letterSpacing: "0.6px", textAlign: i === 4 ? "right" : "left" }}
+            style={{ letterSpacing: "var(--tracking-wider)", textAlign: i === 4 ? "right" : "left" }}
           >
             {h}
           </span>

@@ -22,8 +22,10 @@ import {
   TrendingDown,
   WandSparkles
 } from "lucide-react";
+import { useRef } from "react";
 import type { DashboardData } from "../../shared/api/client.ts";
 import { filterAuditEvents, humanize } from "../../shared/lib/formatters.ts";
+import { BannerOpenClawV2, LiveIndicator } from "../../shared/ui/v2/index.ts";
 
 export function ClustersSection({ data }: { data: DashboardData }) {
   return (
@@ -37,32 +39,32 @@ export function ClustersSection({ data }: { data: DashboardData }) {
 }
 
 /* ============================================================
- * Hero
+ * Hero — kicker eyebrow + LiveIndicator dinámico (fix P0: timestamp hardcoded "hace 14s")
  * ============================================================ */
 function Hero() {
+  const mountedAt = useRef<number>(Date.now()).current;
   return (
-    <header className="flex flex-col" style={{ gap: 6 }}>
-      <div className="flex items-center" style={{ gap: 8 }}>
+    <header className="flex items-start" style={{ gap: 16 }}>
+      <div className="flex flex-col min-w-0 flex-1" style={{ gap: 6 }}>
         <span
           className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
-          style={{ letterSpacing: "1.2px" }}
+          style={{ letterSpacing: "var(--tracking-widest)" }}
         >
           FLOTA SUPERVISADA
         </span>
-        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-          Actualizado hace 14s
-        </span>
+        <h1
+          className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
+          style={{ letterSpacing: "var(--tracking-tightest)" }}
+        >
+          Clústeres y nodos de envío
+        </h1>
+        <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
+          Capacidad preparada, observada y gobernada por gates humanos. Sin envíos reales en el MVP.
+        </p>
       </div>
-      <h1
-        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
-        style={{ letterSpacing: "-0.4px" }}
-      >
-        Clústeres y nodos de envío
-      </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
-        Capacidad preparada, observada y gobernada por gates humanos. Sin envíos reales en el MVP.
-      </p>
+      <div className="shrink-0">
+        <LiveIndicator pollIntervalSec={30} lastUpdateAt={mountedAt} tone="success" />
+      </div>
     </header>
   );
 }
@@ -142,7 +144,7 @@ function Kpi({
         padding: 16,
         borderRadius: 6,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header className="flex items-center" style={{ gap: 8 }}>
@@ -155,14 +157,14 @@ function Kpi({
         </span>
         <span
           className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]"
-          style={{ letterSpacing: "0.4px" }}
+          style={{ letterSpacing: "var(--tracking-wide)" }}
         >
           {label}
         </span>
       </header>
       <span
         className="font-[family-name:var(--font-mono)] font-bold leading-none text-[var(--color-text-primary)] tabular-nums"
-        style={{ fontSize: valueSize, letterSpacing: "-0.6px" }}
+        style={{ fontSize: valueSize, letterSpacing: "var(--tracking-tightest)" }}
       >
         {value}
       </span>
@@ -269,7 +271,7 @@ function ClusterTable({ data }: { data: DashboardData }) {
   return (
     <div
       className="flex flex-col overflow-hidden bg-[var(--color-surface)]"
-      style={{ borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
+      style={{ borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
       <header
         className="flex items-center"
@@ -280,7 +282,7 @@ function ClusterTable({ data }: { data: DashboardData }) {
           borderBottom: "1px solid var(--color-border)"
         }}
       >
-        <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+        <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Tabla de clústeres
         </h2>
         <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -303,7 +305,7 @@ function ClusterTable({ data }: { data: DashboardData }) {
           <span
             key={h}
             className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
-            style={{ letterSpacing: "0.6px" }}
+            style={{ letterSpacing: "var(--tracking-wider)" }}
           >
             {h}
           </span>
@@ -407,7 +409,7 @@ function DetailPanel({ cluster }: { cluster: DashboardData["clusters"]["clusters
         className="flex flex-col bg-[var(--color-surface)]"
         style={{ gap: 8, padding: 18, borderRadius: 6, border: "1px solid var(--color-border)" }}
       >
-        <h3 className="m-0 text-[15px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+        <h3 className="m-0 text-[15px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Sin cluster seleccionado
         </h3>
         <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
@@ -420,16 +422,16 @@ function DetailPanel({ cluster }: { cluster: DashboardData["clusters"]["clusters
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
-      style={{ gap: 14, padding: 18, borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
+      style={{ gap: 14, padding: 18, borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
       <header className="flex flex-col" style={{ gap: 4 }}>
         <span
           className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
-          style={{ letterSpacing: "1.2px" }}
+          style={{ letterSpacing: "var(--tracking-widest)" }}
         >
           INSPECCIÓN · {cluster.id.toUpperCase()}
         </span>
-        <h3 className="m-0 text-[15px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+        <h3 className="m-0 text-[15px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           {cluster.provider}
         </h3>
         <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
@@ -443,7 +445,7 @@ function DetailPanel({ cluster }: { cluster: DashboardData["clusters"]["clusters
       >
         <span
           className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-secondary)]"
-          style={{ letterSpacing: "0.6px" }}
+          style={{ letterSpacing: "var(--tracking-wider)" }}
         >
           REPUTACIÓN · 24 H
         </span>
@@ -470,7 +472,7 @@ function DetailPanel({ cluster }: { cluster: DashboardData["clusters"]["clusters
       >
         <span
           className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-secondary)]"
-          style={{ letterSpacing: "0.6px" }}
+          style={{ letterSpacing: "var(--tracking-wider)" }}
         >
           PLAN WARMING
         </span>
@@ -496,57 +498,28 @@ function DetailPanel({ cluster }: { cluster: DashboardData["clusters"]["clusters
 }
 
 function OpenClawPrompt({ data }: { data: DashboardData }) {
+  // Migrado a BannerOpenClawV2 — ~55 LOC duplicadas eliminadas
   const blockers = data.canvas.blockedBy ?? [];
-  const message = blockers.length > 0
-    ? `Detecté ${blockers.length} bloqueo${blockers.length === 1 ? "" : "s"} activos en la topología del canvas. ¿Revisamos cuáles afectan a los clústeres?`
-    : data.canvas.requiresHumanApproval.length > 0
-      ? `${data.canvas.requiresHumanApproval.length} aprobación${data.canvas.requiresHumanApproval.length === 1 ? "" : "es"} humana${data.canvas.requiresHumanApproval.length === 1 ? "" : "s"} pendiente${data.canvas.requiresHumanApproval.length === 1 ? "" : "s"}. Las acciones permiten avanzar el plan de warming cuando estén firmadas.`
-      : "Topología limpia. Puedo proponer el siguiente ciclo de warming cuando lo autorices.";
-  return <OpenClawPromptInner message={message} />;
-}
-
-function OpenClawPromptInner({ message }: { message: string }) {
+  const approvals = data.canvas.requiresHumanApproval ?? [];
+  const message =
+    blockers.length > 0
+      ? `Detecté ${blockers.length} bloqueo${blockers.length === 1 ? "" : "s"} activos en la topología del canvas. ¿Revisamos cuáles afectan a los clústeres?`
+      : approvals.length > 0
+        ? `${approvals.length} aprobación${approvals.length === 1 ? "" : "es"} humana${approvals.length === 1 ? "" : "s"} pendiente${approvals.length === 1 ? "" : "s"}. Las acciones permiten avanzar el plan de warming cuando estén firmadas.`
+        : "Topología limpia. Puedo proponer el siguiente ciclo de warming cuando lo autorices.";
+  const title =
+    blockers.length > 0
+      ? "Bloqueos activos en topología"
+      : approvals.length > 0
+        ? "Aprobaciones humanas pendientes"
+        : "OpenClaw recomienda";
   return (
-    <div
-      style={{
-        borderRadius: 12,
-        padding: 2,
-        background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
-        boxShadow: "0 6px 18px rgba(146, 64, 14, 0.13)"
-      }}
-    >
-      <div className="flex flex-col bg-[var(--color-surface)]" style={{ borderRadius: 10, padding: 16, gap: 12 }}>
-        <header className="flex items-center" style={{ gap: 10 }}>
-          <span
-            aria-hidden="true"
-            className="grid place-items-center"
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: 8,
-              background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-              color: "var(--color-bg)"
-            }}
-          >
-            <Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />
-          </span>
-          <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
-            OpenClaw recomienda
-          </span>
-        </header>
-        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-primary)]">
-          {message}
-        </p>
-        <button
-          type="button"
-          className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
-          style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "var(--color-text-primary)" }}
-        >
-          <WandSparkles size={13} strokeWidth={1.75} aria-hidden="true" />
-          Revisar plan de degradación
-        </button>
-      </div>
-    </div>
+    <BannerOpenClawV2
+      title={title}
+      body={message}
+      primaryCta="Revisar plan de degradación"
+      secondaryCta="Abrir canvas"
+    />
   );
 }
 
@@ -561,7 +534,7 @@ function SecuritySection({ data }: { data: DashboardData }) {
         <div className="flex items-center" style={{ gap: 8 }}>
           <span
             className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
-            style={{ letterSpacing: "1.2px" }}
+            style={{ letterSpacing: "var(--tracking-widest)" }}
           >
             GOBIERNO
           </span>
@@ -572,7 +545,7 @@ function SecuritySection({ data }: { data: DashboardData }) {
         </div>
         <h2
           className="m-0 text-[22px] font-[family-name:var(--font-heading)] font-bold leading-tight text-[var(--color-text-primary)]"
-          style={{ letterSpacing: "-0.2px" }}
+          style={{ letterSpacing: "var(--tracking-tight)" }}
         >
           Seguridad e interruptor de corte
         </h2>
@@ -630,14 +603,14 @@ function GatesCard({ data }: { data: DashboardData }) {
   return (
     <section
       className="flex flex-col overflow-hidden bg-[var(--color-surface)]"
-      style={{ borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
+      style={{ borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
       <header
         className="flex items-center"
         style={{ gap: 10, padding: "14px 16px", background: "var(--color-surface-sunken)", borderBottom: "1px solid var(--color-border)" }}
       >
         <Shield size={14} strokeWidth={1.75} className="text-[var(--color-info)]" aria-hidden="true" />
-        <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+        <h3 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Gates de la flota
         </h3>
         <span className="flex-1" aria-hidden="true" />
@@ -705,11 +678,11 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
-      style={{ gap: 12, padding: 18, borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
+      style={{ gap: 12, padding: 18, borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
       <header className="flex items-center" style={{ gap: 8 }}>
         <ShieldCheck size={14} strokeWidth={1.75} className="text-[var(--color-success)]" aria-hidden="true" />
-        <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+        <h3 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Interruptor de corte
         </h3>
         <span className="flex-1" aria-hidden="true" />
@@ -721,7 +694,7 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
             borderRadius: 999,
             background: armed ? "var(--color-success-soft)" : "var(--color-critical-soft)",
             color: armed ? "var(--color-success)" : "var(--color-critical)",
-            letterSpacing: "0.6px"
+            letterSpacing: "var(--tracking-wider)"
           }}
         >
           <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: armed ? "var(--color-success)" : "var(--color-critical)" }} />
@@ -797,13 +770,13 @@ function AuditLogCard({ data }: { data: DashboardData }) {
   return (
     <section
       className="flex flex-col overflow-hidden bg-[var(--color-surface)]"
-      style={{ borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(26, 20, 16, 0.08)" }}
+      style={{ borderRadius: 6, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
       <header
         className="flex items-center"
         style={{ gap: 8, padding: "12px 14px", background: "var(--color-surface-sunken)", borderBottom: "1px solid var(--color-border)" }}
       >
-        <h3 className="m-0 text-[12px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+        <h3 className="m-0 text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Audit log · clúster
         </h3>
         <span className="flex-1" aria-hidden="true" />

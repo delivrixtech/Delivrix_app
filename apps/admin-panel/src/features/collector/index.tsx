@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
 import { filterAuditEvents, formatTimeOnly, shortAuditHash } from "../../shared/lib/formatters.ts";
+import { BannerOpenClawV2 } from "../../shared/ui/v2/index.ts";
 
 export function CollectorSection({ data }: { data: DashboardData }) {
   return (
@@ -48,7 +49,7 @@ function Hero() {
     <header className="flex flex-col" style={{ gap: 10 }}>
       <span
         className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
-        style={{ letterSpacing: "1.6px" }}
+        style={{ letterSpacing: "var(--tracking-widest)" }}
       >
         EVIDENCIA SUPERVISADA
       </span>
@@ -104,7 +105,7 @@ function Tabs({ sourcesCount }: { sourcesCount: number }) {
         </span>
         <span
           className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
-          style={{ letterSpacing: "0.6px" }}
+          style={{ letterSpacing: "var(--tracking-wider)" }}
         >
           externo
         </span>
@@ -231,7 +232,7 @@ function SourceCard({
         padding: 16,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header className="flex items-center" style={{ gap: 10 }}>
@@ -248,7 +249,7 @@ function SourceCard({
         >
           {icon}
         </span>
-        <h3 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-semibold text-[var(--color-text-primary)]">
+        <h3 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           {name}
         </h3>
         <span className="flex-1" aria-hidden="true" />
@@ -260,7 +261,7 @@ function SourceCard({
             borderRadius: 4,
             background: stateBg,
             color: stateFg,
-            letterSpacing: "0.4px"
+            letterSpacing: "var(--tracking-wide)"
           }}
         >
           <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: stateFg }} />
@@ -271,7 +272,7 @@ function SourceCard({
       <div className="flex items-end" style={{ gap: 8 }}>
         <span
           className="text-[26px] font-[family-name:var(--font-mono)] font-bold leading-none tabular-nums"
-          style={{ letterSpacing: "-0.4px", color: confidenceColor }}
+          style={{ letterSpacing: "var(--tracking-tightest)", color: confidenceColor }}
         >
           {confidence === 0 ? "—" : `${confidence}%`}
         </span>
@@ -303,7 +304,7 @@ function SourceCard({
         <div className="flex items-center" style={{ gap: 8 }}>
           <span
             className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-secondary)]"
-            style={{ padding: "1px 6px", borderRadius: 4, background: "var(--color-surface-sunken)", letterSpacing: "0.4px" }}
+            style={{ padding: "1px 6px", borderRadius: 4, background: "var(--color-surface-sunken)", letterSpacing: "var(--tracking-wide)" }}
           >
             {mode}
           </span>
@@ -316,151 +317,35 @@ function SourceCard({
 }
 
 /* ============================================================
- * OpenClaw Prompt Wrap (a6nRY) — thin gradient border
+ * OpenClaw Prompt — migrado a BannerOpenClawV2 (~145 LOC duplicadas eliminadas).
+ * Mantiene la lógica de derivación de mensaje por estado de fuente
+ * (blocked > stale > unknown > ok); el chrome es ahora el del building block v2.
  * ============================================================ */
 function OpenClawPromptWrap({ data }: { data: DashboardData }) {
-  // Derivar mensaje desde el state real de las fuentes
   const stale = data.supervisedCollector.sources.find(
     (s) => s.status === "needs_review" || s.freshness.stale
   );
   const blocked = data.supervisedCollector.sources.find((s) => s.status === "blocked");
   const unknown = data.supervisedCollector.sources.find((s) => s.status === "unknown");
-  let message = "Todas las fuentes están dentro del umbral de frescura. Puedo proponer el próximo ciclo de captura.";
-  let avisoBg = "var(--color-success-soft)";
-  let avisoFg = "var(--color-success)";
-  let aviso = "ok";
-  let metaSource = "";
-  let metaTime = "";
+  let title = "Fuentes dentro del umbral";
+  let body: string = "Todas las fuentes están dentro del umbral de frescura. Puedo proponer el próximo ciclo de captura.";
   if (blocked) {
-    message = `${blocked.label} está bloqueado: ${blocked.blockedBy[0] ?? "sin contexto"}. ¿Quieres que abra el runbook?`;
-    avisoBg = "var(--color-critical-soft)";
-    avisoFg = "var(--color-critical)";
-    aviso = "crítico";
-    metaSource = `fuente · ${blocked.label}`;
-    metaTime = relativeAge(blocked.freshness.lastCollectedAt);
+    title = `${blocked.label} bloqueado`;
+    body = `${blocked.label} está bloqueado: ${blocked.blockedBy[0] ?? "sin contexto"}. Frescura ${relativeAge(blocked.freshness.lastCollectedAt)}.`;
   } else if (stale) {
-    message = `${stale.label} no se ha refrescado en ${relativeAge(stale.freshness.lastCollectedAt)}. ¿Quieres que investigue?`;
-    avisoBg = "var(--color-warning-soft)";
-    avisoFg = "var(--color-warning)";
-    aviso = "aviso";
-    metaSource = `fuente · ${stale.label}`;
-    metaTime = relativeAge(stale.freshness.lastCollectedAt);
+    title = `${stale.label} stale`;
+    body = `${stale.label} no se ha refrescado en ${relativeAge(stale.freshness.lastCollectedAt)}. ¿Quieres que investigue?`;
   } else if (unknown) {
-    message = `${unknown.label} aún sin datos. Coordina con el operador para activar el snapshot inicial.`;
-    avisoBg = "var(--color-unknown-soft)";
-    avisoFg = "var(--color-unknown)";
-    aviso = "sin datos";
-    metaSource = `fuente · ${unknown.label}`;
-    metaTime = relativeAge(unknown.freshness.lastCollectedAt);
+    title = `${unknown.label} sin datos`;
+    body = `${unknown.label} aún sin datos. Coordina con el operador para activar el snapshot inicial.`;
   }
-  return <OpenClawPromptInner message={message} avisoBg={avisoBg} avisoFg={avisoFg} aviso={aviso} metaSource={metaSource} metaTime={metaTime} />;
-}
-
-function OpenClawPromptInner({
-  message,
-  avisoBg,
-  avisoFg,
-  aviso,
-  metaSource,
-  metaTime
-}: {
-  message: string;
-  avisoBg: string;
-  avisoFg: string;
-  aviso: string;
-  metaSource: string;
-  metaTime: string;
-}) {
   return (
-    <div
-      style={{
-        borderRadius: 13,
-        padding: 1.5,
-        background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
-      }}
-    >
-      <div className="flex" style={{ gap: 24, padding: 24, borderRadius: 8, background: "var(--color-bg)" }}>
-        <div className="flex flex-col flex-1 min-w-0" style={{ gap: 12 }}>
-          <header className="flex items-center" style={{ gap: 10 }}>
-            <span
-              aria-hidden="true"
-              className="grid place-items-center"
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-                color: "var(--color-bg)"
-              }}
-            >
-              <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
-            </span>
-            <div className="flex flex-col" style={{ gap: 1 }}>
-              <span className="text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
-                OpenClaw
-              </span>
-              <span
-                className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
-                style={{ letterSpacing: "0.4px" }}
-              >
-                Operador supervisado
-              </span>
-            </div>
-            <span className="flex-1" aria-hidden="true" />
-            <span
-              className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
-              style={{
-                padding: "2px 8px",
-                borderRadius: 4,
-                background: avisoBg,
-                color: avisoFg,
-                letterSpacing: "0.4px"
-              }}
-            >
-              {aviso}
-            </span>
-          </header>
-          <p className="m-0 text-[15px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
-            {message}
-          </p>
-          {metaSource ? (
-            <div className="flex items-center" style={{ gap: 8 }}>
-              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-                {metaSource}
-              </span>
-              <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: 999, background: "var(--color-text-tertiary)" }} />
-              <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{metaTime}</span>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="flex flex-col" style={{ gap: 10, width: 240 }}>
-          <button
-            type="button"
-            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
-            style={{ gap: 8, padding: "12px 14px", borderRadius: 6, background: "var(--color-text-primary)" }}
-          >
-            <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
-            Investigar fuente
-          </button>
-          <button
-            type="button"
-            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
-            style={{
-              gap: 8,
-              padding: 12,
-              borderRadius: 6,
-              border: "1px solid var(--color-border)",
-              background: "transparent"
-            }}
-          >
-            <FileText size={14} strokeWidth={1.75} aria-hidden="true" />
-            Ver runbook
-          </button>
-        </div>
-      </div>
-    </div>
+    <BannerOpenClawV2
+      title={title}
+      body={body}
+      primaryCta="Investigar fuente"
+      secondaryCta="Ver runbook"
+    />
   );
 }
 
@@ -533,7 +418,7 @@ function AcceptedFieldsTable({
     <section className="flex flex-col" style={{ gap: 12 }}>
       <header className="flex items-end justify-between" style={{ gap: 16 }}>
         <div className="flex flex-col" style={{ gap: 4 }}>
-          <h2 className="m-0 text-[18px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[18px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Campos aceptados
           </h2>
           <span className="text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
@@ -573,7 +458,7 @@ function AcceptedFieldsTable({
         style={{
           borderRadius: 8,
           border: "1px solid var(--color-border)",
-          boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+          boxShadow: "var(--shadow-sm)",
           overflow: "hidden"
         }}
       >
@@ -591,7 +476,7 @@ function AcceptedFieldsTable({
             <span
               key={h}
               className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
-              style={{ letterSpacing: "0.6px" }}
+              style={{ letterSpacing: "var(--tracking-wider)" }}
             >
               {h}
             </span>
@@ -626,7 +511,7 @@ function AcceptedFieldsTable({
                 borderRadius: 4,
                 background: row.sourceBg,
                 color: row.sourceFg,
-                letterSpacing: "0.4px",
+                letterSpacing: "var(--tracking-wide)",
                 width: "fit-content"
               }}
             >
@@ -654,7 +539,7 @@ function AcceptedFieldsTable({
                     : row.rowState === "desactualizado"
                       ? "var(--color-warning)"
                       : "var(--color-unknown)",
-                letterSpacing: "0.4px",
+                letterSpacing: "var(--tracking-wide)",
                 width: "fit-content"
               }}
             >
@@ -697,11 +582,11 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
-      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
       <header className="flex items-center" style={{ gap: 12 }}>
         <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Bitácora de ingesta
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -737,7 +622,7 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
           <span
             key={h}
             className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
-            style={{ letterSpacing: "0.6px" }}
+            style={{ letterSpacing: "var(--tracking-wider)" }}
           >
             {h}
           </span>
@@ -798,9 +683,9 @@ function ExplainerText({ data }: { data: DashboardData }) {
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
-      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
-      <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+      <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
         Por qué la ingesta vive fuera del panel
       </h2>
       <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
@@ -851,24 +736,24 @@ function CliSnippet() {
         background: "var(--color-text-primary)",
         border: "1px solid var(--color-text-primary)",
         overflow: "hidden",
-        boxShadow: "0 6px 18px rgba(0, 0, 0, 0.18)"
+        boxShadow: "var(--shadow-md)"
       }}
     >
       <header
         className="flex items-center justify-between"
-        style={{ gap: 12, padding: "10px 14px", borderBottom: "1px solid rgba(255, 251, 245, 0.13)" }}
+        style={{ gap: 12, padding: "10px 14px", borderBottom: "1px solid var(--color-on-dark-faint)" }}
       >
         <div className="flex items-center" style={{ gap: 8 }}>
           {[0, 1, 2].map((i) => (
             <span
               key={i}
               aria-hidden="true"
-              style={{ width: 10, height: 10, borderRadius: 999, background: "rgba(255, 251, 245, 0.15)" }}
+              style={{ width: 10, height: 10, borderRadius: 999, background: "var(--color-on-dark-faint)" }}
             />
           ))}
           <span
             className="ml-2 text-[11px] font-[family-name:var(--font-mono)]"
-            style={{ color: "rgba(255, 251, 245, 0.7)" }}
+            style={{ color: "var(--color-on-dark-medium)" }}
           >
             delivrix-cli — captura manual
           </span>
@@ -876,7 +761,7 @@ function CliSnippet() {
         <button
           type="button"
           className="inline-flex items-center text-[10px] font-[family-name:var(--font-mono)]"
-          style={{ gap: 6, padding: "4px 8px", borderRadius: 4, background: "rgba(255, 251, 245, 0.08)", color: "var(--color-bg)" }}
+          style={{ gap: 6, padding: "4px 8px", borderRadius: 4, background: "var(--color-on-dark-hint)", color: "var(--color-bg)" }}
         >
           copy
         </button>

@@ -48,6 +48,7 @@ import {
   isFallbackMeta,
   staleMinutesFromMeta
 } from "../../shared/ui/realtime/index.ts";
+import { BannerOpenClawV2 } from "../../shared/ui/v2/index.ts";
 
 const LEARNING_POLL_INTERVAL_MS = 30_000;
 const LEARNING_POLL_INTERVAL_SECONDS = LEARNING_POLL_INTERVAL_MS / 1_000;
@@ -175,7 +176,7 @@ function Welcome({ generatedAt }: { generatedAt: string }) {
       <div className="flex items-center" style={{ gap: 8 }}>
         <span
           className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
-          style={{ letterSpacing: "1.2px" }}
+          style={{ letterSpacing: "var(--tracking-widest)" }}
         >
           APRENDIZAJE SUPERVISADO
         </span>
@@ -186,7 +187,7 @@ function Welcome({ generatedAt }: { generatedAt: string }) {
       </div>
       <h1
         className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
-        style={{ letterSpacing: "-0.4px" }}
+        style={{ letterSpacing: "var(--tracking-tightest)" }}
       >
         OpenClaw aprende con humanos al volante.
       </h1>
@@ -199,94 +200,14 @@ function Welcome({ generatedAt }: { generatedAt: string }) {
 }
 
 function OpenClawPrompt() {
+  // Migrado a BannerOpenClawV2 — eliminadas ~90 LOC duplicadas (gradient bulky + Sparkles + ocActions).
   return (
-    <div
-      style={{
-        borderRadius: 12,
-        padding: 2,
-        background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
-        boxShadow: "0 6px 18px rgba(146, 64, 14, 0.13)"
-      }}
-    >
-      <div className="flex flex-col bg-[var(--color-surface)]" style={{ borderRadius: 10, padding: 16, gap: 12 }}>
-        <header className="flex items-center" style={{ gap: 10 }}>
-          <span
-            aria-hidden="true"
-            className="grid place-items-center"
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
-              background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
-              color: "var(--color-bg)"
-            }}
-          >
-            <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
-          </span>
-          <div className="flex flex-col leading-tight">
-            <span className="text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
-              OpenClaw
-            </span>
-            <span
-              className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
-              style={{ letterSpacing: "0.4px" }}
-            >
-              Operador supervisado
-            </span>
-          </div>
-          <span className="flex-1" aria-hidden="true" />
-          <span
-            className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
-            style={{
-              padding: "2px 8px",
-              borderRadius: 4,
-              background: "var(--color-surface-sunken)",
-              border: "1px solid var(--color-border)",
-              color: "var(--color-text-secondary)",
-              letterSpacing: "0.4px"
-            }}
-          >
-            read-only
-          </span>
-        </header>
-
-        <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-primary)]">
-          Hay 3 lecciones nuevas listas para revisión humana antes de pasar a evaluación. Te dejo
-          el plan ordenado por impacto.
-        </p>
-
-        <div
-          aria-hidden="true"
-          className="flex items-center"
-          style={{
-            gap: 8,
-            padding: "10px 12px",
-            borderRadius: 8,
-            background: "var(--color-surface-sunken)",
-            border: "1px solid var(--color-border)"
-          }}
-        >
-          <span className="flex-1 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-tertiary)]">
-            Responde a OpenClaw…
-          </span>
-          <ArrowUp size={14} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
-        </div>
-
-        <div className="flex items-center" style={{ gap: 8 }}>
-          <button
-            type="button"
-            className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
-            style={{ gap: 6, padding: "10px 14px", borderRadius: 6, background: "var(--color-text-primary)" }}
-          >
-            <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
-            Ver plan ordenado
-          </button>
-          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-            promoción fuera del panel
-          </span>
-        </div>
-      </div>
-    </div>
+    <BannerOpenClawV2
+      title="3 lecciones listas para revisión"
+      body="Hay 3 lecciones nuevas listas para revisión humana antes de pasar a evaluación. Te dejo el plan ordenado por impacto."
+      primaryCta="Ver plan ordenado"
+      secondaryCta="Abrir chat"
+    />
   );
 }
 
@@ -320,7 +241,7 @@ function KpiShell({ children }: { children: ReactNode }) {
         padding: 16,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       {children}
@@ -453,7 +374,7 @@ function KpiHead({ label, pillBg, pillFg, pillText }: { label: string; pillBg: s
     <div className="flex items-center" style={{ gap: 8 }}>
       <span
         className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]"
-        style={{ letterSpacing: "0.4px" }}
+        style={{ letterSpacing: "var(--tracking-wide)" }}
       >
         {label}
       </span>
@@ -473,7 +394,7 @@ function KpiValue({ value, unit }: { value: string; unit?: string }) {
     <div className="flex items-end" style={{ gap: 8 }}>
       <span
         className="text-[32px] font-[family-name:var(--font-mono)] font-bold leading-none text-[var(--color-text-primary)] tabular-nums"
-        style={{ letterSpacing: "-0.6px" }}
+        style={{ letterSpacing: "var(--tracking-tightest)" }}
       >
         {value}
       </span>
@@ -549,7 +470,7 @@ function PlanCard({ data }: { data: DashboardData }) {
       style={{
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header
@@ -561,7 +482,7 @@ function PlanCard({ data }: { data: DashboardData }) {
         }}
       >
         <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Plan de aprendizaje
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -615,7 +536,7 @@ function PlanCard({ data }: { data: DashboardData }) {
                     borderRadius: 4,
                     background: pill.bg,
                     color: pill.fg,
-                    letterSpacing: "0.4px"
+                    letterSpacing: "var(--tracking-wide)"
                   }}
                 >
                   {pill.text}
@@ -664,7 +585,7 @@ function SkillsCard({ data }: { data: DashboardData }) {
       style={{
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header
@@ -672,7 +593,7 @@ function SkillsCard({ data }: { data: DashboardData }) {
         style={{ gap: 12, padding: "16px 18px 14px 18px", borderBottom: "1px solid var(--color-border)" }}
       >
         <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Habilidades de OpenClaw
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -711,7 +632,7 @@ function SkillsCard({ data }: { data: DashboardData }) {
                     borderRadius: 4,
                     background: s.stateBg,
                     color: s.stateFg,
-                    letterSpacing: "0.4px"
+                    letterSpacing: "var(--tracking-wide)"
                   }}
                 >
                   {s.state}
@@ -787,7 +708,7 @@ function EvidenciaCurada({
       style={{
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header
@@ -795,7 +716,7 @@ function EvidenciaCurada({
         style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid var(--color-border)" }}
       >
         <div className="flex min-w-[220px] flex-1 flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Evidencia curada por OpenClaw
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -815,7 +736,7 @@ function EvidenciaCurada({
             borderRadius: 4,
             background: "var(--color-info-soft)",
             color: "var(--color-info)",
-            letterSpacing: "0.6px"
+            letterSpacing: "var(--tracking-wider)"
           }}
         >
           <Eye size={10} strokeWidth={2} aria-hidden="true" />
@@ -851,7 +772,7 @@ function EvidenciaCurada({
               <span
                 key={h}
                 className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
-                style={{ letterSpacing: "0.6px" }}
+                style={{ letterSpacing: "var(--tracking-wider)" }}
               >
                 {h}
               </span>
@@ -904,7 +825,7 @@ function EvidenciaCurada({
                     background:
                       row[6] === "alto" ? "var(--color-critical-soft)" : row[6] === "medio" ? "var(--color-warning-soft)" : "var(--color-success-soft)",
                     color: row[6] === "alto" ? "var(--color-critical)" : row[6] === "medio" ? "var(--color-warning)" : "var(--color-success)",
-                    letterSpacing: "0.4px",
+                    letterSpacing: "var(--tracking-wide)",
                     width: "fit-content"
                   }}
                 >
@@ -930,7 +851,7 @@ function ColaRetroalimentacion() {
       style={{
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header
@@ -938,7 +859,7 @@ function ColaRetroalimentacion() {
         style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid var(--color-border)" }}
       >
         <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Cola de retroalimentación humana
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -953,7 +874,7 @@ function ColaRetroalimentacion() {
             borderRadius: 4,
             background: "var(--color-info-soft)",
             color: "var(--color-info)",
-            letterSpacing: "0.6px"
+            letterSpacing: "var(--tracking-wider)"
           }}
         >
           GET-only · aprobación fuera del panel
@@ -1092,18 +1013,18 @@ function AuditStrip({
         padding: "14px 18px",
         borderRadius: 8,
         background: "var(--color-text-primary)",
-        boxShadow: "0 6px 18px rgba(0, 0, 0, 0.13)"
+        boxShadow: "var(--shadow-md)"
       }}
     >
       <header className="flex min-w-0 flex-wrap items-center" style={{ gap: 8 }}>
         <History size={14} strokeWidth={1.75} aria-hidden="true" style={{ color: "var(--color-accent-secondary)" }} />
-        <span className="text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-bg)]">
+        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]">
           Bitácora del aprendizaje
         </span>
         <span className="flex-1" aria-hidden="true" />
         <RealtimeTick active={pulseActive} />
         {stale}
-        <span className="min-w-0 truncate text-[10px] font-[family-name:var(--font-mono)]" style={{ color: "rgba(255, 251, 245, 0.4)" }}>
+        <span className="min-w-0 truncate text-[10px] font-[family-name:var(--font-mono)]" style={{ color: "var(--color-on-dark-weak)" }}>
           contrato · /v1/openclaw/skills/audit
         </span>
       </header>
@@ -1130,7 +1051,7 @@ function AuditStrip({
           >
             <span
               className="flex min-w-0 items-center text-[11px] font-[family-name:var(--font-mono)]"
-              style={{ gap: 6, color: "rgba(255, 251, 245, 0.4)" }}
+              style={{ gap: 6, color: "var(--color-on-dark-weak)" }}
             >
               <RealtimeTick active={pulseActive && i === 0} />
               {a.ts}
@@ -1146,7 +1067,7 @@ function AuditStrip({
             </span>
             <span
               className="col-span-2 min-w-0 truncate text-[11px] font-[family-name:var(--font-mono)] md:col-span-1 md:text-right"
-              style={{ color: "rgba(255, 251, 245, 0.4)" }}
+              style={{ color: "var(--color-on-dark-weak)" }}
             >
               {a.hash}
             </span>
