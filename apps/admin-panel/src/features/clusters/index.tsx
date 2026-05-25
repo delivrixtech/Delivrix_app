@@ -637,7 +637,7 @@ function GatesCard({ data }: { data: DashboardData }) {
             >
               <span
                 aria-hidden="true"
-                className="grid place-items-center text-[var(--color-bg)] text-[10px] shrink-0"
+                className="grid place-items-center text-[var(--color-on-dark-strong)] text-[10px] shrink-0"
                 style={{ width: 18, height: 18, borderRadius: 999, background: color, fontWeight: 700 }}
               >
                 {g.check === "ok" ? "✓" : g.check === "warn" ? "!" : g.check === "bad" ? "×" : "−"}
@@ -687,7 +687,7 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
         </h3>
         <span className="flex-1" aria-hidden="true" />
         <span
-          className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
+          className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase"
           style={{
             gap: 6,
             padding: "3px 8px",
@@ -698,7 +698,7 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
           }}
         >
           <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: armed ? "var(--color-success)" : "var(--color-critical)" }} />
-          {armed ? "ARMADO" : "ACTIVO"}
+          {armed ? "Armado" : "Activo"}
         </span>
       </header>
       <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
@@ -710,8 +710,16 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
       </p>
       <button
         type="button"
-        className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
-        style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "var(--color-text-primary)" }}
+        className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+        style={{
+          gap: 6,
+          padding: "9px 12px",
+          borderRadius: 6,
+          background: "var(--color-surface-inverse)",
+          color: "var(--color-on-dark-strong)",
+          border: "1px solid var(--color-on-dark-hint)",
+          cursor: "pointer"
+        }}
       >
         Activar interruptor de corte
       </button>

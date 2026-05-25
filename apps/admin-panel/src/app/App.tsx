@@ -421,14 +421,24 @@ function KillSwitchCard({ data }: { data: DashboardData | undefined }) {
       </div>
       <div className="flex items-center gap-2">
         <span
-          className="inline-block rounded-[4px] px-1.5 py-0.5 text-[9px] font-[family-name:var(--font-caption)] font-bold"
+          className="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-[family-name:var(--font-caption)] font-semibold uppercase"
           style={{
+            gap: 4,
             background: armed ? "var(--color-success-soft)" : "var(--color-critical-soft)",
             color: armed ? "var(--color-success)" : "var(--color-critical)",
-            letterSpacing: "0.6px"
+            letterSpacing: "var(--tracking-wider)"
           }}
         >
-          {armed ? "ARMADO" : "ACTIVO"}
+          <span
+            aria-hidden="true"
+            style={{
+              width: 5,
+              height: 5,
+              borderRadius: 999,
+              background: armed ? "var(--color-success)" : "var(--color-critical)"
+            }}
+          />
+          {armed ? "Armado" : "Activo"}
         </span>
         <span className="flex-1" aria-hidden="true" />
         <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">

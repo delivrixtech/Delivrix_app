@@ -1012,13 +1012,14 @@ function AuditStrip({
         gap: 10,
         padding: "14px 18px",
         borderRadius: 8,
-        background: "var(--color-text-primary)",
+        background: "var(--color-surface-inverse)",
+        border: "1px solid var(--color-on-dark-hint)",
         boxShadow: "var(--shadow-md)"
       }}
     >
       <header className="flex min-w-0 flex-wrap items-center" style={{ gap: 8 }}>
         <History size={14} strokeWidth={1.75} aria-hidden="true" style={{ color: "var(--color-accent-secondary)" }} />
-        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]">
+        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold" style={{ color: "var(--color-on-dark-strong)" }}>
           Bitácora del aprendizaje
         </span>
         <span className="flex-1" aria-hidden="true" />
@@ -1062,7 +1063,7 @@ function AuditStrip({
             >
               {a.action}
             </span>
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-bg)] truncate">
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-on-dark-strong)] truncate">
               {a.body}
             </span>
             <span

@@ -719,7 +719,7 @@ function GateRow({
     <li className="flex items-center min-w-0" style={{ gap: 8 }} title={rawLabel}>
       <span
         aria-hidden="true"
-        className="grid place-items-center text-[var(--color-bg)]"
+        className="grid place-items-center text-[var(--color-on-dark-strong)]"
         style={{ width: 16, height: 16, borderRadius: 8, background: dot.bg, flexShrink: 0 }}
       >
         {dot.icon}

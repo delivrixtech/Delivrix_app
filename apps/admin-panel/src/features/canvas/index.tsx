@@ -282,7 +282,7 @@ function StartHereBanner({
           height: 36,
           borderRadius: 10,
           background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-          color: "var(--color-bg)"
+          color: "var(--color-on-dark-strong)"
         }}
       >
         <Sparkles size={17} strokeWidth={1.75} aria-hidden="true" />
@@ -325,8 +325,8 @@ function StartHereBanner({
           className="inline-flex items-center bg-[var(--color-text-primary)]"
           style={{ gap: 6, padding: "9px 14px", borderRadius: 6 }}
         >
-          <WandSparkles size={13} strokeWidth={1.75} className="text-[var(--color-bg)]" aria-hidden="true" />
-          <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]">
+          <WandSparkles size={13} strokeWidth={1.75} className="text-[var(--color-on-dark-strong)]" aria-hidden="true" />
+          <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-on-dark-strong)]">
             {ctaLabel}
           </span>
         </button>
@@ -749,7 +749,7 @@ function PromptStrip({
               background: isQuarantinePrompt
                 ? "linear-gradient(135deg, var(--color-critical) 0%, var(--color-critical-border) 100%)"
                 : "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-              color: "var(--color-bg)"
+              color: "var(--color-on-dark-strong)"
             }}
           >
             <Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />
@@ -872,8 +872,8 @@ function PromptStrip({
                 borderRadius: 6
               }}
             >
-              <WandSparkles size={12} strokeWidth={1.75} className="text-[var(--color-bg)]" aria-hidden="true" />
-              <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]">
+              <WandSparkles size={12} strokeWidth={1.75} className="text-[var(--color-on-dark-strong)]" aria-hidden="true" />
+              <span className="text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-on-dark-strong)]">
                 {prompt.primaryAction.label}
               </span>
             </button>
@@ -1417,7 +1417,7 @@ function RunbookModal({
               height: 36,
               borderRadius: 10,
               background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-              color: "var(--color-bg)"
+              color: "var(--color-on-dark-strong)"
             }}
           >
             <Sparkles size={18} strokeWidth={1.75} aria-hidden="true" />
@@ -1586,8 +1586,8 @@ function RunbookModal({
             className="inline-flex items-center bg-[var(--color-text-primary)]"
             style={{ gap: 6, padding: "8px 14px", borderRadius: 6, textDecoration: "none" }}
           >
-            <ExternalLink size={12} strokeWidth={1.75} className="text-[var(--color-bg)]" aria-hidden="true" />
-            <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]">
+            <ExternalLink size={12} strokeWidth={1.75} className="text-[var(--color-on-dark-strong)]" aria-hidden="true" />
+            <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-on-dark-strong)]">
               Abrir runbook
             </span>
           </a>

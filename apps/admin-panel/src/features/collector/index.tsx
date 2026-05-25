@@ -724,7 +724,7 @@ function CliSnippet() {
     { tone: "info" as const, text: "› hash registered in audit log" }
   ];
   const colors: Record<"input" | "info" | "success" | "error", string> = {
-    input: "var(--color-bg)",
+    input: "var(--color-on-dark-strong)",
     info: "var(--color-accent-secondary)",
     success: "var(--color-success-border)",
     error: "var(--color-critical)"
@@ -733,8 +733,8 @@ function CliSnippet() {
     <section
       style={{
         borderRadius: 8,
-        background: "var(--color-text-primary)",
-        border: "1px solid var(--color-text-primary)",
+        background: "var(--color-surface-inverse)",
+        border: "1px solid var(--color-on-dark-hint)",
         overflow: "hidden",
         boxShadow: "var(--shadow-md)"
       }}
@@ -761,7 +761,7 @@ function CliSnippet() {
         <button
           type="button"
           className="inline-flex items-center text-[10px] font-[family-name:var(--font-mono)]"
-          style={{ gap: 6, padding: "4px 8px", borderRadius: 4, background: "var(--color-on-dark-hint)", color: "var(--color-bg)" }}
+          style={{ gap: 6, padding: "4px 8px", borderRadius: 4, background: "var(--color-on-dark-hint)", color: "var(--color-on-dark-strong)" }}
         >
           copy
         </button>
