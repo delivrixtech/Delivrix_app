@@ -19,6 +19,7 @@ import {
   ArrowRight,
   ArrowUp,
   Box,
+  CheckCircle2,
   ChevronDown,
   Circle,
   CircleCheck,
@@ -37,6 +38,7 @@ import {
   Play,
   Radio,
   Settings2,
+  ShieldAlert,
   Slash,
   Sparkles,
   Terminal,
@@ -184,7 +186,35 @@ function useAgentActions(pollMs: number): {
       try {
         const payload = await getJson<AuditEventsPayload>(READ_ENDPOINTS.auditEvents);
         if (cancelled) return;
-        const mapped = (payload.events ?? [])
+        // Modo "agente en acción": filtra audit events para mostrar SOLO lo que
+        // OpenClaw está haciendo AHORA. 3 criterios combinados:
+        //
+        //  1. actor: openclaw/* (excluye system/gateway-api, operator manual).
+        //  2. tiempo: últimos AGENT_RECENT_WINDOW_MS (default 10 min). El backend
+        //     siempre devuelve los últimos N del audit chain incluyendo histórico,
+        //     así que filtramos por timestamp para evitar smoke tests viejos.
+        //  3. excluir patterns de test/smoke (audit_smoke:*, healthcheck, etc.).
+        //
+        // Resultado: cuando OpenClaw NO esté trabajando → empty state limpio.
+        // Cuando le pidas algo → cards aparecen en orden cronológico real.
+        const AGENT_RECENT_WINDOW_MS = 10 * 60_000; // 10 min
+        const cutoff = Date.now() - AGENT_RECENT_WINDOW_MS;
+        const TEST_PATTERN = /(audit_smoke|smoke_valid|healthcheck|self_test|warmup_check)/i;
+        const agentEvents = (payload.events ?? []).filter((ev) => {
+          const actorType = (ev.actorType ?? "").toLowerCase();
+          const actorId = (ev.actorId ?? "").toLowerCase();
+          const isAgent = actorType === "openclaw" || actorId.startsWith("openclaw");
+          if (!isAgent) return false;
+          // Excluir tests legacy
+          const action = (ev.action ?? "").toLowerCase();
+          const targetId = (ev.targetId ?? "").toLowerCase();
+          if (TEST_PATTERN.test(action) || TEST_PATTERN.test(targetId)) return false;
+          // Filtro temporal: solo events recientes
+          const occurredAt = new Date(ev.occurredAt).getTime();
+          if (Number.isNaN(occurredAt)) return false;
+          return occurredAt >= cutoff;
+        });
+        const mapped = agentEvents
           .slice(0, 25)
           .map(auditToAction)
           .filter(Boolean) as Action[];
@@ -292,12 +322,25 @@ function auditToAction(ev: AuditEvent): Action | null {
     };
   }
 
-  // default → detect (algo pasó, lo mostramos como detección)
+  // Heurística mejorada de severity: el riskLevel del backend tiene prioridad,
+  // pero si está vacío o "low", el action mismo da pistas. Audit chain meta
+  // (oc.audit.smoke_valid, batch_received, chain_started) son INFO, no warning.
+  const looksLikeOkEvent =
+    /(\.valid|\.ok|\.completed|\.received|\.started|\.persisted|\.acknowledged|\.fresh)/.test(action) ||
+    action.startsWith("oc.audit.");
+  const looksLikeCritical = /(kill_switch|hallucination|blocked|critical|breach|incident)/.test(action);
+
+  let severity: "info" | "warning" | "critical" = "info";
+  if (ev.riskLevel === "critical" || looksLikeCritical) severity = "critical";
+  else if (ev.riskLevel === "high" || ev.riskLevel === "warning" || ev.riskLevel === "error") severity = "warning";
+  else if (looksLikeOkEvent) severity = "info";
+  else severity = "info"; // default: info, no alarmar al usuario
+
   return {
     id: ev.id,
     ts,
     kind: "detect",
-    severity: ev.riskLevel === "critical" ? "critical" : ev.riskLevel === "warning" || ev.riskLevel === "error" ? "warning" : "info",
+    severity,
     title: ev.action,
     body: `${ev.actorType}/${ev.actorId} → ${ev.targetType}:${ev.targetId}`,
     refs: Object.entries(meta).slice(0, 2).map(([k, v]) => ({
@@ -1424,19 +1467,41 @@ function LiveEmptyOrError({
   return (
     <div
       className="flex flex-col items-center justify-center"
-      style={{ flex: 1, gap: 12, padding: 32, color: "var(--color-text-tertiary)", textAlign: "center" }}
+      style={{ flex: 1, gap: 14, padding: 40, color: "var(--color-text-tertiary)", textAlign: "center" }}
     >
-      <Radio size={28} strokeWidth={1.25} />
-      <div className="flex flex-col" style={{ gap: 4, maxWidth: 440 }}>
+      <span
+        aria-hidden="true"
+        className="grid place-items-center"
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: 14,
+          background: "var(--color-surface-sunken)",
+          color: "var(--color-accent-tertiary)"
+        }}
+      >
+        <Sparkles size={26} strokeWidth={1.5} />
+      </span>
+      <div className="flex flex-col" style={{ gap: 6, maxWidth: 440 }}>
         <span
-          className="font-[family-name:var(--font-heading)] font-semibold"
-          style={{ fontSize: 14, color: "var(--color-text-secondary)" }}
+          className="font-[family-name:var(--font-sans)] font-semibold"
+          style={{ fontSize: 15, color: "var(--color-text-primary)", letterSpacing: "var(--tracking-tight)" }}
         >
-          Agente en silencio
+          OpenClaw idle · esperando próxima acción
         </span>
         <span style={{ fontSize: 12, fontFamily: "var(--font-body)", lineHeight: 1.55 }}>
-          El gateway responde pero todavía no hay eventos de OpenClaw en este intervalo.
-          Cuando el agente actúe, las cards aparecen acá en vivo.
+          Cuando le pidas algo en el chat, vas a ver aquí en tiempo real cada lectura,
+          comando, detección, diff o llamada HTTP que el agente ejecute mientras razona.
+        </span>
+        <span
+          style={{
+            fontSize: 11,
+            fontFamily: "var(--font-mono)",
+            color: "var(--color-text-tertiary)",
+            marginTop: 4
+          }}
+        >
+          actor filter: <code>openclaw/*</code> · audit chain completo en Seguridad
         </span>
       </div>
     </div>
@@ -1745,10 +1810,19 @@ function DetectCard({ action }: { action: DetectAction }) {
       : action.severity === "warning"
         ? "var(--color-warning-soft)"
         : "var(--color-info-soft)";
+  // Icono según severity: alarmas solo si es warning/critical real. Para
+  // audit events normales (smoke_valid, batch_received, chain_started) usamos
+  // CheckCircle2 que comunica "todo OK, esto es informativo".
+  const Icon =
+    action.severity === "critical"
+      ? ShieldAlert
+      : action.severity === "warning"
+        ? TriangleAlert
+        : CheckCircle2;
   return (
     <article className="flex flex-col v4-slide-in v4-hoverable" style={{ gap: 8 }}>
       <ActionHeader
-        icon={<TriangleAlert size={14} strokeWidth={1.75} />}
+        icon={<Icon size={14} strokeWidth={1.75} />}
         iconColor={tone}
         verb={action.title}
         ts={action.ts}

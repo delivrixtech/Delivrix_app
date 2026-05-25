@@ -48,6 +48,7 @@ const ClustersSection = lazy(async () => ({ default: (await import("../features/
 const LearningSection = lazy(async () => ({ default: (await import("../features/learning/index.tsx")).LearningSection }));
 const SafetySection = lazy(async () => ({ default: (await import("../features/safety/index.tsx")).SafetySection }));
 const InfrastructureSection = lazy(async () => ({ default: (await import("../features/infrastructure/index.tsx")).InfrastructureSection }));
+const DomainsSection = lazy(async () => ({ default: (await import("../features/domains/index.tsx")).DomainsSection }));
 const ChatWidget = lazy(async () => ({ default: (await import("../features/chat/ChatWidget.tsx")).ChatWidget }));
 
 export function App() {
@@ -611,6 +612,8 @@ function SectionView({
       return <Suspense fallback={<SectionLoadingState />}><SafetySection data={data} /></Suspense>;
     case "infrastructure":
       return <Suspense fallback={<SectionLoadingState />}><InfrastructureSection /></Suspense>;
+    case "domains":
+      return <Suspense fallback={<SectionLoadingState />}><DomainsSection /></Suspense>;
     default: {
       const _exhaustive: never = section;
       void _exhaustive;
@@ -730,6 +733,10 @@ function toneForSection(section: SectionId, data: DashboardData | undefined): To
       // Hito 5.12: el badge del sidebar se calcula desde el endpoint
       // /v1/infrastructure/inventory. Mientras Codex no lo expone, dejamos
       // neutral. Cuando esté listo, contar providers en error/paused.
+      return "neutral";
+    case "domains":
+      // Route53 Fase 1 live; sin propios todavía → neutral. Cuando haya
+      // propios o propuestas pendientes, calcular tono desde useOwned().
       return "neutral";
     default: {
       const _exhaustive: never = section;

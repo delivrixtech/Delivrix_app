@@ -11,6 +11,7 @@ import {
   Compass,
   Cpu,
   Database,
+  Globe,
   GraduationCap,
   LayoutDashboard,
   Server,
@@ -29,7 +30,8 @@ export type SectionId =
   | "clusters"
   | "learning"
   | "safety"
-  | "infrastructure";
+  | "infrastructure"
+  | "domains";
 
 export type SectionGroup = "estado" | "operacion" | "barandillas";
 
@@ -143,6 +145,17 @@ export const sections: SectionDescriptor[] = [
     description:
       "Lectura unificada de servidores y DNS: Webdock × 3 cuentas, AWS Route53, AWS Domains, IONOS Cloud DNS y servidor físico. Todo read-only auditado.",
     endpoint: "/v1/infrastructure/inventory"
+  },
+  {
+    id: "domains",
+    navLabel: "Dominios",
+    group: "operacion",
+    icon: Globe,
+    eyebrow: "Hito 5.12 · Route53 Fase 1",
+    title: "Buscar, valorar y proponer dominios.",
+    description:
+      "Discover/propose vía AWS Route53 Domains. Compra real bloqueada hasta Fase 2 con doble aprobación. Cada consulta queda en audit chain.",
+    endpoint: "/v1/domains/availability"
   }
 ];
 
