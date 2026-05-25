@@ -136,7 +136,7 @@ Orden estricto de lectura para entender el agente:
 - `.env.local` existe en la raíz del repo local, está cubierto por `.gitignore` y contiene `OPENCLAW_GATEWAY_TOKEN`.
 - El valor de `OPENCLAW_GATEWAY_TOKEN` nunca se documenta ni se commitea.
 - Sincronización pendiente: copiar el mismo token al `.env` del container OpenClaw Hostinger y reiniciar el container cuando esté disponible la llave SSH `~/.ssh/openclaw-hostinger`.
-- IONOS inventory usa solo nombres de variables en docs: `IONOS_DNS_API_KEY`, `IONOS_CLOUD_DNS_TOKEN`, `IONOS_API_TOKEN`, `IONOS_DOMAINS_API_KEY`, `IONOS_DOMAINS_TENANT_ID`, `IONOS_HOSTING_API_KEY`, `IONOS_DEVELOPER_API_KEY`, `IONOS_TENANT_ID`. Los valores nunca se documentan ni se commitean.
+- IONOS inventory usa solo nombres de variables en docs: `IONOS_DNS_API_KEY`, `IONOS_CLOUD_DNS_TOKEN`, `IONOS_API_TOKEN`, `IONOS_DOMAINS_API_KEY`, `IONOS_DOMAINS_TENANT_ID`, `IONOS_HOSTING_API_KEY`, `IONOS_DEVELOPER_API_KEY`, `IONOS_TENANT_ID`. `IONOS_DNS_API_KEY` puede alimentar DNS y Domains read-only si la cuenta IONOS lo permite. Los valores nunca se documentan ni se commitean.
 
 ## Documentos de fase (referencia histórica)
 

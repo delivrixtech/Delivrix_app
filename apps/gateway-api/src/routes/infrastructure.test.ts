@@ -322,13 +322,18 @@ test("Infrastructure inventory marks IONOS Domains tenant mismatch as error", as
   assert.equal(domainsProvider?.fetchSourceKind, "live");
 });
 
-test("Infrastructure inventory reports missing IONOS Domains tenant when API key exists", async () => {
+test("Infrastructure inventory accepts live IONOS Domains without tenant for read-only inventory", async () => {
   const payload = await buildInfrastructureInventoryPayload({
     includeStaticProviders: true,
     ionosDomains: {
-      domains: [],
+      domains: [{
+        id: "domain-no-tenant",
+        name: "delivrix.io",
+        status: "ACTIVE",
+        nameservers: []
+      }],
       source: {
-        kind: "mock",
+        kind: "live",
         apiBase: "https://api.hosting.ionos.com/domains/v1",
         fetchedAt: "2026-05-24T17:59:30.000Z",
         responseOk: true,
@@ -341,8 +346,10 @@ test("Infrastructure inventory reports missing IONOS Domains tenant when API key
   });
 
   const domainsProvider = payload.providers.find((provider) => provider.id === "ionos-domains");
-  assert.equal(domainsProvider?.status, "error");
-  assert.equal(domainsProvider?.errorReason, "tenant_not_configured");
+  assert.equal(domainsProvider?.status, "active");
+  assert.equal(domainsProvider?.itemCount, 1);
+  assert.equal(domainsProvider?.fetchSourceKind, "live");
+  assert.equal(domainsProvider?.errorReason, undefined);
 });
 
 test("Infrastructure inventory audit is explicit, privacy-preserving, and keeps hash chain valid", async () => {

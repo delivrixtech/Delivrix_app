@@ -68,6 +68,7 @@ export class IonosDomainsAdapter {
     const env = options.env ?? (typeof process !== "undefined" ? process.env : {});
     this.apiKey =
       normalizeEnvValue(options.apiKey) ??
+      normalizeEnvValue(env.IONOS_DNS_API_KEY) ??
       normalizeEnvValue(env.IONOS_DOMAINS_API_KEY) ??
       normalizeEnvValue(env.IONOS_HOSTING_API_KEY) ??
       normalizeEnvValue(env.IONOS_DEVELOPER_API_KEY);
@@ -82,7 +83,7 @@ export class IonosDomainsAdapter {
   }
 
   isLive(): boolean {
-    return Boolean(this.apiKey && this.tenantId);
+    return Boolean(this.apiKey);
   }
 
   async listInventory(): Promise<IonosDomainsInventoryResult> {
@@ -91,7 +92,7 @@ export class IonosDomainsAdapter {
       return this.cache.result;
     }
 
-    if (!this.apiKey || !this.tenantId) {
+    if (!this.apiKey) {
       const result: IonosDomainsInventoryResult = {
         domains: [],
         source: this.sourceMetadata(now, "mock", true)
@@ -140,12 +141,7 @@ export class IonosDomainsAdapter {
   private async getJson(path: string): Promise<unknown> {
     const response = await this.fetchImpl(`${this.apiBase}${path}`, {
       method: "GET",
-      headers: {
-        "x-api-key": this.apiKey ?? "",
-        "x-tenant-id": this.tenantId ?? "",
-        accept: "application/json",
-        "user-agent": "Delivrix-MailOps/0.1 (ionos-domains-inventory)"
-      }
+      headers: this.headers()
     });
 
     if (!response.ok) {
@@ -175,6 +171,15 @@ export class IonosDomainsAdapter {
     this.cache = {
       expiresAt: now.getTime() + this.cacheTtlMs,
       result
+    };
+  }
+
+  private headers(): HeadersInit {
+    return {
+      "x-api-key": this.apiKey ?? "",
+      ...(this.tenantId ? { "x-tenant-id": this.tenantId } : {}),
+      accept: "application/json",
+      "user-agent": "Delivrix-MailOps/0.1 (ionos-domains-inventory)"
     };
   }
 }
