@@ -609,10 +609,12 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
         </span>
       </header>
 
+      <div className="overflow-x-auto">
       <div
         className="grid"
         style={{
           gridTemplateColumns: "80px 180px 220px minmax(0,1fr) 80px",
+          minWidth: 720,
           gap: 12,
           padding: "8px 12px",
           background: "var(--color-surface-sunken)",
@@ -637,6 +639,7 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
             className="grid items-center"
             style={{
               gridTemplateColumns: "80px 180px 220px minmax(0,1fr) 80px",
+              minWidth: 720,
               gap: 12,
               padding: "8px 12px",
               borderTop: i > 0 ? "1px solid var(--color-border)" : "none"
@@ -656,6 +659,7 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
           </li>
         ))}
       </ul>
+      </div>
     </section>
   );
 }
