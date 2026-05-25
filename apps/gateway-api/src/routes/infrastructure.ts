@@ -9,6 +9,8 @@ import type {
   IonosDnsZone,
   IonosDomainsInventoryResult,
   IonosDomainItem,
+  PorkbunInventoryResult,
+  PorkbunOwnedDomain,
   WebdockInventoryResult,
   WebdockServer
 } from "../../../../packages/adapters/src/index.ts";
@@ -39,6 +41,7 @@ export interface InfrastructureInventoryRouteDependencies {
   auditLog: AuditSink;
   webdockListServers: () => Promise<WebdockAccountInventoryResult[]>;
   awsRoute53DomainsListInventory?: () => Promise<AwsRoute53DomainsInventoryResult>;
+  porkbunListInventory?: () => Promise<PorkbunInventoryResult>;
   ionosListDnsInventory?: () => Promise<IonosDnsInventoryResult>;
   ionosListDomainsInventory?: () => Promise<IonosDomainsInventoryResult>;
   awsBedrockSetupLogPath?: string;
@@ -57,6 +60,7 @@ export interface BuildInfrastructureInventoryPayloadInput {
   /** Compat legacy para tests/consumidores internos previos a multi-cuenta. */
   webdock?: WebdockInventoryResult | null;
   awsRoute53Domains?: AwsRoute53DomainsInventoryResult | null;
+  porkbun?: PorkbunInventoryResult | null;
   ionosDns?: IonosDnsInventoryResult | null;
   ionosDomains?: IonosDomainsInventoryResult | null;
   awsBedrockSetupLogPath?: string | null;
@@ -85,9 +89,13 @@ export async function handleInfrastructureInventoryHttp(
   const awsRoute53Domains = deps.awsRoute53DomainsListInventory
     ? await deps.awsRoute53DomainsListInventory()
     : null;
+  const porkbun = deps.porkbunListInventory
+    ? await deps.porkbunListInventory()
+    : null;
   const payload = await buildInfrastructureInventoryPayload({
     webdockAccounts,
     awsRoute53Domains,
+    porkbun,
     ionosDns,
     ionosDomains,
     awsBedrockSetupLogPath: deps.awsBedrockSetupLogPath,
@@ -123,6 +131,7 @@ export async function buildInfrastructureInventoryPayload(
   if (input.includeStaticProviders ?? true) {
     providers.push(await buildAwsBedrockProvider(input.awsBedrockSetupLogPath ?? ".audit/openclaw-bedrock-setup.jsonl"));
     providers.push(buildAwsRoute53DomainsProvider(input.env ?? process.env, input.awsRoute53Domains));
+    providers.push(buildPorkbunDomainsProvider(input.env ?? process.env, input.porkbun));
     providers.push(buildIonosCloudDnsProvider(input.env ?? process.env, input.ionosDns));
     providers.push(buildIonosDomainsProvider(input.env ?? process.env, input.ionosDomains));
     providers.push(buildPhysicalServerProvider());
@@ -331,6 +340,65 @@ function awsRoute53DomainsCapabilities(env: Record<string, string | undefined>):
   return capabilities;
 }
 
+function buildPorkbunDomainsProvider(
+  env: Record<string, string | undefined>,
+  porkbun?: PorkbunInventoryResult | null
+): Provider {
+  if (porkbun) {
+    const status = resolvePorkbunDomainsProviderStatus(porkbun);
+    const errorReason = porkbun.source.responseOk
+      ? undefined
+      : porkbun.source.errorMessage ?? "porkbun_domains_unavailable";
+    return {
+      id: "porkbun-domains",
+      displayName: "Porkbun Domains",
+      kind: "domain-registrar",
+      status,
+      itemCount: porkbun.domains.length,
+      lastFetched: porkbun.source.fetchedAt,
+      fetchSourceKind: porkbun.source.kind,
+      ...(errorReason ? { errorReason } : {}),
+      capabilities: porkbunDomainsCapabilities(env, porkbun.source.purchaseEnabled),
+      items: porkbun.domains.map(porkbunDomainToInventoryItem)
+    };
+  }
+
+  const hasCreds = hasPorkbunCreds(env);
+  return {
+    id: "porkbun-domains",
+    displayName: "Porkbun Domains",
+    kind: "domain-registrar",
+    status: hasCreds ? "error" : "planned",
+    itemCount: 0,
+    lastFetched: null,
+    fetchSourceKind: "mock",
+    errorReason: hasCreds ? "adapter_pending" : "creds_not_configured",
+    capabilities: porkbunDomainsCapabilities(env, false),
+    items: []
+  };
+}
+
+function hasPorkbunCreds(env: Record<string, string | undefined>): boolean {
+  return Boolean(env.PORKBUN_API_KEY && (env.PORKBUN_SECRET_API_KEY || env.PORKBUN_SECRETAPIKEY));
+}
+
+function porkbunDomainsCapabilities(
+  env: Record<string, string | undefined>,
+  purchaseEnabled: boolean
+): string[] {
+  const capabilities = [
+    "list_registered_domains",
+    "check_domain_availability",
+    "list_domain_prices",
+    "draft_domain_purchase_proposal",
+    "compare_registrar_prices"
+  ];
+  if (purchaseEnabled || env.PORKBUN_ENABLE_PURCHASE === "true") {
+    capabilities.push("register_domain_requires_approval");
+  }
+  return capabilities;
+}
+
 function buildIonosDomainsProvider(
   env: Record<string, string | undefined>,
   ionosDomains?: IonosDomainsInventoryResult | null
@@ -466,6 +534,23 @@ function awsRoute53DomainToInventoryItem(domain: AwsRoute53DomainSummary): Inven
   };
 }
 
+function porkbunDomainToInventoryItem(domain: PorkbunOwnedDomain): InventoryItem {
+  return {
+    id: domain.domainName,
+    kind: "porkbun_domain",
+    displayName: domain.domainName,
+    status: normalizePorkbunDomainStatus(domain),
+    detail: {
+      tld: domain.tld,
+      status: domain.status ?? null,
+      createdAt: domain.createdAt ?? null,
+      expiry: domain.expiry ?? null,
+      autoRenew: domain.autoRenew ?? null,
+      whoisPrivacy: domain.whoisPrivacy ?? null
+    }
+  };
+}
+
 function ionosZoneToInventoryItem(zone: IonosDnsZone): InventoryItem {
   const status = normalizeIonosState(zone.state, zone.enabled);
   return {
@@ -551,6 +636,16 @@ function resolveAwsRoute53DomainsStatus(
   return "active";
 }
 
+function resolvePorkbunDomainsProviderStatus(porkbun: PorkbunInventoryResult): ProviderStatus {
+  if (!porkbun.source.responseOk) {
+    return "error";
+  }
+  if (porkbun.domains.length === 0) {
+    return "planned";
+  }
+  return "active";
+}
+
 function resolveIonosProviderStatus(ionosDns: IonosDnsInventoryResult): ProviderStatus {
   if (!ionosDns.source.responseOk) {
     return "error";
@@ -584,6 +679,14 @@ function normalizeDomainStatus(domain: IonosDomainItem): string {
   if (status.includes("fail") || status.includes("error")) return "error";
   if (status.includes("pending") || status.includes("provision")) return "provisioning";
   if (status.includes("lock") || status.includes("suspend") || status.includes("hold")) return "paused";
+  if (!status || status.includes("active") || status.includes("ok")) return "active";
+  return status;
+}
+
+function normalizePorkbunDomainStatus(domain: PorkbunOwnedDomain): string {
+  const status = (domain.status ?? "").toLowerCase();
+  if (status.includes("fail") || status.includes("error")) return "error";
+  if (status.includes("hold") || status.includes("lock") || status.includes("suspend")) return "paused";
   if (!status || status.includes("active") || status.includes("ok")) return "active";
   return status;
 }
