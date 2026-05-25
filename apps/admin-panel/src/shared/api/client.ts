@@ -1080,3 +1080,39 @@ export async function getJson<TPayload>(endpoint: ReadEndpoint): Promise<TPayloa
 
   return payload as TPayload;
 }
+
+/**
+ * Variante de getJson para endpoints con query string. La base sigue validada
+ * contra el read boundary; los params se serializan via URLSearchParams.
+ *
+ * Uso: getJsonWithQuery<T>(READ_ENDPOINTS.domainAvailability, { name: "foo.com" })
+ */
+export async function getJsonWithQuery<TPayload>(
+  base: ReadEndpoint,
+  params: Record<string, string | number | boolean | undefined | null>
+): Promise<TPayload> {
+  assertReadEndpoint(base);
+
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null) continue;
+    search.set(key, String(value));
+  }
+  const qs = search.toString();
+  const url = qs ? `${base}?${qs}` : base;
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+    cache: "no-store"
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as Partial<{ message: string }>;
+
+  if (!response.ok) {
+    const message = typeof payload.message === "string" ? payload.message : `GET ${url} failed.`;
+    throw new Error(message);
+  }
+
+  return payload as TPayload;
+}
