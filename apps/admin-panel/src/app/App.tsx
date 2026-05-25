@@ -192,31 +192,35 @@ function Topbar({
 
       <span className="flex-1" aria-hidden="true" />
 
-      {/* Read-only badge */}
-      <span className="inline-flex items-center gap-1.5 rounded-[4px] bg-[var(--color-info-soft)] px-2.5 py-1.5">
-        <Eye size={12} strokeWidth={1.75} className="text-[var(--color-info)]" aria-hidden="true" />
-        <span className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-info)]">
-          Solo lectura · GET-only
+      {/* Read-only badge — texto colapsa a icono en mobile (tooltip) */}
+      <Tooltip hint="Solo lectura · GET-only" side="bottom">
+        <span className="inline-flex items-center gap-1.5 rounded-[4px] bg-[var(--color-info-soft)] px-2 py-1.5 sm:px-2.5">
+          <Eye size={12} strokeWidth={1.75} className="text-[var(--color-info)]" aria-hidden="true" />
+          <span className="hidden text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-info)] md:inline">
+            Solo lectura · GET-only
+          </span>
         </span>
-      </span>
+      </Tooltip>
 
-      {/* Env chip */}
-      <span className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface-sunken)] px-2.5 py-1.5">
-        <FlaskConical size={12} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">
-          mvp.local
+      {/* Env chip — colapsa a icono en mobile/tablet (tooltip) */}
+      <Tooltip hint="Entorno mvp.local" side="bottom">
+        <span className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface-sunken)] px-2 py-1.5 sm:px-2.5">
+          <FlaskConical size={12} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
+          <span className="hidden text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] md:inline">
+            mvp.local
+          </span>
         </span>
-      </span>
+      </Tooltip>
 
-      {/* User chip */}
-      <span className="inline-flex items-center gap-2 rounded-[18px] border border-[var(--color-border)] bg-[var(--color-surface-sunken)] pl-1 pr-2.5 py-1">
+      {/* User chip — texto operador colapsa a solo avatar en mobile */}
+      <span className="inline-flex items-center gap-2 rounded-[18px] border border-[var(--color-border)] bg-[var(--color-surface-sunken)] pl-1 pr-1 py-1 sm:pr-2.5">
         <span
           aria-hidden="true"
-          className="grid h-6 w-6 place-items-center rounded-full bg-[var(--color-accent-tertiary)] text-[11px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-bg)]"
+          className="grid h-6 w-6 place-items-center rounded-full bg-[var(--color-accent-tertiary)] text-[11px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-on-dark-strong)]"
         >
           J
         </span>
-        <span className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-primary)]">
+        <span className="hidden text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-primary)] sm:inline">
           operador
         </span>
       </span>

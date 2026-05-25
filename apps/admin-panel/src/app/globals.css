@@ -150,6 +150,56 @@
     cursor: pointer;
     transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
   }
+
+  /* Form inputs — estilo consistente Stripe/Linear sin tener que tokenizar
+     en cada feature. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+  select,
+  textarea {
+    font-family: var(--font-sans);
+    font-size: var(--text-md);
+    line-height: var(--line-snug);
+    color: var(--color-text-primary);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    outline: none;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):hover:not(:disabled):not(:focus),
+  select:hover:not(:disabled):not(:focus),
+  textarea:hover:not(:disabled):not(:focus) {
+    border-color: var(--color-border-strong);
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):focus,
+  select:focus,
+  textarea:focus {
+    border-color: var(--color-border-focus);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-border-focus) 18%, transparent);
+  }
+
+  input:disabled,
+  select:disabled,
+  textarea:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    background: var(--color-surface-sunken);
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-text-tertiary);
+    opacity: 1;
+  }
+
+  /* Selección de texto coherente con la marca naranja. */
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent) 25%, transparent);
+    color: var(--color-text-primary);
+  }
 }
 
 /* Canvas node styling for ReactFlow nodes built with the new design system. */
