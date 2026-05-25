@@ -20,10 +20,8 @@ import {
   Shield,
   ShieldAlert,
   ShieldCheck,
-  Sparkles,
   TriangleAlert,
-  Users,
-  WandSparkles
+  Users
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { DashboardData, RealTimeMeta } from "../../shared/api/client.ts";
@@ -43,6 +41,11 @@ import {
   isFallbackMeta,
   staleMinutesFromMeta
 } from "../../shared/ui/realtime/index.ts";
+import {
+  BannerOpenClawV2,
+  LiveIndicator,
+  SectionDivider
+} from "../../shared/ui/v2/index.ts";
 
 export function SafetySection({ data }: { data: DashboardData }) {
   const hasFallback = [
@@ -58,9 +61,29 @@ export function SafetySection({ data }: { data: DashboardData }) {
     <section className="flex flex-col" style={{ gap: 20 }}>
       {hasFallback ? <FallbackBanner /> : null}
       <Hero data={data} />
+      <SectionDivider
+        title="Estado del gobierno"
+        caption="Permisos, kill switch, sesiones · poll 30s"
+        countTone="success"
+      />
       <KpiRow data={data} />
+      <SectionDivider
+        title="Permisos y sesiones"
+        caption="IAM · sesiones activas · secretos"
+        countTone="success"
+      />
       <TwoCol data={data} rolesPulse={rolesPulse} sessionsPulse={sessionsPulse} />
+      <SectionDivider
+        title="Auditoría reciente"
+        caption="Append-only · log inmutable · SHA-256"
+        countTone="success"
+      />
       <Audit data={data} />
+      <SectionDivider
+        title="Compliance"
+        caption="Estados evaluados continuamente"
+        countTone="success"
+      />
       <ComplianceRow data={data} pulseActive={compliancePulse} />
       <Footer />
     </section>
@@ -104,11 +127,11 @@ function staleBadgeFor(meta: RealTimeMeta | null): ReactNode {
 }
 
 /* ============================================================
- * Hero (r3cIV0)
+ * Hero — Welcome v2 (LiveIndicator inline) + Banner OpenClaw v2
  * ============================================================ */
 function Hero({ data }: { data: DashboardData }) {
   return (
-    <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_440px] items-start">
+    <div className="flex flex-col" style={{ gap: 16 }}>
       <HeroLeft />
       <OpenClawPrompt data={data} />
     </div>
@@ -116,30 +139,34 @@ function Hero({ data }: { data: DashboardData }) {
 }
 
 function HeroLeft() {
+  // Sin timestamp real expuesto; LiveIndicator cuenta segundos desde mount,
+  // reflejando que la página está "viva" (poll 30s safety realtime).
+  const mountedAt = useRef<number>(Date.now()).current;
   return (
-    <header className="flex flex-col" style={{ gap: 6 }}>
-      <div className="flex items-center" style={{ gap: 8 }}>
-        <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
-          style={{ letterSpacing: "1.2px" }}
+    <header className="flex items-start" style={{ gap: 16 }}>
+      <div className="flex flex-col min-w-0 flex-1" style={{ gap: 6 }}>
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <span
+            className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
+            style={{ letterSpacing: "var(--tracking-widest)" }}
+          >
+            Seguridad y gobierno
+          </span>
+        </div>
+        <h1
+          className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
+          style={{ letterSpacing: "var(--tracking-tightest)" }}
         >
-          SEGURIDAD Y GOBIERNO
-        </span>
-        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-          Actualizado hace 14s
-        </span>
+          Sin acciones reales, con todas las barandillas.
+        </h1>
+        <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
+          El panel es GET-only. Toda acción operativa requiere aprobación humana, dry-run previo,
+          log auditable y kill switch probado.
+        </p>
       </div>
-      <h1
-        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
-        style={{ letterSpacing: "-0.4px" }}
-      >
-        Sin acciones reales, con todas las barandillas.
-      </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
-        El panel es GET-only. Toda acción operativa requiere aprobación humana, dry-run previo,
-        log auditable y kill switch probado.
-      </p>
+      <div className="shrink-0">
+        <LiveIndicator pollIntervalSec={30} lastUpdateAt={mountedAt} tone="success" />
+      </div>
     </header>
   );
 }
@@ -155,80 +182,18 @@ function OpenClawPrompt({ data }: { data: DashboardData }) {
       : ks.enabled
         ? `Kill switch activo: ${ks.reason || "sin razón registrada"}. Confirmar protocolo antes de re-armar.`
         : "Sin gates pendientes. Las barandillas están firmes.";
-  const aviso = ks.enabled ? "kill switch" : gates.length > 0 ? "aviso" : "ok";
-  const avisoBg = ks.enabled ? "var(--color-critical-soft)" : gates.length > 0 ? "var(--color-warning-soft)" : "var(--color-success-soft)";
-  const avisoFg = ks.enabled ? "var(--color-critical)" : gates.length > 0 ? "var(--color-warning)" : "var(--color-success)";
-  return <OpenClawPromptInner message={message} aviso={aviso} avisoBg={avisoBg} avisoFg={avisoFg} />;
-}
-
-function OpenClawPromptInner({ message, aviso, avisoBg, avisoFg }: { message: string; aviso: string; avisoBg: string; avisoFg: string }) {
+  const title = ks.enabled
+    ? "Kill switch activo"
+    : gates.length > 0
+      ? "OpenClaw detectó gates abiertos"
+      : "OpenClaw: barandillas firmes";
   return (
-    <div
-      style={{
-        borderRadius: 12,
-        padding: 2,
-        background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
-        boxShadow: "0 6px 18px rgba(146, 64, 14, 0.13)"
-      }}
-    >
-      <div className="flex flex-col bg-[var(--color-surface)]" style={{ borderRadius: 10, padding: 16, gap: 12 }}>
-        <header className="flex items-center" style={{ gap: 10 }}>
-          <span
-            aria-hidden="true"
-            className="grid place-items-center"
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
-              background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
-              color: "var(--color-bg)"
-            }}
-          >
-            <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
-          </span>
-          <div className="flex flex-col leading-tight">
-            <span className="text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
-              OpenClaw
-            </span>
-            <span
-              className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
-              style={{ letterSpacing: "0.4px" }}
-            >
-              Operador supervisado
-            </span>
-          </div>
-          <span className="flex-1" aria-hidden="true" />
-          <span
-            className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
-            style={{
-              padding: "2px 8px",
-              borderRadius: 4,
-              background: avisoBg,
-              color: avisoFg,
-              letterSpacing: "0.4px"
-            }}
-          >
-            {aviso}
-          </span>
-        </header>
-        <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-primary)]">
-          {message}
-        </p>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          <button
-            type="button"
-            className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
-            style={{ gap: 6, padding: "10px 14px", borderRadius: 6, background: "var(--color-text-primary)" }}
-          >
-            <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
-            Revisar plan dry-run
-          </button>
-          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-            ejecución fuera del panel
-          </span>
-        </div>
-      </div>
-    </div>
+    <BannerOpenClawV2
+      title={title}
+      body={message}
+      primaryCta="Revisar plan dry-run"
+      secondaryCta="Abrir runbook"
+    />
   );
 }
 
@@ -336,13 +301,13 @@ function Kpi({
         padding: 16,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <div className="flex items-center" style={{ gap: 8 }}>
         <span
           className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]"
-          style={{ letterSpacing: "0.4px" }}
+          style={{ letterSpacing: "var(--tracking-wide)" }}
         >
           {label}
         </span>
@@ -357,7 +322,7 @@ function Kpi({
       <div className="flex items-end" style={{ gap: 8 }}>
         <span
           className="text-[32px] font-[family-name:var(--font-mono)] font-bold leading-none text-[var(--color-text-primary)] tabular-nums"
-          style={{ letterSpacing: "-0.6px" }}
+          style={{ letterSpacing: "var(--tracking-tightest)" }}
         >
           {value}
         </span>
@@ -420,8 +385,9 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
       className="flex flex-col overflow-hidden"
       style={{
         borderRadius: 10,
-        background: "var(--color-text-primary)",
-        boxShadow: "0 6px 18px rgba(0, 0, 0, 0.13)"
+        background: "var(--color-surface-inverse)",
+        border: "1px solid var(--color-on-dark-hint)",
+        boxShadow: "var(--shadow-md)"
       }}
     >
       <div
@@ -432,45 +398,47 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
           aria-hidden="true"
           className="grid place-items-center"
           style={{
-            width: 48,
-            height: 48,
-            borderRadius: 999,
+            width: 44,
+            height: 44,
+            borderRadius: 10,
             background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-            color: "var(--color-text-primary)"
+            color: "var(--color-on-dark-strong)",
+            boxShadow: "0 0 0 1px var(--color-on-dark-hint), 0 8px 20px rgba(234, 88, 12, 0.25)"
           }}
         >
-          <Power size={22} strokeWidth={2} aria-hidden="true" />
+          <Power size={20} strokeWidth={2.25} aria-hidden="true" />
         </span>
         <div className="flex flex-col flex-1" style={{ gap: 4 }}>
           <span
-            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
-            style={{ color: "rgba(255, 251, 245, 0.5)", letterSpacing: "1.2px" }}
+            className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+            style={{ color: "var(--color-on-dark-soft)", letterSpacing: "var(--tracking-widest)" }}
           >
-            KILL SWITCH GLOBAL
+            Kill switch global
           </span>
           <h2
-            className="m-0 text-[20px] font-[family-name:var(--font-heading)] font-bold leading-tight"
-            style={{ color: "var(--color-bg)" }}
+            className="m-0 text-[18px] font-[family-name:var(--font-sans)] font-semibold leading-tight"
+            style={{ color: "var(--color-on-dark-strong)", letterSpacing: "var(--tracking-tight)" }}
           >
             {ksTitle}
           </h2>
-          <span className="text-[12px] font-[family-name:var(--font-sans)]" style={{ color: "rgba(255, 251, 245, 0.7)" }}>
+          <span className="text-[12px] font-[family-name:var(--font-sans)]" style={{ color: "var(--color-on-dark-medium)" }}>
             {ksSubtitle} · regla de dos personas exigida en cada activación.
           </span>
         </div>
         <span
-          className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
+          className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase"
           style={{
             gap: 6,
-            padding: "6px 12px",
+            padding: "5px 10px",
             borderRadius: 999,
-            background: armed ? "rgba(220, 252, 231, 0.16)" : "rgba(254, 226, 226, 0.16)",
+            background: armed ? "var(--color-on-dark-success-overlay)" : "var(--color-on-dark-critical-overlay)",
+            border: armed ? "1px solid var(--color-on-dark-success-overlay)" : "1px solid var(--color-on-dark-critical-overlay)",
             color: armed ? "var(--color-success-border)" : "var(--color-critical-border)",
-            letterSpacing: "0.6px"
+            letterSpacing: "var(--tracking-wider)"
           }}
         >
           <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: armed ? "var(--color-success)" : "var(--color-critical)" }} />
-          {armed ? "ARMADO" : "ACTIVO"}
+          {armed ? "Armado" : "Activo"}
         </span>
       </div>
       <div
@@ -480,7 +448,7 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
           gap: 16,
           padding: "14px 24px",
           background: "var(--color-surface-inverse)",
-          borderTop: "1px solid rgba(255, 251, 245, 0.08)"
+          borderTop: "1px solid var(--color-on-dark-hint)"
         }}
       >
         <KillStat label="responsable" value={ks.updatedBy || "sin asignar"} />
@@ -495,12 +463,12 @@ function KillStat({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col" style={{ gap: 2 }}>
       <span
-        className="text-[10px] font-[family-name:var(--font-caption)] uppercase"
-        style={{ color: "rgba(255, 251, 245, 0.5)", letterSpacing: "0.6px" }}
+        className="text-[10px] font-[family-name:var(--font-caption)] font-medium uppercase"
+        style={{ color: "var(--color-on-dark-soft)", letterSpacing: "var(--tracking-wider)" }}
       >
         {label}
       </span>
-      <span className="text-[12px] font-[family-name:var(--font-mono)]" style={{ color: "var(--color-accent-secondary)" }}>
+      <span className="text-[12px] font-[family-name:var(--font-mono)] tabular-nums" style={{ color: "var(--color-accent-secondary)" }}>
         {value}
       </span>
     </div>
@@ -559,14 +527,14 @@ function GatesCard({ data }: { data: DashboardData }) {
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
-      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
       <header
         className="flex items-center"
         style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid var(--color-border)" }}
       >
         <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Gates de seguridad
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -675,14 +643,14 @@ function RolesCard({
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
-      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
       <header
         className="flex items-center"
         style={{ gap: 8, padding: "14px 16px 12px 16px", borderBottom: "1px solid var(--color-border)" }}
       >
         <Users size={13} strokeWidth={1.75} className="text-[var(--color-info)]" aria-hidden="true" />
-        <h3 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+        <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Roles
         </h3>
         <span className="flex-1" aria-hidden="true" />
@@ -756,14 +724,14 @@ function SesionesCard({
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
-      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
       <header
         className="flex items-center"
         style={{ gap: 8, padding: "14px 16px 12px 16px", borderBottom: "1px solid var(--color-border)" }}
       >
         <Laptop size={13} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
-        <h3 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+        <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Sesiones activas
         </h3>
         <span className="flex-1" aria-hidden="true" />
@@ -811,12 +779,12 @@ function SecretsCard() {
         padding: 16,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header className="flex items-center" style={{ gap: 8 }}>
         <Lock size={13} strokeWidth={1.75} className="text-[var(--color-unknown)]" aria-hidden="true" />
-        <h3 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+        <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Secrets management
         </h3>
       </header>
@@ -896,14 +864,14 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
-      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
       <header
         className="flex items-center"
         style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid var(--color-border)" }}
       >
         <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+          <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
             Log de auditoría
           </h2>
           <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
@@ -954,7 +922,7 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
           <span
             key={h}
             className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
-            style={{ letterSpacing: "0.6px" }}
+            style={{ letterSpacing: "var(--tracking-wider)" }}
           >
             {h}
           </span>
@@ -995,7 +963,7 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
                   borderRadius: 4,
                   background: row.resultBg,
                   color: row.resultFg,
-                  letterSpacing: "0.4px",
+                  letterSpacing: "var(--tracking-wide)",
                   width: "fit-content"
                 }}
               >
@@ -1151,7 +1119,7 @@ function ComplianceCard({
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
-      style={{ gap: 10, padding: 16, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      style={{ gap: 10, padding: 16, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
     >
       <header className="flex items-center" style={{ gap: 8 }}>
         <span
@@ -1170,7 +1138,7 @@ function ComplianceCard({
         {stale}
         <span
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
-          style={{ padding: "2px 6px", borderRadius: 4, background: pillBg, color: pillFg, letterSpacing: "0.4px" }}
+          style={{ padding: "2px 6px", borderRadius: 4, background: pillBg, color: pillFg, letterSpacing: "var(--tracking-wide)" }}
         >
           {pillText}
         </span>

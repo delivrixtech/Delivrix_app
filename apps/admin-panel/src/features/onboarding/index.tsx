@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
+import { BannerOpenClawV2 } from "../../shared/ui/v2/index.ts";
 
 export function OnboardingSection({ data }: { data: DashboardData }) {
   return (
@@ -50,7 +51,7 @@ function PageHeader() {
     <header className="flex flex-col" style={{ gap: 10 }}>
       <span
         className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-accent-tertiary)]"
-        style={{ letterSpacing: "1.2px" }}
+        style={{ letterSpacing: "var(--tracking-widest)" }}
       >
         PASO 1 DE 6 · INVENTARIO FÍSICO
       </span>
@@ -208,7 +209,7 @@ function Stepper({ data }: { data: DashboardData }) {
         padding: "16px 20px",
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       {steps.map((step, i) => {
@@ -238,7 +239,7 @@ function Stepper({ data }: { data: DashboardData }) {
                 className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
                 style={{
                   color: active ? "var(--color-accent-tertiary)" : "var(--color-text-tertiary)",
-                  letterSpacing: "1px"
+                  letterSpacing: "var(--tracking-widest)"
                 }}
               >
                 {step.kicker}
@@ -277,7 +278,7 @@ function OnboardingStepsEmptyState() {
         padding: "16px 20px",
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
@@ -420,7 +421,7 @@ function SectionCard({
         padding: 20,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       {/* SecHead */}
@@ -436,11 +437,11 @@ function SectionCard({
           <div className="flex flex-col" style={{ gap: 2 }}>
             <span
               className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
-              style={{ letterSpacing: "1.2px" }}
+              style={{ letterSpacing: "var(--tracking-widest)" }}
             >
               {kicker}
             </span>
-            <h3 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-semibold text-[var(--color-text-primary)]">
+            <h3 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
               {title}
             </h3>
           </div>
@@ -453,7 +454,7 @@ function SectionCard({
             borderRadius: 4,
             background: pillBg,
             color: pillFg,
-            letterSpacing: "0.4px"
+            letterSpacing: "var(--tracking-wide)"
           }}
         >
           <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: pillDot }} />
@@ -475,7 +476,7 @@ function FieldRow({ label, value, badge }: { label: string; value: string; badge
       <div className="flex items-center" style={{ gap: 8 }}>
         <span
           className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-tertiary)]"
-          style={{ letterSpacing: "0.4px" }}
+          style={{ letterSpacing: "var(--tracking-wide)" }}
         >
           {label}
         </span>
@@ -487,7 +488,7 @@ function FieldRow({ label, value, badge }: { label: string; value: string; badge
               borderRadius: 4,
               background: "var(--color-success-soft)",
               color: "var(--color-success)",
-              letterSpacing: "0.4px"
+              letterSpacing: "var(--tracking-wide)"
             }}
           >
             {badge}
@@ -525,134 +526,26 @@ function OpenClawColumn({ data }: { data: DashboardData }) {
 }
 
 function OpenClawCard({ unknownsCount, blockers }: { unknownsCount: number; blockers: number }) {
+  // Migrado a BannerOpenClawV2 — ~130 LOC duplicadas eliminadas (gradient bulky + ocInput + ocActions)
+  const title =
+    blockers > 0
+      ? `${blockers} bloqueo${blockers === 1 ? "" : "s"} en onboarding`
+      : unknownsCount > 0
+        ? `${unknownsCount} campo${unknownsCount === 1 ? "" : "s"} sin completar`
+        : "Inventario completo";
+  const body =
+    blockers > 0
+      ? `Tengo ${blockers} bloqueo${blockers === 1 ? "" : "s"} pendiente${blockers === 1 ? "" : "s"}. ¿Quieres que resuma el más crítico antes del gate?`
+      : unknownsCount > 0
+        ? `Detecté ${unknownsCount} campo${unknownsCount === 1 ? "" : "s"} sin completar en tu inventario. ¿Quieres que resuma lo que falta antes del gate de cumplimiento?`
+        : "Inventario completo. Puedo proponer el plan de topología cuando lo autorices.";
   return (
-    <div
-      style={{
-        borderRadius: 12,
-        padding: 2,
-        background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
-        boxShadow: "0 8px 24px rgba(26, 20, 16, 0.13)"
-      }}
-    >
-      <div className="flex flex-col bg-[var(--color-bg)]" style={{ borderRadius: 10, padding: 20, gap: 16 }}>
-        {/* ocHead */}
-        <header className="flex items-center" style={{ gap: 10 }}>
-          <span
-            aria-hidden="true"
-            className="grid place-items-center"
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 999,
-              background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-              color: "var(--color-bg)"
-            }}
-          >
-            <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
-          </span>
-          <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
-            <span className="text-[14px] font-[family-name:var(--font-heading)] font-semibold text-[var(--color-text-primary)]">
-              OpenClaw
-            </span>
-            <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-              supervisado · solo lectura
-            </span>
-          </div>
-          <span
-            className="inline-flex items-center text-[9px] font-[family-name:var(--font-caption)] font-bold"
-            style={{
-              gap: 4,
-              padding: "3px 8px",
-              borderRadius: 4,
-              background: "var(--color-info-soft)",
-              color: "var(--color-info)",
-              letterSpacing: "0.6px"
-            }}
-          >
-            <Eye size={10} strokeWidth={2} aria-hidden="true" />
-            GET
-          </span>
-        </header>
-
-        {/* ocMsgWrap */}
-        <div
-          className="flex flex-col"
-          style={{
-            gap: 8,
-            padding: 14,
-            borderRadius: 8,
-            background: "var(--color-surface-sunken)",
-            border: "1px solid var(--color-border)"
-          }}
-        >
-          <span
-            className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
-            style={{ letterSpacing: "1px" }}
-          >
-            Sugerencia
-          </span>
-          <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
-            {blockers > 0
-              ? `Tengo ${blockers} bloqueo${blockers === 1 ? "" : "s"} pendiente${blockers === 1 ? "" : "s"} en el onboarding. ¿Quieres que resuma el más crítico antes del gate?`
-              : unknownsCount > 0
-                ? `Detecté ${unknownsCount} campo${unknownsCount === 1 ? "" : "s"} sin completar en tu inventario. ¿Quieres que resuma lo que falta antes de avanzar al gate de cumplimiento?`
-                : "Inventario completo. Puedo proponer el plan de topología cuando lo autorices."}
-          </p>
-        </div>
-
-        {/* ocInput */}
-        <div
-          aria-hidden="true"
-          className="flex items-center bg-[var(--color-bg)]"
-          style={{
-            gap: 8,
-            padding: 12,
-            borderRadius: 6,
-            border: "1px solid var(--color-border)"
-          }}
-        >
-          <MessageSquare size={14} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
-          <span className="flex-1 text-[11px] font-[family-name:var(--font-sans)] text-[var(--color-text-tertiary)] truncate">
-            Pregunta a OpenClaw sobre evidencia, gates o recomendaciones…
-          </span>
-          <ArrowUp size={14} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
-        </div>
-
-        {/* ocActions */}
-        <div className="flex flex-col" style={{ gap: 8 }}>
-          <button
-            type="button"
-            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)]"
-            style={{ gap: 6, padding: "10px 12px", borderRadius: 6, background: "var(--color-text-primary)" }}
-          >
-            <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
-            Revisar recomendación
-          </button>
-          <button
-            type="button"
-            className="inline-flex items-center justify-center text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
-            style={{
-              gap: 6,
-              padding: "10px 12px",
-              borderRadius: 6,
-              background: "var(--color-bg)",
-              border: "1px solid var(--color-border)"
-            }}
-          >
-            <FileSearch size={14} strokeWidth={1.75} aria-hidden="true" />
-            Ver evidencia
-          </button>
-        </div>
-
-        {/* ocFoot */}
-        <div className="flex items-center" style={{ gap: 6, padding: "0 4px" }}>
-          <LinkIcon size={11} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
-          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-            /v1/openclaw/recommendations
-          </span>
-        </div>
-      </div>
-    </div>
+    <BannerOpenClawV2
+      title={title}
+      body={body}
+      primaryCta="Revisar recomendación"
+      secondaryCta="Ver evidencia"
+    />
   );
 }
 
@@ -690,7 +583,7 @@ function GatesHead() {
     <header className="flex flex-col" style={{ gap: 6 }}>
       <span
         className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
-        style={{ letterSpacing: "1.2px" }}
+        style={{ letterSpacing: "var(--tracking-widest)" }}
       >
         VALIDACIONES Y GATES
       </span>
@@ -786,7 +679,7 @@ function GateCard({
               borderRadius: 999,
               background: pillBg,
               color: pillFg,
-              letterSpacing: "0.4px"
+              letterSpacing: "var(--tracking-wide)"
             }}
           >
             {pillText}
@@ -811,7 +704,7 @@ function ActionBar() {
         padding: "14px 18px",
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)",
+        boxShadow: "var(--shadow-sm)",
         justifyContent: "space-between"
       }}
     >

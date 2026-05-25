@@ -9,27 +9,40 @@
 
 import {
   ArrowRight,
-  ArrowUp,
   Check,
   Flame,
-  Info,
   Minus,
   ShieldAlert,
-  Sparkles,
   TrendingDown,
   TrendingUp,
   TriangleAlert,
-  WandSparkles,
   X
 } from "lucide-react";
 import type { DashboardData } from "../../shared/api/client.ts";
 import { formatDateTime, formatNumber, humanize } from "../../shared/lib/formatters.ts";
+import {
+  ApprovalRow as ApprovalRowV2,
+  type ApprovalSeverity,
+  BannerOpenClawV2,
+  LiveIndicator,
+  SectionDivider
+} from "../../shared/ui/v2/index.ts";
 
 export function OverviewSection({ data }: { data: DashboardData }) {
   return (
     <section className="flex flex-col gap-5" style={{ width: "100%" }}>
       <HeaderRow data={data} />
+      <SectionDivider
+        title="Métricas operativas"
+        caption="dataSource: panel agregados · actualizado cada 5s"
+        countTone="success"
+      />
       <KpiRow data={data} />
+      <SectionDivider
+        title="Flujo operativo"
+        caption="onboarding → planificación → provisionamiento → calentamiento → reputación"
+        countTone="success"
+      />
       <Pipeline />
       <BottomRow data={data} />
     </section>
@@ -37,146 +50,54 @@ export function OverviewSection({ data }: { data: DashboardData }) {
 }
 
 /* ============================================================
- * Header row — Welcome + OpenClaw prompt (gradient border)
+ * Header row — Welcome + LiveIndicator + Banner OpenClaw v2
  * ============================================================ */
 function HeaderRow({ data }: { data: DashboardData }) {
+  const lastUpdate = new Date(data.overview.generatedAt).getTime();
   return (
-    <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-start">
-      <Welcome generatedAt={data.overview.generatedAt} />
-      <OpenClawPrompt />
+    <div className="flex flex-col" style={{ gap: 16 }}>
+      <Welcome generatedAt={data.overview.generatedAt} lastUpdateMs={lastUpdate} />
+      <BannerOpenClawV2
+        title="OpenClaw propone un plan dry-run"
+        body="2 clústeres de envío esperan aprobación humana. Las quejas del clúster A superaron 0,18% en los últimos 4 snapshots — preparé un plan de degradación."
+        primaryCta="Revisar plan"
+        secondaryCta="Abrir chat"
+      />
     </div>
   );
 }
 
-function Welcome({ generatedAt }: { generatedAt: string }) {
+function Welcome({ generatedAt, lastUpdateMs }: { generatedAt: string; lastUpdateMs: number }) {
   return (
-    <header className="flex flex-col" style={{ gap: 6 }}>
-      <div className="flex items-center" style={{ gap: 8 }}>
-        <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
-          style={{ letterSpacing: "1.2px" }}
-        >
-          INICIO OPERATIVO
-        </span>
-        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-          Actualizado {formatDateTime(generatedAt)}
-        </span>
-      </div>
-      <h1
-        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
-        style={{ letterSpacing: "-0.4px" }}
-      >
-        Capacidad preparada, sin envíos reales.
-      </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
-        Delivrix gobierna infraestructura de correo autorizada en modo solo lectura. OpenClaw
-        observa, valida y propone — los humanos aprueban cada acción real.
-      </p>
-    </header>
-  );
-}
-
-function OpenClawPrompt() {
-  return (
-    <div
-      style={{
-        borderRadius: 12,
-        padding: 2,
-        background:
-          "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
-        boxShadow: "0 6px 18px rgba(146, 64, 14, 0.13)"
-      }}
-    >
-      <div className="flex flex-col bg-[var(--color-surface)]" style={{ borderRadius: 10, padding: 16, gap: 12 }}>
-        {/* ocHead */}
-        <header className="flex items-center" style={{ gap: 10 }}>
-          <span
-            aria-hidden="true"
-            className="grid place-items-center"
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
-              background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
-              color: "var(--color-bg)"
-            }}
-          >
-            <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
-          </span>
-          <div className="flex flex-col leading-tight">
-            <span className="text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
-              OpenClaw
-            </span>
-            <span
-              className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
-              style={{ letterSpacing: "0.4px" }}
-            >
-              Operador supervisado
-            </span>
-          </div>
-          <span className="flex-1" aria-hidden="true" />
-          <span
-            className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
-            style={{
-              padding: "2px 8px",
-              borderRadius: 4,
-              background: "var(--color-surface-sunken)",
-              border: "1px solid var(--color-border)",
-              color: "var(--color-text-secondary)",
-              letterSpacing: "0.4px"
-            }}
-          >
-            read-only
-          </span>
-        </header>
-
-        {/* Message — literal Pencil */}
-        <p className="m-0 text-[13px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-primary)]">
-          2 clústeres de envío esperan aprobación humana. Las quejas del clúster A superaron
-          0,18% en los últimos 4 snapshots — preparé un plan de degradación.
-        </p>
-
-        {/* ocInput */}
-        <div
-          aria-hidden="true"
-          className="flex items-center"
-          style={{
-            gap: 8,
-            padding: "10px 12px",
-            borderRadius: 8,
-            background: "var(--color-surface-sunken)",
-            border: "1px solid var(--color-border)"
-          }}
-        >
-          <span className="flex-1 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-tertiary)]">
-            Responde a OpenClaw…
-          </span>
-          <ArrowUp size={14} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
-        </div>
-
-        {/* ocActions */}
+    <header className="flex items-start" style={{ gap: 16 }}>
+      <div className="flex flex-col min-w-0 flex-1" style={{ gap: 6 }}>
         <div className="flex items-center" style={{ gap: 8 }}>
-          <button
-            type="button"
-            disabled
-            className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-bg)] disabled:cursor-default disabled:opacity-100"
-            style={{
-              gap: 6,
-              padding: "10px 14px",
-              borderRadius: 6,
-              background: "var(--color-text-primary)"
-            }}
+          <span
+            className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
+            style={{ letterSpacing: "var(--tracking-widest)" }}
           >
-            <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
-            Sugerir siguiente paso
-          </button>
+            Inicio operativo
+          </span>
+          <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
           <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-            interacción real vive fuera del panel
+            Actualizado {formatDateTime(generatedAt)}
           </span>
         </div>
+        <h1
+          className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
+          style={{ letterSpacing: "var(--tracking-tightest)" }}
+        >
+          Capacidad preparada, sin envíos reales.
+        </h1>
+        <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
+          Delivrix gobierna infraestructura de correo autorizada en modo solo lectura. OpenClaw
+          observa, valida y propone — los humanos aprueban cada acción real.
+        </p>
       </div>
-    </div>
+      <div className="shrink-0">
+        <LiveIndicator pollIntervalSec={5} lastUpdateAt={lastUpdateMs} tone="success" />
+      </div>
+    </header>
   );
 }
 
@@ -216,7 +137,7 @@ function KpiShell({ children }: { children: React.ReactNode }) {
         padding: 16,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       {children}
@@ -229,7 +150,7 @@ function KpiHead({ label, pillBg, pillFg, pillText }: { label: string; pillBg: s
     <div className="flex items-center" style={{ gap: 8 }}>
       <span
         className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]"
-        style={{ letterSpacing: "0.4px" }}
+        style={{ letterSpacing: "var(--tracking-wide)" }}
       >
         {label}
       </span>
@@ -249,7 +170,7 @@ function KpiValue({ value, unit }: { value: string; unit?: string }) {
     <div className="flex items-end" style={{ gap: 8 }}>
       <span
         className="text-[32px] font-[family-name:var(--font-mono)] font-bold leading-none text-[var(--color-text-primary)] tabular-nums"
-        style={{ letterSpacing: "-0.6px" }}
+        style={{ letterSpacing: "var(--tracking-tightest)" }}
       >
         {value}
       </span>
@@ -424,20 +345,14 @@ function Pipeline() {
         borderRadius: 8,
         padding: 20,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
-      {/* pipeHead */}
+      {/* pipeHead — sin h2 (el SectionDivider del Overview ya lo introduce). Solo CTA. */}
       <header className="flex items-center" style={{ gap: 12, marginBottom: 16 }}>
-        <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
-            Flujo operativo
-          </h2>
-          <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
-            Onboarding → planificación → provisionamiento dry-run → calentamiento → reputación.
-            Cada transición tiene un gate humano.
-          </p>
-        </div>
+        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
+          Cada transición tiene un gate humano · ningún provisionamiento toca producción sin aprobación.
+        </p>
         <span className="flex-1" aria-hidden="true" />
         <button
           type="button"
@@ -561,8 +476,18 @@ function StageCard({
 
 function StageConnector() {
   return (
-    <div className="hidden place-items-center md:grid" style={{ width: 18, height: 22 }}>
-      <ArrowRight size={14} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+    <div
+      aria-hidden="true"
+      className="hidden md:flex items-center justify-center self-stretch"
+      style={{ width: 12 }}
+    >
+      <span
+        style={{
+          width: 8,
+          height: 1,
+          background: "var(--color-border-strong)"
+        }}
+      />
     </div>
   );
 }
@@ -596,214 +521,79 @@ function BottomRow({ data }: { data: DashboardData }) {
 function ApprovalsCard({ data }: { data: DashboardData }) {
   const approvalIds = data.canvas.requiresHumanApproval ?? [];
   const count = approvalIds.length;
-  // Mapping de IDs → metadata visual. Pencil tiene 3 ejemplos canónicos;
-  // se asignan por keyword del ID; los que no matchean caen al genérico.
-  const VARIANTS = [
+  // Mapping de IDs → severidad + descripción del v2. ApprovalRow v2 standardiza
+  // el icono (AlertOctagon) y el chrome — sólo necesitamos severity + cuerpo.
+  type Variant = { key: string; severity: ApprovalSeverity; severityLabel: string; desc: string };
+  const VARIANTS: Variant[] = [
     {
       key: "warming",
-      iconBg: "var(--color-warning-soft)",
-      iconColor: "var(--color-warning)",
-      pillBg: "var(--color-warning-soft)",
-      pillFg: "var(--color-warning)",
-      pillText: "warming",
-      desc: "OpenClaw propone avanzar el ciclo de calentamiento. Vigilancia de reputación activa.",
-      meta1: "contrato · /v1/warming/plan"
+      severity: "medium",
+      severityLabel: "warming",
+      desc: "OpenClaw propone avanzar el ciclo de calentamiento. Vigilancia de reputación activa."
     },
     {
       key: "dns",
-      iconBg: "var(--color-critical-soft)",
-      iconColor: "var(--color-critical)",
-      pillBg: "var(--color-critical-soft)",
-      pillFg: "var(--color-critical)",
-      pillText: "dns",
-      desc: "Drift SPF/DKIM/DMARC detectado · plan dry-run listo, no se realizó escritura real.",
-      meta1: "contrato · /v1/dns/plan"
+      severity: "critical",
+      severityLabel: "dns drift",
+      desc: "Drift SPF/DKIM/DMARC detectado · plan dry-run listo, no se realizó escritura real."
     },
     {
       key: "ssh",
-      iconBg: "var(--color-unknown-soft)",
-      iconColor: "var(--color-unknown)",
-      pillBg: "var(--color-unknown-soft)",
-      pillFg: "var(--color-unknown)",
-      pillText: "ssh",
-      desc: "Alcance del permiso desconocido hasta firmar la regla de 2 personas. SSH desactivado por defecto.",
-      meta1: "runbook · ssh-gate.md"
+      severity: "high",
+      severityLabel: "ssh gate",
+      desc: "Alcance del permiso desconocido hasta firmar la regla de 2 personas. SSH desactivado por defecto."
     },
     {
       key: "generic",
-      iconBg: "var(--color-surface-sunken)",
-      iconColor: "var(--color-text-secondary)",
-      pillBg: "var(--color-surface-sunken)",
-      pillFg: "var(--color-text-secondary)",
-      pillText: "humano",
-      desc: "Acción que requiere autorización humana antes de avanzar.",
-      meta1: "contrato · /v1/openclaw/queue"
+      severity: "low",
+      severityLabel: "humano",
+      desc: "Acción que requiere autorización humana antes de avanzar."
     }
   ];
-  const pickVariant = (id: string) => {
+  const pickVariant = (id: string): Variant => {
     const lower = id.toLowerCase();
     return VARIANTS.find((v) => v.key !== "generic" && lower.includes(v.key)) ?? VARIANTS[3];
   };
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
-      }}
-    >
-      {/* acHead */}
-      <header
-        className="flex items-center"
-        style={{
-          gap: 12,
-          padding: "16px 18px 14px 18px",
-          borderBottom: "1px solid var(--color-border)"
-        }}
-      >
-        <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
-            Aprobaciones pendientes
-          </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-            Cada acción que un humano debe validar
-          </span>
-        </div>
-        <span className="flex-1" aria-hidden="true" />
-        <span
-          className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-          style={{ padding: "3px 8px", borderRadius: 4, background: "var(--color-critical-soft)", color: "var(--color-critical)" }}
-        >
-          {formatNumber(count)} pendientes
-        </span>
-      </header>
+    <section className="flex flex-col" style={{ gap: 12 }}>
+      <SectionDivider
+        title="Aprobaciones pendientes"
+        count={count}
+        countTone={count === 0 ? "neutral" : "critical"}
+        caption="Cada acción que un humano debe validar antes de tocar producción"
+      />
 
-      {/* acList — derivado de canvas.requiresHumanApproval */}
       {count === 0 ? (
-        <div style={{ padding: "14px 18px" }}>
+        <div
+          className="bg-[var(--color-surface)]"
+          style={{
+            borderRadius: "var(--radius-md)",
+            border: "1px solid var(--color-border)",
+            padding: "16px 20px"
+          }}
+        >
           <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
             Cola de aprobaciones vacía. Todas las acciones supervisadas están autorizadas o no
             requieren intervención humana.
           </p>
         </div>
       ) : (
-        approvalIds.slice(0, 3).map((id, i) => {
-          const v = pickVariant(id);
-          const icon = v.key === "warming"
-            ? <Flame size={18} strokeWidth={1.75} />
-            : v.key === "dns"
-              ? <ShieldAlert size={18} strokeWidth={1.75} />
-              : v.key === "ssh"
-                ? <Info size={18} strokeWidth={1.75} />
-                : <Info size={18} strokeWidth={1.75} />;
-          return (
-            <ApprovalRow
-              key={id}
-              iconBg={v.iconBg}
-              iconColor={v.iconColor}
-              icon={icon}
-              title={id.replace(/_/g, " ")}
-              pillBg={v.pillBg}
-              pillFg={v.pillFg}
-              pillText={v.pillText}
-              desc={v.desc}
-              meta1={v.meta1}
-              meta2="pendiente"
-              showBorder={i < Math.min(approvalIds.length, 3) - 1}
-            />
-          );
-        })
+        <div className="flex flex-col" style={{ gap: 8 }}>
+          {approvalIds.slice(0, 3).map((id) => {
+            const v = pickVariant(id);
+            return (
+              <ApprovalRowV2
+                key={id}
+                title={id.replace(/_/g, " ")}
+                body={v.desc}
+                severity={v.severity}
+                severityLabel={v.severityLabel}
+              />
+            );
+          })}
+        </div>
       )}
     </section>
-  );
-}
-
-function ApprovalRow({
-  iconBg,
-  iconColor,
-  icon,
-  title,
-  pillBg,
-  pillFg,
-  pillText,
-  desc,
-  meta1,
-  meta2,
-  showBorder
-}: {
-  iconBg: string;
-  iconColor: string;
-  icon: React.ReactNode;
-  title: string;
-  pillBg: string;
-  pillFg: string;
-  pillText: string;
-  desc: string;
-  meta1: string;
-  meta2: string;
-  showBorder: boolean;
-}) {
-  return (
-    <div
-      className="flex items-center"
-      style={{
-        gap: 12,
-        padding: "14px 18px",
-        borderBottom: showBorder ? "1px solid var(--color-border)" : "none"
-      }}
-    >
-      <span
-        aria-hidden="true"
-        className="grid place-items-center"
-        style={{
-          width: 36,
-          height: 36,
-          borderRadius: 8,
-          background: iconBg,
-          color: iconColor,
-          flexShrink: 0
-        }}
-      >
-        {icon}
-      </span>
-      <div className="flex flex-col min-w-0 flex-1" style={{ gap: 2 }}>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] truncate">
-            {title}
-          </span>
-          <span
-            className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-            style={{ padding: "2px 6px", borderRadius: 4, background: pillBg, color: pillFg }}
-          >
-            {pillText}
-          </span>
-        </div>
-        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.4] text-[var(--color-text-secondary)]">
-          {desc}
-        </p>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{meta1}</span>
-          <span aria-hidden="true" className="rounded-[1.5px]" style={{ width: 3, height: 3, background: "var(--color-text-tertiary)" }} />
-          <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{meta2}</span>
-        </div>
-      </div>
-      <button
-        type="button"
-        className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]"
-        style={{
-          gap: 6,
-          padding: "7px 12px",
-          borderRadius: 6,
-          border: "1px solid var(--color-border-strong)",
-          background: "transparent",
-          flexShrink: 0
-        }}
-      >
-        Revisar
-        <ArrowRight size={13} strokeWidth={1.75} aria-hidden="true" />
-      </button>
-    </div>
   );
 }
 
@@ -861,16 +651,25 @@ function GatesCard({ data }: { data: DashboardData }) {
         padding: 18,
         borderRadius: 8,
         border: "1px solid var(--color-border)",
-        boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)"
+        boxShadow: "var(--shadow-sm)"
       }}
     >
-      {/* gHead */}
+      {/* gHead — H2 en Geist semibold para mantener jerarquía sin invocar display Funnel.
+          Counter como pill compacto Linear-style. */}
       <header className="flex items-center" style={{ gap: 8 }}>
-        <h2 className="m-0 text-[13px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
+        <h2 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Gates no negociables
         </h2>
         <span className="flex-1" aria-hidden="true" />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold text-[var(--color-text-secondary)]">
+        <span
+          className="text-[11px] font-[family-name:var(--font-mono)] tabular-nums"
+          style={{
+            padding: "2px 8px",
+            borderRadius: 999,
+            background: "var(--color-surface-sunken)",
+            color: "var(--color-text-secondary)"
+          }}
+        >
           {okCount}/{gates.length}
         </span>
       </header>
@@ -1006,31 +805,42 @@ function SystemHealthDark({ data }: { data: DashboardData }) {
         gap: 14,
         padding: 18,
         borderRadius: 8,
-        background: "var(--color-text-primary)",
-        boxShadow: "0 6px 18px rgba(0, 0, 0, 0.13)"
+        background: "var(--color-surface-inverse)",
+        border: "1px solid var(--color-on-dark-hint)",
+        boxShadow: "var(--shadow-md)"
       }}
     >
-      {/* shHead */}
+      {/* shHead — eyebrow estilo Linear: izquierda neutra, derecha estado live */}
       <header className="flex items-center" style={{ gap: 8 }}>
         <span
-          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
-          style={{ letterSpacing: "1.2px" }}
+          className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+          style={{ letterSpacing: "var(--tracking-widest)", color: "var(--color-on-dark-soft)" }}
         >
-          SISTEMA
+          Sistema
         </span>
         <span className="flex-1" aria-hidden="true" />
-        <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 4, background: "var(--color-success)" }} />
         <span
-          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-success)]"
-          style={{ letterSpacing: "1.2px" }}
+          className="inline-flex items-center"
+          style={{
+            gap: 6,
+            padding: "3px 8px",
+            borderRadius: 999,
+            background: "var(--color-on-dark-success-overlay)"
+          }}
         >
-          OPERATIVO
+          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: "var(--color-success)" }} />
+          <span
+            className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+            style={{ letterSpacing: "var(--tracking-wider)", color: "var(--color-success)" }}
+          >
+            Operativo
+          </span>
         </span>
       </header>
 
       <h2
-        className="m-0 text-[16px] font-[family-name:var(--font-heading)] font-semibold leading-tight text-[var(--color-bg)]"
-        style={{ letterSpacing: "-0.2px" }}
+        className="m-0 text-[15px] font-[family-name:var(--font-sans)] font-semibold leading-tight"
+        style={{ letterSpacing: "var(--tracking-tight)", color: "var(--color-on-dark-strong)" }}
       >
         Todos los gateways responden.
       </h2>
@@ -1039,11 +849,14 @@ function SystemHealthDark({ data }: { data: DashboardData }) {
       <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 8 }}>
         {rows.map((r) => (
           <li key={r.label} className="flex items-center" style={{ gap: 8 }}>
-            <span className="text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-bg)]" style={{ opacity: 0.8 }}>
+            <span
+              className="text-[12px] font-[family-name:var(--font-sans)]"
+              style={{ color: "var(--color-on-dark-medium)" }}
+            >
               {r.label}
             </span>
             <span className="flex-1" aria-hidden="true" />
-            <span className="text-[11px] font-[family-name:var(--font-mono)]" style={{ color: r.valueColor }}>
+            <span className="text-[11px] font-[family-name:var(--font-mono)] tabular-nums" style={{ color: r.valueColor }}>
               {r.value}
             </span>
           </li>
