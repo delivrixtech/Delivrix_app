@@ -14,6 +14,7 @@ Hallazgos:
 - Hay precedentes de issues del template Hostinger en `openclaw/openclaw`, por ejemplo `openclaw/openclaw#29933` y `openclaw/openclaw#37711`.
 - `gh auth status` local no tiene sesion autenticada.
 - Se intento abrir issue via GitHub App en `openclaw/openclaw` con el contrato de `DOCUMENTACION/OPS_HOSTINGER_BRIDGE_HTTP_DELIVRIX_2026_05_24.md`, pero la llamada fue cancelada antes de confirmar; no se recibio URL ni numero de issue.
+- Draft publico listo para copiar/pegar: `DOCUMENTACION/OPS_HOSTINGER_ISSUE_DRAFT_2026_05_24.md`.
 
 Resultado operativo: no hay ID de ticket. El siguiente paso humano es abrir el issue publico en `openclaw/openclaw` o escalar por soporte Hostinger comercial citando `DOCUMENTACION/OPS_HOSTINGER_BRIDGE_HTTP_DELIVRIX_2026_05_24.md`.
 
