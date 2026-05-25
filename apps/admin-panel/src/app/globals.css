@@ -122,6 +122,33 @@
   :focus-visible {
     outline: none;
     box-shadow: var(--shadow-focus);
+    border-radius: var(--radius-sm);
+  }
+
+  /* Interactive defaults — fixes audit P0:
+     - 0 cursor-pointer on buttons → WCAG affordance broken
+     - 0 hover state → cliquy elements look flat
+     - native button reset (browsers add padding/border) */
+  button {
+    cursor: pointer;
+    font-family: inherit;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease;
+  }
+  button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+  button:hover:not(:disabled) {
+    filter: brightness(0.97);
+  }
+  [data-theme="dark"] button:hover:not(:disabled) {
+    filter: brightness(1.12);
+  }
+
+  /* Links + ARIA buttons get same affordance as <button> */
+  a, [role="button"] {
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease, opacity 120ms ease;
   }
 }
 
@@ -212,4 +239,154 @@
   100% {
     transform: translateX(100%);
   }
+}
+
+/* Building blocks v2 — pulse animation for LiveIndicator and other "live" UI surfaces. */
+@keyframes live-indicator-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.45;
+  }
+  70% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.live-indicator-ring {
+  animation: live-indicator-ring 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  transform-origin: center;
+}
+
+/* Tick halo — flash applied to a KPI value or list item right after a successful poll tick. */
+@keyframes v2-tick-halo {
+  0% {
+    box-shadow: 0 0 0 0 var(--color-success-soft);
+  }
+  100% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+.v2-tick-halo {
+  animation: v2-tick-halo 600ms ease-out;
+}
+
+/* Edge flow — animated dashed border used for the Canvas v2 active lane. */
+@keyframes v2-edge-flow {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 16px 0;
+  }
+}
+
+.v2-edge-flow {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-accent) 0,
+    var(--color-accent) 8px,
+    transparent 8px,
+    transparent 16px
+  );
+  background-size: 16px 2px;
+  background-repeat: repeat-x;
+  background-position: 0 100%;
+  animation: v2-edge-flow 600ms linear infinite;
+}
+
+/* Canvas v4 — slide-in para action cards del feed live */
+@keyframes v4-slide-in {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.v4-slide-in {
+  animation: v4-slide-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Canvas v4 — hover lift sutil para action cards */
+.v4-hoverable {
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+.v4-hoverable:hover {
+  transform: translateY(-1px);
+}
+
+/* Spin keyframe global (algunos componentes lo inyectan, mejor centralizar) */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Blink para cursors */
+@keyframes blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+/* Canvas Topology n8n-style — grab/hover UX para nodos */
+.delivrix-flow-canvas .react-flow__node {
+  cursor: grab;
+}
+.delivrix-flow-canvas .react-flow__node.dragging,
+.delivrix-flow-canvas .react-flow__node:active {
+  cursor: grabbing;
+}
+.delivrix-flow-canvas .delivrix-node-body {
+  cursor: inherit;
+}
+.delivrix-flow-canvas .react-flow__node:hover .delivrix-node-body {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.04), 0 12px 28px rgba(0, 0, 0, 0.55);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+/* Selected ya tiene su box-shadow inline. Mantener para no pisar. */
+.delivrix-flow-canvas .react-flow__handle {
+  transition: transform 120ms ease, opacity 120ms ease;
+}
+.delivrix-flow-canvas .react-flow__node:hover .react-flow__handle {
+  transform: scale(1.25);
+}
+.delivrix-flow-canvas .react-flow__edge-path {
+  transition: stroke-width 120ms ease, opacity 120ms ease;
+}
+.delivrix-flow-canvas .react-flow__edge:hover .react-flow__edge-path {
+  stroke-width: 3 !important;
+  opacity: 1 !important;
+}
+.delivrix-flow-canvas .react-flow__controls-button {
+  background: transparent !important;
+  color: #cdc4b3 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  width: 32px !important;
+  height: 32px !important;
+}
+.delivrix-flow-canvas .react-flow__controls-button:hover {
+  background: rgba(255, 255, 255, 0.04) !important;
+  color: #fffbf5 !important;
+}
+.delivrix-flow-canvas .react-flow__minimap-mask {
+  fill: rgba(10, 10, 10, 0.55);
 }

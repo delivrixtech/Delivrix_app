@@ -1,13 +1,12 @@
-// Fonts (Pencil rebrand — Fase H): Funnel Sans (heading), Geist (body),
-// Inter (caption), IBM Plex Mono (data). Offline-first via @fontsource.
+// Fonts (consolidación 2026-05-24): Funnel Sans (display H1/H2 ≥24px),
+// Geist (body + UI + caption con tracking-wider), IBM Plex Mono (data/code).
+// Inter eliminado para evitar 3-sans-stack que se sentía AI-generated.
+// Offline-first via @fontsource.
 import "@fontsource/funnel-sans/400.css";
 import "@fontsource/funnel-sans/500.css";
 import "@fontsource/funnel-sans/600.css";
 import "@fontsource/funnel-sans/700.css";
 import "@fontsource-variable/geist/index.css";
-import "@fontsource/inter/400.css";
-import "@fontsource/inter/500.css";
-import "@fontsource/inter/600.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 

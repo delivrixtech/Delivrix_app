@@ -87,6 +87,22 @@
   --shadow-md: 0 1px 2px rgba(64, 39, 19, 0.05), 0 2px 4px rgba(64, 39, 19, 0.04);
   --shadow-lg: 0 6px 16px rgba(64, 39, 19, 0.07), 0 2px 4px rgba(64, 39, 19, 0.04);
   --shadow-focus: 0 0 0 3px rgba(245, 158, 11, 0.25);
+
+  /* "On dark" colors — siempre claros sobre blocks dark independientes del tema.
+     Usados por KillSwitchGrande, snippets terminal, JSON viewer, etc. NO usar
+     var(--color-text-inverse) ahí porque se invierte con el tema y rompe contraste. */
+  --color-on-dark-strong: rgba(255, 251, 245, 1);
+  --color-on-dark-medium: rgba(255, 251, 245, 0.7);
+  --color-on-dark-soft: rgba(255, 251, 245, 0.5);
+  --color-on-dark-weak: rgba(255, 251, 245, 0.4);
+  --color-on-dark-faint: rgba(255, 251, 245, 0.15);
+  --color-on-dark-hint: rgba(255, 251, 245, 0.08);
+
+  /* Overlays semánticos translúcidos sobre dark surface (KillSwitch armado/activo, banners
+     OpenClaw, pills sobre surface-inverse). Mantienen el tinte verde/rojo sin depender del
+     tema porque el block es siempre dark. */
+  --color-on-dark-success-overlay: rgba(220, 252, 231, 0.16);
+  --color-on-dark-critical-overlay: rgba(254, 226, 226, 0.16);
 }
 
 [data-theme="dark"] {
@@ -166,13 +182,26 @@
 }
 
 :root {
-  /* Typography — Pencil dictates 4 families. */
+  /* Typography — 2 familias display/body + 1 mono (consolidación 2026-05-24).
+     ANTES: 4 familias (Funnel, Geist, Inter, IBM Plex Mono) → se sentía AI generated
+     por mezclar 3 sans-serifs similares. AHORA: Funnel solo en H1/H2 ≥24px,
+     todo lo demás Geist con jerarquía por peso/tracking.
+
+     --font-heading: solo títulos grandes ≥24px (display character).
+     --font-sans:    UI/body general (h3, párrafos, cards, controles).
+     --font-body:    alias semántico de --font-sans (resuelve usos huérfanos
+                     en canvas-v4 + infrastructure).
+     --font-caption: alias de Geist con guía de uso uppercase + tracking-wider
+                     para pills 10-12px. Mantenido como token para no romper
+                     58+ usos, pero apunta a Geist (no Inter). */
   --font-heading:
-    "Funnel Sans", "Funnel Sans Variable", system-ui, sans-serif;
+    "Funnel Sans", "Funnel Sans Variable", "Geist Variable", system-ui, sans-serif;
   --font-sans:
-    "Geist Variable", "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+    "Geist Variable", "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body:
+    "Geist Variable", "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-caption:
-    "Inter", system-ui, sans-serif;
+    "Geist Variable", "Geist", "Inter", system-ui, sans-serif;
   --font-mono:
     "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
@@ -199,6 +228,16 @@
   --weight-medium: 500;
   --weight-semibold: 600;
   --weight-bold: 700;
+
+  /* Letter-spacing scale — consolidación 2026-05-24.
+     Antes: 0.4px / 0.6px / 1.2px / -0.2px / -0.4px disperso inline.
+     Ahora: 4 valores tokenizados. */
+  --tracking-tightest: -0.4px;   /* Headings grandes display ≥28px */
+  --tracking-tight: -0.2px;      /* Headings medianos 18-24px */
+  --tracking-normal: 0;
+  --tracking-wide: 0.4px;        /* Body labels semibold 11-12px */
+  --tracking-wider: 0.6px;       /* Pill labels uppercase 10-11px */
+  --tracking-widest: 1.2px;      /* Eyebrows uppercase 10-11px */
 
   /* Spacing — Pencil scale */
   --space-0: 0;
