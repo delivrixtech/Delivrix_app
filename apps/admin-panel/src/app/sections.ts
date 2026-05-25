@@ -7,6 +7,7 @@
  */
 
 import {
+  Cloud,
   Compass,
   Cpu,
   Database,
@@ -27,7 +28,8 @@ export type SectionId =
   | "collector"
   | "clusters"
   | "learning"
-  | "safety";
+  | "safety"
+  | "infrastructure";
 
 export type SectionGroup = "estado" | "operacion" | "barandillas";
 
@@ -130,6 +132,17 @@ export const sections: SectionDescriptor[] = [
     description:
       "Kill switch, acciones permitidas y bloqueadas, gates pendientes y roles del norte. Todo lectura desde el contrato del operating-north.",
     endpoint: READ_ENDPOINTS.operatingNorth
+  },
+  {
+    id: "infrastructure",
+    navLabel: "Infraestructura",
+    group: "operacion",
+    icon: Cloud,
+    eyebrow: "Hito 5.12 · Multi-provider",
+    title: "Inventario multi-proveedor",
+    description:
+      "Lectura unificada de servidores y DNS: Webdock × 3 cuentas, AWS Route53, AWS Domains, IONOS Cloud DNS y servidor físico. Todo read-only auditado.",
+    endpoint: "/v1/infrastructure/inventory"
   }
 ];
 

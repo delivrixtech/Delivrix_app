@@ -33,12 +33,13 @@ import {
 const chatOpenStorageKey = "delivrix.openclaw.chat.open";
 const OverviewSection = lazy(async () => ({ default: (await import("../features/overview/index.tsx")).OverviewSection }));
 const OnboardingSection = lazy(async () => ({ default: (await import("../features/onboarding/index.tsx")).OnboardingSection }));
-const CanvasSection = lazy(async () => ({ default: (await import("../features/canvas/index.tsx")).CanvasSection }));
+const CanvasV4 = lazy(async () => ({ default: (await import("../features/canvas/canvas-v4.tsx")).CanvasV4 }));
 const HardwareSection = lazy(async () => ({ default: (await import("../features/hardware/index.tsx")).HardwareSection }));
 const CollectorSection = lazy(async () => ({ default: (await import("../features/collector/index.tsx")).CollectorSection }));
 const ClustersSection = lazy(async () => ({ default: (await import("../features/clusters/index.tsx")).ClustersSection }));
 const LearningSection = lazy(async () => ({ default: (await import("../features/learning/index.tsx")).LearningSection }));
 const SafetySection = lazy(async () => ({ default: (await import("../features/safety/index.tsx")).SafetySection }));
+const InfrastructureSection = lazy(async () => ({ default: (await import("../features/infrastructure/index.tsx")).InfrastructureSection }));
 const ChatWidget = lazy(async () => ({ default: (await import("../features/chat/ChatWidget.tsx")).ChatWidget }));
 
 export function App() {
@@ -405,7 +406,7 @@ function KillSwitchCard({ data }: { data: DashboardData | undefined }) {
     <section
       aria-label="Interruptor de corte"
       className="flex flex-col gap-2.5 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3.5"
-      style={{ boxShadow: "0 1px 3px rgba(0, 0, 0, 0.04)" }}
+      style={{ boxShadow: "var(--shadow-sm)" }}
     >
       <div className="flex items-center gap-2">
         <Power
@@ -451,7 +452,7 @@ function SectionView({ section, data }: { section: SectionId; data: DashboardDat
     case "onboarding":
       return <Suspense fallback={<SectionLoadingState />}><OnboardingSection data={data} /></Suspense>;
     case "canvas":
-      return <Suspense fallback={<SectionLoadingState />}><CanvasSection data={data} /></Suspense>;
+      return <Suspense fallback={<SectionLoadingState />}><CanvasV4 /></Suspense>;
     case "hardware":
       return <Suspense fallback={<SectionLoadingState />}><HardwareSection data={data} /></Suspense>;
     case "collector":
@@ -462,6 +463,8 @@ function SectionView({ section, data }: { section: SectionId; data: DashboardDat
       return <Suspense fallback={<SectionLoadingState />}><LearningSection data={data} /></Suspense>;
     case "safety":
       return <Suspense fallback={<SectionLoadingState />}><SafetySection data={data} /></Suspense>;
+    case "infrastructure":
+      return <Suspense fallback={<SectionLoadingState />}><InfrastructureSection /></Suspense>;
     default: {
       const _exhaustive: never = section;
       void _exhaustive;
@@ -577,6 +580,11 @@ function toneForSection(section: SectionId, data: DashboardData | undefined): To
       )
         return "warning";
       return "success";
+    case "infrastructure":
+      // Hito 5.12: el badge del sidebar se calcula desde el endpoint
+      // /v1/infrastructure/inventory. Mientras Codex no lo expone, dejamos
+      // neutral. Cuando esté listo, contar providers en error/paused.
+      return "neutral";
     default: {
       const _exhaustive: never = section;
       void _exhaustive;
