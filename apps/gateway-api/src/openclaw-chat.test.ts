@@ -7,7 +7,8 @@ import {
   OpenClawChatProxy,
   openClawChatReconnectDelayMs,
   type ChatStreamEvent,
-  type OpenClawChatPanelClient
+  type OpenClawChatPanelClient,
+  type OpenClawChatSshBridge
 } from "./openclaw-chat.ts";
 
 class MemoryAudit {
@@ -116,6 +117,62 @@ test("OpenClaw chat send rejects login HTML returned as HTTP 200", async () => {
   });
 });
 
+test("OpenClaw chat send falls back to HTTP after consecutive SSH bridge failures", async () => {
+  const audit = new MemoryAudit();
+  const bridge: OpenClawChatSshBridge = {
+    async sendMessage() {
+      throw new Error("ssh command timed out");
+    },
+    async streamHistory() {
+      throw new Error("not reached");
+    }
+  };
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return new Response(JSON.stringify({ msgId: "018f7b54-7d4d-7cc2-9c90-df7486c5a333", queued: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  const proxy = new OpenClawChatProxy(audit, {
+    bridgeKind: "ssh",
+    sshBridge: bridge,
+    sshBridgeFailureThreshold: 2,
+    agentHttpUrl: "http://openclaw.test:61175",
+    gatewayToken: "secret-gateway-token",
+    fetchImpl: fetchImpl as typeof fetch
+  });
+
+  await assert.rejects(
+    () => proxy.sendOperatorMessage({
+      msgId: "018f7b54-7d4d-7cc2-9c90-df7486c5a333",
+      message: "hola"
+    }),
+    (error) => {
+      assert.ok(error instanceof ChatProxyError);
+      assert.equal(error.code, "openclaw_ssh_bridge_failed");
+      return true;
+    }
+  );
+
+  const result = await proxy.sendOperatorMessage({
+    msgId: "018f7b54-7d4d-7cc2-9c90-df7486c5a333",
+    message: "hola"
+  });
+
+  assert.deepEqual(result, {
+    msgId: "018f7b54-7d4d-7cc2-9c90-df7486c5a333",
+    queued: true
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://openclaw.test:61175/api/chat.send");
+  assert.equal(audit.events.length, 2);
+  assert.equal(audit.events[0].decision, "reject");
+  assert.equal(audit.events[0].metadata.bridge, "ssh");
+  assert.equal(audit.events[1].decision, "n/a");
+});
+
 test("OpenClaw chat stream normalizes, multiplexes, and audits assistant completion", async () => {
   const audit = new MemoryAudit();
   const proxy = new OpenClawChatProxy(audit, {
@@ -175,6 +232,26 @@ test("OpenClaw chat event parser supports stream delta and backoff schedule", ()
     type: "ASSISTANT_DELTA",
     msgId: "m1",
     delta: "hola"
+  });
+
+  assert.deepEqual(normalizeAgentChatEvent({
+    type: "ASSISTANT_TYPING",
+    msgId: "m1",
+    ts: "2026-05-24T18:00:00.000Z"
+  }), {
+    type: "ASSISTANT_TYPING",
+    msgId: "m1",
+    ts: "2026-05-24T18:00:00.000Z"
+  });
+
+  assert.deepEqual(normalizeAgentChatEvent({
+    type: "ASSISTANT_BLOCKED",
+    msgId: "m1",
+    reason: "ssh_history_timeout"
+  }), {
+    type: "ASSISTANT_BLOCKED",
+    msgId: "m1",
+    reason: "ssh_history_timeout"
   });
 
   assert.equal(openClawChatReconnectDelayMs(1), 1_000);

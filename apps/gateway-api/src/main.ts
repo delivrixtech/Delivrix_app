@@ -127,6 +127,7 @@ import {
   OpenClawChatProxy,
   type ChatSendRequest
 } from "./openclaw-chat.ts";
+import { createOpenClawSshBridgeFromEnv } from "./openclaw-ssh-bridge.ts";
 import { handleInfrastructureInventoryHttp } from "./routes/infrastructure.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 
@@ -151,7 +152,11 @@ const ipReputationReportStore = new LocalFileIpReputationReportStore();
 const backupSimulationStore = new LocalFileBackupSimulationStore();
 const safetyRealtimeCache = new SafetyRealtimeCache();
 const learningRealtimeCache = new SafetyRealtimeCache();
-const openClawChatProxy = new OpenClawChatProxy(auditLog);
+const openClawSshBridge = createOpenClawSshBridgeFromEnv();
+const openClawChatProxy = new OpenClawChatProxy(auditLog, {
+  bridgeKind: openClawSshBridge ? "ssh" : "http",
+  sshBridge: openClawSshBridge
+});
 const defaultStuckJobThresholdMs = Number(process.env.STUCK_JOB_THRESHOLD_MS ?? 5 * 60 * 1000);
 const requestRateLimitProfile = {
   campaignDailyLimit: Number(process.env.RATE_LIMIT_CAMPAIGN_DAILY ?? 100),
