@@ -1,10 +1,14 @@
 /**
  * DarkCliSnippet: panel oscuro estilo terminal con header (titulo + boton copy)
  * y body con multiples lineas. Cada linea puede tener tono distinto:
- * - "input" cream (#FFFBF5) para comandos del usuario.
- * - "info" yellow (#FACC15) para progreso.
- * - "success" green (#DCFCE7) para confirmaciones.
- * - "error" red (#F87171) para fallos.
+ * - "input" cream para comandos del usuario.
+ * - "info" yellow para progreso.
+ * - "success" green para confirmaciones.
+ * - "error" red para fallos.
+ *
+ * Los colores del terminal son INTENCIONALES (paleta GitHub-style terminal)
+ * y NO deben invertir con el tema porque el block es siempre dark surface.
+ * Definidos como tokens fijos en lugar de --color-* que se invierten.
  *
  * Pencil component `WIXCb` (Component / CLI Snippet).
  */
@@ -31,10 +35,10 @@ export interface DarkCliSnippetProps {
 }
 
 const toneToColor: Record<CliLineTone, string> = {
-  input: "#FFFBF5",
-  info: "#FACC15",
-  success: "#86efac",
-  error: "#F87171"
+  input: "var(--color-on-dark-strong)",
+  info: "var(--color-accent-secondary)",
+  success: "var(--color-success-border)",
+  error: "var(--color-critical-border)"
 };
 
 export function DarkCliSnippet({ title, lines, showWindowDots = true, className }: DarkCliSnippetProps) {
@@ -60,23 +64,23 @@ export function DarkCliSnippet({ title, lines, showWindowDots = true, className 
       role="region"
       aria-label={title}
     >
-      <header className="flex items-center justify-between gap-3 border-b border-[#FFFBF522] px-4 py-2.5">
+      <header className="flex items-center justify-between gap-3 border-b border-[var(--color-on-dark-hint)] px-4 py-2.5">
         <div className="flex items-center gap-3 min-w-0">
           {showWindowDots ? (
             <div className="flex items-center gap-1.5">
-              <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full bg-[#FFFBF526]" />
-              <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full bg-[#FFFBF526]" />
-              <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full bg-[#FFFBF526]" />
+              <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full bg-[var(--color-on-dark-faint)]" />
+              <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full bg-[var(--color-on-dark-faint)]" />
+              <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full bg-[var(--color-on-dark-faint)]" />
             </div>
           ) : null}
-          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[#FFFBF5] opacity-70 truncate">
+          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-on-dark-medium)] truncate">
             {title}
           </span>
         </div>
         <button
           type="button"
           onClick={handleCopy}
-          className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] bg-[#FFFBF515] px-2 py-1 text-[10px] font-[family-name:var(--font-caption)] text-[#FFFBF5] opacity-70 transition-opacity hover:opacity-100"
+          className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] bg-[var(--color-on-dark-hint)] px-2 py-1 text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-on-dark-medium)] transition-colors hover:bg-[var(--color-on-dark-faint)] hover:text-[var(--color-on-dark-strong)]"
           aria-label="Copiar snippet"
         >
           <Copy size={11} strokeWidth={1.75} aria-hidden="true" />
