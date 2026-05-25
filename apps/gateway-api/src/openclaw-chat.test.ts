@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { AuditEventInput } from "../../../packages/domain/src/index.ts";
 import {
+  ChatProxyError,
   normalizeAgentChatEvent,
   OpenClawChatProxy,
   openClawChatReconnectDelayMs,
@@ -35,7 +36,10 @@ test("OpenClaw chat send proxies with gateway token and audits operator message"
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init: init ?? {} });
-    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    return new Response(JSON.stringify({ msgId: "018f7b54-7d4d-7cc2-9c90-df7486c5a333", queued: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
   };
   const proxy = new OpenClawChatProxy(audit, {
     agentHttpUrl: "http://openclaw.test:61175",
@@ -71,6 +75,44 @@ test("OpenClaw chat send proxies with gateway token and audits operator message"
     msgId: "018f7b54-7d4d-7cc2-9c90-df7486c5a333",
     sessionKey: "agent:main:operator",
     length: "¿qué gates tiene el MVP?".length
+  });
+});
+
+test("OpenClaw chat send rejects login HTML returned as HTTP 200", async () => {
+  const audit = new MemoryAudit();
+  const fetchImpl = async () => new Response("<html>login</html>", {
+    status: 200,
+    headers: { "content-type": "text/html" }
+  });
+  const proxy = new OpenClawChatProxy(audit, {
+    agentHttpUrl: "http://openclaw.test:61175",
+    gatewayToken: "secret-gateway-token",
+    fetchImpl: fetchImpl as typeof fetch
+  });
+
+  await assert.rejects(
+    () => proxy.sendOperatorMessage({
+      msgId: "018f7b54-7d4d-7cc2-9c90-df7486c5a333",
+      message: "diag ping"
+    }),
+    (error) => {
+      assert.ok(error instanceof ChatProxyError);
+      assert.equal(error.statusCode, 502);
+      assert.equal(error.code, "openclaw_chat_send_invalid_response");
+      return true;
+    }
+  );
+
+  assert.equal(audit.events.length, 1);
+  assert.equal(audit.events[0].action, "oc.chat.operator_message");
+  assert.equal(audit.events[0].decision, "reject");
+  assert.equal(audit.events[0].rejectReason, "gateway_internal_error");
+  assert.deepEqual(audit.events[0].metadata, {
+    msgId: "018f7b54-7d4d-7cc2-9c90-df7486c5a333",
+    sessionKey: "agent:main:operator",
+    length: "diag ping".length,
+    upstreamStatus: 200,
+    upstreamResponse: "invalid_chat_send_ack"
   });
 });
 
