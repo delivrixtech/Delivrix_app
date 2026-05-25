@@ -50,11 +50,17 @@ export interface WebdockServer {
   webRoot?: string;
   /** Snapshot count del server según el proveedor. */
   snapshotRunTime?: number;
+  /** Cuenta Webdock de origen. No contiene secretos. */
+  accountId?: string;
+  /** Etiqueta operativa visible para el panel. */
+  accountLabel?: string;
 }
 
 export interface WebdockInventorySource {
   kind: "live" | "mock";
   apiBase: string;
+  accountId?: string;
+  accountLabel?: string;
   fetchedAt: string;
   /** Cuando `kind === "live"`, indica si la API respondió 200. False = degraded. */
   responseOk: boolean;
@@ -79,6 +85,14 @@ export interface WebdockRealAdapterOptions {
   apiKey?: string;
   /** Base URL para tests. Default https://api.webdock.io/v1. */
   apiBase?: string;
+  /** Alias operativo de apiBase usado por algunas specs OPS. */
+  baseUrl?: string;
+  /** Identificador interno de la cuenta, ej: primary. */
+  accountId?: string;
+  /** Etiqueta humana de la cuenta, ej: Webdock Primary. */
+  accountLabel?: string;
+  /** Entorno inyectable para tests. Default process.env. */
+  env?: Record<string, string | undefined>;
   /** Cache TTL en milisegundos. Default 60_000. */
   cacheTtlMs?: number;
   /** Fetch impl para tests (default global fetch). */
@@ -87,19 +101,37 @@ export interface WebdockRealAdapterOptions {
   now?: () => Date;
 }
 
+export interface WebdockAccountAdapterEntry {
+  id: string;
+  label: string;
+  adapter: WebdockRealAdapter;
+}
+
+export interface CreateWebdockAdaptersFromEnvOptions
+  extends Omit<
+    WebdockRealAdapterOptions,
+    "apiKey" | "accountId" | "accountLabel" | "env"
+  > {
+  env?: Record<string, string | undefined>;
+}
+
 export class WebdockRealAdapter {
   private readonly apiKey: string | undefined;
   private readonly apiBase: string;
+  private readonly accountId: string;
+  private readonly accountLabel: string;
   private readonly cacheTtlMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
   private cache: CacheEntry | null = null;
 
   constructor(options: WebdockRealAdapterOptions = {}) {
+    const env = options.env ?? (typeof process !== "undefined" ? process.env : {});
     this.apiKey =
-      options.apiKey ??
-      (typeof process !== "undefined" ? process.env?.WEBDOCK_API_KEY : undefined);
-    this.apiBase = options.apiBase ?? DEFAULT_API_BASE;
+      normalizeEnvValue(options.apiKey) ?? normalizeEnvValue(env?.WEBDOCK_API_KEY);
+    this.apiBase = options.apiBase ?? options.baseUrl ?? DEFAULT_API_BASE;
+    this.accountId = normalizeEnvValue(options.accountId) ?? "default";
+    this.accountLabel = normalizeEnvValue(options.accountLabel) ?? "Webdock";
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_TTL_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.now = options.now ?? (() => new Date());
@@ -124,13 +156,8 @@ export class WebdockRealAdapter {
 
     if (!this.isLive()) {
       const result: WebdockInventoryResult = {
-        servers: mockWebdockServers(),
-        source: {
-          kind: "mock",
-          apiBase: this.apiBase,
-          fetchedAt: now.toISOString(),
-          responseOk: true
-        }
+        servers: this.withAccount(mockWebdockServers()),
+        source: this.sourceMetadata(now, "mock", true)
       };
       this.cacheResult(now, result);
       return result;
@@ -149,29 +176,18 @@ export class WebdockRealAdapter {
       if (!response.ok) {
         const errorMessage = `Webdock API returned ${response.status} ${response.statusText}`;
         const result: WebdockInventoryResult = {
-          servers: mockWebdockServers(),
-          source: {
-            kind: "mock",
-            apiBase: this.apiBase,
-            fetchedAt: now.toISOString(),
-            responseOk: false,
-            errorMessage
-          }
+          servers: this.withAccount(mockWebdockServers()),
+          source: this.sourceMetadata(now, "mock", false, errorMessage)
         };
         this.cacheResult(now, result);
         return result;
       }
 
       const raw = (await response.json()) as unknown;
-      const servers = parseWebdockServers(raw);
+      const servers = this.withAccount(parseWebdockServers(raw));
       const result: WebdockInventoryResult = {
         servers,
-        source: {
-          kind: "live",
-          apiBase: this.apiBase,
-          fetchedAt: now.toISOString(),
-          responseOk: true
-        }
+        source: this.sourceMetadata(now, "live", true)
       };
       this.cacheResult(now, result);
       return result;
@@ -179,14 +195,8 @@ export class WebdockRealAdapter {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown Webdock fetch error";
       const result: WebdockInventoryResult = {
-        servers: mockWebdockServers(),
-        source: {
-          kind: "mock",
-          apiBase: this.apiBase,
-          fetchedAt: now.toISOString(),
-          responseOk: false,
-          errorMessage
-        }
+        servers: this.withAccount(mockWebdockServers()),
+        source: this.sourceMetadata(now, "mock", false, errorMessage)
       };
       this.cacheResult(now, result);
       return result;
@@ -204,6 +214,90 @@ export class WebdockRealAdapter {
       result
     };
   }
+
+  private sourceMetadata(
+    now: Date,
+    kind: WebdockInventorySource["kind"],
+    responseOk: boolean,
+    errorMessage?: string
+  ): WebdockInventorySource {
+    return {
+      kind,
+      apiBase: this.apiBase,
+      accountId: this.accountId,
+      accountLabel: this.accountLabel,
+      fetchedAt: now.toISOString(),
+      responseOk,
+      ...(errorMessage ? { errorMessage } : {})
+    };
+  }
+
+  private withAccount(servers: WebdockServer[]): WebdockServer[] {
+    return servers.map((server) => ({
+      ...server,
+      accountId: this.accountId,
+      accountLabel: this.accountLabel
+    }));
+  }
+}
+
+export function createWebdockAdaptersFromEnv(
+  env: Record<string, string | undefined> =
+    typeof process !== "undefined" ? process.env : {},
+  options: CreateWebdockAdaptersFromEnvOptions = {}
+): WebdockAccountAdapterEntry[] {
+  const accountSpecs = [
+    {
+      id: "primary",
+      apiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_PRIMARY),
+      label: normalizeEnvValue(env.WEBDOCK_ACCOUNT_PRIMARY_LABEL) ?? "Webdock Primary"
+    },
+    {
+      id: "secondary",
+      apiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_SECONDARY),
+      label:
+        normalizeEnvValue(env.WEBDOCK_ACCOUNT_SECONDARY_LABEL) ?? "Webdock Secondary"
+    },
+    {
+      id: "tertiary",
+      apiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_TERTIARY),
+      label: normalizeEnvValue(env.WEBDOCK_ACCOUNT_TERTIARY_LABEL) ?? "Webdock Tertiary"
+    }
+  ];
+
+  const configuredAccounts = accountSpecs
+    .filter((account) => account.apiKey)
+    .map((account) =>
+      buildAccountAdapterEntry(account.id, account.label, account.apiKey, env, options)
+    );
+
+  if (configuredAccounts.length > 0) {
+    return configuredAccounts;
+  }
+
+  const legacyApiKey = normalizeEnvValue(env.WEBDOCK_API_KEY);
+  const legacyLabel = normalizeEnvValue(env.WEBDOCK_ACCOUNT_DEFAULT_LABEL) ?? "Webdock";
+  return [buildAccountAdapterEntry("default", legacyLabel, legacyApiKey, env, options)];
+}
+
+function buildAccountAdapterEntry(
+  id: string,
+  label: string,
+  apiKey: string | undefined,
+  env: Record<string, string | undefined>,
+  options: CreateWebdockAdaptersFromEnvOptions
+): WebdockAccountAdapterEntry {
+  return {
+    id,
+    label,
+    adapter: new WebdockRealAdapter({
+      ...options,
+      env,
+      apiKey,
+      accountId: id,
+      accountLabel: label
+    })
+  };
 }
 
 /**
@@ -246,6 +340,12 @@ function stringField(obj: Record<string, unknown>, key: string): string | undefi
 function numberField(obj: Record<string, unknown>, key: string): number | undefined {
   const value = obj[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeEnvValue(value: string | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 /**
