@@ -5,6 +5,7 @@ import {
   createWebdockAdaptersFromEnv,
   IonosDnsAdapter,
   IonosDomainsAdapter,
+  PorkbunAdapter,
   ProxmoxAdapter,
   WebdockAdapter,
   WebdockRealAdapter,
@@ -142,6 +143,18 @@ import {
   handleDomainSuggestionsHttp,
   handleOwnedDomainsHttp
 } from "./routes/domains.ts";
+import {
+  handleDomainCompareError,
+  handleDomainCompareHttp
+} from "./routes/domains-compare.ts";
+import {
+  handlePorkbunDomainAvailabilityHttp,
+  handlePorkbunDomainDiscoverError,
+  handlePorkbunDomainPricesHttp,
+  handlePorkbunDomainSuggestionsHttp,
+  handlePorkbunOwnedDomainsHttp,
+  handlePorkbunPingHttp
+} from "./routes/domains-porkbun.ts";
 import { handleInfrastructureInventoryHttp } from "./routes/infrastructure.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 
@@ -163,6 +176,7 @@ const webdockAccountAdapters = createWebdockAdaptersFromEnv();
 const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
 const ionosDnsAdapter = new IonosDnsAdapter();
 const ionosDomainsAdapter = new IonosDomainsAdapter();
+const porkbunAdapter = new PorkbunAdapter();
 const proxmoxAdapter = new ProxmoxAdapter();
 const provisioningRunStore = new LocalFileProvisioningRunStore();
 const ipReputationReportStore = new LocalFileIpReputationReportStore();
@@ -529,6 +543,7 @@ const server = createServer(async (request, response) => {
         ionosListDnsInventory: () => ionosDnsAdapter.listInventory(),
         ionosListDomainsInventory: () => ionosDomainsAdapter.listInventory(),
         awsRoute53DomainsListInventory: () => awsRoute53DomainsAdapter.listInventory(),
+        porkbunListInventory: () => porkbunAdapter.listInventory(),
         env: process.env
       });
     }
@@ -547,6 +562,74 @@ const server = createServer(async (request, response) => {
         }
         throw error;
       }
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/domains/compare")) {
+      try {
+        return await handleDomainCompareHttp({
+          request,
+          response,
+          awsAdapter: awsRoute53DomainsAdapter,
+          porkbunAdapter
+        });
+      } catch (error) {
+        if (handleDomainCompareError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/domains/porkbun/availability")) {
+      try {
+        return await handlePorkbunDomainAvailabilityHttp({
+          request,
+          response,
+          auditLog,
+          adapter: porkbunAdapter
+        });
+      } catch (error) {
+        if (handlePorkbunDomainDiscoverError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/domains/porkbun/suggestions")) {
+      return await handlePorkbunDomainSuggestionsHttp({
+        request,
+        response,
+        auditLog,
+        adapter: porkbunAdapter
+      });
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/domains/porkbun/prices")) {
+      return await handlePorkbunDomainPricesHttp({
+        request,
+        response,
+        auditLog,
+        adapter: porkbunAdapter
+      });
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/domains/porkbun/owned")) {
+      return await handlePorkbunOwnedDomainsHttp({
+        request,
+        response,
+        auditLog,
+        adapter: porkbunAdapter
+      });
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/domains/porkbun/ping")) {
+      return await handlePorkbunPingHttp({
+        request,
+        response,
+        auditLog,
+        adapter: porkbunAdapter
+      });
     }
 
     if (request.method === "GET" && request.url?.startsWith("/v1/domains/availability")) {

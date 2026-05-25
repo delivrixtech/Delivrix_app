@@ -8,6 +8,7 @@ import type {
   AwsRoute53DomainsInventoryResult,
   IonosDnsInventoryResult,
   IonosDomainsInventoryResult,
+  PorkbunInventoryResult,
   WebdockInventoryResult
 } from "../../../../packages/adapters/src/index.ts";
 import { computeAuditHash } from "../audit/hash-chain.ts";
@@ -72,11 +73,12 @@ test("Infrastructure inventory degrades gracefully when AWS cache exists and ION
     now: fixedNow
   });
 
-  assert.equal(payload.providers.length, 6);
+  assert.equal(payload.providers.length, 7);
   assert.deepEqual(payload.providers.map((provider) => [provider.id, provider.status]), [
     ["webdock-default", "active"],
     ["aws-bedrock-us-east-1", "active"],
     ["aws-route53-domains", "planned"],
+    ["porkbun-domains", "planned"],
     ["ionos-cloud-dns", "error"],
     ["ionos-domains", "planned"],
     ["physical-medellin", "planned"]
@@ -85,8 +87,9 @@ test("Infrastructure inventory degrades gracefully when AWS cache exists and ION
   assert.equal(payload.providers[0].itemCount, 1);
   assert.equal(payload.providers[1].items?.[0]?.id, "us.anthropic.claude-sonnet-4-6");
   assert.equal(payload.providers[2].errorReason, "creds_not_configured");
-  assert.equal(payload.providers[3].errorReason, "adapter_pending");
-  assert.equal(payload.providers[4].errorReason, "creds_not_configured");
+  assert.equal(payload.providers[3].errorReason, "creds_not_configured");
+  assert.equal(payload.providers[4].errorReason, "adapter_pending");
+  assert.equal(payload.providers[5].errorReason, "creds_not_configured");
 });
 
 test("Infrastructure inventory exposes three Webdock accounts as distinct providers", async () => {
@@ -176,6 +179,48 @@ test("Infrastructure inventory exposes AWS Route 53 Domains as discovery-only re
     autoRenew: true,
     transferLock: true,
     expiry: "2027-05-25T00:00:00Z"
+  });
+});
+
+test("Infrastructure inventory exposes Porkbun Domains as discovery-only registrar", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: true,
+    porkbun: porkbunInventory({
+      domains: [{
+        domainName: "delivrix-mail.com",
+        tld: "com",
+        status: "ACTIVE",
+        expiry: "2027-05-25",
+        autoRenew: true,
+        whoisPrivacy: true
+      }]
+    }),
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl"),
+    env: {},
+    now: fixedNow
+  });
+
+  const provider = payload.providers.find((item) => item.id === "porkbun-domains");
+
+  assert.equal(provider?.kind, "domain-registrar");
+  assert.equal(provider?.status, "active");
+  assert.equal(provider?.itemCount, 1);
+  assert.equal(provider?.fetchSourceKind, "live");
+  assert.deepEqual(provider?.capabilities, [
+    "list_registered_domains",
+    "check_domain_availability",
+    "list_domain_prices",
+    "draft_domain_purchase_proposal",
+    "compare_registrar_prices"
+  ]);
+  assert.equal(provider?.items?.[0]?.displayName, "delivrix-mail.com");
+  assert.deepEqual(provider?.items?.[0]?.detail, {
+    tld: "com",
+    status: "ACTIVE",
+    createdAt: null,
+    expiry: "2027-05-25",
+    autoRenew: true,
+    whoisPrivacy: true
   });
 });
 
@@ -432,7 +477,7 @@ test("Infrastructure inventory audit is explicit, privacy-preserving, and keeps 
   for (let i = 0; i < events.length; i += 1) {
     const event = events[i];
     assert.equal(event.action, "oc.infrastructure.inventory.fetch");
-    assert.equal(event.metadata.providerCount, 6);
+    assert.equal(event.metadata.providerCount, 7);
     assert.equal(event.metadata.itemTotal, 1);
     assert.equal(event.prevHash, i === 0 ? "GENESIS" : events[i - 1].hash);
     assert.equal(event.hash, computeAuditHash(event as unknown as Record<string, unknown>, event.prevHash ?? "GENESIS"));
@@ -507,6 +552,24 @@ function awsRoute53DomainsInventory(input: {
       apiBase: "https://route53domains.us-east-1.amazonaws.com",
       fetchedAt: "2026-05-24T17:59:30.000Z",
       responseOk: input.responseOk ?? true,
+      ...(input.errorMessage ? { errorMessage: input.errorMessage } : {})
+    }
+  };
+}
+
+function porkbunInventory(input: {
+  domains: PorkbunInventoryResult["domains"];
+  responseOk?: boolean;
+  errorMessage?: string;
+}): PorkbunInventoryResult {
+  return {
+    domains: input.domains,
+    source: {
+      kind: "live",
+      apiBase: "https://api.porkbun.com/api/json/v3",
+      fetchedAt: "2026-05-24T17:59:30.000Z",
+      responseOk: input.responseOk ?? true,
+      purchaseEnabled: false,
       ...(input.errorMessage ? { errorMessage: input.errorMessage } : {})
     }
   };
