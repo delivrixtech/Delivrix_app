@@ -27,6 +27,7 @@ export interface ChatState {
 
 export type ChatStreamEvent =
   | { type: "HEARTBEAT"; at: string }
+  | { type: "ASSISTANT_TYPING"; msgId: string; ts?: string }
   | { type: "ASSISTANT_DELTA"; msgId: string; delta: string }
   | {
       type: "ASSISTANT_DONE";
@@ -35,6 +36,7 @@ export type ChatStreamEvent =
       audit?: { skillsInvoked: string[]; tokensUsed?: number; durationMs?: number };
       proposals?: unknown[];
     }
+  | { type: "ASSISTANT_BLOCKED"; msgId: string; reason: string }
   | { type: "ERROR"; msgId?: string; error: string }
   | { type: "AGENT_OFFLINE" };
 
@@ -170,6 +172,10 @@ export class ChatClient implements ChatClientLike {
     this.syncQueuedCount();
     this.emit();
 
+    if (this.state.connection !== "connected") {
+      this.connect();
+    }
+
     if (this.state.connection === "connected") {
       await this.flushQueue();
     }
@@ -217,15 +223,19 @@ export class ChatClient implements ChatClientLike {
         });
 
         if (!response.ok) {
-          throw new Error(`chat.send failed with ${response.status}`);
+          const payload = await response.json().catch(() => ({})) as Partial<{ message: string }>;
+          const message = typeof payload.message === "string"
+            ? payload.message
+            : `chat.send failed with ${response.status}`;
+          throw new Error(message);
         }
 
         this.removeQueued(item.msgId);
         this.state = updateMessageStatus(this.state, item.msgId, "sent");
       } catch (error) {
-        this.state = updateMessageStatus(this.state, item.msgId, "pending");
+        this.removeQueued(item.msgId);
+        this.state = updateMessageStatus(this.state, item.msgId, "failed");
         this.setState({
-          connection: "offline",
           lastError: error instanceof Error ? error.message : "No se pudo enviar el mensaje."
         }, false);
         break;
@@ -299,7 +309,38 @@ export function reduceChatState(state: ChatState, event: ChatStreamEvent, now = 
   }
 
   if (event.type === "ERROR") {
-    return { ...state, lastError: event.error };
+    return {
+      ...state,
+      streaming: event.msgId && state.streaming?.msgId === event.msgId ? null : state.streaming,
+      lastError: event.error
+    };
+  }
+
+  if (event.type === "ASSISTANT_TYPING") {
+    return {
+      ...state,
+      connection: "connected",
+      streaming: {
+        msgId: event.msgId,
+        deltaSoFar: state.streaming?.msgId === event.msgId ? state.streaming.deltaSoFar : ""
+      },
+      lastError: null
+    };
+  }
+
+  if (event.type === "ASSISTANT_BLOCKED") {
+    return addOrUpdateMessage({
+      ...state,
+      connection: "connected",
+      streaming: state.streaming?.msgId === event.msgId ? null : state.streaming,
+      lastError: `OpenClaw no pudo completar la respuesta: ${event.reason}`
+    }, {
+      msgId: event.msgId,
+      role: "assistant",
+      content: `No pude completar la respuesta (${event.reason}). Revisa el bridge SSH o vuelve a enviar el mensaje.`,
+      timestamp: now.toISOString(),
+      status: "failed"
+    });
   }
 
   if (event.type === "ASSISTANT_DELTA") {

@@ -15,6 +15,7 @@ type ChatModule = {
 };
 
 type ChatClientModule = {
+  ChatClient: new (options?: Record<string, unknown>) => ChatClientLike;
   reduceChatState: (state: ChatState, event: unknown, now?: Date) => ChatState;
 };
 
@@ -168,6 +169,67 @@ test("chat reducer accumulates deltas and finalizes assistant response", async (
   assert.equal(done.messages.length, 1);
   assert.equal(done.messages[0].role, "assistant");
   assert.equal(done.messages[0].content, "Hola operador");
+});
+
+test("chat reducer renders typing and blocked events instead of blank bubbles", async () => {
+  const { reduceChatState } = await loadChatClientModule();
+  const base: ChatState = {
+    messages: [],
+    streaming: null,
+    connection: "reconnecting",
+    lastError: null,
+    queuedCount: 0
+  };
+
+  const typing = reduceChatState(base, {
+    type: "ASSISTANT_TYPING",
+    msgId: "m2"
+  });
+  const blocked = reduceChatState(typing, {
+    type: "ASSISTANT_BLOCKED",
+    msgId: "m2",
+    reason: "ssh_history_timeout"
+  }, new Date("2026-05-20T16:05:00.000Z"));
+
+  assert.deepEqual(typing.streaming, {
+    msgId: "m2",
+    deltaSoFar: ""
+  });
+  assert.equal(blocked.streaming, null);
+  assert.equal(blocked.messages.length, 1);
+  assert.equal(blocked.messages[0].role, "assistant");
+  assert.equal(blocked.messages[0].status, "failed");
+  assert.match(blocked.messages[0].content, /ssh_history_timeout/);
+});
+
+test("chat client marks a rejected send as failed and clears the queue", async () => {
+  const { ChatClient } = await loadChatClientModule();
+  const client = new ChatClient({
+    initialState: {
+      connection: "connected",
+      messages: [],
+      streaming: null,
+      lastError: null,
+      queuedCount: 0
+    },
+    fetchImpl: async () => new Response(JSON.stringify({
+      message: "SSH command failed with exit 1."
+    }), {
+      status: 502,
+      headers: { "content-type": "application/json" }
+    }),
+    webSocketCtor: undefined,
+    idFactory: () => "failed-send-1",
+    now: () => new Date("2026-05-20T16:10:00.000Z")
+  });
+
+  await client.sendMessage("continua");
+
+  const state = client.getSnapshot();
+  assert.equal(state.queuedCount, 0);
+  assert.equal(state.messages.length, 1);
+  assert.equal(state.messages[0].status, "failed");
+  assert.equal(state.lastError, "SSH command failed with exit 1.");
 });
 
 function fakeClient(state: ChatState): ChatClientLike {

@@ -105,7 +105,7 @@ export function ChatWidget({ open, onClose, client = chatClient }: ChatWidgetPro
           {state.streaming ? (
             <div className="flex justify-start">
               <div className="max-w-[88%] rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-[13px] leading-relaxed text-[var(--color-text-primary)]">
-                <p className="m-0 whitespace-pre-wrap break-words">{state.streaming.deltaSoFar}</p>
+                <p className="m-0 whitespace-pre-wrap break-words">{state.streaming.deltaSoFar || "..."}</p>
                 <span className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
                   <span aria-hidden="true" className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--color-accent-tertiary)]" />
                   escribiendo
