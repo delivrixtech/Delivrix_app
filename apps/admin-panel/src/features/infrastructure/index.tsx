@@ -25,12 +25,22 @@ import {
 import { LiveIndicator, SectionDivider } from "../../shared/ui/v2/index.ts";
 
 /* ============================================================
- * Tipos del contrato Hito 5.12 § 2.3 (Codex backend)
+ * Tipos del contrato Hito 5.12 § 2.3.
+ *
+ * Mirror del paquete @delivrix/domain (packages/domain/src/infrastructure-inventory.ts,
+ * commit c972b15). Los nombres coinciden 1:1 con el contract canónico — si
+ * Codex actualiza el paquete, este mirror debe sincronizarse.
+ *
+ * Patrón del panel admin: cada feature copia los types del contract en vez
+ * de depender directamente del paquete domain, para mantener el bundle del
+ * panel acotado y evitar imports cross-workspace.
  * ============================================================ */
 
 export type ProviderKind = "compute" | "dns" | "domain-registrar" | "physical";
 
 export type ProviderStatus = "active" | "paused" | "error" | "planned";
+
+export type ProviderFetchSourceKind = "live" | "mock";
 
 export interface InventoryItem {
   id: string;
@@ -41,14 +51,14 @@ export interface InventoryItem {
   detail?: Record<string, unknown>;
 }
 
-export interface ProviderEntry {
+export interface Provider {
   id: string;
   displayName: string;
   kind: ProviderKind;
   status: ProviderStatus;
   itemCount: number;
   lastFetched: string | null;
-  fetchSourceKind: "live" | "mock" | null;
+  fetchSourceKind: ProviderFetchSourceKind | null;
   errorReason?: string;
   /** capabilities habilitadas (read-only en MVP) */
   capabilities: string[];
@@ -56,9 +66,9 @@ export interface ProviderEntry {
   items?: InventoryItem[];
 }
 
-export interface InventoryPayload {
-  providers: ProviderEntry[];
+export interface InfrastructureInventoryResponse {
   generatedAt: string;
+  providers: Provider[];
 }
 
 /* ============================================================
@@ -67,7 +77,7 @@ export interface InventoryPayload {
 
 type FetchState =
   | { status: "loading" }
-  | { status: "ok"; payload: InventoryPayload; lastUpdateAt: number }
+  | { status: "ok"; payload: InfrastructureInventoryResponse; lastUpdateAt: number }
   | { status: "error"; message: string };
 
 function useInventory(pollMs = 30_000): FetchState {
@@ -84,7 +94,7 @@ function useInventory(pollMs = 30_000): FetchState {
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
-        const payload = (await res.json()) as InventoryPayload;
+        const payload = (await res.json()) as InfrastructureInventoryResponse;
         if (cancelled) return;
         setState({ status: "ok", payload, lastUpdateAt: Date.now() });
       } catch (e) {
@@ -132,17 +142,17 @@ export function InfrastructureSection() {
 
 function Hero({ lastUpdateMs }: { lastUpdateMs: number }) {
   return (
-    <header className="flex items-start" style={{ gap: 16 }}>
+    <header className="flex flex-col items-start sm:flex-row" style={{ gap: 16 }}>
       <div className="flex flex-col min-w-0 flex-1" style={{ gap: 6 }}>
         <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
-          style={{ letterSpacing: "1.2px" }}
+          className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
+          style={{ letterSpacing: "var(--tracking-widest)" }}
         >
-          HITO 5.12 · MULTI-PROVIDER
+          Hito 5.12 · Multi-provider
         </span>
         <h1
           className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
-          style={{ letterSpacing: "-0.4px" }}
+          style={{ letterSpacing: "var(--tracking-tightest)" }}
         >
           Toda tu infraestructura, en una sola vista.
         </h1>
@@ -153,7 +163,7 @@ function Hero({ lastUpdateMs }: { lastUpdateMs: number }) {
           físico. Solo lectura. Cada fetch queda en audit chain.
         </p>
       </div>
-      <div className="shrink-0">
+      <div className="shrink-0 self-start sm:self-auto">
         <LiveIndicator pollIntervalSec={30} lastUpdateAt={lastUpdateMs} tone="success" />
       </div>
     </header>
@@ -267,7 +277,7 @@ function EmptyState() {
  * Grid de provider cards
  * ============================================================ */
 
-function ProvidersGrid({ providers }: { providers: ProviderEntry[] }) {
+function ProvidersGrid({ providers }: { providers: Provider[] }) {
   const [selected, setSelected] = useState<string | null>(null);
   const selectedProvider = useMemo(
     () => providers.find((p) => p.id === selected) ?? null,
@@ -331,7 +341,7 @@ function ProviderCard({
   active,
   onSelect
 }: {
-  provider: ProviderEntry;
+  provider: Provider;
   active: boolean;
   onSelect: () => void;
 }) {
@@ -457,7 +467,7 @@ function ProviderCard({
   );
 }
 
-function ProviderDrilldown({ provider }: { provider: ProviderEntry }) {
+function ProviderDrilldown({ provider }: { provider: Provider }) {
   if (!provider.items || provider.items.length === 0) {
     return (
       <div
