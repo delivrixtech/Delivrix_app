@@ -124,6 +124,7 @@ Orden estricto de lectura para entender el agente:
 
 - **`HITO_5_12_INFRASTRUCTURE_INVENTORY_MVP.md`** — multi-provider MVP, días 27-30. Webdock × 3 + AWS Route53/Domains + IONOS Cloud DNS + placeholder físico + panel Infraestructura nuevo. Solo lectura, writes en hito futuro.
 - **`HITO_5_13_MULTI_PROVIDER_INVENTORY.md`** — completion post-MVP. IONOS Domains legacy + secret manager + cross-references entre proveedores + writes proposal con fase nueva.
+- **`OPS_IONOS_DOMAINS_DNS_INVENTORY_RESULT_2026_05_25.md`** — resultado operativo: IONOS DNS + Domains read-only conectado al inventory, credenciales env soportadas y límites de administración supervisada.
 
 ## Decisiones audited (`.audit/`)
 
@@ -135,6 +136,7 @@ Orden estricto de lectura para entender el agente:
 - `.env.local` existe en la raíz del repo local, está cubierto por `.gitignore` y contiene `OPENCLAW_GATEWAY_TOKEN`.
 - El valor de `OPENCLAW_GATEWAY_TOKEN` nunca se documenta ni se commitea.
 - Sincronización pendiente: copiar el mismo token al `.env` del container OpenClaw Hostinger y reiniciar el container cuando esté disponible la llave SSH `~/.ssh/openclaw-hostinger`.
+- IONOS inventory usa solo nombres de variables en docs: `IONOS_DNS_API_KEY`, `IONOS_CLOUD_DNS_TOKEN`, `IONOS_API_TOKEN`, `IONOS_DOMAINS_API_KEY`, `IONOS_DOMAINS_TENANT_ID`, `IONOS_HOSTING_API_KEY`, `IONOS_DEVELOPER_API_KEY`, `IONOS_TENANT_ID`. Los valores nunca se documentan ni se commitean.
 
 ## Documentos de fase (referencia histórica)
 

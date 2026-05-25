@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
   createWebdockAdaptersFromEnv,
+  IonosDnsAdapter,
+  IonosDomainsAdapter,
   ProxmoxAdapter,
   WebdockAdapter,
   WebdockRealAdapter,
@@ -146,6 +148,8 @@ const rateLimitService = new RateLimitService(rateLimitStore);
 const webdockAdapter = new WebdockAdapter();
 const webdockRealAdapter = new WebdockRealAdapter();
 const webdockAccountAdapters = createWebdockAdaptersFromEnv();
+const ionosDnsAdapter = new IonosDnsAdapter();
+const ionosDomainsAdapter = new IonosDomainsAdapter();
 const proxmoxAdapter = new ProxmoxAdapter();
 const provisioningRunStore = new LocalFileProvisioningRunStore();
 const ipReputationReportStore = new LocalFileIpReputationReportStore();
@@ -509,6 +513,8 @@ const server = createServer(async (request, response) => {
               result: await account.adapter.listServers()
             }))
           ),
+        ionosListDnsInventory: () => ionosDnsAdapter.listInventory(),
+        ionosListDomainsInventory: () => ionosDomainsAdapter.listInventory(),
         env: process.env
       });
     }

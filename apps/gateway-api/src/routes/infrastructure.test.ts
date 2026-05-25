@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
-import type { WebdockInventoryResult } from "../../../../packages/adapters/src/index.ts";
+import type {
+  IonosDnsInventoryResult,
+  IonosDomainsInventoryResult,
+  WebdockInventoryResult
+} from "../../../../packages/adapters/src/index.ts";
 import { computeAuditHash } from "../audit/hash-chain.ts";
 import {
   auditInfrastructureInventoryFetch,
@@ -67,17 +71,19 @@ test("Infrastructure inventory degrades gracefully when AWS cache exists and ION
     now: fixedNow
   });
 
-  assert.equal(payload.providers.length, 4);
+  assert.equal(payload.providers.length, 5);
   assert.deepEqual(payload.providers.map((provider) => [provider.id, provider.status]), [
     ["webdock-default", "active"],
     ["aws-bedrock-us-east-1", "active"],
     ["ionos-cloud-dns", "error"],
+    ["ionos-domains", "planned"],
     ["physical-medellin", "planned"]
   ]);
   assert.equal(payload.providers[0].fetchSourceKind, "live");
   assert.equal(payload.providers[0].itemCount, 1);
   assert.equal(payload.providers[1].items?.[0]?.id, "us.anthropic.claude-sonnet-4-6");
   assert.equal(payload.providers[2].errorReason, "adapter_pending");
+  assert.equal(payload.providers[3].errorReason, "creds_not_configured");
 });
 
 test("Infrastructure inventory exposes three Webdock accounts as distinct providers", async () => {
@@ -153,6 +159,192 @@ test("Infrastructure inventory marks a failed Webdock account without hiding hea
   assert.equal(payload.providers[1].errorReason, "Webdock API returned 401 Unauthorized");
 });
 
+test("Infrastructure inventory exposes IONOS Cloud DNS zones and record summaries", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: true,
+    ionosDns: ionosDnsInventory({
+      zones: [{
+        id: "zone-1",
+        name: "delivrix.io",
+        enabled: true,
+        state: "AVAILABLE",
+        records: [
+          {
+            id: "record-a",
+            name: "mail",
+            type: "A",
+            content: "203.0.113.10",
+            ttl: 3600,
+            enabled: true,
+            state: "AVAILABLE"
+          },
+          {
+            id: "record-txt",
+            name: "_dmarc",
+            type: "TXT",
+            content: "v=DMARC1; p=reject; rua=mailto:ops@example.test",
+            ttl: 3600,
+            enabled: true,
+            state: "AVAILABLE"
+          }
+        ]
+      }]
+    }),
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl"),
+    env: {},
+    now: fixedNow
+  });
+
+  const ionosProvider = payload.providers.find((provider) => provider.id === "ionos-cloud-dns");
+
+  assert.equal(ionosProvider?.status, "active");
+  assert.equal(ionosProvider?.itemCount, 1);
+  assert.equal(ionosProvider?.fetchSourceKind, "live");
+  assert.equal(ionosProvider?.items?.[0]?.displayName, "delivrix.io");
+  assert.equal(ionosProvider?.items?.[0]?.detail?.recordCount, 2);
+  assert.deepEqual(ionosProvider?.items?.[0]?.detail?.records, [
+    {
+      id: "record-a",
+      name: "mail",
+      type: "A",
+      status: "active",
+      state: "AVAILABLE",
+      enabled: true,
+      ttl: 3600,
+      priority: null,
+      contentPreview: "203.0.113.10"
+    },
+    {
+      id: "record-txt",
+      name: "_dmarc",
+      type: "TXT",
+      status: "active",
+      state: "AVAILABLE",
+      enabled: true,
+      ttl: 3600,
+      priority: null,
+      contentPreview: "[redacted-txt:47]"
+    }
+  ]);
+});
+
+test("Infrastructure inventory marks IONOS Cloud DNS as error when live API rejects token", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: true,
+    ionosDns: ionosDnsInventory({
+      zones: [],
+      responseOk: false,
+      errorMessage: "IONOS DNS API returned 403 Forbidden"
+    }),
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl"),
+    env: {},
+    now: fixedNow
+  });
+
+  const ionosProvider = payload.providers.find((provider) => provider.id === "ionos-cloud-dns");
+  assert.equal(ionosProvider?.status, "error");
+  assert.equal(ionosProvider?.errorReason, "IONOS DNS API returned 403 Forbidden");
+  assert.equal(ionosProvider?.fetchSourceKind, "live");
+});
+
+test("Infrastructure inventory exposes IONOS Domains without contacts or auth codes", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: true,
+    ionosDomains: ionosDomainsInventory({
+      domains: [{
+        id: "domain-1",
+        name: "delivrix.io",
+        type: "domain",
+        contract: "123456",
+        status: "ACTIVE",
+        statusGroup: "OK",
+        expiresAt: "2027-05-25",
+        transferLock: true,
+        autoRenew: true,
+        privacyEnabled: true,
+        dnssecEnabled: false,
+        nameservers: [{
+          name: "ns1.ionos.com",
+          ipV4Addresses: ["203.0.113.53"]
+        }]
+      }]
+    }),
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl"),
+    env: {},
+    now: fixedNow
+  });
+
+  const domainsProvider = payload.providers.find((provider) => provider.id === "ionos-domains");
+
+  assert.equal(domainsProvider?.kind, "domain-registrar");
+  assert.equal(domainsProvider?.status, "active");
+  assert.equal(domainsProvider?.itemCount, 1);
+  assert.equal(domainsProvider?.fetchSourceKind, "live");
+  assert.equal(domainsProvider?.items?.[0]?.displayName, "delivrix.io");
+  assert.deepEqual(domainsProvider?.items?.[0]?.detail, {
+    idn: null,
+    type: "domain",
+    contract: "123456",
+    status: "ACTIVE",
+    statusGroup: "OK",
+    provisioningStatus: null,
+    pendingProvisioning: null,
+    expiresAt: "2027-05-25",
+    domainLock: null,
+    transferLock: true,
+    autoRenew: true,
+    privacyEnabled: true,
+    dnssecEnabled: false,
+    nameservers: [{
+      name: "ns1.ionos.com",
+      ipV4AddressCount: 1,
+      ipV6AddressCount: 0
+    }]
+  });
+});
+
+test("Infrastructure inventory marks IONOS Domains tenant mismatch as error", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: true,
+    ionosDomains: ionosDomainsInventory({
+      domains: [],
+      responseOk: false,
+      errorMessage: "IONOS Domains API returned 403 Forbidden"
+    }),
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl"),
+    env: {},
+    now: fixedNow
+  });
+
+  const domainsProvider = payload.providers.find((provider) => provider.id === "ionos-domains");
+  assert.equal(domainsProvider?.status, "error");
+  assert.equal(domainsProvider?.errorReason, "IONOS Domains API returned 403 Forbidden");
+  assert.equal(domainsProvider?.fetchSourceKind, "live");
+});
+
+test("Infrastructure inventory reports missing IONOS Domains tenant when API key exists", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: true,
+    ionosDomains: {
+      domains: [],
+      source: {
+        kind: "mock",
+        apiBase: "https://api.hosting.ionos.com/domains/v1",
+        fetchedAt: "2026-05-24T17:59:30.000Z",
+        responseOk: true,
+        tenantConfigured: false
+      }
+    },
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl"),
+    env: { IONOS_DOMAINS_API_KEY: "public.secret" },
+    now: fixedNow
+  });
+
+  const domainsProvider = payload.providers.find((provider) => provider.id === "ionos-domains");
+  assert.equal(domainsProvider?.status, "error");
+  assert.equal(domainsProvider?.errorReason, "tenant_not_configured");
+});
+
 test("Infrastructure inventory audit is explicit, privacy-preserving, and keeps hash chain valid", async () => {
   assert.equal(shouldAuditInfrastructureInventoryFetch({}), false);
   assert.equal(shouldAuditInfrastructureInventoryFetch({ "x-openclaw-skill-invocation": "panel" }), false);
@@ -193,7 +385,7 @@ test("Infrastructure inventory audit is explicit, privacy-preserving, and keeps 
   for (let i = 0; i < events.length; i += 1) {
     const event = events[i];
     assert.equal(event.action, "oc.infrastructure.inventory.fetch");
-    assert.equal(event.metadata.providerCount, 4);
+    assert.equal(event.metadata.providerCount, 5);
     assert.equal(event.metadata.itemTotal, 1);
     assert.equal(event.prevHash, i === 0 ? "GENESIS" : events[i - 1].hash);
     assert.equal(event.hash, computeAuditHash(event as unknown as Record<string, unknown>, event.prevHash ?? "GENESIS"));
@@ -233,6 +425,42 @@ function webdockAccount(
         responseOk: true,
         ...source
       }
+    }
+  };
+}
+
+function ionosDnsInventory(input: {
+  zones: IonosDnsInventoryResult["zones"];
+  responseOk?: boolean;
+  errorMessage?: string;
+}): IonosDnsInventoryResult {
+  return {
+    zones: input.zones,
+    source: {
+      kind: "live",
+      apiKind: "cloud-dns",
+      apiBase: "https://dns.de-fra.ionos.com",
+      fetchedAt: "2026-05-24T17:59:30.000Z",
+      responseOk: input.responseOk ?? true,
+      ...(input.errorMessage ? { errorMessage: input.errorMessage } : {})
+    }
+  };
+}
+
+function ionosDomainsInventory(input: {
+  domains: IonosDomainsInventoryResult["domains"];
+  responseOk?: boolean;
+  errorMessage?: string;
+}): IonosDomainsInventoryResult {
+  return {
+    domains: input.domains,
+    source: {
+      kind: "live",
+      apiBase: "https://api.hosting.ionos.com/domains/v1",
+      fetchedAt: "2026-05-24T17:59:30.000Z",
+      responseOk: input.responseOk ?? true,
+      tenantConfigured: true,
+      ...(input.errorMessage ? { errorMessage: input.errorMessage } : {})
     }
   };
 }
