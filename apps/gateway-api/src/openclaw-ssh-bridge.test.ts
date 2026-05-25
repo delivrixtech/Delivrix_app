@@ -150,3 +150,78 @@ test("OpenClawSshBridge streamHistory uses dedicated history timeout", async () 
     reason: "ssh_history_timeout"
   });
 });
+
+test("OpenClawSshBridge streamHistory waits past assistant tool-use preamble", async () => {
+  let historyPolls = 0;
+  const runner: OpenClawSshCommandRunner = async (_file, args) => {
+    assert.ok((args.at(-1) ?? "").includes("'chat.history'"));
+    historyPolls += 1;
+    return {
+      stdout: JSON.stringify({
+        messages: historyPolls === 1
+          ? [{
+              role: "assistant",
+              content: [
+                { type: "text", text: "Voy a revisar los registros DNS." },
+                { type: "toolCall", id: "tool-1", name: "exec", arguments: {} }
+              ],
+              stopReason: "toolUse",
+              timestamp: 100
+            }]
+          : [
+              {
+                role: "assistant",
+                content: [
+                  { type: "text", text: "Voy a revisar los registros DNS." },
+                  { type: "toolCall", id: "tool-1", name: "exec", arguments: {} }
+                ],
+                stopReason: "toolUse",
+                timestamp: 100
+              },
+              {
+                role: "toolResult",
+                content: [{ type: "text", text: "records ok" }],
+                timestamp: 150
+              },
+              {
+                role: "assistant",
+                content: [{ type: "text", text: "Respuesta final con tabla." }],
+                stopReason: "stop",
+                timestamp: 200
+              }
+            ]
+      }),
+      stderr: "",
+      exitCode: 0
+    };
+  };
+  const bridge = new OpenClawSshBridge({
+    sshHost: "2.24.223.240",
+    commandRunner: runner,
+    sleep: async () => undefined,
+    now: () => new Date(0)
+  });
+  const events: ChatStreamEvent[] = [];
+
+  await bridge.streamHistory("domain-audit", {
+    timeoutMs: 100,
+    pollIntervalMs: 1,
+    onTyping: (event) => events.push(event),
+    onDelta: (event) => events.push(event),
+    onDone: (event) => events.push(event)
+  });
+
+  assert.equal(historyPolls, 2);
+  assert.deepEqual(events.map((event) => event.type), [
+    "ASSISTANT_TYPING",
+    "ASSISTANT_DELTA",
+    "ASSISTANT_DONE"
+  ]);
+  assert.equal(events[1].type, "ASSISTANT_DELTA");
+  assert.equal(events[1].delta, "Respuesta final con tabla.");
+  assert.deepEqual(events[2], {
+    type: "ASSISTANT_DONE",
+    msgId: "domain-audit",
+    content: "Respuesta final con tabla."
+  });
+});

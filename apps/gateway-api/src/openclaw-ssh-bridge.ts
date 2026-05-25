@@ -362,6 +362,9 @@ function extractAssistantCompletion(
     if (!content || (role !== "assistant" && role !== "ASSISTANT_DONE")) {
       return false;
     }
+    if (isAssistantToolUseMessage(message)) {
+      return false;
+    }
     const timestamp = numberValue(message.timestamp);
     return sentAtMs === undefined || timestamp === undefined || timestamp >= sentAtMs;
   });
@@ -428,6 +431,24 @@ function contentFromMessage(message: Record<string, unknown>): string | null {
     return stringValue(message.message.content) ?? stringValue(message.message.text);
   }
   return null;
+}
+
+function isAssistantToolUseMessage(message: Record<string, unknown>): boolean {
+  const stopReason = stringValue(message.stopReason) ?? stringValue(message.stop_reason);
+  if (stopReason === "toolUse" || stopReason === "tool_use") {
+    return true;
+  }
+
+  if (!Array.isArray(message.content)) {
+    return false;
+  }
+
+  return message.content
+    .filter(isRecord)
+    .some((block) => {
+      const type = stringValue(block.type);
+      return type === "toolCall" || type === "tool_use";
+    });
 }
 
 function extractAudit(
