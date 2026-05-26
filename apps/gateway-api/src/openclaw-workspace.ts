@@ -24,7 +24,9 @@ export interface OpenClawWorkspaceLearning {
   content: string;
 }
 
-const defaultWorkspaceDir = "/data/.openclaw/workspace";
+const defaultWorkspaceDir = process.platform === "darwin"
+  ? "runtime/openclaw-workspace"
+  : "/data/.openclaw/workspace";
 const managedDirs = ["skills", "executions", "learnings", "inventory"] as const;
 
 export class OpenClawWorkspace {

@@ -9,11 +9,13 @@
 
 Se agregó `OpenClawWorkspace` en `apps/gateway-api/src/openclaw-workspace.ts`.
 
-Directorio por defecto:
+Directorio por defecto en Linux/Hostinger:
 
 ```text
 /data/.openclaw/workspace/
 ```
+
+En macOS local usa `runtime/openclaw-workspace/` para evitar depender de permisos de `/data`.
 
 Soporta:
 
