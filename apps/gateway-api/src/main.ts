@@ -192,11 +192,12 @@ const backupSimulationStore = new LocalFileBackupSimulationStore();
 const safetyRealtimeCache = new SafetyRealtimeCache();
 const learningRealtimeCache = new SafetyRealtimeCache();
 const openClawSshBridge = createOpenClawSshBridgeFromEnv();
+const canvasLiveEvents = new CanvasLiveEventService();
 const openClawChatProxy = new OpenClawChatProxy(auditLog, {
   bridgeKind: openClawSshBridge ? "ssh" : "http",
-  sshBridge: openClawSshBridge
+  sshBridge: openClawSshBridge,
+  canvasLiveEvents
 });
-const canvasLiveEvents = new CanvasLiveEventService();
 const defaultStuckJobThresholdMs = Number(process.env.STUCK_JOB_THRESHOLD_MS ?? 5 * 60 * 1000);
 const requestRateLimitProfile = {
   campaignDailyLimit: Number(process.env.RATE_LIMIT_CAMPAIGN_DAILY ?? 100),
