@@ -47,6 +47,7 @@ test("OpenClawWorkspace writes skills, executions, learnings, and inventory", as
   assert.equal(inventory.path, "inventory/domains.json");
   assert.equal(dkimKey.path, "inventory/dkim-keys/delivrix-mail.com/default.private");
   assert.match(await readFile(execution.absolutePath, "utf8"), /op-123/);
+  assert.equal(await workspace.readWorkspaceFile(dkimKey.path), "private-key");
 
   const learnings = await workspace.readLearnings("register_domain_route53");
   assert.equal(learnings.length, 1);
