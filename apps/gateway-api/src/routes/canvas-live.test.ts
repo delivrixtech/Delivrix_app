@@ -121,6 +121,32 @@ test("task update preserves last action for completed live tasks", async () => {
   assert.equal(snapshot.tasks[0].lastAction?.taskId, "task-preserve-action");
 });
 
+test("canvas-live reload preserves last action for completed tasks", async () => {
+  const stateDir = await stateDirForTest();
+  const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  await service.emit(taskDeclare("task-reload-action"));
+  await service.emit({
+    type: "oc.action.now",
+    taskId: "task-reload-action",
+    kind: "api",
+    method: "GET",
+    url: "/v1/domains/prices?tlds=net",
+    status: 200,
+    durationMs: 42,
+    responseBytes: 128,
+    responseBody: { prices: [{ tld: "net" }] },
+    occurredAt: fixedNow.toISOString()
+  });
+  await service.emit(taskUpdate("task-reload-action", "completed"));
+
+  const reloaded = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  const snapshot = await reloaded.snapshot();
+
+  assert.equal(snapshot.tasks[0].status, "completed");
+  assert.equal(snapshot.tasks[0].lastAction?.kind, "api");
+  assert.equal(snapshot.tasks[0].lastAction?.taskId, "task-reload-action");
+});
+
 test("artifact streaming accumulates chunks and closes with complete block", async () => {
   const service = await testService();
   await service.emit(taskDeclare("task-stream"));
