@@ -186,6 +186,74 @@ test("AwsRoute53DomainsAdapter requests filtered prices by TLD", async () => {
   ]);
 });
 
+test("AwsRoute53DomainsAdapter registers a domain only when purchase is enabled", async () => {
+  const calls: Array<{ headers: HeadersInit | undefined; body: Record<string, unknown> }> = [];
+  const contact = route53Contact();
+  const adapter = new AwsRoute53DomainsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    purchaseEnabled: true,
+    fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        headers: init?.headers,
+        body: JSON.parse(init?.body?.toString() ?? "{}")
+      });
+      return jsonResponse({ OperationId: "op-register-123" });
+    }) as typeof fetch,
+    now: () => new Date("2026-05-25T18:00:00.000Z")
+  });
+
+  const result = await adapter.registerDomain({
+    domain: "Delivrix-Mail.COM.",
+    years: 1,
+    autoRenew: true,
+    adminContact: contact,
+    privacyProtection: true
+  });
+
+  assert.equal((calls[0].headers as Record<string, string>)["x-amz-target"], "Route53Domains_v20140515.RegisterDomain");
+  assert.deepEqual(calls[0].body, {
+    DomainName: "delivrix-mail.com",
+    DurationInYears: 1,
+    AutoRenew: true,
+    AdminContact: contact,
+    RegistrantContact: contact,
+    TechContact: contact,
+    PrivacyProtectAdminContact: true,
+    PrivacyProtectRegistrantContact: true,
+    PrivacyProtectTechContact: true
+  });
+  assert.deepEqual(result, {
+    operationId: "op-register-123",
+    expectedExpiry: "2027-05-25T18:00:00.000Z"
+  });
+});
+
+test("AwsRoute53DomainsAdapter blocks registerDomain when purchase flag is off", async () => {
+  let fetchCalled = false;
+  const adapter = new AwsRoute53DomainsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    purchaseEnabled: false,
+    fetchImpl: (async () => {
+      fetchCalled = true;
+      return jsonResponse({ OperationId: "should-not-run" });
+    }) as typeof fetch,
+    now: () => new Date("2026-05-25T18:00:00.000Z")
+  });
+
+  await assert.rejects(
+    adapter.registerDomain({
+      domain: "delivrix-mail.com",
+      years: 1,
+      autoRenew: false,
+      adminContact: route53Contact()
+    }),
+    /purchase is disabled/
+  );
+  assert.equal(fetchCalled, false);
+});
+
 test("AwsRoute53DomainsAdapter paginates unfiltered prices", async () => {
   const payloads: unknown[] = [];
   const adapter = new AwsRoute53DomainsAdapter({
@@ -273,4 +341,20 @@ function jsonResponse(payload: unknown): Response {
     status: 200,
     headers: { "content-type": "application/json" }
   });
+}
+
+function route53Contact() {
+  return {
+    FirstName: "Delivrix",
+    LastName: "Ops",
+    ContactType: "COMPANY",
+    OrganizationName: "Delivrix",
+    AddressLine1: "123 Demo Street",
+    City: "Bogota",
+    State: "Bogota",
+    CountryCode: "CO",
+    ZipCode: "110111",
+    PhoneNumber: "+57.3000000000",
+    Email: "ops@example.com"
+  };
 }
