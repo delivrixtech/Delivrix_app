@@ -199,8 +199,31 @@ function renderBlock(block: Block, baseFontSize: number): ReactNode {
     );
   }
   if (block.kind === "p") {
+    // Pseudo-heading: líneas cortas que terminan en ":" y vienen solas
+    // (ej. "Resumen operativo:") se rendean con peso 500 + margen extra
+    // para que actúen como subtítulo suave, sin esperar que el agente
+    // use ## explícito.
+    const isPseudoHeading =
+      block.lines.length === 1 &&
+      block.lines[0].trim().endsWith(":") &&
+      block.lines[0].trim().length <= 60 &&
+      !block.lines[0].trim().includes(". ");
+    if (isPseudoHeading) {
+      return (
+        <p
+          className="font-[family-name:var(--font-sans)]"
+          style={{
+            margin: "14px 0 6px",
+            fontWeight: 500,
+            color: "var(--color-text-primary)"
+          }}
+        >
+          {renderInline(block.lines[0])}
+        </p>
+      );
+    }
     return (
-      <p style={{ margin: "6px 0", whiteSpace: "pre-wrap" }}>
+      <p style={{ margin: "10px 0", whiteSpace: "pre-wrap" }}>
         {block.lines.map((line, i) => (
           <Fragment key={i}>
             {i > 0 ? <br /> : null}
@@ -215,13 +238,16 @@ function renderBlock(block: Block, baseFontSize: number): ReactNode {
     return (
       <Tag
         style={{
-          margin: "6px 0",
-          paddingLeft: 20,
-          listStyleType: block.ordered ? "decimal" : "disc"
+          margin: "10px 0",
+          paddingLeft: block.ordered ? 28 : 22,
+          listStyleType: block.ordered ? "decimal" : "disc",
+          display: "flex",
+          flexDirection: "column",
+          gap: 6
         }}
       >
         {block.items.map((item, i) => (
-          <li key={i} style={{ marginBottom: 2 }}>
+          <li key={i} style={{ paddingLeft: 4 }}>
             {renderInline(item)}
           </li>
         ))}

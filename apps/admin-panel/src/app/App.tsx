@@ -9,7 +9,7 @@
  * - Branding vive en el sidebar, no en el topbar.
  */
 
-import { ChevronRight, Eye, FlaskConical, Menu, MessageSquare, Power, RefreshCw, Search, X } from "lucide-react";
+import { ChevronRight, Eye, FlaskConical, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Power, RefreshCw, Search, X } from "lucide-react";
 import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { loadDashboardData, type DashboardData } from "../shared/api/client.ts";
@@ -39,6 +39,12 @@ import {
 } from "./sections.ts";
 
 const chatOpenStorageKey = "delivrix.openclaw.chat.open";
+const sidebarCollapsedStorageKey = "delivrix.panel.sidebar.collapsed";
+
+function readSidebarCollapsed(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(sidebarCollapsedStorageKey) === "1";
+}
 const OverviewSection = lazy(async () => ({ default: (await import("../features/overview/index.tsx")).OverviewSection }));
 const OnboardingSection = lazy(async () => ({ default: (await import("../features/onboarding/index.tsx")).OnboardingSection }));
 const CanvasV4 = lazy(async () => ({ default: (await import("../features/canvas/canvas-v4.tsx")).CanvasV4 }));
@@ -73,6 +79,11 @@ export function App() {
   const [activeSection, setActiveSection] = useState<SectionId>(readInitialSection);
   const [chatOpen, setChatOpen] = useState(readChatOpenPreference);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(readSidebarCollapsed);
+
+  useEffect(() => {
+    localStorage.setItem(sidebarCollapsedStorageKey, sidebarCollapsed ? "1" : "0");
+  }, [sidebarCollapsed]);
   const dashboard = useQuery({
     queryKey: ["admin-panel", "dashboard"],
     queryFn: loadDashboardData,
@@ -153,11 +164,35 @@ export function App() {
           setChatOpen((v) => !v);
           close();
         }
+      },
+      {
+        id: "action:sidebar-toggle",
+        label: sidebarCollapsed ? "Mostrar barra lateral" : "Ocultar barra lateral",
+        group: "Acciones",
+        kbd: "⌘ \\",
+        keywords: ["sidebar", "lateral", "navegacion", "ocultar", "colapsar"],
+        action: (close) => {
+          setSidebarCollapsed((v) => !v);
+          close();
+        }
       }
     ];
     return [...sectionCmds, ...actionCmds];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatOpen]);
+  }, [chatOpen, sidebarCollapsed]);
+
+  // Atajo global ⌘ \ para toggle sidebar en desktop, igual que Notion/VS Code.
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      const isMeta = event.metaKey || event.ctrlKey;
+      if (isMeta && event.key === "\\") {
+        event.preventDefault();
+        setSidebarCollapsed((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -165,7 +200,14 @@ export function App() {
       <OpenClawIntentProvider onNavigate={(s) => selectSection(s as SectionId)}>
       <CommandPaletteProvider commands={paletteCommands}>
       <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text-primary)]">
-        <div className="grid min-h-screen grid-cols-1 md:grid-cols-[200px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]">
+        <div
+          className={cn(
+            "grid min-h-screen grid-cols-1",
+            sidebarCollapsed
+              ? "md:grid-cols-[minmax(0,1fr)]"
+              : "md:grid-cols-[200px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]"
+          )}
+        >
           {mobileNavOpen ? (
             <button
               type="button"
@@ -174,13 +216,15 @@ export function App() {
               onClick={() => setMobileNavOpen(false)}
             />
           ) : null}
-          <Sidebar
-            activeSection={activeSection}
-            onSelect={selectSection}
-            mobileOpen={mobileNavOpen}
-            onCloseMobile={() => setMobileNavOpen(false)}
-            data={dashboard.data}
-          />
+          {sidebarCollapsed ? null : (
+            <Sidebar
+              activeSection={activeSection}
+              onSelect={selectSection}
+              mobileOpen={mobileNavOpen}
+              onCloseMobile={() => setMobileNavOpen(false)}
+              data={dashboard.data}
+            />
+          )}
           <div className="flex flex-col min-w-0">
             <Topbar
               activeSection={activeSection}
@@ -195,6 +239,8 @@ export function App() {
               onToggleMobileNav={() => setMobileNavOpen((value) => !value)}
               chatOpen={chatOpen}
               onToggleChat={() => setChatOpen((value) => !value)}
+              sidebarCollapsed={sidebarCollapsed}
+              onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
             />
             <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-6 md:px-7 lg:px-10 xl:px-14 2xl:px-16">
               <div className="mx-auto w-full" style={{ maxWidth: 1680 }}>
@@ -241,7 +287,9 @@ function Topbar({
   mobileNavOpen,
   onToggleMobileNav,
   chatOpen,
-  onToggleChat
+  onToggleChat,
+  sidebarCollapsed,
+  onToggleSidebar
 }: {
   activeSection: SectionId;
   isFetching: boolean;
@@ -250,6 +298,8 @@ function Topbar({
   onToggleMobileNav: () => void;
   chatOpen: boolean;
   onToggleChat: () => void;
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
 }) {
   const section = sectionsById[activeSection];
   const { toast } = useToast();
@@ -284,6 +334,26 @@ function Topbar({
             <X size={16} strokeWidth={1.75} aria-hidden="true" />
           ) : (
             <Menu size={16} strokeWidth={1.75} aria-hidden="true" />
+          )}
+        </Button>
+      </Tooltip>
+
+      <Tooltip
+        hint={sidebarCollapsed ? "Mostrar barra lateral (⌘ \\)" : "Ocultar barra lateral (⌘ \\)"}
+        side="bottom"
+      >
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={sidebarCollapsed ? "Mostrar barra lateral" : "Ocultar barra lateral"}
+          aria-pressed={sidebarCollapsed}
+          onClick={onToggleSidebar}
+          className="hidden text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] md:inline-flex"
+        >
+          {sidebarCollapsed ? (
+            <PanelLeftOpen size={16} strokeWidth={1.75} aria-hidden="true" />
+          ) : (
+            <PanelLeftClose size={16} strokeWidth={1.75} aria-hidden="true" />
           )}
         </Button>
       </Tooltip>
