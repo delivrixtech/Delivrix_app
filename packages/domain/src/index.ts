@@ -3,6 +3,7 @@ export * from "./admin-cluster-overview.ts";
 export * from "./admin-overview.ts";
 export * from "./admin-panel-workflow.ts";
 export * from "./backup-plan.ts";
+export * from "./canvas-live.ts";
 export * from "./collector-snapshot-ingestion.ts";
 export * from "./compliance-status.ts";
 export * from "./control-plane-contract.ts";
