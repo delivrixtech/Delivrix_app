@@ -12,7 +12,7 @@
  * commit 52a451d) es la fase siguiente.
  */
 
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ArrowDown,
   ArrowLeft,
@@ -59,6 +59,9 @@ import {
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
 import { MarkdownText, useConsumeIntentOnMount, useOpenClawIntent, useToast } from "../../shared/ui/v2/index.ts";
 import { CanvasFlow } from "./canvas-flow.tsx";
+import { useDemoAgentRun, useDemoLiveState, type DemoAction } from "./demo-agent-run.ts";
+import { LiveTool } from "./live-tool.tsx";
+import { useLiveCanvasStream } from "./canvas-live-client.ts";
 
 /* ============================================================
  * MOCK DATA — reemplazable por WSS stream cuando esté conectado
@@ -250,19 +253,69 @@ function auditToAction(ev: AuditEvent): Action | null {
   const target = `${ev.targetType}:${ev.targetId}`;
   const meta = ev.metadata ?? {};
 
-  // command-ish: skill execution
-  if (action.includes("skill") || action.includes("runbook") || action.includes("exec") || action.includes("run")) {
+  // oc.chat.agent_response — la respuesta del agente al chat. Antes mostraba
+  // msgId/sessionKey crudos lo cual es metadata interna sin valor para el
+  // operador. Ahora extraemos info útil del metadata (longitud, tokens,
+  // duración) y mostramos una card limpia.
+  if (action === "oc.chat.agent_response" || action.includes("agent_response")) {
+    const chars = typeof meta.responseChars === "number" ? meta.responseChars : null;
+    const tokens = typeof meta.tokens === "number" ? meta.tokens : null;
+    const duration = typeof meta.durationMs === "number" ? meta.durationMs : null;
+    const hints: string[] = [];
+    if (chars != null) hints.push(`${formatBytes(chars)} enviados`);
+    if (tokens != null) hints.push(`${tokens} tokens`);
+    if (duration != null) hints.push(`${duration}ms`);
     return {
       id: ev.id,
       ts,
       kind: "command",
-      cmd: ev.action,
+      cmd: "skill · publish_chat_response",
+      status: "ok",
+      output:
+        hints.length > 0
+          ? ["→ WSS oc.chat.agent_response", `✓ respuesta entregada · ${hints.join(" · ")}`]
+          : ["→ WSS oc.chat.agent_response", "✓ respuesta entregada al operador"]
+    };
+  }
+
+  // oc.chat.operator_message — el operador escribió en el chat. No es
+  // "trabajo del agente" propiamente; lo mostramos como pequeña detección
+  // info para anclar el contexto.
+  if (action === "oc.chat.operator_message" || action.includes("operator_message")) {
+    const preview = typeof meta.preview === "string" ? meta.preview : null;
+    return {
+      id: ev.id,
+      ts,
+      kind: "detect",
+      severity: "info",
+      title: "Solicitud del operador",
+      body: preview ? `"${preview.slice(0, 140)}${preview.length > 140 ? "…" : ""}"` : "Nuevo mensaje del operador en chat.",
+      refs: [{ kind: "audit", label: "oc.chat.operator_message" }]
+    };
+  }
+
+  // command-ish: skill execution
+  if (action.includes("skill") || action.includes("runbook") || action.includes("exec") || action.includes("run")) {
+    // Construimos output con narrativa, no con actor/target crudos. Si el
+    // metadata trae claves útiles (count, status, summary, duration) las
+    // priorizamos; lo demás queda fuera para no llenar de ruido.
+    const output: string[] = [];
+    if (typeof meta.skill === "string") output.push(`→ ${meta.skill}`);
+    else output.push(`→ ${ev.action}`);
+    if (typeof meta.summary === "string") output.push(`✓ ${meta.summary}`);
+    if (typeof meta.count === "number") output.push(`${meta.count} items procesados`);
+    if (typeof meta.durationMs === "number") output.push(`duración ${meta.durationMs}ms`);
+    if (output.length < 2) {
+      // Fallback mínimo: al menos un confirmador para que la card no se vea vacía.
+      output.push("✓ ejecución completada");
+    }
+    return {
+      id: ev.id,
+      ts,
+      kind: "command",
+      cmd: typeof meta.skill === "string" ? `skill · ${meta.skill}` : ev.action,
       status: ev.riskLevel === "critical" || ev.riskLevel === "error" ? "error" : "ok",
-      output: [
-        `actor: ${ev.actorType}/${ev.actorId}`,
-        `target: ${target}`,
-        ...Object.entries(meta).slice(0, 3).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
-      ]
+      output
     };
   }
 
@@ -336,18 +389,51 @@ function auditToAction(ev: AuditEvent): Action | null {
   else if (looksLikeOkEvent) severity = "info";
   else severity = "info"; // default: info, no alarmar al usuario
 
+  // Body humano: si el metadata trae `summary` o `description`, los usamos.
+  // Si no, generamos algo narrativo desde la acción + target sin mostrar
+  // los IDs internos del actor.
+  const humanBody =
+    typeof meta.summary === "string"
+      ? meta.summary
+      : typeof meta.description === "string"
+        ? meta.description
+        : ev.targetType && ev.targetId
+          ? `Acción sobre ${ev.targetType.replace(/_/g, " ")}: ${ev.targetId}`
+          : "Evento del agente registrado.";
+
+  // Title humano: convertir `oc.chat.thing_happened` → "Thing happened".
+  const humanTitle = humanizeActionName(ev.action);
+
   return {
     id: ev.id,
     ts,
     kind: "detect",
     severity,
-    title: ev.action,
-    body: `${ev.actorType}/${ev.actorId} → ${ev.targetType}:${ev.targetId}`,
-    refs: Object.entries(meta).slice(0, 2).map(([k, v]) => ({
-      kind: "audit" as const,
-      label: `${k}=${typeof v === "object" ? "{…}" : String(v).slice(0, 24)}`
-    }))
+    title: humanTitle,
+    body: humanBody,
+    refs: Object.entries(meta)
+      .filter(([k]) => k !== "msgId" && k !== "sessionKey" && k !== "actorId")
+      .slice(0, 2)
+      .map(([k, v]) => ({
+        kind: "audit" as const,
+        label: `${k}: ${typeof v === "object" ? "{…}" : String(v).slice(0, 32)}`
+      }))
   };
+}
+
+function humanizeActionName(action: string): string {
+  // oc.chat.agent_response → "Respuesta del agente"
+  // oc.audit.smoke_valid → "Smoke valid"
+  // oc.eval.c2.operator_override → "Operator override"
+  const tail = action.split(".").slice(-1)[0] ?? action;
+  return tail
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatBytes(chars: number): string {
+  if (chars < 1024) return `${chars} chars`;
+  return `${(chars / 1024).toFixed(1)} KB`;
 }
 
 function formatTs(iso: string): string {
@@ -1359,63 +1445,291 @@ function ViewportTabs({ active, onChange, actions }: { active: ViewportTab; onCh
   );
 }
 
-function LiveTab({
-  actions,
-  source,
-  errorMessage
-}: {
+/**
+ * LiveTab — Canvas Live v6 (2026-05-25).
+ *
+ * Reemplaza el feed de cards anterior con el componente LiveTool
+ * (3 zonas: tareas + Postman view + plan editable). Mientras Codex
+ * entrega el backend (OPS Bloque 7), usa el dataset demo. Cuando
+ * el endpoint /v1/canvas/live/stream esté live, este wrapper se
+ * conecta al WSS y descarta el dataset.
+ *
+ * Los props `actions/source/errorMessage` del wrapper antiguo siguen
+ * llegando pero ya no se usan — son fallback histórico mientras Codex
+ * no entrega el nuevo stream. Quedan documentados para revisitar al
+ * mergear el OPS Bloque 7.
+ */
+function LiveTab(_props: {
   actions: Action[];
   source: AgentSource;
   errorMessage: string | null;
 }) {
-  const [filter, setFilter] = useState<"all" | ActionKind>("all");
-  const filtered = useMemo(
-    () => (filter === "all" ? actions : actions.filter((a) => a.kind === filter)),
-    [filter, actions]
-  );
-  const feedRef = useRef<HTMLDivElement>(null);
-  const [autoScroll, setAutoScroll] = useState(true);
-  useEffect(() => {
-    if (autoScroll && feedRef.current) {
-      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+  void _props;
+  // Demo mode default OFF ahora que Bloque 7 está live. Persiste decisión
+  // del operador en localStorage.
+  const [demoMode, setDemoMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("delivrix.canvas.demo") === "1";
+    } catch {
+      return false;
     }
-  }, [filtered.length, autoScroll]);
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("delivrix.canvas.demo", demoMode ? "1" : "0");
+    } catch {
+      // private mode etc — silencioso.
+    }
+  }, [demoMode]);
+
+  // Las 2 fuentes corren independientes según el toggle. Cuando demoMode=true,
+  // useLiveCanvasStream queda en `offline` (no abre WSS) y useDemoLiveState
+  // entrega el dataset simulado. Al revés cuando demoMode=false.
+  const demoState = useDemoLiveState(demoMode);
+  const liveStream = useLiveCanvasStream(!demoMode);
+
+  // Una única fuente efectiva. Si demo está ON, usa el dataset; si OFF, el
+  // WSS real.
+  const tasks = demoMode ? demoState.tasks : liveStream.tasks;
+  const fallbackActiveId = demoMode ? demoState.activeTaskId : liveStream.activeTaskId;
+
+  const [localActiveId, setLocalActiveId] = useState<string | null>(null);
+  const activeTaskId = localActiveId ?? fallbackActiveId;
+
+  useEffect(() => {
+    // Si el operador no eligió manualmente, sigue el activo "natural" del stream.
+    if (!localActiveId && fallbackActiveId) {
+      // noop — derivado.
+    }
+  }, [localActiveId, fallbackActiveId]);
+
+  const handleSelectTask = useCallback((id: string) => {
+    setLocalActiveId(id);
+    if (!demoMode) liveStream.setActiveTaskId(id);
+  }, [demoMode, liveStream]);
+
+  const currentAction = demoMode
+    ? (activeTaskId && demoState.currentAction?.taskId === activeTaskId
+        ? demoState.currentAction
+        : demoState.currentAction ?? null)
+    : liveStream.currentAction;
+  const artifact = demoMode
+    ? (activeTaskId && demoState.artifact?.taskId === activeTaskId
+        ? demoState.artifact
+        : demoState.artifact ?? null)
+    : liveStream.artifact;
+  const isConnected = demoMode ? demoState.isConnected : liveStream.connection === "connected";
+
+  const { toast } = useToast();
+  const [actionPending, setActionPending] = useState<"approve" | "reject" | null>(null);
+
+  const handleEditBlock = useCallback(
+    async (blockId: string, content: string) => {
+      if (demoMode) {
+        // eslint-disable-next-line no-console
+        console.log("[LiveTool · demo] edit block", blockId, content);
+        return;
+      }
+      try {
+        await liveStream.patchBlock(blockId, content);
+        toast.info("Bloque actualizado", {
+          description: "El cambio quedó en audit chain. OpenClaw lo verá la próxima vez que lea el plan.",
+          duration: 2000
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[LiveTool] patchBlock error", err);
+        toast.error("No se pudo guardar el bloque", {
+          description: err instanceof Error ? err.message : "error desconocido"
+        });
+      }
+    },
+    [demoMode, liveStream, toast]
+  );
+  const handleApprove = useCallback(async () => {
+    if (demoMode) {
+      toast.info("Demo · plan aprobado", {
+        description: "En modo demo no se ejecuta. Apaga Demo para usar el plan real.",
+        duration: 2500
+      });
+      return;
+    }
+    if (actionPending) return;
+    setActionPending("approve");
+    try {
+      await liveStream.approveArtifact();
+      toast.success("Plan aprobado", {
+        description: "OpenClaw ejecuta los pasos. Audit chain firmado como acción crítica.",
+        duration: 3500
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[LiveTool] approve error", err);
+      toast.error("No se pudo aprobar el plan", {
+        description: err instanceof Error ? err.message : "error desconocido"
+      });
+    } finally {
+      setActionPending(null);
+    }
+  }, [demoMode, liveStream, toast, actionPending]);
+  const handleReject = useCallback(async () => {
+    if (demoMode) {
+      toast.info("Demo · plan rechazado", {
+        description: "En modo demo no se ejecuta. Apaga Demo para enviar el rechazo real.",
+        duration: 2500
+      });
+      return;
+    }
+    if (actionPending) return;
+    setActionPending("reject");
+    try {
+      await liveStream.rejectArtifact();
+      toast.success("Plan rechazado", {
+        description: "OpenClaw recibirá la señal y propondrá otro plan o pedirá detalle.",
+        duration: 3500
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[LiveTool] reject error", err);
+      toast.error("No se pudo rechazar el plan", {
+        description: err instanceof Error ? err.message : "error desconocido"
+      });
+    } finally {
+      setActionPending(null);
+    }
+  }, [demoMode, liveStream, toast, actionPending]);
+
   return (
-    <>
-      <LiveFilters
-        actions={actions}
-        value={filter}
-        onChange={setFilter}
-        autoScroll={autoScroll}
-        onAutoScroll={setAutoScroll}
-        source={source}
-      />
+    <div className="flex flex-col" style={{ flex: 1, minHeight: 0 }}>
       <div
-        ref={feedRef}
-        className="flex flex-col overflow-y-auto"
-        style={{ flex: 1, padding: 20, gap: 16, minHeight: 0 }}
+        className="flex items-center"
+        style={{
+          padding: "8px 16px",
+          background: "var(--color-surface)",
+          borderBottom: "1px solid var(--color-border)",
+          gap: 10
+        }}
       >
-        {filtered.length === 0 ? (
-          <LiveEmptyOrError source={source} errorMessage={errorMessage} filterActive={filter !== "all"} />
+        <span
+          className="font-[family-name:var(--font-caption)] font-semibold uppercase"
+          style={{
+            fontSize: 10,
+            letterSpacing: "0.6px",
+            color: "var(--color-text-tertiary)"
+          }}
+        >
+          Canvas Live v6 · herramienta funcional
+        </span>
+        {!demoMode && liveStream.connection !== "connected" ? (
+          <span
+            className="font-[family-name:var(--font-mono)]"
+            style={{
+              fontSize: 10,
+              padding: "2px 8px",
+              borderRadius: 999,
+              background: liveStream.connection === "offline"
+                ? "var(--color-critical-soft)"
+                : "var(--color-warning-soft)",
+              color: liveStream.connection === "offline"
+                ? "var(--color-critical)"
+                : "var(--color-warning)",
+              fontWeight: 500
+            }}
+          >
+            {liveStream.connection}
+          </span>
         ) : null}
-        {filtered.map((a) => (
-          <ActionCard key={a.id} action={a} />
-        ))}
-        <div style={{ height: 32 }} />
+        <span style={{ flex: 1 }} />
+        <button
+          type="button"
+          onClick={() => setDemoMode((v) => !v)}
+          title={
+            demoMode
+              ? "Apagar demo · conectar al WSS real del gateway"
+              : "Encender demo · simular auditoría IONOS sin backend"
+          }
+          className="inline-flex items-center transition-colors"
+          style={{
+            gap: 4,
+            padding: "4px 8px",
+            borderRadius: 9999,
+            background: demoMode ? "var(--color-info-soft)" : "var(--color-surface-sunken)",
+            border: demoMode ? "none" : "1px solid var(--color-border)",
+            color: demoMode ? "var(--color-info)" : "var(--color-text-secondary)",
+            cursor: "pointer",
+            fontSize: 10,
+            fontFamily: "var(--font-caption)",
+            fontWeight: 600
+          }}
+        >
+          Demo {demoMode ? "ON" : "OFF"}
+        </button>
       </div>
-    </>
+      <LiveTool
+        tasks={tasks}
+        activeTaskId={activeTaskId}
+        onSelectTask={handleSelectTask}
+        currentAction={currentAction}
+        artifact={artifact}
+        onEditBlock={handleEditBlock}
+        onApprove={handleApprove}
+        onReject={handleReject}
+        isConnected={isConnected}
+        actionPending={actionPending}
+      />
+    </div>
   );
 }
 
 function LiveEmptyOrError({
   source,
   errorMessage,
-  filterActive
+  filterActive,
+  demoMode
 }: {
   source: AgentSource;
   errorMessage: string | null;
   filterActive: boolean;
+  demoMode: boolean;
 }) {
+  // Si demo está ON pero cursor aún no empezó (0 cards), mostramos un
+  // mensaje específico — evita confundir "demo activado pero todavía nada"
+  // con "agente real idle". Las cards van a aparecer en 1.2s.
+  if (demoMode && !filterActive) {
+    return (
+      <div
+        className="flex flex-col items-center justify-center"
+        style={{ flex: 1, gap: 14, padding: 40, color: "var(--color-text-tertiary)", textAlign: "center" }}
+      >
+        <span
+          aria-hidden="true"
+          className="grid place-items-center"
+          style={{
+            width: 56,
+            height: 56,
+            borderRadius: 14,
+            background: "var(--color-info-soft)",
+            color: "var(--color-info)"
+          }}
+        >
+          <Sparkles size={26} strokeWidth={1.5} />
+        </span>
+        <div className="flex flex-col" style={{ gap: 6, maxWidth: 440 }}>
+          <span
+            className="font-[family-name:var(--font-sans)] font-semibold"
+            style={{ fontSize: 15, color: "var(--color-text-primary)", letterSpacing: "var(--tracking-tight)" }}
+          >
+            Demo cargando…
+          </span>
+          <span style={{ fontSize: 12, fontFamily: "var(--font-body)", lineHeight: 1.55 }}>
+            En segundos vas a ver al agente ejecutar un flujo simulado de búsqueda
+            de dominios. Las cards aparecen progresivamente para mostrar cómo se
+            vería el viewport con eventos reales intermedios.
+          </span>
+        </div>
+      </div>
+    );
+  }
   if (source === "loading") {
     return (
       <div
@@ -1541,14 +1855,22 @@ function LiveFilters({
   onChange,
   autoScroll,
   onAutoScroll,
-  source
+  source,
+  demoMode,
+  onDemoToggle,
+  demoProgress,
+  demoRunning
 }: {
   actions: Action[];
   value: "all" | ActionKind;
   onChange: (v: "all" | ActionKind) => void;
   autoScroll: boolean;
   onAutoScroll: (v: boolean) => void;
-  source: AgentSource;
+  source: AgentSource | "demo";
+  demoMode: boolean;
+  onDemoToggle: (v: boolean) => void;
+  demoProgress: { current: number; total: number };
+  demoRunning: boolean;
 }) {
   return (
     <div
@@ -1607,19 +1929,23 @@ function LiveFilters({
           background:
             source === "live"
               ? "var(--color-success-soft)"
-              : source === "error"
-                ? "var(--color-critical-soft)"
-                : source === "empty"
-                  ? "var(--color-warning-soft)"
-                  : "var(--color-surface-sunken)",
+              : source === "demo"
+                ? "var(--color-info-soft)"
+                : source === "error"
+                  ? "var(--color-critical-soft)"
+                  : source === "empty"
+                    ? "var(--color-warning-soft)"
+                    : "var(--color-surface-sunken)",
           color:
             source === "live"
               ? "var(--color-success)"
-              : source === "error"
-                ? "var(--color-critical)"
-                : source === "empty"
-                  ? "var(--color-warning)"
-                  : "var(--color-text-tertiary)",
+              : source === "demo"
+                ? "var(--color-info)"
+                : source === "error"
+                  ? "var(--color-critical)"
+                  : source === "empty"
+                    ? "var(--color-warning)"
+                    : "var(--color-text-tertiary)",
           fontSize: 10,
           fontFamily: "var(--font-mono)",
           fontWeight: 600
@@ -1627,21 +1953,50 @@ function LiveFilters({
         title={
           source === "live"
             ? "Feed alimentado por /v1/audit-events real del gateway"
-            : source === "error"
-              ? "Sin conexión con el gateway"
-              : source === "empty"
-                ? "Gateway responde pero el agente no ha emitido eventos"
-                : "Cargando…"
+            : source === "demo"
+              ? "Modo demo · dataset simulado para validar diseño"
+              : source === "error"
+                ? "Sin conexión con el gateway"
+                : source === "empty"
+                  ? "Gateway responde pero el agente no ha emitido eventos"
+                  : "Cargando…"
         }
       >
         {source === "live"
           ? "● live"
-          : source === "error"
-            ? "✕ offline"
-            : source === "empty"
-              ? "○ silent"
-              : "…"}
+          : source === "demo"
+            ? `▶ demo ${demoProgress.current}/${demoProgress.total}${demoRunning ? "" : " ✓"}`
+            : source === "error"
+              ? "✕ offline"
+              : source === "empty"
+                ? "○ silent"
+                : "…"}
       </span>
+      <button
+        type="button"
+        onClick={() => onDemoToggle(!demoMode)}
+        title={
+          demoMode
+            ? "Apagar modo demo · vuelve al feed real de /v1/audit-events"
+            : "Encender modo demo · simula al agente trabajando para validar diseño"
+        }
+        className="inline-flex items-center transition-colors"
+        style={{
+          gap: 4,
+          padding: "4px 8px",
+          borderRadius: 9999,
+          background: demoMode ? "var(--color-info-soft)" : "var(--color-surface-sunken)",
+          border: demoMode ? "none" : "1px solid var(--color-border)",
+          color: demoMode ? "var(--color-info)" : "var(--color-text-secondary)",
+          cursor: "pointer",
+          fontSize: 10,
+          fontFamily: "var(--font-caption)",
+          fontWeight: 600
+        }}
+      >
+        <Sparkles size={10} strokeWidth={2} />
+        Demo {demoMode ? "ON" : "OFF"}
+      </button>
       <button
         type="button"
         onClick={() => onAutoScroll(!autoScroll)}
