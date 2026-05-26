@@ -243,7 +243,10 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
             title: event.title,
             status: event.status,
             createdAt: event.createdAt,
-            actorId: event.actorId
+            actorId: event.actorId,
+            // Bloque 10 T7C/T8: si viene del supervisor multi-agent, parentTaskId
+            // apunta al supervisor padre; el sidebar lo renderea anidado.
+            parentTaskId: event.parentTaskId ?? null
           });
           const activeTask = activeTaskIdRef.current ? s.tasks.get(activeTaskIdRef.current) ?? null : null;
           if (event.status === "running" && (!activeTask || activeTask.status !== "running")) {
@@ -456,7 +459,8 @@ function taskFromSnapshot(t: CanvasLiveTaskSnapshotWire): LiveTask {
     title: t.title,
     status: t.status,
     createdAt: t.createdAt,
-    actorId: t.actorId
+    actorId: t.actorId,
+    parentTaskId: t.parentTaskId ?? null
   };
 }
 
