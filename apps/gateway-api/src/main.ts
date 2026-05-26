@@ -171,6 +171,10 @@ import {
   handleSmtpProvisionHttp
 } from "./routes/smtp-provisioning.ts";
 import {
+  handleWarmupStartError,
+  handleWarmupStartHttp
+} from "./routes/warmup.ts";
+import {
   handleDomainCompareError,
   handleDomainCompareHttp
 } from "./routes/domains-compare.ts";
@@ -665,6 +669,26 @@ const server = createServer(async (request, response) => {
         });
       } catch (error) {
         if (handleSmtpProvisionError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/warmup/start") {
+      try {
+        return await handleWarmupStartHttp({
+          request,
+          response,
+          auditLog,
+          sshRunner: smtpSshRunner,
+          workspace: openClawWorkspace,
+          canvasLiveEvents,
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          env: process.env
+        });
+      } catch (error) {
+        if (handleWarmupStartError(error, response)) {
           return;
         }
         throw error;
