@@ -356,7 +356,8 @@ export class CanvasLiveEventService {
           status: event.status,
           createdAt: existing?.createdAt ?? event.updatedAt,
           updatedAt: event.updatedAt,
-          actorId: existing?.actorId ?? "openclaw"
+          actorId: existing?.actorId ?? "openclaw",
+          ...(existing?.lastAction ? { lastAction: existing.lastAction } : {})
         });
         return;
       }
