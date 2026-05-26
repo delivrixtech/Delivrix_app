@@ -22,6 +22,13 @@ export type CanvasLiveArtifactApprovalStatusWire = "pending" | "approved" | "rej
 export interface CanvasLiveTaskDeclareEventWire {
   type: "oc.task.declare";
   taskId: string;
+  /**
+   * Si está presente, esta task es sub-task del taskId indicado.
+   * Bloque 10 T7C/T8 (commit 79cd89f) — supervisor multi-agent spawneé
+   * N sub-agentes y el contract los reporta con parentTaskId apuntando al
+   * supervisor padre para que el frontend los renderee anidados.
+   */
+  parentTaskId?: string;
   title: string;
   status: CanvasLiveTaskStatusWire;
   createdAt: string;
@@ -139,6 +146,8 @@ export type CanvasLiveEventWire =
 
 export interface CanvasLiveTaskSnapshotWire {
   taskId: string;
+  /** Mirror del contract canónico (commit 79cd89f). Ver CanvasLiveTaskDeclareEventWire. */
+  parentTaskId?: string;
   title: string;
   status: CanvasLiveTaskStatusWire;
   createdAt: string;
@@ -198,6 +207,12 @@ export interface LiveTask {
   subPath?: string;
   createdAt: string;
   actorId: string;
+  /**
+   * Si está presente, esta tarea es sub-tarea del taskId indicado. Permite
+   * que el supervisor multi-agent (Bloque 10 T7C) spawneé N sub-agentes y el
+   * frontend los renderee anidados bajo el padre con indent visual.
+   */
+  parentTaskId?: string | null;
 }
 
 export interface LiveApiAction {

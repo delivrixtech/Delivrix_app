@@ -35,6 +35,7 @@ import {
   Loader2,
   Lock,
   MessageSquare,
+  Plus,
   Search,
   Sparkles,
   TriangleAlert,
@@ -275,6 +276,10 @@ export function DomainsSection() {
 
         {/* Side rail */}
         <aside className="flex flex-col" style={{ gap: 16 }}>
+          <OnboardEndToEndCard
+            currentQuery={query}
+            currentAvailability={availability.data?.availability ?? null}
+          />
           <PricesPanel prices={prices} />
           <AskOpenClawCard currentQuery={query} />
           <PhaseStatusCard />
@@ -856,6 +861,158 @@ function PricesPanel({ prices }: { prices: ReturnType<typeof usePrices> }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/* ============================================================
+ * OnboardEndToEndCard — dispara el flow viernes-demo completo
+ *
+ * Pieza 2 del sprint demo viernes (Bloque 10). Equivalente al
+ * OnboardNewDomainCard del Sender Pool pero situado en Domains para que
+ * el operador no tenga que cambiar de feature después de buscar/elegir
+ * un dominio.
+ *
+ * Si el input tiene un dominio AVAILABLE, lo pre-llena en el prompt.
+ * Si no, deja que OpenClaw proponga 3 candidatos.
+ * ============================================================ */
+
+function OnboardEndToEndCard({
+  currentQuery,
+  currentAvailability
+}: {
+  currentQuery: string;
+  currentAvailability: DomainAvailabilityStatus | null;
+}) {
+  const intent = useOpenClawIntent();
+  const { toast } = useToast();
+  const [flowState, setFlowState] = useState<"idle" | "in_progress">("idle");
+
+  const trimmed = currentQuery.trim().toLowerCase();
+  const validInput = isPlausibleDomain(trimmed);
+  const isAvailableForCurrent = validInput && currentAvailability === "AVAILABLE";
+
+  const handleOnboard = useCallback(() => {
+    if (flowState === "in_progress") return;
+    setFlowState("in_progress");
+
+    // Prompt context-aware: si hay dominio AVAILABLE, va con ese; si no, OpenClaw propone.
+    const prompt = isAvailableForCurrent
+      ? `Acción del operador: onboardar el dominio "${trimmed}" end-to-end como sender Delivrix.
+
+Acabo de verificar que está disponible en Route53. Por favor:
+1. Confirma precio (registration + renewal) y prepara la propuesta de compra (Fase 2 · doble aprobación).
+2. Una vez aprobada la compra, configura el flow completo:
+   - Hosted zone Route53 + records DNS básicos.
+   - SPF + DKIM (RSA 2048) + DMARC (p=none para warmup).
+   - Provisionar VPS Webdock profile bit (Finland).
+   - Install stack SMTP (postfix + opendkim + certbot TLS).
+   - Bind dominio al servidor (MX + A).
+   - Arrancar warmup con 3 emails seed a las inboxes configuradas.
+3. Materializa cada paso en Canvas Live como artifact aprovable.
+4. NO ejecutes la compra real sin aprobación humana doble en el artifact.`
+      : `Acción del operador: onboardar un nuevo dominio sender para Delivrix end-to-end.
+
+Por favor:
+1. Propon 3 dominios disponibles relevantes para envío de email (.com o .net, máximo 18 chars, brandables).
+2. Para el dominio que recomiendes, prepara el flow completo:
+   - Compra en Route53 (con gates de aprobación).
+   - Hosted zone + records DNS básicos.
+   - SPF + DKIM (RSA 2048) + DMARC (p=none para warmup).
+   - Provisionar VPS Webdock profile bit (Finland).
+   - Install stack SMTP (postfix + opendkim + certbot TLS).
+   - Bind dominio al servidor (MX + A).
+   - Iniciar warmup con 3 emails seed.
+3. Materializa cada paso en Canvas Live como artifact aprovable.
+4. NO ejecutes la compra real sin mi aprobación explícita en el artifact.`;
+
+    intent.sendIntent(prompt, "domains:onboard-end-to-end");
+    toast.info("Enviando a OpenClaw · Onboarding end-to-end", {
+      description: isAvailableForCurrent
+        ? `Flow para "${trimmed}". Cada paso crítico requiere tu aprobación.`
+        : "OpenClaw propondrá candidatos y luego ejecutará el flow paso a paso.",
+      duration: 3500
+    });
+    setTimeout(() => setFlowState("idle"), 2000);
+  }, [flowState, intent, isAvailableForCurrent, toast, trimmed]);
+
+  return (
+    <div
+      className="flex flex-col"
+      style={{
+        gap: 12,
+        padding: 18,
+        background: "var(--color-surface)",
+        border: "1px solid var(--color-border-strong, var(--color-border))",
+        borderRadius: 10
+      }}
+    >
+      <div className="flex items-center" style={{ gap: 8 }}>
+        <Sparkles size={14} strokeWidth={1.75} style={{ color: "var(--color-accent-tertiary)" }} />
+        <span
+          className="font-[family-name:var(--font-sans)] font-semibold"
+          style={{ fontSize: 13, color: "var(--color-text-primary)" }}
+        >
+          Onboard end-to-end
+        </span>
+      </div>
+      <p
+        className="m-0 font-[family-name:var(--font-caption)]"
+        style={{ fontSize: 11, color: "var(--color-text-secondary)", lineHeight: 1.55 }}
+      >
+        Dispara el flow completo con OpenClaw: compra · DNS · SPF/DKIM/DMARC · VPS · SMTP · warmup. Cada paso crítico requiere tu aprobación.
+      </p>
+      {isAvailableForCurrent ? (
+        <div
+          className="flex items-center"
+          style={{
+            gap: 6,
+            padding: "6px 8px",
+            background: "var(--color-success-soft)",
+            border: "1px solid var(--color-success)",
+            borderRadius: 6
+          }}
+        >
+          <CheckCircle2 size={12} strokeWidth={2} style={{ color: "var(--color-success)", flexShrink: 0 }} />
+          <span
+            className="font-[family-name:var(--font-mono)] truncate"
+            style={{ fontSize: 11, color: "var(--color-success)", fontWeight: 500, minWidth: 0 }}
+            title={trimmed}
+          >
+            {trimmed}
+          </span>
+        </div>
+      ) : null}
+      <button
+        type="button"
+        onClick={handleOnboard}
+        disabled={flowState === "in_progress"}
+        className="inline-flex items-center justify-center font-[family-name:var(--font-sans)] font-semibold transition-colors"
+        style={{
+          gap: 8,
+          padding: "9px 14px",
+          borderRadius: 8,
+          background: "var(--color-text-primary)",
+          color: "var(--color-bg)",
+          border: "none",
+          fontSize: 13,
+          cursor: flowState === "in_progress" ? "wait" : "pointer",
+          opacity: flowState === "in_progress" ? 0.7 : 1
+        }}
+      >
+        {flowState === "in_progress" ? (
+          <>
+            <Loader2 size={14} strokeWidth={1.75} className="animate-spin" />
+            Preparando onboarding…
+          </>
+        ) : (
+          <>
+            <Plus size={14} strokeWidth={1.75} />
+            {isAvailableForCurrent ? `Onboard ${trimmed}` : "Onboard con OpenClaw"}
+            <ArrowRight size={12} strokeWidth={1.75} />
+          </>
+        )}
+      </button>
     </div>
   );
 }

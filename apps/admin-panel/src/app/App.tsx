@@ -55,6 +55,7 @@ const LearningSection = lazy(async () => ({ default: (await import("../features/
 const SafetySection = lazy(async () => ({ default: (await import("../features/safety/index.tsx")).SafetySection }));
 const InfrastructureSection = lazy(async () => ({ default: (await import("../features/infrastructure/index.tsx")).InfrastructureSection }));
 const DomainsSection = lazy(async () => ({ default: (await import("../features/domains/index.tsx")).DomainsSection }));
+const SenderPoolSection = lazy(async () => ({ default: (await import("../features/sender-pool/index.tsx")).SenderPoolSection }));
 const ChatWidget = lazy(async () => ({ default: (await import("../features/chat/ChatWidget.tsx")).ChatWidget }));
 
 function readInitialSection(): SectionId {
@@ -716,6 +717,8 @@ function SectionView({
       return <Suspense fallback={<SectionLoadingState />}><InfrastructureSection /></Suspense>;
     case "domains":
       return <Suspense fallback={<SectionLoadingState />}><DomainsSection /></Suspense>;
+    case "sender-pool":
+      return <Suspense fallback={<SectionLoadingState />}><SenderPoolSection /></Suspense>;
     default: {
       const _exhaustive: never = section;
       void _exhaustive;
@@ -880,6 +883,10 @@ function toneForSection(section: SectionId, data: DashboardData | undefined): To
     case "domains":
       // Route53 Fase 1 live; sin propios todavía → neutral. Cuando haya
       // propios o propuestas pendientes, calcular tono desde useOwned().
+      return "neutral";
+    case "sender-pool":
+      // Bloque 10 demo viernes — endpoint pending hasta que Codex termine.
+      // Neutral mientras tanto; cuando haya datos, tono según estado warmup global.
       return "neutral";
     default: {
       const _exhaustive: never = section;

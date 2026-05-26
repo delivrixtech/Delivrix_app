@@ -18,8 +18,9 @@
  * demo importable que simula el flujo de auditoría de los 16 dominios IONOS.
  */
 
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import type { LiveTask, LiveAction, LiveArtifact, LiveArtifactBlock } from "./live-tool-types.ts";
+import { WorkspaceBrowser } from "./workspace-browser.tsx";
 
 /* ============================================================
  * <LiveTool> — root del 3-pane
@@ -126,26 +127,81 @@ function LiveToolHeader({ task, isConnected }: { task: LiveTask | null; isConnec
  * ============================================================ */
 
 /**
- * Agrupa tareas con mismo title que se crearon dentro de una ventana corta
- * para evitar duplicación visual cuando el backend emite oc.task.declare
- * por cada interacción del operador con la misma intención (ej. "Inventario
- * IONOS" repetido). La tarea representante es la más reciente; las otras
- * se cuentan como repeticiones.
+ * Estructura jerárquica de tareas para renderizar padres con sub-tareas
+ * anidadas debajo. Soporta el caso multi-agent (Bloque 10 T7C): un task
+ * supervisor padre con N sub-tasks corriendo en paralelo.
  */
-function dedupTasks(tasks: LiveTask[]): Array<LiveTask & { repeatCount: number }> {
-  const groups = new Map<string, LiveTask[]>();
+interface TaskNode extends LiveTask {
+  repeatCount: number;
+  children: TaskNode[];
+}
+
+/**
+ * Construye el árbol de tareas: agrupa por parentTaskId, dedup por title
+ * dentro de cada nivel, ordena descendente por createdAt.
+ *
+ * 1) Las tareas raíz (sin parentTaskId) son el nivel 0.
+ * 2) Cada una puede tener N children (tareas con parentTaskId apuntando
+ *    a la raíz).
+ * 3) Dentro de cada nivel, dedupTitle agrupa duplicados consecutivos.
+ *    Esto evita el caso "Inventario IONOS ×6" cuando el operador pregunta
+ *    lo mismo varias veces.
+ */
+function buildTaskTree(tasks: LiveTask[]): TaskNode[] {
+  // Index por id para resolver parents rápido
+  const byId = new Map<string, LiveTask>();
+  for (const t of tasks) byId.set(t.id, t);
+
+  // Agrupar por parentTaskId
+  const childrenByParent = new Map<string | null, LiveTask[]>();
   for (const t of tasks) {
-    const arr = groups.get(t.title);
+    const parent = t.parentTaskId ?? null;
+    const arr = childrenByParent.get(parent);
     if (arr) arr.push(t);
-    else groups.set(t.title, [t]);
+    else childrenByParent.set(parent, [t]);
   }
-  const out: Array<LiveTask & { repeatCount: number }> = [];
-  for (const list of groups.values()) {
-    list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    out.push({ ...list[0], repeatCount: list.length });
+
+  function dedupAndSort(list: LiveTask[]): Array<{ task: LiveTask; repeatCount: number }> {
+    const groups = new Map<string, LiveTask[]>();
+    for (const t of list) {
+      const arr = groups.get(t.title);
+      if (arr) arr.push(t);
+      else groups.set(t.title, [t]);
+    }
+    const out: Array<{ task: LiveTask; repeatCount: number }> = [];
+    for (const items of groups.values()) {
+      items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      out.push({ task: items[0], repeatCount: items.length });
+    }
+    out.sort((a, b) => b.task.createdAt.localeCompare(a.task.createdAt));
+    return out;
   }
-  out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  return out;
+
+  function buildNode(taskId: string, repeatCount: number): TaskNode {
+    const task = byId.get(taskId);
+    if (!task) {
+      // No debería pasar; defensivo.
+      return {
+        id: taskId,
+        title: "(desconocida)",
+        status: "idle",
+        createdAt: new Date(0).toISOString(),
+        actorId: "",
+        repeatCount,
+        children: []
+      };
+    }
+    const rawChildren = childrenByParent.get(taskId) ?? [];
+    const dedupedChildren = dedupAndSort(rawChildren);
+    return {
+      ...task,
+      repeatCount,
+      children: dedupedChildren.map((c) => buildNode(c.task.id, c.repeatCount))
+    };
+  }
+
+  const roots = dedupAndSort(childrenByParent.get(null) ?? []);
+  return roots.map((r) => buildNode(r.task.id, r.repeatCount));
 }
 
 function taskStatusLabel(status: LiveTask["status"]): string {
@@ -183,20 +239,21 @@ function TasksColumn({
   activeTaskId: string | null;
   onSelect: (id: string) => void;
 }) {
-  const grouped = dedupTasks(tasks);
+  const tree = buildTaskTree(tasks);
+  const totalShown = tree.length + tree.reduce((acc, n) => acc + countDescendants(n), 0);
   return (
     <aside
       className="flex flex-col"
       style={{
-        width: 220,
+        width: 240,
         flexShrink: 0,
         borderRight: "1px solid var(--color-border)",
         background: "var(--color-surface)"
       }}
     >
-      <ColHead label={`Tareas · ${grouped.length}`} />
+      <ColHead label={`Tareas · ${totalShown}`} />
       <div className="flex flex-col" style={{ padding: 8, gap: 4, overflowY: "auto" }}>
-        {grouped.length === 0 ? (
+        {tree.length === 0 ? (
           <span
             className="font-[family-name:var(--font-caption)]"
             style={{ fontSize: 11, color: "var(--color-text-tertiary)", padding: "8px 10px", lineHeight: 1.5 }}
@@ -204,86 +261,179 @@ function TasksColumn({
             Sin tareas activas. Cuando el agente arranque, aparece acá.
           </span>
         ) : null}
-        {grouped.map((t) => {
-          const isActive = t.id === activeTaskId;
-          const isRunning = t.status === "running";
-          const isIdle = t.status === "idle";
-          return (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => onSelect(t.id)}
-              className="flex flex-col transition-colors"
-              style={{
-                gap: 4,
-                padding: "9px 10px",
-                borderRadius: 8,
-                background: isActive ? "var(--color-surface-sunken)" : "transparent",
-                border: "0.5px solid",
-                borderColor: isActive ? "var(--color-border-strong, var(--color-border))" : "transparent",
-                cursor: "pointer",
-                textAlign: "left"
-              }}
-            >
-              <div className="flex items-center" style={{ gap: 8 }}>
-                <span
-                  aria-hidden="true"
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 999,
-                    background: pipColor(t.status),
-                    flexShrink: 0,
-                    animation: isRunning ? "live-pip 1.3s ease-in-out infinite" : "none"
-                  }}
-                />
-                <span
-                  className="font-[family-name:var(--font-sans)] truncate"
-                  style={{
-                    fontSize: 12.5,
-                    fontWeight: isActive ? 500 : 400,
-                    lineHeight: 1.3,
-                    color: isIdle ? "var(--color-text-tertiary)" : "var(--color-text-primary)",
-                    flex: 1,
-                    minWidth: 0
-                  }}
-                >
-                  {t.title}
-                </span>
-                {t.repeatCount > 1 ? (
-                  <span
-                    className="font-[family-name:var(--font-mono)]"
-                    style={{
-                      fontSize: 10,
-                      padding: "1px 5px",
-                      borderRadius: 999,
-                      background: "var(--color-surface-sunken)",
-                      color: "var(--color-text-tertiary)",
-                      fontWeight: 500
-                    }}
-                  >
-                    ×{t.repeatCount}
-                  </span>
-                ) : null}
-              </div>
-              <div
-                className="flex items-center font-[family-name:var(--font-mono)]"
-                style={{
-                  gap: 6,
-                  fontSize: 10,
-                  color: "var(--color-text-tertiary)",
-                  paddingLeft: 14
-                }}
-              >
-                <span style={{ color: pipColor(t.status), fontWeight: 500 }}>{taskStatusLabel(t.status)}</span>
-                <span aria-hidden="true">·</span>
-                <span>hace {relativeTimeShort(t.createdAt)}</span>
-              </div>
-            </button>
-          );
-        })}
+        {tree.map((node) => (
+          <TaskNodeRow
+            key={node.id}
+            node={node}
+            level={0}
+            activeTaskId={activeTaskId}
+            onSelect={onSelect}
+          />
+        ))}
       </div>
     </aside>
+  );
+}
+
+function countDescendants(node: TaskNode): number {
+  let count = node.children.length;
+  for (const child of node.children) {
+    count += countDescendants(child);
+  }
+  return count;
+}
+
+/**
+ * Renderer recursivo de un nodo de tarea + sus hijos anidados.
+ * Indent visual 14px por nivel + línea vertical conectando padre con hijos.
+ */
+function TaskNodeRow({
+  node,
+  level,
+  activeTaskId,
+  onSelect
+}: {
+  node: TaskNode;
+  level: number;
+  activeTaskId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const isActive = node.id === activeTaskId;
+  const isRunning = node.status === "running";
+  const isIdle = node.status === "idle";
+  const hasChildren = node.children.length > 0;
+  const indentLeft = level * 14;
+  return (
+    <div className="flex flex-col" style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => onSelect(node.id)}
+        className="flex flex-col transition-colors"
+        style={{
+          gap: 4,
+          padding: "9px 10px",
+          paddingLeft: 10 + indentLeft,
+          borderRadius: 8,
+          background: isActive ? "var(--color-surface-sunken)" : "transparent",
+          border: "0.5px solid",
+          borderColor: isActive ? "var(--color-border-strong, var(--color-border))" : "transparent",
+          cursor: "pointer",
+          textAlign: "left",
+          position: "relative"
+        }}
+      >
+        {/* Línea vertical conectora del padre al hijo */}
+        {level > 0 ? (
+          <span
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              left: indentLeft - 6,
+              top: 0,
+              bottom: "50%",
+              width: 1,
+              background: "var(--color-border)"
+            }}
+          />
+        ) : null}
+        {level > 0 ? (
+          <span
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              left: indentLeft - 6,
+              top: "50%",
+              width: 8,
+              height: 1,
+              background: "var(--color-border)"
+            }}
+          />
+        ) : null}
+        <div className="flex items-center" style={{ gap: 8 }}>
+          <span
+            aria-hidden="true"
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: 999,
+              background: pipColor(node.status),
+              flexShrink: 0,
+              animation: isRunning ? "live-pip 1.3s ease-in-out infinite" : "none"
+            }}
+          />
+          <span
+            className="font-[family-name:var(--font-sans)] truncate"
+            style={{
+              fontSize: level === 0 ? 12.5 : 11.5,
+              fontWeight: isActive ? 500 : 400,
+              lineHeight: 1.3,
+              color: isIdle ? "var(--color-text-tertiary)" : "var(--color-text-primary)",
+              flex: 1,
+              minWidth: 0
+            }}
+          >
+            {node.title}
+          </span>
+          {hasChildren ? (
+            <span
+              className="font-[family-name:var(--font-mono)]"
+              style={{
+                fontSize: 10,
+                padding: "1px 5px",
+                borderRadius: 999,
+                background: "var(--color-info-soft)",
+                color: "var(--color-info)",
+                fontWeight: 500
+              }}
+              title={`${node.children.length} sub-tareas en paralelo`}
+            >
+              {node.children.length} sub
+            </span>
+          ) : null}
+          {node.repeatCount > 1 ? (
+            <span
+              className="font-[family-name:var(--font-mono)]"
+              style={{
+                fontSize: 10,
+                padding: "1px 5px",
+                borderRadius: 999,
+                background: "var(--color-surface-sunken)",
+                color: "var(--color-text-tertiary)",
+                fontWeight: 500
+              }}
+            >
+              ×{node.repeatCount}
+            </span>
+          ) : null}
+        </div>
+        <div
+          className="flex items-center font-[family-name:var(--font-mono)]"
+          style={{
+            gap: 6,
+            fontSize: 10,
+            color: "var(--color-text-tertiary)",
+            paddingLeft: 14
+          }}
+        >
+          <span style={{ color: pipColor(node.status), fontWeight: 500 }}>{taskStatusLabel(node.status)}</span>
+          <span aria-hidden="true">·</span>
+          <span>hace {relativeTimeShort(node.createdAt)}</span>
+        </div>
+      </button>
+      {hasChildren ? (
+        <div className="flex flex-col" style={{ gap: 4, marginTop: 4, position: "relative" }}>
+          {node.children.map((child) => (
+            <TaskNodeRow
+              key={child.id}
+              node={child}
+              level={level + 1}
+              activeTaskId={activeTaskId}
+              onSelect={onSelect}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -345,13 +495,13 @@ function ActionColumn({ action, activeTask }: { action: LiveAction | null; activ
           );
         })}
       </div>
-      <div className="flex flex-col" style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-        {action == null ? (
+      <div className="flex flex-col" style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+        {tab === "files" ? (
+          <FilesTabView action={action} />
+        ) : action == null ? (
           <ActionEmpty tab={tab} activeTask={activeTask} />
         ) : tab === "api" && action.kind === "api" ? (
           <ApiActionView action={action} />
-        ) : tab === "files" && action.kind === "file" ? (
-          <FileActionView action={action} />
         ) : tab === "audit" && action.kind === "audit" ? (
           <AuditActionView action={action} />
         ) : (
@@ -493,6 +643,77 @@ function ApiActionView({ action }: { action: Extract<LiveAction, { kind: "api" }
           {action.next.context ? ` · ${action.next.context}` : ""}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * FilesTabView — tab Archivos del centro.
+ *
+ * Composición:
+ *   - Strip superior con la última file action del agente (si la hay).
+ *   - WorkspaceBrowser ocupando el resto del alto: árbol persistente
+ *     /data/.openclaw/workspace + preview de archivo seleccionado.
+ *
+ * Acto 2 de la demo viernes: el operador abre este tab y muestra que el
+ * agente RECUERDA — cada ejecución dejó rastro, cada falla generó lesson,
+ * el inventory tiene el estado actual del mundo según OpenClaw.
+ */
+function FilesTabView({ action }: { action: LiveAction | null }) {
+  const fileAction = action?.kind === "file" ? action : null;
+  return (
+    <div className="flex flex-col" style={{ flex: 1, minHeight: 0 }}>
+      {fileAction ? (
+        <div
+          style={{
+            padding: "8px 14px",
+            background: "var(--color-surface)",
+            borderBottom: "1px solid var(--color-border)",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexShrink: 0
+          }}
+        >
+          <span
+            className="font-[family-name:var(--font-caption)] font-semibold uppercase"
+            style={{
+              fontSize: 9.5,
+              letterSpacing: "0.6px",
+              color: "var(--color-text-tertiary)"
+            }}
+          >
+            Actividad reciente
+          </span>
+          <span
+            className="font-[family-name:var(--font-mono)]"
+            style={{
+              fontSize: 10.5,
+              padding: "1px 6px",
+              borderRadius: 4,
+              background: "var(--color-accent-tertiary-soft, var(--color-surface-sunken))",
+              color: "var(--color-accent-tertiary)",
+              fontWeight: 500
+            }}
+          >
+            {fileAction.operation.toUpperCase()}
+          </span>
+          <span
+            className="font-[family-name:var(--font-mono)] truncate"
+            style={{ fontSize: 11, color: "var(--color-text-secondary)", flex: 1, minWidth: 0 }}
+            title={fileAction.path}
+          >
+            {fileAction.path}
+          </span>
+          <span
+            className="font-[family-name:var(--font-mono)]"
+            style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
+          >
+            hace {relativeTimeShort(fileAction.occurredAt)}
+          </span>
+        </div>
+      ) : null}
+      <WorkspaceBrowser />
     </div>
   );
 }

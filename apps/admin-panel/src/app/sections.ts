@@ -14,6 +14,7 @@ import {
   Globe,
   GraduationCap,
   LayoutDashboard,
+  SendHorizontal,
   Server,
   ShieldCheck,
   Workflow,
@@ -31,7 +32,8 @@ export type SectionId =
   | "learning"
   | "safety"
   | "infrastructure"
-  | "domains";
+  | "domains"
+  | "sender-pool";
 
 export type SectionGroup = "estado" | "operacion" | "barandillas";
 
@@ -156,6 +158,17 @@ export const sections: SectionDescriptor[] = [
     description:
       "Discover/propose vía AWS Route53 Domains. Compra real bloqueada hasta Fase 2 con doble aprobación. Cada consulta queda en audit chain.",
     endpoint: "/v1/domains/availability"
+  },
+  {
+    id: "sender-pool",
+    navLabel: "Sender Pool",
+    group: "operacion",
+    icon: SendHorizontal,
+    eyebrow: "Bloque 10 · Demo viernes",
+    title: "Dominios sender en producción y warmup.",
+    description:
+      "Estado actual de los dominios sender pool: cuáles están provisionados, en qué etapa de warmup, su deliverability. Onboarding nuevo dispara flow end-to-end con OpenClaw (compra + DNS + SMTP + warmup).",
+    endpoint: "/v1/sender-pool/status"
   }
 ];
 
