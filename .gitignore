@@ -12,6 +12,7 @@ yarn-error.log*
 .turbo/
 .cache/
 runtime/
+state/canvas-live/*.jsonl
 clonado/
 .aws-secrets/
 .venv-awscli/

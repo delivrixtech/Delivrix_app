@@ -148,6 +148,12 @@ import {
   handleDomainCompareHttp
 } from "./routes/domains-compare.ts";
 import {
+  handleCanvasLiveError,
+  handleCanvasLiveEventIngestHttp,
+  handleCanvasLiveStateHttp,
+  routeCanvasArtifactMutation
+} from "./routes/canvas-live.ts";
+import {
   handlePorkbunDomainAvailabilityHttp,
   handlePorkbunDomainDiscoverError,
   handlePorkbunDomainPricesHttp,
@@ -156,6 +162,7 @@ import {
   handlePorkbunPingHttp
 } from "./routes/domains-porkbun.ts";
 import { handleInfrastructureInventoryHttp } from "./routes/infrastructure.ts";
+import { CanvasLiveEventService } from "./services/canvas-live-events.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
@@ -188,6 +195,7 @@ const openClawChatProxy = new OpenClawChatProxy(auditLog, {
   bridgeKind: openClawSshBridge ? "ssh" : "http",
   sshBridge: openClawSshBridge
 });
+const canvasLiveEvents = new CanvasLiveEventService();
 const defaultStuckJobThresholdMs = Number(process.env.STUCK_JOB_THRESHOLD_MS ?? 5 * 60 * 1000);
 const requestRateLimitProfile = {
   campaignDailyLimit: Number(process.env.RATE_LIMIT_CAMPAIGN_DAILY ?? 100),
@@ -428,6 +436,50 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/v1/openclaw/chat/send") {
       const body = await readJson<ChatSendRequest>(request);
       return handleChatSendHttp(openClawChatProxy, body, response);
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/canvas/live/state")) {
+      return handleCanvasLiveStateHttp({
+        request,
+        response,
+        service: canvasLiveEvents,
+        auditLog
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/canvas/live/events") {
+      try {
+        return await handleCanvasLiveEventIngestHttp({
+          request,
+          response,
+          service: canvasLiveEvents,
+          auditLog
+        });
+      } catch (error) {
+        if (handleCanvasLiveError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.url?.startsWith("/v1/canvas/artifact/")) {
+      try {
+        const routed = routeCanvasArtifactMutation({
+          request,
+          response,
+          service: canvasLiveEvents,
+          auditLog
+        });
+        if (routed) {
+          return await routed;
+        }
+      } catch (error) {
+        if (handleCanvasLiveError(error, response)) {
+          return;
+        }
+        throw error;
+      }
     }
 
     if (request.method === "GET" && request.url === "/v1/operating-north") {
@@ -3818,6 +3870,11 @@ server.on("upgrade", (request, socket, head) => {
   const url = requestUrl(request);
   if (request.method === "GET" && url.pathname === "/v1/openclaw/chat/stream") {
     openClawChatProxy.acceptPanelSocket(request, socket, head);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/canvas/live/stream") {
+    canvasLiveEvents.acceptPanelSocket(request, socket, head);
     return;
   }
 
