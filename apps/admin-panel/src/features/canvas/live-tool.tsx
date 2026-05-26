@@ -125,6 +125,55 @@ function LiveToolHeader({ task, isConnected }: { task: LiveTask | null; isConnec
  * Sidebar de tareas
  * ============================================================ */
 
+/**
+ * Agrupa tareas con mismo title que se crearon dentro de una ventana corta
+ * para evitar duplicación visual cuando el backend emite oc.task.declare
+ * por cada interacción del operador con la misma intención (ej. "Inventario
+ * IONOS" repetido). La tarea representante es la más reciente; las otras
+ * se cuentan como repeticiones.
+ */
+function dedupTasks(tasks: LiveTask[]): Array<LiveTask & { repeatCount: number }> {
+  const groups = new Map<string, LiveTask[]>();
+  for (const t of tasks) {
+    const arr = groups.get(t.title);
+    if (arr) arr.push(t);
+    else groups.set(t.title, [t]);
+  }
+  const out: Array<LiveTask & { repeatCount: number }> = [];
+  for (const list of groups.values()) {
+    list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    out.push({ ...list[0], repeatCount: list.length });
+  }
+  out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return out;
+}
+
+function taskStatusLabel(status: LiveTask["status"]): string {
+  switch (status) {
+    case "running":
+      return "en curso";
+    case "awaiting_approval":
+      return "esperando";
+    case "completed":
+      return "completada";
+    case "failed":
+      return "fallida";
+    case "idle":
+    default:
+      return "inactiva";
+  }
+}
+
+function relativeTimeShort(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "—";
+  const diff = Math.max(0, Date.now() - t);
+  if (diff < 60_000) return `${Math.max(1, Math.floor(diff / 1000))}s`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`;
+  return `${Math.floor(diff / 86_400_000)}d`;
+}
+
 function TasksColumn({
   tasks,
   activeTaskId,
@@ -134,53 +183,102 @@ function TasksColumn({
   activeTaskId: string | null;
   onSelect: (id: string) => void;
 }) {
+  const grouped = dedupTasks(tasks);
   return (
     <aside
       className="flex flex-col"
       style={{
-        width: 200,
+        width: 220,
         flexShrink: 0,
         borderRight: "1px solid var(--color-border)",
         background: "var(--color-surface)"
       }}
     >
-      <ColHead label="Tareas" />
-      <div className="flex flex-col" style={{ padding: 8, gap: 2, overflowY: "auto" }}>
-        {tasks.length === 0 ? (
+      <ColHead label={`Tareas · ${grouped.length}`} />
+      <div className="flex flex-col" style={{ padding: 8, gap: 4, overflowY: "auto" }}>
+        {grouped.length === 0 ? (
           <span
             className="font-[family-name:var(--font-caption)]"
-            style={{ fontSize: 11, color: "var(--color-text-tertiary)", padding: "8px 10px" }}
+            style={{ fontSize: 11, color: "var(--color-text-tertiary)", padding: "8px 10px", lineHeight: 1.5 }}
           >
-            Sin tareas activas.
+            Sin tareas activas. Cuando el agente arranque, aparece acá.
           </span>
         ) : null}
-        {tasks.map((t) => {
+        {grouped.map((t) => {
           const isActive = t.id === activeTaskId;
+          const isRunning = t.status === "running";
+          const isIdle = t.status === "idle";
           return (
             <button
               key={t.id}
               type="button"
               onClick={() => onSelect(t.id)}
-              className="flex items-center transition-colors"
+              className="flex flex-col transition-colors"
               style={{
-                gap: 10,
+                gap: 4,
                 padding: "9px 10px",
-                borderRadius: 6,
+                borderRadius: 8,
                 background: isActive ? "var(--color-surface-sunken)" : "transparent",
-                border: "0.5px solid transparent",
-                borderColor: isActive ? "var(--color-border)" : "transparent",
-                color: t.status === "idle" ? "var(--color-text-tertiary)" : "var(--color-text-primary)",
+                border: "0.5px solid",
+                borderColor: isActive ? "var(--color-border-strong, var(--color-border))" : "transparent",
                 cursor: "pointer",
                 textAlign: "left"
               }}
             >
-              <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: pipColor(t.status), flexShrink: 0, animation: t.status === "running" ? "live-pip 1.3s ease-in-out infinite" : "none" }} />
-              <span
-                className="font-[family-name:var(--font-sans)] truncate"
-                style={{ fontSize: 12, fontWeight: isActive ? 500 : 400, lineHeight: 1.3 }}
+              <div className="flex items-center" style={{ gap: 8 }}>
+                <span
+                  aria-hidden="true"
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: 999,
+                    background: pipColor(t.status),
+                    flexShrink: 0,
+                    animation: isRunning ? "live-pip 1.3s ease-in-out infinite" : "none"
+                  }}
+                />
+                <span
+                  className="font-[family-name:var(--font-sans)] truncate"
+                  style={{
+                    fontSize: 12.5,
+                    fontWeight: isActive ? 500 : 400,
+                    lineHeight: 1.3,
+                    color: isIdle ? "var(--color-text-tertiary)" : "var(--color-text-primary)",
+                    flex: 1,
+                    minWidth: 0
+                  }}
+                >
+                  {t.title}
+                </span>
+                {t.repeatCount > 1 ? (
+                  <span
+                    className="font-[family-name:var(--font-mono)]"
+                    style={{
+                      fontSize: 10,
+                      padding: "1px 5px",
+                      borderRadius: 999,
+                      background: "var(--color-surface-sunken)",
+                      color: "var(--color-text-tertiary)",
+                      fontWeight: 500
+                    }}
+                  >
+                    ×{t.repeatCount}
+                  </span>
+                ) : null}
+              </div>
+              <div
+                className="flex items-center font-[family-name:var(--font-mono)]"
+                style={{
+                  gap: 6,
+                  fontSize: 10,
+                  color: "var(--color-text-tertiary)",
+                  paddingLeft: 14
+                }}
               >
-                {t.title}
-              </span>
+                <span style={{ color: pipColor(t.status), fontWeight: 500 }}>{taskStatusLabel(t.status)}</span>
+                <span aria-hidden="true">·</span>
+                <span>hace {relativeTimeShort(t.createdAt)}</span>
+              </div>
             </button>
           );
         })}
@@ -500,7 +598,7 @@ function ArtifactColumn({
     <aside
       className="flex flex-col"
       style={{
-        width: 280,
+        width: 320,
         flexShrink: 0,
         borderLeft: "1px solid var(--color-border)",
         background: "var(--color-surface)"
@@ -517,10 +615,19 @@ function ArtifactColumn({
           </span>
         ) : (
           <>
-            <EditableTitle title={artifact.title} onChange={(t) => onEditBlock("__title__", t)} />
-            {artifact.blocks.map((b) => (
-              <EditableBlock key={b.id} block={b} onChange={(c) => onEditBlock(b.id, c)} />
-            ))}
+            <ArtifactHeader artifact={artifact} />
+            {artifact.kind === "report" ? (
+              <ReadOnlyTitle title={artifact.title} />
+            ) : (
+              <EditableTitle title={artifact.title} onChange={(t) => onEditBlock("__title__", t)} />
+            )}
+            {artifact.blocks.map((b) =>
+              artifact.kind === "report" ? (
+                <ReadOnlyBlock key={b.id} block={b} />
+              ) : (
+                <EditableBlock key={b.id} block={b} onChange={(c) => onEditBlock(b.id, c)} />
+              )
+            )}
             {artifact.kind === "report" ? (
               <ApprovalBadge
                 kind="informational"
@@ -587,6 +694,226 @@ function ArtifactColumn({
         )}
       </div>
     </aside>
+  );
+}
+
+/**
+ * Header del artifact: kind pill + meta (creado hace X · acciones contextuales).
+ * Para reports muestra Pin / Exportar; para plan/proposal lo dejan al footer.
+ */
+function ArtifactHeader({ artifact }: { artifact: LiveArtifact }) {
+  const kindLabel = artifactKindLabel(artifact.kind);
+  return (
+    <div
+      className="flex flex-col"
+      style={{
+        gap: 6,
+        padding: "2px 4px 10px",
+        borderBottom: "0.5px solid var(--color-border)",
+        marginBottom: 4
+      }}
+    >
+      <div className="flex items-center" style={{ gap: 8 }}>
+        <span
+          className="font-[family-name:var(--font-caption)] font-semibold uppercase"
+          style={{
+            fontSize: 9.5,
+            letterSpacing: "0.8px",
+            padding: "2px 8px",
+            borderRadius: 999,
+            background: kindBackground(artifact.kind),
+            color: kindForeground(artifact.kind)
+          }}
+        >
+          {kindLabel}
+        </span>
+        <span className="flex-1" aria-hidden="true" />
+        <span
+          className="font-[family-name:var(--font-mono)]"
+          style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
+        >
+          hace {relativeTimeShort(artifact.createdAt)}
+        </span>
+      </div>
+      {artifact.kind === "report" ? (
+        <div className="flex" style={{ gap: 6 }}>
+          <button
+            type="button"
+            onClick={() => {
+              try {
+                navigator.clipboard.writeText(stringifyArtifact(artifact));
+              } catch {
+                // no-op
+              }
+            }}
+            style={{
+              flex: 1,
+              padding: "5px 8px",
+              fontSize: 11,
+              fontWeight: 500,
+              borderRadius: 6,
+              border: "0.5px solid var(--color-border)",
+              background: "transparent",
+              color: "var(--color-text-secondary)",
+              cursor: "pointer"
+            }}
+          >
+            Copiar reporte
+          </button>
+          <button
+            type="button"
+            onClick={() => downloadArtifact(artifact)}
+            style={{
+              flex: 1,
+              padding: "5px 8px",
+              fontSize: 11,
+              fontWeight: 500,
+              borderRadius: 6,
+              border: "0.5px solid var(--color-border)",
+              background: "transparent",
+              color: "var(--color-text-secondary)",
+              cursor: "pointer"
+            }}
+          >
+            Exportar .md
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function artifactKindLabel(kind: LiveArtifact["kind"]): string {
+  if (kind === "plan") return "Plan";
+  if (kind === "proposal") return "Propuesta";
+  if (kind === "template") return "Template";
+  if (kind === "report") return "Reporte";
+  return kind;
+}
+
+function kindBackground(kind: LiveArtifact["kind"]): string {
+  if (kind === "plan") return "var(--color-info-soft)";
+  if (kind === "proposal") return "var(--color-warning-soft)";
+  if (kind === "template") return "var(--color-surface-sunken)";
+  if (kind === "report") return "var(--color-success-soft)";
+  return "var(--color-surface-sunken)";
+}
+
+function kindForeground(kind: LiveArtifact["kind"]): string {
+  if (kind === "plan") return "var(--color-info)";
+  if (kind === "proposal") return "var(--color-warning)";
+  if (kind === "template") return "var(--color-text-secondary)";
+  if (kind === "report") return "var(--color-success)";
+  return "var(--color-text-secondary)";
+}
+
+function stringifyArtifact(artifact: LiveArtifact): string {
+  const lines = [`# ${artifact.title}`, ""];
+  for (const b of artifact.blocks) {
+    lines.push(b.content);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function downloadArtifact(artifact: LiveArtifact): void {
+  try {
+    const blob = new Blob([stringifyArtifact(artifact)], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${artifact.id || "artifact"}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch {
+    // no-op
+  }
+}
+
+function ReadOnlyTitle({ title }: { title: string }) {
+  return (
+    <div
+      className="font-[family-name:var(--font-sans)]"
+      style={{
+        fontSize: 15,
+        fontWeight: 500,
+        color: "var(--color-text-primary)",
+        padding: "4px 4px 2px",
+        letterSpacing: "var(--tracking-tight)"
+      }}
+    >
+      {title}
+    </div>
+  );
+}
+
+function ReadOnlyBlock({ block }: { block: LiveArtifactBlock }) {
+  if (block.status === "streaming") {
+    return (
+      <div
+        className="flex items-start"
+        style={{
+          gap: 10,
+          padding: "8px 4px",
+          fontSize: 13,
+          color: "var(--color-text-tertiary)",
+          fontStyle: "italic"
+        }}
+      >
+        <span
+          className="font-[family-name:var(--font-mono)]"
+          style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}
+        >
+          {pad2(block.order)}
+        </span>
+        <span style={{ flex: 1 }}>
+          {block.content}
+          <span
+            aria-hidden="true"
+            style={{
+              display: "inline-block",
+              width: 6,
+              height: 12,
+              background: "var(--color-text-info)",
+              verticalAlign: "-2px",
+              marginLeft: 3,
+              animation: "live-cursor 1s steps(1) infinite"
+            }}
+          />
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="flex items-start"
+      style={{
+        gap: 10,
+        padding: "6px 4px",
+        borderBottom: "0.5px dashed var(--color-border)"
+      }}
+    >
+      <span
+        className="font-[family-name:var(--font-mono)]"
+        style={{ fontSize: 11, color: "var(--color-text-tertiary)", paddingTop: 2 }}
+      >
+        {pad2(block.order)}
+      </span>
+      <span
+        className="font-[family-name:var(--font-sans)]"
+        style={{
+          fontSize: 13,
+          color: "var(--color-text-primary)",
+          lineHeight: 1.55,
+          flex: 1,
+          whiteSpace: "pre-wrap"
+        }}
+      >
+        {block.content}
+      </span>
+    </div>
   );
 }
 

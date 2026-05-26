@@ -63,10 +63,41 @@ function emptyState(): InternalState {
   };
 }
 
+function pickPreferredTaskId(state: InternalState, currentTaskId: string | null): string | null {
+  if (currentTaskId && state.tasks.has(currentTaskId)) {
+    return currentTaskId;
+  }
+
+  const tasks = [...state.tasks.values()];
+  const latestByCreatedAt = (items: LiveTask[]) =>
+    [...items].sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null;
+
+  const running = latestByCreatedAt(tasks.filter((task) => task.status === "running"));
+  if (running) return running.id;
+
+  const taskIdsWithArtifacts = new Set([...state.artifacts.values()].map((artifact) => artifact.taskId));
+  const withArtifact = latestByCreatedAt(tasks.filter((task) => taskIdsWithArtifacts.has(task.id)));
+  if (withArtifact) return withArtifact.id;
+
+  const taskIdsWithActions = new Set(state.lastAction.keys());
+  const withAction = latestByCreatedAt(tasks.filter((task) => taskIdsWithActions.has(task.id)));
+  if (withAction) return withAction.id;
+
+  return latestByCreatedAt(tasks)?.id ?? null;
+}
+
+function firstDefined<T>(items: Array<T | null | undefined>): T | null {
+  for (const item of items) {
+    if (item != null) return item;
+  }
+  return null;
+}
+
 export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult {
   const [tick, setTick] = useState(0);
   const stateRef = useRef<InternalState>(emptyState());
   const [activeTaskId, setActiveTaskIdState] = useState<string | null>(null);
+  const activeTaskIdRef = useRef<string | null>(null);
   const [connection, setConnection] = useState<LiveConnectionStatus>("offline");
   const [lastError, setLastError] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -83,6 +114,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
       cleanup();
       stateRef.current = emptyState();
       setConnection("offline");
+      activeTaskIdRef.current = null;
       setActiveTaskIdState(null);
       forceRender();
       return;
@@ -147,14 +179,10 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
         next.artifactToTask.set(a.artifactId, a.taskId);
       }
       stateRef.current = next;
-      // Si no hay tarea activa elegida, defaulteamos a la primera running.
-      if (!activeTaskId) {
-        const running = [...next.tasks.values()].find((t) => t.status === "running");
-        if (running) setActiveTaskIdState(running.id);
-        else {
-          const first = [...next.tasks.values()][0];
-          if (first) setActiveTaskIdState(first.id);
-        }
+      const preferredTaskId = pickPreferredTaskId(next, activeTaskIdRef.current);
+      if (preferredTaskId !== activeTaskIdRef.current) {
+        activeTaskIdRef.current = preferredTaskId;
+        setActiveTaskIdState(preferredTaskId);
       }
       forceRender();
     }
@@ -217,7 +245,9 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
             createdAt: event.createdAt,
             actorId: event.actorId
           });
-          if (!activeTaskId && event.status === "running") {
+          const activeTask = activeTaskIdRef.current ? s.tasks.get(activeTaskIdRef.current) ?? null : null;
+          if (event.status === "running" && (!activeTask || activeTask.status !== "running")) {
+            activeTaskIdRef.current = event.taskId;
             setActiveTaskIdState(event.taskId);
           }
           break;
@@ -226,6 +256,13 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
           const existing = s.tasks.get(event.taskId);
           if (existing) {
             s.tasks.set(event.taskId, { ...existing, status: event.status });
+          }
+          if (activeTaskIdRef.current === event.taskId && event.status !== "running") {
+            const preferredTaskId = pickPreferredTaskId(s, null);
+            if (preferredTaskId !== activeTaskIdRef.current) {
+              activeTaskIdRef.current = preferredTaskId;
+              setActiveTaskIdState(preferredTaskId);
+            }
           }
           break;
         }
@@ -292,11 +329,25 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
 
   /* -------- Lectura derivada -------- */
   const tasks = [...stateRef.current.tasks.values()];
-  const currentAction = activeTaskId ? stateRef.current.lastAction.get(activeTaskId) ?? null : null;
-  // Artifact activo: el último artifact (más reciente createdAt) cuyo taskId == activeTaskId.
+  const activeTask = activeTaskId ? stateRef.current.tasks.get(activeTaskId) ?? null : null;
+  const relatedTaskIds = activeTask
+    ? [
+        activeTask.id,
+        ...tasks
+          .filter((task) => task.title === activeTask.title && task.id !== activeTask.id)
+          .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+          .map((task) => task.id)
+      ]
+    : activeTaskId
+      ? [activeTaskId]
+      : [];
+  const currentAction = firstDefined(
+    relatedTaskIds.map((taskId) => stateRef.current.lastAction.get(taskId) ?? null)
+  );
+  // Artifact activo: el último artifact del task activo o de su grupo visual.
   const artifact = activeTaskId
     ? ([...stateRef.current.artifacts.values()]
-        .filter((a) => a.taskId === activeTaskId)
+        .filter((a) => relatedTaskIds.includes(a.taskId))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null)
     : null;
 
@@ -376,7 +427,10 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
     [artifact]
   );
 
-  const setActiveTaskId = useCallback((id: string) => setActiveTaskIdState(id), []);
+  const setActiveTaskId = useCallback((id: string) => {
+    activeTaskIdRef.current = id;
+    setActiveTaskIdState(id);
+  }, []);
 
   return {
     tasks,

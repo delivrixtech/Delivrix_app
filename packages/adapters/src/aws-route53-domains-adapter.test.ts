@@ -86,6 +86,7 @@ test("AwsRoute53DomainsAdapter caches registered domain inventory", async () => 
 
 test("AwsRoute53DomainsAdapter discovers availability, prices, and suggestions", async () => {
   const targets: string[] = [];
+  const priceTlds: string[] = [];
   const adapter = new AwsRoute53DomainsAdapter({
     accessKeyId: "AKIAEXAMPLE",
     secretAccessKey: "secret",
@@ -94,11 +95,12 @@ test("AwsRoute53DomainsAdapter discovers availability, prices, and suggestions",
       targets.push(headers["x-amz-target"]);
       const body = JSON.parse(init?.body?.toString() ?? "{}");
       if (headers["x-amz-target"].endsWith(".ListPrices")) {
+        priceTlds.push(body.Tld);
         return jsonResponse({
           Prices: [{
-            Name: "com",
-            RegistrationPrice: { Price: 14, Currency: "USD" },
-            RenewalPrice: { Price: 14, Currency: "USD" }
+            Name: body.Tld,
+            RegistrationPrice: { Price: body.Tld === "net" ? 13 : 14, Currency: "USD" },
+            RenewalPrice: { Price: body.Tld === "net" ? 13 : 14, Currency: "USD" }
           }]
         });
       }
@@ -128,19 +130,95 @@ test("AwsRoute53DomainsAdapter discovers availability, prices, and suggestions",
 
   assert.deepEqual(targets, [
     "Route53Domains_v20140515.ListPrices",
+    "Route53Domains_v20140515.ListPrices",
     "Route53Domains_v20140515.CheckDomainAvailability",
     "Route53Domains_v20140515.CheckDomainAvailability",
     "Route53Domains_v20140515.GetDomainSuggestions"
   ]);
+  assert.deepEqual(priceTlds, ["com", "net"]);
   assert.equal(result.candidates[0].domainName, "delivrix.com");
   assert.equal(result.candidates[0].canRegister, true);
   assert.deepEqual(result.candidates[0].registrationPrice, { amount: 14, currency: "USD" });
   assert.equal(result.candidates[1].canRegister, false);
+  assert.deepEqual(result.candidates[1].registrationPrice, { amount: 13, currency: "USD" });
   assert.deepEqual(result.suggestions, [{
     domainName: "delivrixhq.com",
     availability: "AVAILABLE"
   }]);
   assert.equal(result.source.purchaseEnabled, false);
+});
+
+test("AwsRoute53DomainsAdapter requests filtered prices by TLD", async () => {
+  const payloads: unknown[] = [];
+  const adapter = new AwsRoute53DomainsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(init?.body?.toString() ?? "{}");
+      payloads.push(body);
+      return jsonResponse({
+        Prices: [{
+          Name: body.Tld,
+          RegistrationPrice: { Price: body.Tld === "net" ? 13 : 14, Currency: "USD" },
+          RenewalPrice: { Price: body.Tld === "net" ? 13 : 14, Currency: "USD" }
+        }]
+      });
+    }) as typeof fetch,
+    now: () => new Date("2026-05-25T18:00:00.000Z")
+  });
+
+  const prices = await adapter.listPrices([".net", "com", "net"]);
+
+  assert.deepEqual(payloads, [{ Tld: "net" }, { Tld: "com" }]);
+  assert.deepEqual(prices, [
+    {
+      tld: "com",
+      registration: { amount: 14, currency: "USD" },
+      renewal: { amount: 14, currency: "USD" },
+      transfer: undefined
+    },
+    {
+      tld: "net",
+      registration: { amount: 13, currency: "USD" },
+      renewal: { amount: 13, currency: "USD" },
+      transfer: undefined
+    }
+  ]);
+});
+
+test("AwsRoute53DomainsAdapter paginates unfiltered prices", async () => {
+  const payloads: unknown[] = [];
+  const adapter = new AwsRoute53DomainsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(init?.body?.toString() ?? "{}");
+      payloads.push(body);
+      if (!body.Marker) {
+        return jsonResponse({
+          NextPageMarker: "page-2",
+          Prices: [{
+            Name: "com",
+            RegistrationPrice: { Price: 14, Currency: "USD" },
+            RenewalPrice: { Price: 14, Currency: "USD" }
+          }]
+        });
+      }
+      return jsonResponse({
+        Prices: [{
+          Name: "net",
+          RegistrationPrice: { Price: 13, Currency: "USD" },
+          RenewalPrice: { Price: 13, Currency: "USD" }
+        }]
+      });
+    }) as typeof fetch,
+    now: () => new Date("2026-05-25T18:00:00.000Z")
+  });
+
+  const prices = await adapter.listPrices();
+
+  assert.deepEqual(payloads, [{ MaxItems: 100 }, { MaxItems: 100, Marker: "page-2" }]);
+  assert.deepEqual(prices.map((price) => price.tld), ["com", "net"]);
 });
 
 test("parse helpers accept Route53 Domains API shapes", () => {

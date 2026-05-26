@@ -282,7 +282,7 @@ export class CanvasLiveEventService {
   private async loadFromDisk(): Promise<void> {
     for (const record of await readJsonl(this.tasksPath())) {
       const event = normalizeCanvasLiveEvent(record, this.now);
-      if (event.type === "oc.task.declare" || event.type === "oc.task.update") {
+      if (event.type === "oc.task.declare" || event.type === "oc.task.update" || event.type === "oc.action.now") {
         this.applyLiveEvent(event);
       }
     }
@@ -306,7 +306,7 @@ export class CanvasLiveEventService {
   }
 
   private async persistLiveEvent(event: CanvasLiveEvent): Promise<void> {
-    if (event.type === "oc.task.declare" || event.type === "oc.task.update") {
+    if (event.type === "oc.task.declare" || event.type === "oc.task.update" || event.type === "oc.action.now") {
       await this.persistTaskEvent(event);
       return;
     }
@@ -320,7 +320,9 @@ export class CanvasLiveEventService {
     }
   }
 
-  private async persistTaskEvent(event: CanvasLiveTaskDeclareEvent | CanvasLiveTaskUpdateEvent): Promise<void> {
+  private async persistTaskEvent(
+    event: CanvasLiveTaskDeclareEvent | CanvasLiveTaskUpdateEvent | CanvasLiveActionNowEvent
+  ): Promise<void> {
     await this.appendJsonl(this.tasksPath(), event);
   }
 

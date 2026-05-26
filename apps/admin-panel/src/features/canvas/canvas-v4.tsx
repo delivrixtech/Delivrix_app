@@ -1503,6 +1503,12 @@ function LiveTab(_props: {
     }
   }, [localActiveId, fallbackActiveId]);
 
+  useEffect(() => {
+    if (localActiveId && !tasks.some((task) => task.id === localActiveId)) {
+      setLocalActiveId(null);
+    }
+  }, [localActiveId, tasks]);
+
   const handleSelectTask = useCallback((id: string) => {
     setLocalActiveId(id);
     if (!demoMode) liveStream.setActiveTaskId(id);

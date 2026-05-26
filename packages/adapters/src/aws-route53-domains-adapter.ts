@@ -81,6 +81,8 @@ const SERVICE = "route53domains";
 const TARGET_PREFIX = "Route53Domains_v20140515";
 const DEFAULT_REGION = "us-east-1";
 const DEFAULT_TTL_MS = 300_000;
+const MAX_PRICE_PAGES = 20;
+const LIST_PRICES_MAX_ITEMS = 100;
 
 interface CacheEntry {
   expiresAt: number;
@@ -198,10 +200,27 @@ export class AwsRoute53DomainsAdapter {
       return [];
     }
     const normalizedTlds = unique(tlds.map((tld) => tld.toLowerCase().replace(/^\./, "")));
-    const prices = parseAwsRoute53Prices(await this.awsJson("ListPrices", {}));
+    if (normalizedTlds.length > 0) {
+      const prices: AwsRoute53DomainPrice[] = [];
+      for (const tld of normalizedTlds) {
+        prices.push(...parseAwsRoute53Prices(await this.awsJson("ListPrices", { Tld: tld })));
+      }
+      return uniquePrices(prices);
+    }
+
+    const prices: AwsRoute53DomainPrice[] = [];
+    let marker: string | undefined;
+    for (let page = 0; page < MAX_PRICE_PAGES; page += 1) {
+      const payload: Record<string, unknown> = { MaxItems: LIST_PRICES_MAX_ITEMS };
+      if (marker) payload.Marker = marker;
+      const response = await this.awsJson("ListPrices", payload);
+      prices.push(...parseAwsRoute53Prices(response));
+      marker = nextPageMarker(response);
+      if (!marker) break;
+    }
     return normalizedTlds.length === 0
-      ? prices
-      : prices.filter((price) => normalizedTlds.includes(price.tld));
+      ? uniquePrices(prices)
+      : uniquePrices(prices).filter((price) => normalizedTlds.includes(price.tld));
   }
 
   async listOwnedDomains(): Promise<AwsRoute53DomainSummary[]> {
@@ -406,6 +425,10 @@ export function parseAwsRoute53Suggestions(raw: unknown): AwsRoute53DomainSugges
   });
 }
 
+function nextPageMarker(raw: unknown): string | undefined {
+  return isRecord(raw) ? stringValue(raw.NextPageMarker) : undefined;
+}
+
 export function signAwsJsonRequest(input: {
   accessKeyId: string;
   secretAccessKey: string;
@@ -510,6 +533,14 @@ function errorMessage(error: unknown): string {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function uniquePrices(prices: AwsRoute53DomainPrice[]): AwsRoute53DomainPrice[] {
+  const byTld = new Map<string, AwsRoute53DomainPrice>();
+  for (const price of prices) {
+    byTld.set(price.tld, price);
+  }
+  return [...byTld.values()].sort((left, right) => left.tld.localeCompare(right.tld));
 }
 
 function normalizeEnvValue(value: string | undefined): string | undefined {

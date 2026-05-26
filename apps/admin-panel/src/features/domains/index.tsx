@@ -25,7 +25,7 @@
  * directo del panel.
  */
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -132,12 +132,16 @@ function useDebounced<T>(value: T, ms: number): T {
   return debounced;
 }
 
-function usePrices() {
+function usePrices(extraTld?: string | null) {
+  const tlds = useMemo(() => uniqueStrings([
+    ...DEFAULT_TLDS,
+    ...(extraTld ? [extraTld] : [])
+  ]), [extraTld]);
   return useQuery({
-    queryKey: ["domains", "prices", DEFAULT_TLDS.join(",")],
+    queryKey: ["domains", "prices", tlds.join(",")],
     queryFn: () =>
       getJsonWithQuery<PricesResponse>(READ_ENDPOINTS.domainPrices, {
-        tlds: DEFAULT_TLDS.join(",")
+        tlds: tlds.join(",")
       }),
     refetchInterval: POLL_PRICES_MS,
     staleTime: POLL_PRICES_MS / 2
@@ -189,6 +193,17 @@ function isPlausibleDomain(value: string): boolean {
   return /^[a-z0-9][a-z0-9-]{0,62}\.[a-z]{2,}$/.test(value);
 }
 
+function domainTldFromQuery(value: string): string | null {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed.includes(".")) return null;
+  const tld = trimmed.split(".").filter(Boolean).at(-1);
+  return tld && /^[a-z][a-z0-9-]{1,62}$/.test(tld) ? tld : null;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
 /* ============================================================
  * <DomainsSection> — root
  * ============================================================ */
@@ -196,10 +211,11 @@ function isPlausibleDomain(value: string): boolean {
 export function DomainsSection() {
   const [query, setQuery] = useState("");
   const [seed, setSeed] = useState("");
+  const activeTld = domainTldFromQuery(query);
 
   const availability = useAvailability(query);
   const suggestions = useSuggestions(seed);
-  const prices = usePrices();
+  const prices = usePrices(activeTld);
   const owned = useOwned();
 
   const lastUpdate = Math.max(
@@ -239,6 +255,7 @@ export function DomainsSection() {
         onQueryChange={setQuery}
         availability={availability}
         prices={prices.data?.prices}
+        pricesFetching={prices.isFetching}
       />
 
       <div
@@ -275,16 +292,18 @@ function SearchHero({
   query,
   onQueryChange,
   availability,
-  prices
+  prices,
+  pricesFetching
 }: {
   query: string;
   onQueryChange: (v: string) => void;
   availability: ReturnType<typeof useAvailability>;
   prices: DomainPrice[] | undefined;
+  pricesFetching: boolean;
 }) {
   const trimmed = query.trim().toLowerCase();
   const valid = isPlausibleDomain(trimmed);
-  const tld = trimmed.includes(".") ? trimmed.split(".").pop() ?? null : null;
+  const tld = domainTldFromQuery(trimmed);
   const tldPrice = tld ? prices?.find((p) => p.tld === tld) : undefined;
 
   return (
@@ -362,6 +381,7 @@ function SearchHero({
         valid={valid}
         availability={availability}
         tldPrice={tldPrice}
+        pricePending={Boolean(tld && pricesFetching && !tldPrice)}
       />
     </div>
   );
@@ -371,12 +391,14 @@ function AvailabilityRow({
   trimmed,
   valid,
   availability,
-  tldPrice
+  tldPrice,
+  pricePending
 }: {
   trimmed: string;
   valid: boolean;
   availability: ReturnType<typeof useAvailability>;
   tldPrice: DomainPrice | undefined;
+  pricePending: boolean;
 }) {
   if (!trimmed) {
     return (
@@ -461,6 +483,21 @@ function AvailabilityRow({
             style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
           >
             Renovación {formatPrice(tldPrice.renewal, tldPrice.currency)}
+          </span>
+        </div>
+      ) : availability.data.available ? (
+        <div className="flex flex-col items-end" style={{ gap: 2 }}>
+          <span
+            className="font-[family-name:var(--font-mono)] font-semibold"
+            style={{ fontSize: 12, color: "var(--color-text-secondary)" }}
+          >
+            {pricePending ? "consultando precio..." : "precio no disponible"}
+          </span>
+          <span
+            className="font-[family-name:var(--font-caption)]"
+            style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
+          >
+            Route53 snapshot
           </span>
         </div>
       ) : null}
