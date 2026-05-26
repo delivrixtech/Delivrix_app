@@ -283,6 +283,53 @@ Al completar emite:
 oc.smtp.provisioned
 ```
 
+### T6 — bind_domain_to_server
+
+Nuevo endpoint:
+
+```http
+POST /v1/domains/bind
+```
+
+Body:
+
+```json
+{
+  "domain": "delivrix-mail.com",
+  "serverSlug": "mail-delivrix-test",
+  "serverIp": "192.0.2.44",
+  "zoneId": "Z123456",
+  "actorId": "operator/juanes",
+  "approvalToken": "exec-...",
+  "taskId": "optional-canvas-task"
+}
+```
+
+`serverIp` y `zoneId` pueden venir explícitos o resolverse desde workspace:
+
+- `inventory/webdock-servers.json`
+- `inventory/domains.json#dnsZones`
+
+La skill publica:
+
+- `A mail.<domain> -> <serverIp>`
+- `MX @ -> 10 mail.<domain>.`
+
+Gates obligatorios antes de escribir DNS:
+
+- Credenciales AWS Route53 live presentes.
+- `AWS_ROUTE53_DNS_ENABLE_WRITES=true`.
+- Audit chain contiene `oc.artifact.approved` reciente con `metadata.executionId == approvalToken`.
+- Canvas artifact asociado sigue `approved`.
+- Zona Route53 disponible.
+- IP del servidor disponible.
+
+El resultado queda en `inventory/domains.json#bindings` con `status=pending_propagation`, porque la propagación DNS real puede tardar más que la ejecución del endpoint. Al completar emite:
+
+```text
+oc.domain.bound_to_server
+```
+
 ## Seguridad
 
 - No se ejecutó ninguna compra real.
@@ -302,6 +349,7 @@ node --test packages/adapters/src/aws-route53-dns-adapter.test.ts apps/gateway-a
 node --test apps/gateway-api/src/openclaw-workspace.test.ts apps/gateway-api/src/routes/domains-email-auth.test.ts
 node --test packages/adapters/src/webdock-real-adapter.test.ts apps/gateway-api/src/routes/webdock-servers.test.ts
 node --test apps/gateway-api/src/openclaw-workspace.test.ts apps/gateway-api/src/routes/smtp-provisioning.test.ts
+node --test apps/gateway-api/src/routes/domains-bind.test.ts
 npm test
 git diff --check
 ```
@@ -313,12 +361,12 @@ Resultado:
 - T3 focus tests: 4 passed.
 - T4 focus tests: 7 passed.
 - T5 focus tests: 4 passed.
-- Full suite after T5: 326 passed.
+- T6 focus tests: 3 passed.
+- Full suite after T6: 329 passed.
 - Diff check: OK.
 
 ## Pendiente para demo real
 
-- T6 bind domain to server.
 - T7 warmup seed.
 - T7C supervisor batch multi-agent.
 - T8 flow end-to-end async con eventos Canvas Live por fase.

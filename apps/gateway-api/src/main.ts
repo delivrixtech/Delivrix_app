@@ -158,6 +158,10 @@ import {
   handleEmailAuthError
 } from "./routes/domains-email-auth.ts";
 import {
+  handleDomainBindError,
+  handleDomainBindHttp
+} from "./routes/domains-bind.ts";
+import {
   handleWebdockServerCreateError,
   handleWebdockServerCreateHttp
 } from "./routes/webdock-servers.ts";
@@ -771,6 +775,25 @@ const server = createServer(async (request, response) => {
         });
       } catch (error) {
         if (handleEmailAuthError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/domains/bind") {
+      try {
+        return await handleDomainBindHttp({
+          request,
+          response,
+          auditLog,
+          dnsAdapter: awsRoute53DnsAdapter,
+          workspace: openClawWorkspace,
+          canvasLiveEvents,
+          readCanvasState: () => canvasLiveEvents.snapshot()
+        });
+      } catch (error) {
+        if (handleDomainBindError(error, response)) {
           return;
         }
         throw error;
