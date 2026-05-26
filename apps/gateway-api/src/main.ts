@@ -162,6 +162,11 @@ import {
   handleWebdockServerCreateHttp
 } from "./routes/webdock-servers.ts";
 import {
+  createSmtpSshRunnerFromEnv,
+  handleSmtpProvisionError,
+  handleSmtpProvisionHttp
+} from "./routes/smtp-provisioning.ts";
+import {
   handleDomainCompareError,
   handleDomainCompareHttp
 } from "./routes/domains-compare.ts";
@@ -220,6 +225,7 @@ const learningRealtimeCache = new SafetyRealtimeCache();
 const openClawSshBridge = createOpenClawSshBridgeFromEnv();
 const canvasLiveEvents = new CanvasLiveEventService();
 const openClawWorkspace = new OpenClawWorkspace();
+const smtpSshRunner = createSmtpSshRunnerFromEnv();
 const openClawChatProxy = new OpenClawChatProxy(auditLog, {
   bridgeKind: openClawSshBridge ? "ssh" : "http",
   sshBridge: openClawSshBridge,
@@ -633,6 +639,28 @@ const server = createServer(async (request, response) => {
         });
       } catch (error) {
         if (handleWebdockServerCreateError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    const smtpProvisionMatch = request.url?.match(/^\/v1\/servers\/([^/]+)\/provision-smtp$/);
+    if (request.method === "POST" && smtpProvisionMatch) {
+      try {
+        return await handleSmtpProvisionHttp({
+          request,
+          response,
+          serverSlug: smtpProvisionMatch[1],
+          auditLog,
+          sshRunner: smtpSshRunner,
+          workspace: openClawWorkspace,
+          canvasLiveEvents,
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          env: process.env
+        });
+      } catch (error) {
+        if (handleSmtpProvisionError(error, response)) {
           return;
         }
         throw error;

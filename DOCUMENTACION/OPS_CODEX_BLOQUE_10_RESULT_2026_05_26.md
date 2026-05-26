@@ -224,6 +224,65 @@ Se marca `port25UnlockRequired: true` porque Webdock puede bloquear SMTP salient
 oc.webdock.server_created
 ```
 
+### T5 — install_smtp_stack via SSH
+
+Nuevo endpoint:
+
+```http
+POST /v1/servers/{serverSlug}/provision-smtp
+```
+
+Body:
+
+```json
+{
+  "domain": "delivrix-mail.com",
+  "serverIp": "192.0.2.44",
+  "dkimPrivateKeyPath": "inventory/dkim-keys/delivrix-mail.com/default.private",
+  "selector": "default",
+  "actorId": "operator/juanes",
+  "approvalToken": "exec-...",
+  "taskId": "optional-canvas-task"
+}
+```
+
+`serverIp` y `dkimPrivateKeyPath` pueden venir explícitos o resolverse desde workspace:
+
+- `inventory/webdock-servers.json`
+- `inventory/domains.json#emailAuth`
+
+Gates obligatorios antes de ejecutar SSH:
+
+- `SMTP_PROVISIONING_ENABLE_SSH=true`.
+- Runner SSH configurado con `SMTP_PROVISION_SSH_KEY_PATH`.
+- Audit chain contiene `oc.artifact.approved` reciente con `metadata.executionId == approvalToken`.
+- Canvas artifact asociado sigue `approved`.
+- IP de servidor disponible.
+- Private key DKIM disponible en workspace.
+
+La skill ejecuta un plan idempotente por SSH:
+
+- espera `cloud-init`;
+- instala `postfix`, `opendkim`, `opendkim-tools`, `certbot`;
+- escribe `/etc/mailname`, `/etc/postfix/main.cf`, `/etc/opendkim.conf`;
+- instala la private key DKIM por `stdin` con audit redacted;
+- escribe `key.table`, `signing.table`, `trusted.hosts`;
+- intenta certbot para `mail.<domain>` y deja `tlsStatus=attempted_or_pending_dns` si DNS aún no apunta;
+- reinicia/activa `opendkim` y `postfix`;
+- valida listener SMTP local.
+
+Cada comando emite `oc.action.now kind=command`. El resultado se guarda en:
+
+```text
+inventory/smtp-provisioning.json
+```
+
+Al completar emite:
+
+```text
+oc.smtp.provisioned
+```
+
 ## Seguridad
 
 - No se ejecutó ninguna compra real.
@@ -231,8 +290,9 @@ oc.webdock.server_created
 - El contacto administrativo no se escribe en audit ni workspace.
 - La private key DKIM queda restringida al workspace y fuera de audit/response.
 - La public key SSH de Webdock se recibe como parámetro/fallback env, pero audit solo guarda fingerprint.
+- La private key DKIM viaja a SSH por `stdin`; el comando auditado queda redacted.
 - El endpoint no acepta solo UI state: exige audit chain reciente.
-- La compra, las mutaciones DNS, la autenticación de email y la creación de VPS quedan deshabilitadas por defecto hasta activar env + permisos + aprobación.
+- La compra, las mutaciones DNS, la autenticación de email, la creación de VPS y el provisioning SSH quedan deshabilitados por defecto hasta activar env + permisos + aprobación.
 
 ## Verificación
 
@@ -241,6 +301,7 @@ node --test packages/adapters/src/aws-route53-domains-adapter.test.ts apps/gatew
 node --test packages/adapters/src/aws-route53-dns-adapter.test.ts apps/gateway-api/src/routes/domains-dns.test.ts
 node --test apps/gateway-api/src/openclaw-workspace.test.ts apps/gateway-api/src/routes/domains-email-auth.test.ts
 node --test packages/adapters/src/webdock-real-adapter.test.ts apps/gateway-api/src/routes/webdock-servers.test.ts
+node --test apps/gateway-api/src/openclaw-workspace.test.ts apps/gateway-api/src/routes/smtp-provisioning.test.ts
 npm test
 git diff --check
 ```
@@ -251,12 +312,12 @@ Resultado:
 - T2 focus tests: 6 passed.
 - T3 focus tests: 4 passed.
 - T4 focus tests: 7 passed.
-- Full suite after T4: 323 passed.
+- T5 focus tests: 4 passed.
+- Full suite after T5: 326 passed.
 - Diff check: OK.
 
 ## Pendiente para demo real
 
-- T5 SSH provisioning Postfix/OpenDKIM/TLS.
 - T6 bind domain to server.
 - T7 warmup seed.
 - T7C supervisor batch multi-agent.

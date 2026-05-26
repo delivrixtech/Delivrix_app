@@ -1,0 +1,251 @@
+import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
+import test from "node:test";
+import type {
+  CanvasLiveEvent,
+  CanvasLiveStateSnapshot
+} from "../../../../packages/domain/src/index.ts";
+import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
+import { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import {
+  buildSmtpProvisionPlan,
+  handleSmtpProvisionError,
+  handleSmtpProvisionHttp,
+  type SmtpSshCommandInput,
+  type SmtpSshRunner
+} from "./smtp-provisioning.ts";
+
+const fixedNow = new Date("2026-05-27T17:00:00.000Z");
+const dkimPrivateKey = "-----BEGIN PRIVATE KEY-----\nPRIVATE\n-----END PRIVATE KEY-----\n";
+
+test("buildSmtpProvisionPlan writes DKIM key through stdin and keeps audit command redacted", () => {
+  const plan = buildSmtpProvisionPlan({
+    domain: "delivrix-mail.com",
+    serverIp: "192.0.2.44",
+    selector: "default",
+    dkimPrivateKey
+  });
+
+  const dkimStep = plan.find((step) => step.label === "write-dkim-private-key");
+  assert.equal(dkimStep?.stdin, dkimPrivateKey);
+  assert.equal(dkimStep?.auditCommand.includes("PRIVATE"), false);
+  assert.equal(plan.some((step) => step.label === "attempt-certbot"), true);
+});
+
+test("POST /v1/servers/:slug/provision-smtp blocks without SSH flag, runner, approval, server IP, and DKIM key", async () => {
+  const route = await routeHarness({
+    sshRunner: mockRunner({ isConfigured: () => false }),
+    canvasState: canvasState([])
+  });
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-missing",
+    taskId: "task-smtp-blocked"
+  }, { SMTP_PROVISIONING_ENABLE_SSH: "false" });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body.blockers.sort(), [
+    "approval_not_found_or_expired",
+    "dkim_private_key_missing",
+    "server_ip_missing",
+    "smtp_ssh_flag_disabled",
+    "smtp_ssh_runner_missing"
+  ].sort());
+  assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.smtp.provision_blocked");
+});
+
+test("POST /v1/servers/:slug/provision-smtp runs idempotent SSH plan and records workspace inventory", async () => {
+  const commands: SmtpSshCommandInput[] = [];
+  const route = await routeHarness({
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-smtp-plan",
+      executionId: "exec-smtp-123",
+      approvedAt: "2026-05-27T16:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-smtp-plan", "exec-smtp-123");
+  await route.workspace.writeWorkspaceFile("inventory/dkim-keys/delivrix-mail.com/default.private", dkimPrivateKey);
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    emailAuth: [{
+      domain: "delivrix-mail.com",
+      selector: "default",
+      dkimPrivateKeyPath: "inventory/dkim-keys/delivrix-mail.com/default.private"
+    }]
+  }));
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "mail-delivrix-test",
+      hostname: "mail.delivrix-mail.com",
+      ipv4: "192.0.2.44",
+      status: "running"
+    }]
+  }));
+
+  const response = await route({
+    domain: "Delivrix-Mail.COM.",
+    actorId: "operator/juanes",
+    approvalToken: "exec-smtp-123",
+    taskId: "task-smtp-provision"
+  }, { SMTP_PROVISIONING_ENABLE_SSH: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "configured");
+  assert.equal(response.body.serverIp, "192.0.2.44");
+  assert.equal(commands.length, 13);
+  assert.equal(commands.some((command) => command.stdin === dkimPrivateKey), true);
+  assert.equal(commands.every((command) => !command.command.includes("PRIVATE")), true);
+
+  const events = await route.auditLog.list();
+  const provisioned = events.at(-1);
+  assert.equal(provisioned?.action, "oc.smtp.provisioned");
+  assert.equal(JSON.stringify(provisioned?.metadata).includes("PRIVATE"), false);
+
+  const inventory = await route.workspace.readInventoryJson<{
+    servers: Array<{ serverSlug: string; domain: string; status: string }>;
+  }>("smtp-provisioning.json");
+  assert.equal(inventory?.servers[0].serverSlug, "mail-delivrix-test");
+  assert.equal(inventory?.servers[0].domain, "delivrix-mail.com");
+  assert.equal(inventory?.servers[0].status, "configured");
+  assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "command"));
+});
+
+async function routeHarness(input: {
+  sshRunner: SmtpSshRunner;
+  canvasState: CanvasLiveStateSnapshot;
+}) {
+  const dir = await mkdtemp(join(tmpdir(), "smtp-provision-route-"));
+  const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
+  const workspace = new OpenClawWorkspace({
+    rootDir: join(dir, "workspace"),
+    now: () => fixedNow
+  });
+  const canvasEvents: CanvasLiveEvent[] = [];
+
+  const route = async (
+    body: unknown,
+    env: Record<string, string | undefined> = { SMTP_PROVISIONING_ENABLE_SSH: "true" }
+  ): Promise<{ statusCode: number; body: any }> => {
+    const response = captureResponse();
+    try {
+      await handleSmtpProvisionHttp({
+        request: requestWithJson(body),
+        response: response as unknown as ServerResponse,
+        serverSlug: "mail-delivrix-test",
+        auditLog,
+        sshRunner: input.sshRunner,
+        workspace,
+        canvasLiveEvents: {
+          emit: async (event) => {
+            canvasEvents.push(event);
+            return event;
+          }
+        },
+        readCanvasState: () => input.canvasState,
+        env,
+        now: () => fixedNow
+      });
+    } catch (error) {
+      if (!handleSmtpProvisionError(error, response as unknown as ServerResponse)) {
+        throw error;
+      }
+    }
+    return {
+      statusCode: response.statusCode,
+      body: JSON.parse(response.body)
+    };
+  };
+  return Object.assign(route, { auditLog, workspace, canvasEvents });
+}
+
+function mockRunner(overrides: Partial<SmtpSshRunner> = {}): SmtpSshRunner {
+  return {
+    isConfigured: () => true,
+    run: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+    ...overrides
+  };
+}
+
+async function appendApproval(
+  auditLog: LocalFileAuditLog,
+  artifactId: string,
+  executionId: string
+): Promise<void> {
+  await auditLog.append({
+    occurredAt: "2026-05-27T16:59:00.000Z",
+    actorType: "operator",
+    actorId: "operator/juanes",
+    action: "oc.artifact.approved",
+    targetType: "canvas_artifact",
+    targetId: artifactId,
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: ["operator/juanes"],
+    metadata: { executionId, blockCount: 1 }
+  });
+}
+
+function canvasState(approvals: Array<{
+  artifactId: string;
+  executionId: string;
+  approvedAt: string;
+}>): CanvasLiveStateSnapshot {
+  return {
+    schemaVersion: "2026-05-25.canvas-live.v1",
+    generatedAt: fixedNow.toISOString(),
+    tasks: [],
+    artifacts: approvals.map((approval) => ({
+      artifactId: approval.artifactId,
+      taskId: "task-smtp-plan",
+      kind: "proposal",
+      title: "Provisionar SMTP",
+      editable: true,
+      createdAt: "2026-05-27T16:58:00.000Z",
+      updatedAt: approval.approvedAt,
+      approvalStatus: "approved",
+      approvedBy: "operator/juanes",
+      approvedAt: approval.approvedAt,
+      executionId: approval.executionId,
+      blocks: []
+    }))
+  };
+}
+
+function requestWithJson(body: unknown): IncomingMessage {
+  const stream = Readable.from([JSON.stringify(body)]);
+  return Object.assign(stream, {
+    method: "POST",
+    url: "/v1/servers/mail-delivrix-test/provision-smtp",
+    headers: { "content-type": "application/json" }
+  }) as IncomingMessage;
+}
+
+function captureResponse(): {
+  statusCode: number;
+  body: string;
+  writeHead: (statusCode: number) => void;
+  end: (payload: string) => void;
+} {
+  return {
+    statusCode: 0,
+    body: "",
+    writeHead(statusCode: number): void {
+      this.statusCode = statusCode;
+    },
+    end(payload: string): void {
+      this.body = payload;
+    }
+  };
+}
