@@ -1,7 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Socket } from "node:net";
-import type { AuditEventInput } from "../../../packages/domain/src/index.ts";
+import type {
+  AuditEventInput,
+  CanvasLiveEvent,
+  CanvasLiveTaskStatus
+} from "../../../packages/domain/src/index.ts";
+import {
+  extractOpenClawArtifact,
+  summarizeOpenClawTaskTitle
+} from "./openclaw-artifact-extractor.ts";
 
 export const OPENCLAW_CHAT_SESSION_KEY = "agent:main:operator";
 const defaultAgentHttpUrl = "http://2.24.223.240:61175";
@@ -47,6 +55,10 @@ interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
 }
 
+interface CanvasLiveEmitter {
+  emit(event: CanvasLiveEvent): Promise<unknown>;
+}
+
 export interface OpenClawChatPanelClient {
   sendJson(event: ChatStreamEvent): void;
   close(): void;
@@ -81,8 +93,16 @@ export interface OpenClawChatConfig {
   sessionKey?: string;
   fetchImpl?: FetchLike;
   webSocketCtor?: WebSocketConstructor;
+  canvasLiveEvents?: CanvasLiveEmitter | null;
   now?: () => Date;
   reconnectDelay?: (attempt: number) => number;
+}
+
+interface CanvasChatInteraction {
+  msgId: string;
+  taskId: string;
+  title: string;
+  operatorMessage: string;
 }
 
 export class OpenClawChatProxy {
@@ -100,6 +120,9 @@ export class OpenClawChatProxy {
   private readonly sshBridgeFailureThreshold: number;
   private readonly now: () => Date;
   private readonly reconnectDelay: (attempt: number) => number;
+  private readonly canvasLiveEvents: CanvasLiveEmitter | null;
+  private readonly pendingCanvasInteractions = new Map<string, CanvasChatInteraction>();
+  private readonly materializedCanvasMessageIds = new Set<string>();
   private agentSocket: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
@@ -122,6 +145,7 @@ export class OpenClawChatProxy {
     this.sessionKey = config.sessionKey ?? OPENCLAW_CHAT_SESSION_KEY;
     this.fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
     this.webSocketCtor = config.webSocketCtor ?? globalThis.WebSocket;
+    this.canvasLiveEvents = config.canvasLiveEvents ?? null;
     this.bridgeKind = config.bridgeKind ?? (process.env.OPENCLAW_BRIDGE_KIND === "ssh" ? "ssh" : "http");
     this.sshBridge = config.sshBridge ?? null;
     this.sshBridgeFailureThreshold = config.sshBridgeFailureThreshold ?? 3;
@@ -155,14 +179,44 @@ export class OpenClawChatProxy {
         ? input.msgId
         : randomUUID();
 
-    if (this.shouldUseSshBridge()) {
-      const result = await this.sendOperatorMessageViaSsh({ ...input, msgId, message }, msgId, message);
-      if (result) {
-        return result;
-      }
-    }
+    await this.declareCanvasTaskForMessage(msgId, message);
 
-    return this.sendOperatorMessageViaHttp(msgId, message);
+    try {
+      if (this.shouldUseSshBridge()) {
+        const result = await this.sendOperatorMessageViaSsh({ ...input, msgId, message }, msgId, message);
+        if (result) {
+          if (result.assistant?.content) {
+            void this.handleAgentMessage({
+              type: "ASSISTANT_DONE",
+              msgId,
+              content: result.assistant.content,
+              skillsInvoked: result.assistant.skillsInvoked ?? [],
+              audit: {
+                durationMs: result.assistant.durationMs
+              }
+            });
+          }
+          return result;
+        }
+      }
+
+      const result = await this.sendOperatorMessageViaHttp(msgId, message);
+      if (result.assistant?.content) {
+        void this.handleAgentMessage({
+          type: "ASSISTANT_DONE",
+          msgId,
+          content: result.assistant.content,
+          skillsInvoked: result.assistant.skillsInvoked ?? [],
+          audit: {
+            durationMs: result.assistant.durationMs
+          }
+        });
+      }
+      return result;
+    } catch (error) {
+      await this.updateCanvasTaskStatus(msgId, "failed");
+      throw error;
+    }
   }
 
   private shouldUseSshBridge(): boolean {
@@ -233,6 +287,7 @@ export class OpenClawChatProxy {
     }
 
     await this.auditOperatorMessage(msgId, message, "n/a", null);
+    this.ensureAgentConnection();
     return { msgId, queued: true };
   }
 
@@ -341,9 +396,15 @@ export class OpenClawChatProxy {
 
     if (event.type === "ASSISTANT_DONE") {
       await this.auditAgentResponse(event);
+      await this.materializeCanvasArtifactForAgentResponse(event);
     }
 
     return event;
+  }
+
+  markCanvasMaterialized(msgId: string): void {
+    this.materializedCanvasMessageIds.add(msgId);
+    this.pendingCanvasInteractions.delete(msgId);
   }
 
   close(): void {
@@ -475,7 +536,7 @@ export class OpenClawChatProxy {
   }
 
   private startSshHistoryStream(msgId: string): void {
-    if (!this.sshBridge || this.clients.size === 0) {
+    if (!this.sshBridge) {
       return;
     }
 
@@ -485,10 +546,123 @@ export class OpenClawChatProxy {
       onDone: (event) => {
         void this.handleAgentMessage(event);
       },
-      onBlocked: (event) => this.broadcast(event)
+      onBlocked: (event) => {
+        this.broadcast(event);
+        void this.updateCanvasTaskStatus(event.msgId, "failed");
+      }
     }).catch(() => {
       this.broadcast({ type: "ASSISTANT_BLOCKED", msgId, reason: "ssh_history_error" });
+      void this.updateCanvasTaskStatus(msgId, "failed");
     });
+  }
+
+  private async declareCanvasTaskForMessage(msgId: string, operatorMessage: string): Promise<void> {
+    if (!this.canvasLiveEvents || this.materializedCanvasMessageIds.has(msgId)) {
+      return;
+    }
+    const title = summarizeOpenClawTaskTitle(operatorMessage);
+    const taskId = buildCanvasTaskId(msgId, this.now());
+    this.pendingCanvasInteractions.set(msgId, {
+      msgId,
+      taskId,
+      title,
+      operatorMessage
+    });
+    await this.emitCanvasEvent({
+      type: "oc.task.declare",
+      taskId,
+      title,
+      status: "running",
+      createdAt: this.now().toISOString(),
+      actorId: "openclaw/openclaw-hostinger-prod"
+    });
+  }
+
+  private async materializeCanvasArtifactForAgentResponse(
+    event: Extract<ChatStreamEvent, { type: "ASSISTANT_DONE" }>
+  ): Promise<void> {
+    if (!this.canvasLiveEvents || this.materializedCanvasMessageIds.has(event.msgId)) {
+      return;
+    }
+
+    const existing = this.pendingCanvasInteractions.get(event.msgId);
+    const interaction = existing ?? {
+      msgId: event.msgId,
+      taskId: buildCanvasTaskId(event.msgId, this.now()),
+      title: summarizeOpenClawTaskTitle(event.content),
+      operatorMessage: ""
+    };
+
+    if (!existing) {
+      await this.emitCanvasEvent({
+        type: "oc.task.declare",
+        taskId: interaction.taskId,
+        title: interaction.title,
+        status: "running",
+        createdAt: this.now().toISOString(),
+        actorId: "openclaw/openclaw-hostinger-prod"
+      });
+    }
+
+    const artifact = extractOpenClawArtifact(event.content, interaction.operatorMessage);
+    const artifactId = `artifact-${interaction.taskId}`;
+    const editable = artifact.kind === "plan" || artifact.kind === "proposal";
+
+    await this.emitCanvasEvent({
+      type: "oc.artifact.declare",
+      taskId: interaction.taskId,
+      artifactId,
+      kind: artifact.kind,
+      title: artifact.title || interaction.title,
+      editable,
+      createdAt: this.now().toISOString()
+    });
+
+    for (const block of artifact.blocks) {
+      await this.emitCanvasEvent({
+        type: "oc.artifact.block",
+        artifactId,
+        blockId: `block-${String(block.order).padStart(2, "0")}`,
+        order: block.order,
+        kind: block.kind,
+        content: block.content,
+        editable,
+        status: "complete",
+        occurredAt: this.now().toISOString()
+      });
+    }
+
+    await this.updateCanvasTaskStatus(event.msgId, "completed", false);
+    this.pendingCanvasInteractions.delete(event.msgId);
+    this.materializedCanvasMessageIds.add(event.msgId);
+  }
+
+  private async updateCanvasTaskStatus(
+    msgId: string,
+    status: CanvasLiveTaskStatus,
+    removePending = true
+  ): Promise<void> {
+    const interaction = this.pendingCanvasInteractions.get(msgId);
+    if (!interaction) {
+      return;
+    }
+    await this.emitCanvasEvent({
+      type: "oc.task.update",
+      taskId: interaction.taskId,
+      status,
+      updatedAt: this.now().toISOString()
+    });
+    if (removePending) {
+      this.pendingCanvasInteractions.delete(msgId);
+    }
+  }
+
+  private async emitCanvasEvent(event: CanvasLiveEvent): Promise<void> {
+    try {
+      await this.canvasLiveEvents?.emit(event);
+    } catch {
+      // Chat remains available even if the visual canvas emitter is degraded.
+    }
   }
 
   private async auditOperatorMessage(
@@ -734,6 +908,13 @@ function isWebSocketUpgrade(request: IncomingMessage): boolean {
 
 function normalizeBaseUrl(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function buildCanvasTaskId(msgId: string, now: Date): string {
+  const safeId = msgId.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  const prefix = (safeId || "message").slice(0, 8);
+  const stamp = now.toISOString().replace(/\D/g, "").slice(0, 14);
+  return `chat-${prefix}-${stamp}`;
 }
 
 function withTokenQuery(rawUrl: string, token: string): string {

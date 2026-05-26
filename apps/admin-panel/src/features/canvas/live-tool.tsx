@@ -594,6 +594,7 @@ function ArtifactColumn({
   onReject: () => Promise<void> | void;
   actionPending: "approve" | "reject" | null;
 }) {
+  const isReadOnlyArtifact = artifact?.kind === "report" || artifact?.kind === "template";
   return (
     <aside
       className="flex flex-col"
@@ -616,23 +617,27 @@ function ArtifactColumn({
         ) : (
           <>
             <ArtifactHeader artifact={artifact} />
-            {artifact.kind === "report" ? (
+            {isReadOnlyArtifact ? (
               <ReadOnlyTitle title={artifact.title} />
             ) : (
               <EditableTitle title={artifact.title} onChange={(t) => onEditBlock("__title__", t)} />
             )}
             {artifact.blocks.map((b) =>
-              artifact.kind === "report" ? (
+              isReadOnlyArtifact ? (
                 <ReadOnlyBlock key={b.id} block={b} />
               ) : (
                 <EditableBlock key={b.id} block={b} onChange={(c) => onEditBlock(b.id, c)} />
               )
             )}
-            {artifact.kind === "report" ? (
+            {isReadOnlyArtifact ? (
               <ApprovalBadge
                 kind="informational"
                 meta="read-only"
-                detail="Reporte informativo; no requiere aprobación ni ejecuta acciones."
+                detail={
+                  artifact.kind === "template"
+                    ? "Template informativo; se puede copiar o exportar, no ejecuta acciones."
+                    : "Reporte informativo; no requiere aprobación ni ejecuta acciones."
+                }
               />
             ) : artifact.approvalStatus === "approved" ? (
               <ApprovalBadge
@@ -735,7 +740,7 @@ function ArtifactHeader({ artifact }: { artifact: LiveArtifact }) {
           hace {relativeTimeShort(artifact.createdAt)}
         </span>
       </div>
-      {artifact.kind === "report" ? (
+      {artifact.kind === "report" || artifact.kind === "template" ? (
         <div className="flex" style={{ gap: 6 }}>
           <button
             type="button"
@@ -758,7 +763,7 @@ function ArtifactHeader({ artifact }: { artifact: LiveArtifact }) {
               cursor: "pointer"
             }}
           >
-            Copiar reporte
+            {artifact.kind === "template" ? "Copiar template" : "Copiar reporte"}
           </button>
           <button
             type="button"
@@ -968,7 +973,7 @@ function ApprovalBadge({
 
 function artifactColumnLabel(artifact: LiveArtifact): string {
   if (artifact.kind === "report") return "Reporte · read-only";
-  if (artifact.kind === "template") return "Template propuesto · editable";
+  if (artifact.kind === "template") return "Template · read-only";
   if (artifact.kind === "proposal") return "Propuesta · editable";
   return "Plan propuesto · editable";
 }

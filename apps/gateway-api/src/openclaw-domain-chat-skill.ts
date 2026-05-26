@@ -140,6 +140,7 @@ export async function maybeHandleOpenClawDomainChatSkill(
     updatedAt: now().toISOString()
   });
 
+  deps.chatProxy.markCanvasMaterialized?.(msgId);
   await deps.chatProxy.handleAgentMessage({
     type: "ASSISTANT_DONE",
     msgId,

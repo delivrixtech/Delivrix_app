@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AuditEventInput } from "../../../packages/domain/src/index.ts";
+import type { AuditEventInput, CanvasLiveEvent } from "../../../packages/domain/src/index.ts";
 import {
   ChatProxyError,
   normalizeAgentChatEvent,
@@ -29,6 +29,15 @@ class MemoryPanelClient implements OpenClawChatPanelClient {
 
   close(): void {
     this.closed = true;
+  }
+}
+
+class MemoryCanvas {
+  readonly events: CanvasLiveEvent[] = [];
+
+  async emit(event: CanvasLiveEvent): Promise<CanvasLiveEvent> {
+    this.events.push(event);
+    return event;
   }
 }
 
@@ -259,6 +268,95 @@ test("OpenClaw chat stream normalizes, multiplexes, and audits assistant complet
   });
 });
 
+test("OpenClaw chat send creates canvas task and artifact without panel clients", async () => {
+  const audit = new MemoryAudit();
+  const canvas = new MemoryCanvas();
+  const bridge: OpenClawChatSshBridge = {
+    async sendMessage(input) {
+      return { msgId: String(input.msgId), queued: true };
+    },
+    async streamHistory(msgId, callbacks) {
+      callbacks.onDone?.({
+        type: "ASSISTANT_DONE",
+        msgId,
+        content: [
+          "# Propuesta: delivrix-mail.com",
+          "",
+          "Compra real bloqueada por doble aprobación.",
+          "",
+          "| Campo | Valor |",
+          "| --- | --- |",
+          "| Registro | USD 15 |"
+        ].join("\n"),
+        audit: { skillsInvoked: ["route53domains"] }
+      });
+    }
+  };
+  const proxy = new OpenClawChatProxy(audit, {
+    bridgeKind: "ssh",
+    sshBridge: bridge,
+    canvasLiveEvents: canvas,
+    now: () => new Date("2026-05-26T14:00:00.000Z")
+  });
+
+  await proxy.sendOperatorMessage({
+    msgId: "smoke-proposal-001",
+    message: "proponer compra de delivrix-mail.com"
+  });
+  await waitFor(() => canvas.events.some((event) => event.type === "oc.task.update" && event.status === "completed"));
+
+  assert.equal(canvas.events[0].type, "oc.task.declare");
+  assert.equal(canvas.events[0].taskId.includes("smoke-pr"), true);
+  const artifact = canvas.events.find((event) => event.type === "oc.artifact.declare");
+  assert.equal(artifact?.kind, "proposal");
+  assert.equal(artifact?.editable, true);
+  assert.equal(canvas.events.some((event) => event.type === "oc.artifact.block"), true);
+  assert.equal(canvas.events.at(-1)?.type, "oc.task.update");
+  assert.equal(canvas.events.at(-1)?.status, "completed");
+});
+
+test("OpenClaw chat stream materializes orphan assistant response as report artifact", async () => {
+  const audit = new MemoryAudit();
+  const canvas = new MemoryCanvas();
+  const proxy = new OpenClawChatProxy(audit, {
+    gatewayToken: "",
+    webSocketCtor: undefined,
+    canvasLiveEvents: canvas,
+    now: () => new Date("2026-05-26T14:00:00.000Z")
+  });
+
+  await proxy.handleAgentMessage({
+    type: "ASSISTANT_DONE",
+    msgId: "orphan-1",
+    content: "Hola, estoy listo para ayudarte."
+  });
+
+  const task = canvas.events.find((event) => event.type === "oc.task.declare");
+  const artifact = canvas.events.find((event) => event.type === "oc.artifact.declare");
+  assert.equal(task?.taskId.includes("orphan-1"), true);
+  assert.equal(artifact?.kind, "report");
+  assert.equal(artifact?.editable, false);
+});
+
+test("OpenClaw chat skips canvas extraction for messages already materialized by a gateway skill", async () => {
+  const audit = new MemoryAudit();
+  const canvas = new MemoryCanvas();
+  const proxy = new OpenClawChatProxy(audit, {
+    gatewayToken: "",
+    webSocketCtor: undefined,
+    canvasLiveEvents: canvas
+  });
+
+  proxy.markCanvasMaterialized("domain-skill-1");
+  await proxy.handleAgentMessage({
+    type: "ASSISTANT_DONE",
+    msgId: "domain-skill-1",
+    content: "Inventario de dominios ya emitido por skill."
+  });
+
+  assert.equal(canvas.events.length, 0);
+});
+
 test("OpenClaw chat event parser supports stream delta and backoff schedule", () => {
   assert.deepEqual(normalizeAgentChatEvent({
     type: "ASSISTANT_DELTA",
@@ -296,3 +394,11 @@ test("OpenClaw chat event parser supports stream delta and backoff schedule", ()
   assert.equal(openClawChatReconnectDelayMs(4), 8_000);
   assert.equal(openClawChatReconnectDelayMs(5), 30_000);
 });
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  assert.equal(predicate(), true);
+}

@@ -14,6 +14,7 @@ import {
 } from "../index.ts";
 
 const occurredAt = "2026-05-19T12:00:00.000Z";
+const rollbackNow = new Date("2026-05-20T00:00:00.000Z");
 
 test("register runbook creates a sender node and rollback snapshot", async () => {
   const repo = new MemoryRunbookSenderNodeRepository();
@@ -201,6 +202,7 @@ test("revert restores pause snapshot to previous warming state", async () => {
   const repo = new MemoryRunbookSenderNodeRepository([{ ...sampleNode(), status: "paused", warmupDay: 2, dailyLimit: 100 }]);
   const result = await revertRunbook({
     repository: repo,
+    now: rollbackNow,
     snapshot: snapshot("pause-ip", {
       status: "warming",
       warmupDay: 2,
@@ -217,6 +219,7 @@ test("revert restores warming snapshot fields", async () => {
   const repo = new MemoryRunbookSenderNodeRepository([{ ...sampleNode(), warmupDay: 2, dailyLimit: 100 }]);
   const result = await revertRunbook({
     repository: repo,
+    now: rollbackNow,
     snapshot: snapshot("warming-step", {
       status: "warming",
       warmupDay: 1,
@@ -233,6 +236,7 @@ test("revert register marks node retired_pending_approval instead of deleting", 
   const repo = new MemoryRunbookSenderNodeRepository([sampleNode()]);
   const result = await revertRunbook({
     repository: repo,
+    now: rollbackNow,
     snapshot: snapshot("register-sender-node-local", { existed: false })
   });
 
@@ -259,6 +263,7 @@ test("revert quarantine supports explicit retired target status", async () => {
   const repo = new MemoryRunbookSenderNodeRepository([{ ...sampleNode(), status: "quarantined" }]);
   const result = await revertRunbook({
     repository: repo,
+    now: rollbackNow,
     snapshot: snapshot("incident-quarantine", {
       status: "warming",
       warmupDay: 1,
@@ -276,6 +281,7 @@ test("revert quarantine defaults to active target status", async () => {
   const repo = new MemoryRunbookSenderNodeRepository([{ ...sampleNode(), status: "quarantined" }]);
   const result = await revertRunbook({
     repository: repo,
+    now: rollbackNow,
     snapshot: snapshot("incident-quarantine", {
       status: "warming",
       warmupDay: 1,
