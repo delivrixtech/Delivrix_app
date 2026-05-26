@@ -1,12 +1,13 @@
 /**
- * WebdockRealAdapter — cliente HTTP read-only contra la API real de Webdock
+ * WebdockRealAdapter — cliente HTTP contra la API real de Webdock
  * (https://api.webdock.io/v1).
  *
  * Hito 5.11.A. Reemplaza progresivamente los mocks del Canvas con datos
- * vivos del proveedor. Solo lee — no expone métodos de mutación contra
- * Webdock. El bundle frontend sigue GET-only.
+ * vivos del proveedor. Las lecturas y escrituras usan credenciales separadas;
+ * el bundle frontend sigue GET-only y las mutaciones pasan por rutas gated.
  *
- * Fallback: si `WEBDOCK_API_KEY` no está presente en el entorno, devuelve un
+ * Fallback: si `WEBDOCK_API_KEY_PRIMARY`/`WEBDOCK_API_KEY` no está presente
+ * en el entorno, devuelve un
  * snapshot mock canónico para que el panel siga funcionando en desarrollo
  * sin necesidad de tocar la cuenta real.
  *
@@ -101,8 +102,12 @@ interface CacheEntry {
 }
 
 export interface WebdockRealAdapterOptions {
-  /** Key del proveedor. Si no se pasa, se lee de process.env.WEBDOCK_API_KEY. */
+  /** Key legacy del proveedor. Compat: se usa como read/write si no hay keys separadas. */
   apiKey?: string;
+  /** Key read-only para inventario. Si no se pasa, se lee de env. */
+  readApiKey?: string;
+  /** Key con permisos de write para createServer. Si no se pasa, se lee de env. */
+  writeApiKey?: string;
   /** Base URL para tests. Default https://api.webdock.io/v1. */
   apiBase?: string;
   /** Alias operativo de apiBase usado por algunas specs OPS. */
@@ -136,7 +141,8 @@ export interface CreateWebdockAdaptersFromEnvOptions
 }
 
 export class WebdockRealAdapter {
-  private readonly apiKey: string | undefined;
+  private readonly readApiKey: string | undefined;
+  private readonly writeApiKey: string | undefined;
   private readonly apiBase: string;
   private readonly accountId: string;
   private readonly accountLabel: string;
@@ -147,8 +153,16 @@ export class WebdockRealAdapter {
 
   constructor(options: WebdockRealAdapterOptions = {}) {
     const env = options.env ?? (typeof process !== "undefined" ? process.env : {});
-    this.apiKey =
+    const legacyApiKey =
       normalizeEnvValue(options.apiKey) ?? normalizeEnvValue(env?.WEBDOCK_API_KEY);
+    this.readApiKey =
+      normalizeEnvValue(options.readApiKey) ??
+      normalizeEnvValue(env?.WEBDOCK_API_KEY_PRIMARY) ??
+      legacyApiKey;
+    this.writeApiKey =
+      normalizeEnvValue(options.writeApiKey) ??
+      normalizeEnvValue(env?.WEBDOCK_API_KEY_OPS) ??
+      legacyApiKey;
     this.apiBase = options.apiBase ?? options.baseUrl ?? DEFAULT_API_BASE;
     this.accountId = normalizeEnvValue(options.accountId) ?? "default";
     this.accountLabel = normalizeEnvValue(options.accountLabel) ?? "Webdock";
@@ -158,7 +172,7 @@ export class WebdockRealAdapter {
   }
 
   isLive(): boolean {
-    return Boolean(this.apiKey && this.apiKey.length > 0);
+    return Boolean(this.readApiKey || this.writeApiKey);
   }
 
   /**
@@ -174,7 +188,8 @@ export class WebdockRealAdapter {
       return this.cache.result;
     }
 
-    if (!this.isLive()) {
+    const readApiKey = this.readApiKey ?? this.writeApiKey;
+    if (!readApiKey) {
       const result: WebdockInventoryResult = {
         servers: this.withAccount(mockWebdockServers()),
         source: this.sourceMetadata(now, "mock", true)
@@ -187,7 +202,7 @@ export class WebdockRealAdapter {
       const response = await this.fetchImpl(`${this.apiBase}/servers`, {
         method: "GET",
         headers: {
-          authorization: `Bearer ${this.apiKey}`,
+          authorization: `Bearer ${readApiKey}`,
           accept: "application/json",
           "user-agent": "Delivrix-MailOps/0.1 (webdock-collector)"
         }
@@ -224,7 +239,7 @@ export class WebdockRealAdapter {
   }
 
   async createServer(opts: WebdockCreateServerInput): Promise<WebdockCreateServerResult> {
-    if (!this.isLive()) {
+    if (!this.writeApiKey) {
       throw new Error("WEBDOCK_API_KEY_OPS or WEBDOCK_API_KEY is required for Webdock writes.");
     }
 
@@ -240,7 +255,7 @@ export class WebdockRealAdapter {
     const response = await this.fetchImpl(`${this.apiBase}/servers`, {
       method: "POST",
       headers: {
-        authorization: `Bearer ${this.apiKey}`,
+        authorization: `Bearer ${this.writeApiKey}`,
         accept: "application/json",
         "content-type": "application/json",
         "user-agent": "Delivrix-MailOps/0.1 (webdock-provisioner)"
@@ -273,7 +288,8 @@ export class WebdockRealAdapter {
   }
 
   async getServer(slug: string): Promise<WebdockServer> {
-    if (!this.isLive()) {
+    const readApiKey = this.readApiKey ?? this.writeApiKey;
+    if (!readApiKey) {
       const server = this.withAccount(mockWebdockServers()).find((item) => item.slug === slug);
       if (!server) {
         throw new Error(`Webdock mock server not found: ${slug}`);
@@ -284,7 +300,7 @@ export class WebdockRealAdapter {
     const response = await this.fetchImpl(`${this.apiBase}/servers/${encodeURIComponent(slug)}`, {
       method: "GET",
       headers: {
-        authorization: `Bearer ${this.apiKey}`,
+        authorization: `Bearer ${readApiKey}`,
         accept: "application/json",
         "user-agent": "Delivrix-MailOps/0.1 (webdock-provisioner)"
       }
@@ -387,7 +403,7 @@ function buildAccountAdapterEntry(
     adapter: new WebdockRealAdapter({
       ...options,
       env,
-      apiKey,
+      readApiKey: apiKey,
       accountId: id,
       accountLabel: label
     })

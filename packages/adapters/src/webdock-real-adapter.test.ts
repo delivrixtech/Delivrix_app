@@ -51,7 +51,7 @@ test("createWebdockAdaptersFromEnv keeps a mock default adapter when no key exis
 test("WebdockRealAdapter creates a server from the safe demo profile aliases", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const adapter = new WebdockRealAdapter({
-    apiKey: "ops-key",
+    writeApiKey: "ops-key",
     apiBase: "https://api.webdock.test/v1",
     now: () => new Date("2026-05-26T19:00:00.000Z"),
     fetchImpl: async (url, init) => {
@@ -88,9 +88,48 @@ test("WebdockRealAdapter creates a server from the safe demo profile aliases", a
   });
 });
 
+test("WebdockRealAdapter uses primary key for reads and ops key for writes", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const adapter = new WebdockRealAdapter({
+    readApiKey: "primary-read-key",
+    writeApiKey: "ops-write-key",
+    apiBase: "https://api.webdock.test/v1",
+    cacheTtlMs: 0,
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (init?.method === "POST") {
+        return Response.json({
+          slug: "mail-delivrix-test",
+          name: "mail.delivrix.test",
+          status: "provisioning",
+          ipv4: ""
+        }, { status: 201 });
+      }
+      return Response.json([{
+        slug: "mail-current",
+        name: "mail.current.test",
+        status: "running",
+        ipv4: "192.0.2.10"
+      }]);
+    }
+  });
+
+  await adapter.listServers();
+  await adapter.createServer({
+    profile: "bit",
+    locationId: "fi",
+    hostname: "mail.delivrix.test",
+    imageSlug: "ubuntu-2404",
+    publicKey: "ssh-ed25519 AAAA test"
+  });
+
+  assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Bearer primary-read-key");
+  assert.equal((calls[1].init.headers as Record<string, string>).authorization, "Bearer ops-write-key");
+});
+
 test("WebdockRealAdapter fetches a provisioned server by slug", async () => {
   const adapter = new WebdockRealAdapter({
-    apiKey: "ops-key",
+    readApiKey: "ops-key",
     apiBase: "https://api.webdock.test/v1",
     fetchImpl: async (url) => {
       assert.equal(String(url), "https://api.webdock.test/v1/servers/mail-delivrix-test");

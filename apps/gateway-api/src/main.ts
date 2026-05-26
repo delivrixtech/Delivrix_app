@@ -218,8 +218,8 @@ const rateLimitService = new RateLimitService(rateLimitStore);
 const webdockAdapter = new WebdockAdapter();
 const webdockRealAdapter = new WebdockRealAdapter();
 const webdockOpsAdapter = new WebdockRealAdapter({
-  apiKey: process.env.WEBDOCK_API_KEY_OPS,
-  env: { WEBDOCK_API_KEY: process.env.WEBDOCK_API_KEY_OPS },
+  readApiKey: process.env.WEBDOCK_API_KEY_PRIMARY,
+  writeApiKey: process.env.WEBDOCK_API_KEY_OPS,
   accountId: "ops",
   accountLabel: process.env.WEBDOCK_ACCOUNT_OPS_LABEL ?? "Webdock Ops",
   cacheTtlMs: 0
