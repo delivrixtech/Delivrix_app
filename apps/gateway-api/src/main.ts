@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
   AwsRoute53DomainsAdapter,
+  AwsRoute53DnsAdapter,
   createWebdockAdaptersFromEnv,
   IonosDnsAdapter,
   IonosDomainsAdapter,
@@ -149,6 +150,10 @@ import {
   handleRoute53DomainRegisterHttp
 } from "./routes/domains-purchase.ts";
 import {
+  handleRoute53DnsError,
+  handleRoute53DnsUpsertHttp
+} from "./routes/domains-dns.ts";
+import {
   handleDomainCompareError,
   handleDomainCompareHttp
 } from "./routes/domains-compare.ts";
@@ -187,6 +192,7 @@ const webdockAdapter = new WebdockAdapter();
 const webdockRealAdapter = new WebdockRealAdapter();
 const webdockAccountAdapters = createWebdockAdaptersFromEnv();
 const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
+const awsRoute53DnsAdapter = new AwsRoute53DnsAdapter();
 const ionosDnsAdapter = new IonosDnsAdapter();
 const ionosDomainsAdapter = new IonosDomainsAdapter();
 const porkbunAdapter = new PorkbunAdapter();
@@ -664,6 +670,25 @@ const server = createServer(async (request, response) => {
         });
       } catch (error) {
         if (handleRoute53DomainPurchaseError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/domains/route53/dns/upsert") {
+      try {
+        return await handleRoute53DnsUpsertHttp({
+          request,
+          response,
+          auditLog,
+          adapter: awsRoute53DnsAdapter,
+          workspace: openClawWorkspace,
+          canvasLiveEvents,
+          readCanvasState: () => canvasLiveEvents.snapshot()
+        });
+      } catch (error) {
+        if (handleRoute53DnsError(error, response)) {
           return;
         }
         throw error;
