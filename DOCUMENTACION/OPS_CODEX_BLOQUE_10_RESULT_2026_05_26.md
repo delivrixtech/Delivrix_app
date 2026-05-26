@@ -330,6 +330,55 @@ El resultado queda en `inventory/domains.json#bindings` con `status=pending_prop
 oc.domain.bound_to_server
 ```
 
+### T7 — start_warmup_seed
+
+Nuevo endpoint:
+
+```http
+POST /v1/warmup/start
+```
+
+Body:
+
+```json
+{
+  "domain": "delivrix-mail.com",
+  "serverSlug": "mail-delivrix-test",
+  "serverIp": "192.0.2.44",
+  "seedInboxes": [
+    "seed.one@gmail.com",
+    "seed.two@outlook.com",
+    "seed.three@delivrix.com"
+  ],
+  "actorId": "operator/juanes",
+  "approvalToken": "exec-...",
+  "taskId": "optional-canvas-task"
+}
+```
+
+Gates obligatorios antes de enviar:
+
+- `WARMUP_ENABLE_SEND=true`.
+- Runner SSH configurado.
+- Audit chain contiene `oc.artifact.approved` reciente con `metadata.executionId == approvalToken`.
+- Canvas artifact asociado sigue `approved`.
+- IP del servidor disponible por body o workspace.
+- Exactamente 3 seed inboxes.
+
+La skill ejecuta `/usr/sbin/sendmail -t -f noreply@<domain>` por SSH, una vez por inbox. El contenido del mensaje viaja por `stdin`; el comando auditado solo muestra destino enmascarado.
+
+El resultado queda en:
+
+```text
+inventory/warmup-progress.json
+```
+
+Para privacidad, audit/workspace guardan `seedHash`, `seedDomain`, `msgId`, no el email completo. Al completar emite:
+
+```text
+oc.warmup.started
+```
+
 ## Seguridad
 
 - No se ejecutó ninguna compra real.
@@ -338,8 +387,9 @@ oc.domain.bound_to_server
 - La private key DKIM queda restringida al workspace y fuera de audit/response.
 - La public key SSH de Webdock se recibe como parámetro/fallback env, pero audit solo guarda fingerprint.
 - La private key DKIM viaja a SSH por `stdin`; el comando auditado queda redacted.
+- Los seed inboxes de warmup se enmascaran en respuesta y se hashean en workspace/audit.
 - El endpoint no acepta solo UI state: exige audit chain reciente.
-- La compra, las mutaciones DNS, la autenticación de email, la creación de VPS y el provisioning SSH quedan deshabilitados por defecto hasta activar env + permisos + aprobación.
+- La compra, las mutaciones DNS, la autenticación de email, la creación de VPS, el provisioning SSH y el envío warmup quedan deshabilitados por defecto hasta activar env + permisos + aprobación.
 
 ## Verificación
 
@@ -350,6 +400,7 @@ node --test apps/gateway-api/src/openclaw-workspace.test.ts apps/gateway-api/src
 node --test packages/adapters/src/webdock-real-adapter.test.ts apps/gateway-api/src/routes/webdock-servers.test.ts
 node --test apps/gateway-api/src/openclaw-workspace.test.ts apps/gateway-api/src/routes/smtp-provisioning.test.ts
 node --test apps/gateway-api/src/routes/domains-bind.test.ts
+node --test apps/gateway-api/src/routes/warmup.test.ts
 npm test
 git diff --check
 ```
@@ -362,12 +413,12 @@ Resultado:
 - T4 focus tests: 7 passed.
 - T5 focus tests: 4 passed.
 - T6 focus tests: 3 passed.
-- Full suite after T6: 329 passed.
+- T7 focus tests: 2 passed.
+- Full suite after T7: 331 passed.
 - Diff check: OK.
 
 ## Pendiente para demo real
 
-- T7 warmup seed.
 - T7C supervisor batch multi-agent.
 - T8 flow end-to-end async con eventos Canvas Live por fase.
 
