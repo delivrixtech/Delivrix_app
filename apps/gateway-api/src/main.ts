@@ -158,6 +158,10 @@ import {
   handleEmailAuthError
 } from "./routes/domains-email-auth.ts";
 import {
+  handleWebdockServerCreateError,
+  handleWebdockServerCreateHttp
+} from "./routes/webdock-servers.ts";
+import {
   handleDomainCompareError,
   handleDomainCompareHttp
 } from "./routes/domains-compare.ts";
@@ -194,6 +198,13 @@ const rateLimitStore = new LocalFileRateLimitStore();
 const rateLimitService = new RateLimitService(rateLimitStore);
 const webdockAdapter = new WebdockAdapter();
 const webdockRealAdapter = new WebdockRealAdapter();
+const webdockOpsAdapter = new WebdockRealAdapter({
+  apiKey: process.env.WEBDOCK_API_KEY_OPS,
+  env: { WEBDOCK_API_KEY: process.env.WEBDOCK_API_KEY_OPS },
+  accountId: "ops",
+  accountLabel: process.env.WEBDOCK_ACCOUNT_OPS_LABEL ?? "Webdock Ops",
+  cacheTtlMs: 0
+});
 const webdockAccountAdapters = createWebdockAdaptersFromEnv();
 const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
 const awsRoute53DnsAdapter = new AwsRoute53DnsAdapter();
@@ -606,6 +617,26 @@ const server = createServer(async (request, response) => {
         inventory: contract,
         drift
       });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/webdock/servers/create") {
+      try {
+        return await handleWebdockServerCreateHttp({
+          request,
+          response,
+          auditLog,
+          adapter: webdockOpsAdapter,
+          workspace: openClawWorkspace,
+          canvasLiveEvents,
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          env: process.env
+        });
+      } catch (error) {
+        if (handleWebdockServerCreateError(error, response)) {
+          return;
+        }
+        throw error;
+      }
     }
 
     if (request.method === "GET" && request.url === "/v1/infrastructure/inventory") {

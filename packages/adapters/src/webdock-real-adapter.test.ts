@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createWebdockAdaptersFromEnv } from "./webdock-real-adapter.ts";
+import {
+  createWebdockAdaptersFromEnv,
+  WebdockRealAdapter
+} from "./webdock-real-adapter.ts";
 
 test("createWebdockAdaptersFromEnv builds one adapter per configured Webdock account", () => {
   const accounts = createWebdockAdaptersFromEnv({
@@ -43,4 +46,68 @@ test("createWebdockAdaptersFromEnv keeps a mock default adapter when no key exis
   assert.equal(result.source.accountLabel, "Webdock");
   assert.equal(result.servers.length > 0, true);
   assert.equal(result.servers[0].accountId, "default");
+});
+
+test("WebdockRealAdapter creates a server from the safe demo profile aliases", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const adapter = new WebdockRealAdapter({
+    apiKey: "ops-key",
+    apiBase: "https://api.webdock.test/v1",
+    now: () => new Date("2026-05-26T19:00:00.000Z"),
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify({
+        slug: "mail-delivrix-test",
+        name: "mail.delivrix.test",
+        status: "provisioning",
+        ipv4: ""
+      }), {
+        status: 201,
+        headers: { "x-callback-id": "cb-123" }
+      });
+    }
+  });
+
+  const result = await adapter.createServer({
+    profile: "bit",
+    locationId: "fi",
+    hostname: "mail.delivrix.test",
+    imageSlug: "ubuntu-2404",
+    publicKey: "ssh-ed25519 AAAA test"
+  });
+
+  assert.equal(result.serverSlug, "mail-delivrix-test");
+  assert.equal(result.eventId, "cb-123");
+  assert.equal(result.status, "provisioning");
+  assert.equal(calls[0].url, "https://api.webdock.test/v1/servers");
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
+    name: "mail.delivrix.test",
+    locationId: "fi",
+    profileSlug: "webdockepyc-bit-2",
+    imageSlug: "ubuntu-24.04-lts"
+  });
+});
+
+test("WebdockRealAdapter fetches a provisioned server by slug", async () => {
+  const adapter = new WebdockRealAdapter({
+    apiKey: "ops-key",
+    apiBase: "https://api.webdock.test/v1",
+    fetchImpl: async (url) => {
+      assert.equal(String(url), "https://api.webdock.test/v1/servers/mail-delivrix-test");
+      return Response.json({
+        server: {
+          slug: "mail-delivrix-test",
+          name: "mail.delivrix.test",
+          status: "running",
+          ipv4: "192.0.2.44"
+        }
+      });
+    }
+  });
+
+  const server = await adapter.getServer("mail-delivrix-test");
+
+  assert.equal(server.slug, "mail-delivrix-test");
+  assert.equal(server.status, "running");
+  assert.equal(server.ipv4, "192.0.2.44");
 });
