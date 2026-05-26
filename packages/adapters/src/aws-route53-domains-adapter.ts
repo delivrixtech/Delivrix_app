@@ -19,6 +19,39 @@ export interface AwsRoute53Money {
   currency: string;
 }
 
+export interface AwsRoute53ContactDetail {
+  FirstName: string;
+  LastName: string;
+  ContactType: string;
+  AddressLine1: string;
+  City: string;
+  State?: string;
+  CountryCode: string;
+  ZipCode: string;
+  PhoneNumber: string;
+  Email: string;
+  OrganizationName?: string;
+  AddressLine2?: string;
+  Fax?: string;
+  ExtraParams?: Array<{
+    Name: string;
+    Value: string;
+  }>;
+}
+
+export interface AwsRoute53RegisterDomainInput {
+  domain: string;
+  years: number;
+  autoRenew: boolean;
+  adminContact: AwsRoute53ContactDetail;
+  privacyProtection?: boolean;
+}
+
+export interface AwsRoute53RegisterDomainResult {
+  operationId: string;
+  expectedExpiry: string;
+}
+
 export interface AwsRoute53DomainCandidate {
   domainName: string;
   tld: string;
@@ -145,6 +178,10 @@ export class AwsRoute53DomainsAdapter {
     return Boolean(this.accessKeyId && this.secretAccessKey);
   }
 
+  isPurchaseEnabled(): boolean {
+    return this.purchaseEnabled;
+  }
+
   currentSource(
     responseOk = true,
     errorMessageValue?: string
@@ -225,6 +262,44 @@ export class AwsRoute53DomainsAdapter {
 
   async listOwnedDomains(): Promise<AwsRoute53DomainSummary[]> {
     return (await this.listInventory()).domains;
+  }
+
+  async registerDomain(
+    opts: AwsRoute53RegisterDomainInput
+  ): Promise<AwsRoute53RegisterDomainResult> {
+    if (!this.purchaseEnabled) {
+      throw new Error("AWS Route53 domain purchase is disabled by AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE.");
+    }
+    if (!this.isLive()) {
+      throw new Error("AWS Route53 domain purchase requires live credentials.");
+    }
+
+    const domainName = normalizeDomainName(opts.domain);
+    const years = Math.max(1, Math.min(10, Math.trunc(opts.years)));
+    const privacyProtection = opts.privacyProtection ?? true;
+    const response = await this.awsJson("RegisterDomain", {
+      DomainName: domainName,
+      DurationInYears: years,
+      AutoRenew: opts.autoRenew,
+      AdminContact: opts.adminContact,
+      RegistrantContact: opts.adminContact,
+      TechContact: opts.adminContact,
+      PrivacyProtectAdminContact: privacyProtection,
+      PrivacyProtectRegistrantContact: privacyProtection,
+      PrivacyProtectTechContact: privacyProtection
+    });
+    const operationId = isRecord(response) ? stringValue(response.OperationId) : undefined;
+    if (!operationId) {
+      throw new Error("AWS Route53 RegisterDomain response did not include OperationId.");
+    }
+
+    const expectedExpiryDate = this.now();
+    expectedExpiryDate.setUTCFullYear(expectedExpiryDate.getUTCFullYear() + years);
+    this.invalidateCache();
+    return {
+      operationId,
+      expectedExpiry: expectedExpiryDate.toISOString()
+    };
   }
 
   async listInventory(): Promise<AwsRoute53DomainsInventoryResult> {
@@ -521,6 +596,14 @@ function moneyValue(value: unknown): AwsRoute53Money | undefined {
 function domainTld(domainName: string): string | undefined {
   const parts = domainName.toLowerCase().split(".").filter(Boolean);
   return parts.length >= 2 ? parts.at(-1) : undefined;
+}
+
+function normalizeDomainName(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/\.$/, "");
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(normalized)) {
+    throw new Error(`Invalid domain name: ${value}`);
+  }
+  return normalized;
 }
 
 function safePreview(value: string): string {

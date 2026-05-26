@@ -145,6 +145,10 @@ import {
   handleOwnedDomainsHttp
 } from "./routes/domains.ts";
 import {
+  handleRoute53DomainPurchaseError,
+  handleRoute53DomainRegisterHttp
+} from "./routes/domains-purchase.ts";
+import {
   handleDomainCompareError,
   handleDomainCompareHttp
 } from "./routes/domains-compare.ts";
@@ -165,6 +169,7 @@ import {
 import { handleInfrastructureInventoryHttp } from "./routes/infrastructure.ts";
 import { CanvasLiveEventService } from "./services/canvas-live-events.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
+import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
@@ -193,6 +198,7 @@ const safetyRealtimeCache = new SafetyRealtimeCache();
 const learningRealtimeCache = new SafetyRealtimeCache();
 const openClawSshBridge = createOpenClawSshBridgeFromEnv();
 const canvasLiveEvents = new CanvasLiveEventService();
+const openClawWorkspace = new OpenClawWorkspace();
 const openClawChatProxy = new OpenClawChatProxy(auditLog, {
   bridgeKind: openClawSshBridge ? "ssh" : "http",
   sshBridge: openClawSshBridge,
@@ -639,6 +645,25 @@ const server = createServer(async (request, response) => {
         });
       } catch (error) {
         if (handleDomainCompareError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/domains/route53/register") {
+      try {
+        return await handleRoute53DomainRegisterHttp({
+          request,
+          response,
+          auditLog,
+          adapter: awsRoute53DomainsAdapter,
+          workspace: openClawWorkspace,
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          env: process.env
+        });
+      } catch (error) {
+        if (handleRoute53DomainPurchaseError(error, response)) {
           return;
         }
         throw error;
