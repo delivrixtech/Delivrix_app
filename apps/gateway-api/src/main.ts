@@ -175,6 +175,12 @@ import {
   handleWarmupStartHttp
 } from "./routes/warmup.ts";
 import {
+  createGatewayOnboardDomainFlowRunner,
+  handleOnboardBatchHttp,
+  handleOnboardFlowError,
+  handleOnboardSenderDomainHttp
+} from "./routes/onboard-flow.ts";
+import {
   handleDomainCompareError,
   handleDomainCompareHttp
 } from "./routes/domains-compare.ts";
@@ -234,6 +240,17 @@ const openClawSshBridge = createOpenClawSshBridgeFromEnv();
 const canvasLiveEvents = new CanvasLiveEventService();
 const openClawWorkspace = new OpenClawWorkspace();
 const smtpSshRunner = createSmtpSshRunnerFromEnv();
+const onboardDomainFlowRunner = createGatewayOnboardDomainFlowRunner({
+  auditLog,
+  workspace: openClawWorkspace,
+  canvasLiveEvents,
+  domainPurchaseAdapter: awsRoute53DomainsAdapter,
+  dnsAdapter: awsRoute53DnsAdapter,
+  webdockAdapter: webdockOpsAdapter,
+  sshRunner: smtpSshRunner,
+  readCanvasState: () => canvasLiveEvents.snapshot(),
+  env: process.env
+});
 const openClawChatProxy = new OpenClawChatProxy(auditLog, {
   bridgeKind: openClawSshBridge ? "ssh" : "http",
   sshBridge: openClawSshBridge,
@@ -689,6 +706,44 @@ const server = createServer(async (request, response) => {
         });
       } catch (error) {
         if (handleWarmupStartError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/flows/onboard-sender-domain") {
+      try {
+        return await handleOnboardSenderDomainHttp({
+          request,
+          response,
+          auditLog,
+          workspace: openClawWorkspace,
+          canvasLiveEvents,
+          runner: onboardDomainFlowRunner,
+          env: process.env
+        });
+      } catch (error) {
+        if (handleOnboardFlowError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/flows/onboard-batch") {
+      try {
+        return await handleOnboardBatchHttp({
+          request,
+          response,
+          auditLog,
+          workspace: openClawWorkspace,
+          canvasLiveEvents,
+          runner: onboardDomainFlowRunner,
+          env: process.env
+        });
+      } catch (error) {
+        if (handleOnboardFlowError(error, response)) {
           return;
         }
         throw error;

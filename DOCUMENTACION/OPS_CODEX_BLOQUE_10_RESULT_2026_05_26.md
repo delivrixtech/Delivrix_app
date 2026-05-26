@@ -379,6 +379,75 @@ Para privacidad, audit/workspace guardan `seedHash`, `seedDomain`, `msgId`, no e
 oc.warmup.started
 ```
 
+### T7C — supervisor_onboard_batch multi-agent
+
+Nuevo endpoint:
+
+```http
+POST /v1/flows/onboard-batch
+```
+
+Body:
+
+```json
+{
+  "domains": [
+    "delivrix-send.com",
+    "delivrix-relay.com",
+    "delivrix-mta.com"
+  ],
+  "profile": "bit",
+  "actorId": "operator/juanes",
+  "approvalToken": "exec-...",
+  "seedInboxes": [
+    "seed.one@gmail.com",
+    "seed.two@outlook.com",
+    "seed.three@delivrix.com"
+  ]
+}
+```
+
+El endpoint devuelve `202 Accepted` con `parentTaskId` y `subTaskIds` inmediatamente. La ejecución corre en background:
+
+- declara una task padre `Onboarding batch · N domains`;
+- declara una sub-task por dominio con `parentTaskId`;
+- ejecuta los dominios en paralelo con `Promise.all`;
+- reintenta cada sub-task hasta `maxRetries` (default 1);
+- si un dominio falla, escribe learning automático y no tumba el batch completo;
+- al final emite artifact consolidado tipo `report`;
+- escribe execution record `supervisor_onboard_batch`;
+- actualiza `inventory/onboard-batches.json`;
+- emite audit `oc.flow.onboard_batch_completed`.
+
+### T8 — Canvas Live jerárquico + flow async end-to-end
+
+Se extendió el contrato compartido `packages/domain/src/canvas-live.ts`:
+
+```ts
+CanvasLiveTaskDeclareEvent.parentTaskId?: string
+CanvasLiveTaskSnapshot.parentTaskId?: string
+```
+
+El normalizador backend acepta `parentTaskId` y `parent_task_id`, conserva la jerarquía al persistir/releer `tasks.jsonl`, y mantiene `lastAction` al completar sub-tasks.
+
+Nuevo endpoint individual:
+
+```http
+POST /v1/flows/onboard-sender-domain
+```
+
+El runner productivo encadena los endpoints T1-T7 ya implementados:
+
+1. `POST /v1/domains/route53/register`
+2. `POST /v1/domains/route53/dns/upsert`
+3. `POST /v1/webdock/servers/create`
+4. `POST /v1/domains/auth/configure`
+5. `POST /v1/servers/{serverSlug}/provision-smtp`
+6. `POST /v1/domains/bind`
+7. `POST /v1/warmup/start`
+
+Cada fase emite `oc.action.now` al task del dominio. Los handlers internos siguen aplicando sus propias compuertas de env + audit approval + canvas artifact aprobado, así que el flow no bypassa seguridad.
+
 ## Seguridad
 
 - No se ejecutó ninguna compra real.
@@ -388,6 +457,8 @@ oc.warmup.started
 - La public key SSH de Webdock se recibe como parámetro/fallback env, pero audit solo guarda fingerprint.
 - La private key DKIM viaja a SSH por `stdin`; el comando auditado queda redacted.
 - Los seed inboxes de warmup se enmascaran en respuesta y se hashean en workspace/audit.
+- El flow batch no bypassa gates: llama los handlers T1-T7 con el mismo `approvalToken`.
+- Las sub-tasks fallidas quedan aisladas; el supervisor genera learning y artifact de resumen.
 - El endpoint no acepta solo UI state: exige audit chain reciente.
 - La compra, las mutaciones DNS, la autenticación de email, la creación de VPS, el provisioning SSH y el envío warmup quedan deshabilitados por defecto hasta activar env + permisos + aprobación.
 
@@ -401,6 +472,7 @@ node --test packages/adapters/src/webdock-real-adapter.test.ts apps/gateway-api/
 node --test apps/gateway-api/src/openclaw-workspace.test.ts apps/gateway-api/src/routes/smtp-provisioning.test.ts
 node --test apps/gateway-api/src/routes/domains-bind.test.ts
 node --test apps/gateway-api/src/routes/warmup.test.ts
+node --test apps/gateway-api/src/routes/canvas-live.test.ts apps/gateway-api/src/routes/onboard-flow.test.ts
 npm test
 git diff --check
 ```
@@ -414,13 +486,13 @@ Resultado:
 - T5 focus tests: 4 passed.
 - T6 focus tests: 3 passed.
 - T7 focus tests: 2 passed.
-- Full suite after T7: 331 passed.
+- T7C/T8 focus tests: 15 passed.
+- Full suite after T7C/T8: 334 passed.
 - Diff check: OK.
 
 ## Pendiente para demo real
 
-- T7C supervisor batch multi-agent.
-- T8 flow end-to-end async con eventos Canvas Live por fase.
+- Smoke test real con 3 dominios staging cuando estén activos los bloqueantes externos.
 
 Bloqueantes externos:
 

@@ -343,6 +343,7 @@ export class CanvasLiveEventService {
       case "oc.task.declare":
         this.tasks.set(event.taskId, {
           taskId: event.taskId,
+          ...(event.parentTaskId ? { parentTaskId: event.parentTaskId } : {}),
           title: event.title,
           status: event.status,
           createdAt: event.createdAt,
@@ -354,6 +355,7 @@ export class CanvasLiveEventService {
         const existing = this.tasks.get(event.taskId);
         this.tasks.set(event.taskId, {
           taskId: event.taskId,
+          ...(existing?.parentTaskId ? { parentTaskId: existing.parentTaskId } : {}),
           title: existing?.title ?? event.taskId,
           status: event.status,
           createdAt: existing?.createdAt ?? event.updatedAt,
@@ -507,6 +509,7 @@ export function normalizeCanvasLiveEvent(raw: unknown, now: () => Date = () => n
     return {
       type: "oc.task.declare",
       taskId,
+      ...optionalParentTaskId(raw, taskId),
       title: requiredString(raw.title, "title"),
       status: normalizeTaskStatus(raw.status),
       createdAt: normalizeDate(raw.createdAt, now),
@@ -782,6 +785,14 @@ function requiredId(value: unknown, field: string): string {
     throw new CanvasLiveStateError(422, "invalid_identifier", `${field} is required.`);
   }
   return normalized;
+}
+
+function optionalParentTaskId(raw: Record<string, unknown>, taskId: string): { parentTaskId?: string } {
+  const parentTaskId = normalizeId(raw.parentTaskId ?? raw.parent_task_id);
+  if (!parentTaskId || parentTaskId === taskId) {
+    return {};
+  }
+  return { parentTaskId };
 }
 
 function normalizeId(value: unknown): string {
