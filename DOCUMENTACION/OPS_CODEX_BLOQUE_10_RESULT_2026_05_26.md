@@ -168,14 +168,71 @@ Emite `oc.action.now` al Canvas Live para lectura de learnings, keygen, escritur
 oc.email_auth.configured
 ```
 
+### T4 — provision_webdock_vps
+
+Se extendió `WebdockRealAdapter` con:
+
+- `createServer({ profile, locationId, hostname, imageSlug, publicKey, callbackUrl })`
+- `getServer(slug)`
+
+Nuevo endpoint:
+
+```http
+POST /v1/webdock/servers/create
+```
+
+Body:
+
+```json
+{
+  "profile": "bit",
+  "locationId": "fi",
+  "hostname": "mail.delivrix-mail.com",
+  "imageSlug": "ubuntu-2404",
+  "publicKey": "ssh-ed25519 ...",
+  "actorId": "operator/juanes",
+  "approvalToken": "exec-...",
+  "taskId": "optional-canvas-task"
+}
+```
+
+Mapeo seguro para demo:
+
+- `bit` -> `webdockepyc-bit-2`
+- `nibble` -> `webdockepyc-nibble-2`
+- `byte` -> `webdockepyc-byte-2`
+- `kilobyte` -> `webdockepyc-kilobyte-2`
+- `ubuntu-2404` -> `ubuntu-24.04-lts`
+
+Gates obligatorios antes de crear VPS:
+
+- `WEBDOCK_API_KEY_OPS` live.
+- `WEBDOCK_SERVERS_ENABLE_CREATE=true`.
+- Audit chain contiene `oc.artifact.approved` reciente con `metadata.executionId == approvalToken`.
+- Canvas artifact asociado sigue `approved`.
+- Public key OpenSSH explícita o `WEBDOCK_OPERATOR_SSH_PUBLIC_KEY`.
+
+Después del `POST /servers`, la skill hace polling con `GET /servers/{slug}` y emite `oc.action.now` por cada poll. El resultado se guarda en:
+
+```text
+inventory/webdock-servers.json
+```
+
+Se marca `port25UnlockRequired: true` porque Webdock puede bloquear SMTP saliente por defecto. La private key no se guarda; solo se registra fingerprint SHA-256 corto de la public key. Al completar emite:
+
+```text
+oc.webdock.server_created
+```
+
 ## Seguridad
 
 - No se ejecutó ninguna compra real.
 - No se editaron credenciales ni `.env.local`.
 - El contacto administrativo no se escribe en audit ni workspace.
 - La private key DKIM queda restringida al workspace y fuera de audit/response.
+- La public key SSH de Webdock se recibe como parámetro/fallback env, pero audit solo guarda fingerprint.
 - El endpoint no acepta solo UI state: exige audit chain reciente.
-- La compra, las mutaciones DNS y la autenticación de email quedan deshabilitadas por defecto hasta activar env + IAM + aprobación.
+- La compra, las mutaciones DNS, la autenticación de email y la creación de VPS quedan deshabilitadas por defecto hasta activar env + permisos + aprobación.
 
 ## Verificación
 
@@ -183,6 +240,7 @@ oc.email_auth.configured
 node --test packages/adapters/src/aws-route53-domains-adapter.test.ts apps/gateway-api/src/openclaw-workspace.test.ts apps/gateway-api/src/routes/domains-purchase.test.ts
 node --test packages/adapters/src/aws-route53-dns-adapter.test.ts apps/gateway-api/src/routes/domains-dns.test.ts
 node --test apps/gateway-api/src/openclaw-workspace.test.ts apps/gateway-api/src/routes/domains-email-auth.test.ts
+node --test packages/adapters/src/webdock-real-adapter.test.ts apps/gateway-api/src/routes/webdock-servers.test.ts
 npm test
 git diff --check
 ```
@@ -192,12 +250,12 @@ Resultado:
 - T1/T7B focus tests: 13 passed.
 - T2 focus tests: 6 passed.
 - T3 focus tests: 4 passed.
-- Full suite after T3: 319 passed.
+- T4 focus tests: 7 passed.
+- Full suite after T4: 323 passed.
 - Diff check: OK.
 
 ## Pendiente para demo real
 
-- T4 Webdock create server con key write.
 - T5 SSH provisioning Postfix/OpenDKIM/TLS.
 - T6 bind domain to server.
 - T7 warmup seed.

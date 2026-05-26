@@ -72,6 +72,26 @@ export interface WebdockInventoryResult {
   source: WebdockInventorySource;
 }
 
+export type WebdockProvisionProfile = "bit" | "nibble" | "byte" | "kilobyte";
+export type WebdockProvisionImageSlug = "ubuntu-2404" | "debian-12";
+
+export interface WebdockCreateServerInput {
+  profile: WebdockProvisionProfile;
+  locationId: string;
+  hostname: string;
+  imageSlug: WebdockProvisionImageSlug;
+  publicKey: string;
+  callbackUrl?: string;
+}
+
+export interface WebdockCreateServerResult {
+  serverSlug: string;
+  eventId: string;
+  ipv4: string | null;
+  status: WebdockServerStatus;
+  source: WebdockInventorySource;
+}
+
 const DEFAULT_API_BASE = "https://api.webdock.io/v1";
 const DEFAULT_TTL_MS = 60_000;
 
@@ -203,6 +223,80 @@ export class WebdockRealAdapter {
     }
   }
 
+  async createServer(opts: WebdockCreateServerInput): Promise<WebdockCreateServerResult> {
+    if (!this.isLive()) {
+      throw new Error("WEBDOCK_API_KEY_OPS or WEBDOCK_API_KEY is required for Webdock writes.");
+    }
+
+    const now = this.now();
+    const payload = {
+      name: opts.hostname,
+      locationId: opts.locationId,
+      profileSlug: resolveProfileSlug(opts.profile),
+      imageSlug: resolveImageSlug(opts.imageSlug),
+      ...(opts.callbackUrl ? { callbackUrl: opts.callbackUrl } : {})
+    };
+
+    const response = await this.fetchImpl(`${this.apiBase}/servers`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.apiKey}`,
+        accept: "application/json",
+        "content-type": "application/json",
+        "user-agent": "Delivrix-MailOps/0.1 (webdock-provisioner)"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Webdock API returned ${response.status} ${response.statusText}`);
+    }
+
+    const raw = (await response.json()) as unknown;
+    const server = parseCreatedServer(raw);
+    const eventId =
+      response.headers.get("x-callback-id") ??
+      response.headers.get("x_callback_id") ??
+      stringFieldFromUnknown(raw, "callbackId") ??
+      stringFieldFromUnknown(raw, "CallbackID") ??
+      stringFieldFromUnknown(raw, "callbackID") ??
+      server.slug;
+
+    this.invalidateCache();
+    return {
+      serverSlug: server.slug,
+      eventId,
+      ipv4: server.ipv4 || null,
+      status: server.status,
+      source: this.sourceMetadata(now, "live", true)
+    };
+  }
+
+  async getServer(slug: string): Promise<WebdockServer> {
+    if (!this.isLive()) {
+      const server = this.withAccount(mockWebdockServers()).find((item) => item.slug === slug);
+      if (!server) {
+        throw new Error(`Webdock mock server not found: ${slug}`);
+      }
+      return server;
+    }
+
+    const response = await this.fetchImpl(`${this.apiBase}/servers/${encodeURIComponent(slug)}`, {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${this.apiKey}`,
+        accept: "application/json",
+        "user-agent": "Delivrix-MailOps/0.1 (webdock-provisioner)"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Webdock API returned ${response.status} ${response.statusText}`);
+    }
+
+    return this.withAccount([parseCreatedServer((await response.json()) as unknown)])[0];
+  }
+
   /** Permite borrar la cache desde tests o tras un kill-switch event. */
   invalidateCache(): void {
     this.cache = null;
@@ -332,14 +426,70 @@ function parseWebdockServers(raw: unknown): WebdockServer[] {
   return out;
 }
 
+function parseCreatedServer(raw: unknown): WebdockServer {
+  const candidate =
+    raw && typeof raw === "object" && "server" in raw && (raw as Record<string, unknown>).server
+      ? (raw as Record<string, unknown>).server
+      : raw;
+
+  if (!candidate || typeof candidate !== "object") {
+    throw new Error("Webdock response did not include a server object.");
+  }
+
+  const obj = candidate as Record<string, unknown>;
+  const slug = stringField(obj, "slug");
+  if (!slug) {
+    throw new Error("Webdock response did not include server slug.");
+  }
+
+  return {
+    slug,
+    name: stringField(obj, "name") ?? slug,
+    ipv4: stringField(obj, "ipv4") ?? "",
+    ipv6: stringField(obj, "ipv6"),
+    status: (stringField(obj, "status") ?? "provisioning") as WebdockServerStatus,
+    profileSlug: stringField(obj, "profileSlug") ?? stringField(obj, "profile"),
+    location: stringField(obj, "location"),
+    creationDate: stringField(obj, "creationDate") ?? stringField(obj, "date"),
+    lastDataReceived: stringField(obj, "lastDataReceived"),
+    imageSlug: stringField(obj, "imageSlug") ?? stringField(obj, "image"),
+    description: stringField(obj, "description"),
+    webRoot: stringField(obj, "webRoot"),
+    snapshotRunTime: numberField(obj, "snapshotRunTime")
+  };
+}
+
 function stringField(obj: Record<string, unknown>, key: string): string | undefined {
   const value = obj[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function stringFieldFromUnknown(raw: unknown, key: string): string | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  return stringField(raw as Record<string, unknown>, key);
+}
+
 function numberField(obj: Record<string, unknown>, key: string): number | undefined {
   const value = obj[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function resolveProfileSlug(profile: WebdockProvisionProfile): string {
+  const map: Record<WebdockProvisionProfile, string> = {
+    bit: "webdockepyc-bit-2",
+    nibble: "webdockepyc-nibble-2",
+    byte: "webdockepyc-byte-2",
+    kilobyte: "webdockepyc-kilobyte-2"
+  };
+  return map[profile];
+}
+
+function resolveImageSlug(imageSlug: WebdockProvisionImageSlug): string {
+  const map: Record<WebdockProvisionImageSlug, string> = {
+    "ubuntu-2404": "ubuntu-24.04-lts",
+    "debian-12": "debian-12"
+  };
+  return map[imageSlug];
 }
 
 function normalizeEnvValue(value: string | undefined): string | undefined {
