@@ -104,6 +104,15 @@ export class OpenClawWorkspace {
     return this.writeRelative(path, input.content);
   }
 
+  async writeWorkspaceFile(path: string, content: string): Promise<OpenClawWorkspaceFileRef> {
+    await this.ensureBase();
+    const topLevel = path.split(/[\\/]/g)[0];
+    if (!managedDirs.includes(topLevel as (typeof managedDirs)[number])) {
+      throw new Error(`OpenClaw workspace file must be inside ${managedDirs.join(", ")}.`);
+    }
+    return this.writeRelative(path, content);
+  }
+
   async updateInventoryJson<T>(
     name: string,
     updater: (current: T | null) => T

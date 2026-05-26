@@ -154,6 +154,10 @@ import {
   handleRoute53DnsUpsertHttp
 } from "./routes/domains-dns.ts";
 import {
+  handleEmailAuthConfigureHttp,
+  handleEmailAuthError
+} from "./routes/domains-email-auth.ts";
+import {
   handleDomainCompareError,
   handleDomainCompareHttp
 } from "./routes/domains-compare.ts";
@@ -689,6 +693,25 @@ const server = createServer(async (request, response) => {
         });
       } catch (error) {
         if (handleRoute53DnsError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/domains/auth/configure") {
+      try {
+        return await handleEmailAuthConfigureHttp({
+          request,
+          response,
+          auditLog,
+          dnsAdapter: awsRoute53DnsAdapter,
+          workspace: openClawWorkspace,
+          canvasLiveEvents,
+          readCanvasState: () => canvasLiveEvents.snapshot()
+        });
+      } catch (error) {
+        if (handleEmailAuthError(error, response)) {
           return;
         }
         throw error;

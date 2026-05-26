@@ -118,19 +118,71 @@ La skill lee `workspace/learnings/`, escribe execution record, actualiza `invent
 oc.dns.records_updated
 ```
 
+### T3 — configure email auth
+
+Nuevo endpoint:
+
+```http
+POST /v1/domains/auth/configure
+```
+
+Body:
+
+```json
+{
+  "domain": "delivrix-mail.com",
+  "mxServerIp": "192.0.2.10",
+  "zoneId": "Z123456",
+  "selector": "default",
+  "actorId": "operator/juanes",
+  "approvalToken": "exec-...",
+  "taskId": "optional-canvas-task"
+}
+```
+
+La skill genera:
+
+- SPF: `v=spf1 ip4:<server-ip> -all`
+- DKIM RSA 2048 con selector configurable.
+- DMARC inicial en `p=none` para demo segura.
+
+La private key DKIM se guarda solo en workspace:
+
+```text
+inventory/dkim-keys/<domain>/<selector>.private
+```
+
+El contenido de la key no se escribe en audit, response ni execution record. El endpoint hace upsert de los TXT vía Route53 y actualiza `inventory/domains.json#emailAuth`.
+
+Gates obligatorios antes de escribir DNS/auth:
+
+- Credenciales AWS Route53 live presentes.
+- `AWS_ROUTE53_DNS_ENABLE_WRITES=true`.
+- Audit chain contiene `oc.artifact.approved` reciente con `metadata.executionId == approvalToken`.
+- Canvas artifact asociado sigue `approved`.
+- `zoneId` explícito o zona ya registrada en workspace inventory.
+
+Emite `oc.action.now` al Canvas Live para lectura de learnings, keygen, escritura de private key, llamadas API, escritura de execution record y audit. Al completar emite:
+
+```text
+oc.email_auth.configured
+```
+
 ## Seguridad
 
 - No se ejecutó ninguna compra real.
 - No se editaron credenciales ni `.env.local`.
 - El contacto administrativo no se escribe en audit ni workspace.
+- La private key DKIM queda restringida al workspace y fuera de audit/response.
 - El endpoint no acepta solo UI state: exige audit chain reciente.
-- La compra y las mutaciones DNS quedan deshabilitadas por defecto hasta activar env + IAM + aprobación.
+- La compra, las mutaciones DNS y la autenticación de email quedan deshabilitadas por defecto hasta activar env + IAM + aprobación.
 
 ## Verificación
 
 ```bash
 node --test packages/adapters/src/aws-route53-domains-adapter.test.ts apps/gateway-api/src/openclaw-workspace.test.ts apps/gateway-api/src/routes/domains-purchase.test.ts
 node --test packages/adapters/src/aws-route53-dns-adapter.test.ts apps/gateway-api/src/routes/domains-dns.test.ts
+node --test apps/gateway-api/src/openclaw-workspace.test.ts apps/gateway-api/src/routes/domains-email-auth.test.ts
 npm test
 git diff --check
 ```
@@ -139,13 +191,12 @@ Resultado:
 
 - T1/T7B focus tests: 13 passed.
 - T2 focus tests: 6 passed.
-- Full suite after T2: 316 passed.
+- T3 focus tests: 4 passed.
+- Full suite after T3: 319 passed.
 - Diff check: OK.
 
 ## Pendiente para demo real
 
-- T2 Route53 hosted zone + DNS upsert.
-- T3 SPF/DKIM/DMARC skill.
 - T4 Webdock create server con key write.
 - T5 SSH provisioning Postfix/OpenDKIM/TLS.
 - T6 bind domain to server.
