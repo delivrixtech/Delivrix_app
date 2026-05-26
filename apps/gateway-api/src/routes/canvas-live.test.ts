@@ -121,6 +121,24 @@ test("task update preserves last action for completed live tasks", async () => {
   assert.equal(snapshot.tasks[0].lastAction?.taskId, "task-preserve-action");
 });
 
+test("task hierarchy preserves parentTaskId in live snapshot and reload", async () => {
+  const stateDir = await stateDirForTest();
+  const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  await service.emit(taskDeclare("batch-parent"));
+  await service.emit({
+    ...taskDeclare("batch-child"),
+    parent_task_id: "batch-parent"
+  });
+  await service.emit(taskUpdate("batch-child", "completed"));
+
+  const snapshot = await service.snapshot();
+  assert.equal(snapshot.tasks.find((task) => task.taskId === "batch-child")?.parentTaskId, "batch-parent");
+
+  const reloaded = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  const reloadedSnapshot = await reloaded.snapshot();
+  assert.equal(reloadedSnapshot.tasks.find((task) => task.taskId === "batch-child")?.parentTaskId, "batch-parent");
+});
+
 test("canvas-live reload preserves last action for completed tasks", async () => {
   const stateDir = await stateDirForTest();
   const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });

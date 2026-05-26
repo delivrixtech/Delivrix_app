@@ -14,6 +14,7 @@ export type CanvasLiveArtifactApprovalStatus = "pending" | "approved" | "rejecte
 export interface CanvasLiveTaskDeclareEvent {
   type: "oc.task.declare";
   taskId: string;
+  parentTaskId?: string;
   title: string;
   status: CanvasLiveTaskStatus;
   createdAt: string;
@@ -131,6 +132,7 @@ export type CanvasLiveEvent =
 
 export interface CanvasLiveTaskSnapshot {
   taskId: string;
+  parentTaskId?: string;
   title: string;
   status: CanvasLiveTaskStatus;
   createdAt: string;
