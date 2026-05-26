@@ -36,11 +36,16 @@ test("OpenClawWorkspace writes skills, executions, learnings, and inventory", as
       domains: [...(current?.domains ?? []), "delivrix-mail.com"]
     })
   );
+  const dkimKey = await workspace.writeWorkspaceFile(
+    "inventory/dkim-keys/delivrix-mail.com/default.private",
+    "private-key"
+  );
 
   assert.equal(skill.path, "skills/register_domain_route53.v1.md");
   assert.equal(execution.path, "executions/2026-05-29/110203-register_domain_route53-delivrix-mail.com-success.md");
   assert.equal(learning.path, "learnings/2026-05-29-register_domain_route53-route53-confirmation-delay.md");
   assert.equal(inventory.path, "inventory/domains.json");
+  assert.equal(dkimKey.path, "inventory/dkim-keys/delivrix-mail.com/default.private");
   assert.match(await readFile(execution.absolutePath, "utf8"), /op-123/);
 
   const learnings = await workspace.readLearnings("register_domain_route53");
@@ -50,6 +55,7 @@ test("OpenClawWorkspace writes skills, executions, learnings, and inventory", as
   const snapshot = await workspace.snapshot();
   assert.deepEqual(snapshot.files, [
     execution.path,
+    dkimKey.path,
     inventory.path,
     learning.path,
     skill.path
