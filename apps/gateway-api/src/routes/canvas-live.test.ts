@@ -98,6 +98,29 @@ test("oc.action.now supports api, file, and command events", async () => {
   assert.equal(snapshot.tasks[0].lastAction?.kind, "command");
 });
 
+test("task update preserves last action for completed live tasks", async () => {
+  const service = await testService();
+  await service.emit(taskDeclare("task-preserve-action"));
+  await service.emit({
+    type: "oc.action.now",
+    taskId: "task-preserve-action",
+    kind: "api",
+    method: "GET",
+    url: "/v1/infrastructure/inventory#ionos-domains",
+    status: 200,
+    durationMs: 42,
+    responseBytes: 128,
+    responseBody: { domains: 16 },
+    occurredAt: fixedNow.toISOString()
+  });
+  await service.emit(taskUpdate("task-preserve-action", "completed"));
+
+  const snapshot = await service.snapshot();
+  assert.equal(snapshot.tasks[0].status, "completed");
+  assert.equal(snapshot.tasks[0].lastAction?.kind, "api");
+  assert.equal(snapshot.tasks[0].lastAction?.taskId, "task-preserve-action");
+});
+
 test("artifact streaming accumulates chunks and closes with complete block", async () => {
   const service = await testService();
   await service.emit(taskDeclare("task-stream"));

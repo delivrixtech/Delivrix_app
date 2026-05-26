@@ -131,6 +131,7 @@ import {
   OpenClawChatProxy,
   type ChatSendRequest
 } from "./openclaw-chat.ts";
+import { maybeHandleOpenClawDomainChatSkill } from "./openclaw-domain-chat-skill.ts";
 import { createOpenClawSshBridgeFromEnv } from "./openclaw-ssh-bridge.ts";
 import {
   handleAwsDomainDiscoveryError,
@@ -435,6 +436,17 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && request.url === "/v1/openclaw/chat/send") {
       const body = await readJson<ChatSendRequest>(request);
+      const gatewaySkillResult = await maybeHandleOpenClawDomainChatSkill({
+        body,
+        chatProxy: openClawChatProxy,
+        canvasLiveEvents,
+        auditLog,
+        ionosDomains: ionosDomainsAdapter,
+        ionosDns: ionosDnsAdapter
+      });
+      if (gatewaySkillResult) {
+        return json(response, 200, gatewaySkillResult);
+      }
       return handleChatSendHttp(openClawChatProxy, body, response);
     }
 
