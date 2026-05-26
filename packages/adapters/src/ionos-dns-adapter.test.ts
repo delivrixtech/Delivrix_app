@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { IonosDnsAdapter } from "./ionos-dns-adapter.ts";
 
 test("IonosDnsAdapter returns mock empty inventory when credentials are missing", async () => {
@@ -135,6 +136,46 @@ test("IonosDnsAdapter lists zones and records from IONOS Cloud DNS API shape", a
   assert.equal(result.zones[0].records.length, 1);
   assert.equal(result.zones[0].records[0].name, "mail");
   assert.equal(result.zones[0].records[0].content, "203.0.113.10");
+});
+
+test("IonosDnsAdapter fetches zone records concurrently", async () => {
+  let activeRecordFetches = 0;
+  let maxActiveRecordFetches = 0;
+  const fetchImpl = async (url: string | URL | Request) => {
+    const rawUrl = String(url);
+    if (rawUrl.endsWith("/v1/zones")) {
+      return jsonResponse([
+        { id: "zone-1", name: "one.delivrix.io" },
+        { id: "zone-2", name: "two.delivrix.io" },
+        { id: "zone-3", name: "three.delivrix.io" }
+      ]);
+    }
+    if (rawUrl.includes("/v1/zones/zone-")) {
+      activeRecordFetches += 1;
+      maxActiveRecordFetches = Math.max(maxActiveRecordFetches, activeRecordFetches);
+      await delay(10);
+      activeRecordFetches -= 1;
+      return jsonResponse({
+        records: [{
+          id: `record-${rawUrl.at(-1)}`,
+          name: "mail",
+          type: "A",
+          content: "203.0.113.10"
+        }]
+      });
+    }
+    return new Response("not found", { status: 404, statusText: "Not Found" });
+  };
+  const adapter = new IonosDnsAdapter({
+    apiKey: "public.secret",
+    fetchImpl: fetchImpl as typeof fetch,
+    now: () => new Date("2026-05-25T15:00:00.000Z")
+  });
+
+  const result = await adapter.listInventory();
+
+  assert.equal(result.zones.length, 3);
+  assert.equal(maxActiveRecordFetches > 1, true);
 });
 
 test("IonosDnsAdapter reports live error when token lacks DNS privileges", async () => {

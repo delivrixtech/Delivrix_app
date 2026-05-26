@@ -79,19 +79,19 @@ interface AwsBedrockSetupSummary {
 export async function handleInfrastructureInventoryHttp(
   deps: InfrastructureInventoryRouteDependencies
 ): Promise<void> {
-  const webdockAccounts = await deps.webdockListServers();
-  const ionosDns = deps.ionosListDnsInventory
-    ? await deps.ionosListDnsInventory()
-    : null;
-  const ionosDomains = deps.ionosListDomainsInventory
-    ? await deps.ionosListDomainsInventory()
-    : null;
-  const awsRoute53Domains = deps.awsRoute53DomainsListInventory
-    ? await deps.awsRoute53DomainsListInventory()
-    : null;
-  const porkbun = deps.porkbunListInventory
-    ? await deps.porkbunListInventory()
-    : null;
+  const [
+    webdockAccounts,
+    ionosDns,
+    ionosDomains,
+    awsRoute53Domains,
+    porkbun
+  ] = await Promise.all([
+    deps.webdockListServers(),
+    deps.ionosListDnsInventory ? deps.ionosListDnsInventory() : Promise.resolve(null),
+    deps.ionosListDomainsInventory ? deps.ionosListDomainsInventory() : Promise.resolve(null),
+    deps.awsRoute53DomainsListInventory ? deps.awsRoute53DomainsListInventory() : Promise.resolve(null),
+    deps.porkbunListInventory ? deps.porkbunListInventory() : Promise.resolve(null)
+  ]);
   const payload = await buildInfrastructureInventoryPayload({
     webdockAccounts,
     awsRoute53Domains,

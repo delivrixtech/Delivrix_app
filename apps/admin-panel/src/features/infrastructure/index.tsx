@@ -10,7 +10,7 @@
  * apropiado. Sin datos quemados.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -88,6 +88,8 @@ export interface InfrastructureInventoryResponse {
  * ============================================================ */
 
 const POLL_MS = 30_000;
+const INVENTORY_CACHE_KEY = "delivrix.infrastructure.inventory.last-ok";
+const INVENTORY_CACHE_MAX_AGE_MS = 5 * 60_000;
 
 type FetchState =
   | { status: "loading" }
@@ -95,13 +97,22 @@ type FetchState =
   | { status: "error"; message: string };
 
 function useInventory(): FetchState {
+  const cachedInventory = useMemo(readCachedInventory, []);
   const query = useQuery({
     queryKey: ["infrastructure", "inventory"],
     queryFn: () => getJson<InfrastructureInventoryResponse>(READ_ENDPOINTS.infrastructureInventory),
     refetchInterval: POLL_MS,
     refetchIntervalInBackground: false,
-    staleTime: POLL_MS / 2
+    staleTime: POLL_MS / 2,
+    initialData: cachedInventory?.payload,
+    initialDataUpdatedAt: cachedInventory?.updatedAt
   });
+
+  useEffect(() => {
+    if (query.data) {
+      writeCachedInventory(query.data, query.dataUpdatedAt);
+    }
+  }, [query.data, query.dataUpdatedAt]);
 
   if (query.isLoading) return { status: "loading" };
   if (query.isError) {
@@ -118,6 +129,40 @@ function useInventory(): FetchState {
     };
   }
   return { status: "loading" };
+}
+
+function readCachedInventory(): { payload: InfrastructureInventoryResponse; updatedAt: number } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(INVENTORY_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<{
+      payload: InfrastructureInventoryResponse;
+      updatedAt: number;
+    }>;
+    if (!parsed.payload || !Array.isArray(parsed.payload.providers) || typeof parsed.updatedAt !== "number") {
+      return null;
+    }
+    if (Date.now() - parsed.updatedAt > INVENTORY_CACHE_MAX_AGE_MS) {
+      window.sessionStorage.removeItem(INVENTORY_CACHE_KEY);
+      return null;
+    }
+    return {
+      payload: parsed.payload,
+      updatedAt: parsed.updatedAt
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedInventory(payload: InfrastructureInventoryResponse, updatedAt: number): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(INVENTORY_CACHE_KEY, JSON.stringify({ payload, updatedAt }));
+  } catch {
+    // Cache is a paint-time optimization only.
+  }
 }
 
 /* ============================================================

@@ -43,6 +43,7 @@ export interface IonosDnsInventoryResult {
 const DEFAULT_IONOS_CLOUD_DNS_API_BASE = "https://dns.de-fra.ionos.com";
 const DEFAULT_IONOS_HOSTING_DNS_API_BASE = "https://api.hosting.ionos.com/dns";
 const DEFAULT_TTL_MS = 60_000;
+const DEFAULT_RECORD_FETCH_CONCURRENCY = 6;
 
 interface CacheEntry {
   expiresAt: number;
@@ -116,18 +117,20 @@ export class IonosDnsAdapter {
         this.apiKind === "cloud-dns" ? "/zones?limit=1000" : "/v1/zones"
       );
       const zones = parseIonosDnsZones(zonesResponse);
-      const zonesWithRecords: IonosDnsZone[] = [];
-
-      for (const zone of zones) {
-        const recordsResponse =
-          this.apiKind === "cloud-dns"
-            ? await this.getJson(`/zones/${encodeURIComponent(zone.id)}/records?limit=1000`)
-            : await this.getJson(`/v1/zones/${encodeURIComponent(zone.id)}`);
-        zonesWithRecords.push({
-          ...zone,
-          records: parseIonosDnsRecords(recordsResponse, zone.id)
-        });
-      }
+      const zonesWithRecords = await mapWithConcurrency(
+        zones,
+        DEFAULT_RECORD_FETCH_CONCURRENCY,
+        async (zone) => {
+          const recordsResponse =
+            this.apiKind === "cloud-dns"
+              ? await this.getJson(`/zones/${encodeURIComponent(zone.id)}/records?limit=1000`)
+              : await this.getJson(`/v1/zones/${encodeURIComponent(zone.id)}`);
+          return {
+            ...zone,
+            records: parseIonosDnsRecords(recordsResponse, zone.id)
+          };
+        }
+      );
 
       const result: IonosDnsInventoryResult = {
         zones: zonesWithRecords,
@@ -203,6 +206,30 @@ export class IonosDnsAdapter {
       "x-api-key": this.apiKey ?? ""
     };
   }
+}
+
+async function mapWithConcurrency<T, U>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<U>
+): Promise<U[]> {
+  if (items.length === 0) {
+    return [];
+  }
+
+  const results = new Array<U>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }));
+
+  return results;
 }
 
 export function parseIonosDnsZones(raw: unknown): IonosDnsZone[] {

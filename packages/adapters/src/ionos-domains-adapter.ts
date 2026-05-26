@@ -39,6 +39,7 @@ export interface IonosDomainsInventoryResult {
 
 const DEFAULT_IONOS_DOMAINS_API_BASE = "https://api.hosting.ionos.com/domains/v1";
 const DEFAULT_TTL_MS = 60_000;
+const DEFAULT_NAMESERVER_FETCH_CONCURRENCY = 6;
 
 interface CacheEntry {
   expiresAt: number;
@@ -104,17 +105,19 @@ export class IonosDomainsAdapter {
     try {
       const domainsResponse = await this.getJson("/domainitems");
       const domains = parseIonosDomains(domainsResponse);
-      const domainsWithNameservers: IonosDomainItem[] = [];
-
-      for (const domain of domains) {
-        const nameserversResponse = await this.getJson(
-          `/domainitems/${encodeURIComponent(domain.id)}/nameservers`
-        );
-        domainsWithNameservers.push({
-          ...domain,
-          nameservers: parseIonosNameservers(nameserversResponse)
-        });
-      }
+      const domainsWithNameservers = await mapWithConcurrency(
+        domains,
+        DEFAULT_NAMESERVER_FETCH_CONCURRENCY,
+        async (domain) => {
+          const nameserversResponse = await this.getJson(
+            `/domainitems/${encodeURIComponent(domain.id)}/nameservers`
+          );
+          return {
+            ...domain,
+            nameservers: parseIonosNameservers(nameserversResponse)
+          };
+        }
+      );
 
       const result: IonosDomainsInventoryResult = {
         domains: domainsWithNameservers,
@@ -182,6 +185,30 @@ export class IonosDomainsAdapter {
       "user-agent": "Delivrix-MailOps/0.1 (ionos-domains-inventory)"
     };
   }
+}
+
+async function mapWithConcurrency<T, U>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<U>
+): Promise<U[]> {
+  if (items.length === 0) {
+    return [];
+  }
+
+  const results = new Array<U>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }));
+
+  return results;
 }
 
 export function parseIonosDomains(raw: unknown): IonosDomainItem[] {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { IonosDomainsAdapter } from "./ionos-domains-adapter.ts";
 
 test("IonosDomainsAdapter returns mock empty inventory when credentials are missing", async () => {
@@ -108,6 +109,43 @@ test("IonosDomainsAdapter sends tenant header when configured", async () => {
   assert.equal((calls[0] as Record<string, string>)["x-api-key"], "public.secret");
   assert.equal((calls[0] as Record<string, string>)["x-tenant-id"], "tenant-1");
   assert.equal(result.source.tenantConfigured, true);
+});
+
+test("IonosDomainsAdapter fetches nameservers concurrently", async () => {
+  let activeNameserverFetches = 0;
+  let maxActiveNameserverFetches = 0;
+  const fetchImpl = async (url: string | URL | Request) => {
+    const rawUrl = String(url);
+    if (rawUrl.endsWith("/domainitems")) {
+      return jsonResponse({
+        items: [
+          { id: "domain-1", properties: { name: "one.delivrix.io" } },
+          { id: "domain-2", properties: { name: "two.delivrix.io" } },
+          { id: "domain-3", properties: { name: "three.delivrix.io" } }
+        ]
+      });
+    }
+    if (rawUrl.includes("/domainitems/domain-") && rawUrl.endsWith("/nameservers")) {
+      activeNameserverFetches += 1;
+      maxActiveNameserverFetches = Math.max(maxActiveNameserverFetches, activeNameserverFetches);
+      await delay(10);
+      activeNameserverFetches -= 1;
+      return jsonResponse({
+        nameservers: [{ name: "ns1.ionos.com" }]
+      });
+    }
+    return new Response("not found", { status: 404, statusText: "Not Found" });
+  };
+  const adapter = new IonosDomainsAdapter({
+    apiKey: "public.secret",
+    fetchImpl: fetchImpl as typeof fetch,
+    now: () => new Date("2026-05-25T15:00:00.000Z")
+  });
+
+  const result = await adapter.listInventory();
+
+  assert.equal(result.domains.length, 3);
+  assert.equal(maxActiveNameserverFetches > 1, true);
 });
 
 test("IonosDomainsAdapter reports live error when tenant or key is rejected", async () => {
