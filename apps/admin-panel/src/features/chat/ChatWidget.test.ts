@@ -232,6 +232,46 @@ test("chat client marks a rejected send as failed and clears the queue", async (
   assert.equal(state.lastError, "SSH command failed with exit 1.");
 });
 
+test("chat client applies assistant content returned by chat.send ack", async () => {
+  const { ChatClient } = await loadChatClientModule();
+  const client = new ChatClient({
+    initialState: {
+      connection: "connected",
+      messages: [],
+      streaming: null,
+      lastError: null,
+      queuedCount: 0
+    },
+    fetchImpl: async () => new Response(JSON.stringify({
+      msgId: "domain-send-1",
+      queued: true,
+      assistant: {
+        content: "Encontré 16 dominios registrados en IONOS.",
+        source: "delivrix.domain_inventory",
+        skillsInvoked: ["delivrix.domain_inventory"],
+        durationMs: 42
+      }
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }),
+    webSocketCtor: undefined,
+    idFactory: () => "domain-send-1",
+    now: () => new Date("2026-05-20T16:15:00.000Z")
+  });
+
+  await client.sendMessage("enlistame los dominios de IONOS");
+
+  const state = client.getSnapshot();
+  assert.equal(state.queuedCount, 0);
+  assert.equal(state.messages.length, 2);
+  assert.equal(state.messages[0].role, "user");
+  assert.equal(state.messages[0].status, "sent");
+  assert.equal(state.messages[1].role, "assistant");
+  assert.equal(state.messages[1].content, "Encontré 16 dominios registrados en IONOS.");
+  assert.equal(state.lastError, null);
+});
+
 function fakeClient(state: ChatState): ChatClientLike {
   return {
     connect: () => undefined,

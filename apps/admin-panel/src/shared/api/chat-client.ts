@@ -64,6 +64,17 @@ interface ChatClientOptions {
   initialState?: Partial<ChatState>;
 }
 
+interface ChatSendAck {
+  msgId?: string;
+  queued?: boolean;
+  assistant?: {
+    content?: string;
+    source?: string;
+    skillsInvoked?: string[];
+    durationMs?: number;
+  };
+}
+
 const initialState: ChatState = {
   messages: [],
   streaming: null,
@@ -222,8 +233,9 @@ export class ChatClient implements ChatClientLike {
           body: JSON.stringify({ msgId: item.msgId, message: item.content })
         });
 
+        const payload = await response.json().catch(() => ({})) as ChatSendAck & Partial<{ message: string }>;
+
         if (!response.ok) {
-          const payload = await response.json().catch(() => ({})) as Partial<{ message: string }>;
           const message = typeof payload.message === "string"
             ? payload.message
             : `chat.send failed with ${response.status}`;
@@ -232,6 +244,19 @@ export class ChatClient implements ChatClientLike {
 
         this.removeQueued(item.msgId);
         this.state = updateMessageStatus(this.state, item.msgId, "sent");
+        if (payload.assistant?.content) {
+          this.applyStreamEvent({
+            type: "ASSISTANT_DONE",
+            msgId: typeof payload.msgId === "string" ? payload.msgId : item.msgId,
+            content: payload.assistant.content,
+            audit: {
+              skillsInvoked: payload.assistant.skillsInvoked ?? [],
+              ...(typeof payload.assistant.durationMs === "number"
+                ? { durationMs: payload.assistant.durationMs }
+                : {})
+            }
+          });
+        }
       } catch (error) {
         this.removeQueued(item.msgId);
         this.state = updateMessageStatus(this.state, item.msgId, "failed");

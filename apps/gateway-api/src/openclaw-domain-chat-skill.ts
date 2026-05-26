@@ -76,6 +76,7 @@ export async function maybeHandleOpenClawDomainChatSkill(
   ]);
 
   const summary = buildDomainInventoryAnswer(domainsResult, dnsResult, now());
+  const artifactId = `domain-report-${msgId}`;
 
   await deps.canvasLiveEvents.emit({
     type: "oc.action.now",
@@ -109,6 +110,30 @@ export async function maybeHandleOpenClawDomainChatSkill(
   });
 
   await deps.canvasLiveEvents.emit({
+    type: "oc.artifact.declare",
+    taskId,
+    artifactId,
+    kind: "report",
+    title: "Reporte de dominios IONOS",
+    editable: false,
+    createdAt: now().toISOString()
+  });
+
+  for (const block of buildDomainInventoryReportBlocks(domainsResult, dnsResult, now())) {
+    await deps.canvasLiveEvents.emit({
+      type: "oc.artifact.block",
+      artifactId,
+      blockId: block.blockId,
+      order: block.order,
+      kind: block.kind,
+      content: block.content,
+      editable: false,
+      status: "complete",
+      occurredAt: now().toISOString()
+    });
+  }
+
+  await deps.canvasLiveEvents.emit({
     type: "oc.task.update",
     taskId,
     status: "completed",
@@ -125,7 +150,16 @@ export async function maybeHandleOpenClawDomainChatSkill(
     }
   });
 
-  return { msgId, queued: true };
+  return {
+    msgId,
+    queued: true,
+    assistant: {
+      content: summary,
+      source: "delivrix.domain_inventory",
+      skillsInvoked: ["delivrix.domain_inventory"],
+      durationMs: Math.max(0, now().getTime() - startedAt.getTime())
+    }
+  };
 }
 
 export function isDomainInventoryIntent(message: string): boolean {
@@ -215,6 +249,60 @@ export function buildDomainInventoryAnswer(
     "",
     sourceLine
   ].join("\n");
+}
+
+export function buildDomainInventoryReportBlocks(
+  domainsResult: IonosDomainsInventoryResult,
+  dnsResult: IonosDnsInventoryResult,
+  now: Date
+): Array<{
+  blockId: string;
+  order: number;
+  kind: "paragraph" | "code";
+  content: string;
+}> {
+  if (!domainsResult.source.responseOk) {
+    return [
+      {
+        blockId: "domain-report-summary",
+        order: 1,
+        kind: "paragraph",
+        content: `IONOS Domains devolvio error: ${domainsResult.source.errorMessage ?? "ionos_domains_unavailable"}. No se inventaron datos.`
+      }
+    ];
+  }
+
+  const zonesByName = new Map(dnsResult.zones.map((zone) => [zone.name.toLowerCase(), zone]));
+  const rows = domainsResult.domains
+    .slice()
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((domain) => {
+      const zone = zonesByName.get(domain.name.toLowerCase());
+      const aRecords = zone?.records.filter((record) => record.type.toUpperCase() === "A").length ?? 0;
+      const mxRecords = zone?.records.filter((record) => record.type.toUpperCase() === "MX").length ?? 0;
+      return `${domain.name} | ${domainStatus(domain)} | A:${aRecords} | MX:${mxRecords}`;
+    });
+
+  return [
+    {
+      blockId: "domain-report-summary",
+      order: 1,
+      kind: "paragraph",
+      content: `${domainsResult.domains.length} dominios IONOS consultados en modo read-only. Fuente dominios: ${domainsResult.source.kind}. Fuente DNS: ${dnsResult.source.kind}. ${now.toISOString()}`
+    },
+    {
+      blockId: "domain-report-list",
+      order: 2,
+      kind: "code",
+      content: rows.join("\n")
+    },
+    {
+      blockId: "domain-report-guardrails",
+      order: 3,
+      kind: "paragraph",
+      content: "Guardrail: no se hicieron compras, cambios DNS ni writes de infraestructura. Cualquier accion futura requiere propuesta explicita y aprobacion humana."
+    }
+  ];
 }
 
 function extractMessage(body: ChatSendRequest): string {

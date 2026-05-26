@@ -506,7 +506,7 @@ function ArtifactColumn({
         background: "var(--color-surface)"
       }}
     >
-      <ColHead label={artifact ? "Plan propuesto · editable" : "Sin propuesta aún"} />
+      <ColHead label={artifact ? artifactColumnLabel(artifact) : "Sin propuesta aún"} />
       <div className="flex flex-col" style={{ flex: 1, minHeight: 0, padding: 14, gap: 8, overflowY: "auto" }}>
         {artifact == null ? (
           <span
@@ -521,7 +521,13 @@ function ArtifactColumn({
             {artifact.blocks.map((b) => (
               <EditableBlock key={b.id} block={b} onChange={(c) => onEditBlock(b.id, c)} />
             ))}
-            {artifact.approvalStatus === "approved" ? (
+            {artifact.kind === "report" ? (
+              <ApprovalBadge
+                kind="informational"
+                meta="read-only"
+                detail="Reporte informativo; no requiere aprobación ni ejecuta acciones."
+              />
+            ) : artifact.approvalStatus === "approved" ? (
               <ApprovalBadge
                 kind="approved"
                 meta={artifact.approvedBy ?? null}
@@ -589,11 +595,12 @@ function ApprovalBadge({
   meta,
   detail
 }: {
-  kind: "approved" | "rejected";
+  kind: "approved" | "rejected" | "informational";
   meta: string | null;
   detail: string | null;
 }) {
   const isApproved = kind === "approved";
+  const isInfo = kind === "informational";
   return (
     <div
       className="flex flex-col"
@@ -601,23 +608,23 @@ function ApprovalBadge({
         gap: 6,
         padding: "10px 12px",
         borderRadius: "var(--radius-md)",
-        background: isApproved ? "var(--color-success-soft)" : "var(--color-critical-soft)",
-        border: `1px solid ${isApproved ? "var(--color-success)" : "var(--color-critical)"}`,
+        background: isInfo ? "var(--color-info-soft)" : isApproved ? "var(--color-success-soft)" : "var(--color-critical-soft)",
+        border: `1px solid ${isInfo ? "var(--color-info)" : isApproved ? "var(--color-success)" : "var(--color-critical)"}`,
         marginTop: 10
       }}
     >
       <span
         className="font-[family-name:var(--font-sans)] font-semibold"
-        style={{ fontSize: 12, color: isApproved ? "var(--color-success)" : "var(--color-critical)" }}
+        style={{ fontSize: 12, color: isInfo ? "var(--color-info)" : isApproved ? "var(--color-success)" : "var(--color-critical)" }}
       >
-        {isApproved ? "Plan aprobado · en ejecución" : "Plan rechazado"}
+        {isInfo ? "Reporte read-only" : isApproved ? "Plan aprobado · en ejecución" : "Plan rechazado"}
       </span>
       {meta ? (
         <span
           className="font-[family-name:var(--font-mono)]"
           style={{ fontSize: 11, color: "var(--color-text-secondary)" }}
         >
-          {isApproved ? "por" : "rechazado por"} {meta}
+          {isInfo ? "modo" : isApproved ? "por" : "rechazado por"} {meta}
         </span>
       ) : null}
       {detail ? (
@@ -630,6 +637,13 @@ function ApprovalBadge({
       ) : null}
     </div>
   );
+}
+
+function artifactColumnLabel(artifact: LiveArtifact): string {
+  if (artifact.kind === "report") return "Reporte · read-only";
+  if (artifact.kind === "template") return "Template propuesto · editable";
+  if (artifact.kind === "proposal") return "Propuesta · editable";
+  return "Plan propuesto · editable";
 }
 
 function EditableTitle({ title, onChange }: { title: string; onChange: (v: string) => void }) {

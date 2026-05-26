@@ -35,6 +35,12 @@ export interface ChatSendRequest {
 export interface ChatSendResponse {
   msgId: string;
   queued: true;
+  assistant?: {
+    content: string;
+    source: string;
+    skillsInvoked?: string[];
+    durationMs?: number;
+  };
 }
 
 interface AuditSink {
