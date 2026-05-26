@@ -27,6 +27,7 @@ export const READ_ENDPOINTS = Object.freeze({
   complianceStatus: "/v1/compliance/status",
   openClawSkillsAudit: "/v1/openclaw/skills/audit",
   openClawEvidence: "/v1/openclaw/evidence",
+  canvasLiveState: "/v1/canvas/live/state",
   webdockInventory: "/v1/webdock/inventory",
   infrastructureInventory: "/v1/infrastructure/inventory",
   awsDomainDiscovery: "/v1/infrastructure/domain-discovery",

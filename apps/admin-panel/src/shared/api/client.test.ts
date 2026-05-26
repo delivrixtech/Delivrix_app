@@ -13,6 +13,7 @@ test("admin panel exposes only approved GET endpoints", () => {
     "/v1/admin/overview",
     "/v1/admin/workflow",
     "/v1/audit-events",
+    "/v1/canvas/live/state",
     "/v1/compliance/status",
     "/v1/devops/collector/snapshot-ingestion",
     "/v1/devops/collector/status",

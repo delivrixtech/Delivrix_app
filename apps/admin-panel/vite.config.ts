@@ -91,13 +91,38 @@ function readOnlyProxyBoundary(): Plugin {
         const isAllowedWrite =
           request.method === "POST" &&
           allowedWritePaths.has(requestUrl.pathname);
+        // Canvas Live (Bloque 7): approve / reject como POST, edit block como PATCH.
+        // El gateway audita los 3 como acción crítica con regla operador.
+        const isCanvasArtifactApprove =
+          request.method === "POST" &&
+          /^\/v1\/canvas\/artifact\/[^/]+\/approve$/.test(requestUrl.pathname);
+        const isCanvasArtifactReject =
+          request.method === "POST" &&
+          /^\/v1\/canvas\/artifact\/[^/]+\/reject$/.test(requestUrl.pathname);
+        const isCanvasArtifactBlockPatch =
+          request.method === "PATCH" &&
+          /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/.test(requestUrl.pathname);
+        // WSS upgrade del canvas-live stream (sale por el proxy normal, pero
+        // el middleware lo ve como GET con header Upgrade).
+        const isCanvasLiveStream =
+          request.method === "GET" &&
+          requestUrl.pathname === "/v1/canvas/live/stream";
 
         if (!isProxyPath) {
           next();
           return;
         }
 
-        if (isApprovalWrite || isChatSend || isChatStream || isAllowedWrite) {
+        if (
+          isApprovalWrite ||
+          isChatSend ||
+          isChatStream ||
+          isAllowedWrite ||
+          isCanvasArtifactApprove ||
+          isCanvasArtifactReject ||
+          isCanvasArtifactBlockPatch ||
+          isCanvasLiveStream
+        ) {
           next();
           return;
         }
