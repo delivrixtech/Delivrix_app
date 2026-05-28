@@ -76,6 +76,19 @@ Webdock — solo registra metadata local.
   run (dedupe por hash).
 - Audit log último evento `oc.runbook.register_sender_node.executed`.
 
+## Nota demo Webdock + SMTP
+
+Cuando el server Webdock acaba de crearse, el provisionamiento SMTP puede
+empezar antes de que cloud-init y SSH estén listos. El adapter de
+`install_smtp_stack` reintenta internamente el primer comando SSH hasta 3
+veces: intento directo, espera 30s, espera 60s. El operador debe ver una sola
+task externa en Canvas; la auditoría registra `sshConnectAttempts` y
+`cloudInitSettleSeconds`.
+
+Escalar al operador si `sshConnectAttempts > 2`, si el primer paso sigue
+fallando después del tercer intento, o si Webdock reporta el server como
+`running` pero SSH no responde pasados 2 minutos.
+
 ## Rollback
 
 `senderNodeRegistry` no soporta `delete` directo (regla de auditoría). El

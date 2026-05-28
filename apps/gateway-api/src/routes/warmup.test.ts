@@ -93,7 +93,7 @@ test("POST /v1/warmup/start sends three seed messages and stores redacted progre
 
   const events = await route.auditLog.list();
   const started = events.at(-1);
-  assert.equal(started?.action, "oc.warmup.started");
+  assert.equal(started?.action, "oc.warmup.seed_sent");
   assert.deepEqual(started?.metadata.seedDomains, ["gmail.com", "outlook.com", "delivrix.com"]);
   assert.equal(JSON.stringify(started?.metadata).includes("seed.one"), false);
 
@@ -105,6 +105,46 @@ test("POST /v1/warmup/start sends three seed messages and stores redacted progre
   assert.equal(inventory?.runs[0].sent[0].seedDomain, "gmail.com");
   assert.equal("seed.one@gmail.com" in (inventory?.runs[0] ?? {}), false);
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "command"));
+});
+
+test("POST /v1/warmup/start falls back to three env seed inboxes", async () => {
+  const commands: SmtpSshCommandInput[] = [];
+  const route = await routeHarness({
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "queued", stderr: "", exitCode: 0 };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-warmup-plan",
+      executionId: "exec-warmup-env",
+      approvedAt: "2026-05-28T10:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-warmup-plan", "exec-warmup-env");
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    bindings: [{
+      domain: "delivrix-mail.com",
+      serverSlug: "mail-delivrix-test",
+      serverIp: "192.0.2.44"
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-warmup-env",
+    taskId: "task-warmup-env"
+  }, {
+    WARMUP_ENABLE_SEND: "true",
+    WARMUP_DEFAULT_SEED_INBOXES: "seed.one@mailtrap.io, seed.two@mailtrap.io, seed.three@mailtrap.io"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.sent.length, 3);
+  assert.equal(commands.length, 3);
+  assert.equal(commands[0].stdin?.includes("To: seed.one@mailtrap.io"), true);
 });
 
 async function routeHarness(input: {
@@ -212,7 +252,7 @@ function requestWithJson(body: unknown): IncomingMessage {
   const stream = Readable.from([JSON.stringify(body)]);
   return Object.assign(stream, {
     method: "POST",
-    url: "/v1/warmup/start",
+    url: "/v1/warmup/seed",
     headers: { "content-type": "application/json" }
   }) as IncomingMessage;
 }

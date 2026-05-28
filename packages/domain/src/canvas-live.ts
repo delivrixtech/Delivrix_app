@@ -72,6 +72,7 @@ export interface CanvasLiveCommandActionEvent {
   stdout: string;
   stderr: string;
   durationMs: number;
+  progressDetail?: string;
   occurredAt: string;
 }
 
