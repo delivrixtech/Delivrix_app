@@ -38,6 +38,8 @@ test("admin panel exposes only approved GET endpoints", () => {
     "/v1/openclaw/provisioning/state",
     "/v1/openclaw/readiness-signals",
     "/v1/openclaw/skills/audit",
+    "/v1/openclaw/workspace/file",
+    "/v1/openclaw/workspace/tree",
     "/v1/operating-north",
     "/v1/operational-summary",
     "/v1/send-results",

@@ -22,6 +22,8 @@ test("builds the admin panel workflow as a GET-only route contract", () => {
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/admin/clusters"));
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/hardware/physical-host"));
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/openclaw/live-canvas"));
+  assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/openclaw/workspace/tree"));
+  assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/openclaw/workspace/file"));
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/devops/collector/status"));
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/devops/collector/snapshot-ingestion"));
   assert.ok(workflow.readBoundary.allowedEndpoints.includes("/v1/devops/collector/supervised-plan"));
@@ -142,16 +144,24 @@ function northFixture(): OperatingNorthSnapshot {
   return {
     sourceOfTruth: "NORTE_OPERATIVO_DELIVRIX.md",
     phase: "5.9-manual-snapshot-ingestion-ux",
+    environment: "mvp.local",
+    releasePhase: "5.9-manual-snapshot-ingestion-ux",
     delivrixRole: "control_plane",
     nfcRole: "future_optional_external_integration",
     openClawRole: "intelligent_cluster_operator_read_only",
+    roleDisplayNames: {
+      control_plane: "Plano de control",
+      future_optional_external_integration: "Integración externa futura opcional",
+      intelligent_cluster_operator_read_only: "Operador supervisado (sólo lectura)"
+    },
     delivrixSendsRealEmail: false,
     nfcSendsRealEmail: false,
     liveInfrastructureWritesEnabled: false,
     nfcProductionWritesEnabled: false,
     allowedActions: [],
     blockedActions: [],
-    gates: []
+    gates: [],
+    gateDetails: []
   };
 }
 

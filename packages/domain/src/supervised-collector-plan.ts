@@ -36,9 +36,13 @@ export interface SupervisedCollectorSource {
   readOnly: true;
   minimumPermission: string;
   expectedSignals: string[];
+  expectedInMvp: boolean;
+  url: string | null;
   safeCollection: SupervisedCollectorSafeCollection;
   freshness: SupervisedCollectorFreshness;
   blockedBy: string[];
+  blockedReason?: string;
+  blockedReasonOperator?: string;
 }
 
 export interface SupervisedCollectorIngestionPolicy {
@@ -192,6 +196,8 @@ export function buildDefaultCollectorSources(): SupervisedCollectorSource[] {
         "kernel.version",
         "uptime.seconds"
       ],
+      expectedInMvp: true,
+      url: null,
       safeCollection: {
         transport: "manual_snapshot",
         requiresSecret: false,
@@ -200,7 +206,9 @@ export function buildDefaultCollectorSources(): SupervisedCollectorSource[] {
         endpoint: null
       },
       freshness: freshness(null, "unknown"),
-      blockedBy: ["manual_snapshot_not_uploaded"]
+      blockedBy: ["manual_snapshot_not_uploaded"],
+      blockedReason: "manual_snapshot_not_uploaded",
+      blockedReasonOperator: "Falta cargar un snapshot manual redactado del host físico."
     },
     {
       id: "proxmox_read_only_api",
@@ -217,15 +225,19 @@ export function buildDefaultCollectorSources(): SupervisedCollectorSource[] {
         "lxc.count",
         "vm.count"
       ],
+      expectedInMvp: true,
+      url: null,
       safeCollection: {
         transport: "read_only_api",
         requiresSecret: true,
         writesEnabled: false,
         commandPreview: null,
-        endpoint: "https://proxmox.example.invalid/api2/json/version"
+        endpoint: null
       },
       freshness: freshness(null, "unknown"),
-      blockedBy: ["missing_proxmox_endpoint", "missing_read_only_token", "operator_approval_required"]
+      blockedBy: ["missing_proxmox_endpoint", "missing_read_only_token", "operator_approval_required"],
+      blockedReason: "missing_proxmox_endpoint",
+      blockedReasonOperator: "Falta configurar la URL real de Proxmox y un token read-only aprobado."
     },
     {
       id: "prometheus_node_exporter",
@@ -242,6 +254,8 @@ export function buildDefaultCollectorSources(): SupervisedCollectorSource[] {
         "node_network_receive_bytes_total",
         "node_hwmon_temp_celsius"
       ],
+      expectedInMvp: true,
+      url: "http://127.0.0.1:9100/metrics",
       safeCollection: {
         transport: "http_scrape",
         requiresSecret: false,
@@ -250,7 +264,9 @@ export function buildDefaultCollectorSources(): SupervisedCollectorSource[] {
         endpoint: "http://127.0.0.1:9100/metrics"
       },
       freshness: freshness(null, "unknown"),
-      blockedBy: ["node_exporter_not_confirmed", "prometheus_url_missing"]
+      blockedBy: ["node_exporter_not_confirmed", "prometheus_url_missing"],
+      blockedReason: "node_exporter_not_confirmed",
+      blockedReasonOperator: "Falta confirmar que Node Exporter está instalado y accesible solo por lectura."
     },
     {
       id: "ipmi_redfish",
@@ -266,15 +282,19 @@ export function buildDefaultCollectorSources(): SupervisedCollectorSource[] {
         "psu.status",
         "chassis.temperatureCelsius"
       ],
+      expectedInMvp: false,
+      url: null,
       safeCollection: {
         transport: "read_only_api",
         requiresSecret: true,
         writesEnabled: false,
         commandPreview: null,
-        endpoint: "https://bmc.example.invalid/redfish/v1/Chassis"
+        endpoint: null
       },
       freshness: freshness(null, "unknown"),
-      blockedBy: ["hardware_capability_unconfirmed", "bmc_network_missing", "read_only_credentials_missing"]
+      blockedBy: ["hardware_capability_unconfirmed", "bmc_network_missing", "read_only_credentials_missing"],
+      blockedReason: "hardware_capability_unconfirmed",
+      blockedReasonOperator: "IPMI/Redfish es opcional: primero hay que confirmar que el hardware lo soporta."
     }
   ];
 }

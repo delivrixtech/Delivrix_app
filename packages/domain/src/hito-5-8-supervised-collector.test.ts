@@ -35,8 +35,12 @@ test("supervised collector declares local, proxmox, prometheus and ipmi sources"
   assert.deepEqual(sourceKinds, ["local", "proxmox", "prometheus", "ipmi"]);
   assert.ok(plan.sources.some((source) => source.id === "local_hardware_snapshot" && source.status === "needs_review"));
   assert.ok(plan.sources.some((source) => source.id === "proxmox_read_only_api" && source.blockedBy.includes("missing_read_only_token")));
-  assert.ok(plan.sources.some((source) => source.id === "prometheus_node_exporter" && source.safeCollection.transport === "http_scrape"));
+  assert.ok(plan.sources.some((source) => source.id === "proxmox_read_only_api" && source.url === null && source.safeCollection.endpoint === null));
+  assert.ok(plan.sources.some((source) => source.id === "proxmox_read_only_api" && source.blockedReasonOperator?.includes("Proxmox")));
+  assert.ok(plan.sources.some((source) => source.id === "prometheus_node_exporter" && source.url === "http://127.0.0.1:9100/metrics" && source.safeCollection.transport === "http_scrape"));
   assert.ok(plan.sources.some((source) => source.id === "ipmi_redfish" && source.safeCollection.requiresSecret));
+  assert.ok(plan.sources.some((source) => source.id === "ipmi_redfish" && source.url === null && source.safeCollection.endpoint === null && source.expectedInMvp === false));
+  assert.equal(plan.sources.filter((source) => source.expectedInMvp).length, 3);
   assert.equal(plan.freshness.unknownSources, 4);
   assert.equal(plan.freshness.lastCollectedAt, null);
 });

@@ -9,12 +9,18 @@ test("defines Delivrix as control plane and Hito 5.9 snapshot ingestion as curre
   const snapshot = getOperatingNorthSnapshot();
 
   assert.equal(snapshot.phase, "5.9-manual-snapshot-ingestion-ux");
+  assert.equal(snapshot.environment, "mvp.local");
+  assert.equal(snapshot.releasePhase, "5.9-manual-snapshot-ingestion-ux");
   assert.equal(snapshot.delivrixRole, "control_plane");
   assert.equal(snapshot.openClawRole, "intelligent_cluster_operator_read_only");
+  assert.equal(snapshot.roleDisplayNames.control_plane, "Plano de control");
+  assert.equal(snapshot.roleDisplayNames.intelligent_cluster_operator_read_only, "Operador supervisado (sólo lectura)");
   assert.equal(snapshot.nfcRole, "future_optional_external_integration");
   assert.equal(snapshot.delivrixSendsRealEmail, false);
   assert.equal(snapshot.nfcSendsRealEmail, false);
   assert.equal(snapshot.nfcProductionWritesEnabled, false);
+  assert.equal(snapshot.gateDetails.length, snapshot.gates.length);
+  assert.equal(snapshot.gateDetails.find((gate) => gate.id === "no_real_email_from_delivrix")?.displayLabel, "Sin envío real desde Delivrix");
 });
 
 test("allows canvas, hardware, ML and collector contracts in read-only mode", () => {

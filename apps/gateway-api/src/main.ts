@@ -202,6 +202,12 @@ import {
   handlePorkbunPingHttp
 } from "./routes/domains-porkbun.ts";
 import { handleInfrastructureInventoryHttp } from "./routes/infrastructure.ts";
+import {
+  handleOpenClawWorkspaceError,
+  handleOpenClawWorkspaceFileHttp,
+  handleOpenClawWorkspaceTreeHttp,
+  WorkspaceReadRateLimiter
+} from "./routes/openclaw-workspace.ts";
 import { CanvasLiveEventService } from "./services/canvas-live-events.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
@@ -242,6 +248,7 @@ const learningRealtimeCache = new SafetyRealtimeCache();
 const openClawSshBridge = createOpenClawSshBridgeFromEnv();
 const canvasLiveEvents = new CanvasLiveEventService();
 const openClawWorkspace = new OpenClawWorkspace();
+const workspaceReadRateLimiter = new WorkspaceReadRateLimiter();
 const smtpSshRunner = createSmtpSshRunnerFromEnv();
 const onboardDomainFlowRunner = createGatewayOnboardDomainFlowRunner({
   auditLog,
@@ -372,6 +379,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_openclaw_onboarding_state", "allowed_read_only"),
   permission("read_openclaw_provisioning_state", "allowed_read_only"),
   permission("read_openclaw_readiness_signals", "allowed_read_only"),
+  permission("read_openclaw_workspace_tree", "allowed_read_only"),
+  permission("read_openclaw_workspace_file", "allowed_read_only"),
   permission("read_operating_north", "allowed_read_only"),
   permission("read_kill_switch", "allowed_read_only"),
   permission("read_audit_events", "allowed_read_only"),
@@ -550,6 +559,40 @@ const server = createServer(async (request, response) => {
         }
       } catch (error) {
         if (handleCanvasLiveError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/openclaw/workspace/tree")) {
+      try {
+        return await handleOpenClawWorkspaceTreeHttp({
+          request,
+          response,
+          auditLog,
+          rootDir: openClawWorkspace.getRootDir(),
+          rateLimiter: workspaceReadRateLimiter
+        });
+      } catch (error) {
+        if (handleOpenClawWorkspaceError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/openclaw/workspace/file")) {
+      try {
+        return await handleOpenClawWorkspaceFileHttp({
+          request,
+          response,
+          auditLog,
+          rootDir: openClawWorkspace.getRootDir(),
+          rateLimiter: workspaceReadRateLimiter
+        });
+      } catch (error) {
+        if (handleOpenClawWorkspaceError(error, response)) {
           return;
         }
         throw error;

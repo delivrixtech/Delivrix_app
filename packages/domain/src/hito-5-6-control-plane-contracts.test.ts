@@ -151,8 +151,12 @@ test("OpenClaw state contracts keep onboarding and provisioning auditable", () =
   });
   const provisioningState = buildOpenClawProvisioningState({ now: fixedNow });
 
+  assert.equal(onboardingState.environment, "mvp.local");
+  assert.equal(onboardingState.releasePhase, "5.9-manual-snapshot-ingestion-ux");
   assert.equal(onboardingState.canGenerateTopologyPlan, false);
   assert.ok(onboardingState.pendingQuestions.length > 0);
+  assert.equal(onboardingState.sections.find((section) => section.id === "server")?.source, "onboarding.snapshot");
+  assert.equal(onboardingState.sections.find((section) => section.id === "server")?.totalFieldCount, 5);
   assert.ok(onboardingState.blockers.includes("missing_server_model"));
   assert.equal(provisioningState.topologySource.id, null);
   assert.ok(provisioningState.steps.every((step) => step.status === "not_started"));

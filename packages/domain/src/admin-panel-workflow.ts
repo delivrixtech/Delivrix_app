@@ -67,6 +67,8 @@ const allowedEndpoints = [
   "/v1/openclaw/onboarding/state",
   "/v1/openclaw/provisioning/state",
   "/v1/openclaw/readiness-signals",
+  "/v1/openclaw/workspace/file",
+  "/v1/openclaw/workspace/tree",
   "/v1/operating-north",
   "/v1/kill-switch"
 ];

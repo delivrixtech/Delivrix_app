@@ -14,6 +14,8 @@ export const READ_ENDPOINTS = Object.freeze({
   openClawOnboardingState: "/v1/openclaw/onboarding/state",
   openClawProvisioningState: "/v1/openclaw/provisioning/state",
   openClawReadinessSignals: "/v1/openclaw/readiness-signals",
+  openClawWorkspaceFile: "/v1/openclaw/workspace/file",
+  openClawWorkspaceTree: "/v1/openclaw/workspace/tree",
   operatingNorth: "/v1/operating-north",
   killSwitch: "/v1/kill-switch",
   auditEvents: "/v1/audit-events",

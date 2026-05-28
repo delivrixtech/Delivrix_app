@@ -17,6 +17,8 @@ test("safety real-time builders return MVP fallback for empty audit logs", () =>
 
   assert.equal(roles.meta.dataSource, "fallback");
   assert.equal(roles.roles.find((role) => role.id === "operator")?.userCount, 4);
+  assert.equal(roles.roles.find((role) => role.id === "operator")?.displayName, "Operador supervisado (sólo lectura)");
+  assert.equal(roles.roles.find((role) => role.id === "read-only")?.displayName, "Sólo lectura");
 
   assert.equal(sessions.meta.dataSource, "fallback");
   assert.equal(sessions.sessions.length, 3);

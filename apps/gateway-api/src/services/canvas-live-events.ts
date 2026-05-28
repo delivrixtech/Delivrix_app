@@ -510,7 +510,7 @@ export function normalizeCanvasLiveEvent(raw: unknown, now: () => Date = () => n
       type: "oc.task.declare",
       taskId,
       ...optionalParentTaskId(raw, taskId),
-      title: requiredString(raw.title, "title"),
+      title: normalizeCanvasTaskTitle(requiredString(raw.title, "title")),
       status: normalizeTaskStatus(raw.status),
       createdAt: normalizeDate(raw.createdAt, now),
       actorId: requiredString(raw.actorId, "actorId")
@@ -773,6 +773,19 @@ function normalizeBlockStatus(value: unknown): CanvasLiveArtifactBlockStatus {
   if (value === "complete" || value === "streaming") return value;
   throw new CanvasLiveStateError(422, "invalid_artifact_block_status", "Invalid artifact block status.");
 }
+
+function normalizeCanvasTaskTitle(title: string): string {
+  const normalized = title.trim();
+  return taskTitleDisplayLabels[normalized] ?? title;
+}
+
+const taskTitleDisplayLabels: Record<string, string> = {
+  "B8 B9 finish T5 T6 cleanup": "Cierre demo SMTP staging (T5+T6)",
+  "B8 finish": "Cierre Bloque 8 — provisioning",
+  "B9 finish": "Cierre Bloque 9 — extractor de intent",
+  "T7B extractor": "Extractor de intent",
+  "T7C supervisor": "Supervisor multi-agent"
+};
 
 function normalizeRiskLevel(value: unknown): "low" | "medium" | "high" | "critical" {
   if (value === "low" || value === "medium" || value === "high" || value === "critical") return value;
