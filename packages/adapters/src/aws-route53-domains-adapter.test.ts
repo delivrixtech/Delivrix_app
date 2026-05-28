@@ -7,6 +7,7 @@ import {
   parseAwsRoute53Suggestions,
   signAwsJsonRequest
 } from "./aws-route53-domains-adapter.ts";
+import type { AwsRoute53ContactDetail } from "./aws-route53-domains-adapter.ts";
 
 test("AwsRoute53DomainsAdapter returns mock inventory when credentials are missing", async () => {
   const adapter = new AwsRoute53DomainsAdapter({
@@ -229,6 +230,39 @@ test("AwsRoute53DomainsAdapter registers a domain only when purchase is enabled"
   });
 });
 
+test("AwsRoute53DomainsAdapter omits State for Colombia register contacts", async () => {
+  const calls: Array<{ body: Record<string, unknown> }> = [];
+  const contact = route53Contact({
+    City: "Popayan",
+    State: "Cauca",
+    CountryCode: "CO",
+    ZipCode: "190001",
+    PhoneNumber: "+57.3046305266"
+  });
+  const adapter = new AwsRoute53DomainsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    purchaseEnabled: true,
+    fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(init?.body?.toString() ?? "{}") });
+      return jsonResponse({ OperationId: "op-register-co-123" });
+    }) as typeof fetch,
+    now: () => new Date("2026-05-25T18:00:00.000Z")
+  });
+
+  await adapter.registerDomain({
+    domain: "delivrix-demo.co",
+    years: 1,
+    autoRenew: false,
+    adminContact: contact
+  });
+
+  assert.equal("State" in (calls[0].body.AdminContact as Record<string, unknown>), false);
+  assert.equal("State" in (calls[0].body.RegistrantContact as Record<string, unknown>), false);
+  assert.equal("State" in (calls[0].body.TechContact as Record<string, unknown>), false);
+  assert.equal(contact.State, "Cauca");
+});
+
 test("AwsRoute53DomainsAdapter blocks registerDomain when purchase flag is off", async () => {
   let fetchCalled = false;
   const adapter = new AwsRoute53DomainsAdapter({
@@ -343,18 +377,21 @@ function jsonResponse(payload: unknown): Response {
   });
 }
 
-function route53Contact() {
+function route53Contact(
+  overrides: Partial<AwsRoute53ContactDetail> = {}
+): AwsRoute53ContactDetail {
   return {
     FirstName: "Delivrix",
     LastName: "Ops",
     ContactType: "COMPANY",
     OrganizationName: "Delivrix",
     AddressLine1: "123 Demo Street",
-    City: "Bogota",
-    State: "Bogota",
-    CountryCode: "CO",
-    ZipCode: "110111",
-    PhoneNumber: "+57.3000000000",
-    Email: "ops@example.com"
+    City: "Miami",
+    State: "FL",
+    CountryCode: "US",
+    ZipCode: "33101",
+    PhoneNumber: "+1.3055550100",
+    Email: "ops@example.com",
+    ...overrides
   };
 }

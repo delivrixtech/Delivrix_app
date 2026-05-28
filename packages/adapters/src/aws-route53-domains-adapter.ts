@@ -277,13 +277,14 @@ export class AwsRoute53DomainsAdapter {
     const domainName = normalizeDomainName(opts.domain);
     const years = Math.max(1, Math.min(10, Math.trunc(opts.years)));
     const privacyProtection = opts.privacyProtection ?? true;
+    const registrationContact = normalizeRegisterDomainContact(opts.adminContact);
     const response = await this.awsJson("RegisterDomain", {
       DomainName: domainName,
       DurationInYears: years,
       AutoRenew: opts.autoRenew,
-      AdminContact: opts.adminContact,
-      RegistrantContact: opts.adminContact,
-      TechContact: opts.adminContact,
+      AdminContact: registrationContact,
+      RegistrantContact: registrationContact,
+      TechContact: registrationContact,
       PrivacyProtectAdminContact: privacyProtection,
       PrivacyProtectRegistrantContact: privacyProtection,
       PrivacyProtectTechContact: privacyProtection
@@ -602,6 +603,16 @@ function normalizeDomainName(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/\.$/, "");
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(normalized)) {
     throw new Error(`Invalid domain name: ${value}`);
+  }
+  return normalized;
+}
+
+function normalizeRegisterDomainContact(
+  contact: AwsRoute53ContactDetail
+): AwsRoute53ContactDetail {
+  const normalized: AwsRoute53ContactDetail = { ...contact };
+  if (normalized.CountryCode.toUpperCase() === "CO") {
+    delete normalized.State;
   }
   return normalized;
 }

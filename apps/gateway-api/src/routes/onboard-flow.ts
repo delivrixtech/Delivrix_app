@@ -29,9 +29,6 @@ import {
   type SmtpSshRunner
 } from "./smtp-provisioning.ts";
 import {
-  handleWarmupStartHttp
-} from "./warmup.ts";
-import {
   handleWebdockServerCreateHttp,
   type WebdockServerCreateAdapter
 } from "./webdock-servers.ts";
@@ -410,34 +407,6 @@ export function createGatewayOnboardDomainFlowRunner(
         now: deps.now
       });
 
-      await invokePhase({
-        service: deps.canvasLiveEvents,
-        taskId: input.taskId,
-        method: "POST",
-        url: "/v1/warmup/start",
-        body: {
-          domain: input.domain,
-          serverSlug,
-          serverIp,
-          seedInboxes: input.seedInboxes,
-          actorId: input.actorId,
-          approvalToken: input.approvalToken,
-          taskId: input.taskId
-        },
-        handler: (request, response) => handleWarmupStartHttp({
-          request,
-          response,
-          auditLog: deps.auditLog,
-          sshRunner: deps.sshRunner,
-          workspace: deps.workspace,
-          canvasLiveEvents: canvas,
-          readCanvasState: deps.readCanvasState,
-          env: deps.env,
-          now: deps.now
-        }),
-        now: deps.now
-      });
-
       return {
         domain: input.domain,
         taskId: input.taskId,
@@ -732,7 +701,7 @@ function parseCommonOptions(body: OnboardBatchBody, env?: Record<string, string 
   return {
     years: parseYears(body.years),
     autoRenew: typeof body.autoRenew === "boolean" ? body.autoRenew : false,
-    locationId: typeof body.locationId === "string" && body.locationId.trim() ? body.locationId.trim() : env?.WEBDOCK_DEFAULT_LOCATION_ID ?? "fi",
+    locationId: typeof body.locationId === "string" && body.locationId.trim() ? body.locationId.trim() : env?.WEBDOCK_DEFAULT_LOCATION_ID ?? "dk",
     imageSlug: parseImageSlug(body.imageSlug),
     ...(publicKey ? { publicKey } : {})
   };

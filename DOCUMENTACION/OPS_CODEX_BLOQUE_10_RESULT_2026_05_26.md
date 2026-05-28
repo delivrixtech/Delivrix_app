@@ -186,7 +186,7 @@ Body:
 ```json
 {
   "profile": "bit",
-  "locationId": "fi",
+  "locationId": "dk",
   "hostname": "mail.delivrix-mail.com",
   "imageSlug": "ubuntu-2404",
   "publicKey": "ssh-ed25519 ...",
@@ -198,7 +198,7 @@ Body:
 
 Mapeo seguro para demo:
 
-- `bit` -> `webdockepyc-bit-2`
+- `bit` -> `vps-xeon-essential-2025`
 - `nibble` -> `webdockepyc-nibble-2`
 - `byte` -> `webdockepyc-byte-2`
 - `kilobyte` -> `webdockepyc-kilobyte-2`

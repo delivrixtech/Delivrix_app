@@ -24,6 +24,7 @@ export type OpenClawRunbookAction =
   | "ssh_connect"
   | "dns_live_change"
   | "postfix_live_apply"
+  | "register_domain"
   | "smtp_send"
   | "nfc_production_write"
   | "increase_volume"
@@ -33,6 +34,7 @@ export type OpenClawRunbookPermissionCategory =
   | "allowed_read_only"
   | "allowed_dry_run"
   | "supervised_local_state"
+  | "supervised_live_wallet"
   | "future_live_requires_new_phase"
   | "prohibited";
 
@@ -56,6 +58,7 @@ export interface OpenClawPermissionMatrixItem {
   owner: "openclaw" | "operator" | "system";
   allowedInHito45: boolean;
   humanApprovalRequired: boolean;
+  requiredApprovals: number;
   killSwitchMustBeInactive: boolean;
   auditRequired: boolean;
   rollback: "not_applicable" | "local_state_revert" | "manual_runbook_required" | "not_allowed";
@@ -66,6 +69,7 @@ export interface OpenClawActionPermissionInput {
   action: OpenClawRunbookAction;
   mode?: "read_only" | "dry_run" | "supervised" | "live";
   humanApproved?: boolean;
+  approverIds?: string[];
   killSwitch?: KillSwitchState;
 }
 
@@ -167,6 +171,7 @@ const matrix: OpenClawPermissionMatrixItem[] = [
   futureLive("ssh_connect", "operator", "Real SSH requires a future phase, scope review and explicit approval."),
   futureLive("dns_live_change", "operator", "Live DNS changes require prior dry-run, review and future phase authorization."),
   futureLive("postfix_live_apply", "operator", "Live Postfix apply requires future phase authorization and rollback."),
+  supervisedLiveWallet("register_domain", "operator", 1, "RegisterDomain is enabled only for CTO wallet-approved demo purchases with budget, audit and cleanup gates."),
   prohibited("smtp_send", "system", "Delivrix does not send real email in the MVP."),
   prohibited("nfc_production_write", "system", "NFC production writes are outside the MVP and require a future bridge contract."),
   prohibited("increase_volume", "openclaw", "Volume cannot increase without warming and reputation gates."),
@@ -262,6 +267,15 @@ export function evaluateOpenClawActionPermission(
     return blockedDecision(item, ["human_approval_required"], "Action requires explicit human approval.", "high");
   }
 
+  if (
+    item.humanApprovalRequired &&
+    input.humanApproved &&
+    input.approverIds !== undefined &&
+    uniqueApproverCount(input.approverIds ?? []) < item.requiredApprovals
+  ) {
+    return blockedDecision(item, ["human_approval_required"], `Action requires ${item.requiredApprovals} distinct human approval(s).`, "high");
+  }
+
   if (item.killSwitchMustBeInactive) {
     const state = input.killSwitch ?? defaultKillSwitchState();
     const killSwitchDecision = evaluateKillSwitch(state, "apply_supervised_local_action");
@@ -278,7 +292,7 @@ export function evaluateOpenClawActionPermission(
     requiresHumanApproval: item.humanApprovalRequired,
     requiresKillSwitchInactive: item.killSwitchMustBeInactive,
     blockedBy: [],
-    riskLevel: item.category === "supervised_local_state" ? "medium" : "low",
+    riskLevel: item.category === "supervised_live_wallet" ? "critical" : item.category === "supervised_local_state" ? "medium" : "low",
     reason: item.reason
   };
 }
@@ -419,7 +433,7 @@ function buildRunbookSteps(): OpenClawRunbookStep[] {
       name: "Escalate future live infrastructure",
       owner: "operator",
       trigger: "OpenClaw proposes SSH, Proxmox live, DNS live, Postfix live or SMTP",
-      allowedActions: [],
+    allowedActions: [],
       stopCondition: "Always blocked in Hito 4.5.",
       auditAction: "openclaw_runbook.future_live_action_blocked"
     }
@@ -438,6 +452,7 @@ function allowedReadOnly(
     owner,
     allowedInHito45: true,
     humanApprovalRequired: false,
+    requiredApprovals: 0,
     killSwitchMustBeInactive: false,
     auditRequired: true,
     rollback: "not_applicable",
@@ -457,6 +472,7 @@ function allowedDryRun(
     owner,
     allowedInHito45: true,
     humanApprovalRequired: false,
+    requiredApprovals: 0,
     killSwitchMustBeInactive: false,
     auditRequired: true,
     rollback: "not_applicable",
@@ -467,7 +483,8 @@ function allowedDryRun(
 function supervisedLocal(
   action: OpenClawRunbookAction,
   owner: OpenClawPermissionMatrixItem["owner"],
-  reason: string
+  reason: string,
+  requiredApprovals = 1
 ): OpenClawPermissionMatrixItem {
   return {
     action,
@@ -476,9 +493,31 @@ function supervisedLocal(
     owner,
     allowedInHito45: true,
     humanApprovalRequired: true,
+    requiredApprovals,
     killSwitchMustBeInactive: true,
     auditRequired: true,
     rollback: "local_state_revert",
+    reason
+  };
+}
+
+function supervisedLiveWallet(
+  action: OpenClawRunbookAction,
+  owner: OpenClawPermissionMatrixItem["owner"],
+  requiredApprovals: number,
+  reason: string
+): OpenClawPermissionMatrixItem {
+  return {
+    action,
+    category: "supervised_live_wallet",
+    mode: "live",
+    owner,
+    allowedInHito45: true,
+    humanApprovalRequired: true,
+    requiredApprovals,
+    killSwitchMustBeInactive: true,
+    auditRequired: true,
+    rollback: "manual_runbook_required",
     reason
   };
 }
@@ -495,6 +534,7 @@ function futureLive(
     owner,
     allowedInHito45: false,
     humanApprovalRequired: true,
+    requiredApprovals: 2,
     killSwitchMustBeInactive: true,
     auditRequired: true,
     rollback: "manual_runbook_required",
@@ -514,11 +554,16 @@ function prohibited(
     owner,
     allowedInHito45: false,
     humanApprovalRequired: true,
+    requiredApprovals: 2,
     killSwitchMustBeInactive: true,
     auditRequired: true,
     rollback: "not_allowed",
     reason
   };
+}
+
+function uniqueApproverCount(approverIds: string[]): number {
+  return new Set(approverIds.map((id) => id.trim()).filter(Boolean)).size;
 }
 
 function blockedDecision(

@@ -347,11 +347,12 @@ export function createSmtpSshRunnerFromEnv(
   return {
     isConfigured: () => Boolean(keyPath),
     run: async (input) => runSshCommand({
+      ...input,
       user,
       keyPath,
       port,
       timeoutMs: input.timeoutMs ?? timeoutMs,
-      ...input
+      useSudo: user !== "root" && env.SMTP_PROVISION_SSH_USE_SUDO !== "false"
     })
   };
 }
@@ -444,7 +445,7 @@ export function buildSmtpProvisionPlan(input: {
     },
     {
       label: "restart-services",
-      command: "systemctl enable opendkim postfix && systemctl restart opendkim postfix",
+      command: "install -d -m 0755 -o opendkim -g opendkim /run/opendkim && systemctl enable opendkim postfix && systemctl restart opendkim postfix",
       auditCommand: "systemctl enable/restart opendkim postfix"
     },
     {
@@ -579,6 +580,8 @@ function renderOpenDkimConf(): string {
   return [
     "Syslog yes",
     "UMask 002",
+    "UserID opendkim",
+    "PidFile /run/opendkim/opendkim.pid",
     "Mode sv",
     "Canonicalization relaxed/simple",
     "Socket inet:8891@localhost",
@@ -595,10 +598,14 @@ async function runSshCommand(input: SmtpSshCommandInput & {
   keyPath: string | undefined;
   port: number;
   timeoutMs: number;
+  useSudo: boolean;
 }): Promise<SmtpSshCommandResult> {
   if (!input.keyPath) {
     throw new Error("SMTP_PROVISION_SSH_KEY_PATH is required.");
   }
+  const command = input.useSudo
+    ? `sudo -n bash -lc ${shellQuote(input.command)}`
+    : input.command;
   return new Promise((resolvePromise, reject) => {
     const args = [
       "-i",
@@ -608,9 +615,11 @@ async function runSshCommand(input: SmtpSshCommandInput & {
       "-o",
       "BatchMode=yes",
       "-o",
+      "ConnectTimeout=15",
+      "-o",
       "StrictHostKeyChecking=accept-new",
       `${input.user}@${input.serverIp}`,
-      input.command
+      command
     ];
     const child = spawn("ssh", args, { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";

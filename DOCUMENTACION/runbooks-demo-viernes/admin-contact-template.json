@@ -1,0 +1,27 @@
+{
+  "_comment_required_fields": "Estos son los campos OBLIGATORIOS para Route53 RegisterDomain. Llenar todos. Después borrar las claves que empiezan con _comment_ antes de guardar como string en DELIVRIX_ADMIN_CONTACT_JSON.",
+
+  "FirstName": "<NOMBRE LEGAL>",
+  "LastName": "<APELLIDO LEGAL>",
+  "ContactType": "PERSON",
+  "_comment_ContactType": "Valores válidos: PERSON | COMPANY | ASSOCIATION | PUBLIC_BODY | RESELLER. Si usás razón social, cambiá a COMPANY y agregá OrganizationName.",
+
+  "OrganizationName": "<ORGANIZACION LEGAL>",
+  "_comment_OrganizationName": "Opcional si ContactType=PERSON. Obligatorio si es COMPANY.",
+
+  "AddressLine1": "<CALLE Y NÚMERO REAL — aparece en WHOIS si privacy=false; con privacy=true Amazon Registrar la oculta>",
+  "AddressLine2": "",
+  "City": "<CIUDAD>",
+  "State": "<DEPARTAMENTO_O_ESTADO>",
+  "CountryCode": "CO",
+  "_comment_CountryCode": "ISO 3166-1 alpha-2. CO=Colombia, US=Estados Unidos, etc.",
+
+  "ZipCode": "<CÓDIGO POSTAL REAL>",
+  "_comment_ZipCode": "Medellín: 050001 (Poblado), 050010 (Laureles), 050022 (centro). Usá el real de tu dirección.",
+
+  "PhoneNumber": "<+57.30XXXXXXXX>",
+  "_comment_PhoneNumber": "Formato Route53 obligatorio: +CC.NÚMERO con punto entre código país y número, sin espacios. Ej: +57.3001234567",
+
+  "Email": "<EMAIL_OPERATIVO>",
+  "_comment_Email": "Route53 envía verificación a este email — DEBE ser un buzón que respondás en 15 días o el dominio se suspende."
+}

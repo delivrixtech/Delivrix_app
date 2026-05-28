@@ -8,6 +8,7 @@ import test from "node:test";
 import type {
   WebdockCreateServerInput,
   WebdockCreateServerResult,
+  WebdockDeleteServerResult,
   WebdockServer
 } from "../../../../packages/adapters/src/index.ts";
 import type {
@@ -19,7 +20,10 @@ import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import {
   handleWebdockServerCreateError,
   handleWebdockServerCreateHttp,
-  type WebdockServerCreateAdapter
+  handleWebdockServerDeleteError,
+  handleWebdockServerDeleteHttp,
+  type WebdockServerCreateAdapter,
+  type WebdockServerDeleteAdapter
 } from "./webdock-servers.ts";
 
 const fixedNow = new Date("2026-05-27T16:00:00.000Z");
@@ -33,7 +37,7 @@ test("POST /v1/webdock/servers/create blocks without ops key, write flag, and ap
 
   const response = await route({
     profile: "bit",
-    locationId: "fi",
+    locationId: "dk",
     hostname: "mail.delivrix.test",
     imageSlug: "ubuntu-2404",
     publicKey,
@@ -87,7 +91,7 @@ test("POST /v1/webdock/servers/create creates server, polls running, and records
 
   const response = await route({
     profile: "bit",
-    locationId: "fi",
+    locationId: "dk",
     hostname: "Mail.Delivrix.Test.",
     imageSlug: "ubuntu-2404",
     publicKey,
@@ -118,6 +122,93 @@ test("POST /v1/webdock/servers/create creates server, polls running, and records
   assert.equal(inventory?.servers[0].status, "running");
   assert.equal(inventory?.servers[0].port25UnlockRequired, true);
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "api" && event.method === "GET"));
+});
+
+test("DELETE /v1/webdock/servers/:slug blocks without delete flag, ops key, and approval", async () => {
+  const route = await deleteRouteHarness({
+    adapter: mockDeleteAdapter({ isLive: () => false, canWrite: () => false }),
+    canvasState: canvasState([])
+  });
+
+  const response = await route("mail-delivrix-test", {
+    actorId: "operator/juanes",
+    approvalToken: "exec-missing",
+    reason: "cleanup sprint smoke",
+    taskId: "task-webdock-delete-blocked"
+  }, { WEBDOCK_SERVERS_ENABLE_DELETE: "false" });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body.blockers.sort(), [
+    "approval_not_found_or_expired",
+    "webdock_delete_flag_disabled",
+    "webdock_ops_key_missing"
+  ].sort());
+  assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.webdock.server_delete_blocked");
+});
+
+test("DELETE /v1/webdock/servers/:slug deletes server and removes active inventory", async () => {
+  const deletedSlugs: string[] = [];
+  const route = await deleteRouteHarness({
+    adapter: mockDeleteAdapter({
+      deleteServer: async (slug) => {
+        deletedSlugs.push(slug);
+        return {
+          serverSlug: slug,
+          eventId: "delete-cb-123",
+          status: "deleting",
+          source: {
+            kind: "live",
+            apiBase: "https://api.webdock.test/v1",
+            fetchedAt: fixedNow.toISOString(),
+            responseOk: true
+          }
+        };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-delete",
+      executionId: "exec-webdock-delete-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-delete", "exec-webdock-delete-123");
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "mail-delivrix-test",
+      hostname: "mail.delivrix.test",
+      locationId: "dk",
+      profile: "bit",
+      imageSlug: "ubuntu-2404",
+      publicKeyFingerprint: "fp",
+      status: "running",
+      eventId: "create-cb-123",
+      ipv4: "192.0.2.44",
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+      port25UnlockRequired: true
+    }]
+  }));
+
+  const response = await route("Mail-Delivrix-Test", {
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-delete-123",
+    reason: "cleanup sprint smoke",
+    taskId: "task-webdock-delete"
+  }, { WEBDOCK_SERVERS_ENABLE_DELETE: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.serverSlug, "mail-delivrix-test");
+  assert.equal(response.body.eventId, "delete-cb-123");
+  assert.deepEqual(deletedSlugs, ["mail-delivrix-test"]);
+
+  const inventory = await route.workspace.readInventoryJson<{
+    servers: Array<{ slug: string }>;
+    deletedServers: Array<{ slug: string; eventId: string; reason: string }>;
+  }>("webdock-servers.json");
+  assert.equal(inventory?.servers.length, 0);
+  assert.equal(inventory?.deletedServers[0].slug, "mail-delivrix-test");
+  assert.equal(inventory?.deletedServers[0].reason, "cleanup sprint smoke");
+  assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.webdock.server_deleted");
 });
 
 async function routeHarness(input: {
@@ -168,6 +259,55 @@ async function routeHarness(input: {
   return Object.assign(route, { auditLog, workspace, canvasEvents });
 }
 
+async function deleteRouteHarness(input: {
+  adapter: WebdockServerDeleteAdapter;
+  canvasState: CanvasLiveStateSnapshot;
+}) {
+  const dir = await mkdtemp(join(tmpdir(), "webdock-delete-route-"));
+  const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
+  const workspace = new OpenClawWorkspace({
+    rootDir: join(dir, "workspace"),
+    now: () => fixedNow
+  });
+  const canvasEvents: CanvasLiveEvent[] = [];
+
+  const route = async (
+    serverSlug: string,
+    body: unknown,
+    env: Record<string, string | undefined> = { WEBDOCK_SERVERS_ENABLE_DELETE: "true" }
+  ): Promise<{ statusCode: number; body: any }> => {
+    const response = captureResponse();
+    try {
+      await handleWebdockServerDeleteHttp({
+        request: requestWithJson(body, `/v1/webdock/servers/${serverSlug}`, "DELETE"),
+        response: response as unknown as ServerResponse,
+        auditLog,
+        adapter: input.adapter,
+        workspace,
+        canvasLiveEvents: {
+          emit: async (event) => {
+            canvasEvents.push(event);
+            return event;
+          }
+        },
+        readCanvasState: () => input.canvasState,
+        serverSlug,
+        env,
+        now: () => fixedNow
+      });
+    } catch (error) {
+      if (!handleWebdockServerDeleteError(error, response as unknown as ServerResponse)) {
+        throw error;
+      }
+    }
+    return {
+      statusCode: response.statusCode,
+      body: JSON.parse(response.body)
+    };
+  };
+  return Object.assign(route, { auditLog, workspace, canvasEvents });
+}
+
 function mockAdapter(overrides: Partial<WebdockServerCreateAdapter> = {}): WebdockServerCreateAdapter {
   return {
     isLive: () => true,
@@ -176,6 +316,17 @@ function mockAdapter(overrides: Partial<WebdockServerCreateAdapter> = {}): Webdo
     },
     getServer: async (): Promise<WebdockServer> => {
       throw new Error("getServer mock not implemented");
+    },
+    ...overrides
+  };
+}
+
+function mockDeleteAdapter(overrides: Partial<WebdockServerDeleteAdapter> = {}): WebdockServerDeleteAdapter {
+  return {
+    isLive: () => true,
+    canWrite: () => true,
+    deleteServer: async (): Promise<WebdockDeleteServerResult> => {
+      throw new Error("deleteServer mock not implemented");
     },
     ...overrides
   };
@@ -227,11 +378,11 @@ function canvasState(approvals: Array<{
   };
 }
 
-function requestWithJson(body: unknown): IncomingMessage {
+function requestWithJson(body: unknown, url = "/v1/webdock/servers/create", method = "POST"): IncomingMessage {
   const stream = Readable.from([JSON.stringify(body)]);
   return Object.assign(stream, {
-    method: "POST",
-    url: "/v1/webdock/servers/create",
+    method,
+    url,
     headers: { "content-type": "application/json" }
   }) as IncomingMessage;
 }

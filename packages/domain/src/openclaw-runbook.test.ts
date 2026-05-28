@@ -87,6 +87,32 @@ test("blocks live infrastructure and real email actions in Hito 4.5", () => {
   assert.deepEqual(smtp.blockedBy, ["prohibited_action"]);
 });
 
+test("allows register_domain with one CTO wallet approval and rejects zero approvals", () => {
+  const withoutApproval = evaluateOpenClawActionPermission({
+    action: "register_domain",
+    mode: "live"
+  });
+  const withoutApprover = evaluateOpenClawActionPermission({
+    action: "register_domain",
+    mode: "live",
+    humanApproved: true,
+    approverIds: []
+  });
+  const withOneApproval = evaluateOpenClawActionPermission({
+    action: "register_domain",
+    mode: "live",
+    humanApproved: true,
+    approverIds: ["juanescanar-cto"]
+  });
+
+  assert.equal(withoutApproval.allowed, false);
+  assert.ok(withoutApproval.blockedBy.includes("human_approval_required"));
+  assert.equal(withoutApprover.allowed, false);
+  assert.ok(withoutApprover.blockedBy.includes("human_approval_required"));
+  assert.equal(withOneApproval.allowed, true);
+  assert.equal(withOneApproval.riskLevel, "critical");
+});
+
 test("marks runbook as needs review when scheduler report is not ready", () => {
   const schedulerRun = runOpenClawScheduler({}, new Date("2026-05-03T00:00:00.000Z"));
   const runbook = buildOpenClawOperationalRunbook({

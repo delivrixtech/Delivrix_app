@@ -149,6 +149,69 @@ test("POST /v1/domains/route53/register registers after approval, cap, contact, 
   }]);
 });
 
+test("POST /v1/domains/route53/register is idempotent when domain is already owned", async () => {
+  let registerCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      listPrices: async () => [{
+        tld: "com",
+        registration: { amount: 14, currency: "USD" },
+        renewal: { amount: 14, currency: "USD" }
+      }],
+      listOwnedDomains: async () => [{ domainName: "delivrix-mail.com" }],
+      registerDomain: async () => {
+        registerCalled = true;
+        return {
+          operationId: "should-not-run",
+          expectedExpiry: "2027-05-29T11:00:00.000Z"
+        };
+      }
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact())
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  await route.auditLog.append({
+    id: "audit-approved",
+    occurredAt: "2026-05-29T10:58:00.000Z",
+    actorType: "operator",
+    actorId: "operator/juanes",
+    action: "oc.artifact.approved",
+    targetType: "canvas_artifact",
+    targetId: "artifact-domain-plan",
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: ["operator/juanes"],
+    metadata: {
+      executionId: "exec-approved-123",
+      blockCount: 1
+    }
+  });
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "idempotent_already_owned");
+  assert.equal(response.body.costUsd, 0);
+  assert.equal(registerCalled, false);
+  assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.domain.register_idempotent");
+});
+
 async function routeHarness(input: {
   adapter: Route53DomainPurchaseAdapter;
   env: Record<string, string | undefined>;
