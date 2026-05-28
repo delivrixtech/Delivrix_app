@@ -23,6 +23,7 @@ import {
   useOpenClawIntent,
   useToast
 } from "../../shared/ui/v2/index.ts";
+import { WalletWidget } from "./wallet-widget.tsx";
 
 /* ============================================================
  * Contract types — mirror del backend (Bloque 10)
@@ -110,6 +111,7 @@ export function SenderPoolSection() {
           <DomainsTable pool={pool} />
         </div>
         <aside className="flex flex-col" style={{ gap: 16 }}>
+          <WalletWidget />
           <OnboardNewDomainCard />
           <FlowExplainerCard />
         </aside>
