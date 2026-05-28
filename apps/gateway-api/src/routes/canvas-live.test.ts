@@ -139,6 +139,18 @@ test("task hierarchy preserves parentTaskId in live snapshot and reload", async 
   assert.equal(reloadedSnapshot.tasks.find((task) => task.taskId === "batch-child")?.parentTaskId, "batch-parent");
 });
 
+test("canvas-live normalizes known internal task titles to operator labels", async () => {
+  const service = await testService();
+  await service.emit({
+    ...taskDeclare("task-b8"),
+    title: "B8 B9 finish T5 T6 cleanup"
+  });
+
+  const snapshot = await service.snapshot();
+
+  assert.equal(snapshot.tasks[0].title, "Cierre demo SMTP staging (T5+T6)");
+});
+
 test("canvas-live reload preserves last action for completed tasks", async () => {
   const stateDir = await stateDirForTest();
   const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });

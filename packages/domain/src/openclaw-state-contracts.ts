@@ -8,8 +8,19 @@ import {
 import type { OpenClawOnboardingQuestion, OpenClawOnboardingSnapshot } from "./openclaw-onboarding.ts";
 import type { OpenClawProvisioningDryRunPlan } from "./openclaw-provisioning-dry-run.ts";
 
+export interface OpenClawOnboardingSectionState {
+  id: string;
+  displayName: string;
+  detectedFieldCount: number;
+  totalFieldCount: number;
+  source: "onboarding.snapshot" | "fallback.mock";
+}
+
 export interface OpenClawOnboardingState extends ControlPlaneContractBase {
+  environment: "mvp.local";
+  releasePhase: "5.9-manual-snapshot-ingestion-ux";
   readinessByCategory: Record<string, number>;
+  sections: OpenClawOnboardingSectionState[];
   pendingQuestions: OpenClawOnboardingQuestion[];
   knownInputs: Record<string, unknown>;
   blockers: string[];
@@ -54,6 +65,8 @@ export function buildOpenClawOnboardingState(
 
   return {
     ...buildContractBase(input.now, mockSource(), qualityFromUnknownFields(unknownFields, snapshot ? 0.7 : 0)),
+    environment: "mvp.local",
+    releasePhase: "5.9-manual-snapshot-ingestion-ux",
     readinessByCategory: snapshot?.readiness
       ? {
         infrastructure: snapshot.readiness.infrastructure,
@@ -65,6 +78,7 @@ export function buildOpenClawOnboardingState(
         total: snapshot.readiness.total
       }
       : {},
+    sections: buildOnboardingSections(snapshot, pendingQuestions),
     pendingQuestions,
     knownInputs: snapshot?.inputSummary ?? {},
     blockers: snapshot?.blockers ?? ["onboarding_snapshot_unavailable"],
@@ -128,3 +142,88 @@ function defaultProvisioningSteps(): OpenClawProvisioningState["steps"] {
     evidenceRefs: []
   }));
 }
+
+function buildOnboardingSections(
+  snapshot: OpenClawOnboardingSnapshot | undefined,
+  pendingQuestions: OpenClawOnboardingQuestion[]
+): OpenClawOnboardingSectionState[] {
+  const pending = new Set(pendingQuestions.map((question) => question.id));
+  return onboardingSections.map((section) => {
+    const totalFieldCount = section.questionIds.length;
+    const missingFieldCount = snapshot
+      ? section.questionIds.filter((questionId) => pending.has(questionId)).length
+      : totalFieldCount;
+    return {
+      id: section.id,
+      displayName: section.displayName,
+      detectedFieldCount: totalFieldCount - missingFieldCount,
+      totalFieldCount,
+      source: snapshot ? "onboarding.snapshot" : "fallback.mock"
+    };
+  });
+}
+
+const onboardingSections = [
+  {
+    id: "server",
+    displayName: "Servidor",
+    questionIds: [
+      "server.model",
+      "server.cpu_cores",
+      "server.ram_gb",
+      "server.storage_usable_gb",
+      "proxmox.status"
+    ]
+  },
+  {
+    id: "network",
+    displayName: "IPs y dominios",
+    questionIds: [
+      "server.network_uplink",
+      "ip_pool.total_ips",
+      "ip_pool.type",
+      "ip_pool.provider_approval",
+      "ip_pool.ptr_delegation",
+      "domains.verified"
+    ]
+  },
+  {
+    id: "dns",
+    displayName: "DNS",
+    questionIds: [
+      "dns.provider"
+    ]
+  },
+  {
+    id: "limits",
+    displayName: "Límites",
+    questionIds: [
+      "limits.target_daily_volume",
+      "limits.initial_sender_nodes",
+      "limits.daily_per_node",
+      "limits.warmup_days"
+    ]
+  },
+  {
+    id: "compliance",
+    displayName: "Cumplimiento",
+    questionIds: [
+      "compliance.physical_address",
+      "compliance.opt_out",
+      "compliance.suppression_list",
+      "compliance.consent_proof",
+      "compliance.provider_authorization"
+    ]
+  },
+  {
+    id: "review",
+    displayName: "Revisión",
+    questionIds: [
+      "security.secrets_manager",
+      "security.audit_log",
+      "security.kill_switch",
+      "autonomy.mode",
+      "autonomy.human_approval"
+    ]
+  }
+] as const;

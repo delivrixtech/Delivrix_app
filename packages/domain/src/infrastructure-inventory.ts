@@ -15,6 +15,7 @@ export interface Provider {
   displayName: string;
   kind: ProviderKind;
   status: ProviderStatus;
+  statusLabel?: string;
   itemCount: number;
   lastFetched: string | null;
   fetchSourceKind: ProviderFetchSourceKind | null;
@@ -54,6 +55,7 @@ function normalizeProvider(provider: Provider): Provider {
     displayName: provider.displayName,
     kind: provider.kind,
     status: provider.status,
+    statusLabel: provider.statusLabel ?? providerStatusLabel(provider),
     itemCount,
     lastFetched: provider.lastFetched,
     fetchSourceKind: provider.fetchSourceKind,
@@ -71,4 +73,20 @@ function normalizeItem(item: InventoryItem): InventoryItem {
     status: item.status,
     ...(item.detail ? { detail: { ...item.detail } } : {})
   };
+}
+
+function providerStatusLabel(provider: Provider): string {
+  if (provider.errorReason === "not_online_yet") {
+    return "Aún offline";
+  }
+  switch (provider.status) {
+    case "active":
+      return "Activo";
+    case "paused":
+      return "Pausado";
+    case "error":
+      return "Con error";
+    case "planned":
+      return "Planeado";
+  }
 }

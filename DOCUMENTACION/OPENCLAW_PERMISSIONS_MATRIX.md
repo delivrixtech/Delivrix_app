@@ -33,8 +33,8 @@ de Delivrix o a un proveedor externo. Si una acción no aparece aquí o aparece 
 ### 3.1 Lectura (`allowed_read_only`)
 
 OpenClaw puede llamar cualquier endpoint del **read-boundary** del Gateway Delivrix
-(fuente canónica: `apps/admin-panel/src/shared/api/read-boundary.ts`). **29 acciones
-de lectura** enumeradas literal a continuación. Cualquier endpoint nuevo que se
+(fuente canónica: `apps/admin-panel/src/shared/api/read-boundary.ts`). Las acciones
+de lectura quedan enumeradas literal a continuación. Cualquier endpoint nuevo que se
 agregue al read-boundary debe agregarse acá en el mismo commit.
 
 | Acción | Endpoint | Audit ID | Target type |
@@ -54,6 +54,8 @@ agregue al read-boundary debe agregarse acá en el mismo commit.
 | `read_openclaw_onboarding_state` | `GET /v1/openclaw/onboarding/state` | `oc.read.onboarding` | `onboarding_state` |
 | `read_openclaw_provisioning_state` | `GET /v1/openclaw/provisioning/state` | `oc.read.provisioning` | `provisioning_state` |
 | `read_openclaw_readiness_signals` | `GET /v1/openclaw/readiness-signals` | `oc.read.readiness` | `readiness_signals` |
+| `read_openclaw_workspace_tree` | `GET /v1/openclaw/workspace/tree` | `oc.workspace.read_tree` | `openclaw_workspace_path` |
+| `read_openclaw_workspace_file` | `GET /v1/openclaw/workspace/file` | `oc.workspace.read_file` | `openclaw_workspace_path` |
 | `read_operating_north` | `GET /v1/operating-north` | `oc.read.north` | `operating_north` |
 | `read_kill_switch` | `GET /v1/kill-switch` | `oc.read.kill_switch` | `kill_switch` |
 | `read_audit_events` | `GET /v1/audit-events` | `oc.read.audit` | `audit_log` |

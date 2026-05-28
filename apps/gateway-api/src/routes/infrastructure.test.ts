@@ -90,6 +90,7 @@ test("Infrastructure inventory degrades gracefully when AWS cache exists and ION
   assert.equal(payload.providers[3].errorReason, "creds_not_configured");
   assert.equal(payload.providers[4].errorReason, "adapter_pending");
   assert.equal(payload.providers[5].errorReason, "creds_not_configured");
+  assert.equal(payload.providers.find((provider) => provider.id === "physical-medellin")?.statusLabel, "Aún offline");
 });
 
 test("Infrastructure inventory exposes three Webdock accounts as distinct providers", async () => {
@@ -97,8 +98,8 @@ test("Infrastructure inventory exposes three Webdock accounts as distinct provid
     includeStaticProviders: false,
     webdockAccounts: [
       webdockAccount("primary", "Webdock Primary", ["running", "stopped"]),
-      webdockAccount("secondary", "Webdock Secondary", ["running"]),
-      webdockAccount("tertiary", "Webdock Tertiary", ["running", "running", "stopped"])
+      webdockAccount("ops", "Webdock Ops", ["running"]),
+      webdockAccount("account", "Webdock Account", ["running", "running", "stopped"])
     ],
     now: fixedNow
   });
@@ -107,29 +108,33 @@ test("Infrastructure inventory exposes three Webdock accounts as distinct provid
     id: provider.id,
     displayName: provider.displayName,
     status: provider.status,
+    statusLabel: provider.statusLabel,
     itemCount: provider.itemCount
   })), [
     {
       id: "webdock-primary",
       displayName: "Webdock Primary",
       status: "active",
+      statusLabel: "Activo",
       itemCount: 2
     },
     {
-      id: "webdock-secondary",
-      displayName: "Webdock Secondary",
+      id: "webdock-ops",
+      displayName: "Webdock Ops",
       status: "active",
+      statusLabel: "Activo",
       itemCount: 1
     },
     {
-      id: "webdock-tertiary",
-      displayName: "Webdock Tertiary",
+      id: "webdock-account",
+      displayName: "Webdock Account",
       status: "active",
+      statusLabel: "Activo",
       itemCount: 3
     }
   ]);
   assert.equal(payload.providers[0].items?.[0]?.detail?.accountId, "primary");
-  assert.equal(payload.providers[1].items?.[0]?.detail?.accountLabel, "Webdock Secondary");
+  assert.equal(payload.providers[1].items?.[0]?.detail?.accountLabel, "Webdock Ops");
 });
 
 test("Infrastructure inventory preserves legacy Webdock default account shape", async () => {

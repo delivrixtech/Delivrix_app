@@ -9,15 +9,15 @@ test("createWebdockAdaptersFromEnv builds one adapter per configured Webdock acc
   const accounts = createWebdockAdaptersFromEnv({
     WEBDOCK_API_KEY_PRIMARY: "primary-key",
     WEBDOCK_ACCOUNT_PRIMARY_LABEL: "Primary EU",
-    WEBDOCK_API_KEY_SECONDARY: "secondary-key",
-    WEBDOCK_ACCOUNT_SECONDARY_LABEL: "Secondary EU",
-    WEBDOCK_API_KEY_TERTIARY: "tertiary-key"
+    WEBDOCK_API_KEY_OPS: "ops-key",
+    WEBDOCK_ACCOUNT_OPS_LABEL: "Ops EU",
+    WEBDOCK_API_KEY_ACCOUNT: "account-key"
   });
 
   assert.deepEqual(accounts.map((account) => [account.id, account.label]), [
     ["primary", "Primary EU"],
-    ["secondary", "Secondary EU"],
-    ["tertiary", "Webdock Tertiary"]
+    ["ops", "Ops EU"],
+    ["account", "Webdock Account"]
   ]);
 });
 

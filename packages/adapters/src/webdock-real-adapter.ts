@@ -5,9 +5,10 @@ import { createHash, randomBytes } from "node:crypto";
  * (https://api.webdock.io/v1).
  *
  * Hito 5.11.A. Reemplaza progresivamente los mocks del Canvas con datos
- * vivos del proveedor. Las lecturas usan `WEBDOCK_API_KEY_PRIMARY`; las
- * escrituras usan `WEBDOCK_API_KEY_OPS`; el bundle frontend sigue GET-only y
- * las mutaciones pasan por rutas gated.
+ * vivos del proveedor. El inventario expone vistas separadas para
+ * `WEBDOCK_API_KEY_PRIMARY`, `WEBDOCK_API_KEY_OPS` y
+ * `WEBDOCK_API_KEY_ACCOUNT`; el bundle frontend sigue GET-only y las
+ * mutaciones pasan por rutas gated.
  *
  * Fallback: si `WEBDOCK_API_KEY_PRIMARY`/`WEBDOCK_API_KEY` no está presente
  * en el entorno, las lecturas devuelven un snapshot mock canónico para que el
@@ -606,6 +607,16 @@ export function createWebdockAdaptersFromEnv(
       id: "primary",
       apiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_PRIMARY),
       label: normalizeEnvValue(env.WEBDOCK_ACCOUNT_PRIMARY_LABEL) ?? "Webdock Primary"
+    },
+    {
+      id: "ops",
+      apiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_OPS),
+      label: normalizeEnvValue(env.WEBDOCK_ACCOUNT_OPS_LABEL) ?? "Webdock Ops"
+    },
+    {
+      id: "account",
+      apiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_ACCOUNT),
+      label: normalizeEnvValue(env.WEBDOCK_ACCOUNT_ACCOUNT_LABEL) ?? "Webdock Account"
     },
     {
       id: "secondary",

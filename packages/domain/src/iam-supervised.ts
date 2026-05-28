@@ -17,6 +17,7 @@ export type IamRoleColor = "amber" | "green" | "blue" | "violet" | "neutral";
 export interface IamRole {
   id: string;
   name: string;
+  displayName: string;
   color: IamRoleColor;
   userCount: number;
   permissions: string[];
@@ -37,6 +38,7 @@ const ROLES: readonly IamRole[] = Object.freeze([
   {
     id: "operator",
     name: "Operador",
+    displayName: "Operador supervisado (sólo lectura)",
     color: "amber",
     userCount: 4,
     permissions: [
@@ -50,6 +52,7 @@ const ROLES: readonly IamRole[] = Object.freeze([
   {
     id: "sre",
     name: "SRE",
+    displayName: "SRE",
     color: "green",
     userCount: 2,
     permissions: [
@@ -63,6 +66,7 @@ const ROLES: readonly IamRole[] = Object.freeze([
   {
     id: "external-auditor",
     name: "Auditor externo",
+    displayName: "Auditor externo",
     color: "blue",
     userCount: 1,
     permissions: ["read:audit-events", "read:compliance/status"]
@@ -70,6 +74,7 @@ const ROLES: readonly IamRole[] = Object.freeze([
   {
     id: "read-only",
     name: "Sólo lectura",
+    displayName: "Sólo lectura",
     color: "violet",
     userCount: 5,
     permissions: ["read:admin/overview"]
