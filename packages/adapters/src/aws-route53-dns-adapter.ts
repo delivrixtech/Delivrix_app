@@ -18,6 +18,19 @@ export interface AwsRoute53DnsChangeResult {
   changeId: string;
 }
 
+export interface AwsRoute53ResourceRecordSet {
+  name: string;
+  type: string;
+  ttl: number;
+  values: string[];
+}
+
+export interface AwsRoute53DeleteHostedZoneResult {
+  zoneId: string;
+  deletedRecords: Array<AwsRoute53DnsRecordInput & AwsRoute53DnsChangeResult>;
+  deleteChangeId?: string;
+}
+
 export interface AwsRoute53DnsSource {
   kind: "live" | "mock";
   region: string;
@@ -163,6 +176,51 @@ export class AwsRoute53DnsAdapter {
     return { changeId };
   }
 
+  async listResourceRecordSets(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]> {
+    this.assertWritable();
+    const normalizedZoneId = normalizeHostedZoneId(zoneId);
+    if (!normalizedZoneId) {
+      throw new Error(`Invalid Route53 hosted zone id: ${zoneId}`);
+    }
+    const response = await this.awsXml(
+      "GET",
+      `/${API_VERSION}/hostedzone/${encodeURIComponent(normalizedZoneId)}/rrset?maxitems=100`
+    );
+    return parseResourceRecordSets(response);
+  }
+
+  async deleteHostedZone(
+    zoneId: string,
+    opts: { deleteRecords?: boolean } = {}
+  ): Promise<AwsRoute53DeleteHostedZoneResult> {
+    this.assertWritable();
+    const normalizedZoneId = normalizeHostedZoneId(zoneId);
+    if (!normalizedZoneId) {
+      throw new Error(`Invalid Route53 hosted zone id: ${zoneId}`);
+    }
+
+    const deletedRecords: Array<AwsRoute53DnsRecordInput & AwsRoute53DnsChangeResult> = [];
+    if (opts.deleteRecords !== false) {
+      const records = await this.listResourceRecordSets(normalizedZoneId);
+      for (const record of records) {
+        if (!isDeletableRecord(record)) continue;
+        const change = await this.deleteRecord(normalizedZoneId, record);
+        deletedRecords.push({ ...record, ...change });
+      }
+    }
+
+    const response = await this.awsXml(
+      "DELETE",
+      `/${API_VERSION}/hostedzone/${encodeURIComponent(normalizedZoneId)}`
+    );
+    const deleteChangeId = normalizeChangeId(firstXmlValue(response, "Id"));
+    return {
+      zoneId: normalizedZoneId,
+      deletedRecords,
+      ...(deleteChangeId ? { deleteChangeId } : {})
+    };
+  }
+
   private assertWritable(): void {
     if (!this.writeEnabled) {
       throw new Error("AWS Route53 DNS writes are disabled by AWS_ROUTE53_DNS_ENABLE_WRITES.");
@@ -303,9 +361,46 @@ function normalizeRecord(input: AwsRoute53DnsRecordInput): AwsRoute53DnsRecordIn
 function route53RecordValue(type: AwsRoute53DnsRecordType, value: string): string {
   if (type === "TXT") {
     const trimmed = value.trim();
-    return trimmed.startsWith("\"") && trimmed.endsWith("\"") ? trimmed : `"${trimmed.replace(/"/g, "\\\"")}"`;
+    if (trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+      return trimmed;
+    }
+    return chunkTxtValue(trimmed).map((chunk) => `"${chunk.replace(/"/g, "\\\"")}"`).join(" ");
   }
   return value.trim();
+}
+
+function chunkTxtValue(value: string): string[] {
+  const chunks: string[] = [];
+  for (let index = 0; index < value.length; index += 250) {
+    chunks.push(value.slice(index, index + 250));
+  }
+  return chunks.length > 0 ? chunks : [""];
+}
+
+function parseResourceRecordSets(xml: string): AwsRoute53ResourceRecordSet[] {
+  return xmlBlocks(xml, "ResourceRecordSet").map((block) => {
+    const name = firstXmlValue(block, "Name") ?? "";
+    const type = firstXmlValue(block, "Type") ?? "";
+    const ttl = Number(firstXmlValue(block, "TTL") ?? "0");
+    return {
+      name,
+      type,
+      ttl: Number.isFinite(ttl) ? ttl : 0,
+      values: xmlValues(block, "Value")
+    };
+  }).filter((record) => record.name && record.type);
+}
+
+function isDeletableRecord(record: AwsRoute53ResourceRecordSet): record is AwsRoute53DnsRecordInput {
+  if (
+    record.type !== "A" &&
+    record.type !== "MX" &&
+    record.type !== "TXT" &&
+    record.type !== "CNAME"
+  ) {
+    return false;
+  }
+  return record.ttl >= 30 && record.values.length > 0;
 }
 
 function absoluteDnsName(value: string): string {
@@ -337,6 +432,17 @@ function xmlValues(xml: string, tag: string): string[] {
   let match = pattern.exec(xml);
   while (match) {
     values.push(xmlUnescape(match[1]));
+    match = pattern.exec(xml);
+  }
+  return values;
+}
+
+function xmlBlocks(xml: string, tag: string): string[] {
+  const values: string[] = [];
+  const pattern = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");
+  let match = pattern.exec(xml);
+  while (match) {
+    values.push(match[1]);
     match = pattern.exec(xml);
   }
   return values;

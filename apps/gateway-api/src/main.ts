@@ -151,6 +151,7 @@ import {
 } from "./routes/domains-purchase.ts";
 import {
   handleRoute53DnsError,
+  handleRoute53HostedZoneDeleteHttp,
   handleRoute53DnsUpsertHttp
 } from "./routes/domains-dns.ts";
 import {
@@ -163,7 +164,9 @@ import {
 } from "./routes/domains-bind.ts";
 import {
   handleWebdockServerCreateError,
-  handleWebdockServerCreateHttp
+  handleWebdockServerCreateHttp,
+  handleWebdockServerDeleteError,
+  handleWebdockServerDeleteHttp
 } from "./routes/webdock-servers.ts";
 import {
   createSmtpSshRunnerFromEnv,
@@ -670,6 +673,28 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    const webdockDeleteMatch = request.url?.match(/^\/v1\/webdock\/servers\/([^/]+)$/);
+    if (request.method === "DELETE" && webdockDeleteMatch) {
+      try {
+        return await handleWebdockServerDeleteHttp({
+          request,
+          response,
+          auditLog,
+          adapter: webdockOpsAdapter,
+          workspace: openClawWorkspace,
+          canvasLiveEvents,
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          serverSlug: decodeURIComponent(webdockDeleteMatch[1]),
+          env: process.env
+        });
+      } catch (error) {
+        if (handleWebdockServerDeleteError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
     const smtpProvisionMatch = request.url?.match(/^\/v1\/servers\/([^/]+)\/provision-smtp$/);
     if (request.method === "POST" && smtpProvisionMatch) {
       try {
@@ -833,6 +858,26 @@ const server = createServer(async (request, response) => {
           canvasLiveEvents,
           readCanvasState: () => canvasLiveEvents.snapshot()
         });
+      } catch (error) {
+        if (handleRoute53DnsError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    const route53HostedZoneDeleteMatch = request.url?.match(/^\/v1\/domains\/route53\/hosted-zones\/([^/?]+)$/);
+    if (request.method === "DELETE" && route53HostedZoneDeleteMatch) {
+      try {
+        return await handleRoute53HostedZoneDeleteHttp({
+          request,
+          response,
+          auditLog,
+          adapter: awsRoute53DnsAdapter,
+          workspace: openClawWorkspace,
+          canvasLiveEvents,
+          readCanvasState: () => canvasLiveEvents.snapshot()
+        }, route53HostedZoneDeleteMatch[1]);
       } catch (error) {
         if (handleRoute53DnsError(error, response)) {
           return;

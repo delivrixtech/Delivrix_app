@@ -21,6 +21,7 @@ export interface Route53DomainPurchaseAdapter {
   isLive(): boolean;
   isPurchaseEnabled(): boolean;
   listPrices(tlds?: string[]): Promise<AwsRoute53DomainPrice[]>;
+  listOwnedDomains?(): Promise<Array<{ domainName: string }>>;
   registerDomain(input: AwsRoute53RegisterDomainInput): Promise<AwsRoute53RegisterDomainResult>;
   currentSource(responseOk?: boolean, errorMessage?: string): AwsRoute53DomainsInventorySource;
 }
@@ -162,6 +163,59 @@ export async function handleRoute53DomainRegisterHttp(
       costUsd,
       monthlyCapUsd,
       source,
+      workspace
+    });
+    return;
+  }
+
+  const alreadyOwned = await adapterAlreadyOwnsDomain(deps.adapter, domain).catch(() => false);
+  if (alreadyOwned) {
+    const workspace = await safeWriteExecution(deps.workspace, {
+      skill: skillName,
+      params: { domain, years, autoRenew, actorId },
+      outcome: "success",
+      durationMs: Date.now() - startedAt,
+      evidence: {
+        status: "idempotent_already_owned",
+        registrar: "aws-route53",
+        costUsd: 0,
+        approvalArtifactId: approval?.artifactId
+      }
+    });
+    await safeUpdateDomainInventory(deps.workspace, {
+      domain,
+      operationId: "idempotent_already_owned",
+      expectedExpiry: undefined,
+      costUsd: 0,
+      registeredAt: now.toISOString(),
+      status: "owned"
+    });
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.domain.register_idempotent",
+      targetType: "domain",
+      targetId: domain,
+      riskLevel: "critical",
+      decision: "allow",
+      humanApproved: true,
+      approverIds: [actorId],
+      metadata: {
+        registrar: "aws-route53",
+        status: "idempotent_already_owned",
+        costUsd: 0,
+        approvalToken,
+        approvalArtifactId: approval?.artifactId,
+        workspacePath: workspace?.path
+      }
+    });
+
+    json(deps.response, 200, {
+      ok: true,
+      domain,
+      status: "idempotent_already_owned",
+      operationId: "idempotent_already_owned",
+      costUsd: 0,
       workspace
     });
     return;
@@ -381,9 +435,10 @@ async function safeUpdateDomainInventory(
   input: {
     domain: string;
     operationId: string;
-    expectedExpiry: string;
+    expectedExpiry?: string;
     costUsd?: number;
     registeredAt: string;
+    status?: string;
   }
 ): Promise<OpenClawWorkspaceFileRef | null> {
   try {
@@ -393,10 +448,10 @@ async function safeUpdateDomainInventory(
       domains.push({
         domain: input.domain,
         registrar: "aws-route53",
-        status: "pending",
+        status: input.status ?? "pending",
         operationId: input.operationId,
-        expectedExpiry: input.expectedExpiry,
         registeredAt: input.registeredAt,
+        ...(input.expectedExpiry ? { expectedExpiry: input.expectedExpiry } : {}),
         ...(typeof input.costUsd === "number" ? { costUsd: input.costUsd } : {})
       });
       return { domains };
@@ -445,6 +500,15 @@ function parseAdminContact(raw: string | undefined):
   } catch {
     return { ok: false, blocker: "admin_contact_invalid" };
   }
+}
+
+async function adapterAlreadyOwnsDomain(
+  adapter: Route53DomainPurchaseAdapter,
+  domain: string
+): Promise<boolean> {
+  if (!adapter.listOwnedDomains) return false;
+  const owned = await adapter.listOwnedDomains();
+  return owned.some((entry) => normalizeDomainName(entry.domainName) === domain);
 }
 
 function registrationCostForTld(prices: AwsRoute53DomainPrice[], tld: string): number | null {

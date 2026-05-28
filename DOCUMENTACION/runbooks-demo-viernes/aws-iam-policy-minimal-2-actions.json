@@ -1,0 +1,39 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Route53DomainsDiscoveryAndRegistration",
+      "Effect": "Allow",
+      "Action": [
+        "route53domains:CheckDomainAvailability",
+        "route53domains:CheckDomainTransferability",
+        "route53domains:GetDomainDetail",
+        "route53domains:GetDomainSuggestions",
+        "route53domains:GetOperationDetail",
+        "route53domains:ListDomains",
+        "route53domains:ListOperations",
+        "route53domains:ListPrices",
+        "route53domains:RegisterDomain",
+        "route53domains:UpdateDomainContactPrivacy",
+        "route53domains:EnableDomainAutoRenew",
+        "route53domains:DisableDomainAutoRenew",
+        "route53domains:ViewBilling"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "Route53HostedZoneMinimalForDemo",
+      "Effect": "Allow",
+      "Action": [
+        "route53:CreateHostedZone",
+        "route53:GetHostedZone",
+        "route53:ListHostedZones",
+        "route53:ListHostedZonesByName",
+        "route53:ChangeResourceRecordSets",
+        "route53:ListResourceRecordSets",
+        "route53:GetChange"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

@@ -9,6 +9,7 @@ import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import { CanvasLiveEventService } from "../services/canvas-live-events.ts";
 import {
+  createGatewayOnboardDomainFlowRunner,
   handleOnboardBatchHttp,
   handleOnboardFlowError,
   type OnboardDomainFlowInput,
@@ -110,6 +111,138 @@ test("POST /v1/flows/onboard-batch retries one sub-task and isolates permanent f
   assert.ok(workspace.files.some((file) => file.startsWith("learnings/") && file.includes("blocked.delivrix.com")));
 });
 
+test("gateway onboard runner executes T1, T2, T4, T3, T5, T6 without warmup", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "onboard-runner-order-"));
+  const auditLog = new LocalFileAuditLog(join(dir, "audit.jsonl"));
+  const workspace = new OpenClawWorkspace({
+    rootDir: join(dir, "workspace"),
+    now: () => fixedNow
+  });
+  const canvas = new CanvasLiveEventService({
+    stateDir: join(dir, "canvas-live"),
+    now: () => fixedNow
+  });
+  const approvalToken = await seedApproval(canvas, auditLog, "artifact-flow-order");
+  const emitted: any[] = [];
+  const canvasEmitter = {
+    async emit(event: any) {
+      emitted.push(event);
+      return canvas.emit(event);
+    }
+  };
+
+  const runner = createGatewayOnboardDomainFlowRunner({
+    auditLog,
+    workspace,
+    canvasLiveEvents: canvasEmitter,
+    domainPurchaseAdapter: {
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      currentSource: () => ({
+        kind: "live",
+        region: "us-east-1",
+        apiBase: "https://route53domains.us-east-1.amazonaws.com",
+        fetchedAt: fixedNow.toISOString(),
+        responseOk: true
+      }),
+      listPrices: async () => [{ tld: "com", registration: { amount: 12, currency: "USD" } }],
+      registerDomain: async () => ({
+        operationId: "op-register-order",
+        expectedExpiry: "2027-05-28T14:00:00.000Z"
+      })
+    },
+    dnsAdapter: {
+      isLive: () => true,
+      isWriteEnabled: () => true,
+      currentSource: () => ({
+        kind: "live",
+        region: "us-east-1",
+        apiBase: "https://route53.amazonaws.com",
+        fetchedAt: fixedNow.toISOString(),
+        responseOk: true,
+        writeEnabled: true
+      }),
+      createHostedZone: async () => ({
+        zoneId: "ZORDER",
+        nameServers: ["ns-1.awsdns.com"]
+      }),
+      upsertRecord: async (_zoneId, record) => ({
+        changeId: `C-${record.type}-${record.name}`
+      })
+    },
+    webdockAdapter: {
+      isLive: () => true,
+      canCreate: () => true,
+      createServer: async () => ({
+        serverSlug: "server-order",
+        eventId: "cb-order",
+        ipv4: null,
+        status: "provisioning",
+        publicKeyId: 42,
+        source: {
+          kind: "live",
+          apiBase: "https://api.webdock.test/v1",
+          fetchedAt: fixedNow.toISOString(),
+          responseOk: true
+        }
+      }),
+      getServer: async () => ({
+        slug: "server-order",
+        name: "mail.order-delivrix-test.com",
+        status: "running",
+        ipv4: "192.0.2.44"
+      })
+    },
+    sshRunner: {
+      isConfigured: () => true,
+      run: async () => ({ stdout: "", stderr: "", exitCode: 0 })
+    },
+    readCanvasState: () => canvas.snapshot(),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact()),
+      WEBDOCK_SERVERS_ENABLE_CREATE: "true",
+      SMTP_PROVISIONING_ENABLE_SSH: "true"
+    },
+    now: () => fixedNow
+  });
+
+  const result = await runner.run({
+    domain: "order-delivrix-test.com",
+    profile: "bit",
+    actorId: "operator/juanes",
+    approvalToken,
+    taskId: "task-flow-order",
+    years: 1,
+    autoRenew: false,
+    locationId: "dk",
+    imageSlug: "ubuntu-2404",
+    publicKey: "ssh-ed25519 AAAA test",
+    seedInboxes: []
+  });
+
+  const highLevelUrls = emitted
+    .filter((event) => event.type === "oc.action.now" && event.kind === "api")
+    .map((event) => event.url)
+    .filter((url) =>
+      typeof url === "string" &&
+      url.startsWith("/v1/") &&
+      url !== "/v1/servers" &&
+      url !== "/v1/servers/server-order"
+    );
+
+  assert.deepEqual(highLevelUrls, [
+    "/v1/domains/route53/register",
+    "/v1/domains/route53/dns/upsert",
+    "/v1/webdock/servers/create",
+    "/v1/domains/auth/configure",
+    "/v1/servers/server-order/provision-smtp",
+    "/v1/domains/bind"
+  ]);
+  assert.equal(result.serverIp, "192.0.2.44");
+  assert.equal(highLevelUrls.includes("/v1/warmup/start"), false);
+});
+
 async function routeHarness(input: {
   runner: OnboardDomainFlowRunner;
   schedule: (job: () => Promise<void>) => void;
@@ -149,6 +282,79 @@ async function routeHarness(input: {
     };
   };
   return Object.assign(route, { auditLog, workspace, canvas });
+}
+
+async function seedApproval(
+  canvas: CanvasLiveEventService,
+  auditLog: LocalFileAuditLog,
+  artifactId: string
+): Promise<string> {
+  await canvas.emit({
+    type: "oc.task.declare",
+    taskId: "task-approval",
+    title: "Approval",
+    status: "running",
+    createdAt: fixedNow.toISOString(),
+    actorId: "operator/juanes"
+  });
+  await canvas.emit({
+    type: "oc.artifact.declare",
+    taskId: "task-approval",
+    artifactId,
+    kind: "proposal",
+    title: "Approve flow",
+    editable: true,
+    createdAt: fixedNow.toISOString()
+  });
+  await canvas.emit({
+    type: "oc.artifact.block",
+    artifactId,
+    blockId: "scope",
+    order: 1,
+    kind: "paragraph",
+    content: "approve",
+    editable: true,
+    status: "complete",
+    occurredAt: fixedNow.toISOString()
+  });
+  const approval = await canvas.approveArtifact({
+    artifactId,
+    actorId: "operator/juanes",
+    blocks: [{ blockId: "scope", content: "approve" }]
+  });
+  await auditLog.append({
+    occurredAt: fixedNow.toISOString(),
+    actorType: "operator",
+    actorId: "operator/juanes",
+    action: "oc.artifact.approved",
+    targetType: "canvas_artifact",
+    targetId: artifactId,
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: ["operator/juanes"],
+    metadata: {
+      executionId: approval.executionId,
+      blockCount: 1
+    }
+  });
+  return approval.executionId;
+}
+
+function route53Contact() {
+  return {
+    FirstName: "Delivrix",
+    LastName: "Ops",
+    ContactType: "COMPANY",
+    OrganizationName: "Delivrix",
+    AddressLine1: "123 Demo Street",
+    City: "Miami",
+    State: "FL",
+    CountryCode: "US",
+    ZipCode: "33101",
+    PhoneNumber: "+1.3055550100",
+    Email: "ops@example.com"
+  };
 }
 
 function completed(input: OnboardDomainFlowInput) {

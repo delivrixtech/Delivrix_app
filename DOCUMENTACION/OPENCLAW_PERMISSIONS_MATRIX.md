@@ -8,6 +8,7 @@ Categorías y método de evaluación heredados de `HITO_4_5_RUNBOOK_PERMISOS_KIL
 
 - **v1.0** (2026-05-18) — 5 categorías + ~40 acciones por familia.
 - **v2.0** (2026-05-18) — 29 acciones de lectura una a una (todo el read-boundary literal), pseudocódigo formal del pipeline en TypeScript, manejo de race conditions en approvals concurrentes, código de error tipado por rejection reason.
+- **v2.1** (2026-05-27) — Camino B CTO: `register_domain` pasa de doble firma a modelo wallet con `requiredApprovals: 1` y firmante único `juanescanar-cto`; sigue requiriendo presupuesto, flag explícita, audit y cleanup DNS/VPS.
 
 ## 1. Propósito
 
@@ -23,6 +24,7 @@ de Delivrix o a un proveedor externo. Si una acción no aparece aquí o aparece 
 | `allowed_read_only` | Lectura pura. Sin efectos. No requiere aprobación. |
 | `allowed_dry_run` | Genera plan o payload sin tocar nada real. No requiere aprobación. |
 | `supervised_local_state` | Modifica estado **local** de Delivrix (registry, metadata, audit). Requiere aprobación humana + kill switch armado. |
+| `supervised_live_wallet` | Ejecuta una acción live acotada con costo bajo bajo modelo wallet CTO. Requiere aprobación humana única, presupuesto, flags explícitas, audit y cleanup. |
 | `future_live_requires_new_phase` | Acción contra infraestructura real. Bloqueada en Hito 5.11.B. Sólo se habilita con hito posterior + actualización del norte. |
 | `prohibited` | Nunca se permite, ni siquiera con aprobación. Vulneraría norte, compliance o seguridad. |
 
@@ -99,6 +101,12 @@ Requiere `humanApproved: true` + `killSwitch.enabled: false`. Si falla cualquier
 | `record_human_decision` | Registra decisión humana (aprobado/rechazado) sobre una propuesta | `oc.local.decision` |
 
 ### 3.4 Live (`future_live_requires_new_phase`)
+
+#### Live habilitada por Camino B (`supervised_live_wallet`)
+
+| Acción | Descripción | Audit ID | requiredApprovals | Firmante |
+| --- | --- | --- | --- | --- |
+| `register_domain` | Compra real de dominio demo vía Route 53 Domains, con cap mensual, contacto legal, flag `AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE=true`, audit y aprobación wallet CTO. | `oc.route53.domain_registered` | `1` | `juanescanar-cto` |
 
 **Bloqueadas en Hito 5.11.B.** Habilitar requiere nuevo hito + actualización de
 `NORTE_OPERATIVO_DELIVRIX.md`.

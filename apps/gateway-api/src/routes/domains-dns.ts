@@ -4,6 +4,7 @@ import type {
   AwsRoute53DnsChangeResult,
   AwsRoute53DnsRecordInput,
   AwsRoute53DnsRecordType,
+  AwsRoute53DeleteHostedZoneResult,
   AwsRoute53DnsSource,
   AwsRoute53HostedZoneResult
 } from "../../../../packages/adapters/src/index.ts";
@@ -26,6 +27,16 @@ export interface Route53DnsAdapter {
   upsertRecord(zoneId: string, opts: AwsRoute53DnsRecordInput): Promise<AwsRoute53DnsChangeResult>;
 }
 
+export interface Route53HostedZoneDeleteAdapter {
+  isLive(): boolean;
+  isWriteEnabled(): boolean;
+  currentSource(responseOk?: boolean, errorMessage?: string): AwsRoute53DnsSource;
+  deleteHostedZone(
+    zoneId: string,
+    opts?: { deleteRecords?: boolean }
+  ): Promise<AwsRoute53DeleteHostedZoneResult>;
+}
+
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
   list?(): Promise<AuditEvent[]>;
@@ -46,6 +57,17 @@ export interface Route53DnsUpsertDependencies {
   now?: () => Date;
 }
 
+export interface Route53HostedZoneDeleteDependencies {
+  request: IncomingMessage;
+  response: ServerResponse;
+  auditLog: AuditSink;
+  adapter: Route53HostedZoneDeleteAdapter;
+  workspace: OpenClawWorkspace;
+  canvasLiveEvents?: CanvasEmitter;
+  readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
+  now?: () => Date;
+}
+
 interface Route53DnsUpsertBody {
   domain?: unknown;
   zoneId?: unknown;
@@ -53,6 +75,15 @@ interface Route53DnsUpsertBody {
   actorId?: unknown;
   approvalToken?: unknown;
   taskId?: unknown;
+}
+
+interface Route53HostedZoneDeleteBody {
+  domain?: unknown;
+  actorId?: unknown;
+  approvalToken?: unknown;
+  reason?: unknown;
+  taskId?: unknown;
+  deleteRecords?: unknown;
 }
 
 interface Route53DnsInventory {
@@ -70,9 +101,24 @@ interface Route53DnsInventory {
       updatedAt: string;
     }>;
   }>;
+  deletedDnsZones?: Array<{
+    domain?: string;
+    zoneId: string;
+    deletedAt: string;
+    deletedRecords: Array<{
+      name: string;
+      type: AwsRoute53DnsRecordType;
+      ttl: number;
+      values: string[];
+      changeId?: string;
+    }>;
+    deleteChangeId?: string;
+    reason: string;
+  }>;
 }
 
 const skillName = "route53_dns_upsert";
+const deleteSkillName = "route53_hosted_zone_delete";
 const approvalMaxAgeMs = 15 * 60 * 1000;
 
 export async function handleRoute53DnsUpsertHttp(
@@ -274,6 +320,190 @@ export async function handleRoute53DnsUpsertHttp(
   }
 }
 
+export async function handleRoute53HostedZoneDeleteHttp(
+  deps: Route53HostedZoneDeleteDependencies,
+  zoneIdParam: string
+): Promise<void> {
+  const startedAt = Date.now();
+  const now = deps.now?.() ?? new Date();
+  const zoneId = normalizeHostedZoneId(zoneIdParam);
+  const body = await readJson<Route53HostedZoneDeleteBody>(deps.request);
+  const actorId = requiredString(body.actorId, "actorId");
+  const approvalToken = requiredString(body.approvalToken, "approvalToken");
+  const reason = requiredString(body.reason, "reason");
+  const taskId = normalizeTaskId(body.taskId) ?? `route53-zone-delete-${randomUUID()}`;
+  const deleteRecords = body.deleteRecords !== false;
+  const source = deps.adapter.currentSource(true);
+  const inventoryZone = await findWorkspaceZoneById(deps.workspace, zoneId);
+  const domain = typeof body.domain === "string" && body.domain.trim()
+    ? normalizeDomainName(body.domain)
+    : inventoryZone?.domain;
+
+  await emitTaskDeclare(deps.canvasLiveEvents, taskId, `Route53 hosted zone cleanup · ${zoneId}`, actorId, now);
+  const learnings = await safeReadLearnings(deps.workspace);
+  await emitFileAction(deps.canvasLiveEvents, taskId, "read", "learnings/", `learnings:${learnings.length}`, now);
+
+  const approval = await findRecentApproval({
+    auditLog: deps.auditLog,
+    readCanvasState: deps.readCanvasState,
+    approvalToken,
+    now,
+    maxAgeMs: approvalMaxAgeMs
+  });
+  const blockers: string[] = [];
+  if (!deps.adapter.isLive()) blockers.push("aws_route53_dns_credentials_missing");
+  if (!deps.adapter.isWriteEnabled()) blockers.push("dns_write_flag_disabled");
+  if (!approval) blockers.push("approval_not_found_or_expired");
+
+  if (blockers.length > 0) {
+    const workspace = await safeWriteExecution(deps.workspace, {
+      skill: deleteSkillName,
+      params: { zoneId, domain, actorId, deleteRecords, reason },
+      outcome: "blocked",
+      durationMs: Date.now() - startedAt,
+      evidence: {
+        blockers,
+        sourceKind: source.kind,
+        writeEnabled: source.writeEnabled,
+        approvalMatched: Boolean(approval),
+        learningCount: learnings.length
+      }
+    });
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.dns.hosted_zone_delete_blocked",
+      targetType: "route53_hosted_zone",
+      targetId: zoneId,
+      riskLevel: "critical",
+      decision: "reject",
+      humanApproved: false,
+      metadata: {
+        provider: "aws-route53",
+        blockers,
+        domain,
+        reason,
+        workspacePath: workspace?.path
+      }
+    });
+    await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.dns.hosted_zone_delete_blocked", "route53_hosted_zone", zoneId, "critical", now);
+    await emitTaskUpdate(deps.canvasLiveEvents, taskId, "failed", now);
+    json(deps.response, 409, {
+      ok: false,
+      status: "blocked",
+      zoneId,
+      domain,
+      blockers,
+      source,
+      workspace
+    });
+    return;
+  }
+
+  try {
+    const deleted = await deps.adapter.deleteHostedZone(zoneId, { deleteRecords });
+    await emitApiAction(deps.canvasLiveEvents, taskId, "DELETE", `/2013-04-01/hostedzone/${zoneId}`, 200, {
+      zoneId,
+      deleteChangeId: deleted.deleteChangeId,
+      deletedRecordCount: deleted.deletedRecords.length
+    }, now);
+    await markHostedZoneDeleted(deps.workspace, {
+      domain,
+      zoneId,
+      deletedAt: now.toISOString(),
+      deletedRecords: deleted.deletedRecords,
+      deleteChangeId: deleted.deleteChangeId,
+      reason
+    });
+    const workspace = await safeWriteExecution(deps.workspace, {
+      skill: deleteSkillName,
+      params: { zoneId, domain, actorId, deleteRecords, reason },
+      outcome: "success",
+      durationMs: Date.now() - startedAt,
+      evidence: {
+        zoneId,
+        domain,
+        deletedRecordCount: deleted.deletedRecords.length,
+        deleteChangeId: deleted.deleteChangeId,
+        learningCount: learnings.length
+      }
+    });
+    await emitFileAction(deps.canvasLiveEvents, taskId, "write", workspace?.path ?? "executions/", "Route53 hosted zone delete execution record", now);
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.dns.hosted_zone_deleted",
+      targetType: "route53_hosted_zone",
+      targetId: zoneId,
+      riskLevel: "critical",
+      decision: "allow",
+      humanApproved: true,
+      approverIds: [actorId],
+      metadata: {
+        provider: "aws-route53",
+        domain,
+        reason,
+        deletedRecordCount: deleted.deletedRecords.length,
+        deleteChangeId: deleted.deleteChangeId,
+        approvalToken,
+        approvalArtifactId: approval?.artifactId,
+        workspacePath: workspace?.path
+      }
+    });
+    await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.dns.hosted_zone_deleted", "route53_hosted_zone", zoneId, "critical", now);
+    await emitTaskUpdate(deps.canvasLiveEvents, taskId, "completed", now);
+    json(deps.response, 200, {
+      ok: true,
+      status: "deleted",
+      zoneId,
+      domain,
+      deletedRecordCount: deleted.deletedRecords.length,
+      deleteChangeId: deleted.deleteChangeId,
+      workspace
+    });
+  } catch (error) {
+    const workspace = await safeWriteExecution(deps.workspace, {
+      skill: deleteSkillName,
+      params: { zoneId, domain, actorId, deleteRecords, reason },
+      outcome: "failed",
+      durationMs: Date.now() - startedAt,
+      evidence: {
+        error: errorMessage(error),
+        sourceKind: source.kind
+      }
+    });
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.dns.hosted_zone_delete_failed",
+      targetType: "route53_hosted_zone",
+      targetId: zoneId,
+      riskLevel: "critical",
+      decision: "reject",
+      humanApproved: true,
+      approverIds: [actorId],
+      metadata: {
+        provider: "aws-route53",
+        domain,
+        reason,
+        errorMessage: errorMessage(error),
+        workspacePath: workspace?.path
+      }
+    });
+    await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.dns.hosted_zone_delete_failed", "route53_hosted_zone", zoneId, "critical", now);
+    await emitTaskUpdate(deps.canvasLiveEvents, taskId, "failed", now);
+    json(deps.response, 502, {
+      ok: false,
+      status: "failed",
+      zoneId,
+      domain,
+      error: "route53_hosted_zone_delete_failed",
+      message: errorMessage(error),
+      workspace
+    });
+  }
+}
+
 export class Route53DnsInputError extends Error {
   readonly statusCode = 422;
 
@@ -338,6 +568,14 @@ async function findWorkspaceZone(
   return zone ? { zoneId: zone.zoneId, nameServers: zone.nameServers } : null;
 }
 
+async function findWorkspaceZoneById(
+  workspace: OpenClawWorkspace,
+  zoneId: string
+): Promise<(NonNullable<Route53DnsInventory["dnsZones"]>[number]) | null> {
+  const inventory = await workspace.readInventoryJson<Route53DnsInventory>("domains.json").catch(() => null);
+  return inventory?.dnsZones?.find((entry) => entry.zoneId === zoneId) ?? null;
+}
+
 async function updateDnsInventory(
   workspace: OpenClawWorkspace,
   input: {
@@ -366,6 +604,24 @@ async function updateDnsInventory(
     return {
       ...(current ?? {}),
       dnsZones
+    };
+  });
+}
+
+async function markHostedZoneDeleted(
+  workspace: OpenClawWorkspace,
+  input: NonNullable<Route53DnsInventory["deletedDnsZones"]>[number]
+): Promise<void> {
+  await workspace.updateInventoryJson<Route53DnsInventory>("domains.json", (current) => {
+    const dnsZones = (current?.dnsZones ?? []).filter((zone) => zone.zoneId !== input.zoneId);
+    const deletedDnsZones = [
+      ...(current?.deletedDnsZones ?? []).filter((zone) => zone.zoneId !== input.zoneId),
+      input
+    ];
+    return {
+      ...(current ?? {}),
+      dnsZones,
+      deletedDnsZones
     };
   });
 }
@@ -530,6 +786,14 @@ function recordName(name: string, domain: string): string {
   if (trimmed === "@") return `${domain}.`;
   if (trimmed === domain || trimmed.endsWith(`.${domain}`)) return `${trimmed}.`;
   return `${trimmed}.${domain}.`;
+}
+
+function normalizeHostedZoneId(value: string): string {
+  const normalized = decodeURIComponent(value).replace(/^\/hostedzone\//, "").trim().toUpperCase();
+  if (!/^[A-Z0-9]+$/.test(normalized)) {
+    throw new Route53DnsInputError(`Invalid Route53 hosted zone id: ${value}`);
+  }
+  return normalized;
 }
 
 function normalizeDomainName(value: string): string {
