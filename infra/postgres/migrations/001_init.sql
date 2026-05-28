@@ -1,9 +1,12 @@
--- Delivrix MailOps initial schema.
--- Phase 1 focus: compliance gates, sender registry, queue tracking and append-only audit.
+-- Delivrix local development schema foundation.
+-- Safe to run through scripts/db/migrate.mjs; do not put seed data here.
 
-BEGIN;
+CREATE SCHEMA IF NOT EXISTS delivrix;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE TABLE operators (
+SET search_path TO delivrix, public;
+
+CREATE TABLE IF NOT EXISTS operators (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL,
@@ -11,7 +14,7 @@ CREATE TABLE operators (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE campaigns (
+CREATE TABLE IF NOT EXISTS campaigns (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   classification TEXT NOT NULL CHECK (classification IN ('commercial', 'transactional', 'operational')),
@@ -23,13 +26,13 @@ CREATE TABLE campaigns (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE recipients (
+CREATE TABLE IF NOT EXISTS recipients (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE consent_proofs (
+CREATE TABLE IF NOT EXISTS consent_proofs (
   id TEXT PRIMARY KEY,
   recipient_id TEXT NOT NULL REFERENCES recipients(id),
   campaign_id TEXT REFERENCES campaigns(id),
@@ -39,7 +42,7 @@ CREATE TABLE consent_proofs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE suppression_entries (
+CREATE TABLE IF NOT EXISTS suppression_entries (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL,
   reason TEXT NOT NULL CHECK (reason IN ('unsubscribe', 'complaint', 'hard_bounce', 'manual', 'legal')),
@@ -49,7 +52,7 @@ CREATE TABLE suppression_entries (
   UNIQUE (email)
 );
 
-CREATE TABLE ip_addresses (
+CREATE TABLE IF NOT EXISTS ip_addresses (
   id TEXT PRIMARY KEY,
   address INET NOT NULL UNIQUE,
   provider TEXT NOT NULL CHECK (provider IN ('ip_leasing', 'arin', 'webdock', 'racknerd', 'manual')),
@@ -61,7 +64,7 @@ CREATE TABLE ip_addresses (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE sender_nodes (
+CREATE TABLE IF NOT EXISTS sender_nodes (
   id TEXT PRIMARY KEY,
   label TEXT NOT NULL,
   provider TEXT NOT NULL CHECK (provider IN ('webdock', 'proxmox', 'racknerd', 'manual')),
@@ -75,7 +78,7 @@ CREATE TABLE sender_nodes (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE send_jobs (
+CREATE TABLE IF NOT EXISTS send_jobs (
   id TEXT PRIMARY KEY,
   campaign_id TEXT NOT NULL REFERENCES campaigns(id),
   recipient_email TEXT NOT NULL,
@@ -94,7 +97,7 @@ CREATE TABLE send_jobs (
   failure_reason TEXT
 );
 
-CREATE TABLE send_results (
+CREATE TABLE IF NOT EXISTS send_results (
   id TEXT PRIMARY KEY,
   send_job_id TEXT NOT NULL REFERENCES send_jobs(id),
   status TEXT NOT NULL CHECK (status IN ('sent', 'bounce', 'complaint', 'deferred', 'failed')),
@@ -105,39 +108,8 @@ CREATE TABLE send_results (
   occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE audit_events (
-  id TEXT PRIMARY KEY,
-  occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  actor_type TEXT NOT NULL CHECK (actor_type IN ('system', 'operator', 'openclaw')),
-  actor_id TEXT NOT NULL,
-  action TEXT NOT NULL,
-  target_type TEXT NOT NULL,
-  target_id TEXT NOT NULL,
-  risk_level TEXT NOT NULL CHECK (risk_level IN ('low', 'medium', 'high', 'critical')),
-  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
-);
-
-CREATE INDEX idx_suppression_entries_email ON suppression_entries (email);
-CREATE INDEX idx_send_jobs_status ON send_jobs (status);
-CREATE INDEX idx_send_jobs_campaign_id ON send_jobs (campaign_id);
-CREATE INDEX idx_sender_nodes_status ON sender_nodes (status);
-CREATE INDEX idx_ip_addresses_status ON ip_addresses (status);
-CREATE INDEX idx_audit_events_occurred_at ON audit_events (occurred_at);
-CREATE INDEX idx_audit_events_target ON audit_events (target_type, target_id);
-
-CREATE OR REPLACE FUNCTION prevent_audit_event_mutation()
-RETURNS trigger AS $$
-BEGIN
-  RAISE EXCEPTION 'audit_events is append-only';
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER audit_events_no_update
-BEFORE UPDATE ON audit_events
-FOR EACH ROW EXECUTE FUNCTION prevent_audit_event_mutation();
-
-CREATE TRIGGER audit_events_no_delete
-BEFORE DELETE ON audit_events
-FOR EACH ROW EXECUTE FUNCTION prevent_audit_event_mutation();
-
-COMMIT;
+CREATE INDEX IF NOT EXISTS idx_suppression_entries_email ON suppression_entries (email);
+CREATE INDEX IF NOT EXISTS idx_send_jobs_status ON send_jobs (status);
+CREATE INDEX IF NOT EXISTS idx_send_jobs_campaign_id ON send_jobs (campaign_id);
+CREATE INDEX IF NOT EXISTS idx_sender_nodes_status ON sender_nodes (status);
+CREATE INDEX IF NOT EXISTS idx_ip_addresses_status ON ip_addresses (status);

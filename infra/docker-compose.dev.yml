@@ -1,0 +1,35 @@
+services:
+  gateway-api:
+    build:
+      context: ..
+      dockerfile: apps/gateway-api/Dockerfile
+    container_name: delivrix-dev-gateway-api
+    env_file:
+      - path: ../.env.local
+        required: false
+    environment:
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: 3000
+      POSTGRES_URL: postgres://delivrix:delivrix_dev_password@postgres:5432/delivrix_mailops
+      REDIS_URL: redis://redis:6379
+      STORAGE_BACKEND: files
+      WEBDOCK_SERVERS_ENABLE_CREATE: "false"
+      AWS_ROUTE53_DNS_ENABLE_WRITES: "false"
+      SMTP_PROVISIONING_ENABLE_SSH: "false"
+      WARMUP_ENABLE_SEND: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../runtime:/app/runtime
+      - ../state:/app/state
+      - ../.audit:/app/.audit
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then(r=>r.json()).then(j=>process.exit(j.status==='ok'?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12

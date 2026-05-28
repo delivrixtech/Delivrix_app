@@ -17,10 +17,17 @@
     "dev:worker": "node apps/worker/src/main.ts",
     "dev:admin": "npm --workspace @delivrix/admin-panel run dev",
     "dev:admin:force": "npm --workspace @delivrix/admin-panel run dev:force",
-    "serve:admin": "npm --workspace @delivrix/admin-panel run serve"
+    "serve:admin": "npm --workspace @delivrix/admin-panel run serve",
+    "db:migrate": "node scripts/db/migrate.mjs",
+    "db:seed": "node scripts/db/seed.mjs",
+    "db:reset": "node scripts/db/reset.mjs"
   },
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "dependencies": {
+    "pg": "^8.21.0",
+    "redis": "^6.0.0"
+  }
 }
