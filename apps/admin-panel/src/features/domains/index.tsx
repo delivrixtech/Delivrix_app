@@ -1307,11 +1307,21 @@ function formatPrice(amount: number | null, currency: string | null): string {
 function formatExpiry(iso: string | null): string {
   if (!iso) return "Sin dato";
   try {
-    const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) return iso;
+    let date: Date;
+    // El backend de Route53 a veces devuelve Unix epoch como string ("1811462902")
+    // en vez de ISO. Si el input es solo dígitos, parseamos como epoch (segundos si
+    // tiene ≤10 dígitos, ms si tiene 13). Si es ISO normal, parse directo.
+    if (/^\d+$/.test(iso)) {
+      const num = Number(iso);
+      const ms = iso.length <= 10 ? num * 1000 : num;
+      date = new Date(ms);
+    } else {
+      date = new Date(iso);
+    }
+    if (Number.isNaN(date.getTime())) return "Sin fecha válida";
     return date.toLocaleDateString("es-CO", { year: "numeric", month: "short", day: "numeric" });
   } catch {
-    return iso;
+    return "Sin fecha válida";
   }
 }
 

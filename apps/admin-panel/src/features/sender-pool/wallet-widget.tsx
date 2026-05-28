@@ -18,7 +18,7 @@
 
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Wallet, TrendingDown, AlertTriangle, Check } from "lucide-react";
+import { Wallet, AlertTriangle, Check } from "lucide-react";
 import { getJson } from "../../shared/api/client.ts";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
 
@@ -132,7 +132,10 @@ export function WalletWidget() {
       }}
       aria-labelledby="wallet-widget-title"
     >
-      <header className="flex items-center" style={{ gap: 10 }}>
+      <header
+        className="flex items-start"
+        style={{ gap: 10, flexWrap: "wrap" }}
+      >
         <span
           aria-hidden="true"
           className="grid place-items-center shrink-0"
@@ -146,22 +149,37 @@ export function WalletWidget() {
         >
           <Wallet size={16} strokeWidth={1.75} />
         </span>
-        <div className="flex flex-col" style={{ gap: 1, minWidth: 0 }}>
-          <span
-            id="wallet-widget-title"
-            className="font-[family-name:var(--font-sans)] font-semibold truncate"
-            style={{ fontSize: 13, color: "var(--color-text-primary)" }}
-          >
-            Wallet operativo · {WALLET_NAME}
-          </span>
+        <div className="flex flex-col" style={{ gap: 2, flex: 1, minWidth: 0 }}>
+          <div className="flex items-center" style={{ gap: 8, flexWrap: "wrap" }}>
+            <span
+              id="wallet-widget-title"
+              className="font-[family-name:var(--font-sans)] font-semibold"
+              style={{ fontSize: 13, color: "var(--color-text-primary)", lineHeight: 1.3 }}
+            >
+              Wallet operativo
+            </span>
+            <span
+              className="font-[family-name:var(--font-mono)]"
+              style={{
+                fontSize: 10,
+                padding: "1px 6px",
+                borderRadius: 4,
+                background: "var(--color-surface-sunken)",
+                color: "var(--color-text-secondary)",
+                fontWeight: 500
+              }}
+              title={WALLET_NAME}
+            >
+              {WALLET_NAME}
+            </span>
+          </div>
           <span
             className="font-[family-name:var(--font-caption)]"
-            style={{ fontSize: 10.5, color: "var(--color-text-tertiary)" }}
+            style={{ fontSize: 10.5, color: "var(--color-text-tertiary)", lineHeight: 1.4 }}
           >
             Mes en curso · cap configurado en `.env.local`
           </span>
         </div>
-        <span className="flex-1" aria-hidden="true" />
         <ZoneBadge zone={zone} />
       </header>
 
@@ -176,7 +194,6 @@ export function WalletWidget() {
           label="Gastado"
           value={formatUsd(summary.spent)}
           tone={summary.spent > 0 ? "warning" : "neutral"}
-          icon={<TrendingDown size={11} strokeWidth={1.75} />}
         />
         <Stat
           label="Disponible"
@@ -378,24 +395,31 @@ function TransactionsList({
         >
           <div className="flex flex-col min-w-0" style={{ gap: 1, flex: 1 }}>
             <span
-              className="font-[family-name:var(--font-mono)] truncate"
-              style={{ fontSize: 11.5, color: "var(--color-text-primary)" }}
+              className="font-[family-name:var(--font-mono)]"
+              style={{
+                fontSize: 11.5,
+                color: "var(--color-text-primary)",
+                overflowWrap: "anywhere",
+                lineHeight: 1.35
+              }}
+              title={tx.metadata?.domain ?? tx.targetId}
             >
               {tx.metadata?.domain ?? tx.targetId}
             </span>
             <span
               className="font-[family-name:var(--font-caption)]"
-              style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
+              style={{ fontSize: 10, color: "var(--color-text-tertiary)", lineHeight: 1.4 }}
             >
               {formatDateShort(tx.occurredAt)} · firmado por{" "}
               <code style={{ fontFamily: "var(--font-mono)" }}>{tx.actorId}</code>
             </span>
           </div>
           <span
-            className="font-[family-name:var(--font-mono)] font-semibold"
+            className="font-[family-name:var(--font-mono)] font-semibold shrink-0"
             style={{ fontSize: 12, color: "var(--color-warning)" }}
+            title="Débito del wallet operativo"
           >
-            -{formatUsd(extractCostUsd(tx))}
+            −{formatUsd(extractCostUsd(tx))}
           </span>
         </li>
       ))}
