@@ -132,6 +132,11 @@ import {
   OpenClawChatProxy,
   type ChatSendRequest
 } from "./openclaw-chat.ts";
+import {
+  checkGatewayDependencies,
+  dependencyStatus,
+  type GatewayDependencyHealth
+} from "./dependency-health.ts";
 import { maybeHandleOpenClawDomainChatSkill } from "./openclaw-domain-chat-skill.ts";
 import { createOpenClawSshBridgeFromEnv } from "./openclaw-ssh-bridge.ts";
 import {
@@ -444,10 +449,14 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health") {
       const killSwitch = await killSwitchStore.get();
       const operatingNorth = getOperatingNorthSnapshot();
+      const dependencies = await checkGatewayDependencies();
 
       return json(response, 200, {
         status: "ok",
         service: "gateway-api",
+        postgres: dependencyStatus(dependencies.postgres),
+        redis: dependencyStatus(dependencies.redis),
+        dependencies,
         role: "delivrix-control-plane",
         queue: "local-file",
         auditLog: "local-file",
@@ -4218,7 +4227,22 @@ server.on("upgrade", (request, socket, head) => {
 
 server.listen(port, host, () => {
   console.log(`gateway-api listening on http://${host}:${port}`);
+  void logGatewayDependencyWarnings();
 });
+
+async function logGatewayDependencyWarnings(): Promise<void> {
+  const dependencies = await checkGatewayDependencies();
+  logDependencyWarning("Postgres", dependencies.postgres, "POSTGRES_URL", "docker compose -f infra/docker-compose.yml up -d");
+  logDependencyWarning("Redis", dependencies.redis, "REDIS_URL", "docker compose -f infra/docker-compose.yml up -d");
+}
+
+function logDependencyWarning(name: string, check: GatewayDependencyHealth[keyof GatewayDependencyHealth], envVar: string, command: string): void {
+  if (check.status === "ok") {
+    return;
+  }
+
+  console.warn(`[gateway] WARN: ${name} no responde en ${envVar}. ¿Levantaste \`${command}\`? ${check.message ?? ""}`.trim());
+}
 
 async function buildLiveComplianceStatus(now: Date) {
   const [auditEvents, killSwitch] = await Promise.all([
