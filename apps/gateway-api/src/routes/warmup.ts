@@ -94,7 +94,7 @@ export async function handleWarmupStartHttp(deps: WarmupStartDependencies): Prom
   const serverIp = typeof body.serverIp === "string" && body.serverIp.trim()
     ? normalizeIpv4(body.serverIp)
     : await findServerIp(deps.workspace, domain, serverSlug);
-  const seedInboxes = parseSeedInboxes(body.seedInboxes);
+  const seedInboxes = resolveSeedInboxes(body, env);
 
   await emitTaskDeclare(deps.canvasLiveEvents, taskId, `Warmup seed · ${domain}`, actorId, now);
   const learnings = await safeReadLearnings(deps.workspace);
@@ -218,7 +218,7 @@ export async function handleWarmupStartHttp(deps: WarmupStartDependencies): Prom
     await deps.auditLog.append({
       actorType: "operator",
       actorId,
-      action: "oc.warmup.started",
+      action: "oc.warmup.seed_sent",
       targetType: "domain",
       targetId: domain,
       riskLevel: "critical",
@@ -237,7 +237,7 @@ export async function handleWarmupStartHttp(deps: WarmupStartDependencies): Prom
         workspacePath: workspace?.path
       }
     });
-    await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.warmup.started", "domain", domain, "critical", deps.now?.() ?? new Date());
+    await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.warmup.seed_sent", "domain", domain, "critical", deps.now?.() ?? new Date());
     await emitTaskUpdate(deps.canvasLiveEvents, taskId, "completed", deps.now?.() ?? new Date());
 
     json(deps.response, 200, {
@@ -445,7 +445,20 @@ async function safeEmit(service: CanvasEmitter | undefined, event: CanvasLiveEve
   }
 }
 
+function resolveSeedInboxes(body: WarmupStartBody, env: Record<string, string | undefined>): string[] {
+  const fromBody = parseSeedInboxes(body.seedInboxes);
+  if (fromBody.length === 3) return fromBody;
+
+  const fromEnv = parseSeedInboxCsv(env.WARMUP_DEFAULT_SEED_INBOXES);
+  if (fromEnv.length === 3) return fromEnv;
+
+  return fromBody;
+}
+
 function parseSeedInboxes(value: unknown): string[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
   if (!Array.isArray(value)) {
     throw new WarmupStartInputError("seedInboxes must be an array.");
   }
@@ -455,6 +468,15 @@ function parseSeedInboxes(value: unknown): string[] {
     }
     return normalizeEmail(item);
   });
+}
+
+function parseSeedInboxCsv(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map(normalizeEmail);
 }
 
 function normalizeEmail(value: string): string {

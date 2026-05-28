@@ -51,6 +51,7 @@ export interface SmtpProvisionDependencies {
   canvasLiveEvents?: CanvasEmitter;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
   env?: Record<string, string | undefined>;
+  sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
 }
 
@@ -92,6 +93,22 @@ interface SmtpInventory {
     configuredAt: string;
     updatedAt: string;
   }>;
+}
+
+interface SmtpProvisionStep {
+  label: string;
+  command: string;
+  auditCommand: string;
+  stdin?: string;
+  timeoutMs?: number;
+}
+
+interface SmtpProvisionStepResult {
+  label: string;
+  exitCode: number | null;
+  attempts: number;
+  cloudInitSettleSeconds?: number;
+  progressDetail?: string;
 }
 
 const skillName = "install_smtp_stack";
@@ -186,23 +203,48 @@ export async function handleSmtpProvisionHttp(
   });
 
   try {
-    const commandResults: Array<{ label: string; exitCode: number | null }> = [];
-    for (const step of plan) {
-      const result = await deps.sshRunner.run({
-        serverIp: serverIp!,
-        command: step.command,
-        stdin: step.stdin,
-        timeoutMs: step.timeoutMs
+    const commandResults: SmtpProvisionStepResult[] = [];
+    let sshConnectAttempts = 1;
+    let cloudInitSettleSeconds = 0;
+
+    for (const [index, step] of plan.entries()) {
+      const execution = index === 0
+        ? await runSmtpStepWithCloudInitRetry({
+            runner: deps.sshRunner,
+            step,
+            serverIp: serverIp!,
+            sleep: deps.sleep ?? sleep
+          })
+        : {
+            result: await deps.sshRunner.run({
+              serverIp: serverIp!,
+              command: step.command,
+              stdin: step.stdin,
+              timeoutMs: step.timeoutMs
+            }),
+            attempts: 1,
+            cloudInitSettleMs: 0,
+            progressDetail: undefined
+          };
+
+      sshConnectAttempts = Math.max(sshConnectAttempts, execution.attempts);
+      cloudInitSettleSeconds += Math.round(execution.cloudInitSettleMs / 1000);
+      commandResults.push({
+        label: step.label,
+        exitCode: execution.result.exitCode,
+        attempts: execution.attempts,
+        ...(execution.cloudInitSettleMs > 0 ? { cloudInitSettleSeconds: Math.round(execution.cloudInitSettleMs / 1000) } : {}),
+        ...(execution.progressDetail ? { progressDetail: execution.progressDetail } : {})
       });
-      commandResults.push({ label: step.label, exitCode: result.exitCode });
       await emitCommandAction(
         deps.canvasLiveEvents,
         taskId,
         step.auditCommand,
-        result.exitCode ?? 0,
-        truncate(result.stdout),
-        truncate(result.stderr),
-        deps.now?.() ?? new Date()
+        execution.result.exitCode ?? 0,
+        truncate(execution.result.stdout),
+        truncate(execution.result.stderr),
+        deps.now?.() ?? new Date(),
+        execution.progressDetail
       );
     }
 
@@ -225,6 +267,8 @@ export async function handleSmtpProvisionHttp(
       evidence: {
         commandCount: commandResults.length,
         commandResults,
+        sshConnectAttempts,
+        cloudInitSettleSeconds,
         tlsStatus: "attempted_or_pending_dns",
         learningCount: learnings.length
       }
@@ -246,6 +290,8 @@ export async function handleSmtpProvisionHttp(
         serverIp,
         selector,
         commandCount: commandResults.length,
+        sshConnectAttempts,
+        cloudInitSettleSeconds,
         tlsStatus: "attempted_or_pending_dns",
         approvalToken,
         approvalArtifactId: approval?.artifactId,
@@ -263,6 +309,8 @@ export async function handleSmtpProvisionHttp(
       serverIp,
       selector,
       commandCount: commandResults.length,
+      sshConnectAttempts,
+      cloudInitSettleSeconds,
       tlsStatus: "attempted_or_pending_dns",
       workspace
     });
@@ -362,13 +410,7 @@ export function buildSmtpProvisionPlan(input: {
   serverIp: string;
   selector: string;
   dkimPrivateKey: string;
-}): Array<{
-  label: string;
-  command: string;
-  auditCommand: string;
-  stdin?: string;
-  timeoutMs?: number;
-}> {
+}): SmtpProvisionStep[] {
   const mailHost = `mail.${input.domain}`;
   const keyDir = `/etc/opendkim/keys/${input.domain}`;
   const mainCf = renderPostfixMainCf(input.domain, mailHost);
@@ -538,8 +580,19 @@ async function emitFileAction(service: CanvasEmitter | undefined, taskId: string
   await safeEmit(service, { type: "oc.action.now", taskId, kind: "file", operation, path, preview, occurredAt: now.toISOString() });
 }
 
-async function emitCommandAction(service: CanvasEmitter | undefined, taskId: string, cmd: string, exitCode: number, stdout: string, stderr: string, now: Date): Promise<void> {
-  await safeEmit(service, { type: "oc.action.now", taskId, kind: "command", cmd, exitCode, stdout, stderr, durationMs: 1, occurredAt: now.toISOString() });
+async function emitCommandAction(service: CanvasEmitter | undefined, taskId: string, cmd: string, exitCode: number, stdout: string, stderr: string, now: Date, progressDetail?: string): Promise<void> {
+  await safeEmit(service, {
+    type: "oc.action.now",
+    taskId,
+    kind: "command",
+    cmd,
+    exitCode,
+    stdout,
+    stderr,
+    durationMs: 1,
+    ...(progressDetail ? { progressDetail } : {}),
+    occurredAt: now.toISOString()
+  });
 }
 
 async function emitAuditAction(service: CanvasEmitter | undefined, taskId: string, action: string, targetType: string, targetId: string, riskLevel: "critical", now: Date): Promise<void> {
@@ -656,6 +709,68 @@ async function runSshCommand(input: SmtpSshCommandInput & {
     });
     child.stdin?.end(input.stdin ?? "");
   });
+}
+
+async function runSmtpStepWithCloudInitRetry(input: {
+  runner: SmtpSshRunner;
+  step: SmtpProvisionStep;
+  serverIp: string;
+  sleep: (ms: number) => Promise<void>;
+}): Promise<{
+  result: SmtpSshCommandResult;
+  attempts: number;
+  cloudInitSettleMs: number;
+  progressDetail?: string;
+}> {
+  const retryDelays = [30_000, 60_000];
+  const errors: string[] = [];
+  let cloudInitSettleMs = 0;
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const result = await input.runner.run({
+        serverIp: input.serverIp,
+        command: input.step.command,
+        stdin: input.step.stdin,
+        timeoutMs: input.step.timeoutMs
+      });
+      if (result.exitCode === 255) {
+        throw new Error("SSH command failed with exit 255.");
+      }
+      return {
+        result,
+        attempts: attempt,
+        cloudInitSettleMs,
+        progressDetail: attempt > 1
+          ? `esperando cloud-init... intento ${attempt} de 3; espera interna ${Math.round(cloudInitSettleMs / 1000)}s`
+          : undefined
+      };
+    } catch (error) {
+      errors.push(errorMessage(error));
+      if (!isTransientSshConnectError(error) || attempt === 3) {
+        throw new Error(`SSH connect failed after ${attempt} attempt(s): ${errors.join(" | ")}`);
+      }
+
+      const delay = retryDelays[attempt - 1] ?? 0;
+      cloudInitSettleMs += delay;
+      await input.sleep(delay);
+    }
+  }
+
+  throw new Error(`SSH connect failed after 3 attempts: ${errors.join(" | ")}`);
+}
+
+function isTransientSshConnectError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("timed out") ||
+    message.includes("exit 255") ||
+    message.includes("connection refused") ||
+    message.includes("connection reset") ||
+    message.includes("no route to host");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeSlug(value: string, field: string): string {

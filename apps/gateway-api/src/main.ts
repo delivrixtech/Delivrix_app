@@ -769,7 +769,7 @@ const server = createServer(async (request, response) => {
       }
     }
 
-    if (request.method === "POST" && request.url === "/v1/warmup/start") {
+    if (request.method === "POST" && (request.url === "/v1/warmup/start" || request.url === "/v1/warmup/seed")) {
       try {
         return await handleWarmupStartHttp({
           request,

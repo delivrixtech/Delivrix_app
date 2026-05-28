@@ -121,9 +121,75 @@ test("POST /v1/servers/:slug/provision-smtp runs idempotent SSH plan and records
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "command"));
 });
 
+test("POST /v1/servers/:slug/provision-smtp retries transient first SSH failure internally", async () => {
+  const commands: SmtpSshCommandInput[] = [];
+  const sleepDelays: number[] = [];
+  let firstStepAttempts = 0;
+  const route = await routeHarness({
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        if (input.command === "cloud-init status --wait || true") {
+          firstStepAttempts += 1;
+          if (firstStepAttempts < 3) {
+            throw new Error(firstStepAttempts === 1 ? "SSH command timed out." : "SSH command failed with exit 255.");
+          }
+        }
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-smtp-plan",
+      executionId: "exec-smtp-retry",
+      approvedAt: "2026-05-27T16:59:00.000Z"
+    }]),
+    sleep: async (ms) => {
+      sleepDelays.push(ms);
+    }
+  });
+  await appendApproval(route.auditLog, "artifact-smtp-plan", "exec-smtp-retry");
+  await route.workspace.writeWorkspaceFile("inventory/dkim-keys/delivrix-mail.com/default.private", dkimPrivateKey);
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    emailAuth: [{
+      domain: "delivrix-mail.com",
+      selector: "default",
+      dkimPrivateKeyPath: "inventory/dkim-keys/delivrix-mail.com/default.private"
+    }]
+  }));
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "mail-delivrix-test",
+      hostname: "mail.delivrix-mail.com",
+      ipv4: "192.0.2.44",
+      status: "running"
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-smtp-retry",
+    taskId: "task-smtp-retry"
+  }, { SMTP_PROVISIONING_ENABLE_SSH: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.sshConnectAttempts, 3);
+  assert.equal(response.body.cloudInitSettleSeconds, 90);
+  assert.deepEqual(sleepDelays, [30_000, 60_000]);
+  assert.equal(commands.filter((command) => command.command === "cloud-init status --wait || true").length, 3);
+  assert.equal(route.canvasEvents.filter((event) => event.type === "oc.action.now" && event.kind === "command").length, 13);
+  const firstCommandEvent = route.canvasEvents.find((event) => event.type === "oc.action.now" && event.kind === "command");
+  assert.equal(firstCommandEvent?.kind === "command" ? firstCommandEvent.progressDetail : undefined, "esperando cloud-init... intento 3 de 3; espera interna 90s");
+
+  const provisioned = (await route.auditLog.list()).at(-1);
+  assert.equal(provisioned?.metadata.sshConnectAttempts, 3);
+  assert.equal(provisioned?.metadata.cloudInitSettleSeconds, 90);
+});
+
 async function routeHarness(input: {
   sshRunner: SmtpSshRunner;
   canvasState: CanvasLiveStateSnapshot;
+  sleep?: (ms: number) => Promise<void>;
 }) {
   const dir = await mkdtemp(join(tmpdir(), "smtp-provision-route-"));
   const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
@@ -154,6 +220,7 @@ async function routeHarness(input: {
         },
         readCanvasState: () => input.canvasState,
         env,
+        sleep: input.sleep,
         now: () => fixedNow
       });
     } catch (error) {

@@ -609,6 +609,7 @@ function normalizeActionNowEvent(raw: Record<string, unknown>, now: () => Date):
       stdout: typeof raw.stdout === "string" ? raw.stdout : "",
       stderr: typeof raw.stderr === "string" ? raw.stderr : "",
       durationMs: nonNegativeInteger(raw.durationMs, "durationMs"),
+      ...(typeof raw.progressDetail === "string" ? { progressDetail: raw.progressDetail } : {}),
       occurredAt
     };
   }
