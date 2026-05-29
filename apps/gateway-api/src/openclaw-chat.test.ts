@@ -265,6 +265,72 @@ test("OpenClaw local continuity fallback answers SMTP intents with current canva
   ]);
 });
 
+test("OpenClaw fallback inherits intent on short continuation (route after dominio)", async () => {
+  // Bug del demo viernes: T1 'sugieras dominios' → DNS intent. T2 'seria usar route' → cae a default
+  // porque 'route' aislado no matchea regex DNS. Fix: heredar último intent en mensajes cortos.
+  const audit = new MemoryAudit();
+  const fetchImpl = async () => new Response("<html>login</html>", {
+    status: 200,
+    headers: { "content-type": "text/html" }
+  });
+  const proxy = new OpenClawChatProxy(audit, {
+    agentHttpUrl: "http://openclaw.test:61175",
+    gatewayToken: "secret-gateway-token",
+    fetchImpl: fetchImpl as typeof fetch,
+    localFallbackEnabled: true,
+    sessionKey: "session-inherit-test",
+    now: () => new Date("2026-05-29T15:40:00.000Z")
+  });
+
+  // Turno 1: intent DNS fuerte
+  const t1 = await proxy.sendOperatorMessage({
+    msgId: "inherit-t1-dns",
+    message: "necesito que me sugieras unos dominios para comprar"
+  });
+  assert.equal(t1.assistant?.source, "delivrix.dns_domain_planner");
+
+  // Turno 2: continuación corta SIN keyword DNS — debe heredar
+  const t2 = await proxy.sendOperatorMessage({
+    msgId: "inherit-t2-short",
+    message: "seria usar route"
+  });
+  assert.equal(t2.assistant?.source, "delivrix.dns_domain_planner.inherited");
+  assert.match(t2.assistant?.content ?? "", /dominios\/DNS/);
+});
+
+test("OpenClaw fallback renders execute CTA when operator says 'hazlo' with intent active", async () => {
+  // Bug del demo viernes: 'compralo' / 'ejecutalo' / 'dale' caía a default genérico.
+  // Fix: verbos de ejecución sobre último intent activo → CTA accionable.
+  const audit = new MemoryAudit();
+  const fetchImpl = async () => new Response("<html>login</html>", {
+    status: 200,
+    headers: { "content-type": "text/html" }
+  });
+  const proxy = new OpenClawChatProxy(audit, {
+    agentHttpUrl: "http://openclaw.test:61175",
+    gatewayToken: "secret-gateway-token",
+    fetchImpl: fetchImpl as typeof fetch,
+    localFallbackEnabled: true,
+    sessionKey: "session-execute-test",
+    now: () => new Date("2026-05-29T15:42:00.000Z")
+  });
+
+  // Turno 1: intent DNS
+  await proxy.sendOperatorMessage({
+    msgId: "exec-t1-dns",
+    message: "muestrame opciones de dominios para comprar"
+  });
+
+  // Turno 2: verbo de ejecución solo, sin intent propio fuerte
+  const t2 = await proxy.sendOperatorMessage({
+    msgId: "exec-t2-go",
+    message: "dale, ejecutalo"
+  });
+  assert.equal(t2.assistant?.source, "delivrix.execute_on_last_intent.dns");
+  assert.match(t2.assistant?.content ?? "", /3 gates en orden/);
+  assert.match(t2.assistant?.content ?? "", /Approval token humano vigente/);
+});
+
 test("OpenClaw chat send falls back to local continuity when SSH bridge returns invalid ack", async () => {
   const audit = new MemoryAudit();
   const client = new MemoryPanelClient();
