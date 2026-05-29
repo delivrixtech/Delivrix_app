@@ -26,7 +26,14 @@ export type ChatStreamEvent =
       type: "ASSISTANT_DONE";
       msgId: string;
       content: string;
-      audit?: { skillsInvoked: string[]; tokensUsed?: number; durationMs?: number };
+      audit?: {
+        skillsInvoked: string[];
+        tokensUsed?: number;
+        inputTokens?: number;
+        outputTokens?: number;
+        durationMs?: number;
+        modelId?: string;
+      };
       proposals?: unknown[];
     }
   | { type: "ASSISTANT_BLOCKED"; msgId: string; reason: string }
@@ -66,7 +73,7 @@ export interface OpenClawChatPanelClient {
 
 type FetchLike = typeof fetch;
 type WebSocketConstructor = new (url: string) => WebSocket;
-type ChatBridgeKind = "http" | "ssh";
+type ChatBridgeKind = "http" | "ssh" | "bedrock";
 
 export interface OpenClawChatSshBridge {
   sendMessage(input: ChatSendRequest): Promise<ChatSendResponse>;
@@ -221,7 +228,7 @@ export class OpenClawChatProxy {
 
   private shouldUseSshBridge(): boolean {
     return (
-      this.bridgeKind === "ssh" &&
+      (this.bridgeKind === "ssh" || this.bridgeKind === "bedrock") &&
       this.sshBridge !== null &&
       this.sshBridgeFailureThreshold > 0 &&
       this.sshBridgeFailureCount < this.sshBridgeFailureThreshold
@@ -300,12 +307,24 @@ export class OpenClawChatProxy {
       const result = await this.sshBridge!.sendMessage(input);
       this.sshBridgeFailureCount = 0;
       await this.auditOperatorMessage(msgId, message, "n/a", null, {
-        bridge: "ssh"
+        bridge: this.bridgeKind
       });
       this.startSshHistoryStream(msgId);
       return result;
     } catch (error) {
       this.sshBridgeFailureCount += 1;
+      if (this.bridgeKind === "bedrock") {
+        await this.auditOperatorMessage(msgId, message, "reject", "gateway_timeout", {
+          bridge: "bedrock",
+          consecutiveFailures: this.sshBridgeFailureCount,
+          bridgeError: error instanceof Error ? error.message : "OpenClaw Bedrock bridge failed."
+        });
+        throw new ChatProxyError(
+          502,
+          "openclaw_bedrock_bridge_failed",
+          error instanceof Error ? error.message : "OpenClaw Bedrock bridge failed."
+        );
+      }
       if (this.sshBridgeFailureCount >= this.sshBridgeFailureThreshold) {
         return null;
       }
@@ -360,7 +379,7 @@ export class OpenClawChatProxy {
 
   addPanelClient(client: OpenClawChatPanelClient): void {
     this.clients.add(client);
-    if (this.bridgeKind === "ssh" && this.sshBridge) {
+    if ((this.bridgeKind === "ssh" || this.bridgeKind === "bedrock") && this.sshBridge) {
       this.state = "connected";
       client.sendJson({ type: "HEARTBEAT", at: this.now().toISOString() });
       return;
@@ -426,7 +445,7 @@ export class OpenClawChatProxy {
       return;
     }
 
-    if (this.bridgeKind === "ssh" && this.sshBridge) {
+    if ((this.bridgeKind === "ssh" || this.bridgeKind === "bedrock") && this.sshBridge) {
       this.state = "connected";
       return;
     }
@@ -544,6 +563,9 @@ export class OpenClawChatProxy {
       onTyping: (event) => this.broadcast(event),
       onDelta: (event) => this.broadcast(event),
       onDone: (event) => {
+        if (this.bridgeKind === "bedrock") {
+          void this.auditBedrockInvocation(event);
+        }
         void this.handleAgentMessage(event);
       },
       onBlocked: (event) => {
@@ -705,8 +727,33 @@ export class OpenClawChatProxy {
         contentLength: event.content.length,
         skillsInvoked: event.audit?.skillsInvoked ?? [],
         tokensUsed: event.audit?.tokensUsed ?? null,
+        ...(event.audit?.inputTokens === undefined ? {} : { inputTokens: event.audit.inputTokens }),
+        ...(event.audit?.outputTokens === undefined ? {} : { outputTokens: event.audit.outputTokens }),
+        ...(event.audit?.modelId === undefined ? {} : { modelId: event.audit.modelId }),
         durationMs: event.audit?.durationMs ?? null,
         proposalsCount: event.proposals?.length ?? 0
+      }
+    });
+  }
+
+  private async auditBedrockInvocation(event: Extract<ChatStreamEvent, { type: "ASSISTANT_DONE" }>): Promise<void> {
+    await this.auditLog.append({
+      actorType: "openclaw",
+      actorId: "openclaw-bedrock-direct",
+      action: "oc.chat.bedrock_invoked",
+      targetType: "openclaw_chat_session",
+      targetId: this.sessionKey,
+      riskLevel: "low",
+      decision: "n/a",
+      metadata: {
+        msgId: event.msgId,
+        sessionKey: this.sessionKey,
+        modelId: event.audit?.modelId ?? null,
+        inputTokens: event.audit?.inputTokens ?? null,
+        outputTokens: event.audit?.outputTokens ?? null,
+        tokensUsed: event.audit?.tokensUsed ?? null,
+        latencyMs: event.audit?.durationMs ?? null,
+        contentLength: event.content.length
       }
     });
   }
