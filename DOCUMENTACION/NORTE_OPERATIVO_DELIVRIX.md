@@ -47,11 +47,11 @@ NFC se conserva como contexto externo porque puede consumir la capacidad de Deli
 ## Que debe hacer OpenClaw
 
 - Fase inicial: leer, analizar y reportar.
-- Fase supervised: proponer acciones y esperar aprobacion humana.
-- Fase limitada: ejecutar solo acciones reversibles, acotadas y auditadas despues de runbook, permisos, aprobacion humana y kill switch probado.
+- Fase supervised: proponer acciones, recibir UNA firma del operador via panel, ejecutar con audit chain SHA-256 y broadcast inmediato al equipo (Slack/Discord webhook o buffer local si webhook no configurado).
+- Fase autonoma habilitada: ejecutar acciones reversibles, acotadas y auditadas con UNA firma del operador + auto-rollback automatico si bounce > 5% en los primeros N minutos + alerta inmediata al equipo.
 - Fase avanzada: ampliar autonomia solo si los gates operativos demuestran estabilidad.
 
-OpenClaw nunca debe empezar con autonomia plena.
+OpenClaw nunca debe empezar con autonomia plena, pero la "regla de 2 personas" se reemplazo por audit chain robusta + 1 firma + broadcast + auto-rollback (ver compensaciones de seguridad mas abajo).
 
 ## Como funciona el sistema
 
@@ -60,7 +60,7 @@ OpenClaw nunca debe empezar con autonomia plena.
 3. El topology planner genera un plan de clusters/VPS/LXC.
 4. El provisioning flow produce un plan dry-run para Proxmox, Postfix, OpenDKIM, TLS, DNS y warming.
 5. OpenClaw analiza el plan y genera riesgos, recomendaciones y acciones propuestas.
-6. Un humano aprueba cualquier accion real.
+6. Un humano (UN operador, no dos) firma cualquier accion real via panel. La firma queda en audit chain con SHA-256 link al evento anterior. El equipo recibe broadcast inmediato (webhook Slack/Discord o buffer local) en cada accion critical.
 7. Delivrix registra sender nodes y reputacion en su inventario.
 8. Delivrix observa bounces, complaints, blacklists, colas, warming y resultados simulados o autorizados.
 9. OpenClaw recomienda pausar, degradar, cuarentenar o ajustar capacidad segun gates auditados.
@@ -107,15 +107,31 @@ Contratos minimos para una fase futura:
 
 ## Gates no negociables
 
-- No hay envio real desde Delivrix en el MVP.
+- No hay envio real desde Delivrix sin UNA firma del operador + audit chain SHA-256 + broadcast al equipo.
 - No hay escritura en sistemas externos de produccion sin contrato aprobado.
-- No hay SSH real sin aprobacion humana.
-- No hay cambios DNS reales sin dry-run y aprobacion.
-- No hay aumento de volumen sin warming saludable.
+- No hay SSH real sin UNA firma del operador + audit chain SHA-256.
+- No hay cambios DNS reales sin dry-run + UNA firma del operador + rollback automatico preparado en caso de fallo de propagacion.
+- No hay aumento de volumen sin warming saludable + auto-rollback si bounce > 5%.
 - No hay rotacion de IP para sostener volumen ante bounces, complaints o blacklists.
 - No hay secretos en Git.
 - No hay credenciales SMTP en texto plano en produccion.
 - Kill switch debe bloquear nuevas acciones y procesamiento operativo.
+- TODA accion critica emite broadcast inmediato a webhook del equipo (o buffer local si no configurado), con: actor agente + actor humano firmante + categoria matrix + audit ID + diff (dry-run completo).
+
+## Compensaciones de seguridad (reemplazan la 2da firma)
+
+Al pasar de "2 personas firman" a "1 firma + audit chain", agregamos estas barandillas para mantener el mismo nivel de seguridad operativa:
+
+1. **AUDIT CHAIN SHA-256 LINKED** — cada evento incluye prevHash. Una alteracion del log se detecta inmediato via `GET /v1/audit-chain/verify`.
+2. **BROADCAST INMEDIATO AL EQUIPO** — webhook Slack/Discord en cada accion critical. Mensaje incluye: que skill, que dominio, que servidor, audit ID, link al dry-run, link al evento ejecutado. Si la accion fue ilegitima, el equipo se entera en <30 segundos. Si no hay webhook configurado, queda en `runtime/webhook-buffer.jsonl` para revision posterior.
+3. **AUTO-ROLLBACK AUTOMATICO** — para mutaciones reversibles: DNS rollback automatico si propagacion no se confirma en 5 min; SMTP auto-pause si bounce rate > 5%; Webdock VPS snapshot si cloud-init no termina en 15 min.
+4. **KILL SWITCH SIGUE** — sigue siendo el ultimo gate. Cuando enabled=true, TODA accion no read-only se rechaza.
+5. **CATEGORIAS MATRIX RESPETADAS** — el agente sigue declarando categoria explicita antes de pedir firma. Si la skill resulta ser mas riesgosa que la declarada, el sistema rechaza y pide nueva firma.
+6. **KEY ROTATION PROGRAMADA** — credenciales SSH/AWS/IONOS rotadas trimestralmente.
+7. **RATE LIMITS POR OPERADOR** — un mismo humano no puede firmar mas de N acciones criticas por minuto.
+8. **REVIEW PERIODICA DE AUDIT CHAIN** — el equipo (humanos) revisa el audit chain semanalmente buscando patrones anomalos.
+
+Detalle completo y rationale: `DOCUMENTACION/CAMBIO_NORTE_QUITAR_2_PERSONAS_2026_05_29.md`.
 
 ## Hitos subordinados al norte
 

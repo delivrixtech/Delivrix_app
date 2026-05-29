@@ -104,29 +104,37 @@ Requiere `humanApproved: true` + `killSwitch.enabled: false`. Si falla cualquier
 
 ### 3.4 Live (`future_live_requires_new_phase`)
 
-#### Live habilitada por Camino B (`supervised_live_wallet`)
+**Cambio post-demo 2026-05-29:** la regla de 2 personas se reemplazó por 1 firma del operador + audit chain SHA-256 + broadcast al equipo + auto-rollback. Esto **movió 9 skills críticas a `supervised_local_state`** y las habilitó via flags operativos. Las skills destructivas siguen bloqueadas. Detalle completo: `CAMBIO_NORTE_QUITAR_2_PERSONAS_2026_05_29.md`.
 
-| Acción | Descripción | Audit ID | requiredApprovals | Firmante |
-| --- | --- | --- | --- | --- |
-| `register_domain` | Compra real de dominio demo vía Route 53 Domains, con cap mensual, contacto legal, flag `AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE=true`, audit y aprobación wallet CTO. | `oc.route53.domain_registered` | `1` | `juanescanar-cto` |
+#### Skills movidas a `supervised_local_state` (habilitadas con flag + 1 firma)
 
-**Bloqueadas en Hito 5.11.B.** Habilitar requiere nuevo hito + actualización de
-`NORTE_OPERATIVO_DELIVRIX.md`.
+| Acción | Audit ID | Flag operativo | Firmante |
+| --- | --- | --- | --- |
+| `register_domain_route53` | `oc.route53.domain_registered` | `AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE=true` | operador autorizado |
+| `route53_dns_upsert` | `oc.route53.dns_upserted` | `AWS_ROUTE53_DNS_ENABLE_WRITES=true` | operador autorizado |
+| `ionos_dns_upsert` | `oc.ionos.dns_upserted` | `IONOS_DNS_ENABLE_WRITES=true` (NUEVO) | operador autorizado |
+| `provision_webdock_vps` | `oc.webdock.server_created` | `WEBDOCK_SERVERS_ENABLE_CREATE=true` | operador autorizado |
+| `install_smtp_stack` | `oc.smtp.stack_installed` | `SMTP_PROVISIONING_ENABLE_SSH=true` | operador autorizado |
+| `start_warmup_seed` | `oc.warmup.seed_sent` | `WARMUP_ENABLE_SEND=true` | operador autorizado |
+| `start_warmup_ramp` | `oc.warmup.ramp_started` | `WARMUP_RAMP_ENABLE=true` (NUEVO) | operador autorizado |
+| `bind_domain_to_server` | `oc.domain.bound` | `DOMAIN_BIND_ENABLE=true` (NUEVO) | operador autorizado |
+| `configure_email_auth` | `oc.email.auth_configured` | `EMAIL_AUTH_ENABLE_WRITES=true` (NUEVO) | operador autorizado |
+
+#### Skills que SIGUEN bloqueadas en `future_live_requires_new_phase`
+
+Habilitar requiere nuevo hito + actualización adicional del norte.
 
 | Acción | Razón del bloqueo |
 | --- | --- |
 | `proxmox_live_create_vps` | Crea VM real. Requiere fase posterior. |
 | `proxmox_live_destroy_vps` | Destruye VM real. Irreversible sin snapshot. |
-| `webdock_create_server` | Crea VPS en Webdock con costo. |
 | `webdock_destroy_server` | Destruye VPS. Pérdida de datos. |
 | `webdock_snapshot_restore` | Rollback de snapshot. Sobreescribe estado. |
-| `dns_live_change` | Modifica zona DNS real. Afecta deliverabilidad. |
 | `dns_record_delete` | Borra registro DNS. Riesgo de downtime. |
-| `smtp_send_real_email` | Envío real de correo. Norte exige fase posterior. |
-| `postfix_apply_live_config` | Aplica config en MTA productivo. |
-| `tls_cert_renew_live` | Renueva certificado. Riesgo de mismatch. |
-| `ssh_root_access` | Acceso SSH root. Norte prohíbe automatizar. |
-| `ssh_exec_command` | Ejecuta comandos vía SSH. Norte prohíbe. |
+| `delete_domain_route53` | Borra dominio. Destructivo irreversible. |
+| `mass_dns_change` (>10 dominios simultáneos) | Riesgo sistémico. |
+| `ssh_root_access` | Acceso SSH root sin scope acotado. |
+| `tls_cert_renew_live` | Renueva certificado. Riesgo de mismatch. Habilitar con flag dedicado cuando exista runbook. |
 
 ### 3.5 Prohibidas (`prohibited`)
 
