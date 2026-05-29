@@ -210,6 +210,18 @@ export class OpenClawChatProxy {
           }
           return result;
         }
+        if (this.localFallbackEnabled) {
+          return this.sendOperatorMessageViaLocalFallback(
+            msgId,
+            message,
+            new ChatProxyError(
+              502,
+              "openclaw_ssh_bridge_failed",
+              "OpenClaw SSH bridge exceeded failure threshold; routing to local continuity."
+            ),
+            "ssh_bridge_threshold_exceeded"
+          );
+        }
       }
 
       const result = await this.sendOperatorMessageViaHttp(msgId, message);
@@ -321,18 +333,42 @@ export class OpenClawChatProxy {
       return result;
     } catch (error) {
       this.sshBridgeFailureCount += 1;
+      const bridgeErrorCode = sshBridgeErrorCode(error);
+      const bridgeErrorMessage = error instanceof Error ? error.message : "OpenClaw SSH bridge failed.";
       if (this.bridgeKind === "bedrock") {
         await this.auditOperatorMessage(msgId, message, "reject", "gateway_timeout", {
           bridge: "bedrock",
           consecutiveFailures: this.sshBridgeFailureCount,
-          bridgeError: error instanceof Error ? error.message : "OpenClaw Bedrock bridge failed."
+          bridgeError: bridgeErrorMessage,
+          ...(bridgeErrorCode ? { bridgeErrorCode } : {})
         });
         throw new ChatProxyError(
           502,
           "openclaw_bedrock_bridge_failed",
-          error instanceof Error ? error.message : "OpenClaw Bedrock bridge failed."
+          bridgeErrorMessage
         );
       }
+
+      if (this.localFallbackEnabled && isFallbackEligibleSshBridgeError(bridgeErrorCode)) {
+        await this.auditOperatorMessage(msgId, message, "reject", "gateway_timeout", {
+          bridge: "ssh",
+          consecutiveFailures: this.sshBridgeFailureCount,
+          bridgeError: bridgeErrorMessage,
+          ...(bridgeErrorCode ? { bridgeErrorCode } : {})
+        });
+        const bridgeError = new ChatProxyError(
+          502,
+          "openclaw_ssh_bridge_failed",
+          bridgeErrorMessage
+        );
+        return this.sendOperatorMessageViaLocalFallback(
+          msgId,
+          message,
+          bridgeError,
+          bridgeErrorCode ?? "ssh_bridge_failed"
+        );
+      }
+
       if (this.sshBridgeFailureCount >= this.sshBridgeFailureThreshold) {
         return null;
       }
@@ -340,12 +376,13 @@ export class OpenClawChatProxy {
       await this.auditOperatorMessage(msgId, message, "reject", "gateway_timeout", {
         bridge: "ssh",
         consecutiveFailures: this.sshBridgeFailureCount,
-        bridgeError: error instanceof Error ? error.message : "OpenClaw SSH bridge failed."
+        bridgeError: bridgeErrorMessage,
+        ...(bridgeErrorCode ? { bridgeErrorCode } : {})
       });
       throw new ChatProxyError(
         502,
         "openclaw_ssh_bridge_failed",
-        error instanceof Error ? error.message : "OpenClaw SSH bridge failed."
+        bridgeErrorMessage
       );
     }
   }
@@ -353,12 +390,34 @@ export class OpenClawChatProxy {
   private async sendOperatorMessageViaLocalFallback(
     msgId: string,
     message: string,
-    upstreamError: unknown
+    upstreamError: unknown,
+    bridgeDegradedReason?: string
   ): Promise<ChatSendResponse> {
     const startedAt = this.now().getTime();
     const fallback = await buildLocalOpenClawFallbackResponse(message, this.now(), this.canvasLiveEvents);
     const durationMs = Math.max(0, this.now().getTime() - startedAt);
     const errorInfo = openClawTransportErrorInfo(upstreamError);
+
+    if (bridgeDegradedReason) {
+      await this.auditLog.append({
+        actorType: "system",
+        actorId: "gateway-api",
+        action: "oc.chat.bridge_degraded",
+        targetType: "openclaw_chat_session",
+        targetId: this.sessionKey,
+        riskLevel: "medium",
+        decision: "n/a",
+        metadata: {
+          msgId,
+          sessionKey: this.sessionKey,
+          bridge: this.bridgeKind,
+          bridgeError: errorInfo.code,
+          bridgeErrorMessage: errorInfo.message,
+          bridgeDegradedReason,
+          fallbackSource: fallback.source
+        }
+      });
+    }
 
     await this.auditLog.append({
       actorType: "system",
@@ -375,7 +434,8 @@ export class OpenClawChatProxy {
         upstreamErrorCode: errorInfo.code,
         upstreamErrorMessage: errorInfo.message,
         skillsInvoked: fallback.skillsInvoked,
-        contentLength: fallback.content.length
+        contentLength: fallback.content.length,
+        ...(bridgeDegradedReason ? { bridgeDegradedReason } : {})
       }
     });
 
@@ -1041,6 +1101,28 @@ function isRecoverableOpenClawTransportError(error: unknown): boolean {
   ].includes(error.code);
 }
 
+function sshBridgeErrorCode(error: unknown): string | undefined {
+  if (error && typeof error === "object" && "code" in error && typeof (error as { code?: unknown }).code === "string") {
+    return (error as { code: string }).code;
+  }
+  return undefined;
+}
+
+function isFallbackEligibleSshBridgeError(code: string | undefined): boolean {
+  if (!code) {
+    // Unknown errors are still routed to fallback to keep the demo alive.
+    return true;
+  }
+  return [
+    "invalid_chat_send_ack",
+    "ssh_command_failed",
+    "ssh_command_timeout",
+    "ssh_command_aborted",
+    "invalid_chat_payload",
+    "ssh_host_missing"
+  ].includes(code);
+}
+
 function openClawTransportErrorInfo(error: unknown): { code: string; message: string } {
   if (error instanceof ChatProxyError) {
     return {
@@ -1076,7 +1158,7 @@ async function buildLocalOpenClawFallbackResponse(
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase();
 
-  if (/\b(smtp|postfix|opendkim|dkim|mail\s+server|mailserver|correo|sendmail|warmup|calentamiento)\b/.test(normalized)) {
+  if (/\b(smtp|postfix|opendkim|dkim|mail\s+server|mailserver|correo|sendmail|warmup|calentamiento|calentemos|calentar|calienta|calentando|inbox|bandeja|seed|seeds)\b/.test(normalized)) {
     const snapshot = await safeCanvasSnapshot(canvasLiveEvents);
     return {
       source: "delivrix.smtp_provisioning_planner",
@@ -1124,6 +1206,101 @@ async function buildLocalOpenClawFallbackResponse(
         "- archivos operativos filtrados para no exponer material sensible.",
         "",
         "Pedime el run o archivo exacto y respondo con el path y el resumen verificable, sin imprimir secretos.",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+
+  if (/\b(kill\s*switch|kill-switch|killswitch|matar|apagar|frenar|pausar|emergencia|panic|stop)\b/.test(normalized)) {
+    return {
+      source: "delivrix.kill_switch_planner",
+      skillsInvoked: ["delivrix.kill_switch_planner", "delivrix.safety_overview"],
+      content: [
+        "# Kill switch — gobernanza del plano de envíos",
+        "",
+        "Si. El kill switch es el último gate del sistema y vive en /v1/safety/kill-switch.",
+        "",
+        "Estado y operación:",
+        "- Lectura: GET /v1/safety/kill-switch devuelve enabled + updatedAt + updatedBy.",
+        "- Cambio: POST /v1/safety/kill-switch con regla de 2 personas y razón explícita.",
+        "- Gate: cuando enabled=true, TODA acción no read-only del gateway se rechaza.",
+        "",
+        "Para el demo, el switch debe quedar en estado ARMADO (enabled=false, listo para activar).",
+        "No lo activo desde chat; eso requiere doble firma humana via panel /seguridad.",
+        "",
+        "Si pedís bypass o re-armado, te voy a decir que entres por /v1/safety/kill-switch con approvalToken vigente.",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+
+  if (/\b(wallet|cap|presupuesto|gasto|gastado|dinero|costo|usd|dolar|dolares|budget)\b/.test(normalized)) {
+    return {
+      source: "delivrix.wallet_planner",
+      skillsInvoked: ["delivrix.wallet_planner", "delivrix.sender_pool_status"],
+      content: [
+        "# Wallet operativo — gobernanza del gasto",
+        "",
+        "Si. El wallet operativo limita gasto mensual de operaciones reales (compra de dominios, VPS).",
+        "",
+        "Estado:",
+        "- Cap mensual: $50 USD (AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD).",
+        "- Tracking: cada transacción real queda firmada en audit chain con tipo oc.wallet.*.",
+        "- Visible en: panel /sender-pool sección Wallet.",
+        "",
+        "Cuando se supera 80% del cap, escalo al humano antes de la próxima operación.",
+        "Cuando se supera 100%, bloqueo nuevas compras hasta nuevo mes o ajuste manual del cap.",
+        "",
+        "Para ver gasto actual del mes: GET /v1/audit-events?actionPrefix=oc.wallet, filtrado por mes.",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+
+  if (/\b(cluster|clusteres|cl(u|ú)steres|flota|fleet|capacity|capacidad|nodos|sender\s*nodes|nodo)\b/.test(normalized)) {
+    return {
+      source: "delivrix.cluster_planner",
+      skillsInvoked: ["delivrix.cluster_planner", "delivrix.fleet_ops"],
+      content: [
+        "# Flota de envíos — clusters supervisados",
+        "",
+        "Si. Los clusters son grupos de IPs/nodos preparados para envío real, gobernados por gates humanos.",
+        "",
+        "Vista actual disponible:",
+        "- GET /v1/admin/clusters → snapshot agregado (clusters totales, IPs en pool, nodos activos, clusters en warmup).",
+        "- GET /v1/canvas/state → tareas/blocks activos sobre la topología.",
+        "- Panel /clusteres → kpis + cards + sparkline reputación 14d por cluster.",
+        "",
+        "Operaciones supervisadas:",
+        "- Pausar cluster: POST /v1/clusters/:id/pause (manual, requiere approval).",
+        "- Re-armar warmup: POST /v1/warmup/ramp/start con schedule + recipientPool.",
+        "",
+        "Si pedís activar envío real desde un cluster, te voy a decir qué gate falta antes de tocarlo.",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+
+  if (/\b(infraestructura|infrastructure|inventario|inventory|proveedor|proveedores|provider|providers|webdock|aws|sender\s*pool|panel)\b/.test(normalized)) {
+    return {
+      source: "delivrix.infrastructure_planner",
+      skillsInvoked: ["delivrix.infrastructure_planner", "delivrix.multi_provider_inventory"],
+      content: [
+        "# Inventario multi-proveedor — solo lectura",
+        "",
+        "Si. Puedo darte el snapshot de toda la infra que Delivrix gobierna hoy.",
+        "",
+        "Proveedores cubiertos:",
+        "- Webdock × 3 cuentas (compute primario + ops + account).",
+        "- AWS Route53 (registrar + DNS) + AWS Bedrock (LLM us-east-1).",
+        "- IONOS Cloud DNS / Domains (read-only + write actuator nuevo).",
+        "- Porkbun (discover/propose comparativo).",
+        "- Servidor físico Medellín (Proxmox legacy).",
+        "",
+        "Vista live: GET /v1/infrastructure/inventory devuelve providers[] con status, count, lastFetched, capabilities.",
+        "Panel /infraestructura agrupa por kind (Compute / DNS+Domains / Físico) + 'Atención requerida' para errors/offline.",
+        "",
+        "Cualquier cambio en infra real (compra dominio, crear VPS, write DNS) pasa por approval gate.",
         `Timestamp: ${now.toISOString()}`
       ].join("\n")
     };

@@ -265,6 +265,52 @@ test("OpenClaw local continuity fallback answers SMTP intents with current canva
   ]);
 });
 
+test("OpenClaw chat send falls back to local continuity when SSH bridge returns invalid ack", async () => {
+  const audit = new MemoryAudit();
+  const client = new MemoryPanelClient();
+  const bridge: OpenClawChatSshBridge = {
+    async sendMessage() {
+      const error = new Error("OpenClaw SSH chat.send did not return status=started.") as Error & { code?: string };
+      error.code = "invalid_chat_send_ack";
+      error.name = "OpenClawSshBridgeError";
+      throw error;
+    },
+    async streamHistory() {
+      throw new Error("not reached");
+    }
+  };
+  const proxy = new OpenClawChatProxy(audit, {
+    bridgeKind: "ssh",
+    sshBridge: bridge,
+    sshBridgeFailureThreshold: 3,
+    localFallbackEnabled: true,
+    now: () => new Date("2026-05-29T15:00:00.000Z")
+  });
+  proxy.addPanelClient(client);
+
+  const response = await proxy.sendOperatorMessage({
+    msgId: "fallback-ssh-ack-001",
+    message: "Ya funcionas openclaw?"
+  });
+
+  assert.equal(response.msgId, "fallback-ssh-ack-001");
+  assert.equal(response.queued, true);
+  assert.equal(response.assistant?.source, "delivrix.gateway_local_continuity");
+  assert.match(response.assistant?.content ?? "", /modo continuidad local/);
+  assert.equal(client.events.some((event) => event.type === "ASSISTANT_DONE"), true);
+
+  const bridgeDegraded = audit.events.find((event) => event.action === "oc.chat.bridge_degraded");
+  assert.ok(bridgeDegraded, "expected oc.chat.bridge_degraded audit event");
+  assert.equal(bridgeDegraded?.metadata.bridgeError, "openclaw_ssh_bridge_failed");
+  assert.equal(bridgeDegraded?.metadata.bridgeDegradedReason, "invalid_chat_send_ack");
+  assert.equal(bridgeDegraded?.metadata.bridge, "ssh");
+
+  const localFallback = audit.events.find((event) => event.action === "oc.chat.local_fallback");
+  assert.ok(localFallback, "expected oc.chat.local_fallback audit event");
+  assert.equal(localFallback?.metadata.upstreamErrorCode, "openclaw_ssh_bridge_failed");
+  assert.equal(localFallback?.metadata.bridgeDegradedReason, "invalid_chat_send_ack");
+});
+
 test("OpenClaw chat send falls back to HTTP after consecutive SSH bridge failures", async () => {
   const audit = new MemoryAudit();
   const bridge: OpenClawChatSshBridge = {
