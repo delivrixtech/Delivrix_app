@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Permission Notifier"
+  short_description: "Notifica permisos pendientes de Codex"
+  default_prompt: "Use $codex-permission-notifier para configurar avisos cuando Codex quede esperando permisos en terminal."
