@@ -8,6 +8,7 @@ const gatewayOrigin = process.env.ADMIN_PANEL_GATEWAY_ORIGIN ?? "http://127.0.0.
 const allowedProxyPaths = new Set(Object.values(READ_ENDPOINTS));
 const chatSendPath = "/v1/openclaw/chat/send";
 const chatStreamPath = "/v1/openclaw/chat/stream";
+const gatewayLogStreamPath = "/v1/gateway/logs/stream";
 
 /**
  * Write endpoints permitidos desde el admin panel. El panel administrativo
@@ -88,6 +89,9 @@ function readOnlyProxyBoundary(): Plugin {
         const isChatStream =
           request.method === "GET" &&
           requestUrl.pathname === chatStreamPath;
+        const isGatewayLogStream =
+          request.method === "GET" &&
+          requestUrl.pathname === gatewayLogStreamPath;
         const isAllowedWrite =
           request.method === "POST" &&
           allowedWritePaths.has(requestUrl.pathname);
@@ -117,6 +121,7 @@ function readOnlyProxyBoundary(): Plugin {
           isApprovalWrite ||
           isChatSend ||
           isChatStream ||
+          isGatewayLogStream ||
           isAllowedWrite ||
           isCanvasArtifactApprove ||
           isCanvasArtifactReject ||
