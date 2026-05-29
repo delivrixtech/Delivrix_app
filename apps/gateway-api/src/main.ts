@@ -243,6 +243,7 @@ import { createAutoRollbackManagerFromEnv } from "./auto-rollback.ts";
 import { EquipoWebhookBroadcaster } from "./webhook-broadcast.ts";
 import { buildAuditChainAnchor, AuditChainAnchorError } from "./audit-chain-anchor.ts";
 import { hardenIncomingAuditBatchEvent } from "./audit-batch-origin.ts";
+import { classifyLiveActionMutation } from "./live-action-kill-switch.ts";
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
@@ -618,6 +619,44 @@ const server = createServer(async (request, response) => {
           return;
         }
         throw error;
+      }
+    }
+
+    const liveActionMutation = classifyLiveActionMutation(
+      request.method,
+      requestUrl(request).pathname
+    );
+    if (liveActionMutation) {
+      const killSwitchDecision = evaluateKillSwitch(
+        await killSwitchStore.get(),
+        liveActionMutation.operation
+      );
+      if (!killSwitchDecision.allowed) {
+        await auditLog.append({
+          actorType: "system",
+          actorId: "gateway-api",
+          action: "oc.live_action.blocked_by_kill_switch",
+          targetType: liveActionMutation.targetType,
+          targetId: liveActionMutation.targetId,
+          riskLevel: "critical",
+          decision: "reject",
+          rejectReason: "kill_switch_armed",
+          humanApproved: false,
+          killSwitchState: "active",
+          metadata: {
+            method: liveActionMutation.method,
+            path: liveActionMutation.path,
+            operation: liveActionMutation.operation,
+            message: killSwitchDecision.message
+          }
+        });
+        return json(response, 423, {
+          ok: false,
+          rejectReason: "kill_switch_armed",
+          message: killSwitchDecision.message,
+          operation: liveActionMutation.operation,
+          killSwitch: killSwitchDecision.state
+        });
       }
     }
 
@@ -1138,7 +1177,8 @@ const server = createServer(async (request, response) => {
           dnsAdapter: awsRoute53DnsAdapter,
           workspace: openClawWorkspace,
           canvasLiveEvents,
-          readCanvasState: () => canvasLiveEvents.snapshot()
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          env: process.env
         });
       } catch (error) {
         if (handleEmailAuthError(error, response)) {
@@ -1157,7 +1197,8 @@ const server = createServer(async (request, response) => {
           dnsAdapter: awsRoute53DnsAdapter,
           workspace: openClawWorkspace,
           canvasLiveEvents,
-          readCanvasState: () => canvasLiveEvents.snapshot()
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          env: process.env
         });
       } catch (error) {
         if (handleDomainBindError(error, response)) {

@@ -40,6 +40,7 @@ export interface DomainBindDependencies {
   workspace: OpenClawWorkspace;
   canvasLiveEvents?: CanvasEmitter;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
+  env?: Record<string, string | undefined>;
   now?: () => Date;
 }
 
@@ -83,6 +84,7 @@ const approvalMaxAgeMs = 15 * 60 * 1000;
 export async function handleDomainBindHttp(deps: DomainBindDependencies): Promise<void> {
   const startedAt = Date.now();
   const now = deps.now?.() ?? new Date();
+  const env = deps.env ?? process.env;
   const body = await readJson<DomainBindBody>(deps.request);
   const domain = normalizeDomainName(requiredString(body.domain, "domain"));
   const actorId = requiredString(body.actorId, "actorId");
@@ -113,6 +115,7 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
     maxAgeMs: approvalMaxAgeMs
   });
   const blockers: string[] = [];
+  if (env.DOMAIN_BIND_ENABLE !== "true") blockers.push("domain_bind_flag_disabled");
   if (!deps.dnsAdapter.isLive()) blockers.push("aws_route53_dns_credentials_missing");
   if (!deps.dnsAdapter.isWriteEnabled()) blockers.push("dns_write_flag_disabled");
   if (!approval) blockers.push("approval_not_found_or_expired");

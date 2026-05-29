@@ -247,7 +247,7 @@ test("POST /v1/warmup/ramp/start · happy path responde 202 con rampId", async (
     workspace: harness.workspace,
     readCanvasState: () =>
       canvasStateWithApproval("artifact-ramp", "exec-ramp-http"),
-    env: { WARMUP_ENABLE_SEND: "true" },
+    env: { WARMUP_ENABLE_SEND: "true", WARMUP_RAMP_ENABLE: "true" },
     now: () => clock.now()
   });
 
@@ -290,7 +290,7 @@ test("POST /v1/warmup/ramp/start · bloquea sin gates", async () => {
       sshRunner: harness.sshRunner,
       workspace: harness.workspace,
       readCanvasState: () => canvasStateWithApproval("", ""),
-      env: { WARMUP_ENABLE_SEND: "false" },
+      env: { WARMUP_ENABLE_SEND: "false", WARMUP_RAMP_ENABLE: "false" },
       now: () => clock.now()
     });
   } catch (error) {
@@ -302,6 +302,7 @@ test("POST /v1/warmup/ramp/start · bloquea sin gates", async () => {
   assert.equal(response.statusCode, 409);
   const body = JSON.parse(response.body) as { blockers: string[] };
   assert.ok(body.blockers.includes("warmup_send_flag_disabled"));
+  assert.ok(body.blockers.includes("warmup_ramp_flag_disabled"));
   assert.ok(body.blockers.includes("warmup_ssh_runner_missing"));
   assert.ok(body.blockers.includes("approval_not_found_or_expired"));
 });

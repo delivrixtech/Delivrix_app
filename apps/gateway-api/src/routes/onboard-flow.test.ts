@@ -202,7 +202,9 @@ test("gateway onboard runner executes T1, T2, T4, T3, T5, T6 without warmup", as
       AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
       DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact()),
       WEBDOCK_SERVERS_ENABLE_CREATE: "true",
-      SMTP_PROVISIONING_ENABLE_SSH: "true"
+      SMTP_PROVISIONING_ENABLE_SSH: "true",
+      EMAIL_AUTH_ENABLE_WRITES: "true",
+      DOMAIN_BIND_ENABLE: "true"
     },
     now: () => fixedNow
   });

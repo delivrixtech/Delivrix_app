@@ -40,6 +40,7 @@ export interface EmailAuthConfigureDependencies {
   workspace: OpenClawWorkspace;
   canvasLiveEvents?: CanvasEmitter;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
+  env?: Record<string, string | undefined>;
   now?: () => Date;
 }
 
@@ -82,6 +83,7 @@ export async function handleEmailAuthConfigureHttp(
 ): Promise<void> {
   const startedAt = Date.now();
   const now = deps.now?.() ?? new Date();
+  const env = deps.env ?? process.env;
   const body = await readJson<EmailAuthConfigureBody>(deps.request);
   const domain = normalizeDomainName(requiredString(body.domain, "domain"));
   const mxServerIp = normalizeIpv4(requiredString(body.mxServerIp, "mxServerIp"));
@@ -97,6 +99,7 @@ export async function handleEmailAuthConfigureHttp(
   await emitFileAction(deps.canvasLiveEvents, taskId, "read", "learnings/", `learnings:${learnings.length}`, now);
 
   const blockers: string[] = [];
+  if (env.EMAIL_AUTH_ENABLE_WRITES !== "true") blockers.push("email_auth_write_flag_disabled");
   if (!deps.dnsAdapter.isLive()) blockers.push("aws_route53_dns_credentials_missing");
   if (!deps.dnsAdapter.isWriteEnabled()) blockers.push("dns_write_flag_disabled");
   const approval = await findRecentApproval({
