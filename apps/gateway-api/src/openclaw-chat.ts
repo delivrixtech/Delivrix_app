@@ -394,7 +394,7 @@ export class OpenClawChatProxy {
     bridgeDegradedReason?: string
   ): Promise<ChatSendResponse> {
     const startedAt = this.now().getTime();
-    const fallback = await buildLocalOpenClawFallbackResponse(message, this.now(), this.canvasLiveEvents);
+    const fallback = await buildLocalOpenClawFallbackResponse(message, this.now(), this.canvasLiveEvents, this.sessionKey);
     const durationMs = Math.max(0, this.now().getTime() - startedAt);
     const errorInfo = openClawTransportErrorInfo(upstreamError);
 
@@ -1148,15 +1148,297 @@ interface LocalOpenClawFallbackResponse {
   skillsInvoked: string[];
 }
 
+/* ============================================================
+ * Conversational memory para el fallback intent-aware.
+ *
+ * Antes (2026-05-29 09:35): cada turno se procesaba aislado, 42% de
+ * mensajes caían a default. QA exhaustivo identificó tres patrones de
+ * frustración: (1) continuaciones cortas tipo "seria usar route" que
+ * no matcheaban regex aislada pero claramente heredaban contexto; (2)
+ * verbos de ejecución "ejecuta/dale/compralo" caían a default; (3)
+ * refinamientos cortos perdían el intent.
+ *
+ * Fix: Map in-process por sessionKey con últimos 5 turnos. Antes de
+ * correr los regex, miramos último turno: si actual es corto o no
+ * matchea fuerte, heredamos intent. Verbos de ejecución disparan render
+ * "ejecuta sobre último intent" en vez de respuesta genérica.
+ *
+ * Tradeoff: stateless tras restart del gateway (aceptable para demo,
+ * sessionKey por operador). Sin TTL por simplicidad — un proceso de
+ * demo dura <2h.
+ * ============================================================ */
+
+type FallbackIntent =
+  | "smtp"
+  | "vps"
+  | "dns"
+  | "evidence"
+  | "kill_switch"
+  | "wallet"
+  | "cluster"
+  | "infrastructure"
+  | "greeting"
+  | null;
+
+interface FallbackTurn {
+  intent: FallbackIntent;
+  userMsg: string;
+  ts: number;
+}
+
+const fallbackSessionMemory = new Map<string, FallbackTurn[]>();
+const FALLBACK_MAX_TURNS_PER_SESSION = 5;
+const FALLBACK_SHORT_MESSAGE_THRESHOLD = 4; // <=4 palabras = short/continuation
+
+/** Verbos de ejecución que disparan "ejecuta sobre el último intent". */
+const FALLBACK_EXECUTE_VERBS_REGEX = /\b(ejecuta|ejecutalo|ejecutar|hazlo|hacelo|hacelo\s+ya|dale|compralo|comprala|comprar|aprueba|aprobalo|confirma|confirmalo|levantalo|lanzalo|lanzarlo|disparalo|corre|run|go|aprueba\s+ya|si\s+dale|si\s+hazlo)\b/;
+
+/**
+ * Detecta el intent con regex aislada. Si no matchea, devuelve null.
+ * Replica el orden de evaluación que ya estaba en buildLocalOpenClawFallbackResponse.
+ */
+function detectFallbackIntent(normalized: string): FallbackIntent {
+  if (/\b(smtp|postfix|opendkim|dkim|mail\s+server|mailserver|correo|sendmail|warmup|calentamiento|calentemos|calentar|calienta|calentando|inbox|bandeja|seed|seeds)\b/.test(normalized)) return "smtp";
+  if (/\b(vps|servidor|server|webdock|proxmox|provision|provisionar|crear|levantar)\b/.test(normalized)) return "vps";
+  if (/\b(dns|dominio|dominios|domain|domains|ionos|route53|spf|dkim|dmarc|registrar|registrars|registrador|comprar\s+dominio)\b/.test(normalized)) return "dns";
+  if (/\b(evidencia|evidence|workspace|archivo|archivos|execution|executions|memoria|audit|auditoria)\b/.test(normalized)) return "evidence";
+  if (/\b(kill\s*switch|kill-switch|killswitch|matar|apagar|frenar|pausar|emergencia|panic|stop)\b/.test(normalized)) return "kill_switch";
+  if (/\b(wallet|cap|presupuesto|gasto|gastado|dinero|costo|usd|dolar|dolares|budget)\b/.test(normalized)) return "wallet";
+  if (/\b(cluster|clusteres|cl(u|ú)steres|flota|fleet|capacity|capacidad|nodos|sender\s*nodes|nodo)\b/.test(normalized)) return "cluster";
+  if (/\b(infraestructura|infrastructure|inventario|inventory|proveedor|proveedores|provider|providers|webdock|aws|sender\s*pool|panel)\b/.test(normalized)) return "infrastructure";
+  if (/\b(hola|funcionas|funciona|openclaw|ping|estas)\b/.test(normalized)) return "greeting";
+  return null;
+}
+
+/** Empuja turno a la memoria. */
+function pushFallbackMemory(sessionKey: string, turn: FallbackTurn): void {
+  const arr = fallbackSessionMemory.get(sessionKey) ?? [];
+  arr.push(turn);
+  if (arr.length > FALLBACK_MAX_TURNS_PER_SESSION) {
+    arr.splice(0, arr.length - FALLBACK_MAX_TURNS_PER_SESSION);
+  }
+  fallbackSessionMemory.set(sessionKey, arr);
+}
+
+/** Último intent NO null del operador en la memoria, o null. */
+function getLastConfirmedIntent(sessionKey: string): FallbackIntent {
+  const arr = fallbackSessionMemory.get(sessionKey) ?? [];
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const turn = arr[i]!;
+    if (turn.intent && turn.intent !== "greeting") return turn.intent;
+  }
+  return null;
+}
+
+/** Cuenta palabras significativas para decidir si es continuación corta. */
+function countWords(normalized: string): number {
+  return normalized.split(/\s+/).filter((w) => w.length > 0).length;
+}
+
+/** Renders accionables por intent cuando el operador dice "ejecutalo/dale/etc". */
+function buildExecuteOnLastIntentAnswer(intent: FallbackIntent, message: string, now: Date): LocalOpenClawFallbackResponse {
+  const intentLabel: Record<Exclude<FallbackIntent, null>, string> = {
+    smtp: "configurar SMTP supervisado",
+    vps: "crear VPS Webdock",
+    dns: "operación DNS/dominios supervisada",
+    evidence: "consulta de evidencia/audit",
+    kill_switch: "operación de kill switch",
+    wallet: "consulta del wallet operativo",
+    cluster: "operación sobre cluster",
+    infrastructure: "consulta de inventario multi-proveedor",
+    greeting: "ayuda general"
+  };
+  const intentToSkill: Record<Exclude<FallbackIntent, null>, string> = {
+    smtp: "install_smtp_stack",
+    vps: "provision_webdock_vps",
+    dns: "route53_dns_upsert",
+    evidence: "workspace_browser",
+    kill_switch: "kill_switch_safe_pause",
+    wallet: "wallet_inspect",
+    cluster: "cluster_inspect",
+    infrastructure: "multi_provider_inventory",
+    greeting: "gateway_local_continuity"
+  };
+
+  const label = intent ? intentLabel[intent] : intentLabel.greeting;
+  const skill = intent ? intentToSkill[intent] : intentToSkill.greeting;
+
+  return {
+    source: `delivrix.execute_on_last_intent.${intent ?? "default"}`,
+    skillsInvoked: [`delivrix.${skill}`, "delivrix.gateway_audit_chain"],
+    content: [
+      `# Confirmado: ${label}`,
+      "",
+      `Recibido: "${message}". Voy a ejecutar sobre el último contexto activo (${intent ?? "default"}).`,
+      "",
+      "Antes de tocar infraestructura real verifico estos 3 gates en orden:",
+      "1. Approval token humano vigente (máximo 15 min).",
+      "2. Flag operativa habilitada para la skill (SMTP_PROVISIONING_ENABLE_SSH, WEBDOCK_SERVERS_ENABLE_CREATE, etc.).",
+      "3. Kill switch ARMADO (no activo).",
+      "",
+      "Si cualquier gate falta, devuelvo el bloqueo auditado sin tocar infra. Si todo pasa, disparo la skill correspondiente y la respuesta queda firmada en audit chain.",
+      "",
+      "Decime el `serverSlug`/dominio puntual o un approval token nuevo si el detectado en Canvas está expirado. Si querés que solo prepare la propuesta dry-run sin ejecutar, pedímelo explícito.",
+      `Timestamp: ${now.toISOString()}`
+    ].join("\n")
+  };
+}
+
+/**
+ * Renderiza la respuesta de un intent específico sin volver a correr
+ * los regex. Usado por la memoria conversacional cuando hereda intent
+ * del turno anterior.
+ */
+async function renderIntentByName(
+  intent: Exclude<FallbackIntent, null>,
+  normalized: string,
+  now: Date,
+  canvasLiveEvents: CanvasLiveEmitter | null
+): Promise<LocalOpenClawFallbackResponse> {
+  if (intent === "smtp") {
+    const snapshot = await safeCanvasSnapshot(canvasLiveEvents);
+    return {
+      source: "delivrix.smtp_provisioning_planner.inherited",
+      skillsInvoked: ["delivrix.smtp_provisioning_planner", "install_smtp_stack", "start_warmup_seed"],
+      content: buildSmtpProvisioningFallbackAnswer(now, snapshot)
+    };
+  }
+  if (intent === "vps") {
+    return {
+      source: "delivrix.webdock_vps_planner.inherited",
+      skillsInvoked: ["delivrix.webdock_vps_planner", "provision_webdock_vps"],
+      content: buildVpsProvisioningFallbackAnswer(now)
+    };
+  }
+  if (intent === "dns") {
+    return {
+      source: "delivrix.dns_domain_planner.inherited",
+      skillsInvoked: ["delivrix.dns_domain_planner", "delivrix.domain_inventory"],
+      content: [
+        "Sigo en el contexto de dominios/DNS.",
+        "",
+        "Recordatorio de los dos caminos:",
+        "1. Inventario read-only IONOS/Route53.",
+        "2. Cambio DNS supervisado con approval gate.",
+        "",
+        "Si me pasas el dominio puntual + tipo de operación (compra, upsert, lookup), preparo el flujo. Por ejemplo: si dijiste 'route' me referís a Route53 — confirmame el dominio y el record type.",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+  if (intent === "evidence") {
+    return {
+      source: "delivrix.workspace_evidence_planner.inherited",
+      skillsInvoked: ["delivrix.workspace_evidence_planner"],
+      content: [
+        "Sigo en el contexto de evidencia/audit.",
+        "",
+        "Pedí refinamiento puntual: por skill, por fecha, por dominio, por status.",
+        "Si decís 'filtralo por SMTP', miro executions/2026-05-* con skill=install_smtp_stack.",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+  if (intent === "kill_switch") {
+    return {
+      source: "delivrix.kill_switch_planner.inherited",
+      skillsInvoked: ["delivrix.kill_switch_planner"],
+      content: [
+        "Sigo en el contexto de kill switch.",
+        "",
+        "Recordá: doble firma humana via panel /seguridad, NO desde chat. Si querés solo el estado actual: GET /v1/safety/kill-switch.",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+  if (intent === "wallet") {
+    return {
+      source: "delivrix.wallet_planner.inherited",
+      skillsInvoked: ["delivrix.wallet_planner"],
+      content: [
+        "Sigo en el contexto del wallet.",
+        "",
+        "Si querés el gasto exacto del mes en curso: GET /v1/audit-events?actionPrefix=oc.wallet&since=<inicio-mes>.",
+        "Cap actual $50 USD. Bloqueo nuevas compras al 100%.",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+  if (intent === "cluster") {
+    return {
+      source: "delivrix.cluster_planner.inherited",
+      skillsInvoked: ["delivrix.cluster_planner"],
+      content: [
+        "Sigo en el contexto de clusters.",
+        "",
+        "Si decís 'solo el cluster A' o 'el otro', necesito el cluster id puntual (ej. cluster-mail-eu-1) para GET /v1/admin/clusters/:id o pause.",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+  if (intent === "infrastructure") {
+    return {
+      source: "delivrix.infrastructure_planner.inherited",
+      skillsInvoked: ["delivrix.infrastructure_planner"],
+      content: [
+        "Sigo en el contexto del inventario multi-proveedor.",
+        "",
+        "Pedí refinamiento: filtrar por kind (compute/dns/domain-registrar/physical), por proveedor (webdock/aws/ionos/porkbun), o por status (active/error/offline/planned).",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+  // greeting / default
+  return {
+    source: "delivrix.gateway_local_continuity.inherited",
+    skillsInvoked: ["delivrix.gateway_local_continuity"],
+    content: [
+      "Estoy escuchando. Decime el objetivo concreto y traduzco al flujo operativo.",
+      `Timestamp: ${now.toISOString()}`
+    ].join("\n")
+  };
+}
+
 async function buildLocalOpenClawFallbackResponse(
   message: string,
   now: Date,
-  canvasLiveEvents: CanvasLiveEmitter | null
+  canvasLiveEvents: CanvasLiveEmitter | null,
+  sessionKey: string = "__default__"
 ): Promise<LocalOpenClawFallbackResponse> {
   const normalized = message
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase();
+
+  /* Memoria conversacional — 3 reglas en orden:
+   * (1) Verbos de ejecución → render "ejecutar sobre último intent".
+   * (2) Mensaje corto sin match → heredar último intent.
+   * (3) Match débil + last intent fuerte (mismo intent o continuación lógica) → mantener last intent.
+   * Si nada aplica, sigue al matcher tradicional.
+   */
+  const wordCount = countWords(normalized);
+  const detected = detectFallbackIntent(normalized);
+  const lastIntent = getLastConfirmedIntent(sessionKey);
+  const wantsExecute = FALLBACK_EXECUTE_VERBS_REGEX.test(normalized);
+  const isShortContinuation = wordCount <= FALLBACK_SHORT_MESSAGE_THRESHOLD;
+
+  // (1) Verbos de ejecución sobre intent activo, SOLO si el mensaje actual NO
+  //     trae un intent fuerte por sí mismo. Si el operador dice "hazlo el SMTP",
+  //     el intent fuerte "SMTP" del mismo mensaje gana sobre la herencia.
+  if (wantsExecute && !detected && lastIntent) {
+    const response = buildExecuteOnLastIntentAnswer(lastIntent, message, now);
+    pushFallbackMemory(sessionKey, { intent: lastIntent, userMsg: message, ts: now.getTime() });
+    return response;
+  }
+
+  // (2) Mensaje corto sin match propio → heredar último intent del operador.
+  if (!detected && isShortContinuation && lastIntent) {
+    pushFallbackMemory(sessionKey, { intent: lastIntent, userMsg: message, ts: now.getTime() });
+    return await renderIntentByName(lastIntent, normalized, now, canvasLiveEvents);
+  }
+
+  // Push para que futuros turnos puedan heredar (intent puede ser null).
+  pushFallbackMemory(sessionKey, { intent: detected, userMsg: message, ts: now.getTime() });
 
   if (/\b(smtp|postfix|opendkim|dkim|mail\s+server|mailserver|correo|sendmail|warmup|calentamiento|calentemos|calentar|calienta|calentando|inbox|bandeja|seed|seeds)\b/.test(normalized)) {
     const snapshot = await safeCanvasSnapshot(canvasLiveEvents);
