@@ -14,6 +14,11 @@ test("canonicalize excludes the hash field from canonical output", () => {
   assert.equal(canonicalize(event).includes("should-not-appear"), false);
 });
 
+test("canonicalize preserves nested hash fields inside event metadata", () => {
+  const event = { id: "x", metadata: { hash: "evidence-checksum" } };
+  assert.equal(canonicalize(event), "{\"id\":\"x\",\"metadata\":{\"hash\":\"evidence-checksum\"}}");
+});
+
 test("canonicalize sorts nested object keys", () => {
   const event = { meta: { z: 1, a: 2 } };
   assert.equal(canonicalize(event), "{\"meta\":{\"a\":2,\"z\":1}}");
