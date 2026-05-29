@@ -485,9 +485,15 @@ test("OpenClaw chat stream normalizes, multiplexes, and audits assistant complet
     msgId: "reply-1",
     assistant: {
       content: "Respuesta completa",
-      skillsInvoked: ["delivrix-fleet-ops"],
       proposals: [{ category: "node_pause_proposed" }],
-      audit: { tokensUsed: 45, duration_ms: 321 }
+      audit: {
+        skillsInvoked: ["delivrix-fleet-ops"],
+        tokensUsed: 45,
+        input_tokens: 30,
+        outputTokens: 15,
+        duration_ms: 321,
+        model_id: "us.anthropic.claude-sonnet-4-6"
+      }
     }
   });
 
@@ -498,7 +504,10 @@ test("OpenClaw chat stream normalizes, multiplexes, and audits assistant complet
     audit: {
       skillsInvoked: ["delivrix-fleet-ops"],
       tokensUsed: 45,
-      durationMs: 321
+      inputTokens: 30,
+      outputTokens: 15,
+      durationMs: 321,
+      modelId: "us.anthropic.claude-sonnet-4-6"
     },
     proposals: [{ category: "node_pause_proposed" }]
   });
@@ -514,6 +523,9 @@ test("OpenClaw chat stream normalizes, multiplexes, and audits assistant complet
     contentLength: "Respuesta completa".length,
     skillsInvoked: ["delivrix-fleet-ops"],
     tokensUsed: 45,
+    inputTokens: 30,
+    outputTokens: 15,
+    modelId: "us.anthropic.claude-sonnet-4-6",
     durationMs: 321,
     proposalsCount: 1
   });

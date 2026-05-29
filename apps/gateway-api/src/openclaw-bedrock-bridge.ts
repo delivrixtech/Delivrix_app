@@ -1,6 +1,7 @@
 import {
   BedrockRuntimeClient,
   InvokeModelWithResponseStreamCommand,
+  type BedrockRuntimeClientConfig,
   type InvokeModelWithResponseStreamCommandInput
 } from "@aws-sdk/client-bedrock-runtime";
 import { readFile } from "node:fs/promises";
@@ -44,9 +45,10 @@ interface BedrockInvocationResult {
 }
 
 export interface OpenClawBedrockBridgeConfig {
-  accessKeyId: string;
-  secretAccessKey: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
   sessionToken?: string;
+  bearerToken?: string;
   region?: string;
   modelId: string;
   systemPromptPath?: string;
@@ -78,14 +80,20 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       throw new OpenClawBedrockBridgeError("bedrock_model_missing", "AWS_BEDROCK_MODEL_ID is required.");
     }
 
-    this.client = config.client ?? new BedrockRuntimeClient({
-      region: config.region ?? defaultModelRegion,
-      credentials: {
+    const clientConfig: BedrockRuntimeClientConfig = {
+      region: config.region ?? defaultModelRegion
+    };
+    if (config.bearerToken) {
+      clientConfig.token = { token: config.bearerToken };
+      clientConfig.authSchemePreference = ["httpBearerAuth"];
+    } else if (config.accessKeyId && config.secretAccessKey) {
+      clientConfig.credentials = {
         accessKeyId: config.accessKeyId,
         secretAccessKey: config.secretAccessKey,
         ...(config.sessionToken ? { sessionToken: config.sessionToken } : {})
-      }
-    });
+      };
+    }
+    this.client = config.client ?? new BedrockRuntimeClient(clientConfig);
     this.modelId = config.modelId.trim();
     this.systemPromptPath = config.systemPromptPath ?? join(process.cwd(), ".audit", "system-context.txt");
     this.fallbackSystemPromptPath = config.fallbackSystemPromptPath ?? join(process.cwd(), "DOCUMENTACION", "OPENCLAW_SYSTEM_PROMPT.md");
@@ -245,8 +253,9 @@ export function createOpenClawBedrockBridgeFromEnv(
 
   const accessKeyId = normalizeEnvValue(env.AWS_BEDROCK_ACCESS_KEY_ID);
   const secretAccessKey = normalizeEnvValue(env.AWS_BEDROCK_SECRET_ACCESS_KEY);
+  const bearerToken = normalizeEnvValue(env.AWS_BEARER_TOKEN_BEDROCK);
   const modelId = normalizeEnvValue(env.AWS_BEDROCK_MODEL_ID);
-  if (!accessKeyId || !secretAccessKey || !modelId) {
+  if (!modelId || (!bearerToken && (!accessKeyId || !secretAccessKey))) {
     return null;
   }
 
@@ -254,6 +263,7 @@ export function createOpenClawBedrockBridgeFromEnv(
     accessKeyId,
     secretAccessKey,
     sessionToken: normalizeEnvValue(env.AWS_BEDROCK_SESSION_TOKEN),
+    bearerToken,
     region: normalizeEnvValue(env.AWS_BEDROCK_REGION) ?? defaultModelRegion,
     modelId,
     systemPromptPath: normalizeEnvValue(env.OPENCLAW_SYSTEM_CONTEXT_PATH),

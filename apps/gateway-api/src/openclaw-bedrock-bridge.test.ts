@@ -123,6 +123,12 @@ test("createOpenClawBedrockBridgeFromEnv requires bedrock mode and critical env 
   assert.equal(createOpenClawBedrockBridgeFromEnv({ OPENCLAW_BRIDGE_KIND: "bedrock" }), null);
   assert.ok(createOpenClawBedrockBridgeFromEnv({
     OPENCLAW_BRIDGE_KIND: "bedrock",
+    AWS_BEARER_TOKEN_BEDROCK: "bedrock-api-key",
+    AWS_BEDROCK_MODEL_ID: "model-test",
+    AWS_BEDROCK_REGION: "us-east-1"
+  }));
+  assert.ok(createOpenClawBedrockBridgeFromEnv({
+    OPENCLAW_BRIDGE_KIND: "bedrock",
     AWS_BEDROCK_ACCESS_KEY_ID: "access",
     AWS_BEDROCK_SECRET_ACCESS_KEY: "secret",
     AWS_BEDROCK_MODEL_ID: "model-test",
