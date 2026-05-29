@@ -948,9 +948,12 @@ export function normalizeAgentChatEvent(raw: unknown): ChatStreamEvent | null {
 
     const assistant = isRecord(raw.assistant) ? raw.assistant : {};
     const audit = isRecord(assistant.audit) ? assistant.audit : isRecord(raw.audit) ? raw.audit : {};
-    const skillsInvoked = stringArray(assistant.skillsInvoked ?? raw.skillsInvoked);
+    const skillsInvoked = stringArray(assistant.skillsInvoked ?? raw.skillsInvoked ?? audit.skillsInvoked);
     const tokensUsed = numberValue(audit.tokensUsed) ?? numberValue(audit.tokens_used);
+    const inputTokens = numberValue(audit.inputTokens) ?? numberValue(audit.input_tokens);
+    const outputTokens = numberValue(audit.outputTokens) ?? numberValue(audit.output_tokens);
     const durationMs = numberValue(audit.durationMs) ?? numberValue(audit.duration_ms);
+    const modelId = stringValue(audit.modelId) ?? stringValue(audit.model_id);
     const content = stringValue(assistant.content) ?? stringValue(raw.content) ?? "";
     const proposals = Array.isArray(assistant.proposals) ? assistant.proposals : Array.isArray(raw.proposals) ? raw.proposals : undefined;
 
@@ -958,7 +961,14 @@ export function normalizeAgentChatEvent(raw: unknown): ChatStreamEvent | null {
       type: "ASSISTANT_DONE",
       msgId,
       content,
-      audit: { skillsInvoked, ...(tokensUsed === undefined ? {} : { tokensUsed }), ...(durationMs === undefined ? {} : { durationMs }) },
+      audit: {
+        skillsInvoked,
+        ...(tokensUsed === undefined ? {} : { tokensUsed }),
+        ...(inputTokens === undefined ? {} : { inputTokens }),
+        ...(outputTokens === undefined ? {} : { outputTokens }),
+        ...(durationMs === undefined ? {} : { durationMs }),
+        ...(modelId === null ? {} : { modelId })
+      },
       ...(proposals ? { proposals } : {})
     };
   }
