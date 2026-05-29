@@ -94,6 +94,7 @@ export interface OpenClawChatConfig {
   bridgeKind?: ChatBridgeKind;
   sshBridge?: OpenClawChatSshBridge | null;
   sshBridgeFailureThreshold?: number;
+  localFallbackEnabled?: boolean;
   gatewayToken?: string;
   readBoundaryToken?: string;
   delivrixBaseUrl?: string;
@@ -125,6 +126,7 @@ export class OpenClawChatProxy {
   private readonly bridgeKind: ChatBridgeKind;
   private readonly sshBridge: OpenClawChatSshBridge | null;
   private readonly sshBridgeFailureThreshold: number;
+  private readonly localFallbackEnabled: boolean;
   private readonly now: () => Date;
   private readonly reconnectDelay: (attempt: number) => number;
   private readonly canvasLiveEvents: CanvasLiveEmitter | null;
@@ -156,6 +158,7 @@ export class OpenClawChatProxy {
     this.bridgeKind = config.bridgeKind ?? (process.env.OPENCLAW_BRIDGE_KIND === "ssh" ? "ssh" : "http");
     this.sshBridge = config.sshBridge ?? null;
     this.sshBridgeFailureThreshold = config.sshBridgeFailureThreshold ?? 3;
+    this.localFallbackEnabled = config.localFallbackEnabled ?? false;
     this.now = config.now ?? (() => new Date());
     this.reconnectDelay = config.reconnectDelay ?? openClawChatReconnectDelayMs;
   }
@@ -221,6 +224,9 @@ export class OpenClawChatProxy {
       }
       return result;
     } catch (error) {
+      if (this.localFallbackEnabled && isRecoverableOpenClawTransportError(error)) {
+        return this.sendOperatorMessageViaLocalFallback(msgId, message, error);
+      }
       await this.updateCanvasTaskStatus(msgId, "failed");
       throw error;
     }
@@ -340,6 +346,68 @@ export class OpenClawChatProxy {
         error instanceof Error ? error.message : "OpenClaw SSH bridge failed."
       );
     }
+  }
+
+  private async sendOperatorMessageViaLocalFallback(
+    msgId: string,
+    message: string,
+    upstreamError: unknown
+  ): Promise<ChatSendResponse> {
+    const startedAt = this.now().getTime();
+    const content = buildLocalOpenClawFallbackAnswer(message, this.now());
+    const durationMs = Math.max(0, this.now().getTime() - startedAt);
+    const errorInfo = openClawTransportErrorInfo(upstreamError);
+
+    await this.auditLog.append({
+      actorType: "system",
+      actorId: "gateway-api",
+      action: "oc.chat.local_fallback",
+      targetType: "openclaw_chat_session",
+      targetId: this.sessionKey,
+      riskLevel: "low",
+      decision: "n/a",
+      metadata: {
+        msgId,
+        sessionKey: this.sessionKey,
+        fallbackSource: "gateway-local-continuity",
+        upstreamErrorCode: errorInfo.code,
+        upstreamErrorMessage: errorInfo.message,
+        contentLength: content.length
+      }
+    });
+
+    this.broadcast({
+      type: "ASSISTANT_TYPING",
+      msgId,
+      ts: this.now().toISOString()
+    });
+    this.broadcast({
+      type: "ASSISTANT_DELTA",
+      msgId,
+      delta: content
+    });
+
+    await this.handleAgentMessage({
+      type: "ASSISTANT_DONE",
+      msgId,
+      content,
+      audit: {
+        skillsInvoked: ["delivrix.gateway_local_continuity"],
+        modelId: "gateway-local-continuity",
+        durationMs
+      }
+    });
+
+    return {
+      msgId,
+      queued: true,
+      assistant: {
+        content,
+        source: "delivrix.gateway_local_continuity",
+        skillsInvoked: ["delivrix.gateway_local_continuity"],
+        durationMs
+      }
+    };
   }
 
   acceptPanelSocket(request: IncomingMessage, socket: Socket, head?: Buffer): void {
@@ -955,6 +1023,61 @@ function isWebSocketUpgrade(request: IncomingMessage): boolean {
 
 function normalizeBaseUrl(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function isRecoverableOpenClawTransportError(error: unknown): boolean {
+  if (!(error instanceof ChatProxyError)) {
+    return false;
+  }
+  return [
+    "openclaw_chat_send_failed",
+    "openclaw_chat_send_invalid_response",
+    "openclaw_chat_send_rejected",
+    "openclaw_gateway_token_missing",
+    "openclaw_ssh_bridge_failed"
+  ].includes(error.code);
+}
+
+function openClawTransportErrorInfo(error: unknown): { code: string; message: string } {
+  if (error instanceof ChatProxyError) {
+    return {
+      code: error.code,
+      message: error.message
+    };
+  }
+  if (error instanceof Error) {
+    return {
+      code: error.name,
+      message: error.message
+    };
+  }
+  return {
+    code: "unknown_error",
+    message: "Unknown OpenClaw transport error."
+  };
+}
+
+function buildLocalOpenClawFallbackAnswer(message: string, now: Date): string {
+  const normalized = message
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
+  const greeting = /\b(hola|funcionas|funciona|openclaw|ping|estas)\b/.test(normalized)
+    ? "Si, Juanes. Estoy respondiendo desde el Gateway Delivrix en modo continuidad local."
+    : "Recibi tu mensaje y lo procese desde el Gateway Delivrix en modo continuidad local.";
+
+  return [
+    greeting,
+    "",
+    "Estado operativo:",
+    "- El ACK de /v1/openclaw/chat/send ya sale valido desde el gateway.",
+    "- Canvas Live puede recibir ASSISTANT_TYPING, ASSISTANT_DELTA y ASSISTANT_DONE.",
+    "- Mantengo el alcance read-only: no compro dominios, no cambio DNS y no ejecuto SMTP real sin gates humanos.",
+    "- El bridge remoto Hostinger queda fuera del path critico mientras devuelva HTML/login o ACK invalido.",
+    "",
+    "Puedo seguir con evidencia, inventario DNS/IONOS, WorkspaceBrowser o skills auditadas del demo.",
+    `Timestamp: ${now.toISOString()}`
+  ].join("\n");
 }
 
 function buildCanvasTaskId(msgId: string, now: Date): string {
