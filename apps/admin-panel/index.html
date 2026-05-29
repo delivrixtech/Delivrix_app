@@ -7,20 +7,28 @@
     <meta name="theme-color" content="#fafaf7" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0e0e10" media="(prefers-color-scheme: dark)" />
     <title>Delivrix Admin</title>
+
+    <!-- Rebrand B/W (2026-05-28): Montserrat (sans/body/heading principal),
+         JetBrains Mono (código/datos/audit). Caveat (manuscrita decorativa)
+         eliminada el 2026-05-28 — el CTO la sintió fuera de tono profesional;
+         HumanNote ahora usa Montserrat italic regular. Preconnect para CLS. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,500;1,600&display=swap"
+      rel="stylesheet"
+    />
     <script>
+      // v5 rebrand 2026-05-28: dark-first by default.
+      // Operadores trabajan en dark; light disponible para presentaciones
+      // diurnas. Si el usuario forzó light en localStorage, respetar.
       (function applyInitialTheme() {
         try {
           var stored = window.localStorage.getItem("delivrix-admin-theme");
-          var prefersDark = window.matchMedia
-            && window.matchMedia("(prefers-color-scheme: dark)").matches;
-          var theme = stored === "light" || stored === "dark"
-            ? stored
-            : prefersDark
-              ? "dark"
-              : "light";
+          var theme = stored === "light" || stored === "dark" ? stored : "dark";
           document.documentElement.setAttribute("data-theme", theme);
         } catch (error) {
-          document.documentElement.setAttribute("data-theme", "light");
+          document.documentElement.setAttribute("data-theme", "dark");
         }
       })();
     </script>

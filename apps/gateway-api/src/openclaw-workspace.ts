@@ -1,5 +1,11 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
+import type {
+  WarmupRampBatch,
+  WarmupRampPauseReason,
+  WarmupRampSchedule,
+  WarmupRampState
+} from "../../../packages/domain/src/warmup/ramp-plan.ts";
 
 export interface OpenClawWorkspaceOptions {
   rootDir?: string;
@@ -230,4 +236,147 @@ function inventoryBaseName(value: string): string {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+/**
+ * Snapshot persistido de un ramp gradual de warmup. Vive en
+ * `inventory/warmup-progress.json` bajo el array `ramps[]`, lado a lado con
+ * los `runs[]` legacy del seed inicial.
+ */
+export interface WarmupRampRecord {
+  rampId: string;
+  domain: string;
+  serverSlug: string | null;
+  serverIp: string;
+  schedule: WarmupRampSchedule;
+  state: WarmupRampState;
+  pauseReason?: WarmupRampPauseReason;
+  recipientPool: string[];
+  totalPlanned: number;
+  totalSent: number;
+  totalBounced: number;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  nextBatchAt?: string;
+  batches: WarmupRampBatch[];
+  actorId: string;
+  approvalToken: string;
+}
+
+export interface WarmupRampEventRecord {
+  rampId: string;
+  occurredAt: string;
+  action:
+    | "oc.warmup.ramp_started"
+    | "oc.warmup.ramp_batch_sent"
+    | "oc.warmup.ramp_paused"
+    | "oc.warmup.ramp_resumed"
+    | "oc.warmup.ramp_completed"
+    | "oc.warmup.ramp_failed";
+  batchIndex?: number;
+  metadata: Record<string, unknown>;
+}
+
+interface WarmupProgressInventory {
+  runs?: unknown[];
+  ramps?: WarmupRampRecord[];
+  rampEvents?: WarmupRampEventRecord[];
+}
+
+export async function appendWarmupRamp(
+  workspace: OpenClawWorkspace,
+  ramp: WarmupRampRecord
+): Promise<void> {
+  await workspace.updateInventoryJson<WarmupProgressInventory>(
+    "warmup-progress.json",
+    (current) => ({
+      ...(current ?? {}),
+      runs: current?.runs ?? [],
+      ramps: [...(current?.ramps ?? []), ramp],
+      rampEvents: current?.rampEvents ?? []
+    })
+  );
+}
+
+export async function updateWarmupRamp(
+  workspace: OpenClawWorkspace,
+  rampId: string,
+  patch: Partial<WarmupRampRecord>
+): Promise<WarmupRampRecord | null> {
+  let updated: WarmupRampRecord | null = null;
+  await workspace.updateInventoryJson<WarmupProgressInventory>(
+    "warmup-progress.json",
+    (current) => {
+      const ramps = current?.ramps ?? [];
+      const next = ramps.map((ramp) => {
+        if (ramp.rampId !== rampId) return ramp;
+        const merged: WarmupRampRecord = { ...ramp, ...patch, rampId: ramp.rampId };
+        updated = merged;
+        return merged;
+      });
+      return {
+        ...(current ?? {}),
+        runs: current?.runs ?? [],
+        ramps: next,
+        rampEvents: current?.rampEvents ?? []
+      };
+    }
+  );
+  return updated;
+}
+
+export async function appendWarmupRampEvent(
+  workspace: OpenClawWorkspace,
+  event: WarmupRampEventRecord
+): Promise<void> {
+  await workspace.updateInventoryJson<WarmupProgressInventory>(
+    "warmup-progress.json",
+    (current) => ({
+      ...(current ?? {}),
+      runs: current?.runs ?? [],
+      ramps: current?.ramps ?? [],
+      rampEvents: [...(current?.rampEvents ?? []), event]
+    })
+  );
+}
+
+export async function getActiveRamps(
+  workspace: OpenClawWorkspace
+): Promise<WarmupRampRecord[]> {
+  const inventory = await workspace
+    .readInventoryJson<WarmupProgressInventory>("warmup-progress.json")
+    .catch(() => null);
+  const ramps = inventory?.ramps ?? [];
+  return ramps.filter(
+    (ramp) => ramp.state === "running" || ramp.state === "paused" || ramp.state === "auto_paused"
+  );
+}
+
+export async function getRampById(
+  workspace: OpenClawWorkspace,
+  rampId: string
+): Promise<WarmupRampRecord | null> {
+  const inventory = await workspace
+    .readInventoryJson<WarmupProgressInventory>("warmup-progress.json")
+    .catch(() => null);
+  return inventory?.ramps?.find((ramp) => ramp.rampId === rampId) ?? null;
+}
+
+export async function getRampByDomain(
+  workspace: OpenClawWorkspace,
+  domain: string
+): Promise<WarmupRampRecord | null> {
+  const inventory = await workspace
+    .readInventoryJson<WarmupProgressInventory>("warmup-progress.json")
+    .catch(() => null);
+  const ramps = inventory?.ramps ?? [];
+  const normalized = domain.toLowerCase();
+  const active = ramps.find(
+    (ramp) =>
+      ramp.domain.toLowerCase() === normalized &&
+      (ramp.state === "running" || ramp.state === "paused" || ramp.state === "auto_paused")
+  );
+  if (active) return active;
+  return ramps.filter((ramp) => ramp.domain.toLowerCase() === normalized).at(-1) ?? null;
 }

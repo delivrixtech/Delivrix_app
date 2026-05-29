@@ -36,7 +36,8 @@ export const READ_ENDPOINTS = Object.freeze({
   domainAvailability: "/v1/domains/availability",
   domainSuggestions: "/v1/domains/suggestions",
   domainPrices: "/v1/domains/prices",
-  ownedDomains: "/v1/domains/owned"
+  ownedDomains: "/v1/domains/owned",
+  warmupRampByDomain: "/v1/warmup/ramp/by-domain"
 } as const);
 
 export type ReadEndpoint = (typeof READ_ENDPOINTS)[keyof typeof READ_ENDPOINTS];
