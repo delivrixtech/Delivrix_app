@@ -244,8 +244,15 @@ Snapshot 2026-05-18.
 | `skills/delivrix-report-ops/SKILL.md` | crítica | skill literal |
 | `skills/webdock-inventory-sync/SKILL.md` | alta | skill literal |
 | `skills/drift-monitor/SKILL.md` | crítica | skill literal |
+| `REFERENCIAS_FLOW_REAL/README.md` | crítica | flow-real, mapeo skills, disciplina operativa |
+| `REFERENCIAS_FLOW_REAL/SMTP_STACK_AUDIT_JUANES_2026_05_28.md` | crítica | smtp, postfix, dovecot, opendkim, dkim, spf, dmarc, ptr, warmup, ionos, webdock, fail2ban, ufw, reputation, postmaster |
 
-Total: **63 archivos** indexados.
+Total: **65 archivos** indexados.
+
+**Notas v2.1 — Referencias del flow real (2026-05-28)**:
+- El audit SMTP del CTO Juanes es **doctrina operativa**: sus secciones §7 (DNS), §14 (warm-up), §17 (procedimiento ante spam), §18 (política seguridad), §19 (checklist remediación) son gates duros que el agente **debe respetar** antes de proponer cualquier acción de envío o cambio DNS.
+- Citas esperadas en respuestas del agente: `Ref: REFERENCIAS_FLOW_REAL/SMTP_STACK_AUDIT_JUANES_2026_05_28.md §<sección>`.
+- El extracto de gates no negociables va en Capa 1 (system prompt) bajo §"Disciplina del flow real" para que estén siempre presentes aunque el RAG falle.
 
 ### 9.2 NO indexar
 

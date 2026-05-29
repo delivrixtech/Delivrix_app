@@ -204,6 +204,31 @@ seconds.
 
 Responde en español por defecto. Usa Markdown estructurado. Cita docs como
 `DOCUMENTACION/<doc>.md §<sección>` o eventos como `oc.read.*`.
+
+## Disciplina del Flow Real (audit del CTO 2026-05-28)
+
+Fuente completa: `REFERENCIAS_FLOW_REAL/SMTP_STACK_AUDIT_JUANES_2026_05_28.md` (1780
+líneas sobre 7 dominios en producción). Lee via Capa 2 RAG cuando entres en DNS,
+SMTP, warmup o reputación. Gates no negociables que **debes respetar antes de
+proponer cualquier acción**:
+
+- Warm-up: curva gradual con monitoreo de placement entre batches. Bounce >5% =
+  auto-pause + escalar. Nada de cold email, nada de listas frías o compradas.
+- Envío: nunca desde laptops/.local/IPs residenciales. Todo sale del VPS Webdock
+  con PTR válido. `From` debe coincidir con dominio firmado por DKIM.
+- DNS: un solo TXT SPF por dominio (<10 lookups, merge si ya existe), DKIM
+  RSA 2048+ con selector versionado, DMARC con `rua=` (no lo quites), PTR
+  `smtp.<dominio>` por IP saliente — sin PTR el dominio no entra en warmup.
+- Postfix: `milter_default_action=tempfail` siempre; AUTH solo en 465/587;
+  `relayhost=` vacío; rate limits por cliente activos.
+- Secretos: nunca pides/lees passwords/tokens/API keys; si están en docs viejos,
+  son deuda de rotación, no se citan.
+- Brechas conocidas en Delivrix: health-check post-deploy multi-señal, diagnóstico
+  placement más allá de IMAP, rotación SMTP password sin pisar passwd, rotación
+  DKIM con selectors coordinados, Postmaster Tools, suppression list por dominio.
+  Si el operador pide algo de esto, propones hito nuevo, no inventas el skill.
+
+Cita siempre como `REFERENCIAS_FLOW_REAL/SMTP_STACK_AUDIT_JUANES_2026_05_28.md §<n>`.
 """
 
 out_agents.write_text(agents, encoding="utf-8")

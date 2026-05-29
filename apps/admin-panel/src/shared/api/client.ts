@@ -53,10 +53,32 @@ export interface ContractBase {
   safety: ContractSafety;
 }
 
+/**
+ * Codex 50876e5 (OPS OrbStack): /health ahora reporta el status real de
+ * postgres y redis con SELECT 1 y PING. Frontend usa estos chips en el
+ * topbar para visibilidad rápida sin entrar a `/safety`.
+ */
+export type DependencyStatus = "ok" | "down";
+
+export interface DependencyCheck {
+  status: DependencyStatus;
+  checkedAt: string;
+  message?: string;
+}
+
 export interface HealthPayload {
   status: string;
   service: string;
   phase: string;
+  /** Codex 50876e5 — status agregado de Postgres pgvector. */
+  postgres?: DependencyStatus;
+  /** Codex 50876e5 — status agregado de Redis. */
+  redis?: DependencyStatus;
+  /** Codex 50876e5 — detalle con checkedAt y opcional message. */
+  dependencies?: {
+    postgres: DependencyCheck;
+    redis: DependencyCheck;
+  };
   openClaw: Record<string, boolean | string>;
   operatingNorth: {
     delivrixSendsRealEmail: boolean;
@@ -66,14 +88,38 @@ export interface HealthPayload {
   };
 }
 
+/**
+ * Detalle ES de un gate del norte operativo. Codex lo expone en commit
+ * 6500a15 (A-ALT-02 — auditoría frontend jueves 28-may).
+ * Mantenemos `gates: string[]` por compat con el read-boundary.
+ */
+export interface OperatingNorthGateDetail {
+  id: string;
+  displayLabel: string;
+  description?: string;
+}
+
+export interface OperatingNorthRoleDisplayNames {
+  control_plane: string;
+  future_optional_external_integration: string;
+  intelligent_cluster_operator_read_only: string;
+}
+
 export interface OperatingNorthPayload {
   phase: string;
+  /** Codex 6500a15: separado de `releasePhase` para distinguir runtime de sprint. */
+  environment?: "mvp.local";
+  releasePhase?: string;
   delivrixRole: string;
   openClawRole: string;
   nfcRole: string;
+  /** Codex 6500a15: nombres ES de los 3 roles del norte. */
+  roleDisplayNames?: OperatingNorthRoleDisplayNames;
   allowedActions: string[];
   blockedActions: string[];
   gates: string[];
+  /** Codex 6500a15: gates con displayLabel ES + description opcional. */
+  gateDetails?: OperatingNorthGateDetail[];
   delivrixSendsRealEmail: boolean;
   nfcSendsRealEmail: boolean;
   liveInfrastructureWritesEnabled: boolean;
@@ -271,6 +317,10 @@ export interface HardwareTelemetryHistoryPayload {
       }>;
     }>;
     gaps: Array<Record<string, string>>;
+    // A-CRIT-04 (2026-05-28): Codex agrega este field opcional para que
+    // el empty state pueda decir "última captura aceptada hace Xh".
+    // Mientras no lo retorne el backend, el frontend usa copy genérico.
+    lastCaptureAt?: string | null;
   };
 }
 
@@ -387,9 +437,27 @@ export interface OpenClawCanvasPayload {
   };
 }
 
+/**
+ * Sección del onboarding con conteo de campos detectados. Codex 6500a15
+ * (A-MED-07). Permite al frontend mostrar tag warning si detectedFieldCount=0
+ * en vez del verde "detectado por el recolector" engañoso.
+ */
+export interface OpenClawOnboardingSectionState {
+  id: string;
+  displayName: string;
+  detectedFieldCount: number;
+  totalFieldCount: number;
+  source: "onboarding.snapshot" | "fallback.mock";
+}
+
 export interface OpenClawOnboardingStatePayload {
   onboardingState: ContractBase & {
+    /** Codex 6500a15 (A-MED-05): runtime env separado del sprint phase. */
+    environment?: "mvp.local";
+    releasePhase?: string;
     readinessByCategory: Record<string, number>;
+    /** Codex 6500a15 (A-MED-07): conteo de campos detectados por sección. */
+    sections?: OpenClawOnboardingSectionState[];
     pendingQuestions: Array<{
       id: string;
       category: string;
@@ -711,6 +779,12 @@ export type IamRoleColor = "amber" | "green" | "blue" | "violet" | "neutral";
 export interface IamRole {
   id: string;
   name: string;
+  /**
+   * Codex 6500a15 (A-BAJ-04): label expandido en ES, ej. "Operador
+   * supervisado (sólo lectura)" en vez del `name` corto "Operador".
+   * Opcional para backward compat.
+   */
+  displayName?: string;
   color: IamRoleColor;
   userCount: number;
   permissions: string[];
@@ -1060,6 +1134,93 @@ export async function loadDashboardData(): Promise<DashboardData> {
   };
 }
 
+/* ============================================================
+ * Hito 5.12 — placement-check (Gmail IMAP, sub-agente D)
+ *
+ * Endpoint POST /v1/openclaw/skills/placement-check. NO está en
+ * READ_ENDPOINTS — usa postJson sin assertReadEndpoint. El App Password
+ * jamás se envía desde el panel; el adapter lo carga del .env del gateway.
+ * ============================================================ */
+
+export type PlacementMatchBy = "subject" | "from" | "messageId";
+export type PlacementFolder = "inbox" | "spam" | "promotions" | "other";
+
+export interface PlacementSample {
+  uid: number;
+  folder: PlacementFolder;
+  subject: string;
+  from: string;
+  receivedAt: string;
+}
+
+export interface PlacementCheckResult {
+  ok: true;
+  rampId?: string;
+  matched: number;
+  inbox: number;
+  spam: number;
+  promotions: number;
+  other: number;
+  placementRate: number;
+  samples: PlacementSample[];
+  meta: {
+    matcher: string;
+    matchBy: PlacementMatchBy;
+    windowMinutes: number;
+    queriedAt: string;
+    elapsedMs: number;
+  };
+}
+
+export interface PlacementCheckRequest {
+  matchBy: PlacementMatchBy;
+  matcher: string;
+  windowMinutes: number;
+  actorId: string;
+  rampId?: string;
+}
+
+export interface PlacementCheckError {
+  ok: false;
+  error: string;
+  message: string;
+}
+
+export async function postPlacementCheck(
+  input: PlacementCheckRequest
+): Promise<PlacementCheckResult> {
+  const response = await fetch("/v1/openclaw/skills/placement-check", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json"
+    },
+    body: JSON.stringify(input),
+    cache: "no-store"
+  });
+
+  const payload = (await response.json().catch(() => ({}))) as
+    | PlacementCheckResult
+    | PlacementCheckError
+    | Partial<{ message: string; error: string }>;
+
+  if (!response.ok || ("ok" in payload && payload.ok === false)) {
+    const errorCode =
+      "error" in payload && typeof payload.error === "string"
+        ? payload.error
+        : `http_${response.status}`;
+    const message =
+      "message" in payload && typeof payload.message === "string"
+        ? payload.message
+        : `POST /v1/openclaw/skills/placement-check failed (${response.status}).`;
+    const err = new Error(`${errorCode}: ${message}`);
+    (err as Error & { code: string }).code = errorCode;
+    throw err;
+  }
+
+  return payload as PlacementCheckResult;
+}
+
 export async function getJson<TPayload>(endpoint: ReadEndpoint): Promise<TPayload> {
   assertReadEndpoint(endpoint);
 
@@ -1115,4 +1276,194 @@ export async function getJsonWithQuery<TPayload>(
   }
 
   return payload as TPayload;
+}
+
+/* ────────────────── Warmup Ramp (Bloque 10 · Carril C) ────────────────── */
+
+export type WarmupRampState =
+  | "running"
+  | "paused"
+  | "auto_paused"
+  | "completed"
+  | "failed";
+
+export type WarmupRampPauseReason =
+  | "manual"
+  | "auto_bounce_rate"
+  | "auto_delivery_floor"
+  | "send_failed";
+
+export interface WarmupRampBatch {
+  batchIndex: number;
+  scheduledAt: string;
+  emailCount: number;
+  status: "pending" | "running" | "sent" | "failed";
+  sentCount?: number;
+  bouncedCount?: number;
+  deliveryRate?: number;
+  bounceRate?: number;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface WarmupRampStatus {
+  rampId: string;
+  domain: string;
+  schedule: "demo-fast" | "production-14d";
+  state: WarmupRampState;
+  pauseReason?: WarmupRampPauseReason;
+  serverSlug: string | null;
+  serverIp: string;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  nextBatchAt?: string;
+  totals: {
+    planned: number;
+    sent: number;
+    bounced: number;
+    deliveryRate: number;
+    bounceRate: number;
+  };
+  batches: WarmupRampBatch[];
+  sparkline: Array<{ batchIndex: number; emailCount: number; sentCount: number }>;
+}
+
+export async function getWarmupRamp(rampId: string): Promise<WarmupRampStatus> {
+  // El read-boundary cubre solo by-domain; el lookup por rampId también es read-only
+  // y vive en /v1/warmup/ramp/:id — lo permitimos con prefix match defensivo.
+  const url = `/v1/warmup/ramp/${encodeURIComponent(rampId)}`;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+    cache: "no-store"
+  });
+  const payload = (await response.json().catch(() => ({}))) as Partial<{ message: string }>;
+  if (!response.ok) {
+    throw new Error(
+      typeof payload.message === "string" ? payload.message : `GET ${url} failed.`
+    );
+  }
+  return payload as WarmupRampStatus;
+}
+
+export async function getWarmupRampByDomain(
+  domain: string
+): Promise<WarmupRampStatus | null> {
+  const url = `${READ_ENDPOINTS.warmupRampByDomain}/${encodeURIComponent(domain)}`;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+    cache: "no-store"
+  });
+  if (response.status === 404) return null;
+  const payload = (await response.json().catch(() => ({}))) as Partial<{ message: string }>;
+  if (!response.ok) {
+    throw new Error(
+      typeof payload.message === "string" ? payload.message : `GET ${url} failed.`
+    );
+  }
+  return payload as WarmupRampStatus;
+}
+
+/**
+ * Inicia un warmup ramp para un dominio. El operador (humano) elige las
+ * direcciones de prueba en runtime — NO viven en .env. La env solo expone
+ * un fallback opcional para tests automáticos.
+ */
+export interface StartWarmupRampInput {
+  domain: string;
+  schedule: "demo-fast" | "production-14d";
+  recipientPool: string[]; // 3+ direcciones que el operador escribe en el panel
+  actorId: string;
+  approvalToken: string;
+  serverSlug?: string;
+  serverIp?: string;
+}
+
+export interface StartWarmupRampResult {
+  ok: boolean;
+  rampId?: string;
+  batchesPlanned?: number;
+  totalPlanned?: number;
+  nextBatchAt?: string | null;
+  status?: "started" | "blocked";
+  blockers?: string[];
+}
+
+export async function startWarmupRamp(
+  input: StartWarmupRampInput
+): Promise<StartWarmupRampResult> {
+  const url = "/v1/warmup/ramp/start";
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+  const payload = (await response.json().catch(() => ({}))) as Partial<{
+    ok: boolean;
+    rampId: string;
+    batchesPlanned: number;
+    totalPlanned: number;
+    nextBatchAt: string | null;
+    status: "started" | "blocked";
+    blockers: string[];
+    message: string;
+  }>;
+  if (response.status === 409) {
+    // gates bloqueados (ej. WARMUP_ENABLE_SEND off, recipientPool too small)
+    return {
+      ok: false,
+      status: "blocked",
+      blockers: Array.isArray(payload.blockers) ? payload.blockers : []
+    };
+  }
+  if (!response.ok) {
+    throw new Error(
+      typeof payload.message === "string" ? payload.message : `POST ${url} failed.`
+    );
+  }
+  return {
+    ok: payload.ok ?? true,
+    rampId: payload.rampId,
+    batchesPlanned: payload.batchesPlanned,
+    totalPlanned: payload.totalPlanned,
+    nextBatchAt: payload.nextBatchAt ?? null,
+    status: payload.status ?? "started"
+  };
+}
+
+export async function pauseWarmupRamp(
+  rampId: string,
+  actorId: string
+): Promise<{ ok: boolean; status: WarmupRampState; rampId: string }> {
+  const url = `/v1/warmup/ramp/${encodeURIComponent(rampId)}/pause`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json"
+    },
+    body: JSON.stringify({ actorId })
+  });
+  const payload = (await response.json().catch(() => ({}))) as Partial<{
+    message: string;
+    ok: boolean;
+    status: WarmupRampState;
+    rampId: string;
+  }>;
+  if (!response.ok) {
+    throw new Error(
+      typeof payload.message === "string" ? payload.message : `POST ${url} failed.`
+    );
+  }
+  return {
+    ok: payload.ok ?? false,
+    status: payload.status ?? "paused",
+    rampId: payload.rampId ?? rampId
+  };
 }

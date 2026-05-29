@@ -90,6 +90,13 @@ flowchart TB
 - **`ANALISIS_CRITICO_ROADMAP.md`** — riesgos identificados.
 - **`ARQUITECTURA_BASE_1.md`** — arquitectura inicial.
 
+## Referencias del flow real (`REFERENCIAS_FLOW_REAL/`)
+
+Capturas de cómo el CTO Juanes ya hace el flujo manualmente en producción. Base de verdad contra la cual se mide cualquier skill de OpenClaw o adapter de Delivrix. **Consultar antes de tocar skills de SMTP/DNS/warmup.**
+
+- **`REFERENCIAS_FLOW_REAL/README.md`** — índice + mapeo informe → skills Delivrix + disciplina operativa no negociable.
+- **`REFERENCIAS_FLOW_REAL/SMTP_STACK_AUDIT_JUANES_2026_05_28.md`** — auditoría completa del stack SMTP propio (Postfix + Dovecot + OpenDKIM + Let's Encrypt + UFW + Fail2Ban + IONOS DNS + Webdock VPS), 1780 líneas, sobre 7 dominios en producción. Cubre arquitectura, aprovisionamiento, DNS, autenticación, certificados, firewall, runtime, reputación, monitoreo, comandos exactos.
+
 ## Hito activo · 5.11.B OpenClaw Agent (8 docs quirúrgicos)
 
 Orden estricto de lectura para entender el agente:

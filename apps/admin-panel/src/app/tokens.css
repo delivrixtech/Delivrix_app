@@ -1,211 +1,245 @@
-/* Delivrix admin panel design tokens — Pencil rebrand (Fase H, 2026-05-17).
-   Source of truth: Panel Front End.pen (read via mcp__pencil-desktop__get_variables).
-
-   Paleta: amber/orange + warm creams + deep browns. Reemplaza la paleta
-   Stripe/Notion (purple + cool grays) que veniamos usando en Fases A-G.
-
-   El default es light. Dark se activa con [data-theme="dark"] en <html>.
-   Si no hay tema explicito, se respeta `prefers-color-scheme`.
-
-   Reference: DOCUMENTACION/HITO_5_10_FASE_H_BLUEPRINT_2026-05-17.md */
+/* Delivrix admin panel — Design tokens.
+ *
+ * Rebrand B/W (2026-05-28): el CTO pidió rediseño completo a colores
+ * oficiales NEGRO + BLANCO. Fuentes: Montserrat (sans/heading), JetBrains
+ * Mono (mono/datos/audit), Caveat (decorativa para "human notes").
+ *
+ * Estrategia de color:
+ *   - Paleta base monocromática con tinted neutrals (chroma muy bajo
+ *     hacia un hue neutro 0 — gris puro perceptualmente).
+ *   - Semantic colors (success/warning/critical/info) SOBRIOS y
+ *     DESATURADOS — comunican estado sin gritar. Linear/Vercel style.
+ *   - Accent: monocromático (negro puro en light theme, blanco puro en
+ *     dark). No hay color de marca cromático.
+ *   - Impeccable detector friendly: ningún borde lateral grueso, ningún
+ *     gradient purple-to-blue, hairlines 1px en todo.
+ *
+ * Default light. Dark se activa con [data-theme="dark"] o prefers-color-scheme.
+ */
 
 :root,
 [data-theme="light"] {
   color-scheme: light;
 
-  /* Surfaces — warm creams */
-  --color-bg: #fffbf5;                /* surface-primary */
-  --color-surface: #ffffff;           /* surface-tertiary (cards) */
+  /* === SURFACES === Puro B/W con grises neutros */
+  --color-bg: #ffffff;                /* canvas */
+  --color-surface: #ffffff;           /* cards */
   --color-surface-raised: #ffffff;
-  --color-surface-sunken: #f7f2ea;    /* surface-secondary */
+  --color-surface-sunken: #f6f6f6;    /* dimmed surfaces, sidebar bg */
   --color-surface-overlay: #ffffff;
-  --color-surface-inverse: #1a1410;   /* dark panels (CLI snippet, etc.) */
+  --color-surface-inverse: #0a0a0a;   /* dark blocks (kill switch, code) */
 
-  /* Borders — warm taupe */
-  --color-border: #eae0ce;            /* border-subtle */
-  --color-border-strong: #d4c5a8;     /* border-strong */
-  --color-border-focus: #f59e0b;      /* accent-primary */
+  /* === BORDERS === Hairlines neutrales */
+  --color-border: #e5e5e5;            /* default hairline */
+  --color-border-strong: #d1d1d1;     /* emphasized */
+  --color-border-focus: #0a0a0a;      /* focus = el accent (negro puro) */
 
-  /* Foreground — deep brown family */
-  --color-text-primary: #1a1410;      /* foreground-primary */
-  --color-text-secondary: #5c544a;    /* foreground-secondary */
-  --color-text-tertiary: #8a8073;     /* foreground-tertiary */
-  --color-text-disabled: #b8b0a3;
-  --color-text-inverse: #fffbf5;      /* foreground-inverse */
+  /* === FOREGROUND === Negro 100/72/56/40 + inverse */
+  --color-text-primary: #0a0a0a;      /* near-black, AAA contrast */
+  --color-text-secondary: #525252;    /* 70% body */
+  --color-text-tertiary: #8a8a8a;     /* 55% captions/meta */
+  --color-text-disabled: #b5b5b5;
+  --color-text-inverse: #ffffff;      /* texto sobre dark blocks */
 
-  /* Brand accent — Pencil amber/orange */
-  --color-accent: #f59e0b;            /* accent-primary */
-  --color-accent-hover: #d97f08;
-  --color-accent-soft: #fef3c7;
-  --color-accent-fg: #78350f;
-  --color-accent-secondary: #facc15;  /* accent-secondary */
-  --color-accent-tertiary: #ea580c;   /* accent-tertiary */
+  /* === ACCENT === Negro puro (es la marca) */
+  --color-accent: #0a0a0a;            /* CTAs, active states */
+  --color-accent-hover: #262626;
+  --color-accent-soft: #f0f0f0;       /* subtle surface tint */
+  --color-accent-fg: #ffffff;         /* texto sobre accent */
+  --color-accent-secondary: #404040;  /* graphite */
+  --color-accent-tertiary: #0a0a0a;
 
-  /* Hero gradients */
-  --color-gradient-start: #facc15;
-  --color-gradient-mid: #f59e0b;
-  --color-gradient-end: #ea580c;
+  /* Sin gradients de marca — clean B/W */
+  --color-gradient-start: #0a0a0a;
+  --color-gradient-mid: #262626;
+  --color-gradient-end: #404040;
 
-  /* Semantic states — solid + soft (bg) + border (line) + fg (text on soft) */
-  --color-success: #15803d;
-  --color-success-soft: #dcfce7;
-  --color-success-border: #86efac;
-  --color-success-fg: #14532d;
+  /* === SEMANTIC === Desaturados, sobrios, profesionales */
+  /* Verde sutil para success — Linear-style */
+  --color-success: #2f6f3a;
+  --color-success-soft: #ecf6ee;
+  --color-success-border: #c8e2cf;
+  --color-success-fg: #1f4a26;
 
-  --color-info: #1d4ed8;
-  --color-info-soft: #dbeafe;
-  --color-info-border: #93c5fd;
-  --color-info-fg: #1e3a8a;
+  /* Azul sobrio para info — sin saturar */
+  --color-info: #2c5283;
+  --color-info-soft: #eef3fa;
+  --color-info-border: #cad9ec;
+  --color-info-fg: #1d3a5f;
 
-  --color-warning: #b45309;
-  --color-warning-soft: #fef3c7;
-  --color-warning-border: #fcd34d;
-  --color-warning-fg: #78350f;
+  /* Ámbar muy desaturado para warning — atención sin alarma */
+  --color-warning: #8a5a00;
+  --color-warning-soft: #fbf3e1;
+  --color-warning-border: #ecd9a3;
+  --color-warning-fg: #5e3d00;
 
-  --color-critical: #b91c1c;
-  --color-critical-soft: #fee2e2;
-  --color-critical-border: #fca5a5;
-  --color-critical-fg: #7f1d1d;
+  /* Rojo desaturado para critical — serio sin gritar */
+  --color-critical: #a02525;
+  --color-critical-soft: #fbecec;
+  --color-critical-border: #ecc8c8;
+  --color-critical-fg: #6e1818;
 
-  --color-unknown: #7c3aed;
-  --color-unknown-soft: #ede9fe;
-  --color-unknown-border: #c4b5fd;
-  --color-unknown-fg: #4c1d95;
+  --color-unknown: #525252;
+  --color-unknown-soft: #f0f0f0;
+  --color-unknown-border: #d1d1d1;
+  --color-unknown-fg: #262626;
 
-  --color-stale: #ea580c;
-  --color-stale-soft: #ffedd5;
-  --color-stale-border: #fdba74;
-  --color-stale-fg: #7c2d12;
+  --color-stale: #8a5a00;
+  --color-stale-soft: #fbf3e1;
+  --color-stale-border: #ecd9a3;
+  --color-stale-fg: #5e3d00;
 
-  --color-neutral: #57534e;
-  --color-neutral-soft: #f5f5f4;
-  --color-neutral-border: #d6d3d1;
-  --color-neutral-fg: #292524;
+  --color-neutral: #525252;
+  --color-neutral-soft: #f6f6f6;
+  --color-neutral-border: #e5e5e5;
+  --color-neutral-fg: #262626;
 
-  /* Shadows — warm light scheme */
-  --shadow-sm: 0 1px 2px rgba(64, 39, 19, 0.04);
-  --shadow-md: 0 1px 2px rgba(64, 39, 19, 0.05), 0 2px 4px rgba(64, 39, 19, 0.04);
-  --shadow-lg: 0 6px 16px rgba(64, 39, 19, 0.07), 0 2px 4px rgba(64, 39, 19, 0.04);
-  --shadow-focus: 0 0 0 3px rgba(245, 158, 11, 0.25);
+  /* === SHADOWS === Neutras, muy sutiles, B/W */
+  --shadow-sm: 0 1px 2px rgba(10, 10, 10, 0.04);
+  --shadow-md: 0 2px 4px rgba(10, 10, 10, 0.05), 0 4px 8px rgba(10, 10, 10, 0.04);
+  --shadow-lg: 0 8px 24px rgba(10, 10, 10, 0.08), 0 2px 6px rgba(10, 10, 10, 0.04);
+  --shadow-focus: 0 0 0 3px rgba(10, 10, 10, 0.15);
 
-  /* "On dark" colors — siempre claros sobre blocks dark independientes del tema.
-     Usados por KillSwitchGrande, snippets terminal, JSON viewer, etc. NO usar
-     var(--color-text-inverse) ahí porque se invierte con el tema y rompe contraste. */
-  --color-on-dark-strong: rgba(255, 251, 245, 1);
-  --color-on-dark-medium: rgba(255, 251, 245, 0.7);
-  --color-on-dark-soft: rgba(255, 251, 245, 0.5);
-  --color-on-dark-weak: rgba(255, 251, 245, 0.4);
-  --color-on-dark-faint: rgba(255, 251, 245, 0.15);
-  --color-on-dark-hint: rgba(255, 251, 245, 0.08);
+  /* "On dark" — siempre blancos sobre dark blocks (no se invierten con tema) */
+  --color-on-dark-strong: rgba(255, 255, 255, 1);
+  --color-on-dark-medium: rgba(255, 255, 255, 0.7);
+  --color-on-dark-soft: rgba(255, 255, 255, 0.5);
+  --color-on-dark-weak: rgba(255, 255, 255, 0.4);
+  --color-on-dark-faint: rgba(255, 255, 255, 0.15);
+  --color-on-dark-hint: rgba(255, 255, 255, 0.08);
+  --color-on-dark-success-overlay: rgba(47, 111, 58, 0.16);
+  --color-on-dark-critical-overlay: rgba(160, 37, 37, 0.16);
 
-  /* Overlays semánticos translúcidos sobre dark surface (KillSwitch armado/activo, banners
-     OpenClaw, pills sobre surface-inverse). Mantienen el tinte verde/rojo sin depender del
-     tema porque el block es siempre dark. */
-  --color-on-dark-success-overlay: rgba(220, 252, 231, 0.16);
-  --color-on-dark-critical-overlay: rgba(254, 226, 226, 0.16);
+  /* "Always dark" — superficies dark FIJAS que no invierten con el tema.
+   * Para componentes que conceptualmente son "siempre dark" (terminal CLI,
+   * banner OpenClaw, prompt panel, kill switch). Antes usaban
+   * --color-surface-inverse, pero ese token SÍ invierte (es blanco en dark),
+   * causando cards blancas ilegibles dentro de dark mode (bug 2026-05-28).
+   */
+  --color-always-dark-bg: #0a0a0a;
+  --color-always-dark-surface: #141414;
+  --color-always-dark-raised: #1a1a1a;
+  --color-always-dark-border: rgba(255, 255, 255, 0.15);
+  --color-always-dark-border-strong: rgba(255, 255, 255, 0.22);
 }
 
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* Surfaces — deep warm browns */
-  --color-bg: #14110d;
-  --color-surface: #241d16;
-  --color-surface-raised: #2b2218;
-  --color-surface-sunken: #1b1611;
-  --color-surface-overlay: #2b2218;
-  --color-surface-inverse: #0a0805;
+  /* === SURFACES === Negros profundos */
+  --color-bg: #0a0a0a;
+  --color-surface: #141414;
+  --color-surface-raised: #1a1a1a;
+  --color-surface-sunken: #050505;
+  --color-surface-overlay: #1a1a1a;
+  --color-surface-inverse: #ffffff;
 
-  /* Borders */
-  --color-border: #322a20;
-  --color-border-strong: #4a3f30;
-  --color-border-focus: #fbbf24;
+  /* === BORDERS === Grises oscuros */
+  --color-border: #262626;
+  --color-border-strong: #3a3a3a;
+  --color-border-focus: #ffffff;
 
-  /* Foreground */
-  --color-text-primary: #f5eddf;
-  --color-text-secondary: #b5a892;
-  --color-text-tertiary: #867865;
-  --color-text-disabled: #5a4f3e;
-  --color-text-inverse: #14110d;
+  /* === FOREGROUND === Blanco con stops */
+  --color-text-primary: #f5f5f5;
+  --color-text-secondary: #b5b5b5;
+  --color-text-tertiary: #8a8a8a;
+  --color-text-disabled: #525252;
+  --color-text-inverse: #0a0a0a;
 
-  /* Accent */
-  --color-accent: #fbbf24;
-  --color-accent-hover: #fcd34d;
-  --color-accent-soft: #3a2a10;
-  --color-accent-fg: #fde68a;
-  --color-accent-secondary: #fde047;
-  --color-accent-tertiary: #fb923c;
+  /* === ACCENT === Blanco puro en dark */
+  --color-accent: #ffffff;
+  --color-accent-hover: #e5e5e5;
+  --color-accent-soft: #1f1f1f;
+  --color-accent-fg: #0a0a0a;
+  --color-accent-secondary: #b5b5b5;
+  --color-accent-tertiary: #ffffff;
 
-  --color-gradient-start: #fde047;
-  --color-gradient-mid: #fbbf24;
-  --color-gradient-end: #fb923c;
+  --color-gradient-start: #ffffff;
+  --color-gradient-mid: #d1d1d1;
+  --color-gradient-end: #8a8a8a;
 
-  --color-success: #4ade80;
-  --color-success-soft: #14352a;
-  --color-success-border: #166534;
-  --color-success-fg: #86efac;
+  /* === SEMANTIC === Más luminosos para contraste sobre dark */
+  --color-success: #6dbe7c;
+  --color-success-soft: #122a18;
+  --color-success-border: #245a30;
+  --color-success-fg: #a8d9b0;
 
-  --color-info: #93c5fd;
-  --color-info-soft: #1b2845;
-  --color-info-border: #1e40af;
-  --color-info-fg: #bfdbfe;
+  --color-info: #7eaee0;
+  --color-info-soft: #122131;
+  --color-info-border: #2c5283;
+  --color-info-fg: #b3cfe9;
 
-  --color-warning: #fbbf24;
-  --color-warning-soft: #3a2a10;
-  --color-warning-border: #92400e;
-  --color-warning-fg: #fde68a;
+  --color-warning: #d4a04c;
+  --color-warning-soft: #2a1f0c;
+  --color-warning-border: #6e4d10;
+  --color-warning-fg: #e8c98a;
 
-  --color-critical: #f87171;
-  --color-critical-soft: #3f1a1a;
-  --color-critical-border: #991b1b;
-  --color-critical-fg: #fecaca;
+  --color-critical: #d96868;
+  --color-critical-soft: #2a1414;
+  --color-critical-border: #6e2222;
+  --color-critical-fg: #e8a8a8;
 
-  --color-unknown: #c4b5fd;
-  --color-unknown-soft: #26204a;
-  --color-unknown-border: #5b21b6;
-  --color-unknown-fg: #ddd6fe;
+  --color-unknown: #b5b5b5;
+  --color-unknown-soft: #1f1f1f;
+  --color-unknown-border: #3a3a3a;
+  --color-unknown-fg: #d1d1d1;
 
-  --color-stale: #fb923c;
-  --color-stale-soft: #4a1f0a;
-  --color-stale-border: #9a3412;
-  --color-stale-fg: #fed7aa;
+  --color-stale: #d4a04c;
+  --color-stale-soft: #2a1f0c;
+  --color-stale-border: #6e4d10;
+  --color-stale-fg: #e8c98a;
 
-  --color-neutral: #a8a29e;
-  --color-neutral-soft: #2a2520;
-  --color-neutral-border: #44403c;
-  --color-neutral-fg: #d6d3d1;
+  --color-neutral: #8a8a8a;
+  --color-neutral-soft: #1f1f1f;
+  --color-neutral-border: #3a3a3a;
+  --color-neutral-fg: #d1d1d1;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
-  --shadow-focus: 0 0 0 3px rgba(251, 191, 36, 0.35);
+  --shadow-focus: 0 0 0 3px rgba(255, 255, 255, 0.15);
 }
 
 :root {
-  /* Typography — 2 familias display/body + 1 mono (consolidación 2026-05-24).
-     ANTES: 4 familias (Funnel, Geist, Inter, IBM Plex Mono) → se sentía AI generated
-     por mezclar 3 sans-serifs similares. AHORA: Funnel solo en H1/H2 ≥24px,
-     todo lo demás Geist con jerarquía por peso/tracking.
-
-     --font-heading: solo títulos grandes ≥24px (display character).
-     --font-sans:    UI/body general (h3, párrafos, cards, controles).
-     --font-body:    alias semántico de --font-sans (resuelve usos huérfanos
-                     en canvas-v4 + infrastructure).
-     --font-caption: alias de Geist con guía de uso uppercase + tracking-wider
-                     para pills 10-12px. Mantenido como token para no romper
-                     58+ usos, pero apunta a Geist (no Inter). */
+  /* === TYPOGRAPHY === Rebrand 2026-05-28
+   *
+   * Stack oficial:
+   *   - Montserrat: sans + body + heading (todo lo no-mono).
+   *     Pesos en uso: 400 (regular), 500 (medium), 600 (semibold), 700 (bold).
+   *     800/900 disponibles para display gigante si hace falta.
+   *   - JetBrains Mono: datos, código, audit chains, IDs, timestamps,
+   *     terminal-like elements, números tabulares.
+   *   - Caveat: "human notes" decorativas (tags hechos a mano, anotaciones
+   *     marginales, eyebrows con personalidad). Uso muy sparingly.
+   *
+   * Alias semánticos:
+   *   --font-heading: H1-H2 displays. Montserrat 600-800.
+   *   --font-sans:    UI general, body, controles. Montserrat 400-500.
+   *   --font-body:    alias de --font-sans para no romper imports residuales.
+   *   --font-caption: pills/eyebrows 10-12px uppercase. Montserrat 500-600
+   *                   con tracking-wider/widest.
+   *   --font-mono:    JetBrains Mono para datos/audit/code.
+   *   --font-display: alias para Caveat — solo en componentes que la usen
+   *                   explícitamente (no-default).
+   */
   --font-heading:
-    "Funnel Sans", "Funnel Sans Variable", "Geist Variable", system-ui, sans-serif;
+    "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-sans:
-    "Geist Variable", "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-body:
-    "Geist Variable", "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-caption:
-    "Geist Variable", "Geist", "Inter", system-ui, sans-serif;
+    "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono:
-    "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* --font-display antes apuntaba a Caveat (manuscrita). Eliminada
+   * 2026-05-28 por feedback del CTO — fuera de tono profesional para
+   * demos a stakeholders. El alias queda apuntando a Montserrat italic
+   * por si alguna superficie aún lo referencia (HumanNote ya migró). */
+  --font-display:
+    "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
 
-  /* Pencil text scale (matches typical web/admin needs) */
+  /* Type scale (sin cambios — funciona con cualquier sans) */
   --text-2xs: 10px;
   --text-xs: 11px;
   --text-sm: 12px;
@@ -229,17 +263,15 @@
   --weight-semibold: 600;
   --weight-bold: 700;
 
-  /* Letter-spacing scale — consolidación 2026-05-24.
-     Antes: 0.4px / 0.6px / 1.2px / -0.2px / -0.4px disperso inline.
-     Ahora: 4 valores tokenizados. */
-  --tracking-tightest: -0.4px;   /* Headings grandes display ≥28px */
-  --tracking-tight: -0.2px;      /* Headings medianos 18-24px */
+  /* Letter-spacing — recalibrado para Montserrat (un poco más wide) */
+  --tracking-tightest: -0.5px;
+  --tracking-tight: -0.25px;
   --tracking-normal: 0;
-  --tracking-wide: 0.4px;        /* Body labels semibold 11-12px */
-  --tracking-wider: 0.6px;       /* Pill labels uppercase 10-11px */
-  --tracking-widest: 1.2px;      /* Eyebrows uppercase 10-11px */
+  --tracking-wide: 0.3px;
+  --tracking-wider: 0.6px;
+  --tracking-widest: 1.4px;
 
-  /* Spacing — Pencil scale */
+  /* Spacing scale */
   --space-0: 0;
   --space-1: 4px;
   --space-2: 8px;
@@ -256,7 +288,7 @@
   --space-13: 56px;
   --space-14: 64px;
 
-  /* Radii — Pencil values */
+  /* Radii — un poco más conservadores para feel profesional */
   --radius-xs: 2px;
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -271,7 +303,7 @@
   --duration-base: 200ms;
   --duration-slow: 320ms;
 
-  /* Layout dimensions */
+  /* Layout */
   --topbar-height: 56px;
   --sidebar-width: 240px;
   --sidebar-width-collapsed: 64px;
@@ -279,7 +311,7 @@
   --content-padding: var(--space-6);
 }
 
-/* Legacy aliases. Conservados por si algun selector residual los referencia. */
+/* Legacy aliases. Conservados por si algún selector residual los referencia. */
 :root,
 [data-theme="dark"],
 [data-theme="light"] {
@@ -303,72 +335,68 @@
   :root:not([data-theme]) {
     color-scheme: dark;
 
-    --color-bg: #14110d;
-    --color-surface: #241d16;
-    --color-surface-raised: #2b2218;
-    --color-surface-sunken: #1b1611;
-    --color-surface-overlay: #2b2218;
-    --color-surface-inverse: #0a0805;
+    --color-bg: #0a0a0a;
+    --color-surface: #141414;
+    --color-surface-raised: #1a1a1a;
+    --color-surface-sunken: #050505;
+    --color-surface-overlay: #1a1a1a;
+    --color-surface-inverse: #ffffff;
 
-    --color-border: #322a20;
-    --color-border-strong: #4a3f30;
-    --color-border-focus: #fbbf24;
+    --color-border: #262626;
+    --color-border-strong: #3a3a3a;
+    --color-border-focus: #ffffff;
 
-    --color-text-primary: #f5eddf;
-    --color-text-secondary: #b5a892;
-    --color-text-tertiary: #867865;
-    --color-text-disabled: #5a4f3e;
-    --color-text-inverse: #14110d;
+    --color-text-primary: #f5f5f5;
+    --color-text-secondary: #b5b5b5;
+    --color-text-tertiary: #8a8a8a;
+    --color-text-disabled: #525252;
+    --color-text-inverse: #0a0a0a;
 
-    --color-accent: #fbbf24;
-    --color-accent-hover: #fcd34d;
-    --color-accent-soft: #3a2a10;
-    --color-accent-fg: #fde68a;
-    --color-accent-secondary: #fde047;
-    --color-accent-tertiary: #fb923c;
+    --color-accent: #ffffff;
+    --color-accent-hover: #e5e5e5;
+    --color-accent-soft: #1f1f1f;
+    --color-accent-fg: #0a0a0a;
+    --color-accent-secondary: #b5b5b5;
+    --color-accent-tertiary: #ffffff;
 
-    --color-gradient-start: #fde047;
-    --color-gradient-mid: #fbbf24;
-    --color-gradient-end: #fb923c;
+    --color-success: #6dbe7c;
+    --color-success-soft: #122a18;
+    --color-success-border: #245a30;
+    --color-success-fg: #a8d9b0;
 
-    --color-success: #4ade80;
-    --color-success-soft: #14352a;
-    --color-success-border: #166534;
-    --color-success-fg: #86efac;
+    --color-info: #7eaee0;
+    --color-info-soft: #122131;
+    --color-info-border: #2c5283;
+    --color-info-fg: #b3cfe9;
 
-    --color-info: #93c5fd;
-    --color-info-soft: #1b2845;
-    --color-info-border: #1e40af;
-    --color-info-fg: #bfdbfe;
+    --color-warning: #d4a04c;
+    --color-warning-soft: #2a1f0c;
+    --color-warning-border: #6e4d10;
+    --color-warning-fg: #e8c98a;
 
-    --color-warning: #fbbf24;
-    --color-warning-soft: #3a2a10;
-    --color-warning-border: #92400e;
-    --color-warning-fg: #fde68a;
+    --color-critical: #d96868;
+    --color-critical-soft: #2a1414;
+    --color-critical-border: #6e2222;
+    --color-critical-fg: #e8a8a8;
 
-    --color-critical: #f87171;
-    --color-critical-soft: #3f1a1a;
-    --color-critical-border: #991b1b;
-    --color-critical-fg: #fecaca;
+    --color-unknown: #b5b5b5;
+    --color-unknown-soft: #1f1f1f;
+    --color-unknown-border: #3a3a3a;
+    --color-unknown-fg: #d1d1d1;
 
-    --color-unknown: #c4b5fd;
-    --color-unknown-soft: #26204a;
-    --color-unknown-border: #5b21b6;
-    --color-unknown-fg: #ddd6fe;
+    --color-stale: #d4a04c;
+    --color-stale-soft: #2a1f0c;
+    --color-stale-border: #6e4d10;
+    --color-stale-fg: #e8c98a;
 
-    --color-stale: #fb923c;
-    --color-stale-soft: #4a1f0a;
-    --color-stale-border: #9a3412;
-    --color-stale-fg: #fed7aa;
-
-    --color-neutral: #a8a29e;
-    --color-neutral-soft: #2a2520;
-    --color-neutral-border: #44403c;
-    --color-neutral-fg: #d6d3d1;
+    --color-neutral: #8a8a8a;
+    --color-neutral-soft: #1f1f1f;
+    --color-neutral-border: #3a3a3a;
+    --color-neutral-fg: #d1d1d1;
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
     --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
-    --shadow-focus: 0 0 0 3px rgba(251, 191, 36, 0.35);
+    --shadow-focus: 0 0 0 3px rgba(255, 255, 255, 0.15);
   }
 }
