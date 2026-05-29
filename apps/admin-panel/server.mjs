@@ -13,6 +13,7 @@ const distRoot = path.join(__dirname, "dist");
 const staticRoot = existsSync(path.join(distRoot, "index.html")) ? distRoot : __dirname;
 const chatSendPath = "/v1/openclaw/chat/send";
 const chatStreamPath = "/v1/openclaw/chat/stream";
+const gatewayLogStreamPath = "/v1/gateway/logs/stream";
 
 const allowedProxyPaths = new Set([
   "/health",
@@ -69,7 +70,7 @@ const server = createServer(async (request, response) => {
 
 server.on("upgrade", (request, socket, head) => {
   const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? `${host}:${port}`}`);
-  if (requestUrl.pathname !== chatStreamPath) {
+  if (requestUrl.pathname !== chatStreamPath && requestUrl.pathname !== gatewayLogStreamPath) {
     socket.destroy();
     return;
   }

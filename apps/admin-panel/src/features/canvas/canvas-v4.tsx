@@ -60,6 +60,7 @@ import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
 import { MarkdownText, useConsumeIntentOnMount, useOpenClawIntent, useToast } from "../../shared/ui/v2/index.ts";
 import { CanvasFlow } from "./canvas-flow.tsx";
 import { useDemoAgentRun, useDemoLiveState, type DemoAction } from "./demo-agent-run.ts";
+import { GatewayLogTerminal } from "./gateway-log-terminal.tsx";
 import { LiveTool } from "./live-tool.tsx";
 import { useLiveCanvasStream } from "./canvas-live-client.ts";
 
@@ -1313,7 +1314,7 @@ function AgentViewport({
       <ViewportTabs active={tab} onChange={setTab} actions={actions} />
       {tab === "live" ? <LiveTab actions={actions} source={source} errorMessage={errorMessage} /> : null}
       {tab === "files" ? <FilesTab actions={actions} /> : null}
-      {tab === "terminal" ? <TerminalTab actions={actions} source={source} /> : null}
+      {tab === "terminal" ? <GatewayLogTerminal /> : null}
       {tab === "diff" ? <DiffTab actions={actions} /> : null}
       {tab === "topology" ? <TopologyTab /> : null}
     </section>

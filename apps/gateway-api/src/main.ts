@@ -215,6 +215,7 @@ import {
   WorkspaceReadRateLimiter
 } from "./routes/openclaw-workspace.ts";
 import { CanvasLiveEventService } from "./services/canvas-live-events.ts";
+import { GatewayLogStreamService } from "./gateway-log-stream.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 
@@ -255,6 +256,7 @@ const openClawBedrockBridge = createOpenClawBedrockBridgeFromEnv(process.env);
 const openClawSshBridge = openClawBedrockBridge ? null : createOpenClawSshBridgeFromEnv();
 const openClawChatBridge = openClawBedrockBridge ?? openClawSshBridge;
 const canvasLiveEvents = new CanvasLiveEventService();
+const gatewayLogStream = new GatewayLogStreamService();
 const openClawWorkspace = new OpenClawWorkspace();
 const workspaceReadRateLimiter = new WorkspaceReadRateLimiter();
 const smtpSshRunner = createSmtpSshRunnerFromEnv();
@@ -4223,6 +4225,11 @@ server.on("upgrade", (request, socket, head) => {
 
   if (request.method === "GET" && url.pathname === "/v1/canvas/live/stream") {
     canvasLiveEvents.acceptPanelSocket(request, socket, head);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/gateway/logs/stream") {
+    gatewayLogStream.acceptPanelSocket(request, socket, head);
     return;
   }
 
