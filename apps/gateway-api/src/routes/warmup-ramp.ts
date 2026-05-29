@@ -637,6 +637,7 @@ export async function handleRampStartHttp(deps: WarmupRampStartHttpDeps): Promis
 
   const plan = getWarmupRampPlan(schedule);
   const blockers: string[] = [];
+  if (env.WARMUP_RAMP_ENABLE !== "true") blockers.push("warmup_ramp_flag_disabled");
   if (env.WARMUP_ENABLE_SEND !== "true") blockers.push("warmup_send_flag_disabled");
   if (!deps.sshRunner.isConfigured()) blockers.push("warmup_ssh_runner_missing");
   if (!approval) blockers.push("approval_not_found_or_expired");

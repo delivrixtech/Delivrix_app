@@ -61,7 +61,8 @@ test("buildEmailAuthRecords creates SPF, DKIM, and DMARC records with p=none def
 test("POST /v1/domains/auth/configure blocks without zone, live writes, and approval", async () => {
   const route = await routeHarness({
     adapter: mockAdapter({ isLive: () => false, isWriteEnabled: () => false }),
-    canvasState: canvasState([])
+    canvasState: canvasState([]),
+    env: { EMAIL_AUTH_ENABLE_WRITES: "false" }
   });
 
   const response = await route({
@@ -77,6 +78,7 @@ test("POST /v1/domains/auth/configure blocks without zone, live writes, and appr
     "approval_not_found_or_expired",
     "aws_route53_dns_credentials_missing",
     "dns_write_flag_disabled",
+    "email_auth_write_flag_disabled",
     "route53_zone_missing"
   ].sort());
   assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.email_auth.configure_blocked");
@@ -147,6 +149,7 @@ test("POST /v1/domains/auth/configure publishes records and saves DKIM private k
 async function routeHarness(input: {
   adapter: EmailAuthDnsAdapter;
   canvasState: CanvasLiveStateSnapshot;
+  env?: Record<string, string | undefined>;
 }) {
   const dir = await mkdtemp(join(tmpdir(), "email-auth-route-"));
   const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
@@ -172,6 +175,7 @@ async function routeHarness(input: {
           }
         },
         readCanvasState: () => input.canvasState,
+        env: input.env ?? { EMAIL_AUTH_ENABLE_WRITES: "true" },
         now: () => fixedNow
       });
     } catch (error) {

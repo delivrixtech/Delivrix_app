@@ -45,7 +45,8 @@ test("buildDomainBindRecords creates mail A and root MX records", () => {
 test("POST /v1/domains/bind blocks without DNS writes, approval, zone, and server IP", async () => {
   const route = await routeHarness({
     dnsAdapter: mockDnsAdapter({ isLive: () => false, isWriteEnabled: () => false }),
-    canvasState: canvasState([])
+    canvasState: canvasState([]),
+    env: { DOMAIN_BIND_ENABLE: "false" }
   });
 
   const response = await route({
@@ -59,6 +60,7 @@ test("POST /v1/domains/bind blocks without DNS writes, approval, zone, and serve
   assert.deepEqual(response.body.blockers.sort(), [
     "approval_not_found_or_expired",
     "aws_route53_dns_credentials_missing",
+    "domain_bind_flag_disabled",
     "dns_write_flag_disabled",
     "route53_zone_missing",
     "server_ip_missing"
@@ -128,6 +130,7 @@ test("POST /v1/domains/bind upserts MX and A records from workspace inventory", 
 async function routeHarness(input: {
   dnsAdapter: DomainBindDnsAdapter;
   canvasState: CanvasLiveStateSnapshot;
+  env?: Record<string, string | undefined>;
 }) {
   const dir = await mkdtemp(join(tmpdir(), "domain-bind-route-"));
   const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
@@ -153,6 +156,7 @@ async function routeHarness(input: {
           }
         },
         readCanvasState: () => input.canvasState,
+        env: input.env ?? { DOMAIN_BIND_ENABLE: "true" },
         now: () => fixedNow
       });
     } catch (error) {

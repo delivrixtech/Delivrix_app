@@ -347,6 +347,7 @@ export function createGatewayOnboardDomainFlowRunner(
           workspace: deps.workspace,
           canvasLiveEvents: canvas,
           readCanvasState: deps.readCanvasState,
+          env: deps.env,
           now: deps.now
         }),
         now: deps.now
@@ -402,6 +403,7 @@ export function createGatewayOnboardDomainFlowRunner(
           workspace: deps.workspace,
           canvasLiveEvents: canvas,
           readCanvasState: deps.readCanvasState,
+          env: deps.env,
           now: deps.now
         }),
         now: deps.now
