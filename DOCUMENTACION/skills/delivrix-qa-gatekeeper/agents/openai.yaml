@@ -1,0 +1,4 @@
+interface:
+  display_name: "Delivrix QA Gatekeeper"
+  short_description: "QA experto para cambios Delivrix"
+  default_prompt: "Use $delivrix-qa-gatekeeper para revisar este cambio Delivrix contra ruta del proyecto, compliance, gates de seguridad y pruebas."
