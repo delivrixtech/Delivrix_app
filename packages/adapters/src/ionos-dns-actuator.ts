@@ -52,6 +52,15 @@ export interface IonosDnsUpsertResult {
   idempotent: boolean;
 }
 
+export interface IonosDnsRecordSnapshot {
+  id: string;
+  name: string;
+  type: string;
+  content: string;
+  ttl?: number;
+  prio?: number;
+}
+
 export type IonosDnsActuatorApiKind = IonosDnsInventorySource["apiKind"];
 
 export class IonosDnsActuatorError extends Error {
@@ -175,6 +184,22 @@ export class IonosDnsActuator extends IonosDnsAdapter {
     if (!response.ok && response.status !== 404) {
       throw await actuatorErrorFromResponse(response, "Failed to delete record");
     }
+  }
+
+  async listRecords(zoneId: string): Promise<IonosDnsRecordSnapshot[]> {
+    this.assertWritable();
+    const encodedZone = encodeURIComponent(zoneId);
+    const path = this.writeApiKind === "cloud-dns"
+      ? `/zones/${encodedZone}/records?limit=1000`
+      : `/v1/zones/${encodedZone}/records`;
+    const response = await this.send("GET", path);
+    if (!response.ok) {
+      throw await actuatorErrorFromResponse(response, "Failed to list DNS records");
+    }
+    const payload = await safeJson(response);
+    return collectionItems(payload)
+      .map(recordSnapshotFromPayload)
+      .filter((record): record is IonosDnsRecordSnapshot => record !== null);
   }
 
   private async createZoneCloud(zoneName: string): Promise<IonosDnsCreateZoneResult> {
@@ -528,6 +553,28 @@ function firstRecordIdMatching(
   return undefined;
 }
 
+function recordSnapshotFromPayload(item: unknown): IonosDnsRecordSnapshot | null {
+  if (!isRecord(item)) return null;
+  const properties = isRecord(item.properties) ? item.properties : item;
+  const id = stringValue(item.id) ?? stringValue(properties.id);
+  const name = stringValue(properties.name);
+  const type = stringValue(properties.type);
+  const content = stringValue(properties.content);
+  if (!id || !name || !type || !content) {
+    return null;
+  }
+  const ttl = numberValue(properties.ttl);
+  const prio = numberValue(properties.priority) ?? numberValue(properties.prio);
+  return {
+    id,
+    name,
+    type: type.toUpperCase(),
+    content,
+    ...(ttl !== undefined ? { ttl } : {}),
+    ...(prio !== undefined ? { prio } : {})
+  };
+}
+
 function collectionItems(raw: unknown): unknown[] {
   if (Array.isArray(raw)) return raw;
   if (!isRecord(raw)) return [];
@@ -557,6 +604,10 @@ function normalizeEnvValue(value: string | undefined): string | undefined {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

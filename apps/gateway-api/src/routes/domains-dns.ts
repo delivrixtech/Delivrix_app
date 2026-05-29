@@ -4,6 +4,7 @@ import type {
   AwsRoute53DnsChangeResult,
   AwsRoute53DnsRecordInput,
   AwsRoute53DnsRecordType,
+  AwsRoute53ResourceRecordSet,
   AwsRoute53DeleteHostedZoneResult,
   AwsRoute53DnsSource,
   AwsRoute53HostedZoneResult
@@ -18,6 +19,12 @@ import type {
   OpenClawWorkspace,
   OpenClawWorkspaceFileRef
 } from "../openclaw-workspace.ts";
+import {
+  createSafeDigFn,
+  type AutoRollbackManager,
+  type DnsDigFn,
+  type RollbackSnapshot
+} from "../auto-rollback.ts";
 
 export interface Route53DnsAdapter {
   isLive(): boolean;
@@ -25,6 +32,8 @@ export interface Route53DnsAdapter {
   currentSource(responseOk?: boolean, errorMessage?: string): AwsRoute53DnsSource;
   createHostedZone(domain: string): Promise<AwsRoute53HostedZoneResult>;
   upsertRecord(zoneId: string, opts: AwsRoute53DnsRecordInput): Promise<AwsRoute53DnsChangeResult>;
+  deleteRecord?(zoneId: string, opts: AwsRoute53DnsRecordInput): Promise<AwsRoute53DnsChangeResult>;
+  listResourceRecordSets?(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]>;
 }
 
 export interface Route53HostedZoneDeleteAdapter {
@@ -46,6 +55,10 @@ interface CanvasEmitter {
   emit(event: CanvasLiveEvent): Promise<CanvasLiveEvent>;
 }
 
+interface WebhookBroadcaster {
+  broadcast(event: AuditEventInput): Promise<unknown>;
+}
+
 export interface Route53DnsUpsertDependencies {
   request: IncomingMessage;
   response: ServerResponse;
@@ -53,6 +66,9 @@ export interface Route53DnsUpsertDependencies {
   adapter: Route53DnsAdapter;
   workspace: OpenClawWorkspace;
   canvasLiveEvents?: CanvasEmitter;
+  autoRollbackManager?: AutoRollbackManager;
+  webhookBroadcaster?: WebhookBroadcaster;
+  dnsDigFn?: DnsDigFn;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
   now?: () => Date;
 }
@@ -204,6 +220,32 @@ export async function handleRoute53DnsUpsertHttp(
       }, now);
     }
 
+    const rollbackAuditId = `route53-dns-${taskId}`;
+    const beforeRecords = deps.adapter.listResourceRecordSets
+      ? await deps.adapter.listResourceRecordSets(zone.zoneId).catch(() => null)
+      : null;
+    if (deps.autoRollbackManager && beforeRecords) {
+      await deps.autoRollbackManager.captureSnapshot({
+        auditId: rollbackAuditId,
+        kind: "dns",
+        beforeState: {
+          provider: "aws-route53",
+          domain,
+          zoneId: zone.zoneId,
+          zoneCreatedInTransaction: !existingZone,
+          records: beforeRecords,
+          requestedRecords: records
+        },
+        metadata: {
+          provider: "aws-route53",
+          domain,
+          zoneId: zone.zoneId,
+          taskId,
+          actorId
+        }
+      });
+    }
+
     const changes: Array<AwsRoute53DnsChangeResult & AwsRoute53DnsRecordInput> = [];
     for (const record of records) {
       const change = await deps.adapter.upsertRecord(zone.zoneId, record);
@@ -265,6 +307,17 @@ export async function handleRoute53DnsUpsertHttp(
     });
     await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.dns.records_updated", "domain", domain, "critical", now);
     await emitTaskUpdate(deps.canvasLiveEvents, taskId, "completed", now);
+    scheduleRoute53DnsRollbackCheck({
+      manager: deps.autoRollbackManager,
+      webhookBroadcaster: deps.webhookBroadcaster,
+      auditLog: deps.auditLog,
+      adapter: deps.adapter,
+      auditId: rollbackAuditId,
+      domain,
+      zoneId: zone.zoneId,
+      records,
+      digFn: deps.dnsDigFn ?? createSafeDigFn()
+    });
 
     json(deps.response, 200, {
       ok: true,
@@ -501,6 +554,91 @@ export async function handleRoute53HostedZoneDeleteHttp(
       message: errorMessage(error),
       workspace
     });
+  }
+}
+
+function scheduleRoute53DnsRollbackCheck(input: {
+  manager?: AutoRollbackManager;
+  webhookBroadcaster?: WebhookBroadcaster;
+  auditLog: AuditSink;
+  adapter: Route53DnsAdapter;
+  auditId: string;
+  domain: string;
+  zoneId: string;
+  records: AwsRoute53DnsRecordInput[];
+  digFn: DnsDigFn;
+}): void {
+  if (!input.manager) {
+    return;
+  }
+
+  queueMicrotask(async () => {
+    const propagation = await input.manager!.waitForDnsPropagation({
+      auditId: input.auditId,
+      domain: input.domain,
+      expectedRecords: route53ExpectedRecords(input.records),
+      digFn: input.digFn
+    });
+    if (propagation.propagated) {
+      return;
+    }
+
+    const rollback = await input.manager!.applyRollback({
+      auditId: input.auditId,
+      kind: "dns",
+      reason: `propagation_timeout_after_${propagation.elapsedMs}ms`,
+      restoreFn: async (snapshot) => restoreRoute53DnsSnapshot(snapshot, input.adapter)
+    });
+    const event: AuditEventInput = {
+      actorType: "system",
+      actorId: "auto-rollback",
+      action: rollback.applied ? "oc.dns.auto_rolled_back" : "oc.dns.auto_rollback_failed",
+      targetType: "domain",
+      targetId: input.domain,
+      riskLevel: "critical",
+      decision: rollback.applied ? "allow" : "reject",
+      humanApproved: false,
+      metadata: {
+        category: "supervised_local_state",
+        provider: "aws-route53",
+        auditId: input.auditId,
+        zoneId: input.zoneId,
+        domain: input.domain,
+        reason: rollback.reason,
+        elapsedMs: propagation.elapsedMs,
+        rollbackApplied: rollback.applied
+      }
+    };
+    await input.auditLog.append(event);
+    void input.webhookBroadcaster?.broadcast(event).catch(() => undefined);
+  });
+}
+
+async function restoreRoute53DnsSnapshot(
+  snapshot: RollbackSnapshot,
+  adapter: Route53DnsAdapter
+): Promise<void> {
+  const state = snapshot.beforeState;
+  if (!isRecord(state)) {
+    throw new Error("rollback snapshot beforeState is invalid");
+  }
+  const zoneId = requiredSnapshotString(state.zoneId, "zoneId");
+  const beforeRecords = Array.isArray(state.records)
+    ? state.records.filter(isRoute53Record)
+    : [];
+  const requestedRecords = Array.isArray(state.requestedRecords)
+    ? state.requestedRecords.filter(isRoute53Record)
+    : [];
+  const beforeNames = new Set(beforeRecords.map(route53RecordIdentity));
+  if (adapter.deleteRecord) {
+    for (const requested of requestedRecords) {
+      if (!beforeNames.has(route53RecordIdentity(requested))) {
+        await adapter.deleteRecord(zoneId, requested).catch(() => undefined);
+      }
+    }
+  }
+  for (const record of beforeRecords) {
+    await adapter.upsertRecord(zoneId, record);
   }
 }
 
@@ -835,6 +973,44 @@ function errorMessage(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function route53ExpectedRecords(records: AwsRoute53DnsRecordInput[]): Array<{
+  domain: string;
+  type: string;
+  value: string;
+}> {
+  return records.flatMap((record) =>
+    record.values.map((value) => ({
+      domain: record.name.replace(/\.$/, ""),
+      type: record.type,
+      value
+    }))
+  );
+}
+
+function isRoute53Record(value: unknown): value is AwsRoute53DnsRecordInput {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.name === "string" &&
+    typeof value.type === "string" &&
+    typeof value.ttl === "number" &&
+    Array.isArray(value.values) &&
+    value.values.every((item) => typeof item === "string")
+  );
+}
+
+function route53RecordIdentity(record: AwsRoute53DnsRecordInput): string {
+  return `${record.name.toLowerCase()}|${record.type.toUpperCase()}`;
+}
+
+function requiredSnapshotString(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`rollback snapshot ${field} is required`);
+  }
+  return value.trim();
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown): void {

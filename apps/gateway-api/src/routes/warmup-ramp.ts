@@ -30,6 +30,7 @@ import type {
   SmtpSshCommandResult,
   SmtpSshRunner
 } from "./smtp-provisioning.ts";
+import type { AutoRollbackManager } from "../auto-rollback.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -38,6 +39,10 @@ interface AuditSink {
 
 interface CanvasEmitter {
   emit(event: CanvasLiveEvent): Promise<CanvasLiveEvent>;
+}
+
+interface WebhookBroadcaster {
+  broadcast(event: AuditEventInput): Promise<unknown>;
 }
 
 type Timer = ReturnType<typeof setTimeout>;
@@ -54,6 +59,8 @@ export interface RampSchedulerDependencies {
   now?: () => Date;
   setTimer?: TimerFactory;
   clearTimer?: TimerCanceler;
+  autoRollbackManager?: AutoRollbackManager;
+  webhookBroadcaster?: WebhookBroadcaster;
 }
 
 export interface StartRampInput {
@@ -435,12 +442,54 @@ export class RampScheduler {
       occurredAt: completedAt.toISOString()
     });
 
-    if (bounceRate > BOUNCE_RATE_AUTO_PAUSE) {
+    const autoPauseDecision = this.deps.autoRollbackManager?.shouldAutoPauseWarmup({
+      sent: totalSent,
+      bounced: totalBounced
+    }) ?? {
+      pause: bounceRate > BOUNCE_RATE_AUTO_PAUSE,
+      reason: "batch_bounce_rate_exceeded",
+      bounceRate
+    };
+
+    if (autoPauseDecision.pause) {
       await this.pauseRamp({
         rampId,
         reason: "auto_bounce_rate",
         actorId: "ramp-scheduler"
       });
+      await appendWarmupRampEvent(this.deps.workspace, {
+        rampId,
+        occurredAt: completedAt.toISOString(),
+        action: "oc.warmup.ramp_auto_paused",
+        batchIndex,
+        metadata: {
+          domain: ramp.domain,
+          totalSent,
+          totalBounced,
+          reason: autoPauseDecision.reason,
+          bounceRate: Number(autoPauseDecision.bounceRate.toFixed(4))
+        }
+      });
+      const autoPauseAudit: AuditEventInput = {
+        actorType: "system",
+        actorId: "auto-rollback",
+        action: "oc.warmup.ramp_auto_paused",
+        targetType: "domain",
+        targetId: ramp.domain,
+        riskLevel: "critical",
+        decision: "allow",
+        humanApproved: false,
+        metadata: {
+          rampId,
+          batchIndex,
+          totalSent,
+          totalBounced,
+          reason: autoPauseDecision.reason,
+          bounceRate: Number(autoPauseDecision.bounceRate.toFixed(4))
+        }
+      };
+      await this.deps.auditLog.append(autoPauseAudit);
+      void this.deps.webhookBroadcaster?.broadcast(autoPauseAudit).catch(() => undefined);
       return;
     }
     if (allDone) {

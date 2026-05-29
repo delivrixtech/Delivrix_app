@@ -28,6 +28,12 @@ import type {
   OpenClawWorkspace,
   OpenClawWorkspaceFileRef
 } from "../openclaw-workspace.ts";
+import {
+  createSafeDigFn,
+  type AutoRollbackManager,
+  type DnsDigFn,
+  type RollbackSnapshot
+} from "../auto-rollback.ts";
 
 export interface IonosDnsUpsertAdapter {
   isLive(): boolean;
@@ -35,11 +41,17 @@ export interface IonosDnsUpsertAdapter {
   writeApiKindLabel(): "cloud-dns" | "hosting-dns";
   createZone: IonosDnsActuator["createZone"];
   upsertRecords: IonosDnsActuator["upsertRecords"];
+  deleteRecord?: IonosDnsActuator["deleteRecord"];
+  listRecords?: IonosDnsActuator["listRecords"];
 }
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
   list?(): Promise<AuditEvent[]>;
+}
+
+interface WebhookBroadcaster {
+  broadcast(event: AuditEventInput): Promise<unknown>;
 }
 
 export interface IonosDnsUpsertDependencies {
@@ -49,6 +61,9 @@ export interface IonosDnsUpsertDependencies {
   adapter: IonosDnsUpsertAdapter;
   workspace: OpenClawWorkspace;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
+  autoRollbackManager?: AutoRollbackManager;
+  webhookBroadcaster?: WebhookBroadcaster;
+  dnsDigFn?: DnsDigFn;
   env?: Record<string, string | undefined>;
   now?: () => Date;
 }
@@ -152,6 +167,30 @@ export async function handleIonosDnsUpsertHttp(
 
   try {
     const createdZone = await deps.adapter.createZone(zone);
+    const rollbackAuditId = `ionos-dns-${randomUUID()}`;
+    const beforeRecords = deps.adapter.listRecords
+      ? await deps.adapter.listRecords(createdZone.zoneId).catch(() => null)
+      : null;
+    if (deps.autoRollbackManager && beforeRecords) {
+      await deps.autoRollbackManager.captureSnapshot({
+        auditId: rollbackAuditId,
+        kind: "dns",
+        beforeState: {
+          provider: "ionos-cloud-dns",
+          zone,
+          zoneId: createdZone.zoneId,
+          records: beforeRecords,
+          requestedRecords: records
+        },
+        metadata: {
+          provider: "ionos-cloud-dns",
+          apiKind,
+          zone,
+          zoneId: createdZone.zoneId,
+          actorId
+        }
+      });
+    }
     const upsert: IonosDnsUpsertResult = await deps.adapter.upsertRecords(createdZone.zoneId, records);
 
     const workspace = await safeWriteExecution(deps.workspace, {
@@ -201,6 +240,18 @@ export async function handleIonosDnsUpsertHttp(
         idempotencyKey: idempotencyKey ?? null,
         workspacePath: workspace?.path
       }
+    });
+    scheduleIonosDnsRollbackCheck({
+      manager: deps.autoRollbackManager,
+      webhookBroadcaster: deps.webhookBroadcaster,
+      auditLog: deps.auditLog,
+      adapter: deps.adapter,
+      auditId: rollbackAuditId,
+      zone,
+      zoneId: createdZone.zoneId,
+      records,
+      rrsetIds: upsert.rrsetIds,
+      digFn: deps.dnsDigFn ?? createSafeDigFn()
     });
 
     json(deps.response, 200, {
@@ -270,6 +321,97 @@ export class IonosDnsUpsertInputError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "IonosDnsUpsertInputError";
+  }
+}
+
+function scheduleIonosDnsRollbackCheck(input: {
+  manager?: AutoRollbackManager;
+  webhookBroadcaster?: WebhookBroadcaster;
+  auditLog: AuditSink;
+  adapter: IonosDnsUpsertAdapter;
+  auditId: string;
+  zone: string;
+  zoneId: string;
+  records: IonosDnsRecordWriteInput[];
+  rrsetIds: string[];
+  digFn: DnsDigFn;
+}): void {
+  if (!input.manager) {
+    return;
+  }
+
+  queueMicrotask(async () => {
+    const propagation = await input.manager!.waitForDnsPropagation({
+      auditId: input.auditId,
+      domain: input.zone,
+      expectedRecords: ionosExpectedRecords(input.zone, input.records),
+      digFn: input.digFn
+    });
+    if (propagation.propagated) {
+      return;
+    }
+
+    const rollback = await input.manager!.applyRollback({
+      auditId: input.auditId,
+      kind: "dns",
+      reason: `propagation_timeout_after_${propagation.elapsedMs}ms`,
+      restoreFn: async (snapshot) => restoreIonosDnsSnapshot(snapshot, input.adapter, input.rrsetIds)
+    });
+    const event: AuditEventInput = {
+      actorType: "system",
+      actorId: "auto-rollback",
+      action: rollback.applied ? "oc.dns.auto_rolled_back" : "oc.dns.auto_rollback_failed",
+      targetType: "ionos_dns_zone",
+      targetId: input.zone,
+      riskLevel: "critical",
+      decision: rollback.applied ? "allow" : "reject",
+      humanApproved: false,
+      metadata: {
+        category: "supervised_local_state",
+        provider: "ionos-cloud-dns",
+        auditId: input.auditId,
+        zone: input.zone,
+        zoneId: input.zoneId,
+        reason: rollback.reason,
+        elapsedMs: propagation.elapsedMs,
+        rollbackApplied: rollback.applied
+      }
+    };
+    await input.auditLog.append(event);
+    void input.webhookBroadcaster?.broadcast(event).catch(() => undefined);
+  });
+}
+
+async function restoreIonosDnsSnapshot(
+  snapshot: RollbackSnapshot,
+  adapter: IonosDnsUpsertAdapter,
+  rrsetIds: string[]
+): Promise<void> {
+  const state = snapshot.beforeState;
+  if (!isRecord(state)) {
+    throw new Error("rollback snapshot beforeState is invalid");
+  }
+  const zoneId = requiredSnapshotString(state.zoneId, "zoneId");
+  const beforeRecords = Array.isArray(state.records)
+    ? state.records.filter(isIonosSnapshotRecord)
+    : [];
+  const requestedRecords = Array.isArray(state.requestedRecords)
+    ? state.requestedRecords.filter(isIonosRecordInput)
+    : [];
+  const beforeIdentities = new Set(beforeRecords.map(ionosRecordIdentity));
+
+  if (adapter.deleteRecord) {
+    for (let index = 0; index < requestedRecords.length; index += 1) {
+      const requested = requestedRecords[index]!;
+      const rrsetId = rrsetIds[index];
+      if (rrsetId && !beforeIdentities.has(ionosRecordIdentity(requested))) {
+        await adapter.deleteRecord(zoneId, rrsetId).catch(() => undefined);
+      }
+    }
+  }
+
+  if (beforeRecords.length > 0) {
+    await adapter.upsertRecords(zoneId, beforeRecords.map(snapshotRecordToWriteInput));
   }
 }
 
@@ -469,6 +611,62 @@ function errorMessage(error: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function ionosExpectedRecords(zone: string, records: IonosDnsRecordWriteInput[]): Array<{
+  domain: string;
+  type: string;
+  value: string;
+}> {
+  return records.map((record) => ({
+    domain: ionosRecordDomain(zone, record.name),
+    type: record.type,
+    value: record.content
+  }));
+}
+
+function ionosRecordDomain(zone: string, name: string): string {
+  const normalizedName = name.trim().replace(/\.$/, "");
+  if (normalizedName === "@" || normalizedName === "") {
+    return zone;
+  }
+  return normalizedName.includes(".") ? normalizedName : `${normalizedName}.${zone}`;
+}
+
+function isIonosRecordInput(value: unknown): value is IonosDnsRecordWriteInput {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    typeof value.type === "string" &&
+    typeof value.content === "string"
+  );
+}
+
+function isIonosSnapshotRecord(value: unknown): value is IonosDnsRecordWriteInput & { id?: string } {
+  return isIonosRecordInput(value);
+}
+
+function snapshotRecordToWriteInput(
+  record: IonosDnsRecordWriteInput & { id?: string }
+): IonosDnsRecordWriteInput {
+  return {
+    name: record.name,
+    type: record.type,
+    content: record.content,
+    ...(typeof record.ttl === "number" ? { ttl: record.ttl } : {}),
+    ...(typeof record.prio === "number" ? { prio: record.prio } : {})
+  };
+}
+
+function ionosRecordIdentity(record: IonosDnsRecordWriteInput): string {
+  return `${record.name.toLowerCase()}|${record.type.toUpperCase()}|${record.content}`;
+}
+
+function requiredSnapshotString(value: unknown, field: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`rollback snapshot ${field} is required`);
+  }
+  return value.trim();
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown): void {

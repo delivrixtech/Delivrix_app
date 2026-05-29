@@ -94,7 +94,7 @@ export class EquipoWebhookBroadcaster {
     const cat = typeof md.category === "string" ? md.category : "";
     if (CRITICAL_CATEGORIES.has(cat)) return true;
     const action = typeof event.action === "string" ? event.action : "";
-    if (/^oc\.(route53|ionos|webdock|smtp|warmup|domain)\./.test(action)) return true;
+    if (/^oc\.(dns|route53|ionos|webdock|smtp|warmup|domain)\./.test(action)) return true;
     return false;
   }
 
@@ -187,7 +187,7 @@ export class EquipoWebhookBroadcaster {
       return { delivered: false, buffered: false, skipped: "not_critical" };
     }
     if (this.killSwitchProvider) {
-      const armed = await this.killSwitchProvider().catch(() => false);
+      const armed = await this.killSwitchProvider().catch(() => true);
       if (armed) {
         return { delivered: false, buffered: false, skipped: "kill_switch_armed" };
       }

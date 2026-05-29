@@ -4,7 +4,7 @@ import {
   AwsRoute53DomainsAdapter,
   AwsRoute53DnsAdapter,
   createWebdockAdaptersFromEnv,
-  IonosDnsAdapter,
+  IonosDnsActuator,
   IonosDomainsAdapter,
   PorkbunAdapter,
   ProxmoxAdapter,
@@ -161,6 +161,10 @@ import {
   handleRoute53DnsUpsertHttp
 } from "./routes/domains-dns.ts";
 import {
+  handleIonosDnsUpsertError,
+  handleIonosDnsUpsertHttp
+} from "./routes/dns-ionos-upsert.ts";
+import {
   handleEmailAuthConfigureHttp,
   handleEmailAuthError
 } from "./routes/domains-email-auth.ts";
@@ -183,6 +187,22 @@ import {
   handleWarmupStartError,
   handleWarmupStartHttp
 } from "./routes/warmup.ts";
+import {
+  handleRampGetByDomainHttp,
+  handleRampGetHttp,
+  handleRampPauseHttp,
+  handleRampResumeHttp,
+  handleRampStartHttp,
+  handleWarmupRampError,
+  RampScheduler,
+  resumeRampsOnBoot
+} from "./routes/warmup-ramp.ts";
+import {
+  createGmailImapAdapterFromEnv,
+  handlePlacementCheckError,
+  handlePlacementCheckHttp
+} from "./routes/placement-check.ts";
+import { handleSenderPoolStatusHttp } from "./routes/sender-pool-status.ts";
 import {
   createGatewayOnboardDomainFlowRunner,
   handleOnboardBatchHttp,
@@ -219,6 +239,10 @@ import { GatewayLogStreamService } from "./gateway-log-stream.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import { createAuditChainStoreFromEnv } from "./audit-chain.ts";
+import { createAutoRollbackManagerFromEnv } from "./auto-rollback.ts";
+import { EquipoWebhookBroadcaster } from "./webhook-broadcast.ts";
+import { buildAuditChainAnchor, AuditChainAnchorError } from "./audit-chain-anchor.ts";
+import { hardenIncomingAuditBatchEvent } from "./audit-batch-origin.ts";
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
@@ -226,6 +250,7 @@ const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
 const auditLog = new LocalFileAuditLog();
 const auditChainStore = createAuditChainStoreFromEnv();
 const killSwitchStore = new LocalFileKillSwitchStore();
+const autoRollbackManager = createAutoRollbackManagerFromEnv();
 const sendResultStore = new LocalFileSendResultStore();
 const suppressionList = new LocalFileSuppressionList();
 const sendQueue = new LocalFileSendQueue();
@@ -245,7 +270,7 @@ const webdockOpsAdapter = new WebdockRealAdapter({
 const webdockAccountAdapters = createWebdockAdaptersFromEnv();
 const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
 const awsRoute53DnsAdapter = new AwsRoute53DnsAdapter();
-const ionosDnsAdapter = new IonosDnsAdapter();
+const ionosDnsAdapter = new IonosDnsActuator();
 const ionosDomainsAdapter = new IonosDomainsAdapter();
 const porkbunAdapter = new PorkbunAdapter();
 const proxmoxAdapter = new ProxmoxAdapter();
@@ -259,9 +284,23 @@ const openClawSshBridge = openClawBedrockBridge ? null : createOpenClawSshBridge
 const openClawChatBridge = openClawBedrockBridge ?? openClawSshBridge;
 const canvasLiveEvents = new CanvasLiveEventService();
 const gatewayLogStream = new GatewayLogStreamService();
+const equipoWebhookBroadcaster = new EquipoWebhookBroadcaster({
+  killSwitchProvider: async () => (await killSwitchStore.get()).enabled
+});
 const openClawWorkspace = new OpenClawWorkspace();
 const workspaceReadRateLimiter = new WorkspaceReadRateLimiter();
 const smtpSshRunner = createSmtpSshRunnerFromEnv();
+const gmailImapAdapter = createGmailImapAdapterFromEnv(process.env);
+const rampScheduler = new RampScheduler({
+  auditLog,
+  sshRunner: smtpSshRunner,
+  workspace: openClawWorkspace,
+  canvasLiveEvents,
+  readCanvasState: () => canvasLiveEvents.snapshot(),
+  env: process.env,
+  autoRollbackManager,
+  webhookBroadcaster: equipoWebhookBroadcaster
+});
 const onboardDomainFlowRunner = createGatewayOnboardDomainFlowRunner({
   auditLog,
   workspace: openClawWorkspace,
@@ -797,6 +836,127 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    if (request.method === "POST" && request.url === "/v1/warmup/ramp/start") {
+      try {
+        return await handleRampStartHttp({
+          request,
+          response,
+          scheduler: rampScheduler,
+          auditLog,
+          sshRunner: smtpSshRunner,
+          workspace: openClawWorkspace,
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          env: process.env
+        });
+      } catch (error) {
+        if (handleWarmupRampError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    {
+      const rampPauseMatch = request.method === "POST" && request.url
+        ? /^\/v1\/warmup\/ramp\/(ramp-[A-Za-z0-9-]+)\/pause$/.exec(request.url)
+        : null;
+      if (rampPauseMatch) {
+        try {
+          return await handleRampPauseHttp({
+            request,
+            response,
+            scheduler: rampScheduler,
+            rampId: rampPauseMatch[1]
+          });
+        } catch (error) {
+          if (handleWarmupRampError(error, response)) {
+            return;
+          }
+          throw error;
+        }
+      }
+    }
+
+    {
+      const rampResumeMatch = request.method === "POST" && request.url
+        ? /^\/v1\/warmup\/ramp\/(ramp-[A-Za-z0-9-]+)\/resume$/.exec(request.url)
+        : null;
+      if (rampResumeMatch) {
+        try {
+          return await handleRampResumeHttp({
+            request,
+            response,
+            scheduler: rampScheduler,
+            rampId: rampResumeMatch[1]
+          });
+        } catch (error) {
+          if (handleWarmupRampError(error, response)) {
+            return;
+          }
+          throw error;
+        }
+      }
+    }
+
+    {
+      const rampGetMatch = request.method === "GET" && request.url
+        ? /^\/v1\/warmup\/ramp\/(ramp-[A-Za-z0-9-]+)$/.exec(request.url)
+        : null;
+      if (rampGetMatch) {
+        try {
+          return await handleRampGetHttp({
+            request,
+            response,
+            scheduler: rampScheduler,
+            rampId: rampGetMatch[1]
+          });
+        } catch (error) {
+          if (handleWarmupRampError(error, response)) {
+            return;
+          }
+          throw error;
+        }
+      }
+    }
+
+    {
+      const rampByDomainMatch = request.method === "GET" && request.url
+        ? /^\/v1\/warmup\/ramp\/by-domain\/([A-Za-z0-9.-]+)$/.exec(request.url)
+        : null;
+      if (rampByDomainMatch) {
+        try {
+          return await handleRampGetByDomainHttp({
+            request,
+            response,
+            scheduler: rampScheduler,
+            domain: rampByDomainMatch[1]
+          });
+        } catch (error) {
+          if (handleWarmupRampError(error, response)) {
+            return;
+          }
+          throw error;
+        }
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/openclaw/skills/placement-check") {
+      try {
+        return await handlePlacementCheckHttp({
+          request,
+          response,
+          auditLog,
+          adapter: gmailImapAdapter,
+          env: process.env
+        });
+      } catch (error) {
+        if (handlePlacementCheckError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
     if (request.method === "POST" && request.url === "/v1/flows/onboard-sender-domain") {
       try {
         return await handleOnboardSenderDomainHttp({
@@ -916,10 +1076,33 @@ const server = createServer(async (request, response) => {
           adapter: awsRoute53DnsAdapter,
           workspace: openClawWorkspace,
           canvasLiveEvents,
+          autoRollbackManager,
+          webhookBroadcaster: equipoWebhookBroadcaster,
           readCanvasState: () => canvasLiveEvents.snapshot()
         });
       } catch (error) {
         if (handleRoute53DnsError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/dns/ionos/upsert") {
+      try {
+        return await handleIonosDnsUpsertHttp({
+          request,
+          response,
+          auditLog,
+          adapter: ionosDnsAdapter,
+          workspace: openClawWorkspace,
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          autoRollbackManager,
+          webhookBroadcaster: equipoWebhookBroadcaster,
+          env: process.env
+        });
+      } catch (error) {
+        if (handleIonosDnsUpsertError(error, response)) {
           return;
         }
         throw error;
@@ -2521,8 +2704,13 @@ const server = createServer(async (request, response) => {
             });
           }
 
-          const { prevHash: _prevHash, hash: _hash, ...eventWithoutChain } = incoming;
-          const persisted = await auditLog.append(eventWithoutChain as Parameters<typeof auditLog.append>[0]);
+          const hardened = hardenIncomingAuditBatchEvent(incoming as Record<string, unknown>, {
+            caller: {
+              actorType: "openclaw",
+              actorId: process.env.OPENCLAW_AUDIT_CALLER_ID ?? "openclaw-hostinger-prod"
+            }
+          });
+          const persisted = await auditLog.append(hardened.event);
           accepted.push(persisted.id);
         } catch (error) {
           const reason = error instanceof InvalidAuditEventError ? "schema_mismatch" : "gateway_internal_error";
@@ -3127,6 +3315,25 @@ const server = createServer(async (request, response) => {
       return json(response, result.ok ? 200 : 422, publicResult);
     }
 
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/audit-chain/anchor") {
+      const verify = await auditChainStore.verify();
+      try {
+        return json(response, 200, buildAuditChainAnchor({
+          verify,
+          key: process.env.AUDIT_ANCHOR_KEY ?? process.env.OPENCLAW_HMAC_SECRET
+        }));
+      } catch (error) {
+        if (error instanceof AuditChainAnchorError) {
+          return json(response, error.statusCode, {
+            ok: false,
+            error: error.message,
+            ...(verify.ok ? {} : { verify })
+          });
+        }
+        throw error;
+      }
+    }
+
     if (request.method === "GET" && request.url === "/v1/send-jobs") {
       return json(response, 200, {
         jobs: await sendQueue.list()
@@ -3255,6 +3462,13 @@ const server = createServer(async (request, response) => {
       return json(response, 200, {
         nodes: await senderNodeRegistry.list()
       });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/sender-pool/status") {
+      const { status, body } = await handleSenderPoolStatusHttp({
+        workspace: openClawWorkspace
+      });
+      return json(response, status, body as Record<string, unknown>);
     }
 
     if (request.method === "GET" && request.url === "/v1/provisioning-runs") {
@@ -4247,7 +4461,22 @@ server.on("upgrade", (request, socket, head) => {
 server.listen(port, host, () => {
   console.log(`gateway-api listening on http://${host}:${port}`);
   void logGatewayDependencyWarnings();
+  void resumeRampsOnStartup();
 });
+
+async function resumeRampsOnStartup(): Promise<void> {
+  try {
+    const resumed = await resumeRampsOnBoot({
+      scheduler: rampScheduler,
+      workspace: openClawWorkspace
+    });
+    if (resumed.length > 0) {
+      console.log(`[gateway] resumed ${resumed.length} warmup ramp(s) from disk: ${resumed.join(", ")}`);
+    }
+  } catch (error) {
+    console.warn(`[gateway] WARN: failed to resume warmup ramps on boot: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
 async function logGatewayDependencyWarnings(): Promise<void> {
   const dependencies = await checkGatewayDependencies();
