@@ -17,6 +17,7 @@ test("OpenClawBedrockBridge sendMessage queues and streamHistory emits typing, d
     modelId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     systemPromptPath: await promptFile("System prompt demo"),
     now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
     client: {
       send: async (command) => {
         calls.push(command);
@@ -69,6 +70,7 @@ test("OpenClawBedrockBridge keeps in-memory conversation history across turns", 
     modelId: "model-test",
     systemPromptPath: await promptFile("System prompt demo"),
     now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
     client: {
       send: async (command) => {
         payloads.push(JSON.parse(String(command.input.body)));
@@ -103,6 +105,7 @@ test("OpenClawBedrockBridge falls back to OPENCLAW_SYSTEM_PROMPT path when bundl
     systemPromptPath: join(tmpdir(), "missing-system-context.txt"),
     fallbackSystemPromptPath: fallbackPath,
     now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
     client: {
       send: async (command) => {
         payload = JSON.parse(String(command.input.body));
@@ -115,7 +118,68 @@ test("OpenClawBedrockBridge falls back to OPENCLAW_SYSTEM_PROMPT path when bundl
   await bridge.streamHistory("msg-1", {});
 
   assert.ok(payload);
-  assert.equal((payload as Record<string, unknown>).system, "Fallback system prompt");
+  assert.match(String((payload as Record<string, unknown>).system), /^Fallback system prompt/);
+  assert.match(String((payload as Record<string, unknown>).system), /<live_context generatedAt="2026-05-29T05:00:00.000Z">/);
+});
+
+test("OpenClawBedrockBridge injects read-only live context and tolerates endpoint failures", async () => {
+  const requestedPaths: string[] = [];
+  const seenTokens: string[] = [];
+  let payload: Record<string, unknown> | null = null;
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    delivrixBaseUrl: "http://gateway.test/",
+    readBoundaryToken: "read-token",
+    fetchImpl: (async (input, init) => {
+      const url = new URL(String(input));
+      requestedPaths.push(`${url.pathname}${url.search}`);
+      const headers = init?.headers as Record<string, string> | undefined;
+      seenTokens.push(headers?.["x-delivrix-token"] ?? "");
+      if (url.pathname === "/v1/canvas/live/state") {
+        throw new Error("canvas timeout");
+      }
+      const bodyByPath: Record<string, unknown> = {
+        "/v1/admin/overview": { service: "gateway-api", secret: "should-redact" },
+        "/v1/kill-switch": { enabled: false, updatedBy: "operator_local" },
+        "/v1/audit-events": [{ action: "oc.chat.test", token: "should-redact" }]
+      };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => bodyByPath[url.pathname] ?? {}
+      } as Response;
+    }) as typeof fetch,
+    client: {
+      send: async (command) => {
+        payload = JSON.parse(String(command.input.body));
+        return { body: [streamJson({ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } })] };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-1", message: "estado" });
+  await bridge.streamHistory("msg-1", {});
+
+  assert.deepEqual(requestedPaths.sort(), [
+    "/v1/admin/overview",
+    "/v1/audit-events?limit=10",
+    "/v1/canvas/live/state",
+    "/v1/kill-switch"
+  ].sort());
+  assert.deepEqual(new Set(seenTokens), new Set(["read-token"]));
+  const capturedPayload = payload as Record<string, unknown> | null;
+  assert.ok(capturedPayload);
+  const system = String(capturedPayload.system);
+  assert.match(system, /<live_context generatedAt="2026-05-29T05:00:00.000Z">/);
+  assert.match(system, /## kill_switch \(GET \/v1\/kill-switch\)/);
+  assert.match(system, /"enabled": false/);
+  assert.match(system, /"_error": "canvas timeout"/);
+  assert.match(system, /"secret": "\[redacted\]"/);
+  assert.match(system, /"token": "\[redacted\]"/);
 });
 
 test("createOpenClawBedrockBridgeFromEnv requires bedrock mode and critical env vars", () => {
@@ -149,4 +213,15 @@ function streamJson(value: unknown): { chunk: { bytes: Uint8Array } } {
 
 function fixedNow(): () => Date {
   return () => new Date("2026-05-29T05:00:00.000Z");
+}
+
+function liveContextFetchStub(): typeof fetch {
+  return (async (input) => {
+    const path = new URL(String(input)).pathname;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ path })
+    } as Response;
+  }) as typeof fetch;
 }

@@ -18,6 +18,9 @@ const defaultMaxTokens = 4096;
 const defaultTemperature = 0.3;
 const defaultSessionKey = "agent:main:operator";
 const defaultMaxConversationTurns = 12;
+const defaultDelivrixBaseUrl = "http://127.0.0.1:3000";
+
+type FetchLike = typeof fetch;
 
 interface ConversationTurn {
   role: "user" | "assistant";
@@ -58,6 +61,9 @@ export interface OpenClawBedrockBridgeConfig {
   sessionKey?: string;
   maxConversationTurns?: number;
   client?: BedrockRuntimeClientLike;
+  delivrixBaseUrl?: string;
+  readBoundaryToken?: string;
+  fetchImpl?: FetchLike;
   now?: () => Date;
 }
 
@@ -70,6 +76,9 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   private readonly temperature: number;
   private readonly sessionKey: string;
   private readonly maxConversationTurns: number;
+  private readonly delivrixBaseUrl: string;
+  private readonly readBoundaryToken: string;
+  private readonly fetchImpl: FetchLike;
   private readonly now: () => Date;
   private cachedSystemPrompt: string | null = null;
   private readonly conversations = new Map<string, ConversationTurn[]>();
@@ -101,6 +110,9 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     this.temperature = config.temperature ?? defaultTemperature;
     this.sessionKey = config.sessionKey ?? defaultSessionKey;
     this.maxConversationTurns = config.maxConversationTurns ?? defaultMaxConversationTurns;
+    this.delivrixBaseUrl = normalizeBaseUrl(config.delivrixBaseUrl ?? defaultDelivrixBaseUrl);
+    this.readBoundaryToken = config.readBoundaryToken ?? "";
+    this.fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
     this.now = config.now ?? (() => new Date());
   }
 
@@ -176,11 +188,13 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
 
   private async invokeBedrock(turns: ConversationTurn[]): Promise<BedrockInvocationResult> {
     const startedAt = this.now().getTime();
+    const systemBase = await this.loadSystemPrompt();
+    const liveContext = await this.fetchLiveContext();
     const payload = {
       anthropic_version: "bedrock-2023-05-31",
       max_tokens: this.maxTokens,
       temperature: this.temperature,
-      system: await this.loadSystemPrompt(),
+      system: `${systemBase}\n\n${liveContext}`,
       messages: turns.map((turn) => ({
         role: turn.role,
         content: [{ type: "text", text: turn.content }]
@@ -226,6 +240,63 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     };
   }
 
+  private async fetchLiveContext(): Promise<string> {
+    const headers: Record<string, string> = {
+      accept: "application/json"
+    };
+    if (this.readBoundaryToken) {
+      headers["x-delivrix-token"] = this.readBoundaryToken;
+    }
+
+    const safeGet = async (path: string): Promise<unknown> => {
+      try {
+        const response = await this.fetchImpl(`${this.delivrixBaseUrl}${path}`, { headers });
+        if (!response.ok) {
+          return { _error: `HTTP ${response.status}` };
+        }
+        return redactSensitiveLiveContext(await response.json());
+      } catch (error) {
+        return { _error: error instanceof Error ? error.message : "unknown" };
+      }
+    };
+
+    const [overview, killSwitch, canvas, audit] = await Promise.all([
+      safeGet("/v1/admin/overview"),
+      safeGet("/v1/kill-switch"),
+      safeGet("/v1/canvas/live/state"),
+      safeGet("/v1/audit-events?limit=10")
+    ]);
+    const generatedAt = this.now().toISOString();
+
+    return [
+      `<live_context generatedAt="${generatedAt}">`,
+      "Estos son datos REALES del Gateway Delivrix justo antes de tu turno actual.",
+      "Cita explicitamente este contexto cuando el operador te pregunte por estado del sistema.",
+      "Si un campo falta o tiene _error, dilo honesto. NO inventes valores.",
+      "",
+      "## overview (GET /v1/admin/overview)",
+      "```json",
+      stringifyLiveContext(overview, 4000),
+      "```",
+      "",
+      "## kill_switch (GET /v1/kill-switch)",
+      "```json",
+      stringifyLiveContext(killSwitch, 1500),
+      "```",
+      "",
+      "## canvas (GET /v1/canvas/live/state)",
+      "```json",
+      stringifyLiveContext(canvas, 4000),
+      "```",
+      "",
+      "## audit_recent (GET /v1/audit-events?limit=10)",
+      "```json",
+      stringifyLiveContext(audit, 4000),
+      "```",
+      "</live_context>"
+    ].join("\n");
+  }
+
   private async loadSystemPrompt(): Promise<string> {
     if (this.cachedSystemPrompt) return this.cachedSystemPrompt;
     try {
@@ -267,6 +338,8 @@ export function createOpenClawBedrockBridgeFromEnv(
     region: normalizeEnvValue(env.AWS_BEDROCK_REGION) ?? defaultModelRegion,
     modelId,
     systemPromptPath: normalizeEnvValue(env.OPENCLAW_SYSTEM_CONTEXT_PATH),
+    delivrixBaseUrl: normalizeEnvValue(env.DELIVRIX_BASE_URL) ?? defaultDelivrixBaseUrl,
+    readBoundaryToken: normalizeEnvValue(env.DELIVRIX_OPENCLAW_TOKEN) ?? "",
     maxTokens: parsePositiveInt(env.AWS_BEDROCK_MAX_TOKENS) ?? defaultMaxTokens,
     temperature: parseTemperature(env.AWS_BEDROCK_TEMPERATURE) ?? defaultTemperature
   });
@@ -321,4 +394,31 @@ function parsePositiveInt(value: string | undefined): number | undefined {
 function parseTemperature(value: string | undefined): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : undefined;
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function stringifyLiveContext(value: unknown, maxLength: number): string {
+  return JSON.stringify(value, null, 2).slice(0, maxLength);
+}
+
+function redactSensitiveLiveContext(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSensitiveLiveContext(item));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const redacted: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    redacted[key] = isSensitiveLiveContextKey(key) ? "[redacted]" : redactSensitiveLiveContext(child);
+  }
+  return redacted;
+}
+
+function isSensitiveLiveContextKey(key: string): boolean {
+  return /token|secret|password|private[_-]?key|access[_-]?key|api[_-]?key|authorization/i.test(key);
 }
