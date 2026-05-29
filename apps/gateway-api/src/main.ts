@@ -138,6 +138,7 @@ import {
   type GatewayDependencyHealth
 } from "./dependency-health.ts";
 import { maybeHandleOpenClawDomainChatSkill } from "./openclaw-domain-chat-skill.ts";
+import { createOpenClawBedrockBridgeFromEnv } from "./openclaw-bedrock-bridge.ts";
 import { createOpenClawSshBridgeFromEnv } from "./openclaw-ssh-bridge.ts";
 import {
   handleAwsDomainDiscoveryError,
@@ -250,7 +251,9 @@ const ipReputationReportStore = new LocalFileIpReputationReportStore();
 const backupSimulationStore = new LocalFileBackupSimulationStore();
 const safetyRealtimeCache = new SafetyRealtimeCache();
 const learningRealtimeCache = new SafetyRealtimeCache();
-const openClawSshBridge = createOpenClawSshBridgeFromEnv();
+const openClawBedrockBridge = createOpenClawBedrockBridgeFromEnv(process.env);
+const openClawSshBridge = openClawBedrockBridge ? null : createOpenClawSshBridgeFromEnv();
+const openClawChatBridge = openClawBedrockBridge ?? openClawSshBridge;
 const canvasLiveEvents = new CanvasLiveEventService();
 const openClawWorkspace = new OpenClawWorkspace();
 const workspaceReadRateLimiter = new WorkspaceReadRateLimiter();
@@ -267,8 +270,8 @@ const onboardDomainFlowRunner = createGatewayOnboardDomainFlowRunner({
   env: process.env
 });
 const openClawChatProxy = new OpenClawChatProxy(auditLog, {
-  bridgeKind: openClawSshBridge ? "ssh" : "http",
-  sshBridge: openClawSshBridge,
+  bridgeKind: openClawBedrockBridge ? "bedrock" : openClawSshBridge ? "ssh" : "http",
+  sshBridge: openClawChatBridge,
   canvasLiveEvents
 });
 const defaultStuckJobThresholdMs = Number(process.env.STUCK_JOB_THRESHOLD_MS ?? 5 * 60 * 1000);
