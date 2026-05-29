@@ -126,6 +126,37 @@ test("OpenClaw chat send rejects login HTML returned as HTTP 200", async () => {
   });
 });
 
+test("OpenClaw chat send uses local continuity fallback when enabled", async () => {
+  const audit = new MemoryAudit();
+  const client = new MemoryPanelClient();
+  const fetchImpl = async () => new Response("<html>login</html>", {
+    status: 200,
+    headers: { "content-type": "text/html" }
+  });
+  const proxy = new OpenClawChatProxy(audit, {
+    agentHttpUrl: "http://openclaw.test:61175",
+    gatewayToken: "secret-gateway-token",
+    fetchImpl: fetchImpl as typeof fetch,
+    localFallbackEnabled: true,
+    now: () => new Date("2026-05-29T14:30:00.000Z")
+  });
+  proxy.addPanelClient(client);
+
+  const response = await proxy.sendOperatorMessage({
+    msgId: "fallback-001",
+    message: "Ya funcionas openclaw?"
+  });
+
+  assert.equal(response.msgId, "fallback-001");
+  assert.equal(response.queued, true);
+  assert.equal(response.assistant?.source, "delivrix.gateway_local_continuity");
+  assert.match(response.assistant?.content ?? "", /modo continuidad local/);
+  assert.equal(client.events.some((event) => event.type === "ASSISTANT_DONE"), true);
+  assert.equal(audit.events.some((event) => event.action === "oc.chat.local_fallback"), true);
+  const fallbackAudit = audit.events.find((event) => event.action === "oc.chat.local_fallback");
+  assert.equal(fallbackAudit?.metadata.upstreamErrorCode, "openclaw_chat_send_invalid_response");
+});
+
 test("OpenClaw chat send falls back to HTTP after consecutive SSH bridge failures", async () => {
   const audit = new MemoryAudit();
   const bridge: OpenClawChatSshBridge = {

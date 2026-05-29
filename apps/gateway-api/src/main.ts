@@ -272,6 +272,7 @@ const onboardDomainFlowRunner = createGatewayOnboardDomainFlowRunner({
 const openClawChatProxy = new OpenClawChatProxy(auditLog, {
   bridgeKind: openClawBedrockBridge ? "bedrock" : openClawSshBridge ? "ssh" : "http",
   sshBridge: openClawChatBridge,
+  localFallbackEnabled: process.env.OPENCLAW_CHAT_LOCAL_FALLBACK !== "0",
   canvasLiveEvents
 });
 const defaultStuckJobThresholdMs = Number(process.env.STUCK_JOB_THRESHOLD_MS ?? 5 * 60 * 1000);
