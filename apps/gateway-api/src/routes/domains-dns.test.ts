@@ -17,6 +17,7 @@ import type {
 } from "../../../../packages/domain/src/index.ts";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import { AutoRollbackManager } from "../auto-rollback.ts";
 import {
   handleRoute53DnsError,
   handleRoute53HostedZoneDeleteHttp,
@@ -132,6 +133,68 @@ test("POST /v1/domains/route53/dns/upsert creates zone, upserts records, writes 
   assert.equal(route.canvasEvents.filter((event) => event.type === "oc.action.now" && event.kind === "api").length, 3);
 });
 
+test("POST /v1/domains/route53/dns/upsert auto-rolls back when propagation times out", async () => {
+  let nowMs = fixedNow.getTime();
+  const snapshotDir = await mkdtemp(join(tmpdir(), "route53-rollback-"));
+  const rollbackManager = new AutoRollbackManager({
+    snapshotDir,
+    now: () => new Date(nowMs),
+    sleep: async (ms) => {
+      nowMs += ms;
+    },
+    dnsPolicy: { propagationTimeoutMs: 1, pollIntervalMs: 1 }
+  });
+  const upserts: AwsRoute53DnsRecordInput[] = [];
+  const deletes: AwsRoute53DnsRecordInput[] = [];
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isWriteEnabled: () => true,
+      createHostedZone: async () => ({
+        zoneId: "Z123",
+        nameServers: ["ns-1.awsdns.com"]
+      }),
+      listResourceRecordSets: async () => [{
+        name: "delivrix-mail.com.",
+        type: "TXT",
+        ttl: 300,
+        values: ["v=spf1 -all"]
+      }],
+      upsertRecord: async (_zoneId, record) => {
+        upserts.push(record);
+        return { changeId: `C${upserts.length}` };
+      },
+      deleteRecord: async (_zoneId, record) => {
+        deletes.push(record);
+        return { changeId: `D${deletes.length}` };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-dns-plan",
+      executionId: "exec-dns-rollback",
+      approvedAt: "2026-05-27T11:58:00.000Z"
+    }]),
+    autoRollbackManager: rollbackManager,
+    dnsDigFn: async () => []
+  });
+  await appendApproval(route.auditLog, "artifact-dns-plan", "exec-dns-rollback");
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    records: [{ name: "mail", type: "A", ttl: 300, values: ["192.0.2.10"] }],
+    actorId: "operator/juanes",
+    approvalToken: "exec-dns-rollback",
+    taskId: "task-dns-rollback"
+  });
+  await waitForMicrotasks();
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(deletes.length, 1);
+  assert.equal(deletes[0].name, "mail.delivrix-mail.com.");
+  assert.ok(upserts.some((record) => record.name === "delivrix-mail.com." && record.values[0] === "v=spf1 -all"));
+  assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.dns.auto_rolled_back");
+});
+
 test("DELETE /v1/domains/route53/hosted-zones/:zoneId blocks without DNS writes and approval", async () => {
   let deleteCalled = false;
   const route = await deleteRouteHarness({
@@ -226,6 +289,8 @@ test("DELETE /v1/domains/route53/hosted-zones/:zoneId deletes zone and removes a
 async function routeHarness(input: {
   adapter: Route53DnsAdapter;
   canvasState: CanvasLiveStateSnapshot;
+  autoRollbackManager?: AutoRollbackManager;
+  dnsDigFn?: (domain: string, type: string) => Promise<string[]>;
 }) {
   const dir = await mkdtemp(join(tmpdir(), "route53-dns-route-"));
   const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
@@ -250,6 +315,8 @@ async function routeHarness(input: {
             return event;
           }
         },
+        autoRollbackManager: input.autoRollbackManager,
+        dnsDigFn: input.dnsDigFn,
         readCanvasState: () => input.canvasState,
         now: () => fixedNow
       });
@@ -428,4 +495,10 @@ function captureResponse(): {
       this.body = payload;
     }
   };
+}
+
+async function waitForMicrotasks(): Promise<void> {
+  for (let index = 0; index < 10; index += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 }

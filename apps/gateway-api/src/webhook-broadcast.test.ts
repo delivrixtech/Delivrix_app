@@ -112,6 +112,12 @@ test("shouldBroadcast true para oc.route53.domain_registered, false para oc.read
     true
   );
   assert.equal(
+    b.shouldBroadcast(
+      baseEvent({ action: "oc.dns.auto_rolled_back", metadata: {} })
+    ),
+    true
+  );
+  assert.equal(
     b.shouldBroadcast(baseEvent({ action: "oc.read.overview", metadata: {} })),
     false
   );
@@ -307,7 +313,7 @@ test("webhook payload enviado NO contiene secrets", async () => {
   }
 });
 
-test("killSwitchProvider que lanza error es tratado como NO armado", async () => {
+test("killSwitchProvider que lanza error corta el broadcast por fail-closed", async () => {
   const { path: bufferPath, dir } = await makeTmpBuffer();
   try {
     const { fetchImpl, calls } = makeFetchOk();
@@ -321,8 +327,9 @@ test("killSwitchProvider que lanza error es tratado como NO armado", async () =>
       baseDelayMs: 0
     });
     const res = await b.broadcast(baseEvent());
-    assert.equal(res.delivered, true);
-    assert.equal(calls.length, 1);
+    assert.equal(res.delivered, false);
+    assert.equal(res.skipped, "kill_switch_armed");
+    assert.equal(calls.length, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
