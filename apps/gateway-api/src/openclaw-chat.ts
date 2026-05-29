@@ -354,7 +354,7 @@ export class OpenClawChatProxy {
     upstreamError: unknown
   ): Promise<ChatSendResponse> {
     const startedAt = this.now().getTime();
-    const content = buildLocalOpenClawFallbackAnswer(message, this.now());
+    const fallback = buildLocalOpenClawFallbackResponse(message, this.now());
     const durationMs = Math.max(0, this.now().getTime() - startedAt);
     const errorInfo = openClawTransportErrorInfo(upstreamError);
 
@@ -372,7 +372,8 @@ export class OpenClawChatProxy {
         fallbackSource: "gateway-local-continuity",
         upstreamErrorCode: errorInfo.code,
         upstreamErrorMessage: errorInfo.message,
-        contentLength: content.length
+        skillsInvoked: fallback.skillsInvoked,
+        contentLength: fallback.content.length
       }
     });
 
@@ -384,15 +385,15 @@ export class OpenClawChatProxy {
     this.broadcast({
       type: "ASSISTANT_DELTA",
       msgId,
-      delta: content
+      delta: fallback.content
     });
 
     await this.handleAgentMessage({
       type: "ASSISTANT_DONE",
       msgId,
-      content,
+      content: fallback.content,
       audit: {
-        skillsInvoked: ["delivrix.gateway_local_continuity"],
+        skillsInvoked: fallback.skillsInvoked,
         modelId: "gateway-local-continuity",
         durationMs
       }
@@ -402,9 +403,9 @@ export class OpenClawChatProxy {
       msgId,
       queued: true,
       assistant: {
-        content,
-        source: "delivrix.gateway_local_continuity",
-        skillsInvoked: ["delivrix.gateway_local_continuity"],
+        content: fallback.content,
+        source: fallback.source,
+        skillsInvoked: fallback.skillsInvoked,
         durationMs
       }
     };
@@ -1057,25 +1058,105 @@ function openClawTransportErrorInfo(error: unknown): { code: string; message: st
   };
 }
 
-function buildLocalOpenClawFallbackAnswer(message: string, now: Date): string {
+interface LocalOpenClawFallbackResponse {
+  content: string;
+  source: string;
+  skillsInvoked: string[];
+}
+
+function buildLocalOpenClawFallbackResponse(message: string, now: Date): LocalOpenClawFallbackResponse {
   const normalized = message
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase();
+
+  if (/\b(vps|servidor|server|webdock|proxmox|provision|provisionar|crear|levantar)\b/.test(normalized)) {
+    return {
+      source: "delivrix.webdock_vps_planner",
+      skillsInvoked: ["delivrix.webdock_vps_planner", "provision_webdock_vps"],
+      content: buildVpsProvisioningFallbackAnswer(now)
+    };
+  }
+
+  if (/\b(dns|dominio|dominios|domain|domains|ionos|route53|spf|dkim|dmarc)\b/.test(normalized)) {
+    return {
+      source: "delivrix.dns_domain_planner",
+      skillsInvoked: ["delivrix.dns_domain_planner", "delivrix.domain_inventory"],
+      content: [
+        "Si. Para dominios/DNS tengo dos caminos seguros:",
+        "",
+        "1. Inventario read-only: consultar IONOS/Route53 y devolver dominios, zonas y registros visibles.",
+        "2. Cambio DNS supervisado: preparar el upsert y bloquearlo si falta aprobacion humana, token operativo o flag de escritura.",
+        "",
+        "No cambio SPF/DKIM/DMARC ni compro dominios desde chat sin pasar por audit log, evidencia y approval gate.",
+        "",
+        "Decime el dominio y el registro que queres revisar o crear. Si solo queres evidencia para demo, puedo listar inventario DNS/IONOS sin mutaciones.",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+
+  if (/\b(evidencia|evidence|workspace|archivo|archivos|execution|executions|memoria|audit|auditoria)\b/.test(normalized)) {
+    return {
+      source: "delivrix.workspace_evidence_planner",
+      skillsInvoked: ["delivrix.workspace_evidence_planner"],
+      content: [
+        "Si. Para evidencia y memoria persistente puedo usar el WorkspaceBrowser y la audit chain local.",
+        "",
+        "Puedo mostrar:",
+        "- executions/2026-05-26, 2026-05-27 y 2026-05-28.",
+        "- params, evidence y audit de runs reales.",
+        "- archivos operativos filtrados para no exponer material sensible.",
+        "",
+        "Pedime el run o archivo exacto y respondo con el path y el resumen verificable, sin imprimir secretos.",
+        `Timestamp: ${now.toISOString()}`
+      ].join("\n")
+    };
+  }
+
   const greeting = /\b(hola|funcionas|funciona|openclaw|ping|estas)\b/.test(normalized)
     ? "Si, Juanes. Estoy respondiendo desde el Gateway Delivrix en modo continuidad local."
     : "Recibi tu mensaje y lo procese desde el Gateway Delivrix en modo continuidad local.";
 
+  return {
+    source: "delivrix.gateway_local_continuity",
+    skillsInvoked: ["delivrix.gateway_local_continuity"],
+    content: [
+      greeting,
+      "",
+      "Estoy sin LLM remoto en este momento, pero no estoy ciego: puedo enrutar intents del demo a skills seguras del gateway.",
+      "",
+      "Puedo responder y preparar flujos para:",
+      "- crear VPS Webdock/Proxmox con approval gate y dry-run seguro;",
+      "- inventario DNS/IONOS/Route53;",
+      "- evidencia en WorkspaceBrowser y audit chain;",
+      "- SMTP provisioning/warmup solo en modo autorizado y auditado.",
+      "",
+      "Decime el objetivo concreto y lo traduzco al flujo operativo correcto. Si pedis una accion real, te voy a decir exactamente que gate falta antes de ejecutarla.",
+      `Timestamp: ${now.toISOString()}`
+    ].join("\n")
+  };
+}
+
+function buildVpsProvisioningFallbackAnswer(now: Date): string {
   return [
-    greeting,
+    "Si, podemos crear un VPS, pero no lo voy a ejecutar automaticamente desde chat.",
     "",
-    "Estado operativo:",
-    "- El ACK de /v1/openclaw/chat/send ya sale valido desde el gateway.",
-    "- Canvas Live puede recibir ASSISTANT_TYPING, ASSISTANT_DELTA y ASSISTANT_DONE.",
-    "- Mantengo el alcance read-only: no compro dominios, no cambio DNS y no ejecuto SMTP real sin gates humanos.",
-    "- El bridge remoto Hostinger queda fuera del path critico mientras devuelva HTML/login o ACK invalido.",
+    "Flujo real disponible en el gateway:",
+    "- Skill: provision_webdock_vps.",
+    "- Endpoint: POST /v1/webdock/servers/create.",
+    "- Riesgo: critical, porque crea infraestructura real.",
     "",
-    "Puedo seguir con evidencia, inventario DNS/IONOS, WorkspaceBrowser o skills auditadas del demo.",
+    "Gates obligatorios antes de una creacion real:",
+    "- WEBDOCK_API_KEY_OPS con permisos de escritura.",
+    "- WEBDOCK_SERVERS_ENABLE_CREATE=true.",
+    "- approvalToken humano reciente, maximo 15 minutos.",
+    "- public key SSH valida, por body o WEBDOCK_OPERATOR_SSH_PUBLIC_KEY.",
+    "- parametros explicitos: profile, locationId, hostname, imageSlug y actorId.",
+    "",
+    "Si falta cualquier gate, el endpoint responde bloqueado y deja evidencia en audit log/workspace; eso es correcto para el demo y evita cambios accidentales.",
+    "",
+    "Siguiente paso practico: pasame hostname, ubicacion y perfil deseado, y preparo el payload exacto para crear o para mostrar el bloqueo auditado sin tocar infraestructura.",
     `Timestamp: ${now.toISOString()}`
   ].join("\n");
 }

@@ -157,6 +157,36 @@ test("OpenClaw chat send uses local continuity fallback when enabled", async () 
   assert.equal(fallbackAudit?.metadata.upstreamErrorCode, "openclaw_chat_send_invalid_response");
 });
 
+test("OpenClaw local continuity fallback answers VPS intents with real gates", async () => {
+  const audit = new MemoryAudit();
+  const fetchImpl = async () => new Response("<html>login</html>", {
+    status: 200,
+    headers: { "content-type": "text/html" }
+  });
+  const proxy = new OpenClawChatProxy(audit, {
+    agentHttpUrl: "http://openclaw.test:61175",
+    gatewayToken: "secret-gateway-token",
+    fetchImpl: fetchImpl as typeof fetch,
+    localFallbackEnabled: true,
+    now: () => new Date("2026-05-29T14:35:00.000Z")
+  });
+
+  const response = await proxy.sendOperatorMessage({
+    msgId: "fallback-vps-001",
+    message: "Podemos crear un vps?"
+  });
+
+  assert.equal(response.queued, true);
+  assert.equal(response.assistant?.source, "delivrix.webdock_vps_planner");
+  assert.match(response.assistant?.content ?? "", /POST \/v1\/webdock\/servers\/create/);
+  assert.match(response.assistant?.content ?? "", /approvalToken humano reciente/);
+  assert.match(response.assistant?.content ?? "", /WEBDOCK_SERVERS_ENABLE_CREATE=true/);
+  assert.deepEqual(response.assistant?.skillsInvoked, [
+    "delivrix.webdock_vps_planner",
+    "provision_webdock_vps"
+  ]);
+});
+
 test("OpenClaw chat send falls back to HTTP after consecutive SSH bridge failures", async () => {
   const audit = new MemoryAudit();
   const bridge: OpenClawChatSshBridge = {
