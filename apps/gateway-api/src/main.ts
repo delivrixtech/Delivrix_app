@@ -218,11 +218,13 @@ import { CanvasLiveEventService } from "./services/canvas-live-events.ts";
 import { GatewayLogStreamService } from "./gateway-log-stream.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
+import { createAuditChainStoreFromEnv } from "./audit-chain.ts";
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
 
 const auditLog = new LocalFileAuditLog();
+const auditChainStore = createAuditChainStoreFromEnv();
 const killSwitchStore = new LocalFileKillSwitchStore();
 const sendResultStore = new LocalFileSendResultStore();
 const suppressionList = new LocalFileSuppressionList();
@@ -3117,6 +3119,12 @@ const server = createServer(async (request, response) => {
       return json(response, 200, {
         events: Number.isFinite(limit) && limit > 0 ? events.slice(-limit) : events
       });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/audit-chain/verify") {
+      const result = await auditChainStore.verify();
+      const { sourcePath: _sourcePath, ...publicResult } = result;
+      return json(response, result.ok ? 200 : 422, publicResult);
     }
 
     if (request.method === "GET" && request.url === "/v1/send-jobs") {
