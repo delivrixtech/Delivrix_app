@@ -4,6 +4,7 @@ import type { Socket } from "node:net";
 import type {
   AuditEventInput,
   CanvasLiveEvent,
+  CanvasLiveStateSnapshot,
   CanvasLiveTaskStatus
 } from "../../../packages/domain/src/index.ts";
 import {
@@ -64,6 +65,7 @@ interface AuditSink {
 
 interface CanvasLiveEmitter {
   emit(event: CanvasLiveEvent): Promise<unknown>;
+  snapshot?(): Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
 }
 
 export interface OpenClawChatPanelClient {
@@ -354,7 +356,7 @@ export class OpenClawChatProxy {
     upstreamError: unknown
   ): Promise<ChatSendResponse> {
     const startedAt = this.now().getTime();
-    const fallback = buildLocalOpenClawFallbackResponse(message, this.now());
+    const fallback = await buildLocalOpenClawFallbackResponse(message, this.now(), this.canvasLiveEvents);
     const durationMs = Math.max(0, this.now().getTime() - startedAt);
     const errorInfo = openClawTransportErrorInfo(upstreamError);
 
@@ -1064,11 +1066,24 @@ interface LocalOpenClawFallbackResponse {
   skillsInvoked: string[];
 }
 
-function buildLocalOpenClawFallbackResponse(message: string, now: Date): LocalOpenClawFallbackResponse {
+async function buildLocalOpenClawFallbackResponse(
+  message: string,
+  now: Date,
+  canvasLiveEvents: CanvasLiveEmitter | null
+): Promise<LocalOpenClawFallbackResponse> {
   const normalized = message
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
     .toLowerCase();
+
+  if (/\b(smtp|postfix|opendkim|dkim|mail\s+server|mailserver|correo|sendmail|warmup|calentamiento)\b/.test(normalized)) {
+    const snapshot = await safeCanvasSnapshot(canvasLiveEvents);
+    return {
+      source: "delivrix.smtp_provisioning_planner",
+      skillsInvoked: ["delivrix.smtp_provisioning_planner", "install_smtp_stack", "start_warmup_seed"],
+      content: buildSmtpProvisioningFallbackAnswer(now, snapshot)
+    };
+  }
 
   if (/\b(vps|servidor|server|webdock|proxmox|provision|provisionar|crear|levantar)\b/.test(normalized)) {
     return {
@@ -1159,6 +1174,144 @@ function buildVpsProvisioningFallbackAnswer(now: Date): string {
     "Siguiente paso practico: pasame hostname, ubicacion y perfil deseado, y preparo el payload exacto para crear o para mostrar el bloqueo auditado sin tocar infraestructura.",
     `Timestamp: ${now.toISOString()}`
   ].join("\n");
+}
+
+async function safeCanvasSnapshot(canvasLiveEvents: CanvasLiveEmitter | null): Promise<CanvasLiveStateSnapshot | null> {
+  if (!canvasLiveEvents?.snapshot) {
+    return null;
+  }
+  try {
+    return await canvasLiveEvents.snapshot();
+  } catch {
+    return null;
+  }
+}
+
+function buildSmtpProvisioningFallbackAnswer(now: Date, snapshot: CanvasLiveStateSnapshot | null): string {
+  const context = extractSmtpCanvasContext(snapshot, now);
+  const contextLines = context
+    ? [
+        "Contexto detectado en Canvas:",
+        `- Task: ${context.taskTitle ?? "SMTP provisioning"}${context.taskStatus ? ` (${context.taskStatus})` : ""}.`,
+        ...(context.serverSlug ? [`- Server: ${context.serverSlug}.`] : []),
+        ...(context.domain ? [`- Dominio: ${context.domain}.`] : []),
+        ...(context.approvalToken ? [`- Approval token detectado en Canvas: ${context.approvalToken}${context.approvalExpired ? " (expirado para ejecucion directa)" : ""}.`] : []),
+        ...(context.warning ? [`- Nota: ${context.warning}`] : []),
+        ""
+      ]
+    : [
+        "No tengo un serverSlug/dominio nuevo inequívoco en el mensaje. No voy a inventarlo.",
+        ""
+      ];
+
+  return [
+    "# Propuesta: configurar SMTP supervisado",
+    "",
+    "Si. Lo correcto no es contestar generico: el gateway ya tiene el flujo real para configurar SMTP.",
+    "",
+    ...contextLines,
+    "Ruta real disponible:",
+    "- Skill: install_smtp_stack.",
+    "- Endpoint: POST /v1/servers/:serverSlug/provision-smtp.",
+    "- Paso siguiente despues de SMTP: POST /v1/warmup/start o /v1/warmup/seed.",
+    "",
+    "Gates obligatorios antes de tocar el servidor:",
+    "- SMTP_PROVISIONING_ENABLE_SSH=true.",
+    "- SMTP_PROVISION_SSH_KEY_PATH configurado.",
+    "- approvalToken humano reciente (maximo 15 minutos).",
+    "- serverSlug e IP resolubles en inventory/webdock-servers.json.",
+    "- DKIM private key presente en inventory/dkim-keys/<domain>/<selector>.private.",
+    "- domain, actorId y selector explicitos.",
+    "",
+    "Payload base:",
+    "```json",
+    JSON.stringify({
+      domain: context?.domain ?? "<domain>",
+      actorId: "juanescanar-cto",
+      approvalToken: context?.approvalExpired ? "<approval-token-reciente>" : context?.approvalToken ?? "<approval-token>",
+      selector: "default",
+      taskId: "smtp-provision-<run-id>"
+    }, null, 2),
+    "```",
+    "",
+    `Comando HTTP: POST /v1/servers/${context?.serverSlug ?? "<serverSlug>"}/provision-smtp`,
+    "",
+    context?.readyToAttempt
+      ? "Puedo intentar el endpoint con esos datos si el approval token sigue dentro de ventana; si expiro, primero hay que aprobar de nuevo el artifact."
+      : "Para ejecutarlo necesito que confirmes serverSlug, domain y approvalToken actual; si falta algo, lo mas correcto es disparar el endpoint y mostrar el bloqueo auditado.",
+    "",
+    `Timestamp: ${now.toISOString()}`
+  ].join("\n");
+}
+
+function extractSmtpCanvasContext(snapshot: CanvasLiveStateSnapshot | null, now: Date): {
+  taskTitle?: string;
+  taskStatus?: string;
+  serverSlug?: string;
+  domain?: string;
+  approvalToken?: string;
+  approvalExpired?: boolean;
+  readyToAttempt: boolean;
+  warning?: string;
+} | null {
+  if (!snapshot) {
+    return null;
+  }
+
+  const smtpTasks = snapshot.tasks
+    .filter((task) => {
+      const text = `${task.title} ${task.lastAction && "action" in task.lastAction ? task.lastAction.action : ""} ${task.lastAction && "targetId" in task.lastAction ? task.lastAction.targetId : ""}`.toLowerCase();
+      return text.includes("smtp") || text.includes("postfix") || text.includes("opendkim");
+    })
+    .sort((left, right) => (right.updatedAt ?? right.createdAt).localeCompare(left.updatedAt ?? left.createdAt));
+  const strongSmtpTasks = smtpTasks.filter((task) => {
+    const action = task.lastAction && "action" in task.lastAction ? String(task.lastAction.action) : "";
+    return /^smtp stack\b/i.test(task.title) || action.startsWith("oc.smtp.");
+  });
+
+  const smtpArtifacts = snapshot.artifacts
+    .map((artifact) => ({
+      artifact,
+      text: [
+        artifact.title,
+        artifact.approvalStatus,
+        artifact.executionId ?? "",
+        ...artifact.blocks.map((block) => block.content)
+      ].join("\n")
+    }))
+    .filter(({ text }) => /\b(smtp|postfix|opendkim|server\d+|provision)\b/i.test(text))
+    .sort((left, right) => right.artifact.updatedAt.localeCompare(left.artifact.updatedAt));
+
+  const artifact = smtpArtifacts.find((item) => item.artifact.approvalStatus === "approved") ?? smtpArtifacts[0];
+  const task = strongSmtpTasks[0] ?? smtpTasks[0];
+  const text = artifact?.text ?? task?.title ?? "";
+  const serverSlug = text.match(/\bserver\d+\b/i)?.[0] ?? (task?.lastAction && "targetId" in task.lastAction ? stringValue(task.lastAction.targetId) : null);
+  const domain = extractDomainFromText(text) ?? extractDomainFromText(task?.title ?? "");
+  const approvalToken = artifact?.artifact.approvalStatus === "approved" ? artifact.artifact.executionId : undefined;
+  const approvalExpired = artifact?.artifact.approvedAt
+    ? now.getTime() - Date.parse(artifact.artifact.approvedAt) > 15 * 60 * 1000
+    : Boolean(approvalToken);
+  const wasCleanup = /\b(cleanup|deleted|deleting|cleanup vps)\b/i.test(text);
+
+  if (!task && !artifact) {
+    return null;
+  }
+
+  return {
+    ...(task?.title ? { taskTitle: task.title } : artifact?.artifact.title ? { taskTitle: artifact.artifact.title } : {}),
+    ...(task?.status ? { taskStatus: task.status } : {}),
+    ...(serverSlug ? { serverSlug } : {}),
+    ...(domain ? { domain } : {}),
+    ...(approvalToken ? { approvalToken } : {}),
+    ...(approvalToken ? { approvalExpired } : {}),
+    readyToAttempt: Boolean(serverSlug && domain && approvalToken && !approvalExpired && !wasCleanup),
+    ...(wasCleanup ? { warning: "el contexto menciona cleanup; verifica que el servidor aun exista antes de reintentar SMTP." } : {})
+  };
+}
+
+function extractDomainFromText(text: string): string | null {
+  const matches = text.match(/\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\b/gi) ?? [];
+  return matches.find((match) => !match.match(/^(localhost|127\.0\.0\.1)$/i) && !match.startsWith("v1.")) ?? null;
 }
 
 function buildCanvasTaskId(msgId: string, now: Date): string {

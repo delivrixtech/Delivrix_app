@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AuditEventInput, CanvasLiveEvent } from "../../../packages/domain/src/index.ts";
+import type { AuditEventInput, CanvasLiveEvent, CanvasLiveStateSnapshot } from "../../../packages/domain/src/index.ts";
 import {
   ChatProxyError,
   normalizeAgentChatEvent,
@@ -184,6 +184,84 @@ test("OpenClaw local continuity fallback answers VPS intents with real gates", a
   assert.deepEqual(response.assistant?.skillsInvoked, [
     "delivrix.webdock_vps_planner",
     "provision_webdock_vps"
+  ]);
+});
+
+test("OpenClaw local continuity fallback answers SMTP intents with current canvas gates", async () => {
+  const audit = new MemoryAudit();
+  const canvas = new MemoryCanvas() as MemoryCanvas & { snapshot: () => Promise<CanvasLiveStateSnapshot> };
+  canvas.snapshot = async () => ({
+    schemaVersion: "2026-05-25.canvas-live.v1",
+    generatedAt: "2026-05-29T14:42:00.000Z",
+    tasks: [{
+      taskId: "task-b8b9-t5-smtp-opendkim-fix",
+      title: "SMTP stack · delivrix-demo-d10-20260527.click",
+      status: "completed",
+      createdAt: "2026-05-28T01:12:00.000Z",
+      updatedAt: "2026-05-28T01:13:08.000Z",
+      actorId: "juanescanar-cto",
+      lastAction: {
+        type: "oc.action.now",
+        taskId: "task-b8b9-t5-smtp-opendkim-fix",
+        kind: "audit",
+        action: "oc.smtp.provisioned",
+        targetType: "webdock_server",
+        targetId: "server69",
+        riskLevel: "critical",
+        occurredAt: "2026-05-28T01:13:08.000Z"
+      }
+    }],
+    artifacts: [{
+      artifactId: "artifact-b8b9-finish-20260527",
+      taskId: "task-b8b9-finish-20260527",
+      kind: "proposal",
+      title: "Approve B8/B9 finish",
+      editable: true,
+      createdAt: "2026-05-28T01:12:11.000Z",
+      updatedAt: "2026-05-28T01:12:11.000Z",
+      approvalStatus: "approved",
+      approvedBy: "juanescanar-cto",
+      approvedAt: "2026-05-28T01:12:30.000Z",
+      executionId: "exec-e3d1a72c",
+      blocks: [{
+        blockId: "scope",
+        order: 1,
+        kind: "paragraph",
+        content: "Approve B8/B9 finish: retry SMTP provisioning on server69 for delivrix-demo-d10-20260527.click after timeout/OpenDKIM PID fix.",
+        editable: true,
+        status: "complete",
+        updatedAt: "2026-05-28T01:12:11.000Z"
+      }]
+    }]
+  });
+  const fetchImpl = async () => new Response("<html>login</html>", {
+    status: 200,
+    headers: { "content-type": "text/html" }
+  });
+  const proxy = new OpenClawChatProxy(audit, {
+    agentHttpUrl: "http://openclaw.test:61175",
+    gatewayToken: "secret-gateway-token",
+    fetchImpl: fetchImpl as typeof fetch,
+    canvasLiveEvents: canvas,
+    localFallbackEnabled: true,
+    now: () => new Date("2026-05-29T14:42:00.000Z")
+  });
+
+  const response = await proxy.sendOperatorMessage({
+    msgId: "fallback-smtp-001",
+    message: "necesito configurar el smtp nuevo que tenemos. hazlo."
+  });
+
+  assert.equal(response.queued, true);
+  assert.equal(response.assistant?.source, "delivrix.smtp_provisioning_planner");
+  assert.match(response.assistant?.content ?? "", /POST \/v1\/servers\/:serverSlug\/provision-smtp/);
+  assert.match(response.assistant?.content ?? "", /server69/);
+  assert.match(response.assistant?.content ?? "", /delivrix-demo-d10-20260527\.click/);
+  assert.match(response.assistant?.content ?? "", /exec-e3d1a72c/);
+  assert.deepEqual(response.assistant?.skillsInvoked, [
+    "delivrix.smtp_provisioning_planner",
+    "install_smtp_stack",
+    "start_warmup_seed"
   ]);
 });
 
