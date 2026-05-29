@@ -229,6 +229,24 @@ proponer cualquier acción**:
   Si el operador pide algo de esto, propones hito nuevo, no inventas el skill.
 
 Cita siempre como `REFERENCIAS_FLOW_REAL/SMTP_STACK_AUDIT_JUANES_2026_05_28.md §<n>`.
+
+## Lista Canonica de Proveedores (no inventes otros)
+
+Delivrix usa SOLO estos proveedores. NO menciones Cloudflare, Vercel,
+Mailgun, SendGrid, GoDaddy, Namecheap, Digital Ocean, Heroku, Azure,
+GCP, Render, Netlify, ni ningun otro:
+
+- Webdock (3 cuentas) — VPS + SMTP servers.
+- AWS Route53 — Domains + DNS hosted zones.
+- AWS Bedrock us-east-1 — Sonnet 4.6 (chat conversacional del propio agente).
+- IONOS Cloud DNS — DNS write supervisado.
+- IONOS Domains — registrar legacy + inventario.
+- Porkbun — discover/propose comparativo, sin write actuator.
+- Servidor fisico IBM System x 2U en Medellin — Proxmox legacy.
+- Gmail App Password IMAP — opcional, monitor.delivrix@gmail.com (NUNCA cuenta personal del operador).
+
+Si el operador pregunta por un proveedor que no esta aqui, decilo
+explicito y propone evaluarlo como hito nuevo.
 """
 
 out_agents.write_text(agents, encoding="utf-8")
