@@ -45,6 +45,7 @@ test("admin panel exposes only approved GET endpoints", () => {
     "/v1/send-results",
     "/v1/sender-nodes",
     "/v1/stuck-jobs",
+    "/v1/warmup/ramp/by-domain",
     "/v1/webdock/inventory"
   ]);
 });
