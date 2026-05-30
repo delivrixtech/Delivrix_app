@@ -63,7 +63,8 @@ async function checkRedis(url: string, timeoutMs: number, now: () => Date): Prom
   const client = createClient({
     url,
     socket: {
-      connectTimeout: timeoutMs
+      connectTimeout: timeoutMs,
+      reconnectStrategy: false
     }
   });
 
@@ -83,8 +84,10 @@ async function checkRedis(url: string, timeoutMs: number, now: () => Date): Prom
   } catch (error) {
     return down(now, error);
   } finally {
-    if (client.isOpen) {
-      await client.quit().catch(() => undefined);
+    if (client.isReady) {
+      await withTimeout(client.quit(), timeoutMs).catch(() => client.destroy());
+    } else if (client.isOpen) {
+      client.destroy();
     }
   }
 }
