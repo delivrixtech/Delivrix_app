@@ -12,6 +12,7 @@ import type {
 } from "../../../../packages/domain/src/index.ts";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import { approvalTokenHash } from "../approval-guard.ts";
 import type {
   SmtpSshCommandInput,
   SmtpSshCommandResult,
@@ -384,7 +385,11 @@ async function appendApproval(
     decision: "allow",
     humanApproved: true,
     approverIds: ["operator/juanes"],
-    metadata: { executionId, blockCount: 1 }
+    metadata: {
+      executionId,
+      approvalTokenHash: approvalTokenHash(executionId),
+      blockCount: 1
+    }
   });
 }
 

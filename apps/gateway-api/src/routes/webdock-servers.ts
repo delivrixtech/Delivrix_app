@@ -18,6 +18,10 @@ import type {
   OpenClawWorkspace,
   OpenClawWorkspaceFileRef
 } from "../openclaw-workspace.ts";
+import {
+  artifactMatchesAuditApproval,
+  auditApprovalMatchesToken
+} from "../approval-guard.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -682,7 +686,7 @@ async function findRecentApproval(input: {
   if (!input.auditLog.list) return null;
   const events = await input.auditLog.list();
   const auditEvent = events.toReversed().find((event) => {
-    if (event.action !== "oc.artifact.approved" || event.metadata.executionId !== input.approvalToken) {
+    if (!auditApprovalMatchesToken(event, input.approvalToken)) {
       return false;
     }
     const approvedAt = Date.parse(event.occurredAt);
@@ -692,11 +696,13 @@ async function findRecentApproval(input: {
 
   const state = await input.readCanvasState();
   return state.artifacts.find((artifact) => {
-    if (artifact.approvalStatus !== "approved" || artifact.executionId !== input.approvalToken || !artifact.approvedAt) {
-      return false;
-    }
-    const approvedAt = Date.parse(artifact.approvedAt);
-    return Number.isFinite(approvedAt) && input.now.getTime() - approvedAt >= 0 && input.now.getTime() - approvedAt <= input.maxAgeMs;
+    return artifactMatchesAuditApproval({
+      artifact,
+      approvalEvent: auditEvent,
+      approvalToken: input.approvalToken,
+      now: input.now,
+      maxAgeMs: input.maxAgeMs
+    });
   }) ?? null;
 }
 

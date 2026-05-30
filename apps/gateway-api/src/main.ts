@@ -75,6 +75,7 @@ import {
   type BackupPlanInput,
   type BackupResource,
   type BackupResourceSnapshot,
+  type CanvasLiveArtifactSnapshot,
   type IpReputationExternalSignal,
   type DelivrixMvpDemoBlueprintInput,
   type OpenClawOnboardingInput,
@@ -244,6 +245,14 @@ import { EquipoWebhookBroadcaster } from "./webhook-broadcast.ts";
 import { buildAuditChainAnchor, AuditChainAnchorError } from "./audit-chain-anchor.ts";
 import { hardenIncomingAuditBatchEvent } from "./audit-batch-origin.ts";
 import { classifyLiveActionMutation } from "./live-action-kill-switch.ts";
+import { createSkillDispatcher } from "./skill-dispatcher.ts";
+import { handleProposalSign } from "./routes/proposals-sign.ts";
+import { handleProposalReject } from "./routes/proposals-reject.ts";
+import {
+  canonicalSkillSlug,
+  hashSkillExecutionContext,
+  validateSkillActionBinding
+} from "./skill-contracts.ts";
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
@@ -302,6 +311,22 @@ const rampScheduler = new RampScheduler({
   autoRollbackManager,
   webhookBroadcaster: equipoWebhookBroadcaster
 });
+const skillDispatcher = createSkillDispatcher({
+  auditLog,
+  workspace: openClawWorkspace,
+  readCanvasState: () => canvasLiveEvents.snapshot(),
+  domainPurchaseAdapter: awsRoute53DomainsAdapter,
+  route53DnsAdapter: awsRoute53DnsAdapter,
+  ionosDnsAdapter,
+  webdockAdapter: webdockOpsAdapter,
+  smtpSshRunner,
+  rampScheduler,
+  canvasLiveEvents,
+  autoRollbackManager,
+  webhookBroadcaster: equipoWebhookBroadcaster,
+  readKillSwitch: () => killSwitchStore.get(),
+  env: process.env
+});
 const onboardDomainFlowRunner = createGatewayOnboardDomainFlowRunner({
   auditLog,
   workspace: openClawWorkspace,
@@ -335,6 +360,11 @@ interface AgentProposal {
   evidenceRefs: string[];
   runbookRef: string;
   targetRef: string;
+  targetType?: string;
+  skillSlug?: string;
+  params?: unknown;
+  proposalHash?: string;
+  artifactSnapshot?: CanvasLiveArtifactSnapshot;
   delivrix_actions_required: string[];
 }
 
@@ -375,9 +405,13 @@ interface RunbookRevertRequest {
 interface StoredProposal extends AgentProposal {
   receivedAt: string;
   expiresAt: string;
-  status: "pending" | "resolved" | "expired";
+  status: "pending" | "resolved" | "expired" | "signed" | "rejected" | "executing" | "executed" | "execution_failed";
   requiresApproval: boolean;
   requiredApprovals: number;
+  signedAt?: string;
+  signatureId?: string;
+  rejectedAt?: string;
+  rejectionReason?: string;
   resolution?: {
     decision: "allow" | "reject";
     resolvedAt: string;
@@ -463,6 +497,21 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("mark_evidence_curated", "supervised_local_state"),
   permission("snooze_proposal", "supervised_local_state"),
   permission("record_human_decision", "supervised_local_state"),
+  permission("register_domain_route53", "supervised_local_state"),
+  permission("upsert_dns_route53", "supervised_local_state"),
+  permission("route53_dns_upsert", "supervised_local_state"),
+  permission("upsert_dns_ionos", "supervised_local_state"),
+  permission("ionos_dns_upsert", "supervised_local_state"),
+  permission("create_webdock_server", "supervised_local_state"),
+  permission("provision_webdock_vps", "supervised_local_state"),
+  permission("provision_smtp_postfix", "supervised_local_state"),
+  permission("install_smtp_stack", "supervised_local_state"),
+  permission("configure_email_auth", "supervised_local_state"),
+  permission("bind_domain_to_server", "supervised_local_state"),
+  permission("seed_warmup_pool", "supervised_local_state"),
+  permission("start_warmup_seed", "supervised_local_state"),
+  permission("start_warmup_ramp", "supervised_local_state"),
+  permission("warmup_ramp_scheduler", "supervised_local_state"),
   permission("proxmox_live_create_vps", "future_live_requires_new_phase"),
   permission("proxmox_live_destroy_vps", "future_live_requires_new_phase"),
   permission("webdock_create_server", "future_live_requires_new_phase"),
@@ -2633,6 +2682,43 @@ const server = createServer(async (request, response) => {
       const requiresApproval = permissions.some(
         (decision) => decision.category === "supervised_local_state"
       );
+      const skillSlug = canonicalSkillSlug(proposal.skillSlug ?? audit.skillSlug);
+      const skillBinding = validateSkillActionBinding({
+        skill: skillSlug,
+        actionIds: proposal.delivrix_actions_required
+      });
+      if (!skillBinding.ok) {
+        await auditLog.append({
+          actorType: "openclaw",
+          actorId: "openclaw-hostinger-prod",
+          action: "oc.permission.rejected",
+          targetType: "proposal",
+          targetId: proposal.id,
+          riskLevel: "high",
+          metadata: {
+            rejectReason: skillBinding.rejectReason,
+            skillSlug,
+            expectedActionIds: skillBinding.expectedActionIds ?? [],
+            actionIds: proposal.delivrix_actions_required,
+            category: proposal.category,
+            targetRef: proposal.targetRef
+          }
+        });
+
+        return json(response, 409, {
+          rejectReason: skillBinding.rejectReason,
+          details: `Skill ${skillSlug} is not authorized by proposal actions`
+        });
+      }
+      const targetType = proposal.targetType ?? (looksLikeDomain(proposal.targetRef) ? "domain" : "proposal_target");
+      const executionContextHash = hashSkillExecutionContext({
+        proposalId: proposal.id,
+        skill: skillSlug,
+        actionIds: proposal.delivrix_actions_required,
+        targetType,
+        targetId: proposal.targetRef,
+        params: proposal.params ?? {}
+      });
 
       if (existing) {
         return json(response, 200, {
@@ -2646,6 +2732,8 @@ const server = createServer(async (request, response) => {
 
       const stored: StoredProposal = {
         ...proposal,
+        skillSlug,
+        proposalHash: hash,
         receivedAt: now.toISOString(),
         expiresAt: new Date(now.getTime() + proposalTtlMs).toISOString(),
         status: "pending",
@@ -2667,8 +2755,9 @@ const server = createServer(async (request, response) => {
           requiresApproval,
           targetRef: proposal.targetRef,
           proposalHash: hash,
+          executionContextHash,
           runbookRef: proposal.runbookRef,
-          skillSlug: audit.skillSlug,
+          skillSlug,
           modelVersion: audit.modelVersion,
           promptVersion: audit.promptVersion,
           tokensUsed: audit.tokensUsed
@@ -2782,6 +2871,67 @@ const server = createServer(async (request, response) => {
         accepted,
         rejected
       });
+    }
+
+    if (request.method === "POST") {
+      const signMatch = requestUrl(request).pathname.match(/^\/v1\/openclaw\/proposals\/([^/]+)\/sign$/);
+      if (signMatch) {
+        return await handleProposalSign({
+          request,
+          response,
+          proposalId: decodeURIComponent(signMatch[1] ?? ""),
+          auditLog,
+          auditChain: auditChainStore,
+          proposalsStore,
+          canvasState: {
+            upsertArtifact: (artifact) => canvasLiveEvents.upsertArtifactSnapshot(artifact)
+          },
+          webhookBroadcaster: equipoWebhookBroadcaster,
+          dispatcher: skillDispatcher,
+          readKillSwitch: () => killSwitchStore.get(),
+          env: process.env
+        });
+      }
+
+      const rejectMatch = requestUrl(request).pathname.match(/^\/v1\/openclaw\/proposals\/([^/]+)\/reject$/);
+      if (rejectMatch) {
+        return await handleProposalReject({
+          request,
+          response,
+          proposalId: decodeURIComponent(rejectMatch[1] ?? ""),
+          auditLog,
+          auditChain: auditChainStore,
+          proposalsStore,
+          canvasState: {
+            upsertArtifact: (artifact) => canvasLiveEvents.upsertArtifactSnapshot(artifact)
+          },
+          webhookBroadcaster: equipoWebhookBroadcaster,
+          readKillSwitch: () => killSwitchStore.get(),
+          env: process.env
+        });
+      }
+    }
+
+    {
+      const statusMatch = request.method === "GET"
+        ? requestUrl(request).pathname.match(/^\/v1\/openclaw\/proposals\/([^/]+)\/status$/)
+        : null;
+      if (statusMatch) {
+        const proposalId = decodeURIComponent(statusMatch[1] ?? "");
+        const proposal = proposalsStore.find((candidate) => candidate.id === proposalId);
+        if (!proposal) {
+          return json(response, 404, { ok: false, rejectReason: "proposal_not_found" });
+        }
+        return json(response, 200, {
+          ok: true,
+          proposalId: proposal.id,
+          status: proposal.status,
+          signedAt: proposal.signedAt,
+          signatureId: proposal.signatureId,
+          rejectedAt: proposal.rejectedAt,
+          rejectionReason: proposal.rejectionReason
+        });
+      }
     }
 
     const approveMatch = request.url?.match(/^\/v1\/agent\/proposals\/([^/]+)\/approve$/);
@@ -4965,6 +5115,7 @@ function normalizeAgentProposal(value: Partial<AgentProposal> | undefined): Agen
     return null;
   }
 
+  const target = normalizeProposalTargetRef((value as Record<string, unknown>).targetRef);
   if (
     !isNonEmptyString(value.id) ||
     !isNonEmptyString(value.category) ||
@@ -4972,7 +5123,7 @@ function normalizeAgentProposal(value: Partial<AgentProposal> | undefined): Agen
     !isNonEmptyString(value.headline) ||
     !isNonEmptyString(value.body) ||
     !isNonEmptyString(value.runbookRef) ||
-    !isNonEmptyString(value.targetRef) ||
+    !target ||
     !Array.isArray(value.delivrix_actions_required) ||
     value.delivrix_actions_required.length === 0
   ) {
@@ -4995,9 +5146,40 @@ function normalizeAgentProposal(value: Partial<AgentProposal> | undefined): Agen
       ? value.evidenceRefs.filter(isNonEmptyString)
       : [],
     runbookRef: value.runbookRef.trim(),
-    targetRef: value.targetRef.trim(),
+    targetRef: target.id,
+    ...(target.type ? { targetType: target.type } : {}),
+    ...(isNonEmptyString(value.skillSlug) ? { skillSlug: value.skillSlug.trim() } : {}),
+    ...(isRecord((value as Record<string, unknown>).params) ? { params: (value as Record<string, unknown>).params } : {}),
+    ...(isCanvasArtifactSnapshot((value as Record<string, unknown>).artifactSnapshot)
+      ? { artifactSnapshot: (value as Record<string, unknown>).artifactSnapshot as CanvasLiveArtifactSnapshot }
+      : {}),
     delivrix_actions_required: actions.map((action) => action.trim())
   };
+}
+
+function normalizeProposalTargetRef(value: unknown): { id: string; type?: string } | null {
+  if (isNonEmptyString(value)) {
+    return { id: value.trim() };
+  }
+  if (isRecord(value) && isNonEmptyString(value.id)) {
+    return {
+      id: value.id.trim(),
+      ...(isNonEmptyString(value.type) ? { type: value.type.trim() } : {})
+    };
+  }
+  return null;
+}
+
+function isCanvasArtifactSnapshot(value: unknown): value is CanvasLiveArtifactSnapshot {
+  return isRecord(value) &&
+    isNonEmptyString(value.artifactId) &&
+    isNonEmptyString(value.taskId) &&
+    isNonEmptyString(value.title) &&
+    Array.isArray(value.blocks);
+}
+
+function looksLikeDomain(value: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {

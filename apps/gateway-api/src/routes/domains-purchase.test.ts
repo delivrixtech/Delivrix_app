@@ -14,6 +14,7 @@ import type {
 import type { CanvasLiveStateSnapshot } from "../../../../packages/domain/src/index.ts";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import { approvalTokenHash } from "../approval-guard.ts";
 import {
   handleRoute53DomainPurchaseError,
   handleRoute53DomainRegisterHttp,
@@ -109,6 +110,7 @@ test("POST /v1/domains/route53/register registers after approval, cap, contact, 
     approverIds: ["operator/juanes"],
     metadata: {
       executionId: "exec-approved-123",
+      approvalTokenHash: approvalTokenHash("exec-approved-123"),
       blockCount: 1
     }
   });
@@ -193,6 +195,7 @@ test("POST /v1/domains/route53/register is idempotent when domain is already own
     approverIds: ["operator/juanes"],
     metadata: {
       executionId: "exec-approved-123",
+      approvalTokenHash: approvalTokenHash("exec-approved-123"),
       blockCount: 1
     }
   });

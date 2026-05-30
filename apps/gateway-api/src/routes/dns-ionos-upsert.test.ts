@@ -14,6 +14,7 @@ import {
 import type { CanvasLiveStateSnapshot } from "../../../../packages/domain/src/index.ts";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import { approvalTokenHash } from "../approval-guard.ts";
 import {
   handleIonosDnsUpsertError,
   handleIonosDnsUpsertHttp,
@@ -99,6 +100,7 @@ test("POST /v1/dns/ionos/upsert applies records and emits oc.dns.ionos.upserted 
     approverIds: ["operator/juanes"],
     metadata: {
       executionId: "exec-approved-ionos",
+      approvalTokenHash: approvalTokenHash("exec-approved-ionos"),
       blockCount: 1
     }
   });
@@ -194,6 +196,7 @@ test("POST /v1/dns/ionos/upsert returns 502 when actuator throws IonosDnsActuato
     approverIds: ["operator/juanes"],
     metadata: {
       executionId: "exec-approved-ionos",
+      approvalTokenHash: approvalTokenHash("exec-approved-ionos"),
       blockCount: 1
     }
   });

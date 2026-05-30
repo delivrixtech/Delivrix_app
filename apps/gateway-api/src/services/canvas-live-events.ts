@@ -218,6 +218,57 @@ export class CanvasLiveEventService {
     return { occurredAt };
   }
 
+  async upsertArtifactSnapshot(input: CanvasLiveArtifactSnapshot): Promise<void> {
+    await this.ensureLoaded();
+    const snapshot: CanvasLiveArtifactSnapshot = {
+      ...input,
+      blocks: [...input.blocks].sort((left, right) => left.order - right.order)
+    };
+    this.artifacts.set(snapshot.artifactId, snapshot);
+
+    await this.persistArtifactRecord({
+      type: "oc.artifact.declare",
+      taskId: snapshot.taskId,
+      artifactId: snapshot.artifactId,
+      kind: snapshot.kind,
+      title: snapshot.title,
+      editable: snapshot.editable,
+      createdAt: snapshot.createdAt
+    });
+    for (const block of snapshot.blocks) {
+      await this.persistArtifactRecord({
+        type: "oc.artifact.block",
+        artifactId: snapshot.artifactId,
+        blockId: block.blockId,
+        order: block.order,
+        kind: block.kind,
+        content: block.content,
+        editable: block.editable,
+        status: block.status,
+        occurredAt: block.updatedAt
+      });
+    }
+
+    if (snapshot.approvalStatus === "approved" && snapshot.approvedBy && snapshot.approvedAt) {
+      await this.persistArtifactRecord({
+        type: "oc.artifact.approved",
+        artifactId: snapshot.artifactId,
+        actorId: snapshot.approvedBy,
+        executionId: snapshot.executionId,
+        occurredAt: snapshot.approvedAt
+      });
+    }
+    if (snapshot.approvalStatus === "rejected" && snapshot.rejectedBy && snapshot.rejectedAt) {
+      await this.persistArtifactRecord({
+        type: "oc.artifact.rejected",
+        artifactId: snapshot.artifactId,
+        actorId: snapshot.rejectedBy,
+        reason: snapshot.rejectionReason,
+        occurredAt: snapshot.rejectedAt
+      });
+    }
+  }
+
   acceptPanelSocket(request: IncomingMessage, socket: Socket, head?: Buffer): void {
     if (!isWebSocketUpgrade(request)) {
       socket.destroy();

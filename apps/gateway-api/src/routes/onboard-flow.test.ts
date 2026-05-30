@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import { approvalTokenHash } from "../approval-guard.ts";
 import { CanvasLiveEventService } from "../services/canvas-live-events.ts";
 import {
   createGatewayOnboardDomainFlowRunner,
@@ -337,6 +338,7 @@ async function seedApproval(
     approverIds: ["operator/juanes"],
     metadata: {
       executionId: approval.executionId,
+      approvalTokenHash: approvalTokenHash(approval.executionId),
       blockCount: 1
     }
   });

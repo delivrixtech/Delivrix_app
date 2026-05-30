@@ -18,6 +18,7 @@ import type {
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import { AutoRollbackManager } from "../auto-rollback.ts";
+import { approvalTokenHash } from "../approval-guard.ts";
 import {
   handleRoute53DnsError,
   handleRoute53HostedZoneDeleteHttp,
@@ -439,6 +440,7 @@ async function appendApproval(
     approverIds: ["operator/juanes"],
     metadata: {
       executionId,
+      approvalTokenHash: approvalTokenHash(executionId),
       blockCount: 1
     }
   });

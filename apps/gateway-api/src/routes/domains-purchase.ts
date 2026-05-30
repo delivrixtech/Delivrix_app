@@ -16,6 +16,10 @@ import type {
   OpenClawWorkspace,
   OpenClawWorkspaceFileRef
 } from "../openclaw-workspace.ts";
+import {
+  artifactMatchesAuditApproval,
+  auditApprovalMatchesToken
+} from "../approval-guard.ts";
 
 export interface Route53DomainPurchaseAdapter {
   isLive(): boolean;
@@ -368,19 +372,13 @@ async function findRecentApproval(input: {
   }
 
   for (const artifact of state.artifacts) {
-    if (
-      artifact.approvalStatus !== "approved" ||
-      artifact.executionId !== input.approvalToken ||
-      !artifact.approvedAt
-    ) {
-      continue;
-    }
-    const approvedAt = Date.parse(artifact.approvedAt);
-    if (!Number.isFinite(approvedAt)) {
-      continue;
-    }
-    const ageMs = input.now.getTime() - approvedAt;
-    if (ageMs >= 0 && ageMs <= input.maxAgeMs) {
+    if (artifactMatchesAuditApproval({
+      artifact,
+      approvalEvent: auditApproval,
+      approvalToken: input.approvalToken,
+      now: input.now,
+      maxAgeMs: input.maxAgeMs
+    })) {
       return artifact;
     }
   }
@@ -398,10 +396,7 @@ async function findRecentAuditApproval(input: {
   }
   const events = await input.auditLog.list();
   for (const event of events.toReversed()) {
-    if (
-      event.action !== "oc.artifact.approved" ||
-      event.metadata.executionId !== input.approvalToken
-    ) {
+    if (!auditApprovalMatchesToken(event, input.approvalToken)) {
       continue;
     }
     const approvedAt = Date.parse(event.occurredAt);
