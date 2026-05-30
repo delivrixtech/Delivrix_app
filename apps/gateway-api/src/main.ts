@@ -2582,6 +2582,41 @@ const server = createServer(async (request, response) => {
       });
     }
 
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/proposals") {
+      const now = new Date();
+      pruneExpiredProposals(now);
+
+      return json(response, 200, {
+        schemaVersion: "2026-05-29.openclaw-proposals.v1",
+        generatedAt: now.toISOString(),
+        proposals: proposalsStore
+          .filter((proposal) =>
+            proposal.status === "pending" &&
+            proposal.requiresApproval &&
+            Date.parse(proposal.expiresAt) > now.getTime()
+          )
+          .sort((a, b) => Date.parse(b.receivedAt) - Date.parse(a.receivedAt))
+          .map((proposal) => ({
+            id: proposal.id,
+            category: proposal.category,
+            severity: proposal.severity,
+            headline: proposal.headline,
+            body: proposal.body,
+            runbookRef: proposal.runbookRef,
+            targetRef: proposal.targetRef,
+            targetType: proposal.targetType,
+            skillSlug: proposal.skillSlug,
+            params: proposal.params ?? null,
+            evidenceRefs: proposal.evidenceRefs,
+            delivrixActionsRequired: proposal.delivrix_actions_required,
+            receivedAt: proposal.receivedAt,
+            expiresAt: proposal.expiresAt,
+            requiredApprovals: proposal.requiredApprovals,
+            currentApprovals: approvalStateForProposal(proposal).current
+          }))
+      });
+    }
+
     if (request.method === "POST" && request.url === "/v1/agent/proposals") {
       const { raw, body } = await readRawBodyAndJson<AgentProposalRequest>(request);
       const hmac = validateOpenClawHmac(request.headers, raw);
