@@ -17,16 +17,30 @@ const gatewayLogStreamPath = "/v1/gateway/logs/stream";
  * - Audit append-only obligatorio en cada acción.
  * - Reason + actorId requeridos por contrato.
  * - humanApproved=true para snapshot ingest.
- * - Regla de 2 personas para kill switch.
+ * - Kill switch (1 firma operador via panel).
+ * - Sign de propuestas via ApprovalGate (1 firma operador, post cambio norte 2026-05-29).
+ * - Reject de propuestas via ApprovalGate.
  *
- * Otros POST (proposals, scheduler, runbook evaluate, demo, etc.) siguen
+ * Otros POST (proposals submit, scheduler, runbook evaluate, demo, etc.) siguen
  * bloqueados para que solo OpenClaw/CLI los disparen.
+ *
+ * Detalle: el path /sign queda whitelisteado por regex porque incluye {auditId}
+ * dinámico. El backend valida la integridad de la firma vía audit chain SHA-256.
  */
 const allowedWritePaths = new Set<string>([
   "/v1/kill-switch",
   "/v1/openclaw/onboarding/evaluate",
   "/v1/devops/collector/manual-snapshots/ingest"
 ]);
+
+/**
+ * Patrones POST permitidos (regex). Para paths con segmentos dinámicos
+ * tipo /v1/openclaw/proposals/{auditId}/sign.
+ */
+const allowedWritePatterns: RegExp[] = [
+  /^\/v1\/openclaw\/proposals\/[^/]+\/sign$/,
+  /^\/v1\/openclaw\/proposals\/[^/]+\/reject$/
+];
 
 export default defineConfig({
   plugins: [readOnlyProxyBoundary(), tailwindcss(), react()],
@@ -94,7 +108,8 @@ function readOnlyProxyBoundary(): Plugin {
           requestUrl.pathname === gatewayLogStreamPath;
         const isAllowedWrite =
           request.method === "POST" &&
-          allowedWritePaths.has(requestUrl.pathname);
+          (allowedWritePaths.has(requestUrl.pathname) ||
+            allowedWritePatterns.some((re) => re.test(requestUrl.pathname)));
         // Canvas Live (Bloque 7): approve / reject como POST, edit block como PATCH.
         // El gateway audita los 3 como acción crítica con regla operador.
         const isCanvasArtifactApprove =

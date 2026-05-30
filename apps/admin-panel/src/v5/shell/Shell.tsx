@@ -384,7 +384,7 @@ function KillSwitch({
         </Pill>
       </div>
       <span className="font-sans text-[10.5px] leading-[1.4] text-fg-subtle">
-        Regla de 2 personas · click para gestionar
+        1 firma operador · audit SHA-256 · click para gestionar
       </span>
     </button>
   );
