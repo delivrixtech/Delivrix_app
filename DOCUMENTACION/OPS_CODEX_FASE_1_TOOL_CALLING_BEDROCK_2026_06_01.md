@@ -1,7 +1,56 @@
 # OPS Codex Fase 1 — Tool calling Bedrock real
 
 **Fecha despacho:** 2026-05-29 viernes (pre-armado por PM).
-**Fecha ejecución:** lunes 2026-06-01 ~11:00 COT (post-smoke Fase 0.5).
+**Fecha ejecución:** **2026-05-31 domingo, ARRANCAR YA en paralelo con smoke E2E manual.** Juanes pidió 2026-05-31: "Necesito que lo haga HOY MISMO."
+
+**Update 2026-05-31 14:00 COT — MODO URGENT:** Juanes pide cierre completo HOY domingo. Codex CLI multi-agente debe trabajar al límite. PM supervisor (Claude) revisa cada commit. Goal: OpenClaw chat ejecuta E2E completo (compra dominio → espera propagación DNS → crea VPS → bind Webdock main domain → instala Postfix → DNS records → SPF/DKIM/DMARC → envía email REAL legítimo, no test) con 1 firma operador por hito via ApprovalGate.
+
+**Scope reducido para cierre en 1 día (8-12h Codex multi-agente paralelo):**
+
+1. Tool calling Bedrock básico (Sonnet 4.6 con `tools` parameter)
+2. Loop tool_use → auto-submit proposal → ApprovalGate → dispatcher → tool_result → continuar
+3. Frontend Canvas Live: inline tool_use cards + PendingApprovalsPanel multi-step
+4. System prompt v2: reglas naming + flow E2E embebido
+
+**Scope diferido (NO HOY, post-Fase 1):**
+
+- Multi-agente seniors orquestados (Fase 2)
+- Visualización avanzada multi-pane (Fase 3)
+- Cold storage anchor (Fase 4)
+
+---
+
+## Despacho multi-agente paralelo recomendado
+
+Codex CLI puede despachar 5 agentes paralelos en worktrees independientes:
+
+| Agente | Worktree | OPS | Bloqueante de |
+|---|---|---|---|
+| A1 | `/tmp/delivrix-tool-calling` | `OPS_CODEX_FASE_1_TOOL_CALLING_BEDROCK_2026_06_01.md` (este) | A6 (orquestador depende del loop tool_use) |
+| A2 | `/tmp/delivrix-suggest-domain` | `OPS_CODEX_SKILL_SUGGEST_SAFE_DOMAIN_2026_05_31.md` | A6 |
+| A3 | `/tmp/delivrix-wait-dns` | `OPS_CODEX_SKILL_WAIT_FOR_DNS_PROPAGATION_2026_05_31.md` | A6 |
+| A4 | `/tmp/delivrix-bind-domain` | `OPS_CODEX_SKILL_BIND_WEBDOCK_MAIN_DOMAIN_2026_05_31.md` | A6 |
+| A5 | `/tmp/delivrix-send-email` | `OPS_CODEX_SKILL_SEND_REAL_EMAIL_2026_05_31.md` | A6, requiere review CTO |
+
+Cada agente termina con commit en su worktree → push a `main` con merge cuidadoso (rebase si conflicts). PM Claude revisa SHA cuando llega y valida tests verdes.
+
+Cuando 5 agentes Fase A cierren, despachar:
+
+| Agente | OPS | Depende |
+|---|---|---|
+| B1 | `OPS_CODEX_SKILL_CONFIGURE_COMPLETE_SMTP_2026_05_31.md` | A1+A2+A3+A4+A5 |
+| B2 | `OPS_CODEX_SYSTEM_PROMPT_V2_TOOL_CALLING_2026_05_31.md` | B1 |
+
+Después B2 cierra, ejecutar `bash scripts/openclaw/build-system-context.sh` para resync bundle al container Hostinger. Recién entonces OpenClaw chat puede ejecutar el flow.
+
+## Reglas de coordinación
+
+1. NO mezclar worktrees — cada agente en su propio path.
+2. NO tocar archivos del smoke paso 1 ya cerrado (paso 1 en producción real, $15 gastados, no romper).
+3. Tests verdes obligatorios antes de push (NO push con tests rojos).
+4. Si conflict en `main.ts` durante merge → resolver vía rebase + re-test, no force-push.
+5. Reportar SHA + status cada hora al PM Claude (chat o markdown file en repo).
+6. Si bloqueante encontrado (API Webdock no expone X, dependencia faltante, etc.) → escalar al PM ANTES de gastar más tiempo.
 **Owner:** Codex backend senior.
 **PM:** Claude.
 **Duración estimada:** 5 días laborales (lunes 06-01 a viernes 06-05).
