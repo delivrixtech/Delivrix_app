@@ -412,6 +412,10 @@ interface StoredProposal extends AgentProposal {
   signatureId?: string;
   rejectedAt?: string;
   rejectionReason?: string;
+  executionOutcome?: unknown;
+  executionStatusCode?: number;
+  executionDurationMs?: number;
+  executionCompletedAt?: string;
   resolution?: {
     decision: "allow" | "reject";
     resolvedAt: string;
@@ -2964,7 +2968,12 @@ const server = createServer(async (request, response) => {
           signedAt: proposal.signedAt,
           signatureId: proposal.signatureId,
           rejectedAt: proposal.rejectedAt,
-          rejectionReason: proposal.rejectionReason
+          rejectionReason: proposal.rejectionReason,
+          executionOk: proposal.status === "executed",
+          outcome: proposal.executionOutcome ?? null,
+          executionStatusCode: proposal.executionStatusCode ?? null,
+          executionDurationMs: proposal.executionDurationMs ?? null,
+          executionCompletedAt: proposal.executionCompletedAt ?? null
         });
       }
     }
