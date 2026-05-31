@@ -61,6 +61,43 @@ function resolveImageSlug(imageSlug: WebdockProvisionImageSlug): string {
 - El gateway tiene cache del módulo viejo
 - El error no es por imageSlug sino por OTRO campo (profileSlug, publicKeys array, locationId)
 
+## ACTUALIZACIÓN 2026-05-30 19:05 COT — segundo bug encontrado
+
+Tras parchear el adapter para loggear body 4xx, re-corrí smoke paso 3. **El error cambió:**
+
+```json
+{
+  "error": "internal_error",
+  "message": "order must be a positive integer."
+}
+```
+
+HTTP 500. NO llega a Webdock API. **El handler aborta ANTES con un error de validación interna del canvas-live-events service.**
+
+Validador de origen: `apps/gateway-api/src/services/canvas-live-events.ts` línea 601:
+```typescript
+order: positiveInteger(raw.order, "order"),
+```
+
+Algún emit de `oc.artifact.block` durante el flow del `/sign` o del dispatcher de `create_webdock_server` envía `order: 0` / `undefined` / faltante. El validator rechaza.
+
+**Bloqueante adicional:** el catch global del backend NO loggea stack traces. `runtime/gateway-postfix.log` solo muestra `listening on 3000` + warnings de Postgres/Redis. **Imposible diagnosticar la línea exacta sin agregar logging al código.**
+
+## Tareas (revisadas)
+
+### 0. Mejorar logging del catch global (PREREQ)
+
+Agregar `console.error(err.stack)` o equivalente al catch que devuelve `{ error: "internal_error" }`. Sin esto, debug futuro es ciego.
+
+### 1. Identificar dónde se emite `oc.artifact.block` con order inválido durante `/sign` para `create_webdock_server`
+
+Sospechosos:
+- Dispatcher de skills al persistir evidence files como artifact blocks
+- `/sign` endpoint al actualizar canvas state del proposal aprobado
+- Algún `persistArtifactRecord` que itera blocks sin asignar `order`
+
+Buscar todos los lugares donde se construye `{ type: "oc.artifact.block", ... }` sin `order: <positivo>`.
+
 ## Tareas
 
 ### 1. Modificar `webdock-real-adapter.ts` para loggear body 4xx
