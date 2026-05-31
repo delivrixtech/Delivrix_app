@@ -59,10 +59,11 @@ import {
 } from "./routes/dns-wait.ts";
 import {
   handleSendRealEmailHttp,
-  sendRealEmailParamSchema
+  sendRealEmailSkillParamSchema
 } from "./routes/send-email.ts";
 import {
   bindDomainParamSchema,
+  configureCompleteSmtpParamSchema,
   emailAuthParamSchema,
   ionosUpsertParamSchema,
   route53RegisterParamSchema,
@@ -74,6 +75,10 @@ import {
   type SkillParamSchema
 } from "./skill-schemas.ts";
 import { canonicalSkillSlug } from "./skill-contracts.ts";
+import {
+  handleConfigureCompleteSmtp,
+  type ConfigureCompleteSmtpDeps
+} from "./routes/orchestrator-smtp.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -109,6 +114,10 @@ export interface SkillDispatcherDeps {
   dnsDigFn?: DnsDigFn;
   dnsResolver?: DnsResolver;
   readKillSwitch?: () => Promise<KillSwitchProvider> | KillSwitchProvider;
+  configureSmtpDeps?: Pick<
+    ConfigureCompleteSmtpDeps,
+    "invokeSkill" | "submitAndAwaitApproval" | "submitRollbackProposal" | "verifyAuditChain"
+  >;
   env?: Record<string, string | undefined>;
   now?: () => Date;
 }
@@ -484,7 +493,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
       })
   };
   const sendRealEmail: SkillHandlerEntry = {
-    paramSchema: sendRealEmailParamSchema,
+    paramSchema: sendRealEmailSkillParamSchema,
     timeoutMs: 90_000,
     canRollback: false,
     invoke: ({ request, response, deps }) =>
@@ -498,6 +507,28 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         readKillSwitch: deps.readKillSwitch,
         now: deps.now
       })
+  };
+  const configureCompleteSmtp: SkillHandlerEntry = {
+    paramSchema: configureCompleteSmtpParamSchema,
+    timeoutMs: 3 * 60 * 60 * 1000,
+    canRollback: false,
+    invoke: ({ request, response, deps }) => {
+      if (!deps.configureSmtpDeps) {
+        response.writeHead(503, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "configure_smtp_deps_missing" }));
+        return Promise.resolve();
+      }
+      return handleConfigureCompleteSmtp({
+        request,
+        response,
+        auditLog: deps.auditLog,
+        canvasLiveEvents: deps.canvasLiveEvents,
+        readKillSwitch: deps.readKillSwitch,
+        env: deps.env,
+        now: deps.now,
+        ...deps.configureSmtpDeps
+      });
+    }
   };
 
   return {
@@ -524,7 +555,9 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     dns_propagation_wait: waitForDnsPropagation,
     send_real_email: sendRealEmail,
     smtp_send_real: sendRealEmail,
-    smtp_send_real_email: sendRealEmail
+    smtp_send_real_email: sendRealEmail,
+    configure_complete_smtp: configureCompleteSmtp,
+    configure_smtp_complete: configureCompleteSmtp
   };
 }
 

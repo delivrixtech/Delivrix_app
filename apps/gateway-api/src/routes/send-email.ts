@@ -41,6 +41,14 @@ export interface SendRealEmailParams extends Record<string, unknown> {
   approvalToken: string;
 }
 
+export interface SendRealEmailSkillParams extends Record<string, unknown> {
+  fromAddress: string;
+  toAddress: string;
+  subject: string;
+  body: string;
+  serverSlug: string;
+}
+
 export interface SendRealEmailResult {
   ok: boolean;
   messageId: string | null;
@@ -103,6 +111,25 @@ export const sendRealEmailParamSchema: SkillParamSchema<SendRealEmailParams> = {
   safeParse(value: unknown): SkillSafeParseResult<SendRealEmailParams> {
     try {
       return { success: true, data: parseSendRealEmailParams(value) };
+    } catch (error) {
+      const issues = error instanceof SendRealEmailSchemaError
+        ? error.issues
+        : [{ field: "body" as const, message: "schema_mismatch" }];
+      return {
+        success: false,
+        error: {
+          issues: issues.map((issue) => issue.message),
+          format: () => formatIssues(issues)
+        }
+      };
+    }
+  }
+};
+
+export const sendRealEmailSkillParamSchema: SkillParamSchema<SendRealEmailSkillParams> = {
+  safeParse(value: unknown): SkillSafeParseResult<SendRealEmailSkillParams> {
+    try {
+      return { success: true, data: parseSendRealEmailSkillParams(value) };
     } catch (error) {
       const issues = error instanceof SendRealEmailSchemaError
         ? error.issues
@@ -462,6 +489,16 @@ async function tailPostfixLog(input: {
 
 function parseSendRealEmailParams(value: unknown): SendRealEmailParams {
   const input = object(value);
+  const params = parseSendRealEmailSkillParams(input);
+  return {
+    ...params,
+    actorId: boundedString(input.actorId, "actorId", 1, 120),
+    approvalToken: boundedString(input.approvalToken, "approvalToken", 1, 200)
+  };
+}
+
+function parseSendRealEmailSkillParams(value: unknown): SendRealEmailSkillParams {
+  const input = object(value);
   const fromAddress = email(input.fromAddress, "fromAddress");
   const toAddress = email(input.toAddress, "toAddress");
   const subject = boundedString(input.subject, "subject", 3, 200);
@@ -473,9 +510,7 @@ function parseSendRealEmailParams(value: unknown): SendRealEmailParams {
     toAddress,
     subject,
     body,
-    serverSlug: slug(input.serverSlug, "serverSlug"),
-    actorId: boundedString(input.actorId, "actorId", 1, 120),
-    approvalToken: boundedString(input.approvalToken, "approvalToken", 1, 200)
+    serverSlug: slug(input.serverSlug, "serverSlug")
   };
 }
 

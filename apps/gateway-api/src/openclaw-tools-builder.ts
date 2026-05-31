@@ -1,6 +1,7 @@
 import type { SkillParamSchema } from "./skill-schemas.ts";
 import {
   bindDomainParamSchema,
+  configureCompleteSmtpParamSchema,
   emailAuthParamSchema,
   ionosUpsertParamSchema,
   route53RegisterParamSchema,
@@ -10,6 +11,10 @@ import {
   webdockCreateParamSchema
 } from "./skill-schemas.ts";
 import { canonicalSkillSlug } from "./skill-contracts.ts";
+import { suggestSafeDomainParamSchema } from "./routes/domains-suggest.ts";
+import { waitForDnsPropagationSkillParamSchema } from "./routes/dns-wait.ts";
+import { bindWebdockMainDomainSkillParamSchema } from "./routes/webdock-bind-domain.ts";
+import { sendRealEmailSkillParamSchema } from "./routes/send-email.ts";
 
 export interface BedrockToolSpec {
   name: string;
@@ -23,13 +28,18 @@ export interface BedrockToolSpec {
 
 export type OpenClawToolName =
   | "register_domain_route53"
+  | "suggest_safe_domain"
+  | "wait_for_dns_propagation"
   | "upsert_dns_route53"
   | "upsert_dns_ionos"
   | "create_webdock_server"
+  | "bind_webdock_main_domain"
   | "provision_smtp_postfix"
   | "configure_email_auth"
   | "bind_domain_to_server"
-  | "seed_warmup_pool";
+  | "seed_warmup_pool"
+  | "send_real_email"
+  | "configure_complete_smtp";
 
 interface OpenClawToolDefinition {
   spec: BedrockToolSpec;
@@ -44,6 +54,7 @@ const ipv4Pattern = "^(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?:\\.(?:25[0-5]|2[0-4
 const taskIdPattern = "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$";
 const slugPattern = "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$";
 const selectorPattern = "^[a-z0-9][a-z0-9_-]{0,62}$";
+const emailPattern = "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$";
 
 const route53RecordSchema = {
   type: "object",
@@ -109,6 +120,67 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hasAwsRoute53DomainCredentials(env),
     targetType: "domain",
     severity: "critical"
+  },
+  suggest_safe_domain: {
+    spec: {
+      name: "suggest_safe_domain",
+      description: [
+        "Sugiere dominios seguros para SMTP autorizado con filtros de naming y reputación.",
+        "Lectura/propuesta sin compra directa; cualquier compra posterior requiere ApprovalGate, presupuesto, audit y kill switch."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          brand: { type: "string", minLength: 1 },
+          intent: { type: "string", enum: ["smtp", "reporting", "filing", "saas", "ops", "general"], default: "ops" },
+          tlds: {
+            type: "array",
+            minItems: 1,
+            maxItems: 10,
+            items: { type: "string", pattern: "^[a-z]{2,24}$" }
+          },
+          count: { type: "integer", minimum: 1, maximum: 25 }
+        },
+        required: ["brand"]
+      }
+    },
+    paramSchema: suggestSafeDomainParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      (hasAwsRoute53DomainCredentials(env) || hasPorkbunCredentials(env)),
+    targetType: "domain_naming",
+    severity: "high"
+  },
+  wait_for_dns_propagation: {
+    spec: {
+      name: "wait_for_dns_propagation",
+      description: [
+        "Espera propagación DNS para registros A, NS, MX o TXT antes de continuar una operación SMTP.",
+        "No muta infraestructura, pero dentro de flujos supervisados mantiene ApprovalGate, audit chain y kill switch para preservar trazabilidad."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          expectedRecord: {
+            type: "object",
+            properties: {
+              type: { type: "string", enum: ["A", "NS", "MX", "TXT"] },
+              value: { type: "string", minLength: 1, maxLength: 253 }
+            },
+            required: ["type", "value"],
+            additionalProperties: false
+          },
+          maxWaitMs: { type: "integer", minimum: 30000, maximum: 1800000 },
+          pollIntervalMs: { type: "integer", minimum: 30000, maximum: 120000 }
+        },
+        required: ["domain", "expectedRecord"]
+      }
+    },
+    paramSchema: waitForDnsPropagationSkillParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "dns_record",
+    severity: "high"
   },
   upsert_dns_route53: {
     spec: {
@@ -197,6 +269,32 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hmacConfigured(env) &&
       flagEnabled(env.WEBDOCK_SERVERS_ENABLE_CREATE) &&
       hasWebdockOpsCredentials(env),
+    targetType: "webdock_server",
+    severity: "critical"
+  },
+  bind_webdock_main_domain: {
+    spec: {
+      name: "bind_webdock_main_domain",
+      description: [
+        "Configura el Main domain de Webdock y PTR asociado para un VPS autorizado.",
+        "Riesgo crítico: altera identidad SMTP/PTR; requiere ApprovalGate, audit, Webdock ops key, verificación SSH y kill switch."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          serverSlug: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{1,118}[a-z0-9]$" },
+          domain: { type: "string", pattern: domainPattern },
+          setPtr: { type: "boolean", default: true }
+        },
+        required: ["serverSlug", "domain"]
+      }
+    },
+    paramSchema: bindWebdockMainDomainSkillParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      anyFlagEnabled(env, ["WEBDOCK_MAIN_DOMAIN_BIND_ENABLE", "WEBDOCK_BIND_MAIN_DOMAIN_ENABLE", "DOMAIN_BIND_ENABLE"]) &&
+      hasWebdockOpsCredentials(env) &&
+      hasSshRunnerConfig(env),
     targetType: "webdock_server",
     severity: "critical"
   },
@@ -320,6 +418,77 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hasSshRunnerConfig(env),
     targetType: "domain",
     severity: "critical"
+  },
+  send_real_email: {
+    spec: {
+      name: "send_real_email",
+      description: [
+        "Envía un primer correo real autorizado desde el SMTP ya configurado.",
+        "Riesgo crítico: envío real a destinatario confirmado; requiere ApprovalGate, SPF/DKIM/DMARC, rate limits, audit, SSH runner y kill switch."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          fromAddress: { type: "string", pattern: emailPattern },
+          toAddress: { type: "string", pattern: emailPattern },
+          subject: { type: "string", minLength: 1, maxLength: 160 },
+          body: { type: "string", minLength: 1, maxLength: 10000 },
+          serverSlug: { type: "string", pattern: slugPattern }
+        },
+        required: ["fromAddress", "toAddress", "subject", "body", "serverSlug"]
+      }
+    },
+    paramSchema: sendRealEmailSkillParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      anyFlagEnabled(env, ["SMTP_SEND_REAL_EMAIL_ENABLE", "SEND_REAL_EMAIL_ENABLE"]) &&
+      hasSshRunnerConfig(env),
+    targetType: "webdock_server",
+    severity: "critical"
+  },
+  configure_complete_smtp: {
+    spec: {
+      name: "configure_complete_smtp",
+      description: [
+        "Orquesta SMTP completo desde cero: dominio seguro, compra Route53, VPS Webdock, Main domain/PTR, DNS, Postfix/OpenDKIM, SPF/DKIM/DMARC, warmup mínimo y un correo real autorizado.",
+        "Requiere ApprovalGate por cada acción real, audit/canvas events, kill switch, rollback proposal para VPS y presupuesto máximo. Tiempo estimado: 1-3 horas. Costo referencial: USD 15 dominio + USD 4.30/mes VPS prorrateado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          brand: { type: "string", minLength: 1 },
+          intent: { type: "string", minLength: 1 },
+          budgetUsdMax: { type: "integer", minimum: 1, maximum: 10000, default: 25 },
+          testEmailRecipient: { type: "string", pattern: emailPattern },
+          testEmailSubject: { type: "string", minLength: 1, maxLength: 160 },
+          testEmailBody: { type: "string", minLength: 1, maxLength: 10000 },
+          actorId: { type: "string", minLength: 1 },
+          seedInboxes: {
+            type: "array",
+            minItems: 1,
+            maxItems: 50,
+            items: { type: "string", pattern: emailPattern }
+          }
+        },
+        required: ["brand", "budgetUsdMax", "testEmailRecipient", "testEmailSubject", "testEmailBody", "actorId"]
+      }
+    },
+    paramSchema: configureCompleteSmtpParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      flagEnabled(env.OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE) &&
+      isOpenClawToolEnabled("suggest_safe_domain", env) &&
+      isOpenClawToolEnabled("register_domain_route53", env) &&
+      isOpenClawToolEnabled("wait_for_dns_propagation", env) &&
+      isOpenClawToolEnabled("create_webdock_server", env) &&
+      isOpenClawToolEnabled("bind_webdock_main_domain", env) &&
+      isOpenClawToolEnabled("upsert_dns_route53", env) &&
+      isOpenClawToolEnabled("provision_smtp_postfix", env) &&
+      isOpenClawToolEnabled("configure_email_auth", env) &&
+      isOpenClawToolEnabled("seed_warmup_pool", env) &&
+      isOpenClawToolEnabled("send_real_email", env),
+    targetType: "openclaw_orchestrator",
+    severity: "critical"
   }
 };
 
@@ -335,13 +504,18 @@ export function buildToolsForOpenClaw(
 export function openClawToolNames(): OpenClawToolName[] {
   return [
     "register_domain_route53",
+    "suggest_safe_domain",
+    "wait_for_dns_propagation",
     "upsert_dns_route53",
     "upsert_dns_ionos",
     "create_webdock_server",
+    "bind_webdock_main_domain",
     "provision_smtp_postfix",
     "configure_email_auth",
     "bind_domain_to_server",
-    "seed_warmup_pool"
+    "seed_warmup_pool",
+    "send_real_email",
+    "configure_complete_smtp"
   ];
 }
 
@@ -404,6 +578,10 @@ function hasWebdockOpsCredentials(env: Record<string, string | undefined>): bool
 
 function hasSshRunnerConfig(env: Record<string, string | undefined>): boolean {
   return Boolean(firstNonEmpty(env.SMTP_PROVISION_SSH_KEY_PATH, env.SMTP_SSH_KEY_PATH));
+}
+
+function hasPorkbunCredentials(env: Record<string, string | undefined>): boolean {
+  return Boolean(firstNonEmpty(env.PORKBUN_API_KEY, env.PORKBUN_SECRET_API_KEY));
 }
 
 function anyFlagEnabled(env: Record<string, string | undefined>, keys: string[]): boolean {
