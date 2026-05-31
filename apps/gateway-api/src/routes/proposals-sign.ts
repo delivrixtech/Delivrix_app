@@ -59,6 +59,10 @@ export interface ProposalSignStoredProposal {
   signatureId?: string;
   rejectedAt?: string;
   rejectionReason?: string;
+  executionOutcome?: unknown;
+  executionStatusCode?: number;
+  executionDurationMs?: number;
+  executionCompletedAt?: string;
 }
 
 export interface HandleProposalSignDeps {
@@ -263,6 +267,10 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
   const killSwitchBeforeDispatch = await deps.readKillSwitch();
   if (killSwitchBeforeDispatch.enabled) {
     proposal.status = "execution_failed";
+    proposal.executionOutcome = { error: "kill_switch_armed" };
+    proposal.executionStatusCode = 423;
+    proposal.executionDurationMs = 0;
+    proposal.executionCompletedAt = now.toISOString();
     const abortedInput = proposalExecutionAuditInput({
       proposal,
       actorId: parsed.actorId,
@@ -343,6 +351,10 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
   }
 
   proposal.status = dispatchResult.ok ? "executed" : "execution_failed";
+  proposal.executionOutcome = redactSecrets(dispatchResult.summary);
+  proposal.executionStatusCode = dispatchResult.statusCode;
+  proposal.executionDurationMs = dispatchResult.durationMs;
+  proposal.executionCompletedAt = now.toISOString();
   const executedInput = proposalExecutionAuditInput({
     proposal,
     actorId: parsed.actorId,
@@ -413,7 +425,12 @@ async function finalizeTimedOutDispatch(input: {
   executionContextHash: string;
   dispatchResult: DispatchResult;
 }): Promise<void> {
+  const completedAt = (input.deps.now?.() ?? new Date()).toISOString();
   input.proposal.status = input.dispatchResult.ok ? "executed" : "execution_failed";
+  input.proposal.executionOutcome = redactSecrets(input.dispatchResult.summary);
+  input.proposal.executionStatusCode = input.dispatchResult.statusCode;
+  input.proposal.executionDurationMs = input.dispatchResult.durationMs;
+  input.proposal.executionCompletedAt = completedAt;
   const event = proposalExecutionAuditInput({
     proposal: input.proposal,
     actorId: input.actorId,

@@ -215,6 +215,14 @@ test("sign redacts secrets from executed audit metadata", async () => {
     token: "[REDACTED]",
     nested: { privateKey: "[REDACTED]" }
   });
+  assert.deepEqual(ctx.proposals[0].executionOutcome, {
+    ok: true,
+    token: "[REDACTED]",
+    nested: { privateKey: "[REDACTED]" }
+  });
+  assert.equal(ctx.proposals[0].executionStatusCode, 200);
+  assert.equal(ctx.proposals[0].executionDurationMs, 1);
+  assert.equal(ctx.proposals[0].executionCompletedAt, now.toISOString());
 });
 
 test("sign redacts secrets embedded in handler response strings", async () => {

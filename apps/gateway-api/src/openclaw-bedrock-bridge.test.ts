@@ -182,6 +182,97 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
   assert.match(system, /"token": "\[redacted\]"/);
 });
 
+test("OpenClawBedrockBridge loops tool_use through processor and sends tool_result back to Bedrock", async () => {
+  const payloads: Array<Record<string, unknown>> = [];
+  const toolCalls: unknown[] = [];
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    env: enabledToolEnv(),
+    processToolUse: async (input) => {
+      toolCalls.push(input);
+      return {
+        ok: true,
+        status: "executed",
+        result: { ok: true, proposalId: "proposal-1" },
+        proposalId: "proposal-1",
+        signatureId: "sig-1"
+      };
+    },
+    client: {
+      send: async (command) => {
+        const payload = JSON.parse(String(command.input.body));
+        payloads.push(payload);
+        if (payloads.length === 1) {
+          return {
+            body: [
+              streamJson({ type: "message_start", message: { usage: { input_tokens: 20 } } }),
+              streamJson({
+                type: "content_block_start",
+                index: 0,
+                content_block: {
+                  type: "tool_use",
+                  id: "toolu-1",
+                  name: "register_domain_route53",
+                  input: {}
+                }
+              }),
+              streamJson({
+                type: "content_block_delta",
+                index: 0,
+                delta: {
+                  type: "input_json_delta",
+                  partial_json: "{\"domain\":\"delivrix.test\",\"years\":1}"
+                }
+              }),
+              streamJson({ type: "message_delta", usage: { output_tokens: 10 }, stop_reason: "tool_use" })
+            ]
+          };
+        }
+        return {
+          body: [
+            streamJson({ type: "message_start", message: { usage: { input_tokens: 9 } } }),
+            streamJson({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Dominio aprobado y ejecutado." } }),
+            streamJson({ type: "message_delta", usage: { output_tokens: 7 } })
+          ]
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-tool-1", message: "registra delivrix.test" });
+  const events: ChatStreamEvent[] = [];
+  await bridge.streamHistory("msg-tool-1", {
+    onTyping: (event) => events.push(event),
+    onDelta: (event) => events.push(event),
+    onDone: (event) => events.push(event)
+  });
+
+  assert.equal(payloads.length, 2);
+  assert.equal((payloads[0].tools as unknown[]).length, 8);
+  assert.deepEqual(toolCalls, [{
+    toolUseId: "toolu-1",
+    toolName: "register_domain_route53",
+    toolInput: { domain: "delivrix.test", years: 1 },
+    chatSession: { id: "agent:main:operator", msgId: "msg-tool-1" }
+  }]);
+  const secondMessages = payloads[1].messages as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+  assert.equal(secondMessages.at(-2)?.role, "assistant");
+  assert.equal(secondMessages.at(-2)?.content[0].type, "tool_use");
+  assert.equal(secondMessages.at(-1)?.role, "user");
+  assert.equal(secondMessages.at(-1)?.content[0].type, "tool_result");
+  assert.match(String(secondMessages.at(-1)?.content[0].content), /"signatureId":"sig-1"/);
+  const done = events.find((event) => event.type === "ASSISTANT_DONE");
+  assert.equal(done?.type, "ASSISTANT_DONE");
+  assert.equal(done?.content, "Dominio aprobado y ejecutado.");
+  assert.deepEqual(done?.audit?.skillsInvoked, ["openclaw-bedrock-direct", "register_domain_route53"]);
+  assert.equal(done?.audit?.tokensUsed, 46);
+});
+
 test("createOpenClawBedrockBridgeFromEnv requires bedrock mode and critical env vars", () => {
   assert.equal(createOpenClawBedrockBridgeFromEnv({ OPENCLAW_BRIDGE_KIND: "ssh" }), null);
   assert.equal(createOpenClawBedrockBridgeFromEnv({ OPENCLAW_BRIDGE_KIND: "bedrock" }), null);
@@ -224,4 +315,24 @@ function liveContextFetchStub(): typeof fetch {
       json: async () => ({ path })
     } as Response;
   }) as typeof fetch;
+}
+
+function enabledToolEnv(): Record<string, string | undefined> {
+  return {
+    OPENCLAW_HMAC_SECRET: "test-hmac",
+    AWS_ACCESS_KEY_ID: "test-access",
+    AWS_SECRET_ACCESS_KEY: "test-secret",
+    AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE: "true",
+    AWS_ROUTE53_DNS_ENABLE_WRITES: "true",
+    IONOS_DNS_ENABLE_WRITES: "true",
+    IONOS_API_TOKEN: "ionos-token",
+    WEBDOCK_SERVERS_ENABLE_CREATE: "true",
+    WEBDOCK_API_KEY_OPS: "webdock-ops",
+    SMTP_PROVISIONING_ENABLE_SSH: "true",
+    SMTP_PROVISION_SSH_KEY_PATH: "/tmp/delivrix-smoke-key",
+    EMAIL_AUTH_ENABLE_WRITES: "true",
+    DOMAIN_BIND_ENABLE: "true",
+    WARMUP_ENABLE_SEND: "true",
+    WARMUP_RAMP_ENABLE: "true"
+  };
 }

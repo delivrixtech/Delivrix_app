@@ -12,6 +12,14 @@ import type {
   ChatStreamEvent,
   OpenClawChatSshBridge
 } from "./openclaw-chat.ts";
+import {
+  buildToolsForOpenClaw,
+  type BedrockToolSpec
+} from "./openclaw-tools-builder.ts";
+import {
+  createHttpToolUseProcessor,
+  type ToolUseResult
+} from "./tool-use-processor.ts";
 
 const defaultModelRegion = "us-east-1";
 const defaultMaxTokens = 4096;
@@ -19,12 +27,33 @@ const defaultTemperature = 0.3;
 const defaultSessionKey = "agent:main:operator";
 const defaultMaxConversationTurns = 12;
 const defaultDelivrixBaseUrl = "http://127.0.0.1:3000";
+const defaultMaxToolIterations = 10;
 
 type FetchLike = typeof fetch;
 
 interface ConversationTurn {
   role: "user" | "assistant";
   content: string;
+}
+
+type BedrockMessageRole = "user" | "assistant";
+
+type BedrockContentBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | { type: "tool_result"; tool_use_id: string; content: string };
+
+interface BedrockMessage {
+  role: BedrockMessageRole;
+  content: BedrockContentBlock[];
+}
+
+interface BedrockParsedResponse {
+  content: BedrockContentBlock[];
+  text: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  stopReason?: string;
 }
 
 interface BedrockStreamChunk {
@@ -45,6 +74,7 @@ interface BedrockInvocationResult {
   inputTokens?: number;
   outputTokens?: number;
   durationMs: number;
+  toolsInvoked?: string[];
 }
 
 export interface OpenClawBedrockBridgeConfig {
@@ -65,6 +95,14 @@ export interface OpenClawBedrockBridgeConfig {
   readBoundaryToken?: string;
   fetchImpl?: FetchLike;
   now?: () => Date;
+  env?: Record<string, string | undefined>;
+  maxToolIterations?: number;
+  processToolUse?: (input: {
+    toolUseId: string;
+    toolName: string;
+    toolInput: unknown;
+    chatSession: { id: string; msgId?: string };
+  }) => Promise<ToolUseResult>;
 }
 
 export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
@@ -80,6 +118,14 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   private readonly readBoundaryToken: string;
   private readonly fetchImpl: FetchLike;
   private readonly now: () => Date;
+  private readonly env: Record<string, string | undefined>;
+  private readonly maxToolIterations: number;
+  private readonly processToolUse: (input: {
+    toolUseId: string;
+    toolName: string;
+    toolInput: unknown;
+    chatSession: { id: string; msgId?: string };
+  }) => Promise<ToolUseResult>;
   private cachedSystemPrompt: string | null = null;
   private readonly conversations = new Map<string, ConversationTurn[]>();
   private readonly pendingResponses = new Map<string, Promise<BedrockInvocationResult>>();
@@ -114,6 +160,15 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     this.readBoundaryToken = config.readBoundaryToken ?? "";
     this.fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
     this.now = config.now ?? (() => new Date());
+    this.env = config.env ?? (typeof process !== "undefined" ? process.env : {});
+    this.maxToolIterations = config.maxToolIterations ?? defaultMaxToolIterations;
+    this.processToolUse = config.processToolUse ?? createHttpToolUseProcessor({
+      delivrixBaseUrl: this.delivrixBaseUrl,
+      fetchImpl: this.fetchImpl,
+      readBoundaryToken: this.readBoundaryToken,
+      env: this.env,
+      now: this.now
+    });
   }
 
   isConfigured(): boolean {
@@ -134,7 +189,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
 
     const turns = [...(this.conversations.get(this.sessionKey) ?? []), { role: "user" as const, content: message }];
     this.conversations.set(this.sessionKey, this.trimConversation(turns));
-    this.pendingResponses.set(msgId, this.invokeBedrock(turns));
+    this.pendingResponses.set(msgId, this.invokeBedrock(turns, msgId));
     return { msgId, queued: true };
   }
 
@@ -169,7 +224,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
         msgId,
         content: result.text,
         audit: {
-          skillsInvoked: ["openclaw-bedrock-direct"],
+          skillsInvoked: ["openclaw-bedrock-direct", ...(result.toolsInvoked ?? [])],
           modelId: result.modelId,
           ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }),
           ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }),
@@ -186,20 +241,102 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     }
   }
 
-  private async invokeBedrock(turns: ConversationTurn[]): Promise<BedrockInvocationResult> {
+  private async invokeBedrock(turns: ConversationTurn[], msgId: string): Promise<BedrockInvocationResult> {
     const startedAt = this.now().getTime();
     const systemBase = await this.loadSystemPrompt();
     const liveContext = await this.fetchLiveContext();
-    const payload = {
+    const system = `${systemBase}\n\n${liveContext}`;
+    const tools = buildToolsForOpenClaw(this.env);
+    const messages: BedrockMessage[] = turns.map((turn) => ({
+      role: turn.role,
+      content: [{ type: "text", text: turn.content }]
+    }));
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let sawInputTokens = false;
+    let sawOutputTokens = false;
+    const toolsInvoked: string[] = [];
+
+    for (let iteration = 0; iteration < this.maxToolIterations; iteration += 1) {
+      const response = await this.invokeBedrockOnce({
+        messages,
+        system,
+        tools
+      });
+      if (response.inputTokens !== undefined) {
+        inputTokens += response.inputTokens;
+        sawInputTokens = true;
+      }
+      if (response.outputTokens !== undefined) {
+        outputTokens += response.outputTokens;
+        sawOutputTokens = true;
+      }
+
+      const toolUses = response.content.filter(isToolUseBlock);
+      if (toolUses.length === 0) {
+        return {
+          text: response.text,
+          modelId: this.modelId,
+          ...(sawInputTokens ? { inputTokens } : {}),
+          ...(sawOutputTokens ? { outputTokens } : {}),
+          durationMs: Math.max(0, this.now().getTime() - startedAt),
+          ...(toolsInvoked.length > 0 ? { toolsInvoked } : {})
+        };
+      }
+
+      messages.push({
+        role: "assistant",
+        content: response.content
+      });
+
+      const toolResults: BedrockContentBlock[] = [];
+      for (const toolUse of toolUses) {
+        toolsInvoked.push(toolUse.name);
+        const result = await this.processToolUse({
+          toolUseId: toolUse.id,
+          toolName: toolUse.name,
+          toolInput: toolUse.input,
+          chatSession: { id: this.sessionKey, msgId }
+        }).catch((error): ToolUseResult => ({
+          ok: false,
+          error: "tool_use_processor_failed",
+          details: error instanceof Error ? error.message : "Unknown tool-use processor error"
+        }));
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: toolUse.id,
+          content: stringifyToolResult(result)
+        });
+      }
+
+      messages.push({
+        role: "user",
+        content: toolResults
+      });
+    }
+
+    throw new OpenClawBedrockBridgeError(
+      "bedrock_tool_loop_exceeded",
+      `OpenClaw Bedrock exceeded ${this.maxToolIterations} tool-use iterations.`
+    );
+  }
+
+  private async invokeBedrockOnce(input: {
+    messages: BedrockMessage[];
+    system: string;
+    tools: BedrockToolSpec[];
+  }): Promise<BedrockParsedResponse> {
+    const payload: Record<string, unknown> = {
       anthropic_version: "bedrock-2023-05-31",
       max_tokens: this.maxTokens,
       temperature: this.temperature,
-      system: `${systemBase}\n\n${liveContext}`,
-      messages: turns.map((turn) => ({
-        role: turn.role,
-        content: [{ type: "text", text: turn.content }]
-      }))
+      system: input.system,
+      messages: input.messages
     };
+    if (input.tools.length > 0) {
+      payload.tools = input.tools;
+      payload.tool_choice = { type: "auto" };
+    }
     const command = new InvokeModelWithResponseStreamCommand({
       modelId: this.modelId,
       contentType: "application/json",
@@ -208,9 +345,11 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     } satisfies InvokeModelWithResponseStreamCommandInput);
     const result = await this.client.send(command);
 
-    let text = "";
+    const content = new Map<number, MutableBedrockContentBlock>();
+    let currentIndex = 0;
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
+    let stopReason: string | undefined;
 
     for await (const event of toAsyncIterable(result.body ?? [])) {
       if (!event.chunk?.bytes) continue;
@@ -223,20 +362,71 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       if (parsed.type === "message_delta" && isRecord(parsed.usage)) {
         outputTokens = numberValue(parsed.usage.output_tokens) ?? outputTokens;
       }
-      if (parsed.type === "content_block_start" && isRecord(parsed.content_block) && parsed.content_block.type === "text") {
-        text += stringValue(parsed.content_block.text) ?? "";
+      if (parsed.type === "message_delta") {
+        stopReason = stringValue(parsed.stop_reason) ?? stringValue(parsed.stopReason) ?? stopReason;
       }
-      if (parsed.type === "content_block_delta" && isRecord(parsed.delta) && parsed.delta.type === "text_delta") {
-        text += stringValue(parsed.delta.text) ?? "";
+      if (parsed.type === "content_block_start" && isRecord(parsed.content_block)) {
+        const index = numberValue(parsed.index) ?? currentIndex;
+        currentIndex = index;
+        const block = parsed.content_block;
+        if (block.type === "text") {
+          content.set(index, {
+            type: "text",
+            text: stringValue(block.text) ?? ""
+          });
+        }
+        if (block.type === "tool_use") {
+          content.set(index, {
+            type: "tool_use",
+            id: stringValue(block.id) ?? `toolu_${index}`,
+            name: stringValue(block.name) ?? "",
+            input: isRecord(block.input) ? block.input : {},
+            partialJson: ""
+          });
+        }
+      }
+      if (parsed.type === "content_block_delta" && isRecord(parsed.delta)) {
+        const index = numberValue(parsed.index) ?? currentIndex;
+        currentIndex = index;
+        if (parsed.delta.type === "text_delta") {
+          const block = content.get(index);
+          if (block?.type === "text") {
+            block.text += stringValue(parsed.delta.text) ?? "";
+          } else {
+            content.set(index, {
+              type: "text",
+              text: stringValue(parsed.delta.text) ?? ""
+            });
+          }
+        }
+        if (parsed.delta.type === "input_json_delta") {
+          const partial = stringValue(parsed.delta.partial_json) ?? "";
+          const block = content.get(index);
+          if (block?.type === "tool_use") {
+            block.partialJson += partial;
+          } else {
+            content.set(index, {
+              type: "tool_use",
+              id: `toolu_${index}`,
+              name: "",
+              input: {},
+              partialJson: partial
+            });
+          }
+        }
       }
     }
 
+    const blocks = [...content.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, block]) => finalizeContentBlock(block));
+
     return {
-      text,
-      modelId: this.modelId,
+      content: blocks,
+      text: blocks.filter(isTextBlock).map((block) => block.text).join(""),
       ...(inputTokens === undefined ? {} : { inputTokens }),
       ...(outputTokens === undefined ? {} : { outputTokens }),
-      durationMs: Math.max(0, this.now().getTime() - startedAt)
+      ...(stopReason ? { stopReason } : {})
     };
   }
 
@@ -341,7 +531,9 @@ export function createOpenClawBedrockBridgeFromEnv(
     delivrixBaseUrl: normalizeEnvValue(env.DELIVRIX_BASE_URL) ?? defaultDelivrixBaseUrl,
     readBoundaryToken: normalizeEnvValue(env.DELIVRIX_OPENCLAW_TOKEN) ?? "",
     maxTokens: parsePositiveInt(env.AWS_BEDROCK_MAX_TOKENS) ?? defaultMaxTokens,
-    temperature: parseTemperature(env.AWS_BEDROCK_TEMPERATURE) ?? defaultTemperature
+    temperature: parseTemperature(env.AWS_BEDROCK_TEMPERATURE) ?? defaultTemperature,
+    maxToolIterations: parsePositiveInt(env.OPENCLAW_TOOL_MAX_ITERATIONS) ?? defaultMaxToolIterations,
+    env
   });
 }
 
@@ -353,6 +545,46 @@ export class OpenClawBedrockBridgeError extends Error {
     this.name = "OpenClawBedrockBridgeError";
     this.code = code;
   }
+}
+
+type MutableBedrockContentBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: unknown; partialJson: string };
+
+function finalizeContentBlock(block: MutableBedrockContentBlock): BedrockContentBlock {
+  if (block.type === "text") {
+    return block;
+  }
+
+  const parsedInput = block.partialJson.trim().length > 0
+    ? parseJson(block.partialJson)
+    : block.input;
+  return {
+    type: "tool_use",
+    id: block.id,
+    name: block.name,
+    input: parsedInput ?? block.input
+  };
+}
+
+function isTextBlock(block: BedrockContentBlock): block is Extract<BedrockContentBlock, { type: "text" }> {
+  return block.type === "text";
+}
+
+function isToolUseBlock(block: BedrockContentBlock): block is Extract<BedrockContentBlock, { type: "tool_use" }> {
+  return block.type === "tool_use";
+}
+
+function stringifyToolResult(result: ToolUseResult): string {
+  const raw = JSON.stringify(result);
+  if (raw.length <= 4096) {
+    return raw;
+  }
+  return JSON.stringify({
+    ok: result.ok,
+    truncated: true,
+    preview: raw.slice(0, 4096)
+  });
 }
 
 async function* toAsyncIterable<T>(value: AsyncIterable<T> | Iterable<T>): AsyncIterable<T> {

@@ -884,6 +884,7 @@ export class OpenClawChatProxy {
         outputTokens: event.audit?.outputTokens ?? null,
         tokensUsed: event.audit?.tokensUsed ?? null,
         latencyMs: event.audit?.durationMs ?? null,
+        skillsInvoked: event.audit?.skillsInvoked ?? [],
         contentLength: event.content.length
       }
     });
