@@ -8,8 +8,7 @@ Categorías y método de evaluación heredados de `HITO_4_5_RUNBOOK_PERMISOS_KIL
 
 - **v1.0** (2026-05-18) — 5 categorías + ~40 acciones por familia.
 - **v2.0** (2026-05-18) — 29 acciones de lectura una a una (todo el read-boundary literal), pseudocódigo formal del pipeline en TypeScript, manejo de race conditions en approvals concurrentes, código de error tipado por rejection reason.
-- **v2.1** (2026-05-27) — Camino B CTO: `register_domain` pasa de doble firma a modelo wallet con `requiredApprovals: 1` y firmante único `juanescanar-cto`; sigue requiriendo presupuesto, flag explícita, audit y cleanup DNS/VPS.
-- **v2.2** (2026-05-31) — Agrega `suggest_safe_domain` / `naming_suggest` como skill read-only de naming seguro antes de compras Route53. Costo `$0`, reversible `n/a`, audit obligatorio `oc.naming.candidates_suggested`.
+- **v2.2** (2026-05-31) — Fase 1 agrega `suggest_safe_domain` / `naming_suggest` como skill read-only de naming seguro antes de compras Route53 y `wait_for_dns_propagation` / `dns_propagation_wait` como skill supervisada de lectura DNS bloqueante. Ambas cuestan `$0`; audit obligatorio `oc.naming.candidates_suggested` / `oc.dns.propagation_check`.
 
 ## 1. Propósito
 
@@ -106,6 +105,7 @@ Requiere `humanApproved: true` + `killSwitch.enabled: false`. Si falla cualquier
 | `mark_evidence_curated` | Etiqueta un snapshot como evidencia curada | `oc.local.curate_evidence` |
 | `snooze_proposal` | Pospone una propuesta del agente en la UI | `oc.local.snooze` |
 | `record_human_decision` | Registra decisión humana (aprobado/rechazado) sobre una propuesta | `oc.local.decision` |
+| `wait_for_dns_propagation` / `dns_propagation_wait` | Espera síncrona de propagación DNS con `node:dns/promises`; no muta proveedor, sólo escribe audit. Costo `$0`, reversible `n/a`, rollback `n/a`. | `oc.dns.propagation_check` |
 
 ### 3.4 Live (`future_live_requires_new_phase`)
 
@@ -124,6 +124,7 @@ Requiere `humanApproved: true` + `killSwitch.enabled: false`. Si falla cualquier
 | `start_warmup_ramp` | `oc.warmup.ramp_started` | `WARMUP_RAMP_ENABLE=true` (NUEVO) | operador autorizado |
 | `bind_domain_to_server` | `oc.domain.bound` | `DOMAIN_BIND_ENABLE=true` (NUEVO) | operador autorizado |
 | `configure_email_auth` | `oc.email.auth_configured` | `EMAIL_AUTH_ENABLE_WRITES=true` (NUEVO) | operador autorizado |
+| `wait_for_dns_propagation` | `oc.dns.propagation_check` | n/a (lectura DNS + audit local) | operador autorizado |
 
 #### Skills que SIGUEN bloqueadas en `future_live_requires_new_phase`
 

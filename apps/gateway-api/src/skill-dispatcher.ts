@@ -46,6 +46,12 @@ import {
   type DomainAvailabilityAdapter
 } from "./routes/domains-suggest.ts";
 import {
+  createAuditApprovalGuard,
+  handleWaitForDnsPropagationHttp,
+  waitForDnsPropagationSkillParamSchema,
+  type DnsResolver
+} from "./routes/dns-wait.ts";
+import {
   bindDomainParamSchema,
   emailAuthParamSchema,
   ionosUpsertParamSchema,
@@ -91,6 +97,7 @@ export interface SkillDispatcherDeps {
   autoRollbackManager?: AutoRollbackManager;
   webhookBroadcaster?: BroadcastSink;
   dnsDigFn?: DnsDigFn;
+  dnsResolver?: DnsResolver;
   readKillSwitch?: () => Promise<KillSwitchProvider> | KillSwitchProvider;
   env?: Record<string, string | undefined>;
   now?: () => Date;
@@ -426,6 +433,25 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         }
       })
   };
+  const waitForDnsPropagation: SkillHandlerEntry = {
+    paramSchema: waitForDnsPropagationSkillParamSchema,
+    timeoutMs: 700_000,
+    canRollback: false,
+    invoke: ({ request, response, deps }) =>
+      handleWaitForDnsPropagationHttp({
+        request,
+        response,
+        auditLog: deps.auditLog,
+        approvalGuard: createAuditApprovalGuard({
+          auditLog: deps.auditLog,
+          readCanvasState: deps.readCanvasState,
+          now: deps.now
+        }),
+        dns: deps.dnsResolver,
+        now: () => (deps.now?.() ?? new Date()).getTime(),
+        readKillSwitch: deps.readKillSwitch
+      })
+  };
 
   return {
     register_domain_route53: registerDomain,
@@ -444,7 +470,9 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     seed_warmup_pool: warmupSeed,
     start_warmup_seed: warmupSeed,
     start_warmup_ramp: warmupRamp,
-    warmup_ramp_scheduler: warmupRamp
+    warmup_ramp_scheduler: warmupRamp,
+    wait_for_dns_propagation: waitForDnsPropagation,
+    dns_propagation_wait: waitForDnsPropagation
   };
 }
 

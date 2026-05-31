@@ -48,6 +48,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["bind_domain_to_server"]
   },
   {
+    canonicalSkill: "wait_for_dns_propagation",
+    aliases: ["wait_for_dns_propagation", "dns_propagation_wait"],
+    actionIds: ["wait_for_dns_propagation", "dns_propagation_wait"]
+  },
+  {
     canonicalSkill: "seed_warmup_pool",
     aliases: ["seed_warmup_pool", "start_warmup_seed"],
     actionIds: ["seed_warmup_pool", "start_warmup_seed"]
