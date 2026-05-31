@@ -20,6 +20,7 @@ import {
   artifactMatchesAuditApproval,
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
+import { validateDomainNaming } from "../services/naming-validator.ts";
 
 export interface Route53DomainPurchaseAdapter {
   isLive(): boolean;
@@ -82,6 +83,39 @@ export async function handleRoute53DomainRegisterHttp(
   const actorId = requiredString(body.actorId, "actorId");
   const approvalToken = requiredString(body.approvalToken, "approvalToken");
   const source = deps.adapter.currentSource(true);
+  const naming = validateDomainNaming(domain);
+
+  if (!naming.passes) {
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.domain.purchase_blocked_naming",
+      targetType: "domain",
+      targetId: domain,
+      riskLevel: "high",
+      decision: "reject",
+      humanApproved: false,
+      metadata: {
+        registrar: "aws-route53",
+        score: naming.score,
+        blockedReasons: naming.blockedReasons,
+        hint: "POST /v1/skills/suggest-safe-domain"
+      }
+    });
+
+    json(deps.response, 422, {
+      ok: false,
+      status: "blocked",
+      error: "domain_naming_high_risk",
+      details: {
+        domain,
+        score: naming.score,
+        blockedReasons: naming.blockedReasons,
+        hint: "Llama POST /v1/skills/suggest-safe-domain para obtener alternativas validadas."
+      }
+    });
+    return;
+  }
 
   const blockers: string[] = [];
   if (!deps.adapter.isLive()) blockers.push("aws_route53_credentials_missing");

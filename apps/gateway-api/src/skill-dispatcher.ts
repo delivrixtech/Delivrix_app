@@ -40,6 +40,12 @@ import {
   type RampScheduler
 } from "./routes/warmup-ramp.ts";
 import {
+  createDomainAvailabilityCheck,
+  handleSuggestSafeDomainHttp,
+  suggestSafeDomainParamSchema,
+  type DomainAvailabilityAdapter
+} from "./routes/domains-suggest.ts";
+import {
   bindDomainParamSchema,
   emailAuthParamSchema,
   ionosUpsertParamSchema,
@@ -80,6 +86,7 @@ export interface SkillDispatcherDeps {
   webdockAdapter: WebdockServerCreateAdapter;
   smtpSshRunner: SmtpSshRunner;
   rampScheduler: RampScheduler;
+  porkbunDomainAdapter?: DomainAvailabilityAdapter;
   canvasLiveEvents?: CanvasEmitter;
   autoRollbackManager?: AutoRollbackManager;
   webhookBroadcaster?: BroadcastSink;
@@ -403,9 +410,27 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         now: deps.now
       })
   };
+  const suggestSafeDomain: SkillHandlerEntry = {
+    paramSchema: suggestSafeDomainParamSchema,
+    timeoutMs: 30_000,
+    canRollback: false,
+    invoke: ({ request, response, deps }) =>
+      handleSuggestSafeDomainHttp({
+        request,
+        response,
+        deps: {
+          auditLog: deps.auditLog,
+          route53Availability: createDomainAvailabilityCheck(deps.domainPurchaseAdapter as unknown as DomainAvailabilityAdapter),
+          porkbunAvailability: createDomainAvailabilityCheck(requiredPorkbunDomainAdapter(deps)),
+          now: deps.now
+        }
+      })
+  };
 
   return {
     register_domain_route53: registerDomain,
+    suggest_safe_domain: suggestSafeDomain,
+    naming_suggest: suggestSafeDomain,
     upsert_dns_route53: route53Dns,
     route53_dns_upsert: route53Dns,
     upsert_dns_ionos: ionosDns,
@@ -421,6 +446,13 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     start_warmup_ramp: warmupRamp,
     warmup_ramp_scheduler: warmupRamp
   };
+}
+
+function requiredPorkbunDomainAdapter(deps: SkillDispatcherDeps): DomainAvailabilityAdapter {
+  if (!deps.porkbunDomainAdapter) {
+    throw new Error("porkbun_domain_adapter_missing");
+  }
+  return deps.porkbunDomainAdapter;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

@@ -9,6 +9,7 @@ Categorías y método de evaluación heredados de `HITO_4_5_RUNBOOK_PERMISOS_KIL
 - **v1.0** (2026-05-18) — 5 categorías + ~40 acciones por familia.
 - **v2.0** (2026-05-18) — 29 acciones de lectura una a una (todo el read-boundary literal), pseudocódigo formal del pipeline en TypeScript, manejo de race conditions en approvals concurrentes, código de error tipado por rejection reason.
 - **v2.1** (2026-05-27) — Camino B CTO: `register_domain` pasa de doble firma a modelo wallet con `requiredApprovals: 1` y firmante único `juanescanar-cto`; sigue requiriendo presupuesto, flag explícita, audit y cleanup DNS/VPS.
+- **v2.2** (2026-05-31) — Agrega `suggest_safe_domain` / `naming_suggest` como skill read-only de naming seguro antes de compras Route53. Costo `$0`, reversible `n/a`, audit obligatorio `oc.naming.candidates_suggested`.
 
 ## 1. Propósito
 
@@ -70,6 +71,10 @@ agregue al read-boundary debe agregarse acá en el mismo commit.
 | `read_openclaw_skills_audit` | `GET /v1/openclaw/skills/audit` | `oc.read.skills_audit` | `skills_audit` |
 | `read_openclaw_evidence` | `GET /v1/openclaw/evidence` | `oc.read.evidence` | `evidence` |
 | `read_webdock_inventory` | `GET /v1/webdock/inventory` | `oc.read.webdock` | `webdock_inventory` |
+| `suggest_safe_domain` | `POST /v1/skills/suggest-safe-domain` | `oc.naming.candidates_suggested` | `domain_naming` |
+| `naming_suggest` | `POST /v1/skills/suggest-safe-domain` | `oc.naming.candidates_suggested` | `domain_naming` |
+
+`suggest_safe_domain` usa `POST` por payload estructurado, pero es read-only: no registra dominios, no modifica DNS y no requiere firma. Costo `$0`, reversible `n/a`; el único side effect permitido es audit append-only.
 
 **Regla de sincronización:** cualquier PR que agregue un endpoint al
 `read-boundary.ts` debe agregar una fila a esta tabla en el mismo commit, o el
