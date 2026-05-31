@@ -9,7 +9,7 @@ Categorías y método de evaluación heredados de `HITO_4_5_RUNBOOK_PERMISOS_KIL
 - **v1.0** (2026-05-18) — 5 categorías + ~40 acciones por familia.
 - **v2.0** (2026-05-18) — 29 acciones de lectura una a una (todo el read-boundary literal), pseudocódigo formal del pipeline en TypeScript, manejo de race conditions en approvals concurrentes, código de error tipado por rejection reason.
 - **v2.1** (2026-05-27) — Camino B CTO: `register_domain` pasa de doble firma a modelo wallet con `requiredApprovals: 1` y firmante único `juanescanar-cto`; sigue requiriendo presupuesto, flag explícita, audit y cleanup DNS/VPS.
-- **v2.2** (2026-05-31) — Fase 1 agrega `suggest_safe_domain` / `naming_suggest` como skill read-only de naming seguro antes de compras Route53, `wait_for_dns_propagation` / `dns_propagation_wait` como skill supervisada de lectura DNS bloqueante, y `bind_webdock_main_domain` como acción supervisada reversible. Webdock API no documenta endpoint Main Domain/PTR; el MVP usa fallback SSH para hostname y marca PTR como `not_supported_by_api`.
+- **v2.2** (2026-05-31) — Fase A habilita `suggest_safe_domain` / `naming_suggest`, `wait_for_dns_propagation` / `dns_propagation_wait`, `bind_webdock_main_domain` y `send_real_email`. `send_real_email` es CRITICAL, irreversible, rate-limited, one-off para smoke E2E autorizado; Webdock Main Domain usa fallback SSH y PTR queda `not_supported_by_api`.
 
 ## 1. Propósito
 
@@ -127,6 +127,9 @@ Requiere `humanApproved: true` + `killSwitch.enabled: false`. Si falla cualquier
 | `bind_domain_to_server` | `oc.domain.bound` | `DOMAIN_BIND_ENABLE=true` (NUEVO) | operador autorizado |
 | `configure_email_auth` | `oc.email.auth_configured` | `EMAIL_AUTH_ENABLE_WRITES=true` (NUEVO) | operador autorizado |
 | `wait_for_dns_propagation` | `oc.dns.propagation_check` | n/a (lectura DNS + audit local) | operador autorizado |
+| `send_real_email` / `smtp_send_real` | `oc.smtp.real_email_sent` | `CRITICAL_RISK_REPUTATION` + SPF/DKIM/DMARC + Postfix + rate-limit 5/h + burner block | operador autorizado |
+
+`send_real_email` no es reversible: rollback no aplica porque el mensaje ya salió del VPS. El seguimiento posterior es audit/bounce tracking, revisión de reputación y escalación humana si hay rechazo o placement negativo.
 
 #### Skills que SIGUEN bloqueadas en `future_live_requires_new_phase`
 

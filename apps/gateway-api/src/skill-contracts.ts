@@ -66,6 +66,11 @@ const skillActionBindings: SkillActionBinding[] = [
     canonicalSkill: "start_warmup_ramp",
     aliases: ["start_warmup_ramp", "warmup_ramp_scheduler"],
     actionIds: ["start_warmup_ramp", "warmup_ramp_scheduler"]
+  },
+  {
+    canonicalSkill: "send_real_email",
+    aliases: ["send_real_email", "smtp_send_real", "smtp_send_real_email"],
+    actionIds: ["send_real_email", "smtp_send_real", "smtp_send_real_email"]
   }
 ];
 
