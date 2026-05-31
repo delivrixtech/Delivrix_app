@@ -4657,6 +4657,7 @@ const server = createServer(async (request, response) => {
       error: "not_found"
     });
   } catch (error) {
+    logUnhandledRequestError(request, error);
     return json(response, 500, {
       error: "internal_error",
       message: error instanceof Error ? error.message : "Unknown error"
@@ -5294,6 +5295,23 @@ function json(response: ServerResponse, statusCode: number, payload: unknown): v
 
 function requestUrl(request: IncomingMessage): URL {
   return new URL(request.url ?? "/", `http://${request.headers.host ?? `${host}:${port}`}`);
+}
+
+function logUnhandledRequestError(request: IncomingMessage, error: unknown): void {
+  let path = request.url ?? "/";
+  try {
+    path = requestUrl(request).pathname;
+  } catch {
+    path = request.url ?? "/";
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? error.stack ?? error.message : String(error);
+  console.error("[gateway] unhandled request error", {
+    method: request.method ?? "UNKNOWN",
+    path,
+    message
+  });
+  console.error(stack);
 }
 
 function parseStaleAfterMs(value: string | number | null | undefined, fallback: number): number | null {

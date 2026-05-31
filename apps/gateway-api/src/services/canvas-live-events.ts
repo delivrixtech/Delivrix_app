@@ -222,7 +222,12 @@ export class CanvasLiveEventService {
     await this.ensureLoaded();
     const snapshot: CanvasLiveArtifactSnapshot = {
       ...input,
-      blocks: [...input.blocks].sort((left, right) => left.order - right.order)
+      blocks: input.blocks
+        .map((block, index) => ({
+          ...block,
+          order: normalizeSnapshotBlockOrder(block.order, index + 1)
+        }))
+        .sort((left, right) => left.order - right.order)
     };
     this.artifacts.set(snapshot.artifactId, snapshot);
 
@@ -343,7 +348,7 @@ export class CanvasLiveEventService {
         this.applyDecisionRecord(record);
         continue;
       }
-      const event = normalizeCanvasLiveEvent(record, this.now);
+      const event = normalizeCanvasLiveEvent(this.repairPersistedArtifactRecord(record), this.now);
       if (
         event.type === "oc.artifact.declare" ||
         event.type === "oc.artifact.block" ||
@@ -354,6 +359,25 @@ export class CanvasLiveEventService {
     }
 
     this.loaded = true;
+  }
+
+  private repairPersistedArtifactRecord(record: unknown): unknown {
+    if (!isRecord(record) || record.type !== "oc.artifact.block" || isPositiveIntegerValue(record.order)) {
+      return record;
+    }
+    const artifactId = stringValue(record.artifactId);
+    const artifact = artifactId ? this.artifacts.get(artifactId) : undefined;
+    const repairedOrder = artifact ? artifact.blocks.length + 1 : 1;
+    console.warn("[canvas-live] repaired persisted artifact block with invalid order", {
+      artifactId: artifactId ?? "unknown",
+      blockId: stringValue(record.blockId) ?? "unknown",
+      rawOrder: record.order,
+      repairedOrder
+    });
+    return {
+      ...record,
+      order: repairedOrder
+    };
   }
 
   private async persistLiveEvent(event: CanvasLiveEvent): Promise<void> {
@@ -885,6 +909,15 @@ function stringValue(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeSnapshotBlockOrder(value: unknown, fallback: number): number {
+  return isPositiveIntegerValue(value) ? Number(value) : fallback;
+}
+
+function isPositiveIntegerValue(value: unknown): boolean {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 1;
 }
 
 function positiveInteger(value: unknown, field: string): number {

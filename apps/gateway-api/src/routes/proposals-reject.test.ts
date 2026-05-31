@@ -86,6 +86,7 @@ test("reject webhook failure does not block and canvas is updated", async () => 
   assert.equal(response.body.webhookBroadcast.delivered, false);
   assert.equal(ctx.artifacts[0].approvalStatus, "rejected");
   assert.equal(ctx.artifacts[0].rejectionReason, "Rechazo esta propuesta por contrato incorrecto");
+  assert.equal(ctx.artifacts[0].blocks[0]?.order, 1);
 });
 
 interface TestContext {

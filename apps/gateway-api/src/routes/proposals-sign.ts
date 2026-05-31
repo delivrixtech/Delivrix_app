@@ -576,7 +576,7 @@ function approvedArtifactSnapshot(input: {
       ? base.blocks
       : [{
           blockId: "summary",
-          order: 0,
+          order: 1,
           kind: "paragraph",
           content: input.proposal.body ?? input.proposal.category,
           editable: true,
