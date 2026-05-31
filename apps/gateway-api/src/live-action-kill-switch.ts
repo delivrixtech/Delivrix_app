@@ -32,6 +32,9 @@ export function classifyLiveActionMutation(method: string | undefined, path: str
   if (normalizedMethod === "POST" && path === "/v1/webdock/servers/create") {
     return liveAction(normalizedMethod, path, "webdock_server", "webdock-create");
   }
+  if (normalizedMethod === "POST" && path === "/v1/skills/bind-webdock-main-domain") {
+    return liveAction(normalizedMethod, path, "webdock_server", "bind-webdock-main-domain");
+  }
   if (normalizedMethod === "DELETE" && /^\/v1\/webdock\/servers\/[^/]+$/.test(path)) {
     return liveAction(normalizedMethod, path, "webdock_server", decodeURIComponent(path.split("/").at(-1) ?? "unknown"));
   }

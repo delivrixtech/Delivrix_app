@@ -8,7 +8,8 @@ Categorías y método de evaluación heredados de `HITO_4_5_RUNBOOK_PERMISOS_KIL
 
 - **v1.0** (2026-05-18) — 5 categorías + ~40 acciones por familia.
 - **v2.0** (2026-05-18) — 29 acciones de lectura una a una (todo el read-boundary literal), pseudocódigo formal del pipeline en TypeScript, manejo de race conditions en approvals concurrentes, código de error tipado por rejection reason.
-- **v2.2** (2026-05-31) — Fase 1 agrega `suggest_safe_domain` / `naming_suggest` como skill read-only de naming seguro antes de compras Route53 y `wait_for_dns_propagation` / `dns_propagation_wait` como skill supervisada de lectura DNS bloqueante. Ambas cuestan `$0`; audit obligatorio `oc.naming.candidates_suggested` / `oc.dns.propagation_check`.
+- **v2.1** (2026-05-27) — Camino B CTO: `register_domain` pasa de doble firma a modelo wallet con `requiredApprovals: 1` y firmante único `juanescanar-cto`; sigue requiriendo presupuesto, flag explícita, audit y cleanup DNS/VPS.
+- **v2.2** (2026-05-31) — Fase 1 agrega `suggest_safe_domain` / `naming_suggest` como skill read-only de naming seguro antes de compras Route53, `wait_for_dns_propagation` / `dns_propagation_wait` como skill supervisada de lectura DNS bloqueante, y `bind_webdock_main_domain` como acción supervisada reversible. Webdock API no documenta endpoint Main Domain/PTR; el MVP usa fallback SSH para hostname y marca PTR como `not_supported_by_api`.
 
 ## 1. Propósito
 
@@ -119,6 +120,7 @@ Requiere `humanApproved: true` + `killSwitch.enabled: false`. Si falla cualquier
 | `route53_dns_upsert` | `oc.route53.dns_upserted` | `AWS_ROUTE53_DNS_ENABLE_WRITES=true` | operador autorizado |
 | `ionos_dns_upsert` | `oc.ionos.dns_upserted` | `IONOS_DNS_ENABLE_WRITES=true` (NUEVO) | operador autorizado |
 | `provision_webdock_vps` | `oc.webdock.server_created` | `WEBDOCK_SERVERS_ENABLE_CREATE=true` | operador autorizado |
+| `bind_webdock_main_domain` | `oc.webdock.main_domain_bound` | `WEBDOCK_BIND_MAIN_DOMAIN_ENABLE=true`; reversible: sí; rollback: sí, restaura hostname previo si PTR falla; PTR API: `not_supported_by_api` | operador autorizado |
 | `install_smtp_stack` | `oc.smtp.stack_installed` | `SMTP_PROVISIONING_ENABLE_SSH=true` | operador autorizado |
 | `start_warmup_seed` | `oc.warmup.seed_sent` | `WARMUP_ENABLE_SEND=true` | operador autorizado |
 | `start_warmup_ramp` | `oc.warmup.ramp_started` | `WARMUP_RAMP_ENABLE=true` (NUEVO) | operador autorizado |

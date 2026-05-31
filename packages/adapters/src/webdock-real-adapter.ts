@@ -51,6 +51,10 @@ export interface WebdockServer {
   imageSlug?: string;
   /** Notas que el operador puso en Webdock UI. */
   description?: string;
+  /** Dominio principal/Server Identity si la API lo expone. */
+  mainDomain?: string;
+  /** Hostname visible si la API lo expone separadamente. */
+  hostname?: string;
   /** Si esta IP está marcada como suspendida (no factura ni envía). */
   webRoot?: string;
   /** Snapshot count del server según el proveedor. */
@@ -114,6 +118,52 @@ export interface WebdockDeleteServerResult {
   source: WebdockInventorySource;
 }
 
+export interface WebdockSetServerMainDomainResult {
+  ok: boolean;
+  previousMainDomain: string | null;
+  raw: unknown;
+}
+
+export interface WebdockSetServerPtrResult {
+  ok: boolean;
+  supported: boolean;
+  raw: unknown;
+}
+
+export interface WebdockSshCommandInput {
+  serverIp: string;
+  command: string;
+  stdin?: string;
+  timeoutMs?: number;
+}
+
+export interface WebdockSshCommandResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+}
+
+export interface WebdockSshRunner {
+  isConfigured?(): boolean;
+  run(input: WebdockSshCommandInput): Promise<WebdockSshCommandResult>;
+}
+
+export interface WebdockAdapterLogger {
+  error(message: string, metadata?: Record<string, unknown>): void;
+}
+
+export class WebdockAdapterError extends Error {
+  readonly code: string;
+  readonly metadata: Record<string, unknown>;
+
+  constructor(code: string, metadata: Record<string, unknown> = {}) {
+    super(code);
+    this.name = "WebdockAdapterError";
+    this.code = code;
+    this.metadata = metadata;
+  }
+}
+
 const DEFAULT_API_BASE = "https://api.webdock.io/v1";
 const DEFAULT_TTL_MS = 60_000;
 
@@ -145,6 +195,10 @@ export interface WebdockRealAdapterOptions {
   cacheTtlMs?: number;
   /** Fetch impl para tests (default global fetch). */
   fetchImpl?: typeof fetch;
+  /** Runner SSH opcional para fallback de Server Identity. */
+  sshRunner?: WebdockSshRunner;
+  /** Logger opcional para capturar bodies de errores del proveedor. */
+  logger?: WebdockAdapterLogger;
   /** Override del proveedor de timestamps (para tests). */
   now?: () => Date;
 }
@@ -172,6 +226,8 @@ export class WebdockRealAdapter {
   private readonly accountLabel: string;
   private readonly cacheTtlMs: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly sshRunner: WebdockSshRunner | undefined;
+  private readonly logger: WebdockAdapterLogger;
   private readonly now: () => Date;
   private cache: CacheEntry | null = null;
 
@@ -194,6 +250,8 @@ export class WebdockRealAdapter {
     this.accountLabel = normalizeEnvValue(options.accountLabel) ?? "Webdock";
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_TTL_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.sshRunner = options.sshRunner;
+    this.logger = options.logger ?? { error: () => undefined };
     this.now = options.now ?? (() => new Date());
   }
 
@@ -457,6 +515,125 @@ export class WebdockRealAdapter {
     };
   }
 
+  async setServerMainDomain(opts: {
+    serverSlug: string;
+    domain: string;
+    serverIp?: string | null;
+    sshRunner?: WebdockSshRunner;
+    timeoutMs?: number;
+  }): Promise<WebdockSetServerMainDomainResult> {
+    return this.setServerHostnameViaSsh({
+      serverSlug: opts.serverSlug,
+      domain: opts.domain,
+      serverIp: opts.serverIp,
+      sshRunner: opts.sshRunner,
+      timeoutMs: opts.timeoutMs
+    });
+  }
+
+  async setServerHostnameViaSsh(opts: {
+    serverSlug: string;
+    domain: string;
+    serverIp?: string | null;
+    sshRunner?: WebdockSshRunner;
+    timeoutMs?: number;
+  }): Promise<WebdockSetServerMainDomainResult> {
+    const serverSlug = normalizeBindServerSlug(opts.serverSlug);
+    const domain = normalizeMainDomain(opts.domain);
+    const serverIp = normalizeOptionalIpv4(opts.serverIp);
+    if (!serverIp) {
+      throw new WebdockAdapterError("set_main_domain_failed_ipv4_missing", { serverSlug });
+    }
+
+    const runner = opts.sshRunner ?? this.sshRunner;
+    if (!runner || (runner.isConfigured && !runner.isConfigured())) {
+      throw new WebdockAdapterError("set_main_domain_failed_ssh_runner_missing", { serverSlug });
+    }
+
+    const previous = await runner.run({
+      serverIp,
+      command: "hostname",
+      timeoutMs: opts.timeoutMs ?? 15_000
+    });
+    if (previous.exitCode !== 0) {
+      throw new WebdockAdapterError("set_main_domain_failed_hostname_read", {
+        serverSlug,
+        exitCode: previous.exitCode,
+        stderr: previous.stderr.slice(0, 1000)
+      });
+    }
+
+    const previousHostname = lastNonEmptyLine(previous.stdout);
+    if (previousHostname === domain) {
+      return {
+        ok: true,
+        previousMainDomain: previousHostname,
+        raw: { skipped: "already_bound_ssh", previousHostname }
+      };
+    }
+
+    const domainArg = shellSingleQuote(domain);
+    const script = [
+      "set -euo pipefail",
+      `domain=${domainArg}`,
+      "sudo hostnamectl set-hostname \"$domain\"",
+      "if grep -qE '^127\\.0\\.1\\.1[[:space:]]+' /etc/hosts; then",
+      "  sudo sed -i.bak -E \"s/^127\\.0\\.1\\.1[[:space:]].*/127.0.1.1 $domain/\" /etc/hosts",
+      "else",
+      "  printf '127.0.1.1 %s\\n' \"$domain\" | sudo tee -a /etc/hosts >/dev/null",
+      "fi",
+      "hostname"
+    ].join("\n");
+    const result = await runner.run({
+      serverIp,
+      command: script,
+      timeoutMs: opts.timeoutMs ?? 30_000
+    });
+    const hostnameAfter = lastNonEmptyLine(result.stdout);
+    if (result.exitCode !== 0 || hostnameAfter !== domain) {
+      this.logger.error("webdock.set_main_domain_ssh.failed", {
+        serverSlug,
+        serverIp,
+        exitCode: result.exitCode,
+        stdout: result.stdout.slice(0, 1000),
+        stderr: result.stderr.slice(0, 1000)
+      });
+      throw new WebdockAdapterError("set_main_domain_failed_ssh", {
+        serverSlug,
+        exitCode: result.exitCode,
+        stdout: result.stdout.slice(0, 1000),
+        stderr: result.stderr.slice(0, 1000)
+      });
+    }
+
+    this.invalidateCache();
+    return {
+      ok: true,
+      previousMainDomain: previousHostname,
+      raw: {
+        route: "ssh_hostnamectl",
+        commandOutput: result.stdout,
+        previousHostname,
+        hostname: hostnameAfter
+      }
+    };
+  }
+
+  async setServerPtr(opts: {
+    serverSlug: string;
+    ipv4: string;
+    ptrValue: string;
+  }): Promise<WebdockSetServerPtrResult> {
+    normalizeBindServerSlug(opts.serverSlug);
+    normalizeIpv4(opts.ipv4);
+    normalizeMainDomain(opts.ptrValue);
+    return {
+      ok: false,
+      supported: false,
+      raw: { reason: "not_supported_by_api" }
+    };
+  }
+
   async getServer(slug: string): Promise<WebdockServer> {
     const readApiKey = this.readApiKey;
     if (!readApiKey) {
@@ -696,6 +873,8 @@ function parseWebdockServers(raw: unknown): WebdockServer[] {
       lastDataReceived: stringField(obj, "lastDataReceived"),
       imageSlug: stringField(obj, "imageSlug"),
       description: stringField(obj, "description"),
+      mainDomain: stringField(obj, "mainDomain"),
+      hostname: stringField(obj, "hostname"),
       webRoot: stringField(obj, "webRoot"),
       snapshotRunTime: numberField(obj, "snapshotRunTime")
     });
@@ -731,6 +910,8 @@ function parseCreatedServer(raw: unknown): WebdockServer {
     lastDataReceived: stringField(obj, "lastDataReceived"),
     imageSlug: stringField(obj, "imageSlug") ?? stringField(obj, "image"),
     description: stringField(obj, "description"),
+    mainDomain: stringField(obj, "mainDomain"),
+    hostname: stringField(obj, "hostname"),
     webRoot: stringField(obj, "webRoot"),
     snapshotRunTime: numberField(obj, "snapshotRunTime")
   };
@@ -806,6 +987,47 @@ function normalizeServerSlug(value: string): string {
     throw new Error(`Invalid Webdock server slug: ${value}`);
   }
   return normalized;
+}
+
+function normalizeBindServerSlug(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]{1,118}[a-z0-9]$/.test(normalized)) {
+    throw new WebdockAdapterError("server_slug_invalid_format", { value });
+  }
+  return normalized;
+}
+
+function normalizeMainDomain(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/\.$/, "");
+  if (
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9-]{1,63})+$/.test(normalized) ||
+    /^(mail|email|notify|noreply|alert|smtp|sender|inbox|bulk|blast)\./i.test(normalized)
+  ) {
+    throw new WebdockAdapterError("domain_invalid_format", { value });
+  }
+  return normalized;
+}
+
+function normalizeOptionalIpv4(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return normalizeIpv4(value);
+}
+
+function normalizeIpv4(value: string): string {
+  const parts = value.trim().split(".");
+  if (parts.length !== 4 || parts.some((part) => !/^\d+$/.test(part) || Number(part) < 0 || Number(part) > 255)) {
+    throw new WebdockAdapterError("ipv4_invalid_format", { value });
+  }
+  return parts.map((part) => String(Number(part))).join(".");
+}
+
+function lastNonEmptyLine(value: string): string | null {
+  const line = value.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean).at(-1);
+  return line ?? null;
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function normalizeShellUsername(value: string): string {

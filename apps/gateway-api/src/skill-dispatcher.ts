@@ -26,6 +26,12 @@ import {
   type WebdockServerCreateAdapter
 } from "./routes/webdock-servers.ts";
 import {
+  bindWebdockMainDomainSkillParamSchema,
+  createBindWebdockMainDomainApprovalGuard,
+  handleBindWebdockMainDomain,
+  type BindWebdockMainDomainAdapter
+} from "./routes/webdock-bind-domain.ts";
+import {
   handleSmtpProvisionHttp,
   type SmtpSshRunner
 } from "./routes/smtp-provisioning.ts";
@@ -89,7 +95,7 @@ export interface SkillDispatcherDeps {
   domainPurchaseAdapter: Route53DomainPurchaseAdapter;
   route53DnsAdapter: Route53DnsAdapter & EmailAuthDnsAdapter;
   ionosDnsAdapter: IonosDnsUpsertAdapter;
-  webdockAdapter: WebdockServerCreateAdapter;
+  webdockAdapter: WebdockServerCreateAdapter & Partial<BindWebdockMainDomainAdapter>;
   smtpSshRunner: SmtpSshRunner;
   rampScheduler: RampScheduler;
   porkbunDomainAdapter?: DomainAvailabilityAdapter;
@@ -331,6 +337,27 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         now: deps.now
       })
   };
+  const bindWebdockMainDomain: SkillHandlerEntry = {
+    paramSchema: bindWebdockMainDomainSkillParamSchema,
+    timeoutMs: 120_000,
+    canRollback: true,
+    invoke: ({ request, response, deps }) =>
+      handleBindWebdockMainDomain({
+        request,
+        response,
+        deps: {
+          auditLog: deps.auditLog,
+          approvalGuard: createBindWebdockMainDomainApprovalGuard({
+            auditLog: deps.auditLog,
+            readCanvasState: deps.readCanvasState,
+            now: deps.now
+          }),
+          webdockAdapter: deps.webdockAdapter as BindWebdockMainDomainAdapter,
+          sshRunner: deps.smtpSshRunner,
+          now: () => (deps.now?.() ?? new Date()).getTime()
+        }
+      })
+  };
   const smtpProvision: SkillHandlerEntry = {
     paramSchema: smtpProvisionParamSchema,
     timeoutMs: 90_000,
@@ -463,6 +490,8 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     ionos_dns_upsert: ionosDns,
     create_webdock_server: webdockCreate,
     provision_webdock_vps: webdockCreate,
+    bind_webdock_main_domain: bindWebdockMainDomain,
+    webdock_main_domain_bind: bindWebdockMainDomain,
     provision_smtp_postfix: smtpProvision,
     install_smtp_stack: smtpProvision,
     configure_email_auth: emailAuth,
