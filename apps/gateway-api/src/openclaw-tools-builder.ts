@@ -1,7 +1,7 @@
 import type { SkillParamSchema } from "./skill-schemas.ts";
 import {
   bindDomainParamSchema,
-  configureCompleteSmtpParamSchema,
+  configureCompleteSmtpSkillParamSchema,
   emailAuthParamSchema,
   ionosUpsertParamSchema,
   route53RegisterParamSchema,
@@ -462,7 +462,6 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           testEmailRecipient: { type: "string", pattern: emailPattern },
           testEmailSubject: { type: "string", minLength: 1, maxLength: 160 },
           testEmailBody: { type: "string", minLength: 1, maxLength: 10000 },
-          actorId: { type: "string", minLength: 1 },
           seedInboxes: {
             type: "array",
             minItems: 1,
@@ -470,10 +469,10 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
             items: { type: "string", pattern: emailPattern }
           }
         },
-        required: ["brand", "budgetUsdMax", "testEmailRecipient", "testEmailSubject", "testEmailBody", "actorId"]
+        required: ["brand", "budgetUsdMax", "testEmailRecipient", "testEmailSubject", "testEmailBody"]
       }
     },
-    paramSchema: configureCompleteSmtpParamSchema,
+    paramSchema: configureCompleteSmtpSkillParamSchema,
     enabled: (env) =>
       hmacConfigured(env) &&
       flagEnabled(env.OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE) &&

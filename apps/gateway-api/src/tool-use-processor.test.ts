@@ -59,6 +59,45 @@ test("processToolUse rejects unknown tool names before submission", async () => 
   assert.equal(calls.length, 0);
 });
 
+test("processToolUse invokes read-only suggest_safe_domain without proposal wait", async () => {
+  const calls: unknown[] = [];
+  const result = await processToolUse({
+    toolUseId: "toolu-suggest",
+    toolName: "suggest_safe_domain",
+    toolInput: { brand: "delivrix", intent: "ops", count: 5 },
+    chatSession: { id: "agent:main:operator" },
+    env: enabledEnv(),
+    deps: {
+      ...memoryDeps({ calls }),
+      async invokeReadOnlyTool(input) {
+        calls.push({ readOnly: input.toolName, params: input.params });
+        return { candidates: [{ domain: "delivrixops.com", namingScore: 92 }] };
+      }
+    }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected read-only success");
+  assert.equal(result.proposalId, "read_only:toolu-suggest");
+  assert.deepEqual(result.result, { candidates: [{ domain: "delivrixops.com", namingScore: 92 }] });
+  assert.equal(calls.length, 1);
+});
+
+test("processToolUse fails read-only suggest_safe_domain when invoker is missing", async () => {
+  const result = await processToolUse({
+    toolUseId: "toolu-suggest-missing",
+    toolName: "suggest_safe_domain",
+    toolInput: { brand: "delivrix" },
+    chatSession: { id: "agent:main:operator" },
+    env: enabledEnv(),
+    deps: memoryDeps()
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) assert.fail("expected missing invoker failure");
+  assert.equal(result.error, "read_only_tool_invoker_missing");
+});
+
 test("processToolUse validates params with custom skill schema", async () => {
   const calls: unknown[] = [];
   const result = await processToolUse({
@@ -201,6 +240,9 @@ function enabledEnv(): Record<string, string | undefined> {
     EMAIL_AUTH_ENABLE_WRITES: "true",
     DOMAIN_BIND_ENABLE: "true",
     WARMUP_ENABLE_SEND: "true",
-    WARMUP_RAMP_ENABLE: "true"
+    WARMUP_RAMP_ENABLE: "true",
+    WEBDOCK_BIND_MAIN_DOMAIN_ENABLE: "true",
+    SEND_REAL_EMAIL_ENABLE: "true",
+    OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true"
   };
 }

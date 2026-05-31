@@ -38,13 +38,13 @@ Archivos concatenados al `system prompt` en el arranque del container:
 
 | Archivo | Por qué siempre | Aprox tokens |
 | --- | --- | --- |
-| `OPENCLAW_SYSTEM_PROMPT.md` (sección §4 literal) | Define identidad | 1.5K |
+| `OPENCLAW_SYSTEM_PROMPT.md` (sección §4 literal) | Define identidad, tool calling Bedrock y flow SMTP E2E | 2.5K |
 | `OPENCLAW_PERMISSIONS_MATRIX.md` | Cada acción se valida contra esto | 2K |
 | `OPENCLAW_SKILLS_CATALOG.md` (sólo fichas resumidas) | Sin esto, el agente no sabe qué herramientas tiene | 1K |
 | `NORTE_OPERATIVO_DELIVRIX.md` (resumen, no completo) | Los 31 gates | 1.5K |
 | `OPENCLAW_DELIVRIX_API_CONTRACT.md` (sección §3-§5) | Endpoints válidos | 1K |
 
-**Total estimado: ~7K tokens fijos por sesión.** Tolerable con context windows
+**Total estimado: ~8K tokens fijos por sesión.** Tolerable con context windows
 modernos (Claude Sonnet 4.6 maneja 200K).
 
 Build script (Codex implementa):

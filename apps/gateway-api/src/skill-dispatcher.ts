@@ -63,7 +63,7 @@ import {
 } from "./routes/send-email.ts";
 import {
   bindDomainParamSchema,
-  configureCompleteSmtpParamSchema,
+  configureCompleteSmtpSkillParamSchema,
   emailAuthParamSchema,
   ionosUpsertParamSchema,
   route53RegisterParamSchema,
@@ -509,7 +509,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
       })
   };
   const configureCompleteSmtp: SkillHandlerEntry = {
-    paramSchema: configureCompleteSmtpParamSchema,
+    paramSchema: configureCompleteSmtpSkillParamSchema,
     timeoutMs: 3 * 60 * 60 * 1000,
     canRollback: false,
     invoke: ({ request, response, deps }) => {
