@@ -27,6 +27,7 @@ export interface ProcessToolUseInput {
 export interface ToolUseProcessorDeps {
   submitProposalFromToolUse(input: SubmitProposalFromToolUseInput): Promise<ToolUseProposalSubmission>;
   waitForProposalDecision(input: WaitForProposalDecisionInput): Promise<ToolUseProposalDecision>;
+  invokeReadOnlyTool?: (input: InvokeReadOnlyToolInput) => Promise<unknown>;
   readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
 }
 
@@ -44,6 +45,15 @@ export interface ToolUseProposalSubmission {
   duplicate?: boolean;
   requiresApproval?: boolean;
   requiredApprovals?: number;
+}
+
+export interface InvokeReadOnlyToolInput {
+  toolUseId: string;
+  toolName: string;
+  params: Record<string, unknown>;
+  chatSession: ToolUseChatSession;
+  env: Record<string, string | undefined>;
+  now: Date;
 }
 
 export interface WaitForProposalDecisionInput {
@@ -156,6 +166,37 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
     };
   }
 
+  if (canonicalToolName === "suggest_safe_domain") {
+    if (!input.deps.invokeReadOnlyTool) {
+      return {
+        ok: false,
+        error: "read_only_tool_invoker_missing",
+        details: { tool: canonicalToolName }
+      };
+    }
+    try {
+      return {
+        ok: true,
+        status: "executed",
+        result: truncateToolResult(await input.deps.invokeReadOnlyTool({
+          toolUseId: input.toolUseId,
+          toolName: canonicalToolName,
+          params: validation.data,
+          chatSession: input.chatSession,
+          env,
+          now
+        })),
+        proposalId: `read_only:${input.toolUseId}`
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: "read_only_tool_failed",
+        details: errorMessage(error)
+      };
+    }
+  }
+
   let proposal: ToolUseProposalSubmission;
   try {
     proposal = await input.deps.submitProposalFromToolUse({
@@ -174,7 +215,7 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
     };
   }
 
-  const timeoutMs = parsePositiveInt(env.OPENCLAW_TOOL_APPROVAL_TIMEOUT_MS) ?? defaultApprovalTimeoutMs;
+  const timeoutMs = approvalTimeoutForTool(canonicalToolName, env);
   const decision = await input.deps.waitForProposalDecision({
     proposalId: proposal.proposalId,
     timeoutMs,
@@ -262,6 +303,11 @@ export function createHttpToolUseProcessor(config: HttpToolUseProcessorConfig): 
       readBoundaryToken: config.readBoundaryToken ?? "",
       pollIntervalMs,
       readKillSwitch
+    }),
+    invokeReadOnlyTool: async (input) => invokeReadOnlyToolOverHttp({
+      input,
+      baseUrl,
+      fetchImpl
     }),
     readKillSwitch
   };
@@ -374,6 +420,32 @@ async function submitProposalOverHttp(input: {
     requiresApproval: body.requiresApproval === true,
     requiredApprovals: typeof body.requiredApprovals === "number" ? body.requiredApprovals : undefined
   };
+}
+
+async function invokeReadOnlyToolOverHttp(input: {
+  input: InvokeReadOnlyToolInput;
+  baseUrl: string;
+  fetchImpl: FetchLike;
+}): Promise<unknown> {
+  if (input.input.toolName !== "suggest_safe_domain") {
+    throw new Error(`unsupported_read_only_tool:${input.input.toolName}`);
+  }
+  const response = await input.fetchImpl(`${input.baseUrl}/v1/skills/suggest-safe-domain`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      ...input.input.params,
+      actorId: input.input.chatSession.id
+    })
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(`read-only tool failed with HTTP ${response.status}`);
+  }
+  return body;
 }
 
 async function waitForProposalDecisionOverHttp(input: {
@@ -528,6 +600,15 @@ function normalizeBaseUrl(value: string): string {
 function parsePositiveInt(value: string | undefined): number | undefined {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function approvalTimeoutForTool(toolName: string, env: Record<string, string | undefined>): number {
+  if (toolName === "configure_complete_smtp") {
+    return parsePositiveInt(env.OPENCLAW_CONFIGURE_SMTP_TOOL_TIMEOUT_MS) ??
+      parsePositiveInt(env.OPENCLAW_TOOL_APPROVAL_TIMEOUT_MS) ??
+      3 * 60 * 60 * 1000;
+  }
+  return parsePositiveInt(env.OPENCLAW_TOOL_APPROVAL_TIMEOUT_MS) ?? defaultApprovalTimeoutMs;
 }
 
 function sleep(ms: number): Promise<void> {

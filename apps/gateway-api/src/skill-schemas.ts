@@ -99,6 +99,16 @@ export interface ConfigureCompleteSmtpParams extends Record<string, unknown> {
   seedInboxes?: string[];
 }
 
+export interface ConfigureCompleteSmtpSkillParams extends Record<string, unknown> {
+  brand: string;
+  intent?: string;
+  budgetUsdMax: number;
+  testEmailRecipient: string;
+  testEmailSubject: string;
+  testEmailBody: string;
+  seedInboxes?: string[];
+}
+
 export const route53RegisterParamSchema = schema<Route53RegisterParams>((value) => {
   const input = object(value);
   const years = integer(input.years ?? input.durationYears, "years", 1, 10);
@@ -219,7 +229,7 @@ export const warmupRampParamSchema = schema<WarmupRampParams>((value) => {
   };
 });
 
-export const configureCompleteSmtpParamSchema = schema<ConfigureCompleteSmtpParams>((value) => {
+export const configureCompleteSmtpSkillParamSchema = schema<ConfigureCompleteSmtpSkillParams>((value) => {
   const input = object(value);
   return {
     brand: string(input.brand, "brand"),
@@ -230,10 +240,21 @@ export const configureCompleteSmtpParamSchema = schema<ConfigureCompleteSmtpPara
     testEmailRecipient: email(input.testEmailRecipient, "testEmailRecipient"),
     testEmailSubject: string(input.testEmailSubject, "testEmailSubject"),
     testEmailBody: string(input.testEmailBody, "testEmailBody"),
-    actorId: string(input.actorId, "actorId"),
     ...(input.seedInboxes === undefined || input.seedInboxes === null
       ? {}
       : { seedInboxes: array(input.seedInboxes, "seedInboxes", 1, 50).map((entry, index) => email(entry, `seedInboxes[${index}]`)) })
+  };
+});
+
+export const configureCompleteSmtpParamSchema = schema<ConfigureCompleteSmtpParams>((value) => {
+  const input = object(value);
+  const parsed = configureCompleteSmtpSkillParamSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new SkillSchemaError(parsed.error.issues[0] ?? "schema_mismatch");
+  }
+  return {
+    ...parsed.data,
+    actorId: string(input.actorId, "actorId")
   };
 });
 

@@ -188,7 +188,6 @@ function validSample(toolName: string): Record<string, unknown> {
     testEmailRecipient: "operator@example.com",
     testEmailSubject: "Operational readiness report",
     testEmailBody: "Authorized operational readiness message for Delivrix infrastructure.",
-    actorId: "op-1",
     seedInboxes: ["seed-1@example.com", "seed-2@example.com", "seed-3@example.com"]
   };
 }
