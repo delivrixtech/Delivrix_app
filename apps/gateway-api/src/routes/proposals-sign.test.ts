@@ -196,6 +196,7 @@ test("sign updates canvas artifact as approved with executionId", async () => {
   assert.equal(ctx.artifacts.length, 1);
   assert.equal(ctx.artifacts[0].approvalStatus, "approved");
   assert.equal(ctx.artifacts[0].executionId, response.body.signatureId);
+  assert.equal(ctx.artifacts[0].blocks[0]?.order, 1);
 });
 
 test("sign redacts secrets from executed audit metadata", async () => {

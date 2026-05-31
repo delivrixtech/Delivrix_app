@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -371,6 +371,70 @@ test("canvas-live state writes append-only JSONL files", async () => {
   const artifacts = await readFile(join(stateDir, "artifacts.jsonl"), "utf8");
   assert.equal(tasks.trim().split("\n").length, 1);
   assert.equal(artifacts.trim().split("\n").length, 2);
+});
+
+test("canvas-live reload repairs legacy artifact blocks with non-positive order", async () => {
+  const stateDir = await stateDirForTest();
+  await writeFile(join(stateDir, "artifacts.jsonl"), [
+    JSON.stringify({
+      type: "oc.artifact.declare",
+      taskId: "task-legacy",
+      artifactId: "artifact-legacy",
+      kind: "proposal",
+      title: "Legacy proposal",
+      editable: true,
+      createdAt: fixedNow.toISOString()
+    }),
+    JSON.stringify({
+      type: "oc.artifact.block",
+      artifactId: "artifact-legacy",
+      blockId: "summary",
+      order: 0,
+      kind: "paragraph",
+      content: "Legacy summary",
+      editable: true,
+      status: "complete",
+      occurredAt: fixedNow.toISOString()
+    })
+  ].join("\n"), "utf8");
+
+  const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  const snapshot = await service.snapshot();
+
+  assert.equal(snapshot.artifacts[0].blocks[0].order, 1);
+});
+
+test("canvas-live upsertArtifactSnapshot normalizes non-positive block order before persisting", async () => {
+  const stateDir = await stateDirForTest();
+  const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  await service.upsertArtifactSnapshot({
+    artifactId: "artifact-upsert-order",
+    taskId: "task-upsert-order",
+    kind: "proposal",
+    title: "Proposal with fallback block",
+    editable: true,
+    createdAt: fixedNow.toISOString(),
+    updatedAt: fixedNow.toISOString(),
+    approvalStatus: "approved",
+    approvedBy: "operator-juanes",
+    approvedAt: fixedNow.toISOString(),
+    executionId: "sig-test",
+    blocks: [{
+      blockId: "summary",
+      order: 0,
+      kind: "paragraph",
+      content: "Summary",
+      editable: true,
+      status: "complete",
+      updatedAt: fixedNow.toISOString()
+    }]
+  });
+
+  const snapshot = await service.snapshot();
+  const artifacts = await readFile(join(stateDir, "artifacts.jsonl"), "utf8");
+
+  assert.equal(snapshot.artifacts[0].blocks[0].order, 1);
+  assert.match(artifacts, /"order":1/);
 });
 
 async function seedArtifact(
