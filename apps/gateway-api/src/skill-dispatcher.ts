@@ -58,6 +58,10 @@ import {
   type DnsResolver
 } from "./routes/dns-wait.ts";
 import {
+  handleSendRealEmailHttp,
+  sendRealEmailParamSchema
+} from "./routes/send-email.ts";
+import {
   bindDomainParamSchema,
   emailAuthParamSchema,
   ionosUpsertParamSchema,
@@ -479,6 +483,22 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         readKillSwitch: deps.readKillSwitch
       })
   };
+  const sendRealEmail: SkillHandlerEntry = {
+    paramSchema: sendRealEmailParamSchema,
+    timeoutMs: 90_000,
+    canRollback: false,
+    invoke: ({ request, response, deps }) =>
+      handleSendRealEmailHttp({
+        request,
+        response,
+        auditLog: deps.auditLog,
+        sshRunner: deps.smtpSshRunner,
+        workspace: deps.workspace,
+        readCanvasState: deps.readCanvasState,
+        readKillSwitch: deps.readKillSwitch,
+        now: deps.now
+      })
+  };
 
   return {
     register_domain_route53: registerDomain,
@@ -501,7 +521,10 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     start_warmup_ramp: warmupRamp,
     warmup_ramp_scheduler: warmupRamp,
     wait_for_dns_propagation: waitForDnsPropagation,
-    dns_propagation_wait: waitForDnsPropagation
+    dns_propagation_wait: waitForDnsPropagation,
+    send_real_email: sendRealEmail,
+    smtp_send_real: sendRealEmail,
+    smtp_send_real_email: sendRealEmail
   };
 }
 

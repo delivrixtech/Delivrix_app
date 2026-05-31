@@ -197,6 +197,7 @@ import {
   handleWarmupStartError,
   handleWarmupStartHttp
 } from "./routes/warmup.ts";
+import { handleSendRealEmailHttp } from "./routes/send-email.ts";
 import {
   handleRampGetByDomainHttp,
   handleRampGetHttp,
@@ -536,6 +537,9 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("start_warmup_seed", "supervised_local_state"),
   permission("start_warmup_ramp", "supervised_local_state"),
   permission("warmup_ramp_scheduler", "supervised_local_state"),
+  permission("send_real_email", "supervised_local_state"),
+  permission("smtp_send_real", "supervised_local_state"),
+  permission("smtp_send_real_email", "supervised_local_state"),
   permission("proxmox_live_create_vps", "future_live_requires_new_phase"),
   permission("proxmox_live_destroy_vps", "future_live_requires_new_phase"),
   permission("webdock_create_server", "future_live_requires_new_phase"),
@@ -543,7 +547,6 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("webdock_snapshot_restore", "future_live_requires_new_phase"),
   permission("dns_live_change", "future_live_requires_new_phase"),
   permission("dns_record_delete", "future_live_requires_new_phase"),
-  permission("smtp_send_real_email", "future_live_requires_new_phase"),
   permission("postfix_apply_live_config", "future_live_requires_new_phase"),
   permission("tls_cert_renew_live", "future_live_requires_new_phase"),
   permission("ssh_root_access", "future_live_requires_new_phase"),
@@ -990,6 +993,18 @@ const server = createServer(async (request, response) => {
         }
         throw error;
       }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/skills/send-real-email") {
+      return await handleSendRealEmailHttp({
+        request,
+        response,
+        auditLog,
+        sshRunner: smtpSshRunner,
+        workspace: openClawWorkspace,
+        readCanvasState: () => canvasLiveEvents.snapshot(),
+        readKillSwitch: () => killSwitchStore.get()
+      });
     }
 
     {
