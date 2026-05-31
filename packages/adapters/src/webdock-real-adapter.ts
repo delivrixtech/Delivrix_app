@@ -292,6 +292,7 @@ export class WebdockRealAdapter {
       ...(opts.callbackUrl ? { callbackUrl: opts.callbackUrl } : {})
     };
 
+    const sentBody = JSON.stringify(payload);
     const response = await this.fetchImpl(`${this.apiBase}/servers`, {
       method: "POST",
       headers: {
@@ -300,11 +301,14 @@ export class WebdockRealAdapter {
         "content-type": "application/json",
         "user-agent": "Delivrix-MailOps/0.1 (webdock-provisioner)"
       },
-      body: JSON.stringify(payload)
+      body: sentBody
     });
 
     if (!response.ok) {
-      throw new Error(`Webdock API returned ${response.status} ${response.statusText}`);
+      const respBody = await response.text().catch(() => "");
+      throw new Error(
+        `Webdock API returned ${response.status} ${response.statusText} | sent: ${sentBody.slice(0, 500)} | got: ${respBody.slice(0, 600)}`
+      );
     }
 
     const raw = (await response.json()) as unknown;
