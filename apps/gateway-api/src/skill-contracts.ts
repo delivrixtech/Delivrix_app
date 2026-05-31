@@ -71,6 +71,11 @@ const skillActionBindings: SkillActionBinding[] = [
     canonicalSkill: "send_real_email",
     aliases: ["send_real_email", "smtp_send_real", "smtp_send_real_email"],
     actionIds: ["send_real_email", "smtp_send_real", "smtp_send_real_email"]
+  },
+  {
+    canonicalSkill: "configure_complete_smtp",
+    aliases: ["configure_complete_smtp", "configure_smtp_complete"],
+    actionIds: ["configure_complete_smtp", "configure_smtp_complete"]
   }
 ];
 

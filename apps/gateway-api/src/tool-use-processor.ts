@@ -476,8 +476,17 @@ function toolTarget(toolName: string, params: Record<string, unknown>, fallbackT
   if (toolName === "create_webdock_server" && typeof params.hostname === "string") {
     return { id: params.hostname, type: "webdock_server" };
   }
+  if (toolName === "bind_webdock_main_domain" && typeof params.serverSlug === "string") {
+    return { id: params.serverSlug, type: "webdock_server" };
+  }
   if (toolName === "provision_smtp_postfix" && typeof params.serverSlug === "string") {
     return { id: params.serverSlug, type: "webdock_server" };
+  }
+  if (toolName === "send_real_email" && typeof params.serverSlug === "string") {
+    return { id: params.serverSlug, type: "webdock_server" };
+  }
+  if (toolName === "configure_complete_smtp" && typeof params.brand === "string") {
+    return { id: params.brand, type: "openclaw_orchestrator" };
   }
   if (typeof params.domain === "string") {
     return { id: params.domain, type: "domain" };

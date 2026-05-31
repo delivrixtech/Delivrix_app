@@ -160,7 +160,7 @@ test("POST /v1/skills/wait-for-dns-propagation rejects invalid domain", async ()
 test("POST /v1/skills/wait-for-dns-propagation rejects maxWaitMs above hard cap", async () => {
   const response = await callRoute({
     ...validBody(),
-    maxWaitMs: 600_001
+    maxWaitMs: 1_800_001
   });
 
   assert.equal(response.statusCode, 400);

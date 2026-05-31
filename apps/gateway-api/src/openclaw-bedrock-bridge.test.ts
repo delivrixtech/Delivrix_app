@@ -253,7 +253,7 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   });
 
   assert.equal(payloads.length, 2);
-  assert.equal((payloads[0].tools as unknown[]).length, 8);
+  assert.equal((payloads[0].tools as unknown[]).length, 11);
   assert.deepEqual(toolCalls, [{
     toolUseId: "toolu-1",
     toolName: "register_domain_route53",

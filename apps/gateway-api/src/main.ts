@@ -260,8 +260,13 @@ import { buildAuditChainAnchor, AuditChainAnchorError } from "./audit-chain-anch
 import { hardenIncomingAuditBatchEvent } from "./audit-batch-origin.ts";
 import { classifyLiveActionMutation } from "./live-action-kill-switch.ts";
 import { createSkillDispatcher } from "./skill-dispatcher.ts";
+import { createHttpToolUseProcessor } from "./tool-use-processor.ts";
 import { handleProposalSign } from "./routes/proposals-sign.ts";
 import { handleProposalReject } from "./routes/proposals-reject.ts";
+import {
+  handleConfigureCompleteSmtp,
+  type ApprovalStepDecision
+} from "./routes/orchestrator-smtp.ts";
 import {
   canonicalSkillSlug,
   hashSkillExecutionContext,
@@ -325,6 +330,124 @@ const rampScheduler = new RampScheduler({
   autoRollbackManager,
   webhookBroadcaster: equipoWebhookBroadcaster
 });
+const gatewaySelfBaseUrl = process.env.DELIVRIX_GATEWAY_INTERNAL_BASE_URL ?? `http://${host}:${port}`;
+const configureSmtpToolProcessor = createHttpToolUseProcessor({
+  delivrixBaseUrl: gatewaySelfBaseUrl,
+  env: process.env,
+  readBoundaryToken: process.env.DELIVRIX_READ_BOUNDARY_TOKEN,
+  pollIntervalMs: Number(process.env.OPENCLAW_CONFIGURE_SMTP_POLL_INTERVAL_MS ?? 1_000)
+});
+const configureSmtpRuntimeDeps = {
+  invokeSkill: async (input: {
+    runId: string;
+    step: number;
+    skill: string;
+    params: Record<string, unknown>;
+  }) => {
+    if (input.skill === "suggest_safe_domain") {
+      const response = await fetch(`${gatewaySelfBaseUrl}/v1/skills/suggest-safe-domain`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify(input.params)
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(`suggest_safe_domain failed with HTTP ${response.status}`);
+      }
+      return body;
+    }
+
+    if (input.skill === "wait_server_running" || input.skill === "wait_warmup_initial") {
+      return {
+        ok: true,
+        status: "observed_or_deferred",
+        skill: input.skill,
+        params: input.params
+      };
+    }
+
+    throw new Error(`unsupported_read_only_orchestrator_step:${input.skill}`);
+  },
+  submitAndAwaitApproval: async (input: {
+    runId: string;
+    step: number;
+    skill: string;
+    params: Record<string, unknown>;
+    actorId: string;
+    approvalTimeoutMs: number;
+    estimatedCostUsd?: number;
+  }): Promise<ApprovalStepDecision> => {
+    const result = await configureSmtpToolProcessor({
+      toolUseId: `configure-complete-smtp:${input.runId}:${input.step}`,
+      toolName: input.skill,
+      toolInput: input.params,
+      chatSession: { id: `configure-complete-smtp:${input.runId}`, msgId: `step-${input.step}` }
+    });
+
+    if (result.ok) {
+      return {
+        status: "executed" as const,
+        proposalId: result.proposalId,
+        signatureId: result.signatureId,
+        outcome: result.result,
+        durationMs: result.durationMs ?? 0,
+        statusCode: result.statusCode
+      };
+    }
+
+    if (result.error === "rejected_by_operator") {
+      return {
+        status: "rejected" as const,
+        proposalId: result.proposalId ?? `unknown-step-${input.step}`,
+        reason: result.reason
+      };
+    }
+
+    if (result.error === "approval_timeout" || result.error === "execution_timeout") {
+      const timeoutStatus = result.error === "execution_timeout" ? "execution_timeout" : "approval_timeout";
+      return {
+        status: timeoutStatus,
+        proposalId: result.proposalId ?? `unknown-step-${input.step}`,
+        timeoutMs: result.timeoutMs ?? input.approvalTimeoutMs
+      };
+    }
+
+    return {
+      status: "execution_failed" as const,
+      proposalId: result.proposalId ?? `unknown-step-${input.step}`,
+      outcome: result.details ?? { error: result.error },
+      durationMs: 0,
+      statusCode: result.statusCode,
+      error: result.error
+    };
+  },
+  submitRollbackProposal: async (input: {
+    runId: string;
+    failedStep: number;
+    skill: "delete_webdock_server";
+    params: Record<string, unknown>;
+    actorId: string;
+    reason: string;
+  }) => {
+    await auditLog.append({
+      actorType: "openclaw",
+      actorId: "configure_complete_smtp",
+      action: "oc.rollback.proposal_requested",
+      targetType: "webdock_server",
+      targetId: typeof input.params.serverSlug === "string" ? input.params.serverSlug : input.runId,
+      riskLevel: "critical",
+      decision: "n/a",
+      metadata: {
+        runId: input.runId,
+        failedStep: input.failedStep,
+        skill: input.skill,
+        reason: input.reason
+      }
+    });
+    return { proposalId: `rollback-requested-${input.runId}-${input.failedStep}` };
+  },
+  verifyAuditChain: () => auditChainStore.verify()
+};
 const skillDispatcher = createSkillDispatcher({
   auditLog,
   workspace: openClawWorkspace,
@@ -340,6 +463,7 @@ const skillDispatcher = createSkillDispatcher({
   autoRollbackManager,
   webhookBroadcaster: equipoWebhookBroadcaster,
   readKillSwitch: () => killSwitchStore.get(),
+  configureSmtpDeps: configureSmtpRuntimeDeps,
   env: process.env
 });
 const onboardDomainFlowRunner = createGatewayOnboardDomainFlowRunner({
@@ -540,6 +664,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("send_real_email", "supervised_local_state"),
   permission("smtp_send_real", "supervised_local_state"),
   permission("smtp_send_real_email", "supervised_local_state"),
+  permission("configure_complete_smtp", "supervised_local_state"),
+  permission("configure_smtp_complete", "supervised_local_state"),
   permission("proxmox_live_create_vps", "future_live_requires_new_phase"),
   permission("proxmox_live_destroy_vps", "future_live_requires_new_phase"),
   permission("webdock_create_server", "future_live_requires_new_phase"),
@@ -1004,6 +1130,18 @@ const server = createServer(async (request, response) => {
         workspace: openClawWorkspace,
         readCanvasState: () => canvasLiveEvents.snapshot(),
         readKillSwitch: () => killSwitchStore.get()
+      });
+    }
+
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/openclaw/orchestrator/configure-smtp") {
+      return await handleConfigureCompleteSmtp({
+        request,
+        response,
+        auditLog,
+        canvasLiveEvents,
+        readKillSwitch: () => killSwitchStore.get(),
+        env: process.env,
+        ...configureSmtpRuntimeDeps
       });
     }
 

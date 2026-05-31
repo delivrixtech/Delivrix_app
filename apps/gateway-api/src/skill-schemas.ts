@@ -88,6 +88,17 @@ export interface WarmupRampParams extends Record<string, unknown> {
   recipientPool: string[];
 }
 
+export interface ConfigureCompleteSmtpParams extends Record<string, unknown> {
+  brand: string;
+  intent?: string;
+  budgetUsdMax: number;
+  testEmailRecipient: string;
+  testEmailSubject: string;
+  testEmailBody: string;
+  actorId: string;
+  seedInboxes?: string[];
+}
+
 export const route53RegisterParamSchema = schema<Route53RegisterParams>((value) => {
   const input = object(value);
   const years = integer(input.years ?? input.durationYears, "years", 1, 10);
@@ -205,6 +216,24 @@ export const warmupRampParamSchema = schema<WarmupRampParams>((value) => {
     ...(input.serverIp === undefined || input.serverIp === null || input.serverIp === "" ? {} : { serverIp: ipv4(input.serverIp, "serverIp") }),
     schedule: oneOf(input.schedule, "schedule", ["demo-fast", "production-14d"] as const),
     recipientPool: array(input.recipientPool, "recipientPool", 1, 2000).map((entry, index) => email(entry, `recipientPool[${index}]`))
+  };
+});
+
+export const configureCompleteSmtpParamSchema = schema<ConfigureCompleteSmtpParams>((value) => {
+  const input = object(value);
+  return {
+    brand: string(input.brand, "brand"),
+    ...(input.intent === undefined || input.intent === null || input.intent === "" ? {} : { intent: string(input.intent, "intent") }),
+    budgetUsdMax: input.budgetUsdMax === undefined || input.budgetUsdMax === null
+      ? 25
+      : integer(input.budgetUsdMax, "budgetUsdMax", 1, 10_000),
+    testEmailRecipient: email(input.testEmailRecipient, "testEmailRecipient"),
+    testEmailSubject: string(input.testEmailSubject, "testEmailSubject"),
+    testEmailBody: string(input.testEmailBody, "testEmailBody"),
+    actorId: string(input.actorId, "actorId"),
+    ...(input.seedInboxes === undefined || input.seedInboxes === null
+      ? {}
+      : { seedInboxes: array(input.seedInboxes, "seedInboxes", 1, 50).map((entry, index) => email(entry, `seedInboxes[${index}]`)) })
   };
 });
 

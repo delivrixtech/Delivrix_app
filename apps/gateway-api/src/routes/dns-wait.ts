@@ -10,7 +10,7 @@ import {
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
 
-export type DnsRecordType = "A" | "NS" | "MX";
+export type DnsRecordType = "A" | "NS" | "MX" | "TXT";
 
 export interface WaitForDnsPropagationParams extends Record<string, unknown> {
   domain: string;
@@ -43,6 +43,7 @@ export interface DnsResolver {
   resolve4(domain: string): Promise<string[]>;
   resolveNs(domain: string): Promise<string[]>;
   resolveMx(domain: string): Promise<Array<{ priority: number; exchange: string }>>;
+  resolveTxt?(domain: string): Promise<string[][]>;
 }
 
 interface AuditSink {
@@ -330,10 +331,10 @@ export function parseWaitForDnsPropagationParams(
   const output = {
     domain: domain(input.domain, "domain"),
     expectedRecord: {
-      type: oneOf(expected.type, "expectedRecord.type", ["A", "NS", "MX"] as const),
+      type: oneOf(expected.type, "expectedRecord.type", ["A", "NS", "MX", "TXT"] as const),
       value: string(expected.value, "expectedRecord.value", 1, 253)
     },
-    maxWaitMs: optionalInteger(input.maxWaitMs, "maxWaitMs", 30_000, 600_000, 600_000),
+    maxWaitMs: optionalInteger(input.maxWaitMs, "maxWaitMs", 30_000, 1_800_000, 600_000),
     pollIntervalMs: optionalInteger(input.pollIntervalMs, "pollIntervalMs", 30_000, 120_000, 30_000)
   };
 
@@ -359,7 +360,13 @@ async function resolveExpectedRecord(input: {
   if (input.type === "NS") {
     return (await input.dns.resolveNs(input.domain)).map(normalizeDnsValue);
   }
-  return (await input.dns.resolveMx(input.domain)).map((entry) => normalizeDnsValue(entry.exchange));
+  if (input.type === "MX") {
+    return (await input.dns.resolveMx(input.domain)).map((entry) => normalizeDnsValue(entry.exchange));
+  }
+  if (!input.dns.resolveTxt) {
+    throw new Error("resolveTxt is required for TXT propagation checks");
+  }
+  return (await input.dns.resolveTxt(input.domain)).map((entry) => normalizeDnsValue(entry.join("")));
 }
 
 function schema<T extends Record<string, unknown>>(

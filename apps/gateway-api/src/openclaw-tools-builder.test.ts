@@ -5,17 +5,22 @@ import {
   getOpenClawToolDefinition
 } from "./openclaw-tools-builder.ts";
 
-test("buildToolsForOpenClaw returns the 8 canonical tools when gates are enabled", () => {
+test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are enabled", () => {
   const tools = buildToolsForOpenClaw(allEnabledEnv());
   assert.deepEqual(tools.map((tool) => tool.name), [
     "register_domain_route53",
+    "suggest_safe_domain",
+    "wait_for_dns_propagation",
     "upsert_dns_route53",
     "upsert_dns_ionos",
     "create_webdock_server",
+    "bind_webdock_main_domain",
     "provision_smtp_postfix",
     "configure_email_auth",
     "bind_domain_to_server",
-    "seed_warmup_pool"
+    "seed_warmup_pool",
+    "send_real_email",
+    "configure_complete_smtp"
   ]);
   assert.equal(tools.every((tool) => tool.description.includes("ApprovalGate")), true);
 });
@@ -25,8 +30,9 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 7);
+  assert.equal(tools.length, 11);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
+  assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
 
 test("buildToolsForOpenClaw omits Route53 tools when AWS credentials are missing", () => {
@@ -40,6 +46,7 @@ test("buildToolsForOpenClaw omits Route53 tools when AWS credentials are missing
   assert.equal(names.includes("upsert_dns_route53"), false);
   assert.equal(names.includes("configure_email_auth"), false);
   assert.equal(names.includes("bind_domain_to_server"), false);
+  assert.equal(names.includes("configure_complete_smtp"), false);
   assert.equal(names.includes("upsert_dns_ionos"), true);
 });
 
@@ -62,6 +69,30 @@ test("Bedrock tool input schemas align with gateway skill schemas for valid samp
   }
 });
 
+test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
+  const names = buildToolsForOpenClaw(allEnabledEnv()).map((tool) => tool.name);
+  for (const name of [
+    "suggest_safe_domain",
+    "wait_for_dns_propagation",
+    "bind_webdock_main_domain",
+    "send_real_email",
+    "configure_complete_smtp"
+  ]) {
+    assert.equal(names.includes(name), true, `${name} should be exposed`);
+  }
+});
+
+test("configure_complete_smtp fail-closes when a required subtool is disabled", () => {
+  const names = buildToolsForOpenClaw({
+    ...allEnabledEnv(),
+    SEND_REAL_EMAIL_ENABLE: "0",
+    SMTP_SEND_REAL_EMAIL_ENABLE: "0"
+  }).map((tool) => tool.name);
+
+  assert.equal(names.includes("send_real_email"), false);
+  assert.equal(names.includes("configure_complete_smtp"), false);
+});
+
 function allEnabledEnv(): Record<string, string | undefined> {
   return {
     OPENCLAW_HMAC_SECRET: "test-hmac",
@@ -71,20 +102,36 @@ function allEnabledEnv(): Record<string, string | undefined> {
     AWS_ROUTE53_DNS_ENABLE_WRITES: "true",
     IONOS_DNS_ENABLE_WRITES: "true",
     IONOS_API_TOKEN: "ionos-token",
+    PORKBUN_API_KEY: "porkbun-key",
+    PORKBUN_SECRET_API_KEY: "porkbun-secret",
     WEBDOCK_SERVERS_ENABLE_CREATE: "true",
+    WEBDOCK_MAIN_DOMAIN_BIND_ENABLE: "true",
     WEBDOCK_API_KEY_OPS: "webdock-ops",
     SMTP_PROVISIONING_ENABLE_SSH: "true",
     SMTP_PROVISION_SSH_KEY_PATH: "/tmp/delivrix-smoke-key",
     EMAIL_AUTH_ENABLE_WRITES: "true",
     DOMAIN_BIND_ENABLE: "true",
     WARMUP_ENABLE_SEND: "true",
-    WARMUP_RAMP_ENABLE: "true"
+    WARMUP_RAMP_ENABLE: "true",
+    SMTP_SEND_REAL_EMAIL_ENABLE: "true",
+    OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true"
   };
 }
 
 function validSample(toolName: string): Record<string, unknown> {
   if (toolName === "register_domain_route53") {
     return { domain: "delivrix.test", years: 1, autoRenew: false };
+  }
+  if (toolName === "suggest_safe_domain") {
+    return { brand: "delivrix", intent: "ops", count: 5 };
+  }
+  if (toolName === "wait_for_dns_propagation") {
+    return {
+      domain: "delivrix.test",
+      expectedRecord: { type: "TXT", value: "v=DKIM1" },
+      maxWaitMs: 60000,
+      pollIntervalMs: 30000
+    };
   }
   if (toolName === "upsert_dns_route53") {
     return {
@@ -106,6 +153,9 @@ function validSample(toolName: string): Record<string, unknown> {
       imageSlug: "ubuntu-2404"
     };
   }
+  if (toolName === "bind_webdock_main_domain") {
+    return { serverSlug: "server-69", domain: "delivrix.test", setPtr: true };
+  }
   if (toolName === "provision_smtp_postfix") {
     return { serverSlug: "server69", domain: "delivrix.test", serverIp: "203.0.113.10" };
   }
@@ -115,9 +165,30 @@ function validSample(toolName: string): Record<string, unknown> {
   if (toolName === "bind_domain_to_server") {
     return { domain: "delivrix.test", serverIp: "203.0.113.10" };
   }
+  if (toolName === "seed_warmup_pool") {
+    return {
+      domain: "delivrix.test",
+      serverIp: "203.0.113.10",
+      seedInboxes: ["seed-1@example.com", "seed-2@example.com", "seed-3@example.com"]
+    };
+  }
+  if (toolName === "send_real_email") {
+    return {
+      fromAddress: "hello@delivrix.test",
+      toAddress: "operator@example.com",
+      subject: "Operational readiness report",
+      body: "Authorized operational readiness message for Delivrix infrastructure.",
+      serverSlug: "server-69"
+    };
+  }
   return {
-    domain: "delivrix.test",
-    serverIp: "203.0.113.10",
+    brand: "delivrix",
+    intent: "ops",
+    budgetUsdMax: 25,
+    testEmailRecipient: "operator@example.com",
+    testEmailSubject: "Operational readiness report",
+    testEmailBody: "Authorized operational readiness message for Delivrix infrastructure.",
+    actorId: "op-1",
     seedInboxes: ["seed-1@example.com", "seed-2@example.com", "seed-3@example.com"]
   };
 }
