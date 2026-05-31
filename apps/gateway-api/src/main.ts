@@ -215,6 +215,10 @@ import {
   handleDomainCompareHttp
 } from "./routes/domains-compare.ts";
 import {
+  createDomainAvailabilityCheck,
+  handleSuggestSafeDomainHttp
+} from "./routes/domains-suggest.ts";
+import {
   handleCanvasLiveError,
   handleCanvasLiveEventIngestHttp,
   handleCanvasLiveStateHttp,
@@ -321,6 +325,7 @@ const skillDispatcher = createSkillDispatcher({
   webdockAdapter: webdockOpsAdapter,
   smtpSshRunner,
   rampScheduler,
+  porkbunDomainAdapter: porkbunAdapter,
   canvasLiveEvents,
   autoRollbackManager,
   webhookBroadcaster: equipoWebhookBroadcaster,
@@ -486,6 +491,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_openclaw_skills_audit", "allowed_read_only"),
   permission("read_openclaw_evidence", "allowed_read_only"),
   permission("read_webdock_inventory", "allowed_read_only"),
+  permission("suggest_safe_domain", "allowed_read_only"),
+  permission("naming_suggest", "allowed_read_only"),
   permission("propose_warming_step", "allowed_dry_run"),
   permission("propose_pause_ip", "allowed_dry_run"),
   permission("propose_rotate_dns", "allowed_dry_run"),
@@ -1138,6 +1145,18 @@ const server = createServer(async (request, response) => {
         }
         throw error;
       }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/skills/suggest-safe-domain") {
+      return await handleSuggestSafeDomainHttp({
+        request,
+        response,
+        deps: {
+          auditLog,
+          route53Availability: createDomainAvailabilityCheck(awsRoute53DomainsAdapter),
+          porkbunAvailability: createDomainAvailabilityCheck(porkbunAdapter)
+        }
+      });
     }
 
     if (request.method === "POST" && request.url === "/v1/domains/route53/register") {

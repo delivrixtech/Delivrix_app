@@ -13,6 +13,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["register_domain_route53"]
   },
   {
+    canonicalSkill: "suggest_safe_domain",
+    aliases: ["suggest_safe_domain", "naming_suggest"],
+    actionIds: ["suggest_safe_domain", "naming_suggest"]
+  },
+  {
     canonicalSkill: "upsert_dns_route53",
     aliases: ["upsert_dns_route53", "route53_dns_upsert"],
     actionIds: ["upsert_dns_route53", "route53_dns_upsert"]

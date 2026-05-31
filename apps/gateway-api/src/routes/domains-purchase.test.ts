@@ -39,7 +39,7 @@ test("POST /v1/domains/route53/register blocks when hard gates are missing", asy
   });
 
   const response = await route({
-    domain: "delivrix-mail.com",
+    domain: "delivrixops.com",
     years: 1,
     autoRenew: false,
     actorId: "operator/juanes",
@@ -64,7 +64,57 @@ test("POST /v1/domains/route53/register blocks when hard gates are missing", asy
 
   const snapshot = await route.workspace.snapshot();
   assert.equal(snapshot.files.length, 1);
-  assert.match(snapshot.files[0], /register_domain_route53-delivrix-mail.com-blocked\.md$/);
+  assert.match(snapshot.files[0], /register_domain_route53-delivrixops.com-blocked\.md$/);
+});
+
+test("POST /v1/domains/route53/register blocks high-risk naming before Route53 calls", async () => {
+  let listPricesCalled = false;
+  let registerCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      listPrices: async () => {
+        listPricesCalled = true;
+        return [{
+          tld: "com",
+          registration: { amount: 14, currency: "USD" },
+          renewal: { amount: 14, currency: "USD" }
+        }];
+      },
+      registerDomain: async () => {
+        registerCalled = true;
+        return { operationId: "should-not-run", expectedExpiry: fixedNow.toISOString() };
+      }
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact())
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+
+  const response = await route({
+    domain: "delivrix-notify.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.error, "domain_naming_high_risk");
+  assert.ok(response.body.details.blockedReasons.includes("contains_notify"));
+  assert.equal(listPricesCalled, false);
+  assert.equal(registerCalled, false);
+
+  const events = await route.auditLog.list();
+  assert.equal(events.at(-1)?.action, "oc.domain.purchase_blocked_naming");
+  assert.equal(events.at(-1)?.decision, "reject");
 });
 
 test("POST /v1/domains/route53/register registers after approval, cap, contact, and price checks", async () => {
@@ -116,7 +166,7 @@ test("POST /v1/domains/route53/register registers after approval, cap, contact, 
   });
 
   const response = await route({
-    domain: "Delivrix-Mail.COM.",
+    domain: "DelivrixOps.COM.",
     years: 1,
     autoRenew: true,
     actorId: "operator/juanes",
@@ -125,11 +175,11 @@ test("POST /v1/domains/route53/register registers after approval, cap, contact, 
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.status, "pending");
-  assert.equal(response.body.domain, "delivrix-mail.com");
+  assert.equal(response.body.domain, "delivrixops.com");
   assert.equal(response.body.operationId, "op-demo-123");
   assert.equal(response.body.costUsd, 14);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].domain, "delivrix-mail.com");
+  assert.equal(calls[0].domain, "delivrixops.com");
   assert.equal(calls[0].privacyProtection, true);
 
   const events = await route.auditLog.list();
@@ -141,7 +191,7 @@ test("POST /v1/domains/route53/register registers after approval, cap, contact, 
 
   const inventory = await route.workspace.readInventoryJson<{ domains: Array<{ domain: string; operationId: string }> }>("domains.json");
   assert.deepEqual(inventory?.domains, [{
-    domain: "delivrix-mail.com",
+    domain: "delivrixops.com",
     registrar: "aws-route53",
     status: "pending",
     operationId: "op-demo-123",
@@ -162,7 +212,7 @@ test("POST /v1/domains/route53/register is idempotent when domain is already own
         registration: { amount: 14, currency: "USD" },
         renewal: { amount: 14, currency: "USD" }
       }],
-      listOwnedDomains: async () => [{ domainName: "delivrix-mail.com" }],
+      listOwnedDomains: async () => [{ domainName: "delivrixops.com" }],
       registerDomain: async () => {
         registerCalled = true;
         return {
@@ -201,7 +251,7 @@ test("POST /v1/domains/route53/register is idempotent when domain is already own
   });
 
   const response = await route({
-    domain: "delivrix-mail.com",
+    domain: "delivrixops.com",
     years: 1,
     autoRenew: false,
     actorId: "operator/juanes",
