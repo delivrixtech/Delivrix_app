@@ -110,6 +110,10 @@ Orden estricto de lectura para entender el agente:
 7. **`OPENCLAW_RUNBOOKS_OPERATIONAL.md`** — umbrella (referencia a los 6 individuales)
 8. **`OPENCLAW_AUDIT_INTEGRATION.md`** — hash chain SHA-256 + replicación Capa 1→2→3
 
+Documento OPS puntual:
+
+- **`OPS_CODEX_SKILL_WAIT_FOR_DNS_PROPAGATION_2026_05_31.md`** — Fase 1 skill síncrona `wait_for_dns_propagation` para bloquear el flow hasta confirmar DNS con approval, rate-limit y audit.
+
 ### Skills literales en `skills/`
 
 - `delivrix-fleet-ops/SKILL.md` — lectura agregada del fleet

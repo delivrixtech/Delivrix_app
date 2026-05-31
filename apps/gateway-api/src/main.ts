@@ -174,6 +174,10 @@ import {
   handleDomainBindHttp
 } from "./routes/domains-bind.ts";
 import {
+  createAuditApprovalGuard,
+  handleWaitForDnsPropagationHttp
+} from "./routes/dns-wait.ts";
+import {
   handleWebdockServerCreateError,
   handleWebdockServerCreateHttp,
   handleWebdockServerDeleteError,
@@ -519,6 +523,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("install_smtp_stack", "supervised_local_state"),
   permission("configure_email_auth", "supervised_local_state"),
   permission("bind_domain_to_server", "supervised_local_state"),
+  permission("wait_for_dns_propagation", "supervised_local_state"),
+  permission("dns_propagation_wait", "supervised_local_state"),
   permission("seed_warmup_pool", "supervised_local_state"),
   permission("start_warmup_seed", "supervised_local_state"),
   permission("start_warmup_ramp", "supervised_local_state"),
@@ -1054,6 +1060,19 @@ const server = createServer(async (request, response) => {
         }
         throw error;
       }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/skills/wait-for-dns-propagation") {
+      return await handleWaitForDnsPropagationHttp({
+        request,
+        response,
+        auditLog,
+        approvalGuard: createAuditApprovalGuard({
+          auditLog,
+          readCanvasState: () => canvasLiveEvents.snapshot()
+        }),
+        readKillSwitch: () => killSwitchStore.get()
+      });
     }
 
     if (request.method === "POST" && request.url === "/v1/flows/onboard-sender-domain") {
