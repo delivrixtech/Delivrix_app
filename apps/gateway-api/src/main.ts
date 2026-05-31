@@ -184,6 +184,11 @@ import {
   handleWebdockServerDeleteHttp
 } from "./routes/webdock-servers.ts";
 import {
+  createBindWebdockMainDomainApprovalGuard,
+  handleBindWebdockMainDomain,
+  handleBindWebdockMainDomainError
+} from "./routes/webdock-bind-domain.ts";
+import {
   createSmtpSshRunnerFromEnv,
   handleSmtpProvisionError,
   handleSmtpProvisionHttp
@@ -519,6 +524,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("ionos_dns_upsert", "supervised_local_state"),
   permission("create_webdock_server", "supervised_local_state"),
   permission("provision_webdock_vps", "supervised_local_state"),
+  permission("bind_webdock_main_domain", "supervised_local_state"),
+  permission("webdock_main_domain_bind", "supervised_local_state"),
   permission("provision_smtp_postfix", "supervised_local_state"),
   permission("install_smtp_stack", "supervised_local_state"),
   permission("configure_email_auth", "supervised_local_state"),
@@ -871,6 +878,30 @@ const server = createServer(async (request, response) => {
         });
       } catch (error) {
         if (handleWebdockServerCreateError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/skills/bind-webdock-main-domain") {
+      try {
+        return await handleBindWebdockMainDomain({
+          request,
+          response,
+          deps: {
+            auditLog,
+            approvalGuard: createBindWebdockMainDomainApprovalGuard({
+              auditLog,
+              readCanvasState: () => canvasLiveEvents.snapshot()
+            }),
+            webdockAdapter: webdockOpsAdapter,
+            sshRunner: smtpSshRunner,
+            now: () => Date.now()
+          }
+        });
+      } catch (error) {
+        if (handleBindWebdockMainDomainError(error, response)) {
           return;
         }
         throw error;

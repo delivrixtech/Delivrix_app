@@ -33,6 +33,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["create_webdock_server", "provision_webdock_vps"]
   },
   {
+    canonicalSkill: "bind_webdock_main_domain",
+    aliases: ["bind_webdock_main_domain", "webdock_main_domain_bind"],
+    actionIds: ["bind_webdock_main_domain", "webdock_main_domain_bind"]
+  },
+  {
     canonicalSkill: "provision_smtp_postfix",
     aliases: ["provision_smtp_postfix", "install_smtp_stack"],
     actionIds: ["provision_smtp_postfix", "install_smtp_stack"]

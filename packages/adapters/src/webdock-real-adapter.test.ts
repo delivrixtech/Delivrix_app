@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createWebdockAdaptersFromEnv,
+  WebdockAdapterError,
   WebdockRealAdapter
 } from "./webdock-real-adapter.ts";
 
@@ -289,4 +290,57 @@ test("WebdockRealAdapter fetches a provisioned server by slug", async () => {
   assert.equal(server.slug, "mail-delivrix-test");
   assert.equal(server.status, "running");
   assert.equal(server.ipv4, "192.0.2.44");
+});
+
+test("WebdockRealAdapter sets main domain through SSH fallback with validated command", async () => {
+  const commands: string[] = [];
+  const adapter = new WebdockRealAdapter({
+    sshRunner: {
+      isConfigured: () => true,
+      run: async (input) => {
+        commands.push(input.command);
+        assert.equal(input.serverIp, "192.0.2.44");
+        if (input.command === "hostname") {
+          return { stdout: "old.example.com\n", stderr: "", exitCode: 0 };
+        }
+        assert.match(input.command, /hostnamectl set-hostname/);
+        assert.match(input.command, /domain='example\.com'/);
+        return { stdout: "example.com\n", stderr: "", exitCode: 0 };
+      }
+    }
+  });
+
+  const result = await adapter.setServerMainDomain({
+    serverSlug: "server-abc123",
+    domain: "example.com",
+    serverIp: "192.0.2.44"
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.previousMainDomain, "old.example.com");
+  assert.equal(commands.length, 2);
+  await assert.rejects(
+    () => adapter.setServerMainDomain({
+      serverSlug: "server-abc123",
+      domain: "mail.example.com;touch /tmp/pwned",
+      serverIp: "192.0.2.44"
+    }),
+    (error) => error instanceof WebdockAdapterError && error.code === "domain_invalid_format"
+  );
+});
+
+test("WebdockRealAdapter setServerPtr reports PTR unsupported by API", async () => {
+  const adapter = new WebdockRealAdapter();
+
+  const result = await adapter.setServerPtr({
+    serverSlug: "server-abc123",
+    ipv4: "192.0.2.44",
+    ptrValue: "example.com"
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    supported: false,
+    raw: { reason: "not_supported_by_api" }
+  });
 });
