@@ -13,6 +13,46 @@ test("domain chat skill detects Spanish domain inventory requests", () => {
   assert.equal(isDomainInventoryIntent("Como asi, no puedes enlistarme los dominios?"), true);
   assert.equal(isDomainInventoryIntent("necesito revisar DNS de dominios"), true);
   assert.equal(isDomainInventoryIntent("continua con el plan"), false);
+  assert.equal(isDomainInventoryIntent([
+    "OpenClaw, retomá configure_complete_smtp desde el estado real auditado.",
+    "domain=controldelivrix.app serverSlug=server10 serverIp=45.136.70.47",
+    "Primero verificá DNS A actual y proponé ApprovalGate para provision_smtp_postfix."
+  ].join(" ")), false);
+  assert.equal(isDomainInventoryIntent([
+    "Parámetros: brand=controldelivrix domain=controldelivrix.app",
+    "smtpHost=smtp.controldelivrix.app budgetUsdMax=30",
+    "Continuar desde post-DNS, no crear VPS nuevo."
+  ].join(" ")), false);
+});
+
+test("domain chat skill lets operational SMTP prompts reach Bedrock", async () => {
+  const response = await maybeHandleOpenClawDomainChatSkill({
+    body: {
+      msgId: "smtp-resume-1",
+      message: [
+        "OpenClaw, retomá configure_complete_smtp desde el estado real auditado.",
+        "domain=controldelivrix.app serverSlug=server10 serverIp=45.136.70.47",
+        "Verificá DNS A actual y proponé ApprovalGate para provision_smtp_postfix."
+      ].join(" ")
+    },
+    chatProxy: {} as never,
+    canvasLiveEvents: {} as never,
+    auditLog: {
+      append: async () => undefined
+    },
+    ionosDomains: {
+      listInventory: async () => {
+        throw new Error("domain inventory should not run");
+      }
+    },
+    ionosDns: {
+      listInventory: async () => {
+        throw new Error("dns inventory should not run");
+      }
+    }
+  });
+
+  assert.equal(response, null);
 });
 
 test("domain chat skill builds deterministic IONOS inventory answer", () => {
