@@ -9,6 +9,9 @@ const allowedProxyPaths = new Set(Object.values(READ_ENDPOINTS));
 const chatSendPath = "/v1/openclaw/chat/send";
 const chatStreamPath = "/v1/openclaw/chat/stream";
 const gatewayLogStreamPath = "/v1/gateway/logs/stream";
+const allowedReadPatterns: RegExp[] = [
+  /^\/v1\/openclaw\/proposals\/[^/]+\/status$/
+];
 
 /**
  * Write endpoints permitidos desde el admin panel. El panel administrativo
@@ -156,7 +159,10 @@ function readOnlyProxyBoundary(): Plugin {
           return;
         }
 
-        if (!allowedProxyPaths.has(requestUrl.pathname as ReadEndpoint)) {
+        if (
+          !allowedProxyPaths.has(requestUrl.pathname as ReadEndpoint) &&
+          !allowedReadPatterns.some((re) => re.test(requestUrl.pathname))
+        ) {
           writeJson(response, 404, {
             error: "unknown_read_endpoint",
             message: "Endpoint is not exposed to the read-only admin panel."

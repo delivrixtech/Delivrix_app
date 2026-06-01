@@ -12,6 +12,7 @@ export const READ_ENDPOINTS = Object.freeze({
   openClawLearningPlan: "/v1/openclaw/learning-plan",
   openClawLiveCanvas: "/v1/openclaw/live-canvas",
   openClawOnboardingState: "/v1/openclaw/onboarding/state",
+  openClawProposals: "/v1/openclaw/proposals",
   openClawProvisioningState: "/v1/openclaw/provisioning/state",
   openClawReadinessSignals: "/v1/openclaw/readiness-signals",
   openClawWorkspaceFile: "/v1/openclaw/workspace/file",
