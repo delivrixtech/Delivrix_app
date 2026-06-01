@@ -73,6 +73,8 @@ El subject/body no pueden contener:
 
 `test`, `demo`, `prueba`, `lorem`, `smoke`, `ipsum`, `notify`, `noreply`, `no-reply`, `bulk`, `blast`, `spam`, `campaign`, `broadcast`.
 
+El preflight técnico ahora también reporta `launchReadiness.readyForSend`; puede estar `false` aunque runtime/tools/audit estén OK. Eso significa que falta completar el input humano anterior, no que el gateway esté roto.
+
 ## Comando de disparo coordinado
 
 Ejecutar solo cuando Juanes/PM confirmen destinatario y contenido legítimo:
