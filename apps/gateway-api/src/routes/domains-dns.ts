@@ -71,6 +71,7 @@ export interface Route53DnsUpsertDependencies {
   workspace: OpenClawWorkspace;
   canvasLiveEvents?: CanvasEmitter;
   autoRollbackManager?: AutoRollbackManager;
+  awaitAutoRollbackCheck?: boolean;
   webhookBroadcaster?: WebhookBroadcaster;
   dnsDigFn?: DnsDigFn;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
@@ -311,7 +312,7 @@ export async function handleRoute53DnsUpsertHttp(
     });
     await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.dns.records_updated", "domain", domain, "critical", now);
     await emitTaskUpdate(deps.canvasLiveEvents, taskId, "completed", now);
-    scheduleRoute53DnsRollbackCheck({
+    const rollbackCheck = scheduleRoute53DnsRollbackCheck({
       manager: deps.autoRollbackManager,
       webhookBroadcaster: deps.webhookBroadcaster,
       auditLog: deps.auditLog,
@@ -322,6 +323,9 @@ export async function handleRoute53DnsUpsertHttp(
       records,
       digFn: deps.dnsDigFn ?? createSafeDigFn()
     });
+    if (deps.awaitAutoRollbackCheck) {
+      await rollbackCheck;
+    }
 
     json(deps.response, 200, {
       ok: true,
@@ -571,12 +575,12 @@ function scheduleRoute53DnsRollbackCheck(input: {
   zoneId: string;
   records: AwsRoute53DnsRecordInput[];
   digFn: DnsDigFn;
-}): void {
+}): Promise<void> | undefined {
   if (!input.manager) {
-    return;
+    return undefined;
   }
 
-  queueMicrotask(async () => {
+  const run = async (): Promise<void> => {
     const propagation = await input.manager!.waitForDnsPropagation({
       auditId: input.auditId,
       domain: input.domain,
@@ -615,7 +619,39 @@ function scheduleRoute53DnsRollbackCheck(input: {
     };
     await input.auditLog.append(event);
     void input.webhookBroadcaster?.broadcast(event).catch(() => undefined);
+  };
+
+  const scheduled = new Promise<void>((resolve) => {
+    queueMicrotask(() => {
+      run().then(resolve).catch(async (error) => {
+        const event: AuditEventInput = {
+          actorType: "system",
+          actorId: "auto-rollback",
+          action: "oc.dns.auto_rollback_failed",
+          targetType: "domain",
+          targetId: input.domain,
+          riskLevel: "critical",
+          decision: "reject",
+          humanApproved: false,
+          metadata: {
+            category: "supervised_local_state",
+            provider: "aws-route53",
+            auditId: input.auditId,
+            zoneId: input.zoneId,
+            domain: input.domain,
+            reason: "rollback_check_error",
+            errorMessage: errorMessage(error),
+            rollbackApplied: false
+          }
+        };
+        await input.auditLog.append(event).catch(() => undefined);
+        void input.webhookBroadcaster?.broadcast(event).catch(() => undefined);
+        resolve();
+      });
+    });
   });
+
+  return scheduled;
 }
 
 async function restoreRoute53DnsSnapshot(

@@ -176,6 +176,7 @@ test("POST /v1/domains/route53/dns/upsert auto-rolls back when propagation times
       approvedAt: "2026-05-27T11:58:00.000Z"
     }]),
     autoRollbackManager: rollbackManager,
+    awaitAutoRollbackCheck: true,
     dnsDigFn: async () => []
   });
   await appendApproval(route.auditLog, "artifact-dns-plan", "exec-dns-rollback");
@@ -291,6 +292,7 @@ async function routeHarness(input: {
   adapter: Route53DnsAdapter;
   canvasState: CanvasLiveStateSnapshot;
   autoRollbackManager?: AutoRollbackManager;
+  awaitAutoRollbackCheck?: boolean;
   dnsDigFn?: (domain: string, type: string) => Promise<string[]>;
 }) {
   const dir = await mkdtemp(join(tmpdir(), "route53-dns-route-"));
@@ -317,6 +319,7 @@ async function routeHarness(input: {
           }
         },
         autoRollbackManager: input.autoRollbackManager,
+        awaitAutoRollbackCheck: input.awaitAutoRollbackCheck,
         dnsDigFn: input.dnsDigFn,
         readCanvasState: () => input.canvasState,
         now: () => fixedNow
