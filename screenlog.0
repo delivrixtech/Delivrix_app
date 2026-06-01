@@ -1,0 +1,4 @@
+Cannot exec 'zsh': No such file or directory
+Cannot exec '/bin/zsh': Operation not permitted
+Cannot exec '/usr/local/bin/node': No such file or directory
+Cannot exec '/Users/juanescanar/.nvm/versions/node/v22.22.3/bin/node': Operation not permitted
