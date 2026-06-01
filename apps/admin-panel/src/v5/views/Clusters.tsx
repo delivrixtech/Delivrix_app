@@ -707,7 +707,7 @@ function KillSwitchModal({
             type="button"
             onClick={onCancel}
             disabled={isPending}
-            className="grid size-7 shrink-0 place-items-center rounded transition-colors hover:bg-white/10 disabled:cursor-not-allowed"
+            className="grid size-7 shrink-0 place-items-center rounded transition-colors hover:bg-[var(--color-on-dark-hint)] disabled:cursor-not-allowed"
             style={{ color: "var(--color-on-dark-medium)" }}
             aria-label="Cancelar"
           >
@@ -788,7 +788,7 @@ function KillSwitchModal({
             type="button"
             onClick={onCancel}
             disabled={isPending}
-            className="inline-flex items-center rounded-md px-3.5 py-2 font-sans text-[12.5px] font-semibold transition-colors hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center rounded-md px-3.5 py-2 font-sans text-[12.5px] font-semibold transition-colors hover:bg-[var(--color-on-dark-hint)] disabled:cursor-not-allowed disabled:opacity-60"
             style={{
               background: "transparent",
               color: "var(--color-on-dark-medium)",

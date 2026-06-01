@@ -220,8 +220,7 @@ function ToastItem({ entry, onDismiss }: { entry: ToastEntry; onDismiss: () => v
         gap: 10,
         padding: "12px 14px",
         background: "var(--color-surface)",
-        border: "1px solid var(--color-border)",
-        borderLeft: `3px solid ${meta.ringColor}`,
+        border: `1px solid ${meta.ringColor}`,
         borderRadius: "var(--radius-md)",
         boxShadow: "var(--shadow-lg)",
         pointerEvents: "auto"

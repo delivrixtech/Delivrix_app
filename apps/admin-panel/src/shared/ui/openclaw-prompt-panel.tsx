@@ -45,10 +45,9 @@ export function OpenClawPromptPanel({
       <header className="flex items-center gap-2.5">
         <span
           aria-hidden="true"
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-[var(--color-text-inverse)]"
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-[var(--color-accent-fg)]"
           style={{
-            background:
-              "linear-gradient(135deg, var(--color-gradient-start), var(--color-gradient-mid), var(--color-gradient-end))"
+            background: "var(--color-accent)"
           }}
         >
           <Sparkles size={14} strokeWidth={1.75} />

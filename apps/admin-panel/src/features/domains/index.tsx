@@ -525,7 +525,7 @@ function ProposePurchaseButton({ domain }: { domain: string }) {
           duration: 3000
         });
       }}
-      className="inline-flex items-center gap-1.5 rounded-[6px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:bg-[var(--color-accent-tertiary)] hover:text-[var(--color-on-dark-strong)]"
+      className="inline-flex items-center gap-1.5 rounded-[6px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:bg-[var(--color-accent)] hover:text-[var(--color-accent-fg)]"
       style={{
         padding: "7px 12px",
         fontSize: 12,

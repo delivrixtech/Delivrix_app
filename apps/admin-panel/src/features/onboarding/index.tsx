@@ -860,7 +860,7 @@ function ActionBar({ data }: { data: DashboardData }) {
             padding: "10px 18px",
             borderRadius: 6,
             background: canEvaluate ? "var(--color-accent)" : "var(--color-neutral-soft)",
-            color: canEvaluate ? "var(--color-on-dark-strong)" : "var(--color-text-tertiary)",
+            color: canEvaluate ? "var(--color-accent-fg)" : "var(--color-text-tertiary)",
             border: canEvaluate ? "1px solid var(--color-accent)" : "1px solid var(--color-border)",
             cursor: canEvaluate && !evaluateMutation.isPending ? "pointer" : "not-allowed"
           }}

@@ -417,7 +417,7 @@ function Topbar({
       <span className="inline-flex items-center gap-2 rounded-[18px] border border-[var(--color-border)] bg-[var(--color-surface-sunken)] pl-1 pr-1 py-1 sm:pr-2.5">
         <span
           aria-hidden="true"
-          className="grid h-6 w-6 place-items-center rounded-full bg-[var(--color-accent-tertiary)] text-[11px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-on-dark-strong)]"
+          className="grid h-6 w-6 place-items-center rounded-full bg-[var(--color-accent)] text-[11px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-accent-fg)]"
         >
           J
         </span>
@@ -488,10 +488,9 @@ function Sidebar({
       <div className="flex items-center gap-2.5 pb-4 pt-1 pl-1 pr-1">
         <span
           aria-hidden="true"
-          className="grid h-8 w-8 place-items-center rounded-[8px] text-[18px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-bg)]"
+          className="grid h-8 w-8 place-items-center rounded-[8px] text-[18px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-accent-fg)]"
           style={{
-            background:
-              "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)"
+            background: "var(--color-accent)"
           }}
         >
           D

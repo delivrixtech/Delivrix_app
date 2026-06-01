@@ -544,9 +544,7 @@ function ChartShell({
               height: h,
               borderRadius: 2,
               background:
-                i === highlightedIndex
-                  ? "linear-gradient(180deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)"
-                  : "var(--color-accent)"
+                i === highlightedIndex ? "var(--color-accent)" : "var(--color-accent-soft)"
             }}
             aria-hidden="true"
           />
@@ -671,7 +669,7 @@ function CamposDesconocidos({
           >
             <span
               aria-hidden="true"
-              className="grid place-items-center text-[var(--color-on-dark-strong)] tabular-nums shrink-0"
+              className="grid place-items-center text-[var(--color-text-inverse)] tabular-nums shrink-0"
               style={{
                 width: 32,
                 height: 32,
@@ -725,7 +723,7 @@ function DatosFaltantes({ count }: { count: number }) {
         <span
           aria-hidden="true"
           className="grid place-items-center"
-          style={{ width: 32, height: 32, borderRadius: 8, background: count === 0 ? "var(--color-success)" : "var(--color-warning)", color: "var(--color-on-dark-strong)" }}
+          style={{ width: 32, height: 32, borderRadius: 8, background: count === 0 ? "var(--color-success)" : "var(--color-warning)", color: "var(--color-text-inverse)" }}
         >
           <Triangle size={16} strokeWidth={1.75} aria-hidden="true" />
         </span>
@@ -926,7 +924,7 @@ function ManualSnapshotModal({ onClose }: { onClose: () => void }) {
               height: 32,
               borderRadius: 8,
               background: "var(--color-info)",
-              color: "var(--color-on-dark-strong)"
+              color: "var(--color-text-inverse)"
             }}
           >
             <Camera size={16} strokeWidth={2} />
@@ -1031,7 +1029,7 @@ function ManualSnapshotModal({ onClose }: { onClose: () => void }) {
               padding: "8px 14px",
               borderRadius: 6,
               background: "var(--color-accent)",
-              color: "var(--color-on-dark-strong)",
+              color: "var(--color-accent-fg)",
               border: "none",
               cursor: mutation.isPending ? "not-allowed" : "pointer"
             }}

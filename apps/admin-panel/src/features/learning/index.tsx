@@ -301,7 +301,7 @@ function KpiLecciones({ signals }: { signals: number }) {
           style={{
             width: "75%",
             height: "100%",
-            background: "linear-gradient(90deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
+            background: "var(--color-accent)",
             borderRadius: 3
           }}
         />

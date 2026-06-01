@@ -40,8 +40,7 @@ export function KillSwitchV2({ state, title, body, onHistory, className }: KillS
         padding: "20px 24px",
         borderRadius: "var(--radius-md)",
         background: "var(--color-surface)",
-        border: "1px solid var(--color-border)",
-        borderLeft: `4px solid ${s.border}`,
+        border: `1px solid ${s.border}`,
         minWidth: 0
       }}
     >
