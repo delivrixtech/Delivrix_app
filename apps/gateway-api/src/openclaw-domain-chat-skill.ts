@@ -165,6 +165,10 @@ export async function maybeHandleOpenClawDomainChatSkill(
 
 export function isDomainInventoryIntent(message: string): boolean {
   const normalized = normalizeForIntent(message);
+  if (isOperationalOpenClawPrompt(normalized)) {
+    return false;
+  }
+
   const mentionsDomain =
     /\bdominios?\b/.test(normalized) ||
     /\bdomain(s)?\b/.test(normalized) ||
@@ -177,6 +181,14 @@ export function isDomainInventoryIntent(message: string): boolean {
   return (
     /\b(enlista|enlistar|enlistame|enlistarme|enlistes|lista|listar|muestra|mostrar|dime|cuales|cu[aá]les|inventario|registrados|comprados|revisa|revisar|verifica|verificar)\b/.test(normalized) ||
     /\b(list|show|inventory|owned|registered)\b/.test(normalized)
+  );
+}
+
+function isOperationalOpenClawPrompt(normalized: string): boolean {
+  return (
+    /\b(configure_complete_smtp|provision_smtp_postfix|create_webdock_server|bind_webdock_main_domain|bind_domain_to_server|upsert_dns_route53|wait_for_dns_propagation|configure_email_auth|seed_warmup_pool|send_real_email)\b/.test(normalized) ||
+    /\b(serverslug|serverip|smtphost|budgetusdmax|testemailrecipient|testemailsubject|testemailbody|imageslug|locationid)\s*=/.test(normalized) ||
+    /\b(retoma|retomar|continu[aá]|continuar|sigue|seguir|ejecuta|ejecutar|propon[eé]|approvalgate|firma|side effect|post-dns|provisionar|smtp provisioning)\b/.test(normalized)
   );
 }
 
