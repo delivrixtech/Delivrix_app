@@ -6,6 +6,11 @@ import {
   isOpenClawToolEnabled,
   openClawToolMetadata
 } from "./openclaw-tools-builder.ts";
+import {
+  noopGatewayRuntimeLogger,
+  summarizeOperationalParams,
+  type GatewayRuntimeLogger
+} from "./gateway-runtime-log.ts";
 
 type FetchLike = typeof fetch;
 
@@ -23,6 +28,7 @@ export interface ProcessToolUseInput {
   env?: Record<string, string | undefined>;
   deps: ToolUseProcessorDeps;
   now?: () => Date;
+  logger?: GatewayRuntimeLogger;
 }
 
 export interface ToolUseProcessorDeps {
@@ -115,6 +121,7 @@ export interface HttpToolUseProcessorConfig {
   env?: Record<string, string | undefined>;
   now?: () => Date;
   pollIntervalMs?: number;
+  logger?: GatewayRuntimeLogger;
 }
 
 const defaultApprovalTimeoutMs = 300_000;
@@ -126,8 +133,13 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
   const now = input.now?.() ?? new Date();
   const canonicalToolName = canonicalSkillSlug(input.toolName);
   const definition = getOpenClawToolDefinition(canonicalToolName);
+  const logger = input.logger ?? noopGatewayRuntimeLogger;
 
   if (!definition) {
+    void logger.warn("openclaw.tool_use.unknown_tool", "Bedrock requested an unknown Delivrix tool.", {
+      toolUseId: input.toolUseId,
+      toolName: input.toolName
+    });
     return {
       ok: false,
       error: "unknown_tool",
@@ -136,6 +148,10 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
   }
 
   if (!isOpenClawToolEnabled(canonicalToolName, env)) {
+    void logger.warn("openclaw.tool_use.disabled", "Bedrock requested a disabled Delivrix tool.", {
+      toolUseId: input.toolUseId,
+      toolName: canonicalToolName
+    });
     return {
       ok: false,
       error: "tool_disabled",
@@ -145,6 +161,11 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
 
   const validation = definition.paramSchema.safeParse(input.toolInput);
   if (!validation.success) {
+    void logger.warn("openclaw.tool_use.invalid_params", "Tool-use params failed schema validation.", {
+      toolUseId: input.toolUseId,
+      toolName: canonicalToolName,
+      details: validation.error.format()
+    });
     return {
       ok: false,
       error: "invalid_params",
@@ -154,6 +175,11 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
 
   const killSwitch = await readKillSwitchFailClosed(input.deps);
   if (!killSwitch.ok) {
+    void logger.error("openclaw.tool_use.kill_switch_read_failed", "Tool-use failed closed because kill switch could not be read.", {
+      toolUseId: input.toolUseId,
+      toolName: canonicalToolName,
+      details: killSwitch.details
+    });
     return {
       ok: false,
       error: killSwitch.error,
@@ -161,6 +187,10 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
     };
   }
   if (killSwitch.enabled) {
+    void logger.warn("openclaw.tool_use.kill_switch_armed", "Tool-use blocked because kill switch is armed.", {
+      toolUseId: input.toolUseId,
+      toolName: canonicalToolName
+    });
     return {
       ok: false,
       error: "kill_switch_armed"
@@ -176,6 +206,11 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
       };
     }
     try {
+      void logger.info("openclaw.tool_use.read_only_started", "Running read-only Delivrix tool for Bedrock.", {
+        toolUseId: input.toolUseId,
+        toolName: canonicalToolName,
+        params: summarizeOperationalParams(validation.data)
+      });
       return {
         ok: true,
         status: "executed",
@@ -190,6 +225,11 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
         proposalId: `read_only:${input.toolUseId}`
       };
     } catch (error) {
+      void logger.warn("openclaw.tool_use.read_only_failed", "Read-only Delivrix tool failed.", {
+        toolUseId: input.toolUseId,
+        toolName: canonicalToolName,
+        details: errorMessage(error)
+      });
       return {
         ok: false,
         error: "read_only_tool_failed",
@@ -200,6 +240,11 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
 
   let proposal: ToolUseProposalSubmission;
   try {
+    void logger.info("openclaw.tool_use.proposal_submit_started", "Submitting ApprovalGate proposal for Bedrock tool-use.", {
+      toolUseId: input.toolUseId,
+      toolName: canonicalToolName,
+      params: summarizeOperationalParams(validation.data)
+    });
     proposal = await input.deps.submitProposalFromToolUse({
       toolUseId: input.toolUseId,
       toolName: canonicalToolName,
@@ -208,7 +253,20 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
       env,
       now
     });
+    void logger.info("openclaw.tool_use.proposal_submitted", "ApprovalGate proposal submitted; waiting for operator decision.", {
+      toolUseId: input.toolUseId,
+      toolName: canonicalToolName,
+      proposalId: proposal.proposalId,
+      duplicate: proposal.duplicate === true,
+      requiredApprovals: proposal.requiredApprovals,
+      requiresApproval: proposal.requiresApproval
+    });
   } catch (error) {
+    void logger.error("openclaw.tool_use.proposal_submit_failed", "ApprovalGate proposal submission failed.", {
+      toolUseId: input.toolUseId,
+      toolName: canonicalToolName,
+      details: errorMessage(error)
+    });
     return {
       ok: false,
       error: "proposal_submit_failed",
@@ -217,6 +275,12 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
   }
 
   const timeoutMs = input.timeoutMs ?? approvalTimeoutForTool(canonicalToolName, env, validation.data);
+  void logger.info("openclaw.tool_use.awaiting_approval", "Waiting for ApprovalGate decision.", {
+    toolUseId: input.toolUseId,
+    toolName: canonicalToolName,
+    proposalId: proposal.proposalId,
+    timeoutMs
+  });
   const decision = await input.deps.waitForProposalDecision({
     proposalId: proposal.proposalId,
     timeoutMs,
@@ -224,6 +288,23 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
   });
 
   if (decision.status === "executed" || decision.status === "execution_failed") {
+    void (decision.ok
+      ? logger.info("openclaw.tool_use.executed", "ApprovalGate execution completed successfully.", {
+        toolUseId: input.toolUseId,
+        toolName: canonicalToolName,
+        proposalId: decision.proposalId,
+        signatureId: decision.signatureId,
+        statusCode: decision.statusCode,
+        durationMs: decision.durationMs
+      })
+      : logger.error("openclaw.tool_use.execution_failed", "ApprovalGate execution failed.", {
+        toolUseId: input.toolUseId,
+        toolName: canonicalToolName,
+        proposalId: decision.proposalId,
+        signatureId: decision.signatureId,
+        statusCode: decision.statusCode,
+        outcome: decision.outcome
+      }));
     return decision.ok
       ? {
           ok: true,
@@ -245,6 +326,12 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
   }
 
   if (decision.status === "rejected") {
+    void logger.warn("openclaw.tool_use.rejected", "Operator rejected ApprovalGate proposal.", {
+      toolUseId: input.toolUseId,
+      toolName: canonicalToolName,
+      proposalId: decision.proposalId,
+      reason: decision.reason
+    });
     return {
       ok: false,
       error: "rejected_by_operator",
@@ -254,6 +341,11 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
   }
 
   if (decision.status === "kill_switch_armed") {
+    void logger.warn("openclaw.tool_use.kill_switch_armed", "Tool-use stopped while waiting because kill switch is armed.", {
+      toolUseId: input.toolUseId,
+      toolName: canonicalToolName,
+      proposalId: decision.proposalId
+    });
     return {
       ok: false,
       error: "kill_switch_armed",
@@ -262,6 +354,12 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
   }
 
   if (decision.status === "approval_timeout" || decision.status === "execution_timeout") {
+    void logger.warn(`openclaw.tool_use.${decision.status}`, "ApprovalGate wait timed out.", {
+      toolUseId: input.toolUseId,
+      toolName: canonicalToolName,
+      proposalId: decision.proposalId,
+      timeoutMs: decision.timeoutMs
+    });
     return {
       ok: false,
       error: decision.status,
@@ -283,6 +381,7 @@ export function createHttpToolUseProcessor(config: HttpToolUseProcessorConfig): 
   const baseUrl = normalizeBaseUrl(config.delivrixBaseUrl);
   const nowFn = config.now ?? (() => new Date());
   const pollIntervalMs = config.pollIntervalMs ?? defaultPollIntervalMs;
+  const logger = config.logger ?? noopGatewayRuntimeLogger;
   const readKillSwitch = async () => readKillSwitchOverHttp({
     baseUrl,
     fetchImpl,
@@ -317,7 +416,8 @@ export function createHttpToolUseProcessor(config: HttpToolUseProcessorConfig): 
     ...input,
     env,
     deps,
-    now: nowFn
+    now: nowFn,
+    logger
   });
 }
 

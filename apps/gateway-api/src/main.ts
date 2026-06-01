@@ -254,6 +254,10 @@ import {
 } from "./routes/openclaw-workspace.ts";
 import { CanvasLiveEventService } from "./services/canvas-live-events.ts";
 import { GatewayLogStreamService } from "./gateway-log-stream.ts";
+import {
+  createGatewayRuntimeLogger,
+  runtimeErrorMetadata
+} from "./gateway-runtime-log.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import { createAuditChainStoreFromEnv } from "./audit-chain.ts";
@@ -278,10 +282,13 @@ import {
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
+const gatewayRuntimeLog = createGatewayRuntimeLogger();
 const runtimeEnvReloader = createRuntimeEnvReloader({
   env: process.env,
   envFilePath: ".env.local",
-  onError: () => undefined
+  onError: (error) => {
+    void gatewayRuntimeLog.warn("gateway.env_reload_failed", "Runtime env reload failed.", runtimeErrorMetadata(error));
+  }
 });
 runtimeEnvReloader.start();
 
@@ -317,11 +324,13 @@ const ipReputationReportStore = new LocalFileIpReputationReportStore();
 const backupSimulationStore = new LocalFileBackupSimulationStore();
 const safetyRealtimeCache = new SafetyRealtimeCache();
 const learningRealtimeCache = new SafetyRealtimeCache();
-const openClawBedrockBridge = createOpenClawBedrockBridgeFromEnv(process.env);
+const openClawBedrockBridge = createOpenClawBedrockBridgeFromEnv(process.env, {
+  logger: gatewayRuntimeLog
+});
 const openClawSshBridge = openClawBedrockBridge ? null : createOpenClawSshBridgeFromEnv();
 const openClawChatBridge = openClawBedrockBridge ?? openClawSshBridge;
 const canvasLiveEvents = new CanvasLiveEventService();
-const gatewayLogStream = new GatewayLogStreamService();
+const gatewayLogStream = new GatewayLogStreamService({ logPath: gatewayRuntimeLog.logPath });
 const equipoWebhookBroadcaster = new EquipoWebhookBroadcaster({
   killSwitchProvider: async () => (await killSwitchStore.get()).enabled
 });
@@ -344,7 +353,8 @@ const configureSmtpToolProcessor = createHttpToolUseProcessor({
   delivrixBaseUrl: gatewaySelfBaseUrl,
   env: process.env,
   readBoundaryToken: process.env.DELIVRIX_READ_BOUNDARY_TOKEN,
-  pollIntervalMs: Number(process.env.OPENCLAW_CONFIGURE_SMTP_POLL_INTERVAL_MS ?? 1_000)
+  pollIntervalMs: Number(process.env.OPENCLAW_CONFIGURE_SMTP_POLL_INTERVAL_MS ?? 1_000),
+  logger: gatewayRuntimeLog
 });
 const configureSmtpRuntimeDeps = {
   invokeSkill: async (input: {
@@ -456,7 +466,8 @@ const configureSmtpRuntimeDeps = {
     });
     return { proposalId: `rollback-requested-${input.runId}-${input.failedStep}` };
   },
-  verifyAuditChain: () => auditChainStore.verify()
+  verifyAuditChain: () => auditChainStore.verify(),
+  logger: gatewayRuntimeLog
 };
 const skillDispatcher = createSkillDispatcher({
   auditLog,
@@ -780,6 +791,17 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/v1/openclaw/chat/send") {
       await runtimeEnvReloader.refreshNow();
       const body = await readJson<ChatSendRequest>(request);
+      const chatMsgId = typeof body.msgId === "string" ? body.msgId : null;
+      const chatMessage = typeof body.message === "string"
+        ? body.message
+        : typeof body.text === "string"
+          ? body.text
+          : "";
+      void gatewayRuntimeLog.info("openclaw.chat.received", "Operator message received by gateway.", {
+        msgId: chatMsgId,
+        messageChars: chatMessage.length,
+        bridgeKind: openClawBedrockBridge ? "bedrock" : openClawSshBridge ? "ssh" : "http"
+      });
       const gatewaySkillResult = await maybeHandleOpenClawDomainChatSkill({
         body,
         chatProxy: openClawChatProxy,
@@ -789,14 +811,23 @@ const server = createServer(async (request, response) => {
         ionosDns: ionosDnsAdapter
       });
       if (gatewaySkillResult) {
+        void gatewayRuntimeLog.info("openclaw.chat.handled_by_gateway_skill", "Gateway handled chat locally without Bedrock.", {
+          msgId: gatewaySkillResult.msgId,
+          source: gatewaySkillResult.assistant?.source,
+          skillsInvoked: gatewaySkillResult.assistant?.skillsInvoked
+        });
         return json(response, 200, gatewaySkillResult);
       }
-      return handleChatSendHttp(openClawChatProxy, body, response);
+      void gatewayRuntimeLog.info("openclaw.chat.forwarded_to_bridge", "Chat forwarded to OpenClaw bridge.", {
+        msgId: chatMsgId,
+        bridgeKind: openClawBedrockBridge ? "bedrock" : openClawSshBridge ? "ssh" : "http"
+      });
+      return handleChatSendHttp(openClawChatProxy, body, response, gatewayRuntimeLog);
     }
 
     if (request.method === "POST" && request.url === "/v1/openclaw/chat/interrupt") {
       const body = await readJson<ChatInterruptRequest>(request);
-      return handleChatInterruptHttp(openClawChatProxy, body, response);
+      return handleChatInterruptHttp(openClawChatProxy, body, response, gatewayRuntimeLog);
     }
 
     if (request.method === "GET" && request.url?.startsWith("/v1/canvas/live/state")) {
@@ -3171,7 +3202,8 @@ const server = createServer(async (request, response) => {
           webhookBroadcaster: equipoWebhookBroadcaster,
           dispatcher: skillDispatcher,
           readKillSwitch: () => killSwitchStore.get(),
-          env: process.env
+          env: process.env,
+          logger: gatewayRuntimeLog
         });
       }
 
@@ -4940,6 +4972,13 @@ server.on("upgrade", (request, socket, head) => {
 
 server.listen(port, host, () => {
   console.log(`gateway-api listening on http://${host}:${port}`);
+  void gatewayRuntimeLog.info("gateway.started", "Gateway API is listening.", {
+    host,
+    port,
+    logPath: gatewayRuntimeLog.logPath,
+    bridgeKind: openClawBedrockBridge ? "bedrock" : openClawSshBridge ? "ssh" : "http",
+    bedrockModelId: process.env.AWS_BEDROCK_MODEL_ID ?? null
+  });
   void logGatewayDependencyWarnings();
   void resumeRampsOnStartup();
 });
@@ -4952,9 +4991,14 @@ async function resumeRampsOnStartup(): Promise<void> {
     });
     if (resumed.length > 0) {
       console.log(`[gateway] resumed ${resumed.length} warmup ramp(s) from disk: ${resumed.join(", ")}`);
+      void gatewayRuntimeLog.info("gateway.warmup_ramps_resumed", "Warmup ramps resumed from disk.", {
+        count: resumed.length,
+        rampIds: resumed
+      });
     }
   } catch (error) {
     console.warn(`[gateway] WARN: failed to resume warmup ramps on boot: ${error instanceof Error ? error.message : String(error)}`);
+    void gatewayRuntimeLog.warn("gateway.warmup_ramps_resume_failed", "Failed to resume warmup ramps on boot.", runtimeErrorMetadata(error));
   }
 }
 
@@ -4970,6 +5014,13 @@ function logDependencyWarning(name: string, check: GatewayDependencyHealth[keyof
   }
 
   console.warn(`[gateway] WARN: ${name} no responde en ${envVar}. ¿Levantaste \`${command}\`? ${check.message ?? ""}`.trim());
+  void gatewayRuntimeLog.warn("gateway.dependency_down", `${name} dependency is down.`, {
+    dependency: name,
+    envVar,
+    status: check.status,
+    message: check.message ?? "",
+    suggestedCommand: command
+  });
 }
 
 async function buildLiveComplianceStatus(now: Date) {
@@ -5565,6 +5616,12 @@ function logUnhandledRequestError(request: IncomingMessage, error: unknown): voi
     message
   });
   console.error(stack);
+  void gatewayRuntimeLog.error("gateway.unhandled_request_error", "Unhandled request error.", {
+    method: request.method ?? "UNKNOWN",
+    path,
+    message,
+    stack
+  });
 }
 
 function parseStaleAfterMs(value: string | number | null | undefined, fallback: number): number | null {

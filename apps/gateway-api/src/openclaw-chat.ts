@@ -11,6 +11,11 @@ import {
   extractOpenClawArtifact,
   summarizeOpenClawTaskTitle
 } from "./openclaw-artifact-extractor.ts";
+import {
+  noopGatewayRuntimeLogger,
+  runtimeErrorMetadata,
+  type GatewayRuntimeLogger
+} from "./gateway-runtime-log.ts";
 
 export const OPENCLAW_CHAT_SESSION_KEY = "agent:main:operator";
 const defaultAgentHttpUrl = "http://2.24.223.240:61175";
@@ -1089,19 +1094,31 @@ export function openClawChatReconnectDelayMs(attempt: number): number {
 export async function handleChatSendHttp(
   proxy: OpenClawChatProxy,
   body: ChatSendRequest,
-  response: ServerResponse
+  response: ServerResponse,
+  logger: GatewayRuntimeLogger = noopGatewayRuntimeLogger
 ): Promise<void> {
   try {
     const result = await proxy.sendOperatorMessage(body);
+    void logger.info("openclaw.chat.queued", "OpenClaw chat message queued.", {
+      msgId: result.msgId,
+      queued: result.queued,
+      assistantSource: result.assistant?.source
+    });
     jsonResponse(response, 200, result);
   } catch (error) {
     if (error instanceof ChatProxyError) {
+      void logger.warn("openclaw.chat.send_failed", "OpenClaw chat send failed with expected proxy error.", {
+        code: error.code,
+        statusCode: error.statusCode,
+        message: error.message
+      });
       jsonResponse(response, error.statusCode, {
         error: error.code,
         message: error.message
       });
       return;
     }
+    void logger.error("openclaw.chat.send_internal_error", "OpenClaw chat send failed with internal error.", runtimeErrorMetadata(error));
     jsonResponse(response, 500, {
       error: "openclaw_chat_send_internal_error",
       message: error instanceof Error ? error.message : "Unknown chat proxy error."
@@ -1112,19 +1129,31 @@ export async function handleChatSendHttp(
 export async function handleChatInterruptHttp(
   proxy: OpenClawChatProxy,
   body: ChatInterruptRequest,
-  response: ServerResponse
+  response: ServerResponse,
+  logger: GatewayRuntimeLogger = noopGatewayRuntimeLogger
 ): Promise<void> {
   try {
     const result = await proxy.interruptOperatorMessage(body);
+    void logger.info("openclaw.chat.interrupt", "Operator interrupt processed.", {
+      msgId: body.msgId,
+      interrupted: result.interrupted,
+      taskId: result.taskId
+    });
     jsonResponse(response, 200, result);
   } catch (error) {
     if (error instanceof ChatProxyError) {
+      void logger.warn("openclaw.chat.interrupt_failed", "OpenClaw interrupt failed with expected proxy error.", {
+        code: error.code,
+        statusCode: error.statusCode,
+        message: error.message
+      });
       jsonResponse(response, error.statusCode, {
         error: error.code,
         message: error.message
       });
       return;
     }
+    void logger.error("openclaw.chat.interrupt_internal_error", "OpenClaw interrupt failed with internal error.", runtimeErrorMetadata(error));
     jsonResponse(response, 500, {
       error: "openclaw_chat_interrupt_internal_error",
       message: error instanceof Error ? error.message : "Unknown chat interrupt error."

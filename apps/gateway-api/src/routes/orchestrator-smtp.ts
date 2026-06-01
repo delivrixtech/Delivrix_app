@@ -8,6 +8,11 @@ import {
   configureCompleteSmtpParamSchema,
   type ConfigureCompleteSmtpParams
 } from "../skill-schemas.ts";
+import {
+  noopGatewayRuntimeLogger,
+  summarizeOperationalParams,
+  type GatewayRuntimeLogger
+} from "../gateway-runtime-log.ts";
 
 export type ConfigureSmtpStatus =
   | "completed"
@@ -112,6 +117,7 @@ export interface ConfigureCompleteSmtpDeps {
   env?: Record<string, string | undefined>;
   now?: () => Date;
   randomId?: () => string;
+  logger?: GatewayRuntimeLogger;
 }
 
 const defaultApprovalTimeoutMs = 10 * 60 * 1000;
@@ -169,7 +175,15 @@ export async function configureCompleteSmtp(
   let serverSlug = "";
   let serverIpv4 = "";
   let rollbackProposalId: string | undefined;
+  const logger = deps.logger ?? noopGatewayRuntimeLogger;
 
+  void logger.info("openclaw.orchestrator.run_started", "configure_complete_smtp run started.", {
+    runId,
+    brand: input.brand,
+    intent: input.intent,
+    budgetUsdMax: input.budgetUsdMax,
+    actorId: input.actorId
+  });
   await emitRunTask(deps, runId, "running", {
     title: `configure_complete_smtp · ${input.brand}`,
     createdAt: startedAt.toISOString()
@@ -394,6 +408,13 @@ export async function configureCompleteSmtp(
     });
     await emitRunAction(deps, runId, "oc.orchestrator.run_completed", "low");
     await emitRunTask(deps, runId, "completed");
+    void logger.info("openclaw.orchestrator.run_completed", "configure_complete_smtp completed.", {
+      runId,
+      stepCount: stepResults.length,
+      totalCostUsd,
+      totalDurationMs,
+      finalDeliveryStatus: normalizeDeliveryStatus(stringFromOutcome(realEmail.outcome, ["deliveryStatus"], undefined))
+    });
 
     return {
       runId,
@@ -418,6 +439,13 @@ export async function configureCompleteSmtp(
     });
 
     if (serverSlug && failure.step >= 6 && deps.submitRollbackProposal) {
+      void logger.warn("openclaw.orchestrator.rollback_proposal_requested", "configure_complete_smtp requested rollback proposal after failure.", {
+        runId,
+        failedStep: failure.step,
+        skill: failure.skill,
+        serverSlug,
+        chosenDomain
+      });
       const rollback = await deps.submitRollbackProposal({
         runId,
         failedStep: failure.step,
@@ -431,6 +459,14 @@ export async function configureCompleteSmtp(
 
     await emitRunAction(deps, runId, "oc.orchestrator.run_failed", "high");
     await emitRunTask(deps, runId, "failed");
+    void logger.error("openclaw.orchestrator.run_failed", "configure_complete_smtp failed.", {
+      runId,
+      failedStep: failure.step,
+      skill: failure.skill,
+      status: failure.status,
+      error: failure.message,
+      rollbackProposalId
+    });
     return {
       runId,
       status: failure.status,
@@ -453,6 +489,13 @@ async function runReadOnlyStep(input: {
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<unknown> {
   await verifyAuditChain(input.deps);
+  void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.step_started", "Read-only orchestrator step started.", {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    approvalRequired: false,
+    params: summarizeOperationalParams(input.params)
+  });
   await emitStep(input.deps, "oc.orchestrator.step_started", input.runId, input.step, input.skill, {
     approvalRequired: false
   });
@@ -473,6 +516,12 @@ async function runReadOnlyStep(input: {
   await emitStep(input.deps, "oc.orchestrator.step_completed", input.runId, input.step, input.skill, {
     durationMs: result.durationMs
   });
+  void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.step_completed", "Read-only orchestrator step completed.", {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    durationMs: result.durationMs
+  });
   return outcome;
 }
 
@@ -488,11 +537,25 @@ async function runGatedStep(input: {
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   await verifyAuditChain(input.deps);
+  void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.step_started", "Gated orchestrator step started; operator approval required.", {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    approvalRequired: true,
+    estimatedCostUsd: input.estimatedCostUsd ?? 0,
+    params: summarizeOperationalParams(input.params)
+  });
   await emitStep(input.deps, "oc.orchestrator.step_started", input.runId, input.step, input.skill, {
     approvalRequired: true,
     estimatedCostUsd: input.estimatedCostUsd ?? 0
   });
   const approvalTimeoutMs = approvalTimeoutForStep(input.skill, input.params, input.approvalTimeoutMs);
+  void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.awaiting_approval", "Waiting for ApprovalGate signature.", {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    approvalTimeoutMs
+  });
   const decision = await input.deps.submitAndAwaitApproval({
     runId: input.runId,
     step: input.step,
@@ -518,10 +581,26 @@ async function runGatedStep(input: {
       proposalId: decision.proposalId,
       durationMs: decision.durationMs
     });
+    void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.step_completed", "Gated orchestrator step executed.", {
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      proposalId: decision.proposalId,
+      signatureId: decision.signatureId,
+      statusCode: decision.statusCode,
+      durationMs: decision.durationMs
+    });
     return result;
   }
 
   if (decision.status === "rejected") {
+    void (input.deps.logger ?? noopGatewayRuntimeLogger).warn("openclaw.orchestrator.step_rejected", "Operator rejected gated orchestrator step.", {
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      proposalId: decision.proposalId,
+      reason: decision.reason
+    });
     throw new OrchestratorFailure(
       "cancelled_by_operator",
       input.step,
@@ -532,6 +611,13 @@ async function runGatedStep(input: {
   }
 
   if (decision.status === "approval_timeout" || decision.status === "execution_timeout") {
+    void (input.deps.logger ?? noopGatewayRuntimeLogger).warn(`openclaw.orchestrator.${decision.status}`, "Gated orchestrator step timed out.", {
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      proposalId: decision.proposalId,
+      timeoutMs: decision.timeoutMs
+    });
     throw new OrchestratorFailure(
       "failed",
       input.step,
@@ -541,6 +627,15 @@ async function runGatedStep(input: {
     );
   }
 
+  void (input.deps.logger ?? noopGatewayRuntimeLogger).error("openclaw.orchestrator.step_execution_failed", "Gated orchestrator step execution failed.", {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    proposalId: decision.proposalId,
+    statusCode: "statusCode" in decision ? decision.statusCode : undefined,
+    error: "error" in decision ? decision.error : undefined,
+    outcome: "outcome" in decision ? decision.outcome : undefined
+  });
   throw new OrchestratorFailure(
     "failed",
     input.step,

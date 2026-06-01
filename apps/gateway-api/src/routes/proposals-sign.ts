@@ -16,6 +16,11 @@ import {
   hashSkillExecutionContext,
   validateSkillActionBinding
 } from "../skill-contracts.ts";
+import {
+  noopGatewayRuntimeLogger,
+  summarizeOperationalParams,
+  type GatewayRuntimeLogger
+} from "../gateway-runtime-log.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<AuditEvent>;
@@ -78,6 +83,7 @@ export interface HandleProposalSignDeps {
   readKillSwitch: () => Promise<KillSwitchState> | KillSwitchState;
   env?: Record<string, string | undefined>;
   now?: () => Date;
+  logger?: GatewayRuntimeLogger;
 }
 
 interface SignBody {
@@ -89,8 +95,12 @@ interface SignBody {
 
 export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<void> {
   const now = deps.now?.() ?? new Date();
+  const logger = deps.logger ?? noopGatewayRuntimeLogger;
   const killSwitch = await deps.readKillSwitch();
   if (killSwitch.enabled) {
+    void logger.warn("openclaw.proposal.sign_blocked", "Proposal signature blocked by kill switch.", {
+      proposalId: deps.proposalId
+    });
     return json(deps.response, 423, {
       ok: false,
       rejectReason: "kill_switch_armed"
@@ -108,6 +118,11 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
   const { raw, body } = await readRawBodyAndJson<SignBody>(deps.request);
   const parsed = parseSignBody(body);
   if (!parsed.ok) {
+    void logger.warn("openclaw.proposal.sign_rejected", "Proposal signature body failed validation.", {
+      proposalId: deps.proposalId,
+      reason: "schema_mismatch",
+      details: parsed.details
+    });
     return json(deps.response, 400, {
       ok: false,
       rejectReason: "schema_mismatch",
@@ -121,6 +136,11 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
     env: deps.env
   });
   if (!auth.ok) {
+    void logger.warn("openclaw.proposal.sign_rejected", "Proposal signature auth failed.", {
+      proposalId: deps.proposalId,
+      reason: auth.rejectReason,
+      details: auth.details
+    });
     return json(deps.response, 401, {
       ok: false,
       rejectReason: auth.rejectReason,
@@ -130,6 +150,10 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
 
   const proposal = deps.proposalsStore.find((candidate) => candidate.id === deps.proposalId);
   if (!proposal) {
+    void logger.warn("openclaw.proposal.sign_rejected", "Proposal signature requested for missing proposal.", {
+      proposalId: deps.proposalId,
+      reason: "proposal_not_found"
+    });
     return json(deps.response, 404, {
       ok: false,
       rejectReason: "proposal_not_found"
@@ -137,6 +161,11 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
   }
 
   if (proposal.status !== "pending") {
+    void logger.warn("openclaw.proposal.sign_rejected", "Proposal signature requested for non-pending proposal.", {
+      proposalId: proposal.id,
+      reason: "proposal_not_pending",
+      currentStatus: proposal.status
+    });
     return json(deps.response, 409, {
       ok: false,
       rejectReason: "proposal_not_pending",
@@ -156,6 +185,11 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
       decision: "reject",
       metadata: { expiresAt: proposal.expiresAt }
     });
+    void logger.warn("openclaw.proposal.sign_rejected", "Proposal expired before signature.", {
+      proposalId: proposal.id,
+      reason: "proposal_expired",
+      expiresAt: proposal.expiresAt
+    });
     return json(deps.response, 410, {
       ok: false,
       rejectReason: "proposal_expired"
@@ -163,6 +197,10 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
   }
 
   if (!proposal.requiresApproval) {
+    void logger.warn("openclaw.proposal.sign_rejected", "Proposal does not require approval.", {
+      proposalId: proposal.id,
+      reason: "proposal_does_not_require_approval"
+    });
     return json(deps.response, 409, {
       ok: false,
       rejectReason: "proposal_does_not_require_approval"
@@ -171,6 +209,12 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
 
   const chain = await deps.auditChain.verify();
   if (!chain.ok) {
+    void logger.error("openclaw.proposal.sign_rejected", "Audit chain is broken; signature blocked.", {
+      proposalId: proposal.id,
+      reason: "audit_chain_broken",
+      totalEvents: chain.totalEvents,
+      brokenAt: chain.brokenAt
+    });
     return json(deps.response, 503, {
       ok: false,
       rejectReason: "audit_chain_broken",
@@ -186,6 +230,12 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
     requireKnownSkill: true
   });
   if (!actionBinding.ok) {
+    void logger.warn("openclaw.proposal.sign_rejected", "Proposal action binding failed.", {
+      proposalId: proposal.id,
+      skill,
+      reason: actionBinding.rejectReason,
+      expectedActionIds: actionBinding.expectedActionIds ?? []
+    });
     return json(deps.response, 409, {
       ok: false,
       rejectReason: actionBinding.rejectReason,
@@ -263,6 +313,15 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
   proposal.status = "signed";
   proposal.signedAt = now.toISOString();
   proposal.signatureId = signatureId;
+  void logger.info("openclaw.proposal.signed", "Operator signed ApprovalGate proposal; dispatch starting.", {
+    proposalId: proposal.id,
+    skill: actionBinding.canonicalSkill,
+    actorId: parsed.actorId,
+    signatureId,
+    targetType: target.type,
+    targetId: target.id,
+    params: summarizeOperationalParams(isRecord(proposal.params) ? proposal.params : {})
+  });
 
   const killSwitchBeforeDispatch = await deps.readKillSwitch();
   if (killSwitchBeforeDispatch.enabled) {
@@ -289,6 +348,11 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
       reason: "kill_switch_armed_before_dispatch"
     });
     await deps.auditLog.append(abortedInput);
+    void logger.warn("openclaw.proposal.dispatch_aborted", "Proposal dispatch aborted because kill switch armed before execution.", {
+      proposalId: proposal.id,
+      skill: actionBinding.canonicalSkill,
+      signatureId
+    });
     return json(deps.response, 423, {
       ok: false,
       status: "aborted",
@@ -340,6 +404,12 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
         }))
         .catch(() => undefined);
     }
+    void logger.warn("openclaw.proposal.dispatch_executing", "Proposal dispatch exceeded synchronous window; polling continues.", {
+      proposalId: proposal.id,
+      skill: actionBinding.canonicalSkill,
+      signatureId,
+      timeoutMs: 60_000
+    });
     return json(deps.response, 202, {
       ok: true,
       status: "executing",
@@ -373,6 +443,23 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
     buffered: false,
     error: errorMessage(error)
   }));
+
+  void (dispatchResult.ok
+    ? logger.info("openclaw.proposal.dispatch_executed", "Proposal dispatch executed successfully.", {
+      proposalId: proposal.id,
+      skill: actionBinding.canonicalSkill,
+      signatureId,
+      statusCode: dispatchResult.statusCode,
+      durationMs: dispatchResult.durationMs
+    })
+    : logger.error("openclaw.proposal.dispatch_failed", "Proposal dispatch failed.", {
+      proposalId: proposal.id,
+      skill: actionBinding.canonicalSkill,
+      signatureId,
+      statusCode: dispatchResult.statusCode,
+      durationMs: dispatchResult.durationMs,
+      outcome: dispatchResult.summary
+    }));
 
   return json(deps.response, dispatchResult.ok ? 200 : 502, {
     ok: dispatchResult.ok,
@@ -445,6 +532,23 @@ async function finalizeTimedOutDispatch(input: {
   });
   await input.deps.auditLog.append(event);
   await input.deps.webhookBroadcaster?.broadcast(event).catch(() => undefined);
+  const logger = input.deps.logger ?? noopGatewayRuntimeLogger;
+  void (input.dispatchResult.ok
+    ? logger.info("openclaw.proposal.dispatch_settled", "Async proposal dispatch settled successfully.", {
+      proposalId: input.proposal.id,
+      skill: input.skill,
+      signatureId: input.signatureId,
+      statusCode: input.dispatchResult.statusCode,
+      durationMs: input.dispatchResult.durationMs
+    })
+    : logger.error("openclaw.proposal.dispatch_settled_failed", "Async proposal dispatch settled with failure.", {
+      proposalId: input.proposal.id,
+      skill: input.skill,
+      signatureId: input.signatureId,
+      statusCode: input.dispatchResult.statusCode,
+      durationMs: input.dispatchResult.durationMs,
+      outcome: input.dispatchResult.summary
+    }));
 }
 
 function proposalExecutionAuditInput(input: {
@@ -672,6 +776,10 @@ function redactSecretString(value: string): string {
     .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED_AWS_ACCESS_KEY]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
     .replace(/\b(password|passwd|secret|token|api[_-]?key|access[_-]?key)\b\s*[:=]\s*("[^"]+"|'[^']+'|[^\s,;]+)/gi, "$1=[REDACTED]");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function looksLikeDomain(value: string): boolean {
