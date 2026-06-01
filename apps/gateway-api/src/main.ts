@@ -166,6 +166,8 @@ import {
   handleRoute53HostedZoneDeleteHttp,
   handleRoute53DnsUpsertHttp
 } from "./routes/domains-dns.ts";
+import { handleReadRoute53DomainDetail } from "./routes/route53-domain-detail.ts";
+import { handleReadRoute53ZoneRecords } from "./routes/route53-zone-records.ts";
 import {
   handleIonosDnsUpsertError,
   handleIonosDnsUpsertHttp
@@ -687,6 +689,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_webdock_inventory", "allowed_read_only"),
   permission("read_episodic_scratch", "allowed_read_only"),
   permission("openclaw_memory_read", "allowed_read_only"),
+  permission("read_route53_domain_detail", "allowed_read_only"),
+  permission("read_route53_zone_records", "allowed_read_only"),
   permission("suggest_safe_domain", "allowed_read_only"),
   permission("naming_suggest", "allowed_read_only"),
   permission("propose_warming_step", "allowed_dry_run"),
@@ -1503,6 +1507,22 @@ const server = createServer(async (request, response) => {
         }
         throw error;
       }
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/route53/domain-detail") {
+      return await handleReadRoute53DomainDetail(request, response, {
+        canvasLiveEvents,
+        emitAudit: appendRoute53ReadAudit,
+        now: () => new Date()
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/route53/zone-records") {
+      return await handleReadRoute53ZoneRecords(request, response, {
+        canvasLiveEvents,
+        emitAudit: appendRoute53ReadAudit,
+        now: () => new Date()
+      });
     }
 
     if (request.method === "POST" && request.url === "/v1/domains/route53/dns/upsert") {
@@ -5626,6 +5646,25 @@ function riskLevelFromProposalSeverity(severity: AgentProposal["severity"]): "lo
   }
 
   return "low";
+}
+
+async function appendRoute53ReadAudit(event: { type: string; [key: string]: unknown }): Promise<void> {
+  const domain = typeof event.domain === "string" ? event.domain : undefined;
+  const zoneId = typeof event.zoneId === "string" ? event.zoneId : undefined;
+  await auditLog.append({
+    actorType: "openclaw",
+    actorId: "openclaw-route53-read-tools",
+    action: event.type,
+    targetType: domain ? "domain" : "route53_hosted_zone",
+    targetId: domain ?? zoneId ?? "unknown",
+    riskLevel: "low",
+    decision: "allow",
+    humanApproved: false,
+    metadata: {
+      provider: "aws-route53",
+      ...event
+    }
+  });
 }
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {

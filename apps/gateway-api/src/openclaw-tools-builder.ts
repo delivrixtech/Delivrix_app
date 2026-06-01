@@ -6,7 +6,9 @@ import {
   emailAuthParamSchema,
   ionosUpsertParamSchema,
   readEpisodicScratchParamSchema,
+  route53DomainDetailParamSchema,
   route53RegisterParamSchema,
+  route53ZoneRecordsParamSchema,
   route53UpsertParamSchema,
   smtpProvisionParamSchema,
   warmupSeedParamSchema,
@@ -33,6 +35,8 @@ export type OpenClawToolName =
   | "suggest_safe_domain"
   | "read_episodic_scratch"
   | "wait_for_dns_propagation"
+  | "read_route53_domain_detail"
+  | "read_route53_zone_records"
   | "upsert_dns_route53"
   | "upsert_dns_ionos"
   | "create_webdock_server"
@@ -213,6 +217,61 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     paramSchema: waitForDnsPropagationSkillParamSchema,
     enabled: (env) => hmacConfigured(env),
     targetType: "dns_record",
+    severity: "high"
+  },
+  read_route53_domain_detail: {
+    spec: {
+      name: "read_route53_domain_detail",
+      description: "Devuelve metadata autoritativa del registro de un dominio en Route53 Domains: registrar (AWS, IONOS, etc), nameservers asignados, fechas de registro y expiracion, autoRenew, transferLock, status del dominio. Invocar ANTES de asumir cualquier dato sobre el registrar de un dominio - el resultado es la unica fuente confiable. Reemplaza la necesidad de que el operador corra whois o aws cli desde terminal. Lectura auditada: no muta infraestructura y no requiere ApprovalGate.",
+      input_schema: {
+        type: "object",
+        required: ["domain"],
+        properties: {
+          domain: {
+            type: "string",
+            pattern: domainPattern,
+            description: "Dominio sin protocolo ni path. Ejemplo: controldelivrix.app"
+          }
+        }
+      }
+    },
+    paramSchema: route53DomainDetailParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      hasAwsRoute53DomainCredentials(env),
+    targetType: "domain",
+    severity: "high"
+  },
+  read_route53_zone_records: {
+    spec: {
+      name: "read_route53_zone_records",
+      description: "Lista todos los registros DNS dentro de una hosted zone Route53 (NS, SOA, A, AAAA, MX, TXT, CNAME, PTR, SRV, CAA). Invocar SIEMPRE ANTES de proponer upsert_dns_route53 para no escribir sobre registros que ya coinciden con lo deseado, y ANTES de diagnosticar fallos de propagacion DNS. Reemplaza dig. Lectura auditada: no muta DNS y no requiere ApprovalGate.",
+      input_schema: {
+        type: "object",
+        required: ["zoneId"],
+        properties: {
+          zoneId: {
+            type: "string",
+            pattern: "^Z[A-Z0-9]{10,32}$",
+            description: "ID de la hosted zone Route53. Formato Z seguido de 10-32 caracteres. Ejemplo: Z03595092JW2AXJBZGN4E"
+          },
+          recordType: {
+            type: "string",
+            enum: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "PTR", "SRV", "CAA"],
+            description: "Filtrar por tipo de record. Opcional."
+          },
+          recordName: {
+            type: "string",
+            description: "Filtrar por nombre exacto del record. Opcional. Ejemplo: smtp.controldelivrix.app"
+          }
+        }
+      }
+    },
+    paramSchema: route53ZoneRecordsParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      hasAwsRoute53DnsCredentials(env),
+    targetType: "route53_hosted_zone",
     severity: "high"
   },
   upsert_dns_route53: {
@@ -563,6 +622,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       isOpenClawToolEnabled("suggest_safe_domain", env) &&
       isOpenClawToolEnabled("register_domain_route53", env) &&
       isOpenClawToolEnabled("wait_for_dns_propagation", env) &&
+      isOpenClawToolEnabled("read_route53_domain_detail", env) &&
+      isOpenClawToolEnabled("read_route53_zone_records", env) &&
       isOpenClawToolEnabled("create_webdock_server", env) &&
       isOpenClawToolEnabled("bind_webdock_main_domain", env) &&
       isOpenClawToolEnabled("upsert_dns_route53", env) &&
@@ -592,6 +653,8 @@ export function openClawToolNames(): OpenClawToolName[] {
     "suggest_safe_domain",
     "read_episodic_scratch",
     "wait_for_dns_propagation",
+    "read_route53_domain_detail",
+    "read_route53_zone_records",
     "upsert_dns_route53",
     "upsert_dns_ionos",
     "create_webdock_server",
