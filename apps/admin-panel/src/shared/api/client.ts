@@ -70,6 +70,7 @@ export interface HealthPayload {
   status: string;
   service: string;
   phase: string;
+  runtimeFlags?: Record<string, string | undefined>;
   /** Codex 50876e5 — status agregado de Postgres pgvector. */
   postgres?: DependencyStatus;
   /** Codex 50876e5 — status agregado de Redis. */
