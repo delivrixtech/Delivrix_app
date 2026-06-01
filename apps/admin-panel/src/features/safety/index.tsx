@@ -385,10 +385,10 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
     <section
       className="flex flex-col overflow-hidden"
       style={{
-        borderRadius: 10,
-        background: "var(--color-surface-inverse)",
-        border: "1px solid var(--color-on-dark-hint)",
-        boxShadow: "var(--shadow-md)"
+        borderRadius: 8,
+        background: "var(--color-always-dark-surface)",
+        border: "1px solid var(--color-always-dark-border)",
+        boxShadow: "none"
       }}
     >
       <div
@@ -401,10 +401,10 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
           style={{
             width: 44,
             height: 44,
-            borderRadius: 10,
-            background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
+            borderRadius: 8,
+            background: armed ? "var(--color-on-dark-success-overlay)" : "var(--color-on-dark-critical-overlay)",
             color: "var(--color-on-dark-strong)",
-            boxShadow: "0 0 0 1px var(--color-on-dark-hint), 0 8px 20px rgba(234, 88, 12, 0.25)"
+            boxShadow: "0 0 0 1px var(--color-always-dark-border)"
           }}
         >
           <Power size={20} strokeWidth={2.25} aria-hidden="true" />
@@ -433,8 +433,8 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
             padding: "5px 10px",
             borderRadius: 999,
             background: armed ? "var(--color-on-dark-success-overlay)" : "var(--color-on-dark-critical-overlay)",
-            border: armed ? "1px solid var(--color-on-dark-success-overlay)" : "1px solid var(--color-on-dark-critical-overlay)",
-            color: armed ? "var(--color-success-border)" : "var(--color-critical-border)",
+            border: "1px solid var(--color-always-dark-border)",
+            color: "var(--color-on-dark-strong)",
             letterSpacing: "var(--tracking-wider)"
           }}
         >
@@ -448,8 +448,8 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
           gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)",
           gap: 16,
           padding: "14px 24px",
-          background: "var(--color-surface-inverse)",
-          borderTop: "1px solid var(--color-on-dark-hint)"
+          background: "var(--color-always-dark-bg)",
+          borderTop: "1px solid var(--color-always-dark-border)"
         }}
       >
         <KillStat label="responsable" value={ks.updatedBy || "sin asignar"} />
@@ -469,7 +469,7 @@ function KillStat({ label, value }: { label: string; value: string }) {
       >
         {label}
       </span>
-      <span className="text-[12px] font-[family-name:var(--font-mono)] tabular-nums" style={{ color: "var(--color-accent-secondary)" }}>
+      <span className="text-[12px] font-[family-name:var(--font-mono)] tabular-nums" style={{ color: "var(--color-on-dark-medium)" }}>
         {value}
       </span>
     </div>
