@@ -108,8 +108,8 @@ export async function compactIntent(
 ): Promise<CompactIntentOutput> {
   if (!(await intentExists(deps.auditLog, input.intentId))) {
     throw new CompactIntentValidationError(
-      "intent_not_found",
-      "intentId must exist in audit chain before compaction."
+      "intent_id_not_found",
+      "intentId must exist in audit chain as oc.skill.invoked before compaction."
     );
   }
 
@@ -221,16 +221,13 @@ function parseCompactIntentInput(value: unknown): CompactIntentInput {
 }
 
 async function intentExists(auditLog: AuditSink, intentId: string): Promise<boolean> {
-  if (!auditLog.list) return true;
+  if (!auditLog.list) return false;
   const events = await auditLog.list();
   return events.some((event) =>
-    (event.action === "oc.skill.invoked" ||
-      event.action === "oc.orchestrator.run_started" ||
-      event.action === "oc.chat.operator_message") &&
+    event.action === "oc.skill.invoked" &&
     (event.targetId === intentId ||
       event.metadata?.intentId === intentId ||
-      event.metadata?.runId === intentId ||
-      event.metadata?.sessionId === intentId)
+      event.metadata?.runId === intentId)
   );
 }
 

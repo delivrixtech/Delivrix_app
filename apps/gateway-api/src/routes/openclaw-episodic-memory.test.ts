@@ -49,7 +49,7 @@ test("handleReadEpisodicScratchHttp enforces read boundary token when configured
 test("compactIntent writes entries and appends hash-only audit metadata", async () => {
   const pool = new MemoryScratchPool();
   const auditEvents: Array<{ action: string; targetId: string; metadata?: Record<string, unknown> }> = [
-    { action: "oc.orchestrator.run_started", targetId: "intent-1", metadata: { runId: "intent-1" } }
+    { action: "oc.skill.invoked", targetId: "intent-1", metadata: { intentId: "intent-1" } }
   ];
 
   const output = await compactIntent({
@@ -113,14 +113,46 @@ test("compactIntent rejects unknown intent ids", async () => {
         async list() { return []; }
       }
     }),
-    /intentId must exist/
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "intent_id_not_found" &&
+      /oc\.skill\.invoked/.test(error.message)
   );
+});
+
+test("compactIntent rejects intents that only have orchestrator or chat audit events", async () => {
+  const pool = new MemoryScratchPool();
+  await assert.rejects(
+    () => compactIntent({
+      intentId: "intent-1",
+      finalStatus: "failed",
+      decision: "wrong provenance",
+      steps: [{ step: 1, tool: "x", inputHash: "a".repeat(64), outcome: "failed" }]
+    }, {
+      pool,
+      auditLog: {
+        async append(event) { return event; },
+        async list() {
+          return [
+            { action: "oc.orchestrator.run_started", targetId: "intent-1", metadata: { runId: "intent-1" } },
+            { action: "oc.chat.operator_message", targetId: "intent-1", metadata: { intentId: "intent-1" } }
+          ] as never;
+        }
+      }
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "intent_id_not_found"
+  );
+  assert.equal(pool.rows.length, 0);
 });
 
 test("handleCompactIntentHttp accepts unsigned local mode for internal smoke tests", async () => {
   const pool = new MemoryScratchPool();
   const auditEvents: Array<{ action: string; targetId: string; metadata?: Record<string, unknown> }> = [
-    { action: "oc.orchestrator.run_started", targetId: "intent-1", metadata: { runId: "intent-1" } }
+    { action: "oc.skill.invoked", targetId: "intent-1", metadata: { intentId: "intent-1" } }
   ];
   const { request, response, getResponse } = createInternalHttpAdapter({
     method: "POST",
@@ -152,6 +184,36 @@ test("handleCompactIntentHttp accepts unsigned local mode for internal smoke tes
   const captured = getResponse();
   assert.equal(captured.statusCode, 200);
   assert.equal((captured.body as { entriesWritten: number }).entriesWritten, 1);
+});
+
+test("handleCompactIntentHttp returns 400 intent_id_not_found for invented intent ids", async () => {
+  const pool = new MemoryScratchPool();
+  const { request, response, getResponse } = createInternalHttpAdapter({
+    method: "POST",
+    url: "/v1/openclaw/compact-intent",
+    body: {
+      intentId: "invented-intent",
+      finalStatus: "failed",
+      decision: "poison attempt",
+      steps: [{ step: 1, tool: "x", inputHash: "a".repeat(64), outcome: "failed" }]
+    }
+  });
+
+  await handleCompactIntentHttp({
+    request,
+    response,
+    pool,
+    allowUnsignedLocal: true,
+    auditLog: {
+      async append(event) { return event; },
+      async list() { return []; }
+    }
+  });
+
+  const captured = getResponse();
+  assert.equal(captured.statusCode, 400);
+  assert.equal((captured.body as { error: string }).error, "intent_id_not_found");
+  assert.equal(pool.rows.length, 0);
 });
 
 function entry(overrides: Partial<InsertEntryInput> = {}): InsertEntryInput {
