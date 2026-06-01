@@ -147,6 +147,26 @@ node --env-file=.env.local scripts/openclaw/phase1-c-watch.mjs --watch
 
 Cada corrida guarda evidencia en `runtime/phase1-c-watch-*.json`.
 
+## Verificación final post-smoke
+
+Cuando el operador haya firmado el flujo y el watcher muestre estado terminal, cerrar con:
+
+```bash
+node --env-file=.env.local scripts/openclaw/phase1-c-final-verify.mjs \
+  --run-id "run-id-del-orquestador" \
+  --domain "dominio-elegido.com" \
+  --recipient "persona@dominio.com" \
+  --proposal-id "uuid-propuesta-master"
+```
+
+El verificador es read-only y exige:
+
+- audit chain `verify.ok=true`;
+- evento `oc.orchestrator.run_completed`;
+- evento `oc.smtp.real_email_sent`;
+- proposal master ejecutada si se pasa `--proposal-id`;
+- anchor HMAC capturado en `runtime/phase1-c-final-verify-*.json`.
+
 El cierre completo de Fase C requiere evidencia de:
 
 - propuesta `configure_complete_smtp` creada por tool calling Bedrock;
