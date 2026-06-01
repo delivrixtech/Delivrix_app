@@ -14,6 +14,13 @@ const staticRoot = existsSync(path.join(distRoot, "index.html")) ? distRoot : __
 const chatSendPath = "/v1/openclaw/chat/send";
 const chatStreamPath = "/v1/openclaw/chat/stream";
 const gatewayLogStreamPath = "/v1/gateway/logs/stream";
+const allowedWritePatterns = [
+  /^\/v1\/openclaw\/proposals\/[^/]+\/sign$/,
+  /^\/v1\/openclaw\/proposals\/[^/]+\/reject$/
+];
+const allowedReadPatterns = [
+  /^\/v1\/openclaw\/proposals\/[^/]+\/status$/
+];
 
 const allowedProxyPaths = new Set([
   "/health",
@@ -36,6 +43,7 @@ const allowedProxyPaths = new Set([
   "/v1/openclaw/learning-plan",
   "/v1/openclaw/live-canvas",
   "/v1/openclaw/onboarding/state",
+  "/v1/openclaw/proposals",
   "/v1/openclaw/provisioning/state",
   "/v1/openclaw/readiness-signals",
   "/v1/openclaw/skills/audit",
@@ -53,6 +61,10 @@ const server = createServer(async (request, response) => {
 
     if (requestUrl.pathname === chatSendPath) {
       return await proxyGatewayChatSend(request, response, requestUrl);
+    }
+
+    if (allowedWritePatterns.some((pattern) => pattern.test(requestUrl.pathname))) {
+      return await proxyGatewayPost(request, response, requestUrl);
     }
 
     if (requestUrl.pathname === "/health" || requestUrl.pathname.startsWith("/v1/")) {
@@ -125,7 +137,10 @@ async function proxyGatewayGet(request, response, requestUrl) {
     });
   }
 
-  if (!allowedProxyPaths.has(requestUrl.pathname)) {
+  if (
+    !allowedProxyPaths.has(requestUrl.pathname) &&
+    !allowedReadPatterns.some((pattern) => pattern.test(requestUrl.pathname))
+  ) {
     return json(response, 404, {
       error: "unknown_read_endpoint",
       message: "Endpoint is not exposed to the read-only admin panel."
@@ -140,6 +155,41 @@ async function proxyGatewayGet(request, response, requestUrl) {
       headers: {
         accept: "application/json"
       }
+    });
+  } catch (error) {
+    return json(response, 502, {
+      error: "gateway_unavailable",
+      message: error instanceof Error ? error.message : "Gateway unavailable."
+    });
+  }
+
+  const body = await upstreamResponse.text();
+  response.writeHead(upstreamResponse.status, {
+    "content-type": upstreamResponse.headers.get("content-type") ?? "application/json; charset=utf-8",
+    "cache-control": "no-store"
+  });
+  response.end(body);
+}
+
+async function proxyGatewayPost(request, response, requestUrl) {
+  if (request.method !== "POST") {
+    return json(response, 405, {
+      error: "method_not_allowed",
+      message: "This gateway action requires POST."
+    });
+  }
+
+  const upstreamUrl = new URL(requestUrl.pathname, gatewayOrigin);
+  let upstreamResponse;
+  try {
+    upstreamResponse = await fetch(upstreamUrl, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": firstHeader(request.headers["content-type"]) ?? "application/json",
+        origin: `http://${host}:${port}`
+      },
+      body: await readBody(request)
     });
   } catch (error) {
     return json(response, 502, {
