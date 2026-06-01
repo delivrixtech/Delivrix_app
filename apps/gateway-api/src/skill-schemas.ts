@@ -56,6 +56,11 @@ export interface WebdockCreateParams extends Record<string, unknown> {
   maxPolls?: number;
 }
 
+export interface ReadWebdockServersParams extends Record<string, unknown> {
+  serverSlug?: string;
+  ipv4?: string;
+}
+
 export interface SmtpProvisionParams extends Record<string, unknown> {
   serverSlug: string;
   domain: string;
@@ -197,6 +202,18 @@ export const route53ZoneRecordsParamSchema = schema<Route53ZoneRecordsParams>((v
     ...(input.recordName === undefined || input.recordName === null || input.recordName === ""
       ? {}
       : { recordName: dnsRecordName(input.recordName, "recordName") })
+  };
+});
+
+export const readWebdockServersParamSchema = schema<ReadWebdockServersParams>((value) => {
+  const input = object(value);
+  return {
+    ...(input.serverSlug === undefined || input.serverSlug === null || input.serverSlug === ""
+      ? {}
+      : { serverSlug: slug(input.serverSlug, "serverSlug") }),
+    ...(input.ipv4 === undefined || input.ipv4 === null || input.ipv4 === ""
+      ? {}
+      : { ipv4: ipv4(input.ipv4, "ipv4") })
   };
 });
 

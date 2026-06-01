@@ -675,6 +675,21 @@ async function invokeReadOnlyToolOverHttp(input: {
     return body;
   }
 
+  if (input.input.toolName === "read_webdock_servers") {
+    const response = await input.fetchImpl(`${input.baseUrl}/v1/webdock/inventory`, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        "x-openclaw-skill-invocation": "delivrix-fleet-ops"
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+    }
+    return filterWebdockInventoryResult(body, input.input.params);
+  }
+
   throw new Error(`unsupported_read_only_tool:${input.input.toolName}`);
 }
 
@@ -715,6 +730,33 @@ async function invokeMemoryToolOverHttp(input: {
     throw new Error(`memory tool failed with HTTP ${response.status}`);
   }
   return body;
+}
+
+function filterWebdockInventoryResult(body: unknown, params: Record<string, unknown>): unknown {
+  const serverSlug = typeof params.serverSlug === "string" ? params.serverSlug : null;
+  const ipv4 = typeof params.ipv4 === "string" ? params.ipv4 : null;
+  if (!serverSlug && !ipv4) {
+    return body;
+  }
+
+  const payload = isRecord(body) ? body : {};
+  const inventory = isRecord(payload.inventory) ? payload.inventory : {};
+  const servers = Array.isArray(inventory.servers) ? inventory.servers : [];
+  const matchedServers = servers.filter((server) => {
+    if (!isRecord(server)) return false;
+    const slugMatches = !serverSlug || server.slug === serverSlug;
+    const ipv4Matches = !ipv4 || server.ipv4 === ipv4;
+    return slugMatches && ipv4Matches;
+  });
+
+  return {
+    ...payload,
+    filters: {
+      ...(serverSlug ? { serverSlug } : {}),
+      ...(ipv4 ? { ipv4 } : {})
+    },
+    matchedServers
+  };
 }
 
 async function waitForProposalDecisionOverHttp(input: {
@@ -913,7 +955,8 @@ function isReadOnlyToolUse(toolName: string): boolean {
     toolName === "wait_for_dns_propagation" ||
     toolName === "read_episodic_scratch" ||
     toolName === "read_route53_domain_detail" ||
-    toolName === "read_route53_zone_records";
+    toolName === "read_route53_zone_records" ||
+    toolName === "read_webdock_servers";
 }
 
 function isMemoryToolUse(toolName: string): boolean {

@@ -23,6 +23,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["read_episodic_scratch", "openclaw_memory_read"]
   },
   {
+    canonicalSkill: "read_webdock_servers",
+    aliases: ["read_webdock_servers", "read_webdock_inventory"],
+    actionIds: ["read_webdock_servers", "read_webdock_inventory"]
+  },
+  {
     canonicalSkill: "upsert_dns_route53",
     aliases: ["upsert_dns_route53", "route53_dns_upsert"],
     actionIds: ["upsert_dns_route53", "route53_dns_upsert"]
