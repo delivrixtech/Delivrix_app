@@ -84,6 +84,15 @@ node --env-file=.env.local scripts/openclaw/phase1-c-master-smoke.mjs \
 
 Ese modo devuelve exit code `1` si faltan destinatario/asunto/cuerpo autorizados, aunque el runtime esté sano.
 
+Para dejar una terminal esperando a que PM/Juanes carguen esos inputs en `.env.local`, sin enviar nada:
+
+```bash
+node --env-file=.env.local scripts/openclaw/phase1-c-master-smoke.mjs \
+  --preflight --watch-ready --interval-ms 5000 --max-iterations 120
+```
+
+`--watch-ready` implica `--require-launch-ready`; persiste evidencia `runtime/phase1-c-preflight-*.json` y sale `0` solo cuando el launcher ya puede disparar el master prompt de forma autorizada.
+
 Para validar un paquete de datos sin escribirlo en `.env.local`, el launcher también acepta overrides de una sola corrida:
 
 ```bash

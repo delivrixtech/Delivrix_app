@@ -7,7 +7,10 @@ import { buildToolsForOpenClaw } from "../../apps/gateway-api/src/openclaw-tools
 const cliArgs = parseArgs(process.argv.slice(2));
 const gatewayBase = normalizeBase(process.env.GATEWAY_BASE ?? "http://127.0.0.1:3000");
 const mode = cliArgs.send ? "send" : cliArgs.dryRun ? "dry-run" : "preflight";
-const requireLaunchReady = cliArgs.requireLaunchReady === true;
+const watchReady = cliArgs.watchReady === true;
+const requireLaunchReady = cliArgs.requireLaunchReady === true || watchReady;
+const watchIntervalMs = positiveIntegerArg("intervalMs", 5000);
+const watchMaxIterations = positiveIntegerArg("maxIterations", 12);
 const now = new Date();
 const stamp = now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
 const requiredTools = ["send_real_email", "configure_complete_smtp"];
@@ -28,9 +31,9 @@ const bannedEmailTerms = [
   "broadcast"
 ];
 
-const preflight = await runPreflight();
+const preflight = await runPreflightMaybeWatching();
 if (mode === "preflight") {
-  const result = requireLaunchReady ? requireLaunchReadiness(preflight) : preflight;
+  const result = watchReady ? preflight : requireLaunchReady ? requireLaunchReadiness(preflight) : preflight;
   await persistEvidence("preflight", result);
   printJson(result);
   process.exit(result.ok ? 0 : 1);
@@ -157,6 +160,37 @@ async function runPreflight() {
   };
 }
 
+async function runPreflightMaybeWatching() {
+  if (mode !== "preflight" || !watchReady) {
+    return runPreflight();
+  }
+
+  const snapshots = [];
+  for (let index = 0; index < watchMaxIterations; index += 1) {
+    const snapshot = requireLaunchReadiness(await runPreflight());
+    snapshots.push(snapshot);
+    if (snapshot.ok) {
+      break;
+    }
+    if (index < watchMaxIterations - 1) {
+      await sleep(watchIntervalMs);
+    }
+  }
+
+  const latest = snapshots.at(-1) ?? requireLaunchReadiness(await runPreflight());
+  return {
+    ...latest,
+    watchReady: {
+      enabled: true,
+      ready: latest.ok,
+      intervalMs: watchIntervalMs,
+      maxIterations: watchMaxIterations,
+      iterations: snapshots.length
+    },
+    snapshots: snapshots.map(summarizePreflightSnapshot)
+  };
+}
+
 function requireLaunchReadiness(preflight) {
   const readyForSend = preflight.launchReadiness?.readyForSend === true;
   const launchBlockers = Array.isArray(preflight.launchReadiness?.blockers)
@@ -173,6 +207,26 @@ function requireLaunchReadiness(preflight) {
       ...preflight.blockers,
       ...(readyForSend ? [] : launchBlockers.map((blocker) => `launch_not_ready:${blocker}`))
     ]
+  };
+}
+
+function summarizePreflightSnapshot(snapshot) {
+  return {
+    checkedAt: snapshot.checkedAt,
+    ok: snapshot.ok,
+    tools: {
+      count: snapshot.tools?.count ?? 0,
+      missing: snapshot.tools?.missing ?? []
+    },
+    health: snapshot.health,
+    canvas: snapshot.canvas,
+    audit: {
+      verifyOk: snapshot.audit?.verify?.ok === true,
+      totalEvents: snapshot.audit?.verify?.totalEvents ?? null,
+      headSeq: snapshot.audit?.anchor?.headSeq ?? null
+    },
+    launchReadiness: snapshot.launchReadiness,
+    blockers: snapshot.blockers
   };
 }
 
@@ -324,6 +378,16 @@ function parseArgs(argv) {
 function stringArg(key) {
   const value = cliArgs[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function positiveIntegerArg(key, fallback) {
+  const raw = stringArg(key);
+  const parsed = Number(raw ?? fallback);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function isEmail(value) {
