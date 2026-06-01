@@ -671,7 +671,7 @@ function SkillsEmptyState() {
 type EvidenceRow = readonly [string, string, string, string, string, string, string];
 
 function modeLabel(mode: string): string {
-  if (mode === "get-only" || mode === "GET-only") return "GET-only";
+  if (mode === "get-only" || mode === "GET-only") return "Read-boundary";
   return mode;
 }
 
@@ -740,7 +740,7 @@ function EvidenciaCurada({
           }}
         >
           <Eye size={10} strokeWidth={2} aria-hidden="true" />
-          GET-only
+          Read-boundary
         </span>
       </header>
 
@@ -877,7 +877,7 @@ function ColaRetroalimentacion() {
             letterSpacing: "var(--tracking-wider)"
           }}
         >
-          GET-only · aprobación fuera del panel
+          Read-boundary · ApprovalGate
         </span>
       </header>
 
@@ -900,7 +900,7 @@ function ColaRetroalimentacion() {
         iconBg="var(--color-critical-soft)"
         iconColor="var(--color-critical)"
         title="Bloquear adaptador SSH nodo-envio-04"
-        desc="Sin regla de 2 personas firmada. OpenClaw mantiene SSH apagado."
+        desc="Sin firma explícita de operador. OpenClaw mantiene SSH apagado."
         meta="runbook · ssh-gate.md · hace 1 h"
         last
       />

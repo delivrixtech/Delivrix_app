@@ -574,7 +574,7 @@ function buildGates(data: DashboardData) {
   const baseGates: Array<{ check: "ok" | "warn" | "bad" | "off"; label: string; note: string }> = [
     { check: "ok", label: "Log de auditoría append-only", note: "verificado" },
     { check: "ok", label: "Dry-run obligatorio antes de escribir", note: "verificado" },
-    { check: "ok", label: "Panel solo lectura · GET-only", note: "verificado" },
+    { check: "ok", label: "Read-boundary + ApprovalGate", note: "verificado" },
     {
       check: ks.enabled ? "bad" : "ok",
       label: "Kill switch probado",
@@ -682,7 +682,7 @@ function SecRight({ data }: { data: DashboardData }) {
  *
  * Flujo:
  * 1. Click "Activar" → abre KillSwitchModal.
- * 2. Modal pide razón obligatoria + operador (regla de 2 personas).
+ * 2. Modal pide razón obligatoria + operador firmante.
  * 3. Confirm → POST /v1/kill-switch { enabled: !current, reason, actorId }.
  * 4. Backend escribe audit event automático (kill_switch.activated/.deactivated).
  * 5. Toast feedback + invalidate dashboard query → refetch → UI actualizada.
@@ -785,7 +785,7 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
               : "Rearmar interruptor"}
         </button>
         <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-          Requiere rol elevado + regla de 2 personas. Cada acción queda en audit chain.
+          Requiere rol elevado + 1 firma de operador. Cada acción queda en audit chain.
         </span>
       </section>
       {modalOpen ? (
@@ -803,7 +803,7 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
 /**
  * Modal de confirmación KillSwitch.
  *
- * Implementa la regla de 2 personas pidiendo:
+ * Implementa la firma supervisada pidiendo:
  * - reason: requerido si se activa (backend lo valida).
  * - actorId: identifica al operador. En el MVP se pega manualmente; cuando
  *   exista IAM real se reemplaza por session.userId.
@@ -929,7 +929,7 @@ function KillSwitchModal({
               className="text-[11px] font-[family-name:var(--font-caption)] font-semibold uppercase"
               style={{ letterSpacing: "var(--tracking-widest)", color: "var(--color-text-tertiary)" }}
             >
-              Operador (regla de 2 personas) <span style={{ color: "var(--color-critical)" }}>*</span>
+              Operador firmante <span style={{ color: "var(--color-critical)" }}>*</span>
             </span>
             <input
               type="text"

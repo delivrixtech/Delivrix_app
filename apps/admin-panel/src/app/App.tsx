@@ -4,12 +4,12 @@
  * Topbar y Sidebar derivan de `Panel Front End.pen` frame `e1ashz`. Valores
  * literales documentados en DOCUMENTACION/pencil-dumps/01_overview_spec.md.
  *
- * - Topbar: breadcrumb + Read-only badge + env chip + user chip.
+ * - Topbar: breadcrumb + approval badge + live-gates chip + user chip.
  * - Sidebar: brand mark + nav + kill switch card.
  * - Branding vive en el sidebar, no en el topbar.
  */
 
-import { ChevronRight, Eye, FlaskConical, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Power, RefreshCw, Search, X } from "lucide-react";
+import { ChevronRight, FlaskConical, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Power, RefreshCw, Search, ShieldCheck, X } from "lucide-react";
 import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { loadDashboardData, type DashboardData } from "../shared/api/client.ts";
@@ -278,8 +278,8 @@ export function App() {
 
 /**
  * Topbar Pencil (frame `U7pIqs`): fill var(--color-bg), padding [16,28], gap 16,
- * border-bottom var(--color-border) 1px. Contiene breadcrumb + read-only badge + env chip
- * + user chip. El refresh queda como acción ghost para no perder utilidad GET.
+ * border-bottom var(--color-border) 1px. Contiene breadcrumb + approval badge + live gates
+ * + user chip. El refresh queda como acción ghost para no perder utilidad operativa.
  */
 function Topbar({
   activeSection,
@@ -409,22 +409,22 @@ function Topbar({
         </button>
       </Tooltip>
 
-      {/* Read-only badge — texto colapsa a icono en mobile (tooltip) */}
-      <Tooltip hint="Solo lectura · GET-only" side="bottom">
+      {/* Approval badge — texto colapsa a icono en mobile (tooltip) */}
+      <Tooltip hint="ApprovalGate activo · 1 firma operador" side="bottom">
         <span className="inline-flex items-center gap-1.5 rounded-[4px] bg-[var(--color-info-soft)] px-2 py-1.5 sm:px-2.5">
-          <Eye size={12} strokeWidth={1.75} className="text-[var(--color-info)]" aria-hidden="true" />
+          <ShieldCheck size={12} strokeWidth={1.75} className="text-[var(--color-info)]" aria-hidden="true" />
           <span className="hidden text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-info)] md:inline">
-            Solo lectura · GET-only
+            1 firma operador
           </span>
         </span>
       </Tooltip>
 
       {/* Env chip — colapsa a icono en mobile/tablet (tooltip) */}
-      <Tooltip hint="Entorno mvp.local" side="bottom">
+      <Tooltip hint="Gateway local con live gates y audit chain" side="bottom">
         <span className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface-sunken)] px-2 py-1.5 sm:px-2.5">
           <FlaskConical size={12} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
           <span className="hidden text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] md:inline">
-            mvp.local
+            fase-1 · live gates
           </span>
         </span>
       </Tooltip>
@@ -618,7 +618,7 @@ function Sidebar({
  *
  * Click navega a Clusters (donde vive el modal completo para activar/rearmar).
  * El click es solo navegación, NO ejecuta acción directa: la acción real
- * requiere reason + actorId + regla de 2 personas, que solo se puede capturar
+ * requiere reason + actorId + firma de operador, que solo se puede capturar
  * desde el modal de Clusters.
  */
 function KillSwitchCard({
@@ -681,7 +681,7 @@ function KillSwitchCard({
         Prueba en modo simulado
       </p>
       <p className="m-0 text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">
-        Click para gestionar · regla de 2 personas
+        Click para gestionar · 1 firma operador
       </p>
     </button>
   );

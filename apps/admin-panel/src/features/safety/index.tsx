@@ -9,7 +9,7 @@
  *     Right: Roles + Sesiones + Secrets (380w)
  *   Audit (McVRn): tabla 6 col x 6 filas con timestamps reales
  *   Compliance row (DQeL9): 3 cards (Privacy / Cumplimiento / Sin acciones reales)
- *   Footer (N0Fra): GET-only chip + runbook link
+ *   Footer (N0Fra): read-boundary chip + runbook link
  */
 
 import {
@@ -161,8 +161,8 @@ function HeroLeft() {
           Sin acciones reales, con todas las barandillas.
         </h1>
         <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
-          El panel es GET-only. Toda acción operativa requiere aprobación humana, dry-run previo,
-          log auditable y kill switch probado.
+          El panel opera con read-boundary y ApprovalGate. Toda acción operativa requiere
+          firma humana, dry-run previo, log auditable y kill switch probado.
         </p>
       </div>
       <div className="shrink-0">
@@ -423,7 +423,7 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
             {ksTitle}
           </h2>
           <span className="text-[12px] font-[family-name:var(--font-sans)]" style={{ color: "var(--color-on-dark-medium)" }}>
-            {ksSubtitle} · regla de dos personas exigida en cada activación.
+            {ksSubtitle} · 1 firma de operador exigida en cada activación.
           </span>
         </div>
         <span
@@ -484,7 +484,7 @@ function buildSafetyGates(data: DashboardData) {
   const base: Array<{ check: true | "warn" | "bad" | "off"; label: string; state: string; tone: string }> = [
     { check: true, label: "Log de auditoría append-only", state: "verificado", tone: "var(--color-success)" },
     { check: true, label: "Dry-run obligatorio antes de escribir", state: "verificado", tone: "var(--color-success)" },
-    { check: true, label: "Panel solo lectura · GET-only", state: "verificado", tone: "var(--color-success)" },
+    { check: true, label: "Read-boundary + ApprovalGate", state: "verificado", tone: "var(--color-success)" },
     {
       check: ks.enabled ? "bad" : true,
       label: "Kill switch probado",
@@ -1231,7 +1231,7 @@ function Footer() {
       <span className="inline-flex items-center" style={{ gap: 8 }}>
         <ShieldCheck size={12} strokeWidth={1.75} className="text-[var(--color-success)]" aria-hidden="true" />
         <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">
-          Panel GET-only · ningún POST/PUT/PATCH/DELETE en el bundle frontend
+          Read-boundary activo · firmas por ApprovalGate auditado
         </span>
       </span>
       <span className="flex-1" aria-hidden="true" />
