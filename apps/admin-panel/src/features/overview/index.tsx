@@ -363,7 +363,7 @@ function KpiWarming({ value }: { value: number }) {
                 width: 48,
                 height: "100%",
                 borderRadius: 3,
-                background: "linear-gradient(90deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)"
+                background: "var(--color-accent)"
               }}
             />
           ))}
@@ -588,7 +588,7 @@ function StageCard({
             style={{
               width: `${progress}%`,
               height: "100%",
-              background: "linear-gradient(90deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)"
+              background: "var(--color-accent)"
             }}
           />
         </div>
@@ -625,9 +625,9 @@ function stageStyle(variant: StageVariant) {
     return { bg: "var(--color-success-soft)", border: "var(--color-success)", footerFg: "var(--color-text-secondary)" };
   if (variant === "in_progress")
     return {
-      bg: "linear-gradient(135deg, rgba(250, 204, 21, 0.2) 0%, rgba(234, 88, 12, 0.2) 100%)",
-      border: "var(--color-accent-tertiary)",
-      footerFg: "var(--color-accent-tertiary)"
+      bg: "var(--color-warning-soft)",
+      border: "var(--color-warning)",
+      footerFg: "var(--color-warning)"
     };
   if (variant === "warning")
     return { bg: "var(--color-warning-soft)", border: "var(--color-warning)", footerFg: "var(--color-warning)" };
@@ -847,7 +847,7 @@ function GateRow({
     <li className="flex items-center min-w-0" style={{ gap: 8 }} title={rawLabel}>
       <span
         aria-hidden="true"
-        className="grid place-items-center text-[var(--color-on-dark-strong)]"
+        className="grid place-items-center text-[var(--color-text-inverse)]"
         style={{ width: 16, height: 16, borderRadius: 8, background: dot.bg, flexShrink: 0 }}
       >
         {dot.icon}

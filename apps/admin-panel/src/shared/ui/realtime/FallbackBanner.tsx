@@ -15,7 +15,7 @@ export function FallbackBanner({ message = "Mostrando valores de respaldo", clas
         gap: 12,
         padding: "12px 16px",
         borderRadius: "var(--radius-md)",
-        borderLeft: "3px solid var(--color-warning)",
+        border: "1px solid var(--color-warning-border)",
         background: "var(--color-warning-soft)"
       }}
     >

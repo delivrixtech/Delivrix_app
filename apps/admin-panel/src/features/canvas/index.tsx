@@ -268,10 +268,10 @@ function StartHereBanner({
       style={{
         gap: 14,
         padding: "14px 28px",
-        background: "linear-gradient(90deg, rgba(250, 204, 21, 0.08) 0%, rgba(234, 88, 12, 0.05) 100%), var(--color-bg)",
+        background: "var(--color-surface)",
         borderTop: "1px solid var(--color-border)",
         borderBottom: "1px solid var(--color-border)",
-        borderLeft: `4px solid ${laneColor}`
+        borderLeft: `1px solid ${laneColor}`
       }}
     >
       <span
@@ -281,8 +281,8 @@ function StartHereBanner({
           width: 36,
           height: 36,
           borderRadius: 10,
-          background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-          color: "var(--color-on-dark-strong)"
+          background: "var(--color-accent)",
+          color: "var(--color-accent-fg)"
         }}
       >
         <Sparkles size={17} strokeWidth={1.75} aria-hidden="true" />
@@ -727,12 +727,8 @@ function PromptStrip({
         style={{
           padding: 2,
           borderRadius: 10,
-          background: isQuarantinePrompt
-            ? "linear-gradient(135deg, var(--color-critical) 0%, var(--color-critical-border) 100%)"
-            : "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)",
-          boxShadow: isQuarantinePrompt
-            ? "0 6px 18px rgba(153, 27, 27, 0.18)"
-            : "0 6px 18px rgba(146, 64, 14, 0.13)"
+          background: isQuarantinePrompt ? "var(--color-critical)" : "var(--color-accent)",
+          boxShadow: "none"
         }}
       >
         <div
@@ -746,10 +742,8 @@ function PromptStrip({
               width: 30,
               height: 30,
               borderRadius: 8,
-              background: isQuarantinePrompt
-                ? "linear-gradient(135deg, var(--color-critical) 0%, var(--color-critical-border) 100%)"
-                : "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-              color: "var(--color-on-dark-strong)"
+              background: isQuarantinePrompt ? "var(--color-critical)" : "var(--color-accent)",
+              color: isQuarantinePrompt ? "var(--color-text-inverse)" : "var(--color-accent-fg)"
             }}
           >
             <Sparkles size={14} strokeWidth={1.75} aria-hidden="true" />
@@ -1416,8 +1410,8 @@ function RunbookModal({
               width: 36,
               height: 36,
               borderRadius: 10,
-              background: "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent-tertiary) 100%)",
-              color: "var(--color-on-dark-strong)"
+              background: "var(--color-accent)",
+              color: "var(--color-accent-fg)"
             }}
           >
             <Sparkles size={18} strokeWidth={1.75} aria-hidden="true" />

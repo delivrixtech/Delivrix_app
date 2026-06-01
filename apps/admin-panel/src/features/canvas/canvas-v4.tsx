@@ -742,7 +742,14 @@ function EmptyChatState({ connection }: { connection: ChatConnection }) {
         <span
           aria-hidden="true"
           className="grid place-items-center"
-          style={{ width: 24, height: 24, borderRadius: 6, background: "var(--color-accent-tertiary)", color: "#fffbf5" }}
+          style={{
+            width: 24,
+            height: 24,
+            borderRadius: 6,
+            background: "var(--color-accent-soft)",
+            color: "var(--color-accent)",
+            boxShadow: "0 0 0 1px var(--color-border)"
+          }}
         >
           <Sparkles size={11} strokeWidth={1.75} />
         </span>
@@ -1060,8 +1067,8 @@ function ProposalCard({
             gap: 6,
             padding: "9px 14px",
             borderRadius: 8,
-            background: "var(--color-accent-tertiary)",
-            color: "var(--color-on-dark-strong)",
+            background: "var(--color-accent)",
+            color: "var(--color-accent-fg)",
             cursor: "pointer",
             fontSize: 13,
             fontWeight: 600
@@ -1258,8 +1265,8 @@ function ChatInput() {
               width: 30,
               height: 30,
               borderRadius: 8,
-              background: "var(--color-accent-tertiary)",
-              color: "#fffbf5",
+              background: "var(--color-accent)",
+              color: "var(--color-accent-fg)",
               cursor: "pointer",
               border: "none"
             }}
@@ -2611,8 +2618,8 @@ function DiffCard({ action }: { action: DiffAction }) {
             gap: 6,
             padding: "6px 12px",
             borderRadius: 6,
-            background: "var(--color-accent-tertiary)",
-            color: "var(--color-on-dark-strong)",
+            background: "var(--color-accent)",
+            color: "var(--color-accent-fg)",
             cursor: "pointer",
             fontFamily: "var(--font-body)",
             fontSize: 11,
@@ -2787,7 +2794,7 @@ function AwaitCard({ action }: { action: AwaitAction }) {
           padding: "6px 12px",
           borderRadius: 6,
           background: "var(--color-warning)",
-          color: "var(--color-on-dark-strong)",
+          color: "var(--color-text-inverse)",
           cursor: "pointer",
           fontFamily: "var(--font-body)",
           fontSize: 11,

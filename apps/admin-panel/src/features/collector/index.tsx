@@ -340,7 +340,7 @@ function ManualCaptureTab() {
             padding: "10px 18px",
             borderRadius: 6,
             background: "var(--color-accent)",
-            color: "var(--color-on-dark-strong)",
+            color: "var(--color-accent-fg)",
             border: "none",
             cursor: mutation.isPending ? "not-allowed" : "pointer"
           }}

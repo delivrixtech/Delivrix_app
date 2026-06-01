@@ -190,9 +190,7 @@ function DelivrixCanvasNode({ data }: NodeProps<DelivrixNodeType>) {
           width: NODE_WIDTH,
           height: NODE_HEIGHT,
           borderRadius: 16,
-          background: hasPrompt
-            ? "linear-gradient(135deg, rgba(245,158,11,0.12) 0%, #25201a 100%)"
-            : "#25201a",
+          background: hasPrompt ? "var(--color-warning-soft)" : "var(--color-always-dark-surface)",
           border: `${borderWidth}px solid ${borderColor}`,
           boxShadow: hasPrompt
             ? "0 0 0 4px rgba(245,158,11,0.10), 0 8px 20px rgba(0,0,0,0.4)"
@@ -266,7 +264,7 @@ function DelivrixCanvasNode({ data }: NodeProps<DelivrixNodeType>) {
               boxShadow: "0 2px 6px rgba(0,0,0,0.4)"
             }}
           >
-            <AlertTriangle size={11} strokeWidth={2.5} color="#fffbf5" />
+            <AlertTriangle size={11} strokeWidth={2.5} color="var(--color-text-inverse)" />
           </span>
         ) : null}
 
