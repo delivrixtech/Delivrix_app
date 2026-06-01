@@ -92,6 +92,7 @@ node --env-file=.env.local scripts/openclaw/phase1-c-master-smoke.mjs \
 ```
 
 `--watch-ready` implica `--require-launch-ready`; persiste evidencia `runtime/phase1-c-preflight-*.json` y sale `0` solo cuando el launcher ya puede disparar el master prompt de forma autorizada.
+En este modo el launcher re-lee `.env.local` en cada iteración, así que detecta si PM/Juanes cargan `PHASE1_TEST_EMAIL_*` mientras la terminal está esperando.
 
 Para validar un paquete de datos sin escribirlo en `.env.local`, el launcher también acepta overrides de una sola corrida:
 
