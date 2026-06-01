@@ -361,13 +361,17 @@ export async function handleWebdockServerCreateHttp(
       workspace
     });
   } catch (error) {
+    const failure = classifyWebdockServerCreateFailure(error);
     const workspace = await safeWriteExecution(deps.workspace, {
       skill: skillName,
       params: { profile, locationId, hostname, imageSlug, actorId },
       outcome: "failed",
       durationMs: Date.now() - startedAt,
       evidence: {
-        error: errorMessage(error),
+        error: failure.message,
+        failureCode: failure.code,
+        recoverable: failure.recoverable,
+        operatorAction: failure.operatorAction,
         publicKeyFingerprint,
         learningCount: learnings.length
       }
@@ -384,7 +388,10 @@ export async function handleWebdockServerCreateHttp(
       approverIds: [actorId],
       metadata: {
         provider: "webdock",
-        errorMessage: errorMessage(error),
+        errorCode: failure.code,
+        errorMessage: failure.message,
+        recoverable: failure.recoverable,
+        operatorAction: failure.operatorAction,
         workspacePath: workspace?.path
       }
     });
@@ -394,8 +401,10 @@ export async function handleWebdockServerCreateHttp(
       ok: false,
       status: "failed",
       hostname,
-      error: "webdock_server_create_failed",
-      message: errorMessage(error),
+      error: failure.code,
+      message: failure.message,
+      recoverable: failure.recoverable,
+      operatorAction: failure.operatorAction,
       workspace
     });
   }
@@ -615,6 +624,29 @@ export function handleWebdockServerDeleteError(error: unknown, response: ServerR
     return true;
   }
   return false;
+}
+
+function classifyWebdockServerCreateFailure(error: unknown): {
+  code: "webdock_payment_failed" | "webdock_server_create_failed";
+  message: string;
+  recoverable: boolean;
+  operatorAction: string;
+} {
+  const message = errorMessage(error);
+  if (/payment failed|payment method|service credit|enough credit/i.test(message)) {
+    return {
+      code: "webdock_payment_failed",
+      message,
+      recoverable: true,
+      operatorAction: "add_or_fix_webdock_service_credit_then_rerun_configure_complete_smtp"
+    };
+  }
+  return {
+    code: "webdock_server_create_failed",
+    message,
+    recoverable: false,
+    operatorAction: "inspect_webdock_create_workspace_evidence_and_provider_response"
+  };
 }
 
 async function pollProvisioning(input: {

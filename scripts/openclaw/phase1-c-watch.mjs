@@ -241,12 +241,38 @@ function buildNext(snapshot) {
     ];
   }
   if (snapshot.proposalStatus?.status === "execution_failed") {
+    const failure = classifyProposalFailure(snapshot.proposalStatus);
+    if (failure === "webdock_payment_failed") {
+      return [
+        "Bloqueo externo confirmado: Webdock rechazó create_webdock_server por payment/service credit.",
+        "Corregir método de pago o cargar Service Credit en Webdock.",
+        "Después reintentar configure_complete_smtp; dominio/DNS son idempotentes y el flujo puede volver a pasar por los pasos ya completados."
+      ];
+    }
     return ["Revisar proposalStatus.outcome y logs del gateway antes de reintentar."];
   }
   if (snapshot.proposals.pendingCount > 0) {
     return ["Abrir Canvas Live y firmar la propuesta correcta en ApprovalGate si PM/Juanes autorizan el gasto/accion real."];
   }
   return ["Esperar a que OpenClaw emita propuesta master o reintentar master prompt si no aparece actividad nueva."];
+}
+
+function classifyProposalFailure(proposalStatus) {
+  const outcome = proposalStatus?.outcome;
+  const haystack = JSON.stringify({
+    error: outcome?.error,
+    message: outcome?.message,
+    operatorAction: outcome?.operatorAction
+  }).toLowerCase();
+  if (
+    outcome?.error === "webdock_payment_failed" ||
+    haystack.includes("payment failed") ||
+    haystack.includes("service credit") ||
+    haystack.includes("payment method")
+  ) {
+    return "webdock_payment_failed";
+  }
+  return "unknown";
 }
 
 function isTerminal(snapshot) {
