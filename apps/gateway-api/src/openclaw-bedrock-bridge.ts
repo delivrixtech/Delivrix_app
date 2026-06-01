@@ -20,6 +20,12 @@ import {
   createHttpToolUseProcessor,
   type ToolUseResult
 } from "./tool-use-processor.ts";
+import {
+  noopGatewayRuntimeLogger,
+  runtimeErrorMetadata,
+  summarizeOperationalParams,
+  type GatewayRuntimeLogger
+} from "./gateway-runtime-log.ts";
 
 const defaultModelRegion = "us-east-1";
 const defaultMaxTokens = 4096;
@@ -97,6 +103,7 @@ export interface OpenClawBedrockBridgeConfig {
   now?: () => Date;
   env?: Record<string, string | undefined>;
   maxToolIterations?: number;
+  logger?: GatewayRuntimeLogger;
   processToolUse?: (input: {
     toolUseId: string;
     toolName: string;
@@ -120,6 +127,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   private readonly now: () => Date;
   private readonly env: Record<string, string | undefined>;
   private readonly maxToolIterations: number;
+  private readonly logger: GatewayRuntimeLogger;
   private readonly processToolUse: (input: {
     toolUseId: string;
     toolName: string;
@@ -164,12 +172,14 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     this.now = config.now ?? (() => new Date());
     this.env = config.env ?? (typeof process !== "undefined" ? process.env : {});
     this.maxToolIterations = config.maxToolIterations ?? defaultMaxToolIterations;
+    this.logger = config.logger ?? noopGatewayRuntimeLogger;
     this.processToolUse = config.processToolUse ?? createHttpToolUseProcessor({
       delivrixBaseUrl: this.delivrixBaseUrl,
       fetchImpl: this.fetchImpl,
       readBoundaryToken: this.readBoundaryToken,
       env: this.env,
-      now: this.now
+      now: this.now,
+      logger: this.logger
     });
   }
 
@@ -194,6 +204,12 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     const controller = new AbortController();
     this.pendingControllers.set(msgId, controller);
     this.interruptedMsgIds.delete(msgId);
+    void this.logger.info("openclaw.bedrock.message_queued", "Operator message queued for AWS Bedrock.", {
+      msgId,
+      sessionKey: this.sessionKey,
+      modelId: this.modelId,
+      messageChars: message.length
+    });
     this.pendingResponses.set(msgId, this.invokeBedrock(turns, msgId, controller.signal));
     return { msgId, queued: true };
   }
@@ -219,6 +235,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   ): Promise<void> {
     const pending = this.pendingResponses.get(msgId);
     if (!pending) {
+      void this.logger.warn("openclaw.bedrock.response_missing", "Panel requested a Bedrock response that is no longer pending.", { msgId });
       callbacks.onBlocked?.({ type: "ASSISTANT_BLOCKED", msgId, reason: "bedrock_response_missing" });
       return;
     }
@@ -251,8 +268,16 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       this.conversations.set(this.sessionKey, this.trimConversation([...turns, { role: "assistant", content: result.text }]));
     } catch (error) {
       if (this.interruptedMsgIds.has(msgId) || isAbortError(error)) {
+        void this.logger.warn("openclaw.bedrock.interrupted", "Bedrock invocation interrupted by operator.", {
+          msgId,
+          ...runtimeErrorMetadata(error)
+        });
         return;
       }
+      void this.logger.error("openclaw.bedrock.invoke_failed", "Bedrock invocation failed before assistant response.", {
+        msgId,
+        ...runtimeErrorMetadata(error)
+      });
       callbacks.onBlocked?.({ type: "ASSISTANT_BLOCKED", msgId, reason: "bedrock_invoke_error" });
     } finally {
       this.pendingResponses.delete(msgId);
@@ -271,6 +296,13 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       role: turn.role,
       content: [{ type: "text", text: turn.content }]
     }));
+    await this.logger.info("openclaw.bedrock.invoke_started", "Calling AWS Bedrock with live context and tool catalog.", {
+      msgId,
+      modelId: this.modelId,
+      turns: turns.length,
+      tools: tools.length,
+      maxToolIterations: this.maxToolIterations
+    });
     let inputTokens = 0;
     let outputTokens = 0;
     let sawInputTokens = false;
@@ -296,12 +328,21 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
 
       const toolUses = response.content.filter(isToolUseBlock);
       if (toolUses.length === 0) {
+        const durationMs = Math.max(0, this.now().getTime() - startedAt);
+        await this.logger.info("openclaw.bedrock.invoke_completed", "Bedrock returned final assistant response.", {
+          msgId,
+          modelId: this.modelId,
+          durationMs,
+          inputTokens: sawInputTokens ? inputTokens : undefined,
+          outputTokens: sawOutputTokens ? outputTokens : undefined,
+          toolsInvoked
+        });
         return {
           text: response.text,
           modelId: this.modelId,
           ...(sawInputTokens ? { inputTokens } : {}),
           ...(sawOutputTokens ? { outputTokens } : {}),
-          durationMs: Math.max(0, this.now().getTime() - startedAt),
+          durationMs,
           ...(toolsInvoked.length > 0 ? { toolsInvoked } : {})
         };
       }
@@ -315,6 +356,13 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       for (const toolUse of toolUses) {
         throwIfAborted(signal);
         toolsInvoked.push(toolUse.name);
+        await this.logger.info("openclaw.bedrock.tool_use_requested", "Bedrock requested a Delivrix tool.", {
+          msgId,
+          iteration,
+          toolUseId: toolUse.id,
+          toolName: toolUse.name,
+          params: summarizeOperationalParams(toolUse.input)
+        });
         const result = await this.processToolUse({
           toolUseId: toolUse.id,
           toolName: toolUse.name,
@@ -325,6 +373,26 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
           error: "tool_use_processor_failed",
           details: error instanceof Error ? error.message : "Unknown tool-use processor error"
         }));
+        await (result.ok
+          ? this.logger.info("openclaw.bedrock.tool_use_completed", "Delivrix tool completed for Bedrock.", {
+            msgId,
+            iteration,
+            toolUseId: toolUse.id,
+            toolName: toolUse.name,
+            proposalId: result.proposalId,
+            durationMs: result.durationMs,
+            statusCode: result.statusCode
+          })
+          : this.logger.warn("openclaw.bedrock.tool_use_failed", "Delivrix tool returned a non-ok result to Bedrock.", {
+            msgId,
+            iteration,
+            toolUseId: toolUse.id,
+            toolName: toolUse.name,
+            proposalId: result.proposalId,
+            error: result.error,
+            statusCode: result.statusCode,
+            details: result.details
+          }));
         toolResults.push({
           type: "tool_result",
           tool_use_id: toolUse.id,
@@ -467,10 +535,18 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       try {
         const response = await this.fetchImpl(`${this.delivrixBaseUrl}${path}`, { headers });
         if (!response.ok) {
+          void this.logger.warn("openclaw.bedrock.live_context_fetch_failed", "Live context endpoint returned non-OK.", {
+            path,
+            statusCode: response.status
+          });
           return { _error: `HTTP ${response.status}` };
         }
         return redactSensitiveLiveContext(await response.json());
       } catch (error) {
+        void this.logger.warn("openclaw.bedrock.live_context_fetch_failed", "Live context endpoint could not be read.", {
+          path,
+          ...runtimeErrorMetadata(error)
+        });
         return { _error: error instanceof Error ? error.message : "unknown" };
       }
     };
@@ -531,7 +607,8 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
 
 export function createOpenClawBedrockBridgeFromEnv(
   env: Record<string, string | undefined> =
-    typeof process !== "undefined" ? process.env : {}
+    typeof process !== "undefined" ? process.env : {},
+  options: { logger?: GatewayRuntimeLogger } = {}
 ): OpenClawBedrockBridge | null {
   if (env.OPENCLAW_BRIDGE_KIND !== "bedrock") {
     return null;
@@ -558,7 +635,8 @@ export function createOpenClawBedrockBridgeFromEnv(
     maxTokens: parsePositiveInt(env.AWS_BEDROCK_MAX_TOKENS) ?? defaultMaxTokens,
     temperature: parseTemperature(env.AWS_BEDROCK_TEMPERATURE) ?? defaultTemperature,
     maxToolIterations: parsePositiveInt(env.OPENCLAW_TOOL_MAX_ITERATIONS) ?? defaultMaxToolIterations,
-    env
+    env,
+    logger: options.logger
   });
 }
 

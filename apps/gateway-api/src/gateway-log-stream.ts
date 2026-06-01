@@ -331,6 +331,10 @@ export function gatewayLogEventFromLine(line: string, now: Date): Extract<Gatewa
 }
 
 export function inferGatewayLogLevel(line: string): GatewayLogLevel {
+  const structured = /\[(info|warn|error)\]/i.exec(line);
+  if (structured?.[1]) {
+    return structured[1].toLowerCase() as GatewayLogLevel;
+  }
   if (/\b(error|exception|failed|failure|fatal|uncaught)\b/i.test(line)) {
     return "error";
   }

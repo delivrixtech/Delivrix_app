@@ -22,6 +22,8 @@ test("gateway log stream infers and filters levels monotonically", () => {
   assert.equal(inferGatewayLogLevel("gateway-api listening on http://127.0.0.1:3000"), "info");
   assert.equal(inferGatewayLogLevel("[gateway] WARN: dependency degraded"), "warn");
   assert.equal(inferGatewayLogLevel("OpenClaw bridge failed with error"), "error");
+  assert.equal(inferGatewayLogLevel("2026-06-01T14:00:00.000Z [info] event=oc.step_failed handled"), "info");
+  assert.equal(inferGatewayLogLevel("2026-06-01T14:00:00.000Z [error] event=oc.step_failed handled"), "error");
 
   assert.equal(shouldEmitGatewayLogLevel("warn", "info"), true);
   assert.equal(shouldEmitGatewayLogLevel("info", "warn"), false);
