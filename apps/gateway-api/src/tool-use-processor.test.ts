@@ -118,6 +118,69 @@ test("createHttpToolUseProcessor accepts nested gateway kill-switch payload", as
   ]);
 });
 
+test("createHttpToolUseProcessor invokes read-only DNS wait endpoint directly", async () => {
+  const calls: Array<{ url: string; body?: unknown }> = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    fetchImpl: async (url, init) => {
+      calls.push({
+        url: String(url),
+        body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined
+      });
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).endsWith("/v1/skills/wait-for-dns-propagation/read-only")) {
+        assert.equal(init?.method, "POST");
+        return jsonResponse({
+          ok: false,
+          attempts: 1,
+          lastSeen: "(nxdomain)",
+          durationMs: 10,
+          error: "domain_nxdomain",
+          eventId: "audit-dns-1"
+        });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-http-dns",
+    toolName: "wait_for_dns_propagation",
+    toolInput: {
+      domain: "delivrix.test",
+      expectedRecord: { type: "A", value: "203.0.113.10" },
+      maxWaitMs: 30_000,
+      pollIntervalMs: 30_000
+    },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected HTTP read-only DNS success");
+  assert.deepEqual(result.result, {
+    ok: false,
+    attempts: 1,
+    lastSeen: "(nxdomain)",
+    durationMs: 10,
+    error: "domain_nxdomain",
+    eventId: "audit-dns-1"
+  });
+  assert.deepEqual(calls.map((call) => call.url), [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/skills/wait-for-dns-propagation/read-only"
+  ]);
+  assert.deepEqual(calls[1]?.body, {
+    domain: "delivrix.test",
+    expectedRecord: { type: "A", value: "203.0.113.10" },
+    maxWaitMs: 30_000,
+    pollIntervalMs: 30_000,
+    actorId: "agent:main:operator"
+  });
+});
+
 test("processToolUse fails read-only suggest_safe_domain when invoker is missing", async () => {
   const result = await processToolUse({
     toolUseId: "toolu-suggest-missing",
@@ -216,8 +279,8 @@ test("processToolUse maps operator rejection and approval timeout", async () => 
   assert.equal(timeout.timeoutMs, 10);
 });
 
-test("processToolUse extends wait_for_dns_propagation timeout from DNS maxWaitMs", async () => {
-  let observedTimeoutMs = 0;
+test("processToolUse invokes read-only wait_for_dns_propagation without proposal wait", async () => {
+  const calls: unknown[] = [];
   const result = await processToolUse({
     toolUseId: "toolu-dns-wait",
     toolName: "wait_for_dns_propagation",
@@ -231,15 +294,14 @@ test("processToolUse extends wait_for_dns_propagation timeout from DNS maxWaitMs
     env: enabledEnv(),
     deps: {
       async submitProposalFromToolUse() {
-        return { proposalId: "proposal-dns", requiresApproval: true };
+        assert.fail("wait_for_dns_propagation must not submit an ApprovalGate proposal");
       },
-      async waitForProposalDecision(input) {
-        observedTimeoutMs = input.timeoutMs;
-        return {
-          status: "approval_timeout",
-          proposalId: input.proposalId,
-          timeoutMs: input.timeoutMs
-        };
+      async waitForProposalDecision() {
+        assert.fail("wait_for_dns_propagation must not wait for ApprovalGate");
+      },
+      async invokeReadOnlyTool(input) {
+        calls.push({ toolName: input.toolName, params: input.params });
+        return { ok: true, attempts: 1, lastSeen: "ns-1.awsdns-01.com", durationMs: 25 };
       },
       async readKillSwitch() {
         return { enabled: false };
@@ -247,12 +309,22 @@ test("processToolUse extends wait_for_dns_propagation timeout from DNS maxWaitMs
     }
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(observedTimeoutMs, 1_980_000);
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected read-only DNS success");
+  assert.equal(result.proposalId, "read_only:toolu-dns-wait");
+  assert.deepEqual(result.result, { ok: true, attempts: 1, lastSeen: "ns-1.awsdns-01.com", durationMs: 25 });
+  assert.deepEqual(calls, [{
+    toolName: "wait_for_dns_propagation",
+    params: {
+      domain: "delivrix.test",
+      expectedRecord: { type: "NS", value: "contains:awsdns" },
+      maxWaitMs: 1_800_000,
+      pollIntervalMs: 60_000
+    }
+  }]);
 });
 
-test("processToolUse honors explicit timeout override from orchestrator", async () => {
-  let observedTimeoutMs = 0;
+test("processToolUse returns negative DNS propagation evidence without ApprovalGate timeout", async () => {
   const result = await processToolUse({
     toolUseId: "toolu-dns-wait-override",
     toolName: "wait_for_dns_propagation",
@@ -267,14 +339,18 @@ test("processToolUse honors explicit timeout override from orchestrator", async 
     env: enabledEnv(),
     deps: {
       async submitProposalFromToolUse() {
-        return { proposalId: "proposal-dns", requiresApproval: true };
+        assert.fail("wait_for_dns_propagation must not submit an ApprovalGate proposal");
       },
-      async waitForProposalDecision(input) {
-        observedTimeoutMs = input.timeoutMs;
+      async waitForProposalDecision() {
+        assert.fail("wait_for_dns_propagation must not wait for ApprovalGate");
+      },
+      async invokeReadOnlyTool() {
         return {
-          status: "approval_timeout",
-          proposalId: input.proposalId,
-          timeoutMs: input.timeoutMs
+          ok: false,
+          attempts: 2,
+          lastSeen: "(nxdomain)",
+          durationMs: 30_000,
+          error: "domain_nxdomain"
         };
       },
       async readKillSwitch() {
@@ -283,8 +359,15 @@ test("processToolUse honors explicit timeout override from orchestrator", async 
     }
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(observedTimeoutMs, 900_000);
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected read-only DNS transport success");
+  assert.deepEqual(result.result, {
+    ok: false,
+    attempts: 2,
+    lastSeen: "(nxdomain)",
+    durationMs: 30_000,
+    error: "domain_nxdomain"
+  });
 });
 
 test("buildProposalPayloadFromToolUse produces HMAC-submittable proposal envelope", () => {

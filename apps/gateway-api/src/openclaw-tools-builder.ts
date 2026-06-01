@@ -156,7 +156,7 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       name: "wait_for_dns_propagation",
       description: [
         "Espera propagación DNS para registros A, NS, MX o TXT antes de continuar una operación SMTP.",
-        "No muta infraestructura, pero dentro de flujos supervisados mantiene ApprovalGate, audit chain y kill switch para preservar trazabilidad."
+        "Lectura auditada de bajo riesgo: no muta infraestructura, no compra recursos y no requiere ApprovalGate; si no propaga, reporta el blocker exacto."
       ].join(" "),
       input_schema: {
         type: "object",
