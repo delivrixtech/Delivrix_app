@@ -253,7 +253,15 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   });
 
   assert.equal(payloads.length, 2);
-  assert.equal((payloads[0].tools as unknown[]).length, 11);
+  assert.equal((payloads[0].tools as unknown[]).length, 13);
+  assert.equal(
+    (payloads[0].tools as Array<{ name: string }>).some((tool) => tool.name === "read_episodic_scratch"),
+    true
+  );
+  assert.equal(
+    (payloads[0].tools as Array<{ name: string }>).some((tool) => tool.name === "compact_intent"),
+    true
+  );
   assert.deepEqual(toolCalls, [{
     toolUseId: "toolu-1",
     toolName: "register_domain_route53",

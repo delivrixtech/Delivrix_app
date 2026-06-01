@@ -298,6 +298,35 @@ test("configureCompleteSmtp keeps all real actions behind approval submissions",
   assert.deepEqual(ctx.approvals.map((entry) => entry.step), [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 14]);
 });
 
+test("configureCompleteSmtp compacts completed run into episodic memory", async () => {
+  const ctx = createDeps({ compactIntent: true });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.compactions.length, 1);
+  assert.equal(ctx.compactions[0].intentId, "run-1");
+  assert.equal(ctx.compactions[0].finalStatus, "completed");
+  assert.equal(ctx.compactions[0].steps.length, 14);
+  assert.equal(ctx.compactions[0].steps.every((step) => /^[a-f0-9]{64}$/.test(step.inputHash)), true);
+});
+
+test("configureCompleteSmtp compacts failed step with failure evidence", async () => {
+  const ctx = createDeps({
+    compactIntent: true,
+    decisions: {
+      3: { status: "approval_timeout", proposalId: "p-3", timeoutMs: 10 }
+    }
+  });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(ctx.compactions.length, 1);
+  const failed = ctx.compactions[0].steps.find((step) => step.step === 3);
+  assert.equal(ctx.compactions[0].finalStatus, "failed");
+  assert.equal(failed?.outcome, "timeout");
+  assert.equal(failed?.proposalId, "p-3");
+});
+
 function validInput() {
   return {
     brand: "delivrix",
@@ -318,6 +347,7 @@ function createDeps(options: {
   auditOk?: boolean;
   env?: Record<string, string | undefined>;
   canvasEmitFails?: boolean;
+  compactIntent?: boolean;
 } = {}): {
   deps: ConfigureCompleteSmtpDeps;
   approvals: ApprovalStepInput[];
@@ -325,6 +355,11 @@ function createDeps(options: {
   rollbacks: Array<{ skill: string; params: Record<string, unknown> }>;
   auditEvents: Array<{ action: string; metadata?: unknown }>;
   canvasEvents: Array<Record<string, unknown> & { action?: string }>;
+  compactions: Array<{
+    intentId: string;
+    finalStatus: string;
+    steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string }>;
+  }>;
   verifyCount: number;
 } {
   const approvals: ApprovalStepInput[] = [];
@@ -332,6 +367,11 @@ function createDeps(options: {
   const rollbacks: Array<{ skill: string; params: Record<string, unknown> }> = [];
   const auditEvents: Array<{ action: string; metadata?: unknown }> = [];
   const canvasEvents: Array<Record<string, unknown> & { action?: string }> = [];
+  const compactions: Array<{
+    intentId: string;
+    finalStatus: string;
+    steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string }>;
+  }> = [];
   let verifyCount = 0;
 
   const ctx = {
@@ -383,6 +423,16 @@ function createDeps(options: {
           return event;
         }
       },
+      ...(options.compactIntent ? {
+        async compactIntent(input: {
+          intentId: string;
+          finalStatus: string;
+          steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string }>;
+        }) {
+          compactions.push(input);
+          return { entriesWritten: input.steps.length };
+        }
+      } : {}),
       env: options.env ?? {},
       now: () => new Date("2026-05-31T12:00:00.000Z"),
       randomId: () => "run-1"
@@ -392,6 +442,7 @@ function createDeps(options: {
     rollbacks,
     auditEvents,
     canvasEvents,
+    compactions,
     get verifyCount() {
       return verifyCount;
     }
