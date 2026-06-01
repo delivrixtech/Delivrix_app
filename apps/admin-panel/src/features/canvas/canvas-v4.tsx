@@ -1127,6 +1127,11 @@ function ProposalCard({
 
 function ChatInput() {
   const [draft, setDraft] = useState("");
+  const [paramsOpen, setParamsOpen] = useState(false);
+  const [promptMode, setPromptMode] = useState<PromptMode>("chat");
+  const [skillHint, setSkillHint] = useState<PromptSkillHint>("auto");
+  const [executionScope, setExecutionScope] = useState<PromptExecutionScope>("read_only");
+  const [timeBudget, setTimeBudget] = useState<PromptTimeBudget>("30");
   const state = useChatStream(chatClient);
   const { toast } = useToast();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1162,7 +1167,30 @@ function ChatInput() {
     const content = draft.trim();
     if (!content) return;
     setDraft("");
-    await chatClient.sendMessage(content);
+    await chatClient.sendMessage(buildPromptWithOperatorParams(content, {
+      mode: promptMode,
+      skill: skillHint,
+      scope: executionScope,
+      timeBudgetMinutes: timeBudget
+    }));
+  }
+
+  async function handleInterrupt() {
+    if (!isAgentBusy) return;
+    try {
+      const sent = await chatClient.interruptActive();
+      if (sent) {
+        toast.info("Interrupción enviada", {
+          description: "OpenClaw recibió la señal del operador y el turno activo queda cortado.",
+          duration: 3000
+        });
+      }
+    } catch (error) {
+      toast.error("No se pudo interrumpir", {
+        description: error instanceof Error ? error.message : "Error desconocido",
+        duration: 4000
+      });
+    }
   }
 
   function handleKey(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -1174,6 +1202,13 @@ function ChatInput() {
   }
 
   const offline = state.connection !== "connected";
+  const isAgentBusy = state.streaming !== null || state.queuedCount > 0 || state.interrupting;
+  const promptSummary = [
+    promptModeCopy[promptMode],
+    skillHint === "auto" ? "skill auto" : skillHint,
+    executionScopeCopy[executionScope],
+    `${timeBudget}m`
+  ].join(" · ");
 
   return (
     <form
@@ -1196,14 +1231,99 @@ function ChatInput() {
           border: "1px solid var(--color-border-strong)"
         }}
       >
+        <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => setParamsOpen((current) => !current)}
+            className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+            style={{
+              gap: 6,
+              padding: "5px 8px",
+              borderRadius: 7,
+              border: "1px solid var(--color-border)",
+              background: paramsOpen ? "var(--color-surface-raised)" : "var(--color-surface-sunken)",
+              color: "var(--color-text-primary)",
+              cursor: "pointer",
+              fontSize: 11,
+              fontWeight: 600
+            }}
+          >
+            <Settings2 size={12} strokeWidth={1.75} />
+            Parámetros
+          </button>
+          <span
+            className="font-[family-name:var(--font-mono)]"
+            style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
+          >
+            {promptSummary}
+          </span>
+          <span className="flex-1" />
+          {isAgentBusy ? (
+            <button
+              type="button"
+              onClick={handleInterrupt}
+              disabled={state.interrupting}
+              className="inline-flex items-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--color-critical-soft)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+              style={{
+                gap: 6,
+                padding: "5px 9px",
+                borderRadius: 7,
+                border: "1px solid var(--color-critical-border)",
+                background: "var(--color-critical-soft)",
+                color: "var(--color-critical-fg)",
+                cursor: state.interrupting ? "default" : "pointer",
+                fontSize: 11,
+                fontWeight: 700
+              }}
+              aria-label="Interrumpir turno activo de OpenClaw"
+            >
+              <Pause size={12} strokeWidth={2} />
+              {state.interrupting ? "Interrumpiendo" : "Interrumpir"}
+            </button>
+          ) : null}
+        </div>
+        {paramsOpen ? (
+          <div
+            className="grid"
+            style={{
+              gap: 8,
+              gridTemplateColumns: "repeat(auto-fit, minmax(128px, 1fr))"
+            }}
+          >
+            <PromptSelect
+              label="Modo"
+              value={promptMode}
+              options={promptModeOptions}
+              onChange={(value) => setPromptMode(value as PromptMode)}
+            />
+            <PromptSelect
+              label="Skill"
+              value={skillHint}
+              options={skillHintOptions}
+              onChange={(value) => setSkillHint(value as PromptSkillHint)}
+            />
+            <PromptSelect
+              label="Alcance"
+              value={executionScope}
+              options={executionScopeOptions}
+              onChange={(value) => setExecutionScope(value as PromptExecutionScope)}
+            />
+            <PromptSelect
+              label="Budget"
+              value={timeBudget}
+              options={timeBudgetOptions}
+              onChange={(value) => setTimeBudget(value as PromptTimeBudget)}
+            />
+          </div>
+        ) : null}
         <textarea
           ref={textareaRef}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKey}
           rows={1}
-          maxLength={1200}
-          placeholder="Pregunta a OpenClaw, pide evidencia o usa / para skills…"
+          maxLength={6000}
+          placeholder="Prompt para OpenClaw, evidencia, skill o instrucción operativa…"
           className="resize-none bg-transparent outline-none placeholder:text-[var(--color-text-tertiary)]"
           style={{
             fontFamily: "var(--font-body)",
@@ -1293,11 +1413,135 @@ function ChatInput() {
           className="font-[family-name:var(--font-mono)]"
           style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
         >
-          {draft.length}/1200 · ⌘ Enter para enviar
+          {draft.length}/6000 · ⌘ Enter para enviar
         </span>
       </div>
     </form>
   );
+}
+
+type PromptMode = "chat" | "plan" | "execute" | "evidence";
+type PromptSkillHint =
+  | "auto"
+  | "configure_complete_smtp"
+  | "suggest_safe_domain"
+  | "wait_for_dns_propagation"
+  | "bind_webdock_main_domain"
+  | "send_real_email";
+type PromptExecutionScope = "read_only" | "dry_run" | "supervised_local_state";
+type PromptTimeBudget = "15" | "30" | "60" | "120";
+
+interface PromptSelectOption {
+  value: string;
+  label: string;
+}
+
+const promptModeCopy: Record<PromptMode, string> = {
+  chat: "consulta",
+  plan: "plan",
+  execute: "ejecutar",
+  evidence: "evidencia"
+};
+
+const executionScopeCopy: Record<PromptExecutionScope, string> = {
+  read_only: "read-only",
+  dry_run: "dry-run",
+  supervised_local_state: "supervisado"
+};
+
+const promptModeOptions: PromptSelectOption[] = [
+  { value: "chat", label: "Consulta" },
+  { value: "plan", label: "Plan" },
+  { value: "execute", label: "Ejecutar" },
+  { value: "evidence", label: "Evidencia" }
+];
+
+const skillHintOptions: PromptSelectOption[] = [
+  { value: "auto", label: "Auto" },
+  { value: "configure_complete_smtp", label: "SMTP completo" },
+  { value: "suggest_safe_domain", label: "Dominio seguro" },
+  { value: "wait_for_dns_propagation", label: "Esperar DNS" },
+  { value: "bind_webdock_main_domain", label: "Bind Webdock" },
+  { value: "send_real_email", label: "Email real" }
+];
+
+const executionScopeOptions: PromptSelectOption[] = [
+  { value: "read_only", label: "Read-only" },
+  { value: "dry_run", label: "Dry-run" },
+  { value: "supervised_local_state", label: "Supervisado" }
+];
+
+const timeBudgetOptions: PromptSelectOption[] = [
+  { value: "15", label: "15 min" },
+  { value: "30", label: "30 min" },
+  { value: "60", label: "60 min" },
+  { value: "120", label: "120 min" }
+];
+
+function PromptSelect({
+  label,
+  value,
+  options,
+  onChange
+}: {
+  label: string;
+  value: string;
+  options: PromptSelectOption[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="flex flex-col" style={{ gap: 4 }}>
+      <span
+        className="font-[family-name:var(--font-mono)] uppercase tracking-[0.14em]"
+        style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}
+      >
+        {label}
+      </span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+        style={{
+          height: 30,
+          borderRadius: 7,
+          border: "1px solid var(--color-border)",
+          background: "var(--color-surface-sunken)",
+          color: "var(--color-text-primary)",
+          padding: "0 8px",
+          fontSize: 12,
+          fontWeight: 600
+        }}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function buildPromptWithOperatorParams(
+  content: string,
+  params: {
+    mode: PromptMode;
+    skill: PromptSkillHint;
+    scope: PromptExecutionScope;
+    timeBudgetMinutes: PromptTimeBudget;
+  }
+): string {
+  return [
+    "<openclaw_operator_params>",
+    `mode: ${params.mode}`,
+    `skill_hint: ${params.skill}`,
+    `execution_scope: ${params.scope}`,
+    `time_budget_minutes: ${params.timeBudgetMinutes}`,
+    "approval_contract: 1 firma operador, dry-run previo, audit SHA-256, rollback si aplica",
+    "</openclaw_operator_params>",
+    "",
+    content
+  ].join("\n");
 }
 
 /* ============================================================
