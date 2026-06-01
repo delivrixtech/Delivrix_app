@@ -51,12 +51,12 @@ const OnboardingSection = lazy(async () => ({ default: (await import("../feature
 const CanvasV4 = lazy(async () => ({ default: (await import("../features/canvas/canvas-v4.tsx")).CanvasV4 }));
 const HardwareSection = lazy(async () => ({ default: (await import("../features/hardware/index.tsx")).HardwareSection }));
 const CollectorSection = lazy(async () => ({ default: (await import("../features/collector/index.tsx")).CollectorSection }));
-const ClustersSection = lazy(async () => ({ default: (await import("../features/clusters/index.tsx")).ClustersSection }));
+const ClustersSection = lazy(async () => ({ default: (await import("../v5/views/Clusters.tsx")).ClustersV5 }));
 const LearningSection = lazy(async () => ({ default: (await import("../features/learning/index.tsx")).LearningSection }));
 const SafetySection = lazy(async () => ({ default: (await import("../features/safety/index.tsx")).SafetySection }));
-const InfrastructureSection = lazy(async () => ({ default: (await import("../features/infrastructure/index.tsx")).InfrastructureSection }));
-const DomainsSection = lazy(async () => ({ default: (await import("../features/domains/index.tsx")).DomainsSection }));
-const SenderPoolSection = lazy(async () => ({ default: (await import("../features/sender-pool/index.tsx")).SenderPoolSection }));
+const InfrastructureSection = lazy(async () => ({ default: (await import("../v5/views/Infrastructure.tsx")).InfrastructureV5 }));
+const DomainsSection = lazy(async () => ({ default: (await import("../v5/views/Domains.tsx")).DomainsV5 }));
+const SenderPoolSection = lazy(async () => ({ default: (await import("../v5/views/SenderPool.tsx")).SenderPoolV5 }));
 const ChatWidget = lazy(async () => ({ default: (await import("../features/chat/ChatWidget.tsx")).ChatWidget }));
 
 function readInitialSection(): SectionId {
