@@ -131,11 +131,9 @@ test("2. Botón 'Firmar y ejecutar' deshabilitado inicial (timer > 0)", async ()
   // Caption del timer visible
   assert.match(markup, /Botón habilita en 5s/);
   // Botón sign disabled
-  assert.match(
-    markup,
-    /data-testid="approval-gate-sign"[^>]*disabled/,
-    "el botón firmar debe estar disabled mientras corre el timer"
-  );
+  const signBtnMatch = markup.match(/<button[^>]*data-testid="approval-gate-sign"[^>]*>/);
+  assert.ok(signBtnMatch, "debe existir el botón firmar");
+  assert.match(signBtnMatch[0], /\sdisabled(?:=|\s|>)/, "el botón firmar debe estar disabled mientras corre el timer");
   assert.match(markup, /Firmar y ejecutar/);
 });
 
@@ -155,7 +153,7 @@ test("3. Con minReadSeconds=0 y gates ok el botón firmar NO está disabled", as
   assert.ok(signBtnMatch, "debe existir el botón firmar");
   assert.doesNotMatch(
     signBtnMatch[0],
-    /disabled/,
+    /\sdisabled(?:=|\s|>)/,
     "con timer=0 y gates ok el botón firmar no puede estar disabled"
   );
 });
