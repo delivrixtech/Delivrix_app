@@ -54,6 +54,7 @@ import {
   getJson,
   type AuditEvent,
   type AuditEventsPayload,
+  type HealthPayload,
   type OpenClawCanvasPayload
 } from "../../shared/api/client.ts";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
@@ -151,13 +152,14 @@ export function CanvasV4() {
 
   const chatState = useChatStream(chatClient);
   const { actions, lastUpdateAt, source, errorMessage } = useAgentActions(3_000);
+  const runtimeFlags = useRuntimeFlags(3_000);
 
   return (
     <div
       className="flex flex-col"
       style={{ height: "100%", minHeight: 0, background: "var(--color-bg)" }}
     >
-      <CanvasTopbar connection={chatState.connection} lastUpdateAt={lastUpdateAt} />
+      <CanvasTopbar connection={chatState.connection} lastUpdateAt={lastUpdateAt} runtimeFlags={runtimeFlags.flags} />
       <div className="flex flex-1 min-h-0" style={{ borderTop: "1px solid var(--color-border)" }}>
         <ChatPanel />
         <AgentViewport actions={actions} source={source} errorMessage={errorMessage} />
@@ -247,6 +249,46 @@ function useAgentActions(pollMs: number): {
   }, [pollMs]);
 
   return { actions, lastUpdateAt, source, errorMessage };
+}
+
+function useRuntimeFlags(pollMs: number): {
+  flags: Record<string, string | undefined>;
+  lastUpdateAt: number;
+} {
+  const [flags, setFlags] = useState<Record<string, string | undefined>>({});
+  const [lastUpdateAt, setLastUpdateAt] = useState<number>(Date.now());
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+
+    async function tick() {
+      try {
+        const payload = await getJson<HealthPayload>(READ_ENDPOINTS.health);
+        if (!cancelled) {
+          setFlags(payload.runtimeFlags ?? {});
+          setLastUpdateAt(Date.now());
+        }
+      } catch {
+        if (!cancelled) {
+          setFlags({});
+          setLastUpdateAt(Date.now());
+        }
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(tick, pollMs);
+        }
+      }
+    }
+
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [pollMs]);
+
+  return { flags, lastUpdateAt };
 }
 
 function auditToAction(ev: AuditEvent): Action | null {
@@ -497,10 +539,12 @@ function highlightJson(line: string): React.ReactNode {
 
 function CanvasTopbar({
   connection,
-  lastUpdateAt
+  lastUpdateAt,
+  runtimeFlags
 }: {
   connection: ChatConnection;
   lastUpdateAt: number;
+  runtimeFlags: Record<string, string | undefined>;
 }) {
   const [, force] = useState(0);
   useEffect(() => {
@@ -553,10 +597,40 @@ function CanvasTopbar({
       </div>
 
       <span className="flex-1" />
+      <RuntimeFlagPill label="Webdock create" value={runtimeFlags.WEBDOCK_SERVERS_ENABLE_CREATE} />
 
       {/* ThinkingChip reactivo se renderiza dentro del componente vía useChatStream */}
       <ThinkingChip />
     </header>
+  );
+}
+
+function RuntimeFlagPill({ label, value }: { label: string; value?: string }) {
+  const enabled = value === "true" || value === "1";
+  const known = value !== undefined;
+  const tone = enabled
+    ? { bg: "var(--color-success-soft)", fg: "var(--color-success)", text: "true" }
+    : known
+      ? { bg: "var(--color-warning-soft)", fg: "var(--color-warning)", text: String(value) }
+      : { bg: "var(--color-surface-muted)", fg: "var(--color-text-tertiary)", text: "sin dato" };
+  return (
+    <span
+      className="hidden md:inline-flex items-center font-[family-name:var(--font-mono)]"
+      title={`${label}: ${tone.text}`}
+      style={{
+        gap: 6,
+        padding: "5px 8px",
+        borderRadius: 8,
+        background: tone.bg,
+        color: tone.fg,
+        boxShadow: "0 0 0 1px var(--color-border)",
+        fontSize: 10,
+        lineHeight: 1
+      }}
+    >
+      <span style={{ color: "var(--color-text-secondary)" }}>{label}</span>
+      <strong style={{ color: tone.fg }}>{tone.text}</strong>
+    </span>
   );
 }
 

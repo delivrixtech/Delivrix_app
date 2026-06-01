@@ -135,6 +135,7 @@ import {
   type ChatInterruptRequest,
   type ChatSendRequest
 } from "./openclaw-chat.ts";
+import { createRuntimeEnvReloader } from "./runtime-env.ts";
 import {
   checkGatewayDependencies,
   dependencyStatus,
@@ -277,6 +278,12 @@ import {
 
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
+const runtimeEnvReloader = createRuntimeEnvReloader({
+  env: process.env,
+  envFilePath: ".env.local",
+  onError: () => undefined
+});
+runtimeEnvReloader.start();
 
 const auditLog = new LocalFileAuditLog();
 const auditChainStore = createAuditChainStoreFromEnv();
@@ -700,9 +707,11 @@ setInterval(() => cleanupApprovalNonces(), 60_000).unref();
 const server = createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/health") {
+      await runtimeEnvReloader.refreshNow();
       const killSwitch = await killSwitchStore.get();
       const operatingNorth = getOperatingNorthSnapshot();
       const dependencies = await checkGatewayDependencies();
+      const runtimeFlags = runtimeEnvReloader.snapshot();
 
       return json(response, 200, {
         status: "ok",
@@ -719,6 +728,7 @@ const server = createServer(async (request, response) => {
         provisioningRuns: "local-file",
         ipReputationReports: "local-file",
         backupSimulations: "local-file",
+        runtimeFlags,
         killSwitch: {
           enabled: killSwitch.enabled,
           updatedAt: killSwitch.updatedAt,
@@ -768,6 +778,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && request.url === "/v1/openclaw/chat/send") {
+      await runtimeEnvReloader.refreshNow();
       const body = await readJson<ChatSendRequest>(request);
       const gatewaySkillResult = await maybeHandleOpenClawDomainChatSkill({
         body,
@@ -1003,6 +1014,7 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && request.url === "/v1/webdock/servers/create") {
       try {
+        await runtimeEnvReloader.refreshNow();
         return await handleWebdockServerCreateHttp({
           request,
           response,
@@ -3145,6 +3157,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST") {
       const signMatch = requestUrl(request).pathname.match(/^\/v1\/openclaw\/proposals\/([^/]+)\/sign$/);
       if (signMatch) {
+        await runtimeEnvReloader.refreshNow();
         return await handleProposalSign({
           request,
           response,
@@ -3164,6 +3177,7 @@ const server = createServer(async (request, response) => {
 
       const rejectMatch = requestUrl(request).pathname.match(/^\/v1\/openclaw\/proposals\/([^/]+)\/reject$/);
       if (rejectMatch) {
+        await runtimeEnvReloader.refreshNow();
         return await handleProposalReject({
           request,
           response,
