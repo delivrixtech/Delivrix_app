@@ -72,6 +72,8 @@ process.exit(response.ok ? 0 : 1);
 async function runPreflight() {
   const tools = buildToolsForOpenClaw(process.env).map((tool) => tool.name);
   const missingTools = requiredTools.filter((tool) => !tools.includes(tool));
+  const launchInput = readSmokeInput();
+  const launchValidation = validateSmokeInput(launchInput);
   const [health, canvas, verify, anchor] = await Promise.all([
     getJson(`${gatewayBase}/health`),
     getJson(`${gatewayBase}/v1/canvas/live/state`),
@@ -111,6 +113,11 @@ async function runPreflight() {
     audit: {
       verify: verify.body,
       anchor: anchor.body
+    },
+    launchReadiness: {
+      readyForSend: launchValidation.ok,
+      blockers: launchValidation.blockers,
+      sanitizedInput: launchValidation.sanitizedInput
     },
     blockers: [
       ...missingTools.map((tool) => `missing_tool:${tool}`),
