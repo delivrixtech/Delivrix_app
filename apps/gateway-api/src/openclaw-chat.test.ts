@@ -601,6 +601,51 @@ test("OpenClaw chat stream materializes orphan assistant response as report arti
   assert.equal(artifact?.editable, false);
 });
 
+test("OpenClaw chat interrupt aborts bridge, audits operator signal, and broadcasts stop event", async () => {
+  const audit = new MemoryAudit();
+  const canvas = new MemoryCanvas();
+  const client = new MemoryPanelClient();
+  const interrupted: string[] = [];
+  const bridge: OpenClawChatSshBridge = {
+    async sendMessage(input) {
+      return { msgId: String(input.msgId), queued: true };
+    },
+    async interrupt(msgId) {
+      interrupted.push(msgId);
+      return true;
+    },
+    async streamHistory() {
+      await new Promise(() => undefined);
+    }
+  };
+  const proxy = new OpenClawChatProxy(audit, {
+    bridgeKind: "bedrock",
+    sshBridge: bridge,
+    canvasLiveEvents: canvas,
+    now: () => new Date("2026-06-01T12:00:00.000Z")
+  });
+  proxy.addPanelClient(client);
+
+  await proxy.sendOperatorMessage({
+    msgId: "interrupt-openclaw-1",
+    message: "configure_complete_smtp ahora"
+  });
+  const response = await proxy.interruptOperatorMessage({
+    msgId: "interrupt-openclaw-1"
+  });
+
+  assert.deepEqual(response, {
+    msgId: "interrupt-openclaw-1",
+    interrupted: true,
+    bridgeInterrupted: true
+  });
+  assert.deepEqual(interrupted, ["interrupt-openclaw-1"]);
+  assert.equal(client.events.at(-1)?.type, "ASSISTANT_INTERRUPTED");
+  assert.equal(audit.events.at(-1)?.action, "oc.chat.operator_interrupt");
+  assert.equal(audit.events.at(-1)?.metadata.bridgeInterrupted, true);
+  assert.equal(canvas.events.some((event) => event.type === "oc.task.update" && event.status === "failed"), true);
+});
+
 test("OpenClaw chat skips canvas extraction for messages already materialized by a gateway skill", async () => {
   const audit = new MemoryAudit();
   const canvas = new MemoryCanvas();
@@ -649,6 +694,18 @@ test("OpenClaw chat event parser supports stream delta and backoff schedule", ()
     type: "ASSISTANT_BLOCKED",
     msgId: "m1",
     reason: "ssh_history_timeout"
+  });
+
+  assert.deepEqual(normalizeAgentChatEvent({
+    type: "ASSISTANT_INTERRUPTED",
+    msgId: "m1",
+    reason: "operator_interrupt",
+    ts: "2026-06-01T12:00:00.000Z"
+  }), {
+    type: "ASSISTANT_INTERRUPTED",
+    msgId: "m1",
+    reason: "operator_interrupt",
+    ts: "2026-06-01T12:00:00.000Z"
   });
 
   assert.equal(openClawChatReconnectDelayMs(1), 1_000);

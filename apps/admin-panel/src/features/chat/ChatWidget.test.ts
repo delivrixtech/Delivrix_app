@@ -70,7 +70,8 @@ test("ChatWidget renders nothing when closed and full drawer when open", async (
     streaming: null,
     connection: "offline",
     lastError: null,
-    queuedCount: 0
+    queuedCount: 0,
+    interrupting: false
   });
 
   const closed = renderToStaticMarkup(wrapWithTooltipProvider(TooltipProvider, React.createElement(ChatWidget, {
@@ -98,6 +99,7 @@ test("ChatWidget renders messages and streaming state", async () => {
     connection: "connected",
     lastError: null,
     queuedCount: 1,
+    interrupting: false,
     streaming: {
       msgId: "assistant-2",
       deltaSoFar: "Analizando gates"
@@ -141,7 +143,8 @@ test("chat reducer accumulates deltas and finalizes assistant response", async (
     streaming: null,
     connection: "reconnecting",
     lastError: "offline",
-    queuedCount: 0
+    queuedCount: 0,
+    interrupting: false
   };
 
   const withDelta = reduceChatState(base, {
@@ -178,7 +181,8 @@ test("chat reducer renders typing and blocked events instead of blank bubbles", 
     streaming: null,
     connection: "reconnecting",
     lastError: null,
-    queuedCount: 0
+    queuedCount: 0,
+    interrupting: false
   };
 
   const typing = reduceChatState(base, {
@@ -202,6 +206,33 @@ test("chat reducer renders typing and blocked events instead of blank bubbles", 
   assert.match(blocked.messages[0].content, /ssh_history_timeout/);
 });
 
+test("chat reducer clears streaming when operator interrupts OpenClaw", async () => {
+  const { reduceChatState } = await loadChatClientModule();
+  const base: ChatState = {
+    messages: [],
+    streaming: {
+      msgId: "m-stop",
+      deltaSoFar: "Configurando"
+    },
+    connection: "connected",
+    lastError: null,
+    queuedCount: 0,
+    interrupting: true
+  };
+
+  const interrupted = reduceChatState(base, {
+    type: "ASSISTANT_INTERRUPTED",
+    msgId: "m-stop",
+    reason: "operator_interrupt",
+    ts: "2026-05-20T16:06:00.000Z"
+  }, new Date("2026-05-20T16:06:00.000Z"));
+
+  assert.equal(interrupted.streaming, null);
+  assert.equal(interrupted.interrupting, false);
+  assert.equal(interrupted.messages.length, 1);
+  assert.equal(interrupted.messages[0].content, "Interrumpido por el operador.");
+});
+
 test("chat client marks a rejected send as failed and clears the queue", async () => {
   const { ChatClient } = await loadChatClientModule();
   const client = new ChatClient({
@@ -210,7 +241,8 @@ test("chat client marks a rejected send as failed and clears the queue", async (
       messages: [],
       streaming: null,
       lastError: null,
-      queuedCount: 0
+      queuedCount: 0,
+      interrupting: false
     },
     fetchImpl: async () => new Response(JSON.stringify({
       message: "SSH command failed with exit 1."
@@ -240,7 +272,8 @@ test("chat client applies assistant content returned by chat.send ack", async ()
       messages: [],
       streaming: null,
       lastError: null,
-      queuedCount: 0
+      queuedCount: 0,
+      interrupting: false
     },
     fetchImpl: async () => new Response(JSON.stringify({
       msgId: "domain-send-1",
@@ -272,11 +305,51 @@ test("chat client applies assistant content returned by chat.send ack", async ()
   assert.equal(state.lastError, null);
 });
 
+test("chat client posts interrupt for the active streaming message", async () => {
+  const { ChatClient } = await loadChatClientModule();
+  const calls: Array<{ url: string; body: unknown }> = [];
+  const client = new ChatClient({
+    initialState: {
+      connection: "connected",
+      messages: [],
+      streaming: {
+        msgId: "interrupt-1",
+        deltaSoFar: "ejecutando"
+      },
+      lastError: null,
+      queuedCount: 0,
+      interrupting: false
+    },
+    interruptUrl: "/v1/openclaw/chat/interrupt",
+    fetchImpl: async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body ?? "{}")) });
+      return new Response(JSON.stringify({ msgId: "interrupt-1", interrupted: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    },
+    webSocketCtor: undefined,
+    now: () => new Date("2026-05-20T16:20:00.000Z")
+  });
+
+  const interrupted = await client.interruptActive();
+
+  const state = client.getSnapshot();
+  assert.equal(interrupted, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/v1/openclaw/chat/interrupt");
+  assert.deepEqual(calls[0].body, { msgId: "interrupt-1" });
+  assert.equal(state.streaming, null);
+  assert.equal(state.interrupting, false);
+  assert.equal(state.messages.at(-1)?.content, "Interrumpido por el operador.");
+});
+
 function fakeClient(state: ChatState): ChatClientLike {
   return {
     connect: () => undefined,
     disconnect: () => undefined,
     sendMessage: async () => undefined,
+    interruptActive: async () => false,
     getSnapshot: () => state,
     subscribe: () => () => undefined
   };

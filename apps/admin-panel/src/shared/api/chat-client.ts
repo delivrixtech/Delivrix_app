@@ -23,6 +23,7 @@ export interface ChatState {
   connection: ChatConnection;
   lastError: string | null;
   queuedCount: number;
+  interrupting: boolean;
 }
 
 export type ChatStreamEvent =
@@ -37,6 +38,7 @@ export type ChatStreamEvent =
       proposals?: unknown[];
     }
   | { type: "ASSISTANT_BLOCKED"; msgId: string; reason: string }
+  | { type: "ASSISTANT_INTERRUPTED"; msgId: string; reason?: string; ts?: string }
   | { type: "ERROR"; msgId?: string; error: string }
   | { type: "AGENT_OFFLINE" };
 
@@ -44,6 +46,7 @@ export interface ChatClientLike {
   connect(): void;
   disconnect(): void;
   sendMessage(content: string): Promise<void>;
+  interruptActive(): Promise<boolean>;
   getSnapshot(): ChatState;
   subscribe(listener: () => void): () => void;
 }
@@ -58,6 +61,7 @@ interface ChatClientOptions {
   webSocketCtor?: typeof WebSocket;
   streamUrl?: string;
   sendUrl?: string;
+  interruptUrl?: string;
   now?: () => Date;
   idFactory?: () => string;
   reconnectDelay?: (attempt: number) => number;
@@ -80,7 +84,8 @@ const initialState: ChatState = {
   streaming: null,
   connection: "offline",
   lastError: null,
-  queuedCount: 0
+  queuedCount: 0,
+  interrupting: false
 };
 
 export class ChatClient implements ChatClientLike {
@@ -95,6 +100,7 @@ export class ChatClient implements ChatClientLike {
   private readonly fetchImpl: typeof fetch;
   private readonly webSocketCtor: typeof WebSocket | undefined;
   private readonly sendUrl: string;
+  private readonly interruptUrl: string;
   private readonly streamUrl: string;
   private readonly now: () => Date;
   private readonly idFactory: () => string;
@@ -104,6 +110,7 @@ export class ChatClient implements ChatClientLike {
     this.fetchImpl = options.fetchImpl ?? fetch.bind(globalThis);
     this.webSocketCtor = options.webSocketCtor ?? globalThis.WebSocket;
     this.sendUrl = options.sendUrl ?? "/v1/openclaw/chat/send";
+    this.interruptUrl = options.interruptUrl ?? "/v1/openclaw/chat/interrupt";
     this.streamUrl = options.streamUrl ?? resolveChatStreamUrl();
     this.now = options.now ?? (() => new Date());
     this.idFactory = options.idFactory ?? createMessageId;
@@ -189,6 +196,45 @@ export class ChatClient implements ChatClientLike {
 
     if (this.state.connection === "connected") {
       await this.flushQueue();
+    }
+  }
+
+  async interruptActive(): Promise<boolean> {
+    const msgId = this.activeMsgId();
+    if (!msgId || this.state.interrupting) {
+      return false;
+    }
+
+    this.setState({ interrupting: true, lastError: null });
+    try {
+      const response = await this.fetchImpl(this.interruptUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json"
+        },
+        body: JSON.stringify({ msgId })
+      });
+      const payload = await response.json().catch(() => ({})) as Partial<{ message: string; error: string }>;
+      if (!response.ok) {
+        throw new Error(typeof payload.message === "string" ? payload.message : `chat.interrupt failed with ${response.status}`);
+      }
+      this.removeQueued(msgId);
+      this.inFlight.delete(msgId);
+      this.applyStreamEvent({
+        type: "ASSISTANT_INTERRUPTED",
+        msgId,
+        reason: "operator_interrupt",
+        ts: this.now().toISOString()
+      });
+      return true;
+    } catch (error) {
+      this.setState({
+        lastError: error instanceof Error ? error.message : "No se pudo interrumpir OpenClaw."
+      }, false);
+      throw error;
+    } finally {
+      this.setState({ interrupting: false });
     }
   }
 
@@ -279,6 +325,17 @@ export class ChatClient implements ChatClientLike {
     }
   }
 
+  private activeMsgId(): string | null {
+    if (this.state.streaming?.msgId) {
+      return this.state.streaming.msgId;
+    }
+    const inFlight = [...this.inFlight].at(-1);
+    if (inFlight) {
+      return inFlight;
+    }
+    return this.queue.at(0)?.msgId ?? null;
+  }
+
   private scheduleReconnect(): void {
     if (this.reconnectTimer !== null) {
       return;
@@ -365,6 +422,22 @@ export function reduceChatState(state: ChatState, event: ChatStreamEvent, now = 
       content: `No pude completar la respuesta (${event.reason}). Revisa el bridge SSH o vuelve a enviar el mensaje.`,
       timestamp: now.toISOString(),
       status: "failed"
+    });
+  }
+
+  if (event.type === "ASSISTANT_INTERRUPTED") {
+    return addOrUpdateMessage({
+      ...state,
+      connection: "connected",
+      streaming: state.streaming?.msgId === event.msgId ? null : state.streaming,
+      lastError: null,
+      interrupting: false
+    }, {
+      msgId: event.msgId,
+      role: "assistant",
+      content: "Interrumpido por el operador.",
+      timestamp: event.ts ?? now.toISOString(),
+      status: "sent"
     });
   }
 

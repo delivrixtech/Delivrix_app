@@ -38,6 +38,7 @@ export type ChatStreamEvent =
       proposals?: unknown[];
     }
   | { type: "ASSISTANT_BLOCKED"; msgId: string; reason: string }
+  | { type: "ASSISTANT_INTERRUPTED"; msgId: string; reason?: string; ts?: string }
   | { type: "ERROR"; msgId?: string; error: string }
   | { type: "AGENT_OFFLINE" };
 
@@ -46,6 +47,11 @@ export interface ChatSendRequest {
   text?: unknown;
   actor?: unknown;
   msgId?: unknown;
+}
+
+export interface ChatInterruptRequest {
+  msgId?: unknown;
+  reason?: unknown;
 }
 
 export interface ChatSendResponse {
@@ -57,6 +63,12 @@ export interface ChatSendResponse {
     skillsInvoked?: string[];
     durationMs?: number;
   };
+}
+
+export interface ChatInterruptResponse {
+  msgId: string;
+  interrupted: true;
+  bridgeInterrupted: boolean;
 }
 
 interface AuditSink {
@@ -79,6 +91,7 @@ type ChatBridgeKind = "http" | "ssh" | "bedrock";
 
 export interface OpenClawChatSshBridge {
   sendMessage(input: ChatSendRequest): Promise<ChatSendResponse>;
+  interrupt?(msgId: string): Promise<boolean>;
   streamHistory(
     msgId: string,
     callbacks: {
@@ -244,6 +257,51 @@ export class OpenClawChatProxy {
       await this.updateCanvasTaskStatus(msgId, "failed");
       throw error;
     }
+  }
+
+  async interruptOperatorMessage(input: ChatInterruptRequest): Promise<ChatInterruptResponse> {
+    const msgId =
+      typeof input.msgId === "string" && isSafeChatMessageId(input.msgId)
+        ? input.msgId
+        : "";
+    if (!msgId) {
+      throw new ChatProxyError(400, "invalid_interrupt_payload", "msgId is required.");
+    }
+
+    let bridgeInterrupted = false;
+    if (this.sshBridge?.interrupt) {
+      bridgeInterrupted = await this.sshBridge.interrupt(msgId).catch(() => false);
+    }
+
+    await this.updateCanvasTaskStatus(msgId, "failed");
+    await this.auditLog.append({
+      actorType: "operator",
+      actorId: "admin-panel",
+      action: "oc.chat.operator_interrupt",
+      targetType: "openclaw_chat_session",
+      targetId: this.sessionKey,
+      riskLevel: "low",
+      decision: "n/a",
+      metadata: {
+        msgId,
+        sessionKey: this.sessionKey,
+        bridge: this.bridgeKind,
+        bridgeInterrupted,
+        reason: typeof input.reason === "string" ? input.reason : "operator_interrupt"
+      }
+    });
+    this.broadcast({
+      type: "ASSISTANT_INTERRUPTED",
+      msgId,
+      reason: "operator_interrupt",
+      ts: this.now().toISOString()
+    });
+
+    return {
+      msgId,
+      interrupted: true,
+      bridgeInterrupted
+    };
   }
 
   private shouldUseSshBridge(): boolean {
@@ -943,6 +1001,17 @@ export function normalizeAgentChatEvent(raw: unknown): ChatStreamEvent | null {
     };
   }
 
+  if (raw.type === "ASSISTANT_INTERRUPTED") {
+    const msgId = stringValue(raw.msgId);
+    if (!msgId) return null;
+    return {
+      type: "ASSISTANT_INTERRUPTED",
+      msgId,
+      reason: stringValue(raw.reason) ?? "operator_interrupt",
+      ...(typeof raw.ts === "string" ? { ts: raw.ts } : {})
+    };
+  }
+
   if (raw.type === "ASSISTANT_DONE") {
     const msgId = stringValue(raw.msgId);
     if (!msgId) return null;
@@ -1012,6 +1081,29 @@ export async function handleChatSendHttp(
     jsonResponse(response, 500, {
       error: "openclaw_chat_send_internal_error",
       message: error instanceof Error ? error.message : "Unknown chat proxy error."
+    });
+  }
+}
+
+export async function handleChatInterruptHttp(
+  proxy: OpenClawChatProxy,
+  body: ChatInterruptRequest,
+  response: ServerResponse
+): Promise<void> {
+  try {
+    const result = await proxy.interruptOperatorMessage(body);
+    jsonResponse(response, 200, result);
+  } catch (error) {
+    if (error instanceof ChatProxyError) {
+      jsonResponse(response, error.statusCode, {
+        error: error.code,
+        message: error.message
+      });
+      return;
+    }
+    jsonResponse(response, 500, {
+      error: "openclaw_chat_interrupt_internal_error",
+      message: error instanceof Error ? error.message : "Unknown chat interrupt error."
     });
   }
 }

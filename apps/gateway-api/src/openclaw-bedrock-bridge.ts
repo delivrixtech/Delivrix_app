@@ -63,7 +63,7 @@ interface BedrockStreamChunk {
 }
 
 interface BedrockRuntimeClientLike {
-  send(command: InvokeModelWithResponseStreamCommand): Promise<{
+  send(command: InvokeModelWithResponseStreamCommand, options?: { abortSignal?: AbortSignal }): Promise<{
     body?: AsyncIterable<BedrockStreamChunk> | Iterable<BedrockStreamChunk>;
   }>;
 }
@@ -129,6 +129,8 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   private cachedSystemPrompt: string | null = null;
   private readonly conversations = new Map<string, ConversationTurn[]>();
   private readonly pendingResponses = new Map<string, Promise<BedrockInvocationResult>>();
+  private readonly pendingControllers = new Map<string, AbortController>();
+  private readonly interruptedMsgIds = new Set<string>();
 
   constructor(config: OpenClawBedrockBridgeConfig) {
     if (!config.modelId.trim()) {
@@ -189,8 +191,21 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
 
     const turns = [...(this.conversations.get(this.sessionKey) ?? []), { role: "user" as const, content: message }];
     this.conversations.set(this.sessionKey, this.trimConversation(turns));
-    this.pendingResponses.set(msgId, this.invokeBedrock(turns, msgId));
+    const controller = new AbortController();
+    this.pendingControllers.set(msgId, controller);
+    this.interruptedMsgIds.delete(msgId);
+    this.pendingResponses.set(msgId, this.invokeBedrock(turns, msgId, controller.signal));
     return { msgId, queued: true };
+  }
+
+  async interrupt(msgId: string): Promise<boolean> {
+    const controller = this.pendingControllers.get(msgId);
+    const hadPending = this.pendingResponses.has(msgId) || Boolean(controller);
+    this.interruptedMsgIds.add(msgId);
+    controller?.abort();
+    this.pendingControllers.delete(msgId);
+    this.pendingResponses.delete(msgId);
+    return hadPending;
   }
 
   async streamHistory(
@@ -234,14 +249,19 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       });
       const turns = this.conversations.get(this.sessionKey) ?? [];
       this.conversations.set(this.sessionKey, this.trimConversation([...turns, { role: "assistant", content: result.text }]));
-    } catch {
+    } catch (error) {
+      if (this.interruptedMsgIds.has(msgId) || isAbortError(error)) {
+        return;
+      }
       callbacks.onBlocked?.({ type: "ASSISTANT_BLOCKED", msgId, reason: "bedrock_invoke_error" });
     } finally {
       this.pendingResponses.delete(msgId);
+      this.pendingControllers.delete(msgId);
+      this.interruptedMsgIds.delete(msgId);
     }
   }
 
-  private async invokeBedrock(turns: ConversationTurn[], msgId: string): Promise<BedrockInvocationResult> {
+  private async invokeBedrock(turns: ConversationTurn[], msgId: string, signal?: AbortSignal): Promise<BedrockInvocationResult> {
     const startedAt = this.now().getTime();
     const systemBase = await this.loadSystemPrompt();
     const liveContext = await this.fetchLiveContext();
@@ -258,10 +278,12 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     const toolsInvoked: string[] = [];
 
     for (let iteration = 0; iteration < this.maxToolIterations; iteration += 1) {
+      throwIfAborted(signal);
       const response = await this.invokeBedrockOnce({
         messages,
         system,
-        tools
+        tools,
+        signal
       });
       if (response.inputTokens !== undefined) {
         inputTokens += response.inputTokens;
@@ -291,6 +313,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
 
       const toolResults: BedrockContentBlock[] = [];
       for (const toolUse of toolUses) {
+        throwIfAborted(signal);
         toolsInvoked.push(toolUse.name);
         const result = await this.processToolUse({
           toolUseId: toolUse.id,
@@ -325,6 +348,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     messages: BedrockMessage[];
     system: string;
     tools: BedrockToolSpec[];
+    signal?: AbortSignal;
   }): Promise<BedrockParsedResponse> {
     const payload: Record<string, unknown> = {
       anthropic_version: "bedrock-2023-05-31",
@@ -343,7 +367,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       accept: "application/json",
       body: JSON.stringify(payload)
     } satisfies InvokeModelWithResponseStreamCommandInput);
-    const result = await this.client.send(command);
+    const result = await this.client.send(command, { abortSignal: input.signal });
 
     const content = new Map<number, MutableBedrockContentBlock>();
     let currentIndex = 0;
@@ -352,6 +376,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     let stopReason: string | undefined;
 
     for await (const event of toAsyncIterable(result.body ?? [])) {
+      throwIfAborted(input.signal);
       if (!event.chunk?.bytes) continue;
       const parsed = parseJson(new TextDecoder().decode(event.chunk.bytes));
       if (!isRecord(parsed)) continue;
@@ -626,6 +651,22 @@ function parsePositiveInt(value: string | undefined): number | undefined {
 function parseTemperature(value: string | undefined): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : undefined;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new OpenClawBedrockBridgeError("bedrock_invoke_aborted", "Bedrock invocation aborted by operator.");
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  if (error instanceof OpenClawBedrockBridgeError) {
+    return error.code === "bedrock_invoke_aborted";
+  }
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return error.name === "AbortError" || /aborted|abort/i.test(error.message);
 }
 
 function normalizeBaseUrl(value: string): string {

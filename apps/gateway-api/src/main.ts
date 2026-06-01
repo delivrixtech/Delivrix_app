@@ -129,8 +129,10 @@ import {
 import { computeAuditHash, GENESIS_PREV_HASH } from "./audit/hash-chain.ts";
 import { SafetyRealtimeCache } from "./safety-realtime-cache.ts";
 import {
+  handleChatInterruptHttp,
   handleChatSendHttp,
   OpenClawChatProxy,
+  type ChatInterruptRequest,
   type ChatSendRequest
 } from "./openclaw-chat.ts";
 import {
@@ -779,6 +781,11 @@ const server = createServer(async (request, response) => {
         return json(response, 200, gatewaySkillResult);
       }
       return handleChatSendHttp(openClawChatProxy, body, response);
+    }
+
+    if (request.method === "POST" && request.url === "/v1/openclaw/chat/interrupt") {
+      const body = await readJson<ChatInterruptRequest>(request);
+      return handleChatInterruptHttp(openClawChatProxy, body, response);
     }
 
     if (request.method === "GET" && request.url?.startsWith("/v1/canvas/live/state")) {
