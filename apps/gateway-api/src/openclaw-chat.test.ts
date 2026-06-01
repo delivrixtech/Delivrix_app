@@ -34,10 +34,20 @@ class MemoryPanelClient implements OpenClawChatPanelClient {
 
 class MemoryCanvas {
   readonly events: CanvasLiveEvent[] = [];
+  snapshotState: CanvasLiveStateSnapshot | null = null;
 
   async emit(event: CanvasLiveEvent): Promise<CanvasLiveEvent> {
     this.events.push(event);
     return event;
+  }
+
+  async snapshot(): Promise<CanvasLiveStateSnapshot> {
+    return this.snapshotState ?? {
+      schemaVersion: "2026-05-25.canvas-live.v1",
+      generatedAt: new Date("2026-06-01T12:00:00.000Z").toISOString(),
+      tasks: [],
+      artifacts: []
+    };
   }
 }
 
@@ -644,6 +654,46 @@ test("OpenClaw chat interrupt aborts bridge, audits operator signal, and broadca
   assert.equal(audit.events.at(-1)?.action, "oc.chat.operator_interrupt");
   assert.equal(audit.events.at(-1)?.metadata.bridgeInterrupted, true);
   assert.equal(canvas.events.some((event) => event.type === "oc.task.update" && event.status === "failed"), true);
+});
+
+test("OpenClaw chat interrupt closes persisted canvas task after gateway restart", async () => {
+  const audit = new MemoryAudit();
+  const canvas = new MemoryCanvas();
+  canvas.snapshotState = {
+    schemaVersion: "2026-05-25.canvas-live.v1",
+    generatedAt: "2026-06-01T13:00:00.000Z",
+    tasks: [
+      {
+        taskId: "chat-71e7ea5a-20260601123156",
+        title: "OpenClaw, ejecuta configure_complete_smtp",
+        status: "running",
+        createdAt: "2026-06-01T12:31:56.721Z",
+        updatedAt: "2026-06-01T12:31:56.721Z",
+        actorId: "openclaw/openclaw-hostinger-prod"
+      }
+    ],
+    artifacts: []
+  };
+  const proxy = new OpenClawChatProxy(audit, {
+    bridgeKind: "bedrock",
+    sshBridge: null,
+    canvasLiveEvents: canvas,
+    now: () => new Date("2026-06-01T13:00:00.000Z")
+  });
+
+  const response = await proxy.interruptOperatorMessage({
+    msgId: "71e7ea5a-0525-4789-8d74-0c145b2825e6"
+  });
+
+  assert.equal(response.interrupted, true);
+  assert.equal(response.bridgeInterrupted, false);
+  assert.deepEqual(canvas.events.at(-1), {
+    type: "oc.task.update",
+    taskId: "chat-71e7ea5a-20260601123156",
+    status: "failed",
+    updatedAt: "2026-06-01T13:00:00.000Z"
+  });
+  assert.equal(audit.events.at(-1)?.action, "oc.chat.operator_interrupt");
 });
 
 test("OpenClaw chat skips canvas extraction for messages already materialized by a gateway skill", async () => {

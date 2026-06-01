@@ -853,7 +853,9 @@ export class OpenClawChatProxy {
     status: CanvasLiveTaskStatus,
     removePending = true
   ): Promise<void> {
-    const interaction = this.pendingCanvasInteractions.get(msgId);
+    const interaction =
+      this.pendingCanvasInteractions.get(msgId) ??
+      (await this.findPersistedCanvasInteractionForMessage(msgId));
     if (!interaction) {
       return;
     }
@@ -866,6 +868,28 @@ export class OpenClawChatProxy {
     if (removePending) {
       this.pendingCanvasInteractions.delete(msgId);
     }
+  }
+
+  private async findPersistedCanvasInteractionForMessage(msgId: string): Promise<CanvasChatInteraction | null> {
+    const snapshot = await safeCanvasSnapshot(this.canvasLiveEvents);
+    if (!snapshot) {
+      return null;
+    }
+
+    const taskIdPrefix = `chat-${buildCanvasTaskIdPrefix(msgId)}-`;
+    const task = [...snapshot.tasks]
+      .reverse()
+      .find((candidate) => candidate.taskId.startsWith(taskIdPrefix));
+    if (!task) {
+      return null;
+    }
+
+    return {
+      msgId,
+      taskId: task.taskId,
+      title: task.title,
+      operatorMessage: ""
+    };
   }
 
   private async emitCanvasEvent(event: CanvasLiveEvent): Promise<void> {
@@ -1877,10 +1901,14 @@ function extractDomainFromText(text: string): string | null {
 }
 
 function buildCanvasTaskId(msgId: string, now: Date): string {
-  const safeId = msgId.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-  const prefix = (safeId || "message").slice(0, 8);
+  const prefix = buildCanvasTaskIdPrefix(msgId);
   const stamp = now.toISOString().replace(/\D/g, "").slice(0, 14);
   return `chat-${prefix}-${stamp}`;
+}
+
+function buildCanvasTaskIdPrefix(msgId: string): string {
+  const safeId = msgId.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  return (safeId || "message").slice(0, 8);
 }
 
 function withTokenQuery(rawUrl: string, token: string): string {
