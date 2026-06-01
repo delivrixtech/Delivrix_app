@@ -933,9 +933,9 @@ function SystemHealthDark({ data }: { data: DashboardData }) {
         gap: 14,
         padding: 18,
         borderRadius: 8,
-        background: "var(--color-surface-inverse)",
-        border: "1px solid var(--color-on-dark-hint)",
-        boxShadow: "var(--shadow-md)"
+        background: "var(--color-always-dark-surface)",
+        border: "1px solid var(--color-always-dark-border)",
+        boxShadow: "none"
       }}
     >
       {/* shHead — eyebrow estilo Linear: izquierda neutra, derecha estado live */}

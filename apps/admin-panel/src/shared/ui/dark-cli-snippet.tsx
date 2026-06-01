@@ -58,7 +58,7 @@ export function DarkCliSnippet({ title, lines, showWindowDots = true, className 
   return (
     <div
       className={cn(
-        "rounded-[var(--radius-lg)] border border-[var(--color-border-strong)] bg-[var(--color-surface-inverse)] overflow-hidden",
+        "rounded-[var(--radius-lg)] border border-[var(--color-always-dark-border)] bg-[var(--color-always-dark-surface)] overflow-hidden",
         className
       )}
       role="region"

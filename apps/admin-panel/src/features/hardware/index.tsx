@@ -812,9 +812,9 @@ function ManualSnapshotButton() {
           gap: 6,
           padding: "9px 12px",
           borderRadius: 6,
-          background: "var(--color-surface-inverse)",
-          color: "var(--color-on-dark-strong)",
-          border: "1px solid var(--color-on-dark-hint)",
+          background: "var(--color-accent)",
+          color: "var(--color-accent-fg)",
+          border: "1px solid var(--color-accent)",
           cursor: "pointer"
         }}
       >
