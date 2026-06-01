@@ -125,6 +125,49 @@ test("POST /v1/webdock/servers/create creates server, polls running, and records
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "api" && event.method === "GET"));
 });
 
+test("POST /v1/webdock/servers/create classifies Webdock payment failures as recoverable", async () => {
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      createServer: async () => {
+        throw new Error(
+          "Webdock API returned 400 Bad Request | got: {\"message\":\"Server Creation failed. The error we encountered was: Payment failed during server creation. Please check your payment method or whether you have enough Service Credit in your account to pay for the server and try again.\"}"
+        );
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.delivrix.test",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123",
+    taskId: "task-webdock-payment-failed"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 502);
+  assert.equal(response.body.ok, false);
+  assert.equal(response.body.error, "webdock_payment_failed");
+  assert.equal(response.body.recoverable, true);
+  assert.equal(response.body.operatorAction, "add_or_fix_webdock_service_credit_then_rerun_configure_complete_smtp");
+
+  const failed = (await route.auditLog.list()).at(-1);
+  assert.equal(failed?.action, "oc.webdock.server_create_failed");
+  const metadata = failed?.metadata as Record<string, unknown>;
+  assert.equal(metadata.errorCode, "webdock_payment_failed");
+  assert.equal(metadata.recoverable, true);
+  assert.equal(metadata.operatorAction, "add_or_fix_webdock_service_credit_then_rerun_configure_complete_smtp");
+  assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "audit"));
+});
+
 test("DELETE /v1/webdock/servers/:slug blocks without delete flag, ops key, and approval", async () => {
   const route = await deleteRouteHarness({
     adapter: mockDeleteAdapter({ isLive: () => false, canWrite: () => false }),
