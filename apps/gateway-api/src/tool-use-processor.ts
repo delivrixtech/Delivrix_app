@@ -637,6 +637,44 @@ async function invokeReadOnlyToolOverHttp(input: {
     return body;
   }
 
+  if (input.input.toolName === "read_route53_domain_detail") {
+    const url = new URL(`${input.baseUrl}/v1/route53/domain-detail`);
+    url.searchParams.set("domain", String(input.input.params.domain));
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json"
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+    }
+    return body;
+  }
+
+  if (input.input.toolName === "read_route53_zone_records") {
+    const url = new URL(`${input.baseUrl}/v1/route53/zone-records`);
+    url.searchParams.set("zoneId", String(input.input.params.zoneId));
+    if (typeof input.input.params.recordType === "string") {
+      url.searchParams.set("recordType", input.input.params.recordType);
+    }
+    if (typeof input.input.params.recordName === "string") {
+      url.searchParams.set("recordName", input.input.params.recordName);
+    }
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json"
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+    }
+    return body;
+  }
+
   throw new Error(`unsupported_read_only_tool:${input.input.toolName}`);
 }
 
@@ -873,7 +911,9 @@ function positiveIntFromUnknown(value: unknown): number | undefined {
 function isReadOnlyToolUse(toolName: string): boolean {
   return toolName === "suggest_safe_domain" ||
     toolName === "wait_for_dns_propagation" ||
-    toolName === "read_episodic_scratch";
+    toolName === "read_episodic_scratch" ||
+    toolName === "read_route53_domain_detail" ||
+    toolName === "read_route53_zone_records";
 }
 
 function isMemoryToolUse(toolName: string): boolean {

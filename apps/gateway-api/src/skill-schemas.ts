@@ -23,6 +23,16 @@ export interface Route53UpsertParams extends Record<string, unknown> {
   taskId?: string;
 }
 
+export interface Route53DomainDetailParams extends Record<string, unknown> {
+  domain: string;
+}
+
+export interface Route53ZoneRecordsParams extends Record<string, unknown> {
+  zoneId: string;
+  recordType?: "A" | "AAAA" | "CNAME" | "MX" | "TXT" | "NS" | "SOA" | "PTR" | "SRV" | "CAA";
+  recordName?: string;
+}
+
 export interface IonosUpsertParams extends Record<string, unknown> {
   zone: string;
   records: Array<{
@@ -168,6 +178,26 @@ export const route53UpsertParamSchema = schema<Route53UpsertParams>((value) => {
     domain: domain(input.domain ?? input.zoneName, "domain"),
     records: route53Records
   }, input);
+});
+
+export const route53DomainDetailParamSchema = schema<Route53DomainDetailParams>((value) => {
+  const input = object(value);
+  return {
+    domain: domain(input.domain, "domain")
+  };
+});
+
+export const route53ZoneRecordsParamSchema = schema<Route53ZoneRecordsParams>((value) => {
+  const input = object(value);
+  return {
+    zoneId: route53ZoneId(input.zoneId, "zoneId"),
+    ...(input.recordType === undefined || input.recordType === null || input.recordType === ""
+      ? {}
+      : { recordType: oneOf(String(input.recordType).toUpperCase(), "recordType", route53ReadRecordTypes) }),
+    ...(input.recordName === undefined || input.recordName === null || input.recordName === ""
+      ? {}
+      : { recordName: dnsRecordName(input.recordName, "recordName") })
+  };
 });
 
 export const ionosUpsertParamSchema = schema<IonosUpsertParams>((value) => {
@@ -419,6 +449,24 @@ function domain(value: unknown, field: string): string {
   const normalized = string(value, field).toLowerCase().replace(/\.$/, "");
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(normalized)) {
     throw new SkillSchemaError(`${field} must be a valid domain`);
+  }
+  return normalized;
+}
+
+const route53ReadRecordTypes = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "PTR", "SRV", "CAA"] as const;
+
+function route53ZoneId(value: unknown, field: string): string {
+  const normalized = string(value, field).replace(/^\/hostedzone\//, "").toUpperCase();
+  if (!/^Z[A-Z0-9]{10,32}$/.test(normalized)) {
+    throw new SkillSchemaError(`${field} must be a Route53 hosted zone id`);
+  }
+  return normalized;
+}
+
+function dnsRecordName(value: unknown, field: string): string {
+  const normalized = string(value, field).toLowerCase().replace(/\.$/, "");
+  if (!/^[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?)*$/.test(normalized)) {
+    throw new SkillSchemaError(`${field} must be a valid DNS record name`);
   }
   return normalized;
 }
