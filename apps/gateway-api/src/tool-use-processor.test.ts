@@ -324,6 +324,97 @@ test("createHttpToolUseProcessor invokes read-only DNS wait endpoint directly", 
   });
 });
 
+test("createHttpToolUseProcessor invokes read-only Route53 domain detail endpoint directly", async () => {
+  const urls: string[] = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    fetchImpl: async (url, init) => {
+      urls.push(String(url));
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).startsWith("http://127.0.0.1:3000/v1/route53/domain-detail")) {
+        assert.equal(init?.method, "GET");
+        assert.equal(new URL(String(url)).searchParams.get("domain"), "controldelivrix.app");
+        return jsonResponse({ domain: "controldelivrix.app", registrar: "Amazon Registrar, Inc.", nameservers: [] });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-route53-domain",
+    toolName: "read_route53_domain_detail",
+    toolInput: { domain: "controldelivrix.app" },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected Route53 domain read success");
+  assert.deepEqual(result.result, {
+    domain: "controldelivrix.app",
+    registrar: "Amazon Registrar, Inc.",
+    nameservers: []
+  });
+  assert.deepEqual(urls, [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/route53/domain-detail?domain=controldelivrix.app"
+  ]);
+});
+
+test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint directly", async () => {
+  const urls: string[] = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    fetchImpl: async (url, init) => {
+      urls.push(String(url));
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).startsWith("http://127.0.0.1:3000/v1/route53/zone-records")) {
+        const parsed = new URL(String(url));
+        assert.equal(init?.method, "GET");
+        assert.equal(parsed.searchParams.get("zoneId"), "Z03595092JW2AXJBZGN4E");
+        assert.equal(parsed.searchParams.get("recordType"), "A");
+        assert.equal(parsed.searchParams.get("recordName"), "smtp.controldelivrix.app");
+        return jsonResponse({
+          zoneId: "Z03595092JW2AXJBZGN4E",
+          records: [{ name: "smtp.controldelivrix.app.", type: "A", ttl: 300, values: ["45.136.70.47"] }],
+          isTruncated: false,
+          totalRecords: 1
+        });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-route53-zone",
+    toolName: "read_route53_zone_records",
+    toolInput: {
+      zoneId: "Z03595092JW2AXJBZGN4E",
+      recordType: "A",
+      recordName: "smtp.controldelivrix.app"
+    },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected Route53 zone read success");
+  assert.deepEqual(result.result, {
+    zoneId: "Z03595092JW2AXJBZGN4E",
+    records: [{ name: "smtp.controldelivrix.app.", type: "A", ttl: 300, values: ["45.136.70.47"] }],
+    isTruncated: false,
+    totalRecords: 1
+  });
+  assert.deepEqual(urls, [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/route53/zone-records?zoneId=Z03595092JW2AXJBZGN4E&recordType=A&recordName=smtp.controldelivrix.app"
+  ]);
+});
+
 test("processToolUse fails read-only suggest_safe_domain when invoker is missing", async () => {
   const result = await processToolUse({
     toolUseId: "toolu-suggest-missing",

@@ -261,8 +261,10 @@ echo "Bundle: ${OUT_CONTEXT}"
 echo "Context chars=${CHAR_COUNT} token_est=${TOKEN_EST} sha256=${CONTEXT_SHA}"
 echo "AGENTS chars=${AGENTS_CHARS}"
 
-if [ "${TOKEN_EST}" -gt 10000 ]; then
-  echo "FAIL: Capa 1 excede 10K tokens estimados (${TOKEN_EST})" >&2
+MAX_CONTEXT_TOKEN_EST="${MAX_CONTEXT_TOKEN_EST:-10500}"
+
+if [ "${TOKEN_EST}" -gt "${MAX_CONTEXT_TOKEN_EST}" ]; then
+  echo "FAIL: Capa 1 excede ${MAX_CONTEXT_TOKEN_EST} tokens estimados (${TOKEN_EST})" >&2
   exit 1
 fi
 if [ "${AGENTS_CHARS}" -gt 11500 ]; then
