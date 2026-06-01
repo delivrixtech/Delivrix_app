@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { buildToolsForOpenClaw } from "../../apps/gateway-api/src/openclaw-tools-builder.ts";
 
 const cliArgs = parseArgs(process.argv.slice(2));
 const gatewayBase = normalizeBase(process.env.GATEWAY_BASE ?? "http://127.0.0.1:3000");
+const runtimeEnvFile = stringArg("runtimeEnvFile") ?? process.env.PHASE1_ENV_FILE ?? ".env.local";
 const mode = cliArgs.send ? "send" : cliArgs.dryRun ? "dry-run" : "preflight";
 const watchReady = cliArgs.watchReady === true;
 const requireLaunchReady = cliArgs.requireLaunchReady === true || watchReady;
@@ -39,7 +39,7 @@ if (mode === "preflight") {
   process.exit(result.ok ? 0 : 1);
 }
 
-const input = readSmokeInput();
+const input = readSmokeInput(await loadRuntimeEnv());
 const validation = validateSmokeInput(input);
 if (!validation.ok) {
   const result = { ok: false, phase: "phase1-c-master-smoke", mode, preflight, validation };
@@ -101,9 +101,10 @@ printJson(result);
 process.exit(response.ok ? 0 : 1);
 
 async function runPreflight() {
-  const tools = buildToolsForOpenClaw(process.env).map((tool) => tool.name);
+  const runtimeEnv = await loadRuntimeEnv();
+  const tools = buildToolsForOpenClaw(runtimeEnv).map((tool) => tool.name);
   const missingTools = requiredTools.filter((tool) => !tools.includes(tool));
-  const launchInput = readSmokeInput();
+  const launchInput = readSmokeInput(runtimeEnv);
   const launchValidation = validateSmokeInput(launchInput);
   const [health, canvas, verify, anchor] = await Promise.all([
     getJson(`${gatewayBase}/health`),
@@ -127,7 +128,8 @@ async function runPreflight() {
     phase: "phase1-c-master-smoke",
     mode,
     gatewayBase,
-    checkedAt: now.toISOString(),
+    runtimeEnvFile,
+    checkedAt: new Date().toISOString(),
     tools: {
       count: tools.length,
       required: requiredTools,
@@ -230,18 +232,63 @@ function summarizePreflightSnapshot(snapshot) {
   };
 }
 
-function readSmokeInput() {
+async function loadRuntimeEnv() {
   return {
-    brand: stringArg("brand") ?? process.env.PHASE1_SMOKE_BRAND ?? "delivrix",
-    intent: stringArg("intent") ?? process.env.PHASE1_SMOKE_INTENT ?? "ops",
-    budgetUsdMax: Number(stringArg("budgetUsdMax") ?? process.env.PHASE1_SMOKE_BUDGET_USD_MAX ?? "25"),
-    testEmailRecipient: stringArg("recipient") ?? stringArg("testEmailRecipient") ?? process.env.PHASE1_TEST_EMAIL_RECIPIENT ?? "",
-    testEmailSubject: stringArg("subject") ?? stringArg("testEmailSubject") ?? process.env.PHASE1_TEST_EMAIL_SUBJECT ?? "",
-    testEmailBody: stringArg("body") ?? stringArg("testEmailBody") ?? process.env.PHASE1_TEST_EMAIL_BODY ?? "",
+    ...process.env,
+    ...await readEnvFile(runtimeEnvFile)
+  };
+}
+
+async function readEnvFile(path) {
+  try {
+    const raw = await readFile(path, "utf-8");
+    const env = {};
+    for (const rawLine of raw.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const normalizedLine = line.startsWith("export ") ? line.slice("export ".length).trim() : line;
+      const equalsAt = normalizedLine.indexOf("=");
+      if (equalsAt <= 0) continue;
+      const key = normalizedLine.slice(0, equalsAt).trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+      env[key] = decodeEnvValue(normalizedLine.slice(equalsAt + 1).trim());
+    }
+    return env;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return {};
+    }
+    throw error;
+  }
+}
+
+function decodeEnvValue(value) {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1)
+      .replace(/\\n/g, "\n")
+      .replace(/\\r/g, "\r")
+      .replace(/\\t/g, "\t")
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, "\\");
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function readSmokeInput(env) {
+  return {
+    brand: stringArg("brand") ?? env.PHASE1_SMOKE_BRAND ?? "delivrix",
+    intent: stringArg("intent") ?? env.PHASE1_SMOKE_INTENT ?? "ops",
+    budgetUsdMax: Number(stringArg("budgetUsdMax") ?? env.PHASE1_SMOKE_BUDGET_USD_MAX ?? "25"),
+    testEmailRecipient: stringArg("recipient") ?? stringArg("testEmailRecipient") ?? env.PHASE1_TEST_EMAIL_RECIPIENT ?? "",
+    testEmailSubject: stringArg("subject") ?? stringArg("testEmailSubject") ?? env.PHASE1_TEST_EMAIL_SUBJECT ?? "",
+    testEmailBody: stringArg("body") ?? stringArg("testEmailBody") ?? env.PHASE1_TEST_EMAIL_BODY ?? "",
     seedInboxes: parseCsv(
       stringArg("seedInboxes") ??
-      process.env.PHASE1_SEED_INBOXES ??
-      process.env.WARMUP_DEFAULT_SEED_INBOXES ??
+      env.PHASE1_SEED_INBOXES ??
+      env.WARMUP_DEFAULT_SEED_INBOXES ??
       ""
     )
   };
