@@ -1,9 +1,11 @@
 import type { SkillParamSchema } from "./skill-schemas.ts";
 import {
   bindDomainParamSchema,
+  compactIntentParamSchema,
   configureCompleteSmtpSkillParamSchema,
   emailAuthParamSchema,
   ionosUpsertParamSchema,
+  readEpisodicScratchParamSchema,
   route53RegisterParamSchema,
   route53UpsertParamSchema,
   smtpProvisionParamSchema,
@@ -29,6 +31,7 @@ export interface BedrockToolSpec {
 export type OpenClawToolName =
   | "register_domain_route53"
   | "suggest_safe_domain"
+  | "read_episodic_scratch"
   | "wait_for_dns_propagation"
   | "upsert_dns_route53"
   | "upsert_dns_ionos"
@@ -39,6 +42,7 @@ export type OpenClawToolName =
   | "bind_domain_to_server"
   | "seed_warmup_pool"
   | "send_real_email"
+  | "compact_intent"
   | "configure_complete_smtp";
 
 interface OpenClawToolDefinition {
@@ -149,6 +153,35 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hmacConfigured(env) &&
       (hasAwsRoute53DomainCredentials(env) || hasPorkbunCredentials(env)),
     targetType: "domain_naming",
+    severity: "high"
+  },
+  read_episodic_scratch: {
+    spec: {
+      name: "read_episodic_scratch",
+      description: [
+        "Consulta la memoria episódica auditada de OpenClaw por intentId, inputHash o herramienta.",
+        "Es read-only: sirve para reutilizar evidencia, evitar repetir pasos ya completados y detectar intentos fallidos previos sin mutar infraestructura ni requerir ApprovalGate."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          intentId: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$" },
+          inputHash: { type: "string", pattern: "^[a-f0-9]{8,64}$" },
+          tool: { type: "string", minLength: 1, maxLength: 128 },
+          outcome: {
+            type: "string",
+            enum: ["success", "failed", "rolled_back", "rollback_failed", "cancelled_by_operator", "timeout", "partial"]
+          },
+          limit: { type: "integer", minimum: 1, maximum: 100 },
+          sinceDays: { type: "integer", minimum: 1, maximum: 3650 },
+          weighted: { type: "boolean", default: false }
+        },
+        required: []
+      }
+    },
+    paramSchema: readEpisodicScratchParamSchema,
+    enabled: (env) => hmacConfigured(env) && postgresConfigured(env),
+    targetType: "openclaw_memory",
     severity: "high"
   },
   wait_for_dns_propagation: {
@@ -446,6 +479,57 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     targetType: "webdock_server",
     severity: "critical"
   },
+  compact_intent: {
+    spec: {
+      name: "compact_intent",
+      description: [
+        "Compacta el resultado final de un intent OpenClaw en memoria episódica.",
+        "Uso interno y auditado: guardar resumen de pasos, hashes de inputs, outcomes y proveniencia para que futuras ejecuciones no repitan trabajo ni inventen estado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          intentId: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$" },
+          finalStatus: { type: "string", enum: ["completed", "failed", "cancelled", "rolled_back"] },
+          decision: { type: "string", minLength: 1, maxLength: 280 },
+          ttlDays: { type: "integer", minimum: 1, maximum: 365 },
+          steps: {
+            type: "array",
+            minItems: 1,
+            maxItems: 50,
+            items: {
+              type: "object",
+              properties: {
+                step: { type: "integer", minimum: 1, maximum: 10000 },
+                tool: { type: "string", minLength: 1, maxLength: 128 },
+                inputHash: { type: "string", pattern: "^[a-f0-9]{8,64}$" },
+                outcome: {
+                  type: "string",
+                  enum: ["success", "failed", "rolled_back", "rollback_failed", "cancelled_by_operator", "timeout", "partial"]
+                },
+                outcomeData: { type: "object" },
+                errorClass: { type: "string", minLength: 1, maxLength: 128 },
+                errorMessage: { type: "string", minLength: 1, maxLength: 2000 },
+                durationMs: { type: "integer", minimum: 0, maximum: 86400000 },
+                proposalId: { type: "string", minLength: 1, maxLength: 128 },
+                signatureId: { type: "string", minLength: 1, maxLength: 128 },
+                toolUseId: { type: "string", minLength: 1, maxLength: 128 },
+                toolCallId: { type: "string", minLength: 1, maxLength: 128 },
+                auditEventId: { type: "string", minLength: 1, maxLength: 128 }
+              },
+              required: ["step", "tool", "inputHash", "outcome"],
+              additionalProperties: false
+            }
+          }
+        },
+        required: ["intentId", "finalStatus", "decision", "steps"]
+      }
+    },
+    paramSchema: compactIntentParamSchema,
+    enabled: (env) => hmacConfigured(env) && postgresConfigured(env),
+    targetType: "openclaw_memory",
+    severity: "high"
+  },
   configure_complete_smtp: {
     spec: {
       name: "configure_complete_smtp",
@@ -485,7 +569,9 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       isOpenClawToolEnabled("provision_smtp_postfix", env) &&
       isOpenClawToolEnabled("configure_email_auth", env) &&
       isOpenClawToolEnabled("seed_warmup_pool", env) &&
-      isOpenClawToolEnabled("send_real_email", env),
+      isOpenClawToolEnabled("send_real_email", env) &&
+      isOpenClawToolEnabled("read_episodic_scratch", env) &&
+      isOpenClawToolEnabled("compact_intent", env),
     targetType: "openclaw_orchestrator",
     severity: "critical"
   }
@@ -504,6 +590,7 @@ export function openClawToolNames(): OpenClawToolName[] {
   return [
     "register_domain_route53",
     "suggest_safe_domain",
+    "read_episodic_scratch",
     "wait_for_dns_propagation",
     "upsert_dns_route53",
     "upsert_dns_ionos",
@@ -514,6 +601,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "bind_domain_to_server",
     "seed_warmup_pool",
     "send_real_email",
+    "compact_intent",
     "configure_complete_smtp"
   ];
 }
@@ -581,6 +669,10 @@ function hasSshRunnerConfig(env: Record<string, string | undefined>): boolean {
 
 function hasPorkbunCredentials(env: Record<string, string | undefined>): boolean {
   return Boolean(firstNonEmpty(env.PORKBUN_API_KEY, env.PORKBUN_SECRET_API_KEY));
+}
+
+function postgresConfigured(env: Record<string, string | undefined>): boolean {
+  return env.OPENCLAW_EPISODIC_SCRATCH_ENABLE !== "false";
 }
 
 function anyFlagEnabled(env: Record<string, string | undefined>, keys: string[]): boolean {
