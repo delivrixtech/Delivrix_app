@@ -98,6 +98,22 @@ curl -s http://127.0.0.1:3000/v1/audit-chain/anchor
 curl -s "http://127.0.0.1:3000/v1/audit-events?limit=30"
 ```
 
+También queda disponible un watcher read-only que captura health, canvas-live, proposals, audit verify/anchor y eventos relevantes sin firmar ni ejecutar acciones:
+
+```bash
+node --env-file=.env.local scripts/openclaw/phase1-c-watch.mjs \
+  --msg-id phase1-c-master-YYYYMMDDHHMMSS
+```
+
+Si ya existe proposalId, usar:
+
+```bash
+PHASE1_PROPOSAL_ID="uuid-de-la-propuesta" \
+node --env-file=.env.local scripts/openclaw/phase1-c-watch.mjs --watch
+```
+
+Cada corrida guarda evidencia en `runtime/phase1-c-watch-*.json`.
+
 El cierre completo de Fase C requiere evidencia de:
 
 - propuesta `configure_complete_smtp` creada por tool calling Bedrock;
