@@ -12,6 +12,8 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "suggest_safe_domain",
     "read_episodic_scratch",
     "wait_for_dns_propagation",
+    "read_route53_domain_detail",
+    "read_route53_zone_records",
     "upsert_dns_route53",
     "upsert_dns_ionos",
     "create_webdock_server",
@@ -26,12 +28,27 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
   ]);
   assert.equal(
     tools
-      .filter((tool) => !["suggest_safe_domain", "wait_for_dns_propagation", "read_episodic_scratch", "compact_intent"].includes(tool.name))
+      .filter((tool) => ![
+        "suggest_safe_domain",
+        "wait_for_dns_propagation",
+        "read_episodic_scratch",
+        "read_route53_domain_detail",
+        "read_route53_zone_records",
+        "compact_intent"
+      ].includes(tool.name))
       .every((tool) => tool.description.includes("ApprovalGate")),
     true
   );
   assert.match(
     tools.find((tool) => tool.name === "wait_for_dns_propagation")?.description ?? "",
+    /no requiere ApprovalGate/
+  );
+  assert.match(
+    tools.find((tool) => tool.name === "read_route53_domain_detail")?.description ?? "",
+    /no requiere ApprovalGate/
+  );
+  assert.match(
+    tools.find((tool) => tool.name === "read_route53_zone_records")?.description ?? "",
     /no requiere ApprovalGate/
   );
 });
@@ -41,7 +58,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 13);
+  assert.equal(tools.length, 15);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -54,6 +71,8 @@ test("buildToolsForOpenClaw omits Route53 tools when AWS credentials are missing
   };
   const names = buildToolsForOpenClaw(env).map((tool) => tool.name);
   assert.equal(names.includes("register_domain_route53"), false);
+  assert.equal(names.includes("read_route53_domain_detail"), false);
+  assert.equal(names.includes("read_route53_zone_records"), false);
   assert.equal(names.includes("upsert_dns_route53"), false);
   assert.equal(names.includes("configure_email_auth"), false);
   assert.equal(names.includes("bind_domain_to_server"), false);
@@ -80,12 +99,39 @@ test("Bedrock tool input schemas align with gateway skill schemas for valid samp
   }
 });
 
+test("Bedrock catalog contains Route53 read tools with validated schemas", () => {
+  const tools = buildToolsForOpenClaw(allEnabledEnv());
+  const domainDetail = tools.find((tool) => tool.name === "read_route53_domain_detail");
+  const zoneRecords = tools.find((tool) => tool.name === "read_route53_zone_records");
+
+  assert.ok(domainDetail);
+  assert.deepEqual(domainDetail.input_schema.required, ["domain"]);
+  assert.equal(getOpenClawToolDefinition("read_route53_domain_detail")?.paramSchema.safeParse({
+    domain: "controldelivrix.app"
+  }).success, true);
+
+  assert.ok(zoneRecords);
+  assert.deepEqual(zoneRecords.input_schema.required, ["zoneId"]);
+  assert.deepEqual(zoneRecords.input_schema.properties.recordType, {
+    type: "string",
+    enum: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "PTR", "SRV", "CAA"],
+    description: "Filtrar por tipo de record. Opcional."
+  });
+  assert.equal(getOpenClawToolDefinition("read_route53_zone_records")?.paramSchema.safeParse({
+    zoneId: "Z03595092JW2AXJBZGN4E",
+    recordType: "A",
+    recordName: "smtp.controldelivrix.app"
+  }).success, true);
+});
+
 test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
   const names = buildToolsForOpenClaw(allEnabledEnv()).map((tool) => tool.name);
   for (const name of [
     "suggest_safe_domain",
     "read_episodic_scratch",
     "wait_for_dns_propagation",
+    "read_route53_domain_detail",
+    "read_route53_zone_records",
     "bind_webdock_main_domain",
     "send_real_email",
     "compact_intent",
@@ -149,6 +195,16 @@ function validSample(toolName: string): Record<string, unknown> {
   }
   if (toolName === "read_episodic_scratch") {
     return { intentId: "intent-1" };
+  }
+  if (toolName === "read_route53_domain_detail") {
+    return { domain: "controldelivrix.app" };
+  }
+  if (toolName === "read_route53_zone_records") {
+    return {
+      zoneId: "Z03595092JW2AXJBZGN4E",
+      recordType: "A",
+      recordName: "smtp.controldelivrix.app"
+    };
   }
   if (toolName === "upsert_dns_route53") {
     return {
