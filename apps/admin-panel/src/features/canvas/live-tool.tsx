@@ -239,27 +239,37 @@ function TasksColumn({
   activeTaskId: string | null;
   onSelect: (id: string) => void;
 }) {
+  // TasteSkill polish 2026-05-28: width 240→220 (Cursor proportion).
+  // ColHead mono minimal. Empty state alineado izquierda con hint.
   const tree = buildTaskTree(tasks);
   const totalShown = tree.length + tree.reduce((acc, n) => acc + countDescendants(n), 0);
   return (
     <aside
       className="flex flex-col"
       style={{
-        width: 240,
+        width: 220,
         flexShrink: 0,
         borderRight: "1px solid var(--color-border)",
         background: "var(--color-surface)"
       }}
     >
-      <ColHead label={`Tareas · ${totalShown}`} />
-      <div className="flex flex-col" style={{ padding: 8, gap: 4, overflowY: "auto" }}>
+      <ColHead label={`tareas · ${totalShown}`} />
+      <div className="flex flex-col" style={{ padding: "8px 4px", gap: 1, overflowY: "auto" }}>
         {tree.length === 0 ? (
-          <span
-            className="font-[family-name:var(--font-caption)]"
-            style={{ fontSize: 11, color: "var(--color-text-tertiary)", padding: "8px 10px", lineHeight: 1.5 }}
-          >
-            Sin tareas activas. Cuando el agente arranque, aparece acá.
-          </span>
+          <div className="flex flex-col" style={{ padding: "14px 12px", gap: 6 }}>
+            <span
+              className="font-[family-name:var(--font-mono)] uppercase"
+              style={{ fontSize: 10, letterSpacing: "var(--tracking-widest)", color: "var(--color-text-tertiary)", fontWeight: 500 }}
+            >
+              sin tareas
+            </span>
+            <span
+              className="font-[family-name:var(--font-sans)]"
+              style={{ fontSize: 12, color: "var(--color-text-tertiary)", lineHeight: 1.45 }}
+            >
+              Cuando OpenClaw arranque una tarea, aparece acá con su estado en vivo.
+            </span>
+          </div>
         ) : null}
         {tree.map((node) => (
           <TaskNodeRow
@@ -303,6 +313,9 @@ function TaskNodeRow({
   const isIdle = node.status === "idle";
   const hasChildren = node.children.length > 0;
   const indentLeft = level * 14;
+  // TasteSkill polish 2026-05-28: Cursor-style task row. Active state =
+  // barra vertical 2px izquierda + surface-sunken bg, NO border completo
+  // (anti-pattern Impeccable). Radius 4 (era 8). Padding compacto.
   return (
     <div className="flex flex-col" style={{ position: "relative" }}>
       <button
@@ -310,18 +323,33 @@ function TaskNodeRow({
         onClick={() => onSelect(node.id)}
         className="flex flex-col transition-colors"
         style={{
-          gap: 4,
-          padding: "9px 10px",
-          paddingLeft: 10 + indentLeft,
-          borderRadius: 8,
+          gap: 3,
+          padding: "8px 10px",
+          paddingLeft: 12 + indentLeft,
+          borderRadius: 4,
           background: isActive ? "var(--color-surface-sunken)" : "transparent",
-          border: "0.5px solid",
-          borderColor: isActive ? "var(--color-border-strong, var(--color-border))" : "transparent",
+          border: 0,
           cursor: "pointer",
           textAlign: "left",
           position: "relative"
         }}
       >
+        {/* Active indicator izquierda 2px hairline */}
+        {isActive && level === 0 ? (
+          <span
+            aria-hidden="true"
+            style={{
+              position: "absolute",
+              left: 0,
+              top: "50%",
+              transform: "translateY(-50%)",
+              width: 2,
+              height: 18,
+              borderRadius: 1,
+              background: "var(--color-text-primary)"
+            }}
+          />
+        ) : null}
         {/* Línea vertical conectora del padre al hijo */}
         {level > 0 ? (
           <span
@@ -379,15 +407,12 @@ function TaskNodeRow({
               className="font-[family-name:var(--font-mono)]"
               style={{
                 fontSize: 10,
-                padding: "1px 5px",
-                borderRadius: 999,
-                background: "var(--color-info-soft)",
-                color: "var(--color-info)",
+                color: "var(--color-text-tertiary)",
                 fontWeight: 500
               }}
               title={`${node.children.length} sub-tareas en paralelo`}
             >
-              {node.children.length} sub
+              ⌥{node.children.length}
             </span>
           ) : null}
           {node.repeatCount > 1 ? (
@@ -395,30 +420,36 @@ function TaskNodeRow({
               className="font-[family-name:var(--font-mono)]"
               style={{
                 fontSize: 10,
-                padding: "1px 5px",
-                borderRadius: 999,
-                background: "var(--color-surface-sunken)",
                 color: "var(--color-text-tertiary)",
-                fontWeight: 500
+                fontWeight: 500,
+                cursor: "help"
               }}
+              title={`${node.repeatCount} tareas con el mismo título agrupadas (la más reciente se muestra arriba)`}
             >
               ×{node.repeatCount}
             </span>
           ) : null}
         </div>
-        <div
-          className="flex items-center font-[family-name:var(--font-mono)]"
-          style={{
-            gap: 6,
-            fontSize: 10,
-            color: "var(--color-text-tertiary)",
-            paddingLeft: 14
-          }}
-        >
-          <span style={{ color: pipColor(node.status), fontWeight: 500 }}>{taskStatusLabel(node.status)}</span>
-          <span aria-hidden="true">·</span>
-          <span>hace {relativeTimeShort(node.createdAt)}</span>
-        </div>
+        {/* Meta row — solo para estados activos/anormales. Las "completed"
+         * antes pintaban una fila repetida "completada · hace 20h" para
+         * cada una, lo que en un tree de 8 saturaba la columna. Ahora el
+         * dot izquierda + el título dimmed bastan para señalar completado.
+         * El hover del título mostrará el timestamp en title=. */}
+        {node.status !== "completed" ? (
+          <div
+            className="flex items-center font-[family-name:var(--font-mono)]"
+            style={{
+              gap: 6,
+              fontSize: 10,
+              color: "var(--color-text-tertiary)",
+              paddingLeft: 14
+            }}
+          >
+            <span style={{ color: pipColor(node.status), fontWeight: 500 }}>{taskStatusLabel(node.status)}</span>
+            <span aria-hidden="true">·</span>
+            <span>hace {relativeTimeShort(node.createdAt)}</span>
+          </div>
+        ) : null}
       </button>
       {hasChildren ? (
         <div className="flex flex-col" style={{ gap: 4, marginTop: 4, position: "relative" }}>
@@ -513,36 +544,80 @@ function ActionColumn({ action, activeTask }: { action: LiveAction | null; activ
 }
 
 function ActionEmpty({ tab, activeTask }: { tab: "api" | "files" | "audit"; activeTask: LiveTask | null }) {
+  // TasteSkill polish 2026-05-28: empty states alineados a izquierda
+  // (Manus/Postman style), no centered. Eyebrow mono uppercase + body
+  // sans + hint contextual de qué hacer. Sin Sparkles decorativos.
   const isRunning = activeTask?.status === "running";
   const taskTitle = activeTask?.title ?? null;
 
+  let eyebrow: string;
   let label: string;
+  let hint: string | null = null;
+
   if (!activeTask) {
-    label = "Selecciona una tarea en el panel izquierdo para ver lo que el agente está haciendo.";
+    eyebrow = "sin tarea seleccionada";
+    label = "Elegí una tarea del panel izquierdo para ver lo que el agente está haciendo.";
+    hint = "Las tareas activas tienen un dot verde a su izquierda.";
   } else if (!isRunning) {
-    label =
-      taskTitle != null
-        ? `La tarea "${taskTitle}" está en estado ${activeTask.status}. No hay actividad en curso.`
-        : `Esta tarea está en estado ${activeTask.status}. No hay actividad en curso.`;
+    eyebrow = `tarea · ${activeTask.status}`;
+    label = taskTitle != null
+      ? `La tarea "${taskTitle}" no tiene actividad en curso.`
+      : "Esta tarea no tiene actividad en curso.";
+    hint = "Cuando OpenClaw retome la tarea, verás la request o el comando acá.";
   } else {
-    label =
-      tab === "api"
-        ? "El agente está activo pero todavía no hizo ningún GET/POST a un servicio externo. Aparece acá apenas haga una request."
-        : tab === "files"
-          ? "El agente no ha leído ni escrito archivos en esta tarea todavía."
-          : "Sin eventos de audit emitidos por esta tarea aún.";
+    eyebrow = `${tab} · sin actividad`;
+    label = tab === "api"
+      ? "El agente está activo pero todavía no hizo ninguna request HTTP."
+      : tab === "files"
+        ? "El agente no ha leído ni escrito archivos en esta tarea."
+        : "Sin eventos de audit emitidos por esta tarea.";
+    hint = tab === "api"
+      ? "Aparece acá apenas haga un GET / POST a un servicio externo."
+      : tab === "files"
+        ? "Aparece acá cuando ejecute skill read_file, snapshot o runbook lookup."
+        : "El audit chain registra cada acción crítica firmada por OpenClaw.";
   }
   return (
     <div
-      className="flex flex-col items-center justify-center"
-      style={{ flex: 1, padding: 40, gap: 10, color: "var(--color-text-tertiary)", textAlign: "center" }}
+      className="flex flex-col items-start"
+      style={{ flex: 1, padding: "20px 24px", gap: 8 }}
     >
       <span
+        className="font-[family-name:var(--font-mono)] uppercase"
+        style={{
+          fontSize: 10,
+          letterSpacing: "var(--tracking-widest)",
+          color: "var(--color-text-tertiary)",
+          fontWeight: 500
+        }}
+      >
+        {eyebrow}
+      </span>
+      <span
         className="font-[family-name:var(--font-sans)]"
-        style={{ fontSize: 13, maxWidth: 380, lineHeight: 1.55 }}
+        style={{
+          fontSize: 13,
+          maxWidth: 460,
+          lineHeight: 1.5,
+          color: "var(--color-text-secondary)",
+          fontWeight: 500
+        }}
       >
         {label}
       </span>
+      {hint && (
+        <span
+          className="font-[family-name:var(--font-sans)]"
+          style={{
+            fontSize: 12,
+            maxWidth: 460,
+            lineHeight: 1.5,
+            color: "var(--color-text-tertiary)"
+          }}
+        >
+          {hint}
+        </span>
+      )}
     </div>
   );
 }
@@ -941,16 +1016,20 @@ function ArtifactHeader({ artifact }: { artifact: LiveArtifact }) {
     >
       <div className="flex items-center" style={{ gap: 8 }}>
         <span
-          className="font-[family-name:var(--font-caption)] font-semibold uppercase"
+          className="inline-flex items-center font-[family-name:var(--font-mono)] uppercase"
           style={{
-            fontSize: 9.5,
-            letterSpacing: "0.8px",
+            gap: 6,
+            fontSize: 10,
+            letterSpacing: "var(--tracking-widest)",
             padding: "2px 8px",
-            borderRadius: 999,
+            borderRadius: 4,
             background: kindBackground(artifact.kind),
-            color: kindForeground(artifact.kind)
+            color: kindForeground(artifact.kind),
+            border: "1px solid var(--color-border)",
+            fontWeight: 500
           }}
         >
+          <span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: 999, background: kindDot(artifact.kind) }} />
           {kindLabel}
         </span>
         <span className="flex-1" aria-hidden="true" />
@@ -1017,20 +1096,24 @@ function artifactKindLabel(kind: LiveArtifact["kind"]): string {
   return kind;
 }
 
-function kindBackground(kind: LiveArtifact["kind"]): string {
-  if (kind === "plan") return "var(--color-info-soft)";
-  if (kind === "proposal") return "var(--color-warning-soft)";
-  if (kind === "template") return "var(--color-surface-sunken)";
-  if (kind === "report") return "var(--color-success-soft)";
+function kindBackground(_kind: LiveArtifact["kind"]): string {
+  // TasteSkill polish 2026-05-28: tags artifact kind unificados a
+  // surface-sunken neutral. Antes saturated soft bg (warning amber para
+  // proposal, info azul para plan, success verde para report) era pelea
+  // visual. Ahora un dot indicator + texto sutil comunica el kind.
   return "var(--color-surface-sunken)";
 }
 
-function kindForeground(kind: LiveArtifact["kind"]): string {
+function kindForeground(_kind: LiveArtifact["kind"]): string {
+  return "var(--color-text-secondary)";
+}
+
+function kindDot(kind: LiveArtifact["kind"]): string {
   if (kind === "plan") return "var(--color-info)";
   if (kind === "proposal") return "var(--color-warning)";
-  if (kind === "template") return "var(--color-text-secondary)";
+  if (kind === "template") return "var(--color-text-tertiary)";
   if (kind === "report") return "var(--color-success)";
-  return "var(--color-text-secondary)";
+  return "var(--color-text-tertiary)";
 }
 
 function stringifyArtifact(artifact: LiveArtifact): string {
@@ -1152,25 +1235,34 @@ function ApprovalBadge({
   meta: string | null;
   detail: string | null;
 }) {
+  // TasteSkill polish 2026-05-28: status card minimal. Antes bg saturado
+  // + border full color. Ahora dot indicator + label + meta jerarquizados
+  // sobre surface-sunken con hairline. Linear/Notion style.
   const isApproved = kind === "approved";
   const isInfo = kind === "informational";
+  const dot = isInfo ? "var(--color-info)" : isApproved ? "var(--color-success)" : "var(--color-critical)";
+  const labelText = isInfo ? "Reporte read-only" : isApproved ? "Plan aprobado · en ejecución" : "Plan rechazado";
   return (
     <div
       className="flex flex-col"
       style={{
         gap: 6,
         padding: "10px 12px",
-        borderRadius: "var(--radius-md)",
-        background: isInfo ? "var(--color-info-soft)" : isApproved ? "var(--color-success-soft)" : "var(--color-critical-soft)",
-        border: `1px solid ${isInfo ? "var(--color-info)" : isApproved ? "var(--color-success)" : "var(--color-critical)"}`,
+        borderRadius: 6,
+        background: "var(--color-surface-sunken)",
+        border: "1px solid var(--color-border)",
         marginTop: 10
       }}
     >
       <span
-        className="font-[family-name:var(--font-sans)] font-semibold"
-        style={{ fontSize: 12, color: isInfo ? "var(--color-info)" : isApproved ? "var(--color-success)" : "var(--color-critical)" }}
+        className="inline-flex items-center font-[family-name:var(--font-sans)] font-semibold"
+        style={{ gap: 6, fontSize: 12, color: "var(--color-text-primary)" }}
       >
-        {isInfo ? "Reporte read-only" : isApproved ? "Plan aprobado · en ejecución" : "Plan rechazado"}
+        <span
+          aria-hidden="true"
+          style={{ width: 6, height: 6, borderRadius: 999, background: dot }}
+        />
+        {labelText}
       </span>
       {meta ? (
         <span
@@ -1318,15 +1410,16 @@ function EditableBlock({ block, onChange }: { block: LiveArtifactBlock; onChange
  * ============================================================ */
 
 function ColHead({ label }: { label: string }) {
+  // TasteSkill polish 2026-05-28: header minimal Cursor-style mono uppercase
+  // 10px tracking-widest text-tertiary. Antes caption 11px se sentía pesado.
   return (
     <div
-      className="font-[family-name:var(--font-caption)]"
+      className="font-[family-name:var(--font-mono)] uppercase"
       style={{
         padding: "10px 14px",
-        fontSize: 11,
+        fontSize: 10,
         color: "var(--color-text-tertiary)",
-        textTransform: "uppercase",
-        letterSpacing: "0.6px",
+        letterSpacing: "var(--tracking-widest)",
         fontWeight: 500,
         borderBottom: "1px solid var(--color-border)"
       }}
@@ -1337,10 +1430,13 @@ function ColHead({ label }: { label: string }) {
 }
 
 function methodTone(method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH") {
-  if (method === "GET") return { bg: "var(--color-success-soft)", fg: "var(--color-success)" };
-  if (method === "POST") return { bg: "var(--color-info-soft)", fg: "var(--color-info)" };
-  if (method === "PUT" || method === "PATCH") return { bg: "var(--color-warning-soft)", fg: "var(--color-warning)" };
-  return { bg: "var(--color-critical-soft)", fg: "var(--color-critical)" };
+  // TasteSkill minimalist-skill 2026-05-28: methods con desaturated pastels
+  // siguiendo §4 minimalist-skill (Pale Red/Blue/Green/Yellow), no saturados.
+  // GET = neutral (lectura segura), POST/PUT/PATCH/DELETE = más visibles.
+  if (method === "GET") return { bg: "var(--color-surface-sunken)", fg: "var(--color-text-secondary)" };
+  if (method === "POST") return { bg: "var(--color-info-soft)", fg: "var(--color-info-fg)" };
+  if (method === "PUT" || method === "PATCH") return { bg: "var(--color-warning-soft)", fg: "var(--color-warning-fg)" };
+  return { bg: "var(--color-critical-soft)", fg: "var(--color-critical-fg)" };
 }
 
 function statusColor(status: number): string {

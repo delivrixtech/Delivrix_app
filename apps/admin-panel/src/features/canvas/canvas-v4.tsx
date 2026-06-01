@@ -507,47 +507,48 @@ function CanvasTopbar({
     return () => window.clearInterval(id);
   }, []);
   const ago = Math.max(0, Math.floor((Date.now() - lastUpdateAt) / 1000));
+  // Rebrand 2026-05-28: header minimal Cursor-style. Avatar B/W 24px en
+  // lugar del Sparkles 32px coloreado anti-pattern. Compactado a una sola
+  // línea con tipografía consistente.
   return (
     <header
       className="flex items-center"
       style={{
-        gap: 16,
-        padding: "12px 24px",
+        gap: 12,
+        padding: "10px 24px",
         background: "var(--color-surface)",
-        borderBottom: "1px solid var(--color-border)"
+        borderBottom: "1px solid var(--color-border)",
+        minHeight: 44
       }}
     >
-      <div className="flex items-center" style={{ gap: 10 }}>
+      <div className="flex items-center min-w-0" style={{ gap: 10 }}>
         <span
           aria-hidden="true"
-          className="grid place-items-center"
+          className="grid place-items-center shrink-0"
           style={{
-            width: 32,
-            height: 32,
-            borderRadius: 8,
-            background: "var(--color-accent-tertiary)",
-            color: "#e6edf3"
+            width: 24,
+            height: 24,
+            borderRadius: 6,
+            background: "var(--color-text-primary)",
+            color: "var(--color-bg)"
           }}
         >
-          <Sparkles size={16} strokeWidth={1.75} />
+          <Sparkles size={12} strokeWidth={2} />
         </span>
-        <div className="flex flex-col" style={{ gap: 0 }}>
-          <div className="flex items-center" style={{ gap: 8 }}>
-            <span
-              className="font-[family-name:var(--font-heading)] font-bold"
-              style={{ fontSize: 15, color: "var(--color-text-primary)" }}
-            >
-              OpenClaw
-            </span>
-            <LivePill connection={connection} />
-          </div>
-          <span
-            className="font-[family-name:var(--font-mono)]"
-            style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
-          >
-            operador supervisado · agent:main:operator · feed actualizado hace {ago}s
-          </span>
-        </div>
+        <span
+          className="font-[family-name:var(--font-heading)] font-semibold"
+          style={{ fontSize: 13, color: "var(--color-text-primary)", letterSpacing: "-0.2px" }}
+        >
+          OpenClaw
+        </span>
+        <LivePill connection={connection} />
+        <span aria-hidden="true" style={{ width: 1, height: 14, background: "var(--color-border)" }} />
+        <span
+          className="font-[family-name:var(--font-mono)] truncate"
+          style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
+        >
+          agent:main:operator · feed hace {ago}s
+        </span>
       </div>
 
       <span className="flex-1" />
@@ -596,37 +597,16 @@ function ThinkingChip() {
   // Reactivo al stream del chatClient: muestra "Pensando…" sólo cuando el
   // agente está streameando una respuesta (state.streaming !== null) o cuando
   // hay un mensaje user pendiente (queuedCount > 0). En idle no se muestra.
+  //
+  // A-CRIT-02 (2026-05-28): cuando el agente está en idle no renderizamos
+  // nada — el chip "Live" del header ya comunica que la conexión está OK.
+  // Antes mostrábamos un chip gris "Idle" al lado del verde "Live" lo cual
+  // generaba contradicción visual ("¿está vivo o no?"). Ahora solo aparece
+  // cuando hay actividad real ("Pensando…" / "Enviando").
   const state = useChatStream(chatClient);
   const active = state.streaming !== null || state.queuedCount > 0;
   if (!active) {
-    return (
-      <span
-        className="inline-flex items-center"
-        style={{
-          gap: 6,
-          padding: "6px 10px",
-          borderRadius: 8,
-          background: "var(--color-surface-sunken)",
-          border: "1px solid var(--color-border)"
-        }}
-      >
-        <span
-          aria-hidden="true"
-          style={{
-            width: 6,
-            height: 6,
-            borderRadius: 999,
-            background: "var(--color-text-tertiary)"
-          }}
-        />
-        <span
-          className="font-[family-name:var(--font-body)] font-medium"
-          style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}
-        >
-          Idle
-        </span>
-      </span>
-    );
+    return null;
   }
   const label = state.streaming ? "Pensando…" : "Enviando";
   return (
@@ -716,22 +696,156 @@ function ChatMessages() {
         </AssistantMessage>
       ) : null}
 
-      {state.lastError ? (
-        <div
-          style={{
-            padding: "8px 12px",
-            borderRadius: 8,
-            background: "var(--color-warning-soft)",
-            color: "var(--color-warning-fg)",
-            fontFamily: "var(--font-mono)",
-            fontSize: 11
-          }}
-        >
-          {state.lastError}
-        </div>
-      ) : null}
+      {state.lastError ? <ChatErrorBanner rawError={state.lastError} /> : null}
     </div>
   );
+}
+
+/**
+ * A-CRIT-03 (2026-05-28): el chat-client tira `state.lastError` con strings
+ * crudos del gateway tipo "SSH command failed with exit 255." que el operador
+ * no debe ver así. Este componente:
+ *   1. Reescribe los errores conocidos a lenguaje operativo.
+ *   2. Esconde el stderr técnico en un <details> colapsable.
+ *   3. Da contexto sobre qué pasó y qué hacer.
+ */
+function ChatErrorBanner({ rawError }: { rawError: string }) {
+  const translated = translateGatewayError(rawError);
+  return (
+    <div
+      role="alert"
+      className="flex flex-col"
+      style={{
+        gap: 8,
+        padding: "10px 14px",
+        borderRadius: 8,
+        border: "1px solid var(--color-warning)",
+        background: "var(--color-warning-soft)"
+      }}
+    >
+      <div className="flex items-start" style={{ gap: 8 }}>
+        <TriangleAlert
+          size={14}
+          strokeWidth={1.75}
+          style={{ color: "var(--color-warning)", flexShrink: 0, marginTop: 2 }}
+          aria-hidden="true"
+        />
+        <div className="flex flex-col flex-1 min-w-0" style={{ gap: 4 }}>
+          <span
+            className="font-[family-name:var(--font-sans)] font-semibold"
+            style={{ fontSize: 12, color: "var(--color-warning-fg)" }}
+          >
+            {translated.title}
+          </span>
+          <span
+            className="font-[family-name:var(--font-body)]"
+            style={{ fontSize: 12, lineHeight: 1.55, color: "var(--color-text-primary)" }}
+          >
+            {translated.body}
+          </span>
+          {translated.raw !== translated.body ? (
+            <details style={{ marginTop: 2 }}>
+              <summary
+                className="font-[family-name:var(--font-caption)]"
+                style={{
+                  fontSize: 11,
+                  color: "var(--color-text-tertiary)",
+                  cursor: "pointer",
+                  userSelect: "none"
+                }}
+              >
+                Ver detalle técnico
+              </summary>
+              <pre
+                style={{
+                  marginTop: 6,
+                  padding: "8px 10px",
+                  borderRadius: 6,
+                  background: "var(--color-surface-sunken)",
+                  border: "1px solid var(--color-border)",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  color: "var(--color-text-secondary)",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  margin: 0
+                }}
+              >
+                {translated.raw}
+              </pre>
+            </details>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Traduce errores conocidos del gateway/agent a lenguaje operativo. Si no
+ * matchea ningún patrón conocido, devuelve el raw como body (pero igual lo
+ * envuelve con título operativo + opción de ver el detalle).
+ */
+function translateGatewayError(raw: string): {
+  title: string;
+  body: string;
+  raw: string;
+} {
+  // SSH exit code patterns.
+  const sshMatch = raw.match(/SSH command failed.*exit\s+(\d+)/i);
+  if (sshMatch) {
+    const code = sshMatch[1];
+    const explain =
+      code === "255"
+        ? "OpenClaw no pudo establecer la conexión SSH. Probablemente el servidor aún no acepta conexiones desde el cluster, o cambió la huella de host."
+        : code === "1"
+        ? "OpenClaw conectó pero el comando devolvió error genérico. Revisá el detalle técnico."
+        : code === "127"
+        ? "El comando que intentó OpenClaw no existe en el servidor. Verificá que esté instalado postfix/opendkim si era SMTP."
+        : `OpenClaw conectó por SSH pero el comando salió con código ${code}.`;
+    return {
+      title: "Comando SSH no completó",
+      body: explain,
+      raw
+    };
+  }
+
+  // Gateway 502 / connection failed.
+  if (/gateway|502|fetch failed|network error/i.test(raw)) {
+    return {
+      title: "Sin respuesta del gateway",
+      body:
+        "El panel no pudo hablar con el gateway. Verificá que esté arriba en :3000. El stream WSS se reintenta automáticamente.",
+      raw
+    };
+  }
+
+  // OpenClaw timeout.
+  if (/timeout|timed out|deadline/i.test(raw)) {
+    return {
+      title: "OpenClaw no respondió a tiempo",
+      body:
+        "La petición al agente excedió el timeout configurado. Intentá de nuevo o revisá si Bedrock está latencia alta.",
+      raw
+    };
+  }
+
+  // Approval / permission denied.
+  if (/permission denied|not authorized|forbidden|requires approval/i.test(raw)) {
+    return {
+      title: "Acción requiere aprobación humana",
+      body:
+        "OpenClaw intentó una acción que no tiene permitida sin gate. Revisá el detalle y firmá la aprobación si corresponde.",
+      raw
+    };
+  }
+
+  // Fallback — al menos lo envolvemos en estructura, no lo dejamos crudo.
+  return {
+    title: "Error del agente",
+    body: raw,
+    raw
+  };
 }
 
 function EmptyChatState({ connection }: { connection: ChatConnection }) {
@@ -741,7 +855,7 @@ function EmptyChatState({ connection }: { connection: ChatConnection }) {
         <span
           aria-hidden="true"
           className="grid place-items-center"
-          style={{ width: 24, height: 24, borderRadius: 6, background: "var(--color-accent-tertiary)", color: "#fffbf5" }}
+          style={{ width: 24, height: 24, borderRadius: 6, background: "var(--color-always-dark-bg)", color: "var(--color-on-dark-strong)" }}
         >
           <Sparkles size={11} strokeWidth={1.75} />
         </span>
@@ -802,8 +916,8 @@ function AssistantMessage({
             width: 22,
             height: 22,
             borderRadius: 6,
-            background: "var(--color-accent-tertiary)",
-            color: "#e6edf3"
+            background: "var(--color-always-dark-bg)",
+            color: "var(--color-on-dark-strong)"
           }}
         >
           <Sparkles size={11} strokeWidth={1.75} />
@@ -1059,8 +1173,8 @@ function ProposalCard({
             gap: 6,
             padding: "9px 14px",
             borderRadius: 8,
-            background: "var(--color-accent-tertiary)",
-            color: "var(--color-on-dark-strong)",
+            background: "var(--color-accent)",
+            color: "var(--color-accent-fg)",
             cursor: "pointer",
             fontSize: 13,
             fontWeight: 600
@@ -1257,8 +1371,8 @@ function ChatInput() {
               width: 30,
               height: 30,
               borderRadius: 8,
-              background: "var(--color-accent-tertiary)",
-              color: "#fffbf5",
+              background: "var(--color-accent)",
+              color: "var(--color-accent-fg)",
               cursor: "pointer",
               border: "none"
             }}
@@ -1338,7 +1452,11 @@ function buildTabConfig(actions: Action[]): TabConfig[] {
   const diffCount = actions.filter((a) => a.kind === "diff").length;
   return [
     { id: "live", label: "Live", icon: <Radio size={14} strokeWidth={1.75} />, dot: true },
-    { id: "files", label: "Files", icon: <FolderTree size={14} strokeWidth={1.75} />, count: filesCount },
+    // A-MED-01 (2026-05-28): "Files" del top renombrado a "Lecturas" para
+    // distinguirlo del tab "Archivos" del workspace browser (panel medio).
+    // Conceptos distintos: top = archivos que el agente LEYÓ; medio = el
+    // filesystem completo del workspace.
+    { id: "files", label: "Lecturas", icon: <FolderTree size={14} strokeWidth={1.75} />, count: filesCount },
     { id: "terminal", label: "Terminal", icon: <Terminal size={14} strokeWidth={1.75} />, badge: "stream" },
     {
       id: "diff",
@@ -1491,7 +1609,49 @@ function LiveTab(_props: {
 
   // Una única fuente efectiva. Si demo está ON, usa el dataset; si OFF, el
   // WSS real.
-  const tasks = demoMode ? demoState.tasks : liveStream.tasks;
+  const rawTasks = demoMode ? demoState.tasks : liveStream.tasks;
+  const taskIdsWithOutput = demoMode
+    ? new Set<string>(rawTasks.map((t) => t.id))
+    : liveStream.taskIdsWithOutput;
+
+  // A-CRIT-01-B (2026-05-28): heurística para esconder tareas "fantasma" del
+  // sidebar. El extractor de intent del Bloque 9 a veces convierte un mensaje
+  // conversacional del operador en una task ejecutable y falla sin haber
+  // hecho nada — esto pintaba dos red dots "fallida hace Xm" en el top del
+  // Canvas Live destruyendo la narrativa del demo. Las filtramos cuando:
+  //
+  //   1. status === "failed"
+  //   2. NO tienen action ni artifact registrado (proxy "no ejecutó nada")
+  //   3. son root task (sin parentTaskId — las sub-tasks fallidas son
+  //      legítimas, no del extractor)
+  //
+  // Ya no chequeamos edad — Codex confirmó que las tasks fallidas
+  // conversacionales pueden quedar persistidas más allá de la ventana de
+  // 5min y no encontró archivos para borrar manualmente del workspace.
+  // El criterio "failed + root + sin output" es definitivo: si jamás tuvo
+  // action ni artifact, jamás ejecutó nada real, no aporta valor al
+  // operador. El toggle "Mostrar N ocultas" sigue disponible por si el
+  // operador quiere auditar las falsas intents acumuladas.
+  const [showInsignificantFailures, setShowInsignificantFailures] = useState(false);
+  const insignificantFailedIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const t of rawTasks) {
+      if (t.status !== "failed") continue;
+      if (t.parentTaskId) continue;
+      if (taskIdsWithOutput.has(t.id)) continue;
+      ids.add(t.id);
+    }
+    return ids;
+  }, [rawTasks, taskIdsWithOutput]);
+  const tasks = useMemo(
+    () =>
+      showInsignificantFailures
+        ? rawTasks
+        : rawTasks.filter((t) => !insignificantFailedIds.has(t.id)),
+    [rawTasks, showInsignificantFailures, insignificantFailedIds]
+  );
+  const hiddenCount = insignificantFailedIds.size;
+
   const fallbackActiveId = demoMode ? demoState.activeTaskId : liveStream.activeTaskId;
 
   const [localActiveId, setLocalActiveId] = useState<string | null>(null);
@@ -1608,70 +1768,98 @@ function LiveTab(_props: {
 
   return (
     <div className="flex flex-col" style={{ flex: 1, minHeight: 0 }}>
-      <div
-        className="flex items-center"
-        style={{
-          padding: "8px 16px",
-          background: "var(--color-surface)",
-          borderBottom: "1px solid var(--color-border)",
-          gap: 10
-        }}
-      >
-        <span
-          className="font-[family-name:var(--font-caption)] font-semibold uppercase"
+      {/* Rebrand 2026-05-28: barra de status compacta minimal. Antes era una
+          barra grande con "Canvas Live v6 · herramienta funcional" eyebrow
+          (innecesario). Ahora solo aparece si hay conexión problema, tasks
+          ocultas, o demo mode encendido — info contextual sin chrome muerto. */}
+      {(!demoMode && liveStream.connection !== "connected") || hiddenCount > 0 || demoMode ? (
+        <div
+          className="flex items-center"
           style={{
-            fontSize: 10,
-            letterSpacing: "0.6px",
-            color: "var(--color-text-tertiary)"
+            padding: "6px 16px",
+            background: "var(--color-surface-sunken)",
+            borderBottom: "1px solid var(--color-border)",
+            gap: 10,
+            minHeight: 32
           }}
         >
-          Canvas Live v6 · herramienta funcional
-        </span>
-        {!demoMode && liveStream.connection !== "connected" ? (
-          <span
-            className="font-[family-name:var(--font-mono)]"
+          {!demoMode && liveStream.connection !== "connected" ? (
+            <span
+              className="inline-flex items-center font-[family-name:var(--font-mono)]"
+              style={{
+                gap: 6,
+                fontSize: 10,
+                fontWeight: 500,
+                color: liveStream.connection === "offline" ? "var(--color-critical)" : "var(--color-warning)"
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 5,
+                  height: 5,
+                  borderRadius: 999,
+                  background: liveStream.connection === "offline" ? "var(--color-critical)" : "var(--color-warning)"
+                }}
+              />
+              {liveStream.connection}
+            </span>
+          ) : null}
+          {hiddenCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => setShowInsignificantFailures((v) => !v)}
+              title={
+                showInsignificantFailures
+                  ? "Ocultar tareas fallidas sin actividad (probable falsa intent del extractor)"
+                  : "Mostrar tareas fallidas ocultas (sin acción registrada)"
+              }
+              className="inline-flex items-center transition-colors hover:text-[var(--color-text-secondary)]"
+              style={{
+                gap: 4,
+                fontSize: 10,
+                fontFamily: "var(--font-caption)",
+                fontWeight: 500,
+                color: "var(--color-text-tertiary)",
+                cursor: "pointer",
+                background: "transparent",
+                border: 0,
+                padding: 0
+              }}
+            >
+              {showInsignificantFailures
+                ? `· Ocultar ${hiddenCount} sin actividad`
+                : `· ${hiddenCount} ocultas`}
+            </button>
+          ) : null}
+          <span style={{ flex: 1 }} />
+          <button
+            type="button"
+            onClick={() => setDemoMode((v) => !v)}
+            title={
+              demoMode
+                ? "Apagar demo · conectar al WSS real del gateway"
+                : "Encender demo · simular auditoría sin backend"
+            }
+            className="inline-flex items-center transition-colors hover:text-[var(--color-text-primary)]"
             style={{
-              fontSize: 10,
+              gap: 6,
               padding: "2px 8px",
-              borderRadius: 999,
-              background: liveStream.connection === "offline"
-                ? "var(--color-critical-soft)"
-                : "var(--color-warning-soft)",
-              color: liveStream.connection === "offline"
-                ? "var(--color-critical)"
-                : "var(--color-warning)",
-              fontWeight: 500
+              borderRadius: 4,
+              background: demoMode ? "var(--color-accent-soft)" : "transparent",
+              border: `1px solid ${demoMode ? "var(--color-accent)" : "var(--color-border)"}`,
+              color: demoMode ? "var(--color-accent)" : "var(--color-text-tertiary)",
+              cursor: "pointer",
+              fontSize: 10,
+              fontFamily: "var(--font-caption)",
+              fontWeight: 600,
+              letterSpacing: "var(--tracking-wide)"
             }}
           >
-            {liveStream.connection}
-          </span>
-        ) : null}
-        <span style={{ flex: 1 }} />
-        <button
-          type="button"
-          onClick={() => setDemoMode((v) => !v)}
-          title={
-            demoMode
-              ? "Apagar demo · conectar al WSS real del gateway"
-              : "Encender demo · simular auditoría IONOS sin backend"
-          }
-          className="inline-flex items-center transition-colors"
-          style={{
-            gap: 4,
-            padding: "4px 8px",
-            borderRadius: 9999,
-            background: demoMode ? "var(--color-info-soft)" : "var(--color-surface-sunken)",
-            border: demoMode ? "none" : "1px solid var(--color-border)",
-            color: demoMode ? "var(--color-info)" : "var(--color-text-secondary)",
-            cursor: "pointer",
-            fontSize: 10,
-            fontFamily: "var(--font-caption)",
-            fontWeight: 600
-          }}
-        >
-          Demo {demoMode ? "ON" : "OFF"}
-        </button>
-      </div>
+            Demo {demoMode ? "ON" : "OFF"}
+          </button>
+        </div>
+      ) : null}
       <LiveTool
         tasks={tasks}
         activeTaskId={activeTaskId}
@@ -2333,8 +2521,8 @@ function DiffCard({ action }: { action: DiffAction }) {
             gap: 6,
             padding: "6px 12px",
             borderRadius: 6,
-            background: "var(--color-accent-tertiary)",
-            color: "var(--color-on-dark-strong)",
+            background: "var(--color-accent)",
+            color: "var(--color-accent-fg)",
             cursor: "pointer",
             fontFamily: "var(--font-body)",
             fontSize: 11,
@@ -2547,8 +2735,8 @@ function FilesTab({ actions }: { actions: Action[] }) {
     return (
       <EmptyState
         icon={<FolderTree size={28} strokeWidth={1} />}
-        title="Sin archivos leídos por el agente"
-        body="Cuando el agente OpenClaw lea un archivo (skill read_file, snapshot, runbook lookup), aparecerá acá agrupado por path. La lista se actualiza cada 3s desde /v1/audit-events."
+        title="Sin lecturas registradas todavía"
+        body="Cuando OpenClaw lea un archivo (skill read_file, snapshot, runbook lookup), aparece acá agrupado por path. Para ver el filesystem completo del workspace, abrí el tab Archivos del panel medio. La lista se actualiza cada 3s desde /v1/audit-events."
       />
     );
   }

@@ -1,5 +1,5 @@
 /**
- * Hardware Telemetry — port LITERAL desde Pencil frame `q71MQL` / `ZMHuy`.
+ * Hardware Telemetry · port LITERAL desde Pencil frame `q71MQL` / `ZMHuy`.
  *
  * Estructura literal:
  *   Hero (kx9np):  HostCard + OpenClawPrompt (380w gradient border)
@@ -42,7 +42,7 @@ export function HardwareSection({ data }: { data: DashboardData }) {
 }
 
 /* ============================================================
- * Hero — HostCard + OpenClaw prompt
+ * Hero · HostCard + OpenClaw prompt
  * ============================================================ */
 function Hero({ data }: { data: DashboardData }) {
   return (
@@ -65,7 +65,7 @@ function formatRelative(iso: string | null | undefined): string {
   return `hace ${Math.round(diff / 86_400_000)} d`;
 }
 
-function shortHash(iso: string | null | undefined, fallback = "—"): string {
+function shortHash(iso: string | null | undefined, fallback = "·"): string {
   if (!iso) return fallback;
   // pseudo-hash legible para el slot Pencil hasta que el contrato exponga snapshot hash
   return iso.replace(/[^0-9a-f]/gi, "").slice(0, 8) || fallback;
@@ -177,7 +177,7 @@ function Chip({
 }
 
 function OpenClawPrompt({ data }: { data: DashboardData }) {
-  // Migrado a BannerOpenClawV2 — eliminadas ~120 LOC duplicadas (gradient borde + Sparkles + 2 CTAs)
+  // Migrado a BannerOpenClawV2 · eliminadas ~120 LOC duplicadas (gradient borde + Sparkles + 2 CTAs)
   const cpuPct = typeof data.telemetry.cpu.usagePercent === "number" ? data.telemetry.cpu.usagePercent : null;
   const high = cpuPct !== null && cpuPct >= 75;
   const stale = data.telemetry.summary.stale;
@@ -202,7 +202,7 @@ function OpenClawPrompt({ data }: { data: DashboardData }) {
 }
 
 /* ============================================================
- * TwoColumn — Inventario + Historial
+ * TwoColumn · Inventario + Historial
  * ============================================================ */
 function TwoColumn({ data }: { data: DashboardData }) {
   return (
@@ -215,7 +215,7 @@ function TwoColumn({ data }: { data: DashboardData }) {
 
 /**
  * Filas de inventario derivadas de `physicalHost.capacity` + `identity`. Si el
- * campo no existe en el contrato muestra "—". Los hashes/fuentes son slots
+ * campo no existe en el contrato muestra "·". Los hashes/fuentes son slots
  * decorativos del diseño Pencil hasta que el contrato exponga snapshot hashes
  * por componente.
  */
@@ -226,66 +226,66 @@ function buildInventoryRows(data: DashboardData) {
   return [
     {
       component: "CPU",
-      detail: cap.cpuCores ? `${cap.cpuCores} cores` : "—",
+      detail: cap.cpuCores ? `${cap.cpuCores} cores` : "·",
       sub: cap.cpuThreads ? `${cap.cpuThreads} threads` : "topología por detectar",
       source: ph.source.kind,
       sourceBg: "var(--color-info-soft)",
       sourceFg: "var(--color-info)",
-      hash: shortHash(ph.source.collectedAt, "#cpu—")
+      hash: shortHash(ph.source.collectedAt, "#cpu·")
     },
     {
       component: "Memoria RAM",
-      detail: cap.memoryGb ? `${cap.memoryGb} GB` : "—",
+      detail: cap.memoryGb ? `${cap.memoryGb} GB` : "·",
       sub: "DDR4 ECC",
       source: ph.source.kind,
       sourceBg: "var(--color-info-soft)",
       sourceFg: "var(--color-info)",
-      hash: shortHash(ph.generatedAt, "#ram—")
+      hash: shortHash(ph.generatedAt, "#ram·")
     },
     {
       component: "Almacenamiento",
-      detail: cap.storageUsableGb ? `${cap.storageUsableGb} GB usables` : "—",
+      detail: cap.storageUsableGb ? `${cap.storageUsableGb} GB usables` : "·",
       sub: "snapshot supervisado",
       source: "/proc",
       sourceBg: "var(--color-neutral-soft)",
       sourceFg: "var(--color-neutral)",
-      hash: shortHash(ph.source.collectedAt, "#dsk—")
+      hash: shortHash(ph.source.collectedAt, "#dsk·")
     },
     {
       component: "Interfaces de red",
       detail: `${cap.networkInterfaces ?? 0} interfaces`,
-      sub: cap.ipPoolSize ? `${cap.ipPoolSize} IPs en pool` : "—",
+      sub: cap.ipPoolSize ? `${cap.ipPoolSize} IPs en pool` : "·",
       source: ph.source.kind,
       sourceBg: "var(--color-info-soft)",
       sourceFg: "var(--color-info)",
-      hash: shortHash(ph.generatedAt, "#nic—")
+      hash: shortHash(ph.generatedAt, "#nic·")
     },
     {
       component: "Modelo",
-      detail: idem.model || "—",
+      detail: idem.model || "·",
       sub: idem.vendor || "vendor desconocido",
       source: "manifest",
       sourceBg: "var(--color-unknown-soft)",
       sourceFg: "var(--color-unknown)",
-      hash: shortHash(ph.source.collectedAt, "#mdl—")
+      hash: shortHash(ph.source.collectedAt, "#mdl·")
     },
     {
       component: "Serial",
-      detail: idem.serialNumber || "—",
+      detail: idem.serialNumber || "·",
       sub: idem.operatingSystem || "OS desconocido",
       source: "manifest",
       sourceBg: "var(--color-unknown-soft)",
       sourceFg: "var(--color-unknown)",
-      hash: shortHash(ph.generatedAt, "#srl—")
+      hash: shortHash(ph.generatedAt, "#srl·")
     },
     {
       component: "Proxmox / kernel",
-      detail: idem.proxmoxVersion || "—",
+      detail: idem.proxmoxVersion || "·",
       sub: idem.kernelVersion || "kernel desconocido",
       source: "/proc",
       sourceBg: "var(--color-neutral-soft)",
       sourceFg: "var(--color-neutral)",
-      hash: shortHash(ph.generatedAt, "#krn—")
+      hash: shortHash(ph.generatedAt, "#krn·")
     }
   ];
 }
@@ -328,7 +328,7 @@ function Inventario({ data }: { data: DashboardData }) {
         </span>
       </header>
 
-      {/* colHeader — wrap en overflow-x-auto para scroll lateral en mobile */}
+      {/* colHeader · wrap en overflow-x-auto para scroll lateral en mobile */}
       <div className="overflow-x-auto">
       <div
         className="grid items-center"
@@ -434,52 +434,115 @@ function Historial({ data }: { data: DashboardData }) {
             border: "1px solid var(--color-border)"
           }}
         >
-          {data.telemetryHistory.window || "ventana —"}
+          {data.telemetryHistory.window || "ventana ·"}
         </span>
       </header>
 
-      <ChartFromSeries title="USO CPU" pillSuffix="%" series={cpuSeries} fallbackBars={[30, 36, 42, 46, 52, 54, 60, 56, 52, 48, 42, 38]} />
-      <ChartFromSeries title="USO RAM" pillSuffix="%" series={memSeries} fallbackBars={[42, 48, 52, 50, 56, 58, 62, 64, 68, 72, 70, 66]} />
-      <ChartFromSeries title="TEMP CPU" pillSuffix="°C" series={tempSeries} fallbackBars={[22, 26, 30, 32, 36, 40, 46, 50, 54, 60, 52, 48]} />
+      {series.length === 0 ? (
+        <HistorialEmpty lastCaptureAt={data.telemetryHistory.lastCaptureAt} />
+      ) : (
+        <>
+          <ChartFromSeries title="USO CPU" pillSuffix="%" series={cpuSeries} />
+          <ChartFromSeries title="USO RAM" pillSuffix="%" series={memSeries} />
+          <ChartFromSeries title="TEMP CPU" pillSuffix="°C" series={tempSeries} />
+        </>
+      )}
     </section>
+  );
+}
+
+/**
+ * A-CRIT-04 (2026-05-28): empty state honesto cuando no hay series.
+ * Antes renderizábamos 3 gráficas con fallbackBars hardcoded (38/66/48)
+ * que contradecían el texto "Sin series disponibles" inmediatamente arriba.
+ *
+ * Ahora cuando series está vacío, mostramos por qué no hay datos y qué
+ * puede hacer el operador. lastCaptureAt es opcional · si el backend
+ * (Codex) aún no lo expone, usamos copy genérico.
+ */
+function HistorialEmpty({ lastCaptureAt }: { lastCaptureAt?: string | null }) {
+  const lastCaptureText = lastCaptureAt
+    ? `Última captura aceptada ${formatRelative(lastCaptureAt)}.`
+    : "Sin capturas aceptadas en la ventana actual.";
+  return (
+    <div
+      className="flex flex-col items-center text-center"
+      style={{
+        gap: 6,
+        padding: "32px 16px",
+        borderRadius: 8,
+        border: "1px dashed var(--color-border)",
+        background: "var(--color-surface-sunken)"
+      }}
+    >
+      <span
+        className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-secondary)]"
+      >
+        Sin telemetría aceptada todavía
+      </span>
+      <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]" style={{ maxWidth: 320, lineHeight: 1.5 }}>
+        {lastCaptureText} Solicitá un snapshot manual desde el recolector
+        cuando el servidor esté online para empezar a ver historial.
+      </span>
+    </div>
   );
 }
 
 function ChartFromSeries({
   title,
   pillSuffix,
-  series,
-  fallbackBars
+  series
 }: {
   title: string;
   pillSuffix: string;
   series: DashboardData["telemetryHistory"]["series"][number] | undefined;
-  fallbackBars: number[];
 }) {
   const points = (series?.points ?? []).filter((p) => typeof p.value === "number") as Array<{
     timestamp: string;
     value: number;
     quality: string;
   }>;
-  const bars = points.length > 0
-    ? points.slice(-12).map((p) => p.value)
-    : fallbackBars;
+  // A-CRIT-04: si no hay points reales devolvemos un placeholder por-serie
+  // discreto en vez del fallback hardcoded que mentía con 38/66/48.
+  // Esta rama típicamente no se renderiza porque Historial() ya hace
+  // empty state global cuando series.length === 0; queda como defensa por
+  // si una sub-métrica (cpu/mem/temp) específicamente falta.
+  if (points.length === 0) {
+    return (
+      <div
+        className="flex flex-col"
+        style={{
+          gap: 6,
+          padding: "12px 14px",
+          borderRadius: 6,
+          border: "1px dashed var(--color-border)",
+          background: "var(--color-surface-sunken)"
+        }}
+      >
+        <span className="text-[10px] font-[family-name:var(--font-caption)] uppercase text-[var(--color-text-tertiary)]" style={{ letterSpacing: "1.2px" }}>
+          {title}
+        </span>
+        <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
+          serie sin puntos en la ventana actual
+        </span>
+      </div>
+    );
+  }
+  const bars = points.slice(-12).map((p) => p.value);
   const lastValue = bars[bars.length - 1];
   const max = Math.max(...bars, 1);
   const normalized = bars.map((v) => Math.max(6, Math.min(60, (v / max) * 60)));
   const highlightedIndex = bars.length - 1;
-  const axis = points.length > 0
-    ? [
-        new Date(points[0].timestamp).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
-        points.length > 1
-          ? new Date(points[Math.floor(points.length / 2)].timestamp).toLocaleTimeString("es-CO", {
-              hour: "2-digit",
-              minute: "2-digit"
-            })
-          : "—",
-        "ahora"
-      ]
-    : ["-12h", "-6h", "ahora"];
+  const axis = [
+    new Date(points[0].timestamp).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
+    points.length > 1
+      ? new Date(points[Math.floor(points.length / 2)].timestamp).toLocaleTimeString("es-CO", {
+          hour: "2-digit",
+          minute: "2-digit"
+        })
+      : "·",
+    "ahora"
+  ];
   return (
     <ChartShell
       title={title}
@@ -564,7 +627,7 @@ function ChartShell({
 }
 
 /* ============================================================
- * UnknownsRow — Campos desconocidos + Datos faltantes callout
+ * UnknownsRow · Campos desconocidos + Datos faltantes callout
  * ============================================================ */
 const UNKNOWN_DESCRIPTIONS: Record<string, string> = {
   "sensors.ipmi.cpu0.thermal_margin":
@@ -788,10 +851,10 @@ function DatosFaltantes({ count }: { count: number }) {
 }
 
 /* ============================================================
- * AuditFooter — 6 rows literales Pencil
+ * AuditFooter · 6 rows literales Pencil
  * ============================================================ */
 /**
- * ManualSnapshotButton — botón + modal para ingestar snapshot manual.
+ * ManualSnapshotButton · botón + modal para ingestar snapshot manual.
  *
  * Flujo:
  * 1. El operador ejecuta `delivrix-cli capture` localmente y obtiene un JSON.
@@ -812,9 +875,9 @@ function ManualSnapshotButton() {
           gap: 6,
           padding: "9px 12px",
           borderRadius: 6,
-          background: "var(--color-surface-inverse)",
+          background: "var(--color-always-dark-bg)",
           color: "var(--color-on-dark-strong)",
-          border: "1px solid var(--color-on-dark-hint)",
+          border: "1px solid var(--color-always-dark-border)",
           cursor: "pointer"
         }}
       >
@@ -1031,7 +1094,7 @@ function ManualSnapshotModal({ onClose }: { onClose: () => void }) {
               padding: "8px 14px",
               borderRadius: 6,
               background: "var(--color-accent)",
-              color: "var(--color-on-dark-strong)",
+              color: "var(--color-accent-fg)",
               border: "none",
               cursor: mutation.isPending ? "not-allowed" : "pointer"
             }}
@@ -1096,10 +1159,10 @@ function AuditFooter({ data }: { data: DashboardData }) {
     ? buildHardwareAuditRows(events)
     : [
         {
-          ts: "—",
+          ts: "·",
           actor: "audit log vacío",
           action: "el contrato /v1/audit-events no ha registrado eventos de hardware",
-          detail: "Wave 2 — backend logging por host pendiente",
+          detail: "Wave 2 · backend logging por host pendiente",
           sourceText: "todavía",
           sourceBg: "var(--color-surface-sunken)",
           sourceFg: "var(--color-text-tertiary)",
@@ -1136,7 +1199,7 @@ function AuditFooter({ data }: { data: DashboardData }) {
         </span>
       </header>
 
-      {/* colHeader — wrap en overflow-x-auto para scroll lateral en mobile */}
+      {/* colHeader · wrap en overflow-x-auto para scroll lateral en mobile */}
       <div className="overflow-x-auto">
       <div
         className="grid items-center"

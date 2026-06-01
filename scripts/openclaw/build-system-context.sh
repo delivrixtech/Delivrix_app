@@ -5,10 +5,11 @@
 
 set -euo pipefail
 
-WORKTREE="${WORKTREE:-/Users/juanescanar/Documents/delivrix app/.claude/worktrees/youthful-mirzakhani-c517de}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WORKTREE="${WORKTREE:-${REPO_ROOT}}"
 DOCS_DIR="${WORKTREE}/DOCUMENTACION"
 AUDIT_DIR="${WORKTREE}/.audit"
-SSH_KEY="${SSH_KEY:-${WORKTREE}/../../../clonado/.ssh/openclaw_delivrix}"
+SSH_KEY="${SSH_KEY:-${REPO_ROOT}/clonado/.ssh/openclaw_delivrix}"
 SSH_HOST="${SSH_HOST:-root@2.24.223.240}"
 CONTAINER="${CONTAINER:-openclaw-dtsf-openclaw-1}"
 REMOTE_TMP="${REMOTE_TMP:-/tmp/delivrix-openclaw-kb}"

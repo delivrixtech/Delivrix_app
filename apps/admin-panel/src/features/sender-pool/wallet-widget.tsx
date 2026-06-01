@@ -1,5 +1,5 @@
 /**
- * WalletWidget — versión MVP primitivo (decisión CTO D8 + visual D10+).
+ * WalletWidget · versión MVP primitivo (decisión CTO D8 + visual D10+).
  *
  * Muestra el wallet operativo del agente para acciones costosas (hoy: solo
  * Route53 RegisterDomain). Lee audit events del gateway, filtra por mes actual
@@ -12,7 +12,7 @@
  * inteligente con tablas dedicadas, ownership, optimización LLM, alertas
  * threshold, multi-wallet y refill entra en sprint S1 post-demo.
  *
- * Caption honesto en el widget: este es "wallet primitivo" — el S1 trae
+ * Caption honesto en el widget: este es "wallet primitivo" · el S1 trae
  * control granular. El demo viernes ya muestra la metáfora wallet a jefes.
  */
 
@@ -23,7 +23,7 @@ import { getJson } from "../../shared/api/client.ts";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
 
 /* ============================================================
- * Tipos del audit event minimal — mirror del shape backend
+ * Tipos del audit event minimal · mirror del shape backend
  * ============================================================ */
 
 interface AuditEventWire {
@@ -47,7 +47,7 @@ interface AuditEventsResponse {
 }
 
 /* ============================================================
- * Constantes — vienen del env del gateway. Hoy hardcoded en frontend
+ * Constantes · vienen del env del gateway. Hoy hardcoded en frontend
  * porque el endpoint dedicado de wallet config entra en S1.
  * ============================================================ */
 
@@ -99,7 +99,7 @@ function extractCostUsd(event: AuditEventWire): number {
 }
 
 /* ============================================================
- * <WalletWidget> — root
+ * <WalletWidget> · root
  * ============================================================ */
 
 export function WalletWidget() {
@@ -321,21 +321,24 @@ function Stat({
         : tone === "critical"
           ? "var(--color-critical)"
           : "var(--color-text-primary)";
+  // TasteSkill polish 2026-05-28: stats con jerarquía clara. Antes labels
+  // 9.5px se sentían cramped; ahora label 10px tracking-widest + value 18px
+  // tabular-nums (data scanability). Sin nested sunken backgrounds.
   return (
-    <div className="flex flex-col" style={{ gap: 2 }}>
+    <div className="flex flex-col" style={{ gap: 4 }}>
       <span
-        className="font-[family-name:var(--font-caption)] font-semibold uppercase"
+        className="font-[family-name:var(--font-caption)] font-medium uppercase"
         style={{
-          fontSize: 9.5,
-          letterSpacing: "0.6px",
+          fontSize: 10,
+          letterSpacing: "var(--tracking-widest)",
           color: "var(--color-text-tertiary)"
         }}
       >
         {label}
       </span>
       <span
-        className="inline-flex items-center font-[family-name:var(--font-mono)] font-semibold"
-        style={{ gap: 4, fontSize: 14, color, lineHeight: 1.2 }}
+        className="inline-flex items-center font-[family-name:var(--font-mono)] font-semibold tabular-nums"
+        style={{ gap: 4, fontSize: 18, color, lineHeight: 1.1, letterSpacing: "-0.3px" }}
       >
         {icon ? <span style={{ color }}>{icon}</span> : null}
         {value}
@@ -372,7 +375,7 @@ function TransactionsList({
           lineHeight: 1.5
         }}
       >
-        Sin compras este mes. El wallet está intacto — cuando OpenClaw registre un
+        Sin compras este mes. El wallet está intacto · cuando OpenClaw registre un
         dominio aprovado, aparece acá con timestamp y firmante.
       </p>
     );

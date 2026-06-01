@@ -219,9 +219,10 @@ function ToastItem({ entry, onDismiss }: { entry: ToastEntry; onDismiss: () => v
       style={{
         gap: 10,
         padding: "12px 14px",
+        // Impeccable fix: hairline color en perímetro, sin side-tab 3px.
+        // El icono del meta.icon ya señala el tone semántico al usuario.
         background: "var(--color-surface)",
-        border: "1px solid var(--color-border)",
-        borderLeft: `3px solid ${meta.ringColor}`,
+        border: `1px solid ${meta.ringColor}`,
         borderRadius: "var(--radius-md)",
         boxShadow: "var(--shadow-lg)",
         pointerEvents: "auto"

@@ -1025,8 +1025,8 @@ function AuditStrip({
         gap: 10,
         padding: "14px 18px",
         borderRadius: 8,
-        background: "var(--color-surface-inverse)",
-        border: "1px solid var(--color-on-dark-hint)",
+        background: "var(--color-always-dark-bg)",
+        border: "1px solid var(--color-always-dark-border)",
         boxShadow: "var(--shadow-md)"
       }}
     >

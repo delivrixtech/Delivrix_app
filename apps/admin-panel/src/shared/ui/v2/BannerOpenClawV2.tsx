@@ -129,8 +129,9 @@ export function BannerOpenClawV2({
         gap: 14,
         padding: "14px 16px",
         borderRadius: "var(--radius-md)",
+        // Impeccable fix: hairline en perímetro + surface tint, no side-tab.
         background: "var(--color-warning-soft)",
-        borderLeft: "3px solid var(--color-warning)"
+        border: "1px solid var(--color-warning)"
       }}
     >
       <div
@@ -140,7 +141,10 @@ export function BannerOpenClawV2({
           width: 32,
           height: 32,
           borderRadius: 8,
-          background: "var(--color-accent-tertiary)",
+          // Fix 2026-05-28: antes usaba accent-tertiary que vira a #ffffff
+          // en dark mode, dejando el sparkle blanco sobre cuadrado blanco
+          // (invisible). always-dark-bg lo fija a negro en cualquier tema.
+          background: "var(--color-always-dark-bg)",
           color: "var(--color-on-dark-strong)"
         }}
       >

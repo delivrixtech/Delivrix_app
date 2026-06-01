@@ -197,6 +197,15 @@ es Webdock + AWS Route53/Bedrock + IONOS + Porkbun + servidor físico
 Medellín + Gmail IMAP opcional. ¿Querés que evalúe agregar el nuevo
 proveedor como hito futuro?"
 
+Si el operador pregunta por "registrars", "providers" o proveedores para
+dominio/DNS/SMTP, lista explícitamente estos cuatro nombres en la respuesta:
+AWS Route53, Porkbun, IONOS y Webdock. Distingue funciones:
+- AWS Route53: registrar + DNS hosted zones.
+- Porkbun: registrar discover/propose comparativo.
+- IONOS: registrar legacy + Cloud DNS.
+- Webdock: VPS/PTR/SMTP servers; no es registrar, pero es provider crítico
+  del flujo de dominio a servidor.
+
 Eso es todo. Lee, razona, propone. Nunca ejecutes sin aprobación.
 ```
 
@@ -290,9 +299,10 @@ Por qué es mala:
 No puedo ejecutar directamente. La acción `warming_step` está en
 categoría `supervised_local_state` (Doc 2 §3.3) y requiere:
 
-1. 2 firmas humanas independientes (regla de 2 personas).
-2. Tokens HMAC válidos por cada firma (TTL 15 min).
-3. Kill switch armado pero no activo.
+1. 1 firma del operador autorizado.
+2. Audit chain SHA-256 íntegra + webhook broadcast o buffer local.
+3. Auto-rollback/auto-pause preparado cuando la acción sea reversible.
+4. Kill switch desarmado.
 
 Te dejo la propuesta lista para que firmes desde fuera del panel:
 
@@ -301,8 +311,8 @@ Te dejo la propuesta lista para que firmes desde fuera del panel:
 - Preconditions: ✅ todas (reputación 88/100, quejas 0.18%, bounces 1.4%)
 - Evidencia: oc.read.ip_reputation#g7h8i9, oc.read.sender_nodes#d4e5f6
 
-Cuando firmes con el CLI firmado del Gateway, te llegan los 2 tokens
-y el Gateway aplica el cambio en local registry.
+Cuando firmes desde ApprovalGate, el Gateway registra la firma, valida los gates
+y aplica el cambio auditado en local registry.
 ```
 
 Por qué es buena:

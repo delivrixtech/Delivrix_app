@@ -131,9 +131,13 @@ test("2. Botón 'Firmar y ejecutar' deshabilitado inicial (timer > 0)", async ()
   // Caption del timer visible
   assert.match(markup, /Botón habilita en 5s/);
   // Botón sign disabled
+  const disabledSignBtnMatch = markup.match(
+    /<button[^>]*data-testid="approval-gate-sign"[^>]*>/
+  );
+  assert.ok(disabledSignBtnMatch, "debe existir el botón firmar");
   assert.match(
-    markup,
-    /data-testid="approval-gate-sign"[^>]*disabled/,
+    disabledSignBtnMatch[0],
+    /\sdisabled(?:=""|\s|>)/,
     "el botón firmar debe estar disabled mientras corre el timer"
   );
   assert.match(markup, /Firmar y ejecutar/);
@@ -155,7 +159,7 @@ test("3. Con minReadSeconds=0 y gates ok el botón firmar NO está disabled", as
   assert.ok(signBtnMatch, "debe existir el botón firmar");
   assert.doesNotMatch(
     signBtnMatch[0],
-    /disabled/,
+    /\sdisabled(?:=""|\s|>)/,
     "con timer=0 y gates ok el botón firmar no puede estar disabled"
   );
 });
@@ -334,5 +338,30 @@ test("7b. signProposal lanza error genérico cuando el server no devuelve JSON",
         fakeFetch
       ),
     /Sign failed \(HTTP 500\)/
+  );
+});
+
+test("7c. signProposal muestra rejectReason + details del gateway", async () => {
+  const { signProposal } = await loadModule();
+  const fakeFetch: typeof fetch = async () =>
+    new Response(
+      JSON.stringify({
+        ok: false,
+        rejectReason: "schema_mismatch",
+        details: "proposalId must be a UUID v4."
+      }),
+      { status: 400, headers: { "content-type": "application/json" } }
+    );
+  await assert.rejects(
+    () =>
+      signProposal(
+        {
+          auditId: "oc.proposal.legacy",
+          actorId: "operator/juanes",
+          signature: "fake"
+        },
+        fakeFetch
+      ),
+    /schema_mismatch: proposalId must be a UUID v4\./
   );
 });

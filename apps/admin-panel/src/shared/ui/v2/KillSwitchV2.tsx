@@ -39,9 +39,10 @@ export function KillSwitchV2({ state, title, body, onHistory, className }: KillS
         gap: 16,
         padding: "20px 24px",
         borderRadius: "var(--radius-md)",
-        background: "var(--color-surface)",
-        border: "1px solid var(--color-border)",
-        borderLeft: `4px solid ${s.border}`,
+        // Impeccable fix: hairline 1px en perímetro completo + surface
+        // ligeramente sunken con tinte del tone. Antes era side-tab 4px.
+        background: s.bg,
+        border: `1px solid ${s.border}`,
         minWidth: 0
       }}
     >

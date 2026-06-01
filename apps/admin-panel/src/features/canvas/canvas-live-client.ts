@@ -43,6 +43,14 @@ export interface UseLiveCanvasStreamResult {
   approveArtifact: () => Promise<void>;
   rejectArtifact: (reason?: string) => Promise<void>;
   patchBlock: (blockId: string, content: string) => Promise<void>;
+  /**
+   * A-CRIT-01-B (2026-05-28): IDs de tareas que tienen al menos 1 action
+   * registrada o 1 artifact. El frontend usa este Set para detectar tareas
+   * "vacías" (sin output) que típicamente son falsos positivos del extractor
+   * de intent del Bloque 9 cuando convierte un mensaje conversacional del
+   * operador en una task ejecutable y luego falla sin haber hecho nada.
+   */
+  taskIdsWithOutput: ReadonlySet<string>;
 }
 
 interface InternalState {
@@ -435,6 +443,12 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
     setActiveTaskIdState(id);
   }, []);
 
+  // A-CRIT-01-B: derivar el set de taskIds con output real.
+  const taskIdsWithOutput = new Set<string>([
+    ...stateRef.current.lastAction.keys(),
+    ...[...stateRef.current.artifacts.values()].map((a) => a.taskId)
+  ]);
+
   return {
     tasks,
     activeTaskId,
@@ -445,7 +459,8 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
     lastError,
     approveArtifact,
     rejectArtifact,
-    patchBlock
+    patchBlock,
+    taskIdsWithOutput
   };
 }
 

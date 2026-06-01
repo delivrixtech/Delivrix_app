@@ -261,7 +261,7 @@ function renderBlock(block: Block, baseFontSize: number): ReactNode {
           margin: "8px 0",
           padding: "10px 12px",
           borderRadius: 6,
-          background: "var(--color-surface-inverse)",
+          background: "var(--color-always-dark-bg)",
           color: "var(--color-on-dark-strong)",
           fontFamily: "var(--font-mono)",
           fontSize: baseFontSize - 1,

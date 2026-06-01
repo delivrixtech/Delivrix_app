@@ -318,6 +318,22 @@ function Form({ data }: { data: DashboardData }) {
     return v !== undefined && v !== null && v !== "" ? String(v) : fb;
   };
 
+  // A-MED-05 (2026-05-28): Codex 6500a15 expone environment ("mvp.local")
+  // separado de releasePhase (sprint phase interno). Antes ENTORNO mostraba
+  // "5.9-manual-snapshot-ingestion-ux" que era jerga.
+  const environmentLabel =
+    data.onboardingState.environment ?? data.operatingNorth.environment ?? "mvp.local";
+
+  // A-MED-07: sections del backend con detectedFieldCount permite mostrar
+  // tag warning si la sección no tiene campos detectados aún.
+  const sectionsById = new Map(
+    (data.onboardingState.sections ?? []).map((s) => [s.id, s])
+  );
+  const serverSection = sectionsById.get("server");
+  const serverDetected = serverSection?.detectedFieldCount ?? 0;
+  const serverTotal = serverSection?.totalFieldCount ?? 0;
+  const serverNoData = serverSection != null && serverDetected === 0;
+
   // Helpers para mostrar capacidad real desde el contrato o '—' si null.
   const cpuLine = cap.cpuCores
     ? `${cap.cpuCores} cores${cap.cpuThreads ? ` · ${cap.cpuThreads} threads` : ""}`
@@ -343,20 +359,31 @@ function Form({ data }: { data: DashboardData }) {
         <FieldRow label="HOSTNAME" value={ph.identity.label || knownStr("hostname", "—")} />
         <FieldRow label="DATACENTER" value={ph.identity.location || knownStr("datacenter", "—")} />
         <FieldRow label="ROL" value={on.delivrixRole || knownStr("role", "—")} />
-        <FieldRow label="ENTORNO" value={data.health.phase || knownStr("environment", "—")} />
+        <FieldRow label="ENTORNO" value={environmentLabel} />
       </SectionCard>
 
-      {/* Sección 2 — Inventario de cómputo (capacidad real desde el contrato) */}
+      {/* Sección 2 — Inventario de cómputo (capacidad real desde el contrato)
+       *
+       * A-MED-07 (2026-05-28): si el backend reporta detectedFieldCount=0
+       * cambiamos el tag de verde "detectado" a warning "pendiente · esperando
+       * snapshot" — antes era engañoso ver el verde con todos los campos en --.
+       */}
       <SectionCard
-        iconBg="var(--color-info-soft)"
-        iconColor="var(--color-info)"
+        iconBg={serverNoData ? "var(--color-warning-soft)" : "var(--color-info-soft)"}
+        iconColor={serverNoData ? "var(--color-warning)" : "var(--color-info)"}
         icon={<Cpu size={16} strokeWidth={1.75} aria-hidden="true" />}
         kicker="SECCIÓN 2"
         title="Inventario de cómputo"
-        pillBg="var(--color-info-soft)"
-        pillFg="var(--color-info)"
-        pillDot="var(--color-info)"
-        pillText="detectado por el recolector"
+        pillBg={serverNoData ? "var(--color-warning-soft)" : "var(--color-info-soft)"}
+        pillFg={serverNoData ? "var(--color-warning)" : "var(--color-info)"}
+        pillDot={serverNoData ? "var(--color-warning)" : "var(--color-info)"}
+        pillText={
+          serverSection
+            ? serverNoData
+              ? "pendiente · esperando snapshot"
+              : `${serverDetected}/${serverTotal} campos detectados`
+            : "detectado por el recolector"
+        }
       >
         <FieldRow label="CPU" value={cpuLine} badge={cap.cpuCores ? "DETECTADO" : undefined} />
         <FieldRow label="MEMORIA RAM" value={ramLine} badge={cap.memoryGb ? "DETECTADO" : undefined} />
@@ -364,17 +391,26 @@ function Form({ data }: { data: DashboardData }) {
         <FieldRow label="ENLACE PRIMARIO" value={linkLine} badge={cap.networkInterfaces ? "DETECTADO" : undefined} />
       </SectionCard>
 
-      {/* Sección 3 — Interfaces de red (knownInputs cuando exista; placeholder cuando falte) */}
+      {/* Sección 3 — Interfaces de red (knownInputs cuando exista; placeholder cuando falte)
+       *
+       * A-ALT-06 (2026-05-28): cuando count===0 el tag debe ser warning, no
+       * success. 0 interfaces en un servidor de envío bloquea operación
+       * normal — comunicarlo como OK era engañoso.
+       */}
+      {(() => {
+        const ifaces = cap.networkInterfaces ?? 0;
+        const isZero = ifaces === 0;
+        return (
       <SectionCard
-        iconBg="var(--color-success-soft)"
-        iconColor="var(--color-success)"
+        iconBg={isZero ? "var(--color-warning-soft)" : "var(--color-success-soft)"}
+        iconColor={isZero ? "var(--color-warning)" : "var(--color-success)"}
         icon={<Network size={16} strokeWidth={1.75} aria-hidden="true" />}
         kicker="SECCIÓN 3"
         title="Interfaces de red"
-        pillBg="var(--color-success-soft)"
-        pillFg="var(--color-success)"
-        pillDot="var(--color-success)"
-        pillText={`${cap.networkInterfaces ?? 0} interfaces declaradas`}
+        pillBg={isZero ? "var(--color-warning-soft)" : "var(--color-success-soft)"}
+        pillFg={isZero ? "var(--color-warning)" : "var(--color-success)"}
+        pillDot={isZero ? "var(--color-warning)" : "var(--color-success)"}
+        pillText={isZero ? "0 interfaces · pendiente de captura" : `${ifaces} interfaces declaradas`}
       >
         <FieldRow label="BOND0 · ENVÍO" value={knownStr("interface_primary", "—")} />
         <FieldRow label="ETH2 · GESTIÓN" value={knownStr("interface_management", "—")} />
@@ -388,6 +424,8 @@ function Form({ data }: { data: DashboardData }) {
           value={knownStr("public_domain", cap.ipPoolSize ? `${cap.ipPoolSize} IPs · pool` : "—")}
         />
       </SectionCard>
+        );
+      })()}
     </div>
   );
 }
@@ -529,15 +567,20 @@ function OpenClawColumn({ data }: { data: DashboardData }) {
 
 function OpenClawCard({ unknownsCount, blockers }: { unknownsCount: number; blockers: number }) {
   // Migrado a BannerOpenClawV2 — ~130 LOC duplicadas eliminadas (gradient bulky + ocInput + ocActions)
+  //
+  // A-MED-06 (2026-05-28): cambiamos "bloqueos" → "ítems pendientes". El
+  // término "bloqueo" sugería alarma crítica cuando son ítems normales del
+  // checklist de onboarding que aún no se completaron. Lenguaje neutral
+  // sin perder información.
   const title =
     blockers > 0
-      ? `${blockers} bloqueo${blockers === 1 ? "" : "s"} en onboarding`
+      ? `${blockers} ítem${blockers === 1 ? "" : "s"} pendiente${blockers === 1 ? "" : "s"} en onboarding`
       : unknownsCount > 0
         ? `${unknownsCount} campo${unknownsCount === 1 ? "" : "s"} sin completar`
         : "Inventario completo";
   const body =
     blockers > 0
-      ? `Tengo ${blockers} bloqueo${blockers === 1 ? "" : "s"} pendiente${blockers === 1 ? "" : "s"}. ¿Quieres que resuma el más crítico antes del gate?`
+      ? `Tengo ${blockers} ítem${blockers === 1 ? "" : "s"} pendiente${blockers === 1 ? "" : "s"} antes del gate. ¿Quieres que resuma el más crítico?`
       : unknownsCount > 0
         ? `Detecté ${unknownsCount} campo${unknownsCount === 1 ? "" : "s"} sin completar en tu inventario. ¿Quieres que resuma lo que falta antes del gate de cumplimiento?`
         : "Inventario completo. Puedo proponer el plan de topología cuando lo autorices.";
@@ -610,7 +653,7 @@ function GatesStrip({ data }: { data: DashboardData }) {
         title="Cumplimiento pendiente"
         pillBg="var(--color-warning-soft)"
         pillFg="var(--color-warning)"
-        pillText={blockersCount > 0 ? `${blockersCount} bloqueos` : "revisión humana"}
+        pillText={blockersCount > 0 ? `${blockersCount} pendientes` : "revisión humana"}
         desc="A la espera de que un revisor humano firme el cumplimiento de políticas y registre la evidencia."
       />
       <GateCard

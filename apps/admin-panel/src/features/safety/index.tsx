@@ -386,7 +386,7 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
       className="flex flex-col overflow-hidden"
       style={{
         borderRadius: 10,
-        background: "var(--color-surface-inverse)",
+        background: "var(--color-always-dark-bg)",
         border: "1px solid var(--color-on-dark-hint)",
         boxShadow: "var(--shadow-md)"
       }}
@@ -448,7 +448,7 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
           gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)",
           gap: 16,
           padding: "14px 24px",
-          background: "var(--color-surface-inverse)",
+          background: "var(--color-always-dark-bg)",
           borderTop: "1px solid var(--color-on-dark-hint)"
         }}
       >
@@ -632,15 +632,19 @@ function RolesCard({
   pulseActive: boolean;
 }) {
   const stale = staleBadgeFor(meta);
+  // A-BAJ-04 (2026-05-28): Codex 6500a15 expone displayName ES por rol
+  // (ej. "Operador supervisado (sólo lectura)" en vez de "Operador" raw).
+  // Si el backend no lo retorna, fallback al name corto.
   const roles =
     contractRoles.length > 0
       ? contractRoles.map((r) => ({
-          name: r.name,
+          name: (r as unknown as { displayName?: string }).displayName ?? r.name,
+          rawName: r.name,
           count: r.userCount,
           color: roleColorHex(r.color),
           derivedFrom: r.countDerivedFrom
         }))
-      : [{ name: "Sin roles del contrato", count: 0, color: "var(--color-text-secondary)" }];
+      : [{ name: "Sin roles del contrato", rawName: "n/a", count: 0, color: "var(--color-text-secondary)" }];
   return (
     <section
       className="flex flex-col bg-[var(--color-surface)]"
@@ -662,13 +666,14 @@ function RolesCard({
       <ul className="m-0 p-0 list-none flex flex-col">
         {roles.map((r, i) => (
           <li
-            key={r.name}
+            key={r.rawName}
             className="flex items-center"
             style={{
               gap: 8,
               padding: "10px 16px",
               borderBottom: i < roles.length - 1 ? "1px solid var(--color-border)" : "none"
             }}
+            title={r.rawName !== r.name ? r.rawName : undefined}
           >
             <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: r.color }} />
             <span className="text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-primary)]">{r.name}</span>

@@ -1,5 +1,5 @@
 /**
- * Recolector y captura manual — port LITERAL desde Pencil frame `k70xK` / `SqPKX`.
+ * Recolector y captura manual · port LITERAL desde Pencil frame `k70xK` / `SqPKX`.
  *
  * Estructura literal:
  *   Hero (Dl3tb)
@@ -185,7 +185,7 @@ function Tabs({
 }
 
 /**
- * ManualCaptureTab — formulario inline para ingestar snapshots manuales.
+ * ManualCaptureTab · formulario inline para ingestar snapshots manuales.
  *
  * Vive en el tab "Captura manual". Permite al operador pegar el JSON producido
  * por `delivrix-cli capture` y enviarlo al endpoint protegido del backend.
@@ -340,7 +340,7 @@ function ManualCaptureTab() {
             padding: "10px 18px",
             borderRadius: 6,
             background: "var(--color-accent)",
-            color: "var(--color-on-dark-strong)",
+            color: "var(--color-accent-fg)",
             border: "none",
             cursor: mutation.isPending ? "not-allowed" : "pointer"
           }}
@@ -357,7 +357,7 @@ function ManualCaptureTab() {
 }
 
 /* ============================================================
- * SourcesRow (KFzUx) — 4 source cards
+ * SourcesRow (KFzUx) · 4 source cards
  * ============================================================ */
 function statusStyle(status: string): {
   state: string;
@@ -412,23 +412,46 @@ function SourcesRow({ data }: { data: DashboardData }) {
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4" style={{ gap: 14 }}>
       {sources.map((s) => {
         const style = statusStyle(s.status);
+        // A-MED-09/A-MED-10 (2026-05-28): Codex 6500a15 expone url:null
+        // cuando la fuente no tiene URL real configurada + blockedReasonOperator
+        // (ES) + expectedInMvp. El frontend ya no debe mostrar placeholders
+        // ".invalid" porque el backend manda null y aquí caemos al
+        // commandPreview / transport.
+        const sExt = s as unknown as {
+          url?: string | null;
+          blockedReasonOperator?: string;
+          expectedInMvp?: boolean;
+        };
+        const endpoint = s.safeCollection.endpoint
+          ? `${s.safeCollection.transport.toUpperCase()} · ${s.safeCollection.endpoint}`
+          : sExt.url
+            ? `${s.safeCollection.transport.toUpperCase()} · ${sExt.url}`
+            : s.safeCollection.commandPreview || `${s.safeCollection.transport} · URL pendiente`;
+        // Si el bloqueo es esperado en MVP, suavizamos el tono del badge
+        // de neutro en vez de crítico · operador entiende que es estado
+        // del roadmap, no problema real.
+        const styleAdjusted = sExt.expectedInMvp && style.state.toLowerCase().includes("bloque")
+          ? {
+              ...style,
+              stateBg: "var(--color-surface-sunken)",
+              stateFg: "var(--color-text-secondary)"
+            }
+          : style;
         return (
           <SourceCard
             key={s.id}
             name={s.label}
             icon={sourceIcon(s.kind)}
-            state={style.state}
-            stateBg={style.stateBg}
-            stateFg={style.stateFg}
-            confidence={style.confidence}
-            confidenceColor={style.confidenceColor}
-            endpoint={
-              s.safeCollection.endpoint
-                ? `${s.safeCollection.transport.toUpperCase()} · ${s.safeCollection.endpoint}`
-                : s.safeCollection.commandPreview || s.safeCollection.transport
-            }
+            state={styleAdjusted.state}
+            stateBg={styleAdjusted.stateBg}
+            stateFg={styleAdjusted.stateFg}
+            confidence={styleAdjusted.confidence}
+            confidenceColor={styleAdjusted.confidenceColor}
+            endpoint={endpoint}
             mode={s.readOnly ? "solo lectura" : "rw"}
             lastSeen={relativeAge(s.freshness.lastCollectedAt)}
+            blockedReasonOperator={sExt.blockedReasonOperator}
+            expectedInMvp={sExt.expectedInMvp}
           />
         );
       })}
@@ -446,7 +469,9 @@ function SourceCard({
   confidenceColor,
   endpoint,
   mode,
-  lastSeen
+  lastSeen,
+  blockedReasonOperator,
+  expectedInMvp
 }: {
   name: string;
   icon: React.ReactNode;
@@ -458,6 +483,9 @@ function SourceCard({
   endpoint: string;
   mode: string;
   lastSeen: string;
+  /** A-MED-09: razón en ES del bloqueo + flag si es estado esperado del MVP. */
+  blockedReasonOperator?: string;
+  expectedInMvp?: boolean;
 }) {
   return (
     <article
@@ -509,7 +537,7 @@ function SourceCard({
           className="text-[26px] font-[family-name:var(--font-mono)] font-bold leading-none tabular-nums"
           style={{ letterSpacing: "var(--tracking-tightest)", color: confidenceColor }}
         >
-          {confidence === 0 ? "—" : `${confidence}%`}
+          {confidence === 0 ? "·" : `${confidence}%`}
         </span>
         <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)] leading-none">
           confianza
@@ -543,16 +571,34 @@ function SourceCard({
           >
             {mode}
           </span>
+          {expectedInMvp ? (
+            <span
+              className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-info)]"
+              style={{ padding: "1px 6px", borderRadius: 4, background: "var(--color-info-soft)", letterSpacing: "var(--tracking-wide)" }}
+              title="Estado esperado del MVP · no es un problema"
+            >
+              esperado MVP
+            </span>
+          ) : null}
           <span className="flex-1" aria-hidden="true" />
           <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{lastSeen}</span>
         </div>
+        {blockedReasonOperator ? (
+          // A-MED-09: razón ES del bloqueo, visible sin necesidad de hover.
+          <span
+            className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]"
+            style={{ lineHeight: 1.45 }}
+          >
+            {blockedReasonOperator}
+          </span>
+        ) : null}
       </div>
     </article>
   );
 }
 
 /* ============================================================
- * OpenClaw Prompt — migrado a BannerOpenClawV2 (~145 LOC duplicadas eliminadas).
+ * OpenClaw Prompt · migrado a BannerOpenClawV2 (~145 LOC duplicadas eliminadas).
  * Mantiene la lógica de derivación de mensaje por estado de fuente
  * (blocked > stale > unknown > ok); el chrome es ahora el del building block v2.
  * ============================================================ */
@@ -585,7 +631,7 @@ function OpenClawPromptWrap({ data }: { data: DashboardData }) {
 }
 
 /* ============================================================
- * AcceptedFieldsSection (t0dbV) — tabla 6 columnas
+ * AcceptedFieldsSection (t0dbV) · tabla 6 columnas
  * ============================================================ */
 function sourceStylePill(kind: string): { bg: string; fg: string } {
   const t = kind.toLowerCase();
@@ -798,7 +844,7 @@ function buildAuditRows(data: DashboardData): Array<[string, string, string, str
     5
   );
   if (events.length === 0) {
-    return [["—", "—", "sin audit", "el contrato no registró eventos de ingesta todavía", "—"]];
+    return [["·", "·", "sin audit", "el contrato no registró eventos de ingesta todavía", "·"]];
   }
   return events.map((e) => [
     formatTimeOnly(e.occurredAt),
@@ -988,8 +1034,8 @@ function CliSnippet() {
     <section
       style={{
         borderRadius: 8,
-        background: "var(--color-surface-inverse)",
-        border: "1px solid var(--color-on-dark-hint)",
+        background: "var(--color-always-dark-bg)",
+        border: "1px solid var(--color-always-dark-border)",
         overflow: "hidden",
         boxShadow: "var(--shadow-md)"
       }}
@@ -1010,7 +1056,7 @@ function CliSnippet() {
             className="ml-2 text-[11px] font-[family-name:var(--font-mono)]"
             style={{ color: "var(--color-on-dark-medium)" }}
           >
-            delivrix-cli — captura manual
+            delivrix-cli · captura manual
           </span>
         </div>
         <button

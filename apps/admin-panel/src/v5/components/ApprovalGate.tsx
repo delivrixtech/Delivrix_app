@@ -67,6 +67,8 @@ interface SignResponse {
   signatureId?: string;
   signedAt?: string;
   message?: string;
+  rejectReason?: string;
+  details?: string;
   blockers?: string[];
 }
 
@@ -104,7 +106,7 @@ export async function signProposal(
   const raw: unknown = await response.json().catch(() => ({}));
   const payload = (raw ?? {}) as Partial<SignResponse>;
   if (!response.ok) {
-    throw new Error(payload.message ?? `Sign failed (HTTP ${response.status})`);
+    throw new Error(signErrorMessage(payload, response.status));
   }
   return {
     ok: payload.ok ?? true,
@@ -112,6 +114,18 @@ export async function signProposal(
     signedAt: payload.signedAt,
     message: payload.message
   };
+}
+
+function signErrorMessage(payload: Partial<SignResponse>, status: number): string {
+  if (typeof payload.message === "string" && payload.message.trim()) {
+    return payload.message.trim();
+  }
+  const reason = typeof payload.rejectReason === "string" ? payload.rejectReason.trim() : "";
+  const details = typeof payload.details === "string" ? payload.details.trim() : "";
+  if (reason && details) return `${reason}: ${details}`;
+  if (reason) return reason;
+  if (details) return details;
+  return `Sign failed (HTTP ${status})`;
 }
 
 export function ApprovalGate({

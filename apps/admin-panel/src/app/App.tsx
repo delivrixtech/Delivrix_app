@@ -204,28 +204,30 @@ export function App() {
         <div
           className={cn(
             "grid min-h-screen grid-cols-1",
+            // Rebrand 2026-05-28: el sidebar nunca desaparece — colapsa a
+            // 64px icon-only (Linear/Notion style). Eso lo hace profesional.
             sidebarCollapsed
-              ? "md:grid-cols-[minmax(0,1fr)]"
-              : "md:grid-cols-[200px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]"
+              ? "md:grid-cols-[64px_minmax(0,1fr)]"
+              : "md:grid-cols-[240px_minmax(0,1fr)] lg:grid-cols-[256px_minmax(0,1fr)]"
           )}
         >
           {mobileNavOpen ? (
             <button
               type="button"
               aria-label="Cerrar navegación"
-              className="fixed inset-0 z-30 bg-[rgba(0,0,0,0.28)] md:hidden"
+              className="fixed inset-0 z-30 bg-[rgba(0,0,0,0.4)] backdrop-blur-sm md:hidden"
               onClick={() => setMobileNavOpen(false)}
             />
           ) : null}
-          {sidebarCollapsed ? null : (
-            <Sidebar
-              activeSection={activeSection}
-              onSelect={selectSection}
-              mobileOpen={mobileNavOpen}
-              onCloseMobile={() => setMobileNavOpen(false)}
-              data={dashboard.data}
-            />
-          )}
+          <Sidebar
+            activeSection={activeSection}
+            onSelect={selectSection}
+            mobileOpen={mobileNavOpen}
+            onCloseMobile={() => setMobileNavOpen(false)}
+            data={dashboard.data}
+            collapsed={sidebarCollapsed}
+            onToggleCollapsed={() => setSidebarCollapsed((v) => !v)}
+          />
           <div className="flex flex-col min-w-0">
             <Topbar
               activeSection={activeSection}
@@ -242,6 +244,7 @@ export function App() {
               onToggleChat={() => setChatOpen((value) => !value)}
               sidebarCollapsed={sidebarCollapsed}
               onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+              health={dashboard.data?.health}
             />
             <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-6 md:px-7 lg:px-10 xl:px-14 2xl:px-16">
               <div className="mx-auto w-full" style={{ maxWidth: 1680 }}>
@@ -259,6 +262,7 @@ export function App() {
                 ) : null}
               </div>
             </main>
+            <Footer health={dashboard.data?.health} operatingNorth={dashboard.data?.operatingNorth} />
           </div>
         </div>
         {chatOpen ? (
@@ -290,7 +294,8 @@ function Topbar({
   chatOpen,
   onToggleChat,
   sidebarCollapsed,
-  onToggleSidebar
+  onToggleSidebar,
+  health
 }: {
   activeSection: SectionId;
   isFetching: boolean;
@@ -301,6 +306,7 @@ function Topbar({
   onToggleChat: () => void;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
+  health?: DashboardData["health"];
 }) {
   const section = sectionsById[activeSection];
   const { toast } = useToast();
@@ -320,8 +326,10 @@ function Topbar({
   };
   return (
     <header
-      className="flex flex-wrap items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 py-3 sm:flex-nowrap sm:gap-4 sm:px-5 sm:py-4 md:px-6 lg:px-7"
+      className="sticky top-0 z-30 flex items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg)] px-4 sm:gap-2 sm:px-5 md:px-6 lg:px-7"
+      style={{ height: "var(--topbar-height, 56px)" }}
     >
+      {/* === LEFT === Toggle mobile / sidebar */}
       <Tooltip hint={mobileNavOpen ? "Cerrar navegación" : "Abrir navegación"} side="bottom">
         <Button
           variant="ghost"
@@ -339,69 +347,45 @@ function Topbar({
         </Button>
       </Tooltip>
 
-      <Tooltip
-        hint={sidebarCollapsed ? "Mostrar barra lateral (⌘ \\)" : "Ocultar barra lateral (⌘ \\)"}
-        side="bottom"
-      >
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={sidebarCollapsed ? "Mostrar barra lateral" : "Ocultar barra lateral"}
-          aria-pressed={sidebarCollapsed}
-          onClick={onToggleSidebar}
-          className="hidden text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] md:inline-flex"
-        >
-          {sidebarCollapsed ? (
-            <PanelLeftOpen size={16} strokeWidth={1.75} aria-hidden="true" />
-          ) : (
-            <PanelLeftClose size={16} strokeWidth={1.75} aria-hidden="true" />
-          )}
-        </Button>
-      </Tooltip>
+      {/* Toggle sidebar movido al header del sidebar (Linear/Notion/Cursor
+          style). Cuando colapsado, el sidebar mismo expone un botón para
+          re-expandirse. */}
 
-      {/* Breadcrumb */}
-      <nav aria-label="Breadcrumb" className="flex items-center gap-2 min-w-0">
-        <span className="text-[12px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-          Operar
+      {/* === BREADCRUMB === Group → Section, con tipografía clara */}
+      <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2">
+        <span className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-tertiary)]">
+          {sectionGroupLabels[section.group]}
         </span>
-        <ChevronRight size={12} strokeWidth={1.75} className="text-[var(--color-text-tertiary)] shrink-0" aria-hidden="true" />
-        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] truncate">
+        <ChevronRight size={12} strokeWidth={2} className="shrink-0 text-[var(--color-text-disabled)]" aria-hidden="true" />
+        <span className="truncate text-[14px] font-[family-name:var(--font-heading)] font-semibold text-[var(--color-text-primary)]" style={{ letterSpacing: "-0.2px" }}>
           {section.navLabel}
         </span>
       </nav>
 
       <span className="flex-1" aria-hidden="true" />
 
-      {/* Command palette trigger */}
+      {/* === SEARCH === Paleta de comandos */}
       <Tooltip hint="Paleta de comandos (⌘K)" side="bottom">
         <button
           type="button"
           onClick={palette.open}
           aria-label="Abrir paleta de comandos"
-          className="inline-flex items-center transition-colors hover:bg-[var(--color-surface-sunken)]"
-          style={{
-            gap: 8,
-            padding: "5px 10px",
-            border: "1px solid var(--color-border)",
-            borderRadius: 6,
-            background: "var(--color-surface)",
-            color: "var(--color-text-tertiary)",
-            cursor: "pointer"
-          }}
+          className="hidden items-center gap-2 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-[var(--color-text-tertiary)] transition-colors hover:border-[var(--color-border-strong)] hover:bg-[var(--color-surface-sunken)] hover:text-[var(--color-text-secondary)] sm:inline-flex"
+          style={{ cursor: "pointer" }}
         >
-          <Search size={11} strokeWidth={2} aria-hidden="true" />
-          <span className="hidden text-[11px] font-[family-name:var(--font-sans)] sm:inline">
+          <Search size={12} strokeWidth={1.75} aria-hidden="true" />
+          <span className="hidden text-[12px] font-[family-name:var(--font-sans)] font-medium md:inline">
             Buscar
           </span>
           <kbd
-            className="hidden font-[family-name:var(--font-mono)] sm:inline"
+            className="hidden font-[family-name:var(--font-mono)] md:inline"
             style={{
-              padding: "1px 5px",
+              padding: "1px 4px",
               fontSize: 10,
-              border: "1px solid var(--color-border)",
               borderRadius: 3,
               background: "var(--color-surface-sunken)",
-              color: "var(--color-text-tertiary)"
+              color: "var(--color-text-tertiary)",
+              fontWeight: 500
             }}
           >
             ⌘K
@@ -409,121 +393,154 @@ function Topbar({
         </button>
       </Tooltip>
 
-      {/* Read-only badge — texto colapsa a icono en mobile (tooltip) */}
-      <Tooltip hint="Solo lectura · GET-only" side="bottom">
-        <span className="inline-flex items-center gap-1.5 rounded-[4px] bg-[var(--color-info-soft)] px-2 py-1.5 sm:px-2.5">
-          <Eye size={12} strokeWidth={1.75} className="text-[var(--color-info)]" aria-hidden="true" />
-          <span className="hidden text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-info)] md:inline">
-            Solo lectura · GET-only
+      <span className="hidden h-5 w-px bg-[var(--color-border)] sm:block" aria-hidden="true" />
+
+      {/* === STATUS CHIPS === Read-only · pg · redis · env */}
+      <Tooltip hint="Panel en modo solo lectura · todas las acciones requieren aprobación humana" side="bottom">
+        <span className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 sm:px-2.5">
+          <Eye size={11} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
+          <span className="hidden text-[11px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-secondary)] md:inline">
+            Solo lectura
           </span>
         </span>
       </Tooltip>
 
-      {/* Env chip — colapsa a icono en mobile/tablet (tooltip) */}
+      {/* Dependency chips — Codex 50876e5 (OPS OrbStack): /health reporta
+          postgres + redis con SELECT 1 y PING. */}
+      <DependencyChip name="pg" status={health?.postgres} check={health?.dependencies?.postgres} />
+      <DependencyChip name="redis" status={health?.redis} check={health?.dependencies?.redis} />
+
       <Tooltip hint="Entorno mvp.local" side="bottom">
-        <span className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface-sunken)] px-2 py-1.5 sm:px-2.5">
-          <FlaskConical size={12} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
-          <span className="hidden text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)] md:inline">
+        <span className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 sm:px-2.5">
+          <FlaskConical size={11} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+          <span className="hidden text-[11px] font-[family-name:var(--font-mono)] font-medium text-[var(--color-text-secondary)] md:inline">
             mvp.local
           </span>
         </span>
       </Tooltip>
 
-      {/* User chip — texto operador colapsa a solo avatar en mobile */}
-      <span className="inline-flex items-center gap-2 rounded-[18px] border border-[var(--color-border)] bg-[var(--color-surface-sunken)] pl-1 pr-1 py-1 sm:pr-2.5">
-        <span
-          aria-hidden="true"
-          className="grid h-6 w-6 place-items-center rounded-full bg-[var(--color-accent-tertiary)] text-[11px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-on-dark-strong)]"
-        >
-          J
-        </span>
-        <span className="hidden text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-primary)] sm:inline">
-          operador
-        </span>
-      </span>
+      <span className="hidden h-5 w-px bg-[var(--color-border)] sm:block" aria-hidden="true" />
 
-      <Tooltip hint={chatOpen ? "Cerrar chat" : "Abrir chat"} side="bottom">
+      {/* === ACTIONS === Refresh / Chat */}
+      <Tooltip hint="Actualizar datos" side="bottom">
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Actualizar datos"
+          onClick={() => void handleRefresh()}
+          className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
+        >
+          <RefreshCw
+            size={14}
+            strokeWidth={1.75}
+            className={isFetching ? "animate-spin" : ""}
+            aria-hidden="true"
+          />
+        </Button>
+      </Tooltip>
+
+      <Tooltip hint={chatOpen ? "Cerrar chat con OpenClaw" : "Abrir chat con OpenClaw"} side="bottom">
         <Button
           variant={chatOpen ? "default" : "ghost"}
           size="icon"
           aria-label={chatOpen ? "Cerrar chat con OpenClaw" : "Abrir chat con OpenClaw"}
           aria-pressed={chatOpen}
           onClick={onToggleChat}
-          className={chatOpen ? "text-[var(--color-accent-tertiary)]" : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"}
+          className={chatOpen ? "" : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"}
         >
           <MessageSquare size={14} strokeWidth={1.75} aria-hidden="true" />
         </Button>
       </Tooltip>
 
-      {/* Refresh — utilidad ghost; el panel es GET vivo aunque Pencil no lo dibuja */}
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label="Actualizar datos"
-        onClick={() => void handleRefresh()}
-        className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
-      >
-        <RefreshCw
-          size={14}
-          strokeWidth={1.75}
-          className={isFetching ? "animate-spin" : ""}
-          aria-hidden="true"
-        />
-      </Button>
+      {/* === USER === Avatar B/W */}
+      <Tooltip hint="Operador: Juanes" side="bottom">
+        <span className="inline-flex items-center gap-2 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] pl-0.5 pr-2.5 py-0.5">
+          <span
+            aria-hidden="true"
+            className="grid h-7 w-7 place-items-center rounded-full text-[11px] font-[family-name:var(--font-heading)] font-semibold"
+            style={{
+              background: "var(--color-text-primary)",
+              color: "var(--color-bg)",
+              letterSpacing: "0"
+            }}
+          >
+            J
+          </span>
+          <span className="hidden text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-primary)] sm:inline">
+            operador
+          </span>
+        </span>
+      </Tooltip>
     </header>
   );
 }
 
 /**
- * Sidebar Pencil (frame `jEU4h` / `BWD3g` reusable). 240w, fill var(--color-surface-sunken),
- * padding [20, 16], gap 24, border-right var(--color-border) 1.
+ * Sidebar — Rebrand B/W 2026-05-28.
  *
- * Estructura: sbBrand (mark + text) → sbNav (group labels + items) → sbKillSwitch.
+ * Profesional Linear/Notion-style:
+ *   - Modo expandido (240/256px): nav completo con grupos + labels.
+ *   - Modo colapsado (64px): solo iconos centrados con tooltip al hover.
+ *     Brand + Kill Switch siempre visibles, colapsando solo el text.
+ *   - Active state: surface-sunken background + accent ring izquierdo
+ *     2px (NO un side-tab 4px que sería un anti-pattern de Impeccable).
+ *   - Hover smooth con transition 120ms.
+ *   - Brand mark monocromático (B/W puro), sin gradient amber.
  */
 function Sidebar({
   activeSection,
   onSelect,
   mobileOpen,
   onCloseMobile,
-  data
+  data,
+  collapsed,
+  onToggleCollapsed
 }: {
   activeSection: SectionId;
   onSelect: (section: SectionId) => void;
   mobileOpen: boolean;
   onCloseMobile: () => void;
   data: DashboardData | undefined;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
 }) {
   return (
     <aside
       className={cn(
-        "fixed inset-y-0 left-0 z-40 flex h-screen w-[min(82vw,300px)] max-w-[300px] flex-col gap-6 overflow-y-auto border-r border-[var(--color-border)] bg-[var(--color-surface-sunken)] px-3 py-5 shadow-[0_18px_48px_rgba(0,0,0,0.18)] transition-transform duration-200 ease-out md:sticky md:top-0 md:z-auto md:h-screen md:w-full md:max-w-none md:translate-x-0 md:self-start md:shadow-none lg:px-4",
-        mobileOpen ? "translate-x-0" : "-translate-x-full"
+        "fixed inset-y-0 left-0 z-40 flex h-screen flex-col overflow-y-auto border-r border-[var(--color-border)] bg-[var(--color-surface-sunken)] transition-[transform,width] duration-200 ease-out md:sticky md:top-0 md:z-auto md:h-screen md:translate-x-0 md:self-start md:shadow-none",
+        // Mobile: ancho ~300 con slide in/out
+        "w-[min(82vw,300px)] max-w-[300px] shadow-[0_18px_48px_rgba(10,10,10,0.18)]",
+        mobileOpen ? "translate-x-0" : "-translate-x-full",
+        // Desktop: full width o colapsado
+        collapsed ? "md:w-full md:max-w-none" : "md:w-full md:max-w-none"
       )}
     >
-      {/* sbBrand */}
-      <div className="flex items-center gap-2.5 pb-4 pt-1 pl-1 pr-1">
+      {/* === BRAND === Logo B/W monocromático + toggle colapsar (desktop) */}
+      <div className={cn("flex items-center border-b border-[var(--color-border)]", collapsed ? "flex-col gap-2 px-2 py-4" : "gap-2.5 px-4 py-4")}>
         <span
           aria-hidden="true"
-          className="grid h-8 w-8 place-items-center rounded-[8px] text-[18px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-bg)]"
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-[6px] text-[14px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-bg)]"
           style={{
-            background:
-              "linear-gradient(135deg, var(--color-accent-secondary) 0%, var(--color-accent) 50%, var(--color-accent-tertiary) 100%)"
+            background: "var(--color-text-primary)",
+            letterSpacing: "-0.5px"
           }}
         >
           D
         </span>
-        <div className="flex flex-col">
-          <span className="text-[16px] font-[family-name:var(--font-heading)] font-bold leading-tight text-[var(--color-text-primary)]">
-            Delivrix
-          </span>
-          <span
-            className="text-[11px] font-[family-name:var(--font-caption)] leading-tight text-[var(--color-text-tertiary)]"
-            style={{ letterSpacing: "0.4px" }}
-          >
-            plataforma de control
-          </span>
-        </div>
-        <span className="flex-1 md:hidden" aria-hidden="true" />
+        {!collapsed && (
+          <div className="flex min-w-0 flex-1 flex-col">
+            <span className="text-[14px] font-[family-name:var(--font-heading)] font-semibold leading-tight text-[var(--color-text-primary)]" style={{ letterSpacing: "-0.2px" }}>
+              Delivrix
+            </span>
+            <span
+              className="text-[10px] font-[family-name:var(--font-caption)] font-medium uppercase leading-tight text-[var(--color-text-tertiary)]"
+              style={{ letterSpacing: "1.2px" }}
+            >
+              control plane
+            </span>
+          </div>
+        )}
+        {/* Cierre nav móvil — solo visible en mobile */}
         <Button
           variant="ghost"
           size="icon"
@@ -533,71 +550,134 @@ function Sidebar({
         >
           <X size={16} strokeWidth={1.75} aria-hidden="true" />
         </Button>
+        {/* Toggle colapsar — desktop only, esquina derecha cuando expandido,
+            debajo del logo cuando colapsado. */}
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          aria-label={collapsed ? "Mostrar barra lateral" : "Ocultar barra lateral"}
+          aria-pressed={collapsed}
+          title={collapsed ? "Mostrar barra lateral · ⌘\\" : "Ocultar barra lateral · ⌘\\"}
+          className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-[4px] text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-text-primary)] md:inline-flex"
+        >
+          {collapsed ? (
+            <PanelLeftOpen size={14} strokeWidth={1.75} aria-hidden="true" />
+          ) : (
+            <PanelLeftClose size={14} strokeWidth={1.75} aria-hidden="true" />
+          )}
+        </button>
       </div>
 
-      {/* sbNav */}
-      <nav className="flex flex-col gap-5" aria-label="Secciones del panel">
+      {/* === NAV === Grupos + items */}
+      <nav
+        className={cn("flex flex-col gap-4 overflow-y-auto py-4", collapsed ? "px-2" : "px-3")}
+        aria-label="Secciones del panel"
+      >
         {sectionGroupOrder.map((group) => {
           const items = sections.filter((section) => section.group === group);
           if (items.length === 0) return null;
           return (
-            <div key={group} className="flex flex-col gap-1">
-              <span
-                className="px-3 pt-1 text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-tertiary)]"
-                style={{ letterSpacing: "1.2px" }}
-              >
-                {sectionGroupLabels[group]}
-              </span>
+            <div key={group} className="flex flex-col gap-0.5">
+              {!collapsed && (
+                <span
+                  className="px-3 pb-1 pt-2 text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-tertiary)]"
+                  style={{ letterSpacing: "1.2px" }}
+                >
+                  {sectionGroupLabels[group]}
+                </span>
+              )}
+              {collapsed && group !== sectionGroupOrder[0] && (
+                <div className="my-1 h-px bg-[var(--color-border)]" aria-hidden="true" />
+              )}
               {items.map((section) => {
                 const Icon = section.icon;
                 const active = section.id === activeSection;
                 const tone = toneForSection(section.id, data);
+                const toneDotBg =
+                  tone === "success" ? "var(--color-success)"
+                  : tone === "warning" ? "var(--color-warning)"
+                  : tone === "critical" ? "var(--color-critical)"
+                  : tone === "neutral" ? "var(--color-accent)"
+                  : undefined;
                 return (
-                  <button
+                  <Tooltip
                     key={section.id}
-                    type="button"
-                    onClick={() => onSelect(section.id)}
-                    className={cn(
-                      "flex items-center gap-2.5 rounded-[6px] px-3 py-2.5 text-left transition-colors",
-                      active
-                        ? "border border-[var(--color-border)] bg-[var(--color-surface)]"
-                        : "hover:bg-[var(--color-surface)]/40"
-                    )}
+                    hint={collapsed ? section.navLabel : ""}
+                    side="right"
                   >
-                    <Icon
-                      size={16}
-                      strokeWidth={1.75}
-                      aria-hidden="true"
-                      className={active ? "text-[var(--color-accent-tertiary)]" : "text-[var(--color-text-secondary)]"}
-                    />
-                    <span
+                    <button
+                      type="button"
+                      onClick={() => onSelect(section.id)}
+                      aria-current={active ? "page" : undefined}
+                      title={collapsed ? section.navLabel : undefined}
                       className={cn(
-                        "flex-1 text-[13px] font-[family-name:var(--font-sans)]",
+                        "group relative flex items-center rounded-[6px] text-left transition-colors duration-[120ms]",
+                        collapsed ? "h-9 w-full justify-center" : "gap-2.5 px-3 py-2",
                         active
-                          ? "font-semibold text-[var(--color-text-primary)]"
-                          : "font-medium text-[var(--color-text-secondary)]"
+                          ? "bg-[var(--color-surface)] text-[var(--color-text-primary)]"
+                          : "text-[var(--color-text-secondary)] hover:bg-[var(--color-surface)] hover:text-[var(--color-text-primary)]"
                       )}
                     >
-                      {section.navLabel}
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      className={cn(
-                        "block h-1.5 w-1.5 rounded-[3px]",
-                        active && tone === "success" && "bg-[var(--color-success)]",
-                        active && tone === "warning" && "bg-[var(--color-warning)]",
-                        active && tone === "critical" && "bg-[var(--color-critical)]",
-                        active && (tone === "neutral" || tone === "success" || tone === "warning" || tone === "critical")
-                          ? ""
-                          : "opacity-0"
+                      {/* Active indicator izquierdo — 2px hairline, no side-tab */}
+                      {active && !collapsed && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute left-0 top-1/2 -translate-y-1/2"
+                          style={{
+                            width: 2,
+                            height: 16,
+                            borderRadius: 1,
+                            background: "var(--color-accent)"
+                          }}
+                        />
                       )}
-                      style={
-                        active && tone === "neutral"
-                          ? { background: "var(--color-accent)" }
-                          : undefined
-                      }
-                    />
-                  </button>
+                      <Icon
+                        size={16}
+                        strokeWidth={1.75}
+                        aria-hidden="true"
+                        className={cn("shrink-0", active ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-tertiary)] group-hover:text-[var(--color-text-secondary)]")}
+                      />
+                      {!collapsed && (
+                        <>
+                          <span
+                            className={cn(
+                              "flex-1 truncate text-[13px] font-[family-name:var(--font-sans)]",
+                              active ? "font-semibold" : "font-medium"
+                            )}
+                          >
+                            {section.navLabel}
+                          </span>
+                          {toneDotBg && (
+                            <span
+                              aria-hidden="true"
+                              className="shrink-0"
+                              style={{
+                                width: 6,
+                                height: 6,
+                                borderRadius: 999,
+                                background: toneDotBg
+                              }}
+                            />
+                          )}
+                        </>
+                      )}
+                      {collapsed && toneDotBg && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute"
+                          style={{
+                            top: 6,
+                            right: 6,
+                            width: 6,
+                            height: 6,
+                            borderRadius: 999,
+                            background: toneDotBg,
+                            border: "1.5px solid var(--color-surface-sunken)"
+                          }}
+                        />
+                      )}
+                    </button>
+                  </Tooltip>
                 );
               })}
             </div>
@@ -607,8 +687,10 @@ function Sidebar({
 
       <span className="flex-1" aria-hidden="true" />
 
-      {/* sbKillSwitch */}
-      <KillSwitchCard data={data} onNavigate={onSelect} />
+      {/* === KILL SWITCH === Compacto cuando colapsado */}
+      <div className={cn("border-t border-[var(--color-border)]", collapsed ? "px-2 py-3" : "px-3 py-4")}>
+        <KillSwitchCard data={data} onNavigate={onSelect} collapsed={collapsed} />
+      </div>
     </aside>
   );
 }
@@ -623,64 +705,83 @@ function Sidebar({
  */
 function KillSwitchCard({
   data,
-  onNavigate
+  onNavigate,
+  collapsed = false
 }: {
   data: DashboardData | undefined;
   onNavigate?: (section: SectionId) => void;
+  collapsed?: boolean;
 }) {
   const enabled = data?.killSwitch.enabled ?? false;
   // Cuando enabled=true significa que el kill switch fue ACTIVADO (corte real).
   // El "ARMADO" verde de Pencil corresponde a !enabled (listo para apretar).
   const armed = !enabled;
+  if (collapsed) {
+    return (
+      <Tooltip hint={`Kill Switch · ${armed ? "Armado" : "Activo"} · click para gestionar`} side="right">
+        <button
+          type="button"
+          onClick={() => onNavigate?.("clusters")}
+          aria-label="Interruptor de corte"
+          className="grid h-9 w-full place-items-center rounded-[6px] transition-colors hover:bg-[var(--color-surface)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+        >
+          <span className="relative grid h-7 w-7 place-items-center">
+            <Power
+              size={16}
+              strokeWidth={1.75}
+              style={{ color: armed ? "var(--color-success)" : "var(--color-critical)" }}
+              aria-hidden="true"
+            />
+            <span
+              aria-hidden="true"
+              className="absolute"
+              style={{
+                bottom: 0,
+                right: 0,
+                width: 7,
+                height: 7,
+                borderRadius: 999,
+                background: armed ? "var(--color-success)" : "var(--color-critical)",
+                border: "1.5px solid var(--color-surface-sunken)"
+              }}
+            />
+          </span>
+        </button>
+      </Tooltip>
+    );
+  }
   return (
     <button
       type="button"
       onClick={() => onNavigate?.("clusters")}
       aria-label="Interruptor de corte · abrir gestión en Clústeres"
-      className="flex flex-col gap-2.5 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3.5 text-left transition-colors hover:bg-[var(--color-surface-sunken)] hover:border-[var(--color-border-strong)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
-      style={{ boxShadow: "var(--shadow-sm)", cursor: "pointer" }}
+      className="flex w-full flex-col gap-2.5 rounded-[8px] border border-[var(--color-border)] bg-[var(--color-surface)] px-3.5 py-3 text-left transition-colors hover:border-[var(--color-border-strong)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
     >
       <div className="flex items-center gap-2">
         <Power
           size={14}
           strokeWidth={1.75}
-          className={armed ? "text-[var(--color-success)]" : "text-[var(--color-critical)]"}
+          style={{ color: armed ? "var(--color-success)" : "var(--color-critical)" }}
           aria-hidden="true"
         />
         <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-          Interruptor de corte
+          Kill Switch
         </span>
-      </div>
-      <div className="flex items-center gap-2">
+        <span className="flex-1" aria-hidden="true" />
         <span
-          className="inline-flex items-center rounded-full px-2 py-0.5 text-[9px] font-[family-name:var(--font-caption)] font-semibold uppercase"
+          className="inline-flex items-center rounded-[4px] px-1.5 py-0.5 text-[9px] font-[family-name:var(--font-caption)] font-semibold uppercase"
           style={{
             gap: 4,
             background: armed ? "var(--color-success-soft)" : "var(--color-critical-soft)",
-            color: armed ? "var(--color-success)" : "var(--color-critical)",
-            letterSpacing: "var(--tracking-wider)"
+            color: armed ? "var(--color-success-fg)" : "var(--color-critical-fg)",
+            letterSpacing: "var(--tracking-wider)",
+            border: `1px solid ${armed ? "var(--color-success-border)" : "var(--color-critical-border)"}`
           }}
         >
-          <span
-            aria-hidden="true"
-            style={{
-              width: 5,
-              height: 5,
-              borderRadius: 999,
-              background: armed ? "var(--color-success)" : "var(--color-critical)"
-            }}
-          />
           {armed ? "Armado" : "Activo"}
         </span>
-        <span className="flex-1" aria-hidden="true" />
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-          {data ? "actualizado" : "sin datos"}
-        </span>
       </div>
-      <p className="m-0 text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-        Prueba en modo simulado
-      </p>
-      <p className="m-0 text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">
+      <p className="m-0 text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
         Click para gestionar · regla de 2 personas
       </p>
     </button>
@@ -905,4 +1006,179 @@ function readChatOpenPreference(): boolean {
     return false;
   }
   return window.localStorage.getItem(chatOpenStorageKey) === "1";
+}
+
+/**
+ * Footer profesional · Rebrand B/W 2026-05-28.
+ *
+ * Antes no había footer. Faltante crítico que el CTO marcó. Diseño Linear /
+ * Vercel style:
+ *   - Sticky bottom de la columna main (después del <main>, dentro del flex
+ *     vertical), border-top hairline.
+ *   - Altura compacta 40px.
+ *   - 3 zonas: left (brand + env + build), center (flex spacer), right
+ *     (audit chain hash + operator + status global).
+ *   - Tipografía: caption uppercase 10px tracking-widest + mono 10px para
+ *     valores técnicos.
+ *
+ * Esto cierra el frame del panel: topbar arriba + sidebar a la izquierda +
+ * main al centro + footer abajo.
+ */
+function Footer({
+  health,
+  operatingNorth
+}: {
+  health?: DashboardData["health"];
+  operatingNorth?: DashboardData["operatingNorth"];
+}) {
+  const env = health?.phase ?? operatingNorth?.releasePhase ?? operatingNorth?.phase ?? "mvp.local";
+  const buildSha = (import.meta as { env?: { VITE_BUILD_SHA?: string } }).env?.VITE_BUILD_SHA ?? "dev";
+  const buildShort = buildSha.length > 7 ? buildSha.slice(0, 7) : buildSha;
+  const liveWritesEnabled = operatingNorth?.liveInfrastructureWritesEnabled ?? false;
+  const dependenciesOk = (health?.postgres === "ok" || health?.postgres === undefined) && (health?.redis === "ok" || health?.redis === undefined);
+  return (
+    <footer
+      className="flex items-center gap-3 border-t border-[var(--color-border)] bg-[var(--color-surface-sunken)] px-4 sm:px-5 md:px-6 lg:px-7"
+      style={{ height: 40 }}
+    >
+      {/* === LEFT === Brand mark + env + build */}
+      <div className="flex items-center gap-3">
+        <span
+          aria-hidden="true"
+          className="grid h-5 w-5 place-items-center rounded-[4px] text-[9px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-bg)]"
+          style={{ background: "var(--color-text-primary)", letterSpacing: "-0.3px" }}
+        >
+          D
+        </span>
+        <span className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase text-[var(--color-text-tertiary)]" style={{ letterSpacing: "var(--tracking-widest)" }}>
+          Delivrix Control Plane
+        </span>
+        <span aria-hidden="true" className="hidden h-3 w-px bg-[var(--color-border)] sm:block" />
+        <Tooltip hint={`Build SHA · ${buildSha}`} side="top">
+          <span className="hidden text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)] sm:inline">
+            {buildShort}
+          </span>
+        </Tooltip>
+      </div>
+
+      <span className="flex-1" aria-hidden="true" />
+
+      {/* === CENTER === Status global */}
+      <div className="hidden items-center gap-3 md:flex">
+        <Tooltip
+          hint={liveWritesEnabled ? "Live writes habilitados · acciones pueden tocar infraestructura real" : "Modo solo lectura · ninguna acción toca infraestructura real"}
+          side="top"
+        >
+          <span className="inline-flex items-center gap-1.5 text-[10px] font-[family-name:var(--font-caption)] font-medium text-[var(--color-text-tertiary)]" style={{ letterSpacing: "var(--tracking-wide)" }}>
+            <span
+              aria-hidden="true"
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: 999,
+                background: liveWritesEnabled ? "var(--color-warning)" : "var(--color-success)"
+              }}
+            />
+            {liveWritesEnabled ? "Live writes" : "Read-only"}
+          </span>
+        </Tooltip>
+        <span aria-hidden="true" className="h-3 w-px bg-[var(--color-border)]" />
+        <Tooltip
+          hint={dependenciesOk ? "Dependencias backend respondiendo" : "Alguna dependencia caída · revisar /safety"}
+          side="top"
+        >
+          <span className="inline-flex items-center gap-1.5 text-[10px] font-[family-name:var(--font-caption)] font-medium text-[var(--color-text-tertiary)]" style={{ letterSpacing: "var(--tracking-wide)" }}>
+            <span
+              aria-hidden="true"
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: 999,
+                background: dependenciesOk ? "var(--color-success)" : "var(--color-critical)"
+              }}
+            />
+            {dependenciesOk ? "Stack healthy" : "Stack degraded"}
+          </span>
+        </Tooltip>
+      </div>
+
+      <span className="flex-1 md:flex-none" aria-hidden="true" />
+
+      {/* === RIGHT === Env + legal */}
+      <div className="flex items-center gap-3">
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
+          {env}
+        </span>
+        <span aria-hidden="true" className="hidden h-3 w-px bg-[var(--color-border)] sm:block" />
+        <span className="hidden text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)] sm:inline" style={{ letterSpacing: "var(--tracking-wide)" }}>
+          Audit chain · append-only · regla de 2 personas
+        </span>
+        <span aria-hidden="true" className="hidden h-3 w-px bg-[var(--color-border)] md:block" />
+        <span className="hidden text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)] md:inline" style={{ letterSpacing: "var(--tracking-wide)" }}>
+          © 2026 Delivrix
+        </span>
+      </div>
+    </footer>
+  );
+}
+
+/**
+ * Chip de status de dependencia (postgres / redis). Codex 50876e5 expone
+ * /health con `postgres` y `redis` evaluados con SELECT 1 / PING.
+ *
+ * - `ok`: dot verde + label compacto.
+ * - `down`: dot crítico + label, tooltip con el message del backend.
+ * - `undefined`: dot neutro mientras no llega health (loading o backend
+ *   antiguo). No bloquea render del topbar.
+ */
+function DependencyChip({
+  name,
+  status,
+  check
+}: {
+  name: "pg" | "redis";
+  status?: "ok" | "down";
+  check?: { status: "ok" | "down"; checkedAt: string; message?: string };
+}) {
+  const fullName = name === "pg" ? "Postgres" : "Redis";
+  const dotColor =
+    status === "ok"
+      ? "var(--color-success)"
+      : status === "down"
+      ? "var(--color-critical)"
+      : "var(--color-text-tertiary)";
+  const fg =
+    status === "down" ? "var(--color-critical)" : "var(--color-text-secondary)";
+  const hint = (() => {
+    if (!status) return `${fullName} · sin datos`;
+    if (status === "ok") {
+      const ts = check?.checkedAt ? new Date(check.checkedAt).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "ahora";
+      return `${fullName} OK · checked ${ts}`;
+    }
+    return `${fullName} DOWN · ${check?.message ?? "no responde"}`;
+  })();
+  return (
+    <Tooltip hint={hint} side="bottom">
+      <span
+        className="inline-flex items-center gap-1.5 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface-sunken)] px-2 py-1.5 sm:px-2.5"
+        aria-label={hint}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: 999,
+            background: dotColor
+          }}
+        />
+        <span
+          className="hidden text-[11px] font-[family-name:var(--font-mono)] md:inline"
+          style={{ color: fg }}
+        >
+          {name}
+        </span>
+      </span>
+    </Tooltip>
+  );
 }

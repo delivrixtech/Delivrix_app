@@ -1,16 +1,16 @@
 /**
- * Domains — Fase 1 discover/propose (Hito 5.12 / Bloque 5 Codex 2026-05-25).
+ * Domains · Fase 1 discover/propose (Hito 5.12 / Bloque 5 Codex 2026-05-25).
  *
  * Feature read-only que permite al operador (y a OpenClaw via skills) explorar
  * dominios disponibles vía AWS Route53 Domains sin compra real. La compra real
- * queda detrás de Fase 2 con doble aprobación humana — esta UI deja todos los
+ * queda detrás de Fase 2 con doble aprobación humana · esta UI deja todos los
  * affordances visibles para que la transición sea additiva.
  *
  * Diseño:
  *   - SearchHero: input grande con debounce → resultado inline (status + price).
  *   - Suggestions: 10 candidatas cuando hay seed.
  *   - PricesPanel: snapshot top TLDs (.com .net .io .co).
- *   - OwnedDomains: tabla — empty state Fase 1.
+ *   - OwnedDomains: tabla · empty state Fase 1.
  *   - ProposalQueue: placeholder Fase 2 con el flujo de doble aprobación.
  *   - OpenClawBanner: CTAs que inyectan intent al chat (sin endpoints nuevos).
  *
@@ -53,7 +53,7 @@ import {
 } from "../../shared/ui/v2/index.ts";
 
 /* ============================================================
- * Contract types — mirror del paquete @delivrix/domain
+ * Contract types · mirror del paquete @delivrix/domain
  * (packages/domain/src/domains-discover.ts, Codex 5104fd9).
  *
  * Patrón del panel: cada feature copia los tipos del contract domain en vez
@@ -120,7 +120,7 @@ interface OwnedResponse {
  * Hooks
  * ============================================================ */
 
-const POLL_PRICES_MS = 5 * 60_000; // 5min — Route53 cache TTL
+const POLL_PRICES_MS = 5 * 60_000; // 5min · Route53 cache TTL
 const POLL_OWNED_MS = 60_000;
 const DEFAULT_TLDS = ["com", "net", "io", "co"];
 
@@ -190,7 +190,7 @@ function useSuggestions(seed: string) {
 }
 
 function isPlausibleDomain(value: string): boolean {
-  // delivrix-mail.com, foo.io, bar-baz.co — al menos un punto, TLD ≥ 2 chars.
+  // delivrix-mail.com, foo.io, bar-baz.co · al menos un punto, TLD ≥ 2 chars.
   return /^[a-z0-9][a-z0-9-]{0,62}\.[a-z]{2,}$/.test(value);
 }
 
@@ -206,7 +206,7 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 /* ============================================================
- * <DomainsSection> — root
+ * <DomainsSection> · root
  * ============================================================ */
 
 export function DomainsSection() {
@@ -411,7 +411,7 @@ function AvailabilityRow({
         className="m-0 font-[family-name:var(--font-mono)]"
         style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}
       >
-        Escribe un dominio completo (ej. <code>delivrix-mail.com</code>). Las consultas pegan en vivo a Route53 — cache 5 min.
+        Escribe un dominio completo (ej. <code>delivrix-mail.com</code>). Las consultas pegan en vivo a Route53 · cache 5 min.
       </p>
     );
   }
@@ -440,7 +440,7 @@ function AvailabilityRow({
       <div className="flex items-center" style={{ gap: 10 }}>
         <TriangleAlert size={14} strokeWidth={1.75} style={{ color: "var(--color-warning)" }} />
         <span className="font-[family-name:var(--font-mono)]" style={{ fontSize: 11, color: "var(--color-warning)" }}>
-          No se pudo consultar — {availability.error instanceof Error ? availability.error.message : "error desconocido"}
+          No se pudo consultar · {availability.error instanceof Error ? availability.error.message : "error desconocido"}
         </span>
       </div>
     );
@@ -518,7 +518,7 @@ function ProposePurchaseButton({ domain }: { domain: string }) {
     <button
       type="button"
       onClick={() => {
-        const prompt = `Acción del operador: proponer compra de "${domain}".\n\nContexto: encontré disponible vía Route53. Por favor:\n1. Verifica el precio de registro y renovación.\n2. Sugiere si conviene multi-año o auto-renew.\n3. Prepara la propuesta para que dos humanos aprueben antes de Fase 2 (compra real).\n\nNo ejecutes la compra todavía — la Fase 2 requiere doble aprobación y todavía no está habilitada.`;
+        const prompt = `Acción del operador: proponer compra de "${domain}".\n\nContexto: encontré disponible vía Route53. Por favor:\n1. Verifica el precio de registro y renovación.\n2. Sugiere si conviene multi-año o auto-renew.\n3. Prepara la propuesta para que dos humanos aprueben antes de Fase 2 (compra real).\n\nNo ejecutes la compra todavía · la Fase 2 requiere doble aprobación y todavía no está habilitada.`;
         intent.sendIntent(prompt, "domains:propose");
         toast.info("Enviando a OpenClaw · Proponer compra", {
           description: "OpenClaw preparará la propuesta. La compra real queda detrás de doble aprobación.",
@@ -701,7 +701,7 @@ function OwnedDomainsSection({ owned }: { owned: ReturnType<typeof useOwned> }) 
 }
 
 /* ============================================================
- * ProposalQueueSection — Fase 2 placeholder con flujo educativo
+ * ProposalQueueSection · Fase 2 placeholder con flujo educativo
  * ============================================================ */
 
 function ProposalQueueSection() {
@@ -866,7 +866,7 @@ function PricesPanel({ prices }: { prices: ReturnType<typeof usePrices> }) {
 }
 
 /* ============================================================
- * OnboardEndToEndCard — dispara el flow viernes-demo completo
+ * OnboardEndToEndCard · dispara el flow viernes-demo completo
  *
  * Pieza 2 del sprint demo viernes (Bloque 10). Equivalente al
  * OnboardNewDomainCard del Sender Pool pero situado en Domains para que
@@ -1018,7 +1018,7 @@ Por favor:
 }
 
 /* ============================================================
- * AskOpenClawCard — intent prompts al chat
+ * AskOpenClawCard · intent prompts al chat
  * ============================================================ */
 
 function AskOpenClawCard({ currentQuery }: { currentQuery: string }) {
@@ -1046,7 +1046,7 @@ function AskOpenClawCard({ currentQuery }: { currentQuery: string }) {
     }
     send(
       "research",
-      `Pregunta del operador: investiga el dominio "${trimmed}".\n\n1. Verifica disponibilidad con check_availability.\n2. Si está disponible: dame precio (registration + renewal) y propone si conviene multi-año.\n3. Si está ocupado: sugiere 3 alternativas cercanas con disponibilidad confirmada.\n4. Evalúa riesgo de typo-squatting respecto a marcas conocidas.\n\nNo ejecutes compra — la Fase 2 todavía no está habilitada.`
+      `Pregunta del operador: investiga el dominio "${trimmed}".\n\n1. Verifica disponibilidad con check_availability.\n2. Si está disponible: dame precio (registration + renewal) y propone si conviene multi-año.\n3. Si está ocupado: sugiere 3 alternativas cercanas con disponibilidad confirmada.\n4. Evalúa riesgo de typo-squatting respecto a marcas conocidas.\n\nNo ejecutes compra · la Fase 2 todavía no está habilitada.`
     );
   };
   return (

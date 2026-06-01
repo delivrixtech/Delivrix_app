@@ -3,19 +3,24 @@ import { cn } from "../lib/cn.ts";
 
 /**
  * Card primitives in Stripe/Notion style.
- * Flat surface, 0.5px border, generous padding, no shadow by default.
- * Use the `tone` prop to add a left accent for state.
+ * Flat surface, 1px border, generous padding, no shadow by default.
+ *
+ * Impeccable fix (2026-05-28): el `tone` prop usaba thick side accent
+ * uno de los 3 anti-patterns prohibidos absolutamente por Impeccable
+ * (`reference/colorize.md`) porque es la marca más reconocible de UIs
+ * generadas por IA. Reemplazado por hairline 1px en perímetro completo
+ * + surface tint 4-8% del color del tone.
  */
 
 type Tone = "default" | "success" | "warning" | "critical" | "info" | "neutral";
 
 const toneBorder: Record<Tone, string> = {
   default: "",
-  success: "border-l-4 border-l-[var(--color-success)]",
-  warning: "border-l-4 border-l-[var(--color-warning)]",
-  critical: "border-l-4 border-l-[var(--color-critical)]",
-  info: "border-l-4 border-l-[var(--color-info)]",
-  neutral: "border-l-4 border-l-[var(--color-neutral)]"
+  success: "border-[var(--color-success)] bg-[var(--color-success-soft)]",
+  warning: "border-[var(--color-warning)] bg-[var(--color-warning-soft)]",
+  critical: "border-[var(--color-critical)] bg-[var(--color-critical-soft)]",
+  info: "border-[var(--color-info)] bg-[var(--color-info-soft)]",
+  neutral: "border-[var(--color-border-strong,var(--color-border))]"
 };
 
 export interface CardProps extends HTMLAttributes<HTMLDivElement> {

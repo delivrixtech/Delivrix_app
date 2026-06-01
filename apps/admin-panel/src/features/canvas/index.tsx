@@ -268,10 +268,12 @@ function StartHereBanner({
       style={{
         gap: 14,
         padding: "14px 28px",
-        background: "linear-gradient(90deg, rgba(250, 204, 21, 0.08) 0%, rgba(234, 88, 12, 0.05) 100%), var(--color-bg)",
+        // Impeccable fix: surface tint con el color del lane sustituye el
+        // side-tab 4px. El gradient ya tenía un wash, lo subimos al lane color
+        // y dejamos solo bordes horizontales hairline.
+        background: `linear-gradient(90deg, ${laneColor}14 0%, ${laneColor}08 100%), var(--color-bg)`,
         borderTop: "1px solid var(--color-border)",
-        borderBottom: "1px solid var(--color-border)",
-        borderLeft: `4px solid ${laneColor}`
+        borderBottom: "1px solid var(--color-border)"
       }}
     >
       <span

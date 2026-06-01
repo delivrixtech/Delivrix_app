@@ -16,7 +16,7 @@ import "./app/globals.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./app/App.tsx";
+import { AppV5 } from "./v5/App.tsx";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -36,7 +36,7 @@ if (!rootElement) {
 createRoot(rootElement).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App />
+      <AppV5 />
     </QueryClientProvider>
   </StrictMode>
 );

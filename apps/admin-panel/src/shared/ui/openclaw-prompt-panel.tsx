@@ -80,7 +80,7 @@ export function OpenClawPromptPanel({
         type="button"
         onClick={onCta}
         disabled={!onCta}
-        className="inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--color-surface-inverse)] px-3 py-2.5 text-[12px] font-semibold text-[var(--color-text-inverse)] transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-100 focus-visible:outline-none focus-visible:[box-shadow:var(--shadow-focus)]"
+        className="inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-md)] bg-[var(--color-always-dark-bg)] px-3 py-2.5 text-[12px] font-semibold text-[var(--color-on-dark-strong)] transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-100 focus-visible:outline-none focus-visible:[box-shadow:var(--shadow-focus)]"
       >
         <WandSparkles size={14} strokeWidth={1.75} aria-hidden="true" />
         <span>{ctaLabel}</span>

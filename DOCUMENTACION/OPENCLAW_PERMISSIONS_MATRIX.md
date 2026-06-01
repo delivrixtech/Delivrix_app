@@ -413,8 +413,10 @@ aplica rollback.
 
 - La matriz es **append-only**: se agregan acciones, nunca se relajan categorías
   existentes sin actualizar el norte operativo.
-- `humanApproved == true` se establece sólo cuando el operador firma fuera del panel
-  con regla de 2 personas. No hay endpoint en el bundle frontend para marcar approval.
+- `humanApproved == true` se establece sólo cuando 1 operador autorizado firma
+  desde ApprovalGate o endpoint firmado equivalente. El frontend no puede marcar
+  approval por sí solo: el Gateway escribe la firma en audit chain SHA-256,
+  valida kill switch y emite webhook broadcast o buffer local.
 - El kill switch es el último gate. Cuando está armado, el pipeline rechaza incluso
   acciones aprobadas humanamente. No hay bypass.
 - Cambios en esta matriz se versionan en git con commit explícito tipo

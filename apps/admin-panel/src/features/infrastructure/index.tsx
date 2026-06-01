@@ -62,6 +62,12 @@ export interface Provider {
   displayName: string;
   kind: ProviderKind;
   status: ProviderStatus;
+  /**
+   * Codex 6500a15 (A-MED-11): label ES del status (ej. "Aún offline" en vez
+   * de "not_online_yet" snake_case). Opcional para backward compat: si el
+   * backend no lo retorna, frontend cae al status raw humanizado.
+   */
+  statusLabel?: string;
   itemCount: number;
   lastFetched: string | null;
   fetchSourceKind: ProviderFetchSourceKind | null;
@@ -328,7 +334,9 @@ function ProvidersGrid({ providers }: { providers: Provider[] }) {
   return (
     <div
       className="grid"
-      style={{ gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}
+      // A-ALT-03 (2026-05-28): subimos minmax de 280 → 320 para que el
+      // brand + accountSuffix completos quepan sin "Servid..." truncado.
+      style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 14 }}
     >
       {providers.map((p) => (
         <ProviderCard
@@ -494,8 +502,12 @@ function ProviderCard({
             color: status.fg,
             fontSize: 10
           }}
+          // A-MED-11 (2026-05-28): Codex 6500a15 expone statusLabel ES con
+          // mapeo correcto incluso para errorReason `not_online_yet`.
+          // Si no está, fallback al label local del STATUS_META map.
+          title={provider.errorReason || undefined}
         >
-          {status.label}
+          {provider.statusLabel ?? status.label}
         </span>
       </header>
 
@@ -534,11 +546,15 @@ function ProviderCard({
             {provider.errorReason}
           </span>
         ) : provider.lastFetched ? (
+          // A-MED-12 (2026-05-28): antes mostraba el ISO crudo truncado
+          // "2026-05-28T16:18:4..." que era ruido visual. Ahora usa el
+          // helper relativo ("hace 2m") con fallback al absoluto compacto.
           <span
             className="font-[family-name:var(--font-mono)] truncate"
             style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}
+            title={provider.lastFetched}
           >
-            últ. fetch {provider.lastFetched}
+            últ. fetch · {formatRelativeOrIso(provider.lastFetched)}
           </span>
         ) : (
           <span

@@ -1,5 +1,5 @@
 /**
- * Clústeres — port LITERAL desde Pencil frame `V8h2t` / `aTHLP`.
+ * Clústeres · port LITERAL desde Pencil frame `V8h2t` / `aTHLP`.
  *
  * Estructura:
  *   Hero (tpwNV): eyebrow + título + descripción
@@ -27,6 +27,25 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { DashboardData } from "../../shared/api/client.ts";
 import { filterAuditEvents, humanize } from "../../shared/lib/formatters.ts";
 import { BannerOpenClawV2, LiveIndicator, useToast } from "../../shared/ui/v2/index.ts";
+import { Tooltip } from "../../shared/ui/tooltip.tsx";
+
+/**
+ * A-ALT-05 (2026-05-28): la tabla de clústeres usa acrónimos de 3 letras
+ * (ACT/CAL/PAU/DEG/CUA/REP) sin leyenda visible. Para un operador externo
+ * eran imposibles de descifrar. Agregamos tooltip por header + leyenda
+ * compacta arriba de la tabla.
+ */
+const CLUSTER_COL_DEFS: Array<{ key: string; full: string; hint: string }> = [
+  { key: "CLÚSTER · PROVIDER", full: "Clúster · Provider", hint: "Identificador del clúster y proveedor de cómputo" },
+  { key: "ACT", full: "Activos", hint: "Nodos sender activos enviando email" },
+  { key: "CAL", full: "Calentamiento", hint: "Nodos en proceso de warmup (ramp-up supervisado)" },
+  { key: "PAU", full: "Pausados", hint: "Nodos pausados manualmente o por gate" },
+  { key: "DEG", full: "Degradados", hint: "Nodos con métricas debajo del umbral aceptable" },
+  { key: "CUA", full: "Cuarentena", hint: "Nodos aislados por riesgo de blacklist o queja" },
+  { key: "REP", full: "Reputación", hint: "Índice de reputación del clúster (0–100, mayor es mejor)" },
+  { key: "NODOS", full: "Nodos", hint: "Cantidad total de nodos registrados en el clúster" },
+  { key: "ESTADO", full: "Estado", hint: "Estado operativo del clúster (active / blocked / needs_review)" }
+];
 
 export function ClustersSection({ data }: { data: DashboardData }) {
   return (
@@ -40,7 +59,7 @@ export function ClustersSection({ data }: { data: DashboardData }) {
 }
 
 /* ============================================================
- * Hero — kicker eyebrow + LiveIndicator dinámico (fix P0: timestamp hardcoded "hace 14s")
+ * Hero · kicker eyebrow + LiveIndicator dinámico (fix P0: timestamp hardcoded "hace 14s")
  * ============================================================ */
 function Hero() {
   const mountedAt = useRef<number>(Date.now()).current;
@@ -71,7 +90,7 @@ function Hero() {
 }
 
 /* ============================================================
- * KPI row (xlQ5q) — 5 KPIs literales
+ * KPI row (xlQ5q) · 5 KPIs literales
  * ============================================================ */
 function KpiRow({ data }: { data: DashboardData }) {
   const totals = data.clusters.totals;
@@ -175,7 +194,7 @@ function Kpi({
 }
 
 /* ============================================================
- * TwoCol — ClusterTable + DetailPanel + OpenClaw
+ * TwoCol · ClusterTable + DetailPanel + OpenClaw
  * ============================================================ */
 function TwoCol({ data }: { data: DashboardData }) {
   return (
@@ -214,7 +233,7 @@ function buildClusterRows(data: DashboardData) {
       clusterScores.length > 0
         ? clusterScores.reduce((a, b) => a + b, 0) / clusterScores.length
         : null;
-    const reputationStr = avgScore !== null ? avgScore.toFixed(1) : "—";
+    const reputationStr = avgScore !== null ? avgScore.toFixed(1) : "·";
     const reputationColor =
       avgScore === null
         ? "var(--color-text-secondary)"
@@ -254,10 +273,10 @@ function buildClusterRows(data: DashboardData) {
         pausas: 0,
         degradados: 0,
         cuarentena: 0,
-        reputation: "—",
+        reputation: "·",
         reputationColor: "var(--color-text-tertiary)",
         total: "0 nodos",
-        delta: "—",
+        delta: "·",
         accent: "transparent",
         selected: false
       }
@@ -292,6 +311,24 @@ function ClusterTable({ data }: { data: DashboardData }) {
         <span className="flex-1" aria-hidden="true" />
         <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">/v1/admin/clusters</span>
       </header>
+      {/* A-ALT-05 (2026-05-28): leyenda compacta arriba de la tabla. Cubre
+          el caso del jefe que no descubre el tooltip por hover. */}
+      <div
+        className="flex flex-wrap items-center"
+        style={{
+          gap: 10,
+          padding: "8px 16px",
+          background: "var(--color-bg)",
+          borderBottom: "1px solid var(--color-border)"
+        }}
+      >
+        <span className="text-[10px] font-[family-name:var(--font-caption)] uppercase text-[var(--color-text-tertiary)]" style={{ letterSpacing: "var(--tracking-wider)" }}>
+          Leyenda:
+        </span>
+        <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-secondary)]">
+          ACT activos · CAL calentamiento · PAU pausados · DEG degradados · CUA cuarentena · REP reputación
+        </span>
+      </div>
       <div className="overflow-x-auto">
       <div
         className="grid"
@@ -304,14 +341,19 @@ function ClusterTable({ data }: { data: DashboardData }) {
           borderBottom: "1px solid var(--color-border)"
         }}
       >
-        {["CLÚSTER · PROVIDER", "ACT", "CAL", "PAU", "DEG", "CUA", "REP", "NODOS", "ESTADO"].map((h) => (
-          <span
-            key={h}
-            className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
-            style={{ letterSpacing: "var(--tracking-wider)" }}
+        {CLUSTER_COL_DEFS.map((col) => (
+          <Tooltip
+            key={col.key}
+            hint={`${col.full} · ${col.hint}`}
+            side="bottom"
           >
-            {h}
-          </span>
+            <span
+              className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
+              style={{ letterSpacing: "var(--tracking-wider)", cursor: "help" }}
+            >
+              {col.key}
+            </span>
+          </Tooltip>
         ))}
       </div>
       <ul className="m-0 p-0 list-none flex flex-col">
@@ -503,7 +545,7 @@ function DetailPanel({ cluster }: { cluster: DashboardData["clusters"]["clusters
 }
 
 function OpenClawPrompt({ data }: { data: DashboardData }) {
-  // Migrado a BannerOpenClawV2 — ~55 LOC duplicadas eliminadas
+  // Migrado a BannerOpenClawV2 · ~55 LOC duplicadas eliminadas
   const blockers = data.canvas.blockedBy ?? [];
   const approvals = data.canvas.requiresHumanApproval ?? [];
   const message =
@@ -591,7 +633,7 @@ function buildGates(data: DashboardData) {
       note: nfc ? "enabled" : "deshabilitado"
     }
   ];
-  // gates pendientes del operating-north — humanize IDs largos
+  // gates pendientes del operating-north · humanize IDs largos
   const opGates = (data.operatingNorth.gates ?? []).map((g) => ({
     check: "warn" as const,
     label: humanize(g),
@@ -772,9 +814,9 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
             gap: 6,
             padding: "9px 12px",
             borderRadius: 6,
-            background: armed ? "var(--color-critical)" : "var(--color-surface-inverse)",
+            background: armed ? "var(--color-critical)" : "var(--color-always-dark-bg)",
             color: "var(--color-on-dark-strong)",
-            border: armed ? "1px solid var(--color-critical)" : "1px solid var(--color-on-dark-hint)",
+            border: armed ? "1px solid var(--color-critical)" : "1px solid var(--color-always-dark-border)",
             cursor: mutation.isPending ? "wait" : "pointer"
           }}
         >
@@ -1031,7 +1073,7 @@ function AuditLogCard({ data }: { data: DashboardData }) {
   }));
   if (rows.length === 0) {
     rows.push({
-      ts: "—",
+      ts: "·",
       actor: "audit log vacío",
       action: "el contrato no expone eventos todavía",
       color: "var(--color-text-tertiary)"

@@ -1,5 +1,5 @@
 /**
- * Sender Pool — Bloque 10 demo viernes (2026-05-26).
+ * Sender Pool · Bloque 10 demo viernes (2026-05-26).
  *
  * Vista del estado actual de los dominios sender en Delivrix:
  *   - Cuáles están provisionados y operativos.
@@ -13,7 +13,7 @@
 
 import { useCallback, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, CheckCircle2, Loader2, Mail, Plus, SendHorizontal, Sparkles, TriangleAlert } from "lucide-react";
+import { ArrowRight, CheckCircle2, Info, Loader2, Mail, Plus, SendHorizontal, Sparkles, TriangleAlert } from "lucide-react";
 import { getJson } from "../../shared/api/client.ts";
 import {
   FeatureHeader,
@@ -26,7 +26,7 @@ import {
 import { WalletWidget } from "./wallet-widget.tsx";
 
 /* ============================================================
- * Contract types — mirror del backend (Bloque 10)
+ * Contract types · mirror del backend (Bloque 10)
  * ============================================================ */
 
 export type SenderDomainStatus =
@@ -80,7 +80,7 @@ function usePoolStatus() {
 }
 
 /* ============================================================
- * <SenderPoolSection> — root
+ * <SenderPoolSection> · root
  * ============================================================ */
 
 export function SenderPoolSection() {
@@ -93,7 +93,7 @@ export function SenderPoolSection() {
     <section className="flex flex-col" style={{ gap: 24 }}>
       <FeatureHeader
         eyebrow="Bloque 10 · Demo viernes"
-        title="Sender Pool — dominios en producción."
+        title="Sender Pool · dominios en producción."
         lead={
           <>
             Cada dominio que enviá email por Delivrix vive acá con su estado de warmup, deliverability y health.
@@ -125,6 +125,58 @@ export function SenderPoolSection() {
  * ============================================================ */
 
 function CapacityRow({ capacity, loading }: { capacity: SenderPoolStatus["capacity"]; loading: boolean }) {
+  const allZero =
+    !loading &&
+    capacity.activeDomains === 0 &&
+    capacity.totalDomains === 0 &&
+    capacity.plannedDomains === 0;
+
+  if (allZero) {
+    return (
+      <div
+        className="flex items-start"
+        style={{
+          gap: 16,
+          padding: "18px 22px",
+          background: "var(--color-surface)",
+          border: "1px solid var(--color-border)",
+          borderRadius: 10
+        }}
+      >
+        <span
+          aria-hidden="true"
+          className="grid place-items-center shrink-0"
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 8,
+            background: "var(--color-accent-tertiary-soft, var(--color-surface-sunken))",
+            color: "var(--color-accent-tertiary)"
+          }}
+        >
+          <SendHorizontal size={18} strokeWidth={1.75} />
+        </span>
+        <div className="flex flex-col" style={{ gap: 4 }}>
+          <span
+            className="font-[family-name:var(--font-sans)] font-semibold"
+            style={{ fontSize: 14, color: "var(--color-text-primary)" }}
+          >
+            Sender pool aún vacío
+          </span>
+          <p
+            className="m-0 font-[family-name:var(--font-caption)]"
+            style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.55 }}
+          >
+            Cuando OpenClaw aprovisione el primer dominio sender (compra · DNS · SMTP · warmup), aparece
+            acá con su estado de capacity en vivo. Para arrancar uno, usá el botón{" "}
+            <span style={{ fontWeight: 600, color: "var(--color-text-primary)" }}>Onboard con OpenClaw</span>{" "}
+            del panel derecho.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-3" style={{ gap: 10 }}>
       <KpiCard label="Activos enviando" value={capacity.activeDomains} loading={loading} tone="success" />
@@ -268,7 +320,7 @@ function DomainRow({ d }: { d: SenderDomainSummary }) {
             día {d.warmupDayN} / {d.warmupTargetDays}
           </span>
         ) : (
-          <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>—</span>
+          <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>·</span>
         )}
       </Td>
       <Td align="right">
@@ -392,17 +444,17 @@ function EndpointPendingState() {
         gap: 8,
         padding: 20,
         background: "var(--color-surface)",
-        border: "1px solid var(--color-warning)",
+        border: "1px solid var(--color-info)",
         borderRadius: 10
       }}
     >
       <div className="flex items-center" style={{ gap: 8 }}>
-        <TriangleAlert size={16} strokeWidth={1.5} style={{ color: "var(--color-warning)" }} />
+        <Info size={16} strokeWidth={1.5} style={{ color: "var(--color-info)" }} />
         <span
           className="font-[family-name:var(--font-sans)] font-semibold"
-          style={{ fontSize: 13, color: "var(--color-warning)" }}
+          style={{ fontSize: 13, color: "var(--color-info)" }}
         >
-          Endpoint /v1/sender-pool/status pendiente
+          Próximo paso · `GET /v1/sender-pool/status` en backend
         </span>
       </div>
       <p
@@ -410,7 +462,8 @@ function EndpointPendingState() {
         style={{ fontSize: 12, color: "var(--color-text-secondary)", lineHeight: 1.55 }}
       >
         Codex lo expone como parte del Bloque 10. Mientras tanto, podés onboardar un dominio nuevo desde
-        el panel lateral — el flow se ejecuta y aparecerá acá cuando el endpoint esté live.
+        el panel lateral · el flow se ejecuta y aparecerá acá cuando el endpoint esté live. No afecta el
+        demo.
       </p>
     </div>
   );

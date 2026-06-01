@@ -7,6 +7,7 @@
  * los textos descriptivos del diseño se mantienen literales.
  */
 
+import { useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -69,30 +70,24 @@ function HeaderRow({ data }: { data: DashboardData }) {
 }
 
 function Welcome({ generatedAt, lastUpdateMs }: { generatedAt: string; lastUpdateMs: number }) {
+  // Sistema visual v4 (TasteSkill §0 + §3): PageHeader trio
+  // eyebrow + display + body alineado a izquierda. LiveIndicator al lado.
   return (
-    <header className="flex items-start" style={{ gap: 16 }}>
-      <div className="flex flex-col min-w-0 flex-1" style={{ gap: 6 }}>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          <span
-            className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
-            style={{ letterSpacing: "var(--tracking-widest)" }}
-          >
-            Inicio operativo
-          </span>
-          <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
-          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-            Actualizado {formatDateTime(generatedAt)}
+    <header className="flex items-start" style={{ gap: 24 }}>
+      <div className="flex min-w-0 flex-1 flex-col" style={{ gap: 8 }}>
+        <div className="flex items-center" style={{ gap: 10 }}>
+          <span className="ds-eyebrow">Inicio operativo</span>
+          <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: 999, background: "var(--color-border-strong)" }} />
+          <span className="ds-mono-code" style={{ fontSize: 11 }}>
+            actualizado {formatDateTime(generatedAt)}
           </span>
         </div>
-        <h1
-          className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
-          style={{ letterSpacing: "var(--tracking-tightest)" }}
-        >
+        <h1 className="ds-display m-0">
           Capacidad preparada, sin envíos reales.
         </h1>
-        <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
-          Delivrix gobierna infraestructura de correo autorizada en modo solo lectura. OpenClaw
-          observa, valida y propone — los humanos aprueban cada acción real.
+        <p className="ds-body m-0" style={{ maxWidth: 720 }}>
+          Delivrix gobierna infraestructura de correo autorizada en modo solo lectura.
+          OpenClaw observa, valida y propone. Los humanos aprueban cada acción real.
         </p>
       </div>
       <div className="shrink-0">
@@ -143,15 +138,13 @@ function KpiShell({
   children: React.ReactNode;
   tooltipHint?: React.ReactNode;
 }) {
+  // Sistema visual v4: ds-card + ds-stat. Sin shadow, sin hover-lift.
+  // Hover state = border-strong (handled por ds-card).
   const card = (
     <article
-      className="flex flex-col bg-[var(--color-surface)] transition-shadow hover:shadow-[var(--shadow-md)]"
+      className="ds-card flex flex-col"
       style={{
         gap: 12,
-        padding: 16,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)",
         cursor: tooltipHint ? "help" : "default"
       }}
     >
@@ -167,18 +160,37 @@ function KpiShell({
 }
 
 function KpiHead({ label, pillBg, pillFg, pillText }: { label: string; pillBg: string; pillFg: string; pillText: string }) {
+  // TasteSkill polish 2026-05-28: KPI heads consistentes. Label en mono
+  // uppercase 10px tracking-widest text-tertiary (era caption 11px semibold
+  // text-secondary cramped). Pill compacta border 1px en lugar de bg fill.
   return (
     <div className="flex items-center" style={{ gap: 8 }}>
       <span
-        className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]"
-        style={{ letterSpacing: "var(--tracking-wide)" }}
+        className="font-[family-name:var(--font-mono)] uppercase"
+        style={{
+          fontSize: 10,
+          letterSpacing: "var(--tracking-widest)",
+          color: "var(--color-text-tertiary)",
+          fontWeight: 500
+        }}
       >
         {label}
       </span>
       <span className="flex-1" aria-hidden="true" />
       <span
-        className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-        style={{ padding: "2px 6px", borderRadius: 4, background: pillBg, color: pillFg }}
+        className="inline-flex items-center font-[family-name:var(--font-mono)] uppercase"
+        style={{
+          gap: 4,
+          fontSize: 10,
+          padding: "1px 6px",
+          borderRadius: 4,
+          background: pillBg,
+          color: pillFg,
+          fontWeight: 500,
+          letterSpacing: "var(--tracking-wide)",
+          border: "1px solid currentColor",
+          borderColor: pillFg
+        }}
       >
         {pillText}
       </span>
@@ -187,16 +199,12 @@ function KpiHead({ label, pillBg, pillFg, pillText }: { label: string; pillBg: s
 }
 
 function KpiValue({ value, unit }: { value: string; unit?: string }) {
+  // Sistema visual v4: ds-mono-stat-xl (JetBrains Mono 28px tabular-nums).
   return (
     <div className="flex items-end" style={{ gap: 8 }}>
-      <span
-        className="text-[32px] font-[family-name:var(--font-mono)] font-bold leading-none text-[var(--color-text-primary)] tabular-nums"
-        style={{ letterSpacing: "var(--tracking-tightest)" }}
-      >
-        {value}
-      </span>
+      <span className="ds-mono-stat-xl">{value}</span>
       {unit ? (
-        <span className="text-[14px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)] leading-none">
+        <span className="ds-caption" style={{ fontFamily: "var(--font-mono)", lineHeight: 1 }}>
           {unit}
         </span>
       ) : null}
@@ -646,9 +654,20 @@ function BottomRow({ data }: { data: DashboardData }) {
   );
 }
 
+/**
+ * A-ALT-01 (2026-05-28): antes mostraba `slice(0, 3)` aunque el badge dijera
+ * "7" en el header. El operador veía un contador mentiroso. Ahora mostramos
+ * todas las aprobaciones hasta INITIAL_VISIBLE; si hay más se expande con
+ * toggle "Ver N más".
+ */
+const APPROVALS_INITIAL_VISIBLE = 6;
+
 function ApprovalsCard({ data }: { data: DashboardData }) {
   const approvalIds = data.canvas.requiresHumanApproval ?? [];
   const count = approvalIds.length;
+  const [expanded, setExpanded] = useState(false);
+  const visibleIds = expanded ? approvalIds : approvalIds.slice(0, APPROVALS_INITIAL_VISIBLE);
+  const hiddenCount = Math.max(0, count - APPROVALS_INITIAL_VISIBLE);
   // Mapping de IDs → severidad + descripción del v2. ApprovalRow v2 standardiza
   // el icono (AlertOctagon) y el chrome — sólo necesitamos severity + cuerpo.
   type Variant = { key: string; severity: ApprovalSeverity; severityLabel: string; desc: string };
@@ -707,7 +726,7 @@ function ApprovalsCard({ data }: { data: DashboardData }) {
         </div>
       ) : (
         <div className="flex flex-col" style={{ gap: 8 }}>
-          {approvalIds.slice(0, 3).map((id) => {
+          {visibleIds.map((id) => {
             const v = pickVariant(id);
             return (
               <ApprovalRowV2
@@ -719,6 +738,36 @@ function ApprovalsCard({ data }: { data: DashboardData }) {
               />
             );
           })}
+          {hiddenCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              className="inline-flex items-center self-start transition-colors hover:bg-[var(--color-surface-sunken)]"
+              style={{
+                gap: 6,
+                padding: "6px 10px",
+                border: "1px solid var(--color-border)",
+                borderRadius: 6,
+                background: "var(--color-surface)",
+                color: "var(--color-text-secondary)",
+                cursor: "pointer",
+                fontSize: 12,
+                fontFamily: "var(--font-sans)",
+                fontWeight: 500
+              }}
+            >
+              {expanded ? "Mostrar menos" : `Ver ${hiddenCount} más`}
+              <ArrowRight
+                size={12}
+                strokeWidth={1.75}
+                style={{
+                  transform: expanded ? "rotate(-90deg)" : "rotate(90deg)",
+                  transition: "transform 0.2s ease"
+                }}
+                aria-hidden="true"
+              />
+            </button>
+          ) : null}
         </div>
       )}
     </section>
@@ -760,15 +809,25 @@ function GatesCard({ data }: { data: DashboardData }) {
       note: nfc ? "enabled" : "deshabilitado"
     }
   ];
-  // gates específicos del operating-north — humanize() convierte
-  // `admin_panel_reads_canvas_and_hardware_from_backend_contracts` en
-  // "admin panel reads canvas and hardware from backend contracts".
-  const opGates = (data.operatingNorth.gates ?? []).map((g) => ({
-    kind: "warn" as const,
-    label: humanize(g),
-    rawLabel: g,
-    note: "revisión pendiente"
-  }));
+  // A-ALT-02 (2026-05-28): Codex commit 6500a15 expone gateDetails[] con
+  // displayLabel ES + description opcional. Si está disponible, lo usamos;
+  // si no, fallback al gates[] inglés con humanize() (compat con backend
+  // viejo). El operador deja de ver "admin panel reads cluster state from
+  // backend contract" y pasa a leer "Panel lee clusters desde contrato
+  // backend" con tooltip extendido por description.
+  const detailsById = new Map<string, { displayLabel: string; description?: string }>(
+    (data.operatingNorth.gateDetails ?? []).map((d) => [d.id, d])
+  );
+  const opGates = (data.operatingNorth.gates ?? []).map((g) => {
+    const detail = detailsById.get(g);
+    return {
+      kind: "warn" as const,
+      label: detail?.displayLabel ?? humanize(g),
+      rawLabel: g,
+      description: detail?.description,
+      note: "revisión pendiente"
+    };
+  });
   const gates = [...base, ...opGates];
   const okCount = gates.filter((g) => g.kind === "ok").length;
   return (
@@ -806,6 +865,7 @@ function GatesCard({ data }: { data: DashboardData }) {
       <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 8 }}>
         {gates.map((g, i) => {
           const raw = "rawLabel" in g && typeof g.rawLabel === "string" ? g.rawLabel : g.label;
+          const desc = "description" in g && typeof g.description === "string" ? g.description : undefined;
           return (
             <GateRow
               key={`${i}-${raw}`}
@@ -813,6 +873,7 @@ function GatesCard({ data }: { data: DashboardData }) {
               label={g.label}
               rawLabel={raw}
               note={g.note}
+              description={desc}
             />
           );
         })}
@@ -825,12 +886,15 @@ function GateRow({
   kind,
   label,
   rawLabel,
-  note
+  note,
+  description
 }: {
   kind: "ok" | "warn" | "bad" | "off";
   label: string;
   rawLabel: string;
   note: string;
+  /** A-ALT-02: viene de operatingNorth.gateDetails[].description si está. */
+  description?: string;
 }) {
   const dot =
     kind === "ok"
@@ -843,8 +907,11 @@ function GateRow({
   const noteColor =
     kind === "ok" ? "var(--color-success)" : kind === "warn" ? "var(--color-warning)" : kind === "bad" ? "var(--color-critical)" : "var(--color-text-tertiary)";
 
+  // A-ALT-02: tooltip nativo combina raw slug (debug) + description ES si
+  // existe. Operador que hover sobre el row ve el contexto completo del gate.
+  const hoverText = description ? `${description}\n[${rawLabel}]` : rawLabel;
   return (
-    <li className="flex items-center min-w-0" style={{ gap: 8 }} title={rawLabel}>
+    <li className="flex items-center min-w-0" style={{ gap: 8 }} title={hoverText}>
       <span
         aria-hidden="true"
         className="grid place-items-center text-[var(--color-on-dark-strong)]"
@@ -933,8 +1000,8 @@ function SystemHealthDark({ data }: { data: DashboardData }) {
         gap: 14,
         padding: 18,
         borderRadius: 8,
-        background: "var(--color-surface-inverse)",
-        border: "1px solid var(--color-on-dark-hint)",
+        background: "var(--color-always-dark-bg)",
+        border: "1px solid var(--color-always-dark-border)",
         boxShadow: "var(--shadow-md)"
       }}
     >
