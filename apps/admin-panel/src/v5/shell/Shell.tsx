@@ -23,6 +23,7 @@ import {
   ChevronRight,
   CircleDot,
   Command,
+  MessageSquare,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
@@ -67,8 +68,12 @@ export interface ShellProps {
   onRefresh?: () => void | Promise<void>;
   isRefreshing?: boolean;
   onOpenCommand?: () => void;
+  chatOpen?: boolean;
+  onToggleChat?: () => void;
   user?: { initial: string; label: string };
   rightDrawer?: ReactNode;
+  contentClassName?: string;
+  contentInnerClassName?: string;
   children: ReactNode;
 }
 
@@ -89,8 +94,12 @@ export function Shell({
   onRefresh,
   isRefreshing = false,
   onOpenCommand,
+  chatOpen = false,
+  onToggleChat,
   user = { initial: "J", label: "operador" },
   rightDrawer,
+  contentClassName,
+  contentInnerClassName,
   children
 }: ShellProps) {
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -143,6 +152,8 @@ export function Shell({
           onRefresh={onRefresh}
           isRefreshing={isRefreshing}
           onOpenCommand={onOpenCommand}
+          chatOpen={chatOpen}
+          onToggleChat={onToggleChat}
           user={user}
         />
         <main className="relative flex min-h-0 flex-1 overflow-hidden">
@@ -151,9 +162,11 @@ export function Shell({
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: durations.page, ease: easeOutExpo }}
-            className="flex-1 overflow-y-auto"
+            className={cn("flex-1 overflow-y-auto", contentClassName)}
           >
-            <div className="mx-auto w-full max-w-[1440px] px-6 py-6">{children}</div>
+            <div className={cn("mx-auto w-full max-w-[1440px] px-6 py-6", contentInnerClassName)}>
+              {children}
+            </div>
           </motion.div>
           {rightDrawer}
         </main>
@@ -403,6 +416,8 @@ function Topbar({
   onRefresh,
   isRefreshing,
   onOpenCommand,
+  chatOpen,
+  onToggleChat,
   user
 }: {
   breadcrumb: { group: string; section: string };
@@ -413,6 +428,8 @@ function Topbar({
   onRefresh?: () => void | Promise<void>;
   isRefreshing: boolean;
   onOpenCommand?: () => void;
+  chatOpen: boolean;
+  onToggleChat?: () => void;
   user: { initial: string; label: string };
 }) {
   return (
@@ -481,6 +498,19 @@ function Topbar({
             className={cn(isRefreshing && "animate-spin")}
             aria-hidden="true"
           />
+        </Button>
+      )}
+
+      {onToggleChat && (
+        <Button
+          variant={chatOpen ? "primary" : "ghost"}
+          size="icon"
+          aria-label={chatOpen ? "Cerrar chat con OpenClaw" : "Abrir chat con OpenClaw"}
+          aria-pressed={chatOpen}
+          title={chatOpen ? "Cerrar chat" : "Abrir chat"}
+          onClick={onToggleChat}
+        >
+          <MessageSquare size={13} strokeWidth={1.75} aria-hidden="true" />
         </Button>
       )}
 

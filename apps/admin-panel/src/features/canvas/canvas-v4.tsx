@@ -155,7 +155,7 @@ export function CanvasV4() {
   return (
     <div
       className="flex flex-col"
-      style={{ height: "calc(100vh - 64px)", background: "var(--color-bg)" }}
+      style={{ height: "100%", minHeight: 0, background: "var(--color-bg)" }}
     >
       <CanvasTopbar connection={chatState.connection} lastUpdateAt={lastUpdateAt} />
       <div className="flex flex-1 min-h-0" style={{ borderTop: "1px solid var(--color-border)" }}>

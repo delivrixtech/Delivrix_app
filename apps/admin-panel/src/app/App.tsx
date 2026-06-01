@@ -11,7 +11,7 @@
 
 import { ChevronRight, FlaskConical, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Power, RefreshCw, Search, ShieldCheck, X } from "lucide-react";
 import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { loadDashboardData, type DashboardData } from "../shared/api/client.ts";
 import { stateTone, type Tone } from "../shared/lib/formatters.ts";
 import { cn } from "../shared/lib/cn.ts";
@@ -37,6 +37,7 @@ import {
   sectionsById,
   type SectionId
 } from "./sections.ts";
+import { Shell, type NavGroup } from "../v5/shell/Shell.tsx";
 
 const chatOpenStorageKey = "delivrix.openclaw.chat.open";
 const sidebarCollapsedStorageKey = "delivrix.panel.sidebar.collapsed";
@@ -76,15 +77,25 @@ function writeSectionToHistory(section: SectionId) {
   window.history.pushState(null, "", nextPath);
 }
 
+const shellGroups: NavGroup[] = sectionGroupOrder.map((group) => ({
+  id: group,
+  label: sectionGroupLabels[group],
+  items: sections
+    .filter((section) => section.group === group)
+    .map((section) => {
+      const Icon = section.icon;
+      return {
+        id: section.id,
+        label: section.navLabel,
+        icon: <Icon size={14} strokeWidth={1.75} aria-hidden="true" />,
+        status: section.id === "canvas" ? "ok" : null
+      };
+    })
+}));
+
 export function App() {
   const [activeSection, setActiveSection] = useState<SectionId>(readInitialSection);
   const [chatOpen, setChatOpen] = useState(readChatOpenPreference);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(readSidebarCollapsed);
-
-  useEffect(() => {
-    localStorage.setItem(sidebarCollapsedStorageKey, sidebarCollapsed ? "1" : "0");
-  }, [sidebarCollapsed]);
   const dashboard = useQuery({
     queryKey: ["admin-panel", "dashboard"],
     queryFn: loadDashboardData,
@@ -99,34 +110,14 @@ export function App() {
   useEffect(() => {
     const handlePopState = () => {
       setActiveSection(readSectionFromLocation());
-      setMobileNavOpen(false);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
-  useEffect(() => {
-    if (!mobileNavOpen) return;
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setMobileNavOpen(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [mobileNavOpen]);
-
   const selectSection = (section: SectionId) => {
     setActiveSection(section);
     writeSectionToHistory(section);
-    setMobileNavOpen(false);
   };
 
   /**
@@ -165,114 +156,107 @@ export function App() {
           setChatOpen((v) => !v);
           close();
         }
-      },
-      {
-        id: "action:sidebar-toggle",
-        label: sidebarCollapsed ? "Mostrar barra lateral" : "Ocultar barra lateral",
-        group: "Acciones",
-        kbd: "⌘ \\",
-        keywords: ["sidebar", "lateral", "navegacion", "ocultar", "colapsar"],
-        action: (close) => {
-          setSidebarCollapsed((v) => !v);
-          close();
-        }
       }
     ];
     return [...sectionCmds, ...actionCmds];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatOpen, sidebarCollapsed]);
-
-  // Atajo global ⌘ \ para toggle sidebar en desktop, igual que Notion/VS Code.
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      const isMeta = event.metaKey || event.ctrlKey;
-      if (isMeta && event.key === "\\") {
-        event.preventDefault();
-        setSidebarCollapsed((v) => !v);
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [chatOpen]);
 
   return (
     <TooltipProvider delayDuration={200}>
       <ToastProvider>
       <OpenClawIntentProvider onNavigate={(s) => selectSection(s as SectionId)}>
       <CommandPaletteProvider commands={paletteCommands}>
-      <div className="min-h-screen bg-[var(--color-bg)] text-[var(--color-text-primary)]">
-        <div
-          className={cn(
-            "grid min-h-screen grid-cols-1",
-            sidebarCollapsed
-              ? "md:grid-cols-[minmax(0,1fr)]"
-              : "md:grid-cols-[200px_minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]"
-          )}
-        >
-          {mobileNavOpen ? (
-            <button
-              type="button"
-              aria-label="Cerrar navegación"
-              className="fixed inset-0 z-30 bg-[rgba(0,0,0,0.28)] md:hidden"
-              onClick={() => setMobileNavOpen(false)}
-            />
-          ) : null}
-          {sidebarCollapsed ? null : (
-            <Sidebar
-              activeSection={activeSection}
-              onSelect={selectSection}
-              mobileOpen={mobileNavOpen}
-              onCloseMobile={() => setMobileNavOpen(false)}
-              data={dashboard.data}
-            />
-          )}
-          <div className="flex flex-col min-w-0">
-            <Topbar
-              activeSection={activeSection}
-              isFetching={dashboard.isFetching}
-              onRefresh={async () => {
-                const result = await dashboard.refetch();
-                if (result.isError) {
-                  throw result.error instanceof Error ? result.error : new Error("refresh failed");
-                }
-              }}
-              mobileNavOpen={mobileNavOpen}
-              onToggleMobileNav={() => setMobileNavOpen((value) => !value)}
-              chatOpen={chatOpen}
-              onToggleChat={() => setChatOpen((value) => !value)}
-              sidebarCollapsed={sidebarCollapsed}
-              onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
-            />
-            <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 sm:py-6 md:px-7 lg:px-10 xl:px-14 2xl:px-16">
-              <div className="mx-auto w-full" style={{ maxWidth: 1680 }}>
-                {dashboard.isLoading ? <LoadingState /> : null}
-                {dashboard.isError ? (
-                  <ErrorState
-                    message={errorMessage(dashboard.error)}
-                    onRefresh={() => void dashboard.refetch()}
-                  />
-                ) : null}
-                {dashboard.data && !dashboard.isLoading && !dashboard.isError ? (
-                  <PanelErrorBoundary resetKey={activeSection} title="No pude abrir esta sección">
-                    <SectionView section={activeSection} data={dashboard.data} onNavigate={selectSection} />
-                  </PanelErrorBoundary>
-                ) : null}
-              </div>
-            </main>
-          </div>
-        </div>
-        {chatOpen ? (
-          <PanelErrorBoundary resetKey="chat" title="No pude abrir el chat">
-            <Suspense fallback={<ChatWidgetLoadingState />}>
-              <ChatWidget open={chatOpen} onClose={() => setChatOpen(false)} />
-            </Suspense>
-          </PanelErrorBoundary>
-        ) : null}
-      </div>
+        <AppShellFrame
+          activeSection={activeSection}
+          chatOpen={chatOpen}
+          dashboard={dashboard}
+          onNavigate={selectSection}
+          onToggleChat={() => setChatOpen((value) => !value)}
+          onCloseChat={() => setChatOpen(false)}
+        />
       </CommandPaletteProvider>
       </OpenClawIntentProvider>
       </ToastProvider>
     </TooltipProvider>
+  );
+}
+
+function AppShellFrame({
+  activeSection,
+  chatOpen,
+  dashboard,
+  onNavigate,
+  onToggleChat,
+  onCloseChat
+}: {
+  activeSection: SectionId;
+  chatOpen: boolean;
+  dashboard: UseQueryResult<DashboardData, Error>;
+  onNavigate: (section: SectionId) => void;
+  onToggleChat: () => void;
+  onCloseChat: () => void;
+}) {
+  const palette = useCommandPalette();
+  const { toast } = useToast();
+  const section = sectionsById[activeSection];
+  const isCanvas = activeSection === "canvas";
+  const killSwitchArmed = !(dashboard.data?.killSwitch.enabled ?? false);
+
+  const handleRefresh = async () => {
+    const result = await dashboard.refetch();
+    if (result.isError) {
+      toast.error("No pude refrescar los datos", {
+        description: result.error instanceof Error ? result.error.message : "Reintenta en unos segundos."
+      });
+      return;
+    }
+    toast.success("Datos actualizados", {
+      description: "Snapshot vigente del backend.",
+      duration: 2500
+    });
+  };
+
+  return (
+    <>
+      <Shell
+        groups={shellGroups}
+        activeSection={activeSection}
+        onSelect={(id) => onNavigate(id as SectionId)}
+        breadcrumb={{ group: sectionGroupLabels[section.group], section: section.navLabel }}
+        agentState="idle"
+        killSwitchArmed={killSwitchArmed}
+        killSwitchOnClick={() => onNavigate("clusters")}
+        onRefresh={handleRefresh}
+        isRefreshing={dashboard.isFetching}
+        onOpenCommand={palette.open}
+        chatOpen={chatOpen}
+        onToggleChat={onToggleChat}
+        user={{ initial: "J", label: "operador" }}
+        contentClassName={isCanvas ? "overflow-hidden" : undefined}
+        contentInnerClassName={isCanvas ? "h-full max-w-none px-0 py-0" : undefined}
+      >
+        {dashboard.isLoading ? <LoadingState /> : null}
+        {dashboard.isError ? (
+          <ErrorState
+            message={errorMessage(dashboard.error)}
+            onRefresh={() => void dashboard.refetch()}
+          />
+        ) : null}
+        {dashboard.data && !dashboard.isLoading && !dashboard.isError ? (
+          <PanelErrorBoundary resetKey={activeSection} title="No pude abrir esta sección">
+            <SectionView section={activeSection} data={dashboard.data} onNavigate={onNavigate} />
+          </PanelErrorBoundary>
+        ) : null}
+      </Shell>
+      {chatOpen ? (
+        <PanelErrorBoundary resetKey="chat" title="No pude abrir el chat">
+          <Suspense fallback={<ChatWidgetLoadingState />}>
+            <ChatWidget open={chatOpen} onClose={onCloseChat} />
+          </Suspense>
+        </PanelErrorBoundary>
+      ) : null}
+    </>
   );
 }
 
