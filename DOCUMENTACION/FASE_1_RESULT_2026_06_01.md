@@ -75,6 +75,25 @@ El subject/body no pueden contener:
 
 El preflight técnico ahora también reporta `launchReadiness.readyForSend`; puede estar `false` aunque runtime/tools/audit estén OK. Eso significa que falta completar el input humano anterior, no que el gateway esté roto.
 
+Para usarlo como gate automatizable antes del disparo, correr:
+
+```bash
+node --env-file=.env.local scripts/openclaw/phase1-c-master-smoke.mjs \
+  --preflight --require-launch-ready
+```
+
+Ese modo devuelve exit code `1` si faltan destinatario/asunto/cuerpo autorizados, aunque el runtime esté sano.
+
+Para validar un paquete de datos sin escribirlo en `.env.local`, el launcher también acepta overrides de una sola corrida:
+
+```bash
+node --env-file=.env.local scripts/openclaw/phase1-c-master-smoke.mjs \
+  --preflight --require-launch-ready \
+  --recipient "persona@dominio.com" \
+  --subject "Operational readiness handoff" \
+  --body "Texto legítimo del correo real autorizado, sin palabras bloqueadas."
+```
+
 ## Comando de disparo coordinado
 
 Ejecutar solo cuando Juanes/PM confirmen destinatario y contenido legítimo:
