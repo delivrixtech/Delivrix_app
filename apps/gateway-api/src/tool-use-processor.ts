@@ -517,10 +517,16 @@ async function readKillSwitchOverHttp(input: {
   }
   const response = await input.fetchImpl(`${input.baseUrl}/v1/kill-switch`, { headers });
   const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-  if (!response.ok || !body || typeof body.enabled !== "boolean") {
+  const nested = isRecord(body?.killSwitch) ? body.killSwitch : null;
+  const enabled = typeof body?.enabled === "boolean"
+    ? body.enabled
+    : typeof nested?.enabled === "boolean"
+      ? nested.enabled
+      : null;
+  if (!response.ok || enabled === null) {
     throw new Error(`kill switch read failed with HTTP ${response.status}`);
   }
-  return { enabled: body.enabled };
+  return { enabled };
 }
 
 async function readKillSwitchFailClosed(deps: ToolUseProcessorDeps): Promise<
@@ -591,6 +597,10 @@ function stableStringify(value: unknown): string {
   const entries = Object.entries(value as Record<string, unknown>)
     .sort(([left], [right]) => left.localeCompare(right));
   return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeBaseUrl(value: string): string {

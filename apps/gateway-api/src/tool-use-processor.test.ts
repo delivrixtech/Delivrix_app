@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildProposalPayloadFromToolUse,
+  createHttpToolUseProcessor,
   processToolUse,
   type ToolUseProcessorDeps,
   type ToolUseProposalDecision,
@@ -81,6 +82,40 @@ test("processToolUse invokes read-only suggest_safe_domain without proposal wait
   assert.equal(result.proposalId, "read_only:toolu-suggest");
   assert.deepEqual(result.result, { candidates: [{ domain: "delivrixops.com", namingScore: 92 }] });
   assert.equal(calls.length, 1);
+});
+
+test("createHttpToolUseProcessor accepts nested gateway kill-switch payload", async () => {
+  const urls: string[] = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    fetchImpl: async (url, init) => {
+      urls.push(String(url));
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).endsWith("/v1/skills/suggest-safe-domain")) {
+        assert.equal(init?.method, "POST");
+        return jsonResponse({ candidates: [{ domain: "delivrixops.com", namingScore: 92 }] });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-http-suggest",
+    toolName: "suggest_safe_domain",
+    toolInput: { brand: "delivrix", intent: "ops", count: 5 },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected HTTP read-only success");
+  assert.deepEqual(result.result, { candidates: [{ domain: "delivrixops.com", namingScore: 92 }] });
+  assert.deepEqual(urls, [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/skills/suggest-safe-domain"
+  ]);
 });
 
 test("processToolUse fails read-only suggest_safe_domain when invoker is missing", async () => {
@@ -245,4 +280,11 @@ function enabledEnv(): Record<string, string | undefined> {
     SEND_REAL_EMAIL_ENABLE: "true",
     OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true"
   };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" }
+  });
 }
