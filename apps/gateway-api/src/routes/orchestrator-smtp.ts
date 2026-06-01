@@ -214,6 +214,12 @@ export async function configureCompleteSmtp(
     createdAt: startedAt.toISOString()
   });
   await emitRunAction(deps, runId, "oc.orchestrator.run_started", "low");
+  await audit(deps, "oc.skill.invoked", "openclaw_intent", runId, "low", {
+    skillSlug: "configure_complete_smtp",
+    intentId: runId,
+    runId,
+    actorId: input.actorId
+  });
   await audit(deps, "oc.orchestrator.run_started", "openclaw_orchestrator_run", runId, "high", {
     skill: "configure_complete_smtp",
     budgetUsdMax: input.budgetUsdMax,

@@ -214,6 +214,7 @@ test("configureCompleteSmtp audits failed steps", async () => {
     }
   });
   await configureCompleteSmtp(validInput(), ctx.deps);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.skill.invoked"), true);
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.step_failed"), true);
 });
 
