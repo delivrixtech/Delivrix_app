@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { Pool } from "pg";
 import {
   AwsRoute53DomainsAdapter,
   AwsRoute53DnsAdapter,
@@ -138,6 +139,7 @@ import {
 import { createRuntimeEnvReloader } from "./runtime-env.ts";
 import {
   checkGatewayDependencies,
+  defaultPostgresUrl,
   dependencyStatus,
   type GatewayDependencyHealth
 } from "./dependency-health.ts";
@@ -275,6 +277,12 @@ import {
   handleConfigureCompleteSmtp,
   type ApprovalStepDecision
 } from "./routes/orchestrator-smtp.ts";
+import { handleReadEpisodicScratchHttp } from "./routes/episodic-scratch.ts";
+import {
+  compactIntent,
+  handleCompactIntentHttp
+} from "./routes/openclaw-compact-intent.ts";
+import { startEpisodicScratchTtlJob } from "./episodic-scratch-ttl.ts";
 import {
   canonicalSkillSlug,
   hashSkillExecutionContext,
@@ -331,6 +339,10 @@ const openClawBedrockBridge = createOpenClawBedrockBridgeFromEnv(process.env, {
 const openClawSshBridge = openClawBedrockBridge ? null : createOpenClawSshBridgeFromEnv();
 const openClawChatBridge = openClawBedrockBridge ?? openClawSshBridge;
 const canvasLiveEvents = new CanvasLiveEventService();
+const episodicScratchPool = new Pool({
+  connectionString: process.env.POSTGRES_URL ?? defaultPostgresUrl,
+  application_name: "delivrix-openclaw-episodic-scratch"
+});
 const gatewayLogStream = new GatewayLogStreamService({ logPath: gatewayRuntimeLog.logPath });
 const equipoWebhookBroadcaster = new EquipoWebhookBroadcaster({
   killSwitchProvider: async () => (await killSwitchStore.get()).enabled
@@ -467,6 +479,32 @@ const configureSmtpRuntimeDeps = {
     });
     return { proposalId: `rollback-requested-${input.runId}-${input.failedStep}` };
   },
+  compactIntent: async (input: {
+    intentId: string;
+    finalStatus: "completed" | "failed" | "cancelled" | "rolled_back";
+    decision: string;
+    ttlDays?: number;
+    steps: Array<{
+      step: number;
+      tool: string;
+      inputHash: string;
+      outcome: "success" | "failed" | "rolled_back" | "rollback_failed" | "cancelled_by_operator" | "timeout" | "partial";
+      outcomeData?: Record<string, unknown>;
+      errorClass?: string;
+      errorMessage?: string;
+      durationMs?: number;
+      proposalId?: string;
+      signatureId?: string;
+      toolUseId?: string;
+      toolCallId?: string;
+      auditEventId?: string;
+    }>;
+  }) => compactIntent(input, {
+    pool: episodicScratchPool,
+    auditLog,
+    canvasLiveEvents,
+    now: () => resolveGatewayNow()
+  }),
   verifyAuditChain: () => auditChainStore.verify(),
   logger: gatewayRuntimeLog
 };
@@ -647,6 +685,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_openclaw_skills_audit", "allowed_read_only"),
   permission("read_openclaw_evidence", "allowed_read_only"),
   permission("read_webdock_inventory", "allowed_read_only"),
+  permission("read_episodic_scratch", "allowed_read_only"),
+  permission("openclaw_memory_read", "allowed_read_only"),
   permission("suggest_safe_domain", "allowed_read_only"),
   permission("naming_suggest", "allowed_read_only"),
   permission("propose_warming_step", "allowed_dry_run"),
@@ -686,6 +726,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("send_real_email", "supervised_local_state"),
   permission("smtp_send_real", "supervised_local_state"),
   permission("smtp_send_real_email", "supervised_local_state"),
+  permission("compact_intent", "allowed_dry_run"),
+  permission("openclaw_memory_compact", "allowed_dry_run"),
   permission("configure_complete_smtp", "supervised_local_state"),
   permission("configure_smtp_complete", "supervised_local_state"),
   permission("proxmox_live_create_vps", "future_live_requires_new_phase"),
@@ -1194,6 +1236,27 @@ const server = createServer(async (request, response) => {
         readKillSwitch: () => killSwitchStore.get(),
         env: process.env,
         ...configureSmtpRuntimeDeps
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/scratch") {
+      return await handleReadEpisodicScratchHttp({
+        request,
+        response,
+        pool: episodicScratchPool,
+        readBoundaryToken: process.env.DELIVRIX_READ_BOUNDARY_TOKEN
+      });
+    }
+
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/openclaw/compact-intent") {
+      return await handleCompactIntentHttp({
+        request,
+        response,
+        pool: episodicScratchPool,
+        auditLog,
+        canvasLiveEvents,
+        allowUnsignedLocal: process.env.OPENCLAW_COMPACT_INTENT_ALLOW_UNSIGNED_LOCAL === "true",
+        now: () => resolveGatewayNow()
       });
     }
 
@@ -4991,6 +5054,15 @@ server.listen(port, host, () => {
   });
   void logGatewayDependencyWarnings();
   void resumeRampsOnStartup();
+  if (process.env.OPENCLAW_EPISODIC_SCRATCH_TTL_JOB_ENABLE === "true") {
+    startEpisodicScratchTtlJob({
+      pool: episodicScratchPool,
+      auditLog,
+      canvasLiveEvents,
+      logger: gatewayRuntimeLog,
+      intervalMs: Number(process.env.OPENCLAW_EPISODIC_SCRATCH_TTL_INTERVAL_MS ?? 6 * 60 * 60 * 1000)
+    });
+  }
 });
 
 async function resumeRampsOnStartup(): Promise<void> {

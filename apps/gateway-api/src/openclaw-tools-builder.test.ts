@@ -10,6 +10,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
   assert.deepEqual(tools.map((tool) => tool.name), [
     "register_domain_route53",
     "suggest_safe_domain",
+    "read_episodic_scratch",
     "wait_for_dns_propagation",
     "upsert_dns_route53",
     "upsert_dns_ionos",
@@ -20,11 +21,12 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "bind_domain_to_server",
     "seed_warmup_pool",
     "send_real_email",
+    "compact_intent",
     "configure_complete_smtp"
   ]);
   assert.equal(
     tools
-      .filter((tool) => !["suggest_safe_domain", "wait_for_dns_propagation"].includes(tool.name))
+      .filter((tool) => !["suggest_safe_domain", "wait_for_dns_propagation", "read_episodic_scratch", "compact_intent"].includes(tool.name))
       .every((tool) => tool.description.includes("ApprovalGate")),
     true
   );
@@ -39,7 +41,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 11);
+  assert.equal(tools.length, 13);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -82,9 +84,11 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
   const names = buildToolsForOpenClaw(allEnabledEnv()).map((tool) => tool.name);
   for (const name of [
     "suggest_safe_domain",
+    "read_episodic_scratch",
     "wait_for_dns_propagation",
     "bind_webdock_main_domain",
     "send_real_email",
+    "compact_intent",
     "configure_complete_smtp"
   ]) {
     assert.equal(names.includes(name), true, `${name} should be exposed`);
@@ -105,6 +109,7 @@ test("configure_complete_smtp fail-closes when a required subtool is disabled", 
 function allEnabledEnv(): Record<string, string | undefined> {
   return {
     OPENCLAW_HMAC_SECRET: "test-hmac",
+    POSTGRES_URL: "postgres://delivrix:delivrix_dev_password@localhost:5432/delivrix_mailops",
     AWS_ACCESS_KEY_ID: "test-access",
     AWS_SECRET_ACCESS_KEY: "test-secret",
     AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE: "true",
@@ -141,6 +146,9 @@ function validSample(toolName: string): Record<string, unknown> {
       maxWaitMs: 60000,
       pollIntervalMs: 30000
     };
+  }
+  if (toolName === "read_episodic_scratch") {
+    return { intentId: "intent-1" };
   }
   if (toolName === "upsert_dns_route53") {
     return {
@@ -188,6 +196,21 @@ function validSample(toolName: string): Record<string, unknown> {
       subject: "Operational readiness report",
       body: "Authorized operational readiness message for Delivrix infrastructure.",
       serverSlug: "server-69"
+    };
+  }
+  if (toolName === "compact_intent") {
+    return {
+      intentId: "intent-1",
+      finalStatus: "completed",
+      decision: "stored completed flow summary",
+      steps: [
+        {
+          step: 1,
+          tool: "suggest_safe_domain",
+          inputHash: "a".repeat(64),
+          outcome: "success"
+        }
+      ]
     };
   }
   return {

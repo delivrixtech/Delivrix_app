@@ -35,6 +35,7 @@ export interface ToolUseProcessorDeps {
   submitProposalFromToolUse(input: SubmitProposalFromToolUseInput): Promise<ToolUseProposalSubmission>;
   waitForProposalDecision(input: WaitForProposalDecisionInput): Promise<ToolUseProposalDecision>;
   invokeReadOnlyTool?: (input: InvokeReadOnlyToolInput) => Promise<unknown>;
+  invokeMemoryTool?: (input: InvokeReadOnlyToolInput) => Promise<unknown>;
   readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
 }
 
@@ -238,6 +239,47 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
     }
   }
 
+  if (isMemoryToolUse(canonicalToolName)) {
+    if (!input.deps.invokeMemoryTool) {
+      return {
+        ok: false,
+        error: "memory_tool_invoker_missing",
+        details: { tool: canonicalToolName }
+      };
+    }
+    try {
+      void logger.info("openclaw.tool_use.memory_started", "Running audited OpenClaw memory tool for Bedrock.", {
+        toolUseId: input.toolUseId,
+        toolName: canonicalToolName,
+        params: summarizeOperationalParams(validation.data)
+      });
+      return {
+        ok: true,
+        status: "executed",
+        result: truncateToolResult(await input.deps.invokeMemoryTool({
+          toolUseId: input.toolUseId,
+          toolName: canonicalToolName,
+          params: validation.data,
+          chatSession: input.chatSession,
+          env,
+          now
+        })),
+        proposalId: `memory:${input.toolUseId}`
+      };
+    } catch (error) {
+      void logger.warn("openclaw.tool_use.memory_failed", "OpenClaw memory tool failed.", {
+        toolUseId: input.toolUseId,
+        toolName: canonicalToolName,
+        details: errorMessage(error)
+      });
+      return {
+        ok: false,
+        error: "memory_tool_failed",
+        details: errorMessage(error)
+      };
+    }
+  }
+
   let proposal: ToolUseProposalSubmission;
   try {
     void logger.info("openclaw.tool_use.proposal_submit_started", "Submitting ApprovalGate proposal for Bedrock tool-use.", {
@@ -407,7 +449,15 @@ export function createHttpToolUseProcessor(config: HttpToolUseProcessorConfig): 
     invokeReadOnlyTool: async (input) => invokeReadOnlyToolOverHttp({
       input,
       baseUrl,
-      fetchImpl
+      fetchImpl,
+      readBoundaryToken: config.readBoundaryToken ?? ""
+    }),
+    invokeMemoryTool: async (input) => invokeMemoryToolOverHttp({
+      input,
+      baseUrl,
+      fetchImpl,
+      env,
+      now: nowFn
     }),
     readKillSwitch
   };
@@ -527,6 +577,7 @@ async function invokeReadOnlyToolOverHttp(input: {
   input: InvokeReadOnlyToolInput;
   baseUrl: string;
   fetchImpl: FetchLike;
+  readBoundaryToken?: string;
 }): Promise<unknown> {
   if (input.input.toolName === "suggest_safe_domain") {
     const response = await input.fetchImpl(`${input.baseUrl}/v1/skills/suggest-safe-domain`, {
@@ -566,7 +617,66 @@ async function invokeReadOnlyToolOverHttp(input: {
     return body;
   }
 
+  if (input.input.toolName === "read_episodic_scratch") {
+    const url = new URL(`${input.baseUrl}/v1/openclaw/scratch`);
+    for (const [key, value] of Object.entries(input.input.params)) {
+      if (value !== undefined && value !== null && value !== "") {
+        url.searchParams.set(key, String(value));
+      }
+    }
+    const response = await input.fetchImpl(url, {
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+    }
+    return body;
+  }
+
   throw new Error(`unsupported_read_only_tool:${input.input.toolName}`);
+}
+
+async function invokeMemoryToolOverHttp(input: {
+  input: InvokeReadOnlyToolInput;
+  baseUrl: string;
+  fetchImpl: FetchLike;
+  env: Record<string, string | undefined>;
+  now: () => Date;
+}): Promise<unknown> {
+  if (input.input.toolName !== "compact_intent") {
+    throw new Error(`unsupported_memory_tool:${input.input.toolName}`);
+  }
+
+  const secret = input.env.OPENCLAW_HMAC_SECRET?.trim();
+  if (!secret) {
+    throw new Error("OPENCLAW_HMAC_SECRET is required for memory tool submission.");
+  }
+
+  const raw = JSON.stringify({
+    ...input.input.params,
+    actorId: input.input.chatSession.id
+  });
+  const timestamp = Math.floor(input.now().getTime() / 1000);
+  const signature = signOpenClawPayload(raw, timestamp, secret);
+  const response = await input.fetchImpl(`${input.baseUrl}/v1/openclaw/compact-intent`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "x-openclaw-timestamp": String(timestamp),
+      "x-openclaw-signature": signature
+    },
+    body: raw
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(`memory tool failed with HTTP ${response.status}`);
+  }
+  return body;
 }
 
 async function waitForProposalDecisionOverHttp(input: {
@@ -761,7 +871,13 @@ function positiveIntFromUnknown(value: unknown): number | undefined {
 }
 
 function isReadOnlyToolUse(toolName: string): boolean {
-  return toolName === "suggest_safe_domain" || toolName === "wait_for_dns_propagation";
+  return toolName === "suggest_safe_domain" ||
+    toolName === "wait_for_dns_propagation" ||
+    toolName === "read_episodic_scratch";
+}
+
+function isMemoryToolUse(toolName: string): boolean {
+  return toolName === "compact_intent";
 }
 
 function sleep(ms: number): Promise<void> {

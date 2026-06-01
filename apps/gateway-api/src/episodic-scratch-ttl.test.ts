@@ -1,0 +1,116 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { insertEpisodicEntry, type InsertEntryInput } from "../../../packages/storage/src/index.ts";
+import { runEpisodicScratchTtlJob } from "./episodic-scratch-ttl.ts";
+
+test("runEpisodicScratchTtlJob expires old rows and emits audit/canvas when work happened", async () => {
+  const pool = new MemoryScratchPool();
+  await insertEpisodicEntry(pool, entry({ intentId: "old" }));
+  await insertEpisodicEntry(pool, entry({ intentId: "new" }));
+  pool.rows[0].ttl_expires_at = new Date("2026-06-01T11:00:00.000Z");
+  pool.rows[1].ttl_expires_at = new Date("2026-06-01T13:00:00.000Z");
+  const auditEvents: Array<{ action: string; metadata?: Record<string, unknown> }> = [];
+  const canvasEvents: Array<{ action?: string }> = [];
+
+  const result = await runEpisodicScratchTtlJob({
+    pool,
+    now: () => new Date("2026-06-01T12:00:00.000Z"),
+    auditLog: {
+      async append(event) {
+        auditEvents.push(event as { action: string; metadata?: Record<string, unknown> });
+        return event;
+      }
+    },
+    canvasLiveEvents: {
+      async emit(event) {
+        canvasEvents.push(event as { action?: string });
+        return event;
+      }
+    }
+  });
+
+  assert.equal(result.expired, 1);
+  assert.deepEqual(pool.rows.map((row) => row.intent_id), ["new"]);
+  assert.equal(auditEvents[0]?.action, "oc.episodic.scratch_expired");
+  assert.equal(auditEvents[0]?.metadata?.expired, 1);
+  assert.equal(canvasEvents[0]?.action, "oc.episodic.scratch_expired");
+});
+
+function entry(overrides: Partial<InsertEntryInput> = {}): InsertEntryInput {
+  return {
+    intentId: "intent-1",
+    step: 1,
+    tool: "suggest_safe_domain",
+    inputHash: "0123456789abcdef",
+    outcome: "success",
+    outcomeData: { ok: true },
+    source: "openclaw",
+    ...overrides
+  };
+}
+
+interface MemoryRow {
+  id: string;
+  intent_id: string;
+  step: number;
+  tool: string;
+  input_hash: string;
+  outcome: string;
+  outcome_data: Record<string, unknown> | null;
+  error_class: string | null;
+  error_message: string | null;
+  source: string;
+  trust_score: number;
+  ttl_expires_at: Date;
+  created_at: Date;
+  metadata: Record<string, unknown>;
+}
+
+class MemoryScratchPool {
+  rows: MemoryRow[] = [];
+  #id = 0;
+
+  async query(sql: string, params: unknown[] = []): Promise<{ rows: MemoryRow[]; rowCount: number }> {
+    if (sql.includes("INSERT INTO openclaw_episodic_scratch")) {
+      const row: MemoryRow = {
+        id: `scratch-${++this.#id}`,
+        intent_id: String(params[0]),
+        step: Number(params[1]),
+        tool: String(params[2]),
+        input_hash: String(params[3]),
+        outcome: String(params[4]),
+        outcome_data: parseJsonRecord(params[5]),
+        error_class: typeof params[6] === "string" ? params[6] : null,
+        error_message: typeof params[7] === "string" ? params[7] : null,
+        source: String(params[8]),
+        trust_score: Number(params[9]),
+        ttl_expires_at: params[10] instanceof Date ? params[10] : new Date(String(params[10])),
+        created_at: new Date(Date.now() + this.#id),
+        metadata: parseJsonRecord(params[11]) ?? {}
+      };
+      this.rows.push(row);
+      return { rows: [row], rowCount: 1 };
+    }
+
+    if (sql.includes("DELETE FROM openclaw_episodic_scratch")) {
+      const before = params[0] instanceof Date ? params[0] : new Date(String(params[0]));
+      const deleted = this.rows.filter((row) => row.ttl_expires_at < before);
+      this.rows = this.rows.filter((row) => row.ttl_expires_at >= before);
+      return { rows: deleted, rowCount: deleted.length };
+    }
+
+    return { rows: [], rowCount: 0 };
+  }
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "string") {
+    const parsed = JSON.parse(value) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  }
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
