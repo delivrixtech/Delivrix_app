@@ -415,6 +415,51 @@ test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint
   ]);
 });
 
+test("createHttpToolUseProcessor invokes read-only Webdock inventory endpoint directly", async () => {
+  const urls: string[] = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    fetchImpl: async (url, init) => {
+      urls.push(String(url));
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).endsWith("/v1/webdock/inventory")) {
+        assert.equal(init?.method, "GET");
+        assert.equal((init?.headers as Record<string, string>)["x-openclaw-skill-invocation"], "delivrix-fleet-ops");
+        return jsonResponse({
+          inventory: {
+            servers: [
+              { slug: "server9", status: "running", ipv4: "192.0.2.9" },
+              { slug: "server10", status: "running", ipv4: "45.136.70.47", mainDomain: "controldelivrix.app" }
+            ]
+          },
+          drift: { proposals: [] }
+        });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-webdock-read",
+    toolName: "read_webdock_servers",
+    toolInput: { serverSlug: "server10", ipv4: "45.136.70.47" },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected Webdock inventory read success");
+  assert.deepEqual((result.result as { matchedServers: unknown[] }).matchedServers, [
+    { slug: "server10", status: "running", ipv4: "45.136.70.47", mainDomain: "controldelivrix.app" }
+  ]);
+  assert.deepEqual(urls, [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/webdock/inventory"
+  ]);
+});
+
 test("processToolUse fails read-only suggest_safe_domain when invoker is missing", async () => {
   const result = await processToolUse({
     toolUseId: "toolu-suggest-missing",

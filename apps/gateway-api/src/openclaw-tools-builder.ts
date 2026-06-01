@@ -6,6 +6,7 @@ import {
   emailAuthParamSchema,
   ionosUpsertParamSchema,
   readEpisodicScratchParamSchema,
+  readWebdockServersParamSchema,
   route53DomainDetailParamSchema,
   route53RegisterParamSchema,
   route53ZoneRecordsParamSchema,
@@ -37,6 +38,7 @@ export type OpenClawToolName =
   | "wait_for_dns_propagation"
   | "read_route53_domain_detail"
   | "read_route53_zone_records"
+  | "read_webdock_servers"
   | "upsert_dns_route53"
   | "upsert_dns_ionos"
   | "create_webdock_server"
@@ -272,6 +274,36 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hmacConfigured(env) &&
       hasAwsRoute53DnsCredentials(env),
     targetType: "route53_hosted_zone",
+    severity: "high"
+  },
+  read_webdock_servers: {
+    spec: {
+      name: "read_webdock_servers",
+      description: [
+        "Lee el inventario Webdock real vía Gateway Delivrix, incluyendo slug, status, IPv4, profileSlug, imageSlug, hostname/mainDomain cuando Webdock lo expone, y drift contra sender_node local.",
+        "Invocar antes de asumir que un VPS existe, crear otro VPS, bindear dominio o provisionar SMTP en un server.",
+        "Lectura auditada: no muta infraestructura, no crea servidores y no requiere ApprovalGate."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          serverSlug: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Filtrar por slug Webdock opcional. Ejemplo: server10."
+          },
+          ipv4: {
+            type: "string",
+            pattern: ipv4Pattern,
+            description: "Filtrar por IPv4 opcional. Ejemplo: 45.136.70.47."
+          }
+        },
+        required: []
+      }
+    },
+    paramSchema: readWebdockServersParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "webdock_inventory",
     severity: "high"
   },
   upsert_dns_route53: {
@@ -624,6 +656,7 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       isOpenClawToolEnabled("wait_for_dns_propagation", env) &&
       isOpenClawToolEnabled("read_route53_domain_detail", env) &&
       isOpenClawToolEnabled("read_route53_zone_records", env) &&
+      isOpenClawToolEnabled("read_webdock_servers", env) &&
       isOpenClawToolEnabled("create_webdock_server", env) &&
       isOpenClawToolEnabled("bind_webdock_main_domain", env) &&
       isOpenClawToolEnabled("upsert_dns_route53", env) &&
@@ -655,6 +688,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "read_webdock_servers",
     "upsert_dns_route53",
     "upsert_dns_ionos",
     "create_webdock_server",

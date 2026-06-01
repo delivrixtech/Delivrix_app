@@ -14,6 +14,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "read_webdock_servers",
     "upsert_dns_route53",
     "upsert_dns_ionos",
     "create_webdock_server",
@@ -34,6 +35,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
         "read_episodic_scratch",
         "read_route53_domain_detail",
         "read_route53_zone_records",
+        "read_webdock_servers",
         "compact_intent"
       ].includes(tool.name))
       .every((tool) => tool.description.includes("ApprovalGate")),
@@ -51,6 +53,10 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     tools.find((tool) => tool.name === "read_route53_zone_records")?.description ?? "",
     /no requiere ApprovalGate/
   );
+  assert.match(
+    tools.find((tool) => tool.name === "read_webdock_servers")?.description ?? "",
+    /no requiere ApprovalGate/
+  );
 });
 
 test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", () => {
@@ -58,7 +64,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 15);
+  assert.equal(tools.length, 16);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -132,6 +138,7 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "read_webdock_servers",
     "bind_webdock_main_domain",
     "send_real_email",
     "compact_intent",
@@ -205,6 +212,9 @@ function validSample(toolName: string): Record<string, unknown> {
       recordType: "A",
       recordName: "smtp.controldelivrix.app"
     };
+  }
+  if (toolName === "read_webdock_servers") {
+    return { serverSlug: "server10", ipv4: "45.136.70.47" };
   }
   if (toolName === "upsert_dns_route53") {
     return {

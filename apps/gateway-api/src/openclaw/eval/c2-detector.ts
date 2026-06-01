@@ -36,6 +36,7 @@ export const C2_MATRIX_ACTIONS = [
   "read_openclaw_skills_audit",
   "read_openclaw_evidence",
   "read_webdock_inventory",
+  "read_webdock_servers",
   "propose_warming_step",
   "propose_pause_ip",
   "propose_quarantine",

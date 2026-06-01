@@ -687,6 +687,7 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_openclaw_skills_audit", "allowed_read_only"),
   permission("read_openclaw_evidence", "allowed_read_only"),
   permission("read_webdock_inventory", "allowed_read_only"),
+  permission("read_webdock_servers", "allowed_read_only"),
   permission("read_episodic_scratch", "allowed_read_only"),
   permission("openclaw_memory_read", "allowed_read_only"),
   permission("read_route53_domain_detail", "allowed_read_only"),
