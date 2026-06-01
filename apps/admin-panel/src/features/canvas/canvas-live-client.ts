@@ -29,6 +29,7 @@ const STATE_ENDPOINT = "/v1/canvas/live/state";
 const STREAM_PATH = "/v1/canvas/live/stream";
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15_000;
+const SNAPSHOT_POLL_MS = 5_000;
 
 export type LiveConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline";
 
@@ -102,6 +103,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
   const [lastError, setLastError] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const snapshotPollTimerRef = useRef<number | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const cancelledRef = useRef(false);
 
@@ -121,6 +123,9 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
     }
     cancelledRef.current = false;
     void loadSnapshotThenStream();
+    snapshotPollTimerRef.current = window.setInterval(() => {
+      void pollSnapshot();
+    }, SNAPSHOT_POLL_MS);
     return () => {
       cancelledRef.current = true;
       cleanup();
@@ -130,6 +135,10 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
       if (reconnectTimerRef.current != null) {
         window.clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
+      }
+      if (snapshotPollTimerRef.current != null) {
+        window.clearInterval(snapshotPollTimerRef.current);
+        snapshotPollTimerRef.current = null;
       }
       if (socketRef.current) {
         try {
@@ -144,15 +153,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
     async function loadSnapshotThenStream() {
       try {
         setConnection("connecting");
-        const res = await fetch(STATE_ENDPOINT, {
-          method: "GET",
-          headers: { accept: "application/json" },
-          cache: "no-store"
-        });
-        if (!res.ok) {
-          throw new Error(`GET ${STATE_ENDPOINT} failed (${res.status})`);
-        }
-        const payload = (await res.json()) as CanvasLiveStateSnapshotWire;
+        const payload = await fetchSnapshot();
         if (cancelledRef.current) return;
         applySnapshot(payload);
       } catch (err) {
@@ -163,6 +164,30 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
         return;
       }
       openSocket();
+    }
+
+    async function pollSnapshot() {
+      try {
+        const payload = await fetchSnapshot();
+        if (cancelledRef.current) return;
+        applySnapshot(payload);
+        setLastError(null);
+      } catch (err) {
+        if (cancelledRef.current) return;
+        setLastError(err instanceof Error ? err.message : "snapshot poll error");
+      }
+    }
+
+    async function fetchSnapshot(): Promise<CanvasLiveStateSnapshotWire> {
+      const res = await fetch(STATE_ENDPOINT, {
+        method: "GET",
+        headers: { accept: "application/json" },
+        cache: "no-store"
+      });
+      if (!res.ok) {
+        throw new Error(`GET ${STATE_ENDPOINT} failed (${res.status})`);
+      }
+      return (await res.json()) as CanvasLiveStateSnapshotWire;
     }
 
     function applySnapshot(snapshot: CanvasLiveStateSnapshotWire) {

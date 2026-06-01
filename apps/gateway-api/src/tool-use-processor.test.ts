@@ -216,6 +216,77 @@ test("processToolUse maps operator rejection and approval timeout", async () => 
   assert.equal(timeout.timeoutMs, 10);
 });
 
+test("processToolUse extends wait_for_dns_propagation timeout from DNS maxWaitMs", async () => {
+  let observedTimeoutMs = 0;
+  const result = await processToolUse({
+    toolUseId: "toolu-dns-wait",
+    toolName: "wait_for_dns_propagation",
+    toolInput: {
+      domain: "delivrix.test",
+      expectedRecord: { type: "NS", value: "contains:awsdns" },
+      maxWaitMs: 1_800_000,
+      pollIntervalMs: 60_000
+    },
+    chatSession: { id: "agent:main:operator" },
+    env: enabledEnv(),
+    deps: {
+      async submitProposalFromToolUse() {
+        return { proposalId: "proposal-dns", requiresApproval: true };
+      },
+      async waitForProposalDecision(input) {
+        observedTimeoutMs = input.timeoutMs;
+        return {
+          status: "approval_timeout",
+          proposalId: input.proposalId,
+          timeoutMs: input.timeoutMs
+        };
+      },
+      async readKillSwitch() {
+        return { enabled: false };
+      }
+    }
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(observedTimeoutMs, 1_980_000);
+});
+
+test("processToolUse honors explicit timeout override from orchestrator", async () => {
+  let observedTimeoutMs = 0;
+  const result = await processToolUse({
+    toolUseId: "toolu-dns-wait-override",
+    toolName: "wait_for_dns_propagation",
+    toolInput: {
+      domain: "delivrix.test",
+      expectedRecord: { type: "A", value: "203.0.113.10" },
+      maxWaitMs: 600_000,
+      pollIntervalMs: 30_000
+    },
+    timeoutMs: 900_000,
+    chatSession: { id: "agent:main:operator" },
+    env: enabledEnv(),
+    deps: {
+      async submitProposalFromToolUse() {
+        return { proposalId: "proposal-dns", requiresApproval: true };
+      },
+      async waitForProposalDecision(input) {
+        observedTimeoutMs = input.timeoutMs;
+        return {
+          status: "approval_timeout",
+          proposalId: input.proposalId,
+          timeoutMs: input.timeoutMs
+        };
+      },
+      async readKillSwitch() {
+        return { enabled: false };
+      }
+    }
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(observedTimeoutMs, 900_000);
+});
+
 test("buildProposalPayloadFromToolUse produces HMAC-submittable proposal envelope", () => {
   const payload = buildProposalPayloadFromToolUse({
     toolUseId: "toolu-payload",

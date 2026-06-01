@@ -115,6 +115,7 @@ export interface ConfigureCompleteSmtpDeps {
 }
 
 const defaultApprovalTimeoutMs = 10 * 60 * 1000;
+const longRunningStepTimeoutPaddingMs = 2 * 60 * 1000;
 const minEstimatedCostUsd = 15 + 4.30 / 30;
 
 export async function handleConfigureCompleteSmtp(
@@ -169,6 +170,11 @@ export async function configureCompleteSmtp(
   let serverIpv4 = "";
   let rollbackProposalId: string | undefined;
 
+  await emitRunTask(deps, runId, "running", {
+    title: `configure_complete_smtp · ${input.brand}`,
+    createdAt: startedAt.toISOString()
+  });
+  await emitRunAction(deps, runId, "oc.orchestrator.run_started", "low");
   await audit(deps, "oc.orchestrator.run_started", "openclaw_orchestrator_run", runId, "high", {
     skill: "configure_complete_smtp",
     budgetUsdMax: input.budgetUsdMax,
@@ -214,7 +220,7 @@ export async function configureCompleteSmtp(
       approvalTimeoutMs,
       params: {
         domain: chosenDomain,
-        expectedRecord: { type: "NS", value: "awsdns" },
+        expectedRecord: { type: "NS", value: "contains:awsdns" },
         maxWaitMs: 1_800_000,
         pollIntervalMs: 60_000
       },
@@ -386,6 +392,8 @@ export async function configureCompleteSmtp(
       totalCostUsd,
       totalDurationMs
     });
+    await emitRunAction(deps, runId, "oc.orchestrator.run_completed", "low");
+    await emitRunTask(deps, runId, "completed");
 
     return {
       runId,
@@ -421,6 +429,8 @@ export async function configureCompleteSmtp(
       rollbackProposalId = rollback.proposalId;
     }
 
+    await emitRunAction(deps, runId, "oc.orchestrator.run_failed", "high");
+    await emitRunTask(deps, runId, "failed");
     return {
       runId,
       status: failure.status,
@@ -482,13 +492,14 @@ async function runGatedStep(input: {
     approvalRequired: true,
     estimatedCostUsd: input.estimatedCostUsd ?? 0
   });
+  const approvalTimeoutMs = approvalTimeoutForStep(input.skill, input.params, input.approvalTimeoutMs);
   const decision = await input.deps.submitAndAwaitApproval({
     runId: input.runId,
     step: input.step,
     skill: input.skill,
     params: input.params,
     actorId: input.actorId,
-    approvalTimeoutMs: input.approvalTimeoutMs,
+    approvalTimeoutMs,
     estimatedCostUsd: input.estimatedCostUsd
   });
 
@@ -546,6 +557,51 @@ async function verifyAuditChain(deps: ConfigureCompleteSmtpDeps): Promise<void> 
   }
 }
 
+async function emitRunTask(
+  deps: ConfigureCompleteSmtpDeps,
+  runId: string,
+  status: "running" | "completed" | "failed",
+  input: { title?: string; createdAt?: string } = {}
+): Promise<void> {
+  const now = (deps.now?.() ?? new Date()).toISOString();
+  if (status === "running") {
+    await safeEmit(deps, {
+      type: "oc.task.declare",
+      taskId: runId,
+      title: input.title ?? `configure_complete_smtp · ${runId}`,
+      status: "running",
+      createdAt: input.createdAt ?? now,
+      actorId: "openclaw/configure_complete_smtp"
+    } as CanvasLiveEvent);
+    return;
+  }
+
+  await safeEmit(deps, {
+    type: "oc.task.update",
+    taskId: runId,
+    status,
+    updatedAt: now
+  } as CanvasLiveEvent);
+}
+
+async function emitRunAction(
+  deps: ConfigureCompleteSmtpDeps,
+  runId: string,
+  action: "oc.orchestrator.run_started" | "oc.orchestrator.run_completed" | "oc.orchestrator.run_failed",
+  riskLevel: "low" | "high"
+): Promise<void> {
+  await safeEmit(deps, {
+    type: "oc.action.now",
+    taskId: runId,
+    kind: "audit",
+    action,
+    targetType: "openclaw_orchestrator_run",
+    targetId: runId,
+    riskLevel,
+    occurredAt: (deps.now?.() ?? new Date()).toISOString()
+  } as CanvasLiveEvent);
+}
+
 async function emitStep(
   deps: ConfigureCompleteSmtpDeps,
   action: "oc.orchestrator.step_started" | "oc.orchestrator.step_completed" | "oc.orchestrator.step_failed",
@@ -554,7 +610,7 @@ async function emitStep(
   skill: string,
   metadata: Record<string, unknown>
 ): Promise<void> {
-  await deps.canvasLiveEvents?.emit({
+  await safeEmit(deps, {
     type: "oc.action.now",
     taskId: runId,
     kind: "audit",
@@ -562,9 +618,27 @@ async function emitStep(
     targetType: "openclaw_orchestrator_step",
     targetId: `${runId}:${step}:${skill}`,
     riskLevel: action.endsWith("failed") ? "high" : "low",
-    occurredAt: (deps.now?.() ?? new Date()).toISOString(),
-    metadata: { runId, step, skill, ...metadata }
-  } as CanvasLiveEvent & { metadata: Record<string, unknown> });
+    occurredAt: (deps.now?.() ?? new Date()).toISOString()
+  } as CanvasLiveEvent);
+  void metadata;
+}
+
+async function safeEmit(deps: ConfigureCompleteSmtpDeps, event: CanvasLiveEvent): Promise<void> {
+  if (!deps.canvasLiveEvents) return;
+  try {
+    await deps.canvasLiveEvents.emit(event);
+  } catch (error) {
+    console.error("[canvas-live] emit failed for event", event.type, errorMessage(error));
+  }
+}
+
+function approvalTimeoutForStep(skill: string, params: Record<string, unknown>, baseTimeoutMs: number): number {
+  const maxWaitMs = positiveIntFromUnknown(params.maxWaitMs);
+  const pollIntervalMs = positiveIntFromUnknown(params.pollIntervalMs) ?? 0;
+  if (skill === "wait_for_dns_propagation" && maxWaitMs !== undefined) {
+    return Math.max(baseTimeoutMs, maxWaitMs + pollIntervalMs + longRunningStepTimeoutPaddingMs);
+  }
+  return baseTimeoutMs;
 }
 
 async function audit(
@@ -648,6 +722,10 @@ function roundUsd(value: number): number {
 function positiveInt(value: string | undefined): number | undefined {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function positiveIntFromUnknown(value: unknown): number | undefined {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

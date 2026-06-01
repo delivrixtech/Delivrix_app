@@ -204,7 +204,7 @@ export async function pollDnsRecord(input: {
         observedAnyValue = true;
       }
       lastSeen = observed.join(",");
-      if (observed.some((value) => normalizeDnsValue(value) === expectedValue)) {
+      if (observed.some((value) => recordMatchesExpected(value, expectedValue))) {
         return {
           ok: true,
           attempts,
@@ -367,6 +367,15 @@ async function resolveExpectedRecord(input: {
     throw new Error("resolveTxt is required for TXT propagation checks");
   }
   return (await input.dns.resolveTxt(input.domain)).map((entry) => normalizeDnsValue(entry.join("")));
+}
+
+function recordMatchesExpected(observed: string, expectedValue: string): boolean {
+  const normalized = normalizeDnsValue(observed);
+  const containsPrefix = "contains:";
+  if (expectedValue.startsWith(containsPrefix)) {
+    return normalized.includes(normalizeDnsValue(expectedValue.slice(containsPrefix.length)));
+  }
+  return normalized === expectedValue;
 }
 
 function schema<T extends Record<string, unknown>>(

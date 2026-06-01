@@ -19,6 +19,7 @@ export interface ProcessToolUseInput {
   toolName: string;
   toolInput: unknown;
   chatSession: ToolUseChatSession;
+  timeoutMs?: number;
   env?: Record<string, string | undefined>;
   deps: ToolUseProcessorDeps;
   now?: () => Date;
@@ -215,7 +216,7 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
     };
   }
 
-  const timeoutMs = approvalTimeoutForTool(canonicalToolName, env);
+  const timeoutMs = input.timeoutMs ?? approvalTimeoutForTool(canonicalToolName, env, validation.data);
   const decision = await input.deps.waitForProposalDecision({
     proposalId: proposal.proposalId,
     timeoutMs,
@@ -612,13 +613,31 @@ function parsePositiveInt(value: string | undefined): number | undefined {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function approvalTimeoutForTool(toolName: string, env: Record<string, string | undefined>): number {
+function approvalTimeoutForTool(
+  toolName: string,
+  env: Record<string, string | undefined>,
+  params: Record<string, unknown>
+): number {
   if (toolName === "configure_complete_smtp") {
     return parsePositiveInt(env.OPENCLAW_CONFIGURE_SMTP_TOOL_TIMEOUT_MS) ??
       parsePositiveInt(env.OPENCLAW_TOOL_APPROVAL_TIMEOUT_MS) ??
       3 * 60 * 60 * 1000;
   }
+  if (toolName === "wait_for_dns_propagation") {
+    const maxWaitMs = positiveIntFromUnknown(params.maxWaitMs);
+    const pollIntervalMs = positiveIntFromUnknown(params.pollIntervalMs) ?? 0;
+    if (maxWaitMs !== undefined) {
+      return Math.max(
+        parsePositiveInt(env.OPENCLAW_TOOL_APPROVAL_TIMEOUT_MS) ?? defaultApprovalTimeoutMs,
+        maxWaitMs + pollIntervalMs + 2 * 60 * 1000
+      );
+    }
+  }
   return parsePositiveInt(env.OPENCLAW_TOOL_APPROVAL_TIMEOUT_MS) ?? defaultApprovalTimeoutMs;
+}
+
+function positiveIntFromUnknown(value: unknown): number | undefined {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined;
 }
 
 function sleep(ms: number): Promise<void> {
