@@ -197,7 +197,7 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
     };
   }
 
-  if (canonicalToolName === "suggest_safe_domain") {
+  if (isReadOnlyToolUse(canonicalToolName)) {
     if (!input.deps.invokeReadOnlyTool) {
       return {
         ok: false,
@@ -528,25 +528,45 @@ async function invokeReadOnlyToolOverHttp(input: {
   baseUrl: string;
   fetchImpl: FetchLike;
 }): Promise<unknown> {
-  if (input.input.toolName !== "suggest_safe_domain") {
-    throw new Error(`unsupported_read_only_tool:${input.input.toolName}`);
+  if (input.input.toolName === "suggest_safe_domain") {
+    const response = await input.fetchImpl(`${input.baseUrl}/v1/skills/suggest-safe-domain`, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        ...input.input.params,
+        actorId: input.input.chatSession.id
+      })
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+    }
+    return body;
   }
-  const response = await input.fetchImpl(`${input.baseUrl}/v1/skills/suggest-safe-domain`, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({
-      ...input.input.params,
-      actorId: input.input.chatSession.id
-    })
-  });
-  const body = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(`read-only tool failed with HTTP ${response.status}`);
+
+  if (input.input.toolName === "wait_for_dns_propagation") {
+    const response = await input.fetchImpl(`${input.baseUrl}/v1/skills/wait-for-dns-propagation/read-only`, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        ...input.input.params,
+        actorId: input.input.chatSession.id
+      })
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+    }
+    return body;
   }
-  return body;
+
+  throw new Error(`unsupported_read_only_tool:${input.input.toolName}`);
 }
 
 async function waitForProposalDecisionOverHttp(input: {
@@ -738,6 +758,10 @@ function approvalTimeoutForTool(
 
 function positiveIntFromUnknown(value: unknown): number | undefined {
   return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined;
+}
+
+function isReadOnlyToolUse(toolName: string): boolean {
+  return toolName === "suggest_safe_domain" || toolName === "wait_for_dns_propagation";
 }
 
 function sleep(ms: number): Promise<void> {

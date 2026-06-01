@@ -178,7 +178,8 @@ import {
 } from "./routes/domains-bind.ts";
 import {
   createAuditApprovalGuard,
-  handleWaitForDnsPropagationHttp
+  handleWaitForDnsPropagationHttp,
+  handleWaitForDnsPropagationReadOnlyHttp
 } from "./routes/dns-wait.ts";
 import {
   handleWebdockServerCreateError,
@@ -1306,6 +1307,15 @@ const server = createServer(async (request, response) => {
           auditLog,
           readCanvasState: () => canvasLiveEvents.snapshot()
         }),
+        readKillSwitch: () => killSwitchStore.get()
+      });
+    }
+
+    if (request.method === "POST" && request.url === "/v1/skills/wait-for-dns-propagation/read-only") {
+      return await handleWaitForDnsPropagationReadOnlyHttp({
+        request,
+        response,
+        auditLog,
         readKillSwitch: () => killSwitchStore.get()
       });
     }

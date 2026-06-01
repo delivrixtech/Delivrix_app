@@ -14,6 +14,7 @@ import type { ApprovalToken } from "../security/approval-token.ts";
 import {
   createAuditApprovalGuard,
   handleWaitForDnsPropagationHttp,
+  handleWaitForDnsPropagationReadOnlyHttp,
   pollDnsRecord,
   type ApprovalGuard,
   type DnsResolver
@@ -233,6 +234,51 @@ test("POST /v1/skills/wait-for-dns-propagation audits propagation metadata", asy
   assert.equal(response.body.eventId, event?.id);
 });
 
+test("POST /v1/skills/wait-for-dns-propagation/read-only audits without approval fields", async () => {
+  const auditLog = new MemoryAuditLog();
+  const response = await callReadOnlyRoute({
+    domain: "delivrix.test",
+    expectedRecord: { type: "A", value: "1.2.3.4" },
+    maxWaitMs: 30_000,
+    pollIntervalMs: 30_000,
+    actorId
+  }, {
+    auditLog,
+    dns: dnsResolver({ resolve4: async () => ["1.2.3.4"] })
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+  const event = (await auditLog.list()).at(-1);
+  assert.equal(event?.action, "oc.dns.propagation_check");
+  assert.equal(event?.actorId, actorId);
+  assert.equal(event?.humanApproved, false);
+  assert.equal(event?.metadata.readOnly, true);
+  assert.equal(response.body.eventId, event?.id);
+});
+
+test("POST /v1/skills/wait-for-dns-propagation/read-only returns DNS blockers as data", async () => {
+  const auditLog = new MemoryAuditLog();
+  const response = await callReadOnlyRoute({
+    domain: "missing.delivrix.test",
+    expectedRecord: { type: "A", value: "1.2.3.4" },
+    maxWaitMs: 30_000,
+    pollIntervalMs: 30_000,
+    actorId
+  }, {
+    auditLog,
+    dns: dnsResolver({ resolve4: async () => { throw dnsError("ENOTFOUND"); } })
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, false);
+  assert.equal(response.body.error, "domain_nxdomain");
+  const event = (await auditLog.list()).at(-1);
+  assert.equal(event?.decision, "reject");
+  assert.equal(event?.metadata.ok, false);
+  assert.equal(event?.metadata.readOnly, true);
+});
+
 test("POST /v1/skills/wait-for-dns-propagation respects kill switch", async () => {
   let dnsCalls = 0;
   const response = await callRoute(validBody(), {
@@ -346,6 +392,32 @@ async function callRoute(
     response: response as unknown as ServerResponse,
     auditLog: options.auditLog ?? new MemoryAuditLog(),
     approvalGuard: options.approvalGuard ?? { verify: async () => ({ ok: true, eventId: "approval-event-1" }) },
+    dns: options.dns ?? dnsResolver(),
+    now: options.now ?? (() => fixedNow.getTime()),
+    sleep: options.sleep ?? (async () => undefined),
+    readKillSwitch: options.readKillSwitch
+  });
+  return {
+    statusCode: response.statusCode,
+    body: JSON.parse(response.body)
+  };
+}
+
+async function callReadOnlyRoute(
+  body: unknown,
+  options: {
+    auditLog?: MemoryAuditLog;
+    dns?: DnsResolver;
+    now?: () => number;
+    sleep?: (ms: number) => Promise<void>;
+    readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
+  } = {}
+): Promise<{ statusCode: number; body: any }> {
+  const response = captureResponse();
+  await handleWaitForDnsPropagationReadOnlyHttp({
+    request: requestWithJson(body),
+    response: response as unknown as ServerResponse,
+    auditLog: options.auditLog ?? new MemoryAuditLog(),
     dns: options.dns ?? dnsResolver(),
     now: options.now ?? (() => fixedNow.getTime()),
     sleep: options.sleep ?? (async () => undefined),

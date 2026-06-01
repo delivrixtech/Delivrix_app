@@ -173,6 +173,84 @@ export async function handleWaitForDnsPropagationHttp(
   } satisfies WaitForDnsPropagationResult);
 }
 
+export async function handleWaitForDnsPropagationReadOnlyHttp(
+  deps: Omit<WaitForDnsPropagationDeps, "approvalGuard">
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = await readJsonBody(deps.request);
+  } catch {
+    json(deps.response, 400, {
+      error: "invalid_params",
+      details: { _errors: ["Request body must be valid JSON."] }
+    });
+    return;
+  }
+
+  const parsed = waitForDnsPropagationSkillParamSchema.safeParse(body);
+  if (!parsed.success) {
+    json(deps.response, 400, {
+      error: "invalid_params",
+      details: parsed.error.format()
+    });
+    return;
+  }
+
+  const killSwitch = await deps.readKillSwitch?.();
+  if (killSwitch?.enabled) {
+    json(deps.response, 423, {
+      error: "kill_switch_armed"
+    });
+    return;
+  }
+
+  const params = parsed.data;
+  const actorId = isRecord(body) && typeof body.actorId === "string" && body.actorId.trim()
+    ? body.actorId.trim()
+    : "openclaw-bedrock-tool-use";
+  const result = await pollDnsRecord({
+    domain: params.domain,
+    expectedRecord: params.expectedRecord,
+    maxWaitMs: params.maxWaitMs,
+    pollIntervalMs: params.pollIntervalMs,
+    dns: deps.dns,
+    now: deps.now ?? Date.now,
+    sleep: deps.sleep ?? realSleep
+  });
+
+  const auditEvent = await deps.auditLog.append({
+    actorType: "operator",
+    actorId,
+    action: "oc.dns.propagation_check",
+    targetType: "dns_record",
+    targetId: params.domain,
+    riskLevel: "low",
+    decision: result.ok ? "allow" : "reject",
+    humanApproved: false,
+    metadata: {
+      domain: params.domain,
+      expectedRecordType: params.expectedRecord.type,
+      expectedRecordValue: params.expectedRecord.value,
+      attempts: result.attempts,
+      lastSeen: result.lastSeen,
+      durationMs: result.durationMs,
+      ok: result.ok,
+      error: result.error ?? null,
+      readOnly: true
+    }
+  });
+
+  json(deps.response, 200, {
+    ok: result.ok,
+    attempts: result.attempts,
+    lastSeen: result.lastSeen,
+    durationMs: result.durationMs,
+    error: result.error,
+    errorDetails: result.errorDetails,
+    eventId: eventId(auditEvent)
+  } satisfies WaitForDnsPropagationResult);
+}
+
 export async function pollDnsRecord(input: {
   domain: string;
   expectedRecord: { type: DnsRecordType; value: string };
@@ -404,6 +482,10 @@ function object(value: unknown, field = "params"): Record<string, unknown> {
     throw new Error(`${field} must be an object`);
   }
   return value as Record<string, unknown>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function string(value: unknown, field: string, min: number, max: number): string {

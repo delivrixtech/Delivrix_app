@@ -22,7 +22,16 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "send_real_email",
     "configure_complete_smtp"
   ]);
-  assert.equal(tools.every((tool) => tool.description.includes("ApprovalGate")), true);
+  assert.equal(
+    tools
+      .filter((tool) => !["suggest_safe_domain", "wait_for_dns_propagation"].includes(tool.name))
+      .every((tool) => tool.description.includes("ApprovalGate")),
+    true
+  );
+  assert.match(
+    tools.find((tool) => tool.name === "wait_for_dns_propagation")?.description ?? "",
+    /no requiere ApprovalGate/
+  );
 });
 
 test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", () => {
