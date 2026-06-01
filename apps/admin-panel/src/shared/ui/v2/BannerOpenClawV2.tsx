@@ -129,8 +129,8 @@ export function BannerOpenClawV2({
         gap: 14,
         padding: "14px 16px",
         borderRadius: "var(--radius-md)",
-        background: "var(--color-warning-soft)",
-        borderLeft: "3px solid var(--color-warning)"
+        background: "color-mix(in srgb, var(--color-warning) 14%, var(--color-surface))",
+        border: "1px solid color-mix(in srgb, var(--color-warning) 40%, var(--color-border))"
       }}
     >
       <div
@@ -140,8 +140,9 @@ export function BannerOpenClawV2({
           width: 32,
           height: 32,
           borderRadius: 8,
-          background: "var(--color-accent-tertiary)",
-          color: "var(--color-on-dark-strong)"
+          background: "color-mix(in srgb, var(--color-warning) 18%, transparent)",
+          color: "var(--color-warning-fg)",
+          boxShadow: "0 0 0 1px color-mix(in srgb, var(--color-warning) 28%, transparent)"
         }}
       >
         <Sparkles size={16} strokeWidth={2} />
@@ -184,7 +185,7 @@ export function BannerOpenClawV2({
             padding: "7px 12px",
             borderRadius: "var(--radius-sm)",
             background: "var(--color-warning)",
-            color: "var(--color-on-dark-strong)",
+            color: "var(--color-bg)",
             fontSize: 12,
             border: "1px solid var(--color-warning)",
             cursor: "pointer"
