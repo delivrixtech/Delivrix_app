@@ -1,11 +1,12 @@
 #!/usr/bin/env node
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import { buildToolsForOpenClaw } from "../../apps/gateway-api/src/openclaw-tools-builder.ts";
 
 const cliArgs = parseArgs(process.argv.slice(2));
 const gatewayBase = normalizeBase(process.env.GATEWAY_BASE ?? "http://127.0.0.1:3000");
-const mode = cliArgs.send ? "send" : "preflight";
+const mode = cliArgs.send ? "send" : cliArgs.dryRun ? "dry-run" : "preflight";
 const requireLaunchReady = cliArgs.requireLaunchReady === true;
 const now = new Date();
 const stamp = now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
@@ -46,6 +47,30 @@ if (!validation.ok) {
 
 const message = buildMasterPrompt(input);
 const msgId = `phase1-c-master-${stamp}`;
+if (mode === "dry-run") {
+  const result = {
+    ok: preflight.ok && validation.ok,
+    phase: "phase1-c-master-smoke",
+    mode,
+    msgId,
+    gatewayBase,
+    wouldSubmitTo: `${gatewayBase}/v1/openclaw/chat/send`,
+    submitted: false,
+    generatedAt: now.toISOString(),
+    preflight,
+    validation: sanitizeValidationForOutput(validation, input),
+    messagePreview: buildMasterPrompt({ ...input, testEmailBody: `[redacted body chars=${input.testEmailBody.length} sha256=${sha256(input.testEmailBody)}]` }),
+    next: [
+      "Si PM/Juanes aprueban recipient/subject/body, repetir el mismo comando con --send.",
+      "Después abrir Canvas Live y firmar la propuesta master configure_complete_smtp cuando aparezca.",
+      `Watcher: PHASE1_MSG_ID=${msgId} node --env-file=.env.local scripts/openclaw/phase1-c-watch.mjs --watch`
+    ]
+  };
+  await persistEvidence("dry-run", result);
+  printJson(result);
+  process.exit(result.ok ? 0 : 1);
+}
+
 const response = await postJson(`${gatewayBase}/v1/openclaw/chat/send`, {
   msgId,
   message
@@ -198,6 +223,16 @@ function validateSmokeInput(input) {
   };
 }
 
+function sanitizeValidationForOutput(validation, input) {
+  return {
+    ...validation,
+    sanitizedInput: {
+      ...validation.sanitizedInput,
+      testEmailBodySha256: sha256(input.testEmailBody)
+    }
+  };
+}
+
 function buildMasterPrompt(input) {
   const seedLine = input.seedInboxes.length > 0
     ? `\nseedInboxes: ${JSON.stringify(input.seedInboxes)}`
@@ -263,6 +298,10 @@ function normalizeBase(value) {
 
 function parseCsv(value) {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 function parseArgs(argv) {
