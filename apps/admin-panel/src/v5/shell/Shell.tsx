@@ -82,7 +82,7 @@ export function Shell({
   agentState = "idle",
   killSwitchArmed = true,
   killSwitchOnClick,
-  envLabel = "mvp.local",
+  envLabel = "fase-1 · live gates",
   buildSha = "dev",
   postgresOk = true,
   redisOk = true,
@@ -590,7 +590,7 @@ function Footer({
 
       {/* Derecha: solo el estado funcional clave.
        *
-       * Antes vivían acá 'Audit chain · Append-only · Regla de 2 personas'
+       * Antes vivían acá 'Audit chain · Append-only · 1 firma operador'
        * — jerga técnica que el stakeholder no entiende y que ya se cuenta
        * mejor en banners, Vista General y la sección de Seguridad. El
        * footer queda minimal estilo Linear/Stripe/Vercel. */}

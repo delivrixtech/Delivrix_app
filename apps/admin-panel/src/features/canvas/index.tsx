@@ -391,8 +391,8 @@ function Hero({
         </h1>
         <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
           OpenClaw te muestra cada paso del provisioning supervisado: del servidor físico
-          en Popayán hasta que las IPs estén calentadas y la reputación firme. El panel
-          es solo lectura — las aprobaciones se firman afuera con regla de dos personas.
+          en Popayán hasta que las IPs estén calentadas y la reputación firme. Las
+          aprobaciones reales pasan por ApprovalGate con 1 firma de operador.
         </p>
       </div>
       <div className="shrink-0">
@@ -1351,8 +1351,8 @@ function pillBg(status: string): string {
 /* ============================================================
  * Runbook modal — abre cuando el operador hace clic en el primary action
  * del prompt. NO ejecuta nada en el backend; solo muestra los pasos del
- * runbook .md y los hashes de evidencia para que el operador apruebe afuera
- * con regla de 2 personas firmada.
+ * runbook .md y los hashes de evidencia para que el operador apruebe con
+ * firma explícita.
  * ============================================================ */
 function RunbookModal({
   prompt,
@@ -1487,8 +1487,7 @@ function RunbookModal({
                 Verifica la evidencia firmada (hashes abajo).
               </li>
               <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
-                Solicita la firma de la segunda persona autorizada (regla de
-                dos personas).
+                Captura la firma del operador autorizado en ApprovalGate.
               </li>
               <li className="text-[12px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-primary)]">
                 Ejecuta el paso en modo dry-run primero. Solo después aplica.
@@ -1552,9 +1551,8 @@ function RunbookModal({
               Importante
             </span>
             <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-warning-fg)]">
-              Este botón no ejecuta nada. El panel es GET-only. La acción se
-              aprueba y aplica fuera, siguiendo el runbook y la regla de dos
-              personas firmada.
+              Este botón sólo abre revisión. La acción real se aprueba con
+              ApprovalGate, firma de operador y audit chain.
             </p>
           </section>
         </div>

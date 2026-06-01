@@ -356,9 +356,9 @@ function GuardrailStrip({
       />
       <GuardrailTile
         label="Aprobación"
-        value="Doble firma"
-        hint="Operador 1 propone, Operador 2 confirma · audit chain firma cada paso"
-        pillLabel="2 humanos"
+        value="1 firma operador"
+        hint="ApprovalGate confirma el operador y audit chain firma cada paso"
+        pillLabel="live gate"
         pillTone="warning"
         icon={<CircleHelp size={14} strokeWidth={1.75} />}
       />
@@ -684,7 +684,7 @@ function BannerOpenClawV2({ count }: { count: number }) {
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <div className="flex items-center gap-2">
           <Eyebrow>OpenClaw recuerda</Eyebrow>
-          <Pill tone="warning" size="sm">Doble firma</Pill>
+          <Pill tone="warning" size="sm">1 firma operador</Pill>
         </div>
         <H3>
           {count === 1
@@ -692,9 +692,9 @@ function BannerOpenClawV2({ count }: { count: number }) {
             : `${count} propuestas esperan aprobación humana`}
         </H3>
         <BodySm>
-          La compra real queda detrás de Fase 2 con dos firmas humanas. Cuando
-          firmes la propuesta, OpenClaw prepara el flow de registro pero no
-          ejecuta hasta que un segundo operador valide en Canvas Live.
+          La compra real queda detrás de ApprovalGate con una firma humana.
+          Cuando firmes la propuesta, OpenClaw ejecuta sólo dentro del flujo
+          auditado visible en Canvas Live.
         </BodySm>
         <HumanNote className="mt-1 max-w-[560px]">
           Si quieres revisamos cada candidata antes de firmar — abro el chat y te lo explico.

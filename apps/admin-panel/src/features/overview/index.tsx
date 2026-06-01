@@ -669,7 +669,7 @@ function ApprovalsCard({ data }: { data: DashboardData }) {
       key: "ssh",
       severity: "high",
       severityLabel: "ssh gate",
-      desc: "Alcance del permiso desconocido hasta firmar la regla de 2 personas. SSH desactivado por defecto."
+      desc: "Alcance del permiso desconocido hasta firma explícita de operador. SSH desactivado por defecto."
     },
     {
       key: "generic",
