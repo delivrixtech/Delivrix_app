@@ -526,8 +526,9 @@ function CanvasTopbar({
             width: 32,
             height: 32,
             borderRadius: 8,
-            background: "var(--color-accent-tertiary)",
-            color: "#e6edf3"
+            background: "var(--color-accent-soft)",
+            color: "var(--color-accent)",
+            boxShadow: "0 0 0 1px var(--color-border)"
           }}
         >
           <Sparkles size={16} strokeWidth={1.75} />
@@ -755,7 +756,7 @@ function EmptyChatState({ connection }: { connection: ChatConnection }) {
         </span>
         <span
           className="font-[family-name:var(--font-caption)] font-semibold"
-          style={{ fontSize: 11, color: "var(--color-text-secondary)" }}
+          style={{ fontSize: 11, color: "var(--color-text-primary)" }}
         >
           OpenClaw {connection === "connected" ? "está listo" : connection === "reconnecting" ? "está reconectando" : "está offline"}
         </span>
@@ -810,15 +811,16 @@ function AssistantMessage({
             width: 22,
             height: 22,
             borderRadius: 6,
-            background: "var(--color-accent-tertiary)",
-            color: "#e6edf3"
+            background: "var(--color-accent-soft)",
+            color: "var(--color-accent)",
+            boxShadow: "0 0 0 1px var(--color-border)"
           }}
         >
           <Sparkles size={11} strokeWidth={1.75} />
         </span>
         <span
           className="font-[family-name:var(--font-caption)] font-semibold"
-          style={{ fontSize: 11, color: "var(--color-text-secondary)" }}
+          style={{ fontSize: 11, color: "var(--color-text-primary)" }}
         >
           OpenClaw
         </span>
