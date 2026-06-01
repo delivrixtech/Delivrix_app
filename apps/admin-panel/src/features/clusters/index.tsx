@@ -772,9 +772,9 @@ function KillSwitchCard({ data }: { data: DashboardData }) {
             gap: 6,
             padding: "9px 12px",
             borderRadius: 6,
-            background: armed ? "var(--color-critical)" : "var(--color-surface-inverse)",
-            color: "var(--color-on-dark-strong)",
-            border: armed ? "1px solid var(--color-critical)" : "1px solid var(--color-on-dark-hint)",
+            background: armed ? "var(--color-critical)" : "var(--color-accent)",
+            color: armed ? "var(--color-on-dark-strong)" : "var(--color-accent-fg)",
+            border: armed ? "1px solid var(--color-critical)" : "1px solid var(--color-accent)",
             cursor: mutation.isPending ? "wait" : "pointer"
           }}
         >

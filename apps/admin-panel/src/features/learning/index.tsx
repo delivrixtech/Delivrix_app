@@ -7,7 +7,7 @@
  *   Plan + Skills (F8tXWx): Plan de aprendizaje (flex) + Habilidades de OpenClaw 380w
  *   Evidencia curada (La9pF): tabla 7 columnas
  *   Cola retroalimentación (V0QJTS): 3 sugerencias
- *   Audit strip dark (W4egWR): 5 audit rows con sha256 hashes
+ *   Audit strip (W4egWR): 5 audit rows con sha256 hashes
  */
 
 import {
@@ -985,7 +985,7 @@ function FeedbackRow({
 }
 
 /* ============================================================
- * Audit strip (dark) — cableado a /v1/openclaw/skills/audit
+ * Audit strip — cableado a /v1/openclaw/skills/audit
  * ============================================================ */
 type LearningAuditLine = {
   id: string;
@@ -1025,20 +1025,20 @@ function AuditStrip({
         gap: 10,
         padding: "14px 18px",
         borderRadius: 8,
-        background: "var(--color-surface-inverse)",
-        border: "1px solid var(--color-on-dark-hint)",
-        boxShadow: "var(--shadow-md)"
+        background: "var(--color-surface-raised)",
+        border: "1px solid var(--color-border)",
+        boxShadow: "var(--shadow-sm)"
       }}
     >
       <header className="flex min-w-0 flex-wrap items-center" style={{ gap: 8 }}>
         <History size={14} strokeWidth={1.75} aria-hidden="true" style={{ color: "var(--color-accent-secondary)" }} />
-        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold" style={{ color: "var(--color-on-dark-strong)" }}>
+        <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold" style={{ color: "var(--color-text-primary)" }}>
           Bitácora del aprendizaje
         </span>
         <span className="flex-1" aria-hidden="true" />
         <RealtimeTick active={pulseActive} />
         {stale}
-        <span className="min-w-0 truncate text-[10px] font-[family-name:var(--font-mono)]" style={{ color: "var(--color-on-dark-weak)" }}>
+        <span className="min-w-0 truncate text-[10px] font-[family-name:var(--font-mono)]" style={{ color: "var(--color-text-tertiary)" }}>
           contrato · /v1/openclaw/skills/audit
         </span>
       </header>
@@ -1065,7 +1065,7 @@ function AuditStrip({
           >
             <span
               className="flex min-w-0 items-center text-[11px] font-[family-name:var(--font-mono)]"
-              style={{ gap: 6, color: "var(--color-on-dark-weak)" }}
+              style={{ gap: 6, color: "var(--color-text-tertiary)" }}
             >
               <RealtimeTick active={pulseActive && i === 0} />
               {a.ts}
@@ -1076,12 +1076,12 @@ function AuditStrip({
             >
               {a.action}
             </span>
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-on-dark-strong)] truncate">
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)] truncate">
               {a.body}
             </span>
             <span
               className="col-span-2 min-w-0 truncate text-[11px] font-[family-name:var(--font-mono)] md:col-span-1 md:text-right"
-              style={{ color: "var(--color-on-dark-weak)" }}
+              style={{ color: "var(--color-text-tertiary)" }}
             >
               {a.hash}
             </span>

@@ -194,7 +194,7 @@ const cardVariants = cva(
       tone: {
         default: "hover:border-border-strong",
         quiet: "bg-surface-sunken border-border/60",
-        inverse: "bg-surface-inverse text-fg-inverse border-transparent"
+        inverse: "border-[var(--color-always-dark-border)] bg-[var(--color-always-dark-surface)] text-[var(--color-on-dark-strong)]"
       },
       padding: {
         none: "",

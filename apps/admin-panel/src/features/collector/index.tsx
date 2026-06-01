@@ -988,10 +988,10 @@ function CliSnippet() {
     <section
       style={{
         borderRadius: 8,
-        background: "var(--color-surface-inverse)",
-        border: "1px solid var(--color-on-dark-hint)",
+        background: "var(--color-always-dark-surface)",
+        border: "1px solid var(--color-always-dark-border)",
         overflow: "hidden",
-        boxShadow: "var(--shadow-md)"
+        boxShadow: "none"
       }}
     >
       <header
