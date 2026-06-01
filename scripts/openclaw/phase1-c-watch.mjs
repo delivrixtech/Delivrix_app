@@ -72,6 +72,9 @@ async function collectSnapshot(iteration) {
 
   const auditEventItems = Array.isArray(auditEvents.body?.events) ? auditEvents.body.events : [];
   const relevantEvents = summarizeEvents(auditEventItems, filters);
+  const proposalAuditFallback = filters.proposalId
+    ? summarizeProposalFromAudit(relevantEvents, filters.proposalId)
+    : null;
   const canvasSummary = summarizeCanvas(canvas.body);
   const proposalsSummary = summarizeProposals(proposals.body);
   const ok = (
@@ -83,7 +86,7 @@ async function collectSnapshot(iteration) {
     anchor.ok &&
     auditEvents.ok &&
     proposals.ok &&
-    (!proposalStatus || proposalStatus.ok)
+    (!proposalStatus || proposalStatus.ok || Boolean(proposalAuditFallback))
   );
 
   return {
@@ -101,6 +104,7 @@ async function collectSnapshot(iteration) {
     },
     proposals: proposalsSummary,
     proposalStatus: proposalStatus ? sanitize(proposalStatus.body) : null,
+    proposalAuditFallback,
     blockers: [
       ...(health.ok && health.body?.status === "ok" ? [] : ["gateway_health_not_ok"]),
       ...(canvas.ok ? [] : ["canvas_state_unavailable"]),
@@ -108,7 +112,7 @@ async function collectSnapshot(iteration) {
       ...(anchor.ok ? [] : ["audit_anchor_unavailable"]),
       ...(auditEvents.ok ? [] : ["audit_events_unavailable"]),
       ...(proposals.ok ? [] : ["proposals_unavailable"]),
-      ...(proposalStatus && !proposalStatus.ok ? [`proposal_status_unavailable:${filters.proposalId}`] : [])
+      ...(proposalStatus && !proposalStatus.ok && !proposalAuditFallback ? [`proposal_status_unavailable:${filters.proposalId}`] : [])
     ]
   };
 }
@@ -200,6 +204,29 @@ function summarizeEvents(events, eventFilters) {
     }));
 }
 
+function summarizeProposalFromAudit(events, proposalId) {
+  const executed = events
+    .filter((event) => event?.targetId === proposalId && event?.action === "oc.proposal.executed")
+    .at(-1);
+  if (!executed) return null;
+
+  const summary = executed.metadata?.handlerResponseSummary ?? executed.metadata?.outcome ?? null;
+  const status = executed.metadata?.proposalStatus === "execution_failed" || executed.metadata?.outcome === "failure"
+    ? "execution_failed"
+    : executed.metadata?.proposalStatus ?? null;
+
+  return sanitize({
+    source: "audit_events",
+    proposalId,
+    status,
+    executionOk: executed.metadata?.outcome === "success",
+    outcome: summary,
+    executionStatusCode: executed.metadata?.handlerStatusCode,
+    executionDurationMs: executed.metadata?.durationMs,
+    executionCompletedAt: executed.occurredAt
+  });
+}
+
 function isRelevantEvent(event, eventFilters) {
   const hasExplicitFilter = Boolean(eventFilters.msgId || eventFilters.runId || eventFilters.proposalId);
   const haystack = JSON.stringify({
@@ -233,15 +260,16 @@ function isRelevantEvent(event, eventFilters) {
 
 function buildNext(snapshot) {
   if (!snapshot) return ["No snapshot collected."];
+  const proposalState = snapshot.proposalStatus?.status ? snapshot.proposalStatus : snapshot.proposalAuditFallback;
   if (!snapshot.ok) return ["Resolver blockers antes de firmar o reintentar Fase C.", ...snapshot.blockers];
-  if (snapshot.proposalStatus?.status === "executed") {
+  if (proposalState?.status === "executed") {
     return [
       "Guardar anchor post-smoke y verificar evidencia funcional de dominio/DNS/VPS/Postfix/email.",
       `curl -s ${gatewayBase}/v1/audit-chain/anchor`
     ];
   }
-  if (snapshot.proposalStatus?.status === "execution_failed") {
-    const failure = classifyProposalFailure(snapshot.proposalStatus);
+  if (proposalState?.status === "execution_failed") {
+    const failure = classifyProposalFailure(proposalState);
     if (failure === "webdock_payment_failed") {
       return [
         "Bloqueo externo confirmado: Webdock rechazó create_webdock_server por payment/service credit.",
