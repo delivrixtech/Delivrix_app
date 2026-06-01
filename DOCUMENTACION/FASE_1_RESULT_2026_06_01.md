@@ -94,6 +94,18 @@ node --env-file=.env.local scripts/openclaw/phase1-c-master-smoke.mjs \
   --body "Texto legítimo del correo real autorizado, sin palabras bloqueadas."
 ```
 
+Para generar una revisión final sin enviar el mensaje a OpenClaw:
+
+```bash
+node --env-file=.env.local scripts/openclaw/phase1-c-master-smoke.mjs \
+  --dry-run --require-launch-ready \
+  --recipient "persona@dominio.com" \
+  --subject "Operational readiness handoff" \
+  --body "Texto legítimo del correo real autorizado, sin palabras bloqueadas."
+```
+
+El dry-run persiste `runtime/phase1-c-dry-run-*.json`; no hace POST al chat y redacta el body en la evidencia, dejando longitud + SHA-256 para verificación.
+
 ## Comando de disparo coordinado
 
 Ejecutar solo cuando Juanes/PM confirmen destinatario y contenido legítimo:
