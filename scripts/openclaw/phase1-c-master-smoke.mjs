@@ -3,8 +3,10 @@ import { writeFile } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import { buildToolsForOpenClaw } from "../../apps/gateway-api/src/openclaw-tools-builder.ts";
 
+const cliArgs = parseArgs(process.argv.slice(2));
 const gatewayBase = normalizeBase(process.env.GATEWAY_BASE ?? "http://127.0.0.1:3000");
-const mode = process.argv.includes("--send") ? "send" : "preflight";
+const mode = cliArgs.send ? "send" : "preflight";
+const requireLaunchReady = cliArgs.requireLaunchReady === true;
 const now = new Date();
 const stamp = now.toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
 const requiredTools = ["send_real_email", "configure_complete_smtp"];
@@ -27,9 +29,10 @@ const bannedEmailTerms = [
 
 const preflight = await runPreflight();
 if (mode === "preflight") {
-  await persistEvidence("preflight", preflight);
-  printJson(preflight);
-  process.exit(preflight.ok ? 0 : 1);
+  const result = requireLaunchReady ? requireLaunchReadiness(preflight) : preflight;
+  await persistEvidence("preflight", result);
+  printJson(result);
+  process.exit(result.ok ? 0 : 1);
 }
 
 const input = readSmokeInput();
@@ -129,15 +132,39 @@ async function runPreflight() {
   };
 }
 
+function requireLaunchReadiness(preflight) {
+  const readyForSend = preflight.launchReadiness?.readyForSend === true;
+  const launchBlockers = Array.isArray(preflight.launchReadiness?.blockers)
+    ? preflight.launchReadiness.blockers
+    : ["launch_readiness_unknown"];
+  return {
+    ...preflight,
+    ok: preflight.ok && readyForSend,
+    launchReadiness: {
+      ...preflight.launchReadiness,
+      required: true
+    },
+    blockers: [
+      ...preflight.blockers,
+      ...(readyForSend ? [] : launchBlockers.map((blocker) => `launch_not_ready:${blocker}`))
+    ]
+  };
+}
+
 function readSmokeInput() {
   return {
-    brand: process.env.PHASE1_SMOKE_BRAND ?? "delivrix",
-    intent: process.env.PHASE1_SMOKE_INTENT ?? "ops",
-    budgetUsdMax: Number(process.env.PHASE1_SMOKE_BUDGET_USD_MAX ?? "25"),
-    testEmailRecipient: process.env.PHASE1_TEST_EMAIL_RECIPIENT ?? "",
-    testEmailSubject: process.env.PHASE1_TEST_EMAIL_SUBJECT ?? "",
-    testEmailBody: process.env.PHASE1_TEST_EMAIL_BODY ?? "",
-    seedInboxes: parseCsv(process.env.PHASE1_SEED_INBOXES ?? process.env.WARMUP_DEFAULT_SEED_INBOXES ?? "")
+    brand: stringArg("brand") ?? process.env.PHASE1_SMOKE_BRAND ?? "delivrix",
+    intent: stringArg("intent") ?? process.env.PHASE1_SMOKE_INTENT ?? "ops",
+    budgetUsdMax: Number(stringArg("budgetUsdMax") ?? process.env.PHASE1_SMOKE_BUDGET_USD_MAX ?? "25"),
+    testEmailRecipient: stringArg("recipient") ?? stringArg("testEmailRecipient") ?? process.env.PHASE1_TEST_EMAIL_RECIPIENT ?? "",
+    testEmailSubject: stringArg("subject") ?? stringArg("testEmailSubject") ?? process.env.PHASE1_TEST_EMAIL_SUBJECT ?? "",
+    testEmailBody: stringArg("body") ?? stringArg("testEmailBody") ?? process.env.PHASE1_TEST_EMAIL_BODY ?? "",
+    seedInboxes: parseCsv(
+      stringArg("seedInboxes") ??
+      process.env.PHASE1_SEED_INBOXES ??
+      process.env.WARMUP_DEFAULT_SEED_INBOXES ??
+      ""
+    )
   };
 }
 
@@ -236,6 +263,28 @@ function normalizeBase(value) {
 
 function parseCsv(value) {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function parseArgs(argv) {
+  const parsed = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const current = argv[index];
+    if (!current.startsWith("--")) continue;
+    const key = current.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+    const next = argv[index + 1];
+    if (next && !next.startsWith("--")) {
+      parsed[key] = next;
+      index += 1;
+    } else {
+      parsed[key] = true;
+    }
+  }
+  return parsed;
+}
+
+function stringArg(key) {
+  const value = cliArgs[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 function isEmail(value) {
