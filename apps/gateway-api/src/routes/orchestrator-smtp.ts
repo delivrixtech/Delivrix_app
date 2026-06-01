@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
   AuditEventInput,
@@ -24,6 +24,7 @@ export type ConfigureSmtpStatus =
 export interface ConfigureCompleteSmtpStepResult {
   step: number;
   skill: string;
+  inputHash: string;
   proposalId?: string;
   signatureId?: string;
   outcome: unknown;
@@ -104,6 +105,29 @@ interface CanvasEmitter {
   emit(event: CanvasLiveEvent): Promise<CanvasLiveEvent>;
 }
 
+interface CompactIntentSink {
+  (input: {
+    intentId: string;
+    finalStatus: "completed" | "failed" | "cancelled" | "rolled_back";
+    decision: string;
+    ttlDays?: number;
+    steps: Array<{
+      step: number;
+      tool: string;
+      inputHash: string;
+      outcome: "success" | "failed" | "rolled_back" | "rollback_failed" | "cancelled_by_operator" | "timeout" | "partial";
+      outcomeData?: Record<string, unknown>;
+      errorClass?: string;
+      errorMessage?: string;
+      durationMs?: number;
+      proposalId?: string;
+      signatureId?: string;
+    }>;
+  }): Promise<unknown>;
+}
+
+type CompactIntentStepInput = Parameters<CompactIntentSink>[0]["steps"][number];
+
 export interface ConfigureCompleteSmtpDeps {
   request?: IncomingMessage;
   response?: ServerResponse;
@@ -114,6 +138,7 @@ export interface ConfigureCompleteSmtpDeps {
   verifyAuditChain?: () => Promise<{ ok: boolean; details?: unknown }> | { ok: boolean; details?: unknown };
   readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
   canvasLiveEvents?: CanvasEmitter;
+  compactIntent?: CompactIntentSink;
   env?: Record<string, string | undefined>;
   now?: () => Date;
   randomId?: () => string;
@@ -189,6 +214,12 @@ export async function configureCompleteSmtp(
     createdAt: startedAt.toISOString()
   });
   await emitRunAction(deps, runId, "oc.orchestrator.run_started", "low");
+  await audit(deps, "oc.skill.invoked", "openclaw_intent", runId, "low", {
+    skillSlug: "configure_complete_smtp",
+    intentId: runId,
+    runId,
+    actorId: input.actorId
+  });
   await audit(deps, "oc.orchestrator.run_started", "openclaw_orchestrator_run", runId, "high", {
     skill: "configure_complete_smtp",
     budgetUsdMax: input.budgetUsdMax,
@@ -406,6 +437,12 @@ export async function configureCompleteSmtp(
       totalCostUsd,
       totalDurationMs
     });
+    await compactRunIntent(deps, {
+      runId,
+      status: "completed",
+      decision: "configure_complete_smtp completed all 14 steps",
+      stepResults
+    });
     await emitRunAction(deps, runId, "oc.orchestrator.run_completed", "low");
     await emitRunTask(deps, runId, "completed");
     void logger.info("openclaw.orchestrator.run_completed", "configure_complete_smtp completed.", {
@@ -457,6 +494,13 @@ export async function configureCompleteSmtp(
       rollbackProposalId = rollback.proposalId;
     }
 
+    await compactRunIntent(deps, {
+      runId,
+      status: failure.status === "cancelled_by_operator" ? "cancelled" : "failed",
+      decision: `configure_complete_smtp failed at step ${failure.step}: ${failure.message}`,
+      stepResults,
+      failure
+    });
     await emitRunAction(deps, runId, "oc.orchestrator.run_failed", "high");
     await emitRunTask(deps, runId, "failed");
     void logger.error("openclaw.orchestrator.run_failed", "configure_complete_smtp failed.", {
@@ -500,6 +544,7 @@ async function runReadOnlyStep(input: {
     approvalRequired: false
   });
   const startedAt = Date.now();
+  const inputHash = hashInput(input.params);
   const outcome = await input.deps.invokeSkill({
     runId: input.runId,
     step: input.step,
@@ -509,6 +554,7 @@ async function runReadOnlyStep(input: {
   const result = {
     step: input.step,
     skill: input.skill,
+    inputHash,
     outcome,
     durationMs: Date.now() - startedAt
   };
@@ -549,6 +595,7 @@ async function runGatedStep(input: {
     approvalRequired: true,
     estimatedCostUsd: input.estimatedCostUsd ?? 0
   });
+  const inputHash = hashInput(input.params);
   const approvalTimeoutMs = approvalTimeoutForStep(input.skill, input.params, input.approvalTimeoutMs);
   void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.awaiting_approval", "Waiting for ApprovalGate signature.", {
     runId: input.runId,
@@ -570,6 +617,7 @@ async function runGatedStep(input: {
     const result: ConfigureCompleteSmtpStepResult = {
       step: input.step,
       skill: input.skill,
+      inputHash,
       proposalId: decision.proposalId,
       signatureId: decision.signatureId,
       outcome: decision.outcome,
@@ -606,7 +654,8 @@ async function runGatedStep(input: {
       input.step,
       input.skill,
       decision.reason ?? "operator_rejected",
-      decision.proposalId
+      decision.proposalId,
+      inputHash
     );
   }
 
@@ -623,7 +672,8 @@ async function runGatedStep(input: {
       input.step,
       input.skill,
       decision.status,
-      decision.proposalId
+      decision.proposalId,
+      inputHash
     );
   }
 
@@ -641,7 +691,8 @@ async function runGatedStep(input: {
     input.step,
     input.skill,
     "error" in decision ? decision.error ?? "execution_failed" : "execution_failed",
-    decision.proposalId
+    decision.proposalId,
+    inputHash
   );
 }
 
@@ -793,6 +844,76 @@ function normalizeFailure(error: unknown): OrchestratorFailure {
   return new OrchestratorFailure("failed", 0, "configure_complete_smtp", errorMessage(error));
 }
 
+async function compactRunIntent(
+  deps: ConfigureCompleteSmtpDeps,
+  input: {
+    runId: string;
+    status: "completed" | "failed" | "cancelled" | "rolled_back";
+    decision: string;
+    stepResults: ConfigureCompleteSmtpStepResult[];
+    failure?: OrchestratorFailure;
+  }
+): Promise<void> {
+  if (!deps.compactIntent) return;
+  const steps: CompactIntentStepInput[] = input.stepResults.map((step) => ({
+    step: step.step,
+    tool: step.skill,
+    inputHash: step.inputHash,
+    outcome: "success" as const,
+    outcomeData: summarizeOutcome(step.outcome),
+    durationMs: step.durationMs,
+    ...(step.proposalId ? { proposalId: step.proposalId } : {}),
+    ...(step.signatureId ? { signatureId: step.signatureId } : {})
+  }));
+  const failureAlreadyRecorded = input.failure
+    ? steps.some((step) => step.step === input.failure?.step && step.tool === input.failure?.skill)
+    : true;
+  if (input.failure && !failureAlreadyRecorded) {
+    steps.push({
+      step: input.failure.step,
+      tool: input.failure.skill,
+      inputHash: input.failure.inputHash ?? hashInput({ failure: input.failure.message, proposalId: input.failure.proposalId }),
+      outcome: failureOutcome(input.failure),
+      errorClass: input.failure.status,
+      errorMessage: input.failure.message,
+      durationMs: 0,
+      ...(input.failure.proposalId ? { proposalId: input.failure.proposalId } : {})
+    });
+  }
+
+  try {
+    await deps.compactIntent({
+      intentId: input.runId,
+      finalStatus: input.status,
+      decision: input.decision.slice(0, 280),
+      ttlDays: positiveInt(deps.env?.OPENCLAW_EPISODIC_SCRATCH_TTL_DAYS) ?? 30,
+      steps
+    });
+  } catch (error) {
+    void (deps.logger ?? noopGatewayRuntimeLogger).warn("openclaw.orchestrator.compact_intent_failed", "Episodic memory compaction failed.", {
+      runId: input.runId,
+      status: input.status,
+      error: errorMessage(error)
+    });
+  }
+}
+
+function failureOutcome(failure: OrchestratorFailure): "failed" | "cancelled_by_operator" | "timeout" {
+  if (failure.status === "cancelled_by_operator") return "cancelled_by_operator";
+  if (failure.message.includes("timeout")) return "timeout";
+  return "failed";
+}
+
+function summarizeOutcome(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) {
+    return { value };
+  }
+  const entries = Object.entries(value)
+    .filter(([key]) => !/token|secret|password|private|api[_-]?key|credential|authorization/i.test(key))
+    .slice(0, 20);
+  return Object.fromEntries(entries);
+}
+
 function totalEstimatedCost(results: ConfigureCompleteSmtpStepResult[]): number {
   return results.reduce((total, step) => total + (step.estimatedCostUsd ?? extractCost(step.outcome)), 0);
 }
@@ -823,6 +944,23 @@ function positiveIntFromUnknown(value: unknown): number | undefined {
   return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined;
 }
 
+function hashInput(value: unknown): string {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "undefined";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+    .join(",")}}`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -850,18 +988,21 @@ class OrchestratorFailure extends Error {
   readonly step: number;
   readonly skill: string;
   readonly proposalId?: string;
+  readonly inputHash?: string;
 
   constructor(
     status: Exclude<ConfigureSmtpStatus, "completed" | "executing" | "rolled_back">,
     step: number,
     skill: string,
     message: string,
-    proposalId?: string
+    proposalId?: string,
+    inputHash?: string
   ) {
     super(message);
     this.status = status;
     this.step = step;
     this.skill = skill;
     this.proposalId = proposalId;
+    this.inputHash = inputHash;
   }
 }

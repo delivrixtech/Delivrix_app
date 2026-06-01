@@ -84,6 +84,70 @@ test("processToolUse invokes read-only suggest_safe_domain without proposal wait
   assert.equal(calls.length, 1);
 });
 
+test("processToolUse invokes read-only episodic scratch without ApprovalGate", async () => {
+  const calls: unknown[] = [];
+  const result = await processToolUse({
+    toolUseId: "toolu-scratch-read",
+    toolName: "read_episodic_scratch",
+    toolInput: { intentId: "intent-1" },
+    chatSession: { id: "agent:main:operator" },
+    env: enabledEnv(),
+    deps: {
+      ...memoryDeps({ calls }),
+      async submitProposalFromToolUse() {
+        assert.fail("read_episodic_scratch must not submit an ApprovalGate proposal");
+      },
+      async waitForProposalDecision() {
+        assert.fail("read_episodic_scratch must not wait for ApprovalGate");
+      },
+      async invokeReadOnlyTool(input) {
+        calls.push({ readOnly: input.toolName, params: input.params });
+        return { entries: [{ intentId: "intent-1", outcome: "success" }] };
+      }
+    }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected scratch read success");
+  assert.equal(result.proposalId, "read_only:toolu-scratch-read");
+  assert.deepEqual(result.result, { entries: [{ intentId: "intent-1", outcome: "success" }] });
+  assert.deepEqual(calls, [{ readOnly: "read_episodic_scratch", params: { intentId: "intent-1" } }]);
+});
+
+test("processToolUse invokes compact_intent as internal memory write without ApprovalGate", async () => {
+  const calls: unknown[] = [];
+  const result = await processToolUse({
+    toolUseId: "toolu-compact",
+    toolName: "compact_intent",
+    toolInput: {
+      intentId: "intent-1",
+      finalStatus: "completed",
+      decision: "stored",
+      steps: [{ step: 1, tool: "suggest_safe_domain", inputHash: "a".repeat(64), outcome: "success" }]
+    },
+    chatSession: { id: "agent:main:operator" },
+    env: enabledEnv(),
+    deps: {
+      ...memoryDeps({ calls }),
+      async submitProposalFromToolUse() {
+        assert.fail("compact_intent must not submit an ApprovalGate proposal");
+      },
+      async waitForProposalDecision() {
+        assert.fail("compact_intent must not wait for ApprovalGate");
+      },
+      async invokeMemoryTool(input) {
+        calls.push({ memory: input.toolName, params: input.params });
+        return { entriesWritten: 1, scratchIds: ["scratch-1"] };
+      }
+    }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected compact success");
+  assert.equal(result.proposalId, "memory:toolu-compact");
+  assert.deepEqual(result.result, { entriesWritten: 1, scratchIds: ["scratch-1"] });
+});
+
 test("createHttpToolUseProcessor accepts nested gateway kill-switch payload", async () => {
   const urls: string[] = [];
   const processor = createHttpToolUseProcessor({
@@ -116,6 +180,85 @@ test("createHttpToolUseProcessor accepts nested gateway kill-switch payload", as
     "http://127.0.0.1:3000/v1/kill-switch",
     "http://127.0.0.1:3000/v1/skills/suggest-safe-domain"
   ]);
+});
+
+test("createHttpToolUseProcessor invokes episodic scratch read endpoint directly", async () => {
+  const urls: string[] = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    fetchImpl: async (url) => {
+      urls.push(String(url));
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).includes("/v1/openclaw/scratch?intentId=intent-1")) {
+        return jsonResponse({ entries: [{ intentId: "intent-1" }] });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-http-scratch",
+    toolName: "read_episodic_scratch",
+    toolInput: { intentId: "intent-1" },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected HTTP scratch read success");
+  assert.deepEqual(result.result, { entries: [{ intentId: "intent-1" }] });
+  assert.deepEqual(urls, [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/openclaw/scratch?intentId=intent-1"
+  ]);
+});
+
+test("createHttpToolUseProcessor signs compact_intent HTTP payload", async () => {
+  const calls: Array<{ url: string; headers?: HeadersInit; body?: unknown }> = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    now: () => new Date("2026-06-01T12:00:00.000Z"),
+    fetchImpl: async (url, init) => {
+      calls.push({
+        url: String(url),
+        headers: init?.headers,
+        body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined
+      });
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).endsWith("/v1/openclaw/compact-intent")) {
+        assert.equal(init?.method, "POST");
+        assert.equal((init.headers as Record<string, string>)["x-openclaw-timestamp"], "1780315200");
+        assert.match((init.headers as Record<string, string>)["x-openclaw-signature"], /^[a-f0-9]{64}$/);
+        return jsonResponse({ entriesWritten: 1, scratchIds: ["scratch-1"] });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-http-compact",
+    toolName: "compact_intent",
+    toolInput: {
+      intentId: "intent-1",
+      finalStatus: "completed",
+      decision: "stored",
+      steps: [{ step: 1, tool: "suggest_safe_domain", inputHash: "a".repeat(64), outcome: "success" }]
+    },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected HTTP compact success");
+  assert.deepEqual(calls.map((call) => call.url), [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/openclaw/compact-intent"
+  ]);
+  assert.equal((calls[1]?.body as Record<string, unknown>).actorId, "agent:main:operator");
 });
 
 test("createHttpToolUseProcessor invokes read-only DNS wait endpoint directly", async () => {
@@ -416,6 +559,7 @@ function memoryDeps(options: {
 function enabledEnv(): Record<string, string | undefined> {
   return {
     OPENCLAW_HMAC_SECRET: "test-hmac",
+    POSTGRES_URL: "postgres://delivrix:delivrix_dev_password@localhost:5432/delivrix_mailops",
     AWS_ACCESS_KEY_ID: "test-access",
     AWS_SECRET_ACCESS_KEY: "test-secret",
     AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE: "true",

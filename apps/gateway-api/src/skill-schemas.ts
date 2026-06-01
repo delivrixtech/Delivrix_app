@@ -109,6 +109,38 @@ export interface ConfigureCompleteSmtpSkillParams extends Record<string, unknown
   seedInboxes?: string[];
 }
 
+export interface ReadEpisodicScratchParams extends Record<string, unknown> {
+  intentId?: string;
+  inputHash?: string;
+  tool?: string;
+  outcome?: "success" | "failed" | "rolled_back" | "rollback_failed" | "cancelled_by_operator" | "timeout" | "partial";
+  limit?: number;
+  sinceDays?: number;
+  weighted?: boolean;
+}
+
+export interface CompactIntentParams extends Record<string, unknown> {
+  intentId: string;
+  finalStatus: "completed" | "failed" | "cancelled" | "rolled_back";
+  decision: string;
+  ttlDays?: number;
+  steps: Array<{
+    step: number;
+    tool: string;
+    inputHash: string;
+    outcome: "success" | "failed" | "rolled_back" | "rollback_failed" | "cancelled_by_operator" | "timeout" | "partial";
+    outcomeData?: Record<string, unknown>;
+    errorClass?: string;
+    errorMessage?: string;
+    durationMs?: number;
+    proposalId?: string;
+    signatureId?: string;
+    toolUseId?: string;
+    toolCallId?: string;
+    auditEventId?: string;
+  }>;
+}
+
 export const route53RegisterParamSchema = schema<Route53RegisterParams>((value) => {
   const input = object(value);
   const years = integer(input.years ?? input.durationYears, "years", 1, 10);
@@ -258,6 +290,67 @@ export const configureCompleteSmtpParamSchema = schema<ConfigureCompleteSmtpPara
   };
 });
 
+export const readEpisodicScratchParamSchema = schema<ReadEpisodicScratchParams>((value) => {
+  const input = object(value);
+  const output: ReadEpisodicScratchParams = {};
+  if (input.intentId !== undefined && input.intentId !== null && input.intentId !== "") {
+    output.intentId = boundedId(input.intentId, "intentId", 64);
+  }
+  if (input.inputHash !== undefined && input.inputHash !== null && input.inputHash !== "") {
+    output.inputHash = inputHash(input.inputHash, "inputHash");
+  }
+  if (input.tool !== undefined && input.tool !== null && input.tool !== "") {
+    output.tool = string(input.tool, "tool");
+  }
+  if (input.outcome !== undefined && input.outcome !== null && input.outcome !== "") {
+    output.outcome = scratchOutcome(input.outcome, "outcome");
+  }
+  if (input.limit !== undefined && input.limit !== null) {
+    output.limit = integer(input.limit, "limit", 1, 100);
+  }
+  if (input.sinceDays !== undefined && input.sinceDays !== null) {
+    output.sinceDays = integer(input.sinceDays, "sinceDays", 1, 3650);
+  }
+  if (input.weighted !== undefined && input.weighted !== null) {
+    output.weighted = boolean(input.weighted, "weighted");
+  }
+  if (!output.intentId && !output.inputHash && !output.tool) {
+    throw new SkillSchemaError("intentId, inputHash or tool is required");
+  }
+  if (output.tool && !output.outcome && output.weighted !== true) {
+    throw new SkillSchemaError("tool queries require outcome or weighted=true");
+  }
+  return output;
+});
+
+export const compactIntentParamSchema = schema<CompactIntentParams>((value) => {
+  const input = object(value);
+  return {
+    intentId: boundedId(input.intentId, "intentId", 64),
+    finalStatus: oneOf(input.finalStatus, "finalStatus", ["completed", "failed", "cancelled", "rolled_back"] as const),
+    decision: boundedText(input.decision, "decision", 1, 280),
+    ...(input.ttlDays === undefined || input.ttlDays === null ? {} : { ttlDays: integer(input.ttlDays, "ttlDays", 1, 365) }),
+    steps: array(input.steps, "steps", 1, 50).map((step, index) => {
+      const item = object(step, `steps[${index}]`);
+      return {
+        step: integer(item.step, `steps[${index}].step`, 1, 10_000),
+        tool: string(item.tool, `steps[${index}].tool`),
+        inputHash: inputHash(item.inputHash, `steps[${index}].inputHash`),
+        outcome: scratchOutcome(item.outcome, `steps[${index}].outcome`),
+        ...(item.outcomeData === undefined || item.outcomeData === null ? {} : { outcomeData: object(item.outcomeData, `steps[${index}].outcomeData`) }),
+        ...(item.errorClass === undefined || item.errorClass === null ? {} : { errorClass: boundedText(item.errorClass, `steps[${index}].errorClass`, 1, 128) }),
+        ...(item.errorMessage === undefined || item.errorMessage === null ? {} : { errorMessage: boundedText(item.errorMessage, `steps[${index}].errorMessage`, 1, 2000) }),
+        ...(item.durationMs === undefined || item.durationMs === null ? {} : { durationMs: integer(item.durationMs, `steps[${index}].durationMs`, 0, 86_400_000) }),
+        ...(item.proposalId === undefined || item.proposalId === null ? {} : { proposalId: boundedText(item.proposalId, `steps[${index}].proposalId`, 1, 128) }),
+        ...(item.signatureId === undefined || item.signatureId === null ? {} : { signatureId: boundedText(item.signatureId, `steps[${index}].signatureId`, 1, 128) }),
+        ...(item.toolUseId === undefined || item.toolUseId === null ? {} : { toolUseId: boundedText(item.toolUseId, `steps[${index}].toolUseId`, 1, 128) }),
+        ...(item.toolCallId === undefined || item.toolCallId === null ? {} : { toolCallId: boundedText(item.toolCallId, `steps[${index}].toolCallId`, 1, 128) }),
+        ...(item.auditEventId === undefined || item.auditEventId === null ? {} : { auditEventId: boundedText(item.auditEventId, `steps[${index}].auditEventId`, 1, 128) })
+      };
+    })
+  };
+});
+
 class SkillSchemaError extends Error {}
 
 function schema<T extends Record<string, unknown>>(parse: (value: unknown) => T): SkillParamSchema<T> {
@@ -398,6 +491,42 @@ function httpsUrl(value: unknown, field: string): string {
     if (error instanceof SkillSchemaError) throw error;
     throw new SkillSchemaError(`${field} must be a valid URL`);
   }
+}
+
+function boundedId(value: unknown, field: string, max: number): string {
+  const normalized = string(value, field);
+  if (normalized.length > max || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(normalized)) {
+    throw new SkillSchemaError(`${field} is invalid`);
+  }
+  return normalized;
+}
+
+function boundedText(value: unknown, field: string, min: number, max: number): string {
+  const normalized = string(value, field);
+  if (normalized.length < min || normalized.length > max) {
+    throw new SkillSchemaError(`${field} length is invalid`);
+  }
+  return normalized;
+}
+
+function inputHash(value: unknown, field: string): string {
+  const normalized = string(value, field).toLowerCase();
+  if (!/^[a-f0-9]{8,64}$/.test(normalized)) {
+    throw new SkillSchemaError(`${field} must be 8-64 hex chars`);
+  }
+  return normalized;
+}
+
+function scratchOutcome(value: unknown, field: string) {
+  return oneOf(value, field, [
+    "success",
+    "failed",
+    "rolled_back",
+    "rollback_failed",
+    "cancelled_by_operator",
+    "timeout",
+    "partial"
+  ] as const);
 }
 
 function withOptionalTaskId<T extends Record<string, unknown>>(

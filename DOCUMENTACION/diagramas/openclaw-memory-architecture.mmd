@@ -1,0 +1,19 @@
+flowchart LR
+  Operator[Operador humano] --> Canvas[Canvas Live]
+  Canvas --> Gateway[Gateway API]
+  Gateway --> Bedrock[AWS Bedrock Claude]
+  Bedrock --> Tools[Tool calling OpenClaw]
+  Tools --> ReadScratch[read_episodic_scratch]
+  Tools --> CompactIntent[compact_intent]
+  Tools --> Orchestrator[configure_complete_smtp]
+  Orchestrator --> ApprovalGate[ApprovalGate 1 firma]
+  ApprovalGate --> Providers[Route53 / Webdock / IONOS / SMTP]
+  Providers --> Audit[Audit chain SHA-256]
+  Orchestrator --> CompactIntent
+  CompactIntent --> Scratch[(Postgres openclaw_episodic_scratch)]
+  ReadScratch --> Scratch
+  Scratch --> Bedrock
+  Scratch --> TtlJob[TTL job env-gated]
+  TtlJob --> Audit
+  Gateway --> Logs[Canvas Terminal logs]
+  Audit --> Canvas

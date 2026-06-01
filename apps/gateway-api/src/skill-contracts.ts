@@ -18,6 +18,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["suggest_safe_domain", "naming_suggest"]
   },
   {
+    canonicalSkill: "read_episodic_scratch",
+    aliases: ["read_episodic_scratch", "openclaw_memory_read"],
+    actionIds: ["read_episodic_scratch", "openclaw_memory_read"]
+  },
+  {
     canonicalSkill: "upsert_dns_route53",
     aliases: ["upsert_dns_route53", "route53_dns_upsert"],
     actionIds: ["upsert_dns_route53", "route53_dns_upsert"]
@@ -71,6 +76,11 @@ const skillActionBindings: SkillActionBinding[] = [
     canonicalSkill: "send_real_email",
     aliases: ["send_real_email", "smtp_send_real", "smtp_send_real_email"],
     actionIds: ["send_real_email", "smtp_send_real", "smtp_send_real_email"]
+  },
+  {
+    canonicalSkill: "compact_intent",
+    aliases: ["compact_intent", "openclaw_memory_compact"],
+    actionIds: ["compact_intent", "openclaw_memory_compact"]
   },
   {
     canonicalSkill: "configure_complete_smtp",
