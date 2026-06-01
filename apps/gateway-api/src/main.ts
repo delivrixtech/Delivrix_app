@@ -381,7 +381,8 @@ const configureSmtpRuntimeDeps = {
       toolUseId: `configure-complete-smtp:${input.runId}:${input.step}`,
       toolName: input.skill,
       toolInput: input.params,
-      chatSession: { id: `configure-complete-smtp:${input.runId}`, msgId: `step-${input.step}` }
+      chatSession: { id: `configure-complete-smtp:${input.runId}`, msgId: `step-${input.step}` },
+      timeoutMs: input.approvalTimeoutMs
     });
 
     if (result.ok) {

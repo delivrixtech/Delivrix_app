@@ -196,9 +196,15 @@ test("configureCompleteSmtp reports estimated domain and prorated VPS cost", asy
 test("configureCompleteSmtp emits canvas start and completion events", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);
+  const types = ctx.canvasEvents.map((event) => event.type);
   const actions = ctx.canvasEvents.map((event) => event.action);
+  assert.deepEqual(types.slice(0, 2), ["oc.task.declare", "oc.action.now"]);
+  assert.equal(actions.includes("oc.orchestrator.run_started"), true);
   assert.equal(actions.includes("oc.orchestrator.step_started"), true);
   assert.equal(actions.includes("oc.orchestrator.step_completed"), true);
+  assert.equal(actions.includes("oc.orchestrator.run_completed"), true);
+  assert.equal(types.at(-1), "oc.task.update");
+  assert.equal(ctx.canvasEvents.at(-1)?.status, "completed");
 });
 
 test("configureCompleteSmtp audits failed steps", async () => {
@@ -209,6 +215,26 @@ test("configureCompleteSmtp audits failed steps", async () => {
   });
   await configureCompleteSmtp(validInput(), ctx.deps);
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.step_failed"), true);
+});
+
+test("configureCompleteSmtp marks canvas task failed when a step fails", async () => {
+  const ctx = createDeps({
+    decisions: {
+      3: { status: "execution_timeout", proposalId: "p-3", timeoutMs: 10 }
+    }
+  });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+  assert.equal(result.status, "failed");
+  assert.equal(ctx.canvasEvents.at(-1)?.type, "oc.task.update");
+  assert.equal(ctx.canvasEvents.at(-1)?.status, "failed");
+  assert.equal(ctx.canvasEvents.some((event) => event.action === "oc.orchestrator.run_failed"), true);
+});
+
+test("configureCompleteSmtp does not fail operational work when canvas emit fails", async () => {
+  const ctx = createDeps({ canvasEmitFails: true });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+  assert.equal(result.status, "completed");
+  assert.equal(result.stepResults.length, 14);
 });
 
 test("configureCompleteSmtp does not submit rollback before VPS exists", async () => {
@@ -251,7 +277,10 @@ test("configureCompleteSmtp maps queued final delivery without rewriting it", as
 test("approval timeout env is passed to every gated step", async () => {
   const ctx = createDeps({ env: { OPENCLAW_CONFIGURE_SMTP_APPROVAL_TIMEOUT_MS: "12345" } });
   await configureCompleteSmtp(validInput(), ctx.deps);
-  assert.equal(ctx.approvals.every((entry) => entry.approvalTimeoutMs === 12345), true);
+  assert.equal(ctx.approvals.find((entry) => entry.step === 2)?.approvalTimeoutMs, 12345);
+  assert.equal(ctx.approvals.find((entry) => entry.step === 3)?.approvalTimeoutMs, 1_980_000);
+  assert.equal(ctx.approvals.find((entry) => entry.step === 8)?.approvalTimeoutMs, 750_000);
+  assert.equal(ctx.approvals.find((entry) => entry.step === 11)?.approvalTimeoutMs, 750_000);
 });
 
 test("handleConfigureCompleteSmtp returns HTTP 200 for completed run", async () => {
@@ -288,20 +317,21 @@ function createDeps(options: {
   killSwitchEnabled?: boolean;
   auditOk?: boolean;
   env?: Record<string, string | undefined>;
+  canvasEmitFails?: boolean;
 } = {}): {
   deps: ConfigureCompleteSmtpDeps;
   approvals: ApprovalStepInput[];
   invocations: SkillInvocationInput[];
   rollbacks: Array<{ skill: string; params: Record<string, unknown> }>;
   auditEvents: Array<{ action: string; metadata?: unknown }>;
-  canvasEvents: Array<{ action?: string }>;
+  canvasEvents: Array<Record<string, unknown> & { action?: string }>;
   verifyCount: number;
 } {
   const approvals: ApprovalStepInput[] = [];
   const invocations: SkillInvocationInput[] = [];
   const rollbacks: Array<{ skill: string; params: Record<string, unknown> }> = [];
   const auditEvents: Array<{ action: string; metadata?: unknown }> = [];
-  const canvasEvents: Array<{ action?: string }> = [];
+  const canvasEvents: Array<Record<string, unknown> & { action?: string }> = [];
   let verifyCount = 0;
 
   const ctx = {
@@ -346,7 +376,10 @@ function createDeps(options: {
       },
       canvasLiveEvents: {
         async emit(event) {
-          canvasEvents.push(event as { action?: string });
+          if (options.canvasEmitFails) {
+            throw new Error("canvas emit failed");
+          }
+          canvasEvents.push(event as Record<string, unknown> & { action?: string });
           return event;
         }
       },

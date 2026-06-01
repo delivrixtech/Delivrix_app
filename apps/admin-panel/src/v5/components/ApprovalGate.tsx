@@ -66,6 +66,9 @@ interface SignResponse {
   ok: boolean;
   signatureId?: string;
   signedAt?: string;
+  status?: "executed" | "executing" | "execution_failed" | "rejected" | string;
+  proposalId?: string;
+  pollEndpoint?: string;
   message?: string;
   blockers?: string[];
 }
@@ -110,6 +113,9 @@ export async function signProposal(
     ok: payload.ok ?? true,
     signatureId: payload.signatureId,
     signedAt: payload.signedAt,
+    status: payload.status,
+    proposalId: payload.proposalId,
+    pollEndpoint: payload.pollEndpoint,
     message: payload.message
   };
 }
@@ -131,6 +137,7 @@ export function ApprovalGate({
   const queryClient = useQueryClient();
   const [secondsLeft, setSecondsLeft] = useState(minReadSeconds);
   const [confirmed, setConfirmed] = useState(false);
+  const [executionStatus, setExecutionStatus] = useState<string | null>(null);
 
   // Timer cuenta atrás (MOTION 1/5: tick discreto cada 1s, sin animación).
   useEffect(() => {
@@ -152,14 +159,48 @@ export function ApprovalGate({
     onSuccess: (result) => {
       if (!result.ok) return;
       setConfirmed(true);
+      setExecutionStatus(result.status ?? "signed");
       queryClient.invalidateQueries({ queryKey: ["audit-events"] });
       queryClient.invalidateQueries({ queryKey: ["sender-pool", "status"] });
+      queryClient.invalidateQueries({ queryKey: ["canvas-live"] });
+      queryClient.invalidateQueries({ queryKey: ["canvas-live-state"] });
       onSigned?.({
         signatureId: result.signatureId ?? auditId,
         signedAt: result.signedAt ?? new Date().toISOString()
       });
     }
   });
+
+  useEffect(() => {
+    const result = mutation.data;
+    if (!confirmed || result?.status !== "executing") return;
+    const endpoint = result.pollEndpoint ?? `/v1/openclaw/proposals/${encodeURIComponent(result.proposalId ?? auditId)}/status`;
+    const fetcher = fetchImpl ?? fetch;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const response = await fetcher(endpoint, { headers: { accept: "application/json" } });
+        const body = await response.json().catch(() => ({})) as { status?: string };
+        if (cancelled || !body.status) return;
+        setExecutionStatus(body.status);
+        queryClient.invalidateQueries({ queryKey: ["canvas-live"] });
+        queryClient.invalidateQueries({ queryKey: ["canvas-live-state"] });
+        if (body.status === "executed" || body.status === "execution_failed" || body.status === "rejected") {
+          window.clearInterval(timer);
+        }
+      } catch {
+        // El fallback de canvas seguirá refrescando estado aunque un poll puntual falle.
+      }
+    };
+    const timer = window.setInterval(() => {
+      void poll();
+    }, 5_000);
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [auditId, confirmed, fetchImpl, mutation.data, queryClient]);
 
   const gatesOk = gates.filter((g) => g.status === "ok").length;
   const gatesBlocked = gates.filter((g) => g.status === "blocked").length;
@@ -265,6 +306,12 @@ export function ApprovalGate({
               {"signatureId: "}
               <MonoCode>{mutation.data.signatureId}</MonoCode>
             </span>
+            {executionStatus ? (
+              <span>
+                {"status: "}
+                <MonoCode>{executionStatus}</MonoCode>
+              </span>
+            ) : null}
           </div>
         </div>
       ) : mutation.error ? (

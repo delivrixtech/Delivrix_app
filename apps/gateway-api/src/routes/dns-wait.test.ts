@@ -129,6 +129,24 @@ test("pollDnsRecord resolves NS record with normalized trailing dot", async () =
   assert.equal(result.lastSeen, "ns-1.awsdns-01.com");
 });
 
+test("pollDnsRecord supports contains matcher for Route53 NS propagation", async () => {
+  let nowMs = fixedNow.getTime();
+  const result = await pollDnsRecord({
+    domain: "delivrix.test",
+    expectedRecord: { type: "NS", value: "contains:awsdns" },
+    maxWaitMs: 30_000,
+    pollIntervalMs: 30_000,
+    dns: dnsResolver({ resolveNs: async () => ["ns-123.awsdns-45.org."] }),
+    now: () => nowMs,
+    sleep: async (ms) => {
+      nowMs += ms;
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.lastSeen, "ns-123.awsdns-45.org");
+});
+
 test("pollDnsRecord resolves MX record by exchange", async () => {
   let nowMs = fixedNow.getTime();
   const result = await pollDnsRecord({
