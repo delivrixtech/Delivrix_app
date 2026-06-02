@@ -89,6 +89,35 @@ test("warming runbook increments warmup day and daily limit", async () => {
   assert.equal((await repo.get("svc-mvp-test-01"))?.warmupDay, 2);
 });
 
+test("warming runbook lowers stale daily limit to the planned next-day cap", async () => {
+  const repo = new MemoryRunbookSenderNodeRepository([{ ...sampleNode(), dailyLimit: 10_000 }]);
+  const result = await executeWarmingStepRunbook(
+    { nodeId: "svc-mvp-test-01" },
+    ctx(repo, { approverIds: ["op-a", "op-b"], rollbackToken: "rb-warming" })
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.ok ? result.newState : {}, {
+    status: "warming",
+    warmupDay: 2,
+    dailyLimit: 100
+  });
+});
+
+test("warming runbook rejects safety-capped nodes below the current plan", async () => {
+  const repo = new MemoryRunbookSenderNodeRepository([{ ...sampleNode(), warmupDay: 2, dailyLimit: 50 }]);
+  const result = await executeWarmingStepRunbook(
+    { nodeId: "svc-mvp-test-01" },
+    ctx(repo, { approverIds: ["op-a", "op-b"] })
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? "" : result.rejectReason, "preconditions_failed");
+  assert.match(result.ok ? "" : result.detail, /below current warming plan 100/);
+  assert.equal((await repo.get("svc-mvp-test-01"))?.warmupDay, 2);
+  assert.equal((await repo.get("svc-mvp-test-01"))?.dailyLimit, 50);
+});
+
 test("warming runbook rejects non-warming nodes", async () => {
   const repo = new MemoryRunbookSenderNodeRepository([{ ...sampleNode(), status: "paused" }]);
   const result = await executeWarmingStepRunbook(
