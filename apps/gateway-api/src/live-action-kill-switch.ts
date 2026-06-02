@@ -53,6 +53,15 @@ export function classifyLiveActionMutation(method: string | undefined, path: str
   if (normalizedMethod === "POST" && (path === "/v1/flows/onboard-sender-domain" || path === "/v1/flows/onboard-batch")) {
     return liveAction(normalizedMethod, path, "onboard_flow", path.split("/").at(-1) ?? "unknown");
   }
+  if (normalizedMethod === "POST" && path === "/v1/webdock/bridge-nodes/seed") {
+    return liveAction(normalizedMethod, path, "sender_node", "webdock-bridge-seed");
+  }
+  if (normalizedMethod === "POST" && path === "/v1/proxmox/provisioning-plan") {
+    return liveAction(normalizedMethod, path, "sender_node", "proxmox-provisioning-plan");
+  }
+  if (normalizedMethod === "POST" && path === "/v1/proxmox/mock-nodes/seed") {
+    return liveAction(normalizedMethod, path, "sender_node", "proxmox-mock-seed");
+  }
 
   return null;
 }

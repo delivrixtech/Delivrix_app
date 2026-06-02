@@ -120,7 +120,12 @@ import {
   resolveGatewayNow,
   type QuorumResolution
 } from "./security/business-hours.ts";
+import {
+  operatorIdFromHeaders,
+  validateGatewayMutationHmac
+} from "./security/gateway-mutation-auth.ts";
 import { validateOpenClawHmac } from "./security/hmac.ts";
+import { validateRunbookExecuteAuthorization } from "./security/runbook-authorization.ts";
 import {
   consumeRollbackSnapshot,
   getRollbackSnapshot,
@@ -365,10 +370,11 @@ const rampScheduler = new RampScheduler({
   webhookBroadcaster: equipoWebhookBroadcaster
 });
 const gatewaySelfBaseUrl = process.env.DELIVRIX_GATEWAY_INTERNAL_BASE_URL ?? `http://${host}:${port}`;
+const sensitiveReadBoundaryToken = process.env.DELIVRIX_READ_BOUNDARY_TOKEN ?? process.env.DELIVRIX_OPENCLAW_TOKEN;
 const configureSmtpToolProcessor = createHttpToolUseProcessor({
   delivrixBaseUrl: gatewaySelfBaseUrl,
   env: process.env,
-  readBoundaryToken: process.env.DELIVRIX_READ_BOUNDARY_TOKEN,
+  readBoundaryToken: sensitiveReadBoundaryToken,
   pollIntervalMs: Number(process.env.OPENCLAW_CONFIGURE_SMTP_POLL_INTERVAL_MS ?? 1_000),
   logger: gatewayRuntimeLog
 });
@@ -1515,7 +1521,8 @@ const server = createServer(async (request, response) => {
       return await handleReadRoute53DomainDetail(request, response, {
         canvasLiveEvents,
         emitAudit: appendRoute53ReadAudit,
-        now: () => new Date()
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
       });
     }
 
@@ -1523,7 +1530,8 @@ const server = createServer(async (request, response) => {
       return await handleReadRoute53ZoneRecords(request, response, {
         canvasLiveEvents,
         emitAudit: appendRoute53ReadAudit,
-        now: () => new Date()
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
       });
     }
 
@@ -4659,8 +4667,17 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && request.url === "/v1/webdock/bridge-nodes/seed") {
-      const body = await readJson<{ nodes: WebdockBridgeNodeConfig[] } | WebdockBridgeNodeConfig[]>(request);
-      const configs = Array.isArray(body) ? body : body.nodes;
+      const { raw, body } = await readRawBodyAndJson<{ nodes: WebdockBridgeNodeConfig[] } | WebdockBridgeNodeConfig[]>(request);
+      const auth = validateGatewayMutationHmac(request, raw);
+
+      if (!auth.ok) {
+        return json(response, 401, {
+          rejectReason: auth.rejectReason
+        });
+      }
+
+      const configs = Array.isArray(body) ? body : body?.nodes;
+      const actorId = operatorIdFromRequest(request) ?? "openclaw-hmac";
 
       if (!Array.isArray(configs)) {
         return json(response, 422, {
@@ -4679,8 +4696,8 @@ const server = createServer(async (request, response) => {
       }
 
       await auditLog.append({
-        actorType: "system",
-        actorId: "gateway-api",
+        actorType: "operator",
+        actorId,
         action: "webdock_bridge_nodes.seeded",
         targetType: "sender_node",
         targetId: "webdock",
@@ -4698,8 +4715,23 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && request.url === "/v1/proxmox/provisioning-plan") {
-      const body = await readJson<ProxmoxMockNodeConfig & { actorId?: string }>(request);
-      const actorId = body.actorId?.trim() || "gateway-api";
+      const { raw, body } = await readRawBodyAndJson<ProxmoxMockNodeConfig & { actorId?: string }>(request);
+      const auth = validateGatewayMutationHmac(request, raw);
+
+      if (!auth.ok) {
+        return json(response, 401, {
+          rejectReason: auth.rejectReason
+        });
+      }
+
+      if (!body) {
+        return json(response, 422, {
+          error: "invalid_proxmox_plan_payload",
+          message: "Expected a provisioning plan payload."
+        });
+      }
+
+      const actorId = body.actorId?.trim() || (operatorIdFromRequest(request) ?? "openclaw-hmac");
       const plan = tryBuild(response, () => proxmoxAdapter.planProvisioning(body));
 
       if (!plan) {
@@ -4707,7 +4739,7 @@ const server = createServer(async (request, response) => {
       }
 
       await auditLog.append({
-        actorType: body.actorId ? "operator" : "system",
+        actorType: "operator",
         actorId,
         action: "proxmox.provisioning_plan_created",
         targetType: "sender_node",
@@ -4784,12 +4816,22 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && request.url === "/v1/proxmox/mock-nodes/seed") {
-      const body = await readJson<{
+      const { raw, body } = await readRawBodyAndJson<{
         nodes?: ProxmoxMockNodeConfig[];
         actorId?: string;
       } | ProxmoxMockNodeConfig[]>(request);
-      const configs = Array.isArray(body) ? body : body.nodes;
-      const actorId = Array.isArray(body) ? "gateway-api" : body.actorId?.trim() || "gateway-api";
+      const auth = validateGatewayMutationHmac(request, raw);
+
+      if (!auth.ok) {
+        return json(response, 401, {
+          rejectReason: auth.rejectReason
+        });
+      }
+
+      const configs = Array.isArray(body) ? body : body?.nodes;
+      const actorId = Array.isArray(body)
+        ? (operatorIdFromRequest(request) ?? "openclaw-hmac")
+        : body?.actorId?.trim() || (operatorIdFromRequest(request) ?? "openclaw-hmac");
 
       if (!Array.isArray(configs)) {
         return json(response, 422, {
@@ -5520,29 +5562,6 @@ function normalizeQuarantineTargetStatus(value: unknown): QuarantineRevertTarget
   return null;
 }
 
-function validateRunbookExecuteAuthorization(
-  request: IncomingMessage,
-  raw: string
-): { ok: true } | { ok: false; rejectReason: string } {
-  if (isInternalPanelRunbookRequest(request)) {
-    return { ok: true };
-  }
-
-  return validateOpenClawHmac(request.headers, raw);
-}
-
-function isInternalPanelRunbookRequest(request: IncomingMessage): boolean {
-  const operatorId = request.headers["x-operator-id"];
-
-  if (!isNonEmptyString(operatorId) || !operatorId.startsWith("op-")) {
-    return false;
-  }
-
-  return [request.headers.origin, request.headers.referer, request.headers.host]
-    .flatMap((value) => Array.isArray(value) ? value : [value])
-    .some((value) => typeof value === "string" && /(^|\/\/)(127\.0\.0\.1|localhost)(:|\/|$)/.test(value));
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -5628,6 +5647,10 @@ function looksLikeDomain(value: string): boolean {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function operatorIdFromRequest(request: IncomingMessage): string | null {
+  return operatorIdFromHeaders(request.headers);
 }
 
 function isUuid(value: unknown): value is string {

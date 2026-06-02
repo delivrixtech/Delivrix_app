@@ -27,6 +27,7 @@ import type {
 
 const STATE_ENDPOINT = "/v1/canvas/live/state";
 const STREAM_PATH = "/v1/canvas/live/stream";
+const STREAM_TOKEN = import.meta.env.VITE_CANVAS_LIVE_STREAM_TOKEN || import.meta.env.VITE_DELIVRIX_READ_BOUNDARY_TOKEN || "";
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15_000;
 const SNAPSHOT_POLL_MS = 5_000;
@@ -215,7 +216,10 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
     function openSocket() {
       try {
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const url = `${protocol}//${window.location.host}${STREAM_PATH}`;
+        const url = new URL(`${protocol}//${window.location.host}${STREAM_PATH}`);
+        if (STREAM_TOKEN) {
+          url.searchParams.set("token", STREAM_TOKEN);
+        }
         const ws = new WebSocket(url);
         socketRef.current = ws;
         ws.addEventListener("open", () => {

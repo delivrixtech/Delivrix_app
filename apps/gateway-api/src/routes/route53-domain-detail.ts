@@ -4,6 +4,7 @@ import {
   type GetDomainDetailCommandOutput
 } from "@aws-sdk/client-route-53-domains";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { authorizeSensitiveRead, type SensitiveReadAuthDeps } from "./sensitive-read-auth.ts";
 
 interface CanvasLiveEvents {
   emit(event: { type: string; [k: string]: unknown }): Promise<unknown> | unknown;
@@ -24,6 +25,8 @@ export interface ReadDomainDetailDeps {
   canvasLiveEvents?: CanvasLiveEvents;
   emitAudit?: (event: { type: string; [k: string]: unknown }) => Promise<void>;
   now?: () => Date;
+  readBoundaryToken?: string;
+  rateLimitPerMinute?: number;
 }
 
 export interface DomainDetailResponse {
@@ -46,6 +49,12 @@ export async function handleReadRoute53DomainDetail(
   response: ServerResponse,
   deps: ReadDomainDetailDeps
 ): Promise<void> {
+  const auth = authorizeRoute53Read(request, deps, "route53_domain_detail");
+  if (!auth.ok) {
+    json(response, auth.statusCode, { error: auth.error });
+    return;
+  }
+
   const url = new URL(request.url ?? "", "http://localhost");
   const domain = normalizeDomain(url.searchParams.get("domain") ?? "");
 
@@ -97,6 +106,14 @@ export async function handleReadRoute53DomainDetail(
       domain
     });
   }
+}
+
+function authorizeRoute53Read(
+  request: IncomingMessage,
+  deps: SensitiveReadAuthDeps,
+  scope: string
+) {
+  return authorizeSensitiveRead(request, deps, scope);
 }
 
 function normalizeDomain(value: string): string {

@@ -48,6 +48,16 @@ test("WSS task filter only receives matching task events", async () => {
   service.close();
 });
 
+test("WSS /v1/canvas/live/stream rejects missing token", async () => {
+  const service = await testService();
+  const socket = connectFakeSocket(service, "/v1/canvas/live/stream", null);
+
+  assert.ok(socket.handshake().includes("401 Unauthorized"));
+  await service.emit(taskDeclare("task-unauthorized"));
+  assert.equal(socket.messages().length, 0);
+  service.close();
+});
+
 test("oc.action.now supports api, file, and command events", async () => {
   const service = await testService();
   await service.emit(taskDeclare("task-action"));
@@ -338,28 +348,62 @@ test("GET /v1/canvas/live/state returns persisted snapshot", async () => {
 });
 
 test("POST /v1/canvas/live/events ingests events without writing audit chain", async () => {
+  const previousToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  process.env.OPENCLAW_GATEWAY_TOKEN = "canvas-token";
   const service = await testService();
   const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-ingest-audit-")), "audit.jsonl"));
-  const response = await runRoute(
-    (request, response) => handleCanvasLiveEventIngestHttp({
-      request,
-      response,
-      service,
-      auditLog
-    }),
-    {
-      method: "POST",
-      url: "/v1/canvas/live/events",
-      headers: process.env.OPENCLAW_GATEWAY_TOKEN
-        ? { authorization: `Bearer ${process.env.OPENCLAW_GATEWAY_TOKEN}` }
-        : {},
-      body: taskDeclare("task-ingest")
-    }
-  );
+  let response: Awaited<ReturnType<typeof runRoute>>;
+  try {
+    response = await runRoute(
+      (request, response) => handleCanvasLiveEventIngestHttp({
+        request,
+        response,
+        service,
+        auditLog
+      }),
+      {
+        method: "POST",
+        url: "/v1/canvas/live/events",
+        headers: { authorization: "Bearer canvas-token" },
+        body: taskDeclare("task-ingest")
+      }
+    );
+  } finally {
+    process.env.OPENCLAW_GATEWAY_TOKEN = previousToken;
+  }
 
   assert.equal(response.statusCode, 202);
   assert.equal(response.body.eventCount, 1);
   assert.equal((await auditLog.list()).length, 0);
+});
+
+test("POST /v1/canvas/live/events fails closed when gateway token is unconfigured", async () => {
+  const previousToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  delete process.env.OPENCLAW_GATEWAY_TOKEN;
+  const service = await testService();
+  const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-ingest-closed-audit-")), "audit.jsonl"));
+  let response: Awaited<ReturnType<typeof runRoute>>;
+  try {
+    response = await runRoute(
+      (request, response) => handleCanvasLiveEventIngestHttp({
+        request,
+        response,
+        service,
+        auditLog
+      }),
+      {
+        method: "POST",
+        url: "/v1/canvas/live/events",
+        body: taskDeclare("task-ingest-closed")
+      }
+    );
+  } finally {
+    process.env.OPENCLAW_GATEWAY_TOKEN = previousToken;
+  }
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.body.error, "canvas_live_unauthorized");
+  assert.equal((await service.snapshot()).tasks.length, 0);
 });
 
 test("canvas-live state writes append-only JSONL files", async () => {
@@ -501,7 +545,8 @@ function artifactBlock(
 async function testService(): Promise<CanvasLiveEventService> {
   return new CanvasLiveEventService({
     stateDir: await stateDirForTest(),
-    now: () => fixedNow
+    now: () => fixedNow,
+    streamToken: "canvas-token"
   });
 }
 
@@ -565,10 +610,14 @@ function captureResponse(): {
   };
 }
 
-function connectFakeSocket(service: CanvasLiveEventService, path: string): FakeSocket {
+function connectFakeSocket(service: CanvasLiveEventService, path: string, token: string | null = "canvas-token"): FakeSocket {
+  const url = new URL(path, "http://127.0.0.1");
+  if (token) {
+    url.searchParams.set("token", token);
+  }
   const request = {
     method: "GET",
-    url: path,
+    url: `${url.pathname}${url.search}`,
     headers: {
       upgrade: "websocket",
       "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="

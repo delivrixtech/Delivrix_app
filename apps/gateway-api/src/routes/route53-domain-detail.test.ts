@@ -8,6 +8,7 @@ import {
 } from "./route53-domain-detail.ts";
 
 const fixedNow = new Date("2026-06-01T18:00:00.000Z");
+const readToken = "route53-read-token";
 
 test("GET /v1/route53/domain-detail normalizes full Route53 Domains payload", async () => {
   const auditEvents: Array<Record<string, unknown>> = [];
@@ -90,6 +91,27 @@ test("GET /v1/route53/domain-detail rejects domain foo", async () => {
   assert.equal(response.body.error, "invalid_domain_format");
 });
 
+test("GET /v1/route53/domain-detail requires read-boundary token", async () => {
+  const calls: unknown[] = [];
+  const response = await route("/v1/route53/domain-detail?domain=controldelivrix.app", {
+    client: mockClient({}, calls),
+    headers: {}
+  });
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.body.error, "read_boundary_token_invalid");
+  assert.equal(calls.length, 0);
+});
+
+test("GET /v1/route53/domain-detail fails closed when read token is unconfigured", async () => {
+  const response = await route("/v1/route53/domain-detail?domain=controldelivrix.app", {
+    readBoundaryToken: null
+  });
+
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.body.error, "read_boundary_token_unconfigured");
+});
+
 test("GET /v1/route53/domain-detail rejects domain with spaces", async () => {
   const response = await route("/v1/route53/domain-detail?domain=foo%20bar");
 
@@ -161,16 +183,19 @@ async function route(
   deps: {
     client?: { send(command: unknown): Promise<unknown> };
     emitAudit?: (event: { type: string; [k: string]: unknown }) => Promise<void>;
+    headers?: Record<string, string>;
+    readBoundaryToken?: string | null;
   } = {}
 ): Promise<{ statusCode: number; body: any }> {
   const response = captureResponse();
   await handleReadRoute53DomainDetail(
-    request(url),
+    request(url, deps.headers ?? { "x-delivrix-token": readToken }),
     response as unknown as ServerResponse,
     {
       client: deps.client as any,
       emitAudit: deps.emitAudit,
-      now: () => fixedNow
+      now: () => fixedNow,
+      readBoundaryToken: deps.readBoundaryToken === null ? undefined : deps.readBoundaryToken ?? readToken
     }
   );
   return {
@@ -198,12 +223,12 @@ function mockClient(output: unknown, calls: unknown[] = []): { send(command: unk
   };
 }
 
-function request(url: string): IncomingMessage {
+function request(url: string, headers: Record<string, string>): IncomingMessage {
   const stream = Readable.from([]);
   return Object.assign(stream, {
     method: "GET",
     url,
-    headers: {}
+    headers
   }) as IncomingMessage;
 }
 

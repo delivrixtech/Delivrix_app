@@ -5,6 +5,7 @@ import {
   type RRType
 } from "@aws-sdk/client-route-53";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { authorizeSensitiveRead, type SensitiveReadAuthDeps } from "./sensitive-read-auth.ts";
 
 interface CanvasLiveEvents {
   emit(event: { type: string; [k: string]: unknown }): Promise<unknown> | unknown;
@@ -25,6 +26,8 @@ export interface ReadZoneRecordsDeps {
   canvasLiveEvents?: CanvasLiveEvents;
   emitAudit?: (event: { type: string; [k: string]: unknown }) => Promise<void>;
   now?: () => Date;
+  readBoundaryToken?: string;
+  rateLimitPerMinute?: number;
 }
 
 export interface ZoneRecord {
@@ -62,6 +65,12 @@ export async function handleReadRoute53ZoneRecords(
   response: ServerResponse,
   deps: ReadZoneRecordsDeps
 ): Promise<void> {
+  const auth = authorizeRoute53Read(request, deps, "route53_zone_records");
+  if (!auth.ok) {
+    json(response, auth.statusCode, { error: auth.error });
+    return;
+  }
+
   const url = new URL(request.url ?? "", "http://localhost");
   const zoneId = normalizeZoneId(url.searchParams.get("zoneId") ?? "");
   const recordType = normalizeRecordType(url.searchParams.get("recordType"));
@@ -137,6 +146,14 @@ export async function handleReadRoute53ZoneRecords(
       zoneId
     });
   }
+}
+
+function authorizeRoute53Read(
+  request: IncomingMessage,
+  deps: SensitiveReadAuthDeps,
+  scope: string
+) {
+  return authorizeSensitiveRead(request, deps, scope);
 }
 
 function normalizeZoneId(value: string): string {

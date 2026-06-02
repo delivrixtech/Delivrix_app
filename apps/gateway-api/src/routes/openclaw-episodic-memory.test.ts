@@ -49,7 +49,19 @@ test("handleReadEpisodicScratchHttp enforces read boundary token when configured
 test("compactIntent writes entries and appends hash-only audit metadata", async () => {
   const pool = new MemoryScratchPool();
   const auditEvents: Array<{ action: string; targetId: string; metadata?: Record<string, unknown> }> = [
-    { action: "oc.skill.invoked", targetId: "intent-1", metadata: { intentId: "intent-1" } }
+    { action: "oc.skill.invoked", targetId: "intent-1", metadata: { intentId: "intent-1" } },
+    {
+      action: "oc.proposal.signed",
+      targetId: "proposal-2",
+      metadata: { signatureId: "sig-2" },
+      actorType: "operator",
+      actorId: "juanescanar-cto",
+      decision: "allow",
+      humanApproved: true,
+      id: "audit-sig-2",
+      occurredAt: "2026-06-01T11:59:00.000Z",
+      hash: "hash-sig-2"
+    } as never
   ];
 
   const output = await compactIntent({
@@ -150,6 +162,8 @@ test("compactIntent rejects intents that only have orchestrator or chat audit ev
 });
 
 test("handleCompactIntentHttp accepts unsigned local mode for internal smoke tests", async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "test";
   const pool = new MemoryScratchPool();
   const auditEvents: Array<{ action: string; targetId: string; metadata?: Record<string, unknown> }> = [
     { action: "oc.skill.invoked", targetId: "intent-1", metadata: { intentId: "intent-1" } }
@@ -165,21 +179,25 @@ test("handleCompactIntentHttp accepts unsigned local mode for internal smoke tes
     }
   });
 
-  await handleCompactIntentHttp({
-    request,
-    response,
-    pool,
-    allowUnsignedLocal: true,
-    auditLog: {
-      async append(event) {
-        auditEvents.push(event as { action: string; targetId: string; metadata?: Record<string, unknown> });
-        return { id: `audit-${auditEvents.length}`, ...event };
-      },
-      async list() {
-        return auditEvents as never;
+  try {
+    await handleCompactIntentHttp({
+      request,
+      response,
+      pool,
+      allowUnsignedLocal: true,
+      auditLog: {
+        async append(event) {
+          auditEvents.push(event as { action: string; targetId: string; metadata?: Record<string, unknown> });
+          return { id: `audit-${auditEvents.length}`, ...event };
+        },
+        async list() {
+          return auditEvents as never;
+        }
       }
-    }
-  });
+    });
+  } finally {
+    process.env.NODE_ENV = previousNodeEnv;
+  }
 
   const captured = getResponse();
   assert.equal(captured.statusCode, 200);
@@ -187,6 +205,8 @@ test("handleCompactIntentHttp accepts unsigned local mode for internal smoke tes
 });
 
 test("handleCompactIntentHttp returns 400 intent_id_not_found for invented intent ids", async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "test";
   const pool = new MemoryScratchPool();
   const { request, response, getResponse } = createInternalHttpAdapter({
     method: "POST",
@@ -199,20 +219,60 @@ test("handleCompactIntentHttp returns 400 intent_id_not_found for invented inten
     }
   });
 
-  await handleCompactIntentHttp({
-    request,
-    response,
-    pool,
-    allowUnsignedLocal: true,
-    auditLog: {
-      async append(event) { return event; },
-      async list() { return []; }
-    }
-  });
+  try {
+    await handleCompactIntentHttp({
+      request,
+      response,
+      pool,
+      allowUnsignedLocal: true,
+      auditLog: {
+        async append(event) { return event; },
+        async list() { return []; }
+      }
+    });
+  } finally {
+    process.env.NODE_ENV = previousNodeEnv;
+  }
 
   const captured = getResponse();
   assert.equal(captured.statusCode, 400);
   assert.equal((captured.body as { error: string }).error, "intent_id_not_found");
+  assert.equal(pool.rows.length, 0);
+});
+
+test("handleCompactIntentHttp rejects unsigned local mode outside tests", async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  const pool = new MemoryScratchPool();
+  const { request, response, getResponse } = createInternalHttpAdapter({
+    method: "POST",
+    url: "/v1/openclaw/compact-intent",
+    body: {
+      intentId: "intent-1",
+      finalStatus: "completed",
+      decision: "stored",
+      steps: [{ step: 1, tool: "read_episodic_scratch", inputHash: "a".repeat(64), outcome: "success" }]
+    }
+  });
+
+  try {
+    await handleCompactIntentHttp({
+      request,
+      response,
+      pool,
+      allowUnsignedLocal: true,
+      auditLog: {
+        async append(event) { return event; },
+        async list() { return []; }
+      }
+    });
+  } finally {
+    process.env.NODE_ENV = previousNodeEnv;
+  }
+
+  const captured = getResponse();
+  assert.equal(captured.statusCode, 401);
+  assert.equal((captured.body as { error: string }).error, "hmac_secret_unconfigured");
   assert.equal(pool.rows.length, 0);
 });
 

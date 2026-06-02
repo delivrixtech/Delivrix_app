@@ -9,6 +9,7 @@ import {
 
 const fixedNow = new Date("2026-06-01T18:15:00.000Z");
 const validZoneId = "Z03595092JW2AXJBZGN4E";
+const readToken = "route53-read-token";
 
 test("GET /v1/route53/zone-records normalizes NS, SOA, A, MX and TXT records", async () => {
   const auditEvents: Array<Record<string, unknown>> = [];
@@ -82,6 +83,27 @@ test("GET /v1/route53/zone-records rejects invalid zone id", async () => {
   assert.equal(response.body.error, "invalid_zone_id");
 });
 
+test("GET /v1/route53/zone-records requires read-boundary token", async () => {
+  const calls: unknown[] = [];
+  const response = await route(`/v1/route53/zone-records?zoneId=${validZoneId}`, {
+    client: mockClient({ ResourceRecordSets: sampleRecords(), IsTruncated: false }, calls),
+    headers: {}
+  });
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.body.error, "read_boundary_token_invalid");
+  assert.equal(calls.length, 0);
+});
+
+test("GET /v1/route53/zone-records fails closed when read token is unconfigured", async () => {
+  const response = await route(`/v1/route53/zone-records?zoneId=${validZoneId}`, {
+    readBoundaryToken: null
+  });
+
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.body.error, "read_boundary_token_unconfigured");
+});
+
 test("GET /v1/route53/zone-records rejects unsupported record type", async () => {
   const response = await route(`/v1/route53/zone-records?zoneId=${validZoneId}&recordType=SPF`);
 
@@ -150,16 +172,19 @@ async function route(
   deps: {
     client?: { send(command: unknown): Promise<unknown> };
     emitAudit?: (event: { type: string; [k: string]: unknown }) => Promise<void>;
+    headers?: Record<string, string>;
+    readBoundaryToken?: string | null;
   } = {}
 ): Promise<{ statusCode: number; body: any }> {
   const response = captureResponse();
   await handleReadRoute53ZoneRecords(
-    request(url),
+    request(url, deps.headers ?? { "x-delivrix-token": readToken }),
     response as unknown as ServerResponse,
     {
       client: deps.client as any,
       emitAudit: deps.emitAudit,
-      now: () => fixedNow
+      now: () => fixedNow,
+      readBoundaryToken: deps.readBoundaryToken === null ? undefined : deps.readBoundaryToken ?? readToken
     }
   );
   return {
@@ -215,12 +240,12 @@ function sampleRecords(): unknown[] {
   ];
 }
 
-function request(url: string): IncomingMessage {
+function request(url: string, headers: Record<string, string>): IncomingMessage {
   const stream = Readable.from([]);
   return Object.assign(stream, {
     method: "GET",
     url,
-    headers: {}
+    headers
   }) as IncomingMessage;
 }
 

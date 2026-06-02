@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
   AuditEventInput,
@@ -200,7 +201,7 @@ export function handleCanvasLiveError(error: unknown, response: ServerResponse):
 function isAuthorizedOpenClawEmitter(request: IncomingMessage): boolean {
   const expected = process.env.OPENCLAW_GATEWAY_TOKEN;
   if (!expected) {
-    return true;
+    return false;
   }
   const authorization = request.headers.authorization;
   const bearer = typeof authorization === "string" && authorization.startsWith("Bearer ")
@@ -209,7 +210,13 @@ function isAuthorizedOpenClawEmitter(request: IncomingMessage): boolean {
   const headerToken = typeof request.headers["x-openclaw-gateway-token"] === "string"
     ? request.headers["x-openclaw-gateway-token"]
     : "";
-  return bearer === expected || headerToken === expected;
+  return safeTokenEqual(bearer, expected) || safeTokenEqual(headerToken, expected);
+}
+
+function safeTokenEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 function normalizeOptionalId(value: string | null): string | undefined {

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import type { IncomingMessage } from "node:http";
+import { Readable } from "node:stream";
 import test from "node:test";
 import {
   gatewayLogEventFromLine,
   inferGatewayLogLevel,
+  isGatewayLogStreamRequestAuthorized,
   redactGatewayLogSecrets,
   shouldEmitGatewayLogLevel
 } from "./gateway-log-stream.ts";
@@ -38,3 +41,17 @@ test("gateway log event keeps timestamp and caps message", () => {
   assert.equal(event.message.includes("supersecret"), false);
   assert.equal(event.message.length, 8_000);
 });
+
+test("gateway log stream auth fails closed without configured token", () => {
+  assert.equal(isGatewayLogStreamRequestAuthorized(request({}), {}), false);
+  assert.equal(isGatewayLogStreamRequestAuthorized(request({ authorization: "Bearer log-token" }), { authToken: "log-token" }), true);
+  assert.equal(isGatewayLogStreamRequestAuthorized(request({ "x-delivrix-openclaw-token": "bad" }), { authToken: "log-token" }), false);
+});
+
+function request(headers: Record<string, string>, url = "/v1/gateway/logs/stream"): IncomingMessage {
+  return Object.assign(Readable.from([]), {
+    method: "GET",
+    url,
+    headers
+  }) as IncomingMessage;
+}
