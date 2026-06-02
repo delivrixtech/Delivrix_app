@@ -1,4 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, rmdir } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { join } from "node:path";
 import type {
   AwsRoute53ContactDetail,
   AwsRoute53DomainPrice,
@@ -65,11 +68,13 @@ interface DomainsInventory {
     registeredAt?: string;
     expectedExpiry?: string;
     costUsd?: number;
+    errorMessage?: string;
   }>;
 }
 
 const approvalMaxAgeMs = 15 * 60 * 1000;
 const skillName = "register_domain_route53";
+const monthlySpendLocks = new Map<string, Promise<void>>();
 
 export async function handleRoute53DomainRegisterHttp(
   deps: Route53DomainRegisterDependencies
@@ -141,8 +146,9 @@ export async function handleRoute53DomainRegisterHttp(
   let costUsd: number | null = null;
   if (blockers.length === 0) {
     try {
-      costUsd = registrationCostForTld(await deps.adapter.listPrices([domainTld(domain)]), domainTld(domain));
-      if (costUsd === null) {
+      const annualCostUsd = registrationCostForTld(await deps.adapter.listPrices([domainTld(domain)]), domainTld(domain));
+      costUsd = annualCostUsd === null ? null : roundUsd(annualCostUsd * years);
+      if (annualCostUsd === null) {
         blockers.push("registration_price_unavailable");
       }
     } catch (error) {
@@ -151,12 +157,6 @@ export async function handleRoute53DomainRegisterHttp(
   }
 
   let monthSpendUsd = 0;
-  if (blockers.length === 0 && monthlyCapUsd !== null && costUsd !== null) {
-    monthSpendUsd = await currentRoute53MonthSpend(deps.workspace, now);
-    if (monthSpendUsd + costUsd > monthlyCapUsd) {
-      blockers.push("monthly_cap_exceeded");
-    }
-  }
 
   if (blockers.length > 0) {
     const workspace = await safeWriteExecution(deps.workspace, {
@@ -260,6 +260,67 @@ export async function handleRoute53DomainRegisterHttp(
     return;
   }
 
+  const reservation = await reserveRoute53MonthlySpend({
+    workspace: deps.workspace,
+    domain,
+    now,
+    monthlyCapUsd: monthlyCapUsd as number,
+    costUsd: costUsd as number
+  });
+  monthSpendUsd = reservation.monthSpendUsd;
+  if (!reservation.ok) {
+    const workspace = await safeWriteExecution(deps.workspace, {
+      skill: skillName,
+      params: { domain, years, autoRenew, actorId },
+      outcome: "blocked",
+      durationMs: Date.now() - startedAt,
+      evidence: {
+        blockers: reservation.blockers,
+        sourceKind: source.kind,
+        monthlyCapUsd,
+        costUsd,
+        monthSpendUsd,
+        projectedSpendUsd: reservation.projectedSpendUsd,
+        approvalMatched: Boolean(approval)
+      }
+    });
+
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.domain.register_blocked",
+      targetType: "domain",
+      targetId: domain,
+      riskLevel: "critical",
+      decision: "reject",
+      humanApproved: false,
+      metadata: {
+        registrar: "aws-route53",
+        blockers: reservation.blockers,
+        sourceKind: source.kind,
+        monthlyCapUsd,
+        costUsd,
+        monthSpendUsd,
+        projectedSpendUsd: reservation.projectedSpendUsd,
+        workspacePath: workspace?.path
+      }
+    });
+
+    json(deps.response, 409, {
+      ok: false,
+      status: "blocked",
+      domain,
+      blockers: reservation.blockers,
+      costUsd,
+      monthlyCapUsd,
+      monthSpendUsd,
+      projectedSpendUsd: reservation.projectedSpendUsd,
+      source,
+      workspace
+    });
+    return;
+  }
+
   try {
     const result = await deps.adapter.registerDomain({
       domain,
@@ -309,6 +370,8 @@ export async function handleRoute53DomainRegisterHttp(
         approvalArtifactId: approval?.artifactId,
         monthlyCapUsd,
         monthSpendUsd,
+        projectedSpendUsd: reservation.projectedSpendUsd,
+        reservationOperationId: reservation.operationId,
         workspacePath: workspace?.path
       }
     });
@@ -320,9 +383,17 @@ export async function handleRoute53DomainRegisterHttp(
       expectedExpiry: result.expectedExpiry,
       costUsd,
       status: "pending",
+      reservationOperationId: reservation.operationId,
       workspace
     });
   } catch (error) {
+    await safeMarkDomainPurchaseNeedsReconciliation(deps.workspace, {
+      domain,
+      operationId: reservation.operationId,
+      registeredAt: now.toISOString(),
+      costUsd: costUsd ?? undefined,
+      errorMessage: errorMessage(error)
+    });
     const workspace = await safeWriteExecution(deps.workspace, {
       skill: skillName,
       params: { domain, years, autoRenew, actorId },
@@ -456,8 +527,141 @@ async function currentRoute53MonthSpend(workspace: OpenClawWorkspace, now: Date)
     if (!entry.registeredAt?.startsWith(month)) {
       return total;
     }
+    if (!route53DomainSpendCountsTowardCap(entry.status)) {
+      return total;
+    }
     return total + entry.costUsd;
   }, 0);
+}
+
+type Route53MonthlySpendReservation =
+  | {
+      ok: true;
+      operationId: string;
+      monthSpendUsd: number;
+      projectedSpendUsd: number;
+    }
+  | {
+      ok: false;
+      blockers: string[];
+      monthSpendUsd: number;
+      projectedSpendUsd: number;
+    };
+
+async function reserveRoute53MonthlySpend(input: {
+  workspace: OpenClawWorkspace;
+  domain: string;
+  now: Date;
+  monthlyCapUsd: number;
+  costUsd: number;
+}): Promise<Route53MonthlySpendReservation> {
+  const locked = await withRoute53MonthSpendLock(input.workspace, input.now, async () => {
+    const monthSpendUsd = await currentRoute53MonthSpend(input.workspace, input.now);
+    const projectedSpendUsd = roundUsd(monthSpendUsd + input.costUsd);
+    if (projectedSpendUsd > input.monthlyCapUsd) {
+      return {
+        ok: false as const,
+        blockers: ["monthly_cap_exceeded"],
+        monthSpendUsd,
+        projectedSpendUsd
+      };
+    }
+
+    const operationId = `route53-reservation-${randomUUID()}`;
+    const inventoryRef = await safeUpdateDomainInventory(input.workspace, {
+      domain: input.domain,
+      operationId,
+      costUsd: input.costUsd,
+      registeredAt: input.now.toISOString(),
+      status: "purchase_reserved"
+    });
+    if (!inventoryRef) {
+      return {
+        ok: false as const,
+        blockers: ["monthly_cap_reservation_failed"],
+        monthSpendUsd,
+        projectedSpendUsd
+      };
+    }
+
+    return {
+      ok: true as const,
+      operationId,
+      monthSpendUsd,
+      projectedSpendUsd
+    };
+  });
+
+  return locked ?? {
+    ok: false,
+    blockers: ["monthly_cap_lock_unavailable"],
+    monthSpendUsd: 0,
+    projectedSpendUsd: input.costUsd
+  };
+}
+
+async function withRoute53MonthSpendLock<T>(
+  workspace: OpenClawWorkspace,
+  now: Date,
+  callback: () => Promise<T>
+): Promise<T | null> {
+  const month = now.toISOString().slice(0, 7);
+  const key = `${workspace.getRootDir()}:${month}`;
+  const previous = monthlySpendLocks.get(key) ?? Promise.resolve();
+  let releaseLocalLock!: () => void;
+  const current = new Promise<void>((resolve) => {
+    releaseLocalLock = resolve;
+  });
+  const queued = previous.then(() => current);
+  monthlySpendLocks.set(key, queued);
+
+  await previous;
+  let releaseFileLock: (() => Promise<void>) | null = null;
+
+  try {
+    releaseFileLock = await acquireRoute53MonthSpendFileLock(workspace, month);
+    if (!releaseFileLock) {
+      return null;
+    }
+    return await callback();
+  } finally {
+    if (releaseFileLock) {
+      await releaseFileLock();
+    }
+    releaseLocalLock();
+    if (monthlySpendLocks.get(key) === queued) {
+      monthlySpendLocks.delete(key);
+    }
+  }
+}
+
+async function acquireRoute53MonthSpendFileLock(
+  workspace: OpenClawWorkspace,
+  month: string
+): Promise<(() => Promise<void>) | null> {
+  await workspace.ensureBase();
+  const lockRoot = join(workspace.getRootDir(), "inventory", ".locks");
+  await mkdir(lockRoot, { recursive: true });
+  const lockDir = join(lockRoot, `route53-monthly-cap-${month}.lock`);
+
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    try {
+      await mkdir(lockDir);
+      return async () => {
+        await rmdir(lockDir).catch(() => undefined);
+      };
+    } catch (error) {
+      if (!isFileAlreadyExistsError(error)) {
+        return null;
+      }
+      await sleep(20);
+    }
+  }
+  return null;
+}
+
+function route53DomainSpendCountsTowardCap(status: string | undefined): boolean {
+  return status !== "released" && status !== "failed";
 }
 
 async function safeUpdateDomainInventory(
@@ -469,6 +673,7 @@ async function safeUpdateDomainInventory(
     costUsd?: number;
     registeredAt: string;
     status?: string;
+    errorMessage?: string;
   }
 ): Promise<OpenClawWorkspaceFileRef | null> {
   try {
@@ -482,13 +687,34 @@ async function safeUpdateDomainInventory(
         operationId: input.operationId,
         registeredAt: input.registeredAt,
         ...(input.expectedExpiry ? { expectedExpiry: input.expectedExpiry } : {}),
-        ...(typeof input.costUsd === "number" ? { costUsd: input.costUsd } : {})
+        ...(typeof input.costUsd === "number" ? { costUsd: input.costUsd } : {}),
+        ...(input.errorMessage ? { errorMessage: input.errorMessage } : {})
       });
       return { domains };
     });
   } catch {
     return null;
   }
+}
+
+async function safeMarkDomainPurchaseNeedsReconciliation(
+  workspace: OpenClawWorkspace,
+  input: {
+    domain: string;
+    operationId: string;
+    costUsd?: number;
+    registeredAt: string;
+    errorMessage: string;
+  }
+): Promise<OpenClawWorkspaceFileRef | null> {
+  return safeUpdateDomainInventory(workspace, {
+    domain: input.domain,
+    operationId: input.operationId,
+    costUsd: input.costUsd,
+    registeredAt: input.registeredAt,
+    status: "needs_reconciliation",
+    errorMessage: input.errorMessage
+  });
 }
 
 async function safeWriteExecution(
@@ -551,6 +777,10 @@ function parsePositiveMoney(value: string | undefined): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+function roundUsd(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 function normalizeYears(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed)) {
@@ -592,6 +822,17 @@ async function readJson<T>(request: IncomingMessage): Promise<T> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown Route53 domain registration error";
+}
+
+function isFileAlreadyExistsError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: unknown }).code === "EEXIST";
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown): void {
