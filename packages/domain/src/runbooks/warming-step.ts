@@ -6,8 +6,10 @@ import {
   type RunbookResult,
   type WarmingStepInput
 } from "./types.ts";
+import { getWarmupRampPlan } from "../warmup/ramp-plan.ts";
 
 const maxWarmupDay = 30;
+const dailyLimitPlan = getWarmupRampPlan("production-14d").batches;
 
 export async function executeWarmingStepRunbook(
   input: WarmingStepInput,
@@ -46,6 +48,14 @@ export async function executeWarmingStepRunbook(
     warmupDay: node.warmupDay,
     dailyLimit: node.dailyLimit
   };
+  const plannedCurrentDailyLimit = computeDailyLimitForDay(node.warmupDay);
+  if (node.dailyLimit < plannedCurrentDailyLimit) {
+    return rejectRunbook(
+      "preconditions_failed",
+      `Node dailyLimit ${node.dailyLimit} is below current warming plan ${plannedCurrentDailyLimit}; resume requires separate approval.`
+    );
+  }
+
   const newWarmupDay = node.warmupDay + 1;
   const newDailyLimit = computeDailyLimitForDay(newWarmupDay, node.dailyLimit);
 
@@ -76,6 +86,12 @@ export async function executeWarmingStepRunbook(
   };
 }
 
-export function computeDailyLimitForDay(warmupDay: number, previousLimit: number): number {
-  return Math.max(previousLimit, warmupDay * 50);
+export function computeDailyLimitForDay(warmupDay: number, previousLimit = 0): number {
+  void previousLimit;
+  const day = Math.trunc(warmupDay);
+  if (day <= 0) {
+    return 0;
+  }
+
+  return dailyLimitPlan[Math.min(day - 1, dailyLimitPlan.length - 1)]?.emailCount ?? 0;
 }
