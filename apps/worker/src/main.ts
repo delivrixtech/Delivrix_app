@@ -1,4 +1,5 @@
 import {
+  MailPolicyEngine,
   RateLimitService,
   SenderNodeRegistry,
   evaluateKillSwitch,
@@ -12,7 +13,8 @@ import {
   LocalFileKillSwitchStore,
   LocalFileRateLimitStore,
   LocalFileSendResultStore,
-  LocalFileSenderNodeStore
+  LocalFileSenderNodeStore,
+  LocalFileSuppressionList
 } from "../../../packages/local-store/src/index.ts";
 import { LocalFileSendQueue } from "../../../packages/queue/src/index.ts";
 
@@ -22,6 +24,7 @@ const killSwitchStore = new LocalFileKillSwitchStore();
 const sendResultStore = new LocalFileSendResultStore();
 const senderNodeRegistry = new SenderNodeRegistry(new LocalFileSenderNodeStore());
 const rateLimitService = new RateLimitService(new LocalFileRateLimitStore());
+const policyEngine = new MailPolicyEngine(new LocalFileSuppressionList());
 const requestRateLimitProfile = {
   campaignDailyLimit: Number(process.env.RATE_LIMIT_CAMPAIGN_DAILY ?? 100),
   senderDomainDailyLimit: Number(process.env.RATE_LIMIT_SENDER_DOMAIN_DAILY ?? 300),
@@ -71,102 +74,146 @@ if (!job) {
     }
   });
 
-  const senderNode = await senderNodeRegistry.findAvailableFor(job.request);
-
-  if (!senderNode) {
-    const reason = "No available sender node. Register Webdock bridge nodes before processing.";
-    await queue.markFailed(job.id, reason);
+  const policyDecision = await policyEngine.evaluate(job.request).catch(async (error) => {
+    const reason = "Mail policy check failed during worker enforcement.";
+    await queue.markBlocked(job.id, reason);
     await auditLog.append({
       actorType: "system",
       actorId: "worker",
-      action: "send_job.failed_no_sender_node",
+      action: "send_job.policy_check_failed",
       targetType: "send_job",
       targetId: job.id,
-      riskLevel: "medium",
+      riskLevel: "critical",
+      decision: "reject",
       metadata: {
         reason,
+        error: error instanceof Error ? error.message : "Unknown policy error",
+        smtpEnabled: false
+      }
+    });
+    console.log(reason);
+    return null;
+  });
+
+  if (!policyDecision) {
+    // Fail closed when compliance state cannot be read.
+  } else if (!policyDecision.allowed) {
+    const reason = "Mail policy rejected during worker enforcement.";
+    await queue.markBlocked(job.id, reason);
+    await auditLog.append({
+      actorType: "system",
+      actorId: "worker",
+      action: "send_job.policy_rejected",
+      targetType: "send_job",
+      targetId: job.id,
+      riskLevel: "critical",
+      decision: "reject",
+      metadata: {
+        reason,
+        violations: policyDecision.violations,
+        warnings: policyDecision.warnings,
         smtpEnabled: false
       }
     });
     console.log(reason);
   } else {
-    await queue.assignSenderNode(job.id, senderNode.id);
-    await auditLog.append({
-      actorType: "system",
-      actorId: "worker",
-      action: "send_job.sender_node_assigned",
-      targetType: "send_job",
-      targetId: job.id,
-      riskLevel: "low",
-      metadata: {
-        senderNodeId: senderNode.id,
-        provider: senderNode.provider,
-        status: senderNode.status,
-        smtpEnabled: false
-      }
-    });
+    const senderNode = await senderNodeRegistry.findAvailableFor(job.request);
 
-    console.log(`Assigned sender node ${senderNode.id}`);
-    const rateLimitRules = [
-      ...requestRateLimitRules(job.request, requestRateLimitProfile),
-      senderNodeRateLimitRule(senderNode)
-    ];
-    const rateLimitDecision = await rateLimitService.consume(rateLimitRules);
-
-    if (!rateLimitDecision.allowed) {
-      const reason = "Rate limit exceeded during worker enforcement.";
-      await queue.markBlocked(job.id, reason);
+    if (!senderNode) {
+      const reason = "No available sender node. Register Webdock bridge nodes before processing.";
+      await queue.markFailed(job.id, reason);
       await auditLog.append({
         actorType: "system",
         actorId: "worker",
-        action: "send_job.rate_limited",
+        action: "send_job.failed_no_sender_node",
         targetType: "send_job",
         targetId: job.id,
         riskLevel: "medium",
         metadata: {
           reason,
-          violations: rateLimitDecision.violations,
-          senderNodeId: senderNode.id,
           smtpEnabled: false
         }
       });
       console.log(reason);
     } else {
-      console.log("SMTP is disabled in Base 1/2; generating simulated result.");
-      const simulatedResult = simulateSendResult({
-        ...job,
-        senderNodeId: senderNode.id
-      });
-      const result = await sendResultStore.create({
-        sendJobId: job.id,
-        senderNodeId: senderNode.id,
-        ...simulatedResult
-      });
-      const jobFailed = result.status === "failed";
-
-      if (jobFailed) {
-        await queue.markFailed(job.id, "Simulated send result failed.");
-      } else {
-        await queue.markCompleted(job.id);
-      }
-
+      await queue.assignSenderNode(job.id, senderNode.id);
       await auditLog.append({
         actorType: "system",
         actorId: "worker",
-        action: "send_result.simulated",
-        targetType: "send_result",
-        targetId: result.id,
-        riskLevel: result.status === "complaint" || result.status === "bounce" ? "medium" : "low",
+        action: "send_job.sender_node_assigned",
+        targetType: "send_job",
+        targetId: job.id,
+        riskLevel: "low",
         metadata: {
-          sendJobId: job.id,
           senderNodeId: senderNode.id,
-          status: result.status,
-          smtpEnabled: false,
-          phase: "base-2"
+          provider: senderNode.provider,
+          status: senderNode.status,
+          smtpEnabled: false
         }
       });
 
-      console.log(`Recorded simulated result ${result.status} for ${job.id}`);
+      console.log(`Assigned sender node ${senderNode.id}`);
+      const rateLimitRules = [
+        ...requestRateLimitRules(job.request, requestRateLimitProfile),
+        senderNodeRateLimitRule(senderNode)
+      ];
+      const rateLimitDecision = await rateLimitService.consume(rateLimitRules);
+
+      if (!rateLimitDecision.allowed) {
+        const reason = "Rate limit exceeded during worker enforcement.";
+        await queue.markBlocked(job.id, reason);
+        await auditLog.append({
+          actorType: "system",
+          actorId: "worker",
+          action: "send_job.rate_limited",
+          targetType: "send_job",
+          targetId: job.id,
+          riskLevel: "medium",
+          metadata: {
+            reason,
+            violations: rateLimitDecision.violations,
+            senderNodeId: senderNode.id,
+            smtpEnabled: false
+          }
+        });
+        console.log(reason);
+      } else {
+        console.log("SMTP is disabled in Base 1/2; generating simulated result.");
+        const simulatedResult = simulateSendResult({
+          ...job,
+          senderNodeId: senderNode.id
+        });
+        const result = await sendResultStore.create({
+          sendJobId: job.id,
+          senderNodeId: senderNode.id,
+          ...simulatedResult
+        });
+        const jobFailed = result.status === "failed";
+
+        if (jobFailed) {
+          await queue.markFailed(job.id, "Simulated send result failed.");
+        } else {
+          await queue.markCompleted(job.id);
+        }
+
+        await auditLog.append({
+          actorType: "system",
+          actorId: "worker",
+          action: "send_result.simulated",
+          targetType: "send_result",
+          targetId: result.id,
+          riskLevel: result.status === "complaint" || result.status === "bounce" ? "medium" : "low",
+          metadata: {
+            sendJobId: job.id,
+            senderNodeId: senderNode.id,
+            status: result.status,
+            smtpEnabled: false,
+            phase: "base-2"
+          }
+        });
+
+        console.log(`Recorded simulated result ${result.status} for ${job.id}`);
+      }
     }
   }
 }
