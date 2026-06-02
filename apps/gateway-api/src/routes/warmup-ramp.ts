@@ -16,6 +16,7 @@ import {
   isWarmupRampSchedule,
   materializeRampBatches
 } from "../../../../packages/domain/src/warmup/ramp-plan.ts";
+import { readRequestBody } from "../request-body.ts";
 import {
   appendWarmupRamp,
   appendWarmupRampEvent,
@@ -1039,11 +1040,7 @@ function errorMessage(error: unknown): string {
 }
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  const raw = await readRequestBody(request);
   if (!raw) {
     throw new WarmupRampInputError("Request body is required.");
   }

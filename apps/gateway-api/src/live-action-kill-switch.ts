@@ -59,6 +59,9 @@ export function classifyLiveActionMutation(method: string | undefined, path: str
   if (normalizedMethod === "POST" && path === "/v1/proxmox/provisioning-plan") {
     return liveAction(normalizedMethod, path, "sender_node", "proxmox-provisioning-plan");
   }
+  if (normalizedMethod === "POST" && path === "/v1/proxmox/provisioning-runs/simulate") {
+    return liveAction(normalizedMethod, path, "sender_node", "proxmox-provisioning-run-simulate");
+  }
   if (normalizedMethod === "POST" && path === "/v1/proxmox/mock-nodes/seed") {
     return liveAction(normalizedMethod, path, "sender_node", "proxmox-mock-seed");
   }

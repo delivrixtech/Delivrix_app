@@ -22,6 +22,7 @@ import {
   artifactMatchesAuditApproval,
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
+import { readRequestBody } from "../request-body.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -920,11 +921,7 @@ async function readJson<T>(
   request: IncomingMessage,
   ErrorCtor: new (message: string) => Error = WebdockServerCreateInputError
 ): Promise<T> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  const raw = await readRequestBody(request);
   if (!raw) {
     throw new ErrorCtor("Request body is required.");
   }

@@ -9,6 +9,7 @@ import {
   generateCandidates,
   validateDomainNaming
 } from "../services/naming-validator.ts";
+import { readRequestBody } from "../request-body.ts";
 
 export type SafeDomainIntent = "smtp" | "reporting" | "filing" | "saas" | "ops" | "general";
 export type SpamhausDblResult = "clean" | "listed" | "error" | "skipped";
@@ -344,11 +345,7 @@ function eventId(event: unknown): string {
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  const raw = await readRequestBody(request);
   if (!raw) {
     throw new SyntaxError("empty_json_body");
   }

@@ -19,6 +19,7 @@ import {
   artifactMatchesAuditApproval,
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
+import { readRequestBody } from "../request-body.ts";
 
 export interface EmailAuthDnsAdapter {
   isLive(): boolean;
@@ -545,11 +546,7 @@ function requiredString(value: unknown, field: string): string {
 }
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  const raw = await readRequestBody(request);
   if (!raw) {
     throw new EmailAuthInputError("Request body is required.");
   }

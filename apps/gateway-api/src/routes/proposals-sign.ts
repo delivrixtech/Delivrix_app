@@ -21,6 +21,7 @@ import {
   summarizeOperationalParams,
   type GatewayRuntimeLogger
 } from "../gateway-runtime-log.ts";
+import { readRequestBody } from "../request-body.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<AuditEvent>;
@@ -743,11 +744,7 @@ function isUuidV4(value: unknown): value is string {
 }
 
 async function readRawBodyAndJson<T>(request: IncomingMessage): Promise<{ raw: string; body: T | null }> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8");
+  const raw = await readRequestBody(request, { trim: false });
   if (!raw.trim()) return { raw, body: null };
   try {
     return { raw, body: JSON.parse(raw) as T };

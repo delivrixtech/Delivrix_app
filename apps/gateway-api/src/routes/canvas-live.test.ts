@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -406,6 +406,72 @@ test("POST /v1/canvas/live/events fails closed when gateway token is unconfigure
   assert.equal((await service.snapshot()).tasks.length, 0);
 });
 
+test("POST /v1/canvas/live/events rejects batches over the event cap before persisting", async () => {
+  const previousToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  const previousMaxEvents = process.env.CANVAS_LIVE_EVENTS_MAX_EVENTS;
+  process.env.OPENCLAW_GATEWAY_TOKEN = "canvas-token";
+  process.env.CANVAS_LIVE_EVENTS_MAX_EVENTS = "1";
+  const service = await testService();
+  const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-ingest-cap-audit-")), "audit.jsonl"));
+  let response: Awaited<ReturnType<typeof runRoute>>;
+  try {
+    response = await runRoute(
+      (request, response) => handleCanvasLiveEventIngestHttp({
+        request,
+        response,
+        service,
+        auditLog
+      }),
+      {
+        method: "POST",
+        url: "/v1/canvas/live/events",
+        headers: { authorization: "Bearer canvas-token" },
+        body: { events: [taskDeclare("task-cap-a"), taskDeclare("task-cap-b")] }
+      }
+    );
+  } finally {
+    process.env.OPENCLAW_GATEWAY_TOKEN = previousToken;
+    process.env.CANVAS_LIVE_EVENTS_MAX_EVENTS = previousMaxEvents;
+  }
+
+  assert.equal(response.statusCode, 413);
+  assert.equal(response.body.error, "canvas_live_events_too_many");
+  assert.equal((await service.snapshot()).tasks.length, 0);
+});
+
+test("POST /v1/canvas/live/events rejects request bodies over the byte cap", async () => {
+  const previousToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  const previousMaxBytes = process.env.CANVAS_LIVE_EVENTS_MAX_BODY_BYTES;
+  process.env.OPENCLAW_GATEWAY_TOKEN = "canvas-token";
+  process.env.CANVAS_LIVE_EVENTS_MAX_BODY_BYTES = "32";
+  const service = await testService();
+  const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-ingest-size-audit-")), "audit.jsonl"));
+  let response: Awaited<ReturnType<typeof runRoute>>;
+  try {
+    response = await runRoute(
+      (request, response) => handleCanvasLiveEventIngestHttp({
+        request,
+        response,
+        service,
+        auditLog
+      }),
+      {
+        method: "POST",
+        url: "/v1/canvas/live/events",
+        headers: { authorization: "Bearer canvas-token" },
+        body: taskDeclare("task-body-too-large")
+      }
+    );
+  } finally {
+    process.env.OPENCLAW_GATEWAY_TOKEN = previousToken;
+    process.env.CANVAS_LIVE_EVENTS_MAX_BODY_BYTES = previousMaxBytes;
+  }
+
+  assert.equal(response.statusCode, 413);
+  assert.equal(response.body.error, "request_body_too_large");
+  assert.equal((await service.snapshot()).tasks.length, 0);
+});
+
 test("canvas-live state writes append-only JSONL files", async () => {
   const stateDir = await stateDirForTest();
   const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
@@ -415,6 +481,37 @@ test("canvas-live state writes append-only JSONL files", async () => {
   const artifacts = await readFile(join(stateDir, "artifacts.jsonl"), "utf8");
   assert.equal(tasks.trim().split("\n").length, 1);
   assert.equal(artifacts.trim().split("\n").length, 2);
+});
+
+test("canvas-live reload skips corrupt JSONL lines and keeps valid records", async () => {
+  const stateDir = await stateDirForTest();
+  await writeFile(join(stateDir, "tasks.jsonl"), [
+    JSON.stringify(taskDeclare("task-valid-a")),
+    "{not valid json",
+    JSON.stringify(taskUpdate("task-valid-a", "completed")),
+    ""
+  ].join("\n"), "utf8");
+
+  const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  const snapshot = await service.snapshot();
+
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(snapshot.tasks[0].taskId, "task-valid-a");
+  assert.equal(snapshot.tasks[0].status, "completed");
+});
+
+test("canvas-live reload retries after a failed disk load instead of caching the rejection", async () => {
+  const stateDir = await stateDirForTest();
+  await mkdir(join(stateDir, "tasks.jsonl"));
+  const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+
+  await assert.rejects(() => service.snapshot());
+  await rm(join(stateDir, "tasks.jsonl"), { recursive: true, force: true });
+  await writeFile(join(stateDir, "tasks.jsonl"), `${JSON.stringify(taskDeclare("task-retry"))}\n`, "utf8");
+
+  const snapshot = await service.snapshot();
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(snapshot.tasks[0].taskId, "task-retry");
 });
 
 test("canvas-live reload repairs legacy artifact blocks with non-positive order", async () => {

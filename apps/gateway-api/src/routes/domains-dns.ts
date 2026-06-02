@@ -23,6 +23,7 @@ import {
   artifactMatchesAuditApproval,
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
+import { readRequestBody } from "../request-body.ts";
 import {
   createSafeDigFn,
   type AutoRollbackManager,
@@ -998,11 +999,7 @@ function requiredString(value: unknown, field: string): string {
 }
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  const raw = await readRequestBody(request);
   if (!raw) {
     throw new Route53DnsInputError("Request body is required.");
   }

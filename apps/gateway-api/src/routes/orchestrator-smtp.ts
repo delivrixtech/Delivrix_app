@@ -13,6 +13,7 @@ import {
   summarizeOperationalParams,
   type GatewayRuntimeLogger
 } from "../gateway-runtime-log.ts";
+import { readRequestBody } from "../request-body.ts";
 
 export type ConfigureSmtpStatus =
   | "completed"
@@ -966,11 +967,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8");
+  const raw = await readRequestBody(request);
   return raw.trim() ? JSON.parse(raw) : {};
 }
 

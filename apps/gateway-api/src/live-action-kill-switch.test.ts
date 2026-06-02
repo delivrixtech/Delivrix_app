@@ -21,6 +21,7 @@ test("classifyLiveActionMutation covers A3 live external mutation routes", () =>
     ["POST", "/v1/flows/onboard-batch"],
     ["POST", "/v1/webdock/bridge-nodes/seed"],
     ["POST", "/v1/proxmox/provisioning-plan"],
+    ["POST", "/v1/proxmox/provisioning-runs/simulate"],
     ["POST", "/v1/proxmox/mock-nodes/seed"]
   ] as const;
 

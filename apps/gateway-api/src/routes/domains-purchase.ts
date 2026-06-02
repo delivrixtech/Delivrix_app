@@ -20,6 +20,7 @@ import {
   artifactMatchesAuditApproval,
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
+import { readRequestBody } from "../request-body.ts";
 import { validateDomainNaming } from "../services/naming-validator.ts";
 
 export interface Route53DomainPurchaseAdapter {
@@ -582,11 +583,7 @@ function domainTld(domain: string): string {
 }
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  const raw = await readRequestBody(request);
   if (!raw) {
     throw new Route53DomainPurchaseInputError("Request body is required.");
   }

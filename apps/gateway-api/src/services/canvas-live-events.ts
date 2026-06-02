@@ -340,7 +340,12 @@ export class CanvasLiveEventService {
     if (!this.loadPromise) {
       this.loadPromise = this.loadFromDisk();
     }
-    await this.loadPromise;
+    try {
+      await this.loadPromise;
+    } catch (error) {
+      this.loadPromise = null;
+      throw error;
+    }
   }
 
   private async loadFromDisk(): Promise<void> {
@@ -868,11 +873,23 @@ async function readJsonl(filePath: string): Promise<unknown[]> {
     return [];
   }
   const raw = await readFile(filePath, "utf8");
-  return raw
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as unknown);
+  const records: unknown[] = [];
+  for (const [index, line] of raw.split("\n").entries()) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    try {
+      records.push(JSON.parse(trimmed) as unknown);
+    } catch (error) {
+      console.warn("[canvas-live] skipped corrupt JSONL line", {
+        filePath,
+        line: index + 1,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+  return records;
 }
 
 function isArtifactDecisionRecord(raw: unknown): raw is CanvasLiveArtifactDecisionRecord {

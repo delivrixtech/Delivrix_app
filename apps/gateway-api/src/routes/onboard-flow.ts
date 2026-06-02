@@ -12,6 +12,7 @@ import {
   handleDomainBindHttp,
   type DomainBindDnsAdapter
 } from "./domains-bind.ts";
+import { readRequestBody } from "../request-body.ts";
 import {
   handleEmailAuthConfigureHttp,
   type EmailAuthDnsAdapter
@@ -949,11 +950,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  const raw = await readRequestBody(request);
   if (!raw) {
     throw new OnboardFlowInputError("Request body is required.");
   }
