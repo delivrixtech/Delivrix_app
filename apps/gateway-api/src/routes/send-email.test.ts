@@ -132,6 +132,87 @@ test("rate limit rejects the sixth email in the same hour before SSH", async () 
   assert.equal(response.commands.length, 0);
 });
 
+test("writes rate-limit reservation before the sent audit event", async () => {
+  const route = await routeHarness();
+  const response = await route(validBody());
+
+  assert.equal(response.statusCode, 200);
+  const events = await route.auditLog.list();
+  const reservationIndex = events.findIndex((event) => event.action === "oc.smtp.real_email_rate_limit_reserved");
+  const sentIndex = events.findIndex((event) => event.action === "oc.smtp.real_email_sent");
+  const reservation = events[reservationIndex];
+  const sent = events[sentIndex];
+
+  assert.equal(reservationIndex > -1, true);
+  assert.equal(sentIndex > reservationIndex, true);
+  assert.equal(sent?.metadata.rateLimitReservationEventId, reservation?.id);
+});
+
+test("concurrent rate reservation blocks before a second SSH send", async () => {
+  let releaseSend!: () => void;
+  let markSendStarted!: () => void;
+  const sendStarted = new Promise<void>((resolve) => {
+    markSendStarted = resolve;
+  });
+  const sendHold = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const route = await routeHarness({
+    runnerFactory: (commands) => mockRunner(commands, {
+      run: async (input) => {
+        commands.push(input);
+        if (input.command.startsWith("systemctl is-active postfix")) {
+          return { stdout: "active\nLISTEN 0 4096 0.0.0.0:25", stderr: "", exitCode: 0 };
+        }
+        if (input.command.startsWith("command -v swaks")) {
+          return { stdout: "SWAKS_AVAILABLE\n", stderr: "", exitCode: 0 };
+        }
+        if (input.command.startsWith("swaks --to")) {
+          markSendStarted();
+          await sendHold;
+          return { stdout: "250 2.0.0 Ok: queued as ABC123", stderr: "", exitCode: 0 };
+        }
+        if (input.command.startsWith("tail -200 /var/log/mail.log")) {
+          return {
+            stdout: "postfix/smtp[42]: from=<ops@sender.example>, to=<recipient@operator.example>, status=sent",
+            stderr: "",
+            exitCode: 0
+          };
+        }
+        throw new Error(`Unexpected SSH command: ${input.command}`);
+      }
+    })
+  });
+  await appendSentEvents(route.auditLog, 4);
+
+  const first = route(validBody());
+  await sendStarted;
+
+  const second = await route(validBody());
+
+  assert.equal(second.statusCode, 429);
+  assert.equal(second.body.error, "rate_limit_exceeded");
+  assert.deepEqual(second.body.details, { maxPerHour: 5, recentCount: 5 });
+  assert.equal(route.commands.filter((command) => command.command.startsWith("swaks --to")).length, 1);
+
+  releaseSend();
+  assert.equal((await first).statusCode, 200);
+});
+
+test("counts reserved completed sends only once for hourly rate limit", async () => {
+  const route = await routeHarness();
+  const reservation = await appendRateLimitReservation(route.auditLog);
+  await appendSentEvent(route.auditLog, {
+    occurredAt: "2026-05-31T17:57:00.000Z",
+    reservationEventId: reservation.id
+  });
+  await appendSentEvents(route.auditLog, 3);
+
+  const response = await route(validBody());
+
+  assert.equal(response.statusCode, 200);
+});
+
 test("burner recipient is blocked before DNS and SSH", async () => {
   const dnsCalls: string[] = [];
   const route = await routeHarness({
@@ -283,7 +364,7 @@ async function routeHarness(input: {
     };
   };
 
-  return Object.assign(route, { auditLog, workspace });
+  return Object.assign(route, { auditLog, workspace, commands });
 }
 
 function mockRunner(
@@ -375,22 +456,51 @@ async function appendApproval(
 
 async function appendSentEvents(auditLog: LocalFileAuditLog, count: number): Promise<void> {
   for (let index = 0; index < count; index += 1) {
-    await auditLog.append({
-      occurredAt: new Date(fixedNow.getTime() - (index + 1) * 60_000).toISOString(),
-      actorType: "operator",
-      actorId: "operator/juanes",
-      action: "oc.smtp.real_email_sent",
-      targetType: "webdock_server",
-      targetId: "mail-sender-example",
-      riskLevel: "critical",
-      decision: "allow",
-      humanApproved: true,
-      metadata: {
-        serverSlug: "mail-sender-example",
-        deliveryStatus: "sent"
-      }
+    await appendSentEvent(auditLog, {
+      occurredAt: new Date(fixedNow.getTime() - (index + 1) * 60_000).toISOString()
     });
   }
+}
+
+async function appendSentEvent(
+  auditLog: LocalFileAuditLog,
+  input: { occurredAt: string; reservationEventId?: string }
+): Promise<void> {
+  await auditLog.append({
+    occurredAt: input.occurredAt,
+    actorType: "operator",
+    actorId: "operator/juanes",
+    action: "oc.smtp.real_email_sent",
+    targetType: "webdock_server",
+    targetId: "mail-sender-example",
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    metadata: {
+      serverSlug: "mail-sender-example",
+      deliveryStatus: "sent",
+      ...(input.reservationEventId ? { rateLimitReservationEventId: input.reservationEventId } : {})
+    }
+  });
+}
+
+async function appendRateLimitReservation(auditLog: LocalFileAuditLog) {
+  return auditLog.append({
+    occurredAt: "2026-05-31T17:56:30.000Z",
+    actorType: "operator",
+    actorId: "operator/juanes",
+    action: "oc.smtp.real_email_rate_limit_reserved",
+    targetType: "webdock_server",
+    targetId: "mail-sender-example",
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    metadata: {
+      serverSlug: "mail-sender-example",
+      maxPerHour: 5,
+      recentCountBefore: 3
+    }
+  });
 }
 
 function canvasState(approvals: Array<{
