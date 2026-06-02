@@ -268,6 +268,13 @@ import {
   createGatewayRuntimeLogger,
   runtimeErrorMetadata
 } from "./gateway-runtime-log.ts";
+import { installGatewayProcessGuards } from "./gateway-process-guards.ts";
+import {
+  positiveIntegerOrDefault,
+  readRequestBody,
+  RequestBodyTooLargeError,
+  defaultMaxRequestBodyBytes
+} from "./request-body.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import { createAuditChainStoreFromEnv } from "./audit-chain.ts";
@@ -278,6 +285,7 @@ import { hardenIncomingAuditBatchEvent } from "./audit-batch-origin.ts";
 import { classifyLiveActionMutation } from "./live-action-kill-switch.ts";
 import { createSkillDispatcher } from "./skill-dispatcher.ts";
 import { createHttpToolUseProcessor } from "./tool-use-processor.ts";
+import { routeGatewayWebSocketUpgrade } from "./gateway-upgrade-router.ts";
 import { handleProposalSign } from "./routes/proposals-sign.ts";
 import { handleProposalReject } from "./routes/proposals-reject.ts";
 import {
@@ -299,6 +307,11 @@ import {
 const port = Number(process.env.GATEWAY_PORT ?? 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
 const gatewayRuntimeLog = createGatewayRuntimeLogger();
+installGatewayProcessGuards(gatewayRuntimeLog);
+const gatewayMaxRequestBodyBytes = positiveIntegerOrDefault(
+  process.env.GATEWAY_MAX_REQUEST_BODY_BYTES,
+  defaultMaxRequestBodyBytes
+);
 const runtimeEnvReloader = createRuntimeEnvReloader({
   env: process.env,
   envFilePath: ".env.local",
@@ -4764,13 +4777,28 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && request.url === "/v1/proxmox/provisioning-runs/simulate") {
-      const body = await readJson<{
+      const { raw, body } = await readRawBodyAndJson<{
         node?: ProxmoxMockNodeConfig;
         registerSenderNode?: boolean;
         actorId?: string;
       } & ProxmoxMockNodeConfig>(request);
+      const auth = validateGatewayMutationHmac(request, raw);
+
+      if (!auth.ok) {
+        return json(response, 401, {
+          rejectReason: auth.rejectReason
+        });
+      }
+
+      if (!body) {
+        return json(response, 422, {
+          error: "invalid_proxmox_simulation_payload",
+          message: "Expected a provisioning simulation payload."
+        });
+      }
+
       const config = body.node ?? body;
-      const actorId = body.actorId?.trim() || "gateway-api";
+      const actorId = body.actorId?.trim() || (operatorIdFromRequest(request) ?? "openclaw-hmac");
       const plan = tryBuild(response, () => proxmoxAdapter.planProvisioning(config));
 
       if (!plan) {
@@ -4786,7 +4814,7 @@ const server = createServer(async (request, response) => {
       );
 
       await auditLog.append({
-        actorType: body.actorId ? "operator" : "system",
+        actorType: "operator",
         actorId,
         action: "proxmox.provisioning_run_simulated",
         targetType: "sender_node",
@@ -5079,6 +5107,13 @@ const server = createServer(async (request, response) => {
       error: "not_found"
     });
   } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return json(response, error.statusCode, {
+        error: error.code,
+        message: error.message,
+        maxBytes: error.maxBytes
+      });
+    }
     logUnhandledRequestError(request, error);
     return json(response, 500, {
       error: "internal_error",
@@ -5088,23 +5123,12 @@ const server = createServer(async (request, response) => {
 });
 
 server.on("upgrade", (request, socket, head) => {
-  const url = requestUrl(request);
-  if (request.method === "GET" && url.pathname === "/v1/openclaw/chat/stream") {
-    openClawChatProxy.acceptPanelSocket(request, socket, head);
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/v1/canvas/live/stream") {
-    canvasLiveEvents.acceptPanelSocket(request, socket, head);
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/v1/gateway/logs/stream") {
-    gatewayLogStream.acceptPanelSocket(request, socket, head);
-    return;
-  }
-
-  socket.destroy();
+  routeGatewayWebSocketUpgrade(request, socket, head, {
+    openClawChatProxy,
+    canvasLiveEvents,
+    gatewayLogStream,
+    logger: gatewayRuntimeLog
+  });
 });
 
 server.listen(port, host, () => {
@@ -5727,13 +5751,7 @@ async function readRawBodyAndJson<T>(request: IncomingMessage): Promise<{ raw: s
 }
 
 async function readBody(request: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-
-  return Buffer.concat(chunks).toString("utf8").trim();
+  return readRequestBody(request, { maxBytes: gatewayMaxRequestBodyBytes });
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown): void {

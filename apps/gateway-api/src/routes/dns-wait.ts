@@ -9,6 +9,7 @@ import {
   artifactMatchesAuditApproval,
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
+import { readRequestBody } from "../request-body.ts";
 
 export type DnsRecordType = "A" | "NS" | "MX" | "TXT";
 
@@ -536,11 +537,7 @@ function normalizeDnsValue(value: string): string {
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8");
+  const raw = await readRequestBody(request);
   return raw.trim() ? JSON.parse(raw) : {};
 }
 

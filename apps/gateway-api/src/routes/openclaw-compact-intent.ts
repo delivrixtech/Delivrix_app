@@ -13,6 +13,7 @@ import {
   type ScratchSource
 } from "../../../../packages/storage/src/index.ts";
 import { validateOpenClawHmac } from "../security/hmac.ts";
+import { readRequestBody } from "../request-body.ts";
 
 export interface CompactIntentStep {
   step: number;
@@ -413,11 +414,7 @@ function inputHash(value: unknown, field: string): string {
 }
 
 async function readRawBody(request: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-  }
-  return Buffer.concat(chunks).toString("utf8");
+  return readRequestBody(request, { trim: false });
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown): void {

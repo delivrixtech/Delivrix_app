@@ -14,6 +14,7 @@ import {
   artifactMatchesAuditApproval,
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
+import { readRequestBody } from "../request-body.ts";
 import type { SkillParamSchema } from "../skill-schemas.ts";
 
 export interface BindWebdockMainDomainParams extends Record<string, unknown> {
@@ -462,11 +463,7 @@ function requiredBoolean(value: unknown, field: string): boolean {
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  const raw = await readRequestBody(request);
   if (!raw) throw new SyntaxError("empty_json_body");
   return JSON.parse(raw) as unknown;
 }

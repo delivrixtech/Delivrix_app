@@ -11,6 +11,14 @@ import {
   CanvasLiveEventService,
   CanvasLiveStateError
 } from "../services/canvas-live-events.ts";
+import {
+  positiveIntegerOrDefault,
+  readRequestBody,
+  RequestBodyTooLargeError,
+  defaultMaxRequestBodyBytes
+} from "../request-body.ts";
+
+const defaultMaxCanvasLiveEventsPerIngest = 100;
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -40,6 +48,14 @@ export async function handleCanvasLiveEventIngestHttp(deps: CanvasLiveRouteDepen
 
   const body = await readJson<CanvasLiveEvent | { events?: unknown[] }>(deps.request);
   const rawEvents = isRecord(body) && Array.isArray(body.events) ? body.events : [body];
+  const maxEvents = maxCanvasLiveEventsPerIngest();
+  if (rawEvents.length > maxEvents) {
+    throw new CanvasLiveStateError(
+      413,
+      "canvas_live_events_too_many",
+      `Canvas live event ingest accepts at most ${maxEvents} events per request.`
+    );
+  }
   const events: CanvasLiveEvent[] = [];
   for (const rawEvent of rawEvents) {
     events.push(await deps.service.emit(rawEvent));
@@ -187,6 +203,15 @@ export function handleCanvasLiveError(error: unknown, response: ServerResponse):
     return true;
   }
 
+  if (error instanceof RequestBodyTooLargeError) {
+    json(response, error.statusCode, {
+      error: error.code,
+      message: error.message,
+      maxBytes: error.maxBytes
+    });
+    return true;
+  }
+
   if (error instanceof SyntaxError) {
     json(response, 400, {
       error: "invalid_json",
@@ -225,15 +250,23 @@ function normalizeOptionalId(value: string | null): string | undefined {
 }
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  const raw = await readRequestBody(request, {
+    maxBytes: positiveIntegerOrDefault(
+      process.env.CANVAS_LIVE_EVENTS_MAX_BODY_BYTES,
+      defaultMaxRequestBodyBytes
+    )
+  });
   if (!raw) {
     throw new CanvasLiveStateError(400, "body_required", "Request body is required.");
   }
   return JSON.parse(raw) as T;
+}
+
+function maxCanvasLiveEventsPerIngest(): number {
+  return positiveIntegerOrDefault(
+    process.env.CANVAS_LIVE_EVENTS_MAX_EVENTS,
+    defaultMaxCanvasLiveEventsPerIngest
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

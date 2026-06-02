@@ -17,6 +17,7 @@ import type {
   AuditEvent,
   AuditEventInput
 } from "../../../../packages/domain/src/index.ts";
+import { readRequestBody } from "../request-body.ts";
 import {
   GmailImapAdapter,
   GmailImapAdapterError,
@@ -309,11 +310,7 @@ function optionalString(value: unknown): string | undefined {
  * ============================================================ */
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  const raw = await readRequestBody(request);
   if (!raw) {
     throw new PlacementCheckInputError("Request body is required.", "invalid_json", 400);
   }
