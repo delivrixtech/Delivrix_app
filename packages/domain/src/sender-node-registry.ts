@@ -1,8 +1,18 @@
 import type { SendRequest, SenderNode } from "./types.ts";
+import {
+  dailyWindowKey,
+  senderNodeRateLimitRule,
+  type RateLimitCounterStore
+} from "./rate-limit.ts";
 
 export interface SenderNodeRegistryStore {
   list(): Promise<SenderNode[]>;
   upsert(node: SenderNode): Promise<SenderNode>;
+}
+
+export interface SenderNodeCapacitySnapshot {
+  senderNodeId: string;
+  consumed: number;
 }
 
 export interface RegisterSenderNodeInput {
@@ -18,9 +28,16 @@ export interface RegisterSenderNodeInput {
 
 export class SenderNodeRegistry {
   private readonly store: SenderNodeRegistryStore;
+  private readonly quotaStore: RateLimitCounterStore | null;
+  private readonly now: () => Date;
 
-  constructor(store: SenderNodeRegistryStore) {
+  constructor(
+    store: SenderNodeRegistryStore,
+    options: { quotaStore?: RateLimitCounterStore; now?: () => Date } = {}
+  ) {
     this.store = store;
+    this.quotaStore = options.quotaStore ?? null;
+    this.now = options.now ?? (() => new Date());
   }
 
   async register(input: RegisterSenderNodeInput): Promise<SenderNode> {
@@ -52,9 +69,38 @@ export class SenderNodeRegistry {
     return nodes.some((candidate) => candidate.ipAddress === ip);
   }
 
-  async findAvailableFor(_request: SendRequest): Promise<SenderNode | null> {
+  async findAvailableFor(request: SendRequest): Promise<SenderNode | null> {
+    void request;
     const nodes = await this.store.list();
-    return selectSenderNode(nodes);
+    if (!this.quotaStore) {
+      return selectSenderNode(nodes);
+    }
+
+    const capacities = await this.capacitySnapshotsFor(nodes);
+    if (!capacities) {
+      return null;
+    }
+    return selectSenderNode(nodes, capacities);
+  }
+
+  private async capacitySnapshotsFor(nodes: SenderNode[]): Promise<SenderNodeCapacitySnapshot[] | null> {
+    const quotaStore = this.quotaStore;
+    if (!quotaStore) {
+      return [];
+    }
+
+    const windowKey = dailyWindowKey(this.now());
+    try {
+      return await Promise.all(nodes.map(async (node) => {
+        const counter = await quotaStore.get(senderNodeRateLimitRule(node), windowKey);
+        return {
+          senderNodeId: node.id,
+          consumed: counter.count
+        };
+      }));
+    } catch {
+      return null;
+    }
   }
 
   async updateStatus(senderNodeId: string, status: SenderNode["status"]): Promise<SenderNode> {
@@ -89,20 +135,32 @@ export class SenderNodeRegistry {
   }
 }
 
-export function selectSenderNode(nodes: SenderNode[]): SenderNode | null {
+export function selectSenderNode(
+  nodes: SenderNode[],
+  capacities: SenderNodeCapacitySnapshot[] = [],
+  requestedAmount = 1
+): SenderNode | null {
+  const consumedByNodeId = new Map(capacities.map((capacity) => [capacity.senderNodeId, capacity.consumed]));
   const eligibleNodes = nodes
     .filter((node) => node.dailyLimit > 0)
     .filter((node) => node.status === "active" || node.status === "warming")
-    .sort(compareSenderNodes);
+    .filter((node) => remainingCapacity(node, consumedByNodeId) >= requestedAmount)
+    .sort((left, right) => compareSenderNodes(left, right, consumedByNodeId));
 
   return eligibleNodes[0] ?? null;
 }
 
-function compareSenderNodes(left: SenderNode, right: SenderNode): number {
+function compareSenderNodes(left: SenderNode, right: SenderNode, consumedByNodeId = new Map<string, number>()): number {
   const statusRank = rankStatus(left.status) - rankStatus(right.status);
 
   if (statusRank !== 0) {
     return statusRank;
+  }
+
+  const remainingRank = remainingCapacity(right, consumedByNodeId) - remainingCapacity(left, consumedByNodeId);
+
+  if (remainingRank !== 0) {
+    return remainingRank;
   }
 
   const warmupRank = left.warmupDay - right.warmupDay;
@@ -112,6 +170,10 @@ function compareSenderNodes(left: SenderNode, right: SenderNode): number {
   }
 
   return left.id.localeCompare(right.id);
+}
+
+function remainingCapacity(node: SenderNode, consumedByNodeId: Map<string, number>): number {
+  return node.dailyLimit - (consumedByNodeId.get(node.id) ?? 0);
 }
 
 function rankStatus(status: SenderNode["status"]): number {

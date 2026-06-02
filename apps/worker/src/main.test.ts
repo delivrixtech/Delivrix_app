@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import type {
   AuditEvent,
+  RateLimitCounter,
   SendJob,
   SendRequest,
   SenderNode,
@@ -55,9 +56,45 @@ test("worker fails closed when suppression state cannot be read", async () => {
   assert.equal(events.some((event) => event.action === "send_job.sender_node_assigned"), false);
 });
 
+test("worker skips exhausted sender nodes using daily quota counters", async () => {
+  const state = await createWorkerState({
+    request: {
+      ...sendRequest(),
+      recipient: { email: "clear@example.com" }
+    },
+    senderNodes: [
+      { ...senderNode(), id: "node-a", dailyLimit: 10 },
+      { ...senderNode(), id: "node-b", dailyLimit: 10 }
+    ],
+    rateLimitCounters: [{
+      scope: "sender_node",
+      id: "node-a",
+      window: "daily",
+      windowKey: new Date().toISOString().slice(0, 10),
+      count: 10
+    }]
+  });
+
+  const result = await runWorker(state);
+
+  assert.match(result.stdout, /Assigned sender node node-b/);
+  const jobs = await readJson<SendJob[]>(state.queueFile, []);
+  assert.equal(jobs[0].status, "completed");
+  assert.equal(jobs[0].senderNodeId, "node-b");
+
+  const events = await readAuditEvents(state.auditFile);
+  const assigned = events.find((event) => event.action === "send_job.sender_node_assigned");
+  assert.equal(assigned?.metadata.senderNodeId, "node-b");
+  const results = await readJson<Array<{ senderNodeId?: string }>>(state.resultsFile, []);
+  assert.equal(results[0].senderNodeId, "node-b");
+});
+
 async function createWorkerState(input: {
   suppressionEntries?: SuppressionEntry[];
   suppressionRaw?: string;
+  request?: SendRequest;
+  senderNodes?: SenderNode[];
+  rateLimitCounters?: RateLimitCounter[];
 } = {}): Promise<{
   dir: string;
   auditFile: string;
@@ -77,8 +114,11 @@ async function createWorkerState(input: {
   const rateLimitsFile = join(dir, "rate-limit-counters.json");
   const killSwitchFile = join(dir, "kill-switch.json");
 
-  await writeFile(queueFile, `${JSON.stringify([sendJob()], null, 2)}\n`, "utf8");
-  await writeFile(senderNodesFile, `${JSON.stringify([senderNode()], null, 2)}\n`, "utf8");
+  await writeFile(queueFile, `${JSON.stringify([sendJob(input.request)], null, 2)}\n`, "utf8");
+  await writeFile(senderNodesFile, `${JSON.stringify(input.senderNodes ?? [senderNode()], null, 2)}\n`, "utf8");
+  if (input.rateLimitCounters) {
+    await writeFile(rateLimitsFile, `${JSON.stringify(input.rateLimitCounters, null, 2)}\n`, "utf8");
+  }
   await writeFile(
     suppressionFile,
     input.suppressionRaw ?? `${JSON.stringify(input.suppressionEntries ?? [], null, 2)}\n`,
@@ -113,10 +153,10 @@ async function runWorker(state: Awaited<ReturnType<typeof createWorkerState>>): 
   });
 }
 
-function sendJob(): SendJob {
+function sendJob(request = sendRequest()): SendJob {
   return {
     id: "sendjob-worker-policy",
-    request: sendRequest(),
+    request,
     status: "queued",
     createdAt: "2026-06-02T10:00:00.000Z"
   };

@@ -22,8 +22,9 @@ const queue = new LocalFileSendQueue();
 const auditLog = new LocalFileAuditLog();
 const killSwitchStore = new LocalFileKillSwitchStore();
 const sendResultStore = new LocalFileSendResultStore();
-const senderNodeRegistry = new SenderNodeRegistry(new LocalFileSenderNodeStore());
-const rateLimitService = new RateLimitService(new LocalFileRateLimitStore());
+const rateLimitStore = new LocalFileRateLimitStore();
+const senderNodeRegistry = new SenderNodeRegistry(new LocalFileSenderNodeStore(), { quotaStore: rateLimitStore });
+const rateLimitService = new RateLimitService(rateLimitStore);
 const policyEngine = new MailPolicyEngine(new LocalFileSuppressionList());
 const requestRateLimitProfile = {
   campaignDailyLimit: Number(process.env.RATE_LIMIT_CAMPAIGN_DAILY ?? 100),
@@ -136,23 +137,6 @@ if (!job) {
       });
       console.log(reason);
     } else {
-      await queue.assignSenderNode(job.id, senderNode.id);
-      await auditLog.append({
-        actorType: "system",
-        actorId: "worker",
-        action: "send_job.sender_node_assigned",
-        targetType: "send_job",
-        targetId: job.id,
-        riskLevel: "low",
-        metadata: {
-          senderNodeId: senderNode.id,
-          provider: senderNode.provider,
-          status: senderNode.status,
-          smtpEnabled: false
-        }
-      });
-
-      console.log(`Assigned sender node ${senderNode.id}`);
       const rateLimitRules = [
         ...requestRateLimitRules(job.request, requestRateLimitProfile),
         senderNodeRateLimitRule(senderNode)
@@ -178,6 +162,23 @@ if (!job) {
         });
         console.log(reason);
       } else {
+        await queue.assignSenderNode(job.id, senderNode.id);
+        await auditLog.append({
+          actorType: "system",
+          actorId: "worker",
+          action: "send_job.sender_node_assigned",
+          targetType: "send_job",
+          targetId: job.id,
+          riskLevel: "low",
+          metadata: {
+            senderNodeId: senderNode.id,
+            provider: senderNode.provider,
+            status: senderNode.status,
+            smtpEnabled: false
+          }
+        });
+
+        console.log(`Assigned sender node ${senderNode.id}`);
         console.log("SMTP is disabled in Base 1/2; generating simulated result.");
         const simulatedResult = simulateSendResult({
           ...job,
