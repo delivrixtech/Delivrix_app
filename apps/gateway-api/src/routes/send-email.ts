@@ -102,6 +102,7 @@ const RFC5322_EMAIL = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 const approvalMaxAgeMs = 15 * 60 * 1000;
 const rateLimitWindowMs = 3_600_000;
 const maxEmailsPerServerPerHour = 5;
+const serverRateLimitLocks = new Map<string, Promise<void>>();
 
 interface SchemaIssue {
   field: keyof SendRealEmailParams;
@@ -243,6 +244,20 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
     return;
   }
 
+  const reservation = await reserveRateLimitSlot({
+    auditLog: deps.auditLog,
+    serverSlug: params.serverSlug,
+    actorId: params.actorId,
+    nowMs: currentTimeMs(deps)
+  });
+  if (!reservation.ok) {
+    json(deps.response, reservation.error === "rate_limit_exceeded" ? 429 : 503, {
+      error: reservation.error,
+      details: { maxPerHour: maxEmailsPerServerPerHour, recentCount: reservation.recentCount }
+    });
+    return;
+  }
+
   const sendResult = await sendEmailViaSsh({
     sshRunner: deps.sshRunner,
     serverIp,
@@ -289,7 +304,8 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
         rateLimitOk: rate.ok
       },
       approvalEventId: approval.eventId,
-      approvalArtifactId: approval.artifactId
+      approvalArtifactId: approval.artifactId,
+      rateLimitReservationEventId: reservation.reservationEventId
     }
   });
 
@@ -398,14 +414,129 @@ async function checkRateLimit(input: {
   nowMs: number;
 }): Promise<{ ok: boolean; recentCount: number }> {
   const events = await input.auditLog.list?.() ?? [];
-  const cutoff = input.nowMs - rateLimitWindowMs;
-  const recent = events.filter((event) => {
-    if (event.action !== "oc.smtp.real_email_sent") return false;
-    if (event.metadata?.serverSlug !== input.serverSlug) return false;
-    const occurredAt = Date.parse(event.occurredAt);
-    return Number.isFinite(occurredAt) && occurredAt > cutoff;
+  const recentCount = countRecentSendSlots(events, input.serverSlug, input.nowMs);
+  return { ok: recentCount < maxEmailsPerServerPerHour, recentCount };
+}
+
+type RateLimitSlotReservation =
+  | { ok: true; recentCount: number; reservationEventId: string }
+  | { ok: false; recentCount: number; error: "rate_limit_exceeded" | "rate_limit_reservation_failed" };
+
+async function reserveRateLimitSlot(input: {
+  auditLog: AuditSink;
+  serverSlug: string;
+  actorId: string;
+  nowMs: number;
+}): Promise<RateLimitSlotReservation> {
+  return withServerRateLimitLock(input.serverSlug, async () => {
+    const events = await input.auditLog.list?.() ?? [];
+    const recentCount = countRecentSendSlots(events, input.serverSlug, input.nowMs);
+    if (recentCount >= maxEmailsPerServerPerHour) {
+      return {
+        ok: false,
+        recentCount,
+        error: "rate_limit_exceeded"
+      };
+    }
+
+    try {
+      const reservation = await input.auditLog.append({
+        occurredAt: new Date(input.nowMs).toISOString(),
+        actorType: "operator",
+        actorId: input.actorId,
+        action: "oc.smtp.real_email_rate_limit_reserved",
+        targetType: "webdock_server",
+        targetId: input.serverSlug,
+        riskLevel: "critical",
+        decision: "allow",
+        humanApproved: true,
+        approverIds: [input.actorId],
+        metadata: {
+          serverSlug: input.serverSlug,
+          maxPerHour: maxEmailsPerServerPerHour,
+          recentCountBefore: recentCount,
+          reservationExpiresAt: new Date(input.nowMs + rateLimitWindowMs).toISOString(),
+          smtpEnabled: true
+        }
+      });
+      return {
+        ok: true,
+        recentCount: recentCount + 1,
+        reservationEventId: eventId(reservation)
+      };
+    } catch {
+      return {
+        ok: false,
+        recentCount,
+        error: "rate_limit_reservation_failed"
+      };
+    }
   });
-  return { ok: recent.length < maxEmailsPerServerPerHour, recentCount: recent.length };
+}
+
+async function withServerRateLimitLock<T>(serverSlug: string, callback: () => Promise<T>): Promise<T> {
+  const previous = serverRateLimitLocks.get(serverSlug) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.then(() => current);
+  serverRateLimitLocks.set(serverSlug, queued);
+
+  await previous;
+  try {
+    return await callback();
+  } finally {
+    release();
+    if (serverRateLimitLocks.get(serverSlug) === queued) {
+      serverRateLimitLocks.delete(serverSlug);
+    }
+  }
+}
+
+function countRecentSendSlots(events: AuditEvent[], serverSlug: string, nowMs: number): number {
+  const cutoff = nowMs - rateLimitWindowMs;
+  const reservationIds = new Set<string>();
+  let count = 0;
+
+  for (const event of events) {
+    if (!eventInRateLimitWindow(event, serverSlug, cutoff)) {
+      continue;
+    }
+    if (event.action === "oc.smtp.real_email_rate_limit_reserved") {
+      reservationIds.add(event.id);
+      count += 1;
+    }
+  }
+
+  for (const event of events) {
+    if (!eventInRateLimitWindow(event, serverSlug, cutoff)) {
+      continue;
+    }
+    if (event.action !== "oc.smtp.real_email_sent") {
+      continue;
+    }
+    const reservationEventId = metadataString(event.metadata, "rateLimitReservationEventId");
+    if (reservationEventId && reservationIds.has(reservationEventId)) {
+      continue;
+    }
+    count += 1;
+  }
+
+  return count;
+}
+
+function eventInRateLimitWindow(event: AuditEvent, serverSlug: string, cutoff: number): boolean {
+  if (event.metadata?.serverSlug !== serverSlug) {
+    return false;
+  }
+  const occurredAt = Date.parse(event.occurredAt);
+  return Number.isFinite(occurredAt) && occurredAt > cutoff;
+}
+
+function metadataString(metadata: Record<string, unknown> | undefined, key: string): string | null {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 async function sendEmailViaSsh(input: {
