@@ -643,7 +643,8 @@ async function invokeReadOnlyToolOverHttp(input: {
     const response = await input.fetchImpl(url, {
       method: "GET",
       headers: {
-        accept: "application/json"
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
       }
     });
     const body = await response.json().catch(() => null);
@@ -665,7 +666,8 @@ async function invokeReadOnlyToolOverHttp(input: {
     const response = await input.fetchImpl(url, {
       method: "GET",
       headers: {
-        accept: "application/json"
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
       }
     });
     const body = await response.json().catch(() => null);

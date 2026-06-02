@@ -54,6 +54,15 @@ interface CanvasEmitter {
   emit(event: CanvasLiveEvent): Promise<CanvasLiveEvent>;
 }
 
+interface VerifiedOperatorSignature {
+  signatureId: string;
+  actorId: string;
+  auditEventId: string;
+  auditEventHash?: string;
+  signedAt: string;
+  proposalId: string;
+}
+
 export interface CompactIntentDeps {
   pool: Pick<Pool, "query">;
   auditLog: AuditSink;
@@ -66,7 +75,7 @@ export async function handleCompactIntentHttp(
   deps: CompactIntentDeps & { request: IncomingMessage; response: ServerResponse }
 ): Promise<void> {
   const rawBody = await readRawBody(deps.request);
-  const hmac = deps.allowUnsignedLocal
+  const hmac = isUnsignedLocalCompactionAllowed(deps)
     ? { ok: true as const }
     : validateOpenClawHmac(deps.request.headers, rawBody, deps.now?.().getTime() ?? Date.now());
   if (!hmac.ok) {
@@ -116,8 +125,9 @@ export async function compactIntent(
   const scratchIds: string[] = [];
   let ttlExpiresAt: string | undefined;
   for (const step of input.steps) {
-    const source = memorySourceForStep(step);
-    const metadata = compactMetadataForStep(step, input);
+    const operatorSignature = await verifiedOperatorSignatureForStep(step, deps.auditLog);
+    const source = memorySourceForStep(step, operatorSignature);
+    const metadata = compactMetadataForStep(step, input, operatorSignature);
     const inserted = await insertEpisodicEntry(deps.pool, {
       intentId: input.intentId,
       step: step.step,
@@ -231,25 +241,83 @@ async function intentExists(auditLog: AuditSink, intentId: string): Promise<bool
   );
 }
 
-function memorySourceForStep(step: CompactIntentStep): ScratchSource {
-  if (step.signatureId) return "operator";
+function isUnsignedLocalCompactionAllowed(deps: CompactIntentDeps): boolean {
+  return deps.allowUnsignedLocal === true && process.env.NODE_ENV === "test";
+}
+
+async function verifiedOperatorSignatureForStep(
+  step: CompactIntentStep,
+  auditLog: AuditSink
+): Promise<VerifiedOperatorSignature | undefined> {
+  if (!step.signatureId) return undefined;
+  if (!step.proposalId) {
+    throw new CompactIntentValidationError(
+      "signature_id_not_verified",
+      "signatureId must be tied to a proposalId before it can be trusted as operator memory."
+    );
+  }
+  if (!auditLog.list) {
+    throw new CompactIntentValidationError(
+      "signature_id_not_verified",
+      "signatureId cannot be verified because the audit chain is unavailable."
+    );
+  }
+
+  const events = await auditLog.list();
+  const signed = events.find((event) =>
+    event.action === "oc.proposal.signed" &&
+    event.actorType === "operator" &&
+    event.decision === "allow" &&
+    event.humanApproved === true &&
+    event.metadata?.signatureId === step.signatureId &&
+    event.targetId === step.proposalId
+  );
+
+  if (!signed) {
+    throw new CompactIntentValidationError(
+      "signature_id_not_verified",
+      "signatureId must match a verified operator signature in the audit chain."
+    );
+  }
+
+  return {
+    signatureId: step.signatureId,
+    actorId: signed.actorId,
+    auditEventId: signed.id,
+    ...(typeof signed.hash === "string" ? { auditEventHash: signed.hash } : {}),
+    signedAt: signed.occurredAt,
+    proposalId: signed.targetId
+  };
+}
+
+function memorySourceForStep(
+  step: CompactIntentStep,
+  operatorSignature?: VerifiedOperatorSignature
+): ScratchSource {
+  if (operatorSignature) return "operator";
   if (step.toolUseId || step.toolCallId || step.proposalId || step.auditEventId) return "tool_output";
   return "openclaw";
 }
 
 function compactMetadataForStep(
   step: CompactIntentStep,
-  input: CompactIntentInput
+  input: CompactIntentInput,
+  operatorSignature?: VerifiedOperatorSignature
 ): Record<string, unknown> {
   return {
     intentFinalStatus: input.finalStatus,
     decisionHash: hashJson(input.decision),
     ...(step.durationMs === undefined ? {} : { durationMs: step.durationMs }),
     ...(step.proposalId ? { proposalId: step.proposalId } : {}),
-    ...(step.signatureId ? {
-      signatureId: step.signatureId,
-      operatorSignatureId: step.signatureId,
-      operatorSignatureVerified: true
+    ...(operatorSignature ? {
+      signatureId: operatorSignature.signatureId,
+      operatorSignatureId: operatorSignature.signatureId,
+      operatorSignatureVerified: true,
+      operatorSignatureActorId: operatorSignature.actorId,
+      operatorSignatureAuditEventId: operatorSignature.auditEventId,
+      ...(operatorSignature.auditEventHash ? { operatorSignatureAuditEventHash: operatorSignature.auditEventHash } : {}),
+      operatorSignatureSignedAt: operatorSignature.signedAt,
+      operatorSignatureProposalId: operatorSignature.proposalId
     } : {}),
     ...(step.toolUseId ? { toolUseId: step.toolUseId } : {}),
     ...(step.toolCallId ? { toolCallId: step.toolCallId } : {}),

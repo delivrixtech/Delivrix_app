@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
@@ -39,6 +39,7 @@ interface ClientEntry {
 export interface CanvasLiveEventServiceOptions {
   stateDir?: string;
   now?: () => Date;
+  streamToken?: string;
 }
 
 export interface CanvasLiveArtifactDecisionRecord {
@@ -59,6 +60,7 @@ type PersistedArtifactRecord =
 export class CanvasLiveEventService {
   private readonly stateDir: string;
   private readonly now: () => Date;
+  private readonly streamToken: string;
   private readonly clients = new Set<ClientEntry>();
   private readonly tasks = new Map<string, CanvasLiveTaskSnapshot>();
   private readonly artifacts = new Map<string, CanvasLiveArtifactSnapshot>();
@@ -69,6 +71,7 @@ export class CanvasLiveEventService {
   constructor(options: CanvasLiveEventServiceOptions = {}) {
     this.stateDir = resolve(options.stateDir ?? process.env.CANVAS_LIVE_STATE_DIR ?? defaultStateDir);
     this.now = options.now ?? (() => new Date());
+    this.streamToken = options.streamToken ?? process.env.CANVAS_LIVE_STREAM_TOKEN ?? process.env.DELIVRIX_READ_BOUNDARY_TOKEN ?? process.env.OPENCLAW_GATEWAY_TOKEN ?? "";
   }
 
   async emit(rawEvent: unknown): Promise<CanvasLiveEvent> {
@@ -277,6 +280,11 @@ export class CanvasLiveEventService {
   acceptPanelSocket(request: IncomingMessage, socket: Socket, head?: Buffer): void {
     if (!isWebSocketUpgrade(request)) {
       socket.destroy();
+      return;
+    }
+
+    if (!isAuthorizedCanvasStream(request, this.streamToken)) {
+      rejectWebSocket(socket, 401, "Unauthorized");
       return;
     }
 
@@ -800,6 +808,59 @@ function hasCloseFrame(chunk: Buffer): boolean {
 
 function isWebSocketUpgrade(request: IncomingMessage): boolean {
   return request.headers.upgrade?.toLowerCase() === "websocket";
+}
+
+function isAuthorizedCanvasStream(request: IncomingMessage, expectedToken: string): boolean {
+  if (!expectedToken) {
+    return false;
+  }
+  const supplied = bearerToken(request.headers.authorization) ??
+    headerValue(request.headers["x-openclaw-gateway-token"]) ??
+    headerValue(request.headers["x-delivrix-token"]) ??
+    tokenQueryParam(request.url);
+  return typeof supplied === "string" && safeTokenEqual(supplied, expectedToken);
+}
+
+function bearerToken(value: string | string[] | undefined): string | null {
+  const normalized = headerValue(value);
+  if (!normalized) {
+    return null;
+  }
+  const match = /^Bearer\s+(.+)$/i.exec(normalized.trim());
+  return match?.[1] ?? null;
+}
+
+function tokenQueryParam(url: string | undefined): string | null {
+  if (!url) {
+    return null;
+  }
+  const parsed = new URL(url, "http://127.0.0.1");
+  return parsed.searchParams.get("token");
+}
+
+function headerValue(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+  return value ?? null;
+}
+
+function safeTokenEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function rejectWebSocket(socket: Socket, statusCode: number, reason: string): void {
+  const body = JSON.stringify({ error: reason.toLowerCase(), message: reason });
+  socket.end([
+    `HTTP/1.1 ${statusCode} ${reason}`,
+    "Connection: close",
+    "Content-Type: application/json; charset=utf-8",
+    `Content-Length: ${Buffer.byteLength(body)}`,
+    "",
+    body
+  ].join("\r\n"));
 }
 
 async function readJsonl(filePath: string): Promise<unknown[]> {

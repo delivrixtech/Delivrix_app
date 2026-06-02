@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import type { IncomingMessage } from "node:http";
@@ -76,7 +76,7 @@ export class GatewayLogStreamService {
   constructor(options: GatewayLogStreamOptions = {}) {
     this.logPath = resolve(options.logPath ?? process.env.GATEWAY_LOG_PATH ?? "runtime/logs/gateway.log");
     this.authToken = options.authToken ?? process.env.GATEWAY_LOG_STREAM_TOKEN ?? process.env.DELIVRIX_OPENCLAW_TOKEN ?? "";
-    this.requireToken = options.requireToken ?? (this.authToken.length > 0 || process.env.GATEWAY_LOG_STREAM_REQUIRE_TOKEN === "true");
+    this.requireToken = options.requireToken ?? true;
     this.now = options.now ?? (() => new Date());
     this.pollIntervalMs = options.pollIntervalMs ?? 500;
     this.backlogLines = options.backlogLines ?? 200;
@@ -147,16 +147,10 @@ export class GatewayLogStreamService {
   }
 
   private isAuthorized(request: IncomingMessage): boolean {
-    if (!this.requireToken) {
-      return true;
-    }
-
-    if (!this.authToken) {
-      return false;
-    }
-
-    const supplied = bearerToken(request.headers.authorization) ?? tokenQueryParam(request.url) ?? headerValue(request.headers["x-delivrix-openclaw-token"]);
-    return supplied === this.authToken;
+    return isGatewayLogStreamRequestAuthorized(request, {
+      authToken: this.authToken,
+      requireToken: this.requireToken
+    });
   }
 
   private ensureWatching(): void {
@@ -315,6 +309,24 @@ export class GatewayLogStreamService {
       }
     }
   }
+}
+
+export function isGatewayLogStreamRequestAuthorized(
+  request: IncomingMessage,
+  options: { authToken?: string; requireToken?: boolean }
+): boolean {
+  const requireToken = options.requireToken ?? true;
+  if (!requireToken) {
+    return true;
+  }
+
+  const authToken = options.authToken ?? "";
+  if (!authToken) {
+    return false;
+  }
+
+  const supplied = bearerToken(request.headers.authorization) ?? tokenQueryParam(request.url) ?? headerValue(request.headers["x-delivrix-openclaw-token"]);
+  return typeof supplied === "string" && safeTokenEqual(supplied, authToken);
 }
 
 export function gatewayLogEventFromLine(line: string, now: Date): Extract<GatewayLogStreamEvent, { type: "GATEWAY_LOG" }> | null {
@@ -547,4 +559,10 @@ function headerValue(value: string | string[] | undefined): string | null {
     return value[0] ?? null;
   }
   return value ?? null;
+}
+
+function safeTokenEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
