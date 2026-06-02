@@ -193,6 +193,17 @@ test("configureCompleteSmtp reports estimated domain and prorated VPS cost", asy
   assert.equal(result.totalCostUsd, 15.14);
 });
 
+test("configureCompleteSmtp aborts a costly step before it exceeds budget", async () => {
+  const ctx = createDeps();
+  const result = await configureCompleteSmtp({ ...validInput(), budgetUsdMax: 15 }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 4);
+  assert.equal(result.error?.startsWith("budget_exceeded"), true);
+  assert.deepEqual(ctx.approvals.map((entry) => entry.step), [2, 3]);
+  assert.equal(result.totalCostUsd, 15);
+});
+
 test("configureCompleteSmtp emits canvas start and completion events", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);

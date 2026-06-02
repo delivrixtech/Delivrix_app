@@ -253,6 +253,7 @@ export async function configureCompleteSmtp(
       actorId: input.actorId,
       approvalTimeoutMs,
       estimatedCostUsd: 15,
+      budgetUsdMax: input.budgetUsdMax,
       params: { domain: chosenDomain, years: 1, autoRenew: false },
       stepResults
     });
@@ -264,6 +265,7 @@ export async function configureCompleteSmtp(
       skill: "wait_for_dns_propagation",
       actorId: input.actorId,
       approvalTimeoutMs,
+      budgetUsdMax: input.budgetUsdMax,
       params: {
         domain: chosenDomain,
         expectedRecord: { type: "NS", value: "contains:awsdns" },
@@ -281,6 +283,7 @@ export async function configureCompleteSmtp(
       actorId: input.actorId,
       approvalTimeoutMs,
       estimatedCostUsd: 4.30 / 30,
+      budgetUsdMax: input.budgetUsdMax,
       params: {
         profile: "bit",
         locationId: "dk",
@@ -308,6 +311,7 @@ export async function configureCompleteSmtp(
       skill: "bind_webdock_main_domain",
       actorId: input.actorId,
       approvalTimeoutMs,
+      budgetUsdMax: input.budgetUsdMax,
       params: { serverSlug, domain: chosenDomain },
       stepResults
     });
@@ -319,6 +323,7 @@ export async function configureCompleteSmtp(
       skill: "upsert_dns_route53",
       actorId: input.actorId,
       approvalTimeoutMs,
+      budgetUsdMax: input.budgetUsdMax,
       params: {
         domain: chosenDomain,
         records: [
@@ -336,6 +341,7 @@ export async function configureCompleteSmtp(
       skill: "wait_for_dns_propagation",
       actorId: input.actorId,
       approvalTimeoutMs,
+      budgetUsdMax: input.budgetUsdMax,
       params: {
         domain: chosenDomain,
         expectedRecord: { type: "A", value: serverIpv4 },
@@ -352,6 +358,7 @@ export async function configureCompleteSmtp(
       skill: "provision_smtp_postfix",
       actorId: input.actorId,
       approvalTimeoutMs,
+      budgetUsdMax: input.budgetUsdMax,
       params: { serverSlug, domain: chosenDomain, serverIp: serverIpv4, selector: "s2026a" },
       stepResults
     });
@@ -363,6 +370,7 @@ export async function configureCompleteSmtp(
       skill: "configure_email_auth",
       actorId: input.actorId,
       approvalTimeoutMs,
+      budgetUsdMax: input.budgetUsdMax,
       params: {
         domain: chosenDomain,
         mxServerIp: serverIpv4,
@@ -380,6 +388,7 @@ export async function configureCompleteSmtp(
       skill: "wait_for_dns_propagation",
       actorId: input.actorId,
       approvalTimeoutMs,
+      budgetUsdMax: input.budgetUsdMax,
       params: {
         domain: `s2026a._domainkey.${chosenDomain}`,
         expectedRecord: { type: "TXT", value: "v=DKIM1" },
@@ -396,6 +405,7 @@ export async function configureCompleteSmtp(
       skill: "seed_warmup_pool",
       actorId: input.actorId,
       approvalTimeoutMs,
+      budgetUsdMax: input.budgetUsdMax,
       params: {
         domain: chosenDomain,
         serverSlug,
@@ -421,6 +431,7 @@ export async function configureCompleteSmtp(
       skill: "send_real_email",
       actorId: input.actorId,
       approvalTimeoutMs,
+      budgetUsdMax: input.budgetUsdMax,
       params: {
         fromAddress: `hello@${chosenDomain}`,
         toAddress: input.testEmailRecipient,
@@ -581,9 +592,12 @@ async function runGatedStep(input: {
   actorId: string;
   approvalTimeoutMs: number;
   estimatedCostUsd?: number;
+  budgetUsdMax: number;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   await verifyAuditChain(input.deps);
+  const inputHash = hashInput(input.params);
+  ensureBudgetForStep(input, inputHash);
   void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.step_started", "Gated orchestrator step started; operator approval required.", {
     runId: input.runId,
     step: input.step,
@@ -596,7 +610,6 @@ async function runGatedStep(input: {
     approvalRequired: true,
     estimatedCostUsd: input.estimatedCostUsd ?? 0
   });
-  const inputHash = hashInput(input.params);
   const approvalTimeoutMs = approvalTimeoutForStep(input.skill, input.params, input.approvalTimeoutMs);
   void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.awaiting_approval", "Waiting for ApprovalGate signature.", {
     runId: input.runId,
@@ -917,6 +930,48 @@ function summarizeOutcome(value: unknown): Record<string, unknown> {
 
 function totalEstimatedCost(results: ConfigureCompleteSmtpStepResult[]): number {
   return results.reduce((total, step) => total + (step.estimatedCostUsd ?? extractCost(step.outcome)), 0);
+}
+
+function ensureBudgetForStep(
+  input: {
+    deps: ConfigureCompleteSmtpDeps;
+    runId: string;
+    step: number;
+    skill: string;
+    estimatedCostUsd?: number;
+    budgetUsdMax: number;
+    stepResults: ConfigureCompleteSmtpStepResult[];
+  },
+  inputHash: string
+): void {
+  const estimatedCostUsd = input.estimatedCostUsd ?? 0;
+  if (estimatedCostUsd <= 0) {
+    return;
+  }
+
+  const committedCostUsd = totalEstimatedCost(input.stepResults);
+  const projectedCostUsd = roundUsd(committedCostUsd + estimatedCostUsd);
+  if (projectedCostUsd <= input.budgetUsdMax) {
+    return;
+  }
+
+  void (input.deps.logger ?? noopGatewayRuntimeLogger).warn("openclaw.orchestrator.budget_exceeded", "Gated orchestrator step blocked by budget cap.", {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    committedCostUsd: roundUsd(committedCostUsd),
+    estimatedCostUsd: roundUsd(estimatedCostUsd),
+    projectedCostUsd,
+    budgetUsdMax: input.budgetUsdMax
+  });
+  throw new OrchestratorFailure(
+    "failed",
+    input.step,
+    input.skill,
+    `budget_exceeded: projected_cost_usd=${projectedCostUsd} budget_usd_max=${input.budgetUsdMax}`,
+    undefined,
+    inputHash
+  );
 }
 
 function extractCost(outcome: unknown): number {
