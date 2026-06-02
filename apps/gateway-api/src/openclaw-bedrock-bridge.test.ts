@@ -185,6 +185,7 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
 test("OpenClawBedrockBridge loops tool_use through processor and sends tool_result back to Bedrock", async () => {
   const payloads: Array<Record<string, unknown>> = [];
   const toolCalls: unknown[] = [];
+  const auditEvents: Array<{ action: string; targetId: string; metadata: Record<string, unknown> }> = [];
   const bridge = new OpenClawBedrockBridge({
     accessKeyId: "test-access",
     secretAccessKey: "test-secret",
@@ -193,6 +194,16 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
     now: fixedNow(),
     fetchImpl: liveContextFetchStub(),
     env: enabledToolEnv(),
+    auditLog: {
+      async append(event) {
+        auditEvents.push({
+          action: event.action,
+          targetId: event.targetId,
+          metadata: event.metadata
+        });
+        return event;
+      }
+    },
     processToolUse: async (input) => {
       toolCalls.push(input);
       return {
@@ -271,7 +282,17 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   assert.equal(secondMessages.at(-2)?.content[0].type, "tool_use");
   assert.equal(secondMessages.at(-1)?.role, "user");
   assert.equal(secondMessages.at(-1)?.content[0].type, "tool_result");
-  assert.match(String(secondMessages.at(-1)?.content[0].content), /"signatureId":"sig-1"/);
+  const toolResult = JSON.parse(String(secondMessages.at(-1)?.content[0].content)) as Record<string, unknown>;
+  assert.equal(toolResult.signatureId, "sig-1");
+  const toolResultMetadata = toolResult._openclaw as Record<string, unknown>;
+  assert.match(String(toolResultMetadata.intentId), /^chat:[a-f0-9]{24}$/);
+  assert.equal(toolResultMetadata.toolUseId, "toolu-1");
+  assert.equal(toolResultMetadata.tool, "register_domain_route53");
+  assert.match(String(toolResultMetadata.inputHash), /^[a-f0-9]{64}$/);
+  assert.deepEqual(auditEvents.map((event) => event.action), ["oc.skill.invoked"]);
+  assert.equal(auditEvents[0].targetId, toolResultMetadata.intentId);
+  assert.equal(auditEvents[0].metadata.skillSlug, "register_domain_route53");
+  assert.equal(auditEvents[0].metadata.inputHash, toolResultMetadata.inputHash);
   const done = events.find((event) => event.type === "ASSISTANT_DONE");
   assert.equal(done?.type, "ASSISTANT_DONE");
   assert.equal(done?.content, "Dominio aprobado y ejecutado.");

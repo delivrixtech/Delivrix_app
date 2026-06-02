@@ -4,8 +4,10 @@ import {
   type BedrockRuntimeClientConfig,
   type InvokeModelWithResponseStreamCommandInput
 } from "@aws-sdk/client-bedrock-runtime";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { AuditEventInput } from "../../../packages/domain/src/index.ts";
 import type {
   ChatSendRequest,
   ChatSendResponse,
@@ -74,6 +76,10 @@ interface BedrockRuntimeClientLike {
   }>;
 }
 
+interface AuditSink {
+  append(event: AuditEventInput): Promise<unknown>;
+}
+
 interface BedrockInvocationResult {
   text: string;
   modelId: string;
@@ -104,6 +110,7 @@ export interface OpenClawBedrockBridgeConfig {
   env?: Record<string, string | undefined>;
   maxToolIterations?: number;
   logger?: GatewayRuntimeLogger;
+  auditLog?: AuditSink;
   processToolUse?: (input: {
     toolUseId: string;
     toolName: string;
@@ -128,6 +135,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   private readonly env: Record<string, string | undefined>;
   private readonly maxToolIterations: number;
   private readonly logger: GatewayRuntimeLogger;
+  private readonly auditLog: AuditSink | null;
   private readonly processToolUse: (input: {
     toolUseId: string;
     toolName: string;
@@ -173,6 +181,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     this.env = config.env ?? (typeof process !== "undefined" ? process.env : {});
     this.maxToolIterations = config.maxToolIterations ?? defaultMaxToolIterations;
     this.logger = config.logger ?? noopGatewayRuntimeLogger;
+    this.auditLog = config.auditLog ?? null;
     this.processToolUse = config.processToolUse ?? createHttpToolUseProcessor({
       delivrixBaseUrl: this.delivrixBaseUrl,
       fetchImpl: this.fetchImpl,
@@ -308,6 +317,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     let sawInputTokens = false;
     let sawOutputTokens = false;
     const toolsInvoked: string[] = [];
+    const turnIntentId = intentIdForMsgId(msgId);
 
     for (let iteration = 0; iteration < this.maxToolIterations; iteration += 1) {
       throwIfAborted(signal);
@@ -356,6 +366,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       for (const toolUse of toolUses) {
         throwIfAborted(signal);
         toolsInvoked.push(toolUse.name);
+        const toolInputHash = hashToolInput(toolUse.input);
         await this.logger.info("openclaw.bedrock.tool_use_requested", "Bedrock requested a Delivrix tool.", {
           msgId,
           iteration,
@@ -393,10 +404,24 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
             statusCode: result.statusCode,
             details: result.details
           }));
+        await this.auditSkillInvokedFromToolUse({
+          intentId: turnIntentId,
+          msgId,
+          iteration,
+          toolUse,
+          inputHash: toolInputHash,
+          result
+        });
         toolResults.push({
           type: "tool_result",
           tool_use_id: toolUse.id,
-          content: stringifyToolResult(result)
+          content: stringifyToolResult(enrichToolResultForModel(result, {
+            intentId: turnIntentId,
+            msgId,
+            iteration,
+            toolUse,
+            inputHash: toolInputHash
+          }))
         });
       }
 
@@ -410,6 +435,49 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       "bedrock_tool_loop_exceeded",
       `OpenClaw Bedrock exceeded ${this.maxToolIterations} tool-use iterations.`
     );
+  }
+
+  private async auditSkillInvokedFromToolUse(input: {
+    intentId: string;
+    msgId: string;
+    iteration: number;
+    toolUse: Extract<BedrockContentBlock, { type: "tool_use" }>;
+    inputHash: string;
+    result: ToolUseResult;
+  }): Promise<void> {
+    if (!this.auditLog || input.toolUse.name === "compact_intent") {
+      return;
+    }
+
+    try {
+      await this.auditLog.append({
+        actorType: "openclaw",
+        actorId: "openclaw-bedrock-direct",
+        action: "oc.skill.invoked",
+        targetType: "openclaw_intent",
+        targetId: input.intentId,
+        riskLevel: "low",
+        decision: "allow",
+        metadata: {
+          intentId: input.intentId,
+          msgId: input.msgId,
+          iteration: input.iteration,
+          toolUseId: input.toolUse.id,
+          skillSlug: input.toolUse.name,
+          inputHash: input.inputHash,
+          ok: input.result.ok,
+          ...(input.result.proposalId ? { proposalId: input.result.proposalId } : {}),
+          ...(input.result.statusCode === undefined ? {} : { statusCode: input.result.statusCode })
+        }
+      });
+    } catch (error) {
+      await this.logger.warn("openclaw.bedrock.skill_invocation_audit_failed", "Could not append skill invocation audit event for tool-use.", {
+        msgId: input.msgId,
+        toolUseId: input.toolUse.id,
+        toolName: input.toolUse.name,
+        ...runtimeErrorMetadata(error)
+      });
+    }
   }
 
   private async invokeBedrockOnce(input: {
@@ -608,7 +676,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
 export function createOpenClawBedrockBridgeFromEnv(
   env: Record<string, string | undefined> =
     typeof process !== "undefined" ? process.env : {},
-  options: { logger?: GatewayRuntimeLogger } = {}
+  options: { logger?: GatewayRuntimeLogger; auditLog?: AuditSink } = {}
 ): OpenClawBedrockBridge | null {
   if (env.OPENCLAW_BRIDGE_KIND !== "bedrock") {
     return null;
@@ -636,7 +704,8 @@ export function createOpenClawBedrockBridgeFromEnv(
     temperature: parseTemperature(env.AWS_BEDROCK_TEMPERATURE) ?? defaultTemperature,
     maxToolIterations: parsePositiveInt(env.OPENCLAW_TOOL_MAX_ITERATIONS) ?? defaultMaxToolIterations,
     env,
-    logger: options.logger
+    logger: options.logger,
+    auditLog: options.auditLog
   });
 }
 
@@ -678,16 +747,72 @@ function isToolUseBlock(block: BedrockContentBlock): block is Extract<BedrockCon
   return block.type === "tool_use";
 }
 
-function stringifyToolResult(result: ToolUseResult): string {
+function enrichToolResultForModel(
+  result: ToolUseResult,
+  input: {
+    intentId: string;
+    msgId: string;
+    iteration: number;
+    toolUse: Extract<BedrockContentBlock, { type: "tool_use" }>;
+    inputHash: string;
+  }
+): Record<string, unknown> {
+  return {
+    ...result,
+    _openclaw: {
+      intentId: input.intentId,
+      msgId: input.msgId,
+      iteration: input.iteration,
+      toolUseId: input.toolUse.id,
+      tool: input.toolUse.name,
+      inputHash: input.inputHash,
+      compactIntentStep: {
+        step: input.iteration + 1,
+        tool: input.toolUse.name,
+        inputHash: input.inputHash,
+        outcome: result.ok ? "success" : "failed",
+        toolUseId: input.toolUse.id,
+        ...(result.proposalId ? { proposalId: result.proposalId } : {}),
+        ...(result.ok ? {} : { errorClass: result.error })
+      },
+      compactIntentInstruction:
+        "Para cerrar memoria, llama compact_intent con este intentId y steps derivados de compactIntentStep. No inventes intentId."
+    }
+  };
+}
+
+function stringifyToolResult(result: unknown): string {
   const raw = JSON.stringify(result);
   if (raw.length <= 4096) {
     return raw;
   }
+  const metadata = isRecord(result) && isRecord(result._openclaw) ? result._openclaw : undefined;
   return JSON.stringify({
-    ok: result.ok,
+    ok: isRecord(result) ? result.ok : undefined,
+    ...(metadata ? { _openclaw: metadata } : {}),
     truncated: true,
     preview: raw.slice(0, 4096)
   });
+}
+
+function intentIdForMsgId(msgId: string): string {
+  return `chat:${hashToolInput(msgId).slice(0, 24)}`;
+}
+
+function hashToolInput(value: unknown): string {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "undefined";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`;
 }
 
 async function* toAsyncIterable<T>(value: AsyncIterable<T> | Iterable<T>): AsyncIterable<T> {

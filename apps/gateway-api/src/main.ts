@@ -336,7 +336,8 @@ const backupSimulationStore = new LocalFileBackupSimulationStore();
 const safetyRealtimeCache = new SafetyRealtimeCache();
 const learningRealtimeCache = new SafetyRealtimeCache();
 const openClawBedrockBridge = createOpenClawBedrockBridgeFromEnv(process.env, {
-  logger: gatewayRuntimeLog
+  logger: gatewayRuntimeLog,
+  auditLog
 });
 const openClawSshBridge = openClawBedrockBridge ? null : createOpenClawSshBridgeFromEnv();
 const openClawChatBridge = openClawBedrockBridge ?? openClawSshBridge;
