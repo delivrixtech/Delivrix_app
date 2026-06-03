@@ -1,8 +1,7 @@
 import type { SenderNode } from "../types.ts";
 import {
-  hasProposalExecuted,
-  markProposalExecuted,
   rejectRunbook,
+  reserveProposalExecution,
   type RegisterSenderNodeRunbookInput,
   type RunbookContext,
   type RunbookResult
@@ -16,16 +15,17 @@ export async function executeRegisterSenderNodeRunbook(
     return rejectRunbook("kill_switch_armed", "Kill switch enabled.");
   }
 
-  if (hasProposalExecuted(ctx)) {
-    return rejectRunbook("state_inconsistent", `Proposal ${ctx.proposalId} already executed.`);
-  }
-
   if (await ctx.repository.exists(input.id)) {
     return rejectRunbook("state_inconsistent", `Node ${input.id} already registered.`);
   }
 
   if (await ctx.repository.existsByIp(input.ipAddress)) {
     return rejectRunbook("state_inconsistent", `IP ${input.ipAddress} already registered.`);
+  }
+
+  const idempotencyResult = await reserveProposalExecution(ctx, "register-sender-node-local");
+  if (idempotencyResult) {
+    return idempotencyResult;
   }
 
   const prevState = { existed: false };
@@ -42,8 +42,6 @@ export async function executeRegisterSenderNodeRunbook(
   if (!found) {
     return rejectRunbook("state_inconsistent", `Node ${input.id} not found after register.`);
   }
-
-  markProposalExecuted(ctx);
 
   return {
     ok: true,

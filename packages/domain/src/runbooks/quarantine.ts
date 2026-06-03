@@ -1,7 +1,6 @@
 import {
-  hasProposalExecuted,
-  markProposalExecuted,
   rejectRunbook,
+  reserveProposalExecution,
   type QuarantineInput,
   type RunbookContext,
   type RunbookResult
@@ -13,10 +12,6 @@ export async function executeQuarantineRunbook(
 ): Promise<RunbookResult> {
   if (ctx.killSwitchState === "active") {
     return rejectRunbook("kill_switch_armed", "Kill switch enabled.");
-  }
-
-  if (hasProposalExecuted(ctx)) {
-    return rejectRunbook("state_inconsistent", `Proposal ${ctx.proposalId} already executed.`);
   }
 
   if (!input.reason?.trim()) {
@@ -39,6 +34,11 @@ export async function executeQuarantineRunbook(
     dailyLimit: node.dailyLimit
   };
 
+  const idempotencyResult = await reserveProposalExecution(ctx, "incident-quarantine");
+  if (idempotencyResult) {
+    return idempotencyResult;
+  }
+
   const rollbackToken = await ctx.persistRollbackSnapshot({
     runbookId: "incident-quarantine",
     targetType: "sender_node",
@@ -47,7 +47,6 @@ export async function executeQuarantineRunbook(
   });
 
   const updated = await ctx.repository.updateStatus(input.nodeId, "quarantined");
-  markProposalExecuted(ctx);
 
   return {
     ok: true,

@@ -9,6 +9,7 @@ import {
   type RegisterSenderNodeInput,
   type RollbackSnapshot,
   type RunbookContext,
+  type RunbookExecutionTracker,
   type RunbookSenderNodeRepository,
   type SenderNode
 } from "../index.ts";
@@ -52,14 +53,26 @@ test("register runbook rejects duplicate IPs", async () => {
 
 test("register runbook rejects idempotency replay by proposal id", async () => {
   const repo = new MemoryRunbookSenderNodeRepository();
-  const executedProposalIds = new Set<string>(["proposal-1"]);
   const result = await executeRegisterSenderNodeRunbook(
     sampleRegisterInput(),
-    ctx(repo, { executedProposalIds })
+    ctx(repo, { executionTracker: new MemoryRunbookExecutionTracker(["proposal-1"]) })
   );
 
   assert.equal(result.ok, false);
   assert.match(result.ok ? "" : result.detail, /already executed/);
+});
+
+test("register runbook fails closed when idempotency tracker is unavailable", async () => {
+  const repo = new MemoryRunbookSenderNodeRepository();
+  const result = await executeRegisterSenderNodeRunbook(
+    sampleRegisterInput(),
+    ctx(repo, { executionTracker: new FailingRunbookExecutionTracker() })
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.ok ? "" : result.rejectReason, "state_inconsistent");
+  assert.match(result.ok ? "" : result.detail, /idempotency tracker unavailable/);
+  assert.equal(await repo.exists("svc-mvp-test-01"), false);
 });
 
 test("warming runbook requires two distinct approvers", async () => {
@@ -217,10 +230,9 @@ test("runbooks reject when kill switch is active", async () => {
 
 test("quarantine runbook rejects idempotency replay by proposal id", async () => {
   const repo = new MemoryRunbookSenderNodeRepository([sampleNode()]);
-  const executedProposalIds = new Set<string>(["proposal-1"]);
   const result = await executeQuarantineRunbook(
     { nodeId: "svc-mvp-test-01", reason: "SBL hit", evidenceRefs: [] },
-    ctx(repo, { executedProposalIds })
+    ctx(repo, { executionTracker: new MemoryRunbookExecutionTracker(["proposal-1"]) })
   );
 
   assert.equal(result.ok, false);
@@ -333,7 +345,7 @@ function ctx(
     occurredAt,
     repository,
     persistRollbackSnapshot: () => overrides.rollbackToken ?? "rb-token",
-    executedProposalIds: overrides.executedProposalIds,
+    executionTracker: overrides.executionTracker ?? new MemoryRunbookExecutionTracker(),
     ...overrides
   };
 }
@@ -424,5 +436,27 @@ class MemoryRunbookSenderNodeRepository implements RunbookSenderNodeRepository {
     const updated = { ...node, ...patch };
     this.nodes.set(senderNodeId, updated);
     return updated;
+  }
+}
+
+class MemoryRunbookExecutionTracker implements RunbookExecutionTracker {
+  private readonly proposalIds: Set<string>;
+
+  constructor(proposalIds: string[] = []) {
+    this.proposalIds = new Set(proposalIds);
+  }
+
+  async reserve(input: { proposalId: string }): Promise<"reserved" | "already_reserved"> {
+    if (this.proposalIds.has(input.proposalId)) {
+      return "already_reserved";
+    }
+    this.proposalIds.add(input.proposalId);
+    return "reserved";
+  }
+}
+
+class FailingRunbookExecutionTracker implements RunbookExecutionTracker {
+  async reserve(): Promise<"reserved" | "already_reserved"> {
+    throw new Error("idempotency store unavailable");
   }
 }
