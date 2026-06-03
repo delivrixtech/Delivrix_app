@@ -107,6 +107,12 @@ No reescribir: **evolucionar `orchestrator-smtp.ts`** (ya tiene 14 steps gated).
 
 Todo local, Claude por Bedrock, gobierno intacto. Es el experimento que prueba con datos antes de comprometer el resto.
 
+### 8.1 Corte B1 memoria grounded — 2026-06-03
+
+Este corte implementa solo B1 local y testeable: retrieval de decision sobre `openclaw_episodic_scratch` sin embeddings, recuperando unicamente `plane='verified_fact' AND invalid_at IS NULL`, con relevancia por keywords/query, recencia, reliability como multiplicador acotado, salida tipada y abstencion cuando no hay memoria verificada relevante. Las observaciones quedan fuera de la ruta que alimenta decisiones.
+
+Parte 4 queda diferida: Bedrock Cohere Embed Multilingual v3, pgvector/HNSW, busqueda hibrida vector+keyword/RRF y rerank. Ese corte requiere infra/Bedrock y no se mezcla con B1 para mantener la prueba local sin dependencia externa.
+
 ## 9. Riesgos remanentes
 
 - Mastra v1 mueve API rápido → pinnear versión, aislar tras adaptadores propios.

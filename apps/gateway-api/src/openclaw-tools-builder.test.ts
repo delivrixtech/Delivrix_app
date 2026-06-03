@@ -201,7 +201,7 @@ function validSample(toolName: string): Record<string, unknown> {
     };
   }
   if (toolName === "read_episodic_scratch") {
-    return { intentId: "intent-1" };
+    return { tool: "suggest_safe_domain", query: "warmup domain reputation", limit: 5 };
   }
   if (toolName === "read_route53_domain_detail") {
     return { domain: "controldelivrix.app" };

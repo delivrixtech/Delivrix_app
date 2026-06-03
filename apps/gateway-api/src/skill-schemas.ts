@@ -132,6 +132,9 @@ export interface ReadEpisodicScratchParams extends Record<string, unknown> {
   limit?: number;
   sinceDays?: number;
   weighted?: boolean;
+  grounded?: boolean;
+  query?: string;
+  keywords?: string[];
 }
 
 export interface CompactIntentParams extends Record<string, unknown> {
@@ -361,10 +364,31 @@ export const readEpisodicScratchParamSchema = schema<ReadEpisodicScratchParams>(
   if (input.weighted !== undefined && input.weighted !== null) {
     output.weighted = boolean(input.weighted, "weighted");
   }
-  if (!output.intentId && !output.inputHash && !output.tool) {
-    throw new SkillSchemaError("intentId, inputHash or tool is required");
+  if (input.grounded !== undefined && input.grounded !== null) {
+    output.grounded = boolean(input.grounded, "grounded");
   }
-  if (output.tool && !output.outcome && output.weighted !== true) {
+  if (input.query !== undefined && input.query !== null && input.query !== "") {
+    output.query = boundedText(input.query, "query", 3, 512);
+    output.grounded = output.grounded !== false;
+  }
+  if (input.keywords !== undefined && input.keywords !== null) {
+    if (!Array.isArray(input.keywords)) {
+      throw new SkillSchemaError("keywords must be an array");
+    }
+    output.keywords = input.keywords.map((keyword, index) =>
+      boundedText(keyword, `keywords[${index}]`, 1, 64)
+    ).slice(0, 16);
+    if (output.keywords.length > 0) {
+      output.grounded = output.grounded !== false;
+    }
+  }
+  if (output.grounded === true && !output.query && !(output.keywords && output.keywords.length > 0)) {
+    throw new SkillSchemaError("grounded retrieval requires query or keywords");
+  }
+  if (!output.intentId && !output.inputHash && !output.tool && !(output.grounded && output.query)) {
+    throw new SkillSchemaError("intentId, inputHash, tool or grounded query is required");
+  }
+  if (output.tool && !output.outcome && output.weighted !== true && output.grounded !== true) {
     throw new SkillSchemaError("tool queries require outcome or weighted=true");
   }
   return output;

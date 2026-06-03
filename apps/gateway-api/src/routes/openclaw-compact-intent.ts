@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
 import type {
@@ -62,6 +62,17 @@ interface VerifiedOperatorSignature {
   auditEventHash?: string;
   signedAt: string;
   proposalId: string;
+}
+
+interface OperatorMemoryHmacContext {
+  intentId: string;
+  step: number;
+  tool: string;
+  inputHash: string;
+  outcome: ScratchOutcome;
+  outcomeData?: Record<string, unknown>;
+  errorClass?: string;
+  errorMessage?: string;
 }
 
 export interface CompactIntentDeps {
@@ -308,6 +319,19 @@ function compactMetadataForStep(
   input: CompactIntentInput,
   operatorSignature?: VerifiedOperatorSignature
 ): Record<string, unknown> {
+  const operatorSecret = operatorSignature
+    ? process.env.OPENCLAW_OPERATOR_HMAC_SECRET?.trim()
+    : undefined;
+  if (operatorSignature && !operatorSecret) {
+    throw new CompactIntentValidationError(
+      "operator_hmac_secret_required",
+      "OPENCLAW_OPERATOR_HMAC_SECRET is required before operator memory can be persisted."
+    );
+  }
+  const operatorContext = operatorSignature ? operatorMemoryContext(input, step) : undefined;
+  const operatorPayload = operatorSignature && operatorContext
+    ? operatorHmacPayload(operatorSignature, operatorContext)
+    : undefined;
   return {
     intentFinalStatus: input.finalStatus,
     decisionHash: hashJson(input.decision),
@@ -317,6 +341,7 @@ function compactMetadataForStep(
       signatureId: operatorSignature.signatureId,
       operatorSignatureId: operatorSignature.signatureId,
       operatorSignatureVerified: true,
+      operatorSignatureHmac: createHmac("sha256", operatorSecret).update(stableStringify(operatorPayload)).digest("hex"),
       operatorSignatureActorId: operatorSignature.actorId,
       operatorSignatureAuditEventId: operatorSignature.auditEventId,
       ...(operatorSignature.auditEventHash ? { operatorSignatureAuditEventHash: operatorSignature.auditEventHash } : {}),
@@ -326,6 +351,44 @@ function compactMetadataForStep(
     ...(step.toolUseId ? { toolUseId: step.toolUseId } : {}),
     ...(step.toolCallId ? { toolCallId: step.toolCallId } : {}),
     ...(step.auditEventId ? { auditEventId: step.auditEventId } : {})
+  };
+}
+
+function operatorMemoryContext(
+  input: CompactIntentInput,
+  step: CompactIntentStep
+): OperatorMemoryHmacContext {
+  return {
+    intentId: input.intentId,
+    step: step.step,
+    tool: step.tool,
+    inputHash: step.inputHash,
+    outcome: step.outcome,
+    ...(step.outcomeData === undefined ? {} : { outcomeData: step.outcomeData }),
+    ...(step.errorClass === undefined ? {} : { errorClass: step.errorClass }),
+    ...(step.errorMessage === undefined ? {} : { errorMessage: step.errorMessage })
+  };
+}
+
+function operatorHmacPayload(
+  signature: VerifiedOperatorSignature,
+  context: OperatorMemoryHmacContext
+): Record<string, string> {
+  return {
+    actorId: signature.actorId,
+    auditEventId: signature.auditEventId,
+    ...(signature.auditEventHash ? { auditEventHash: signature.auditEventHash } : {}),
+    ...(context.errorClass ? { memoryErrorClass: context.errorClass } : {}),
+    ...(context.errorMessage ? { memoryErrorMessage: context.errorMessage } : {}),
+    memoryInputHash: context.inputHash,
+    memoryIntentId: context.intentId,
+    memoryOutcome: context.outcome,
+    memoryOutcomeHash: hashJson(context.outcomeData ?? null),
+    memoryStep: String(context.step),
+    memoryTool: context.tool,
+    proposalId: signature.proposalId,
+    signatureId: signature.signatureId,
+    signedAt: signature.signedAt
   };
 }
 

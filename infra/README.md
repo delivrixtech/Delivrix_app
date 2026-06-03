@@ -26,6 +26,20 @@ npm run db:migrate
 npm run db:seed
 ```
 
+## Seed memoria episodica de revision
+
+Este seed es solo para revisar retrieval grounded B1 en local. No es seed de produccion y se niega a correr con `NODE_ENV=production`, con `POSTGRES_URL` no-local o sin `OPENCLAW_OPERATOR_HMAC_SECRET`.
+
+Flujo minimo para el operador:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d
+npm run db:migrate
+OPENCLAW_OPERATOR_HMAC_SECRET=replace_with_local_review_secret node scripts/db/seed-episodic.mjs
+```
+
+El script inserta datos representativos mediante `insertEpisodicEntry`: `verified_fact`, `observation`, distintas `reliability`, hechos invalidados y provenance de operador con HMAC ligado a la fila de memoria. Codex no lo ejecuta contra una BD real; levantar Docker y poblar Postgres queda como accion explicita del operador.
+
 ## Resetear todo
 
 Esto borra el volumen local `delivrix_postgres_data`.

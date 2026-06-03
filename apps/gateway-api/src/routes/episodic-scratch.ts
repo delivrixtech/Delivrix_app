@@ -5,6 +5,7 @@ import {
   queryByInputHash,
   queryByIntent,
   queryByToolAndOutcome,
+  retrieveGroundedDecisionMemory,
   retrieveTrustWeighted,
   type EpisodicEntry,
   type ScratchOutcome
@@ -36,16 +37,36 @@ export async function handleReadEpisodicScratchHttp(deps: EpisodicScratchReadDep
     const sinceDays = optionalIntegerParam(url, "sinceDays");
     const limit = optionalIntegerParam(url, "limit");
     const weighted = url.searchParams.get("weighted") === "true";
+    const grounded = url.searchParams.get("grounded") === "true";
+    const query = optionalParam(url, "query");
+    const keywords = optionalCsvParam(url, "keywords");
+    const hasGroundingSignals = Boolean(query) || keywords.length > 0;
 
-    if (!intentId && !inputHash && !tool) {
+    if (!intentId && !inputHash && !tool && !(grounded && query)) {
       return json(deps.response, 400, {
         error: "missing_query",
         details: "Provide intentId, inputHash, or tool."
       });
     }
+    if (grounded && !hasGroundingSignals) {
+      return json(deps.response, 400, {
+        error: "grounded_query_required",
+        details: "grounded retrieval requires query or keywords so relevance can be scored."
+      });
+    }
 
     let entries: EpisodicEntry[];
-    if (intentId) {
+    if (grounded) {
+      const groundedMemory = await retrieveGroundedDecisionMemory(deps.pool, {
+        ...(tool ? { tool } : {}),
+        ...(outcome ? { outcome: outcomeValue(outcome) } : {}),
+        ...(inputHash ? { inputHash } : {}),
+        ...(query ? { query } : {}),
+        ...(keywords.length > 0 ? { keywords } : {}),
+        limit: limit ?? 10
+      });
+      return json(deps.response, 200, redactObject(groundedMemory));
+    } else if (intentId) {
       entries = await queryByIntent(deps.pool, intentId);
     } else if (inputHash) {
       entries = await queryByInputHash(deps.pool, inputHash, {
@@ -96,7 +117,7 @@ function redactObject(value: unknown): unknown {
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
-      secretKeyPattern.test(key) ? "[redacted]" : redactObject(item)
+      key === "errorMessage" || secretKeyPattern.test(key) ? "[redacted]" : redactObject(item)
     ])
   );
 }
@@ -128,6 +149,16 @@ function optionalIntegerParam(url: URL, name: string): number | undefined {
     throw new EpisodicScratchValidationError(`invalid_${name}`, `${name} must be a positive integer.`);
   }
   return parsed;
+}
+
+function optionalCsvParam(url: URL, name: string): string[] {
+  const value = url.searchParams.get(name);
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 20);
 }
 
 function requestUrl(request: IncomingMessage): URL {
