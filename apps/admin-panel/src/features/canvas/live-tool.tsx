@@ -457,8 +457,10 @@ function pipColor(status: LiveTask["status"]): string {
  * Postman view — centro
  * ============================================================ */
 
+type ActionTab = "api" | "files" | "commands" | "audit";
+
 function ActionColumn({ action, activeTask }: { action: LiveAction | null; activeTask: LiveTask | null }) {
-  const [tab, setTab] = useState<"api" | "files" | "audit">("api");
+  const [tab, setTab] = useState<ActionTab>("api");
   return (
     <section
       className="flex flex-col"
@@ -472,7 +474,7 @@ function ActionColumn({ action, activeTask }: { action: LiveAction | null; activ
           borderBottom: "1px solid var(--color-border)"
         }}
       >
-        {(["api", "files", "audit"] as const).map((t) => {
+        {(["api", "files", "commands", "audit"] as const).map((t) => {
           const isActive = tab === t;
           return (
             <button
@@ -490,7 +492,7 @@ function ActionColumn({ action, activeTask }: { action: LiveAction | null; activ
                 cursor: "pointer"
               }}
             >
-              {t === "api" ? "API" : t === "files" ? "Archivos" : "Audit"}
+              {t === "api" ? "API" : t === "files" ? "Archivos" : t === "commands" ? "Comandos" : "Audit"}
             </button>
           );
         })}
@@ -502,6 +504,8 @@ function ActionColumn({ action, activeTask }: { action: LiveAction | null; activ
           <ActionEmpty tab={tab} activeTask={activeTask} />
         ) : tab === "api" && action.kind === "api" ? (
           <ApiActionView action={action} />
+        ) : tab === "commands" && action.kind === "command" ? (
+          <CommandActionView action={action} />
         ) : tab === "audit" && action.kind === "audit" ? (
           <AuditActionView action={action} />
         ) : (
@@ -512,7 +516,7 @@ function ActionColumn({ action, activeTask }: { action: LiveAction | null; activ
   );
 }
 
-function ActionEmpty({ tab, activeTask }: { tab: "api" | "files" | "audit"; activeTask: LiveTask | null }) {
+function ActionEmpty({ tab, activeTask }: { tab: ActionTab; activeTask: LiveTask | null }) {
   const isRunning = activeTask?.status === "running";
   const taskTitle = activeTask?.title ?? null;
 
@@ -530,7 +534,9 @@ function ActionEmpty({ tab, activeTask }: { tab: "api" | "files" | "audit"; acti
         ? "El agente está activo pero todavía no hizo ningún GET/POST a un servicio externo. Aparece acá apenas haga una request."
         : tab === "files"
           ? "El agente no ha leído ni escrito archivos en esta tarea todavía."
-          : "Sin eventos de audit emitidos por esta tarea aún.";
+          : tab === "commands"
+            ? "El agente no ha ejecutado comandos para esta tarea todavía."
+            : "Sin eventos de audit emitidos por esta tarea aún.";
   }
   return (
     <div
@@ -543,6 +549,105 @@ function ActionEmpty({ tab, activeTask }: { tab: "api" | "files" | "audit"; acti
       >
         {label}
       </span>
+    </div>
+  );
+}
+
+export function CommandActionView({ action }: { action: Extract<LiveAction, { kind: "command" }> }) {
+  const isSuccess = action.exitCode === 0;
+  return (
+    <div className="flex flex-col" style={{ minHeight: 0 }}>
+      <div
+        className="flex items-center"
+        style={{ padding: "16px 18px 12px", gap: 10 }}
+      >
+        <span
+          className="font-[family-name:var(--font-mono)] font-semibold"
+          style={{
+            padding: "3px 10px",
+            borderRadius: 4,
+            background: isSuccess ? "var(--color-success-soft)" : "var(--color-critical-soft)",
+            color: isSuccess ? "var(--color-success)" : "var(--color-critical)",
+            fontSize: 11
+          }}
+        >
+          exit {action.exitCode}
+        </span>
+        <span
+          className="font-[family-name:var(--font-mono)] truncate"
+          style={{ fontSize: 13, color: "var(--color-text-primary)", flex: 1, minWidth: 0 }}
+          title={action.cmd}
+        >
+          {action.cmd}
+        </span>
+      </div>
+      <div
+        className="flex items-center"
+        style={{
+          padding: "0 18px 14px",
+          gap: 18,
+          fontSize: 11,
+          fontFamily: "var(--font-mono)",
+          color: "var(--color-text-secondary)",
+          borderBottom: "1px solid var(--color-border)",
+          marginBottom: 14,
+          paddingBottom: 14
+        }}
+      >
+        <span style={{ color: isSuccess ? "var(--color-success)" : "var(--color-critical)", fontWeight: 500 }}>
+          {isSuccess ? "completado" : "falló"}
+        </span>
+        <span>{(action.durationMs / 1000).toFixed(2)}s</span>
+        <span>hace {relativeTimeShort(action.occurredAt)}</span>
+      </div>
+      <div className="flex flex-col" style={{ padding: "0 18px 18px", gap: 10 }}>
+        <CommandOutputBlock label="stdout" value={action.stdout} />
+        <CommandOutputBlock label="stderr" value={action.stderr} tone="critical" />
+      </div>
+    </div>
+  );
+}
+
+function CommandOutputBlock({
+  label,
+  value,
+  tone = "neutral"
+}: {
+  label: string;
+  value?: string;
+  tone?: "neutral" | "critical";
+}) {
+  if (!value) return null;
+  return (
+    <div className="flex flex-col" style={{ gap: 6 }}>
+      <span
+        className="font-[family-name:var(--font-caption)] font-semibold uppercase"
+        style={{
+          fontSize: 9.5,
+          letterSpacing: "0.6px",
+          color: tone === "critical" ? "var(--color-critical)" : "var(--color-text-tertiary)"
+        }}
+      >
+        {label}
+      </span>
+      <pre
+        className="font-[family-name:var(--font-mono)]"
+        style={{
+          fontSize: 12,
+          lineHeight: 1.7,
+          color: "var(--color-text-primary)",
+          background: "var(--color-surface)",
+          border: "1px solid var(--color-border)",
+          borderRadius: "var(--radius-sm)",
+          padding: "12px 14px",
+          margin: 0,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          overflowX: "auto"
+        }}
+      >
+        {value}
+      </pre>
     </div>
   );
 }
@@ -1199,12 +1304,22 @@ function artifactColumnLabel(artifact: LiveArtifact): string {
   return "Plan propuesto · editable";
 }
 
+export function commitEditableTitleText(
+  textContent: string | null,
+  title: string,
+  onChange: (v: string) => void
+): string {
+  const nextDraft = textContent ?? "";
+  if (nextDraft !== title) onChange(nextDraft);
+  return nextDraft;
+}
+
 function EditableTitle({ title, onChange }: { title: string; onChange: (v: string) => void }) {
-  const [draft, setDraft] = useState(title);
+  const [, setDraft] = useState(title);
   useEffect(() => setDraft(title), [title]);
-  const commit = useCallback(() => {
-    if (draft !== title) onChange(draft);
-  }, [draft, title, onChange]);
+  const commit = useCallback((nextDraft: string | null) => {
+    setDraft(commitEditableTitleText(nextDraft, title, onChange));
+  }, [title, onChange]);
   return (
     <div
       role="textbox"
@@ -1212,10 +1327,9 @@ function EditableTitle({ title, onChange }: { title: string; onChange: (v: strin
       contentEditable
       suppressContentEditableWarning
       onBlur={(e) => {
-        setDraft(e.currentTarget.textContent ?? "");
-        commit();
+        commit(e.currentTarget.textContent);
       }}
-      onInput={(e) => setDraft((e.currentTarget.textContent ?? ""))}
+      onInput={(e) => setDraft(e.currentTarget.textContent ?? "")}
       className="font-[family-name:var(--font-sans)]"
       style={{
         fontSize: 15,

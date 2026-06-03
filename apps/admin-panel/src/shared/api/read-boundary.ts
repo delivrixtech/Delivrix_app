@@ -20,6 +20,7 @@ export const READ_ENDPOINTS = Object.freeze({
   operatingNorth: "/v1/operating-north",
   killSwitch: "/v1/kill-switch",
   auditEvents: "/v1/audit-events",
+  senderPoolStatus: "/v1/sender-pool/status",
   senderNodes: "/v1/sender-nodes",
   ipReputationReports: "/v1/ip-reputation/reports",
   sendResults: "/v1/send-results",

@@ -168,7 +168,7 @@ export const sections: SectionDescriptor[] = [
     title: "Dominios sender en producción y warmup.",
     description:
       "Estado actual de los dominios sender pool: cuáles están provisionados, en qué etapa de warmup, su deliverability. Onboarding nuevo dispara flow end-to-end con OpenClaw (compra + DNS + SMTP + warmup).",
-    endpoint: "/v1/sender-pool/status"
+    endpoint: READ_ENDPOINTS.senderPoolStatus
   }
 ];
 
