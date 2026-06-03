@@ -86,6 +86,9 @@ function redactEntry(entry: EpisodicEntry): EpisodicEntry {
 
 function redactObject(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactObject);
+  if (value instanceof Date) return value;
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) return value;
+  if (value instanceof Map) return value;
   if (!isRecord(value)) return value;
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
