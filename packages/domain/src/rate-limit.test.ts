@@ -55,6 +55,41 @@ test("does not consume counters when any rule is over limit", async () => {
   assert.equal(counters.find((counter) => counter.scope === "recipient_domain")?.count, 1);
 });
 
+test("consume delegates to store-level atomic reservation", async () => {
+  const store = new TryConsumeOnlyRateLimitCounterStore();
+  const service = new RateLimitService(store, () => new Date("2026-05-02T10:00:00.000Z"));
+  const rule: RateLimitRule = {
+    scope: "campaign",
+    id: "campaign_001",
+    limit: 1,
+    window: "daily"
+  };
+
+  const decision = await service.consume([rule]);
+
+  assert.equal(decision.allowed, true);
+  assert.equal(store.windowKey, "2026-05-02");
+});
+
+test("concurrent consumes with limit one allow exactly one reservation", async () => {
+  const store = new MemoryRateLimitCounterStore();
+  const service = new RateLimitService(store, () => new Date("2026-05-02T10:00:00.000Z"));
+  const rule: RateLimitRule = {
+    scope: "campaign",
+    id: "campaign_001",
+    limit: 1,
+    window: "daily"
+  };
+
+  const decisions = await Promise.all([
+    service.consume([rule]),
+    service.consume([rule])
+  ]);
+
+  assert.equal(decisions.filter((decision) => decision.allowed).length, 1);
+  assert.equal((await store.get(rule, "2026-05-02")).count, 1);
+});
+
 test("builds request rate-limit rules from campaign and domains", () => {
   const request: SendRequest = {
     campaignId: "campaign_001",
@@ -127,11 +162,95 @@ class MemoryRateLimitCounterStore implements RateLimitCounterStore {
     return updated;
   }
 
+  async tryConsume(rules: RateLimitRule[], windowKey: string, amount: number) {
+    const counters = rules.map((rule) => this.current(rule, windowKey));
+    const violations = counters
+      .map((counter, index) => toViolation(counter, rules[index], amount))
+      .filter((violation): violation is NonNullable<ReturnType<typeof toViolation>> => violation !== null);
+
+    if (violations.length > 0) {
+      return { allowed: false, violations, counters };
+    }
+
+    return {
+      allowed: true,
+      violations: [],
+      counters: rules.map((rule) => this.incrementCurrent(rule, windowKey, amount))
+    };
+  }
+
   async list(): Promise<RateLimitCounter[]> {
     return [...this.counters.values()];
+  }
+
+  private current(rule: RateLimitRule, windowKey: string): RateLimitCounter {
+    return this.counters.get(key(rule, windowKey)) ?? {
+      scope: rule.scope,
+      id: rule.id,
+      window: rule.window,
+      windowKey,
+      count: 0
+    };
+  }
+
+  private incrementCurrent(rule: RateLimitRule, windowKey: string, amount: number): RateLimitCounter {
+    const counter = this.current(rule, windowKey);
+    const updated = {
+      ...counter,
+      count: counter.count + amount
+    };
+    this.counters.set(key(rule, windowKey), updated);
+    return updated;
+  }
+}
+
+class TryConsumeOnlyRateLimitCounterStore implements RateLimitCounterStore {
+  windowKey: string | null = null;
+
+  async get(): Promise<RateLimitCounter> {
+    throw new Error("get must not be called by consume");
+  }
+
+  async increment(): Promise<RateLimitCounter> {
+    throw new Error("increment must not be called by consume");
+  }
+
+  async tryConsume(rules: RateLimitRule[], windowKey: string, amount: number) {
+    this.windowKey = windowKey;
+    return {
+      allowed: true,
+      violations: [],
+      counters: rules.map((rule) => ({
+        scope: rule.scope,
+        id: rule.id,
+        window: rule.window,
+        windowKey,
+        count: amount
+      }))
+    };
+  }
+
+  async list(): Promise<RateLimitCounter[]> {
+    return [];
   }
 }
 
 function key(rule: RateLimitRule, windowKey: string): string {
   return `${rule.scope}:${rule.id}:${rule.window}:${windowKey}`;
+}
+
+function toViolation(counter: RateLimitCounter, rule: RateLimitRule | undefined, amount: number) {
+  if (!rule || counter.count + amount <= rule.limit) {
+    return null;
+  }
+
+  return {
+    scope: rule.scope,
+    id: rule.id,
+    limit: rule.limit,
+    current: counter.count,
+    requested: amount,
+    window: rule.window,
+    windowKey: counter.windowKey
+  };
 }
