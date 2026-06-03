@@ -103,6 +103,7 @@ import {
   LocalFileKillSwitchStore,
   LocalFileProvisioningRunStore,
   LocalFileRateLimitStore,
+  LocalFileRunbookExecutionStore,
   LocalFileSendResultStore,
   LocalFileSenderNodeStore,
   LocalFileSuppressionList
@@ -673,7 +674,7 @@ interface AgentPermissionEntry {
 }
 
 const proposalsStore: StoredProposal[] = [];
-const executedProposalIds = new Set<string>();
+const runbookExecutionStore = new LocalFileRunbookExecutionStore();
 const proposalTtlMs = 60 * 60 * 1000;
 const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_health", "allowed_read_only"),
@@ -3656,7 +3657,7 @@ const server = createServer(async (request, response) => {
         killSwitchState: killSwitch.enabled ? "active" : "armed",
         occurredAt,
         repository: senderNodeRegistry,
-        executedProposalIds,
+        executionTracker: runbookExecutionStore,
         persistRollbackSnapshot: (input) => persistRollbackSnapshot(input).rollbackToken
       });
 

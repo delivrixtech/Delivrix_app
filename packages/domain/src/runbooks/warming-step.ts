@@ -1,7 +1,6 @@
 import {
-  hasProposalExecuted,
-  markProposalExecuted,
   rejectRunbook,
+  reserveProposalExecution,
   type RunbookContext,
   type RunbookResult,
   type WarmingStepInput
@@ -17,10 +16,6 @@ export async function executeWarmingStepRunbook(
 ): Promise<RunbookResult> {
   if (ctx.killSwitchState === "active") {
     return rejectRunbook("kill_switch_armed", "Kill switch enabled.");
-  }
-
-  if (hasProposalExecuted(ctx)) {
-    return rejectRunbook("state_inconsistent", `Proposal ${ctx.proposalId} already executed.`);
   }
 
   const approverIds = [...new Set(ctx.approverIds)];
@@ -59,6 +54,11 @@ export async function executeWarmingStepRunbook(
   const newWarmupDay = node.warmupDay + 1;
   const newDailyLimit = computeDailyLimitForDay(newWarmupDay, node.dailyLimit);
 
+  const idempotencyResult = await reserveProposalExecution(ctx, "warming-step");
+  if (idempotencyResult) {
+    return idempotencyResult;
+  }
+
   const rollbackToken = await ctx.persistRollbackSnapshot({
     runbookId: "warming-step",
     targetType: "sender_node",
@@ -70,8 +70,6 @@ export async function executeWarmingStepRunbook(
     warmupDay: newWarmupDay,
     dailyLimit: newDailyLimit
   });
-
-  markProposalExecuted(ctx);
 
   return {
     ok: true,

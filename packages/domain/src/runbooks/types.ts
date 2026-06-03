@@ -16,6 +16,16 @@ export interface PersistRollbackSnapshotInput {
   prevStateJson: string;
 }
 
+export interface ReserveRunbookExecutionInput {
+  proposalId: string;
+  runbookId: RunbookId;
+  occurredAt: string;
+}
+
+export interface RunbookExecutionTracker {
+  reserve(input: ReserveRunbookExecutionInput): Promise<"reserved" | "already_reserved">;
+}
+
 export interface RunbookSenderNodeRepository {
   list(): Promise<SenderNode[]>;
   get(senderNodeId: string): Promise<SenderNode | null>;
@@ -36,7 +46,7 @@ export interface RunbookContext {
   occurredAt: string;
   repository: RunbookSenderNodeRepository;
   persistRollbackSnapshot(input: PersistRollbackSnapshotInput): Promise<string> | string;
-  executedProposalIds?: Set<string>;
+  executionTracker: RunbookExecutionTracker;
 }
 
 export type RunbookResult = {
@@ -101,10 +111,24 @@ export function rejectRunbook(rejectReason: RunbookRejectReason, detail: string)
   return { ok: false, rejectReason, detail };
 }
 
-export function markProposalExecuted(ctx: RunbookContext): void {
-  ctx.executedProposalIds?.add(ctx.proposalId);
-}
-
-export function hasProposalExecuted(ctx: RunbookContext): boolean {
-  return ctx.executedProposalIds?.has(ctx.proposalId) ?? false;
+export async function reserveProposalExecution(
+  ctx: RunbookContext,
+  runbookId: RunbookId
+): Promise<RunbookResult | null> {
+  try {
+    const reservation = await ctx.executionTracker.reserve({
+      proposalId: ctx.proposalId,
+      runbookId,
+      occurredAt: ctx.occurredAt
+    });
+    if (reservation === "already_reserved") {
+      return rejectRunbook("state_inconsistent", `Proposal ${ctx.proposalId} already executed.`);
+    }
+    return null;
+  } catch {
+    return rejectRunbook(
+      "state_inconsistent",
+      `Runbook idempotency tracker unavailable for proposal ${ctx.proposalId}; refusing execution.`
+    );
+  }
 }

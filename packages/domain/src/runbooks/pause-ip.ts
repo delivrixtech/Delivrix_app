@@ -1,7 +1,6 @@
 import {
-  hasProposalExecuted,
-  markProposalExecuted,
   rejectRunbook,
+  reserveProposalExecution,
   type PauseIpInput,
   type RunbookContext,
   type RunbookResult
@@ -13,10 +12,6 @@ export async function executePauseIpRunbook(
 ): Promise<RunbookResult> {
   if (ctx.killSwitchState === "active") {
     return rejectRunbook("kill_switch_armed", "Kill switch enabled.");
-  }
-
-  if (hasProposalExecuted(ctx)) {
-    return rejectRunbook("state_inconsistent", `Proposal ${ctx.proposalId} already executed.`);
   }
 
   const node = await ctx.repository.get(input.nodeId);
@@ -35,6 +30,11 @@ export async function executePauseIpRunbook(
     dailyLimit: node.dailyLimit
   };
 
+  const idempotencyResult = await reserveProposalExecution(ctx, "pause-ip");
+  if (idempotencyResult) {
+    return idempotencyResult;
+  }
+
   const rollbackToken = await ctx.persistRollbackSnapshot({
     runbookId: "pause-ip",
     targetType: "sender_node",
@@ -43,8 +43,6 @@ export async function executePauseIpRunbook(
   });
 
   const updated = await ctx.repository.updateStatus(input.nodeId, "paused");
-
-  markProposalExecuted(ctx);
 
   return {
     ok: true,
