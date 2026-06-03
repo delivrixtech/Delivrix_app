@@ -339,6 +339,29 @@ test("configureCompleteSmtp compacts failed step with failure evidence", async (
   assert.equal(failed?.proposalId, "p-3");
 });
 
+test("configureCompleteSmtp compacts execution failure with real outcome data", async () => {
+  const ctx = createDeps({
+    compactIntent: true,
+    decisions: {
+      2: {
+        status: "execution_failed",
+        proposalId: "p-2",
+        outcome: { error: "purchase_failed", providerRequestId: "req-2" },
+        durationMs: 7,
+        error: "purchase_failed"
+      }
+    }
+  });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(ctx.compactions.length, 1);
+  const failed = ctx.compactions[0].steps.find((step) => step.step === 2);
+  assert.equal(failed?.outcome, "failed");
+  assert.equal(failed?.proposalId, "p-2");
+  assert.deepEqual(failed?.outcomeData, { error: "purchase_failed", providerRequestId: "req-2" });
+});
+
 function validInput() {
   return {
     brand: "delivrix",
@@ -370,7 +393,7 @@ function createDeps(options: {
   compactions: Array<{
     intentId: string;
     finalStatus: string;
-    steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string }>;
+    steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string; outcomeData?: Record<string, unknown> }>;
   }>;
   verifyCount: number;
 } {
@@ -382,7 +405,7 @@ function createDeps(options: {
   const compactions: Array<{
     intentId: string;
     finalStatus: string;
-    steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string }>;
+    steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string; outcomeData?: Record<string, unknown> }>;
   }> = [];
   let verifyCount = 0;
 
@@ -439,7 +462,7 @@ function createDeps(options: {
         async compactIntent(input: {
           intentId: string;
           finalStatus: string;
-          steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string }>;
+          steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string; outcomeData?: Record<string, unknown> }>;
         }) {
           compactions.push(input);
           return { entriesWritten: input.steps.length };
