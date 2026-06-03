@@ -29,6 +29,23 @@ test("handleReadEpisodicScratchHttp returns redacted scratch rows by intent", as
   assert.deepEqual(body.entries[0].outcomeData.nested, { token: "[redacted]", visible: "kept" });
 });
 
+test("handleReadEpisodicScratchHttp preserves scratch Date fields as ISO strings", async () => {
+  const pool = new MemoryScratchPool();
+  await insertEpisodicEntry(pool, entry());
+  const { request, response, getResponse } = createInternalHttpAdapter({
+    method: "GET",
+    url: "/v1/openclaw/scratch?intentId=intent-1"
+  });
+
+  await handleReadEpisodicScratchHttp({ request, response, pool });
+
+  const captured = getResponse();
+  assert.equal(captured.statusCode, 200);
+  const body = captured.body as { entries: Array<{ createdAt: string; ttlExpiresAt: string }> };
+  assert.match(body.entries[0].createdAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(body.entries[0].ttlExpiresAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
 test("handleReadEpisodicScratchHttp enforces read boundary token when configured", async () => {
   const pool = new MemoryScratchPool();
   const { request, response, getResponse } = createInternalHttpAdapter({
