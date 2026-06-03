@@ -306,7 +306,7 @@ import {
   validateSkillActionBinding
 } from "./skill-contracts.ts";
 
-const port = Number(process.env.GATEWAY_PORT ?? 3000);
+const port = positiveIntegerOrDefault(process.env.GATEWAY_PORT, 3000);
 const host = process.env.GATEWAY_HOST ?? "127.0.0.1";
 const gatewayRuntimeLog = createGatewayRuntimeLogger();
 installGatewayProcessGuards(gatewayRuntimeLog);
@@ -390,7 +390,7 @@ const configureSmtpToolProcessor = createHttpToolUseProcessor({
   delivrixBaseUrl: gatewaySelfBaseUrl,
   env: process.env,
   readBoundaryToken: sensitiveReadBoundaryToken,
-  pollIntervalMs: Number(process.env.OPENCLAW_CONFIGURE_SMTP_POLL_INTERVAL_MS ?? 1_000),
+  pollIntervalMs: positiveIntegerOrDefault(process.env.OPENCLAW_CONFIGURE_SMTP_POLL_INTERVAL_MS, 1_000),
   logger: gatewayRuntimeLog
 });
 const configureSmtpRuntimeDeps = {
@@ -567,11 +567,11 @@ const openClawChatProxy = new OpenClawChatProxy(auditLog, {
   localFallbackEnabled: process.env.OPENCLAW_CHAT_LOCAL_FALLBACK !== "0",
   canvasLiveEvents
 });
-const defaultStuckJobThresholdMs = Number(process.env.STUCK_JOB_THRESHOLD_MS ?? 5 * 60 * 1000);
+const defaultStuckJobThresholdMs = positiveIntegerOrDefault(process.env.STUCK_JOB_THRESHOLD_MS, 5 * 60 * 1000);
 const requestRateLimitProfile = {
-  campaignDailyLimit: Number(process.env.RATE_LIMIT_CAMPAIGN_DAILY ?? 100),
-  senderDomainDailyLimit: Number(process.env.RATE_LIMIT_SENDER_DOMAIN_DAILY ?? 300),
-  recipientDomainDailyLimit: Number(process.env.RATE_LIMIT_RECIPIENT_DOMAIN_DAILY ?? 100)
+  campaignDailyLimit: positiveIntegerOrDefault(process.env.RATE_LIMIT_CAMPAIGN_DAILY, 100),
+  senderDomainDailyLimit: positiveIntegerOrDefault(process.env.RATE_LIMIT_SENDER_DOMAIN_DAILY, 300),
+  recipientDomainDailyLimit: positiveIntegerOrDefault(process.env.RATE_LIMIT_RECIPIENT_DOMAIN_DAILY, 100)
 };
 
 interface AgentProposal {
@@ -5163,7 +5163,7 @@ server.listen(port, host, () => {
       auditLog,
       canvasLiveEvents,
       logger: gatewayRuntimeLog,
-      intervalMs: Number(process.env.OPENCLAW_EPISODIC_SCRATCH_TTL_INTERVAL_MS ?? 6 * 60 * 60 * 1000)
+      intervalMs: positiveIntegerOrDefault(process.env.OPENCLAW_EPISODIC_SCRATCH_TTL_INTERVAL_MS, 6 * 60 * 60 * 1000)
     });
   }
 });

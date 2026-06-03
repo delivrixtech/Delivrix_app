@@ -31,8 +31,10 @@ npm run db:seed
 Esto borra el volumen local `delivrix_postgres_data`.
 
 ```bash
-npm run db:reset
+DELIVRIX_CONFIRM_RESET=1 npm run db:reset
 ```
+
+En una terminal interactiva tambien se puede ejecutar `npm run db:reset` y confirmar escribiendo `RESET`. El script se niega a correr con `NODE_ENV=production`.
 
 ## Conexión psql interactiva
 
@@ -58,7 +60,9 @@ docker run --rm -v delivrix_postgres_data:/data -v "$(pwd)/backups:/backup" alpi
 
 ```bash
 POSTGRES_URL=postgres://delivrix:delivrix_dev_password@localhost:5432/delivrix_mailops
+POSTGRES_CONTAINER=delivrix-postgres
 REDIS_URL=redis://localhost:6379
 ```
 
 El gateway usa estos defaults en desarrollo si las variables no existen.
+Los scripts DB usan el contenedor local cuando `POSTGRES_CONTAINER` apunta al compose local; si `POSTGRES_URL` apunta a un host no local y no se define `POSTGRES_CONTAINER`, ejecutan `psql` directo contra esa URL.
