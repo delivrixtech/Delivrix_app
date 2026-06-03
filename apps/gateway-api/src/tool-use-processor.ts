@@ -11,6 +11,7 @@ import {
   summarizeOperationalParams,
   type GatewayRuntimeLogger
 } from "./gateway-runtime-log.ts";
+import { stableStringify } from "../../../packages/storage/src/stable-stringify.ts";
 
 type FetchLike = typeof fetch;
 
@@ -898,18 +899,6 @@ function truncateToolResult(value: unknown): unknown {
     maxChars: maxToolResultJsonChars,
     preview: raw.slice(0, maxToolResultJsonChars)
   };
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "undefined";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(",")}]`;
-  }
-  const entries = Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left.localeCompare(right));
-  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

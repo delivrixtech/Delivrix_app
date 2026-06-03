@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { defaultPostgresContainer, defaultPostgresUrl, postgresConfig } from "./common.mjs";
-import { insertEpisodicEntry } from "../../packages/storage/src/index.ts";
+import { insertEpisodicEntry, stableStringify } from "../../packages/storage/src/index.ts";
 
 const { Pool } = pg;
 const localHosts = new Set(["localhost", "127.0.0.1", "::1", "postgres", defaultPostgresContainer]);
@@ -227,7 +227,7 @@ function operatorFact(secret, slug, reliability, outcomeData) {
   };
 }
 
-function observation(tool, outcome, slug, daysAgo, reliability, outcomeData) {
+function observation(tool, outcome, slug, daysAgo, _reliability, outcomeData) {
   return {
     intentId: `seed-episodic-${slug}`,
     step: 1,
@@ -237,7 +237,6 @@ function observation(tool, outcome, slug, daysAgo, reliability, outcomeData) {
     outcomeData,
     source: "openclaw",
     plane: "observation",
-    reliability,
     validAt: new Date(seedNow.getTime() - daysAgo * 24 * 60 * 60 * 1000),
     ttlDays: 30,
     provenance: {},
@@ -261,15 +260,6 @@ function hash(value) {
 
 function hashJson(value) {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
-}
-
-function stableStringify(value) {
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined";
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  return `{${Object.entries(value)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
-    .join(",")}}`;
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";

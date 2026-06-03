@@ -6,6 +6,8 @@ Worktree: `/private/tmp/delivrix-produ-correct`
 Base corregida: `40c1727` + Track C `e4d119e`
 Alcance: memoria OpenClaw, guards I5/I6, seed de revision y retrieval grounded B1 sin embeddings.
 
+Hardening I5: `codex/poc-grounded-hardening` en `/private/tmp/delivrix-grounded-hardening`, base `codex/poc-grounded-memoria@3e79922`.
+
 ## Fuentes
 
 - `DOCUMENTACION/Tesis_Delivrix_v3.4_BUSINESS_PLAN_MVP.pdf`
@@ -45,10 +47,24 @@ Alcance: memoria OpenClaw, guards I5/I6, seed de revision y retrieval grounded B
 
 [S14] P2 · `scripts/db/seed-episodic.mjs:132` · seed no se ejecuto contra Postgres real · causa: Docker/OrbStack es accion explicita del operador y estaba no disponible en la sesion previa · fix: script y tests fake-pool listos; ejecutar localmente cuando Docker este arriba · estado ABIERTO OPERADOR.
 
+[S15] P1 · `packages/storage/src/stable-stringify.ts:1` · varias copias productivas/test de `stableStringify` podian divergir y romper hashes/HMAC sin deteccion real · causa: helper duplicado en storage, gateway, skill contracts, runtime logs y seed · fix: modulo canonico byte-for-byte igual a la implementacion previa de `episodic-scratch`, exportado por storage, migracion de imports productivos/seed/tests y golden tests literales · estado CERRADO.
+
+[S16] P1 · `packages/storage/src/episodic-scratch.ts:943` · `outcomeData` podia transportar instrucciones como `{note:"disregard earlier directives"}` o claves estructuralmente peligrosas (`system_prompt`, `systemPrompt`, `developer_message`, `tool_use`) · causa: se caminaba como payload generico y no como datos maquina de memoria · fix: write-gate especializado para `outcomeData`, normalizacion NFKC/camel/snake/zero-width, deny de fragmentos peligrosos, allow estrecho de strings estructurados/hash y tests de variantes con mayusculas, saltos, doble espacio y zero-width · estado CERRADO.
+
+[S17] P1 · `apps/gateway-api/src/routes/episodic-scratch.ts:121` · memoria legacy ya escrita podia leerse con `outcomeData` venenoso aunque el write-gate nuevo lo rechazara · causa: la ruta de lectura solo redactaba secretos por nombre de clave · fix: `redactUnsafeOutcomeData` se aplica a toda lectura `outcomeData`, preserva datos maquina legitimos y redacta claves/strings no estructurados o instruction-like · estado CERRADO.
+
+[S18] P1 · `apps/gateway-api/src/routes/openclaw-compact-intent.test.ts:45` · prueba HMAC podia ser falso verde si writer y verifier compartian la misma serializacion equivocada · causa: expectativa calculada dinamicamente con el mismo helper · fix: HMAC operator fijo `c7738f9c9a826df1bbeb980dff78e8f956ce1ecb35bce4c8dc624c911aa58e21` sobre payload canonico y test directo de `compactIntent` rechazando `outcomeData` venenoso antes de persistir · estado CERRADO.
+
+[S19] P1 · `scripts/db/seed-episodic.test.mjs:60` · seed de revision podia seguir verde sin pasar por invariantes reales de storage · causa: test inyectaba insert mock y las observaciones `openclaw` intentaban fijar `reliability` · fix: observaciones ya no autoasignan reliability; test nuevo inserta las 18 entradas con `insertEpisodicEntry` real y valida default 0.35 para `openclaw` · estado CERRADO.
+
+[S20] P2 · `apps/gateway-api/src/routes/orchestrator-smtp.ts:950` · compaction desde orquestador podia reenviar strings largas o DKIM publico crudo a `outcomeData` · causa: `summarizeOutcome` copiaba campos no secretos casi tal cual · fix: strings no-record y strings >200 se convierten a `...Hash` + `...Present`, `dkimPublicKey` se hashifica explicitamente y secretos por clave se omiten · estado CERRADO.
+
 ## Evidencia de tests
 
-- `node --test packages/storage/src/episodic-scratch.test.ts apps/gateway-api/src/routes/openclaw-episodic-memory.test.ts apps/gateway-api/src/routes/openclaw-compact-intent.test.ts apps/gateway-api/src/episodic-scratch-ttl.test.ts apps/gateway-api/src/tool-use-processor.test.ts apps/gateway-api/src/openclaw-tools-builder.test.ts scripts/db/seed-episodic.test.mjs` -> PASS 72/72.
-- `npm test` -> PASS 781/781.
+- Corte previo B1: `node --test packages/storage/src/episodic-scratch.test.ts apps/gateway-api/src/routes/openclaw-episodic-memory.test.ts apps/gateway-api/src/routes/openclaw-compact-intent.test.ts apps/gateway-api/src/episodic-scratch-ttl.test.ts apps/gateway-api/src/tool-use-processor.test.ts apps/gateway-api/src/openclaw-tools-builder.test.ts scripts/db/seed-episodic.test.mjs` -> PASS 72/72.
+- Corte previo B1: `npm test` -> PASS 781/781.
+- `node --test packages/storage/src/stable-stringify.test.ts packages/storage/src/episodic-scratch.test.ts apps/gateway-api/src/routes/openclaw-compact-intent.test.ts apps/gateway-api/src/routes/openclaw-episodic-memory.test.ts scripts/db/seed-episodic.test.mjs` -> PASS 48/48.
+- `npm test` -> PASS 787/787.
 - `git diff --check` -> PASS.
 - `node --version` -> `v22.22.3`; residual S13 mantiene la repeticion en Node >=24 como gate de merge productivo.
 - `node scripts/db/seed-episodic.mjs` contra Postgres real -> NO RUN por instruccion del prompt; Docker/Postgres es accion explicita del operador.

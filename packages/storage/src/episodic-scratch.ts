@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { Pool } from "pg";
+import { stableStringify } from "./stable-stringify.ts";
 
 export type ScratchOutcome =
   | "success"
@@ -139,8 +140,58 @@ const planes: ScratchPlane[] = ["observation", "verified_fact"];
 const dayMs = 24 * 60 * 60 * 1000;
 const maxStructuredPayloadBytes = 16 * 1024;
 const injectionPattern =
-  /\b(ignore|disregard|forget|bypass|override|discard|drop)\s+(all\s+)?(previous|prior|earlier|system|developer)?\s*(instructions?|messages?|prompt|rules?)\b|\b(system\s+prompt|developer\s+message|jailbreak|you\s+are\s+now|exfiltrate|set\s+reliability|raise\s+trust|promote\s+(this\s+)?memory|treat\s+this\s+as\s+verified|override\s+governance|act\s+as\s+system)\b/i;
+  /\b(ignore|disregard|forget|bypass|override|discard|drop)\s+(all\s+)?(previous|prior|earlier|system|developer)?\s*(instructions?|directives?|messages?|prompt|rules?)\b|\b(system\s+prompt|developer\s+message|jailbreak|you\s+are\s+now|exfiltrate|set\s+reliability|raise\s+trust|promote\s+(this\s+)?memory|treat\s+this\s+as\s+verified|override\s+governance|act\s+as\s+system)\b/i;
 const zeroWidthPattern = /[\u200B-\u200D\uFEFF]/g;
+const zeroWidthPresencePattern = /[\u200B-\u200D\uFEFF]/;
+const structuredOutcomeStringPattern = /^[A-Za-z0-9][A-Za-z0-9_.:@/<>\-]{0,199}$/;
+const forbiddenOutcomeKeyFragments = [
+  "prompt",
+  "instruction",
+  "system",
+  "developer",
+  "assistant",
+  "messages",
+  "role",
+  "tooluse",
+  "token",
+  "secret",
+  "password",
+  "private",
+  "apikey",
+  "credential",
+  "authorization"
+];
+const outcomeStringAllowedKeys = new Set([
+  "appliesto",
+  "continuity",
+  "decisioncode",
+  "deliverystatus",
+  "dkimpublickeyhash",
+  "domain",
+  "error",
+  "invalidationreason",
+  "ipv4",
+  "messageid",
+  "mode",
+  "notecode",
+  "providerrequestid",
+  "recordtype",
+  "rejectioncode",
+  "retry",
+  "rollbackcode",
+  "schedule",
+  "serverip",
+  "serverslug",
+  "slug",
+  "status",
+  "value",
+  "zoneid"
+]);
+const outcomeStringArrayAllowedKeys = new Set([
+  "gates",
+  "messageids",
+  "reputationsignals"
+]);
 
 export class EpisodicScratchValidationError extends Error {
   readonly code: string;
@@ -549,7 +600,7 @@ function normalizeInsert(entry: InsertEntryInput): InsertEntryInput & {
   const inputHash = inputHashValue(entry.inputHash);
   const outcome = outcomeValue(entry.outcome);
 
-  assertStructuredPayload(entry.outcomeData, "outcomeData");
+  assertStructuredOutcomeData(entry.outcomeData, "outcomeData");
   assertStructuredPayload(metadata, "metadata");
   assertStructuredPayload(provenance, "provenance");
 
@@ -889,6 +940,18 @@ function assertStructuredPayload(value: unknown, field: string): void {
   walkPayload(value, field);
 }
 
+function assertStructuredOutcomeData(value: unknown, field: string): void {
+  if (value === undefined || value === null) return;
+  const serialized = JSON.stringify(value);
+  if (serialized.length > maxStructuredPayloadBytes) {
+    throw new EpisodicScratchValidationError(
+      `${field}_too_large`,
+      `${field} exceeds the episodic scratch write-gate size limit.`
+    );
+  }
+  walkOutcomeData(value, field, undefined);
+}
+
 function walkPayload(value: unknown, path: string): void {
   if (typeof value === "string") {
     assertStructuredText(value, path);
@@ -910,7 +973,54 @@ function walkPayload(value: unknown, path: string): void {
   }
 }
 
+function walkOutcomeData(value: unknown, path: string, parentKey: string | undefined): void {
+  if (typeof value === "string") {
+    assertStructuredOutcomeString(value, path, parentKey);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => walkOutcomeData(item, `${path}[${index}]`, parentKey));
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, item] of Object.entries(value)) {
+    assertStructuredOutcomeKey(key, `${path}.${key}`);
+    walkOutcomeData(item, `${path}.${key}`, key);
+  }
+}
+
+function assertStructuredOutcomeKey(key: string, path: string): void {
+  const normalized = normalizeMemoryKey(key);
+  if (forbiddenOutcomeKeyFragments.some((fragment) => normalized.includes(fragment))) {
+    throw new EpisodicScratchValidationError(
+      "memory_payload_free_text_forbidden",
+      `${path} is not allowed in episodic outcomeData.`
+    );
+  }
+}
+
+function assertStructuredOutcomeString(value: string, path: string, parentKey: string | undefined): void {
+  assertStructuredText(value, path);
+  const normalizedKey = normalizeMemoryKey(parentKey ?? "");
+  const allowed =
+    outcomeStringAllowedKeys.has(normalizedKey) ||
+    outcomeStringArrayAllowedKeys.has(normalizedKey) ||
+    isHashOutcomeString(normalizedKey, value);
+  if (!allowed || !isStructuredOutcomeString(value, normalizedKey)) {
+    throw new EpisodicScratchValidationError(
+      "memory_payload_free_text_forbidden",
+      `${path} must be structured machine data, not free text.`
+    );
+  }
+}
+
 function assertStructuredText(value: string, path: string): void {
+  if (zeroWidthPresencePattern.test(value)) {
+    throw new EpisodicScratchValidationError(
+      "memory_payload_instruction_injection",
+      `${path} contains invisible control characters and was rejected by the write gate.`
+    );
+  }
   if (injectionPattern.test(normalizeGuardText(value))) {
     throw new EpisodicScratchValidationError(
       "memory_payload_instruction_injection",
@@ -929,17 +1039,70 @@ function normalizeGuardText(value: string): string {
     .toLowerCase();
 }
 
+function normalizeMemoryKey(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(zeroWidthPattern, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_\-\s]+/g, "")
+    .toLowerCase();
+}
+
+function isStructuredOutcomeString(value: string, normalizedKey: string): boolean {
+  const trimmed = value.trim();
+  if (zeroWidthPresencePattern.test(value)) return false;
+  if (injectionPattern.test(normalizeGuardText(value))) return false;
+  if (!structuredOutcomeStringPattern.test(trimmed)) return false;
+  if (normalizedKey === "domain") {
+    return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(trimmed);
+  }
+  if (normalizedKey === "ipv4" || normalizedKey === "serverip") {
+    return /^(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?:\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}$/.test(trimmed);
+  }
+  if (normalizedKey === "recordtype") {
+    return /^(A|AAAA|CNAME|MX|TXT|NS|SOA|PTR|SRV|CAA)$/i.test(trimmed);
+  }
+  return true;
+}
+
+export function redactUnsafeOutcomeData(value: unknown): unknown {
+  return redactOutcomeDataValue(value, undefined);
+}
+
+function redactOutcomeDataValue(value: unknown, parentKey: string | undefined): unknown {
+  if (typeof value === "string") {
+    const normalizedKey = normalizeMemoryKey(parentKey ?? "");
+    const allowed =
+      outcomeStringAllowedKeys.has(normalizedKey) ||
+      outcomeStringArrayAllowedKeys.has(normalizedKey) ||
+      isHashOutcomeString(normalizedKey, value);
+    return allowed && isStructuredOutcomeString(value, normalizedKey) && !injectionPattern.test(normalizeGuardText(value))
+      ? value
+      : "[redacted]";
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactOutcomeDataValue(item, parentKey));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => {
+      const normalizedKey = normalizeMemoryKey(key);
+      if (forbiddenOutcomeKeyFragments.some((fragment) => normalizedKey.includes(fragment))) {
+        return [key, "[redacted]"];
+      }
+      return [key, redactOutcomeDataValue(item, key)];
+    })
+  );
+}
+
 function hashJson(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
 }
 
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined";
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  return `{${Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
-    .join(",")}}`;
+function isHashOutcomeString(normalizedKey: string, value: string): boolean {
+  return normalizedKey.endsWith("hash") && /^[a-f0-9]{64}$/i.test(value.trim());
 }
 
 interface ScoredEntry {

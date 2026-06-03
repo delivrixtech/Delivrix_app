@@ -1,5 +1,6 @@
 import { mkdir, appendFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { stableStringify } from "../../../packages/storage/src/stable-stringify.ts";
 
 export type GatewayRuntimeLogLevel = "info" | "warn" | "error";
 export type GatewayRuntimeLogMetadata = Record<string, unknown>;
@@ -150,18 +151,6 @@ function normalizeMetadataValue(value: unknown): unknown {
     return normalizeMetadata(value);
   }
   return value;
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "undefined";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(",")}]`;
-  }
-  const entries = Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left.localeCompare(right));
-  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`;
 }
 
 function normalizeEventName(value: string): string {

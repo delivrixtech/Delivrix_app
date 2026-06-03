@@ -9,6 +9,7 @@ import type {
 import {
   EpisodicScratchValidationError,
   insertEpisodicEntry,
+  stableStringify,
   type ScratchOutcome,
   type ScratchSource
 } from "../../../../packages/storage/src/index.ts";
@@ -418,15 +419,6 @@ function compactProvenanceForStep(
 
 function hashJson(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined";
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  return `{${Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
-    .join(",")}}`;
 }
 
 async function safeEmit(deps: CompactIntentDeps, event: CanvasLiveEvent): Promise<void> {
