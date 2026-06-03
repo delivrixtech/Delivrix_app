@@ -20,7 +20,10 @@ interface EpisodicScratchReadDeps {
 const secretKeyPattern = /token|secret|password|private|api[_-]?key|credential|authorization/i;
 
 export async function handleReadEpisodicScratchHttp(deps: EpisodicScratchReadDeps): Promise<void> {
-  if (deps.readBoundaryToken && deps.request.headers["x-delivrix-token"] !== deps.readBoundaryToken) {
+  if (!deps.readBoundaryToken) {
+    return json(deps.response, 401, { error: "read_boundary_token_required" });
+  }
+  if (deps.request.headers["x-delivrix-token"] !== deps.readBoundaryToken) {
     return json(deps.response, 401, { error: "read_boundary_token_invalid" });
   }
 

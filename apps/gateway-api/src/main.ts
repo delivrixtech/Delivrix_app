@@ -385,7 +385,8 @@ const rampScheduler = new RampScheduler({
   webhookBroadcaster: equipoWebhookBroadcaster
 });
 const gatewaySelfBaseUrl = process.env.DELIVRIX_GATEWAY_INTERNAL_BASE_URL ?? `http://${host}:${port}`;
-const sensitiveReadBoundaryToken = process.env.DELIVRIX_READ_BOUNDARY_TOKEN ?? process.env.DELIVRIX_OPENCLAW_TOKEN;
+const sensitiveReadBoundaryToken =
+  process.env.DELIVRIX_READ_BOUNDARY_TOKEN?.trim() || process.env.DELIVRIX_OPENCLAW_TOKEN?.trim();
 const configureSmtpToolProcessor = createHttpToolUseProcessor({
   delivrixBaseUrl: gatewaySelfBaseUrl,
   env: process.env,
@@ -1271,7 +1272,7 @@ const server = createServer(async (request, response) => {
         request,
         response,
         pool: episodicScratchPool,
-        readBoundaryToken: process.env.DELIVRIX_READ_BOUNDARY_TOKEN
+        readBoundaryToken: sensitiveReadBoundaryToken
       });
     }
 

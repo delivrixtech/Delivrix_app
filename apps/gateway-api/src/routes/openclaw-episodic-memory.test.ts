@@ -16,10 +16,16 @@ test("handleReadEpisodicScratchHttp returns redacted scratch rows by intent", as
   }));
   const { request, response, getResponse } = createInternalHttpAdapter({
     method: "GET",
-    url: "/v1/openclaw/scratch?intentId=intent-1"
+    url: "/v1/openclaw/scratch?intentId=intent-1",
+    headers: { "x-delivrix-token": "expected-token" }
   });
 
-  await handleReadEpisodicScratchHttp({ request, response, pool });
+  await handleReadEpisodicScratchHttp({
+    request,
+    response,
+    pool,
+    readBoundaryToken: "expected-token"
+  });
 
   const captured = getResponse();
   assert.equal(captured.statusCode, 200);
@@ -34,10 +40,16 @@ test("handleReadEpisodicScratchHttp preserves scratch Date fields as ISO strings
   await insertEpisodicEntry(pool, entry());
   const { request, response, getResponse } = createInternalHttpAdapter({
     method: "GET",
-    url: "/v1/openclaw/scratch?intentId=intent-1"
+    url: "/v1/openclaw/scratch?intentId=intent-1",
+    headers: { "x-delivrix-token": "expected-token" }
   });
 
-  await handleReadEpisodicScratchHttp({ request, response, pool });
+  await handleReadEpisodicScratchHttp({
+    request,
+    response,
+    pool,
+    readBoundaryToken: "expected-token"
+  });
 
   const captured = getResponse();
   assert.equal(captured.statusCode, 200);
@@ -61,6 +73,20 @@ test("handleReadEpisodicScratchHttp enforces read boundary token when configured
   });
 
   assert.equal(getResponse().statusCode, 401);
+});
+
+test("handleReadEpisodicScratchHttp fails closed when no read boundary token is configured", async () => {
+  const pool = new MemoryScratchPool();
+  const { request, response, getResponse } = createInternalHttpAdapter({
+    method: "GET",
+    url: "/v1/openclaw/scratch?intentId=intent-1"
+  });
+
+  await handleReadEpisodicScratchHttp({ request, response, pool });
+
+  const captured = getResponse();
+  assert.equal(captured.statusCode, 401);
+  assert.equal((captured.body as { error: string }).error, "read_boundary_token_required");
 });
 
 test("compactIntent writes entries and appends hash-only audit metadata", async () => {
@@ -318,6 +344,11 @@ interface MemoryRow {
   error_message: string | null;
   source: string;
   trust_score: number;
+  plane: string;
+  provenance: Record<string, unknown>;
+  reliability: number;
+  valid_at: Date;
+  invalid_at: Date | null;
   ttl_expires_at: Date;
   created_at: Date;
   metadata: Record<string, unknown>;
@@ -330,7 +361,7 @@ class MemoryScratchPool {
 
   async query(sql: string, params: unknown[] = []): Promise<{ rows: MemoryRow[]; rowCount: number }> {
     if (sql.includes("INSERT INTO openclaw_episodic_scratch")) {
-      const ttlDays = Number(params[10]);
+      const ttlDays = Number(params[15]);
       const row: MemoryRow = {
         id: `scratch-${++this.#id}`,
         intent_id: String(params[0]),
@@ -343,15 +374,20 @@ class MemoryScratchPool {
         error_message: typeof params[7] === "string" ? params[7] : null,
         source: String(params[8]),
         trust_score: Number(params[9]),
+        plane: String(params[10]),
+        provenance: parseJsonRecord(params[11]) ?? {},
+        reliability: Number(params[12]),
+        valid_at: params[13] instanceof Date ? params[13] : new Date(String(params[13])),
+        invalid_at: params[14] instanceof Date ? params[14] : null,
         ttl_expires_at: new Date(this.now.getTime() + ttlDays * 24 * 60 * 60 * 1000),
         created_at: new Date(this.now.getTime() + this.#id),
-        metadata: parseJsonRecord(params[11]) ?? {}
+        metadata: parseJsonRecord(params[16]) ?? {}
       };
       this.rows.push(row);
       return { rows: [row], rowCount: 1 };
     }
 
-    let rows = this.rows.filter((row) => row.ttl_expires_at > this.now);
+    let rows = this.rows.filter((row) => row.ttl_expires_at > this.now && !row.invalid_at);
     if (sql.includes("intent_id = $1")) {
       rows = rows.filter((row) => row.intent_id === params[0]);
       rows.sort((left, right) => left.step - right.step || left.created_at.getTime() - right.created_at.getTime());
@@ -365,7 +401,8 @@ class MemoryScratchPool {
       rows = rows.filter((row) => row.tool === params[0] && row.outcome === params[1]);
       return { rows, rowCount: rows.length };
     }
-    if (sql.includes("ORDER BY (trust_score * 100")) {
+    if (sql.includes("plane = 'verified_fact'")) {
+      rows = rows.filter((row) => row.plane === "verified_fact");
       return { rows, rowCount: rows.length };
     }
     return { rows: [], rowCount: 0 };

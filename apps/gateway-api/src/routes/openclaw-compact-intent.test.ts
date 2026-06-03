@@ -34,6 +34,12 @@ test("compactIntent marks operator memory only after matching a signed audit eve
   assert.equal(output.entriesWritten, 1);
   assert.equal(ctx.pool.rows[0].source, "operator");
   assert.equal(ctx.pool.rows[0].trust_score, 95);
+  assert.equal(ctx.pool.rows[0].plane, "verified_fact");
+  assert.deepEqual(ctx.pool.rows[0].provenance, {
+    kind: "operator_signature",
+    signatureId: "sig_verified",
+    proposalId: "proposal-1"
+  });
   assert.deepEqual(ctx.pool.rows[0].metadata, {
     intentFinalStatus: "completed",
     decisionHash: ctx.pool.rows[0].metadata.decisionHash,
@@ -211,6 +217,11 @@ interface MemoryRow {
   error_message: string | null;
   source: string;
   trust_score: number;
+  plane: string;
+  provenance: Record<string, unknown>;
+  reliability: number;
+  valid_at: Date;
+  invalid_at: Date | null;
   ttl_expires_at: Date;
   created_at: Date;
   metadata: Record<string, unknown>;
@@ -226,7 +237,7 @@ class MemoryScratchPool {
       throw new Error(`Unexpected SQL in compact intent test: ${sql}`);
     }
 
-    const ttlDays = Number(params[10]);
+    const ttlDays = Number(params[15]);
     const row: MemoryRow = {
       id: `scratch-${++this.#id}`,
       intent_id: String(params[0]),
@@ -239,8 +250,13 @@ class MemoryScratchPool {
       error_message: typeof params[7] === "string" ? params[7] : null,
       source: String(params[8]),
       trust_score: Number(params[9]),
+      plane: String(params[10]),
+      provenance: typeof params[11] === "string" ? JSON.parse(params[11]) : {},
+      reliability: Number(params[12]),
+      valid_at: params[13] instanceof Date ? params[13] : new Date(String(params[13])),
+      invalid_at: params[14] instanceof Date ? params[14] : null,
       ttl_expires_at: new Date(this.now.getTime() + ttlDays * 24 * 60 * 60 * 1000),
-      metadata: typeof params[11] === "string" ? JSON.parse(params[11]) : {},
+      metadata: typeof params[16] === "string" ? JSON.parse(params[16]) : {},
       created_at: new Date(this.now.getTime() + this.#id)
     };
     this.rows.push(row);
