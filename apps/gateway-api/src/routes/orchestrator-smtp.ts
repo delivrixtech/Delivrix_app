@@ -700,11 +700,22 @@ async function runGatedStep(input: {
     error: "error" in decision ? decision.error : undefined,
     outcome: "outcome" in decision ? decision.outcome : undefined
   });
+  const failureMessage = "error" in decision ? decision.error ?? "execution_failed" : "execution_failed";
+  input.stepResults.push({
+    step: input.step,
+    skill: input.skill,
+    inputHash,
+    proposalId: decision.proposalId,
+    outcome: "outcome" in decision ? decision.outcome ?? { error: failureMessage } : { error: failureMessage },
+    durationMs: "durationMs" in decision ? decision.durationMs : 0,
+    ...("signatureId" in decision && decision.signatureId ? { signatureId: decision.signatureId } : {}),
+    ...(input.estimatedCostUsd === undefined ? {} : { estimatedCostUsd: input.estimatedCostUsd })
+  });
   throw new OrchestratorFailure(
     "failed",
     input.step,
     input.skill,
-    "error" in decision ? decision.error ?? "execution_failed" : "execution_failed",
+    failureMessage,
     decision.proposalId,
     inputHash
   );
@@ -869,16 +880,7 @@ async function compactRunIntent(
   }
 ): Promise<void> {
   if (!deps.compactIntent) return;
-  const steps: CompactIntentStepInput[] = input.stepResults.map((step) => ({
-    step: step.step,
-    tool: step.skill,
-    inputHash: step.inputHash,
-    outcome: "success" as const,
-    outcomeData: summarizeOutcome(step.outcome),
-    durationMs: step.durationMs,
-    ...(step.proposalId ? { proposalId: step.proposalId } : {}),
-    ...(step.signatureId ? { signatureId: step.signatureId } : {})
-  }));
+  const steps: CompactIntentStepInput[] = input.stepResults.map((step) => compactStepFromResult(step, input.failure));
   const failureAlreadyRecorded = input.failure
     ? steps.some((step) => step.step === input.failure?.step && step.tool === input.failure?.skill)
     : true;
@@ -910,6 +912,32 @@ async function compactRunIntent(
       error: errorMessage(error)
     });
   }
+}
+
+function compactStepFromResult(
+  step: ConfigureCompleteSmtpStepResult,
+  failure: OrchestratorFailure | undefined
+): CompactIntentStepInput {
+  const isFailureStep = failure && step.step === failure.step && step.skill === failure.skill;
+  const isAfterFailure = failure && step.step > failure.step;
+  return {
+    step: step.step,
+    tool: step.skill,
+    inputHash: step.inputHash,
+    outcome: isFailureStep ? failureOutcome(failure) : isAfterFailure ? "partial" : "success",
+    outcomeData: summarizeOutcome(step.outcome),
+    durationMs: step.durationMs,
+    ...(isFailureStep ? {
+      errorClass: failure.status,
+      errorMessage: failure.message
+    } : {}),
+    ...(isAfterFailure ? {
+      errorClass: "not_executed_after_failure",
+      errorMessage: `Step ${step.step} was recorded after failure at step ${failure.step}.`
+    } : {}),
+    ...(step.proposalId ? { proposalId: step.proposalId } : {}),
+    ...(step.signatureId ? { signatureId: step.signatureId } : {})
+  };
 }
 
 function failureOutcome(failure: OrchestratorFailure): "failed" | "cancelled_by_operator" | "timeout" {
