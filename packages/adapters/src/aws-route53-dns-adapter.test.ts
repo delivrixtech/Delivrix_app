@@ -140,6 +140,104 @@ test("AwsRoute53DnsAdapter deletes records before deleting hosted zone", async (
   assert.equal(result.deleteChangeId, "CZONE");
 });
 
+test("AwsRoute53DnsAdapter lists resource records across Route53 cursors", async () => {
+  const calls: string[] = [];
+  const adapter = new AwsRoute53DnsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    writeEnabled: true,
+    fetchImpl: (async (url: string | URL | Request) => {
+      calls.push(url.toString());
+      if (calls.length === 1) {
+        return xmlResponse([
+          "<ListResourceRecordSetsResponse>",
+          "<ResourceRecordSets>",
+          "<ResourceRecordSet><Name>a.delivrix-mail.com.</Name><Type>A</Type><TTL>300</TTL><ResourceRecords><ResourceRecord><Value>192.0.2.10</Value></ResourceRecord></ResourceRecords></ResourceRecordSet>",
+          "</ResourceRecordSets>",
+          "<IsTruncated>true</IsTruncated>",
+          "<NextRecordName>txt.delivrix-mail.com.</NextRecordName>",
+          "<NextRecordType>TXT</NextRecordType>",
+          "<NextRecordIdentifier>weighted-a</NextRecordIdentifier>",
+          "</ListResourceRecordSetsResponse>"
+        ].join(""));
+      }
+      return xmlResponse([
+        "<ListResourceRecordSetsResponse>",
+        "<ResourceRecordSets>",
+        "<ResourceRecordSet><Name>txt.delivrix-mail.com.</Name><Type>TXT</Type><TTL>300</TTL><ResourceRecords><ResourceRecord><Value>&quot;ok&quot;</Value></ResourceRecord></ResourceRecords></ResourceRecordSet>",
+        "</ResourceRecordSets>",
+        "<IsTruncated>false</IsTruncated>",
+        "</ListResourceRecordSetsResponse>"
+      ].join(""));
+    }) as typeof fetch,
+    now: () => fixedNow
+  });
+
+  const records = await adapter.listResourceRecordSets("Z123456789");
+
+  assert.deepEqual(records.map((record) => record.name), ["a.delivrix-mail.com.", "txt.delivrix-mail.com."]);
+  const cursorUrl = new URL(calls[1]);
+  assert.equal(cursorUrl.searchParams.get("maxitems"), "100");
+  assert.equal(cursorUrl.searchParams.get("name"), "txt.delivrix-mail.com.");
+  assert.equal(cursorUrl.searchParams.get("type"), "TXT");
+  assert.equal(cursorUrl.searchParams.get("identifier"), "weighted-a");
+});
+
+test("AwsRoute53DnsAdapter deletes hosted zone records from all listed pages", async () => {
+  const calls: Array<{ method: string | undefined; url: string; body: string | undefined }> = [];
+  const adapter = new AwsRoute53DnsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    writeEnabled: true,
+    fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        method: init?.method,
+        url: url.toString(),
+        body: init?.body?.toString()
+      });
+      const getCalls = calls.filter((call) => call.method === "GET").length;
+      if (init?.method === "GET" && getCalls === 1) {
+        return xmlResponse([
+          "<ListResourceRecordSetsResponse>",
+          "<ResourceRecordSets>",
+          "<ResourceRecordSet><Name>a.delivrix-mail.com.</Name><Type>A</Type><TTL>300</TTL><ResourceRecords><ResourceRecord><Value>192.0.2.10</Value></ResourceRecord></ResourceRecords></ResourceRecordSet>",
+          "</ResourceRecordSets>",
+          "<IsTruncated>true</IsTruncated>",
+          "<NextRecordName>mx.delivrix-mail.com.</NextRecordName>",
+          "<NextRecordType>MX</NextRecordType>",
+          "</ListResourceRecordSetsResponse>"
+        ].join(""));
+      }
+      if (init?.method === "GET") {
+        return xmlResponse([
+          "<ListResourceRecordSetsResponse>",
+          "<ResourceRecordSets>",
+          "<ResourceRecordSet><Name>mx.delivrix-mail.com.</Name><Type>MX</Type><TTL>300</TTL><ResourceRecords><ResourceRecord><Value>10 mail.delivrix-mail.com.</Value></ResourceRecord></ResourceRecords></ResourceRecordSet>",
+          "</ResourceRecordSets>",
+          "<IsTruncated>false</IsTruncated>",
+          "</ListResourceRecordSetsResponse>"
+        ].join(""));
+      }
+      if (init?.method === "POST") {
+        return xmlResponse("<ChangeResourceRecordSetsResponse><ChangeInfo><Id>/change/CDELETE</Id></ChangeInfo></ChangeResourceRecordSetsResponse>");
+      }
+      return xmlResponse("<DeleteHostedZoneResponse><ChangeInfo><Id>/change/CZONE</Id></ChangeInfo></DeleteHostedZoneResponse>");
+    }) as typeof fetch,
+    now: () => fixedNow
+  });
+
+  const result = await adapter.deleteHostedZone("Z123456789");
+
+  assert.equal(calls[0].method, "GET");
+  assert.equal(calls[1].method, "GET");
+  assert.equal(calls[2].method, "POST");
+  assert.equal(calls[3].method, "POST");
+  assert.equal(calls[4].method, "DELETE");
+  assert.equal(result.deletedRecords.length, 2);
+  assert.match(calls[2].body ?? "", /<Name>a\.delivrix-mail\.com\.<\/Name>/);
+  assert.match(calls[3].body ?? "", /<Name>mx\.delivrix-mail\.com\.<\/Name>/);
+});
+
 test("AwsRoute53DnsAdapter blocks writes when write flag is disabled", async () => {
   let fetchCalled = false;
   const adapter = new AwsRoute53DnsAdapter({
