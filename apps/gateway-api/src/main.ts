@@ -73,6 +73,7 @@ import {
   simulateBackup,
   simulateSendResult,
   type AuditEvent,
+  type AuditEventInput,
   type BackupPlanInput,
   type BackupResource,
   type BackupResourceSnapshot,
@@ -3245,31 +3246,44 @@ const server = createServer(async (request, response) => {
 
       for (const incoming of body.events) {
         try {
-          const expectedPrev = auditLog.getLastHashSync();
-          if (typeof incoming.prevHash === "string" && incoming.prevHash && incoming.prevHash !== expectedPrev) {
-            await auditLog.append({
-              actorType: "system",
-              actorId: "gateway-api",
-              action: "oc.audit.chain_continuity_drift",
-              targetType: "audit_event",
-              targetId: typeof incoming.id === "string" ? incoming.id : "unknown",
-              riskLevel: "medium",
-              decision: "n/a",
-              metadata: {
-                expectedPrev,
-                agentClaimedPrev: incoming.prevHash,
-                note: "Gateway recalcula prevHash; el del agente es referencial."
-              }
-            });
-          }
-
+          const claimedPrev = typeof incoming.prevHash === "string" && incoming.prevHash ? incoming.prevHash : null;
           const hardened = hardenIncomingAuditBatchEvent(incoming as Record<string, unknown>, {
             caller: {
               actorType: "openclaw",
               actorId: process.env.OPENCLAW_AUDIT_CALLER_ID ?? "openclaw-hostinger-prod"
             }
           });
-          const persisted = await auditLog.append(hardened.event);
+          const persistedEventId = isUuid(hardened.event.id) ? hardened.event.id : randomUUID();
+          const hardenedEvent: AuditEventInput = {
+            ...hardened.event,
+            id: persistedEventId
+          };
+          const appended = await auditLog.appendMany((expectedPrev) => {
+            const events: AuditEventInput[] = [hardenedEvent];
+            if (claimedPrev && claimedPrev !== expectedPrev) {
+              events.push({
+                actorType: "system",
+                actorId: "gateway-api",
+                action: "oc.audit.chain_continuity_drift",
+                targetType: "audit_event",
+                targetId: persistedEventId,
+                riskLevel: "medium",
+                decision: "n/a",
+                metadata: {
+                  expectedPrev,
+                  agentClaimedPrev: claimedPrev,
+                  incomingEventId: typeof incoming.id === "string" ? incoming.id : null,
+                  note: "Gateway recalcula prevHash; el del agente es referencial."
+                }
+              });
+            }
+            return events;
+          });
+          const persisted = appended.at(0);
+          if (!persisted) {
+            throw new Error("audit batch append produced no event");
+          }
+
           accepted.push(persisted.id);
         } catch (error) {
           const reason = error instanceof InvalidAuditEventError ? "schema_mismatch" : "gateway_internal_error";

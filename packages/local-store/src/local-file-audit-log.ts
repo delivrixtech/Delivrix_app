@@ -17,44 +17,44 @@ import {
   InvalidAuditEventError,
   validateAuditEvent
 } from "../../../apps/gateway-api/src/audit/schema.ts";
-
-class AsyncMutex {
-  private current = Promise.resolve();
-
-  async runExclusive<T>(fn: () => Promise<T>): Promise<T> {
-    const previous = this.current;
-    let release: () => void = () => undefined;
-    this.current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await fn();
-    } finally {
-      release();
-    }
-  }
-}
+import { withFileLock } from "./json-file-store.ts";
 
 export { InvalidAuditEventError };
 
 export class LocalFileAuditLog {
   private readonly filePath: string;
-  private readonly writeMutex = new AsyncMutex();
 
   constructor(filePath = process.env.LOCAL_AUDIT_LOG_FILE ?? ".audit/audit-events.jsonl") {
     this.filePath = resolve(filePath);
   }
 
   async append(input: AuditEventInput): Promise<AuditEvent> {
-    return this.writeMutex.runExclusive(async () => {
-      const prevHash = await this.readLastHashFromDisk();
-      const event = this.fillDefaults(input, prevHash);
-      event.hash = computeAuditHash(event as unknown as Record<string, unknown>, prevHash);
-      validateAuditEvent(event);
+    const [event] = await this.appendMany([input]);
+    if (!event) {
+      throw new Error("audit append produced no event");
+    }
+    return event;
+  }
 
-      await this.appendLine(JSON.stringify(event));
-      return event;
+  async appendMany(inputs: AuditEventInput[] | ((prevHash: string) => AuditEventInput[])): Promise<AuditEvent[]> {
+    return withFileLock(this.filePath, async () => {
+      let prevHash = await this.readLastHashFromDisk();
+      const resolvedInputs = typeof inputs === "function" ? inputs(prevHash) : inputs;
+      const events: AuditEvent[] = [];
+
+      for (const input of resolvedInputs) {
+        const event = this.fillDefaults(input, prevHash);
+        event.hash = computeAuditHash(event as unknown as Record<string, unknown>, prevHash);
+        validateAuditEvent(event);
+        events.push(event);
+        prevHash = event.hash;
+      }
+
+      if (events.length > 0) {
+        await this.appendLines(events.map((event) => JSON.stringify(event)));
+      }
+
+      return events;
     });
   }
 
@@ -134,9 +134,9 @@ export class LocalFileAuditLog {
     };
   }
 
-  private async appendLine(line: string): Promise<void> {
+  private async appendLines(lines: string[]): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
-    await appendFile(this.filePath, `${line}\n`, "utf8");
+    await appendFile(this.filePath, `${lines.join("\n")}\n`, "utf8");
   }
 
   private async readLastHashFromDisk(): Promise<string> {
