@@ -41,7 +41,6 @@ export { InvalidAuditEventError };
 export class LocalFileAuditLog {
   private readonly filePath: string;
   private readonly writeMutex = new AsyncMutex();
-  private lastHash: string | null = null;
 
   constructor(filePath = process.env.LOCAL_AUDIT_LOG_FILE ?? ".audit/audit-events.jsonl") {
     this.filePath = resolve(filePath);
@@ -49,13 +48,12 @@ export class LocalFileAuditLog {
 
   async append(input: AuditEventInput): Promise<AuditEvent> {
     return this.writeMutex.runExclusive(async () => {
-      const prevHash = this.lastHash ?? await this.readLastHashFromDisk();
+      const prevHash = await this.readLastHashFromDisk();
       const event = this.fillDefaults(input, prevHash);
       event.hash = computeAuditHash(event as unknown as Record<string, unknown>, prevHash);
       validateAuditEvent(event);
 
       await this.appendLine(JSON.stringify(event));
-      this.lastHash = event.hash;
       return event;
     });
   }
@@ -82,10 +80,6 @@ export class LocalFileAuditLog {
   }
 
   getLastHashSync(): string {
-    if (this.lastHash) {
-      return this.lastHash;
-    }
-
     if (!existsSync(this.filePath)) {
       return GENESIS_PREV_HASH;
     }
