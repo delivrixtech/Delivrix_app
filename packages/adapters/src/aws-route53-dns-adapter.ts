@@ -25,6 +25,14 @@ export interface AwsRoute53ResourceRecordSet {
   values: string[];
 }
 
+interface AwsRoute53ResourceRecordSetPage {
+  records: AwsRoute53ResourceRecordSet[];
+  isTruncated: boolean;
+  nextRecordName?: string;
+  nextRecordType?: string;
+  nextRecordIdentifier?: string;
+}
+
 export interface AwsRoute53DeleteHostedZoneResult {
   zoneId: string;
   deletedRecords: Array<AwsRoute53DnsRecordInput & AwsRoute53DnsChangeResult>;
@@ -182,11 +190,34 @@ export class AwsRoute53DnsAdapter {
     if (!normalizedZoneId) {
       throw new Error(`Invalid Route53 hosted zone id: ${zoneId}`);
     }
-    const response = await this.awsXml(
-      "GET",
-      `/${API_VERSION}/hostedzone/${encodeURIComponent(normalizedZoneId)}/rrset?maxitems=100`
-    );
-    return parseResourceRecordSets(response);
+    const records: AwsRoute53ResourceRecordSet[] = [];
+    let startRecordName: string | undefined;
+    let startRecordType: string | undefined;
+    let startRecordIdentifier: string | undefined;
+
+    while (true) {
+      const query = new URLSearchParams();
+      query.set("maxitems", "100");
+      if (startRecordName) query.set("name", startRecordName);
+      if (startRecordType) query.set("type", startRecordType);
+      if (startRecordIdentifier) query.set("identifier", startRecordIdentifier);
+      const response = await this.awsXml(
+        "GET",
+        `/${API_VERSION}/hostedzone/${encodeURIComponent(normalizedZoneId)}/rrset?${query.toString()}`
+      );
+      const page = parseResourceRecordSetsPage(response);
+      records.push(...page.records);
+
+      if (!page.isTruncated) {
+        return records;
+      }
+      if (!page.nextRecordName || !page.nextRecordType) {
+        throw new Error("AWS Route53 ListResourceRecordSets response was truncated without next record cursor.");
+      }
+      startRecordName = page.nextRecordName;
+      startRecordType = page.nextRecordType;
+      startRecordIdentifier = page.nextRecordIdentifier;
+    }
   }
 
   async deleteHostedZone(
@@ -389,6 +420,16 @@ function parseResourceRecordSets(xml: string): AwsRoute53ResourceRecordSet[] {
       values: xmlValues(block, "Value")
     };
   }).filter((record) => record.name && record.type);
+}
+
+function parseResourceRecordSetsPage(xml: string): AwsRoute53ResourceRecordSetPage {
+  return {
+    records: parseResourceRecordSets(xml),
+    isTruncated: (firstXmlValue(xml, "IsTruncated") ?? "false").toLowerCase() === "true",
+    nextRecordName: firstXmlValue(xml, "NextRecordName"),
+    nextRecordType: firstXmlValue(xml, "NextRecordType"),
+    nextRecordIdentifier: firstXmlValue(xml, "NextRecordIdentifier")
+  };
 }
 
 function isDeletableRecord(record: AwsRoute53ResourceRecordSet): record is AwsRoute53DnsRecordInput {
