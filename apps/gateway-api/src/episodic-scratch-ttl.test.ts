@@ -5,6 +5,7 @@ import { runEpisodicScratchTtlJob } from "./episodic-scratch-ttl.ts";
 
 test("runEpisodicScratchTtlJob expires old rows and emits audit/canvas when work happened", async () => {
   const pool = new MemoryScratchPool();
+  pool.now = new Date("2026-06-01T12:00:00.000Z");
   await insertEpisodicEntry(pool, entry({ intentId: "old" }));
   await insertEpisodicEntry(pool, entry({ intentId: "new" }));
   pool.rows[0].ttl_expires_at = new Date("2026-06-01T11:00:00.000Z");
@@ -68,10 +69,13 @@ interface MemoryRow {
 
 class MemoryScratchPool {
   rows: MemoryRow[] = [];
+  now = new Date();
+  deleteSql?: string;
   #id = 0;
 
   async query(sql: string, params: unknown[] = []): Promise<{ rows: MemoryRow[]; rowCount: number }> {
     if (sql.includes("INSERT INTO openclaw_episodic_scratch")) {
+      const ttlDays = Number(params[10]);
       const row: MemoryRow = {
         id: `scratch-${++this.#id}`,
         intent_id: String(params[0]),
@@ -84,7 +88,7 @@ class MemoryScratchPool {
         error_message: typeof params[7] === "string" ? params[7] : null,
         source: String(params[8]),
         trust_score: Number(params[9]),
-        ttl_expires_at: params[10] instanceof Date ? params[10] : new Date(String(params[10])),
+        ttl_expires_at: new Date(this.now.getTime() + ttlDays * 24 * 60 * 60 * 1000),
         created_at: new Date(Date.now() + this.#id),
         metadata: parseJsonRecord(params[11]) ?? {}
       };
@@ -93,9 +97,9 @@ class MemoryScratchPool {
     }
 
     if (sql.includes("DELETE FROM openclaw_episodic_scratch")) {
-      const before = params[0] instanceof Date ? params[0] : new Date(String(params[0]));
-      const deleted = this.rows.filter((row) => row.ttl_expires_at < before);
-      this.rows = this.rows.filter((row) => row.ttl_expires_at >= before);
+      this.deleteSql = sql;
+      const deleted = this.rows.filter((row) => row.ttl_expires_at <= this.now);
+      this.rows = this.rows.filter((row) => row.ttl_expires_at > this.now);
       return { rows: deleted, rowCount: deleted.length };
     }
 

@@ -218,6 +218,7 @@ interface MemoryRow {
 
 class MemoryScratchPool {
   rows: MemoryRow[] = [];
+  now = new Date("2026-06-02T12:01:00.000Z");
   #id = 0;
 
   async query(sql: string, params: unknown[] = []): Promise<{ rows: MemoryRow[]; rowCount: number }> {
@@ -225,6 +226,7 @@ class MemoryScratchPool {
       throw new Error(`Unexpected SQL in compact intent test: ${sql}`);
     }
 
+    const ttlDays = Number(params[10]);
     const row: MemoryRow = {
       id: `scratch-${++this.#id}`,
       intent_id: String(params[0]),
@@ -237,9 +239,9 @@ class MemoryScratchPool {
       error_message: typeof params[7] === "string" ? params[7] : null,
       source: String(params[8]),
       trust_score: Number(params[9]),
-      ttl_expires_at: params[10] instanceof Date ? params[10] : new Date(String(params[10])),
+      ttl_expires_at: new Date(this.now.getTime() + ttlDays * 24 * 60 * 60 * 1000),
       metadata: typeof params[11] === "string" ? JSON.parse(params[11]) : {},
-      created_at: new Date("2026-06-02T12:01:00.000Z")
+      created_at: new Date(this.now.getTime() + this.#id)
     };
     this.rows.push(row);
     return { rows: [row], rowCount: 1 };

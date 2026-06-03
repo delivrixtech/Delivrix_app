@@ -89,7 +89,7 @@ export async function insertEpisodicEntry(
         ttl_expires_at,
         metadata
       )
-      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb)
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, NOW() + ($11::integer * INTERVAL '1 day'), $12::jsonb)
       RETURNING *
     `,
     [
@@ -103,7 +103,7 @@ export async function insertEpisodicEntry(
       normalized.errorMessage ?? null,
       normalized.source,
       normalized.trustScore,
-      normalized.ttlExpiresAt,
+      normalized.ttlDays,
       JSON.stringify(normalized.metadata ?? {})
     ]
   );
@@ -220,27 +220,26 @@ export async function retrieveTrustWeighted(
 }
 
 export async function expireOldEntries(
-  pool: QueryablePool,
-  before = new Date()
+  pool: QueryablePool
 ): Promise<number> {
   const result = await pool.query(
     `
       DELETE FROM openclaw_episodic_scratch
-      WHERE ttl_expires_at < $1
+      WHERE ttl_expires_at <= NOW()
       RETURNING id
-    `,
-    [before]
+    `
   );
   return typeof result.rowCount === "number" ? result.rowCount : rows(result).length;
 }
 
 function normalizeInsert(entry: InsertEntryInput): InsertEntryInput & {
   trustScore: number;
-  ttlExpiresAt: Date;
+  ttlDays: number;
 } {
   const source = sourceValue(entry.source);
   const trustScore = entry.trustScore ?? defaultTrustScore(source);
   const metadata = entry.metadata ?? {};
+  const ttlDays = positiveInteger(entry.ttlDays ?? 30, "ttlDays", 1, 365);
 
   if (source === "operator" && !hasValidOperatorProvenance(metadata)) {
     throw new EpisodicScratchValidationError(
@@ -264,8 +263,7 @@ function normalizeInsert(entry: InsertEntryInput): InsertEntryInput & {
     outcome: outcomeValue(entry.outcome),
     source,
     trustScore: trustScoreValue(trustScore),
-    ttlDays: positiveInteger(entry.ttlDays ?? 30, "ttlDays", 1, 365),
-    ttlExpiresAt: new Date(Date.now() + positiveInteger(entry.ttlDays ?? 30, "ttlDays", 1, 365) * dayMs),
+    ttlDays,
     metadata
   };
 }
