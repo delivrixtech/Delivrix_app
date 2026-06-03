@@ -165,8 +165,9 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     spec: {
       name: "read_episodic_scratch",
       description: [
-        "Consulta la memoria episódica auditada de OpenClaw por intentId, inputHash o herramienta.",
-        "Es read-only: sirve para reutilizar evidencia, evitar repetir pasos ya completados y detectar intentos fallidos previos sin mutar infraestructura ni requerir ApprovalGate."
+        "Consulta la memoria episódica auditada de OpenClaw por intentId, inputHash, herramienta o query grounded.",
+        "Es read-only: sirve para reutilizar evidencia, evitar repetir pasos ya completados y detectar intentos fallidos previos sin mutar infraestructura ni requerir ApprovalGate.",
+        "Cuando recibe query/keywords usa retrieval grounded de decisión: solo verified_fact activo, salida tipada, score de relevancia/recencia/reliability y abstención si no hay memoria verificada relevante."
       ].join(" "),
       input_schema: {
         type: "object",
@@ -180,7 +181,24 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           },
           limit: { type: "integer", minimum: 1, maximum: 100 },
           sinceDays: { type: "integer", minimum: 1, maximum: 3650 },
-          weighted: { type: "boolean", default: false }
+          weighted: { type: "boolean", default: false },
+          grounded: {
+            type: "boolean",
+            default: false,
+            description: "Usar retrieval de decisión grounded; query lo activa por defecto."
+          },
+          query: {
+            type: "string",
+            minLength: 3,
+            maxLength: 512,
+            description: "Pregunta o necesidad de decisión para buscar memoria verificada relevante."
+          },
+          keywords: {
+            type: "array",
+            maxItems: 16,
+            items: { type: "string", minLength: 1, maxLength: 64 },
+            description: "Términos controlados opcionales para reforzar la relevancia B1 sin embeddings."
+          }
         },
         required: []
       }

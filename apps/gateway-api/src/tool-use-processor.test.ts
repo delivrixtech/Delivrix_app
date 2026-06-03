@@ -215,6 +215,53 @@ test("createHttpToolUseProcessor invokes episodic scratch read endpoint directly
   ]);
 });
 
+test("createHttpToolUseProcessor routes episodic query through grounded retrieval", async () => {
+  const urls: string[] = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    fetchImpl: async (url) => {
+      urls.push(String(url));
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (
+        String(url).includes("/v1/openclaw/scratch?tool=suggest_safe_domain") &&
+        String(url).includes("query=warmup+domain+reputation") &&
+        String(url).includes("grounded=true")
+      ) {
+        return jsonResponse({
+          status: "abstain",
+          reason: "no_verified_relevant_memory",
+          memories: [],
+          discarded: []
+        });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-http-scratch-grounded",
+    toolName: "read_episodic_scratch",
+    toolInput: { tool: "suggest_safe_domain", query: "warmup domain reputation", limit: 5 },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected HTTP grounded scratch read success");
+  assert.deepEqual(result.result, {
+    status: "abstain",
+    reason: "no_verified_relevant_memory",
+    memories: [],
+    discarded: []
+  });
+  assert.deepEqual(urls, [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/openclaw/scratch?tool=suggest_safe_domain&limit=5&query=warmup+domain+reputation&grounded=true"
+  ]);
+});
+
 test("createHttpToolUseProcessor signs compact_intent HTTP payload", async () => {
   const calls: Array<{ url: string; headers?: HeadersInit; body?: unknown }> = [];
   const processor = createHttpToolUseProcessor({

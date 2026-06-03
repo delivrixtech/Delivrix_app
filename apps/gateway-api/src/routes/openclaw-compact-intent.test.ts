@@ -1,5 +1,6 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash, createHmac } from "node:crypto";
+import test from "node:test";
 import type { AuditEvent, AuditEventInput } from "../../../../packages/domain/src/index.ts";
 import { compactIntent, CompactIntentValidationError, type CompactIntentInput } from "./openclaw-compact-intent.ts";
 
@@ -26,10 +27,10 @@ test("compactIntent marks operator memory only after matching a signed audit eve
     ]
   });
 
-  const output = await compactIntent(input({
+  const output = await withOperatorSecret("operator-secret", () => compactIntent(input({
     proposalId: "proposal-1",
     signatureId: "sig_verified"
-  }), ctx.deps);
+  }), ctx.deps));
 
   assert.equal(output.entriesWritten, 1);
   assert.equal(ctx.pool.rows[0].source, "operator");
@@ -47,12 +48,59 @@ test("compactIntent marks operator memory only after matching a signed audit eve
     signatureId: "sig_verified",
     operatorSignatureId: "sig_verified",
     operatorSignatureVerified: true,
+    operatorSignatureHmac: operatorHmac({
+      actorId: "juanescanar-cto",
+      auditEventId: "audit-signed",
+      auditEventHash: "hash-signed",
+      memoryInputHash: "0123456789abcdef",
+      memoryIntentId: "intent-1",
+      memoryOutcome: "success",
+      memoryOutcomeHash: hashJson(null),
+      memoryStep: "1",
+      memoryTool: "runbook_execute",
+      proposalId: "proposal-1",
+      signatureId: "sig_verified",
+      signedAt: "2026-06-02T12:00:00.000Z"
+    }, "operator-secret"),
     operatorSignatureActorId: "juanescanar-cto",
     operatorSignatureAuditEventId: "audit-signed",
     operatorSignatureAuditEventHash: "hash-signed",
     operatorSignatureSignedAt: "2026-06-02T12:00:00.000Z",
     operatorSignatureProposalId: "proposal-1"
   });
+});
+
+test("compactIntent fails closed when operator signature secret is missing", async () => {
+  const previous = process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
+  delete process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
+  const ctx = context({
+    events: [
+      skillInvokedEvent(),
+      signedEvent({
+        targetId: "proposal-1",
+        signatureId: "sig_verified"
+      })
+    ]
+  });
+
+  try {
+    await assert.rejects(
+      () => compactIntent(input({
+        proposalId: "proposal-1",
+        signatureId: "sig_verified"
+      }), ctx.deps),
+      (error) =>
+        error instanceof CompactIntentValidationError &&
+        error.code === "operator_hmac_secret_required"
+    );
+  } finally {
+    if (previous === undefined) {
+      delete process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
+    } else {
+      process.env.OPENCLAW_OPERATOR_HMAC_SECRET = previous;
+    }
+  }
+  assert.equal(ctx.pool.rows.length, 0);
 });
 
 test("compactIntent rejects a verified signature when proposalId is omitted", async () => {
@@ -262,4 +310,35 @@ class MemoryScratchPool {
     this.rows.push(row);
     return { rows: [row], rowCount: 1 };
   }
+}
+
+async function withOperatorSecret<T>(secret: string, fn: () => T | Promise<T>): Promise<T> {
+  const previous = process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
+  process.env.OPENCLAW_OPERATOR_HMAC_SECRET = secret;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
+    } else {
+      process.env.OPENCLAW_OPERATOR_HMAC_SECRET = previous;
+    }
+  }
+}
+
+function operatorHmac(payload: Record<string, string>, secret: string): string {
+  return createHmac("sha256", secret).update(stableStringify(payload)).digest("hex");
+}
+
+function hashJson(value: unknown): string {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+    .join(",")}}`;
 }

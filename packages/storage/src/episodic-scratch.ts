@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { Pool } from "pg";
 
 export type ScratchOutcome =
@@ -63,6 +63,66 @@ export interface InvalidateEpisodicFactsInput {
   invalidAt?: Date;
 }
 
+export type GroundedMemoryAssessment = "correct" | "ambiguous" | "incorrect";
+export type GroundedMemoryStatus = "grounded" | "ambiguous" | "abstain";
+export type GroundedMemoryReason =
+  | "verified_memory_relevant"
+  | "verified_memory_ambiguous_search_more"
+  | "no_verified_relevant_memory";
+
+export interface GroundedDecisionMemory {
+  id: string;
+  intentId: string;
+  step: number;
+  tool: string;
+  inputHash: string;
+  outcome: ScratchOutcome;
+  outcomeData?: Record<string, unknown>;
+  errorClass?: string;
+  source: Exclude<ScratchSource, "openclaw">;
+  trustScore: number;
+  plane: "verified_fact";
+  provenance: Record<string, unknown>;
+  reliability: number;
+  validAt: Date;
+  ttlExpiresAt: Date;
+  createdAt: Date;
+}
+
+export interface GroundedMemorySignals {
+  relevance: number;
+  recency: number;
+  reliability: number;
+  trust: number;
+  keywordOverlap: number;
+}
+
+export interface GroundedMemoryCandidate {
+  memory: GroundedDecisionMemory;
+  score: number;
+  assessment: GroundedMemoryAssessment;
+  signals: GroundedMemorySignals;
+}
+
+export interface GroundedMemoryRetrievalInput {
+  tool?: string;
+  outcome?: ScratchOutcome;
+  inputHash?: string;
+  query?: string;
+  keywords?: string[];
+  limit?: number;
+  minScore?: number;
+  ambiguousScore?: number;
+  now?: Date;
+}
+
+export interface GroundedMemoryRetrievalOutput {
+  status: GroundedMemoryStatus;
+  reason: GroundedMemoryReason;
+  memories: GroundedMemoryCandidate[];
+  discarded: GroundedMemoryCandidate[];
+}
+
 type QueryablePool = Pick<Pool, "query">;
 
 const outcomes: ScratchOutcome[] = [
@@ -79,7 +139,8 @@ const planes: ScratchPlane[] = ["observation", "verified_fact"];
 const dayMs = 24 * 60 * 60 * 1000;
 const maxStructuredPayloadBytes = 16 * 1024;
 const injectionPattern =
-  /\b(ignore (all )?(previous|prior) instructions|system prompt|developer message|jailbreak|you are now|exfiltrate|set reliability|promote (this|memory)|override governance)\b/i;
+  /\b(ignore|disregard|forget|bypass|override|discard|drop)\s+(all\s+)?(previous|prior|earlier|system|developer)?\s*(instructions?|messages?|prompt|rules?)\b|\b(system\s+prompt|developer\s+message|jailbreak|you\s+are\s+now|exfiltrate|set\s+reliability|raise\s+trust|promote\s+(this\s+)?memory|treat\s+this\s+as\s+verified|override\s+governance|act\s+as\s+system)\b/i;
+const zeroWidthPattern = /[\u200B-\u200D\uFEFF]/g;
 
 export class EpisodicScratchValidationError extends Error {
   readonly code: string;
@@ -297,6 +358,67 @@ export async function retrieveTrustWeighted(
   criteria: { tool?: string; outcome?: ScratchOutcome; inputHash?: string },
   limit = 10
 ): Promise<EpisodicEntry[]> {
+  const entries = await queryVerifiedMemoryCandidates(pool, criteria, limit);
+  const keywords = [
+    ...(criteria.tool ? tokenize(criteria.tool) : []),
+    ...(criteria.outcome ? tokenize(criteria.outcome) : [])
+  ];
+  return scoreGroundedEntries(entries, { ...criteria, keywords, limit })
+    .filter((candidate) => candidate.assessment === "correct")
+    .map((candidate) => candidate.entry);
+}
+
+export async function retrieveGroundedDecisionMemory(
+  pool: QueryablePool,
+  input: GroundedMemoryRetrievalInput = {}
+): Promise<GroundedMemoryRetrievalOutput> {
+  const limit = limitValue(input.limit);
+  const entries = await queryVerifiedMemoryCandidates(pool, input, limit);
+  const scored = scoreGroundedEntries(entries, input);
+  const memories = scored
+    .filter((candidate) => candidate.assessment === "correct")
+    .slice(0, limit)
+    .map(toGroundedCandidate);
+  const ambiguous = scored
+    .filter((candidate) => candidate.assessment === "ambiguous")
+    .slice(0, limit)
+    .map(toGroundedCandidate);
+  const discarded = scored
+    .filter((candidate) => candidate.assessment === "incorrect")
+    .slice(0, limit)
+    .map(toGroundedCandidate);
+
+  if (memories.length > 0) {
+    return {
+      status: "grounded",
+      reason: "verified_memory_relevant",
+      memories,
+      discarded: [...ambiguous, ...discarded]
+    };
+  }
+
+  if (ambiguous.length > 0) {
+    return {
+      status: "ambiguous",
+      reason: "verified_memory_ambiguous_search_more",
+      memories: [],
+      discarded: [...ambiguous, ...discarded]
+    };
+  }
+
+  return {
+    status: "abstain",
+    reason: "no_verified_relevant_memory",
+    memories: [],
+    discarded
+  };
+}
+
+async function queryVerifiedMemoryCandidates(
+  pool: QueryablePool,
+  criteria: { tool?: string; outcome?: ScratchOutcome; inputHash?: string },
+  limit = 10
+): Promise<EpisodicEntry[]> {
   const params: unknown[] = [];
   const filters = ["ttl_expires_at > NOW()", "invalid_at IS NULL", "plane = 'verified_fact'"];
   if (criteria.tool !== undefined) {
@@ -311,26 +433,14 @@ export async function retrieveTrustWeighted(
     params.push(inputHashValue(criteria.inputHash));
     filters.push(`input_hash = $${params.length}`);
   }
-  params.push(limitValue(limit));
+  params.push(limitValue(limit) * 4);
 
   const result = await pool.query(
     `
       SELECT *
       FROM openclaw_episodic_scratch
       WHERE ${filters.join(" AND ")}
-      ORDER BY (
-        (reliability * 0.45) +
-        ((trust_score::double precision / 100.0) * 0.25) +
-        (
-          CASE
-            WHEN metadata ? 'importance' AND (metadata->>'importance') ~ '^[0-9]+(\\.[0-9]+)?$'
-              THEN LEAST(GREATEST((metadata->>'importance')::double precision, 0), 1)
-            ELSE 0.5
-          END * 0.15
-        ) +
-        (GREATEST(0, 1 - (EXTRACT(EPOCH FROM NOW() - created_at) / 2592000.0)) * 0.15)
-      ) DESC,
-      created_at DESC
+      ORDER BY reliability DESC, created_at DESC
       LIMIT $${params.length}
     `,
     params
@@ -427,8 +537,32 @@ function normalizeInsert(entry: InsertEntryInput): InsertEntryInput & {
   const plane = planeValue(entry.plane ?? defaultPlane(source));
   const provenance = entry.provenance ?? provenanceFromMetadata(source, metadata);
   const reliability = entry.reliability ?? defaultReliability(source);
+  const errorClass = entry.errorClass === undefined
+    ? undefined
+    : boundedString(entry.errorClass, "errorClass", 1, 128);
+  const errorMessage = entry.errorMessage === undefined
+    ? undefined
+    : guardedText(entry.errorMessage, "errorMessage", 1, 2000);
+  const intentId = boundedString(entry.intentId, "intentId", 1, 64);
+  const step = positiveInteger(entry.step, "step", 1, 10_000);
+  const tool = boundedString(entry.tool, "tool", 1, 128);
+  const inputHash = inputHashValue(entry.inputHash);
+  const outcome = outcomeValue(entry.outcome);
 
-  if (source === "operator" && !hasValidOperatorProvenance(metadata)) {
+  assertStructuredPayload(entry.outcomeData, "outcomeData");
+  assertStructuredPayload(metadata, "metadata");
+  assertStructuredPayload(provenance, "provenance");
+
+  if (source === "operator" && !hasValidOperatorProvenance(metadata, {
+    intentId,
+    step,
+    tool,
+    inputHash,
+    outcome,
+    outcomeData: entry.outcomeData,
+    errorClass,
+    errorMessage
+  })) {
     throw new EpisodicScratchValidationError(
       "operator_provenance_invalid",
       "source=operator requires verified operator provenance."
@@ -458,17 +592,16 @@ function normalizeInsert(entry: InsertEntryInput): InsertEntryInput & {
       "verified_fact entries require immutable provenance."
     );
   }
-  assertStructuredPayload(entry.outcomeData, "outcomeData");
-  assertStructuredPayload(metadata, "metadata");
-  assertStructuredPayload(provenance, "provenance");
 
   return {
     ...entry,
-    intentId: boundedString(entry.intentId, "intentId", 1, 64),
-    step: positiveInteger(entry.step, "step", 1, 10_000),
-    tool: boundedString(entry.tool, "tool", 1, 128),
-    inputHash: inputHashValue(entry.inputHash),
-    outcome: outcomeValue(entry.outcome),
+    intentId,
+    step,
+    tool,
+    inputHash,
+    outcome,
+    ...(errorClass === undefined ? {} : { errorClass }),
+    ...(errorMessage === undefined ? {} : { errorMessage }),
     source,
     trustScore: trustScoreValue(trustScore),
     plane,
@@ -520,17 +653,71 @@ function addOptionalToolAndSinceFilters(
   }
 }
 
-function hasValidOperatorProvenance(metadata: Record<string, unknown>): boolean {
-  const signatureId = metadata.operatorSignatureId ?? metadata.signatureId;
-  if (typeof signatureId !== "string" || !signatureId.trim()) return false;
+interface OperatorMemoryHmacContext {
+  intentId: string;
+  step: number;
+  tool: string;
+  inputHash: string;
+  outcome: ScratchOutcome;
+  outcomeData?: Record<string, unknown>;
+  errorClass?: string;
+  errorMessage?: string;
+}
+
+function hasValidOperatorProvenance(
+  metadata: Record<string, unknown>,
+  context: OperatorMemoryHmacContext
+): boolean {
   const secret = process.env.OPENCLAW_OPERATOR_HMAC_SECRET?.trim();
-  if (!secret) {
-    return metadata.operatorSignatureVerified === true;
-  }
+  if (!secret) return false;
   const provided = metadata.operatorSignatureHmac;
   if (typeof provided !== "string") return false;
-  const expected = createHmac("sha256", secret).update(signatureId.trim()).digest("hex");
+  const payload = operatorHmacPayloadFromMetadata(metadata, context);
+  if (!payload) return false;
+  const expected = createHmac("sha256", secret).update(stableStringify(payload)).digest("hex");
   return safeEqualHex(provided, expected);
+}
+
+function operatorHmacPayloadFromMetadata(
+  metadata: Record<string, unknown>,
+  context: OperatorMemoryHmacContext
+): Record<string, string> | null {
+  const signatureId = metadata.operatorSignatureId ?? metadata.signatureId;
+  const proposalId = metadata.operatorSignatureProposalId ?? metadata.proposalId;
+  const actorId = metadata.operatorSignatureActorId;
+  const auditEventId = metadata.operatorSignatureAuditEventId ?? metadata.auditEventId;
+  const auditEventHash = metadata.operatorSignatureAuditEventHash;
+  const signedAt = metadata.operatorSignatureSignedAt;
+  if (
+    typeof signatureId !== "string" ||
+    typeof proposalId !== "string" ||
+    typeof actorId !== "string" ||
+    typeof auditEventId !== "string" ||
+    typeof signedAt !== "string" ||
+    !signatureId.trim() ||
+    !proposalId.trim() ||
+    !actorId.trim() ||
+    !auditEventId.trim() ||
+    !signedAt.trim()
+  ) {
+    return null;
+  }
+  return {
+    actorId: actorId.trim(),
+    auditEventId: auditEventId.trim(),
+    ...(typeof auditEventHash === "string" && auditEventHash.trim() ? { auditEventHash: auditEventHash.trim() } : {}),
+    ...(context.errorClass ? { memoryErrorClass: context.errorClass } : {}),
+    ...(context.errorMessage ? { memoryErrorMessage: context.errorMessage } : {}),
+    memoryInputHash: context.inputHash,
+    memoryIntentId: context.intentId,
+    memoryOutcome: context.outcome,
+    memoryOutcomeHash: hashJson(context.outcomeData ?? null),
+    memoryStep: String(context.step),
+    memoryTool: context.tool,
+    proposalId: proposalId.trim(),
+    signatureId: signatureId.trim(),
+    signedAt: signedAt.trim()
+  };
 }
 
 function hasToolOutputProvenance(metadata: Record<string, unknown>): boolean {
@@ -647,6 +834,18 @@ function boundedString(value: unknown, field: string, min: number, max: number):
   return trimmed;
 }
 
+function guardedText(value: unknown, field: string, min: number, max: number): string {
+  const trimmed = boundedString(value, field, min, max);
+  assertStructuredText(trimmed, field);
+  if (field === "errorMessage" && !/^[a-z0-9_.:-]+$/i.test(trimmed)) {
+    throw new EpisodicScratchValidationError(
+      "memory_payload_free_text_forbidden",
+      "errorMessage must be a structured machine code, not free text."
+    );
+  }
+  return trimmed;
+}
+
 function positiveInteger(value: unknown, field: string, min: number, max: number): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
@@ -692,12 +891,7 @@ function assertStructuredPayload(value: unknown, field: string): void {
 
 function walkPayload(value: unknown, path: string): void {
   if (typeof value === "string") {
-    if (injectionPattern.test(value)) {
-      throw new EpisodicScratchValidationError(
-        "memory_payload_instruction_injection",
-        `${path} contains instruction-like text and was rejected by the write gate.`
-      );
-    }
+    assertStructuredText(value, path);
     return;
   }
   if (Array.isArray(value)) {
@@ -715,6 +909,190 @@ function walkPayload(value: unknown, path: string): void {
     walkPayload(item, `${path}.${key}`);
   }
 }
+
+function assertStructuredText(value: string, path: string): void {
+  if (injectionPattern.test(normalizeGuardText(value))) {
+    throw new EpisodicScratchValidationError(
+      "memory_payload_instruction_injection",
+      `${path} contains instruction-like text and was rejected by the write gate.`
+    );
+  }
+}
+
+function normalizeGuardText(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(zeroWidthPattern, "")
+    .replace(/[_\W]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function hashJson(value: unknown): string {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined";
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+    .join(",")}}`;
+}
+
+interface ScoredEntry {
+  entry: EpisodicEntry;
+  score: number;
+  assessment: GroundedMemoryAssessment;
+  signals: GroundedMemorySignals;
+}
+
+function scoreGroundedEntries(
+  entries: EpisodicEntry[],
+  input: GroundedMemoryRetrievalInput
+): ScoredEntry[] {
+  const now = input.now ?? new Date();
+  const minScore = boundedScore(input.minScore ?? 0.52, "minScore");
+  const ambiguousScore = boundedScore(input.ambiguousScore ?? 0.35, "ambiguousScore");
+  return entries
+    .map((entry) => scoreGroundedEntry(entry, input, now, minScore, ambiguousScore))
+    .sort((left, right) =>
+      right.score - left.score ||
+      right.entry.reliability - left.entry.reliability ||
+      right.entry.createdAt.getTime() - left.entry.createdAt.getTime()
+    );
+}
+
+function scoreGroundedEntry(
+  entry: EpisodicEntry,
+  input: GroundedMemoryRetrievalInput,
+  now: Date,
+  minScore: number,
+  ambiguousScore: number
+): ScoredEntry {
+  const keywords = retrievalKeywords(input);
+  const keywordOverlap = keywordOverlapScore(keywords, entry);
+  const relevance = keywords.length === 0 ? 0 : keywordOverlap;
+  const ageDays = Math.max(0, (now.getTime() - entry.createdAt.getTime()) / dayMs);
+  const recency = Math.exp(-ageDays / 30);
+  const reliability = reliabilityValue(entry.reliability);
+  const trust = trustScoreValue(entry.trustScore) / 100;
+  const baseScore = (relevance * 0.7) + (recency * 0.2) + (trust * 0.1);
+  const score = baseScore * (0.25 + reliability * 0.75);
+  const assessment: GroundedMemoryAssessment =
+    keywords.length > 0 && relevance >= 0.25 && reliability >= 0.5 && score >= minScore
+      ? "correct"
+      : keywords.length > 0 && score >= ambiguousScore ? "ambiguous" : "incorrect";
+  return {
+    entry,
+    score,
+    assessment,
+    signals: {
+      relevance,
+      recency,
+      reliability,
+      trust,
+      keywordOverlap
+    }
+  };
+}
+
+function retrievalKeywords(input: GroundedMemoryRetrievalInput): string[] {
+  const values = [
+    ...(input.keywords ?? []),
+    ...(input.query ? tokenize(input.query) : [])
+  ];
+  return [...new Set(values.flatMap(tokenize))];
+}
+
+function keywordOverlapScore(keywords: string[], entry: EpisodicEntry): number {
+  if (keywords.length === 0) return 0.5;
+  const haystack = new Set(tokenize(JSON.stringify({
+    tool: entry.tool,
+    outcome: entry.outcome,
+    outcomeData: entry.outcomeData ?? {},
+    errorClass: entry.errorClass,
+    provenance: entry.provenance,
+    metadata: entry.metadata ?? {}
+  })));
+  const hits = keywords.filter((keyword) => haystack.has(keyword)).length;
+  return hits / keywords.length;
+}
+
+function tokenize(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  return normalizeGuardText(value)
+    .split(" ")
+    .filter((token) => token.length >= 3 && !stopWords.has(token));
+}
+
+function boundedScore(value: unknown, field: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new EpisodicScratchValidationError(`invalid_${field}`, `${field} must be between 0 and 1.`);
+  }
+  return parsed;
+}
+
+function toGroundedCandidate(scored: ScoredEntry): GroundedMemoryCandidate {
+  return {
+    memory: toGroundedDecisionMemory(scored.entry),
+    score: Number(scored.score.toFixed(6)),
+    assessment: scored.assessment,
+    signals: {
+      relevance: Number(scored.signals.relevance.toFixed(6)),
+      recency: Number(scored.signals.recency.toFixed(6)),
+      reliability: Number(scored.signals.reliability.toFixed(6)),
+      trust: Number(scored.signals.trust.toFixed(6)),
+      keywordOverlap: Number(scored.signals.keywordOverlap.toFixed(6))
+    }
+  };
+}
+
+function toGroundedDecisionMemory(entry: EpisodicEntry): GroundedDecisionMemory {
+  if (entry.plane !== "verified_fact" || entry.source === "openclaw" || entry.invalidAt) {
+    throw new EpisodicScratchValidationError(
+      "invalid_grounded_memory",
+      "Decision memory must be an active verified fact."
+    );
+  }
+  return {
+    id: entry.id,
+    intentId: entry.intentId,
+    step: entry.step,
+    tool: entry.tool,
+    inputHash: entry.inputHash,
+    outcome: entry.outcome,
+    ...(entry.outcomeData === undefined ? {} : { outcomeData: entry.outcomeData }),
+    ...(entry.errorClass === undefined ? {} : { errorClass: entry.errorClass }),
+    source: entry.source,
+    trustScore: entry.trustScore,
+    plane: entry.plane,
+    provenance: entry.provenance,
+    reliability: entry.reliability,
+    validAt: entry.validAt,
+    ttlExpiresAt: entry.ttlExpiresAt,
+    createdAt: entry.createdAt
+  };
+}
+
+const stopWords = new Set([
+  "the",
+  "and",
+  "for",
+  "con",
+  "que",
+  "para",
+  "una",
+  "uno",
+  "los",
+  "las",
+  "del",
+  "smtp",
+  "openclaw"
+]);
 
 function rows(result: unknown): Record<string, unknown>[] {
   if (!isRecord(result) || !Array.isArray(result.rows)) {

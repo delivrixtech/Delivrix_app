@@ -107,7 +107,7 @@ test("compactIntent writes entries and appends hash-only audit metadata", async 
     } as never
   ];
 
-  const output = await compactIntent({
+  const output = await withOperatorSecret("operator-secret", () => compactIntent({
     intentId: "intent-1",
     finalStatus: "completed",
     decision: "completed smtp setup",
@@ -141,7 +141,7 @@ test("compactIntent writes entries and appends hash-only audit metadata", async 
       }
     },
     now: () => new Date("2026-06-01T12:00:00.000Z")
-  });
+  }));
 
   assert.equal(output.entriesWritten, 2);
   assert.equal(pool.rows.length, 2);
@@ -419,4 +419,18 @@ function parseJsonRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+async function withOperatorSecret<T>(secret: string, fn: () => T | Promise<T>): Promise<T> {
+  const previous = process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
+  process.env.OPENCLAW_OPERATOR_HMAC_SECRET = secret;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
+    } else {
+      process.env.OPENCLAW_OPERATOR_HMAC_SECRET = previous;
+    }
+  }
 }
