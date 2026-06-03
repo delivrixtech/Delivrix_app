@@ -24,7 +24,7 @@ export async function runEpisodicScratchTtlJob(
   deps: EpisodicScratchTtlJobDeps
 ): Promise<{ expired: number }> {
   const now = deps.now?.() ?? new Date();
-  const expired = await expireOldEntries(deps.pool, now);
+  const expired = await expireOldEntries(deps.pool);
   if (expired <= 0) return { expired };
 
   await deps.auditLog?.append({

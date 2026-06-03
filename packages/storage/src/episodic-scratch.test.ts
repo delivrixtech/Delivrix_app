@@ -22,6 +22,16 @@ test("insertEpisodicEntry writes and queryByIntent returns ordered live entries"
   assert.equal(rows[0].tool, "suggest_safe_domain");
 });
 
+test("insertEpisodicEntry computes ttl with the database clock", async () => {
+  const pool = new MemoryScratchPool();
+  pool.now = new Date("2026-06-01T12:00:00.000Z");
+
+  const row = await insertEpisodicEntry(pool, entry({ ttlDays: 3 }));
+
+  assert.match(pool.insertSql ?? "", /NOW\(\) \+ \(\$11::integer \* INTERVAL '1 day'\)/);
+  assert.equal(row.ttlExpiresAt.toISOString(), "2026-06-04T12:00:00.000Z");
+});
+
 test("queryByInputHash finds reusable evidence across intents", async () => {
   const pool = new MemoryScratchPool();
   await insertEpisodicEntry(pool, entry({ intentId: "intent-a", inputHash: "a".repeat(64) }));
@@ -69,12 +79,15 @@ test("retrieveTrustWeighted prefers higher trust and recency", async () => {
 
 test("expireOldEntries deletes expired rows", async () => {
   const pool = new MemoryScratchPool();
+  pool.now = new Date("2026-06-01T12:00:00.000Z");
   await insertEpisodicEntry(pool, entry({ intentId: "old" }));
   await insertEpisodicEntry(pool, entry({ intentId: "new" }));
-  pool.rows[0].ttl_expires_at = new Date(Date.now() - 60_000);
+  pool.rows[0].ttl_expires_at = new Date("2026-06-01T12:00:00.000Z");
+  pool.rows[1].ttl_expires_at = new Date("2026-06-01T12:00:01.000Z");
 
   assert.equal(await expireOldEntries(pool), 1);
   assert.deepEqual(pool.rows.map((row) => row.intent_id), ["new"]);
+  assert.match(pool.deleteSql ?? "", /ttl_expires_at <= NOW\(\)/);
 });
 
 test("insertEpisodicEntry rejects invalid outcome, source, trust and input hash", async () => {
@@ -166,11 +179,16 @@ interface MemoryRow {
 
 class MemoryScratchPool {
   rows: MemoryRow[] = [];
+  now = new Date();
+  insertSql?: string;
+  deleteSql?: string;
   #id = 0;
 
   async query(sql: string, params: unknown[] = []): Promise<{ rows: MemoryRow[]; rowCount: number }> {
     if (sql.includes("INSERT INTO openclaw_episodic_scratch")) {
-      const now = new Date(Date.now() + this.#id);
+      this.insertSql = sql;
+      const now = new Date(this.now.getTime() + this.#id);
+      const ttlDays = Number(params[10]);
       const row: MemoryRow = {
         id: `scratch-${++this.#id}`,
         intent_id: String(params[0]),
@@ -183,7 +201,7 @@ class MemoryScratchPool {
         error_message: typeof params[7] === "string" ? params[7] : null,
         source: String(params[8]),
         trust_score: Number(params[9]),
-        ttl_expires_at: params[10] instanceof Date ? params[10] : new Date(String(params[10])),
+        ttl_expires_at: new Date(this.now.getTime() + ttlDays * 24 * 60 * 60 * 1000),
         created_at: now,
         metadata: parseJsonRecord(params[11]) ?? {}
       };
@@ -192,29 +210,29 @@ class MemoryScratchPool {
     }
 
     if (sql.includes("DELETE FROM openclaw_episodic_scratch")) {
-      const before = params[0] instanceof Date ? params[0] : new Date(String(params[0]));
-      const deleted = this.rows.filter((row) => row.ttl_expires_at < before);
-      this.rows = this.rows.filter((row) => row.ttl_expires_at >= before);
+      this.deleteSql = sql;
+      const deleted = this.rows.filter((row) => row.ttl_expires_at <= this.now);
+      this.rows = this.rows.filter((row) => row.ttl_expires_at > this.now);
       return { rows: deleted, rowCount: deleted.length };
     }
 
     let rows = [...this.rows];
     if (sql.includes("intent_id = $1")) {
       rows = rows.filter((row) => row.intent_id === params[0]);
-      if (sql.includes("ttl_expires_at > NOW()")) rows = onlyLive(rows);
+      if (sql.includes("ttl_expires_at > NOW()")) rows = onlyLive(rows, this.now);
       rows.sort((left, right) => left.step - right.step || left.created_at.getTime() - right.created_at.getTime());
       return { rows, rowCount: rows.length };
     }
 
     if (sql.includes("input_hash = $1")) {
-      rows = onlyLive(rows).filter((row) => row.input_hash === params[0]);
+      rows = onlyLive(rows, this.now).filter((row) => row.input_hash === params[0]);
       if (sql.includes("tool = $2")) rows = rows.filter((row) => row.tool === params[1]);
       rows.sort((left, right) => right.created_at.getTime() - left.created_at.getTime());
       return { rows, rowCount: rows.length };
     }
 
     if (sql.includes("ORDER BY (trust_score * 100")) {
-      rows = onlyLive(rows);
+      rows = onlyLive(rows, this.now);
       let index = 0;
       if (sql.includes("tool = $")) {
         const value = params[index++];
@@ -237,7 +255,7 @@ class MemoryScratchPool {
     }
 
     if (sql.includes("tool = $1") && sql.includes("outcome = $2")) {
-      rows = onlyLive(rows)
+      rows = onlyLive(rows, this.now)
         .filter((row) => row.tool === params[0] && row.outcome === params[1])
         .sort((left, right) => right.created_at.getTime() - left.created_at.getTime());
       const limit = Number(params.at(-1) ?? rows.length);
@@ -248,8 +266,7 @@ class MemoryScratchPool {
   }
 }
 
-function onlyLive(rows: MemoryRow[]): MemoryRow[] {
-  const now = new Date();
+function onlyLive(rows: MemoryRow[], now = new Date()): MemoryRow[] {
   return rows.filter((row) => row.ttl_expires_at > now);
 }
 

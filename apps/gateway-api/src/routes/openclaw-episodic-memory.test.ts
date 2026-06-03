@@ -325,10 +325,12 @@ interface MemoryRow {
 
 class MemoryScratchPool {
   rows: MemoryRow[] = [];
+  now = new Date();
   #id = 0;
 
   async query(sql: string, params: unknown[] = []): Promise<{ rows: MemoryRow[]; rowCount: number }> {
     if (sql.includes("INSERT INTO openclaw_episodic_scratch")) {
+      const ttlDays = Number(params[10]);
       const row: MemoryRow = {
         id: `scratch-${++this.#id}`,
         intent_id: String(params[0]),
@@ -341,15 +343,15 @@ class MemoryScratchPool {
         error_message: typeof params[7] === "string" ? params[7] : null,
         source: String(params[8]),
         trust_score: Number(params[9]),
-        ttl_expires_at: params[10] instanceof Date ? params[10] : new Date(String(params[10])),
-        created_at: new Date(Date.now() + this.#id),
+        ttl_expires_at: new Date(this.now.getTime() + ttlDays * 24 * 60 * 60 * 1000),
+        created_at: new Date(this.now.getTime() + this.#id),
         metadata: parseJsonRecord(params[11]) ?? {}
       };
       this.rows.push(row);
       return { rows: [row], rowCount: 1 };
     }
 
-    let rows = this.rows.filter((row) => row.ttl_expires_at > new Date());
+    let rows = this.rows.filter((row) => row.ttl_expires_at > this.now);
     if (sql.includes("intent_id = $1")) {
       rows = rows.filter((row) => row.intent_id === params[0]);
       rows.sort((left, right) => left.step - right.step || left.created_at.getTime() - right.created_at.getTime());
