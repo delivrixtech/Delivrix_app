@@ -1,3 +1,4 @@
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -32,6 +33,72 @@ test("insertEpisodicEntry computes ttl with the database clock", async () => {
   assert.equal(row.ttlExpiresAt.toISOString(), "2026-06-04T12:00:00.000Z");
 });
 
+test("insertEpisodicEntry upserts retries for the same intent step", async () => {
+  const pool = new MemoryScratchPool();
+  pool.now = new Date("2026-06-01T12:00:00.000Z");
+  const first = await insertEpisodicEntry(pool, entry({ ttlDays: 10 }));
+  const second = await insertEpisodicEntry(pool, entry({
+    outcome: "failed",
+    outcomeData: { retry: true },
+    ttlDays: 30
+  }));
+
+  assert.equal(second.id, first.id);
+  assert.equal(pool.rows.length, 1);
+  assert.equal(second.outcome, "failed");
+  assert.deepEqual(second.outcomeData, { retry: true });
+  assert.equal(second.ttlExpiresAt.toISOString(), "2026-07-01T12:00:00.000Z");
+  assert.match(pool.insertSql ?? "", /ON CONFLICT \(intent_id, step\) DO UPDATE/);
+});
+
+test("insertEpisodicEntry rejects conflicting replay for the same intent step", async () => {
+  const pool = new MemoryScratchPool();
+  await insertEpisodicEntry(pool, entry());
+
+  await assert.rejects(
+    () => insertEpisodicEntry(pool, entry({ inputHash: "abcdef12" })),
+    (error) =>
+      error instanceof EpisodicScratchValidationError &&
+      error.code === "scratch_step_conflict"
+  );
+  assert.equal(pool.rows.length, 1);
+});
+
+test("insertEpisodicEntry does not downgrade higher trust memory on replay", async () => {
+  const pool = new MemoryScratchPool();
+  await insertEpisodicEntry(pool, entry({
+    source: "operator",
+    outcome: "success",
+    metadata: { signatureId: "sig-1", operatorSignatureVerified: true }
+  }));
+
+  const replay = await insertEpisodicEntry(pool, entry({
+    source: "openclaw",
+    outcome: "failed",
+    outcomeData: { retry: "lower-trust" }
+  }));
+
+  assert.equal(replay.source, "operator");
+  assert.equal(replay.trustScore, 95);
+  assert.equal(replay.outcome, "success");
+  assert.deepEqual(replay.metadata, { signatureId: "sig-1", operatorSignatureVerified: true });
+});
+
+test("episodic scratch migrations have one active source and a unique step constraint", () => {
+  const migration = readFileSync(
+    new URL("../../../infra/postgres/migrations/006_episodic_scratch_unique_intent_step.sql", import.meta.url),
+    "utf8"
+  );
+  assert.match(migration, /openclaw_episodic_scratch_quarantine/);
+  assert.match(migration, /UNIQUE \(intent_id, step\)/);
+
+  const packageMigrationsDir = new URL("../migrations/", import.meta.url);
+  const packageSqlFiles = existsSync(packageMigrationsDir)
+    ? readdirSync(packageMigrationsDir).filter((file) => file.endsWith(".sql"))
+    : [];
+  assert.deepEqual(packageSqlFiles, []);
+});
+
 test("queryByInputHash finds reusable evidence across intents", async () => {
   const pool = new MemoryScratchPool();
   await insertEpisodicEntry(pool, entry({ intentId: "intent-a", inputHash: "a".repeat(64) }));
@@ -55,9 +122,9 @@ test("expired rows are hidden unless includeExpired is true", async () => {
 
 test("queryByToolAndOutcome filters tool and outcome", async () => {
   const pool = new MemoryScratchPool();
-  await insertEpisodicEntry(pool, entry({ tool: "upsert_dns_route53", outcome: "success" }));
-  await insertEpisodicEntry(pool, entry({ tool: "upsert_dns_route53", outcome: "failed" }));
-  await insertEpisodicEntry(pool, entry({ tool: "create_webdock_server", outcome: "success" }));
+  await insertEpisodicEntry(pool, entry({ step: 1, tool: "upsert_dns_route53", outcome: "success" }));
+  await insertEpisodicEntry(pool, entry({ step: 2, tool: "upsert_dns_route53", outcome: "failed" }));
+  await insertEpisodicEntry(pool, entry({ step: 3, tool: "create_webdock_server", outcome: "success" }));
 
   const rows = await queryByToolAndOutcome(pool, "upsert_dns_route53", "success");
 
@@ -205,6 +272,26 @@ class MemoryScratchPool {
         created_at: now,
         metadata: parseJsonRecord(params[11]) ?? {}
       };
+      const existing = this.rows.find((item) => item.intent_id === row.intent_id && item.step === row.step);
+      if (existing && sql.includes("ON CONFLICT")) {
+        if (existing.tool !== row.tool || existing.input_hash !== row.input_hash) {
+          return { rows: [], rowCount: 0 };
+        }
+        const canOverwrite = row.trust_score >= existing.trust_score;
+        if (canOverwrite) {
+          existing.outcome = row.outcome;
+          existing.outcome_data = row.outcome_data;
+          existing.error_class = row.error_class;
+          existing.error_message = row.error_message;
+          existing.source = row.source;
+          existing.metadata = row.metadata;
+        }
+        existing.trust_score = Math.max(existing.trust_score, row.trust_score);
+        if (row.ttl_expires_at > existing.ttl_expires_at) {
+          existing.ttl_expires_at = row.ttl_expires_at;
+        }
+        return { rows: [existing], rowCount: 1 };
+      }
       this.rows.push(row);
       return { rows: [row], rowCount: 1 };
     }
