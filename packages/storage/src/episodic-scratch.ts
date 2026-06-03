@@ -90,6 +90,37 @@ export async function insertEpisodicEntry(
         metadata
       )
       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, NOW() + ($11::integer * INTERVAL '1 day'), $12::jsonb)
+      ON CONFLICT (intent_id, step) DO UPDATE
+      SET
+        outcome = CASE
+          WHEN EXCLUDED.trust_score >= openclaw_episodic_scratch.trust_score THEN EXCLUDED.outcome
+          ELSE openclaw_episodic_scratch.outcome
+        END,
+        outcome_data = CASE
+          WHEN EXCLUDED.trust_score >= openclaw_episodic_scratch.trust_score THEN EXCLUDED.outcome_data
+          ELSE openclaw_episodic_scratch.outcome_data
+        END,
+        error_class = CASE
+          WHEN EXCLUDED.trust_score >= openclaw_episodic_scratch.trust_score THEN EXCLUDED.error_class
+          ELSE openclaw_episodic_scratch.error_class
+        END,
+        error_message = CASE
+          WHEN EXCLUDED.trust_score >= openclaw_episodic_scratch.trust_score THEN EXCLUDED.error_message
+          ELSE openclaw_episodic_scratch.error_message
+        END,
+        source = CASE
+          WHEN EXCLUDED.trust_score >= openclaw_episodic_scratch.trust_score THEN EXCLUDED.source
+          ELSE openclaw_episodic_scratch.source
+        END,
+        trust_score = GREATEST(openclaw_episodic_scratch.trust_score, EXCLUDED.trust_score),
+        ttl_expires_at = GREATEST(openclaw_episodic_scratch.ttl_expires_at, EXCLUDED.ttl_expires_at),
+        metadata = CASE
+          WHEN EXCLUDED.trust_score >= openclaw_episodic_scratch.trust_score THEN EXCLUDED.metadata
+          ELSE openclaw_episodic_scratch.metadata
+        END
+      WHERE
+        openclaw_episodic_scratch.tool = EXCLUDED.tool
+        AND openclaw_episodic_scratch.input_hash = EXCLUDED.input_hash
       RETURNING *
     `,
     [
@@ -108,7 +139,14 @@ export async function insertEpisodicEntry(
     ]
   );
 
-  return rowToEntry(firstRow(result));
+  const row = rows(result)[0];
+  if (!row) {
+    throw new EpisodicScratchValidationError(
+      "scratch_step_conflict",
+      "intentId + step already exists with a different tool or inputHash."
+    );
+  }
+  return rowToEntry(row);
 }
 
 export async function queryByIntent(
@@ -412,14 +450,6 @@ function dateField(value: unknown, field: string): Date {
     throw new Error(`${field} missing in scratch row.`);
   }
   return date;
-}
-
-function firstRow(result: unknown): Record<string, unknown> {
-  const row = rows(result)[0];
-  if (!row) {
-    throw new Error("scratch insert returned no row.");
-  }
-  return row;
 }
 
 function rows(result: unknown): Record<string, unknown>[] {
