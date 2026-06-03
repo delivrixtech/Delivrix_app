@@ -23,8 +23,8 @@ CREATE TABLE IF NOT EXISTS openclaw_memory_vectors (
 
 CREATE INDEX IF NOT EXISTS idx_openclaw_memory_vectors_embedding
   ON openclaw_memory_vectors
-  USING ivfflat (embedding vector_cosine_ops)
-  WITH (lists = 100)
+  USING hnsw (embedding vector_cosine_ops)
+  WITH (m = 16, ef_construction = 64)
   WHERE embedding IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_openclaw_memory_vectors_agent_type

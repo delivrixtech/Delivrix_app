@@ -3,6 +3,7 @@ import type { IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
 import test from "node:test";
 import {
+  positiveIntegerOrDefault,
   readRequestBody,
   RequestBodyTooLargeError
 } from "./request-body.ts";
@@ -42,6 +43,14 @@ test("readRequestBody rejects oversized content-length before reading chunks", a
       error.maxBytes === 8 &&
       error.receivedBytes === 100
   );
+});
+
+test("positiveIntegerOrDefault falls back for non-finite or non-positive input", () => {
+  assert.equal(positiveIntegerOrDefault("not-a-number", 100), 100);
+  assert.equal(positiveIntegerOrDefault("Infinity", 100), 100);
+  assert.equal(positiveIntegerOrDefault("0", 100), 100);
+  assert.equal(positiveIntegerOrDefault("-10", 100), 100);
+  assert.equal(positiveIntegerOrDefault("12.9", 100), 12);
 });
 
 function request(body: string, headers: Record<string, string> = {}): IncomingMessage {

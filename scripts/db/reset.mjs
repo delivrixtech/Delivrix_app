@@ -1,19 +1,62 @@
 import { execFileSync } from "node:child_process";
+import { createInterface } from "node:readline/promises";
 import { join } from "node:path";
-import { repoRoot } from "./common.mjs";
+import { fileURLToPath } from "node:url";
+import { defaultPostgresContainer, postgresConfig, repoRoot } from "./common.mjs";
 
 const composeFile = join(repoRoot, "infra/docker-compose.yml");
+const directRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 
-execFileSync("docker", ["compose", "-f", composeFile, "down", "-v"], { stdio: "inherit" });
-execFileSync("docker", ["compose", "-f", composeFile, "up", "-d"], { stdio: "inherit" });
-waitForService("postgres", () => {
-  execFileSync("docker", ["exec", "delivrix-postgres", "pg_isready", "-U", "delivrix", "-d", "delivrix_mailops"], { stdio: "ignore" });
-});
-waitForService("redis", () => {
-  execFileSync("docker", ["exec", "delivrix-redis", "redis-cli", "ping"], { stdio: "ignore" });
-});
-execFileSync("npm", ["run", "db:migrate"], { cwd: repoRoot, stdio: "inherit" });
-execFileSync("npm", ["run", "db:seed"], { cwd: repoRoot, stdio: "inherit" });
+export async function main({
+  env = process.env,
+  stdin = process.stdin,
+  stdout = process.stdout,
+  exec = execFileSync
+} = {}) {
+  await assertResetAllowed({ env, stdin, stdout });
+  const postgres = postgresConfig({ ...env, POSTGRES_CONTAINER: env.POSTGRES_CONTAINER ?? defaultPostgresContainer });
+  const postgresContainer = postgres.container ?? defaultPostgresContainer;
+
+  exec("docker", ["compose", "-f", composeFile, "down", "-v"], { stdio: "inherit" });
+  exec("docker", ["compose", "-f", composeFile, "up", "-d"], { stdio: "inherit" });
+
+  waitForService("postgres", () => {
+    exec("docker", ["exec", postgresContainer, "pg_isready", "-U", postgres.user, "-d", postgres.database], { stdio: "ignore" });
+  });
+  waitForService("redis", () => {
+    exec("docker", ["exec", "delivrix-redis", "redis-cli", "ping"], { stdio: "ignore" });
+  });
+  exec("npm", ["run", "db:migrate"], { cwd: repoRoot, stdio: "inherit" });
+  exec("npm", ["run", "db:seed"], { cwd: repoRoot, stdio: "inherit" });
+}
+
+export async function assertResetAllowed({ env = process.env, stdin = process.stdin, stdout = process.stdout } = {}) {
+  if (env.NODE_ENV === "production") {
+    throw new Error("Refusing db:reset while NODE_ENV=production.");
+  }
+
+  if (env.DELIVRIX_CONFIRM_RESET === "1") {
+    return;
+  }
+
+  if (!stdin.isTTY) {
+    throw new Error("Refusing db:reset without DELIVRIX_CONFIRM_RESET=1 in a non-interactive shell.");
+  }
+
+  const answer = await promptResetConfirmation({ stdin, stdout });
+  if (answer !== "RESET") {
+    throw new Error("Refusing db:reset because the confirmation prompt was not accepted.");
+  }
+}
+
+export async function promptResetConfirmation({ stdin = process.stdin, stdout = process.stdout } = {}) {
+  const rl = createInterface({ input: stdin, output: stdout });
+  try {
+    return (await rl.question("db:reset deletes the local Postgres volume. Type RESET to continue: ")).trim();
+  } finally {
+    rl.close();
+  }
+}
 
 function waitForService(name, check, timeoutMs = 30_000) {
   const started = Date.now();
@@ -33,4 +76,8 @@ function waitForService(name, check, timeoutMs = 30_000) {
 
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+if (directRun) {
+  await main();
 }
