@@ -14,6 +14,7 @@ import {
   type GatewayRuntimeLogger
 } from "../gateway-runtime-log.ts";
 import { readRequestBody } from "../request-body.ts";
+import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
 
 export type ConfigureSmtpStatus =
   | "completed"
@@ -948,12 +949,28 @@ function failureOutcome(failure: OrchestratorFailure): "failed" | "cancelled_by_
 
 function summarizeOutcome(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) {
-    return { value };
+    return typeof value === "string"
+      ? { valueHash: hashInput(value), valuePresent: value.length > 0 }
+      : { value };
   }
-  const entries = Object.entries(value)
-    .filter(([key]) => !/token|secret|password|private|api[_-]?key|credential|authorization/i.test(key))
-    .slice(0, 20);
-  return Object.fromEntries(entries);
+  const output: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value).slice(0, 20)) {
+    if (/token|secret|password|private|api[_-]?key|credential|authorization/i.test(key)) {
+      continue;
+    }
+    if (/^dkimPublicKey$/i.test(key) && typeof item === "string") {
+      output.dkimPublicKeyHash = hashInput(item);
+      output.dkimPublicKeyPresent = item.length > 0;
+      continue;
+    }
+    if (typeof item === "string" && item.length > 200) {
+      output[`${key}Hash`] = hashInput(item);
+      output[`${key}Present`] = item.length > 0;
+      continue;
+    }
+    output[key] = item;
+  }
+  return output;
 }
 
 function totalEstimatedCost(results: ConfigureCompleteSmtpStepResult[]): number {
@@ -1030,19 +1047,6 @@ function positiveIntFromUnknown(value: unknown): number | undefined {
 
 function hashInput(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "undefined";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(",")}]`;
-  }
-  return `{${Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
-    .join(",")}}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

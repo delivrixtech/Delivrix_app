@@ -28,6 +28,7 @@ import {
   summarizeOperationalParams,
   type GatewayRuntimeLogger
 } from "./gateway-runtime-log.ts";
+import { stableStringify } from "../../../packages/storage/src/stable-stringify.ts";
 
 const defaultModelRegion = "us-east-1";
 const defaultMaxTokens = 4096;
@@ -801,18 +802,6 @@ function intentIdForMsgId(msgId: string): string {
 
 function hashToolInput(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "undefined";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(",")}]`;
-  }
-  const entries = Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left.localeCompare(right));
-  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`;
 }
 
 async function* toAsyncIterable<T>(value: AsyncIterable<T> | Iterable<T>): AsyncIterable<T> {

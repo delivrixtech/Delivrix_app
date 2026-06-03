@@ -5,6 +5,7 @@ import {
   queryByInputHash,
   queryByIntent,
   queryByToolAndOutcome,
+  redactUnsafeOutcomeData,
   retrieveGroundedDecisionMemory,
   retrieveTrustWeighted,
   type EpisodicEntry,
@@ -117,7 +118,9 @@ function redactObject(value: unknown): unknown {
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
-      key === "errorMessage" || secretKeyPattern.test(key) ? "[redacted]" : redactObject(item)
+      key === "outcomeData"
+        ? redactUnsafeOutcomeData(item)
+        : key === "errorMessage" || secretKeyPattern.test(key) ? "[redacted]" : redactObject(item)
     ])
   );
 }

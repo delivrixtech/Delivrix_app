@@ -5,6 +5,7 @@ import {
   buildEpisodicReviewSeedEntries,
   runEpisodicReviewSeed
 } from "./seed-episodic.mjs";
+import { insertEpisodicEntry } from "../../packages/storage/src/index.ts";
 
 const localEnv = {
   NODE_ENV: "development",
@@ -56,6 +57,25 @@ test("runEpisodicReviewSeed uses one transaction and injected insert without rea
   assert.deepEqual(logs, ["episodic review seed complete: 18 deterministic entries"]);
 });
 
+test("episodic review seed entries pass the real scratch write gate", async () => {
+  const pool = new FakeScratchPool();
+  const entries = buildEpisodicReviewSeedEntries(localEnv);
+
+  await withOperatorSecret(localEnv.OPENCLAW_OPERATOR_HMAC_SECRET, async () => {
+    for (const entry of entries) {
+      await insertEpisodicEntry(pool, entry);
+    }
+  });
+
+  assert.equal(pool.rows.length, 18);
+  assert.equal(
+    pool.rows
+      .filter((row) => row.source === "openclaw")
+      .every((row) => row.reliability === 0.35),
+    true
+  );
+});
+
 test("episodic review seed refuses production and non-local targets", () => {
   assert.throws(
     () => assertEpisodicReviewSeedAllowed({ ...localEnv, NODE_ENV: "production" }),
@@ -85,5 +105,67 @@ class FakeClient {
 
   release() {
     this.released = true;
+  }
+}
+
+class FakeScratchPool {
+  rows = [];
+  now = new Date("2026-06-03T12:00:00.000Z");
+  #id = 0;
+
+  async query(sql, params = []) {
+    if (!sql.includes("INSERT INTO openclaw_episodic_scratch")) {
+      throw new Error(`Unexpected SQL in seed write-gate test: ${sql}`);
+    }
+    const ttlDays = Number(params[15]);
+    const row = {
+      id: `scratch-${++this.#id}`,
+      intent_id: String(params[0]),
+      step: Number(params[1]),
+      tool: String(params[2]),
+      input_hash: String(params[3]),
+      outcome: String(params[4]),
+      outcome_data: parseJsonRecord(params[5]),
+      error_class: typeof params[6] === "string" ? params[6] : null,
+      error_message: typeof params[7] === "string" ? params[7] : null,
+      source: String(params[8]),
+      trust_score: Number(params[9]),
+      plane: String(params[10]),
+      provenance: parseJsonRecord(params[11]) ?? {},
+      reliability: Number(params[12]),
+      valid_at: params[13] instanceof Date ? params[13] : new Date(String(params[13])),
+      invalid_at: params[14] instanceof Date ? params[14] : null,
+      ttl_expires_at: new Date(this.now.getTime() + ttlDays * 24 * 60 * 60 * 1000),
+      created_at: new Date(this.now.getTime() + this.#id),
+      metadata: parseJsonRecord(params[16]) ?? {}
+    };
+    this.rows.push(row);
+    return { rows: [row], rowCount: 1 };
+  }
+}
+
+function parseJsonRecord(value) {
+  if (typeof value === "string") {
+    const parsed = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed
+      : null;
+  }
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value
+    : null;
+}
+
+async function withOperatorSecret(secret, fn) {
+  const previous = process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
+  process.env.OPENCLAW_OPERATOR_HMAC_SECRET = secret;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
+    } else {
+      process.env.OPENCLAW_OPERATOR_HMAC_SECRET = previous;
+    }
   }
 }
