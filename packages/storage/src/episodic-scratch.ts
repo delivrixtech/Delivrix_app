@@ -11,6 +11,7 @@ export type ScratchOutcome =
   | "partial";
 
 export type ScratchSource = "openclaw" | "operator" | "tool_output";
+export type ScratchPlane = "observation" | "verified_fact";
 
 export interface EpisodicEntry {
   id: string;
@@ -24,6 +25,11 @@ export interface EpisodicEntry {
   errorMessage?: string;
   source: ScratchSource;
   trustScore: number;
+  plane: ScratchPlane;
+  provenance: Record<string, unknown>;
+  reliability: number;
+  validAt: Date;
+  invalidAt?: Date;
   ttlExpiresAt: Date;
   createdAt: Date;
   metadata?: Record<string, unknown>;
@@ -40,8 +46,21 @@ export interface InsertEntryInput {
   errorMessage?: string;
   source: ScratchSource;
   trustScore?: number;
+  plane?: ScratchPlane;
+  provenance?: Record<string, unknown>;
+  reliability?: number;
+  validAt?: Date;
+  invalidAt?: Date | null;
   ttlDays?: number;
   metadata?: Record<string, unknown>;
+}
+
+export interface InvalidateEpisodicFactsInput {
+  tool?: string;
+  inputHash?: string;
+  reason: string;
+  invalidatedBy: string;
+  invalidAt?: Date;
 }
 
 type QueryablePool = Pick<Pool, "query">;
@@ -56,7 +75,11 @@ const outcomes: ScratchOutcome[] = [
   "partial"
 ];
 const sources: ScratchSource[] = ["openclaw", "operator", "tool_output"];
+const planes: ScratchPlane[] = ["observation", "verified_fact"];
 const dayMs = 24 * 60 * 60 * 1000;
+const maxStructuredPayloadBytes = 16 * 1024;
+const injectionPattern =
+  /\b(ignore (all )?(previous|prior) instructions|system prompt|developer message|jailbreak|you are now|exfiltrate|set reliability|promote (this|memory)|override governance)\b/i;
 
 export class EpisodicScratchValidationError extends Error {
   readonly code: string;
@@ -86,10 +109,33 @@ export async function insertEpisodicEntry(
         error_message,
         source,
         trust_score,
+        plane,
+        provenance,
+        reliability,
+        valid_at,
+        invalid_at,
         ttl_expires_at,
         metadata
       )
-      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, NOW() + ($11::integer * INTERVAL '1 day'), $12::jsonb)
+      VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6::jsonb,
+        $7,
+        $8,
+        $9,
+        $10,
+        $11,
+        $12::jsonb,
+        $13,
+        $14,
+        $15,
+        NOW() + ($16::integer * INTERVAL '1 day'),
+        $17::jsonb
+      )
       ON CONFLICT (intent_id, step) DO UPDATE
       SET
         outcome = CASE
@@ -112,6 +158,23 @@ export async function insertEpisodicEntry(
           WHEN EXCLUDED.trust_score >= openclaw_episodic_scratch.trust_score THEN EXCLUDED.source
           ELSE openclaw_episodic_scratch.source
         END,
+        plane = CASE
+          WHEN EXCLUDED.trust_score >= openclaw_episodic_scratch.trust_score THEN EXCLUDED.plane
+          ELSE openclaw_episodic_scratch.plane
+        END,
+        provenance = CASE
+          WHEN EXCLUDED.trust_score >= openclaw_episodic_scratch.trust_score THEN EXCLUDED.provenance
+          ELSE openclaw_episodic_scratch.provenance
+        END,
+        reliability = CASE
+          WHEN EXCLUDED.trust_score >= openclaw_episodic_scratch.trust_score THEN EXCLUDED.reliability
+          ELSE openclaw_episodic_scratch.reliability
+        END,
+        valid_at = CASE
+          WHEN EXCLUDED.trust_score >= openclaw_episodic_scratch.trust_score THEN EXCLUDED.valid_at
+          ELSE openclaw_episodic_scratch.valid_at
+        END,
+        invalid_at = COALESCE(openclaw_episodic_scratch.invalid_at, EXCLUDED.invalid_at),
         trust_score = GREATEST(openclaw_episodic_scratch.trust_score, EXCLUDED.trust_score),
         ttl_expires_at = GREATEST(openclaw_episodic_scratch.ttl_expires_at, EXCLUDED.ttl_expires_at),
         metadata = CASE
@@ -134,6 +197,11 @@ export async function insertEpisodicEntry(
       normalized.errorMessage ?? null,
       normalized.source,
       normalized.trustScore,
+      normalized.plane,
+      JSON.stringify(normalized.provenance),
+      normalized.reliability,
+      normalized.validAt,
+      normalized.invalidAt ?? null,
       normalized.ttlDays,
       JSON.stringify(normalized.metadata ?? {})
     ]
@@ -158,6 +226,7 @@ export async function queryByIntent(
   const params: unknown[] = [boundedString(intentId, "intentId", 1, 64)];
   if (!opts.includeExpired) {
     filters.push("ttl_expires_at > NOW()");
+    filters.push("invalid_at IS NULL");
   }
 
   const result = await pool.query(
@@ -178,7 +247,7 @@ export async function queryByInputHash(
   opts: { tool?: string; sinceDays?: number } = {}
 ): Promise<EpisodicEntry[]> {
   const params: unknown[] = [inputHashValue(inputHash)];
-  const filters = ["input_hash = $1", "ttl_expires_at > NOW()"];
+  const filters = ["input_hash = $1", "ttl_expires_at > NOW()", "invalid_at IS NULL"];
   addOptionalToolAndSinceFilters(filters, params, opts);
 
   const result = await pool.query(
@@ -203,7 +272,7 @@ export async function queryByToolAndOutcome(
     boundedString(tool, "tool", 1, 128),
     outcomeValue(outcome)
   ];
-  const filters = ["tool = $1", "outcome = $2", "ttl_expires_at > NOW()"];
+  const filters = ["tool = $1", "outcome = $2", "ttl_expires_at > NOW()", "invalid_at IS NULL"];
   if (opts.sinceDays !== undefined) {
     params.push(sinceDate(opts.sinceDays));
     filters.push(`created_at >= $${params.length}`);
@@ -229,7 +298,7 @@ export async function retrieveTrustWeighted(
   limit = 10
 ): Promise<EpisodicEntry[]> {
   const params: unknown[] = [];
-  const filters = ["ttl_expires_at > NOW()"];
+  const filters = ["ttl_expires_at > NOW()", "invalid_at IS NULL", "plane = 'verified_fact'"];
   if (criteria.tool !== undefined) {
     params.push(boundedString(criteria.tool, "tool", 1, 128));
     filters.push(`tool = $${params.length}`);
@@ -249,7 +318,19 @@ export async function retrieveTrustWeighted(
       SELECT *
       FROM openclaw_episodic_scratch
       WHERE ${filters.join(" AND ")}
-      ORDER BY (trust_score * 100 + EXTRACT(EPOCH FROM NOW() - created_at) / -86400) DESC
+      ORDER BY (
+        (reliability * 0.45) +
+        ((trust_score::double precision / 100.0) * 0.25) +
+        (
+          CASE
+            WHEN metadata ? 'importance' AND (metadata->>'importance') ~ '^[0-9]+(\\.[0-9]+)?$'
+              THEN LEAST(GREATEST((metadata->>'importance')::double precision, 0), 1)
+            ELSE 0.5
+          END * 0.15
+        ) +
+        (GREATEST(0, 1 - (EXTRACT(EPOCH FROM NOW() - created_at) / 2592000.0)) * 0.15)
+      ) DESC,
+      created_at DESC
       LIMIT $${params.length}
     `,
     params
@@ -262,22 +343,90 @@ export async function expireOldEntries(
 ): Promise<number> {
   const result = await pool.query(
     `
-      DELETE FROM openclaw_episodic_scratch
-      WHERE ttl_expires_at <= NOW()
-      RETURNING id
+      WITH invalidated AS (
+        UPDATE openclaw_episodic_scratch
+        SET invalid_at = COALESCE(invalid_at, NOW())
+        WHERE ttl_expires_at <= NOW()
+          AND invalid_at IS NULL
+          AND (plane = 'verified_fact' OR source = 'operator')
+        RETURNING id
+      ),
+      deleted AS (
+        DELETE FROM openclaw_episodic_scratch
+        WHERE ttl_expires_at <= NOW()
+          AND invalid_at IS NULL
+          AND plane <> 'verified_fact'
+          AND source <> 'operator'
+        RETURNING id
+      )
+      SELECT
+        (SELECT COUNT(*) FROM invalidated)::integer +
+        (SELECT COUNT(*) FROM deleted)::integer AS affected
     `
+  );
+  const affected = rows(result)[0]?.affected;
+  return Number.isFinite(Number(affected)) ? Number(affected) : 0;
+}
+
+export async function invalidateEpisodicFacts(
+  pool: QueryablePool,
+  input: InvalidateEpisodicFactsInput
+): Promise<number> {
+  if (!input.tool && !input.inputHash) {
+    throw new EpisodicScratchValidationError(
+      "invalid_invalidation_target",
+      "tool or inputHash is required to invalidate episodic facts."
+    );
+  }
+
+  const params: unknown[] = [
+    input.invalidAt ?? new Date(),
+    boundedString(input.reason, "reason", 1, 240),
+    boundedString(input.invalidatedBy, "invalidatedBy", 1, 128)
+  ];
+  const filters = ["plane = 'verified_fact'", "invalid_at IS NULL"];
+  if (input.tool !== undefined) {
+    params.push(boundedString(input.tool, "tool", 1, 128));
+    filters.push(`tool = $${params.length}`);
+  }
+  if (input.inputHash !== undefined) {
+    params.push(inputHashValue(input.inputHash));
+    filters.push(`input_hash = $${params.length}`);
+  }
+
+  const result = await pool.query(
+    `
+      UPDATE openclaw_episodic_scratch
+      SET
+        invalid_at = $1,
+        metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+          'invalidationReason', $2,
+          'invalidatedBy', $3
+        )
+      WHERE ${filters.join(" AND ")}
+      RETURNING id
+    `,
+    params
   );
   return typeof result.rowCount === "number" ? result.rowCount : rows(result).length;
 }
 
 function normalizeInsert(entry: InsertEntryInput): InsertEntryInput & {
   trustScore: number;
+  plane: ScratchPlane;
+  provenance: Record<string, unknown>;
+  reliability: number;
+  validAt: Date;
+  invalidAt: Date | null;
   ttlDays: number;
 } {
   const source = sourceValue(entry.source);
   const trustScore = entry.trustScore ?? defaultTrustScore(source);
   const metadata = entry.metadata ?? {};
   const ttlDays = positiveInteger(entry.ttlDays ?? 30, "ttlDays", 1, 365);
+  const plane = planeValue(entry.plane ?? defaultPlane(source));
+  const provenance = entry.provenance ?? provenanceFromMetadata(source, metadata);
+  const reliability = entry.reliability ?? defaultReliability(source);
 
   if (source === "operator" && !hasValidOperatorProvenance(metadata)) {
     throw new EpisodicScratchValidationError(
@@ -291,6 +440,27 @@ function normalizeInsert(entry: InsertEntryInput): InsertEntryInput & {
       "source=tool_output requires tool output provenance."
     );
   }
+  if (source === "openclaw" && (entry.reliability !== undefined || entry.trustScore !== undefined)) {
+    throw new EpisodicScratchValidationError(
+      "openclaw_reliability_forbidden",
+      "OpenClaw observations cannot set or raise their own reliability."
+    );
+  }
+  if (source === "openclaw" && plane !== "observation") {
+    throw new EpisodicScratchValidationError(
+      "openclaw_verified_fact_forbidden",
+      "OpenClaw observations cannot promote themselves to verified facts."
+    );
+  }
+  if (plane === "verified_fact" && Object.keys(provenance).length === 0) {
+    throw new EpisodicScratchValidationError(
+      "verified_fact_provenance_required",
+      "verified_fact entries require immutable provenance."
+    );
+  }
+  assertStructuredPayload(entry.outcomeData, "outcomeData");
+  assertStructuredPayload(metadata, "metadata");
+  assertStructuredPayload(provenance, "provenance");
 
   return {
     ...entry,
@@ -301,6 +471,11 @@ function normalizeInsert(entry: InsertEntryInput): InsertEntryInput & {
     outcome: outcomeValue(entry.outcome),
     source,
     trustScore: trustScoreValue(trustScore),
+    plane,
+    provenance,
+    reliability: reliabilityValue(reliability),
+    validAt: entry.validAt ?? new Date(),
+    invalidAt: entry.invalidAt ?? null,
     ttlDays,
     metadata
   };
@@ -319,6 +494,11 @@ function rowToEntry(row: Record<string, unknown>): EpisodicEntry {
     ...(typeof row.error_message === "string" ? { errorMessage: row.error_message } : {}),
     source: sourceValue(row.source),
     trustScore: numberField(row.trust_score, "trust_score"),
+    plane: planeValue(row.plane ?? "observation"),
+    provenance: isRecord(row.provenance) ? row.provenance : {},
+    reliability: reliabilityValue(row.reliability ?? numberField(row.trust_score, "trust_score") / 100),
+    validAt: dateField(row.valid_at ?? row.created_at, "valid_at"),
+    ...(row.invalid_at === null || row.invalid_at === undefined ? {} : { invalidAt: dateField(row.invalid_at, "invalid_at") }),
     ttlExpiresAt: dateField(row.ttl_expires_at, "ttl_expires_at"),
     createdAt: dateField(row.created_at, "created_at"),
     ...(isRecord(row.metadata) ? { metadata: row.metadata } : {})
@@ -372,6 +552,37 @@ function defaultTrustScore(source: ScratchSource): number {
   return 50;
 }
 
+function defaultReliability(source: ScratchSource): number {
+  if (source === "operator") return 0.95;
+  if (source === "tool_output") return 0.7;
+  return 0.35;
+}
+
+function defaultPlane(source: ScratchSource): ScratchPlane {
+  return source === "openclaw" ? "observation" : "verified_fact";
+}
+
+function provenanceFromMetadata(
+  source: ScratchSource,
+  metadata: Record<string, unknown>
+): Record<string, unknown> {
+  if (source === "operator") {
+    const signatureId = metadata.operatorSignatureId ?? metadata.signatureId;
+    return typeof signatureId === "string" && signatureId.trim()
+      ? { kind: "operator_signature", signatureId: signatureId.trim() }
+      : {};
+  }
+  if (source === "tool_output") {
+    for (const key of ["toolCallId", "toolUseId", "proposalId", "auditEventId"]) {
+      const value = metadata[key];
+      if (typeof value === "string" && value.trim()) {
+        return { kind: "tool_evidence", [key]: value.trim() };
+      }
+    }
+  }
+  return {};
+}
+
 function outcomeValue(value: unknown): ScratchOutcome {
   if (typeof value === "string" && outcomes.includes(value as ScratchOutcome)) {
     return value as ScratchOutcome;
@@ -384,6 +595,13 @@ function sourceValue(value: unknown): ScratchSource {
     return value as ScratchSource;
   }
   throw new EpisodicScratchValidationError("invalid_source", "Invalid scratch source.");
+}
+
+function planeValue(value: unknown): ScratchPlane {
+  if (typeof value === "string" && planes.includes(value as ScratchPlane)) {
+    return value as ScratchPlane;
+  }
+  throw new EpisodicScratchValidationError("invalid_plane", "Invalid scratch plane.");
 }
 
 function inputHashValue(value: unknown): string {
@@ -400,6 +618,14 @@ function trustScoreValue(value: unknown): number {
     throw new EpisodicScratchValidationError("invalid_trust_score", "trustScore must be between 0 and 100.");
   }
   return score;
+}
+
+function reliabilityValue(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new EpisodicScratchValidationError("invalid_reliability", "reliability must be between 0 and 1.");
+  }
+  return parsed;
 }
 
 function limitValue(value: unknown): number {
@@ -450,6 +676,44 @@ function dateField(value: unknown, field: string): Date {
     throw new Error(`${field} missing in scratch row.`);
   }
   return date;
+}
+
+function assertStructuredPayload(value: unknown, field: string): void {
+  if (value === undefined || value === null) return;
+  const serialized = JSON.stringify(value);
+  if (serialized.length > maxStructuredPayloadBytes) {
+    throw new EpisodicScratchValidationError(
+      `${field}_too_large`,
+      `${field} exceeds the episodic scratch write-gate size limit.`
+    );
+  }
+  walkPayload(value, field);
+}
+
+function walkPayload(value: unknown, path: string): void {
+  if (typeof value === "string") {
+    if (injectionPattern.test(value)) {
+      throw new EpisodicScratchValidationError(
+        "memory_payload_instruction_injection",
+        `${path} contains instruction-like text and was rejected by the write gate.`
+      );
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => walkPayload(item, `${path}[${index}]`));
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, item] of Object.entries(value)) {
+    if (/^(prompt|instruction|instructions|system|developer|assistant|user|messages)$/i.test(key)) {
+      throw new EpisodicScratchValidationError(
+        "memory_payload_free_text_forbidden",
+        `${path}.${key} is not allowed in episodic scratch writes.`
+      );
+    }
+    walkPayload(item, `${path}.${key}`);
+  }
 }
 
 function rows(result: unknown): Record<string, unknown>[] {

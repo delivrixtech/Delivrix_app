@@ -129,6 +129,7 @@ export async function compactIntent(
     const operatorSignature = await verifiedOperatorSignatureForStep(step, deps.auditLog);
     const source = memorySourceForStep(step, operatorSignature);
     const metadata = compactMetadataForStep(step, input, operatorSignature);
+    const provenance = compactProvenanceForStep(step, source);
     const inserted = await insertEpisodicEntry(deps.pool, {
       intentId: input.intentId,
       step: step.step,
@@ -139,6 +140,8 @@ export async function compactIntent(
       errorClass: step.errorClass,
       errorMessage: step.errorMessage,
       source,
+      plane: source === "openclaw" ? "observation" : "verified_fact",
+      provenance,
       ttlDays: input.ttlDays ?? 30,
       metadata
     });
@@ -324,6 +327,30 @@ function compactMetadataForStep(
     ...(step.toolCallId ? { toolCallId: step.toolCallId } : {}),
     ...(step.auditEventId ? { auditEventId: step.auditEventId } : {})
   };
+}
+
+function compactProvenanceForStep(
+  step: CompactIntentStep,
+  source: ScratchSource
+): Record<string, unknown> {
+  if (source === "operator" && step.signatureId) {
+    return {
+      kind: "operator_signature",
+      signatureId: step.signatureId,
+      ...(step.proposalId ? { proposalId: step.proposalId } : {}),
+      ...(step.auditEventId ? { auditEventId: step.auditEventId } : {})
+    };
+  }
+  if (source === "tool_output") {
+    return {
+      kind: "tool_evidence",
+      ...(step.toolUseId ? { toolUseId: step.toolUseId } : {}),
+      ...(step.toolCallId ? { toolCallId: step.toolCallId } : {}),
+      ...(step.proposalId ? { proposalId: step.proposalId } : {}),
+      ...(step.auditEventId ? { auditEventId: step.auditEventId } : {})
+    };
+  }
+  return {};
 }
 
 function hashJson(value: unknown): string {

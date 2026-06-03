@@ -62,6 +62,11 @@ interface MemoryRow {
   error_message: string | null;
   source: string;
   trust_score: number;
+  plane: string;
+  provenance: Record<string, unknown>;
+  reliability: number;
+  valid_at: Date;
+  invalid_at: Date | null;
   ttl_expires_at: Date;
   created_at: Date;
   metadata: Record<string, unknown>;
@@ -75,7 +80,7 @@ class MemoryScratchPool {
 
   async query(sql: string, params: unknown[] = []): Promise<{ rows: MemoryRow[]; rowCount: number }> {
     if (sql.includes("INSERT INTO openclaw_episodic_scratch")) {
-      const ttlDays = Number(params[10]);
+      const ttlDays = Number(params[15]);
       const row: MemoryRow = {
         id: `scratch-${++this.#id}`,
         intent_id: String(params[0]),
@@ -88,19 +93,33 @@ class MemoryScratchPool {
         error_message: typeof params[7] === "string" ? params[7] : null,
         source: String(params[8]),
         trust_score: Number(params[9]),
+        plane: String(params[10]),
+        provenance: parseJsonRecord(params[11]) ?? {},
+        reliability: Number(params[12]),
+        valid_at: params[13] instanceof Date ? params[13] : new Date(String(params[13])),
+        invalid_at: params[14] instanceof Date ? params[14] : null,
         ttl_expires_at: new Date(this.now.getTime() + ttlDays * 24 * 60 * 60 * 1000),
         created_at: new Date(Date.now() + this.#id),
-        metadata: parseJsonRecord(params[11]) ?? {}
+        metadata: parseJsonRecord(params[16]) ?? {}
       };
       this.rows.push(row);
       return { rows: [row], rowCount: 1 };
     }
 
-    if (sql.includes("DELETE FROM openclaw_episodic_scratch")) {
+    if (sql.includes("WITH invalidated")) {
       this.deleteSql = sql;
-      const deleted = this.rows.filter((row) => row.ttl_expires_at <= this.now);
-      this.rows = this.rows.filter((row) => row.ttl_expires_at > this.now);
-      return { rows: deleted, rowCount: deleted.length };
+      let affected = 0;
+      this.rows = this.rows.filter((row) => {
+        if (row.ttl_expires_at > this.now || row.invalid_at) return true;
+        if (row.plane === "verified_fact" || row.source === "operator") {
+          row.invalid_at = this.now;
+          affected++;
+          return true;
+        }
+        affected++;
+        return false;
+      });
+      return { rows: [{ affected } as unknown as MemoryRow], rowCount: 1 };
     }
 
     return { rows: [], rowCount: 0 };
