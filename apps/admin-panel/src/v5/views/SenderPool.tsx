@@ -7,12 +7,14 @@ import { motion } from "framer-motion";
 import { AlertTriangle, ArrowRight, CheckCircle2, Pause, Plus, Send, Sparkles } from "lucide-react";
 import {
   getJson,
+  getJsonWithQuery,
   getWarmupRampByDomain,
   pauseWarmupRamp,
   type AuditEventsPayload,
-  type AuditEvent,
   type WarmupRampStatus
 } from "../../shared/api/client";
+import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
+import { computeWalletTransactions, type WalletTx } from "./sender-pool-wallet";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import {
   Badge,
@@ -27,6 +29,7 @@ import {
   MonoCode,
   MonoData,
   Pill,
+  type PillProps,
   SectionHead
 } from "../components/primitives";
 import { PageHead } from "./_PageHead";
@@ -35,6 +38,7 @@ import { StartWarmupRampInline } from "../components/StartWarmupRampInline";
 
 const POLL_MS = 15_000;
 const CAP_USD = 50;
+type PillTone = NonNullable<PillProps["tone"]>;
 
 interface DomainSummary {
   domain: string;
@@ -65,7 +69,7 @@ interface SenderPoolPayload {
 function useSenderPool() {
   return useQuery({
     queryKey: ["sender-pool", "status"],
-    queryFn: () => getJson<SenderPoolPayload>("/v1/sender-pool/status" as never),
+    queryFn: () => getJson<SenderPoolPayload>(READ_ENDPOINTS.senderPoolStatus),
     refetchInterval: POLL_MS,
     staleTime: POLL_MS / 2,
     retry: false
@@ -75,7 +79,7 @@ function useSenderPool() {
 function useWalletTransactions() {
   return useQuery({
     queryKey: ["audit-events", "wallet"],
-    queryFn: () => getJson<AuditEventsPayload>("/v1/audit-events?limit=50" as never),
+    queryFn: () => getJsonWithQuery<AuditEventsPayload>(READ_ENDPOINTS.auditEvents, { limit: 50 }),
     refetchInterval: 30_000,
     staleTime: 15_000,
     retry: 1
@@ -180,7 +184,7 @@ export function SenderPoolV5() {
 /* ----- Domain row ----- */
 
 function DomainRow({ d }: { d: DomainSummary }) {
-  const statusTone =
+  const statusTone: PillTone =
     d.status === "active"
       ? "success"
       : d.status === "warming"
@@ -215,7 +219,7 @@ function DomainRow({ d }: { d: DomainSummary }) {
         </Caption>
       </div>
       <div className="flex items-center gap-2">
-        <Pill tone={statusTone as never} size="sm">
+        <Pill tone={statusTone} size="sm">
           {d.status}
         </Pill>
         {d.warmupDayN != null && d.warmupTargetDays != null && (
@@ -267,37 +271,6 @@ function FlowSteps() {
 
 /* ----- Wallet ----- */
 
-interface WalletTx {
-  occurredAt: string;
-  domain: string;
-  amount: number;
-  actor: string;
-}
-
-function computeWalletTransactions(events: AuditEvent[]): WalletTx[] {
-  const now = new Date();
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
-  const out: WalletTx[] = [];
-  for (const e of events) {
-    if (e.action !== "oc.domain.registered") continue;
-    const ts = new Date(e.occurredAt);
-    if (Number.isNaN(ts.getTime())) continue;
-    if (ts.getUTCFullYear() !== year || ts.getUTCMonth() !== month) continue;
-    const ev = e as unknown as Record<string, unknown>;
-    const detail = (ev["detail"] ?? ev["payload"] ?? {}) as Record<string, unknown>;
-    const cost = Number(detail["costUsd"] ?? detail["cost_usd"] ?? 0);
-    if (!Number.isFinite(cost) || cost <= 0) continue;
-    out.push({
-      occurredAt: e.occurredAt,
-      domain: String(detail["domain"] ?? "—"),
-      amount: cost,
-      actor: e.actorId ?? "—"
-    });
-  }
-  return out.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
-}
-
 function WalletCard({
   spent,
   available,
@@ -321,7 +294,7 @@ function WalletCard({
           <Eyebrow>Wallet operativo</Eyebrow>
           <H2>Route53 Domains</H2>
         </div>
-        <Pill tone={tone as never} size="sm">
+        <Pill tone={tone} size="sm">
           {pillLabel}
         </Pill>
       </div>
@@ -354,7 +327,7 @@ function WalletCard({
       ) : (
         <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
           {transactions.slice(0, 4).map((t) => (
-            <li key={t.occurredAt} className="flex items-start justify-between gap-2 text-[11px]">
+            <li key={t.id} className="flex items-start justify-between gap-2 text-[11px]">
               <div className="flex min-w-0 flex-col">
                 <MonoData className="truncate text-[11px]">{t.domain}</MonoData>
                 <Caption className="text-[10px]">{new Date(t.occurredAt).toLocaleString("es-CO", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} · {t.actor}</Caption>
