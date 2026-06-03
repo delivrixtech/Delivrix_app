@@ -41,6 +41,34 @@ test("LocalFileAuditLog getLastHashSync reads external appends from disk", async
   assert.equal(first.getLastHashSync(), secondEvent.hash);
 });
 
+test("LocalFileAuditLog serializes concurrent Promise.all appends across two instances", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "delivrix-audit-concurrent-"));
+  t.after(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const filePath = join(dir, "audit-events.jsonl");
+  const first = new LocalFileAuditLog(filePath);
+  const second = new LocalFileAuditLog(filePath);
+
+  await Promise.all(
+    Array.from({ length: 160 }, (_, index) => {
+      const auditLog = index % 2 === 0 ? first : second;
+      return auditLog.append(event(`concurrent-${index}`));
+    })
+  );
+
+  const verify = await verifyAuditChainFile(filePath);
+  assert.equal(verify.ok, true, verify.brokenAt ? JSON.stringify(verify.brokenAt) : undefined);
+
+  const events = await first.list();
+  assert.equal(events.length, 160);
+  const prevHashes = events.map((event) => event.prevHash);
+  assert.equal(new Set(prevHashes).size, events.length);
+  for (let index = 1; index < events.length; index += 1) {
+    assert.equal(events[index]!.prevHash, events[index - 1]!.hash);
+  }
+});
+
 function event(targetId: string): AuditEventInput {
   return {
     actorType: "system",

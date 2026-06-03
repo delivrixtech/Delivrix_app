@@ -84,15 +84,7 @@ export class JsonFileStore<T> {
   }
 
   private async withLock<R>(fn: () => Promise<R>): Promise<R> {
-    const mutex = mutexFor(this.filePath);
-    return mutex.runExclusive(async () => {
-      const release = await acquireFileLock(this.filePath);
-      try {
-        return await fn();
-      } finally {
-        await release();
-      }
-    });
+    return withFileLock(this.filePath, fn);
   }
 }
 
@@ -136,6 +128,19 @@ async function acquireFileLock(filePath: string): Promise<() => Promise<void>> {
       await sleep(25);
     }
   }
+}
+
+export async function withFileLock<R>(filePath: string, fn: () => Promise<R>): Promise<R> {
+  const resolvedPath = resolve(filePath);
+  const mutex = mutexFor(resolvedPath);
+  return mutex.runExclusive(async () => {
+    const release = await acquireFileLock(resolvedPath);
+    try {
+      return await fn();
+    } finally {
+      await release();
+    }
+  });
 }
 
 function sleep(ms: number): Promise<void> {
