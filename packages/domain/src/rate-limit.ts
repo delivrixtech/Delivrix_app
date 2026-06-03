@@ -21,6 +21,7 @@ export interface RateLimitCounter {
 export interface RateLimitCounterStore {
   get(rule: RateLimitRule, windowKey: string): Promise<RateLimitCounter>;
   increment(rule: RateLimitRule, windowKey: string, amount: number): Promise<RateLimitCounter>;
+  tryConsume(rules: RateLimitRule[], windowKey: string, amount: number): Promise<RateLimitDecision>;
   list(): Promise<RateLimitCounter[]>;
 }
 
@@ -70,24 +71,8 @@ export class RateLimitService {
   }
 
   async consume(rules: RateLimitRule[], amount = 1): Promise<RateLimitDecision> {
-    const decision = await this.check(rules, amount);
-
-    if (!decision.allowed) {
-      return decision;
-    }
-
     const windowKey = dailyWindowKey(this.now());
-    const counters: RateLimitCounter[] = [];
-
-    for (const rule of rules) {
-      counters.push(await this.store.increment(rule, windowKey, amount));
-    }
-
-    return {
-      allowed: true,
-      violations: [],
-      counters
-    };
+    return this.store.tryConsume(rules, windowKey, amount);
   }
 }
 

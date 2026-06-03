@@ -1,5 +1,7 @@
 import type {
   RateLimitCounter,
+  RateLimitDecision,
+  RateLimitViolation,
   RateLimitCounterStore,
   RateLimitRule
 } from "../../domain/src/index.ts";
@@ -24,28 +26,40 @@ export class LocalFileRateLimitStore implements RateLimitCounterStore {
   }
 
   async increment(rule: RateLimitRule, windowKey: string, amount: number): Promise<RateLimitCounter> {
-    const counters = await this.store.read([]);
-    const index = counters.findIndex((counter) => matches(counter, rule, windowKey));
-    const current = index >= 0 ? counters[index] : {
-      scope: rule.scope,
-      id: rule.id,
-      window: rule.window,
-      windowKey,
-      count: 0
-    };
-    const updated = {
-      ...current,
-      count: current.count + amount
-    };
+    return this.store.transaction([], (counters) => {
+      const updated = incrementCounter(counters, rule, windowKey, amount);
+      return { value: counters, result: updated };
+    });
+  }
 
-    if (index >= 0) {
-      counters[index] = updated;
-    } else {
-      counters.push(updated);
-    }
+  async tryConsume(rules: RateLimitRule[], windowKey: string, amount: number): Promise<RateLimitDecision> {
+    return this.store.transaction([], (counters) => {
+      const currentCounters = rules.map((rule) => findCounter(counters, rule, windowKey));
+      const violations = currentCounters
+        .map((counter, index) => toViolation(counter, rules[index], amount))
+        .filter((violation): violation is RateLimitViolation => violation !== null);
 
-    await this.store.write(counters);
-    return updated;
+      if (violations.length > 0) {
+        return {
+          value: counters,
+          result: {
+            allowed: false,
+            violations,
+            counters: currentCounters
+          }
+        };
+      }
+
+      const updatedCounters = rules.map((rule) => incrementCounter(counters, rule, windowKey, amount));
+      return {
+        value: counters,
+        result: {
+          allowed: true,
+          violations: [],
+          counters: updatedCounters
+        }
+      };
+    });
   }
 
   async list(): Promise<RateLimitCounter[]> {
@@ -58,4 +72,59 @@ function matches(counter: RateLimitCounter, rule: RateLimitRule, windowKey: stri
     && counter.id === rule.id
     && counter.window === rule.window
     && counter.windowKey === windowKey;
+}
+
+function findCounter(counters: RateLimitCounter[], rule: RateLimitRule, windowKey: string): RateLimitCounter {
+  return counters.find((counter) => matches(counter, rule, windowKey)) ?? {
+    scope: rule.scope,
+    id: rule.id,
+    window: rule.window,
+    windowKey,
+    count: 0
+  };
+}
+
+function incrementCounter(
+  counters: RateLimitCounter[],
+  rule: RateLimitRule,
+  windowKey: string,
+  amount: number
+): RateLimitCounter {
+  const index = counters.findIndex((counter) => matches(counter, rule, windowKey));
+  const current = index >= 0 ? counters[index] : findCounter(counters, rule, windowKey);
+  const updated = {
+    ...current,
+    count: current.count + amount
+  };
+
+  if (index >= 0) {
+    counters[index] = updated;
+  } else {
+    counters.push(updated);
+  }
+  return updated;
+}
+
+function toViolation(
+  counter: RateLimitCounter,
+  rule: RateLimitRule | undefined,
+  amount: number
+): RateLimitViolation | null {
+  if (!rule) {
+    return null;
+  }
+
+  if (counter.count + amount <= rule.limit) {
+    return null;
+  }
+
+  return {
+    scope: rule.scope,
+    id: rule.id,
+    limit: rule.limit,
+    current: counter.count,
+    requested: amount,
+    window: rule.window,
+    windowKey: counter.windowKey
+  };
 }

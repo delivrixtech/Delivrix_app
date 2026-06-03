@@ -16,17 +16,17 @@ export class LocalFileRunbookExecutionStore implements RunbookExecutionTracker {
   }
 
   async reserve(input: ReserveRunbookExecutionInput): Promise<"reserved" | "already_reserved"> {
-    const records = await this.store.read([]);
-    if (records.some((record) => record.proposalId === input.proposalId)) {
-      return "already_reserved";
-    }
+    return this.store.transaction([], (records) => {
+      if (records.some((record) => record.proposalId === input.proposalId)) {
+        return { value: records, result: "already_reserved" as const };
+      }
 
-    records.push({
-      ...input,
-      reservedAt: new Date().toISOString()
+      records.push({
+        ...input,
+        reservedAt: new Date().toISOString()
+      });
+      return { value: records, result: "reserved" as const };
     });
-    await this.store.write(records);
-    return "reserved";
   }
 
   async list(): Promise<RunbookExecutionRecord[]> {

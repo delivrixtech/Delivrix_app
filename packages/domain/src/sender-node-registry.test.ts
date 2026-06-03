@@ -187,6 +187,14 @@ class MemoryRateLimitCounterStore implements RateLimitCounterStore {
     return { ...current, count: current.count + amount };
   }
 
+  async tryConsume(rules: RateLimitRule[], windowKey: string, amount: number) {
+    return {
+      allowed: true,
+      violations: [],
+      counters: await Promise.all(rules.map((rule) => this.increment(rule, windowKey, amount)))
+    };
+  }
+
   async list(): Promise<RateLimitCounter[]> {
     return this.counters;
   }
@@ -198,6 +206,10 @@ class FailingRateLimitCounterStore implements RateLimitCounterStore {
   }
 
   async increment(): Promise<RateLimitCounter> {
+    throw new Error("quota store unavailable");
+  }
+
+  async tryConsume() {
     throw new Error("quota store unavailable");
   }
 

@@ -1,6 +1,3 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
-import { dirname, resolve } from "node:path";
 import {
   createId,
   findStuckProcessingJobs,
@@ -9,6 +6,7 @@ import {
   type StuckJobRecoveryAction,
   type StuckProcessingJob
 } from "../../domain/src/index.ts";
+import { JsonFileStore } from "../../local-store/src/index.ts";
 
 export interface RecoverStuckProcessingJobsInput {
   staleAfterMs: number;
@@ -39,10 +37,10 @@ export interface SendJobQueue {
 }
 
 export class LocalFileSendQueue implements SendJobQueue {
-  private readonly filePath: string;
+  private readonly store: JsonFileStore<SendJob[]>;
 
   constructor(filePath = process.env.LOCAL_SEND_QUEUE_FILE ?? "runtime/send-jobs.json") {
-    this.filePath = resolve(filePath);
+    this.store = new JsonFileStore<SendJob[]>(filePath);
   }
 
   async add(request: SendRequest): Promise<SendJob> {
@@ -53,42 +51,23 @@ export class LocalFileSendQueue implements SendJobQueue {
       createdAt: new Date().toISOString()
     };
 
-    const jobs = await this.readJobs();
-    jobs.push(job);
-    await this.writeJobs(jobs);
+    await this.store.update([], (jobs) => {
+      jobs.push(job);
+      return jobs;
+    });
     return job;
   }
 
   async list(): Promise<SendJob[]> {
-    return this.readJobs();
+    return this.store.read([]);
   }
 
   async claimNext(): Promise<SendJob | null> {
-    const jobs = await this.readJobs();
-    const job = jobs.find((candidate) => candidate.status === "queued");
-
-    if (!job) {
-      return null;
-    }
-
-    job.status = "processing";
-    job.processingStartedAt = new Date().toISOString();
-    await this.writeJobs(jobs);
-    return job;
+    return this.store.transaction([], (jobs) => claimFirstQueued(jobs));
   }
 
   async claim(jobId: string): Promise<SendJob | null> {
-    const jobs = await this.readJobs();
-    const job = jobs.find((candidate) => candidate.id === jobId && candidate.status === "queued");
-
-    if (!job) {
-      return null;
-    }
-
-    job.status = "processing";
-    job.processingStartedAt = new Date().toISOString();
-    await this.writeJobs(jobs);
-    return job;
+    return this.store.transaction([], (jobs) => claimById(jobs, jobId));
   }
 
   async markCompleted(jobId: string): Promise<void> {
@@ -122,7 +101,7 @@ export class LocalFileSendQueue implements SendJobQueue {
 
   async listStuckProcessingJobs(staleAfterMs: number, now = new Date()): Promise<StuckProcessingJob[]> {
     return findStuckProcessingJobs({
-      jobs: await this.readJobs(),
+      jobs: await this.store.read([]),
       staleAfterMs,
       now
     });
@@ -131,72 +110,71 @@ export class LocalFileSendQueue implements SendJobQueue {
   async recoverStuckProcessingJobs(input: RecoverStuckProcessingJobsInput): Promise<StuckJobRecoveryReport> {
     const now = input.now ?? new Date();
     const recoveredAt = now.toISOString();
-    const jobs = await this.readJobs();
-    const detected = findStuckProcessingJobs({
-      jobs,
-      staleAfterMs: input.staleAfterMs,
-      now
-    });
-    const detectedIds = new Set(detected.map((job) => job.jobId));
-    const recovered: SendJob[] = [];
+    return this.store.transaction([], (jobs) => {
+      const detected = findStuckProcessingJobs({
+        jobs,
+        staleAfterMs: input.staleAfterMs,
+        now
+      });
+      const detectedIds = new Set(detected.map((job) => job.jobId));
+      const recovered: SendJob[] = [];
 
-    for (const job of jobs) {
-      if (!detectedIds.has(job.id)) {
-        continue;
+      for (const job of jobs) {
+        if (!detectedIds.has(job.id)) {
+          continue;
+        }
+
+        recoverJob(job, input.action, recoveredAt, input.staleAfterMs, input.reason);
+        recovered.push({ ...job });
       }
 
-      recoverJob(job, input.action, recoveredAt, input.staleAfterMs, input.reason);
-      recovered.push({ ...job });
-    }
-
-    if (recovered.length > 0) {
-      await this.writeJobs(jobs);
-    }
-
-    return {
-      action: input.action,
-      staleAfterMs: input.staleAfterMs,
-      recoveredAt,
-      detected,
-      recovered
-    };
+      return {
+        value: jobs,
+        result: {
+          action: input.action,
+          staleAfterMs: input.staleAfterMs,
+          recoveredAt,
+          detected,
+          recovered
+        }
+      };
+    });
   }
 
   private async updateJob(jobId: string, update: (job: SendJob) => void): Promise<void> {
-    const jobs = await this.readJobs();
-    const job = jobs.find((candidate) => candidate.id === jobId);
+    await this.store.transaction([], (jobs) => {
+      const job = jobs.find((candidate) => candidate.id === jobId);
 
-    if (!job) {
-      throw new Error(`Send job not found: ${jobId}`);
-    }
-
-    update(job);
-    await this.writeJobs(jobs);
-  }
-
-  private async readJobs(): Promise<SendJob[]> {
-    try {
-      const raw = await readFile(this.filePath, "utf8");
-      return JSON.parse(raw) as SendJob[];
-    } catch (error) {
-      if (isNotFound(error)) {
-        return [];
+      if (!job) {
+        throw new Error(`Send job not found: ${jobId}`);
       }
 
-      throw error;
-    }
-  }
-
-  private async writeJobs(jobs: SendJob[]): Promise<void> {
-    await mkdir(dirname(this.filePath), { recursive: true });
-    const tmpPath = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(tmpPath, `${JSON.stringify(jobs, null, 2)}\n`, "utf8");
-    await rename(tmpPath, this.filePath);
+      update(job);
+      return { value: jobs, result: undefined };
+    });
   }
 }
 
-function isNotFound(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
+function claimFirstQueued(jobs: SendJob[]): { value: SendJob[]; result: SendJob | null } {
+  const job = jobs.find((candidate) => candidate.status === "queued");
+  if (!job) {
+    return { value: jobs, result: null };
+  }
+
+  job.status = "processing";
+  job.processingStartedAt = new Date().toISOString();
+  return { value: jobs, result: { ...job } };
+}
+
+function claimById(jobs: SendJob[], jobId: string): { value: SendJob[]; result: SendJob | null } {
+  const job = jobs.find((candidate) => candidate.id === jobId && candidate.status === "queued");
+  if (!job) {
+    return { value: jobs, result: null };
+  }
+
+  job.status = "processing";
+  job.processingStartedAt = new Date().toISOString();
+  return { value: jobs, result: { ...job } };
 }
 
 function recoverJob(
