@@ -119,7 +119,7 @@ test("OpenClawBedrockBridge falls back to OPENCLAW_SYSTEM_PROMPT path when bundl
 
   assert.ok(payload);
   assert.match(String((payload as Record<string, unknown>).system), /^Fallback system prompt/);
-  assert.match(String((payload as Record<string, unknown>).system), /<live_context generatedAt="2026-05-29T05:00:00.000Z">/);
+  assert.match(String((payload as Record<string, unknown>).system), /<live_context generatedAt="2026-05-29T05:00:00.000Z" grounding="inventory_and_verified_facts">/);
 });
 
 test("OpenClawBedrockBridge injects read-only live context and tolerates endpoint failures", async () => {
@@ -145,7 +145,50 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
       const bodyByPath: Record<string, unknown> = {
         "/v1/admin/overview": { service: "gateway-api", secret: "should-redact" },
         "/v1/kill-switch": { enabled: false, updatedBy: "operator_local" },
-        "/v1/audit-events": [{ action: "oc.chat.test", token: "should-redact" }]
+        "/v1/audit-events": [{ action: "oc.chat.test", token: "should-redact" }],
+        "/v1/infrastructure/inventory": {
+          providers: [{
+            id: "aws-route53-domains",
+            kind: "domain-registrar",
+            fetchSourceKind: "live",
+            items: [{
+              id: "controldelivrix.app",
+              kind: "aws_route53_domain",
+              displayName: "controldelivrix.app",
+              status: "active"
+            }]
+          }]
+        },
+        "/v1/webdock/inventory": {
+          inventory: {
+            servers: [{
+              slug: "server10",
+              name: "server10",
+              ipv4: "45.136.70.47",
+              status: "running"
+            }]
+          }
+        },
+        "/v1/openclaw/scratch": {
+          status: "grounded",
+          memories: [{
+            memory: {
+              id: "memory-1",
+              plane: "verified_fact",
+              source: "audit-chain",
+              tool: "read_webdock_inventory",
+              outcome: "success",
+              outcomeData: {
+                domain: "controldelivrix.app",
+                serverSlug: "server10"
+              },
+              trustScore: 0.98,
+              reliability: "high",
+              validAt: "2026-05-29T04:50:00.000Z",
+              ttlExpiresAt: "2026-05-30T04:50:00.000Z"
+            }
+          }]
+        }
       };
       return {
         ok: true,
@@ -168,18 +211,77 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
     "/v1/admin/overview",
     "/v1/audit-events?limit=10",
     "/v1/canvas/live/state",
-    "/v1/kill-switch"
+    "/v1/infrastructure/inventory",
+    "/v1/kill-switch",
+    "/v1/openclaw/scratch?grounded=true&limit=5&query=estado",
+    "/v1/webdock/inventory"
   ].sort());
   assert.deepEqual(new Set(seenTokens), new Set(["read-token"]));
   const capturedPayload = payload as Record<string, unknown> | null;
   assert.ok(capturedPayload);
   const system = String(capturedPayload.system);
-  assert.match(system, /<live_context generatedAt="2026-05-29T05:00:00.000Z">/);
+  assert.match(system, /<live_context generatedAt="2026-05-29T05:00:00.000Z" grounding="inventory_and_verified_facts">/);
+  assert.match(system, /## inventory_domains \(GET \/v1\/infrastructure\/inventory\)/);
+  assert.match(system, /"domain": "controldelivrix\.app"/);
+  assert.match(system, /## inventory_servers \(GET \/v1\/infrastructure\/inventory \+ GET \/v1\/webdock\/inventory\)/);
+  assert.match(system, /"serverSlug": "server10"/);
+  assert.match(system, /"serverIp": "45\.136\.70\.47"/);
+  assert.match(system, /## verified_facts \(GET \/v1\/openclaw\/scratch\?grounded=true&query=<operator>\)/);
+  assert.match(system, /"plane": "verified_fact"/);
   assert.match(system, /## kill_switch \(GET \/v1\/kill-switch\)/);
   assert.match(system, /"enabled": false/);
   assert.match(system, /"_error": "canvas timeout"/);
   assert.match(system, /"secret": "\[redacted\]"/);
   assert.match(system, /"token": "\[redacted\]"/);
+});
+
+test("OpenClawBedrockBridge injects explicit abstention when inventory and verified facts are absent", async () => {
+  let payload: Record<string, unknown> | null = null;
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    delivrixBaseUrl: "http://gateway.test/",
+    fetchImpl: (async (input) => {
+      const url = new URL(String(input));
+      const bodyByPath: Record<string, unknown> = {
+        "/v1/admin/overview": {},
+        "/v1/kill-switch": { enabled: false },
+        "/v1/canvas/live/state": {},
+        "/v1/audit-events": [],
+        "/v1/infrastructure/inventory": { providers: [] },
+        "/v1/webdock/inventory": { inventory: { servers: [] } },
+        "/v1/openclaw/scratch": { status: "abstain", reason: "no_grounded_match", memories: [] }
+      };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => bodyByPath[url.pathname] ?? {}
+      } as Response;
+    }) as typeof fetch,
+    client: {
+      send: async (command) => {
+        payload = JSON.parse(String(command.input.body));
+        return { body: [streamJson({ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } })] };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-abs", message: "esta configurado SMTP para 37.842Z?" });
+  await bridge.streamHistory("msg-abs", {});
+
+  const capturedPayload = payload as Record<string, unknown> | null;
+  assert.ok(capturedPayload);
+  const system = String(capturedPayload.system);
+  assert.match(system, /## inventory_domains/);
+  assert.match(system, /"reason": "no_inventory_domains_available"/);
+  assert.match(system, /## inventory_servers/);
+  assert.match(system, /"reason": "no_inventory_servers_available"/);
+  assert.match(system, /## verified_facts/);
+  assert.match(system, /"status": "abstain"/);
+  assert.match(system, /No hay hechos verificados relevantes/);
 });
 
 test("OpenClawBedrockBridge loops tool_use through processor and sends tool_result back to Bedrock", async () => {

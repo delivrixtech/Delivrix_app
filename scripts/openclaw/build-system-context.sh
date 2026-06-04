@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Delivrix OpenClaw KB Capa 1
-# Builds the fixed system-context bundle locally, pushes it to the OpenClaw
-# container on Hostinger, and refreshes the injected AGENTS.md bootstrap file.
+# Builds the fixed system-context bundle locally, and by default pushes it to
+# the OpenClaw container on Hostinger. Set OPENCLAW_CONTEXT_LOCAL_ONLY=true to
+# regenerate local artifacts without any remote SSH/docker mutation.
 
 set -euo pipefail
 
@@ -78,7 +79,7 @@ api = read_doc("OPENCLAW_DELIVRIX_API_CONTRACT.md")
 
 system_literal = section(system_prompt, "## 4. System prompt literal")
 permissions_categories = section(permissions, "## 2. Categorías canónicas")
-permissions_matrix = compact_lines(section(permissions, "## 3. Matriz literal"), 9200)
+permissions_matrix = compact_lines(section(permissions, "## 3. Matriz literal"), 8400)
 permissions_gates = section(permissions, "## 7. Gates duros")
 permissions_core = "\n\n".join(part for part in (
     permissions_categories,
@@ -208,6 +209,18 @@ seconds.
 Responde en español por defecto. Usa Markdown estructurado. Cita docs como
 `DOCUMENTACION/<doc>.md §<sección>` o eventos como `oc.read.*`.
 
+## Protocolo Antidelirio de Entidades
+
+- Antes de responder estado o proponer/usar tool con `domain`, `serverSlug`,
+  `serverIp`, `ip` o `zoneId`, resuelve la entidad contra inventario vivo,
+  read-tools o memoria `verified_fact`.
+- No uses timestamps, texto libre de chat, prose del audit/canvas ni recuerdos
+  sin `verified_fact` como fuente de entidades.
+- Si no hay entidad verificada, di que no tienes dato suficiente, pide el valor
+  exacto y no generes proposal/tool_use.
+- Si una ruta devuelve `entity_not_resolved`, no reintentes inventando otro
+  parámetro; reporta blocker y espera corrección humana.
+
 ## Disciplina del Flow Real (audit del CTO 2026-05-28)
 
 Fuente completa: `REFERENCIAS_FLOW_REAL/SMTP_STACK_AUDIT_JUANES_2026_05_28.md` (1780
@@ -273,6 +286,11 @@ fi
 if [ "${AGENTS_CHARS}" -gt 11500 ]; then
   echo "FAIL: AGENTS bootstrap excede budget por archivo (${AGENTS_CHARS} chars)" >&2
   exit 1
+fi
+
+if [ "${OPENCLAW_CONTEXT_LOCAL_ONLY:-false}" = "true" ]; then
+  echo "ok: local-only; no se ejecutó SSH/scp/docker cp remoto"
+  exit 0
 fi
 
 ssh -i "${SSH_KEY}" "${SSH_HOST}" "mkdir -p '${REMOTE_TMP}'"

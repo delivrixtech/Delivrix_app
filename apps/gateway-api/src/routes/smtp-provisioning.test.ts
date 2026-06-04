@@ -54,11 +54,86 @@ test("POST /v1/servers/:slug/provision-smtp blocks without SSH flag, runner, app
   assert.deepEqual(response.body.blockers.sort(), [
     "approval_not_found_or_expired",
     "dkim_private_key_missing",
+    "entity_not_resolved",
     "server_ip_missing",
     "smtp_ssh_flag_disabled",
     "smtp_ssh_runner_missing"
   ].sort());
   assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.smtp.provision_blocked");
+});
+
+test("POST /v1/servers/:slug/provision-smtp rejects timestamp fragments as unresolved domains", async () => {
+  const commands: SmtpSshCommandInput[] = [];
+  const route = await routeHarness({
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-smtp-plan",
+      executionId: "exec-smtp-bad-domain",
+      approvedAt: "2026-05-27T16:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-smtp-plan", "exec-smtp-bad-domain");
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "mail-delivrix-test",
+      hostname: "mail.delivrix-mail.com",
+      ipv4: "192.0.2.44",
+      status: "running"
+    }]
+  }));
+
+  const response = await route({
+    domain: "37.842Z",
+    actorId: "operator/juanes",
+    approvalToken: "exec-smtp-bad-domain",
+    taskId: "task-smtp-bad-domain"
+  }, { SMTP_PROVISIONING_ENABLE_SSH: "true" });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.blockers.includes("entity_not_resolved"), true);
+  assert.equal(response.body.entityResolution.failures[0].reason, "timestamp_fragment_is_not_domain");
+  assert.equal(commands.length, 0);
+  const events = await route.auditLog.list();
+  assert.equal(events.some((event) => event.action === "oc.guard.entity_not_resolved"), true);
+  assert.equal(events.at(-1)?.action, "oc.smtp.provision_blocked");
+});
+
+test("POST /v1/servers/:slug/provision-smtp blocks serverSlug that is absent from inventory", async () => {
+  const route = await routeHarness({
+    serverSlug: "missing-server",
+    sshRunner: mockRunner(),
+    canvasState: canvasState([{
+      artifactId: "artifact-smtp-plan",
+      executionId: "exec-smtp-missing-server",
+      approvedAt: "2026-05-27T16:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-smtp-plan", "exec-smtp-missing-server");
+  await route.workspace.writeWorkspaceFile("inventory/dkim-keys/delivrix-mail.com/default.private", dkimPrivateKey);
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    emailAuth: [{
+      domain: "delivrix-mail.com",
+      selector: "default",
+      dkimPrivateKeyPath: "inventory/dkim-keys/delivrix-mail.com/default.private"
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-smtp-missing-server",
+    taskId: "task-smtp-missing-server"
+  }, { SMTP_PROVISIONING_ENABLE_SSH: "true" });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.blockers.includes("entity_not_resolved"), true);
+  assert.equal(response.body.blockers.includes("server_ip_missing"), true);
+  assert.equal(response.body.entityResolution.failures[0].reason, "server_slug_not_in_inventory");
 });
 
 test("POST /v1/servers/:slug/provision-smtp runs idempotent SSH plan and records workspace inventory", async () => {
@@ -190,6 +265,7 @@ test("POST /v1/servers/:slug/provision-smtp retries transient first SSH failure 
 async function routeHarness(input: {
   sshRunner: SmtpSshRunner;
   canvasState: CanvasLiveStateSnapshot;
+  serverSlug?: string;
   sleep?: (ms: number) => Promise<void>;
 }) {
   const dir = await mkdtemp(join(tmpdir(), "smtp-provision-route-"));
@@ -209,7 +285,7 @@ async function routeHarness(input: {
       await handleSmtpProvisionHttp({
         request: requestWithJson(body),
         response: response as unknown as ServerResponse,
-        serverSlug: "mail-delivrix-test",
+        serverSlug: input.serverSlug ?? "mail-delivrix-test",
         auditLog,
         sshRunner: input.sshRunner,
         workspace,

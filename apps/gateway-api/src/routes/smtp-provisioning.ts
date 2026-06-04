@@ -17,6 +17,14 @@ import {
   artifactMatchesAuditApproval,
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
+import {
+  entityFailureMetadata,
+  entityNotResolvedBlocker,
+  resolveWorkspaceServer,
+  resolveWorkspaceServerIp,
+  tryNormalizeStrictDomainName,
+  type EntityResolutionFailure
+} from "../entity-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 
 interface AuditSink {
@@ -78,15 +86,6 @@ interface DomainsInventory {
   }>;
 }
 
-interface WebdockServersInventory {
-  servers?: Array<{
-    slug: string;
-    hostname: string;
-    ipv4: string | null;
-    status: string;
-  }>;
-}
-
 interface SmtpInventory {
   servers?: Array<{
     serverSlug: string;
@@ -127,16 +126,34 @@ export async function handleSmtpProvisionHttp(
   const env = deps.env ?? process.env;
   const body = await readJson<SmtpProvisionBody>(deps.request);
   const serverSlug = normalizeSlug(deps.serverSlug, "serverSlug");
-  const domain = normalizeDomainName(requiredString(body.domain, "domain"));
+  const rawDomain = requiredString(body.domain, "domain");
+  const domainResolution = tryNormalizeStrictDomainName(rawDomain);
+  const domain = domainResolution.ok ? domainResolution.value : rawDomain.trim().toLowerCase().replace(/\.$/, "");
   const actorId = requiredString(body.actorId, "actorId");
   const approvalToken = requiredString(body.approvalToken, "approvalToken");
   const taskId = normalizeTaskId(body.taskId) ?? `smtp-provision-${randomUUID()}`;
   const selector = normalizeSelector(body.selector);
-  const serverIp = typeof body.serverIp === "string" && body.serverIp.trim()
-    ? normalizeIpv4(body.serverIp)
-    : await findServerIp(deps.workspace, serverSlug);
+  const entityFailures: EntityResolutionFailure[] = [];
+  if (!domainResolution.ok) {
+    entityFailures.push(domainResolution.failure);
+  }
+  const serverResolution = await resolveWorkspaceServer(deps.workspace, serverSlug);
+  if (!serverResolution.ok) {
+    entityFailures.push(serverResolution.failure);
+  }
+  const explicitServerIp = typeof body.serverIp === "string" && body.serverIp.trim()
+    ? await resolveWorkspaceServerIp(deps.workspace, body.serverIp, serverSlug)
+    : null;
+  if (explicitServerIp && !explicitServerIp.ok) {
+    entityFailures.push(explicitServerIp.failure);
+  }
+  const serverIp = explicitServerIp
+    ? explicitServerIp.ok ? explicitServerIp.value : null
+    : serverResolution.ok ? serverResolution.value.serverIp : null;
   const dkimPrivateKeyPath =
-    typeof body.dkimPrivateKeyPath === "string" && body.dkimPrivateKeyPath.trim()
+    !domainResolution.ok
+      ? null
+      : typeof body.dkimPrivateKeyPath === "string" && body.dkimPrivateKeyPath.trim()
       ? normalizeWorkspacePrivateKeyPath(body.dkimPrivateKeyPath)
       : await findDkimPrivateKeyPath(deps.workspace, domain, selector);
 
@@ -155,10 +172,21 @@ export async function handleSmtpProvisionHttp(
   if (env.SMTP_PROVISIONING_ENABLE_SSH !== "true") blockers.push("smtp_ssh_flag_disabled");
   if (!deps.sshRunner.isConfigured()) blockers.push("smtp_ssh_runner_missing");
   if (!approval) blockers.push("approval_not_found_or_expired");
+  if (entityFailures.length > 0) blockers.push(entityNotResolvedBlocker);
   if (!serverIp) blockers.push("server_ip_missing");
   if (!dkimPrivateKeyPath) blockers.push("dkim_private_key_missing");
 
   if (blockers.length > 0) {
+    if (entityFailures.length > 0) {
+      await appendEntityGuardAudits({
+        auditLog: deps.auditLog,
+        canvasLiveEvents: deps.canvasLiveEvents,
+        taskId,
+        actorId,
+        failures: entityFailures,
+        now
+      });
+    }
     const workspace = await safeWriteExecution(deps.workspace, {
       skill: skillName,
       params: { domain, serverSlug, actorId },
@@ -168,7 +196,8 @@ export async function handleSmtpProvisionHttp(
         blockers,
         serverIpKnown: Boolean(serverIp),
         dkimPrivateKeyKnown: Boolean(dkimPrivateKeyPath),
-        learningCount: learnings.length
+        learningCount: learnings.length,
+        ...(entityFailures.length > 0 ? { entityResolution: entityFailureMetadata(entityFailures) } : {})
       }
     });
     await deps.auditLog.append({
@@ -183,6 +212,7 @@ export async function handleSmtpProvisionHttp(
       metadata: {
         blockers,
         domain,
+        ...(entityFailures.length > 0 ? { entityResolution: entityFailureMetadata(entityFailures) } : {}),
         workspacePath: workspace?.path
       }
     });
@@ -194,6 +224,7 @@ export async function handleSmtpProvisionHttp(
       serverSlug,
       domain,
       blockers,
+      ...(entityFailures.length > 0 ? { entityResolution: entityFailureMetadata(entityFailures) } : {}),
       workspace
     });
     return;
@@ -503,12 +534,6 @@ export function buildSmtpProvisionPlan(input: {
   ];
 }
 
-async function findServerIp(workspace: OpenClawWorkspace, serverSlug: string): Promise<string | null> {
-  const inventory = await workspace.readInventoryJson<WebdockServersInventory>("webdock-servers.json").catch(() => null);
-  const server = inventory?.servers?.find((item) => item.slug === serverSlug);
-  return server?.ipv4 ? normalizeIpv4(server.ipv4) : null;
-}
-
 async function findDkimPrivateKeyPath(workspace: OpenClawWorkspace, domain: string, selector: string): Promise<string | null> {
   const inventory = await workspace.readInventoryJson<DomainsInventory>("domains.json").catch(() => null);
   const match = inventory?.emailAuth?.find((entry) => entry.domain === domain && entry.selector === selector);
@@ -524,6 +549,44 @@ async function updateSmtpInventory(
     servers.push(input);
     return { servers };
   });
+}
+
+async function appendEntityGuardAudits(input: {
+  auditLog: AuditSink;
+  canvasLiveEvents?: CanvasEmitter;
+  taskId: string;
+  actorId: string;
+  failures: EntityResolutionFailure[];
+  now: Date;
+}): Promise<void> {
+  for (const failure of input.failures) {
+    await input.auditLog.append({
+      actorType: "operator",
+      actorId: input.actorId,
+      action: "oc.guard.entity_not_resolved",
+      targetType: failure.valueClass,
+      targetId: failure.normalized ?? failure.value,
+      riskLevel: "critical",
+      decision: "reject",
+      humanApproved: false,
+      metadata: {
+        taskId: input.taskId,
+        entityResolution: entityFailureMetadata([failure])
+      }
+    });
+  }
+  const first = input.failures[0];
+  if (first) {
+    await emitAuditAction(
+      input.canvasLiveEvents,
+      input.taskId,
+      "oc.guard.entity_not_resolved",
+      first.valueClass,
+      first.normalized ?? first.value,
+      "critical",
+      input.now
+    );
+  }
 }
 
 async function findRecentApproval(input: {
@@ -800,22 +863,6 @@ function normalizeWorkspacePrivateKeyPath(value: string): string {
   const normalized = value.trim().replace(/^\/+/, "");
   if (!/^inventory\/dkim-keys\/[a-z0-9.-]+\/[a-z0-9_-]+\.private$/.test(normalized)) {
     throw new SmtpProvisionInputError("dkimPrivateKeyPath must point to inventory/dkim-keys/<domain>/<selector>.private.");
-  }
-  return normalized;
-}
-
-function normalizeIpv4(value: string): string {
-  const parts = value.trim().split(".");
-  if (parts.length !== 4 || parts.some((part) => !/^\d+$/.test(part) || Number(part) < 0 || Number(part) > 255)) {
-    throw new SmtpProvisionInputError(`Invalid IPv4 address: ${value}`);
-  }
-  return parts.map((part) => String(Number(part))).join(".");
-}
-
-function normalizeDomainName(value: string): string {
-  const normalized = value.trim().toLowerCase().replace(/\.$/, "");
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(normalized)) {
-    throw new SmtpProvisionInputError(`Invalid domain name: ${value}`);
   }
   return normalized;
 }

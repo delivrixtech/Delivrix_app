@@ -128,6 +128,80 @@ test("POST /v1/domains/bind upserts MX and A records from workspace inventory", 
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "api"));
 });
 
+test("POST /v1/domains/bind rejects timestamp fragments as unresolved domains before DNS writes", async () => {
+  const upserts: AwsRoute53DnsRecordInput[] = [];
+  const route = await routeHarness({
+    dnsAdapter: mockDnsAdapter({
+      isLive: () => true,
+      isWriteEnabled: () => true,
+      upsertRecord: async (_zoneId, record) => {
+        upserts.push(record);
+        return { changeId: `C${upserts.length}` };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-bind-plan",
+      executionId: "exec-bind-bad-domain",
+      approvedAt: "2026-05-28T09:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-bind-plan", "exec-bind-bad-domain");
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "mail-delivrix-test",
+      ipv4: "192.0.2.44"
+    }]
+  }));
+
+  const response = await route({
+    domain: "37.842Z",
+    serverSlug: "mail-delivrix-test",
+    zoneId: "Z123",
+    actorId: "operator/juanes",
+    approvalToken: "exec-bind-bad-domain",
+    taskId: "task-bind-bad-domain"
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.blockers.includes("entity_not_resolved"), true);
+  assert.equal(response.body.entityResolution.failures[0].reason, "timestamp_fragment_is_not_domain");
+  assert.equal(upserts.length, 0);
+  const events = await route.auditLog.list();
+  assert.equal(events.some((event) => event.action === "oc.guard.entity_not_resolved"), true);
+  assert.equal(events.at(-1)?.action, "oc.domain.bind_blocked");
+});
+
+test("POST /v1/domains/bind blocks serverSlug that is absent from inventory", async () => {
+  const route = await routeHarness({
+    dnsAdapter: mockDnsAdapter({ isLive: () => true, isWriteEnabled: () => true }),
+    canvasState: canvasState([{
+      artifactId: "artifact-bind-plan",
+      executionId: "exec-bind-missing-server",
+      approvedAt: "2026-05-28T09:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-bind-plan", "exec-bind-missing-server");
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    dnsZones: [{
+      domain: "delivrix-mail.com",
+      zoneId: "Z123"
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    serverSlug: "missing-server",
+    actorId: "operator/juanes",
+    approvalToken: "exec-bind-missing-server",
+    taskId: "task-bind-missing-server"
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.blockers.includes("entity_not_resolved"), true);
+  assert.equal(response.body.blockers.includes("server_ip_missing"), true);
+  assert.equal(response.body.entityResolution.failures[0].reason, "server_slug_not_in_inventory");
+});
+
 async function routeHarness(input: {
   dnsAdapter: DomainBindDnsAdapter;
   canvasState: CanvasLiveStateSnapshot;
