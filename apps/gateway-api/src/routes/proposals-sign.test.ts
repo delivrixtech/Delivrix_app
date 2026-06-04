@@ -21,6 +21,60 @@ test("sign happy path dispatches and returns executed", async () => {
   assert.equal(ctx.events.some((event) => event.action === "oc.proposal.executed"), true);
 });
 
+test("sign leaves plan approval inert when autonomy flag is off", async () => {
+  const ctx = context({ proposal: configureCompleteSmtpProposal() });
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.planApproval, undefined);
+  assert.equal(ctx.proposals[0].planApproval, undefined);
+  assert.equal(ctx.events.some((event) => event.action === "oc.plan.signed"), false);
+  assert.equal(ctx.dispatches.length, 1);
+});
+
+test("sign records run-scoped plan approval when autonomy flag is on", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    proposal: configureCompleteSmtpProposal()
+  });
+
+  const response = await sign(ctx);
+  const planEvent = ctx.events.find((event) => event.action === "oc.plan.signed");
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.planApproval.runId, "smtp-run-2026-06-04-a");
+  assert.equal(ctx.proposals[0].planApproval?.scope.runId, "smtp-run-2026-06-04-a");
+  assert.equal(ctx.proposals[0].planApproval?.scope.domain, "delivrixops.com");
+  assert.match(ctx.proposals[0].planApproval?.scopeHash ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(planEvent?.targetType, "openclaw_orchestrator_run");
+  assert.equal(planEvent?.targetId, "smtp-run-2026-06-04-a");
+  assert.equal(planEvent?.humanApproved, true);
+  assert.equal(planEvent?.metadata.scopeHash, ctx.proposals[0].planApproval?.scopeHash);
+  assert.equal(ctx.dispatches.length, 1);
+});
+
+test("sign rejects incomplete plan scope when autonomy flag is on", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    proposal: configureCompleteSmtpProposal({
+      params: {
+        brand: "Delivrix",
+        budgetUsdMax: 25,
+        testEmailRecipient: "ops@delivrixops.com",
+        testEmailSubject: "Smoke",
+        testEmailBody: "Authorized smoke"
+      }
+    })
+  });
+
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.rejectReason, "plan_scope_missing");
+  assert.equal(ctx.events.some((event) => event.action === "oc.plan.signed"), false);
+  assert.equal(ctx.dispatches.length, 0);
+});
+
 test("sign keeps private approval token out of public signature fields", async () => {
   const ctx = context();
   const response = await sign(ctx);
@@ -392,4 +446,28 @@ function baseProposal(overrides: Partial<ProposalSignStoredProposal> = {}): Prop
     expiresAt: "2026-05-29T22:00:00.000Z",
     ...overrides
   };
+}
+
+function configureCompleteSmtpProposal(overrides: Partial<ProposalSignStoredProposal> = {}): ProposalSignStoredProposal {
+  return baseProposal({
+    category: "supervised_local_state",
+    severity: "critical",
+    headline: "SMTP completo autorizado",
+    runbookRef: "configure_complete_smtp",
+    targetRef: "smtp-run-2026-06-04-a",
+    targetType: "openclaw_orchestrator_run",
+    skillSlug: "configure_complete_smtp",
+    params: {
+      runId: "smtp-run-2026-06-04-a",
+      domain: "delivrixops.com",
+      provider: "route53-webdock",
+      brand: "Delivrix",
+      budgetUsdMax: 25,
+      testEmailRecipient: "ops@delivrixops.com",
+      testEmailSubject: "Smoke autorizado",
+      testEmailBody: "Prueba autorizada y auditada"
+    },
+    delivrix_actions_required: ["configure_complete_smtp"],
+    ...overrides
+  });
 }

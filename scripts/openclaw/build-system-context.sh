@@ -6,7 +6,9 @@
 
 set -euo pipefail
 
-WORKTREE="${WORKTREE:-/Users/juanescanar/Documents/delivrix app/.claude/worktrees/youthful-mirzakhani-c517de}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_WORKTREE="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+WORKTREE="${WORKTREE:-${DEFAULT_WORKTREE}}"
 DOCS_DIR="${WORKTREE}/DOCUMENTACION"
 AUDIT_DIR="${WORKTREE}/.audit"
 SSH_KEY="${SSH_KEY:-${WORKTREE}/../../../clonado/.ssh/openclaw_delivrix}"
@@ -17,6 +19,11 @@ CONTAINER_CONTEXT="/data/.openclaw/workspace/system-context.txt"
 CONTAINER_AGENTS="/data/.openclaw/workspace/AGENTS.md"
 CONTAINER_AUDIT="/data/.openclaw/kb/audit/openclaw-kb.jsonl"
 CONTAINER_CONTEXT_ALT="/openclaw/context/system.txt"
+
+test -d "${WORKTREE}/.git" || test -f "${WORKTREE}/.git" || {
+  echo "FAIL: WORKTREE no apunta a un repositorio git: ${WORKTREE}" >&2
+  exit 1
+}
 
 mkdir -p "${AUDIT_DIR}"
 
@@ -152,12 +159,19 @@ di: "no tengo dato suficiente para responder esto".
 
 - El admin panel frontend es GET-only.
 - No existe bypass del kill switch.
-- Toda acción contra estado local supervisado requiere `humanApproved=true` y
-  `killSwitch.enabled=false`.
+- Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE` ausente/OFF, toda acción contra
+  estado local supervisado requiere firma humana canónica por propuesta
+  (`POST /v1/openclaw/proposals/{{id}}/sign`) y `killSwitch.enabled=false`.
+- Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE=true`, solo una PlanApproval
+  firmada por HMAC canónica puede cubrir subpasos dentro del mismo `runId`,
+  `domain`, `provider`, `budgetUsdMax` y `recipient`. Cualquier mismatch vuelve
+  a requerir firma o queda bloqueado.
 - Cualquier acción live real queda bloqueada hasta hito futuro formal.
 - Audit log append-only; cada decisión deja evidenceRefs.
 - Compliance, opt-out, suppression, bounces/complaints, rate limits y escalación
   humana son parte del camino principal.
+- No existen rutas legacy de aprobación/ejecución/rollback: `/v1/agent/proposals/*/approve`,
+  `/v1/agent/runbook/execute` y `/v1/agent/runbook/revert` están deprecadas.
 
 ## Prohibiciones Explícitas
 

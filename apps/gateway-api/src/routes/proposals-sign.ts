@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
   AuditEvent,
@@ -6,6 +6,7 @@ import type {
   AuditRiskLevel,
   CanvasLiveArtifactSnapshot
 } from "../../../../packages/domain/src/index.ts";
+import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
 import { issueApprovalToken } from "../security/approval-token.ts";
 import { validateOpenClawHmac } from "../security/hmac.ts";
 import type { AuditChainVerifyResult } from "../audit-chain.ts";
@@ -44,6 +45,26 @@ interface KillSwitchState {
   enabled: boolean;
 }
 
+export interface PlanApprovalScope {
+  runId: string;
+  domain: string;
+  provider: string;
+  budgetUsdMax: number;
+  recipient: string;
+  plannedSkill: "configure_complete_smtp";
+  plannedSteps: string[];
+}
+
+export interface PlanApprovalRecord {
+  status: "signed";
+  signedAt: string;
+  expiresAt: string;
+  signatureId: string;
+  scopeHash: string;
+  scope: PlanApprovalScope;
+  flagEnabled: true;
+}
+
 export interface ProposalSignStoredProposal {
   id: string;
   category: string;
@@ -69,6 +90,7 @@ export interface ProposalSignStoredProposal {
   executionStatusCode?: number;
   executionDurationMs?: number;
   executionCompletedAt?: string;
+  planApproval?: PlanApprovalRecord;
 }
 
 export interface HandleProposalSignDeps {
@@ -252,14 +274,37 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
     targetId: target.id,
     params: proposal.params ?? {}
   });
+  const signatureId = `sig_${randomUUID()}`;
+  const planApprovalResolution = resolvePlanApproval({
+    env: deps.env,
+    proposal,
+    skill: actionBinding.canonicalSkill,
+    actorId: parsed.actorId,
+    signatureId,
+    now
+  });
+  if (planApprovalResolution.enabled && !planApprovalResolution.ok) {
+    void logger.warn("openclaw.proposal.sign_rejected", "Plan approval scope failed validation.", {
+      proposalId: proposal.id,
+      reason: planApprovalResolution.rejectReason,
+      details: planApprovalResolution.details
+    });
+    return json(deps.response, 422, {
+      ok: false,
+      rejectReason: planApprovalResolution.rejectReason,
+      details: planApprovalResolution.details
+    });
+  }
   const token = issueApprovalToken({
     actionId: proposal.runbookRef || proposal.category,
     targetType: target.type,
     targetId: target.id,
     approverId: parsed.actorId
   }, now);
-  const signatureId = `sig_${randomUUID()}`;
   const privateApprovalTokenHash = approvalTokenHash(token.tokenId);
+  const planApproval = planApprovalResolution.enabled && planApprovalResolution.ok
+    ? planApprovalResolution.planApproval
+    : null;
 
   const signedEvent = await deps.auditLog.append({
     actorType: "operator",
@@ -281,7 +326,15 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
       authMode: auth.authMode,
       runbookRef: proposal.runbookRef ?? null,
       panelVersion: parsed.signatureMetadata.panelVersion ?? null,
-      chainPrevHash: chain.lastHash
+      chainPrevHash: chain.lastHash,
+      ...(planApproval ? {
+        planApproval: {
+          scopeHash: planApproval.scopeHash,
+          scope: planApproval.scope,
+          expiresAt: planApproval.expiresAt,
+          flag: "OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE"
+        }
+      } : {})
     }
   });
 
@@ -303,6 +356,31 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
       approvalTokenHash: privateApprovalTokenHash
     }
   });
+
+  if (planApproval) {
+    proposal.planApproval = planApproval;
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId: parsed.actorId,
+      action: "oc.plan.signed",
+      targetType: "openclaw_orchestrator_run",
+      targetId: planApproval.scope.runId,
+      riskLevel: "critical",
+      decision: "allow",
+      humanApproved: true,
+      approverIds: [parsed.actorId],
+      metadata: {
+        proposalId: proposal.id,
+        signatureId,
+        signedEventHash: signedEvent.hash ?? null,
+        executionContextHash,
+        scopeHash: planApproval.scopeHash,
+        scope: planApproval.scope,
+        expiresAt: planApproval.expiresAt,
+        flag: "OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE"
+      }
+    });
+  }
 
   await deps.canvasState.upsertArtifact(approvedArtifactSnapshot({
     proposal,
@@ -360,6 +438,7 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
       rejectReason: "kill_switch_armed",
       proposalId: proposal.id,
       signatureId,
+      ...(planApproval ? { planApproval: publicPlanApproval(planApproval) } : {}),
       signedAt: proposal.signedAt
     });
   }
@@ -417,6 +496,7 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
       proposalId: proposal.id,
       signatureId,
       signedAt: proposal.signedAt,
+      ...(planApproval ? { planApproval: publicPlanApproval(planApproval) } : {}),
       pollEndpoint: `/v1/openclaw/proposals/${encodeURIComponent(proposal.id)}/status`
     });
   }
@@ -469,6 +549,7 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
     signatureId,
     signedAt: proposal.signedAt,
     skill: actionBinding.canonicalSkill,
+    ...(planApproval ? { planApproval: publicPlanApproval(planApproval) } : {}),
     outcome: redactSecrets(dispatchResult.summary),
     webhookBroadcast: webhookBroadcast ?? null
   });
@@ -501,6 +582,153 @@ function parseSignBody(body: SignBody | null): {
     reason,
     signatureMetadata: metadata.value
   };
+}
+
+const configureCompleteSmtpPlanSteps = [
+  "suggest_safe_domain",
+  "register_domain_route53",
+  "wait_for_dns_propagation",
+  "read_route53_domain_detail",
+  "read_route53_zone_records",
+  "read_webdock_servers",
+  "create_webdock_server",
+  "bind_webdock_main_domain",
+  "upsert_dns_route53",
+  "provision_smtp_postfix",
+  "configure_email_auth",
+  "seed_warmup_pool",
+  "send_real_email",
+  "compact_intent"
+] as const;
+
+function resolvePlanApproval(input: {
+  env?: Record<string, string | undefined>;
+  proposal: ProposalSignStoredProposal;
+  skill: string;
+  actorId: string;
+  signatureId: string;
+  now: Date;
+}): { enabled: false } | {
+  enabled: true;
+  ok: true;
+  planApproval: PlanApprovalRecord;
+} | {
+  enabled: true;
+  ok: false;
+  rejectReason: "plan_scope_missing";
+  details: string[];
+} {
+  if (!envFlagEnabled(input.env?.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)) {
+    return { enabled: false };
+  }
+  if (input.skill !== "configure_complete_smtp") {
+    return { enabled: false };
+  }
+
+  const scope = extractConfigureCompleteSmtpPlanScope(input.proposal.params);
+  if (!scope.ok) {
+    return {
+      enabled: true,
+      ok: false,
+      rejectReason: "plan_scope_missing",
+      details: scope.details
+    };
+  }
+
+  return {
+    enabled: true,
+    ok: true,
+    planApproval: {
+      status: "signed",
+      signedAt: input.now.toISOString(),
+      expiresAt: input.proposal.expiresAt,
+      signatureId: input.signatureId,
+      scopeHash: hashPlanApprovalScope(scope.value),
+      scope: scope.value,
+      flagEnabled: true
+    }
+  };
+}
+
+function extractConfigureCompleteSmtpPlanScope(params: unknown): {
+  ok: true;
+  value: PlanApprovalScope;
+} | {
+  ok: false;
+  details: string[];
+} {
+  const details: string[] = [];
+  if (!isRecord(params)) {
+    return {
+      ok: false,
+      details: ["params must be an object when plan-signature autonomy is enabled."]
+    };
+  }
+
+  const runId = normalizedScopeString(params.runId);
+  const domain = normalizedScopeString(params.domain ?? params.approvedDomain)?.toLowerCase();
+  const provider = normalizedScopeString(params.provider)?.toLowerCase();
+  const budgetUsdMax = Number(params.budgetUsdMax);
+  const recipient = normalizedScopeString(params.testEmailRecipient ?? params.recipient)?.toLowerCase();
+
+  if (!runId) details.push("params.runId is required.");
+  if (!domain || !/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+$/.test(domain)) {
+    details.push("params.domain must be a verified domain.");
+  }
+  if (!provider) details.push("params.provider is required.");
+  if (!Number.isInteger(budgetUsdMax) || budgetUsdMax < 1 || budgetUsdMax > 10_000) {
+    details.push("params.budgetUsdMax must be an integer between 1 and 10000.");
+  }
+  if (!recipient || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+    details.push("params.testEmailRecipient must be a valid recipient email.");
+  }
+
+  if (details.length > 0) {
+    return { ok: false, details };
+  }
+
+  return {
+    ok: true,
+    value: {
+      runId: runId!,
+      domain: domain!,
+      provider: provider!,
+      budgetUsdMax,
+      recipient: recipient!,
+      plannedSkill: "configure_complete_smtp",
+      plannedSteps: [...configureCompleteSmtpPlanSteps]
+    }
+  };
+}
+
+function normalizedScopeString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized ? normalized : null;
+}
+
+function hashPlanApprovalScope(scope: PlanApprovalScope): string {
+  return createHash("sha256").update(stableStringify(scope)).digest("hex");
+}
+
+function publicPlanApproval(planApproval: PlanApprovalRecord): {
+  scopeHash: string;
+  runId: string;
+  domain: string;
+  provider: string;
+  expiresAt: string;
+} {
+  return {
+    scopeHash: planApproval.scopeHash,
+    runId: planApproval.scope.runId,
+    domain: planApproval.scope.domain,
+    provider: planApproval.scope.provider,
+    expiresAt: planApproval.expiresAt
+  };
+}
+
+function envFlagEnabled(value: string | undefined): boolean {
+  return value === "true" || value === "1" || value === "yes" || value === "on";
 }
 
 async function finalizeTimedOutDispatch(input: {

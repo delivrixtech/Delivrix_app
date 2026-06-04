@@ -16,6 +16,7 @@ async function loadModule(): Promise<LiveToolModule> {
   server ??= await createServer({
     configFile: false,
     root: process.cwd(),
+    optimizeDeps: { noDiscovery: true, include: [] },
     server: { hmr: false, middlewareMode: true, ws: false },
     appType: "custom"
   });
