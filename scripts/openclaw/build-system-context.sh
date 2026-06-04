@@ -86,7 +86,7 @@ api = read_doc("OPENCLAW_DELIVRIX_API_CONTRACT.md")
 
 system_literal = section(system_prompt, "## 4. System prompt literal")
 permissions_categories = section(permissions, "## 2. Categorías canónicas")
-permissions_matrix = compact_lines(section(permissions, "## 3. Matriz literal"), 8400)
+permissions_matrix = compact_lines(section(permissions, "## 3. Matriz literal"), 5600)
 permissions_gates = section(permissions, "## 7. Gates duros")
 permissions_core = "\n\n".join(part for part in (
     permissions_categories,
