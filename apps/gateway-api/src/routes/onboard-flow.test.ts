@@ -174,6 +174,15 @@ test("gateway onboard runner executes T1, T2, T4, T3, T5, T6 without warmup", as
     webdockAdapter: {
       isLive: () => true,
       canCreate: () => true,
+      listServers: async () => ({
+        servers: [],
+        source: {
+          kind: "live",
+          apiBase: "https://api.webdock.test/v1",
+          fetchedAt: fixedNow.toISOString(),
+          responseOk: true
+        }
+      }),
       createServer: async () => ({
         serverSlug: "server-order",
         eventId: "cb-order",

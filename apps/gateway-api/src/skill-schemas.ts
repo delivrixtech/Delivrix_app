@@ -15,6 +15,8 @@ export interface Route53RegisterParams extends Record<string, unknown> {
   domain: string;
   years: number;
   autoRenew: boolean;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface Route53UpsertParams extends Record<string, unknown> {
@@ -26,6 +28,8 @@ export interface Route53UpsertParams extends Record<string, unknown> {
     values: string[];
   }>;
   taskId?: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface Route53DomainDetailParams extends Record<string, unknown> {
@@ -54,6 +58,8 @@ export interface IonosUpsertParams extends Record<string, unknown> {
     ttl?: number;
     prio?: number;
   }>;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface WebdockCreateParams extends Record<string, unknown> {
@@ -63,9 +69,12 @@ export interface WebdockCreateParams extends Record<string, unknown> {
   imageSlug: "ubuntu-2404" | "debian-12";
   publicKey?: string;
   callbackUrl?: string;
+  runId?: string;
   taskId?: string;
   pollIntervalMs?: number;
   maxPolls?: number;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface ReadWebdockServersParams extends Record<string, unknown> {
@@ -80,6 +89,8 @@ export interface SmtpProvisionParams extends Record<string, unknown> {
   dkimPrivateKeyPath?: string;
   selector?: string;
   taskId?: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface EmailAuthParams extends Record<string, unknown> {
@@ -89,6 +100,8 @@ export interface EmailAuthParams extends Record<string, unknown> {
   selector?: string;
   dmarcPolicy?: "none" | "quarantine" | "reject";
   taskId?: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface DomainBindParams extends Record<string, unknown> {
@@ -97,6 +110,8 @@ export interface DomainBindParams extends Record<string, unknown> {
   serverIp?: string;
   zoneId?: string;
   taskId?: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface WarmupSeedParams extends Record<string, unknown> {
@@ -105,6 +120,8 @@ export interface WarmupSeedParams extends Record<string, unknown> {
   serverIp?: string;
   seedInboxes: string[];
   taskId?: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface WarmupRampParams extends Record<string, unknown> {
@@ -180,11 +197,11 @@ export interface CompactIntentParams extends Record<string, unknown> {
 export const route53RegisterParamSchema = schema<Route53RegisterParams>((value) => {
   const input = object(value);
   const years = integer(input.years ?? input.durationYears, "years", 1, 10);
-  return {
+  return withOptionalRepairScope({
     domain: domain(input.domain, "domain"),
     years,
     autoRenew: input.autoRenew === undefined ? false : boolean(input.autoRenew, "autoRenew")
-  };
+  }, input);
 });
 
 export const route53UpsertParamSchema = schema<Route53UpsertParams>((value) => {
@@ -200,10 +217,10 @@ export const route53UpsertParamSchema = schema<Route53UpsertParams>((value) => {
       )
     };
   });
-  return withOptionalTaskId({
+  return withOptionalRepairScope(withOptionalTaskId({
     domain: domain(input.domain ?? input.zoneName, "domain"),
     records: route53Records
-  }, input);
+  }, input), input);
 });
 
 export const route53DomainDetailParamSchema = schema<Route53DomainDetailParams>((value) => {
@@ -269,46 +286,47 @@ export const ionosUpsertParamSchema = schema<IonosUpsertParams>((value) => {
       ...(item.prio === undefined || item.prio === null ? {} : { prio: integer(item.prio, `records[${index}].prio`, 0, 65535) })
     };
   });
-  return {
+  return withOptionalRepairScope({
     zone: domain(input.zone ?? input.zoneName ?? input.domain, "zone"),
     records
-  };
+  }, input);
 });
 
 export const webdockCreateParamSchema = schema<WebdockCreateParams>((value) => {
   const input = object(value);
-  return withOptionalTaskId({
+  return withOptionalRepairScope(withOptionalTaskId({
     profile: oneOf(input.profile, "profile", ["bit", "nibble", "byte", "kilobyte"] as const),
     locationId: providerId(input.locationId, "locationId"),
     hostname: domain(input.hostname, "hostname"),
     imageSlug: oneOf(input.imageSlug, "imageSlug", ["ubuntu-2404", "debian-12"] as const),
     ...(input.publicKey === undefined || input.publicKey === null || input.publicKey === "" ? {} : { publicKey: publicKey(input.publicKey, "publicKey") }),
     ...(input.callbackUrl === undefined || input.callbackUrl === null || input.callbackUrl === "" ? {} : { callbackUrl: httpsUrl(input.callbackUrl, "callbackUrl") }),
+    ...(input.runId === undefined || input.runId === null || input.runId === "" ? {} : { runId: boundedId(input.runId, "runId", 64) }),
     ...(input.pollIntervalMs === undefined || input.pollIntervalMs === null ? {} : { pollIntervalMs: integer(input.pollIntervalMs, "pollIntervalMs", 0, 60000) }),
     ...(input.maxPolls === undefined || input.maxPolls === null ? {} : { maxPolls: integer(input.maxPolls, "maxPolls", 0, 60) })
-  }, input);
+  }, input), input);
 });
 
 export const smtpProvisionParamSchema = schema<SmtpProvisionParams>((value) => {
   const input = object(value);
-  return withOptionalTaskId({
+  return withOptionalRepairScope(withOptionalTaskId({
     serverSlug: slug(input.serverSlug, "serverSlug"),
     domain: domain(input.domain, "domain"),
     ...(input.serverIp === undefined || input.serverIp === null || input.serverIp === "" ? {} : { serverIp: ipv4(input.serverIp, "serverIp") }),
     ...(input.dkimPrivateKeyPath === undefined || input.dkimPrivateKeyPath === null || input.dkimPrivateKeyPath === "" ? {} : { dkimPrivateKeyPath: dkimPrivateKeyPath(input.dkimPrivateKeyPath, "dkimPrivateKeyPath") }),
     ...(input.selector === undefined || input.selector === null || input.selector === "" ? {} : { selector: selector(input.selector, "selector") })
-  }, input);
+  }, input), input);
 });
 
 export const emailAuthParamSchema = schema<EmailAuthParams>((value) => {
   const input = object(value);
-  return withOptionalTaskId({
+  return withOptionalRepairScope(withOptionalTaskId({
     domain: domain(input.domain, "domain"),
     mxServerIp: ipv4(input.mxServerIp, "mxServerIp"),
     ...(input.zoneId === undefined || input.zoneId === null || input.zoneId === "" ? {} : { zoneId: string(input.zoneId, "zoneId") }),
     ...(input.selector === undefined || input.selector === null || input.selector === "" ? {} : { selector: selector(input.selector, "selector") }),
     ...(input.dmarcPolicy === undefined || input.dmarcPolicy === null || input.dmarcPolicy === "" ? {} : { dmarcPolicy: oneOf(input.dmarcPolicy, "dmarcPolicy", ["none", "quarantine", "reject"] as const) })
-  }, input);
+  }, input), input);
 });
 
 export const bindDomainParamSchema = schema<DomainBindParams>((value) => {
@@ -318,23 +336,23 @@ export const bindDomainParamSchema = schema<DomainBindParams>((value) => {
   if (!hasServerSlug && !hasServerIp) {
     throw new SkillSchemaError("serverSlug or serverIp is required");
   }
-  return withOptionalTaskId({
+  return withOptionalRepairScope(withOptionalTaskId({
     domain: domain(input.domain, "domain"),
     ...(hasServerSlug ? { serverSlug: slug(input.serverSlug, "serverSlug") } : {}),
     ...(hasServerIp ? { serverIp: ipv4(input.serverIp, "serverIp") } : {}),
     ...(input.zoneId === undefined || input.zoneId === null || input.zoneId === "" ? {} : { zoneId: string(input.zoneId, "zoneId") })
-  }, input);
+  }, input), input);
 });
 
 export const warmupSeedParamSchema = schema<WarmupSeedParams>((value) => {
   const input = object(value);
   const seeds = input.seedInboxes ?? input.seedAddresses;
-  return withOptionalTaskId({
+  return withOptionalRepairScope(withOptionalTaskId({
     domain: domain(input.domain, "domain"),
     ...(input.serverSlug === undefined || input.serverSlug === null || input.serverSlug === "" ? {} : { serverSlug: slug(input.serverSlug, "serverSlug") }),
     ...(input.serverIp === undefined || input.serverIp === null || input.serverIp === "" ? {} : { serverIp: ipv4(input.serverIp, "serverIp") }),
     seedInboxes: array(seeds, "seedInboxes", 1, 50).map((entry, index) => email(entry, `seedInboxes[${index}]`))
-  }, input);
+  }, input), input);
 });
 
 export const warmupRampParamSchema = schema<WarmupRampParams>((value) => {
@@ -670,4 +688,27 @@ function withOptionalTaskId<T extends Record<string, unknown>>(
     throw new SkillSchemaError("taskId is invalid");
   }
   return { ...output, taskId };
+}
+
+function withOptionalRepairScope<T extends Record<string, unknown>>(
+  output: T,
+  input: Record<string, unknown>
+): T {
+  const repairReason = optionalBoundedText(input.repairReason, "repairReason", 10, 500);
+  const explicitRepairScope = optionalBoundedText(input.explicitRepairScope, "explicitRepairScope", 3, 300);
+  return {
+    ...output,
+    ...(repairReason ? { repairReason } : {}),
+    ...(explicitRepairScope ? { explicitRepairScope } : {})
+  };
+}
+
+function optionalBoundedText(
+  value: unknown,
+  field: string,
+  min: number,
+  max: number
+): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  return boundedText(value, field, min, max);
 }

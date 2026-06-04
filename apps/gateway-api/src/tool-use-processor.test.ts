@@ -608,6 +608,54 @@ test("processToolUse blocks direct SMTP subtools when plan autonomy is enabled",
   assert.equal(calls.length, 0);
 });
 
+test("processToolUse allows direct SMTP subtool only with explicit repair scope", async () => {
+  const calls: any[] = [];
+  const result = await processToolUse({
+    toolUseId: "toolu-direct-smtp-repair",
+    toolName: "provision_smtp_postfix",
+    toolInput: {
+      serverSlug: "server69",
+      domain: "delivrix.test",
+      serverIp: "203.0.113.10",
+      repairReason: "retry postfix after audited DKIM key generation",
+      explicitRepairScope: "delivrix.test/server69"
+    },
+    chatSession: { id: "agent:main:operator" },
+    env: {
+      ...enabledEnv(),
+      OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true",
+      OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true"
+    },
+    deps: memoryDeps({ calls })
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].params.repairReason, "retry postfix after audited DKIM key generation");
+  assert.equal(calls[0].params.explicitRepairScope, "delivrix.test/server69");
+});
+
+test("processToolUse blocks bind_domain_to_server alias when plan autonomy is enabled", async () => {
+  const calls: unknown[] = [];
+  const result = await processToolUse({
+    toolUseId: "toolu-direct-bind-alias",
+    toolName: "bind_domain_to_server",
+    toolInput: { domain: "delivrix.test", serverIp: "203.0.113.10" },
+    chatSession: { id: "agent:main:operator" },
+    env: {
+      ...enabledEnv(),
+      OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true",
+      OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true"
+    },
+    deps: memoryDeps({ calls })
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) assert.fail("expected direct alias rejection");
+  assert.equal(result.error, "use_configure_complete_smtp");
+  assert.equal(calls.length, 0);
+});
+
 test("createHttpToolUseProcessor invokes read-only Webdock inventory endpoint directly", async () => {
   const urls: string[] = [];
   const processor = createHttpToolUseProcessor({

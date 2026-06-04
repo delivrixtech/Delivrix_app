@@ -106,6 +106,21 @@ const optionalTaskId = {
   }
 };
 
+const optionalRepairScope = {
+  repairReason: {
+    type: "string",
+    minLength: 10,
+    maxLength: 500,
+    description: "Motivo explícito de reparación puntual. No usar para flujos SMTP completos."
+  },
+  explicitRepairScope: {
+    type: "string",
+    minLength: 3,
+    maxLength: 300,
+    description: "Scope exacto de la reparación puntual autorizada, por ejemplo dominio, serverSlug o registro específico."
+  }
+};
+
 const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
   register_domain_route53: {
     spec: {
@@ -120,7 +135,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
         properties: {
           domain: { type: "string", pattern: domainPattern },
           years: { type: "integer", minimum: 1, maximum: 10 },
-          autoRenew: { type: "boolean", default: false }
+          autoRenew: { type: "boolean", default: false },
+          ...optionalRepairScope
         },
         required: ["domain", "years"]
       }
@@ -381,7 +397,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
             maxItems: 50,
             items: route53RecordSchema
           },
-          ...optionalTaskId
+          ...optionalTaskId,
+          ...optionalRepairScope
         },
         required: ["domain", "records"]
       }
@@ -410,7 +427,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
             minItems: 1,
             maxItems: 50,
             items: ionosRecordSchema
-          }
+          },
+          ...optionalRepairScope
         },
         required: ["zone", "records"]
       }
@@ -439,9 +457,11 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           imageSlug: { type: "string", enum: ["ubuntu-2404", "debian-12"] },
           publicKey: { type: "string", minLength: 1 },
           callbackUrl: { type: "string", format: "uri" },
+          runId: { type: "string", minLength: 1, maxLength: 64 },
           pollIntervalMs: { type: "integer", minimum: 0, maximum: 60000 },
           maxPolls: { type: "integer", minimum: 0, maximum: 60 },
-          ...optionalTaskId
+          ...optionalTaskId,
+          ...optionalRepairScope
         },
         required: ["profile", "locationId", "hostname", "imageSlug"]
       }
@@ -466,7 +486,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
         properties: {
           serverSlug: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{1,118}[a-z0-9]$" },
           domain: { type: "string", pattern: domainPattern },
-          setPtr: { type: "boolean", default: true }
+          setPtr: { type: "boolean", default: true },
+          ...optionalRepairScope
         },
         required: ["serverSlug", "domain"]
       }
@@ -498,7 +519,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
             pattern: "^/?inventory/dkim-keys/[a-z0-9.-]+/[a-z0-9_-]+\\.private$"
           },
           selector: { type: "string", pattern: selectorPattern },
-          ...optionalTaskId
+          ...optionalTaskId,
+          ...optionalRepairScope
         },
         required: ["serverSlug", "domain"]
       }
@@ -526,7 +548,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           zoneId: { type: "string", minLength: 1 },
           selector: { type: "string", pattern: selectorPattern },
           dmarcPolicy: { type: "string", enum: ["none", "quarantine", "reject"] },
-          ...optionalTaskId
+          ...optionalTaskId,
+          ...optionalRepairScope
         },
         required: ["domain", "mxServerIp"]
       }
@@ -554,7 +577,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           serverSlug: { type: "string", pattern: slugPattern },
           serverIp: { type: "string", pattern: ipv4Pattern },
           zoneId: { type: "string", minLength: 1 },
-          ...optionalTaskId
+          ...optionalTaskId,
+          ...optionalRepairScope
         },
         required: ["domain"]
       }
@@ -587,7 +611,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
             maxItems: 50,
             items: { type: "string", format: "email" }
           },
-          ...optionalTaskId
+          ...optionalTaskId,
+          ...optionalRepairScope
         },
         required: ["domain", "seedInboxes"]
       }
@@ -615,7 +640,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           toAddress: { type: "string", pattern: emailPattern },
           subject: { type: "string", minLength: 1, maxLength: 160 },
           body: { type: "string", minLength: 1, maxLength: 10000 },
-          serverSlug: { type: "string", pattern: slugPattern }
+          serverSlug: { type: "string", pattern: slugPattern },
+          ...optionalRepairScope
         },
         required: ["fromAddress", "toAddress", "subject", "body", "serverSlug"]
       }

@@ -4,6 +4,7 @@ import type {
   WebdockCreateServerInput,
   WebdockCreateServerResult,
   WebdockDeleteServerResult,
+  WebdockInventoryResult,
   WebdockProvisionImageSlug,
   WebdockProvisionProfile,
   WebdockServer
@@ -39,6 +40,7 @@ export interface WebdockServerCreateAdapter {
   canCreate?(): boolean;
   createServer(opts: WebdockCreateServerInput): Promise<WebdockCreateServerResult>;
   getServer(slug: string): Promise<WebdockServer>;
+  listServers?(): Promise<WebdockInventoryResult>;
   ensureServerSshAccess?(opts: {
     serverSlug: string;
     publicKey: string;
@@ -78,6 +80,7 @@ interface WebdockServerCreateBody {
   imageSlug?: unknown;
   publicKey?: unknown;
   callbackUrl?: unknown;
+  runId?: unknown;
   actorId?: unknown;
   approvalToken?: unknown;
   taskId?: unknown;
@@ -129,6 +132,13 @@ interface WebdockServerInventory {
     reason: string;
     deletedAt: string;
   }>;
+  runBindings?: Array<{
+    runId: string;
+    serverSlug: string;
+    domain: string;
+    boundAt: string;
+    source: "created" | "idempotent_already_exists";
+  }>;
 }
 
 const skillName = "provision_webdock_vps";
@@ -153,6 +163,7 @@ export async function handleWebdockServerCreateHttp(
       : env.WEBDOCK_OPERATOR_SSH_PUBLIC_KEY
   );
   const callbackUrl = normalizeOptionalUrl(body.callbackUrl);
+  const runId = normalizeTaskId(body.runId);
   const actorId = requiredString(body.actorId, "actorId");
   const approvalToken = requiredString(body.approvalToken, "approvalToken");
   const taskId = normalizeTaskId(body.taskId) ?? `webdock-create-${randomUUID()}`;
@@ -226,6 +237,128 @@ export async function handleWebdockServerCreateHttp(
   }
 
   try {
+    const existing = await resolveExistingServerForCreate(deps.adapter, hostname);
+    if (existing.status === "blocked") {
+      const workspace = await safeWriteExecution(deps.workspace, {
+        skill: skillName,
+        params: { profile, locationId, hostname, imageSlug, actorId, runId },
+        outcome: "blocked",
+        durationMs: Date.now() - startedAt,
+        evidence: {
+          blockers: existing.blockers,
+          publicKeyFingerprint,
+          learningCount: learnings.length
+        }
+      });
+      await deps.auditLog.append({
+        actorType: "operator",
+        actorId,
+        action: "oc.webdock.server_create_blocked",
+        targetType: "webdock_server",
+        targetId: hostname,
+        riskLevel: "critical",
+        decision: "reject",
+        humanApproved: false,
+        metadata: {
+          blockers: existing.blockers,
+          provider: "webdock",
+          profile,
+          locationId,
+          imageSlug,
+          idempotenceCheck: true,
+          workspacePath: workspace?.path
+        }
+      });
+      await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.webdock.server_create_blocked", "webdock_server", hostname, "critical", now);
+      await emitTaskUpdate(deps.canvasLiveEvents, taskId, "failed", now);
+      json(deps.response, 409, {
+        ok: false,
+        status: "blocked",
+        blockers: existing.blockers,
+        hostname,
+        workspace
+      });
+      return;
+    }
+
+    if (existing.status === "reuse") {
+      const server = existing.server;
+      const ipv4 = server.ipv4 || null;
+      await updateWebdockInventory(deps.workspace, {
+        slug: server.slug,
+        hostname,
+        locationId: server.location ?? locationId,
+        profile: normalizeInventoryProfile(server.profileSlug) ?? profile,
+        imageSlug: normalizeInventoryImageSlug(server.imageSlug) ?? imageSlug,
+        publicKeyFingerprint,
+        status: server.status,
+        eventId: "idempotent_already_exists",
+        ipv4,
+        createdAt: server.creationDate ?? now.toISOString(),
+        updatedAt: (deps.now?.() ?? new Date()).toISOString(),
+        port25UnlockRequired: true
+      });
+      if (runId) {
+        await upsertWebdockRunBinding(deps.workspace, {
+          runId,
+          serverSlug: server.slug,
+          domain: hostname,
+          boundAt: (deps.now?.() ?? new Date()).toISOString(),
+          source: "idempotent_already_exists"
+        });
+      }
+      const workspace = await safeWriteExecution(deps.workspace, {
+        skill: skillName,
+        params: { profile, locationId, hostname, imageSlug, actorId, runId },
+        outcome: "success",
+        durationMs: Date.now() - startedAt,
+        evidence: {
+          status: "idempotent_already_exists",
+          serverSlug: server.slug,
+          ipv4,
+          costUsd: 0,
+          publicKeyFingerprint,
+          learningCount: learnings.length
+        }
+      });
+      await deps.auditLog.append({
+        actorType: "operator",
+        actorId,
+        action: "oc.webdock.create_idempotent",
+        targetType: "webdock_server",
+        targetId: server.slug,
+        riskLevel: "critical",
+        decision: "allow",
+        humanApproved: true,
+        approverIds: [actorId],
+        metadata: {
+          provider: "webdock",
+          hostname,
+          serverSlug: server.slug,
+          ipv4,
+          status: "idempotent_already_exists",
+          costUsd: 0,
+          approvalToken,
+          approvalArtifactId: approval?.artifactId,
+          workspacePath: workspace?.path,
+          runId
+        }
+      });
+      await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.webdock.create_idempotent", "webdock_server", server.slug, "critical", deps.now?.() ?? new Date());
+      await emitTaskUpdate(deps.canvasLiveEvents, taskId, "completed", deps.now?.() ?? new Date());
+      json(deps.response, 200, {
+        ok: true,
+        status: "idempotent_already_exists",
+        serverSlug: server.slug,
+        slug: server.slug,
+        ipv4,
+        costUsd: 0,
+        pollCount: 0,
+        workspace
+      });
+      return;
+    }
+
     const created = await deps.adapter.createServer({
       profile,
       locationId,
@@ -290,6 +423,15 @@ export async function handleWebdockServerCreateHttp(
       updatedAt: (deps.now?.() ?? new Date()).toISOString(),
       port25UnlockRequired: true
     });
+    if (runId) {
+      await upsertWebdockRunBinding(deps.workspace, {
+        runId,
+        serverSlug: created.serverSlug,
+        domain: hostname,
+        boundAt: (deps.now?.() ?? new Date()).toISOString(),
+        source: "created"
+      });
+    }
 
     const workspace = await safeWriteExecution(deps.workspace, {
       skill: skillName,
@@ -684,6 +826,70 @@ async function pollProvisioning(input: {
   return out;
 }
 
+async function resolveExistingServerForCreate(
+  adapter: WebdockServerCreateAdapter,
+  hostname: string
+): Promise<
+  | { status: "create" }
+  | { status: "reuse"; server: WebdockServer }
+  | { status: "blocked"; blockers: string[] }
+> {
+  if (!adapter.listServers) {
+    return { status: "blocked", blockers: ["webdock_inventory_read_unavailable"] };
+  }
+  let inventory: WebdockInventoryResult;
+  try {
+    inventory = await adapter.listServers();
+  } catch {
+    return { status: "blocked", blockers: ["webdock_inventory_read_failed"] };
+  }
+  if (inventory.source.kind !== "live" || inventory.source.responseOk !== true) {
+    return { status: "blocked", blockers: ["webdock_inventory_degraded"] };
+  }
+  const matches = dedupeServers(inventory.servers.filter((server) =>
+    webdockServerMatchesHostname(server, hostname)
+  ));
+  if (matches.length === 0) return { status: "create" };
+  if (matches.length > 1) {
+    return { status: "blocked", blockers: ["webdock_existing_server_ambiguous"] };
+  }
+  const server = matches[0];
+  if (!server.ipv4) {
+    return { status: "blocked", blockers: ["webdock_existing_server_ipv4_missing"] };
+  }
+  return { status: "reuse", server };
+}
+
+function webdockServerMatchesHostname(server: WebdockServer, hostname: string): boolean {
+  const target = normalizeDomainLoose(hostname);
+  return [server.hostname, server.mainDomain]
+    .map((value) => typeof value === "string" ? normalizeDomainLoose(value) : null)
+    .some((value) => value === target);
+}
+
+function dedupeServers(servers: WebdockServer[]): WebdockServer[] {
+  const seen = new Set<string>();
+  const out: WebdockServer[] = [];
+  for (const server of servers) {
+    if (seen.has(server.slug)) continue;
+    seen.add(server.slug);
+    out.push(server);
+  }
+  return out;
+}
+
+function normalizeDomainLoose(value: string): string {
+  return value.trim().toLowerCase().replace(/\.$/, "");
+}
+
+function normalizeInventoryProfile(value: string | undefined): WebdockProvisionProfile | null {
+  return value === "bit" || value === "nibble" || value === "byte" || value === "kilobyte" ? value : null;
+}
+
+function normalizeInventoryImageSlug(value: string | undefined): WebdockProvisionImageSlug | null {
+  return value === "ubuntu-2404" || value === "debian-12" ? value : null;
+}
+
 async function updateWebdockInventory(
   workspace: OpenClawWorkspace,
   input: NonNullable<WebdockServerInventory["servers"]>[number]
@@ -692,6 +898,20 @@ async function updateWebdockInventory(
     const servers = (current?.servers ?? []).filter((server) => server.slug !== input.slug);
     servers.push(input);
     return { servers };
+  });
+}
+
+async function upsertWebdockRunBinding(
+  workspace: OpenClawWorkspace,
+  input: NonNullable<WebdockServerInventory["runBindings"]>[number]
+): Promise<void> {
+  await workspace.updateInventoryJson<WebdockServerInventory>("webdock-servers.json", (current) => {
+    const runBindings = (current?.runBindings ?? []).filter((binding) => binding.runId !== input.runId);
+    runBindings.push(input);
+    return {
+      ...(current ?? {}),
+      runBindings
+    };
   });
 }
 

@@ -23,12 +23,16 @@ export interface BindWebdockMainDomainParams extends Record<string, unknown> {
   setPtr: boolean;
   actorId: string;
   approvalToken: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface BindWebdockMainDomainSkillParams extends Record<string, unknown> {
   serverSlug: string;
   domain: string;
   setPtr: boolean;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface BindWebdockMainDomainResult {
@@ -107,7 +111,9 @@ export const bindWebdockMainDomainSkillParamSchema: SkillParamSchema<BindWebdock
         data: {
           serverSlug: params.serverSlug,
           domain: params.domain,
-          setPtr: params.setPtr
+          setPtr: params.setPtr,
+          ...(params.repairReason ? { repairReason: params.repairReason } : {}),
+          ...(params.explicitRepairScope ? { explicitRepairScope: params.explicitRepairScope } : {})
         }
       };
     } catch (error) {
@@ -412,7 +418,22 @@ function parseParams(value: unknown, requireApproval: boolean): BindWebdockMainD
     domain: normalizeDomain(input.domain),
     setPtr: input.setPtr === undefined ? true : requiredBoolean(input.setPtr, "setPtr"),
     actorId: requireApproval ? requiredString(input.actorId, "actorId") : "dispatcher",
-    approvalToken: requireApproval ? requiredString(input.approvalToken, "approvalToken") : "dispatcher"
+    approvalToken: requireApproval ? requiredString(input.approvalToken, "approvalToken") : "dispatcher",
+    ...optionalRepairScope(input)
+  };
+}
+
+function optionalRepairScope(input: Record<string, unknown>): {
+  repairReason?: string;
+  explicitRepairScope?: string;
+} {
+  return {
+    ...(typeof input.repairReason === "string" && input.repairReason.trim().length >= 10
+      ? { repairReason: input.repairReason.trim().slice(0, 500) }
+      : {}),
+    ...(typeof input.explicitRepairScope === "string" && input.explicitRepairScope.trim().length >= 3
+      ? { explicitRepairScope: input.explicitRepairScope.trim().slice(0, 300) }
+      : {})
   };
 }
 

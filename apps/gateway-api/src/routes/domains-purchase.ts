@@ -125,14 +125,6 @@ export async function handleRoute53DomainRegisterHttp(
 
   const blockers: string[] = [];
   if (!deps.adapter.isLive()) blockers.push("aws_route53_credentials_missing");
-  if (!deps.adapter.isPurchaseEnabled()) blockers.push("purchase_flag_disabled");
-
-  const monthlyCapUsd = parsePositiveMoney(env.AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD);
-  if (monthlyCapUsd === null) blockers.push("monthly_cap_missing");
-
-  const contactResult = parseAdminContact(env.DELIVRIX_ADMIN_CONTACT_JSON);
-  const adminContact = contactResult.ok ? contactResult.contact : null;
-  if (!contactResult.ok) blockers.push(contactResult.blocker);
 
   const approval = await findRecentApproval({
     auditLog: deps.auditLog,
@@ -143,7 +135,74 @@ export async function handleRoute53DomainRegisterHttp(
   });
   if (!approval) blockers.push("approval_not_found_or_expired");
 
+  let monthlyCapUsd: number | null = null;
+  let adminContact: AwsRoute53ContactDetail | null = null;
   let costUsd: number | null = null;
+
+  const alreadyOwned = blockers.length === 0
+    ? await adapterAlreadyOwnsDomain(deps.adapter, domain).catch(() => false)
+    : false;
+  if (alreadyOwned) {
+    const workspace = await safeWriteExecution(deps.workspace, {
+      skill: skillName,
+      params: { domain, years, autoRenew, actorId },
+      outcome: "success",
+      durationMs: Date.now() - startedAt,
+      evidence: {
+        status: "idempotent_already_owned",
+        registrar: "aws-route53",
+        costUsd: 0,
+        approvalArtifactId: approval?.artifactId
+      }
+    });
+    await safeUpdateDomainInventory(deps.workspace, {
+      domain,
+      operationId: "idempotent_already_owned",
+      expectedExpiry: undefined,
+      costUsd: 0,
+      registeredAt: now.toISOString(),
+      status: "owned"
+    });
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.domain.register_idempotent",
+      targetType: "domain",
+      targetId: domain,
+      riskLevel: "critical",
+      decision: "allow",
+      humanApproved: true,
+      approverIds: [actorId],
+      metadata: {
+        registrar: "aws-route53",
+        status: "idempotent_already_owned",
+        costUsd: 0,
+        approvalToken,
+        approvalArtifactId: approval?.artifactId,
+        workspacePath: workspace?.path
+      }
+    });
+
+    json(deps.response, 200, {
+      ok: true,
+      domain,
+      status: "idempotent_already_owned",
+      operationId: "idempotent_already_owned",
+      costUsd: 0,
+      workspace
+    });
+    return;
+  }
+
+  if (!deps.adapter.isPurchaseEnabled()) blockers.push("purchase_flag_disabled");
+
+  monthlyCapUsd = parsePositiveMoney(env.AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD);
+  if (monthlyCapUsd === null) blockers.push("monthly_cap_missing");
+
+  const contactResult = parseAdminContact(env.DELIVRIX_ADMIN_CONTACT_JSON);
+  adminContact = contactResult.ok ? contactResult.contact : null;
+  if (!contactResult.ok) blockers.push(contactResult.blocker);
+
   if (blockers.length === 0) {
     try {
       const annualCostUsd = registrationCostForTld(await deps.adapter.listPrices([domainTld(domain)]), domainTld(domain));
@@ -202,59 +261,6 @@ export async function handleRoute53DomainRegisterHttp(
       costUsd,
       monthlyCapUsd,
       source,
-      workspace
-    });
-    return;
-  }
-
-  const alreadyOwned = await adapterAlreadyOwnsDomain(deps.adapter, domain).catch(() => false);
-  if (alreadyOwned) {
-    const workspace = await safeWriteExecution(deps.workspace, {
-      skill: skillName,
-      params: { domain, years, autoRenew, actorId },
-      outcome: "success",
-      durationMs: Date.now() - startedAt,
-      evidence: {
-        status: "idempotent_already_owned",
-        registrar: "aws-route53",
-        costUsd: 0,
-        approvalArtifactId: approval?.artifactId
-      }
-    });
-    await safeUpdateDomainInventory(deps.workspace, {
-      domain,
-      operationId: "idempotent_already_owned",
-      expectedExpiry: undefined,
-      costUsd: 0,
-      registeredAt: now.toISOString(),
-      status: "owned"
-    });
-    await deps.auditLog.append({
-      actorType: "operator",
-      actorId,
-      action: "oc.domain.register_idempotent",
-      targetType: "domain",
-      targetId: domain,
-      riskLevel: "critical",
-      decision: "allow",
-      humanApproved: true,
-      approverIds: [actorId],
-      metadata: {
-        registrar: "aws-route53",
-        status: "idempotent_already_owned",
-        costUsd: 0,
-        approvalToken,
-        approvalArtifactId: approval?.artifactId,
-        workspacePath: workspace?.path
-      }
-    });
-
-    json(deps.response, 200, {
-      ok: true,
-      domain,
-      status: "idempotent_already_owned",
-      operationId: "idempotent_already_owned",
-      costUsd: 0,
       workspace
     });
     return;
