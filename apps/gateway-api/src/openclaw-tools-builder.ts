@@ -644,11 +644,14 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       name: "configure_complete_smtp",
       description: [
         "Orquesta SMTP completo desde cero: dominio seguro, compra Route53, VPS Webdock, Main domain/PTR, DNS, Postfix/OpenDKIM, SPF/DKIM/DMARC, warmup mínimo y un correo real autorizado.",
-        "Requiere ApprovalGate por cada acción real, audit/canvas events, kill switch, rollback proposal para VPS y presupuesto máximo. Tiempo estimado: 1-3 horas. Costo referencial: USD 15 dominio + USD 4.30/mes VPS prorrateado."
+        "Requiere ApprovalGate por cada acción real cuando OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE está OFF. Con el flag ON, una firma de plan puede cubrir solo el runId/domain/provider/budget/recipient explícitos. Audit/canvas events, kill switch, rollback proposal para VPS y presupuesto máximo siguen obligatorios. Tiempo estimado: 1-3 horas. Costo referencial: USD 15 dominio + USD 4.30/mes VPS prorrateado."
       ].join(" "),
       input_schema: {
         type: "object",
         properties: {
+          runId: { type: "string", minLength: 1, maxLength: 64 },
+          domain: { type: "string", minLength: 1 },
+          provider: { type: "string", minLength: 1, maxLength: 32 },
           brand: { type: "string", minLength: 1 },
           intent: { type: "string", minLength: 1 },
           budgetUsdMax: { type: "integer", minimum: 1, maximum: 10000, default: 25 },

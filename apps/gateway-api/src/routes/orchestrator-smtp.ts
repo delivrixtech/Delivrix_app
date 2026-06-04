@@ -194,7 +194,7 @@ export async function configureCompleteSmtp(
 ): Promise<ConfigureCompleteSmtpResult> {
   const startedAt = deps.now?.() ?? new Date();
   const startedMs = startedAt.getTime();
-  const runId = deps.randomId?.() ?? randomUUID();
+  const runId = input.runId ?? deps.randomId?.() ?? randomUUID();
   const stepResults: ConfigureCompleteSmtpStepResult[] = [];
   const approvalTimeoutMs = positiveInt(deps.env?.OPENCLAW_CONFIGURE_SMTP_APPROVAL_TIMEOUT_MS) ??
     defaultApprovalTimeoutMs;
@@ -207,6 +207,8 @@ export async function configureCompleteSmtp(
   void logger.info("openclaw.orchestrator.run_started", "configure_complete_smtp run started.", {
     runId,
     brand: input.brand,
+    domain: input.domain,
+    provider: input.provider,
     intent: input.intent,
     budgetUsdMax: input.budgetUsdMax,
     actorId: input.actorId
@@ -225,6 +227,8 @@ export async function configureCompleteSmtp(
   await audit(deps, "oc.orchestrator.run_started", "openclaw_orchestrator_run", runId, "high", {
     skill: "configure_complete_smtp",
     budgetUsdMax: input.budgetUsdMax,
+    domain: input.domain,
+    provider: input.provider,
     actorId: input.actorId
   });
 

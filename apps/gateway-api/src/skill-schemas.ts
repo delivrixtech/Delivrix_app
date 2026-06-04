@@ -109,6 +109,9 @@ export interface WarmupRampParams extends Record<string, unknown> {
 }
 
 export interface ConfigureCompleteSmtpParams extends Record<string, unknown> {
+  runId?: string;
+  domain?: string;
+  provider?: string;
   brand: string;
   intent?: string;
   budgetUsdMax: number;
@@ -120,6 +123,9 @@ export interface ConfigureCompleteSmtpParams extends Record<string, unknown> {
 }
 
 export interface ConfigureCompleteSmtpSkillParams extends Record<string, unknown> {
+  runId?: string;
+  domain?: string;
+  provider?: string;
   brand: string;
   intent?: string;
   budgetUsdMax: number;
@@ -319,6 +325,9 @@ export const warmupRampParamSchema = schema<WarmupRampParams>((value) => {
 export const configureCompleteSmtpSkillParamSchema = schema<ConfigureCompleteSmtpSkillParams>((value) => {
   const input = object(value);
   return {
+    ...(input.runId === undefined || input.runId === null || input.runId === "" ? {} : { runId: boundedId(input.runId, "runId", 64) }),
+    ...(input.domain === undefined || input.domain === null || input.domain === "" ? {} : { domain: domain(input.domain, "domain") }),
+    ...(input.provider === undefined || input.provider === null || input.provider === "" ? {} : { provider: providerId(input.provider, "provider") }),
     brand: string(input.brand, "brand"),
     ...(input.intent === undefined || input.intent === null || input.intent === "" ? {} : { intent: string(input.intent, "intent") }),
     budgetUsdMax: input.budgetUsdMax === undefined || input.budgetUsdMax === null

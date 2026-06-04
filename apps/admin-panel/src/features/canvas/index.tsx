@@ -645,8 +645,8 @@ function PromptStrip({
   onPrimary: () => void;
 }) {
   const [pending, setPending] = useState<"approve" | "execute" | "revert" | null>(null);
-  const [signed, setSigned] = useState(false);
-  const [execution, setExecution] = useState<{ rollbackToken?: string; rollbackExpiresAt?: string } | null>(null);
+  const [signed] = useState(false);
+  const [execution] = useState<{ rollbackToken?: string; rollbackExpiresAt?: string } | null>(null);
   const [destinationOpen, setDestinationOpen] = useState(false);
 
   if (!prompt) {
@@ -690,22 +690,13 @@ function PromptStrip({
     }
 
     setPending("approve");
-    const approval = await approveProposal(prompt.proposalId);
-    setSigned(true);
-
-    if (approval.quorum.reached && prompt.runbookId) {
-      setPending("execute");
-      const result = await executeRunbook({
+    window.dispatchEvent(new CustomEvent("delivrix:approval-gate-required", {
+      detail: {
         proposalId: prompt.proposalId,
-        runbookId: prompt.runbookId,
-        input: buildRunbookInput(prompt)
-      });
-      setExecution({
-        rollbackToken: result.rollbackToken,
-        rollbackExpiresAt: result.rollbackExpiresAt
-      });
-    }
-
+        canonicalEndpoint: `/v1/openclaw/proposals/${encodeURIComponent(prompt.proposalId)}/sign`
+      }
+    }));
+    onPrimary();
     setPending(null);
   }
 
@@ -715,8 +706,13 @@ function PromptStrip({
     }
 
     setPending("revert");
-    await revertRunbook(rollbackToken, "operator_revert_from_canvas", targetStatus);
-    setExecution(null);
+    window.dispatchEvent(new CustomEvent("delivrix:approval-gate-required", {
+      detail: {
+        rollbackToken,
+        targetStatus,
+        reason: "rollback_requires_canonical_approval_gate"
+      }
+    }));
     setDestinationOpen(false);
     setPending(null);
   }
@@ -816,8 +812,8 @@ function PromptStrip({
                   {signedByOperator
                     ? "Ya firmaste"
                     : pending === "approve"
-                      ? "Firmando"
-                      : isQuarantinePrompt ? "Cuarentena urgente" : "Aprobar"}
+                      ? "Abriendo gate"
+                      : isQuarantinePrompt ? "Gate urgente" : "Firmar en gate"}
                 </span>
               </button>
             ) : null}
@@ -939,102 +935,8 @@ function PromptStrip({
   );
 }
 
-async function approveProposal(proposalId: string) {
-  const response = await fetch(`/v1/agent/proposals/${encodeURIComponent(proposalId)}/approve`, {
-    method: "POST",
-    headers: {
-      "X-Operator-Id": getCurrentOperatorId()
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`Approval failed with HTTP ${response.status}.`);
-  }
-
-  return response.json() as Promise<{
-    approvalToken: unknown;
-    quorum: { current: number; required: number; reached: boolean; approverIds: string[] };
-  }>;
-}
-
-async function executeRunbook(params: {
-  proposalId: string;
-  runbookId: string;
-  input: unknown;
-}) {
-  const response = await fetch("/v1/agent/runbook/execute", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Operator-Id": getCurrentOperatorId()
-    },
-    body: JSON.stringify(params)
-  });
-
-  if (!response.ok) {
-    throw new Error(`Runbook execute failed with HTTP ${response.status}.`);
-  }
-
-  return response.json() as Promise<{
-    runbookId: string;
-    rollbackToken: string;
-    rollbackExpiresAt: string;
-    newState: unknown;
-  }>;
-}
-
-async function revertRunbook(
-  rollbackToken: string,
-  reason: string,
-  targetStatus?: "active" | "retired" | "quarantined"
-) {
-  const response = await fetch("/v1/agent/runbook/revert", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Operator-Id": getCurrentOperatorId()
-    },
-    body: JSON.stringify({
-      rollbackToken,
-      reason,
-      metadata: targetStatus ? { targetStatus } : undefined
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`Runbook revert failed with HTTP ${response.status}.`);
-  }
-
-  return response.json() as Promise<{ reverted: true; restoredState: unknown; newState: unknown }>;
-}
-
 function getCurrentOperatorId(): string {
   return "op-juanes-a";
-}
-
-function buildRunbookInput(prompt: NonNullable<CanvasData["prompt"]>): unknown {
-  if (prompt.runbookId === "register-sender-node-local") {
-    return {
-      id: prompt.targetRef,
-      label: prompt.targetRef ?? "Sender node",
-      provider: "webdock",
-      status: "warming",
-      dailyLimit: 50,
-      warmupDay: 1
-    };
-  }
-
-  if (prompt.runbookId === "incident-quarantine") {
-    return {
-      nodeId: prompt.targetRef,
-      reason: prompt.body,
-      evidenceRefs: prompt.evidenceRefs
-    };
-  }
-
-  return {
-    nodeId: prompt.targetRef
-  };
 }
 
 /* ============================================================

@@ -155,11 +155,17 @@ El Gateway:
    `unknown_action`, `live_blocked_hito_5_11_b`).
 
 **El agente nunca llama POST a otros endpoints del Gateway.** Solo `/v1/agent/proposals`.
+Las aprobaciones humanas usan únicamente `POST /v1/openclaw/proposals/{id}/sign`.
+Las rutas legacy `/v1/agent/proposals/{id}/approve`, `/v1/agent/runbook/execute`
+y `/v1/agent/runbook/revert` están deprecadas y devuelven
+`410 canonical_hmac_signature_required`.
 
 ### 4.3 Firma HMAC para POST privados del agente
 
-Todo `POST` privado del agente (`/v1/agent/proposals`, `/v1/agent/audit/batch`,
-`/v1/agent/runbook/execute` cuando lo invoca el agente) se firma con HMAC-SHA256.
+Todo `POST` privado del agente (`/v1/agent/proposals`, `/v1/agent/audit/batch`
+si está habilitado) se firma con HMAC-SHA256. La firma de aprobación humana vive
+en `POST /v1/openclaw/proposals/{id}/sign` y usa la misma disciplina HMAC salvo
+modo panel local explícito.
 La lectura `GET` sigue usando `Bearer ${DELIVRIX_OPENCLAW_TOKEN}`.
 
 Headers obligatorios:
@@ -264,6 +270,12 @@ Detalle de payloads en Doc 8 (`OPENCLAW_AUDIT_INTEGRATION.md`).
 
 - El bundle frontend nunca llama `POST /v1/agent/proposals`. Solo el agente.
 - El agente nunca llama `POST` a endpoints fuera de `/v1/agent/proposals`.
+- La ejecución supervisada no se autoriza por `/v1/agent/runbook/execute`;
+  primero debe existir firma canónica `oc.proposal.signed`.
+- Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE` ausente/OFF, la aprobación es por
+  propuesta/paso. Con el flag ON, una PlanApproval firmada queda atada a
+  `runId/domain/provider/budgetUsdMax/testEmailRecipient` y no desbloquea acciones
+  `future_live_requires_new_phase`.
 - `delivrix_actions_required` en cada proposal se valida contra la matriz **antes**
   de persistir. Sin excepciones.
 - El token `DELIVRIX_OPENCLAW_TOKEN` es short-lived y solo autoriza reads.
@@ -312,51 +324,50 @@ paths:
         '429':
           description: Rate limit exceeded
 
-  /v1/agent/runbook/execute:
+  /v1/openclaw/proposals/{proposalId}/sign:
     post:
-      summary: Execute supervised runbook with approval tokens
-      operationId: executeRunbook
+      summary: Canonical human ApprovalGate signature
+      operationId: signOpenClawProposal
       security:
-        - bearerToken: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RunbookExecuteRequest'
+        - openClawHmac: []
+      parameters:
+        - name: proposalId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
       responses:
         '200':
-          description: Runbook executed successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RunbookExecuteResult'
+          description: Proposal signed and executed synchronously
+        '202':
+          description: Proposal signed and execution still running
         '401':
-          description: Missing or invalid approval token(s)
-        '403':
-          description: Action prohibited or live-blocked
+          description: Missing or invalid HMAC signature
         '409':
-          description: Race condition or token replay
+          description: Proposal not pending or binding mismatch
+        '422':
+          description: PlanApproval scope missing when autonomy flag is enabled
         '423':
           description: Kill switch armed
 
+  /v1/agent/runbook/execute:
+    post:
+      deprecated: true
+      summary: Deprecated legacy runbook execute route
+      operationId: executeRunbookDeprecated
+      responses:
+        '410':
+          description: canonical_hmac_signature_required
+
   /v1/agent/runbook/revert:
     post:
-      summary: Revert a previously executed runbook via rollback token
-      operationId: revertRunbook
-      security:
-        - bearerToken: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RunbookRevertRequest'
+      deprecated: true
+      summary: Deprecated legacy runbook revert route
+      operationId: revertRunbookDeprecated
       responses:
-        '200':
-          description: Reverted
-        '401':
-          description: Token invalid or expired
+        '410':
+          description: canonical_hmac_signature_required
 
   /v1/agent/audit/batch:
     post:

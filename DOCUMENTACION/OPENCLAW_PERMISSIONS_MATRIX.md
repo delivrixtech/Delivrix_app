@@ -10,6 +10,7 @@ Categorías y método de evaluación heredados de `HITO_4_5_RUNBOOK_PERMISOS_KIL
 - **v2.0** (2026-05-18) — 29 acciones de lectura una a una (todo el read-boundary literal), pseudocódigo formal del pipeline en TypeScript, manejo de race conditions en approvals concurrentes, código de error tipado por rejection reason.
 - **v2.1** (2026-05-27) — Camino B CTO: `register_domain` pasa de doble firma a modelo wallet con `requiredApprovals: 1` y firmante único `juanescanar-cto`; sigue requiriendo presupuesto, flag explícita, audit y cleanup DNS/VPS.
 - **v2.2** (2026-05-31) — Fase A habilita `suggest_safe_domain` / `naming_suggest`, `wait_for_dns_propagation` / `dns_propagation_wait`, `bind_webdock_main_domain` y `send_real_email`. `send_real_email` es CRITICAL, irreversible, rate-limited, one-off para smoke E2E autorizado; Webdock Main Domain usa fallback SSH y PTR queda `not_supported_by_api`.
+- **v2.3** (2026-06-04) — Fase 0 contrato de permisos: se deprecian rutas legacy `/v1/agent/proposals/*/approve`, `/v1/agent/runbook/execute` y `/v1/agent/runbook/revert`; la autorización canónica es `POST /v1/openclaw/proposals/{id}/sign` con HMAC. Se introduce PlanApproval por `runId` detrás de `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE`, apagado por defecto.
 
 ## 1. Propósito
 
@@ -24,10 +25,14 @@ de Delivrix o a un proveedor externo. Si una acción no aparece aquí o aparece 
 | --- | --- |
 | `allowed_read_only` | Lectura pura. Sin efectos. No requiere aprobación. |
 | `allowed_dry_run` | Genera plan o payload sin tocar nada real. No requiere aprobación. |
-| `supervised_local_state` | Modifica estado **local** de Delivrix (registry, metadata, audit). Requiere aprobación humana + kill switch armado. |
+| `supervised_local_state` | Modifica estado **local** de Delivrix (registry, metadata, audit). Requiere firma humana canónica + kill switch desarmado. Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE=true`, una PlanApproval válida puede cubrir subpasos del mismo `runId` y scope. |
 | `supervised_live_wallet` | Ejecuta una acción live acotada con costo bajo bajo modelo wallet CTO. Requiere aprobación humana única, presupuesto, flags explícitas, audit y cleanup. |
 | `future_live_requires_new_phase` | Acción contra infraestructura real. Bloqueada en Hito 5.11.B. Sólo se habilita con hito posterior + actualización del norte. |
 | `prohibited` | Nunca se permite, ni siquiera con aprobación. Vulneraría norte, compliance o seguridad. |
+
+**Contrato canónico Fase 0:** toda aprobación humana pasa por `POST /v1/openclaw/proposals/{id}/sign` y auditoría `oc.proposal.signed`. Las rutas legacy devuelven `410 canonical_hmac_signature_required`.
+
+**PlanApproval:** con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE` ausente/OFF no cambia el flujo por paso. Con el flag ON, el proposal debe incluir `runId`, `domain`, `provider`, `budgetUsdMax` y `testEmailRecipient`; el Gateway firma `scopeHash` y emite `oc.plan.signed`. Este mecanismo no autoriza acciones `future_live_requires_new_phase` ni `prohibited`.
 
 ## 3. Matriz literal
 

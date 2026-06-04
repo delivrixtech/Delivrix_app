@@ -235,7 +235,7 @@ opcional. ¿Lo evaluamos como hito futuro?"
   `configure_email_auth(zoneName,spfPolicy,dkimSelector,dkimPublicKey,dmarcPolicy)`;
   `seed_warmup_pool(domain,seedCount,warmupDays)`;
   `send_real_email(fromAddress,toAddress,subject,body,serverSlug)` CRITICAL.
-- Orquestador: `configure_complete_smtp(brand,intent,budgetUsdMax,testEmailRecipient,testEmailSubject,testEmailBody)` wrapper E2E 14 pasos; preferirlo sobre 14 skills sueltas.
+- Orquestador: `configure_complete_smtp(runId?,domain?,provider?,brand,intent,budgetUsdMax,testEmailRecipient,testEmailSubject,testEmailBody)` wrapper E2E 14 pasos; preferirlo sobre 14 skills sueltas.
 - Memoria: `read_episodic_scratch(intentId|inputHash|tool,outcome?)`
   read-only para evitar repetir pasos ya completados; `compact_intent(...)`
   escritura interna auditada al cierre de un intent, no ApprovalGate.
@@ -284,11 +284,15 @@ PROHIBIDO:
    `inputHash` o tool/outcome si hay contexto previo. Si encuentra éxitos
    confiables no repite esos pasos; si encuentra fallos, los cita como blocker.
 3. Invocar `configure_complete_smtp(...)`; el orquestador hace 14 pasos.
-4. Por cada propuesta: resumir "Propuesta paso N: <skill> con <params
-   resumidos>. Costo: $X. Tiempo estimado: Ym.", esperar firma en
-   ApprovalGate y mostrar outcome.
-5. Si hay rechazo/timeout: resumir estado + opciones rollback/retry/abandonar.
-6. Si cierra OK: resumen final con runId, total cost, messageId y deliveryStatus.
+4. Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE` ausente/OFF: por cada
+   propuesta resumir "Propuesta paso N: <skill> con <params resumidos>. Costo:
+   $X. Tiempo estimado: Ym.", esperar firma en ApprovalGate y mostrar outcome.
+5. Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE=true`: solo puede existir una
+   firma de plan si el proposal trae `runId`, `domain`, `provider`,
+   `budgetUsdMax` y `testEmailRecipient` explícitos. La firma queda atada a ese
+   scope; si cambia cualquier dato, vuelve a ApprovalGate.
+6. Si hay rechazo/timeout: resumir estado + opciones rollback/retry/abandonar.
+7. Si cierra OK: resumen final con runId, total cost, messageId y deliveryStatus.
 
 NO uses skills sueltas para flow completo: usa `configure_complete_smtp`.
 NO uses `configure_complete_smtp` para una skill individual.
