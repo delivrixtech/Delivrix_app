@@ -58,6 +58,18 @@ test("WSS /v1/canvas/live/stream rejects missing token", async () => {
   service.close();
 });
 
+test("WSS /v1/canvas/live/stream heartbeats with ping and responds to client ping", async () => {
+  const service = await testService({ heartbeatIntervalMs: 5 });
+  const socket = connectFakeSocket(service, "/v1/canvas/live/stream");
+
+  await wait(20);
+  assert.ok(socket.frames(0x09).length >= 1);
+
+  socket.emit("data", Buffer.from([0x89, 0x00]));
+  assert.ok(socket.frames(0x0a).length >= 1);
+  service.close();
+});
+
 test("oc.action.now supports api, file, and command events", async () => {
   const service = await testService();
   await service.emit(taskDeclare("task-action"));
@@ -106,6 +118,60 @@ test("oc.action.now supports api, file, and command events", async () => {
   assert.equal(command.kind, "command");
   const snapshot = await service.snapshot();
   assert.equal(snapshot.tasks[0].lastAction?.kind, "command");
+});
+
+test("oc.action.now redacts secrets before broadcast, snapshot, and JSONL persistence", async () => {
+  const stateDir = await stateDirForTest();
+  const service = new CanvasLiveEventService({
+    stateDir,
+    now: () => fixedNow,
+    streamToken: "canvas-token"
+  });
+  const socket = connectFakeSocket(service, "/v1/canvas/live/stream");
+  await service.emit(taskDeclare("task-redact"));
+  await service.emit({
+    type: "oc.action.now",
+    taskId: "task-redact",
+    kind: "api",
+    method: "POST",
+    url: "https://api.example.test/run?token=canvas-secret-token",
+    status: 200,
+    durationMs: 10,
+    responseBytes: 128,
+    responseBody: {
+      ok: true,
+      token: "canvas-secret-token",
+      nested: {
+        sessionToken: "session-secret-value",
+        message: "Authorization: Bearer bearer-secret-value"
+      }
+    },
+    occurredAt: fixedNow.toISOString()
+  });
+  await service.emit({
+    type: "oc.action.now",
+    taskId: "task-redact",
+    kind: "command",
+    cmd: "curl -H 'Authorization: Bearer bearer-secret-value' https://api.example.test",
+    exitCode: 0,
+    stdout: "signature=sig-secret-value",
+    stderr: "private_key=private-secret-value",
+    durationMs: 4,
+    occurredAt: fixedNow.toISOString()
+  });
+
+  const snapshot = await service.snapshot();
+  const persisted = await readFile(join(stateDir, "tasks.jsonl"), "utf8");
+  const broadcast = JSON.stringify(socket.messages());
+  const combined = `${JSON.stringify(snapshot)}\n${persisted}\n${broadcast}`;
+
+  assert.doesNotMatch(combined, /canvas-secret-token/);
+  assert.doesNotMatch(combined, /session-secret-value/);
+  assert.doesNotMatch(combined, /bearer-secret-value/);
+  assert.doesNotMatch(combined, /sig-secret-value/);
+  assert.doesNotMatch(combined, /private-secret-value/);
+  assert.match(combined, /\[REDACTED\]/);
+  service.close();
 });
 
 test("task update preserves last action for completed live tasks", async () => {
@@ -639,11 +705,12 @@ function artifactBlock(
   };
 }
 
-async function testService(): Promise<CanvasLiveEventService> {
+async function testService(options: { heartbeatIntervalMs?: number } = {}): Promise<CanvasLiveEventService> {
   return new CanvasLiveEventService({
     stateDir: await stateDirForTest(),
     now: () => fixedNow,
-    streamToken: "canvas-token"
+    streamToken: "canvas-token",
+    ...options
   });
 }
 
@@ -759,6 +826,15 @@ class FakeSocket extends EventEmitter {
       .filter((chunk): chunk is Buffer => Buffer.isBuffer(chunk) && (chunk[0] & 0x0f) === 0x1)
       .map((chunk) => JSON.parse(decodeTextFrame(chunk)) as CanvasLiveEvent);
   }
+
+  frames(opcode: number): Buffer[] {
+    return this.writes
+      .filter((chunk): chunk is Buffer => Buffer.isBuffer(chunk) && (chunk[0] & 0x0f) === opcode);
+  }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function decodeTextFrame(frame: Buffer): string {

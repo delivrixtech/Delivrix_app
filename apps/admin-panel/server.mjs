@@ -13,10 +13,26 @@ const distRoot = path.join(__dirname, "dist");
 const staticRoot = existsSync(path.join(distRoot, "index.html")) ? distRoot : __dirname;
 const chatSendPath = "/v1/openclaw/chat/send";
 const chatStreamPath = "/v1/openclaw/chat/stream";
+const canvasLiveStatePath = "/v1/canvas/live/state";
+const canvasLiveStreamPath = "/v1/canvas/live/stream";
 const gatewayLogStreamPath = "/v1/gateway/logs/stream";
+const canvasLiveProxyToken =
+  process.env.CANVAS_LIVE_STREAM_TOKEN ??
+  process.env.DELIVRIX_READ_BOUNDARY_TOKEN ??
+  process.env.OPENCLAW_GATEWAY_TOKEN ??
+  "";
+const gatewayLogProxyToken =
+  process.env.GATEWAY_LOG_STREAM_TOKEN ??
+  process.env.DELIVRIX_OPENCLAW_TOKEN ??
+  process.env.DELIVRIX_READ_BOUNDARY_TOKEN ??
+  process.env.OPENCLAW_GATEWAY_TOKEN ??
+  "";
 const allowedWritePatterns = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/sign$/,
-  /^\/v1\/openclaw\/proposals\/[^/]+\/reject$/
+  /^\/v1\/openclaw\/proposals\/[^/]+\/reject$/,
+  /^\/v1\/canvas\/artifact\/[^/]+\/approve$/,
+  /^\/v1\/canvas\/artifact\/[^/]+\/reject$/,
+  /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/
 ];
 const allowedReadPatterns = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/status$/
@@ -28,6 +44,7 @@ const allowedProxyPaths = new Set([
   "/v1/admin/overview",
   "/v1/admin/workflow",
   "/v1/audit-events",
+  canvasLiveStatePath,
   "/v1/compliance/status",
   "/v1/devops/collector/snapshot-ingestion",
   "/v1/devops/collector/status",
@@ -64,7 +81,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (allowedWritePatterns.some((pattern) => pattern.test(requestUrl.pathname))) {
-      return await proxyGatewayPost(request, response, requestUrl);
+      return await proxyGatewayWrite(request, response, requestUrl);
     }
 
     if (requestUrl.pathname === "/health" || requestUrl.pathname.startsWith("/v1/")) {
@@ -82,7 +99,11 @@ const server = createServer(async (request, response) => {
 
 server.on("upgrade", (request, socket, head) => {
   const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? `${host}:${port}`}`);
-  if (requestUrl.pathname !== chatStreamPath && requestUrl.pathname !== gatewayLogStreamPath) {
+  if (
+    requestUrl.pathname !== chatStreamPath &&
+    requestUrl.pathname !== canvasLiveStreamPath &&
+    requestUrl.pathname !== gatewayLogStreamPath
+  ) {
     socket.destroy();
     return;
   }
@@ -103,7 +124,7 @@ async function proxyGatewayChatSend(request, response, requestUrl) {
     });
   }
 
-  const upstreamUrl = new URL(requestUrl.pathname, gatewayOrigin);
+  const upstreamUrl = new URL(`${requestUrl.pathname}${requestUrl.search}`, gatewayOrigin);
   let upstreamResponse;
   try {
     upstreamResponse = await fetch(upstreamUrl, {
@@ -147,14 +168,23 @@ async function proxyGatewayGet(request, response, requestUrl) {
     });
   }
 
-  const upstreamUrl = new URL(requestUrl.pathname, gatewayOrigin);
+  const upstreamUrl = new URL(`${requestUrl.pathname}${requestUrl.search}`, gatewayOrigin);
+  const headers = {
+    accept: "application/json"
+  };
+  const authorization = firstHeader(request.headers.authorization);
+  const delivrixToken = firstHeader(request.headers["x-delivrix-token"]);
+  if (authorization) {
+    headers.authorization = authorization;
+  }
+  if (delivrixToken) {
+    headers["x-delivrix-token"] = delivrixToken;
+  }
   let upstreamResponse;
   try {
     upstreamResponse = await fetch(upstreamUrl, {
       method: "GET",
-      headers: {
-        accept: "application/json"
-      }
+      headers
     });
   } catch (error) {
     return json(response, 502, {
@@ -171,11 +201,11 @@ async function proxyGatewayGet(request, response, requestUrl) {
   response.end(body);
 }
 
-async function proxyGatewayPost(request, response, requestUrl) {
-  if (request.method !== "POST") {
+async function proxyGatewayWrite(request, response, requestUrl) {
+  if (request.method !== "POST" && request.method !== "PATCH") {
     return json(response, 405, {
       error: "method_not_allowed",
-      message: "This gateway action requires POST."
+      message: "This gateway action requires POST or PATCH."
     });
   }
 
@@ -183,7 +213,7 @@ async function proxyGatewayPost(request, response, requestUrl) {
   let upstreamResponse;
   try {
     upstreamResponse = await fetch(upstreamUrl, {
-      method: "POST",
+      method: request.method,
       headers: {
         accept: "application/json",
         "content-type": firstHeader(request.headers["content-type"]) ?? "application/json",
@@ -214,7 +244,7 @@ function proxyGatewayWebSocket(request, socket, head, requestUrl) {
   });
 
   upstreamSocket.on("connect", () => {
-    const upstreamPath = `${requestUrl.pathname}${requestUrl.search}`;
+    const upstreamPath = gatewayWebSocketPath(requestUrl);
     const handshake = [
       `GET ${upstreamPath} HTTP/1.1`,
       `Host: ${upstreamOrigin.host}`,
@@ -240,6 +270,23 @@ function proxyGatewayWebSocket(request, socket, head, requestUrl) {
   socket.on("error", () => {
     upstreamSocket.destroy();
   });
+}
+
+function gatewayWebSocketPath(requestUrl) {
+  const upstreamUrl = new URL(`${requestUrl.pathname}${requestUrl.search}`, "http://127.0.0.1");
+  if (upstreamUrl.pathname === canvasLiveStreamPath) {
+    appendTokenIfMissing(upstreamUrl, canvasLiveProxyToken);
+  }
+  if (upstreamUrl.pathname === gatewayLogStreamPath) {
+    appendTokenIfMissing(upstreamUrl, gatewayLogProxyToken);
+  }
+  return `${upstreamUrl.pathname}${upstreamUrl.search}`;
+}
+
+function appendTokenIfMissing(url, token) {
+  if (token && !url.searchParams.has("token")) {
+    url.searchParams.set("token", token);
+  }
 }
 
 async function serveStatic(response, pathname) {

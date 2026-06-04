@@ -9,6 +9,12 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AuditEventInput } from "../../../packages/domain/src/index.ts";
 import type {
+  CanvasLiveActionKind,
+  CanvasLiveActionNowEvent,
+  CanvasLiveTaskDeclareEvent,
+  CanvasLiveTaskUpdateEvent
+} from "../../../packages/domain/src/index.ts";
+import type {
   ChatSendRequest,
   ChatSendResponse,
   ChatStreamEvent,
@@ -87,6 +93,10 @@ interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
 }
 
+interface CanvasLiveEmitter {
+  emit(event: unknown): Promise<unknown>;
+}
+
 interface BedrockInvocationResult {
   text: string;
   modelId: string;
@@ -120,6 +130,7 @@ export interface OpenClawBedrockBridgeConfig {
   liveContextMaxChars?: number;
   logger?: GatewayRuntimeLogger;
   auditLog?: AuditSink;
+  canvasLiveEvents?: CanvasLiveEmitter;
   processToolUse?: (input: {
     toolUseId: string;
     toolName: string;
@@ -147,6 +158,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   private readonly liveContextMaxChars: number;
   private readonly logger: GatewayRuntimeLogger;
   private readonly auditLog: AuditSink | null;
+  private readonly canvasLiveEvents: CanvasLiveEmitter | null;
   private readonly processToolUse: (input: {
     toolUseId: string;
     toolName: string;
@@ -196,6 +208,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     this.liveContextMaxChars = config.liveContextMaxChars ?? parsePositiveInt(runtimeEnv.OPENCLAW_LIVE_CONTEXT_MAX_CHARS) ?? defaultLiveContextMaxChars;
     this.logger = config.logger ?? noopGatewayRuntimeLogger;
     this.auditLog = config.auditLog ?? null;
+    this.canvasLiveEvents = config.canvasLiveEvents ?? null;
     this.processToolUse = config.processToolUse ?? createHttpToolUseProcessor({
       delivrixBaseUrl: this.delivrixBaseUrl,
       fetchImpl: this.fetchImpl,
@@ -311,6 +324,15 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
 
   private async invokeBedrock(turns: ConversationTurn[], msgId: string, signal?: AbortSignal): Promise<BedrockInvocationResult> {
     const startedAt = this.now().getTime();
+    const canvasTaskId = canvasTaskIdForMsgId(msgId);
+    await this.emitCanvasTaskDeclare({
+      type: "oc.task.declare",
+      taskId: canvasTaskId,
+      title: summarizeCanvasTurnTitle(latestUserTurnContent(turns)),
+      status: "running",
+      createdAt: this.now().toISOString(),
+      actorId: "openclaw-bedrock-direct"
+    });
     const systemBase = await this.loadSystemPrompt();
     const liveContext = await this.fetchLiveContext(latestUserTurnContent(turns));
     const system = `${systemBase}\n\n${liveContext}`;
@@ -333,122 +355,161 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     const toolsInvoked: string[] = [];
     const turnIntentId = intentIdForMsgId(msgId);
 
-    for (let iteration = 0; iteration < this.maxToolIterations; iteration += 1) {
-      throwIfAborted(signal);
-      const response = await this.invokeBedrockOnce({
-        messages,
-        system,
-        tools,
-        signal
-      });
-      if (response.inputTokens !== undefined) {
-        inputTokens += response.inputTokens;
-        sawInputTokens = true;
-      }
-      if (response.outputTokens !== undefined) {
-        outputTokens += response.outputTokens;
-        sawOutputTokens = true;
-      }
-
-      const toolUses = response.content.filter(isToolUseBlock);
-      if (toolUses.length === 0) {
-        const durationMs = Math.max(0, this.now().getTime() - startedAt);
-        await this.logger.info("openclaw.bedrock.invoke_completed", "Bedrock returned final assistant response.", {
-          msgId,
-          modelId: this.modelId,
-          durationMs,
-          inputTokens: sawInputTokens ? inputTokens : undefined,
-          outputTokens: sawOutputTokens ? outputTokens : undefined,
-          toolsInvoked
-        });
-        return {
-          text: response.text,
-          modelId: this.modelId,
-          ...(sawInputTokens ? { inputTokens } : {}),
-          ...(sawOutputTokens ? { outputTokens } : {}),
-          durationMs,
-          ...(toolsInvoked.length > 0 ? { toolsInvoked } : {})
-        };
-      }
-
-      messages.push({
-        role: "assistant",
-        content: response.content
-      });
-
-      const toolResults: BedrockContentBlock[] = [];
-      for (const toolUse of toolUses) {
+    try {
+      for (let iteration = 0; iteration < this.maxToolIterations; iteration += 1) {
         throwIfAborted(signal);
-        toolsInvoked.push(toolUse.name);
-        const toolInputHash = hashToolInput(toolUse.input);
-        await this.logger.info("openclaw.bedrock.tool_use_requested", "Bedrock requested a Delivrix tool.", {
-          msgId,
-          iteration,
-          toolUseId: toolUse.id,
-          toolName: toolUse.name,
-          params: summarizeOperationalParams(toolUse.input)
+        const response = await this.invokeBedrockOnce({
+          messages,
+          system,
+          tools,
+          signal
         });
-        const result = await this.processToolUse({
-          toolUseId: toolUse.id,
-          toolName: toolUse.name,
-          toolInput: toolUse.input,
-          chatSession: { id: this.sessionKey, msgId }
-        }).catch((error): ToolUseResult => ({
-          ok: false,
-          error: "tool_use_processor_failed",
-          details: error instanceof Error ? error.message : "Unknown tool-use processor error"
-        }));
-        await (result.ok
-          ? this.logger.info("openclaw.bedrock.tool_use_completed", "Delivrix tool completed for Bedrock.", {
+        if (response.inputTokens !== undefined) {
+          inputTokens += response.inputTokens;
+          sawInputTokens = true;
+        }
+        if (response.outputTokens !== undefined) {
+          outputTokens += response.outputTokens;
+          sawOutputTokens = true;
+        }
+
+        const toolUses = response.content.filter(isToolUseBlock);
+        if (toolUses.length === 0) {
+          const durationMs = Math.max(0, this.now().getTime() - startedAt);
+          await this.logger.info("openclaw.bedrock.invoke_completed", "Bedrock returned final assistant response.", {
+            msgId,
+            modelId: this.modelId,
+            durationMs,
+            inputTokens: sawInputTokens ? inputTokens : undefined,
+            outputTokens: sawOutputTokens ? outputTokens : undefined,
+            toolsInvoked
+          });
+          await this.emitCanvasTaskUpdate({
+            type: "oc.task.update",
+            taskId: canvasTaskId,
+            status: "completed",
+            updatedAt: this.now().toISOString()
+          });
+          return {
+            text: response.text,
+            modelId: this.modelId,
+            ...(sawInputTokens ? { inputTokens } : {}),
+            ...(sawOutputTokens ? { outputTokens } : {}),
+            durationMs,
+            ...(toolsInvoked.length > 0 ? { toolsInvoked } : {})
+          };
+        }
+
+        messages.push({
+          role: "assistant",
+          content: response.content
+        });
+
+        const toolResults: BedrockContentBlock[] = [];
+        for (const toolUse of toolUses) {
+          throwIfAborted(signal);
+          toolsInvoked.push(toolUse.name);
+          const toolInputHash = hashToolInput(toolUse.input);
+          await this.logger.info("openclaw.bedrock.tool_use_requested", "Bedrock requested a Delivrix tool.", {
             msgId,
             iteration,
             toolUseId: toolUse.id,
             toolName: toolUse.name,
-            proposalId: result.proposalId,
-            durationMs: result.durationMs,
-            statusCode: result.statusCode
-          })
-          : this.logger.warn("openclaw.bedrock.tool_use_failed", "Delivrix tool returned a non-ok result to Bedrock.", {
-            msgId,
-            iteration,
+            params: summarizeOperationalParams(toolUse.input)
+          });
+          await this.emitCanvasToolAction({
+            taskId: canvasTaskId,
+            toolName: toolUse.name,
+            phase: "requested",
+            occurredAt: this.now().toISOString()
+          });
+          const toolStartedAt = this.now().getTime();
+          const result = await this.processToolUse({
             toolUseId: toolUse.id,
             toolName: toolUse.name,
-            proposalId: result.proposalId,
-            error: result.error,
-            statusCode: result.statusCode,
-            details: result.details
+            toolInput: toolUse.input,
+            chatSession: { id: this.sessionKey, msgId }
+          }).catch((error): ToolUseResult => ({
+            ok: false,
+            error: "tool_use_processor_failed",
+            details: error instanceof Error ? error.message : "Unknown tool-use processor error"
           }));
-        await this.auditSkillInvokedFromToolUse({
-          intentId: turnIntentId,
-          msgId,
-          iteration,
-          toolUse,
-          inputHash: toolInputHash,
-          result
-        });
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: toolUse.id,
-          content: stringifyToolResult(enrichToolResultForModel(result, {
+          await (result.ok
+            ? this.logger.info("openclaw.bedrock.tool_use_completed", "Delivrix tool completed for Bedrock.", {
+              msgId,
+              iteration,
+              toolUseId: toolUse.id,
+              toolName: toolUse.name,
+              proposalId: result.proposalId,
+              durationMs: result.durationMs,
+              statusCode: result.statusCode
+            })
+            : this.logger.warn("openclaw.bedrock.tool_use_failed", "Delivrix tool returned a non-ok result to Bedrock.", {
+              msgId,
+              iteration,
+              toolUseId: toolUse.id,
+              toolName: toolUse.name,
+              proposalId: result.proposalId,
+              error: result.error,
+              statusCode: result.statusCode,
+              details: result.details
+            }));
+          await this.emitCanvasToolAction({
+            taskId: canvasTaskId,
+            toolName: toolUse.name,
+            phase: result.ok ? "completed" : "failed",
+            result,
+            durationMs: result.durationMs ?? Math.max(0, this.now().getTime() - toolStartedAt),
+            occurredAt: this.now().toISOString()
+          });
+          if (result.proposalId || result.signatureId) {
+            await this.emitCanvasToolAudit({
+              taskId: canvasTaskId,
+              toolName: toolUse.name,
+              result,
+              occurredAt: this.now().toISOString()
+            });
+          }
+          await this.auditSkillInvokedFromToolUse({
             intentId: turnIntentId,
             msgId,
             iteration,
             toolUse,
-            inputHash: toolInputHash
-          }))
+            inputHash: toolInputHash,
+            result
+          });
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: toolUse.id,
+            content: stringifyToolResult(enrichToolResultForModel(result, {
+              intentId: turnIntentId,
+              msgId,
+              iteration,
+              toolUse,
+              inputHash: toolInputHash
+            }))
+          });
+        }
+
+        messages.push({
+          role: "user",
+          content: toolResults
         });
       }
 
-      messages.push({
-        role: "user",
-        content: toolResults
+      throw new OpenClawBedrockBridgeError(
+        "bedrock_tool_loop_exceeded",
+        `OpenClaw Bedrock exceeded ${this.maxToolIterations} tool-use iterations.`
+      );
+    } catch (error) {
+      await this.emitCanvasTaskUpdate({
+        type: "oc.task.update",
+        taskId: canvasTaskId,
+        status: "failed",
+        updatedAt: this.now().toISOString()
       });
+      throw error;
     }
-
-    throw new OpenClawBedrockBridgeError(
-      "bedrock_tool_loop_exceeded",
-      `OpenClaw Bedrock exceeded ${this.maxToolIterations} tool-use iterations.`
-    );
   }
 
   private async auditSkillInvokedFromToolUse(input: {
@@ -489,6 +550,79 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
         msgId: input.msgId,
         toolUseId: input.toolUse.id,
         toolName: input.toolUse.name,
+        ...runtimeErrorMetadata(error)
+      });
+    }
+  }
+
+  private async emitCanvasTaskDeclare(event: CanvasLiveTaskDeclareEvent): Promise<void> {
+    await this.emitCanvasLiveEvent(event, {
+      msgId: event.taskId,
+      eventType: event.type
+    });
+  }
+
+  private async emitCanvasTaskUpdate(event: CanvasLiveTaskUpdateEvent): Promise<void> {
+    await this.emitCanvasLiveEvent(event, {
+      msgId: event.taskId,
+      eventType: event.type,
+      status: event.status
+    });
+  }
+
+  private async emitCanvasToolAction(input: {
+    taskId: string;
+    toolName: string;
+    phase: "requested" | "completed" | "failed";
+    result?: ToolUseResult;
+    durationMs?: number;
+    occurredAt: string;
+  }): Promise<void> {
+    const kind = canvasActionKindForTool(input.toolName);
+    const event = canvasActionEventForTool({
+      ...input,
+      kind
+    });
+    await this.emitCanvasLiveEvent(event, {
+      msgId: input.taskId,
+      eventType: event.type,
+      toolName: input.toolName,
+      phase: input.phase
+    });
+  }
+
+  private async emitCanvasToolAudit(input: {
+    taskId: string;
+    toolName: string;
+    result: ToolUseResult;
+    occurredAt: string;
+  }): Promise<void> {
+    await this.emitCanvasLiveEvent({
+      type: "oc.action.now",
+      taskId: input.taskId,
+      kind: "audit",
+      action: input.result.signatureId ? "oc.tool_use.signed" : "oc.tool_use.proposed",
+      targetType: "openclaw_tool",
+      targetId: input.toolName,
+      riskLevel: input.result.signatureId ? "high" : "medium",
+      occurredAt: input.occurredAt
+    } satisfies CanvasLiveActionNowEvent, {
+      msgId: input.taskId,
+      eventType: "oc.action.now",
+      toolName: input.toolName,
+      phase: input.result.signatureId ? "signed" : "proposed"
+    });
+  }
+
+  private async emitCanvasLiveEvent(event: unknown, metadata: Record<string, unknown>): Promise<void> {
+    if (!this.canvasLiveEvents) {
+      return;
+    }
+    try {
+      await this.canvasLiveEvents.emit(event);
+    } catch (error) {
+      await this.logger.warn("openclaw.bedrock.canvas_emit_failed", "Could not emit Bedrock activity to Canvas Live.", {
+        ...metadata,
         ...runtimeErrorMetadata(error)
       });
     }
@@ -712,7 +846,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
 export function createOpenClawBedrockBridgeFromEnv(
   env: Record<string, string | undefined> =
     typeof process !== "undefined" ? process.env : {},
-  options: { logger?: GatewayRuntimeLogger; auditLog?: AuditSink } = {}
+  options: { logger?: GatewayRuntimeLogger; auditLog?: AuditSink; canvasLiveEvents?: CanvasLiveEmitter } = {}
 ): OpenClawBedrockBridge | null {
   if (env.OPENCLAW_BRIDGE_KIND !== "bedrock") {
     return null;
@@ -747,7 +881,8 @@ export function createOpenClawBedrockBridgeFromEnv(
     liveContextMaxChars: parsePositiveInt(env.OPENCLAW_LIVE_CONTEXT_MAX_CHARS) ?? defaultLiveContextMaxChars,
     env,
     logger: options.logger,
-    auditLog: options.auditLog
+    auditLog: options.auditLog,
+    canvasLiveEvents: options.canvasLiveEvents
   });
 }
 
@@ -787,6 +922,128 @@ function isTextBlock(block: BedrockContentBlock): block is Extract<BedrockConten
 
 function isToolUseBlock(block: BedrockContentBlock): block is Extract<BedrockContentBlock, { type: "tool_use" }> {
   return block.type === "tool_use";
+}
+
+function canvasTaskIdForMsgId(msgId: string): string {
+  const normalized = msgId.trim().replace(/[^a-zA-Z0-9_.:-]/g, "-").slice(0, 96);
+  return normalized ? `bedrock:${normalized}` : "bedrock:unknown";
+}
+
+function summarizeCanvasTurnTitle(message: string): string {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "OpenClaw Bedrock turn";
+  }
+  return normalized.length <= 90 ? normalized : `${normalized.slice(0, 87)}...`;
+}
+
+function canvasActionKindForTool(toolName: string): CanvasLiveActionKind {
+  if (toolName === "compact_intent" || toolName.includes("scratch")) {
+    return "file";
+  }
+  if (toolName.includes("ssh") || toolName.includes("postfix") || toolName.includes("smtp_provision")) {
+    return "command";
+  }
+  if (
+    toolName.startsWith("read_") ||
+    toolName.includes("dns") ||
+    toolName.includes("route53") ||
+    toolName.includes("webdock") ||
+    toolName.includes("domain") ||
+    toolName.includes("warmup") ||
+    toolName.includes("email") ||
+    toolName.includes("smtp")
+  ) {
+    return "api";
+  }
+  return "audit";
+}
+
+function canvasActionEventForTool(input: {
+  taskId: string;
+  toolName: string;
+  kind: CanvasLiveActionKind;
+  phase: "requested" | "completed" | "failed";
+  result?: ToolUseResult;
+  durationMs?: number;
+  occurredAt: string;
+}): CanvasLiveActionNowEvent {
+  const status = canvasStatusForToolPhase(input.phase, input.result);
+  const durationMs = Math.max(0, input.durationMs ?? 0);
+  if (input.kind === "file") {
+    return {
+      type: "oc.action.now",
+      taskId: input.taskId,
+      kind: "file",
+      operation: input.phase === "requested" ? "read" : input.phase,
+      path: `openclaw-tool:${input.toolName}`,
+      preview: `tool ${input.toolName} ${input.phase}`,
+      occurredAt: input.occurredAt
+    };
+  }
+  if (input.kind === "command") {
+    return {
+      type: "oc.action.now",
+      taskId: input.taskId,
+      kind: "command",
+      cmd: `openclaw-tool ${input.toolName}`,
+      exitCode: input.result && !input.result.ok ? 1 : 0,
+      stdout: input.phase === "requested" ? "requested" : "completed",
+      stderr: input.result && !input.result.ok ? String(input.result.error ?? "tool_failed").slice(0, 500) : "",
+      durationMs,
+      progressDetail: `tool ${input.toolName} ${input.phase}`,
+      occurredAt: input.occurredAt
+    };
+  }
+  if (input.kind === "audit") {
+    return {
+      type: "oc.action.now",
+      taskId: input.taskId,
+      kind: "audit",
+      action: `oc.tool_use.${input.phase}`,
+      targetType: "openclaw_tool",
+      targetId: input.toolName,
+      riskLevel: input.result && !input.result.ok ? "medium" : "low",
+      occurredAt: input.occurredAt
+    };
+  }
+  return {
+    type: "oc.action.now",
+    taskId: input.taskId,
+    kind: "api",
+    method: "POST",
+    url: `/v1/openclaw/tools/${encodeURIComponent(input.toolName)}`,
+    status,
+    durationMs,
+    responseBytes: estimatedToolResultBytes(input.result),
+    responseBody: canvasToolResultSummary(input.result, input.phase),
+    occurredAt: input.occurredAt
+  };
+}
+
+function canvasStatusForToolPhase(phase: "requested" | "completed" | "failed", result?: ToolUseResult): number {
+  if (phase === "requested") return 102;
+  if (result?.statusCode && Number.isInteger(result.statusCode)) return result.statusCode;
+  return phase === "failed" || (result && !result.ok) ? 424 : 200;
+}
+
+function canvasToolResultSummary(result: ToolUseResult | undefined, phase: "requested" | "completed" | "failed"): Record<string, unknown> {
+  if (!result) {
+    return { phase };
+  }
+  return {
+    phase,
+    ok: result.ok,
+    ...(result.status ? { status: result.status } : {}),
+    ...(result.statusCode === undefined ? {} : { statusCode: result.statusCode }),
+    ...(result.proposalId ? { proposalId: result.proposalId } : {}),
+    ...(result.ok ? {} : { error: result.error })
+  };
+}
+
+function estimatedToolResultBytes(result: ToolUseResult | undefined): number {
+  if (!result) return 0;
+  return Buffer.byteLength(JSON.stringify(canvasToolResultSummary(result, result.ok ? "completed" : "failed")), "utf8");
 }
 
 function enrichToolResultForModel(

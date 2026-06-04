@@ -10,6 +10,7 @@ SCREEN_FILE="${RUNTIME_DIR}/admin-panel.screen"
 SCREEN_NAME="${ADMIN_PANEL_SCREEN:-delivrix-admin}"
 HOST="${ADMIN_PANEL_HOST:-127.0.0.1}"
 PORT="${ADMIN_PANEL_PORT:-5173}"
+NODE_BIN_DIR="${NODE_BIN_DIR:-}"
 TODAY="$(date +%Y-%m-%d)"
 LOG_FILE="${LOG_DIR}/admin-panel-${TODAY}.log"
 CURRENT_LOG="${LOG_DIR}/admin-panel.log"
@@ -44,7 +45,41 @@ stop_admin_pid() {
   return 1
 }
 
-if screen -ls 2>/dev/null | grep -q "[.]${SCREEN_NAME}[[:space:]]"; then
+load_admin_proxy_env() {
+  local env_file="$1"
+  [[ -f "${env_file}" ]] || return 0
+
+  local line key value
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "${line//[[:space:]]/}" || "${line}" =~ ^[[:space:]]*# ]] && continue
+    [[ "${line}" == *"="* ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    case "${key}" in
+      ADMIN_PANEL_GATEWAY_ORIGIN|CANVAS_LIVE_STREAM_TOKEN|GATEWAY_LOG_STREAM_TOKEN|DELIVRIX_READ_BOUNDARY_TOKEN|DELIVRIX_OPENCLAW_TOKEN|OPENCLAW_GATEWAY_TOKEN|VITE_CANVAS_LIVE_STREAM_TOKEN|VITE_GATEWAY_LOG_STREAM_TOKEN|VITE_DELIVRIX_READ_BOUNDARY_TOKEN|VITE_DELIVRIX_OPENCLAW_TOKEN)
+        if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
+          value="${value:1:${#value}-2}"
+        fi
+        export "${key}=${value}"
+        ;;
+    esac
+  done < "${env_file}"
+}
+
+load_admin_proxy_env "${ROOT_DIR}/.env.local"
+
+if [[ -z "${NODE_BIN_DIR}" ]]; then
+  if [[ -x "${HOME}/.nvm/versions/node/v24.15.0/bin/node" ]]; then
+    NODE_BIN_DIR="${HOME}/.nvm/versions/node/v24.15.0/bin"
+  else
+    NODE_BIN_DIR="$(dirname "$(command -v node)")"
+  fi
+fi
+
+if screen -ls 2>/dev/null | grep -q "[.]${SCREEN_NAME}"; then
   echo "Stopping previous ${SCREEN_NAME} screen..."
   screen -X -S "${SCREEN_NAME}" quit 2>/dev/null || true
   sleep 1
@@ -81,12 +116,24 @@ ln -sfn "$(basename "${LOG_FILE}")" "${CURRENT_LOG}"
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] starting admin-panel on http://${HOST}:${PORT}"
   echo "root=${ROOT_DIR}"
   echo "log=${LOG_FILE}"
+  echo "node_bin=${NODE_BIN_DIR}"
 } >> "${LOG_FILE}"
 
-printf -v start_cmd 'cd %q && npm run dev >> %q 2>&1' "${APP_DIR}" "${LOG_FILE}"
+printf -v start_cmd 'export PATH=%q:"$PATH"; export ADMIN_PANEL_HOST=%q; export ADMIN_PANEL_PORT=%q; cd %q && exec npm run dev >> %q 2>&1' "${NODE_BIN_DIR}" "${HOST}" "${PORT}" "${APP_DIR}" "${LOG_FILE}"
 screen -dmS "${SCREEN_NAME}" bash -lc "${start_cmd}"
 echo "${SCREEN_NAME}" > "${SCREEN_FILE}"
 
+admin_pid=""
+for _ in {1..30}; do
+  admin_pid="$(lsof -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
+  if [[ -n "${admin_pid}" ]]; then
+    echo "${admin_pid}" > "${PID_FILE}"
+    break
+  fi
+  sleep 0.2
+done
+
 echo "Admin panel screen: ${SCREEN_NAME}"
+echo "Admin panel PID: ${admin_pid:-pending}"
 echo "URL: http://${HOST}:${PORT}/"
 echo "Log: ${CURRENT_LOG}"

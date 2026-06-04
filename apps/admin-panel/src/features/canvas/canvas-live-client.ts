@@ -56,6 +56,11 @@ interface InternalState {
   artifactToTask: Map<string, string>;
 }
 
+interface LocationLike {
+  protocol: string;
+  host: string;
+}
+
 function emptyState(): InternalState {
   return {
     tasks: new Map(),
@@ -222,7 +227,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
       try {
         const res = await fetch(STATE_ENDPOINT, {
           method: "GET",
-          headers: { accept: "application/json" },
+          headers: canvasLiveRequestHeaders(),
           cache: "no-store",
           signal: request.controller.signal
         });
@@ -274,12 +279,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
 
     function openSocket() {
       try {
-        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const url = new URL(`${protocol}//${window.location.host}${STREAM_PATH}`);
-        if (STREAM_TOKEN) {
-          url.searchParams.set("token", STREAM_TOKEN);
-        }
-        const ws = new WebSocket(url);
+        const ws = new WebSocket(buildCanvasLiveStreamUrl(window.location));
         socketRef.current = ws;
         ws.addEventListener("open", () => {
           if (cancelledRef.current) return;
@@ -540,6 +540,21 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
 /* ============================================================
  * Adapters: Codex shape → LiveTool shape
  * ============================================================ */
+
+export function buildCanvasLiveStreamUrl(location: LocationLike, streamToken = STREAM_TOKEN): string {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = new URL(`${protocol}//${location.host}${STREAM_PATH}`);
+  if (streamToken) {
+    url.searchParams.set("token", streamToken);
+  }
+  return url.toString();
+}
+
+export function canvasLiveRequestHeaders(streamToken = STREAM_TOKEN): HeadersInit {
+  return streamToken
+    ? { accept: "application/json", authorization: `Bearer ${streamToken}` }
+    : { accept: "application/json" };
+}
 
 function taskFromSnapshot(t: CanvasLiveTaskSnapshotWire): LiveTask {
   return {

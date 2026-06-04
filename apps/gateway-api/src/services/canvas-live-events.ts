@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
+import { redactRuntimeLogSecrets } from "../gateway-runtime-log.ts";
 import type {
   CanvasLiveActionNowEvent,
   CanvasLiveArtifactBlockEvent,
@@ -25,6 +26,11 @@ import type {
 const defaultStateDir = "state/canvas-live";
 const tasksFileName = "tasks.jsonl";
 const artifactsFileName = "artifacts.jsonl";
+const defaultWebSocketHeartbeatIntervalMs = 30_000;
+const maxCanvasTextChars = 8_000;
+const maxCanvasValueArrayItems = 50;
+const maxCanvasValueObjectKeys = 80;
+const maxCanvasValueDepth = 5;
 
 export interface CanvasLiveEventClient {
   sendJson(event: CanvasLiveEvent): void;
@@ -40,6 +46,7 @@ export interface CanvasLiveEventServiceOptions {
   stateDir?: string;
   now?: () => Date;
   streamToken?: string;
+  heartbeatIntervalMs?: number;
 }
 
 export interface CanvasLiveArtifactDecisionRecord {
@@ -61,6 +68,7 @@ export class CanvasLiveEventService {
   private readonly stateDir: string;
   private readonly now: () => Date;
   private readonly streamToken: string;
+  private readonly heartbeatIntervalMs: number;
   private readonly clients = new Set<ClientEntry>();
   private readonly tasks = new Map<string, CanvasLiveTaskSnapshot>();
   private readonly artifacts = new Map<string, CanvasLiveArtifactSnapshot>();
@@ -72,6 +80,7 @@ export class CanvasLiveEventService {
     this.stateDir = resolve(options.stateDir ?? process.env.CANVAS_LIVE_STATE_DIR ?? defaultStateDir);
     this.now = options.now ?? (() => new Date());
     this.streamToken = options.streamToken ?? process.env.CANVAS_LIVE_STREAM_TOKEN ?? process.env.DELIVRIX_READ_BOUNDARY_TOKEN ?? process.env.OPENCLAW_GATEWAY_TOKEN ?? "";
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? defaultWebSocketHeartbeatIntervalMs;
   }
 
   async emit(rawEvent: unknown): Promise<CanvasLiveEvent> {
@@ -316,7 +325,7 @@ export class CanvasLiveEventService {
             this.clients.delete(candidate);
           }
         }
-      }),
+      }, this.heartbeatIntervalMs),
       ...(taskId ? { taskId } : {})
     };
     this.clients.add(entry);
@@ -666,11 +675,11 @@ function normalizeActionNowEvent(raw: Record<string, unknown>, now: () => Date):
       taskId,
       kind: "api",
       method: requiredString(raw.method, "method").toUpperCase(),
-      url: requiredString(raw.url, "url"),
+      url: redactCanvasLiveText(requiredString(raw.url, "url"), 1_000),
       status: positiveInteger(raw.status, "status"),
       durationMs: nonNegativeInteger(raw.durationMs, "durationMs"),
       responseBytes: nonNegativeInteger(raw.responseBytes, "responseBytes"),
-      ...(raw.responseBody === undefined ? {} : { responseBody: raw.responseBody }),
+      ...(raw.responseBody === undefined ? {} : { responseBody: redactCanvasLiveValue(raw.responseBody) }),
       ...(isRecord(raw.next) ? { next: normalizeActionNext(raw.next) } : {}),
       occurredAt
     };
@@ -680,10 +689,10 @@ function normalizeActionNowEvent(raw: Record<string, unknown>, now: () => Date):
       type: "oc.action.now",
       taskId,
       kind: "file",
-      operation: requiredString(raw.operation, "operation"),
-      path: requiredString(raw.path, "path"),
-      ...(typeof raw.diffSummary === "string" ? { diffSummary: raw.diffSummary } : {}),
-      ...(typeof raw.preview === "string" ? { preview: raw.preview } : {}),
+      operation: redactCanvasLiveText(requiredString(raw.operation, "operation"), 120),
+      path: redactCanvasLiveText(requiredString(raw.path, "path"), 2_000),
+      ...(typeof raw.diffSummary === "string" ? { diffSummary: redactCanvasLiveText(raw.diffSummary, maxCanvasTextChars) } : {}),
+      ...(typeof raw.preview === "string" ? { preview: redactCanvasLiveText(raw.preview, maxCanvasTextChars) } : {}),
       occurredAt
     };
   }
@@ -692,12 +701,12 @@ function normalizeActionNowEvent(raw: Record<string, unknown>, now: () => Date):
       type: "oc.action.now",
       taskId,
       kind: "command",
-      cmd: requiredString(raw.cmd, "cmd"),
+      cmd: redactCanvasLiveText(requiredString(raw.cmd, "cmd"), 2_000),
       exitCode: Number.isInteger(raw.exitCode) ? Number(raw.exitCode) : 0,
-      stdout: typeof raw.stdout === "string" ? raw.stdout : "",
-      stderr: typeof raw.stderr === "string" ? raw.stderr : "",
+      stdout: typeof raw.stdout === "string" ? redactCanvasLiveText(raw.stdout, maxCanvasTextChars) : "",
+      stderr: typeof raw.stderr === "string" ? redactCanvasLiveText(raw.stderr, maxCanvasTextChars) : "",
       durationMs: nonNegativeInteger(raw.durationMs, "durationMs"),
-      ...(typeof raw.progressDetail === "string" ? { progressDetail: raw.progressDetail } : {}),
+      ...(typeof raw.progressDetail === "string" ? { progressDetail: redactCanvasLiveText(raw.progressDetail, 1_000) } : {}),
       occurredAt
     };
   }
@@ -706,9 +715,9 @@ function normalizeActionNowEvent(raw: Record<string, unknown>, now: () => Date):
       type: "oc.action.now",
       taskId,
       kind: "audit",
-      action: requiredString(raw.action, "action"),
-      targetType: requiredString(raw.targetType, "targetType"),
-      targetId: requiredString(raw.targetId, "targetId"),
+      action: redactCanvasLiveText(requiredString(raw.action, "action"), 200),
+      targetType: redactCanvasLiveText(requiredString(raw.targetType, "targetType"), 200),
+      targetId: redactCanvasLiveText(requiredString(raw.targetId, "targetId"), 500),
       riskLevel: normalizeRiskLevel(raw.riskLevel),
       occurredAt
     };
@@ -723,13 +732,47 @@ function normalizeActionNext(raw: Record<string, unknown>) {
   }
   return {
     kind,
-    ...(typeof raw.method === "string" ? { method: raw.method.toUpperCase() } : {}),
-    ...(typeof raw.url === "string" ? { url: raw.url } : {}),
-    ...(typeof raw.context === "string" ? { context: raw.context } : {}),
-    ...(typeof raw.operation === "string" ? { operation: raw.operation } : {}),
-    ...(typeof raw.path === "string" ? { path: raw.path } : {}),
-    ...(typeof raw.cmd === "string" ? { cmd: raw.cmd } : {})
+    ...(typeof raw.method === "string" ? { method: redactCanvasLiveText(raw.method.toUpperCase(), 40) } : {}),
+    ...(typeof raw.url === "string" ? { url: redactCanvasLiveText(raw.url, 1_000) } : {}),
+    ...(typeof raw.context === "string" ? { context: redactCanvasLiveText(raw.context, 1_000) } : {}),
+    ...(typeof raw.operation === "string" ? { operation: redactCanvasLiveText(raw.operation, 120) } : {}),
+    ...(typeof raw.path === "string" ? { path: redactCanvasLiveText(raw.path, 2_000) } : {}),
+    ...(typeof raw.cmd === "string" ? { cmd: redactCanvasLiveText(raw.cmd, 2_000) } : {})
   };
+}
+
+function redactCanvasLiveValue(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") {
+    return redactCanvasLiveText(value, maxCanvasTextChars);
+  }
+  if (typeof value === "number" || typeof value === "boolean" || value === null) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (depth >= maxCanvasValueDepth) {
+      return "[REDACTED_DEPTH_LIMIT]";
+    }
+    return value.slice(0, maxCanvasValueArrayItems).map((item) => redactCanvasLiveValue(item, depth + 1));
+  }
+  if (isRecord(value)) {
+    if (depth >= maxCanvasValueDepth) {
+      return "[REDACTED_DEPTH_LIMIT]";
+    }
+    const normalized: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value).slice(0, maxCanvasValueObjectKeys)) {
+      normalized[key] = isSensitiveCanvasKey(key) ? "[REDACTED]" : redactCanvasLiveValue(item, depth + 1);
+    }
+    return normalized;
+  }
+  return String(value);
+}
+
+function redactCanvasLiveText(value: string, maxChars: number): string {
+  return redactRuntimeLogSecrets(value).slice(0, maxChars);
+}
+
+function isSensitiveCanvasKey(key: string): boolean {
+  return /authorization|bearer|cookie|password|passwd|secret|token|session[_-]?token|api[_-]?key|access[_-]?key|private[_-]?key|signature|hmac|nonce/i.test(key);
 }
 
 function eventTaskId(event: CanvasLiveEvent, artifacts: Map<string, CanvasLiveArtifactSnapshot>): string | undefined {
@@ -746,24 +789,43 @@ class RawCanvasLiveWebSocketClient implements CanvasLiveEventClient {
   private closed = false;
   private readonly socket: Socket;
   private readonly onClose: (client: CanvasLiveEventClient) => void;
+  private readonly heartbeatIntervalMs: number;
+  private readonly heartbeatTimer: NodeJS.Timeout | null;
+  private lastPongAt = Date.now();
 
   constructor(
     socket: Socket,
-    onClose: (client: CanvasLiveEventClient) => void
+    onClose: (client: CanvasLiveEventClient) => void,
+    heartbeatIntervalMs: number
   ) {
     this.socket = socket;
     this.onClose = onClose;
+    this.heartbeatIntervalMs = heartbeatIntervalMs;
+    this.heartbeatTimer = heartbeatIntervalMs > 0
+      ? setInterval(() => this.sendPing(), heartbeatIntervalMs)
+      : null;
+    this.heartbeatTimer?.unref?.();
     socket.on("data", (chunk: Buffer) => {
       if (hasCloseFrame(chunk)) {
         this.close();
+        return;
+      }
+      if (hasPingFrame(chunk)) {
+        this.socket.write(encodeWebSocketPongFrame());
+        return;
+      }
+      if (hasPongFrame(chunk)) {
+        this.lastPongAt = Date.now();
       }
     });
     socket.on("close", () => {
       this.closed = true;
+      this.clearHeartbeat();
       this.onClose(this);
     });
     socket.on("error", () => {
       this.closed = true;
+      this.clearHeartbeat();
       this.onClose(this);
     });
   }
@@ -776,7 +838,27 @@ class RawCanvasLiveWebSocketClient implements CanvasLiveEventClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.clearHeartbeat();
     this.socket.end(encodeWebSocketCloseFrame());
+  }
+
+  private sendPing(): void {
+    if (this.closed) return;
+    if (this.heartbeatIntervalMs > 0 && Date.now() - this.lastPongAt > this.heartbeatIntervalMs * 4) {
+      this.close();
+      return;
+    }
+    try {
+      this.socket.write(encodeWebSocketPingFrame());
+    } catch {
+      this.close();
+    }
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+    }
   }
 }
 
@@ -786,6 +868,14 @@ function encodeWebSocketTextFrame(text: string): Buffer {
 
 function encodeWebSocketCloseFrame(): Buffer {
   return encodeWebSocketFrame(0x8, Buffer.alloc(0));
+}
+
+function encodeWebSocketPingFrame(): Buffer {
+  return encodeWebSocketFrame(0x9, Buffer.alloc(0));
+}
+
+function encodeWebSocketPongFrame(): Buffer {
+  return encodeWebSocketFrame(0x0a, Buffer.alloc(0));
 }
 
 function encodeWebSocketFrame(opcode: number, payload: Buffer): Buffer {
@@ -809,6 +899,14 @@ function encodeWebSocketFrame(opcode: number, payload: Buffer): Buffer {
 
 function hasCloseFrame(chunk: Buffer): boolean {
   return (chunk[0] & 0x0f) === 0x8;
+}
+
+function hasPingFrame(chunk: Buffer): boolean {
+  return (chunk[0] & 0x0f) === 0x09;
+}
+
+function hasPongFrame(chunk: Buffer): boolean {
+  return (chunk[0] & 0x0f) === 0x0a;
 }
 
 function isWebSocketUpgrade(request: IncomingMessage): boolean {
