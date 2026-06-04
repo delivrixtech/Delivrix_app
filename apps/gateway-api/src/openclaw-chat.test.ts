@@ -184,6 +184,49 @@ test("OpenClaw chat stream stays connected when local continuity fallback is ena
   ]);
 });
 
+test("OpenClaw local continuity fallback surfaces project runtime diagnostics in Canvas", async () => {
+  const audit = new MemoryAudit();
+  const canvas = new MemoryCanvas();
+  const fetchImpl = async () => new Response("<html>login</html>", {
+    status: 200,
+    headers: { "content-type": "text/html" }
+  });
+  const proxy = new OpenClawChatProxy(audit, {
+    agentHttpUrl: "http://openclaw.test:61175",
+    gatewayToken: "secret-gateway-token",
+    fetchImpl: fetchImpl as typeof fetch,
+    canvasLiveEvents: canvas,
+    localFallbackEnabled: true,
+    now: () => new Date("2026-06-04T12:14:26.437Z")
+  });
+
+  const response = await proxy.sendOperatorMessage({
+    msgId: "fallback-project-001",
+    message: "vamos a continuar corriendo el proyecto"
+  });
+
+  assert.equal(response.queued, true);
+  assert.equal(response.assistant?.source, "delivrix.project_runtime_diagnostics");
+  assert.match(response.assistant?.content ?? "", /Diagnostico local del proyecto/);
+  assert.deepEqual(response.assistant?.skillsInvoked, [
+    "delivrix.project_runtime_diagnostics",
+    "delivrix.gateway_local_continuity"
+  ]);
+
+  const actions = canvas.events.filter((event): event is Extract<CanvasLiveEvent, { type: "oc.action.now" }> => event.type === "oc.action.now");
+  assert.equal(actions.length, 4);
+  assert.ok(actions.some((event) => event.kind === "api" && event.url === "/v1/openclaw/chat/stream"));
+  assert.ok(actions.some((event) => event.kind === "command" && event.cmd === "local-continuity:verify-openclaw-contract"));
+  assert.ok(actions.some((event) => event.kind === "audit" && event.action === "oc.chat.local_fallback"));
+
+  const healthAction = actions.find((event) => event.kind === "api" && event.url === "/health");
+  assert.ok(healthAction);
+  assert.equal(actions.at(-1), healthAction);
+  assert.equal((healthAction.responseBody as { continuity?: string }).continuity, "local_fallback_active");
+  assert.equal((healthAction.responseBody as { openClawRemoteReason?: string }).openClawRemoteReason, "openclaw_chat_send_invalid_response");
+  assert.ok(canvas.events.some((event) => event.type === "oc.task.update" && event.status === "completed"));
+});
+
 test("OpenClaw local continuity fallback answers VPS intents with real gates", async () => {
   const audit = new MemoryAudit();
   const fetchImpl = async () => new Response("<html>login</html>", {
