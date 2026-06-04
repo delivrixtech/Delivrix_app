@@ -6,6 +6,7 @@ import type {
   AwsRoute53ResourceRecordSet
 } from "../../../../packages/adapters/src/index.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import { smtpHostForDomain } from "../smtp-naming.ts";
 
 export interface Route53ZonePolicyAdapter {
   createHostedZone(domain: string): Promise<AwsRoute53HostedZoneResult>;
@@ -34,6 +35,7 @@ export interface Route53ZoneResolution {
   zone: AwsRoute53HostedZoneResult;
   status: "created" | "reused";
   source: "aws-single" | "aws-disambiguated" | "workspace-verified" | "created";
+  smtpSetup?: Route53SmtpSetupKind;
   cleanupSuggested?: Array<{
     zoneId: string;
     name: string;
@@ -42,6 +44,7 @@ export interface Route53ZoneResolution {
 }
 
 export type Route53ZoneResolveMode = "reuse-or-create" | "reuse-only";
+export type Route53SmtpSetupKind = "canonical" | "legacy" | "missing";
 
 export class Route53ZonePolicyError extends Error {
   readonly code: string;
@@ -94,7 +97,7 @@ export async function resolveRoute53HostedZone(input: {
   }
 
   const workspaceZone = await findWorkspaceZone(input.workspace, domain);
-  if (workspaceZone) {
+  if (workspaceZone && domainZones.length <= 1) {
     const verified = domainZones.find((zone) => normalizeHostedZoneId(zone.zoneId) === normalizeHostedZoneId(workspaceZone.zoneId));
     if (verified) {
       const zone = await zoneResultWithNameservers(input.adapter, domain, {
@@ -148,15 +151,17 @@ export async function resolveRoute53HostedZone(input: {
 
   const candidates = await Promise.all(domainZones.map(async (zone) => {
     const records = await input.adapter.listResourceRecordSets(zone.zoneId);
+    const smtpSetup = classifyRoute53SmtpRecords(records, domain);
     return {
       zone,
-      hasApexMailRecords: hasApexMailRecords(records, domain),
+      smtpSetup,
       recordCount: records.length
     };
   }));
-  const mailReady = candidates.filter((candidate) => candidate.hasApexMailRecords);
-  if (mailReady.length === 1) {
-    const selected = mailReady[0].zone;
+  const canonicalReady = candidates.filter((candidate) => candidate.smtpSetup.kind === "canonical");
+  const legacyReady = candidates.filter((candidate) => candidate.smtpSetup.kind === "legacy");
+  if (canonicalReady.length === 1) {
+    const selected = canonicalReady[0].zone;
     const zone = await zoneResultWithNameservers(input.adapter, domain, selected);
     await rememberRoute53Zone(input.workspace, {
       domain,
@@ -167,6 +172,23 @@ export async function resolveRoute53HostedZone(input: {
       zone,
       status: "reused",
       source: "aws-disambiguated",
+      smtpSetup: "canonical",
+      cleanupSuggested: duplicateCleanup(domainZones, zone.zoneId)
+    };
+  }
+  if (canonicalReady.length === 0 && legacyReady.length === 1) {
+    const selected = legacyReady[0].zone;
+    const zone = await zoneResultWithNameservers(input.adapter, domain, selected);
+    await rememberRoute53Zone(input.workspace, {
+      domain,
+      zone,
+      updatedAt: (input.now?.() ?? new Date()).toISOString()
+    });
+    return {
+      zone,
+      status: "reused",
+      source: "aws-disambiguated",
+      smtpSetup: "legacy",
       cleanupSuggested: duplicateCleanup(domainZones, zone.zoneId)
     };
   }
@@ -176,7 +198,8 @@ export async function resolveRoute53HostedZone(input: {
     candidates: candidates.map((candidate) => ({
       zoneId: candidate.zone.zoneId,
       name: candidate.zone.name,
-      hasApexMailRecords: candidate.hasApexMailRecords,
+      smtpSetup: candidate.smtpSetup.kind,
+      targetHost: candidate.smtpSetup.targetHost,
       recordCount: candidate.recordCount
     })),
     cleanupSuggested: duplicateCleanup(domainZones, null)
@@ -189,10 +212,12 @@ export async function requireRoute53ZoneWithApexMailRecords(input: {
   zone: AwsRoute53HostedZoneResult;
 }): Promise<AwsRoute53ResourceRecordSet[]> {
   const records = await input.adapter.listResourceRecordSets(input.zone.zoneId);
-  if (!hasApexMailRecords(records, input.domain)) {
-    throw new Route53ZonePolicyError("zone_missing_apex_a_mx", "Route53 destination zone is not safe for registrar realignment because A and MX records are not both present.", {
+  const smtpSetup = classifyRoute53SmtpRecords(records, input.domain);
+  if (smtpSetup.kind === "missing") {
+    throw new Route53ZonePolicyError("zone_missing_smtp_a_mx", "Route53 destination zone is not safe for registrar realignment because SMTP A and MX records are not both present.", {
       domain: normalizeDomainName(input.domain),
       zoneId: input.zone.zoneId,
+      smtpSetup,
       recordTypes: records.map((record) => ({ name: record.name, type: record.type }))
     });
   }
@@ -245,22 +270,54 @@ export function normalizeRoute53Nameservers(values: string[]): string[] {
   return values.map(normalizeNameserver).filter(Boolean).sort();
 }
 
-function hasApexMailRecords(records: AwsRoute53ResourceRecordSet[], domain: string): boolean {
+export function classifyRoute53SmtpRecords(
+  records: AwsRoute53ResourceRecordSet[],
+  domain: string
+): { kind: Route53SmtpSetupKind; targetHost?: string; legacyKind?: "mail" | "apex"; hasTargetA: boolean; hasTargetMx: boolean } {
   const apex = `${normalizeDomainName(domain)}.`;
+  const smtp = `${smtpHostForDomain(domain)}.`;
   const mail = `mail.${normalizeDomainName(domain)}.`;
-  const hasMailA = records.some((record) => record.type === "A" && record.name.toLowerCase() === mail && record.values.length > 0);
-  const hasMailMx = records.some((record) =>
-    record.type === "MX" &&
-    record.name.toLowerCase() === apex &&
-    record.values.some((value) => normalizeMxValue(value) === `10 ${mail}`)
-  );
-  const hasApexA = records.some((record) => record.type === "A" && record.name.toLowerCase() === apex && record.values.length > 0);
-  const hasApexMx = records.some((record) =>
-    record.type === "MX" &&
-    record.name.toLowerCase() === apex &&
-    record.values.some((value) => normalizeMxValue(value) === `10 ${apex}`)
-  );
-  return (hasMailA && hasMailMx) || (hasApexA && hasApexMx);
+  const canonical = setupForTarget(records, apex, smtp);
+  if (canonical.hasTargetA && canonical.hasTargetMx) {
+    return { kind: "canonical", targetHost: smtp, ...canonical };
+  }
+
+  const legacyMail = setupForTarget(records, apex, mail);
+  if (legacyMail.hasTargetA && legacyMail.hasTargetMx) {
+    return { kind: "legacy", targetHost: mail, legacyKind: "mail", ...legacyMail };
+  }
+
+  const legacyApex = setupForTarget(records, apex, apex);
+  if (legacyApex.hasTargetA && legacyApex.hasTargetMx) {
+    return { kind: "legacy", targetHost: apex, legacyKind: "apex", ...legacyApex };
+  }
+
+  const attemptedSmtp = canonical.hasTargetA || canonical.hasTargetMx;
+  return {
+    kind: "missing",
+    targetHost: attemptedSmtp ? smtp : undefined,
+    hasTargetA: canonical.hasTargetA,
+    hasTargetMx: canonical.hasTargetMx
+  };
+}
+
+function setupForTarget(
+  records: AwsRoute53ResourceRecordSet[],
+  apex: string,
+  targetHost: string
+): { hasTargetA: boolean; hasTargetMx: boolean } {
+  return {
+    hasTargetA: records.some((record) =>
+      record.type === "A" &&
+      record.name.toLowerCase() === targetHost &&
+      record.values.length > 0
+    ),
+    hasTargetMx: records.some((record) =>
+      record.type === "MX" &&
+      record.name.toLowerCase() === apex &&
+      record.values.some((value) => normalizeMxValue(value) === `10 ${targetHost}`)
+    )
+  };
 }
 
 async function zoneResultWithNameservers(

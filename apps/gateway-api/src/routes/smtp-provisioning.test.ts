@@ -42,6 +42,25 @@ test("buildSmtpProvisionPlan writes DKIM key through stdin and keeps audit comma
   assert.equal(plan.some((step) => step.label === "attempt-certbot"), true);
 });
 
+test("buildSmtpProvisionPlan uses smtp host for mailname, HELO, hostname and TLS", () => {
+  const plan = buildSmtpProvisionPlan({
+    domain: "delivrix-mail.com",
+    serverIp: "192.0.2.44",
+    selector: "default",
+    dkimPrivateKey
+  });
+
+  const mailname = plan.find((step) => step.label === "write-mailname");
+  const mainCf = plan.find((step) => step.label === "write-postfix-main-cf");
+  const certbot = plan.find((step) => step.label === "attempt-certbot");
+
+  assert.equal(mailname?.stdin, "smtp.delivrix-mail.com\n");
+  assert.match(mainCf?.stdin ?? "", /myhostname = smtp\.delivrix-mail\.com/);
+  assert.match(mainCf?.stdin ?? "", /smtp_helo_name = smtp\.delivrix-mail\.com/);
+  assert.doesNotMatch(mainCf?.stdin ?? "", /mail\.delivrix-mail\.com/);
+  assert.match(certbot?.command ?? "", /smtp\.delivrix-mail\.com/);
+});
+
 test("POST /v1/servers/:slug/provision-smtp blocks without SSH flag, runner, approval, server IP, and DKIM key", async () => {
   const route = await routeHarness({
     sshRunner: mockRunner({ isConfigured: () => false }),

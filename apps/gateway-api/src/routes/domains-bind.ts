@@ -36,6 +36,7 @@ import {
   Route53ZonePolicyError,
   type Route53ZoneResolution
 } from "./route53-zone-policy.ts";
+import { smtpHostForDomain } from "../smtp-naming.ts";
 
 export interface DomainBindDnsAdapter {
   isLive(): boolean;
@@ -254,7 +255,7 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
       domain,
       serverSlug,
       serverIp: serverIp!,
-      mxHost: `mail.${domain}`,
+      mxHost: smtpHostForDomain(domain),
       zoneId: zoneId!,
       status: "pending_propagation",
       updatedAt: (deps.now?.() ?? new Date()).toISOString(),
@@ -275,6 +276,7 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
           zoneResolution: {
             status: zoneResolution.status,
             source: zoneResolution.source,
+            smtpSetup: zoneResolution.smtpSetup ?? null,
             cleanupSuggested: zoneResolution.cleanupSuggested ?? []
           }
         } : {}),
@@ -307,6 +309,7 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
           zoneResolution: {
             status: zoneResolution.status,
             source: zoneResolution.source,
+            smtpSetup: zoneResolution.smtpSetup ?? null,
             cleanupSuggested: zoneResolution.cleanupSuggested ?? []
           }
         } : {}),
@@ -326,7 +329,7 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
       domain,
       serverSlug,
       serverIp,
-      mxHost: `mail.${domain}`,
+      mxHost: smtpHostForDomain(domain),
       changes: changes.map((change) => ({
         name: change.name,
         type: change.type,
@@ -403,9 +406,10 @@ export function handleDomainBindError(error: unknown, response: ServerResponse):
 }
 
 export function buildDomainBindRecords(domain: string, serverIp: string): AwsRoute53DnsRecordInput[] {
+  const smtpHost = smtpHostForDomain(domain);
   return [
     {
-      name: `mail.${domain}.`,
+      name: `${smtpHost}.`,
       type: "A",
       ttl: 300,
       values: [serverIp]
@@ -414,7 +418,7 @@ export function buildDomainBindRecords(domain: string, serverIp: string): AwsRou
       name: `${domain}.`,
       type: "MX",
       ttl: 300,
-      values: [`10 mail.${domain}.`]
+      values: [`10 ${smtpHost}.`]
     }
   ];
 }

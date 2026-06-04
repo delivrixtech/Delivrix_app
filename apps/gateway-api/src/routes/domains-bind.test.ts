@@ -29,10 +29,10 @@ import {
 
 const fixedNow = new Date("2026-05-28T10:00:00.000Z");
 
-test("buildDomainBindRecords creates mail A and root MX records", () => {
+test("buildDomainBindRecords creates canonical smtp A and root MX records", () => {
   assert.deepEqual(buildDomainBindRecords("delivrix-mail.com", "192.0.2.44"), [
     {
-      name: "mail.delivrix-mail.com.",
+      name: "smtp.delivrix-mail.com.",
       type: "A",
       ttl: 300,
       values: ["192.0.2.44"]
@@ -41,7 +41,7 @@ test("buildDomainBindRecords creates mail A and root MX records", () => {
       name: "delivrix-mail.com.",
       type: "MX",
       ttl: 300,
-      values: ["10 mail.delivrix-mail.com."]
+      values: ["10 smtp.delivrix-mail.com."]
     }
   ]);
 });
@@ -115,9 +115,10 @@ test("POST /v1/domains/bind upserts MX and A records from workspace inventory", 
   assert.equal(response.body.status, "pending_propagation");
   assert.equal(response.body.serverIp, "192.0.2.44");
   assert.deepEqual(upserts.map((record) => [record.name, record.type]), [
-    ["mail.delivrix-mail.com.", "A"],
+    ["smtp.delivrix-mail.com.", "A"],
     ["delivrix-mail.com.", "MX"]
   ]);
+  assert.equal(response.body.mxHost, "smtp.delivrix-mail.com");
 
   const events = await route.auditLog.list();
   assert.equal(events.at(-1)?.action, "oc.domain.bound_to_server");

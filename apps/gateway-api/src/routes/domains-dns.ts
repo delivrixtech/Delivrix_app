@@ -293,6 +293,7 @@ export async function handleRoute53DnsUpsertHttp(
         zoneResolution: {
           status: zoneResolution.status,
           source: zoneResolution.source,
+          smtpSetup: zoneResolution.smtpSetup ?? null,
           cleanupSuggested: zoneResolution.cleanupSuggested ?? []
         },
         learningCount: learnings.length
@@ -324,6 +325,7 @@ export async function handleRoute53DnsUpsertHttp(
         zoneResolution: {
           status: zoneResolution.status,
           source: zoneResolution.source,
+          smtpSetup: zoneResolution.smtpSetup ?? null,
           cleanupSuggested: zoneResolution.cleanupSuggested ?? []
         },
         approvalToken,
@@ -357,6 +359,7 @@ export async function handleRoute53DnsUpsertHttp(
       zoneResolution: {
         status: zoneResolution.status,
         source: zoneResolution.source,
+        smtpSetup: zoneResolution.smtpSetup ?? null,
         cleanupSuggested: zoneResolution.cleanupSuggested ?? []
       },
       changes: changes.map((change) => ({

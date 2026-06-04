@@ -16,6 +16,7 @@ import {
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import type { SkillParamSchema } from "../skill-schemas.ts";
+import { smtpHostForDomain } from "../smtp-naming.ts";
 
 export interface BindWebdockMainDomainParams extends Record<string, unknown> {
   serverSlug: string;
@@ -232,10 +233,11 @@ export async function handleBindWebdockMainDomain(input: {
     ptrSkipReason = "ipv4_missing";
   } else {
     try {
+      const ptrValue = smtpHostForDomain(params.domain);
       const ptr = await input.deps.webdockAdapter.setServerPtr({
         serverSlug: params.serverSlug,
         ipv4: server.ipv4,
-        ptrValue: params.domain
+        ptrValue
       });
       if (ptr.supported && ptr.ok) {
         ptrSet = true;

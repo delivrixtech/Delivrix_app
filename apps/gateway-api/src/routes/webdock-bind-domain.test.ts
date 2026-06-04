@@ -16,16 +16,16 @@ import {
 
 const fixedNowMs = Date.parse("2026-05-31T19:30:00.000Z");
 
-test("bind_webdock_main_domain binds hostname and PTR", async () => {
-  const calls: Array<{ method: string; domain?: string }> = [];
+test("bind_webdock_main_domain binds hostname and canonical smtp PTR", async () => {
+  const calls: Array<{ method: string; domain?: string; ptrValue?: string }> = [];
   const harness = routeHarness({
     adapter: adapterMock({
       setServerMainDomain: async (opts) => {
         calls.push({ method: "main", domain: opts.domain });
         return { ok: true, previousMainDomain: "old.example.com", raw: {} };
       },
-      setServerPtr: async () => {
-        calls.push({ method: "ptr" });
+      setServerPtr: async (opts) => {
+        calls.push({ method: "ptr", ptrValue: opts.ptrValue });
         return { ok: true, supported: true, raw: {} };
       }
     })
@@ -38,6 +38,7 @@ test("bind_webdock_main_domain binds hostname and PTR", async () => {
   assert.equal(response.body.ptrSet, true);
   assert.equal(response.body.alreadyBound, false);
   assert.deepEqual(calls.map((call) => call.method), ["main", "ptr"]);
+  assert.equal(calls.find((call) => call.method === "ptr")?.ptrValue, "smtp.example.com");
   assert.equal(harness.auditEvents.at(-1)?.action, "oc.webdock.main_domain_bound");
 });
 

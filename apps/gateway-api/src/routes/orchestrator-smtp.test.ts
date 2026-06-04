@@ -142,21 +142,29 @@ test("configureCompleteSmtp fails when no domain candidates are returned", async
   assert.equal(result.error, "no_domain_candidate");
 });
 
-test("create_webdock_server uses the root chosen domain as hostname", async () => {
+test("create_webdock_server uses canonical smtp host as hostname", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);
   const step4 = ctx.approvals.find((entry) => entry.step === 4);
-  assert.equal(step4?.params.hostname, "delivrixops.com");
+  assert.equal(step4?.params.hostname, "smtp.delivrixops.com");
 });
 
-test("route53 DNS step includes A and MX records", async () => {
+test("route53 DNS step writes canonical smtp A and MX records", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);
   const step7 = ctx.approvals.find((entry) => entry.step === 7);
   assert.deepEqual(step7?.params.records, [
-    { name: "delivrixops.com", type: "A", ttl: 300, values: ["203.0.113.10"] },
-    { name: "delivrixops.com", type: "MX", ttl: 300, values: ["10 delivrixops.com."] }
+    { name: "smtp.delivrixops.com", type: "A", ttl: 300, values: ["203.0.113.10"] },
+    { name: "delivrixops.com", type: "MX", ttl: 300, values: ["10 smtp.delivrixops.com."] }
   ]);
+});
+
+test("DNS A propagation waits on canonical smtp host", async () => {
+  const ctx = createDeps();
+  await configureCompleteSmtp(validInput(), ctx.deps);
+  const step8 = ctx.approvals.find((entry) => entry.step === 8);
+  assert.equal(step8?.params.domain, "smtp.delivrixops.com");
+  assert.deepEqual(step8?.params.expectedRecord, { type: "A", value: "203.0.113.10" });
 });
 
 test("SMTP provisioning includes server, domain, IP and DKIM selector", async () => {
@@ -375,7 +383,7 @@ test("configureCompleteSmtp adopts a signed existing Route53-owned domain not in
   assert.equal(result.status, "completed");
   assert.equal(ctx.ownershipChecks[0], "controldelivrix.app");
   assert.equal(ctx.planExecutions.find((entry) => entry.step === 2)?.estimatedCostUsd, 0);
-  assert.equal(ctx.planExecutions.find((entry) => entry.step === 4)?.params.hostname, "controldelivrix.app");
+  assert.equal(ctx.planExecutions.find((entry) => entry.step === 4)?.params.hostname, "smtp.controldelivrix.app");
   assert.equal(result.totalCostUsd, 0);
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.domain.ownership_verified"), true);
 });
