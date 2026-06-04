@@ -573,6 +573,11 @@ export class OpenClawChatProxy {
 
   addPanelClient(client: OpenClawChatPanelClient): void {
     this.clients.add(client);
+    if (this.localFallbackEnabled) {
+      this.state = "connected";
+      client.sendJson({ type: "HEARTBEAT", at: this.now().toISOString() });
+      return;
+    }
     if ((this.bridgeKind === "ssh" || this.bridgeKind === "bedrock") && this.sshBridge) {
       this.state = "connected";
       client.sendJson({ type: "HEARTBEAT", at: this.now().toISOString() });

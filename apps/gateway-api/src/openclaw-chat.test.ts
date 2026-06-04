@@ -167,6 +167,23 @@ test("OpenClaw chat send uses local continuity fallback when enabled", async () 
   assert.equal(fallbackAudit?.metadata.upstreamErrorCode, "openclaw_chat_send_invalid_response");
 });
 
+test("OpenClaw chat stream stays connected when local continuity fallback is enabled", () => {
+  const audit = new MemoryAudit();
+  const client = new MemoryPanelClient();
+  const proxy = new OpenClawChatProxy(audit, {
+    gatewayToken: "secret-gateway-token",
+    localFallbackEnabled: true,
+    now: () => new Date("2026-06-04T12:00:00.000Z")
+  });
+
+  proxy.addPanelClient(client);
+
+  assert.equal(proxy.connectionState, "connected");
+  assert.deepEqual(client.events, [
+    { type: "HEARTBEAT", at: "2026-06-04T12:00:00.000Z" }
+  ]);
+});
+
 test("OpenClaw local continuity fallback answers VPS intents with real gates", async () => {
   const audit = new MemoryAudit();
   const fetchImpl = async () => new Response("<html>login</html>", {
