@@ -4840,6 +4840,21 @@ server.on("upgrade", (request, socket, head) => {
   });
 });
 
+server.on("error", (error: NodeJS.ErrnoException) => {
+  const code = error.code ?? "UNKNOWN";
+  console.error(`[gateway] FATAL listen failed on http://${host}:${port} (${code}): ${error.message}`);
+  void gatewayRuntimeLog
+    .error("gateway.listen_failed", "Gateway failed to bind the listen socket.", {
+      ...runtimeErrorMetadata(error),
+      code,
+      host,
+      port
+    })
+    .finally(() => {
+      process.exit(1);
+    });
+});
+
 server.listen(port, host, () => {
   console.log(`gateway-api listening on http://${host}:${port}`);
   void gatewayRuntimeLog.info("gateway.started", "Gateway API is listening.", {
