@@ -3,6 +3,8 @@ import { after, test } from "node:test";
 import { createServer, type ViteDevServer } from "vite";
 
 interface CanvasLiveClientModule {
+  buildCanvasLiveStreamUrl: (location: { protocol: string; host: string }, streamToken?: string) => string;
+  canvasLiveRequestHeaders: (streamToken?: string) => HeadersInit;
   createSnapshotRequestGate: () => {
     begin: () => {
       controller: AbortController;
@@ -54,4 +56,24 @@ test("snapshot request gate abortCurrent invalidates the active request", async 
 
   assert.equal(request.controller.signal.aborted, true);
   assert.equal(request.isCurrent(), false);
+});
+
+test("canvas live client appends stream token and bearer snapshot header", async () => {
+  const { buildCanvasLiveStreamUrl, canvasLiveRequestHeaders } = await loadModule();
+
+  assert.equal(
+    buildCanvasLiveStreamUrl({ protocol: "http:", host: "127.0.0.1:5173" }, "canvas-token"),
+    "ws://127.0.0.1:5173/v1/canvas/live/stream?token=canvas-token"
+  );
+  assert.equal(
+    buildCanvasLiveStreamUrl({ protocol: "https:", host: "panel.delivrix.test" }, ""),
+    "wss://panel.delivrix.test/v1/canvas/live/stream"
+  );
+  assert.deepEqual(canvasLiveRequestHeaders("canvas-token"), {
+    accept: "application/json",
+    authorization: "Bearer canvas-token"
+  });
+  assert.deepEqual(canvasLiveRequestHeaders(""), {
+    accept: "application/json"
+  });
 });

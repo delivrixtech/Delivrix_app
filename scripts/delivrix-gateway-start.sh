@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME_DIR="${ROOT_DIR}/runtime"
 LOG_DIR="${RUNTIME_DIR}/logs"
 PID_FILE="${RUNTIME_DIR}/gateway.pid"
+SCREEN_FILE="${RUNTIME_DIR}/gateway.screen"
+SCREEN_NAME="${GATEWAY_SCREEN:-delivrix-gateway}"
 HOST="${GATEWAY_HOST:-127.0.0.1}"
 PORT="${GATEWAY_PORT:-3000}"
 TODAY="$(date +%Y-%m-%d)"
@@ -41,6 +43,12 @@ stop_gateway_pid() {
   return 1
 }
 
+if screen -ls 2>/dev/null | grep -q "[.]${SCREEN_NAME}"; then
+  echo "Stopping previous ${SCREEN_NAME} screen..."
+  screen -X -S "${SCREEN_NAME}" quit 2>/dev/null || true
+  sleep 1
+fi
+
 if [[ -f "${PID_FILE}" ]]; then
   existing_pid="$(tr -d '[:space:]' < "${PID_FILE}")"
   if [[ "${existing_pid}" =~ ^[0-9]+$ ]] && is_alive "${existing_pid}"; then
@@ -49,6 +57,7 @@ if [[ -f "${PID_FILE}" ]]; then
   fi
   rm -f "${PID_FILE}"
 fi
+rm -f "${SCREEN_FILE}"
 
 port_pid="$(lsof -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
 if [[ -n "${port_pid}" ]]; then
@@ -74,11 +83,21 @@ ln -sfn "$(basename "${LOG_FILE}")" "${CURRENT_LOG}"
 } >> "${LOG_FILE}"
 
 cd "${ROOT_DIR}"
-nohup node --env-file=.env.local apps/gateway-api/src/main.ts >> "${LOG_FILE}" 2>&1 < /dev/null &
-gateway_pid="$!"
-disown "${gateway_pid}" 2>/dev/null || true
-echo "${gateway_pid}" > "${PID_FILE}"
+printf -v start_cmd 'cd %q && exec node --env-file=.env.local apps/gateway-api/src/main.ts >> %q 2>&1' "${ROOT_DIR}" "${LOG_FILE}"
+screen -dmS "${SCREEN_NAME}" bash -lc "${start_cmd}"
+echo "${SCREEN_NAME}" > "${SCREEN_FILE}"
 
-echo "Gateway PID: ${gateway_pid}"
+gateway_pid=""
+for _ in {1..30}; do
+  gateway_pid="$(lsof -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null | head -n 1 || true)"
+  if [[ -n "${gateway_pid}" ]]; then
+    echo "${gateway_pid}" > "${PID_FILE}"
+    break
+  fi
+  sleep 0.2
+done
+
+echo "Gateway screen: ${SCREEN_NAME}"
+echo "Gateway PID: ${gateway_pid:-pending}"
 echo "Health: http://${HOST}:${PORT}/health"
 echo "Log: ${CURRENT_LOG}"

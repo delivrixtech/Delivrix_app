@@ -5,10 +5,23 @@ import { defineConfig, type Plugin } from "vite";
 import { READ_ENDPOINTS, type ReadEndpoint } from "./src/shared/api/read-boundary.ts";
 
 const gatewayOrigin = process.env.ADMIN_PANEL_GATEWAY_ORIGIN ?? "http://127.0.0.1:3000";
-const allowedProxyPaths = new Set(Object.values(READ_ENDPOINTS));
 const chatSendPath = "/v1/openclaw/chat/send";
 const chatStreamPath = "/v1/openclaw/chat/stream";
+const canvasLiveStatePath = "/v1/canvas/live/state";
+const canvasLiveStreamPath = "/v1/canvas/live/stream";
 const gatewayLogStreamPath = "/v1/gateway/logs/stream";
+const canvasLiveProxyToken =
+  process.env.CANVAS_LIVE_STREAM_TOKEN ??
+  process.env.DELIVRIX_READ_BOUNDARY_TOKEN ??
+  process.env.OPENCLAW_GATEWAY_TOKEN ??
+  "";
+const gatewayLogProxyToken =
+  process.env.GATEWAY_LOG_STREAM_TOKEN ??
+  process.env.DELIVRIX_OPENCLAW_TOKEN ??
+  process.env.DELIVRIX_READ_BOUNDARY_TOKEN ??
+  process.env.OPENCLAW_GATEWAY_TOKEN ??
+  "";
+const allowedProxyPaths = new Set([...Object.values(READ_ENDPOINTS), canvasLiveStatePath]);
 const allowedReadPatterns: RegExp[] = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/status$/
 ];
@@ -59,7 +72,8 @@ export default defineConfig({
       "/v1": {
         target: gatewayOrigin,
         changeOrigin: false,
-        ws: true
+        ws: true,
+        rewrite: rewriteGatewayProxyPath
       }
     }
   },
@@ -128,7 +142,7 @@ function readOnlyProxyBoundary(): Plugin {
         // el middleware lo ve como GET con header Upgrade).
         const isCanvasLiveStream =
           request.method === "GET" &&
-          requestUrl.pathname === "/v1/canvas/live/stream";
+          requestUrl.pathname === canvasLiveStreamPath;
 
         if (!isProxyPath) {
           next();
@@ -174,6 +188,23 @@ function readOnlyProxyBoundary(): Plugin {
       });
     }
   };
+}
+
+function rewriteGatewayProxyPath(pathnameWithSearch: string): string {
+  const url = new URL(pathnameWithSearch, "http://127.0.0.1");
+  if (url.pathname === canvasLiveStreamPath) {
+    appendTokenIfMissing(url, canvasLiveProxyToken);
+  }
+  if (url.pathname === gatewayLogStreamPath) {
+    appendTokenIfMissing(url, gatewayLogProxyToken);
+  }
+  return `${url.pathname}${url.search}`;
+}
+
+function appendTokenIfMissing(url: URL, token: string): void {
+  if (token && !url.searchParams.has("token")) {
+    url.searchParams.set("token", token);
+  }
 }
 
 function writeJson(response: ServerResponse, statusCode: number, payload: unknown) {

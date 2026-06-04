@@ -119,7 +119,7 @@ export function redactRuntimeLogSecrets(value: string): string {
     .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED_AWS_ACCESS_KEY]")
     .replace(/\bauthorization\b\s*[:=]\s*Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Authorization: Bearer [REDACTED]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-    .replace(/\b(password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)\b\s*[:=]\s*("[^"]+"|'[^']+'|[^\s,;]+)/gi, "$1=[REDACTED]");
+    .replace(/\b(password|passwd|secret|token|session[_-]?token|api[_-]?key|access[_-]?key|private[_-]?key|signature|hmac)\b\s*[:=]\s*("[^"]+"|'[^']+'|[^\s,;]+)/gi, "$1=[REDACTED]");
 }
 
 function normalizeMetadata(metadata: GatewayRuntimeLogMetadata): GatewayRuntimeLogMetadata {
@@ -159,7 +159,7 @@ function normalizeEventName(value: string): string {
 }
 
 function isSensitiveKey(key: string): boolean {
-  return /token|secret|password|private[_-]?key|access[_-]?key|api[_-]?key|authorization/i.test(key);
+  return /token|secret|password|private[_-]?key|access[_-]?key|api[_-]?key|authorization|signature|hmac|nonce/i.test(key);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

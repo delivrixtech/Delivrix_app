@@ -288,6 +288,7 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   const payloads: Array<Record<string, unknown>> = [];
   const toolCalls: unknown[] = [];
   const auditEvents: Array<{ action: string; targetId: string; metadata: Record<string, unknown> }> = [];
+  const canvasEvents: Array<Record<string, unknown>> = [];
   const bridge = new OpenClawBedrockBridge({
     accessKeyId: "test-access",
     secretAccessKey: "test-secret",
@@ -306,12 +307,18 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
         return event;
       }
     },
+    canvasLiveEvents: {
+      async emit(event) {
+        canvasEvents.push(event as Record<string, unknown>);
+        return event;
+      }
+    },
     processToolUse: async (input) => {
       toolCalls.push(input);
       return {
         ok: true,
         status: "executed",
-        result: { ok: true, proposalId: "proposal-1" },
+        result: { ok: true, proposalId: "proposal-1", token: "secret-result-token" },
         proposalId: "proposal-1",
         signatureId: "sig-1"
       };
@@ -401,6 +408,22 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   assert.equal(done?.content, "Dominio aprobado y ejecutado.");
   assert.deepEqual(done?.audit?.skillsInvoked, ["openclaw-bedrock-direct", "register_domain_route53"]);
   assert.equal(done?.audit?.tokensUsed, 46);
+  assert.deepEqual(canvasEvents.map((event) => event.type), [
+    "oc.task.declare",
+    "oc.action.now",
+    "oc.action.now",
+    "oc.action.now",
+    "oc.task.update"
+  ]);
+  assert.equal(canvasEvents[0].taskId, "bedrock:msg-tool-1");
+  assert.equal(canvasEvents[0].status, "running");
+  assert.equal(canvasEvents[1].kind, "api");
+  assert.deepEqual((canvasEvents[1] as { responseBody?: unknown }).responseBody, { phase: "requested" });
+  assert.equal(canvasEvents[2].kind, "api");
+  assert.equal((canvasEvents[2] as { responseBody?: { proposalId?: string } }).responseBody?.proposalId, "proposal-1");
+  assert.equal(canvasEvents[3].kind, "audit");
+  assert.equal(canvasEvents[4].status, "completed");
+  assert.doesNotMatch(JSON.stringify(canvasEvents), /secret-result-token/);
 });
 
 test("createOpenClawBedrockBridgeFromEnv requires bedrock mode and critical env vars", () => {

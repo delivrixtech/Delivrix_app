@@ -39,6 +39,7 @@ interface TerminalLine {
 }
 
 const STREAM_PATH = "/v1/gateway/logs/stream";
+const STREAM_TOKEN = import.meta.env.VITE_GATEWAY_LOG_STREAM_TOKEN || import.meta.env.VITE_DELIVRIX_OPENCLAW_TOKEN || "";
 const MAX_LINES = 1_000;
 
 export function GatewayLogTerminal() {
@@ -350,10 +351,17 @@ function IconButton({
   );
 }
 
-function gatewayLogStreamUrl(level: LogLevel): string {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+export function gatewayLogStreamUrl(
+  level: LogLevel,
+  location: Pick<Location, "protocol" | "host"> = window.location,
+  streamToken = STREAM_TOKEN
+): string {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const search = new URLSearchParams({ level });
-  return `${protocol}//${window.location.host}${STREAM_PATH}?${search.toString()}`;
+  if (streamToken) {
+    search.set("token", streamToken);
+  }
+  return `${protocol}//${location.host}${STREAM_PATH}?${search.toString()}`;
 }
 
 function formatTime(value: string): string {

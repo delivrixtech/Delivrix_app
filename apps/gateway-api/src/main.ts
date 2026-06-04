@@ -342,13 +342,14 @@ const ipReputationReportStore = new LocalFileIpReputationReportStore();
 const backupSimulationStore = new LocalFileBackupSimulationStore();
 const safetyRealtimeCache = new SafetyRealtimeCache();
 const learningRealtimeCache = new SafetyRealtimeCache();
+const canvasLiveEvents = new CanvasLiveEventService();
 const openClawBedrockBridge = createOpenClawBedrockBridgeFromEnv(process.env, {
   logger: gatewayRuntimeLog,
-  auditLog
+  auditLog,
+  canvasLiveEvents
 });
 const openClawSshBridge = openClawBedrockBridge ? null : createOpenClawSshBridgeFromEnv();
 const openClawChatBridge = openClawBedrockBridge ?? openClawSshBridge;
-const canvasLiveEvents = new CanvasLiveEventService();
 const episodicScratchPool = new Pool({
   connectionString: process.env.POSTGRES_URL ?? defaultPostgresUrl,
   application_name: "delivrix-openclaw-episodic-scratch"

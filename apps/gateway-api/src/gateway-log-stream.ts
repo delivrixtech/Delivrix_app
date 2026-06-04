@@ -43,6 +43,7 @@ export interface GatewayLogStreamOptions {
   backlogLines?: number;
   maxQueuedFrames?: number;
   maxReadBytes?: number;
+  heartbeatIntervalMs?: number;
 }
 
 interface GatewayLogClient {
@@ -52,6 +53,7 @@ interface GatewayLogClient {
 }
 
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const defaultWebSocketHeartbeatIntervalMs = 30_000;
 const levelRank: Record<GatewayLogLevel, number> = {
   info: 0,
   warn: 1,
@@ -67,6 +69,7 @@ export class GatewayLogStreamService {
   private readonly backlogLines: number;
   private readonly maxQueuedFrames: number;
   private readonly maxReadBytes: number;
+  private readonly heartbeatIntervalMs: number;
   private readonly clients = new Set<GatewayLogClient>();
   private pollTimer: NodeJS.Timeout | null = null;
   private pollInFlight = false;
@@ -75,13 +78,19 @@ export class GatewayLogStreamService {
 
   constructor(options: GatewayLogStreamOptions = {}) {
     this.logPath = resolve(options.logPath ?? process.env.GATEWAY_LOG_PATH ?? "runtime/logs/gateway.log");
-    this.authToken = options.authToken ?? process.env.GATEWAY_LOG_STREAM_TOKEN ?? process.env.DELIVRIX_OPENCLAW_TOKEN ?? "";
+    this.authToken = options.authToken ??
+      process.env.GATEWAY_LOG_STREAM_TOKEN ??
+      process.env.DELIVRIX_OPENCLAW_TOKEN ??
+      process.env.DELIVRIX_READ_BOUNDARY_TOKEN ??
+      process.env.OPENCLAW_GATEWAY_TOKEN ??
+      "";
     this.requireToken = options.requireToken ?? true;
     this.now = options.now ?? (() => new Date());
     this.pollIntervalMs = options.pollIntervalMs ?? 500;
     this.backlogLines = options.backlogLines ?? 200;
     this.maxQueuedFrames = options.maxQueuedFrames ?? 5_000;
     this.maxReadBytes = options.maxReadBytes ?? 512 * 1024;
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? defaultWebSocketHeartbeatIntervalMs;
   }
 
   acceptPanelSocket(request: IncomingMessage, socket: Socket, head?: Buffer): void {
@@ -113,7 +122,7 @@ export class GatewayLogStreamService {
 
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const minLevel = normalizeGatewayLogLevel(url.searchParams.get("level"));
-    const client = new RawGatewayLogWebSocketClient(socket, minLevel, this.maxQueuedFrames, (closedClient) => {
+    const client = new RawGatewayLogWebSocketClient(socket, minLevel, this.maxQueuedFrames, this.heartbeatIntervalMs, (closedClient) => {
       this.clients.delete(closedClient);
       this.stopWatchingWhenIdle();
     });
@@ -325,7 +334,10 @@ export function isGatewayLogStreamRequestAuthorized(
     return false;
   }
 
-  const supplied = bearerToken(request.headers.authorization) ?? tokenQueryParam(request.url) ?? headerValue(request.headers["x-delivrix-openclaw-token"]);
+  const supplied = bearerToken(request.headers.authorization) ??
+    tokenQueryParam(request.url) ??
+    headerValue(request.headers["x-delivrix-openclaw-token"]) ??
+    headerValue(request.headers["x-delivrix-token"]);
   return typeof supplied === "string" && safeTokenEqual(supplied, authToken);
 }
 
@@ -367,7 +379,7 @@ export function redactGatewayLogSecrets(value: string): string {
     .replace(/\bauthorization\b\s*[:=]\s*Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Authorization: Bearer [REDACTED]")
     .replace(/\bauthorization\b\s*[:=]\s*(?!Bearer\s+\[REDACTED\])("[^"]+"|'[^']+'|[^\s,;]+)/gi, "Authorization=[REDACTED]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-    .replace(/\b(password|passwd|secret|token|api[_-]?key|access[_-]?key)\b\s*[:=]\s*("[^"]+"|'[^']+'|[^\s,;]+)/gi, "$1=[REDACTED]");
+    .replace(/\b(password|passwd|secret|token|session[_-]?token|api[_-]?key|access[_-]?key|private[_-]?key|signature|hmac)\b\s*[:=]\s*("[^"]+"|'[^']+'|[^\s,;]+)/gi, "$1=[REDACTED]");
 }
 
 function normalizeGatewayLogLevel(value: string | null): GatewayLogLevel {
@@ -415,6 +427,9 @@ class RawGatewayLogWebSocketClient implements GatewayLogClient {
   private blocked = false;
   private readonly socket: Socket;
   private readonly maxQueuedFrames: number;
+  private readonly heartbeatIntervalMs: number;
+  private readonly heartbeatTimer: NodeJS.Timeout | null;
+  private lastPongAt = Date.now();
   private readonly queue: Buffer[] = [];
   private readonly onClose: (client: GatewayLogClient) => void;
 
@@ -422,15 +437,29 @@ class RawGatewayLogWebSocketClient implements GatewayLogClient {
     socket: Socket,
     minLevel: GatewayLogLevel,
     maxQueuedFrames: number,
+    heartbeatIntervalMs: number,
     onClose: (client: GatewayLogClient) => void
   ) {
     this.socket = socket;
     this.minLevel = minLevel;
     this.maxQueuedFrames = maxQueuedFrames;
+    this.heartbeatIntervalMs = heartbeatIntervalMs;
     this.onClose = onClose;
+    this.heartbeatTimer = heartbeatIntervalMs > 0
+      ? setInterval(() => this.sendPing(), heartbeatIntervalMs)
+      : null;
+    this.heartbeatTimer?.unref?.();
     socket.on("data", (chunk: Buffer) => {
       if (hasCloseFrame(chunk)) {
         this.close();
+        return;
+      }
+      if (hasPingFrame(chunk)) {
+        this.socket.write(encodeWebSocketPongFrame());
+        return;
+      }
+      if (hasPongFrame(chunk)) {
+        this.lastPongAt = Date.now();
       }
     });
     socket.on("drain", () => {
@@ -438,10 +467,12 @@ class RawGatewayLogWebSocketClient implements GatewayLogClient {
     });
     socket.on("close", () => {
       this.closed = true;
+      this.clearHeartbeat();
       this.onClose(this);
     });
     socket.on("error", () => {
       this.closed = true;
+      this.clearHeartbeat();
       this.onClose(this);
     });
   }
@@ -463,7 +494,29 @@ class RawGatewayLogWebSocketClient implements GatewayLogClient {
       return;
     }
     this.closed = true;
+    this.clearHeartbeat();
     this.socket.end(encodeWebSocketCloseFrame());
+  }
+
+  private sendPing(): void {
+    if (this.closed) {
+      return;
+    }
+    if (this.heartbeatIntervalMs > 0 && Date.now() - this.lastPongAt > this.heartbeatIntervalMs * 4) {
+      this.close();
+      return;
+    }
+    try {
+      this.socket.write(encodeWebSocketPingFrame());
+    } catch {
+      this.close();
+    }
+  }
+
+  private clearHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+    }
   }
 
   private enqueue(frame: Buffer): void {
@@ -499,6 +552,14 @@ function encodeWebSocketCloseFrame(): Buffer {
   return encodeWebSocketFrame(0x8, Buffer.alloc(0));
 }
 
+function encodeWebSocketPingFrame(): Buffer {
+  return encodeWebSocketFrame(0x9, Buffer.alloc(0));
+}
+
+function encodeWebSocketPongFrame(): Buffer {
+  return encodeWebSocketFrame(0x0a, Buffer.alloc(0));
+}
+
 function encodeWebSocketFrame(opcode: number, payload: Buffer): Buffer {
   const length = payload.length;
   if (length < 126) {
@@ -520,6 +581,14 @@ function encodeWebSocketFrame(opcode: number, payload: Buffer): Buffer {
 
 function hasCloseFrame(chunk: Buffer): boolean {
   return (chunk[0] & 0x0f) === 0x8;
+}
+
+function hasPingFrame(chunk: Buffer): boolean {
+  return (chunk[0] & 0x0f) === 0x09;
+}
+
+function hasPongFrame(chunk: Buffer): boolean {
+  return (chunk[0] & 0x0f) === 0x0a;
 }
 
 function isWebSocketUpgrade(request: IncomingMessage): boolean {
