@@ -66,6 +66,7 @@ import {
   configureCompleteSmtpSkillParamSchema,
   emailAuthParamSchema,
   ionosUpsertParamSchema,
+  route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
   route53UpsertParamSchema,
   smtpProvisionParamSchema,
@@ -79,6 +80,10 @@ import {
   handleConfigureCompleteSmtp,
   type ConfigureCompleteSmtpDeps
 } from "./routes/orchestrator-smtp.ts";
+import {
+  handleDomainNameserverUpdateHttp,
+  type DomainNameserverRegistrarAdapter
+} from "./routes/domain-nameservers.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -101,7 +106,7 @@ export interface SkillDispatcherDeps {
   auditLog: AuditSink;
   workspace: OpenClawWorkspace;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
-  domainPurchaseAdapter: Route53DomainPurchaseAdapter;
+  domainPurchaseAdapter: Route53DomainPurchaseAdapter & Partial<DomainNameserverRegistrarAdapter>;
   route53DnsAdapter: Route53DnsAdapter & EmailAuthDnsAdapter;
   ionosDnsAdapter: IonosDnsUpsertAdapter;
   webdockAdapter: WebdockServerCreateAdapter & Partial<BindWebdockMainDomainAdapter>;
@@ -314,6 +319,34 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         readCanvasState: deps.readCanvasState,
         now: deps.now
       })
+  };
+  const route53NameserverUpdate: SkillHandlerEntry = {
+    paramSchema: route53NameserverUpdateParamSchema,
+    timeoutMs: 60_000,
+    canRollback: false,
+    invoke: ({ request, response, deps }) => {
+      if (
+        typeof deps.domainPurchaseAdapter.isNameserverUpdateEnabled !== "function" ||
+        typeof deps.domainPurchaseAdapter.getDomainNameservers !== "function" ||
+        typeof deps.domainPurchaseAdapter.updateDomainNameservers !== "function"
+      ) {
+        response.writeHead(503, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "route53_nameserver_adapter_missing" }));
+        return Promise.resolve();
+      }
+      return handleDomainNameserverUpdateHttp({
+        request,
+        response,
+        auditLog: deps.auditLog,
+        registrarAdapter: deps.domainPurchaseAdapter as DomainNameserverRegistrarAdapter,
+        dnsAdapter: deps.route53DnsAdapter,
+        workspace: deps.workspace,
+        canvasLiveEvents: deps.canvasLiveEvents,
+        readCanvasState: deps.readCanvasState,
+        readKillSwitch: async () => await deps.readKillSwitch?.() ?? { enabled: true },
+        now: deps.now
+      });
+    }
   };
   const ionosDns: SkillHandlerEntry = {
     paramSchema: ionosUpsertParamSchema,
@@ -537,6 +570,8 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     naming_suggest: suggestSafeDomain,
     upsert_dns_route53: route53Dns,
     route53_dns_upsert: route53Dns,
+    update_domain_nameservers: route53NameserverUpdate,
+    route53_domain_nameservers_update: route53NameserverUpdate,
     upsert_dns_ionos: ionosDns,
     ionos_dns_upsert: ionosDns,
     create_webdock_server: webdockCreate,

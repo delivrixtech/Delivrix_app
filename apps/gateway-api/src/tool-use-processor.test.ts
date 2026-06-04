@@ -44,6 +44,42 @@ test("processToolUse submits a validated proposal and returns executed tool_resu
   assert.equal(calls.length, 1);
 });
 
+test("processToolUse submits update_domain_nameservers through ApprovalGate", async () => {
+  const calls: any[] = [];
+  const result = await processToolUse({
+    toolUseId: "toolu-ns-update",
+    toolName: "update_domain_nameservers",
+    toolInput: {
+      domain: "controldelivrix.app",
+      zoneId: "Z03595092JW2AXJBZGN4E",
+      nameservers: ["ns-1.awsdns.com", "ns-2.awsdns.net"]
+    },
+    chatSession: { id: "agent:main:operator", msgId: "msg-ns" },
+    env: enabledEnv(),
+    deps: memoryDeps({
+      calls,
+      decision: {
+        status: "executed",
+        proposalId: "proposal-ns",
+        ok: true,
+        signatureId: "sig-ns",
+        outcome: { ok: true, operationId: "op-ns-123" },
+        durationMs: 30,
+        statusCode: 200
+      }
+    })
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].toolName, "update_domain_nameservers");
+  assert.deepEqual(calls[0].params.nameservers, ["ns-1.awsdns.com", "ns-2.awsdns.net"]);
+  assert.deepEqual(
+    buildProposalPayloadFromToolUse(calls[0]).proposal.delivrix_actions_required,
+    ["update_domain_nameservers"]
+  );
+});
+
 test("processToolUse rejects unknown tool names before submission", async () => {
   const calls: unknown[] = [];
   const result = await processToolUse({
@@ -976,6 +1012,7 @@ function enabledEnv(): Record<string, string | undefined> {
     AWS_ACCESS_KEY_ID: "test-access",
     AWS_SECRET_ACCESS_KEY: "test-secret",
     AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE: "true",
+    AWS_ROUTE53_DOMAINS_ENABLE_NAMESERVER_UPDATES: "true",
     AWS_ROUTE53_DNS_ENABLE_WRITES: "true",
     IONOS_DNS_ENABLE_WRITES: "true",
     IONOS_API_TOKEN: "ionos-token",

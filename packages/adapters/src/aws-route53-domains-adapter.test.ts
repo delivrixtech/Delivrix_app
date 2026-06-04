@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   AwsRoute53DomainsAdapter,
   parseAwsRoute53Domains,
+  parseAwsRoute53Nameservers,
   parseAwsRoute53Prices,
   parseAwsRoute53Suggestions,
   signAwsJsonRequest
@@ -288,6 +289,79 @@ test("AwsRoute53DomainsAdapter blocks registerDomain when purchase flag is off",
   assert.equal(fetchCalled, false);
 });
 
+test("AwsRoute53DomainsAdapter updates domain nameservers with SigV4 JSON request", async () => {
+  const calls: Array<{ target: string; body: Record<string, unknown> }> = [];
+  const adapter = new AwsRoute53DomainsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    nameserverUpdatesEnabled: true,
+    fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string>;
+      calls.push({
+        target: headers["x-amz-target"],
+        body: JSON.parse(init?.body?.toString() ?? "{}")
+      });
+      return jsonResponse({ OperationId: "op-ns-123" });
+    }) as typeof fetch,
+    now: () => new Date("2026-05-25T18:00:00.000Z")
+  });
+
+  const result = await adapter.updateDomainNameservers("Delivrix-Mail.COM.", [
+    "ns-2.awsdns.net.",
+    "ns-1.awsdns.com",
+    "ns-1.awsdns.com"
+  ]);
+
+  assert.deepEqual(result, { operationId: "op-ns-123" });
+  assert.equal(calls[0].target, "Route53Domains_v20140515.UpdateDomainNameservers");
+  assert.deepEqual(calls[0].body, {
+    DomainName: "delivrix-mail.com",
+    Nameservers: [
+      { Name: "ns-2.awsdns.net" },
+      { Name: "ns-1.awsdns.com" }
+    ]
+  });
+});
+
+test("AwsRoute53DomainsAdapter blocks nameserver update when flag is off", async () => {
+  let fetchCalled = false;
+  const adapter = new AwsRoute53DomainsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    nameserverUpdatesEnabled: false,
+    fetchImpl: (async () => {
+      fetchCalled = true;
+      return jsonResponse({ OperationId: "should-not-run" });
+    }) as typeof fetch,
+    now: () => new Date("2026-05-25T18:00:00.000Z")
+  });
+
+  await assert.rejects(
+    adapter.updateDomainNameservers("delivrix-mail.com", ["ns-1.awsdns.com", "ns-2.awsdns.net"]),
+    /nameserver updates are disabled/
+  );
+  assert.equal(fetchCalled, false);
+});
+
+test("AwsRoute53DomainsAdapter reads domain nameservers", async () => {
+  const adapter = new AwsRoute53DomainsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+      assert.equal((init?.headers as Record<string, string>)["x-amz-target"], "Route53Domains_v20140515.GetDomainDetail");
+      return jsonResponse({
+        Nameservers: [{ Name: "ns-1.awsdns.com" }, { Name: "ns-2.awsdns.net" }]
+      });
+    }) as typeof fetch,
+    now: () => new Date("2026-05-25T18:00:00.000Z")
+  });
+
+  assert.deepEqual(await adapter.getDomainNameservers("delivrix-mail.com"), [
+    "ns-1.awsdns.com",
+    "ns-2.awsdns.net"
+  ]);
+});
+
 test("AwsRoute53DomainsAdapter paginates unfiltered prices", async () => {
   const payloads: unknown[] = [];
   const adapter = new AwsRoute53DomainsAdapter({
@@ -350,6 +424,9 @@ test("parse helpers accept Route53 Domains API shapes", () => {
     domainName: "examplehq.com",
     availability: "AVAILABLE"
   }]);
+  assert.deepEqual(parseAwsRoute53Nameservers({
+    Nameservers: [{ Name: "ns-1.awsdns.com" }, { Name: "" }]
+  }), [{ name: "ns-1.awsdns.com" }]);
 });
 
 test("signAwsJsonRequest produces deterministic SigV4 headers", () => {

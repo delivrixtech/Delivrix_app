@@ -8,7 +8,10 @@ import test from "node:test";
 import type {
   AwsRoute53DnsChangeResult,
   AwsRoute53DnsRecordInput,
-  AwsRoute53DnsSource
+  AwsRoute53DnsSource,
+  AwsRoute53HostedZoneResult,
+  AwsRoute53HostedZoneSummary,
+  AwsRoute53ResourceRecordSet
 } from "../../../../packages/adapters/src/index.ts";
 import type {
   CanvasLiveEvent,
@@ -126,6 +129,49 @@ test("POST /v1/domains/bind upserts MX and A records from workspace inventory", 
   assert.equal(inventory?.bindings[0].serverSlug, "mail-delivrix-test");
   assert.equal(inventory?.bindings[0].status, "pending_propagation");
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "api"));
+});
+
+test("POST /v1/domains/bind resolves Route53 zone from AWS fallback when workspace inventory is empty", async () => {
+  const upsertZones: string[] = [];
+  const route = await routeHarness({
+    dnsAdapter: mockDnsAdapter({
+      isLive: () => true,
+      isWriteEnabled: () => true,
+      listHostedZones: async () => [{
+        zoneId: "ZAWSFALLBACK1",
+        name: "delivrix-mail.com.",
+        nameServers: ["ns-1.awsdns.com"]
+      }],
+      upsertRecord: async (zoneId, record) => {
+        upsertZones.push(zoneId);
+        return { changeId: `C${record.type}` };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-bind-plan",
+      executionId: "exec-bind-aws-zone",
+      approvedAt: "2026-05-28T09:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-bind-plan", "exec-bind-aws-zone");
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "mail-delivrix-test",
+      ipv4: "192.0.2.44"
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    serverSlug: "mail-delivrix-test",
+    actorId: "operator/juanes",
+    approvalToken: "exec-bind-aws-zone",
+    taskId: "task-bind-aws-zone"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "pending_propagation");
+  assert.deepEqual(upsertZones, ["ZAWSFALLBACK1", "ZAWSFALLBACK1"]);
 });
 
 test("POST /v1/domains/bind rejects timestamp fragments as unresolved domains before DNS writes", async () => {
@@ -263,6 +309,20 @@ function mockDnsAdapter(overrides: Partial<DomainBindDnsAdapter> = {}): DomainBi
     upsertRecord: async (): Promise<AwsRoute53DnsChangeResult> => {
       throw new Error("upsertRecord mock not implemented");
     },
+    createHostedZone: async (): Promise<AwsRoute53HostedZoneResult> => {
+      throw new Error("createHostedZone mock not implemented");
+    },
+    listHostedZones: async (): Promise<AwsRoute53HostedZoneSummary[]> => [{
+      zoneId: "Z123",
+      name: "delivrix-mail.com.",
+      nameServers: ["ns-1.awsdns.com"]
+    }],
+    listResourceRecordSets: async (): Promise<AwsRoute53ResourceRecordSet[]> => [{
+      name: "delivrix-mail.com.",
+      type: "NS",
+      ttl: 172800,
+      values: ["ns-1.awsdns.com."]
+    }],
     ...overrides
   };
 }

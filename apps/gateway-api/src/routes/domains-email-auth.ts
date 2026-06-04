@@ -3,7 +3,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
   AwsRoute53DnsChangeResult,
   AwsRoute53DnsRecordInput,
-  AwsRoute53DnsSource
+  AwsRoute53DnsSource,
+  AwsRoute53HostedZoneResult,
+  AwsRoute53HostedZoneSummary,
+  AwsRoute53ResourceRecordSet
 } from "../../../../packages/adapters/src/index.ts";
 import type {
   AuditEvent,
@@ -21,11 +24,19 @@ import {
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import { ensureDkimKeyPair } from "../dkim-keypair.ts";
+import {
+  resolveRoute53HostedZone,
+  Route53ZonePolicyError,
+  type Route53ZoneResolution
+} from "./route53-zone-policy.ts";
 
 export interface EmailAuthDnsAdapter {
   isLive(): boolean;
   isWriteEnabled(): boolean;
   currentSource(responseOk?: boolean, errorMessage?: string): AwsRoute53DnsSource;
+  createHostedZone(domain: string): Promise<AwsRoute53HostedZoneResult>;
+  listHostedZones(): Promise<AwsRoute53HostedZoneSummary[]>;
+  listResourceRecordSets(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]>;
   upsertRecord(zoneId: string, opts: AwsRoute53DnsRecordInput): Promise<AwsRoute53DnsChangeResult>;
 }
 
@@ -100,6 +111,8 @@ export async function handleEmailAuthConfigureHttp(
   const approvalToken = requiredString(body.approvalToken, "approvalToken");
   const taskId = normalizeTaskId(body.taskId) ?? `email-auth-${randomUUID()}`;
   const source = deps.dnsAdapter.currentSource(true);
+  const preferredZoneId = typeof body.zoneId === "string" && body.zoneId.trim() ? body.zoneId.trim() : null;
+  const inventoryZoneId = await findWorkspaceZoneId(deps.workspace, domain);
 
   await emitTaskDeclare(deps.canvasLiveEvents, taskId, `Email auth · ${domain}`, actorId, now);
   const learnings = await safeReadLearnings(deps.workspace);
@@ -118,10 +131,32 @@ export async function handleEmailAuthConfigureHttp(
   });
   if (!approval) blockers.push("approval_not_found_or_expired");
 
-  const zoneId = typeof body.zoneId === "string" && body.zoneId.trim()
-    ? body.zoneId.trim()
-    : await findWorkspaceZoneId(deps.workspace, domain);
-  if (!zoneId) blockers.push("route53_zone_missing");
+  let zoneId = preferredZoneId ?? inventoryZoneId;
+  let zoneResolution: Route53ZoneResolution | null = null;
+  let zonePolicyDetails: Record<string, unknown> | null = null;
+  const canResolveZone = deps.dnsAdapter.isLive() && deps.dnsAdapter.isWriteEnabled() && Boolean(approval);
+  if (canResolveZone) {
+    try {
+      zoneResolution = await resolveRoute53HostedZone({
+        workspace: deps.workspace,
+        adapter: deps.dnsAdapter,
+        domain,
+        mode: "reuse-or-create",
+        preferredZoneId,
+        now: deps.now
+      });
+      zoneId = zoneResolution.zone.zoneId;
+    } catch (error) {
+      if (error instanceof Route53ZonePolicyError) {
+        blockers.push(error.code);
+        zonePolicyDetails = error.details;
+      } else {
+        throw error;
+      }
+    }
+  } else if (!zoneId) {
+    blockers.push("route53_zone_missing");
+  }
 
   if (blockers.length > 0) {
     const workspace = await safeWriteExecution(deps.workspace, {
@@ -134,7 +169,8 @@ export async function handleEmailAuthConfigureHttp(
         sourceKind: source.kind,
         writeEnabled: source.writeEnabled,
         approvalMatched: Boolean(approval),
-        learningCount: learnings.length
+        learningCount: learnings.length,
+        ...(zonePolicyDetails ? { zonePolicyDetails } : {})
       }
     });
     await deps.auditLog.append({
@@ -149,6 +185,7 @@ export async function handleEmailAuthConfigureHttp(
       metadata: {
         blockers,
         provider: "aws-route53",
+        ...(zonePolicyDetails ? { zonePolicyDetails } : {}),
         workspacePath: workspace?.path
       }
     });
@@ -162,6 +199,9 @@ export async function handleEmailAuthConfigureHttp(
       workspace
     });
     return;
+  }
+  if (!zoneId) {
+    throw new EmailAuthInputError("route53 zone could not be resolved.");
   }
 
   const keyPair = await ensureDkimKeyPair({
@@ -227,8 +267,15 @@ export async function handleEmailAuthConfigureHttp(
       outcome: "success",
       durationMs: Date.now() - startedAt,
       evidence: {
-        zoneId,
-        dkimPrivateKeyPath: keyPair.privateKeyPath,
+      zoneId,
+      ...(zoneResolution ? {
+        zoneResolution: {
+          status: zoneResolution.status,
+          source: zoneResolution.source,
+          cleanupSuggested: zoneResolution.cleanupSuggested ?? []
+        }
+      } : {}),
+      dkimPrivateKeyPath: keyPair.privateKeyPath,
         dkimPublicKeyHash: keyPair.publicKeyHash,
         dkimKeyGenerated: keyPair.generated,
         records: changes.map((record) => ({
@@ -254,6 +301,13 @@ export async function handleEmailAuthConfigureHttp(
       metadata: {
         provider: "aws-route53",
         zoneId,
+        ...(zoneResolution ? {
+          zoneResolution: {
+            status: zoneResolution.status,
+            source: zoneResolution.source,
+            cleanupSuggested: zoneResolution.cleanupSuggested ?? []
+          }
+        } : {}),
         selector,
         dmarcPolicy,
         recordCount: records.length,
@@ -274,6 +328,13 @@ export async function handleEmailAuthConfigureHttp(
       status: "pending",
       domain,
       zoneId,
+      ...(zoneResolution ? {
+        zoneResolution: {
+          status: zoneResolution.status,
+          source: zoneResolution.source,
+          cleanupSuggested: zoneResolution.cleanupSuggested ?? []
+        }
+      } : {}),
       selector,
       dkimPrivateKeyPath: keyPair.privateKeyPath,
       dkimPublicKey: keyPair.publicKeyB64,

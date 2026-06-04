@@ -14,6 +14,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "update_domain_nameservers",
     "read_dns_ionos",
     "read_webdock_servers",
     "upsert_dns_route53",
@@ -70,7 +71,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 17);
+  assert.equal(tools.length, 18);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -85,6 +86,7 @@ test("buildToolsForOpenClaw omits Route53 tools when AWS credentials are missing
   assert.equal(names.includes("register_domain_route53"), false);
   assert.equal(names.includes("read_route53_domain_detail"), false);
   assert.equal(names.includes("read_route53_zone_records"), false);
+  assert.equal(names.includes("update_domain_nameservers"), false);
   assert.equal(names.includes("upsert_dns_route53"), false);
   assert.equal(names.includes("configure_email_auth"), false);
   assert.equal(names.includes("bind_domain_to_server"), false);
@@ -117,6 +119,7 @@ test("Bedrock catalog contains Route53 read tools with validated schemas", () =>
   const domainDetail = tools.find((tool) => tool.name === "read_route53_domain_detail");
   const zoneRecords = tools.find((tool) => tool.name === "read_route53_zone_records");
   const ionosRecords = tools.find((tool) => tool.name === "read_dns_ionos");
+  const nameservers = tools.find((tool) => tool.name === "update_domain_nameservers");
 
   assert.ok(domainDetail);
   assert.deepEqual(domainDetail.input_schema.required, ["domain"]);
@@ -144,6 +147,14 @@ test("Bedrock catalog contains Route53 read tools with validated schemas", () =>
     recordType: "TXT",
     recordName: "_dmarc.nationalcorphub.app"
   }).success, true);
+
+  assert.ok(nameservers);
+  assert.deepEqual(nameservers.input_schema.required, ["domain"]);
+  assert.equal(getOpenClawToolDefinition("update_domain_nameservers")?.paramSchema.safeParse({
+    domain: "controldelivrix.app",
+    zoneId: "Z03595092JW2AXJBZGN4E",
+    nameservers: ["ns-1.awsdns.com", "ns-2.awsdns.net"]
+  }).success, true);
 });
 
 test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
@@ -154,6 +165,7 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "update_domain_nameservers",
     "read_dns_ionos",
     "read_webdock_servers",
     "bind_webdock_main_domain",
@@ -183,6 +195,7 @@ function allEnabledEnv(): Record<string, string | undefined> {
     AWS_ACCESS_KEY_ID: "test-access",
     AWS_SECRET_ACCESS_KEY: "test-secret",
     AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE: "true",
+    AWS_ROUTE53_DOMAINS_ENABLE_NAMESERVER_UPDATES: "true",
     AWS_ROUTE53_DNS_ENABLE_WRITES: "true",
     IONOS_DNS_ENABLE_WRITES: "true",
     IONOS_API_TOKEN: "ionos-token",
@@ -228,6 +241,13 @@ function validSample(toolName: string): Record<string, unknown> {
       zoneId: "Z03595092JW2AXJBZGN4E",
       recordType: "A",
       recordName: "smtp.controldelivrix.app"
+    };
+  }
+  if (toolName === "update_domain_nameservers") {
+    return {
+      domain: "controldelivrix.app",
+      zoneId: "Z03595092JW2AXJBZGN4E",
+      nameservers: ["ns-1.awsdns.com", "ns-2.awsdns.net"]
     };
   }
   if (toolName === "read_dns_ionos") {

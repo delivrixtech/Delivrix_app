@@ -9,6 +9,7 @@ import {
   readEpisodicScratchParamSchema,
   readWebdockServersParamSchema,
   route53DomainDetailParamSchema,
+  route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
   route53ZoneRecordsParamSchema,
   route53UpsertParamSchema,
@@ -39,6 +40,7 @@ export type OpenClawToolName =
   | "wait_for_dns_propagation"
   | "read_route53_domain_detail"
   | "read_route53_zone_records"
+  | "update_domain_nameservers"
   | "read_dns_ionos"
   | "read_webdock_servers"
   | "upsert_dns_route53"
@@ -311,6 +313,46 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hasAwsRoute53DnsCredentials(env),
     targetType: "route53_hosted_zone",
     severity: "high"
+  },
+  update_domain_nameservers: {
+    spec: {
+      name: "update_domain_nameservers",
+      description: [
+        "Realinea los nameservers del registrar Route53 Domains hacia una hosted zone Route53 verificada en nuestra cuenta.",
+        "Riesgo crítico/live wallet: requiere ApprovalGate HMAC, flag AWS_ROUTE53_DOMAINS_ENABLE_NAMESERVER_UPDATES, zona destino con A+MX existentes, audit, kill switch y operación idempotente. No delega a nameservers externos."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          zoneId: {
+            type: "string",
+            pattern: "^Z[A-Z0-9]{10,32}$",
+            description: "Hosted zone Route53 destino opcional. Si se envía, el gateway verifica que pertenezca al dominio y cuenta AWS."
+          },
+          nameservers: {
+            type: "array",
+            minItems: 2,
+            maxItems: 13,
+            items: {
+              type: "string",
+              pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}\\.)+[a-z0-9-]{2,63}\\.?$"
+            },
+            description: "Opcional: debe coincidir exactamente con los NS de la hosted zone verificada."
+          },
+          ...optionalTaskId
+        },
+        required: ["domain"]
+      }
+    },
+    paramSchema: route53NameserverUpdateParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      anyFlagEnabled(env, ["AWS_ROUTE53_DOMAINS_ENABLE_NAMESERVER_UPDATES", "AWS_ROUTE53_ENABLE_NAMESERVER_UPDATES"]) &&
+      hasAwsRoute53DomainCredentials(env) &&
+      hasAwsRoute53DnsCredentials(env),
+    targetType: "domain",
+    severity: "critical"
   },
   read_dns_ionos: {
     spec: {
@@ -775,6 +817,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "update_domain_nameservers",
     "read_dns_ionos",
     "read_webdock_servers",
     "upsert_dns_route53",

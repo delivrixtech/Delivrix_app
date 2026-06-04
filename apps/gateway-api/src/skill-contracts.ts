@@ -34,6 +34,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["read_dns_ionos", "read_ionos_dns"]
   },
   {
+    canonicalSkill: "update_domain_nameservers",
+    aliases: ["update_domain_nameservers", "route53_domain_nameservers_update"],
+    actionIds: ["update_domain_nameservers", "route53_domain_nameservers_update"]
+  },
+  {
     canonicalSkill: "upsert_dns_route53",
     aliases: ["upsert_dns_route53", "route53_dns_upsert"],
     actionIds: ["upsert_dns_route53", "route53_dns_upsert"]

@@ -173,6 +173,10 @@ import {
   handleDomainBindHttp
 } from "./routes/domains-bind.ts";
 import {
+  handleDomainNameserverUpdateError,
+  handleDomainNameserverUpdateHttp
+} from "./routes/domain-nameservers.ts";
+import {
   createAuditApprovalGuard,
   handleWaitForDnsPropagationHttp,
   handleWaitForDnsPropagationReadOnlyHttp
@@ -811,6 +815,7 @@ type AgentPermissionCategory =
   | "allowed_read_only"
   | "allowed_dry_run"
   | "supervised_local_state"
+  | "supervised_live_wallet"
   | "future_live_requires_new_phase"
   | "prohibited";
 
@@ -899,6 +904,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("install_smtp_stack", "supervised_local_state"),
   permission("configure_email_auth", "supervised_local_state"),
   permission("bind_domain_to_server", "supervised_local_state"),
+  permission("update_domain_nameservers", "supervised_live_wallet"),
+  permission("route53_domain_nameservers_update", "supervised_live_wallet"),
   permission("wait_for_dns_propagation", "supervised_local_state"),
   permission("dns_propagation_wait", "supervised_local_state"),
   permission("seed_warmup_pool", "supervised_local_state"),
@@ -1750,6 +1757,27 @@ const server = createServer(async (request, response) => {
         });
       } catch (error) {
         if (handleIonosDnsUpsertError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/domains/route53/nameservers/update") {
+      try {
+        return await handleDomainNameserverUpdateHttp({
+          request,
+          response,
+          auditLog,
+          registrarAdapter: awsRoute53DomainsAdapter,
+          dnsAdapter: awsRoute53DnsAdapter,
+          workspace: openClawWorkspace,
+          canvasLiveEvents,
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          readKillSwitch: () => killSwitchStore.get()
+        });
+      } catch (error) {
+        if (handleDomainNameserverUpdateError(error, response)) {
           return;
         }
         throw error;
@@ -3274,7 +3302,7 @@ const server = createServer(async (request, response) => {
       const hash = hashProposal(proposal);
       const existing = findPendingProposalByHash(hash, now);
       const requiresApproval = permissions.some(
-        (decision) => decision.category === "supervised_local_state"
+        (decision) => decision.category === "supervised_local_state" || decision.category === "supervised_live_wallet"
       );
       const skillSlug = canonicalSkillSlug(proposal.skillSlug ?? audit.skillSlug);
       const skillBinding = validateSkillActionBinding({
@@ -5034,7 +5062,7 @@ function evaluateAgentActionPermission(
     };
   }
 
-  if (entry.category === "supervised_local_state") {
+  if (entry.category === "supervised_local_state" || entry.category === "supervised_live_wallet") {
     if (context.killSwitchEnabled) {
       return {
         decision: "reject",
@@ -5175,7 +5203,10 @@ function getRequiredApprovalsForRunbook(runbookId: RunbookId): number {
 
 function supervisedActionForProposal(proposal: AgentProposal): string | null {
   return proposal.delivrix_actions_required.find(
-    (actionId) => matrixCategoryOf(actionId) === "supervised_local_state"
+    (actionId) => {
+      const category = matrixCategoryOf(actionId);
+      return category === "supervised_local_state" || category === "supervised_live_wallet";
+    }
   ) ?? null;
 }
 
