@@ -23,6 +23,10 @@ import {
   type ToolUseResult
 } from "./tool-use-processor.ts";
 import {
+  tryNormalizeIpv4Address,
+  tryNormalizeStrictDomainName
+} from "./entity-guard.ts";
+import {
   noopGatewayRuntimeLogger,
   runtimeErrorMetadata,
   summarizeOperationalParams,
@@ -37,6 +41,8 @@ const defaultSessionKey = "agent:main:operator";
 const defaultMaxConversationTurns = 12;
 const defaultDelivrixBaseUrl = "http://127.0.0.1:3000";
 const defaultMaxToolIterations = 10;
+const defaultLiveContextItemLimit = 20;
+const defaultLiveContextMaxChars = 18_000;
 
 type FetchLike = typeof fetch;
 
@@ -110,6 +116,8 @@ export interface OpenClawBedrockBridgeConfig {
   now?: () => Date;
   env?: Record<string, string | undefined>;
   maxToolIterations?: number;
+  liveContextItemLimit?: number;
+  liveContextMaxChars?: number;
   logger?: GatewayRuntimeLogger;
   auditLog?: AuditSink;
   processToolUse?: (input: {
@@ -135,6 +143,8 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   private readonly now: () => Date;
   private readonly env: Record<string, string | undefined>;
   private readonly maxToolIterations: number;
+  private readonly liveContextItemLimit: number;
+  private readonly liveContextMaxChars: number;
   private readonly logger: GatewayRuntimeLogger;
   private readonly auditLog: AuditSink | null;
   private readonly processToolUse: (input: {
@@ -167,6 +177,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
         ...(config.sessionToken ? { sessionToken: config.sessionToken } : {})
       };
     }
+    const runtimeEnv = config.env ?? (typeof process !== "undefined" ? process.env : {});
     this.client = config.client ?? new BedrockRuntimeClient(clientConfig);
     this.modelId = config.modelId.trim();
     this.systemPromptPath = config.systemPromptPath ?? join(process.cwd(), ".audit", "system-context.txt");
@@ -179,8 +190,10 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     this.readBoundaryToken = config.readBoundaryToken ?? "";
     this.fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
     this.now = config.now ?? (() => new Date());
-    this.env = config.env ?? (typeof process !== "undefined" ? process.env : {});
+    this.env = runtimeEnv;
     this.maxToolIterations = config.maxToolIterations ?? defaultMaxToolIterations;
+    this.liveContextItemLimit = config.liveContextItemLimit ?? parsePositiveInt(runtimeEnv.OPENCLAW_LIVE_CONTEXT_ITEM_LIMIT) ?? defaultLiveContextItemLimit;
+    this.liveContextMaxChars = config.liveContextMaxChars ?? parsePositiveInt(runtimeEnv.OPENCLAW_LIVE_CONTEXT_MAX_CHARS) ?? defaultLiveContextMaxChars;
     this.logger = config.logger ?? noopGatewayRuntimeLogger;
     this.auditLog = config.auditLog ?? null;
     this.processToolUse = config.processToolUse ?? createHttpToolUseProcessor({
@@ -299,7 +312,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   private async invokeBedrock(turns: ConversationTurn[], msgId: string, signal?: AbortSignal): Promise<BedrockInvocationResult> {
     const startedAt = this.now().getTime();
     const systemBase = await this.loadSystemPrompt();
-    const liveContext = await this.fetchLiveContext();
+    const liveContext = await this.fetchLiveContext(latestUserTurnContent(turns));
     const system = `${systemBase}\n\n${liveContext}`;
     const tools = buildToolsForOpenClaw(this.env);
     const messages: BedrockMessage[] = turns.map((turn) => ({
@@ -592,7 +605,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     };
   }
 
-  private async fetchLiveContext(): Promise<string> {
+  private async fetchLiveContext(operatorQuery: string): Promise<string> {
     const headers: Record<string, string> = {
       accept: "application/json"
     };
@@ -620,23 +633,43 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       }
     };
 
-    const [overview, killSwitch, canvas, audit] = await Promise.all([
+    const groundedQuery = encodeURIComponent(operatorQuery.trim().slice(0, 300) || "estado operacional openclaw inventario dominios servidores smtp");
+    const groundedPath = `/v1/openclaw/scratch?grounded=true&limit=5&query=${groundedQuery}`;
+    const [overview, killSwitch, canvas, audit, infrastructure, webdock, groundedMemory] = await Promise.all([
       safeGet("/v1/admin/overview"),
       safeGet("/v1/kill-switch"),
       safeGet("/v1/canvas/live/state"),
-      safeGet("/v1/audit-events?limit=10")
+      safeGet("/v1/audit-events?limit=10"),
+      safeGet("/v1/infrastructure/inventory"),
+      safeGet("/v1/webdock/inventory"),
+      safeGet(groundedPath)
     ]);
     const generatedAt = this.now().toISOString();
-
-    return [
-      `<live_context generatedAt="${generatedAt}">`,
+    const liveContext = [
+      `<live_context generatedAt="${generatedAt}" grounding="inventory_and_verified_facts">`,
       "Estos son datos REALES del Gateway Delivrix justo antes de tu turno actual.",
       "Cita explicitamente este contexto cuando el operador te pregunte por estado del sistema.",
-      "Si un campo falta o tiene _error, dilo honesto. NO inventes valores.",
+      "Antes de proponer o ejecutar acciones con domain/serverSlug/ip, resuelve la entidad con inventory_domains, inventory_servers, verified_facts o una read-tool. Si no aparece, abstente y pide el dato al operador.",
+      "Si un campo falta, no hay hechos verificados, o un endpoint tiene _error, dilo honesto. NO inventes valores ni extraigas entidades desde timestamps/chat/audit prose.",
+      "",
+      "## inventory_domains (GET /v1/infrastructure/inventory)",
+      "```json",
+      stringifyLiveContext(summarizeInventoryDomains(infrastructure, this.liveContextItemLimit), 3000),
+      "```",
+      "",
+      "## inventory_servers (GET /v1/infrastructure/inventory + GET /v1/webdock/inventory)",
+      "```json",
+      stringifyLiveContext(summarizeInventoryServers(infrastructure, webdock, this.liveContextItemLimit), 3000),
+      "```",
+      "",
+      "## verified_facts (GET /v1/openclaw/scratch?grounded=true&query=<operator>)",
+      "```json",
+      stringifyLiveContext(summarizeVerifiedFacts(groundedMemory, this.liveContextItemLimit), 3000),
+      "```",
       "",
       "## overview (GET /v1/admin/overview)",
       "```json",
-      stringifyLiveContext(overview, 4000),
+      stringifyLiveContext(overview, 3500),
       "```",
       "",
       "## kill_switch (GET /v1/kill-switch)",
@@ -646,15 +679,17 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       "",
       "## canvas (GET /v1/canvas/live/state)",
       "```json",
-      stringifyLiveContext(canvas, 4000),
+      stringifyLiveContext(canvas, 3500),
       "```",
       "",
       "## audit_recent (GET /v1/audit-events?limit=10)",
       "```json",
-      stringifyLiveContext(audit, 4000),
+      stringifyLiveContext(audit, 3000),
       "```",
       "</live_context>"
     ].join("\n");
+
+    return truncateLiveContext(liveContext, this.liveContextMaxChars);
   }
 
   private async loadSystemPrompt(): Promise<string> {
@@ -699,11 +734,13 @@ export function createOpenClawBedrockBridgeFromEnv(
     region: normalizeEnvValue(env.AWS_BEDROCK_REGION) ?? defaultModelRegion,
     modelId,
     systemPromptPath: normalizeEnvValue(env.OPENCLAW_SYSTEM_CONTEXT_PATH),
-    delivrixBaseUrl: normalizeEnvValue(env.DELIVRIX_BASE_URL) ?? defaultDelivrixBaseUrl,
-    readBoundaryToken: normalizeEnvValue(env.DELIVRIX_OPENCLAW_TOKEN) ?? "",
+    delivrixBaseUrl: normalizeEnvValue(env.DELIVRIX_GATEWAY_INTERNAL_BASE_URL) ?? normalizeEnvValue(env.DELIVRIX_BASE_URL) ?? defaultDelivrixBaseUrl,
+    readBoundaryToken: normalizeEnvValue(env.DELIVRIX_READ_BOUNDARY_TOKEN) ?? normalizeEnvValue(env.DELIVRIX_OPENCLAW_TOKEN) ?? "",
     maxTokens: parsePositiveInt(env.AWS_BEDROCK_MAX_TOKENS) ?? defaultMaxTokens,
     temperature: parseTemperature(env.AWS_BEDROCK_TEMPERATURE) ?? defaultTemperature,
     maxToolIterations: parsePositiveInt(env.OPENCLAW_TOOL_MAX_ITERATIONS) ?? defaultMaxToolIterations,
+    liveContextItemLimit: parsePositiveInt(env.OPENCLAW_LIVE_CONTEXT_ITEM_LIMIT) ?? defaultLiveContextItemLimit,
+    liveContextMaxChars: parsePositiveInt(env.OPENCLAW_LIVE_CONTEXT_MAX_CHARS) ?? defaultLiveContextMaxChars,
     env,
     logger: options.logger,
     auditLog: options.auditLog
@@ -830,6 +867,15 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function latestUserTurnContent(turns: ConversationTurn[]): string {
+  for (const turn of turns.toReversed()) {
+    if (turn.role === "user") {
+      return turn.content;
+    }
+  }
+  return "";
+}
+
 function normalizeEnvValue(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized ? normalized : undefined;
@@ -867,6 +913,216 @@ function normalizeBaseUrl(value: string): string {
 
 function stringifyLiveContext(value: unknown, maxLength: number): string {
   return JSON.stringify(value, null, 2).slice(0, maxLength);
+}
+
+function truncateLiveContext(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  const closing = "\n<!-- live_context_truncated -->\n</live_context>";
+  return `${value.replace(/\n<\/live_context>$/, "").slice(0, Math.max(0, maxLength - closing.length))}${closing}`;
+}
+
+function summarizeInventoryDomains(infrastructure: unknown, limit: number): Record<string, unknown> {
+  if (isEndpointError(infrastructure)) {
+    return {
+      status: "abstain",
+      reason: "inventory_domains_unavailable",
+      error: infrastructure._error,
+      instruction: "No hay dominios verificados disponibles; abstente antes de usar domain."
+    };
+  }
+
+  const domains = new Map<string, Record<string, unknown>>();
+  for (const entry of collectInfrastructureItems(infrastructure)) {
+    const domain = extractDomainFromInventoryItem(entry.item);
+    if (!domain) continue;
+    domains.set(domain, {
+      domain,
+      providerId: entry.providerId,
+      providerKind: entry.providerKind,
+      itemKind: stringValue(entry.item.kind) ?? "unknown",
+      status: stringValue(entry.item.status) ?? "unknown",
+      sourceKind: entry.sourceKind,
+      ...(entry.providerKind === "dns" ? { zoneId: stringValue(entry.item.id) ?? null } : {})
+    });
+  }
+
+  const items = [...domains.values()].slice(0, limit);
+  if (items.length === 0) {
+    return {
+      status: "abstain",
+      reason: "no_inventory_domains_available",
+      instruction: "No hay dominios verificados en inventario; abstente antes de usar domain."
+    };
+  }
+  return {
+    status: "grounded",
+    count: domains.size,
+    items
+  };
+}
+
+function summarizeInventoryServers(infrastructure: unknown, webdock: unknown, limit: number): Record<string, unknown> {
+  const servers = new Map<string, Record<string, unknown>>();
+  for (const server of collectWebdockServers(webdock)) {
+    const slug = stringValue(server.slug);
+    if (!slug) continue;
+    const ipRaw = stringValue(server.ipv4);
+    const ip = ipRaw ? tryNormalizeIpv4Address(ipRaw, "serverIp") : null;
+    servers.set(slug, {
+      serverSlug: slug,
+      name: stringValue(server.name) ?? stringValue(server.hostname) ?? slug,
+      status: stringValue(server.status) ?? "unknown",
+      serverIp: ip?.ok ? ip.value : null,
+      ipVerified: Boolean(ip?.ok),
+      source: "GET /v1/webdock/inventory"
+    });
+  }
+
+  for (const entry of collectInfrastructureItems(infrastructure)) {
+    const kind = stringValue(entry.item.kind) ?? "";
+    if (!/server|compute/i.test(kind) || kind === "bedrock_model") continue;
+    const slug = stringValue(entry.item.id);
+    if (!slug || servers.has(slug)) continue;
+    servers.set(slug, {
+      serverSlug: slug,
+      name: stringValue(entry.item.displayName) ?? slug,
+      status: stringValue(entry.item.status) ?? "unknown",
+      serverIp: null,
+      ipVerified: false,
+      providerId: entry.providerId,
+      source: "GET /v1/infrastructure/inventory"
+    });
+  }
+
+  const items = [...servers.values()].slice(0, limit);
+  if (items.length === 0) {
+    return {
+      status: "abstain",
+      reason: "no_inventory_servers_available",
+      instruction: "No hay servidores/IP verificados en inventario; abstente antes de usar serverSlug o ip."
+    };
+  }
+  return {
+    status: "grounded",
+    count: servers.size,
+    items
+  };
+}
+
+function summarizeVerifiedFacts(groundedMemory: unknown, limit: number): Record<string, unknown> {
+  if (!isRecord(groundedMemory)) {
+    return {
+      status: "abstain",
+      reason: "verified_facts_payload_invalid",
+      instruction: "No hay hechos verificados relevantes; abstente si el inventario no resuelve la entidad."
+    };
+  }
+  if (isEndpointError(groundedMemory)) {
+    return {
+      status: "abstain",
+      reason: "verified_facts_unavailable",
+      error: groundedMemory._error,
+      instruction: "No hay hechos verificados relevantes; abstente si el inventario no resuelve la entidad."
+    };
+  }
+
+  const status = stringValue(groundedMemory.status) ?? "abstain";
+  const reason = stringValue(groundedMemory.reason) ?? "no_verified_facts_available";
+  const memories = recordArray(groundedMemory.memories);
+  const facts: Record<string, unknown>[] = [];
+  for (const candidate of memories) {
+    const memory = isRecord(candidate.memory) ? candidate.memory : candidate;
+    const plane = stringValue(memory.plane) ?? "verified_fact";
+    if (plane !== "verified_fact") continue;
+    facts.push({
+      plane,
+      id: stringValue(memory.id) ?? null,
+      source: stringValue(memory.source) ?? null,
+      tool: stringValue(memory.tool) ?? null,
+      outcome: stringValue(memory.outcome) ?? null,
+      trustScore: numberValue(memory.trustScore) ?? null,
+      reliability: stringValue(memory.reliability) ?? null,
+      validAt: stringValue(memory.validAt) ?? null,
+      ttlExpiresAt: stringValue(memory.ttlExpiresAt) ?? null,
+      summary: summarizeFactPayload(memory.outcomeData ?? memory.provenance ?? memory)
+    });
+    if (facts.length >= limit) break;
+  }
+
+  if (facts.length === 0) {
+    return {
+      status: "abstain",
+      reason,
+      instruction: "No hay hechos verificados relevantes para esta consulta; abstente si el inventario no resuelve la entidad."
+    };
+  }
+  return {
+    status,
+    count: facts.length,
+    facts
+  };
+}
+
+function collectInfrastructureItems(value: unknown): Array<{
+  providerId: string | null;
+  providerKind: string | null;
+  sourceKind: string | null;
+  item: Record<string, unknown>;
+}> {
+  if (!isRecord(value)) return [];
+  const output: Array<{
+    providerId: string | null;
+    providerKind: string | null;
+    sourceKind: string | null;
+    item: Record<string, unknown>;
+  }> = [];
+  for (const provider of recordArray(value.providers)) {
+    for (const item of recordArray(provider.items)) {
+      output.push({
+        providerId: stringValue(provider.id),
+        providerKind: stringValue(provider.kind),
+        sourceKind: stringValue(provider.fetchSourceKind),
+        item
+      });
+    }
+  }
+  return output;
+}
+
+function collectWebdockServers(value: unknown): Record<string, unknown>[] {
+  if (!isRecord(value)) return [];
+  const inventory = isRecord(value.inventory) ? value.inventory : value;
+  return recordArray(inventory.servers);
+}
+
+function extractDomainFromInventoryItem(item: Record<string, unknown>): string | null {
+  const detail = isRecord(item.detail) ? item.detail : {};
+  const candidates = [
+    stringValue(item.displayName),
+    stringValue(item.id),
+    stringValue(detail.domainName),
+    stringValue(detail.name)
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const domain = tryNormalizeStrictDomainName(candidate);
+    if (domain.ok) return domain.value;
+  }
+  return null;
+}
+
+function summarizeFactPayload(value: unknown): string {
+  return JSON.stringify(redactSensitiveLiveContext(value)).slice(0, 500);
+}
+
+function recordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+function isEndpointError(value: unknown): value is { _error: unknown } {
+  return isRecord(value) && "_error" in value;
 }
 
 function redactSensitiveLiveContext(value: unknown): unknown {

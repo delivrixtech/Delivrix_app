@@ -60,6 +60,23 @@ test("processToolUse rejects unknown tool names before submission", async () => 
   assert.equal(calls.length, 0);
 });
 
+test("processToolUse rejects timestamp fragments as domains before proposal submission", async () => {
+  const calls: unknown[] = [];
+  const result = await processToolUse({
+    toolUseId: "toolu-bad-domain",
+    toolName: "register_domain_route53",
+    toolInput: { domain: "37.842Z", years: 1 },
+    chatSession: { id: "agent:main:operator" },
+    env: enabledEnv(),
+    deps: memoryDeps({ calls })
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) assert.fail("expected invalid_params failure");
+  assert.equal(result.error, "invalid_params");
+  assert.equal(calls.length, 0);
+});
+
 test("processToolUse invokes read-only suggest_safe_domain without proposal wait", async () => {
   const calls: unknown[] = [];
   const result = await processToolUse({

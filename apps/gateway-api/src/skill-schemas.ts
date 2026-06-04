@@ -1,3 +1,8 @@
+import {
+  tryNormalizeServerSlug,
+  tryNormalizeStrictDomainName
+} from "./entity-guard.ts";
+
 export type SkillSafeParseResult<T> =
   | { success: true; data: T }
   | { success: false; error: { issues: string[]; format: () => Record<string, unknown> } };
@@ -487,11 +492,11 @@ function oneOf<const T extends readonly string[]>(value: unknown, field: string,
 }
 
 function domain(value: unknown, field: string): string {
-  const normalized = string(value, field).toLowerCase().replace(/\.$/, "");
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(normalized)) {
+  const normalized = tryNormalizeStrictDomainName(string(value, field));
+  if (!normalized.ok) {
     throw new SkillSchemaError(`${field} must be a valid domain`);
   }
-  return normalized;
+  return normalized.value;
 }
 
 const route53ReadRecordTypes = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "PTR", "SRV", "CAA"] as const;
@@ -529,11 +534,11 @@ function email(value: unknown, field: string): string {
 }
 
 function slug(value: unknown, field: string): string {
-  const normalized = string(value, field);
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(normalized)) {
+  const normalized = tryNormalizeServerSlug(string(value, field), "serverSlug");
+  if (!normalized.ok) {
     throw new SkillSchemaError(`${field} is invalid`);
   }
-  return normalized;
+  return normalized.value;
 }
 
 function selector(value: unknown, field: string): string {

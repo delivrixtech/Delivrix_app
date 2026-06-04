@@ -10,6 +10,8 @@ Hardening I5: `codex/poc-grounded-hardening` en `/private/tmp/delivrix-grounded-
 
 Hardening allowlist guard: `codex/poc-grounded-allowlist-guard` en `/private/tmp/delivrix-grounded-allowlist-guard`, base `codex/poc-grounded-hardening@e783b7b`.
 
+Grounding antidelirio: `codex/poc-grounded-agent-context` en `/private/tmp/delivrix-run-allowlist`, base `codex/poc-grounded-allowlist-guard@f489275`.
+
 ## Fuentes
 
 - `DOCUMENTACION/Tesis_Delivrix_v3.4_BUSINESS_PLAN_MVP.pdf`
@@ -18,6 +20,7 @@ Hardening allowlist guard: `codex/poc-grounded-allowlist-guard` en `/private/tmp
 - `DOCUMENTACION/skills/delivrix-qa-gatekeeper/references/qa-checklist.md`
 - `DOCUMENTACION/PROMPT_CODEX_MEMORIA_GUARDS_Y_RETRIEVAL_2026_06_03.md`
 - `DOCUMENTACION/PROMPT_CODEX_MEMORIA_ALLOWLIST_GUARD_2026_06_03.md`
+- `DOCUMENTACION/PROMPT_CODEX_GROUNDING_AGENTE_ANTIDELIRIO_2026_06_04.md`
 - `DOCUMENTACION/RUNBOOK_LEVANTAR_PROBAR_MEMORIA_2026_06_03.md`
 - `DOCUMENTACION/decisiones/2026-06-03-arquitectura-agente-local-mastra-rag.md`
 
@@ -79,6 +82,8 @@ Hardening allowlist guard: `codex/poc-grounded-allowlist-guard` en `/private/tmp
 
 [S28] P2 · `apps/gateway-api/src/routes/episodic-scratch.ts:94` · la ruta de lectura de memoria podia devolver mensajes internos del store en `details` · causa: el catch exponia `error.message` en errores de storage/validacion · fix: respuestas sanitizadas con `_errors` generico y test que verifica que un mensaje sensible del pool no sale en JSON · estado CERRADO.
 
+[S29] P1 · `apps/gateway-api/src/openclaw-bedrock-bridge.ts:595`, `apps/gateway-api/src/entity-guard.ts:1`, `apps/gateway-api/src/skill-schemas.ts:489`, `apps/gateway-api/src/routes/smtp-provisioning.ts:130`, `apps/gateway-api/src/routes/domains-bind.ts:94` · OpenClaw podia convertir timestamps/prosa como `37.842Z` en entidad operacional y responder/proponer sin grounding · causa: `fetchLiveContext` solo inyectaba overview/kill-switch/canvas/audit y las rutas/schemas validaban forma laxa sin resolver `domain`/`serverSlug`/`serverIp` contra inventario · fix: live context agrega `inventory_domains`, `inventory_servers` y `verified_facts` con abstencion explicita; guard compartido rechaza/audita `entity_not_resolved`; schemas bloquean tool_use con dominio/slug timestamp antes de proposal; SMTP/bind bloquean antes de side effects; system prompt v2.5 exige resolver entidades con inventario/read-tools/memoria `verified_fact`; bundle local regenerado con `OPENCLAW_CONTEXT_LOCAL_ONLY=true` · estado CERRADO LOCAL, DEPLOY REMOTO PENDIENTE OPERADOR (`delivrix_hostinger_bridge_pendiente`, requiere aprobacion explicita).
+
 ## Evidencia de tests
 
 - Corte previo B1: `node --test packages/storage/src/episodic-scratch.test.ts apps/gateway-api/src/routes/openclaw-episodic-memory.test.ts apps/gateway-api/src/routes/openclaw-compact-intent.test.ts apps/gateway-api/src/episodic-scratch-ttl.test.ts apps/gateway-api/src/tool-use-processor.test.ts apps/gateway-api/src/openclaw-tools-builder.test.ts scripts/db/seed-episodic.test.mjs` -> PASS 72/72.
@@ -91,3 +96,10 @@ Hardening allowlist guard: `codex/poc-grounded-allowlist-guard` en `/private/tmp
 - `git diff --check` -> PASS.
 - `node --version` -> `v22.22.3`; residual S13 mantiene la repeticion en Node >=24 como gate de merge productivo.
 - `node scripts/db/seed-episodic.mjs` contra Postgres real -> NO RUN por instruccion del prompt; Docker/Postgres es accion explicita del operador.
+- Grounding S29: `node --test apps/gateway-api/src/openclaw-bedrock-bridge.test.ts` -> PASS 7/7.
+- Grounding S29: `node --test apps/gateway-api/src/routes/smtp-provisioning.test.ts` -> PASS 6/6.
+- Grounding S29: `node --test apps/gateway-api/src/routes/domains-bind.test.ts` -> PASS 5/5.
+- Grounding S29: `env OPENCLAW_CONTEXT_LOCAL_ONLY=true WORKTREE=/private/tmp/delivrix-run-allowlist scripts/openclaw/build-system-context.sh` -> PASS local-only, chars=41872, token_est=10468, sha256=5658544be7e505fb8ede4bae258901b984ab93915c5253379803ec6e0b0857cb; SSH/scp/docker cp remoto NO RUN.
+- Grounding S29 regression: `node --test packages/storage/src/episodic-scratch.test.ts apps/gateway-api/src/routes/openclaw-compact-intent.test.ts apps/gateway-api/src/routes/openclaw-episodic-memory.test.ts apps/gateway-api/src/episodic-scratch-ttl.test.ts apps/gateway-api/src/tool-use-processor.test.ts apps/gateway-api/src/openclaw-tools-builder.test.ts scripts/db/seed-episodic.test.mjs` -> PASS 84/84.
+- Grounding S29 regression: `node --test packages/storage/src/stable-stringify.test.ts apps/gateway-api/src/security/hmac.test.ts apps/gateway-api/src/security/gateway-mutation-auth.test.ts apps/gateway-api/src/security/runbook-authorization.test.ts apps/gateway-api/src/audit/hash-chain.test.ts packages/local-store/src/local-file-audit-log.test.ts` -> PASS 26/26.
+- Grounding S29: `git diff --check` -> PASS.

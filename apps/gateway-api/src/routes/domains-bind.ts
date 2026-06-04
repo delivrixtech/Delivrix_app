@@ -19,6 +19,14 @@ import {
   artifactMatchesAuditApproval,
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
+import {
+  entityFailureMetadata,
+  entityNotResolvedBlocker,
+  resolveWorkspaceServer,
+  resolveWorkspaceServerIp,
+  tryNormalizeStrictDomainName,
+  type EntityResolutionFailure
+} from "../entity-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 
 export interface DomainBindDnsAdapter {
@@ -76,13 +84,6 @@ interface DomainsInventory {
   }>;
 }
 
-interface WebdockServersInventory {
-  servers?: Array<{
-    slug: string;
-    ipv4: string | null;
-  }>;
-}
-
 const skillName = "bind_domain_to_server";
 const approvalMaxAgeMs = 15 * 60 * 1000;
 
@@ -91,21 +92,35 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
   const now = deps.now?.() ?? new Date();
   const env = deps.env ?? process.env;
   const body = await readJson<DomainBindBody>(deps.request);
-  const domain = normalizeDomainName(requiredString(body.domain, "domain"));
+  const rawDomain = requiredString(body.domain, "domain");
+  const domainResolution = tryNormalizeStrictDomainName(rawDomain);
+  const domain = domainResolution.ok ? domainResolution.value : rawDomain.trim().toLowerCase().replace(/\.$/, "");
   const actorId = requiredString(body.actorId, "actorId");
   const approvalToken = requiredString(body.approvalToken, "approvalToken");
   const taskId = normalizeTaskId(body.taskId) ?? `domain-bind-${randomUUID()}`;
   const serverSlug = typeof body.serverSlug === "string" && body.serverSlug.trim()
     ? normalizeSlug(body.serverSlug)
     : null;
-  const serverIp = typeof body.serverIp === "string" && body.serverIp.trim()
-    ? normalizeIpv4(body.serverIp)
-    : serverSlug
-      ? await findServerIp(deps.workspace, serverSlug)
-      : null;
+  const entityFailures: EntityResolutionFailure[] = [];
+  if (!domainResolution.ok) {
+    entityFailures.push(domainResolution.failure);
+  }
+  const serverResolution = serverSlug ? await resolveWorkspaceServer(deps.workspace, serverSlug) : null;
+  if (serverResolution && !serverResolution.ok) {
+    entityFailures.push(serverResolution.failure);
+  }
+  const explicitServerIp = typeof body.serverIp === "string" && body.serverIp.trim()
+    ? await resolveWorkspaceServerIp(deps.workspace, body.serverIp, serverSlug)
+    : null;
+  if (explicitServerIp && !explicitServerIp.ok) {
+    entityFailures.push(explicitServerIp.failure);
+  }
+  const serverIp = explicitServerIp
+    ? explicitServerIp.ok ? explicitServerIp.value : null
+    : serverResolution?.ok ? serverResolution.value.serverIp : null;
   const zoneId = typeof body.zoneId === "string" && body.zoneId.trim()
     ? body.zoneId.trim()
-    : await findZoneId(deps.workspace, domain);
+    : domainResolution.ok ? await findZoneId(deps.workspace, domain) : null;
   const source = deps.dnsAdapter.currentSource(true);
 
   await emitTaskDeclare(deps.canvasLiveEvents, taskId, `Bind dominio · ${domain}`, actorId, now);
@@ -124,10 +139,21 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
   if (!deps.dnsAdapter.isLive()) blockers.push("aws_route53_dns_credentials_missing");
   if (!deps.dnsAdapter.isWriteEnabled()) blockers.push("dns_write_flag_disabled");
   if (!approval) blockers.push("approval_not_found_or_expired");
+  if (entityFailures.length > 0) blockers.push(entityNotResolvedBlocker);
   if (!zoneId) blockers.push("route53_zone_missing");
   if (!serverIp) blockers.push("server_ip_missing");
 
   if (blockers.length > 0) {
+    if (entityFailures.length > 0) {
+      await appendEntityGuardAudits({
+        auditLog: deps.auditLog,
+        canvasLiveEvents: deps.canvasLiveEvents,
+        taskId,
+        actorId,
+        failures: entityFailures,
+        now
+      });
+    }
     const workspace = await safeWriteExecution(deps.workspace, {
       skill: skillName,
       params: { domain, serverSlug, actorId },
@@ -137,7 +163,8 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
         blockers,
         sourceKind: source.kind,
         writeEnabled: source.writeEnabled,
-        learningCount: learnings.length
+        learningCount: learnings.length,
+        ...(entityFailures.length > 0 ? { entityResolution: entityFailureMetadata(entityFailures) } : {})
       }
     });
     await deps.auditLog.append({
@@ -152,6 +179,7 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
       metadata: {
         blockers,
         serverSlug,
+        ...(entityFailures.length > 0 ? { entityResolution: entityFailureMetadata(entityFailures) } : {}),
         workspacePath: workspace?.path
       }
     });
@@ -162,6 +190,7 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
       status: "blocked",
       domain,
       blockers,
+      ...(entityFailures.length > 0 ? { entityResolution: entityFailureMetadata(entityFailures) } : {}),
       workspace
     });
     return;
@@ -335,12 +364,6 @@ export function buildDomainBindRecords(domain: string, serverIp: string): AwsRou
   ];
 }
 
-async function findServerIp(workspace: OpenClawWorkspace, serverSlug: string): Promise<string | null> {
-  const inventory = await workspace.readInventoryJson<WebdockServersInventory>("webdock-servers.json").catch(() => null);
-  const server = inventory?.servers?.find((item) => item.slug === serverSlug);
-  return server?.ipv4 ? normalizeIpv4(server.ipv4) : null;
-}
-
 async function findZoneId(workspace: OpenClawWorkspace, domain: string): Promise<string | null> {
   const inventory = await workspace.readInventoryJson<DomainsInventory>("domains.json").catch(() => null);
   return inventory?.dnsZones?.find((zone) => zone.domain === domain)?.zoneId ?? null;
@@ -358,6 +381,44 @@ async function updateBindInventory(
       bindings
     };
   });
+}
+
+async function appendEntityGuardAudits(input: {
+  auditLog: AuditSink;
+  canvasLiveEvents?: CanvasEmitter;
+  taskId: string;
+  actorId: string;
+  failures: EntityResolutionFailure[];
+  now: Date;
+}): Promise<void> {
+  for (const failure of input.failures) {
+    await input.auditLog.append({
+      actorType: "operator",
+      actorId: input.actorId,
+      action: "oc.guard.entity_not_resolved",
+      targetType: failure.valueClass,
+      targetId: failure.normalized ?? failure.value,
+      riskLevel: "critical",
+      decision: "reject",
+      humanApproved: false,
+      metadata: {
+        taskId: input.taskId,
+        entityResolution: entityFailureMetadata([failure])
+      }
+    });
+  }
+  const first = input.failures[0];
+  if (first) {
+    await emitAuditAction(
+      input.canvasLiveEvents,
+      input.taskId,
+      "oc.guard.entity_not_resolved",
+      first.valueClass,
+      first.normalized ?? first.value,
+      "critical",
+      input.now
+    );
+  }
 }
 
 async function findRecentApproval(input: {
@@ -453,22 +514,6 @@ function normalizeSlug(value: string): string {
   const normalized = value.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(normalized)) {
     throw new DomainBindInputError("serverSlug is invalid.");
-  }
-  return normalized;
-}
-
-function normalizeIpv4(value: string): string {
-  const parts = value.trim().split(".");
-  if (parts.length !== 4 || parts.some((part) => !/^\d+$/.test(part) || Number(part) < 0 || Number(part) > 255)) {
-    throw new DomainBindInputError(`Invalid IPv4 address: ${value}`);
-  }
-  return parts.map((part) => String(Number(part))).join(".");
-}
-
-function normalizeDomainName(value: string): string {
-  const normalized = value.trim().toLowerCase().replace(/\.$/, "");
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(normalized)) {
-    throw new DomainBindInputError(`Invalid domain name: ${value}`);
   }
   return normalized;
 }
