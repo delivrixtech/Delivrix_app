@@ -375,6 +375,8 @@ export function shouldEmitGatewayLogLevel(eventLevel: GatewayLogLevel, minLevel:
 export function redactGatewayLogSecrets(value: string): string {
   return value
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY]")
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*$/g, "[REDACTED_PARTIAL_KEY]")
+    .replace(/^[A-Za-z0-9+/]{48,}={0,2}$/gm, "[REDACTED_PEM_BODY]")
     .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED_AWS_ACCESS_KEY]")
     .replace(/\bauthorization\b\s*[:=]\s*Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Authorization: Bearer [REDACTED]")
     .replace(/\bauthorization\b\s*[:=]\s*(?!Bearer\s+\[REDACTED\])("[^"]+"|'[^']+'|[^\s,;]+)/gi, "Authorization=[REDACTED]")

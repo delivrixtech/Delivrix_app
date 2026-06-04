@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
@@ -30,6 +31,21 @@ test("gateway log stream redacts tokens, bearer credentials, and AWS access keys
   assert.doesNotMatch(redacted, /session-secret/);
   assert.doesNotMatch(redacted, /sig-secret/);
   assert.doesNotMatch(redacted, /hmac-secret/);
+});
+
+test("gateway log stream redacts complete, partial, and body-only PEM private keys", () => {
+  const pem = generatedPrivateKeyPem();
+  const keyLine = pemBodyLine(pem);
+  const partialPem = pem.slice(0, 500);
+  const redacted = redactGatewayLogSecrets(`${pem}\n${partialPem}`);
+  const bodyOnlyEvent = gatewayLogEventFromLine(keyLine, new Date("2026-05-29T12:01:00.000Z"));
+
+  assert.match(redacted, /\[REDACTED_PRIVATE_KEY\]/);
+  assert.match(redacted, /\[REDACTED_PARTIAL_KEY\]/);
+  assert.doesNotMatch(redacted, /-----BEGIN PRIVATE KEY-----/);
+  assert.doesNotMatch(redacted, /-----END PRIVATE KEY-----/);
+  assert.equal(redacted.includes(keyLine), false);
+  assert.equal(bodyOnlyEvent?.message, "[REDACTED_PEM_BODY]");
 });
 
 test("gateway log stream infers and filters levels monotonically", () => {
@@ -130,4 +146,18 @@ class FakeSocket extends EventEmitter {
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function generatedPrivateKeyPem(): string {
+  return generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" }
+  }).privateKey;
+}
+
+function pemBodyLine(pem: string): string {
+  const line = pem.split(/\r?\n/).find((candidate) => /^[A-Za-z0-9+/]{48,}={0,2}$/.test(candidate));
+  assert.ok(line);
+  return line;
 }

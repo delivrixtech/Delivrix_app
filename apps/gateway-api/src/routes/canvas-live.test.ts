@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -174,6 +175,95 @@ test("oc.action.now redacts secrets before broadcast, snapshot, and JSONL persis
   service.close();
 });
 
+test("Canvas Live redacts complete and truncated DKIM PEM before broadcast, snapshot, and JSONL persistence", async () => {
+  const stateDir = await stateDirForTest();
+  const service = new CanvasLiveEventService({
+    stateDir,
+    now: () => fixedNow,
+    streamToken: "canvas-token"
+  });
+  const socket = connectFakeSocket(service, "/v1/canvas/live/stream");
+  const completePem = generatedPrivateKeyPem();
+  const pemLine = pemBodyLine(completePem);
+  const truncatedPem = completePem.slice(0, 500);
+
+  assert.equal(truncatedPem.includes("-----BEGIN PRIVATE KEY-----"), true);
+  assert.equal(truncatedPem.includes("-----END PRIVATE KEY-----"), false);
+
+  await service.emit(taskDeclare("task-redact-pem"));
+  await service.emit({
+    type: "oc.action.now",
+    taskId: "task-redact-pem",
+    kind: "api",
+    method: "POST",
+    url: "https://api.example.test/provision",
+    status: 424,
+    durationMs: 12,
+    responseBytes: 256,
+    responseBody: {
+      ok: false,
+      error: completePem,
+      nested: { stderr: truncatedPem }
+    },
+    occurredAt: fixedNow.toISOString()
+  });
+  await service.emit({
+    type: "oc.action.now",
+    taskId: "task-redact-pem",
+    kind: "command",
+    cmd: "opendkim-testkey -d example.test -s default",
+    exitCode: 1,
+    stdout: completePem,
+    stderr: truncatedPem,
+    durationMs: 8,
+    occurredAt: fixedNow.toISOString()
+  });
+  await service.emit({
+    type: "oc.artifact.declare",
+    taskId: "task-redact-pem",
+    artifactId: "artifact-redact-pem",
+    kind: "report",
+    title: "PEM redaction check",
+    editable: false,
+    createdAt: fixedNow.toISOString()
+  });
+  await service.emit({
+    type: "oc.artifact.block",
+    artifactId: "artifact-redact-pem",
+    blockId: "block-complete",
+    order: 1,
+    kind: "paragraph",
+    content: completePem,
+    editable: false,
+    status: "complete",
+    occurredAt: fixedNow.toISOString()
+  });
+  await service.emit({
+    type: "oc.artifact.streaming",
+    artifactId: "artifact-redact-pem",
+    blockId: "block-partial",
+    chunk: truncatedPem,
+    occurredAt: fixedNow.toISOString()
+  });
+
+  const snapshot = await service.snapshot();
+  const tasksJsonl = await readFile(join(stateDir, "tasks.jsonl"), "utf8");
+  const artifactsJsonl = await readFile(join(stateDir, "artifacts.jsonl"), "utf8");
+  const combined = [
+    JSON.stringify(socket.messages()),
+    JSON.stringify(snapshot),
+    tasksJsonl,
+    artifactsJsonl
+  ].join("\n");
+
+  assert.doesNotMatch(combined, /-----BEGIN PRIVATE KEY-----/);
+  assert.doesNotMatch(combined, /-----END PRIVATE KEY-----/);
+  assert.equal(combined.includes(pemLine), false);
+  assert.match(combined, /\[REDACTED_PRIVATE_KEY\]/);
+  assert.match(combined, /\[REDACTED_PARTIAL_KEY\]/);
+  service.close();
+});
+
 test("task update preserves last action for completed live tasks", async () => {
   const service = await testService();
   await service.emit(taskDeclare("task-preserve-action"));
@@ -285,6 +375,8 @@ test("approve/reject endpoints validate actorId, audit critical events, and pers
   const stateDir = await stateDirForTest();
   const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
   const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-audit-")), "audit.jsonl"));
+  const pem = generatedPrivateKeyPem();
+  const pemLine = pemBodyLine(pem);
   await seedArtifact(service, "task-approve", "artifact-approve");
   await runRoute(
     (request, response) => handleCanvasArtifactApproveHttp({
@@ -298,7 +390,7 @@ test("approve/reject endpoints validate actorId, audit critical events, and pers
       url: "/v1/canvas/artifact/artifact-approve/approve",
       body: {
         actorId: "operator/juanes",
-        blocks: [{ blockId: "step-01", content: "Plan aprobado" }]
+        blocks: [{ blockId: "step-01", content: pem }]
       }
     }
   );
@@ -328,6 +420,9 @@ test("approve/reject endpoints validate actorId, audit critical events, and pers
   const reloaded = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
   const snapshot = await reloaded.snapshot();
   assert.equal(snapshot.artifacts.find((artifact) => artifact.artifactId === "artifact-approve")?.approvalStatus, "approved");
+  const approvedBlockContent = snapshot.artifacts.find((artifact) => artifact.artifactId === "artifact-approve")?.blocks[0]?.content ?? "";
+  assert.equal(approvedBlockContent.includes(pemLine), false);
+  assert.match(approvedBlockContent, /\[REDACTED_PRIVATE_KEY\]/);
   assert.equal(snapshot.artifacts.find((artifact) => artifact.artifactId === "artifact-reject")?.approvalStatus, "rejected");
 });
 
@@ -361,6 +456,8 @@ test("approve endpoint rejects missing actorId before audit append", async () =>
 test("PATCH block updates content without marking artifact approved", async () => {
   const service = await testService();
   const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-patch-audit-")), "audit.jsonl"));
+  const pem = generatedPrivateKeyPem();
+  const pemLine = pemBodyLine(pem);
   await seedArtifact(service, "task-patch", "artifact-patch");
 
   const response = await runRoute(
@@ -375,7 +472,7 @@ test("PATCH block updates content without marking artifact approved", async () =
       url: "/v1/canvas/artifact/artifact-patch/block/step-01",
       body: {
         actorId: "operator/juanes",
-        content: "Contenido editado"
+        content: pem.slice(0, 500)
       }
     }
   );
@@ -383,7 +480,8 @@ test("PATCH block updates content without marking artifact approved", async () =
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.ok, true);
   const snapshot = await service.snapshot();
-  assert.equal(snapshot.artifacts[0].blocks[0].content, "Contenido editado");
+  assert.equal(snapshot.artifacts[0].blocks[0].content.includes(pemLine), false);
+  assert.match(snapshot.artifacts[0].blocks[0].content, /\[REDACTED_PARTIAL_KEY\]/);
   assert.equal(snapshot.artifacts[0].approvalStatus, "pending");
   const events = await auditLog.list();
   assert.equal(events.length, 1);
@@ -614,6 +712,8 @@ test("canvas-live reload repairs legacy artifact blocks with non-positive order"
 test("canvas-live upsertArtifactSnapshot normalizes non-positive block order before persisting", async () => {
   const stateDir = await stateDirForTest();
   const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  const pem = generatedPrivateKeyPem();
+  const pemLine = pemBodyLine(pem);
   await service.upsertArtifactSnapshot({
     artifactId: "artifact-upsert-order",
     taskId: "task-upsert-order",
@@ -630,7 +730,7 @@ test("canvas-live upsertArtifactSnapshot normalizes non-positive block order bef
       blockId: "summary",
       order: 0,
       kind: "paragraph",
-      content: "Summary",
+      content: pem,
       editable: true,
       status: "complete",
       updatedAt: fixedNow.toISOString()
@@ -641,7 +741,10 @@ test("canvas-live upsertArtifactSnapshot normalizes non-positive block order bef
   const artifacts = await readFile(join(stateDir, "artifacts.jsonl"), "utf8");
 
   assert.equal(snapshot.artifacts[0].blocks[0].order, 1);
+  assert.equal(snapshot.artifacts[0].blocks[0].content.includes(pemLine), false);
+  assert.match(snapshot.artifacts[0].blocks[0].content, /\[REDACTED_PRIVATE_KEY\]/);
   assert.match(artifacts, /"order":1/);
+  assert.equal(artifacts.includes(pemLine), false);
 });
 
 async function seedArtifact(
@@ -835,6 +938,20 @@ class FakeSocket extends EventEmitter {
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function generatedPrivateKeyPem(): string {
+  return generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" }
+  }).privateKey;
+}
+
+function pemBodyLine(pem: string): string {
+  const line = pem.split(/\r?\n/).find((candidate) => /^[A-Za-z0-9+/]{48,}={0,2}$/.test(candidate));
+  assert.ok(line);
+  return line;
 }
 
 function decodeTextFrame(frame: Buffer): string {

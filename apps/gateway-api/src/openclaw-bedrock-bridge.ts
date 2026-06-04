@@ -34,6 +34,7 @@ import {
 } from "./entity-guard.ts";
 import {
   noopGatewayRuntimeLogger,
+  redactRuntimeLogSecrets,
   runtimeErrorMetadata,
   summarizeOperationalParams,
   type GatewayRuntimeLogger
@@ -989,7 +990,7 @@ function canvasActionEventForTool(input: {
       cmd: `openclaw-tool ${input.toolName}`,
       exitCode: input.result && !input.result.ok ? 1 : 0,
       stdout: input.phase === "requested" ? "requested" : "completed",
-      stderr: input.result && !input.result.ok ? String(input.result.error ?? "tool_failed").slice(0, 500) : "",
+      stderr: input.result && !input.result.ok ? redactCanvasToolText(String(input.result.error ?? "tool_failed")) : "",
       durationMs,
       progressDetail: `tool ${input.toolName} ${input.phase}`,
       occurredAt: input.occurredAt
@@ -1037,13 +1038,17 @@ function canvasToolResultSummary(result: ToolUseResult | undefined, phase: "requ
     ...(result.status ? { status: result.status } : {}),
     ...(result.statusCode === undefined ? {} : { statusCode: result.statusCode }),
     ...(result.proposalId ? { proposalId: result.proposalId } : {}),
-    ...(result.ok ? {} : { error: result.error })
+    ...(result.ok ? {} : { error: redactCanvasToolText(String(result.error ?? "tool_failed")) })
   };
 }
 
 function estimatedToolResultBytes(result: ToolUseResult | undefined): number {
   if (!result) return 0;
   return Buffer.byteLength(JSON.stringify(canvasToolResultSummary(result, result.ok ? "completed" : "failed")), "utf8");
+}
+
+function redactCanvasToolText(value: string): string {
+  return redactRuntimeLogSecrets(value).slice(0, 8_000);
 }
 
 function enrichToolResultForModel(
@@ -1081,7 +1086,7 @@ function enrichToolResultForModel(
 }
 
 function stringifyToolResult(result: unknown): string {
-  const raw = JSON.stringify(result);
+  const raw = redactRuntimeLogSecrets(JSON.stringify(redactSensitiveLiveContext(result)));
   if (raw.length <= 4096) {
     return raw;
   }
