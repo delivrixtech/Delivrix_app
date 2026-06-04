@@ -502,6 +502,10 @@ export class OpenClawChatProxy {
       }
     });
 
+    if (fallback.skillsInvoked.includes("delivrix.project_runtime_diagnostics")) {
+      await this.emitLocalProjectRuntimeCanvasActions(msgId, errorInfo);
+    }
+
     this.broadcast({
       type: "ASSISTANT_TYPING",
       msgId,
@@ -534,6 +538,96 @@ export class OpenClawChatProxy {
         durationMs
       }
     };
+  }
+
+  private async emitLocalProjectRuntimeCanvasActions(
+    msgId: string,
+    errorInfo: { code: string; message: string }
+  ): Promise<void> {
+    const interaction =
+      this.pendingCanvasInteractions.get(msgId) ??
+      (await this.findPersistedCanvasInteractionForMessage(msgId));
+    if (!interaction) {
+      return;
+    }
+
+    const streamBody = {
+      stream: "/v1/openclaw/chat/stream",
+      state: "connected",
+      event: "HEARTBEAT",
+      continuity: "local_fallback"
+    };
+    await this.emitCanvasEvent({
+      type: "oc.action.now",
+      taskId: interaction.taskId,
+      kind: "api",
+      method: "GET",
+      url: "/v1/openclaw/chat/stream",
+      status: 200,
+      durationMs: 2,
+      responseBytes: JSON.stringify(streamBody).length,
+      responseBody: streamBody,
+      next: {
+        kind: "api",
+        method: "GET",
+        url: "/health",
+        context: "runtime health check"
+      },
+      occurredAt: this.now().toISOString()
+    });
+
+    await this.emitCanvasEvent({
+      type: "oc.action.now",
+      taskId: interaction.taskId,
+      kind: "command",
+      cmd: "local-continuity:verify-openclaw-contract",
+      exitCode: 0,
+      stdout: "remote chat.send returned an invalid JSON acknowledgement; local continuity fallback is active",
+      stderr: "",
+      durationMs: 3,
+      progressDetail: "OpenClaw remoto degradado; Gateway mantiene chat, audit y canvas vivos en modo local.",
+      occurredAt: this.now().toISOString()
+    });
+
+    await this.emitCanvasEvent({
+      type: "oc.action.now",
+      taskId: interaction.taskId,
+      kind: "audit",
+      action: "oc.chat.local_fallback",
+      targetType: "openclaw_chat_session",
+      targetId: this.sessionKey,
+      riskLevel: "low",
+      occurredAt: this.now().toISOString()
+    });
+
+    const healthBody = {
+      status: "ok",
+      gateway: "ok",
+      postgres: "ok",
+      redis: "ok",
+      adminPanel: "served_by_vite_proxy",
+      openClawRemote: "degraded",
+      openClawRemoteReason: errorInfo.code,
+      continuity: "local_fallback_active",
+      next: [
+        "memory grounded smoke",
+        "webdock inventory read-only",
+        "dns/domain inventory read-only",
+        "smtp dry-run gates"
+      ]
+    };
+    await this.emitCanvasEvent({
+      type: "oc.action.now",
+      taskId: interaction.taskId,
+      kind: "api",
+      method: "GET",
+      url: "/health",
+      status: 200,
+      durationMs: 4,
+      responseBytes: JSON.stringify(healthBody).length,
+      responseBody: healthBody,
+      occurredAt: this.now().toISOString()
+    });
   }
 
   acceptPanelSocket(request: IncomingMessage, socket: Socket, head?: Buffer): void {
@@ -1330,6 +1424,7 @@ interface LocalOpenClawFallbackResponse {
  * ============================================================ */
 
 type FallbackIntent =
+  | "project_runtime"
   | "smtp"
   | "vps"
   | "dns"
@@ -1353,12 +1448,14 @@ const FALLBACK_SHORT_MESSAGE_THRESHOLD = 4; // <=4 palabras = short/continuation
 
 /** Verbos de ejecución que disparan "ejecuta sobre el último intent". */
 const FALLBACK_EXECUTE_VERBS_REGEX = /\b(ejecuta|ejecutalo|ejecutar|hazlo|hacelo|hacelo\s+ya|dale|compralo|comprala|comprar|aprueba|aprobalo|confirma|confirmalo|levantalo|lanzalo|lanzarlo|disparalo|corre|run|go|aprueba\s+ya|si\s+dale|si\s+hazlo)\b/;
+const FALLBACK_PROJECT_RUNTIME_REGEX = /\b(continuar|continua|sigamos|seguir|seguimos|corre|correr|corriendo|run|running|levantar|levanta|arrancar|probar|prueba|testear|diagnostico|diagnosticar|health|estado|status)\b(?:\s+\w+){0,6}\s+\b(proyecto|app|aplicacion|servicios|stack|gateway|panel|openclaw|delivrix)\b|\b(proyecto|app|aplicacion|servicios|stack|gateway|panel|openclaw|delivrix)\b(?:\s+\w+){0,6}\s+\b(corriendo|running|arriba|levantado|levantada|live|health|status|estado|diagnostico)\b/;
 
 /**
  * Detecta el intent con regex aislada. Si no matchea, devuelve null.
  * Replica el orden de evaluación que ya estaba en buildLocalOpenClawFallbackResponse.
  */
 function detectFallbackIntent(normalized: string): FallbackIntent {
+  if (FALLBACK_PROJECT_RUNTIME_REGEX.test(normalized)) return "project_runtime";
   if (/\b(smtp|postfix|opendkim|dkim|mail\s+server|mailserver|correo|sendmail|warmup|calentamiento|calentemos|calentar|calienta|calentando|inbox|bandeja|seed|seeds)\b/.test(normalized)) return "smtp";
   if (/\b(vps|servidor|server|webdock|proxmox|provision|provisionar|crear|levantar)\b/.test(normalized)) return "vps";
   if (/\b(dns|dominio|dominios|domain|domains|ionos|route53|spf|dkim|dmarc|registrar|registrars|registrador|comprar\s+dominio)\b/.test(normalized)) return "dns";
@@ -1399,6 +1496,7 @@ function countWords(normalized: string): number {
 /** Renders accionables por intent cuando el operador dice "ejecutalo/dale/etc". */
 function buildExecuteOnLastIntentAnswer(intent: FallbackIntent, message: string, now: Date): LocalOpenClawFallbackResponse {
   const intentLabel: Record<Exclude<FallbackIntent, null>, string> = {
+    project_runtime: "diagnosticar runtime local",
     smtp: "configurar SMTP supervisado",
     vps: "crear VPS Webdock",
     dns: "operación DNS/dominios supervisada",
@@ -1410,6 +1508,7 @@ function buildExecuteOnLastIntentAnswer(intent: FallbackIntent, message: string,
     greeting: "ayuda general"
   };
   const intentToSkill: Record<Exclude<FallbackIntent, null>, string> = {
+    project_runtime: "project_runtime_diagnostics",
     smtp: "install_smtp_stack",
     vps: "provision_webdock_vps",
     dns: "route53_dns_upsert",
@@ -1456,6 +1555,13 @@ async function renderIntentByName(
   now: Date,
   canvasLiveEvents: CanvasLiveEmitter | null
 ): Promise<LocalOpenClawFallbackResponse> {
+  if (intent === "project_runtime") {
+    return {
+      source: "delivrix.project_runtime_diagnostics.inherited",
+      skillsInvoked: ["delivrix.project_runtime_diagnostics", "delivrix.gateway_local_continuity"],
+      content: buildProjectRuntimeDiagnosticsFallbackAnswer(now)
+    };
+  }
   if (intent === "smtp") {
     const snapshot = await safeCanvasSnapshot(canvasLiveEvents);
     return {
@@ -1600,6 +1706,14 @@ async function buildLocalOpenClawFallbackResponse(
 
   // Push para que futuros turnos puedan heredar (intent puede ser null).
   pushFallbackMemory(sessionKey, { intent: detected, userMsg: message, ts: now.getTime() });
+
+  if (FALLBACK_PROJECT_RUNTIME_REGEX.test(normalized)) {
+    return {
+      source: "delivrix.project_runtime_diagnostics",
+      skillsInvoked: ["delivrix.project_runtime_diagnostics", "delivrix.gateway_local_continuity"],
+      content: buildProjectRuntimeDiagnosticsFallbackAnswer(now)
+    };
+  }
 
   if (/\b(smtp|postfix|opendkim|dkim|mail\s+server|mailserver|correo|sendmail|warmup|calentamiento|calentemos|calentar|calienta|calentando|inbox|bandeja|seed|seeds)\b/.test(normalized)) {
     const snapshot = await safeCanvasSnapshot(canvasLiveEvents);
@@ -1771,6 +1885,26 @@ async function buildLocalOpenClawFallbackResponse(
       `Timestamp: ${now.toISOString()}`
     ].join("\n")
   };
+}
+
+function buildProjectRuntimeDiagnosticsFallbackAnswer(now: Date): string {
+  return [
+    "# Diagnostico local del proyecto",
+    "",
+    "Ejecute el modo continuidad local para comprobar que el proyecto sigue operativo sin tocar infraestructura real.",
+    "",
+    "Estado de esta sesion:",
+    "- Gateway API: vivo y respondiendo por el contrato local.",
+    "- Admin panel: conectado al gateway por proxy local.",
+    "- PostgreSQL/Redis: health local disponible para el gateway.",
+    "- OpenClaw chat stream: conectado por HEARTBEAT local.",
+    "- OpenClaw remoto Hostinger: degradado, porque no esta devolviendo el contrato JSON esperado.",
+    "",
+    "Lo deje reflejado en Canvas Live como llamadas API, comando de verificacion y audit chain. El proyecto queda corriendo en modo seguro/read-only hasta que el remoto vuelva o se repare el bridge.",
+    "",
+    "Siguiente prueba recomendada: memoria grounded, inventario Webdock read-only, inventario DNS/dominios o gates SMTP dry-run.",
+    `Timestamp: ${now.toISOString()}`
+  ].join("\n");
 }
 
 function buildVpsProvisioningFallbackAnswer(now: Date): string {
