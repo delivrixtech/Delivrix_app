@@ -95,14 +95,22 @@ export async function handleReadEpisodicScratchHttp(deps: EpisodicScratchReadDep
     if (error instanceof EpisodicScratchValidationError) {
       return json(deps.response, 400, {
         error: error.code,
-        details: error.message
+        details: episodicScratchValidationDetails(error)
       });
     }
     return json(deps.response, 503, {
       error: "episodic_scratch_unavailable",
-      details: error instanceof Error ? error.message : "Scratch store query failed."
+      details: { _errors: ["Scratch store query failed."] }
     });
   }
+}
+
+function episodicScratchValidationDetails(error: EpisodicScratchValidationError): Record<string, unknown> {
+  return {
+    code: error.code,
+    ...(error.details ? error.details : {}),
+    _errors: ["Episodic scratch validation failed."]
+  };
 }
 
 function redactEntry(entry: EpisodicEntry): EpisodicEntry {

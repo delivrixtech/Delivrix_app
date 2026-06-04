@@ -111,6 +111,34 @@ test("validateAuditEvent accepts namespaced Webdock inventory action", () => {
   assert.doesNotThrow(() => validateAuditEvent(event));
 });
 
+test("validateAuditEvent accepts memory compaction rejection reason", () => {
+  const event = {
+    id: "018f7b54-7d4d-7cc2-9c90-df7486c5a113",
+    occurredAt: "2026-05-19T00:00:00.000Z",
+    actorType: "openclaw",
+    actorId: "compact_intent",
+    action: "oc.episodic.compaction_rejected",
+    targetType: "openclaw_intent",
+    targetId: "intent-1",
+    riskLevel: "medium",
+    decision: "reject",
+    rejectReason: "memory_compaction_rejected",
+    humanApproved: false,
+    approverIds: [],
+    killSwitchState: "unknown",
+    rollbackToken: null,
+    schemaVersion: "2026-05-18.v1",
+    promptVersion: null,
+    modelVersion: null,
+    evidenceRefs: ["openclaw_intent:intent-1"],
+    metadata: { fieldPath: "outcomeData.hostnameFuture" },
+    prevHash: "GENESIS",
+    hash: ""
+  };
+  event.hash = computeAuditHash(event, event.prevHash);
+  assert.doesNotThrow(() => validateAuditEvent(event));
+});
+
 test("validateAuditEvent rejects malformed action id", () => {
   const event = {
     id: "018f7b54-7d4d-7cc2-9c90-df7486c5a111",

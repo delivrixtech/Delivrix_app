@@ -907,11 +907,21 @@ async function compactRunIntent(
       steps
     });
   } catch (error) {
-    void (deps.logger ?? noopGatewayRuntimeLogger).warn("openclaw.orchestrator.compact_intent_failed", "Episodic memory compaction failed.", {
-      runId: input.runId,
-      status: input.status,
-      error: errorMessage(error)
-    });
+    const rejection = compactionRejectionMetadata(error, input.runId, input.status, steps);
+    if (rejection) {
+      void (deps.logger ?? noopGatewayRuntimeLogger).warn(
+        "openclaw.orchestrator.compact_intent_failed",
+        "Episodic memory compaction rejected by storage write gate.",
+        rejection
+      );
+      await appendCompactionRejectedAudit(deps, input.runId, input.status, steps.length, rejection);
+    } else {
+      void (deps.logger ?? noopGatewayRuntimeLogger).warn("openclaw.orchestrator.compact_intent_failed", "Episodic memory compaction failed.", {
+        runId: input.runId,
+        status: input.status,
+        error: errorMessage(error)
+      });
+    }
   }
 }
 
@@ -971,6 +981,151 @@ function summarizeOutcome(value: unknown): Record<string, unknown> {
     output[key] = item;
   }
   return output;
+}
+
+interface CompactionRejectionMetadata {
+  rejectReason: "memory_compaction_rejected";
+  errorCode: string;
+  rejectionStage: string;
+  rejectionKind: string;
+  component: "orchestrator_smtp";
+  intentId: string;
+  finalStatus: ConfigureSmtpStatus;
+  stepsCount: number;
+  compactAttemptId: string;
+  stepsShapeHash: string;
+  fieldPath?: string;
+  fieldKey?: string;
+  fieldKeyHash?: string;
+  normalizedFieldKey?: string;
+  step?: number;
+  tool?: string;
+  inputHash?: string;
+  outcome?: string;
+  valueType?: string;
+  valueLength?: number;
+  arrayLength?: number;
+  objectKeyCount?: number;
+  redaction: {
+    rawValueLogged: false;
+    rawErrorMessageLogged: false;
+    requestBodyLogged: false;
+  };
+}
+
+function compactionRejectionMetadata(
+  error: unknown,
+  runId: string,
+  status: ConfigureSmtpStatus,
+  steps: CompactIntentStepInput[]
+): CompactionRejectionMetadata | undefined {
+  if (!isRecord(error) || typeof error.code !== "string" || !error.code.startsWith("memory_payload_")) {
+    return undefined;
+  }
+  const details = isRecord(error.details) ? error.details : {};
+  const stepsShapeHash = hashInput(steps.map(stepShape));
+  return {
+    errorCode: error.code,
+    rejectionStage: stringRecordValue(details.rejectionStage, "storage_write_gate"),
+    rejectionKind: stringRecordValue(details.rejectionKind, "structured_value_invalid"),
+    component: "orchestrator_smtp",
+    intentId: runId,
+    finalStatus: status,
+    stepsCount: steps.length,
+    compactAttemptId: hashInput({ runId, stepsShapeHash }).slice(0, 32),
+    stepsShapeHash,
+    ...(copyStringDetail(details, "fieldPath")),
+    ...(copyStringDetail(details, "fieldKey")),
+    ...(copyStringDetail(details, "fieldKeyHash")),
+    ...(copyStringDetail(details, "normalizedFieldKey")),
+    ...(copyNumberDetail(details, "step")),
+    ...(copyStringDetail(details, "tool")),
+    ...(copyStringDetail(details, "inputHash")),
+    ...(copyStringDetail(details, "outcome")),
+    ...(copyStringDetail(details, "valueType")),
+    ...(copyNumberDetail(details, "valueLength")),
+    ...(copyNumberDetail(details, "arrayLength")),
+    ...(copyNumberDetail(details, "objectKeyCount")),
+    rejectReason: "memory_compaction_rejected",
+    redaction: {
+      rawValueLogged: false,
+      rawErrorMessageLogged: false,
+      requestBodyLogged: false
+    }
+  };
+}
+
+async function appendCompactionRejectedAudit(
+  deps: ConfigureCompleteSmtpDeps,
+  runId: string,
+  status: ConfigureSmtpStatus,
+  stepsCount: number,
+  rejection: CompactionRejectionMetadata
+): Promise<void> {
+  try {
+    await deps.auditLog.append({
+      actorType: "openclaw",
+      actorId: "configure_complete_smtp",
+      action: "oc.episodic.compaction_rejected",
+      targetType: "openclaw_intent",
+      targetId: runId,
+      riskLevel: rejection.rejectionKind === "instruction_like_text" ? "high" : "medium",
+      decision: "reject",
+      rejectReason: "memory_compaction_rejected",
+      evidenceRefs: [
+        `openclaw_intent:${runId}`,
+        `compact_intent:${rejection.compactAttemptId}`
+      ],
+      metadata: {
+        ...rejection,
+        stepsCount
+      }
+    });
+  } catch (error) {
+    void (deps.logger ?? noopGatewayRuntimeLogger).warn(
+      "openclaw.orchestrator.compaction_rejected_audit_failed",
+      "Episodic memory rejection audit event could not be appended.",
+      {
+        runId,
+        rejectionKind: rejection.rejectionKind,
+        ...(rejection.fieldPath ? { fieldPath: rejection.fieldPath } : {}),
+        error: errorMessage(error)
+      }
+    );
+  }
+}
+
+function stepShape(step: CompactIntentStepInput): Record<string, unknown> {
+  return {
+    step: step.step,
+    tool: step.tool,
+    inputHash: step.inputHash,
+    outcome: step.outcome,
+    outcomeDataShape: step.outcomeData
+      ? Object.fromEntries(Object.entries(step.outcomeData).map(([key, value]) => [key, valueShape(value)]).sort(([left], [right]) => left.localeCompare(right)))
+      : {}
+  };
+}
+
+function valueShape(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `array:${value.length}`;
+  if (typeof value === "object") return `object:${Object.keys(value as Record<string, unknown>).length}`;
+  return typeof value;
+}
+
+function copyStringDetail(record: Record<string, unknown>, key: string): Record<string, string> {
+  const value = record[key];
+  return typeof value === "string" ? { [key]: value } : {};
+}
+
+function copyNumberDetail(record: Record<string, unknown>, key: string): Record<string, number> {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? { [key]: value } : {};
+}
+
+function stringRecordValue(value: unknown, fallback: string): string {
+  return typeof value === "string" && value ? value : fallback;
 }
 
 function totalEstimatedCost(results: ConfigureCompleteSmtpStepResult[]): number {

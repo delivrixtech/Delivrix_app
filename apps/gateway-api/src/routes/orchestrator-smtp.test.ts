@@ -9,6 +9,7 @@ import {
   type ConfigureCompleteSmtpDeps,
   type SkillInvocationInput
 } from "./orchestrator-smtp.ts";
+import { compactIntent } from "./openclaw-compact-intent.ts";
 
 test("configureCompleteSmtp completes the 14-step happy path", async () => {
   const ctx = createDeps();
@@ -322,6 +323,106 @@ test("configureCompleteSmtp compacts completed run into episodic memory", async 
   assert.equal(ctx.compactions[0].steps.every((step) => /^[a-f0-9]{64}$/.test(step.inputHash)), true);
 });
 
+test("configureCompleteSmtp persists compacted steps through the real episodic write gate", async () => {
+  const scratchPool = new MemoryScratchPool();
+  const ctx = createDeps({ signedAuditEvents: true });
+  ctx.deps.compactIntent = async (input) => compactIntent(input, {
+    pool: scratchPool,
+    auditLog: {
+      async append(event) {
+        ctx.auditEvents.push(event as never);
+        return { id: `audit-${ctx.auditEvents.length}`, ...event } as never;
+      },
+      async list() {
+        return ctx.auditEvents as never;
+      }
+    },
+    now: () => new Date("2026-05-31T12:00:00.000Z")
+  });
+
+  const result = await withOperatorSecret("operator-secret", () => configureCompleteSmtp(validInput(), ctx.deps));
+
+  assert.equal(result.status, "completed");
+  assert.equal(scratchPool.rows.length, 14);
+  assert.equal(ctx.logs.some((entry) => entry.event === "openclaw.orchestrator.compact_intent_failed"), false);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.episodic.intent_compacted"), true);
+});
+
+test("configureCompleteSmtp producer outcome keys stay synchronized with memory write gate", async () => {
+  const scratchPool = new MemoryScratchPool();
+  const ctx = createDeps({ signedAuditEvents: true });
+  ctx.deps.compactIntent = async (input) => compactIntent(input, {
+    pool: scratchPool,
+    auditLog: {
+      async append(event) {
+        ctx.auditEvents.push(event as never);
+        return { id: `audit-${ctx.auditEvents.length}`, ...event } as never;
+      },
+      async list() {
+        return ctx.auditEvents as never;
+      }
+    },
+    now: () => new Date("2026-05-31T12:00:00.000Z")
+  });
+
+  await withOperatorSecret("operator-secret", () => configureCompleteSmtp(validInput(), ctx.deps));
+
+  assert.deepEqual(collectOutcomeDataKeys(scratchPool.rows), [
+    "available",
+    "candidates",
+    "deliveryStatus",
+    "dkimPublicKeyHash",
+    "dkimPublicKeyPresent",
+    "domain",
+    "ipv4",
+    "messageId",
+    "ok",
+    "priceUsd",
+    "skill",
+    "slug"
+  ]);
+});
+
+test("configureCompleteSmtp audits storage write-gate compaction rejection", async () => {
+  const ctx = createDeps();
+  ctx.deps.compactIntent = async () => {
+    throw {
+      code: "memory_payload_free_text_forbidden",
+      details: {
+        rejectionStage: "storage_write_gate",
+        rejectionKind: "unknown_outcome_key",
+        fieldPath: "outcomeData.hostnameFuture",
+        fieldKey: "hostnameFuture",
+        normalizedFieldKey: "hostnamefuture",
+        step: 4,
+        tool: "create_webdock_server",
+        inputHash: "a".repeat(64),
+        outcome: "success",
+        valueType: "string",
+        valueLength: 18,
+        redaction: {
+          rawValueLogged: false,
+          rawErrorMessageLogged: false,
+          requestBodyLogged: false
+        }
+      }
+    };
+  };
+
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "completed");
+  const log = ctx.logs.find((entry) => entry.event === "openclaw.orchestrator.compact_intent_failed");
+  assert.equal(log?.metadata?.fieldPath, "outcomeData.hostnameFuture");
+  assert.equal(log?.metadata?.error, undefined);
+  const rejected = ctx.auditEvents.find((event) => event.action === "oc.episodic.compaction_rejected");
+  assert.equal(rejected?.decision, "reject");
+  assert.equal(rejected?.rejectReason, "memory_compaction_rejected");
+  const metadata = rejected?.metadata as { fieldPath?: string; redaction?: { rawErrorMessageLogged?: boolean } } | undefined;
+  assert.equal(metadata?.fieldPath, "outcomeData.hostnameFuture");
+  assert.equal(metadata?.redaction?.rawErrorMessageLogged, false);
+});
+
 test("configureCompleteSmtp compacts failed step with failure evidence", async () => {
   const ctx = createDeps({
     compactIntent: true,
@@ -383,25 +484,28 @@ function createDeps(options: {
   env?: Record<string, string | undefined>;
   canvasEmitFails?: boolean;
   compactIntent?: boolean;
+  signedAuditEvents?: boolean;
 } = {}): {
   deps: ConfigureCompleteSmtpDeps;
   approvals: ApprovalStepInput[];
   invocations: SkillInvocationInput[];
   rollbacks: Array<{ skill: string; params: Record<string, unknown> }>;
-  auditEvents: Array<{ action: string; metadata?: unknown }>;
+  auditEvents: Array<Record<string, unknown> & { action: string; metadata?: unknown }>;
   canvasEvents: Array<Record<string, unknown> & { action?: string }>;
   compactions: Array<{
     intentId: string;
     finalStatus: string;
     steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string; outcomeData?: Record<string, unknown> }>;
   }>;
+  logs: Array<{ level: string; event: string; metadata?: Record<string, unknown> }>;
   verifyCount: number;
 } {
   const approvals: ApprovalStepInput[] = [];
   const invocations: SkillInvocationInput[] = [];
   const rollbacks: Array<{ skill: string; params: Record<string, unknown> }> = [];
-  const auditEvents: Array<{ action: string; metadata?: unknown }> = [];
+  const auditEvents: Array<Record<string, unknown> & { action: string; metadata?: unknown }> = [];
   const canvasEvents: Array<Record<string, unknown> & { action?: string }> = [];
+  const logs: Array<{ level: string; event: string; metadata?: Record<string, unknown> }> = [];
   const compactions: Array<{
     intentId: string;
     finalStatus: string;
@@ -412,7 +516,7 @@ function createDeps(options: {
   const ctx = {
     deps: {
       auditLog: {
-        async append(event: { action: string; metadata?: unknown }) {
+        async append(event: Record<string, unknown> & { action: string; metadata?: unknown }) {
           auditEvents.push(event);
           return { id: `audit-${auditEvents.length}` };
         }
@@ -430,6 +534,21 @@ function createDeps(options: {
         approvals.push(input);
         const decision = options.decisions?.[input.step];
         if (decision) return decision;
+        if (options.signedAuditEvents) {
+          auditEvents.push({
+            id: `audit-sig-${input.step}`,
+            occurredAt: "2026-05-31T12:00:00.000Z",
+            action: "oc.proposal.signed",
+            targetType: "proposal",
+            targetId: `proposal-${input.step}`,
+            actorType: "operator",
+            actorId: input.actorId,
+            decision: "allow",
+            humanApproved: true,
+            metadata: { signatureId: `sig-${input.step}` },
+            hash: `hash-sig-${input.step}`
+          });
+        }
         return {
           status: "executed",
           proposalId: `proposal-${input.step}`,
@@ -470,7 +589,19 @@ function createDeps(options: {
       } : {}),
       env: options.env ?? {},
       now: () => new Date("2026-05-31T12:00:00.000Z"),
-      randomId: () => "run-1"
+      randomId: () => "run-1",
+      logger: {
+        logPath: "",
+        info: async (event, _message, metadata) => {
+          logs.push({ level: "info", event, ...(metadata ? { metadata } : {}) });
+        },
+        warn: async (event, _message, metadata) => {
+          logs.push({ level: "warn", event, ...(metadata ? { metadata } : {}) });
+        },
+        error: async (event, _message, metadata) => {
+          logs.push({ level: "error", event, ...(metadata ? { metadata } : {}) });
+        }
+      }
     } satisfies ConfigureCompleteSmtpDeps,
     approvals,
     invocations,
@@ -478,6 +609,7 @@ function createDeps(options: {
     auditEvents,
     canvasEvents,
     compactions,
+    logs,
     get verifyCount() {
       return verifyCount;
     }
@@ -491,4 +623,108 @@ function defaultOutcome(step: number): unknown {
   if (step === 9) return { dkimPublicKey: "v=DKIM1; k=rsa; p=abc" };
   if (step === 14) return { messageId: "msg-1", deliveryStatus: "sent" };
   return { ok: true };
+}
+
+async function withOperatorSecret<T>(secret: string, fn: () => T | Promise<T>): Promise<T> {
+  const previous = process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
+  process.env.OPENCLAW_OPERATOR_HMAC_SECRET = secret;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
+    } else {
+      process.env.OPENCLAW_OPERATOR_HMAC_SECRET = previous;
+    }
+  }
+}
+
+interface MemoryRow {
+  id: string;
+  intent_id: string;
+  step: number;
+  tool: string;
+  input_hash: string;
+  outcome: string;
+  outcome_data: Record<string, unknown> | null;
+  error_class: string | null;
+  error_message: string | null;
+  source: string;
+  trust_score: number;
+  plane: string;
+  provenance: Record<string, unknown>;
+  reliability: number;
+  valid_at: Date;
+  invalid_at: Date | null;
+  ttl_expires_at: Date;
+  created_at: Date;
+  metadata: Record<string, unknown>;
+}
+
+class MemoryScratchPool {
+  rows: MemoryRow[] = [];
+  now = new Date("2026-05-31T12:00:00.000Z");
+  #id = 0;
+
+  async query(sql: string, params: unknown[] = []): Promise<{ rows: MemoryRow[]; rowCount: number }> {
+    if (!sql.includes("INSERT INTO openclaw_episodic_scratch")) {
+      throw new Error(`Unexpected SQL in orchestrator memory test: ${sql}`);
+    }
+    const ttlDays = Number(params[15]);
+    const row: MemoryRow = {
+      id: `scratch-${++this.#id}`,
+      intent_id: String(params[0]),
+      step: Number(params[1]),
+      tool: String(params[2]),
+      input_hash: String(params[3]),
+      outcome: String(params[4]),
+      outcome_data: parseJsonRecord(params[5]),
+      error_class: typeof params[6] === "string" ? params[6] : null,
+      error_message: typeof params[7] === "string" ? params[7] : null,
+      source: String(params[8]),
+      trust_score: Number(params[9]),
+      plane: String(params[10]),
+      provenance: parseJsonRecord(params[11]) ?? {},
+      reliability: Number(params[12]),
+      valid_at: params[13] instanceof Date ? params[13] : new Date(String(params[13])),
+      invalid_at: params[14] instanceof Date ? params[14] : null,
+      ttl_expires_at: new Date(this.now.getTime() + ttlDays * 24 * 60 * 60 * 1000),
+      created_at: new Date(this.now.getTime() + this.#id),
+      metadata: parseJsonRecord(params[16]) ?? {}
+    };
+    this.rows.push(row);
+    return { rows: [row], rowCount: 1 };
+  }
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "string") {
+    const parsed = JSON.parse(value) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  }
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function collectOutcomeDataKeys(rows: MemoryRow[]): string[] {
+  const keys = new Set<string>();
+  for (const row of rows) {
+    collectKeys(row.outcome_data, keys);
+  }
+  return [...keys].sort((left, right) => left.localeCompare(right));
+}
+
+function collectKeys(value: unknown, keys: Set<string>): void {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectKeys(item, keys));
+    return;
+  }
+  if (typeof value !== "object" || value === null) return;
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    keys.add(key);
+    collectKeys(item, keys);
+  }
 }

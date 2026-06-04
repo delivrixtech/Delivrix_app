@@ -74,6 +74,41 @@ test("compactIntent rejects poisoned outcomeData before persistence", async () =
   assert.equal(ctx.pool.rows.length, 0);
 });
 
+test("compactIntent prevalidates all steps before writing scratch rows", async () => {
+  const ctx = context();
+
+  await assert.rejects(
+    () => compactIntent({
+      intentId: "intent-1",
+      finalStatus: "completed",
+      decision: "stored",
+      steps: [
+        {
+          step: 1,
+          tool: "read_episodic_scratch",
+          inputHash: "a".repeat(64),
+          outcome: "success",
+          outcomeData: { status: "available" }
+        },
+        {
+          step: 2,
+          tool: "read_episodic_scratch",
+          inputHash: "b".repeat(64),
+          outcome: "success",
+          outcomeData: { unexpectedProducerKey: "domain_candidate_safe" }
+        }
+      ]
+    }, ctx.deps),
+    (error) =>
+      error instanceof EpisodicScratchValidationError &&
+      error.code === "memory_payload_free_text_forbidden" &&
+      error.details?.fieldPath === "outcomeData.unexpectedProducerKey"
+  );
+
+  assert.equal(ctx.pool.rows.length, 0);
+  assert.equal(ctx.events.some((event) => event.action === "oc.episodic.intent_compacted"), false);
+});
+
 test("compactIntent fails closed when operator signature secret is missing", async () => {
   const previous = process.env.OPENCLAW_OPERATOR_HMAC_SECRET;
   delete process.env.OPENCLAW_OPERATOR_HMAC_SECRET;

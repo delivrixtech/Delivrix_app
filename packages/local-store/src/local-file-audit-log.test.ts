@@ -69,6 +69,30 @@ test("LocalFileAuditLog serializes concurrent Promise.all appends across two ins
   }
 });
 
+test("LocalFileAuditLog preserves memory compaction rejection reason", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "delivrix-audit-reject-reason-"));
+  t.after(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const filePath = join(dir, "audit-events.jsonl");
+  const auditLog = new LocalFileAuditLog(filePath);
+
+  const stored = await auditLog.append({
+    ...event("intent-1"),
+    actorType: "openclaw",
+    actorId: "compact_intent",
+    action: "oc.episodic.compaction_rejected",
+    targetType: "openclaw_intent",
+    decision: "reject",
+    rejectReason: "memory_compaction_rejected",
+    riskLevel: "medium",
+    metadata: { fieldPath: "outcomeData.hostnameFuture" }
+  });
+
+  assert.equal(stored.rejectReason, "memory_compaction_rejected");
+  assert.equal((await auditLog.list())[0]?.rejectReason, "memory_compaction_rejected");
+});
+
 function event(targetId: string): AuditEventInput {
   return {
     actorType: "system",

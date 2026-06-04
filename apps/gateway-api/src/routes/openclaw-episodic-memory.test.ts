@@ -93,6 +93,30 @@ test("handleReadEpisodicScratchHttp fails closed when no read boundary token is 
   assert.equal((captured.body as { error: string }).error, "read_boundary_token_required");
 });
 
+test("handleReadEpisodicScratchHttp does not expose raw store errors", async () => {
+  const { request, response, getResponse } = createInternalHttpAdapter({
+    method: "GET",
+    url: "/v1/openclaw/scratch?intentId=intent-1",
+    headers: { "x-delivrix-token": "expected-token" }
+  });
+
+  await handleReadEpisodicScratchHttp({
+    request,
+    response,
+    pool: {
+      async query() {
+        throw new Error("raw database secret should not leak");
+      }
+    },
+    readBoundaryToken: "expected-token"
+  });
+
+  const captured = getResponse();
+  assert.equal(captured.statusCode, 503);
+  assert.equal((captured.body as { error: string }).error, "episodic_scratch_unavailable");
+  assert.equal(JSON.stringify(captured.body).includes("raw database secret"), false);
+});
+
 test("compactIntent writes entries and appends hash-only audit metadata", async () => {
   const pool = new MemoryScratchPool();
   const auditEvents: Array<{ action: string; targetId: string; metadata?: Record<string, unknown> }> = [
@@ -297,8 +321,23 @@ test("handleCompactIntentHttp rejects poisoned outcomeData before writing scratc
 
   const captured = getResponse();
   assert.equal(captured.statusCode, 400);
-  assert.equal((captured.body as { error: string }).error, "memory_payload_instruction_injection");
+  const body = captured.body as {
+    error: string;
+    code: string;
+    rejectReason: string;
+    details: { fieldPath: string; rejectionKind: string; rawErrorMessageLogged?: boolean };
+  };
+  assert.equal(body.error, "compact_intent_rejected");
+  assert.equal(body.code, "memory_payload_instruction_injection");
+  assert.equal(body.rejectReason, "memory_compaction_rejected");
+  assert.equal(body.details.fieldPath, "outcomeData.note");
+  assert.equal(body.details.rejectionKind, "instruction_like_text");
   assert.equal(pool.rows.length, 0);
+  const rejected = auditEvents.find((event) => event.action === "oc.episodic.compaction_rejected");
+  const rejectedMetadata = rejected?.metadata as { fieldPath?: string; redaction?: { rawErrorMessageLogged?: boolean } } | undefined;
+  assert.equal(rejected?.targetId, "intent-1");
+  assert.equal(rejectedMetadata?.fieldPath, "outcomeData.note");
+  assert.equal(rejectedMetadata?.redaction?.rawErrorMessageLogged, false);
 });
 
 test("handleCompactIntentHttp returns 400 intent_id_not_found for invented intent ids", async () => {
