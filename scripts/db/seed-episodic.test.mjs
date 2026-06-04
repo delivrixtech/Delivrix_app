@@ -76,6 +76,32 @@ test("episodic review seed entries pass the real scratch write gate", async () =
   );
 });
 
+test("episodic review seed producer keys stay synchronized with the write gate", () => {
+  const keys = collectOutcomeDataKeys(buildEpisodicReviewSeedEntries(localEnv));
+
+  assert.deepEqual(keys, [
+    "appliesTo",
+    "approvedLimitPerDay",
+    "autoRenew",
+    "continuity",
+    "decisionCode",
+    "domain",
+    "gates",
+    "highImpactAction",
+    "invalidationReason",
+    "maxDailyRamp",
+    "mode",
+    "noteCode",
+    "recordType",
+    "rejectionCode",
+    "reputationSignals",
+    "rollbackCode",
+    "schedule",
+    "serverSlug",
+    "zoneId"
+  ]);
+});
+
 test("episodic review seed refuses production and non-local targets", () => {
   assert.throws(
     () => assertEpisodicReviewSeedAllowed({ ...localEnv, NODE_ENV: "production" }),
@@ -167,5 +193,25 @@ async function withOperatorSecret(secret, fn) {
     } else {
       process.env.OPENCLAW_OPERATOR_HMAC_SECRET = previous;
     }
+  }
+}
+
+function collectOutcomeDataKeys(entries) {
+  const keys = new Set();
+  for (const entry of entries) {
+    collectKeys(entry.outcomeData, keys);
+  }
+  return [...keys].sort((left, right) => left.localeCompare(right));
+}
+
+function collectKeys(value, keys) {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectKeys(item, keys));
+    return;
+  }
+  if (typeof value !== "object" || value === null) return;
+  for (const [key, item] of Object.entries(value)) {
+    keys.add(key);
+    collectKeys(item, keys);
   }
 }

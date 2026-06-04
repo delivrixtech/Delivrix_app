@@ -16,7 +16,8 @@ const rejectReasons = new Set([
   "rate_limit_exceeded",
   "duplicate_proposal",
   "gateway_internal_error",
-  "gateway_timeout"
+  "gateway_timeout",
+  "memory_compaction_rejected"
 ]);
 const killSwitchStates = new Set(["armed", "active", "unknown"]);
 const riskLevels = new Set(["low", "medium", "high", "critical"]);

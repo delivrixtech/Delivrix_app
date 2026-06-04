@@ -10,6 +10,9 @@ import {
   EpisodicScratchValidationError,
   insertEpisodicEntry,
   stableStringify,
+  validateEpisodicEntryInput,
+  type EpisodicScratchValidationDetails,
+  type InsertEntryInput,
   type ScratchOutcome,
   type ScratchSource
 } from "../../../../packages/storage/src/index.ts";
@@ -107,19 +110,31 @@ export async function handleCompactIntentHttp(
     });
   }
 
+  let input: CompactIntentInput | undefined;
   try {
-    const output = await compactIntent(parseCompactIntentInput(body), deps);
+    input = parseCompactIntentInput(body);
+    const output = await compactIntent(input, deps);
     return json(deps.response, 200, output);
   } catch (error) {
     if (error instanceof CompactIntentValidationError || error instanceof EpisodicScratchValidationError) {
+      if (error instanceof EpisodicScratchValidationError) {
+        const details = compactionRejectionMetadata(error, input, "compact_intent_http", "/v1/openclaw/compact-intent");
+        await appendCompactionRejectedAudit(deps, input, details);
+        return json(deps.response, 400, {
+          error: "compact_intent_rejected",
+          code: error.code,
+          rejectReason: "memory_compaction_rejected",
+          details
+        });
+      }
       return json(deps.response, 400, {
         error: error.code,
-        details: error.message
+        details: compactIntentValidationDetails(error)
       });
     }
     return json(deps.response, 503, {
       error: "compact_intent_failed",
-      details: error instanceof Error ? error.message : "Intent compaction failed."
+      details: { _errors: ["Intent compaction failed."] }
     });
   }
 }
@@ -135,14 +150,13 @@ export async function compactIntent(
     );
   }
 
-  const scratchIds: string[] = [];
-  let ttlExpiresAt: string | undefined;
+  const pendingEntries: InsertEntryInput[] = [];
   for (const step of input.steps) {
     const operatorSignature = await verifiedOperatorSignatureForStep(step, deps.auditLog);
     const source = memorySourceForStep(step, operatorSignature);
     const metadata = compactMetadataForStep(step, input, operatorSignature);
     const provenance = compactProvenanceForStep(step, source);
-    const inserted = await insertEpisodicEntry(deps.pool, {
+    pendingEntries.push({
       intentId: input.intentId,
       step: step.step,
       tool: step.tool,
@@ -157,6 +171,16 @@ export async function compactIntent(
       ttlDays: input.ttlDays ?? 30,
       metadata
     });
+  }
+
+  for (const entry of pendingEntries) {
+    validateEpisodicEntryInput(entry);
+  }
+
+  const scratchIds: string[] = [];
+  let ttlExpiresAt: string | undefined;
+  for (const entry of pendingEntries) {
+    const inserted = await insertEpisodicEntry(deps.pool, entry);
     scratchIds.push(inserted.id);
     ttlExpiresAt = inserted.ttlExpiresAt.toISOString();
   }
@@ -212,6 +236,108 @@ export class CompactIntentValidationError extends Error {
     this.name = "CompactIntentValidationError";
     this.code = code;
   }
+}
+
+function compactIntentValidationDetails(error: CompactIntentValidationError): Record<string, unknown> {
+  return {
+    code: error.code,
+    _errors: ["Compact intent validation failed."]
+  };
+}
+
+interface CompactionRejectionMetadata extends Omit<EpisodicScratchValidationDetails, "redaction"> {
+  rejectReason: "memory_compaction_rejected";
+  errorCode: string;
+  component: "compact_intent_http";
+  route: "/v1/openclaw/compact-intent";
+  intentId: string;
+  finalStatus: string;
+  stepsCount: number;
+  compactAttemptId: string;
+  stepsShapeHash: string;
+  redaction: EpisodicScratchValidationDetails["redaction"];
+}
+
+function compactionRejectionMetadata(
+  error: EpisodicScratchValidationError,
+  input: CompactIntentInput | undefined,
+  component: "compact_intent_http",
+  route: "/v1/openclaw/compact-intent"
+): CompactionRejectionMetadata {
+  const base = error.details ?? fallbackValidationDetails(error);
+  const stepsShapeHash = hashJson(input?.steps.map(stepShape) ?? []);
+  return {
+    ...base,
+    rejectReason: "memory_compaction_rejected",
+    errorCode: error.code,
+    component,
+    route,
+    intentId: input?.intentId ?? "unknown",
+    finalStatus: input?.finalStatus ?? "unknown",
+    stepsCount: input?.steps.length ?? 0,
+    compactAttemptId: hashJson({
+      intentId: input?.intentId ?? "unknown",
+      stepsShapeHash
+    }).slice(0, 32),
+    stepsShapeHash
+  };
+}
+
+async function appendCompactionRejectedAudit(
+  deps: CompactIntentDeps,
+  input: CompactIntentInput | undefined,
+  details: CompactionRejectionMetadata
+): Promise<void> {
+  try {
+    await deps.auditLog.append({
+      actorType: "openclaw",
+      actorId: input?.actorId ?? "compact_intent",
+      action: "oc.episodic.compaction_rejected",
+      targetType: "openclaw_intent",
+      targetId: input?.intentId ?? "unknown",
+      riskLevel: details.rejectionKind === "instruction_like_text" ? "high" : "medium",
+      decision: "reject",
+      rejectReason: "memory_compaction_rejected",
+      evidenceRefs: [
+        `openclaw_intent:${input?.intentId ?? "unknown"}`,
+        `compact_intent:${details.compactAttemptId}`
+      ],
+      metadata: details
+    });
+  } catch {
+    // The client still needs the typed 400 response; audit append failures are surfaced by the audit backend.
+  }
+}
+
+function fallbackValidationDetails(error: EpisodicScratchValidationError): EpisodicScratchValidationDetails {
+  return {
+    rejectionStage: "storage_write_gate",
+    rejectionKind: error.code === "memory_payload_instruction_injection" ? "instruction_like_text" : "structured_value_invalid",
+    redaction: {
+      rawValueLogged: false,
+      rawErrorMessageLogged: false,
+      requestBodyLogged: false
+    }
+  };
+}
+
+function stepShape(step: CompactIntentStep): Record<string, unknown> {
+  return {
+    step: step.step,
+    tool: step.tool,
+    inputHash: step.inputHash,
+    outcome: step.outcome,
+    outcomeDataShape: step.outcomeData
+      ? Object.fromEntries(Object.entries(step.outcomeData).map(([key, value]) => [key, valueShape(value)]).sort(([left], [right]) => left.localeCompare(right)))
+      : {}
+  };
+}
+
+function valueShape(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `array:${value.length}`;
+  if (typeof value === "object") return `object:${Object.keys(value as Record<string, unknown>).length}`;
+  return typeof value;
 }
 
 function parseCompactIntentInput(value: unknown): CompactIntentInput {

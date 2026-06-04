@@ -125,6 +125,35 @@ export interface GroundedMemoryRetrievalOutput {
 }
 
 type QueryablePool = Pick<Pool, "query">;
+export type EpisodicScratchRejectionKind =
+  | "unknown_outcome_key"
+  | "forbidden_key_fragment"
+  | "structured_value_invalid"
+  | "zero_width_control_chars"
+  | "instruction_like_text"
+  | "payload_too_large";
+
+export interface EpisodicScratchValidationDetails {
+  rejectionStage: "storage_write_gate";
+  rejectionKind: EpisodicScratchRejectionKind;
+  fieldPath?: string;
+  fieldKey?: string;
+  fieldKeyHash?: string;
+  normalizedFieldKey?: string;
+  step?: number;
+  tool?: string;
+  inputHash?: string;
+  outcome?: ScratchOutcome;
+  valueType?: "string" | "array" | "object" | "number" | "boolean" | "null";
+  valueLength?: number;
+  arrayLength?: number;
+  objectKeyCount?: number;
+  redaction: {
+    rawValueLogged: false;
+    rawErrorMessageLogged: false;
+    requestBodyLogged: false;
+  };
+}
 
 const outcomes: ScratchOutcome[] = [
   "success",
@@ -164,42 +193,84 @@ const forbiddenOutcomeKeyFragments = [
 const outcomeStringAllowedKeys = new Set([
   "appliesto",
   "continuity",
+  "changeid",
   "decisioncode",
   "deliverystatus",
   "dkimpublickeyhash",
   "domain",
   "error",
+  "eventid",
+  "expectedexpiry",
+  "failurecode",
+  "hostname",
   "invalidationreason",
   "ipv4",
+  "lastseen",
+  "maindomain",
   "messageid",
   "mode",
+  "msgid",
+  "name",
+  "nameserver",
   "notecode",
+  "nextbatchat",
+  "operationid",
+  "operatoraction",
+  "previousmaindomain",
   "providerrequestid",
+  "rampid",
+  "recordname",
   "recordtype",
+  "recordvalue",
+  "registrar",
+  "region",
+  "requestid",
+  "reservationoperationid",
   "rejectioncode",
   "retry",
   "rollbackcode",
+  "rrsetid",
+  "runid",
   "schedule",
+  "scheduledat",
+  "seeddomain",
   "serverip",
   "serverslug",
+  "selector",
+  "shelluserid",
+  "skill",
+  "sshusername",
+  "state",
   "slug",
   "status",
+  "tlsstatus",
+  "type",
   "value",
+  "zone",
   "zoneid"
 ]);
 const outcomeStringArrayAllowedKeys = new Set([
+  "blockedreasons",
+  "blockers",
   "gates",
+  "nameservers",
+  "recordvalues",
+  "rrsetids",
+  "seeddomains",
+  "values",
   "messageids",
   "reputationsignals"
 ]);
 
 export class EpisodicScratchValidationError extends Error {
   readonly code: string;
+  readonly details?: EpisodicScratchValidationDetails;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, details?: EpisodicScratchValidationDetails) {
     super(message);
     this.name = "EpisodicScratchValidationError";
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -207,7 +278,7 @@ export async function insertEpisodicEntry(
   pool: QueryablePool,
   entry: InsertEntryInput
 ): Promise<EpisodicEntry> {
-  const normalized = normalizeInsert(entry);
+  const normalized = normalizeInsertWithContext(entry);
   const result = await pool.query(
     `
       INSERT INTO openclaw_episodic_scratch (
@@ -327,6 +398,10 @@ export async function insertEpisodicEntry(
     );
   }
   return rowToEntry(row);
+}
+
+export function validateEpisodicEntryInput(entry: InsertEntryInput): void {
+  normalizeInsertWithContext(entry);
 }
 
 export async function queryByIntent(
@@ -572,6 +647,29 @@ export async function invalidateEpisodicFacts(
   return typeof result.rowCount === "number" ? result.rowCount : rows(result).length;
 }
 
+function normalizeInsertWithContext(entry: InsertEntryInput): InsertEntryInput & {
+  trustScore: number;
+  plane: ScratchPlane;
+  provenance: Record<string, unknown>;
+  reliability: number;
+  validAt: Date;
+  invalidAt: Date | null;
+  ttlDays: number;
+} {
+  try {
+    return normalizeInsert(entry);
+  } catch (error) {
+    if (error instanceof EpisodicScratchValidationError && error.details) {
+      throw new EpisodicScratchValidationError(
+        error.code,
+        error.message,
+        validationDetailsWithEntryContext(error.details, entry)
+      );
+    }
+    throw error;
+  }
+}
+
 function normalizeInsert(entry: InsertEntryInput): InsertEntryInput & {
   trustScore: number;
   plane: ScratchPlane;
@@ -662,6 +760,21 @@ function normalizeInsert(entry: InsertEntryInput): InsertEntryInput & {
     invalidAt: entry.invalidAt ?? null,
     ttlDays,
     metadata
+  };
+}
+
+function validationDetailsWithEntryContext(
+  details: EpisodicScratchValidationDetails,
+  entry: InsertEntryInput
+): EpisodicScratchValidationDetails {
+  return {
+    ...details,
+    ...(Number.isInteger(entry.step) ? { step: Number(entry.step) } : {}),
+    ...(typeof entry.tool === "string" ? { tool: entry.tool } : {}),
+    ...(typeof entry.inputHash === "string" ? { inputHash: entry.inputHash } : {}),
+    ...(typeof entry.outcome === "string" && outcomes.includes(entry.outcome as ScratchOutcome)
+      ? { outcome: entry.outcome as ScratchOutcome }
+      : {})
   };
 }
 
@@ -946,7 +1059,8 @@ function assertStructuredOutcomeData(value: unknown, field: string): void {
   if (serialized.length > maxStructuredPayloadBytes) {
     throw new EpisodicScratchValidationError(
       `${field}_too_large`,
-      `${field} exceeds the episodic scratch write-gate size limit.`
+      `${field} exceeds the episodic scratch write-gate size limit.`,
+      validationDetails("payload_too_large", field, value)
     );
   }
   walkOutcomeData(value, field, undefined);
@@ -984,32 +1098,47 @@ function walkOutcomeData(value: unknown, path: string, parentKey: string | undef
   }
   if (!isRecord(value)) return;
   for (const [key, item] of Object.entries(value)) {
-    assertStructuredOutcomeKey(key, `${path}.${key}`);
+    assertStructuredOutcomeKey(key, `${path}.${key}`, item);
     walkOutcomeData(item, `${path}.${key}`, key);
   }
 }
 
-function assertStructuredOutcomeKey(key: string, path: string): void {
+function assertStructuredOutcomeKey(key: string, path: string, value: unknown): void {
   const normalized = normalizeMemoryKey(key);
   if (forbiddenOutcomeKeyFragments.some((fragment) => normalized.includes(fragment))) {
     throw new EpisodicScratchValidationError(
       "memory_payload_free_text_forbidden",
-      `${path} is not allowed in episodic outcomeData.`
+      `${path} is not allowed in episodic outcomeData.`,
+      validationDetails("forbidden_key_fragment", path, value, key)
     );
   }
 }
 
 function assertStructuredOutcomeString(value: string, path: string, parentKey: string | undefined): void {
-  assertStructuredText(value, path);
   const normalizedKey = normalizeMemoryKey(parentKey ?? "");
   const allowed =
     outcomeStringAllowedKeys.has(normalizedKey) ||
     outcomeStringArrayAllowedKeys.has(normalizedKey) ||
     isHashOutcomeString(normalizedKey, value);
+  if (zeroWidthPresencePattern.test(value)) {
+    throw new EpisodicScratchValidationError(
+      "memory_payload_instruction_injection",
+      `${path} contains invisible control characters and was rejected by the write gate.`,
+      validationDetails("zero_width_control_chars", path, value, parentKey)
+    );
+  }
+  if (injectionPattern.test(normalizeGuardText(value))) {
+    throw new EpisodicScratchValidationError(
+      "memory_payload_instruction_injection",
+      `${path} contains instruction-like text and was rejected by the write gate.`,
+      validationDetails("instruction_like_text", path, value, parentKey)
+    );
+  }
   if (!allowed || !isStructuredOutcomeString(value, normalizedKey)) {
     throw new EpisodicScratchValidationError(
       "memory_payload_free_text_forbidden",
-      `${path} must be structured machine data, not free text.`
+      `${path} must be structured machine data, not free text.`,
+      validationDetails(allowed ? "structured_value_invalid" : "unknown_outcome_key", path, value, parentKey)
     );
   }
 }
@@ -1052,15 +1181,42 @@ function isStructuredOutcomeString(value: string, normalizedKey: string): boolea
   const trimmed = value.trim();
   if (zeroWidthPresencePattern.test(value)) return false;
   if (injectionPattern.test(normalizeGuardText(value))) return false;
+  if (normalizedKey === "expectedexpiry" || normalizedKey === "lastseen" || normalizedKey === "nextbatchat" || normalizedKey === "scheduledat") {
+    return isStructuredTimestampOrSentinel(trimmed, normalizedKey);
+  }
+  if (normalizedKey === "recordvalue" || normalizedKey === "recordvalues") return isStructuredDnsRecordValue(trimmed);
+  if (normalizedKey === "value" || normalizedKey === "values") return isStructuredGenericValue(trimmed);
+  if (isProviderIdKey(normalizedKey)) {
+    return /^\/?[A-Za-z0-9][A-Za-z0-9_.:/<>\-]{0,199}$/.test(trimmed);
+  }
   if (!structuredOutcomeStringPattern.test(trimmed)) return false;
-  if (normalizedKey === "domain") {
-    return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(trimmed);
+  if (
+    normalizedKey === "domain" ||
+    normalizedKey === "hostname" ||
+    normalizedKey === "maindomain" ||
+    normalizedKey === "nameserver" ||
+    normalizedKey === "nameservers" ||
+    normalizedKey === "previousmaindomain" ||
+    normalizedKey === "seeddomain" ||
+    normalizedKey === "seeddomains" ||
+    normalizedKey === "zone"
+  ) {
+    return isStructuredDnsName(trimmed);
+  }
+  if (normalizedKey === "name" || normalizedKey === "recordname") {
+    return isStructuredDnsOwnerName(trimmed);
   }
   if (normalizedKey === "ipv4" || normalizedKey === "serverip") {
     return /^(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?:\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}$/.test(trimmed);
   }
-  if (normalizedKey === "recordtype") {
+  if (normalizedKey === "region") {
+    return /^[a-z]{2}(?:-gov)?-[a-z]+-\d$/i.test(trimmed);
+  }
+  if (normalizedKey === "recordtype" || normalizedKey === "type") {
     return /^(A|AAAA|CNAME|MX|TXT|NS|SOA|PTR|SRV|CAA)$/i.test(trimmed);
+  }
+  if (normalizedKey === "selector") {
+    return /^[a-z0-9][a-z0-9_-]{0,62}$/i.test(trimmed);
   }
   return true;
 }
@@ -1103,6 +1259,100 @@ function hashJson(value: unknown): string {
 
 function isHashOutcomeString(normalizedKey: string, value: string): boolean {
   return normalizedKey.endsWith("hash") && /^[a-f0-9]{64}$/i.test(value.trim());
+}
+
+function validationDetails(
+  rejectionKind: EpisodicScratchRejectionKind,
+  fieldPath: string,
+  value: unknown,
+  fieldKey?: string
+): EpisodicScratchValidationDetails {
+  const safeKey = fieldKey && /^[A-Za-z0-9_.:-]{1,64}$/.test(fieldKey) ? fieldKey : undefined;
+  const unsafeKeyHash = fieldKey && !safeKey ? createHash("sha256").update(fieldKey).digest("hex") : undefined;
+  const valueShape = validationValueShape(value);
+  return {
+    rejectionStage: "storage_write_gate",
+    rejectionKind,
+    fieldPath,
+    ...(safeKey ? { fieldKey: safeKey } : {}),
+    ...(unsafeKeyHash ? { fieldKeyHash: unsafeKeyHash } : {}),
+    ...(fieldKey ? { normalizedFieldKey: normalizeMemoryKey(fieldKey) } : {}),
+    ...valueShape,
+    redaction: {
+      rawValueLogged: false,
+      rawErrorMessageLogged: false,
+      requestBodyLogged: false
+    }
+  };
+}
+
+function validationValueShape(value: unknown): Pick<
+  EpisodicScratchValidationDetails,
+  "valueType" | "valueLength" | "arrayLength" | "objectKeyCount"
+> {
+  if (value === null) return { valueType: "null" };
+  if (typeof value === "string") return { valueType: "string", valueLength: value.length };
+  if (Array.isArray(value)) return { valueType: "array", arrayLength: value.length };
+  if (isRecord(value)) return { valueType: "object", objectKeyCount: Object.keys(value).length };
+  if (typeof value === "number") return { valueType: "number" };
+  if (typeof value === "boolean") return { valueType: "boolean" };
+  return {};
+}
+
+function isStructuredDnsName(value: string): boolean {
+  const trimmed = value.replace(/\.$/, "");
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(trimmed);
+}
+
+function isStructuredDnsOwnerName(value: string): boolean {
+  const trimmed = value.replace(/\.$/, "");
+  return /^_?[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?(?:\._?[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?)+$/i.test(trimmed);
+}
+
+function isStructuredDnsRecordValue(value: string): boolean {
+  if (/^(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?:\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}$/.test(value)) {
+    return true;
+  }
+  if (isStructuredDnsName(value)) {
+    return true;
+  }
+  if (/^\d{1,5}\s+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\.?$/i.test(value)) {
+    return true;
+  }
+  return /^v=(SPF1|DKIM1|DMARC1)\b[ A-Za-z0-9_.:@/<>=;+~?-]{0,190}$/i.test(value);
+}
+
+function isStructuredGenericValue(value: string): boolean {
+  return isStructuredDnsRecordValue(value) || structuredOutcomeStringPattern.test(value);
+}
+
+function isStructuredTimestampOrSentinel(value: string, normalizedKey: string): boolean {
+  if (normalizedKey === "lastseen" && (value === "(nxdomain)" || value === "(resolver_error)")) {
+    return true;
+  }
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) {
+    return true;
+  }
+  return normalizedKey === "lastseen" && value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .every(isStructuredDnsRecordValue);
+}
+
+function isProviderIdKey(normalizedKey: string): boolean {
+  return [
+    "changeid",
+    "eventid",
+    "operationid",
+    "providerrequestid",
+    "rampid",
+    "requestid",
+    "reservationoperationid",
+    "rrsetid",
+    "rrsetids",
+    "runid"
+  ].includes(normalizedKey);
 }
 
 interface ScoredEntry {

@@ -197,7 +197,8 @@ function normalizeRejectReason(value: unknown): string | null {
     "rate_limit_exceeded",
     "duplicate_proposal",
     "gateway_internal_error",
-    "gateway_timeout"
+    "gateway_timeout",
+    "memory_compaction_rejected"
   ]);
   return allowed.has(value) ? value : null;
 }

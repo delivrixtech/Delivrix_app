@@ -8,6 +8,8 @@ Alcance: memoria OpenClaw, guards I5/I6, seed de revision y retrieval grounded B
 
 Hardening I5: `codex/poc-grounded-hardening` en `/private/tmp/delivrix-grounded-hardening`, base `codex/poc-grounded-memoria@3e79922`.
 
+Hardening allowlist guard: `codex/poc-grounded-allowlist-guard` en `/private/tmp/delivrix-grounded-allowlist-guard`, base `codex/poc-grounded-hardening@e783b7b`.
+
 ## Fuentes
 
 - `DOCUMENTACION/Tesis_Delivrix_v3.4_BUSINESS_PLAN_MVP.pdf`
@@ -15,6 +17,8 @@ Hardening I5: `codex/poc-grounded-hardening` en `/private/tmp/delivrix-grounded-
 - `DOCUMENTACION/skills/delivrix-qa-gatekeeper/SKILL.md`
 - `DOCUMENTACION/skills/delivrix-qa-gatekeeper/references/qa-checklist.md`
 - `DOCUMENTACION/PROMPT_CODEX_MEMORIA_GUARDS_Y_RETRIEVAL_2026_06_03.md`
+- `DOCUMENTACION/PROMPT_CODEX_MEMORIA_ALLOWLIST_GUARD_2026_06_03.md`
+- `DOCUMENTACION/RUNBOOK_LEVANTAR_PROBAR_MEMORIA_2026_06_03.md`
 - `DOCUMENTACION/decisiones/2026-06-03-arquitectura-agente-local-mastra-rag.md`
 
 ## Ledger
@@ -59,12 +63,31 @@ Hardening I5: `codex/poc-grounded-hardening` en `/private/tmp/delivrix-grounded-
 
 [S20] P2 · `apps/gateway-api/src/routes/orchestrator-smtp.ts:950` · compaction desde orquestador podia reenviar strings largas o DKIM publico crudo a `outcomeData` · causa: `summarizeOutcome` copiaba campos no secretos casi tal cual · fix: strings no-record y strings >200 se convierten a `...Hash` + `...Present`, `dkimPublicKey` se hashifica explicitamente y secretos por clave se omiten · estado CERRADO.
 
+[S21] P1 · `packages/storage/src/episodic-scratch.ts:1264` · los rechazos del write-gate de memoria no tenian metadata segura para diagnosticar drift de allowlist sin exponer payload crudo · causa: `EpisodicScratchValidationError` solo transportaba codigo/mensaje · fix: `EpisodicScratchValidationDetails` agrega `rejectionStage`, `rejectionKind`, `fieldPath`, forma del valor y flags de redaccion con `rawValueLogged=false`, `rawErrorMessageLogged=false`, `requestBodyLogged=false` · estado CERRADO.
+
+[S22] P1 · `apps/gateway-api/src/routes/openclaw-compact-intent.ts:176` · `compactIntent` podia insertar filas parciales si un step posterior fallaba el write-gate · causa: el flujo validaba e insertaba step por step · fix: construye `pendingEntries`, prevalida todas con `validateEpisodicEntryInput` y solo despues persiste; test cubre cero filas escritas ante rechazo tardio · estado CERRADO.
+
+[S23] P1 · `apps/gateway-api/src/routes/openclaw-compact-intent.ts:119` · el endpoint HTTP de compaction devolvia error crudo y no dejaba auditoria especifica cuando storage rechazaba `outcomeData` · causa: el catch mezclaba validacion de contrato con rechazo del write-gate · fix: respuesta `compact_intent_rejected` con `rejectReason=memory_compaction_rejected`, metadata segura y evento `oc.episodic.compaction_rejected` · estado CERRADO.
+
+[S24] P1 · `apps/gateway-api/src/routes/orchestrator-smtp.ts:909` · el orquestador podia perder memoria silenciosamente cuando storage rechazaba compaction · causa: solo registraba warn generico y seguia sin audit event accionable · fix: detecta codigos `memory_payload_*`, loguea metadata segura, y emite `oc.episodic.compaction_rejected` con evidencia `openclaw_intent`/`compact_intent` · estado CERRADO.
+
+[S25] P2 · `apps/gateway-api/src/audit/schema.ts:6` y `packages/local-store/src/local-file-audit-log.ts:187` · `memory_compaction_rejected` no estaba permitido por los normalizadores/schema de auditoria · causa: la razon nueva no existia en el contrato de audit log · fix: reason agregada a schema y local-store con pruebas de preservacion/validacion · estado CERRADO.
+
+[S26] P2 · `packages/storage/src/episodic-scratch.ts:1117` · allowlist de `outcomeData` podia bloquear claves maquina reales del productor SMTP/DNS o aceptar formatos demasiado laxos bajo claves conocidas · causa: la lista previa era estrecha pero no estaba sincronizada contra productores reales/futuros · fix: se agregan claves maquina esperadas (`hostname`, `zone`, `recordName`, `recordValue`, `changeId`, `operationId`, `scheduledAt`, `tlsStatus`, etc.) con validadores estructurales por tipo DNS, provider id, region, timestamp, selector y hashes · estado CERRADO.
+
+[S27] P2 · `apps/gateway-api/src/routes/orchestrator-smtp.test.ts:326` · no habia contrato CI que demostrara que `configureCompleteSmtp` pasa por el write-gate real ni que sus claves de productor sigan sincronizadas · causa: la cobertura previa podia mockear invariantes de storage · fix: tests de path real `configureCompleteSmtp -> compactIntent -> insertEpisodicEntry`, drift de claves productor, rechazo auditado, schema/local-store rejectReason y seed sincronizado · estado CERRADO.
+
+[S28] P2 · `apps/gateway-api/src/routes/episodic-scratch.ts:94` · la ruta de lectura de memoria podia devolver mensajes internos del store en `details` · causa: el catch exponia `error.message` en errores de storage/validacion · fix: respuestas sanitizadas con `_errors` generico y test que verifica que un mensaje sensible del pool no sale en JSON · estado CERRADO.
+
 ## Evidencia de tests
 
 - Corte previo B1: `node --test packages/storage/src/episodic-scratch.test.ts apps/gateway-api/src/routes/openclaw-episodic-memory.test.ts apps/gateway-api/src/routes/openclaw-compact-intent.test.ts apps/gateway-api/src/episodic-scratch-ttl.test.ts apps/gateway-api/src/tool-use-processor.test.ts apps/gateway-api/src/openclaw-tools-builder.test.ts scripts/db/seed-episodic.test.mjs` -> PASS 72/72.
 - Corte previo B1: `npm test` -> PASS 781/781.
 - `node --test packages/storage/src/stable-stringify.test.ts packages/storage/src/episodic-scratch.test.ts apps/gateway-api/src/routes/openclaw-compact-intent.test.ts apps/gateway-api/src/routes/openclaw-episodic-memory.test.ts scripts/db/seed-episodic.test.mjs` -> PASS 48/48.
 - `npm test` -> PASS 787/787.
+- `git diff --check` -> PASS.
+- `node --test packages/storage/src/episodic-scratch.test.ts apps/gateway-api/src/routes/openclaw-compact-intent.test.ts apps/gateway-api/src/routes/openclaw-episodic-memory.test.ts apps/gateway-api/src/routes/orchestrator-smtp.test.ts apps/gateway-api/src/audit/hash-chain.test.ts packages/local-store/src/local-file-audit-log.test.ts scripts/db/seed-episodic.test.mjs` -> PASS 106/106.
+- `npm test` -> PASS 798/798.
 - `git diff --check` -> PASS.
 - `node --version` -> `v22.22.3`; residual S13 mantiene la repeticion en Node >=24 como gate de merge productivo.
 - `node scripts/db/seed-episodic.mjs` contra Postgres real -> NO RUN por instruccion del prompt; Docker/Postgres es accion explicita del operador.
