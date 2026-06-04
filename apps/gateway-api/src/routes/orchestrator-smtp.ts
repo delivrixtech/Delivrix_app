@@ -15,6 +15,7 @@ import {
 } from "../gateway-runtime-log.ts";
 import { readRequestBody } from "../request-body.ts";
 import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
+import type { PlanApprovalRecord } from "./proposals-sign.ts";
 
 export type ConfigureSmtpStatus =
   | "completed"
@@ -32,6 +33,7 @@ export interface ConfigureCompleteSmtpStepResult {
   outcome: unknown;
   durationMs: number;
   estimatedCostUsd?: number;
+  planStepTokenId?: string;
 }
 
 export interface ConfigureCompleteSmtpResult {
@@ -60,6 +62,42 @@ export interface ApprovalStepInput extends SkillInvocationInput {
   approvalTimeoutMs: number;
   estimatedCostUsd?: number;
 }
+
+export interface PlanApprovalLookupInput {
+  runId: string;
+  params: ConfigureCompleteSmtpParams;
+}
+
+export interface PlanApprovedStepInput extends SkillInvocationInput {
+  actorId: string;
+  inputHash: string;
+  estimatedCostUsd?: number;
+  planApproval: PlanApprovalRecord;
+}
+
+export type PlanApprovedStepDecision =
+  | {
+      status: "executed";
+      planStepTokenId: string;
+      signatureId?: string;
+      outcome: unknown;
+      durationMs: number;
+      statusCode?: number;
+    }
+  | {
+      status: "execution_failed";
+      planStepTokenId: string;
+      signatureId?: string;
+      outcome?: unknown;
+      durationMs: number;
+      statusCode?: number;
+      error?: string;
+    }
+  | {
+      status: "replay_detected" | "scope_rejected" | "kill_switch_armed";
+      planStepTokenId?: string;
+      reason?: string;
+    };
 
 export type ApprovalStepDecision =
   | {
@@ -136,6 +174,8 @@ export interface ConfigureCompleteSmtpDeps {
   auditLog: AuditSink;
   invokeSkill(input: SkillInvocationInput): Promise<unknown>;
   submitAndAwaitApproval(input: ApprovalStepInput): Promise<ApprovalStepDecision>;
+  resolvePlanApproval?: (input: PlanApprovalLookupInput) => Promise<PlanApprovalRecord | null> | PlanApprovalRecord | null;
+  executePlanApprovedStep?: (input: PlanApprovedStepInput) => Promise<PlanApprovedStepDecision>;
   submitRollbackProposal?: (input: RollbackProposalInput) => Promise<{ proposalId: string }>;
   verifyAuditChain?: () => Promise<{ ok: boolean; details?: unknown }> | { ok: boolean; details?: unknown };
   readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
@@ -203,6 +243,7 @@ export async function configureCompleteSmtp(
   let serverIpv4 = "";
   let rollbackProposalId: string | undefined;
   const logger = deps.logger ?? noopGatewayRuntimeLogger;
+  let planApproval: PlanApprovalRecord | null = null;
 
   void logger.info("openclaw.orchestrator.run_started", "configure_complete_smtp run started.", {
     runId,
@@ -229,11 +270,24 @@ export async function configureCompleteSmtp(
     budgetUsdMax: input.budgetUsdMax,
     domain: input.domain,
     provider: input.provider,
-    actorId: input.actorId
+    actorId: input.actorId,
+    planSignatureAutonomy: envFlagEnabled(deps.env?.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)
   });
 
   try {
     await verifyAuditChain(deps);
+    planApproval = envFlagEnabled(deps.env?.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)
+      ? await resolveAndValidatePlanApproval({ deps, runId, input })
+      : null;
+    if (planApproval) {
+      await audit(deps, "oc.plan.run_authorized", "openclaw_orchestrator_run", runId, "critical", {
+        runId,
+        scopeHash: planApproval.scopeHash,
+        scope: planApproval.scope,
+        signatureId: planApproval.signatureId,
+        expiresAt: planApproval.expiresAt
+      });
+    }
 
     const suggestions = await runReadOnlyStep({
       deps,
@@ -248,10 +302,11 @@ export async function configureCompleteSmtp(
       },
       stepResults
     });
-    chosenDomain = chooseDomain(suggestions);
+    chosenDomain = chooseDomainForRun(suggestions, planApproval, input);
 
-    await runGatedStep({
+    await runMutatingStep({
       deps,
+      planApproval,
       runId,
       step: 2,
       skill: "register_domain_route53",
@@ -263,8 +318,9 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    await runGatedStep({
+    await runMutatingStep({
       deps,
+      planApproval,
       runId,
       step: 3,
       skill: "wait_for_dns_propagation",
@@ -280,8 +336,9 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    const vps = await runGatedStep({
+    const vps = await runMutatingStep({
       deps,
+      planApproval,
       runId,
       step: 4,
       skill: "create_webdock_server",
@@ -309,8 +366,9 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    await runGatedStep({
+    await runMutatingStep({
       deps,
+      planApproval,
       runId,
       step: 6,
       skill: "bind_webdock_main_domain",
@@ -321,8 +379,9 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    await runGatedStep({
+    await runMutatingStep({
       deps,
+      planApproval,
       runId,
       step: 7,
       skill: "upsert_dns_route53",
@@ -339,8 +398,9 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    await runGatedStep({
+    await runMutatingStep({
       deps,
+      planApproval,
       runId,
       step: 8,
       skill: "wait_for_dns_propagation",
@@ -356,8 +416,9 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    const smtp = await runGatedStep({
+    const smtp = await runMutatingStep({
       deps,
+      planApproval,
       runId,
       step: 9,
       skill: "provision_smtp_postfix",
@@ -368,8 +429,9 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    await runGatedStep({
+    await runMutatingStep({
       deps,
+      planApproval,
       runId,
       step: 10,
       skill: "configure_email_auth",
@@ -386,8 +448,9 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    await runGatedStep({
+    await runMutatingStep({
       deps,
+      planApproval,
       runId,
       step: 11,
       skill: "wait_for_dns_propagation",
@@ -403,8 +466,9 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    await runGatedStep({
+    await runMutatingStep({
       deps,
+      planApproval,
       runId,
       step: 12,
       skill: "seed_warmup_pool",
@@ -429,8 +493,9 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    const realEmail = await runGatedStep({
+    const realEmail = await runMutatingStep({
       deps,
+      planApproval,
       runId,
       step: 14,
       skill: "send_real_email",
@@ -726,10 +791,161 @@ async function runGatedStep(input: {
   );
 }
 
+async function runMutatingStep(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  planApproval: PlanApprovalRecord | null;
+  runId: string;
+  step: number;
+  skill: string;
+  params: Record<string, unknown>;
+  actorId: string;
+  approvalTimeoutMs: number;
+  estimatedCostUsd?: number;
+  budgetUsdMax: number;
+  stepResults: ConfigureCompleteSmtpStepResult[];
+}): Promise<ConfigureCompleteSmtpStepResult> {
+  if (input.planApproval) {
+    return runPlanApprovedStep({
+      deps: input.deps,
+      planApproval: input.planApproval,
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      params: input.params,
+      actorId: input.actorId,
+      estimatedCostUsd: input.estimatedCostUsd,
+      budgetUsdMax: input.budgetUsdMax,
+      stepResults: input.stepResults
+    });
+  }
+
+  return runGatedStep(input);
+}
+
+async function runPlanApprovedStep(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  planApproval: PlanApprovalRecord;
+  runId: string;
+  step: number;
+  skill: string;
+  params: Record<string, unknown>;
+  actorId: string;
+  estimatedCostUsd?: number;
+  budgetUsdMax: number;
+  stepResults: ConfigureCompleteSmtpStepResult[];
+}): Promise<ConfigureCompleteSmtpStepResult> {
+  if (!input.deps.executePlanApprovedStep) {
+    throw new OrchestratorFailure("failed", input.step, input.skill, "plan_executor_missing");
+  }
+  await verifyAuditChain(input.deps);
+  await ensureKillSwitchClear(input.deps, input.step, input.skill);
+  const inputHash = hashInput(input.params);
+  ensureBudgetForStep(input, inputHash);
+  validatePlanApprovedStepScope(input, inputHash);
+  void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.step_started", "Plan-approved orchestrator step started.", {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    approvalRequired: false,
+    planApprovalScopeHash: input.planApproval.scopeHash,
+    estimatedCostUsd: input.estimatedCostUsd ?? 0,
+    params: summarizeOperationalParams(input.params)
+  });
+  await emitStep(input.deps, "oc.orchestrator.step_started", input.runId, input.step, input.skill, {
+    approvalRequired: false,
+    planApproved: true,
+    estimatedCostUsd: input.estimatedCostUsd ?? 0
+  });
+
+  const decision = await input.deps.executePlanApprovedStep({
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    params: input.params,
+    actorId: input.actorId,
+    inputHash,
+    estimatedCostUsd: input.estimatedCostUsd,
+    planApproval: input.planApproval
+  });
+
+  if (decision.status === "executed") {
+    const result: ConfigureCompleteSmtpStepResult = {
+      step: input.step,
+      skill: input.skill,
+      inputHash,
+      proposalId: `plan:${decision.planStepTokenId}`,
+      signatureId: decision.signatureId,
+      planStepTokenId: decision.planStepTokenId,
+      outcome: decision.outcome,
+      durationMs: decision.durationMs,
+      ...(input.estimatedCostUsd === undefined ? {} : { estimatedCostUsd: input.estimatedCostUsd })
+    };
+    input.stepResults.push(result);
+    await emitStep(input.deps, "oc.orchestrator.step_completed", input.runId, input.step, input.skill, {
+      planStepTokenId: decision.planStepTokenId,
+      durationMs: decision.durationMs
+    });
+    await audit(input.deps, "oc.plan.step_executed", "openclaw_orchestrator_step", `${input.runId}:${input.step}:${input.skill}`, "critical", {
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      inputHash,
+      planApprovalScopeHash: input.planApproval.scopeHash,
+      planStepTokenId: decision.planStepTokenId,
+      signatureId: decision.signatureId,
+      estimatedCostUsd: input.estimatedCostUsd ?? 0
+    });
+    return result;
+  }
+
+  if (decision.status === "scope_rejected" || decision.status === "replay_detected" || decision.status === "kill_switch_armed") {
+    throw new OrchestratorFailure(
+      decision.status === "kill_switch_armed" ? "cancelled_by_operator" : "failed",
+      input.step,
+      input.skill,
+      decision.reason ?? decision.status,
+      decision.planStepTokenId ? `plan:${decision.planStepTokenId}` : undefined,
+      inputHash
+    );
+  }
+
+  const failureMessage = decision.error ?? "execution_failed";
+  input.stepResults.push({
+    step: input.step,
+    skill: input.skill,
+    inputHash,
+    proposalId: `plan:${decision.planStepTokenId}`,
+    signatureId: decision.signatureId,
+    planStepTokenId: decision.planStepTokenId,
+    outcome: decision.outcome ?? { error: failureMessage },
+    durationMs: decision.durationMs,
+    ...(input.estimatedCostUsd === undefined ? {} : { estimatedCostUsd: input.estimatedCostUsd })
+  });
+  throw new OrchestratorFailure(
+    "failed",
+    input.step,
+    input.skill,
+    failureMessage,
+    `plan:${decision.planStepTokenId}`,
+    inputHash
+  );
+}
+
 async function verifyAuditChain(deps: ConfigureCompleteSmtpDeps): Promise<void> {
   const chain = await deps.verifyAuditChain?.();
   if (chain && !chain.ok) {
     throw new OrchestratorFailure("failed", 0, "audit_chain", "audit_chain_broken");
+  }
+}
+
+async function ensureKillSwitchClear(
+  deps: ConfigureCompleteSmtpDeps,
+  step: number,
+  skill: string
+): Promise<void> {
+  const killSwitch = await deps.readKillSwitch?.();
+  if (killSwitch?.enabled) {
+    throw new OrchestratorFailure("cancelled_by_operator", step, skill, "kill_switch_armed");
   }
 }
 
@@ -844,6 +1060,197 @@ function chooseDomain(outcome: unknown): string {
     throw new OrchestratorFailure("failed", 1, "suggest_safe_domain", "no_domain_candidate");
   }
   return first.domain.trim().toLowerCase().replace(/\.$/, "");
+}
+
+function chooseDomainForRun(
+  outcome: unknown,
+  planApproval: PlanApprovalRecord | null,
+  input: ConfigureCompleteSmtpParams
+): string {
+  if (!planApproval) {
+    return chooseDomain(outcome);
+  }
+
+  const approvedDomain = planApproval.scope.domain;
+  if (input.domain && normalizeDomain(input.domain) !== approvedDomain) {
+    throw new OrchestratorFailure(
+      "failed",
+      1,
+      "suggest_safe_domain",
+      `plan_scope_mismatch: input.domain=${normalizeDomain(input.domain)} approved_domain=${approvedDomain}`
+    );
+  }
+  const candidates = isRecord(outcome) && Array.isArray(outcome.candidates) ? outcome.candidates : [];
+  const hasApprovedCandidate = candidates.some((candidate) =>
+    isRecord(candidate) &&
+    typeof candidate.domain === "string" &&
+    normalizeDomain(candidate.domain) === approvedDomain
+  );
+  if (candidates.length > 0 && !hasApprovedCandidate) {
+    throw new OrchestratorFailure(
+      "failed",
+      1,
+      "suggest_safe_domain",
+      `plan_domain_not_in_suggestions: approved_domain=${approvedDomain}`
+    );
+  }
+  return approvedDomain;
+}
+
+async function resolveAndValidatePlanApproval(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  input: ConfigureCompleteSmtpParams;
+}): Promise<PlanApprovalRecord> {
+  if (!input.deps.resolvePlanApproval) {
+    throw new OrchestratorFailure("failed", 0, "plan_approval", "plan_approval_resolver_missing");
+  }
+  const planApproval = await input.deps.resolvePlanApproval({
+    runId: input.runId,
+    params: input.input
+  });
+  if (!planApproval) {
+    throw new OrchestratorFailure("failed", 0, "plan_approval", "plan_approval_missing");
+  }
+  if (planApproval.status !== "signed") {
+    throw new OrchestratorFailure("failed", 0, "plan_approval", "plan_approval_not_signed");
+  }
+  if (planApproval.scope.runId !== input.runId) {
+    throw new OrchestratorFailure(
+      "failed",
+      0,
+      "plan_approval",
+      `plan_scope_mismatch: runId=${input.runId} approved_runId=${planApproval.scope.runId}`
+    );
+  }
+  if (Date.parse(planApproval.expiresAt) <= (input.deps.now?.() ?? new Date()).getTime()) {
+    throw new OrchestratorFailure("failed", 0, "plan_approval", "plan_approval_expired");
+  }
+  const expectedDomain = input.input.domain ? normalizeDomain(input.input.domain) : planApproval.scope.domain;
+  const expectedProvider = input.input.provider?.trim().toLowerCase() ?? planApproval.scope.provider;
+  const expectedRecipient = input.input.testEmailRecipient.trim().toLowerCase();
+  const details: string[] = [];
+  if (planApproval.scope.domain !== expectedDomain) details.push("domain");
+  if (planApproval.scope.provider !== expectedProvider) details.push("provider");
+  if (planApproval.scope.budgetUsdMax !== input.input.budgetUsdMax) details.push("budgetUsdMax");
+  if (planApproval.scope.recipient !== expectedRecipient) details.push("recipient");
+  if (planApproval.scope.plannedSkill !== "configure_complete_smtp") details.push("plannedSkill");
+  if (details.length > 0) {
+    throw new OrchestratorFailure(
+      "failed",
+      0,
+      "plan_approval",
+      `plan_scope_mismatch: ${details.join(",")}`
+    );
+  }
+  return planApproval;
+}
+
+function validatePlanApprovedStepScope(
+  input: {
+    planApproval: PlanApprovalRecord;
+    runId: string;
+    step: number;
+    skill: string;
+    params: Record<string, unknown>;
+  },
+  inputHash: string
+): void {
+  const scope = input.planApproval.scope;
+  if (scope.runId !== input.runId) {
+    throw new OrchestratorFailure("failed", input.step, input.skill, "plan_scope_mismatch:runId", undefined, inputHash);
+  }
+  if (!scope.plannedSteps.includes(input.skill)) {
+    throw new OrchestratorFailure("failed", input.step, input.skill, "plan_scope_mismatch:skill", undefined, inputHash);
+  }
+  for (const value of domainValuesInParams(input.params)) {
+    if (!isSubdomainOrSame(value, scope.domain)) {
+      throw new OrchestratorFailure(
+        "failed",
+        input.step,
+        input.skill,
+        `plan_scope_mismatch:domain=${value} approved_domain=${scope.domain}`,
+        undefined,
+        inputHash
+      );
+    }
+  }
+  for (const value of recipientValuesInParams(input.params)) {
+    if (value !== scope.recipient) {
+      throw new OrchestratorFailure(
+        "failed",
+        input.step,
+        input.skill,
+        `plan_scope_mismatch:recipient=${value} approved_recipient=${scope.recipient}`,
+        undefined,
+        inputHash
+      );
+    }
+  }
+}
+
+function domainValuesInParams(params: Record<string, unknown>): string[] {
+  const values: string[] = [];
+  for (const key of ["domain", "hostname", "fromAddress"]) {
+    const value = params[key];
+    if (typeof value !== "string") continue;
+    if (key === "fromAddress") {
+      const [, domain] = value.split("@");
+      if (domain) values.push(normalizeDomain(domain));
+      continue;
+    }
+    const normalized = normalizeOperationalDomain(value);
+    if (normalized) values.push(normalized);
+  }
+  if (Array.isArray(params.records)) {
+    for (const record of params.records) {
+      if (!isRecord(record) || typeof record.name !== "string") continue;
+      const normalized = record.name === "@" ? null : normalizeOperationalDomain(record.name);
+      if (normalized) values.push(normalized);
+    }
+  }
+  return [...new Set(values)];
+}
+
+function recipientValuesInParams(params: Record<string, unknown>): string[] {
+  const values: string[] = [];
+  for (const key of ["toAddress", "recipient", "testEmailRecipient"]) {
+    const value = params[key];
+    if (typeof value === "string" && value.trim()) values.push(value.trim().toLowerCase());
+  }
+  return [...new Set(values)];
+}
+
+function isSubdomainOrSame(value: string, root: string): boolean {
+  return value === root || value.endsWith(`.${root}`);
+}
+
+function normalizeMaybeDomain(value: string): string | null {
+  const normalized = value.trim().toLowerCase().replace(/\.$/, "");
+  return /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+$/.test(normalized)
+    ? normalized
+    : null;
+}
+
+function normalizeOperationalDomain(value: string): string | null {
+  const normalized = value.trim().toLowerCase().replace(/\.$/, "");
+  const dkimSuffix = "._domainkey.";
+  const dkimIndex = normalized.indexOf(dkimSuffix);
+  if (dkimIndex >= 0) {
+    return normalizeMaybeDomain(normalized.slice(dkimIndex + dkimSuffix.length));
+  }
+  if (normalized.startsWith("_dmarc.")) {
+    return normalizeMaybeDomain(normalized.slice("_dmarc.".length));
+  }
+  return normalizeMaybeDomain(normalized);
+}
+
+function normalizeDomain(value: string): string {
+  const normalized = normalizeMaybeDomain(value);
+  if (!normalized) {
+    throw new OrchestratorFailure("failed", 0, "domain_scope", "invalid_domain_scope");
+  }
+  return normalized;
 }
 
 function stringFromOutcome(
@@ -1202,6 +1609,10 @@ function positiveInt(value: string | undefined): number | undefined {
 
 function positiveIntFromUnknown(value: unknown): number | undefined {
   return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined;
+}
+
+function envFlagEnabled(value: string | undefined): boolean {
+  return value === "true" || value === "1" || value === "yes" || value === "on";
 }
 
 function hashInput(value: unknown): string {

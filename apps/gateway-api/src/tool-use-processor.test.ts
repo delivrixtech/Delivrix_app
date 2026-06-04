@@ -532,6 +532,82 @@ test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint
   assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
 });
 
+test("createHttpToolUseProcessor invokes read-only IONOS DNS endpoint directly", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    readBoundaryToken: "read-token",
+    fetchImpl: async (url, init) => {
+      calls.push({
+        url: String(url),
+        headers: init?.headers as Record<string, string> ?? {}
+      });
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).startsWith("http://127.0.0.1:3000/v1/dns/ionos/records")) {
+        const parsed = new URL(String(url));
+        assert.equal(init?.method, "GET");
+        assert.equal(parsed.searchParams.get("domain"), "nationalcorphub.app");
+        assert.equal(parsed.searchParams.get("recordType"), "TXT");
+        return jsonResponse({
+          zoneId: "ionos-zone-1",
+          zoneName: "nationalcorphub.app",
+          records: [{ id: "record-1", name: "_dmarc.nationalcorphub.app", type: "TXT", content: "v=DMARC1; p=quarantine" }],
+          totalRecords: 1
+        });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-ionos-read",
+    toolName: "read_dns_ionos",
+    toolInput: {
+      domain: "nationalcorphub.app",
+      recordType: "TXT"
+    },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected IONOS DNS read success");
+  assert.deepEqual(result.result, {
+    zoneId: "ionos-zone-1",
+    zoneName: "nationalcorphub.app",
+    records: [{ id: "record-1", name: "_dmarc.nationalcorphub.app", type: "TXT", content: "v=DMARC1; p=quarantine" }],
+    totalRecords: 1
+  });
+  assert.deepEqual(calls.map((call) => call.url), [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/dns/ionos/records?domain=nationalcorphub.app&recordType=TXT"
+  ]);
+  assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
+});
+
+test("processToolUse blocks direct SMTP subtools when plan autonomy is enabled", async () => {
+  const calls: unknown[] = [];
+  const result = await processToolUse({
+    toolUseId: "toolu-direct-smtp",
+    toolName: "provision_smtp_postfix",
+    toolInput: { serverSlug: "server69", domain: "delivrix.test", serverIp: "203.0.113.10" },
+    chatSession: { id: "agent:main:operator" },
+    env: {
+      ...enabledEnv(),
+      OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true",
+      OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true"
+    },
+    deps: memoryDeps({ calls })
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) assert.fail("expected direct subtool rejection");
+  assert.equal(result.error, "use_configure_complete_smtp");
+  assert.equal(calls.length, 0);
+});
+
 test("createHttpToolUseProcessor invokes read-only Webdock inventory endpoint directly", async () => {
   const urls: string[] = [];
   const processor = createHttpToolUseProcessor({

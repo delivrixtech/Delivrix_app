@@ -38,6 +38,13 @@ export interface Route53ZoneRecordsParams extends Record<string, unknown> {
   recordName?: string;
 }
 
+export interface IonosDnsReadParams extends Record<string, unknown> {
+  domain?: string;
+  zoneId?: string;
+  recordType?: "A" | "AAAA" | "CNAME" | "MX" | "TXT" | "NS" | "SOA" | "PTR" | "SRV" | "CAA";
+  recordName?: string;
+}
+
 export interface IonosUpsertParams extends Record<string, unknown> {
   zone: string;
   records: Array<{
@@ -210,6 +217,25 @@ export const route53ZoneRecordsParamSchema = schema<Route53ZoneRecordsParams>((v
   const input = object(value);
   return {
     zoneId: route53ZoneId(input.zoneId, "zoneId"),
+    ...(input.recordType === undefined || input.recordType === null || input.recordType === ""
+      ? {}
+      : { recordType: oneOf(String(input.recordType).toUpperCase(), "recordType", route53ReadRecordTypes) }),
+    ...(input.recordName === undefined || input.recordName === null || input.recordName === ""
+      ? {}
+      : { recordName: dnsRecordName(input.recordName, "recordName") })
+  };
+});
+
+export const ionosDnsReadParamSchema = schema<IonosDnsReadParams>((value) => {
+  const input = object(value);
+  const hasDomain = input.domain !== undefined && input.domain !== null && input.domain !== "";
+  const hasZoneId = input.zoneId !== undefined && input.zoneId !== null && input.zoneId !== "";
+  if (!hasDomain && !hasZoneId) {
+    throw new SkillSchemaError("domain or zoneId is required");
+  }
+  return {
+    ...(hasDomain ? { domain: domain(input.domain, "domain") } : {}),
+    ...(hasZoneId ? { zoneId: boundedId(input.zoneId, "zoneId", 128) } : {}),
     ...(input.recordType === undefined || input.recordType === null || input.recordType === ""
       ? {}
       : { recordType: oneOf(String(input.recordType).toUpperCase(), "recordType", route53ReadRecordTypes) }),

@@ -590,6 +590,7 @@ const configureCompleteSmtpPlanSteps = [
   "wait_for_dns_propagation",
   "read_route53_domain_detail",
   "read_route53_zone_records",
+  "read_dns_ionos",
   "read_webdock_servers",
   "create_webdock_server",
   "bind_webdock_main_domain",

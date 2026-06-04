@@ -14,6 +14,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "read_dns_ionos",
     "read_webdock_servers",
     "upsert_dns_route53",
     "upsert_dns_ionos",
@@ -35,6 +36,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
         "read_episodic_scratch",
         "read_route53_domain_detail",
         "read_route53_zone_records",
+        "read_dns_ionos",
         "read_webdock_servers",
         "compact_intent"
       ].includes(tool.name))
@@ -54,6 +56,10 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     /no requiere ApprovalGate/
   );
   assert.match(
+    tools.find((tool) => tool.name === "read_dns_ionos")?.description ?? "",
+    /no requiere ApprovalGate/
+  );
+  assert.match(
     tools.find((tool) => tool.name === "read_webdock_servers")?.description ?? "",
     /no requiere ApprovalGate/
   );
@@ -64,7 +70,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 16);
+  assert.equal(tools.length, 17);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -84,6 +90,7 @@ test("buildToolsForOpenClaw omits Route53 tools when AWS credentials are missing
   assert.equal(names.includes("bind_domain_to_server"), false);
   assert.equal(names.includes("configure_complete_smtp"), false);
   assert.equal(names.includes("upsert_dns_ionos"), true);
+  assert.equal(names.includes("read_dns_ionos"), true);
 });
 
 test("buildToolsForOpenClaw fail-closes when HMAC secret is missing", () => {
@@ -109,6 +116,7 @@ test("Bedrock catalog contains Route53 read tools with validated schemas", () =>
   const tools = buildToolsForOpenClaw(allEnabledEnv());
   const domainDetail = tools.find((tool) => tool.name === "read_route53_domain_detail");
   const zoneRecords = tools.find((tool) => tool.name === "read_route53_zone_records");
+  const ionosRecords = tools.find((tool) => tool.name === "read_dns_ionos");
 
   assert.ok(domainDetail);
   assert.deepEqual(domainDetail.input_schema.required, ["domain"]);
@@ -128,6 +136,14 @@ test("Bedrock catalog contains Route53 read tools with validated schemas", () =>
     recordType: "A",
     recordName: "smtp.controldelivrix.app"
   }).success, true);
+
+  assert.ok(ionosRecords);
+  assert.deepEqual(ionosRecords.input_schema.required, []);
+  assert.equal(getOpenClawToolDefinition("read_dns_ionos")?.paramSchema.safeParse({
+    domain: "nationalcorphub.app",
+    recordType: "TXT",
+    recordName: "_dmarc.nationalcorphub.app"
+  }).success, true);
 });
 
 test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
@@ -138,6 +154,7 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "read_dns_ionos",
     "read_webdock_servers",
     "bind_webdock_main_domain",
     "send_real_email",
@@ -211,6 +228,13 @@ function validSample(toolName: string): Record<string, unknown> {
       zoneId: "Z03595092JW2AXJBZGN4E",
       recordType: "A",
       recordName: "smtp.controldelivrix.app"
+    };
+  }
+  if (toolName === "read_dns_ionos") {
+    return {
+      domain: "nationalcorphub.app",
+      recordType: "TXT",
+      recordName: "_dmarc.nationalcorphub.app"
     };
   }
   if (toolName === "read_webdock_servers") {
