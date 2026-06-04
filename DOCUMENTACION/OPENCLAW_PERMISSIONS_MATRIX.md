@@ -137,6 +137,14 @@ Requiere `humanApproved: true` + `killSwitch.enabled: false`. Si falla cualquier
 
 `send_real_email` no es reversible: rollback no aplica porque el mensaje ya salió del VPS. El seguimiento posterior es audit/bounce tracking, revisión de reputación y escalación humana si hay rechazo o placement negativo.
 
+#### Live wallet acotado (`supervised_live_wallet`)
+
+| Acción | Audit ID | Flag operativo | Firmante |
+| --- | --- | --- | --- |
+| `update_domain_nameservers` / `route53_domain_nameservers_update` | `oc.domain.nameservers_updated` | `AWS_ROUTE53_DOMAINS_ENABLE_NAMESERVER_UPDATES=true`; zona Route53 en nuestra cuenta + A/MX presentes + kill switch legible/desarmado | operador autorizado |
+
+`update_domain_nameservers` sólo realinea Route53 Domains hacia una hosted zone Route53 verificada de Delivrix. No delega a NS externos, no borra zonas duplicadas y sólo reporta `cleanupSuggested`.
+
 #### Skills que SIGUEN bloqueadas en `future_live_requires_new_phase`
 
 Habilitar requiere nuevo hito + actualización adicional del norte.

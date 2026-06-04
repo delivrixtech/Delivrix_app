@@ -14,6 +14,12 @@ export interface AwsRoute53HostedZoneResult {
   nameServers: string[];
 }
 
+export interface AwsRoute53HostedZoneSummary {
+  zoneId: string;
+  name: string;
+  nameServers: string[];
+}
+
 export interface AwsRoute53DnsChangeResult {
   changeId: string;
 }
@@ -144,6 +150,29 @@ export class AwsRoute53DnsAdapter {
     };
   }
 
+  async listHostedZones(): Promise<AwsRoute53HostedZoneSummary[]> {
+    this.assertLive("AWS Route53 hosted zone listing requires live credentials.");
+    const zones: AwsRoute53HostedZoneSummary[] = [];
+    let marker: string | undefined;
+
+    while (true) {
+      const query = new URLSearchParams();
+      query.set("maxitems", "100");
+      if (marker) query.set("marker", marker);
+      const response = await this.awsXml("GET", `/${API_VERSION}/hostedzone?${query.toString()}`);
+      const page = parseHostedZonesPage(response);
+      zones.push(...page.zones);
+
+      if (!page.isTruncated) {
+        return zones;
+      }
+      if (!page.nextMarker) {
+        throw new Error("AWS Route53 ListHostedZones response was truncated without NextMarker.");
+      }
+      marker = page.nextMarker;
+    }
+  }
+
   async upsertRecord(
     zoneId: string,
     opts: AwsRoute53DnsRecordInput
@@ -185,7 +214,7 @@ export class AwsRoute53DnsAdapter {
   }
 
   async listResourceRecordSets(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]> {
-    this.assertWritable();
+    this.assertLive("AWS Route53 resource record listing requires live credentials.");
     const normalizedZoneId = normalizeHostedZoneId(zoneId);
     if (!normalizedZoneId) {
       throw new Error(`Invalid Route53 hosted zone id: ${zoneId}`);
@@ -256,8 +285,12 @@ export class AwsRoute53DnsAdapter {
     if (!this.writeEnabled) {
       throw new Error("AWS Route53 DNS writes are disabled by AWS_ROUTE53_DNS_ENABLE_WRITES.");
     }
+    this.assertLive("AWS Route53 DNS writes require live credentials.");
+  }
+
+  private assertLive(message: string): void {
     if (!this.isLive()) {
-      throw new Error("AWS Route53 DNS writes require live credentials.");
+      throw new Error(message);
     }
   }
 
@@ -432,6 +465,23 @@ function parseResourceRecordSetsPage(xml: string): AwsRoute53ResourceRecordSetPa
   };
 }
 
+function parseHostedZonesPage(xml: string): {
+  zones: AwsRoute53HostedZoneSummary[];
+  isTruncated: boolean;
+  nextMarker?: string;
+} {
+  const hostedZonesSection = firstXmlBlock(xml, "HostedZones") ?? "";
+  return {
+    zones: xmlBlocks(hostedZonesSection, "HostedZone").map((block) => ({
+      zoneId: normalizeHostedZoneId(firstXmlValue(block, "Id")) ?? "",
+      name: firstXmlValue(block, "Name") ?? "",
+      nameServers: xmlValues(block, "NameServer")
+    })).filter((zone) => zone.zoneId && zone.name),
+    isTruncated: (firstXmlValue(xml, "IsTruncated") ?? "false").toLowerCase() === "true",
+    nextMarker: firstXmlValue(xml, "NextMarker")
+  };
+}
+
 function isDeletableRecord(record: AwsRoute53ResourceRecordSet): record is AwsRoute53DnsRecordInput {
   if (
     record.type !== "A" &&
@@ -487,6 +537,10 @@ function xmlBlocks(xml: string, tag: string): string[] {
     match = pattern.exec(xml);
   }
   return values;
+}
+
+function firstXmlBlock(xml: string, tag: string): string | undefined {
+  return xmlBlocks(xml, tag)[0];
 }
 
 function normalizeHostedZoneId(value: string | undefined): string | undefined {

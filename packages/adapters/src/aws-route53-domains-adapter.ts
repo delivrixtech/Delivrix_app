@@ -52,6 +52,14 @@ export interface AwsRoute53RegisterDomainResult {
   expectedExpiry: string;
 }
 
+export interface AwsRoute53DomainNameserver {
+  name: string;
+}
+
+export interface AwsRoute53UpdateDomainNameserversResult {
+  operationId: string;
+}
+
 export interface AwsRoute53DomainCandidate {
   domainName: string;
   tld: string;
@@ -108,6 +116,7 @@ export interface AwsRoute53DomainsAdapterOptions {
   now?: () => Date;
   env?: Record<string, string | undefined>;
   purchaseEnabled?: boolean;
+  nameserverUpdatesEnabled?: boolean;
 }
 
 const SERVICE = "route53domains";
@@ -132,6 +141,7 @@ export class AwsRoute53DomainsAdapter {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
   private readonly purchaseEnabled: boolean;
+  private readonly nameserverUpdatesEnabled: boolean;
   private cache: CacheEntry | null = null;
 
   constructor(options: AwsRoute53DomainsAdapterOptions = {}) {
@@ -172,6 +182,12 @@ export class AwsRoute53DomainsAdapter {
         normalizeEnvValue(env.AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE) === "true" ||
         normalizeEnvValue(env.AWS_ROUTE53_ENABLE_PURCHASE) === "true"
       );
+    this.nameserverUpdatesEnabled =
+      options.nameserverUpdatesEnabled ??
+      (
+        normalizeEnvValue(env.AWS_ROUTE53_DOMAINS_ENABLE_NAMESERVER_UPDATES) === "true" ||
+        normalizeEnvValue(env.AWS_ROUTE53_ENABLE_NAMESERVER_UPDATES) === "true"
+      );
   }
 
   isLive(): boolean {
@@ -180,6 +196,10 @@ export class AwsRoute53DomainsAdapter {
 
   isPurchaseEnabled(): boolean {
     return this.purchaseEnabled;
+  }
+
+  isNameserverUpdateEnabled(): boolean {
+    return this.nameserverUpdatesEnabled;
   }
 
   currentSource(
@@ -301,6 +321,41 @@ export class AwsRoute53DomainsAdapter {
       operationId,
       expectedExpiry: expectedExpiryDate.toISOString()
     };
+  }
+
+  async getDomainNameservers(domain: string): Promise<string[]> {
+    if (!this.isLive()) {
+      throw new Error("AWS Route53 domain detail requires live credentials.");
+    }
+    const domainName = normalizeDomainName(domain);
+    const response = await this.awsJson("GetDomainDetail", {
+      DomainName: domainName
+    });
+    return parseAwsRoute53Nameservers(response).map((nameserver) => nameserver.name);
+  }
+
+  async updateDomainNameservers(
+    domain: string,
+    nameservers: string[]
+  ): Promise<AwsRoute53UpdateDomainNameserversResult> {
+    if (!this.nameserverUpdatesEnabled) {
+      throw new Error("AWS Route53 domain nameserver updates are disabled by AWS_ROUTE53_DOMAINS_ENABLE_NAMESERVER_UPDATES.");
+    }
+    if (!this.isLive()) {
+      throw new Error("AWS Route53 domain nameserver update requires live credentials.");
+    }
+    const domainName = normalizeDomainName(domain);
+    const normalizedNameservers = normalizeNameservers(nameservers);
+    const response = await this.awsJson("UpdateDomainNameservers", {
+      DomainName: domainName,
+      Nameservers: normalizedNameservers.map((name) => ({ Name: name }))
+    });
+    const operationId = isRecord(response) ? stringValue(response.OperationId) : undefined;
+    if (!operationId) {
+      throw new Error("AWS Route53 UpdateDomainNameservers response did not include OperationId.");
+    }
+    this.invalidateCache();
+    return { operationId };
   }
 
   async listInventory(): Promise<AwsRoute53DomainsInventoryResult> {
@@ -501,6 +556,15 @@ export function parseAwsRoute53Suggestions(raw: unknown): AwsRoute53DomainSugges
   });
 }
 
+export function parseAwsRoute53Nameservers(raw: unknown): AwsRoute53DomainNameserver[] {
+  const nameservers = isRecord(raw) && Array.isArray(raw.Nameservers) ? raw.Nameservers : [];
+  return nameservers.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const name = stringValue(item.Name);
+    return name ? [{ name }] : [];
+  });
+}
+
 function nextPageMarker(raw: unknown): string | undefined {
   return isRecord(raw) ? stringValue(raw.NextPageMarker) : undefined;
 }
@@ -603,6 +667,19 @@ function normalizeDomainName(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/\.$/, "");
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(normalized)) {
     throw new Error(`Invalid domain name: ${value}`);
+  }
+  return normalized;
+}
+
+function normalizeNameservers(values: string[]): string[] {
+  const normalized = unique(values.map((value) => value.trim().toLowerCase().replace(/\.$/, "")).filter(Boolean));
+  if (normalized.length < 2 || normalized.length > 13) {
+    throw new Error("Route53 domain nameserver update requires 2 to 13 nameservers.");
+  }
+  for (const value of normalized) {
+    if (!/^[a-z0-9](?:[a-z0-9-]{0,62}\.)+[a-z0-9-]{2,63}$/.test(value)) {
+      throw new Error(`Invalid Route53 domain nameserver: ${value}`);
+    }
   }
   return normalized;
 }

@@ -3,7 +3,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
   AwsRoute53DnsChangeResult,
   AwsRoute53DnsRecordInput,
-  AwsRoute53DnsSource
+  AwsRoute53DnsSource,
+  AwsRoute53HostedZoneResult,
+  AwsRoute53HostedZoneSummary,
+  AwsRoute53ResourceRecordSet
 } from "../../../../packages/adapters/src/index.ts";
 import type {
   AuditEvent,
@@ -28,11 +31,19 @@ import {
   type EntityResolutionFailure
 } from "../entity-guard.ts";
 import { readRequestBody } from "../request-body.ts";
+import {
+  resolveRoute53HostedZone,
+  Route53ZonePolicyError,
+  type Route53ZoneResolution
+} from "./route53-zone-policy.ts";
 
 export interface DomainBindDnsAdapter {
   isLive(): boolean;
   isWriteEnabled(): boolean;
   currentSource(responseOk?: boolean, errorMessage?: string): AwsRoute53DnsSource;
+  createHostedZone(domain: string): Promise<AwsRoute53HostedZoneResult>;
+  listHostedZones(): Promise<AwsRoute53HostedZoneSummary[]>;
+  listResourceRecordSets(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]>;
   upsertRecord(zoneId: string, opts: AwsRoute53DnsRecordInput): Promise<AwsRoute53DnsChangeResult>;
 }
 
@@ -118,9 +129,9 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
   const serverIp = explicitServerIp
     ? explicitServerIp.ok ? explicitServerIp.value : null
     : serverResolution?.ok ? serverResolution.value.serverIp : null;
-  const zoneId = typeof body.zoneId === "string" && body.zoneId.trim()
-    ? body.zoneId.trim()
-    : domainResolution.ok ? await findZoneId(deps.workspace, domain) : null;
+  const preferredZoneId = typeof body.zoneId === "string" && body.zoneId.trim() ? body.zoneId.trim() : null;
+  const inventoryZoneId = domainResolution.ok ? await findZoneId(deps.workspace, domain) : null;
+  let zoneId = preferredZoneId ?? inventoryZoneId;
   const source = deps.dnsAdapter.currentSource(true);
 
   await emitTaskDeclare(deps.canvasLiveEvents, taskId, `Bind dominio · ${domain}`, actorId, now);
@@ -140,8 +151,36 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
   if (!deps.dnsAdapter.isWriteEnabled()) blockers.push("dns_write_flag_disabled");
   if (!approval) blockers.push("approval_not_found_or_expired");
   if (entityFailures.length > 0) blockers.push(entityNotResolvedBlocker);
-  if (!zoneId) blockers.push("route53_zone_missing");
   if (!serverIp) blockers.push("server_ip_missing");
+  let zoneResolution: Route53ZoneResolution | null = null;
+  let zonePolicyDetails: Record<string, unknown> | null = null;
+  const canResolveZone =
+    deps.dnsAdapter.isLive() &&
+    deps.dnsAdapter.isWriteEnabled() &&
+    Boolean(approval) &&
+    entityFailures.length === 0;
+  if (canResolveZone) {
+    try {
+      zoneResolution = await resolveRoute53HostedZone({
+        workspace: deps.workspace,
+        adapter: deps.dnsAdapter,
+        domain,
+        mode: "reuse-or-create",
+        preferredZoneId,
+        now: deps.now
+      });
+      zoneId = zoneResolution.zone.zoneId;
+    } catch (error) {
+      if (error instanceof Route53ZonePolicyError) {
+        blockers.push(error.code);
+        zonePolicyDetails = error.details;
+      } else {
+        throw error;
+      }
+    }
+  } else if (!zoneId) {
+    blockers.push("route53_zone_missing");
+  }
 
   if (blockers.length > 0) {
     if (entityFailures.length > 0) {
@@ -164,6 +203,7 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
         sourceKind: source.kind,
         writeEnabled: source.writeEnabled,
         learningCount: learnings.length,
+        ...(zonePolicyDetails ? { zonePolicyDetails } : {}),
         ...(entityFailures.length > 0 ? { entityResolution: entityFailureMetadata(entityFailures) } : {})
       }
     });
@@ -179,6 +219,7 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
       metadata: {
         blockers,
         serverSlug,
+        ...(zonePolicyDetails ? { zonePolicyDetails } : {}),
         ...(entityFailures.length > 0 ? { entityResolution: entityFailureMetadata(entityFailures) } : {}),
         workspacePath: workspace?.path
       }
@@ -230,6 +271,13 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
       durationMs: Date.now() - startedAt,
       evidence: {
         zoneId,
+        ...(zoneResolution ? {
+          zoneResolution: {
+            status: zoneResolution.status,
+            source: zoneResolution.source,
+            cleanupSuggested: zoneResolution.cleanupSuggested ?? []
+          }
+        } : {}),
         changes: changes.map((change) => ({
           name: change.name,
           type: change.type,
@@ -255,6 +303,13 @@ export async function handleDomainBindHttp(deps: DomainBindDependencies): Promis
         serverSlug,
         serverIp,
         zoneId,
+        ...(zoneResolution ? {
+          zoneResolution: {
+            status: zoneResolution.status,
+            source: zoneResolution.source,
+            cleanupSuggested: zoneResolution.cleanupSuggested ?? []
+          }
+        } : {}),
         changeIds: changes.map((change) => change.changeId),
         propagationStatus: "pending_propagation",
         approvalToken,

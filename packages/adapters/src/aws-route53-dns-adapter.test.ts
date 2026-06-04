@@ -183,6 +183,72 @@ test("AwsRoute53DnsAdapter lists resource records across Route53 cursors", async
   assert.equal(cursorUrl.searchParams.get("identifier"), "weighted-a");
 });
 
+test("AwsRoute53DnsAdapter lists hosted zones across Route53 cursors", async () => {
+  const calls: string[] = [];
+  const adapter = new AwsRoute53DnsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    writeEnabled: false,
+    fetchImpl: (async (url: string | URL | Request) => {
+      calls.push(url.toString());
+      if (calls.length === 1) {
+        return xmlResponse([
+          "<ListHostedZonesResponse>",
+          "<HostedZones>",
+          "<HostedZone><Id>/hostedzone/Z111111111</Id><Name>delivrix-mail.com.</Name></HostedZone>",
+          "</HostedZones>",
+          "<IsTruncated>true</IsTruncated>",
+          "<NextMarker>Z222222222</NextMarker>",
+          "</ListHostedZonesResponse>"
+        ].join(""));
+      }
+      return xmlResponse([
+        "<ListHostedZonesResponse>",
+        "<HostedZones>",
+        "<HostedZone><Id>/hostedzone/Z222222222</Id><Name>example.com.</Name></HostedZone>",
+        "</HostedZones>",
+        "<IsTruncated>false</IsTruncated>",
+        "</ListHostedZonesResponse>"
+      ].join(""));
+    }) as typeof fetch,
+    now: () => fixedNow
+  });
+
+  const zones = await adapter.listHostedZones();
+
+  assert.deepEqual(zones, [
+    { zoneId: "Z111111111", name: "delivrix-mail.com.", nameServers: [] },
+    { zoneId: "Z222222222", name: "example.com.", nameServers: [] }
+  ]);
+  assert.equal(new URL(calls[0]).searchParams.get("maxitems"), "100");
+  assert.equal(new URL(calls[1]).searchParams.get("marker"), "Z222222222");
+});
+
+test("AwsRoute53DnsAdapter lists resource records when writes are disabled", async () => {
+  let fetchCalled = false;
+  const adapter = new AwsRoute53DnsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    writeEnabled: false,
+    fetchImpl: (async () => {
+      fetchCalled = true;
+      return xmlResponse([
+        "<ListResourceRecordSetsResponse>",
+        "<ResourceRecordSets>",
+        "<ResourceRecordSet><Name>delivrix-mail.com.</Name><Type>NS</Type><TTL>172800</TTL><ResourceRecords><ResourceRecord><Value>ns-1.awsdns.com.</Value></ResourceRecord></ResourceRecords></ResourceRecordSet>",
+        "</ResourceRecordSets>",
+        "</ListResourceRecordSetsResponse>"
+      ].join(""));
+    }) as typeof fetch,
+    now: () => fixedNow
+  });
+
+  const records = await adapter.listResourceRecordSets("Z123456789");
+
+  assert.equal(fetchCalled, true);
+  assert.equal(records[0].type, "NS");
+});
+
 test("AwsRoute53DnsAdapter deletes hosted zone records from all listed pages", async () => {
   const calls: Array<{ method: string | undefined; url: string; body: string | undefined }> = [];
   const adapter = new AwsRoute53DnsAdapter({

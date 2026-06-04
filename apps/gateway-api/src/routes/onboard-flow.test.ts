@@ -125,6 +125,8 @@ test("gateway onboard runner executes T1, T2, T4, T3, T5, T6 without warmup", as
   });
   const approvalToken = await seedApproval(canvas, auditLog, "artifact-flow-order");
   const emitted: any[] = [];
+  let route53ZoneCreated = false;
+  const route53Records: Array<{ name: string; type: string; ttl: number; values: string[] }> = [];
   const canvasEmitter = {
     async emit(event: any) {
       emitted.push(event);
@@ -163,13 +165,39 @@ test("gateway onboard runner executes T1, T2, T4, T3, T5, T6 without warmup", as
         responseOk: true,
         writeEnabled: true
       }),
-      createHostedZone: async () => ({
-        zoneId: "ZORDER",
-        nameServers: ["ns-1.awsdns.com"]
-      }),
-      upsertRecord: async (_zoneId, record) => ({
-        changeId: `C-${record.type}-${record.name}`
-      })
+      createHostedZone: async () => {
+        route53ZoneCreated = true;
+        return {
+          zoneId: "ZORDER",
+          nameServers: ["ns-1.awsdns.com"]
+        };
+      },
+      listHostedZones: async () => route53ZoneCreated
+        ? [{
+            zoneId: "ZORDER",
+            name: "order-delivrix-test.com.",
+            nameServers: ["ns-1.awsdns.com"]
+          }]
+        : [],
+      listResourceRecordSets: async () => route53Records,
+      upsertRecord: async (_zoneId, record) => {
+        const name = record.name.endsWith(".") ? record.name : `${record.name}.`;
+        const existing = route53Records.findIndex((entry) => entry.name === name && entry.type === record.type);
+        const next = {
+          name,
+          type: record.type,
+          ttl: record.ttl,
+          values: record.values
+        };
+        if (existing >= 0) {
+          route53Records.splice(existing, 1, next);
+        } else {
+          route53Records.push(next);
+        }
+        return {
+          changeId: `C-${record.type}-${record.name}`
+        };
+      }
     },
     webdockAdapter: {
       isLive: () => true,

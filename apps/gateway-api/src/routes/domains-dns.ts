@@ -7,7 +7,8 @@ import type {
   AwsRoute53ResourceRecordSet,
   AwsRoute53DeleteHostedZoneResult,
   AwsRoute53DnsSource,
-  AwsRoute53HostedZoneResult
+  AwsRoute53HostedZoneResult,
+  AwsRoute53HostedZoneSummary
 } from "../../../../packages/adapters/src/index.ts";
 import type {
   AuditEvent,
@@ -30,15 +31,20 @@ import {
   type DnsDigFn,
   type RollbackSnapshot
 } from "../auto-rollback.ts";
+import {
+  resolveRoute53HostedZone,
+  Route53ZonePolicyError
+} from "./route53-zone-policy.ts";
 
 export interface Route53DnsAdapter {
   isLive(): boolean;
   isWriteEnabled(): boolean;
   currentSource(responseOk?: boolean, errorMessage?: string): AwsRoute53DnsSource;
   createHostedZone(domain: string): Promise<AwsRoute53HostedZoneResult>;
+  listHostedZones(): Promise<AwsRoute53HostedZoneSummary[]>;
   upsertRecord(zoneId: string, opts: AwsRoute53DnsRecordInput): Promise<AwsRoute53DnsChangeResult>;
   deleteRecord?(zoneId: string, opts: AwsRoute53DnsRecordInput): Promise<AwsRoute53DnsChangeResult>;
-  listResourceRecordSets?(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]>;
+  listResourceRecordSets(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]>;
 }
 
 export interface Route53HostedZoneDeleteAdapter {
@@ -217,9 +223,15 @@ export async function handleRoute53DnsUpsertHttp(
   }
 
   try {
-    const existingZone = await findWorkspaceZone(deps.workspace, domain);
-    const zone = existingZone ?? await deps.adapter.createHostedZone(domain);
-    if (!existingZone) {
+    const zoneResolution = await resolveRoute53HostedZone({
+      workspace: deps.workspace,
+      adapter: deps.adapter,
+      domain,
+      mode: "reuse-or-create",
+      now: deps.now
+    });
+    const zone = zoneResolution.zone;
+    if (zoneResolution.status === "created") {
       await emitApiAction(deps.canvasLiveEvents, taskId, "POST", "/2013-04-01/hostedzone", 200, {
         zoneId: zone.zoneId,
         nameServers: zone.nameServers
@@ -227,9 +239,7 @@ export async function handleRoute53DnsUpsertHttp(
     }
 
     const rollbackAuditId = `route53-dns-${taskId}`;
-    const beforeRecords = deps.adapter.listResourceRecordSets
-      ? await deps.adapter.listResourceRecordSets(zone.zoneId).catch(() => null)
-      : null;
+    const beforeRecords = await deps.adapter.listResourceRecordSets(zone.zoneId).catch(() => null);
     if (deps.autoRollbackManager && beforeRecords) {
       await deps.autoRollbackManager.captureSnapshot({
         auditId: rollbackAuditId,
@@ -238,7 +248,7 @@ export async function handleRoute53DnsUpsertHttp(
           provider: "aws-route53",
           domain,
           zoneId: zone.zoneId,
-          zoneCreatedInTransaction: !existingZone,
+          zoneCreatedInTransaction: zoneResolution.status === "created",
           records: beforeRecords,
           requestedRecords: records
         },
@@ -280,6 +290,11 @@ export async function handleRoute53DnsUpsertHttp(
           type: change.type,
           changeId: change.changeId
         })),
+        zoneResolution: {
+          status: zoneResolution.status,
+          source: zoneResolution.source,
+          cleanupSuggested: zoneResolution.cleanupSuggested ?? []
+        },
         learningCount: learnings.length
       }
     });
@@ -306,6 +321,11 @@ export async function handleRoute53DnsUpsertHttp(
         zoneId: zone.zoneId,
         recordCount: records.length,
         changeIds: changes.map((change) => change.changeId),
+        zoneResolution: {
+          status: zoneResolution.status,
+          source: zoneResolution.source,
+          cleanupSuggested: zoneResolution.cleanupSuggested ?? []
+        },
         approvalToken,
         approvalArtifactId: approval?.artifactId,
         workspacePath: workspace?.path
@@ -334,6 +354,11 @@ export async function handleRoute53DnsUpsertHttp(
       domain,
       zoneId: zone.zoneId,
       nameServers: zone.nameServers,
+      zoneResolution: {
+        status: zoneResolution.status,
+        source: zoneResolution.source,
+        cleanupSuggested: zoneResolution.cleanupSuggested ?? []
+      },
       changes: changes.map((change) => ({
         name: change.name,
         type: change.type,
@@ -342,6 +367,48 @@ export async function handleRoute53DnsUpsertHttp(
       workspace
     });
   } catch (error) {
+    if (error instanceof Route53ZonePolicyError) {
+      workspace = await safeWriteExecution(deps.workspace, {
+        skill: skillName,
+        params: { domain, recordCount: records.length, actorId },
+        outcome: "blocked",
+        durationMs: Date.now() - startedAt,
+        evidence: {
+          blockers: [error.code],
+          details: error.details,
+          sourceKind: source.kind
+        }
+      });
+      await deps.auditLog.append({
+        actorType: "operator",
+        actorId,
+        action: "oc.dns.records_update_blocked",
+        targetType: "domain",
+        targetId: domain,
+        riskLevel: "critical",
+        decision: "reject",
+        humanApproved: true,
+        approverIds: [actorId],
+        metadata: {
+          provider: "aws-route53",
+          blockers: [error.code],
+          details: error.details,
+          recordCount: records.length,
+          workspacePath: workspace?.path
+        }
+      });
+      await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.dns.records_update_blocked", "domain", domain, "critical", now);
+      await emitTaskUpdate(deps.canvasLiveEvents, taskId, "failed", now);
+      json(deps.response, error.statusCode, {
+        ok: false,
+        status: "blocked",
+        domain,
+        blockers: [error.code],
+        details: error.details,
+        workspace
+      });
+      return;
+    }
     workspace = await safeWriteExecution(deps.workspace, {
       skill: skillName,
       params: { domain, recordCount: records.length, actorId },
@@ -738,15 +805,6 @@ async function findRecentApproval(input: {
       maxAgeMs: input.maxAgeMs
     });
   }) ?? null;
-}
-
-async function findWorkspaceZone(
-  workspace: OpenClawWorkspace,
-  domain: string
-): Promise<AwsRoute53HostedZoneResult | null> {
-  const inventory = await workspace.readInventoryJson<Route53DnsInventory>("domains.json").catch(() => null);
-  const zone = inventory?.dnsZones?.find((entry) => entry.domain === domain);
-  return zone ? { zoneId: zone.zoneId, nameServers: zone.nameServers } : null;
 }
 
 async function findWorkspaceZoneById(

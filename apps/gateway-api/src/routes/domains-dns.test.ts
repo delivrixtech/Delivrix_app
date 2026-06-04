@@ -9,7 +9,9 @@ import type {
   AwsRoute53DnsChangeResult,
   AwsRoute53DnsRecordInput,
   AwsRoute53DnsSource,
-  AwsRoute53HostedZoneResult
+  AwsRoute53HostedZoneResult,
+  AwsRoute53HostedZoneSummary,
+  AwsRoute53ResourceRecordSet
 } from "../../../../packages/adapters/src/index.ts";
 import type {
   CanvasLiveEvent,
@@ -64,14 +66,19 @@ test("POST /v1/domains/route53/dns/upsert blocks without live writes and approva
 
 test("POST /v1/domains/route53/dns/upsert creates zone, upserts records, writes workspace and audit", async () => {
   const upserts: AwsRoute53DnsRecordInput[] = [];
+  let createCalled = false;
   const route = await routeHarness({
     adapter: mockAdapter({
       isLive: () => true,
       isWriteEnabled: () => true,
-      createHostedZone: async (domain) => ({
-        zoneId: domain === "delivrix-mail.com" ? "Z123" : "ZOTHER",
-        nameServers: ["ns-1.awsdns.com", "ns-2.awsdns.net"]
-      }),
+      listHostedZones: async () => [],
+      createHostedZone: async (domain) => {
+        createCalled = true;
+        return {
+          zoneId: domain === "delivrix-mail.com" ? "Z123" : "ZOTHER",
+          nameServers: ["ns-1.awsdns.com", "ns-2.awsdns.net"]
+        };
+      },
       upsertRecord: async (_zoneId, record) => {
         upserts.push(record);
         return { changeId: `C${upserts.length}` };
@@ -97,6 +104,7 @@ test("POST /v1/domains/route53/dns/upsert creates zone, upserts records, writes 
   });
 
   assert.equal(response.statusCode, 200);
+  assert.equal(createCalled, true);
   assert.equal(response.body.zoneId, "Z123");
   assert.deepEqual(response.body.changes.map((change: { changeId: string }) => change.changeId), ["C1", "C2"]);
   assert.equal(upserts[0].name, "delivrix-mail.com.");
@@ -132,6 +140,105 @@ test("POST /v1/domains/route53/dns/upsert creates zone, upserts records, writes 
     ]
   }]);
   assert.equal(route.canvasEvents.filter((event) => event.type === "oc.action.now" && event.kind === "api").length, 3);
+});
+
+test("POST /v1/domains/route53/dns/upsert reuses existing AWS zone when workspace inventory is empty", async () => {
+  let createCalled = false;
+  const upsertZones: string[] = [];
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isWriteEnabled: () => true,
+      listHostedZones: async () => [{
+        zoneId: "ZEXISTING123",
+        name: "delivrix-mail.com.",
+        nameServers: []
+      }],
+      listResourceRecordSets: async () => [{
+        name: "delivrix-mail.com.",
+        type: "NS",
+        ttl: 172800,
+        values: ["ns-1.awsdns.com.", "ns-2.awsdns.net."]
+      }],
+      createHostedZone: async () => {
+        createCalled = true;
+        return { zoneId: "ZSHOULDNOTCREATE", nameServers: [] };
+      },
+      upsertRecord: async (zoneId, record) => {
+        upsertZones.push(zoneId);
+        return { changeId: `C-${record.type}` };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-dns-plan",
+      executionId: "exec-dns-reuse",
+      approvedAt: "2026-05-27T11:58:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-dns-plan", "exec-dns-reuse");
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    records: [{ name: "mail", type: "A", ttl: 300, values: ["192.0.2.10"] }],
+    actorId: "operator/juanes",
+    approvalToken: "exec-dns-reuse",
+    taskId: "task-dns-reuse"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.zoneId, "ZEXISTING123");
+  assert.equal(response.body.zoneResolution.source, "aws-single");
+  assert.equal(createCalled, false);
+  assert.deepEqual(upsertZones, ["ZEXISTING123"]);
+});
+
+test("POST /v1/domains/route53/dns/upsert fail-closes ambiguous AWS zones without creating duplicate", async () => {
+  let createCalled = false;
+  let upsertCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isWriteEnabled: () => true,
+      listHostedZones: async () => [
+        { zoneId: "ZONEAMBIGUOUS1", name: "delivrix-mail.com.", nameServers: ["ns-1.awsdns.com"] },
+        { zoneId: "ZONEAMBIGUOUS2", name: "delivrix-mail.com.", nameServers: ["ns-2.awsdns.net"] }
+      ],
+      listResourceRecordSets: async () => [{
+        name: "delivrix-mail.com.",
+        type: "NS",
+        ttl: 172800,
+        values: ["ns-1.awsdns.com."]
+      }],
+      createHostedZone: async () => {
+        createCalled = true;
+        return { zoneId: "ZSHOULDNOTCREATE", nameServers: [] };
+      },
+      upsertRecord: async () => {
+        upsertCalled = true;
+        return { changeId: "CSHOULDNOTUPSERT" };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-dns-plan",
+      executionId: "exec-dns-ambiguous",
+      approvedAt: "2026-05-27T11:58:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-dns-plan", "exec-dns-ambiguous");
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    records: [{ name: "mail", type: "A", ttl: 300, values: ["192.0.2.10"] }],
+    actorId: "operator/juanes",
+    approvalToken: "exec-dns-ambiguous",
+    taskId: "task-dns-ambiguous"
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body.blockers, ["zone_ambiguous_manual_review"]);
+  assert.equal(createCalled, false);
+  assert.equal(upsertCalled, false);
+  assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.dns.records_update_blocked");
 });
 
 test("POST /v1/domains/route53/dns/upsert auto-rolls back when propagation times out", async () => {
@@ -353,6 +460,10 @@ function mockAdapter(overrides: Partial<Route53DnsAdapter> = {}): Route53DnsAdap
     }),
     createHostedZone: async (): Promise<AwsRoute53HostedZoneResult> => {
       throw new Error("createHostedZone mock not implemented");
+    },
+    listHostedZones: async (): Promise<AwsRoute53HostedZoneSummary[]> => [],
+    listResourceRecordSets: async (): Promise<AwsRoute53ResourceRecordSet[]> => {
+      throw new Error("listResourceRecordSets mock not implemented");
     },
     upsertRecord: async (): Promise<AwsRoute53DnsChangeResult> => {
       throw new Error("upsertRecord mock not implemented");

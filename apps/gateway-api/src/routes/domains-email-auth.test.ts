@@ -8,7 +8,10 @@ import test from "node:test";
 import type {
   AwsRoute53DnsChangeResult,
   AwsRoute53DnsRecordInput,
-  AwsRoute53DnsSource
+  AwsRoute53DnsSource,
+  AwsRoute53HostedZoneResult,
+  AwsRoute53HostedZoneSummary,
+  AwsRoute53ResourceRecordSet
 } from "../../../../packages/adapters/src/index.ts";
 import type {
   CanvasLiveEvent,
@@ -147,6 +150,44 @@ test("POST /v1/domains/auth/configure publishes records and saves DKIM private k
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "command"));
 });
 
+test("POST /v1/domains/auth/configure resolves Route53 zone from AWS fallback when workspace inventory is empty", async () => {
+  const upsertZones: string[] = [];
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isWriteEnabled: () => true,
+      listHostedZones: async () => [{
+        zoneId: "ZAUTHFALLBACK1",
+        name: "delivrix-mail.com.",
+        nameServers: ["ns-1.awsdns.com"]
+      }],
+      upsertRecord: async (zoneId, record) => {
+        upsertZones.push(zoneId);
+        return { changeId: `C${record.type}` };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-auth-plan",
+      executionId: "exec-auth-aws-zone",
+      approvedAt: "2026-05-27T14:58:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-auth-plan", "exec-auth-aws-zone");
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    mxServerIp: "192.0.2.10",
+    actorId: "operator/juanes",
+    approvalToken: "exec-auth-aws-zone",
+    taskId: "task-auth-aws-zone"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.zoneId, "ZAUTHFALLBACK1");
+  assert.equal(response.body.zoneResolution.source, "aws-single");
+  assert.deepEqual(upsertZones, ["ZAUTHFALLBACK1", "ZAUTHFALLBACK1", "ZAUTHFALLBACK1"]);
+});
+
 async function routeHarness(input: {
   adapter: EmailAuthDnsAdapter;
   canvasState: CanvasLiveStateSnapshot;
@@ -208,6 +249,20 @@ function mockAdapter(overrides: Partial<EmailAuthDnsAdapter> = {}): EmailAuthDns
     upsertRecord: async (): Promise<AwsRoute53DnsChangeResult> => {
       throw new Error("upsertRecord mock not implemented");
     },
+    createHostedZone: async (): Promise<AwsRoute53HostedZoneResult> => {
+      throw new Error("createHostedZone mock not implemented");
+    },
+    listHostedZones: async (): Promise<AwsRoute53HostedZoneSummary[]> => [{
+      zoneId: "Z123",
+      name: "delivrix-mail.com.",
+      nameServers: ["ns-1.awsdns.com"]
+    }],
+    listResourceRecordSets: async (): Promise<AwsRoute53ResourceRecordSet[]> => [{
+      name: "delivrix-mail.com.",
+      type: "NS",
+      ttl: 172800,
+      values: ["ns-1.awsdns.com."]
+    }],
     ...overrides
   };
 }

@@ -42,6 +42,13 @@ export interface Route53ZoneRecordsParams extends Record<string, unknown> {
   recordName?: string;
 }
 
+export interface Route53NameserverUpdateParams extends Record<string, unknown> {
+  domain: string;
+  zoneId?: string;
+  nameservers?: string[];
+  taskId?: string;
+}
+
 export interface IonosDnsReadParams extends Record<string, unknown> {
   domain?: string;
   zoneId?: string;
@@ -241,6 +248,17 @@ export const route53ZoneRecordsParamSchema = schema<Route53ZoneRecordsParams>((v
       ? {}
       : { recordName: dnsRecordName(input.recordName, "recordName") })
   };
+});
+
+export const route53NameserverUpdateParamSchema = schema<Route53NameserverUpdateParams>((value) => {
+  const input = object(value);
+  return withOptionalTaskId({
+    domain: domain(input.domain, "domain"),
+    ...(input.zoneId === undefined || input.zoneId === null || input.zoneId === "" ? {} : { zoneId: route53ZoneId(input.zoneId, "zoneId") }),
+    ...(input.nameservers === undefined || input.nameservers === null
+      ? {}
+      : { nameservers: array(input.nameservers, "nameservers", 2, 13).map((entry, index) => nameserver(entry, `nameservers[${index}]`)) })
+  }, input);
 });
 
 export const ionosDnsReadParamSchema = schema<IonosDnsReadParams>((value) => {
@@ -566,6 +584,14 @@ function dnsRecordName(value: unknown, field: string): string {
   const normalized = string(value, field).toLowerCase().replace(/\.$/, "");
   if (!/^[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?)*$/.test(normalized)) {
     throw new SkillSchemaError(`${field} must be a valid DNS record name`);
+  }
+  return normalized;
+}
+
+function nameserver(value: unknown, field: string): string {
+  const normalized = string(value, field).toLowerCase().replace(/\.$/, "");
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,62}\.)+[a-z0-9-]{2,63}$/.test(normalized)) {
+    throw new SkillSchemaError(`${field} must be a valid nameserver`);
   }
   return normalized;
 }
