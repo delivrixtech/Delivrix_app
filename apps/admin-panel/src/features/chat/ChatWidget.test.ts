@@ -305,6 +305,58 @@ test("chat client applies assistant content returned by chat.send ack", async ()
   assert.equal(state.lastError, null);
 });
 
+test("chat client sends operator params as metadata while keeping local message clean", async () => {
+  const { ChatClient } = await loadChatClientModule();
+  const calls: unknown[] = [];
+  const client = new ChatClient({
+    initialState: {
+      connection: "connected",
+      messages: [],
+      streaming: null,
+      lastError: null,
+      queuedCount: 0,
+      interrupting: false
+    },
+    fetchImpl: async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push(JSON.parse(String(init?.body ?? "{}")));
+      return new Response(JSON.stringify({
+        msgId: "params-send-1",
+        queued: true
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    },
+    webSocketCtor: undefined,
+    idFactory: () => "params-send-1",
+    now: () => new Date("2026-06-04T13:10:00.000Z")
+  });
+
+  await client.sendMessage("vamos a continuar corriendo el proyecto", {
+    operatorParams: {
+      mode: "chat",
+      skillHint: "auto",
+      executionScope: "read_only",
+      timeBudgetMinutes: 30,
+      approvalContract: "1 firma operador"
+    }
+  });
+
+  assert.deepEqual(calls, [{
+    msgId: "params-send-1",
+    message: "vamos a continuar corriendo el proyecto",
+    operatorParams: {
+      mode: "chat",
+      skillHint: "auto",
+      executionScope: "read_only",
+      timeBudgetMinutes: 30,
+      approvalContract: "1 firma operador"
+    }
+  }]);
+  const state = client.getSnapshot();
+  assert.equal(state.messages[0].content, "vamos a continuar corriendo el proyecto");
+});
+
 test("chat client posts interrupt for the active streaming message", async () => {
   const { ChatClient } = await loadChatClientModule();
   const calls: Array<{ url: string; body: unknown }> = [];

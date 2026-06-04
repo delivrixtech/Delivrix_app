@@ -735,7 +735,11 @@ export function createOpenClawBedrockBridgeFromEnv(
     modelId,
     systemPromptPath: normalizeEnvValue(env.OPENCLAW_SYSTEM_CONTEXT_PATH),
     delivrixBaseUrl: normalizeEnvValue(env.DELIVRIX_GATEWAY_INTERNAL_BASE_URL) ?? normalizeEnvValue(env.DELIVRIX_BASE_URL) ?? defaultDelivrixBaseUrl,
-    readBoundaryToken: normalizeEnvValue(env.DELIVRIX_READ_BOUNDARY_TOKEN) ?? normalizeEnvValue(env.DELIVRIX_OPENCLAW_TOKEN) ?? "",
+    readBoundaryToken:
+      normalizeEnvValue(env.DELIVRIX_READ_BOUNDARY_TOKEN) ??
+      normalizeEnvValue(env.DELIVRIX_OPENCLAW_TOKEN) ??
+      normalizeEnvValue(env.OPENCLAW_GATEWAY_TOKEN) ??
+      "",
     maxTokens: parsePositiveInt(env.AWS_BEDROCK_MAX_TOKENS) ?? defaultMaxTokens,
     temperature: parseTemperature(env.AWS_BEDROCK_TEMPERATURE) ?? defaultTemperature,
     maxToolIterations: parsePositiveInt(env.OPENCLAW_TOOL_MAX_ITERATIONS) ?? defaultMaxToolIterations,

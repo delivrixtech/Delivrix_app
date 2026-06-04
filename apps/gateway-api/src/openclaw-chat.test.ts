@@ -98,6 +98,64 @@ test("OpenClaw chat send proxies with gateway token and audits operator message"
   });
 });
 
+test("OpenClaw chat send strips legacy operator params and preserves structured metadata", async () => {
+  const audit = new MemoryAudit();
+  const canvas = new MemoryCanvas();
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return new Response(JSON.stringify({ msgId: "legacy-wrapper-1", queued: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  const proxy = new OpenClawChatProxy(audit, {
+    agentHttpUrl: "http://openclaw.test:61175",
+    gatewayToken: "secret-gateway-token",
+    fetchImpl: fetchImpl as typeof fetch,
+    canvasLiveEvents: canvas,
+    now: () => new Date("2026-06-04T13:00:00.000Z")
+  });
+
+  await proxy.sendOperatorMessage({
+    msgId: "legacy-wrapper-1",
+    message: [
+      "<openclaw_operator_params>",
+      "mode: execute",
+      "skill_hint: configure_complete_smtp",
+      "execution_scope: dry_run",
+      "time_budget_minutes: 30",
+      "approval_contract: inline contract",
+      "</openclaw_operator_params>",
+      "",
+      "vamos a continuar corriendo el proyecto"
+    ].join("\n"),
+    operatorParams: {
+      mode: "chat",
+      skillHint: "auto",
+      executionScope: "read_only",
+      timeBudgetMinutes: 15,
+      approvalContract: "structured contract"
+    }
+  });
+
+  const body = JSON.parse(String(calls[0].init.body));
+  assert.equal(body.message.content, "vamos a continuar corriendo el proyecto");
+  assert.equal(String(body.message.content).includes("<openclaw_operator_params>"), false);
+  assert.equal(canvas.events[0].type, "oc.task.declare");
+  assert.equal(canvas.events[0].title.includes("<openclaw_operator_params>"), false);
+  assert.deepEqual(audit.events[0].metadata.operatorParams, {
+    mode: "chat",
+    skillHint: "auto",
+    executionScope: "read_only",
+    timeBudgetMinutes: 15,
+    approvalContract: "structured contract"
+  });
+  assert.equal(audit.events[0].metadata.operatorParamsSource, "legacy_inline+structured");
+  assert.equal(audit.events[0].metadata.strippedInlineOperatorParams, true);
+  assert.equal(audit.events[0].metadata.length, "vamos a continuar corriendo el proyecto".length);
+});
+
 test("OpenClaw chat send rejects login HTML returned as HTTP 200", async () => {
   const audit = new MemoryAudit();
   const fetchImpl = async () => new Response("<html>login</html>", {

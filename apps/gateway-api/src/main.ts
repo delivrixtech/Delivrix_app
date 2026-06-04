@@ -386,7 +386,9 @@ const rampScheduler = new RampScheduler({
 });
 const gatewaySelfBaseUrl = process.env.DELIVRIX_GATEWAY_INTERNAL_BASE_URL ?? `http://${host}:${port}`;
 const sensitiveReadBoundaryToken =
-  process.env.DELIVRIX_READ_BOUNDARY_TOKEN?.trim() || process.env.DELIVRIX_OPENCLAW_TOKEN?.trim();
+  process.env.DELIVRIX_READ_BOUNDARY_TOKEN?.trim() ||
+  process.env.DELIVRIX_OPENCLAW_TOKEN?.trim() ||
+  process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
 const configureSmtpToolProcessor = createHttpToolUseProcessor({
   delivrixBaseUrl: gatewaySelfBaseUrl,
   env: process.env,
