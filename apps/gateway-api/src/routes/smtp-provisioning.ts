@@ -26,6 +26,7 @@ import {
   type EntityResolutionFailure
 } from "../entity-guard.ts";
 import { readRequestBody } from "../request-body.ts";
+import { ensureDkimKeyPair, findExistingDkimPrivateKeyPath } from "../dkim-keypair.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -76,14 +77,6 @@ interface SmtpProvisionBody {
   actorId?: unknown;
   approvalToken?: unknown;
   taskId?: unknown;
-}
-
-interface DomainsInventory {
-  emailAuth?: Array<{
-    domain: string;
-    selector: string;
-    dkimPrivateKeyPath: string;
-  }>;
 }
 
 interface SmtpInventory {
@@ -150,12 +143,12 @@ export async function handleSmtpProvisionHttp(
   const serverIp = explicitServerIp
     ? explicitServerIp.ok ? explicitServerIp.value : null
     : serverResolution.ok ? serverResolution.value.serverIp : null;
-  const dkimPrivateKeyPath =
+  let dkimPrivateKeyPath =
     !domainResolution.ok
       ? null
       : typeof body.dkimPrivateKeyPath === "string" && body.dkimPrivateKeyPath.trim()
       ? normalizeWorkspacePrivateKeyPath(body.dkimPrivateKeyPath)
-      : await findDkimPrivateKeyPath(deps.workspace, domain, selector);
+      : await findExistingDkimPrivateKeyPath(deps.workspace, domain, selector);
 
   await emitTaskDeclare(deps.canvasLiveEvents, taskId, `SMTP stack · ${domain}`, actorId, now);
   const learnings = await safeReadLearnings(deps.workspace);
@@ -174,6 +167,35 @@ export async function handleSmtpProvisionHttp(
   if (!approval) blockers.push("approval_not_found_or_expired");
   if (entityFailures.length > 0) blockers.push(entityNotResolvedBlocker);
   if (!serverIp) blockers.push("server_ip_missing");
+  let dkimPublicKey: string | undefined;
+  let dkimPublicKeyHash: string | undefined;
+  let dkimKeyGenerated = false;
+  let dkimKeyGenerationError: string | undefined;
+  if (blockers.length === 0 && !dkimPrivateKeyPath) {
+    try {
+      const keyPair = await ensureDkimKeyPair({
+        workspace: deps.workspace,
+        domain,
+        selector,
+        now: deps.now
+      });
+      dkimPrivateKeyPath = keyPair.privateKeyPath;
+      dkimPublicKey = keyPair.publicKeyB64;
+      dkimPublicKeyHash = keyPair.publicKeyHash;
+      dkimKeyGenerated = keyPair.generated;
+      await emitFileAction(
+        deps.canvasLiveEvents,
+        taskId,
+        keyPair.generated ? "write" : "read",
+        keyPair.privateKeyPath,
+        keyPair.generated ? "DKIM private key generated for SMTP provisioning" : "DKIM private key reused for SMTP provisioning",
+        now
+      );
+    } catch (error) {
+      blockers.push("dkim_key_generation_failed");
+      dkimKeyGenerationError = errorMessage(error);
+    }
+  }
   if (!dkimPrivateKeyPath) blockers.push("dkim_private_key_missing");
 
   if (blockers.length > 0) {
@@ -196,6 +218,8 @@ export async function handleSmtpProvisionHttp(
         blockers,
         serverIpKnown: Boolean(serverIp),
         dkimPrivateKeyKnown: Boolean(dkimPrivateKeyPath),
+        ...(dkimPublicKeyHash ? { dkimPublicKeyHash } : {}),
+        ...(dkimKeyGenerationError ? { dkimKeyGenerationError } : {}),
         learningCount: learnings.length,
         ...(entityFailures.length > 0 ? { entityResolution: entityFailureMetadata(entityFailures) } : {})
       }
@@ -231,6 +255,17 @@ export async function handleSmtpProvisionHttp(
   }
 
   const dkimPrivateKey = await deps.workspace.readWorkspaceFile(dkimPrivateKeyPath!);
+  if (!dkimPublicKey) {
+    const keyPair = await ensureDkimKeyPair({
+      workspace: deps.workspace,
+      domain,
+      selector,
+      now: deps.now
+    });
+    dkimPublicKey = keyPair.publicKeyB64;
+    dkimPublicKeyHash = keyPair.publicKeyHash;
+    dkimKeyGenerated = keyPair.generated;
+  }
   const plan = buildSmtpProvisionPlan({
     domain,
     serverIp: serverIp!,
@@ -306,6 +341,9 @@ export async function handleSmtpProvisionHttp(
         sshConnectAttempts,
         cloudInitSettleSeconds,
         tlsStatus: "attempted_or_pending_dns",
+        dkimPrivateKeyPath,
+        dkimPublicKeyHash,
+        dkimKeyGenerated,
         learningCount: learnings.length
       }
     });
@@ -329,6 +367,9 @@ export async function handleSmtpProvisionHttp(
         sshConnectAttempts,
         cloudInitSettleSeconds,
         tlsStatus: "attempted_or_pending_dns",
+        dkimPrivateKeyPath,
+        dkimPublicKeyHash,
+        dkimKeyGenerated,
         approvalToken,
         approvalArtifactId: approval?.artifactId,
         workspacePath: workspace?.path
@@ -348,6 +389,10 @@ export async function handleSmtpProvisionHttp(
       sshConnectAttempts,
       cloudInitSettleSeconds,
       tlsStatus: "attempted_or_pending_dns",
+      dkimPrivateKeyPath,
+      dkimPublicKey,
+      dkimPublicKeyHash,
+      dkimKeyGenerated,
       workspace
     });
   } catch (error) {
@@ -532,12 +577,6 @@ export function buildSmtpProvisionPlan(input: {
       auditCommand: "validate local SMTP listener"
     }
   ];
-}
-
-async function findDkimPrivateKeyPath(workspace: OpenClawWorkspace, domain: string, selector: string): Promise<string | null> {
-  const inventory = await workspace.readInventoryJson<DomainsInventory>("domains.json").catch(() => null);
-  const match = inventory?.emailAuth?.find((entry) => entry.domain === domain && entry.selector === selector);
-  return match?.dkimPrivateKeyPath ? normalizeWorkspacePrivateKeyPath(match.dkimPrivateKeyPath) : null;
 }
 
 async function updateSmtpInventory(

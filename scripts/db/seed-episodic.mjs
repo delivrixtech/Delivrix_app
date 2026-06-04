@@ -110,6 +110,7 @@ export function buildEpisodicReviewSeedEntries(env = process.env) {
       appliesTo: "dns_and_smtp_changes",
       highImpactAction: true
     }),
+    ...productionSenderDomainFacts(secret),
     observation("compact_intent", "success", "observation-compaction", 0, 0.35, {
       noteCode: "compaction_completed_for_review_seed"
     }),
@@ -225,6 +226,25 @@ function operatorFact(secret, slug, reliability, outcomeData) {
       seedVersion: "episodic-b1-2026-06-03"
     }
   };
+}
+
+function productionSenderDomainFacts(secret) {
+  return [
+    "fileyourcorp.app",
+    "filecorppro.net",
+    "nationalcorphub.app",
+    "swiftcorpdocs.app",
+    "annualcorpfilings.com",
+    "nfcorpreport.com",
+    "nfcorpreport.online"
+  ].map((domain) => operatorFact(secret, `prod-domain-${domain.replace(/[^a-z0-9]+/g, "-")}`, 0.98, {
+    domain,
+    decisionCode: "production_sender_stack_active",
+    productionSenderStack: true,
+    scopeGuard: {
+      mode: "explicit_plan_signature"
+    }
+  }));
 }
 
 function observation(tool, outcome, slug, daysAgo, _reliability, outcomeData) {

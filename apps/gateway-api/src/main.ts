@@ -105,8 +105,10 @@ import {
 import { LocalFileSendQueue } from "../../../packages/queue/src/index.ts";
 import {
   cleanupApprovalNonces,
+  issueApprovalToken,
   listApprovalNoncesForTarget
 } from "./security/approval-token.ts";
+import { approvalTokenHash } from "./approval-guard.ts";
 import {
   resolveGatewayNow,
   type QuorumResolution
@@ -157,6 +159,7 @@ import {
 } from "./routes/domains-dns.ts";
 import { handleReadRoute53DomainDetail } from "./routes/route53-domain-detail.ts";
 import { handleReadRoute53ZoneRecords } from "./routes/route53-zone-records.ts";
+import { handleReadIonosDns } from "./routes/read-dns-ionos.ts";
 import {
   handleIonosDnsUpsertError,
   handleIonosDnsUpsertHttp
@@ -270,7 +273,7 @@ import { classifyLiveActionMutation } from "./live-action-kill-switch.ts";
 import { createSkillDispatcher } from "./skill-dispatcher.ts";
 import { createHttpToolUseProcessor } from "./tool-use-processor.ts";
 import { routeGatewayWebSocketUpgrade } from "./gateway-upgrade-router.ts";
-import { handleProposalSign } from "./routes/proposals-sign.ts";
+import { handleProposalSign, type PlanApprovalRecord } from "./routes/proposals-sign.ts";
 import { handleProposalReject } from "./routes/proposals-reject.ts";
 import { handleLegacyAuthorizationDeprecated } from "./routes/legacy-authorization.ts";
 import {
@@ -464,6 +467,158 @@ const configureSmtpRuntimeDeps = {
       error: result.error
     };
   },
+  resolvePlanApproval: async (input: {
+    runId: string;
+    params: { domain?: unknown; provider?: unknown; budgetUsdMax?: unknown; testEmailRecipient?: unknown };
+  }) => {
+    const nowMs = resolveGatewayNow().getTime();
+    const match = proposalsStore
+      .filter((proposal) =>
+        proposal.planApproval?.scope.runId === input.runId &&
+        proposal.planApproval.status === "signed" &&
+        (proposal.status === "signed" || proposal.status === "executing" || proposal.status === "executed")
+      )
+      .toReversed()
+      .find((proposal) => {
+        const plan = proposal.planApproval;
+        if (!plan || Date.parse(plan.expiresAt) <= nowMs) return false;
+        if (typeof input.params.domain === "string" && normalizeDomainForPlan(input.params.domain) !== plan.scope.domain) return false;
+        if (typeof input.params.provider === "string" && input.params.provider.trim().toLowerCase() !== plan.scope.provider) return false;
+        if (typeof input.params.budgetUsdMax === "number" && input.params.budgetUsdMax !== plan.scope.budgetUsdMax) return false;
+        if (typeof input.params.testEmailRecipient === "string" && input.params.testEmailRecipient.trim().toLowerCase() !== plan.scope.recipient) return false;
+        return true;
+      });
+    return match?.planApproval ?? null;
+  },
+  executePlanApprovedStep: async (input: {
+    runId: string;
+    step: number;
+    skill: string;
+    params: Record<string, unknown>;
+    actorId: string;
+    inputHash: string;
+    estimatedCostUsd?: number;
+    planApproval: PlanApprovalRecord;
+  }) => {
+    const killSwitch = await killSwitchStore.get();
+    if (killSwitch.enabled) {
+      return { status: "kill_switch_armed" as const, reason: "kill_switch_armed" };
+    }
+    const key = hashPlanStepExecution({
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      inputHash: input.inputHash,
+      scopeHash: input.planApproval.scopeHash
+    });
+    if (planStepExecutions.has(key)) {
+      return { status: "replay_detected" as const, planStepTokenId: key, reason: "plan_step_replay_detected" };
+    }
+    planStepExecutions.add(key);
+
+    const now = resolveGatewayNow();
+    const token = issueApprovalToken({
+      actionId: `plan:${input.planApproval.scopeHash}:${input.step}:${input.skill}`,
+      targetType: "openclaw_orchestrator_step",
+      targetId: `${input.runId}:${input.step}:${input.skill}`,
+      approverId: input.actorId
+    }, now);
+    const artifactId = `plan-step-${key.slice(0, 32)}`;
+    const approvalHash = approvalTokenHash(token.tokenId);
+    await auditLog.append({
+      actorType: "operator",
+      actorId: input.actorId,
+      action: "oc.artifact.approved",
+      targetType: "canvas_artifact",
+      targetId: artifactId,
+      riskLevel: "critical",
+      decision: "allow",
+      humanApproved: true,
+      approverIds: [input.actorId],
+      metadata: {
+        executionId: token.tokenId,
+        approvalTokenHash: approvalHash,
+        planApprovalScopeHash: input.planApproval.scopeHash,
+        planSignatureId: input.planApproval.signatureId,
+        runId: input.runId,
+        step: input.step,
+        skill: input.skill,
+        inputHash: input.inputHash,
+        planStepTokenId: key,
+        estimatedCostUsd: input.estimatedCostUsd ?? 0
+      }
+    });
+    await auditLog.append({
+      actorType: "openclaw",
+      actorId: "configure_complete_smtp",
+      action: "oc.plan.step_token.issued",
+      targetType: "openclaw_orchestrator_step",
+      targetId: `${input.runId}:${input.step}:${input.skill}`,
+      riskLevel: "critical",
+      decision: "allow",
+      humanApproved: true,
+      approverIds: [input.actorId],
+      metadata: {
+        approvalArtifactId: artifactId,
+        approvalTokenHash: approvalHash,
+        planApprovalScopeHash: input.planApproval.scopeHash,
+        planSignatureId: input.planApproval.signatureId,
+        runId: input.runId,
+        step: input.step,
+        skill: input.skill,
+        inputHash: input.inputHash,
+        planStepTokenId: key
+      }
+    });
+    await canvasLiveEvents.upsertArtifactSnapshot({
+      artifactId,
+      taskId: input.runId,
+      kind: "proposal",
+      title: `Plan step ${input.step} · ${input.skill}`,
+      editable: false,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      approvalStatus: "approved",
+      approvedBy: input.actorId,
+      approvedAt: now.toISOString(),
+      executionId: token.tokenId,
+      blocks: [{
+        blockId: `${artifactId}-scope`,
+        order: 1,
+        kind: "paragraph",
+        content: `Autorizado por firma de plan ${input.planApproval.scopeHash} para run ${input.runId}.`,
+        editable: false,
+        status: "complete",
+        updatedAt: now.toISOString()
+      }]
+    });
+
+    const result = await skillDispatcher.dispatch({
+      skill: input.skill,
+      params: input.params,
+      actorId: input.actorId,
+      approvalToken: token,
+      timeoutMs: approvalTimeoutForPlanStep(input.skill, input.params)
+    });
+    return result.ok
+      ? {
+          status: "executed" as const,
+          planStepTokenId: key,
+          signatureId: input.planApproval.signatureId,
+          outcome: result.summary,
+          durationMs: result.durationMs,
+          statusCode: result.statusCode
+        }
+      : {
+          status: "execution_failed" as const,
+          planStepTokenId: key,
+          signatureId: input.planApproval.signatureId,
+          outcome: result.summary,
+          durationMs: result.durationMs,
+          statusCode: result.statusCode,
+          error: extractDispatchError(result.summary)
+        };
+  },
   submitRollbackProposal: async (input: {
     runId: string;
     failedStep: number;
@@ -624,6 +779,7 @@ interface StoredProposal extends AgentProposal {
     rollbackExpiresAt: string;
     newState: unknown;
   };
+  planApproval?: PlanApprovalRecord;
 }
 
 type AgentPermissionCategory =
@@ -647,6 +803,7 @@ interface AgentPermissionEntry {
 }
 
 const proposalsStore: StoredProposal[] = [];
+const planStepExecutions = new Set<string>();
 const runbookExecutionStore = new LocalFileRunbookExecutionStore();
 const proposalTtlMs = 60 * 60 * 1000;
 const agentPermissionMatrix: AgentPermissionEntry[] = [
@@ -686,6 +843,7 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("openclaw_memory_read", "allowed_read_only"),
   permission("read_route53_domain_detail", "allowed_read_only"),
   permission("read_route53_zone_records", "allowed_read_only"),
+  permission("read_dns_ionos", "allowed_read_only"),
   permission("suggest_safe_domain", "allowed_read_only"),
   permission("naming_suggest", "allowed_read_only"),
   permission("propose_warming_step", "allowed_dry_run"),
@@ -1516,6 +1674,15 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && requestUrl(request).pathname === "/v1/route53/zone-records") {
       return await handleReadRoute53ZoneRecords(request, response, {
         canvasLiveEvents,
+        emitAudit: appendRoute53ReadAudit,
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/dns/ionos/records") {
+      return await handleReadIonosDns(request, response, {
+        adapter: ionosDnsAdapter,
         emitAudit: appendRoute53ReadAudit,
         now: () => new Date(),
         readBoundaryToken: sensitiveReadBoundaryToken
@@ -5151,17 +5318,18 @@ function riskLevelFromProposalSeverity(severity: AgentProposal["severity"]): "lo
 async function appendRoute53ReadAudit(event: { type: string; [key: string]: unknown }): Promise<void> {
   const domain = typeof event.domain === "string" ? event.domain : undefined;
   const zoneId = typeof event.zoneId === "string" ? event.zoneId : undefined;
+  const isIonos = event.type.startsWith("oc.ionos.");
   await auditLog.append({
     actorType: "openclaw",
-    actorId: "openclaw-route53-read-tools",
+    actorId: isIonos ? "openclaw-ionos-read-tools" : "openclaw-route53-read-tools",
     action: event.type,
-    targetType: domain ? "domain" : "route53_hosted_zone",
+    targetType: domain ? "domain" : isIonos ? "ionos_dns_zone" : "route53_hosted_zone",
     targetId: domain ?? zoneId ?? "unknown",
     riskLevel: "low",
     decision: "allow",
     humanApproved: false,
     metadata: {
-      provider: "aws-route53",
+      provider: isIonos ? "ionos-dns" : "aws-route53",
       ...event
     }
   });
@@ -5242,6 +5410,48 @@ function logUnhandledRequestError(request: IncomingMessage, error: unknown): voi
 function parseStaleAfterMs(value: string | number | null | undefined, fallback: number): number | null {
   const parsed = Number(value ?? fallback);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function hashPlanStepExecution(value: {
+  runId: string;
+  step: number;
+  skill: string;
+  inputHash: string;
+  scopeHash: string;
+}): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function approvalTimeoutForPlanStep(skill: string, params: Record<string, unknown>): number {
+  if (skill === "wait_for_dns_propagation") {
+    const maxWaitMs = positiveNumber(params.maxWaitMs);
+    const pollIntervalMs = positiveNumber(params.pollIntervalMs) ?? 0;
+    if (maxWaitMs !== undefined) {
+      return Math.max(maxWaitMs + pollIntervalMs + 2 * 60 * 1000, 300_000);
+    }
+  }
+  if (skill === "configure_complete_smtp") {
+    return positiveIntegerOrDefault(process.env.OPENCLAW_CONFIGURE_SMTP_TOOL_TIMEOUT_MS, 3 * 60 * 60 * 1000);
+  }
+  return positiveIntegerOrDefault(process.env.OPENCLAW_PLAN_STEP_TIMEOUT_MS, 300_000);
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function extractDispatchError(summary: unknown): string {
+  if (typeof summary === "object" && summary !== null) {
+    const record = summary as Record<string, unknown>;
+    if (typeof record.error === "string") return record.error;
+    if (typeof record.message === "string") return record.message;
+  }
+  return "execution_failed";
+}
+
+function normalizeDomainForPlan(value: string): string {
+  return value.trim().toLowerCase().replace(/\.$/, "");
 }
 
 function tryBuild<T>(response: ServerResponse, factory: () => T): T | undefined {

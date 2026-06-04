@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
   AwsRoute53DnsChangeResult,
@@ -20,6 +20,7 @@ import {
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
+import { ensureDkimKeyPair } from "../dkim-keypair.ts";
 
 export interface EmailAuthDnsAdapter {
   isLive(): boolean;
@@ -70,6 +71,7 @@ interface EmailAuthInventory {
     zoneId: string;
     selector: string;
     dkimPrivateKeyPath: string;
+    dkimPublicKeyHash?: string;
     configuredAt: string;
     records: Array<{
       name: string;
@@ -162,8 +164,21 @@ export async function handleEmailAuthConfigureHttp(
     return;
   }
 
-  const keyPair = generateDkimKeyPair();
-  await emitCommandAction(deps.canvasLiveEvents, taskId, "node:crypto generateKeyPairSync rsa:2048", 0, "", "", now);
+  const keyPair = await ensureDkimKeyPair({
+    workspace: deps.workspace,
+    domain,
+    selector,
+    now: deps.now
+  });
+  await emitCommandAction(
+    deps.canvasLiveEvents,
+    taskId,
+    keyPair.generated ? "node:crypto ensureDkimKeyPair rsa:2048" : "reuse inventory DKIM keypair",
+    0,
+    "",
+    "",
+    now
+  );
   const records = buildEmailAuthRecords({
     domain,
     mxServerIp,
@@ -173,11 +188,14 @@ export async function handleEmailAuthConfigureHttp(
   });
 
   try {
-    const dkimPrivateKeyFile = await deps.workspace.writeWorkspaceFile(
-      `inventory/dkim-keys/${domain}/${selector}.private`,
-      keyPair.privateKeyPem
+    await emitFileAction(
+      deps.canvasLiveEvents,
+      taskId,
+      keyPair.generated ? "write" : "read",
+      keyPair.privateKeyPath,
+      keyPair.generated ? "DKIM private key saved for SSH provisioning" : "DKIM private key reused from inventory",
+      now
     );
-    await emitFileAction(deps.canvasLiveEvents, taskId, "write", dkimPrivateKeyFile.path, "DKIM private key saved for SSH provisioning", now);
 
     const changes: Array<AwsRoute53DnsRecordInput & AwsRoute53DnsChangeResult> = [];
     for (const record of records) {
@@ -198,7 +216,8 @@ export async function handleEmailAuthConfigureHttp(
       domain,
       zoneId,
       selector,
-      dkimPrivateKeyPath: dkimPrivateKeyFile.path,
+      dkimPrivateKeyPath: keyPair.privateKeyPath,
+      dkimPublicKeyHash: keyPair.publicKeyHash,
       configuredAt: now.toISOString(),
       records: changes
     });
@@ -209,7 +228,9 @@ export async function handleEmailAuthConfigureHttp(
       durationMs: Date.now() - startedAt,
       evidence: {
         zoneId,
-        dkimPrivateKeyPath: dkimPrivateKeyFile.path,
+        dkimPrivateKeyPath: keyPair.privateKeyPath,
+        dkimPublicKeyHash: keyPair.publicKeyHash,
+        dkimKeyGenerated: keyPair.generated,
         records: changes.map((record) => ({
           name: record.name,
           type: record.type,
@@ -237,7 +258,9 @@ export async function handleEmailAuthConfigureHttp(
         dmarcPolicy,
         recordCount: records.length,
         changeIds: changes.map((change) => change.changeId),
-        dkimPrivateKeyPath: dkimPrivateKeyFile.path,
+        dkimPrivateKeyPath: keyPair.privateKeyPath,
+        dkimPublicKeyHash: keyPair.publicKeyHash,
+        dkimKeyGenerated: keyPair.generated,
         approvalToken,
         approvalArtifactId: approval?.artifactId,
         workspacePath: workspace?.path
@@ -252,7 +275,10 @@ export async function handleEmailAuthConfigureHttp(
       domain,
       zoneId,
       selector,
-      dkimPrivateKeyPath: dkimPrivateKeyFile.path,
+      dkimPrivateKeyPath: keyPair.privateKeyPath,
+      dkimPublicKey: keyPair.publicKeyB64,
+      dkimPublicKeyHash: keyPair.publicKeyHash,
+      dkimKeyGenerated: keyPair.generated,
       records: changes.map((record) => ({
         name: record.name,
         type: record.type,
@@ -358,19 +384,6 @@ export function buildEmailAuthRecords(input: {
   ];
 }
 
-function generateDkimKeyPair(): { privateKeyPem: string; publicKeyB64: string } {
-  const keyPair = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    publicKeyEncoding: { type: "spki", format: "pem" },
-    privateKeyEncoding: { type: "pkcs8", format: "pem" }
-  });
-  return {
-    privateKeyPem: keyPair.privateKey,
-    publicKeyB64: keyPair.publicKey
-      .replace(/-----BEGIN PUBLIC KEY-----|-----END PUBLIC KEY-----|\s+/g, "")
-  };
-}
-
 async function findWorkspaceZoneId(workspace: OpenClawWorkspace, domain: string): Promise<string | null> {
   const inventory = await workspace.readInventoryJson<EmailAuthInventory>("domains.json").catch(() => null);
   return inventory?.dnsZones?.find((zone) => zone.domain === domain)?.zoneId ?? null;
@@ -383,6 +396,7 @@ async function updateEmailAuthInventory(
     zoneId: string;
     selector: string;
     dkimPrivateKeyPath: string;
+    dkimPublicKeyHash?: string;
     configuredAt: string;
     records: Array<AwsRoute53DnsRecordInput & AwsRoute53DnsChangeResult>;
   }
@@ -394,6 +408,7 @@ async function updateEmailAuthInventory(
       zoneId: input.zoneId,
       selector: input.selector,
       dkimPrivateKeyPath: input.dkimPrivateKeyPath,
+      ...(input.dkimPublicKeyHash ? { dkimPublicKeyHash: input.dkimPublicKeyHash } : {}),
       configuredAt: input.configuredAt,
       records: input.records.map((record) => ({
         name: record.name,

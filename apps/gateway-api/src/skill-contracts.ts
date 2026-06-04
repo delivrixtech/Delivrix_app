@@ -29,6 +29,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["read_webdock_servers", "read_webdock_inventory"]
   },
   {
+    canonicalSkill: "read_dns_ionos",
+    aliases: ["read_dns_ionos", "read_ionos_dns"],
+    actionIds: ["read_dns_ionos", "read_ionos_dns"]
+  },
+  {
     canonicalSkill: "upsert_dns_route53",
     aliases: ["upsert_dns_route53", "route53_dns_upsert"],
     actionIds: ["upsert_dns_route53", "route53_dns_upsert"]

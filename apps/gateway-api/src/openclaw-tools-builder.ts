@@ -4,6 +4,7 @@ import {
   compactIntentParamSchema,
   configureCompleteSmtpSkillParamSchema,
   emailAuthParamSchema,
+  ionosDnsReadParamSchema,
   ionosUpsertParamSchema,
   readEpisodicScratchParamSchema,
   readWebdockServersParamSchema,
@@ -38,6 +39,7 @@ export type OpenClawToolName =
   | "wait_for_dns_propagation"
   | "read_route53_domain_detail"
   | "read_route53_zone_records"
+  | "read_dns_ionos"
   | "read_webdock_servers"
   | "upsert_dns_route53"
   | "upsert_dns_ionos"
@@ -292,6 +294,44 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hmacConfigured(env) &&
       hasAwsRoute53DnsCredentials(env),
     targetType: "route53_hosted_zone",
+    severity: "high"
+  },
+  read_dns_ionos: {
+    spec: {
+      name: "read_dns_ionos",
+      description: "Lista registros DNS en IONOS por domain o zoneId. Invocar SIEMPRE ANTES de upsert_dns_ionos para no escribir a ciegas ni pisar records existentes. Lectura sensible auditada: no requiere ApprovalGate, no muta DNS y no depende de IONOS_DNS_ENABLE_WRITES.",
+      input_schema: {
+        type: "object",
+        required: [],
+        properties: {
+          domain: {
+            type: "string",
+            pattern: domainPattern,
+            description: "Dominio o subdominio para resolver la zona IONOS. Ejemplo: nationalcorphub.app"
+          },
+          zoneId: {
+            type: "string",
+            minLength: 1,
+            maxLength: 128,
+            description: "ID de zona IONOS opcional cuando ya se conoce."
+          },
+          recordType: {
+            type: "string",
+            enum: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "PTR", "SRV", "CAA"],
+            description: "Filtrar por tipo de record. Opcional."
+          },
+          recordName: {
+            type: "string",
+            description: "Filtrar por nombre exacto del record. Opcional."
+          }
+        }
+      }
+    },
+    paramSchema: ionosDnsReadParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      hasIonosDnsCredentials(env),
+    targetType: "ionos_dns_zone",
     severity: "high"
   },
   read_webdock_servers: {
@@ -709,6 +749,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "read_dns_ionos",
     "read_webdock_servers",
     "upsert_dns_route53",
     "upsert_dns_ionos",

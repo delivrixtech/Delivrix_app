@@ -17,11 +17,17 @@ const localEnv = {
 test("buildEpisodicReviewSeedEntries creates representative review-only memory", () => {
   const entries = buildEpisodicReviewSeedEntries(localEnv);
 
-  assert.equal(entries.length, 18);
+  assert.equal(entries.length, 25);
   assert.equal(entries.some((entry) => entry.plane === "verified_fact"), true);
   assert.equal(entries.some((entry) => entry.plane === "observation"), true);
   assert.equal(entries.some((entry) => entry.invalidAt instanceof Date), true);
   assert.equal(entries.some((entry) => entry.source === "operator"), true);
+  assert.equal(
+    entries
+      .filter((entry) => entry.outcomeData.decisionCode === "production_sender_stack_active")
+      .every((entry) => entry.outcomeData.scopeGuard?.mode === "explicit_plan_signature"),
+    true
+  );
   assert.equal(entries.every((entry) => entry.metadata.seedKind === "review"), true);
   assert.equal(
     entries.filter((entry) => entry.source === "operator")
@@ -52,9 +58,9 @@ test("runEpisodicReviewSeed uses one transaction and injected insert without rea
     "COMMIT"
   ]);
   assert.equal(client.released, true);
-  assert.equal(result.inserted, 18);
-  assert.equal(inserted.length, 18);
-  assert.deepEqual(logs, ["episodic review seed complete: 18 deterministic entries"]);
+  assert.equal(result.inserted, 25);
+  assert.equal(inserted.length, 25);
+  assert.deepEqual(logs, ["episodic review seed complete: 25 deterministic entries"]);
 });
 
 test("episodic review seed entries pass the real scratch write gate", async () => {
@@ -67,7 +73,7 @@ test("episodic review seed entries pass the real scratch write gate", async () =
     }
   });
 
-  assert.equal(pool.rows.length, 18);
+  assert.equal(pool.rows.length, 25);
   assert.equal(
     pool.rows
       .filter((row) => row.source === "openclaw")
@@ -92,11 +98,13 @@ test("episodic review seed producer keys stay synchronized with the write gate",
     "maxDailyRamp",
     "mode",
     "noteCode",
+    "productionSenderStack",
     "recordType",
     "rejectionCode",
     "reputationSignals",
     "rollbackCode",
     "schedule",
+    "scopeGuard",
     "serverSlug",
     "zoneId"
   ]);

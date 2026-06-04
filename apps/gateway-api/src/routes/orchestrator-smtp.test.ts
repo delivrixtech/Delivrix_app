@@ -7,8 +7,10 @@ import {
   type ApprovalStepDecision,
   type ApprovalStepInput,
   type ConfigureCompleteSmtpDeps,
+  type PlanApprovedStepInput,
   type SkillInvocationInput
 } from "./orchestrator-smtp.ts";
+import type { PlanApprovalRecord } from "./proposals-sign.ts";
 import { compactIntent } from "./openclaw-compact-intent.ts";
 
 test("configureCompleteSmtp completes the 14-step happy path", async () => {
@@ -311,6 +313,66 @@ test("configureCompleteSmtp keeps all real actions behind approval submissions",
   assert.deepEqual(ctx.approvals.map((entry) => entry.step), [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 14]);
 });
 
+test("configureCompleteSmtp uses one signed plan to execute mutating steps without more ApprovalGates", async () => {
+  const planApproval = signedPlanApproval();
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.approvals.length, 0);
+  assert.deepEqual(ctx.planExecutions.map((entry) => entry.step), [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 14]);
+  assert.equal(result.stepResults.filter((step) => step.planStepTokenId).length, 11);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.plan.run_authorized"), true);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.plan.step_executed"), true);
+});
+
+test("configureCompleteSmtp fails closed when signed plan domain is not in suggestions", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ domain: "approved.example.com" }),
+    suggestions: { candidates: [{ domain: "different.example.com", priceUsd: 15, available: true }] }
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "approved.example.com",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 1);
+  assert.equal(result.error, "plan_domain_not_in_suggestions: approved_domain=approved.example.com");
+  assert.equal(ctx.approvals.length, 0);
+  assert.equal(ctx.planExecutions.length, 0);
+});
+
+test("configureCompleteSmtp checks kill switch before every plan-approved step", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    killSwitchAfterPlanExecutions: 3
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "cancelled_by_operator");
+  assert.equal(result.failedStep, 6);
+  assert.equal(result.error, "kill_switch_armed");
+  assert.deepEqual(ctx.planExecutions.map((entry) => entry.step), [2, 3, 4]);
+});
+
 test("configureCompleteSmtp compacts completed run into episodic memory", async () => {
   const ctx = createDeps({ compactIntent: true });
   const result = await configureCompleteSmtp(validInput(), ctx.deps);
@@ -475,6 +537,44 @@ function validInput() {
   };
 }
 
+function signedPlanApproval(overrides: Partial<PlanApprovalRecord["scope"]> = {}): PlanApprovalRecord {
+  const scope = {
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    budgetUsdMax: 25,
+    recipient: "operator@example.com",
+    plannedSkill: "configure_complete_smtp" as const,
+    plannedSteps: [
+      "suggest_safe_domain",
+      "register_domain_route53",
+      "wait_for_dns_propagation",
+      "read_route53_domain_detail",
+      "read_route53_zone_records",
+      "read_dns_ionos",
+      "read_webdock_servers",
+      "create_webdock_server",
+      "bind_webdock_main_domain",
+      "upsert_dns_route53",
+      "provision_smtp_postfix",
+      "configure_email_auth",
+      "seed_warmup_pool",
+      "send_real_email",
+      "compact_intent"
+    ],
+    ...overrides
+  };
+  return {
+    status: "signed",
+    signedAt: "2026-05-31T11:59:00.000Z",
+    expiresAt: "2026-05-31T13:00:00.000Z",
+    signatureId: "sig-plan-1",
+    scopeHash: "plan-scope-hash-1",
+    scope,
+    flagEnabled: true
+  };
+}
+
 function createDeps(options: {
   decisions?: Record<number, ApprovalStepDecision>;
   outcomes?: Record<number, unknown>;
@@ -485,9 +585,12 @@ function createDeps(options: {
   canvasEmitFails?: boolean;
   compactIntent?: boolean;
   signedAuditEvents?: boolean;
+  planApproval?: PlanApprovalRecord | null;
+  killSwitchAfterPlanExecutions?: number;
 } = {}): {
   deps: ConfigureCompleteSmtpDeps;
   approvals: ApprovalStepInput[];
+  planExecutions: PlanApprovedStepInput[];
   invocations: SkillInvocationInput[];
   rollbacks: Array<{ skill: string; params: Record<string, unknown> }>;
   auditEvents: Array<Record<string, unknown> & { action: string; metadata?: unknown }>;
@@ -501,6 +604,7 @@ function createDeps(options: {
   verifyCount: number;
 } {
   const approvals: ApprovalStepInput[] = [];
+  const planExecutions: PlanApprovedStepInput[] = [];
   const invocations: SkillInvocationInput[] = [];
   const rollbacks: Array<{ skill: string; params: Record<string, unknown> }> = [];
   const auditEvents: Array<Record<string, unknown> & { action: string; metadata?: unknown }> = [];
@@ -557,6 +661,21 @@ function createDeps(options: {
           durationMs: input.step
         };
       },
+      async resolvePlanApproval(input) {
+        if (options.planApproval === undefined) return null;
+        return options.planApproval?.scope.runId === input.runId ? options.planApproval : null;
+      },
+      async executePlanApprovedStep(input: PlanApprovedStepInput) {
+        planExecutions.push(input);
+        return {
+          status: "executed" as const,
+          planStepTokenId: `plan-step-${input.step}`,
+          signatureId: input.planApproval.signatureId,
+          outcome: options.outcomes?.[input.step] ?? defaultOutcome(input.step),
+          durationMs: input.step,
+          statusCode: 200
+        };
+      },
       async submitRollbackProposal(input: { skill: "delete_webdock_server"; params: Record<string, unknown> }) {
         rollbacks.push(input);
         return { proposalId: "rollback-1" };
@@ -566,7 +685,10 @@ function createDeps(options: {
         return { ok: options.auditOk ?? true };
       },
       readKillSwitch() {
-        return { enabled: options.killSwitchEnabled ?? false };
+        return {
+          enabled: options.killSwitchEnabled ??
+            (options.killSwitchAfterPlanExecutions !== undefined && planExecutions.length >= options.killSwitchAfterPlanExecutions)
+        };
       },
       canvasLiveEvents: {
         async emit(event) {
@@ -604,6 +726,7 @@ function createDeps(options: {
       }
     } satisfies ConfigureCompleteSmtpDeps,
     approvals,
+    planExecutions,
     invocations,
     rollbacks,
     auditEvents,

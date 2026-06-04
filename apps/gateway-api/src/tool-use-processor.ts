@@ -175,6 +175,22 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
     };
   }
 
+  if (shouldRouteThroughConfigureCompleteSmtp(canonicalToolName, input.toolInput, env)) {
+    void logger.warn("openclaw.tool_use.use_configure_complete_smtp", "Blocked direct SMTP subtool; configure_complete_smtp is required for end-to-end SMTP autonomy.", {
+      toolUseId: input.toolUseId,
+      toolName: canonicalToolName
+    });
+    return {
+      ok: false,
+      error: "use_configure_complete_smtp",
+      details: {
+        tool: canonicalToolName,
+        requiredTool: "configure_complete_smtp",
+        repairEscapeHatch: "Set repairReason and explicitRepairScope for a punctual repair."
+      }
+    };
+  }
+
   const killSwitch = await readKillSwitchFailClosed(input.deps);
   if (!killSwitch.ok) {
     void logger.error("openclaw.tool_use.kill_switch_read_failed", "Tool-use failed closed because kill switch could not be read.", {
@@ -678,6 +694,34 @@ async function invokeReadOnlyToolOverHttp(input: {
     return body;
   }
 
+  if (input.input.toolName === "read_dns_ionos") {
+    const url = new URL(`${input.baseUrl}/v1/dns/ionos/records`);
+    if (typeof input.input.params.domain === "string") {
+      url.searchParams.set("domain", input.input.params.domain);
+    }
+    if (typeof input.input.params.zoneId === "string") {
+      url.searchParams.set("zoneId", input.input.params.zoneId);
+    }
+    if (typeof input.input.params.recordType === "string") {
+      url.searchParams.set("recordType", input.input.params.recordType);
+    }
+    if (typeof input.input.params.recordName === "string") {
+      url.searchParams.set("recordName", input.input.params.recordName);
+    }
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+    }
+    return body;
+  }
+
   if (input.input.toolName === "read_webdock_servers") {
     const response = await input.fetchImpl(`${input.baseUrl}/v1/webdock/inventory`, {
       method: "GET",
@@ -947,7 +991,38 @@ function isReadOnlyToolUse(toolName: string): boolean {
     toolName === "read_episodic_scratch" ||
     toolName === "read_route53_domain_detail" ||
     toolName === "read_route53_zone_records" ||
+    toolName === "read_dns_ionos" ||
     toolName === "read_webdock_servers";
+}
+
+function shouldRouteThroughConfigureCompleteSmtp(
+  toolName: string,
+  rawInput: unknown,
+  env: Record<string, string | undefined>
+): boolean {
+  if (!envFlagEnabled(env.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)) return false;
+  if (!envFlagEnabled(env.OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE)) return false;
+  if (!smtpPlanSubtools.has(toolName)) return false;
+  if (!isRecord(rawInput)) return true;
+  const repairReason = typeof rawInput.repairReason === "string" ? rawInput.repairReason.trim() : "";
+  const repairScope = typeof rawInput.explicitRepairScope === "string" ? rawInput.explicitRepairScope.trim() : "";
+  return repairReason.length < 10 || repairScope.length < 3;
+}
+
+const smtpPlanSubtools = new Set([
+  "register_domain_route53",
+  "upsert_dns_route53",
+  "upsert_dns_ionos",
+  "create_webdock_server",
+  "bind_webdock_main_domain",
+  "provision_smtp_postfix",
+  "configure_email_auth",
+  "seed_warmup_pool",
+  "send_real_email"
+]);
+
+function envFlagEnabled(value: string | undefined): boolean {
+  return value === "true" || value === "1" || value === "yes" || value === "on";
 }
 
 function isMemoryToolUse(toolName: string): boolean {

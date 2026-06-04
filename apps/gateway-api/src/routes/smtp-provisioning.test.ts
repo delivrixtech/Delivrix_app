@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtemp, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,11 @@ import {
 } from "./smtp-provisioning.ts";
 
 const fixedNow = new Date("2026-05-27T17:00:00.000Z");
-const dkimPrivateKey = "-----BEGIN PRIVATE KEY-----\nPRIVATE\n-----END PRIVATE KEY-----\n";
+const dkimPrivateKey = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: "spki", format: "pem" },
+  privateKeyEncoding: { type: "pkcs8", format: "pem" }
+}).privateKey;
 
 test("buildSmtpProvisionPlan writes DKIM key through stdin and keeps audit command redacted", () => {
   const plan = buildSmtpProvisionPlan({
@@ -195,6 +200,49 @@ test("POST /v1/servers/:slug/provision-smtp runs idempotent SSH plan and records
   assert.equal(inventory?.servers[0].domain, "delivrix-mail.com");
   assert.equal(inventory?.servers[0].status, "configured");
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "command"));
+});
+
+test("POST /v1/servers/:slug/provision-smtp generates DKIM keypair when missing", async () => {
+  const commands: SmtpSshCommandInput[] = [];
+  const route = await routeHarness({
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-smtp-plan",
+      executionId: "exec-smtp-keygen",
+      approvedAt: "2026-05-27T16:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-smtp-plan", "exec-smtp-keygen");
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "mail-delivrix-test",
+      hostname: "mail.delivrix-mail.com",
+      ipv4: "192.0.2.44",
+      status: "running"
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-smtp-keygen",
+    taskId: "task-smtp-keygen"
+  }, { SMTP_PROVISIONING_ENABLE_SSH: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "configured");
+  assert.match(response.body.dkimPublicKey, /^[A-Za-z0-9+/]+=*$/);
+  assert.equal(response.body.dkimKeyGenerated, true);
+  assert.equal(commands.some((command) => typeof command.stdin === "string" && command.stdin.includes("BEGIN PRIVATE KEY")), true);
+  const privateKeyStat = await stat(join(route.workspace.getRootDir(), response.body.dkimPrivateKeyPath));
+  assert.equal(privateKeyStat.mode & 0o777, 0o600);
+  const events = await route.auditLog.list();
+  assert.equal(JSON.stringify(events).includes("BEGIN PRIVATE KEY"), false);
 });
 
 test("POST /v1/servers/:slug/provision-smtp retries transient first SSH failure internally", async () => {
