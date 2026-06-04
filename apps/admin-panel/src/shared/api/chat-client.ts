@@ -12,6 +12,18 @@ export interface ChatMessage {
   status: ChatMessageStatus;
 }
 
+export interface ChatOperatorParams {
+  mode?: string;
+  skillHint?: string;
+  executionScope?: string;
+  timeBudgetMinutes?: number;
+  approvalContract?: string;
+}
+
+export interface ChatSendOptions {
+  operatorParams?: ChatOperatorParams;
+}
+
 export interface ChatStreamingState {
   msgId: string;
   deltaSoFar: string;
@@ -45,7 +57,7 @@ export type ChatStreamEvent =
 export interface ChatClientLike {
   connect(): void;
   disconnect(): void;
-  sendMessage(content: string): Promise<void>;
+  sendMessage(content: string, options?: ChatSendOptions): Promise<void>;
   interruptActive(): Promise<boolean>;
   getSnapshot(): ChatState;
   subscribe(listener: () => void): () => void;
@@ -54,6 +66,7 @@ export interface ChatClientLike {
 interface QueuedMessage {
   msgId: string;
   content: string;
+  operatorParams?: ChatOperatorParams;
 }
 
 interface ChatClientOptions {
@@ -172,14 +185,18 @@ export class ChatClient implements ChatClientLike {
     this.setState({ connection: "offline" });
   }
 
-  async sendMessage(content: string): Promise<void> {
+  async sendMessage(content: string, options: ChatSendOptions = {}): Promise<void> {
     const trimmed = content.trim();
     if (!trimmed) {
       return;
     }
 
     const msgId = this.idFactory();
-    this.queue.push({ msgId, content: trimmed });
+    this.queue.push({
+      msgId,
+      content: trimmed,
+      ...(options.operatorParams ? { operatorParams: options.operatorParams } : {})
+    });
     this.state = addOrUpdateMessage(this.state, {
       msgId,
       role: "user",
@@ -276,7 +293,11 @@ export class ChatClient implements ChatClientLike {
             "content-type": "application/json",
             accept: "application/json"
           },
-          body: JSON.stringify({ msgId: item.msgId, message: item.content })
+          body: JSON.stringify({
+            msgId: item.msgId,
+            message: item.content,
+            ...(item.operatorParams ? { operatorParams: item.operatorParams } : {})
+          })
         });
 
         const payload = await response.json().catch(() => ({})) as ChatSendAck & Partial<{ message: string }>;

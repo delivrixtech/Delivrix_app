@@ -418,6 +418,14 @@ test("createOpenClawBedrockBridgeFromEnv requires bedrock mode and critical env 
     AWS_BEDROCK_MODEL_ID: "model-test",
     AWS_BEDROCK_REGION: "us-east-1"
   }));
+  const fallbackTokenBridge = createOpenClawBedrockBridgeFromEnv({
+    OPENCLAW_BRIDGE_KIND: "bedrock",
+    AWS_BEARER_TOKEN_BEDROCK: "bedrock-api-key",
+    AWS_BEDROCK_MODEL_ID: "model-test",
+    AWS_BEDROCK_REGION: "us-east-1",
+    OPENCLAW_GATEWAY_TOKEN: "gateway-token"
+  }) as unknown as { readBoundaryToken: string } | null;
+  assert.equal(fallbackTokenBridge?.readBoundaryToken, "gateway-token");
 });
 
 async function promptFile(content: string): Promise<string> {

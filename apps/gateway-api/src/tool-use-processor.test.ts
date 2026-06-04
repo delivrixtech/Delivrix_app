@@ -199,13 +199,17 @@ test("createHttpToolUseProcessor accepts nested gateway kill-switch payload", as
   ]);
 });
 
-test("createHttpToolUseProcessor invokes episodic scratch read endpoint directly", async () => {
-  const urls: string[] = [];
+test("createHttpToolUseProcessor invokes episodic scratch read endpoint directly with read-boundary token", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
   const processor = createHttpToolUseProcessor({
     delivrixBaseUrl: "http://127.0.0.1:3000",
     env: enabledEnv(),
-    fetchImpl: async (url) => {
-      urls.push(String(url));
+    readBoundaryToken: "read-token",
+    fetchImpl: async (url, init) => {
+      calls.push({
+        url: String(url),
+        headers: init?.headers as Record<string, string> ?? {}
+      });
       if (String(url).endsWith("/v1/kill-switch")) {
         return jsonResponse({ killSwitch: { enabled: false } });
       }
@@ -226,10 +230,49 @@ test("createHttpToolUseProcessor invokes episodic scratch read endpoint directly
   assert.equal(result.ok, true);
   if (!result.ok) assert.fail("expected HTTP scratch read success");
   assert.deepEqual(result.result, { entries: [{ intentId: "intent-1" }] });
-  assert.deepEqual(urls, [
+  assert.deepEqual(calls.map((call) => call.url), [
     "http://127.0.0.1:3000/v1/kill-switch",
     "http://127.0.0.1:3000/v1/openclaw/scratch?intentId=intent-1"
   ]);
+  assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
+});
+
+test("createHttpToolUseProcessor fails closed when scratch requires token and none is configured", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    fetchImpl: async (url, init) => {
+      const headers = init?.headers as Record<string, string> ?? {};
+      calls.push({ url: String(url), headers });
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).includes("/v1/openclaw/scratch?intentId=intent-1")) {
+        return headers["x-delivrix-token"]
+          ? jsonResponse({ entries: [{ intentId: "intent-1" }] })
+          : jsonResponse({ error: "unauthorized" }, 401);
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-http-scratch-no-token",
+    toolName: "read_episodic_scratch",
+    toolInput: { intentId: "intent-1" },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) assert.fail("expected HTTP scratch read to fail closed");
+  assert.equal(result.error, "read_only_tool_failed");
+  assert.match(String(result.details), /HTTP 401/);
+  assert.deepEqual(calls.map((call) => call.url), [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/openclaw/scratch?intentId=intent-1"
+  ]);
+  assert.equal(calls[1].headers["x-delivrix-token"], undefined);
 });
 
 test("createHttpToolUseProcessor routes episodic query through grounded retrieval", async () => {
@@ -389,12 +432,16 @@ test("createHttpToolUseProcessor invokes read-only DNS wait endpoint directly", 
 });
 
 test("createHttpToolUseProcessor invokes read-only Route53 domain detail endpoint directly", async () => {
-  const urls: string[] = [];
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
   const processor = createHttpToolUseProcessor({
     delivrixBaseUrl: "http://127.0.0.1:3000",
     env: enabledEnv(),
+    readBoundaryToken: "read-token",
     fetchImpl: async (url, init) => {
-      urls.push(String(url));
+      calls.push({
+        url: String(url),
+        headers: init?.headers as Record<string, string> ?? {}
+      });
       if (String(url).endsWith("/v1/kill-switch")) {
         return jsonResponse({ killSwitch: { enabled: false } });
       }
@@ -421,19 +468,24 @@ test("createHttpToolUseProcessor invokes read-only Route53 domain detail endpoin
     registrar: "Amazon Registrar, Inc.",
     nameservers: []
   });
-  assert.deepEqual(urls, [
+  assert.deepEqual(calls.map((call) => call.url), [
     "http://127.0.0.1:3000/v1/kill-switch",
     "http://127.0.0.1:3000/v1/route53/domain-detail?domain=controldelivrix.app"
   ]);
+  assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
 });
 
 test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint directly", async () => {
-  const urls: string[] = [];
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
   const processor = createHttpToolUseProcessor({
     delivrixBaseUrl: "http://127.0.0.1:3000",
     env: enabledEnv(),
+    readBoundaryToken: "read-token",
     fetchImpl: async (url, init) => {
-      urls.push(String(url));
+      calls.push({
+        url: String(url),
+        headers: init?.headers as Record<string, string> ?? {}
+      });
       if (String(url).endsWith("/v1/kill-switch")) {
         return jsonResponse({ killSwitch: { enabled: false } });
       }
@@ -473,10 +525,11 @@ test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint
     isTruncated: false,
     totalRecords: 1
   });
-  assert.deepEqual(urls, [
+  assert.deepEqual(calls.map((call) => call.url), [
     "http://127.0.0.1:3000/v1/kill-switch",
     "http://127.0.0.1:3000/v1/route53/zone-records?zoneId=Z03595092JW2AXJBZGN4E&recordType=A&recordName=smtp.controldelivrix.app"
   ]);
+  assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
 });
 
 test("createHttpToolUseProcessor invokes read-only Webdock inventory endpoint directly", async () => {

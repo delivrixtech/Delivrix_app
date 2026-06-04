@@ -48,7 +48,8 @@ import {
 import {
   chatClient,
   useChatStream,
-  type ChatConnection
+  type ChatConnection,
+  type ChatOperatorParams
 } from "../../shared/api/chat-client.ts";
 import {
   getJson,
@@ -1241,12 +1242,14 @@ function ChatInput() {
     const content = draft.trim();
     if (!content) return;
     setDraft("");
-    await chatClient.sendMessage(buildPromptWithOperatorParams(content, {
-      mode: promptMode,
-      skill: skillHint,
-      scope: executionScope,
-      timeBudgetMinutes: timeBudget
-    }));
+    await chatClient.sendMessage(content, {
+      operatorParams: buildOperatorParams({
+        mode: promptMode,
+        skill: skillHint,
+        scope: executionScope,
+        timeBudgetMinutes: timeBudget
+      })
+    });
   }
 
   async function handleInterrupt() {
@@ -1596,26 +1599,23 @@ function PromptSelect({
   );
 }
 
-function buildPromptWithOperatorParams(
-  content: string,
+const openClawApprovalContract = "1 firma operador, dry-run previo, audit SHA-256, rollback si aplica";
+
+function buildOperatorParams(
   params: {
     mode: PromptMode;
     skill: PromptSkillHint;
     scope: PromptExecutionScope;
     timeBudgetMinutes: PromptTimeBudget;
   }
-): string {
-  return [
-    "<openclaw_operator_params>",
-    `mode: ${params.mode}`,
-    `skill_hint: ${params.skill}`,
-    `execution_scope: ${params.scope}`,
-    `time_budget_minutes: ${params.timeBudgetMinutes}`,
-    "approval_contract: 1 firma operador, dry-run previo, audit SHA-256, rollback si aplica",
-    "</openclaw_operator_params>",
-    "",
-    content
-  ].join("\n");
+): ChatOperatorParams {
+  return {
+    mode: params.mode,
+    skillHint: params.skill,
+    executionScope: params.scope,
+    timeBudgetMinutes: Number(params.timeBudgetMinutes),
+    approvalContract: openClawApprovalContract
+  };
 }
 
 /* ============================================================

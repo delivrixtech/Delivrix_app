@@ -52,6 +52,22 @@ export interface ChatSendRequest {
   text?: unknown;
   actor?: unknown;
   msgId?: unknown;
+  operatorParams?: unknown;
+}
+
+export interface OpenClawOperatorParams {
+  mode?: string;
+  skillHint?: string;
+  executionScope?: string;
+  timeBudgetMinutes?: number;
+  approvalContract?: string;
+}
+
+interface SanitizedOperatorMessage {
+  message: string;
+  operatorParams?: OpenClawOperatorParams;
+  operatorParamsSource?: "legacy_inline" | "structured" | "legacy_inline+structured";
+  strippedInlineOperatorParams: boolean;
 }
 
 export interface ChatInterruptRequest {
@@ -169,7 +185,11 @@ export class OpenClawChatProxy {
     this.agentHttpUrl = normalizeBaseUrl(config.agentHttpUrl ?? process.env.OPENCLAW_AGENT_HTTP_URL ?? defaultAgentHttpUrl);
     this.agentWsUrl = config.agentWsUrl ?? process.env.OPENCLAW_AGENT_WS_URL ?? defaultAgentWsUrl;
     this.gatewayToken = config.gatewayToken ?? process.env.OPENCLAW_GATEWAY_TOKEN;
-    this.readBoundaryToken = config.readBoundaryToken ?? process.env.DELIVRIX_OPENCLAW_TOKEN ?? "";
+    this.readBoundaryToken = config.readBoundaryToken ?? firstNonEmptyString(
+      process.env.DELIVRIX_READ_BOUNDARY_TOKEN,
+      process.env.DELIVRIX_OPENCLAW_TOKEN,
+      process.env.OPENCLAW_GATEWAY_TOKEN
+    ) ?? "";
     this.delivrixBaseUrl = config.delivrixBaseUrl ?? process.env.DELIVRIX_BASE_URL ?? "http://gateway.delivrix.local:3000";
     this.sessionKey = config.sessionKey ?? OPENCLAW_CHAT_SESSION_KEY;
     this.fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
@@ -199,11 +219,14 @@ export class OpenClawChatProxy {
           ? input.text
           : "";
 
-    if (!rawMessage.trim()) {
+    const sanitized = sanitizeOperatorMessage(rawMessage, input.operatorParams);
+
+    if (!sanitized.message) {
       throw new ChatProxyError(400, "invalid_message", "message is required.");
     }
 
-    const message = rawMessage.trim();
+    const message = sanitized.message;
+    const operatorAuditMetadata = operatorParamsAuditMetadata(sanitized);
     const msgId =
       typeof input.msgId === "string" && isSafeChatMessageId(input.msgId)
         ? input.msgId
@@ -213,7 +236,12 @@ export class OpenClawChatProxy {
 
     try {
       if (this.shouldUseSshBridge()) {
-        const result = await this.sendOperatorMessageViaSsh({ ...input, msgId, message }, msgId, message);
+        const result = await this.sendOperatorMessageViaSsh({
+          ...input,
+          msgId,
+          message,
+          ...(sanitized.operatorParams ? { operatorParams: sanitized.operatorParams } : {})
+        }, msgId, message, operatorAuditMetadata);
         if (result) {
           if (result.assistant?.content) {
             void this.handleAgentMessage({
@@ -242,7 +270,7 @@ export class OpenClawChatProxy {
         }
       }
 
-      const result = await this.sendOperatorMessageViaHttp(msgId, message);
+      const result = await this.sendOperatorMessageViaHttp(msgId, message, operatorAuditMetadata);
       if (result.assistant?.content) {
         void this.handleAgentMessage({
           type: "ASSISTANT_DONE",
@@ -320,10 +348,11 @@ export class OpenClawChatProxy {
 
   private async sendOperatorMessageViaHttp(
     msgId: string,
-    message: string
+    message: string,
+    operatorAuditMetadata: Record<string, unknown> = {}
   ): Promise<ChatSendResponse> {
     if (!this.gatewayToken) {
-      await this.auditOperatorMessage(msgId, message, "reject", "gateway_internal_error");
+      await this.auditOperatorMessage(msgId, message, "reject", "gateway_internal_error", operatorAuditMetadata);
       throw new ChatProxyError(503, "openclaw_gateway_token_missing", "OPENCLAW_GATEWAY_TOKEN is not configured.");
     }
 
@@ -348,7 +377,7 @@ export class OpenClawChatProxy {
         body: JSON.stringify(upstreamPayload)
       });
     } catch (error) {
-      await this.auditOperatorMessage(msgId, message, "reject", "gateway_timeout");
+      await this.auditOperatorMessage(msgId, message, "reject", "gateway_timeout", operatorAuditMetadata);
       throw new ChatProxyError(
         502,
         "openclaw_chat_send_failed",
@@ -358,6 +387,7 @@ export class OpenClawChatProxy {
 
     if (!upstreamResponse.ok) {
       await this.auditOperatorMessage(msgId, message, "reject", "gateway_internal_error", {
+        ...operatorAuditMetadata,
         upstreamStatus: upstreamResponse.status
       });
       throw new ChatProxyError(502, "openclaw_chat_send_rejected", `OpenClaw rejected chat.send with ${upstreamResponse.status}.`);
@@ -366,6 +396,7 @@ export class OpenClawChatProxy {
     const upstreamAck = await readUpstreamChatSendAck(upstreamResponse);
     if (!isValidUpstreamChatSendAck(upstreamAck, msgId)) {
       await this.auditOperatorMessage(msgId, message, "reject", "gateway_internal_error", {
+        ...operatorAuditMetadata,
         upstreamStatus: upstreamResponse.status,
         upstreamResponse: "invalid_chat_send_ack"
       });
@@ -376,7 +407,7 @@ export class OpenClawChatProxy {
       );
     }
 
-    await this.auditOperatorMessage(msgId, message, "n/a", null);
+    await this.auditOperatorMessage(msgId, message, "n/a", null, operatorAuditMetadata);
     this.ensureAgentConnection();
     return { msgId, queued: true };
   }
@@ -384,12 +415,14 @@ export class OpenClawChatProxy {
   private async sendOperatorMessageViaSsh(
     input: ChatSendRequest,
     msgId: string,
-    message: string
+    message: string,
+    operatorAuditMetadata: Record<string, unknown> = {}
   ): Promise<ChatSendResponse | null> {
     try {
       const result = await this.sshBridge!.sendMessage(input);
       this.sshBridgeFailureCount = 0;
       await this.auditOperatorMessage(msgId, message, "n/a", null, {
+        ...operatorAuditMetadata,
         bridge: this.bridgeKind
       });
       this.startSshHistoryStream(msgId);
@@ -400,6 +433,7 @@ export class OpenClawChatProxy {
       const bridgeErrorMessage = error instanceof Error ? error.message : "OpenClaw SSH bridge failed.";
       if (this.bridgeKind === "bedrock") {
         await this.auditOperatorMessage(msgId, message, "reject", "gateway_timeout", {
+          ...operatorAuditMetadata,
           bridge: "bedrock",
           consecutiveFailures: this.sshBridgeFailureCount,
           bridgeError: bridgeErrorMessage,
@@ -414,6 +448,7 @@ export class OpenClawChatProxy {
 
       if (this.localFallbackEnabled && isFallbackEligibleSshBridgeError(bridgeErrorCode)) {
         await this.auditOperatorMessage(msgId, message, "reject", "gateway_timeout", {
+          ...operatorAuditMetadata,
           bridge: "ssh",
           consecutiveFailures: this.sshBridgeFailureCount,
           bridgeError: bridgeErrorMessage,
@@ -437,6 +472,7 @@ export class OpenClawChatProxy {
       }
 
       await this.auditOperatorMessage(msgId, message, "reject", "gateway_timeout", {
+        ...operatorAuditMetadata,
         bridge: "ssh",
         consecutiveFailures: this.sshBridgeFailureCount,
         bridgeError: bridgeErrorMessage,
@@ -1341,6 +1377,125 @@ function isWebSocketUpgrade(request: IncomingMessage): boolean {
 
 function normalizeBaseUrl(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function firstNonEmptyString(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return undefined;
+}
+
+function sanitizeOperatorMessage(rawMessage: string, structuredParams: unknown): SanitizedOperatorMessage {
+  const inlineParams: OpenClawOperatorParams[] = [];
+  let strippedInlineOperatorParams = false;
+  const message = rawMessage
+    .replace(/<openclaw_operator_params>([\s\S]*?)<\/openclaw_operator_params>/gi, (_block, paramsBlock: string) => {
+      strippedInlineOperatorParams = true;
+      const parsed = parseInlineOperatorParams(paramsBlock);
+      if (parsed) {
+        inlineParams.push(parsed);
+      }
+      return "";
+    })
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  const inlineOperatorParams = inlineParams.reduce<OpenClawOperatorParams>(
+    (current, next) => ({ ...current, ...next }),
+    {}
+  );
+  const normalizedStructuredParams = normalizeOperatorParams(structuredParams);
+  const hasInlineParams = hasOperatorParams(inlineOperatorParams);
+  const hasStructuredParams = normalizedStructuredParams !== null;
+  const operatorParams = {
+    ...(hasInlineParams ? inlineOperatorParams : {}),
+    ...(normalizedStructuredParams ?? {})
+  };
+
+  return {
+    message,
+    ...(hasOperatorParams(operatorParams) ? { operatorParams } : {}),
+    ...(hasInlineParams && hasStructuredParams
+      ? { operatorParamsSource: "legacy_inline+structured" as const }
+      : hasInlineParams
+        ? { operatorParamsSource: "legacy_inline" as const }
+        : hasStructuredParams
+          ? { operatorParamsSource: "structured" as const }
+          : {}),
+    strippedInlineOperatorParams
+  };
+}
+
+function parseInlineOperatorParams(paramsBlock: string): OpenClawOperatorParams | null {
+  const params: OpenClawOperatorParams = {};
+  for (const line of paramsBlock.split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$/);
+    if (!match) {
+      continue;
+    }
+    setOperatorParam(params, match[1], match[2]);
+  }
+  return hasOperatorParams(params) ? params : null;
+}
+
+function normalizeOperatorParams(value: unknown): OpenClawOperatorParams | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const params: OpenClawOperatorParams = {};
+  setOperatorParam(params, "mode", value.mode);
+  setOperatorParam(params, "skill_hint", value.skillHint ?? value.skill_hint);
+  setOperatorParam(params, "execution_scope", value.executionScope ?? value.execution_scope);
+  setOperatorParam(params, "time_budget_minutes", value.timeBudgetMinutes ?? value.time_budget_minutes);
+  setOperatorParam(params, "approval_contract", value.approvalContract ?? value.approval_contract);
+  return hasOperatorParams(params) ? params : null;
+}
+
+function setOperatorParam(params: OpenClawOperatorParams, rawKey: string, rawValue: unknown): void {
+  const key = rawKey.trim().toLowerCase().replace(/-/g, "_");
+  const value = typeof rawValue === "string" ? rawValue.trim() : rawValue;
+  if (value === "" || value === undefined || value === null) {
+    return;
+  }
+
+  if (key === "mode" && typeof value === "string") {
+    params.mode = value;
+    return;
+  }
+  if (key === "skill_hint" && typeof value === "string") {
+    params.skillHint = value;
+    return;
+  }
+  if (key === "execution_scope" && typeof value === "string") {
+    params.executionScope = value;
+    return;
+  }
+  if (key === "time_budget_minutes") {
+    const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      params.timeBudgetMinutes = parsed;
+    }
+    return;
+  }
+  if (key === "approval_contract" && typeof value === "string") {
+    params.approvalContract = value;
+  }
+}
+
+function hasOperatorParams(params: OpenClawOperatorParams): boolean {
+  return Object.values(params).some((value) => value !== undefined);
+}
+
+function operatorParamsAuditMetadata(input: SanitizedOperatorMessage): Record<string, unknown> {
+  return {
+    ...(input.operatorParams ? { operatorParams: input.operatorParams } : {}),
+    ...(input.operatorParamsSource ? { operatorParamsSource: input.operatorParamsSource } : {}),
+    ...(input.strippedInlineOperatorParams ? { strippedInlineOperatorParams: true } : {})
+  };
 }
 
 function isRecoverableOpenClawTransportError(error: unknown): boolean {
