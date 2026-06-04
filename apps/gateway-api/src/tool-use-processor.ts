@@ -8,6 +8,7 @@ import {
 } from "./openclaw-tools-builder.ts";
 import {
   noopGatewayRuntimeLogger,
+  redactRuntimeLogSecrets,
   summarizeOperationalParams,
   type GatewayRuntimeLogger
 } from "./gateway-runtime-log.ts";
@@ -934,15 +935,40 @@ function toolTarget(toolName: string, params: Record<string, unknown>, fallbackT
 }
 
 function truncateToolResult(value: unknown): unknown {
-  const raw = stableStringify(value);
+  const sanitized = sanitizeToolResult(value);
+  const raw = stableStringify(sanitized);
   if (raw.length <= maxToolResultJsonChars) {
-    return value;
+    return sanitized;
   }
   return {
     truncated: true,
     maxChars: maxToolResultJsonChars,
     preview: raw.slice(0, maxToolResultJsonChars)
   };
+}
+
+function sanitizeToolResult(value: unknown): unknown {
+  if (typeof value === "string") {
+    return redactRuntimeLogSecrets(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean" || value === null || value === undefined) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(sanitizeToolResult);
+  }
+  if (isRecord(value)) {
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      sanitized[key] = isSensitiveToolResultKey(key) ? "[REDACTED]" : sanitizeToolResult(child);
+    }
+    return sanitized;
+  }
+  return redactRuntimeLogSecrets(String(value));
+}
+
+function isSensitiveToolResultKey(key: string): boolean {
+  return /authorization|bearer|cookie|password|passwd|secret|token|session[_-]?token|api[_-]?key|access[_-]?key|private[_-]?key|signature|hmac|nonce/i.test(key);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

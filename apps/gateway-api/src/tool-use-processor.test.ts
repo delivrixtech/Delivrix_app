@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import {
   buildProposalPayloadFromToolUse,
@@ -99,6 +100,41 @@ test("processToolUse invokes read-only suggest_safe_domain without proposal wait
   assert.equal(result.proposalId, "read_only:toolu-suggest");
   assert.deepEqual(result.result, { candidates: [{ domain: "delivrixops.com", namingScore: 92 }] });
   assert.equal(calls.length, 1);
+});
+
+test("processToolUse redacts PEM data from tool results before returning model content", async () => {
+  const calls: unknown[] = [];
+  const pem = generatedPrivateKeyPem();
+  const pemLine = pemBodyLine(pem);
+  const result = await processToolUse({
+    toolUseId: "toolu-suggest-pem",
+    toolName: "suggest_safe_domain",
+    toolInput: { brand: "delivrix", intent: "ops", count: 5 },
+    chatSession: { id: "agent:main:operator" },
+    env: enabledEnv(),
+    deps: {
+      ...memoryDeps({ calls }),
+      async invokeReadOnlyTool(input) {
+        calls.push({ readOnly: input.toolName, params: input.params });
+        return {
+          ok: false,
+          error: pem,
+          stderr: pem.slice(0, 500),
+          nested: { privateKey: pem }
+        };
+      }
+    }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected read-only success");
+  const surface = JSON.stringify(result.result);
+  assert.doesNotMatch(surface, /-----BEGIN PRIVATE KEY-----/);
+  assert.doesNotMatch(surface, /-----END PRIVATE KEY-----/);
+  assert.equal(surface.includes(pemLine), false);
+  assert.match(surface, /\[REDACTED_PRIVATE_KEY\]/);
+  assert.match(surface, /\[REDACTED_PARTIAL_KEY\]/);
+  assert.match(surface, /\[REDACTED\]/);
 });
 
 test("processToolUse invokes read-only episodic scratch without ApprovalGate", async () => {
@@ -955,6 +991,20 @@ function enabledEnv(): Record<string, string | undefined> {
     SEND_REAL_EMAIL_ENABLE: "true",
     OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true"
   };
+}
+
+function generatedPrivateKeyPem(): string {
+  return generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" }
+  }).privateKey;
+}
+
+function pemBodyLine(pem: string): string {
+  const line = pem.split(/\r?\n/).find((candidate) => /^[A-Za-z0-9+/]{48,}={0,2}$/.test(candidate));
+  assert.ok(line);
+  return line;
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

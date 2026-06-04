@@ -138,7 +138,7 @@ export class CanvasLiveEventService {
       blockId: input.blockId,
       order: existing.order,
       kind: existing.kind,
-      content: input.content,
+      content: redactCanvasLiveText(input.content, maxCanvasTextChars),
       editable: existing.editable,
       status: "complete",
       occurredAt: updatedAt
@@ -176,7 +176,7 @@ export class CanvasLiveEventService {
           blockId: existing.blockId,
           order: existing.order,
           kind: existing.kind,
-          content: block.content,
+          content: redactCanvasLiveText(block.content, maxCanvasTextChars),
           editable: existing.editable,
           status: "complete",
           occurredAt: this.now().toISOString()
@@ -237,6 +237,7 @@ export class CanvasLiveEventService {
       blocks: input.blocks
         .map((block, index) => ({
           ...block,
+          content: redactCanvasLiveText(block.content, maxCanvasTextChars),
           order: normalizeSnapshotBlockOrder(block.order, index + 1)
         }))
         .sort((left, right) => left.order - right.order)
@@ -646,7 +647,7 @@ export function normalizeCanvasLiveEvent(raw: unknown, now: () => Date = () => n
       blockId: requiredId(raw.blockId, "blockId"),
       order: positiveInteger(raw.order, "order"),
       kind: normalizeBlockKind(raw.kind),
-      content: requiredText(raw.content, "content"),
+      content: redactCanvasLiveText(requiredText(raw.content, "content"), maxCanvasTextChars),
       editable: raw.editable === true,
       status: normalizeBlockStatus(raw.status),
       occurredAt: normalizeDate(raw.occurredAt, now)
@@ -658,7 +659,7 @@ export function normalizeCanvasLiveEvent(raw: unknown, now: () => Date = () => n
       type: "oc.artifact.streaming",
       artifactId: requiredId(raw.artifactId, "artifactId"),
       blockId: requiredId(raw.blockId, "blockId"),
-      chunk: requiredText(raw.chunk, "chunk"),
+      chunk: redactCanvasLiveText(requiredText(raw.chunk, "chunk"), maxCanvasTextChars),
       occurredAt: normalizeDate(raw.occurredAt, now)
     };
   }

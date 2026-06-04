@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import {
   formatGatewayRuntimeLogLine,
@@ -38,6 +39,41 @@ test("runtime log redacts common credential forms", () => {
   assert.doesNotMatch(redacted, /supersecret/);
 });
 
+test("runtime log redacts complete, partial, and body-only PEM private keys before caps", () => {
+  const pem = generatedPrivateKeyPem();
+  const keyLine = pemBodyLine(pem);
+  const partialPem = pem.slice(0, 500);
+  const redacted = redactRuntimeLogSecrets(`${pem}\n${partialPem}`);
+  const bodyOnly = redactRuntimeLogSecrets(keyLine);
+
+  assert.match(redacted, /\[REDACTED_PRIVATE_KEY\]/);
+  assert.match(redacted, /\[REDACTED_PARTIAL_KEY\]/);
+  assert.equal(bodyOnly, "[REDACTED_PEM_BODY]");
+  assert.doesNotMatch(redacted, /-----BEGIN PRIVATE KEY-----/);
+  assert.doesNotMatch(redacted, /-----END PRIVATE KEY-----/);
+  assert.equal(redacted.includes(keyLine), false);
+});
+
+test("runtime log redacts metadata strings before truncating them", () => {
+  const pem = generatedPrivateKeyPem();
+  const keyLine = pemBodyLine(pem);
+  const line = formatGatewayRuntimeLogLine({
+    ts: "2026-06-01T14:00:00.000Z",
+    level: "error",
+    event: "OpenClaw PEM leak",
+    message: "tool failed",
+    metadata: {
+      details: `stderr=${pem}`,
+      message: pem.slice(0, 500)
+    }
+  });
+
+  assert.doesNotMatch(line, /-----BEGIN PRIVATE KEY-----/);
+  assert.doesNotMatch(line, /-----END PRIVATE KEY-----/);
+  assert.equal(line.includes(keyLine), false);
+  assert.match(line, /\[REDACTED_PRIVATE_KEY\]|\[REDACTED_PARTIAL_KEY\]/);
+});
+
 test("summarizeOperationalParams keeps only useful non-secret operator fields", () => {
   assert.deepEqual(summarizeOperationalParams({
     domain: "controldelivrix.app",
@@ -51,3 +87,17 @@ test("summarizeOperationalParams keeps only useful non-secret operator fields", 
     serverSlug: "server10"
   });
 });
+
+function generatedPrivateKeyPem(): string {
+  return generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" }
+  }).privateKey;
+}
+
+function pemBodyLine(pem: string): string {
+  const line = pem.split(/\r?\n/).find((candidate) => /^[A-Za-z0-9+/]{48,}={0,2}$/.test(candidate));
+  assert.ok(line);
+  return line;
+}
