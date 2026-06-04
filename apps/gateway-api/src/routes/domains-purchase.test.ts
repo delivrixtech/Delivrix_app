@@ -265,6 +265,44 @@ test("POST /v1/domains/route53/register is idempotent when domain is already own
   assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.domain.register_idempotent");
 });
 
+test("POST /v1/domains/route53/register idempotent owned bypasses purchase-only blockers", async () => {
+  let registerCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => false,
+      listOwnedDomains: async () => [{ domainName: "delivrixops.com" }],
+      registerDomain: async () => {
+        registerCalled = true;
+        return {
+          operationId: "should-not-run",
+          expectedExpiry: "2027-05-29T11:00:00.000Z"
+        };
+      }
+    }),
+    env: {},
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  await appendDomainApproval(route.auditLog);
+
+  const response = await route({
+    domain: "delivrixops.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "idempotent_already_owned");
+  assert.equal(response.body.costUsd, 0);
+  assert.equal(registerCalled, false);
+});
+
 test("POST /v1/domains/route53/register reserves monthly cap before concurrent provider call", async () => {
   const calls: AwsRoute53RegisterDomainInput[] = [];
   let releaseRegister!: () => void;

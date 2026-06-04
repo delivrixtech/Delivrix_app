@@ -40,6 +40,8 @@ export interface SendRealEmailParams extends Record<string, unknown> {
   serverSlug: string;
   actorId: string;
   approvalToken: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface SendRealEmailSkillParams extends Record<string, unknown> {
@@ -48,6 +50,8 @@ export interface SendRealEmailSkillParams extends Record<string, unknown> {
   subject: string;
   body: string;
   serverSlug: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
 }
 
 export interface SendRealEmailResult {
@@ -642,7 +646,22 @@ function parseSendRealEmailSkillParams(value: unknown): SendRealEmailSkillParams
     toAddress,
     subject,
     body,
-    serverSlug: slug(input.serverSlug, "serverSlug")
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    ...optionalRepairScope(input)
+  };
+}
+
+function optionalRepairScope(input: Record<string, unknown>): {
+  repairReason?: string;
+  explicitRepairScope?: string;
+} {
+  return {
+    ...(typeof input.repairReason === "string" && input.repairReason.trim().length >= 10
+      ? { repairReason: input.repairReason.trim().slice(0, 500) }
+      : {}),
+    ...(typeof input.explicitRepairScope === "string" && input.explicitRepairScope.trim().length >= 3
+      ? { explicitRepairScope: input.explicitRepairScope.trim().slice(0, 300) }
+      : {})
   };
 }
 

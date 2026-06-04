@@ -349,9 +349,35 @@ test("configureCompleteSmtp fails closed when signed plan domain is not in sugge
 
   assert.equal(result.status, "failed");
   assert.equal(result.failedStep, 1);
-  assert.equal(result.error, "plan_domain_not_in_suggestions: approved_domain=approved.example.com");
+  assert.equal(result.error, "domain_ownership_not_verified: domain=approved.example.com");
   assert.equal(ctx.approvals.length, 0);
   assert.equal(ctx.planExecutions.length, 0);
+});
+
+test("configureCompleteSmtp adopts a signed existing Route53-owned domain not in suggestions", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ domain: "controldelivrix.app" }),
+    suggestions: { candidates: [{ domain: "fresh-delivrix.com", priceUsd: 15, available: true }] },
+    ownedDomains: ["controldelivrix.app"],
+    outcomes: {
+      2: { status: "idempotent_already_owned", costUsd: 0 },
+      4: { status: "idempotent_already_exists", serverSlug: "server10", ipv4: "45.136.70.47", costUsd: 0 }
+    }
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "controldelivrix.app",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.ownershipChecks[0], "controldelivrix.app");
+  assert.equal(ctx.planExecutions.find((entry) => entry.step === 2)?.estimatedCostUsd, 0);
+  assert.equal(ctx.planExecutions.find((entry) => entry.step === 4)?.params.hostname, "controldelivrix.app");
+  assert.equal(result.totalCostUsd, 0);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.domain.ownership_verified"), true);
 });
 
 test("configureCompleteSmtp checks kill switch before every plan-approved step", async () => {
@@ -587,6 +613,7 @@ function createDeps(options: {
   signedAuditEvents?: boolean;
   planApproval?: PlanApprovalRecord | null;
   killSwitchAfterPlanExecutions?: number;
+  ownedDomains?: string[];
 } = {}): {
   deps: ConfigureCompleteSmtpDeps;
   approvals: ApprovalStepInput[];
@@ -601,6 +628,7 @@ function createDeps(options: {
     steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string; outcomeData?: Record<string, unknown> }>;
   }>;
   logs: Array<{ level: string; event: string; metadata?: Record<string, unknown> }>;
+  ownershipChecks: string[];
   verifyCount: number;
 } {
   const approvals: ApprovalStepInput[] = [];
@@ -610,6 +638,7 @@ function createDeps(options: {
   const auditEvents: Array<Record<string, unknown> & { action: string; metadata?: unknown }> = [];
   const canvasEvents: Array<Record<string, unknown> & { action?: string }> = [];
   const logs: Array<{ level: string; event: string; metadata?: Record<string, unknown> }> = [];
+  const ownershipChecks: string[] = [];
   const compactions: Array<{
     intentId: string;
     finalStatus: string;
@@ -676,6 +705,15 @@ function createDeps(options: {
           statusCode: 200
         };
       },
+      async verifyOwnedDomain(domain: string) {
+        ownershipChecks.push(domain);
+        return {
+          owned: options.ownedDomains?.includes(domain) ?? false,
+          provider: "route53" as const,
+          sourceKind: "live",
+          responseOk: true
+        };
+      },
       async submitRollbackProposal(input: { skill: "delete_webdock_server"; params: Record<string, unknown> }) {
         rollbacks.push(input);
         return { proposalId: "rollback-1" };
@@ -733,6 +771,7 @@ function createDeps(options: {
     canvasEvents,
     compactions,
     logs,
+    ownershipChecks,
     get verifyCount() {
       return verifyCount;
     }

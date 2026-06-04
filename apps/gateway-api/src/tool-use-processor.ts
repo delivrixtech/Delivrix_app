@@ -1015,6 +1015,7 @@ const smtpPlanSubtools = new Set([
   "upsert_dns_ionos",
   "create_webdock_server",
   "bind_webdock_main_domain",
+  "bind_domain_to_server",
   "provision_smtp_postfix",
   "configure_email_auth",
   "seed_warmup_pool",

@@ -278,7 +278,8 @@ import { handleProposalReject } from "./routes/proposals-reject.ts";
 import { handleLegacyAuthorizationDeprecated } from "./routes/legacy-authorization.ts";
 import {
   handleConfigureCompleteSmtp,
-  type ApprovalStepDecision
+  type ApprovalStepDecision,
+  type OwnedDomainVerification
 } from "./routes/orchestrator-smtp.ts";
 import { handleReadEpisodicScratchHttp } from "./routes/episodic-scratch.ts";
 import {
@@ -618,6 +619,29 @@ const configureSmtpRuntimeDeps = {
           statusCode: result.statusCode,
           error: extractDispatchError(result.summary)
         };
+  },
+  verifyOwnedDomain: async (domain: string): Promise<OwnedDomainVerification> => {
+    const normalized = normalizeDomainForPlan(domain);
+    const inventory = await awsRoute53DomainsAdapter.listInventory();
+    if (inventory.source.kind !== "live" || inventory.source.responseOk !== true) {
+      return {
+        owned: false,
+        provider: "route53",
+        reason: "route53_domain_inventory_not_live",
+        sourceKind: inventory.source.kind,
+        responseOk: inventory.source.responseOk
+      };
+    }
+    const owned = inventory.domains.some((entry) =>
+      normalizeDomainForPlan(entry.domainName) === normalized
+    );
+    return {
+      owned,
+      provider: "route53",
+      reason: owned ? "listed_in_route53_domains_inventory" : "domain_not_listed_in_route53_domains_inventory",
+      sourceKind: inventory.source.kind,
+      responseOk: inventory.source.responseOk
+    };
   },
   submitRollbackProposal: async (input: {
     runId: string;

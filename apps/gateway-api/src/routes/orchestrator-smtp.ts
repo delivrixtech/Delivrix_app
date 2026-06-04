@@ -68,6 +68,14 @@ export interface PlanApprovalLookupInput {
   params: ConfigureCompleteSmtpParams;
 }
 
+export interface OwnedDomainVerification {
+  owned: boolean;
+  provider: "route53";
+  reason?: string;
+  sourceKind?: string;
+  responseOk?: boolean;
+}
+
 export interface PlanApprovedStepInput extends SkillInvocationInput {
   actorId: string;
   inputHash: string;
@@ -176,6 +184,7 @@ export interface ConfigureCompleteSmtpDeps {
   submitAndAwaitApproval(input: ApprovalStepInput): Promise<ApprovalStepDecision>;
   resolvePlanApproval?: (input: PlanApprovalLookupInput) => Promise<PlanApprovalRecord | null> | PlanApprovalRecord | null;
   executePlanApprovedStep?: (input: PlanApprovedStepInput) => Promise<PlanApprovedStepDecision>;
+  verifyOwnedDomain?: (domain: string) => Promise<OwnedDomainVerification> | OwnedDomainVerification;
   submitRollbackProposal?: (input: RollbackProposalInput) => Promise<{ proposalId: string }>;
   verifyAuditChain?: () => Promise<{ ok: boolean; details?: unknown }> | { ok: boolean; details?: unknown };
   readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
@@ -241,6 +250,7 @@ export async function configureCompleteSmtp(
   let chosenDomain = "";
   let serverSlug = "";
   let serverIpv4 = "";
+  let verifiedOwnedDomain: string | null = null;
   let rollbackProposalId: string | undefined;
   const logger = deps.logger ?? noopGatewayRuntimeLogger;
   let planApproval: PlanApprovalRecord | null = null;
@@ -302,7 +312,15 @@ export async function configureCompleteSmtp(
       },
       stepResults
     });
-    chosenDomain = chooseDomainForRun(suggestions, planApproval, input);
+    const explicitDomain = explicitDomainForRun(input, planApproval);
+    if (explicitDomain && !domainInSuggestions(suggestions, explicitDomain)) {
+      verifiedOwnedDomain = await verifyExistingDomainOwnership({
+        deps,
+        runId,
+        domain: explicitDomain
+      });
+    }
+    chosenDomain = chooseDomainForRun(suggestions, planApproval, input, verifiedOwnedDomain);
 
     await runMutatingStep({
       deps,
@@ -312,7 +330,7 @@ export async function configureCompleteSmtp(
       skill: "register_domain_route53",
       actorId: input.actorId,
       approvalTimeoutMs,
-      estimatedCostUsd: 15,
+      estimatedCostUsd: verifiedOwnedDomain === chosenDomain ? 0 : 15,
       budgetUsdMax: input.budgetUsdMax,
       params: { domain: chosenDomain, years: 1, autoRenew: false },
       stepResults
@@ -347,6 +365,7 @@ export async function configureCompleteSmtp(
       estimatedCostUsd: 4.30 / 30,
       budgetUsdMax: input.budgetUsdMax,
       params: {
+        runId,
         profile: "bit",
         locationId: "dk",
         hostname: chosenDomain,
@@ -1065,9 +1084,22 @@ function chooseDomain(outcome: unknown): string {
 function chooseDomainForRun(
   outcome: unknown,
   planApproval: PlanApprovalRecord | null,
-  input: ConfigureCompleteSmtpParams
+  input: ConfigureCompleteSmtpParams,
+  verifiedOwnedDomain: string | null
 ): string {
   if (!planApproval) {
+    if (input.domain) {
+      const requestedDomain = normalizeDomain(input.domain);
+      if (domainInSuggestions(outcome, requestedDomain) || verifiedOwnedDomain === requestedDomain) {
+        return requestedDomain;
+      }
+      throw new OrchestratorFailure(
+        "failed",
+        1,
+        "suggest_safe_domain",
+        `domain_not_in_suggestions_or_owned: domain=${requestedDomain}`
+      );
+    }
     return chooseDomain(outcome);
   }
 
@@ -1081,12 +1113,8 @@ function chooseDomainForRun(
     );
   }
   const candidates = isRecord(outcome) && Array.isArray(outcome.candidates) ? outcome.candidates : [];
-  const hasApprovedCandidate = candidates.some((candidate) =>
-    isRecord(candidate) &&
-    typeof candidate.domain === "string" &&
-    normalizeDomain(candidate.domain) === approvedDomain
-  );
-  if (candidates.length > 0 && !hasApprovedCandidate) {
+  const hasApprovedCandidate = domainInSuggestions(outcome, approvedDomain);
+  if (candidates.length > 0 && !hasApprovedCandidate && verifiedOwnedDomain !== approvedDomain) {
     throw new OrchestratorFailure(
       "failed",
       1,
@@ -1095,6 +1123,77 @@ function chooseDomainForRun(
     );
   }
   return approvedDomain;
+}
+
+function explicitDomainForRun(
+  input: ConfigureCompleteSmtpParams,
+  planApproval: PlanApprovalRecord | null
+): string | null {
+  if (input.domain) return normalizeDomain(input.domain);
+  return planApproval?.scope.domain ?? null;
+}
+
+function domainInSuggestions(outcome: unknown, domain: string): boolean {
+  const candidates = isRecord(outcome) && Array.isArray(outcome.candidates) ? outcome.candidates : [];
+  return candidates.some((candidate) =>
+    isRecord(candidate) &&
+    typeof candidate.domain === "string" &&
+    normalizeDomain(candidate.domain) === domain
+  );
+}
+
+async function verifyExistingDomainOwnership(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  domain: string;
+}): Promise<string> {
+  await verifyAuditChain(input.deps);
+  if (!input.deps.verifyOwnedDomain) {
+    throw new OrchestratorFailure(
+      "failed",
+      1,
+      "route53_domain_ownership",
+      `domain_ownership_verifier_missing: domain=${input.domain}`
+    );
+  }
+  let verification: OwnedDomainVerification;
+  try {
+    verification = await input.deps.verifyOwnedDomain(input.domain);
+  } catch (error) {
+    void (input.deps.logger ?? noopGatewayRuntimeLogger).warn(
+      "openclaw.orchestrator.domain_ownership_read_failed",
+      "Route53 domain ownership verification failed closed.",
+      {
+        runId: input.runId,
+        domain: input.domain,
+        error: errorMessage(error)
+      }
+    );
+    throw new OrchestratorFailure(
+      "failed",
+      1,
+      "route53_domain_ownership",
+      `domain_ownership_not_verified: domain=${input.domain}`
+    );
+  }
+
+  if (verification.provider !== "route53" || verification.owned !== true) {
+    throw new OrchestratorFailure(
+      "failed",
+      1,
+      "route53_domain_ownership",
+      `domain_ownership_not_verified: domain=${input.domain}`
+    );
+  }
+
+  await audit(input.deps, "oc.domain.ownership_verified", "domain", input.domain, "high", {
+    runId: input.runId,
+    provider: "route53",
+    source: "listOwnedDomains",
+    sourceKind: verification.sourceKind,
+    responseOk: verification.responseOk
+  });
+  return input.domain;
 }
 
 async function resolveAndValidatePlanApproval(input: {
@@ -1540,7 +1639,7 @@ function stringRecordValue(value: unknown, fallback: string): string {
 }
 
 function totalEstimatedCost(results: ConfigureCompleteSmtpStepResult[]): number {
-  return results.reduce((total, step) => total + (step.estimatedCostUsd ?? extractCost(step.outcome)), 0);
+  return results.reduce((total, step) => total + (extractCost(step.outcome) ?? step.estimatedCostUsd ?? 0), 0);
 }
 
 function ensureBudgetForStep(
@@ -1585,13 +1684,13 @@ function ensureBudgetForStep(
   );
 }
 
-function extractCost(outcome: unknown): number {
-  if (!isRecord(outcome)) return 0;
+function extractCost(outcome: unknown): number | undefined {
+  if (!isRecord(outcome)) return undefined;
   for (const key of ["costUsd", "priceUsd", "estimatedCostUsd"]) {
     const value = outcome[key];
-    if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
   }
-  return 0;
+  return undefined;
 }
 
 function elapsed(deps: ConfigureCompleteSmtpDeps, startedMs: number): number {

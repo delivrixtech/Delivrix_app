@@ -125,6 +125,182 @@ test("POST /v1/webdock/servers/create creates server, polls running, and records
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "api" && event.method === "GET"));
 });
 
+test("POST /v1/webdock/servers/create reuses an existing server by hostname", async () => {
+  let createCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      listServers: async () => ({
+        servers: [{
+          slug: "server10",
+          name: "display-name",
+          hostname: "controldelivrix.app",
+          mainDomain: undefined,
+          ipv4: "45.136.70.47",
+          status: "running"
+        }],
+        source: liveWebdockSource()
+      }),
+      createServer: async () => {
+        createCalled = true;
+        throw new Error("createServer must not run");
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    runId: "run-controldelivrix",
+    profile: "bit",
+    locationId: "dk",
+    hostname: "controldelivrix.app",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123",
+    taskId: "task-webdock-idempotent"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "idempotent_already_exists");
+  assert.equal(response.body.serverSlug, "server10");
+  assert.equal(response.body.costUsd, 0);
+  assert.equal(createCalled, false);
+  assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.webdock.create_idempotent");
+  const inventory = await route.workspace.readInventoryJson<{
+    runBindings: Array<{ runId: string; serverSlug: string; source: string }>;
+  }>("webdock-servers.json");
+  assert.deepEqual(inventory?.runBindings, [{
+    runId: "run-controldelivrix",
+    serverSlug: "server10",
+    domain: "controldelivrix.app",
+    boundAt: fixedNow.toISOString(),
+    source: "idempotent_already_exists"
+  }]);
+});
+
+test("POST /v1/webdock/servers/create reuses an existing server by mainDomain", async () => {
+  let createCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      listServers: async () => ({
+        servers: [{
+          slug: "server10",
+          name: "server10",
+          mainDomain: "controldelivrix.app",
+          ipv4: "45.136.70.47",
+          status: "running"
+        }],
+        source: liveWebdockSource()
+      }),
+      createServer: async () => {
+        createCalled = true;
+        throw new Error("createServer must not run");
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    profile: "bit",
+    locationId: "dk",
+    hostname: "controldelivrix.app",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "idempotent_already_exists");
+  assert.equal(response.body.serverSlug, "server10");
+  assert.equal(createCalled, false);
+});
+
+test("POST /v1/webdock/servers/create fails closed on ambiguous existing servers", async () => {
+  let createCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      listServers: async () => ({
+        servers: [
+          { slug: "server10", name: "server10", hostname: "controldelivrix.app", ipv4: "45.136.70.47", status: "running" },
+          { slug: "server11", name: "server11", mainDomain: "controldelivrix.app", ipv4: "45.136.70.48", status: "running" }
+        ],
+        source: liveWebdockSource()
+      }),
+      createServer: async () => {
+        createCalled = true;
+        throw new Error("createServer must not run");
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    profile: "bit",
+    locationId: "dk",
+    hostname: "controldelivrix.app",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body.blockers, ["webdock_existing_server_ambiguous"]);
+  assert.equal(createCalled, false);
+});
+
+test("POST /v1/webdock/servers/create fails closed on degraded inventory", async () => {
+  let createCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      listServers: async () => ({
+        servers: [],
+        source: { ...liveWebdockSource(), kind: "mock", responseOk: false, errorMessage: "api down" }
+      }),
+      createServer: async () => {
+        createCalled = true;
+        throw new Error("createServer must not run");
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    profile: "bit",
+    locationId: "dk",
+    hostname: "controldelivrix.app",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body.blockers, ["webdock_inventory_degraded"]);
+  assert.equal(createCalled, false);
+});
+
 test("POST /v1/webdock/servers/create classifies Webdock payment failures as recoverable", async () => {
   const route = await routeHarness({
     adapter: mockAdapter({
@@ -355,6 +531,7 @@ async function deleteRouteHarness(input: {
 function mockAdapter(overrides: Partial<WebdockServerCreateAdapter> = {}): WebdockServerCreateAdapter {
   return {
     isLive: () => true,
+    listServers: async () => ({ servers: [], source: liveWebdockSource() }),
     createServer: async (): Promise<WebdockCreateServerResult> => {
       throw new Error("createServer mock not implemented");
     },
@@ -362,6 +539,15 @@ function mockAdapter(overrides: Partial<WebdockServerCreateAdapter> = {}): Webdo
       throw new Error("getServer mock not implemented");
     },
     ...overrides
+  };
+}
+
+function liveWebdockSource() {
+  return {
+    kind: "live" as const,
+    apiBase: "https://api.webdock.test/v1",
+    fetchedAt: fixedNow.toISOString(),
+    responseOk: true
   };
 }
 
