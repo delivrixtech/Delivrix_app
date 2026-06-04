@@ -237,6 +237,7 @@ export async function handleDomainNameserverUpdateHttp(
         operationId: update?.operationId,
         zoneResolution: {
           source: zoneResolution.source,
+          smtpSetup: zoneResolution.smtpSetup ?? null,
           cleanupSuggested: zoneResolution.cleanupSuggested ?? []
         }
       }
@@ -264,6 +265,7 @@ export async function handleDomainNameserverUpdateHttp(
         workspacePath: workspace?.path,
         zoneResolution: {
           source: zoneResolution.source,
+          smtpSetup: zoneResolution.smtpSetup ?? null,
           cleanupSuggested: zoneResolution.cleanupSuggested ?? []
         }
       }
@@ -288,6 +290,7 @@ export async function handleDomainNameserverUpdateHttp(
       operationId: update?.operationId,
       zoneResolution: {
         source: zoneResolution.source,
+        smtpSetup: zoneResolution.smtpSetup ?? null,
         cleanupSuggested: zoneResolution.cleanupSuggested ?? []
       },
       workspace

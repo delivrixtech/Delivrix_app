@@ -123,14 +123,14 @@ Requiere `humanApproved: true` + `killSwitch.enabled: false`. Si falla cualquier
 | Acción | Audit ID | Flag operativo | Firmante |
 | --- | --- | --- | --- |
 | `register_domain_route53` | `oc.route53.domain_registered` | `AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE=true` | operador autorizado |
-| `route53_dns_upsert` | `oc.route53.dns_upserted` | `AWS_ROUTE53_DNS_ENABLE_WRITES=true` | operador autorizado |
+| `route53_dns_upsert` | `oc.route53.dns_upserted` | `AWS_ROUTE53_DNS_ENABLE_WRITES=true`; SMTP nuevo: `A smtp` + `MX -> smtp` | operador autorizado |
 | `ionos_dns_upsert` | `oc.ionos.dns_upserted` | `IONOS_DNS_ENABLE_WRITES=true` (NUEVO) | operador autorizado |
 | `provision_webdock_vps` | `oc.webdock.server_created` | `WEBDOCK_SERVERS_ENABLE_CREATE=true` | operador autorizado |
-| `bind_webdock_main_domain` | `oc.webdock.main_domain_bound` | `WEBDOCK_BIND_MAIN_DOMAIN_ENABLE=true`; reversible: sí; rollback: sí, restaura hostname previo si PTR falla; PTR API: `not_supported_by_api` | operador autorizado |
-| `install_smtp_stack` | `oc.smtp.stack_installed` | `SMTP_PROVISIONING_ENABLE_SSH=true` | operador autorizado |
+| `bind_webdock_main_domain` | `oc.webdock.main_domain_bound` | `WEBDOCK_BIND_MAIN_DOMAIN_ENABLE=true`; PTR `smtp.<dominio>`; reversible: sí; rollback: sí, restaura hostname previo si PTR falla; PTR API: `not_supported_by_api` | operador autorizado |
+| `install_smtp_stack` | `oc.smtp.stack_installed` | `SMTP_PROVISIONING_ENABLE_SSH=true`; host/HELO/TLS = `smtp.<dominio>` | operador autorizado |
 | `start_warmup_seed` | `oc.warmup.seed_sent` | `WARMUP_ENABLE_SEND=true` | operador autorizado |
 | `start_warmup_ramp` | `oc.warmup.ramp_started` | `WARMUP_RAMP_ENABLE=true` (NUEVO) | operador autorizado |
-| `bind_domain_to_server` | `oc.domain.bound` | `DOMAIN_BIND_ENABLE=true` (NUEVO) | operador autorizado |
+| `bind_domain_to_server` | `oc.domain.bound` | `DOMAIN_BIND_ENABLE=true`; escribe `A smtp` + `MX -> smtp` | operador autorizado |
 | `configure_email_auth` | `oc.email.auth_configured` | `EMAIL_AUTH_ENABLE_WRITES=true` (NUEVO) | operador autorizado |
 | `wait_for_dns_propagation` | `oc.dns.propagation_check` | n/a (lectura DNS + audit local) | operador autorizado |
 | `send_real_email` / `smtp_send_real` | `oc.smtp.real_email_sent` | `CRITICAL_RISK_REPUTATION` + SPF/DKIM/DMARC + Postfix + rate-limit 5/h + burner block | operador autorizado |
@@ -141,7 +141,7 @@ Requiere `humanApproved: true` + `killSwitch.enabled: false`. Si falla cualquier
 
 | Acción | Audit ID | Flag operativo | Firmante |
 | --- | --- | --- | --- |
-| `update_domain_nameservers` / `route53_domain_nameservers_update` | `oc.domain.nameservers_updated` | `AWS_ROUTE53_DOMAINS_ENABLE_NAMESERVER_UPDATES=true`; zona Route53 en nuestra cuenta + A/MX presentes + kill switch legible/desarmado | operador autorizado |
+| `update_domain_nameservers` / `route53_domain_nameservers_update` | `oc.domain.nameservers_updated` | `AWS_ROUTE53_DOMAINS_ENABLE_NAMESERVER_UPDATES=true`; zona nuestra + SMTP A/MX presente (`smtp.` preferido; `mail.` legacy) + kill switch legible/desarmado | operador autorizado |
 
 `update_domain_nameservers` sólo realinea Route53 Domains hacia una hosted zone Route53 verificada de Delivrix. No delega a NS externos, no borra zonas duplicadas y sólo reporta `cleanupSuggested`.
 

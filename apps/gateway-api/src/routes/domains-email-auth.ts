@@ -272,6 +272,7 @@ export async function handleEmailAuthConfigureHttp(
         zoneResolution: {
           status: zoneResolution.status,
           source: zoneResolution.source,
+          smtpSetup: zoneResolution.smtpSetup ?? null,
           cleanupSuggested: zoneResolution.cleanupSuggested ?? []
         }
       } : {}),
@@ -305,6 +306,7 @@ export async function handleEmailAuthConfigureHttp(
           zoneResolution: {
             status: zoneResolution.status,
             source: zoneResolution.source,
+            smtpSetup: zoneResolution.smtpSetup ?? null,
             cleanupSuggested: zoneResolution.cleanupSuggested ?? []
           }
         } : {}),
@@ -332,6 +334,7 @@ export async function handleEmailAuthConfigureHttp(
         zoneResolution: {
           status: zoneResolution.status,
           source: zoneResolution.source,
+          smtpSetup: zoneResolution.smtpSetup ?? null,
           cleanupSuggested: zoneResolution.cleanupSuggested ?? []
         }
       } : {}),

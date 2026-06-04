@@ -27,6 +27,7 @@ import {
 } from "../entity-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import { ensureDkimKeyPair, findExistingDkimPrivateKeyPath } from "../dkim-keypair.ts";
+import { smtpHostForDomain } from "../smtp-naming.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -492,7 +493,7 @@ export function buildSmtpProvisionPlan(input: {
   selector: string;
   dkimPrivateKey: string;
 }): SmtpProvisionStep[] {
-  const mailHost = `mail.${input.domain}`;
+  const mailHost = smtpHostForDomain(input.domain);
   const keyDir = `/etc/opendkim/keys/${input.domain}`;
   const mainCf = renderPostfixMainCf(input.domain, mailHost);
   const opendkimConf = renderOpenDkimConf();
@@ -721,6 +722,7 @@ function renderPostfixMainCf(domain: string, mailHost: string): string {
   return [
     `myhostname = ${mailHost}`,
     `mydomain = ${domain}`,
+    `smtp_helo_name = ${mailHost}`,
     "myorigin = /etc/mailname",
     "mydestination = $myhostname, localhost.$mydomain, localhost",
     "inet_interfaces = all",

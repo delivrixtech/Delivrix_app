@@ -13,6 +13,7 @@ import {
   type DomainBindDnsAdapter
 } from "./domains-bind.ts";
 import { readRequestBody } from "../request-body.ts";
+import { smtpHostForDomain } from "../smtp-naming.ts";
 import {
   handleEmailAuthConfigureHttp,
   type EmailAuthDnsAdapter
@@ -300,7 +301,7 @@ export function createGatewayOnboardDomainFlowRunner(
         body: {
           profile: input.profile,
           locationId: input.locationId,
-          hostname: `mail.${input.domain}`,
+          hostname: smtpHostForDomain(input.domain),
           imageSlug: input.imageSlug,
           publicKey: input.publicKey,
           actorId: input.actorId,

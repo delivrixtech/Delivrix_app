@@ -241,6 +241,62 @@ test("POST /v1/domains/route53/dns/upsert fail-closes ambiguous AWS zones withou
   assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.dns.records_update_blocked");
 });
 
+test("POST /v1/domains/route53/dns/upsert prefers canonical smtp zone over legacy mail zone", async () => {
+  const upsertZones: string[] = [];
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isWriteEnabled: () => true,
+      listHostedZones: async () => [
+        { zoneId: "ZLEGACYMAIL", name: "controldelivrix.app.", nameServers: ["ns-mail.awsdns.com"] },
+        { zoneId: "ZCANONICALSMTP", name: "controldelivrix.app.", nameServers: ["ns-smtp.awsdns.net"] }
+      ],
+      listResourceRecordSets: async (zoneId) => zoneId === "ZCANONICALSMTP"
+        ? [
+            { name: "controldelivrix.app.", type: "NS", ttl: 172800, values: ["ns-smtp.awsdns.net."] },
+            { name: "smtp.controldelivrix.app.", type: "A", ttl: 300, values: ["45.136.70.47"] },
+            { name: "controldelivrix.app.", type: "MX", ttl: 300, values: ["10 smtp.controldelivrix.app."] }
+          ]
+        : [
+            { name: "controldelivrix.app.", type: "NS", ttl: 172800, values: ["ns-mail.awsdns.com."] },
+            { name: "mail.controldelivrix.app.", type: "A", ttl: 300, values: ["45.136.70.47"] },
+            { name: "controldelivrix.app.", type: "MX", ttl: 300, values: ["10 mail.controldelivrix.app."] }
+          ],
+      createHostedZone: async () => {
+        throw new Error("createHostedZone should not run when canonical smtp zone exists");
+      },
+      upsertRecord: async (zoneId, record) => {
+        upsertZones.push(zoneId);
+        return { changeId: `C-${record.type}` };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-dns-plan",
+      executionId: "exec-dns-smtp-prefer",
+      approvedAt: "2026-05-27T11:58:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-dns-plan", "exec-dns-smtp-prefer");
+
+  const response = await route({
+    domain: "controldelivrix.app",
+    records: [{ name: "smtp", type: "A", ttl: 300, values: ["45.136.70.47"] }],
+    actorId: "operator/juanes",
+    approvalToken: "exec-dns-smtp-prefer",
+    taskId: "task-dns-smtp-prefer"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.zoneId, "ZCANONICALSMTP");
+  assert.equal(response.body.zoneResolution.smtpSetup, "canonical");
+  assert.deepEqual(response.body.zoneResolution.cleanupSuggested, [{
+    zoneId: "ZLEGACYMAIL",
+    name: "controldelivrix.app.",
+    reason: "duplicate_route53_hosted_zone"
+  }]);
+  assert.deepEqual(upsertZones, ["ZCANONICALSMTP"]);
+});
+
 test("POST /v1/domains/route53/dns/upsert auto-rolls back when propagation times out", async () => {
   let nowMs = fixedNow.getTime();
   const snapshotDir = await mkdtemp(join(tmpdir(), "route53-rollback-"));

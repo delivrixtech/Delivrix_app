@@ -126,6 +126,7 @@ test("gateway onboard runner executes T1, T2, T4, T3, T5, T6 without warmup", as
   const approvalToken = await seedApproval(canvas, auditLog, "artifact-flow-order");
   const emitted: any[] = [];
   let route53ZoneCreated = false;
+  const webdockCreateInputs: Array<{ hostname?: string }> = [];
   const route53Records: Array<{ name: string; type: string; ttl: number; values: string[] }> = [];
   const canvasEmitter = {
     async emit(event: any) {
@@ -211,22 +212,25 @@ test("gateway onboard runner executes T1, T2, T4, T3, T5, T6 without warmup", as
           responseOk: true
         }
       }),
-      createServer: async () => ({
-        serverSlug: "server-order",
-        eventId: "cb-order",
-        ipv4: null,
-        status: "provisioning",
-        publicKeyId: 42,
-        source: {
-          kind: "live",
-          apiBase: "https://api.webdock.test/v1",
-          fetchedAt: fixedNow.toISOString(),
-          responseOk: true
-        }
-      }),
+      createServer: async (input) => {
+        webdockCreateInputs.push({ hostname: input.hostname });
+        return {
+          serverSlug: "server-order",
+          eventId: "cb-order",
+          ipv4: null,
+          status: "provisioning",
+          publicKeyId: 42,
+          source: {
+            kind: "live",
+            apiBase: "https://api.webdock.test/v1",
+            fetchedAt: fixedNow.toISOString(),
+            responseOk: true
+          }
+        };
+      },
       getServer: async () => ({
         slug: "server-order",
-        name: "mail.order-delivrix-test.com",
+        name: "smtp.order-delivrix-test.com",
         status: "running",
         ipv4: "192.0.2.44"
       })
@@ -281,6 +285,7 @@ test("gateway onboard runner executes T1, T2, T4, T3, T5, T6 without warmup", as
   ]);
   assert.equal(result.serverIp, "192.0.2.44");
   assert.equal(highLevelUrls.includes("/v1/warmup/start"), false);
+  assert.deepEqual(webdockCreateInputs, [{ hostname: "smtp.order-delivrix-test.com" }]);
 });
 
 async function routeHarness(input: {

@@ -123,9 +123,109 @@ test("POST /v1/domains/route53/nameservers/update blocks empty Route53 zone befo
   });
 
   assert.equal(response.statusCode, 409);
-  assert.deepEqual(response.body.blockers, ["zone_missing_apex_a_mx"]);
+  assert.deepEqual(response.body.blockers, ["zone_missing_smtp_a_mx"]);
   assert.equal(updateCalled, false);
   assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.domain.nameservers_update_blocked");
+});
+
+test("POST /v1/domains/route53/nameservers/update blocks smtp MX without matching A before registrar mutation", async () => {
+  let updateCalled = false;
+  const route = await routeHarness({
+    registrarAdapter: mockRegistrarAdapter({
+      updateDomainNameservers: async () => {
+        updateCalled = true;
+        return { operationId: "should-not-run" };
+      }
+    }),
+    dnsAdapter: mockDnsAdapter({
+      listResourceRecordSets: async () => [
+        {
+          name: "delivrix-mail.com.",
+          type: "NS",
+          ttl: 172800,
+          values: ["ns-1.awsdns.com.", "ns-2.awsdns.net."]
+        },
+        {
+          name: "delivrix-mail.com.",
+          type: "MX",
+          ttl: 300,
+          values: ["10 smtp.delivrix-mail.com."]
+        }
+      ]
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-ns-plan",
+      executionId: "exec-ns-missing-a",
+      approvedAt: "2026-06-04T16:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-ns-plan", "exec-ns-missing-a");
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-ns-missing-a",
+    taskId: "task-ns-missing-a"
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body.blockers, ["zone_missing_smtp_a_mx"]);
+  assert.equal(response.body.smtpSetup.hasTargetMx, true);
+  assert.equal(response.body.smtpSetup.hasTargetA, false);
+  assert.equal(updateCalled, false);
+});
+
+test("POST /v1/domains/route53/nameservers/update tolerates one legacy mail zone when no smtp zone exists", async () => {
+  const updates: Array<{ domain: string; nameservers: string[] }> = [];
+  const route = await routeHarness({
+    registrarAdapter: mockRegistrarAdapter({
+      getDomainNameservers: async () => ["ns-old-1.example.net", "ns-old-2.example.net"],
+      updateDomainNameservers: async (domain, nameservers) => {
+        updates.push({ domain, nameservers });
+        return { operationId: "op-ns-legacy" };
+      }
+    }),
+    dnsAdapter: mockDnsAdapter({
+      listResourceRecordSets: async (): Promise<AwsRoute53ResourceRecordSet[]> => [
+        {
+          name: "delivrix-mail.com.",
+          type: "NS",
+          ttl: 172800,
+          values: ["ns-1.awsdns.com.", "ns-2.awsdns.net."]
+        },
+        {
+          name: "mail.delivrix-mail.com.",
+          type: "A",
+          ttl: 300,
+          values: ["192.0.2.44"]
+        },
+        {
+          name: "delivrix-mail.com.",
+          type: "MX",
+          ttl: 300,
+          values: ["10 mail.delivrix-mail.com."]
+        }
+      ]
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-ns-plan",
+      executionId: "exec-ns-legacy",
+      approvedAt: "2026-06-04T16:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-ns-plan", "exec-ns-legacy");
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-ns-legacy",
+    taskId: "task-ns-legacy"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "updated");
+  assert.equal(response.body.operationId, "op-ns-legacy");
+  assert.equal(updates.length, 1);
 });
 
 async function routeHarness(input: {
@@ -224,7 +324,7 @@ function mockDnsAdapter(overrides: Partial<DomainNameserverDnsAdapter> = {}): Do
         values: ["ns-1.awsdns.com.", "ns-2.awsdns.net."]
       },
       {
-        name: "mail.delivrix-mail.com.",
+        name: "smtp.delivrix-mail.com.",
         type: "A",
         ttl: 300,
         values: ["192.0.2.44"]
@@ -233,7 +333,7 @@ function mockDnsAdapter(overrides: Partial<DomainNameserverDnsAdapter> = {}): Do
         name: "delivrix-mail.com.",
         type: "MX",
         ttl: 300,
-        values: ["10 mail.delivrix-mail.com."]
+        values: ["10 smtp.delivrix-mail.com."]
       }
     ],
     ...overrides

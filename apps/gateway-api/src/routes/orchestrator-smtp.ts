@@ -14,6 +14,7 @@ import {
   type GatewayRuntimeLogger
 } from "../gateway-runtime-log.ts";
 import { readRequestBody } from "../request-body.ts";
+import { smtpHostForDomain } from "../smtp-naming.ts";
 import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
 import type { PlanApprovalRecord } from "./proposals-sign.ts";
 
@@ -321,6 +322,7 @@ export async function configureCompleteSmtp(
       });
     }
     chosenDomain = chooseDomainForRun(suggestions, planApproval, input, verifiedOwnedDomain);
+    const smtpHost = smtpHostForDomain(chosenDomain);
 
     await runMutatingStep({
       deps,
@@ -368,7 +370,7 @@ export async function configureCompleteSmtp(
         runId,
         profile: "bit",
         locationId: "dk",
-        hostname: chosenDomain,
+        hostname: smtpHost,
         imageSlug: "ubuntu-2404"
       },
       stepResults
@@ -410,8 +412,8 @@ export async function configureCompleteSmtp(
       params: {
         domain: chosenDomain,
         records: [
-          { name: chosenDomain, type: "A", ttl: 300, values: [serverIpv4] },
-          { name: chosenDomain, type: "MX", ttl: 300, values: [`10 ${chosenDomain}.`] }
+          { name: smtpHost, type: "A", ttl: 300, values: [serverIpv4] },
+          { name: chosenDomain, type: "MX", ttl: 300, values: [`10 ${smtpHost}.`] }
         ]
       },
       stepResults
@@ -427,7 +429,7 @@ export async function configureCompleteSmtp(
       approvalTimeoutMs,
       budgetUsdMax: input.budgetUsdMax,
       params: {
-        domain: chosenDomain,
+        domain: smtpHost,
         expectedRecord: { type: "A", value: serverIpv4 },
         maxWaitMs: 600_000,
         pollIntervalMs: 30_000
