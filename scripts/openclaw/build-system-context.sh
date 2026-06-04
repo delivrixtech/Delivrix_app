@@ -83,6 +83,8 @@ permissions = read_doc("OPENCLAW_PERMISSIONS_MATRIX.md")
 skills = read_doc("OPENCLAW_SKILLS_CATALOG.md")
 norte = read_doc("NORTE_OPERATIVO_DELIVRIX.md")
 api = read_doc("OPENCLAW_DELIVRIX_API_CONTRACT.md")
+prompt_version_match = re.search(r"openclaw-prompt-v[0-9.]+", system_prompt)
+prompt_version = prompt_version_match.group(0) if prompt_version_match else "openclaw-prompt-unknown"
 
 system_literal = section(system_prompt, "## 4. System prompt literal")
 permissions_categories = section(permissions, "## 2. Categorías canónicas")
@@ -115,6 +117,7 @@ generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 context = f"""# Delivrix OpenClaw — System Context Bundle
 # Generated: {generated_at}
 # Source commit: {source_commit}
+# Prompt version: {prompt_version}
 # Capa 1: núcleo fijo. Docs completos viven en Capa 2 RAG.
 
 ----- BEGIN OPENCLAW_SYSTEM_PROMPT.md §4 -----
