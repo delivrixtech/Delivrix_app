@@ -139,9 +139,11 @@ export async function handleRoute53DomainRegisterHttp(
   let adminContact: AwsRoute53ContactDetail | null = null;
   let costUsd: number | null = null;
 
-  const alreadyOwned = blockers.length === 0
-    ? await adapterAlreadyOwnsDomain(deps.adapter, domain).catch(() => false)
-    : false;
+  const ownership = blockers.length === 0
+    ? await adapterOwnershipStatus(deps.adapter, domain)
+    : { ok: true as const, owned: false };
+  if (!ownership.ok) blockers.push(ownership.blocker);
+  const alreadyOwned = ownership.ok ? ownership.owned : false;
   if (alreadyOwned) {
     const workspace = await safeWriteExecution(deps.workspace, {
       skill: skillName,
@@ -393,20 +395,33 @@ export async function handleRoute53DomainRegisterHttp(
       workspace
     });
   } catch (error) {
-    await safeMarkDomainPurchaseNeedsReconciliation(deps.workspace, {
-      domain,
-      operationId: reservation.operationId,
-      registeredAt: now.toISOString(),
-      costUsd: costUsd ?? undefined,
-      errorMessage: errorMessage(error)
-    });
+    const normalizedError = route53RegistrationError(error);
+    if (normalizedError.error === "domain_unavailable") {
+      await safeUpdateDomainInventory(deps.workspace, {
+        domain,
+        operationId: reservation.operationId,
+        registeredAt: now.toISOString(),
+        costUsd: costUsd ?? undefined,
+        status: "failed",
+        errorMessage: normalizedError.message
+      });
+    } else {
+      await safeMarkDomainPurchaseNeedsReconciliation(deps.workspace, {
+        domain,
+        operationId: reservation.operationId,
+        registeredAt: now.toISOString(),
+        costUsd: costUsd ?? undefined,
+        errorMessage: normalizedError.message
+      });
+    }
     const workspace = await safeWriteExecution(deps.workspace, {
       skill: skillName,
       params: { domain, years, autoRenew, actorId },
       outcome: "failed",
       durationMs: Date.now() - startedAt,
       evidence: {
-        error: errorMessage(error),
+        error: normalizedError.error,
+        message: normalizedError.message,
         sourceKind: source.kind
       }
     });
@@ -422,7 +437,8 @@ export async function handleRoute53DomainRegisterHttp(
       approverIds: [actorId],
       metadata: {
         registrar: "aws-route53",
-        errorMessage: errorMessage(error),
+        error: normalizedError.error,
+        errorMessage: normalizedError.message,
         costUsd,
         workspacePath: workspace?.path
       }
@@ -431,8 +447,8 @@ export async function handleRoute53DomainRegisterHttp(
       ok: false,
       status: "failed",
       domain,
-      error: "route53_register_failed",
-      message: errorMessage(error),
+      error: normalizedError.error,
+      message: normalizedError.message,
       workspace
     });
   }
@@ -764,13 +780,20 @@ function parseAdminContact(raw: string | undefined):
   }
 }
 
-async function adapterAlreadyOwnsDomain(
+async function adapterOwnershipStatus(
   adapter: Route53DomainPurchaseAdapter,
   domain: string
-): Promise<boolean> {
-  if (!adapter.listOwnedDomains) return false;
-  const owned = await adapter.listOwnedDomains();
-  return owned.some((entry) => normalizeDomainName(entry.domainName) === domain);
+): Promise<{ ok: true; owned: boolean } | { ok: false; blocker: "ownership_inventory_unavailable" }> {
+  if (!adapter.listOwnedDomains) return { ok: true, owned: false };
+  try {
+    const owned = await adapter.listOwnedDomains();
+    return {
+      ok: true,
+      owned: owned.some((entry) => normalizeDomainName(entry.domainName) === domain)
+    };
+  } catch {
+    return { ok: false, blocker: "ownership_inventory_unavailable" };
+  }
 }
 
 function registrationCostForTld(prices: AwsRoute53DomainPrice[], tld: string): number | null {
@@ -828,6 +851,21 @@ async function readJson<T>(request: IncomingMessage): Promise<T> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown Route53 domain registration error";
+}
+
+function route53RegistrationError(error: unknown): { error: "domain_unavailable" | "route53_register_failed"; message: string } {
+  const message = errorMessage(error);
+  const normalized = message.toLowerCase();
+  const isUnavailable =
+    normalized.includes("domainunavailable") ||
+    normalized.includes("domain unavailable") ||
+    normalized.includes("domain is not available") ||
+    normalized.includes("already registered") ||
+    normalized.includes("not available for registration");
+  return {
+    error: isUnavailable ? "domain_unavailable" : "route53_register_failed",
+    message
+  };
 }
 
 function isFileAlreadyExistsError(error: unknown): boolean {

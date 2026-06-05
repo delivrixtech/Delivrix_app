@@ -143,6 +143,7 @@ export interface ConfigureCompleteSmtpParams extends Record<string, unknown> {
   runId?: string;
   domain?: string;
   provider?: string;
+  requireExistingDomain?: boolean;
   brand: string;
   intent?: string;
   budgetUsdMax: number;
@@ -157,6 +158,7 @@ export interface ConfigureCompleteSmtpSkillParams extends Record<string, unknown
   runId?: string;
   domain?: string;
   provider?: string;
+  requireExistingDomain?: boolean;
   brand: string;
   intent?: string;
   budgetUsdMax: number;
@@ -390,6 +392,7 @@ export const configureCompleteSmtpSkillParamSchema = schema<ConfigureCompleteSmt
     ...(input.runId === undefined || input.runId === null || input.runId === "" ? {} : { runId: boundedId(input.runId, "runId", 64) }),
     ...(input.domain === undefined || input.domain === null || input.domain === "" ? {} : { domain: domain(input.domain, "domain") }),
     ...(input.provider === undefined || input.provider === null || input.provider === "" ? {} : { provider: providerId(input.provider, "provider") }),
+    ...(input.requireExistingDomain === undefined || input.requireExistingDomain === null ? {} : { requireExistingDomain: boolean(input.requireExistingDomain, "requireExistingDomain") }),
     brand: string(input.brand, "brand"),
     ...(input.intent === undefined || input.intent === null || input.intent === "" ? {} : { intent: string(input.intent, "intent") }),
     budgetUsdMax: input.budgetUsdMax === undefined || input.budgetUsdMax === null

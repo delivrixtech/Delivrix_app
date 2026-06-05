@@ -49,6 +49,7 @@ export interface PlanApprovalScope {
   runId: string;
   domain: string;
   provider: string;
+  requireExistingDomain?: boolean;
   budgetUsdMax: number;
   recipient: string;
   plannedSkill: "configure_complete_smtp";
@@ -669,6 +670,7 @@ function extractConfigureCompleteSmtpPlanScope(params: unknown): {
   const runId = normalizedScopeString(params.runId);
   const domain = normalizedScopeString(params.domain ?? params.approvedDomain)?.toLowerCase();
   const provider = normalizedScopeString(params.provider)?.toLowerCase();
+  const requireExistingDomain = optionalScopeBoolean(params.requireExistingDomain);
   const budgetUsdMax = Number(params.budgetUsdMax);
   const recipient = normalizedScopeString(params.testEmailRecipient ?? params.recipient)?.toLowerCase();
 
@@ -677,6 +679,7 @@ function extractConfigureCompleteSmtpPlanScope(params: unknown): {
     details.push("params.domain must be a verified domain.");
   }
   if (!provider) details.push("params.provider is required.");
+  if (requireExistingDomain === null) details.push("params.requireExistingDomain must be boolean when present.");
   if (!Number.isInteger(budgetUsdMax) || budgetUsdMax < 1 || budgetUsdMax > 10_000) {
     details.push("params.budgetUsdMax must be an integer between 1 and 10000.");
   }
@@ -694,6 +697,7 @@ function extractConfigureCompleteSmtpPlanScope(params: unknown): {
       runId: runId!,
       domain: domain!,
       provider: provider!,
+      ...(requireExistingDomain === true ? { requireExistingDomain: true } : {}),
       budgetUsdMax,
       recipient: recipient!,
       plannedSkill: "configure_complete_smtp",
@@ -706,6 +710,11 @@ function normalizedScopeString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized ? normalized : null;
+}
+
+function optionalScopeBoolean(value: unknown): boolean | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  return typeof value === "boolean" ? value : null;
 }
 
 function hashPlanApprovalScope(scope: PlanApprovalScope): string {

@@ -760,6 +760,10 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           runId: { type: "string", minLength: 1, maxLength: 64 },
           domain: { type: "string", minLength: 1 },
           provider: { type: "string", minLength: 1, maxLength: 32 },
+          requireExistingDomain: {
+            type: "boolean",
+            description: "true solo para adopción estricta de un dominio Route53 ya owned; false/omitido permite compra fresca si no es owned."
+          },
           brand: { type: "string", minLength: 1 },
           intent: { type: "string", minLength: 1 },
           budgetUsdMax: { type: "integer", minimum: 1, maximum: 10000, default: 25 },

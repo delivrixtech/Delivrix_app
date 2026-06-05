@@ -201,6 +201,50 @@ test("POST /v1/domains/route53/register registers after approval, cap, contact, 
   }]);
 });
 
+test("POST /v1/domains/route53/register reports unavailable domain distinctly", async () => {
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      listPrices: async () => [{
+        tld: "com",
+        registration: { amount: 14, currency: "USD" },
+        renewal: { amount: 14, currency: "USD" }
+      }],
+      registerDomain: async () => {
+        throw new Error("AWS Route 53 Domains API returned 400 Bad Request: DomainUnavailable: domain is not available for registration");
+      }
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact())
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  await appendDomainApproval(route.auditLog);
+
+  const response = await route({
+    domain: "taken-delivrixops.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 502);
+  assert.equal(response.body.error, "domain_unavailable");
+  assert.match(response.body.message, /DomainUnavailable/);
+  assert.equal((await route.auditLog.list()).at(-1)?.metadata.error, "domain_unavailable");
+  const inventory = await route.workspace.readInventoryJson<{ domains: Array<{ domain: string; status: string; costUsd: number; errorMessage?: string }> }>("domains.json");
+  assert.equal(inventory?.domains[0].domain, "taken-delivrixops.com");
+  assert.equal(inventory?.domains[0].status, "failed");
+  assert.equal(inventory?.domains[0].costUsd, 14);
+});
+
 test("POST /v1/domains/route53/register is idempotent when domain is already owned", async () => {
   let registerCalled = false;
   const route = await routeHarness({
@@ -263,6 +307,59 @@ test("POST /v1/domains/route53/register is idempotent when domain is already own
   assert.equal(response.body.costUsd, 0);
   assert.equal(registerCalled, false);
   assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.domain.register_idempotent");
+});
+
+test("POST /v1/domains/route53/register fails closed when ownership inventory cannot be read", async () => {
+  let registerCalled = false;
+  let pricesCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      listOwnedDomains: async () => {
+        throw new Error("route53 inventory unavailable");
+      },
+      listPrices: async () => {
+        pricesCalled = true;
+        return [{
+          tld: "com",
+          registration: { amount: 14, currency: "USD" },
+          renewal: { amount: 14, currency: "USD" }
+        }];
+      },
+      registerDomain: async () => {
+        registerCalled = true;
+        return {
+          operationId: "should-not-run",
+          expectedExpiry: "2027-05-29T11:00:00.000Z"
+        };
+      }
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact())
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  await appendDomainApproval(route.auditLog);
+
+  const response = await route({
+    domain: "delivrixops.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body.blockers, ["ownership_inventory_unavailable"]);
+  assert.equal(pricesCalled, false);
+  assert.equal(registerCalled, false);
+  assert.equal((await route.auditLog.list()).at(-1)?.decision, "reject");
 });
 
 test("POST /v1/domains/route53/register idempotent owned bypasses purchase-only blockers", async () => {
