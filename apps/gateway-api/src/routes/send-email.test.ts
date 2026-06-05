@@ -100,6 +100,44 @@ test("missing DKIM blocks with details before SSH", async () => {
   assert.equal(response.commands.length, 0);
 });
 
+test("non-default DKIM selector is used for prevalidation", async () => {
+  const queried: string[] = [];
+  const route = await routeHarness({
+    resolveTxt: async (domain) => {
+      queried.push(domain);
+      if (domain === "sender.example") return [["v=spf1 ip4:192.0.2.44 -all"]];
+      if (domain === "s2026a._domainkey.sender.example") return [["v=DKIM1; p=abc"]];
+      if (domain === "_dmarc.sender.example") return [["v=DMARC1; p=none"]];
+      return [];
+    }
+  });
+  const response = await route(validBody({ selector: "s2026a" }));
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(queried.includes("s2026a._domainkey.sender.example"), true);
+  assert.equal(queried.includes("default._domainkey.sender.example"), false);
+});
+
+test("idempotency key suppresses duplicate real send before SSH", async () => {
+  const route = await routeHarness();
+  await appendSentEvent(route.auditLog, {
+    occurredAt: "2026-05-31T17:59:30.000Z",
+    idempotencyKey: "run-idem-1",
+    runId: "run-idem-1",
+    messageId: "<delivrix-existing@sender.example>"
+  });
+
+  const response = await route(validBody({
+    idempotencyKey: "run-idem-1",
+    runId: "run-idem-1"
+  }));
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.messageId, "<delivrix-existing@sender.example>");
+  assert.equal(response.body.postfixLogTail, "idempotent_replay_suppressed");
+  assert.equal(response.commands.length, 0);
+});
+
 test("Postfix not running blocks before send command", async () => {
   const route = await routeHarness({
     runnerFactory: (commands) => mockRunner(commands, {
@@ -464,7 +502,7 @@ async function appendSentEvents(auditLog: LocalFileAuditLog, count: number): Pro
 
 async function appendSentEvent(
   auditLog: LocalFileAuditLog,
-  input: { occurredAt: string; reservationEventId?: string }
+  input: { occurredAt: string; reservationEventId?: string; idempotencyKey?: string; runId?: string; messageId?: string }
 ): Promise<void> {
   await auditLog.append({
     occurredAt: input.occurredAt,
@@ -479,6 +517,9 @@ async function appendSentEvent(
     metadata: {
       serverSlug: "mail-sender-example",
       deliveryStatus: "sent",
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+      ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.messageId ? { messageId: input.messageId } : {}),
       ...(input.reservationEventId ? { rateLimitReservationEventId: input.reservationEventId } : {})
     }
   });

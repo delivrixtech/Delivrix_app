@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { join } from "node:path";
 import type {
   AuditEventInput,
   CanvasLiveEvent
@@ -17,6 +19,7 @@ import { readRequestBody } from "../request-body.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
 import type { PlanApprovalRecord } from "./proposals-sign.ts";
+import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
 
 export type ConfigureSmtpStatus =
   | "completed"
@@ -148,6 +151,7 @@ export interface RollbackProposalInput {
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
+  list?(): Promise<Array<Record<string, unknown>>>;
 }
 
 interface CanvasEmitter {
@@ -191,6 +195,14 @@ export interface ConfigureCompleteSmtpDeps {
   readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
   canvasLiveEvents?: CanvasEmitter;
   compactIntent?: CompactIntentSink;
+  workspace?: Pick<OpenClawWorkspace,
+    "ensureBase" |
+    "getRootDir" |
+    "readWorkspaceFile" |
+    "writeWorkspaceFileAtomic" |
+    "readInventoryJson" |
+    "updateInventoryJson"
+  >;
   env?: Record<string, string | undefined>;
   now?: () => Date;
   randomId?: () => string;
@@ -200,6 +212,118 @@ export interface ConfigureCompleteSmtpDeps {
 const defaultApprovalTimeoutMs = 10 * 60 * 1000;
 const longRunningStepTimeoutPaddingMs = 2 * 60 * 1000;
 const minEstimatedCostUsd = 15 + 4.30 / 30;
+const smtpRunStateVersion = "smtp-run-state/v1";
+const smtpRunStateLockLeaseMs = 15 * 60 * 1000;
+const smtpRunStepLeaseMs = 30 * 60 * 1000;
+const smtpRunLocalLocks = new Map<string, Promise<void>>();
+
+type SmtpRunStatus = "running" | "completed" | "failed" | "cancelled_by_operator";
+type SmtpRunStepStatus = "pending" | "in_flight" | "done";
+
+interface SmtpRunStepState {
+  step: number;
+  skill: string;
+  status: SmtpRunStepStatus;
+  inputHash?: string;
+  attemptId?: string;
+  leaseUntil?: string;
+  startedAt?: string;
+  completedAt?: string;
+  estimatedCostUsd?: number;
+  result?: ConfigureCompleteSmtpStepResult;
+  lastError?: string;
+  updatedAt: string;
+}
+
+interface SmtpRunState {
+  schemaVersion: typeof smtpRunStateVersion;
+  runId: string;
+  status: SmtpRunStatus;
+  createdAt: string;
+  updatedAt: string;
+  params: {
+    brand: string;
+    intent?: string;
+    provider?: string;
+    requireExistingDomain: boolean;
+    budgetUsdMax: number;
+    testEmailRecipient: string;
+    testEmailSubject: string;
+    testEmailBody: string;
+    seedInboxes: string[];
+  };
+  plan?: {
+    scopeHash: string;
+    signatureId: string;
+    expiresAt: string;
+  };
+  chosenDomain?: string;
+  smtpHost?: string;
+  serverSlug?: string;
+  serverIpv4?: string;
+  selector: string;
+  verifiedOwnedDomain?: string;
+  budgetSpentUsd: number;
+  lastCompletedStep: number;
+  finalEmailMessageId?: string;
+  finalDeliveryStatus?: "queued" | "delivered" | "deferred" | "bounced";
+  legacyReconstructed?: boolean;
+  steps: Record<string, SmtpRunStepState>;
+}
+
+interface DomainsInventoryForResume {
+  domains?: Array<{
+    domain: string;
+    registrar?: string;
+    status?: string;
+    operationId?: string;
+    registeredAt?: string;
+    costUsd?: number;
+  }>;
+  bindings?: Array<{
+    domain: string;
+    serverSlug: string | null;
+    serverIp: string;
+    status?: string;
+  }>;
+}
+
+interface WebdockInventoryForResume {
+  servers?: Array<{
+    slug: string;
+    hostname?: string;
+    ipv4: string | null;
+    status?: string;
+  }>;
+  runBindings?: Array<{
+    runId: string;
+    serverSlug: string;
+    domain: string;
+    boundAt: string;
+    source: string;
+  }>;
+}
+
+interface SmtpProvisionInventoryForResume {
+  servers?: Array<{
+    serverSlug: string;
+    domain: string;
+    serverIp: string;
+    selector: string;
+    status: string;
+  }>;
+}
+
+interface WarmupInventoryForResume {
+  runs?: Array<{
+    runId: string;
+    domain: string;
+    serverSlug: string | null;
+    serverIp: string;
+    seedCount: number;
+    status: string;
+  }>;
+}
 
 export async function handleConfigureCompleteSmtp(
   deps: ConfigureCompleteSmtpDeps & { request: IncomingMessage; response: ServerResponse }
@@ -235,7 +359,12 @@ export async function handleConfigureCompleteSmtp(
   }
 
   const result = await configureCompleteSmtp(parsed.data, deps);
-  return json(deps.response, result.status === "completed" ? 200 : 424, result);
+  const statusCode = result.status === "completed"
+    ? 200
+    : result.error === "run_already_in_progress" || result.error === "step_in_flight"
+    ? 423
+    : 424;
+  return json(deps.response, statusCode, result);
 }
 
 export async function configureCompleteSmtp(
@@ -255,6 +384,10 @@ export async function configureCompleteSmtp(
   let rollbackProposalId: string | undefined;
   const logger = deps.logger ?? noopGatewayRuntimeLogger;
   let planApproval: PlanApprovalRecord | null = null;
+  let runState: SmtpRunState | null = null;
+  let releaseRunLock: (() => Promise<void>) | null = null;
+  let selector = "s2026a";
+  let effectiveInput = input;
 
   void logger.info("openclaw.orchestrator.run_started", "configure_complete_smtp run started.", {
     runId,
@@ -286,11 +419,30 @@ export async function configureCompleteSmtp(
   });
 
   try {
+    releaseRunLock = await acquireSmtpRunStateLock(deps, runId);
+    runState = await loadOrCreateSmtpRunState({ deps, runId, params: input, startedAt });
+    effectiveInput = inputFromRunState(input, runState);
+    selector = runState.selector;
+    chosenDomain = runState.chosenDomain ?? "";
+    serverSlug = runState.serverSlug ?? "";
+    serverIpv4 = runState.serverIpv4 ?? "";
     await verifyAuditChain(deps);
     planApproval = envFlagEnabled(deps.env?.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)
-      ? await resolveAndValidatePlanApproval({ deps, runId, input })
+      ? await resolveAndValidatePlanApproval({ deps, runId, input: effectiveInput })
       : null;
+    validateResumeScopeAgainstRunState({
+      state: runState,
+      planApproval,
+      request: input,
+      now: deps.now?.() ?? new Date()
+    });
     if (planApproval) {
+      runState.plan = {
+        scopeHash: planApproval.scopeHash,
+        signatureId: planApproval.signatureId,
+        expiresAt: planApproval.expiresAt
+      };
+      await persistSmtpRunState(deps, runState);
       await audit(deps, "oc.plan.run_authorized", "openclaw_orchestrator_run", runId, "critical", {
         runId,
         scopeHash: planApproval.scopeHash,
@@ -300,21 +452,22 @@ export async function configureCompleteSmtp(
       });
     }
 
-    const suggestions = await runReadOnlyStep({
+    const suggestions = await runReadOnlyStepWithState({
       deps,
+      runState,
       runId,
       step: 1,
       skill: "suggest_safe_domain",
       params: {
-        brand: input.brand,
-        intent: input.intent ?? "ops",
+        brand: effectiveInput.brand,
+        intent: effectiveInput.intent ?? "ops",
         count: 5,
-        actorId: input.actorId
+        actorId: effectiveInput.actorId
       },
       stepResults
     });
-    const explicitDomain = explicitDomainForRun(input, planApproval);
-    const requireExistingDomain = requiresExistingDomainForRun(input, planApproval);
+    const explicitDomain = explicitDomainForRun(effectiveInput, planApproval);
+    const requireExistingDomain = requiresExistingDomainForRun(effectiveInput, planApproval);
     if (explicitDomain && (requireExistingDomain || !domainInSuggestions(suggestions, explicitDomain))) {
       const ownership = await resolveExistingDomainOwnership({
         deps,
@@ -324,32 +477,38 @@ export async function configureCompleteSmtp(
       });
       verifiedOwnedDomain = ownership.owned ? explicitDomain : null;
     }
-    chosenDomain = chooseDomainForRun(suggestions, planApproval, input, verifiedOwnedDomain);
+    chosenDomain = runState.chosenDomain ?? chooseDomainForRun(suggestions, planApproval, effectiveInput, verifiedOwnedDomain);
     const smtpHost = smtpHostForDomain(chosenDomain);
+    runState.chosenDomain = chosenDomain;
+    runState.smtpHost = smtpHost;
+    if (verifiedOwnedDomain) runState.verifiedOwnedDomain = verifiedOwnedDomain;
+    await persistSmtpRunState(deps, runState);
 
-    await runMutatingStep({
+    await runMutatingStepWithState({
       deps,
+      runState,
       planApproval,
       runId,
       step: 2,
       skill: "register_domain_route53",
-      actorId: input.actorId,
+      actorId: effectiveInput.actorId,
       approvalTimeoutMs,
       estimatedCostUsd: verifiedOwnedDomain === chosenDomain ? 0 : 15,
-      budgetUsdMax: input.budgetUsdMax,
+      budgetUsdMax: effectiveInput.budgetUsdMax,
       params: { domain: chosenDomain, years: 1, autoRenew: false },
       stepResults
     });
 
-    await runMutatingStep({
+    await runMutatingStepWithState({
       deps,
+      runState,
       planApproval,
       runId,
       step: 3,
       skill: "wait_for_dns_propagation",
-      actorId: input.actorId,
+      actorId: effectiveInput.actorId,
       approvalTimeoutMs,
-      budgetUsdMax: input.budgetUsdMax,
+      budgetUsdMax: effectiveInput.budgetUsdMax,
       params: {
         domain: chosenDomain,
         expectedRecord: { type: "NS", value: "contains:awsdns" },
@@ -359,16 +518,17 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    const vps = await runMutatingStep({
+    const vps = await runMutatingStepWithState({
       deps,
+      runState,
       planApproval,
       runId,
       step: 4,
       skill: "create_webdock_server",
-      actorId: input.actorId,
+      actorId: effectiveInput.actorId,
       approvalTimeoutMs,
       estimatedCostUsd: 4.30 / 30,
-      budgetUsdMax: input.budgetUsdMax,
+      budgetUsdMax: effectiveInput.budgetUsdMax,
       params: {
         runId,
         profile: "bit",
@@ -380,9 +540,13 @@ export async function configureCompleteSmtp(
     });
     serverSlug = stringFromOutcome(vps.outcome, ["slug", "serverSlug"]);
     serverIpv4 = stringFromOutcome(vps.outcome, ["ipv4", "serverIp"]);
+    runState.serverSlug = serverSlug;
+    runState.serverIpv4 = serverIpv4;
+    await persistSmtpRunState(deps, runState);
 
-    await runReadOnlyStep({
+    await runReadOnlyStepWithState({
       deps,
+      runState,
       runId,
       step: 5,
       skill: "wait_server_running",
@@ -390,28 +554,30 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    await runMutatingStep({
+    await runMutatingStepWithState({
       deps,
+      runState,
       planApproval,
       runId,
       step: 6,
       skill: "bind_webdock_main_domain",
-      actorId: input.actorId,
+      actorId: effectiveInput.actorId,
       approvalTimeoutMs,
-      budgetUsdMax: input.budgetUsdMax,
+      budgetUsdMax: effectiveInput.budgetUsdMax,
       params: { serverSlug, domain: chosenDomain },
       stepResults
     });
 
-    await runMutatingStep({
+    await runMutatingStepWithState({
       deps,
+      runState,
       planApproval,
       runId,
       step: 7,
       skill: "upsert_dns_route53",
-      actorId: input.actorId,
+      actorId: effectiveInput.actorId,
       approvalTimeoutMs,
-      budgetUsdMax: input.budgetUsdMax,
+      budgetUsdMax: effectiveInput.budgetUsdMax,
       params: {
         domain: chosenDomain,
         records: [
@@ -422,15 +588,16 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    await runMutatingStep({
+    await runMutatingStepWithState({
       deps,
+      runState,
       planApproval,
       runId,
       step: 8,
       skill: "wait_for_dns_propagation",
-      actorId: input.actorId,
+      actorId: effectiveInput.actorId,
       approvalTimeoutMs,
-      budgetUsdMax: input.budgetUsdMax,
+      budgetUsdMax: effectiveInput.budgetUsdMax,
       params: {
         domain: smtpHost,
         expectedRecord: { type: "A", value: serverIpv4 },
@@ -440,49 +607,52 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    const smtp = await runMutatingStep({
+    const smtp = await runMutatingStepWithState({
       deps,
+      runState,
       planApproval,
       runId,
       step: 9,
       skill: "provision_smtp_postfix",
-      actorId: input.actorId,
+      actorId: effectiveInput.actorId,
       approvalTimeoutMs,
-      budgetUsdMax: input.budgetUsdMax,
-      params: { serverSlug, domain: chosenDomain, serverIp: serverIpv4, selector: "s2026a" },
+      budgetUsdMax: effectiveInput.budgetUsdMax,
+      params: { serverSlug, domain: chosenDomain, serverIp: serverIpv4, selector },
       stepResults
     });
 
-    await runMutatingStep({
+    await runMutatingStepWithState({
       deps,
+      runState,
       planApproval,
       runId,
       step: 10,
       skill: "configure_email_auth",
-      actorId: input.actorId,
+      actorId: effectiveInput.actorId,
       approvalTimeoutMs,
-      budgetUsdMax: input.budgetUsdMax,
+      budgetUsdMax: effectiveInput.budgetUsdMax,
       params: {
         domain: chosenDomain,
         mxServerIp: serverIpv4,
-        selector: "s2026a",
+        selector,
         dmarcPolicy: "quarantine",
         dkimPublicKey: stringFromOutcome(smtp.outcome, ["dkimPublicKey"], "")
       },
       stepResults
     });
 
-    await runMutatingStep({
+    await runMutatingStepWithState({
       deps,
+      runState,
       planApproval,
       runId,
       step: 11,
       skill: "wait_for_dns_propagation",
-      actorId: input.actorId,
+      actorId: effectiveInput.actorId,
       approvalTimeoutMs,
-      budgetUsdMax: input.budgetUsdMax,
+      budgetUsdMax: effectiveInput.budgetUsdMax,
       params: {
-        domain: `s2026a._domainkey.${chosenDomain}`,
+        domain: `${selector}._domainkey.${chosenDomain}`,
         expectedRecord: { type: "TXT", value: "v=DKIM1" },
         maxWaitMs: 600_000,
         pollIntervalMs: 30_000
@@ -490,26 +660,31 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    await runMutatingStep({
+    if (runState.params.seedInboxes.length !== 3) {
+      throw new OrchestratorFailure("failed", 12, "seed_warmup_pool", "seed_inboxes_must_be_exactly_3");
+    }
+    await runMutatingStepWithState({
       deps,
+      runState,
       planApproval,
       runId,
       step: 12,
       skill: "seed_warmup_pool",
-      actorId: input.actorId,
+      actorId: effectiveInput.actorId,
       approvalTimeoutMs,
-      budgetUsdMax: input.budgetUsdMax,
+      budgetUsdMax: effectiveInput.budgetUsdMax,
       params: {
         domain: chosenDomain,
         serverSlug,
         serverIp: serverIpv4,
-        seedInboxes: input.seedInboxes ?? [input.testEmailRecipient]
+        seedInboxes: runState.params.seedInboxes
       },
       stepResults
     });
 
-    await runReadOnlyStep({
+    await runReadOnlyStepWithState({
       deps,
+      runState,
       runId,
       step: 13,
       skill: "wait_warmup_initial",
@@ -517,27 +692,35 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    const realEmail = await runMutatingStep({
+    const realEmail = await runMutatingStepWithState({
       deps,
+      runState,
       planApproval,
       runId,
       step: 14,
       skill: "send_real_email",
-      actorId: input.actorId,
+      actorId: effectiveInput.actorId,
       approvalTimeoutMs,
-      budgetUsdMax: input.budgetUsdMax,
+      budgetUsdMax: effectiveInput.budgetUsdMax,
       params: {
         fromAddress: `hello@${chosenDomain}`,
-        toAddress: input.testEmailRecipient,
-        subject: input.testEmailSubject,
-        body: input.testEmailBody,
-        serverSlug
+        toAddress: runState.params.testEmailRecipient,
+        subject: runState.params.testEmailSubject,
+        body: runState.params.testEmailBody,
+        serverSlug,
+        selector,
+        idempotencyKey: runId,
+        runId
       },
       stepResults
     });
 
     const totalDurationMs = elapsed(deps, startedMs);
     const totalCostUsd = roundUsd(totalEstimatedCost(stepResults));
+    runState.status = "completed";
+    runState.finalEmailMessageId = stringFromOutcome(realEmail.outcome, ["messageId"], undefined);
+    runState.finalDeliveryStatus = normalizeDeliveryStatus(stringFromOutcome(realEmail.outcome, ["deliveryStatus"], undefined));
+    await persistSmtpRunState(deps, runState);
     await audit(deps, "oc.orchestrator.run_completed", "openclaw_orchestrator_run", runId, "high", {
       stepCount: stepResults.length,
       totalCostUsd,
@@ -565,11 +748,15 @@ export async function configureCompleteSmtp(
       stepResults,
       totalDurationMs,
       totalCostUsd,
-      finalEmailMessageId: stringFromOutcome(realEmail.outcome, ["messageId"], undefined),
-      finalDeliveryStatus: normalizeDeliveryStatus(stringFromOutcome(realEmail.outcome, ["deliveryStatus"], undefined))
+      finalEmailMessageId: runState.finalEmailMessageId,
+      finalDeliveryStatus: runState.finalDeliveryStatus
     };
   } catch (error) {
     const failure = normalizeFailure(error);
+    if (runState) {
+      runState.status = failure.status === "cancelled_by_operator" ? "cancelled_by_operator" : "failed";
+      await persistSmtpRunState(deps, runState).catch(() => undefined);
+    }
     await emitStep(deps, "oc.orchestrator.step_failed", runId, failure.step, failure.skill, {
       error: failure.message,
       status: failure.status
@@ -627,11 +814,589 @@ export async function configureCompleteSmtp(
       error: failure.message,
       failedStep: failure.step
     };
+  } finally {
+    if (releaseRunLock) {
+      await releaseRunLock();
+    }
   }
+}
+
+async function acquireSmtpRunStateLock(
+  deps: ConfigureCompleteSmtpDeps,
+  runId: string
+): Promise<() => Promise<void>> {
+  const workspace = requireRunStateWorkspace(deps);
+  await workspace.ensureBase();
+  const key = `${workspace.getRootDir()}:${runId}`;
+  if (smtpRunLocalLocks.has(key)) {
+    throw new OrchestratorFailure("failed", 0, "run_lock", "run_already_in_progress");
+  }
+
+  let releaseLocalLock!: () => void;
+  const localLock = new Promise<void>((resolve) => {
+    releaseLocalLock = resolve;
+  });
+  smtpRunLocalLocks.set(key, localLock);
+
+  let releaseFileLock: (() => Promise<void>) | null = null;
+  try {
+    releaseFileLock = await acquireSmtpRunFileLock(workspace, runId, deps.now?.() ?? new Date());
+    return async () => {
+      try {
+        if (releaseFileLock) {
+          await releaseFileLock();
+        }
+      } finally {
+        releaseLocalLock();
+        if (smtpRunLocalLocks.get(key) === localLock) {
+          smtpRunLocalLocks.delete(key);
+        }
+      }
+    };
+  } catch (error) {
+    releaseLocalLock();
+    if (smtpRunLocalLocks.get(key) === localLock) {
+      smtpRunLocalLocks.delete(key);
+    }
+    throw error;
+  }
+}
+
+async function acquireSmtpRunFileLock(
+  workspace: NonNullable<ConfigureCompleteSmtpDeps["workspace"]>,
+  runId: string,
+  now: Date
+): Promise<() => Promise<void>> {
+  const lockRoot = join(workspace.getRootDir(), "inventory", ".locks");
+  await mkdir(lockRoot, { recursive: true });
+  const lockDir = join(lockRoot, `run-${safeWorkspaceSegment(runId)}.lock`);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await mkdir(lockDir);
+      await writeFile(join(lockDir, "lease.json"), JSON.stringify({
+        runId,
+        acquiredAt: now.toISOString(),
+        leaseUntil: new Date(now.getTime() + smtpRunStateLockLeaseMs).toISOString(),
+        pid: process.pid
+      }, null, 2), "utf8");
+      return async () => {
+        await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+      };
+    } catch (error) {
+      if (!isFileAlreadyExistsError(error)) {
+        throw new OrchestratorFailure("failed", 0, "run_lock", "run_lock_unavailable");
+      }
+      const expired = await smtpRunFileLockExpired(lockDir, now);
+      if (expired) {
+        await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+        continue;
+      }
+      throw new OrchestratorFailure("failed", 0, "run_lock", "run_already_in_progress");
+    }
+  }
+
+  throw new OrchestratorFailure("failed", 0, "run_lock", "run_already_in_progress");
+}
+
+async function smtpRunFileLockExpired(lockDir: string, now: Date): Promise<boolean> {
+  try {
+    const info = await stat(lockDir);
+    return now.getTime() - info.mtimeMs > smtpRunStateLockLeaseMs;
+  } catch {
+    return false;
+  }
+}
+
+function requireRunStateWorkspace(
+  deps: ConfigureCompleteSmtpDeps
+): NonNullable<ConfigureCompleteSmtpDeps["workspace"]> {
+  if (!deps.workspace) {
+    throw new OrchestratorFailure("failed", 0, "run_state", "run_state_workspace_missing");
+  }
+  return deps.workspace;
+}
+
+async function loadOrCreateSmtpRunState(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  params: ConfigureCompleteSmtpParams;
+  startedAt: Date;
+}): Promise<SmtpRunState> {
+  const existing = await readSmtpRunState(input.deps, input.runId);
+  if (existing) {
+    updateRunStateProgress(existing);
+    return existing;
+  }
+
+  const legacy = await reconstructLegacySmtpRunState(input);
+  if (legacy) {
+    await persistSmtpRunState(input.deps, legacy);
+    return legacy;
+  }
+
+  const state: SmtpRunState = {
+    schemaVersion: smtpRunStateVersion,
+    runId: input.runId,
+    status: "running",
+    createdAt: input.startedAt.toISOString(),
+    updatedAt: input.startedAt.toISOString(),
+    params: {
+      brand: input.params.brand,
+      ...(input.params.intent ? { intent: input.params.intent } : {}),
+      ...(input.params.provider ? { provider: input.params.provider.trim().toLowerCase() } : {}),
+      requireExistingDomain: input.params.requireExistingDomain === true,
+      budgetUsdMax: input.params.budgetUsdMax,
+      testEmailRecipient: input.params.testEmailRecipient.trim().toLowerCase(),
+      testEmailSubject: input.params.testEmailSubject,
+      testEmailBody: input.params.testEmailBody,
+      seedInboxes: seedInboxesForRun(input.params, input.deps.env)
+    },
+    ...(input.params.domain ? { chosenDomain: normalizeDomain(input.params.domain), smtpHost: smtpHostForDomain(normalizeDomain(input.params.domain)) } : {}),
+    selector: "s2026a",
+    budgetSpentUsd: 0,
+    lastCompletedStep: 0,
+    steps: {}
+  };
+  await persistSmtpRunState(input.deps, state);
+  return state;
+}
+
+async function readSmtpRunState(
+  deps: ConfigureCompleteSmtpDeps,
+  runId: string
+): Promise<SmtpRunState | null> {
+  const workspace = requireRunStateWorkspace(deps);
+  try {
+    const raw = await workspace.readWorkspaceFile(smtpRunStatePath(runId));
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed) || parsed.schemaVersion !== smtpRunStateVersion || parsed.runId !== runId) {
+      throw new OrchestratorFailure("failed", 0, "run_state", "run_state_corrupt");
+    }
+    return parsed as SmtpRunState;
+  } catch (error) {
+    if (error instanceof OrchestratorFailure) throw error;
+    return null;
+  }
+}
+
+async function persistSmtpRunState(
+  deps: ConfigureCompleteSmtpDeps,
+  state: SmtpRunState
+): Promise<void> {
+  const workspace = requireRunStateWorkspace(deps);
+  state.updatedAt = (deps.now?.() ?? new Date()).toISOString();
+  updateRunStateProgress(state);
+  await workspace.writeWorkspaceFileAtomic(smtpRunStatePath(state.runId), `${JSON.stringify(redactSmtpRunState(state), null, 2)}\n`);
+}
+
+function smtpRunStatePath(runId: string): string {
+  return `inventory/smtp-runs/${safeWorkspaceSegment(runId)}.json`;
+}
+
+function safeWorkspaceSegment(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96) || "unknown";
+}
+
+function seedInboxesForRun(
+  input: ConfigureCompleteSmtpParams,
+  env: Record<string, string | undefined> | undefined
+): string[] {
+  if (Array.isArray(input.seedInboxes) && input.seedInboxes.length > 0) {
+    return input.seedInboxes.map((entry) => entry.trim().toLowerCase());
+  }
+  return (env?.WARMUP_DEFAULT_SEED_INBOXES ?? "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function inputFromRunState(
+  input: ConfigureCompleteSmtpParams,
+  state: SmtpRunState
+): ConfigureCompleteSmtpParams {
+  return {
+    ...input,
+    runId: state.runId,
+    ...(state.chosenDomain ? { domain: state.chosenDomain } : input.domain ? { domain: input.domain } : {}),
+    ...(state.params.provider ? { provider: state.params.provider } : input.provider ? { provider: input.provider } : {}),
+    requireExistingDomain: state.params.requireExistingDomain,
+    budgetUsdMax: state.params.budgetUsdMax,
+    testEmailRecipient: state.params.testEmailRecipient,
+    testEmailSubject: state.params.testEmailSubject,
+    testEmailBody: state.params.testEmailBody,
+    seedInboxes: state.params.seedInboxes
+  };
+}
+
+function validateResumeScopeAgainstRunState(input: {
+  state: SmtpRunState;
+  planApproval: PlanApprovalRecord | null;
+  request: ConfigureCompleteSmtpParams;
+  now: Date;
+}): void {
+  const state = input.state;
+  if (input.planApproval) {
+    const details: string[] = [];
+    if (state.chosenDomain && input.planApproval.scope.domain !== state.chosenDomain) details.push("domain");
+    if (state.params.provider && input.planApproval.scope.provider !== state.params.provider) details.push("provider");
+    if (input.planApproval.scope.recipient !== state.params.testEmailRecipient) details.push("recipient");
+    if ((input.planApproval.scope.requireExistingDomain === true) !== state.params.requireExistingDomain) details.push("requireExistingDomain");
+    if (input.planApproval.scope.budgetUsdMax < state.budgetSpentUsd) details.push("budgetUsdMax");
+    if (Date.parse(input.planApproval.expiresAt) <= input.now.getTime()) details.push("plan_approval_expired");
+    if (details.length > 0) {
+      throw new OrchestratorFailure("failed", 0, "run_state", `resume_scope_drift: ${details.join(",")}`);
+    }
+  }
+
+  const requestDomain = input.request.domain ? normalizeDomain(input.request.domain) : null;
+  if (requestDomain && state.chosenDomain && requestDomain !== state.chosenDomain) {
+    throw new OrchestratorFailure("failed", 0, "run_state", "resume_scope_drift: domain");
+  }
+  const requestRecipient = input.request.testEmailRecipient.trim().toLowerCase();
+  if (requestRecipient !== state.params.testEmailRecipient) {
+    throw new OrchestratorFailure("failed", 0, "run_state", "resume_scope_drift: recipient");
+  }
+  if (input.request.budgetUsdMax < state.budgetSpentUsd) {
+    throw new OrchestratorFailure("failed", 0, "run_state", "resume_scope_drift: budgetUsdMax");
+  }
+  if ((input.request.requireExistingDomain === true) !== state.params.requireExistingDomain) {
+    throw new OrchestratorFailure("failed", 0, "run_state", "resume_scope_drift: requireExistingDomain");
+  }
+}
+
+async function reconstructLegacySmtpRunState(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  params: ConfigureCompleteSmtpParams;
+  startedAt: Date;
+}): Promise<SmtpRunState | null> {
+  const workspace = requireRunStateWorkspace(input.deps);
+  const webdock = await workspace.readInventoryJson<WebdockInventoryForResume>("webdock-servers.json").catch(() => null);
+  const binding = webdock?.runBindings?.find((entry) => entry.runId === input.runId);
+  if (!binding) return null;
+
+  const server = webdock?.servers?.find((entry) => entry.slug === binding.serverSlug);
+  const chosenDomain = input.params.domain ? normalizeDomain(input.params.domain) : domainFromLegacyBinding(binding.domain);
+  if (!chosenDomain || !server?.ipv4) return null;
+
+  const now = input.startedAt.toISOString();
+  const state: SmtpRunState = {
+    schemaVersion: smtpRunStateVersion,
+    runId: input.runId,
+    status: "running",
+    createdAt: now,
+    updatedAt: now,
+    params: {
+      brand: input.params.brand,
+      ...(input.params.intent ? { intent: input.params.intent } : {}),
+      ...(input.params.provider ? { provider: input.params.provider.trim().toLowerCase() } : {}),
+      requireExistingDomain: input.params.requireExistingDomain === true,
+      budgetUsdMax: input.params.budgetUsdMax,
+      testEmailRecipient: input.params.testEmailRecipient.trim().toLowerCase(),
+      testEmailSubject: input.params.testEmailSubject,
+      testEmailBody: input.params.testEmailBody,
+      seedInboxes: seedInboxesForRun(input.params, input.deps.env)
+    },
+    chosenDomain,
+    smtpHost: smtpHostForDomain(chosenDomain),
+    serverSlug: binding.serverSlug,
+    serverIpv4: server.ipv4,
+    selector: "s2026a",
+    budgetSpentUsd: 0,
+    lastCompletedStep: 0,
+    legacyReconstructed: true,
+    steps: {}
+  };
+
+  recordLegacyDoneStep(state, 1, "suggest_safe_domain", {
+    brand: input.params.brand,
+    intent: input.params.intent ?? "ops",
+    count: 5,
+    actorId: input.params.actorId
+  }, { candidates: [{ domain: chosenDomain, available: true, source: "legacy_reconstructed" }] });
+  await reconcileLegacyDomainStep(input.deps, state, chosenDomain);
+  recordLegacyDoneStep(state, 3, "wait_for_dns_propagation", {
+    domain: chosenDomain,
+    expectedRecord: { type: "NS", value: "contains:awsdns" },
+    maxWaitMs: 1_800_000,
+    pollIntervalMs: 60_000
+  }, { ok: true, status: "legacy_reconstructed" });
+  recordLegacyDoneStep(state, 4, "create_webdock_server", {
+    runId: input.runId,
+    profile: "bit",
+    locationId: "dk",
+    hostname: smtpHostForDomain(chosenDomain),
+    imageSlug: "ubuntu-2404"
+  }, { status: binding.source, serverSlug: binding.serverSlug, slug: binding.serverSlug, ipv4: server.ipv4, costUsd: 0 });
+  recordLegacyDoneStep(state, 5, "wait_server_running", {
+    serverSlug: binding.serverSlug,
+    maxWaitMs: 600_000
+  }, { ok: true, status: "legacy_reconstructed" });
+  updateRunStateProgress(state);
+  return state;
+}
+
+async function reconcileLegacyDomainStep(
+  deps: ConfigureCompleteSmtpDeps,
+  state: SmtpRunState,
+  domain: string
+): Promise<void> {
+  const inventory = await requireRunStateWorkspace(deps)
+    .readInventoryJson<DomainsInventoryForResume>("domains.json")
+    .catch(() => null);
+  const entry = inventory?.domains?.find((candidate) => candidate.domain === domain);
+  if (!entry || !["owned", "pending", "purchase_reserved", "needs_reconciliation"].includes(entry.status ?? "")) {
+    return;
+  }
+  recordLegacyDoneStep(state, 2, "register_domain_route53", {
+    domain,
+    years: 1,
+    autoRenew: false
+  }, {
+    ok: true,
+    status: entry.status,
+    operationId: entry.operationId,
+    costUsd: entry.costUsd ?? 0
+  }, entry.costUsd ?? 0);
+}
+
+function domainFromLegacyBinding(value: string): string | null {
+  const normalized = normalizeMaybeDomain(value);
+  if (!normalized) return null;
+  return normalized.startsWith("smtp.") ? normalizeMaybeDomain(normalized.slice("smtp.".length)) : normalized;
+}
+
+function recordLegacyDoneStep(
+  state: SmtpRunState,
+  step: number,
+  skill: string,
+  params: Record<string, unknown>,
+  outcome: unknown,
+  estimatedCostUsd?: number
+): void {
+  const inputHash = hashInput(params);
+  const result: ConfigureCompleteSmtpStepResult = {
+    step,
+    skill,
+    inputHash,
+    outcome,
+    durationMs: 0,
+    ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd })
+  };
+  state.steps[String(step)] = {
+    step,
+    skill,
+    status: "done",
+    inputHash,
+    result,
+    estimatedCostUsd,
+    startedAt: state.createdAt,
+    completedAt: state.createdAt,
+    updatedAt: state.createdAt
+  };
+}
+
+function updateRunStateProgress(state: SmtpRunState): void {
+  const doneResults = Object.values(state.steps)
+    .filter((entry): entry is SmtpRunStepState & { result: ConfigureCompleteSmtpStepResult } =>
+      entry.status === "done" && entry.result !== undefined
+    )
+    .map((entry) => entry.result)
+    .sort((left, right) => left.step - right.step);
+  state.budgetSpentUsd = roundUsd(totalEstimatedCost(doneResults));
+  let cursor = 0;
+  for (let step = 1; step <= 14; step += 1) {
+    const stateStep = state.steps[String(step)];
+    if (stateStep?.status === "done" && stateStep.result) {
+      cursor = step;
+      continue;
+    }
+    break;
+  }
+  state.lastCompletedStep = cursor;
+}
+
+function redactSmtpRunState(state: SmtpRunState): SmtpRunState {
+  return sanitizeJsonValue(JSON.parse(JSON.stringify(state))) as SmtpRunState;
+}
+
+function sanitizeJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeJsonValue);
+  if (!isRecord(value)) return value;
+  const output: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (/private|secret|password|credential|authorization|approvalToken/i.test(key)) {
+      output[`${key}Redacted`] = true;
+      continue;
+    }
+    output[key] = sanitizeJsonValue(item);
+  }
+  return output;
+}
+
+function isFileAlreadyExistsError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: unknown }).code === "EEXIST";
+}
+
+async function runReadOnlyStepWithState(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runState: SmtpRunState;
+  runId: string;
+  step: number;
+  skill: string;
+  params: Record<string, unknown>;
+  stepResults: ConfigureCompleteSmtpStepResult[];
+}): Promise<unknown> {
+  const skipped = await skipDoneStep({
+    deps: input.deps,
+    runState: input.runState,
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    params: input.params,
+    stepResults: input.stepResults
+  });
+  if (skipped) return skipped.outcome;
+  return runReadOnlyStep(input);
+}
+
+async function runMutatingStepWithState(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runState: SmtpRunState;
+  planApproval: PlanApprovalRecord | null;
+  runId: string;
+  step: number;
+  skill: string;
+  params: Record<string, unknown>;
+  actorId: string;
+  approvalTimeoutMs: number;
+  estimatedCostUsd?: number;
+  budgetUsdMax: number;
+  stepResults: ConfigureCompleteSmtpStepResult[];
+}): Promise<ConfigureCompleteSmtpStepResult> {
+  const skipped = await skipDoneStep({
+    deps: input.deps,
+    runState: input.runState,
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    params: input.params,
+    stepResults: input.stepResults
+  });
+  if (skipped) return skipped;
+  return runMutatingStep(input);
+}
+
+async function skipDoneStep(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runState: SmtpRunState;
+  runId: string;
+  step: number;
+  skill: string;
+  params: Record<string, unknown>;
+  stepResults: ConfigureCompleteSmtpStepResult[];
+}): Promise<ConfigureCompleteSmtpStepResult | null> {
+  const inputHash = hashInput(input.params);
+  const existing = input.runState.steps[String(input.step)];
+  if (!existing) return null;
+  if (existing.status === "done") {
+    if (!existing.result) {
+      throw new OrchestratorFailure("failed", input.step, input.skill, "run_state_corrupt");
+    }
+    if (existing.skill !== input.skill || existing.inputHash !== inputHash) {
+      throw new OrchestratorFailure("failed", input.step, input.skill, "resume_scope_drift: step_input_changed", undefined, inputHash);
+    }
+    if (!input.stepResults.some((entry) => entry.step === existing.result?.step)) {
+      input.stepResults.push(existing.result);
+    }
+    await emitStep(input.deps, "oc.orchestrator.step_completed", input.runId, input.step, input.skill, {
+      skipped: true,
+      resume: true,
+      durationMs: existing.result.durationMs
+    });
+    return existing.result;
+  }
+  if (existing.status === "in_flight") {
+    const leaseUntil = Date.parse(existing.leaseUntil ?? "");
+    const nowMs = (input.deps.now?.() ?? new Date()).getTime();
+    if (Number.isFinite(leaseUntil) && leaseUntil > nowMs) {
+      throw new OrchestratorFailure("failed", input.step, input.skill, "step_in_flight", undefined, inputHash);
+    }
+    throw new OrchestratorFailure("failed", input.step, input.skill, "step_reconciliation_required", undefined, inputHash);
+  }
+  return null;
+}
+
+async function markRunStepInFlight(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runState?: SmtpRunState;
+  runId: string;
+  step: number;
+  skill: string;
+  inputHash: string;
+  estimatedCostUsd?: number;
+}): Promise<void> {
+  if (!input.runState) return;
+  const now = input.deps.now?.() ?? new Date();
+  const existing = input.runState.steps[String(input.step)];
+  if (existing?.status === "in_flight") {
+    const leaseUntil = Date.parse(existing.leaseUntil ?? "");
+    if (Number.isFinite(leaseUntil) && leaseUntil > now.getTime()) {
+      throw new OrchestratorFailure("failed", input.step, input.skill, "step_in_flight", undefined, input.inputHash);
+    }
+    throw new OrchestratorFailure("failed", input.step, input.skill, "step_reconciliation_required", undefined, input.inputHash);
+  }
+  if (existing?.status === "done") {
+    throw new OrchestratorFailure("failed", input.step, input.skill, "step_already_done", undefined, input.inputHash);
+  }
+  input.runState.status = "running";
+  input.runState.steps[String(input.step)] = {
+    step: input.step,
+    skill: input.skill,
+    status: "in_flight",
+    inputHash: input.inputHash,
+    attemptId: randomUUID(),
+    leaseUntil: new Date(now.getTime() + smtpRunStepLeaseMs).toISOString(),
+    startedAt: now.toISOString(),
+    estimatedCostUsd: input.estimatedCostUsd,
+    updatedAt: now.toISOString()
+  };
+  await persistSmtpRunState(input.deps, input.runState);
+}
+
+async function markRunStepDone(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runState?: SmtpRunState;
+  result: ConfigureCompleteSmtpStepResult;
+}): Promise<void> {
+  if (!input.runState) return;
+  const now = input.deps.now?.() ?? new Date();
+  input.runState.steps[String(input.result.step)] = {
+    step: input.result.step,
+    skill: input.result.skill,
+    status: "done",
+    inputHash: input.result.inputHash,
+    result: input.result,
+    estimatedCostUsd: input.result.estimatedCostUsd,
+    startedAt: input.runState.steps[String(input.result.step)]?.startedAt ?? now.toISOString(),
+    completedAt: now.toISOString(),
+    updatedAt: now.toISOString()
+  };
+  await persistSmtpRunState(input.deps, input.runState);
 }
 
 async function runReadOnlyStep(input: {
   deps: ConfigureCompleteSmtpDeps;
+  runState?: SmtpRunState;
   runId: string;
   step: number;
   skill: string;
@@ -651,6 +1416,14 @@ async function runReadOnlyStep(input: {
   });
   const startedAt = Date.now();
   const inputHash = hashInput(input.params);
+  await markRunStepInFlight({
+    deps: input.deps,
+    runState: input.runState,
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    inputHash
+  });
   const outcome = await input.deps.invokeSkill({
     runId: input.runId,
     step: input.step,
@@ -665,6 +1438,11 @@ async function runReadOnlyStep(input: {
     durationMs: Date.now() - startedAt
   };
   input.stepResults.push(result);
+  await markRunStepDone({
+    deps: input.deps,
+    runState: input.runState,
+    result
+  });
   await emitStep(input.deps, "oc.orchestrator.step_completed", input.runId, input.step, input.skill, {
     durationMs: result.durationMs
   });
@@ -679,6 +1457,7 @@ async function runReadOnlyStep(input: {
 
 async function runGatedStep(input: {
   deps: ConfigureCompleteSmtpDeps;
+  runState?: SmtpRunState;
   runId: string;
   step: number;
   skill: string;
@@ -692,6 +1471,15 @@ async function runGatedStep(input: {
   await verifyAuditChain(input.deps);
   const inputHash = hashInput(input.params);
   ensureBudgetForStep(input, inputHash);
+  await markRunStepInFlight({
+    deps: input.deps,
+    runState: input.runState,
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    inputHash,
+    estimatedCostUsd: input.estimatedCostUsd
+  });
   void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.step_started", "Gated orchestrator step started; operator approval required.", {
     runId: input.runId,
     step: input.step,
@@ -733,6 +1521,11 @@ async function runGatedStep(input: {
       ...(input.estimatedCostUsd === undefined ? {} : { estimatedCostUsd: input.estimatedCostUsd })
     };
     input.stepResults.push(result);
+    await markRunStepDone({
+      deps: input.deps,
+      runState: input.runState,
+      result
+    });
     await emitStep(input.deps, "oc.orchestrator.step_completed", input.runId, input.step, input.skill, {
       proposalId: decision.proposalId,
       durationMs: decision.durationMs
@@ -795,7 +1588,7 @@ async function runGatedStep(input: {
     outcome: "outcome" in decision ? decision.outcome : undefined
   });
   const failureMessage = "error" in decision ? decision.error ?? "execution_failed" : "execution_failed";
-  input.stepResults.push({
+  const failedResult = {
     step: input.step,
     skill: input.skill,
     inputHash,
@@ -804,7 +1597,8 @@ async function runGatedStep(input: {
     durationMs: "durationMs" in decision ? decision.durationMs : 0,
     ...("signatureId" in decision && decision.signatureId ? { signatureId: decision.signatureId } : {}),
     ...(input.estimatedCostUsd === undefined ? {} : { estimatedCostUsd: input.estimatedCostUsd })
-  });
+  };
+  input.stepResults.push(failedResult);
   throw new OrchestratorFailure(
     "failed",
     input.step,
@@ -817,6 +1611,7 @@ async function runGatedStep(input: {
 
 async function runMutatingStep(input: {
   deps: ConfigureCompleteSmtpDeps;
+  runState?: SmtpRunState;
   planApproval: PlanApprovalRecord | null;
   runId: string;
   step: number;
@@ -831,6 +1626,7 @@ async function runMutatingStep(input: {
   if (input.planApproval) {
     return runPlanApprovedStep({
       deps: input.deps,
+      runState: input.runState,
       planApproval: input.planApproval,
       runId: input.runId,
       step: input.step,
@@ -848,6 +1644,7 @@ async function runMutatingStep(input: {
 
 async function runPlanApprovedStep(input: {
   deps: ConfigureCompleteSmtpDeps;
+  runState?: SmtpRunState;
   planApproval: PlanApprovalRecord;
   runId: string;
   step: number;
@@ -866,6 +1663,15 @@ async function runPlanApprovedStep(input: {
   const inputHash = hashInput(input.params);
   ensureBudgetForStep(input, inputHash);
   validatePlanApprovedStepScope(input, inputHash);
+  await markRunStepInFlight({
+    deps: input.deps,
+    runState: input.runState,
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    inputHash,
+    estimatedCostUsd: input.estimatedCostUsd
+  });
   void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.step_started", "Plan-approved orchestrator step started.", {
     runId: input.runId,
     step: input.step,
@@ -905,6 +1711,11 @@ async function runPlanApprovedStep(input: {
       ...(input.estimatedCostUsd === undefined ? {} : { estimatedCostUsd: input.estimatedCostUsd })
     };
     input.stepResults.push(result);
+    await markRunStepDone({
+      deps: input.deps,
+      runState: input.runState,
+      result
+    });
     await emitStep(input.deps, "oc.orchestrator.step_completed", input.runId, input.step, input.skill, {
       planStepTokenId: decision.planStepTokenId,
       durationMs: decision.durationMs
@@ -1688,6 +2499,7 @@ function totalEstimatedCost(results: ConfigureCompleteSmtpStepResult[]): number 
 function ensureBudgetForStep(
   input: {
     deps: ConfigureCompleteSmtpDeps;
+    runState?: SmtpRunState;
     runId: string;
     step: number;
     skill: string;
@@ -1702,7 +2514,7 @@ function ensureBudgetForStep(
     return;
   }
 
-  const committedCostUsd = totalEstimatedCost(input.stepResults);
+  const committedCostUsd = input.runState?.budgetSpentUsd ?? totalEstimatedCost(input.stepResults);
   const projectedCostUsd = roundUsd(committedCostUsd + estimatedCostUsd);
   if (projectedCostUsd <= input.budgetUsdMax) {
     return;

@@ -221,6 +221,57 @@ test("POST /v1/servers/:slug/provision-smtp runs idempotent SSH plan and records
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "command"));
 });
 
+test("POST /v1/servers/:slug/provision-smtp skips SSH when inventory is already configured", async () => {
+  const commands: SmtpSshCommandInput[] = [];
+  const route = await routeHarness({
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-smtp-plan",
+      executionId: "exec-smtp-idem",
+      approvedAt: "2026-05-27T16:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-smtp-plan", "exec-smtp-idem");
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "mail-delivrix-test",
+      hostname: "mail.delivrix-mail.com",
+      ipv4: "192.0.2.44",
+      status: "running"
+    }]
+  }));
+  await route.workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      serverSlug: "mail-delivrix-test",
+      domain: "delivrix-mail.com",
+      serverIp: "192.0.2.44",
+      selector: "default",
+      status: "configured",
+      tlsStatus: "attempted_or_pending_dns",
+      configuredAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString()
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-smtp-idem",
+    taskId: "task-smtp-idem"
+  }, { SMTP_PROVISIONING_ENABLE_SSH: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "idempotent_already_configured");
+  assert.equal(response.body.commandCount, 0);
+  assert.equal(commands.length, 0);
+  assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.smtp.provision_idempotent");
+});
+
 test("POST /v1/servers/:slug/provision-smtp generates DKIM keypair when missing", async () => {
   const commands: SmtpSshCommandInput[] = [];
   const route = await routeHarness({

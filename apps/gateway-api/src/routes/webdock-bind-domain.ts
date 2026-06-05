@@ -17,6 +17,7 @@ import {
 import { readRequestBody } from "../request-body.ts";
 import type { SkillParamSchema } from "../skill-schemas.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
+import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
 
 export interface BindWebdockMainDomainParams extends Record<string, unknown> {
   serverSlug: string;
@@ -42,7 +43,7 @@ export interface BindWebdockMainDomainResult {
   mainDomain: string;
   previousMainDomain: string | null;
   ptrSet: boolean;
-  ptrSkipReason?: "not_supported_by_api" | "ipv4_missing" | "operator_opt_out";
+  ptrSkipReason?: "not_supported_by_api" | "ipv4_missing" | "operator_opt_out" | "set_failed";
   alreadyBound: boolean;
   eventId: string;
   durationMs: number;
@@ -81,6 +82,7 @@ export interface BindWebdockMainDomainDeps {
   approvalGuard: BindWebdockMainDomainApprovalGuard;
   webdockAdapter: BindWebdockMainDomainAdapter;
   sshRunner?: WebdockSshRunner;
+  workspace?: OpenClawWorkspace;
   now: () => number;
 }
 
@@ -182,6 +184,12 @@ export async function handleBindWebdockMainDomain(input: {
         approvalArtifactId: approval.artifactId ?? null
       }
     });
+    await upsertDomainBinding(input.deps.workspace, {
+      domain: params.domain,
+      serverSlug: params.serverSlug,
+      serverIp: server.ipv4 || "",
+      status: "main_domain_bound"
+    });
     json(input.response, 200, {
       ok: true,
       serverSlug: params.serverSlug,
@@ -245,19 +253,26 @@ export async function handleBindWebdockMainDomain(input: {
         ptrSkipReason = "not_supported_by_api";
       }
     } catch (error) {
-      const rollback = await rollbackMainDomain({
-        deps: input.deps,
-        params,
-        previousMainDomain,
-        serverIp: server.ipv4,
-        reason: "ptr_set_failed",
-        error
+      ptrSkipReason = "set_failed";
+      await input.deps.auditLog.append({
+        actorType: "operator",
+        actorId: params.actorId,
+        action: "oc.webdock.ptr_set_failed_best_effort",
+        targetType: "webdock_server",
+        targetId: params.serverSlug,
+        riskLevel: "high",
+        decision: "allow",
+        humanApproved: true,
+        approverIds: [params.actorId],
+        metadata: {
+          serverSlug: params.serverSlug,
+          domain: params.domain,
+          ipv4: server.ipv4,
+          ptrValue: smtpHostForDomain(params.domain),
+          ptrSkipReason,
+          error: errorMessage(error)
+        }
       });
-      json(input.response, 502, {
-        error: rollback.ok ? "ptr_failed_rolled_back" : "ptr_failed_rollback_failed",
-        details: errorMessage(error)
-      });
-      return;
     }
   }
 
@@ -281,6 +296,12 @@ export async function handleBindWebdockMainDomain(input: {
       approvalEventId: approval.eventId ?? null,
       approvalArtifactId: approval.artifactId ?? null
     }
+  });
+  await upsertDomainBinding(input.deps.workspace, {
+    domain: params.domain,
+    serverSlug: params.serverSlug,
+    serverIp: server.ipv4 || "",
+    status: "main_domain_bound"
   });
 
   json(input.response, 200, {
@@ -450,6 +471,33 @@ function currentDomainFromServer(server: WebdockServer): string | null {
     }
   }
   return null;
+}
+
+async function upsertDomainBinding(
+  workspace: OpenClawWorkspace | undefined,
+  input: {
+    domain: string;
+    serverSlug: string;
+    serverIp: string;
+    status: string;
+  }
+): Promise<void> {
+  if (!workspace) return;
+  await workspace.updateInventoryJson<{
+    bindings?: Array<{
+      domain: string;
+      serverSlug: string | null;
+      serverIp: string;
+      status: string;
+    }>;
+  }>("domains.json", (current) => {
+    const bindings = (current?.bindings ?? []).filter((entry) => entry.domain !== input.domain);
+    bindings.push(input);
+    return {
+      ...(current ?? {}),
+      bindings
+    };
+  }).catch(() => undefined);
 }
 
 function normalizeServerSlug(value: unknown): string {

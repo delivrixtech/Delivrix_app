@@ -400,6 +400,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
           }),
           webdockAdapter: deps.webdockAdapter as BindWebdockMainDomainAdapter,
           sshRunner: deps.smtpSshRunner,
+          workspace: deps.workspace,
           now: () => (deps.now?.() ?? new Date()).getTime()
         }
       })

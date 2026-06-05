@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import type {
@@ -13,6 +16,7 @@ import {
   type BindWebdockMainDomainAdapter,
   type BindWebdockMainDomainApprovalGuard
 } from "./webdock-bind-domain.ts";
+import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 
 const fixedNowMs = Date.parse("2026-05-31T19:30:00.000Z");
 
@@ -40,6 +44,15 @@ test("bind_webdock_main_domain binds hostname and canonical smtp PTR", async () 
   assert.deepEqual(calls.map((call) => call.method), ["main", "ptr"]);
   assert.equal(calls.find((call) => call.method === "ptr")?.ptrValue, "smtp.example.com");
   assert.equal(harness.auditEvents.at(-1)?.action, "oc.webdock.main_domain_bound");
+  const inventory = await harness.workspace.readInventoryJson<{
+    bindings: Array<{ domain: string; serverSlug: string | null; serverIp: string; status: string }>;
+  }>("domains.json");
+  assert.deepEqual(inventory?.bindings[0], {
+    domain: "example.com",
+    serverSlug: "server-abc123",
+    serverIp: "192.0.2.55",
+    status: "main_domain_bound"
+  });
 });
 
 test("bind_webdock_main_domain is idempotent when already bound", async () => {
@@ -89,7 +102,7 @@ test("bind_webdock_main_domain rejects prohibited mail prefix", async () => {
   assert.match(JSON.stringify(response.body.details), /domain_has_prohibited_prefix/);
 });
 
-test("bind_webdock_main_domain rolls back if PTR fails", async () => {
+test("bind_webdock_main_domain treats PTR failure as best-effort after main-domain bind", async () => {
   const domains: string[] = [];
   const harness = routeHarness({
     adapter: adapterMock({
@@ -109,10 +122,13 @@ test("bind_webdock_main_domain rolls back if PTR fails", async () => {
 
   const response = await harness.request(validBody());
 
-  assert.equal(response.statusCode, 502);
-  assert.equal(response.body.error, "ptr_failed_rolled_back");
-  assert.deepEqual(domains, ["example.com", "old.example.com"]);
-  assert.equal(harness.auditEvents.at(-1)?.action, "oc.webdock.main_domain_rollback");
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.ptrSet, false);
+  assert.equal(response.body.ptrSkipReason, "set_failed");
+  assert.deepEqual(domains, ["example.com"]);
+  assert.equal(harness.auditEvents.some((event) => event.action === "oc.webdock.ptr_set_failed_best_effort"), true);
+  assert.equal(harness.auditEvents.at(-1)?.action, "oc.webdock.main_domain_bound");
 });
 
 test("bind_webdock_main_domain reports PTR unsupported by API", async () => {
@@ -175,6 +191,9 @@ function routeHarness(input: {
   approvalGuard?: BindWebdockMainDomainApprovalGuard;
 } = {}) {
   const auditEvents: AuditEventInput[] = [];
+  const workspace = new OpenClawWorkspace({
+    rootDir: mkdtempSync(join(tmpdir(), "webdock-bind-route-"))
+  });
   const route = async (body: unknown): Promise<{ statusCode: number; body: any }> => {
     const response = captureResponse();
     await handleBindWebdockMainDomain({
@@ -189,6 +208,7 @@ function routeHarness(input: {
         },
         approvalGuard: input.approvalGuard ?? { verify: async () => ({ ok: true, eventId: "approval-1" }) },
         webdockAdapter: input.adapter ?? adapterMock(),
+        workspace,
         now: () => fixedNowMs + auditEvents.length
       }
     });
@@ -197,7 +217,7 @@ function routeHarness(input: {
       body: JSON.parse(response.body)
     };
   };
-  return { request: route, auditEvents };
+  return { request: route, auditEvents, workspace };
 }
 
 function adapterMock(overrides: Partial<BindWebdockMainDomainAdapter> & {

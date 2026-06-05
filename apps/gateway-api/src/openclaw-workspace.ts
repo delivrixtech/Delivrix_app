@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import type {
   WarmupRampBatch,
@@ -119,6 +119,15 @@ export class OpenClawWorkspace {
     return this.writeRelative(path, content);
   }
 
+  async writeWorkspaceFileAtomic(path: string, content: string): Promise<OpenClawWorkspaceFileRef> {
+    await this.ensureBase();
+    const topLevel = path.split(/[\\/]/g)[0];
+    if (!managedDirs.includes(topLevel as (typeof managedDirs)[number])) {
+      throw new Error(`OpenClaw workspace file must be inside ${managedDirs.join(", ")}.`);
+    }
+    return this.writeRelativeAtomic(path, content);
+  }
+
   async readWorkspaceFile(path: string): Promise<string> {
     await this.ensureBase();
     const topLevel = path.split(/[\\/]/g)[0];
@@ -135,7 +144,7 @@ export class OpenClawWorkspace {
     await this.ensureBase();
     const path = `inventory/${inventoryBaseName(name)}.json`;
     const current = await this.readInventoryJson<T>(name);
-    return this.writeRelative(path, `${JSON.stringify(updater(current), null, 2)}\n`);
+    return this.writeRelativeAtomic(path, `${JSON.stringify(updater(current), null, 2)}\n`);
   }
 
   async readInventoryJson<T>(name: string): Promise<T | null> {
@@ -164,6 +173,18 @@ export class OpenClawWorkspace {
     const absolutePath = this.resolveRelative(path);
     await mkdir(dirname(absolutePath), { recursive: true });
     await writeFile(absolutePath, content, "utf8");
+    return {
+      path: this.relativePath(absolutePath),
+      absolutePath
+    };
+  }
+
+  private async writeRelativeAtomic(path: string, content: string): Promise<OpenClawWorkspaceFileRef> {
+    const absolutePath = this.resolveRelative(path);
+    await mkdir(dirname(absolutePath), { recursive: true });
+    const tmpPath = `${absolutePath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tmpPath, content, "utf8");
+    await rename(tmpPath, absolutePath);
     return {
       path: this.relativePath(absolutePath),
       absolutePath

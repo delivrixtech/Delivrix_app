@@ -255,6 +255,62 @@ export async function handleSmtpProvisionHttp(
     return;
   }
 
+  const configured = await findConfiguredSmtpInventory(deps.workspace, {
+    serverSlug,
+    domain,
+    selector
+  });
+  if (configured) {
+    const workspace = await safeWriteExecution(deps.workspace, {
+      skill: skillName,
+      params: { domain, serverSlug, serverIp, selector, actorId },
+      outcome: "success",
+      durationMs: Date.now() - startedAt,
+      evidence: {
+        status: "idempotent_already_configured",
+        serverIp: configured.serverIp,
+        selector,
+        commandCount: 0,
+        learningCount: learnings.length
+      }
+    });
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.smtp.provision_idempotent",
+      targetType: "webdock_server",
+      targetId: serverSlug,
+      riskLevel: "critical",
+      decision: "allow",
+      humanApproved: true,
+      approverIds: [actorId],
+      metadata: {
+        domain,
+        serverIp: configured.serverIp,
+        selector,
+        status: "idempotent_already_configured",
+        commandCount: 0,
+        approvalToken,
+        approvalArtifactId: approval?.artifactId,
+        workspacePath: workspace?.path
+      }
+    });
+    await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.smtp.provision_idempotent", "webdock_server", serverSlug, "critical", deps.now?.() ?? new Date());
+    await emitTaskUpdate(deps.canvasLiveEvents, taskId, "completed", deps.now?.() ?? new Date());
+    json(deps.response, 200, {
+      ok: true,
+      status: "idempotent_already_configured",
+      serverSlug,
+      domain,
+      serverIp: configured.serverIp,
+      selector,
+      commandCount: 0,
+      tlsStatus: configured.tlsStatus,
+      workspace
+    });
+    return;
+  }
+
   const dkimPrivateKey = await deps.workspace.readWorkspaceFile(dkimPrivateKeyPath!);
   if (!dkimPublicKey) {
     const keyPair = await ensureDkimKeyPair({
@@ -563,8 +619,8 @@ export function buildSmtpProvisionPlan(input: {
     },
     {
       label: "attempt-certbot",
-      command: `certbot certonly --standalone -d ${shellQuote(mailHost)} --non-interactive --agree-tos -m dmarc-reports@delivrix.com || echo delivrix_certbot_pending_dns`,
-      auditCommand: `certbot certonly --standalone -d ${mailHost} || echo pending_dns`,
+      command: `[ -d ${shellQuote(`/etc/letsencrypt/live/${mailHost}`)} ] && echo delivrix_certbot_existing || certbot certonly --standalone -d ${shellQuote(mailHost)} --non-interactive --agree-tos -m dmarc-reports@delivrix.com || echo delivrix_certbot_pending_dns`,
+      auditCommand: `skip-if-existing certbot certonly --standalone -d ${mailHost} || echo pending_dns`,
       timeoutMs: 180_000
     },
     {
@@ -589,6 +645,19 @@ async function updateSmtpInventory(
     servers.push(input);
     return { servers };
   });
+}
+
+async function findConfiguredSmtpInventory(
+  workspace: OpenClawWorkspace,
+  input: { serverSlug: string; domain: string; selector: string }
+): Promise<NonNullable<SmtpInventory["servers"]>[number] | null> {
+  const inventory = await workspace.readInventoryJson<SmtpInventory>("smtp-provisioning.json").catch(() => null);
+  return inventory?.servers?.find((entry) =>
+    entry.serverSlug === input.serverSlug &&
+    entry.domain === input.domain &&
+    entry.selector === input.selector &&
+    entry.status === "configured"
+  ) ?? null;
 }
 
 async function appendEntityGuardAudits(input: {

@@ -649,8 +649,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           serverIp: { type: "string", pattern: ipv4Pattern },
           seedInboxes: {
             type: "array",
-            minItems: 1,
-            maxItems: 50,
+            minItems: 3,
+            maxItems: 3,
             items: { type: "string", format: "email" }
           },
           ...optionalTaskId,
@@ -683,6 +683,9 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           subject: { type: "string", minLength: 1, maxLength: 160 },
           body: { type: "string", minLength: 1, maxLength: 10000 },
           serverSlug: { type: "string", pattern: slugPattern },
+          selector: { type: "string", pattern: selectorPattern, default: "default" },
+          idempotencyKey: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+          runId: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
           ...optionalRepairScope
         },
         required: ["fromAddress", "toAddress", "subject", "body", "serverSlug"]
