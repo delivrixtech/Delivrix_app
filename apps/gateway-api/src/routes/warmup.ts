@@ -160,6 +160,56 @@ export async function handleWarmupStartHttp(deps: WarmupStartDependencies): Prom
     return;
   }
 
+  const existingWarmup = await findExistingWarmupRun(deps.workspace, domain);
+  if (existingWarmup) {
+    const workspace = await safeWriteExecution(deps.workspace, {
+      skill: skillName,
+      params: { domain, serverSlug, serverIp, actorId, seedCount: seedInboxes.length },
+      outcome: "success",
+      durationMs: Date.now() - startedAt,
+      evidence: {
+        status: "idempotent_already_started",
+        runId: existingWarmup.runId,
+        seedCount: existingWarmup.seedCount,
+        learningCount: learnings.length
+      }
+    });
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.warmup.seed_idempotent",
+      targetType: "domain",
+      targetId: domain,
+      riskLevel: "critical",
+      decision: "allow",
+      humanApproved: true,
+      approverIds: [actorId],
+      metadata: {
+        runId: existingWarmup.runId,
+        serverSlug: existingWarmup.serverSlug,
+        serverIp: existingWarmup.serverIp,
+        seedCount: existingWarmup.seedCount,
+        status: "idempotent_already_started",
+        approvalToken,
+        approvalArtifactId: approval?.artifactId,
+        workspacePath: workspace?.path
+      }
+    });
+    await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.warmup.seed_idempotent", "domain", domain, "critical", deps.now?.() ?? new Date());
+    await emitTaskUpdate(deps.canvasLiveEvents, taskId, "completed", deps.now?.() ?? new Date());
+    json(deps.response, 200, {
+      ok: true,
+      status: "idempotent_already_started",
+      runId: existingWarmup.runId,
+      domain,
+      serverSlug: existingWarmup.serverSlug,
+      serverIp: existingWarmup.serverIp,
+      sent: [],
+      workspace
+    });
+    return;
+  }
+
   const sent: NonNullable<WarmupInventory["runs"]>[number]["sent"] = [];
 
   try {
@@ -370,8 +420,19 @@ async function updateWarmupInventory(
   input: NonNullable<WarmupInventory["runs"]>[number]
 ): Promise<void> {
   await workspace.updateInventoryJson<WarmupInventory>("warmup-progress.json", (current) => ({
-    runs: [...(current?.runs ?? []), input]
+    runs: [
+      ...(current?.runs ?? []).filter((run) => run.domain !== input.domain),
+      input
+    ]
   }));
+}
+
+async function findExistingWarmupRun(
+  workspace: OpenClawWorkspace,
+  domain: string
+): Promise<NonNullable<WarmupInventory["runs"]>[number] | null> {
+  const inventory = await workspace.readInventoryJson<WarmupInventory>("warmup-progress.json").catch(() => null);
+  return inventory?.runs?.find((run) => run.domain === domain && run.status === "started") ?? null;
 }
 
 async function findRecentApproval(input: {

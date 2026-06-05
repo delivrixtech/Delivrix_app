@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { createInternalHttpAdapter } from "../internal-http-adapter.ts";
+import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import {
   configureCompleteSmtp,
   handleConfigureCompleteSmtp,
@@ -271,11 +275,13 @@ test("configureCompleteSmtp does not submit rollback before VPS exists", async (
   assert.equal(ctx.rollbacks.length, 0);
 });
 
-test("seed warmup defaults to the operator recipient when seedInboxes is absent", async () => {
+test("seed warmup blocks when seedInboxes are absent and env has no three defaults", async () => {
   const ctx = createDeps();
-  await configureCompleteSmtp({ ...validInput(), seedInboxes: undefined }, ctx.deps);
-  const step12 = ctx.approvals.find((entry) => entry.step === 12);
-  assert.deepEqual(step12?.params.seedInboxes, [validInput().testEmailRecipient]);
+  const result = await configureCompleteSmtp({ ...validInput(), seedInboxes: undefined }, ctx.deps);
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 12);
+  assert.equal(result.error, "seed_inboxes_must_be_exactly_3");
+  assert.equal(ctx.approvals.some((entry) => entry.step === 12), false);
 });
 
 test("seed warmup honors explicit seed inboxes", async () => {
@@ -671,6 +677,122 @@ test("configureCompleteSmtp compacts execution failure with real outcome data", 
   assert.deepEqual(failed?.outcomeData, { error: "purchase_failed", providerRequestId: "req-2" });
 });
 
+test("configureCompleteSmtp persists write-ahead in_flight before a plan-approved dispatch completes", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    planDecisions: {
+      2: {
+        status: "execution_failed",
+        planStepTokenId: "plan-step-2",
+        outcome: { error: "purchase_failed" },
+        durationMs: 2,
+        error: "purchase_failed"
+      }
+    }
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 2);
+  const state = await readRunState(ctx.workspace, "run-1");
+  assert.equal(state.steps["2"].status, "in_flight");
+  assert.equal(typeof state.steps["2"].attemptId, "string");
+
+  const retry = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  }, ctx.deps);
+  assert.equal(retry.status, "failed");
+  assert.equal(retry.failedStep, 2);
+  assert.equal(retry.error, "step_in_flight");
+  assert.deepEqual(ctx.planExecutions.map((entry) => entry.step), [2]);
+});
+
+test("configureCompleteSmtp skips all done steps on replay of a completed run", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval()
+  });
+  const input = {
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  };
+
+  const first = await configureCompleteSmtp(input, ctx.deps);
+  assert.equal(first.status, "completed");
+  const planExecutionsAfterFirst = ctx.planExecutions.length;
+  const invocationsAfterFirst = ctx.invocations.length;
+
+  const second = await configureCompleteSmtp(input, ctx.deps);
+  assert.equal(second.status, "completed");
+  assert.equal(ctx.planExecutions.length, planExecutionsAfterFirst);
+  assert.equal(ctx.invocations.length, invocationsAfterFirst);
+  assert.equal(second.stepResults.length, 14);
+});
+
+test("configureCompleteSmtp rejects resume scope drift before invoking tools", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval()
+  });
+  const input = {
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  };
+  await configureCompleteSmtp(input, ctx.deps);
+
+  const drift = await configureCompleteSmtp({
+    ...input,
+    testEmailRecipient: "other@example.com"
+  }, ctx.deps);
+  assert.equal(drift.status, "failed");
+  assert.equal(drift.error, "resume_scope_drift: recipient");
+  assert.equal(ctx.planExecutions.length, 11);
+});
+
+test("configureCompleteSmtp blocks concurrent runs for the same runId", async () => {
+  let releaseStep2!: () => void;
+  const step2Gate = new Promise<void>((resolve) => {
+    releaseStep2 = resolve;
+  });
+  const ctx = createDeps();
+  ctx.deps.submitAndAwaitApproval = async (input: ApprovalStepInput): Promise<ApprovalStepDecision> => {
+    ctx.approvals.push(input);
+    if (input.step === 2) {
+      await step2Gate;
+    }
+    return {
+      status: "executed",
+      proposalId: `proposal-${input.step}`,
+      signatureId: `sig-${input.step}`,
+      outcome: defaultOutcome(input.step),
+      durationMs: input.step
+    };
+  };
+  const input = { ...validInput(), runId: "run-concurrent" };
+
+  const first = configureCompleteSmtp(input, ctx.deps);
+  await waitFor(() => ctx.approvals.some((entry) => entry.step === 2));
+  const second = await configureCompleteSmtp(input, ctx.deps);
+  assert.equal(second.status, "failed");
+  assert.equal(second.error, "run_already_in_progress");
+  releaseStep2();
+  const firstResult = await first;
+  assert.equal(firstResult.status, "completed");
+});
+
 function validInput() {
   return {
     brand: "delivrix",
@@ -679,6 +801,7 @@ function validInput() {
     testEmailRecipient: "operator@example.com",
     testEmailSubject: "Operational readiness report",
     testEmailBody: "Authorized operational readiness message for Delivrix infrastructure.",
+    seedInboxes: ["seed-a@example.com", "seed-b@example.com", "seed-c@example.com"],
     actorId: "op-1"
   };
 }
@@ -750,6 +873,7 @@ function createDeps(options: {
   }>;
   logs: Array<{ level: string; event: string; metadata?: Record<string, unknown> }>;
   ownershipChecks: string[];
+  workspace: OpenClawWorkspace;
   verifyCount: number;
 } {
   const approvals: ApprovalStepInput[] = [];
@@ -766,9 +890,14 @@ function createDeps(options: {
     steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string; outcomeData?: Record<string, unknown> }>;
   }> = [];
   let verifyCount = 0;
+  const workspace = new OpenClawWorkspace({
+    rootDir: mkdtempSync(join(tmpdir(), "openclaw-smtp-orchestrator-test-")),
+    now: () => new Date("2026-05-31T12:00:00.000Z")
+  });
 
   const ctx = {
     deps: {
+      workspace,
       auditLog: {
         async append(event: Record<string, unknown> & { action: string; metadata?: unknown }) {
           auditEvents.push(event);
@@ -895,12 +1024,31 @@ function createDeps(options: {
     compactions,
     logs,
     ownershipChecks,
+    workspace,
     get verifyCount() {
       return verifyCount;
     }
   };
 
   return ctx;
+}
+
+async function readRunState(workspace: OpenClawWorkspace, runId: string): Promise<{
+  steps: Record<string, { status: string; attemptId?: string }>;
+}> {
+  return JSON.parse(await workspace.readWorkspaceFile(`inventory/smtp-runs/${runId}.json`)) as {
+    steps: Record<string, { status: string; attemptId?: string }>;
+  };
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("waitFor timeout");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 function defaultOutcome(step: number): unknown {

@@ -389,6 +389,7 @@ const configureSmtpToolProcessor = createHttpToolUseProcessor({
   logger: gatewayRuntimeLog
 });
 const configureSmtpRuntimeDeps = {
+  workspace: openClawWorkspace,
   invokeSkill: async (input: {
     runId: string;
     step: number;

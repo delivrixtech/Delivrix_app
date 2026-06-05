@@ -371,7 +371,7 @@ export const warmupSeedParamSchema = schema<WarmupSeedParams>((value) => {
     domain: domain(input.domain, "domain"),
     ...(input.serverSlug === undefined || input.serverSlug === null || input.serverSlug === "" ? {} : { serverSlug: slug(input.serverSlug, "serverSlug") }),
     ...(input.serverIp === undefined || input.serverIp === null || input.serverIp === "" ? {} : { serverIp: ipv4(input.serverIp, "serverIp") }),
-    seedInboxes: array(seeds, "seedInboxes", 1, 50).map((entry, index) => email(entry, `seedInboxes[${index}]`))
+    seedInboxes: array(seeds, "seedInboxes", 3, 3).map((entry, index) => email(entry, `seedInboxes[${index}]`))
   }, input), input);
 });
 
@@ -403,7 +403,7 @@ export const configureCompleteSmtpSkillParamSchema = schema<ConfigureCompleteSmt
     testEmailBody: string(input.testEmailBody, "testEmailBody"),
     ...(input.seedInboxes === undefined || input.seedInboxes === null
       ? {}
-      : { seedInboxes: array(input.seedInboxes, "seedInboxes", 1, 50).map((entry, index) => email(entry, `seedInboxes[${index}]`)) })
+      : { seedInboxes: array(input.seedInboxes, "seedInboxes", 3, 3).map((entry, index) => email(entry, `seedInboxes[${index}]`)) })
   };
 });
 

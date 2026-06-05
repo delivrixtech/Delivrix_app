@@ -526,6 +526,59 @@ test("POST /v1/domains/route53/register keeps failed provider reservation for re
   assert.equal(registerCalls, 1);
 });
 
+test("POST /v1/domains/route53/register fails closed for existing reserved purchase without re-registering", async () => {
+  let registerCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      listPrices: async () => [{
+        tld: "com",
+        registration: { amount: 14, currency: "USD" },
+        renewal: { amount: 14, currency: "USD" }
+      }],
+      registerDomain: async () => {
+        registerCalled = true;
+        return { operationId: "should-not-run", expectedExpiry: fixedNow.toISOString() };
+      }
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact())
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  await appendDomainApproval(route.auditLog);
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    domains: [{
+      domain: "delivrixops.com",
+      registrar: "aws-route53",
+      status: "purchase_reserved",
+      operationId: "route53-reservation-existing",
+      registeredAt: fixedNow.toISOString(),
+      costUsd: 14
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrixops.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.blockers[0], "domain_purchase_reconciliation_required");
+  assert.equal(response.body.inventoryStatus, "purchase_reserved");
+  assert.equal(response.body.operationId, "route53-reservation-existing");
+  assert.equal(registerCalled, false);
+});
+
 test("POST /v1/domains/route53/register counts legacy monthly spend in domains inventory", async () => {
   let registerCalled = false;
   const route = await routeHarness({

@@ -108,6 +108,61 @@ test("POST /v1/warmup/start sends three seed messages and stores redacted progre
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "command"));
 });
 
+test("POST /v1/warmup/start is idempotent by domain and does not resend seeds", async () => {
+  const commands: SmtpSshCommandInput[] = [];
+  const route = await routeHarness({
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "queued", stderr: "", exitCode: 0 };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-warmup-plan",
+      executionId: "exec-warmup-idem",
+      approvedAt: "2026-05-28T10:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-warmup-plan", "exec-warmup-idem");
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    bindings: [{
+      domain: "delivrix-mail.com",
+      serverSlug: "mail-delivrix-test",
+      serverIp: "192.0.2.44"
+    }]
+  }));
+  await route.workspace.updateInventoryJson("warmup-progress.json", () => ({
+    runs: [{
+      runId: "warmup-existing",
+      domain: "delivrix-mail.com",
+      serverSlug: "mail-delivrix-test",
+      serverIp: "192.0.2.44",
+      seedCount: 3,
+      sent: [],
+      status: "started",
+      startedAt: fixedNow.toISOString()
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    seedInboxes: [
+      "seed.one@gmail.com",
+      "seed.two@outlook.com",
+      "seed.three@delivrix.com"
+    ],
+    actorId: "operator/juanes",
+    approvalToken: "exec-warmup-idem",
+    taskId: "task-warmup-idem"
+  }, { WARMUP_ENABLE_SEND: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "idempotent_already_started");
+  assert.equal(response.body.runId, "warmup-existing");
+  assert.deepEqual(response.body.sent, []);
+  assert.equal(commands.length, 0);
+});
+
 test("POST /v1/warmup/start falls back to three env seed inboxes", async () => {
   const commands: SmtpSshCommandInput[] = [];
   const route = await routeHarness({

@@ -38,6 +38,9 @@ export interface SendRealEmailParams extends Record<string, unknown> {
   subject: string;
   body: string;
   serverSlug: string;
+  selector?: string;
+  idempotencyKey?: string;
+  runId?: string;
   actorId: string;
   approvalToken: string;
   repairReason?: string;
@@ -50,6 +53,9 @@ export interface SendRealEmailSkillParams extends Record<string, unknown> {
   subject: string;
   body: string;
   serverSlug: string;
+  selector?: string;
+  idempotencyKey?: string;
+  runId?: string;
   repairReason?: string;
   explicitRepairScope?: string;
 }
@@ -192,6 +198,25 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
     return;
   }
 
+  const duplicate = await findExistingSendByIdempotency({
+    auditLog: deps.auditLog,
+    serverSlug: params.serverSlug,
+    idempotencyKey: params.idempotencyKey,
+    runId: params.runId
+  });
+  if (duplicate) {
+    json(deps.response, 200, {
+      ok: true,
+      messageId: duplicate.messageId,
+      deliveryStatus: duplicate.deliveryStatus,
+      postfixLogTail: "idempotent_replay_suppressed",
+      preValidations: duplicate.preValidations,
+      eventId: duplicate.eventId,
+      durationMs: currentTimeMs(deps) - startedAt
+    } satisfies SendRealEmailResult);
+    return;
+  }
+
   const burnerCheck = checkRecipientNotBurner(params.toAddress);
   if (!burnerCheck.ok) {
     json(deps.response, 400, { error: "recipient_burner", details: burnerCheck.reason });
@@ -201,6 +226,7 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
   const fromDomain = domainFromEmail(params.fromAddress);
   const auth = await validateEmailAuth({
     domain: fromDomain,
+    selector: params.selector,
     resolveTxt: deps.resolveTxt ?? dns.resolveTxt
   });
   if (!auth.spfPresent || !auth.dkimPresent || !auth.dmarcPresent) {
@@ -269,6 +295,7 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
     to: params.toAddress,
     subject: params.subject,
     body: params.body,
+    idempotencyKey: params.idempotencyKey ?? params.runId,
     now: deps.now?.() ?? new Date()
   });
   const logTail = await tailPostfixLog({
@@ -300,6 +327,9 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
       bodyLength: params.body.length,
       messageId: sendResult.messageId,
       deliveryStatus: sendResult.deliveryStatus,
+      selector: params.selector,
+      idempotencyKey: params.idempotencyKey ?? null,
+      runId: params.runId ?? null,
       preValidations: {
         spfPresent: auth.spfPresent,
         dkimPresent: auth.dkimPresent,
@@ -334,6 +364,7 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
 
 export async function validateEmailAuth(input: {
   domain: string;
+  selector?: string;
   resolveTxt: (domain: string) => Promise<string[][]>;
 }): Promise<{
   spfPresent: boolean;
@@ -360,7 +391,8 @@ export async function validateEmailAuth(input: {
   }
 
   try {
-    const txt = await input.resolveTxt(`default._domainkey.${input.domain}`);
+    const selector = input.selector?.trim().toLowerCase() || "default";
+    const txt = await input.resolveTxt(`${selector}._domainkey.${input.domain}`);
     const dkim = flattenTxt(txt).find((entry) => entry.includes("v=DKIM1"));
     if (dkim) {
       result.dkimPresent = true;
@@ -388,6 +420,64 @@ export function checkRecipientNotBurner(to: string): { ok: true } | { ok: false;
   const domain = domainFromEmail(to);
   const blocked = SEED_POOL_BURNER_DOMAINS.some((burner) => domain === burner || domain.endsWith(`.${burner}`));
   return blocked ? { ok: false, reason: "recipient_is_burner_domain" } : { ok: true };
+}
+
+async function findExistingSendByIdempotency(input: {
+  auditLog: AuditSink;
+  serverSlug: string;
+  idempotencyKey?: string;
+  runId?: string;
+}): Promise<{
+  eventId: string;
+  messageId: string | null;
+  deliveryStatus: SendRealEmailResult["deliveryStatus"];
+  preValidations: SendRealEmailResult["preValidations"];
+} | null> {
+  if (!input.idempotencyKey && !input.runId) return null;
+  const events = await input.auditLog.list?.() ?? [];
+  const match = events.toReversed().find((event) => {
+    if (event.action !== "oc.smtp.real_email_sent") return false;
+    if (metadataString(event.metadata, "serverSlug") !== input.serverSlug) return false;
+    const idempotencyKey = metadataString(event.metadata, "idempotencyKey");
+    const runId = metadataString(event.metadata, "runId");
+    return Boolean(
+      input.idempotencyKey && idempotencyKey === input.idempotencyKey ||
+      input.runId && runId === input.runId
+    );
+  });
+  if (!match) return null;
+  const metadata = match.metadata ?? {};
+  return {
+    eventId: match.id,
+    messageId: metadataString(metadata, "messageId"),
+    deliveryStatus: deliveryStatusFromMetadata(metadata.deliveryStatus),
+    preValidations: preValidationsFromMetadata(metadata.preValidations)
+  };
+}
+
+function deliveryStatusFromMetadata(value: unknown): SendRealEmailResult["deliveryStatus"] {
+  return value === "queued" || value === "sent" || value === "rejected" || value === "deferred" || value === "unknown"
+    ? value
+    : "unknown";
+}
+
+function preValidationsFromMetadata(value: unknown): SendRealEmailResult["preValidations"] {
+  if (!isRecord(value)) {
+    return {
+      spfPresent: true,
+      dkimPresent: true,
+      dmarcPresent: true,
+      postfixRunning: true,
+      rateLimitOk: true
+    };
+  }
+  return {
+    spfPresent: value.spfPresent === true,
+    dkimPresent: value.dkimPresent === true,
+    dmarcPresent: value.dmarcPresent === true,
+    postfixRunning: value.postfixRunning === true,
+    rateLimitOk: value.rateLimitOk === true
+  };
 }
 
 async function checkPostfixRunning(input: {
@@ -550,6 +640,7 @@ async function sendEmailViaSsh(input: {
   to: string;
   subject: string;
   body: string;
+  idempotencyKey?: string;
   now: Date;
 }): Promise<{
   ok: boolean;
@@ -558,7 +649,9 @@ async function sendEmailViaSsh(input: {
   rawOutput: string;
   error?: string;
 }> {
-  const messageId = `<delivrix-${randomUUID()}@${domainFromEmail(input.from)}>`;
+  const messageId = input.idempotencyKey
+    ? `<delivrix-${shortHash(input.idempotencyKey)}@${domainFromEmail(input.from)}>`
+    : `<delivrix-${randomUUID()}@${domainFromEmail(input.from)}>`;
   const message = renderMessage({
     from: input.from,
     to: input.to,
@@ -647,6 +740,9 @@ function parseSendRealEmailSkillParams(value: unknown): SendRealEmailSkillParams
     subject,
     body,
     serverSlug: slug(input.serverSlug, "serverSlug"),
+    selector: optionalSelector(input.selector),
+    ...(input.idempotencyKey === undefined || input.idempotencyKey === null || input.idempotencyKey === "" ? {} : { idempotencyKey: idempotencyKey(input.idempotencyKey, "idempotencyKey") }),
+    ...(input.runId === undefined || input.runId === null || input.runId === "" ? {} : { runId: idempotencyKey(input.runId, "runId") }),
     ...optionalRepairScope(input)
   };
 }
@@ -688,6 +784,10 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function boundedString(value: unknown, field: keyof SendRealEmailParams, min: number, max: number): string {
   if (typeof value !== "string") {
     throw new SendRealEmailSchemaError([{ field, message: `${field}_must_be_string` }]);
@@ -710,6 +810,23 @@ function email(value: unknown, field: keyof SendRealEmailParams): string {
 function slug(value: unknown, field: keyof SendRealEmailParams): string {
   const trimmed = boundedString(value, field, 3, 120);
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$/.test(trimmed)) {
+    throw new SendRealEmailSchemaError([{ field, message: `${field}_invalid` }]);
+  }
+  return trimmed;
+}
+
+function optionalSelector(value: unknown): string {
+  if (value === undefined || value === null || value === "") return "default";
+  const trimmed = boundedString(value, "selector", 1, 63).toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(trimmed)) {
+    throw new SendRealEmailSchemaError([{ field: "selector", message: "selector_invalid" }]);
+  }
+  return trimmed;
+}
+
+function idempotencyKey(value: unknown, field: keyof SendRealEmailParams): string {
+  const trimmed = boundedString(value, field, 1, 128);
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(trimmed)) {
     throw new SendRealEmailSchemaError([{ field, message: `${field}_invalid` }]);
   }
   return trimmed;
