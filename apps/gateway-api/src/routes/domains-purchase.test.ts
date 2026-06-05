@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import type {
+  AwsRoute53DomainOperationDetail,
   AwsRoute53DomainPrice,
   AwsRoute53DomainsInventorySource,
   AwsRoute53RegisterDomainInput,
@@ -579,6 +580,121 @@ test("POST /v1/domains/route53/register fails closed for existing reserved purch
   assert.equal(registerCalled, false);
 });
 
+test("POST /v1/domains/route53/register reconciles successful pending operation without re-registering", async () => {
+  let registerCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      getOperationDetail: async () => ({
+        operationId: "op-existing-success",
+        status: "SUCCESSFUL",
+        type: "REGISTER_DOMAIN",
+        domainName: "delivrixops.com",
+        message: "Operation completed"
+      }),
+      registerDomain: async () => {
+        registerCalled = true;
+        return { operationId: "should-not-run", expectedExpiry: fixedNow.toISOString() };
+      }
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact())
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  await appendDomainApproval(route.auditLog);
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    domains: [{
+      domain: "delivrixops.com",
+      registrar: "aws-route53",
+      status: "pending",
+      operationId: "op-existing-success",
+      registeredAt: fixedNow.toISOString(),
+      expectedExpiry: "2027-05-29T11:00:00.000Z",
+      costUsd: 14
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrixops.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "idempotent_already_owned");
+  assert.equal(response.body.operationStatus, "SUCCESSFUL");
+  assert.equal(registerCalled, false);
+
+  const inventory = await route.workspace.readInventoryJson<{ domains: Array<{ domain: string; status: string; costUsd: number }> }>("domains.json");
+  assert.equal(inventory?.domains[0].status, "owned");
+  assert.equal(inventory?.domains[0].costUsd, 14);
+  const events = await route.auditLog.list();
+  assert.equal(events.at(-1)?.action, "oc.domain.register_reconciled");
+  assert.equal(events.at(-1)?.decision, "allow");
+});
+
+test("POST /v1/domains/route53/register keeps in-progress pending operation blocked without re-registering", async () => {
+  let registerCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      getOperationDetail: async () => ({
+        operationId: "op-existing-progress",
+        status: "IN_PROGRESS",
+        type: "REGISTER_DOMAIN",
+        domainName: "delivrixops.com"
+      }),
+      registerDomain: async () => {
+        registerCalled = true;
+        return { operationId: "should-not-run", expectedExpiry: fixedNow.toISOString() };
+      }
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact())
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  await appendDomainApproval(route.auditLog);
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    domains: [{
+      domain: "delivrixops.com",
+      registrar: "aws-route53",
+      status: "pending",
+      operationId: "op-existing-progress",
+      registeredAt: fixedNow.toISOString(),
+      costUsd: 14
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrixops.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body.blockers, ["domain_purchase_still_pending"]);
+  assert.equal(response.body.operationStatus, "IN_PROGRESS");
+  assert.equal(registerCalled, false);
+});
+
 test("POST /v1/domains/route53/register counts legacy monthly spend in domains inventory", async () => {
   let registerCalled = false;
   const route = await routeHarness({
@@ -723,6 +839,9 @@ function mockAdapter(overrides: Partial<Route53DomainPurchaseAdapter> = {}): Rou
     isLive: () => true,
     isPurchaseEnabled: () => false,
     listPrices: async (): Promise<AwsRoute53DomainPrice[]> => [],
+    getOperationDetail: async (): Promise<AwsRoute53DomainOperationDetail> => {
+      throw new Error("getOperationDetail mock not implemented");
+    },
     registerDomain: async (): Promise<AwsRoute53RegisterDomainResult> => {
       throw new Error("registerDomain mock not implemented");
     },

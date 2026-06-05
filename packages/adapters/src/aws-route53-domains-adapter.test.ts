@@ -289,6 +289,47 @@ test("AwsRoute53DomainsAdapter blocks registerDomain when purchase flag is off",
   assert.equal(fetchCalled, false);
 });
 
+test("AwsRoute53DomainsAdapter reads operation detail with SigV4 JSON request", async () => {
+  const calls: Array<{ target: string; body: Record<string, unknown> }> = [];
+  const adapter = new AwsRoute53DomainsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string>;
+      calls.push({
+        target: headers["x-amz-target"],
+        body: JSON.parse(init?.body?.toString() ?? "{}")
+      });
+      return jsonResponse({
+        OperationId: "op-register-123",
+        Status: "SUCCESSFUL",
+        Type: "REGISTER_DOMAIN",
+        DomainName: "delivrixops.com",
+        Message: "Done",
+        SubmittedDate: 1770000000,
+        LastUpdatedDate: "2026-06-05T03:12:00.000Z"
+      });
+    }) as typeof fetch,
+    now: () => new Date("2026-05-25T18:00:00.000Z")
+  });
+
+  const result = await adapter.getOperationDetail("op-register-123");
+
+  assert.deepEqual(calls, [{
+    target: "Route53Domains_v20140515.GetOperationDetail",
+    body: { OperationId: "op-register-123" }
+  }]);
+  assert.deepEqual(result, {
+    operationId: "op-register-123",
+    status: "SUCCESSFUL",
+    type: "REGISTER_DOMAIN",
+    domainName: "delivrixops.com",
+    message: "Done",
+    submittedAt: "2026-02-02T02:40:00.000Z",
+    lastUpdatedAt: "2026-06-05T03:12:00.000Z"
+  });
+});
+
 test("AwsRoute53DomainsAdapter updates domain nameservers with SigV4 JSON request", async () => {
   const calls: Array<{ target: string; body: Record<string, unknown> }> = [];
   const adapter = new AwsRoute53DomainsAdapter({

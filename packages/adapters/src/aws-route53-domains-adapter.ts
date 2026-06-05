@@ -52,6 +52,16 @@ export interface AwsRoute53RegisterDomainResult {
   expectedExpiry: string;
 }
 
+export interface AwsRoute53DomainOperationDetail {
+  operationId: string;
+  status: string;
+  type?: string;
+  domainName?: string;
+  message?: string;
+  submittedAt?: string;
+  lastUpdatedAt?: string;
+}
+
 export interface AwsRoute53DomainNameserver {
   name: string;
 }
@@ -323,6 +333,20 @@ export class AwsRoute53DomainsAdapter {
     };
   }
 
+  async getOperationDetail(operationId: string): Promise<AwsRoute53DomainOperationDetail> {
+    if (!this.isLive()) {
+      throw new Error("AWS Route53 domain operation detail requires live credentials.");
+    }
+    const normalizedOperationId = operationId.trim();
+    if (!normalizedOperationId) {
+      throw new Error("AWS Route53 domain operation detail requires operationId.");
+    }
+    const response = await this.awsJson("GetOperationDetail", {
+      OperationId: normalizedOperationId
+    });
+    return parseAwsRoute53OperationDetail(response, normalizedOperationId);
+  }
+
   async getDomainNameservers(domain: string): Promise<string[]> {
     if (!this.isLive()) {
       throw new Error("AWS Route53 domain detail requires live credentials.");
@@ -565,6 +589,30 @@ export function parseAwsRoute53Nameservers(raw: unknown): AwsRoute53DomainNamese
   });
 }
 
+export function parseAwsRoute53OperationDetail(
+  raw: unknown,
+  fallbackOperationId = ""
+): AwsRoute53DomainOperationDetail {
+  const record = isRecord(raw) ? raw : {};
+  const operationId = stringValue(record.OperationId) ?? fallbackOperationId.trim();
+  const status = stringValue(record.Status);
+  if (!operationId) {
+    throw new Error("AWS Route53 GetOperationDetail response did not include OperationId.");
+  }
+  if (!status) {
+    throw new Error("AWS Route53 GetOperationDetail response did not include Status.");
+  }
+  return {
+    operationId,
+    status,
+    type: stringValue(record.Type),
+    domainName: stringValue(record.DomainName),
+    message: stringValue(record.Message),
+    submittedAt: dateStringValue(record.SubmittedDate),
+    lastUpdatedAt: dateStringValue(record.LastUpdatedDate)
+  };
+}
+
 function nextPageMarker(raw: unknown): string | undefined {
   return isRecord(raw) ? stringValue(raw.NextPageMarker) : undefined;
 }
@@ -727,6 +775,13 @@ function positiveNumber(value: number): number | undefined {
 function stringValue(value: unknown): string | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function dateStringValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString();
+  if (typeof value === "number" && Number.isFinite(value)) return new Date(value * 1000).toISOString();
+  return undefined;
 }
 
 function numberValue(value: unknown): number | undefined {
