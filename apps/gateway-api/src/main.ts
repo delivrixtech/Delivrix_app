@@ -278,6 +278,7 @@ import { createSkillDispatcher } from "./skill-dispatcher.ts";
 import { createHttpToolUseProcessor } from "./tool-use-processor.ts";
 import { routeGatewayWebSocketUpgrade } from "./gateway-upgrade-router.ts";
 import { handleProposalSign, type PlanApprovalRecord } from "./routes/proposals-sign.ts";
+import { findSignedPlanApprovalInAuditEvents } from "./plan-approval-audit.ts";
 import { handleProposalReject } from "./routes/proposals-reject.ts";
 import { handleLegacyAuthorizationDeprecated } from "./routes/legacy-authorization.ts";
 import {
@@ -495,7 +496,17 @@ const configureSmtpRuntimeDeps = {
         if (typeof input.params.testEmailRecipient === "string" && input.params.testEmailRecipient.trim().toLowerCase() !== plan.scope.recipient) return false;
         return true;
       });
-    return match?.planApproval ?? null;
+    if (match?.planApproval) {
+      return match.planApproval;
+    }
+
+    const events = await auditLog.list().catch(() => []);
+    return findSignedPlanApprovalInAuditEvents({
+      events,
+      runId: input.runId,
+      params: input.params,
+      now: new Date(nowMs)
+    });
   },
   executePlanApprovedStep: async (input: {
     runId: string;
