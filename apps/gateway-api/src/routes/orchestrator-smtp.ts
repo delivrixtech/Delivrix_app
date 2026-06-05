@@ -17,6 +17,7 @@ import {
 } from "../gateway-runtime-log.ts";
 import { readRequestBody } from "../request-body.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
+import { conformOutcomeData } from "../../../../packages/storage/src/episodic-scratch.ts";
 import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
 import type { PlanApprovalRecord } from "./proposals-sign.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
@@ -2411,7 +2412,7 @@ async function compactRunIntent(
       inputHash: input.failure.inputHash ?? hashInput({ failure: input.failure.message, proposalId: input.failure.proposalId }),
       outcome: failureOutcome(input.failure),
       errorClass: input.failure.status,
-      errorMessage: input.failure.message,
+      errorMessage: machineErrorCode(input.failure.message),
       durationMs: 0,
       ...(input.failure.proposalId ? { proposalId: input.failure.proposalId } : {})
     });
@@ -2455,15 +2456,15 @@ function compactStepFromResult(
     tool: step.skill,
     inputHash: step.inputHash,
     outcome: isFailureStep ? failureOutcome(failure) : isAfterFailure ? "partial" : "success",
-    outcomeData: summarizeOutcome(step.outcome),
+    outcomeData: compactOutcomeData(step.outcome),
     durationMs: step.durationMs,
     ...(isFailureStep ? {
       errorClass: failure.status,
-      errorMessage: failure.message
+      errorMessage: machineErrorCode(failure.message)
     } : {}),
     ...(isAfterFailure ? {
       errorClass: "not_executed_after_failure",
-      errorMessage: `Step ${step.step} was recorded after failure at step ${failure.step}.`
+      errorMessage: "skipped_after_prior_failure"
     } : {}),
     ...(step.proposalId ? { proposalId: step.proposalId } : {}),
     ...(step.signatureId && !step.proposalId?.startsWith("plan:") ? { signatureId: step.signatureId } : {})
@@ -2474,6 +2475,22 @@ function failureOutcome(failure: OrchestratorFailure): "failed" | "cancelled_by_
   if (failure.status === "cancelled_by_operator") return "cancelled_by_operator";
   if (failure.message.includes("timeout")) return "timeout";
   return "failed";
+}
+
+function compactOutcomeData(value: unknown): Record<string, unknown> {
+  const conformed = conformOutcomeData(summarizeOutcome(value));
+  return isRecord(conformed) ? conformed : {};
+}
+
+function machineErrorCode(value: string): string {
+  const firstToken = value.trim().split(/\s+/)[0] ?? "";
+  const code = firstToken
+    .toLowerCase()
+    .replace(/[^a-z0-9_.:-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return /^[a-z0-9_.:-]+$/i.test(code) && code.length > 0
+    ? code.slice(0, 200)
+    : "operation_failed";
 }
 
 function summarizeOutcome(value: unknown): Record<string, unknown> {

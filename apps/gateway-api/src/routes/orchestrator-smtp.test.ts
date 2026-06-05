@@ -712,6 +712,50 @@ test("configureCompleteSmtp persists compacted steps through the real episodic w
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.episodic.intent_compacted"), true);
 });
 
+test("configureCompleteSmtp conforms realistic 14-step outcomes before episodic compaction", async () => {
+  const scratchPool = new MemoryScratchPool();
+  const dirtyOutcomes = realisticSmtpOutcomes();
+  const ctx = createDeps({
+    signedAuditEvents: true,
+    suggestions: dirtyOutcomes[1],
+    outcomes: dirtyOutcomes
+  });
+  ctx.deps.compactIntent = async (input) => compactIntent(input, {
+    pool: scratchPool,
+    auditLog: {
+      async append(event) {
+        ctx.auditEvents.push(event as never);
+        return { id: `audit-${ctx.auditEvents.length}`, ...event } as never;
+      },
+      async list() {
+        return ctx.auditEvents as never;
+      }
+    },
+    now: () => new Date("2026-05-31T12:00:00.000Z")
+  });
+
+  const result = await withOperatorSecret("operator-secret", () => configureCompleteSmtp(validInput(), ctx.deps));
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.stepResults.length, 14);
+  assert.equal(scratchPool.rows.length, 14);
+  assert.equal(ctx.logs.some((entry) => entry.event === "openclaw.orchestrator.compact_intent_failed"), false);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.episodic.intent_compacted"), true);
+
+  const rawSuggestion = result.stepResults.find((step) => step.step === 1)?.outcome as Record<string, unknown>;
+  assert.equal(JSON.stringify(rawSuggestion).includes("spamhausDBL"), true);
+  assert.equal(JSON.stringify(rawSuggestion).includes("workspace"), true);
+
+  const compacted = JSON.stringify(scratchPool.rows.map((row) => row.outcome_data));
+  assert.equal(compacted.includes("spamhausDBL"), false);
+  assert.equal(compacted.includes("rationale"), false);
+  assert.equal(compacted.includes("postfixLogTail"), true);
+  assert.equal(compacted.includes("connect from unknown host"), false);
+  assert.equal(compacted.includes("dkimPrivateKeyPath"), false);
+  assert.equal(compacted.includes("operator@example.com"), false);
+  assert.equal(compacted.includes("[redacted]"), false);
+});
+
 test("configureCompleteSmtp compacts plan-approved steps without requiring step signatures", async () => {
   const scratchPool = new MemoryScratchPool();
   const ctx = createDeps({
@@ -857,6 +901,49 @@ test("configureCompleteSmtp compacts execution failure with real outcome data", 
   assert.equal(failed?.outcome, "failed");
   assert.equal(failed?.proposalId, "p-2");
   assert.deepEqual(failed?.outcomeData, { error: "purchase_failed", providerRequestId: "req-2" });
+});
+
+test("configureCompleteSmtp compacts free-text execution failures as machine-code memory", async () => {
+  const scratchPool = new MemoryScratchPool();
+  const ctx = createDeps({
+    signedAuditEvents: true,
+    decisions: {
+      2: {
+        status: "execution_failed",
+        proposalId: "p-2",
+        outcome: {
+          error: "purchase_failed",
+          providerRequestId: "req-2",
+          message: "Route53 purchase failed because the provider is still pending",
+          details: "manual follow-up text must not enter memory"
+        },
+        durationMs: 7,
+        error: "domain registration failed while provider was pending"
+      }
+    }
+  });
+  ctx.deps.compactIntent = async (input) => compactIntent(input, {
+    pool: scratchPool,
+    auditLog: {
+      async append(event) {
+        ctx.auditEvents.push(event as never);
+        return { id: `audit-${ctx.auditEvents.length}`, ...event } as never;
+      },
+      async list() {
+        return ctx.auditEvents as never;
+      }
+    },
+    now: () => new Date("2026-05-31T12:00:00.000Z")
+  });
+
+  const result = await withOperatorSecret("operator-secret", () => configureCompleteSmtp(validInput(), ctx.deps));
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error, "domain registration failed while provider was pending");
+  assert.equal(ctx.logs.some((entry) => entry.event === "openclaw.orchestrator.compact_intent_failed"), false);
+  const failed = scratchPool.rows.find((row) => row.step === 2);
+  assert.equal(failed?.error_message, "domain");
+  assert.deepEqual(failed?.outcome_data, { error: "purchase_failed", providerRequestId: "req-2" });
 });
 
 test("configureCompleteSmtp persists write-ahead in_flight before a plan-approved dispatch completes", async () => {
@@ -1219,7 +1306,7 @@ function createDeps(options: {
             candidates: [{ domain: "delivrixops.com", priceUsd: 15, available: true }]
           };
         }
-        return { ok: true, skill: input.skill };
+        return options.outcomes?.[input.step] ?? { ok: true, skill: input.skill };
       },
       async submitAndAwaitApproval(input: ApprovalStepInput): Promise<ApprovalStepDecision> {
         approvals.push(input);
@@ -1386,6 +1473,113 @@ function defaultOutcome(step: number): unknown {
   if (step === 9) return { dkimPublicKey: "v=DKIM1; k=rsa; p=abc" };
   if (step === 14) return { messageId: "msg-1", deliveryStatus: "sent" };
   return { ok: true };
+}
+
+function realisticSmtpOutcomes(): Record<number, unknown> {
+  return {
+    1: {
+      candidates: [{
+        domain: "delivrixops.com",
+        priceUsd: 15,
+        available: true,
+        spamhausDBL: "clear at check time, prose should be dropped",
+        rationale: "short brand match with low collision risk",
+        registrarOptions: [{ registrar: "route53", priceUsd: 15 }]
+      }],
+      workspace: { path: "/tmp/openclaw/run-1" }
+    },
+    2: {
+      domain: "delivrixops.com",
+      operationId: "op-domain-1",
+      reservationOperationId: "res-domain-1",
+      expectedExpiry: "2027-06-05T00:00:00.000Z",
+      message: "provider returned a friendly sentence"
+    },
+    3: {
+      status: "propagated",
+      nameservers: ["ns-1.awsdns-01.com", "ns-2.awsdns-02.net"],
+      zoneResolution: { source: "route53 lookup", smtpSetup: "ready", cleanupSuggested: "none" }
+    },
+    4: {
+      slug: "srv-delivrix",
+      serverSlug: "srv-delivrix",
+      ipv4: "203.0.113.10",
+      publicKeyId: "ssh-key-ops",
+      workspace: { path: "/tmp/openclaw/webdock" }
+    },
+    5: {
+      status: "running",
+      serverSlug: "srv-delivrix",
+      workspace: { path: "/tmp/openclaw/server-running" }
+    },
+    6: {
+      status: "bound",
+      domain: "delivrixops.com",
+      serverSlug: "srv-delivrix",
+      ptrSkipReason: "Webdock PTR endpoint unavailable",
+      operatorAction: "ptr_manual"
+    },
+    7: {
+      changeId: "/change/C123456789",
+      zoneId: "Z03595092JW2AXJBZGN4E",
+      records: [
+        { name: "mail.delivrixops.com", type: "A", value: "203.0.113.10" },
+        { name: "delivrixops.com", type: "MX", value: "10 mail.delivrixops.com." }
+      ],
+      workspace: { path: "/tmp/openclaw/dns" }
+    },
+    8: {
+      status: "propagated",
+      recordName: "mail.delivrixops.com",
+      recordType: "A",
+      recordValue: "203.0.113.10",
+      preValidations: ["resolver returned expected A record"]
+    },
+    9: {
+      status: "configured",
+      serverSlug: "srv-delivrix",
+      dkimPublicKey: "v=DKIM1; k=rsa; p=abc",
+      dkimPrivateKeyPath: "/inventory/dkim-keys/delivrixops.com/s2026a.private",
+      postfixLogTail: "connect from unknown host then queued successfully ".repeat(8)
+    },
+    10: {
+      status: "configured",
+      selector: "s2026a",
+      dkimPublicKeyHash: "a".repeat(64),
+      records: [
+        { name: "s2026a._domainkey.delivrixops.com", type: "TXT", value: "v=DKIM1; k=rsa; p=abc" },
+        { name: "delivrixops.com", type: "TXT", value: "v=SPF1 ip4:203.0.113.10 ~all" }
+      ],
+      workspace: { path: "/tmp/openclaw/email-auth" }
+    },
+    11: {
+      status: "propagated",
+      recordName: "s2026a._domainkey.delivrixops.com",
+      recordType: "TXT",
+      recordValue: "v=DKIM1; k=rsa; p=abc"
+    },
+    12: {
+      status: "seeded",
+      sent: [
+        { to: "operator@example.com", msgId: "msg-seed-1", deliveryStatus: "sent" },
+        { to: "seed@example.com", msgId: "msg-seed-2", deliveryStatus: "sent" }
+      ],
+      workspace: { path: "/tmp/openclaw/warmup" }
+    },
+    13: {
+      status: "scheduled",
+      nextBatchAt: "2026-06-05T18:00:00.000Z",
+      schedule: "daily",
+      preValidations: ["warmup queue inspected"]
+    },
+    14: {
+      messageId: "msg-final-1",
+      deliveryStatus: "sent",
+      tlsStatus: "valid",
+      postfixLogTail: "250 queued as ABC123 after human-readable SMTP dialogue ".repeat(8),
+      sent: [{ to: "operator@example.com", msgId: "msg-final-1" }]
+    }
+  };
 }
 
 async function withOperatorSecret<T>(secret: string, fn: () => T | Promise<T>): Promise<T> {

@@ -237,6 +237,56 @@ test("processToolUse invokes compact_intent as internal memory write without App
   assert.deepEqual(result.result, { entriesWritten: 1, scratchIds: ["scratch-1"] });
 });
 
+test("processToolUse truncates compact_intent decision before internal memory write", async () => {
+  const calls: Array<{ memory: string; params: Record<string, unknown> }> = [];
+  const logs: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
+  const longDecision = `stored-${"x".repeat(320)}`;
+  const result = await processToolUse({
+    toolUseId: "toolu-compact-long",
+    toolName: "compact_intent",
+    toolInput: {
+      intentId: "intent-1",
+      finalStatus: "completed",
+      decision: longDecision,
+      steps: [{ step: 1, tool: "suggest_safe_domain", inputHash: "a".repeat(64), outcome: "success" }]
+    },
+    chatSession: { id: "agent:main:operator" },
+    env: enabledEnv(),
+    logger: {
+      logPath: "",
+      async info() {},
+      async warn(event, _message, metadata) {
+        logs.push({ event, metadata });
+      },
+      async error() {}
+    },
+    deps: {
+      ...memoryDeps(),
+      async submitProposalFromToolUse() {
+        assert.fail("compact_intent must not submit an ApprovalGate proposal");
+      },
+      async waitForProposalDecision() {
+        assert.fail("compact_intent must not wait for ApprovalGate");
+      },
+      async invokeMemoryTool(input) {
+        calls.push({ memory: input.toolName, params: input.params });
+        return { entriesWritten: 1, scratchIds: ["scratch-1"] };
+      }
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].params.decision, longDecision.trim().slice(0, 280));
+  assert.equal(String(calls[0].params.decision).length, 280);
+  const warning = logs.find((entry) => entry.event === "openclaw.tool_use.compact_intent_decision_truncated");
+  assert.equal(warning?.metadata?.originalLength, longDecision.length);
+  assert.equal(warning?.metadata?.storedLength, 280);
+  assert.equal(typeof warning?.metadata?.originalHash, "string");
+  assert.equal(typeof warning?.metadata?.storedHash, "string");
+  assert.equal(JSON.stringify(warning).includes(longDecision), false);
+});
+
 test("createHttpToolUseProcessor accepts nested gateway kill-switch payload", async () => {
   const urls: string[] = [];
   const processor = createHttpToolUseProcessor({
