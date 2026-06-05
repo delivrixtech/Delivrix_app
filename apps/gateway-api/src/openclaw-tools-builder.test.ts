@@ -157,6 +157,22 @@ test("Bedrock catalog contains Route53 read tools with validated schemas", () =>
   }).success, true);
 });
 
+test("Bedrock wait_for_dns_propagation schema accepts DKIM and DMARC record names", () => {
+  const waitTool = buildToolsForOpenClaw(allEnabledEnv()).find((tool) => tool.name === "wait_for_dns_propagation");
+  assert.ok(waitTool);
+  const domainProperty = waitTool.input_schema.properties.domain as { pattern?: string; description?: string };
+  assert.ok(domainProperty.pattern);
+  assert.match("s2026a._domainkey.delivrix.test", new RegExp(domainProperty.pattern));
+  assert.match("_dmarc.delivrix.test", new RegExp(domainProperty.pattern));
+  assert.match(domainProperty.description ?? "", /underscore/);
+  assert.equal(getOpenClawToolDefinition("wait_for_dns_propagation")?.paramSchema.safeParse({
+    domain: "s2026a._domainkey.delivrix.test",
+    expectedRecord: { type: "TXT", value: "contains:v=DKIM1" },
+    maxWaitMs: 60000,
+    pollIntervalMs: 30000
+  }).success, true);
+});
+
 test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
   const names = buildToolsForOpenClaw(allEnabledEnv()).map((tool) => tool.name);
   for (const name of [
@@ -224,8 +240,8 @@ function validSample(toolName: string): Record<string, unknown> {
   }
   if (toolName === "wait_for_dns_propagation") {
     return {
-      domain: "delivrix.test",
-      expectedRecord: { type: "TXT", value: "v=DKIM1" },
+      domain: "s2026a._domainkey.delivrix.test",
+      expectedRecord: { type: "TXT", value: "contains:v=DKIM1" },
       maxWaitMs: 60000,
       pollIntervalMs: 30000
     };

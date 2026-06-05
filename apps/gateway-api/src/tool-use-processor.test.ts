@@ -877,10 +877,10 @@ test("processToolUse invokes read-only wait_for_dns_propagation without proposal
     toolUseId: "toolu-dns-wait",
     toolName: "wait_for_dns_propagation",
     toolInput: {
-      domain: "delivrix.test",
-      expectedRecord: { type: "NS", value: "contains:awsdns" },
-      maxWaitMs: 1_800_000,
-      pollIntervalMs: 60_000
+      domain: "s2026a._domainkey.delivrix.test",
+      expectedRecord: { type: "TXT", value: "contains:v=DKIM1" },
+      maxWaitMs: 600_000,
+      pollIntervalMs: 30_000
     },
     chatSession: { id: "agent:main:operator" },
     env: enabledEnv(),
@@ -893,7 +893,7 @@ test("processToolUse invokes read-only wait_for_dns_propagation without proposal
       },
       async invokeReadOnlyTool(input) {
         calls.push({ toolName: input.toolName, params: input.params });
-        return { ok: true, attempts: 1, lastSeen: "ns-1.awsdns-01.com", durationMs: 25 };
+        return { ok: true, attempts: 1, lastSeen: "v=dkim1; p=abc", durationMs: 25 };
       },
       async readKillSwitch() {
         return { enabled: false };
@@ -904,14 +904,14 @@ test("processToolUse invokes read-only wait_for_dns_propagation without proposal
   assert.equal(result.ok, true);
   if (!result.ok) assert.fail("expected read-only DNS success");
   assert.equal(result.proposalId, "read_only:toolu-dns-wait");
-  assert.deepEqual(result.result, { ok: true, attempts: 1, lastSeen: "ns-1.awsdns-01.com", durationMs: 25 });
+  assert.deepEqual(result.result, { ok: true, attempts: 1, lastSeen: "v=dkim1; p=abc", durationMs: 25 });
   assert.deepEqual(calls, [{
     toolName: "wait_for_dns_propagation",
     params: {
-      domain: "delivrix.test",
-      expectedRecord: { type: "NS", value: "contains:awsdns" },
-      maxWaitMs: 1_800_000,
-      pollIntervalMs: 60_000
+      domain: "s2026a._domainkey.delivrix.test",
+      expectedRecord: { type: "TXT", value: "contains:v=DKIM1" },
+      maxWaitMs: 600_000,
+      pollIntervalMs: 30_000
     }
   }]);
 });

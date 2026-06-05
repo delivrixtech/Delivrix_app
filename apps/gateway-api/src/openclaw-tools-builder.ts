@@ -64,6 +64,7 @@ interface OpenClawToolDefinition {
 }
 
 const domainPattern = "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$";
+const dnsRecordNamePattern = "^[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?(?:\\.[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?)*$";
 const ipv4Pattern = "^(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(?:\\.(?:25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})){3}$";
 const taskIdPattern = "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$";
 const slugPattern = "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$";
@@ -238,7 +239,11 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       input_schema: {
         type: "object",
         properties: {
-          domain: { type: "string", pattern: domainPattern },
+          domain: {
+            type: "string",
+            pattern: dnsRecordNamePattern,
+            description: "Nombre DNS objetivo del record a esperar. Acepta labels con underscore para DKIM/DMARC, por ejemplo s2026a._domainkey.example.com o _dmarc.example.com."
+          },
           expectedRecord: {
             type: "object",
             properties: {
