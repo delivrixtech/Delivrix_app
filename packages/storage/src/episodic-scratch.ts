@@ -1221,6 +1221,56 @@ function isStructuredOutcomeString(value: string, normalizedKey: string): boolea
   return true;
 }
 
+const conformOutcomeDataDrop = Symbol("conformOutcomeData.drop");
+
+export function conformOutcomeData(value: unknown): unknown {
+  const conformed = conformOutcomeDataValue(value, undefined);
+  return conformed === conformOutcomeDataDrop ? undefined : conformed;
+}
+
+function conformOutcomeDataValue(value: unknown, parentKey: string | undefined): unknown | typeof conformOutcomeDataDrop {
+  if (typeof value === "string") {
+    return isConformableOutcomeString(value, parentKey) ? value : conformOutcomeDataDrop;
+  }
+  if (Array.isArray(value)) {
+    const output: unknown[] = [];
+    for (const item of value) {
+      const conformed = conformOutcomeDataValue(item, parentKey);
+      if (conformed !== conformOutcomeDataDrop) output.push(conformed);
+    }
+    return output;
+  }
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (!isRecord(value)) {
+    return conformOutcomeDataDrop;
+  }
+
+  const entries: Array<[string, unknown]> = [];
+  for (const [key, item] of Object.entries(value)) {
+    const normalizedKey = normalizeMemoryKey(key);
+    if (forbiddenOutcomeKeyFragments.some((fragment) => normalizedKey.includes(fragment))) {
+      continue;
+    }
+    const conformed = conformOutcomeDataValue(item, key);
+    if (conformed !== conformOutcomeDataDrop) entries.push([key, conformed]);
+  }
+  return Object.fromEntries(entries);
+}
+
+function isConformableOutcomeString(value: string, parentKey: string | undefined): boolean {
+  const normalizedKey = normalizeMemoryKey(parentKey ?? "");
+  const allowed =
+    outcomeStringAllowedKeys.has(normalizedKey) ||
+    outcomeStringArrayAllowedKeys.has(normalizedKey) ||
+    isHashOutcomeString(normalizedKey, value);
+  return allowed &&
+    !zeroWidthPresencePattern.test(value) &&
+    !injectionPattern.test(normalizeGuardText(value)) &&
+    isStructuredOutcomeString(value, normalizedKey);
+}
+
 export function redactUnsafeOutcomeData(value: unknown): unknown {
   return redactOutcomeDataValue(value, undefined);
 }

@@ -365,7 +365,7 @@ function parseCompactIntentInput(value: unknown): CompactIntentInput {
   return {
     intentId: string(input.intentId, "intentId", 1, 64),
     finalStatus: oneOf(input.finalStatus, "finalStatus", ["completed", "failed", "cancelled", "rolled_back"] as const),
-    decision: string(input.decision, "decision", 1, 280),
+    decision: compactIntentDecision(input.decision, "decision", "http_parser"),
     steps,
     ...(input.ttlDays === undefined || input.ttlDays === null ? {} : { ttlDays: integer(input.ttlDays, "ttlDays", 1, 365) }),
     ...(input.actorId === undefined || input.actorId === null ? {} : { actorId: string(input.actorId, "actorId", 1, 128) })
@@ -545,6 +545,33 @@ function compactProvenanceForStep(
 
 function hashJson(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function compactIntentDecision(value: unknown, field: string, channel: "http_parser"): string {
+  if (typeof value !== "string") {
+    throw new CompactIntentValidationError(`invalid_${field}`, `${field} must be a string.`);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length < 1) {
+    throw new CompactIntentValidationError(`invalid_${field}`, `${field} length is invalid.`);
+  }
+  if (trimmed.length <= 280) {
+    return trimmed;
+  }
+  const truncated = trimmed.slice(0, 280);
+  console.warn("[compact-intent] decision truncated", {
+    channel,
+    field,
+    originalLength: trimmed.length,
+    storedLength: truncated.length,
+    originalHash: hashText(trimmed),
+    storedHash: hashText(truncated)
+  });
+  return truncated;
 }
 
 async function safeEmit(deps: CompactIntentDeps, event: CanvasLiveEvent): Promise<void> {

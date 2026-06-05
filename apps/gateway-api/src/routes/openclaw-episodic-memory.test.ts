@@ -275,6 +275,51 @@ test("handleCompactIntentHttp accepts unsigned local mode for internal smoke tes
   assert.equal((captured.body as { entriesWritten: number }).entriesWritten, 1);
 });
 
+test("handleCompactIntentHttp truncates long decision text in the parser path", async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "test";
+  const pool = new MemoryScratchPool();
+  const auditEvents: Array<{ action: string; targetId: string; metadata?: Record<string, unknown> }> = [
+    { action: "oc.skill.invoked", targetId: "intent-1", metadata: { intentId: "intent-1" } }
+  ];
+  const { request, response, getResponse } = createInternalHttpAdapter({
+    method: "POST",
+    url: "/v1/openclaw/compact-intent",
+    body: {
+      intentId: "intent-1",
+      finalStatus: "completed",
+      decision: `stored-${"x".repeat(320)}`,
+      steps: [{ step: 1, tool: "read_episodic_scratch", inputHash: "a".repeat(64), outcome: "success" }]
+    }
+  });
+
+  try {
+    await handleCompactIntentHttp({
+      request,
+      response,
+      pool,
+      allowUnsignedLocal: true,
+      auditLog: {
+        async append(event) {
+          auditEvents.push(event as { action: string; targetId: string; metadata?: Record<string, unknown> });
+          return { id: `audit-${auditEvents.length}`, ...event };
+        },
+        async list() {
+          return auditEvents as never;
+        }
+      }
+    });
+  } finally {
+    process.env.NODE_ENV = previousNodeEnv;
+  }
+
+  const captured = getResponse();
+  assert.equal(captured.statusCode, 200);
+  assert.equal((captured.body as { entriesWritten: number }).entriesWritten, 1);
+  assert.equal(pool.rows.length, 1);
+  assert.equal(typeof pool.rows[0].metadata.decisionHash, "string");
+});
+
 test("handleCompactIntentHttp rejects poisoned outcomeData before writing scratch rows", async () => {
   const previousNodeEnv = process.env.NODE_ENV;
   process.env.NODE_ENV = "test";

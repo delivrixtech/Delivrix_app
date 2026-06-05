@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { signOpenClawPayload } from "./security/hmac.ts";
 import { canonicalSkillSlug } from "./skill-contracts.ts";
 import {
@@ -175,6 +175,7 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
       details: validation.error.format()
     };
   }
+  logCompactIntentDecisionTruncation(canonicalToolName, input.toolInput, validation.data, logger, input.toolUseId);
 
   if (shouldRouteThroughConfigureCompleteSmtp(canonicalToolName, input.toolInput, env)) {
     void logger.warn("openclaw.tool_use.use_configure_complete_smtp", "Blocked direct SMTP subtool; configure_complete_smtp is required for end-to-end SMTP autonomy.", {
@@ -932,6 +933,33 @@ function toolTarget(toolName: string, params: Record<string, unknown>, fallbackT
     return { id: params.serverIp, type: fallbackType };
   }
   return { id: `${toolName}-${randomUUID()}`, type: fallbackType };
+}
+
+function logCompactIntentDecisionTruncation(
+  toolName: string,
+  rawInput: unknown,
+  parsedInput: Record<string, unknown>,
+  logger: GatewayRuntimeLogger,
+  toolUseId: string
+): void {
+  if (toolName !== "compact_intent" || !isRecord(rawInput)) return;
+  const rawDecision = rawInput.decision;
+  const storedDecision = parsedInput.decision;
+  if (typeof rawDecision !== "string" || typeof storedDecision !== "string") return;
+  const original = rawDecision.trim();
+  if (original.length <= storedDecision.length) return;
+  void logger.warn("openclaw.tool_use.compact_intent_decision_truncated", "compact_intent decision was truncated before memory write.", {
+    toolUseId,
+    toolName,
+    originalLength: original.length,
+    storedLength: storedDecision.length,
+    originalHash: hashText(original),
+    storedHash: hashText(storedDecision)
+  });
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function truncateToolResult(value: unknown): unknown {

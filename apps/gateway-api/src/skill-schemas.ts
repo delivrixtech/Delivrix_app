@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   tryNormalizeServerSlug,
   tryNormalizeStrictDomainName
@@ -478,7 +479,7 @@ export const compactIntentParamSchema = schema<CompactIntentParams>((value) => {
   return {
     intentId: boundedId(input.intentId, "intentId", 64),
     finalStatus: oneOf(input.finalStatus, "finalStatus", ["completed", "failed", "cancelled", "rolled_back"] as const),
-    decision: boundedText(input.decision, "decision", 1, 280),
+    decision: compactIntentDecisionText(input.decision, "decision"),
     ...(input.ttlDays === undefined || input.ttlDays === null ? {} : { ttlDays: integer(input.ttlDays, "ttlDays", 1, 365) }),
     steps: array(input.steps, "steps", 1, 50).map((step, index) => {
       const item = object(step, `steps[${index}]`);
@@ -683,6 +684,27 @@ function boundedText(value: unknown, field: string, min: number, max: number): s
     throw new SkillSchemaError(`${field} length is invalid`);
   }
   return normalized;
+}
+
+function compactIntentDecisionText(value: unknown, field: string): string {
+  const normalized = string(value, field);
+  if (normalized.length <= 280) {
+    return normalized;
+  }
+  const truncated = normalized.slice(0, 280);
+  console.warn("[compact-intent] decision truncated", {
+    channel: "tool_schema",
+    field,
+    originalLength: normalized.length,
+    storedLength: truncated.length,
+    originalHash: hashText(normalized),
+    storedHash: hashText(truncated)
+  });
+  return truncated;
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function inputHash(value: unknown, field: string): string {
