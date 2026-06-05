@@ -80,6 +80,40 @@ export interface OwnedDomainVerification {
   responseOk?: boolean;
 }
 
+export type Route53DomainRegistrationWaitResult =
+  | {
+      status: "owned";
+      operationId: string;
+      operationStatus: string;
+      attempts: number;
+      durationMs: number;
+    }
+  | {
+      status: "skipped";
+      reason: string;
+      operationId?: string;
+      attempts: number;
+      durationMs: number;
+    }
+  | {
+      status: "blocked";
+      blockers: string[];
+      operationId?: string;
+      operationStatus?: string;
+      message?: string;
+      attempts: number;
+      durationMs: number;
+    };
+
+export interface Route53DomainRegistrationWaitInput {
+  domain: string;
+  operationId: string;
+  expectedExpiry?: string;
+  costUsd?: number;
+  maxWaitMs: number;
+  pollIntervalMs: number;
+}
+
 export interface PlanApprovedStepInput extends SkillInvocationInput {
   actorId: string;
   inputHash: string;
@@ -190,6 +224,9 @@ export interface ConfigureCompleteSmtpDeps {
   resolvePlanApproval?: (input: PlanApprovalLookupInput) => Promise<PlanApprovalRecord | null> | PlanApprovalRecord | null;
   executePlanApprovedStep?: (input: PlanApprovedStepInput) => Promise<PlanApprovedStepDecision>;
   verifyOwnedDomain?: (domain: string) => Promise<OwnedDomainVerification> | OwnedDomainVerification;
+  waitForRoute53DomainRegistration?: (
+    input: Route53DomainRegistrationWaitInput
+  ) => Promise<Route53DomainRegistrationWaitResult> | Route53DomainRegistrationWaitResult;
   submitRollbackProposal?: (input: RollbackProposalInput) => Promise<{ proposalId: string }>;
   verifyAuditChain?: () => Promise<{ ok: boolean; details?: unknown }> | { ok: boolean; details?: unknown };
   readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
@@ -213,8 +250,10 @@ const defaultApprovalTimeoutMs = 10 * 60 * 1000;
 const longRunningStepTimeoutPaddingMs = 2 * 60 * 1000;
 const minEstimatedCostUsd = 15 + 4.30 / 30;
 const smtpRunStateVersion = "smtp-run-state/v1";
-const smtpRunStateLockLeaseMs = 15 * 60 * 1000;
-const smtpRunStepLeaseMs = 30 * 60 * 1000;
+const smtpRunStateLockLeaseMs = 40 * 60 * 1000;
+const smtpRunStepLeaseMs = 45 * 60 * 1000;
+const route53DomainRegistrationWaitMaxMs = 1_800_000;
+const route53DomainRegistrationWaitPollMs = 30_000;
 const smtpRunLocalLocks = new Map<string, Promise<void>>();
 
 type SmtpRunStatus = "running" | "completed" | "failed" | "cancelled_by_operator";
@@ -484,7 +523,7 @@ export async function configureCompleteSmtp(
     if (verifiedOwnedDomain) runState.verifiedOwnedDomain = verifiedOwnedDomain;
     await persistSmtpRunState(deps, runState);
 
-    await runMutatingStepWithState({
+    const domainRegistration = await runMutatingStepWithState({
       deps,
       runState,
       planApproval,
@@ -497,6 +536,13 @@ export async function configureCompleteSmtp(
       budgetUsdMax: effectiveInput.budgetUsdMax,
       params: { domain: chosenDomain, years: 1, autoRenew: false },
       stepResults
+    });
+    await awaitFreshRoute53Registration({
+      deps,
+      runId,
+      result: domainRegistration,
+      domain: chosenDomain,
+      costUsd: verifiedOwnedDomain === chosenDomain ? 0 : 15
     });
 
     await runMutatingStepWithState({
@@ -601,7 +647,7 @@ export async function configureCompleteSmtp(
       params: {
         domain: smtpHost,
         expectedRecord: { type: "A", value: serverIpv4 },
-        maxWaitMs: 600_000,
+        maxWaitMs: 1_800_000,
         pollIntervalMs: 30_000
       },
       stepResults
@@ -654,7 +700,7 @@ export async function configureCompleteSmtp(
       params: {
         domain: `${selector}._domainkey.${chosenDomain}`,
         expectedRecord: { type: "TXT", value: "contains:v=DKIM1" },
-        maxWaitMs: 600_000,
+        maxWaitMs: 1_800_000,
         pollIntervalMs: 30_000
       },
       stepResults
@@ -1294,6 +1340,102 @@ async function runMutatingStepWithState(input: {
   });
   if (skipped) return skipped;
   return runMutatingStep(input);
+}
+
+async function awaitFreshRoute53Registration(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  result: ConfigureCompleteSmtpStepResult;
+  domain: string;
+  costUsd?: number;
+}): Promise<void> {
+  const status = stringFromOutcome(input.result.outcome, ["status"], "");
+  if (status !== "pending") return;
+
+  const operationId = stringFromOutcome(input.result.outcome, ["operationId"], "");
+  if (!operationId || isSyntheticRoute53OperationId(operationId)) {
+    await audit(input.deps, "oc.domain.registration_wait_blocked", "domain", input.domain, "critical", {
+      runId: input.runId,
+      step: input.result.step,
+      status,
+      operationId,
+      reason: operationId ? "synthetic_operation_id" : "missing_operation_id"
+    });
+    throw new OrchestratorFailure(
+      "failed",
+      input.result.step,
+      input.result.skill,
+      "domain_registration_failed",
+      input.result.proposalId,
+      input.result.inputHash
+    );
+  }
+
+  if (!input.deps.waitForRoute53DomainRegistration) {
+    await audit(input.deps, "oc.domain.registration_wait_blocked", "domain", input.domain, "critical", {
+      runId: input.runId,
+      step: input.result.step,
+      operationId,
+      reason: "route53_registration_wait_missing"
+    });
+    throw new OrchestratorFailure(
+      "failed",
+      input.result.step,
+      input.result.skill,
+      "domain_registration_failed",
+      input.result.proposalId,
+      input.result.inputHash
+    );
+  }
+
+  await audit(input.deps, "oc.domain.registration_wait_started", "domain", input.domain, "critical", {
+    runId: input.runId,
+    step: input.result.step,
+    operationId,
+    maxWaitMs: route53DomainRegistrationWaitMaxMs,
+    pollIntervalMs: route53DomainRegistrationWaitPollMs
+  });
+  const wait = await input.deps.waitForRoute53DomainRegistration({
+    domain: input.domain,
+    operationId,
+    expectedExpiry: stringFromOutcome(input.result.outcome, ["expectedExpiry"], ""),
+    costUsd: input.costUsd,
+    maxWaitMs: route53DomainRegistrationWaitMaxMs,
+    pollIntervalMs: route53DomainRegistrationWaitPollMs
+  });
+
+  if (wait.status === "owned" || wait.status === "skipped") {
+    await audit(input.deps, "oc.domain.registration_wait_completed", "domain", input.domain, "critical", {
+      runId: input.runId,
+      step: input.result.step,
+      status: wait.status,
+      reason: wait.status === "skipped" ? wait.reason : undefined,
+      operationId: wait.operationId,
+      operationStatus: wait.status === "owned" ? wait.operationStatus : undefined,
+      attempts: wait.attempts,
+      durationMs: wait.durationMs
+    });
+    return;
+  }
+
+  await audit(input.deps, "oc.domain.registration_wait_failed", "domain", input.domain, "critical", {
+    runId: input.runId,
+    step: input.result.step,
+    blockers: wait.blockers,
+    operationId: wait.operationId,
+    operationStatus: wait.operationStatus,
+    attempts: wait.attempts,
+    durationMs: wait.durationMs,
+    message: wait.message
+  });
+  throw new OrchestratorFailure(
+    "failed",
+    input.result.step,
+    input.result.skill,
+    "domain_registration_failed",
+    input.result.proposalId,
+    input.result.inputHash
+  );
 }
 
 async function skipDoneStep(input: {
@@ -2209,6 +2351,14 @@ function normalizeDomain(value: string): string {
     throw new OrchestratorFailure("failed", 0, "domain_scope", "invalid_domain_scope");
   }
   return normalized;
+}
+
+function isSyntheticRoute53OperationId(operationId: string): boolean {
+  return (
+    operationId === "idempotent_already_owned" ||
+    operationId === "workspace_owned" ||
+    operationId.startsWith("route53-reservation-")
+  );
 }
 
 function stringFromOutcome(

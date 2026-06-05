@@ -150,7 +150,8 @@ import {
 } from "./routes/domains.ts";
 import {
   handleRoute53DomainPurchaseError,
-  handleRoute53DomainRegisterHttp
+  handleRoute53DomainRegisterHttp,
+  waitForRoute53DomainRegistration
 } from "./routes/domains-purchase.ts";
 import {
   handleRoute53DnsError,
@@ -660,6 +661,24 @@ const configureSmtpRuntimeDeps = {
       responseOk: inventory.source.responseOk
     };
   },
+  waitForRoute53DomainRegistration: async (input: {
+    domain: string;
+    operationId: string;
+    expectedExpiry?: string;
+    costUsd?: number;
+    maxWaitMs: number;
+    pollIntervalMs: number;
+  }) => waitForRoute53DomainRegistration({
+    adapter: awsRoute53DomainsAdapter,
+    workspace: openClawWorkspace,
+    domain: input.domain,
+    operationId: input.operationId,
+    expectedExpiry: input.expectedExpiry,
+    costUsd: input.costUsd,
+    maxWaitMs: input.maxWaitMs,
+    pollIntervalMs: input.pollIntervalMs,
+    now: () => resolveGatewayNow()
+  }),
   submitRollbackProposal: async (input: {
     runId: string;
     failedStep: number;

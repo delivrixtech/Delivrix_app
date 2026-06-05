@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,6 +14,8 @@ import {
   type ConfigureCompleteSmtpDeps,
   type PlanApprovedStepInput,
   type PlanApprovedStepDecision,
+  type Route53DomainRegistrationWaitInput,
+  type Route53DomainRegistrationWaitResult,
   type SkillInvocationInput
 } from "./orchestrator-smtp.ts";
 import type { PlanApprovalRecord } from "./proposals-sign.ts";
@@ -318,8 +321,8 @@ test("approval timeout env is passed to every gated step", async () => {
   await configureCompleteSmtp(validInput(), ctx.deps);
   assert.equal(ctx.approvals.find((entry) => entry.step === 2)?.approvalTimeoutMs, 12345);
   assert.equal(ctx.approvals.find((entry) => entry.step === 3)?.approvalTimeoutMs, 1_980_000);
-  assert.equal(ctx.approvals.find((entry) => entry.step === 8)?.approvalTimeoutMs, 750_000);
-  assert.equal(ctx.approvals.find((entry) => entry.step === 11)?.approvalTimeoutMs, 750_000);
+  assert.equal(ctx.approvals.find((entry) => entry.step === 8)?.approvalTimeoutMs, 1_950_000);
+  assert.equal(ctx.approvals.find((entry) => entry.step === 11)?.approvalTimeoutMs, 1_950_000);
 });
 
 test("handleConfigureCompleteSmtp returns HTTP 200 for completed run", async () => {
@@ -356,6 +359,144 @@ test("configureCompleteSmtp uses one signed plan to execute mutating steps witho
   assert.equal(result.stepResults.filter((step) => step.planStepTokenId).length, 11);
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.plan.run_authorized"), true);
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.plan.step_executed"), true);
+});
+
+test("configureCompleteSmtp waits for fresh Route53 registration before DNS propagation", async () => {
+  let ctx!: ReturnType<typeof createDeps>;
+  const planApproval = signedPlanApproval();
+  const executionsAtWait: number[][] = [];
+  ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval,
+    outcomes: {
+      2: {
+        ok: true,
+        domain: "delivrixops.com",
+        status: "pending",
+        operationId: "op-real-register",
+        expectedExpiry: "2027-05-31T12:00:00.000Z",
+        costUsd: 15
+      }
+    },
+    route53RegistrationWait: async (input) => {
+      executionsAtWait.push(ctx.planExecutions.map((entry) => entry.step));
+      return {
+        status: "owned",
+        operationId: input.operationId,
+        operationStatus: "SUCCESSFUL",
+        attempts: 3,
+        durationMs: 60_000
+      };
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(executionsAtWait, [[2]]);
+  assert.equal(ctx.route53RegistrationWaits.length, 1);
+  assert.equal(ctx.route53RegistrationWaits[0].operationId, "op-real-register");
+  assert.equal(ctx.route53RegistrationWaits[0].maxWaitMs, 1_800_000);
+  assert.equal(ctx.route53RegistrationWaits[0].pollIntervalMs, 30_000);
+  assert.deepEqual(ctx.planExecutions.map((entry) => entry.step), [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 14]);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.domain.registration_wait_completed"), true);
+});
+
+test("configureCompleteSmtp blocks before DNS when Route53 registration fails", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    outcomes: {
+      2: {
+        ok: true,
+        domain: "delivrixops.com",
+        status: "pending",
+        operationId: "op-real-register",
+        costUsd: 15
+      }
+    },
+    route53RegistrationWaitResults: [{
+      status: "blocked",
+      blockers: ["domain_registration_failed"],
+      operationId: "op-real-register",
+      operationStatus: "FAILED",
+      message: "Route53 operation FAILED",
+      attempts: 2,
+      durationMs: 30_000
+    }]
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 2);
+  assert.equal(result.error, "domain_registration_failed");
+  assert.deepEqual(ctx.planExecutions.map((entry) => entry.step), [2]);
+  assert.equal(ctx.route53RegistrationWaits.length, 1);
+  assert.equal(ctx.rollbacks.length, 0);
+});
+
+test("configureCompleteSmtp skips Route53 registration wait for idempotent owned outcomes", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ domain: "controldelivrix.app" }),
+    suggestions: { candidates: [{ domain: "fresh-delivrix.com", priceUsd: 15, available: true }] },
+    ownedDomains: ["controldelivrix.app"],
+    outcomes: {
+      2: { status: "idempotent_already_owned", operationId: "idempotent_already_owned", costUsd: 0 },
+      4: { status: "idempotent_already_exists", serverSlug: "server10", ipv4: "45.136.70.47", costUsd: 0 }
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "controldelivrix.app",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.route53RegistrationWaits.length, 0);
+  assert.equal(result.totalCostUsd, 0);
+});
+
+test("configureCompleteSmtp fails closed for pending Route53 registration with synthetic operationId", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    outcomes: {
+      2: {
+        ok: true,
+        domain: "delivrixops.com",
+        status: "pending",
+        operationId: "route53-reservation-existing",
+        costUsd: 15
+      }
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 2);
+  assert.equal(result.error, "domain_registration_failed");
+  assert.equal(ctx.route53RegistrationWaits.length, 0);
+  assert.deepEqual(ctx.planExecutions.map((entry) => entry.step), [2]);
 });
 
 test("configureCompleteSmtp treats signed non-owned explicit domain outside suggestions as fresh purchase", async () => {
@@ -916,6 +1057,46 @@ test("configureCompleteSmtp blocks concurrent runs for the same runId", async ()
   assert.equal(firstResult.status, "completed");
 });
 
+test("configureCompleteSmtp run lock outlives 30 minute waits and step lease outlives run lock", async () => {
+  let releaseStep2!: () => void;
+  const step2Gate = new Promise<void>((resolve) => {
+    releaseStep2 = resolve;
+  });
+  const ctx = createDeps();
+  ctx.deps.submitAndAwaitApproval = async (input: ApprovalStepInput): Promise<ApprovalStepDecision> => {
+    ctx.approvals.push(input);
+    if (input.step === 2) {
+      await step2Gate;
+    }
+    return {
+      status: "executed",
+      proposalId: `proposal-${input.step}`,
+      signatureId: `sig-${input.step}`,
+      outcome: defaultOutcome(input.step),
+      durationMs: input.step
+    };
+  };
+  const input = { ...validInput(), runId: "run-lease" };
+
+  const first = configureCompleteSmtp(input, ctx.deps);
+  await waitFor(() => ctx.approvals.some((entry) => entry.step === 2));
+
+  const leasePath = join(ctx.workspace.getRootDir(), "inventory", ".locks", "run-run-lease.lock", "lease.json");
+  const lockLease = JSON.parse(await readFile(leasePath, "utf8")) as { acquiredAt: string; leaseUntil: string };
+  const state = await readRunState(ctx.workspace, "run-lease");
+  const acquiredAtMs = Date.parse(lockLease.acquiredAt);
+  const runLeaseUntilMs = Date.parse(lockLease.leaseUntil);
+  const stepLeaseUntilMs = Date.parse(state.steps["2"].leaseUntil ?? "");
+
+  assert.equal(runLeaseUntilMs - acquiredAtMs, 40 * 60 * 1000);
+  assert.equal(stepLeaseUntilMs - acquiredAtMs, 45 * 60 * 1000);
+  assert.ok(stepLeaseUntilMs > runLeaseUntilMs);
+
+  releaseStep2();
+  const firstResult = await first;
+  assert.equal(firstResult.status, "completed");
+});
+
 function validInput() {
   return {
     brand: "delivrix",
@@ -981,11 +1162,14 @@ function createDeps(options: {
   planApproval?: PlanApprovalRecord | null;
   killSwitchAfterPlanExecutions?: number;
   ownedDomains?: string[];
+  route53RegistrationWaitResults?: Route53DomainRegistrationWaitResult[];
+  route53RegistrationWait?: (input: Route53DomainRegistrationWaitInput) => Promise<Route53DomainRegistrationWaitResult> | Route53DomainRegistrationWaitResult;
 } = {}): {
   deps: ConfigureCompleteSmtpDeps;
   approvals: ApprovalStepInput[];
   planExecutions: PlanApprovedStepInput[];
   invocations: SkillInvocationInput[];
+  route53RegistrationWaits: Route53DomainRegistrationWaitInput[];
   rollbacks: Array<{ skill: string; params: Record<string, unknown> }>;
   auditEvents: Array<Record<string, unknown> & { action: string; metadata?: unknown }>;
   canvasEvents: Array<Record<string, unknown> & { action?: string }>;
@@ -1002,6 +1186,7 @@ function createDeps(options: {
   const approvals: ApprovalStepInput[] = [];
   const planExecutions: PlanApprovedStepInput[] = [];
   const invocations: SkillInvocationInput[] = [];
+  const route53RegistrationWaits: Route53DomainRegistrationWaitInput[] = [];
   const rollbacks: Array<{ skill: string; params: Record<string, unknown> }> = [];
   const auditEvents: Array<Record<string, unknown> & { action: string; metadata?: unknown }> = [];
   const canvasEvents: Array<Record<string, unknown> & { action?: string }> = [];
@@ -1089,6 +1274,19 @@ function createDeps(options: {
           responseOk: true
         };
       },
+      async waitForRoute53DomainRegistration(input: Route53DomainRegistrationWaitInput): Promise<Route53DomainRegistrationWaitResult> {
+        route53RegistrationWaits.push(input);
+        if (options.route53RegistrationWait) {
+          return options.route53RegistrationWait(input);
+        }
+        return options.route53RegistrationWaitResults?.shift() ?? {
+          status: "owned",
+          operationId: input.operationId,
+          operationStatus: "SUCCESSFUL",
+          attempts: 1,
+          durationMs: 0
+        };
+      },
       async submitRollbackProposal(input: { skill: "delete_webdock_server"; params: Record<string, unknown> }) {
         rollbacks.push(input);
         return { proposalId: "rollback-1" };
@@ -1141,6 +1339,7 @@ function createDeps(options: {
     approvals,
     planExecutions,
     invocations,
+    route53RegistrationWaits,
     rollbacks,
     auditEvents,
     canvasEvents,
