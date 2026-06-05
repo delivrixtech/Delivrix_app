@@ -653,7 +653,7 @@ export async function configureCompleteSmtp(
       budgetUsdMax: effectiveInput.budgetUsdMax,
       params: {
         domain: `${selector}._domainkey.${chosenDomain}`,
-        expectedRecord: { type: "TXT", value: "v=DKIM1" },
+        expectedRecord: { type: "TXT", value: "contains:v=DKIM1" },
         maxWaitMs: 600_000,
         pollIntervalMs: 30_000
       },
@@ -2311,7 +2311,7 @@ function compactStepFromResult(
       errorMessage: `Step ${step.step} was recorded after failure at step ${failure.step}.`
     } : {}),
     ...(step.proposalId ? { proposalId: step.proposalId } : {}),
-    ...(step.signatureId ? { signatureId: step.signatureId } : {})
+    ...(step.signatureId && !step.proposalId?.startsWith("plan:") ? { signatureId: step.signatureId } : {})
   };
 }
 

@@ -166,14 +166,81 @@ test("pollDnsRecord resolves MX record by exchange", async () => {
   assert.equal(result.lastSeen, "mail.example.com");
 });
 
-test("POST /v1/skills/wait-for-dns-propagation rejects invalid domain", async () => {
+test("pollDnsRecord resolves TXT records with DKIM underscore labels", async () => {
+  let nowMs = fixedNow.getTime();
+  const queried: string[] = [];
+  const result = await pollDnsRecord({
+    domain: "s2026a._domainkey.delivrix.test",
+    expectedRecord: { type: "TXT", value: "contains:v=DKIM1" },
+    maxWaitMs: 30_000,
+    pollIntervalMs: 30_000,
+    dns: dnsResolver({
+      resolveTxt: async (domain) => {
+        queried.push(domain);
+        return [["v=DKIM1; k=rsa; p=abc"]];
+      }
+    }),
+    now: () => nowMs,
+    sleep: async (ms) => {
+      nowMs += ms;
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts, 1);
+  assert.equal(result.lastSeen, "v=dkim1; k=rsa; p=abc");
+  assert.deepEqual(queried, ["s2026a._domainkey.delivrix.test"]);
+});
+
+test("POST /v1/skills/wait-for-dns-propagation rejects invalid DNS record name", async () => {
   const response = await callRoute({
     ...validBody(),
-    domain: "no-tld"
+    domain: "bad record!"
   });
 
   assert.equal(response.statusCode, 400);
   assert.equal(response.body.error, "invalid_params");
+});
+
+test("POST /v1/skills/wait-for-dns-propagation/read-only accepts DKIM and DMARC record names", async () => {
+  const queried: string[] = [];
+  const dkim = await callReadOnlyRoute({
+    domain: "s2026a._domainkey.delivrix.test",
+    expectedRecord: { type: "TXT", value: "contains:v=DKIM1" },
+    maxWaitMs: 30_000,
+    pollIntervalMs: 30_000,
+    actorId
+  }, {
+    dns: dnsResolver({
+      resolveTxt: async (domain) => {
+        queried.push(domain);
+        return [["v=DKIM1; p=abc"]];
+      }
+    })
+  });
+  const dmarc = await callReadOnlyRoute({
+    domain: "_dmarc.delivrix.test",
+    expectedRecord: { type: "TXT", value: "contains:v=DMARC1" },
+    maxWaitMs: 30_000,
+    pollIntervalMs: 30_000,
+    actorId
+  }, {
+    dns: dnsResolver({
+      resolveTxt: async (domain) => {
+        queried.push(domain);
+        return [["v=DMARC1; p=quarantine"]];
+      }
+    })
+  });
+
+  assert.equal(dkim.statusCode, 200);
+  assert.equal(dkim.body.ok, true);
+  assert.equal(dmarc.statusCode, 200);
+  assert.equal(dmarc.body.ok, true);
+  assert.deepEqual(queried, [
+    "s2026a._domainkey.delivrix.test",
+    "_dmarc.delivrix.test"
+  ]);
 });
 
 test("POST /v1/skills/wait-for-dns-propagation rejects maxWaitMs above hard cap", async () => {
@@ -322,8 +389,8 @@ test("dispatcher exposes dns_propagation_wait alias with ApprovalGate guard", as
   const result = await dispatchSkillHandler({
     skill: "dns_propagation_wait",
     params: {
-      domain: "delivrix.test",
-      expectedRecord: { type: "NS", value: "ns-1.awsdns-01.com" },
+      domain: "s2026a._domainkey.delivrix.test",
+      expectedRecord: { type: "TXT", value: "contains:v=DKIM1" },
       maxWaitMs: 30_000,
       pollIntervalMs: 30_000
     },
@@ -332,7 +399,7 @@ test("dispatcher exposes dns_propagation_wait alias with ApprovalGate guard", as
     deps: {
       auditLog,
       readCanvasState: () => canvasStateForApproval("approval-execution-dispatcher"),
-      dnsResolver: dnsResolver({ resolveNs: async () => ["ns-1.awsdns-01.com"] }),
+      dnsResolver: dnsResolver({ resolveTxt: async () => [["v=DKIM1; p=abc"]] }),
       readKillSwitch: () => ({ enabled: false }),
       now: () => fixedNow
     } as any

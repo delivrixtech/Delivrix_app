@@ -193,6 +193,15 @@ test("email auth step uses quarantine DMARC and selector", async () => {
   assert.equal(step10?.params.mxServerIp, "203.0.113.10");
 });
 
+test("DKIM propagation waits on selector._domainkey as TXT", async () => {
+  const ctx = createDeps();
+  await configureCompleteSmtp(validInput(), ctx.deps);
+  const step11 = ctx.approvals.find((entry) => entry.step === 11);
+  assert.equal(step11?.skill, "wait_for_dns_propagation");
+  assert.equal(step11?.params.domain, "s2026a._domainkey.delivrixops.com");
+  assert.deepEqual(step11?.params.expectedRecord, { type: "TXT", value: "contains:v=DKIM1" });
+});
+
 test("final send step preserves operator subject and body", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);
@@ -555,6 +564,38 @@ test("configureCompleteSmtp persists compacted steps through the real episodic w
   });
 
   const result = await withOperatorSecret("operator-secret", () => configureCompleteSmtp(validInput(), ctx.deps));
+
+  assert.equal(result.status, "completed");
+  assert.equal(scratchPool.rows.length, 14);
+  assert.equal(ctx.logs.some((entry) => entry.event === "openclaw.orchestrator.compact_intent_failed"), false);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.episodic.intent_compacted"), true);
+});
+
+test("configureCompleteSmtp compacts plan-approved steps without requiring step signatures", async () => {
+  const scratchPool = new MemoryScratchPool();
+  const ctx = createDeps({
+    planApproval: signedPlanApproval(),
+    compactIntent: true
+  });
+  ctx.deps.env = {
+    ...ctx.deps.env,
+    OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true"
+  };
+  ctx.deps.compactIntent = async (input) => compactIntent(input, {
+    pool: scratchPool,
+    auditLog: {
+      async append(event) {
+        ctx.auditEvents.push(event as never);
+        return { id: `audit-${ctx.auditEvents.length}`, ...event } as never;
+      },
+      async list() {
+        return ctx.auditEvents as never;
+      }
+    },
+    now: () => new Date("2026-05-31T12:00:00.000Z")
+  });
+
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
 
   assert.equal(result.status, "completed");
   assert.equal(scratchPool.rows.length, 14);

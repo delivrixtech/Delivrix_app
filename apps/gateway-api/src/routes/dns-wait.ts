@@ -408,7 +408,7 @@ export function parseWaitForDnsPropagationParams(
   const input = object(value);
   const expected = object(input.expectedRecord, "expectedRecord");
   const output = {
-    domain: domain(input.domain, "domain"),
+    domain: dnsRecordName(input.domain, "domain"),
     expectedRecord: {
       type: oneOf(expected.type, "expectedRecord.type", ["A", "NS", "MX", "TXT"] as const),
       value: string(expected.value, "expectedRecord.value", 1, 253)
@@ -524,10 +524,10 @@ function oneOf<const T extends readonly string[]>(value: unknown, field: string,
   throw new Error(`${field} must be one of ${allowed.join(", ")}`);
 }
 
-function domain(value: unknown, field: string): string {
-  const normalized = string(value, field, 3, 253).toLowerCase().replace(/\.$/, "");
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(normalized)) {
-    throw new Error(`${field} must be a valid domain`);
+function dnsRecordName(value: unknown, field: string): string {
+  const normalized = string(value, field, 1, 253).toLowerCase().replace(/\.$/, "");
+  if (!/^[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?)*$/.test(normalized)) {
+    throw new Error(`${field} must be a valid DNS record name`);
   }
   return normalized;
 }
