@@ -45,12 +45,40 @@ test("sign records run-scoped plan approval when autonomy flag is on", async () 
   assert.equal(response.body.planApproval.runId, "smtp-run-2026-06-04-a");
   assert.equal(ctx.proposals[0].planApproval?.scope.runId, "smtp-run-2026-06-04-a");
   assert.equal(ctx.proposals[0].planApproval?.scope.domain, "delivrixops.com");
+  assert.equal(ctx.proposals[0].planApproval?.scope.requireExistingDomain, undefined);
   assert.match(ctx.proposals[0].planApproval?.scopeHash ?? "", /^[a-f0-9]{64}$/);
   assert.equal(planEvent?.targetType, "openclaw_orchestrator_run");
   assert.equal(planEvent?.targetId, "smtp-run-2026-06-04-a");
   assert.equal(planEvent?.humanApproved, true);
   assert.equal(planEvent?.metadata.scopeHash, ctx.proposals[0].planApproval?.scopeHash);
   assert.equal(ctx.dispatches.length, 1);
+});
+
+test("sign records strict existing-domain adoption in run-scoped plan approval", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    proposal: configureCompleteSmtpProposal({
+      params: {
+        runId: "smtp-run-2026-06-04-a",
+        domain: "controldelivrix.app",
+        provider: "route53-webdock",
+        requireExistingDomain: true,
+        brand: "Delivrix",
+        budgetUsdMax: 25,
+        testEmailRecipient: "ops@delivrixops.com",
+        testEmailSubject: "Smoke autorizado",
+        testEmailBody: "Prueba autorizada y auditada"
+      }
+    })
+  });
+
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(ctx.proposals[0].planApproval?.scope.domain, "controldelivrix.app");
+  assert.equal(ctx.proposals[0].planApproval?.scope.requireExistingDomain, true);
+  assert.match(ctx.proposals[0].planApproval?.scopeHash ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(ctx.events.some((event) => event.action === "oc.plan.signed"), true);
 });
 
 test("sign rejects incomplete plan scope when autonomy flag is on", async () => {
@@ -63,6 +91,32 @@ test("sign rejects incomplete plan scope when autonomy flag is on", async () => 
         testEmailRecipient: "ops@delivrixops.com",
         testEmailSubject: "Smoke",
         testEmailBody: "Authorized smoke"
+      }
+    })
+  });
+
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.rejectReason, "plan_scope_missing");
+  assert.equal(ctx.events.some((event) => event.action === "oc.plan.signed"), false);
+  assert.equal(ctx.dispatches.length, 0);
+});
+
+test("sign rejects non-boolean requireExistingDomain in plan scope", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    proposal: configureCompleteSmtpProposal({
+      params: {
+        runId: "smtp-run-2026-06-04-a",
+        domain: "delivrixops.com",
+        provider: "route53-webdock",
+        requireExistingDomain: "true",
+        brand: "Delivrix",
+        budgetUsdMax: 25,
+        testEmailRecipient: "ops@delivrixops.com",
+        testEmailSubject: "Smoke autorizado",
+        testEmailBody: "Prueba autorizada y auditada"
       }
     })
   });

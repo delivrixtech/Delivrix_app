@@ -314,12 +314,15 @@ export async function configureCompleteSmtp(
       stepResults
     });
     const explicitDomain = explicitDomainForRun(input, planApproval);
-    if (explicitDomain && !domainInSuggestions(suggestions, explicitDomain)) {
-      verifiedOwnedDomain = await verifyExistingDomainOwnership({
+    const requireExistingDomain = requiresExistingDomainForRun(input, planApproval);
+    if (explicitDomain && (requireExistingDomain || !domainInSuggestions(suggestions, explicitDomain))) {
+      const ownership = await resolveExistingDomainOwnership({
         deps,
         runId,
-        domain: explicitDomain
+        domain: explicitDomain,
+        requireExistingDomain
       });
+      verifiedOwnedDomain = ownership.owned ? explicitDomain : null;
     }
     chosenDomain = chooseDomainForRun(suggestions, planApproval, input, verifiedOwnedDomain);
     const smtpHost = smtpHostForDomain(chosenDomain);
@@ -1092,7 +1095,11 @@ function chooseDomainForRun(
   if (!planApproval) {
     if (input.domain) {
       const requestedDomain = normalizeDomain(input.domain);
-      if (domainInSuggestions(outcome, requestedDomain) || verifiedOwnedDomain === requestedDomain) {
+      if (
+        domainInSuggestions(outcome, requestedDomain) ||
+        verifiedOwnedDomain === requestedDomain ||
+        input.requireExistingDomain !== true
+      ) {
         return requestedDomain;
       }
       throw new OrchestratorFailure(
@@ -1116,7 +1123,12 @@ function chooseDomainForRun(
   }
   const candidates = isRecord(outcome) && Array.isArray(outcome.candidates) ? outcome.candidates : [];
   const hasApprovedCandidate = domainInSuggestions(outcome, approvedDomain);
-  if (candidates.length > 0 && !hasApprovedCandidate && verifiedOwnedDomain !== approvedDomain) {
+  if (
+    planApproval.scope.requireExistingDomain === true &&
+    candidates.length > 0 &&
+    !hasApprovedCandidate &&
+    verifiedOwnedDomain !== approvedDomain
+  ) {
     throw new OrchestratorFailure(
       "failed",
       1,
@@ -1135,6 +1147,13 @@ function explicitDomainForRun(
   return planApproval?.scope.domain ?? null;
 }
 
+function requiresExistingDomainForRun(
+  input: ConfigureCompleteSmtpParams,
+  planApproval: PlanApprovalRecord | null
+): boolean {
+  return input.requireExistingDomain === true || planApproval?.scope.requireExistingDomain === true;
+}
+
 function domainInSuggestions(outcome: unknown, domain: string): boolean {
   const candidates = isRecord(outcome) && Array.isArray(outcome.candidates) ? outcome.candidates : [];
   return candidates.some((candidate) =>
@@ -1144,11 +1163,12 @@ function domainInSuggestions(outcome: unknown, domain: string): boolean {
   );
 }
 
-async function verifyExistingDomainOwnership(input: {
+async function resolveExistingDomainOwnership(input: {
   deps: ConfigureCompleteSmtpDeps;
   runId: string;
   domain: string;
-}): Promise<string> {
+  requireExistingDomain: boolean;
+}): Promise<{ owned: boolean }> {
   await verifyAuditChain(input.deps);
   if (!input.deps.verifyOwnedDomain) {
     throw new OrchestratorFailure(
@@ -1180,6 +1200,17 @@ async function verifyExistingDomainOwnership(input: {
   }
 
   if (verification.provider !== "route53" || verification.owned !== true) {
+    if (!input.requireExistingDomain) {
+      await audit(input.deps, "oc.domain.ownership_not_owned_fresh_purchase", "domain", input.domain, "high", {
+        runId: input.runId,
+        provider: verification.provider,
+        source: "listOwnedDomains",
+        sourceKind: verification.sourceKind,
+        responseOk: verification.responseOk,
+        decision: "proceed_to_register_domain_route53"
+      });
+      return { owned: false };
+    }
     throw new OrchestratorFailure(
       "failed",
       1,
@@ -1195,7 +1226,7 @@ async function verifyExistingDomainOwnership(input: {
     sourceKind: verification.sourceKind,
     responseOk: verification.responseOk
   });
-  return input.domain;
+  return { owned: true };
 }
 
 async function resolveAndValidatePlanApproval(input: {
@@ -1242,6 +1273,16 @@ async function resolveAndValidatePlanApproval(input: {
       0,
       "plan_approval",
       `plan_scope_mismatch: ${details.join(",")}`
+    );
+  }
+  const expectedRequireExistingDomain = input.input.requireExistingDomain === true;
+  const approvedRequireExistingDomain = planApproval.scope.requireExistingDomain === true;
+  if (approvedRequireExistingDomain !== expectedRequireExistingDomain) {
+    throw new OrchestratorFailure(
+      "failed",
+      0,
+      "plan_approval",
+      "plan_scope_mismatch: requireExistingDomain"
     );
   }
   return planApproval;

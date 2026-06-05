@@ -8,6 +8,7 @@ import {
   type ApprovalStepInput,
   type ConfigureCompleteSmtpDeps,
   type PlanApprovedStepInput,
+  type PlanApprovedStepDecision,
   type SkillInvocationInput
 } from "./orchestrator-smtp.ts";
 import type { PlanApprovalRecord } from "./proposals-sign.ts";
@@ -342,7 +343,7 @@ test("configureCompleteSmtp uses one signed plan to execute mutating steps witho
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.plan.step_executed"), true);
 });
 
-test("configureCompleteSmtp fails closed when signed plan domain is not in suggestions", async () => {
+test("configureCompleteSmtp treats signed non-owned explicit domain outside suggestions as fresh purchase", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
     planApproval: signedPlanApproval({ domain: "approved.example.com" }),
@@ -355,11 +356,122 @@ test("configureCompleteSmtp fails closed when signed plan domain is not in sugge
     provider: "route53"
   }, ctx.deps);
 
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.ownershipChecks[0], "approved.example.com");
+  assert.equal(ctx.approvals.length, 0);
+  assert.equal(ctx.planExecutions.find((entry) => entry.step === 2)?.params.domain, "approved.example.com");
+  assert.equal(ctx.planExecutions.find((entry) => entry.step === 2)?.estimatedCostUsd, 15);
+  assert.equal(ctx.planExecutions.find((entry) => entry.step === 4)?.params.hostname, "smtp.approved.example.com");
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.domain.ownership_not_owned_fresh_purchase"), true);
+});
+
+test("configureCompleteSmtp keeps strict adoption fail-closed for non-owned explicit domain", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ domain: "approved.example.com", requireExistingDomain: true }),
+    suggestions: { candidates: [{ domain: "different.example.com", priceUsd: 15, available: true }] }
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "approved.example.com",
+    provider: "route53",
+    requireExistingDomain: true
+  }, ctx.deps);
+
   assert.equal(result.status, "failed");
   assert.equal(result.failedStep, 1);
   assert.equal(result.error, "domain_ownership_not_verified: domain=approved.example.com");
+  assert.deepEqual(ctx.ownershipChecks, ["approved.example.com"]);
   assert.equal(ctx.approvals.length, 0);
   assert.equal(ctx.planExecutions.length, 0);
+});
+
+test("configureCompleteSmtp blocks post-signature downgrade from strict adoption to fresh purchase", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ domain: "approved.example.com", requireExistingDomain: true })
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "approved.example.com",
+    provider: "route53",
+    requireExistingDomain: false
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.equal(result.error, "plan_scope_mismatch: requireExistingDomain");
+  assert.equal(ctx.invocations.length, 0);
+  assert.equal(ctx.approvals.length, 0);
+  assert.equal(ctx.planExecutions.length, 0);
+});
+
+test("configureCompleteSmtp verifies strict adoption even when domain is suggested", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ domain: "approved.example.com", requireExistingDomain: true }),
+    suggestions: { candidates: [{ domain: "approved.example.com", priceUsd: 15, available: true }] }
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "approved.example.com",
+    provider: "route53",
+    requireExistingDomain: true
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 1);
+  assert.equal(result.error, "domain_ownership_not_verified: domain=approved.example.com");
+  assert.deepEqual(ctx.ownershipChecks, ["approved.example.com"]);
+  assert.equal(ctx.planExecutions.length, 0);
+});
+
+test("configureCompleteSmtp sends unsigned explicit fresh domain to register step", async () => {
+  const ctx = createDeps({
+    suggestions: { candidates: [{ domain: "different.example.com", priceUsd: 15, available: true }] }
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    domain: "freshdelivrix.com",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(ctx.ownershipChecks, ["freshdelivrix.com"]);
+  assert.equal(ctx.approvals.find((entry) => entry.step === 2)?.params.domain, "freshdelivrix.com");
+  assert.equal(ctx.approvals.find((entry) => entry.step === 2)?.estimatedCostUsd, 15);
+});
+
+test("configureCompleteSmtp surfaces domain_unavailable from register step instead of ownership 424", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ domain: "taken.example.com" }),
+    suggestions: { candidates: [{ domain: "different.example.com", priceUsd: 15, available: true }] },
+    planDecisions: {
+      2: {
+        status: "execution_failed",
+        planStepTokenId: "plan-step-2",
+        outcome: { error: "domain_unavailable" },
+        durationMs: 2,
+        statusCode: 502,
+        error: "domain_unavailable"
+      }
+    }
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "taken.example.com",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 2);
+  assert.equal(result.error, "domain_unavailable");
+  assert.deepEqual(ctx.ownershipChecks, ["taken.example.com"]);
 });
 
 test("configureCompleteSmtp adopts a signed existing Route53-owned domain not in suggestions", async () => {
@@ -611,6 +723,7 @@ function signedPlanApproval(overrides: Partial<PlanApprovalRecord["scope"]> = {}
 
 function createDeps(options: {
   decisions?: Record<number, ApprovalStepDecision>;
+  planDecisions?: Record<number, PlanApprovedStepDecision>;
   outcomes?: Record<number, unknown>;
   suggestions?: unknown;
   killSwitchEnabled?: boolean;
@@ -704,6 +817,8 @@ function createDeps(options: {
       },
       async executePlanApprovedStep(input: PlanApprovedStepInput) {
         planExecutions.push(input);
+        const decision = options.planDecisions?.[input.step];
+        if (decision) return decision;
         return {
           status: "executed" as const,
           planStepTokenId: `plan-step-${input.step}`,
