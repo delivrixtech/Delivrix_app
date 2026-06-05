@@ -1331,7 +1331,7 @@ async function skipDoneStep(input: {
     if (Number.isFinite(leaseUntil) && leaseUntil > nowMs) {
       throw new OrchestratorFailure("failed", input.step, input.skill, "step_in_flight", undefined, inputHash);
     }
-    if (existing.skill !== input.skill || existing.inputHash !== inputHash) {
+    if (existing.skill !== input.skill) {
       throw new OrchestratorFailure("failed", input.step, input.skill, "step_reconciliation_required", undefined, inputHash);
     }
     return null;
@@ -1356,7 +1356,7 @@ async function markRunStepInFlight(input: {
     if (Number.isFinite(leaseUntil) && leaseUntil > now.getTime()) {
       throw new OrchestratorFailure("failed", input.step, input.skill, "step_in_flight", undefined, input.inputHash);
     }
-    if (existing.skill !== input.skill || existing.inputHash !== input.inputHash) {
+    if (existing.skill !== input.skill) {
       throw new OrchestratorFailure("failed", input.step, input.skill, "step_reconciliation_required", undefined, input.inputHash);
     }
   }
