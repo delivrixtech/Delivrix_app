@@ -19,6 +19,7 @@ import { approvalTokenHash } from "../approval-guard.ts";
 import {
   handleRoute53DomainPurchaseError,
   handleRoute53DomainRegisterHttp,
+  waitForRoute53DomainRegistration,
   type Route53DomainPurchaseAdapter
 } from "./domains-purchase.ts";
 
@@ -693,6 +694,102 @@ test("POST /v1/domains/route53/register keeps in-progress pending operation bloc
   assert.deepEqual(response.body.blockers, ["domain_purchase_still_pending"]);
   assert.equal(response.body.operationStatus, "IN_PROGRESS");
   assert.equal(registerCalled, false);
+});
+
+test("waitForRoute53DomainRegistration polls Route53 until SUCCESSFUL and marks inventory owned", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "route53-registration-wait-")),
+    now: () => fixedNow
+  });
+  await workspace.updateInventoryJson("domains.json", () => ({
+    domains: [{
+      domain: "delivrixops.com",
+      registrar: "aws-route53",
+      status: "pending",
+      operationId: "op-wait-success",
+      registeredAt: fixedNow.toISOString(),
+      expectedExpiry: "2027-05-29T11:00:00.000Z",
+      costUsd: 14
+    }]
+  }));
+  const statuses = ["IN_PROGRESS", "SUCCESSFUL"];
+  const operations: string[] = [];
+
+  const result = await waitForRoute53DomainRegistration({
+    adapter: mockAdapter({
+      isLive: () => true,
+      getOperationDetail: async (operationId) => {
+        operations.push(operationId);
+        return {
+          operationId,
+          status: statuses.shift() ?? "SUCCESSFUL",
+          type: "REGISTER_DOMAIN",
+          domainName: "delivrixops.com"
+        };
+      }
+    }),
+    workspace,
+    domain: "delivrixops.com",
+    operationId: "op-wait-success",
+    maxWaitMs: 90_000,
+    pollIntervalMs: 30_000,
+    now: () => fixedNow,
+    sleep: async () => undefined
+  });
+
+  assert.equal(result.status, "owned");
+  assert.equal(result.attempts, 2);
+  assert.deepEqual(operations, ["op-wait-success", "op-wait-success"]);
+  const inventory = await workspace.readInventoryJson<{ domains: Array<{ domain: string; status: string; operationId: string }> }>("domains.json");
+  assert.equal(inventory?.domains[0].status, "owned");
+  assert.equal(inventory?.domains[0].operationId, "op-wait-success");
+});
+
+test("waitForRoute53DomainRegistration times out pending Route53 operations without marking owned", async () => {
+  let nowMs = fixedNow.getTime();
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "route53-registration-timeout-")),
+    now: () => new Date(nowMs)
+  });
+  await workspace.updateInventoryJson("domains.json", () => ({
+    domains: [{
+      domain: "delivrixops.com",
+      registrar: "aws-route53",
+      status: "pending",
+      operationId: "op-wait-timeout",
+      registeredAt: fixedNow.toISOString(),
+      costUsd: 14
+    }]
+  }));
+
+  const result = await waitForRoute53DomainRegistration({
+    adapter: mockAdapter({
+      isLive: () => true,
+      getOperationDetail: async (operationId) => ({
+        operationId,
+        status: "IN_PROGRESS",
+        type: "REGISTER_DOMAIN",
+        domainName: "delivrixops.com"
+      })
+    }),
+    workspace,
+    domain: "delivrixops.com",
+    operationId: "op-wait-timeout",
+    maxWaitMs: 60_000,
+    pollIntervalMs: 30_000,
+    now: () => new Date(nowMs),
+    sleep: async (ms) => {
+      nowMs += ms;
+    }
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.deepEqual(result.status === "blocked" ? result.blockers : [], ["domain_registration_failed"]);
+  assert.equal(result.attempts, 3);
+  assert.equal(result.durationMs, 60_000);
+  const inventory = await workspace.readInventoryJson<{ domains: Array<{ status: string; operationId: string }> }>("domains.json");
+  assert.equal(inventory?.domains[0].status, "pending");
+  assert.equal(inventory?.domains[0].operationId, "op-wait-timeout");
 });
 
 test("POST /v1/domains/route53/register counts legacy monthly spend in domains inventory", async () => {

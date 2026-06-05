@@ -77,6 +77,33 @@ interface DomainsInventory {
 const approvalMaxAgeMs = 15 * 60 * 1000;
 const skillName = "register_domain_route53";
 const monthlySpendLocks = new Map<string, Promise<void>>();
+const defaultRoute53RegistrationWaitMs = 1_800_000;
+const defaultRoute53RegistrationPollMs = 30_000;
+
+export type Route53DomainRegistrationWaitResult =
+  | {
+      status: "owned";
+      operationId: string;
+      operationStatus: string;
+      attempts: number;
+      durationMs: number;
+    }
+  | {
+      status: "skipped";
+      reason: string;
+      operationId?: string;
+      attempts: number;
+      durationMs: number;
+    }
+  | {
+      status: "blocked";
+      blockers: string[];
+      operationId?: string;
+      operationStatus?: string;
+      message?: string;
+      attempts: number;
+      durationMs: number;
+    };
 
 export async function handleRoute53DomainRegisterHttp(
   deps: Route53DomainRegisterDependencies
@@ -732,6 +759,116 @@ type Route53PurchaseReconciliation =
       message?: string;
     };
 
+export async function waitForRoute53DomainRegistration(input: {
+  adapter: Route53DomainPurchaseAdapter;
+  workspace: OpenClawWorkspace;
+  domain: string;
+  operationId?: string;
+  registeredAt?: string;
+  expectedExpiry?: string;
+  costUsd?: number;
+  now?: () => Date;
+  maxWaitMs?: number;
+  pollIntervalMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<Route53DomainRegistrationWaitResult> {
+  const startedAt = input.now?.() ?? new Date();
+  const operationId = input.operationId?.trim();
+  const durationMs = () => Math.max(0, (input.now?.() ?? new Date()).getTime() - startedAt.getTime());
+  if (!operationId || isSyntheticRoute53OperationId(operationId)) {
+    return {
+      status: "skipped",
+      reason: operationId ? "synthetic_operation_id" : "missing_operation_id",
+      ...(operationId ? { operationId } : {}),
+      attempts: 0,
+      durationMs: durationMs()
+    };
+  }
+  if (!input.adapter.getOperationDetail) {
+    return {
+      status: "blocked",
+      blockers: ["domain_registration_failed"],
+      operationId,
+      message: "Route53 operation detail adapter is not available.",
+      attempts: 0,
+      durationMs: durationMs()
+    };
+  }
+
+  const maxWaitMs = positiveMilliseconds(input.maxWaitMs, defaultRoute53RegistrationWaitMs);
+  const pollIntervalMs = positiveMilliseconds(input.pollIntervalMs, defaultRoute53RegistrationPollMs);
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let attempts = 0;
+
+  while (true) {
+    const now = input.now?.() ?? new Date();
+    const inventoryStatus = await route53DomainInventoryStatus(input.workspace, input.domain);
+    if (inventoryStatus?.status === "owned") {
+      return {
+        status: "skipped",
+        reason: "inventory_already_owned",
+        operationId,
+        attempts,
+        durationMs: durationMs()
+      };
+    }
+
+    const reconciliation = await reconcileRoute53DomainPurchase({
+      adapter: input.adapter,
+      workspace: input.workspace,
+      domain: input.domain,
+      inventoryStatus: {
+        domain: input.domain,
+        registrar: "aws-route53",
+        status: inventoryStatus?.status ?? "pending",
+        operationId,
+        registeredAt: inventoryStatus?.registeredAt ?? input.registeredAt ?? now.toISOString(),
+        expectedExpiry: inventoryStatus?.expectedExpiry ?? input.expectedExpiry,
+        costUsd: inventoryStatus?.costUsd ?? input.costUsd
+      },
+      now
+    });
+    attempts += 1;
+
+    if (reconciliation.status === "owned") {
+      return {
+        status: "owned",
+        operationId: reconciliation.operation.operationId,
+        operationStatus: reconciliation.operation.status,
+        attempts,
+        durationMs: durationMs()
+      };
+    }
+
+    const operationStatus = reconciliation.operation?.status;
+    if (!reconciliation.blockers.includes("domain_purchase_still_pending")) {
+      return {
+        status: "blocked",
+        blockers: ["domain_registration_failed"],
+        operationId,
+        ...(operationStatus ? { operationStatus } : {}),
+        message: reconciliation.message,
+        attempts,
+        durationMs: durationMs()
+      };
+    }
+
+    if ((input.now?.() ?? new Date()).getTime() - startedAt.getTime() >= maxWaitMs) {
+      return {
+        status: "blocked",
+        blockers: ["domain_registration_failed"],
+        operationId,
+        ...(operationStatus ? { operationStatus } : {}),
+        message: "Route53 domain registration did not complete before timeout.",
+        attempts,
+        durationMs: durationMs()
+      };
+    }
+
+    await sleep(pollIntervalMs);
+  }
+}
+
 async function reconcileRoute53DomainPurchase(input: {
   adapter: Route53DomainPurchaseAdapter;
   workspace: OpenClawWorkspace;
@@ -740,7 +877,7 @@ async function reconcileRoute53DomainPurchase(input: {
   now: Date;
 }): Promise<Route53PurchaseReconciliation> {
   const operationId = input.inventoryStatus.operationId;
-  if (!operationId || operationId.startsWith("route53-reservation-")) {
+  if (!operationId || isSyntheticRoute53OperationId(operationId)) {
     return {
       status: "blocked",
       blockers: ["domain_purchase_reconciliation_required"],
@@ -812,6 +949,18 @@ async function reconcileRoute53DomainPurchase(input: {
     operation,
     message: operation.message ?? `Route53 operation ${normalizedStatus}`
   };
+}
+
+function isSyntheticRoute53OperationId(operationId: string): boolean {
+  return (
+    operationId === "idempotent_already_owned" ||
+    operationId === "workspace_owned" ||
+    operationId.startsWith("route53-reservation-")
+  );
+}
+
+function positiveMilliseconds(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && Number(value) > 0 ? Math.trunc(Number(value)) : fallback;
 }
 
 type Route53MonthlySpendReservation =
