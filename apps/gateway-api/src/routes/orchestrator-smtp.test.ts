@@ -797,6 +797,48 @@ test("configureCompleteSmtp retries an expired in_flight step with the same inpu
   assert.equal(completedState.steps["2"].status, "done");
 });
 
+test("configureCompleteSmtp retries an expired in_flight step after input hash contract changes", async () => {
+  const planDecisions: Record<number, PlanApprovedStepDecision> = {
+    2: {
+      status: "execution_failed",
+      planStepTokenId: "plan-step-2",
+      outcome: { error: "purchase_failed" },
+      durationMs: 2,
+      error: "purchase_failed"
+    }
+  };
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    planDecisions
+  });
+  const input = {
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  };
+  const first = await configureCompleteSmtp(input, ctx.deps);
+  assert.equal(first.status, "failed");
+  assert.equal(first.failedStep, 2);
+
+  const state = await readRunState(ctx.workspace, "run-1");
+  assert.equal(state.steps["2"].status, "in_flight");
+  state.steps["2"].inputHash = "stale-input-hash-from-previous-code";
+  state.steps["2"].leaseUntil = "2026-05-31T11:00:00.000Z";
+  await writeRunState(ctx.workspace, "run-1", state);
+  delete planDecisions[2];
+
+  const retry = await configureCompleteSmtp(input, ctx.deps);
+
+  assert.equal(retry.status, "completed");
+  assert.equal(retry.stepResults.length, 14);
+  assert.equal(ctx.planExecutions.filter((entry) => entry.step === 2).length, 2);
+  const completedState = await readRunState(ctx.workspace, "run-1");
+  assert.equal(completedState.steps["2"].status, "done");
+  assert.notEqual(completedState.steps["2"].inputHash, "stale-input-hash-from-previous-code");
+});
+
 test("configureCompleteSmtp skips all done steps on replay of a completed run", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
@@ -1115,17 +1157,17 @@ function createDeps(options: {
 }
 
 async function readRunState(workspace: OpenClawWorkspace, runId: string): Promise<{
-  steps: Record<string, { status: string; attemptId?: string; leaseUntil?: string }>;
+  steps: Record<string, { status: string; inputHash?: string; attemptId?: string; leaseUntil?: string }>;
 }> {
   return JSON.parse(await workspace.readWorkspaceFile(`inventory/smtp-runs/${runId}.json`)) as {
-    steps: Record<string, { status: string; attemptId?: string; leaseUntil?: string }>;
+    steps: Record<string, { status: string; inputHash?: string; attemptId?: string; leaseUntil?: string }>;
   };
 }
 
 async function writeRunState(
   workspace: OpenClawWorkspace,
   runId: string,
-  state: { steps: Record<string, { status: string; attemptId?: string; leaseUntil?: string }> }
+  state: { steps: Record<string, { status: string; inputHash?: string; attemptId?: string; leaseUntil?: string }> }
 ): Promise<void> {
   await workspace.writeWorkspaceFileAtomic(`inventory/smtp-runs/${runId}.json`, `${JSON.stringify(state, null, 2)}\n`);
 }
