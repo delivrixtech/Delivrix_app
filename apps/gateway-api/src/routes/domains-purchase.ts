@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import type {
   AwsRoute53ContactDetail,
+  AwsRoute53DomainOperationDetail,
   AwsRoute53DomainPrice,
   AwsRoute53DomainsInventorySource,
   AwsRoute53RegisterDomainInput,
@@ -31,6 +32,7 @@ export interface Route53DomainPurchaseAdapter {
   isPurchaseEnabled(): boolean;
   listPrices(tlds?: string[]): Promise<AwsRoute53DomainPrice[]>;
   listOwnedDomains?(): Promise<Array<{ domainName: string }>>;
+  getOperationDetail?(operationId: string): Promise<AwsRoute53DomainOperationDetail>;
   registerDomain(input: AwsRoute53RegisterDomainInput): Promise<AwsRoute53RegisterDomainResult>;
   currentSource(responseOk?: boolean, errorMessage?: string): AwsRoute53DomainsInventorySource;
 }
@@ -247,15 +249,73 @@ export async function handleRoute53DomainRegisterHttp(
     inventoryStatus?.status === "purchase_reserved" ||
     inventoryStatus?.status === "needs_reconciliation"
   ) {
+    const reconciliation = await reconcileRoute53DomainPurchase({
+      adapter: deps.adapter,
+      workspace: deps.workspace,
+      domain,
+      inventoryStatus,
+      now
+    });
+    if (reconciliation.status === "owned") {
+      const workspace = await safeWriteExecution(deps.workspace, {
+        skill: skillName,
+        params: { domain, years, autoRenew, actorId },
+        outcome: "success",
+        durationMs: Date.now() - startedAt,
+        evidence: {
+          status: "idempotent_already_owned",
+          registrar: "aws-route53",
+          source: "route53_operation_reconciliation",
+          operationId: reconciliation.operation.operationId,
+          operationStatus: reconciliation.operation.status,
+          costUsd: 0,
+          approvalArtifactId: approval?.artifactId
+        }
+      });
+      await deps.auditLog.append({
+        actorType: "operator",
+        actorId,
+        action: "oc.domain.register_reconciled",
+        targetType: "domain",
+        targetId: domain,
+        riskLevel: "critical",
+        decision: "allow",
+        humanApproved: true,
+        approverIds: [actorId],
+        metadata: {
+          registrar: "aws-route53",
+          status: "idempotent_already_owned",
+          source: "route53_operation_reconciliation",
+          operationId: reconciliation.operation.operationId,
+          operationStatus: reconciliation.operation.status,
+          approvalToken,
+          approvalArtifactId: approval?.artifactId,
+          workspacePath: workspace?.path
+        }
+      });
+      json(deps.response, 200, {
+        ok: true,
+        domain,
+        status: "idempotent_already_owned",
+        operationId: reconciliation.operation.operationId,
+        operationStatus: reconciliation.operation.status,
+        costUsd: 0,
+        workspace
+      });
+      return;
+    }
+
     const workspace = await safeWriteExecution(deps.workspace, {
       skill: skillName,
       params: { domain, years, autoRenew, actorId },
       outcome: "blocked",
       durationMs: Date.now() - startedAt,
       evidence: {
-        blockers: ["domain_purchase_reconciliation_required"],
+        blockers: reconciliation.blockers,
         status: inventoryStatus.status,
         operationId: inventoryStatus.operationId,
+        operationStatus: reconciliation.operation?.status,
+        reconciliationMessage: reconciliation.message,
         approvalMatched: Boolean(approval)
       }
     });
@@ -270,9 +330,11 @@ export async function handleRoute53DomainRegisterHttp(
       humanApproved: false,
       metadata: {
         registrar: "aws-route53",
-        blockers: ["domain_purchase_reconciliation_required"],
+        blockers: reconciliation.blockers,
         status: inventoryStatus.status,
         operationId: inventoryStatus.operationId,
+        operationStatus: reconciliation.operation?.status,
+        reconciliationMessage: reconciliation.message,
         workspacePath: workspace?.path
       }
     });
@@ -280,9 +342,11 @@ export async function handleRoute53DomainRegisterHttp(
       ok: false,
       status: "blocked",
       domain,
-      blockers: ["domain_purchase_reconciliation_required"],
+      blockers: reconciliation.blockers,
       inventoryStatus: inventoryStatus.status,
       operationId: inventoryStatus.operationId,
+      operationStatus: reconciliation.operation?.status,
+      message: reconciliation.message,
       workspace
     });
     return;
@@ -654,6 +718,100 @@ async function route53DomainInventoryStatus(
 ): Promise<NonNullable<DomainsInventory["domains"]>[number] | null> {
   const inventory = await workspace.readInventoryJson<DomainsInventory>("domains.json").catch(() => null);
   return inventory?.domains?.find((entry) => entry.domain === domain && entry.registrar === "aws-route53") ?? null;
+}
+
+type Route53PurchaseReconciliation =
+  | {
+      status: "owned";
+      operation: AwsRoute53DomainOperationDetail;
+    }
+  | {
+      status: "blocked";
+      blockers: string[];
+      operation?: AwsRoute53DomainOperationDetail;
+      message?: string;
+    };
+
+async function reconcileRoute53DomainPurchase(input: {
+  adapter: Route53DomainPurchaseAdapter;
+  workspace: OpenClawWorkspace;
+  domain: string;
+  inventoryStatus: NonNullable<DomainsInventory["domains"]>[number];
+  now: Date;
+}): Promise<Route53PurchaseReconciliation> {
+  const operationId = input.inventoryStatus.operationId;
+  if (!operationId || operationId.startsWith("route53-reservation-")) {
+    return {
+      status: "blocked",
+      blockers: ["domain_purchase_reconciliation_required"],
+      message: "No Route53 operationId is available for provider reconciliation."
+    };
+  }
+  if (!input.adapter.getOperationDetail) {
+    return {
+      status: "blocked",
+      blockers: ["domain_purchase_reconciliation_required"],
+      message: "Route53 operation detail adapter is not available."
+    };
+  }
+
+  let operation: AwsRoute53DomainOperationDetail;
+  try {
+    operation = await input.adapter.getOperationDetail(operationId);
+  } catch (error) {
+    return {
+      status: "blocked",
+      blockers: ["domain_purchase_reconciliation_unavailable"],
+      message: errorMessage(error)
+    };
+  }
+
+  if (operation.domainName && operation.domainName.toLowerCase() !== input.domain.toLowerCase()) {
+    return {
+      status: "blocked",
+      blockers: ["domain_purchase_reconciliation_scope_mismatch"],
+      operation,
+      message: `Route53 operation belongs to ${operation.domainName}, not ${input.domain}.`
+    };
+  }
+
+  const normalizedStatus = operation.status.toUpperCase();
+  if (normalizedStatus === "SUCCESSFUL") {
+    await safeUpdateDomainInventory(input.workspace, {
+      domain: input.domain,
+      operationId: operation.operationId,
+      registeredAt: input.inventoryStatus.registeredAt ?? input.now.toISOString(),
+      expectedExpiry: input.inventoryStatus.expectedExpiry,
+      costUsd: input.inventoryStatus.costUsd,
+      status: "owned"
+    });
+    return { status: "owned", operation };
+  }
+
+  if (normalizedStatus === "FAILED" || normalizedStatus === "ERROR") {
+    await safeUpdateDomainInventory(input.workspace, {
+      domain: input.domain,
+      operationId: operation.operationId,
+      registeredAt: input.inventoryStatus.registeredAt ?? input.now.toISOString(),
+      expectedExpiry: input.inventoryStatus.expectedExpiry,
+      costUsd: input.inventoryStatus.costUsd,
+      status: "failed",
+      errorMessage: operation.message ?? `Route53 operation ${normalizedStatus}`
+    });
+    return {
+      status: "blocked",
+      blockers: ["domain_purchase_failed"],
+      operation,
+      message: operation.message ?? `Route53 operation ${normalizedStatus}`
+    };
+  }
+
+  return {
+    status: "blocked",
+    blockers: ["domain_purchase_still_pending"],
+    operation,
+    message: operation.message ?? `Route53 operation ${normalizedStatus}`
+  };
 }
 
 type Route53MonthlySpendReservation =
