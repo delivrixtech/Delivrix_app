@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { conformOutcomeData, machineErrorCode } from "../../../packages/storage/src/index.ts";
 import {
   tryNormalizeServerSlug,
   tryNormalizeStrictDomainName
@@ -488,9 +489,9 @@ export const compactIntentParamSchema = schema<CompactIntentParams>((value) => {
         tool: string(item.tool, `steps[${index}].tool`),
         inputHash: inputHash(item.inputHash, `steps[${index}].inputHash`),
         outcome: scratchOutcome(item.outcome, `steps[${index}].outcome`),
-        ...(item.outcomeData === undefined || item.outcomeData === null ? {} : { outcomeData: object(item.outcomeData, `steps[${index}].outcomeData`) }),
+        ...(item.outcomeData === undefined || item.outcomeData === null ? {} : { outcomeData: conformOutcomeData(object(item.outcomeData, `steps[${index}].outcomeData`)) as Record<string, unknown> }),
         ...(item.errorClass === undefined || item.errorClass === null ? {} : { errorClass: boundedText(item.errorClass, `steps[${index}].errorClass`, 1, 128) }),
-        ...(item.errorMessage === undefined || item.errorMessage === null ? {} : { errorMessage: boundedText(item.errorMessage, `steps[${index}].errorMessage`, 1, 2000) }),
+        ...(item.errorMessage === undefined || item.errorMessage === null ? {} : { errorMessage: machineErrorCode(boundedText(item.errorMessage, `steps[${index}].errorMessage`, 1, 2000)) }),
         ...(item.durationMs === undefined || item.durationMs === null ? {} : { durationMs: integer(item.durationMs, `steps[${index}].durationMs`, 0, 86_400_000) }),
         ...(item.proposalId === undefined || item.proposalId === null ? {} : { proposalId: boundedText(item.proposalId, `steps[${index}].proposalId`, 1, 128) }),
         ...(item.signatureId === undefined || item.signatureId === null ? {} : { signatureId: boundedText(item.signatureId, `steps[${index}].signatureId`, 1, 128) }),

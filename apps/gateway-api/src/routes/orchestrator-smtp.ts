@@ -17,7 +17,7 @@ import {
 } from "../gateway-runtime-log.ts";
 import { readRequestBody } from "../request-body.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
-import { conformOutcomeData } from "../../../../packages/storage/src/episodic-scratch.ts";
+import { conformOutcomeData, machineErrorCode } from "../../../../packages/storage/src/episodic-scratch.ts";
 import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
 import type { PlanApprovalRecord } from "./proposals-sign.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
@@ -2480,17 +2480,6 @@ function failureOutcome(failure: OrchestratorFailure): "failed" | "cancelled_by_
 function compactOutcomeData(value: unknown): Record<string, unknown> {
   const conformed = conformOutcomeData(summarizeOutcome(value));
   return isRecord(conformed) ? conformed : {};
-}
-
-function machineErrorCode(value: string): string {
-  const firstToken = value.trim().split(/\s+/)[0] ?? "";
-  const code = firstToken
-    .toLowerCase()
-    .replace(/[^a-z0-9_.:-]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return /^[a-z0-9_.:-]+$/i.test(code) && code.length > 0
-    ? code.slice(0, 200)
-    : "operation_failed";
 }
 
 function summarizeOutcome(value: unknown): Record<string, unknown> {
