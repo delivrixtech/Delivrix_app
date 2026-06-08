@@ -1228,6 +1228,17 @@ export function conformOutcomeData(value: unknown): unknown {
   return conformed === conformOutcomeDataDrop ? undefined : conformed;
 }
 
+export function machineErrorCode(value: string): string {
+  const firstToken = value.trim().split(/\s+/)[0] ?? "";
+  const code = firstToken
+    .toLowerCase()
+    .replace(/[^a-z0-9_.:-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return /^[a-z0-9_.:-]+$/i.test(code) && code.length > 0
+    ? code.slice(0, 200)
+    : "operation_failed";
+}
+
 function conformOutcomeDataValue(value: unknown, parentKey: string | undefined): unknown | typeof conformOutcomeDataDrop {
   if (typeof value === "string") {
     return isConformableOutcomeString(value, parentKey) ? value : conformOutcomeDataDrop;
