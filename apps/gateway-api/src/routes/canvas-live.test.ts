@@ -175,6 +175,53 @@ test("oc.action.now redacts secrets before broadcast, snapshot, and JSONL persis
   service.close();
 });
 
+test("audit action metadata survives broadcast, snapshot, and JSONL persistence with redaction", async () => {
+  const stateDir = await stateDirForTest();
+  const service = new CanvasLiveEventService({
+    stateDir,
+    now: () => fixedNow,
+    streamToken: "canvas-token"
+  });
+  const socket = connectFakeSocket(service, "/v1/canvas/live/stream");
+
+  await service.emit(taskDeclare("task-audit-metadata"));
+  const event = await service.emit({
+    type: "oc.action.now",
+    taskId: "task-audit-metadata",
+    kind: "audit",
+    action: "oc.orchestrator.creation_rate_exceeded",
+    targetType: "webdock_account",
+    targetId: "ops",
+    riskLevel: "critical",
+    metadata: {
+      accountId: "ops",
+      createdInWindow: 4,
+      cap: 4,
+      apiKey: "canvas-secret-token"
+    },
+    occurredAt: fixedNow.toISOString()
+  });
+
+  const emittedMetadata = event.kind === "audit" ? event.metadata : undefined;
+  const snapshot = await service.snapshot();
+  const persisted = await readFile(join(stateDir, "tasks.jsonl"), "utf8");
+  const broadcast = JSON.stringify(socket.messages());
+  const combined = `${JSON.stringify(snapshot)}\n${persisted}\n${broadcast}`;
+
+  assert.deepEqual(emittedMetadata, {
+    accountId: "ops",
+    createdInWindow: 4,
+    cap: 4,
+    apiKey: "[REDACTED]"
+  });
+  assert.equal(snapshot.tasks[0].lastAction?.kind, "audit");
+  assert.deepEqual(snapshot.tasks[0].lastAction?.kind === "audit" ? snapshot.tasks[0].lastAction.metadata : undefined, emittedMetadata);
+  assert.match(persisted, /"metadata"/);
+  assert.match(broadcast, /creation_rate_exceeded/);
+  assert.doesNotMatch(combined, /canvas-secret-token/);
+  service.close();
+});
+
 test("Canvas Live redacts complete and truncated DKIM PEM before broadcast, snapshot, and JSONL persistence", async () => {
   const stateDir = await stateDirForTest();
   const service = new CanvasLiveEventService({

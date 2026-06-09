@@ -6,6 +6,7 @@ import type { Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { redactRuntimeLogSecrets } from "../gateway-runtime-log.ts";
 import type {
+  CanvasLiveActionNext,
   CanvasLiveActionNowEvent,
   CanvasLiveArtifactBlockEvent,
   CanvasLiveArtifactBlockKind,
@@ -763,13 +764,14 @@ function normalizeActionNowEvent(raw: Record<string, unknown>, now: () => Date):
       targetType: redactCanvasLiveText(requiredString(raw.targetType, "targetType"), 200),
       targetId: redactCanvasLiveText(requiredString(raw.targetId, "targetId"), 500),
       riskLevel: normalizeRiskLevel(raw.riskLevel),
+      ...(isRecord(raw.metadata) ? { metadata: redactCanvasLiveValue(raw.metadata) as Record<string, unknown> } : {}),
       occurredAt
     };
   }
   throw new CanvasLiveStateError(422, "invalid_action_kind", "kind must be api, file, audit, or command.");
 }
 
-function normalizeActionNext(raw: Record<string, unknown>) {
+function normalizeActionNext(raw: Record<string, unknown>): CanvasLiveActionNext {
   const kind = raw.kind;
   if (kind !== "api" && kind !== "file" && kind !== "audit" && kind !== "command") {
     throw new CanvasLiveStateError(422, "invalid_next_action_kind", "next.kind is invalid.");

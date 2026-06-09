@@ -13,6 +13,8 @@ import {
   type ApprovalStepDecision,
   type ApprovalStepInput,
   type ConfigureCompleteSmtpDeps,
+  type CreationRateOverrideInput,
+  type CreationRateOverrideDecision,
   type PlanApprovedStepInput,
   type PlanApprovedStepDecision,
   type Route53DomainRegistrationWaitInput,
@@ -310,6 +312,140 @@ test("configureCompleteSmtp aborts a costly step before it exceeds budget", asyn
   assert.equal(result.error?.startsWith("budget_exceeded"), true);
   assert.deepEqual(ctx.approvals.map((entry) => entry.step), [2, 3]);
   assert.equal(result.totalCostUsd, 15);
+});
+
+test("configureCompleteSmtp keeps create_webdock_server params byte-identical when creation governor is below cap", async () => {
+  const ctx = createDeps({
+    creationServers: [
+      { creationDate: "2026-05-31T11:00:00.000Z" },
+      { creationDate: "2026-05-31T10:00:00.000Z" }
+    ]
+  });
+  await configureCompleteSmtp(validInput(), ctx.deps);
+
+  const step4 = ctx.approvals.find((entry) => entry.step === 4);
+  assert.deepEqual(step4?.params, {
+    runId: "run-1",
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.delivrixops.com",
+    imageSlug: "ubuntu-2404"
+  });
+  assert.deepEqual(ctx.creationReads, ["ops"]);
+});
+
+test("configureCompleteSmtp can disable creation governor without changing create params", async () => {
+  const ctx = createDeps({
+    env: { CREATION_RATE_GOVERNOR_ENABLE: "false" },
+    creationReadError: new Error("reader should not run when governor is disabled"),
+    creationServers: [
+      { creationDate: "2026-05-31T11:00:00.000Z" },
+      { creationDate: "2026-05-31T10:00:00.000Z" },
+      { creationDate: "2026-05-31T09:00:00.000Z" },
+      { creationDate: "2026-05-31T08:00:00.000Z" }
+    ]
+  });
+  await configureCompleteSmtp(validInput(), ctx.deps);
+
+  const step4 = ctx.approvals.find((entry) => entry.step === 4);
+  assert.equal(step4?.skill, "create_webdock_server");
+  assert.deepEqual(step4?.params, {
+    runId: "run-1",
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.delivrixops.com",
+    imageSlug: "ubuntu-2404"
+  });
+  assert.deepEqual(ctx.creationReads, []);
+});
+
+test("configureCompleteSmtp blocks create when Webdock account reaches creation cap", async () => {
+  const ctx = createDeps({
+    creationServers: [
+      { creationDate: "2026-05-31T11:00:00.000Z" },
+      { creationDate: "2026-05-31T10:00:00.000Z" },
+      { creationDate: "2026-05-31T09:00:00.000Z" },
+      { creationDate: "2026-05-31T08:00:00.000Z" }
+    ]
+  });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 4);
+  assert.equal(result.error, "creation_rate_exceeded: created_24h=4 cap=4 account=ops");
+  assert.deepEqual(ctx.approvals.map((entry) => entry.step), [2, 3]);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.creation_rate_exceeded"), true);
+  const canvasBlock = ctx.canvasEvents.find((event) => event.action === "oc.orchestrator.creation_rate_exceeded");
+  assert.deepEqual(canvasBlock?.metadata, {
+    runId: "run-1",
+    step: 4,
+    skill: "create_webdock_server",
+    accountId: "ops",
+    createdInWindow: 4,
+    cap: 4,
+    window: "rolling_24h",
+    reason: "creation_rate_exceeded"
+  });
+  assert.equal(ctx.canvasEvents.some((event) => event.action === "oc.orchestrator.step_failed"), true);
+});
+
+test("configureCompleteSmtp fails open with noisy audit when creation inventory read fails", async () => {
+  const ctx = createDeps({ creationReadError: new Error("webdock timeout") });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.approvals.some((entry) => entry.step === 4), true);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.creation_rate_read_failed"), true);
+  assert.equal(ctx.logs.some((entry) => entry.event === "openclaw.orchestrator.creation_rate_read_failed"), true);
+});
+
+test("configureCompleteSmtp treats mock Webdock inventory as a read failure instead of source of truth", async () => {
+  const ctx = createDeps({
+    creationSourceKind: "mock",
+    creationResponseOk: false,
+    creationServers: [
+      { creationDate: "2026-05-31T11:00:00.000Z" },
+      { creationDate: "2026-05-31T10:00:00.000Z" },
+      { creationDate: "2026-05-31T09:00:00.000Z" },
+      { creationDate: "2026-05-31T08:00:00.000Z" }
+    ]
+  });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.approvals.some((entry) => entry.step === 4), true);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.creation_rate_read_failed"), true);
+});
+
+test("configureCompleteSmtp can fail closed when creation inventory read fails", async () => {
+  const ctx = createDeps({
+    env: { CREATION_RATE_GOVERNOR_FAIL_MODE: "fail_closed" },
+    creationReadError: new Error("webdock timeout")
+  });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 4);
+  assert.match(result.error ?? "", /^creation_rate_read_failed: mode=fail_closed/);
+  assert.deepEqual(ctx.approvals.map((entry) => entry.step), [2, 3]);
+});
+
+test("configureCompleteSmtp accepts explicit creation-rate override with audit", async () => {
+  const ctx = createDeps({
+    creationServers: [
+      { creationDate: "2026-05-31T11:00:00.000Z" },
+      { creationDate: "2026-05-31T10:00:00.000Z" },
+      { creationDate: "2026-05-31T09:00:00.000Z" },
+      { creationDate: "2026-05-31T08:00:00.000Z" }
+    ],
+    creationOverride: { approved: true, signatureId: "sig-override-1", actorId: "op-1", reason: "human-approved-cap-override" }
+  });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.approvals.some((entry) => entry.step === 4), true);
+  assert.equal(ctx.creationOverrides.length, 1);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.creation_rate_override"), true);
 });
 
 test("configureCompleteSmtp emits canvas start and completion events", async () => {
@@ -1332,11 +1468,18 @@ function createDeps(options: {
   ownedDomains?: string[];
   route53RegistrationWaitResults?: Route53DomainRegistrationWaitResult[];
   route53RegistrationWait?: (input: Route53DomainRegistrationWaitInput) => Promise<Route53DomainRegistrationWaitResult> | Route53DomainRegistrationWaitResult;
+  creationServers?: Array<{ creationDate?: string }>;
+  creationReadError?: unknown;
+  creationSourceKind?: "live" | "mock" | string;
+  creationResponseOk?: boolean;
+  creationOverride?: CreationRateOverrideDecision;
 } = {}): {
   deps: ConfigureCompleteSmtpDeps;
   approvals: ApprovalStepInput[];
   planExecutions: PlanApprovedStepInput[];
   invocations: SkillInvocationInput[];
+  creationReads: string[];
+  creationOverrides: CreationRateOverrideInput[];
   route53RegistrationWaits: Route53DomainRegistrationWaitInput[];
   rollbacks: Array<{ skill: string; params: Record<string, unknown> }>;
   auditEvents: Array<Record<string, unknown> & { action: string; metadata?: unknown }>;
@@ -1354,6 +1497,8 @@ function createDeps(options: {
   const approvals: ApprovalStepInput[] = [];
   const planExecutions: PlanApprovedStepInput[] = [];
   const invocations: SkillInvocationInput[] = [];
+  const creationReads: string[] = [];
+  const creationOverrides: CreationRateOverrideInput[] = [];
   const route53RegistrationWaits: Route53DomainRegistrationWaitInput[] = [];
   const rollbacks: Array<{ skill: string; params: Record<string, unknown> }> = [];
   const auditEvents: Array<Record<string, unknown> & { action: string; metadata?: unknown }> = [];
@@ -1388,6 +1533,23 @@ function createDeps(options: {
           };
         }
         return options.outcomes?.[input.step] ?? { ok: true, skill: input.skill };
+      },
+      async listWebdockCreationServers(input: { accountId: string }) {
+        creationReads.push(input.accountId);
+        if (options.creationReadError) {
+          throw options.creationReadError;
+        }
+        return {
+          accountId: "ops",
+          accountLabel: "Webdock Ops",
+          sourceKind: options.creationSourceKind ?? "live",
+          responseOk: options.creationResponseOk ?? true,
+          servers: options.creationServers ?? []
+        };
+      },
+      async resolveCreationRateOverride(input: CreationRateOverrideInput) {
+        creationOverrides.push(input);
+        return options.creationOverride ?? { approved: false };
       },
       async submitAndAwaitApproval(input: ApprovalStepInput): Promise<ApprovalStepDecision> {
         approvals.push(input);
@@ -1474,7 +1636,7 @@ function createDeps(options: {
           if (options.canvasEmitFails) {
             throw new Error("canvas emit failed");
           }
-          canvasEvents.push(event as Record<string, unknown> & { action?: string });
+          canvasEvents.push(event as unknown as Record<string, unknown> & { action?: string });
           return event;
         }
       },
@@ -1507,6 +1669,8 @@ function createDeps(options: {
     approvals,
     planExecutions,
     invocations,
+    creationReads,
+    creationOverrides,
     route53RegistrationWaits,
     rollbacks,
     auditEvents,

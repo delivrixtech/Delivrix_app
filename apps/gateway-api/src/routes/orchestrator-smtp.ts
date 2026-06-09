@@ -16,6 +16,13 @@ import {
   summarizeOperationalParams,
   type GatewayRuntimeLogger
 } from "../gateway-runtime-log.ts";
+import {
+  evaluateCreationBudget,
+  evaluateCreationBudgetReadError,
+  selectAccountForCreation,
+  type CreationRateServer,
+  type CreationRateWindow
+} from "../../../../packages/domain/src/creation-rate-governor.ts";
 import { readRequestBody } from "../request-body.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import { conformOutcomeData, machineErrorCode } from "../../../../packages/storage/src/episodic-scratch.ts";
@@ -114,6 +121,34 @@ export interface Route53DomainRegistrationWaitInput {
   costUsd?: number;
   maxWaitMs: number;
   pollIntervalMs: number;
+}
+
+export interface WebdockCreationInventoryInput {
+  accountId: string;
+}
+
+export interface WebdockCreationInventoryResult {
+  accountId?: string;
+  accountLabel?: string;
+  sourceKind?: "live" | "mock" | string;
+  responseOk?: boolean;
+  servers: CreationRateServer[];
+}
+
+export interface CreationRateOverrideInput {
+  runId: string;
+  step: number;
+  skill: "create_webdock_server";
+  accountId: string;
+  createdCount: number;
+  cap: number;
+}
+
+export interface CreationRateOverrideDecision {
+  approved: boolean;
+  signatureId?: string;
+  reason?: string;
+  actorId?: string;
 }
 
 export interface PlanApprovedStepInput extends SkillInvocationInput {
@@ -226,6 +261,12 @@ export interface ConfigureCompleteSmtpDeps {
   resolvePlanApproval?: (input: PlanApprovalLookupInput) => Promise<PlanApprovalRecord | null> | PlanApprovalRecord | null;
   executePlanApprovedStep?: (input: PlanApprovedStepInput) => Promise<PlanApprovedStepDecision>;
   verifyOwnedDomain?: (domain: string) => Promise<OwnedDomainVerification> | OwnedDomainVerification;
+  listWebdockCreationServers?: (
+    input: WebdockCreationInventoryInput
+  ) => Promise<WebdockCreationInventoryResult> | WebdockCreationInventoryResult;
+  resolveCreationRateOverride?: (
+    input: CreationRateOverrideInput
+  ) => Promise<CreationRateOverrideDecision> | CreationRateOverrideDecision;
   waitForRoute53DomainRegistration?: (
     input: Route53DomainRegistrationWaitInput
   ) => Promise<Route53DomainRegistrationWaitResult> | Route53DomainRegistrationWaitResult;
@@ -580,6 +621,14 @@ export async function configureCompleteSmtp(
         pollIntervalMs: 60_000
       },
       stepResults
+    });
+
+    await ensureCreationBudgetForAccount({
+      deps,
+      runId,
+      step: 4,
+      skill: "create_webdock_server",
+      accountId: "ops"
     });
 
     const vps = await runMutatingStepWithState({
@@ -2748,6 +2797,239 @@ function ensureBudgetForStep(
   );
 }
 
+async function ensureCreationBudgetForAccount(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  step: 4;
+  skill: "create_webdock_server";
+  accountId: string;
+}): Promise<void> {
+  const enabled = !envFlagDisabled(input.deps.env?.CREATION_RATE_GOVERNOR_ENABLE);
+  if (!enabled) {
+    return;
+  }
+
+  const cap = nonNegativeInt(input.deps.env?.CREATION_MAX_PER_DAY) ?? 4;
+  const window = creationRateWindow(input.deps.env?.CREATION_RATE_WINDOW);
+  const failClosed = creationRateFailClosed(input.deps.env?.CREATION_RATE_GOVERNOR_FAIL_MODE);
+  const inventoryHash = hashInput({
+    accountId: input.accountId,
+    cap,
+    window,
+    gate: "creation_rate_governor"
+  });
+
+  if (!input.deps.listWebdockCreationServers) {
+    await handleCreationRateReadError({
+      deps: input.deps,
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      accountId: input.accountId,
+      cap,
+      window,
+      enabled,
+      failClosed,
+      error: "creation_inventory_reader_missing",
+      inputHash: inventoryHash
+    });
+    return;
+  }
+
+  let inventory: WebdockCreationInventoryResult;
+  try {
+    inventory = await input.deps.listWebdockCreationServers({ accountId: input.accountId });
+  } catch (error) {
+    await handleCreationRateReadError({
+      deps: input.deps,
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      accountId: input.accountId,
+      cap,
+      window,
+      enabled,
+      failClosed,
+      error,
+      inputHash: inventoryHash
+    });
+    return;
+  }
+
+  if (inventory.sourceKind !== "live" || inventory.responseOk !== true) {
+    await handleCreationRateReadError({
+      deps: input.deps,
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      accountId: input.accountId,
+      cap,
+      window,
+      enabled,
+      failClosed,
+      error: `creation_inventory_not_live: sourceKind=${inventory.sourceKind ?? "unknown"} responseOk=${String(inventory.responseOk)}`,
+      inputHash: inventoryHash
+    });
+    return;
+  }
+
+  const decision = evaluateCreationBudget({
+    servers: inventory.servers,
+    now: input.deps.now?.() ?? new Date(),
+    cap,
+    accountId: inventory.accountId ?? input.accountId,
+    window,
+    enabled
+  });
+
+  if (decision.allowed) {
+    const selectedAccountId = selectAccountForCreation({
+      accounts: [{ accountId: decision.accountId, healthy: true }],
+      governorState: [{
+        accountId: decision.accountId,
+        allowed: decision.allowed,
+        createdInWindow: decision.createdInWindow,
+        cap: decision.cap
+      }]
+    });
+    if (selectedAccountId !== input.accountId) {
+      throw new OrchestratorFailure("failed", input.step, input.skill, "creation_account_selection_mismatch", undefined, inventoryHash);
+    }
+    void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.creation_rate_allowed", "Creation-rate governor allowed Webdock create step.", {
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      accountId: decision.accountId,
+      createdInWindow: decision.createdInWindow,
+      cap: decision.cap,
+      window: decision.window
+    });
+    return;
+  }
+
+  const override = await input.deps.resolveCreationRateOverride?.({
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    accountId: decision.accountId,
+    createdCount: decision.createdInWindow,
+    cap: decision.cap
+  });
+  if (override?.approved) {
+    await audit(input.deps, "oc.orchestrator.creation_rate_override", "webdock_account", decision.accountId, "critical", {
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      accountId: decision.accountId,
+      createdInWindow: decision.createdInWindow,
+      cap: decision.cap,
+      window: decision.window,
+      signatureId: override.signatureId,
+      reason: override.reason,
+      actorId: override.actorId
+    });
+    return;
+  }
+
+  const message = decision.failure?.message ?? `creation_rate_exceeded: created_24h=${decision.createdInWindow} cap=${decision.cap} account=${decision.accountId}`;
+  await audit(input.deps, "oc.orchestrator.creation_rate_exceeded", "webdock_account", decision.accountId, "critical", {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    accountId: decision.accountId,
+    accountLabel: inventory.accountLabel,
+    sourceKind: inventory.sourceKind,
+    responseOk: inventory.responseOk,
+    createdInWindow: decision.createdInWindow,
+    cap: decision.cap,
+    window: decision.window,
+    reason: decision.reason
+  });
+  await safeEmit(input.deps, {
+    type: "oc.action.now",
+    taskId: input.runId,
+    kind: "audit",
+    action: "oc.orchestrator.creation_rate_exceeded",
+    targetType: "webdock_account",
+    targetId: decision.accountId,
+    riskLevel: "critical",
+    metadata: {
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      accountId: decision.accountId,
+      createdInWindow: decision.createdInWindow,
+      cap: decision.cap,
+      window: decision.window,
+      reason: decision.reason
+    },
+    occurredAt: (input.deps.now?.() ?? new Date()).toISOString()
+  } as CanvasLiveEvent);
+  void (input.deps.logger ?? noopGatewayRuntimeLogger).warn("openclaw.orchestrator.creation_rate_exceeded", "Creation-rate governor blocked Webdock create step.", {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    accountId: decision.accountId,
+    createdInWindow: decision.createdInWindow,
+    cap: decision.cap,
+    window: decision.window
+  });
+  throw new OrchestratorFailure("failed", input.step, input.skill, message, undefined, inventoryHash);
+}
+
+async function handleCreationRateReadError(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  step: 4;
+  skill: "create_webdock_server";
+  accountId: string;
+  cap: number;
+  window: CreationRateWindow;
+  enabled: boolean;
+  failClosed: boolean;
+  error: unknown;
+  inputHash: string;
+}): Promise<void> {
+  const decision = evaluateCreationBudgetReadError({
+    now: input.deps.now?.() ?? new Date(),
+    accountId: input.accountId,
+    cap: input.cap,
+    enabled: input.enabled,
+    window: input.window,
+    failMode: input.failClosed ? "fail_closed" : "fail_open",
+    error: input.error
+  });
+  await audit(input.deps, "oc.orchestrator.creation_rate_read_failed", "webdock_account", input.accountId, input.failClosed ? "critical" : "high", {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    accountId: input.accountId,
+    cap: decision.cap,
+    window: decision.window,
+    failMode: input.failClosed ? "closed" : "open",
+    reason: decision.reason,
+    readErrorMessage: decision.readErrorMessage
+  });
+  void (input.deps.logger ?? noopGatewayRuntimeLogger).warn("openclaw.orchestrator.creation_rate_read_failed", "Creation-rate governor inventory read failed.", {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    accountId: input.accountId,
+    failMode: input.failClosed ? "closed" : "open",
+    error: decision.readErrorMessage
+  });
+  if (!decision.allowed) {
+    throw new OrchestratorFailure(
+      "failed",
+      input.step,
+      input.skill,
+      decision.failure?.message ?? "creation_rate_read_failed",
+      undefined,
+      input.inputHash
+    );
+  }
+}
+
 function extractCost(outcome: unknown): number | undefined {
   if (!isRecord(outcome)) return undefined;
   for (const key of ["costUsd", "priceUsd", "estimatedCostUsd"]) {
@@ -2770,12 +3052,32 @@ function positiveInt(value: string | undefined): number | undefined {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function nonNegativeInt(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
 function positiveIntFromUnknown(value: unknown): number | undefined {
   return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined;
 }
 
 function envFlagEnabled(value: string | undefined): boolean {
   return value === "true" || value === "1" || value === "yes" || value === "on";
+}
+
+function envFlagDisabled(value: string | undefined): boolean {
+  return value === "false" || value === "0" || value === "no" || value === "off";
+}
+
+function creationRateWindow(value: string | undefined): CreationRateWindow {
+  return value === "calendar_day_bogota" ? "calendar_day_bogota" : "rolling_24h";
+}
+
+function creationRateFailClosed(value: string | undefined): boolean {
+  return value === "closed" || value === "fail_closed" || value === "true" || value === "1";
 }
 
 function hashInput(value: unknown): string {
