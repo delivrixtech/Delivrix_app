@@ -147,7 +147,7 @@ interface TaskNode extends LiveTask {
  *    Esto evita el caso "Inventario IONOS ×6" cuando el operador pregunta
  *    lo mismo varias veces.
  */
-function buildTaskTree(tasks: LiveTask[]): TaskNode[] {
+export function buildTaskTree(tasks: LiveTask[]): TaskNode[] {
   // Index por id para resolver parents rápido
   const byId = new Map<string, LiveTask>();
   for (const t of tasks) byId.set(t.id, t);
@@ -155,7 +155,9 @@ function buildTaskTree(tasks: LiveTask[]): TaskNode[] {
   // Agrupar por parentTaskId
   const childrenByParent = new Map<string | null, LiveTask[]>();
   for (const t of tasks) {
-    const parent = t.parentTaskId ?? null;
+    const rawParent = t.parentTaskId ?? null;
+    // Re-root orphans: si el padre fue evictado (no está en byId), tratar como raíz.
+    const parent = rawParent !== null && byId.has(rawParent) ? rawParent : null;
     const arr = childrenByParent.get(parent);
     if (arr) arr.push(t);
     else childrenByParent.set(parent, [t]);
