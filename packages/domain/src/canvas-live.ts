@@ -84,6 +84,7 @@ export interface CanvasLiveAuditActionEvent {
   targetType: string;
   targetId: string;
   riskLevel: "low" | "medium" | "high" | "critical";
+  metadata?: Record<string, unknown>;
   occurredAt: string;
 }
 

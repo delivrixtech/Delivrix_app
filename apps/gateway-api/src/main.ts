@@ -428,6 +428,19 @@ const configureSmtpRuntimeDeps = {
 
     throw new Error(`unsupported_read_only_orchestrator_step:${input.skill}`);
   },
+  listWebdockCreationServers: async (input: { accountId: string }) => {
+    if (input.accountId !== "ops") {
+      throw new Error(`unknown_webdock_creation_account:${input.accountId}`);
+    }
+    const result = await webdockOpsAdapter.listServers();
+    return {
+      accountId: result.source.accountId ?? "ops",
+      accountLabel: result.source.accountLabel,
+      sourceKind: result.source.kind,
+      responseOk: result.source.responseOk,
+      servers: result.servers
+    };
+  },
   submitAndAwaitApproval: async (input: {
     runId: string;
     step: number;
