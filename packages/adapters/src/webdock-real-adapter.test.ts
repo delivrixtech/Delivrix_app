@@ -279,7 +279,8 @@ test("WebdockRealAdapter fetches a provisioned server by slug", async () => {
           slug: "mail-delivrix-test",
           name: "mail.delivrix.test",
           status: "running",
-          ipv4: "192.0.2.44"
+          ipv4: "192.0.2.44",
+          aliases: ["smtp.delivrix.test"]
         }
       });
     }
@@ -290,6 +291,7 @@ test("WebdockRealAdapter fetches a provisioned server by slug", async () => {
   assert.equal(server.slug, "mail-delivrix-test");
   assert.equal(server.status, "running");
   assert.equal(server.ipv4, "192.0.2.44");
+  assert.equal(server.mainDomain, "smtp.delivrix.test");
 });
 
 test("WebdockRealAdapter sets main domain through SSH fallback with validated command", async () => {
@@ -343,4 +345,119 @@ test("WebdockRealAdapter setServerPtr reports PTR unsupported by API", async () 
     supported: false,
     raw: { reason: "not_supported_by_api" }
   });
+});
+
+test("WebdockRealAdapter sets server identity through Webdock API and waits for set-hostnames", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const adapter = new WebdockRealAdapter({
+    readApiKey: "primary-read-key",
+    writeApiKey: "ops-write-key",
+    apiBase: "https://api.webdock.test/v1",
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      if (String(url).endsWith("/servers/server60/identity")) {
+        return Response.json({
+          slug: "server60",
+          mainDomain: "smtp.example.com",
+          status: "running"
+        }, {
+          status: 202,
+          headers: { "x-callback-id": "identity-cb-123" }
+        });
+      }
+      if (String(url).startsWith("https://api.webdock.test/v1/events?")) {
+        return Response.json([{
+          callbackId: "identity-cb-123",
+          eventType: "set-hostnames",
+          status: "finished"
+        }]);
+      }
+      return Response.json({}, { status: 404 });
+    }
+  });
+
+  const result = await adapter.setServerIdentity({
+    serverSlug: "server60",
+    mainDomain: "smtp.example.com",
+    timeoutMs: 50,
+    pollIntervalMs: 1
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.callbackId, "identity-cb-123");
+  assert.equal(result.mainDomain, "smtp.example.com");
+  assert.equal(calls[0].url, "https://api.webdock.test/v1/servers/server60/identity");
+  assert.equal(calls[0].init.method, "PATCH");
+  assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Bearer ops-write-key");
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
+    maindomain: "smtp.example.com",
+    aliasdomains: "",
+    removeDefaultAlias: true
+  });
+  assert.equal(calls[1].url, "https://api.webdock.test/v1/events?callbackId=identity-cb-123&eventType=set-hostnames&per_page=10");
+  assert.equal(calls[1].init.method, "GET");
+  assert.equal((calls[1].init.headers as Record<string, string>).authorization, "Bearer primary-read-key");
+});
+
+test("WebdockRealAdapter rejects when set-hostnames event fails", async () => {
+  const adapter = new WebdockRealAdapter({
+    readApiKey: "primary-read-key",
+    writeApiKey: "ops-write-key",
+    apiBase: "https://api.webdock.test/v1",
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/servers/server60/identity")) {
+        return Response.json({ slug: "server60" }, {
+          status: 202,
+          headers: { "x-callback-id": "identity-cb-error" }
+        });
+      }
+      return Response.json([{
+        callbackId: "identity-cb-error",
+        eventType: "set-hostnames",
+        status: "error",
+        message: "provider failed"
+      }]);
+    }
+  });
+
+  await assert.rejects(
+    () => adapter.setServerIdentity({
+      serverSlug: "server60",
+      mainDomain: "smtp.example.com",
+      timeoutMs: 50,
+      pollIntervalMs: 1
+    }),
+    (error) => error instanceof WebdockAdapterError && error.code === "set_server_identity_event_failed"
+  );
+});
+
+test("WebdockRealAdapter rejects when set-hostnames event stays pending past timeout", async () => {
+  const adapter = new WebdockRealAdapter({
+    readApiKey: "primary-read-key",
+    writeApiKey: "ops-write-key",
+    apiBase: "https://api.webdock.test/v1",
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/servers/server60/identity")) {
+        return Response.json({ slug: "server60" }, {
+          status: 202,
+          headers: { "x-callback-id": "identity-cb-timeout" }
+        });
+      }
+      return Response.json([{
+        callbackId: "identity-cb-timeout",
+        eventType: "set-hostnames",
+        status: "waiting"
+      }]);
+    }
+  });
+
+  await assert.rejects(
+    () => adapter.setServerIdentity({
+      serverSlug: "server60",
+      mainDomain: "smtp.example.com",
+      timeoutMs: 5,
+      pollIntervalMs: 1
+    }),
+    (error) => error instanceof WebdockAdapterError && error.code === "set_server_identity_event_timeout"
+  );
 });

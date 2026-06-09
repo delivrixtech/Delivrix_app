@@ -96,9 +96,9 @@ test("readSmtpRunProgress returns the safe 14-step snapshot shape", async () => 
       { step: 3, skill: "wait_for_dns_propagation", status: "pending" },
       { step: 4, skill: "create_webdock_server", status: "pending" },
       { step: 5, skill: "wait_server_running", status: "pending" },
-      { step: 6, skill: "bind_webdock_main_domain", status: "pending" },
-      { step: 7, skill: "upsert_dns_route53", status: "pending" },
-      { step: 8, skill: "wait_for_dns_propagation", status: "pending" },
+      { step: 6, skill: "upsert_dns_route53", status: "pending" },
+      { step: 7, skill: "wait_for_dns_propagation", status: "pending" },
+      { step: 8, skill: "bind_webdock_main_domain", status: "pending" },
       { step: 9, skill: "provision_smtp_postfix", status: "pending" },
       { step: 10, skill: "configure_email_auth", status: "pending" },
       { step: 11, skill: "wait_for_dns_propagation", status: "pending" },
@@ -123,31 +123,31 @@ test("configureCompleteSmtp does not proceed after step 2 execution failure", as
   assert.equal(ctx.approvals.length, 1);
 });
 
-test("configureCompleteSmtp emits rollback proposal when step 6 fails after VPS creation", async () => {
+test("configureCompleteSmtp emits rollback proposal when identity bind fails after DNS forward", async () => {
   const ctx = createDeps({
     decisions: {
-      6: { status: "execution_failed", proposalId: "p-6", outcome: { error: "bind_failed" }, durationMs: 9 }
+      8: { status: "execution_failed", proposalId: "p-8", outcome: { error: "bind_failed" }, durationMs: 9 }
     }
   });
   const result = await configureCompleteSmtp(validInput(), ctx.deps);
 
   assert.equal(result.status, "failed");
-  assert.equal(result.failedStep, 6);
+  assert.equal(result.failedStep, 8);
   assert.equal(ctx.rollbacks.length, 1);
   assert.equal(ctx.rollbacks[0].skill, "delete_webdock_server");
   assert.equal(ctx.rollbacks[0].params.serverSlug, "srv-delivrix");
 });
 
-test("configureCompleteSmtp maps operator rejection at step 8 to cancelled_by_operator", async () => {
+test("configureCompleteSmtp maps operator rejection during A propagation wait to cancelled_by_operator", async () => {
   const ctx = createDeps({
     decisions: {
-      8: { status: "rejected", proposalId: "p-8", reason: "operator stopped DNS wait" }
+      7: { status: "rejected", proposalId: "p-7", reason: "operator stopped DNS wait" }
     }
   });
   const result = await configureCompleteSmtp(validInput(), ctx.deps);
 
   assert.equal(result.status, "cancelled_by_operator");
-  assert.equal(result.failedStep, 8);
+  assert.equal(result.failedStep, 7);
   assert.equal(result.error, "operator stopped DNS wait");
 });
 
@@ -232,8 +232,8 @@ test("create_webdock_server uses canonical smtp host as hostname", async () => {
 test("route53 DNS step writes canonical smtp A and MX records", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);
-  const step7 = ctx.approvals.find((entry) => entry.step === 7);
-  assert.deepEqual(step7?.params.records, [
+  const step6 = ctx.approvals.find((entry) => entry.step === 6);
+  assert.deepEqual(step6?.params.records, [
     { name: "smtp.delivrixops.com", type: "A", ttl: 300, values: ["203.0.113.10"] },
     { name: "delivrixops.com", type: "MX", ttl: 300, values: ["10 smtp.delivrixops.com."] }
   ]);
@@ -242,9 +242,17 @@ test("route53 DNS step writes canonical smtp A and MX records", async () => {
 test("DNS A propagation waits on canonical smtp host", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);
+  const step7 = ctx.approvals.find((entry) => entry.step === 7);
+  assert.equal(step7?.params.domain, "smtp.delivrixops.com");
+  assert.deepEqual(step7?.params.expectedRecord, { type: "A", value: "203.0.113.10" });
+});
+
+test("Webdock identity bind runs after DNS A propagation", async () => {
+  const ctx = createDeps();
+  await configureCompleteSmtp(validInput(), ctx.deps);
   const step8 = ctx.approvals.find((entry) => entry.step === 8);
-  assert.equal(step8?.params.domain, "smtp.delivrixops.com");
-  assert.deepEqual(step8?.params.expectedRecord, { type: "A", value: "203.0.113.10" });
+  assert.equal(step8?.skill, "bind_webdock_main_domain");
+  assert.deepEqual(step8?.params, { serverSlug: "srv-delivrix", domain: "delivrixops.com" });
 });
 
 test("SMTP provisioning includes server, domain, IP and DKIM selector", async () => {
@@ -393,7 +401,8 @@ test("approval timeout env is passed to every gated step", async () => {
   await configureCompleteSmtp(validInput(), ctx.deps);
   assert.equal(ctx.approvals.find((entry) => entry.step === 2)?.approvalTimeoutMs, 12345);
   assert.equal(ctx.approvals.find((entry) => entry.step === 3)?.approvalTimeoutMs, 1_980_000);
-  assert.equal(ctx.approvals.find((entry) => entry.step === 8)?.approvalTimeoutMs, 1_950_000);
+  assert.equal(ctx.approvals.find((entry) => entry.step === 7)?.approvalTimeoutMs, 1_950_000);
+  assert.equal(ctx.approvals.find((entry) => entry.step === 8)?.approvalTimeoutMs, 12345);
   assert.equal(ctx.approvals.find((entry) => entry.step === 11)?.approvalTimeoutMs, 1_950_000);
 });
 
@@ -1286,8 +1295,8 @@ function signedPlanApproval(overrides: Partial<PlanApprovalRecord["scope"]> = {}
       "read_dns_ionos",
       "read_webdock_servers",
       "create_webdock_server",
-      "bind_webdock_main_domain",
       "upsert_dns_route53",
+      "bind_webdock_main_domain",
       "provision_smtp_postfix",
       "configure_email_auth",
       "seed_warmup_pool",

@@ -1,6 +1,8 @@
+import { promises as dns } from "node:dns";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
   WebdockServer,
+  WebdockSetServerIdentityResult,
   WebdockSetServerMainDomainResult,
   WebdockSetServerPtrResult,
   WebdockSshRunner
@@ -42,8 +44,18 @@ export interface BindWebdockMainDomainResult {
   serverSlug: string;
   mainDomain: string;
   previousMainDomain: string | null;
+  identitySet: boolean;
+  identityCallbackId?: string;
   ptrSet: boolean;
-  ptrSkipReason?: "not_supported_by_api" | "ipv4_missing" | "operator_opt_out" | "set_failed";
+  ptrSkipReason?: "ipv4_missing" | "operator_opt_out" | "fcrdns_pending" | "set_failed";
+  fcrdnsVerified: boolean;
+  fcrdnsStatus: "verified" | "pending";
+  fcrdns?: {
+    expectedA: string;
+    expectedPtr: string;
+    forwardA: string[];
+    reversePtr: string[];
+  };
   alreadyBound: boolean;
   eventId: string;
   durationMs: number;
@@ -64,6 +76,15 @@ export interface BindWebdockMainDomainApprovalGuard {
 
 export interface BindWebdockMainDomainAdapter {
   getServer(serverSlug: string): Promise<WebdockServer>;
+  setServerIdentity(opts: {
+    serverSlug: string;
+    mainDomain: string;
+    aliasDomains?: string[];
+    removeDefaultAlias?: boolean;
+    waitForCompletion?: boolean;
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+  }): Promise<WebdockSetServerIdentityResult>;
   setServerMainDomain(opts: {
     serverSlug: string;
     domain: string;
@@ -77,6 +98,11 @@ export interface BindWebdockMainDomainAdapter {
   }): Promise<WebdockSetServerPtrResult>;
 }
 
+export interface FcrdnsResolver {
+  resolve4(hostname: string): Promise<string[]>;
+  reverse(ip: string): Promise<string[]>;
+}
+
 export interface BindWebdockMainDomainDeps {
   auditLog: AuditSink;
   approvalGuard: BindWebdockMainDomainApprovalGuard;
@@ -84,9 +110,27 @@ export interface BindWebdockMainDomainDeps {
   sshRunner?: WebdockSshRunner;
   workspace?: OpenClawWorkspace;
   now: () => number;
+  fcrdnsResolver?: FcrdnsResolver;
+  fcrdnsMaxWaitMs?: number;
+  fcrdnsPollIntervalMs?: number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 const approvalMaxAgeMs = 15 * 60 * 1000;
+const defaultFcrdnsResolver: FcrdnsResolver = {
+  resolve4: (hostname) => dns.resolve4(hostname),
+  reverse: (ip) => dns.reverse(ip)
+};
+
+interface FcrdnsCheckResult {
+  verified: boolean;
+  expectedA: string;
+  expectedPtr: string;
+  forwardA: string[];
+  reversePtr: string[];
+  forwardMatched: boolean;
+  reverseMatched: boolean;
+}
 
 export const bindWebdockMainDomainParamSchema: SkillParamSchema<BindWebdockMainDomainParams> = {
   safeParse(value: unknown) {
@@ -162,61 +206,20 @@ export async function handleBindWebdockMainDomain(input: {
     return;
   }
 
-  const currentMainDomain = currentDomainFromServer(server);
-  if (currentMainDomain === params.domain) {
+  const identityDomain = smtpHostForDomain(params.domain);
+  const currentMainDomain = currentIdentityDomainFromServer(server);
+  if (!params.setPtr) {
+    json(input.response, 422, {
+      error: "fcrdns_required",
+      message: "Webdock SMTP identity requires FCrDNS verification; setPtr=false is not allowed for SMTP provisioning."
+    });
+    return;
+  }
+  if (!server.ipv4) {
     const event = await input.deps.auditLog.append({
       actorType: "operator",
       actorId: params.actorId,
-      action: "oc.webdock.main_domain_bound",
-      targetType: "webdock_server",
-      targetId: params.serverSlug,
-      riskLevel: "critical",
-      decision: "allow",
-      humanApproved: true,
-      approverIds: [params.actorId],
-      metadata: {
-        serverSlug: params.serverSlug,
-        previousMainDomain: params.domain,
-        newMainDomain: params.domain,
-        ptrSet: false,
-        alreadyBound: true,
-        approvalEventId: approval.eventId ?? null,
-        approvalArtifactId: approval.artifactId ?? null
-      }
-    });
-    await upsertDomainBinding(input.deps.workspace, {
-      domain: params.domain,
-      serverSlug: params.serverSlug,
-      serverIp: server.ipv4 || "",
-      status: "main_domain_bound"
-    });
-    json(input.response, 200, {
-      ok: true,
-      serverSlug: params.serverSlug,
-      mainDomain: params.domain,
-      previousMainDomain: params.domain,
-      ptrSet: false,
-      alreadyBound: true,
-      eventId: eventId(event),
-      durationMs: input.deps.now() - startedAt
-    } satisfies BindWebdockMainDomainResult);
-    return;
-  }
-
-  let previousMainDomain: string | null = currentMainDomain;
-  try {
-    const bind = await input.deps.webdockAdapter.setServerMainDomain({
-      serverSlug: params.serverSlug,
-      domain: params.domain,
-      serverIp: server.ipv4 || null,
-      sshRunner: input.deps.sshRunner
-    });
-    previousMainDomain = bind.previousMainDomain ?? previousMainDomain;
-  } catch (error) {
-    await input.deps.auditLog.append({
-      actorType: "operator",
-      actorId: params.actorId,
-      action: "oc.webdock.main_domain_bind_failed",
+      action: "oc.webdock.identity_pending_fcrdns",
       targetType: "webdock_server",
       targetId: params.serverSlug,
       riskLevel: "critical",
@@ -226,57 +229,162 @@ export async function handleBindWebdockMainDomain(input: {
       metadata: {
         serverSlug: params.serverSlug,
         domain: params.domain,
-        error: errorMessage(error)
+        identityDomain,
+        ptrSet: false,
+        ptrSkipReason: "ipv4_missing",
+        approvalEventId: approval.eventId ?? null,
+        approvalArtifactId: approval.artifactId ?? null
       }
     });
-    json(input.response, 502, { error: "bind_failed", details: errorMessage(error) });
+    await upsertDomainBinding(input.deps.workspace, {
+      domain: params.domain,
+      serverSlug: params.serverSlug,
+      serverIp: "",
+      status: "identity_pending_fcrdns"
+    });
+    json(input.response, 424, {
+      ok: false,
+      serverSlug: params.serverSlug,
+      mainDomain: identityDomain,
+      previousMainDomain: currentMainDomain,
+      identitySet: false,
+      ptrSet: false,
+      ptrSkipReason: "ipv4_missing",
+      fcrdnsVerified: false,
+      fcrdnsStatus: "pending",
+      alreadyBound: currentMainDomain === identityDomain,
+      eventId: eventId(event),
+      durationMs: input.deps.now() - startedAt,
+      error: "ipv4_missing"
+    } satisfies BindWebdockMainDomainResult);
     return;
   }
 
-  let ptrSet = false;
-  let ptrSkipReason: BindWebdockMainDomainResult["ptrSkipReason"];
-  if (!params.setPtr) {
-    ptrSkipReason = "operator_opt_out";
-  } else if (!server.ipv4) {
-    ptrSkipReason = "ipv4_missing";
-  } else {
+  let previousMainDomain: string | null = currentMainDomain;
+  const alreadyBound = currentMainDomain === identityDomain;
+  let identity: WebdockSetServerIdentityResult | null = null;
+  if (!alreadyBound) {
     try {
-      const ptrValue = smtpHostForDomain(params.domain);
-      const ptr = await input.deps.webdockAdapter.setServerPtr({
+      identity = await input.deps.webdockAdapter.setServerIdentity({
         serverSlug: params.serverSlug,
-        ipv4: server.ipv4,
-        ptrValue
+        mainDomain: identityDomain,
+        aliasDomains: [],
+        removeDefaultAlias: true,
+        waitForCompletion: true
       });
-      if (ptr.supported && ptr.ok) {
-        ptrSet = true;
-      } else if (!ptr.supported) {
-        ptrSkipReason = "not_supported_by_api";
-      }
+      previousMainDomain = currentMainDomain;
     } catch (error) {
-      ptrSkipReason = "set_failed";
       await input.deps.auditLog.append({
         actorType: "operator",
         actorId: params.actorId,
-        action: "oc.webdock.ptr_set_failed_best_effort",
+        action: "oc.webdock.identity_set_failed",
         targetType: "webdock_server",
         targetId: params.serverSlug,
-        riskLevel: "high",
-        decision: "allow",
+        riskLevel: "critical",
+        decision: "reject",
         humanApproved: true,
         approverIds: [params.actorId],
         metadata: {
           serverSlug: params.serverSlug,
           domain: params.domain,
-          ipv4: server.ipv4,
-          ptrValue: smtpHostForDomain(params.domain),
-          ptrSkipReason,
+          identityDomain,
+          previousMainDomain,
           error: errorMessage(error)
         }
       });
+      json(input.response, 502, { error: "identity_set_failed", details: errorMessage(error) });
+      return;
     }
   }
 
-  const event = await input.deps.auditLog.append({
+  const fcrdns = await verifyFcrdnsWithRetry({
+    resolver: input.deps.fcrdnsResolver ?? defaultFcrdnsResolver,
+    smtpHost: identityDomain,
+    ipv4: server.ipv4,
+    maxWaitMs: input.deps.fcrdnsMaxWaitMs ?? 120_000,
+    pollIntervalMs: input.deps.fcrdnsPollIntervalMs ?? 10_000,
+    sleep: input.deps.sleep ?? sleep
+  });
+
+  if (!fcrdns.verified) {
+    const event = await input.deps.auditLog.append({
+      actorType: "operator",
+      actorId: params.actorId,
+      action: "oc.webdock.identity_pending_fcrdns",
+      targetType: "webdock_server",
+      targetId: params.serverSlug,
+      riskLevel: "critical",
+      decision: "reject",
+      humanApproved: true,
+      approverIds: [params.actorId],
+      metadata: {
+        serverSlug: params.serverSlug,
+        domain: params.domain,
+        identityDomain,
+        previousMainDomain,
+        identitySet: !alreadyBound,
+        identityCallbackId: identity?.callbackId ?? null,
+        ptrSet: false,
+        ptrSkipReason: "fcrdns_pending",
+        fcrdns,
+        alreadyBound,
+        approvalEventId: approval.eventId ?? null,
+        approvalArtifactId: approval.artifactId ?? null
+      }
+    });
+    await upsertDomainBinding(input.deps.workspace, {
+      domain: params.domain,
+      serverSlug: params.serverSlug,
+      serverIp: server.ipv4,
+      status: "identity_pending_fcrdns"
+    });
+    json(input.response, 424, {
+      ok: false,
+      serverSlug: params.serverSlug,
+      mainDomain: identityDomain,
+      previousMainDomain,
+      identitySet: !alreadyBound,
+      ...(identity?.callbackId ? { identityCallbackId: identity.callbackId } : {}),
+      ptrSet: false,
+      ptrSkipReason: "fcrdns_pending",
+      fcrdnsVerified: false,
+      fcrdnsStatus: "pending",
+      fcrdns: fcrdnsSnapshot(fcrdns),
+      alreadyBound,
+      eventId: eventId(event),
+      durationMs: input.deps.now() - startedAt,
+      error: "fcrdns_pending"
+    } satisfies BindWebdockMainDomainResult);
+    return;
+  }
+
+  const alignedEvent = await input.deps.auditLog.append({
+    actorType: "operator",
+    actorId: params.actorId,
+    action: "oc.webdock.identity_aligned",
+    targetType: "webdock_server",
+    targetId: params.serverSlug,
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: [params.actorId],
+    metadata: {
+      serverSlug: params.serverSlug,
+      domain: params.domain,
+      previousMainDomain,
+      newMainDomain: identityDomain,
+      identitySet: !alreadyBound,
+      identityCallbackId: identity?.callbackId ?? null,
+      removeDefaultAlias: true,
+      ptrSet: true,
+      fcrdns,
+      alreadyBound,
+      approvalEventId: approval.eventId ?? null,
+      approvalArtifactId: approval.artifactId ?? null
+    }
+  });
+
+  await input.deps.auditLog.append({
     actorType: "operator",
     actorId: params.actorId,
     action: "oc.webdock.main_domain_bound",
@@ -289,10 +397,13 @@ export async function handleBindWebdockMainDomain(input: {
     metadata: {
       serverSlug: params.serverSlug,
       previousMainDomain,
-      newMainDomain: params.domain,
-      ptrSet,
-      ptrSkipReason: ptrSkipReason ?? null,
-      alreadyBound: false,
+      newMainDomain: identityDomain,
+      identitySet: !alreadyBound,
+      identityCallbackId: identity?.callbackId ?? null,
+      ptrSet: true,
+      ptrSkipReason: null,
+      fcrdnsVerified: true,
+      alreadyBound,
       approvalEventId: approval.eventId ?? null,
       approvalArtifactId: approval.artifactId ?? null
     }
@@ -307,12 +418,16 @@ export async function handleBindWebdockMainDomain(input: {
   json(input.response, 200, {
     ok: true,
     serverSlug: params.serverSlug,
-    mainDomain: params.domain,
+    mainDomain: identityDomain,
     previousMainDomain,
-    ptrSet,
-    ...(ptrSkipReason ? { ptrSkipReason } : {}),
-    alreadyBound: false,
-    eventId: eventId(event),
+    identitySet: !alreadyBound,
+    ...(identity?.callbackId ? { identityCallbackId: identity.callbackId } : {}),
+    ptrSet: true,
+    fcrdnsVerified: true,
+    fcrdnsStatus: "verified",
+    fcrdns: fcrdnsSnapshot(fcrdns),
+    alreadyBound,
+    eventId: eventId(alignedEvent),
     durationMs: input.deps.now() - startedAt
   } satisfies BindWebdockMainDomainResult);
 }
@@ -460,17 +575,83 @@ function optionalRepairScope(input: Record<string, unknown>): {
   };
 }
 
-function currentDomainFromServer(server: WebdockServer): string | null {
-  const candidates = [server.mainDomain, server.hostname, server.name, server.description];
+function currentIdentityDomainFromServer(server: WebdockServer): string | null {
+  const candidates = [server.mainDomain];
   for (const candidate of candidates) {
     if (typeof candidate !== "string") continue;
     try {
-      return normalizeDomain(candidate);
+      return normalizeIdentityDomain(candidate);
     } catch {
       continue;
     }
   }
   return null;
+}
+
+async function verifyFcrdnsWithRetry(input: {
+  resolver: FcrdnsResolver;
+  smtpHost: string;
+  ipv4: string;
+  maxWaitMs: number;
+  pollIntervalMs: number;
+  sleep: (ms: number) => Promise<void>;
+}): Promise<FcrdnsCheckResult> {
+  const pollIntervalMs = Math.max(0, input.pollIntervalMs);
+  const attempts = Math.max(1, Math.floor(Math.max(0, input.maxWaitMs) / Math.max(1, pollIntervalMs || 1)) + 1);
+  let latest: FcrdnsCheckResult = await checkFcrdns(input);
+  for (let attempt = 1; attempt < attempts && !latest.verified; attempt += 1) {
+    if (pollIntervalMs > 0) {
+      await input.sleep(pollIntervalMs);
+    }
+    latest = await checkFcrdns(input);
+  }
+  return latest;
+}
+
+async function checkFcrdns(input: {
+  resolver: FcrdnsResolver;
+  smtpHost: string;
+  ipv4: string;
+}): Promise<FcrdnsCheckResult> {
+  const expectedPtr = normalizeDnsName(input.smtpHost);
+  const forwardA = await input.resolver.resolve4(input.smtpHost).catch(() => [] as string[]);
+  const reversePtr = (await input.resolver.reverse(input.ipv4).catch(() => [] as string[])).map(normalizeDnsName);
+  const forwardMatched = forwardA.includes(input.ipv4);
+  const reverseMatched = reversePtr.includes(expectedPtr);
+  return {
+    verified: forwardMatched && reverseMatched,
+    expectedA: input.ipv4,
+    expectedPtr: `${expectedPtr}.`,
+    forwardA,
+    reversePtr: reversePtr.map((value) => `${value}.`),
+    forwardMatched,
+    reverseMatched
+  };
+}
+
+function fcrdnsSnapshot(result: FcrdnsCheckResult): BindWebdockMainDomainResult["fcrdns"] {
+  return {
+    expectedA: result.expectedA,
+    expectedPtr: result.expectedPtr,
+    forwardA: result.forwardA,
+    reversePtr: result.reversePtr
+  };
+}
+
+function normalizeIdentityDomain(value: unknown): string {
+  const normalized = requiredString(value, "domain").toLowerCase().replace(/\.$/, "");
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(normalized)) {
+    throw new BindWebdockMainDomainInputError("domain_invalid_format");
+  }
+  return normalized;
+}
+
+function normalizeDnsName(value: string): string {
+  return value.trim().toLowerCase().replace(/\.$/, "");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function upsertDomainBinding(

@@ -130,6 +130,13 @@ export interface WebdockSetServerPtrResult {
   raw: unknown;
 }
 
+export interface WebdockSetServerIdentityResult {
+  ok: boolean;
+  callbackId: string;
+  mainDomain: string;
+  raw: unknown;
+}
+
 export interface WebdockSshCommandInput {
   serverIp: string;
   command: string;
@@ -626,11 +633,80 @@ export class WebdockRealAdapter {
   }): Promise<WebdockSetServerPtrResult> {
     normalizeBindServerSlug(opts.serverSlug);
     normalizeIpv4(opts.ipv4);
-    normalizeMainDomain(opts.ptrValue);
+    normalizeReverseDnsHost(opts.ptrValue);
     return {
       ok: false,
       supported: false,
       raw: { reason: "not_supported_by_api" }
+    };
+  }
+
+  async setServerIdentity(opts: {
+    serverSlug: string;
+    mainDomain: string;
+    aliasDomains?: string | string[] | null;
+    removeDefaultAlias?: boolean;
+    waitForCompletion?: boolean;
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+  }): Promise<WebdockSetServerIdentityResult> {
+    if (!this.writeApiKey) {
+      throw new Error("WEBDOCK_API_KEY_OPS is required for Webdock writes.");
+    }
+
+    const serverSlug = normalizeBindServerSlug(opts.serverSlug);
+    const mainDomain = normalizeIdentityHost(opts.mainDomain);
+    const aliasdomains = normalizeIdentityAliasDomains(opts.aliasDomains);
+    const payload = {
+      maindomain: mainDomain,
+      aliasdomains,
+      removeDefaultAlias: opts.removeDefaultAlias ?? true
+    };
+
+    const response = await this.fetchImpl(
+      `${this.apiBase}/servers/${encodeURIComponent(serverSlug)}/identity`,
+      {
+        method: "PATCH",
+        headers: this.jsonHeaders(this.writeApiKey, "Delivrix-MailOps/0.1 (webdock-identity)"),
+        body: JSON.stringify(payload)
+      }
+    );
+    const body = response.status === 204 ? "" : await response.text();
+    const raw = parseJsonObject(body);
+
+    if (!response.ok) {
+      throw new WebdockAdapterError("set_server_identity_failed_api", {
+        serverSlug,
+        status: response.status,
+        statusText: response.statusText,
+        body: body.slice(0, 1000)
+      });
+    }
+
+    const eventId = callbackId(response, raw);
+    if (!eventId) {
+      throw new WebdockAdapterError("set_server_identity_callback_missing", { serverSlug });
+    }
+
+    const event = opts.waitForCompletion === false
+      ? null
+      : await this.waitForWebdockEvent({
+        callbackId: eventId,
+        eventType: "set-hostnames",
+        serverSlug,
+        timeoutMs: opts.timeoutMs ?? 120_000,
+        pollIntervalMs: opts.pollIntervalMs ?? 2_000
+      });
+
+    this.invalidateCache();
+    return {
+      ok: true,
+      callbackId: eventId,
+      mainDomain,
+      raw: {
+        response: raw,
+        event
+      }
     };
   }
 
@@ -765,6 +841,76 @@ export class WebdockRealAdapter {
       .find((user) => user.username === username) ?? null;
   }
 
+  private async waitForWebdockEvent(input: {
+    callbackId: string;
+    eventType: string;
+    serverSlug: string;
+    timeoutMs: number;
+    pollIntervalMs: number;
+  }): Promise<unknown> {
+    const apiKey = this.readApiKey ?? this.accountApiKey;
+    if (!apiKey) {
+      throw new Error("WEBDOCK_API_KEY_PRIMARY or WEBDOCK_API_KEY_ACCOUNT is required to poll Webdock events.");
+    }
+
+    const startedAt = Date.now();
+    const pollIntervalMs = Math.max(1, input.pollIntervalMs);
+    const timeoutMs = Math.max(1, input.timeoutMs);
+    let lastRaw: unknown = null;
+
+    while (Date.now() - startedAt <= timeoutMs) {
+      const response = await this.fetchImpl(
+        `${this.apiBase}/events?callbackId=${encodeURIComponent(input.callbackId)}&eventType=${encodeURIComponent(input.eventType)}&per_page=10`,
+        {
+          method: "GET",
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+            accept: "application/json",
+            "user-agent": "Delivrix-MailOps/0.1 (webdock-identity)"
+          }
+        }
+      );
+      const body = response.status === 204 ? "" : await response.text();
+      const raw = parseJsonObject(body);
+      lastRaw = raw;
+
+      if (!response.ok) {
+        throw new WebdockAdapterError("set_server_identity_event_poll_failed_api", {
+          serverSlug: input.serverSlug,
+          callbackId: input.callbackId,
+          status: response.status,
+          statusText: response.statusText,
+          body: body.slice(0, 1000)
+        });
+      }
+
+      for (const event of parseWebdockEventLogs(raw)) {
+        const status = stringField(event, "status");
+        if (status === "finished") {
+          return event;
+        }
+        if (status === "error") {
+          throw new WebdockAdapterError("set_server_identity_event_failed", {
+            serverSlug: input.serverSlug,
+            callbackId: input.callbackId,
+            eventType: input.eventType,
+            event
+          });
+        }
+      }
+
+      await delay(pollIntervalMs);
+    }
+
+    throw new WebdockAdapterError("set_server_identity_event_timeout", {
+      serverSlug: input.serverSlug,
+      callbackId: input.callbackId,
+      eventType: input.eventType,
+      timeoutMs,
+      lastRaw
+    });
+  }
+
   private jsonHeaders(apiKey: string | undefined, userAgent: string): Record<string, string> {
     if (!apiKey) {
       throw new Error("Webdock API key is required for this operation.");
@@ -873,7 +1019,7 @@ function parseWebdockServers(raw: unknown): WebdockServer[] {
       lastDataReceived: stringField(obj, "lastDataReceived"),
       imageSlug: stringField(obj, "imageSlug"),
       description: stringField(obj, "description"),
-      mainDomain: stringField(obj, "mainDomain"),
+      mainDomain: mainDomainFromServerObject(obj),
       hostname: stringField(obj, "hostname"),
       webRoot: stringField(obj, "webRoot"),
       snapshotRunTime: numberField(obj, "snapshotRunTime")
@@ -910,11 +1056,19 @@ function parseCreatedServer(raw: unknown): WebdockServer {
     lastDataReceived: stringField(obj, "lastDataReceived"),
     imageSlug: stringField(obj, "imageSlug") ?? stringField(obj, "image"),
     description: stringField(obj, "description"),
-    mainDomain: stringField(obj, "mainDomain"),
+    mainDomain: mainDomainFromServerObject(obj),
     hostname: stringField(obj, "hostname"),
     webRoot: stringField(obj, "webRoot"),
     snapshotRunTime: numberField(obj, "snapshotRunTime")
   };
+}
+
+function mainDomainFromServerObject(obj: Record<string, unknown>): string | undefined {
+  const legacy = stringField(obj, "mainDomain") ?? stringField(obj, "maindomain") ?? stringField(obj, "main_domain");
+  if (legacy) return legacy;
+  const aliases = Array.isArray(obj.aliases) ? obj.aliases : [];
+  const firstAlias = aliases.find((alias): alias is string => typeof alias === "string" && alias.trim().length > 0);
+  return firstAlias?.trim();
 }
 
 function parsePublicKeys(raw: unknown): Array<{ id: number; key: string }> {
@@ -950,6 +1104,17 @@ function parseShellUsers(raw: unknown): Array<{
     out.push({ id, username, publicKeyIds });
   }
   return out;
+}
+
+function parseWebdockEventLogs(raw: unknown): Array<Record<string, unknown>> {
+  const obj = raw && typeof raw === "object" ? raw as Record<string, unknown> : null;
+  const candidates: unknown[] =
+    Array.isArray(raw) ? raw :
+      obj && Array.isArray(obj.events) ? obj.events as unknown[] :
+        obj && Array.isArray(obj.data) ? obj.data as unknown[] :
+          obj && Array.isArray(obj.items) ? obj.items as unknown[] :
+            [];
+  return candidates.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"));
 }
 
 function stringField(obj: Record<string, unknown>, key: string): string | undefined {
@@ -1006,6 +1171,41 @@ function normalizeMainDomain(value: string): string {
     throw new WebdockAdapterError("domain_invalid_format", { value });
   }
   return normalized;
+}
+
+function normalizeIdentityHost(value: string): string {
+  const normalized = normalizeReverseDnsHost(value);
+  if (!normalized.startsWith("smtp.")) {
+    throw new WebdockAdapterError("identity_host_invalid_format", { value });
+  }
+  return normalized;
+}
+
+function normalizeReverseDnsHost(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/\.$/, "");
+  const labels = normalized.split(".");
+  const validLabels = labels.every((label) =>
+    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)
+  );
+  if (
+    normalized.length > 253 ||
+    labels.length < 2 ||
+    !validLabels ||
+    !/[a-z]/.test(labels.at(-1) ?? "")
+  ) {
+    throw new WebdockAdapterError("identity_host_invalid_format", { value });
+  }
+  return normalized;
+}
+
+function normalizeIdentityAliasDomains(value: string | string[] | null | undefined): string {
+  if (value === null || value === undefined) return "";
+  const values = Array.isArray(value) ? value : value.split(/[,\n]/);
+  const normalized = values
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map(normalizeReverseDnsHost);
+  return [...new Set(normalized)].join("\n");
 }
 
 function normalizeOptionalIpv4(value: string | null | undefined): string | null {
@@ -1075,6 +1275,10 @@ function callbackId(response: Response, raw: unknown): string | undefined {
 
 function uniqueNumbers(values: number[]): number[] {
   return [...new Set(values)];
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function resolveProfileSlug(profile: WebdockProvisionProfile): string {

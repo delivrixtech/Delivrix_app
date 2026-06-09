@@ -263,9 +263,9 @@ const smtpRunProgressSteps = [
   { step: 3, skill: "wait_for_dns_propagation" },
   { step: 4, skill: "create_webdock_server" },
   { step: 5, skill: "wait_server_running" },
-  { step: 6, skill: "bind_webdock_main_domain" },
-  { step: 7, skill: "upsert_dns_route53" },
-  { step: 8, skill: "wait_for_dns_propagation" },
+  { step: 6, skill: "upsert_dns_route53" },
+  { step: 7, skill: "wait_for_dns_propagation" },
+  { step: 8, skill: "bind_webdock_main_domain" },
   { step: 9, skill: "provision_smtp_postfix" },
   { step: 10, skill: "configure_email_auth" },
   { step: 11, skill: "wait_for_dns_propagation" },
@@ -624,20 +624,6 @@ export async function configureCompleteSmtp(
       planApproval,
       runId,
       step: 6,
-      skill: "bind_webdock_main_domain",
-      actorId: effectiveInput.actorId,
-      approvalTimeoutMs,
-      budgetUsdMax: effectiveInput.budgetUsdMax,
-      params: { serverSlug, domain: chosenDomain },
-      stepResults
-    });
-
-    await runMutatingStepWithState({
-      deps,
-      runState,
-      planApproval,
-      runId,
-      step: 7,
       skill: "upsert_dns_route53",
       actorId: effectiveInput.actorId,
       approvalTimeoutMs,
@@ -657,7 +643,7 @@ export async function configureCompleteSmtp(
       runState,
       planApproval,
       runId,
-      step: 8,
+      step: 7,
       skill: "wait_for_dns_propagation",
       actorId: effectiveInput.actorId,
       approvalTimeoutMs,
@@ -668,6 +654,20 @@ export async function configureCompleteSmtp(
         maxWaitMs: 1_800_000,
         pollIntervalMs: 30_000
       },
+      stepResults
+    });
+
+    await runMutatingStepWithState({
+      deps,
+      runState,
+      planApproval,
+      runId,
+      step: 8,
+      skill: "bind_webdock_main_domain",
+      actorId: effectiveInput.actorId,
+      approvalTimeoutMs,
+      budgetUsdMax: effectiveInput.budgetUsdMax,
+      params: { serverSlug, domain: chosenDomain },
       stepResults
     });
 

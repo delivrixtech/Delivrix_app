@@ -14,23 +14,21 @@ import type { AuditEventInput } from "../../../../packages/domain/src/index.ts";
 import {
   handleBindWebdockMainDomain,
   type BindWebdockMainDomainAdapter,
-  type BindWebdockMainDomainApprovalGuard
+  type BindWebdockMainDomainApprovalGuard,
+  type FcrdnsResolver
 } from "./webdock-bind-domain.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 
 const fixedNowMs = Date.parse("2026-05-31T19:30:00.000Z");
 
-test("bind_webdock_main_domain binds hostname and canonical smtp PTR", async () => {
-  const calls: Array<{ method: string; domain?: string; ptrValue?: string }> = [];
+test("bind_webdock_main_domain sets Webdock identity to smtp host and verifies FCrDNS", async () => {
+  const calls: Array<{ method: string; mainDomain?: string; removeDefaultAlias?: boolean }> = [];
   const harness = routeHarness({
+    fcrdnsResolver: fcrdnsOkResolver(),
     adapter: adapterMock({
-      setServerMainDomain: async (opts) => {
-        calls.push({ method: "main", domain: opts.domain });
-        return { ok: true, previousMainDomain: "old.example.com", raw: {} };
-      },
-      setServerPtr: async (opts) => {
-        calls.push({ method: "ptr", ptrValue: opts.ptrValue });
-        return { ok: true, supported: true, raw: {} };
+      setServerIdentity: async (opts) => {
+        calls.push({ method: "identity", mainDomain: opts.mainDomain, removeDefaultAlias: opts.removeDefaultAlias });
+        return { ok: true, serverSlug: opts.serverSlug, mainDomain: opts.mainDomain, callbackId: "cb-identity-1", raw: {} };
       }
     })
   });
@@ -39,11 +37,14 @@ test("bind_webdock_main_domain binds hostname and canonical smtp PTR", async () 
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.ok, true);
+  assert.equal(response.body.mainDomain, "smtp.example.com");
+  assert.equal(response.body.identitySet, true);
+  assert.equal(response.body.identityCallbackId, "cb-identity-1");
   assert.equal(response.body.ptrSet, true);
+  assert.equal(response.body.fcrdnsVerified, true);
   assert.equal(response.body.alreadyBound, false);
-  assert.deepEqual(calls.map((call) => call.method), ["main", "ptr"]);
-  assert.equal(calls.find((call) => call.method === "ptr")?.ptrValue, "smtp.example.com");
-  assert.equal(harness.auditEvents.at(-1)?.action, "oc.webdock.main_domain_bound");
+  assert.deepEqual(calls, [{ method: "identity", mainDomain: "smtp.example.com", removeDefaultAlias: true }]);
+  assert.equal(harness.auditEvents.some((event) => event.action === "oc.webdock.identity_aligned"), true);
   const inventory = await harness.workspace.readInventoryJson<{
     bindings: Array<{ domain: string; serverSlug: string | null; serverIp: string; status: string }>;
   }>("domains.json");
@@ -55,14 +56,15 @@ test("bind_webdock_main_domain binds hostname and canonical smtp PTR", async () 
   });
 });
 
-test("bind_webdock_main_domain is idempotent when already bound", async () => {
-  let setMainCalls = 0;
+test("bind_webdock_main_domain is idempotent when Webdock identity is already aligned", async () => {
+  let setIdentityCalls = 0;
   const harness = routeHarness({
+    fcrdnsResolver: fcrdnsOkResolver(),
     adapter: adapterMock({
-      server: serverFixture({ mainDomain: "example.com", hostname: "example.com" }),
-      setServerMainDomain: async () => {
-        setMainCalls += 1;
-        return { ok: true, previousMainDomain: "example.com", raw: {} };
+      server: serverFixture({ mainDomain: "smtp.example.com", hostname: "smtp.example.com" }),
+      setServerIdentity: async (opts) => {
+        setIdentityCalls += 1;
+        return { ok: true, serverSlug: opts.serverSlug, mainDomain: opts.mainDomain, callbackId: "cb-identity-1", raw: {} };
       }
     })
   });
@@ -71,7 +73,29 @@ test("bind_webdock_main_domain is idempotent when already bound", async () => {
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.alreadyBound, true);
-  assert.equal(setMainCalls, 0);
+  assert.equal(response.body.identitySet, false);
+  assert.equal(response.body.ptrSet, true);
+  assert.equal(setIdentityCalls, 0);
+});
+
+test("bind_webdock_main_domain does not treat hostname as confirmed Webdock identity", async () => {
+  let setIdentityCalls = 0;
+  const harness = routeHarness({
+    fcrdnsResolver: fcrdnsOkResolver(),
+    adapter: adapterMock({
+      server: serverFixture({ mainDomain: undefined, hostname: "smtp.example.com", name: "smtp.example.com" }),
+      setServerIdentity: async (opts) => {
+        setIdentityCalls += 1;
+        return { ok: true, serverSlug: opts.serverSlug, mainDomain: opts.mainDomain, callbackId: "cb-identity-1", raw: {} };
+      }
+    })
+  });
+
+  const response = await harness.request(validBody());
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.identitySet, true);
+  assert.equal(setIdentityCalls, 1);
 });
 
 test("bind_webdock_main_domain returns 404 for missing server", async () => {
@@ -102,47 +126,49 @@ test("bind_webdock_main_domain rejects prohibited mail prefix", async () => {
   assert.match(JSON.stringify(response.body.details), /domain_has_prohibited_prefix/);
 });
 
-test("bind_webdock_main_domain treats PTR failure as best-effort after main-domain bind", async () => {
-  const domains: string[] = [];
+test("bind_webdock_main_domain returns pending instead of declaring success when FCrDNS is not aligned", async () => {
   const harness = routeHarness({
+    fcrdnsResolver: {
+      resolve4: async () => ["192.0.2.55"],
+      reverse: async () => ["server-abc123.vps.webdock.cloud."]
+    },
+    fcrdnsMaxWaitMs: 0,
     adapter: adapterMock({
-      setServerMainDomain: async (opts) => {
-        domains.push(opts.domain);
-        return {
-          ok: true,
-          previousMainDomain: opts.domain === "example.com" ? "old.example.com" : "example.com",
-          raw: {}
-        };
-      },
-      setServerPtr: async () => {
-        throw new Error("ptr boom");
+      setServerIdentity: async (opts) => {
+        return { ok: true, serverSlug: opts.serverSlug, mainDomain: opts.mainDomain, callbackId: "cb-identity-1", raw: {} };
       }
     })
   });
 
   const response = await harness.request(validBody());
 
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.ok, true);
+  assert.equal(response.statusCode, 424);
+  assert.equal(response.body.ok, false);
   assert.equal(response.body.ptrSet, false);
-  assert.equal(response.body.ptrSkipReason, "set_failed");
-  assert.deepEqual(domains, ["example.com"]);
-  assert.equal(harness.auditEvents.some((event) => event.action === "oc.webdock.ptr_set_failed_best_effort"), true);
-  assert.equal(harness.auditEvents.at(-1)?.action, "oc.webdock.main_domain_bound");
+  assert.equal(response.body.ptrSkipReason, "fcrdns_pending");
+  assert.equal(response.body.fcrdnsVerified, false);
+  assert.equal(response.body.error, "fcrdns_pending");
+  assert.equal(harness.auditEvents.at(-1)?.action, "oc.webdock.identity_pending_fcrdns");
+  const inventory = await harness.workspace.readInventoryJson<{
+    bindings: Array<{ domain: string; serverSlug: string | null; serverIp: string; status: string }>;
+  }>("domains.json");
+  assert.equal(inventory?.bindings[0]?.status, "identity_pending_fcrdns");
 });
 
-test("bind_webdock_main_domain reports PTR unsupported by API", async () => {
+test("bind_webdock_main_domain fails closed when Webdock identity API fails", async () => {
   const harness = routeHarness({
     adapter: adapterMock({
-      setServerPtr: async () => ({ ok: false, supported: false, raw: { reason: "not_supported_by_api" } })
+      setServerIdentity: async () => {
+        throw new Error("identity API boom");
+      }
     })
   });
 
   const response = await harness.request(validBody());
 
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.ptrSet, false);
-  assert.equal(response.body.ptrSkipReason, "not_supported_by_api");
+  assert.equal(response.statusCode, 502);
+  assert.equal(response.body.error, "identity_set_failed");
+  assert.equal(harness.auditEvents.at(-1)?.action, "oc.webdock.identity_set_failed");
 });
 
 test("bind_webdock_main_domain rejects invalid approval before adapter calls", async () => {
@@ -164,13 +190,13 @@ test("bind_webdock_main_domain rejects invalid approval before adapter calls", a
   assert.equal(getServerCalls, 0);
 });
 
-test("bind_webdock_main_domain supports operator PTR opt-out", async () => {
-  let ptrCalls = 0;
+test("bind_webdock_main_domain rejects PTR opt-out because FCrDNS is mandatory", async () => {
+  let identityCalls = 0;
   const harness = routeHarness({
     adapter: adapterMock({
-      setServerPtr: async () => {
-        ptrCalls += 1;
-        return { ok: true, supported: true, raw: {} };
+      setServerIdentity: async (opts) => {
+        identityCalls += 1;
+        return { ok: true, serverSlug: opts.serverSlug, mainDomain: opts.mainDomain, callbackId: "cb-identity-1", raw: {} };
       }
     })
   });
@@ -180,15 +206,16 @@ test("bind_webdock_main_domain supports operator PTR opt-out", async () => {
     setPtr: false
   });
 
-  assert.equal(response.statusCode, 200);
-  assert.equal(response.body.ptrSet, false);
-  assert.equal(response.body.ptrSkipReason, "operator_opt_out");
-  assert.equal(ptrCalls, 0);
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.error, "fcrdns_required");
+  assert.equal(identityCalls, 0);
 });
 
 function routeHarness(input: {
   adapter?: BindWebdockMainDomainAdapter;
   approvalGuard?: BindWebdockMainDomainApprovalGuard;
+  fcrdnsResolver?: FcrdnsResolver;
+  fcrdnsMaxWaitMs?: number;
 } = {}) {
   const auditEvents: AuditEventInput[] = [];
   const workspace = new OpenClawWorkspace({
@@ -209,7 +236,10 @@ function routeHarness(input: {
         approvalGuard: input.approvalGuard ?? { verify: async () => ({ ok: true, eventId: "approval-1" }) },
         webdockAdapter: input.adapter ?? adapterMock(),
         workspace,
-        now: () => fixedNowMs + auditEvents.length
+        now: () => fixedNowMs + auditEvents.length,
+        fcrdnsResolver: input.fcrdnsResolver ?? fcrdnsOkResolver(),
+        fcrdnsMaxWaitMs: input.fcrdnsMaxWaitMs ?? 0,
+        fcrdnsPollIntervalMs: 0
       }
     });
     return {
@@ -225,6 +255,13 @@ function adapterMock(overrides: Partial<BindWebdockMainDomainAdapter> & {
 } = {}): BindWebdockMainDomainAdapter {
   return {
     getServer: overrides.getServer ?? (async () => overrides.server ?? serverFixture()),
+    setServerIdentity: overrides.setServerIdentity ?? (async (opts) => ({
+      ok: true,
+      serverSlug: opts.serverSlug,
+      mainDomain: opts.mainDomain,
+      callbackId: "cb-identity-1",
+      raw: {}
+    })),
     setServerMainDomain: overrides.setServerMainDomain ?? (async (): Promise<WebdockSetServerMainDomainResult> => ({
       ok: true,
       previousMainDomain: "old.example.com",
@@ -235,6 +272,13 @@ function adapterMock(overrides: Partial<BindWebdockMainDomainAdapter> & {
       supported: true,
       raw: {}
     }))
+  };
+}
+
+function fcrdnsOkResolver(): FcrdnsResolver {
+  return {
+    resolve4: async () => ["192.0.2.55"],
+    reverse: async () => ["smtp.example.com."]
   };
 }
 
