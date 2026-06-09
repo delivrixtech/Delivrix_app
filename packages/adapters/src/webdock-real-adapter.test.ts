@@ -22,6 +22,67 @@ test("createWebdockAdaptersFromEnv builds one adapter per configured Webdock acc
   ]);
 });
 
+test("Fase0: cuenta distinta (secondary) con solo read key queda read-only (canCreate false, no cae a singletons OPS/ACCOUNT)", () => {
+  const accounts = createWebdockAdaptersFromEnv({
+    // singletons de la cuenta-1 presentes (el bug latente los tomaba por fallback)
+    WEBDOCK_API_KEY_PRIMARY: "primary-key",
+    WEBDOCK_API_KEY_OPS: "ops-key",
+    WEBDOCK_API_KEY_ACCOUNT: "account-key",
+    // cuenta-2 SOLO con read key, sin _WRITE/_ACCOUNT propias
+    WEBDOCK_API_KEY_SECONDARY: "secondary-read"
+  });
+  const secondary = accounts.find((a) => a.id === "secondary");
+  assert.ok(secondary, "secondary debe existir");
+  assert.equal(secondary.adapter.isLive(), true, "lee inventario");
+  assert.equal(secondary.adapter.canCreate(), false, "NO debe poder crear: sin write/account propias y sin fallback a singletons de cuenta-1");
+  assert.equal(secondary.adapter.canWrite(), false, "NO debe heredar la OPS key de la cuenta-1");
+});
+
+test("Fase0: cuenta distinta (secondary) con sus 3 keys propias crea con SU token (assert sobre el adapter de la factory)", async () => {
+  // El fetchImpl capturador se inyecta VIA LA FACTORY (no un adapter manual),
+  // para aseverar el wiring real de la factory, no uno paralelo.
+  const calls: Array<{ url: string; auth: string }> = [];
+  const accounts = createWebdockAdaptersFromEnv({
+    WEBDOCK_API_KEY_OPS: "ops-key-cuenta1",
+    WEBDOCK_API_KEY_ACCOUNT: "account-key-cuenta1",
+    WEBDOCK_API_KEY_SECONDARY: "secondary-read",
+    WEBDOCK_API_KEY_SECONDARY_WRITE: "secondary-write",
+    WEBDOCK_API_KEY_SECONDARY_ACCOUNT: "secondary-account",
+    WEBDOCK_ACCOUNT_SECONDARY_LABEL: "Cuenta 2"
+  }, {
+    apiBase: "https://api.webdock.test/v1",
+    fetchImpl: async (url, init) => {
+      calls.push({ url: String(url), auth: (init?.headers as Record<string, string>)?.authorization ?? "" });
+      if (String(url).endsWith("/account/publicKeys") && init?.method === "GET") return Response.json([{ id: 9, key: "ssh-ed25519 AAAA t" }]);
+      return Response.json({ slug: "s2", name: "mail.c2.test", status: "provisioning", ipv4: "" }, { status: 201 });
+    }
+  });
+  const secondary = accounts.find((a) => a.id === "secondary");
+  assert.ok(secondary);
+  assert.equal(secondary.label, "Cuenta 2");
+  assert.equal(secondary.adapter.canCreate(), true);
+
+  await secondary.adapter.createServer({ profile: "bit", locationId: "dk", hostname: "mail.c2.test", imageSlug: "ubuntu-2404", publicKey: "ssh-ed25519 AAAA t" });
+  const createCall = calls.find((c) => c.url.endsWith("/servers"));
+  assert.equal(createCall?.auth, "Bearer secondary-write", "el create del adapter de la FACTORY escribe con el token de la cuenta-2, NO con la OPS de cuenta-1");
+  const pubKeyCall = calls.find((c) => c.url.endsWith("/account/publicKeys"));
+  assert.equal(pubKeyCall?.auth, "Bearer secondary-account", "registra la SSH key con el account token de la cuenta-2");
+});
+
+test("Fase0: cuenta distinta con WRITE pero sin ACCOUNT propia NO hereda el account de cuenta-1 (canCreate false)", () => {
+  const accounts = createWebdockAdaptersFromEnv({
+    WEBDOCK_API_KEY_OPS: "ops-key-cuenta1",
+    WEBDOCK_API_KEY_ACCOUNT: "account-key-cuenta1",
+    WEBDOCK_API_KEY_SECONDARY: "secondary-read",
+    WEBDOCK_API_KEY_SECONDARY_WRITE: "secondary-write"
+    // SIN _ACCOUNT propia
+  });
+  const secondary = accounts.find((a) => a.id === "secondary");
+  assert.ok(secondary);
+  assert.equal(secondary.adapter.canWrite(), true, "tiene write propia");
+  assert.equal(secondary.adapter.canCreate(), false, "canCreate exige write Y account; no debe heredar el ACCOUNT de la cuenta-1");
+});
+
 test("createWebdockAdaptersFromEnv preserves legacy Webdock account fallback", () => {
   const accounts = createWebdockAdaptersFromEnv({
     WEBDOCK_API_KEY: "legacy-key"

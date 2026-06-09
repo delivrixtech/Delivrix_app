@@ -929,7 +929,16 @@ export function createWebdockAdaptersFromEnv(
     typeof process !== "undefined" ? process.env : {},
   options: CreateWebdockAdaptersFromEnvOptions = {}
 ): WebdockAccountAdapterEntry[] {
-  const accountSpecs = [
+  // Specs legacy de la cuenta-1 (primary/ops/account): NO se tocan para
+  // preservar byte-identidad del comportamiento single-account de hoy. Sus
+  // write/account keys quedan undefined -> el constructor cae al fallback de
+  // los singletons OPS/ACCOUNT (correcto: son la misma cuenta-1).
+  // Specs de cuentas DISTINTAS (secondary/tertiary/quaternary/quinary): write
+  // y account keys PROPIAS inyectadas explicitas + env aislado, para que NO
+  // caigan al fallback de los singletons de la cuenta-1 (bug latente: un
+  // create "secondary" escribiria en la cuenta-1). Sin sus _WRITE/_ACCOUNT
+  // propias quedan read-only (canCreate()===false real, no enganoso).
+  const accountSpecs: AccountSpec[] = [
     {
       id: "primary",
       apiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_PRIMARY),
@@ -945,24 +954,15 @@ export function createWebdockAdaptersFromEnv(
       apiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_ACCOUNT),
       label: normalizeEnvValue(env.WEBDOCK_ACCOUNT_ACCOUNT_LABEL) ?? "Webdock Account"
     },
-    {
-      id: "secondary",
-      apiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_SECONDARY),
-      label:
-        normalizeEnvValue(env.WEBDOCK_ACCOUNT_SECONDARY_LABEL) ?? "Webdock Secondary"
-    },
-    {
-      id: "tertiary",
-      apiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_TERTIARY),
-      label: normalizeEnvValue(env.WEBDOCK_ACCOUNT_TERTIARY_LABEL) ?? "Webdock Tertiary"
-    }
+    buildDistinctAccountSpec("secondary", "SECONDARY", "Webdock Secondary", env),
+    buildDistinctAccountSpec("tertiary", "TERTIARY", "Webdock Tertiary", env),
+    buildDistinctAccountSpec("quaternary", "QUATERNARY", "Webdock Quaternary", env),
+    buildDistinctAccountSpec("quinary", "QUINARY", "Webdock Quinary", env)
   ];
 
   const configuredAccounts = accountSpecs
     .filter((account) => account.apiKey)
-    .map((account) =>
-      buildAccountAdapterEntry(account.id, account.label, account.apiKey, env, options)
-    );
+    .map((account) => buildAccountAdapterEntry(account, env, options));
 
   if (configuredAccounts.length > 0) {
     return configuredAccounts;
@@ -970,26 +970,78 @@ export function createWebdockAdaptersFromEnv(
 
   const legacyApiKey = normalizeEnvValue(env.WEBDOCK_API_KEY);
   const legacyLabel = normalizeEnvValue(env.WEBDOCK_ACCOUNT_DEFAULT_LABEL) ?? "Webdock";
-  return [buildAccountAdapterEntry("default", legacyLabel, legacyApiKey, env, options)];
+  return [buildAccountAdapterEntry({ id: "default", label: legacyLabel, apiKey: legacyApiKey }, env, options)];
+}
+
+interface AccountSpec {
+  id: string;
+  label: string;
+  /** Read key (inventario). */
+  apiKey: string | undefined;
+  /** Write key PROPIA de la cuenta (create/delete). Solo cuentas distintas. */
+  writeApiKey?: string | undefined;
+  /** Account key PROPIA de la cuenta (registrar SSH). Solo cuentas distintas. */
+  accountApiKey?: string | undefined;
+  /**
+   * Si true, el adapter se construye con env aislado: write/account NO caen al
+   * fallback de los singletons globales OPS/ACCOUNT. Para cuentas distintas.
+   */
+  isolated?: boolean;
+}
+
+/**
+ * Spec de una cuenta Webdock DISTINTA (no la cuenta-1). Lee 3 env vars propias:
+ * WEBDOCK_API_KEY_<ROLE> (read), _<ROLE>_WRITE (write), _<ROLE>_ACCOUNT (account).
+ * Si solo tiene la read key, queda read-only (canCreate false real).
+ */
+function buildDistinctAccountSpec(
+  id: string,
+  role: string,
+  defaultLabel: string,
+  env: Record<string, string | undefined>
+): AccountSpec {
+  return {
+    id,
+    apiKey: normalizeEnvValue(env[`WEBDOCK_API_KEY_${role}`]),
+    label: normalizeEnvValue(env[`WEBDOCK_ACCOUNT_${role}_LABEL`]) ?? defaultLabel,
+    writeApiKey: normalizeEnvValue(env[`WEBDOCK_API_KEY_${role}_WRITE`]),
+    accountApiKey: normalizeEnvValue(env[`WEBDOCK_API_KEY_${role}_ACCOUNT`]),
+    isolated: true
+  };
 }
 
 function buildAccountAdapterEntry(
-  id: string,
-  label: string,
-  apiKey: string | undefined,
+  spec: AccountSpec,
   env: Record<string, string | undefined>,
   options: CreateWebdockAdaptersFromEnvOptions
 ): WebdockAccountAdapterEntry {
+  if (spec.isolated) {
+    // env aislado: sin singletons globales -> write/account solo si son propias.
+    return {
+      id: spec.id,
+      label: spec.label,
+      adapter: new WebdockRealAdapter({
+        ...options,
+        env: {},
+        readApiKey: spec.apiKey,
+        writeApiKey: spec.writeApiKey,
+        accountApiKey: spec.accountApiKey,
+        accountId: spec.id,
+        accountLabel: spec.label
+      })
+    };
+  }
+  // Cuenta-1 legacy: comportamiento idéntico al de antes (fallback a singletons).
   return {
-    id,
-    label,
+    id: spec.id,
+    label: spec.label,
     adapter: new WebdockRealAdapter({
       ...options,
       env,
-      readApiKey: apiKey,
+      readApiKey: spec.apiKey,
       accountApiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_ACCOUNT),
-      accountId: id,
-      accountLabel: label
+      accountId: spec.id,
+      accountLabel: spec.label
     })
   };
 }
