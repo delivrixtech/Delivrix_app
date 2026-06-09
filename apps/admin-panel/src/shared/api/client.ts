@@ -18,6 +18,7 @@ export type ContractStatus =
   | "critical"
   | "unknown"
   | "not_started"
+  | "pending"
   | "requires_approval"
   | "disabled_by_mvp"
   | "inactive"

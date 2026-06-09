@@ -4,6 +4,7 @@ export type LiveRunStatus = "running" | "completed" | "failed" | string;
 export type LiveRunStepStatus = "in_progress" | "ready" | "error";
 export type SmtpBuildStepVisualStatus = "pending" | "in_progress" | "ready" | "error";
 export type TopologyOverlayStatus = "in_progress" | "ready" | "error";
+export type RecorridoEdgeStatus = "ready" | "in_progress" | "pending";
 
 export interface LiveRunStepProgress {
   skill: string;
@@ -48,6 +49,35 @@ export const SMTP_BUILD_STEPS: SmtpBuildStepDefinition[] = [
 ];
 
 const SMTP_BUILD_STEP_BY_STEP = new Map(SMTP_BUILD_STEPS.map((item) => [item.step, item]));
+
+export const RECORRIDO_EDGES = [
+  { id: "proxmox_to_cluster", from: "proxmox_host", to: "cluster_plan" },
+  { id: "cluster_to_vps", from: "cluster_plan", to: "vps_lxc_plan" },
+  { id: "vps_to_dns", from: "vps_lxc_plan", to: "dns_identity" },
+  { id: "dns_to_sender", from: "dns_identity", to: "sender_nodes" },
+  { id: "sender_to_warming", from: "sender_nodes", to: "warming_plan" },
+  { id: "warming_plan_to_ramp", from: "warming_plan", to: "warming_ramp" },
+  { id: "warming_to_reputation", from: "warming_ramp", to: "reputation_gates" }
+] as const;
+
+export type RecorridoEdgeId = (typeof RECORRIDO_EDGES)[number]["id"];
+
+export interface RecorridoOverlay {
+  nodes: Record<string, TopologyOverlayStatus>;
+  edges: Record<string, RecorridoEdgeStatus>;
+  activeNodeId: string | null;
+  buildNodeIds: string[];
+}
+
+const RECORRIDO_BUILD_NODE_IDS = [
+  RECORRIDO_EDGES[0]!.from,
+  ...RECORRIDO_EDGES.map((edge) => edge.to)
+];
+
+interface RecorridoCanvasLike {
+  nodes: Array<{ id: string; status: string }>;
+  edges: Array<{ id: string; status: string }>;
+}
 
 export interface ParsedOrchestratorProgress {
   runId: string;
@@ -235,7 +265,102 @@ function aggregateNodeStatus(statuses: TopologyOverlayStatus[]): TopologyOverlay
   return "ready";
 }
 
-function nodeIdForSmtpStep(step: number, skill: string): string | null {
+export function buildRecorridoOverlay(run: LiveRunProgress | null): RecorridoOverlay {
+  if (!run) return emptyRecorridoOverlay();
+  if (run.runStatus !== "running") return buildRecorridoTerminalOverlay(run);
+
+  const activeStep = run.currentStep == null ? null : run.steps.get(run.currentStep);
+  const activeNodeId = run.currentStep == null ? null : nodeIdForSmtpStep(run.currentStep, activeStep?.skill);
+  const frontierIdx = recorridoFrontierForRun(run, activeNodeId);
+  const edges: Record<string, RecorridoEdgeStatus> = {};
+  const hasActiveStep = activeNodeId !== null;
+
+  for (let index = 0; index < RECORRIDO_EDGES.length; index += 1) {
+    const edge = RECORRIDO_EDGES[index]!;
+    edges[edge.id] = recorridoEdgeStatus(index, frontierIdx, hasActiveStep);
+  }
+
+  return {
+    nodes: buildTopologyStatusOverlay(run),
+    edges,
+    activeNodeId,
+    buildNodeIds: [...RECORRIDO_BUILD_NODE_IDS]
+  };
+}
+
+function buildRecorridoTerminalOverlay(run: LiveRunProgress): RecorridoOverlay {
+  const nodes = buildTopologyStatusOverlay(run);
+  const edges: Record<string, RecorridoEdgeStatus> = {};
+  for (const edge of RECORRIDO_EDGES) {
+    edges[edge.id] = nodes[edge.from] === "ready" && nodes[edge.to] === "ready" ? "ready" : "pending";
+  }
+  return {
+    nodes,
+    edges,
+    activeNodeId: null,
+    buildNodeIds: [...RECORRIDO_BUILD_NODE_IDS]
+  };
+}
+
+export function applyRecorridoOverlayToCanvas<T extends RecorridoCanvasLike>(data: T, overlay: RecorridoOverlay): T {
+  if (Object.keys(overlay.nodes).length === 0 && Object.keys(overlay.edges).length === 0) return data;
+  return {
+    ...data,
+    nodes: data.nodes.map((node) => ({
+      ...node,
+      status: overlay.nodes[node.id] ?? node.status
+    })),
+    edges: data.edges.map((edge) => ({
+      ...edge,
+      status: overlay.edges[edge.id] ?? edge.status
+    }))
+  } as T;
+}
+
+function emptyRecorridoOverlay(): RecorridoOverlay {
+  return {
+    nodes: {},
+    edges: {},
+    activeNodeId: null,
+    buildNodeIds: []
+  };
+}
+
+function recorridoFrontierForRun(run: LiveRunProgress, activeNodeId: string | null): number | null {
+  let frontierIdx: number | null = activeNodeId ? frontierIndexForActiveNode(activeNodeId) : null;
+  for (const [step, state] of run.steps.entries()) {
+    if (state.status === "error") continue;
+    const nodeId = nodeIdForSmtpStep(step, state.skill);
+    const stepFrontierIdx = nodeId ? frontierIndexForActiveNode(nodeId) : null;
+    if (stepFrontierIdx == null) continue;
+    frontierIdx = frontierIdx == null ? stepFrontierIdx : Math.max(frontierIdx, stepFrontierIdx);
+  }
+  if (frontierIdx != null || run.lastCompletedStep <= 0) return frontierIdx;
+  for (let step = 1; step <= run.lastCompletedStep; step += 1) {
+    const nodeId = SMTP_BUILD_STEP_BY_STEP.get(step)?.nodeId ?? null;
+    const stepFrontierIdx = nodeId ? frontierIndexForActiveNode(nodeId) : null;
+    if (stepFrontierIdx == null) continue;
+    frontierIdx = frontierIdx == null ? stepFrontierIdx : Math.max(frontierIdx, stepFrontierIdx);
+  }
+  return frontierIdx;
+}
+
+function frontierIndexForActiveNode(activeNodeId: string): number | null {
+  const incomingIdx = RECORRIDO_EDGES.findIndex((edge) => edge.to === activeNodeId);
+  if (incomingIdx >= 0) return incomingIdx;
+  if (RECORRIDO_EDGES[0]?.from === activeNodeId) return -1;
+  return null;
+}
+
+function recorridoEdgeStatus(index: number, frontierIdx: number | null, hasActiveStep: boolean): RecorridoEdgeStatus {
+  if (frontierIdx == null) return "pending";
+  if (index < frontierIdx) return "ready";
+  if (!hasActiveStep) return index <= frontierIdx ? "ready" : "pending";
+  if (index === frontierIdx || index === frontierIdx + 1) return "in_progress";
+  return "pending";
+}
+
+export function nodeIdForSmtpStep(step: number, skill?: string): string | null {
   const known = SMTP_BUILD_STEP_BY_STEP.get(step);
   if (known) return known.nodeId;
   if (skill === "suggest_safe_domain") return "proxmox_host";
