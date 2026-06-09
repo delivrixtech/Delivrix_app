@@ -257,14 +257,17 @@ test("buildSmtpBuildStepViews exposes all 14 steps and currentBuildStepNumber fo
     currentStep: 9,
     lastCompletedStep: 8,
     steps: new Map([
-      [8, { skill: "wait_for_dns_propagation", status: "ready" }],
+      [7, { skill: "wait_for_dns_propagation", status: "ready" }],
+      [8, { skill: "bind_webdock_main_domain", status: "ready" }],
       [9, { skill: "provision_smtp_postfix", status: "in_progress" }]
     ])
   });
 
   const views = buildSmtpBuildStepViews(run);
   assert.equal(views.length, 14);
-  assert.equal(views[7].label, "Esperando propagación A");
+  assert.equal(views[6].label, "Esperando propagación A");
+  assert.equal(views[6].status, "ready");
+  assert.equal(views[7].label, "Alineando identidad + FCrDNS");
   assert.equal(views[7].status, "ready");
   assert.equal(views[8].label, "Instalando Postfix + DKIM + TLS");
   assert.equal(views[8].status, "in_progress");

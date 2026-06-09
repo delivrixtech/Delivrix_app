@@ -525,8 +525,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     spec: {
       name: "bind_webdock_main_domain",
       description: [
-        "Configura el Main domain de Webdock y PTR asociado para un VPS autorizado.",
-        "Riesgo crítico: altera identidad SMTP/PTR; requiere ApprovalGate, audit, Webdock ops key, verificación SSH y kill switch."
+        "Alinea el Server Identity de Webdock a smtp.<dominio>, quita el alias default y verifica FCrDNS antes de declarar el VPS SMTP listo.",
+        "Riesgo crítico: altera identidad SMTP/PTR; requiere ApprovalGate, audit, Webdock ops key, A record ya propagado, verificación FCrDNS y kill switch."
       ].join(" "),
       input_schema: {
         type: "object",
