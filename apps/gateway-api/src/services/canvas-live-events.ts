@@ -16,6 +16,7 @@ import type {
   CanvasLiveArtifactSnapshot,
   CanvasLiveArtifactStreamingEvent,
   CanvasLiveEvent,
+  CanvasLiveRunProgress,
   CanvasLiveStateSnapshot,
   CanvasLiveTaskDeclareEvent,
   CanvasLiveTaskSnapshot,
@@ -47,6 +48,16 @@ export interface CanvasLiveEventServiceOptions {
   now?: () => Date;
   streamToken?: string;
   heartbeatIntervalMs?: number;
+  smtpProgressReader?: CanvasLiveSmtpProgressReader;
+}
+
+export interface CanvasLiveSmtpProgressReaderInput {
+  taskId?: string;
+  runIds: string[];
+}
+
+export interface CanvasLiveSmtpProgressReader {
+  (input: CanvasLiveSmtpProgressReaderInput): Promise<CanvasLiveRunProgress[]> | CanvasLiveRunProgress[];
 }
 
 export interface CanvasLiveArtifactDecisionRecord {
@@ -64,11 +75,30 @@ type PersistedArtifactRecord =
   | CanvasLiveArtifactStreamingEvent
   | CanvasLiveArtifactDecisionRecord;
 
+const maxRecentProgressRuns = 5;
+
+export function canvasLiveSnapshotProgressRunIds(
+  taskId: string | undefined,
+  tasks: CanvasLiveTaskSnapshot[]
+): string[] {
+  if (taskId) return [taskId];
+  const selected = new Set<string>();
+  for (const task of tasks) {
+    if (task.status === "running") selected.add(task.taskId);
+  }
+  for (const task of [...tasks].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))) {
+    if (selected.size >= maxRecentProgressRuns) break;
+    selected.add(task.taskId);
+  }
+  return [...selected];
+}
+
 export class CanvasLiveEventService {
   private readonly stateDir: string;
   private readonly now: () => Date;
   private readonly streamToken: string;
   private readonly heartbeatIntervalMs: number;
+  private readonly smtpProgressReader?: CanvasLiveSmtpProgressReader;
   private readonly clients = new Set<ClientEntry>();
   private readonly tasks = new Map<string, CanvasLiveTaskSnapshot>();
   private readonly artifacts = new Map<string, CanvasLiveArtifactSnapshot>();
@@ -81,6 +111,7 @@ export class CanvasLiveEventService {
     this.now = options.now ?? (() => new Date());
     this.streamToken = options.streamToken ?? process.env.CANVAS_LIVE_STREAM_TOKEN ?? process.env.DELIVRIX_READ_BOUNDARY_TOKEN ?? process.env.OPENCLAW_GATEWAY_TOKEN ?? "";
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? defaultWebSocketHeartbeatIntervalMs;
+    this.smtpProgressReader = options.smtpProgressReader;
   }
 
   async emit(rawEvent: unknown): Promise<CanvasLiveEvent> {
@@ -105,13 +136,25 @@ export class CanvasLiveEventService {
         blocks: [...artifact.blocks].sort((left, right) => left.order - right.order)
       }))
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const progress = await this.snapshotProgress(taskId, tasks);
 
     return {
       schemaVersion: "2026-05-25.canvas-live.v1",
       generatedAt: this.now().toISOString(),
       tasks,
-      artifacts
+      artifacts,
+      ...(progress.length > 0 ? { progress } : {})
     };
+  }
+
+  private async snapshotProgress(
+    taskId: string | undefined,
+    tasks: CanvasLiveTaskSnapshot[]
+  ): Promise<CanvasLiveRunProgress[]> {
+    if (!this.smtpProgressReader) return [];
+    const runIds = canvasLiveSnapshotProgressRunIds(taskId, tasks);
+    if (runIds.length === 0) return [];
+    return this.smtpProgressReader({ taskId, runIds });
   }
 
   async patchBlock(input: {

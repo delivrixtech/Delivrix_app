@@ -24,6 +24,12 @@ import type {
   LiveArtifactBlock,
   LiveTask
 } from "./live-tool-types.ts";
+import {
+  applyOrchestratorProgressEvent,
+  cloneLiveRunProgressMap,
+  liveRunProgressFromSnapshot,
+  type LiveRunProgressMap
+} from "./smtp-live-progress.ts";
 
 const STATE_ENDPOINT = "/v1/canvas/live/state";
 const STREAM_PATH = "/v1/canvas/live/stream";
@@ -41,6 +47,7 @@ export interface UseLiveCanvasStreamResult {
   setActiveTaskId: (id: string) => void;
   currentAction: LiveAction | null;
   artifact: LiveArtifact | null;
+  liveRunProgress: LiveRunProgressMap;
   connection: LiveConnectionStatus;
   lastError: string | null;
   approveArtifact: () => Promise<void>;
@@ -55,6 +62,8 @@ export interface InternalState {
   artifacts: Map<string, LiveArtifact>;
   /** índice artifactId → taskId para resolver active artifact. */
   artifactToTask: Map<string, string>;
+  /** Progreso SMTP acumulado por runId; se mantiene fuera de la evicción de tareas. */
+  liveRunProgress: LiveRunProgressMap;
 }
 
 interface LocationLike {
@@ -67,7 +76,8 @@ function emptyState(): InternalState {
     tasks: new Map(),
     lastAction: new Map(),
     artifacts: new Map(),
-    artifactToTask: new Map()
+    artifactToTask: new Map(),
+    liveRunProgress: new Map()
   };
 }
 
@@ -322,6 +332,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
         next.artifacts.set(a.artifactId, artifactFromSnapshot(a));
         next.artifactToTask.set(a.artifactId, a.taskId);
       }
+      next.liveRunProgress = liveRunProgressFromSnapshot(snapshot.progress);
       evictLiveState(next, activeTaskIdRef.current);
       stateRef.current = next;
       const preferredTaskId = pickPreferredTaskId(next, activeTaskIdRef.current);
@@ -415,6 +426,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
         case "oc.action.now": {
           const action = adaptAction(event);
           if (action) s.lastAction.set(event.taskId, action);
+          applyOrchestratorProgressEvent(s.liveRunProgress, event);
           break;
         }
         case "oc.artifact.declare": {
@@ -497,6 +509,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
         .filter((a) => relatedTaskIds.includes(a.taskId))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null)
     : null;
+  const liveRunProgress = cloneLiveRunProgressMap(stateRef.current.liveRunProgress);
 
   // Importante: leemos `tick` para que React re-renderee cuando cambia.
   void tick;
@@ -585,6 +598,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
     setActiveTaskId,
     currentAction,
     artifact,
+    liveRunProgress,
     connection,
     lastError,
     approveArtifact,

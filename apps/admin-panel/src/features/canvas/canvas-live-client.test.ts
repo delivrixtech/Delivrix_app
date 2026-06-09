@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { createServer, type ViteDevServer } from "vite";
 import type { LiveAction, LiveArtifact, LiveTask, LiveTaskStatus } from "./live-tool-types.ts";
+import type { LiveRunProgressMap } from "./smtp-live-progress.ts";
 
 interface InternalStateShape {
   tasks: Map<string, LiveTask>;
   lastAction: Map<string, LiveAction>;
   artifacts: Map<string, LiveArtifact>;
   artifactToTask: Map<string, string>;
+  liveRunProgress: LiveRunProgressMap;
 }
 
 interface CanvasLiveClientModule {
@@ -31,6 +33,7 @@ async function loadModule(): Promise<CanvasLiveClientModule> {
   server ??= await createServer({
     configFile: false,
     root: process.cwd(),
+    optimizeDeps: { noDiscovery: true, include: [] },
     server: { hmr: false, middlewareMode: true, ws: false },
     appType: "custom"
   });
@@ -87,7 +90,8 @@ function makeState(tasks: LiveTask[]): InternalStateShape {
     tasks: new Map(),
     lastAction: new Map(),
     artifacts: new Map(),
-    artifactToTask: new Map()
+    artifactToTask: new Map(),
+    liveRunProgress: new Map()
   };
   for (const task of tasks) {
     state.tasks.set(task.id, task);

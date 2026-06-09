@@ -184,11 +184,25 @@ export interface CanvasLiveArtifactSnapshotWire {
   blocks: CanvasLiveArtifactBlockSnapshotWire[];
 }
 
+export type CanvasLiveRunProgressStepStatusWire = "pending" | "in_flight" | "done";
+
+export interface CanvasLiveRunProgressWire {
+  runId: string;
+  status: "running" | "completed" | "failed" | string;
+  lastCompletedStep: number;
+  steps: Array<{
+    step: number;
+    skill: string;
+    status: CanvasLiveRunProgressStepStatusWire;
+  }>;
+}
+
 export interface CanvasLiveStateSnapshotWire {
   schemaVersion: "2026-05-25.canvas-live.v1";
   generatedAt: string;
   tasks: CanvasLiveTaskSnapshotWire[];
   artifacts: CanvasLiveArtifactSnapshotWire[];
+  progress?: CanvasLiveRunProgressWire[];
 }
 
 /* ============================================================

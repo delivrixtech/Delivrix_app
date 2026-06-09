@@ -4,7 +4,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import type {
   AuditEventInput,
-  CanvasLiveEvent
+  CanvasLiveEvent,
+  CanvasLiveRunProgress
 } from "../../../../packages/domain/src/index.ts";
 import {
   configureCompleteSmtpParamSchema,
@@ -256,6 +257,22 @@ const smtpRunStepLeaseMs = 45 * 60 * 1000;
 const route53DomainRegistrationWaitMaxMs = 1_800_000;
 const route53DomainRegistrationWaitPollMs = 30_000;
 const smtpRunLocalLocks = new Map<string, Promise<void>>();
+const smtpRunProgressSteps = [
+  { step: 1, skill: "suggest_safe_domain" },
+  { step: 2, skill: "register_domain_route53" },
+  { step: 3, skill: "wait_for_dns_propagation" },
+  { step: 4, skill: "create_webdock_server" },
+  { step: 5, skill: "wait_server_running" },
+  { step: 6, skill: "bind_webdock_main_domain" },
+  { step: 7, skill: "upsert_dns_route53" },
+  { step: 8, skill: "wait_for_dns_propagation" },
+  { step: 9, skill: "provision_smtp_postfix" },
+  { step: 10, skill: "configure_email_auth" },
+  { step: 11, skill: "wait_for_dns_propagation" },
+  { step: 12, skill: "seed_warmup_pool" },
+  { step: 13, skill: "wait_warmup_initial" },
+  { step: 14, skill: "send_real_email" }
+] as const;
 
 type SmtpRunStatus = "running" | "completed" | "failed" | "cancelled_by_operator";
 type SmtpRunStepStatus = "pending" | "in_flight" | "done";
@@ -1020,11 +1037,42 @@ async function readSmtpRunState(
     if (!isRecord(parsed) || parsed.schemaVersion !== smtpRunStateVersion || parsed.runId !== runId) {
       throw new OrchestratorFailure("failed", 0, "run_state", "run_state_corrupt");
     }
-    return parsed as SmtpRunState;
+    return parsed as unknown as SmtpRunState;
   } catch (error) {
     if (error instanceof OrchestratorFailure) throw error;
     return null;
   }
+}
+
+export async function readSmtpRunProgress(
+  deps: Pick<ConfigureCompleteSmtpDeps, "workspace">,
+  runId: string
+): Promise<CanvasLiveRunProgress | null> {
+  const state = await readSmtpRunState(deps as ConfigureCompleteSmtpDeps, runId).catch(() => null);
+  if (!state) return null;
+  updateRunStateProgress(state);
+  return smtpRunStateToProgress(state);
+}
+
+function smtpRunStateToProgress(state: SmtpRunState): CanvasLiveRunProgress {
+  return {
+    runId: state.runId,
+    status: state.status,
+    lastCompletedStep: state.lastCompletedStep,
+    steps: smtpRunProgressSteps.map((expected) => {
+      const stepState = state.steps[String(expected.step)];
+      return {
+        step: expected.step,
+        skill: stepState?.skill || expected.skill,
+        status: normalizeSmtpRunProgressStepStatus(stepState?.status)
+      };
+    })
+  };
+}
+
+function normalizeSmtpRunProgressStepStatus(status: string | undefined): "pending" | "in_flight" | "done" {
+  if (status === "in_flight" || status === "done") return status;
+  return "pending";
 }
 
 async function persistSmtpRunState(
