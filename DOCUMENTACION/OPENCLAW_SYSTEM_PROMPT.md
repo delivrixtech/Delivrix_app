@@ -345,7 +345,7 @@ NO uses `configure_complete_smtp` para una skill individual.
 
 ## 6. Versionado y refresh
 
-- `promptVersion` viaja en cada audit event (Doc 8). Hoy: `openclaw-prompt-v2.7`.
+- `promptVersion` viaja en cada audit event (Doc 8). Hoy: `openclaw-prompt-v2.8`.
 - Cambios menores (clarificaciones de tono, ejemplos): bump patch sin reinicio.
 - Cambios mayores (nuevo bloque, cambio de gates): bump major + redeploy del
   container + smoke supervisado.
