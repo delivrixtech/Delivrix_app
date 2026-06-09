@@ -23,3 +23,5 @@ clonado/
 .claude/
 .sync-backups/
 ~$*.docx
+.vercel
+.env*

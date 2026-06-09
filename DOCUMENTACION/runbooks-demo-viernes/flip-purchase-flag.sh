@@ -19,7 +19,7 @@ ENV_FILE="/Users/juanescanar/Documents/delivrix app/.env.local"
 FLAG_KEY="AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE"
 
 if [ ! -f "$ENV_FILE" ]; then
-  echo "✗ .env.local no existe en $ENV_FILE"
+  echo "FALLO: .env.local no existe en $ENV_FILE"
   exit 1
 fi
 
@@ -34,7 +34,7 @@ case "${1:-status}" in
       # macOS sed requiere '' después de -i
       sed -i '' "s/^${FLAG_KEY}=.*/${FLAG_KEY}=true/" "$ENV_FILE"
     fi
-    echo "✓ Flag actualizado a true."
+    echo "OK: Flag actualizado a true."
     NEEDS_RESTART=1
     ;;
   off)
@@ -44,18 +44,18 @@ case "${1:-status}" in
     else
       sed -i '' "s/^${FLAG_KEY}=.*/${FLAG_KEY}=false/" "$ENV_FILE"
     fi
-    echo "✓ Flag actualizado a false."
+    echo "OK: Flag actualizado a false."
     NEEDS_RESTART=1
     ;;
   status)
     echo "Estado actual del flag:"
     echo "  ${FLAG_KEY}=${current}"
     if [ "$current" = "true" ]; then
-      echo "  ⚠️  COMPRA REAL HABILITADA — cada aprobación gasta dinero."
+      echo "  AVISO: COMPRA REAL HABILITADA — cada aprobación gasta dinero."
     elif [ "$current" = "false" ]; then
-      echo "  ✓ Compra bloqueada. Gateway responderá purchase_flag_disabled."
+      echo "  OK: Compra bloqueada. Gateway responderá purchase_flag_disabled."
     else
-      echo "  ⚠️  Flag no presente en .env.local."
+      echo "  AVISO: Flag no presente en .env.local."
     fi
     exit 0
     ;;
@@ -72,7 +72,7 @@ if [ -z "${NEEDS_RESTART:-}" ]; then
 fi
 
 if [ -z "$GATEWAY_PID" ]; then
-  echo "ℹ️  Gateway no está corriendo en :3000. Arrancalo cuando estés listo:"
+  echo "INFO: Gateway no está corriendo en :3000. Arrancalo cuando estés listo:"
   echo "   cd \"/Users/juanescanar/Documents/delivrix app\""
   echo "   node --env-file=.env.local apps/gateway-api/src/main.ts"
   exit 0
@@ -90,7 +90,7 @@ sleep 2
 
 # Verificar /health
 if curl -s -f http://127.0.0.1:3000/health >/dev/null 2>&1; then
-  echo "✓ Gateway running PID $NEW_PID. /health OK."
+  echo "OK: Gateway running PID $NEW_PID. /health OK."
 else
-  echo "⚠️  Gateway arrancó (PID $NEW_PID) pero /health no responde aún. Revisá runtime/gateway.log."
+  echo "AVISO: Gateway arrancó (PID $NEW_PID) pero /health no responde aún. Revisá runtime/gateway.log."
 fi

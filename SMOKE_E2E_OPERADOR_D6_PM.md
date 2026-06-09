@@ -208,14 +208,14 @@ Exit code 0.
 
 Verde si los 6 puntos pasan:
 
-1. ✅ Pregunta natural en chat → agente invoca skill(s) y responde con
+1. [x] Pregunta natural en chat → agente invoca skill(s) y responde con
    data del registry
-2. ✅ Pedido accionable → propuesta llega a canvas.prompt del panel
-3. ✅ Firma(s) → `quorum.reached: true` (1 o 2 según runbook)
-4. ✅ Execute → HTTP 200 con rollbackToken + state mutado verificable en
+2. [x] Pedido accionable → propuesta llega a canvas.prompt del panel
+3. [x] Firma(s) → `quorum.reached: true` (1 o 2 según runbook)
+4. [x] Execute → HTTP 200 con rollbackToken + state mutado verificable en
    `/v1/sender-nodes`
-5. ✅ Revert (si lo hiciste) → state restaurado al prev
-6. ✅ `verify-chain.ts` post-smoke → exit 0
+5. [x] Revert (si lo hiciste) → state restaurado al prev
+6. [x] `verify-chain.ts` post-smoke → exit 0
 
 ## Lo que validás con esto
 

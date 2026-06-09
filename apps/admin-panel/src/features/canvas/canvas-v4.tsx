@@ -328,8 +328,8 @@ function auditToAction(ev: AuditEvent): Action | null {
       status: "ok",
       output:
         hints.length > 0
-          ? ["→ WSS oc.chat.agent_response", `✓ respuesta entregada · ${hints.join(" · ")}`]
-          : ["→ WSS oc.chat.agent_response", "✓ respuesta entregada al operador"]
+          ? ["→ WSS oc.chat.agent_response", `OK respuesta entregada · ${hints.join(" · ")}`]
+          : ["→ WSS oc.chat.agent_response", "OK respuesta entregada al operador"]
     };
   }
 
@@ -357,12 +357,12 @@ function auditToAction(ev: AuditEvent): Action | null {
     const output: string[] = [];
     if (typeof meta.skill === "string") output.push(`→ ${meta.skill}`);
     else output.push(`→ ${ev.action}`);
-    if (typeof meta.summary === "string") output.push(`✓ ${meta.summary}`);
+    if (typeof meta.summary === "string") output.push(`OK ${meta.summary}`);
     if (typeof meta.count === "number") output.push(`${meta.count} items procesados`);
     if (typeof meta.durationMs === "number") output.push(`duración ${meta.durationMs}ms`);
     if (output.length < 2) {
       // Fallback mínimo: al menos un confirmador para que la card no se vea vacía.
-      output.push("✓ ejecución completada");
+      output.push("OK ejecución completada");
     }
     return {
       id: ev.id,
@@ -1127,7 +1127,7 @@ function ProposalCard({
           className="font-[family-name:var(--font-mono)]"
           style={{ color: "var(--color-text-tertiary)" }}
         >
-          {quorum.mode} · firmaste ✓
+          {quorum.mode} · firmaste (ok)
         </span>
         <span className="flex-1" />
         <span
@@ -2600,9 +2600,9 @@ function LiveFilters({
         {source === "live"
           ? "● live"
           : source === "demo"
-            ? `▶ demo ${demoProgress.current}/${demoProgress.total}${demoRunning ? "" : " ✓"}`
+            ? `> demo ${demoProgress.current}/${demoProgress.total}${demoRunning ? "" : " ok"}`
             : source === "error"
-              ? "✕ offline"
+              ? "x offline"
               : source === "empty"
                 ? "○ silent"
                 : "…"}
@@ -3330,7 +3330,7 @@ function TerminalTab({ actions, source }: { actions: Action[]; source: AgentSour
           {source === "live"
             ? "● live"
             : source === "error"
-              ? "✕ offline"
+              ? "x offline"
               : source === "empty"
                 ? "○ silent"
                 : "…"}
