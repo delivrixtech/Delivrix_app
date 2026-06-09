@@ -1,6 +1,6 @@
 # OpenClaw — Permissions Matrix
 
-Fecha: 2026-05-18 (v2.0 expansión 2026-05-18).
+Fecha: 2026-06-09 (v2.4 identidad Webdock + FCrDNS SMTP).
 Hito rector: `HITO_5_11_OPENCLAW_AGENT_HOSTINGER.md`.
 Categorías y método de evaluación heredados de `HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md`.
 
@@ -9,8 +9,9 @@ Categorías y método de evaluación heredados de `HITO_4_5_RUNBOOK_PERMISOS_KIL
 - **v1.0** (2026-05-18) — 5 categorías + ~40 acciones por familia.
 - **v2.0** (2026-05-18) — 29 acciones de lectura una a una (todo el read-boundary literal), pseudocódigo formal del pipeline en TypeScript, manejo de race conditions en approvals concurrentes, código de error tipado por rejection reason.
 - **v2.1** (2026-05-27) — Camino B CTO: `register_domain` pasa de doble firma a modelo wallet con `requiredApprovals: 1` y firmante único `juanescanar-cto`; sigue requiriendo presupuesto, flag explícita, audit y cleanup DNS/VPS.
-- **v2.2** (2026-05-31) — Fase A habilita `suggest_safe_domain` / `naming_suggest`, `wait_for_dns_propagation` / `dns_propagation_wait`, `bind_webdock_main_domain` y `send_real_email`. `send_real_email` es CRITICAL, irreversible, rate-limited, one-off para smoke E2E autorizado; Webdock Main Domain usa fallback SSH y PTR queda `not_supported_by_api`.
+- **v2.2** (2026-05-31) — Fase A habilita `suggest_safe_domain` / `naming_suggest`, `wait_for_dns_propagation` / `dns_propagation_wait`, `bind_webdock_main_domain` y `send_real_email`. `send_real_email` es CRITICAL, irreversible, rate-limited, one-off para smoke E2E autorizado.
 - **v2.3** (2026-06-04) — Fase 0 contrato de permisos: se deprecian rutas legacy `/v1/agent/proposals/*/approve`, `/v1/agent/runbook/execute` y `/v1/agent/runbook/revert`; la autorización canónica es `POST /v1/openclaw/proposals/{id}/sign` con HMAC. Se introduce PlanApproval por `runId` detrás de `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE`, apagado por defecto.
+- **v2.4** (2026-06-09) — `bind_webdock_main_domain` usa Webdock Server Identity API (`PATCH /servers/{slug}/identity`) con `maindomain=smtp.<dominio>`, remueve alias default y sólo declara éxito con FCrDNS verificado.
 
 ## 1. Propósito
 
@@ -126,7 +127,7 @@ Requiere `humanApproved: true` + `killSwitch.enabled: false`. Si falla cualquier
 | `route53_dns_upsert` | `oc.route53.dns_upserted` | `AWS_ROUTE53_DNS_ENABLE_WRITES=true`; SMTP nuevo: `A smtp` + `MX -> smtp` | operador autorizado |
 | `ionos_dns_upsert` | `oc.ionos.dns_upserted` | `IONOS_DNS_ENABLE_WRITES=true` (NUEVO) | operador autorizado |
 | `provision_webdock_vps` | `oc.webdock.server_created` | `WEBDOCK_SERVERS_ENABLE_CREATE=true` | operador autorizado |
-| `bind_webdock_main_domain` | `oc.webdock.main_domain_bound` | `WEBDOCK_BIND_MAIN_DOMAIN_ENABLE=true`; PTR `smtp.<dominio>`; reversible: sí; rollback: sí, restaura hostname previo si PTR falla; PTR API: `not_supported_by_api` | operador autorizado |
+| `bind_webdock_main_domain` | `oc.webdock.main_domain_bound` | `WEBDOCK_BIND_MAIN_DOMAIN_ENABLE=true`; requiere A `smtp.<dominio>` propagado; usa Webdock Server Identity API con `maindomain=smtp.<dominio>` y `removeDefaultAlias=true`; éxito sólo con FCrDNS verificado; si no verifica queda pending/fail-closed. | operador autorizado |
 | `install_smtp_stack` | `oc.smtp.stack_installed` | `SMTP_PROVISIONING_ENABLE_SSH=true`; host/HELO/TLS = `smtp.<dominio>` | operador autorizado |
 | `start_warmup_seed` | `oc.warmup.seed_sent` | `WARMUP_ENABLE_SEND=true` | operador autorizado |
 | `start_warmup_ramp` | `oc.warmup.ramp_started` | `WARMUP_RAMP_ENABLE=true` (NUEVO) | operador autorizado |
