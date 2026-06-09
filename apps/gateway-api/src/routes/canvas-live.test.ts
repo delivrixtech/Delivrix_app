@@ -709,6 +709,50 @@ test("canvas-live reload repairs legacy artifact blocks with non-positive order"
   assert.equal(snapshot.artifacts[0].blocks[0].order, 1);
 });
 
+test("canvas-live snapshot includes flat SMTP progress for filtered task runs", async () => {
+  const readerInputs: Array<{ taskId?: string; runIds: string[] }> = [];
+  const service = new CanvasLiveEventService({
+    stateDir: await stateDirForTest(),
+    now: () => fixedNow,
+    streamToken: "canvas-token",
+    smtpProgressReader: async (input) => {
+      readerInputs.push(input);
+      return input.runIds.map((runId) => ({
+        runId,
+        status: "running",
+        lastCompletedStep: 1,
+        steps: [
+          { step: 1, skill: "suggest_safe_domain", status: "done" },
+          { step: 2, skill: "register_domain_route53", status: "in_flight" }
+        ]
+      }));
+    }
+  });
+
+  await service.emit(taskDeclare("run-a"));
+  await service.emit(taskDeclare("run-b"));
+
+  const filtered = await service.snapshot("run-b");
+  assert.deepEqual(readerInputs.at(-1), { taskId: "run-b", runIds: ["run-b"] });
+  assert.deepEqual(filtered.progress, [{
+    runId: "run-b",
+    status: "running",
+    lastCompletedStep: 1,
+    steps: [
+      { step: 1, skill: "suggest_safe_domain", status: "done" },
+      { step: 2, skill: "register_domain_route53", status: "in_flight" }
+    ]
+  }]);
+
+  const missingTask = await service.snapshot("run-without-canvas-task");
+  assert.deepEqual(readerInputs.at(-1), {
+    taskId: "run-without-canvas-task",
+    runIds: ["run-without-canvas-task"]
+  });
+  assert.equal(missingTask.tasks.length, 0);
+  assert.equal(missingTask.progress?.[0]?.runId, "run-without-canvas-task");
+});
+
 test("canvas-live upsertArtifactSnapshot normalizes non-positive block order before persisting", async () => {
   const stateDir = await stateDirForTest();
   const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });

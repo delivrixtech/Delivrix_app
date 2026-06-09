@@ -12,7 +12,7 @@
  * commit 52a451d) es la fase siguiente.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import {
   ArrowDown,
   ArrowLeft,
@@ -65,7 +65,16 @@ import { CanvasFlow } from "./canvas-flow.tsx";
 import { useDemoAgentRun, useDemoLiveState, type DemoAction } from "./demo-agent-run.ts";
 import { GatewayLogTerminal } from "./gateway-log-terminal.tsx";
 import { LiveTool } from "./live-tool.tsx";
-import { useLiveCanvasStream } from "./canvas-live-client.ts";
+import { useLiveCanvasStream, type UseLiveCanvasStreamResult } from "./canvas-live-client.ts";
+import {
+  buildSmtpBuildStepViews,
+  buildTopologyStatusOverlay,
+  currentBuildStepNumber,
+  selectActiveRunProgress,
+  type LiveRunProgress,
+  type LiveRunProgressMap,
+  type SmtpBuildStepVisualStatus
+} from "./smtp-live-progress.ts";
 
 /* ============================================================
  * MOCK DATA — reemplazable por WSS stream cuando esté conectado
@@ -1634,17 +1643,44 @@ function AgentViewport({
   errorMessage: string | null;
 }) {
   const [tab, setTab] = useState<ViewportTab>("live");
+  const [demoMode, setDemoMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("delivrix.canvas.demo") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("delivrix.canvas.demo", demoMode ? "1" : "0");
+    } catch {
+      // private mode etc — silencioso.
+    }
+  }, [demoMode]);
+  const liveStream = useLiveCanvasStream(!demoMode);
+
   return (
     <section
       className="flex flex-col flex-1 min-w-0"
       style={{ background: "var(--color-surface-sunken)" }}
     >
       <ViewportTabs active={tab} onChange={setTab} actions={actions} />
-      {tab === "live" ? <LiveTab actions={actions} source={source} errorMessage={errorMessage} /> : null}
+      {tab === "live" ? (
+        <LiveTab
+          actions={actions}
+          source={source}
+          errorMessage={errorMessage}
+          demoMode={demoMode}
+          setDemoMode={setDemoMode}
+          liveStream={liveStream}
+        />
+      ) : null}
       {tab === "files" ? <FilesTab actions={actions} /> : null}
       {tab === "terminal" ? <GatewayLogTerminal /> : null}
       {tab === "diff" ? <DiffTab actions={actions} /> : null}
-      {tab === "topology" ? <TopologyTab /> : null}
+      {tab === "topology" ? (
+        <TopologyTab liveRunProgress={liveStream.liveRunProgress} activeTaskId={liveStream.activeTaskId} />
+      ) : null}
     </section>
   );
 }
@@ -2063,30 +2099,16 @@ function LiveTab(_props: {
   actions: Action[];
   source: AgentSource;
   errorMessage: string | null;
+  demoMode: boolean;
+  setDemoMode: Dispatch<SetStateAction<boolean>>;
+  liveStream: UseLiveCanvasStreamResult;
 }) {
-  void _props;
-  // Demo mode default OFF ahora que Bloque 7 está live. Persiste decisión
-  // del operador en localStorage.
-  const [demoMode, setDemoMode] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("delivrix.canvas.demo") === "1";
-    } catch {
-      return false;
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem("delivrix.canvas.demo", demoMode ? "1" : "0");
-    } catch {
-      // private mode etc — silencioso.
-    }
-  }, [demoMode]);
+  const { demoMode, setDemoMode, liveStream } = _props;
 
   // Las 2 fuentes corren independientes según el toggle. Cuando demoMode=true,
   // useLiveCanvasStream queda en `offline` (no abre WSS) y useDemoLiveState
   // entrega el dataset simulado. Al revés cuando demoMode=false.
   const demoState = useDemoLiveState(demoMode);
-  const liveStream = useLiveCanvasStream(!demoMode);
   const pendingApprovals = usePendingOpenClawProposals(!demoMode);
 
   // Una única fuente efectiva. Si demo está ON, usa el dataset; si OFF, el
@@ -3481,10 +3503,35 @@ function DiffTab({ actions }: { actions: Action[] }) {
  * TopologyTab — re-render del ReactFlow real
  * ============================================================ */
 
-function TopologyTab() {
+function TopologyTab({
+  liveRunProgress,
+  activeTaskId
+}: {
+  liveRunProgress: LiveRunProgressMap;
+  activeTaskId: string | null;
+}) {
   const [data, setData] = useState<OpenClawCanvasPayload["canvas"] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const activeRunProgress = useMemo(
+    () => selectActiveRunProgress(liveRunProgress, activeTaskId),
+    [activeTaskId, liveRunProgress]
+  );
+  const statusOverlay = useMemo(
+    () => buildTopologyStatusOverlay(activeRunProgress),
+    [activeRunProgress]
+  );
+  const renderedCanvas = useMemo<OpenClawCanvasPayload["canvas"] | null>(() => {
+    if (!data) return null;
+    if (Object.keys(statusOverlay).length === 0) return data;
+    return {
+      ...data,
+      nodes: data.nodes.map((node) => ({
+        ...node,
+        status: statusOverlay[node.id] ?? node.status
+      }))
+    };
+  }, [data, statusOverlay]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3532,10 +3579,148 @@ function TopologyTab() {
   }
 
   return (
-    <div className="flex flex-1 min-h-0" style={{ padding: 16 }}>
-      <CanvasFlow canvas={data} selectedId={selectedId} onSelectNode={setSelectedId} />
+    <div className="flex flex-1 min-h-0" style={{ padding: 16, gap: 16 }}>
+      <div className="flex flex-1 min-w-0">
+        <CanvasFlow canvas={renderedCanvas ?? data} selectedId={selectedId} onSelectNode={setSelectedId} />
+      </div>
+      <SmtpBuildStepper run={activeRunProgress} />
     </div>
   );
+}
+
+function SmtpBuildStepper({ run }: { run: LiveRunProgress | null }) {
+  const steps = useMemo(() => buildSmtpBuildStepViews(run), [run]);
+  const currentStep = currentBuildStepNumber(run);
+  const runLabel = run ? smtpRunStatusLabel(run.runStatus) : "sin build activo";
+
+  return (
+    <aside
+      className="flex flex-col shrink-0 min-h-0"
+      style={{
+        width: 330,
+        borderLeft: "1px solid var(--color-border)",
+        paddingLeft: 16,
+        gap: 12
+      }}
+    >
+      <header className="flex flex-col" style={{ gap: 6 }}>
+        <span
+          className="font-[family-name:var(--font-caption)] font-semibold uppercase"
+          style={{ fontSize: 10, letterSpacing: "0.6px", color: "var(--color-text-tertiary)" }}
+        >
+          Progreso del build SMTP · paso {currentStep}/14
+        </span>
+        <span
+          className="font-[family-name:var(--font-heading)] font-semibold"
+          style={{ fontSize: 14, color: "var(--color-text-primary)" }}
+        >
+          {runLabel}
+        </span>
+      </header>
+      <div className="flex flex-col min-h-0 overflow-y-auto" style={{ gap: 7, paddingRight: 2 }}>
+        {steps.map((step) => (
+          <SmtpBuildStepRow key={step.step} step={step} />
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function SmtpBuildStepRow({
+  step
+}: {
+  step: ReturnType<typeof buildSmtpBuildStepViews>[number];
+}) {
+  const visual = smtpBuildStepVisual(step.status);
+  return (
+    <div
+      className="grid items-start"
+      style={{
+        gridTemplateColumns: "22px 1fr",
+        gap: 8,
+        minHeight: 44,
+        padding: "7px 0"
+      }}
+    >
+      <span
+        className="inline-flex items-center justify-center font-[family-name:var(--font-mono)] font-bold"
+        style={{
+          width: 22,
+          height: 22,
+          borderRadius: 999,
+          background: visual.background,
+          color: visual.color,
+          fontSize: 10
+        }}
+      >
+        {step.status === "in_progress" ? (
+          <Loader size={12} strokeWidth={2} style={{ animation: "spin 1.4s linear infinite" }} />
+        ) : step.status === "ready" ? (
+          <CheckCircle2 size={12} strokeWidth={2} />
+        ) : step.status === "error" ? (
+          <TriangleAlert size={12} strokeWidth={2} />
+        ) : (
+          step.step
+        )}
+      </span>
+      <span className="flex flex-col min-w-0" style={{ gap: 3 }}>
+        <span
+          className="font-[family-name:var(--font-body)] font-semibold"
+          style={{ fontSize: 12, color: "var(--color-text-primary)", lineHeight: 1.25 }}
+        >
+          {step.label}
+        </span>
+        <span
+          className="font-[family-name:var(--font-mono)]"
+          style={{ fontSize: 10, color: visual.color, lineHeight: 1.35 }}
+        >
+          {smtpBuildStepMeta(step)}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+function smtpRunStatusLabel(status: LiveRunProgress["runStatus"]): string {
+  if (status === "completed") return "build completado";
+  if (status === "failed") return "build con falla";
+  if (status === "running") return "build en ejecución";
+  return String(status);
+}
+
+function smtpBuildStepMeta(step: ReturnType<typeof buildSmtpBuildStepViews>[number]): string {
+  if (step.status === "ready") {
+    const duration = step.startedAt && step.completedAt ? formatStepDuration(step.startedAt, step.completedAt) : null;
+    return duration ? `hecho · ${duration}` : "hecho";
+  }
+  if (step.status === "in_progress") return `configurando · esperando… ${step.eta}, normal`;
+  if (step.status === "error") return "falla · revisar evento";
+  return `pendiente · ETA ${step.eta}`;
+}
+
+function formatStepDuration(startedAt: string, completedAt: string): string | null {
+  const start = Date.parse(startedAt);
+  const end = Date.parse(completedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  const seconds = Math.max(1, Math.round((end - start) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.round(seconds / 60)}min`;
+}
+
+function smtpBuildStepVisual(status: SmtpBuildStepVisualStatus): {
+  color: string;
+  background: string;
+} {
+  if (status === "ready") {
+    return { color: "var(--color-success)", background: "var(--color-success-soft)" };
+  }
+  if (status === "in_progress") {
+    return { color: "var(--color-warning)", background: "var(--color-warning-soft)" };
+  }
+  if (status === "error") {
+    return { color: "var(--color-critical)", background: "var(--color-critical-soft)" };
+  }
+  return { color: "var(--color-text-tertiary)", background: "var(--color-surface-sunken)" };
 }
 
 /* ============================================================

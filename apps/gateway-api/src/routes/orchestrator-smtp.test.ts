@@ -9,6 +9,7 @@ import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import {
   configureCompleteSmtp,
   handleConfigureCompleteSmtp,
+  readSmtpRunProgress,
   type ApprovalStepDecision,
   type ApprovalStepInput,
   type ConfigureCompleteSmtpDeps,
@@ -36,6 +37,77 @@ test("configureCompleteSmtp chooses the first suggested domain", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);
   assert.equal(ctx.approvals[0].params.domain, "delivrixops.com");
+});
+
+test("readSmtpRunProgress returns the safe 14-step snapshot shape", async () => {
+  const ctx = createDeps();
+  await ctx.workspace.writeWorkspaceFileAtomic("inventory/smtp-runs/run-progress.json", `${JSON.stringify({
+    schemaVersion: "smtp-run-state/v1",
+    runId: "run-progress",
+    status: "running",
+    createdAt: "2026-05-31T12:00:00.000Z",
+    updatedAt: "2026-05-31T12:01:00.000Z",
+    params: {
+      brand: "Delivrix",
+      requireExistingDomain: false,
+      budgetUsdMax: 25,
+      testEmailRecipient: "operator@example.test",
+      testEmailSubject: "secret subject should not leak",
+      testEmailBody: "secret body should not leak",
+      seedInboxes: ["seed-a@example.test", "seed-b@example.test", "seed-c@example.test"]
+    },
+    selector: "s2026a",
+    budgetSpentUsd: 0,
+    lastCompletedStep: 0,
+    steps: {
+      "1": {
+        step: 1,
+        skill: "suggest_safe_domain",
+        status: "done",
+        result: {
+          step: 1,
+          skill: "suggest_safe_domain",
+          inputHash: "hash-1",
+          outcome: { token: "super-secret-token" },
+          durationMs: 10
+        },
+        updatedAt: "2026-05-31T12:00:10.000Z"
+      },
+      "2": {
+        step: 2,
+        skill: "register_domain_route53",
+        status: "in_flight",
+        inputHash: "hash-2",
+        leaseUntil: "2026-05-31T12:10:00.000Z",
+        updatedAt: "2026-05-31T12:00:20.000Z"
+      }
+    }
+  }, null, 2)}\n`);
+
+  const progress = await readSmtpRunProgress({ workspace: ctx.workspace }, "run-progress");
+
+  assert.deepEqual(progress, {
+    runId: "run-progress",
+    status: "running",
+    lastCompletedStep: 1,
+    steps: [
+      { step: 1, skill: "suggest_safe_domain", status: "done" },
+      { step: 2, skill: "register_domain_route53", status: "in_flight" },
+      { step: 3, skill: "wait_for_dns_propagation", status: "pending" },
+      { step: 4, skill: "create_webdock_server", status: "pending" },
+      { step: 5, skill: "wait_server_running", status: "pending" },
+      { step: 6, skill: "bind_webdock_main_domain", status: "pending" },
+      { step: 7, skill: "upsert_dns_route53", status: "pending" },
+      { step: 8, skill: "wait_for_dns_propagation", status: "pending" },
+      { step: 9, skill: "provision_smtp_postfix", status: "pending" },
+      { step: 10, skill: "configure_email_auth", status: "pending" },
+      { step: 11, skill: "wait_for_dns_propagation", status: "pending" },
+      { step: 12, skill: "seed_warmup_pool", status: "pending" },
+      { step: 13, skill: "wait_warmup_initial", status: "pending" },
+      { step: 14, skill: "send_real_email", status: "pending" }
+    ]
+  });
+  assert.doesNotMatch(JSON.stringify(progress), /super-secret-token|secret subject|secret body|operator@example\.test/);
 });
 
 test("configureCompleteSmtp does not proceed after step 2 execution failure", async () => {

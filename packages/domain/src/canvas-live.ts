@@ -170,11 +170,27 @@ export interface CanvasLiveArtifactSnapshot {
   blocks: CanvasLiveArtifactBlockSnapshot[];
 }
 
+export type CanvasLiveRunProgressStepStatus = "pending" | "in_flight" | "done";
+
+export interface CanvasLiveRunProgressStep {
+  step: number;
+  skill: string;
+  status: CanvasLiveRunProgressStepStatus;
+}
+
+export interface CanvasLiveRunProgress {
+  runId: string;
+  status: "running" | "completed" | "failed" | string;
+  lastCompletedStep: number;
+  steps: CanvasLiveRunProgressStep[];
+}
+
 export interface CanvasLiveStateSnapshot {
   schemaVersion: "2026-05-25.canvas-live.v1";
   generatedAt: string;
   tasks: CanvasLiveTaskSnapshot[];
   artifacts: CanvasLiveArtifactSnapshot[];
+  progress?: CanvasLiveRunProgress[];
 }
 
 export interface CanvasArtifactApproveInput {

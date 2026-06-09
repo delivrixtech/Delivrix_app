@@ -284,6 +284,7 @@ import { handleProposalReject } from "./routes/proposals-reject.ts";
 import { handleLegacyAuthorizationDeprecated } from "./routes/legacy-authorization.ts";
 import {
   handleConfigureCompleteSmtp,
+  readSmtpRunProgress,
   type ApprovalStepDecision,
   type OwnedDomainVerification
 } from "./routes/orchestrator-smtp.ts";
@@ -348,7 +349,13 @@ const ipReputationReportStore = new LocalFileIpReputationReportStore();
 const backupSimulationStore = new LocalFileBackupSimulationStore();
 const safetyRealtimeCache = new SafetyRealtimeCache();
 const learningRealtimeCache = new SafetyRealtimeCache();
-const canvasLiveEvents = new CanvasLiveEventService();
+const openClawWorkspace = new OpenClawWorkspace();
+const canvasLiveEvents = new CanvasLiveEventService({
+  smtpProgressReader: async ({ runIds }) => {
+    const progress = await Promise.all(runIds.map((runId) => readSmtpRunProgress({ workspace: openClawWorkspace }, runId)));
+    return progress.filter((entry) => entry !== null);
+  }
+});
 const openClawBedrockBridge = createOpenClawBedrockBridgeFromEnv(process.env, {
   logger: gatewayRuntimeLog,
   auditLog,
@@ -364,7 +371,6 @@ const gatewayLogStream = new GatewayLogStreamService({ logPath: gatewayRuntimeLo
 const equipoWebhookBroadcaster = new EquipoWebhookBroadcaster({
   killSwitchProvider: async () => (await killSwitchStore.get()).enabled
 });
-const openClawWorkspace = new OpenClawWorkspace();
 const workspaceReadRateLimiter = new WorkspaceReadRateLimiter();
 const smtpSshRunner = createSmtpSshRunnerFromEnv();
 const gmailImapAdapter = createGmailImapAdapterFromEnv(process.env);
