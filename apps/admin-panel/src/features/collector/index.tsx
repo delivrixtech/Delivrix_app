@@ -959,9 +959,9 @@ function CliSnippet() {
   const lines = [
     { tone: "input" as const, text: "$ delivrix collector capture --source proxmox" },
     { tone: "info" as const, text: "› authenticating with operator role…" },
-    { tone: "success" as const, text: "✓ snapshot signed sha256:a3f1bd…" },
+    { tone: "success" as const, text: "OK snapshot signed sha256:a3f1bd…" },
     { tone: "info" as const, text: "› posting to /v1/devops/collector/snapshots" },
-    { tone: "success" as const, text: "✓ accepted, schema 5.10.0" },
+    { tone: "success" as const, text: "OK accepted, schema 5.10.0" },
     { tone: "info" as const, text: "› hash registered in audit log" }
   ];
   const handleCopy = async () => {

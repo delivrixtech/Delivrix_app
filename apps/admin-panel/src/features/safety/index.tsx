@@ -567,7 +567,7 @@ function GatesCard({ data }: { data: DashboardData }) {
               className="grid place-items-center text-[var(--color-on-dark-strong)] text-[10px] shrink-0"
               style={{ width: 16, height: 16, borderRadius: 999, background: row.tone, fontWeight: 700 }}
             >
-              {row.check === true ? "✓" : row.check === "warn" ? "!" : row.check === "bad" ? "×" : "−"}
+              {row.check === true ? "+" : row.check === "warn" ? "!" : row.check === "bad" ? "×" : "−"}
             </span>
             <span
               className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-primary)] truncate"

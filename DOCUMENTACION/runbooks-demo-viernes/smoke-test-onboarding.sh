@@ -38,7 +38,7 @@ if curl -s -f "$GATEWAY/health" >/dev/null; then
   curl -s "$GATEWAY/health" | head -c 200
   echo ""
 else
-  echo "✗ Gateway no responde en $GATEWAY. Arrancalo primero:"
+  echo "FALLO: Gateway no responde en $GATEWAY. Arrancalo primero:"
   echo "    node --env-file=.env.local apps/gateway-api/src/main.ts"
   exit 1
 fi
@@ -92,10 +92,10 @@ for blocker in \
         echo "  ⏳ $blocker  ← OK con approval token dummy; con token real válido debería pasar"
         ;;
       monthly_cap_exceeded)
-        echo "  ⚠️  $blocker            ← cap mensual gastado"
+        echo "  AVISO: $blocker            ← cap mensual gastado"
         ;;
       *)
-        echo "  ✗ $blocker         ← INESPERADO, deberíamos haberlo cerrado ya"
+        echo "  FALLO: $blocker         ← INESPERADO, deberíamos haberlo cerrado ya"
         ;;
     esac
   fi
@@ -111,7 +111,7 @@ if [ "${#FOUND[@]}" -eq 2 ] && \
    [[ " ${FOUND[*]} " == *" purchase_flag_disabled "* ]] && \
    [[ " ${FOUND[*]} " == *" approval_not_found_or_expired "* ]]; then
   echo ""
-  echo "✓ ESTADO IDEAL pre-demo: solo quedan los 2 blockers esperados."
+  echo "OK: ESTADO IDEAL pre-demo: solo quedan los 2 blockers esperados."
   echo "  Cuando flipeés purchase_flag + dispares con approval token real,"
   echo "  el flow va a pasar T1 y arrancar la compra."
 fi
