@@ -503,7 +503,7 @@ export class CanvasLiveEventService {
     }
     const existing = artifact.blocks.find((block) => block.blockId === event.blockId);
     if (existing) {
-      existing.content += event.chunk;
+      existing.content = (existing.content + event.chunk).slice(-50000);
       existing.status = "streaming";
       existing.updatedAt = event.occurredAt;
     } else {

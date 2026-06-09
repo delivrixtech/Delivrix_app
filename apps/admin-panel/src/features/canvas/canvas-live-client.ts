@@ -31,6 +31,7 @@ const STREAM_TOKEN = import.meta.env.VITE_CANVAS_LIVE_STREAM_TOKEN || import.met
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15_000;
 const SNAPSHOT_POLL_MS = 5_000;
+export const MAX_LIVE_TASKS = 50;
 
 export type LiveConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline";
 
@@ -47,7 +48,7 @@ export interface UseLiveCanvasStreamResult {
   patchBlock: (blockId: string, content: string) => Promise<void>;
 }
 
-interface InternalState {
+export interface InternalState {
   tasks: Map<string, LiveTask>;
   /** lastAction por task. */
   lastAction: Map<string, LiveAction>;
@@ -68,6 +69,43 @@ function emptyState(): InternalState {
     artifacts: new Map(),
     artifactToTask: new Map()
   };
+}
+
+export function evictLiveState(state: InternalState, activeTaskId: string | null): void {
+  if (state.tasks.size <= MAX_LIVE_TASKS) return;
+  const preserve = new Set<string>();
+  const addWithAncestors = (taskId: string | null | undefined): void => {
+    let cursor = taskId ?? null;
+    let guard = 0;
+    while (cursor && state.tasks.has(cursor) && !preserve.has(cursor) && guard < MAX_LIVE_TASKS) {
+      preserve.add(cursor);
+      cursor = state.tasks.get(cursor)?.parentTaskId ?? null;
+      guard += 1;
+    }
+  };
+  if (activeTaskId && state.tasks.has(activeTaskId)) addWithAncestors(activeTaskId);
+  for (const task of state.tasks.values()) if (task.status === "running") addWithAncestors(task.id);
+  if (preserve.size < MAX_LIVE_TASKS) {
+    const candidates = [...state.tasks.values()]
+      .filter((task) => !preserve.has(task.id))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    for (const task of candidates) {
+      if (preserve.size >= MAX_LIVE_TASKS) break;
+      preserve.add(task.id);
+    }
+  }
+  if (preserve.size >= state.tasks.size) return;
+  for (const taskId of [...state.tasks.keys()]) {
+    if (preserve.has(taskId)) continue;
+    state.tasks.delete(taskId);
+    state.lastAction.delete(taskId);
+  }
+  for (const [artifactId, taskId] of [...state.artifactToTask.entries()]) {
+    if (!state.tasks.has(taskId)) {
+      state.artifacts.delete(artifactId);
+      state.artifactToTask.delete(artifactId);
+    }
+  }
 }
 
 function pickPreferredTaskId(state: InternalState, currentTaskId: string | null): string | null {
@@ -151,6 +189,17 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
   const snapshotRequestGateRef = useRef(createSnapshotRequestGate());
 
   const forceRender = useCallback(() => setTick((n) => (n + 1) % 1_000_000), []);
+  const rafPendingRef = useRef(false);
+  const rafHandleRef = useRef<number | null>(null);
+  const scheduleForceRender = useCallback(() => {
+    if (rafPendingRef.current) return;
+    rafPendingRef.current = true;
+    rafHandleRef.current = window.requestAnimationFrame(() => {
+      rafPendingRef.current = false;
+      rafHandleRef.current = null;
+      forceRender();
+    });
+  }, [forceRender]);
 
   /* -------- Conexión + snapshot inicial -------- */
   useEffect(() => {
@@ -189,6 +238,11 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
         socketRef.current = null;
       }
       snapshotRequestGateRef.current.abortCurrent();
+      if (rafHandleRef.current != null) {
+        window.cancelAnimationFrame(rafHandleRef.current);
+        rafHandleRef.current = null;
+        rafPendingRef.current = false;
+      }
     }
 
     async function loadSnapshotThenStream() {
@@ -268,6 +322,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
         next.artifacts.set(a.artifactId, artifactFromSnapshot(a));
         next.artifactToTask.set(a.artifactId, a.taskId);
       }
+      evictLiveState(next, activeTaskIdRef.current);
       stateRef.current = next;
       const preferredTaskId = pickPreferredTaskId(next, activeTaskIdRef.current);
       if (preferredTaskId !== activeTaskIdRef.current) {
@@ -405,7 +460,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
           art.blocks = [...art.blocks];
           art.blocks[idx] = {
             ...prev,
-            content: prev.content + event.chunk,
+            content: (prev.content + event.chunk).slice(-20000),
             status: "streaming"
           };
           break;
@@ -413,7 +468,8 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
         default:
           break;
       }
-      forceRender();
+      evictLiveState(s, activeTaskIdRef.current);
+      scheduleForceRender();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
