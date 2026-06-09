@@ -98,6 +98,8 @@ type DelivrixNodeData = {
   selected: boolean;
   hasPrompt: boolean;
   pulseKey: number; // cambia cuando status cambia → trigger CSS halo
+  emphasis: boolean;
+  dimmed: boolean;
 } & Record<string, unknown>;
 
 type DelivrixNodeType = Node<DelivrixNodeData, "delivrix">;
@@ -106,6 +108,8 @@ interface CanvasFlowProps {
   canvas: CanvasData;
   selectedId: string | null;
   onSelectNode: (id: string) => void;
+  activeNodeId?: string | null;
+  buildNodeIds?: readonly string[] | null;
 }
 
 /* ============================================================
@@ -158,7 +162,7 @@ function nodeIcon(node: CanvasNode): LucideIcon {
 }
 
 function DelivrixCanvasNode({ data }: NodeProps<DelivrixNodeType>) {
-  const { node, laneColor, selected, hasPrompt, pulseKey } = data;
+  const { node, laneColor, selected, hasPrompt, pulseKey, emphasis, dimmed } = data;
   const visual = statusToVisual(node.status);
   const Icon = nodeIcon(node);
   const hasError = node.status === "blocked" || node.status === "error";
@@ -178,13 +182,15 @@ function DelivrixCanvasNode({ data }: NodeProps<DelivrixNodeType>) {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        gap: 8
+        gap: 8,
+        opacity: dimmed ? 0.4 : 1,
+        transition: "opacity 180ms ease"
       }}
     >
       {/* Icon body — el bloque que se arrastra */}
       <div
-        key={pulseKey}
-        className="v2-tick-halo delivrix-node-body"
+        key={emphasis ? "active" : pulseKey}
+        className={`v2-tick-halo delivrix-node-body${emphasis ? " is-active" : ""}`}
         style={{
           position: "relative",
           width: NODE_WIDTH,
@@ -194,6 +200,8 @@ function DelivrixCanvasNode({ data }: NodeProps<DelivrixNodeType>) {
           border: `${borderWidth}px solid ${borderColor}`,
           boxShadow: hasPrompt
             ? "0 0 0 4px rgba(245,158,11,0.10), 0 8px 20px rgba(0,0,0,0.4)"
+            : emphasis
+              ? "0 0 0 4px rgba(251,191,36,0.18), 0 10px 24px rgba(0,0,0,0.45)"
             : selected
               ? "0 0 0 4px rgba(255,255,255,0.04), 0 8px 20px rgba(0,0,0,0.4)"
               : "0 4px 12px rgba(0,0,0,0.3)",
@@ -350,7 +358,9 @@ function layoutNodes(
   lanes: OpenClawCanvasLane[],
   selectedId: string | null,
   promptNodeId: string | null,
-  statusSignatures: Record<string, string>
+  statusSignatures: Record<string, string>,
+  activeNodeId: string | null,
+  buildNodeIds: readonly string[] | null
 ): DelivrixNodeType[] {
   // Group by lane preserving the order they arrive in `nodes` (backend order = chronological)
   const byLane: Record<OpenClawCanvasLane, CanvasNode[]> = {} as any;
@@ -387,7 +397,9 @@ function layoutNodes(
           laneColor: LANE_COLOR[lane],
           selected: node.id === selectedId,
           hasPrompt: node.id === promptNodeId,
-          pulseKey: hashString(statusSignatures[node.id] ?? node.status)
+          pulseKey: hashString(statusSignatures[node.id] ?? node.status),
+          emphasis: node.id === activeNodeId,
+          dimmed: !!buildNodeIds && !buildNodeIds.includes(node.id)
         }
       });
     });
@@ -408,6 +420,7 @@ function layoutEdges(canvasEdges: CanvasEdge[]): Edge[] {
   return canvasEdges.map((e) => {
     const isBlocked = e.status === "blocked" || e.status === "error";
     const isReady = e.status === "ready";
+    const isPending = e.status === "pending";
     const isProgress = e.status === "in_progress" || e.status === "collecting";
     const color = isBlocked
       ? "#f87171"
@@ -415,18 +428,21 @@ function layoutEdges(canvasEdges: CanvasEdge[]): Edge[] {
         ? "#4ade80"
         : isProgress
           ? "#fbbf24"
-          : "rgba(255,255,255,0.22)";
+          : isPending
+            ? "rgba(255,255,255,0.22)"
+            : "rgba(255,255,255,0.22)";
     return {
       id: e.id,
       source: e.from,
       target: e.to,
-      animated: isProgress || isBlocked,
+      animated: isProgress,
+      className: isProgress ? "v4-edge-flowing" : undefined,
       type: "smoothstep",
       style: {
         stroke: color,
-        strokeWidth: isBlocked ? 2.5 : 2,
+        strokeWidth: isProgress ? 3 : isBlocked ? 2.5 : 2,
         // n8n usa dashed para edges no-ejecutados, sólida para ready
-        strokeDasharray: isReady ? undefined : "6,4"
+        strokeDasharray: isReady ? undefined : isProgress ? "10,6" : "6,4"
       }
       // n8n-style: SIN flechas, SIN labels. La conexión es lo que importa visualmente.
     };
@@ -490,7 +506,13 @@ function LaneLabelNode({ data }: NodeProps<Node<{ lane: OpenClawCanvasLane }, "l
 /* ============================================================
  * CanvasFlow — componente principal
  * ============================================================ */
-export function CanvasFlow({ canvas, selectedId, onSelectNode }: CanvasFlowProps) {
+export function CanvasFlow({
+  canvas,
+  selectedId,
+  onSelectNode,
+  activeNodeId = null,
+  buildNodeIds = null
+}: CanvasFlowProps) {
   const promptNodeId = canvas.prompt?.nodeId ?? null;
   // Trackeamos status anterior por nodo para que el pulseKey cambie sólo cuando cambia status
   const previousStatusesRef = useRef<Record<string, string>>({});
@@ -510,8 +532,8 @@ export function CanvasFlow({ canvas, selectedId, onSelectNode }: CanvasFlowProps
   }, [canvas.nodes]);
 
   const dataNodes = useMemo(
-    () => layoutNodes(canvas.nodes, LANE_ORDER, selectedId, promptNodeId, statusSignatures),
-    [canvas.nodes, selectedId, promptNodeId, statusSignatures]
+    () => layoutNodes(canvas.nodes, LANE_ORDER, selectedId, promptNodeId, statusSignatures, activeNodeId, buildNodeIds),
+    [canvas.nodes, selectedId, promptNodeId, statusSignatures, activeNodeId, buildNodeIds]
   );
   const edges = useMemo(() => layoutEdges(canvas.edges ?? []), [canvas.edges]);
 

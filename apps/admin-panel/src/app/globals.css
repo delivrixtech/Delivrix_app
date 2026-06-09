@@ -406,6 +406,35 @@
   animation: v2-edge-flow 600ms linear infinite;
 }
 
+/* Canvas v4 — flujo direccional real sobre paths SVG de ReactFlow. */
+@keyframes delivrix-recorrido-flow {
+  to {
+    stroke-dashoffset: -16;
+  }
+}
+
+.delivrix-flow-canvas .react-flow__edge.v4-edge-flowing .react-flow__edge-path {
+  stroke-dasharray: 10 6;
+  stroke-width: 3;
+  animation: delivrix-recorrido-flow 700ms linear infinite;
+  filter: drop-shadow(0 0 4px rgba(251, 191, 36, 0.55));
+}
+
+@keyframes delivrix-node-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(251, 191, 36, 0.2);
+  }
+}
+
+.delivrix-flow-canvas .delivrix-node-body.is-active {
+  animation: delivrix-node-pulse 1.4s ease-in-out infinite;
+  border-color: var(--color-accent-tertiary) !important;
+}
+
 /* Canvas v4 — slide-in para action cards del feed live */
 @keyframes v4-slide-in {
   0% {

@@ -67,8 +67,9 @@ import { GatewayLogTerminal } from "./gateway-log-terminal.tsx";
 import { LiveTool } from "./live-tool.tsx";
 import { useLiveCanvasStream, type UseLiveCanvasStreamResult } from "./canvas-live-client.ts";
 import {
+  applyRecorridoOverlayToCanvas,
   buildSmtpBuildStepViews,
-  buildTopologyStatusOverlay,
+  buildRecorridoOverlay,
   currentBuildStepNumber,
   selectActiveRunProgress,
   type LiveRunProgress,
@@ -3517,21 +3518,15 @@ function TopologyTab({
     () => selectActiveRunProgress(liveRunProgress, activeTaskId),
     [activeTaskId, liveRunProgress]
   );
-  const statusOverlay = useMemo(
-    () => buildTopologyStatusOverlay(activeRunProgress),
+  const recorridoOverlay = useMemo(
+    () => buildRecorridoOverlay(activeRunProgress),
     [activeRunProgress]
   );
+  const runActive = activeRunProgress?.runStatus === "running";
   const renderedCanvas = useMemo<OpenClawCanvasPayload["canvas"] | null>(() => {
     if (!data) return null;
-    if (Object.keys(statusOverlay).length === 0) return data;
-    return {
-      ...data,
-      nodes: data.nodes.map((node) => ({
-        ...node,
-        status: statusOverlay[node.id] ?? node.status
-      }))
-    };
-  }, [data, statusOverlay]);
+    return applyRecorridoOverlayToCanvas(data, recorridoOverlay);
+  }, [data, recorridoOverlay]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3581,7 +3576,13 @@ function TopologyTab({
   return (
     <div className="flex flex-1 min-h-0" style={{ padding: 16, gap: 16 }}>
       <div className="flex flex-1 min-w-0">
-        <CanvasFlow canvas={renderedCanvas ?? data} selectedId={selectedId} onSelectNode={setSelectedId} />
+        <CanvasFlow
+          canvas={renderedCanvas ?? data}
+          selectedId={selectedId}
+          onSelectNode={setSelectedId}
+          activeNodeId={runActive ? recorridoOverlay.activeNodeId : null}
+          buildNodeIds={runActive ? recorridoOverlay.buildNodeIds : null}
+        />
       </div>
       <SmtpBuildStepper run={activeRunProgress} />
     </div>

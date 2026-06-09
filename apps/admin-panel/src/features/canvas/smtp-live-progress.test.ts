@@ -3,11 +3,14 @@ import { test } from "node:test";
 import type { CanvasLiveActionNowEventWire, CanvasLiveRunProgressWire } from "./live-tool-types.ts";
 import {
   applyOrchestratorProgressEvent,
+  applyRecorridoOverlayToCanvas,
+  buildRecorridoOverlay,
   buildSmtpBuildStepViews,
   buildTopologyStatusOverlay,
   currentBuildStepNumber,
   liveRunProgressFromSnapshot,
   parseOrchestratorAuditProgress,
+  RECORRIDO_EDGES,
   selectActiveRunProgress,
   type LiveRunProgress,
   type LiveRunProgressMap
@@ -140,6 +143,102 @@ test("buildTopologyStatusOverlay aggregates node statuses by priority and suppre
     currentStep: 5
   });
   assert.deepEqual(buildTopologyStatusOverlay(completed), {});
+});
+
+test("buildRecorridoOverlay marks the active frontier around an intermediate SMTP step", () => {
+  const run = runProgress({
+    currentStep: 9,
+    lastCompletedStep: 8,
+    steps: new Map([
+      [8, { skill: "wait_for_dns_propagation", status: "ready" }],
+      [9, { skill: "provision_smtp_postfix", status: "in_progress" }]
+    ])
+  });
+
+  const overlay = buildRecorridoOverlay(run);
+
+  assert.equal(overlay.activeNodeId, "sender_nodes");
+  assert.deepEqual(overlay.edges, {
+    proxmox_to_cluster: "ready",
+    cluster_to_vps: "ready",
+    vps_to_dns: "ready",
+    dns_to_sender: "in_progress",
+    sender_to_warming: "in_progress",
+    warming_plan_to_ramp: "pending",
+    warming_to_reputation: "pending"
+  });
+  assert.equal(overlay.nodes.sender_nodes, "in_progress");
+});
+
+test("buildRecorridoOverlay keeps an empty overlay only when there is no run", () => {
+  assert.deepEqual(buildRecorridoOverlay(null), {
+    nodes: {},
+    edges: {},
+    activeNodeId: null,
+    buildNodeIds: []
+  });
+
+  const completed = runProgress({
+    runStatus: "completed",
+    currentStep: 9,
+    steps: new Map([[9, { skill: "provision_smtp_postfix", status: "ready" }]])
+  });
+
+  const completedOverlay = buildRecorridoOverlay(completed);
+  assert.equal(completedOverlay.activeNodeId, null);
+  assert.equal(completedOverlay.nodes.sender_nodes, "ready");
+  assert.equal(completedOverlay.edges.dns_to_sender, "pending");
+  assert.ok(completedOverlay.buildNodeIds.includes("sender_nodes"));
+});
+
+test("buildRecorridoOverlay keeps the frontier monotonic when later SMTP steps revisit DNS", () => {
+  const run = runProgress({
+    currentStep: 10,
+    lastCompletedStep: 9,
+    steps: new Map([
+      [9, { skill: "provision_smtp_postfix", status: "ready" }],
+      [10, { skill: "configure_email_auth", status: "in_progress" }]
+    ])
+  });
+
+  const overlay = buildRecorridoOverlay(run);
+
+  assert.equal(overlay.activeNodeId, "dns_identity");
+  assert.deepEqual(overlay.edges, {
+    proxmox_to_cluster: "ready",
+    cluster_to_vps: "ready",
+    vps_to_dns: "ready",
+    dns_to_sender: "in_progress",
+    sender_to_warming: "in_progress",
+    warming_plan_to_ramp: "pending",
+    warming_to_reputation: "pending"
+  });
+});
+
+test("applyRecorridoOverlayToCanvas preserves the same canvas reference when overlay is empty", () => {
+  const canvas = {
+    nodes: [{ id: "proxmox_host", status: "ready" }],
+    edges: [{ id: "proxmox_to_cluster", status: "in_progress" }]
+  };
+
+  assert.equal(applyRecorridoOverlayToCanvas(canvas, buildRecorridoOverlay(null)), canvas);
+});
+
+test("buildRecorridoOverlay exposes the fixed recorrido spine node ids", () => {
+  const run = runProgress({
+    currentStep: 12,
+    lastCompletedStep: 11,
+    steps: new Map([[12, { skill: "seed_warmup_pool", status: "in_progress" }]])
+  });
+
+  assert.deepEqual(
+    buildRecorridoOverlay(run).buildNodeIds,
+    ["proxmox_host", "cluster_plan", "vps_lxc_plan", "dns_identity", "sender_nodes", "warming_plan", "warming_ramp", "reputation_gates"]
+  );
+  assert.deepEqual(
+    RECORRIDO_EDGES.map((edge) => edge.id),
+    ["proxmox_to_cluster", "cluster_to_vps", "vps_to_dns", "dns_to_sender", "sender_to_warming", "warming_plan_to_ramp", "warming_to_reputation"]
+  );
 });
 
 test("selectActiveRunProgress scopes topology and stepper to the active run only", () => {
