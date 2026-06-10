@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
 import { createInternalHttpAdapter } from "../internal-http-adapter.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import {
@@ -472,6 +474,167 @@ test("configureCompleteSmtp accepts explicit creation-rate override with audit",
   assert.equal(ctx.approvals.some((entry) => entry.step === 4), true);
   assert.equal(ctx.creationOverrides.length, 1);
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.creation_rate_override"), true);
+});
+
+test("DoD#1 regresion single-account byte-identico: serverAccountId=ops, step4 params/hash sin accountId, creationReads=[ops], rollback contra ops", async () => {
+  // Run firmado (camino autonomo = el write-path multicuenta real) con SOLO la cuenta-1 configurada.
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    decisions: {} // forzamos fallo del bind (step 8) para ejercitar el rollback
+  });
+  ctx.deps.executePlanApprovedStep = (() => {
+    const original = ctx.deps.executePlanApprovedStep!;
+    return async (input: PlanApprovedStepInput) => {
+      if (input.step === 8) {
+        ctx.planExecutions.push(input);
+        return { status: "execution_failed", planStepTokenId: "plan-step-8", outcome: { error: "bind_failed" }, durationMs: 8, error: "bind_failed" };
+      }
+      return original(input);
+    };
+  })();
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 8);
+  // Sin multicuenta: el selector consulta SOLO "ops" (1 lectura), y NO se pidio la lista de cuentas.
+  assert.deepEqual(ctx.creationReads, ["ops"]);
+  assert.equal(ctx.creationAccountReads, 0);
+  // El step 4 viaja con serverAccountId="ops" por canal paralelo, y SUS params NO contienen accountId.
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  assert.equal(step4.serverAccountId, "ops");
+  assert.deepEqual(step4.params, {
+    runId: "run-1",
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.delivrixops.com",
+    imageSlug: "ubuntu-2404"
+  });
+  assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "accountId"), false);
+  // El inputHash del step 4 es el de un params SIN accountId (idempotencia/resume intactos).
+  const expectedStep4Hash = createHash("sha256").update(stableStringify({
+    runId: "run-1", profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404"
+  })).digest("hex");
+  assert.equal(step4.inputHash, expectedStep4Hash);
+  // runState persiste serverAccountId="ops"; el rollback/delete enruta a "ops".
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.serverAccountId, "ops");
+  assert.equal(ctx.rollbacks.length, 1);
+  assert.equal(ctx.rollbacks[0].serverAccountId, "ops");
+});
+
+test("DoD#2 multicuenta selecciona la cuenta con budget y propaga su accountId al create + rollback", async () => {
+  // ops en cap (4/4), secondary con budget (1/4) => el selector elige "secondary".
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { servers: fourServers(), sourceKind: "live", responseOk: true },
+      secondary: { servers: [{ creationDate: "2026-05-31T11:00:00.000Z" }], sourceKind: "live", responseOk: true }
+    }
+  });
+  // Forzamos fallo del bind para ejercitar tambien el rollback hacia la cuenta ganadora.
+  ctx.deps.executePlanApprovedStep = (() => {
+    const original = ctx.deps.executePlanApprovedStep!;
+    return async (input: PlanApprovedStepInput) => {
+      if (input.step === 8) {
+        ctx.planExecutions.push(input);
+        return { status: "execution_failed", planStepTokenId: "plan-step-8", outcome: { error: "bind_failed" }, durationMs: 8, error: "bind_failed" };
+      }
+      return original(input);
+    };
+  })();
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 8);
+  // Consulto la lista de cuentas y leyo el inventario de AMBAS.
+  assert.equal(ctx.creationAccountReads, 1);
+  assert.deepEqual([...ctx.creationReads].sort(), ["ops", "secondary"]);
+  // El create (step 4) va dirigido a "secondary"; el params sigue SIN accountId.
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  assert.equal(step4.serverAccountId, "secondary");
+  assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "accountId"), false);
+  // runState persiste la cuenta ganadora; el rollback/delete enruta a "secondary" (no a ops).
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.serverAccountId, "secondary");
+  assert.equal(ctx.rollbacks[0].serverAccountId, "secondary");
+});
+
+test("DoD#5 backward-compat: un runState viejo SIN serverAccountId hace rollback/delete contra ops sin error", async () => {
+  // Sembramos un runState legacy (sin serverAccountId) con el step 4 ya hecho, server creado, y
+  // forzamos que el bind (step 8) falle al reanudar -> el rollback debe defaultear a "ops".
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval()
+  });
+  ctx.deps.executePlanApprovedStep = (() => {
+    const original = ctx.deps.executePlanApprovedStep!;
+    return async (input: PlanApprovedStepInput) => {
+      if (input.step === 8) {
+        ctx.planExecutions.push(input);
+        return { status: "execution_failed", planStepTokenId: "plan-step-8", outcome: { error: "bind_failed" }, durationMs: 8, error: "bind_failed" };
+      }
+      return original(input);
+    };
+  })();
+  await seedLegacyRunStateThroughStep4(ctx.workspace, "run-1");
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 8);
+  // No re-selecciono cuenta (el step 4 ya estaba done): reuso el serverAccountId persistido, que al
+  // ser legacy es undefined -> rollback/delete defaultea a "ops" sin romper.
+  assert.equal(ctx.rollbacks.length, 1);
+  assert.equal(ctx.rollbacks[0].serverAccountId, "ops");
+  assert.equal(ctx.creationAccountReads, 0, "no re-selecciona cuenta en un resume con step 4 ya hecho");
+});
+
+test("DoD#6 todas las cuentas no-live => preserva fail-open (no no_eligible_accounts silencioso)", async () => {
+  const ctx = createDeps({
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { readError: new Error("ops webdock timeout") },
+      secondary: { sourceKind: "mock", responseOk: false, servers: fourServers() }
+    }
+  });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  // fail-open por defecto: el run completa y emite el audit ruidoso de read_failed (no se traga el error).
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.approvals.some((entry) => entry.step === 4), true);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.creation_rate_read_failed"), true);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.creation_rate_exceeded"), false);
+});
+
+test("DoD#6 todas las cuentas no-live + fail_closed => bloquea el create (no no_eligible_accounts silencioso)", async () => {
+  const ctx = createDeps({
+    env: { CREATION_RATE_GOVERNOR_FAIL_MODE: "fail_closed" },
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { readError: new Error("ops webdock timeout") },
+      secondary: { readError: new Error("secondary webdock timeout") }
+    }
+  });
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 4);
+  assert.match(result.error ?? "", /^creation_rate_read_failed: mode=fail_closed/);
+  assert.deepEqual(ctx.approvals.map((entry) => entry.step), [2, 3]);
 });
 
 test("configureCompleteSmtp emits canvas start and completion events", async () => {
@@ -1509,6 +1672,14 @@ function createDeps(options: {
   creationSourceKind?: "live" | "mock" | string;
   creationResponseOk?: boolean;
   creationOverride?: CreationRateOverrideDecision;
+  // 5.12 multicuenta: cuentas write-capable + inventario/estado por cuenta (account-aware).
+  creationAccounts?: Array<{ accountId: string; enabled: boolean }>;
+  creationByAccount?: Record<string, {
+    servers?: Array<{ creationDate?: string }>;
+    sourceKind?: "live" | "mock" | string;
+    responseOk?: boolean;
+    readError?: unknown;
+  }>;
 } = {}): {
   deps: ConfigureCompleteSmtpDeps;
   approvals: ApprovalStepInput[];
@@ -1517,7 +1688,8 @@ function createDeps(options: {
   creationReads: string[];
   creationOverrides: CreationRateOverrideInput[];
   route53RegistrationWaits: Route53DomainRegistrationWaitInput[];
-  rollbacks: Array<{ skill: string; params: Record<string, unknown> }>;
+  rollbacks: Array<{ skill: string; params: Record<string, unknown>; serverAccountId?: string }>;
+  creationAccountReads: number;
   auditEvents: Array<Record<string, unknown> & { action: string; metadata?: unknown }>;
   canvasEvents: Array<Record<string, unknown> & { action?: string }>;
   compactions: Array<{
@@ -1536,7 +1708,8 @@ function createDeps(options: {
   const creationReads: string[] = [];
   const creationOverrides: CreationRateOverrideInput[] = [];
   const route53RegistrationWaits: Route53DomainRegistrationWaitInput[] = [];
-  const rollbacks: Array<{ skill: string; params: Record<string, unknown> }> = [];
+  const rollbacks: Array<{ skill: string; params: Record<string, unknown>; serverAccountId?: string }> = [];
+  let creationAccountReads = 0;
   const auditEvents: Array<Record<string, unknown> & { action: string; metadata?: unknown }> = [];
   const canvasEvents: Array<Record<string, unknown> & { action?: string }> = [];
   const logs: Array<{ level: string; event: string; metadata?: Record<string, unknown> }> = [];
@@ -1570,8 +1743,29 @@ function createDeps(options: {
         }
         return options.outcomes?.[input.step] ?? { ok: true, skill: input.skill };
       },
+      ...(options.creationAccounts ? {
+        listCreationAccounts() {
+          creationAccountReads += 1;
+          return options.creationAccounts!;
+        }
+      } : {}),
       async listWebdockCreationServers(input: { accountId: string }) {
         creationReads.push(input.accountId);
+        // Modo account-aware (multicuenta): inventario/estado por cuenta.
+        const perAccount = options.creationByAccount?.[input.accountId];
+        if (perAccount) {
+          if (perAccount.readError) {
+            throw perAccount.readError;
+          }
+          return {
+            accountId: input.accountId,
+            accountLabel: `Webdock ${input.accountId}`,
+            sourceKind: perAccount.sourceKind ?? "live",
+            responseOk: perAccount.responseOk ?? true,
+            servers: perAccount.servers ?? []
+          };
+        }
+        // Modo single-account (compat byte-identica con los tests previos): siempre "ops".
         if (options.creationReadError) {
           throw options.creationReadError;
         }
@@ -1653,7 +1847,7 @@ function createDeps(options: {
           durationMs: 0
         };
       },
-      async submitRollbackProposal(input: { skill: "delete_webdock_server"; params: Record<string, unknown> }) {
+      async submitRollbackProposal(input: { skill: "delete_webdock_server"; params: Record<string, unknown>; serverAccountId?: string }) {
         rollbacks.push(input);
         return { proposalId: "rollback-1" };
       },
@@ -1715,6 +1909,9 @@ function createDeps(options: {
     logs,
     ownershipChecks,
     workspace,
+    get creationAccountReads() {
+      return creationAccountReads;
+    },
     get verifyCount() {
       return verifyCount;
     }
@@ -1736,6 +1933,79 @@ async function writeRunState(
   runId: string,
   state: { steps: Record<string, { status: string; inputHash?: string; attemptId?: string; leaseUntil?: string }> }
 ): Promise<void> {
+  await workspace.writeWorkspaceFileAtomic(`inventory/smtp-runs/${runId}.json`, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function readRunStateFull(workspace: OpenClawWorkspace, runId: string): Promise<{
+  serverAccountId?: string;
+  serverSlug?: string;
+  steps: Record<string, { status: string; inputHash?: string }>;
+}> {
+  return JSON.parse(await workspace.readWorkspaceFile(`inventory/smtp-runs/${runId}.json`)) as {
+    serverAccountId?: string;
+    serverSlug?: string;
+    steps: Record<string, { status: string; inputHash?: string }>;
+  };
+}
+
+function fourServers(): Array<{ creationDate: string }> {
+  return [
+    { creationDate: "2026-05-31T11:00:00.000Z" },
+    { creationDate: "2026-05-31T10:00:00.000Z" },
+    { creationDate: "2026-05-31T09:00:00.000Z" },
+    { creationDate: "2026-05-31T08:00:00.000Z" }
+  ];
+}
+
+// Siembra un runState LEGACY (sin serverAccountId) con los pasos 1-5 ya "done" (server creado),
+// para reanudar y forzar el fallo del bind (step 8) sin re-seleccionar cuenta. hashInput debe
+// coincidir con el de los params que el orquestador recomputa en cada paso, o el resume aborta.
+async function seedLegacyRunStateThroughStep4(workspace: OpenClawWorkspace, runId: string): Promise<void> {
+  const hash = (params: Record<string, unknown>) => createHash("sha256").update(stableStringify(params)).digest("hex");
+  const done = (step: number, skill: string, params: Record<string, unknown>, outcome: unknown, estimatedCostUsd?: number) => ({
+    step,
+    skill,
+    status: "done" as const,
+    inputHash: hash(params),
+    result: { step, skill, inputHash: hash(params), outcome, durationMs: 0, ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }) },
+    ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
+    startedAt: "2026-05-31T12:00:00.000Z",
+    completedAt: "2026-05-31T12:00:00.000Z",
+    updatedAt: "2026-05-31T12:00:00.000Z"
+  });
+  const state = {
+    schemaVersion: "smtp-run-state/v1",
+    runId,
+    status: "running",
+    createdAt: "2026-05-31T12:00:00.000Z",
+    updatedAt: "2026-05-31T12:00:00.000Z",
+    params: {
+      brand: "delivrix",
+      intent: "ops",
+      provider: "route53",
+      requireExistingDomain: false,
+      budgetUsdMax: 25,
+      testEmailRecipient: "operator@example.com",
+      testEmailSubject: "Operational readiness report",
+      testEmailBody: "Authorized operational readiness message for Delivrix infrastructure.",
+      seedInboxes: ["seed-a@example.com", "seed-b@example.com", "seed-c@example.com"]
+    },
+    chosenDomain: "delivrixops.com",
+    smtpHost: "smtp.delivrixops.com",
+    serverSlug: "srv-delivrix",
+    serverIpv4: "203.0.113.10",
+    // NOTA: serverAccountId AUSENTE a proposito (runState viejo, pre-multicuenta).
+    selector: "s2026a",
+    budgetSpentUsd: 0,
+    lastCompletedStep: 5,
+    steps: {
+      "1": done(1, "suggest_safe_domain", { brand: "delivrix", intent: "ops", count: 5, actorId: "op-1" }, { candidates: [{ domain: "delivrixops.com", priceUsd: 15, available: true }] }),
+      "2": done(2, "register_domain_route53", { domain: "delivrixops.com", years: 1, autoRenew: false }, { ok: true, status: "owned", operationId: "op-2" }, 0),
+      "3": done(3, "wait_for_dns_propagation", { domain: "delivrixops.com", expectedRecord: { type: "NS", value: "contains:awsdns" }, maxWaitMs: 1_800_000, pollIntervalMs: 60_000 }, { ok: true }),
+      "4": done(4, "create_webdock_server", { runId, profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404" }, { slug: "srv-delivrix", ipv4: "203.0.113.10" }),
+      "5": done(5, "wait_server_running", { serverSlug: "srv-delivrix", maxWaitMs: 600_000 }, { ok: true })
+    }
+  };
   await workspace.writeWorkspaceFileAtomic(`inventory/smtp-runs/${runId}.json`, `${JSON.stringify(state, null, 2)}\n`);
 }
 

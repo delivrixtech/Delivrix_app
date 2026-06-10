@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
   WebdockAdapterError,
   WebdockRealAdapter
@@ -521,4 +522,46 @@ test("WebdockRealAdapter rejects when set-hostnames event stays pending past tim
     }),
     (error) => error instanceof WebdockAdapterError && error.code === "set_server_identity_event_timeout"
   );
+});
+
+test("DoD#4 de-dup: las 3 keys de la cuenta-1 (primary/ops/account) colapsan a UNA cuenta 'ops' en el registry write-capable", () => {
+  // createWebdockAdaptersFromEnv produce 3 entries para la cuenta-1 (roles), todas write-capable
+  // por el fallback a los singletons OPS/ACCOUNT. El registry debe contar la cuenta UNA vez.
+  const entries = createWebdockAdaptersFromEnv({
+    WEBDOCK_API_KEY_PRIMARY: "primary-key",
+    WEBDOCK_API_KEY_OPS: "ops-key",
+    WEBDOCK_API_KEY_ACCOUNT: "account-key"
+  });
+  assert.equal(entries.length, 3, "la factory devuelve primary+ops+account (3 roles de la cuenta-1)");
+
+  const opsAdapter = new WebdockRealAdapter({
+    readApiKey: "primary-key",
+    writeApiKey: "ops-key",
+    accountApiKey: "account-key",
+    accountId: "ops"
+  });
+  const registry = buildWebdockCreateRegistry(entries, opsAdapter);
+
+  assert.deepEqual([...registry.keys()], ["ops"], "la cuenta-1 cuenta UNA vez, no 3");
+  assert.equal(registry.get("ops"), opsAdapter, "la clave 'ops' apunta al opsAdapter canonico (mismo objeto)");
+});
+
+test("DoD#4 de-dup: una cuenta DISTINTA write-capable entra al registry SIN inflar la cuenta-1", () => {
+  const entries = createWebdockAdaptersFromEnv({
+    WEBDOCK_API_KEY_PRIMARY: "primary-key",
+    WEBDOCK_API_KEY_OPS: "ops-key",
+    WEBDOCK_API_KEY_ACCOUNT: "account-key",
+    // cuenta-2 con sus 3 keys propias => canCreate true => entra
+    WEBDOCK_API_KEY_SECONDARY: "secondary-read",
+    WEBDOCK_API_KEY_SECONDARY_WRITE: "secondary-write",
+    WEBDOCK_API_KEY_SECONDARY_ACCOUNT: "secondary-account",
+    // cuenta-3 SOLO read => canCreate false => NO entra
+    WEBDOCK_API_KEY_TERTIARY: "tertiary-read"
+  });
+  const opsAdapter = new WebdockRealAdapter({ writeApiKey: "ops-key", accountApiKey: "account-key", accountId: "ops" });
+  const registry = buildWebdockCreateRegistry(entries, opsAdapter);
+
+  assert.deepEqual([...registry.keys()].sort(), ["ops", "secondary"], "ops (cuenta-1 de-dupeada) + secondary write-capable; tertiary read-only excluida");
+  const secondary = entries.find((e) => e.id === "secondary");
+  assert.equal(registry.get("secondary"), secondary?.adapter, "secondary apunta a su adapter aislado (token propio)");
 });

@@ -93,6 +93,14 @@ export interface WebdockServerDeleteDependencies {
   response: ServerResponse;
   auditLog: AuditSink;
   adapter: WebdockServerDeleteAdapter;
+  /**
+   * Registry write-capable id->adapter (5.12 multicuenta). Si la cuenta pedida (body.accountId o
+   * el arg accountId) esta aqui, el delete va a ESA cuenta; si no, cae al `adapter` escalar
+   * (cuenta-1 "ops") => byte-identico al delete previo cuando no hay multicuenta.
+   */
+  accountAdapters?: Map<string, WebdockServerDeleteAdapter>;
+  /** Cuenta destino del delete cuando no viene en el body. undefined/"ops" => `adapter`. */
+  accountId?: string;
   workspace: OpenClawWorkspace;
   canvasLiveEvents?: CanvasEmitter;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
@@ -106,6 +114,7 @@ interface WebdockServerDeleteBody {
   approvalToken?: unknown;
   taskId?: unknown;
   reason?: unknown;
+  accountId?: unknown;
 }
 
 interface WebdockServerInventory {
@@ -565,6 +574,11 @@ export async function handleWebdockServerDeleteHttp(
   const approvalToken = requiredString(body.approvalToken, "approvalToken", WebdockServerDeleteInputError);
   const reason = requiredString(body.reason, "reason", WebdockServerDeleteInputError);
   const taskId = normalizeTaskId(body.taskId) ?? `webdock-delete-${randomUUID()}`;
+  // Cuenta destino del delete (5.12): body.accountId tiene prioridad, luego el arg deps.accountId,
+  // luego "ops". undefined/"ops"/desconocida => deps.adapter (cuenta-1) = byte-identico al delete previo.
+  const requestedAccountId =
+    (typeof body.accountId === "string" && body.accountId.trim()) || deps.accountId?.trim() || undefined;
+  const adapter = resolveWebdockDeleteAdapter(deps, requestedAccountId);
 
   await emitTaskDeclare(deps.canvasLiveEvents, taskId, `Cleanup Webdock VPS · ${serverSlug}`, actorId, now);
   const approval = await findRecentApproval({
@@ -576,9 +590,9 @@ export async function handleWebdockServerDeleteHttp(
   });
   const blockers: string[] = [];
   const canWrite =
-    typeof deps.adapter.canWrite === "function"
-      ? deps.adapter.canWrite()
-      : deps.adapter.isLive();
+    typeof adapter.canWrite === "function"
+      ? adapter.canWrite()
+      : adapter.isLive();
   if (!canWrite) blockers.push("webdock_ops_key_missing");
   if (env.WEBDOCK_SERVERS_ENABLE_DELETE !== "true") blockers.push("webdock_delete_flag_disabled");
   if (!approval) blockers.push("approval_not_found_or_expired");
@@ -620,7 +634,7 @@ export async function handleWebdockServerDeleteHttp(
   }
 
   try {
-    const deleted = await deps.adapter.deleteServer(serverSlug);
+    const deleted = await adapter.deleteServer(serverSlug);
     await emitApiAction(deps.canvasLiveEvents, taskId, "DELETE", `/v1/servers/${serverSlug}`, 202, {
       serverSlug: deleted.serverSlug,
       eventId: deleted.eventId,
@@ -731,6 +745,20 @@ export class WebdockServerDeleteInputError extends Error {
     super(message);
     this.name = "WebdockServerDeleteInputError";
   }
+}
+
+/**
+ * Resuelve el adapter Webdock de delete para la cuenta pedida (5.12 multicuenta). undefined/"ops"/
+ * cuenta-desconocida => el `adapter` escalar (cuenta-1 "ops"), byte-identico al delete previo.
+ */
+function resolveWebdockDeleteAdapter(
+  deps: Pick<WebdockServerDeleteDependencies, "adapter" | "accountAdapters">,
+  accountId: string | undefined
+): WebdockServerDeleteAdapter {
+  if (!accountId || accountId === "ops" || !deps.accountAdapters) {
+    return deps.adapter;
+  }
+  return deps.accountAdapters.get(accountId) ?? deps.adapter;
 }
 
 export function handleWebdockServerCreateError(error: unknown, response: ServerResponse): boolean {

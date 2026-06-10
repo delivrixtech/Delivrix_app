@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
-import { dispatchSkillHandler, type SkillHandlerEntry } from "./skill-dispatcher.ts";
+import { dispatchSkillHandler, type SkillDispatcherDeps, type SkillHandlerEntry } from "./skill-dispatcher.ts";
 import { route53RegisterParamSchema, route53UpsertParamSchema } from "./skill-schemas.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
+import type { WebdockServerCreateAdapter, WebdockServerDeleteAdapter } from "./routes/webdock-servers.ts";
 
 const token: ApprovalToken = {
   tokenId: "exec-token-1",
@@ -199,6 +200,116 @@ test("dispatcher records durationMs", async () => {
   assert.equal(typeof result.durationMs, "number");
   assert.equal(result.durationMs >= 0, true);
 });
+
+test("dispatcher threads accountId (canal paralelo 5.12) to the handler invoke", async () => {
+  const seen: Array<string | undefined> = [];
+  const result = await dispatchSkillHandler({
+    skill: "register_domain_route53",
+    params: { domain: "delivrix.test", years: 1 },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    accountId: "secondary",
+    deps: fakeDeps(),
+    handlers: {
+      register_domain_route53: {
+        paramSchema: route53RegisterParamSchema,
+        timeoutMs: 1000,
+        canRollback: true,
+        invoke: async ({ response, accountId }) => {
+          seen.push(accountId);
+          json(response, 200, { ok: true });
+        }
+      }
+    }
+  });
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(seen, ["secondary"]);
+});
+
+test("DoD#2 routing: create_webdock_server con accountId='secondary' usa el adapter de la cuenta-2 (no el de ops)", async () => {
+  // El handler real de create bloquea sin approval/flag, pero ANTES consulta canCreate() del adapter
+  // RESUELTO. Espiamos canCreate de cada cuenta para probar que el registry enruta a la cuenta-2.
+  const opsCalls: string[] = [];
+  const secondaryCalls: string[] = [];
+  const opsAdapter = makeSpyCreateAdapter("ops", opsCalls);
+  const secondaryAdapter = makeSpyCreateAdapter("secondary", secondaryCalls);
+  const deps = webdockDispatchDeps({
+    webdockAdapter: opsAdapter,
+    webdockCreateAdapters: new Map([["ops", opsAdapter], ["secondary", secondaryAdapter]])
+  });
+
+  await dispatchSkillHandler({
+    skill: "create_webdock_server",
+    params: { profile: "bit", locationId: "dk", hostname: "smtp.controlsecondary.com", imageSlug: "ubuntu-2404", publicKey: "ssh-ed25519 AAAA test" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    accountId: "secondary",
+    deps
+  });
+
+  assert.deepEqual(secondaryCalls, ["canCreate"], "el handler consulto el adapter de la cuenta-2");
+  assert.deepEqual(opsCalls, [], "NO toco el adapter de la cuenta-1");
+});
+
+test("DoD#2 routing: create_webdock_server sin accountId usa el webdockAdapter (cuenta-1 ops), byte-identico", async () => {
+  const opsCalls: string[] = [];
+  const secondaryCalls: string[] = [];
+  const opsAdapter = makeSpyCreateAdapter("ops", opsCalls);
+  const secondaryAdapter = makeSpyCreateAdapter("secondary", secondaryCalls);
+  const deps = webdockDispatchDeps({
+    webdockAdapter: opsAdapter,
+    webdockCreateAdapters: new Map([["ops", opsAdapter], ["secondary", secondaryAdapter]])
+  });
+
+  await dispatchSkillHandler({
+    skill: "create_webdock_server",
+    params: { profile: "bit", locationId: "dk", hostname: "smtp.controlops.com", imageSlug: "ubuntu-2404", publicKey: "ssh-ed25519 AAAA test" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    // sin accountId => cuenta-1
+    deps
+  });
+
+  assert.deepEqual(opsCalls, ["canCreate"], "sin accountId enruta a la cuenta-1 (ops)");
+  assert.deepEqual(secondaryCalls, [], "no toca la cuenta-2");
+});
+
+function makeSpyCreateAdapter(
+  id: string,
+  calls: string[]
+): WebdockServerCreateAdapter & WebdockServerDeleteAdapter {
+  return {
+    isLive: () => true,
+    canWrite: () => { calls.push("canWrite"); return false; },
+    canCreate: () => { calls.push("canCreate"); return false; },
+    async createServer() { calls.push("createServer"); throw new Error(`createServer should not run for ${id} in blocked path`); },
+    async getServer() { throw new Error("getServer not expected"); },
+    async deleteServer() { calls.push("deleteServer"); throw new Error("deleteServer not expected"); }
+  };
+}
+
+function webdockDispatchDeps(overrides: {
+  webdockAdapter: WebdockServerCreateAdapter;
+  webdockCreateAdapters: Map<string, WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter>>;
+}): SkillDispatcherDeps {
+  return {
+    auditLog: { append: async () => ({}), list: async () => [] },
+    workspace: {
+      readLearnings: async () => [],
+      writeExecutionRecord: async () => null,
+      updateInventoryJson: async () => undefined
+    } as unknown as SkillDispatcherDeps["workspace"],
+    readCanvasState: () => ({ tasks: [], actions: [], artifacts: [] } as never),
+    domainPurchaseAdapter: {} as never,
+    route53DnsAdapter: {} as never,
+    ionosDnsAdapter: {} as never,
+    webdockAdapter: overrides.webdockAdapter as never,
+    webdockCreateAdapters: overrides.webdockCreateAdapters,
+    smtpSshRunner: {} as never,
+    rampScheduler: {} as never,
+    env: { WEBDOCK_SERVERS_ENABLE_CREATE: "false" }
+  };
+}
 
 function okEntry(schema: SkillHandlerEntry["paramSchema"], calls: Array<Record<string, unknown>> = []): SkillHandlerEntry {
   return {
