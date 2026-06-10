@@ -8,6 +8,7 @@ import test from "node:test";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import {
   handleSuggestSafeDomainHttp,
+  suggestSafeDomainParamSchema,
   type RegistrarAvailability,
   type SpamhausDblResult,
   type SuggestSafeDomainDeps
@@ -63,9 +64,40 @@ test("POST /v1/skills/suggest-safe-domain degrades availability failures to unkn
   assert.deepEqual(response.body.candidates[0].registrarOptions, []);
 });
 
-test("POST /v1/skills/suggest-safe-domain rejects uppercase brand", async () => {
+test("suggestSafeDomainParamSchema normaliza el brand a [a-z0-9] en vez de rechazar", () => {
+  // Regresion: "corpfiling-infra" (con guion) tumbaba configure_complete_smtp en el
+  // paso 1 con HTTP 400. El brand es un concepto de marca, no un identificador
+  // estricto: mayusculas, guiones y puntuacion se normalizan. El dominio final viene
+  // del scope firmado del plan, no del brand, asi que normalizar es seguro.
+  for (const [raw, normalized] of [
+    ["corpfiling-infra", "corpfilinginfra"],
+    ["Delivrix", "delivrix"],
+    ["Corp Filing.Infra", "corpfilinginfra"],
+    ["corpfiling", "corpfiling"]
+  ] as const) {
+    const result = suggestSafeDomainParamSchema.safeParse({ brand: raw, actorId: "juanes-cto" });
+    assert.equal(result.success, true, `brand "${raw}" debe pasar`);
+    if (result.success) {
+      assert.equal(result.data.brand, normalized);
+    }
+  }
+});
+
+test("POST /v1/skills/suggest-safe-domain acepta brand con guion end-to-end (regresion corpfiling-infra)", async () => {
   const response = await route({
-    brand: "Delivrix",
+    brand: "corpfiling-infra",
+    intent: "smtp",
+    count: 3,
+    actorId: "juanes-cto"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.candidates.length, 3);
+});
+
+test("POST /v1/skills/suggest-safe-domain rechaza brand sin caracteres alfanumericos", async () => {
+  const response = await route({
+    brand: "-.-",
     intent: "smtp",
     count: 3,
     actorId: "juanes-cto"
