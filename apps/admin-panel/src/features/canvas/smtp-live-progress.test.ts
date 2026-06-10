@@ -252,6 +252,24 @@ test("selectActiveRunProgress scopes topology and stepper to the active run only
   assert.equal(selectActiveRunProgress(progress, null), null);
 });
 
+test("selectActiveRunProgress falls back to the single running run when activeTaskId is a non-run task (webdock-create zombie)", () => {
+  // Un solo run del orquestador en curso; el activeTaskId apunta a la sub-tarea generica
+  // webdock-create-* (que el paso 4 declara y nunca cierra, y que pickPreferredTaskId elige
+  // por ser la "running" mas nueva). El panel SMTP debe mostrar el run igual, no "0/14".
+  const progress: LiveRunProgressMap = new Map([
+    ["smtp-controlnational-20260610", runProgress({ currentStep: 4 })]
+  ]);
+  assert.equal(selectActiveRunProgress(progress, "webdock-create-38dd49ac")?.currentStep, 4);
+  // Pero con 0 runs sigue siendo null ("sin build activo").
+  assert.equal(selectActiveRunProgress(new Map(), "webdock-create-x"), null);
+  // Y con varios runs en curso no adivina (scopeo explicito requerido).
+  const multi: LiveRunProgressMap = new Map([
+    ["run-a", runProgress({ currentStep: 4 })],
+    ["run-b", runProgress({ currentStep: 9 })]
+  ]);
+  assert.equal(selectActiveRunProgress(multi, "webdock-create-x"), null);
+});
+
 test("buildSmtpBuildStepViews exposes all 14 steps and currentBuildStepNumber follows active/completed state", () => {
   const run = runProgress({
     currentStep: 9,

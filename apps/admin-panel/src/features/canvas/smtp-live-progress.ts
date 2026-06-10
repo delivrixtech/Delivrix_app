@@ -233,8 +233,21 @@ export function selectActiveRunProgress(
   progress: LiveRunProgressMap,
   activeTaskId: string | null
 ): LiveRunProgress | null {
-  if (!activeTaskId) return null;
-  return progress.get(activeTaskId) ?? null;
+  // Caso bueno: el activeTaskId ES el runId de un run del orquestador.
+  if (activeTaskId) {
+    const direct = progress.get(activeTaskId);
+    if (direct) return direct;
+  }
+  // Fallback: el activeTaskId NO corresponde a un run del orquestador. Pasa cuando
+  // pickPreferredTaskId elige una sub-tarea genérica que eclipsa al run (p.ej. la
+  // sub-tarea webdock-create-* que el paso 4 declara y nunca cierra). El progreso SMTP
+  // se indexa por runId; si hay EXACTAMENTE un run en curso (el caso normal: un orquestador
+  // a la vez), lo mostramos. Con 0 o varios no adivinamos -> null (scopeo explicito por activeTaskId).
+  const runningRuns: LiveRunProgress[] = [];
+  for (const run of progress.values()) {
+    if (run.runStatus === "running") runningRuns.push(run);
+  }
+  return runningRuns.length === 1 ? runningRuns[0]! : null;
 }
 
 export function buildTopologyStatusOverlay(run: LiveRunProgress | null): Record<string, TopologyOverlayStatus> {
