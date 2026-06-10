@@ -828,6 +828,41 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
+    // El handler send_real_email devuelve HTTP 400 {error,details} cuando la auth aun no esta
+    // completa (p.ej. el DKIM no termino de propagar al momento del envio). El dispatcher lo
+    // marca executed igual (corrio), de modo que sin esta guarda el step 14 quedaria "done",
+    // el run "completed" pese a que NO se envio, y el parser de abajo lanzaria un confuso
+    // "missing messageId". Detectamos el error aca: reportamos la causa REAL y borramos el
+    // step 14 del estado para que un resume reintente el envio cuando el DNS termine de propagar.
+    const sendErrorCode =
+      isRecord(realEmail.outcome) && typeof realEmail.outcome.error === "string"
+        ? realEmail.outcome.error.trim()
+        : "";
+    if (sendErrorCode) {
+      const detailObj =
+        isRecord(realEmail.outcome) && isRecord(realEmail.outcome.details)
+          ? realEmail.outcome.details
+          : null;
+      const detailStr = detailObj
+        ? ` (${Object.entries(detailObj).map(([k, v]) => `${k}=${String(v)}`).join(", ")})`
+        : "";
+      delete runState.steps[String(14)];
+      runState.status = "failed";
+      await persistSmtpRunState(deps, runState);
+      await emitStep(deps, "oc.orchestrator.step_failed", runId, 14, "send_real_email", {
+        error: sendErrorCode,
+        ...(detailObj ? { details: detailObj } : {})
+      });
+      throw new OrchestratorFailure(
+        "failed",
+        14,
+        "send_real_email",
+        `${sendErrorCode}${detailStr}`,
+        realEmail.proposalId,
+        realEmail.inputHash
+      );
+    }
+
     const totalDurationMs = elapsed(deps, startedMs);
     const totalCostUsd = roundUsd(totalEstimatedCost(stepResults));
     runState.status = "completed";
