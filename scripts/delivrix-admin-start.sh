@@ -156,7 +156,7 @@ ln -sfn "$(basename "${LOG_FILE}")" "${CURRENT_LOG}"
   echo "node_bin=${NODE_BIN_DIR}"
 } >> "${LOG_FILE}"
 
-printf -v start_cmd 'export PATH=%q:"$PATH"; export ADMIN_PANEL_HOST=%q; export ADMIN_PANEL_PORT=%q; export ADMIN_PANEL_GATEWAY_ORIGIN=%q; export CANVAS_LIVE_STREAM_TOKEN=%q; export GATEWAY_LOG_STREAM_TOKEN=%q; export DELIVRIX_READ_BOUNDARY_TOKEN=%q; export DELIVRIX_OPENCLAW_TOKEN=%q; export OPENCLAW_GATEWAY_TOKEN=%q; export VITE_CANVAS_LIVE_STREAM_TOKEN=%q; export VITE_GATEWAY_LOG_STREAM_TOKEN=%q; export VITE_DELIVRIX_READ_BOUNDARY_TOKEN=%q; export VITE_DELIVRIX_OPENCLAW_TOKEN=%q; cd %q && exec npm run dev >> %q 2>&1' \
+printf -v start_cmd 'export PATH=%q:"$PATH"; export ADMIN_PANEL_HOST=%q; export ADMIN_PANEL_PORT=%q; export ADMIN_PANEL_GATEWAY_ORIGIN=%q; export CANVAS_LIVE_STREAM_TOKEN=%q; export GATEWAY_LOG_STREAM_TOKEN=%q; export DELIVRIX_READ_BOUNDARY_TOKEN=%q; export DELIVRIX_OPENCLAW_TOKEN=%q; export OPENCLAW_GATEWAY_TOKEN=%q; export VITE_CANVAS_LIVE_STREAM_TOKEN=%q; export VITE_GATEWAY_LOG_STREAM_TOKEN=%q; export VITE_DELIVRIX_READ_BOUNDARY_TOKEN=%q; export VITE_DELIVRIX_OPENCLAW_TOKEN=%q; cd %q && while true; do npm run dev; echo "[auto-restart] panel Vite cayo; relanzando en 3s..."; sleep 3; done >> %q 2>&1' \
   "${NODE_BIN_DIR}" "${HOST}" "${PORT}" \
   "${ADMIN_PANEL_GATEWAY_ORIGIN_EFFECTIVE}" \
   "${CANVAS_LIVE_EFFECTIVE_TOKEN}" "${GATEWAY_LOG_EFFECTIVE_TOKEN}" \
