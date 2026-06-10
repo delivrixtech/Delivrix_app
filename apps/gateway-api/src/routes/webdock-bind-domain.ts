@@ -301,7 +301,13 @@ export async function handleBindWebdockMainDomain(input: {
     resolver: input.deps.fcrdnsResolver ?? defaultFcrdnsResolver,
     smtpHost: identityDomain,
     ipv4: server.ipv4,
-    maxWaitMs: input.deps.fcrdnsMaxWaitMs ?? 120_000,
+    // 120s era insuficiente para un dominio fresco: el A recien escrito y el PTR de Webdock
+    // tardan en ser visibles al resolver, y el run abortaba intermitente con fcrdns_pending
+    // (lo que ademas gatillaba el loop de recuperacion de OpenClaw -> bedrock_invoke_error).
+    // verifyFcrdnsWithRetry hace polling y retorna apenas verifica, asi que este valor es solo
+    // el TECHO del caso de fallo; el caso normal cierra en pocos minutos. 15 min alinea con los
+    // wait_for_dns_propagation del orquestador.
+    maxWaitMs: input.deps.fcrdnsMaxWaitMs ?? 900_000,
     pollIntervalMs: input.deps.fcrdnsPollIntervalMs ?? 10_000,
     sleep: input.deps.sleep ?? sleep
   });
