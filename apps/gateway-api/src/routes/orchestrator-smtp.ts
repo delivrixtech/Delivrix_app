@@ -1233,19 +1233,19 @@ function validateResumeScopeAgainstRunState(input: {
     }
   }
 
+  // En un RESUME el orquestador ejecuta SIEMPRE con los params del ESTADO persistido, no con el
+  // request crudo que reenvia OpenClaw: inputFromRunState reescribe recipient/budget/etc desde
+  // state.params, y p.ej. el smoke envia a runState.params.testEmailRecipient (no a input.request).
+  // Por eso NO abortamos si el request difiere en recipient/budget/requireExistingDomain — OpenClaw
+  // no memoriza esos valores exactos al reanudar y exigirselos idénticos era un falso positivo que
+  // bloqueaba todo resume legitimo (resume_scope_drift: recipient). La proteccion REAL del scope la
+  // dan: (1) el bloque de arriba (firma del plan vs estado) y (2) validatePlanApprovedStepScope por
+  // cada paso, que aborta si el recipient/domain REAL de la accion no coincide con la firma.
+  // Solo el DOMAIN del request, si viene y difiere del ya elegido, es senal fuerte de confusion
+  // (reanudar el run de un dominio con otro) y si justifica abortar.
   const requestDomain = input.request.domain ? normalizeDomain(input.request.domain) : null;
   if (requestDomain && state.chosenDomain && requestDomain !== state.chosenDomain) {
     throw new OrchestratorFailure("failed", 0, "run_state", "resume_scope_drift: domain");
-  }
-  const requestRecipient = input.request.testEmailRecipient.trim().toLowerCase();
-  if (requestRecipient !== state.params.testEmailRecipient) {
-    throw new OrchestratorFailure("failed", 0, "run_state", "resume_scope_drift: recipient");
-  }
-  if (input.request.budgetUsdMax < state.budgetSpentUsd) {
-    throw new OrchestratorFailure("failed", 0, "run_state", "resume_scope_drift: budgetUsdMax");
-  }
-  if ((input.request.requireExistingDomain === true) !== state.params.requireExistingDomain) {
-    throw new OrchestratorFailure("failed", 0, "run_state", "resume_scope_drift: requireExistingDomain");
   }
 }
 
@@ -2537,7 +2537,10 @@ async function compactRunIntent(
   const failureAlreadyRecorded = input.failure
     ? steps.some((step) => step.step === input.failure?.step && step.tool === input.failure?.skill)
     : true;
-  if (input.failure && !failureAlreadyRecorded) {
+  // Solo registramos el fallo como "step" del compact si corresponde a un paso real del flujo (>=1).
+  // Los fallos pre-paso (outcome_parser, run_state/scope-drift, kill-switch) usan step 0 y NO son
+  // pasos ejecutados; incluirlos rompia el compact con "step must be an integer between 1 and 10000".
+  if (input.failure && !failureAlreadyRecorded && input.failure.step >= 1) {
     steps.push({
       step: input.failure.step,
       tool: input.failure.skill,
@@ -2548,6 +2551,17 @@ async function compactRunIntent(
       durationMs: 0,
       ...(input.failure.proposalId ? { proposalId: input.failure.proposalId } : {})
     });
+  }
+
+  // Si no quedo ningun paso real que compactar (p.ej. el run fallo en validacion antes de ejecutar
+  // nada), no hay trabajo que guardar y el schema exige >=1 step: salimos limpio en vez de romper.
+  if (steps.length === 0) {
+    void (deps.logger ?? noopGatewayRuntimeLogger).info(
+      "openclaw.orchestrator.compact_intent_skipped",
+      "No executed steps to compact; skipping episodic compaction.",
+      { runId: input.runId, status: input.status }
+    );
+    return;
   }
 
   try {
