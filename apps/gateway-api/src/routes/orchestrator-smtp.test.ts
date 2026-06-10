@@ -1308,7 +1308,7 @@ test("configureCompleteSmtp skips all done steps on replay of a completed run", 
   assert.equal(second.stepResults.length, 14);
 });
 
-test("configureCompleteSmtp rejects resume scope drift before invoking tools", async () => {
+test("configureCompleteSmtp resume uses signed-state recipient (no false drift) but rejects domain drift", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
     planApproval: signedPlanApproval()
@@ -1321,13 +1321,23 @@ test("configureCompleteSmtp rejects resume scope drift before invoking tools", a
   };
   await configureCompleteSmtp(input, ctx.deps);
 
-  const drift = await configureCompleteSmtp({
+  // Reanudar con un recipient distinto en el request ya NO aborta: el orquestador ejecuta con el
+  // recipient del ESTADO firmado (el request crudo se ignora; el smoke envia a state.params). Antes
+  // daba un falso positivo resume_scope_drift: recipient que bloqueaba todo resume legitimo.
+  const resumedWithOtherRecipient = await configureCompleteSmtp({
     ...input,
     testEmailRecipient: "other@example.com"
   }, ctx.deps);
-  assert.equal(drift.status, "failed");
-  assert.equal(drift.error, "resume_scope_drift: recipient");
-  assert.equal(ctx.planExecutions.length, 11);
+  assert.equal(resumedWithOtherRecipient.status, "completed");
+
+  // Pero reanudar con un DOMINIO distinto SI es drift real (reanudar el run de un dominio con otro)
+  // y debe abortar.
+  const domainDrift = await configureCompleteSmtp({
+    ...input,
+    domain: "otherdomain.com"
+  }, ctx.deps);
+  assert.equal(domainDrift.status, "failed");
+  assert.equal(domainDrift.error, "resume_scope_drift: domain");
 });
 
 test("configureCompleteSmtp blocks concurrent runs for the same runId", async () => {
