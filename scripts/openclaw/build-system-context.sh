@@ -294,7 +294,8 @@ echo "Bundle: ${OUT_CONTEXT}"
 echo "Context chars=${CHAR_COUNT} token_est=${TOKEN_EST} sha256=${CONTEXT_SHA}"
 echo "AGENTS chars=${AGENTS_CHARS}"
 
-MAX_CONTEXT_TOKEN_EST="${MAX_CONTEXT_TOKEN_EST:-10500}"
+# 10700: +200 sobre el 10500 historico para alojar [11B] ubicaciones Webdock (regla anti-alucinacion de datacenters). Trivial vs contexto Bedrock 200k.
+MAX_CONTEXT_TOKEN_EST="${MAX_CONTEXT_TOKEN_EST:-10700}"
 
 if [ "${TOKEN_EST}" -gt "${MAX_CONTEXT_TOKEN_EST}" ]; then
   echo "FAIL: Capa 1 excede ${MAX_CONTEXT_TOKEN_EST} tokens estimados (${TOKEN_EST})" >&2

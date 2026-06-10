@@ -73,7 +73,26 @@ export default defineConfig({
         target: gatewayOrigin,
         changeOrigin: false,
         ws: true,
-        rewrite: rewriteGatewayProxyPath
+        rewrite: rewriteGatewayProxyPath,
+        // El gateway (:3000) se reinicia mientras el panel sigue abierto. Sin estos
+        // handlers, un EPIPE/ECONNRESET/ECONNREFUSED del socket WS proxiado (canvas-live)
+        // se vuelve excepcion no capturada y tumba TODO el dev server -> el panel :5173
+        // cae con ERR_CONNECTION_REFUSED. Capturarlos los degrada a warning sin matar Vite.
+        configure: (proxy) => {
+          proxy.on("error", (err) => {
+            console.warn(`[vite] proxy error (ignorado, panel sigue vivo): ${err.message}`);
+          });
+          proxy.on("proxyReqWs", (_proxyReq, _req, socket) => {
+            socket.on("error", (err) => {
+              console.warn(`[vite] ws client socket error (ignorado): ${err.message}`);
+            });
+          });
+          proxy.on("open", (proxySocket) => {
+            proxySocket.on("error", (err) => {
+              console.warn(`[vite] ws upstream socket error (ignorado): ${err.message}`);
+            });
+          });
+        }
       }
     }
   },
