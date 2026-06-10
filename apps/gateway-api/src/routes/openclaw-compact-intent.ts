@@ -179,10 +179,24 @@ export async function compactIntent(
 
   const scratchIds: string[] = [];
   let ttlExpiresAt: string | undefined;
+  let idempotentConflicts = 0;
   for (const entry of pendingEntries) {
-    const inserted = await insertEpisodicEntry(deps.pool, entry);
-    scratchIds.push(inserted.id);
-    ttlExpiresAt = inserted.ttlExpiresAt.toISOString();
+    try {
+      const inserted = await insertEpisodicEntry(deps.pool, entry);
+      scratchIds.push(inserted.id);
+      ttlExpiresAt = inserted.ttlExpiresAt.toISOString();
+    } catch (error) {
+      // scratch_step_conflict = ese (intentId, step) ya existe en memoria con otro
+      // tool/inputHash. Tipicamente el orquestador YA compacto el run con los datos
+      // REALES y esta es una recompactacion de OpenClaw (el modelo) al cerrar el turno.
+      // Es idempotente: conservamos el dato existente (la verdad del orquestador) y NO
+      // tumbamos el cierre de memoria con un 400. Cualquier otro error se propaga.
+      if (error instanceof EpisodicScratchValidationError && error.code === "scratch_step_conflict") {
+        idempotentConflicts += 1;
+        continue;
+      }
+      throw error;
+    }
   }
 
   const compactedAt = (deps.now?.() ?? new Date()).toISOString();
@@ -198,6 +212,7 @@ export async function compactIntent(
       intentId: input.intentId,
       finalStatus: input.finalStatus,
       entriesWritten: scratchIds.length,
+      idempotentConflicts,
       entriesHash: hashJson(input.steps.map((step) => ({
         step: step.step,
         tool: step.tool,
