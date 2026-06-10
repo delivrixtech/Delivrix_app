@@ -185,6 +185,29 @@ test("compactIntent rejects a verified signature attached to a different proposa
   assert.equal(ctx.pool.rows.length, 0);
 });
 
+test("compactIntent trata scratch_step_conflict como idempotente (no tumba el cierre de memoria)", async () => {
+  const ctx = context();
+  // El INSERT ... ON CONFLICT ... RETURNING * no retorna fila (el step ya existe con otro
+  // tool/inputHash, p.ej. el orquestador ya lo compacto con los datos reales) ->
+  // insertEpisodicEntry lanza scratch_step_conflict. El cierre de memoria NO debe fallar
+  // con 400: se conserva el dato existente y se trata como idempotente.
+  const conflictDeps = {
+    ...ctx.deps,
+    pool: {
+      async query(sql: string): Promise<{ rows: never[]; rowCount: number }> {
+        if (!sql.includes("INSERT INTO openclaw_episodic_scratch")) {
+          throw new Error(`Unexpected SQL: ${sql}`);
+        }
+        return { rows: [], rowCount: 0 };
+      }
+    } as never
+  };
+
+  const output = await compactIntent(input(), conflictDeps);
+  assert.equal(output.entriesWritten, 0);
+  assert.deepEqual(output.scratchIds, []);
+});
+
 function input(step: Partial<CompactIntentInput["steps"][number]> = {}): CompactIntentInput {
   return {
     intentId: "intent-1",
