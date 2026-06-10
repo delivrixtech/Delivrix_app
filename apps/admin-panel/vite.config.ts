@@ -4,6 +4,21 @@ import type { ServerResponse } from "node:http";
 import { defineConfig, type Plugin } from "vite";
 import { READ_ENDPOINTS, type ReadEndpoint } from "./src/shared/api/read-boundary.ts";
 
+// Guard global: el proxy WS de canvas-live escribe a sockets que el gateway cierra cada vez que
+// reinicia. Algunos EPIPE/ECONNRESET escapan a los handlers por-conexion del proxy y, sin esto,
+// tumban el dev server entero (panel :5173 -> ERR_CONNECTION_REFUSED). Degradamos SOLO errores de
+// socket benignos a warning; cualquier otra excepcion no manejada se re-propaga (exit) para no
+// ocultar bugs reales.
+const BENIGN_SOCKET_ERRORS = new Set(["EPIPE", "ECONNRESET", "ECONNABORTED", "ERR_STREAM_WRITE_AFTER_END"]);
+process.on("uncaughtException", (err: NodeJS.ErrnoException) => {
+  if (err && typeof err.code === "string" && BENIGN_SOCKET_ERRORS.has(err.code)) {
+    console.warn(`[vite] socket error global ignorado (${err.code}) - el panel sigue vivo`);
+    return;
+  }
+  console.error("[vite] uncaughtException no benigno:", err);
+  process.exit(1);
+});
+
 const gatewayOrigin = process.env.ADMIN_PANEL_GATEWAY_ORIGIN ?? "http://127.0.0.1:3000";
 const chatSendPath = "/v1/openclaw/chat/send";
 const chatStreamPath = "/v1/openclaw/chat/stream";

@@ -725,7 +725,16 @@ function scheduleRoute53DnsRollbackCheck(input: {
   return scheduled;
 }
 
-async function restoreRoute53DnsSnapshot(
+// Tipos que el adapter Route53 puede escribir. NS/SOA son infraestructura de la
+// zona: el upsert original nunca los toca y el adapter no puede re-upsertearlos.
+const ROUTE53_RESTORABLE_RECORD_TYPES = new Set(["A", "MX", "TXT", "CNAME"]);
+
+// Exportado para tests de regresion del incidente 2026-06-10: la version anterior
+// borraba primero los registros creados (errores silenciados) y recien despues
+// intentaba restaurar beforeState — que incluia NS/SOA — haciendo explotar el
+// adapter a mitad de camino. Resultado: A+MX borrados y un evento
+// oc.dns.auto_rollback_failed con rollbackApplied:false que negaba el borrado.
+export async function restoreRoute53DnsSnapshot(
   snapshot: RollbackSnapshot,
   adapter: Route53DnsAdapter
 ): Promise<void> {
@@ -734,22 +743,36 @@ async function restoreRoute53DnsSnapshot(
     throw new Error("rollback snapshot beforeState is invalid");
   }
   const zoneId = requiredSnapshotString(state.zoneId, "zoneId");
-  const beforeRecords = Array.isArray(state.records)
-    ? state.records.filter(isRoute53Record)
-    : [];
+  const beforeRecords = (Array.isArray(state.records) ? state.records.filter(isRoute53Record) : [])
+    .filter((record) => ROUTE53_RESTORABLE_RECORD_TYPES.has(record.type.toUpperCase()));
   const requestedRecords = Array.isArray(state.requestedRecords)
     ? state.requestedRecords.filter(isRoute53Record)
     : [];
   const beforeNames = new Set(beforeRecords.map(route53RecordIdentity));
+  const failures: string[] = [];
+
+  // Restaurar primero lo que existia antes...
+  for (const record of beforeRecords) {
+    try {
+      await adapter.upsertRecord(zoneId, record);
+    } catch (error) {
+      failures.push(`restore ${record.type} ${record.name}: ${errorMessage(error)}`);
+    }
+  }
+  // ...y recien despues borrar lo creado, sin silenciar errores.
   if (adapter.deleteRecord) {
     for (const requested of requestedRecords) {
       if (!beforeNames.has(route53RecordIdentity(requested))) {
-        await adapter.deleteRecord(zoneId, requested).catch(() => undefined);
+        try {
+          await adapter.deleteRecord(zoneId, requested);
+        } catch (error) {
+          failures.push(`delete ${requested.type} ${requested.name}: ${errorMessage(error)}`);
+        }
       }
     }
   }
-  for (const record of beforeRecords) {
-    await adapter.upsertRecord(zoneId, record);
+  if (failures.length > 0) {
+    throw new Error(`rollback_partial: ${failures.join("; ")}`);
   }
 }
 

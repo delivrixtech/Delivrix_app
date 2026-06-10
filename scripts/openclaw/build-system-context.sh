@@ -11,7 +11,8 @@ DEFAULT_WORKTREE="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 WORKTREE="${WORKTREE:-${DEFAULT_WORKTREE}}"
 DOCS_DIR="${WORKTREE}/DOCUMENTACION"
 AUDIT_DIR="${WORKTREE}/.audit"
-SSH_KEY="${SSH_KEY:-${WORKTREE}/../../../clonado/.ssh/openclaw_delivrix}"
+# La key vive dentro del repo; el path viejo (../../../) era de la era worktrees.
+SSH_KEY="${SSH_KEY:-${WORKTREE}/clonado/.ssh/openclaw_delivrix}"
 SSH_HOST="${SSH_HOST:-root@2.24.223.240}"
 CONTAINER="${CONTAINER:-openclaw-dtsf-openclaw-1}"
 REMOTE_TMP="${REMOTE_TMP:-/tmp/delivrix-openclaw-kb}"
@@ -33,6 +34,7 @@ CORE_DOCS=(
   "OPENCLAW_SKILLS_CATALOG.md"
   "NORTE_OPERATIVO_DELIVRIX.md"
   "OPENCLAW_DELIVRIX_API_CONTRACT.md"
+  "OPENCLAW_VERIFICATION_PROTOCOL.md"
 )
 
 for doc in "${CORE_DOCS[@]}"; do
@@ -83,6 +85,7 @@ permissions = read_doc("OPENCLAW_PERMISSIONS_MATRIX.md")
 skills = read_doc("OPENCLAW_SKILLS_CATALOG.md")
 norte = read_doc("NORTE_OPERATIVO_DELIVRIX.md")
 api = read_doc("OPENCLAW_DELIVRIX_API_CONTRACT.md")
+verification = read_doc("OPENCLAW_VERIFICATION_PROTOCOL.md")
 prompt_version_match = re.search(r"openclaw-prompt-v[0-9.]+", system_prompt)
 prompt_version = prompt_version_match.group(0) if prompt_version_match else "openclaw-prompt-unknown"
 
@@ -110,6 +113,13 @@ api_core = sections(api, [
     "## 3. Dirección A",
     "## 4. Dirección B",
     "## 10. Gates duros",
+])
+verification_core = sections(verification, [
+    "## 1. Jerarquía de fuentes de verdad",
+    "## 2. Checklist externa post-build",
+    "## 3. Estados del correo",
+    "## 4. Auto-reparación y escalada",
+    "## 5. Aprendizaje permanente",
 ])
 
 generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -139,6 +149,10 @@ context = f"""# Delivrix OpenClaw — System Context Bundle
 ----- BEGIN OPENCLAW_DELIVRIX_API_CONTRACT.md core -----
 {api_core}
 ----- END OPENCLAW_DELIVRIX_API_CONTRACT.md core -----
+
+----- BEGIN OPENCLAW_VERIFICATION_PROTOCOL.md core -----
+{verification_core}
+----- END OPENCLAW_VERIFICATION_PROTOCOL.md core -----
 """
 
 out_context.write_text(context, encoding="utf-8")
@@ -222,6 +236,9 @@ seconds.
 3. REASON: diagnostica con evidencia citada.
 4. PROPOSE: si aplica, dry-run con categoría matrix y runbookRef.
 5. AUDIT: deja rastro con action id y evidenceRefs.
+6. VERIFY: tras cada mutación, verificación externa según
+   OPENCLAW_VERIFICATION_PROTOCOL: queued != sent != inbox, FCrDNS par completo,
+   y el caché de inventario nunca es fuente de diagnóstico.
 
 Responde en español por defecto. Usa Markdown estructurado. Cita docs como
 `DOCUMENTACION/<doc>.md §<sección>` o eventos como `oc.read.*`.
@@ -295,7 +312,8 @@ echo "Context chars=${CHAR_COUNT} token_est=${TOKEN_EST} sha256=${CONTEXT_SHA}"
 echo "AGENTS chars=${AGENTS_CHARS}"
 
 # 10700: +200 sobre el 10500 historico para alojar [11B] ubicaciones Webdock (regla anti-alucinacion de datacenters). Trivial vs contexto Bedrock 200k.
-MAX_CONTEXT_TOKEN_EST="${MAX_CONTEXT_TOKEN_EST:-10700}"
+# 11800: +1100 para alojar OPENCLAW_VERIFICATION_PROTOCOL core (incidente 2026-06-10: queued!=inbox, FCrDNS, cache no es fuente de verdad).
+MAX_CONTEXT_TOKEN_EST="${MAX_CONTEXT_TOKEN_EST:-11800}"
 
 if [ "${TOKEN_EST}" -gt "${MAX_CONTEXT_TOKEN_EST}" ]; then
   echo "FAIL: Capa 1 excede ${MAX_CONTEXT_TOKEN_EST} tokens estimados (${TOKEN_EST})" >&2

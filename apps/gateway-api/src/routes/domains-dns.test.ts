@@ -19,12 +19,13 @@ import type {
 } from "../../../../packages/domain/src/index.ts";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
-import { AutoRollbackManager } from "../auto-rollback.ts";
+import { AutoRollbackManager, type RollbackSnapshot } from "../auto-rollback.ts";
 import { approvalTokenHash } from "../approval-guard.ts";
 import {
   handleRoute53DnsError,
   handleRoute53HostedZoneDeleteHttp,
   handleRoute53DnsUpsertHttp,
+  restoreRoute53DnsSnapshot,
   type Route53HostedZoneDeleteAdapter,
   type Route53DnsAdapter
 } from "./domains-dns.ts";
@@ -674,3 +675,81 @@ async function waitForMicrotasks(): Promise<void> {
     await new Promise((resolve) => setImmediate(resolve));
   }
 }
+
+test("restoreRoute53DnsSnapshot omite NS/SOA de la zona y aun asi borra lo creado (incidente 2026-06-10)", async () => {
+  const upserts: AwsRoute53DnsRecordInput[] = [];
+  const deletes: AwsRoute53DnsRecordInput[] = [];
+  // Replica del snapshot real runtime/rollback-snapshots/dns-route53-dns-route53-dns-be59f820.json:
+  // la zona recien creada solo tenia NS+SOA, y el upsert pedia A+MX.
+  const snapshot: RollbackSnapshot = {
+    auditId: "route53-dns-incidente-20260610",
+    kind: "dns",
+    capturedAt: "2026-06-10T05:09:13.008Z",
+    metadata: { domain: "controlnational.com" },
+    beforeState: {
+      provider: "aws-route53",
+      domain: "controlnational.com",
+      zoneId: "Z00433981L5IKDQAIZZ7B",
+      records: [
+        {
+          name: "controlnational.com.",
+          type: "NS",
+          ttl: 172800,
+          values: ["ns-419.awsdns-52.com.", "ns-725.awsdns-26.net."]
+        },
+        {
+          name: "controlnational.com.",
+          type: "SOA",
+          ttl: 900,
+          values: ["ns-419.awsdns-52.com. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400"]
+        }
+      ],
+      requestedRecords: [
+        { name: "smtp.controlnational.com.", type: "A", ttl: 300, values: ["193.181.213.40"] },
+        { name: "controlnational.com.", type: "MX", ttl: 300, values: ["10 smtp.controlnational.com."] }
+      ]
+    }
+  };
+
+  await restoreRoute53DnsSnapshot(snapshot, mockAdapter({
+    upsertRecord: async (_zoneId, record) => {
+      upserts.push(record);
+      return { changeId: `C${upserts.length}` };
+    },
+    deleteRecord: async (_zoneId, record) => {
+      deletes.push(record);
+      return { changeId: `D${deletes.length}` };
+    }
+  }));
+
+  assert.equal(upserts.length, 0, "NS/SOA no deben re-upsertearse: el adapter no los soporta");
+  assert.deepEqual(
+    deletes.map((record) => `${record.type} ${record.name}`).sort(),
+    ["A smtp.controlnational.com.", "MX controlnational.com."]
+  );
+});
+
+test("restoreRoute53DnsSnapshot reporta fallas reales en vez de silenciarlas", async () => {
+  const snapshot: RollbackSnapshot = {
+    auditId: "route53-dns-partial",
+    kind: "dns",
+    capturedAt: "2026-06-10T05:09:13.008Z",
+    metadata: {},
+    beforeState: {
+      zoneId: "Z00433981L5IKDQAIZZ7B",
+      records: [],
+      requestedRecords: [
+        { name: "smtp.controlnational.com.", type: "A", ttl: 300, values: ["193.181.213.40"] }
+      ]
+    }
+  };
+
+  await assert.rejects(
+    restoreRoute53DnsSnapshot(snapshot, mockAdapter({
+      deleteRecord: async () => {
+        throw new Error("Rate exceeded");
+      }
+    })),
+    /rollback_partial: delete A smtp\.controlnational\.com\.: Rate exceeded/
+  );
+});
