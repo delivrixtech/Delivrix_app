@@ -238,6 +238,54 @@ test("domain inventory report blocks summarize DNS read-only evidence", () => {
   assert.match(blocks[2].content, /no se hicieron compras/);
 });
 
+test("domain chat skill NO secuestra prompts de configuracion SMTP (regresion content is required)", () => {
+  // Estos mensajes en lenguaje natural crasheaban el chat con "content is required."
+  // porque el clasificador los mandaba al skill local de inventario (IONOS 0 dominios).
+  // Deben ir al modelo (Bedrock) -> isDomainInventoryIntent === false.
+  assert.equal(isDomainInventoryIntent("crea un nuevo smtp"), false);
+  assert.equal(isDomainInventoryIntent(
+    "Configura este; controlledgerdesk.com y luego vamos por el siguiente; Con el mismo presupuesto, y datos de envio."
+  ), false);
+  assert.equal(isDomainInventoryIntent(
+    "Hay una lista de dominios adquiridos sin configurar, lo que haremos es aprovecharlos; Configura este; controlledgerdesk.com"
+  ), false);
+  assert.equal(isDomainInventoryIntent(
+    "genial, configuremos este controlcorpfiling.com correo de prueba; juanestebancanar@gmail.com"
+  ), false);
+});
+
+test("domain chat skill sigue detectando inventario PURO", () => {
+  assert.equal(isDomainInventoryIntent("enlistame los dominios de ionos"), true);
+  assert.equal(isDomainInventoryIntent("muestra los dominios registrados"), true);
+  assert.equal(isDomainInventoryIntent("cuales dominios tengo en ionos"), true);
+});
+
+test("domain inventory report blocks nunca emiten content vacio con 0 dominios (regresion content is required)", () => {
+  const blocks = buildDomainInventoryReportBlocks({
+    source: {
+      kind: "live",
+      apiBase: "https://api.hosting.ionos.com/domains/v1",
+      fetchedAt: "2026-06-10T02:00:00.000Z",
+      responseOk: true,
+      tenantConfigured: false
+    },
+    domains: []
+  }, {
+    source: {
+      kind: "live",
+      apiKind: "hosting-dns",
+      apiBase: "https://api.hosting.ionos.com/dns",
+      fetchedAt: "2026-06-10T02:00:00.000Z",
+      responseOk: true
+    },
+    zones: []
+  }, new Date("2026-06-10T02:05:00.000Z"));
+
+  for (const block of blocks) {
+    assert.ok(block.content.trim().length > 0, `bloque ${block.blockId} no debe estar vacio`);
+  }
+});
+
 function isEventType(event: unknown, type: string): boolean {
   return typeof event === "object" && event !== null && "type" in event && event.type === type;
 }
