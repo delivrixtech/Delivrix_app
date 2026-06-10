@@ -83,7 +83,12 @@ ln -sfn "$(basename "${LOG_FILE}")" "${CURRENT_LOG}"
 } >> "${LOG_FILE}"
 
 cd "${ROOT_DIR}"
-printf -v start_cmd 'cd %q && exec node --env-file=.env.local apps/gateway-api/src/main.ts >> %q 2>&1' "${ROOT_DIR}" "${LOG_FILE}"
+# Env canonico: config/gateway.env (blindado -- Vercel CLI solo pisa .env.local).
+# Fallback a .env.local si el blindado no existe. main.ts resuelve igual para el reloader.
+ENV_FILE="config/gateway.env"
+[[ -f "${ROOT_DIR}/config/gateway.env" ]] || ENV_FILE=".env.local"
+echo "env_file=${ENV_FILE}" >> "${LOG_FILE}"
+printf -v start_cmd 'cd %q && exec node --env-file=%q apps/gateway-api/src/main.ts >> %q 2>&1' "${ROOT_DIR}" "${ENV_FILE}" "${LOG_FILE}"
 screen -dmS "${SCREEN_NAME}" bash -lc "${start_cmd}"
 echo "${SCREEN_NAME}" > "${SCREEN_FILE}"
 

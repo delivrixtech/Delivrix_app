@@ -20,7 +20,11 @@ echo ""
 echo "=== 2. Levantar gateway ==="
 mkdir -p runtime
 rm -f runtime/gateway-smoke.log
-screen -dmS delivrix-gateway bash -lc 'cd "/Users/juanescanar/Documents/delivrix app" && OPENCLAW_SIGN_ALLOW_UNSIGNED_LOCAL_PANEL=true node --env-file=.env.local apps/gateway-api/src/main.ts > runtime/gateway-smoke.log 2>&1'
+# Env canonico: config/gateway.env (blindado -- Vercel CLI solo pisa .env.local).
+ENV_FILE="config/gateway.env"
+[[ -f config/gateway.env ]] || ENV_FILE=".env.local"
+echo "Usando env: ${ENV_FILE}"
+screen -dmS delivrix-gateway bash -lc "cd '/Users/juanescanar/Documents/delivrix app' && OPENCLAW_SIGN_ALLOW_UNSIGNED_LOCAL_PANEL=true node --env-file='${ENV_FILE}' apps/gateway-api/src/main.ts > runtime/gateway-smoke.log 2>&1"
 
 echo "Esperando a que levante..."
 for i in 1 2 3 4 5 6 7 8 9 10; do

@@ -76,7 +76,10 @@ load_admin_proxy_env() {
   done < "${env_file}"
 }
 
-load_admin_proxy_env "${ROOT_DIR}/.env.local"
+# Env canonico: config/gateway.env (blindado -- Vercel CLI solo pisa .env.local).
+ADMIN_ENV_FILE="${ROOT_DIR}/config/gateway.env"
+[[ -f "${ADMIN_ENV_FILE}" ]] || ADMIN_ENV_FILE="${ROOT_DIR}/.env.local"
+load_admin_proxy_env "${ADMIN_ENV_FILE}"
 
 if [[ -z "${NODE_BIN_DIR}" ]]; then
   if [[ -x "${HOME}/.nvm/versions/node/v24.15.0/bin/node" ]]; then

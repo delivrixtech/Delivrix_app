@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Pool } from "pg";
 import {
@@ -109,6 +110,7 @@ import {
   listApprovalNoncesForTarget
 } from "./security/approval-token.ts";
 import { approvalTokenHash } from "./approval-guard.ts";
+import { checkEnvPreflight } from "./env-preflight.ts";
 import {
   resolveGatewayNow,
   type QuorumResolution
@@ -308,9 +310,12 @@ const gatewayMaxRequestBodyBytes = positiveIntegerOrDefault(
   process.env.GATEWAY_MAX_REQUEST_BODY_BYTES,
   defaultMaxRequestBodyBytes
 );
+// Env canonico: config/gateway.env (blindado -- Vercel CLI solo pisa .env.local).
+// Fallback a .env.local si el blindado no existe. El start script resuelve igual.
+const gatewayEnvFilePath = existsSync("config/gateway.env") ? "config/gateway.env" : ".env.local";
 const runtimeEnvReloader = createRuntimeEnvReloader({
   env: process.env,
-  envFilePath: ".env.local",
+  envFilePath: gatewayEnvFilePath,
   onError: (error) => {
     void gatewayRuntimeLog.warn("gateway.env_reload_failed", "Runtime env reload failed.", runtimeErrorMetadata(error));
   }
@@ -4957,6 +4962,28 @@ server.on("error", (error: NodeJS.ErrnoException) => {
       process.exit(1);
     });
 });
+
+// --- Pre-flight de entorno: detecta huecos de .env ANTES de levantar degradado ---
+// Nace del incidente del 2026-06-09 (Vercel piso .env.local): el gateway arrancaba
+// degradado en silencio y los huecos se descubrian a mitad de un run. Ahora se
+// reportan TODOS de una y, si falta algo del nucleo de auth, no se arranca a ciegas.
+const envPreflight = checkEnvPreflight(process.env);
+console.log(envPreflight.report);
+void gatewayRuntimeLog.info("gateway.env_preflight", "Gateway env pre-flight check.", {
+  ok: envPreflight.ok,
+  okCount: envPreflight.okCount,
+  checkedCount: envPreflight.checkedCount,
+  fatal: envPreflight.fatal.map((issue) => issue.name),
+  warnings: envPreflight.warnings.map((issue) => issue.name)
+});
+if (!envPreflight.ok && process.env.GATEWAY_ENV_PREFLIGHT_ENFORCE !== "false") {
+  console.error(
+    "[gateway] FATAL: faltan variables de entorno criticas (detalle arriba). Abortando el arranque " +
+      "para no levantar degradado. Restauralas en el env y reinicia."
+  );
+  console.error("[gateway] Para forzar el arranque igual (no recomendado): GATEWAY_ENV_PREFLIGHT_ENFORCE=false");
+  process.exit(1);
+}
 
 server.listen(port, host, () => {
   console.log(`gateway-api listening on http://${host}:${port}`);
