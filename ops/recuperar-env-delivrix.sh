@@ -138,7 +138,7 @@ fi
 say "5. Validando vars críticas en .env.local"
 MISSING_CORE=(); MISSING_PROV=()
 need() { # $1 tier core|prov ; $2 var
-  if grep -qE "^$2=..+" .env.local 2>/dev/null && ! grep -qE "^$2=.*(CAMBIAR_AQUI|<|TODO|xxx)" .env.local; then
+  if grep -qE "^$2=..+" .env.local 2>/dev/null && ! grep -qE "^$2=.*(CAMBIAR_AQUI|<|TODO|xxx|replace_with|replace-me|changeme|your_|your-|placeholder)" .env.local; then
     return 0
   fi
   if [ "$1" = core ]; then MISSING_CORE+=("$2"); else MISSING_PROV+=("$2"); fi

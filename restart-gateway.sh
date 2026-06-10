@@ -10,7 +10,8 @@
 
 set -u
 
-WORKTREE="/Users/juanescanar/Documents/delivrix app/.claude/worktrees/youthful-mirzakhani-c517de"
+# Auto-localiza la raíz del repo (carpeta donde vive este script); override con WORKTREE=...
+WORKTREE="${WORKTREE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 PORT="${GATEWAY_PORT:-3000}"
 GATEWAY_FILE="${WORKTREE}/apps/gateway-api/src/main.ts"
 LOG="${WORKTREE}/.gateway.log"
@@ -25,10 +26,11 @@ if [ -f "${WORKTREE}/.env.local" ]; then
   # shellcheck source=/dev/null
   source "${WORKTREE}/.env.local"
   set +a
-  if [ -n "${WEBDOCK_API_KEY:-}" ]; then
-    echo "  WEBDOCK_API_KEY presente (****${WEBDOCK_API_KEY: -4})."
+  WEBDOCK_KEY_EFFECTIVE="${WEBDOCK_API_KEY:-${WEBDOCK_API_KEY_PRIMARY:-${WEBDOCK_API_KEY_OPS:-}}}"
+  if [ -n "${WEBDOCK_KEY_EFFECTIVE}" ]; then
+    echo "  Credencial Webdock presente (****${WEBDOCK_KEY_EFFECTIVE: -4})."
   else
-    echo "  WEBDOCK_API_KEY no encontrada en .env.local — gateway usará fallback mock."
+    echo "  Sin credencial Webdock (WEBDOCK_API_KEY[_PRIMARY|_OPS]) — gateway usará fallback mock."
   fi
 else
   echo "=== 0. .env.local no existe — gateway usará fallback mock para Webdock ==="

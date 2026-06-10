@@ -25,3 +25,6 @@ clonado/
 ~$*.docx
 .vercel
 .env*
+
+# Repo git embebido sin checkout (rompe git add -A)
+DOCUMENTACION/skills/external/_emil_tmp/

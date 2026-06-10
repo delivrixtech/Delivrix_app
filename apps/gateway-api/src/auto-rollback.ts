@@ -64,7 +64,11 @@ export interface AutoRollbackPoliciesSnapshot {
   webdock: Required<WebdockRollbackPolicy>;
 }
 
-const DEFAULT_DNS_PROPAGATION_MS = 5 * 60 * 1000;
+// Debe ser >= la ventana del paso wait_for_dns_propagation del orquestador (30 min).
+// Con 5 min el watchdog borraba registros legitimos mientras el run seguia esperando
+// propagacion (el negative cache del SOA es de 900s = 15 min). Incidente 2026-06-10:
+// A+MX de controlnational.com y corpfiling-ops.com revertidos a los 5:02 del upsert.
+const DEFAULT_DNS_PROPAGATION_MS = 30 * 60 * 1000;
 const DEFAULT_DNS_POLL_MS = 30 * 1000;
 const DEFAULT_SMTP_MAX_BOUNCE_RATE = 0.05;
 const DEFAULT_SMTP_MIN_SENDS = 10;
@@ -315,10 +319,36 @@ function dnsValueMatches(observed: string, expected: string, type: string): bool
   const observedNormalized = normalizeDnsValue(observed);
   const expectedNormalized = normalizeDnsValue(expected);
   if (type.toUpperCase() === "MX") {
-    const mxWithoutPriority = observedNormalized.replace(/^\d+\s+/, "");
-    return mxWithoutPriority === expectedNormalized || observedNormalized === expectedNormalized;
+    const observedMx = parseMxValue(observedNormalized);
+    const expectedMx = parseMxValue(expectedNormalized);
+    if (!observedMx.exchange || observedMx.exchange !== expectedMx.exchange) {
+      return false;
+    }
+    if (observedMx.priority !== undefined && expectedMx.priority !== undefined) {
+      return observedMx.priority === expectedMx.priority;
+    }
+    return true;
   }
   return observedNormalized === expectedNormalized;
+}
+
+// Node resolveMx entrega objetos {exchange, priority} que flattenDnsRecords une en
+// orden de insercion ("smtp.x.com 10"), mientras Route53 expresa el MX como
+// "10 smtp.x.com.". El matcher anterior solo entendia prioridad-adelante, asi que
+// el MX nunca matcheaba, el watchdog expiraba y el rollback borraba A+MX recien
+// creados (incidente 2026-06-10). Canonicalizamos ambos lados a {priority?, exchange}.
+function parseMxValue(value: string): { priority?: number; exchange: string } {
+  const parts = value
+    .split(/\s+/)
+    .map((part) => part.replace(/\.$/, ""))
+    .filter(Boolean);
+  if (parts.length === 2) {
+    const numericIndex = parts.findIndex((part) => /^\d+$/.test(part));
+    if (numericIndex >= 0) {
+      return { priority: Number(parts[numericIndex]), exchange: parts[1 - numericIndex] };
+    }
+  }
+  return { exchange: parts.join(" ") };
 }
 
 function normalizeDnsValue(value: string): string {

@@ -222,6 +222,44 @@ test("createSafeDigFn normalizes array and object DNS responses", async () => {
   assert.deepEqual(await dig("example.com", "MX"), ["10 mail.example.com"]);
 });
 
+test("waitForDnsPropagation matchea MX con exchange primero (orden real de node resolveMx)", async () => {
+  const manager = new AutoRollbackManager({ snapshotDir: await tempDir(), now: fixedNow });
+
+  const result = await manager.waitForDnsPropagation({
+    auditId: "audit-mx-order",
+    domain: "controlnational.com",
+    expectedRecords: [
+      { domain: "smtp.controlnational.com", type: "A", value: "193.181.213.40" },
+      { type: "MX", value: "10 smtp.controlnational.com." }
+    ],
+    digFn: async (_domain, type) =>
+      type === "A" ? ["193.181.213.40"] : ["smtp.controlnational.com 10"]
+  });
+
+  assert.equal(result.propagated, true);
+});
+
+test("waitForDnsPropagation rechaza MX cuando el exchange difiere", async () => {
+  let nowMs = Date.parse("2026-06-10T05:09:13.000Z");
+  const manager = new AutoRollbackManager({
+    snapshotDir: await tempDir(),
+    now: () => new Date(nowMs),
+    sleep: async (ms) => {
+      nowMs += ms;
+    },
+    dnsPolicy: { propagationTimeoutMs: 100, pollIntervalMs: 25 }
+  });
+
+  const result = await manager.waitForDnsPropagation({
+    auditId: "audit-mx-wrong",
+    domain: "controlnational.com",
+    expectedRecords: [{ type: "MX", value: "10 smtp.controlnational.com." }],
+    digFn: async () => ["otro-host.example.com 10"]
+  });
+
+  assert.equal(result.propagated, false);
+});
+
 async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "delivrix-auto-rollback-"));
 }
