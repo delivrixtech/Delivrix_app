@@ -7,6 +7,8 @@ import test from "node:test";
 import { createInternalHttpAdapter } from "../internal-http-adapter.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import {
+  coerceSafeSmokeBody,
+  coerceSafeSmokeSubject,
   configureCompleteSmtp,
   handleConfigureCompleteSmtp,
   readSmtpRunProgress,
@@ -23,6 +25,30 @@ import {
 } from "./orchestrator-smtp.ts";
 import type { PlanApprovalRecord } from "./proposals-sign.ts";
 import { compactIntent } from "./openclaw-compact-intent.ts";
+import { SPAM_FLAG_WORDS } from "./send-email.ts";
+
+test("coerceSafeSmoke respeta contenido valido y coerciona el que dispararia anti-spam/longitud (regresion 400 step 14)", () => {
+  // Contenido valido se respeta tal cual (los smokes reales en espanol pasan).
+  const okSubject = "Infraestructura Delivrix - verificacion de entrega";
+  const okBody = "Este correo confirma que la infraestructura de correo del dominio esta operativa con SPF, DKIM y DMARC.";
+  assert.equal(coerceSafeSmokeSubject(okSubject, "controlledgerdesk.com"), okSubject);
+  assert.equal(coerceSafeSmokeBody(okBody, "controlledgerdesk.com"), okBody);
+
+  // Spam flag words -> reemplazado por default seguro que NO contiene NINGUNA flag word.
+  const subjFlag = coerceSafeSmokeSubject("Test SMTP smoke prueba", "controlledgerdesk.com");
+  const bodyFlag = coerceSafeSmokeBody("prueba de envio test", "controlledgerdesk.com");
+  for (const word of SPAM_FLAG_WORDS) {
+    assert.equal(subjFlag.toLowerCase().includes(word), false, `subject default no debe contener "${word}"`);
+    assert.equal(bodyFlag.toLowerCase().includes(word), false, `body default no debe contener "${word}"`);
+  }
+  assert.match(subjFlag, /controlledgerdesk\.com/);
+  assert.ok(bodyFlag.length >= 20);
+
+  // Longitud fuera de rango -> default seguro.
+  assert.ok(coerceSafeSmokeSubject("ab", "x.com").length >= 3); // subject < 3
+  assert.ok(coerceSafeSmokeBody("corto", "x.com").length >= 20); // body < 20
+  assert.ok(coerceSafeSmokeBody("a".repeat(9000), "x.com").length <= 8000); // body > 8000 (default)
+});
 
 test("configureCompleteSmtp completes the 14-step happy path", async () => {
   const ctx = createDeps();

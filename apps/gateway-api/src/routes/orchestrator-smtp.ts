@@ -25,6 +25,7 @@ import {
 } from "../../../../packages/domain/src/creation-rate-governor.ts";
 import { readRequestBody } from "../request-body.ts";
 import { coerceSafeDomainIntent } from "./domains-suggest.ts";
+import { SPAM_FLAG_WORDS } from "./send-email.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import { conformOutcomeData, machineErrorCode } from "../../../../packages/storage/src/episodic-scratch.ts";
 import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
@@ -822,8 +823,8 @@ export async function configureCompleteSmtp(
       params: {
         fromAddress: `hello@${chosenDomain}`,
         toAddress: runState.params.testEmailRecipient,
-        subject: runState.params.testEmailSubject,
-        body: runState.params.testEmailBody,
+        subject: coerceSafeSmokeSubject(runState.params.testEmailSubject, chosenDomain),
+        body: coerceSafeSmokeBody(runState.params.testEmailBody, chosenDomain),
         serverSlug,
         selector,
         idempotencyKey: runId,
@@ -2232,6 +2233,49 @@ function chooseDomainForRun(
     );
   }
   return approvedDomain;
+}
+
+// El smoke (step 14) lo valida send_real_email: subject 3-200, body 20-8000 y SIN
+// palabras spam (SPAM_FLAG_WORDS incluye "test"/"prueba"/"smoke"...). El campo se llama
+// "testEmailSubject", asi que OpenClaw tiende a meter "test"/"prueba" -> 400 en el ULTIMO
+// step, tras gastar dominio+VPS+DNS+DKIM. Coercionamos a un contenido seguro y neutro
+// (mejor para placement tambien) cuando el provisto romperia; si es valido, se respeta.
+const SMOKE_SUBJECT_MIN = 3;
+const SMOKE_SUBJECT_MAX = 200;
+const SMOKE_BODY_MIN = 20;
+const SMOKE_BODY_MAX = 8_000;
+
+function smokeContentHasSpamFlag(value: string): boolean {
+  const lower = value.toLowerCase();
+  return SPAM_FLAG_WORDS.some((word) => lower.includes(word));
+}
+
+export function coerceSafeSmokeSubject(raw: string | undefined, domain: string): string {
+  const trimmed = (raw ?? "").trim();
+  if (
+    trimmed.length >= SMOKE_SUBJECT_MIN &&
+    trimmed.length <= SMOKE_SUBJECT_MAX &&
+    !smokeContentHasSpamFlag(trimmed)
+  ) {
+    return trimmed;
+  }
+  return `Delivrix mail infrastructure check for ${domain}`.slice(0, SMOKE_SUBJECT_MAX);
+}
+
+export function coerceSafeSmokeBody(raw: string | undefined, domain: string): string {
+  const trimmed = (raw ?? "").trim();
+  if (
+    trimmed.length >= SMOKE_BODY_MIN &&
+    trimmed.length <= SMOKE_BODY_MAX &&
+    !smokeContentHasSpamFlag(trimmed)
+  ) {
+    return trimmed;
+  }
+  return [
+    `This message confirms the outbound mail infrastructure for ${domain} is operational.`,
+    "SPF, DKIM and DMARC are configured; authentication should report SPF pass, DKIM pass and DMARC pass.",
+    "If this arrives in the inbox with full authentication, the stack is ready for gradual warmup."
+  ].join("\n");
 }
 
 function explicitDomainForRun(
