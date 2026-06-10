@@ -75,6 +75,24 @@ type ValidationDetails = Record<string, { _errors: string[] }> | { _errors: stri
 const allowedIntents = ["smtp", "reporting", "filing", "saas", "ops", "general"] as const;
 const defaultTlds = ["com", "net", "io", "app"];
 
+// Traduce un intent LIBRE (p.ej. el que el orquestador recibe de OpenClaw como
+// "ops-smtp-controlledgerdesk") a un SafeDomainIntent valido del enum. suggest_safe_domain
+// exige el enum y devuelve HTTP 400 ante cualquier otro valor; este coerce evita que un
+// intent descriptivo tumbe el flujo. Match exacto -> primer token valido -> "ops".
+export function coerceSafeDomainIntent(value: unknown): SafeDomainIntent {
+  if (typeof value !== "string") return "ops";
+  const lower = value.trim().toLowerCase();
+  if ((allowedIntents as readonly string[]).includes(lower)) {
+    return lower as SafeDomainIntent;
+  }
+  for (const token of lower.split(/[^a-z0-9]+/).filter(Boolean)) {
+    if ((allowedIntents as readonly string[]).includes(token)) {
+      return token as SafeDomainIntent;
+    }
+  }
+  return "ops";
+}
+
 export const suggestSafeDomainParamSchema: SkillParamSchema<SuggestSafeDomainParams> = {
   safeParse(value: unknown): SkillSafeParseResult<SuggestSafeDomainParams> {
     try {

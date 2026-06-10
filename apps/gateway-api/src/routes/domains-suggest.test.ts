@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import {
+  coerceSafeDomainIntent,
   handleSuggestSafeDomainHttp,
   suggestSafeDomainParamSchema,
   type RegistrarAvailability,
@@ -169,6 +170,30 @@ test("POST /v1/skills/suggest-safe-domain is deterministic for repeated input", 
     first.body.candidates.map((candidate: { domain: string }) => candidate.domain),
     second.body.candidates.map((candidate: { domain: string }) => candidate.domain)
   );
+});
+
+test("coerceSafeDomainIntent traduce un intent libre a un enum valido (regresion HTTP 400)", () => {
+  // El orquestador recibia de OpenClaw intents libres como "ops-smtp-controlledgerdesk"
+  // y los propagaba a suggest_safe_domain (enum estricto) -> HTTP 400 que tumbaba el run.
+  assert.equal(coerceSafeDomainIntent("ops-smtp-controlledgerdesk"), "ops");
+  assert.equal(coerceSafeDomainIntent("reporting-pipeline-x"), "reporting");
+  assert.equal(coerceSafeDomainIntent("smtp"), "smtp");
+  assert.equal(coerceSafeDomainIntent("SMTP"), "smtp");
+  assert.equal(coerceSafeDomainIntent(""), "ops");
+  assert.equal(coerceSafeDomainIntent(undefined), "ops");
+  assert.equal(coerceSafeDomainIntent("totalmente-desconocido-xyz"), "ops");
+});
+
+test("suggest_safe_domain acepta el intent ya coercido sin 400", () => {
+  const result = suggestSafeDomainParamSchema.safeParse({
+    brand: "ledgerdesk",
+    intent: coerceSafeDomainIntent("ops-smtp-controlledgerdesk"),
+    actorId: "operator-juanes"
+  });
+  assert.equal(result.success, true);
+  if (result.success) {
+    assert.equal(result.data.intent, "ops");
+  }
 });
 
 async function route(

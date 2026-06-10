@@ -24,6 +24,7 @@ import {
   type CreationRateWindow
 } from "../../../../packages/domain/src/creation-rate-governor.ts";
 import { readRequestBody } from "../request-body.ts";
+import { coerceSafeDomainIntent } from "./domains-suggest.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import { conformOutcomeData, machineErrorCode } from "../../../../packages/storage/src/episodic-scratch.ts";
 import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
@@ -558,7 +559,10 @@ export async function configureCompleteSmtp(
       skill: "suggest_safe_domain",
       params: {
         brand: effectiveInput.brand,
-        intent: effectiveInput.intent ?? "ops",
+        // El intent de configure_complete_smtp es libre (OpenClaw manda cosas como
+        // "ops-smtp-controlledgerdesk"); suggest_safe_domain exige el enum -> se traduce
+        // a un SafeDomainIntent valido para que un intent descriptivo no tumbe el step 1.
+        intent: coerceSafeDomainIntent(effectiveInput.intent),
         count: 5,
         actorId: effectiveInput.actorId
       },
