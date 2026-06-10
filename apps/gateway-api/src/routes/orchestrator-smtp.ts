@@ -1982,6 +1982,22 @@ async function runMutatingStep(input: {
     });
   }
 
+  // Guard multicuenta del camino GATED (5.12). El selector (resolveCreationAccount) corre SIEMPRE,
+  // pero el camino gated (submitAndAwaitApproval -> aprobacion humana -> execute) es single-account:
+  // su processor NO recibe el accountId, asi que crearia el VPS en la cuenta-1 ("ops") mientras el
+  // rollback/delete enruta a runState.serverAccountId (la cuenta elegida) -> VPS HUERFANO que cuesta
+  // plata. Si el gated seleccionó una cuenta != "ops", abortamos LIMPIO ANTES de crear, en vez de
+  // crear en la cuenta equivocada. (Single-account/produ NO afectados: ops===ops no dispara; el
+  // camino autonomo con firma de plan propaga el accountId de verdad por arriba.)
+  if (input.serverAccountId && input.serverAccountId !== DEFAULT_CREATION_ACCOUNT_ID) {
+    throw new OrchestratorFailure(
+      "failed",
+      input.step,
+      input.skill,
+      "gated_multiaccount_unsupported"
+    );
+  }
+
   return runGatedStep(input);
 }
 
@@ -3129,8 +3145,23 @@ async function resolveCreationAccount(input: {
     return decision.accountId;
   }
 
-  const message = decision.failure?.message ?? `creation_rate_exceeded: created_24h=${decision.createdInWindow} cap=${decision.cap} account=${decision.accountId}`;
-  await audit(input.deps, "oc.orchestrator.creation_rate_exceeded", "webdock_account", decision.accountId, "critical", {
+  // Distinguir el motivo REAL del no-ganador (5.12):
+  //  - "no_eligible_accounts": ninguna cuenta es write-capable/healthy (NO fue exceso de rate).
+  //    Etiquetar esto como "creation_rate_exceeded" con "created_24h=X cap=Y" es enganoso, asi que
+  //    emitimos un codigo/accion/mensaje propios (no_write_capable_account). Casi inalcanzable hoy
+  //    (el create siempre pasa por aca con al menos "ops"), pero correcto.
+  //  - resto (exhausted / creation_rate_exceeded_all_accounts): camino de rate previo, byte-identico.
+  const noWriteCapable = selection.reason === "no_eligible_accounts";
+  const action = noWriteCapable
+    ? "oc.orchestrator.no_write_capable_account"
+    : "oc.orchestrator.creation_rate_exceeded";
+  const logEvent = noWriteCapable
+    ? "openclaw.orchestrator.no_write_capable_account"
+    : "openclaw.orchestrator.creation_rate_exceeded";
+  const message = noWriteCapable
+    ? `no_write_capable_account: account=${decision.accountId}`
+    : decision.failure?.message ?? `creation_rate_exceeded: created_24h=${decision.createdInWindow} cap=${decision.cap} account=${decision.accountId}`;
+  await audit(input.deps, action, "webdock_account", decision.accountId, "critical", {
     runId: input.runId,
     step: input.step,
     skill: input.skill,
@@ -3147,7 +3178,7 @@ async function resolveCreationAccount(input: {
     type: "oc.action.now",
     taskId: input.runId,
     kind: "audit",
-    action: "oc.orchestrator.creation_rate_exceeded",
+    action,
     targetType: "webdock_account",
     targetId: decision.accountId,
     riskLevel: "critical",
@@ -3163,7 +3194,9 @@ async function resolveCreationAccount(input: {
     },
     occurredAt: (input.deps.now?.() ?? new Date()).toISOString()
   } as CanvasLiveEvent);
-  void (input.deps.logger ?? noopGatewayRuntimeLogger).warn("openclaw.orchestrator.creation_rate_exceeded", "Creation-rate governor blocked Webdock create step.", {
+  void (input.deps.logger ?? noopGatewayRuntimeLogger).warn(logEvent, noWriteCapable
+    ? "No write-capable Webdock account available for create step."
+    : "Creation-rate governor blocked Webdock create step.", {
     runId: input.runId,
     step: input.step,
     skill: input.skill,

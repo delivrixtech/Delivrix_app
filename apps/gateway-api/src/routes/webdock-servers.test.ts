@@ -431,6 +431,108 @@ test("DELETE /v1/webdock/servers/:slug deletes server and removes active invento
   assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.webdock.server_deleted");
 });
 
+test("DELETE /v1/webdock/servers/:slug con accountId=secondary enruta al adapter de secondary (5.12 money-path)", async () => {
+  // El rollback de un run multicuenta debe borrar el VPS en la MISMA cuenta donde se creo. Si el
+  // routing por accountId fallara, el delete iria a la cuenta-1 ("ops") y el server quedaria
+  // huerfano (plata) en secondary. Cada adapter registra que recibio el delete.
+  const opsHits: string[] = [];
+  const secondaryHits: string[] = [];
+  const opsAdapter = mockDeleteAdapter({
+    deleteServer: async (slug) => {
+      opsHits.push(slug);
+      return deleteResult(slug, "delete-ops-evt");
+    }
+  });
+  const secondaryAdapter = mockDeleteAdapter({
+    deleteServer: async (slug) => {
+      secondaryHits.push(slug);
+      return deleteResult(slug, "delete-secondary-evt");
+    }
+  });
+  const route = await deleteRouteHarness({
+    adapter: opsAdapter,
+    accountAdapters: new Map([["secondary", secondaryAdapter]]),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-delete",
+      executionId: "exec-webdock-delete-secondary",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-delete", "exec-webdock-delete-secondary");
+
+  const response = await route("mail-secondary-test", {
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-delete-secondary",
+    reason: "rollback multicuenta secondary",
+    taskId: "task-webdock-delete-secondary",
+    accountId: "secondary"
+  }, { WEBDOCK_SERVERS_ENABLE_DELETE: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.eventId, "delete-secondary-evt");
+  // El delete fue a secondary, NO a ops.
+  assert.deepEqual(secondaryHits, ["mail-secondary-test"]);
+  assert.deepEqual(opsHits, []);
+});
+
+test("DELETE /v1/webdock/servers/:slug sin accountId (o 'ops') enruta al adapter ops por defecto (5.12 fallback)", async () => {
+  // Single-account / runState legacy: sin accountId el delete cae al adapter escalar (cuenta-1).
+  // "ops" explicito hace lo mismo: byte-identico al delete previo al cableado multicuenta.
+  const opsHits: string[] = [];
+  const secondaryHits: string[] = [];
+  const opsAdapter = mockDeleteAdapter({
+    deleteServer: async (slug) => {
+      opsHits.push(slug);
+      return deleteResult(slug, "delete-ops-evt");
+    }
+  });
+  const secondaryAdapter = mockDeleteAdapter({
+    deleteServer: async (slug) => {
+      secondaryHits.push(slug);
+      return deleteResult(slug, "delete-secondary-evt");
+    }
+  });
+  const makeRoute = async () => {
+    const route = await deleteRouteHarness({
+      adapter: opsAdapter,
+      accountAdapters: new Map([["secondary", secondaryAdapter]]),
+      canvasState: canvasState([{
+        artifactId: "artifact-webdock-delete",
+        executionId: "exec-webdock-delete-ops",
+        approvedAt: "2026-05-27T15:59:00.000Z"
+      }])
+    });
+    await appendApproval(route.auditLog, "artifact-webdock-delete", "exec-webdock-delete-ops");
+    return route;
+  };
+
+  // (a) sin accountId en el body => adapter ops.
+  const routeNoAccount = await makeRoute();
+  const noAccount = await routeNoAccount("mail-default-test", {
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-delete-ops",
+    reason: "delete sin accountId",
+    taskId: "task-webdock-delete-default"
+  }, { WEBDOCK_SERVERS_ENABLE_DELETE: "true" });
+  assert.equal(noAccount.statusCode, 200);
+  assert.equal(noAccount.body.eventId, "delete-ops-evt");
+
+  // (b) accountId="ops" explicito => mismo adapter ops (no toca secondary).
+  const routeOps = await makeRoute();
+  const ops = await routeOps("mail-ops-test", {
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-delete-ops",
+    reason: "delete accountId ops",
+    taskId: "task-webdock-delete-ops",
+    accountId: "ops"
+  }, { WEBDOCK_SERVERS_ENABLE_DELETE: "true" });
+  assert.equal(ops.statusCode, 200);
+  assert.equal(ops.body.eventId, "delete-ops-evt");
+
+  assert.deepEqual(opsHits, ["mail-default-test", "mail-ops-test"]);
+  assert.deepEqual(secondaryHits, []);
+});
+
 async function routeHarness(input: {
   adapter: WebdockServerCreateAdapter;
   canvasState: CanvasLiveStateSnapshot;
@@ -482,6 +584,8 @@ async function routeHarness(input: {
 async function deleteRouteHarness(input: {
   adapter: WebdockServerDeleteAdapter;
   canvasState: CanvasLiveStateSnapshot;
+  // 5.12 multicuenta: registry write-capable id->adapter. Si se pasa, el delete enruta por accountId.
+  accountAdapters?: Map<string, WebdockServerDeleteAdapter>;
 }) {
   const dir = await mkdtemp(join(tmpdir(), "webdock-delete-route-"));
   const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
@@ -503,6 +607,7 @@ async function deleteRouteHarness(input: {
         response: response as unknown as ServerResponse,
         auditLog,
         adapter: input.adapter,
+        ...(input.accountAdapters ? { accountAdapters: input.accountAdapters } : {}),
         workspace,
         canvasLiveEvents: {
           emit: async (event) => {
@@ -559,6 +664,20 @@ function mockDeleteAdapter(overrides: Partial<WebdockServerDeleteAdapter> = {}):
       throw new Error("deleteServer mock not implemented");
     },
     ...overrides
+  };
+}
+
+function deleteResult(slug: string, eventId: string): WebdockDeleteServerResult {
+  return {
+    serverSlug: slug,
+    eventId,
+    status: "deleting",
+    source: {
+      kind: "live",
+      apiBase: "https://api.webdock.test/v1",
+      fetchedAt: fixedNow.toISOString(),
+      responseOk: true
+    }
   };
 }
 

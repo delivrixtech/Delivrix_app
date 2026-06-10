@@ -637,6 +637,58 @@ test("DoD#6 todas las cuentas no-live + fail_closed => bloquea el create (no no_
   assert.deepEqual(ctx.approvals.map((entry) => entry.step), [2, 3]);
 });
 
+test("FIX1 gated + cuenta != ops => falla LIMPIO gated_multiaccount_unsupported ANTES de crear (no VPS huerfano)", async () => {
+  // Camino GATED (sin OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE): ops en cap (4/4), secondary con
+  // budget (1/4) => el selector (que corre incondicionalmente) elige "secondary". Pero el create
+  // gated es single-account (su processor no recibe el accountId): crearia el VPS en "ops" y
+  // enrutaria rollback a "secondary" => huerfano. El guard debe abortar limpio ANTES del create.
+  const ctx = createDeps({
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { servers: fourServers(), sourceKind: "live", responseOk: true },
+      secondary: { servers: [{ creationDate: "2026-05-31T11:00:00.000Z" }], sourceKind: "live", responseOk: true }
+    }
+  });
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 4);
+  assert.equal(result.error, "gated_multiaccount_unsupported");
+  // El selector eligio secondary y lo persistio, PERO el create gated nunca se ejecuto (no llego a
+  // submitAndAwaitApproval para el step 4) => no se creo VPS.
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.serverAccountId, "secondary");
+  assert.equal(ctx.approvals.some((entry) => entry.step === 4), false);
+  assert.deepEqual(ctx.approvals.map((entry) => entry.step), [2, 3]);
+  // step 4 < 6 => no hay rollback (no hay nada que borrar): no VPS huerfano.
+  assert.equal(ctx.rollbacks.length, 0);
+});
+
+test("FIX1 gated + ops (single-account) NO dispara el guard: el create gated procede normal", async () => {
+  // Mismo camino gated pero con SOLO "ops" elegible (con budget). ops===ops no dispara el guard:
+  // el step 4 llega a submitAndAwaitApproval y el run completa (comportamiento single-account de hoy).
+  const ctx = createDeps({
+    creationServers: [
+      { creationDate: "2026-05-31T11:00:00.000Z" },
+      { creationDate: "2026-05-31T10:00:00.000Z" }
+    ]
+  });
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  // El create gated (step 4) SI se ejecuto via approval, contra "ops" por el canal paralelo.
+  const step4 = ctx.approvals.find((entry) => entry.step === 4);
+  assert.equal(step4?.skill, "create_webdock_server");
+  assert.equal(step4?.serverAccountId, "ops");
+  assert.deepEqual(ctx.creationReads, ["ops"]);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.run_completed"), true);
+});
+
 test("configureCompleteSmtp emits canvas start and completion events", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);
