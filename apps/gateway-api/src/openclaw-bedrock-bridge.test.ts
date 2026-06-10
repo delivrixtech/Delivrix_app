@@ -63,6 +63,39 @@ test("OpenClawBedrockBridge sendMessage queues and streamHistory emits typing, d
   assert.equal(events[2].audit?.tokensUsed, 20);
 });
 
+test("OpenClawBedrockBridge inyecta active_smtp_runs en el contexto para poder continuar runs", async () => {
+  let capturedBody = "";
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    smtpRunsReader: async () => [
+      { runId: "exec-continuity-1", status: "failed", lastCompletedStep: 8, chosenDomain: "controlledgerdesk.com" }
+    ],
+    client: {
+      send: async (command) => {
+        capturedBody = String((command as { input: { body: unknown } }).input.body);
+        return {
+          body: [
+            streamJson({ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } })
+          ]
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-runs", message: "continua el smtp anterior" });
+  await bridge.streamHistory("msg-runs", {});
+
+  // El runId, su estado y dominio deben llegar al modelo para que pueda reanudar.
+  assert.match(capturedBody, /active_smtp_runs/);
+  assert.match(capturedBody, /exec-continuity-1/);
+  assert.match(capturedBody, /controlledgerdesk\.com/);
+});
+
 test("OpenClawBedrockBridge keeps in-memory conversation history across turns", async () => {
   const payloads: Array<Record<string, unknown>> = [];
   const bridge = new OpenClawBedrockBridge({

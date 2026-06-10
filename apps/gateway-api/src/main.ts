@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Pool } from "pg";
 import {
@@ -137,7 +139,7 @@ import {
   type GatewayDependencyHealth
 } from "./dependency-health.ts";
 import { maybeHandleOpenClawDomainChatSkill } from "./openclaw-domain-chat-skill.ts";
-import { createOpenClawBedrockBridgeFromEnv } from "./openclaw-bedrock-bridge.ts";
+import { createOpenClawBedrockBridgeFromEnv, type SmtpRunSummary } from "./openclaw-bedrock-bridge.ts";
 import { createOpenClawSshBridgeFromEnv } from "./openclaw-ssh-bridge.ts";
 import {
   handleAwsDomainDiscoveryError,
@@ -364,7 +366,8 @@ const canvasLiveEvents = new CanvasLiveEventService({
 const openClawBedrockBridge = createOpenClawBedrockBridgeFromEnv(process.env, {
   logger: gatewayRuntimeLog,
   auditLog,
-  canvasLiveEvents
+  canvasLiveEvents,
+  smtpRunsReader: listActiveSmtpRuns
 });
 const openClawSshBridge = openClawBedrockBridge ? null : createOpenClawSshBridgeFromEnv();
 const openClawChatBridge = openClawBedrockBridge ?? openClawSshBridge;
@@ -1089,14 +1092,27 @@ const server = createServer(async (request, response) => {
         messageChars: chatMessage.length,
         bridgeKind: openClawBedrockBridge ? "bedrock" : openClawSshBridge ? "ssh" : "http"
       });
-      const gatewaySkillResult = await maybeHandleOpenClawDomainChatSkill({
-        body,
-        chatProxy: openClawChatProxy,
-        canvasLiveEvents,
-        auditLog,
-        ionosDomains: ionosDomainsAdapter,
-        ionosDns: ionosDnsAdapter
-      });
+      // El skill local de inventario es un atajo opcional. Si falla por cualquier
+      // motivo, NO debe tumbar el chat con un 500: se degrada reenviando el mensaje
+      // al bridge (Bedrock), que es el camino correcto para prompts operacionales.
+      let gatewaySkillResult: Awaited<ReturnType<typeof maybeHandleOpenClawDomainChatSkill>> = null;
+      try {
+        gatewaySkillResult = await maybeHandleOpenClawDomainChatSkill({
+          body,
+          chatProxy: openClawChatProxy,
+          canvasLiveEvents,
+          auditLog,
+          ionosDomains: ionosDomainsAdapter,
+          ionosDns: ionosDnsAdapter
+        });
+      } catch (error) {
+        void gatewayRuntimeLog.warn(
+          "openclaw.chat.gateway_skill_failed",
+          "Domain inventory skill failed; degrading to bridge.",
+          { msgId: chatMsgId, ...runtimeErrorMetadata(error) }
+        );
+        gatewaySkillResult = null;
+      }
       if (gatewaySkillResult) {
         void gatewayRuntimeLog.info("openclaw.chat.handled_by_gateway_skill", "Gateway handled chat locally without Bedrock.", {
           msgId: gatewaySkillResult.msgId,
@@ -5023,6 +5039,43 @@ async function resumeRampsOnStartup(): Promise<void> {
   } catch (error) {
     console.warn(`[gateway] WARN: failed to resume warmup ramps on boot: ${error instanceof Error ? error.message : String(error)}`);
     void gatewayRuntimeLog.warn("gateway.warmup_ramps_resume_failed", "Failed to resume warmup ramps on boot.", runtimeErrorMetadata(error));
+  }
+}
+
+// Lista los runs SMTP persistidos (inventory/smtp-runs/<runId>.json), recientes primero,
+// para que el bridge los inyecte al live context y el modelo pueda CONTINUAR un run en
+// curso (pasando el runId exacto) en vez de empezar de cero. Read-only, tolerante a fallos.
+async function listActiveSmtpRuns(): Promise<SmtpRunSummary[]> {
+  try {
+    const dir = join(openClawWorkspace.getRootDir(), "inventory", "smtp-runs");
+    const files = (await readdir(dir).catch(() => [] as string[])).filter((file) => file.endsWith(".json"));
+    const entries = await Promise.all(
+      files.map(async (file) => {
+        try {
+          const absolute = join(dir, file);
+          const [rawText, fileStat] = await Promise.all([readFile(absolute, "utf8"), stat(absolute)]);
+          const raw = JSON.parse(rawText) as Record<string, unknown>;
+          const summary: SmtpRunSummary = {
+            runId: typeof raw.runId === "string" ? raw.runId : file.replace(/\.json$/, ""),
+            status: typeof raw.status === "string" ? raw.status : "unknown",
+            lastCompletedStep: typeof raw.lastCompletedStep === "number" ? raw.lastCompletedStep : 0,
+            ...(typeof raw.chosenDomain === "string" && raw.chosenDomain.length > 0
+              ? { chosenDomain: raw.chosenDomain }
+              : {})
+          };
+          return { mtimeMs: fileStat.mtimeMs, summary };
+        } catch {
+          return null;
+        }
+      })
+    );
+    return entries
+      .filter((entry): entry is { mtimeMs: number; summary: SmtpRunSummary } => entry !== null)
+      .sort((left, right) => right.mtimeMs - left.mtimeMs)
+      .slice(0, 12)
+      .map((entry) => entry.summary);
+  } catch {
+    return [];
   }
 }
 

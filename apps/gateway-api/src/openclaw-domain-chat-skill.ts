@@ -120,6 +120,11 @@ export async function maybeHandleOpenClawDomainChatSkill(
   });
 
   for (const block of buildDomainInventoryReportBlocks(domainsResult, dnsResult, now())) {
+    // Defensa en profundidad: el Canvas Live lanza "content is required." ante
+    // content vacio. Nunca emitir un bloque sin texto.
+    if (!block.content || block.content.trim().length === 0) {
+      continue;
+    }
     await deps.canvasLiveEvents.emit({
       type: "oc.artifact.block",
       artifactId,
@@ -188,7 +193,15 @@ function isOperationalOpenClawPrompt(normalized: string): boolean {
   return (
     /\b(configure_complete_smtp|provision_smtp_postfix|create_webdock_server|bind_webdock_main_domain|bind_domain_to_server|upsert_dns_route53|wait_for_dns_propagation|configure_email_auth|seed_warmup_pool|send_real_email)\b/.test(normalized) ||
     /\b(serverslug|serverip|smtphost|budgetusdmax|testemailrecipient|testemailsubject|testemailbody|imageslug|locationid)\s*=/.test(normalized) ||
-    /\b(retoma|retomar|continu[aá]|continuar|sigue|seguir|ejecuta|ejecutar|propon[eé]|approvalgate|firma|side effect|post-dns|provisionar|smtp provisioning)\b/.test(normalized)
+    /\b(retoma|retomar|continu[aá]|continuar|sigue|seguir|ejecuta|ejecutar|propon[eé]|approvalgate|firma|side effect|post-dns|provisionar|smtp provisioning)\b/.test(normalized) ||
+    // Lenguaje natural de configuracion/creacion SMTP -> debe ir al modelo (Bedrock),
+    // NO al skill local de inventario. Sin esto, "configura este dominio... revisa..."
+    // secuestraba el turno y crasheaba con "content is required." (IONOS 0 dominios).
+    // Ante la duda preferimos Bedrock: el skill local de inventario es solo un atajo
+    // para preguntas de inventario PURAS.
+    /\bsmtp\b/.test(normalized) ||
+    /\b(configura\w*|configuremos|crea\w*|creemos|crear|monta\w*|montemos|arma\w*|armemos|aprovecha\w*|setup|provisiona\w*)\b/.test(normalized) ||
+    /\b(presupuesto|budget|correo de prueba|smoke|message[ -]?id|destinatario|warmup)\b/.test(normalized)
   );
 }
 
@@ -306,8 +319,13 @@ export function buildDomainInventoryReportBlocks(
     {
       blockId: "domain-report-list",
       order: 2,
-      kind: "code",
-      content: rows.join("\n")
+      kind: rows.length > 0 ? "code" : "paragraph",
+      // Nunca emitir content vacio: el Canvas Live rechaza content="" con
+      // "content is required." Si IONOS no devuelve dominios (p.ej. estan en
+      // Route53, no en IONOS), se informa en texto en vez de un bloque vacio.
+      content: rows.length > 0
+        ? rows.join("\n")
+        : "IONOS respondio sin dominios para esta credencial. Es esperable si los dominios estan registrados en Route53 y no en IONOS."
     },
     {
       blockId: "domain-report-guardrails",

@@ -45,7 +45,10 @@ const defaultModelRegion = "us-east-1";
 const defaultMaxTokens = 4096;
 const defaultTemperature = 0.3;
 const defaultSessionKey = "agent:main:operator";
-const defaultMaxConversationTurns = 12;
+// 40 turnos (~20 intercambios) en vez de 12 (~6): con 12 el contexto del inicio del
+// chat (dominio, brand, runId del SMTP previo) se truncaba al pedir "continua"/"otro",
+// y el modelo arrancaba de cero. Configurable por OPENCLAW_MAX_CONVERSATION_TURNS.
+const defaultMaxConversationTurns = 40;
 const defaultDelivrixBaseUrl = "http://127.0.0.1:3000";
 const defaultMaxToolIterations = 10;
 const defaultLiveContextItemLimit = 20;
@@ -107,6 +110,13 @@ interface BedrockInvocationResult {
   toolsInvoked?: string[];
 }
 
+export interface SmtpRunSummary {
+  runId: string;
+  status: string;
+  lastCompletedStep: number;
+  chosenDomain?: string;
+}
+
 export interface OpenClawBedrockBridgeConfig {
   accessKeyId?: string;
   secretAccessKey?: string;
@@ -132,6 +142,7 @@ export interface OpenClawBedrockBridgeConfig {
   logger?: GatewayRuntimeLogger;
   auditLog?: AuditSink;
   canvasLiveEvents?: CanvasLiveEmitter;
+  smtpRunsReader?: () => Promise<SmtpRunSummary[]>;
   processToolUse?: (input: {
     toolUseId: string;
     toolName: string;
@@ -160,6 +171,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   private readonly logger: GatewayRuntimeLogger;
   private readonly auditLog: AuditSink | null;
   private readonly canvasLiveEvents: CanvasLiveEmitter | null;
+  private readonly smtpRunsReader: (() => Promise<SmtpRunSummary[]>) | null;
   private readonly processToolUse: (input: {
     toolUseId: string;
     toolName: string;
@@ -210,6 +222,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     this.logger = config.logger ?? noopGatewayRuntimeLogger;
     this.auditLog = config.auditLog ?? null;
     this.canvasLiveEvents = config.canvasLiveEvents ?? null;
+    this.smtpRunsReader = config.smtpRunsReader ?? null;
     this.processToolUse = config.processToolUse ?? createHttpToolUseProcessor({
       delivrixBaseUrl: this.delivrixBaseUrl,
       fetchImpl: this.fetchImpl,
@@ -779,6 +792,18 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       safeGet("/v1/webdock/inventory"),
       safeGet(groundedPath)
     ]);
+    // Runs SMTP en disco: el modelo SIEMPRE ve los runId en curso aunque el turno
+    // donde se crearon ya se truncó del historial, para CONTINUAR en vez de re-crear.
+    const activeRuns = this.smtpRunsReader
+      ? await this.smtpRunsReader().catch((error) => {
+          void this.logger.warn(
+            "openclaw.bedrock.smtp_runs_read_failed",
+            "SMTP runs reader failed; continuing without active_smtp_runs.",
+            runtimeErrorMetadata(error)
+          );
+          return [] as SmtpRunSummary[];
+        })
+      : [];
     const generatedAt = this.now().toISOString();
     const liveContext = [
       `<live_context generatedAt="${generatedAt}" grounding="inventory_and_verified_facts">`,
@@ -795,6 +820,14 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       "## inventory_servers (GET /v1/infrastructure/inventory + GET /v1/webdock/inventory)",
       "```json",
       stringifyLiveContext(summarizeInventoryServers(infrastructure, webdock, this.liveContextItemLimit), 3000),
+      "```",
+      "",
+      // Colocado temprano a proposito: truncateLiveContext recorta desde el final, asi
+      // que los runId en curso (lo accionable para CONTINUAR) deben sobrevivir bajo carga.
+      "## active_smtp_runs (runs de configure_complete_smtp persistidos en disco)",
+      "Si el operador pide CONTINUAR o seguir un SMTP, NO empieces de cero: pasá el runId exacto a configure_complete_smtp para reanudar desde lastCompletedStep (la idempotencia adopta dominio y VPS existentes). status=failed/running son candidatos a continuar.",
+      "```json",
+      stringifyLiveContext(activeRuns, 2500),
       "```",
       "",
       "## verified_facts (GET /v1/openclaw/scratch?grounded=true&query=<operator>)",
@@ -847,7 +880,12 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
 export function createOpenClawBedrockBridgeFromEnv(
   env: Record<string, string | undefined> =
     typeof process !== "undefined" ? process.env : {},
-  options: { logger?: GatewayRuntimeLogger; auditLog?: AuditSink; canvasLiveEvents?: CanvasLiveEmitter } = {}
+  options: {
+    logger?: GatewayRuntimeLogger;
+    auditLog?: AuditSink;
+    canvasLiveEvents?: CanvasLiveEmitter;
+    smtpRunsReader?: () => Promise<SmtpRunSummary[]>;
+  } = {}
 ): OpenClawBedrockBridge | null {
   if (env.OPENCLAW_BRIDGE_KIND !== "bedrock") {
     return null;
@@ -878,12 +916,14 @@ export function createOpenClawBedrockBridgeFromEnv(
     maxTokens: parsePositiveInt(env.AWS_BEDROCK_MAX_TOKENS) ?? defaultMaxTokens,
     temperature: parseTemperature(env.AWS_BEDROCK_TEMPERATURE) ?? defaultTemperature,
     maxToolIterations: parsePositiveInt(env.OPENCLAW_TOOL_MAX_ITERATIONS) ?? defaultMaxToolIterations,
+    maxConversationTurns: parsePositiveInt(env.OPENCLAW_MAX_CONVERSATION_TURNS) ?? defaultMaxConversationTurns,
     liveContextItemLimit: parsePositiveInt(env.OPENCLAW_LIVE_CONTEXT_ITEM_LIMIT) ?? defaultLiveContextItemLimit,
     liveContextMaxChars: parsePositiveInt(env.OPENCLAW_LIVE_CONTEXT_MAX_CHARS) ?? defaultLiveContextMaxChars,
     env,
     logger: options.logger,
     auditLog: options.auditLog,
-    canvasLiveEvents: options.canvasLiveEvents
+    canvasLiveEvents: options.canvasLiveEvents,
+    smtpRunsReader: options.smtpRunsReader
   });
 }
 
