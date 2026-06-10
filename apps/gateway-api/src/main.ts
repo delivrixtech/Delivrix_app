@@ -7,6 +7,7 @@ import { Pool } from "pg";
 import {
   AwsRoute53DomainsAdapter,
   AwsRoute53DnsAdapter,
+  buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
   IonosDnsActuator,
   IonosDomainsAdapter,
@@ -345,6 +346,19 @@ const webdockOpsAdapter = new WebdockRealAdapter({
   cacheTtlMs: 0
 });
 const webdockAccountAdapters = createWebdockAdaptersFromEnv();
+// Registry write-capable id->adapter para create/delete multicuenta (5.12), de-dupeando la cuenta-1
+// (primary/ops/account/default = roles de la MISMA cuenta -> una sola clave "ops" apuntando al
+// webdockOpsAdapter de hoy: mismo objeto/keys => single-account byte-identico). Las cuentas DISTINTAS
+// entran solo si canCreate()===true (post Fase 0). Logica de de-dup unica y testeada en el adapter.
+const webdockCreateAdapters = buildWebdockCreateRegistry(webdockAccountAdapters, webdockOpsAdapter);
+// Cuentas write-capable para el selector del orquestador (una por CUENTA real, ya de-dupeada).
+// enabled = canCreate() REAL: la cuenta-1 ("ops") siempre apta; las distintas solo con sus keys.
+function listWebdockCreationAccounts(): Array<{ accountId: string; enabled: boolean }> {
+  return [...webdockCreateAdapters.entries()].map(([accountId, adapter]) => ({
+    accountId,
+    enabled: adapter.canCreate()
+  }));
+}
 const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
 const awsRoute53DnsAdapter = new AwsRoute53DnsAdapter();
 const ionosDnsAdapter = new IonosDnsActuator();
@@ -436,13 +450,16 @@ const configureSmtpRuntimeDeps = {
 
     throw new Error(`unsupported_read_only_orchestrator_step:${input.skill}`);
   },
+  listCreationAccounts: () => listWebdockCreationAccounts(),
   listWebdockCreationServers: async (input: { accountId: string }) => {
-    if (input.accountId !== "ops") {
-      throw new Error(`unknown_webdock_creation_account:${input.accountId}`);
-    }
-    const result = await webdockOpsAdapter.listServers();
+    // Resolver el adapter de la cuenta pedida (5.12). "ops"/desconocida => webdockOpsAdapter
+    // (cuenta-1, byte-identico al comportamiento previo: este mismo objeto se consultaba antes).
+    const adapter = input.accountId === "ops"
+      ? webdockOpsAdapter
+      : webdockCreateAdapters.get(input.accountId) ?? webdockOpsAdapter;
+    const result = await adapter.listServers();
     return {
-      accountId: result.source.accountId ?? "ops",
+      accountId: result.source.accountId ?? input.accountId,
       accountLabel: result.source.accountLabel,
       sourceKind: result.source.kind,
       responseOk: result.source.responseOk,
@@ -457,6 +474,11 @@ const configureSmtpRuntimeDeps = {
     actorId: string;
     approvalTimeoutMs: number;
     estimatedCostUsd?: number;
+    // 5.12: la cuenta destino del create viaja por canal paralelo. El camino gated (proposal ->
+    // aprobacion humana -> execute) es single-account hoy; la seleccion multicuenta opera por la
+    // via autonoma (executePlanApprovedStep -> dispatch accountId). Se acepta el campo para
+    // compatibilidad de tipos sin alterar el comportamiento gated.
+    serverAccountId?: string;
   }): Promise<ApprovalStepDecision> => {
     const result = await configureSmtpToolProcessor({
       toolUseId: `configure-complete-smtp:${input.runId}:${input.step}`,
@@ -545,6 +567,7 @@ const configureSmtpRuntimeDeps = {
     inputHash: string;
     estimatedCostUsd?: number;
     planApproval: PlanApprovalRecord;
+    serverAccountId?: string;
   }) => {
     const killSwitch = await killSwitchStore.get();
     if (killSwitch.enabled) {
@@ -644,6 +667,9 @@ const configureSmtpRuntimeDeps = {
       params: input.params,
       actorId: input.actorId,
       approvalToken: token,
+      // Canal paralelo accountId (5.12): el dispatcher enruta create/delete al adapter de ESA cuenta;
+      // undefined/"ops" => cuenta-1. NO va en params (no toca hashInput/idempotencia).
+      ...(input.serverAccountId ? { accountId: input.serverAccountId } : {}),
       timeoutMs: approvalTimeoutForPlanStep(input.skill, input.params)
     });
     return result.ok
@@ -713,6 +739,7 @@ const configureSmtpRuntimeDeps = {
     params: Record<string, unknown>;
     actorId: string;
     reason: string;
+    serverAccountId?: string;
   }) => {
     await auditLog.append({
       actorType: "openclaw",
@@ -726,7 +753,9 @@ const configureSmtpRuntimeDeps = {
         runId: input.runId,
         failedStep: input.failedStep,
         skill: input.skill,
-        reason: input.reason
+        reason: input.reason,
+        // Cuenta donde vive el server a borrar (5.12): el delete debe ir a ESTA cuenta, no a cuenta-1.
+        serverAccountId: input.serverAccountId ?? "ops"
       }
     });
     return { proposalId: `rollback-requested-${input.runId}-${input.failedStep}` };
@@ -768,6 +797,7 @@ const skillDispatcher = createSkillDispatcher({
   route53DnsAdapter: awsRoute53DnsAdapter,
   ionosDnsAdapter,
   webdockAdapter: webdockOpsAdapter,
+  webdockCreateAdapters,
   smtpSshRunner,
   rampScheduler,
   porkbunDomainAdapter: porkbunAdapter,
@@ -1399,6 +1429,9 @@ const server = createServer(async (request, response) => {
           response,
           auditLog,
           adapter: webdockOpsAdapter,
+          // Registry write-capable (5.12): si el body trae accountId de otra cuenta, el delete va a
+          // ESA cuenta (evita server huerfano). Sin accountId/"ops" => webdockOpsAdapter (cuenta-1).
+          accountAdapters: webdockCreateAdapters,
           workspace: openClawWorkspace,
           canvasLiveEvents,
           readCanvasState: () => canvasLiveEvents.snapshot(),

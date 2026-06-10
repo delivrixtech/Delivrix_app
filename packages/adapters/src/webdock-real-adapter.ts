@@ -973,6 +973,33 @@ export function createWebdockAdaptersFromEnv(
   return [buildAccountAdapterEntry({ id: "default", label: legacyLabel, apiKey: legacyApiKey }, env, options)];
 }
 
+/**
+ * Roles de la cuenta-1 (la misma cuenta Webdock vista con sus 3 keys read/write/account, mas el
+ * fallback legacy `default`). En el registry de create/delete multicuenta (5.12) NO deben contar
+ * como cuentas separadas: se colapsan a una sola clave "ops" apuntando al adapter ops canonico.
+ */
+const CUENTA1_ROLE_IDS: ReadonlySet<string> = new Set(["primary", "ops", "account", "default"]);
+
+/**
+ * Construye el registry write-capable id->adapter para create/delete multicuenta (5.12), de-dupeando
+ * la cuenta-1. La clave "ops" SIEMPRE apunta a `opsAdapter` (el webdockOpsAdapter de produccion:
+ * mismo objeto/keys => single-account byte-identico). Las cuentas DISTINTAS (secondary/tertiary/...)
+ * entran solo si `canCreate()===true` (post Fase 0 = tienen write+account keys propias). Asi, aunque
+ * `entries` traiga primary+ops+account de la cuenta-1, el governor/selector la cuenta UNA sola vez.
+ */
+export function buildWebdockCreateRegistry(
+  entries: WebdockAccountAdapterEntry[],
+  opsAdapter: WebdockRealAdapter
+): Map<string, WebdockRealAdapter> {
+  const registry = new Map<string, WebdockRealAdapter>([["ops", opsAdapter]]);
+  for (const entry of entries) {
+    if (CUENTA1_ROLE_IDS.has(entry.id)) continue;
+    if (!entry.adapter.canCreate()) continue;
+    registry.set(entry.id, entry.adapter);
+  }
+  return registry;
+}
+
 interface AccountSpec {
   id: string;
   label: string;

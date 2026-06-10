@@ -17,9 +17,12 @@ import {
   type GatewayRuntimeLogger
 } from "../gateway-runtime-log.ts";
 import {
+  DEFAULT_CREATION_ACCOUNT_ID,
+  evaluateAccountSelection,
   evaluateCreationBudget,
   evaluateCreationBudgetReadError,
-  selectAccountForCreation,
+  type CreationAccountForSelection,
+  type CreationAccountGovernorState,
   type CreationRateServer,
   type CreationRateWindow
 } from "../../../../packages/domain/src/creation-rate-governor.ts";
@@ -76,6 +79,11 @@ export interface ApprovalStepInput extends SkillInvocationInput {
   actorId: string;
   approvalTimeoutMs: number;
   estimatedCostUsd?: number;
+  /**
+   * Cuenta Webdock destino del create (5.12 multicuenta). Canal PARALELO: viaja fuera de
+   * `params`, NO entra al hashInput. undefined => cuenta-1 "ops" (single-account byte-identico).
+   */
+  serverAccountId?: string;
 }
 
 export interface PlanApprovalLookupInput {
@@ -125,6 +133,12 @@ export interface Route53DomainRegistrationWaitInput {
   pollIntervalMs: number;
 }
 
+export interface WebdockCreationAccount {
+  accountId: string;
+  /** canCreate() REAL del adapter (post Fase 0): salvaguarda contra elegir una cuenta sin write. */
+  enabled: boolean;
+}
+
 export interface WebdockCreationInventoryInput {
   accountId: string;
 }
@@ -158,6 +172,11 @@ export interface PlanApprovedStepInput extends SkillInvocationInput {
   inputHash: string;
   estimatedCostUsd?: number;
   planApproval: PlanApprovalRecord;
+  /**
+   * Cuenta Webdock destino del create (5.12 multicuenta). Canal PARALELO fuera de `params`/
+   * hashInput. undefined => cuenta-1 "ops" (single-account byte-identico).
+   */
+  serverAccountId?: string;
 }
 
 export type PlanApprovedStepDecision =
@@ -220,6 +239,11 @@ export interface RollbackProposalInput {
   params: Record<string, unknown>;
   actorId: string;
   reason: string;
+  /**
+   * Cuenta Webdock donde vive el server a borrar (5.12 multicuenta). El delete DEBE ir a ESTA
+   * cuenta, no a la cuenta-1, o el server queda huerfano. runState viejo sin el campo => "ops".
+   */
+  serverAccountId?: string;
 }
 
 interface AuditSink {
@@ -266,6 +290,14 @@ export interface ConfigureCompleteSmtpDeps {
   listWebdockCreationServers?: (
     input: WebdockCreationInventoryInput
   ) => Promise<WebdockCreationInventoryResult> | WebdockCreationInventoryResult;
+  /**
+   * Cuentas Webdock write-capable a evaluar en el selector multicuenta (5.12). Devuelve
+   * UNA entrada por CUENTA REAL (de-dup roles primary/ops/account -> 1 cuenta). Si la dep
+   * no esta o devuelve vacio, el orquestador cae al modo single-account "ops" byte-identico.
+   */
+  listCreationAccounts?: () =>
+    | Promise<WebdockCreationAccount[]>
+    | WebdockCreationAccount[];
   resolveCreationRateOverride?: (
     input: CreationRateOverrideInput
   ) => Promise<CreationRateOverrideDecision> | CreationRateOverrideDecision;
@@ -361,6 +393,12 @@ interface SmtpRunState {
   smtpHost?: string;
   serverSlug?: string;
   serverIpv4?: string;
+  /**
+   * Cuenta Webdock donde se creo el server (5.12 multicuenta). OPCIONAL para backward-compat:
+   * runStates viejos sin el campo defaultean a "ops" en rollback/delete. Se persiste junto a
+   * serverSlug/serverIpv4 ANTES del create, asi un resume firmado retoma la cuenta correcta.
+   */
+  serverAccountId?: string;
   selector: string;
   verifiedOwnedDomain?: string;
   budgetSpentUsd: number;
@@ -628,13 +666,21 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    await ensureCreationBudgetForAccount({
-      deps,
-      runId,
-      step: 4,
-      skill: "create_webdock_server",
-      accountId: "ops"
-    });
+    // Seleccion multicuenta (5.12). En un RESUME reusamos la cuenta YA elegida y persistida
+    // (re-seleccionar podria elegir otra cuenta distinta a donde ya vive el server -> huerfano);
+    // en un run fresco seleccionamos entre las cuentas write-capable. Con solo la cuenta-1 el
+    // ganador es "ops" y el comportamiento (lecturas, audits, governor) es byte-identico al de hoy.
+    const serverAccountId = runState.serverAccountId
+      ?? await resolveCreationAccount({
+        deps,
+        runId,
+        step: 4,
+        skill: "create_webdock_server"
+      });
+    // Persistir la cuenta ANTES del create: si el create corre y luego el proceso muere, un resume
+    // (cuya firma es POSTERIOR) debe enrutar rollback/delete a ESTA cuenta. Va por estado, no closure.
+    runState.serverAccountId = serverAccountId;
+    await persistSmtpRunState(deps, runState);
 
     const vps = await runMutatingStepWithState({
       deps,
@@ -647,6 +693,8 @@ export async function configureCompleteSmtp(
       approvalTimeoutMs,
       estimatedCostUsd: 4.30 / 30,
       budgetUsdMax: effectiveInput.budgetUsdMax,
+      // accountId NO entra a params (idempotencia/resume + el allowlist del schema lo descartaria):
+      // viaja por el canal paralelo serverAccountId.
       params: {
         runId,
         profile: "bit",
@@ -654,6 +702,7 @@ export async function configureCompleteSmtp(
         hostname: smtpHost,
         imageSlug: "ubuntu-2404"
       },
+      serverAccountId,
       stepResults
     });
     serverSlug = stringFromOutcome(vps.outcome, ["slug", "serverSlug"]);
@@ -935,7 +984,10 @@ export async function configureCompleteSmtp(
         skill: "delete_webdock_server",
         params: { serverSlug, domain: chosenDomain },
         actorId: input.actorId,
-        reason: `configure_complete_smtp failed at step ${failure.step}: ${failure.message}`
+        reason: `configure_complete_smtp failed at step ${failure.step}: ${failure.message}`,
+        // Enrutar el delete a la cuenta donde se creo el server (5.12). runState viejo sin el
+        // campo => "ops" (backward-compat), igual que antes del cableado multicuenta.
+        serverAccountId: runState?.serverAccountId ?? DEFAULT_CREATION_ACCOUNT_ID
       });
       rollbackProposalId = rollback.proposalId;
     }
@@ -1465,6 +1517,7 @@ async function runMutatingStepWithState(input: {
   approvalTimeoutMs: number;
   estimatedCostUsd?: number;
   budgetUsdMax: number;
+  serverAccountId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   const skipped = await skipDoneStep({
@@ -1751,6 +1804,7 @@ async function runGatedStep(input: {
   approvalTimeoutMs: number;
   estimatedCostUsd?: number;
   budgetUsdMax: number;
+  serverAccountId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   await verifyAuditChain(input.deps);
@@ -1791,7 +1845,9 @@ async function runGatedStep(input: {
     params: input.params,
     actorId: input.actorId,
     approvalTimeoutMs,
-    estimatedCostUsd: input.estimatedCostUsd
+    estimatedCostUsd: input.estimatedCostUsd,
+    // Canal paralelo (no entra a params/hashInput); el create gated lo usa para enrutar la cuenta.
+    ...(input.serverAccountId ? { serverAccountId: input.serverAccountId } : {})
   });
 
   if (decision.status === "executed") {
@@ -1906,6 +1962,7 @@ async function runMutatingStep(input: {
   approvalTimeoutMs: number;
   estimatedCostUsd?: number;
   budgetUsdMax: number;
+  serverAccountId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   if (input.planApproval) {
@@ -1920,6 +1977,7 @@ async function runMutatingStep(input: {
       actorId: input.actorId,
       estimatedCostUsd: input.estimatedCostUsd,
       budgetUsdMax: input.budgetUsdMax,
+      serverAccountId: input.serverAccountId,
       stepResults: input.stepResults
     });
   }
@@ -1938,6 +1996,7 @@ async function runPlanApprovedStep(input: {
   actorId: string;
   estimatedCostUsd?: number;
   budgetUsdMax: number;
+  serverAccountId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   if (!input.deps.executePlanApprovedStep) {
@@ -1980,7 +2039,9 @@ async function runPlanApprovedStep(input: {
     actorId: input.actorId,
     inputHash,
     estimatedCostUsd: input.estimatedCostUsd,
-    planApproval: input.planApproval
+    planApproval: input.planApproval,
+    // Canal paralelo (no entra a params/hashInput); el dispatch del create lo usa como accountId destino.
+    ...(input.serverAccountId ? { serverAccountId: input.serverAccountId } : {})
   });
 
   if (decision.status === "executed") {
@@ -2894,115 +2955,155 @@ function ensureBudgetForStep(
   );
 }
 
-async function ensureCreationBudgetForAccount(input: {
+interface CreationAccountEvaluation {
+  accountId: string;
+  inventory: WebdockCreationInventoryResult;
+  decision: ReturnType<typeof evaluateCreationBudget>;
+  inventoryHash: string;
+}
+
+/**
+ * Selecciona la cuenta Webdock donde crear el VPS (step 4) entre N cuentas write-capable (5.12).
+ * Devuelve el accountId ganador (el orquestador lo propaga a runState + create + rollback).
+ *
+ * Invariante single-account byte-identico: con SOLO la cuenta-1 ("ops") write-capable, esto
+ * consulta unicamente "ops", emite los mismos audit/canvas/log events, usa el mismo inventoryHash
+ * y devuelve "ops" — identico al `ensureCreationBudgetForAccount({accountId:"ops"})` previo.
+ *
+ * - Governor OFF: devuelve "ops" sin tocar el reader (igual que antes).
+ * - Cuentas no-live (read falla / mock / not-live): NO entran a governorState (no afirmar budget
+ *   falso); si TODAS fallan la lectura => handleCreationRateReadError (fail-open/closed por env),
+ *   preservando el camino de hoy. Si alguna SI esta live, las no-live solo se excluyen.
+ * - enabled = canCreate() del adapter (salvaguarda Fase 0: nunca elegir una cuenta sin write real).
+ * - evaluateAccountSelection (no-throw) distingue en audit `creation_rate_exceeded_all_accounts`
+ *   vs `no_eligible_accounts`. El override humano sigue aplicando a la cuenta exhausta.
+ */
+async function resolveCreationAccount(input: {
   deps: ConfigureCompleteSmtpDeps;
   runId: string;
   step: 4;
   skill: "create_webdock_server";
-  accountId: string;
-}): Promise<void> {
+}): Promise<string> {
   const enabled = !envFlagDisabled(input.deps.env?.CREATION_RATE_GOVERNOR_ENABLE);
   if (!enabled) {
-    return;
+    return DEFAULT_CREATION_ACCOUNT_ID;
   }
 
   const cap = nonNegativeInt(input.deps.env?.CREATION_MAX_PER_DAY) ?? 4;
   const window = creationRateWindow(input.deps.env?.CREATION_RATE_WINDOW);
   const failClosed = creationRateFailClosed(input.deps.env?.CREATION_RATE_GOVERNOR_FAIL_MODE);
-  const inventoryHash = hashInput({
-    accountId: input.accountId,
-    cap,
-    window,
-    gate: "creation_rate_governor"
-  });
+  const now = input.deps.now?.() ?? new Date();
 
-  if (!input.deps.listWebdockCreationServers) {
-    await handleCreationRateReadError({
-      deps: input.deps,
-      runId: input.runId,
-      step: input.step,
-      skill: input.skill,
-      accountId: input.accountId,
+  // Cuentas write-capable a evaluar. Sin la dep multicuenta (o vacia) => single-account "ops"
+  // de hoy (1 iteracion, byte-identico). De-dup ya viene resuelto por el productor (1 por cuenta).
+  const accounts = await resolveWriteCapableCreationAccounts(input.deps);
+
+  const reader = input.deps.listWebdockCreationServers;
+  const evaluations: CreationAccountEvaluation[] = [];
+  const selectionAccounts: CreationAccountForSelection[] = [];
+  const governorState: CreationAccountGovernorState[] = [];
+  const readFailures: Array<{ accountId: string; enabled: boolean; error: unknown; inventoryHash: string }> = [];
+
+  for (const account of accounts) {
+    const inventoryHash = hashInput({
+      accountId: account.accountId,
       cap,
       window,
-      enabled,
-      failClosed,
-      error: "creation_inventory_reader_missing",
-      inputHash: inventoryHash
+      gate: "creation_rate_governor"
     });
-    return;
-  }
 
-  let inventory: WebdockCreationInventoryResult;
-  try {
-    inventory = await input.deps.listWebdockCreationServers({ accountId: input.accountId });
-  } catch (error) {
-    await handleCreationRateReadError({
-      deps: input.deps,
-      runId: input.runId,
-      step: input.step,
-      skill: input.skill,
-      accountId: input.accountId,
-      cap,
-      window,
-      enabled,
-      failClosed,
-      error,
-      inputHash: inventoryHash
-    });
-    return;
-  }
-
-  if (inventory.sourceKind !== "live" || inventory.responseOk !== true) {
-    await handleCreationRateReadError({
-      deps: input.deps,
-      runId: input.runId,
-      step: input.step,
-      skill: input.skill,
-      accountId: input.accountId,
-      cap,
-      window,
-      enabled,
-      failClosed,
-      error: `creation_inventory_not_live: sourceKind=${inventory.sourceKind ?? "unknown"} responseOk=${String(inventory.responseOk)}`,
-      inputHash: inventoryHash
-    });
-    return;
-  }
-
-  const decision = evaluateCreationBudget({
-    servers: inventory.servers,
-    now: input.deps.now?.() ?? new Date(),
-    cap,
-    accountId: inventory.accountId ?? input.accountId,
-    window,
-    enabled
-  });
-
-  if (decision.allowed) {
-    const selectedAccountId = selectAccountForCreation({
-      accounts: [{ accountId: decision.accountId, healthy: true }],
-      governorState: [{
-        accountId: decision.accountId,
-        allowed: decision.allowed,
-        createdInWindow: decision.createdInWindow,
-        cap: decision.cap
-      }]
-    });
-    if (selectedAccountId !== input.accountId) {
-      throw new OrchestratorFailure("failed", input.step, input.skill, "creation_account_selection_mismatch", undefined, inventoryHash);
+    if (!reader) {
+      readFailures.push({ accountId: account.accountId, enabled: account.enabled, error: "creation_inventory_reader_missing", inventoryHash });
+      selectionAccounts.push({ accountId: account.accountId, healthy: false, enabled: account.enabled });
+      continue;
     }
+
+    let inventory: WebdockCreationInventoryResult;
+    try {
+      inventory = await reader({ accountId: account.accountId });
+    } catch (error) {
+      readFailures.push({ accountId: account.accountId, enabled: account.enabled, error, inventoryHash });
+      selectionAccounts.push({ accountId: account.accountId, healthy: false, enabled: account.enabled });
+      continue;
+    }
+
+    if (inventory.sourceKind !== "live" || inventory.responseOk !== true) {
+      readFailures.push({
+        accountId: account.accountId,
+        enabled: account.enabled,
+        error: `creation_inventory_not_live: sourceKind=${inventory.sourceKind ?? "unknown"} responseOk=${String(inventory.responseOk)}`,
+        inventoryHash
+      });
+      selectionAccounts.push({ accountId: account.accountId, healthy: false, enabled: account.enabled });
+      continue;
+    }
+
+    const decision = evaluateCreationBudget({
+      servers: inventory.servers,
+      now,
+      cap,
+      accountId: inventory.accountId ?? account.accountId,
+      window,
+      enabled
+    });
+    evaluations.push({ accountId: decision.accountId, inventory, decision, inventoryHash });
+    selectionAccounts.push({ accountId: decision.accountId, healthy: true, enabled: account.enabled });
+    governorState.push({
+      accountId: decision.accountId,
+      allowed: decision.allowed,
+      createdInWindow: decision.createdInWindow,
+      cap: decision.cap
+    });
+  }
+
+  // Ninguna cuenta live => preservar el camino de read-error de hoy (fail-open/closed). Con solo
+  // "ops" configurada, este es exactamente el handleCreationRateReadError previo (mismo inventoryHash).
+  if (evaluations.length === 0) {
+    const failure = readFailures[0] ?? {
+      accountId: DEFAULT_CREATION_ACCOUNT_ID,
+      enabled: true,
+      error: "creation_inventory_reader_missing",
+      inventoryHash: hashInput({ accountId: DEFAULT_CREATION_ACCOUNT_ID, cap, window, gate: "creation_rate_governor" })
+    };
+    await handleCreationRateReadError({
+      deps: input.deps,
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      accountId: failure.accountId,
+      cap,
+      window,
+      enabled,
+      failClosed,
+      error: failure.error,
+      inputHash: failure.inventoryHash
+    });
+    // fail-open no lanzo: no hay budget afirmable, seguimos contra la cuenta-1 como hoy.
+    return failure.accountId;
+  }
+
+  const selection = evaluateAccountSelection({ accounts: selectionAccounts, governorState });
+
+  if (selection.selectedAccountId) {
+    const winner = evaluations.find((entry) => entry.accountId === selection.selectedAccountId) ?? evaluations[0];
     void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.creation_rate_allowed", "Creation-rate governor allowed Webdock create step.", {
       runId: input.runId,
       step: input.step,
       skill: input.skill,
-      accountId: decision.accountId,
-      createdInWindow: decision.createdInWindow,
-      cap: decision.cap,
-      window: decision.window
+      accountId: winner.decision.accountId,
+      createdInWindow: winner.decision.createdInWindow,
+      cap: winner.decision.cap,
+      window: winner.decision.window
     });
-    return;
+    return winner.decision.accountId;
   }
+
+  // No hay ganador: o todas las cuentas healthy estan en cap (exhausted) o ninguna es elegible.
+  // El override humano aplica a la PRIMERA cuenta exhausta (con solo "ops" exhausta = "ops" exacto).
+  const exhausted = evaluations.find((entry) => !entry.decision.allowed) ?? evaluations[0];
+  const decision = exhausted.decision;
+  const inventory = exhausted.inventory;
+  const inventoryHash = exhausted.inventoryHash;
 
   const override = await input.deps.resolveCreationRateOverride?.({
     runId: input.runId,
@@ -3025,7 +3126,7 @@ async function ensureCreationBudgetForAccount(input: {
       reason: override.reason,
       actorId: override.actorId
     });
-    return;
+    return decision.accountId;
   }
 
   const message = decision.failure?.message ?? `creation_rate_exceeded: created_24h=${decision.createdInWindow} cap=${decision.cap} account=${decision.accountId}`;
@@ -3040,7 +3141,7 @@ async function ensureCreationBudgetForAccount(input: {
     createdInWindow: decision.createdInWindow,
     cap: decision.cap,
     window: decision.window,
-    reason: decision.reason
+    reason: selection.reason === "creation_rate_exceeded_all_accounts" ? decision.reason : selection.reason
   });
   await safeEmit(input.deps, {
     type: "oc.action.now",
@@ -3058,7 +3159,7 @@ async function ensureCreationBudgetForAccount(input: {
       createdInWindow: decision.createdInWindow,
       cap: decision.cap,
       window: decision.window,
-      reason: decision.reason
+      reason: selection.reason === "creation_rate_exceeded_all_accounts" ? decision.reason : selection.reason
     },
     occurredAt: (input.deps.now?.() ?? new Date()).toISOString()
   } as CanvasLiveEvent);
@@ -3072,6 +3173,23 @@ async function ensureCreationBudgetForAccount(input: {
     window: decision.window
   });
   throw new OrchestratorFailure("failed", input.step, input.skill, message, undefined, inventoryHash);
+}
+
+/**
+ * Cuentas write-capable a evaluar en el selector. Sin la dep multicuenta (o si devuelve vacio),
+ * cae al unico candidato "ops" de hoy -> el loop corre 1 iteracion y todo queda byte-identico.
+ */
+async function resolveWriteCapableCreationAccounts(
+  deps: ConfigureCompleteSmtpDeps
+): Promise<WebdockCreationAccount[]> {
+  if (!deps.listCreationAccounts) {
+    return [{ accountId: DEFAULT_CREATION_ACCOUNT_ID, enabled: true }];
+  }
+  const accounts = await deps.listCreationAccounts();
+  const normalized = accounts
+    .map((account) => ({ accountId: account.accountId.trim(), enabled: account.enabled }))
+    .filter((account) => account.accountId.length > 0);
+  return normalized.length > 0 ? normalized : [{ accountId: DEFAULT_CREATION_ACCOUNT_ID, enabled: true }];
 }
 
 async function handleCreationRateReadError(input: {

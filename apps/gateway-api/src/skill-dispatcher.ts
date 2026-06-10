@@ -23,7 +23,8 @@ import {
 } from "./routes/dns-ionos-upsert.ts";
 import {
   handleWebdockServerCreateHttp,
-  type WebdockServerCreateAdapter
+  type WebdockServerCreateAdapter,
+  type WebdockServerDeleteAdapter
 } from "./routes/webdock-servers.ts";
 import {
   bindWebdockMainDomainSkillParamSchema,
@@ -110,6 +111,13 @@ export interface SkillDispatcherDeps {
   route53DnsAdapter: Route53DnsAdapter & EmailAuthDnsAdapter;
   ionosDnsAdapter: IonosDnsUpsertAdapter;
   webdockAdapter: WebdockServerCreateAdapter & Partial<BindWebdockMainDomainAdapter>;
+  /**
+   * Registry id->adapter para crear/borrar en N cuentas Webdock (5.12 multicuenta).
+   * Solo cuentas write-capable (canCreate()===true). La resolucion del accountId pedido
+   * cae al webdockAdapter (cuenta-1 "ops") cuando el accountId es undefined, "ops", o no
+   * esta en el registry, para preservar el comportamiento single-account byte-identico.
+   */
+  webdockCreateAdapters?: Map<string, WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter>>;
   smtpSshRunner: SmtpSshRunner;
   rampScheduler: RampScheduler;
   porkbunDomainAdapter?: DomainAvailabilityAdapter;
@@ -133,6 +141,12 @@ export interface DispatchSkillHandlerInput {
   actorId: string;
   approvalToken: ApprovalToken;
   timeoutMs?: number;
+  /**
+   * Cuenta Webdock destino para create/delete (5.12 multicuenta). Canal PARALELO:
+   * NO entra a `params` (no toca el hashInput/idempotencia del orquestador). undefined
+   * o "ops" => cuenta-1 (webdockAdapter), byte-identico al comportamiento de hoy.
+   */
+  accountId?: string;
   deps?: SkillDispatcherDeps;
   handlers?: Record<string, SkillHandlerEntry>;
 }
@@ -158,6 +172,7 @@ export interface SkillHandlerEntry {
     response: ServerResponse;
     params: Record<string, unknown>;
     deps: SkillDispatcherDeps;
+    accountId?: string;
   }): Promise<void>;
 }
 
@@ -226,6 +241,7 @@ export async function dispatchSkillHandler(input: DispatchSkillHandlerInput): Pr
     response,
     params: paramsValidation.data,
     deps: input.deps,
+    accountId: input.accountId,
     getResponse,
     startedAt
   });
@@ -257,6 +273,7 @@ async function invokeAndCapture(entry: SkillHandlerEntry, input: {
   response: ServerResponse;
   params: Record<string, unknown>;
   deps: SkillDispatcherDeps;
+  accountId?: string;
   getResponse: () => { statusCode: number; body: unknown };
   startedAt: number;
 }): Promise<DispatchResult> {
@@ -265,7 +282,8 @@ async function invokeAndCapture(entry: SkillHandlerEntry, input: {
       request: input.request,
       response: input.response,
       params: input.params,
-      deps: input.deps
+      deps: input.deps,
+      accountId: input.accountId
     });
     const captured = input.getResponse();
     return {
@@ -370,12 +388,12 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     paramSchema: webdockCreateParamSchema,
     timeoutMs: 120_000,
     canRollback: false,
-    invoke: ({ request, response, deps }) =>
+    invoke: ({ request, response, deps, accountId }) =>
       handleWebdockServerCreateHttp({
         request,
         response,
         auditLog: deps.auditLog,
-        adapter: deps.webdockAdapter,
+        adapter: resolveWebdockCreateAdapter(deps, accountId),
         workspace: deps.workspace,
         canvasLiveEvents: deps.canvasLiveEvents,
         readCanvasState: deps.readCanvasState,
@@ -602,6 +620,23 @@ function requiredPorkbunDomainAdapter(deps: SkillDispatcherDeps): DomainAvailabi
     throw new Error("porkbun_domain_adapter_missing");
   }
   return deps.porkbunDomainAdapter;
+}
+
+/**
+ * Resuelve el adapter Webdock de create/delete para el accountId pedido (5.12 multicuenta).
+ * Invariante single-account byte-identico: accountId undefined o "ops" => el webdockAdapter
+ * de hoy (cuenta-1), tal cual. Solo un accountId distinto presente en el registry write-capable
+ * enruta a otra cuenta; cualquier accountId desconocido cae tambien a la cuenta-1 (defensivo).
+ */
+function resolveWebdockCreateAdapter(
+  deps: SkillDispatcherDeps,
+  accountId: string | undefined
+): WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter> {
+  const normalized = accountId?.trim();
+  if (!normalized || normalized === "ops" || !deps.webdockCreateAdapters) {
+    return deps.webdockAdapter;
+  }
+  return deps.webdockCreateAdapters.get(normalized) ?? deps.webdockAdapter;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
