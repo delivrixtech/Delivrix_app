@@ -274,8 +274,14 @@ export async function checkSpamhausDBL(domain: string): Promise<"clean" | "liste
 
 function parseSuggestSafeDomainParams(value: unknown): SuggestSafeDomainParams {
   const input = object(value);
-  const brand = requiredString(input.brand, "brand");
-  if (brand.length < 2 || brand.length > 40 || !/^[a-z0-9]+$/.test(brand)) {
+  // El brand es un concepto de marca (lo escribe un humano o el agente), no un
+  // identificador estricto. Se normaliza a [a-z0-9] -- minusculas, sin guiones,
+  // espacios ni puntuacion -- para construir dominios limpios sin que un guion
+  // (p.ej. "corpfiling-infra") tumbe el flujo entero con un HTTP 400. El dominio
+  // final NO se deriva del brand (viene del scope firmado del plan), asi que
+  // normalizar aqui es seguro: no cambia que dominio se registra.
+  const brand = requiredString(input.brand, "brand").toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (brand.length < 2 || brand.length > 40) {
     throw fieldError("brand", "brand_must_be_lowercase_alphanumeric");
   }
 
