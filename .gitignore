@@ -28,3 +28,7 @@ clonado/
 
 # Repo git embebido sin checkout (rompe git add -A)
 DOCUMENTACION/skills/external/_emil_tmp/
+
+# Env canonico del gateway (blindado contra Vercel CLI que pisa .env.local)
+config/gateway.env
+config/*.env
