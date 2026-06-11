@@ -329,6 +329,8 @@ const minEstimatedCostUsd = 15 + 4.30 / 30;
 const smtpRunStateVersion = "smtp-run-state/v1";
 const smtpRunStateLockLeaseMs = 40 * 60 * 1000;
 const smtpRunStepLeaseMs = 45 * 60 * 1000;
+/** Tope de cuentas a probar en el failover de pago del create (step 4). Cubre las write-capable. */
+const smtpCreateAccountFailoverMaxAttempts = 6;
 const route53DomainRegistrationWaitMaxMs = 1_800_000;
 const route53DomainRegistrationWaitPollMs = 30_000;
 const smtpRunLocalLocks = new Map<string, Promise<void>>();
@@ -670,41 +672,85 @@ export async function configureCompleteSmtp(
     // (re-seleccionar podria elegir otra cuenta distinta a donde ya vive el server -> huerfano);
     // en un run fresco seleccionamos entre las cuentas write-capable. Con solo la cuenta-1 el
     // ganador es "ops" y el comportamiento (lecturas, audits, governor) es byte-identico al de hoy.
-    const serverAccountId = runState.serverAccountId
-      ?? await resolveCreationAccount({
-        deps,
-        runId,
-        step: 4,
-        skill: "create_webdock_server"
-      });
-    // Persistir la cuenta ANTES del create: si el create corre y luego el proceso muere, un resume
-    // (cuya firma es POSTERIOR) debe enrutar rollback/delete a ESTA cuenta. Va por estado, no closure.
-    runState.serverAccountId = serverAccountId;
-    await persistSmtpRunState(deps, runState);
-
-    const vps = await runMutatingStepWithState({
-      deps,
-      runState,
-      planApproval,
-      runId,
-      step: 4,
-      skill: "create_webdock_server",
-      actorId: effectiveInput.actorId,
-      approvalTimeoutMs,
-      estimatedCostUsd: 4.30 / 30,
-      budgetUsdMax: effectiveInput.budgetUsdMax,
-      // accountId NO entra a params (idempotencia/resume + el allowlist del schema lo descartaria):
-      // viaja por el canal paralelo serverAccountId.
-      params: {
-        runId,
-        profile: "bit",
-        locationId: "dk",
-        hostname: smtpHost,
-        imageSlug: "ubuntu-2404"
-      },
-      serverAccountId,
-      stepResults
-    });
+    // FAILOVER de pago multicuenta (2026-06-11). El governor elige la mejor cuenta write-capable; si
+    // el create rechaza el PAGO (webdock_payment_failed, recoverable), se excluye esa cuenta y se
+    // reintenta en la siguiente, hasta crear o agotarlas. El accountId va por canal paralelo (no
+    // re-firma el plan). En RESUME el primer intento reusa la cuenta ya persistida (donde podria vivir
+    // el server); con solo "ops" write-capable es identico al de hoy (1 iteracion, byte-identico).
+    const excludedFailoverAccounts = new Set<string>();
+    let vps: ConfigureCompleteSmtpStepResult | undefined;
+    let lastCreateFailure: unknown;
+    for (let attempt = 0; attempt < smtpCreateAccountFailoverMaxAttempts; attempt++) {
+      const reuseAccountId = attempt === 0
+        && runState.serverAccountId
+        && !excludedFailoverAccounts.has(runState.serverAccountId)
+        ? runState.serverAccountId
+        : undefined;
+      const serverAccountId = reuseAccountId
+        ?? await resolveCreationAccount({
+          deps,
+          runId,
+          step: 4,
+          skill: "create_webdock_server",
+          excludeAccounts: excludedFailoverAccounts
+        });
+      if (!serverAccountId || excludedFailoverAccounts.has(serverAccountId)) {
+        break; // no quedan cuentas write-capable con las que reintentar
+      }
+      // Persistir la cuenta ANTES del create: si el create corre y el proceso muere, un resume
+      // (firma POSTERIOR) enruta rollback/delete a ESTA cuenta. Va por estado, no closure.
+      runState.serverAccountId = serverAccountId;
+      await persistSmtpRunState(deps, runState);
+      try {
+        vps = await runMutatingStepWithState({
+          deps,
+          runState,
+          planApproval,
+          runId,
+          step: 4,
+          skill: "create_webdock_server",
+          actorId: effectiveInput.actorId,
+          approvalTimeoutMs,
+          estimatedCostUsd: 4.30 / 30,
+          budgetUsdMax: effectiveInput.budgetUsdMax,
+          // accountId NO entra a params (idempotencia/resume + el allowlist del schema lo descartaria):
+          // viaja por el canal paralelo serverAccountId.
+          params: {
+            runId,
+            profile: "bit",
+            locationId: "dk",
+            hostname: smtpHost,
+            imageSlug: "ubuntu-2404"
+          },
+          serverAccountId,
+          stepResults
+        });
+        break; // VPS creado
+      } catch (createError) {
+        const createFailure = normalizeFailure(createError);
+        if (!isRecoverablePaymentFailure(createFailure, stepResults[stepResults.length - 1])) {
+          throw createError; // no es un rechazo de pago -> propagar (no failover a ciegas)
+        }
+        // La cuenta rechazo el pago: excluirla, liberar su lease del step 4 y probar la siguiente.
+        excludedFailoverAccounts.add(serverAccountId);
+        lastCreateFailure = createError;
+        releaseRunStepLeaseOnFailure(runState, 4, createFailure.message, deps.now?.() ?? new Date());
+        runState.serverAccountId = undefined;
+        await persistSmtpRunState(deps, runState);
+        await audit(deps, "oc.orchestrator.account_payment_failover", "webdock_account", serverAccountId, "high", {
+          runId,
+          step: 4,
+          skill: "create_webdock_server",
+          rejectedAccount: serverAccountId,
+          excludedCount: excludedFailoverAccounts.size,
+          reason: createFailure.message.slice(0, 200)
+        });
+      }
+    }
+    if (!vps) {
+      throw lastCreateFailure
+        ?? new OrchestratorFailure("failed", 4, "create_webdock_server", "all_write_accounts_payment_failed");
+    }
     serverSlug = stringFromOutcome(vps.outcome, ["slug", "serverSlug"]);
     serverIpv4 = stringFromOutcome(vps.outcome, ["ipv4", "serverIp"]);
     runState.serverSlug = serverSlug;
@@ -1774,6 +1820,25 @@ function releaseRunStepLeaseOnFailure(
     updatedAt: now.toISOString()
   };
   return true;
+}
+
+/**
+ * Detecta si un fallo del create de VPS fue un RECHAZO DE PAGO recuperable (webdock_payment_failed),
+ * para disparar el failover a otra cuenta. Mira el failureCode/error del outcome del step y, como
+ * respaldo, el mensaje del fallo. NO dispara failover para otros errores (red, validacion, etc).
+ */
+function isRecoverablePaymentFailure(
+  failure: { message: string },
+  lastResult: ConfigureCompleteSmtpStepResult | undefined
+): boolean {
+  const paymentPattern = /payment failed|payment method|service credit|enough credit|webdock_payment_failed/i;
+  const outcome = lastResult?.outcome;
+  if (outcome && typeof outcome === "object" && !Array.isArray(outcome)) {
+    const record = outcome as Record<string, unknown>;
+    if (record.failureCode === "webdock_payment_failed") return true;
+    if (typeof record.error === "string" && paymentPattern.test(record.error)) return true;
+  }
+  return paymentPattern.test(failure.message ?? "");
 }
 
 async function runReadOnlyStep(input: {
@@ -3043,6 +3108,8 @@ async function resolveCreationAccount(input: {
   runId: string;
   step: 4;
   skill: "create_webdock_server";
+  /** Cuentas a EXCLUIR (ya rechazaron el pago en este run): el failover prueba las demas. */
+  excludeAccounts?: ReadonlySet<string>;
 }): Promise<string> {
   const enabled = !envFlagDisabled(input.deps.env?.CREATION_RATE_GOVERNOR_ENABLE);
   if (!enabled) {
@@ -3056,7 +3123,14 @@ async function resolveCreationAccount(input: {
 
   // Cuentas write-capable a evaluar. Sin la dep multicuenta (o vacia) => single-account "ops"
   // de hoy (1 iteracion, byte-identico). De-dup ya viene resuelto por el productor (1 por cuenta).
-  const accounts = await resolveWriteCapableCreationAccounts(input.deps);
+  const allWriteCapable = await resolveWriteCapableCreationAccounts(input.deps);
+  const accounts = input.excludeAccounts && input.excludeAccounts.size > 0
+    ? allWriteCapable.filter((account) => !input.excludeAccounts!.has(account.accountId))
+    : allWriteCapable;
+  // Todas las write-capable ya excluidas por el failover: sin candidato -> "" (el step 4 corta el loop).
+  if (accounts.length === 0) {
+    return "";
+  }
 
   const reader = input.deps.listWebdockCreationServers;
   const evaluations: CreationAccountEvaluation[] = [];
