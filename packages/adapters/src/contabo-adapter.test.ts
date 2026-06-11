@@ -597,3 +597,52 @@ test("createContaboAdaptersFromEnv: honors CONTABO_REGION/PRODUCT_ID overrides i
   assert.equal(sent.region, "US-west");
   assert.equal(sent.productId, "V48");
 });
+
+// --- adapter nits (P2 #7) --------------------------------------------------
+
+test("mapContaboStatus: maps 'pending_payment' (real enum, underscore) to provisioning", async () => {
+  // El enum real de Contabo es pending_payment (underscore); antes el case era 'pendingpayment' (sin
+  // underscore) y nunca matcheaba -> caia al default. getServer debe mapearlo a 'provisioning'.
+  installFetch([
+    tokenRoute(),
+    {
+      match: (url, m) => url.includes("/v1/compute/instances/77") && m === "GET",
+      respond: () => Response.json({ data: [{ instanceId: 77, status: "pending_payment" }] })
+    }
+  ]);
+  const adapter = new ContaboAdapter(baseConfig);
+  const server = await adapter.getServer("contabo-77");
+  assert.equal(server.status, "provisioning");
+});
+
+test("token error path: redacts access_token/refresh_token before truncateRaw (no token leak)", async () => {
+  // El cuerpo del token-grant trae refresh_token (y aqui un access_token no-string que dispara el error).
+  // El metadata de error NO debe contener el valor del refresh_token ni el access_token.
+  installFetch([
+    {
+      match: (url) => url.includes("/openid-connect/token"),
+      respond: () =>
+        Response.json({
+          access_token: 12345, // no-string => dispara contabo_token_missing_access_token
+          refresh_token: "SUPER_SECRET_REFRESH_VALUE",
+          id_token: "SUPER_SECRET_ID_VALUE",
+          error_description: "kept"
+        })
+    }
+  ]);
+  const adapter = new ContaboAdapter(baseConfig);
+  // getServer SI propaga el error de token (listServers lo tragaria en un source non-live).
+  let captured: ContaboAdapterError | undefined;
+  try {
+    await adapter.getServer("contabo-1");
+  } catch (error) {
+    captured = error as ContaboAdapterError;
+  }
+  assert.ok(captured instanceof ContaboAdapterError, "throws a ContaboAdapterError");
+  assert.equal(captured.code, "contabo_token_missing_access_token");
+  const rawStr = JSON.stringify(captured.metadata ?? {});
+  assert.doesNotMatch(rawStr, /SUPER_SECRET_REFRESH_VALUE/, "refresh_token value must be redacted");
+  assert.doesNotMatch(rawStr, /SUPER_SECRET_ID_VALUE/, "id_token value must be redacted");
+  assert.match(rawStr, /\[redacted\]/, "sensitive fields replaced with [redacted]");
+  assert.match(rawStr, /kept/, "non-sensitive fields are preserved");
+});

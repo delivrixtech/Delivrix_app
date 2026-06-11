@@ -518,9 +518,12 @@ export class ContaboAdapter implements VpsProvider {
     const accessToken =
       typeof raw.access_token === "string" ? raw.access_token : undefined;
     if (!accessToken) {
+      // El cuerpo del token-grant puede traer access_token/refresh_token (incluso parcialmente,
+      // p.ej. sin access_token pero con refresh_token). Redactarlos ANTES de truncateRaw para que
+      // ningun token se filtre a metadata de error/logs/audit.
       throw new ContaboAdapterError("contabo_token_missing_access_token", {
         recoverable: false,
-        metadata: { raw: truncateRaw(raw) }
+        metadata: { raw: truncateRaw(redactTokenFields(raw)) }
       });
     }
     const expiresInSec =
@@ -728,7 +731,7 @@ function mapContaboStatus(status: string | undefined): WebdockServerStatus {
       return "stopped";
     case "provisioning":
     case "installing":
-    case "pendingpayment":
+    case "pending_payment":
     case "manual_provisioning":
       return "provisioning";
     case "rescue":
@@ -874,6 +877,20 @@ function truncateRaw(raw: unknown): string {
   } catch {
     return "[unserializable]";
   }
+}
+
+/**
+ * Reemplaza cualquier campo de token sensible (access_token/refresh_token/id_token) por "[redacted]"
+ * antes de serializar a metadata de error. Devuelve una COPIA superficial; no muta el original.
+ * Solo aplica al cuerpo del token-grant de Keycloak, que es el unico raw que puede traer tokens.
+ */
+function redactTokenFields(raw: Record<string, unknown>): Record<string, unknown> {
+  const sensitive = new Set(["access_token", "refresh_token", "id_token"]);
+  const redacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    redacted[key] = sensitive.has(key) ? "[redacted]" : value;
+  }
+  return redacted;
 }
 
 function normalizePublicKey(value: string): string {

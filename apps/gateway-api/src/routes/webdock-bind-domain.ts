@@ -1,6 +1,7 @@
 import { promises as dns } from "node:dns";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
+  VpsProvider,
   WebdockServer,
   WebdockSetServerIdentityResult,
   WebdockSetServerMainDomainResult,
@@ -107,6 +108,12 @@ export interface BindWebdockMainDomainDeps {
   auditLog: AuditSink;
   approvalGuard: BindWebdockMainDomainApprovalGuard;
   webdockAdapter: BindWebdockMainDomainAdapter;
+  /**
+   * Registry providerId->adapter de proveedores NO-Webdock (Contabo, etc.). Canal HERMANO de
+   * webdockAdapter: SOLO se consulta cuando el providerId del bind es no-Webdock y esta presente aqui
+   * (-> CONTABO BIND PATH). Ausente/"webdock"/desconocido => bind Webdock (setServerIdentity) sin cambios.
+   */
+  vpsProviderAdapters?: Map<string, VpsProvider>;
   sshRunner?: WebdockSshRunner;
   workspace?: OpenClawWorkspace;
   now: () => number;
@@ -179,6 +186,7 @@ export const bindWebdockMainDomainSkillParamSchema: SkillParamSchema<BindWebdock
 export async function handleBindWebdockMainDomain(input: {
   request: IncomingMessage;
   response: ServerResponse;
+  providerId?: string;
   deps: BindWebdockMainDomainDeps;
 }): Promise<void> {
   const startedAt = input.deps.now();
@@ -196,6 +204,27 @@ export async function handleBindWebdockMainDomain(input: {
   if (!approval.ok) {
     json(input.response, 403, { error: "approval_invalid" });
     return;
+  }
+
+  // CONTABO BIND PATH (canal HERMANO providerId): cuando el run pidio un proveedor NO-Webdock presente
+  // en el registry, el server vive en ESE proveedor (slug contabo-<id>) y la API Webdock daria 404. Se
+  // toma el camino del proveedor (getServer del adapter + hostname por SSH + PTR manual + FCrDNS reusado),
+  // ANTES de cualquier llamada a la API Webdock. Ausente/"webdock"/desconocido => bind Webdock unchanged.
+  const normalizedProviderId = input.providerId?.trim().toLowerCase();
+  if (normalizedProviderId && normalizedProviderId !== "webdock") {
+    const providerAdapter = input.deps.vpsProviderAdapters?.get(normalizedProviderId);
+    if (providerAdapter) {
+      await bindNonWebdockMainDomain({
+        response: input.response,
+        deps: input.deps,
+        adapter: providerAdapter,
+        providerId: normalizedProviderId,
+        params,
+        approval,
+        startedAt
+      });
+      return;
+    }
   }
 
   let server: WebdockServer;
@@ -436,6 +465,328 @@ export async function handleBindWebdockMainDomain(input: {
     eventId: eventId(alignedEvent),
     durationMs: input.deps.now() - startedAt
   } satisfies BindWebdockMainDomainResult);
+}
+
+/**
+ * CONTABO BIND PATH (proveedor NO-Webdock). Espejo funcional del bind Webdock pero:
+ *  - Resuelve el server por el adapter del PROVEEDOR (getServer del VpsProvider), NO la API Webdock.
+ *  - Setea el HOSTNAME a smtp.<domain> por SSH (Contabo NO tiene identity API), con el MISMO runner y
+ *    key de operador que usa el provisioning (step 9). Mirror de WebdockRealAdapter.setServerHostnameViaSsh.
+ *  - Emite oc.bind.contabo_manual_ptr_required con IP + PTR objetivo: el rDNS Contabo es panel-only, el
+ *    operador lo setea a mano. El FCrDNS verify (reusado tal cual) gatea hasta que el PTR propague.
+ *  - Si FCrDNS no verifica (operador aun no puso el PTR), termina 424 pending/reintentable (NO pasa en
+ *    silencio): un re-run despues de setear el PTR completa el step.
+ * Devuelve el MISMO BindWebdockMainDomainResult para que los steps 9-14 sigan sin cambios.
+ */
+async function bindNonWebdockMainDomain(input: {
+  response: ServerResponse;
+  deps: BindWebdockMainDomainDeps;
+  adapter: VpsProvider;
+  providerId: string;
+  params: BindWebdockMainDomainParams;
+  approval: { ok: boolean; eventId?: string; artifactId?: string };
+  startedAt: number;
+}): Promise<void> {
+  const { response, deps, adapter, providerId, params, approval, startedAt } = input;
+  const identityDomain = smtpHostForDomain(params.domain);
+
+  // FCrDNS es obligatorio para SMTP (igual que Webdock): setPtr=false no se permite.
+  if (!params.setPtr) {
+    json(response, 422, {
+      error: "fcrdns_required",
+      message: `${providerId} SMTP identity requires FCrDNS verification; setPtr=false is not allowed for SMTP provisioning.`
+    });
+    return;
+  }
+
+  // Resolver el server en el PROVEEDOR (no Webdock). 404 si el adapter no lo encuentra.
+  let server: WebdockServer;
+  try {
+    server = await adapter.getServer(params.serverSlug);
+  } catch {
+    json(response, 404, { error: "server_not_found", slug: params.serverSlug });
+    return;
+  }
+
+  const currentMainDomain = currentIdentityDomainFromServer(server);
+  const alreadyBound = currentMainDomain === identityDomain;
+
+  // Sin IPv4 todavia (provisioning incompleto): no se puede SSH ni verificar FCrDNS. Pending/reintentable.
+  if (!server.ipv4) {
+    const event = await deps.auditLog.append({
+      actorType: "operator",
+      actorId: params.actorId,
+      action: "oc.bind.contabo_identity_pending_fcrdns",
+      targetType: "webdock_server",
+      targetId: params.serverSlug,
+      riskLevel: "critical",
+      decision: "reject",
+      humanApproved: true,
+      approverIds: [params.actorId],
+      metadata: {
+        provider: providerId,
+        serverSlug: params.serverSlug,
+        domain: params.domain,
+        identityDomain,
+        ptrSet: false,
+        ptrSkipReason: "ipv4_missing",
+        approvalEventId: approval.eventId ?? null,
+        approvalArtifactId: approval.artifactId ?? null
+      }
+    });
+    await upsertDomainBinding(deps.workspace, {
+      domain: params.domain,
+      serverSlug: params.serverSlug,
+      serverIp: "",
+      status: "identity_pending_fcrdns"
+    });
+    json(response, 424, {
+      ok: false,
+      serverSlug: params.serverSlug,
+      mainDomain: identityDomain,
+      previousMainDomain: currentMainDomain,
+      identitySet: false,
+      ptrSet: false,
+      ptrSkipReason: "ipv4_missing",
+      fcrdnsVerified: false,
+      fcrdnsStatus: "pending",
+      alreadyBound,
+      eventId: eventId(event),
+      durationMs: deps.now() - startedAt,
+      error: "ipv4_missing"
+    } satisfies BindWebdockMainDomainResult);
+    return;
+  }
+
+  // Setear el hostname a la FQDN por SSH (Contabo no tiene identity API). Mismo runner+key del provisioning.
+  let identitySet = false;
+  if (!alreadyBound) {
+    try {
+      await setHostnameViaSsh({
+        sshRunner: deps.sshRunner,
+        serverIp: server.ipv4,
+        fqdn: identityDomain
+      });
+      identitySet = true;
+    } catch (error) {
+      await deps.auditLog.append({
+        actorType: "operator",
+        actorId: params.actorId,
+        action: "oc.bind.contabo_hostname_set_failed",
+        targetType: "webdock_server",
+        targetId: params.serverSlug,
+        riskLevel: "critical",
+        decision: "reject",
+        humanApproved: true,
+        approverIds: [params.actorId],
+        metadata: {
+          provider: providerId,
+          serverSlug: params.serverSlug,
+          domain: params.domain,
+          identityDomain,
+          serverIp: server.ipv4,
+          error: errorMessage(error)
+        }
+      });
+      json(response, 502, { error: "identity_set_failed", details: errorMessage(error) });
+      return;
+    }
+  }
+
+  // PTR MANUAL: el rDNS Contabo es panel-only (no API). Instruccion CLARA al operador via audit, con la
+  // IP exacta y el PTR objetivo. El FCrDNS verify de abajo gatea hasta que el operador lo setee y propague.
+  await deps.auditLog.append({
+    actorType: "operator",
+    actorId: params.actorId,
+    action: "oc.bind.contabo_manual_ptr_required",
+    targetType: "webdock_server",
+    targetId: params.serverSlug,
+    riskLevel: "high",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: [params.actorId],
+    metadata: {
+      provider: providerId,
+      serverSlug: params.serverSlug,
+      serverIp: server.ipv4,
+      targetPtr: identityDomain,
+      instruction: `Set rDNS/PTR for ${server.ipv4} to ${identityDomain} in the ${providerId} panel (no API). FCrDNS gates SMTP until it propagates.`,
+      approvalEventId: approval.eventId ?? null,
+      approvalArtifactId: approval.artifactId ?? null
+    }
+  });
+
+  // FCrDNS verify REUSADO tal cual: dig -x IP == smtp.<domain> AND smtp.<domain> -> IP, con retry.
+  const fcrdns = await verifyFcrdnsWithRetry({
+    resolver: deps.fcrdnsResolver ?? defaultFcrdnsResolver,
+    smtpHost: identityDomain,
+    ipv4: server.ipv4,
+    maxWaitMs: deps.fcrdnsMaxWaitMs ?? 900_000,
+    pollIntervalMs: deps.fcrdnsPollIntervalMs ?? 10_000,
+    sleep: deps.sleep ?? sleep
+  });
+
+  if (!fcrdns.verified) {
+    // PTR aun no propagado (operador no lo puso, o DNS no convergio): pending/reintentable, NO success.
+    const event = await deps.auditLog.append({
+      actorType: "operator",
+      actorId: params.actorId,
+      action: "oc.bind.contabo_identity_pending_fcrdns",
+      targetType: "webdock_server",
+      targetId: params.serverSlug,
+      riskLevel: "critical",
+      decision: "reject",
+      humanApproved: true,
+      approverIds: [params.actorId],
+      metadata: {
+        provider: providerId,
+        serverSlug: params.serverSlug,
+        domain: params.domain,
+        identityDomain,
+        previousMainDomain: currentMainDomain,
+        identitySet,
+        ptrSet: false,
+        ptrSkipReason: "fcrdns_pending",
+        fcrdns,
+        alreadyBound,
+        approvalEventId: approval.eventId ?? null,
+        approvalArtifactId: approval.artifactId ?? null
+      }
+    });
+    await upsertDomainBinding(deps.workspace, {
+      domain: params.domain,
+      serverSlug: params.serverSlug,
+      serverIp: server.ipv4,
+      status: "identity_pending_fcrdns"
+    });
+    json(response, 424, {
+      ok: false,
+      serverSlug: params.serverSlug,
+      mainDomain: identityDomain,
+      previousMainDomain: currentMainDomain,
+      identitySet,
+      ptrSet: false,
+      ptrSkipReason: "fcrdns_pending",
+      fcrdnsVerified: false,
+      fcrdnsStatus: "pending",
+      fcrdns: fcrdnsSnapshot(fcrdns),
+      alreadyBound,
+      eventId: eventId(event),
+      durationMs: deps.now() - startedAt,
+      error: "fcrdns_pending"
+    } satisfies BindWebdockMainDomainResult);
+    return;
+  }
+
+  const alignedEvent = await deps.auditLog.append({
+    actorType: "operator",
+    actorId: params.actorId,
+    action: "oc.bind.contabo_identity_aligned",
+    targetType: "webdock_server",
+    targetId: params.serverSlug,
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: [params.actorId],
+    metadata: {
+      provider: providerId,
+      serverSlug: params.serverSlug,
+      domain: params.domain,
+      previousMainDomain: currentMainDomain,
+      newMainDomain: identityDomain,
+      identitySet,
+      ptrSet: true,
+      fcrdns,
+      alreadyBound,
+      approvalEventId: approval.eventId ?? null,
+      approvalArtifactId: approval.artifactId ?? null
+    }
+  });
+  await upsertDomainBinding(deps.workspace, {
+    domain: params.domain,
+    serverSlug: params.serverSlug,
+    serverIp: server.ipv4 || "",
+    status: "main_domain_bound"
+  });
+
+  json(response, 200, {
+    ok: true,
+    serverSlug: params.serverSlug,
+    mainDomain: identityDomain,
+    previousMainDomain: currentMainDomain,
+    identitySet,
+    ptrSet: true,
+    fcrdnsVerified: true,
+    fcrdnsStatus: "verified",
+    fcrdns: fcrdnsSnapshot(fcrdns),
+    alreadyBound,
+    eventId: eventId(alignedEvent),
+    durationMs: deps.now() - startedAt
+  } satisfies BindWebdockMainDomainResult);
+}
+
+/**
+ * Setea el hostname del server a la FQDN por SSH: `hostnamectl set-hostname <fqdn>` + actualiza la linea
+ * 127.0.1.1 de /etc/hosts. Mirror del intent de WebdockRealAdapter.setServerHostnameViaSsh (idempotente:
+ * si el hostname ya es la FQDN, no-op). El runner es el mismo operador-key del provisioning.
+ */
+async function setHostnameViaSsh(input: {
+  sshRunner?: WebdockSshRunner;
+  serverIp: string;
+  fqdn: string;
+}): Promise<void> {
+  const runner = input.sshRunner;
+  if (!runner || (runner.isConfigured && !runner.isConfigured())) {
+    throw new BindWebdockMainDomainInputError("ssh_runner_missing");
+  }
+
+  const previous = await runner.run({
+    serverIp: input.serverIp,
+    command: "hostname",
+    timeoutMs: 15_000
+  });
+  if (previous.exitCode !== 0) {
+    throw new BindWebdockMainDomainInputError("hostname_read_failed");
+  }
+  const previousHostname = lastNonEmptyLine(previous.stdout);
+  if (previousHostname === input.fqdn) {
+    return; // ya alineado: idempotente.
+  }
+
+  const domainArg = shellSingleQuote(input.fqdn);
+  const script = [
+    "set -euo pipefail",
+    `domain=${domainArg}`,
+    "sudo hostnamectl set-hostname \"$domain\"",
+    "if grep -qE '^127\\.0\\.1\\.1[[:space:]]+' /etc/hosts; then",
+    "  sudo sed -i.bak -E \"s/^127\\.0\\.1\\.1[[:space:]].*/127.0.1.1 $domain/\" /etc/hosts",
+    "else",
+    "  printf '127.0.1.1 %s\\n' \"$domain\" | sudo tee -a /etc/hosts >/dev/null",
+    "fi",
+    "hostname"
+  ].join("\n");
+  const result = await runner.run({
+    serverIp: input.serverIp,
+    command: script,
+    timeoutMs: 30_000
+  });
+  const hostnameAfter = lastNonEmptyLine(result.stdout);
+  if (result.exitCode !== 0 || hostnameAfter !== input.fqdn) {
+    throw new BindWebdockMainDomainInputError("hostname_set_failed");
+  }
+}
+
+function lastNonEmptyLine(value: string): string {
+  const lines = value.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const trimmed = lines[i].trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return "";
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export function createBindWebdockMainDomainApprovalGuard(input: {
