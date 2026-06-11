@@ -815,8 +815,8 @@ const skillDispatcher = createSkillDispatcher({
   ionosDnsAdapter,
   webdockAdapter: webdockOpsAdapter,
   webdockCreateAdapters,
-  // Registry providerId->adapter (canal HERMANO). VACIO en esta fase: el seam queda cableado pero
-  // ningun providerId != "webdock" resuelve -> camino Webdock byte-identico. Phase 3 lo puebla.
+  // Registry providerId->adapter (canal HERMANO). Poblado desde env (createContaboAdaptersFromEnv);
+  // vacio si no hay creds Contabo -> ningun providerId != "webdock" resuelve -> camino Webdock byte-identico.
   vpsProviderAdapters,
   smtpSshRunner,
   rampScheduler,

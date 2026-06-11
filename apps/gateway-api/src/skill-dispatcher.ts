@@ -424,10 +424,14 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     paramSchema: bindWebdockMainDomainSkillParamSchema,
     timeoutMs: 120_000,
     canRollback: true,
-    invoke: ({ request, response, deps }) =>
+    // providerId (canal HERMANO) viaja por invoke -> el handler elige CONTABO BIND PATH (hostname por
+    // SSH + PTR manual + FCrDNS) cuando es un proveedor no-Webdock presente en vpsProviderAdapters;
+    // undefined/"webdock"/desconocido => bind Webdock (setServerIdentity) byte-identico.
+    invoke: ({ request, response, deps, providerId }) =>
       handleBindWebdockMainDomain({
         request,
         response,
+        providerId,
         deps: {
           auditLog: deps.auditLog,
           approvalGuard: createBindWebdockMainDomainApprovalGuard({
@@ -436,6 +440,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
             now: deps.now
           }),
           webdockAdapter: deps.webdockAdapter as BindWebdockMainDomainAdapter,
+          vpsProviderAdapters: deps.vpsProviderAdapters,
           sshRunner: deps.smtpSshRunner,
           workspace: deps.workspace,
           now: () => (deps.now?.() ?? new Date()).getTime()
@@ -658,7 +663,9 @@ function resolveWebdockCreateAdapter(
   accountId: string | undefined,
   providerId?: string
 ): WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter> {
-  const provider = providerId?.trim();
+  // Normalizar a lowercase: la KEY del registry es lowercase ("contabo"); un providerId capitalizado
+  // ("Contabo") debe seguir enrutando. Coincide con normalizeVpsProviderId del orquestador.
+  const provider = providerId?.trim().toLowerCase();
   if (provider && provider !== "webdock" && deps.vpsProviderAdapters?.has(provider)) {
     // VpsProvider es asignable estructuralmente a WebdockServerCreateAdapter & Partial<...Delete>.
     return deps.vpsProviderAdapters.get(provider)!;

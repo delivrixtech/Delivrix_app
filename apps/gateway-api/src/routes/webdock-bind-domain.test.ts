@@ -6,9 +6,12 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import type {
+  VpsProvider,
   WebdockServer,
   WebdockSetServerMainDomainResult,
-  WebdockSetServerPtrResult
+  WebdockSetServerPtrResult,
+  WebdockSshCommandResult,
+  WebdockSshRunner
 } from "../../../../packages/adapters/src/index.ts";
 import type { AuditEventInput } from "../../../../packages/domain/src/index.ts";
 import {
@@ -211,11 +214,178 @@ test("bind_webdock_main_domain rejects PTR opt-out because FCrDNS is mandatory",
   assert.equal(identityCalls, 0);
 });
 
+// --- CONTABO BIND PATH (providerId no-Webdock) -----------------------------
+
+test("bind: Contabo run sets hostname via SSH, emits manual-PTR audit, gates on FCrDNS, never calls Webdock setServerIdentity", async () => {
+  let webdockIdentityCalls = 0;
+  let webdockGetServerCalls = 0;
+  const ssh = okSshRunner();
+  const contaboGetCalls: string[] = [];
+  const harness = routeHarness({
+    providerId: "contabo",
+    sshRunner: ssh,
+    fcrdnsResolver: fcrdnsOkResolver(),
+    vpsProviderAdapters: new Map<string, VpsProvider>([[
+      "contabo",
+      vpsProviderMock({
+        getServer: async (slug) => {
+          contaboGetCalls.push(slug);
+          return contaboServerFixture();
+        }
+      })
+    ]]),
+    // El adapter Webdock NO debe tocarse en el camino Contabo: si lo hace, fallan estos spies.
+    adapter: adapterMock({
+      getServer: async () => {
+        webdockGetServerCalls += 1;
+        return serverFixture();
+      },
+      setServerIdentity: async () => {
+        webdockIdentityCalls += 1;
+        throw new Error("Webdock setServerIdentity must NOT be called on the Contabo path");
+      }
+    })
+  });
+
+  const response = await harness.request({
+    serverSlug: "contabo-12345",
+    domain: "example.com",
+    setPtr: true,
+    actorId: "operator/juanes",
+    approvalToken: "approval-token"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.mainDomain, "smtp.example.com");
+  assert.equal(response.body.identitySet, true);
+  assert.equal(response.body.ptrSet, true);
+  assert.equal(response.body.fcrdnsVerified, true);
+  // Resolvio via el adapter Contabo, NO el Webdock.
+  assert.deepEqual(contaboGetCalls, ["contabo-12345"]);
+  assert.equal(webdockGetServerCalls, 0);
+  assert.equal(webdockIdentityCalls, 0);
+  // Hostname seteado por SSH: probe "hostname" + script con hostnamectl set-hostname.
+  assert.equal(ssh.commands[0].trim(), "hostname");
+  assert.match(ssh.commands[1], /hostnamectl set-hostname/);
+  assert.match(ssh.commands[1], /127\.0\.1\.1/);
+  // Audit de PTR manual con IP + PTR objetivo.
+  const ptrEvent = harness.auditEvents.find((e) => e.action === "oc.bind.contabo_manual_ptr_required");
+  assert.ok(ptrEvent, "emits oc.bind.contabo_manual_ptr_required");
+  assert.equal((ptrEvent?.metadata as Record<string, unknown>).serverIp, "192.0.2.55");
+  assert.equal((ptrEvent?.metadata as Record<string, unknown>).targetPtr, "smtp.example.com");
+  // Cierre aligned (Contabo-specific action).
+  assert.equal(harness.auditEvents.some((e) => e.action === "oc.bind.contabo_identity_aligned"), true);
+});
+
+test("bind: Contabo run ends pending (424) when FCrDNS does not verify (operator has not set PTR yet)", async () => {
+  const ssh = okSshRunner();
+  const harness = routeHarness({
+    providerId: "contabo",
+    sshRunner: ssh,
+    // PTR aun no propagado: reverse NO devuelve smtp.example.com -> FCrDNS no verifica.
+    fcrdnsResolver: {
+      resolve4: async () => ["192.0.2.55"],
+      reverse: async () => ["vmiXXXXX.contaboserver.net."]
+    },
+    fcrdnsMaxWaitMs: 0,
+    vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", vpsProviderMock()]])
+  });
+
+  const response = await harness.request({
+    serverSlug: "contabo-12345",
+    domain: "example.com",
+    setPtr: true,
+    actorId: "operator/juanes",
+    approvalToken: "approval-token"
+  });
+
+  assert.equal(response.statusCode, 424);
+  assert.equal(response.body.ok, false);
+  assert.equal(response.body.ptrSet, false);
+  assert.equal(response.body.ptrSkipReason, "fcrdns_pending");
+  assert.equal(response.body.fcrdnsVerified, false);
+  assert.equal(response.body.error, "fcrdns_pending");
+  // El hostname SI se seteo (eso no depende del PTR); el manual-PTR audit se emitio igual.
+  assert.match(ssh.commands[1] ?? "", /hostnamectl set-hostname/);
+  assert.equal(harness.auditEvents.some((e) => e.action === "oc.bind.contabo_manual_ptr_required"), true);
+  assert.equal(harness.auditEvents.at(-1)?.action, "oc.bind.contabo_identity_pending_fcrdns");
+});
+
+test("bind: Contabo run fails closed (502) when SSH hostname set fails", async () => {
+  const harness = routeHarness({
+    providerId: "contabo",
+    sshRunner: {
+      isConfigured: () => true,
+      run: async (cmd) => {
+        // probe "hostname" ok, pero el script de set-hostname falla (exitCode != 0).
+        if (cmd.command.trim() === "hostname") return { stdout: "old.host", stderr: "", exitCode: 0 };
+        return { stdout: "", stderr: "sudo: a password is required", exitCode: 1 };
+      }
+    },
+    vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", vpsProviderMock()]])
+  });
+
+  const response = await harness.request({
+    serverSlug: "contabo-12345",
+    domain: "example.com",
+    setPtr: true,
+    actorId: "operator/juanes",
+    approvalToken: "approval-token"
+  });
+
+  assert.equal(response.statusCode, 502);
+  assert.equal(response.body.error, "identity_set_failed");
+  assert.equal(harness.auditEvents.at(-1)?.action, "oc.bind.contabo_hostname_set_failed");
+});
+
+test("bind: Webdock run (no providerId / registry miss) still calls Webdock setServerIdentity, NOT the Contabo path", async () => {
+  // Re-asercion de no-regresion: con providerId ausente, el bind Webdock corre tal cual aunque el
+  // registry tenga un adapter Contabo (no se consulta sin providerId). Tambien con providerId="webdock".
+  let webdockIdentityCalls = 0;
+  let contaboGetCalls = 0;
+  const makeHarness = (providerId?: string) => routeHarness({
+    ...(providerId ? { providerId } : {}),
+    fcrdnsResolver: fcrdnsOkResolver(),
+    vpsProviderAdapters: new Map<string, VpsProvider>([[
+      "contabo",
+      vpsProviderMock({
+        getServer: async () => {
+          contaboGetCalls += 1;
+          return contaboServerFixture();
+        }
+      })
+    ]]),
+    adapter: adapterMock({
+      setServerIdentity: async (opts) => {
+        webdockIdentityCalls += 1;
+        return { ok: true, serverSlug: opts.serverSlug, mainDomain: opts.mainDomain, callbackId: "cb-identity-1", raw: {} };
+      }
+    })
+  });
+
+  // (a) sin providerId.
+  const noProvider = await makeHarness().request(validBody());
+  assert.equal(noProvider.statusCode, 200);
+  assert.equal(noProvider.body.identitySet, true);
+
+  // (b) providerId="webdock" (normaliza a Webdock).
+  const webdockProvider = await makeHarness("webdock").request(validBody());
+  assert.equal(webdockProvider.statusCode, 200);
+
+  assert.equal(webdockIdentityCalls, 2, "Webdock setServerIdentity called for both Webdock runs");
+  assert.equal(contaboGetCalls, 0, "Contabo adapter never consulted without a non-webdock providerId");
+});
+
 function routeHarness(input: {
   adapter?: BindWebdockMainDomainAdapter;
   approvalGuard?: BindWebdockMainDomainApprovalGuard;
   fcrdnsResolver?: FcrdnsResolver;
   fcrdnsMaxWaitMs?: number;
+  // Canal HERMANO providerId + registry: si se pasan, el bind toma el camino del proveedor no-Webdock.
+  providerId?: string;
+  vpsProviderAdapters?: Map<string, VpsProvider>;
+  sshRunner?: WebdockSshRunner;
 } = {}) {
   const auditEvents: AuditEventInput[] = [];
   const workspace = new OpenClawWorkspace({
@@ -226,6 +396,7 @@ function routeHarness(input: {
     await handleBindWebdockMainDomain({
       request: requestWithJson(body),
       response: response as unknown as ServerResponse,
+      ...(input.providerId ? { providerId: input.providerId } : {}),
       deps: {
         auditLog: {
           append: async (event) => {
@@ -235,6 +406,8 @@ function routeHarness(input: {
         },
         approvalGuard: input.approvalGuard ?? { verify: async () => ({ ok: true, eventId: "approval-1" }) },
         webdockAdapter: input.adapter ?? adapterMock(),
+        ...(input.vpsProviderAdapters ? { vpsProviderAdapters: input.vpsProviderAdapters } : {}),
+        ...(input.sshRunner ? { sshRunner: input.sshRunner } : {}),
         workspace,
         now: () => fixedNowMs + auditEvents.length,
         fcrdnsResolver: input.fcrdnsResolver ?? fcrdnsOkResolver(),
@@ -279,6 +452,57 @@ function fcrdnsOkResolver(): FcrdnsResolver {
   return {
     resolve4: async () => ["192.0.2.55"],
     reverse: async () => ["smtp.example.com."]
+  };
+}
+
+/** VpsProvider mock (Contabo) para el camino no-Webdock del bind. getServer override-able. */
+function vpsProviderMock(overrides: Partial<VpsProvider> = {}): VpsProvider {
+  return {
+    isLive: () => true,
+    canWrite: () => true,
+    canCreate: () => true,
+    createServer: async () => {
+      throw new Error("createServer not used in bind");
+    },
+    getServer: overrides.getServer ?? (async () => contaboServerFixture()),
+    ...overrides
+  };
+}
+
+/**
+ * SSH runner mock que simula `hostnamectl set-hostname`: el 1er run ("hostname") devuelve el hostname
+ * previo; el 2do run (el script) devuelve la FQDN como stdout. Registra cada comando para asserts.
+ */
+function okSshRunner(opts: { previousHostname?: string; finalHostname?: string } = {}): WebdockSshRunner & {
+  commands: string[];
+} {
+  const commands: string[] = [];
+  const previousHostname = opts.previousHostname ?? "vmiXXXXX.contaboserver.net";
+  const finalHostname = opts.finalHostname ?? "smtp.example.com";
+  return {
+    commands,
+    isConfigured: () => true,
+    run: async (cmd): Promise<WebdockSshCommandResult> => {
+      commands.push(cmd.command);
+      const isHostnameProbe = cmd.command.trim() === "hostname";
+      return {
+        stdout: isHostnameProbe ? previousHostname : finalHostname,
+        stderr: "",
+        exitCode: 0
+      };
+    }
+  };
+}
+
+function contaboServerFixture(overrides: Partial<WebdockServer> = {}): WebdockServer {
+  return {
+    slug: "contabo-12345",
+    name: "contabo-12345",
+    mainDomain: "",
+    hostname: "vmiXXXXX.contaboserver.net",
+    ipv4: "192.0.2.55",
+    status: "running",
+    ...overrides
   };
 }
 

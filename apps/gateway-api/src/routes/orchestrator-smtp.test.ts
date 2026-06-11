@@ -887,6 +887,87 @@ test("PROVIDER#e gated + vpsProviderId='contabo' => falla LIMPIO gated_provider_
   assert.equal(state.providerId, "contabo");
 });
 
+test("PROVIDER#f governor short-circuit: un step-4 Contabo NO llama resolveCreationAccount/governor y deja serverAccountId sin setear", async () => {
+  // P2 #5: el governor y la seleccion de cuenta son construcciones Webdock. Un run Contabo NO debe
+  // leer inventario de cuentas (creationReads) ni fijar runState.serverAccountId a una cuenta Webdock
+  // enganosa (eso contaminaria el cap 24h y enrutaria mal el rollback). Sembramos 2 cuentas Webdock
+  // write-capable: si el governor corriera, creationReads tendria entradas. Para Contabo debe quedar vacio.
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { servers: [], sourceKind: "live", responseOk: true },
+      secondary: { servers: [], sourceKind: "live", responseOk: true }
+    }
+  });
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53", vpsProviderId: "contabo" }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  // El governor NUNCA leyo inventario de cuentas: short-circuit total para el proveedor no-Webdock.
+  assert.deepEqual(ctx.creationReads, []);
+  // El step 4 viajo SIN serverAccountId (canal de cuenta apagado) y CON providerId="contabo".
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  assert.equal(step4.serverAccountId, undefined);
+  assert.equal(step4.providerId, "contabo");
+  // runState NO fija serverAccountId (no se contamina el cap del governor ni el routing de rollback).
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.serverAccountId, undefined);
+  assert.equal(state.providerId, "contabo");
+});
+
+test("PROVIDER#g failover guard: un error recuperable en step-4 Contabo PROPAGA sin reintentos de cuenta Webdock", async () => {
+  // P2 #4: el failover multicuenta de pago es Webdock-only. Un error recuperable (payment_failed) en un
+  // run Contabo NO debe excluir cuentas ni reintentar en otra cuenta Webdock: debe PROPAGAR de inmediato
+  // (un solo intento de create). Sembramos 2 cuentas Webdock para probar que NO se usan en el failover.
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { servers: [], sourceKind: "live", responseOk: true },
+      secondary: { servers: [], sourceKind: "live", responseOk: true }
+    }
+  });
+  // El create Contabo (step 4) devuelve un fallo recuperable de pago.
+  ctx.deps.executePlanApprovedStep = (() => {
+    const original = ctx.deps.executePlanApprovedStep!;
+    return async (input: PlanApprovedStepInput) => {
+      if (input.step === 4) {
+        ctx.planExecutions.push(input);
+        return {
+          status: "execution_failed",
+          planStepTokenId: "plan-step-4-contabo",
+          outcome: { error: "Payment failed during server creation", failureCode: "webdock_payment_failed" },
+          durationMs: 4,
+          error: "webdock_payment_failed"
+        };
+      }
+      return original(input);
+    };
+  })();
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53", vpsProviderId: "contabo" }, ctx.deps);
+
+  // El run FALLA en el step 4 (el error propago); NO hubo failover a otra cuenta.
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 4);
+  // UN SOLO intento del step 4 (no se reintento en ninguna cuenta Webdock).
+  const step4Attempts = ctx.planExecutions.filter((entry) => entry.step === 4);
+  assert.equal(step4Attempts.length, 1);
+  assert.equal(step4Attempts[0].providerId, "contabo");
+  assert.equal(step4Attempts[0].serverAccountId, undefined);
+  // El governor nunca corrio (no hubo seleccion de cuenta para excluir/reintentar).
+  assert.deepEqual(ctx.creationReads, []);
+});
+
 test("configureCompleteSmtp emits canvas start and completion events", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);

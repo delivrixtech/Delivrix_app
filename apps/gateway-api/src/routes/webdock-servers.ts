@@ -775,7 +775,9 @@ function resolveWebdockDeleteAdapter(
   accountId: string | undefined,
   providerId?: string
 ): WebdockServerDeleteAdapter {
-  const provider = providerId?.trim();
+  // Normalizar a lowercase: la KEY del registry es lowercase ("contabo"); un providerId capitalizado
+  // ("Contabo") debe seguir enrutando el rollback/delete al proveedor correcto.
+  const provider = providerId?.trim().toLowerCase();
   if (provider && provider !== "webdock" && deps.vpsProviderAdapters?.has(provider)) {
     const candidate = deps.vpsProviderAdapters.get(provider)!;
     if (typeof candidate.deleteServer === "function") {

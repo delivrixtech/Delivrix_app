@@ -711,8 +711,42 @@ export async function configureCompleteSmtp(
     if (vpsProviderId) {
       runState.providerId = vpsProviderId;
     }
-    const excludedFailoverAccounts = new Set<string>();
     let vps: ConfigureCompleteSmtpStepResult | undefined;
+    if (isNonWebdockProviderId(vpsProviderId)) {
+      // PROVEEDOR NO-WEBDOCK (Contabo, etc.): el governor y el failover de pago multicuenta son
+      // construcciones Webdock (eligen entre cuentas Webdock write-capable, cuentan por creationDate
+      // contra el cap Webdock). NO aplican a otro proveedor:
+      // - GOVERNOR SHORT-CIRCUIT (P2 #5): NO se llama resolveCreationAccount. serverAccountId queda
+      //   undefined -> runState.serverAccountId NO se setea a una cuenta Webdock enganosa y el cap 24h
+      //   del governor NO se contamina con creates de otro proveedor. El dispatcher enruta por
+      //   providerId (canal HERMANO), asi que serverAccountId undefined es correcto.
+      // - FAILOVER GUARD (P2 #4): un error recuperable NO excluye cuentas ni reintenta en otra cuenta
+      //   Webdock (no existe esa nocion aqui). El error PROPAGA de inmediato (un solo intento de create).
+      vps = await runMutatingStepWithState({
+        deps,
+        runState,
+        planApproval,
+        runId,
+        step: 4,
+        skill: "create_webdock_server",
+        actorId: effectiveInput.actorId,
+        approvalTimeoutMs,
+        estimatedCostUsd: 4.30 / 30,
+        budgetUsdMax: effectiveInput.budgetUsdMax,
+        // params byte-identicos al camino Webdock: el adapter del proveedor TRADUCE el vocabulario
+        // (profile/locationId/imageSlug) a su propia API. providerId va por canal HERMANO (no en params).
+        params: {
+          runId,
+          profile: "bit",
+          locationId: "dk",
+          hostname: smtpHost,
+          imageSlug: "ubuntu-2404"
+        },
+        providerId: vpsProviderId,
+        stepResults
+      });
+    } else {
+    const excludedFailoverAccounts = new Set<string>();
     let lastCreateFailure: unknown;
     // El break por "" (todas las write-capable excluidas) es el terminador real -> cubre CUALQUIER
     // numero de cuentas; smtpCreateAccountFailoverMaxAttempts es solo safety contra loop infinito.
@@ -788,6 +822,11 @@ export async function configureCompleteSmtp(
       throw lastCreateFailure
         ?? new OrchestratorFailure("failed", 4, "create_webdock_server", "all_write_accounts_payment_failed");
     }
+    } // fin del camino Webdock (failover multicuenta). El camino no-Webdock siempre asigna vps o lanza.
+    if (!vps) {
+      // Inalcanzable en runtime (ambos caminos asignan vps o lanzan); narrowing para TS + cinturon.
+      throw new OrchestratorFailure("failed", 4, "create_webdock_server", "create_result_missing");
+    }
     serverSlug = stringFromOutcome(vps.outcome, ["slug", "serverSlug"]);
     serverIpv4 = stringFromOutcome(vps.outcome, ["ipv4", "serverIp"]);
     runState.serverSlug = serverSlug;
@@ -854,6 +893,12 @@ export async function configureCompleteSmtp(
       approvalTimeoutMs,
       budgetUsdMax: effectiveInput.budgetUsdMax,
       params: { serverSlug, domain: chosenDomain },
+      // providerId por canal HERMANO (NO en params): un run no-Webdock toma el CONTABO BIND PATH en el
+      // dispatcher (getServer + hostname por SSH + PTR manual + FCrDNS) en vez de getServer/setServerIdentity
+      // contra la API Webdock (que daria 404 para un slug contabo-<id> y tumbaria el run). undefined/"webdock"
+      // => bind Webdock byte-identico. El bind no necesita serverAccountId: el Webdock bind usa siempre la
+      // cuenta-1 (deps.webdockAdapter) y el Contabo bind resuelve por providerId -> vpsProviderAdapters.
+      providerId: vpsProviderId,
       stepResults
     });
 

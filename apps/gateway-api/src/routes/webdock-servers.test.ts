@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import type {
+  VpsProvider,
   WebdockCreateServerInput,
   WebdockCreateServerResult,
   WebdockDeleteServerResult,
@@ -533,6 +534,66 @@ test("DELETE /v1/webdock/servers/:slug sin accountId (o 'ops') enruta al adapter
   assert.deepEqual(secondaryHits, []);
 });
 
+test("DELETE /v1/webdock/servers/:slug con providerId=contabo enruta al adapter Contabo (rollback no-Webdock)", async () => {
+  // DoD#7: el rollback de un VPS Contabo debe borrar en el adapter Contabo (cancel fin-de-termino), NO
+  // en la cuenta Webdock (que daria 404 / dejaria el VPS Contabo facturable). El canal HERMANO providerId
+  // enruta; ausente/"webdock" cae al adapter Webdock (cuenta-1) byte-identico.
+  const webdockHits: string[] = [];
+  const contaboHits: string[] = [];
+  const webdockAdapter = mockDeleteAdapter({
+    deleteServer: async (slug) => {
+      webdockHits.push(slug);
+      return deleteResult(slug, "delete-webdock-evt");
+    }
+  });
+  const contaboAdapter = mockVpsProvider({
+    deleteServer: async (slug) => {
+      contaboHits.push(slug);
+      return deleteResult(slug, "delete-contabo-evt");
+    }
+  });
+  const makeRoute = async (executionId: string) => {
+    const route = await deleteRouteHarness({
+      adapter: webdockAdapter,
+      vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", contaboAdapter]]),
+      canvasState: canvasState([{
+        artifactId: "artifact-webdock-delete",
+        executionId,
+        approvedAt: "2026-05-27T15:59:00.000Z"
+      }])
+    });
+    await appendApproval(route.auditLog, "artifact-webdock-delete", executionId);
+    return route;
+  };
+
+  // (a) providerId="contabo" => adapter Contabo (NO Webdock).
+  const routeContabo = await makeRoute("exec-delete-contabo");
+  const contabo = await routeContabo("contabo-12345", {
+    actorId: "operator/juanes",
+    approvalToken: "exec-delete-contabo",
+    reason: "rollback VPS Contabo",
+    taskId: "task-delete-contabo",
+    providerId: "contabo"
+  }, { WEBDOCK_SERVERS_ENABLE_DELETE: "true" });
+  assert.equal(contabo.statusCode, 200);
+  assert.equal(contabo.body.eventId, "delete-contabo-evt");
+
+  // (b) sin providerId => adapter Webdock (cuenta-1) byte-identico.
+  const routeWebdock = await makeRoute("exec-delete-webdock");
+  const webdock = await routeWebdock("mail-webdock-test", {
+    actorId: "operator/juanes",
+    approvalToken: "exec-delete-webdock",
+    reason: "rollback VPS Webdock",
+    taskId: "task-delete-webdock"
+  }, { WEBDOCK_SERVERS_ENABLE_DELETE: "true" });
+  assert.equal(webdock.statusCode, 200);
+  assert.equal(webdock.body.eventId, "delete-webdock-evt");
+
+  // El delete Contabo fue al adapter Contabo; el Webdock al Webdock. Sin cruces.
+  assert.deepEqual(contaboHits, ["contabo-12345"]);
+  assert.deepEqual(webdockHits, ["mail-webdock-test"]);
+});
+
 async function routeHarness(input: {
   adapter: WebdockServerCreateAdapter;
   canvasState: CanvasLiveStateSnapshot;
@@ -586,6 +647,8 @@ async function deleteRouteHarness(input: {
   canvasState: CanvasLiveStateSnapshot;
   // 5.12 multicuenta: registry write-capable id->adapter. Si se pasa, el delete enruta por accountId.
   accountAdapters?: Map<string, WebdockServerDeleteAdapter>;
+  // Registry providerId->adapter (canal HERMANO): si se pasa, el delete enruta por providerId.
+  vpsProviderAdapters?: Map<string, VpsProvider>;
 }) {
   const dir = await mkdtemp(join(tmpdir(), "webdock-delete-route-"));
   const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
@@ -608,6 +671,7 @@ async function deleteRouteHarness(input: {
         auditLog,
         adapter: input.adapter,
         ...(input.accountAdapters ? { accountAdapters: input.accountAdapters } : {}),
+        ...(input.vpsProviderAdapters ? { vpsProviderAdapters: input.vpsProviderAdapters } : {}),
         workspace,
         canvasLiveEvents: {
           emit: async (event) => {
@@ -660,6 +724,24 @@ function mockDeleteAdapter(overrides: Partial<WebdockServerDeleteAdapter> = {}):
   return {
     isLive: () => true,
     canWrite: () => true,
+    deleteServer: async (): Promise<WebdockDeleteServerResult> => {
+      throw new Error("deleteServer mock not implemented");
+    },
+    ...overrides
+  };
+}
+
+function mockVpsProvider(overrides: Partial<VpsProvider> = {}): VpsProvider {
+  return {
+    isLive: () => true,
+    canWrite: () => true,
+    canCreate: () => true,
+    createServer: async (): Promise<WebdockCreateServerResult> => {
+      throw new Error("createServer mock not implemented");
+    },
+    getServer: async (): Promise<WebdockServer> => {
+      throw new Error("getServer mock not implemented");
+    },
     deleteServer: async (): Promise<WebdockDeleteServerResult> => {
       throw new Error("deleteServer mock not implemented");
     },
