@@ -233,6 +233,16 @@ export async function dispatchSkillHandler(input: DispatchSkillHandlerInput): Pr
     };
   }
 
+  const unknownVpsProvider = unknownExternalVpsProviderId(input.providerId, input.deps.vpsProviderAdapters);
+  if (unknownVpsProvider) {
+    return {
+      ok: false,
+      statusCode: 422,
+      summary: { error: "unknown_vps_provider", providerId: unknownVpsProvider },
+      durationMs: 0
+    };
+  }
+
   const body = {
     ...paramsValidation.data,
     actorId: input.actorId,
@@ -650,8 +660,9 @@ function requiredPorkbunDomainAdapter(deps: SkillDispatcherDeps): DomainAvailabi
  * Resuelve el adapter de create/delete para el provider/account pedido.
  *
  * PRECEDENCIA (canal HERMANO providerId primero): si providerId esta presente y != "webdock" y
- * vpsProviderAdapters tiene esa key, enruta a ESE proveedor (Contabo, etc.). En CUALQUIER otro caso
- * (providerId ausente/"webdock", o registry no lo tiene) cae a la logica Webdock por accountId
+ * vpsProviderAdapters tiene esa key, enruta a ESE proveedor (Contabo, etc.). Si providerId apunta a
+ * un proveedor externo desconocido, dispatchSkillHandler falla 422 antes de invocar. En cualquier
+ * otro caso (providerId ausente/"webdock") cae a la logica Webdock por accountId
  * EXISTENTE, SIN CAMBIOS:
  * - Invariante single-provider/single-account byte-identico: providerId undefined/"webdock" +
  *   accountId undefined/"ops" => el webdockAdapter de hoy (cuenta-1 "ops"), tal cual.
@@ -675,6 +686,12 @@ function resolveWebdockCreateAdapter(
     return deps.webdockAdapter;
   }
   return deps.webdockCreateAdapters.get(normalized) ?? deps.webdockAdapter;
+}
+
+function unknownExternalVpsProviderId(providerId: string | undefined, adapters?: Map<string, VpsProvider>): string | null {
+  const provider = providerId?.trim().toLowerCase();
+  if (!provider || provider === "webdock") return null;
+  return adapters?.has(provider) ? null : provider;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

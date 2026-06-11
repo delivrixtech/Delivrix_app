@@ -336,6 +336,33 @@ test("PROVIDER#b2 routing: create_webdock_server sin providerId (o 'webdock') us
   assert.deepEqual(contaboCalls, [], "el mock Contabo sigue intacto con providerId='webdock'");
 });
 
+test("PROVIDER#guard providerId desconocido falla 422 y no cae a Webdock", async () => {
+  const opsCalls: string[] = [];
+  const contaboCalls: string[] = [];
+  const opsAdapter = makeSpyCreateAdapter("ops", opsCalls);
+  const contaboAdapter = makeSpyCreateAdapter("contabo", contaboCalls);
+  const deps = webdockDispatchDeps({
+    webdockAdapter: opsAdapter,
+    webdockCreateAdapters: new Map([["ops", opsAdapter]]),
+    vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", contaboAdapter]])
+  });
+
+  const result = await dispatchSkillHandler({
+    skill: "create_webdock_server",
+    params: { profile: "bit", locationId: "dk", hostname: "smtp.controltypo.com", imageSlug: "ubuntu-2404", publicKey: "ssh-ed25519 AAAA test" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    providerId: "contaboo",
+    deps
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.statusCode, 422);
+  assert.deepEqual(result.summary, { error: "unknown_vps_provider", providerId: "contaboo" });
+  assert.deepEqual(opsCalls, [], "typo de provider NO cae al adapter Webdock");
+  assert.deepEqual(contaboCalls, [], "typo de provider NO toca Contabo");
+});
+
 test("PROVIDER#c el providerId (canal paralelo) NO entra en los params pasados a invoke", async () => {
   const seenParams: Array<Record<string, unknown>> = [];
   const seenProviderId: Array<string | undefined> = [];
@@ -345,7 +372,10 @@ test("PROVIDER#c el providerId (canal paralelo) NO entra en los params pasados a
     actorId: "operator-juanes",
     approvalToken: token,
     providerId: "contabo",
-    deps: fakeDeps(),
+    deps: {
+      ...fakeDeps(),
+      vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", {} as VpsProvider]])
+    },
     handlers: {
       create_webdock_server: {
         paramSchema: webdockCreateParamSchema,
