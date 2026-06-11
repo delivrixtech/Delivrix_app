@@ -777,6 +777,116 @@ test("FIX1 gated + ops (single-account) NO dispara el guard: el create gated pro
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.run_completed"), true);
 });
 
+test("PROVIDER#a Webdock-unchanged: vpsProviderId ausente => step4 params SIN providerId NI provider, inputHash byte-identico", async () => {
+  // Run firmado (camino autonomo) sin vpsProviderId: el providerId NO debe tocar params/hashInput.
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval()
+  });
+  await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  // El canal paralelo NO viaja: providerId ausente => no se spreadea al executePlanApprovedStep.
+  assert.equal(step4.providerId, undefined);
+  assert.deepEqual(step4.params, {
+    runId: "run-1",
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.delivrixops.com",
+    imageSlug: "ubuntu-2404"
+  });
+  // Los params del step 4 NO contienen NI providerId NI provider (el `provider` es el registrar DNS).
+  assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "providerId"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "provider"), false);
+  // inputHash byte-identico al de un params SIN providerId (idempotencia/resume/plan-signature intactos).
+  const expectedStep4Hash = createHash("sha256").update(stableStringify({
+    runId: "run-1", profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404"
+  })).digest("hex");
+  assert.equal(step4.inputHash, expectedStep4Hash);
+  // runState NO persiste providerId (canal apagado => Webdock).
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.providerId, undefined);
+});
+
+test("PROVIDER#a2 Webdock-unchanged: vpsProviderId='webdock' se trata como ausente (params/hash sin cambios)", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval()
+  });
+  await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53", vpsProviderId: "webdock" }, ctx.deps);
+
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  // "webdock" normaliza a undefined: el canal paralelo NO viaja, params byte-identicos.
+  assert.equal(step4.providerId, undefined);
+  assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "providerId"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "provider"), false);
+  const expectedStep4Hash = createHash("sha256").update(stableStringify({
+    runId: "run-1", profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404"
+  })).digest("hex");
+  assert.equal(step4.inputHash, expectedStep4Hash);
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.providerId, undefined);
+});
+
+test("PROVIDER#d plan-signed con vpsProviderId='contabo' NO cambia el scope hash firmado; el create viaja por canal paralelo", async () => {
+  const plan = signedPlanApproval();
+  const scopeHashBefore = plan.scopeHash;
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: plan
+  });
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53", vpsProviderId: "contabo" }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  // La firma del plan NO se altera por el providerId (es un canal HERMANO, no entra al scope).
+  assert.equal(plan.scopeHash, scopeHashBefore);
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  // El create (step 4) viaja con providerId="contabo" por canal paralelo; SUS params siguen byte-identicos.
+  assert.equal(step4.providerId, "contabo");
+  assert.deepEqual(step4.params, {
+    runId: "run-1",
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.delivrixops.com",
+    imageSlug: "ubuntu-2404"
+  });
+  assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "providerId"), false);
+  // El inputHash del step 4 es el de un params SIN providerId (idempotencia intacta).
+  const expectedStep4Hash = createHash("sha256").update(stableStringify({
+    runId: "run-1", profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404"
+  })).digest("hex");
+  assert.equal(step4.inputHash, expectedStep4Hash);
+  // runState persiste providerId="contabo" (para que un resume firmado retome el proveedor en rollback).
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.providerId, "contabo");
+});
+
+test("PROVIDER#e gated + vpsProviderId='contabo' => falla LIMPIO gated_provider_unsupported ANTES de crear (no VPS huerfano)", async () => {
+  // Camino GATED (sin OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE): el processor gated single-account NO
+  // recibe el providerId, asi que crearia el VPS en Webdock mientras el rollback enrutaria a Contabo
+  // => huerfano. El guard debe abortar limpio ANTES del create. Solo "ops" elegible (sin multicuenta).
+  const ctx = createDeps({
+    creationServers: [
+      { creationDate: "2026-05-31T11:00:00.000Z" },
+      { creationDate: "2026-05-31T10:00:00.000Z" }
+    ]
+  });
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53", vpsProviderId: "contabo" }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 4);
+  assert.equal(result.error, "gated_provider_unsupported");
+  // El create gated nunca se ejecuto (no llego a submitAndAwaitApproval para el step 4) => no se creo VPS.
+  assert.equal(ctx.approvals.some((entry) => entry.step === 4), false);
+  assert.deepEqual(ctx.approvals.map((entry) => entry.step), [2, 3]);
+  // step 4 < 6 => no hay rollback (no hay nada que borrar): no VPS huerfano.
+  assert.equal(ctx.rollbacks.length, 0);
+  // runState persiste providerId="contabo" (la eleccion del run), aunque el create se aborto.
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.providerId, "contabo");
+});
+
 test("configureCompleteSmtp emits canvas start and completion events", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);
@@ -2119,11 +2229,13 @@ async function writeRunState(
 
 async function readRunStateFull(workspace: OpenClawWorkspace, runId: string): Promise<{
   serverAccountId?: string;
+  providerId?: string;
   serverSlug?: string;
   steps: Record<string, { status: string; inputHash?: string }>;
 }> {
   return JSON.parse(await workspace.readWorkspaceFile(`inventory/smtp-runs/${runId}.json`)) as {
     serverAccountId?: string;
+    providerId?: string;
     serverSlug?: string;
     steps: Record<string, { status: string; inputHash?: string }>;
   };

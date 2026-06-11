@@ -9,6 +9,7 @@ import {
   AwsRoute53DnsAdapter,
   buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
+  createContaboAdaptersFromEnv,
   IonosDnsActuator,
   IonosDomainsAdapter,
   PorkbunAdapter,
@@ -16,6 +17,7 @@ import {
   WebdockAdapter,
   WebdockRealAdapter,
   type ProxmoxMockNodeConfig,
+  type VpsProvider,
   type WebdockBridgeNodeConfig
 } from "../../../packages/adapters/src/index.ts";
 import {
@@ -351,6 +353,13 @@ const webdockAccountAdapters = createWebdockAdaptersFromEnv();
 // webdockOpsAdapter de hoy: mismo objeto/keys => single-account byte-identico). Las cuentas DISTINTAS
 // entran solo si canCreate()===true (post Fase 0). Logica de de-dup unica y testeada en el adapter.
 const webdockCreateAdapters = buildWebdockCreateRegistry(webdockAccountAdapters, webdockOpsAdapter);
+// Registry providerId->adapter para proveedores NO-Webdock (Contabo, etc.). Canal PARALELO HERMANO de
+// webdockCreateAdapters. Se construye desde env: si no hay credenciales Contabo queda VACIO y NINGUN
+// providerId distinto de "webdock" resuelve a nada -> el camino Webdock queda byte-identico.
+const vpsProviderEntries = createContaboAdaptersFromEnv();
+const vpsProviderAdapters = new Map<string, VpsProvider>(
+  vpsProviderEntries.map((entry): [string, VpsProvider] => [entry.id, entry.adapter])
+);
 // Cuentas write-capable para el selector del orquestador (una por CUENTA real, ya de-dupeada).
 // enabled = canCreate() REAL: la cuenta-1 ("ops") siempre apta; las distintas solo con sus keys.
 function listWebdockCreationAccounts(): Array<{ accountId: string; enabled: boolean }> {
@@ -568,6 +577,7 @@ const configureSmtpRuntimeDeps = {
     estimatedCostUsd?: number;
     planApproval: PlanApprovalRecord;
     serverAccountId?: string;
+    providerId?: string;
   }) => {
     const killSwitch = await killSwitchStore.get();
     if (killSwitch.enabled) {
@@ -670,6 +680,9 @@ const configureSmtpRuntimeDeps = {
       // Canal paralelo accountId (5.12): el dispatcher enruta create/delete al adapter de ESA cuenta;
       // undefined/"ops" => cuenta-1. NO va en params (no toca hashInput/idempotencia).
       ...(input.serverAccountId ? { accountId: input.serverAccountId } : {}),
+      // Canal paralelo providerId (HERMANO): el dispatcher enruta al adapter de ESE proveedor (Contabo);
+      // undefined/"webdock" => Webdock por accountId. NO va en params.
+      ...(input.providerId ? { providerId: input.providerId } : {}),
       timeoutMs: approvalTimeoutForPlanStep(input.skill, input.params)
     });
     return result.ok
@@ -740,6 +753,7 @@ const configureSmtpRuntimeDeps = {
     actorId: string;
     reason: string;
     serverAccountId?: string;
+    providerId?: string;
   }) => {
     await auditLog.append({
       actorType: "openclaw",
@@ -755,7 +769,10 @@ const configureSmtpRuntimeDeps = {
         skill: input.skill,
         reason: input.reason,
         // Cuenta donde vive el server a borrar (5.12): el delete debe ir a ESTA cuenta, no a cuenta-1.
-        serverAccountId: input.serverAccountId ?? "ops"
+        serverAccountId: input.serverAccountId ?? "ops",
+        // Proveedor donde vive el server a borrar (canal HERMANO). Solo se registra cuando es != Webdock;
+        // undefined => Webdock (payload byte-identico al de hoy en runs Webdock).
+        ...(input.providerId ? { providerId: input.providerId } : {})
       }
     });
     return { proposalId: `rollback-requested-${input.runId}-${input.failedStep}` };
@@ -798,6 +815,9 @@ const skillDispatcher = createSkillDispatcher({
   ionosDnsAdapter,
   webdockAdapter: webdockOpsAdapter,
   webdockCreateAdapters,
+  // Registry providerId->adapter (canal HERMANO). VACIO en esta fase: el seam queda cableado pero
+  // ningun providerId != "webdock" resuelve -> camino Webdock byte-identico. Phase 3 lo puebla.
+  vpsProviderAdapters,
   smtpSshRunner,
   rampScheduler,
   porkbunDomainAdapter: porkbunAdapter,
@@ -1432,6 +1452,9 @@ const server = createServer(async (request, response) => {
           // Registry write-capable (5.12): si el body trae accountId de otra cuenta, el delete va a
           // ESA cuenta (evita server huerfano). Sin accountId/"ops" => webdockOpsAdapter (cuenta-1).
           accountAdapters: webdockCreateAdapters,
+          // Registry providerId->adapter (canal HERMANO): rollback del VPS Contabo va a ESE proveedor.
+          // VACIO en esta fase => providerId != "webdock" no resuelve, delete Webdock byte-identico.
+          vpsProviderAdapters,
           workspace: openClawWorkspace,
           canvasLiveEvents,
           readCanvasState: () => canvasLiveEvents.snapshot(),

@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
 import { dispatchSkillHandler, type SkillDispatcherDeps, type SkillHandlerEntry } from "./skill-dispatcher.ts";
-import { route53RegisterParamSchema, route53UpsertParamSchema } from "./skill-schemas.ts";
+import { route53RegisterParamSchema, route53UpsertParamSchema, webdockCreateParamSchema } from "./skill-schemas.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
 import type { WebdockServerCreateAdapter, WebdockServerDeleteAdapter } from "./routes/webdock-servers.ts";
+import type { VpsProvider } from "../../../packages/adapters/src/index.ts";
 
 const token: ApprovalToken = {
   tokenId: "exec-token-1",
@@ -274,6 +275,100 @@ test("DoD#2 routing: create_webdock_server sin accountId usa el webdockAdapter (
   assert.deepEqual(secondaryCalls, [], "no toca la cuenta-2");
 });
 
+test("PROVIDER#b routing: create_webdock_server con providerId='contabo' usa el adapter del proveedor (no Webdock)", async () => {
+  // El handler real de create bloquea sin approval/flag, pero ANTES consulta canCreate() del adapter
+  // RESUELTO. Espiamos canCreate de cada adapter para probar que el providerId enruta a Contabo.
+  const opsCalls: string[] = [];
+  const contaboCalls: string[] = [];
+  const opsAdapter = makeSpyCreateAdapter("ops", opsCalls);
+  const contaboAdapter = makeSpyCreateAdapter("contabo", contaboCalls);
+  const deps = webdockDispatchDeps({
+    webdockAdapter: opsAdapter,
+    webdockCreateAdapters: new Map([["ops", opsAdapter]]),
+    vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", contaboAdapter]])
+  });
+
+  await dispatchSkillHandler({
+    skill: "create_webdock_server",
+    params: { profile: "bit", locationId: "dk", hostname: "smtp.controlcontabo.com", imageSlug: "ubuntu-2404", publicKey: "ssh-ed25519 AAAA test" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    providerId: "contabo",
+    deps
+  });
+
+  assert.deepEqual(contaboCalls, ["canCreate"], "el handler consulto el adapter de Contabo (createServer enrutaria alli)");
+  assert.deepEqual(opsCalls, [], "NO toco el adapter Webdock (ops)");
+});
+
+test("PROVIDER#b2 routing: create_webdock_server sin providerId (o 'webdock') usa el webdockAdapter; NUNCA toca el mock Contabo", async () => {
+  const opsCalls: string[] = [];
+  const contaboCalls: string[] = [];
+  const opsAdapter = makeSpyCreateAdapter("ops", opsCalls);
+  const contaboAdapter = makeSpyCreateAdapter("contabo", contaboCalls);
+  const deps = webdockDispatchDeps({
+    webdockAdapter: opsAdapter,
+    webdockCreateAdapters: new Map([["ops", opsAdapter]]),
+    vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", contaboAdapter]])
+  });
+
+  // Sin providerId => Webdock (cuenta-1 ops).
+  await dispatchSkillHandler({
+    skill: "create_webdock_server",
+    params: { profile: "bit", locationId: "dk", hostname: "smtp.controlops.com", imageSlug: "ubuntu-2404", publicKey: "ssh-ed25519 AAAA test" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps
+  });
+  assert.deepEqual(opsCalls, ["canCreate"], "sin providerId enruta a Webdock (ops)");
+  assert.deepEqual(contaboCalls, [], "el mock Contabo NUNCA se toca sin providerId");
+
+  // providerId='webdock' => tambien Webdock (se trata como ausente en el resolver).
+  await dispatchSkillHandler({
+    skill: "create_webdock_server",
+    params: { profile: "bit", locationId: "dk", hostname: "smtp.controlwebdock.com", imageSlug: "ubuntu-2404", publicKey: "ssh-ed25519 AAAA test" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    providerId: "webdock",
+    deps
+  });
+  assert.deepEqual(opsCalls, ["canCreate", "canCreate"], "providerId='webdock' enruta a Webdock (ops)");
+  assert.deepEqual(contaboCalls, [], "el mock Contabo sigue intacto con providerId='webdock'");
+});
+
+test("PROVIDER#c el providerId (canal paralelo) NO entra en los params pasados a invoke", async () => {
+  const seenParams: Array<Record<string, unknown>> = [];
+  const seenProviderId: Array<string | undefined> = [];
+  const result = await dispatchSkillHandler({
+    skill: "create_webdock_server",
+    params: { profile: "bit", locationId: "dk", hostname: "smtp.controlchannel.com", imageSlug: "ubuntu-2404", publicKey: "ssh-ed25519 AAAA test" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    providerId: "contabo",
+    deps: fakeDeps(),
+    handlers: {
+      create_webdock_server: {
+        paramSchema: webdockCreateParamSchema,
+        timeoutMs: 1000,
+        canRollback: false,
+        invoke: async ({ response, params, providerId }) => {
+          seenParams.push(params);
+          seenProviderId.push(providerId);
+          json(response, 200, { ok: true });
+        }
+      }
+    }
+  });
+
+  assert.equal(result.statusCode, 200);
+  // El providerId viaja por el canal paralelo (arg de invoke), NO dentro de params.
+  assert.deepEqual(seenProviderId, ["contabo"]);
+  assert.equal(seenParams.length, 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(seenParams[0], "providerId"), false);
+  // Sanidad: los params validados son exactamente el dict Webdock (sin providerId ni provider).
+  assert.deepEqual(Object.keys(seenParams[0]).sort(), ["hostname", "imageSlug", "locationId", "profile", "publicKey"]);
+});
+
 function makeSpyCreateAdapter(
   id: string,
   calls: string[]
@@ -291,6 +386,7 @@ function makeSpyCreateAdapter(
 function webdockDispatchDeps(overrides: {
   webdockAdapter: WebdockServerCreateAdapter;
   webdockCreateAdapters: Map<string, WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter>>;
+  vpsProviderAdapters?: SkillDispatcherDeps["vpsProviderAdapters"];
 }): SkillDispatcherDeps {
   return {
     auditLog: { append: async () => ({}), list: async () => [] },
@@ -305,6 +401,7 @@ function webdockDispatchDeps(overrides: {
     ionosDnsAdapter: {} as never,
     webdockAdapter: overrides.webdockAdapter as never,
     webdockCreateAdapters: overrides.webdockCreateAdapters,
+    ...(overrides.vpsProviderAdapters ? { vpsProviderAdapters: overrides.vpsProviderAdapters } : {}),
     smtpSshRunner: {} as never,
     rampScheduler: {} as never,
     env: { WEBDOCK_SERVERS_ENABLE_CREATE: "false" }

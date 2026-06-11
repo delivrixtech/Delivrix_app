@@ -5,6 +5,7 @@ import type {
   CanvasLiveEvent,
   CanvasLiveStateSnapshot
 } from "../../../packages/domain/src/index.ts";
+import type { VpsProvider } from "../../../packages/adapters/src/index.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
 import { createInternalHttpAdapter } from "./internal-http-adapter.ts";
 import type { OpenClawWorkspace } from "./openclaw-workspace.ts";
@@ -118,6 +119,14 @@ export interface SkillDispatcherDeps {
    * esta en el registry, para preservar el comportamiento single-account byte-identico.
    */
   webdockCreateAdapters?: Map<string, WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter>>;
+  /**
+   * Registry providerId->adapter para crear/borrar en proveedores NO-Webdock (Contabo, etc.).
+   * Canal PARALELO HERMANO de webdockCreateAdapters. Se consulta SOLO cuando el providerId del
+   * canal paralelo esta presente y != "webdock"; cualquier otro caso cae a la logica Webdock por
+   * accountId UNCHANGED (single-provider byte-identico). VpsProvider es asignable estructuralmente
+   * a WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter>.
+   */
+  vpsProviderAdapters?: Map<string, VpsProvider>;
   smtpSshRunner: SmtpSshRunner;
   rampScheduler: RampScheduler;
   porkbunDomainAdapter?: DomainAvailabilityAdapter;
@@ -147,6 +156,12 @@ export interface DispatchSkillHandlerInput {
    * o "ops" => cuenta-1 (webdockAdapter), byte-identico al comportamiento de hoy.
    */
   accountId?: string;
+  /**
+   * Proveedor de VPS destino para create/delete. Canal PARALELO HERMANO de accountId:
+   * NO entra a `params`. undefined o "webdock" => Webdock (resuelve por accountId, sin cambios).
+   * Presente y != "webdock" => el vpsProviderAdapters de esa key (Contabo, etc.).
+   */
+  providerId?: string;
   deps?: SkillDispatcherDeps;
   handlers?: Record<string, SkillHandlerEntry>;
 }
@@ -173,6 +188,7 @@ export interface SkillHandlerEntry {
     params: Record<string, unknown>;
     deps: SkillDispatcherDeps;
     accountId?: string;
+    providerId?: string;
   }): Promise<void>;
 }
 
@@ -242,6 +258,7 @@ export async function dispatchSkillHandler(input: DispatchSkillHandlerInput): Pr
     params: paramsValidation.data,
     deps: input.deps,
     accountId: input.accountId,
+    providerId: input.providerId,
     getResponse,
     startedAt
   });
@@ -274,6 +291,7 @@ async function invokeAndCapture(entry: SkillHandlerEntry, input: {
   params: Record<string, unknown>;
   deps: SkillDispatcherDeps;
   accountId?: string;
+  providerId?: string;
   getResponse: () => { statusCode: number; body: unknown };
   startedAt: number;
 }): Promise<DispatchResult> {
@@ -283,7 +301,8 @@ async function invokeAndCapture(entry: SkillHandlerEntry, input: {
       response: input.response,
       params: input.params,
       deps: input.deps,
-      accountId: input.accountId
+      accountId: input.accountId,
+      providerId: input.providerId
     });
     const captured = input.getResponse();
     return {
@@ -388,12 +407,12 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     paramSchema: webdockCreateParamSchema,
     timeoutMs: 120_000,
     canRollback: false,
-    invoke: ({ request, response, deps, accountId }) =>
+    invoke: ({ request, response, deps, accountId, providerId }) =>
       handleWebdockServerCreateHttp({
         request,
         response,
         auditLog: deps.auditLog,
-        adapter: resolveWebdockCreateAdapter(deps, accountId),
+        adapter: resolveWebdockCreateAdapter(deps, accountId, providerId),
         workspace: deps.workspace,
         canvasLiveEvents: deps.canvasLiveEvents,
         readCanvasState: deps.readCanvasState,
@@ -623,15 +642,27 @@ function requiredPorkbunDomainAdapter(deps: SkillDispatcherDeps): DomainAvailabi
 }
 
 /**
- * Resuelve el adapter Webdock de create/delete para el accountId pedido (5.12 multicuenta).
- * Invariante single-account byte-identico: accountId undefined o "ops" => el webdockAdapter
- * de hoy (cuenta-1), tal cual. Solo un accountId distinto presente en el registry write-capable
- * enruta a otra cuenta; cualquier accountId desconocido cae tambien a la cuenta-1 (defensivo).
+ * Resuelve el adapter de create/delete para el provider/account pedido.
+ *
+ * PRECEDENCIA (canal HERMANO providerId primero): si providerId esta presente y != "webdock" y
+ * vpsProviderAdapters tiene esa key, enruta a ESE proveedor (Contabo, etc.). En CUALQUIER otro caso
+ * (providerId ausente/"webdock", o registry no lo tiene) cae a la logica Webdock por accountId
+ * EXISTENTE, SIN CAMBIOS:
+ * - Invariante single-provider/single-account byte-identico: providerId undefined/"webdock" +
+ *   accountId undefined/"ops" => el webdockAdapter de hoy (cuenta-1 "ops"), tal cual.
+ * - Solo un accountId distinto presente en el registry write-capable enruta a otra cuenta; cualquier
+ *   accountId desconocido cae tambien a la cuenta-1 (defensivo).
  */
 function resolveWebdockCreateAdapter(
   deps: SkillDispatcherDeps,
-  accountId: string | undefined
+  accountId: string | undefined,
+  providerId?: string
 ): WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter> {
+  const provider = providerId?.trim();
+  if (provider && provider !== "webdock" && deps.vpsProviderAdapters?.has(provider)) {
+    // VpsProvider es asignable estructuralmente a WebdockServerCreateAdapter & Partial<...Delete>.
+    return deps.vpsProviderAdapters.get(provider)!;
+  }
   const normalized = accountId?.trim();
   if (!normalized || normalized === "ops" || !deps.webdockCreateAdapters) {
     return deps.webdockAdapter;

@@ -145,6 +145,12 @@ export interface ConfigureCompleteSmtpParams extends Record<string, unknown> {
   runId?: string;
   domain?: string;
   provider?: string;
+  /**
+   * Proveedor de VPS (Webdock=default, "contabo"=segundo). Canal PARALELO HERMANO de runId/provider:
+   * el orquestador lo saca de aqui y lo enruta por providerId FUERA de los `params` del step 4 (NO toca
+   * el hashInput/plan-signature). NO es el `provider` (registrar DNS route53). undefined => Webdock.
+   */
+  vpsProviderId?: string;
   requireExistingDomain?: boolean;
   brand: string;
   intent?: string;
@@ -160,6 +166,8 @@ export interface ConfigureCompleteSmtpSkillParams extends Record<string, unknown
   runId?: string;
   domain?: string;
   provider?: string;
+  /** Proveedor de VPS (Webdock=default, "contabo"=segundo). Canal paralelo; NO es el registrar DNS. */
+  vpsProviderId?: string;
   requireExistingDomain?: boolean;
   brand: string;
   intent?: string;
@@ -394,6 +402,9 @@ export const configureCompleteSmtpSkillParamSchema = schema<ConfigureCompleteSmt
     ...(input.runId === undefined || input.runId === null || input.runId === "" ? {} : { runId: boundedId(input.runId, "runId", 64) }),
     ...(input.domain === undefined || input.domain === null || input.domain === "" ? {} : { domain: domain(input.domain, "domain") }),
     ...(input.provider === undefined || input.provider === null || input.provider === "" ? {} : { provider: providerId(input.provider, "provider") }),
+    // Canal PARALELO HERMANO (5.12 provider): sibling top-level con guarda undefined -> {} (igual que
+    // provider/runId). NUNCA va dentro de un step `params:{}`; el orquestador lo enruta por providerId.
+    ...(input.vpsProviderId === undefined || input.vpsProviderId === null || input.vpsProviderId === "" ? {} : { vpsProviderId: providerId(input.vpsProviderId, "vpsProviderId") }),
     ...(input.requireExistingDomain === undefined || input.requireExistingDomain === null ? {} : { requireExistingDomain: boolean(input.requireExistingDomain, "requireExistingDomain") }),
     brand: string(input.brand, "brand"),
     ...(input.intent === undefined || input.intent === null || input.intent === "" ? {} : { intent: string(input.intent, "intent") }),
