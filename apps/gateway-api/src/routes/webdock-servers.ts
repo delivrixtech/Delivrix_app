@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
+  VpsProvider,
   WebdockCreateServerInput,
   WebdockCreateServerResult,
   WebdockDeleteServerResult,
@@ -99,8 +100,17 @@ export interface WebdockServerDeleteDependencies {
    * (cuenta-1 "ops") => byte-identico al delete previo cuando no hay multicuenta.
    */
   accountAdapters?: Map<string, WebdockServerDeleteAdapter>;
+  /**
+   * Registry providerId->adapter para borrar en proveedores NO-Webdock (Contabo, etc.). Canal
+   * PARALELO HERMANO de accountAdapters: si el providerId pedido (body.providerId o el arg providerId)
+   * esta aqui y != "webdock", el delete va a ESE proveedor (rollback del VPS Contabo); si no, cae a la
+   * logica Webdock por accountId SIN CAMBIOS. VpsProvider es asignable estructuralmente al delete adapter.
+   */
+  vpsProviderAdapters?: Map<string, VpsProvider>;
   /** Cuenta destino del delete cuando no viene en el body. undefined/"ops" => `adapter`. */
   accountId?: string;
+  /** Proveedor destino del delete cuando no viene en el body. undefined/"webdock" => logica Webdock. */
+  providerId?: string;
   workspace: OpenClawWorkspace;
   canvasLiveEvents?: CanvasEmitter;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
@@ -115,6 +125,7 @@ interface WebdockServerDeleteBody {
   taskId?: unknown;
   reason?: unknown;
   accountId?: unknown;
+  providerId?: unknown;
 }
 
 interface WebdockServerInventory {
@@ -578,7 +589,11 @@ export async function handleWebdockServerDeleteHttp(
   // luego "ops". undefined/"ops"/desconocida => deps.adapter (cuenta-1) = byte-identico al delete previo.
   const requestedAccountId =
     (typeof body.accountId === "string" && body.accountId.trim()) || deps.accountId?.trim() || undefined;
-  const adapter = resolveWebdockDeleteAdapter(deps, requestedAccountId);
+  // Proveedor destino del delete (canal HERMANO): body.providerId tiene prioridad, luego deps.providerId.
+  // undefined/"webdock"/desconocido => logica Webdock por accountId, SIN CAMBIOS.
+  const requestedProviderId =
+    (typeof body.providerId === "string" && body.providerId.trim()) || deps.providerId?.trim() || undefined;
+  const adapter = resolveWebdockDeleteAdapter(deps, requestedAccountId, requestedProviderId);
 
   await emitTaskDeclare(deps.canvasLiveEvents, taskId, `Cleanup Webdock VPS · ${serverSlug}`, actorId, now);
   const approval = await findRecentApproval({
@@ -748,13 +763,26 @@ export class WebdockServerDeleteInputError extends Error {
 }
 
 /**
- * Resuelve el adapter Webdock de delete para la cuenta pedida (5.12 multicuenta). undefined/"ops"/
- * cuenta-desconocida => el `adapter` escalar (cuenta-1 "ops"), byte-identico al delete previo.
+ * Resuelve el adapter de delete para el provider/account pedido.
+ *
+ * PRECEDENCIA (canal HERMANO providerId primero): si providerId esta presente y != "webdock" y el
+ * vpsProviderAdapters tiene esa key con un deleteServer() disponible, enruta a ESE proveedor (rollback
+ * del VPS Contabo). En CUALQUIER otro caso cae a la logica Webdock por accountId EXISTENTE, SIN CAMBIOS:
+ * undefined/"ops"/cuenta-desconocida => el `adapter` escalar (cuenta-1 "ops"), byte-identico al delete previo.
  */
 function resolveWebdockDeleteAdapter(
-  deps: Pick<WebdockServerDeleteDependencies, "adapter" | "accountAdapters">,
-  accountId: string | undefined
+  deps: Pick<WebdockServerDeleteDependencies, "adapter" | "accountAdapters" | "vpsProviderAdapters">,
+  accountId: string | undefined,
+  providerId?: string
 ): WebdockServerDeleteAdapter {
+  const provider = providerId?.trim();
+  if (provider && provider !== "webdock" && deps.vpsProviderAdapters?.has(provider)) {
+    const candidate = deps.vpsProviderAdapters.get(provider)!;
+    if (typeof candidate.deleteServer === "function") {
+      // VpsProvider con deleteServer presente satisface estructuralmente WebdockServerDeleteAdapter.
+      return candidate as WebdockServerDeleteAdapter;
+    }
+  }
   if (!accountId || accountId === "ops" || !deps.accountAdapters) {
     return deps.adapter;
   }

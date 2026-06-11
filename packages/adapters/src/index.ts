@@ -7,3 +7,5 @@ export * from "./porkbun-adapter.ts";
 export * from "./proxmox-adapter.ts";
 export * from "./webdock-adapter.ts";
 export * from "./webdock-real-adapter.ts";
+export * from "./vps-provider.ts";
+export * from "./contabo-adapter.ts";

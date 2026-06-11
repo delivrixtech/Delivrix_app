@@ -84,6 +84,11 @@ export interface ApprovalStepInput extends SkillInvocationInput {
    * `params`, NO entra al hashInput. undefined => cuenta-1 "ops" (single-account byte-identico).
    */
   serverAccountId?: string;
+  /**
+   * Proveedor de VPS destino del create (Contabo, etc.). Canal PARALELO HERMANO de serverAccountId:
+   * viaja fuera de `params`, NO entra al hashInput. undefined o "webdock" => Webdock (byte-identico).
+   */
+  providerId?: string;
 }
 
 export interface PlanApprovalLookupInput {
@@ -177,6 +182,11 @@ export interface PlanApprovedStepInput extends SkillInvocationInput {
    * hashInput. undefined => cuenta-1 "ops" (single-account byte-identico).
    */
   serverAccountId?: string;
+  /**
+   * Proveedor de VPS destino del create. Canal PARALELO HERMANO de serverAccountId fuera de
+   * `params`/hashInput. undefined o "webdock" => Webdock (byte-identico).
+   */
+  providerId?: string;
 }
 
 export type PlanApprovedStepDecision =
@@ -244,6 +254,11 @@ export interface RollbackProposalInput {
    * cuenta, no a la cuenta-1, o el server queda huerfano. runState viejo sin el campo => "ops".
    */
   serverAccountId?: string;
+  /**
+   * Proveedor de VPS donde vive el server a borrar. Canal PARALELO HERMANO de serverAccountId: el
+   * delete debe enrutar a ESTE proveedor (Contabo) o el VPS queda huerfano. undefined => Webdock.
+   */
+  providerId?: string;
 }
 
 interface AuditSink {
@@ -405,6 +420,12 @@ interface SmtpRunState {
    * serverSlug/serverIpv4 ANTES del create, asi un resume firmado retoma la cuenta correcta.
    */
   serverAccountId?: string;
+  /**
+   * Proveedor de VPS donde se creo el server (Contabo, etc.). OPCIONAL para backward-compat:
+   * runStates viejos sin el campo => Webdock en rollback/delete. Se persiste junto a serverAccountId
+   * ANTES del create, asi un resume firmado retoma el proveedor correcto. undefined => Webdock.
+   */
+  providerId?: string;
   selector: string;
   verifiedOwnedDomain?: string;
   budgetSpentUsd: number;
@@ -681,6 +702,15 @@ export async function configureCompleteSmtp(
     // reintenta en la siguiente, hasta crear o agotarlas. El accountId va por canal paralelo (no
     // re-firma el plan). En RESUME el primer intento reusa la cuenta ya persistida (donde podria vivir
     // el server); con solo "ops" write-capable es identico al de hoy (1 iteracion, byte-identico).
+    // Proveedor de VPS (Contabo, etc.). Canal PARALELO HERMANO de serverAccountId: NO entra a params/
+    // hashInput. Es una eleccion FIJA del run (no participa del failover de cuentas, que es Webdock
+    // multi-cuenta de pago). En RESUME reusamos el persistido; en run fresco viene del skill param
+    // vpsProviderId. undefined o "webdock" => Webdock (byte-identico). Se persiste ANTES del create
+    // junto a serverAccountId para que un resume firmado retome el proveedor correcto en rollback/delete.
+    const vpsProviderId = resolveVpsProviderId(effectiveInput, runState);
+    if (vpsProviderId) {
+      runState.providerId = vpsProviderId;
+    }
     const excludedFailoverAccounts = new Set<string>();
     let vps: ConfigureCompleteSmtpStepResult | undefined;
     let lastCreateFailure: unknown;
@@ -719,8 +749,8 @@ export async function configureCompleteSmtp(
           approvalTimeoutMs,
           estimatedCostUsd: 4.30 / 30,
           budgetUsdMax: effectiveInput.budgetUsdMax,
-          // accountId NO entra a params (idempotencia/resume + el allowlist del schema lo descartaria):
-          // viaja por el canal paralelo serverAccountId.
+          // accountId/providerId NO entran a params (idempotencia/resume + el allowlist del schema los
+          // descartaria): viajan por los canales paralelos serverAccountId / providerId.
           params: {
             runId,
             profile: "bit",
@@ -729,6 +759,7 @@ export async function configureCompleteSmtp(
             imageSlug: "ubuntu-2404"
           },
           serverAccountId,
+          providerId: vpsProviderId,
           stepResults
         });
         break; // VPS creado
@@ -1047,7 +1078,10 @@ export async function configureCompleteSmtp(
         reason: `configure_complete_smtp failed at step ${failure.step}: ${failure.message}`,
         // Enrutar el delete a la cuenta donde se creo el server (5.12). runState viejo sin el
         // campo => "ops" (backward-compat), igual que antes del cableado multicuenta.
-        serverAccountId: runState?.serverAccountId ?? DEFAULT_CREATION_ACCOUNT_ID
+        serverAccountId: runState?.serverAccountId ?? DEFAULT_CREATION_ACCOUNT_ID,
+        // Enrutar el delete al proveedor donde se creo el server (canal HERMANO). undefined =>
+        // Webdock: el spread condicional deja el payload BYTE-IDENTICO al de hoy en runs Webdock.
+        ...(runState?.providerId ? { providerId: runState.providerId } : {})
       });
       rollbackProposalId = rollback.proposalId;
     }
@@ -1578,6 +1612,7 @@ async function runMutatingStepWithState(input: {
   estimatedCostUsd?: number;
   budgetUsdMax: number;
   serverAccountId?: string;
+  providerId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   const skipped = await skipDoneStep({
@@ -1920,6 +1955,7 @@ async function runGatedStep(input: {
   estimatedCostUsd?: number;
   budgetUsdMax: number;
   serverAccountId?: string;
+  providerId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   await verifyAuditChain(input.deps);
@@ -1961,8 +1997,9 @@ async function runGatedStep(input: {
     actorId: input.actorId,
     approvalTimeoutMs,
     estimatedCostUsd: input.estimatedCostUsd,
-    // Canal paralelo (no entra a params/hashInput); el create gated lo usa para enrutar la cuenta.
-    ...(input.serverAccountId ? { serverAccountId: input.serverAccountId } : {})
+    // Canales paralelos (no entran a params/hashInput); el create gated los usa para enrutar cuenta/proveedor.
+    ...(input.serverAccountId ? { serverAccountId: input.serverAccountId } : {}),
+    ...(input.providerId ? { providerId: input.providerId } : {})
   });
 
   if (decision.status === "executed") {
@@ -2078,6 +2115,7 @@ async function runMutatingStep(input: {
   estimatedCostUsd?: number;
   budgetUsdMax: number;
   serverAccountId?: string;
+  providerId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   if (input.planApproval) {
@@ -2093,6 +2131,7 @@ async function runMutatingStep(input: {
       estimatedCostUsd: input.estimatedCostUsd,
       budgetUsdMax: input.budgetUsdMax,
       serverAccountId: input.serverAccountId,
+      providerId: input.providerId,
       stepResults: input.stepResults
     });
   }
@@ -2113,6 +2152,20 @@ async function runMutatingStep(input: {
     );
   }
 
+  // Guard de proveedor del camino GATED (HERMANO del de multicuenta). El processor gated single-account
+  // NO recibe el providerId, asi que crearia el VPS en Webdock mientras el rollback/delete enruta a
+  // runState.providerId (Contabo) -> VPS HUERFANO. Si el gated pidio un proveedor != Webdock, abortamos
+  // LIMPIO ANTES de crear. (undefined/"webdock" NO dispara; el camino autonomo con firma de plan
+  // propaga el providerId de verdad por arriba via executePlanApprovedStep -> dispatch.)
+  if (isNonWebdockProviderId(input.providerId)) {
+    throw new OrchestratorFailure(
+      "failed",
+      input.step,
+      input.skill,
+      "gated_provider_unsupported"
+    );
+  }
+
   return runGatedStep(input);
 }
 
@@ -2128,6 +2181,7 @@ async function runPlanApprovedStep(input: {
   estimatedCostUsd?: number;
   budgetUsdMax: number;
   serverAccountId?: string;
+  providerId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   if (!input.deps.executePlanApprovedStep) {
@@ -2171,8 +2225,10 @@ async function runPlanApprovedStep(input: {
     inputHash,
     estimatedCostUsd: input.estimatedCostUsd,
     planApproval: input.planApproval,
-    // Canal paralelo (no entra a params/hashInput); el dispatch del create lo usa como accountId destino.
-    ...(input.serverAccountId ? { serverAccountId: input.serverAccountId } : {})
+    // Canales paralelos (no entran a params/hashInput); el dispatch del create los usa como accountId/
+    // providerId destino. providerId undefined/"webdock" => Webdock (byte-identico).
+    ...(input.serverAccountId ? { serverAccountId: input.serverAccountId } : {}),
+    ...(input.providerId ? { providerId: input.providerId } : {})
   });
 
   if (decision.status === "executed") {
@@ -3450,6 +3506,34 @@ function creationRateWindow(value: string | undefined): CreationRateWindow {
 
 function creationRateFailClosed(value: string | undefined): boolean {
   return value === "closed" || value === "fail_closed" || value === "true" || value === "1";
+}
+
+/**
+ * Resuelve el proveedor de VPS del run (canal HERMANO de serverAccountId). Fuente:
+ * (1) runState.providerId si ya se persistio (RESUME: el server podria vivir alli);
+ * (2) el skill param vpsProviderId en un run fresco. Normaliza a minusculas. Devuelve
+ * undefined cuando esta ausente o es "webdock", de modo que el spread condicional aguas
+ * arriba NO agregue la clave providerId y el camino Webdock quede BYTE-IDENTICO (no toca
+ * params/hashInput/plan-signature). NUNCA reusa el `provider` (registrar DNS route53).
+ */
+function resolveVpsProviderId(
+  input: ConfigureCompleteSmtpParams,
+  state: SmtpRunState
+): string | undefined {
+  const raw = state.providerId ?? (typeof input.vpsProviderId === "string" ? input.vpsProviderId : undefined);
+  return normalizeVpsProviderId(raw);
+}
+
+function normalizeVpsProviderId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized === "webdock") return undefined;
+  return normalized;
+}
+
+/** True si hay un proveedor de VPS explicito distinto de Webdock (dispara el guard gated). */
+function isNonWebdockProviderId(value: string | undefined): boolean {
+  return normalizeVpsProviderId(value) !== undefined;
 }
 
 function hashInput(value: unknown): string {
