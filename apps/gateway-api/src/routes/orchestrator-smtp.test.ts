@@ -567,6 +567,53 @@ test("DoD#2 multicuenta selecciona la cuenta con budget y propaga su accountId a
   assert.equal(ctx.rollbacks[0].serverAccountId, "secondary");
 });
 
+test("failover de pago: si una cuenta rechaza el pago en step 4, el orquestador crea en la siguiente solo", async () => {
+  // ops y secondary con budget; el governor elige "ops" por tie-break. ops rechaza el PAGO -> el
+  // orquestador excluye ops y reintenta en secondary, sin intervencion humana.
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { servers: [], sourceKind: "live", responseOk: true },
+      secondary: { servers: [], sourceKind: "live", responseOk: true }
+    }
+  });
+  // El create en "ops" rechaza el pago (webdock_payment_failed); en "secondary" procede normal.
+  ctx.deps.executePlanApprovedStep = (() => {
+    const original = ctx.deps.executePlanApprovedStep!;
+    return async (input: PlanApprovedStepInput) => {
+      if (input.step === 4 && input.serverAccountId === "ops") {
+        ctx.planExecutions.push(input);
+        return {
+          status: "execution_failed",
+          planStepTokenId: "plan-step-4-ops",
+          outcome: { error: "Payment failed during server creation", failureCode: "webdock_payment_failed" },
+          durationMs: 4,
+          error: "webdock_payment_failed"
+        };
+      }
+      return original(input);
+    };
+  })();
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  // El run COMPLETA: el failover creo el VPS en secondary tras el rechazo de pago de ops.
+  assert.equal(result.status, "completed");
+  // Hubo 2 intentos del step 4: primero ops (rechazo de pago), luego secondary (exito).
+  const step4Attempts = ctx.planExecutions.filter((entry) => entry.step === 4);
+  assert.equal(step4Attempts.length, 2);
+  assert.equal(step4Attempts[0].serverAccountId, "ops");
+  assert.equal(step4Attempts[1].serverAccountId, "secondary");
+  // runState persiste la cuenta GANADORA (secondary), no la que rechazo el pago.
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.serverAccountId, "secondary");
+});
+
 test("DoD#5 backward-compat: un runState viejo SIN serverAccountId hace rollback/delete contra ops sin error", async () => {
   // Sembramos un runState legacy (sin serverAccountId) con el step 4 ya hecho, server creado, y
   // forzamos que el bind (step 8) falle al reanudar -> el rollback debe defaultear a "ops".
