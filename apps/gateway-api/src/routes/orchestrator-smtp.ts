@@ -956,6 +956,14 @@ export async function configureCompleteSmtp(
   } catch (error) {
     const failure = normalizeFailure(error);
     if (runState) {
+      // Liberar el lease SOLO del create de VPS, que es idempotente (resolveExistingServerForCreate
+      // reusa por hostname): asi un reintento tras un fallo recuperable (ej. webdock_payment_failed)
+      // NO queda bloqueado los 45min del lease (HTTP 423) ni puede crear un VPS doble. El resto de
+      // steps mantiene el lease como proteccion anti-doble-efecto (ej. compra de dominio en step 2).
+      // NO liberar en fallos de contencion de lock: ese lease es de otro intento en vuelo.
+      if (failure.skill === "create_webdock_server" && !STEP_LOCK_CONTENTION_FAILURES.has(failure.message)) {
+        releaseRunStepLeaseOnFailure(runState, failure.step, failure.message, deps.now?.() ?? new Date());
+      }
       runState.status = failure.status === "cancelled_by_operator" ? "cancelled_by_operator" : "failed";
       await persistSmtpRunState(deps, runState).catch(() => undefined);
     }
@@ -1730,6 +1738,42 @@ async function markRunStepDone(input: {
     updatedAt: now.toISOString()
   };
   await persistSmtpRunState(input.deps, input.runState);
+}
+
+/**
+ * Fallos que provienen de la contencion del lock (no de la ejecucion del step): el lease in_flight
+ * pertenece a OTRO intento en vuelo, asi que NO debe liberarse al capturarlos.
+ */
+const STEP_LOCK_CONTENTION_FAILURES = new Set([
+  "step_in_flight",
+  "step_already_done",
+  "step_reconciliation_required"
+]);
+
+/**
+ * Libera el lease de un step que quedo in_flight tras un fallo de EJECUCION, para que un reintento no
+ * tenga que esperar los 45min del lease (smtpRunStepLeaseMs). Lo deja "pending" (reintentable) y
+ * registra el error en lastError. Solo toca steps in_flight; nunca un done. Devuelve true si libero.
+ */
+function releaseRunStepLeaseOnFailure(
+  runState: SmtpRunState | undefined,
+  step: number,
+  reason: string,
+  now: Date
+): boolean {
+  if (!runState) return false;
+  const key = String(step);
+  const existing = runState.steps[key];
+  if (!existing || existing.status !== "in_flight") return false;
+  runState.steps[key] = {
+    ...existing,
+    status: "pending",
+    leaseUntil: undefined,
+    attemptId: undefined,
+    lastError: reason.slice(0, 500),
+    updatedAt: now.toISOString()
+  };
+  return true;
 }
 
 async function runReadOnlyStep(input: {

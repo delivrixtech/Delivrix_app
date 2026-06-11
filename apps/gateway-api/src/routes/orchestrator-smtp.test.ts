@@ -1443,6 +1443,47 @@ test("configureCompleteSmtp persists write-ahead in_flight before a plan-approve
   assert.deepEqual(ctx.planExecutions.map((entry) => entry.step), [2]);
 });
 
+test("configureCompleteSmtp releases the create_webdock_server lease on failure so a retry is not 423-blocked", async () => {
+  const planDecisions: Record<number, PlanApprovedStepDecision> = {
+    4: {
+      status: "execution_failed",
+      planStepTokenId: "plan-step-4",
+      outcome: { error: "webdock_payment_failed" },
+      durationMs: 2,
+      error: "webdock_payment_failed"
+    }
+  };
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    planDecisions
+  });
+  const input = {
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  };
+  const first = await configureCompleteSmtp(input, ctx.deps);
+  assert.equal(first.status, "failed");
+  assert.equal(first.failedStep, 4);
+
+  // El create de VPS es idempotente: su lease se libera tras el fallo -> step "pending", sin lease,
+  // con el error registrado. Asi un reintento NO queda bloqueado 45min con HTTP 423 step_in_flight.
+  const state = await readRunState(ctx.workspace, "run-1");
+  assert.equal(state.steps["4"].status, "pending");
+  assert.equal(state.steps["4"].leaseUntil, undefined);
+  assert.equal(state.steps["4"].lastError, "webdock_payment_failed");
+
+  // Reintento inmediato (simula pago arreglado): NO recibe step_in_flight y completa el run.
+  delete planDecisions[4];
+  const retry = await configureCompleteSmtp(input, ctx.deps);
+  assert.notEqual(retry.error, "step_in_flight");
+  assert.equal(retry.status, "completed");
+  const finalState = await readRunState(ctx.workspace, "run-1");
+  assert.equal(finalState.steps["4"].status, "done");
+});
+
 test("configureCompleteSmtp retries an expired in_flight step with the same input hash", async () => {
   const planDecisions: Record<number, PlanApprovedStepDecision> = {
     2: {
