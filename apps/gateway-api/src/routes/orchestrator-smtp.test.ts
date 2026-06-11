@@ -614,6 +614,47 @@ test("failover de pago: si una cuenta rechaza el pago en step 4, el orquestador 
   assert.equal(state.serverAccountId, "secondary");
 });
 
+test("failover de pago: si TODAS las cuentas rechazan el pago, el run falla limpio sin loop infinito", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { servers: [], sourceKind: "live", responseOk: true },
+      secondary: { servers: [], sourceKind: "live", responseOk: true }
+    }
+  });
+  // Ambas cuentas rechazan el pago en el step 4.
+  ctx.deps.executePlanApprovedStep = (() => {
+    const original = ctx.deps.executePlanApprovedStep!;
+    return async (input: PlanApprovedStepInput) => {
+      if (input.step === 4) {
+        ctx.planExecutions.push(input);
+        return {
+          status: "execution_failed",
+          planStepTokenId: `plan-step-4-${input.serverAccountId}`,
+          outcome: { error: "Payment failed during server creation", failureCode: "webdock_payment_failed" },
+          durationMs: 4,
+          error: "webdock_payment_failed"
+        };
+      }
+      return original(input);
+    };
+  })();
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  // Run falla (ninguna cuenta pudo crear), SIN loop infinito: probo AMBAS cuentas una vez y paro.
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 4);
+  const step4Attempts = ctx.planExecutions.filter((entry) => entry.step === 4);
+  assert.equal(step4Attempts.length, 2);
+  assert.deepEqual([...new Set(step4Attempts.map((entry) => entry.serverAccountId))].sort(), ["ops", "secondary"]);
+});
+
 test("DoD#5 backward-compat: un runState viejo SIN serverAccountId hace rollback/delete contra ops sin error", async () => {
   // Sembramos un runState legacy (sin serverAccountId) con el step 4 ya hecho, server creado, y
   // forzamos que el bind (step 8) falle al reanudar -> el rollback debe defaultear a "ops".

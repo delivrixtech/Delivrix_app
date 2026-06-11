@@ -329,8 +329,12 @@ const minEstimatedCostUsd = 15 + 4.30 / 30;
 const smtpRunStateVersion = "smtp-run-state/v1";
 const smtpRunStateLockLeaseMs = 40 * 60 * 1000;
 const smtpRunStepLeaseMs = 45 * 60 * 1000;
-/** Tope de cuentas a probar en el failover de pago del create (step 4). Cubre las write-capable. */
-const smtpCreateAccountFailoverMaxAttempts = 6;
+/**
+ * Safety del loop de failover de pago (step 4) contra loop infinito. El terminador REAL es el break
+ * por "" de resolveCreationAccount (todas las write-capable excluidas), que ocurre en <=N+1 iteraciones
+ * con N cuentas; este tope alto solo cubre un bug teorico + holgura para agregar muchas cuentas.
+ */
+const smtpCreateAccountFailoverMaxAttempts = 25;
 const route53DomainRegistrationWaitMaxMs = 1_800_000;
 const route53DomainRegistrationWaitPollMs = 30_000;
 const smtpRunLocalLocks = new Map<string, Promise<void>>();
@@ -680,6 +684,8 @@ export async function configureCompleteSmtp(
     const excludedFailoverAccounts = new Set<string>();
     let vps: ConfigureCompleteSmtpStepResult | undefined;
     let lastCreateFailure: unknown;
+    // El break por "" (todas las write-capable excluidas) es el terminador real -> cubre CUALQUIER
+    // numero de cuentas; smtpCreateAccountFailoverMaxAttempts es solo safety contra loop infinito.
     for (let attempt = 0; attempt < smtpCreateAccountFailoverMaxAttempts; attempt++) {
       const reuseAccountId = attempt === 0
         && runState.serverAccountId
