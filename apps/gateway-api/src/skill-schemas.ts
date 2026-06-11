@@ -404,7 +404,7 @@ export const configureCompleteSmtpSkillParamSchema = schema<ConfigureCompleteSmt
     ...(input.provider === undefined || input.provider === null || input.provider === "" ? {} : { provider: providerId(input.provider, "provider") }),
     // Canal PARALELO HERMANO (5.12 provider): sibling top-level con guarda undefined -> {} (igual que
     // provider/runId). NUNCA va dentro de un step `params:{}`; el orquestador lo enruta por providerId.
-    ...(input.vpsProviderId === undefined || input.vpsProviderId === null || input.vpsProviderId === "" ? {} : { vpsProviderId: providerId(input.vpsProviderId, "vpsProviderId") }),
+    ...(input.vpsProviderId === undefined || input.vpsProviderId === null || input.vpsProviderId === "" ? {} : { vpsProviderId: vpsProviderId(input.vpsProviderId, "vpsProviderId") }),
     ...(input.requireExistingDomain === undefined || input.requireExistingDomain === null ? {} : { requireExistingDomain: boolean(input.requireExistingDomain, "requireExistingDomain") }),
     brand: string(input.brand, "brand"),
     ...(input.intent === undefined || input.intent === null || input.intent === "" ? {} : { intent: string(input.intent, "intent") }),
@@ -658,6 +658,10 @@ function providerId(value: unknown, field: string): string {
     throw new SkillSchemaError(`${field} must be provider id-safe`);
   }
   return normalized;
+}
+
+function vpsProviderId(value: unknown, field: string): "webdock" | "contabo" {
+  return oneOf(providerId(value, field), field, ["webdock", "contabo"] as const);
 }
 
 function publicKey(value: unknown, field: string): string {

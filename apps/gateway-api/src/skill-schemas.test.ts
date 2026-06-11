@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactIntentParamSchema } from "./skill-schemas.ts";
+import {
+  compactIntentParamSchema,
+  configureCompleteSmtpSkillParamSchema
+} from "./skill-schemas.ts";
 import {
   EpisodicScratchValidationError,
   validateEpisodicEntryInput,
@@ -121,4 +124,38 @@ test("agent producer output passes the storage write-gate where raw free-text wo
     source: "openclaw"
   };
   assert.doesNotThrow(() => validateEpisodicEntryInput(conformedEntry));
+});
+
+test("configureCompleteSmtpSkillParamSchema rejects unknown VPS providers fail-closed", () => {
+  const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
+    brand: "delivrix",
+    domain: "example.com",
+    provider: "route53",
+    vpsProviderId: "contaboo",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@example.com",
+    testEmailSubject: "Smoke",
+    testEmailBody: "Smoke body"
+  });
+
+  assert.equal(parsed.success, false);
+  if (parsed.success) assert.fail("unknown provider should be rejected");
+  assert.match(parsed.error.issues.join("\n"), /vpsProviderId/);
+});
+
+test("configureCompleteSmtpSkillParamSchema normalizes known VPS providers", () => {
+  const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
+    brand: "delivrix",
+    domain: "example.com",
+    provider: "route53",
+    vpsProviderId: "Contabo",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@example.com",
+    testEmailSubject: "Smoke",
+    testEmailBody: "Smoke body"
+  });
+
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail(parsed.error.issues.join("\n"));
+  assert.equal(parsed.data.vpsProviderId, "contabo");
 });

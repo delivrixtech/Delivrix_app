@@ -587,6 +587,7 @@ export async function configureCompleteSmtp(
     releaseRunLock = await acquireSmtpRunStateLock(deps, runId);
     runState = await loadOrCreateSmtpRunState({ deps, runId, params: input, startedAt });
     effectiveInput = inputFromRunState(input, runState);
+    assertKnownNonWebdockVpsProviderId(resolveVpsProviderId(effectiveInput, runState));
     selector = runState.selector;
     chosenDomain = runState.chosenDomain ?? "";
     serverSlug = runState.serverSlug ?? "";
@@ -708,6 +709,7 @@ export async function configureCompleteSmtp(
     // vpsProviderId. undefined o "webdock" => Webdock (byte-identico). Se persiste ANTES del create
     // junto a serverAccountId para que un resume firmado retome el proveedor correcto en rollback/delete.
     const vpsProviderId = resolveVpsProviderId(effectiveInput, runState);
+    assertKnownNonWebdockVpsProviderId(vpsProviderId);
     if (vpsProviderId) {
       runState.providerId = vpsProviderId;
     }
@@ -3574,6 +3576,11 @@ function normalizeVpsProviderId(value: unknown): string | undefined {
   const normalized = value.trim().toLowerCase();
   if (!normalized || normalized === "webdock") return undefined;
   return normalized;
+}
+
+function assertKnownNonWebdockVpsProviderId(value: string | undefined): void {
+  if (value === undefined || value === "contabo") return;
+  throw new OrchestratorFailure("failed", 0, "vps_provider_guard", `unknown_vps_provider:${value}`);
 }
 
 /** True si hay un proveedor de VPS explicito distinto de Webdock (dispara el guard gated). */

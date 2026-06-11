@@ -828,6 +828,26 @@ test("PROVIDER#a2 Webdock-unchanged: vpsProviderId='webdock' se trata como ausen
   assert.equal(state.providerId, undefined);
 });
 
+test("PROVIDER#guard unknown vpsProviderId falla antes de pasos mutantes", async () => {
+  const ctx = createDeps();
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    vpsProviderId: "contaboo"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.equal(result.error, "unknown_vps_provider:contaboo");
+  assert.deepEqual(result.stepResults, []);
+  assert.deepEqual(ctx.approvals, []);
+  assert.deepEqual(ctx.planExecutions, []);
+  assert.equal(ctx.rollbacks.length, 0);
+});
+
 test("PROVIDER#d plan-signed con vpsProviderId='contabo' NO cambia el scope hash firmado; el create viaja por canal paralelo", async () => {
   const plan = signedPlanApproval();
   const scopeHashBefore = plan.scopeHash;
