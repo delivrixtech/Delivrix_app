@@ -2,8 +2,8 @@
  * Infraestructura — Hito 5.12 Multi-provider inventory MVP.
  *
  * Vista unificada read-only de los proveedores que Delivrix gobierna:
- * Webdock × 3 cuentas + AWS Route53 + AWS Domains + IONOS Cloud DNS + servidor
- * físico (placeholder). Datos vienen del endpoint unificado
+ * Webdock × 5 cuentas + Contabo + AWS Route53 + AWS Domains + IONOS Cloud DNS
+ * + servidor físico (placeholder). Datos vienen del endpoint unificado
  * GET /v1/infrastructure/inventory (Codex backend Hito 5.12).
  *
  * Mientras el endpoint no esté expuesto el feature muestra empty/error state
@@ -206,8 +206,9 @@ function Hero({ lastUpdateMs }: { lastUpdateMs: number }) {
         <p
           className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]"
         >
-          Webdock × 3 cuentas, AWS Route53, AWS Domains, IONOS Cloud DNS y el servidor
-          físico. Solo lectura. Cada fetch queda en audit chain.
+          Webdock × 5 cuentas, Contabo conectado sin servidores vivos, AWS Route53,
+          AWS Domains, IONOS Cloud DNS y el servidor físico. Solo lectura. Cada fetch
+          queda en audit chain.
         </p>
       </div>
       <div className="shrink-0 self-start sm:self-auto">

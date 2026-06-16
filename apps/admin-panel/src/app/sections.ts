@@ -145,7 +145,7 @@ export const sections: SectionDescriptor[] = [
     eyebrow: "Hito 5.12 · Multi-provider",
     title: "Inventario multi-proveedor",
     description:
-      "Lectura unificada de servidores y DNS: Webdock × 3 cuentas, AWS Route53, AWS Domains, IONOS Cloud DNS y servidor físico. Todo read-only auditado.",
+      "Lectura unificada de servidores y DNS: Webdock × 5 cuentas, Contabo conectado sin servidores vivos, AWS Route53, AWS Domains, IONOS Cloud DNS y servidor físico. Todo read-only auditado.",
     endpoint: "/v1/infrastructure/inventory"
   },
   {

@@ -17,7 +17,7 @@ mkdir -p "${LOG_DIR}"
 
 is_alive() {
   local pid="$1"
-  kill -0 "${pid}" 2>/dev/null
+  ps -p "${pid}" >/dev/null 2>&1
 }
 
 command_for_pid() {
@@ -31,7 +31,10 @@ stop_gateway_pid() {
     return 0
   fi
 
-  kill "${pid}" 2>/dev/null || true
+  if ! kill "${pid}" 2>/dev/null; then
+    echo "Could not send SIGTERM to gateway PID ${pid}." >&2
+    return 1
+  fi
   for _ in {1..20}; do
     if ! is_alive "${pid}"; then
       return 0
@@ -39,7 +42,18 @@ stop_gateway_pid() {
     sleep 0.2
   done
 
-  echo "Gateway PID ${pid} did not stop after SIGTERM." >&2
+  if ! kill -9 "${pid}" 2>/dev/null; then
+    echo "Could not send SIGKILL to gateway PID ${pid}." >&2
+    return 1
+  fi
+  for _ in {1..20}; do
+    if ! is_alive "${pid}"; then
+      return 0
+    fi
+    sleep 0.2
+  done
+
+  echo "Gateway PID ${pid} did not stop after SIGKILL." >&2
   return 1
 }
 
