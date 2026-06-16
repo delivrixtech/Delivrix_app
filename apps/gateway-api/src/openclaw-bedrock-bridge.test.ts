@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -154,6 +154,37 @@ test("OpenClawBedrockBridge falls back to OPENCLAW_SYSTEM_PROMPT path when bundl
   assert.ok(payload);
   assert.match(String((payload as Record<string, unknown>).system), /^Fallback system prompt/);
   assert.match(String((payload as Record<string, unknown>).system), /<live_context generatedAt="2026-05-29T05:00:00.000Z" grounding="inventory_and_verified_facts">/);
+});
+
+test("OpenClawBedrockBridge reloads the system prompt when the bundle file changes", async () => {
+  const systemPromptPath = await promptFile("System prompt v1");
+  const payloads: Array<Record<string, unknown>> = [];
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath,
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    client: {
+      send: async (command) => {
+        payloads.push(JSON.parse(String(command.input.body)));
+        return { body: [streamJson({ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } })] };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-1", message: "hola" });
+  await bridge.streamHistory("msg-1", {});
+
+  await writeFile(systemPromptPath, "System prompt v2 with Contabo", "utf8");
+  await utimes(systemPromptPath, new Date("2026-06-16T14:00:00.000Z"), new Date("2026-06-16T14:00:00.000Z"));
+
+  await bridge.sendMessage({ msgId: "msg-2", message: "proveedores" });
+  await bridge.streamHistory("msg-2", {});
+
+  assert.match(String(payloads[0].system), /^System prompt v1/);
+  assert.match(String(payloads[1].system), /^System prompt v2 with Contabo/);
 });
 
 test("OpenClawBedrockBridge injects read-only live context and tolerates endpoint failures", async () => {

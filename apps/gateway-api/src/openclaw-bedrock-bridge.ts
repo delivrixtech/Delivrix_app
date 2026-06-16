@@ -5,7 +5,7 @@ import {
   type InvokeModelWithResponseStreamCommandInput
 } from "@aws-sdk/client-bedrock-runtime";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AuditEventInput } from "../../../packages/domain/src/index.ts";
 import type {
@@ -58,6 +58,12 @@ type FetchLike = typeof fetch;
 
 interface ConversationTurn {
   role: "user" | "assistant";
+  content: string;
+}
+
+interface CachedSystemPrompt {
+  path: string;
+  mtimeMs: number;
   content: string;
 }
 
@@ -178,7 +184,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     toolInput: unknown;
     chatSession: { id: string; msgId?: string };
   }) => Promise<ToolUseResult>;
-  private cachedSystemPrompt: string | null = null;
+  private cachedSystemPrompt: CachedSystemPrompt | null = null;
   private readonly conversations = new Map<string, ConversationTurn[]>();
   private readonly pendingResponses = new Map<string, Promise<BedrockInvocationResult>>();
   private readonly pendingControllers = new Map<string, AbortController>();
@@ -861,14 +867,21 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   }
 
   private async loadSystemPrompt(): Promise<string> {
-    if (this.cachedSystemPrompt) return this.cachedSystemPrompt;
     try {
-      this.cachedSystemPrompt = await readFile(this.systemPromptPath, "utf8");
-      return this.cachedSystemPrompt;
+      return await this.loadSystemPromptFile(this.systemPromptPath);
     } catch {
-      this.cachedSystemPrompt = await readFile(this.fallbackSystemPromptPath, "utf8");
-      return this.cachedSystemPrompt;
+      return await this.loadSystemPromptFile(this.fallbackSystemPromptPath);
     }
+  }
+
+  private async loadSystemPromptFile(path: string): Promise<string> {
+    const promptStat = await stat(path);
+    if (this.cachedSystemPrompt?.path === path && this.cachedSystemPrompt.mtimeMs === promptStat.mtimeMs) {
+      return this.cachedSystemPrompt.content;
+    }
+    const content = await readFile(path, "utf8");
+    this.cachedSystemPrompt = { path, mtimeMs: promptStat.mtimeMs, content };
+    return content;
   }
 
   private trimConversation(turns: ConversationTurn[]): ConversationTurn[] {
