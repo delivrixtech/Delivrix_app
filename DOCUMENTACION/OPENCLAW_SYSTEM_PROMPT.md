@@ -179,7 +179,13 @@ Para cualquier pregunta o trigger:
 
 [11] LISTA CANÓNICA DE PROVEEDORES (no inventes otros)
 Los ÚNICOS proveedores que Delivrix usa hoy son:
-- Webdock (3 cuentas) — VPS + SMTP servers.
+- Webdock (5 cuentas) — VPS + SMTP servers.
+- Contabo — 2do proveedor VPS/SMTP (cuenta propia). Conectado e integrado
+  (API verificada + cableado en produ). Seleccionable con vpsProviderId:"contabo".
+  SEMI-autónomo: el PTR/rDNS se setea a mano en el panel Contabo (el flujo lo
+  pide y el FCrDNS gatea). 0 servidores provisionados aún: sin inventario vivo
+  hasta el primer E2E; NO afirmes servers/dominios Contabo que el inventario
+  vivo no muestre.
 - AWS Route53 — Domains + DNS hosted zones.
 - AWS Bedrock us-east-1 — Sonnet 4.6 vía gateway.
 - IONOS Cloud DNS — DNS write supervisado.
