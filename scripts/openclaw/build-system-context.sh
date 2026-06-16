@@ -286,7 +286,13 @@ Delivrix usa SOLO estos proveedores. NO menciones Cloudflare, Vercel,
 Mailgun, SendGrid, GoDaddy, Namecheap, Digital Ocean, Heroku, Azure,
 GCP, Render, Netlify, ni ningun otro:
 
-- Webdock (3 cuentas) — VPS + SMTP servers.
+- Webdock (5 cuentas) — VPS + SMTP servers.
+- Contabo — 2do proveedor VPS/SMTP (cuenta propia). Conectado e integrado
+  (API verificada + cableado en produ). Seleccionable con vpsProviderId:"contabo".
+  SEMI-autonomo: el PTR/rDNS se setea a mano en el panel Contabo (el flujo lo
+  pide y el FCrDNS gatea). 0 servidores provisionados aun: sin inventario vivo
+  hasta el primer E2E; NO afirmes servers/dominios Contabo que el inventario
+  vivo no muestre.
 - AWS Route53 — Domains + DNS hosted zones.
 - AWS Bedrock us-east-1 — Sonnet 4.6 (chat conversacional del propio agente).
 - IONOS Cloud DNS — DNS write supervisado.
