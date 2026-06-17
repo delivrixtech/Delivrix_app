@@ -57,6 +57,28 @@ test("GET /v1/route53/domain-detail normalizes full Route53 Domains payload", as
   }]);
 });
 
+test("GET /v1/route53/domain-detail retries throttling and returns detail on retry success", async () => {
+  const calls: unknown[] = [];
+  const logs: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
+  const response = await route("/v1/route53/domain-detail?domain=controldelivrix.app", {
+    client: mockClient([
+      awsError("ThrottlingException", "Rate exceeded", 429),
+      { RegistrarName: "Amazon Registrar, Inc.", Nameservers: [] }
+    ], calls),
+    logger: testLogger(logs),
+    sleep: async () => undefined,
+    retryBaseDelayMs: 0,
+    retryJitterMs: 0
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.registrar, "Amazon Registrar, Inc.");
+  assert.equal(calls.length, 2);
+  assert.equal(logs[0]?.event, "route53.domain_detail_attempt_failed");
+  assert.equal(logs[0]?.metadata?.awsError, "ThrottlingException");
+  assert.equal(logs[0]?.metadata?.httpStatus, 429);
+});
+
 test("GET /v1/route53/domain-detail returns empty nameservers array", async () => {
   const response = await route("/v1/route53/domain-detail?domain=controldelivrix.app", {
     client: mockClient({ Nameservers: [] })
@@ -133,7 +155,68 @@ test("GET /v1/route53/domain-detail rejects empty domain", async () => {
   assert.equal(response.body.error, "invalid_domain_format");
 });
 
-test("GET /v1/route53/domain-detail maps AWS errors to 502", async () => {
+test("GET /v1/route53/domain-detail maps exhausted throttling to 429 and logs AWS metadata", async () => {
+  const calls: unknown[] = [];
+  const logs: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
+  const response = await route("/v1/route53/domain-detail?domain=controldelivrix.app", {
+    client: mockClient(awsError("ThrottlingException", "Rate exceeded", 429), calls),
+    logger: testLogger(logs),
+    maxAttempts: 2,
+    sleep: async () => undefined,
+    retryBaseDelayMs: 0,
+    retryJitterMs: 0
+  });
+
+  assert.equal(response.statusCode, 429);
+  assert.equal(response.body.error, "route53_domain_detail_throttled");
+  assert.equal(response.body.message, "Rate exceeded");
+  assert.equal(response.body.domain, "controldelivrix.app");
+  assert.equal(response.body.awsError, "ThrottlingException");
+  assert.equal(response.body.httpStatus, 429);
+  assert.equal(response.body.transient, true);
+  assert.equal(response.body.retryable, true);
+  assert.equal(calls.length, 2);
+  assert.equal(logs.at(-1)?.event, "route53.domain_detail_failed");
+  assert.equal(logs.at(-1)?.metadata?.awsError, "ThrottlingException");
+  assert.equal(logs.at(-1)?.metadata?.httpStatus, 429);
+});
+
+test("GET /v1/route53/domain-detail maps Route53 domain not found to 404 without retry", async () => {
+  const calls: unknown[] = [];
+  const response = await route("/v1/route53/domain-detail?domain=missing.example", {
+    client: mockClient(awsError("InvalidInput", "Domain was not found in this account", 400), calls),
+    sleep: async () => undefined
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.body.error, "route53_domain_detail_not_found");
+  assert.equal(response.body.awsError, "InvalidInput");
+  assert.equal(response.body.httpStatus, 400);
+  assert.equal(response.body.transient, false);
+  assert.equal(response.body.retryable, false);
+  assert.equal(calls.length, 1);
+});
+
+test("GET /v1/route53/domain-detail maps timeouts to 503 after retry budget", async () => {
+  const calls: unknown[] = [];
+  const response = await route("/v1/route53/domain-detail?domain=controldelivrix.app", {
+    client: mockClient(awsError("TimeoutError", "request timed out", 504), calls),
+    maxAttempts: 2,
+    sleep: async () => undefined,
+    retryBaseDelayMs: 0,
+    retryJitterMs: 0
+  });
+
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.body.error, "route53_domain_detail_unavailable");
+  assert.equal(response.body.awsError, "TimeoutError");
+  assert.equal(response.body.httpStatus, 504);
+  assert.equal(response.body.transient, true);
+  assert.equal(response.body.retryable, true);
+  assert.equal(calls.length, 2);
+});
+
+test("GET /v1/route53/domain-detail maps unknown AWS errors to 502", async () => {
   const response = await route("/v1/route53/domain-detail?domain=controldelivrix.app", {
     client: mockClient(new Error("route53 domains unavailable"))
   });
@@ -142,6 +225,10 @@ test("GET /v1/route53/domain-detail maps AWS errors to 502", async () => {
   assert.equal(response.body.error, "route53_domains_read_failed");
   assert.equal(response.body.message, "route53 domains unavailable");
   assert.equal(response.body.domain, "controldelivrix.app");
+  assert.equal(response.body.awsError, "Error");
+  assert.equal(response.body.httpStatus, null);
+  assert.equal(response.body.transient, false);
+  assert.equal(response.body.retryable, false);
 });
 
 test("route53DomainDetailClientConfigFromEnv uses Route53 Domains credentials", () => {
@@ -154,6 +241,8 @@ test("route53DomainDetailClientConfigFromEnv uses Route53 Domains credentials", 
 
   assert.deepEqual(config, {
     region: "us-east-1",
+    maxAttempts: 5,
+    retryMode: "adaptive",
     credentials: {
       accessKeyId: "domain-access",
       secretAccessKey: "domain-secret",
@@ -171,6 +260,8 @@ test("route53DomainDetailClientConfigFromEnv falls back to shared AWS credential
 
   assert.deepEqual(config, {
     region: "us-west-2",
+    maxAttempts: 5,
+    retryMode: "adaptive",
     credentials: {
       accessKeyId: "shared-access",
       secretAccessKey: "shared-secret"
@@ -183,8 +274,13 @@ async function route(
   deps: {
     client?: { send(command: unknown): Promise<unknown> };
     emitAudit?: (event: { type: string; [k: string]: unknown }) => Promise<void>;
+    logger?: { warn(event: string, message: string, metadata?: Record<string, unknown>): Promise<void> };
     headers?: Record<string, string>;
     readBoundaryToken?: string | null;
+    maxAttempts?: number;
+    retryBaseDelayMs?: number;
+    retryJitterMs?: number;
+    sleep?: (ms: number) => Promise<void>;
   } = {}
 ): Promise<{ statusCode: number; body: any }> {
   const response = captureResponse();
@@ -194,8 +290,13 @@ async function route(
     {
       client: deps.client as any,
       emitAudit: deps.emitAudit,
+      logger: deps.logger,
       now: () => fixedNow,
-      readBoundaryToken: deps.readBoundaryToken === null ? undefined : deps.readBoundaryToken ?? readToken
+      readBoundaryToken: deps.readBoundaryToken === null ? undefined : deps.readBoundaryToken ?? readToken,
+      maxAttempts: deps.maxAttempts,
+      retryBaseDelayMs: deps.retryBaseDelayMs,
+      retryJitterMs: deps.retryJitterMs,
+      sleep: deps.sleep
     }
   );
   return {
@@ -205,11 +306,13 @@ async function route(
 }
 
 function mockClient(output: unknown, calls: unknown[] = []): { send(command: unknown): Promise<unknown> } {
+  const queue = Array.isArray(output) ? [...output] : null;
   return {
     async send(command: unknown): Promise<unknown> {
       calls.push(command);
-      if (output instanceof Error) {
-        throw output;
+      const current = queue ? queue.shift() : output;
+      if (current instanceof Error) {
+        throw current;
       }
       return {
         RegistrarName: "unknown",
@@ -217,8 +320,23 @@ function mockClient(output: unknown, calls: unknown[] = []): { send(command: unk
         AutoRenew: false,
         TransferLock: false,
         StatusList: [],
-        ...output as Record<string, unknown>
+        ...current as Record<string, unknown>
       };
+    }
+  };
+}
+
+function awsError(name: string, message: string, httpStatusCode: number): Error {
+  const error = new Error(message) as Error & { $metadata?: { httpStatusCode: number } };
+  error.name = name;
+  error.$metadata = { httpStatusCode };
+  return error;
+}
+
+function testLogger(logs: Array<{ event: string; metadata?: Record<string, unknown> }>) {
+  return {
+    async warn(event: string, _message: string, metadata?: Record<string, unknown>) {
+      logs.push({ event, metadata });
     }
   };
 }

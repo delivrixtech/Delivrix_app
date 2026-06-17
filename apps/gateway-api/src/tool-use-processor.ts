@@ -612,7 +612,7 @@ async function invokeReadOnlyToolOverHttp(input: {
     });
     const body = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
     }
     return body;
   }
@@ -631,7 +631,7 @@ async function invokeReadOnlyToolOverHttp(input: {
     });
     const body = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
     }
     return body;
   }
@@ -651,7 +651,7 @@ async function invokeReadOnlyToolOverHttp(input: {
     });
     const body = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
     }
     return body;
   }
@@ -668,7 +668,7 @@ async function invokeReadOnlyToolOverHttp(input: {
     });
     const body = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
     }
     return body;
   }
@@ -691,7 +691,7 @@ async function invokeReadOnlyToolOverHttp(input: {
     });
     const body = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
     }
     return body;
   }
@@ -719,7 +719,7 @@ async function invokeReadOnlyToolOverHttp(input: {
     });
     const body = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
     }
     return body;
   }
@@ -734,7 +734,7 @@ async function invokeReadOnlyToolOverHttp(input: {
     });
     const body = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(`read-only tool failed with HTTP ${response.status}`);
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
     }
     return filterWebdockInventoryResult(body, input.input.params);
   }
@@ -1086,6 +1086,13 @@ function isMemoryToolUse(toolName: string): boolean {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readOnlyToolHttpErrorMessage(status: number, body: unknown): string {
+  const bodyText = body === null || body === undefined
+    ? "null"
+    : redactRuntimeLogSecrets(stableStringify(body)).slice(0, maxToolResultJsonChars);
+  return `read-only tool failed with HTTP ${status}: ${bodyText}`;
 }
 
 function errorMessage(error: unknown): string {
