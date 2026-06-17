@@ -1864,6 +1864,7 @@ const server = createServer(async (request, response) => {
       return await handleReadRoute53DomainDetail(request, response, {
         canvasLiveEvents,
         emitAudit: appendRoute53ReadAudit,
+        logger: gatewayRuntimeLog,
         now: () => new Date(),
         readBoundaryToken: sensitiveReadBoundaryToken
       });

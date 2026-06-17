@@ -597,6 +597,45 @@ test("createHttpToolUseProcessor invokes read-only Route53 domain detail endpoin
   assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
 });
 
+test("createHttpToolUseProcessor surfaces Route53 domain detail error body to OpenClaw", async () => {
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    readBoundaryToken: "read-token",
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).startsWith("http://127.0.0.1:3000/v1/route53/domain-detail")) {
+        return jsonResponse({
+          error: "route53_domain_detail_throttled",
+          awsError: "ThrottlingException",
+          httpStatus: 429,
+          transient: true,
+          retryable: true
+        }, 429);
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-route53-domain-throttle",
+    toolName: "read_route53_domain_detail",
+    toolInput: { domain: "controldelivrix.app" },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, false);
+  if (result.ok) assert.fail("expected Route53 read failure");
+  assert.equal(result.error, "read_only_tool_failed");
+  assert.equal(typeof result.details, "string");
+  assert.match(result.details, /HTTP 429/);
+  assert.match(result.details, /route53_domain_detail_throttled/);
+  assert.match(result.details, /ThrottlingException/);
+  assert.match(result.details, /transient/);
+});
+
 test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint directly", async () => {
   const calls: Array<{ url: string; headers: Record<string, string> }> = [];
   const processor = createHttpToolUseProcessor({
