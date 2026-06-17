@@ -54,6 +54,7 @@ const allowedProxyPaths = new Set([
   "/v1/hardware/telemetry/latest",
   "/v1/iam/roles",
   "/v1/iam/sessions",
+  "/v1/infrastructure/inventory",
   "/v1/ip-reputation/reports",
   "/v1/operational-summary",
   "/v1/openclaw/evidence",
