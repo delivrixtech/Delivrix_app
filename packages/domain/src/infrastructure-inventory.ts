@@ -28,6 +28,7 @@ export type InfrastructureInventoryProvider = Provider;
 
 export interface InfrastructureInventoryResponse {
   generatedAt: string;
+  itemTotal: number;
   providers: Provider[];
 }
 
@@ -39,9 +40,11 @@ export interface BuildInfrastructureInventoryInput {
 export function buildInfrastructureInventoryResponse(
   input: BuildInfrastructureInventoryInput = {}
 ): InfrastructureInventoryResponse {
+  const providers = (input.providers ?? []).map(normalizeProvider);
   return {
     generatedAt: (input.now ?? new Date()).toISOString(),
-    providers: (input.providers ?? []).map(normalizeProvider)
+    itemTotal: providers.reduce((sum, provider) => sum + provider.itemCount, 0),
+    providers
   };
 }
 

@@ -241,16 +241,16 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(function Card(
  * ============================================================ */
 
 const pillVariants = cva(
-  "inline-flex items-center gap-1.5 rounded-full font-sans text-[11px] font-medium leading-[1.3] whitespace-nowrap",
+  "inline-flex items-center gap-1.5 rounded-full border font-sans text-[11px] font-medium leading-[1.3] whitespace-nowrap",
   {
     variants: {
       tone: {
-        neutral: "bg-surface-sunken text-fg-muted",
-        success: "bg-success-soft text-success-fg",
-        warning: "bg-warning-soft text-warning-fg",
-        critical: "bg-critical-soft text-critical-fg",
-        info: "bg-info-soft text-info-fg",
-        accent: "bg-accent text-accent-fg"
+        neutral: "border-border bg-surface-sunken text-fg-muted",
+        success: "border-[color:var(--color-success-border)] bg-success-soft text-success-fg",
+        warning: "border-[color:var(--color-warning-border)] bg-warning-soft text-warning-fg",
+        critical: "border-[color:var(--color-critical-border)] bg-critical-soft text-critical-fg",
+        info: "border-[color:var(--color-info-border)] bg-info-soft text-info-fg",
+        accent: "border-[color:var(--color-accent)] bg-accent text-accent-fg"
       },
       size: {
         sm: "px-2 py-[2px] text-[10px]",
@@ -271,13 +271,31 @@ export interface PillProps
   dot?: boolean;
 }
 
+function pillDotClassName(tone: PillProps["tone"]): string {
+  switch (tone) {
+    case "success":
+      return "bg-success";
+    case "warning":
+      return "bg-warning";
+    case "critical":
+      return "bg-critical";
+    case "info":
+      return "bg-info";
+    case "accent":
+      return "bg-accent-fg";
+    case "neutral":
+    default:
+      return "bg-fg-subtle";
+  }
+}
+
 export function Pill({ className, tone, size, dot = true, children, ...props }: PillProps) {
   return (
     <span className={cn(pillVariants({ tone, size }), className)} {...props}>
       {dot ? (
         <span
           aria-hidden="true"
-          className="inline-block size-1.5 rounded-full bg-current"
+          className={cn("inline-block size-1.5 rounded-full", pillDotClassName(tone))}
         />
       ) : null}
       {children}
@@ -355,7 +373,7 @@ export function Stat({ label, value, unit, hint, trend, tone = "default", classN
               "font-mono text-[30px] font-semibold leading-none tabular-nums",
               valueClassName
             )}
-            style={{ letterSpacing: "-0.015em" }}
+            style={{ letterSpacing: "0" }}
           >
             {value}
           </span>

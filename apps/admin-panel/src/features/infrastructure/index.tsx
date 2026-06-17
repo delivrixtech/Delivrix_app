@@ -74,6 +74,7 @@ export interface Provider {
 
 export interface InfrastructureInventoryResponse {
   generatedAt: string;
+  itemTotal: number;
   providers: Provider[];
 }
 
