@@ -218,25 +218,27 @@ export async function auditInfrastructureInventoryFetch(
 function buildWebdockProvider(account: WebdockAccountInventoryResult): Provider {
   const webdock = account.result;
   const status = resolveWebdockProviderStatus(webdock);
+  const visibleServers = webdock.source.responseOk ? webdock.servers : [];
   const errorReason = webdock.source.responseOk ? undefined : webdock.source.errorMessage ?? "webdock_unavailable";
   return {
     id: `webdock-${sanitizeProviderId(account.accountId)}`,
     displayName: account.accountLabel,
     kind: "compute",
     status,
-    itemCount: webdock.servers.length,
+    itemCount: visibleServers.length,
     lastFetched: webdock.source.fetchedAt,
     fetchSourceKind: webdock.source.kind,
     ...(errorReason ? { errorReason } : {}),
     capabilities: ["list_compute_servers", "get_compute_server_detail"],
-    items: webdock.servers.map(webdockServerToInventoryItem)
+    items: visibleServers.map(webdockServerToInventoryItem)
   };
 }
 
 function buildExternalVpsProvider(provider: VpsProviderInventoryResult): Provider {
   const inventory = provider.result;
   const status = resolveExternalVpsProviderStatus(inventory);
-  const hasServers = inventory.servers.length > 0;
+  const visibleServers = inventory.source.responseOk ? inventory.servers : [];
+  const hasServers = visibleServers.length > 0;
   const errorReason = inventory.source.responseOk
     ? undefined
     : inventory.source.errorMessage ?? `${provider.providerId}_unavailable`;
@@ -246,7 +248,7 @@ function buildExternalVpsProvider(provider: VpsProviderInventoryResult): Provide
     kind: "compute",
     status,
     ...(status === "active" && !hasServers ? { statusLabel: "Conectado sin VPS" } : {}),
-    itemCount: inventory.servers.length,
+    itemCount: visibleServers.length,
     lastFetched: inventory.source.fetchedAt,
     fetchSourceKind: inventory.source.kind,
     ...(errorReason ? { errorReason } : {}),
@@ -255,7 +257,7 @@ function buildExternalVpsProvider(provider: VpsProviderInventoryResult): Provide
       "get_compute_server_detail",
       "provision_vps_requires_approval"
     ],
-    items: inventory.servers.map((server) => externalVpsServerToInventoryItem(provider.providerId, server))
+    items: visibleServers.map((server) => externalVpsServerToInventoryItem(provider.providerId, server))
   };
 }
 
