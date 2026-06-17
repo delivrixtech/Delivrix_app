@@ -11,6 +11,7 @@ import type {
   PorkbunInventoryResult,
   WebdockInventoryResult
 } from "../../../../packages/adapters/src/index.ts";
+import { WebdockRealAdapter } from "../../../../packages/adapters/src/index.ts";
 import { computeAuditHash } from "../audit/hash-chain.ts";
 import {
   auditInfrastructureInventoryFetch,
@@ -144,6 +145,46 @@ test("Infrastructure inventory preserves distinct Webdock accounts after cuenta 
   ]);
 });
 
+test("Infrastructure inventory does not surface adapter fallback servers when Webdock read is rejected", async () => {
+  const adapter = new WebdockRealAdapter({
+    readApiKey: "bad-read-key",
+    apiBase: "https://api.webdock.test/v1",
+    accountId: "secondary",
+    accountLabel: "Webdock Secondary",
+    cacheTtlMs: 0,
+    now: () => new Date("2026-05-24T17:59:30.000Z"),
+    fetchImpl: async (url, init) => {
+      assert.equal(String(url), "https://api.webdock.test/v1/servers");
+      assert.equal(init?.method, "GET");
+      assert.equal((init?.headers as Record<string, string>).authorization, "Bearer bad-read-key");
+      return new Response("", { status: 401, statusText: "Unauthorized" });
+    }
+  });
+
+  const result = await adapter.listServers();
+  assert.equal(result.source.kind, "mock");
+  assert.equal(result.source.responseOk, false);
+  assert.equal(result.source.errorMessage, "Webdock API returned 401 Unauthorized");
+  assert.deepEqual(result.servers, []);
+
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [{
+      accountId: "secondary",
+      accountLabel: "Webdock Secondary",
+      result
+    }],
+    now: fixedNow
+  });
+
+  const provider = payload.providers[0];
+  assert.equal(provider.id, "webdock-secondary");
+  assert.equal(provider.status, "error");
+  assert.equal(provider.itemCount, 0);
+  assert.deepEqual(provider.items, []);
+  assert.equal(payload.itemTotal, 0);
+});
+
 test("Infrastructure inventory preserves legacy Webdock default account shape", async () => {
   const payload = await buildInfrastructureInventoryPayload({
     includeStaticProviders: false,
@@ -241,7 +282,7 @@ test("Infrastructure inventory marks a failed Webdock account without hiding hea
     includeStaticProviders: false,
     webdockAccounts: [
       webdockAccount("primary", "Webdock Primary", ["running"]),
-      webdockAccount("secondary", "Webdock Secondary", [], {
+      webdockAccount("secondary", "Webdock Secondary", ["running", "running", "stopped"], {
         responseOk: false,
         errorMessage: "Webdock API returned 401 Unauthorized"
       })
@@ -254,6 +295,9 @@ test("Infrastructure inventory marks a failed Webdock account without hiding hea
     ["webdock-secondary", "error"]
   ]);
   assert.equal(payload.providers[1].errorReason, "Webdock API returned 401 Unauthorized");
+  assert.equal(payload.providers[1].itemCount, 0);
+  assert.deepEqual(payload.providers[1].items, []);
+  assert.equal(payload.itemTotal, 1);
 });
 
 test("Infrastructure inventory exposes Contabo as connected external VPS provider with zero live servers", async () => {
@@ -280,6 +324,27 @@ test("Infrastructure inventory exposes Contabo as connected external VPS provide
     itemCount: 0,
     fetchSourceKind: "live"
   }]);
+});
+
+test("Infrastructure inventory hides stale external VPS items when provider fetch fails", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    vpsProviders: [
+      vpsProvider("contabo", "Contabo Host Latam", ["running"], {
+        responseOk: false,
+        errorMessage: "Contabo API returned 401 Unauthorized"
+      })
+    ],
+    now: fixedNow
+  });
+
+  const provider = payload.providers[0];
+  assert.equal(provider.id, "contabo");
+  assert.equal(provider.status, "error");
+  assert.equal(provider.errorReason, "Contabo API returned 401 Unauthorized");
+  assert.equal(provider.itemCount, 0);
+  assert.deepEqual(provider.items, []);
+  assert.equal(payload.itemTotal, 0);
 });
 
 test("Infrastructure inventory exposes IONOS Cloud DNS zones and record summaries", async () => {
@@ -562,7 +627,8 @@ function webdockAccount(
 function vpsProvider(
   providerId: string,
   providerLabel: string,
-  statuses: string[]
+  statuses: string[],
+  source?: Partial<WebdockInventoryResult["source"]>
 ) {
   return {
     providerId,
@@ -583,7 +649,8 @@ function vpsProvider(
         accountId: providerId,
         accountLabel: providerLabel,
         fetchedAt: "2026-05-24T17:59:30.000Z",
-        responseOk: true
+        responseOk: true,
+        ...source
       }
     }
   };

@@ -276,8 +276,9 @@ export class WebdockRealAdapter {
 
   /**
    * Devuelve el inventario de servers. Cuando hay key, llama a la API real
-   * con TTL cache. Cuando no hay key o la API falla, devuelve un mock
-   * canónico que mantiene el panel utilizable en dev.
+   * con TTL cache. Cuando no hay key, devuelve un mock canónico que mantiene
+   * el panel utilizable en dev. Si la API falla, reporta la fuente degradada
+   * sin publicar servidores simulados como capacidad real.
    */
   async listServers(): Promise<WebdockInventoryResult> {
     const now = this.now();
@@ -310,7 +311,7 @@ export class WebdockRealAdapter {
       if (!response.ok) {
         const errorMessage = `Webdock API returned ${response.status} ${response.statusText}`;
         const result: WebdockInventoryResult = {
-          servers: this.withAccount(mockWebdockServers()),
+          servers: this.withAccount([]),
           source: this.sourceMetadata(now, "mock", false, errorMessage)
         };
         this.cacheResult(now, result);
@@ -329,7 +330,7 @@ export class WebdockRealAdapter {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown Webdock fetch error";
       const result: WebdockInventoryResult = {
-        servers: this.withAccount(mockWebdockServers()),
+        servers: this.withAccount([]),
         source: this.sourceMetadata(now, "mock", false, errorMessage)
       };
       this.cacheResult(now, result);
