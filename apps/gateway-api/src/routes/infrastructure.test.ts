@@ -28,6 +28,7 @@ test("Infrastructure inventory returns an empty provider list when nothing is co
 
   assert.deepEqual(payload, {
     generatedAt: "2026-05-24T18:00:00.000Z",
+    itemTotal: 0,
     providers: []
   });
 });
@@ -93,12 +94,12 @@ test("Infrastructure inventory degrades gracefully when AWS cache exists and ION
   assert.equal(payload.providers.find((provider) => provider.id === "physical-medellin")?.statusLabel, "Aún offline");
 });
 
-test("Infrastructure inventory exposes three Webdock accounts as distinct providers", async () => {
+test("Infrastructure inventory de-dupes Webdock cuenta madre roles in read-only inventory", async () => {
   const payload = await buildInfrastructureInventoryPayload({
     includeStaticProviders: false,
     webdockAccounts: [
-      webdockAccount("primary", "Webdock Primary", ["running", "stopped"]),
-      webdockAccount("ops", "Webdock Ops", ["running"]),
+      webdockAccount("primary", "Webdock Primary", ["running", "running", "stopped"]),
+      webdockAccount("ops", "Webdock Ops", ["running", "running", "stopped"]),
       webdockAccount("account", "Webdock Account", ["running", "running", "stopped"])
     ],
     now: fixedNow
@@ -116,25 +117,31 @@ test("Infrastructure inventory exposes three Webdock accounts as distinct provid
       displayName: "Webdock Primary",
       status: "active",
       statusLabel: "Activo",
-      itemCount: 2
-    },
-    {
-      id: "webdock-ops",
-      displayName: "Webdock Ops",
-      status: "active",
-      statusLabel: "Activo",
-      itemCount: 1
-    },
-    {
-      id: "webdock-account",
-      displayName: "Webdock Account",
-      status: "active",
-      statusLabel: "Activo",
       itemCount: 3
     }
   ]);
   assert.equal(payload.providers[0].items?.[0]?.detail?.accountId, "primary");
-  assert.equal(payload.providers[1].items?.[0]?.detail?.accountLabel, "Webdock Ops");
+  assert.equal(payload.providers[0].items?.[0]?.detail?.accountLabel, "Webdock Primary");
+});
+
+test("Infrastructure inventory preserves distinct Webdock accounts after cuenta madre de-dupe", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [
+      webdockAccount("primary", "Webdock Primary", ["running"]),
+      webdockAccount("ops", "Webdock Ops", ["running"]),
+      webdockAccount("secondary", "Webdock Secondary", [], {
+        responseOk: false,
+        errorMessage: "Webdock API returned 401 Unauthorized"
+      })
+    ],
+    now: fixedNow
+  });
+
+  assert.deepEqual(payload.providers.map((provider) => [provider.id, provider.status, provider.itemCount]), [
+    ["webdock-primary", "active", 1],
+    ["webdock-secondary", "error", 0]
+  ]);
 });
 
 test("Infrastructure inventory preserves legacy Webdock default account shape", async () => {
@@ -247,6 +254,32 @@ test("Infrastructure inventory marks a failed Webdock account without hiding hea
     ["webdock-secondary", "error"]
   ]);
   assert.equal(payload.providers[1].errorReason, "Webdock API returned 401 Unauthorized");
+});
+
+test("Infrastructure inventory exposes Contabo as connected external VPS provider with zero live servers", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    vpsProviders: [vpsProvider("contabo", "Contabo Host Latam", [])],
+    now: fixedNow
+  });
+
+  assert.deepEqual(payload.providers.map((provider) => ({
+    id: provider.id,
+    displayName: provider.displayName,
+    kind: provider.kind,
+    status: provider.status,
+    statusLabel: provider.statusLabel,
+    itemCount: provider.itemCount,
+    fetchSourceKind: provider.fetchSourceKind
+  })), [{
+    id: "contabo",
+    displayName: "Contabo Host Latam",
+    kind: "compute",
+    status: "active",
+    statusLabel: "Conectado sin VPS",
+    itemCount: 0,
+    fetchSourceKind: "live"
+  }]);
 });
 
 test("Infrastructure inventory exposes IONOS Cloud DNS zones and record summaries", async () => {
@@ -521,6 +554,36 @@ function webdockAccount(
         fetchedAt: "2026-05-24T17:59:30.000Z",
         responseOk: true,
         ...source
+      }
+    }
+  };
+}
+
+function vpsProvider(
+  providerId: string,
+  providerLabel: string,
+  statuses: string[]
+) {
+  return {
+    providerId,
+    providerLabel,
+    result: {
+      servers: statuses.map((status, index) => ({
+        slug: `${providerId}-${index + 1}`,
+        name: `${providerId}-${index + 1}`,
+        ipv4: `203.0.113.${index + 10}`,
+        status,
+        location: "us-east",
+        accountId: providerId,
+        accountLabel: providerLabel
+      })),
+      source: {
+        kind: "live" as const,
+        apiBase: `https://api.${providerId}.example.test`,
+        accountId: providerId,
+        accountLabel: providerLabel,
+        fetchedAt: "2026-05-24T17:59:30.000Z",
+        responseOk: true
       }
     }
   };

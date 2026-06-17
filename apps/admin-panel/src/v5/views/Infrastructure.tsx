@@ -27,18 +27,15 @@
  * No requiere props del shell.
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
   AlertCircle,
   ArrowRight,
   Cloud,
-  Globe,
-  HardDrive,
   KeyRound,
   PowerOff,
-  Server,
   TriangleAlert
 } from "lucide-react";
 import { getJson } from "../../shared/api/client";
@@ -93,6 +90,7 @@ interface Provider {
 
 interface InfrastructureInventoryResponse {
   generatedAt: string;
+  itemTotal: number;
   providers: Provider[];
 }
 
@@ -197,12 +195,14 @@ function useInventory(): FetchState {
 function brandName(provider: Provider): string {
   const id = provider.id.toLowerCase();
   if (id.startsWith("webdock")) return "Webdock";
+  if (id.startsWith("contabo")) return "Contabo";
   if (id.startsWith("aws-")) return "AWS";
   if (id.startsWith("ionos-")) return "IONOS";
   if (id.startsWith("porkbun")) return "Porkbun";
   if (id.startsWith("physical-")) return "Servidor físico";
   const dn = provider.displayName.toLowerCase();
   if (dn.includes("webdock")) return "Webdock";
+  if (dn.includes("contabo")) return "Contabo";
   if (dn.includes("aws")) return "AWS";
   if (dn.includes("ionos")) return "IONOS";
   if (dn.includes("porkbun")) return "Porkbun";
@@ -215,9 +215,67 @@ function accountSuffix(provider: Provider): string {
   const dn = provider.displayName.trim();
   if (dn === brand) return "";
   if (dn.toLowerCase().startsWith(brand.toLowerCase())) {
-    return dn.slice(brand.length).trim().replace(/^[·:\-—]+/, "").trim();
+    return humanSafeAccountLabel(
+      dn.slice(brand.length).trim().replace(/^[·:\-—]+/, "").trim()
+    );
   }
-  return dn;
+  return humanSafeAccountLabel(dn);
+}
+
+function humanSafeAccountLabel(label: string): string {
+  const normalized = label.trim();
+  if (!normalized) return "";
+  const lower = normalized.toLowerCase();
+  if (lower.includes("@") || lower.includes("emael")) return "cuenta operativa";
+  return normalized;
+}
+
+function providerMonogram(provider: Provider): string {
+  const brand = brandName(provider);
+  const id = provider.id.toLowerCase();
+  if (brand === "Webdock") return "WB";
+  if (brand === "Contabo") return "CT";
+  if (brand === "AWS") return id.includes("bedrock") ? "AI" : "AW";
+  if (brand === "IONOS") return "IO";
+  if (brand === "Porkbun") return "PB";
+  if (brand === "Servidor físico") return "HW";
+  const initials = brand
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+  return initials || "PV";
+}
+
+function providerRoleLabel(provider: Provider): string {
+  const id = provider.id.toLowerCase();
+  if (id.includes("bedrock")) return "Modelo LLM de OpenClaw";
+  if (provider.kind === "compute") return "VPS de operación autorizada";
+  if (provider.kind === "dns") return "DNS gestionado";
+  if (provider.kind === "domain-registrar") return "Registrador de dominios";
+  return "Host físico de respaldo";
+}
+
+function resourceLabel(provider: Provider): string {
+  // Anti-confusion: nunca mostrar un conteo que no proviene de una lectura real.
+  // Una cuenta en error (ej. 401) o en modo demo no tiene un conteo confiable;
+  // mostrar "3 servidores" junto a "Credencial rechazada" es un dato fantasma.
+  if (provider.status === "error") return "conteo no disponible";
+  if (provider.fetchSourceKind !== "live") return "sin recursos reales";
+  const count = provider.itemCount;
+  const noun = providerResourceNoun(provider);
+  return formatCount(count, noun.singular, noun.plural);
+}
+
+function sourceLabel(provider: Provider): string {
+  if (provider.fetchSourceKind === "live") return "API real";
+  if (provider.fetchSourceKind === "mock") return "modo demo";
+  return "sin fuente";
+}
+
+function technicalSummary(provider: Provider): string {
+  return `${provider.id} · ${provider.capabilities.join(" · ") || "sin capabilities"}`;
 }
 
 /* ============================================================
@@ -241,8 +299,146 @@ const STATUS_LABEL_FALLBACK: Record<ProviderStatus, string> = {
   planned: "planeado"
 };
 
+const STALE_FETCH_MS = 24 * 60 * 60 * 1000;
+
 function statusLabelOf(p: Provider): string {
   return p.statusLabel ?? STATUS_LABEL_FALLBACK[p.status];
+}
+
+function isProviderStale(p: Provider): boolean {
+  if (p.status !== "active" || p.fetchSourceKind !== "live") return false;
+  if (!p.lastFetched) return true;
+  const fetchedAt = new Date(p.lastFetched).getTime();
+  if (Number.isNaN(fetchedAt)) return false;
+  return Date.now() - fetchedAt > STALE_FETCH_MS;
+}
+
+function providerStatusTone(p: Provider): "success" | "warning" | "critical" | "neutral" {
+  if (isProviderStale(p)) return "warning";
+  return STATUS_TONE[p.status];
+}
+
+function providerStatusLabel(p: Provider): string {
+  if (isProviderStale(p)) return "dato viejo";
+  return statusLabelOf(p);
+}
+
+function itemTotalOf(providers: Provider[]): number {
+  return providers.reduce((sum, provider) => sum + provider.itemCount, 0);
+}
+
+type ProviderBucket = "attention" | "connected" | "queued";
+
+interface ProviderGroupSummary {
+  totalAccounts: number;
+  realResourceCount: number;
+  connectedCount: number;
+  attentionCount: number;
+  queuedCount: number;
+}
+
+type ProviderRenderEntry =
+  | { type: "group"; brand: string; monogram: string; summary: ProviderGroupSummary; providers: Provider[] }
+  | { type: "rows"; providers: Provider[] };
+
+function classifyProvider(provider: Provider): ProviderBucket {
+  if (provider.status === "error" || isOfflineLike(provider)) return "attention";
+  if (provider.status === "planned" || provider.fetchSourceKind === "mock") return "queued";
+  if (provider.status === "active" || provider.status === "paused") {
+    return "connected";
+  }
+  return "queued";
+}
+
+function canExpandProvider(provider: Provider): boolean {
+  return (
+    provider.fetchSourceKind === "live" &&
+    provider.status !== "error" &&
+    (provider.items?.length ?? 0) > 0
+  );
+}
+
+function realResourceCount(provider: Provider): number {
+  return provider.fetchSourceKind === "live" && provider.status !== "error"
+    ? provider.itemCount
+    : 0;
+}
+
+function providerResourceNoun(provider: Provider): { singular: string; plural: string } {
+  if (provider.id.toLowerCase().includes("bedrock")) {
+    return { singular: "modelo", plural: "modelos" };
+  }
+  if (provider.kind === "compute") {
+    return { singular: "servidor", plural: "servidores" };
+  }
+  if (provider.kind === "dns") {
+    return { singular: "zona DNS", plural: "zonas DNS" };
+  }
+  if (provider.kind === "domain-registrar") {
+    return { singular: "dominio", plural: "dominios" };
+  }
+  if (provider.kind === "physical") {
+    return { singular: "host", plural: "hosts" };
+  }
+  return { singular: "recurso", plural: "recursos" };
+}
+
+function formatCount(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function buildProviderGroupSummary(brand: string, allProviders: Provider[]): ProviderGroupSummary {
+  const brandProviders = allProviders.filter((provider) => brandName(provider) === brand);
+  return {
+    totalAccounts: brandProviders.length,
+    realResourceCount: brandProviders.reduce((sum, provider) => sum + realResourceCount(provider), 0),
+    connectedCount: brandProviders.filter((provider) => classifyProvider(provider) === "connected").length,
+    attentionCount: brandProviders.filter((provider) => classifyProvider(provider) === "attention").length,
+    queuedCount: brandProviders.filter((provider) => classifyProvider(provider) === "queued").length
+  };
+}
+
+function buildProviderRenderEntries(
+  connectedProviders: Provider[],
+  allProviders: Provider[]
+): ProviderRenderEntry[] {
+  const byBrand = new Map<string, Provider[]>();
+  for (const provider of connectedProviders) {
+    const brand = brandName(provider);
+    byBrand.set(brand, [...(byBrand.get(brand) ?? []), provider]);
+  }
+
+  const entries: ProviderRenderEntry[] = [];
+  let rowBuffer: Provider[] = [];
+  const renderedBrands = new Set<string>();
+
+  const flushRows = () => {
+    if (rowBuffer.length === 0) return;
+    entries.push({ type: "rows", providers: rowBuffer });
+    rowBuffer = [];
+  };
+
+  for (const provider of connectedProviders) {
+    const brand = brandName(provider);
+    const brandProviders = byBrand.get(brand) ?? [];
+    if (brandProviders.length < 2) {
+      rowBuffer.push(provider);
+      continue;
+    }
+    if (renderedBrands.has(brand)) continue;
+    flushRows();
+    renderedBrands.add(brand);
+    entries.push({
+      type: "group",
+      brand,
+      monogram: providerMonogram(provider),
+      summary: buildProviderGroupSummary(brand, allProviders),
+      providers: brandProviders
+    });
+  }
+
+  flushRows();
+  return entries;
 }
 
 /* ============================================================
@@ -295,9 +491,9 @@ function isOfflineLike(p: Provider): boolean {
  * marca el salto cualitativo "lectura → escritura aprobada".
  * ============================================================ */
 
-function isIonosDnsActuator(p: Provider): boolean {
+function isIonosDnsActuator(p: Provider | undefined): boolean {
   return (
-    p.id === "ionos-cloud-dns" &&
+    p?.id === "ionos-cloud-dns" &&
     p.capabilities.includes("dns:write")
   );
 }
@@ -320,7 +516,7 @@ export function InfrastructureV5() {
           eyebrow="Inventario multi-proveedor"
           meta="Solo lectura"
           title="Toda tu infraestructura, en una sola vista."
-          body="Webdock, AWS, IONOS, Porkbun y el servidor físico, agrupados por función. Solo lectura. Cada fetch firmado en audit chain."
+          body="Proveedores VPS, DNS, dominios, LLM y hardware agrupados por función. Solo lectura. Cada fetch firmado en audit chain."
           trailing={
             <LivePollSide
               lastUpdateAt={
@@ -359,7 +555,7 @@ function Body({ state }: { state: FetchState }) {
       </motion.div>
     );
   }
-  return <Loaded providers={state.payload.providers} />;
+  return <Loaded payload={state.payload} />;
 }
 
 /* ============================================================
@@ -390,38 +586,62 @@ function LivePollSide({
  * Loaded — estructura principal.
  * ============================================================ */
 
-function Loaded({ providers }: { providers: Provider[] }) {
+function Loaded({ payload }: { payload: InfrastructureInventoryResponse }) {
+  const providers = payload.providers;
   const errors = providers.filter((p) => p.status === "error" && !isOfflineLike(p));
   const offline = providers.filter(isOfflineLike);
   const okCount = providers.filter((p) => p.status === "active").length;
   const plannedCount = providers.filter((p) => p.status === "planned").length;
-
-  const compute = providers.filter((p) => p.kind === "compute");
-  const dns = providers.filter(
-    (p) => p.kind === "dns" || p.kind === "domain-registrar"
-  );
-  const physical = providers.filter((p) => p.kind === "physical");
+  const staleCount = providers.filter(isProviderStale).length;
+  const mockCount = providers.filter((p) => p.fetchSourceKind === "mock").length;
 
   const attentionItems = [...errors, ...offline];
+  const connectedProviders = providers.filter((provider) => classifyProvider(provider) === "connected");
+  const queuedProviders = providers.filter((provider) => classifyProvider(provider) === "queued");
+  const visibleProviders = providers.filter((provider) => classifyProvider(provider) !== "attention");
+  const connectedCompute = connectedProviders.filter((p) => p.kind === "compute");
+  const queuedCompute = queuedProviders.filter((p) => p.kind === "compute");
+  const connectedDns = connectedProviders.filter(
+    (p) => p.kind === "dns" || p.kind === "domain-registrar"
+  );
+  const queuedDns = queuedProviders.filter(
+    (p) => p.kind === "dns" || p.kind === "domain-registrar"
+  );
+  const physical = visibleProviders.filter((p) => p.kind === "physical");
+  const computeCount = connectedCompute.length + queuedCompute.length;
+  const dnsCount = connectedDns.length + queuedDns.length;
+  const ionosDnsProvider = providers.find((p) => p.id === "ionos-cloud-dns");
+  const dnsCaption = isIonosDnsActuator(ionosDnsProvider)
+    ? "Zonas, registros y registradores. IONOS Cloud DNS expone escritura aprobada por contrato; compra de dominios exige doble aprobación humana."
+    : "Zonas, registros y registradores en lectura. Los cambios reales siguen bloqueados hasta contrato auditado y aprobación humana.";
+
+  const attentionSummary =
+    attentionItems.length === 0
+      ? "Inventario sin proveedores en atención."
+      : `${attentionItems.length} proveedor${attentionItems.length === 1 ? "" : "es"} requieren atención.`;
 
   return (
     <>
       <motion.section variants={staggerItem}>
         <KpiStrip
+          itemTotal={payload.itemTotal ?? itemTotalOf(providers)}
           okCount={okCount}
-          errorCount={errors.length}
-          offlineCount={offline.length}
+          attentionCount={attentionItems.length}
           plannedCount={plannedCount}
+          staleOrMockCount={staleCount + mockCount}
           providers={providers}
         />
       </motion.section>
 
       {attentionItems.length > 0 ? (
         <motion.section variants={staggerItem} className="flex flex-col gap-3">
+          <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+            {attentionSummary}
+          </span>
           <SectionHead
             eyebrow="Prioridad"
             title="Atención requerida"
-            caption="Proveedores con error de credencial o sin respuesta. OpenClaw puede preparar el plan de remediación."
+            caption="Proveedores con error de credencial o sin respuesta. Cualquier remediación real queda pendiente de contrato auditado."
             count={attentionItems.length}
             countTone="critical"
           />
@@ -437,31 +657,37 @@ function Loaded({ providers }: { providers: Provider[] }) {
         </motion.section>
       ) : null}
 
-      {compute.length > 0 ? (
+      {computeCount > 0 ? (
         <motion.section variants={staggerItem} className="flex flex-col gap-3">
           <SectionHead
             eyebrow="Cómputo"
             title="Compute"
-            caption="Cuentas Webdock + AWS Bedrock que sostienen contenedores, agentes y planos de control."
-            count={compute.length}
+            caption="Cuentas VPS y modelo Bedrock que sostienen operación, agentes y planos de control."
+            count={computeCount}
             countTone="neutral"
-            trailing={<MonoCode>kind=compute</MonoCode>}
           />
-          <ProviderList providers={compute} icon={Server} />
+          <ProviderSectionInventory
+            allProviders={providers}
+            connectedProviders={connectedCompute}
+            queuedProviders={queuedCompute}
+          />
         </motion.section>
       ) : null}
 
-      {dns.length > 0 ? (
+      {dnsCount > 0 ? (
         <motion.section variants={staggerItem} className="flex flex-col gap-3">
           <SectionHead
             eyebrow="DNS y dominios"
             title="DNS · Domains"
-            caption="Zonas, registros y registradores. IONOS Cloud DNS ya es read+write (actuator). Compra de dominios sigue requiriendo doble aprobación humana (Fase 2)."
-            count={dns.length}
+            caption={dnsCaption}
+            count={dnsCount}
             countTone="neutral"
-            trailing={<MonoCode>kind=dns | domain-registrar</MonoCode>}
           />
-          <ProviderList providers={dns} icon={Globe} />
+          <ProviderSectionInventory
+            allProviders={providers}
+            connectedProviders={connectedDns}
+            queuedProviders={queuedDns}
+          />
         </motion.section>
       ) : null}
 
@@ -473,7 +699,6 @@ function Loaded({ providers }: { providers: Provider[] }) {
             caption="IBM System x 2U en Medellín. Garantía vencida; rol de respaldo y laboratorio."
             count={physical.length}
             countTone="neutral"
-            trailing={<MonoCode>kind=physical</MonoCode>}
           />
           <div className="flex flex-col gap-2">
             {physical.map((p) => (
@@ -495,16 +720,18 @@ function Loaded({ providers }: { providers: Provider[] }) {
  * ============================================================ */
 
 function KpiStrip({
+  itemTotal,
   okCount,
-  errorCount,
-  offlineCount,
+  attentionCount,
   plannedCount,
+  staleOrMockCount,
   providers
 }: {
+  itemTotal: number;
   okCount: number;
-  errorCount: number;
-  offlineCount: number;
+  attentionCount: number;
   plannedCount: number;
+  staleOrMockCount: number;
   providers: Provider[];
 }) {
   const byKind = useMemo(() => {
@@ -515,51 +742,62 @@ function KpiStrip({
       physical: 0
     };
     for (const p of providers) {
-      if (p.status === "active") map[p.kind]++;
+      // Solo contamos recursos de lecturas reales (live) y no en error: los
+      // conteos mock/401 son fantasmas y no deben inflar el inventario.
+      if (p.fetchSourceKind === "live" && p.status !== "error") {
+        map[p.kind] += p.itemCount;
+      }
     }
     return map;
   }, [providers]);
 
-  const okHint = `${byKind.compute} compute · ${byKind.dns + byKind["domain-registrar"]} dns/dom · ${byKind.physical} físico`;
-  const errorHint =
-    errorCount === 0
-      ? "Sin errores de credencial"
-      : `${errorCount === 1 ? "1 proveedor" : `${errorCount} proveedores`} con fallo de auth`;
-  const offlineHint =
-    offlineCount === 0 ? "Todo respondiendo" : "Recurso físico sin respuesta";
+  const realTotal =
+    byKind.compute + byKind.dns + byKind["domain-registrar"] + byKind.physical;
+  const okHint = `${byKind.compute} compute · ${byKind.dns + byKind["domain-registrar"]} dns/dom · de ${itemTotal} configurados`;
+  const attentionHint =
+    attentionCount === 0
+      ? "Sin proveedores bloqueados"
+      : `${attentionCount === 1 ? "1 proveedor" : `${attentionCount} proveedores`} requiere acción`;
   const plannedHint =
     plannedCount === 0 ? "Sin proveedores en cola" : "Esperan onboarding";
+  const staleHint =
+    staleOrMockCount === 0
+      ? "Lecturas frescas"
+      : `${staleOrMockCount === 1 ? "1 fuente" : `${staleOrMockCount} fuentes`} con mock o dato viejo`;
+  const freshnessHint = plannedCount > 0
+    ? `${staleHint} · ${plannedHint}`
+    : staleHint;
 
   return (
     <Card padding="relaxed">
       <div className="grid grid-cols-2 gap-6 lg:grid-cols-4">
         <Stat
-          label="Operando OK"
-          value={okCount}
-          unit={okCount === 1 ? "proveedor" : "proveedores"}
-          tone={okCount > 0 ? "success" : "default"}
+          label="Recursos reales"
+          value={realTotal}
+          unit={realTotal === 1 ? "recurso" : "recursos"}
+          tone={realTotal > 0 ? "success" : "default"}
           hint={okHint}
         />
         <Stat
-          label="Con error"
-          value={errorCount}
-          unit={errorCount === 1 ? "cuenta" : "cuentas"}
-          tone={errorCount > 0 ? "critical" : "default"}
-          hint={errorHint}
+          label="Proveedores conectados"
+          value={okCount}
+          unit={okCount === 1 ? "proveedor" : "proveedores"}
+          tone={okCount > 0 ? "success" : "default"}
+          hint={`${okCount} activos · ${plannedCount} en cola`}
         />
         <Stat
-          label="Offline"
-          value={offlineCount}
-          unit={offlineCount === 1 ? "host" : "hosts"}
-          tone={offlineCount > 0 ? "warning" : "default"}
-          hint={offlineHint}
+          label="Atención"
+          value={attentionCount}
+          unit={attentionCount === 1 ? "caso" : "casos"}
+          tone={attentionCount > 0 ? "critical" : "default"}
+          hint={attentionHint}
         />
         <Stat
-          label="Planeados"
-          value={plannedCount}
-          unit={plannedCount === 1 ? "proveedor" : "proveedores"}
-          tone="default"
-          hint={plannedHint}
+          label="Datos viejos/mock"
+          value={staleOrMockCount}
+          unit={staleOrMockCount === 1 ? "fuente" : "fuentes"}
+          tone={staleOrMockCount > 0 ? "warning" : "default"}
+          hint={freshnessHint}
         />
       </div>
     </Card>
@@ -577,6 +815,7 @@ function AttentionRow({
   provider: Provider;
   kind: "error" | "offline";
 }) {
+  const [expanded, setExpanded] = useState(false);
   const borderColor =
     kind === "error" ? "var(--color-critical-border)" : "var(--color-warning-border)";
   const accent =
@@ -586,47 +825,65 @@ function AttentionRow({
   const Icon = kind === "error" ? KeyRound : PowerOff;
   const ctaLabel = kind === "error" ? "Reautenticar" : "Marcar online";
   const reasonLabel = kind === "error" ? "Credencial rechazada" : "Sin respuesta";
+  const detailsId = `attention-detail-${provider.id}`;
+  const canExpand = canExpandProvider(provider);
   return (
     <Card
       padding="default"
-      className="flex items-center gap-4"
+      className="flex flex-col gap-3"
       style={{ borderColor, background: "var(--color-surface)" }}
     >
-      <div
-        aria-hidden="true"
-        className="grid size-9 shrink-0 place-items-center rounded-md"
-        style={{ background: accentSoft, color: accent }}
-      >
-        <Icon size={16} strokeWidth={1.75} />
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="flex items-center gap-2">
-          <span
-            className="font-sans text-[14px] font-semibold leading-none text-fg"
-            style={{ letterSpacing: "-0.01em" }}
-          >
-            {brandName(provider)}
-          </span>
-          {accountSuffix(provider) ? (
-            <Caption className="truncate">· {accountSuffix(provider)}</Caption>
-          ) : null}
-          <Pill tone={kind === "error" ? "critical" : "warning"} size="sm">
-            {reasonLabel}
-          </Pill>
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-4">
+        <div
+          aria-hidden="true"
+          className="grid size-9 shrink-0 place-items-center rounded-md"
+          style={{ background: accentSoft, color: accent }}
+        >
+          <Icon size={16} strokeWidth={1.75} />
         </div>
-        <MonoCode className="truncate" title={provider.errorReason}>
-          {provider.errorReason ?? statusLabelOf(provider)} · {provider.id}
-        </MonoCode>
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="font-sans text-[14px] font-semibold leading-none text-fg">
+              {brandName(provider)}
+            </span>
+            {accountSuffix(provider) ? (
+              <Caption className="truncate">· {accountSuffix(provider)}</Caption>
+            ) : null}
+            <Pill tone={kind === "error" ? "critical" : "warning"} size="sm">
+              {reasonLabel}
+            </Pill>
+          </div>
+          <Caption className="truncate" title={technicalSummary(provider)}>
+            {providerRoleLabel(provider)} · {resourceLabel(provider)}
+          </Caption>
+          <MonoCode className="truncate" title={provider.errorReason}>
+            {provider.errorReason ?? statusLabelOf(provider)}
+          </MonoCode>
+        </div>
+        <div className="flex shrink-0 items-center gap-2 self-start md:self-auto">
+          {canExpand ? (
+            <Button
+              variant="outline"
+              size="sm"
+              aria-expanded={expanded}
+              aria-controls={detailsId}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? "Ocultar" : "Ver detalle"}
+            </Button>
+          ) : null}
+          <Button
+            variant="primary"
+            size="sm"
+            disabled
+            title="Requiere contrato de ejecución, approval gate y rollback verificado."
+          >
+            {ctaLabel}
+            <ArrowRight size={11} strokeWidth={1.75} />
+          </Button>
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <Button variant="outline" size="sm">
-          Ver detalle
-        </Button>
-        <Button variant="primary" size="sm">
-          {ctaLabel}
-          <ArrowRight size={11} strokeWidth={1.75} />
-        </Button>
-      </div>
+      {canExpand && expanded ? <ProviderDetail provider={provider} id={detailsId} /> : null}
     </Card>
   );
 }
@@ -711,12 +968,14 @@ function BannerOpenClawV2({
             className="mt-1"
             style={{ color: "var(--color-on-dark-soft)" }}
           >
-            Si querés, abrí el chat y te explico cada paso antes de proponer.
+            Plan de remediación pendiente de contrato de ejecución aprobado.
           </HumanNote>
           <div className="mt-2 flex items-center gap-2">
             <Button
               variant="primary"
               size="sm"
+              disabled
+              title="Pendiente de approval gate, audit log y rollback verificado."
               style={{
                 background: "var(--color-accent)",
                 color: "var(--color-accent-fg)"
@@ -728,6 +987,8 @@ function BannerOpenClawV2({
             <Button
               variant="ghost"
               size="sm"
+              disabled
+              title="El chat operativo no está conectado desde esta vista."
               style={{ color: "var(--color-on-dark-medium)" }}
             >
               Abrir chat
@@ -740,70 +1001,278 @@ function BannerOpenClawV2({
 }
 
 /* ============================================================
- * ProviderList — fila densa, no grid.
+ * ProviderSectionInventory — grupos conectados + cola plegada.
  * ============================================================ */
 
-function ProviderList({
-  providers,
-  icon: Icon
+function ProviderSectionInventory({
+  allProviders,
+  connectedProviders,
+  queuedProviders
 }: {
-  providers: Provider[];
-  icon: typeof Server;
+  allProviders: Provider[];
+  connectedProviders: Provider[];
+  queuedProviders: Provider[];
 }) {
+  const entries = buildProviderRenderEntries(connectedProviders, allProviders);
+  return (
+    <div className="flex flex-col gap-2">
+      {entries.map((entry) =>
+        entry.type === "group" ? (
+          <ProviderGroup
+            key={`group-${entry.brand}`}
+            brand={entry.brand}
+            monogram={entry.monogram}
+            summary={entry.summary}
+            providers={entry.providers}
+          />
+        ) : (
+          <ProviderList
+            key={`rows-${entry.providers.map((provider) => provider.id).join("-")}`}
+            providers={entry.providers}
+          />
+        )
+      )}
+      {queuedProviders.length > 0 ? (
+        <CollapsibleSection
+          title="En cola / sin conectar"
+          count={queuedProviders.length}
+          defaultOpen={false}
+        >
+          <ProviderList providers={queuedProviders} />
+        </CollapsibleSection>
+      ) : null}
+    </div>
+  );
+}
+
+function ProviderGroup({
+  brand,
+  monogram,
+  summary,
+  providers
+}: {
+  brand: string;
+  monogram: string;
+  summary: ProviderGroupSummary;
+  providers: Provider[];
+}) {
+  const noun = providers[0] ? providerResourceNoun(providers[0]) : { singular: "recurso", plural: "recursos" };
+  const statusParts = [
+    summary.connectedCount > 0 ? `${summary.connectedCount} conectada${summary.connectedCount === 1 ? "" : "s"}` : null,
+    summary.attentionCount > 0 ? `${summary.attentionCount} en atención ↑` : null,
+    summary.queuedCount > 0 ? `${summary.queuedCount} en cola ↓` : null
+  ].filter(Boolean);
+
   return (
     <Card padding="none" className="overflow-hidden">
-      <ul className="m-0 flex list-none flex-col p-0">
-        {providers.map((p, idx) => (
-          <li
-            key={p.id}
-            className="flex items-center gap-4 px-4 py-3"
-            style={{
-              borderTop:
-                idx === 0 ? "none" : "1px solid var(--color-border)"
-            }}
+      <div className="flex flex-col gap-2 border-b border-border px-4 py-3 md:flex-row md:items-center md:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <div
+            aria-hidden="true"
+            className="grid size-9 shrink-0 place-items-center rounded-md border border-border-strong bg-surface-sunken font-mono text-[11px] font-semibold text-fg"
           >
-            <div
-              aria-hidden="true"
-              className="grid size-8 shrink-0 place-items-center rounded-md bg-surface-sunken text-fg-muted"
-            >
-              <Icon size={14} strokeWidth={1.75} />
+            {monogram}
+          </div>
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+              <span className="truncate font-sans text-[13.5px] font-semibold leading-none text-fg">
+                {brand}
+              </span>
+              <Caption>
+                {formatCount(summary.totalAccounts, "cuenta", "cuentas")} ·{" "}
+                {formatCount(summary.realResourceCount, `${noun.singular} real`, `${noun.plural} reales`)}
+              </Caption>
             </div>
-            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <div className="flex items-center gap-2">
-                <span
-                  className="font-sans text-[13.5px] font-semibold leading-none text-fg"
-                  style={{ letterSpacing: "-0.01em" }}
-                >
-                  {brandName(p)}
-                </span>
-                {accountSuffix(p) ? (
-                  <span className="truncate font-sans text-[12.5px] text-fg-muted">
-                    · {accountSuffix(p)}
-                  </span>
-                ) : null}
-              </div>
-              <MonoCode className="truncate">
-                {p.id} · {p.capabilities.slice(0, 3).join(" · ") || "sin caps"}
-              </MonoCode>
-            </div>
-            <div className="hidden shrink-0 items-center gap-1.5 md:flex">
-              <Badge>{p.itemCount} items</Badge>
-              <MonoData className="text-[11px] text-fg-subtle">
-                {formatRelative(p.lastFetched)}
-              </MonoData>
-            </div>
-            {isIonosDnsActuator(p) ? (
-              <Pill tone="success" size="sm">
-                actuator
-              </Pill>
+            {statusParts.length > 0 ? (
+              <Caption>{statusParts.join(" · ")}</Caption>
             ) : null}
-            <Pill tone={STATUS_TONE[p.status]} size="sm">
-              {statusLabelOf(p)}
-            </Pill>
-          </li>
+          </div>
+        </div>
+        <Pill tone="success" size="sm">
+          grupo
+        </Pill>
+      </div>
+      <ul className="m-0 flex list-none flex-col p-0">
+        {providers.map((provider, index) => (
+          <ProviderRow key={provider.id} provider={provider} index={index} />
         ))}
       </ul>
     </Card>
+  );
+}
+
+function CollapsibleSection({
+  title,
+  count,
+  defaultOpen,
+  children
+}: {
+  title: string;
+  count: number;
+  defaultOpen: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const sectionId = `infra-collapsible-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  return (
+    <div className="flex flex-col gap-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={sectionId}
+        onClick={() => setOpen((value) => !value)}
+        className="flex items-center justify-between gap-3 rounded-md border border-border bg-surface px-3 py-2 text-left transition-colors duration-150 hover:border-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="font-sans text-[12.5px] font-semibold text-fg">{title}</span>
+          <Pill tone="neutral" size="sm">
+            {count}
+          </Pill>
+        </span>
+        <MonoData className="text-[11px] text-fg-subtle">{open ? "ocultar" : "mostrar"}</MonoData>
+      </button>
+      {open ? (
+        <div id={sectionId}>
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ============================================================
+ * ProviderList / ProviderRow — fila densa con drill-down real.
+ * ============================================================ */
+
+function ProviderList({ providers }: { providers: Provider[] }) {
+  return (
+    <Card padding="none" className="overflow-hidden">
+      <ul className="m-0 flex list-none flex-col p-0">
+        {providers.map((provider, index) => (
+          <ProviderRow key={provider.id} provider={provider} index={index} />
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+function ProviderRow({ provider, index }: { provider: Provider; index: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const canExpand = canExpandProvider(provider);
+  const detailsId = `provider-detail-${provider.id}`;
+  return (
+    <li
+      className="grid grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 md:grid-cols-[36px_minmax(160px,1.15fr)_minmax(140px,0.9fr)_auto_auto_auto_auto_auto]"
+      style={{
+        borderTop: index === 0 ? "none" : "1px solid var(--color-border)"
+      }}
+    >
+      <div
+        aria-hidden="true"
+        className="grid size-9 place-items-center rounded-md border border-border-strong bg-surface-sunken font-mono text-[11px] font-semibold text-fg"
+      >
+        {providerMonogram(provider)}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-sans text-[13.5px] font-semibold leading-none text-fg">
+            {brandName(provider)}
+          </span>
+          {accountSuffix(provider) ? (
+            <span className="truncate font-sans text-[12.5px] text-fg-muted">
+              · {accountSuffix(provider)}
+            </span>
+          ) : null}
+        </div>
+        <Caption className="truncate md:hidden" title={technicalSummary(provider)}>
+          {provider.kind !== "compute" || provider.id.toLowerCase().includes("bedrock")
+            ? `${providerRoleLabel(provider)} · ${resourceLabel(provider)}`
+            : resourceLabel(provider)}
+        </Caption>
+      </div>
+      <Caption className="hidden truncate md:block" title={technicalSummary(provider)}>
+        {provider.kind !== "compute" || provider.id.toLowerCase().includes("bedrock")
+          ? providerRoleLabel(provider)
+          : ""}
+      </Caption>
+      <Badge className="hidden justify-self-start md:inline-flex">
+        {resourceLabel(provider)}
+      </Badge>
+      <div className="hidden min-w-[92px] flex-col items-start gap-0.5 lg:flex">
+        <MonoData className="text-[11px] text-fg-subtle" title={provider.lastFetched ?? undefined}>
+          {formatRelative(provider.lastFetched)}
+        </MonoData>
+        <Caption className="text-[10.5px]">{sourceLabel(provider)}</Caption>
+      </div>
+      {isIonosDnsActuator(provider) ? (
+        <Pill tone="success" size="sm" className="hidden md:inline-flex">
+          actuator
+        </Pill>
+      ) : null}
+      <Pill tone={providerStatusTone(provider)} size="sm">
+        {providerStatusLabel(provider)}
+      </Pill>
+      {canExpand ? (
+        <Button
+          variant="outline"
+          size="sm"
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          onClick={() => setExpanded((value) => !value)}
+          className="col-span-3 justify-self-start md:col-span-1 md:justify-self-end"
+        >
+          {expanded ? "Ocultar" : "Ver detalle"}
+        </Button>
+      ) : null}
+      {canExpand && expanded ? (
+        <ProviderDetail
+          provider={provider}
+          id={detailsId}
+          className="col-span-full"
+        />
+      ) : null}
+    </li>
+  );
+}
+
+function ProviderDetail({
+  provider,
+  id,
+  className
+}: {
+  provider: Provider;
+  id: string;
+  className?: string;
+}) {
+  return (
+    <div
+      id={id}
+      className={[
+        "rounded-md border border-border bg-surface-sunken px-3 py-2",
+        className ?? ""
+      ].join(" ")}
+    >
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <Eyebrow>Detalle read-only</Eyebrow>
+        <Badge>{sourceLabel(provider)}</Badge>
+      </div>
+      {provider.items && provider.items.length > 0 ? (
+        <ul className="m-0 flex list-none flex-col gap-1 p-0">
+          {provider.items.map((item) => (
+            <li
+              key={item.id}
+              className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)_auto] gap-3"
+            >
+              <MonoData className="truncate text-[11px] text-fg-subtle">{item.id}</MonoData>
+              <Caption className="truncate">{item.displayName}</Caption>
+              <MonoData className="text-[11px] text-fg-subtle">{item.status}</MonoData>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <Caption>Sin recursos reportados en este fetch.</Caption>
+      )}
+    </div>
   );
 }
 
@@ -822,9 +1291,9 @@ function PhysicalCard({ provider }: { provider: Provider }) {
       <div className="flex items-start gap-4">
         <div
           aria-hidden="true"
-          className="grid size-10 shrink-0 place-items-center rounded-md bg-surface-sunken text-fg-muted"
+          className="grid size-10 shrink-0 place-items-center rounded-md border border-border-strong bg-surface-sunken font-mono text-[11px] font-semibold text-fg"
         >
-          <HardDrive size={16} strokeWidth={1.75} />
+          {providerMonogram(provider)}
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex items-center gap-2">
@@ -839,10 +1308,10 @@ function PhysicalCard({ provider }: { provider: Provider }) {
           </BodySm>
         </div>
         <Pill
-          tone={offline ? "warning" : STATUS_TONE[provider.status]}
+          tone={offline ? "warning" : providerStatusTone(provider)}
           size="sm"
         >
-          {offline ? "sin respuesta" : statusLabelOf(provider)}
+          {offline ? "sin respuesta" : providerStatusLabel(provider)}
         </Pill>
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -883,8 +1352,13 @@ function FooterMeta({ providers }: { providers: Provider[] }) {
           {liveCount} live · {mockCount} mock
         </Caption>
       </div>
-      <Button variant="link" size="sm">
-        Ver docs del contrato
+      <Button
+        variant="outline"
+        size="sm"
+        disabled
+        title="Pendiente de enlace interno a documentación versionada."
+      >
+        Docs pendientes
         <ArrowRight size={11} strokeWidth={1.75} />
       </Button>
     </div>
@@ -956,8 +1430,13 @@ function RegistryEmpty() {
           <MonoCode>/etc/openclaw/skills.env</MonoCode> y recargá.
         </BodySm>
         <div className="mt-1">
-          <Button variant="outline" size="sm">
-            Ver guía de onboarding
+          <Button
+            variant="outline"
+            size="sm"
+            disabled
+            title="Pendiente de ruta de onboarding conectada desde esta vista."
+          >
+            Guía pendiente
             <ArrowRight size={11} strokeWidth={1.75} />
           </Button>
         </div>
@@ -973,4 +1452,3 @@ function RegistryEmpty() {
 function stringOrDash(value: unknown): string {
   return typeof value === "string" && value.length > 0 ? value : "sin dato";
 }
-

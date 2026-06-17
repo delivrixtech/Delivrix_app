@@ -254,7 +254,7 @@ import {
   handlePorkbunOwnedDomainsHttp,
   handlePorkbunPingHttp
 } from "./routes/domains-porkbun.ts";
-import { handleInfrastructureInventoryHttp } from "./routes/infrastructure.ts";
+import { handleInfrastructureInventoryHttp, type VpsProviderInventoryResult } from "./routes/infrastructure.ts";
 import {
   handleOpenClawWorkspaceError,
   handleOpenClawWorkspaceFileHttp,
@@ -1750,6 +1750,45 @@ const server = createServer(async (request, response) => {
               result: await account.adapter.listServers()
             }))
           ),
+        vpsProviderListServers: async () => {
+          const providerInventories: VpsProviderInventoryResult[] = [];
+          for (const entry of vpsProviderEntries) {
+            const listServers = entry.adapter.listServers?.bind(entry.adapter);
+            if (!listServers) continue;
+            const fetchedAt = new Date().toISOString();
+            let result: VpsProviderInventoryResult["result"];
+            try {
+              result = await listServers();
+            } catch (error) {
+              void gatewayRuntimeLog.warn(
+                "infrastructure.vps_provider_inventory_failed",
+                "VPS provider inventory failed; degrading this provider only.",
+                {
+                  providerId: entry.id,
+                  errorName: error instanceof Error ? error.name : "UnknownError"
+                }
+              );
+              result = {
+                servers: [],
+                source: {
+                  kind: entry.adapter.isLive() ? "live" : "mock",
+                  apiBase: "vps-provider",
+                  accountId: entry.id,
+                  accountLabel: entry.label,
+                  fetchedAt,
+                  responseOk: false,
+                  errorMessage: "vps_provider_inventory_failed"
+                }
+              };
+            }
+            providerInventories.push({
+              providerId: entry.id,
+              providerLabel: entry.label,
+              result
+            });
+          }
+          return providerInventories;
+        },
         ionosListDnsInventory: () => ionosDnsAdapter.listInventory(),
         ionosListDomainsInventory: () => ionosDomainsAdapter.listInventory(),
         awsRoute53DomainsListInventory: () => awsRoute53DomainsAdapter.listInventory(),

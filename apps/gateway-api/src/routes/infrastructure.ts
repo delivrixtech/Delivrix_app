@@ -40,6 +40,7 @@ export interface InfrastructureInventoryRouteDependencies {
   response: ServerResponse;
   auditLog: AuditSink;
   webdockListServers: () => Promise<WebdockAccountInventoryResult[]>;
+  vpsProviderListServers?: () => Promise<VpsProviderInventoryResult[]>;
   awsRoute53DomainsListInventory?: () => Promise<AwsRoute53DomainsInventoryResult>;
   porkbunListInventory?: () => Promise<PorkbunInventoryResult>;
   ionosListDnsInventory?: () => Promise<IonosDnsInventoryResult>;
@@ -55,10 +56,17 @@ export interface WebdockAccountInventoryResult {
   result: WebdockInventoryResult;
 }
 
+export interface VpsProviderInventoryResult {
+  providerId: string;
+  providerLabel: string;
+  result: WebdockInventoryResult;
+}
+
 export interface BuildInfrastructureInventoryPayloadInput {
   webdockAccounts?: WebdockAccountInventoryResult[] | null;
   /** Compat legacy para tests/consumidores internos previos a multi-cuenta. */
   webdock?: WebdockInventoryResult | null;
+  vpsProviders?: VpsProviderInventoryResult[] | null;
   awsRoute53Domains?: AwsRoute53DomainsInventoryResult | null;
   porkbun?: PorkbunInventoryResult | null;
   ionosDns?: IonosDnsInventoryResult | null;
@@ -81,12 +89,14 @@ export async function handleInfrastructureInventoryHttp(
 ): Promise<void> {
   const [
     webdockAccounts,
+    vpsProviders,
     ionosDns,
     ionosDomains,
     awsRoute53Domains,
     porkbun
   ] = await Promise.all([
     deps.webdockListServers(),
+    deps.vpsProviderListServers ? deps.vpsProviderListServers() : Promise.resolve([]),
     deps.ionosListDnsInventory ? deps.ionosListDnsInventory() : Promise.resolve(null),
     deps.ionosListDomainsInventory ? deps.ionosListDomainsInventory() : Promise.resolve(null),
     deps.awsRoute53DomainsListInventory ? deps.awsRoute53DomainsListInventory() : Promise.resolve(null),
@@ -94,6 +104,7 @@ export async function handleInfrastructureInventoryHttp(
   ]);
   const payload = await buildInfrastructureInventoryPayload({
     webdockAccounts,
+    vpsProviders,
     awsRoute53Domains,
     porkbun,
     ionosDns,
@@ -114,7 +125,7 @@ export async function buildInfrastructureInventoryPayload(
   input: BuildInfrastructureInventoryPayloadInput = {}
 ): Promise<InfrastructureInventoryResponse> {
   const providers: Provider[] = [];
-  const webdockAccounts =
+  const webdockAccounts = dedupeWebdockInventoryAccounts(
     input.webdockAccounts ??
     (input.webdock
       ? [{
@@ -122,10 +133,14 @@ export async function buildInfrastructureInventoryPayload(
           accountLabel: input.webdock.source.accountLabel ?? "Webdock",
           result: input.webdock
         }]
-      : []);
+      : [])
+  );
 
   for (const account of webdockAccounts) {
     providers.push(buildWebdockProvider(account));
+  }
+  for (const provider of input.vpsProviders ?? []) {
+    providers.push(buildExternalVpsProvider(provider));
   }
 
   if (input.includeStaticProviders ?? true) {
@@ -143,6 +158,28 @@ export async function buildInfrastructureInventoryPayload(
   });
 }
 
+const cuenta1WebdockRoleIds = new Set(["primary", "ops", "account", "default"]);
+const cuenta1WebdockRolePriority = ["primary", "ops", "account", "default"];
+
+function dedupeWebdockInventoryAccounts(accounts: WebdockAccountInventoryResult[]): WebdockAccountInventoryResult[] {
+  const cuenta1Accounts = accounts.filter((account) => cuenta1WebdockRoleIds.has(account.accountId.toLowerCase()));
+  if (cuenta1Accounts.length <= 1) {
+    return accounts;
+  }
+
+  const otherAccounts = accounts.filter((account) => !cuenta1WebdockRoleIds.has(account.accountId.toLowerCase()));
+  const selected = [...cuenta1Accounts].sort(compareCuenta1WebdockAccounts)[0];
+  return [selected, ...otherAccounts];
+}
+
+function compareCuenta1WebdockAccounts(a: WebdockAccountInventoryResult, b: WebdockAccountInventoryResult): number {
+  const aHealthy = a.result.source.responseOk ? 0 : 1;
+  const bHealthy = b.result.source.responseOk ? 0 : 1;
+  if (aHealthy !== bHealthy) return aHealthy - bHealthy;
+  return cuenta1WebdockRolePriority.indexOf(a.accountId.toLowerCase()) -
+    cuenta1WebdockRolePriority.indexOf(b.accountId.toLowerCase());
+}
+
 export function shouldAuditInfrastructureInventoryFetch(headers: IncomingHttpHeaders): boolean {
   const rawHeader = headers[infrastructureInventorySkillInvocationHeader];
   const skillInvocation = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
@@ -153,7 +190,7 @@ export async function auditInfrastructureInventoryFetch(
   auditLog: AuditSink,
   payload: InfrastructureInventoryResponse
 ): Promise<void> {
-  const itemTotal = payload.providers.reduce((sum, provider) => sum + provider.itemCount, 0);
+  const itemTotal = payload.itemTotal;
   const providerStatuses = summarizeBy(payload.providers, (provider) => provider.status);
   const providerKinds = summarizeBy(payload.providers, (provider) => provider.kind);
   const sourceKinds = summarizeBy(payload.providers, (provider) => provider.fetchSourceKind ?? "none");
@@ -193,6 +230,32 @@ function buildWebdockProvider(account: WebdockAccountInventoryResult): Provider 
     ...(errorReason ? { errorReason } : {}),
     capabilities: ["list_compute_servers", "get_compute_server_detail"],
     items: webdock.servers.map(webdockServerToInventoryItem)
+  };
+}
+
+function buildExternalVpsProvider(provider: VpsProviderInventoryResult): Provider {
+  const inventory = provider.result;
+  const status = resolveExternalVpsProviderStatus(inventory);
+  const hasServers = inventory.servers.length > 0;
+  const errorReason = inventory.source.responseOk
+    ? undefined
+    : inventory.source.errorMessage ?? `${provider.providerId}_unavailable`;
+  return {
+    id: sanitizeProviderId(provider.providerId),
+    displayName: provider.providerLabel,
+    kind: "compute",
+    status,
+    ...(status === "active" && !hasServers ? { statusLabel: "Conectado sin VPS" } : {}),
+    itemCount: inventory.servers.length,
+    lastFetched: inventory.source.fetchedAt,
+    fetchSourceKind: inventory.source.kind,
+    ...(errorReason ? { errorReason } : {}),
+    capabilities: [
+      "list_compute_servers",
+      "get_compute_server_detail",
+      "provision_vps_requires_approval"
+    ],
+    items: inventory.servers.map((server) => externalVpsServerToInventoryItem(provider.providerId, server))
   };
 }
 
@@ -520,6 +583,18 @@ function webdockServerToInventoryItem(server: WebdockServer): InventoryItem {
   };
 }
 
+function externalVpsServerToInventoryItem(providerId: string, server: WebdockServer): InventoryItem {
+  const item = webdockServerToInventoryItem(server);
+  return {
+    ...item,
+    kind: `${sanitizeProviderId(providerId)}_server`,
+    detail: {
+      ...item.detail,
+      providerId
+    }
+  };
+}
+
 function awsRoute53DomainToInventoryItem(domain: AwsRoute53DomainSummary): InventoryItem {
   return {
     id: domain.domainName,
@@ -622,6 +697,13 @@ function resolveWebdockProviderStatus(webdock: WebdockInventoryResult): Provider
     return "active";
   }
   return "paused";
+}
+
+function resolveExternalVpsProviderStatus(inventory: WebdockInventoryResult): ProviderStatus {
+  if (!inventory.source.responseOk) {
+    return "error";
+  }
+  return "active";
 }
 
 function resolveAwsRoute53DomainsStatus(
