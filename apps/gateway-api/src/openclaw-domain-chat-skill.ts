@@ -194,6 +194,7 @@ function isOperationalOpenClawPrompt(normalized: string): boolean {
     /\b(configure_complete_smtp|provision_smtp_postfix|create_webdock_server|bind_webdock_main_domain|bind_domain_to_server|upsert_dns_route53|wait_for_dns_propagation|configure_email_auth|seed_warmup_pool|send_real_email)\b/.test(normalized) ||
     /\b(serverslug|serverip|smtphost|budgetusdmax|testemailrecipient|testemailsubject|testemailbody|imageslug|locationid)\s*=/.test(normalized) ||
     /\b(retoma|retomar|continu[aá]|continuar|sigue|seguir|ejecuta|ejecutar|propon[eé]|approvalgate|firma|side effect|post-dns|provisionar|smtp provisioning)\b/.test(normalized) ||
+    /\b(blacklist|blocklist|mxtoolbox|spamhaus|spamcop|reputaci[oó]n|quemad[oa]|listad[oa])\b/.test(normalized) ||
     // Lenguaje natural de configuracion/creacion SMTP -> debe ir al modelo (Bedrock),
     // NO al skill local de inventario. Sin esto, "configura este dominio... revisa..."
     // secuestraba el turno y crasheaba con "content is required." (IONOS 0 dominios).

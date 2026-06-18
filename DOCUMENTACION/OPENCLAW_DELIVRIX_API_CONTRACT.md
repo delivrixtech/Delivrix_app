@@ -64,35 +64,24 @@ el admin panel, o cuando un cron del Gateway pide al agente generar reporte diar
 
 `OPENCLAW_GATEWAY_TOKEN` vive en `.env.local` del Gateway. **Nunca en repo, nunca en chat.**
 
-Schema del request `chat.send`:
+Schema mínimo `chat.send`:
 
 ```json
 {
   "sessionKey": "agent:main:main",
   "msgId": "<uuid v4>",
-  "message": {
-    "role": "user",
-    "content": "string natural del operador"
-  },
-  "context": {
-    "delivrix_endpoint_token": "<bearer que OpenClaw usará para llamar de regreso>",
-    "delivrix_base_url": "http://gateway.delivrix.local:3000"
-  }
+  "message": { "role": "user", "content": "string" },
+  "context": { "delivrix_endpoint_token": "<bearer>", "delivrix_base_url": "<gateway>" }
 }
 ```
 
-Schema de respuesta esperada (`ASSISTANT_DONE` por WSS):
+Respuesta esperada (`ASSISTANT_DONE` por WSS):
 
 ```json
 {
   "msgId": "<uuid>",
   "sessionKey": "agent:main:main",
-  "assistant": {
-    "content": "markdown estructurado",
-    "skillsInvoked": ["delivrix-fleet-ops"],
-    "proposals": [{ "category": "node_pause_proposed", "...": "..." }],
-    "audit": { "evidenceRefs": ["..."], "duration_ms": 1234 }
-  }
+  "assistant": { "content": "markdown", "skillsInvoked": [], "proposals": [], "audit": {} }
 }
 ```
 
@@ -110,8 +99,8 @@ son los **únicos** que el agente puede llamar.
 | --- | --- | --- | --- | --- |
 | Cualquier read action de la matriz | `GET` | `/v1/<resource>` | `Bearer ${DELIVRIX_OPENCLAW_TOKEN}` | Token con scope `agent:read-only` |
 
-`DELIVRIX_OPENCLAW_TOKEN` se genera en el Gateway Delivrix y se inyecta al `context`
-del request en Dirección A (campo `delivrix_endpoint_token`). Vida útil: 15 min.
+`DELIVRIX_OPENCLAW_TOKEN` se genera en Gateway y se inyecta como
+`context.delivrix_endpoint_token`; TTL 15 min.
 
 ### 4.2 Inyección de propuestas (POST privado, NO en read-boundary)
 
@@ -126,21 +115,16 @@ frontend nunca llama. Esto preserva GET-only del panel.
 {
   "proposal": {
     "id": "<uuid>",
-    "category": "node_pause_proposed | node_resume_proposed | warming_step_proposed | ...",
+    "category": "<typed_proposal>",
     "severity": "low | medium | high",
-    "headline": "string corto",
-    "body": "string explicativo",
+    "headline": "string",
+    "body": "string",
     "evidenceRefs": ["<hashes audit>"],
-    "runbookRef": "warming-step-runbook.md",
-    "targetRef": "<nodeId|slug|domain>",
+    "runbookRef": "<runbook>",
+    "targetRef": "<node|slug|domain>",
     "delivrix_actions_required": ["propose_warming_step"]
   },
-  "audit": {
-    "skillSlug": "delivrix-publish-proposal",
-    "modelVersion": "us.anthropic.claude-sonnet-4-6",
-    "promptVersion": "v1",
-    "tokensUsed": 1234
-  },
+  "audit": { "skillSlug": "delivrix-publish-proposal", "modelVersion": "<model>", "promptVersion": "v1", "tokensUsed": 1234 },
   "schemaVersion": "2026-05-18.v1"
 }
 ```
@@ -154,19 +138,17 @@ El Gateway:
 4. Si falla la validación → devuelve `403` con código de rechazo (`prohibited_action`,
    `unknown_action`, `live_blocked_hito_5_11_b`).
 
-**El agente nunca llama POST a otros endpoints del Gateway.** Solo `/v1/agent/proposals`.
-Las aprobaciones humanas usan únicamente `POST /v1/openclaw/proposals/{id}/sign`.
-Las rutas legacy `/v1/agent/proposals/{id}/approve`, `/v1/agent/runbook/execute`
-y `/v1/agent/runbook/revert` están deprecadas y devuelven
-`410 canonical_hmac_signature_required`.
+**El agente nunca llama POST a otros endpoints del Gateway.** Solo
+`/v1/agent/proposals`. Aprobación humana: únicamente
+`POST /v1/openclaw/proposals/{id}/sign`. Rutas legacy
+`/v1/agent/proposals/{id}/approve`, `/v1/agent/runbook/execute`,
+`/v1/agent/runbook/revert` => `410 canonical_hmac_signature_required`.
 
 ### 4.3 Firma HMAC para POST privados del agente
 
-Todo `POST` privado del agente (`/v1/agent/proposals`, `/v1/agent/audit/batch`
-si está habilitado) se firma con HMAC-SHA256. La firma de aprobación humana vive
-en `POST /v1/openclaw/proposals/{id}/sign` y usa la misma disciplina HMAC salvo
-modo panel local explícito.
-La lectura `GET` sigue usando `Bearer ${DELIVRIX_OPENCLAW_TOKEN}`.
+Todo `POST` privado del agente se firma con HMAC-SHA256. La aprobación humana vive
+en `POST /v1/openclaw/proposals/{id}/sign` con la misma disciplina HMAC salvo
+modo panel local explícito. Reads usan `Bearer ${DELIVRIX_OPENCLAW_TOKEN}`.
 
 Headers obligatorios:
 
@@ -181,28 +163,9 @@ Canonical string:
 ${timestamp}.${rawBody}
 ```
 
-Donde `rawBody` es exactamente el JSON compacto enviado por HTTP. El Gateway
-rechaza con `401 hmac_missing`, `401 hmac_invalid`, `401 hmac_timestamp_invalid`
-o `401 hmac_timestamp_expired` antes de tocar el store.
-
-Ejemplo de generación:
-
-```bash
-ts="$(date +%s)"
-raw='{"proposal":{...},"audit":{...},"schemaVersion":"2026-05-18.v1"}'
-sig="$(printf '%s' "${ts}.${raw}" \
-  | openssl dgst -sha256 -hmac "$OPENCLAW_HMAC_SECRET" -binary \
-  | od -An -tx1 | tr -d ' \n')"
-
-curl -X POST "$DELIVRIX_GATEWAY_URL/v1/agent/proposals" \
-  -H "Content-Type: application/json" \
-  -H "X-OpenClaw-Timestamp: $ts" \
-  -H "X-OpenClaw-Signature: $sig" \
-  --data-binary "$raw"
-```
-
-No usar el token Bearer de lectura para `/v1/agent/proposals`. Ese token queda
-reservado para reads del read-boundary.
+`rawBody` es el JSON compacto exacto. Rechazos antes de tocar store:
+`401 hmac_missing|hmac_invalid|hmac_timestamp_invalid|hmac_timestamp_expired`.
+No usar Bearer para `/v1/agent/proposals`; queda reservado para reads.
 
 ## 5. Dirección C — OpenClaw → Notion
 

@@ -43,54 +43,54 @@ Si declara una acción inexistente o `prohibited`, OpenClaw rechaza el load.
 
 ## 3. Skills iniciales (7)
 
-Mínimo viable Hito 5.11.B: fleet/report/alert, drift Webdock, publisher HMAC y diagnóstico MXToolbox read-only.
+MVP Hito 5.11.B: fleet/report/alert, drift Webdock, publisher HMAC y MXToolbox read-only.
 
 ### 3.1 `delivrix-fleet-ops`
 
 | Campo | Valor |
 | --- | --- |
-| Trigger natural | "estado de la flota", "qué clústeres tenemos", "cuántos sender nodes", "qué nodos activos" |
+| Trigger natural | "estado de la flota", "clústeres", "sender nodes", "nodos activos" |
 | Acciones matrix | `read_admin_clusters`, `read_sender_nodes`, `read_canvas`, `read_webdock_inventory` |
 | Endpoints | `GET /v1/admin/clusters`, `GET /v1/sender-nodes`, `GET /v1/openclaw/live-canvas`, `GET /v1/webdock/inventory` |
-| Retorna | Markdown estructurado con secciones: clústeres (count, status), nodos por cluster, estado canvas, inventario Webdock |
-| Errores | Si un endpoint falla, sigue con los demás y reporta cuál falló |
-| Fallback | Rules engine local `evaluateWebdockDrift` cuando OpenClaw no puede llegar al Gateway |
-| Audit | `oc.skill.fleet_ops.invoke` con `evidenceRefs` a cada endpoint consultado |
+| Retorna | Markdown: clusters, nodos, canvas, Webdock inventory |
+| Errores | Sigue con endpoints sanos y reporta fallas |
+| Fallback | `evaluateWebdockDrift` local si no llega al Gateway |
+| Audit | `oc.skill.fleet_ops.invoke` + `evidenceRefs` |
 
 ### 3.2 `delivrix-alert-ops`
 
 | Campo | Valor |
 | --- | --- |
-| Trigger natural | "qué alertas hay", "qué gates están abiertos", "qué requiere mi atención", "está bien todo" |
+| Trigger natural | "alertas", "gates abiertos", "qué requiere atención", "está bien todo" |
 | Acciones matrix | `read_admin_overview`, `read_audit_events`, `read_kill_switch`, `read_operating_north`, `read_canvas` |
 | Endpoints | `GET /v1/admin/overview`, `GET /v1/audit-events`, `GET /v1/kill-switch`, `GET /v1/operating-north`, `GET /v1/openclaw/live-canvas` |
-| Retorna | Markdown: kill switch state, gates abiertos, alertas críticas, drift Webdock, propuestas pendientes |
-| Errores | Si kill switch no responde, escalar severidad a critical |
-| Fallback | Sin fallback: si no hay datos, retorna estado "unknown" honesto |
+| Retorna | Markdown: kill switch, gates, alertas, drift, propuestas |
+| Errores | Kill switch sin respuesta = critical |
+| Fallback | Ninguno: datos faltantes => `unknown` honesto |
 | Audit | `oc.skill.alert_ops.invoke` |
 
 ### 3.3 `delivrix-report-ops`
 
 | Campo | Valor |
 | --- | --- |
-| Trigger natural | "reporte diario", "resumen del día", "qué pasó hoy", scheduled cron `0 23 * * *` |
+| Trigger natural | "reporte diario", "resumen del día", "qué pasó hoy", cron `0 23 * * *` |
 | Acciones matrix | `read_operational_summary`, `read_audit_events`, `read_send_results`, `read_ip_reputation`, `generate_daily_report` |
 | Endpoints | `GET /v1/operational-summary`, `GET /v1/audit-events?since=24h`, `GET /v1/send-results?since=24h`, `GET /v1/ip-reputation/reports` |
-| Retorna | Markdown reporte ejecutivo: KPIs del día, eventos críticos, propuestas aprobadas/rechazadas, próximos pasos |
-| Errores | Sin datos suficientes → reporta "datos insuficientes para reporte completo" y lista qué faltó |
-| Fallback | Generar reporte parcial con los datos disponibles |
+| Retorna | Markdown ejecutivo: KPIs, eventos, propuestas, próximos pasos |
+| Errores | Datos insuficientes => lista faltantes |
+| Fallback | Reporte parcial |
 | Audit | `oc.skill.report_ops.invoke` + `oc.dry.daily_report` |
-| Side-effect permitido | POST del reporte a Notion Daily Standup DB (vía Agent Integration Guide, Doc 8) |
+| Side-effect permitido | POST a Notion Daily Standup DB (Doc 8) |
 
 ### 3.4 `webdock-inventory-sync`
 
 | Campo | Valor |
 | --- | --- |
-| Trigger natural | "qué servidores tengo en Webdock", "cuántos VPS están corriendo", "muéstrame el inventario" |
+| Trigger natural | "servidores Webdock", "VPS corriendo", "inventario" |
 | Acciones matrix | `read_webdock_inventory` |
-| Endpoints | `GET /v1/webdock/inventory` (gateway local, no Webdock API directo) |
+| Endpoints | `GET /v1/webdock/inventory` (gateway local) |
 | Retorna | Lista tabular: slug, name, status, ipv4, location, profileSlug, lastDataReceived |
-| Errores | Si gateway retorna `source.kind: mock`, lo advierte en la respuesta |
+| Errores | Si `source.kind: mock`, lo advierte |
 | Fallback | Mock canónico de 3 servers (`svc-warmup-01/02`, `svc-prod-eu-01`) |
 | Audit | `oc.skill.webdock_sync.invoke` |
 
@@ -98,38 +98,38 @@ Mínimo viable Hito 5.11.B: fleet/report/alert, drift Webdock, publisher HMAC y 
 
 | Campo | Valor |
 | --- | --- |
-| Trigger natural | scheduled cada 5 min, o "hay algo desalineado", "qué propone OpenClaw" |
+| Trigger natural | cron 5 min, "desalineado", "qué propone OpenClaw" |
 | Acciones matrix | `read_webdock_inventory`, `read_sender_nodes`, `evaluate_webdock_drift`, `propose_register_sender_node`, `propose_pause_ip` |
-| Endpoints | `GET /v1/webdock/inventory` (incluye `drift.proposals[]` con propuestas tipadas del rules engine) |
-| Retorna | Lista de propuestas con severidad (high/medium/low), nodo afectado, runbookRef, evidencia |
-| Errores | Si drift engine falla, escalar a alert-ops |
-| Fallback | Rules engine local de `openclaw-rules.ts` siempre disponible |
+| Endpoints | `GET /v1/webdock/inventory` (`drift.proposals[]`) |
+| Retorna | Propuestas: severidad, nodo, runbookRef, evidencia |
+| Errores | Drift engine falla => alert-ops |
+| Fallback | Rules engine local `openclaw-rules.ts` |
 | Audit | `oc.skill.drift.invoke` + `oc.dry.drift` |
-| Side-effect permitido | Inyectar propuestas al `prompt` del Canvas Delivrix vía Doc 4 (API contract) |
+| Side-effect permitido | Inyectar propuestas al Canvas vía Doc 4 |
 
 ### 3.6 `delivrix-publish-proposal`
 
 | Campo | Valor |
 | --- | --- |
-| Trigger natural | "publicar propuesta", "enviar propuesta al gateway", "proponer pausa", "proponer warming", "proponer quarantine" |
+| Trigger natural | "publicar propuesta", "enviar al gateway", "proponer pausa/warming/quarantine" |
 | Acciones matrix | `propose_register_sender_node`, `propose_warming_step`, `propose_pause_ip`, `propose_quarantine`, `update_sender_node_metadata`, `record_human_decision` |
 | Endpoints | `POST /v1/agent/proposals` |
-| Auth | HMAC `X-OpenClaw-Signature` + `X-OpenClaw-Timestamp`; nunca Bearer para submit |
+| Auth | HMAC `X-OpenClaw-Signature` + `X-OpenClaw-Timestamp`; nunca Bearer |
 | Retorna | Salida corta para el LLM: `status`, `httpStatus`, `proposalId`, `requiredApprovals`, `injectedIntoCanvas` |
-| Errores | Si el Gateway devuelve `401`/`403`, reporta `httpStatus` + `rejectReason` y no cambia headers ni acciones para forzar bypass |
-| Fallback | Ninguno: si no puede publicar, el agente informa que no llegó al Gateway |
+| Errores | `401`/`403`: reporta `httpStatus` + `rejectReason`; no fuerza bypass |
+| Fallback | Ninguno: informa que no llegó al Gateway |
 | Audit | `oc.skill.publish_proposal.invoke` + `oc.skill.publish_proposal.completed` + `oc.skill.publish_proposal.failed` |
-| Side-effect permitido | Crear un `StoredProposal` en Gateway si la permissions matrix acepta la propuesta |
+| Side-effect permitido | Crear `StoredProposal` si la matriz acepta |
 
 ### 3.7 `mxtoolbox-health-check`
 
 | Campo | Valor |
 | --- | --- |
-| Trigger natural | "revisa blacklist", "salud SMTP", "MXToolbox para dominio/IP" |
+| Trigger natural | "blacklist", "salud SMTP", "MXToolbox dominio/IP" |
 | Acciones matrix | `read_mxtoolbox_health` |
 | Endpoint | `GET /v1/mxtoolbox/health` |
 | Retorna | `status`, checks resumidos, `rawRef`; nunca raw completo |
-| Fallback | `mxtoolbox_not_configured`/`status:error`; no inventar reputacion |
+| Fallback | `mxtoolbox_not_configured`/`status:error`; no inventar reputación |
 | Audit | `oc.mxtoolbox.lookup`; listed diario -> `oc.mxtoolbox.blacklist_detected` |
 | Side-effect | Ninguno |
 

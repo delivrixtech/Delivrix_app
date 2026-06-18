@@ -254,6 +254,18 @@ test("domain chat skill NO secuestra prompts de configuracion SMTP (regresion co
   ), false);
 });
 
+test("domain chat skill deja reputacion y blacklist a Bedrock/MXToolbox", () => {
+  assert.equal(isDomainInventoryIntent(
+    "¿Este dominio está quemado annualrenewalnational.com o listado? Revisa reputación."
+  ), false);
+  assert.equal(isDomainInventoryIntent(
+    "revisa si el dominio annualrenewalnational.com esta en blacklist"
+  ), false);
+  assert.equal(isDomainInventoryIntent(
+    "¿la IP 8.8.8.8 está listada en MXToolbox o Spamhaus?"
+  ), false);
+});
+
 test("domain chat skill sigue detectando inventario PURO", () => {
   assert.equal(isDomainInventoryIntent("enlistame los dominios de ionos"), true);
   assert.equal(isDomainInventoryIntent("muestra los dominios registrados"), true);
