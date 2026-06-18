@@ -6,6 +6,7 @@ import {
   emailAuthParamSchema,
   ionosDnsReadParamSchema,
   ionosUpsertParamSchema,
+  mxtoolboxHealthParamSchema,
   readEpisodicScratchParamSchema,
   readWebdockServersParamSchema,
   route53DomainDetailParamSchema,
@@ -42,6 +43,7 @@ export type OpenClawToolName =
   | "read_route53_zone_records"
   | "update_domain_nameservers"
   | "read_dns_ionos"
+  | "read_mxtoolbox_health"
   | "read_webdock_servers"
   | "upsert_dns_route53"
   | "upsert_dns_ionos"
@@ -395,6 +397,44 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hmacConfigured(env) &&
       hasIonosDnsCredentials(env),
     targetType: "ionos_dns_zone",
+    severity: "high"
+  },
+  read_mxtoolbox_health: {
+    spec: {
+      name: "read_mxtoolbox_health",
+      description: [
+        "Consulta MXToolbox en modo read-only para diagnosticar blacklist y salud SMTP/DNS de una IP o dominio autorizado.",
+        "Usar antes de asumir reputacion: comandos permitidos blacklist, smtp, mx, spf, dkim, dmarc, ptr, a, txt, dns, bimi y mta-sts.",
+        "No expone raw ni API key; devuelve status clean/warning/listed/error, checks fallidos y rawRef auditado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        required: ["target"],
+        properties: {
+          target: {
+            type: "string",
+            minLength: 1,
+            maxLength: 253,
+            description: "IP o dominio a diagnosticar. Ejemplos: 8.8.8.8, mail.delivrix.com"
+          },
+          type: {
+            type: "string",
+            enum: ["blacklist", "smtp", "mx", "spf", "dkim", "dmarc", "ptr", "a", "txt", "dns", "bimi", "mta-sts"],
+            description: "Tipo de lookup MXToolbox. Default: blacklist."
+          },
+          selector: {
+            type: "string",
+            pattern: selectorPattern,
+            description: "Selector DKIM opcional cuando type=dkim."
+          }
+        }
+      }
+    },
+    paramSchema: mxtoolboxHealthParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      hasMxtoolboxCredentials(env),
+    targetType: "ip_or_domain_reputation",
     severity: "high"
   },
   read_webdock_servers: {
@@ -831,6 +871,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "read_route53_zone_records",
     "update_domain_nameservers",
     "read_dns_ionos",
+    "read_mxtoolbox_health",
     "read_webdock_servers",
     "upsert_dns_route53",
     "upsert_dns_ionos",
@@ -909,6 +950,10 @@ function hasSshRunnerConfig(env: Record<string, string | undefined>): boolean {
 
 function hasPorkbunCredentials(env: Record<string, string | undefined>): boolean {
   return Boolean(firstNonEmpty(env.PORKBUN_API_KEY, env.PORKBUN_SECRET_API_KEY));
+}
+
+function hasMxtoolboxCredentials(env: Record<string, string | undefined>): boolean {
+  return Boolean(firstNonEmpty(env.MXTOOLBOX_API_KEY));
 }
 
 function postgresConfigured(env: Record<string, string | undefined>): boolean {

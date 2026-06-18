@@ -7,6 +7,7 @@
  */
 
 import {
+  Activity,
   Cloud,
   Compass,
   Cpu,
@@ -31,6 +32,7 @@ export type SectionId =
   | "clusters"
   | "learning"
   | "safety"
+  | "mxtoolbox"
   | "infrastructure"
   | "domains"
   | "sender-pool";
@@ -136,6 +138,17 @@ export const sections: SectionDescriptor[] = [
     description:
       "Kill switch, acciones permitidas y bloqueadas, gates pendientes y roles del norte. Todo lectura desde el contrato del operating-north.",
     endpoint: READ_ENDPOINTS.operatingNorth
+  },
+  {
+    id: "mxtoolbox",
+    navLabel: "Blacklist",
+    group: "barandillas",
+    icon: Activity,
+    eyebrow: "MXToolbox · Reputación",
+    title: "Salud de blacklist y SMTP",
+    description:
+      "Diagnóstico read-only de MXToolbox para IPs y dominios autorizados. El Gateway guarda auditoría y el panel nunca recibe la API key.",
+    endpoint: READ_ENDPOINTS.mxtoolboxDailyReport
   },
   {
     id: "infrastructure",

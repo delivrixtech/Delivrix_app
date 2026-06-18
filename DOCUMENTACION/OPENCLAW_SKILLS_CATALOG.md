@@ -41,12 +41,9 @@ fallback: rules-engine-local
 `delivrix_actions` se valida contra la permissions matrix antes de cargar la skill.
 Si declara una acción inexistente o `prohibited`, OpenClaw rechaza el load.
 
-## 3. Skills iniciales (6)
+## 3. Skills iniciales (7)
 
-Mínimo viable para cerrar Hito 5.11.B. Cubren las skills conceptuales del Hito 4.4
-(`fleet-ops`, `alert-ops`, `report-ops`) más las dos del rules engine local
-(`webdock-inventory-sync`, `drift-monitor`) y el publisher HMAC genérico de
-propuestas (`delivrix-publish-proposal`).
+Mínimo viable Hito 5.11.B: fleet/report/alert, drift Webdock, publisher HMAC y diagnóstico MXToolbox read-only.
 
 ### 3.1 `delivrix-fleet-ops`
 
@@ -123,6 +120,18 @@ propuestas (`delivrix-publish-proposal`).
 | Fallback | Ninguno: si no puede publicar, el agente informa que no llegó al Gateway |
 | Audit | `oc.skill.publish_proposal.invoke` + `oc.skill.publish_proposal.completed` + `oc.skill.publish_proposal.failed` |
 | Side-effect permitido | Crear un `StoredProposal` en Gateway si la permissions matrix acepta la propuesta |
+
+### 3.7 `mxtoolbox-health-check`
+
+| Campo | Valor |
+| --- | --- |
+| Trigger natural | "revisa blacklist", "salud SMTP", "MXToolbox para dominio/IP" |
+| Acciones matrix | `read_mxtoolbox_health` |
+| Endpoint | `GET /v1/mxtoolbox/health` |
+| Retorna | `status`, checks resumidos, `rawRef`; nunca raw completo |
+| Fallback | `mxtoolbox_not_configured`/`status:error`; no inventar reputacion |
+| Audit | `oc.mxtoolbox.lookup`; listed diario -> `oc.mxtoolbox.blacklist_detected` |
+| Side-effect | Ninguno |
 
 ## 4. Anatomía estándar de una skill
 

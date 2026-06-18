@@ -439,12 +439,13 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
 
   assert.equal(payloads.length, 2);
   const toolNames = (payloads[0].tools as Array<{ name: string }>).map((tool) => tool.name);
-  assert.equal(toolNames.length, 17);
+  assert.equal(toolNames.length, 18);
   assert.equal(toolNames.includes("read_episodic_scratch"), true);
   assert.equal(toolNames.includes("compact_intent"), true);
   assert.equal(toolNames.includes("read_route53_domain_detail"), true);
   assert.equal(toolNames.includes("read_route53_zone_records"), true);
   assert.equal(toolNames.includes("read_dns_ionos"), true);
+  assert.equal(toolNames.includes("read_mxtoolbox_health"), true);
   assert.equal(toolNames.includes("read_webdock_servers"), true);
   assert.deepEqual(toolCalls, [{
     toolUseId: "toolu-1",
@@ -649,6 +650,7 @@ function enabledToolEnv(): Record<string, string | undefined> {
     AWS_ROUTE53_DNS_ENABLE_WRITES: "true",
     IONOS_DNS_ENABLE_WRITES: "true",
     IONOS_API_TOKEN: "ionos-token",
+    MXTOOLBOX_API_KEY: "mxtoolbox-key",
     WEBDOCK_SERVERS_ENABLE_CREATE: "true",
     WEBDOCK_API_KEY_OPS: "webdock-ops",
     SMTP_PROVISIONING_ENABLE_SSH: "true",

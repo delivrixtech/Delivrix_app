@@ -54,6 +54,7 @@ const CollectorSection = lazy(async () => ({ default: (await import("../features
 const ClustersSection = lazy(async () => ({ default: (await import("../v5/views/Clusters.tsx")).ClustersV5 }));
 const LearningSection = lazy(async () => ({ default: (await import("../features/learning/index.tsx")).LearningSection }));
 const SafetySection = lazy(async () => ({ default: (await import("../features/safety/index.tsx")).SafetySection }));
+const MxtoolboxHealthSection = lazy(async () => ({ default: (await import("../v5/views/MxtoolboxHealth.tsx")).MxtoolboxHealthV5 }));
 const InfrastructureSection = lazy(async () => ({ default: (await import("../v5/views/Infrastructure.tsx")).InfrastructureV5 }));
 const DomainsSection = lazy(async () => ({ default: (await import("../v5/views/Domains.tsx")).DomainsV5 }));
 const SenderPoolSection = lazy(async () => ({ default: (await import("../v5/views/SenderPool.tsx")).SenderPoolV5 }));
@@ -696,6 +697,8 @@ function SectionView({
       return <Suspense fallback={<SectionLoadingState />}><LearningSection data={data} /></Suspense>;
     case "safety":
       return <Suspense fallback={<SectionLoadingState />}><SafetySection data={data} /></Suspense>;
+    case "mxtoolbox":
+      return <Suspense fallback={<SectionLoadingState />}><MxtoolboxHealthSection /></Suspense>;
     case "infrastructure":
       return <Suspense fallback={<SectionLoadingState />}><InfrastructureSection /></Suspense>;
     case "domains":
@@ -858,6 +861,8 @@ function toneForSection(section: SectionId, data: DashboardData | undefined): To
       )
         return "warning";
       return "success";
+    case "mxtoolbox":
+      return "neutral";
     case "infrastructure":
       // Hito 5.12: el badge del sidebar se calcula desde el endpoint
       // /v1/infrastructure/inventory. Mientras Codex no lo expone, dejamos

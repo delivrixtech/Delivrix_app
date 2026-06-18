@@ -58,6 +58,12 @@ export interface IonosDnsReadParams extends Record<string, unknown> {
   recordName?: string;
 }
 
+export interface MxtoolboxHealthParams extends Record<string, unknown> {
+  target: string;
+  type?: "blacklist" | "smtp" | "mx" | "spf" | "dkim" | "dmarc" | "ptr" | "a" | "txt" | "dns" | "bimi" | "mta-sts";
+  selector?: string;
+}
+
 export interface IonosUpsertParams extends Record<string, unknown> {
   zone: string;
   records: Array<{
@@ -289,6 +295,19 @@ export const ionosDnsReadParamSchema = schema<IonosDnsReadParams>((value) => {
     ...(input.recordName === undefined || input.recordName === null || input.recordName === ""
       ? {}
       : { recordName: dnsRecordName(input.recordName, "recordName") })
+  };
+});
+
+export const mxtoolboxHealthParamSchema = schema<MxtoolboxHealthParams>((value) => {
+  const input = object(value);
+  return {
+    target: mxtoolboxTarget(input.target, "target"),
+    ...(input.type === undefined || input.type === null || input.type === ""
+      ? { type: "blacklist" as const }
+      : { type: oneOf(String(input.type).toLowerCase(), "type", mxtoolboxCommands) }),
+    ...(input.selector === undefined || input.selector === null || input.selector === ""
+      ? {}
+      : { selector: selector(input.selector, "selector") })
   };
 });
 
@@ -587,6 +606,7 @@ function domain(value: unknown, field: string): string {
 }
 
 const route53ReadRecordTypes = ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "PTR", "SRV", "CAA"] as const;
+const mxtoolboxCommands = ["blacklist", "smtp", "mx", "spf", "dkim", "dmarc", "ptr", "a", "txt", "dns", "bimi", "mta-sts"] as const;
 
 function route53ZoneId(value: unknown, field: string): string {
   const normalized = string(value, field).replace(/^\/hostedzone\//, "").toUpperCase();
@@ -618,6 +638,14 @@ function ipv4(value: unknown, field: string): string {
     throw new SkillSchemaError(`${field} must be a valid IPv4 address`);
   }
   return parts.map((part) => String(Number(part))).join(".");
+}
+
+function mxtoolboxTarget(value: unknown, field: string): string {
+  const raw = string(value, field).toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  const parts = raw.split(".");
+  const maybeIpv4 = parts.length === 4 && parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+  if (maybeIpv4) return parts.map((part) => String(Number(part))).join(".");
+  return domain(raw, field);
 }
 
 function email(value: unknown, field: string): string {

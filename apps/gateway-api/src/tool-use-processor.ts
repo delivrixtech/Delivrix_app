@@ -724,6 +724,29 @@ async function invokeReadOnlyToolOverHttp(input: {
     return body;
   }
 
+  if (input.input.toolName === "read_mxtoolbox_health") {
+    const url = new URL(`${input.baseUrl}/v1/mxtoolbox/health`);
+    url.searchParams.set("target", String(input.input.params.target));
+    if (typeof input.input.params.type === "string") {
+      url.searchParams.set("type", input.input.params.type);
+    }
+    if (typeof input.input.params.selector === "string") {
+      url.searchParams.set("selector", input.input.params.selector);
+    }
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return body;
+  }
+
   if (input.input.toolName === "read_webdock_servers") {
     const response = await input.fetchImpl(`${input.baseUrl}/v1/webdock/inventory`, {
       method: "GET",
@@ -1046,6 +1069,7 @@ function isReadOnlyToolUse(toolName: string): boolean {
     toolName === "read_route53_domain_detail" ||
     toolName === "read_route53_zone_records" ||
     toolName === "read_dns_ionos" ||
+    toolName === "read_mxtoolbox_health" ||
     toolName === "read_webdock_servers";
 }
 

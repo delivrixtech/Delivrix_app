@@ -16,6 +16,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "read_route53_zone_records",
     "update_domain_nameservers",
     "read_dns_ionos",
+    "read_mxtoolbox_health",
     "read_webdock_servers",
     "upsert_dns_route53",
     "upsert_dns_ionos",
@@ -38,6 +39,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
         "read_route53_domain_detail",
         "read_route53_zone_records",
         "read_dns_ionos",
+        "read_mxtoolbox_health",
         "read_webdock_servers",
         "compact_intent"
       ].includes(tool.name))
@@ -61,6 +63,10 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     /no requiere ApprovalGate/
   );
   assert.match(
+    tools.find((tool) => tool.name === "read_mxtoolbox_health")?.description ?? "",
+    /read-only/
+  );
+  assert.match(
     tools.find((tool) => tool.name === "read_webdock_servers")?.description ?? "",
     /no requiere ApprovalGate/
   );
@@ -71,9 +77,18 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 18);
+  assert.equal(tools.length, 19);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
+});
+
+test("buildToolsForOpenClaw omits MXToolbox tool when API key is missing", () => {
+  const names = buildToolsForOpenClaw({
+    ...allEnabledEnv(),
+    MXTOOLBOX_API_KEY: ""
+  }).map((tool) => tool.name);
+
+  assert.equal(names.includes("read_mxtoolbox_health"), false);
 });
 
 test("buildToolsForOpenClaw omits Route53 tools when AWS credentials are missing", () => {
@@ -215,6 +230,7 @@ function allEnabledEnv(): Record<string, string | undefined> {
     AWS_ROUTE53_DNS_ENABLE_WRITES: "true",
     IONOS_DNS_ENABLE_WRITES: "true",
     IONOS_API_TOKEN: "ionos-token",
+    MXTOOLBOX_API_KEY: "mxtoolbox-key",
     PORKBUN_API_KEY: "porkbun-key",
     PORKBUN_SECRET_API_KEY: "porkbun-secret",
     WEBDOCK_SERVERS_ENABLE_CREATE: "true",
@@ -272,6 +288,9 @@ function validSample(toolName: string): Record<string, unknown> {
       recordType: "TXT",
       recordName: "_dmarc.nationalcorphub.app"
     };
+  }
+  if (toolName === "read_mxtoolbox_health") {
+    return { target: "8.8.8.8", type: "blacklist" };
   }
   if (toolName === "read_webdock_servers") {
     return { serverSlug: "server10", ipv4: "45.136.70.47" };

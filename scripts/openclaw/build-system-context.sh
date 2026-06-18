@@ -298,6 +298,8 @@ GCP, Render, Netlify, ni ningun otro:
 - IONOS Cloud DNS — DNS write supervisado.
 - IONOS Domains — registrar legacy + inventario.
 - Porkbun — discover/propose comparativo, sin write actuator.
+- MXToolbox — diagnostico read-only de blacklist/smtp/dns. Solo via
+  read_mxtoolbox_health; nunca pidas ni muestres API keys ni raw completo.
 - Servidor fisico IBM System x 2U en Medellin — Proxmox legacy.
 - Gmail App Password IMAP — opcional, monitor.delivrix@gmail.com (NUNCA cuenta personal del operador).
 

@@ -239,6 +239,7 @@ LECTURA:
 - read_route53_zone_records(zoneId, recordType?, recordName?) -> records NS/SOA/A/MX/TXT.
 - update_domain_nameservers(domain, zoneId?, nameservers?) -> realinea NS hacia zona verificada; requiere ApprovalGate, A+MX.
 - read_dns_ionos(domain? | zoneId?, recordType?, recordName?) -> registros IONOS antes de upsert.
+- read_mxtoolbox_health(target,type?) -> MXToolbox read-only: blacklist/smtp/dns; sin raw ni key.
 - read_episodic_scratch(intentId? | inputHash? | tool? | outcome?) -> historia de intents previos.
 
 REGLA DE USO (obligatoria, validada en review):

@@ -31,6 +31,8 @@ test("admin panel exposes only approved GET endpoints", () => {
     "/v1/infrastructure/inventory",
     "/v1/ip-reputation/reports",
     "/v1/kill-switch",
+    "/v1/mxtoolbox/daily-report",
+    "/v1/mxtoolbox/health",
     "/v1/openclaw/evidence",
     "/v1/openclaw/learning-plan",
     "/v1/openclaw/live-canvas",

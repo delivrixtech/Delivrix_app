@@ -77,6 +77,8 @@ agregue al read-boundary debe agregarse acá en el mismo commit.
 | `read_compliance_status` | `GET /v1/compliance/status` | `oc.read.compliance` | `compliance` |
 | `read_openclaw_skills_audit` | `GET /v1/openclaw/skills/audit` | `oc.read.skills_audit` | `skills_audit` |
 | `read_openclaw_evidence` | `GET /v1/openclaw/evidence` | `oc.read.evidence` | `evidence` |
+| `read_mxtoolbox_health` | `GET /v1/mxtoolbox/health` | `oc.mxtoolbox.lookup` | `ip_or_domain_reputation` |
+| `read_mxtoolbox_daily_report` | `GET /v1/mxtoolbox/daily-report` | `oc.mxtoolbox.daily_scan_clean` | `mxtoolbox_report` |
 | `read_webdock_inventory` | `GET /v1/webdock/inventory` | `oc.read.webdock` | `webdock_inventory` |
 | `read_webdock_servers` | `GET /v1/webdock/inventory` | `oc.read.webdock` | `webdock_inventory` |
 | `suggest_safe_domain` | `POST /v1/skills/suggest-safe-domain` | `oc.naming.candidates_suggested` | `domain_naming` |
