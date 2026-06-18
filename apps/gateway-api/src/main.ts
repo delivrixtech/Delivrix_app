@@ -10,6 +10,7 @@ import {
   buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
   createContaboAdaptersFromEnv,
+  createMxtoolboxAdapterFromEnv,
   IonosDnsActuator,
   IonosDomainsAdapter,
   PorkbunAdapter,
@@ -169,6 +170,13 @@ import { handleReadRoute53DomainDetail } from "./routes/route53-domain-detail.ts
 import { handleReadRoute53ZoneRecords } from "./routes/route53-zone-records.ts";
 import { handleReadIonosDns } from "./routes/read-dns-ionos.ts";
 import {
+  buildMxtoolboxDailyReport,
+  handleReadMxtoolbox,
+  handleReadMxtoolboxDailyReport,
+  type MxtoolboxAuditEvent,
+  type MxtoolboxDailyReportResponse
+} from "./routes/mxtoolbox-read.ts";
+import {
   handleIonosDnsUpsertError,
   handleIonosDnsUpsertHttp
 } from "./routes/dns-ionos-upsert.ts";
@@ -301,6 +309,7 @@ import {
   handleCompactIntentHttp
 } from "./routes/openclaw-compact-intent.ts";
 import { startEpisodicScratchTtlJob } from "./episodic-scratch-ttl.ts";
+import { insertEpisodicEntry } from "../../../packages/storage/src/index.ts";
 import {
   canonicalSkillSlug,
   hashSkillExecutionContext,
@@ -373,6 +382,7 @@ const awsRoute53DnsAdapter = new AwsRoute53DnsAdapter();
 const ionosDnsAdapter = new IonosDnsActuator();
 const ionosDomainsAdapter = new IonosDomainsAdapter();
 const porkbunAdapter = new PorkbunAdapter();
+const mxtoolboxAdapter = createMxtoolboxAdapterFromEnv(process.env);
 const proxmoxAdapter = new ProxmoxAdapter();
 const provisioningRunStore = new LocalFileProvisioningRunStore();
 const ipReputationReportStore = new LocalFileIpReputationReportStore();
@@ -982,6 +992,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_route53_domain_detail", "allowed_read_only"),
   permission("read_route53_zone_records", "allowed_read_only"),
   permission("read_dns_ionos", "allowed_read_only"),
+  permission("read_mxtoolbox_health", "allowed_read_only"),
+  permission("read_mxtoolbox_daily_report", "allowed_read_only"),
   permission("suggest_safe_domain", "allowed_read_only"),
   permission("naming_suggest", "allowed_read_only"),
   permission("propose_warming_step", "allowed_dry_run"),
@@ -1885,6 +1897,27 @@ const server = createServer(async (request, response) => {
         emitAudit: appendRoute53ReadAudit,
         now: () => new Date(),
         readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/mxtoolbox/health") {
+      return await handleReadMxtoolbox(request, response, {
+        adapter: mxtoolboxAdapter,
+        emitAudit: appendMxtoolboxAudit,
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/mxtoolbox/daily-report") {
+      return await handleReadMxtoolboxDailyReport(request, response, {
+        adapter: mxtoolboxAdapter,
+        canvasLiveEvents,
+        emitAudit: appendMxtoolboxAudit,
+        getSenderNodes: () => senderNodeRegistry.list(),
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        recordScratch: recordMxtoolboxDailyReportScratch
       });
     }
 
@@ -5117,7 +5150,82 @@ server.listen(port, host, () => {
       intervalMs: positiveIntegerOrDefault(process.env.OPENCLAW_EPISODIC_SCRATCH_TTL_INTERVAL_MS, 6 * 60 * 60 * 1000)
     });
   }
+  if (flagEnabled(process.env.MXTOOLBOX_DAILY_SCAN_ENABLE)) {
+    startMxtoolboxDailyScan(
+      positiveIntegerOrDefault(process.env.MXTOOLBOX_DAILY_SCAN_INTERVAL_MS, 24 * 60 * 60 * 1000)
+    );
+  }
 });
+
+function startMxtoolboxDailyScan(intervalMs: number): void {
+  setInterval(() => {
+    void runMxtoolboxDailyScan();
+  }, intervalMs).unref();
+  void gatewayRuntimeLog.info("mxtoolbox.daily_scan_started", "MXToolbox daily scan job started.", {
+    intervalMs
+  });
+}
+
+async function runMxtoolboxDailyScan(): Promise<void> {
+  if (!mxtoolboxAdapter) {
+    void gatewayRuntimeLog.warn("mxtoolbox.daily_scan_skipped", "MXToolbox daily scan skipped because adapter is not configured.", {
+      reason: "mxtoolbox_not_configured"
+    });
+    return;
+  }
+  try {
+    const request = { url: "/v1/mxtoolbox/daily-report", method: "GET", headers: {} } as IncomingMessage;
+    const report = await buildMxtoolboxDailyReport(request, {
+      adapter: mxtoolboxAdapter,
+      getSenderNodes: () => senderNodeRegistry.list(),
+      now: () => new Date()
+    });
+    if (report.criticalAlerts.length === 0) {
+      await appendMxtoolboxAudit({
+        action: "oc.mxtoolbox.daily_scan_clean",
+        targetType: "mxtoolbox_report",
+        targetId: report.generatedAt,
+        riskLevel: "low",
+        metadata: {
+          totalTargets: report.totalTargets,
+          summary: report.summary
+        }
+      });
+    } else {
+      for (const alert of report.criticalAlerts) {
+        await appendMxtoolboxAudit({
+          action: "oc.mxtoolbox.blacklist_detected",
+          targetType: /^\d+\.\d+\.\d+\.\d+$/.test(alert.target) ? "ip" : "domain",
+          targetId: alert.target,
+          riskLevel: "high",
+          metadata: {
+            command: alert.command,
+            failedChecks: alert.failedChecks,
+            rawRef: alert.rawRef
+          }
+        });
+      }
+      await canvasLiveEvents.emit({
+        type: "oc.action.now",
+        taskId: `mxtoolbox-${report.generatedAt.slice(0, 10)}`,
+        kind: "audit",
+        action: "oc.mxtoolbox.blacklist_detected",
+        targetType: "mxtoolbox_report",
+        targetId: report.generatedAt,
+        riskLevel: report.criticalAlerts.length > 5 ? "critical" : "high",
+        occurredAt: report.generatedAt
+      });
+    }
+    await recordMxtoolboxDailyReportScratch(report).catch(() => undefined);
+    void gatewayRuntimeLog.info("mxtoolbox.daily_scan_completed", "MXToolbox daily scan completed.", {
+      totalTargets: report.totalTargets,
+      summary: report.summary,
+      criticalAlerts: report.criticalAlerts.length
+    });
+  } catch (error) {
+    void gatewayRuntimeLog.warn("mxtoolbox.daily_scan_failed", "MXToolbox daily scan failed.", runtimeErrorMetadata(error));
+  }
+}
 
 async function resumeRampsOnStartup(): Promise<void> {
   try {
@@ -5632,6 +5740,63 @@ async function appendRoute53ReadAudit(event: { type: string; [key: string]: unkn
   });
 }
 
+async function appendMxtoolboxAudit(event: MxtoolboxAuditEvent): Promise<void> {
+  await auditLog.append({
+    actorType: "openclaw",
+    actorId: "openclaw-mxtoolbox-read",
+    action: event.action,
+    targetType: event.targetType,
+    targetId: event.targetId,
+    riskLevel: event.riskLevel,
+    decision: "allow",
+    humanApproved: false,
+    metadata: {
+      provider: "mxtoolbox",
+      ...(event.metadata ?? {})
+    }
+  });
+}
+
+async function recordMxtoolboxDailyReportScratch(report: MxtoolboxDailyReportResponse): Promise<void> {
+  const generatedHour = report.generatedAt.slice(0, 13).replace(/[-:T]/g, "");
+  await insertEpisodicEntry(episodicScratchPool, {
+    intentId: `mxtoolbox-daily-${generatedHour}`,
+    step: 1,
+    tool: "read_mxtoolbox_daily_report",
+    inputHash: hashJson({
+      generatedAt: report.generatedAt,
+      totalTargets: report.totalTargets,
+      summary: report.summary,
+      results: report.results.map((result) => ({
+        target: result.target,
+        command: result.command,
+        status: result.status,
+        rawRef: result.rawRef
+      }))
+    }),
+    outcome: report.summary.error > 0 ? "partial" : "success",
+    outcomeData: {
+      generatedAt: report.generatedAt,
+      totalTargets: report.totalTargets,
+      summary: report.summary,
+      criticalAlerts: report.criticalAlerts.map((alert) => ({
+        target: alert.target,
+        command: alert.command,
+        failedChecks: alert.failedChecks,
+        rawRef: alert.rawRef
+      }))
+    },
+    source: "tool_output",
+    plane: "verified_fact",
+    provenance: { kind: "mxtoolbox_daily_scan" },
+    ttlDays: 7,
+    metadata: {
+      provider: "mxtoolbox",
+      reportHash: hashJson(report)
+    }
+  });
+}
+
 async function readJson<T>(request: IncomingMessage): Promise<T> {
   const raw = await readBody(request);
 
@@ -5736,6 +5901,11 @@ function approvalTimeoutForPlanStep(skill: string, params: Record<string, unknow
 function positiveNumber(value: unknown): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function flagEnabled(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "true" || normalized === "1";
 }
 
 function extractDispatchError(summary: unknown): string {

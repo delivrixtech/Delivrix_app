@@ -19,6 +19,8 @@ export const READ_ENDPOINTS = Object.freeze({
   openClawWorkspaceTree: "/v1/openclaw/workspace/tree",
   operatingNorth: "/v1/operating-north",
   killSwitch: "/v1/kill-switch",
+  mxtoolboxDailyReport: "/v1/mxtoolbox/daily-report",
+  mxtoolboxHealth: "/v1/mxtoolbox/health",
   auditEvents: "/v1/audit-events",
   senderPoolStatus: "/v1/sender-pool/status",
   senderNodes: "/v1/sender-nodes",

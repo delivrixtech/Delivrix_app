@@ -748,6 +748,63 @@ test("createHttpToolUseProcessor invokes read-only IONOS DNS endpoint directly",
   assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
 });
 
+test("createHttpToolUseProcessor invokes read-only MXToolbox health endpoint directly", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    readBoundaryToken: "read-token",
+    fetchImpl: async (url, init) => {
+      calls.push({
+        url: String(url),
+        headers: init?.headers as Record<string, string> ?? {}
+      });
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).startsWith("http://127.0.0.1:3000/v1/mxtoolbox/health")) {
+        const parsed = new URL(String(url));
+        assert.equal(init?.method, "GET");
+        assert.equal(parsed.searchParams.get("target"), "8.8.8.8");
+        assert.equal(parsed.searchParams.get("type"), "blacklist");
+        return jsonResponse({
+          source: "live",
+          result: {
+            target: "8.8.8.8",
+            command: "blacklist",
+            checkedAt: "2026-06-18T10:00:00.000Z",
+            status: "clean",
+            failedChecks: [],
+            warningChecks: [],
+            passedCount: 59,
+            timeoutCount: 0,
+            rawRef: "a".repeat(64)
+          }
+        });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-mxtoolbox-read",
+    toolName: "read_mxtoolbox_health",
+    toolInput: {
+      target: "8.8.8.8",
+      type: "blacklist"
+    },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected MXToolbox read success");
+  assert.deepEqual(calls.map((call) => call.url), [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/mxtoolbox/health?target=8.8.8.8&type=blacklist"
+  ]);
+  assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
+});
+
 test("processToolUse blocks direct SMTP subtools when plan autonomy is enabled", async () => {
   const calls: unknown[] = [];
   const result = await processToolUse({
@@ -1105,6 +1162,7 @@ function enabledEnv(): Record<string, string | undefined> {
     AWS_ROUTE53_DNS_ENABLE_WRITES: "true",
     IONOS_DNS_ENABLE_WRITES: "true",
     IONOS_API_TOKEN: "ionos-token",
+    MXTOOLBOX_API_KEY: "mxtoolbox-key",
     WEBDOCK_SERVERS_ENABLE_CREATE: "true",
     WEBDOCK_API_KEY_OPS: "webdock-ops",
     SMTP_PROVISIONING_ENABLE_SSH: "true",

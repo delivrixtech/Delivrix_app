@@ -36,6 +36,11 @@ const gatewayLogProxyToken =
   process.env.DELIVRIX_READ_BOUNDARY_TOKEN ??
   process.env.OPENCLAW_GATEWAY_TOKEN ??
   "";
+const readBoundaryProxyToken =
+  process.env.DELIVRIX_READ_BOUNDARY_TOKEN ??
+  process.env.DELIVRIX_OPENCLAW_TOKEN ??
+  process.env.OPENCLAW_GATEWAY_TOKEN ??
+  "";
 const allowedProxyPaths = new Set([...Object.values(READ_ENDPOINTS), canvasLiveStatePath]);
 const allowedReadPatterns: RegExp[] = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/status$/
@@ -96,6 +101,16 @@ export default defineConfig({
         configure: (proxy) => {
           proxy.on("error", (err) => {
             console.warn(`[vite] proxy error (ignorado, panel sigue vivo): ${err.message}`);
+          });
+          proxy.on("proxyReq", (proxyReq, req) => {
+            const requestUrl = new URL(req.url ?? "/", "http://127.0.0.1:5173");
+            const isAllowedRead =
+              req.method === "GET" &&
+              (allowedProxyPaths.has(requestUrl.pathname as ReadEndpoint) ||
+                allowedReadPatterns.some((re) => re.test(requestUrl.pathname)));
+            if (isAllowedRead && readBoundaryProxyToken && !req.headers["x-delivrix-token"]) {
+              proxyReq.setHeader("x-delivrix-token", readBoundaryProxyToken);
+            }
           });
           proxy.on("proxyReqWs", (_proxyReq, _req, socket) => {
             socket.on("error", (err) => {

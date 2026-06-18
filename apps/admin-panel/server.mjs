@@ -27,6 +27,11 @@ const gatewayLogProxyToken =
   process.env.DELIVRIX_READ_BOUNDARY_TOKEN ??
   process.env.OPENCLAW_GATEWAY_TOKEN ??
   "";
+const readBoundaryProxyToken =
+  process.env.DELIVRIX_READ_BOUNDARY_TOKEN ??
+  process.env.DELIVRIX_OPENCLAW_TOKEN ??
+  process.env.OPENCLAW_GATEWAY_TOKEN ??
+  "";
 const allowedWritePatterns = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/sign$/,
   /^\/v1\/openclaw\/proposals\/[^/]+\/reject$/,
@@ -67,6 +72,8 @@ const allowedProxyPaths = new Set([
   "/v1/openclaw/skills/audit",
   "/v1/operating-north",
   "/v1/kill-switch",
+  "/v1/mxtoolbox/daily-report",
+  "/v1/mxtoolbox/health",
   "/v1/send-results",
   "/v1/sender-nodes",
   "/v1/stuck-jobs",
@@ -180,6 +187,8 @@ async function proxyGatewayGet(request, response, requestUrl) {
   }
   if (delivrixToken) {
     headers["x-delivrix-token"] = delivrixToken;
+  } else if (readBoundaryProxyToken) {
+    headers["x-delivrix-token"] = readBoundaryProxyToken;
   }
   let upstreamResponse;
   try {

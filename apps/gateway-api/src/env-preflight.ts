@@ -335,6 +335,13 @@ export const ENV_PREFLIGHT_CATALOG: readonly EnvVarSpec[] = [
     kind: "secret",
     anyOf: ["SMTP_SSH_KEY_PATH"],
     breaks: "provision/bind/warmup/send SSH al VPS sin clave (provision_smtp_postfix, send_real_email)"
+  },
+  {
+    name: "MXTOOLBOX_API_KEY",
+    group: "providers",
+    severity: "warn",
+    kind: "secret",
+    breaks: "lecturas MXtoolbox fallan"
   }
 ];
 
