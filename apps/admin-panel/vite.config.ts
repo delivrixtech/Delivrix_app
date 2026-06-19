@@ -41,7 +41,9 @@ const readBoundaryProxyToken =
   process.env.DELIVRIX_OPENCLAW_TOKEN ??
   process.env.OPENCLAW_GATEWAY_TOKEN ??
   "";
-const allowedProxyPaths = new Set([...Object.values(READ_ENDPOINTS), canvasLiveStatePath]);
+const chatConversationsPath = "/v1/openclaw/chat/conversations";
+const chatHistoryPath = "/v1/openclaw/chat/history";
+const allowedProxyPaths = new Set([...Object.values(READ_ENDPOINTS), canvasLiveStatePath, chatConversationsPath, chatHistoryPath]);
 const allowedReadPatterns: RegExp[] = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/status$/
 ];

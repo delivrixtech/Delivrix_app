@@ -101,8 +101,16 @@ const initialState: ChatState = {
   interrupting: false
 };
 
+export interface ChatConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: string;
+  preview: string;
+}
+
 export class ChatClient implements ChatClientLike {
   private state: ChatState;
+  private activeConversationId: string | null = null;
   private readonly listeners = new Set<() => void>();
   private readonly queue: QueuedMessage[] = [];
   private readonly inFlight = new Set<string>();
@@ -134,6 +142,59 @@ export class ChatClient implements ChatClientLike {
       messages: options.initialState?.messages ?? []
     };
     this.syncQueuedCount();
+  }
+
+  getActiveConversationId(): string | null {
+    return this.activeConversationId;
+  }
+
+  setActiveConversation(conversationId: string | null): void {
+    this.activeConversationId = conversationId;
+  }
+
+  startNewConversation(): string {
+    const id = `chat-${globalThis.crypto?.randomUUID?.() ?? String(Date.now())}`;
+    this.activeConversationId = id;
+    this.setState({ messages: [], streaming: null, lastError: null });
+    return id;
+  }
+
+  async fetchConversations(): Promise<ChatConversationSummary[]> {
+    try {
+      const res = await this.fetchImpl("/v1/openclaw/chat/conversations", { headers: { accept: "application/json" } });
+      if (!res.ok) return [];
+      const data = await res.json().catch(() => ({})) as { conversations?: unknown };
+      if (!Array.isArray(data.conversations)) return [];
+      return data.conversations.filter((c): c is ChatConversationSummary =>
+        !!c && typeof c === "object"
+        && typeof (c as ChatConversationSummary).id === "string"
+        && typeof (c as ChatConversationSummary).title === "string");
+    } catch {
+      return [];
+    }
+  }
+
+  async loadHistory(): Promise<void> {
+    const id = this.activeConversationId;
+    const qs = id ? `?conversationId=${encodeURIComponent(id)}` : "";
+    try {
+      const res = await this.fetchImpl(`/v1/openclaw/chat/history${qs}`, { headers: { accept: "application/json" } });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({})) as { turns?: unknown };
+      const turns = Array.isArray(data.turns) ? data.turns : [];
+      const messages: ChatMessage[] = turns
+        .filter((t): t is { role?: unknown; content?: unknown; createdAt?: unknown; msgId?: unknown } => !!t && typeof t === "object")
+        .map((t, index) => ({
+          msgId: typeof t.msgId === "string" ? t.msgId : `hist-${index}`,
+          role: t.role === "assistant" ? "assistant" : "user",
+          content: typeof t.content === "string" ? t.content : "",
+          timestamp: typeof t.createdAt === "string" ? t.createdAt : new Date().toISOString(),
+          status: "sent"
+        }));
+      this.setState({ messages, streaming: null });
+    } catch {
+      /* backend sin endpoint aun: dejar el estado actual */
+    }
   }
 
   connect(): void {
@@ -296,6 +357,7 @@ export class ChatClient implements ChatClientLike {
           body: JSON.stringify({
             msgId: item.msgId,
             message: item.content,
+            ...(this.activeConversationId ? { conversationId: this.activeConversationId } : {}),
             ...(item.operatorParams ? { operatorParams: item.operatorParams } : {})
           })
         });

@@ -13,9 +13,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUp, BadgeCheck, Box, Check, ChevronDown, CircleDollarSign, CheckCircle2,
   Copy, FileText, Folder, GitCompare, Globe, Hourglass, Inbox, Key, Loader2,
-  Mail, MailCheck, Network, PanelLeftClose, PanelLeftOpen, Server, ShieldAlert, Sparkles, Square, Terminal, X, XCircle
+  Mail, MailCheck, Network, PanelLeftClose, PanelLeftOpen, Plus, Server, ShieldAlert, Sparkles, Square, Terminal, X, XCircle
 } from "lucide-react";
-import { chatClient, useChatStream } from "../../shared/api/chat-client.ts";
+import { chatClient, useChatStream, type ChatConversationSummary } from "../../shared/api/chat-client.ts";
 import { useLiveCanvasStream } from "./canvas-live-client.ts";
 import { SMTP_BUILD_STEPS, type LiveRunProgress } from "./smtp-live-progress.ts";
 import { GatewayLogTerminal } from "./gateway-log-terminal.tsx";
@@ -51,6 +51,18 @@ const STYLE = `
 .cv5 .collapse:hover{background:var(--s1);color:var(--t1);border-color:var(--line)}
 .cv5 .reopen{width:30px;height:30px;border-radius:7px;background:var(--s2);border:1px solid var(--line2);color:var(--t2);display:flex;align-items:center;justify-content:center;cursor:pointer;margin-right:12px;flex:0 0 auto}
 .cv5 .reopen:hover{background:var(--s3);color:var(--t1)}
+.cv5 .convs{width:248px;flex:0 0 248px;border-right:1px solid var(--line);background:var(--bg);display:flex;flex-direction:column;min-height:0}
+.cv5 .cvhead{display:flex;align-items:center;gap:9px;padding:14px 14px 10px}
+.cv5 .cvttl{font-family:var(--disp);font-weight:600;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--t3);flex:1}
+.cv5 .cvnew{width:28px;height:28px;border-radius:7px;background:var(--s1);border:1px solid var(--line2);color:var(--t2);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
+.cv5 .cvnew:hover{background:var(--s2);color:var(--t1)}
+.cv5 .cvlist{flex:1;overflow:auto;padding:4px 8px 10px;display:flex;flex-direction:column;gap:2px}
+.cv5 .cvempty{color:var(--t4);font-size:12px;padding:14px 8px;line-height:1.5}
+.cv5 .conv{display:block;width:100%;text-align:left;border:1px solid transparent;background:none;border-radius:9px;padding:9px 10px;cursor:pointer;font:inherit}
+.cv5 .conv:hover{background:var(--s1)}
+.cv5 .conv.on{background:var(--s2);border-color:var(--line2)}
+.cv5 .convt{font-size:13px;color:var(--t1);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cv5 .convp{font-size:11.5px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}
 .cv5 .chead .ic{width:26px;height:26px;border-radius:7px;background:var(--s2);border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;color:var(--t2);flex:0 0 auto}
 .cv5 .chead .nm{font-family:var(--disp);font-weight:600;font-size:14px}
 .cv5 .chead .sub{font-size:11px;color:var(--t3);display:flex;align-items:center;gap:6px}
@@ -421,6 +433,8 @@ export function CanvasV5Preview() {
   const [swOpen, setSwOpen] = useState(false);
   const [raw, setRaw] = useState(false);
   const [chatOpen, setChatOpen] = useState(true);
+  const [convos, setConvos] = useState<ChatConversationSummary[]>([]);
+  const [activeConvId, setActiveConvId] = useState<string | null>(null);
 
   const runIds = Array.from(live.liveRunProgress.keys());
   const activeRunId = selRunId && live.liveRunProgress.has(selRunId) ? selRunId : (runIds[0] ?? null);
@@ -435,11 +449,38 @@ export function CanvasV5Preview() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [chat.messages.length, chat.streaming?.deltaSoFar]);
 
+  const ACTIVE_CONV_KEY = "delivrix.chat.active.v1";
+  useEffect(() => {
+    let stored: string | null = null;
+    try { stored = window.localStorage.getItem(ACTIVE_CONV_KEY); } catch { /* */ }
+    if (stored) { chatClient.setActiveConversation(stored); setActiveConvId(stored); }
+    void chatClient.fetchConversations().then(setConvos);
+    void chatClient.loadHistory();
+  }, []);
+
+  const refreshConvos = () => { void chatClient.fetchConversations().then(setConvos); };
+
+  function switchConvo(id: string) {
+    if (id === activeConvId) return;
+    chatClient.setActiveConversation(id);
+    setActiveConvId(id);
+    try { window.localStorage.setItem(ACTIVE_CONV_KEY, id); } catch { /* */ }
+    void chatClient.loadHistory();
+  }
+
+  function newConvo() {
+    const id = chatClient.startNewConversation();
+    setActiveConvId(id);
+    try { window.localStorage.setItem(ACTIVE_CONV_KEY, id); } catch { /* */ }
+    refreshConvos();
+  }
+
   async function send() {
     const content = draft.trim();
     if (!content) return;
     setDraft("");
     try { await chatClient.sendMessage(content); } catch { /* el cliente reintenta */ }
+    refreshConvos();
   }
 
   const hasMsgs = chat.messages.length > 0 || !!chat.streaming;
@@ -450,6 +491,23 @@ export function CanvasV5Preview() {
       <div className="main">
 
         {chatOpen ? (
+        <>
+        <div className="convos col">
+          <div className="cvhead">
+            <div className="cvttl">Conversaciones</div>
+            <button className="cvnew" type="button" title="Nueva conversación" onClick={newConvo}><Plus size={15} /></button>
+          </div>
+          <div className="cvlist">
+            {convos.length === 0 ? (
+              <div className="cvempty">Sin conversaciones guardadas. Escribile a OpenClaw o creá una nueva.</div>
+            ) : convos.map((c) => (
+              <button key={c.id} className={`conv${c.id === activeConvId ? " on" : ""}`} type="button" onClick={() => switchConvo(c.id)}>
+                <div className="convt">{c.title || "Conversación"}</div>
+                {c.preview ? <div className="convp">{c.preview}</div> : null}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="chat col">
           <div className="chead">
             <span className="ic"><Sparkles size={15} /></span>
@@ -488,13 +546,14 @@ export function CanvasV5Preview() {
                 placeholder="Escribile a OpenClaw…"
               />
               {chat.streaming ? (
-                <button className="send stop" type="button" aria-label="Detener" title="Detener (interrumpir)" onClick={() => { void chatClient.interruptActive(); }}><Square size={12} /></button>
+                <button className="send stop" type="button" aria-label="Detener" title="Detener (interrumpir)" disabled={chat.interrupting} onClick={() => { void chatClient.interruptActive(); }}>{chat.interrupting ? <Loader2 size={12} className="spin" /> : <Square size={12} />}</button>
               ) : (
                 <button className="send" type="button" aria-label="Enviar" disabled={!draft.trim()} onClick={() => void send()}><ArrowUp size={15} /></button>
               )}
             </div>
           </div>
         </div>
+        </>
         ) : null}
 
         <div className="view">
