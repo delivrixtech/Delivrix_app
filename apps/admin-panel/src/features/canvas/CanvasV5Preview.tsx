@@ -13,12 +13,14 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUp, BadgeCheck, Box, Check, ChevronDown, CircleDollarSign, CheckCircle2,
   Copy, FileText, Folder, GitCompare, Globe, Hourglass, Inbox, Key, Loader2,
-  Mail, MailCheck, Network, Server, Sparkles, Square, Terminal, X, XCircle
+  Mail, MailCheck, Network, PanelLeftClose, PanelLeftOpen, Server, ShieldAlert, Sparkles, Square, Terminal, X, XCircle
 } from "lucide-react";
 import { chatClient, useChatStream } from "../../shared/api/chat-client.ts";
 import { useLiveCanvasStream } from "./canvas-live-client.ts";
 import { SMTP_BUILD_STEPS, type LiveRunProgress } from "./smtp-live-progress.ts";
 import { GatewayLogTerminal } from "./gateway-log-terminal.tsx";
+import { MarkdownText } from "../../shared/ui/v2/MarkdownText.tsx";
+import type { LiveArtifact, CanvasLiveArtifactKindWire, CanvasLiveArtifactPayloadWire } from "./live-tool-types.ts";
 
 type Tab = "run" | "logs" | "files" | "diff";
 
@@ -43,19 +45,26 @@ const STYLE = `
 .cv5 .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
 .cv5 .beat{animation:cv5beat 1.8s infinite}
 
-.cv5 .chat{width:400px;flex:0 0 400px;border-right:1px solid var(--line);background:var(--bg)}
+.cv5 .chat{width:600px;flex:0 0 600px;border-right:1px solid var(--line);background:var(--bg)}
 .cv5 .chead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px}
+.cv5 .collapse{margin-left:auto;width:28px;height:28px;border-radius:7px;background:none;border:1px solid transparent;color:var(--t3);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
+.cv5 .collapse:hover{background:var(--s1);color:var(--t1);border-color:var(--line)}
+.cv5 .reopen{width:30px;height:30px;border-radius:7px;background:var(--s2);border:1px solid var(--line2);color:var(--t2);display:flex;align-items:center;justify-content:center;cursor:pointer;margin-right:12px;flex:0 0 auto}
+.cv5 .reopen:hover{background:var(--s3);color:var(--t1)}
 .cv5 .chead .ic{width:26px;height:26px;border-radius:7px;background:var(--s2);border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;color:var(--t2);flex:0 0 auto}
 .cv5 .chead .nm{font-family:var(--disp);font-weight:600;font-size:14px}
 .cv5 .chead .sub{font-size:11px;color:var(--t3);display:flex;align-items:center;gap:6px}
-.cv5 .cbody{flex:1;overflow:auto;padding:18px 16px;display:flex;flex-direction:column;gap:18px}
+.cv5 .cbody{flex:1;overflow:auto;padding:24px 22px;display:flex;flex-direction:column;gap:24px}
 .cv5 .cempty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;color:var(--t3);padding:30px}
 .cv5 .cempty .ii{width:46px;height:46px;border-radius:11px;background:var(--s1);border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;color:var(--t3)}
 .cv5 .cempty .h{font-family:var(--disp);font-size:14px;color:var(--t2)}
 .cv5 .cempty .p{font-size:12.5px;max-width:280px;line-height:1.55}
 .cv5 .msg{display:flex;flex-direction:column;gap:5px;max-width:92%}
 .cv5 .role{font-size:10px;color:var(--t4);font-weight:600;letter-spacing:.06em;text-transform:uppercase}
-.cv5 .bub{padding:10px 13px;border-radius:10px;font-size:13px;line-height:1.55;border:1px solid var(--line);background:var(--s1);white-space:pre-wrap;word-break:break-word}
+.cv5 .bub{padding:13px 16px;border-radius:11px;font-size:13.5px;line-height:1.7;border:1px solid var(--line);background:var(--s1);white-space:pre-wrap;word-break:break-word}
+.cv5 .msg{max-width:88%}
+.cv5 .bub.md{white-space:normal}
+.cv5 .bub.md>div>:first-child{margin-top:0}.cv5 .bub.md>div>:last-child{margin-bottom:0}
 .cv5 .msg.op{align-self:flex-end;align-items:flex-end}
 .cv5 .msg.op .bub{background:var(--s2);border-color:var(--line2)}
 .cv5 .cinput{border-top:1px solid var(--line);padding:12px;background:var(--s1)}
@@ -140,6 +149,30 @@ const STYLE = `
 .cv5 .empty .ep{font-size:13.5px;max-width:420px;line-height:1.6}
 .cv5 .empty .ecode{font-family:var(--mono);font-size:12px;background:var(--s1);border:1px solid var(--line);border-radius:7px;padding:8px 12px;color:var(--t2)}
 .cv5 .connpill{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-family:var(--mono);color:var(--t3);background:var(--s1);border:1px solid var(--line);border-radius:999px;padding:4px 10px}
+.cv5 .kbadge,.cv5 .abar .kick .kb{display:inline-flex}
+.cv5 .atitle{font-family:var(--disp);font-size:15px;color:var(--t1);font-weight:600;margin-top:5px;max-width:560px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cv5 .seg{display:inline-flex;background:var(--s2);border:1px solid var(--line2);border-radius:8px;padding:2px;flex:0 0 auto}
+.cv5 .seg button{height:25px;padding:0 13px;border:none;background:none;color:var(--t3);font:inherit;font-size:12px;font-weight:500;border-radius:6px;cursor:pointer}
+.cv5 .seg button.on{background:var(--s3);color:var(--t1)}
+.cv5 .prose{font-size:14px;line-height:1.65;color:var(--t2)}
+.cv5 .prose h1,.cv5 .prose h2,.cv5 .prose h3{font-family:var(--disp);color:var(--t1);font-weight:600;line-height:1.25;margin:22px 0 10px}
+.cv5 .prose h1{font-size:22px;letter-spacing:-.01em}.cv5 .prose h2{font-size:17px}.cv5 .prose h3{font-size:13.5px;letter-spacing:.02em}
+.cv5 .prose>*:first-child{margin-top:0}
+.cv5 .prose p{margin:0 0 12px}
+.cv5 .prose strong{color:var(--t1);font-weight:600}
+.cv5 .prose code{font-family:var(--mono);font-size:12.5px;background:var(--s1);border:1px solid var(--line);border-radius:5px;padding:1px 5px;color:var(--t1)}
+.cv5 .prose ul,.cv5 .prose ol{margin:0 0 13px;padding-left:20px}.cv5 .prose li{margin:5px 0}
+.cv5 .prose pre{background:var(--s1);border:1px solid var(--line);border-radius:9px;padding:14px;overflow:auto;margin:0 0 14px}
+.cv5 .prose pre code{background:none;border:none;padding:0;font-size:12px;color:var(--t1)}
+.cv5 .dt{width:100%;border-collapse:collapse;border:1px solid var(--line);border-radius:10px;overflow:hidden;margin:0 0 14px}
+.cv5 .dt th{text-align:left;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--t3);font-weight:600;background:var(--s1);padding:10px 12px;border-bottom:1px solid var(--line)}
+.cv5 .dt td{padding:10px 12px;border-bottom:1px solid var(--line);color:var(--t1);font-family:var(--mono);font-size:12px;vertical-align:top}
+.cv5 .dt tr:last-child td{border-bottom:none}.cv5 .dt tbody tr:hover td{background:var(--s1)}
+.cv5 .badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;font-family:var(--disp)}
+.cv5 .badge.ok{color:var(--ok);background:var(--okS);border:1px solid var(--okB)}
+.cv5 .badge.bad{color:var(--err);background:var(--errS);border:1px solid var(--errB)}
+.cv5 .badge.mut{color:var(--t3);background:var(--s2);border:1px solid var(--line)}
+.cv5 .raw{font-family:var(--mono);font-size:12px;color:var(--t2);background:var(--s1);border:1px solid var(--line);border-radius:10px;padding:16px;white-space:pre-wrap;word-break:break-word;line-height:1.6}
 `;
 
 function relTime(ts: string): string {
@@ -233,6 +266,148 @@ function RunFicha({ run, runId }: { run: LiveRunProgress; runId: string }) {
   );
 }
 
+function ProseArtifact({ artifact }: { artifact: LiveArtifact }) {
+  const md = [...artifact.blocks].sort((a, b) => a.order - b.order).map((b) => b.content).join("\n\n");
+  return <div className="prose"><MarkdownText fontSize={14}>{md}</MarkdownText></div>;
+}
+
+function statusBadgeClass(status: string): string {
+  if (/^(running|ok|pass|active|delivered|done|verificad)/i.test(status)) return "ok";
+  if (/(stop|fail|listed|bounce|error|defer)/i.test(status)) return "bad";
+  return "mut";
+}
+
+function InventoryArtifact({ servers }: { servers: Extract<CanvasLiveArtifactPayloadWire, { kind: "inventory" }>["servers"] }) {
+  if (servers.length === 0) return <div className="prose"><p>Inventario sin servidores.</p></div>;
+  return (
+    <table className="dt">
+      <thead><tr><th>Slug</th><th>Dominio SMTP</th><th>IPv4</th><th>Proveedor</th><th>Estado</th></tr></thead>
+      <tbody>
+        {servers.map((s, i) => (
+          <tr key={i}>
+            <td>{s.slug}</td>
+            <td>{s.domain ?? "—"}</td>
+            <td>{s.ipv4 ?? "—"}</td>
+            <td>{s.provider ?? "—"}</td>
+            <td><span className={`badge ${statusBadgeClass(s.status)}`}>{s.status}</span></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function BlacklistArtifact({ payload }: { payload: Extract<CanvasLiveArtifactPayloadWire, { kind: "blacklist_report" }> }) {
+  const listed = payload.checks.filter((c) => c.status === "listed").length;
+  return (
+    <>
+      <div className="meta" style={{ marginBottom: 18 }}>
+        <span className="tag"><span className="i"><Globe size={13} /></span>{payload.target}</span>
+        <span className="tag">{payload.source}</span>
+        <span className={`badge ${listed > 0 ? "bad" : "ok"}`}>{listed > 0 ? `${listed} en lista` : "limpia"}</span>
+      </div>
+      <table className="dt">
+        <thead><tr><th>Lista</th><th>Estado</th><th>Nota</th></tr></thead>
+        <tbody>
+          {payload.checks.map((c, i) => (
+            <tr key={i}>
+              <td>{c.list}</td>
+              <td><span className={`badge ${c.status === "pass" ? "ok" : c.status === "listed" ? "bad" : "mut"}`}>{c.status}</span></td>
+              <td style={{ fontFamily: "var(--font-sans)" }}>{c.note ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
+function DnsZoneTable({ records, domain }: { records: Array<{ name: string; type: string; value: string }>; domain?: string }) {
+  return (
+    <div className="dns">
+      <div className="dnsh"><span>Tipo</span><span>Nombre · valor{domain ? ` · ${domain}` : ""}</span><span /></div>
+      {records.map((r, i) => (
+        <div className="drow" key={i}>
+          <span className="ty">{r.type}</span>
+          <span className="dnm"><b>{r.name}</b><span>{r.value}</span></span>
+          <button className="cp" type="button" aria-label="Copiar" onClick={() => { try { navigator.clipboard?.writeText(`${r.name} ${r.type} ${r.value}`); } catch { /* */ } }}><Copy size={13} /></button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SmtpRunArtifactView({ payload }: { payload: Extract<CanvasLiveArtifactPayloadWire, { kind: "smtp_run" }> }) {
+  const id = payload.identity;
+  return (
+    <div className="runwrap">
+      <div className="rmain">
+        <div className="hero">
+          <div className="icn"><Mail size={22} /></div>
+          <div>
+            <h1>{id.domain ?? payload.runId}</h1>
+            <div className="meta">
+              {id.providerId ? <span className="tag"><span className="i"><Server size={13} /></span>{id.providerId}</span> : null}
+              {id.smtpHost ? <span className="tag"><span className="i"><Globe size={13} /></span>{id.smtpHost}</span> : null}
+            </div>
+          </div>
+        </div>
+        <div className="sec">
+          <div className="sech"><h2>Pasos</h2><span className="n">{payload.steps.length}</span></div>
+          {payload.steps.map((s) => {
+            const cls = s.status === "done" ? "done" : s.status === "in_flight" ? "act" : "pend";
+            const ic: ReactNode = s.status === "done" ? <Check size={12} /> : s.status === "in_flight" ? <Loader2 size={14} className="spin" /> : <span style={{ width: 6, height: 6, borderRadius: "50%", background: "currentColor", display: "block" }} />;
+            return (
+              <div key={s.step} className={`step ${cls}`}>
+                <div className="sic">{ic}</div><span className="ln" />
+                <span className="snm">{s.label ?? s.skill}</span>
+                <span className="du">{fmtDur(s.durationMs) || "·"}</span>
+              </div>
+            );
+          })}
+        </div>
+        {id.dnsRecords && id.dnsRecords.length > 0 ? (
+          <div className="sec"><div className="sech"><h2>Zona DNS</h2><span className="n">{id.dnsRecords.length} registros</span></div><DnsZoneTable records={id.dnsRecords} /></div>
+        ) : null}
+      </div>
+      <aside className="rside">
+        <div className="stat"><div className="l"><Network size={13} /> IPv4</div><div className="v">{id.serverIpv4 ?? <span style={{ color: "var(--color-text-disabled)" }}>pendiente</span>}</div></div>
+        <div className="stat"><div className="l"><Server size={13} /> Servidor</div><div className="v">{id.serverSlug ?? <span style={{ color: "var(--color-text-disabled)" }}>pendiente</span>}</div></div>
+        <div className="stat"><div className="l"><Key size={13} /> DKIM</div><div className="v">{id.dkimPublicKey ? <span style={{ color: "var(--color-success)" }}>verificada</span> : <span style={{ color: "var(--color-text-disabled)" }}>pendiente</span>}</div></div>
+        {id.finalDeliveryStatus ? (
+          <div className="deliv"><div className="big"><Inbox size={20} /></div><div className="info"><div className="t">Entrega</div><div className="s">{id.finalDeliveryStatus}{id.finalEmailMessageId ? ` · ${id.finalEmailMessageId}` : ""}</div></div></div>
+        ) : null}
+      </aside>
+    </div>
+  );
+}
+
+function kindMeta(kind: CanvasLiveArtifactKindWire): { label: string; icon: ReactNode } {
+  switch (kind) {
+    case "inventory": return { label: "Inventario", icon: <Server size={12} /> };
+    case "blacklist_report": return { label: "Blacklist", icon: <ShieldAlert size={12} /> };
+    case "dns_zone": return { label: "Zona DNS", icon: <Globe size={12} /> };
+    case "smtp_run": return { label: "SMTP run", icon: <Mail size={12} /> };
+    case "plan": return { label: "Plan", icon: <FileText size={12} /> };
+    case "proposal": return { label: "Propuesta", icon: <FileText size={12} /> };
+    case "template": return { label: "Template", icon: <FileText size={12} /> };
+    default: return { label: "Reporte", icon: <FileText size={12} /> };
+  }
+}
+
+function ArtifactBody({ artifact, raw }: { artifact: LiveArtifact; raw: boolean }) {
+  if (raw) {
+    const dump = artifact.payload ? JSON.stringify(artifact.payload, null, 2) : artifact.blocks.slice().sort((a, b) => a.order - b.order).map((b) => b.content).join("\n\n");
+    return <div className="raw">{dump}</div>;
+  }
+  const p = artifact.payload;
+  if (p?.kind === "inventory") return <InventoryArtifact servers={p.servers} />;
+  if (p?.kind === "blacklist_report") return <BlacklistArtifact payload={p} />;
+  if (p?.kind === "dns_zone") return <DnsZoneTable records={p.records} domain={p.domain} />;
+  if (p?.kind === "smtp_run") return <SmtpRunArtifactView payload={p} />;
+  return <ProseArtifact artifact={artifact} />;
+}
+
 export function CanvasV5Preview() {
   useEffect(() => {
     chatClient.connect();
@@ -244,11 +419,16 @@ export function CanvasV5Preview() {
   const [tab, setTab] = useState<Tab>("run");
   const [selRunId, setSelRunId] = useState<string | null>(null);
   const [swOpen, setSwOpen] = useState(false);
+  const [raw, setRaw] = useState(false);
+  const [chatOpen, setChatOpen] = useState(true);
 
   const runIds = Array.from(live.liveRunProgress.keys());
   const activeRunId = selRunId && live.liveRunProgress.has(selRunId) ? selRunId : (runIds[0] ?? null);
   const run = activeRunId ? live.liveRunProgress.get(activeRunId) ?? null : null;
   const online = chat.connection !== "offline";
+
+  // Artifact activo: el hook ya lo resuelve por el task activo (estilo Claude Artifacts).
+  const selArt: LiveArtifact | null = live.artifact;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -269,10 +449,12 @@ export function CanvasV5Preview() {
       <style>{STYLE}</style>
       <div className="main">
 
+        {chatOpen ? (
         <div className="chat col">
           <div className="chead">
             <span className="ic"><Sparkles size={15} /></span>
             <div><div className="nm">OpenClaw</div><div className="sub"><span className="dot beat" style={{ background: online ? "var(--color-success)" : "var(--color-text-disabled)" }} /> {online ? "en vivo" : "reconectando…"}</div></div>
+            <button className="collapse" type="button" title="Esconder chat" onClick={() => setChatOpen(false)}><PanelLeftClose size={16} /></button>
           </div>
           <div className="cbody" ref={scrollRef}>
             {!hasMsgs ? (
@@ -285,11 +467,13 @@ export function CanvasV5Preview() {
             {chat.messages.map((m) => (
               <div className={`msg${m.role === "user" ? " op" : ""}`} key={`${m.role}-${m.msgId}`}>
                 <span className="role">{m.role === "user" ? "operador" : "openclaw"} · {relTime(m.timestamp)}</span>
-                <div className="bub">{m.content}</div>
+                {m.role === "user"
+                  ? <div className="bub">{m.content}</div>
+                  : <div className="bub md"><MarkdownText fontSize={14} muted>{m.content}</MarkdownText></div>}
               </div>
             ))}
             {chat.streaming ? (
-              <div className="msg"><span className="role">openclaw · ahora</span><div className="bub">{chat.streaming.deltaSoFar || "…"}<Loader2 size={12} className="spin" style={{ marginLeft: 6, verticalAlign: "-1px" }} /></div></div>
+              <div className="msg"><span className="role">openclaw · ahora</span><div className="bub md"><MarkdownText fontSize={14} muted>{chat.streaming.deltaSoFar || "…"}</MarkdownText><Loader2 size={12} className="spin" style={{ marginLeft: 6, verticalAlign: "-1px" }} /></div></div>
             ) : null}
             {chat.lastError ? (
               <div className="bub" style={{ borderColor: "var(--color-critical-border)", color: "var(--color-critical)", background: "var(--color-critical-soft)", fontSize: 12 }}>{chat.lastError}</div>
@@ -311,10 +495,12 @@ export function CanvasV5Preview() {
             </div>
           </div>
         </div>
+        ) : null}
 
         <div className="view">
           <div className="tabs">
-            {([["run", "Run", <Box size={15} key="r" />], ["logs", "Logs", <Terminal size={15} key="l" />], ["files", "Files", <Folder size={15} key="f" />], ["diff", "Diff", <GitCompare size={15} key="d" />]] as Array<[Tab, string, ReactNode]>).map(([id, label, icon]) => (
+            {!chatOpen ? <button className="reopen" type="button" title="Mostrar chat" onClick={() => setChatOpen(true)}><PanelLeftOpen size={16} /></button> : null}
+            {([["run", "Vista", <Box size={15} key="r" />], ["logs", "Logs", <Terminal size={15} key="l" />], ["files", "Files", <Folder size={15} key="f" />], ["diff", "Diff", <GitCompare size={15} key="d" />]] as Array<[Tab, string, ReactNode]>).map(([id, label, icon]) => (
               <button key={id} className={`tab${tab === id ? " on" : ""}`} type="button" onClick={() => setTab(id)}>
                 {icon} {label}
                 {id === "run" && run && run.runStatus === "running" ? <span className="li"><span className="dot beat" /> live</span> : null}
@@ -367,12 +553,26 @@ export function CanvasV5Preview() {
               </div>
               <div className="scroll"><div className="art"><RunFicha run={run} runId={activeRunId ?? ""} /></div></div>
             </>
+          ) : selArt ? (
+            <>
+              <div className="abar">
+                <div style={{ minWidth: 0 }}>
+                  <div className="kick">{kindMeta(selArt.kind).icon} {kindMeta(selArt.kind).label}{selArt.version && selArt.version > 1 ? ` · v${selArt.version}` : ""}</div>
+                  <div className="atitle">{selArt.title}</div>
+                </div>
+                <div style={{ flex: 1 }} />
+                <div className="seg">
+                  <button type="button" className={raw ? "" : "on"} onClick={() => setRaw(false)}>Vista</button>
+                  <button type="button" className={raw ? "on" : ""} onClick={() => setRaw(true)}>Crudo</button>
+                </div>
+              </div>
+              <div className="scroll"><div className="art"><ArtifactBody artifact={selArt} raw={raw} /></div></div>
+            </>
           ) : (
             <div className="empty">
               <div className="ei"><Hourglass size={28} /></div>
-              <div className="eh">Sin aprovisionamientos activos</div>
-              <div className="ep">No hay ningún run de SMTP corriendo ahora. Iniciá uno desde el chat y la ficha se llena en vivo con dominio, IP, DKIM, DNS y entrega reales — sin datos de muestra.</div>
-              <div className="ecode">configurá un SMTP para tu-dominio.com</div>
+              <div className="eh">Nada que mostrar todavía</div>
+              <div className="ep">Pedile a OpenClaw un diagnóstico, un inventario, una consulta de blacklist o que configure un SMTP. El resultado aparece acá renderizado en vivo — sin datos de muestra.</div>
               <span className="connpill"><span className="dot" style={{ width: 6, height: 6, background: live.connection === "connected" ? "var(--color-success)" : "var(--color-warning)" }} /> stream {live.connection}</span>
             </div>
           )}

@@ -392,7 +392,61 @@ export class ChatClient implements ChatClientLike {
   }
 }
 
-export const chatClient = new ChatClient();
+/* ============================================================
+ * Persistencia local del historial (parche frontend).
+ * Sobrevive recargas del panel. La persistencia server-side real
+ * (disco + GET /chat/history + sessionKey por chat) la hace el gateway.
+ * Guardado bajo typeof guards → no corre en tests/SSR.
+ * ============================================================ */
+const CHAT_HISTORY_KEY = "delivrix.chat.history.v1";
+const CHAT_HISTORY_MAX = 100;
+
+function loadPersistedChatMessages(): ChatMessage[] {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(CHAT_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const valid: ChatMessage[] = [];
+    for (const item of parsed) {
+      if (
+        item && typeof item === "object"
+        && typeof (item as ChatMessage).msgId === "string"
+        && ((item as ChatMessage).role === "user" || (item as ChatMessage).role === "assistant")
+        && typeof (item as ChatMessage).content === "string"
+        && typeof (item as ChatMessage).timestamp === "string"
+      ) {
+        const m = item as ChatMessage;
+        valid.push({ msgId: m.msgId, role: m.role, content: m.content, timestamp: m.timestamp, status: "sent" });
+      }
+    }
+    return valid.slice(-CHAT_HISTORY_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function persistChatMessages(messages: ChatMessage[]): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(messages.slice(-CHAT_HISTORY_MAX)));
+  } catch {
+    /* quota o storage deshabilitado: ignorar */
+  }
+}
+
+export const chatClient = new ChatClient({ initialState: { messages: loadPersistedChatMessages() } });
+
+if (typeof window !== "undefined") {
+  let lastMessagesRef: ChatMessage[] | null = null;
+  chatClient.subscribe(() => {
+    const messages = chatClient.getSnapshot().messages;
+    if (messages === lastMessagesRef) return;
+    lastMessagesRef = messages;
+    persistChatMessages(messages);
+  });
+}
 
 export function useChatStream(client: ChatClientLike = chatClient): ChatState {
   return useSyncExternalStore(
