@@ -13,7 +13,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUp, BadgeCheck, Box, Check, ChevronDown, CircleDollarSign, CheckCircle2,
   Copy, FileText, Folder, GitCompare, Globe, Hourglass, Inbox, Key, Loader2,
-  Mail, MailCheck, Network, Server, Sparkles, Terminal, X, XCircle
+  Mail, MailCheck, Network, Server, Sparkles, Square, Terminal, X, XCircle
 } from "lucide-react";
 import { chatClient, useChatStream } from "../../shared/api/chat-client.ts";
 import { useLiveCanvasStream } from "./canvas-live-client.ts";
@@ -65,6 +65,8 @@ const STYLE = `
 .cv5 .field input::placeholder{color:var(--t4)}
 .cv5 .send{width:30px;height:30px;border-radius:8px;background:var(--acc);color:var(--accfg);border:none;display:flex;align-items:center;justify-content:center;flex:0 0 auto;cursor:pointer}
 .cv5 .send:disabled{opacity:.4;cursor:not-allowed}
+.cv5 .send.stop{background:var(--s3);color:var(--t1);border:1px solid var(--line2)}
+.cv5 .send.stop:hover{color:var(--err);border-color:var(--errB)}
 
 .cv5 .view{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
 .cv5 .tabs{display:flex;align-items:center;gap:2px;padding:0 24px;height:46px;flex:0 0 46px;border-bottom:1px solid var(--line);background:var(--s1)}
@@ -301,7 +303,11 @@ export function CanvasV5Preview() {
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void send(); } }}
                 placeholder="Escribile a OpenClaw…"
               />
-              <button className="send" type="button" aria-label="Enviar" disabled={!draft.trim()} onClick={() => void send()}><ArrowUp size={15} /></button>
+              {chat.streaming ? (
+                <button className="send stop" type="button" aria-label="Detener" title="Detener (interrumpir)" onClick={() => { void chatClient.interruptActive(); }}><Square size={12} /></button>
+              ) : (
+                <button className="send" type="button" aria-label="Enviar" disabled={!draft.trim()} onClick={() => void send()}><ArrowUp size={15} /></button>
+              )}
             </div>
           </div>
         </div>
