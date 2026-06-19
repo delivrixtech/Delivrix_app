@@ -30,6 +30,7 @@ test("POST /v1/skills/send-real-email sends through swaks and stores redacted au
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.ok, true);
   assert.equal(response.body.deliveryStatus, "sent");
+  assert.match(response.body.messageId, /^<delivrix-[a-z0-9-]{1,80}@sender\.example>$/);
   assert.equal(response.body.preValidations.spfPresent, true);
   assert.equal(response.body.preValidations.dkimPresent, true);
   assert.equal(response.body.preValidations.dmarcPresent, true);
