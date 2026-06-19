@@ -59,7 +59,7 @@ test("configureCompleteSmtp completes the 14-step happy path", async () => {
   assert.equal(result.status, "completed");
   assert.equal(result.stepResults.length, 14);
   assert.deepEqual(result.stepResults.map((step) => step.step), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
-  assert.equal(result.finalEmailMessageId, "msg-1");
+  assert.equal(result.finalEmailMessageId, "<delivrix-0123456789abcdef@delivrixops.com>");
   assert.equal(result.finalDeliveryStatus, "delivered");
 });
 
@@ -86,20 +86,31 @@ test("readSmtpRunProgress returns the safe 14-step snapshot shape", async () => 
       testEmailBody: "secret body should not leak",
       seedInboxes: ["seed-a@example.test", "seed-b@example.test", "seed-c@example.test"]
     },
+    chosenDomain: "annualrenewalnational.com",
+    smtpHost: "smtp.annualrenewalnational.com",
+    serverSlug: "server42",
+    serverIpv4: "203.0.113.42",
+    serverAccountId: "webdock-cuenta-2",
+    providerId: "webdock",
     selector: "s2026a",
-    budgetSpentUsd: 0,
+    budgetSpentUsd: 12.34,
     lastCompletedStep: 0,
+    finalEmailMessageId: "<delivrix-final-123@annualrenewalnational.com>",
+    finalDeliveryStatus: "queued",
     steps: {
       "1": {
         step: 1,
         skill: "suggest_safe_domain",
         status: "done",
+        startedAt: "2026-05-31T12:00:01.000Z",
+        completedAt: "2026-05-31T12:00:10.000Z",
         result: {
           step: 1,
           skill: "suggest_safe_domain",
           inputHash: "hash-1",
           outcome: { token: "super-secret-token" },
-          durationMs: 10
+          durationMs: 10,
+          estimatedCostUsd: 12.34
         },
         updatedAt: "2026-05-31T12:00:10.000Z"
       },
@@ -109,35 +120,160 @@ test("readSmtpRunProgress returns the safe 14-step snapshot shape", async () => 
         status: "in_flight",
         inputHash: "hash-2",
         leaseUntil: "2026-05-31T12:10:00.000Z",
+        lastError: "waiting_for_route53_operation",
         updatedAt: "2026-05-31T12:00:20.000Z"
+      },
+      "9": {
+        step: 9,
+        skill: "provision_smtp_postfix",
+        status: "done",
+        result: {
+          step: 9,
+          skill: "provision_smtp_postfix",
+          inputHash: "hash-9",
+          outcome: {
+            dkimPublicKey: "PUBLICKEY",
+            dkimPrivateKey: "-----BEGIN PRIVATE KEY----- should not leak"
+          },
+          durationMs: 99
+        },
+        updatedAt: "2026-05-31T12:01:30.000Z"
       }
     }
   }, null, 2)}\n`);
 
   const progress = await readSmtpRunProgress({ workspace: ctx.workspace }, "run-progress");
 
-  assert.deepEqual(progress, {
-    runId: "run-progress",
-    status: "running",
-    lastCompletedStep: 1,
-    steps: [
-      { step: 1, skill: "suggest_safe_domain", status: "done" },
-      { step: 2, skill: "register_domain_route53", status: "in_flight" },
-      { step: 3, skill: "wait_for_dns_propagation", status: "pending" },
-      { step: 4, skill: "create_webdock_server", status: "pending" },
-      { step: 5, skill: "wait_server_running", status: "pending" },
-      { step: 6, skill: "upsert_dns_route53", status: "pending" },
-      { step: 7, skill: "wait_for_dns_propagation", status: "pending" },
-      { step: 8, skill: "bind_webdock_main_domain", status: "pending" },
-      { step: 9, skill: "provision_smtp_postfix", status: "pending" },
-      { step: 10, skill: "configure_email_auth", status: "pending" },
-      { step: 11, skill: "wait_for_dns_propagation", status: "pending" },
-      { step: 12, skill: "seed_warmup_pool", status: "pending" },
-      { step: 13, skill: "wait_warmup_initial", status: "pending" },
-      { step: 14, skill: "send_real_email", status: "pending" }
-    ]
+  assert.equal(progress?.runId, "run-progress");
+  assert.equal(progress?.status, "running");
+  assert.equal(progress?.lastCompletedStep, 1);
+  assert.equal(progress?.steps.length, 14);
+  assert.deepEqual(progress?.steps[0], {
+    step: 1,
+    skill: "suggest_safe_domain",
+    status: "done",
+    label: "Suggest Safe Domain",
+    startedAt: "2026-05-31T12:00:01.000Z",
+    completedAt: "2026-05-31T12:00:10.000Z",
+    durationMs: 10
   });
-  assert.doesNotMatch(JSON.stringify(progress), /super-secret-token|secret subject|secret body|operator@example\.test/);
+  assert.deepEqual(progress?.steps[1], {
+    step: 2,
+    skill: "register_domain_route53",
+    status: "in_flight",
+    label: "Register Domain Route53",
+    error: "waiting_for_route53_operation"
+  });
+  assert.equal(progress?.steps[8]?.durationMs, 99);
+  assert.deepEqual(progress?.identity, {
+    brand: "Delivrix",
+    domain: "annualrenewalnational.com",
+    smtpHost: "smtp.annualrenewalnational.com",
+    serverSlug: "server42",
+    serverIpv4: "203.0.113.42",
+    serverAccountId: "webdock-cuenta-2",
+    providerId: "webdock",
+    dkimSelector: "s2026a",
+    dkimPublicKey: "PUBLICKEY",
+    dnsRecords: [
+      { name: "smtp.annualrenewalnational.com", type: "A", value: "203.0.113.42" },
+      { name: "annualrenewalnational.com", type: "MX", value: "10 smtp.annualrenewalnational.com." },
+      { name: "annualrenewalnational.com", type: "TXT", value: "v=spf1 ip4:203.0.113.42 -all" },
+      { name: "s2026a._domainkey.annualrenewalnational.com", type: "TXT", value: "v=DKIM1; k=rsa; p=PUBLICKEY" },
+      {
+        name: "_dmarc.annualrenewalnational.com",
+        type: "TXT",
+        value: "v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@delivrix.com; ruf=mailto:dmarc-forensics@delivrix.com; fo=1"
+      }
+    ],
+    finalDeliveryStatus: "queued",
+    finalEmailMessageId: "delivrix-final-123@annualrenewalnational.com",
+    budgetSpentUsd: 12.34
+  });
+  assert.doesNotMatch(JSON.stringify(progress), /super-secret-token|secret subject|secret body|operator@example\.test|PRIVATE KEY|dkimPrivateKey/);
+});
+
+test("readSmtpRunProgress rejects malformed DKIM and unsafe timing metadata", async () => {
+  const ctx = createDeps();
+  await ctx.workspace.writeWorkspaceFileAtomic("inventory/smtp-runs/run-unsafe-dkim.json", `${JSON.stringify({
+    schemaVersion: "smtp-run-state/v1",
+    runId: "run-unsafe-dkim",
+    status: "running",
+    createdAt: "2026-05-31T12:00:00.000Z",
+    updatedAt: "2026-05-31T12:01:00.000Z",
+    params: {
+      brand: "Delivrix",
+      requireExistingDomain: false,
+      budgetUsdMax: 25,
+      testEmailRecipient: "operator@example.test",
+      testEmailSubject: "secret subject should not leak",
+      testEmailBody: "secret body should not leak",
+      seedInboxes: ["seed-a@example.test", "seed-b@example.test", "seed-c@example.test"]
+    },
+    chosenDomain: "annualrenewalnational.com",
+    smtpHost: "smtp.annualrenewalnational.com",
+    serverIpv4: "203.0.113.42",
+    selector: "s2026a",
+    budgetSpentUsd: 0,
+    lastCompletedStep: 0,
+    finalDeliveryStatus: "queued token=secret",
+    finalEmailMessageId: "msg-secret-token",
+    steps: {
+      "1": {
+        step: 1,
+        skill: "suggest_safe_domain",
+        status: "done",
+        startedAt: "not-a-date",
+        completedAt: "2026-05-31T12:00:10.000Z\nbad",
+        result: {
+          step: 1,
+          skill: "suggest_safe_domain",
+          inputHash: "hash-1",
+          outcome: { token: "super-secret-token" },
+          durationMs: -1
+        },
+        updatedAt: "2026-05-31T12:00:10.000Z"
+      },
+      "2": {
+        step: 2,
+        skill: "register_domain_route53",
+        status: "in_flight",
+        inputHash: "hash-2",
+        lastError: "Authorization: Bearer secret-token",
+        updatedAt: "2026-05-31T12:00:20.000Z"
+      },
+      "9": {
+        step: 9,
+        skill: "provision_smtp_postfix",
+        status: "done",
+        result: {
+          step: 9,
+          skill: "provision_smtp_postfix",
+          inputHash: "hash-9",
+          outcome: {
+            dkimPublicKey: "v=DKIM1; k=rsa; p=abc\nmalicious"
+          },
+          durationMs: 7
+        },
+        updatedAt: "2026-05-31T12:01:30.000Z"
+      }
+    }
+  }, null, 2)}\n`);
+
+  const progress = await readSmtpRunProgress({ workspace: ctx.workspace }, "run-unsafe-dkim");
+
+  assert.deepEqual(progress?.steps[0], {
+    step: 1,
+    skill: "suggest_safe_domain",
+    status: "done",
+    label: "Suggest Safe Domain"
+  });
+  assert.equal(progress?.steps[1]?.error, "step_error");
+  assert.equal(progress?.identity?.dkimPublicKey, undefined);
+  assert.equal(progress?.identity?.finalDeliveryStatus, undefined);
+  assert.equal(progress?.identity?.finalEmailMessageId, undefined);
+  assert.equal(progress?.identity?.dnsRecords?.some((record) => record.name === "s2026a._domainkey.annualrenewalnational.com"), false);
+  assert.doesNotMatch(JSON.stringify(progress), /malicious|super-secret-token|secret-token|Authorization|Bearer/);
 });
 
 test("configureCompleteSmtp does not proceed after step 2 execution failure", async () => {
@@ -1065,7 +1201,7 @@ test("seed warmup honors explicit seed inboxes", async () => {
 test("configureCompleteSmtp maps queued final delivery without rewriting it", async () => {
   const ctx = createDeps({
     outcomes: {
-      14: { messageId: "msg-queued", deliveryStatus: "queued" }
+      14: { messageId: "<delivrix-queued-123@delivrixops.com>", deliveryStatus: "queued" }
     }
   });
   const result = await configureCompleteSmtp(validInput(), ctx.deps);
@@ -2416,7 +2552,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
 function defaultOutcome(step: number): unknown {
   if (step === 4) return { slug: "srv-delivrix", ipv4: "203.0.113.10" };
   if (step === 9) return { dkimPublicKey: "v=DKIM1; k=rsa; p=abc" };
-  if (step === 14) return { messageId: "msg-1", deliveryStatus: "sent" };
+  if (step === 14) return { messageId: "<delivrix-0123456789abcdef@delivrixops.com>", deliveryStatus: "sent" };
   return { ok: true };
 }
 
@@ -2518,11 +2654,11 @@ function realisticSmtpOutcomes(): Record<number, unknown> {
       preValidations: ["warmup queue inspected"]
     },
     14: {
-      messageId: "msg-final-1",
+      messageId: "<delivrix-final-1@delivrixops.com>",
       deliveryStatus: "sent",
       tlsStatus: "valid",
       postfixLogTail: "250 queued as ABC123 after human-readable SMTP dialogue ".repeat(8),
-      sent: [{ to: "operator@example.com", msgId: "msg-final-1" }]
+      sent: [{ to: "operator@example.com", msgId: "<delivrix-final-1@delivrixops.com>" }]
     }
   };
 }

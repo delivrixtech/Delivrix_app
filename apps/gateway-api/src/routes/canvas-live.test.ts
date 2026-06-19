@@ -544,11 +544,13 @@ test("GET /v1/canvas/live/state returns persisted snapshot", async () => {
       request,
       response,
       service,
-      auditLog
+      auditLog,
+      readBoundaryToken: "read-token"
     }),
     {
       method: "GET",
-      url: "/v1/canvas/live/state"
+      url: "/v1/canvas/live/state",
+      headers: { "x-delivrix-token": "read-token" }
     }
   );
 
@@ -556,6 +558,31 @@ test("GET /v1/canvas/live/state returns persisted snapshot", async () => {
   assert.equal(response.body.schemaVersion, "2026-05-25.canvas-live.v1");
   assert.equal(response.body.tasks.length, 1);
   assert.equal(response.body.artifacts.length, 1);
+});
+
+test("GET /v1/canvas/live/state rejects missing read boundary token", async () => {
+  const service = await testService();
+  const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-state-audit-")), "audit.jsonl"));
+  const response = await runRoute(
+    (request, response) => handleCanvasLiveStateHttp({
+      request,
+      response,
+      service,
+      auditLog,
+      readBoundaryToken: "read-token"
+    }),
+    {
+      method: "GET",
+      url: "/v1/canvas/live/state"
+    }
+  );
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.body.error, "read_boundary_token_invalid");
+  const events = await auditLog.list();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].action, "oc.canvas_live_state.read_denied");
+  assert.equal(events[0].decision, "reject");
 });
 
 test("POST /v1/canvas/live/events ingests events without writing audit chain", async () => {
@@ -769,9 +796,19 @@ test("canvas-live snapshot includes flat SMTP progress for filtered task runs", 
         status: "running",
         lastCompletedStep: 1,
         steps: [
-          { step: 1, skill: "suggest_safe_domain", status: "done" },
-          { step: 2, skill: "register_domain_route53", status: "in_flight" }
-        ]
+          { step: 1, skill: "suggest_safe_domain", status: "done", durationMs: 14 },
+          { step: 2, skill: "register_domain_route53", status: "in_flight", error: "waiting_for_route53_operation" }
+        ],
+        identity: {
+          domain: "annualrenewalnational.com",
+          smtpHost: "smtp.annualrenewalnational.com",
+          serverIpv4: "203.0.113.42",
+          dkimSelector: "s2026a",
+          dkimPublicKey: "PUBLICKEY",
+          dnsRecords: [
+            { name: "smtp.annualrenewalnational.com", type: "A", value: "203.0.113.42" }
+          ]
+        }
       }));
     }
   });
@@ -786,9 +823,19 @@ test("canvas-live snapshot includes flat SMTP progress for filtered task runs", 
     status: "running",
     lastCompletedStep: 1,
     steps: [
-      { step: 1, skill: "suggest_safe_domain", status: "done" },
-      { step: 2, skill: "register_domain_route53", status: "in_flight" }
-    ]
+      { step: 1, skill: "suggest_safe_domain", status: "done", durationMs: 14 },
+      { step: 2, skill: "register_domain_route53", status: "in_flight", error: "waiting_for_route53_operation" }
+    ],
+    identity: {
+      domain: "annualrenewalnational.com",
+      smtpHost: "smtp.annualrenewalnational.com",
+      serverIpv4: "203.0.113.42",
+      dkimSelector: "s2026a",
+      dkimPublicKey: "PUBLICKEY",
+      dnsRecords: [
+        { name: "smtp.annualrenewalnational.com", type: "A", value: "203.0.113.42" }
+      ]
+    }
   }]);
 
   const missingTask = await service.snapshot("run-without-canvas-task");
