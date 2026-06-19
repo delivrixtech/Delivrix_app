@@ -437,8 +437,10 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
             title: event.title,
             editable: event.editable,
             createdAt: event.createdAt,
+            version: event.version,
             approvalStatus: "pending",
-            blocks: []
+            blocks: [],
+            ...(event.payload ? { payload: event.payload } : {})
           });
           s.artifactToTask.set(event.artifactId, event.taskId);
           break;
@@ -645,6 +647,7 @@ function artifactFromSnapshot(a: CanvasLiveArtifactSnapshotWire): LiveArtifact {
     title: a.title,
     editable: a.editable,
     createdAt: a.createdAt,
+    version: a.version,
     approvalStatus: a.approvalStatus,
     approvedBy: a.approvedBy,
     approvedAt: a.approvedAt,
@@ -652,6 +655,7 @@ function artifactFromSnapshot(a: CanvasLiveArtifactSnapshotWire): LiveArtifact {
     rejectedAt: a.rejectedAt,
     rejectionReason: a.rejectionReason,
     executionId: a.executionId,
+    ...(a.payload ? { payload: a.payload } : {}),
     blocks: a.blocks
       .slice()
       .sort((x, y) => x.order - y.order)

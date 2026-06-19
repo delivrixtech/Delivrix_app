@@ -6,7 +6,15 @@ export type CanvasLiveTaskStatus =
   | "failed";
 
 export type CanvasLiveActionKind = "api" | "file" | "audit" | "command";
-export type CanvasLiveArtifactKind = "plan" | "proposal" | "template" | "report";
+export type CanvasLiveArtifactKind =
+  | "plan"
+  | "proposal"
+  | "template"
+  | "report"
+  | "smtp_run"
+  | "inventory"
+  | "blacklist_report"
+  | "dns_zone";
 export type CanvasLiveArtifactBlockKind = "step" | "title" | "paragraph" | "table_row" | "code";
 export type CanvasLiveArtifactBlockStatus = "complete" | "streaming";
 export type CanvasLiveArtifactApprovalStatus = "pending" | "approved" | "rejected";
@@ -102,6 +110,9 @@ export interface CanvasLiveArtifactDeclareEvent {
   title: string;
   editable: boolean;
   createdAt: string;
+  updatedAt?: string;
+  version?: number;
+  payload?: CanvasLiveArtifactPayload;
 }
 
 export interface CanvasLiveArtifactBlockEvent {
@@ -161,6 +172,7 @@ export interface CanvasLiveArtifactSnapshot {
   editable: boolean;
   createdAt: string;
   updatedAt: string;
+  version?: number;
   approvalStatus: CanvasLiveArtifactApprovalStatus;
   approvedBy?: string;
   approvedAt?: string;
@@ -169,6 +181,7 @@ export interface CanvasLiveArtifactSnapshot {
   rejectionReason?: string;
   executionId?: string;
   blocks: CanvasLiveArtifactBlockSnapshot[];
+  payload?: CanvasLiveArtifactPayload;
 }
 
 export type CanvasLiveRunProgressStepStatus = "pending" | "in_flight" | "done";
@@ -211,6 +224,45 @@ export interface CanvasLiveRunProgress {
   steps: CanvasLiveRunProgressStep[];
   identity?: CanvasLiveRunIdentity;
 }
+
+export type CanvasLiveArtifactPayload =
+  | {
+      kind: "smtp_run";
+      runId: string;
+      identity: CanvasLiveRunIdentity;
+      steps: CanvasLiveRunProgressStep[];
+    }
+  | {
+      kind: "inventory";
+      servers: Array<{
+        slug: string;
+        domain?: string;
+        ipv4?: string;
+        provider?: string;
+        status: string;
+        accountId?: string;
+      }>;
+    }
+  | {
+      kind: "blacklist_report";
+      target: string;
+      source: string;
+      evaluatedAt: string;
+      checks: Array<{
+        list: string;
+        status: "pass" | "listed" | "na";
+        note?: string;
+      }>;
+    }
+  | {
+      kind: "dns_zone";
+      domain: string;
+      records: Array<{
+        name: string;
+        type: string;
+        value: string;
+      }>;
+    };
 
 export interface CanvasLiveStateSnapshot {
   schemaVersion: "2026-05-25.canvas-live.v1";
