@@ -61,8 +61,9 @@ test("runAudit agrega los 3 subagentes y bloquea ante un blocker", async () => {
 
   assert.equal(outcome.verdict, "blocked");
   assert.equal(outcome.conclusion, "failure");
-  // Un blocker por cada dimension (mismo path/title, dimension distinta): 3.
-  assert.equal(outcome.counts.blocker, 3);
+  // Los 3 subagentes reportan el MISMO punto (a.ts:1-1): collapseByLocation los
+  // fusiona en 1 (conserva el mas severo). Antes daba 3 = ruido duplicado.
+  assert.equal(outcome.counts.blocker, 1);
   assert.equal(outcome.subagentsOk, 3);
   assert.ok(outcome.report.includes(COMMENT_MARKER));
 });

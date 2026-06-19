@@ -105,6 +105,20 @@ export function createGithubClient(options: GithubClientOptions) {
     });
   }
 
+  // Lee un archivo del repo (contents API) en un ref dado. null si no existe
+  // (404) o no es un blob base64. Se usa para QA_CONTEXT.md desde la rama base.
+  async function getFileContent(path: string, ref: string): Promise<string | null> {
+    try {
+      const json: any = await request(`/repos/${owner}/${repo}/contents/${path}?ref=${encodeURIComponent(ref)}`);
+      if (json && typeof json.content === "string" && json.encoding === "base64") {
+        return Buffer.from(json.content, "base64").toString("utf8");
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   async function listPullRequestFiles(prNumber: number, maxFiles: number): Promise<ChangedFile[]> {
     const perPage = 100;
     const files: ChangedFile[] = [];
@@ -222,6 +236,7 @@ export function createGithubClient(options: GithubClientOptions) {
   return {
     getPullRequestDiff,
     getPullRequest,
+    getFileContent,
     listPullRequestFiles,
     getCommitDiff,
     listIssueComments,

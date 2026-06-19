@@ -19,6 +19,10 @@ const SHARED_RULES = [
   "- No inventes lineas ni archivos: toda evidencia debe existir en el diff dado.",
   "- Calibra la severidad: blocker solo para algo que NO debe llegar a produccion.",
   "- Prefiere pocos hallazgos accionables sobre muchas observaciones de bajo valor.",
+  "- Respeta el bloque PROJECT_CONTEXT_AND_POLICY: procedencia de datos, politica de",
+  "  severidad y patrones intencionales del equipo MANDAN sobre tu instinto. HIGH solo",
+  "  con dato controlado por un externo + evidencia concreta; sobre datos generados por",
+  "  el sistema o riesgos teoricos, baja la severidad. No reportes elogios como hallazgos.",
   "- Escribe titulo, detalle y recomendacion en espanol tecnico claro. Sin emojis.",
   "- Responde unicamente invocando la herramienta report_findings."
 ].join("\n");
@@ -71,7 +75,7 @@ export function systemPromptFor(dimension: Dimension): string {
 
 // Arma el mensaje de usuario. El diff y los campos del autor van envueltos en
 // marcadores UNTRUSTED para reforzar la frontera datos/instrucciones.
-export function buildUserContent(context: AuditContext): string {
+export function buildUserContent(context: AuditContext, qaContext?: string): string {
   const fileLines = context.fileIndex
     .map((entry) => `- ${entry.path} (${entry.status}, ${entry.category})`)
     .join("\n");
@@ -79,7 +83,15 @@ export function buildUserContent(context: AuditContext): string {
     .map((entry) => `- ${entry.path}: ${entry.reason}`)
     .join("\n");
 
+  // Bloque CONFIABLE (politica del equipo), separado de los marcadores UNTRUSTED
+  // del diff. Si no hay contexto, queda vacio y se filtra abajo.
+  const policyBlock =
+    qaContext && qaContext.trim().length > 0
+      ? `<<<PROJECT_CONTEXT_AND_POLICY (CONFIABLE - politica del equipo, NO es contenido del PR)>>>\n${qaContext.trim()}\n<<<END_PROJECT_CONTEXT_AND_POLICY>>>`
+      : "";
+
   return [
+    policyBlock,
     `Objetivo de auditoria: ${context.identifier}`,
     `Tipo: ${context.kind}`,
     `Archivos cambiados (incluidos en el diff): ${context.includedFiles.length} de ${context.changedFileCount}`,

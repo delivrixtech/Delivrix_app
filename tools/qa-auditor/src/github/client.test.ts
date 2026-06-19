@@ -29,6 +29,25 @@ function recorder(handler: (call: Call) => any): { fetchImpl: typeof fetch; call
   return { fetchImpl, calls };
 }
 
+test("getFileContent decodifica contenido base64 del contents API", async () => {
+  const content = "# politica\nregla 1";
+  const { fetchImpl, calls } = recorder(() =>
+    res(200, { content: Buffer.from(content, "utf8").toString("base64"), encoding: "base64" })
+  );
+  const client = createGithubClient({ token: "t", owner: "o", repo: "r", fetchImpl });
+  const out = await client.getFileContent("tools/qa-auditor/QA_CONTEXT.md", "base-sha");
+  assert.equal(out, content);
+  assert.ok(calls[0].url.includes("/contents/tools/qa-auditor/QA_CONTEXT.md"));
+  assert.ok(calls[0].url.includes("ref=base-sha"));
+});
+
+test("getFileContent devuelve null si el archivo no existe (404)", async () => {
+  const { fetchImpl } = recorder(() => res(404, { message: "Not Found" }));
+  const client = createGithubClient({ token: "t", owner: "o", repo: "r", fetchImpl, sleep: async () => {} });
+  const out = await client.getFileContent("nope.md", "base-sha");
+  assert.equal(out, null);
+});
+
 test("upsertMarkerComment crea un comentario cuando no existe el marcador", async () => {
   const { fetchImpl, calls } = recorder((call) => {
     if (call.url.includes("/comments") && call.method === "GET") {

@@ -8,6 +8,7 @@ import { runAllSubagents } from "./subagents/run.ts";
 import type { Finding, Severity } from "./subagents/schema.ts";
 import {
   checkConclusion,
+  collapseByLocation,
   computeVerdict,
   countBySeverity,
   dedupeFindings,
@@ -44,15 +45,23 @@ export type RunAuditParams = {
   dryRun: boolean;
   // Hallazgos deterministas (no-LLM) a fusionar, p.ej. conflicto de merge.
   extraFindings?: Finding[];
+  // Memoria-archivo: contexto/politica del proyecto inyectado a los subagentes.
+  qaContext?: string;
   now?: () => Date;
 };
 
 export async function runAudit(params: RunAuditParams): Promise<AuditOutcome> {
   const now = params.now ?? (() => new Date());
-  const runs = await runAllSubagents(params.anthropic, params.context, params.maxTokensPerSubagent);
+  const runs = await runAllSubagents(
+    params.anthropic,
+    params.context,
+    params.maxTokensPerSubagent,
+    params.qaContext
+  );
 
   const collected = [...(params.extraFindings ?? []), ...runs.flatMap((run) => run.result.findings)];
-  const allFindings = sortFindings(dedupeFindings(collected));
+  // dedupe exacto -> colapsa duplicados por ubicacion entre dimensiones -> ordena.
+  const allFindings = sortFindings(collapseByLocation(dedupeFindings(collected)));
   const counts = countBySeverity(allFindings);
   const verdict = computeVerdict(allFindings);
   const conclusion = checkConclusion(allFindings, params.failOn);
