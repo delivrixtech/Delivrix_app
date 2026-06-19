@@ -14,7 +14,15 @@
 
 export type CanvasLiveTaskStatusWire = "running" | "idle" | "awaiting_approval" | "completed" | "failed";
 export type CanvasLiveActionKindWire = "api" | "file" | "audit" | "command";
-export type CanvasLiveArtifactKindWire = "plan" | "proposal" | "template" | "report";
+export type CanvasLiveArtifactKindWire =
+  | "plan"
+  | "proposal"
+  | "template"
+  | "report"
+  | "smtp_run"
+  | "inventory"
+  | "blacklist_report"
+  | "dns_zone";
 export type CanvasLiveArtifactBlockKindWire = "step" | "title" | "paragraph" | "table_row" | "code";
 export type CanvasLiveArtifactBlockStatusWire = "complete" | "streaming";
 export type CanvasLiveArtifactApprovalStatusWire = "pending" | "approved" | "rejected";
@@ -114,6 +122,9 @@ export interface CanvasLiveArtifactDeclareEventWire {
   title: string;
   editable: boolean;
   createdAt: string;
+  updatedAt?: string;
+  version?: number;
+  payload?: CanvasLiveArtifactPayloadWire;
 }
 
 export interface CanvasLiveArtifactBlockEventWire {
@@ -174,6 +185,7 @@ export interface CanvasLiveArtifactSnapshotWire {
   editable: boolean;
   createdAt: string;
   updatedAt: string;
+  version?: number;
   approvalStatus: CanvasLiveArtifactApprovalStatusWire;
   approvedBy?: string;
   approvedAt?: string;
@@ -182,6 +194,7 @@ export interface CanvasLiveArtifactSnapshotWire {
   rejectionReason?: string;
   executionId?: string;
   blocks: CanvasLiveArtifactBlockSnapshotWire[];
+  payload?: CanvasLiveArtifactPayloadWire;
 }
 
 export type CanvasLiveRunProgressStepStatusWire = "pending" | "in_flight" | "done";
@@ -224,6 +237,45 @@ export interface CanvasLiveRunProgressWire {
   steps: CanvasLiveRunProgressStepWire[];
   identity?: CanvasLiveRunIdentityWire;
 }
+
+export type CanvasLiveArtifactPayloadWire =
+  | {
+      kind: "smtp_run";
+      runId: string;
+      identity: CanvasLiveRunIdentityWire;
+      steps: CanvasLiveRunProgressStepWire[];
+    }
+  | {
+      kind: "inventory";
+      servers: Array<{
+        slug: string;
+        domain?: string;
+        ipv4?: string;
+        provider?: string;
+        status: string;
+        accountId?: string;
+      }>;
+    }
+  | {
+      kind: "blacklist_report";
+      target: string;
+      source: string;
+      evaluatedAt: string;
+      checks: Array<{
+        list: string;
+        status: "pass" | "listed" | "na";
+        note?: string;
+      }>;
+    }
+  | {
+      kind: "dns_zone";
+      domain: string;
+      records: Array<{
+        name: string;
+        type: string;
+        value: string;
+      }>;
+    };
 
 export interface CanvasLiveStateSnapshotWire {
   schemaVersion: "2026-05-25.canvas-live.v1";
@@ -321,9 +373,10 @@ export interface LiveArtifactBlock {
 export interface LiveArtifact {
   id: string;
   taskId: string;
-  kind: "plan" | "proposal" | "template" | "report";
+  kind: CanvasLiveArtifactKindWire;
   title: string;
   editable: boolean;
+  version?: number;
   approvalStatus: LiveArtifactApprovalStatus;
   approvedBy?: string;
   approvedAt?: string;
@@ -332,5 +385,6 @@ export interface LiveArtifact {
   rejectionReason?: string;
   executionId?: string;
   blocks: LiveArtifactBlock[];
+  payload?: CanvasLiveArtifactPayloadWire;
   createdAt: string;
 }

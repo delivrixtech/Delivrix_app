@@ -11,6 +11,10 @@ import type { AuditEventInput } from "../../../packages/domain/src/index.ts";
 import type {
   CanvasLiveActionKind,
   CanvasLiveActionNowEvent,
+  CanvasLiveArtifactPayload,
+  CanvasLiveArtifactSnapshot,
+  CanvasLiveRunIdentity,
+  CanvasLiveRunProgressStep,
   CanvasLiveTaskDeclareEvent,
   CanvasLiveTaskUpdateEvent
 } from "../../../packages/domain/src/index.ts";
@@ -28,6 +32,10 @@ import {
   createHttpToolUseProcessor,
   type ToolUseResult
 } from "./tool-use-processor.ts";
+import {
+  extractOpenClawArtifact,
+  shouldOpenArtifact
+} from "./openclaw-artifact-extractor.ts";
 import {
   tryNormalizeIpv4Address,
   tryNormalizeStrictDomainName
@@ -105,6 +113,7 @@ interface AuditSink {
 
 interface CanvasLiveEmitter {
   emit(event: unknown): Promise<unknown>;
+  upsertArtifactSnapshot?(snapshot: CanvasLiveArtifactSnapshot): Promise<unknown>;
 }
 
 interface BedrockInvocationResult {
@@ -374,6 +383,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     let sawOutputTokens = false;
     const toolsInvoked: string[] = [];
     const turnIntentId = intentIdForMsgId(msgId);
+    let emittedTypedArtifact = false;
 
     try {
       for (let iteration = 0; iteration < this.maxToolIterations; iteration += 1) {
@@ -410,6 +420,14 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
             status: "completed",
             updatedAt: this.now().toISOString()
           });
+          if (!emittedTypedArtifact && shouldOpenArtifact(response.text)) {
+            await this.emitProseArtifactFromFinalResponse({
+              taskId: canvasTaskId,
+              msgId,
+              operatorMessage: latestUserTurnContent(turns),
+              responseText: response.text
+            });
+          }
           return {
             text: response.text,
             modelId: this.modelId,
@@ -482,6 +500,14 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
             durationMs: result.durationMs ?? Math.max(0, this.now().getTime() - toolStartedAt),
             occurredAt: this.now().toISOString()
           });
+          if (result.ok) {
+            emittedTypedArtifact = await this.emitTypedArtifactFromToolResult({
+              taskId: canvasTaskId,
+              toolName: toolUse.name,
+              result,
+              occurredAt: this.now().toISOString()
+            }) || emittedTypedArtifact;
+          }
           if (result.proposalId || result.signatureId) {
             await this.emitCanvasToolAudit({
               taskId: canvasTaskId,
@@ -632,6 +658,124 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       toolName: input.toolName,
       phase: input.result.signatureId ? "signed" : "proposed"
     });
+  }
+
+  private async emitProseArtifactFromFinalResponse(input: {
+    taskId: string;
+    msgId: string;
+    operatorMessage: string;
+    responseText: string;
+  }): Promise<void> {
+    const artifact = extractOpenClawArtifact(input.responseText, input.operatorMessage);
+    const artifactId = `artifact-${input.taskId}`;
+    const editable = artifact.kind === "plan" || artifact.kind === "proposal";
+    const now = this.now().toISOString();
+    await this.emitCanvasArtifactSnapshot({
+      artifactId,
+      taskId: input.taskId,
+      kind: artifact.kind,
+      title: artifact.title || summarizeCanvasTurnTitle(input.operatorMessage),
+      editable,
+      createdAt: now,
+      updatedAt: now,
+      approvalStatus: "pending",
+      blocks: artifact.blocks.map((block) => ({
+        blockId: `${artifactId}-block-${String(block.order).padStart(2, "0")}`,
+        order: block.order,
+        kind: block.kind,
+        content: block.content,
+        editable,
+        status: "complete",
+        updatedAt: now
+      }))
+    }, {
+      msgId: input.msgId,
+      artifactId,
+      source: "final_response"
+    });
+  }
+
+  private async emitTypedArtifactFromToolResult(input: {
+    taskId: string;
+    toolName: string;
+    result: Extract<ToolUseResult, { ok: true }>;
+    occurredAt: string;
+  }): Promise<boolean> {
+    const artifact = typedArtifactFromToolResult(input.toolName, input.result.result, input.occurredAt);
+    if (!artifact) {
+      return false;
+    }
+    await this.emitCanvasArtifactSnapshot({
+      artifactId: artifact.artifactId,
+      taskId: input.taskId,
+      kind: artifact.payload.kind,
+      title: artifact.title,
+      editable: false,
+      createdAt: input.occurredAt,
+      updatedAt: input.occurredAt,
+      approvalStatus: "pending",
+      blocks: [],
+      payload: artifact.payload
+    }, {
+      msgId: input.taskId,
+      artifactId: artifact.artifactId,
+      toolName: input.toolName,
+      source: "tool_result"
+    });
+    return true;
+  }
+
+  private async emitCanvasArtifactSnapshot(
+    snapshot: CanvasLiveArtifactSnapshot,
+    metadata: Record<string, unknown>
+  ): Promise<void> {
+    if (!this.canvasLiveEvents) {
+      return;
+    }
+    if (this.canvasLiveEvents.upsertArtifactSnapshot) {
+      try {
+        await this.canvasLiveEvents.upsertArtifactSnapshot(snapshot);
+        return;
+      } catch (error) {
+        await this.logger.warn("openclaw.bedrock.canvas_artifact_upsert_failed", "Could not upsert Canvas Live artifact snapshot.", {
+          ...metadata,
+          ...runtimeErrorMetadata(error)
+        });
+        return;
+      }
+    }
+
+    await this.emitCanvasLiveEvent({
+      type: "oc.artifact.declare",
+      taskId: snapshot.taskId,
+      artifactId: snapshot.artifactId,
+      kind: snapshot.kind,
+      title: snapshot.title,
+      editable: snapshot.editable,
+      createdAt: snapshot.createdAt,
+      updatedAt: snapshot.updatedAt,
+      ...(snapshot.version === undefined ? {} : { version: snapshot.version }),
+      ...(snapshot.payload ? { payload: snapshot.payload } : {})
+    }, {
+      ...metadata,
+      eventType: "oc.artifact.declare"
+    });
+    for (const block of snapshot.blocks) {
+      await this.emitCanvasLiveEvent({
+        type: "oc.artifact.block",
+        artifactId: snapshot.artifactId,
+        blockId: block.blockId,
+        order: block.order,
+        kind: block.kind,
+        content: block.content,
+        editable: block.editable,
+        status: block.status,
+        occurredAt: block.updatedAt
+      }, {
+        ...metadata,
+        eventType: "oc.artifact.block"
+      });
+    }
   }
 
   private async emitCanvasLiveEvent(event: unknown, metadata: Record<string, unknown>): Promise<void> {
@@ -1093,6 +1237,202 @@ function canvasToolResultSummary(result: ToolUseResult | undefined, phase: "requ
     ...(result.proposalId ? { proposalId: result.proposalId } : {}),
     ...(result.ok ? {} : { error: redactCanvasToolText(String(result.error ?? "tool_failed")) })
   };
+}
+
+interface TypedArtifactBuildResult {
+  artifactId: string;
+  title: string;
+  payload: CanvasLiveArtifactPayload;
+}
+
+function typedArtifactFromToolResult(
+  toolName: string,
+  result: unknown,
+  occurredAt: string
+): TypedArtifactBuildResult | null {
+  if (toolName === "read_webdock_servers") {
+    return inventoryArtifactFromToolResult(result);
+  }
+  if (toolName === "read_mxtoolbox_health") {
+    return blacklistArtifactFromToolResult(result, occurredAt);
+  }
+  if (toolName === "configure_complete_smtp") {
+    return smtpRunArtifactFromToolResult(result);
+  }
+  return null;
+}
+
+function inventoryArtifactFromToolResult(result: unknown): TypedArtifactBuildResult | null {
+  const payload = isRecord(result) ? result : {};
+  const inventory = isRecord(payload.inventory) ? payload.inventory : {};
+  const rawServers = Array.isArray(payload.matchedServers) && payload.matchedServers.length > 0
+    ? payload.matchedServers
+    : Array.isArray(inventory.servers)
+      ? inventory.servers
+      : [];
+  const servers = rawServers
+    .filter(isRecord)
+    .map((server) => {
+      const slug = stringValue(server.slug) ?? stringValue(server.serverSlug);
+      if (!slug) {
+        return null;
+      }
+      return {
+        slug,
+        ...(stringValue(server.mainDomain) ?? stringValue(server.domain) ?? stringValue(server.hostname)
+          ? { domain: stringValue(server.mainDomain) ?? stringValue(server.domain) ?? stringValue(server.hostname) }
+          : {}),
+        ...(stringValue(server.ipv4) ?? stringValue(server.serverIpv4) ? { ipv4: stringValue(server.ipv4) ?? stringValue(server.serverIpv4) } : {}),
+        provider: stringValue(server.provider) ?? stringValue(server.providerId) ?? "webdock",
+        status: stringValue(server.status) ?? "unknown",
+        ...(stringValue(server.accountId) ?? stringValue(server.serverAccountId) ? { accountId: stringValue(server.accountId) ?? stringValue(server.serverAccountId) } : {})
+      };
+    })
+    .filter((server): server is NonNullable<typeof server> => server !== null);
+  if (servers.length === 0) {
+    return null;
+  }
+  return {
+    artifactId: "inventory-webdock",
+    title: `Inventario Webdock (${servers.length})`,
+    payload: {
+      kind: "inventory",
+      servers
+    }
+  };
+}
+
+function blacklistArtifactFromToolResult(result: unknown, occurredAt: string): TypedArtifactBuildResult | null {
+  const payload = isRecord(result) ? result : {};
+  const summary = isRecord(payload.result) ? payload.result : payload;
+  const target = stringValue(summary.target);
+  if (!target) {
+    return null;
+  }
+  const command = stringValue(summary.command) ?? "blacklist";
+  const source = stringValue(payload.source) ?? "mxtoolbox";
+  const checks: Extract<CanvasLiveArtifactPayload, { kind: "blacklist_report" }>["checks"] = [];
+  for (const name of stringArray(summary.failedChecks)) {
+    checks.push({ list: name, status: "listed" });
+  }
+  for (const name of stringArray(summary.warningChecks)) {
+    checks.push({ list: name, status: "na", note: "warning" });
+  }
+  const timeoutCount = numberValue(summary.timeoutCount) ?? 0;
+  if (timeoutCount > 0) {
+    checks.push({ list: `${source}:${command}:timeouts`, status: "na", note: `${timeoutCount} timeout(s)` });
+  }
+  if (checks.length === 0) {
+    const passedCount = numberValue(summary.passedCount) ?? 0;
+    checks.push({
+      list: `${source}:${command}`,
+      status: "pass",
+      ...(passedCount > 0 ? { note: `${passedCount} checks passed` } : {})
+    });
+  }
+  return {
+    artifactId: `blacklist-${safeArtifactIdSegment(target)}`,
+    title: `Blacklist ${target}`,
+    payload: {
+      kind: "blacklist_report",
+      target,
+      source,
+      evaluatedAt: stringValue(summary.checkedAt) ?? stringValue(payload.cachedAt) ?? occurredAt,
+      checks
+    }
+  };
+}
+
+function smtpRunArtifactFromToolResult(result: unknown): TypedArtifactBuildResult | null {
+  if (!isRecord(result)) {
+    return null;
+  }
+  const runId = stringValue(result.runId);
+  if (!runId) {
+    return null;
+  }
+  const steps = normalizeCanvasRunSteps(result.steps) ?? normalizeStepResultsAsRunSteps(result.stepResults);
+  if (steps.length === 0) {
+    return null;
+  }
+  const identity = normalizeCanvasRunIdentity(result.identity) ?? {};
+  return {
+    artifactId: `run-${safeArtifactIdSegment(runId)}`,
+    title: `SMTP run ${runId}`,
+    payload: {
+      kind: "smtp_run",
+      runId,
+      identity,
+      steps
+    }
+  };
+}
+
+function normalizeCanvasRunSteps(value: unknown): CanvasLiveRunProgressStep[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  return value.filter(isRecord).map((step) => ({
+    step: Math.max(1, Math.floor(numberValue(step.step) ?? 1)),
+    skill: stringValue(step.skill) ?? "unknown",
+    status: normalizeRunStepStatus(stringValue(step.status)),
+    ...(stringValue(step.label) ? { label: stringValue(step.label) } : {}),
+    ...(stringValue(step.startedAt) ? { startedAt: stringValue(step.startedAt) } : {}),
+    ...(stringValue(step.completedAt) ? { completedAt: stringValue(step.completedAt) } : {}),
+    ...(numberValue(step.durationMs) === undefined ? {} : { durationMs: Math.max(0, Math.floor(numberValue(step.durationMs)!)) }),
+    ...(stringValue(step.error) ? { error: stringValue(step.error) } : {})
+  }));
+}
+
+function normalizeStepResultsAsRunSteps(value: unknown): CanvasLiveRunProgressStep[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(isRecord).map((step) => ({
+    step: Math.max(1, Math.floor(numberValue(step.step) ?? 1)),
+    skill: stringValue(step.skill) ?? "unknown",
+    status: "done",
+    ...(numberValue(step.durationMs) === undefined ? {} : { durationMs: Math.max(0, Math.floor(numberValue(step.durationMs)!)) })
+  }));
+}
+
+function normalizeCanvasRunIdentity(value: unknown): CanvasLiveRunIdentity | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const identity: CanvasLiveRunIdentity = {
+    ...(stringValue(value.brand) ? { brand: stringValue(value.brand) } : {}),
+    ...(stringValue(value.domain) ? { domain: stringValue(value.domain) } : {}),
+    ...(stringValue(value.smtpHost) ? { smtpHost: stringValue(value.smtpHost) } : {}),
+    ...(stringValue(value.serverSlug) ? { serverSlug: stringValue(value.serverSlug) } : {}),
+    ...(stringValue(value.serverIpv4) ? { serverIpv4: stringValue(value.serverIpv4) } : {}),
+    ...(stringValue(value.serverAccountId) ? { serverAccountId: stringValue(value.serverAccountId) } : {}),
+    ...(stringValue(value.providerId) ? { providerId: stringValue(value.providerId) } : {}),
+    ...(stringValue(value.dkimSelector) ? { dkimSelector: stringValue(value.dkimSelector) } : {}),
+    ...(stringValue(value.dkimPublicKey) ? { dkimPublicKey: stringValue(value.dkimPublicKey) } : {}),
+    ...(Array.isArray(value.dnsRecords) ? { dnsRecords: value.dnsRecords.filter(isRecord).map((record) => ({
+      name: stringValue(record.name) ?? "",
+      type: stringValue(record.type) ?? "",
+      value: stringValue(record.value) ?? ""
+    })).filter((record) => record.name && record.type && record.value) } : {}),
+    ...(stringValue(value.finalDeliveryStatus) ? { finalDeliveryStatus: stringValue(value.finalDeliveryStatus) } : {}),
+    ...(stringValue(value.finalEmailMessageId) ? { finalEmailMessageId: stringValue(value.finalEmailMessageId) } : {}),
+    ...(numberValue(value.budgetSpentUsd) === undefined ? {} : { budgetSpentUsd: numberValue(value.budgetSpentUsd) })
+  };
+  return Object.keys(identity).length > 0 ? identity : null;
+}
+
+function normalizeRunStepStatus(value: string | null): "pending" | "in_flight" | "done" {
+  return value === "in_flight" || value === "done" ? value : "pending";
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(stringValue).filter((item): item is string => Boolean(item)) : [];
+}
+
+function safeArtifactIdSegment(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_.:-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized.slice(0, 96) || hashToolInput(value).slice(0, 16);
 }
 
 function estimatedToolResultBytes(result: ToolUseResult | undefined): number {

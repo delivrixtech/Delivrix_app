@@ -885,6 +885,78 @@ test("canvas-live upsertArtifactSnapshot normalizes non-positive block order bef
   assert.equal(artifacts.includes(pemLine), false);
 });
 
+test("canvas-live upsertArtifactSnapshot persists typed payload with version and redaction", async () => {
+  const stateDir = await stateDirForTest();
+  const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  const pem = generatedPrivateKeyPem();
+  const pemLine = pemBodyLine(pem);
+  const later = new Date("2026-05-25T22:05:00.000Z");
+
+  await service.upsertArtifactSnapshot({
+    artifactId: "dns-zone-delivrix-test",
+    taskId: "task-dns-zone",
+    kind: "dns_zone",
+    title: "Zona DNS delivrix.test",
+    editable: false,
+    createdAt: fixedNow.toISOString(),
+    updatedAt: fixedNow.toISOString(),
+    approvalStatus: "pending",
+    blocks: [],
+    payload: {
+      kind: "dns_zone",
+      domain: "delivrix.test",
+      records: [
+        { name: "smtp.delivrix.test", type: "A", value: "203.0.113.10" },
+        { name: "s2026a._domainkey.delivrix.test", type: "TXT", value: pem }
+      ]
+    }
+  });
+
+  await service.upsertArtifactSnapshot({
+    artifactId: "dns-zone-delivrix-test",
+    taskId: "task-dns-zone",
+    kind: "dns_zone",
+    title: "Zona DNS delivrix.test",
+    editable: false,
+    createdAt: later.toISOString(),
+    updatedAt: later.toISOString(),
+    approvalStatus: "pending",
+    blocks: [],
+    payload: {
+      kind: "dns_zone",
+      domain: "delivrix.test",
+      records: [
+        { name: "smtp.delivrix.test", type: "A", value: "203.0.113.10" }
+      ]
+    }
+  });
+
+  const snapshot = await service.snapshot();
+  const artifact = snapshot.artifacts[0];
+  assert.equal(artifact.artifactId, "dns-zone-delivrix-test");
+  assert.equal(artifact.kind, "dns_zone");
+  assert.equal(artifact.version, 2);
+  assert.equal(artifact.createdAt, fixedNow.toISOString());
+  assert.equal(artifact.updatedAt, later.toISOString());
+  assert.equal(artifact.payload?.kind, "dns_zone");
+  assert.deepEqual(artifact.payload?.records, [
+    { name: "smtp.delivrix.test", type: "A", value: "203.0.113.10" }
+  ]);
+
+  const persisted = await readFile(join(stateDir, "artifacts.jsonl"), "utf8");
+  assert.match(persisted, /"version":2/);
+  assert.match(persisted, /"updatedAt":"2026-05-25T22:05:00.000Z"/);
+  assert.equal(persisted.includes(pemLine), false);
+  assert.match(persisted, /\[REDACTED_PRIVATE_KEY\]/);
+
+  const reloaded = new CanvasLiveEventService({ stateDir, now: () => later });
+  const reloadedArtifact = (await reloaded.snapshot()).artifacts[0];
+  assert.equal(reloadedArtifact.version, 2);
+  assert.equal(reloadedArtifact.updatedAt, later.toISOString());
+  assert.equal(reloadedArtifact.payload?.kind, "dns_zone");
+  assert.equal(JSON.stringify(reloadedArtifact).includes(pemLine), false);
+});
+
 async function seedArtifact(
   service: CanvasLiveEventService,
   taskId: string,

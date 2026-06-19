@@ -575,6 +575,203 @@ test("OpenClawBedrockBridge redacts PEM tool failures before Canvas and Bedrock 
   }
 });
 
+test("OpenClawBedrockBridge emits typed inventory artifact and skips duplicate prose artifact", async () => {
+  const payloads: Array<Record<string, unknown>> = [];
+  const snapshots: Array<Record<string, unknown>> = [];
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    env: enabledToolEnv(),
+    canvasLiveEvents: {
+      async emit(event) {
+        return event;
+      },
+      async upsertArtifactSnapshot(snapshot) {
+        snapshots.push(snapshot as unknown as Record<string, unknown>);
+        return snapshot;
+      }
+    },
+    processToolUse: async () => ({
+      ok: true,
+      status: "executed",
+      proposalId: "read_only:toolu-inventory",
+      result: {
+        inventory: {
+          servers: [
+            { slug: "server10", status: "running", ipv4: "45.136.70.47", mainDomain: "controldelivrix.app", token: "must-not-ship" },
+            { slug: "server11", status: "stopped", ipv4: "192.0.2.11" }
+          ]
+        }
+      }
+    }),
+    client: {
+      send: async (command) => {
+        payloads.push(JSON.parse(String(command.input.body)));
+        if (payloads.length === 1) {
+          return {
+            body: toolUseStream("toolu-inventory", "read_webdock_servers", "{}")
+          };
+        }
+        return {
+          body: [
+            streamJson({ type: "message_start", message: { usage: { input_tokens: 9 } } }),
+            streamJson({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "## Reporte\n- Inventario leído\n- Sin cambios live\n- Continuidad Webdock preservada" } }),
+            streamJson({ type: "message_delta", usage: { output_tokens: 7 } })
+          ]
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-inventory", message: "cuántos SMTPs hay" });
+  await bridge.streamHistory("msg-inventory", {});
+
+  assert.equal(payloads.length, 2);
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].artifactId, "inventory-webdock");
+  assert.equal(snapshots[0].kind, "inventory");
+  const payload = snapshots[0].payload as { kind: string; servers: Array<Record<string, unknown>> };
+  assert.equal(payload.kind, "inventory");
+  assert.equal(payload.servers.length, 2);
+  assert.equal(payload.servers[0].slug, "server10");
+  assert.equal(payload.servers[0].domain, "controldelivrix.app");
+  assert.doesNotMatch(JSON.stringify(payload), /must-not-ship/);
+});
+
+test("OpenClawBedrockBridge emits typed blacklist artifact from MXToolbox result", async () => {
+  const payloads: Array<Record<string, unknown>> = [];
+  const snapshots: Array<Record<string, unknown>> = [];
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    env: enabledToolEnv(),
+    canvasLiveEvents: {
+      async emit(event) {
+        return event;
+      },
+      async upsertArtifactSnapshot(snapshot) {
+        snapshots.push(snapshot as unknown as Record<string, unknown>);
+        return snapshot;
+      }
+    },
+    processToolUse: async () => ({
+      ok: true,
+      status: "executed",
+      proposalId: "read_only:toolu-blacklist",
+      result: {
+        source: "live",
+        result: {
+          target: "8.8.8.8",
+          command: "blacklist",
+          checkedAt: "2026-06-18T10:00:00.000Z",
+          status: "listed",
+          failedChecks: ["Spamhaus ZEN"],
+          warningChecks: ["Barracuda warning"],
+          passedCount: 58,
+          timeoutCount: 0,
+          rawRef: "raw-ref-must-not-ship"
+        }
+      }
+    }),
+    client: {
+      send: async (command) => {
+        payloads.push(JSON.parse(String(command.input.body)));
+        if (payloads.length === 1) {
+          return {
+            body: toolUseStream("toolu-blacklist", "read_mxtoolbox_health", "{\"target\":\"8.8.8.8\",\"type\":\"blacklist\"}")
+          };
+        }
+        return {
+          body: [
+            streamJson({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Reputación consultada." } })
+          ]
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-blacklist", message: "revisa blacklist 8.8.8.8" });
+  await bridge.streamHistory("msg-blacklist", {});
+
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].artifactId, "blacklist-8.8.8.8");
+  assert.equal(snapshots[0].kind, "blacklist_report");
+  const payload = snapshots[0].payload as { kind: string; checks: Array<Record<string, unknown>> };
+  assert.equal(payload.kind, "blacklist_report");
+  assert.deepEqual(payload.checks.map((check) => check.status), ["listed", "na"]);
+  assert.doesNotMatch(JSON.stringify(payload), /raw-ref-must-not-ship/);
+});
+
+test("OpenClawBedrockBridge emits final prose artifact only for structured deliverables", async () => {
+  const snapshots: Array<Record<string, unknown>> = [];
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    canvasLiveEvents: {
+      async emit(event) {
+        return event;
+      },
+      async upsertArtifactSnapshot(snapshot) {
+        snapshots.push(snapshot as unknown as Record<string, unknown>);
+        return snapshot;
+      }
+    },
+    client: {
+      send: async () => ({
+        body: [
+          streamJson({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "FCrDNS vincula PTR y A/AAAA para reputación SMTP." } })
+        ]
+      })
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-concept", message: "qué es FCrDNS" });
+  await bridge.streamHistory("msg-concept", {});
+  assert.equal(snapshots.length, 0);
+
+  const structuredBridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    canvasLiveEvents: {
+      async emit(event) {
+        return event;
+      },
+      async upsertArtifactSnapshot(snapshot) {
+        snapshots.push(snapshot as unknown as Record<string, unknown>);
+        return snapshot;
+      }
+    },
+    client: {
+      send: async () => ({
+        body: [
+          streamJson({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Plan\n\n1. Validar DNS\n2. Revisar PTR\n3. Emitir reporte" } })
+        ]
+      })
+    }
+  });
+
+  await structuredBridge.sendMessage({ msgId: "msg-plan", message: "prepara plan FCrDNS" });
+  await structuredBridge.streamHistory("msg-plan", {});
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].kind, "plan");
+});
+
 test("createOpenClawBedrockBridgeFromEnv requires bedrock mode and critical env vars", () => {
   assert.equal(createOpenClawBedrockBridgeFromEnv({ OPENCLAW_BRIDGE_KIND: "ssh" }), null);
   assert.equal(createOpenClawBedrockBridgeFromEnv({ OPENCLAW_BRIDGE_KIND: "bedrock" }), null);
@@ -610,6 +807,31 @@ async function promptFile(content: string): Promise<string> {
 
 function streamJson(value: unknown): { chunk: { bytes: Uint8Array } } {
   return { chunk: { bytes: new TextEncoder().encode(JSON.stringify(value)) } };
+}
+
+function toolUseStream(toolUseId: string, name: string, inputJson: string): Array<{ chunk: { bytes: Uint8Array } }> {
+  return [
+    streamJson({ type: "message_start", message: { usage: { input_tokens: 20 } } }),
+    streamJson({
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "tool_use",
+        id: toolUseId,
+        name,
+        input: {}
+      }
+    }),
+    streamJson({
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "input_json_delta",
+        partial_json: inputJson
+      }
+    }),
+    streamJson({ type: "message_delta", usage: { output_tokens: 10 }, stop_reason: "tool_use" })
+  ];
 }
 
 function fixedNow(): () => Date {
