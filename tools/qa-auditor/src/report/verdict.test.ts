@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   checkConclusion,
+  collapseByLocation,
   computeVerdict,
   countBySeverity,
   dedupeFindings,
@@ -77,4 +78,79 @@ test("sortFindings ordena por severidad y luego por dimension", () => {
   assert.equal(sorted[0].dimension, "security");
   assert.equal(sorted[0].severity, "blocker");
   assert.equal(sorted[2].severity, "low");
+});
+
+function findingAt(
+  severity: Severity,
+  dimension: Dimension,
+  path: string,
+  lines: string,
+  category = "c"
+): Finding {
+  return {
+    dimension,
+    severity,
+    category,
+    title: `${dimension}-${lines}`,
+    detail: "d",
+    evidence: { path, lines },
+    recommendation: "r",
+    confidence: "high"
+  };
+}
+
+test("collapseByLocation fusiona hallazgos con lineas solapadas en el mismo archivo", () => {
+  const out = collapseByLocation([
+    findingAt("medium", "code_quality", "a.ts", "1449-1451", "incomplete-validation"),
+    findingAt("low", "qa_deploy", "a.ts", "1449-1451", "missing-test")
+  ]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].severity, "medium");
+  assert.equal(out[0].dimension, "code_quality");
+  assert.match(out[0].detail, /tambien observado en qa_deploy/);
+});
+
+test("collapseByLocation desempata por dimension (security gana) con igual severidad", () => {
+  const out = collapseByLocation([
+    findingAt("high", "code_quality", "a.ts", "10-20"),
+    findingAt("high", "security", "a.ts", "15-25")
+  ]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].dimension, "security");
+});
+
+test("collapseByLocation no fusiona archivos distintos, lineas no solapadas, ni hallazgos sin lineas", () => {
+  const out = collapseByLocation([
+    findingAt("medium", "code_quality", "a.ts", "1-5"),
+    findingAt("medium", "code_quality", "b.ts", "1-5"),
+    findingAt("medium", "code_quality", "a.ts", "100-110"),
+    finding("medium", "code_quality", "a.ts", "sin-lineas")
+  ]);
+  assert.equal(out.length, 4);
+});
+
+test("collapseByLocation NO fusiona rangos que solo se tocan en un extremo", () => {
+  const out = collapseByLocation([
+    findingAt("medium", "code_quality", "a.ts", "10-15"),
+    findingAt("low", "qa_deploy", "a.ts", "15-20")
+  ]);
+  assert.equal(out.length, 2);
+});
+
+test("collapseByLocation fusiona una sola linea identica y parsea multi-token", () => {
+  assert.equal(
+    collapseByLocation([
+      findingAt("medium", "code_quality", "a.ts", "7"),
+      findingAt("low", "qa_deploy", "a.ts", "7")
+    ]).length,
+    1
+  );
+  // "10, 20" (multi-token) cubre 10..20 y solapa con 12-18.
+  assert.equal(
+    collapseByLocation([
+      findingAt("medium", "code_quality", "a.ts", "10, 20"),
+      findingAt("low", "qa_deploy", "a.ts", "12-18")
+    ]).length,
+    1
+  );
 });

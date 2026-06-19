@@ -84,4 +84,82 @@ export function sortFindings(findings: Finding[]): Finding[] {
   });
 }
 
+// Colapsa hallazgos que apuntan al MISMO archivo con rangos de lineas que se
+// solapan (tipicamente la misma observacion vista por dos dimensiones). Conserva
+// el de mayor severidad (desempate: security > qa_deploy > code_quality) y deja
+// una nota corta si el otro era de otra dimension. Reduce ruido sin perder el
+// hallazgo mas importante. Solo colapsa cuando ambas evidencias tienen lineas
+// parseables y solapadas: hallazgos sin lineas no se tocan.
+const DIMENSION_RANK: Record<string, number> = { security: 0, qa_deploy: 1, code_quality: 2 };
+
+function parseLineRange(lines: string | undefined): [number, number] | null {
+  if (!lines) {
+    return null;
+  }
+  // Toma TODOS los enteros del string (cubre "12", "1449-1451", "1449, 1502")
+  // y usa min/max como region cubierta. Robusto a formatos libres del modelo.
+  const nums = (lines.match(/\d+/g) ?? []).map(Number).filter((n) => Number.isFinite(n));
+  if (nums.length === 0) {
+    return null;
+  }
+  return [Math.min(...nums), Math.max(...nums)];
+}
+
+function rangesOverlap(a: [number, number], b: [number, number]): boolean {
+  const lo = Math.max(a[0], b[0]);
+  const hi = Math.min(a[1], b[1]);
+  if (lo > hi) {
+    return false; // disjuntos
+  }
+  if (lo === hi) {
+    // Se tocan en una sola linea: solo fusiona si es EXACTAMENTE el mismo punto
+    // (ambos rangos son esa unica linea). Rangos distintos que solo se rozan en
+    // un extremo (p.ej. 10-15 y 15-20) NO se fusionan.
+    return a[0] === a[1] && b[0] === b[1] && a[0] === b[0];
+  }
+  return true; // solapan en mas de una linea
+}
+
+function mergeFindings(a: Finding, b: Finding): Finding {
+  const aWins =
+    severityRank(a.severity) < severityRank(b.severity) ||
+    (a.severity === b.severity &&
+      (DIMENSION_RANK[a.dimension] ?? 9) <= (DIMENSION_RANK[b.dimension] ?? 9));
+  const winner = aWins ? a : b;
+  const other = aWins ? b : a;
+  if (other.dimension !== winner.dimension) {
+    return {
+      ...winner,
+      detail: `${winner.detail} [Mismo punto tambien observado en ${other.dimension} (${other.category}).]`
+    };
+  }
+  return winner;
+}
+
+export function collapseByLocation(findings: Finding[]): Finding[] {
+  const kept: Finding[] = [];
+  for (const finding of findings) {
+    const range = parseLineRange(finding.evidence.lines);
+    let mergedIndex = -1;
+    if (range !== null) {
+      for (let i = 0; i < kept.length; i += 1) {
+        if (kept[i].evidence.path !== finding.evidence.path) {
+          continue;
+        }
+        const keptRange = parseLineRange(kept[i].evidence.lines);
+        if (keptRange !== null && rangesOverlap(range, keptRange)) {
+          mergedIndex = i;
+          break;
+        }
+      }
+    }
+    if (mergedIndex >= 0) {
+      kept[mergedIndex] = mergeFindings(kept[mergedIndex], finding);
+    } else {
+      kept.push(finding);
+    }
+  }
+  return kept;
+}
+
 export { SEVERITIES };

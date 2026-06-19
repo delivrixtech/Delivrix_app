@@ -15,6 +15,7 @@ import {
   type ContextLimits
 } from "../context/collect.ts";
 import { runAudit } from "../orchestrator.ts";
+import { loadQaContext } from "../context/qa-context.ts";
 import { buildMergeConflictFinding } from "../subagents/merge-conflict.ts";
 import { SEVERITIES, type Finding, type Severity } from "../subagents/schema.ts";
 import { COMMENT_MARKER } from "../report/render.ts";
@@ -74,6 +75,8 @@ export const handler = async (input: WorkerInput): Promise<void> => {
 
   let context: AuditContext;
   let headSha = "";
+  // Ref desde donde leer QA_CONTEXT.md: la rama BASE en PRs (anti-tamper).
+  let contextRef = "";
   const extraFindings: Finding[] = [];
 
   if (target.kind === "pull_request") {
@@ -83,6 +86,7 @@ export const handler = async (input: WorkerInput): Promise<void> => {
     }
     context = await collectPullRequestContext(client, target, limits);
     headSha = target.headSha;
+    contextRef = target.baseSha || target.headSha;
     try {
       const pr = await client.getPullRequest(target.number);
       const conflict = buildMergeConflictFinding({
@@ -102,11 +106,13 @@ export const handler = async (input: WorkerInput): Promise<void> => {
     }
     context = await collectDeploymentContext(client, target, limits);
     headSha = target.sha;
+    contextRef = target.sha;
   } else {
     log.info("evento_no_soportado_worker", { eventName: input.eventName });
     return;
   }
 
+  const qaContext = await loadQaContext(client, contextRef);
   const llm = createBedrockClient({ modelId: model, region: env.AWS_REGION });
   const outcome = await runAudit({
     context,
@@ -116,7 +122,8 @@ export const handler = async (input: WorkerInput): Promise<void> => {
     failOn: failOnEnv(env),
     headSha,
     dryRun: false,
-    extraFindings
+    extraFindings,
+    qaContext
   });
 
   if (target.kind === "pull_request") {
