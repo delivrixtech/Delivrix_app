@@ -17,6 +17,7 @@ import {
   RequestBodyTooLargeError,
   defaultMaxRequestBodyBytes
 } from "../request-body.ts";
+import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
 
 const defaultMaxCanvasLiveEventsPerIngest = 100;
 
@@ -29,11 +30,31 @@ export interface CanvasLiveRouteDependencies {
   response: ServerResponse;
   service: CanvasLiveEventService;
   auditLog: AuditSink;
+  readBoundaryToken?: string;
 }
 
 export async function handleCanvasLiveStateHttp(deps: CanvasLiveRouteDependencies): Promise<void> {
   const url = new URL(deps.request.url ?? "/", "http://127.0.0.1");
   const taskId = normalizeOptionalId(url.searchParams.get("task"));
+  const auth = authorizeSensitiveRead(deps.request, { readBoundaryToken: deps.readBoundaryToken }, "canvas_live_state");
+  if (!auth.ok) {
+    await deps.auditLog.append({
+      actorType: "system",
+      actorId: "read-boundary",
+      action: "oc.canvas_live_state.read_denied",
+      targetType: "canvas_live_state",
+      targetId: taskId ?? "all",
+      riskLevel: "medium",
+      decision: "reject",
+      rejectReason: auth.error,
+      metadata: {
+        statusCode: auth.statusCode
+      }
+    });
+    json(deps.response, auth.statusCode, { error: auth.error });
+    return;
+  }
+
   json(deps.response, 200, await deps.service.snapshot(taskId));
 }
 

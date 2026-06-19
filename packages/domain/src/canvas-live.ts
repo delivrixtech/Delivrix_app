@@ -177,6 +177,31 @@ export interface CanvasLiveRunProgressStep {
   step: number;
   skill: string;
   status: CanvasLiveRunProgressStepStatus;
+  label?: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface CanvasLiveRunIdentity {
+  brand?: string;
+  domain?: string;
+  smtpHost?: string;
+  serverSlug?: string;
+  serverIpv4?: string;
+  serverAccountId?: string;
+  providerId?: string;
+  dkimSelector?: string;
+  dkimPublicKey?: string;
+  dnsRecords?: Array<{
+    name: string;
+    type: string;
+    value: string;
+  }>;
+  finalDeliveryStatus?: string;
+  finalEmailMessageId?: string;
+  budgetSpentUsd?: number;
 }
 
 export interface CanvasLiveRunProgress {
@@ -184,6 +209,7 @@ export interface CanvasLiveRunProgress {
   status: "running" | "completed" | "failed" | string;
   lastCompletedStep: number;
   steps: CanvasLiveRunProgressStep[];
+  identity?: CanvasLiveRunIdentity;
 }
 
 export interface CanvasLiveStateSnapshot {
