@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type {
   AuditEventInput,
   CanvasLiveEvent,
+  CanvasLiveRunIdentity,
   CanvasLiveRunProgress
 } from "../../../../packages/domain/src/index.ts";
 import {
@@ -353,6 +354,7 @@ const smtpCreateAccountFailoverMaxAttempts = 25;
 const route53DomainRegistrationWaitMaxMs = 1_800_000;
 const route53DomainRegistrationWaitPollMs = 30_000;
 const smtpRunLocalLocks = new Map<string, Promise<void>>();
+const provisionSmtpPostfixStep = 9;
 const smtpRunProgressSteps = [
   { step: 1, skill: "suggest_safe_domain" },
   { step: 2, skill: "register_domain_route53" },
@@ -362,7 +364,7 @@ const smtpRunProgressSteps = [
   { step: 6, skill: "upsert_dns_route53" },
   { step: 7, skill: "wait_for_dns_propagation" },
   { step: 8, skill: "bind_webdock_main_domain" },
-  { step: 9, skill: "provision_smtp_postfix" },
+  { step: provisionSmtpPostfixStep, skill: "provision_smtp_postfix" },
   { step: 10, skill: "configure_email_auth" },
   { step: 11, skill: "wait_for_dns_propagation" },
   { step: 12, skill: "seed_warmup_pool" },
@@ -909,7 +911,7 @@ export async function configureCompleteSmtp(
       runState,
       planApproval,
       runId,
-      step: 9,
+      step: provisionSmtpPostfixStep,
       skill: "provision_smtp_postfix",
       actorId: effectiveInput.actorId,
       approvalTimeoutMs,
@@ -1337,24 +1339,198 @@ export async function readSmtpRunProgress(
 }
 
 function smtpRunStateToProgress(state: SmtpRunState): CanvasLiveRunProgress {
+  const identity = smtpRunStateToIdentity(state);
   return {
     runId: state.runId,
     status: state.status,
     lastCompletedStep: state.lastCompletedStep,
     steps: smtpRunProgressSteps.map((expected) => {
       const stepState = state.steps[String(expected.step)];
+      const durationMs = safeNonNegativeNumber(stepState?.result?.durationMs);
+      const error = safeProgressError(stepState?.lastError);
       return {
         step: expected.step,
         skill: stepState?.skill || expected.skill,
-        status: normalizeSmtpRunProgressStepStatus(stepState?.status)
+        status: normalizeSmtpRunProgressStepStatus(stepState?.status),
+        label: smtpRunProgressStepLabel(stepState?.skill || expected.skill),
+        ...safeTimestampField("startedAt", stepState?.startedAt),
+        ...safeTimestampField("completedAt", stepState?.completedAt),
+        ...(durationMs === undefined ? {} : { durationMs }),
+        ...(error ? { error } : {})
       };
-    })
+    }),
+    ...(identity ? { identity } : {})
   };
 }
 
 function normalizeSmtpRunProgressStepStatus(status: string | undefined): "pending" | "in_flight" | "done" {
   if (status === "in_flight" || status === "done") return status;
   return "pending";
+}
+
+function smtpRunProgressStepLabel(skill: string): string {
+  return skill
+    .split("_")
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function smtpRunStateToIdentity(state: SmtpRunState): CanvasLiveRunIdentity | undefined {
+  const domain = state.chosenDomain;
+  const smtpHost = state.smtpHost;
+  const serverIpv4 = state.serverIpv4;
+  const budgetSpentUsd = safeNonNegativeNumber(state.budgetSpentUsd);
+  const finalDeliveryStatus = safeFinalDeliveryStatus(state.finalDeliveryStatus);
+  const finalEmailMessageId = safeEmailMessageId(state.finalEmailMessageId);
+  const dkimPublicKey = safeDkimPublicKey(stringFromOutcome(
+    state.steps[String(provisionSmtpPostfixStep)]?.result?.outcome,
+    ["dkimPublicKey"],
+    ""
+  ));
+  const dnsRecords = buildSmtpRunIdentityDnsRecords({
+    domain,
+    smtpHost,
+    serverIpv4,
+    selector: state.selector,
+    dkimPublicKey
+  });
+  const identity: CanvasLiveRunIdentity = {
+    ...(state.params.brand ? { brand: state.params.brand } : {}),
+    ...(domain ? { domain } : {}),
+    ...(smtpHost ? { smtpHost } : {}),
+    ...(state.serverSlug ? { serverSlug: state.serverSlug } : {}),
+    ...(serverIpv4 ? { serverIpv4 } : {}),
+    ...(state.serverAccountId ? { serverAccountId: state.serverAccountId } : {}),
+    ...(state.providerId ? { providerId: state.providerId } : {}),
+    ...(state.selector ? { dkimSelector: state.selector } : {}),
+    ...(dkimPublicKey ? { dkimPublicKey } : {}),
+    ...(dnsRecords.length > 0 ? { dnsRecords } : {}),
+    ...(finalDeliveryStatus ? { finalDeliveryStatus } : {}),
+    ...(finalEmailMessageId ? { finalEmailMessageId } : {}),
+    ...(budgetSpentUsd === undefined ? {} : { budgetSpentUsd })
+  };
+  return Object.keys(identity).length > 0 ? identity : undefined;
+}
+
+function buildSmtpRunIdentityDnsRecords(input: {
+  domain?: string;
+  smtpHost?: string;
+  serverIpv4?: string;
+  selector?: string;
+  dkimPublicKey?: string;
+}): NonNullable<CanvasLiveRunIdentity["dnsRecords"]> {
+  const records: NonNullable<CanvasLiveRunIdentity["dnsRecords"]> = [];
+  if (input.smtpHost && input.serverIpv4) {
+    records.push({ name: input.smtpHost, type: "A", value: input.serverIpv4 });
+  }
+  if (input.domain && input.smtpHost) {
+    records.push({ name: input.domain, type: "MX", value: `10 ${input.smtpHost}.` });
+  }
+  if (input.domain && input.serverIpv4) {
+    records.push({ name: input.domain, type: "TXT", value: `v=spf1 ip4:${input.serverIpv4} -all` });
+  }
+  if (input.domain && input.selector && input.dkimPublicKey) {
+    const dkimValue = dkimDnsRecordValue(input.dkimPublicKey);
+    if (dkimValue) {
+      records.push({
+        name: `${input.selector}._domainkey.${input.domain}`,
+        type: "TXT",
+        value: dkimValue
+      });
+    }
+  }
+  if (input.domain) {
+    records.push({
+      name: `_dmarc.${input.domain}`,
+      type: "TXT",
+      value: "v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@delivrix.com; ruf=mailto:dmarc-forensics@delivrix.com; fo=1"
+    });
+  }
+  return records;
+}
+
+function dkimDnsRecordValue(dkimPublicKey: string): string {
+  const safePublicKey = safeDkimPublicKey(dkimPublicKey);
+  if (!safePublicKey) return "";
+  return /^v\s*=\s*DKIM1\b/i.test(safePublicKey)
+    ? safePublicKey
+    : `v=DKIM1; k=rsa; p=${safePublicKey}`;
+}
+
+function safeDkimPublicKey(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || /PRIVATE KEY|BEGIN [A-Z ]*KEY|END [A-Z ]*KEY/i.test(trimmed)) return "";
+  if (isSafeDkimRecordValue(trimmed) || isSafeDkimRawPublicKey(trimmed)) return trimmed;
+  return "";
+}
+
+function isSafeDkimRecordValue(value: string): boolean {
+  if (/[\u0000-\u001f\u007f"'`\\]/.test(value) || value.length > 4096) return false;
+  const allowedTags = new Set(["v", "k", "p", "t", "n", "s", "h"]);
+  const tags = new Map<string, string>();
+  for (const part of value.split(";").map((item) => item.trim()).filter(Boolean)) {
+    const match = /^([a-z][a-z0-9_]*)\s*=\s*([A-Za-z0-9+/=:_.,-]+)$/i.exec(part);
+    if (!match) return false;
+    const key = match[1].toLowerCase();
+    if (!allowedTags.has(key) || tags.has(key)) return false;
+    tags.set(key, match[2]);
+  }
+  return tags.get("v")?.toUpperCase() === "DKIM1" && isSafeDkimRawPublicKey(tags.get("p") ?? "");
+}
+
+function isSafeDkimRawPublicKey(value: string): boolean {
+  return value.length <= 4096 && /^[A-Za-z0-9+/=]+$/.test(value);
+}
+
+function safeNonNegativeNumber(value: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function safeTimestampField<Key extends "startedAt" | "completedAt">(
+  key: Key,
+  value: string | undefined
+): Partial<Record<Key, string>> {
+  if (!value || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) || Number.isNaN(Date.parse(value))) return {};
+  return { [key]: value } as Partial<Record<Key, string>>;
+}
+
+function safeProgressError(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return allowedSmtpProgressErrors.has(trimmed) ? trimmed : "step_error";
+}
+
+const allowedSmtpProgressErrors = new Set([
+  "cancelled_by_operator",
+  "domain_unavailable",
+  "dns_propagation_pending",
+  "dns_propagation_timeout",
+  "gated_multiaccount_unsupported",
+  "gated_provider_unsupported",
+  "no_eligible_accounts",
+  "purchase_failed",
+  "rate_limit_exceeded",
+  "route53_registration_pending",
+  "step_error",
+  "step_failed",
+  "step_timeout",
+  "waiting_for_dns_propagation",
+  "waiting_for_route53_operation"
+]);
+
+function safeFinalDeliveryStatus(value: string | undefined): string | undefined {
+  if (value === "queued" || value === "delivered" || value === "deferred" || value === "bounced") return value;
+  return undefined;
+}
+
+function safeEmailMessageId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim().replace(/^<|>$/g, "");
+  if (!trimmed || trimmed.length > 220) return undefined;
+  if (/token|secret|password|credential|authorization|private|bearer|api[_-]?key/i.test(trimmed)) return undefined;
+  return /^delivrix-[a-z0-9-]{1,80}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(trimmed)
+    ? trimmed
+    : undefined;
 }
 
 async function persistSmtpRunState(
@@ -2985,6 +3161,11 @@ function summarizeOutcome(value: unknown): Record<string, unknown> {
     if (/^dkimPublicKey$/i.test(key) && typeof item === "string") {
       output.dkimPublicKeyHash = hashInput(item);
       output.dkimPublicKeyPresent = item.length > 0;
+      continue;
+    }
+    if (/^messageId$/i.test(key) && typeof item === "string") {
+      const messageId = safeEmailMessageId(item);
+      if (messageId) output[key] = messageId;
       continue;
     }
     if (typeof item === "string" && item.length > 200) {

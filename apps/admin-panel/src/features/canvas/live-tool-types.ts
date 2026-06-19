@@ -186,15 +186,43 @@ export interface CanvasLiveArtifactSnapshotWire {
 
 export type CanvasLiveRunProgressStepStatusWire = "pending" | "in_flight" | "done";
 
+export interface CanvasLiveRunProgressStepWire {
+  step: number;
+  skill: string;
+  status: CanvasLiveRunProgressStepStatusWire;
+  label?: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface CanvasLiveRunIdentityWire {
+  brand?: string;
+  domain?: string;
+  smtpHost?: string;
+  serverSlug?: string;
+  serverIpv4?: string;
+  serverAccountId?: string;
+  providerId?: string;
+  dkimSelector?: string;
+  dkimPublicKey?: string;
+  dnsRecords?: Array<{
+    name: string;
+    type: string;
+    value: string;
+  }>;
+  finalDeliveryStatus?: string;
+  finalEmailMessageId?: string;
+  budgetSpentUsd?: number;
+}
+
 export interface CanvasLiveRunProgressWire {
   runId: string;
   status: "running" | "completed" | "failed" | string;
   lastCompletedStep: number;
-  steps: Array<{
-    step: number;
-    skill: string;
-    status: CanvasLiveRunProgressStepStatusWire;
-  }>;
+  steps: CanvasLiveRunProgressStepWire[];
+  identity?: CanvasLiveRunIdentityWire;
 }
 
 export interface CanvasLiveStateSnapshotWire {

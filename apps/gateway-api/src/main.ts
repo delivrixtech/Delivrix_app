@@ -1196,11 +1196,15 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && request.url?.startsWith("/v1/canvas/live/state")) {
+      if (!sensitiveReadBoundaryToken) {
+        return json(response, 503, { error: "read_boundary_token_unconfigured" });
+      }
       return handleCanvasLiveStateHttp({
         request,
         response,
         service: canvasLiveEvents,
-        auditLog
+        auditLog,
+        readBoundaryToken: sensitiveReadBoundaryToken
       });
     }
 
