@@ -308,8 +308,13 @@ import {
   compactIntent,
   handleCompactIntentHttp
 } from "./routes/openclaw-compact-intent.ts";
+import {
+  handleOpenClawChatConversationsHttp,
+  handleOpenClawChatHistoryHttp
+} from "./routes/openclaw-chat-history.ts";
 import { startEpisodicScratchTtlJob } from "./episodic-scratch-ttl.ts";
 import { insertEpisodicEntry } from "../../../packages/storage/src/index.ts";
+import { OpenClawChatHistoryStore } from "./services/openclaw-chat-history-store.ts";
 import {
   canonicalSkillSlug,
   hashSkillExecutionContext,
@@ -323,6 +328,10 @@ installGatewayProcessGuards(gatewayRuntimeLog);
 const gatewayMaxRequestBodyBytes = positiveIntegerOrDefault(
   process.env.GATEWAY_MAX_REQUEST_BODY_BYTES,
   defaultMaxRequestBodyBytes
+);
+const openClawChatMaxRequestBodyBytes = positiveIntegerOrDefault(
+  process.env.OPENCLAW_CHAT_MAX_REQUEST_BODY_BYTES,
+  24 * 1024 * 1024
 );
 // Env canonico: config/gateway.env (blindado -- Vercel CLI solo pisa .env.local).
 // Fallback a .env.local si el blindado no existe. El start script resuelve igual.
@@ -396,10 +405,12 @@ const canvasLiveEvents = new CanvasLiveEventService({
     return progress.filter((entry) => entry !== null);
   }
 });
+const openClawChatHistoryStore = new OpenClawChatHistoryStore();
 const openClawBedrockBridge = createOpenClawBedrockBridgeFromEnv(process.env, {
   logger: gatewayRuntimeLog,
   auditLog,
   canvasLiveEvents,
+  chatHistoryStore: openClawChatHistoryStore,
   smtpRunsReader: listActiveSmtpRuns
 });
 const openClawSshBridge = openClawBedrockBridge ? null : createOpenClawSshBridgeFromEnv();
@@ -1142,38 +1153,43 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && request.url === "/v1/openclaw/chat/send") {
       await runtimeEnvReloader.refreshNow();
-      const body = await readJson<ChatSendRequest>(request);
+      const body = await readJson<ChatSendRequest>(request, openClawChatMaxRequestBodyBytes);
       const chatMsgId = typeof body.msgId === "string" ? body.msgId : null;
       const chatMessage = typeof body.message === "string"
         ? body.message
         : typeof body.text === "string"
           ? body.text
           : "";
+      const attachmentCount = Array.isArray(body.attachments) ? body.attachments.length : 0;
+      const hasAttachments = attachmentCount > 0;
       void gatewayRuntimeLog.info("openclaw.chat.received", "Operator message received by gateway.", {
         msgId: chatMsgId,
         messageChars: chatMessage.length,
+        ...(hasAttachments ? { attachmentCount } : {}),
         bridgeKind: openClawBedrockBridge ? "bedrock" : openClawSshBridge ? "ssh" : "http"
       });
       // El skill local de inventario es un atajo opcional. Si falla por cualquier
       // motivo, NO debe tumbar el chat con un 500: se degrada reenviando el mensaje
       // al bridge (Bedrock), que es el camino correcto para prompts operacionales.
       let gatewaySkillResult: Awaited<ReturnType<typeof maybeHandleOpenClawDomainChatSkill>> = null;
-      try {
-        gatewaySkillResult = await maybeHandleOpenClawDomainChatSkill({
-          body,
-          chatProxy: openClawChatProxy,
-          canvasLiveEvents,
-          auditLog,
-          ionosDomains: ionosDomainsAdapter,
-          ionosDns: ionosDnsAdapter
-        });
-      } catch (error) {
-        void gatewayRuntimeLog.warn(
-          "openclaw.chat.gateway_skill_failed",
-          "Domain inventory skill failed; degrading to bridge.",
-          { msgId: chatMsgId, ...runtimeErrorMetadata(error) }
-        );
-        gatewaySkillResult = null;
+      if (!hasAttachments) {
+        try {
+          gatewaySkillResult = await maybeHandleOpenClawDomainChatSkill({
+            body,
+            chatProxy: openClawChatProxy,
+            canvasLiveEvents,
+            auditLog,
+            ionosDomains: ionosDomainsAdapter,
+            ionosDns: ionosDnsAdapter
+          });
+        } catch (error) {
+          void gatewayRuntimeLog.warn(
+            "openclaw.chat.gateway_skill_failed",
+            "Domain inventory skill failed; degrading to bridge.",
+            { msgId: chatMsgId, ...runtimeErrorMetadata(error) }
+          );
+          gatewaySkillResult = null;
+        }
       }
       if (gatewaySkillResult) {
         void gatewayRuntimeLog.info("openclaw.chat.handled_by_gateway_skill", "Gateway handled chat locally without Bedrock.", {
@@ -1193,6 +1209,30 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && request.url === "/v1/openclaw/chat/interrupt") {
       const body = await readJson<ChatInterruptRequest>(request);
       return handleChatInterruptHttp(openClawChatProxy, body, response, gatewayRuntimeLog);
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/openclaw/chat/conversations")) {
+      if (!sensitiveReadBoundaryToken) {
+        return json(response, 503, { error: "read_boundary_token_unconfigured" });
+      }
+      return handleOpenClawChatConversationsHttp({
+        request,
+        response,
+        store: openClawChatHistoryStore,
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/openclaw/chat/history")) {
+      if (!sensitiveReadBoundaryToken) {
+        return json(response, 503, { error: "read_boundary_token_unconfigured" });
+      }
+      return handleOpenClawChatHistoryHttp({
+        request,
+        response,
+        store: openClawChatHistoryStore,
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
     }
 
     if (request.method === "GET" && request.url?.startsWith("/v1/canvas/live/state")) {
@@ -5801,8 +5841,8 @@ async function recordMxtoolboxDailyReportScratch(report: MxtoolboxDailyReportRes
   });
 }
 
-async function readJson<T>(request: IncomingMessage): Promise<T> {
-  const raw = await readBody(request);
+async function readJson<T>(request: IncomingMessage, maxBytes = gatewayMaxRequestBodyBytes): Promise<T> {
+  const raw = await readBody(request, maxBytes);
 
   if (!raw) {
     throw new Error("Request body is required.");
@@ -5835,8 +5875,8 @@ async function readRawBodyAndJson<T>(request: IncomingMessage): Promise<{ raw: s
   }
 }
 
-async function readBody(request: IncomingMessage): Promise<string> {
-  return readRequestBody(request, { maxBytes: gatewayMaxRequestBodyBytes });
+async function readBody(request: IncomingMessage, maxBytes = gatewayMaxRequestBodyBytes): Promise<string> {
+  return readRequestBody(request, { maxBytes });
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown): void {
