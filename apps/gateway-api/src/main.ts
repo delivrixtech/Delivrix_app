@@ -725,27 +725,7 @@ const configureSmtpRuntimeDeps = {
         };
   },
   verifyOwnedDomain: async (domain: string): Promise<OwnedDomainVerification> => {
-    const normalized = normalizeDomainForPlan(domain);
-    const inventory = await awsRoute53DomainsAdapter.listInventory();
-    if (inventory.source.kind !== "live" || inventory.source.responseOk !== true) {
-      return {
-        owned: false,
-        provider: "route53",
-        reason: "route53_domain_inventory_not_live",
-        sourceKind: inventory.source.kind,
-        responseOk: inventory.source.responseOk
-      };
-    }
-    const owned = inventory.domains.some((entry) =>
-      normalizeDomainForPlan(entry.domainName) === normalized
-    );
-    return {
-      owned,
-      provider: "route53",
-      reason: owned ? "listed_in_route53_domains_inventory" : "domain_not_listed_in_route53_domains_inventory",
-      sourceKind: inventory.source.kind,
-      responseOk: inventory.source.responseOk
-    };
+    return verifyOwnedDomainAcrossRegistrars(domain);
   },
   waitForRoute53DomainRegistration: async (input: {
     domain: string;
@@ -5932,6 +5912,74 @@ function extractDispatchError(summary: unknown): string {
     if (typeof record.message === "string") return record.message;
   }
   return "execution_failed";
+}
+
+async function verifyOwnedDomainAcrossRegistrars(domain: string): Promise<OwnedDomainVerification> {
+  const normalized = normalizeDomainForPlan(domain);
+  const checks: Array<() => Promise<OwnedDomainVerification>> = [
+    async () => {
+      const inventory = await awsRoute53DomainsAdapter.listInventory();
+      if (inventory.source.kind !== "live" || inventory.source.responseOk !== true) {
+        return {
+          owned: false,
+          provider: "route53",
+          reason: "route53_domain_inventory_not_live",
+          sourceKind: inventory.source.kind,
+          responseOk: inventory.source.responseOk
+        };
+      }
+      const owned = inventory.domains.some((entry) =>
+        normalizeDomainForPlan(entry.domainName) === normalized
+      );
+      return {
+        owned,
+        provider: "route53",
+        reason: owned ? "listed_in_route53_domains_inventory" : "domain_not_listed_in_route53_domains_inventory",
+        sourceKind: inventory.source.kind,
+        responseOk: inventory.source.responseOk
+      };
+    },
+    async () => {
+      const inventory = await ionosDomainsAdapter.listInventory();
+      if (inventory.source.kind !== "live" || inventory.source.responseOk !== true) {
+        return {
+          owned: false,
+          provider: "ionos",
+          reason: "ionos_domain_inventory_not_live",
+          sourceKind: inventory.source.kind,
+          responseOk: inventory.source.responseOk
+        };
+      }
+      const owned = inventory.domains.some((entry) =>
+        normalizeDomainForPlan(entry.name) === normalized ||
+        (typeof entry.idn === "string" && normalizeDomainForPlan(entry.idn) === normalized)
+      );
+      return {
+        owned,
+        provider: "ionos",
+        reason: owned ? "listed_in_ionos_domains_inventory" : "domain_not_listed_in_ionos_domains_inventory",
+        sourceKind: inventory.source.kind,
+        responseOk: inventory.source.responseOk
+      };
+    }
+  ];
+  const misses: OwnedDomainVerification[] = [];
+  for (const check of checks) {
+    const verification = await check();
+    if (verification.owned) return verification;
+    misses.push(verification);
+  }
+  return (
+    misses.find((entry) => entry.sourceKind === "live" && entry.responseOk === true) ??
+    misses[0] ??
+    {
+      owned: false,
+      provider: "route53",
+      reason: "domain_inventory_not_configured",
+      sourceKind: "mock",
+      responseOk: true
+    }
+  );
 }
 
 function normalizeDomainForPlan(value: string): string {
