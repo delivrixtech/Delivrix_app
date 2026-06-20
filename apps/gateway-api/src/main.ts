@@ -10,13 +10,16 @@ import {
   buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
   createContaboAdaptersFromEnv,
+  createIonosDnsProviderFromEnv,
   createMxtoolboxAdapterFromEnv,
+  createRoute53DnsProviderFromEnv,
   IonosDnsActuator,
   IonosDomainsAdapter,
   PorkbunAdapter,
   ProxmoxAdapter,
   WebdockAdapter,
   WebdockRealAdapter,
+  type DnsProvider,
   type ProxmoxMockNodeConfig,
   type VpsProvider,
   type WebdockBridgeNodeConfig
@@ -380,6 +383,13 @@ function listWebdockCreationAccounts(): Array<{ accountId: string; enabled: bool
 const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
 const awsRoute53DnsAdapter = new AwsRoute53DnsAdapter();
 const ionosDnsAdapter = new IonosDnsActuator();
+const dnsProviderEntries = [
+  ...createRoute53DnsProviderFromEnv(process.env, { adapter: awsRoute53DnsAdapter }),
+  ...createIonosDnsProviderFromEnv(process.env, { adapter: ionosDnsAdapter })
+];
+const dnsProviderAdapters = new Map<string, DnsProvider>(
+  dnsProviderEntries.map((entry): [string, DnsProvider] => [entry.id, entry.adapter])
+);
 const ionosDomainsAdapter = new IonosDomainsAdapter();
 const porkbunAdapter = new PorkbunAdapter();
 const mxtoolboxAdapter = createMxtoolboxAdapterFromEnv(process.env);
@@ -828,6 +838,9 @@ const skillDispatcher = createSkillDispatcher({
   // Registry providerId->adapter (canal HERMANO). Poblado desde env (createContaboAdaptersFromEnv);
   // vacio si no hay creds Contabo -> ningun providerId != "webdock" resuelve -> camino Webdock byte-identico.
   vpsProviderAdapters,
+  // Registry dnsProviderId->adapter (canal HERMANO futuro). Etapa 2 solo lo expone; no entra en params
+  // ni cambia el path Route53 actual del orquestador/dispatcher.
+  dnsProviderAdapters,
   smtpSshRunner,
   rampScheduler,
   porkbunDomainAdapter: porkbunAdapter,

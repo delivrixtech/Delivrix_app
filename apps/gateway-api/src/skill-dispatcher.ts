@@ -5,7 +5,7 @@ import type {
   CanvasLiveEvent,
   CanvasLiveStateSnapshot
 } from "../../../packages/domain/src/index.ts";
-import type { VpsProvider } from "../../../packages/adapters/src/index.ts";
+import type { DnsProvider, VpsProvider } from "../../../packages/adapters/src/index.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
 import { createInternalHttpAdapter } from "./internal-http-adapter.ts";
 import type { OpenClawWorkspace } from "./openclaw-workspace.ts";
@@ -127,6 +127,12 @@ export interface SkillDispatcherDeps {
    * a WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter>.
    */
   vpsProviderAdapters?: Map<string, VpsProvider>;
+  /**
+   * Registry dnsProviderId->adapter para DNS multiproveedor (Route53, IONOS, ...).
+   * Canal futuro PARALELO HERMANO: no entra en params ni modifica hashInput/scope.
+   * Etapa 2 solo lo cablea; el orquestador sigue usando Route53 por defecto.
+   */
+  dnsProviderAdapters?: Map<string, DnsProvider>;
   smtpSshRunner: SmtpSshRunner;
   rampScheduler: RampScheduler;
   porkbunDomainAdapter?: DomainAvailabilityAdapter;
