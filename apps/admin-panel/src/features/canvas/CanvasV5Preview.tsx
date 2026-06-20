@@ -13,9 +13,34 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowUp, BadgeCheck, Box, Check, ChevronDown, CircleDollarSign, CheckCircle2,
   Copy, FileText, Folder, GitCompare, Globe, Hourglass, Inbox, Key, Loader2,
-  Mail, MailCheck, Network, PanelLeftClose, PanelLeftOpen, Plus, Server, ShieldAlert, Sparkles, Square, Terminal, X, XCircle
+  Mail, MailCheck, Network, PanelLeftClose, PanelLeftOpen, Paperclip, Plus, Server, ShieldAlert, Sparkles, Square, Terminal, X, XCircle
 } from "lucide-react";
-import { chatClient, useChatStream, type ChatConversationSummary } from "../../shared/api/chat-client.ts";
+import { chatClient, useChatStream, type ChatConversationSummary, type ChatAttachmentInput } from "../../shared/api/chat-client.ts";
+
+const ACCEPTED_ATTACHMENT_MIME = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "text/plain", "text/markdown"]);
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_ATTACHMENTS = 6;
+
+function attachmentMimeOf(file: File): string {
+  if (file.type) return file.type;
+  const lower = file.name.toLowerCase();
+  if (lower.endsWith(".md")) return "text/markdown";
+  if (lower.endsWith(".txt")) return "text/plain";
+  return "";
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : "");
+    };
+    reader.onerror = () => resolve("");
+    reader.readAsDataURL(file);
+  });
+}
 import { useLiveCanvasStream } from "./canvas-live-client.ts";
 import { SMTP_BUILD_STEPS, type LiveRunProgress } from "./smtp-live-progress.ts";
 import { GatewayLogTerminal } from "./gateway-log-terminal.tsx";
@@ -88,6 +113,16 @@ const STYLE = `
 .cv5 .send:disabled{opacity:.4;cursor:not-allowed}
 .cv5 .send.stop{background:var(--s3);color:var(--t1);border:1px solid var(--line2)}
 .cv5 .send.stop:hover{color:var(--err);border-color:var(--errB)}
+.cv5 .attach{width:30px;height:30px;border-radius:8px;background:none;border:none;color:var(--t3);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
+.cv5 .attach:hover{color:var(--t1)}
+.cv5 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.cv5 .chip{display:inline-flex;align-items:center;gap:7px;font-size:11px;color:var(--t2);background:var(--s2);border:1px solid var(--line);border-radius:7px;padding:4px 7px;max-width:220px}
+.cv5 .chip b{font-family:var(--disp);font-size:9px;letter-spacing:.04em;color:var(--info);background:var(--infoS);border:1px solid var(--infoB);border-radius:4px;padding:1px 5px;flex:0 0 auto}
+.cv5 .chip .cnm{font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cv5 .chip .cx{background:none;border:none;color:var(--t4);cursor:pointer;display:flex;padding:0;flex:0 0 auto}
+.cv5 .chip .cx:hover{color:var(--err)}
+.cv5 .cvcollapse{width:26px;height:26px;border-radius:7px;background:none;border:1px solid transparent;color:var(--t3);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
+.cv5 .cvcollapse:hover{background:var(--s1);color:var(--t1);border-color:var(--line)}
 
 .cv5 .view{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
 .cv5 .tabs{display:flex;align-items:center;gap:2px;padding:0 24px;height:46px;flex:0 0 46px;border-bottom:1px solid var(--line);background:var(--s1)}
@@ -435,6 +470,9 @@ export function CanvasV5Preview() {
   const [chatOpen, setChatOpen] = useState(true);
   const [convos, setConvos] = useState<ChatConversationSummary[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<ChatAttachmentInput[]>([]);
+  const [convosOpen, setConvosOpen] = useState(true);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const runIds = Array.from(live.liveRunProgress.keys());
   const activeRunId = selRunId && live.liveRunProgress.has(selRunId) ? selRunId : (runIds[0] ?? null);
@@ -478,11 +516,26 @@ export function CanvasV5Preview() {
     refreshConvos();
   }
 
+  async function addFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const next: ChatAttachmentInput[] = [];
+    for (const file of Array.from(files)) {
+      const mimeType = attachmentMimeOf(file);
+      if (!ACCEPTED_ATTACHMENT_MIME.has(mimeType)) continue;
+      if (file.size > MAX_ATTACHMENT_BYTES) continue;
+      const dataBase64 = await fileToBase64(file);
+      if (dataBase64) next.push({ name: file.name, mimeType, dataBase64 });
+    }
+    if (next.length > 0) setAttachments((prev) => [...prev, ...next].slice(0, MAX_ATTACHMENTS));
+  }
+
   async function send() {
     const content = draft.trim();
-    if (!content) return;
+    if (!content && attachments.length === 0) return;
+    const atts = attachments;
     setDraft("");
-    try { await chatClient.sendMessage(content); } catch { /* el cliente reintenta */ }
+    setAttachments([]);
+    try { await chatClient.sendMessage(content, atts.length > 0 ? { attachments: atts } : {}); } catch { /* el cliente reintenta */ }
     refreshConvos();
   }
 
@@ -495,9 +548,11 @@ export function CanvasV5Preview() {
 
         {chatOpen ? (
         <>
+        {convosOpen ? (
         <div className="convos col">
           <div className="cvhead">
             <div className="cvttl">Conversaciones</div>
+            <button className="cvcollapse" type="button" title="Ocultar conversaciones" onClick={() => setConvosOpen(false)}><PanelLeftClose size={15} /></button>
             <button className="cvnew" type="button" title="Nueva conversación" onClick={newConvo}><Plus size={15} /></button>
           </div>
           <div className="cvlist">
@@ -511,8 +566,10 @@ export function CanvasV5Preview() {
             ))}
           </div>
         </div>
+        ) : null}
         <div className="chat col">
           <div className="chead">
+            {!convosOpen ? <button className="reopen" type="button" title="Mostrar conversaciones" onClick={() => setConvosOpen(true)}><PanelLeftOpen size={16} /></button> : null}
             <span className="ic"><Sparkles size={15} /></span>
             <div><div className="nm">OpenClaw</div><div className="sub"><span className="dot beat" style={{ background: online ? "var(--color-success)" : "var(--color-text-disabled)" }} /> {online ? "en vivo" : "reconectando…"}</div></div>
             <button className="collapse" type="button" title="Esconder chat" onClick={() => setChatOpen(false)}><PanelLeftClose size={16} /></button>
@@ -541,7 +598,20 @@ export function CanvasV5Preview() {
             ) : null}
           </div>
           <div className="cinput">
+            {attachments.length > 0 ? (
+              <div className="chips">
+                {attachments.map((a, i) => (
+                  <span className="chip" key={`${a.name}-${i}`}>
+                    <b>{a.mimeType.startsWith("image/") ? "IMG" : "TXT"}</b>
+                    <span className="cnm">{a.name}</span>
+                    <button className="cx" type="button" aria-label="Quitar" onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}><X size={11} /></button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
             <div className="field">
+              <button className="attach" type="button" title="Adjuntar archivo o imagen" onClick={() => fileRef.current?.click()}><Paperclip size={16} /></button>
+              <input ref={fileRef} type="file" multiple accept=".md,.txt,.png,.jpg,.jpeg,.webp,.gif" style={{ display: "none" }} onChange={(e) => { void addFiles(e.target.files); e.currentTarget.value = ""; }} />
               <input
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
@@ -551,7 +621,7 @@ export function CanvasV5Preview() {
               {chat.streaming ? (
                 <button className="send stop" type="button" aria-label="Detener" title="Detener (interrumpir)" disabled={chat.interrupting} onClick={() => { void chatClient.interruptActive(); }}>{chat.interrupting ? <Loader2 size={12} className="spin" /> : <Square size={12} />}</button>
               ) : (
-                <button className="send" type="button" aria-label="Enviar" disabled={!draft.trim()} onClick={() => void send()}><ArrowUp size={15} /></button>
+                <button className="send" type="button" aria-label="Enviar" disabled={!draft.trim() && attachments.length === 0} onClick={() => void send()}><ArrowUp size={15} /></button>
               )}
             </div>
           </div>

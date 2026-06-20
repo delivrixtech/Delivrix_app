@@ -20,8 +20,15 @@ export interface ChatOperatorParams {
   approvalContract?: string;
 }
 
+export interface ChatAttachmentInput {
+  name: string;
+  mimeType: string;
+  dataBase64: string;
+}
+
 export interface ChatSendOptions {
   operatorParams?: ChatOperatorParams;
+  attachments?: ChatAttachmentInput[];
 }
 
 export interface ChatStreamingState {
@@ -67,6 +74,7 @@ interface QueuedMessage {
   msgId: string;
   content: string;
   operatorParams?: ChatOperatorParams;
+  attachments?: ChatAttachmentInput[];
 }
 
 interface ChatClientOptions {
@@ -248,7 +256,8 @@ export class ChatClient implements ChatClientLike {
 
   async sendMessage(content: string, options: ChatSendOptions = {}): Promise<void> {
     const trimmed = content.trim();
-    if (!trimmed) {
+    const attachments = options.attachments ?? [];
+    if (!trimmed && attachments.length === 0) {
       return;
     }
 
@@ -256,7 +265,8 @@ export class ChatClient implements ChatClientLike {
     this.queue.push({
       msgId,
       content: trimmed,
-      ...(options.operatorParams ? { operatorParams: options.operatorParams } : {})
+      ...(options.operatorParams ? { operatorParams: options.operatorParams } : {}),
+      ...(attachments.length > 0 ? { attachments } : {})
     });
     this.state = addOrUpdateMessage(this.state, {
       msgId,
@@ -358,7 +368,8 @@ export class ChatClient implements ChatClientLike {
             msgId: item.msgId,
             message: item.content,
             ...(this.activeConversationId ? { conversationId: this.activeConversationId } : {}),
-            ...(item.operatorParams ? { operatorParams: item.operatorParams } : {})
+            ...(item.operatorParams ? { operatorParams: item.operatorParams } : {}),
+            ...(item.attachments && item.attachments.length > 0 ? { attachments: item.attachments } : {})
           })
         });
 
