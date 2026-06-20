@@ -481,7 +481,7 @@ export function CanvasV5Preview() {
 
   // Artifact activo: el hook lo resuelve por el task activo, pero al cargar puede
   // agarrar uno viejo/mock. Gate de recencia: solo mostrarlo si es de esta sesion (<30 min).
-  const rawArt = live.artifact;
+  const rawArt = live.latestArtifact ?? live.artifact;
   const selArt: LiveArtifact | null =
     rawArt && Date.now() - new Date(rawArt.createdAt).getTime() < 30 * 60 * 1000 ? rawArt : null;
 

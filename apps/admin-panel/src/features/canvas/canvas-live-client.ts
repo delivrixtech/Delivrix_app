@@ -47,6 +47,7 @@ export interface UseLiveCanvasStreamResult {
   setActiveTaskId: (id: string) => void;
   currentAction: LiveAction | null;
   artifact: LiveArtifact | null;
+  latestArtifact: LiveArtifact | null;
   liveRunProgress: LiveRunProgressMap;
   connection: LiveConnectionStatus;
   lastError: string | null;
@@ -511,6 +512,12 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
         .filter((a) => relatedTaskIds.includes(a.taskId))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null)
     : null;
+  // Artifact para el preview: el ultimo global por createdAt. Desacoplado del taskId/titulo
+  // del task activo (fragil: typed usan bedrock:<msgId>, prose chat:<msgId>, titulos distintos
+  // que nunca matchean). El componente le aplica el gate de recencia para no mostrar lo viejo.
+  const latestArtifact =
+    [...stateRef.current.artifacts.values()]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null;
   const liveRunProgress = cloneLiveRunProgressMap(stateRef.current.liveRunProgress);
 
   // Importante: leemos `tick` para que React re-renderee cuando cambia.
@@ -600,6 +607,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
     setActiveTaskId,
     currentAction,
     artifact,
+    latestArtifact,
     liveRunProgress,
     connection,
     lastError,
