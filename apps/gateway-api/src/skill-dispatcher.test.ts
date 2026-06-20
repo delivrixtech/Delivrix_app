@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
 import { dispatchSkillHandler, type SkillDispatcherDeps, type SkillHandlerEntry } from "./skill-dispatcher.ts";
-import { route53RegisterParamSchema, route53UpsertParamSchema, webdockCreateParamSchema } from "./skill-schemas.ts";
+import { ionosUpsertParamSchema, route53RegisterParamSchema, route53UpsertParamSchema, webdockCreateParamSchema } from "./skill-schemas.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
 import type { WebdockServerCreateAdapter, WebdockServerDeleteAdapter } from "./routes/webdock-servers.ts";
 import {
@@ -451,6 +451,70 @@ test("DNS#stage2 registry factories inject dnsProviderAdapters without touching 
   assert.equal(dnsProviderAdapters.get("ionos")?.isWriteEnabled(), true);
   assert.equal(Object.prototype.hasOwnProperty.call(seenParams[0], "dnsProviderId"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(seenParams[0], "registrarId"), false);
+});
+
+test("DNS#stage4 dnsProviderId travels as sibling and never enters params", async () => {
+  const dnsProviderAdapters = new Map<string, DnsProvider>([["ionos", {} as DnsProvider]]);
+  const seenParams: Array<Record<string, unknown>> = [];
+  const seenDnsProviderIds: Array<string | undefined> = [];
+
+  const result = await dispatchSkillHandler({
+    skill: "upsert_dns_ionos",
+    params: {
+      zone: "annualcorpfilings.com",
+      records: [{ name: "smtp.annualcorpfilings.com", type: "A", ttl: 300, content: "203.0.113.10" }]
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    dnsProviderId: "ionos",
+    deps: {
+      ...fakeDeps(),
+      dnsProviderAdapters
+    },
+    handlers: {
+      upsert_dns_ionos: {
+        paramSchema: ionosUpsertParamSchema,
+        timeoutMs: 1000,
+        canRollback: true,
+        invoke: async ({ response, params, dnsProviderId }) => {
+          seenParams.push(params);
+          seenDnsProviderIds.push(dnsProviderId);
+          json(response, 200, { ok: true });
+        }
+      }
+    }
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(seenDnsProviderIds, ["ionos"]);
+  assert.equal(Object.prototype.hasOwnProperty.call(seenParams[0], "dnsProviderId"), false);
+  assert.deepEqual(seenParams[0], {
+    zone: "annualcorpfilings.com",
+    records: [{ name: "smtp.annualcorpfilings.com", type: "A", ttl: 300, content: "203.0.113.10" }]
+  });
+});
+
+test("DNS#stage4 unknown dnsProviderId fails 422 before handler invoke", async () => {
+  const calls: unknown[] = [];
+  const result = await dispatchSkillHandler({
+    skill: "upsert_dns_ionos",
+    params: {
+      zone: "annualcorpfilings.com",
+      records: [{ name: "smtp.annualcorpfilings.com", type: "A", ttl: 300, content: "203.0.113.10" }]
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    dnsProviderId: "cloudflare",
+    deps: {
+      ...fakeDeps(),
+      dnsProviderAdapters: new Map<string, DnsProvider>([["ionos", {} as DnsProvider]])
+    },
+    handlers: { upsert_dns_ionos: okEntry(ionosUpsertParamSchema, calls) }
+  });
+
+  assert.equal(result.statusCode, 422);
+  assert.deepEqual(result.summary, { error: "unknown_dns_provider", dnsProviderId: "cloudflare" });
+  assert.deepEqual(calls, []);
 });
 
 function makeSpyCreateAdapter(

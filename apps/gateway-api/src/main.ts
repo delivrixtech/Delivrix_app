@@ -509,6 +509,7 @@ const configureSmtpRuntimeDeps = {
     // via autonoma (executePlanApprovedStep -> dispatch accountId). Se acepta el campo para
     // compatibilidad de tipos sin alterar el comportamiento gated.
     serverAccountId?: string;
+    dnsProviderId?: string;
   }): Promise<ApprovalStepDecision> => {
     const result = await configureSmtpToolProcessor({
       toolUseId: `configure-complete-smtp:${input.runId}:${input.step}`,
@@ -599,6 +600,7 @@ const configureSmtpRuntimeDeps = {
     planApproval: PlanApprovalRecord;
     serverAccountId?: string;
     providerId?: string;
+    dnsProviderId?: string;
   }) => {
     const killSwitch = await killSwitchStore.get();
     if (killSwitch.enabled) {
@@ -704,6 +706,9 @@ const configureSmtpRuntimeDeps = {
       // Canal paralelo providerId (HERMANO): el dispatcher enruta al adapter de ESE proveedor (Contabo);
       // undefined/"webdock" => Webdock por accountId. NO va en params.
       ...(input.providerId ? { providerId: input.providerId } : {}),
+      // Canal paralelo dnsProviderId (HERMANO): el dispatcher valida que el proveedor DNS elegido
+      // exista; NO va en params ni toca hashInput/scope.
+      ...(input.dnsProviderId ? { dnsProviderId: input.dnsProviderId } : {}),
       timeoutMs: approvalTimeoutForPlanStep(input.skill, input.params)
     });
     return result.ok
@@ -728,7 +733,10 @@ const configureSmtpRuntimeDeps = {
   verifyOwnedDomain: async (domain: string): Promise<OwnedDomainVerification> => {
     return verifyOwnedDomainAcrossRegistrars(domain, {
       route53: awsRoute53DomainsAdapter,
-      ionos: ionosDomainsAdapter
+      ionos: ionosDomainsAdapter,
+      logger: {
+        warn: (event, metadata) => gatewayRuntimeLog.warn(event, "Domain ownership registrar check failed.", metadata)
+      }
     });
   },
   waitForRoute53DomainRegistration: async (input: {

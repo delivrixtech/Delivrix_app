@@ -52,6 +52,7 @@ test("verifyOwnedDomainAcrossRegistrars adopts IONOS when Route53 is live but de
 });
 
 test("verifyOwnedDomainAcrossRegistrars adopts IONOS when Route53 throws", async () => {
+  const logs: Array<{ event: string; metadata: Record<string, unknown> }> = [];
   const result = await verifyOwnedDomainAcrossRegistrars("annualcorpfilings.com", {
     route53: {
       listInventory: async () => {
@@ -62,12 +63,22 @@ test("verifyOwnedDomainAcrossRegistrars adopts IONOS when Route53 throws", async
       listInventory: () => ionosInventory({
         domains: [{ id: "domain-1", name: "annualcorpfilings.com", nameservers: [] }]
       })
+    },
+    logger: {
+      warn: (event, metadata) => logs.push({ event, metadata })
     }
   });
 
   assert.equal(result.owned, true);
   assert.equal(result.provider, "ionos");
   assert.equal(result.reason, "listed_in_ionos_domains_inventory");
+  assert.deepEqual(logs, [{
+    event: "domain_ownership_check_failed",
+    metadata: {
+      provider: "route53",
+      error: "route53 inventory unavailable"
+    }
+  }]);
 });
 
 test("verifyOwnedDomainAcrossRegistrars returns not configured when both registrar inventories are mock", async () => {

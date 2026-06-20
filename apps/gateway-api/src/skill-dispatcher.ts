@@ -168,6 +168,11 @@ export interface DispatchSkillHandlerInput {
    * Presente y != "webdock" => el vpsProviderAdapters de esa key (Contabo, etc.).
    */
   providerId?: string;
+  /**
+   * Proveedor DNS destino. Canal PARALELO HERMANO: NO entra a `params`. undefined/"route53"
+   * preserva Route53; "ionos" exige registry DNS disponible.
+   */
+  dnsProviderId?: string;
   deps?: SkillDispatcherDeps;
   handlers?: Record<string, SkillHandlerEntry>;
 }
@@ -195,6 +200,7 @@ export interface SkillHandlerEntry {
     deps: SkillDispatcherDeps;
     accountId?: string;
     providerId?: string;
+    dnsProviderId?: string;
   }): Promise<void>;
 }
 
@@ -248,6 +254,15 @@ export async function dispatchSkillHandler(input: DispatchSkillHandlerInput): Pr
       durationMs: 0
     };
   }
+  const unknownDnsProvider = unknownExternalDnsProviderId(input.dnsProviderId, input.deps.dnsProviderAdapters);
+  if (unknownDnsProvider) {
+    return {
+      ok: false,
+      statusCode: 422,
+      summary: { error: "unknown_dns_provider", dnsProviderId: unknownDnsProvider },
+      durationMs: 0
+    };
+  }
 
   const body = {
     ...paramsValidation.data,
@@ -275,6 +290,7 @@ export async function dispatchSkillHandler(input: DispatchSkillHandlerInput): Pr
     deps: input.deps,
     accountId: input.accountId,
     providerId: input.providerId,
+    dnsProviderId: input.dnsProviderId,
     getResponse,
     startedAt
   });
@@ -308,6 +324,7 @@ async function invokeAndCapture(entry: SkillHandlerEntry, input: {
   deps: SkillDispatcherDeps;
   accountId?: string;
   providerId?: string;
+  dnsProviderId?: string;
   getResponse: () => { statusCode: number; body: unknown };
   startedAt: number;
 }): Promise<DispatchResult> {
@@ -318,7 +335,8 @@ async function invokeAndCapture(entry: SkillHandlerEntry, input: {
       params: input.params,
       deps: input.deps,
       accountId: input.accountId,
-      providerId: input.providerId
+      providerId: input.providerId,
+      dnsProviderId: input.dnsProviderId
     });
     const captured = input.getResponse();
     return {
@@ -697,6 +715,12 @@ function resolveWebdockCreateAdapter(
 function unknownExternalVpsProviderId(providerId: string | undefined, adapters?: Map<string, VpsProvider>): string | null {
   const provider = providerId?.trim().toLowerCase();
   if (!provider || provider === "webdock") return null;
+  return adapters?.has(provider) ? null : provider;
+}
+
+function unknownExternalDnsProviderId(providerId: string | undefined, adapters?: Map<string, DnsProvider>): string | null {
+  const provider = providerId?.trim().toLowerCase();
+  if (!provider || provider === "route53") return null;
   return adapters?.has(provider) ? null : provider;
 }
 
