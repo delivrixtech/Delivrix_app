@@ -99,7 +99,7 @@ export interface PlanApprovalLookupInput {
 
 export interface OwnedDomainVerification {
   owned: boolean;
-  provider: "route53";
+  provider: "route53" | "ionos";
   reason?: string;
   sourceKind?: string;
   responseOk?: boolean;
@@ -2790,11 +2790,12 @@ async function resolveExistingDomainOwnership(input: {
   }
   let verification: OwnedDomainVerification;
   try {
+    // Ownership verification is fail-closed: unreadable inventories cannot satisfy strict adoption.
     verification = await input.deps.verifyOwnedDomain(input.domain);
   } catch (error) {
     void (input.deps.logger ?? noopGatewayRuntimeLogger).warn(
       "openclaw.orchestrator.domain_ownership_read_failed",
-      "Route53 domain ownership verification failed closed.",
+      "Domain ownership verification failed closed.",
       {
         runId: input.runId,
         domain: input.domain,
@@ -2809,7 +2810,7 @@ async function resolveExistingDomainOwnership(input: {
     );
   }
 
-  if (verification.provider !== "route53" || verification.owned !== true) {
+  if (verification.owned !== true) {
     if (!input.requireExistingDomain) {
       await audit(input.deps, "oc.domain.ownership_not_owned_fresh_purchase", "domain", input.domain, "high", {
         runId: input.runId,
@@ -2831,7 +2832,7 @@ async function resolveExistingDomainOwnership(input: {
 
   await audit(input.deps, "oc.domain.ownership_verified", "domain", input.domain, "high", {
     runId: input.runId,
-    provider: "route53",
+    provider: verification.provider,
     source: "listOwnedDomains",
     sourceKind: verification.sourceKind,
     responseOk: verification.responseOk
