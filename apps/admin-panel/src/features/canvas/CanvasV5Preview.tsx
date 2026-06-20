@@ -481,9 +481,9 @@ export function CanvasV5Preview() {
 
   // Artifact activo: el hook lo resuelve por el task activo, pero al cargar puede
   // agarrar uno viejo/mock. Gate de recencia: solo mostrarlo si es de esta sesion (<30 min).
-  const rawArt = live.latestArtifact ?? live.artifact;
-  const selArt: LiveArtifact | null =
-    rawArt && Date.now() - new Date(rawArt.createdAt).getTime() < 30 * 60 * 1000 ? rawArt : null;
+  // El preview muestra el ultimo artifact global (el hook ya elige el mas nuevo, no un mock viejo).
+  // Sin gate de recencia: filtraba trabajo legitimo de >30min. Precedencia: si hay run, el run gana.
+  const selArt: LiveArtifact | null = runIds.length === 0 ? (live.latestArtifact ?? live.artifact) : null;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
