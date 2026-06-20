@@ -45,13 +45,13 @@ const STYLE = `
 .cv5 .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
 .cv5 .beat{animation:cv5beat 1.8s infinite}
 
-.cv5 .chat{width:460px;flex:0 0 460px;border-right:1px solid var(--line);background:var(--bg)}
+.cv5 .chat{width:600px;flex:0 0 600px;border-right:1px solid var(--line);background:var(--bg)}
 .cv5 .chead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px}
 .cv5 .collapse{margin-left:auto;width:28px;height:28px;border-radius:7px;background:none;border:1px solid transparent;color:var(--t3);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
 .cv5 .collapse:hover{background:var(--s1);color:var(--t1);border-color:var(--line)}
 .cv5 .reopen{width:30px;height:30px;border-radius:7px;background:var(--s2);border:1px solid var(--line2);color:var(--t2);display:flex;align-items:center;justify-content:center;cursor:pointer;margin-right:12px;flex:0 0 auto}
 .cv5 .reopen:hover{background:var(--s3);color:var(--t1)}
-.cv5 .convs{width:240px;flex:0 0 240px;border-right:1px solid var(--line);background:var(--bg);display:flex;flex-direction:column;min-height:0}
+.cv5 .convos{width:350px;flex:0 0 350px;border-right:1px solid var(--line2);background:var(--bg);display:flex;flex-direction:column;min-height:0}
 .cv5 .cvhead{display:flex;align-items:center;gap:9px;padding:14px 14px 10px}
 .cv5 .cvttl{font-family:var(--disp);font-weight:600;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--t3);flex:1}
 .cv5 .cvnew{width:28px;height:28px;border-radius:7px;background:var(--s1);border:1px solid var(--line2);color:var(--t2);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
