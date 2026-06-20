@@ -44,6 +44,7 @@ function fileToBase64(file: File): Promise<string> {
 import { useLiveCanvasStream } from "./canvas-live-client.ts";
 import { SMTP_BUILD_STEPS, type LiveRunProgress } from "./smtp-live-progress.ts";
 import { GatewayLogTerminal } from "./gateway-log-terminal.tsx";
+import { usePendingOpenClawProposals, PendingOpenClawApprovalPanel } from "./PendingApprovalGate.tsx";
 import { MarkdownText } from "../../shared/ui/v2/MarkdownText.tsx";
 import type { LiveArtifact, CanvasLiveArtifactKindWire, CanvasLiveArtifactPayloadWire } from "./live-tool-types.ts";
 
@@ -462,6 +463,7 @@ export function CanvasV5Preview() {
   }, []);
   const chat = useChatStream(chatClient);
   const live = useLiveCanvasStream(true);
+  const pendingApprovals = usePendingOpenClawProposals(true);
   const [draft, setDraft] = useState("");
   const [tab, setTab] = useState<Tab>("run");
   const [selRunId, setSelRunId] = useState<string | null>(null);
@@ -640,6 +642,12 @@ export function CanvasV5Preview() {
             ))}
             <span className="pchip"><span className="dot" style={{ width: 6, height: 6, background: live.connection === "connected" ? "var(--color-success)" : "var(--color-warning)" }} /> {live.connection}</span>
           </div>
+
+          <PendingOpenClawApprovalPanel
+            proposals={pendingApprovals.proposals}
+            error={pendingApprovals.error}
+            onRefresh={pendingApprovals.refresh}
+          />
 
           {tab === "logs" ? (
             <GatewayLogTerminal />
