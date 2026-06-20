@@ -95,6 +95,13 @@ export function evictLiveState(state: InternalState, activeTaskId: string | null
     }
   };
   if (activeTaskId && state.tasks.has(activeTaskId)) addWithAncestors(activeTaskId);
+  // Preservar las tasks de los artifacts mas recientes, para que el preview no pierda lo ultimo
+  // renderizable (los runs zombies en "running" no deben desalojar lo reciente).
+  const recentArtifactTaskIds = [...state.artifacts.values()]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, 12)
+    .map((artifact) => artifact.taskId);
+  for (const taskId of recentArtifactTaskIds) addWithAncestors(taskId);
   for (const task of state.tasks.values()) if (task.status === "running") addWithAncestors(task.id);
   if (preserve.size < MAX_LIVE_TASKS) {
     const candidates = [...state.tasks.values()]
