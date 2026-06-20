@@ -64,6 +64,27 @@ test("Route53DnsProvider adapts plural records to Route53 singular upserts", asy
   }]);
 });
 
+test("Route53DnsProvider rejects conflicting MX value priority when prio is explicit", async () => {
+  const adapter = {
+    isLive: () => true,
+    isWriteEnabled: () => true,
+    upsertRecord: async () => {
+      throw new Error("upsertRecord should not be called for invalid MX priority");
+    }
+  } as unknown as AwsRoute53DnsAdapter;
+  const provider = new Route53DnsProvider(adapter);
+
+  await assert.rejects(
+    () => provider.upsertRecords("zone-delivrix.test", [{
+      name: "delivrix.test.",
+      type: "MX",
+      prio: 10,
+      values: ["5 mail.delivrix.test."]
+    }]),
+    /MX value at index 0 already includes priority 5; expected 10/
+  );
+});
+
 test("IonosDnsProvider adapts IONOS actuator shape to neutral DNS provider shape", async () => {
   const upserts: Array<{ zoneId: string; records: unknown[] }> = [];
   const adapter = {
@@ -115,6 +136,29 @@ test("IonosDnsProvider adapts IONOS actuator shape to neutral DNS provider shape
     ttl: 300,
     values: ["v=spf1 -all"]
   }]);
+});
+
+test("IonosDnsProvider validates the whole batch before calling the actuator", async () => {
+  const upserts: unknown[] = [];
+  const adapter = {
+    isLive: () => true,
+    isWriteEnabled: () => true,
+    upsertRecords: async (_zoneId: string, records: unknown[]) => {
+      upserts.push(records);
+      return { rrsetIds: ["rrset-1"], idempotent: false };
+    }
+  } as unknown as IonosDnsActuator;
+  const provider = new IonosDnsProvider(adapter);
+
+  await assert.rejects(
+    () => provider.upsertRecords("ionos-zone", [
+      { name: "valid.delivrix.test", type: "TXT", values: ["ok"] },
+      { name: "empty.delivrix.test", type: "TXT", values: [] },
+      { name: "also-valid.delivrix.test", type: "A", values: ["203.0.113.10"] }
+    ]),
+    /DNS record empty\.delivrix\.test TXT at index 1 must include at least one value/
+  );
+  assert.equal(upserts.length, 0);
 });
 
 test("DNS provider factories only register providers with credentials", () => {

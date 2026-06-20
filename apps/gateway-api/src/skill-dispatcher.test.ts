@@ -5,7 +5,12 @@ import { dispatchSkillHandler, type SkillDispatcherDeps, type SkillHandlerEntry 
 import { route53RegisterParamSchema, route53UpsertParamSchema, webdockCreateParamSchema } from "./skill-schemas.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
 import type { WebdockServerCreateAdapter, WebdockServerDeleteAdapter } from "./routes/webdock-servers.ts";
-import type { VpsProvider } from "../../../packages/adapters/src/index.ts";
+import {
+  createIonosDnsProviderFromEnv,
+  createRoute53DnsProviderFromEnv,
+  type DnsProvider,
+  type VpsProvider
+} from "../../../packages/adapters/src/index.ts";
 
 const token: ApprovalToken = {
   tokenId: "exec-token-1",
@@ -397,6 +402,55 @@ test("PROVIDER#c el providerId (canal paralelo) NO entra en los params pasados a
   assert.equal(Object.prototype.hasOwnProperty.call(seenParams[0], "providerId"), false);
   // Sanidad: los params validados son exactamente el dict Webdock (sin providerId ni provider).
   assert.deepEqual(Object.keys(seenParams[0]).sort(), ["hostname", "imageSlug", "locationId", "profile", "publicKey"]);
+});
+
+test("DNS#stage2 registry factories inject dnsProviderAdapters without touching params", async () => {
+  const dnsProviderEntries = [
+    ...createRoute53DnsProviderFromEnv({
+      AWS_ACCESS_KEY_ID: "AKIAEXAMPLE",
+      AWS_SECRET_ACCESS_KEY: "secret"
+    }),
+    ...createIonosDnsProviderFromEnv({
+      IONOS_API_TOKEN: "ionos-token",
+      IONOS_DNS_ENABLE_WRITES: "true"
+    })
+  ];
+  const dnsProviderAdapters = new Map<string, DnsProvider>(
+    dnsProviderEntries.map((entry): [string, DnsProvider] => [entry.id, entry.adapter])
+  );
+  const seenKeys: string[][] = [];
+  const seenParams: Array<Record<string, unknown>> = [];
+
+  const result = await dispatchSkillHandler({
+    skill: "register_domain_route53",
+    params: { domain: "delivrix.test", years: 1 },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      dnsProviderAdapters
+    },
+    handlers: {
+      register_domain_route53: {
+        paramSchema: route53RegisterParamSchema,
+        timeoutMs: 1000,
+        canRollback: true,
+        invoke: async ({ response, params, deps }) => {
+          seenKeys.push([...(deps.dnsProviderAdapters?.keys() ?? [])].sort());
+          seenParams.push(params);
+          json(response, 200, { ok: true });
+        }
+      }
+    }
+  });
+
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(seenKeys, [["ionos", "route53"]]);
+  assert.equal(dnsProviderAdapters.get("route53")?.isLive(), true);
+  assert.equal(dnsProviderAdapters.get("ionos")?.isLive(), true);
+  assert.equal(dnsProviderAdapters.get("ionos")?.isWriteEnabled(), true);
+  assert.equal(Object.prototype.hasOwnProperty.call(seenParams[0], "dnsProviderId"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(seenParams[0], "registrarId"), false);
 });
 
 function makeSpyCreateAdapter(
