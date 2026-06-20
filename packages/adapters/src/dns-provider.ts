@@ -35,6 +35,11 @@ export interface DnsProvider {
   isWriteEnabled(): boolean;
   ensureZone(domainOrZoneName: string): Promise<DnsZoneResult>;
   upsertRecords(zoneId: string, records: DnsRecordSpec[]): Promise<DnsUpsertResult>;
+  /**
+   * Returns the neutral DNS types supported by this seam only: A, MX, TXT and CNAME.
+   * Provider-native records outside that set, such as NS/SOA/AAAA/SRV, are filtered
+   * by design until a later stage widens the shared contract.
+   */
   listRecords(zoneId: string): Promise<DnsRecordSpec[]>;
 }
 
@@ -123,7 +128,8 @@ export class IonosDnsProvider implements DnsProvider {
   }
 
   async upsertRecords(zoneId: string, records: DnsRecordSpec[]): Promise<DnsUpsertResult> {
-    const result = await this.adapter.upsertRecords(zoneId, records.map(ionosRecordInput));
+    const normalizedRecords = records.map((record, index) => ionosRecordInput(record, index));
+    const result = await this.adapter.upsertRecords(zoneId, normalizedRecords);
     return {
       changeIds: result.rrsetIds,
       idempotent: result.idempotent
@@ -189,13 +195,27 @@ function route53Values(record: DnsRecordSpec): string[] {
   if (record.type !== "MX" || typeof record.prio !== "number") {
     return record.values;
   }
-  return record.values.map((value) => /^\d+\s+/.test(value) ? value : `${record.prio} ${value}`);
+  return record.values.map((value, index) => route53MxValue(record, value, index));
 }
 
-function ionosRecordInput(record: DnsRecordSpec): IonosDnsRecordWriteInput {
+function route53MxValue(record: DnsRecordSpec, value: string, index: number): string {
+  const existingPriority = value.match(/^(\d+)\s+(.+)$/);
+  if (!existingPriority) {
+    return `${record.prio} ${value}`;
+  }
+  const priority = Number(existingPriority[1]);
+  if (priority !== record.prio) {
+    throw new Error(
+      `DNS record ${record.name} MX value at index ${index} already includes priority ${priority}; expected ${record.prio}.`
+    );
+  }
+  return `${record.prio} ${existingPriority[2]}`;
+}
+
+function ionosRecordInput(record: DnsRecordSpec, index: number): IonosDnsRecordWriteInput {
   const content = record.values[0];
   if (!content) {
-    throw new Error(`DNS record ${record.name} ${record.type} must include at least one value.`);
+    throw new Error(`DNS record ${record.name} ${record.type} at index ${index} must include at least one value.`);
   }
   return {
     name: record.name,
