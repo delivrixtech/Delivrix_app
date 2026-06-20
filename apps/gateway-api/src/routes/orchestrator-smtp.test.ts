@@ -19,6 +19,7 @@ import {
   type ConfigureCompleteSmtpDeps,
   type CreationRateOverrideInput,
   type CreationRateOverrideDecision,
+  type OwnedDomainVerification,
   type PlanApprovedStepInput,
   type PlanApprovedStepDecision,
   type Route53DomainRegistrationWaitInput,
@@ -1549,6 +1550,37 @@ test("configureCompleteSmtp adopts a signed existing Route53-owned domain not in
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.domain.ownership_verified"), true);
 });
 
+test("configureCompleteSmtp adopts a signed strict existing IONOS-owned domain not in suggestions", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ domain: "annualcorpfilings.com", requireExistingDomain: true }),
+    suggestions: { candidates: [{ domain: "fresh-delivrix.com", priceUsd: 15, available: true }] },
+    ownedDomains: ["annualcorpfilings.com"],
+    ownedDomainProvider: "ionos",
+    outcomes: {
+      2: { status: "idempotent_already_owned", costUsd: 0 },
+      4: { status: "idempotent_already_exists", serverSlug: "server10", ipv4: "45.136.70.47", costUsd: 0 }
+    }
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "annualcorpfilings.com",
+    provider: "route53",
+    requireExistingDomain: true
+  }, ctx.deps);
+  const ownershipAudit = ctx.auditEvents.find((event) => event.action === "oc.domain.ownership_verified");
+  const ownershipAuditMetadata = ownershipAudit?.metadata as Record<string, unknown> | undefined;
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(ctx.ownershipChecks, ["annualcorpfilings.com"]);
+  assert.equal(ctx.planExecutions.find((entry) => entry.step === 2)?.estimatedCostUsd, 0);
+  assert.equal(ctx.planExecutions.find((entry) => entry.step === 4)?.params.hostname, "smtp.annualcorpfilings.com");
+  assert.equal(ctx.route53RegistrationWaits.length, 0);
+  assert.equal(ownershipAuditMetadata?.provider, "ionos");
+  assert.equal(result.totalCostUsd, 0);
+});
+
 test("configureCompleteSmtp checks kill switch before every plan-approved step", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
@@ -2200,6 +2232,7 @@ function createDeps(options: {
   creationSourceKind?: "live" | "mock" | string;
   creationResponseOk?: boolean;
   creationOverride?: CreationRateOverrideDecision;
+  ownedDomainProvider?: OwnedDomainVerification["provider"];
   // 5.12 multicuenta: cuentas write-capable + inventario/estado por cuenta (account-aware).
   creationAccounts?: Array<{ accountId: string; enabled: boolean }>;
   creationByAccount?: Record<string, {
@@ -2357,7 +2390,7 @@ function createDeps(options: {
         ownershipChecks.push(domain);
         return {
           owned: options.ownedDomains?.includes(domain) ?? false,
-          provider: "route53" as const,
+          provider: options.ownedDomainProvider ?? "route53",
           sourceKind: "live",
           responseOk: true
         };
