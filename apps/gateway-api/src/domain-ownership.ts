@@ -13,6 +13,9 @@ export interface DomainOwnershipInventoryReaders {
   ionos: {
     listInventory(): Promise<IonosDomainsInventoryResult> | IonosDomainsInventoryResult;
   };
+  logger?: {
+    warn(event: string, metadata: Record<string, unknown>): unknown;
+  };
 }
 
 interface RegistrarOwnershipCheck {
@@ -31,7 +34,7 @@ export async function verifyOwnedDomainAcrossRegistrars(
   // Deliberately sequential: the first owned match wins according to REGISTRAR_PRECEDENCE.
   // This keeps cross-registrar duplicates deterministic and avoids extra provider calls.
   for (const check of checks) {
-    const verification = await safeVerify(check);
+    const verification = await safeVerify(check, readers.logger);
     if (verification.owned) return verification;
     misses.push(verification);
   }
@@ -108,10 +111,22 @@ function verifyIonosOwnership(
   };
 }
 
-async function safeVerify(check: RegistrarOwnershipCheck): Promise<OwnedDomainVerification> {
+async function safeVerify(
+  check: RegistrarOwnershipCheck,
+  logger?: DomainOwnershipInventoryReaders["logger"]
+): Promise<OwnedDomainVerification> {
   try {
     return await check.verify();
-  } catch {
+  } catch (err) {
+    const metadata = {
+      provider: check.id,
+      error: err instanceof Error ? err.message : String(err)
+    };
+    if (logger) {
+      logger.warn("domain_ownership_check_failed", metadata);
+    } else {
+      console.warn("domain_ownership_check_failed", metadata);
+    }
     return {
       owned: false,
       provider: check.id,

@@ -135,6 +135,8 @@ test("POST /v1/dns/ionos/upsert applies records and emits oc.dns.ionos.upserted 
   assert.equal(upserted?.metadata.zoneId, "zone-cloud-1");
   assert.equal(upserted?.metadata.idempotencyKey, "demo-replay-001");
   assert.equal(upserted?.metadata.recordCount, 1);
+  assert.equal(upserted?.metadata.approvalToken, undefined);
+  assert.equal(upserted?.metadata.approvalTokenHash, approvalTokenHash("exec-approved-ionos"));
 });
 
 test("POST /v1/dns/ionos/upsert blocks with approval_not_found_or_expired when token has no audit event", async () => {
