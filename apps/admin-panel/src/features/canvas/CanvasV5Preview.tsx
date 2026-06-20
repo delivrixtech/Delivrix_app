@@ -45,13 +45,13 @@ const STYLE = `
 .cv5 .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
 .cv5 .beat{animation:cv5beat 1.8s infinite}
 
-.cv5 .chat{width:600px;flex:0 0 600px;border-right:1px solid var(--line);background:var(--bg)}
+.cv5 .chat{width:460px;flex:0 0 460px;border-right:1px solid var(--line);background:var(--bg)}
 .cv5 .chead{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px}
 .cv5 .collapse{margin-left:auto;width:28px;height:28px;border-radius:7px;background:none;border:1px solid transparent;color:var(--t3);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
 .cv5 .collapse:hover{background:var(--s1);color:var(--t1);border-color:var(--line)}
 .cv5 .reopen{width:30px;height:30px;border-radius:7px;background:var(--s2);border:1px solid var(--line2);color:var(--t2);display:flex;align-items:center;justify-content:center;cursor:pointer;margin-right:12px;flex:0 0 auto}
 .cv5 .reopen:hover{background:var(--s3);color:var(--t1)}
-.cv5 .convs{width:248px;flex:0 0 248px;border-right:1px solid var(--line);background:var(--bg);display:flex;flex-direction:column;min-height:0}
+.cv5 .convs{width:240px;flex:0 0 240px;border-right:1px solid var(--line);background:var(--bg);display:flex;flex-direction:column;min-height:0}
 .cv5 .cvhead{display:flex;align-items:center;gap:9px;padding:14px 14px 10px}
 .cv5 .cvttl{font-family:var(--disp);font-weight:600;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--t3);flex:1}
 .cv5 .cvnew{width:28px;height:28px;border-radius:7px;background:var(--s1);border:1px solid var(--line2);color:var(--t2);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
@@ -66,7 +66,7 @@ const STYLE = `
 .cv5 .chead .ic{width:26px;height:26px;border-radius:7px;background:var(--s2);border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;color:var(--t2);flex:0 0 auto}
 .cv5 .chead .nm{font-family:var(--disp);font-weight:600;font-size:14px}
 .cv5 .chead .sub{font-size:11px;color:var(--t3);display:flex;align-items:center;gap:6px}
-.cv5 .cbody{flex:1;overflow:auto;padding:24px 22px;display:flex;flex-direction:column;gap:24px}
+.cv5 .cbody{flex:1;overflow:auto;padding:20px 18px;display:flex;flex-direction:column;gap:18px}
 .cv5 .cempty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;color:var(--t3);padding:30px}
 .cv5 .cempty .ii{width:46px;height:46px;border-radius:11px;background:var(--s1);border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;color:var(--t3)}
 .cv5 .cempty .h{font-family:var(--disp);font-size:14px;color:var(--t2)}
@@ -74,7 +74,7 @@ const STYLE = `
 .cv5 .msg{display:flex;flex-direction:column;gap:5px;max-width:92%}
 .cv5 .role{font-size:10px;color:var(--t4);font-weight:600;letter-spacing:.06em;text-transform:uppercase}
 .cv5 .bub{padding:13px 16px;border-radius:11px;font-size:13.5px;line-height:1.7;border:1px solid var(--line);background:var(--s1);white-space:pre-wrap;word-break:break-word}
-.cv5 .msg{max-width:88%}
+.cv5 .msg{max-width:350px}
 .cv5 .bub.md{white-space:normal}
 .cv5 .bub.md>div>:first-child{margin-top:0}.cv5 .bub.md>div>:last-child{margin-bottom:0}
 .cv5 .msg.op{align-self:flex-end;align-items:flex-end}
@@ -441,8 +441,11 @@ export function CanvasV5Preview() {
   const run = activeRunId ? live.liveRunProgress.get(activeRunId) ?? null : null;
   const online = chat.connection !== "offline";
 
-  // Artifact activo: el hook ya lo resuelve por el task activo (estilo Claude Artifacts).
-  const selArt: LiveArtifact | null = live.artifact;
+  // Artifact activo: el hook lo resuelve por el task activo, pero al cargar puede
+  // agarrar uno viejo/mock. Gate de recencia: solo mostrarlo si es de esta sesion (<30 min).
+  const rawArt = live.artifact;
+  const selArt: LiveArtifact | null =
+    rawArt && Date.now() - new Date(rawArt.createdAt).getTime() < 30 * 60 * 1000 ? rawArt : null;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
