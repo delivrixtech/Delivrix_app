@@ -2790,6 +2790,7 @@ async function resolveExistingDomainOwnership(input: {
   }
   let verification: OwnedDomainVerification;
   try {
+    // Ownership verification is fail-closed: unreadable inventories cannot satisfy strict adoption.
     verification = await input.deps.verifyOwnedDomain(input.domain);
   } catch (error) {
     void (input.deps.logger ?? noopGatewayRuntimeLogger).warn(
