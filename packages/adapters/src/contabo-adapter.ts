@@ -224,7 +224,10 @@ export class ContaboAdapter implements VpsProvider {
       region: this.region,
       sshKeys: [secretId],
       period: this.periodMonths,
-      displayName: input.hostname,
+      // Contabo solo permite [letras, numeros, espacios, -] en displayName.
+      // El hostname operativo trae puntos, asi que conservamos una forma
+      // reversible para idempotencia (smtp.example.com -> smtp-example-com).
+      displayName: contaboDisplayNameFromHostname(input.hostname),
       defaultUser: this.defaultUser
     };
 
@@ -235,6 +238,16 @@ export class ContaboAdapter implements VpsProvider {
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
+      console.warn(
+        "[contabo] createServer failed:",
+        JSON.stringify({
+          status: response.status,
+          body: body.slice(0, 600),
+          sentRegion: this.region,
+          sentProductId: this.productId,
+          sentImageId: imageId
+        })
+      );
       throw this.classifyContaboFailure(response.status, body, {
         phase: "create_instance",
         sent: JSON.stringify(payload).slice(0, 500)
@@ -632,16 +645,19 @@ export class ContaboAdapter implements VpsProvider {
     instance: Record<string, unknown> | undefined,
     instanceId: string
   ): WebdockServer {
+    const displayName = stringField(instance, "displayName");
+    const instanceName = stringField(instance, "name");
     return {
       slug: toServerSlug(instanceId),
-      name: stringField(instance, "displayName") ?? stringField(instance, "name") ?? `contabo-${instanceId}`,
+      name: displayName ?? instanceName ?? `contabo-${instanceId}`,
       ipv4: ipv4FromInstance(instance),
       ipv6: ipv6FromInstance(instance),
       status: mapContaboStatus(stringField(instance, "status")),
       location: stringField(instance, "region") ?? this.region,
       creationDate: stringField(instance, "createdDate") ?? stringField(instance, "creationDate"),
       imageSlug: stringField(instance, "imageId"),
-      hostname: stringField(instance, "name"),
+      hostname: displayName ?? instanceName,
+      mainDomain: displayName,
       accountId: this.accountId,
       accountLabel: this.accountLabel
     };
@@ -930,4 +946,8 @@ function normalizeEnvValue(value: string | undefined): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function contaboDisplayNameFromHostname(hostname: string): string {
+  return hostname.replace(/[^a-zA-Z0-9 -]/g, "-");
 }

@@ -76,6 +76,11 @@ export interface SkillInvocationInput {
   skill: string;
   params: Record<string, unknown>;
   timeoutMs?: number;
+  /**
+   * Canal paralelo para lecturas provider/account-aware. No entra en params/hashInput.
+   */
+  serverAccountId?: string;
+  providerId?: string;
 }
 
 export interface ApprovalStepInput extends SkillInvocationInput {
@@ -609,6 +614,10 @@ export async function configureCompleteSmtp(
   try {
     releaseRunLock = await acquireSmtpRunStateLock(deps, runId);
     runState = await loadOrCreateSmtpRunState({ deps, runId, params: input, startedAt });
+    if (backfillSmtpRunStateServerIpv4(runState)) {
+      await persistSmtpRunState(deps, runState);
+    }
+    assertSmtpRunStateServerIpv4Integrity(runState);
     assertDnsProviderResumeCompatible(runState, input);
     effectiveInput = inputFromRunState(input, runState);
     assertKnownNonWebdockVpsProviderId(resolveVpsProviderId(effectiveInput, runState));
@@ -934,20 +943,32 @@ export async function configureCompleteSmtp(
       throw new OrchestratorFailure("failed", 4, "create_webdock_server", "create_result_missing");
     }
     serverSlug = stringFromOutcome(vps.outcome, ["slug", "serverSlug"]);
-    serverIpv4 = stringFromOutcome(vps.outcome, ["ipv4", "serverIp"]);
+    const step4Ipv4 = stringFromOutcome(vps.outcome, ["ipv4", "serverIp"], "");
     runState.serverSlug = serverSlug;
-    runState.serverIpv4 = serverIpv4;
+    if (step4Ipv4) {
+      serverIpv4 = step4Ipv4;
+      runState.serverIpv4 = step4Ipv4;
+    }
     await persistSmtpRunState(deps, runState);
 
-    await runReadOnlyStepWithState({
+    const waitServerOutcome = await runReadOnlyStepWithState({
       deps,
       runState,
       runId,
       step: 5,
       skill: "wait_server_running",
       params: { serverSlug, maxWaitMs: 600_000 },
+      serverAccountId: runState.serverAccountId,
+      providerId: vpsProviderId,
       stepResults
     });
+    const step5Ipv4 = stringFromOutcome(waitServerOutcome, ["ipv4", "serverIp"], step4Ipv4 || runState.serverIpv4 || "");
+    if (!step5Ipv4) {
+      throw new OrchestratorFailure("failed", 5, "wait_server_running", "missing ipv4/serverIp");
+    }
+    serverIpv4 = step5Ipv4;
+    runState.serverIpv4 = serverIpv4;
+    await persistSmtpRunState(deps, runState);
 
     await runMutatingStepWithState({
       deps,
@@ -1429,6 +1450,44 @@ async function loadOrCreateSmtpRunState(input: {
   return state;
 }
 
+function backfillSmtpRunStateServerIpv4(state: SmtpRunState): boolean {
+  if (state.serverIpv4) return false;
+  if (state.lastCompletedStep < 4) return false;
+  const recovered =
+    stringFromRunStateStepOutcome(state, 5, ["ipv4", "serverIp"]) ??
+    stringFromRunStateStepOutcome(state, 4, ["ipv4", "serverIp"]);
+  if (!recovered) return false;
+  state.serverIpv4 = recovered;
+  return true;
+}
+
+function assertSmtpRunStateServerIpv4Integrity(state: SmtpRunState): void {
+  if (state.lastCompletedStep >= 5 && !state.serverIpv4) {
+    throw new OrchestratorFailure(
+      "failed",
+      5,
+      "wait_server_running",
+      "server_ipv4_missing_in_run_state"
+    );
+  }
+}
+
+function stringFromRunStateStepOutcome(
+  state: SmtpRunState,
+  step: number,
+  keys: string[]
+): string | null {
+  const outcome = state.steps[String(step)]?.result?.outcome;
+  if (!isRecord(outcome)) return null;
+  for (const key of keys) {
+    const value = outcome[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
 async function readSmtpRunState(
   deps: ConfigureCompleteSmtpDeps,
   runId: string
@@ -1825,7 +1884,8 @@ async function reconstructLegacySmtpRunState(input: {
 
   const server = webdock?.servers?.find((entry) => entry.slug === binding.serverSlug);
   const chosenDomain = input.params.domain ? normalizeDomain(input.params.domain) : domainFromLegacyBinding(binding.domain);
-  if (!chosenDomain || !server?.ipv4) return null;
+  if (!chosenDomain || !binding.serverSlug) return null;
+  const legacyIpv4 = typeof server?.ipv4 === "string" && server.ipv4.trim() ? server.ipv4.trim() : "";
   const dnsProviderId = normalizeDnsProviderId(input.params.dnsProviderId);
 
   const now = input.startedAt.toISOString();
@@ -1849,7 +1909,7 @@ async function reconstructLegacySmtpRunState(input: {
     chosenDomain,
     smtpHost: smtpHostForDomain(chosenDomain),
     serverSlug: binding.serverSlug,
-    serverIpv4: server.ipv4,
+    ...(legacyIpv4 ? { serverIpv4: legacyIpv4 } : {}),
     ...(dnsProviderId === "ionos" ? { dnsProviderId } : {}),
     selector: "s2026a",
     budgetSpentUsd: 0,
@@ -1902,11 +1962,13 @@ async function reconstructLegacySmtpRunState(input: {
     locationId: "dk",
     hostname: smtpHostForDomain(chosenDomain),
     imageSlug: "ubuntu-2404"
-  }, { status: binding.source, serverSlug: binding.serverSlug, slug: binding.serverSlug, ipv4: server.ipv4, costUsd: 0 });
-  recordLegacyDoneStep(state, 5, "wait_server_running", {
-    serverSlug: binding.serverSlug,
-    maxWaitMs: 600_000
-  }, { ok: true, status: "legacy_reconstructed" });
+  }, { status: binding.source, serverSlug: binding.serverSlug, slug: binding.serverSlug, ipv4: legacyIpv4 || null, costUsd: 0 });
+  if (legacyIpv4) {
+    recordLegacyDoneStep(state, 5, "wait_server_running", {
+      serverSlug: binding.serverSlug,
+      maxWaitMs: 600_000
+    }, { ok: true, status: "legacy_reconstructed", serverSlug: binding.serverSlug, ipv4: legacyIpv4 });
+  }
   updateRunStateProgress(state);
   return state;
 }
@@ -2067,6 +2129,8 @@ async function runReadOnlyStepWithState(input: {
   step: number;
   skill: string;
   params: Record<string, unknown>;
+  serverAccountId?: string;
+  providerId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<unknown> {
   const skipped = await skipDoneStep({
@@ -2373,6 +2437,8 @@ async function runReadOnlyStep(input: {
   step: number;
   skill: string;
   params: Record<string, unknown>;
+  serverAccountId?: string;
+  providerId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<unknown> {
   await verifyAuditChain(input.deps);
@@ -2400,7 +2466,9 @@ async function runReadOnlyStep(input: {
     runId: input.runId,
     step: input.step,
     skill: input.skill,
-    params: input.params
+    params: input.params,
+    ...(input.serverAccountId ? { serverAccountId: input.serverAccountId } : {}),
+    ...(input.providerId ? { providerId: input.providerId } : {})
   });
   const result = {
     step: input.step,
