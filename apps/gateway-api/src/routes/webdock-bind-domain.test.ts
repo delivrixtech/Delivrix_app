@@ -10,6 +10,7 @@ import type {
   WebdockServer,
   WebdockSetServerMainDomainResult,
   WebdockSetServerPtrResult,
+  WebdockSshCommandInput,
   WebdockSshCommandResult,
   WebdockSshRunner
 } from "../../../../packages/adapters/src/index.ts";
@@ -267,7 +268,9 @@ test("bind: Contabo run sets hostname via SSH, emits manual-PTR audit, gates on 
   assert.equal(webdockIdentityCalls, 0);
   // Hostname seteado por SSH: probe "hostname" + script con hostnamectl set-hostname.
   assert.equal(ssh.commands[0].trim(), "hostname");
+  assert.equal(ssh.inputs.every((input) => input.serverSlug === "contabo-12345"), true);
   assert.match(ssh.commands[1], /hostnamectl set-hostname/);
+  assert.doesNotMatch(ssh.commands[1], /\bsudo\b/);
   assert.match(ssh.commands[1], /127\.0\.1\.1/);
   // Audit de PTR manual con IP + PTR objetivo.
   const ptrEvent = harness.auditEvents.find((e) => e.action === "oc.bind.contabo_manual_ptr_required");
@@ -475,14 +478,18 @@ function vpsProviderMock(overrides: Partial<VpsProvider> = {}): VpsProvider {
  */
 function okSshRunner(opts: { previousHostname?: string; finalHostname?: string } = {}): WebdockSshRunner & {
   commands: string[];
+  inputs: WebdockSshCommandInput[];
 } {
   const commands: string[] = [];
+  const inputs: WebdockSshCommandInput[] = [];
   const previousHostname = opts.previousHostname ?? "vmiXXXXX.contaboserver.net";
   const finalHostname = opts.finalHostname ?? "smtp.example.com";
   return {
     commands,
+    inputs,
     isConfigured: () => true,
     run: async (cmd): Promise<WebdockSshCommandResult> => {
+      inputs.push(cmd);
       commands.push(cmd.command);
       const isHostnameProbe = cmd.command.trim() === "hostname";
       return {

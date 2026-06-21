@@ -6,6 +6,7 @@ import type {
   WebdockSetServerIdentityResult,
   WebdockSetServerMainDomainResult,
   WebdockSetServerPtrResult,
+  WebdockSshCommandResult,
   WebdockSshRunner
 } from "../../../../packages/adapters/src/index.ts";
 import type {
@@ -21,6 +22,8 @@ import { readRequestBody } from "../request-body.ts";
 import type { SkillParamSchema } from "../skill-schemas.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import { getProviderFromServerSlug } from "../server-provider.ts";
+import { runWithTransientSshRetry } from "../ssh-retry.ts";
 
 export interface BindWebdockMainDomainParams extends Record<string, unknown> {
   serverSlug: string;
@@ -564,6 +567,7 @@ async function bindNonWebdockMainDomain(input: {
     try {
       await setHostnameViaSsh({
         sshRunner: deps.sshRunner,
+        serverSlug: params.serverSlug,
         serverIp: server.ipv4,
         fqdn: identityDomain
       });
@@ -732,6 +736,7 @@ async function bindNonWebdockMainDomain(input: {
  */
 async function setHostnameViaSsh(input: {
   sshRunner?: WebdockSshRunner;
+  serverSlug: string;
   serverIp: string;
   fqdn: string;
 }): Promise<void> {
@@ -740,7 +745,9 @@ async function setHostnameViaSsh(input: {
     throw new BindWebdockMainDomainInputError("ssh_runner_missing");
   }
 
-  const previous = await runner.run({
+  const previous = await runBindSshWithCloudInitRetry({
+    runner,
+    serverSlug: input.serverSlug,
     serverIp: input.serverIp,
     command: "hostname",
     timeoutMs: 15_000
@@ -754,18 +761,21 @@ async function setHostnameViaSsh(input: {
   }
 
   const domainArg = shellSingleQuote(input.fqdn);
+  const sudo = getProviderFromServerSlug(input.serverSlug) === "contabo" ? "" : "sudo ";
   const script = [
     "set -euo pipefail",
     `domain=${domainArg}`,
-    "sudo hostnamectl set-hostname \"$domain\"",
+    `${sudo}hostnamectl set-hostname "$domain"`,
     "if grep -qE '^127\\.0\\.1\\.1[[:space:]]+' /etc/hosts; then",
-    "  sudo sed -i.bak -E \"s/^127\\.0\\.1\\.1[[:space:]].*/127.0.1.1 $domain/\" /etc/hosts",
+    `  ${sudo}sed -i.bak -E "s/^127\\.0\\.1\\.1[[:space:]].*/127.0.1.1 $domain/" /etc/hosts`,
     "else",
-    "  printf '127.0.1.1 %s\\n' \"$domain\" | sudo tee -a /etc/hosts >/dev/null",
+    `  printf '127.0.1.1 %s\\n' "$domain" | ${sudo}tee -a /etc/hosts >/dev/null`,
     "fi",
     "hostname"
   ].join("\n");
-  const result = await runner.run({
+  const result = await runBindSshWithCloudInitRetry({
+    runner,
+    serverSlug: input.serverSlug,
     serverIp: input.serverIp,
     command: script,
     timeoutMs: 30_000
@@ -774,6 +784,25 @@ async function setHostnameViaSsh(input: {
   if (result.exitCode !== 0 || hostnameAfter !== input.fqdn) {
     throw new BindWebdockMainDomainInputError("hostname_set_failed");
   }
+}
+
+async function runBindSshWithCloudInitRetry(input: {
+  runner: WebdockSshRunner;
+  serverSlug: string;
+  serverIp: string;
+  command: string;
+  timeoutMs: number;
+}): Promise<WebdockSshCommandResult> {
+  const execution = await runWithTransientSshRetry({
+    sleep,
+    operation: () => input.runner.run({
+      serverSlug: input.serverSlug,
+      serverIp: input.serverIp,
+      command: input.command,
+      timeoutMs: input.timeoutMs
+    })
+  });
+  return execution.result;
 }
 
 function lastNonEmptyLine(value: string): string {
