@@ -22,7 +22,8 @@ import { readRequestBody } from "../request-body.ts";
 import type { SkillParamSchema } from "../skill-schemas.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
-import { isContaboLikeServerSlug } from "../provider-slug.ts";
+import { getProviderFromServerSlug } from "../server-provider.ts";
+import { runWithTransientSshRetry } from "../ssh-retry.ts";
 
 export interface BindWebdockMainDomainParams extends Record<string, unknown> {
   serverSlug: string;
@@ -760,7 +761,7 @@ async function setHostnameViaSsh(input: {
   }
 
   const domainArg = shellSingleQuote(input.fqdn);
-  const sudo = isContaboLikeServerSlug(input.serverSlug) ? "" : "sudo ";
+  const sudo = getProviderFromServerSlug(input.serverSlug) === "contabo" ? "" : "sudo ";
   const script = [
     "set -euo pipefail",
     `domain=${domainArg}`,
@@ -792,36 +793,16 @@ async function runBindSshWithCloudInitRetry(input: {
   command: string;
   timeoutMs: number;
 }): Promise<WebdockSshCommandResult> {
-  const retryDelays = [30_000, 60_000];
-  const errors: string[] = [];
-
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      return await input.runner.run({
-        serverSlug: input.serverSlug,
-        serverIp: input.serverIp,
-        command: input.command,
-        timeoutMs: input.timeoutMs
-      });
-    } catch (error) {
-      errors.push(errorMessage(error));
-      if (!isTransientSshConnectError(error) || attempt === 3) {
-        throw new Error(`SSH connect failed after ${attempt} attempt(s): ${errors.join(" | ")}`);
-      }
-      await sleep(retryDelays[attempt - 1] ?? 0);
-    }
-  }
-
-  throw new Error(`SSH connect failed after 3 attempts: ${errors.join(" | ")}`);
-}
-
-function isTransientSshConnectError(error: unknown): boolean {
-  const message = errorMessage(error).toLowerCase();
-  return message.includes("timed out") ||
-    message.includes("exit 255") ||
-    message.includes("connection refused") ||
-    message.includes("connection reset") ||
-    message.includes("no route to host");
+  const execution = await runWithTransientSshRetry({
+    sleep,
+    operation: () => input.runner.run({
+      serverSlug: input.serverSlug,
+      serverIp: input.serverIp,
+      command: input.command,
+      timeoutMs: input.timeoutMs
+    })
+  });
+  return execution.result;
 }
 
 function lastNonEmptyLine(value: string): string {

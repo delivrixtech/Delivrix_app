@@ -25,7 +25,7 @@ import {
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
-import { isContaboLikeServerIdentity } from "../provider-slug.ts";
+import { getProviderFromServerIdentity } from "../server-provider.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -991,13 +991,13 @@ function hostnamesEquivalent(left: string, right: string): boolean {
   const normalizedLeft = normalizeDomainLoose(left);
   const normalizedRight = normalizeDomainLoose(right);
   if (normalizedLeft === normalizedRight) return true;
-  // Fallback para Contabo displayName: la API reemplaza puntos por guiones.
-  // Ejemplo: smtp.example.com equivale a smtp-example-com solo en servidores Contabo-like.
+  // Fallback para displayName de proveedores que reemplazan puntos por guiones.
+  // Ejemplo: smtp.example.com equivale a smtp-example-com solo en servidores Contabo.
   return normalizeProviderHostnameLoose(normalizedLeft) === normalizeProviderHostnameLoose(normalizedRight);
 }
 
 function isContaboLikeServer(server: WebdockServer): boolean {
-  return isContaboLikeServerIdentity(server);
+  return getProviderFromServerIdentity(server) === "contabo";
 }
 
 function dedupeServers(servers: WebdockServer[]): WebdockServer[] {

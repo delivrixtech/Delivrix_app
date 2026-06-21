@@ -28,7 +28,8 @@ import {
 import { readRequestBody } from "../request-body.ts";
 import { ensureDkimKeyPair, findExistingDkimPrivateKeyPath } from "../dkim-keypair.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
-import { isContaboLikeServerSlug } from "../provider-slug.ts";
+import { getProviderFromServerSlug } from "../server-provider.ts";
+import { runWithTransientSshRetry } from "../ssh-retry.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -563,7 +564,8 @@ export function resolveSmtpSshTarget(input: {
   user: string;
   useSudo: boolean;
 } {
-  if (isContaboLikeServerSlug(input.serverSlug)) {
+  const provider = getProviderFromServerSlug(input.serverSlug);
+  if (provider === "contabo") {
     return { user: "root", useSudo: false };
   }
   return {
@@ -932,12 +934,9 @@ async function runSmtpStepWithCloudInitRetry(input: {
   cloudInitSettleMs: number;
   progressDetail?: string;
 }> {
-  const retryDelays = [30_000, 60_000];
-  const errors: string[] = [];
-  let cloudInitSettleMs = 0;
-
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
+  const execution = await runWithTransientSshRetry({
+    sleep: input.sleep,
+    operation: async () => {
       const result = await input.runner.run({
         serverSlug: input.serverSlug,
         serverIp: input.serverIp,
@@ -948,36 +947,18 @@ async function runSmtpStepWithCloudInitRetry(input: {
       if (result.exitCode === 255) {
         throw new Error("SSH command failed with exit 255.");
       }
-      return {
-        result,
-        attempts: attempt,
-        cloudInitSettleMs,
-        progressDetail: attempt > 1
-          ? `esperando cloud-init... intento ${attempt} de 3; espera interna ${Math.round(cloudInitSettleMs / 1000)}s`
-          : undefined
-      };
-    } catch (error) {
-      errors.push(errorMessage(error));
-      if (!isTransientSshConnectError(error) || attempt === 3) {
-        throw new Error(`SSH connect failed after ${attempt} attempt(s): ${errors.join(" | ")}`);
-      }
-
-      const delay = retryDelays[attempt - 1] ?? 0;
-      cloudInitSettleMs += delay;
-      await input.sleep(delay);
+      return result;
     }
-  }
+  });
 
-  throw new Error(`SSH connect failed after 3 attempts: ${errors.join(" | ")}`);
-}
-
-function isTransientSshConnectError(error: unknown): boolean {
-  const message = errorMessage(error).toLowerCase();
-  return message.includes("timed out") ||
-    message.includes("exit 255") ||
-    message.includes("connection refused") ||
-    message.includes("connection reset") ||
-    message.includes("no route to host");
+  return {
+    result: execution.result,
+    attempts: execution.attempts,
+    cloudInitSettleMs: execution.settleMs,
+    progressDetail: execution.attempts > 1
+      ? `esperando cloud-init... intento ${execution.attempts} de 3; espera interna ${Math.round(execution.settleMs / 1000)}s`
+      : undefined
+  };
 }
 
 function sleep(ms: number): Promise<void> {
