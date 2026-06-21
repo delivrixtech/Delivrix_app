@@ -30,7 +30,8 @@ import type {
 } from "../openclaw-workspace.ts";
 import {
   artifactMatchesAuditApproval,
-  auditApprovalMatchesToken
+  auditApprovalMatchesToken,
+  approvalTokenHash
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import {
@@ -240,7 +241,7 @@ export async function handleIonosDnsUpsertHttp(
         recordCount: records.length,
         rrsetIds: upsert.rrsetIds,
         idempotent: upsert.idempotent,
-        approvalToken,
+        approvalTokenHash: approvalTokenHash(approvalToken),
         approvalArtifactId: approval?.artifactId ?? null,
         idempotencyKey: idempotencyKey ?? null,
         workspacePath: workspace?.path

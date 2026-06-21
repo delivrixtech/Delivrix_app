@@ -10,13 +10,16 @@ import {
   buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
   createContaboAdaptersFromEnv,
+  createIonosDnsProviderFromEnv,
   createMxtoolboxAdapterFromEnv,
+  createRoute53DnsProviderFromEnv,
   IonosDnsActuator,
   IonosDomainsAdapter,
   PorkbunAdapter,
   ProxmoxAdapter,
   WebdockAdapter,
   WebdockRealAdapter,
+  type DnsProvider,
   type ProxmoxMockNodeConfig,
   type VpsProvider,
   type WebdockBridgeNodeConfig
@@ -303,6 +306,7 @@ import {
   type ApprovalStepDecision,
   type OwnedDomainVerification
 } from "./routes/orchestrator-smtp.ts";
+import { verifyOwnedDomainAcrossRegistrars } from "./domain-ownership.ts";
 import { handleReadEpisodicScratchHttp } from "./routes/episodic-scratch.ts";
 import {
   compactIntent,
@@ -389,6 +393,13 @@ function listWebdockCreationAccounts(): Array<{ accountId: string; enabled: bool
 const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
 const awsRoute53DnsAdapter = new AwsRoute53DnsAdapter();
 const ionosDnsAdapter = new IonosDnsActuator();
+const dnsProviderEntries = [
+  ...createRoute53DnsProviderFromEnv(process.env, { adapter: awsRoute53DnsAdapter }),
+  ...createIonosDnsProviderFromEnv(process.env, { adapter: ionosDnsAdapter })
+];
+const dnsProviderAdapters = new Map<string, DnsProvider>(
+  dnsProviderEntries.map((entry): [string, DnsProvider] => [entry.id, entry.adapter])
+);
 const ionosDomainsAdapter = new IonosDomainsAdapter();
 const porkbunAdapter = new PorkbunAdapter();
 const mxtoolboxAdapter = createMxtoolboxAdapterFromEnv(process.env);
@@ -509,6 +520,7 @@ const configureSmtpRuntimeDeps = {
     // via autonoma (executePlanApprovedStep -> dispatch accountId). Se acepta el campo para
     // compatibilidad de tipos sin alterar el comportamiento gated.
     serverAccountId?: string;
+    dnsProviderId?: string;
   }): Promise<ApprovalStepDecision> => {
     const result = await configureSmtpToolProcessor({
       toolUseId: `configure-complete-smtp:${input.runId}:${input.step}`,
@@ -599,6 +611,7 @@ const configureSmtpRuntimeDeps = {
     planApproval: PlanApprovalRecord;
     serverAccountId?: string;
     providerId?: string;
+    dnsProviderId?: string;
   }) => {
     const killSwitch = await killSwitchStore.get();
     if (killSwitch.enabled) {
@@ -704,6 +717,9 @@ const configureSmtpRuntimeDeps = {
       // Canal paralelo providerId (HERMANO): el dispatcher enruta al adapter de ESE proveedor (Contabo);
       // undefined/"webdock" => Webdock por accountId. NO va en params.
       ...(input.providerId ? { providerId: input.providerId } : {}),
+      // Canal paralelo dnsProviderId (HERMANO): el dispatcher valida que el proveedor DNS elegido
+      // exista; NO va en params ni toca hashInput/scope.
+      ...(input.dnsProviderId ? { dnsProviderId: input.dnsProviderId } : {}),
       timeoutMs: approvalTimeoutForPlanStep(input.skill, input.params)
     });
     return result.ok
@@ -726,27 +742,14 @@ const configureSmtpRuntimeDeps = {
         };
   },
   verifyOwnedDomain: async (domain: string): Promise<OwnedDomainVerification> => {
-    const normalized = normalizeDomainForPlan(domain);
-    const inventory = await awsRoute53DomainsAdapter.listInventory();
-    if (inventory.source.kind !== "live" || inventory.source.responseOk !== true) {
-      return {
-        owned: false,
-        provider: "route53",
-        reason: "route53_domain_inventory_not_live",
-        sourceKind: inventory.source.kind,
-        responseOk: inventory.source.responseOk
-      };
-    }
-    const owned = inventory.domains.some((entry) =>
-      normalizeDomainForPlan(entry.domainName) === normalized
-    );
-    return {
-      owned,
-      provider: "route53",
-      reason: owned ? "listed_in_route53_domains_inventory" : "domain_not_listed_in_route53_domains_inventory",
-      sourceKind: inventory.source.kind,
-      responseOk: inventory.source.responseOk
-    };
+    return verifyOwnedDomainAcrossRegistrars(domain, {
+      route53: awsRoute53DomainsAdapter,
+      ionos: ionosDomainsAdapter,
+      logger: {
+        info: (event, metadata) => gatewayRuntimeLog.info(event, "Domain ownership registrar check completed.", metadata),
+        warn: (event, metadata) => gatewayRuntimeLog.warn(event, "Domain ownership registrar check failed.", metadata)
+      }
+    });
   },
   waitForRoute53DomainRegistration: async (input: {
     domain: string;
@@ -839,6 +842,9 @@ const skillDispatcher = createSkillDispatcher({
   // Registry providerId->adapter (canal HERMANO). Poblado desde env (createContaboAdaptersFromEnv);
   // vacio si no hay creds Contabo -> ningun providerId != "webdock" resuelve -> camino Webdock byte-identico.
   vpsProviderAdapters,
+  // Registry dnsProviderId->adapter (canal HERMANO futuro). Etapa 2 solo lo expone; no entra en params
+  // ni cambia el path Route53 actual del orquestador/dispatcher.
+  dnsProviderAdapters,
   smtpSshRunner,
   rampScheduler,
   porkbunDomainAdapter: porkbunAdapter,

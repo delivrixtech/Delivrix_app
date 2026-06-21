@@ -92,6 +92,11 @@ export interface ApprovalStepInput extends SkillInvocationInput {
    * viaja fuera de `params`, NO entra al hashInput. undefined o "webdock" => Webdock (byte-identico).
    */
   providerId?: string;
+  /**
+   * Proveedor DNS destino del run. Canal PARALELO HERMANO: viaja fuera de `params` y solo se usa para
+   * enrutar/validar el proveedor DNS. undefined o "route53" => Route53 (byte-identico).
+   */
+  dnsProviderId?: string;
 }
 
 export interface PlanApprovalLookupInput {
@@ -101,7 +106,7 @@ export interface PlanApprovalLookupInput {
 
 export interface OwnedDomainVerification {
   owned: boolean;
-  provider: "route53";
+  provider: "route53" | "ionos";
   reason?: string;
   sourceKind?: string;
   responseOk?: boolean;
@@ -190,6 +195,11 @@ export interface PlanApprovedStepInput extends SkillInvocationInput {
    * `params`/hashInput. undefined o "webdock" => Webdock (byte-identico).
    */
   providerId?: string;
+  /**
+   * Proveedor DNS destino del run. Canal PARALELO HERMANO fuera de `params`/hashInput.
+   * undefined o "route53" => Route53 (byte-identico).
+   */
+  dnsProviderId?: string;
 }
 
 export type PlanApprovedStepDecision =
@@ -430,8 +440,14 @@ interface SmtpRunState {
    * ANTES del create, asi un resume firmado retoma el proveedor correcto. undefined => Webdock.
    */
   providerId?: string;
+  /**
+   * Proveedor DNS elegido para este run. OPCIONAL para backward-compat: runStates viejos sin el campo
+   * usan Route53. Va por canal hermano y se persiste antes de las mutaciones DNS.
+   */
+  dnsProviderId?: "ionos";
   selector: string;
   verifiedOwnedDomain?: string;
+  verifiedOwnedDomainProvider?: OwnedDomainVerification["provider"];
   budgetSpentUsd: number;
   lastCompletedStep: number;
   finalEmailMessageId?: string;
@@ -550,6 +566,7 @@ export async function configureCompleteSmtp(
   let serverSlug = "";
   let serverIpv4 = "";
   let verifiedOwnedDomain: string | null = null;
+  let verifiedOwnedProvider: OwnedDomainVerification["provider"] | null = null;
   let rollbackProposalId: string | undefined;
   const logger = deps.logger ?? noopGatewayRuntimeLogger;
   let planApproval: PlanApprovalRecord | null = null;
@@ -563,6 +580,7 @@ export async function configureCompleteSmtp(
     brand: input.brand,
     domain: input.domain,
     provider: input.provider,
+    dnsProviderId: input.dnsProviderId,
     intent: input.intent,
     budgetUsdMax: input.budgetUsdMax,
     actorId: input.actorId
@@ -583,6 +601,7 @@ export async function configureCompleteSmtp(
     budgetUsdMax: input.budgetUsdMax,
     domain: input.domain,
     provider: input.provider,
+    dnsProviderId: input.dnsProviderId,
     actorId: input.actorId,
     planSignatureAutonomy: envFlagEnabled(deps.env?.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)
   });
@@ -590,12 +609,21 @@ export async function configureCompleteSmtp(
   try {
     releaseRunLock = await acquireSmtpRunStateLock(deps, runId);
     runState = await loadOrCreateSmtpRunState({ deps, runId, params: input, startedAt });
+    assertDnsProviderResumeCompatible(runState, input);
     effectiveInput = inputFromRunState(input, runState);
     assertKnownNonWebdockVpsProviderId(resolveVpsProviderId(effectiveInput, runState));
+    const dnsProviderId = resolveDnsProviderId(effectiveInput, runState);
+    assertKnownDnsProviderId(dnsProviderId);
+    if (dnsProviderId === "ionos") {
+      runState.dnsProviderId = "ionos";
+      await persistSmtpRunState(deps, runState);
+    }
     selector = runState.selector;
     chosenDomain = runState.chosenDomain ?? "";
     serverSlug = runState.serverSlug ?? "";
     serverIpv4 = runState.serverIpv4 ?? "";
+    verifiedOwnedDomain = runState.verifiedOwnedDomain ?? null;
+    verifiedOwnedProvider = runState.verifiedOwnedDomainProvider ?? null;
     await verifyAuditChain(deps);
     planApproval = envFlagEnabled(deps.env?.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)
       ? await resolveAndValidatePlanApproval({ deps, runId, input: effectiveInput })
@@ -641,7 +669,7 @@ export async function configureCompleteSmtp(
     });
     const explicitDomain = explicitDomainForRun(effectiveInput, planApproval);
     const requireExistingDomain = requiresExistingDomainForRun(effectiveInput, planApproval);
-    if (explicitDomain && (requireExistingDomain || !domainInSuggestions(suggestions, explicitDomain))) {
+    if (explicitDomain && (requireExistingDomain || dnsProviderId === "ionos" || !domainInSuggestions(suggestions, explicitDomain))) {
       const ownership = await resolveExistingDomainOwnership({
         deps,
         runId,
@@ -649,54 +677,126 @@ export async function configureCompleteSmtp(
         requireExistingDomain
       });
       verifiedOwnedDomain = ownership.owned ? explicitDomain : null;
+      verifiedOwnedProvider = ownership.owned ? ownership.provider ?? null : null;
     }
     chosenDomain = runState.chosenDomain ?? chooseDomainForRun(suggestions, planApproval, effectiveInput, verifiedOwnedDomain);
     const smtpHost = smtpHostForDomain(chosenDomain);
     runState.chosenDomain = chosenDomain;
     runState.smtpHost = smtpHost;
-    if (verifiedOwnedDomain) runState.verifiedOwnedDomain = verifiedOwnedDomain;
+    if (verifiedOwnedDomain) {
+      runState.verifiedOwnedDomain = verifiedOwnedDomain;
+      if (verifiedOwnedProvider) runState.verifiedOwnedDomainProvider = verifiedOwnedProvider;
+    }
     await persistSmtpRunState(deps, runState);
 
-    const domainRegistration = await runMutatingStepWithState({
-      deps,
-      runState,
-      planApproval,
-      runId,
-      step: 2,
-      skill: "register_domain_route53",
-      actorId: effectiveInput.actorId,
-      approvalTimeoutMs,
-      estimatedCostUsd: verifiedOwnedDomain === chosenDomain ? 0 : 15,
-      budgetUsdMax: effectiveInput.budgetUsdMax,
-      params: { domain: chosenDomain, years: 1, autoRenew: false },
-      stepResults
-    });
-    await awaitFreshRoute53Registration({
-      deps,
-      runId,
-      result: domainRegistration,
-      domain: chosenDomain,
-      costUsd: verifiedOwnedDomain === chosenDomain ? 0 : 15
-    });
+    const route53RegistrationParams = { domain: chosenDomain, years: 1, autoRenew: false };
+    const ionosAdoptedDnsRun =
+      dnsProviderId === "ionos" &&
+      verifiedOwnedDomain === chosenDomain &&
+      verifiedOwnedProvider === "ionos";
+    if (dnsProviderId === "ionos" && !ionosAdoptedDnsRun) {
+      throw new OrchestratorFailure(
+        "failed",
+        2,
+        "dns_provider_guard",
+        "ionos_dns_requires_ionos_owned_domain"
+      );
+    }
 
-    await runMutatingStepWithState({
-      deps,
-      runState,
-      planApproval,
-      runId,
-      step: 3,
-      skill: "wait_for_dns_propagation",
-      actorId: effectiveInput.actorId,
-      approvalTimeoutMs,
-      budgetUsdMax: effectiveInput.budgetUsdMax,
-      params: {
+    if (ionosAdoptedDnsRun) {
+      await recordSyntheticDoneStepWithState({
+        deps,
+        runState,
+        runId,
+        step: 2,
+        skill: "register_domain_route53",
+        params: route53RegistrationParams,
+        outcome: {
+          ok: true,
+          status: "skipped",
+          reason: "ionos_owned_domain",
+          provider: "ionos",
+          domain: chosenDomain
+        },
+        estimatedCostUsd: 0,
+        stepResults
+      });
+      await audit(deps, "oc.domain.registration_skipped", "domain", chosenDomain, "high", {
+        runId,
+        provider: "ionos",
+        reason: "ionos_owned_domain"
+      });
+    } else {
+      const domainRegistration = await runMutatingStepWithState({
+        deps,
+        runState,
+        planApproval,
+        runId,
+        step: 2,
+        skill: "register_domain_route53",
+        actorId: effectiveInput.actorId,
+        approvalTimeoutMs,
+        estimatedCostUsd: verifiedOwnedDomain === chosenDomain ? 0 : 15,
+        budgetUsdMax: effectiveInput.budgetUsdMax,
+        params: route53RegistrationParams,
+        stepResults
+      });
+      await awaitFreshRoute53Registration({
+        deps,
+        runId,
+        result: domainRegistration,
         domain: chosenDomain,
-        expectedRecord: { type: "NS", value: "contains:awsdns" },
-        maxWaitMs: 1_800_000,
-        pollIntervalMs: 60_000
-      },
-      stepResults
-    });
+        costUsd: verifiedOwnedDomain === chosenDomain ? 0 : 15
+      });
+    }
+
+    const route53NameserverWaitParams = {
+      domain: chosenDomain,
+      expectedRecord: { type: "NS", value: "contains:awsdns" },
+      maxWaitMs: 1_800_000,
+      pollIntervalMs: 60_000
+    };
+    if (ionosAdoptedDnsRun) {
+      await recordSyntheticDoneStepWithState({
+        deps,
+        runState,
+        runId,
+        step: 3,
+        skill: "wait_for_dns_propagation",
+        params: {
+          domain: chosenDomain,
+          expectedRecord: { type: "NS", value: "skipped:ionos-authoritative" },
+          maxWaitMs: 0,
+          pollIntervalMs: 0
+        },
+        outcome: {
+          ok: true,
+          status: "skipped",
+          reason: "ionos_authoritative_nameservers",
+          provider: "ionos"
+        },
+        stepResults
+      });
+      await audit(deps, "oc.dns.nameserver_wait_skipped", "domain", chosenDomain, "high", {
+        runId,
+        provider: "ionos",
+        reason: "ionos_authoritative_nameservers"
+      });
+    } else {
+      await runMutatingStepWithState({
+        deps,
+        runState,
+        planApproval,
+        runId,
+        step: 3,
+        skill: "wait_for_dns_propagation",
+        actorId: effectiveInput.actorId,
+        approvalTimeoutMs,
+        budgetUsdMax: effectiveInput.budgetUsdMax,
+        params: route53NameserverWaitParams,
+        stepResults
+      });
+    }
 
     // Seleccion multicuenta (5.12). En un RESUME reusamos la cuenta YA elegida y persistida
     // (re-seleccionar podria elegir otra cuenta distinta a donde ya vive el server -> huerfano);
@@ -855,17 +955,14 @@ export async function configureCompleteSmtp(
       planApproval,
       runId,
       step: 6,
-      skill: "upsert_dns_route53",
+      skill: dnsProviderId === "ionos" ? "upsert_dns_ionos" : "upsert_dns_route53",
       actorId: effectiveInput.actorId,
       approvalTimeoutMs,
       budgetUsdMax: effectiveInput.budgetUsdMax,
-      params: {
-        domain: chosenDomain,
-        records: [
-          { name: smtpHost, type: "A", ttl: 300, values: [serverIpv4] },
-          { name: chosenDomain, type: "MX", ttl: 300, values: [`10 ${smtpHost}.`] }
-        ]
-      },
+      params: dnsProviderId === "ionos"
+        ? ionosSmtpRouteDnsParams({ domain: chosenDomain, smtpHost, serverIpv4 })
+        : route53SmtpRouteDnsParams({ domain: chosenDomain, smtpHost, serverIpv4 }),
+      dnsProviderId,
       stepResults
     });
 
@@ -922,23 +1019,37 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
+    const dkimPublicKey = stringFromOutcome(smtp.outcome, ["dkimPublicKey"], "");
+    const dkimDnsValue = dkimDnsRecordValue(dkimPublicKey);
+    if (dnsProviderId === "ionos" && !dkimDnsValue) {
+      throw new OrchestratorFailure("failed", 10, "upsert_dns_ionos", "dkim_public_key_missing");
+    }
+
     await runMutatingStepWithState({
       deps,
       runState,
       planApproval,
       runId,
       step: 10,
-      skill: "configure_email_auth",
+      skill: dnsProviderId === "ionos" ? "upsert_dns_ionos" : "configure_email_auth",
       actorId: effectiveInput.actorId,
       approvalTimeoutMs,
       budgetUsdMax: effectiveInput.budgetUsdMax,
-      params: {
-        domain: chosenDomain,
-        mxServerIp: serverIpv4,
-        selector,
-        dmarcPolicy: "quarantine",
-        dkimPublicKey: stringFromOutcome(smtp.outcome, ["dkimPublicKey"], "")
-      },
+      params: dnsProviderId === "ionos"
+        ? ionosEmailAuthDnsParams({
+          domain: chosenDomain,
+          serverIpv4,
+          selector,
+          dkimDnsValue
+        })
+        : {
+          domain: chosenDomain,
+          mxServerIp: serverIpv4,
+          selector,
+          dmarcPolicy: "quarantine",
+          dkimPublicKey
+        },
+      dnsProviderId,
       stepResults
     });
 
@@ -1458,6 +1569,55 @@ function buildSmtpRunIdentityDnsRecords(input: {
   return records;
 }
 
+function route53SmtpRouteDnsParams(input: {
+  domain: string;
+  smtpHost: string;
+  serverIpv4: string;
+}): Record<string, unknown> {
+  return {
+    domain: input.domain,
+    records: [
+      { name: input.smtpHost, type: "A", ttl: 300, values: [input.serverIpv4] },
+      { name: input.domain, type: "MX", ttl: 300, values: [`10 ${input.smtpHost}.`] }
+    ]
+  };
+}
+
+function ionosSmtpRouteDnsParams(input: {
+  domain: string;
+  smtpHost: string;
+  serverIpv4: string;
+}): Record<string, unknown> {
+  return {
+    zone: input.domain,
+    records: [
+      { name: input.smtpHost, type: "A", ttl: 300, content: input.serverIpv4 },
+      { name: input.domain, type: "MX", ttl: 300, content: `${input.smtpHost}.`, prio: 10 }
+    ]
+  };
+}
+
+function ionosEmailAuthDnsParams(input: {
+  domain: string;
+  serverIpv4: string;
+  selector: string;
+  dkimDnsValue: string;
+}): Record<string, unknown> {
+  return {
+    zone: input.domain,
+    records: [
+      { name: input.domain, type: "TXT", ttl: 300, content: `v=spf1 ip4:${input.serverIpv4} -all` },
+      { name: `${input.selector}._domainkey.${input.domain}`, type: "TXT", ttl: 300, content: input.dkimDnsValue },
+      {
+        name: `_dmarc.${input.domain}`,
+        type: "TXT",
+        ttl: 300,
+        content: "v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@delivrix.com; ruf=mailto:dmarc-forensics@delivrix.com; fo=1"
+      }
+    ]
+  };
+}
+
 function dkimDnsRecordValue(dkimPublicKey: string): string {
   const safePublicKey = safeDkimPublicKey(dkimPublicKey);
   if (!safePublicKey) return "";
@@ -1586,6 +1746,7 @@ function inputFromRunState(
     runId: state.runId,
     ...(state.chosenDomain ? { domain: state.chosenDomain } : input.domain ? { domain: input.domain } : {}),
     ...(state.params.provider ? { provider: state.params.provider } : input.provider ? { provider: input.provider } : {}),
+    ...(state.dnsProviderId ? { dnsProviderId: state.dnsProviderId } : input.dnsProviderId ? { dnsProviderId: input.dnsProviderId } : {}),
     requireExistingDomain: state.params.requireExistingDomain,
     budgetUsdMax: state.params.budgetUsdMax,
     testEmailRecipient: state.params.testEmailRecipient,
@@ -1631,6 +1792,26 @@ function validateResumeScopeAgainstRunState(input: {
   }
 }
 
+function assertDnsProviderResumeCompatible(
+  state: SmtpRunState,
+  request: ConfigureCompleteSmtpParams
+): void {
+  const requested = normalizeDnsProviderId(request.dnsProviderId);
+  if (!requested) return;
+  if (state.dnsProviderId === requested) return;
+  if (state.dnsProviderId && state.dnsProviderId !== requested) {
+    throw new OrchestratorFailure("failed", 0, "dns_provider_guard", "dns_provider_conflict_in_existing_run");
+  }
+  if (smtpRunStateHasProviderLockedProgress(state)) {
+    throw new OrchestratorFailure("failed", 0, "dns_provider_guard", "dns_provider_conflict_in_existing_run");
+  }
+}
+
+function smtpRunStateHasProviderLockedProgress(state: SmtpRunState): boolean {
+  if (state.lastCompletedStep > 0 || state.serverSlug || state.serverIpv4) return true;
+  return Object.values(state.steps).some((step) => step.status === "done" || step.status === "in_flight");
+}
+
 async function reconstructLegacySmtpRunState(input: {
   deps: ConfigureCompleteSmtpDeps;
   runId: string;
@@ -1645,6 +1826,7 @@ async function reconstructLegacySmtpRunState(input: {
   const server = webdock?.servers?.find((entry) => entry.slug === binding.serverSlug);
   const chosenDomain = input.params.domain ? normalizeDomain(input.params.domain) : domainFromLegacyBinding(binding.domain);
   if (!chosenDomain || !server?.ipv4) return null;
+  const dnsProviderId = normalizeDnsProviderId(input.params.dnsProviderId);
 
   const now = input.startedAt.toISOString();
   const state: SmtpRunState = {
@@ -1668,6 +1850,7 @@ async function reconstructLegacySmtpRunState(input: {
     smtpHost: smtpHostForDomain(chosenDomain),
     serverSlug: binding.serverSlug,
     serverIpv4: server.ipv4,
+    ...(dnsProviderId === "ionos" ? { dnsProviderId } : {}),
     selector: "s2026a",
     budgetSpentUsd: 0,
     lastCompletedStep: 0,
@@ -1681,13 +1864,38 @@ async function reconstructLegacySmtpRunState(input: {
     count: 5,
     actorId: input.params.actorId
   }, { candidates: [{ domain: chosenDomain, available: true, source: "legacy_reconstructed" }] });
-  await reconcileLegacyDomainStep(input.deps, state, chosenDomain);
-  recordLegacyDoneStep(state, 3, "wait_for_dns_propagation", {
-    domain: chosenDomain,
-    expectedRecord: { type: "NS", value: "contains:awsdns" },
-    maxWaitMs: 1_800_000,
-    pollIntervalMs: 60_000
-  }, { ok: true, status: "legacy_reconstructed" });
+  if (dnsProviderId === "ionos") {
+    recordLegacyDoneStep(state, 2, "register_domain_route53", {
+      domain: chosenDomain,
+      years: 1,
+      autoRenew: false
+    }, {
+      ok: true,
+      status: "skipped",
+      reason: "ionos_owned_domain",
+      provider: "ionos",
+      domain: chosenDomain
+    }, 0);
+    recordLegacyDoneStep(state, 3, "wait_for_dns_propagation", {
+      domain: chosenDomain,
+      expectedRecord: { type: "NS", value: "skipped:ionos-authoritative" },
+      maxWaitMs: 0,
+      pollIntervalMs: 0
+    }, {
+      ok: true,
+      status: "skipped",
+      reason: "ionos_authoritative_nameservers",
+      provider: "ionos"
+    });
+  } else {
+    await reconcileLegacyDomainStep(input.deps, state, chosenDomain);
+    recordLegacyDoneStep(state, 3, "wait_for_dns_propagation", {
+      domain: chosenDomain,
+      expectedRecord: { type: "NS", value: "contains:awsdns" },
+      maxWaitMs: 1_800_000,
+      pollIntervalMs: 60_000
+    }, { ok: true, status: "legacy_reconstructed" });
+  }
   recordLegacyDoneStep(state, 4, "create_webdock_server", {
     runId: input.runId,
     profile: "bit",
@@ -1761,6 +1969,50 @@ function recordLegacyDoneStep(
     completedAt: state.createdAt,
     updatedAt: state.createdAt
   };
+}
+
+async function recordSyntheticDoneStepWithState(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runState: SmtpRunState;
+  runId: string;
+  step: number;
+  skill: string;
+  params: Record<string, unknown>;
+  outcome: unknown;
+  estimatedCostUsd?: number;
+  stepResults: ConfigureCompleteSmtpStepResult[];
+}): Promise<ConfigureCompleteSmtpStepResult> {
+  const skipped = await skipDoneStep({
+    deps: input.deps,
+    runState: input.runState,
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    params: input.params,
+    stepResults: input.stepResults
+  });
+  if (skipped) return skipped;
+
+  const inputHash = hashInput(input.params);
+  const result: ConfigureCompleteSmtpStepResult = {
+    step: input.step,
+    skill: input.skill,
+    inputHash,
+    outcome: input.outcome,
+    durationMs: 0,
+    ...(input.estimatedCostUsd === undefined ? {} : { estimatedCostUsd: input.estimatedCostUsd })
+  };
+  input.stepResults.push(result);
+  await markRunStepDone({
+    deps: input.deps,
+    runState: input.runState,
+    result
+  });
+  await emitStep(input.deps, "oc.orchestrator.step_completed", input.runId, input.step, input.skill, {
+    synthetic: true,
+    durationMs: 0
+  });
+  return result;
 }
 
 function updateRunStateProgress(state: SmtpRunState): void {
@@ -1844,6 +2096,7 @@ async function runMutatingStepWithState(input: {
   budgetUsdMax: number;
   serverAccountId?: string;
   providerId?: string;
+  dnsProviderId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   const skipped = await skipDoneStep({
@@ -2187,6 +2440,7 @@ async function runGatedStep(input: {
   budgetUsdMax: number;
   serverAccountId?: string;
   providerId?: string;
+  dnsProviderId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   await verifyAuditChain(input.deps);
@@ -2230,7 +2484,8 @@ async function runGatedStep(input: {
     estimatedCostUsd: input.estimatedCostUsd,
     // Canales paralelos (no entran a params/hashInput); el create gated los usa para enrutar cuenta/proveedor.
     ...(input.serverAccountId ? { serverAccountId: input.serverAccountId } : {}),
-    ...(input.providerId ? { providerId: input.providerId } : {})
+    ...(input.providerId ? { providerId: input.providerId } : {}),
+    ...(input.dnsProviderId ? { dnsProviderId: input.dnsProviderId } : {})
   });
 
   if (decision.status === "executed") {
@@ -2347,6 +2602,7 @@ async function runMutatingStep(input: {
   budgetUsdMax: number;
   serverAccountId?: string;
   providerId?: string;
+  dnsProviderId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   if (input.planApproval) {
@@ -2363,6 +2619,7 @@ async function runMutatingStep(input: {
       budgetUsdMax: input.budgetUsdMax,
       serverAccountId: input.serverAccountId,
       providerId: input.providerId,
+      dnsProviderId: input.dnsProviderId,
       stepResults: input.stepResults
     });
   }
@@ -2413,6 +2670,7 @@ async function runPlanApprovedStep(input: {
   budgetUsdMax: number;
   serverAccountId?: string;
   providerId?: string;
+  dnsProviderId?: string;
   stepResults: ConfigureCompleteSmtpStepResult[];
 }): Promise<ConfigureCompleteSmtpStepResult> {
   if (!input.deps.executePlanApprovedStep) {
@@ -2459,7 +2717,8 @@ async function runPlanApprovedStep(input: {
     // Canales paralelos (no entran a params/hashInput); el dispatch del create los usa como accountId/
     // providerId destino. providerId undefined/"webdock" => Webdock (byte-identico).
     ...(input.serverAccountId ? { serverAccountId: input.serverAccountId } : {}),
-    ...(input.providerId ? { providerId: input.providerId } : {})
+    ...(input.providerId ? { providerId: input.providerId } : {}),
+    ...(input.dnsProviderId ? { dnsProviderId: input.dnsProviderId } : {})
   });
 
   if (decision.status === "executed") {
@@ -2786,7 +3045,7 @@ async function resolveExistingDomainOwnership(input: {
   runId: string;
   domain: string;
   requireExistingDomain: boolean;
-}): Promise<{ owned: boolean }> {
+}): Promise<{ owned: boolean; provider?: OwnedDomainVerification["provider"] }> {
   await verifyAuditChain(input.deps);
   if (!input.deps.verifyOwnedDomain) {
     throw new OrchestratorFailure(
@@ -2798,11 +3057,12 @@ async function resolveExistingDomainOwnership(input: {
   }
   let verification: OwnedDomainVerification;
   try {
+    // Ownership verification is fail-closed: unreadable inventories cannot satisfy strict adoption.
     verification = await input.deps.verifyOwnedDomain(input.domain);
   } catch (error) {
     void (input.deps.logger ?? noopGatewayRuntimeLogger).warn(
       "openclaw.orchestrator.domain_ownership_read_failed",
-      "Route53 domain ownership verification failed closed.",
+      "Domain ownership verification failed closed.",
       {
         runId: input.runId,
         domain: input.domain,
@@ -2817,7 +3077,7 @@ async function resolveExistingDomainOwnership(input: {
     );
   }
 
-  if (verification.provider !== "route53" || verification.owned !== true) {
+  if (verification.owned !== true) {
     if (!input.requireExistingDomain) {
       await audit(input.deps, "oc.domain.ownership_not_owned_fresh_purchase", "domain", input.domain, "high", {
         runId: input.runId,
@@ -2827,7 +3087,7 @@ async function resolveExistingDomainOwnership(input: {
         responseOk: verification.responseOk,
         decision: "proceed_to_register_domain_route53"
       });
-      return { owned: false };
+      return { owned: false, provider: verification.provider };
     }
     throw new OrchestratorFailure(
       "failed",
@@ -2839,12 +3099,12 @@ async function resolveExistingDomainOwnership(input: {
 
   await audit(input.deps, "oc.domain.ownership_verified", "domain", input.domain, "high", {
     runId: input.runId,
-    provider: "route53",
+    provider: verification.provider,
     source: "listOwnedDomains",
     sourceKind: verification.sourceKind,
     responseOk: verification.responseOk
   });
-  return { owned: true };
+  return { owned: true, provider: verification.provider };
 }
 
 async function resolveAndValidatePlanApproval(input: {
@@ -2913,6 +3173,7 @@ function validatePlanApprovedStepScope(
     step: number;
     skill: string;
     params: Record<string, unknown>;
+    dnsProviderId?: string;
   },
   inputHash: string
 ): void {
@@ -2920,7 +3181,7 @@ function validatePlanApprovedStepScope(
   if (scope.runId !== input.runId) {
     throw new OrchestratorFailure("failed", input.step, input.skill, "plan_scope_mismatch:runId", undefined, inputHash);
   }
-  if (!scope.plannedSteps.includes(input.skill)) {
+  if (!plannedScopeAllowsStepSkill(scope.plannedSteps, input.step, input.skill, input.dnsProviderId)) {
     throw new OrchestratorFailure("failed", input.step, input.skill, "plan_scope_mismatch:skill", undefined, inputHash);
   }
   for (const value of domainValuesInParams(input.params)) {
@@ -2947,6 +3208,19 @@ function validatePlanApprovedStepScope(
       );
     }
   }
+}
+
+function plannedScopeAllowsStepSkill(
+  plannedSteps: string[],
+  step: number,
+  skill: string,
+  dnsProviderId: string | undefined
+): boolean {
+  if (plannedSteps.includes(skill)) return true;
+  if (dnsProviderId !== "ionos" || skill !== "upsert_dns_ionos") return false;
+  if (step === 6) return plannedSteps.includes("upsert_dns_route53");
+  if (step === 10) return plannedSteps.includes("configure_email_auth");
+  return false;
 }
 
 function domainValuesInParams(params: Record<string, unknown>): string[] {
@@ -3775,6 +4049,31 @@ function assertKnownNonWebdockVpsProviderId(value: string | undefined): void {
 /** True si hay un proveedor de VPS explicito distinto de Webdock (dispara el guard gated). */
 function isNonWebdockProviderId(value: string | undefined): boolean {
   return normalizeVpsProviderId(value) !== undefined;
+}
+
+/**
+ * Resuelve el proveedor DNS del run (canal HERMANO de params). Fuente state-first para que RESUME
+ * retome el proveedor persistido. undefined/"route53" no se propaga aguas arriba y conserva Route53
+ * byte-identico.
+ */
+function resolveDnsProviderId(
+  input: ConfigureCompleteSmtpParams,
+  state: SmtpRunState
+): string | undefined {
+  const raw = state.dnsProviderId ?? (typeof input.dnsProviderId === "string" ? input.dnsProviderId : undefined);
+  return normalizeDnsProviderId(raw);
+}
+
+function normalizeDnsProviderId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized === "route53") return undefined;
+  return normalized;
+}
+
+function assertKnownDnsProviderId(value: string | undefined): void {
+  if (value === undefined || value === "ionos") return;
+  throw new OrchestratorFailure("failed", 0, "dns_provider_guard", `unknown_dns_provider:${value}`);
 }
 
 function hashInput(value: unknown): string {

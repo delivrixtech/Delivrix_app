@@ -1,5 +1,6 @@
 export * from "./aws-route53-domains-adapter.ts";
 export * from "./aws-route53-dns-adapter.ts";
+export * from "./dns-provider.ts";
 export * from "./ionos-dns-adapter.ts";
 export * from "./ionos-dns-actuator.ts";
 export * from "./ionos-domains-adapter.ts";
