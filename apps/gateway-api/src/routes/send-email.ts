@@ -267,6 +267,7 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
 
   const postfix = await checkPostfixRunning({
     sshRunner: deps.sshRunner,
+    serverSlug: params.serverSlug,
     serverIp
   });
   if (!postfix.running) {
@@ -290,6 +291,7 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
 
   const sendResult = await sendEmailViaSsh({
     sshRunner: deps.sshRunner,
+    serverSlug: params.serverSlug,
     serverIp,
     from: params.fromAddress,
     to: params.toAddress,
@@ -300,6 +302,7 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
   });
   const logTail = await tailPostfixLog({
     sshRunner: deps.sshRunner,
+    serverSlug: params.serverSlug,
     serverIp,
     messageId: sendResult.messageId,
     lines: 20
@@ -482,10 +485,12 @@ function preValidationsFromMetadata(value: unknown): SendRealEmailResult["preVal
 
 async function checkPostfixRunning(input: {
   sshRunner: SmtpSshRunner;
+  serverSlug: string;
   serverIp: string;
 }): Promise<{ running: boolean; statusLine: string }> {
   try {
     const result = await input.sshRunner.run({
+      serverSlug: input.serverSlug,
       serverIp: input.serverIp,
       command: "systemctl is-active postfix && ss -tlnp | grep ':25'",
       timeoutMs: 30_000
@@ -635,6 +640,7 @@ function metadataString(metadata: Record<string, unknown> | undefined, key: stri
 
 async function sendEmailViaSsh(input: {
   sshRunner: SmtpSshRunner;
+  serverSlug: string;
   serverIp: string;
   from: string;
   to: string;
@@ -664,6 +670,7 @@ async function sendEmailViaSsh(input: {
 
   try {
     const swaksCheck = await input.sshRunner.run({
+      serverSlug: input.serverSlug,
       serverIp: input.serverIp,
       command: "command -v swaks >/dev/null 2>&1 && echo SWAKS_AVAILABLE || echo SWAKS_MISSING",
       timeoutMs: 30_000
@@ -674,6 +681,7 @@ async function sendEmailViaSsh(input: {
       : `/usr/sbin/sendmail -f ${shellQuote(input.from)} ${shellQuote(input.to)} 2>&1`;
 
     const result = await input.sshRunner.run({
+      serverSlug: input.serverSlug,
       serverIp: input.serverIp,
       command,
       stdin: message,
@@ -699,6 +707,7 @@ async function sendEmailViaSsh(input: {
 
 async function tailPostfixLog(input: {
   sshRunner: SmtpSshRunner;
+  serverSlug: string;
   serverIp: string;
   messageId: string | null;
   lines: number;
@@ -706,6 +715,7 @@ async function tailPostfixLog(input: {
   const filter = input.messageId ? `grep -F ${shellQuote(input.messageId)}` : "tail -20";
   try {
     const result = await input.sshRunner.run({
+      serverSlug: input.serverSlug,
       serverIp: input.serverIp,
       command: `tail -200 /var/log/mail.log | ${filter} | tail -${input.lines}`,
       timeoutMs: 30_000
