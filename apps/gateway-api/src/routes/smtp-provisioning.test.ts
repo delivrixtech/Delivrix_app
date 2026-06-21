@@ -62,7 +62,7 @@ test("buildSmtpProvisionPlan uses smtp host for mailname, HELO, hostname and TLS
   assert.match(certbot?.command ?? "", /smtp\.delivrix-mail\.com/);
 });
 
-test("resolveSmtpSshTarget uses root without sudo only for Contabo-like slugs", () => {
+test("resolveSmtpSshTarget uses root without sudo only for canonical Contabo slugs", () => {
   assert.deepEqual(resolveSmtpSshTarget({
     serverSlug: "contabo-203386827",
     defaultUser: "delivrixops",
@@ -78,6 +78,16 @@ test("resolveSmtpSshTarget uses root without sudo only for Contabo-like slugs", 
     defaultUser: "delivrixops",
     sudoEnabled: false
   }), { user: "delivrixops", useSudo: false });
+  assert.deepEqual(resolveSmtpSshTarget({
+    serverSlug: "Contabo-203386827",
+    defaultUser: "delivrixops",
+    sudoEnabled: true
+  }), { user: "delivrixops", useSudo: true });
+  assert.deepEqual(resolveSmtpSshTarget({
+    serverSlug: " contabo-203386827 ",
+    defaultUser: "delivrixops",
+    sudoEnabled: true
+  }), { user: "delivrixops", useSudo: true });
 });
 
 test("POST /v1/servers/:slug/provision-smtp blocks without SSH flag, runner, approval, server IP, and DKIM key", async () => {
