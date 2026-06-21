@@ -6,6 +6,7 @@ import type {
   WebdockSetServerIdentityResult,
   WebdockSetServerMainDomainResult,
   WebdockSetServerPtrResult,
+  WebdockSshCommandResult,
   WebdockSshRunner
 } from "../../../../packages/adapters/src/index.ts";
 import type {
@@ -21,6 +22,7 @@ import { readRequestBody } from "../request-body.ts";
 import type { SkillParamSchema } from "../skill-schemas.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import { isContaboLikeServerSlug } from "../provider-slug.ts";
 
 export interface BindWebdockMainDomainParams extends Record<string, unknown> {
   serverSlug: string;
@@ -564,6 +566,7 @@ async function bindNonWebdockMainDomain(input: {
     try {
       await setHostnameViaSsh({
         sshRunner: deps.sshRunner,
+        serverSlug: params.serverSlug,
         serverIp: server.ipv4,
         fqdn: identityDomain
       });
@@ -732,6 +735,7 @@ async function bindNonWebdockMainDomain(input: {
  */
 async function setHostnameViaSsh(input: {
   sshRunner?: WebdockSshRunner;
+  serverSlug: string;
   serverIp: string;
   fqdn: string;
 }): Promise<void> {
@@ -740,7 +744,9 @@ async function setHostnameViaSsh(input: {
     throw new BindWebdockMainDomainInputError("ssh_runner_missing");
   }
 
-  const previous = await runner.run({
+  const previous = await runBindSshWithCloudInitRetry({
+    runner,
+    serverSlug: input.serverSlug,
     serverIp: input.serverIp,
     command: "hostname",
     timeoutMs: 15_000
@@ -754,18 +760,21 @@ async function setHostnameViaSsh(input: {
   }
 
   const domainArg = shellSingleQuote(input.fqdn);
+  const sudo = isContaboLikeServerSlug(input.serverSlug) ? "" : "sudo ";
   const script = [
     "set -euo pipefail",
     `domain=${domainArg}`,
-    "sudo hostnamectl set-hostname \"$domain\"",
+    `${sudo}hostnamectl set-hostname "$domain"`,
     "if grep -qE '^127\\.0\\.1\\.1[[:space:]]+' /etc/hosts; then",
-    "  sudo sed -i.bak -E \"s/^127\\.0\\.1\\.1[[:space:]].*/127.0.1.1 $domain/\" /etc/hosts",
+    `  ${sudo}sed -i.bak -E "s/^127\\.0\\.1\\.1[[:space:]].*/127.0.1.1 $domain/" /etc/hosts`,
     "else",
-    "  printf '127.0.1.1 %s\\n' \"$domain\" | sudo tee -a /etc/hosts >/dev/null",
+    `  printf '127.0.1.1 %s\\n' "$domain" | ${sudo}tee -a /etc/hosts >/dev/null`,
     "fi",
     "hostname"
   ].join("\n");
-  const result = await runner.run({
+  const result = await runBindSshWithCloudInitRetry({
+    runner,
+    serverSlug: input.serverSlug,
     serverIp: input.serverIp,
     command: script,
     timeoutMs: 30_000
@@ -774,6 +783,45 @@ async function setHostnameViaSsh(input: {
   if (result.exitCode !== 0 || hostnameAfter !== input.fqdn) {
     throw new BindWebdockMainDomainInputError("hostname_set_failed");
   }
+}
+
+async function runBindSshWithCloudInitRetry(input: {
+  runner: WebdockSshRunner;
+  serverSlug: string;
+  serverIp: string;
+  command: string;
+  timeoutMs: number;
+}): Promise<WebdockSshCommandResult> {
+  const retryDelays = [30_000, 60_000];
+  const errors: string[] = [];
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await input.runner.run({
+        serverSlug: input.serverSlug,
+        serverIp: input.serverIp,
+        command: input.command,
+        timeoutMs: input.timeoutMs
+      });
+    } catch (error) {
+      errors.push(errorMessage(error));
+      if (!isTransientSshConnectError(error) || attempt === 3) {
+        throw new Error(`SSH connect failed after ${attempt} attempt(s): ${errors.join(" | ")}`);
+      }
+      await sleep(retryDelays[attempt - 1] ?? 0);
+    }
+  }
+
+  throw new Error(`SSH connect failed after 3 attempts: ${errors.join(" | ")}`);
+}
+
+function isTransientSshConnectError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("timed out") ||
+    message.includes("exit 255") ||
+    message.includes("connection refused") ||
+    message.includes("connection reset") ||
+    message.includes("no route to host");
 }
 
 function lastNonEmptyLine(value: string): string {

@@ -28,6 +28,7 @@ import {
 import { readRequestBody } from "../request-body.ts";
 import { ensureDkimKeyPair, findExistingDkimPrivateKeyPath } from "../dkim-keypair.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
+import { isContaboLikeServerSlug } from "../provider-slug.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -39,6 +40,7 @@ interface CanvasEmitter {
 }
 
 export interface SmtpSshCommandInput {
+  serverSlug?: string | null;
   serverIp: string;
   command: string;
   stdin?: string;
@@ -340,11 +342,13 @@ export async function handleSmtpProvisionHttp(
         ? await runSmtpStepWithCloudInitRetry({
             runner: deps.sshRunner,
             step,
+            serverSlug,
             serverIp: serverIp!,
             sleep: deps.sleep ?? sleep
           })
         : {
             result: await deps.sshRunner.run({
+              serverSlug,
               serverIp: serverIp!,
               command: step.command,
               stdin: step.stdin,
@@ -525,21 +529,46 @@ export function createSmtpSshRunnerFromEnv(
   env: Record<string, string | undefined> =
     typeof process !== "undefined" ? process.env : {}
 ): SmtpSshRunner {
-  const user = normalizeEnvValue(env.SMTP_PROVISION_SSH_USER) ?? "root";
+  const defaultUser = normalizeEnvValue(env.SMTP_PROVISION_SSH_USER) ?? "root";
   const keyPath = expandHome(normalizeEnvValue(env.SMTP_PROVISION_SSH_KEY_PATH));
   const port = parsePositiveInt(env.SMTP_PROVISION_SSH_PORT) ?? 22;
   const timeoutMs = parsePositiveInt(env.SMTP_PROVISION_SSH_TIMEOUT_MS) ?? 180_000;
+  const sudoEnabled = env.SMTP_PROVISION_SSH_USE_SUDO !== "false";
 
   return {
     isConfigured: () => Boolean(keyPath),
-    run: async (input) => runSshCommand({
-      ...input,
-      user,
-      keyPath,
-      port,
-      timeoutMs: input.timeoutMs ?? timeoutMs,
-      useSudo: user !== "root" && env.SMTP_PROVISION_SSH_USE_SUDO !== "false"
-    })
+    run: async (input) => {
+      const target = resolveSmtpSshTarget({
+        serverSlug: input.serverSlug,
+        defaultUser,
+        sudoEnabled
+      });
+      return runSshCommand({
+        ...input,
+        user: target.user,
+        keyPath,
+        port,
+        timeoutMs: input.timeoutMs ?? timeoutMs,
+        useSudo: target.useSudo
+      });
+    }
+  };
+}
+
+export function resolveSmtpSshTarget(input: {
+  serverSlug?: string | null;
+  defaultUser: string;
+  sudoEnabled: boolean;
+}): {
+  user: string;
+  useSudo: boolean;
+} {
+  if (isContaboLikeServerSlug(input.serverSlug)) {
+    return { user: "root", useSudo: false };
+  }
+  return {
+    user: input.defaultUser,
+    useSudo: input.defaultUser !== "root" && input.sudoEnabled
   };
 }
 
@@ -894,6 +923,7 @@ async function runSshCommand(input: SmtpSshCommandInput & {
 async function runSmtpStepWithCloudInitRetry(input: {
   runner: SmtpSshRunner;
   step: SmtpProvisionStep;
+  serverSlug?: string | null;
   serverIp: string;
   sleep: (ms: number) => Promise<void>;
 }): Promise<{
@@ -909,6 +939,7 @@ async function runSmtpStepWithCloudInitRetry(input: {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       const result = await input.runner.run({
+        serverSlug: input.serverSlug,
         serverIp: input.serverIp,
         command: input.step.command,
         stdin: input.step.stdin,

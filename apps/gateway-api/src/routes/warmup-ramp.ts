@@ -345,6 +345,7 @@ export class RampScheduler {
     let result: SmtpSshCommandResult;
     try {
       result = await this.deps.sshRunner.run({
+        serverSlug: ramp.serverSlug,
         serverIp: ramp.serverIp,
         command: `/usr/sbin/sendmail -t -f ${shellQuote(`noreply@${ramp.domain}`)}`,
         stdin: renderBatchPayload({
@@ -646,6 +647,7 @@ export async function handleRampStartHttp(deps: WarmupRampStartHttpDeps): Promis
   if (env.WARMUP_ENABLE_SEND !== "true") blockers.push("warmup_send_flag_disabled");
   if (!deps.sshRunner.isConfigured()) blockers.push("warmup_ssh_runner_missing");
   if (!approval) blockers.push("approval_not_found_or_expired");
+  if (!serverSlug) blockers.push("server_slug_missing");
   if (!serverIp) blockers.push("server_ip_missing");
   if (recipientPool.length < plan.recipientPoolMin) {
     blockers.push(`recipient_pool_too_small_min_${plan.recipientPoolMin}`);

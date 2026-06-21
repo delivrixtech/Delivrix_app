@@ -138,6 +138,7 @@ export interface WebdockSetServerIdentityResult {
 }
 
 export interface WebdockSshCommandInput {
+  serverSlug?: string | null;
   serverIp: string;
   command: string;
   stdin?: string;
