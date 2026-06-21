@@ -126,6 +126,98 @@ test("POST /v1/webdock/servers/create creates server, polls running, and records
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "api" && event.method === "GET"));
 });
 
+test("POST /v1/webdock/servers/create keeps Webdock default polling at 24 attempts", async () => {
+  let getServerCalls = 0;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      createServer: async () => ({
+        serverSlug: "mail-delivrix-test",
+        eventId: "cb-123",
+        ipv4: null,
+        status: "provisioning",
+        source: liveWebdockSource()
+      }),
+      getServer: async () => {
+        getServerCalls += 1;
+        return {
+          slug: "mail-delivrix-test",
+          name: "mail.delivrix.test",
+          ipv4: "",
+          status: "provisioning"
+        };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    profile: "bit",
+    locationId: "dk",
+    hostname: "mail.delivrix.test",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.pollCount, 24);
+  assert.equal(getServerCalls, 24);
+});
+
+test("POST /v1/webdock/servers/create uses Contabo default polling of 60 attempts", async () => {
+  let getServerCalls = 0;
+  const route = await routeHarness({
+    providerId: "contabo",
+    adapter: mockAdapter({
+      createServer: async () => ({
+        serverSlug: "contabo-203386827",
+        eventId: "cb-contabo",
+        ipv4: null,
+        status: "provisioning",
+        source: liveWebdockSource()
+      }),
+      getServer: async () => {
+        getServerCalls += 1;
+        return {
+          slug: "contabo-203386827",
+          name: "smtp-delivrix-test",
+          hostname: "smtp-delivrix-test",
+          mainDomain: "smtp-delivrix-test",
+          ipv4: "",
+          status: "provisioning",
+          accountId: "contabo"
+        };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.delivrix.test",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.pollCount, 60);
+  assert.equal(getServerCalls, 60);
+});
+
 test("POST /v1/webdock/servers/create reuses an existing server by hostname", async () => {
   let createCalled = false;
   const route = await routeHarness({
@@ -225,6 +317,164 @@ test("POST /v1/webdock/servers/create reuses an existing server by mainDomain", 
   assert.equal(response.body.status, "idempotent_already_exists");
   assert.equal(response.body.serverSlug, "server10");
   assert.equal(createCalled, false);
+});
+
+test("POST /v1/webdock/servers/create reuses Contabo displayName-sanitized host even while IP is pending", async () => {
+  let createCalled = false;
+  const route = await routeHarness({
+    providerId: "contabo",
+    adapter: mockAdapter({
+      listServers: async () => ({
+        servers: [{
+          slug: "contabo-203386827",
+          name: "smtp-annualcorpfilings-com",
+          hostname: "vmi203386827",
+          mainDomain: "smtp-annualcorpfilings-com",
+          ipv4: "",
+          status: "provisioning",
+          accountId: "contabo"
+        }],
+        source: liveWebdockSource()
+      }),
+      createServer: async () => {
+        createCalled = true;
+        throw new Error("createServer must not run");
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    runId: "run-annualcorpfilings",
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.annualcorpfilings.com",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "idempotent_already_exists");
+  assert.equal(response.body.serverSlug, "contabo-203386827");
+  assert.equal(response.body.ipv4, null);
+  assert.equal(createCalled, false);
+});
+
+test("POST /v1/webdock/servers/create keeps Webdock ipv4-missing blocker for existing servers", async () => {
+  let createCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      listServers: async () => ({
+        servers: [{
+          slug: "server10",
+          name: "server10",
+          hostname: "controldelivrix.app",
+          ipv4: "",
+          status: "provisioning"
+        }],
+        source: liveWebdockSource()
+      }),
+      createServer: async () => {
+        createCalled = true;
+        throw new Error("createServer must not run");
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    profile: "bit",
+    locationId: "dk",
+    hostname: "controldelivrix.app",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body.blockers, ["webdock_existing_server_ipv4_missing"]);
+  assert.equal(createCalled, false);
+});
+
+test("POST /v1/webdock/servers/create reuses same-run Contabo binding before inventory create", async () => {
+  let createCalled = false;
+  let listCalled = false;
+  const route = await routeHarness({
+    providerId: "contabo",
+    adapter: mockAdapter({
+      getServer: async (slug) => ({
+        slug,
+        name: "smtp-annualcorpfilings-com",
+        hostname: "smtp-annualcorpfilings-com",
+        mainDomain: "smtp-annualcorpfilings-com",
+        ipv4: "",
+        status: "provisioning",
+        accountId: "contabo"
+      }),
+      listServers: async () => {
+        listCalled = true;
+        throw new Error("listServers must not run when run binding exists");
+      },
+      createServer: async () => {
+        createCalled = true;
+        throw new Error("createServer must not run");
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [],
+    runBindings: [
+      { runId: "run-other", serverSlug: "contabo-1", domain: "smtp.other.test", boundAt: fixedNow.toISOString(), source: "created" },
+      { runId: "run-annualcorpfilings", serverSlug: "contabo-203386827", domain: "smtp.annualcorpfilings.com", boundAt: fixedNow.toISOString(), source: "created" }
+    ]
+  }));
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    runId: "run-annualcorpfilings",
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.annualcorpfilings.com",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.serverSlug, "contabo-203386827");
+  assert.equal(response.body.ipv4, null);
+  assert.equal(createCalled, false);
+  assert.equal(listCalled, false);
+
+  const inventory = await route.workspace.readInventoryJson<{
+    runBindings: Array<{ runId: string; serverSlug: string }>;
+  }>("webdock-servers.json");
+  assert.deepEqual(
+    inventory?.runBindings.map((entry) => [entry.runId, entry.serverSlug]).sort(),
+    [
+      ["run-annualcorpfilings", "contabo-203386827"],
+      ["run-other", "contabo-1"]
+    ].sort()
+  );
 });
 
 test("POST /v1/webdock/servers/create fails closed on ambiguous existing servers", async () => {
@@ -597,6 +847,7 @@ test("DELETE /v1/webdock/servers/:slug con providerId=contabo enruta al adapter 
 async function routeHarness(input: {
   adapter: WebdockServerCreateAdapter;
   canvasState: CanvasLiveStateSnapshot;
+  providerId?: string;
 }) {
   const dir = await mkdtemp(join(tmpdir(), "webdock-create-route-"));
   const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
@@ -626,6 +877,7 @@ async function routeHarness(input: {
         },
         readCanvasState: () => input.canvasState,
         env,
+        providerId: input.providerId,
         now: () => fixedNow,
         sleep: async () => {}
       });
