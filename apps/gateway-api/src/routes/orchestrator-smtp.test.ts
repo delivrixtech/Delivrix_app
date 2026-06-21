@@ -1018,6 +1018,102 @@ test("PROVIDER#d plan-signed con vpsProviderId='contabo' NO cambia el scope hash
   assert.equal(state.providerId, "contabo");
 });
 
+test("PROVIDER#d2 Contabo: step 4 puede devolver slug sin IP y step 5 resuelve la IP para DNS", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    outcomes: {
+      4: { serverSlug: "contabo-203386827", ipv4: null, status: "provisioning" },
+      5: { serverSlug: "contabo-203386827", ipv4: "203.0.113.77", status: "running" }
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    vpsProviderId: "contabo"
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  assert.equal(step4.providerId, "contabo");
+  assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "providerId"), false);
+  const expectedStep4Hash = createHash("sha256").update(stableStringify({
+    runId: "run-1", profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404"
+  })).digest("hex");
+  assert.equal(step4.inputHash, expectedStep4Hash);
+
+  const step5 = ctx.invocations.find((entry) => entry.step === 5)!;
+  assert.equal(step5.providerId, "contabo");
+  assert.deepEqual(step5.params, { serverSlug: "contabo-203386827", maxWaitMs: 600_000 });
+
+  const step6 = ctx.planExecutions.find((entry) => entry.step === 6)!;
+  const records = (step6.params.records as Array<{ name: string; type: string; values?: string[] }>);
+  assert.deepEqual(records[0], {
+    name: "smtp.delivrixops.com",
+    type: "A",
+    ttl: 300,
+    values: ["203.0.113.77"]
+  });
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.serverIpv4, "203.0.113.77");
+});
+
+test("PROVIDER#d3 resume Contabo con step 4 done sin IP ejecuta step 5 sin recrear VPS", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    outcomes: {
+      5: { serverSlug: "contabo-203386827", ipv4: "203.0.113.88", status: "running" }
+    }
+  });
+  await seedContaboRunStateThroughStep4WithoutIp(ctx.workspace, "run-1");
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    vpsProviderId: "contabo"
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.planExecutions.some((entry) => entry.step === 4), false);
+  const step5 = ctx.invocations.find((entry) => entry.step === 5)!;
+  assert.equal(step5.providerId, "contabo");
+  assert.deepEqual(step5.params, { serverSlug: "contabo-203386827", maxWaitMs: 600_000 });
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.providerId, "contabo");
+  assert.equal(state.serverSlug, "contabo-203386827");
+  assert.equal(state.serverIpv4, "203.0.113.88");
+});
+
+test("configureCompleteSmtp backfills serverIpv4 from completed step outcomes on resume", async () => {
+  const ctx = createDeps();
+  await seedLegacyRunStateThroughStep4(ctx.workspace, "run-1");
+  const raw = JSON.parse(await ctx.workspace.readWorkspaceFile("inventory/smtp-runs/run-1.json")) as Record<string, unknown>;
+  delete raw.serverIpv4;
+  await ctx.workspace.writeWorkspaceFileAtomic("inventory/smtp-runs/run-1.json", `${JSON.stringify(raw, null, 2)}\n`);
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53"
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.approvals.some((entry) => entry.step === 4), false);
+  assert.equal(ctx.invocations.some((entry) => entry.step === 5), false);
+  const step6 = ctx.approvals.find((entry) => entry.step === 6)!;
+  const records = step6.params.records as Array<{ type: string; values?: string[] }>;
+  assert.deepEqual(records[0].values, ["203.0.113.10"]);
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.serverIpv4, "203.0.113.10");
+});
+
 test("PROVIDER#e gated + vpsProviderId='contabo' => falla LIMPIO gated_provider_unsupported ANTES de crear (no VPS huerfano)", async () => {
   // Camino GATED (sin OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE): el processor gated single-account NO
   // recibe el providerId, asi que crearia el VPS en Webdock mientras el rollback enrutaria a Contabo
@@ -2673,6 +2769,7 @@ async function readRunStateFull(workspace: OpenClawWorkspace, runId: string): Pr
   dnsProviderId?: string;
   verifiedOwnedDomainProvider?: string;
   serverSlug?: string;
+  serverIpv4?: string;
   steps: Record<string, { status: string; inputHash?: string }>;
 }> {
   return JSON.parse(await workspace.readWorkspaceFile(`inventory/smtp-runs/${runId}.json`)) as {
@@ -2681,6 +2778,7 @@ async function readRunStateFull(workspace: OpenClawWorkspace, runId: string): Pr
     dnsProviderId?: string;
     verifiedOwnedDomainProvider?: string;
     serverSlug?: string;
+    serverIpv4?: string;
     steps: Record<string, { status: string; inputHash?: string }>;
   };
 }
@@ -2741,6 +2839,53 @@ async function seedLegacyRunStateThroughStep4(workspace: OpenClawWorkspace, runI
       "3": done(3, "wait_for_dns_propagation", { domain: "delivrixops.com", expectedRecord: { type: "NS", value: "contains:awsdns" }, maxWaitMs: 1_800_000, pollIntervalMs: 60_000 }, { ok: true }),
       "4": done(4, "create_webdock_server", { runId, profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404" }, { slug: "srv-delivrix", ipv4: "203.0.113.10" }),
       "5": done(5, "wait_server_running", { serverSlug: "srv-delivrix", maxWaitMs: 600_000 }, { ok: true })
+    }
+  };
+  await workspace.writeWorkspaceFileAtomic(`inventory/smtp-runs/${runId}.json`, `${JSON.stringify(state, null, 2)}\n`);
+}
+
+async function seedContaboRunStateThroughStep4WithoutIp(workspace: OpenClawWorkspace, runId: string): Promise<void> {
+  const hash = (params: Record<string, unknown>) => createHash("sha256").update(stableStringify(params)).digest("hex");
+  const done = (step: number, skill: string, params: Record<string, unknown>, outcome: unknown, estimatedCostUsd?: number) => ({
+    step,
+    skill,
+    status: "done" as const,
+    inputHash: hash(params),
+    result: { step, skill, inputHash: hash(params), outcome, durationMs: 0, ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }) },
+    ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
+    startedAt: "2026-05-31T12:00:00.000Z",
+    completedAt: "2026-05-31T12:00:00.000Z",
+    updatedAt: "2026-05-31T12:00:00.000Z"
+  });
+  const state = {
+    schemaVersion: "smtp-run-state/v1",
+    runId,
+    status: "running",
+    createdAt: "2026-05-31T12:00:00.000Z",
+    updatedAt: "2026-05-31T12:00:00.000Z",
+    params: {
+      brand: "delivrix",
+      intent: "ops",
+      provider: "route53",
+      requireExistingDomain: false,
+      budgetUsdMax: 25,
+      testEmailRecipient: "operator@example.com",
+      testEmailSubject: "Operational readiness report",
+      testEmailBody: "Authorized operational readiness message for Delivrix infrastructure.",
+      seedInboxes: ["seed-a@example.com", "seed-b@example.com", "seed-c@example.com"]
+    },
+    chosenDomain: "delivrixops.com",
+    smtpHost: "smtp.delivrixops.com",
+    serverSlug: "contabo-203386827",
+    providerId: "contabo",
+    selector: "s2026a",
+    budgetSpentUsd: 0,
+    lastCompletedStep: 4,
+    steps: {
+      "1": done(1, "suggest_safe_domain", { brand: "delivrix", intent: "ops", count: 5, actorId: "op-1" }, { candidates: [{ domain: "delivrixops.com", priceUsd: 15, available: true }] }),
+      "2": done(2, "register_domain_route53", { domain: "delivrixops.com", years: 1, autoRenew: false }, { ok: true, status: "owned", operationId: "op-2" }, 0),
+      "3": done(3, "wait_for_dns_propagation", { domain: "delivrixops.com", expectedRecord: { type: "NS", value: "contains:awsdns" }, maxWaitMs: 1_800_000, pollIntervalMs: 60_000 }, { ok: true }),
+      "4": done(4, "create_webdock_server", { runId, profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404" }, { slug: "contabo-203386827", serverSlug: "contabo-203386827", ipv4: null })
     }
   };
   await workspace.writeWorkspaceFileAtomic(`inventory/smtp-runs/${runId}.json`, `${JSON.stringify(state, null, 2)}\n`);
