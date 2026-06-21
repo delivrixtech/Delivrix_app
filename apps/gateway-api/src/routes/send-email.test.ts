@@ -35,6 +35,7 @@ test("POST /v1/skills/send-real-email sends through swaks and stores redacted au
   assert.equal(response.body.preValidations.dkimPresent, true);
   assert.equal(response.body.preValidations.dmarcPresent, true);
   assert.equal(response.body.preValidations.postfixRunning, true);
+  assert.equal(response.commands.every((command) => command.serverSlug === "mail-sender-example"), true);
   assert.equal(response.commands.some((command) => command.command.startsWith("swaks --to")), true);
   assert.equal(response.commands.some((command) => command.command.includes("/usr/sbin/sendmail")), false);
 

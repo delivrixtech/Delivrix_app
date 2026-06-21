@@ -17,6 +17,7 @@ import {
   buildSmtpProvisionPlan,
   handleSmtpProvisionError,
   handleSmtpProvisionHttp,
+  resolveSmtpSshTarget,
   type SmtpSshCommandInput,
   type SmtpSshRunner
 } from "./smtp-provisioning.ts";
@@ -59,6 +60,24 @@ test("buildSmtpProvisionPlan uses smtp host for mailname, HELO, hostname and TLS
   assert.match(mainCf?.stdin ?? "", /smtp_helo_name = smtp\.delivrix-mail\.com/);
   assert.doesNotMatch(mainCf?.stdin ?? "", /mail\.delivrix-mail\.com/);
   assert.match(certbot?.command ?? "", /smtp\.delivrix-mail\.com/);
+});
+
+test("resolveSmtpSshTarget uses root without sudo only for Contabo-like slugs", () => {
+  assert.deepEqual(resolveSmtpSshTarget({
+    serverSlug: "contabo-203386827",
+    defaultUser: "delivrixops",
+    sudoEnabled: true
+  }), { user: "root", useSudo: false });
+  assert.deepEqual(resolveSmtpSshTarget({
+    serverSlug: "mail-delivrix-test",
+    defaultUser: "delivrixops",
+    sudoEnabled: true
+  }), { user: "delivrixops", useSudo: true });
+  assert.deepEqual(resolveSmtpSshTarget({
+    serverSlug: null,
+    defaultUser: "delivrixops",
+    sudoEnabled: false
+  }), { user: "delivrixops", useSudo: false });
 });
 
 test("POST /v1/servers/:slug/provision-smtp blocks without SSH flag, runner, approval, server IP, and DKIM key", async () => {
@@ -204,6 +223,7 @@ test("POST /v1/servers/:slug/provision-smtp runs idempotent SSH plan and records
   assert.equal(response.body.status, "configured");
   assert.equal(response.body.serverIp, "192.0.2.44");
   assert.equal(commands.length, 13);
+  assert.equal(commands.every((command) => command.serverSlug === "mail-delivrix-test"), true);
   assert.equal(commands.some((command) => command.stdin === dkimPrivateKey), true);
   assert.equal(commands.every((command) => !command.command.includes("PRIVATE")), true);
 

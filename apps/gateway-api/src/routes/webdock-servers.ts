@@ -25,6 +25,7 @@ import {
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
+import { isContaboLikeServerIdentity } from "../provider-slug.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -996,7 +997,7 @@ function hostnamesEquivalent(left: string, right: string): boolean {
 }
 
 function isContaboLikeServer(server: WebdockServer): boolean {
-  return server.accountId === "contabo" || server.slug.startsWith("contabo-");
+  return isContaboLikeServerIdentity(server);
 }
 
 function dedupeServers(servers: WebdockServer[]): WebdockServer[] {
