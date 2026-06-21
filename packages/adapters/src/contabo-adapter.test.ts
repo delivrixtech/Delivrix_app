@@ -194,7 +194,7 @@ test("createServer: translates to config region/product, finds-or-creates ssh se
   assert.equal(sent.imageId, "img-2204-uuid", "resolved Ubuntu 22.04 image (lookup, not hardcoded)");
   assert.deepEqual(sent.sshKeys, [777], "references the created secretId");
   assert.equal(sent.period, 1);
-  assert.equal(sent.displayName, "mail.controlcorp.example");
+  assert.equal(sent.displayName, "mail-controlcorp-example");
   assert.equal(sent.defaultUser, "root");
 
   // Mandatory headers on the instance POST.
@@ -298,7 +298,8 @@ test("getServer: running instance maps ipv4 from ipConfig.v4.ip", async () => {
           data: [
             {
               instanceId: 555,
-              displayName: "mail.controlcorp.example",
+              displayName: "mail-controlcorp-example",
+              name: "vmi555",
               status: "running",
               region: "US-east",
               createdDate: "2026-06-11T12:00:00.000Z",
@@ -317,6 +318,9 @@ test("getServer: running instance maps ipv4 from ipConfig.v4.ip", async () => {
   assert.equal(server.ipv6, "2a02:c::1");
   assert.equal(server.creationDate, "2026-06-11T12:00:00.000Z");
   assert.equal(server.accountId, "contabo");
+  assert.equal(server.name, "mail-controlcorp-example");
+  assert.equal(server.hostname, "mail-controlcorp-example");
+  assert.equal(server.mainDomain, "mail-controlcorp-example");
   // It stripped the prefix to hit the API.
   const getCall = calls.find((c) => c.url.includes("/v1/compute/instances/"));
   assert.ok(getCall?.url.endsWith("/v1/compute/instances/555"), "stripped contabo- prefix for the API call");

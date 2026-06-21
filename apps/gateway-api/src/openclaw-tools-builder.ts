@@ -799,7 +799,7 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     spec: {
       name: "configure_complete_smtp",
       description: [
-        "Orquesta SMTP completo desde cero: dominio seguro, compra Route53, VPS Webdock, Main domain/PTR, DNS, Postfix/OpenDKIM, SPF/DKIM/DMARC, warmup mínimo y un correo real autorizado.",
+        "Orquesta SMTP completo desde cero: dominio seguro, compra Route53 (o adopción IONOS/Route53), VPS elegible (Webdock o Contabo via vpsProviderId), Main domain/PTR, DNS (Route53 o IONOS via dnsProviderId), Postfix/OpenDKIM, SPF/DKIM/DMARC, warmup mínimo y un correo real autorizado.",
         "Requiere ApprovalGate por cada acción real cuando OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE está OFF. Con el flag ON, una firma de plan puede cubrir solo el runId/domain/provider/budget/recipient explícitos. Audit/canvas events, kill switch, rollback proposal para VPS y presupuesto máximo siguen obligatorios. Tiempo estimado: 1-3 horas. Costo referencial: USD 15 dominio + USD 4.30/mes VPS prorrateado."
       ].join(" "),
       input_schema: {
@@ -816,6 +816,11 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           requireExistingDomain: {
             type: "boolean",
             description: "true para adopción estricta de un dominio ya owned (Route53 o IONOS); false/omitido permite compra fresca Route53 si no es owned."
+          },
+          vpsProviderId: {
+            type: "string",
+            enum: ["webdock", "contabo"],
+            description: "Proveedor de VPS del run (elegible). Omitido/webdock = Webdock (default); contabo = crea el VPS en Contabo (cuenta propia; PTR/rDNS manual en el panel Contabo). El campo 'provider' NO rutea el VPS."
           },
           brand: { type: "string", minLength: 1 },
           intent: { type: "string", minLength: 1 },
