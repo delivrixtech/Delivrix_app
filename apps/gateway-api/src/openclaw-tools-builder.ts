@@ -808,9 +808,14 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           runId: { type: "string", minLength: 1, maxLength: 64 },
           domain: { type: "string", minLength: 1 },
           provider: { type: "string", minLength: 1, maxLength: 32 },
+          dnsProviderId: {
+            type: "string",
+            enum: ["route53", "ionos"],
+            description: "Proveedor DNS del run. Omitido/route53 conserva Route53; ionos requiere dominio owned en IONOS y escribe DNS en IONOS."
+          },
           requireExistingDomain: {
             type: "boolean",
-            description: "true solo para adopción estricta de un dominio Route53 ya owned; false/omitido permite compra fresca si no es owned."
+            description: "true para adopción estricta de un dominio ya owned (Route53 o IONOS); false/omitido permite compra fresca Route53 si no es owned."
           },
           brand: { type: "string", minLength: 1 },
           intent: { type: "string", minLength: 1 },
