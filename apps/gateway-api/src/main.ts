@@ -735,6 +735,7 @@ const configureSmtpRuntimeDeps = {
       route53: awsRoute53DomainsAdapter,
       ionos: ionosDomainsAdapter,
       logger: {
+        info: (event, metadata) => gatewayRuntimeLog.info(event, "Domain ownership registrar check completed.", metadata),
         warn: (event, metadata) => gatewayRuntimeLog.warn(event, "Domain ownership registrar check failed.", metadata)
       }
     });

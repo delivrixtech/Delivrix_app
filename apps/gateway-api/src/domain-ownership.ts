@@ -15,6 +15,7 @@ export interface DomainOwnershipInventoryReaders {
   };
   logger?: {
     warn(event: string, metadata: Record<string, unknown>): unknown;
+    info?(event: string, metadata: Record<string, unknown>): unknown;
   };
 }
 
@@ -116,7 +117,15 @@ async function safeVerify(
   logger?: DomainOwnershipInventoryReaders["logger"]
 ): Promise<OwnedDomainVerification> {
   try {
-    return await check.verify();
+    const verification = await check.verify();
+    logger?.info?.("domain_ownership_check_completed", {
+      provider: verification.provider,
+      owned: verification.owned,
+      reason: verification.reason,
+      sourceKind: verification.sourceKind,
+      responseOk: verification.responseOk
+    });
+    return verification;
   } catch (err) {
     const metadata = {
       provider: check.id,
