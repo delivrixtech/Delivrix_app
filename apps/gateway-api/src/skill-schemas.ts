@@ -152,6 +152,11 @@ export interface ConfigureCompleteSmtpParams extends Record<string, unknown> {
   domain?: string;
   provider?: string;
   /**
+   * Proveedor DNS del run. Canal PARALELO HERMANO: el orquestador lo enruta fuera de los
+   * `params` de cada step (NO toca hashInput/plan-signature). undefined/"route53" => Route53.
+   */
+  dnsProviderId?: string;
+  /**
    * Proveedor de VPS (Webdock=default, "contabo"=segundo). Canal PARALELO HERMANO de runId/provider:
    * el orquestador lo saca de aqui y lo enruta por providerId FUERA de los `params` del step 4 (NO toca
    * el hashInput/plan-signature). NO es el `provider` (registrar DNS route53). undefined => Webdock.
@@ -172,6 +177,8 @@ export interface ConfigureCompleteSmtpSkillParams extends Record<string, unknown
   runId?: string;
   domain?: string;
   provider?: string;
+  /** Proveedor DNS (Route53=default, "ionos"=adopcion IONOS). Canal paralelo; NO entra a step params. */
+  dnsProviderId?: string;
   /** Proveedor de VPS (Webdock=default, "contabo"=segundo). Canal paralelo; NO es el registrar DNS. */
   vpsProviderId?: string;
   requireExistingDomain?: boolean;
@@ -421,6 +428,9 @@ export const configureCompleteSmtpSkillParamSchema = schema<ConfigureCompleteSmt
     ...(input.runId === undefined || input.runId === null || input.runId === "" ? {} : { runId: boundedId(input.runId, "runId", 64) }),
     ...(input.domain === undefined || input.domain === null || input.domain === "" ? {} : { domain: domain(input.domain, "domain") }),
     ...(input.provider === undefined || input.provider === null || input.provider === "" ? {} : { provider: providerId(input.provider, "provider") }),
+    // Canal PARALELO HERMANO (DNS multiproveedor): NUNCA va dentro de un step `params:{}`.
+    // undefined/"route53" preserva el camino Route53 byte-identico.
+    ...(input.dnsProviderId === undefined || input.dnsProviderId === null || input.dnsProviderId === "" ? {} : { dnsProviderId: dnsProviderId(input.dnsProviderId, "dnsProviderId") }),
     // Canal PARALELO HERMANO (5.12 provider): sibling top-level con guarda undefined -> {} (igual que
     // provider/runId). NUNCA va dentro de un step `params:{}`; el orquestador lo enruta por providerId.
     ...(input.vpsProviderId === undefined || input.vpsProviderId === null || input.vpsProviderId === "" ? {} : { vpsProviderId: vpsProviderId(input.vpsProviderId, "vpsProviderId") }),
@@ -690,6 +700,10 @@ function providerId(value: unknown, field: string): string {
 
 function vpsProviderId(value: unknown, field: string): "webdock" | "contabo" {
   return oneOf(providerId(value, field), field, ["webdock", "contabo"] as const);
+}
+
+function dnsProviderId(value: unknown, field: string): "route53" | "ionos" {
+  return oneOf(providerId(value, field), field, ["route53", "ionos"] as const);
 }
 
 function publicKey(value: unknown, field: string): string {
