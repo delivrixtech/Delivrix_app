@@ -822,7 +822,40 @@ test("rollback guard: un runState viejo sin serverCreatedByRun NO propone borrar
   assert.equal(result.failedStep, 8);
   assert.equal(ctx.rollbacks.length, 0);
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.rollback_delete_skipped_reused_server"), true);
+  const skipEvent = ctx.auditEvents.find((event) => event.action === "oc.orchestrator.rollback_delete_skipped_reused_server");
+  assert.ok(skipEvent);
+  assert.equal((skipEvent.metadata as Record<string, unknown>).reason, "server_created_by_run_unknown");
   assert.equal(ctx.creationAccountReads, 0, "no re-selecciona cuenta en un resume con step 4 ya hecho");
+});
+
+test("rollback guard: runState legacy con serverCreatedByRun=true conserva propuesta de delete", async () => {
+  // Resume de un run anterior a serverAccountId pero posterior al flag de ownership: si el run sabe
+  // que creo el VPS, el rollback delete sigue permitido y cae al accountId legacy "ops".
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval()
+  });
+  ctx.deps.executePlanApprovedStep = (() => {
+    const original = ctx.deps.executePlanApprovedStep!;
+    return async (input: PlanApprovedStepInput) => {
+      if (input.step === 8) {
+        ctx.planExecutions.push(input);
+        return { status: "execution_failed", planStepTokenId: "plan-step-8", outcome: { error: "bind_failed" }, durationMs: 8, error: "bind_failed" };
+      }
+      return original(input);
+    };
+  })();
+  await seedLegacyRunStateThroughStep4(ctx.workspace, "run-1", { serverCreatedByRun: true });
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 8);
+  assert.equal(ctx.rollbacks.length, 1);
+  assert.equal(ctx.rollbacks[0].skill, "delete_webdock_server");
+  assert.equal(ctx.rollbacks[0].serverAccountId, "ops");
+  assert.deepEqual(ctx.rollbacks[0].params, { serverSlug: "srv-delivrix", domain: "delivrixops.com" });
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.rollback_delete_skipped_reused_server"), false);
 });
 
 test("rollback guard: adopted idempotent server does not get a delete proposal after later failure", async () => {
@@ -2953,7 +2986,11 @@ function fourServers(): Array<{ creationDate: string }> {
 // Siembra un runState LEGACY (sin serverAccountId) con los pasos 1-5 ya "done" (server creado),
 // para reanudar y forzar el fallo del bind (step 8) sin re-seleccionar cuenta. hashInput debe
 // coincidir con el de los params que el orquestador recomputa en cada paso, o el resume aborta.
-async function seedLegacyRunStateThroughStep4(workspace: OpenClawWorkspace, runId: string): Promise<void> {
+async function seedLegacyRunStateThroughStep4(
+  workspace: OpenClawWorkspace,
+  runId: string,
+  options: { serverCreatedByRun?: boolean } = {}
+): Promise<void> {
   const hash = (params: Record<string, unknown>) => createHash("sha256").update(stableStringify(params)).digest("hex");
   const done = (step: number, skill: string, params: Record<string, unknown>, outcome: unknown, estimatedCostUsd?: number) => ({
     step,
@@ -2988,6 +3025,7 @@ async function seedLegacyRunStateThroughStep4(workspace: OpenClawWorkspace, runI
     serverSlug: "srv-delivrix",
     serverIpv4: "203.0.113.10",
     // NOTA: serverAccountId AUSENTE a proposito (runState viejo, pre-multicuenta).
+    ...(options.serverCreatedByRun === undefined ? {} : { serverCreatedByRun: options.serverCreatedByRun }),
     selector: "s2026a",
     budgetSpentUsd: 0,
     lastCompletedStep: 5,

@@ -214,6 +214,11 @@ export interface SkillHandlerEntry {
   }): Promise<void>;
 }
 
+/**
+ * Contabo rDNS/PTR is panel-only. Step 8 waits briefly for FCrDNS, then returns an advisory pending
+ * response. Defaults: wait 180s, cap operator override at 240s, poll no faster than 5s, and keep the
+ * handler cap at 300s so SSH/audit overhead cannot trigger the shared dispatcher timeout.
+ */
 const contaboBindFcrdnsDefaultMaxWaitMs = 180_000;
 const contaboBindFcrdnsMaxWaitCapMs = 240_000;
 const contaboBindFcrdnsMinPollIntervalMs = 5_000;
@@ -479,7 +484,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
   };
   const bindWebdockMainDomain: SkillHandlerEntry = {
     paramSchema: bindWebdockMainDomainSkillParamSchema,
-    timeoutMs: ({ providerId, deps }) => contaboBindHandlerTimeoutMs(providerId, deps.env, 120_000),
+    timeoutMs: ({ providerId, deps }) => resolveContaboBindTiming(providerId, deps.env, 120_000).handlerTimeoutMs,
     canRollback: true,
     // providerId (canal HERMANO) viaja por invoke -> el handler elige CONTABO BIND PATH (hostname por
     // SSH + PTR manual + FCrDNS) cuando es un proveedor no-Webdock presente en vpsProviderAdapters;
@@ -780,26 +785,32 @@ function contaboBindFcrdnsDeps(
   providerId: string | undefined,
   env: Record<string, string | undefined> | undefined
 ): { fcrdnsMaxWaitMs?: number; fcrdnsPollIntervalMs?: number } {
-  const maxWaitMs = contaboBindFcrdnsMaxWaitMs(providerId, env);
+  const timing = resolveContaboBindTiming(providerId, env, 120_000);
+  const maxWaitMs = timing.fcrdnsMaxWaitMs;
   if (maxWaitMs === undefined) return {};
-  const pollIntervalMs = contaboBindFcrdnsPollIntervalMs(providerId, env);
   return {
     fcrdnsMaxWaitMs: maxWaitMs,
-    ...(pollIntervalMs === undefined ? {} : { fcrdnsPollIntervalMs: pollIntervalMs })
+    ...(timing.fcrdnsPollIntervalMs === undefined ? {} : { fcrdnsPollIntervalMs: timing.fcrdnsPollIntervalMs })
   };
 }
 
-function contaboBindHandlerTimeoutMs(
+export function resolveContaboBindTiming(
   providerId: string | undefined,
   env: Record<string, string | undefined> | undefined,
   fallbackMs: number
-): number {
+): { handlerTimeoutMs: number; fcrdnsMaxWaitMs?: number; fcrdnsPollIntervalMs?: number } {
   const maxWaitMs = contaboBindFcrdnsMaxWaitMs(providerId, env);
-  if (maxWaitMs === undefined) return fallbackMs;
-  return Math.min(
+  if (maxWaitMs === undefined) return { handlerTimeoutMs: fallbackMs };
+  const handlerTimeoutMs = Math.min(
     contaboBindHandlerTimeoutCapMs,
     Math.max(fallbackMs, maxWaitMs + contaboBindHandlerTimeoutPaddingMs)
   );
+  const pollIntervalMs = contaboBindFcrdnsPollIntervalMs(providerId, env);
+  return {
+    handlerTimeoutMs,
+    fcrdnsMaxWaitMs: maxWaitMs,
+    ...(pollIntervalMs === undefined ? {} : { fcrdnsPollIntervalMs: pollIntervalMs })
+  };
 }
 
 function resolveSkillHandlerTimeoutMs(
