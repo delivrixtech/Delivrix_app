@@ -451,6 +451,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         canvasLiveEvents: deps.canvasLiveEvents,
         readCanvasState: deps.readCanvasState,
         env: deps.env,
+        providerId,
         now: deps.now
       })
   };

@@ -70,6 +70,8 @@ export interface WebdockServerCreateDependencies {
   canvasLiveEvents?: CanvasEmitter;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
   env?: Record<string, string | undefined>;
+  /** Proveedor destino cuando el dispatcher enruta por canal paralelo. undefined/"webdock" conserva Webdock. */
+  providerId?: string;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -165,6 +167,8 @@ const skillName = "provision_webdock_vps";
 const approvalMaxAgeMs = 15 * 60 * 1000;
 const defaultPollIntervalMs = 5_000;
 const defaultMaxPolls = 24;
+const defaultContaboPollIntervalMs = 10_000;
+const defaultContaboMaxPolls = 60;
 
 export async function handleWebdockServerCreateHttp(
   deps: WebdockServerCreateDependencies
@@ -173,6 +177,14 @@ export async function handleWebdockServerCreateHttp(
   const now = deps.now?.() ?? new Date();
   const env = deps.env ?? process.env;
   const body = await readJson<WebdockServerCreateBody>(deps.request);
+  const providerId = normalizeRouteProviderId(deps.providerId);
+  const providerLabel = providerId ?? "webdock";
+  const polling = resolveProvisioningPolling({
+    env,
+    providerId,
+    pollIntervalMs: body.pollIntervalMs,
+    maxPolls: body.maxPolls
+  });
   const profile = normalizeProfile(body.profile);
   const locationId = normalizeId(requiredString(body.locationId, "locationId"), "locationId");
   const hostname = normalizeHostname(requiredString(body.hostname, "hostname"));
@@ -187,8 +199,8 @@ export async function handleWebdockServerCreateHttp(
   const actorId = requiredString(body.actorId, "actorId");
   const approvalToken = requiredString(body.approvalToken, "approvalToken");
   const taskId = normalizeTaskId(body.taskId) ?? `webdock-create-${randomUUID()}`;
-  const pollIntervalMs = normalizePollInterval(body.pollIntervalMs);
-  const maxPolls = normalizeMaxPolls(body.maxPolls);
+  const pollIntervalMs = polling.pollIntervalMs;
+  const maxPolls = polling.maxPolls;
 
   await emitTaskDeclare(deps.canvasLiveEvents, taskId, `Webdock VPS · ${hostname}`, actorId, now);
   const learnings = await safeReadLearnings(deps.workspace);
@@ -237,7 +249,7 @@ export async function handleWebdockServerCreateHttp(
       humanApproved: false,
       metadata: {
         blockers,
-        provider: "webdock",
+        provider: providerLabel,
         profile,
         locationId,
         imageSlug,
@@ -257,7 +269,13 @@ export async function handleWebdockServerCreateHttp(
   }
 
   try {
-    const existing = await resolveExistingServerForCreate(deps.adapter, hostname);
+    const existing = await resolveExistingServerForCreate({
+      adapter: deps.adapter,
+      workspace: deps.workspace,
+      hostname,
+      runId,
+      allowPendingIpReuse: providerId === "contabo"
+    });
     if (existing.status === "blocked") {
       const workspace = await safeWriteExecution(deps.workspace, {
         skill: skillName,
@@ -281,7 +299,7 @@ export async function handleWebdockServerCreateHttp(
         humanApproved: false,
         metadata: {
           blockers: existing.blockers,
-          provider: "webdock",
+          provider: providerLabel,
           profile,
           locationId,
           imageSlug,
@@ -352,7 +370,7 @@ export async function handleWebdockServerCreateHttp(
         humanApproved: true,
         approverIds: [actorId],
         metadata: {
-          provider: "webdock",
+          provider: providerLabel,
           hostname,
           serverSlug: server.slug,
           ipv4,
@@ -487,7 +505,7 @@ export async function handleWebdockServerCreateHttp(
       humanApproved: true,
       approverIds: [actorId],
       metadata: {
-        provider: "webdock",
+        provider: providerLabel,
         hostname,
         profile,
         locationId,
@@ -550,7 +568,7 @@ export async function handleWebdockServerCreateHttp(
       humanApproved: true,
       approverIds: [actorId],
       metadata: {
-        provider: "webdock",
+        provider: providerLabel,
         errorCode: failure.code,
         errorMessage: failure.message,
         recoverable: failure.recoverable,
@@ -884,20 +902,28 @@ async function pollProvisioning(input: {
   return out;
 }
 
-async function resolveExistingServerForCreate(
-  adapter: WebdockServerCreateAdapter,
-  hostname: string
-): Promise<
+async function resolveExistingServerForCreate(input: {
+  adapter: WebdockServerCreateAdapter;
+  workspace: OpenClawWorkspace;
+  hostname: string;
+  runId?: string;
+  allowPendingIpReuse: boolean;
+}): Promise<
   | { status: "create" }
   | { status: "reuse"; server: WebdockServer }
   | { status: "blocked"; blockers: string[] }
 > {
-  if (!adapter.listServers) {
+  if (input.runId) {
+    const bound = await resolveExistingServerByRunBinding(input);
+    if (bound) return bound;
+  }
+
+  if (!input.adapter.listServers) {
     return { status: "blocked", blockers: ["webdock_inventory_read_unavailable"] };
   }
   let inventory: WebdockInventoryResult;
   try {
-    inventory = await adapter.listServers();
+    inventory = await input.adapter.listServers();
   } catch {
     return { status: "blocked", blockers: ["webdock_inventory_read_failed"] };
   }
@@ -905,24 +931,72 @@ async function resolveExistingServerForCreate(
     return { status: "blocked", blockers: ["webdock_inventory_degraded"] };
   }
   const matches = dedupeServers(inventory.servers.filter((server) =>
-    webdockServerMatchesHostname(server, hostname)
+    webdockServerMatchesHostname(server, input.hostname)
   ));
   if (matches.length === 0) return { status: "create" };
   if (matches.length > 1) {
     return { status: "blocked", blockers: ["webdock_existing_server_ambiguous"] };
   }
   const server = matches[0];
-  if (!server.ipv4) {
+  if (!server.ipv4 && !input.allowPendingIpReuse) {
     return { status: "blocked", blockers: ["webdock_existing_server_ipv4_missing"] };
   }
   return { status: "reuse", server };
 }
 
+async function resolveExistingServerByRunBinding(input: {
+  adapter: WebdockServerCreateAdapter;
+  workspace: OpenClawWorkspace;
+  hostname: string;
+  runId: string;
+  allowPendingIpReuse: boolean;
+}): Promise<
+  | { status: "reuse"; server: WebdockServer }
+  | { status: "blocked"; blockers: string[] }
+  | null
+> {
+  const inventory = await input.workspace.readInventoryJson<WebdockServerInventory>("webdock-servers.json");
+  const binding = inventory?.runBindings?.find((entry) => entry.runId === input.runId);
+  if (!binding) return null;
+  if (!hostnamesEquivalent(binding.domain, input.hostname)) {
+    return { status: "blocked", blockers: ["webdock_run_binding_hostname_mismatch"] };
+  }
+  try {
+    const server = await input.adapter.getServer(binding.serverSlug);
+    if (!server.ipv4 && !input.allowPendingIpReuse) {
+      return { status: "blocked", blockers: ["webdock_existing_server_ipv4_missing"] };
+    }
+    return { status: "reuse", server };
+  } catch {
+    return { status: "blocked", blockers: ["webdock_run_binding_server_read_failed"] };
+  }
+}
+
 function webdockServerMatchesHostname(server: WebdockServer, hostname: string): boolean {
+  const candidates = [server.hostname, server.mainDomain];
   const target = normalizeDomainLoose(hostname);
-  return [server.hostname, server.mainDomain]
-    .map((value) => typeof value === "string" ? normalizeDomainLoose(value) : null)
-    .some((value) => value === target);
+  const exactMatch = candidates.some((value) =>
+    typeof value === "string" && normalizeDomainLoose(value) === target
+  );
+  if (exactMatch) return true;
+  if (isContaboLikeServer(server)) {
+    candidates.push(server.name);
+    return candidates.some((value) => typeof value === "string" && hostnamesEquivalent(value, hostname));
+  }
+  return false;
+}
+
+function hostnamesEquivalent(left: string, right: string): boolean {
+  const normalizedLeft = normalizeDomainLoose(left);
+  const normalizedRight = normalizeDomainLoose(right);
+  if (normalizedLeft === normalizedRight) return true;
+  // Fallback para Contabo displayName: la API reemplaza puntos por guiones.
+  // Ejemplo: smtp.example.com equivale a smtp-example-com solo en servidores Contabo-like.
+  return normalizeProviderHostnameLoose(normalizedLeft) === normalizeProviderHostnameLoose(normalizedRight);
+}
+
+function isContaboLikeServer(server: WebdockServer): boolean {
+  return server.accountId === "contabo" || server.slug.startsWith("contabo-");
 }
 
 function dedupeServers(servers: WebdockServer[]): WebdockServer[] {
@@ -940,6 +1014,10 @@ function normalizeDomainLoose(value: string): string {
   return value.trim().toLowerCase().replace(/\.$/, "");
 }
 
+function normalizeProviderHostnameLoose(value: string): string {
+  return value.replace(/[^a-z0-9 -]/g, "-");
+}
+
 function normalizeInventoryProfile(value: string | undefined): WebdockProvisionProfile | null {
   return value === "bit" || value === "nibble" || value === "byte" || value === "kilobyte" ? value : null;
 }
@@ -955,7 +1033,7 @@ async function updateWebdockInventory(
   await workspace.updateInventoryJson<WebdockServerInventory>("webdock-servers.json", (current) => {
     const servers = (current?.servers ?? []).filter((server) => server.slug !== input.slug);
     servers.push(input);
-    return { servers };
+    return { ...(current ?? {}), servers };
   });
 }
 
@@ -1154,26 +1232,55 @@ function normalizeTaskId(value: unknown): string | undefined {
   return /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(trimmed) ? trimmed : undefined;
 }
 
-function normalizePollInterval(value: unknown): number {
-  if (value === undefined || value === null || value === "") return defaultPollIntervalMs;
+function normalizePollInterval(value: unknown, defaultValue = defaultPollIntervalMs): number {
+  if (value === undefined || value === null || value === "") return defaultValue;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 60_000) {
     throw new WebdockServerCreateInputError("pollIntervalMs must be an integer between 0 and 60000.");
   }
   return value;
 }
 
-function normalizeMaxPolls(value: unknown): number {
-  if (value === undefined || value === null || value === "") return defaultMaxPolls;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 60) {
-    throw new WebdockServerCreateInputError("maxPolls must be an integer between 0 and 60.");
+function normalizeMaxPolls(value: unknown, defaultValue = defaultMaxPolls, maxValue = 60): number {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > maxValue) {
+    throw new WebdockServerCreateInputError(`maxPolls must be an integer between 0 and ${maxValue}.`);
   }
   return value;
+}
+
+function resolveProvisioningPolling(input: {
+  env: Record<string, string | undefined>;
+  providerId?: string;
+  pollIntervalMs: unknown;
+  maxPolls: unknown;
+}): { pollIntervalMs: number; maxPolls: number } {
+  if (input.providerId !== "contabo") {
+    return {
+      pollIntervalMs: normalizePollInterval(input.pollIntervalMs),
+      maxPolls: normalizeMaxPolls(input.maxPolls)
+    };
+  }
+  const defaultInterval =
+    parseNonNegativeInteger(input.env.CONTABO_PROVISION_POLL_INTERVAL_MS) ?? defaultContaboPollIntervalMs;
+  const defaultPolls =
+    parseNonNegativeInteger(input.env.CONTABO_PROVISION_MAX_POLLS) ?? defaultContaboMaxPolls;
+  // Rango operativo documentado: intervalos env de Contabo se clampean a 60s y 240 polls.
+  // Los overrides explícitos del request siguen validados por normalizePollInterval/normalizeMaxPolls.
+  return {
+    pollIntervalMs: normalizePollInterval(input.pollIntervalMs, Math.min(defaultInterval, 60_000)),
+    maxPolls: normalizeMaxPolls(input.maxPolls, Math.min(defaultPolls, 240), 240)
+  };
+}
+
+function normalizeRouteProviderId(value: string | undefined): "contabo" | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && normalized !== "webdock" ? normalized === "contabo" ? "contabo" : undefined : undefined;
 }
 
 function parseNonNegativeInteger(value: string | undefined): number | null {
   if (!value) return null;
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+  return Number.isFinite(parsed) && Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function requiredString(
