@@ -286,6 +286,7 @@ import {
   defaultMaxRequestBodyBytes
 } from "./request-body.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
+import { waitForServerRunning } from "./server-running-wait.ts";
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import { createAuditChainStoreFromEnv } from "./audit-chain.ts";
 import { createAutoRollbackManagerFromEnv } from "./auto-rollback.ts";
@@ -455,6 +456,8 @@ const configureSmtpRuntimeDeps = {
     step: number;
     skill: string;
     params: Record<string, unknown>;
+    serverAccountId?: string;
+    providerId?: string;
   }) => {
     if (input.skill === "suggest_safe_domain") {
       const response = await fetch(`${gatewaySelfBaseUrl}/v1/skills/suggest-safe-domain`, {
@@ -469,7 +472,21 @@ const configureSmtpRuntimeDeps = {
       return body;
     }
 
-    if (input.skill === "wait_server_running" || input.skill === "wait_warmup_initial") {
+    if (input.skill === "wait_server_running") {
+      return waitForServerRunning({
+        params: input.params,
+        adapters: {
+          webdockOpsAdapter,
+          webdockCreateAdapters,
+          vpsProviderAdapters
+        },
+        env: process.env,
+        serverAccountId: input.serverAccountId,
+        providerId: input.providerId
+      });
+    }
+
+    if (input.skill === "wait_warmup_initial") {
       return {
         ok: true,
         status: "observed_or_deferred",
