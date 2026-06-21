@@ -1582,9 +1582,14 @@ test("configureCompleteSmtp adopts a signed strict existing IONOS-owned domain n
 });
 
 test("DNS#IONOS configureCompleteSmtp adopted domain stays in IONOS for DNS writes", async () => {
+  const planApproval = signedPlanApproval({ domain: "annualcorpfilings.com", requireExistingDomain: true });
+  assert.equal(planApproval.scope.plannedSteps.includes("upsert_dns_route53"), true);
+  assert.equal(planApproval.scope.plannedSteps.includes("configure_email_auth"), true);
+  assert.equal(planApproval.scope.plannedSteps.includes("upsert_dns_ionos"), false);
+
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
-    planApproval: signedPlanApproval({ domain: "annualcorpfilings.com", requireExistingDomain: true }),
+    planApproval,
     suggestions: { candidates: [{ domain: "fresh-delivrix.com", priceUsd: 15, available: true }] },
     ownedDomains: ["annualcorpfilings.com"],
     ownedDomainProvider: "ionos",
@@ -1704,6 +1709,46 @@ test("DNS#IONOS legacy reconstruction skips Route53 registration and awsdns NS w
   assert.equal(JSON.stringify(state.steps["2"]).includes("ionos_owned_domain"), true);
   assert.equal(JSON.stringify(state.steps["3"]).includes("contains:awsdns"), false);
   assert.equal(JSON.stringify(state.steps["3"]).includes("ionos_authoritative_nameservers"), true);
+});
+
+test("DNS#IONOS rejects switching a persisted Route53 run state to IONOS", async () => {
+  const ctx = createDeps();
+  await seedLegacyRunStateThroughStep4(ctx.workspace, "run-1");
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    dnsProviderId: "ionos",
+    requireExistingDomain: true
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.equal(result.error, "dns_provider_conflict_in_existing_run");
+  assert.deepEqual(ctx.approvals, []);
+  assert.deepEqual(ctx.planExecutions, []);
+  assert.deepEqual(ctx.route53RegistrationWaits, []);
+});
+
+test("DNS#guard unknown dnsProviderId fails before side effects", async () => {
+  const ctx = createDeps();
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    dnsProviderId: "cloudflare"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.equal(result.error, "unknown_dns_provider:cloudflare");
+  assert.deepEqual(ctx.approvals, []);
+  assert.deepEqual(ctx.planExecutions, []);
+  assert.deepEqual(ctx.route53RegistrationWaits, []);
 });
 
 test("configureCompleteSmtp checks kill switch before every plan-approved step", async () => {

@@ -607,6 +607,7 @@ export async function configureCompleteSmtp(
   try {
     releaseRunLock = await acquireSmtpRunStateLock(deps, runId);
     runState = await loadOrCreateSmtpRunState({ deps, runId, params: input, startedAt });
+    assertDnsProviderResumeCompatible(runState, input);
     effectiveInput = inputFromRunState(input, runState);
     assertKnownNonWebdockVpsProviderId(resolveVpsProviderId(effectiveInput, runState));
     const dnsProviderId = resolveDnsProviderId(effectiveInput, runState);
@@ -1781,6 +1782,26 @@ function validateResumeScopeAgainstRunState(input: {
   if (requestDomain && state.chosenDomain && requestDomain !== state.chosenDomain) {
     throw new OrchestratorFailure("failed", 0, "run_state", "resume_scope_drift: domain");
   }
+}
+
+function assertDnsProviderResumeCompatible(
+  state: SmtpRunState,
+  request: ConfigureCompleteSmtpParams
+): void {
+  const requested = normalizeDnsProviderId(request.dnsProviderId);
+  if (!requested) return;
+  if (state.dnsProviderId === requested) return;
+  if (state.dnsProviderId && state.dnsProviderId !== requested) {
+    throw new OrchestratorFailure("failed", 0, "dns_provider_guard", "dns_provider_conflict_in_existing_run");
+  }
+  if (smtpRunStateHasProviderLockedProgress(state)) {
+    throw new OrchestratorFailure("failed", 0, "dns_provider_guard", "dns_provider_conflict_in_existing_run");
+  }
+}
+
+function smtpRunStateHasProviderLockedProgress(state: SmtpRunState): boolean {
+  if (state.lastCompletedStep > 0 || state.serverSlug || state.serverIpv4) return true;
+  return Object.values(state.steps).some((step) => step.status === "done" || step.status === "in_flight");
 }
 
 async function reconstructLegacySmtpRunState(input: {
