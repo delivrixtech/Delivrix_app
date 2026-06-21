@@ -281,7 +281,7 @@ test("bind: Contabo run sets hostname via SSH, emits manual-PTR audit, gates on 
   assert.equal(harness.auditEvents.some((e) => e.action === "oc.bind.contabo_identity_aligned"), true);
 });
 
-test("bind: Contabo run ends pending (424) when FCrDNS does not verify (operator has not set PTR yet)", async () => {
+test("bind: Contabo run ends advisory-pending (200) when FCrDNS does not verify yet", async () => {
   const ssh = okSshRunner();
   const harness = routeHarness({
     providerId: "contabo",
@@ -303,16 +303,56 @@ test("bind: Contabo run ends pending (424) when FCrDNS does not verify (operator
     approvalToken: "approval-token"
   });
 
-  assert.equal(response.statusCode, 424);
-  assert.equal(response.body.ok, false);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
   assert.equal(response.body.ptrSet, false);
   assert.equal(response.body.ptrSkipReason, "fcrdns_pending");
   assert.equal(response.body.fcrdnsVerified, false);
-  assert.equal(response.body.error, "fcrdns_pending");
+  assert.equal(response.body.fcrdnsStatus, "pending");
+  assert.equal(response.body.error, undefined);
+  assert.match(response.body.operatorAction, /Set rDNS\/PTR for 192\.0\.2\.55 to smtp\.example\.com/);
   // El hostname SI se seteo (eso no depende del PTR); el manual-PTR audit se emitio igual.
   assert.match(ssh.commands[1] ?? "", /hostnamectl set-hostname/);
   assert.equal(harness.auditEvents.some((e) => e.action === "oc.bind.contabo_manual_ptr_required"), true);
   assert.equal(harness.auditEvents.at(-1)?.action, "oc.bind.contabo_identity_pending_fcrdns");
+  assert.equal(harness.auditEvents.at(-1)?.decision, "allow");
+  assert.equal((harness.auditEvents.at(-1)?.metadata as Record<string, unknown>).nonBlocking, true);
+});
+
+test("bind: Contabo FCrDNS wait is bounded and returns advisory pending without handler timeout", async () => {
+  const sleeps: number[] = [];
+  let reverseAttempts = 0;
+  const harness = routeHarness({
+    providerId: "contabo",
+    sshRunner: okSshRunner(),
+    fcrdnsResolver: {
+      resolve4: async () => ["192.0.2.55"],
+      reverse: async () => {
+        reverseAttempts += 1;
+        return ["vmiXXXXX.contaboserver.net."];
+      }
+    },
+    fcrdnsMaxWaitMs: 20_000,
+    fcrdnsPollIntervalMs: 10_000,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+    vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", vpsProviderMock()]])
+  });
+
+  const response = await harness.request({
+    serverSlug: "contabo-12345",
+    domain: "example.com",
+    setPtr: true,
+    actorId: "operator/juanes",
+    approvalToken: "approval-token"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.ptrSkipReason, "fcrdns_pending");
+  assert.deepEqual(sleeps, [10_000, 10_000]);
+  assert.equal(reverseAttempts, 3);
 });
 
 test("bind: Contabo run fails closed (502) when SSH hostname set fails", async () => {
@@ -385,6 +425,8 @@ function routeHarness(input: {
   approvalGuard?: BindWebdockMainDomainApprovalGuard;
   fcrdnsResolver?: FcrdnsResolver;
   fcrdnsMaxWaitMs?: number;
+  fcrdnsPollIntervalMs?: number;
+  sleep?: (ms: number) => Promise<void>;
   // Canal HERMANO providerId + registry: si se pasan, el bind toma el camino del proveedor no-Webdock.
   providerId?: string;
   vpsProviderAdapters?: Map<string, VpsProvider>;
@@ -415,7 +457,8 @@ function routeHarness(input: {
         now: () => fixedNowMs + auditEvents.length,
         fcrdnsResolver: input.fcrdnsResolver ?? fcrdnsOkResolver(),
         fcrdnsMaxWaitMs: input.fcrdnsMaxWaitMs ?? 0,
-        fcrdnsPollIntervalMs: 0
+        fcrdnsPollIntervalMs: input.fcrdnsPollIntervalMs ?? 0,
+        ...(input.sleep ? { sleep: input.sleep } : {})
       }
     });
     return {
