@@ -159,3 +159,37 @@ test("configureCompleteSmtpSkillParamSchema normalizes known VPS providers", () 
   if (!parsed.success) assert.fail(parsed.error.issues.join("\n"));
   assert.equal(parsed.data.vpsProviderId, "contabo");
 });
+
+test("configureCompleteSmtpSkillParamSchema rejects unknown DNS providers fail-closed", () => {
+  const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
+    brand: "delivrix",
+    domain: "example.com",
+    provider: "route53",
+    dnsProviderId: "cloudflare",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@example.com",
+    testEmailSubject: "Smoke",
+    testEmailBody: "Smoke body"
+  });
+
+  assert.equal(parsed.success, false);
+  if (parsed.success) assert.fail("unknown DNS provider should be rejected");
+  assert.match(parsed.error.issues.join("\n"), /dnsProviderId/);
+});
+
+test("configureCompleteSmtpSkillParamSchema normalizes known DNS providers", () => {
+  const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
+    brand: "delivrix",
+    domain: "example.com",
+    provider: "route53",
+    dnsProviderId: "IONOS",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@example.com",
+    testEmailSubject: "Smoke",
+    testEmailBody: "Smoke body"
+  });
+
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail(parsed.error.issues.join("\n"));
+  assert.equal(parsed.data.dnsProviderId, "ionos");
+});

@@ -1581,6 +1581,176 @@ test("configureCompleteSmtp adopts a signed strict existing IONOS-owned domain n
   assert.equal(result.totalCostUsd, 0);
 });
 
+test("DNS#IONOS configureCompleteSmtp adopted domain stays in IONOS for DNS writes", async () => {
+  const planApproval = signedPlanApproval({ domain: "annualcorpfilings.com", requireExistingDomain: true });
+  assert.equal(planApproval.scope.plannedSteps.includes("upsert_dns_route53"), true);
+  assert.equal(planApproval.scope.plannedSteps.includes("configure_email_auth"), true);
+  assert.equal(planApproval.scope.plannedSteps.includes("upsert_dns_ionos"), false);
+
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval,
+    suggestions: { candidates: [{ domain: "fresh-delivrix.com", priceUsd: 15, available: true }] },
+    ownedDomains: ["annualcorpfilings.com"],
+    ownedDomainProvider: "ionos",
+    outcomes: {
+      4: { status: "idempotent_already_exists", serverSlug: "server10", ipv4: "45.136.70.47", costUsd: 0 },
+      9: { dkimPublicKey: "v=DKIM1; k=rsa; p=abc" }
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "annualcorpfilings.com",
+    provider: "route53",
+    dnsProviderId: "ionos",
+    requireExistingDomain: true
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(ctx.ownershipChecks, ["annualcorpfilings.com"]);
+  assert.deepEqual(ctx.route53RegistrationWaits, []);
+  assert.equal(ctx.planExecutions.some((entry) => entry.step === 2 || entry.skill === "register_domain_route53"), false);
+  assert.equal(ctx.planExecutions.some((entry) =>
+    entry.skill === "wait_for_dns_propagation" &&
+    JSON.stringify(entry.params).includes("contains:awsdns")
+  ), false);
+
+  const step6 = ctx.planExecutions.find((entry) => entry.step === 6)!;
+  assert.equal(step6.skill, "upsert_dns_ionos");
+  assert.equal(step6.dnsProviderId, "ionos");
+  assert.equal(Object.prototype.hasOwnProperty.call(step6.params, "dnsProviderId"), false);
+  assert.deepEqual(step6.params, {
+    zone: "annualcorpfilings.com",
+    records: [
+      { name: "smtp.annualcorpfilings.com", type: "A", ttl: 300, content: "45.136.70.47" },
+      { name: "annualcorpfilings.com", type: "MX", ttl: 300, content: "smtp.annualcorpfilings.com.", prio: 10 }
+    ]
+  });
+
+  const step10 = ctx.planExecutions.find((entry) => entry.step === 10)!;
+  assert.equal(step10.skill, "upsert_dns_ionos");
+  assert.equal(step10.dnsProviderId, "ionos");
+  assert.equal(Object.prototype.hasOwnProperty.call(step10.params, "dnsProviderId"), false);
+  assert.deepEqual(step10.params, {
+    zone: "annualcorpfilings.com",
+    records: [
+      { name: "annualcorpfilings.com", type: "TXT", ttl: 300, content: "v=spf1 ip4:45.136.70.47 -all" },
+      { name: "s2026a._domainkey.annualcorpfilings.com", type: "TXT", ttl: 300, content: "v=DKIM1; k=rsa; p=abc" },
+      {
+        name: "_dmarc.annualcorpfilings.com",
+        type: "TXT",
+        ttl: 300,
+        content: "v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@delivrix.com; ruf=mailto:dmarc-forensics@delivrix.com; fo=1"
+      }
+    ]
+  });
+
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.dnsProviderId, "ionos");
+  assert.equal(state.verifiedOwnedDomainProvider, "ionos");
+  assert.equal(state.steps["2"].status, "done");
+  assert.equal(state.steps["3"].status, "done");
+  assert.equal(JSON.stringify(state).includes("contains:awsdns"), false);
+});
+
+test("DNS#IONOS legacy reconstruction skips Route53 registration and awsdns NS wait", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({
+      runId: "run-legacy-ionos",
+      domain: "annualcorpfilings.com",
+      requireExistingDomain: true
+    }),
+    suggestions: { candidates: [{ domain: "fresh-delivrix.com", priceUsd: 15, available: true }] },
+    ownedDomains: ["annualcorpfilings.com"],
+    ownedDomainProvider: "ionos",
+    outcomes: {
+      9: { dkimPublicKey: "v=DKIM1; k=rsa; p=abc" }
+    }
+  });
+  await ctx.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "legacy-ionos",
+      hostname: "smtp.annualcorpfilings.com",
+      ipv4: "45.136.70.47",
+      status: "running"
+    }],
+    runBindings: [{
+      runId: "run-legacy-ionos",
+      serverSlug: "legacy-ionos",
+      domain: "annualcorpfilings.com",
+      boundAt: "2026-05-31T11:45:00.000Z",
+      source: "legacy_reconstructed"
+    }]
+  }));
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-legacy-ionos",
+    domain: "annualcorpfilings.com",
+    provider: "route53",
+    dnsProviderId: "ionos",
+    requireExistingDomain: true
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(ctx.route53RegistrationWaits, []);
+  assert.equal(ctx.planExecutions.some((entry) => entry.step === 2 || entry.step === 3), false);
+  const step6 = ctx.planExecutions.find((entry) => entry.step === 6)!;
+  assert.equal(step6.skill, "upsert_dns_ionos");
+  assert.equal(step6.dnsProviderId, "ionos");
+
+  const state = await readRunStateFull(ctx.workspace, "run-legacy-ionos");
+  assert.equal(state.dnsProviderId, "ionos");
+  assert.equal(state.steps["2"].status, "done");
+  assert.equal(state.steps["3"].status, "done");
+  assert.equal(JSON.stringify(state.steps["2"]).includes("ionos_owned_domain"), true);
+  assert.equal(JSON.stringify(state.steps["3"]).includes("contains:awsdns"), false);
+  assert.equal(JSON.stringify(state.steps["3"]).includes("ionos_authoritative_nameservers"), true);
+});
+
+test("DNS#IONOS rejects switching a persisted Route53 run state to IONOS", async () => {
+  const ctx = createDeps();
+  await seedLegacyRunStateThroughStep4(ctx.workspace, "run-1");
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    dnsProviderId: "ionos",
+    requireExistingDomain: true
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.equal(result.error, "dns_provider_conflict_in_existing_run");
+  assert.deepEqual(ctx.approvals, []);
+  assert.deepEqual(ctx.planExecutions, []);
+  assert.deepEqual(ctx.route53RegistrationWaits, []);
+});
+
+test("DNS#guard unknown dnsProviderId fails before side effects", async () => {
+  const ctx = createDeps();
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    dnsProviderId: "cloudflare"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.equal(result.error, "unknown_dns_provider:cloudflare");
+  assert.deepEqual(ctx.approvals, []);
+  assert.deepEqual(ctx.planExecutions, []);
+  assert.deepEqual(ctx.route53RegistrationWaits, []);
+});
+
 test("configureCompleteSmtp checks kill switch before every plan-approved step", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
@@ -2500,12 +2670,16 @@ async function writeRunState(
 async function readRunStateFull(workspace: OpenClawWorkspace, runId: string): Promise<{
   serverAccountId?: string;
   providerId?: string;
+  dnsProviderId?: string;
+  verifiedOwnedDomainProvider?: string;
   serverSlug?: string;
   steps: Record<string, { status: string; inputHash?: string }>;
 }> {
   return JSON.parse(await workspace.readWorkspaceFile(`inventory/smtp-runs/${runId}.json`)) as {
     serverAccountId?: string;
     providerId?: string;
+    dnsProviderId?: string;
+    verifiedOwnedDomainProvider?: string;
     serverSlug?: string;
     steps: Record<string, { status: string; inputHash?: string }>;
   };
