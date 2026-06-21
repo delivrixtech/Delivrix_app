@@ -612,6 +612,10 @@ export async function configureCompleteSmtp(
   try {
     releaseRunLock = await acquireSmtpRunStateLock(deps, runId);
     runState = await loadOrCreateSmtpRunState({ deps, runId, params: input, startedAt });
+    if (backfillSmtpRunStateServerIpv4(runState)) {
+      await persistSmtpRunState(deps, runState);
+    }
+    assertSmtpRunStateServerIpv4Integrity(runState);
     assertDnsProviderResumeCompatible(runState, input);
     effectiveInput = inputFromRunState(input, runState);
     assertKnownNonWebdockVpsProviderId(resolveVpsProviderId(effectiveInput, runState));
@@ -1436,6 +1440,44 @@ async function loadOrCreateSmtpRunState(input: {
   };
   await persistSmtpRunState(input.deps, state);
   return state;
+}
+
+function backfillSmtpRunStateServerIpv4(state: SmtpRunState): boolean {
+  if (state.serverIpv4) return false;
+  if (state.lastCompletedStep < 4) return false;
+  const recovered =
+    stringFromRunStateStepOutcome(state, 5, ["ipv4", "serverIp"]) ??
+    stringFromRunStateStepOutcome(state, 4, ["ipv4", "serverIp"]);
+  if (!recovered) return false;
+  state.serverIpv4 = recovered;
+  return true;
+}
+
+function assertSmtpRunStateServerIpv4Integrity(state: SmtpRunState): void {
+  if (state.lastCompletedStep >= 5 && !state.serverIpv4) {
+    throw new OrchestratorFailure(
+      "failed",
+      5,
+      "wait_server_running",
+      "server_ipv4_missing_in_run_state"
+    );
+  }
+}
+
+function stringFromRunStateStepOutcome(
+  state: SmtpRunState,
+  step: number,
+  keys: string[]
+): string | null {
+  const outcome = state.steps[String(step)]?.result?.outcome;
+  if (!isRecord(outcome)) return null;
+  for (const key of keys) {
+    const value = outcome[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
 }
 
 async function readSmtpRunState(

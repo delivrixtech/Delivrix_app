@@ -218,6 +218,58 @@ test("POST /v1/webdock/servers/create uses Contabo default polling of 60 attempt
   assert.equal(getServerCalls, 60);
 });
 
+test("POST /v1/webdock/servers/create clamps oversized Contabo polling env values", async () => {
+  let getServerCalls = 0;
+  const route = await routeHarness({
+    providerId: "contabo",
+    adapter: mockAdapter({
+      createServer: async () => ({
+        serverSlug: "contabo-203386827",
+        eventId: "cb-contabo",
+        ipv4: null,
+        status: "provisioning",
+        source: liveWebdockSource()
+      }),
+      getServer: async () => {
+        getServerCalls += 1;
+        return {
+          slug: "contabo-203386827",
+          name: "smtp-delivrix-test",
+          hostname: "smtp-delivrix-test",
+          mainDomain: "smtp-delivrix-test",
+          ipv4: "",
+          status: "provisioning",
+          accountId: "contabo"
+        };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.delivrix.test",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, {
+    WEBDOCK_SERVERS_ENABLE_CREATE: "true",
+    CONTABO_PROVISION_MAX_POLLS: "999999",
+    CONTABO_PROVISION_POLL_INTERVAL_MS: "999999"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.pollCount, 240);
+  assert.equal(getServerCalls, 240);
+});
+
 test("POST /v1/webdock/servers/create reuses an existing server by hostname", async () => {
   let createCalled = false;
   const route = await routeHarness({
