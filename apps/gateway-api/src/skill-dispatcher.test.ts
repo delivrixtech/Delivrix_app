@@ -113,6 +113,43 @@ test("dispatcher maps handler timeout to 504", async () => {
   assert.equal((result.summary as { error: string }).error, "handler_timeout");
 });
 
+test("dispatcher supports provider-specific dynamic handler timeouts", async () => {
+  const dynamicTimeoutEntry: SkillHandlerEntry = {
+    paramSchema: passthroughParamSchema(),
+    timeoutMs: ({ providerId }) => providerId === "contabo" ? 50 : 5,
+    canRollback: true,
+    invoke: async ({ response }) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      json(response, 200, { ok: true });
+    }
+  };
+
+  const webdockResult = await dispatchSkillHandler({
+    skill: "bind_webdock_main_domain",
+    params: { serverSlug: "srv-delivrix", domain: "example.com" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: fakeDeps(),
+    handlers: { bind_webdock_main_domain: dynamicTimeoutEntry }
+  });
+  assert.equal(webdockResult.statusCode, 504);
+  assert.deepEqual(webdockResult.summary, { error: "handler_timeout", timeoutMs: 5 });
+
+  const contaboResult = await dispatchSkillHandler({
+    skill: "bind_webdock_main_domain",
+    params: { serverSlug: "contabo-123", domain: "example.com" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    providerId: "contabo",
+    deps: {
+      ...fakeDeps(),
+      vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", {} as VpsProvider]])
+    },
+    handlers: { bind_webdock_main_domain: dynamicTimeoutEntry }
+  });
+  assert.equal(contaboResult.statusCode, 200);
+});
+
 test("dispatcher maps thrown handler to 500", async () => {
   const result = await dispatchSkillHandler({
     skill: "register_domain_route53",
@@ -586,6 +623,14 @@ function statusEntry(
 
 function fakeDeps(): any {
   return {};
+}
+
+function passthroughParamSchema(): SkillHandlerEntry["paramSchema"] {
+  return {
+    safeParse(value: unknown) {
+      return { success: true, data: value as Record<string, unknown> };
+    }
+  } as SkillHandlerEntry["paramSchema"];
 }
 
 async function readJson(request: AsyncIterable<unknown>): Promise<Record<string, unknown>> {
