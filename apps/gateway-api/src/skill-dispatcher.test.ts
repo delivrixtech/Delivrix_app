@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
-import { dispatchSkillHandler, type SkillDispatcherDeps, type SkillHandlerEntry } from "./skill-dispatcher.ts";
+import {
+  dispatchSkillHandler,
+  resolveContaboBindTiming,
+  type SkillDispatcherDeps,
+  type SkillHandlerEntry
+} from "./skill-dispatcher.ts";
 import { ionosUpsertParamSchema, route53RegisterParamSchema, route53UpsertParamSchema, webdockCreateParamSchema } from "./skill-schemas.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
 import type { WebdockServerCreateAdapter, WebdockServerDeleteAdapter } from "./routes/webdock-servers.ts";
@@ -148,6 +153,50 @@ test("dispatcher supports provider-specific dynamic handler timeouts", async () 
     handlers: { bind_webdock_main_domain: dynamicTimeoutEntry }
   });
   assert.equal(contaboResult.statusCode, 200);
+});
+
+test("dispatcher clamps Contabo FCrDNS timing env values", () => {
+  assert.deepEqual(
+    resolveContaboBindTiming(undefined, {
+      CONTABO_FCRDNS_MAX_WAIT_MS: "999999",
+      CONTABO_FCRDNS_POLL_INTERVAL_MS: "1"
+    }, 120_000),
+    { handlerTimeoutMs: 120_000 }
+  );
+
+  assert.deepEqual(
+    resolveContaboBindTiming("contabo", {
+      CONTABO_FCRDNS_MAX_WAIT_MS: "abc",
+      CONTABO_FCRDNS_POLL_INTERVAL_MS: "-10"
+    }, 120_000),
+    {
+      handlerTimeoutMs: 240_000,
+      fcrdnsMaxWaitMs: 180_000
+    }
+  );
+
+  assert.deepEqual(
+    resolveContaboBindTiming("contabo", {
+      CONTABO_FCRDNS_MAX_WAIT_MS: "-10",
+      CONTABO_FCRDNS_POLL_INTERVAL_MS: "NaN"
+    }, 120_000),
+    {
+      handlerTimeoutMs: 240_000,
+      fcrdnsMaxWaitMs: 180_000
+    }
+  );
+
+  assert.deepEqual(
+    resolveContaboBindTiming("contabo", {
+      CONTABO_FCRDNS_MAX_WAIT_MS: "999999",
+      CONTABO_FCRDNS_POLL_INTERVAL_MS: "1"
+    }, 120_000),
+    {
+      handlerTimeoutMs: 300_000,
+      fcrdnsMaxWaitMs: 240_000,
+      fcrdnsPollIntervalMs: 5_000
+    }
+  );
 });
 
 test("dispatcher maps thrown handler to 500", async () => {
