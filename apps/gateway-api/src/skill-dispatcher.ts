@@ -185,13 +185,23 @@ export interface DispatchResult {
   settled?: Promise<DispatchResult>;
 }
 
+interface SkillHandlerTimeoutInput {
+  params: Record<string, unknown>;
+  deps: SkillDispatcherDeps;
+  accountId?: string;
+  providerId?: string;
+  dnsProviderId?: string;
+}
+
+type SkillHandlerTimeoutMs = number | ((input: SkillHandlerTimeoutInput) => number);
+
 export interface SkillDispatcher {
   dispatch(input: Omit<DispatchSkillHandlerInput, "deps" | "handlers">): Promise<DispatchResult>;
 }
 
 export interface SkillHandlerEntry {
   paramSchema: SkillParamSchema;
-  timeoutMs: number;
+  timeoutMs: SkillHandlerTimeoutMs;
   canRollback: boolean;
   invoke(input: {
     request: IncomingMessage;
@@ -203,6 +213,12 @@ export interface SkillHandlerEntry {
     dnsProviderId?: string;
   }): Promise<void>;
 }
+
+const contaboBindFcrdnsDefaultMaxWaitMs = 180_000;
+const contaboBindFcrdnsMaxWaitCapMs = 240_000;
+const contaboBindFcrdnsMinPollIntervalMs = 5_000;
+const contaboBindHandlerTimeoutCapMs = 300_000;
+const contaboBindHandlerTimeoutPaddingMs = 60_000;
 
 export function createSkillDispatcher(deps: SkillDispatcherDeps): SkillDispatcher {
   return {
@@ -271,7 +287,13 @@ export async function dispatchSkillHandler(input: DispatchSkillHandlerInput): Pr
   };
   const { request, response, getResponse } = createInternalHttpAdapter({ body });
   const startedAt = Date.now();
-  const timeoutMs = input.timeoutMs ?? entry.timeoutMs;
+  const timeoutMs = input.timeoutMs ?? resolveSkillHandlerTimeoutMs(entry.timeoutMs, {
+    params: paramsValidation.data,
+    deps: input.deps,
+    accountId: input.accountId,
+    providerId: input.providerId,
+    dnsProviderId: input.dnsProviderId
+  });
 
   const killSwitch = await input.deps.readKillSwitch?.();
   if (killSwitch?.enabled) {
@@ -457,7 +479,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
   };
   const bindWebdockMainDomain: SkillHandlerEntry = {
     paramSchema: bindWebdockMainDomainSkillParamSchema,
-    timeoutMs: 120_000,
+    timeoutMs: ({ providerId, deps }) => contaboBindHandlerTimeoutMs(providerId, deps.env, 120_000),
     canRollback: true,
     // providerId (canal HERMANO) viaja por invoke -> el handler elige CONTABO BIND PATH (hostname por
     // SSH + PTR manual + FCrDNS) cuando es un proveedor no-Webdock presente en vpsProviderAdapters;
@@ -478,7 +500,8 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
           vpsProviderAdapters: deps.vpsProviderAdapters,
           sshRunner: deps.smtpSshRunner,
           workspace: deps.workspace,
-          now: () => (deps.now?.() ?? new Date()).getTime()
+          now: () => (deps.now?.() ?? new Date()).getTime(),
+          ...contaboBindFcrdnsDeps(providerId, deps.env)
         }
       })
   };
@@ -723,6 +746,67 @@ function unknownExternalDnsProviderId(providerId: string | undefined, adapters?:
   const provider = providerId?.trim().toLowerCase();
   if (!provider || provider === "route53") return null;
   return adapters?.has(provider) ? null : provider;
+}
+
+function contaboBindFcrdnsMaxWaitMs(
+  providerId: string | undefined,
+  env: Record<string, string | undefined> | undefined
+): number | undefined {
+  if (providerId?.trim().toLowerCase() !== "contabo") return undefined;
+  return boundedEnvMs(
+    env?.CONTABO_FCRDNS_MAX_WAIT_MS,
+    contaboBindFcrdnsDefaultMaxWaitMs,
+    contaboBindFcrdnsMaxWaitCapMs
+  );
+}
+
+function contaboBindFcrdnsPollIntervalMs(
+  providerId: string | undefined,
+  env: Record<string, string | undefined> | undefined
+): number | undefined {
+  if (providerId?.trim().toLowerCase() !== "contabo") return undefined;
+  const parsed = Number(env?.CONTABO_FCRDNS_POLL_INTERVAL_MS);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.max(contaboBindFcrdnsMinPollIntervalMs, Math.floor(parsed));
+}
+
+function boundedEnvMs(value: string | undefined, fallback: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(Math.floor(parsed), max);
+}
+
+function contaboBindFcrdnsDeps(
+  providerId: string | undefined,
+  env: Record<string, string | undefined> | undefined
+): { fcrdnsMaxWaitMs?: number; fcrdnsPollIntervalMs?: number } {
+  const maxWaitMs = contaboBindFcrdnsMaxWaitMs(providerId, env);
+  if (maxWaitMs === undefined) return {};
+  const pollIntervalMs = contaboBindFcrdnsPollIntervalMs(providerId, env);
+  return {
+    fcrdnsMaxWaitMs: maxWaitMs,
+    ...(pollIntervalMs === undefined ? {} : { fcrdnsPollIntervalMs: pollIntervalMs })
+  };
+}
+
+function contaboBindHandlerTimeoutMs(
+  providerId: string | undefined,
+  env: Record<string, string | undefined> | undefined,
+  fallbackMs: number
+): number {
+  const maxWaitMs = contaboBindFcrdnsMaxWaitMs(providerId, env);
+  if (maxWaitMs === undefined) return fallbackMs;
+  return Math.min(
+    contaboBindHandlerTimeoutCapMs,
+    Math.max(fallbackMs, maxWaitMs + contaboBindHandlerTimeoutPaddingMs)
+  );
+}
+
+function resolveSkillHandlerTimeoutMs(
+  timeoutMs: SkillHandlerTimeoutMs,
+  input: SkillHandlerTimeoutInput
+): number {
+  return typeof timeoutMs === "function" ? timeoutMs(input) : timeoutMs;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
