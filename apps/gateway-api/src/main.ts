@@ -286,6 +286,7 @@ import {
   defaultMaxRequestBodyBytes
 } from "./request-body.ts";
 import { shouldAuditWebdockInventoryPoll } from "./webdock-inventory-audit.ts";
+import { waitForServerRunning } from "./server-running-wait.ts";
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import { createAuditChainStoreFromEnv } from "./audit-chain.ts";
 import { createAutoRollbackManagerFromEnv } from "./auto-rollback.ts";
@@ -381,101 +382,6 @@ function listWebdockCreationAccounts(): Array<{ accountId: string; enabled: bool
     enabled: adapter.canCreate()
   }));
 }
-
-type ServerRunningAdapter = Pick<VpsProvider, "getServer">;
-
-async function waitForServerRunning(input: {
-  params: Record<string, unknown>;
-  serverAccountId?: string;
-  providerId?: string;
-}): Promise<Record<string, unknown>> {
-  const serverSlug = stringParam(input.params, "serverSlug");
-  if (!serverSlug) {
-    throw new Error("wait_server_running requires serverSlug");
-  }
-  const maxWaitMs = positiveIntegerOrDefault(input.params.maxWaitMs, 600_000);
-  const provider = normalizeRuntimeProviderId(input.providerId);
-  const adapter = resolveServerRunningAdapter({
-    providerId: provider,
-    serverAccountId: input.serverAccountId
-  });
-  const pollIntervalMs = provider === "contabo"
-    ? positiveIntegerOrDefault(process.env.CONTABO_PROVISION_POLL_INTERVAL_MS, 10_000)
-    : positiveIntegerOrDefault(process.env.WEBDOCK_PROVISION_POLL_INTERVAL_MS, 5_000);
-  const startedAt = Date.now();
-  let attempts = 0;
-  let lastStatus: unknown = "unknown";
-  let lastIpv4: string | null = null;
-
-  while (true) {
-    attempts += 1;
-    const server = await adapter.getServer(serverSlug);
-    lastStatus = server.status;
-    lastIpv4 = typeof server.ipv4 === "string" && server.ipv4.trim() ? server.ipv4.trim() : null;
-    if (server.status === "running" && lastIpv4) {
-      return {
-        ok: true,
-        status: "running",
-        providerId: provider ?? "webdock",
-        serverAccountId: input.serverAccountId ?? "ops",
-        serverSlug: server.slug,
-        ipv4: lastIpv4,
-        serverIp: lastIpv4,
-        pollCount: attempts,
-        durationMs: Date.now() - startedAt
-      };
-    }
-
-    const remainingMs = maxWaitMs - (Date.now() - startedAt);
-    if (remainingMs <= 0) {
-      return {
-        ok: false,
-        status: "timeout_waiting_for_server_ip",
-        providerId: provider ?? "webdock",
-        serverAccountId: input.serverAccountId ?? "ops",
-        serverSlug,
-        ipv4: lastIpv4,
-        serverIp: lastIpv4,
-        lastStatus,
-        pollCount: attempts,
-        durationMs: Date.now() - startedAt
-      };
-    }
-
-    await sleepMs(Math.min(pollIntervalMs, remainingMs));
-  }
-}
-
-function resolveServerRunningAdapter(input: {
-  providerId?: string;
-  serverAccountId?: string;
-}): ServerRunningAdapter {
-  if (input.providerId && input.providerId !== "webdock") {
-    const adapter = vpsProviderAdapters.get(input.providerId);
-    if (!adapter) {
-      throw new Error(`unknown_vps_provider:${input.providerId}`);
-    }
-    return adapter;
-  }
-  const accountId = input.serverAccountId?.trim() || "ops";
-  if (accountId === "ops") return webdockOpsAdapter;
-  return webdockCreateAdapters.get(accountId) ?? webdockOpsAdapter;
-}
-
-function normalizeRuntimeProviderId(value: string | undefined): string | undefined {
-  const normalized = value?.trim().toLowerCase();
-  if (!normalized || normalized === "webdock") return undefined;
-  return normalized;
-}
-
-function stringParam(params: Record<string, unknown>, key: string): string | null {
-  const value = params[key];
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
-}
 const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
 const awsRoute53DnsAdapter = new AwsRoute53DnsAdapter();
 const ionosDnsAdapter = new IonosDnsActuator();
@@ -569,6 +475,12 @@ const configureSmtpRuntimeDeps = {
     if (input.skill === "wait_server_running") {
       return waitForServerRunning({
         params: input.params,
+        adapters: {
+          webdockOpsAdapter,
+          webdockCreateAdapters,
+          vpsProviderAdapters
+        },
+        env: process.env,
         serverAccountId: input.serverAccountId,
         providerId: input.providerId
       });

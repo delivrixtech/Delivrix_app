@@ -990,6 +990,8 @@ function hostnamesEquivalent(left: string, right: string): boolean {
   const normalizedLeft = normalizeDomainLoose(left);
   const normalizedRight = normalizeDomainLoose(right);
   if (normalizedLeft === normalizedRight) return true;
+  // Fallback para Contabo displayName: la API reemplaza puntos por guiones.
+  // Ejemplo: smtp.example.com equivale a smtp-example-com solo en servidores Contabo-like.
   return normalizeProviderHostnameLoose(normalizedLeft) === normalizeProviderHostnameLoose(normalizedRight);
 }
 
@@ -1262,6 +1264,8 @@ function resolveProvisioningPolling(input: {
     parseNonNegativeInteger(input.env.CONTABO_PROVISION_POLL_INTERVAL_MS) ?? defaultContaboPollIntervalMs;
   const defaultPolls =
     parseNonNegativeInteger(input.env.CONTABO_PROVISION_MAX_POLLS) ?? defaultContaboMaxPolls;
+  // Rango operativo documentado: intervalos env de Contabo se clampean a 60s y 240 polls.
+  // Los overrides explícitos del request siguen validados por normalizePollInterval/normalizeMaxPolls.
   return {
     pollIntervalMs: normalizePollInterval(input.pollIntervalMs, Math.min(defaultInterval, 60_000)),
     maxPolls: normalizeMaxPolls(input.maxPolls, Math.min(defaultPolls, 240), 240)
@@ -1276,7 +1280,7 @@ function normalizeRouteProviderId(value: string | undefined): "contabo" | undefi
 function parseNonNegativeInteger(value: string | undefined): number | null {
   if (!value) return null;
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+  return Number.isFinite(parsed) && Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function requiredString(
