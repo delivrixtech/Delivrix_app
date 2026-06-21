@@ -52,6 +52,7 @@ export interface BindWebdockMainDomainResult {
   identityCallbackId?: string;
   ptrSet: boolean;
   ptrSkipReason?: "ipv4_missing" | "operator_opt_out" | "fcrdns_pending" | "set_failed";
+  operatorAction?: string;
   fcrdnsVerified: boolean;
   fcrdnsStatus: "verified" | "pending";
   fcrdns?: {
@@ -127,6 +128,7 @@ export interface BindWebdockMainDomainDeps {
 }
 
 const approvalMaxAgeMs = 15 * 60 * 1000;
+const defaultNonWebdockFcrdnsMaxWaitMs = 180_000;
 const defaultFcrdnsResolver: FcrdnsResolver = {
   resolve4: (hostname) => dns.resolve4(hostname),
   reverse: (ip) => dns.reverse(ip)
@@ -476,9 +478,9 @@ export async function handleBindWebdockMainDomain(input: {
  *  - Setea el HOSTNAME a smtp.<domain> por SSH (Contabo NO tiene identity API), con el MISMO runner y
  *    key de operador que usa el provisioning (step 9). Mirror de WebdockRealAdapter.setServerHostnameViaSsh.
  *  - Emite oc.bind.contabo_manual_ptr_required con IP + PTR objetivo: el rDNS Contabo es panel-only, el
- *    operador lo setea a mano. El FCrDNS verify (reusado tal cual) gatea hasta que el PTR propague.
- *  - Si FCrDNS no verifica (operador aun no puso el PTR), termina 424 pending/reintentable (NO pasa en
- *    silencio): un re-run despues de setear el PTR completa el step.
+ *    operador lo setea a mano. El FCrDNS verify (reusado tal cual) espera acotado y deja advisory.
+ *  - Si FCrDNS no verifica dentro del wait acotado (operador aun no puso el PTR, o no propago), devuelve
+ *    200 advisory/no-bloqueante con operatorAction; un re-run posterior puede confirmar el alignment.
  * Devuelve el MISMO BindWebdockMainDomainResult para que los steps 9-14 sigan sin cambios.
  */
 async function bindNonWebdockMainDomain(input: {
@@ -614,24 +616,25 @@ async function bindNonWebdockMainDomain(input: {
       serverSlug: params.serverSlug,
       serverIp: server.ipv4,
       targetPtr: identityDomain,
-      instruction: `Set rDNS/PTR for ${server.ipv4} to ${identityDomain} in the ${providerId} panel (no API). FCrDNS gates SMTP until it propagates.`,
+      instruction: `Set rDNS/PTR for ${server.ipv4} to ${identityDomain} in the ${providerId} panel (no API). FCrDNS remains advisory-pending until it propagates.`,
       approvalEventId: approval.eventId ?? null,
       approvalArtifactId: approval.artifactId ?? null
     }
   });
 
-  // FCrDNS verify REUSADO tal cual: dig -x IP == smtp.<domain> AND smtp.<domain> -> IP, con retry.
+  // FCrDNS verify REUSADO tal cual: dig -x IP == smtp.<domain> AND smtp.<domain> -> IP, con retry acotado.
   const fcrdns = await verifyFcrdnsWithRetry({
     resolver: deps.fcrdnsResolver ?? defaultFcrdnsResolver,
     smtpHost: identityDomain,
     ipv4: server.ipv4,
-    maxWaitMs: deps.fcrdnsMaxWaitMs ?? 900_000,
+    maxWaitMs: deps.fcrdnsMaxWaitMs ?? defaultNonWebdockFcrdnsMaxWaitMs,
     pollIntervalMs: deps.fcrdnsPollIntervalMs ?? 10_000,
     sleep: deps.sleep ?? sleep
   });
 
   if (!fcrdns.verified) {
-    // PTR aun no propagado (operador no lo puso, o DNS no convergio): pending/reintentable, NO success.
+    // PTR aun no propagado (operador no lo puso, o DNS no convergio): advisory no-bloqueante.
+    const operatorAction = `Set rDNS/PTR for ${server.ipv4} to ${identityDomain} in the ${providerId} panel, then rerun verification when DNS has propagated.`;
     const event = await deps.auditLog.append({
       actorType: "operator",
       actorId: params.actorId,
@@ -639,7 +642,7 @@ async function bindNonWebdockMainDomain(input: {
       targetType: "webdock_server",
       targetId: params.serverSlug,
       riskLevel: "critical",
-      decision: "reject",
+      decision: "allow",
       humanApproved: true,
       approverIds: [params.actorId],
       metadata: {
@@ -651,6 +654,8 @@ async function bindNonWebdockMainDomain(input: {
         identitySet,
         ptrSet: false,
         ptrSkipReason: "fcrdns_pending",
+        operatorAction,
+        nonBlocking: true,
         fcrdns,
         alreadyBound,
         approvalEventId: approval.eventId ?? null,
@@ -663,21 +668,21 @@ async function bindNonWebdockMainDomain(input: {
       serverIp: server.ipv4,
       status: "identity_pending_fcrdns"
     });
-    json(response, 424, {
-      ok: false,
+    json(response, 200, {
+      ok: true,
       serverSlug: params.serverSlug,
       mainDomain: identityDomain,
       previousMainDomain: currentMainDomain,
       identitySet,
       ptrSet: false,
       ptrSkipReason: "fcrdns_pending",
+      operatorAction,
       fcrdnsVerified: false,
       fcrdnsStatus: "pending",
       fcrdns: fcrdnsSnapshot(fcrdns),
       alreadyBound,
       eventId: eventId(event),
-      durationMs: deps.now() - startedAt,
-      error: "fcrdns_pending"
+      durationMs: deps.now() - startedAt
     } satisfies BindWebdockMainDomainResult);
     return;
   }

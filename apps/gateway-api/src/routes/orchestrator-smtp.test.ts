@@ -303,6 +303,8 @@ test("configureCompleteSmtp emits rollback proposal when identity bind fails aft
   assert.equal(ctx.rollbacks.length, 1);
   assert.equal(ctx.rollbacks[0].skill, "delete_webdock_server");
   assert.equal(ctx.rollbacks[0].params.serverSlug, "srv-delivrix");
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.serverCreatedByRun, true);
 });
 
 test("configureCompleteSmtp maps operator rejection during A propagation wait to cancelled_by_operator", async () => {
@@ -657,6 +659,7 @@ test("DoD#1 regresion single-account byte-identico: serverAccountId=ops, step4 p
   // runState persiste serverAccountId="ops"; el rollback/delete enruta a "ops".
   const state = await readRunStateFull(ctx.workspace, "run-1");
   assert.equal(state.serverAccountId, "ops");
+  assert.equal(state.serverCreatedByRun, true);
   assert.equal(ctx.rollbacks.length, 1);
   assert.equal(ctx.rollbacks[0].serverAccountId, "ops");
 });
@@ -701,6 +704,7 @@ test("DoD#2 multicuenta selecciona la cuenta con budget y propaga su accountId a
   // runState persiste la cuenta ganadora; el rollback/delete enruta a "secondary" (no a ops).
   const state = await readRunStateFull(ctx.workspace, "run-1");
   assert.equal(state.serverAccountId, "secondary");
+  assert.equal(state.serverCreatedByRun, true);
   assert.equal(ctx.rollbacks[0].serverAccountId, "secondary");
 });
 
@@ -792,9 +796,10 @@ test("failover de pago: si TODAS las cuentas rechazan el pago, el run falla limp
   assert.deepEqual([...new Set(step4Attempts.map((entry) => entry.serverAccountId))].sort(), ["ops", "secondary"]);
 });
 
-test("DoD#5 backward-compat: un runState viejo SIN serverAccountId hace rollback/delete contra ops sin error", async () => {
+test("rollback guard: un runState viejo sin serverCreatedByRun NO propone borrar el VPS", async () => {
   // Sembramos un runState legacy (sin serverAccountId) con el step 4 ya hecho, server creado, y
-  // forzamos que el bind (step 8) falle al reanudar -> el rollback debe defaultear a "ops".
+  // forzamos que el bind (step 8) falle al reanudar -> no sabemos si el run creo el VPS, asi que
+  // se evita proponer un delete destructivo por defecto.
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
     planApproval: signedPlanApproval()
@@ -815,12 +820,103 @@ test("DoD#5 backward-compat: un runState viejo SIN serverAccountId hace rollback
 
   assert.equal(result.status, "failed");
   assert.equal(result.failedStep, 8);
-  // No re-selecciono cuenta (el step 4 ya estaba done): reuso el serverAccountId persistido, que al
-  // ser legacy es undefined -> rollback/delete defaultea a "ops" sin romper.
-  assert.equal(ctx.rollbacks.length, 1);
-  assert.equal(ctx.rollbacks[0].serverAccountId, "ops");
+  assert.equal(ctx.rollbacks.length, 0);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.rollback_delete_skipped_reused_server"), true);
+  const skipEvent = ctx.auditEvents.find((event) => event.action === "oc.orchestrator.rollback_delete_skipped_reused_server");
+  assert.ok(skipEvent);
+  assert.equal((skipEvent.metadata as Record<string, unknown>).reason, "server_created_by_run_unknown");
   assert.equal(ctx.creationAccountReads, 0, "no re-selecciona cuenta en un resume con step 4 ya hecho");
 });
+
+test("rollback guard: runState legacy con serverCreatedByRun=true conserva propuesta de delete", async () => {
+  // Resume de un run anterior a serverAccountId pero posterior al flag de ownership: si el run sabe
+  // que creo el VPS, el rollback delete sigue permitido y cae al accountId legacy "ops".
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval()
+  });
+  ctx.deps.executePlanApprovedStep = (() => {
+    const original = ctx.deps.executePlanApprovedStep!;
+    return async (input: PlanApprovedStepInput) => {
+      if (input.step === 8) {
+        ctx.planExecutions.push(input);
+        return { status: "execution_failed", planStepTokenId: "plan-step-8", outcome: { error: "bind_failed" }, durationMs: 8, error: "bind_failed" };
+      }
+      return original(input);
+    };
+  })();
+  await seedLegacyRunStateThroughStep4(ctx.workspace, "run-1", { serverCreatedByRun: true });
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 8);
+  assert.equal(ctx.rollbacks.length, 1);
+  assert.equal(ctx.rollbacks[0].skill, "delete_webdock_server");
+  assert.equal(ctx.rollbacks[0].serverAccountId, "ops");
+  assert.deepEqual(ctx.rollbacks[0].params, { serverSlug: "srv-delivrix", domain: "delivrixops.com" });
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.rollback_delete_skipped_reused_server"), false);
+});
+
+test("rollback guard: adopted idempotent server does not get a delete proposal after later failure", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    outcomes: {
+      4: { status: "idempotent_already_exists", serverSlug: "srv-delivrix", slug: "srv-delivrix", ipv4: "203.0.113.10", costUsd: 0 }
+    }
+  });
+  ctx.deps.executePlanApprovedStep = (() => {
+    const original = ctx.deps.executePlanApprovedStep!;
+    return async (input: PlanApprovedStepInput) => {
+      if (input.step === 8) {
+        ctx.planExecutions.push(input);
+        return { status: "execution_failed", planStepTokenId: "plan-step-8", outcome: { error: "bind_failed" }, durationMs: 8, error: "bind_failed" };
+      }
+      return original(input);
+    };
+  })();
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 8);
+  assert.equal(state.serverCreatedByRun, false);
+  assert.equal(ctx.rollbacks.length, 0);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.rollback_delete_skipped_reused_server"), true);
+});
+
+for (const reusedStatus of ["adopted", "reused"]) {
+  test(`rollback guard: ${reusedStatus} server status does not get a delete proposal after later failure`, async () => {
+    const ctx = createDeps({
+      env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+      planApproval: signedPlanApproval(),
+      outcomes: {
+        4: { status: reusedStatus, serverSlug: "srv-delivrix", slug: "srv-delivrix", ipv4: "203.0.113.10", costUsd: 0 }
+      }
+    });
+    ctx.deps.executePlanApprovedStep = (() => {
+      const original = ctx.deps.executePlanApprovedStep!;
+      return async (input: PlanApprovedStepInput) => {
+        if (input.step === 8) {
+          ctx.planExecutions.push(input);
+          return { status: "execution_failed", planStepTokenId: "plan-step-8", outcome: { error: "bind_failed" }, durationMs: 8, error: "bind_failed" };
+        }
+        return original(input);
+      };
+    })();
+
+    const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+    const state = await readRunStateFull(ctx.workspace, "run-1");
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failedStep, 8);
+    assert.equal(state.serverCreatedByRun, false);
+    assert.equal(ctx.rollbacks.length, 0);
+    assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.rollback_delete_skipped_reused_server"), true);
+  });
+}
 
 test("DoD#6 todas las cuentas no-live => preserva fail-open (no no_eligible_accounts silencioso)", async () => {
   const ctx = createDeps({
@@ -1800,12 +1896,105 @@ test("DNS#IONOS legacy reconstruction skips Route53 registration and awsdns NS w
 
   const state = await readRunStateFull(ctx.workspace, "run-legacy-ionos");
   assert.equal(state.dnsProviderId, "ionos");
+  assert.equal(state.serverCreatedByRun, false);
   assert.equal(state.steps["2"].status, "done");
   assert.equal(state.steps["3"].status, "done");
   assert.equal(JSON.stringify(state.steps["2"]).includes("ionos_owned_domain"), true);
   assert.equal(JSON.stringify(state.steps["3"]).includes("contains:awsdns"), false);
   assert.equal(JSON.stringify(state.steps["3"]).includes("ionos_authoritative_nameservers"), true);
 });
+
+test("legacy reconstruction marks idempotent server bindings as not created by this run", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({
+      runId: "run-legacy-adopted",
+      domain: "annualcorpfilings.com",
+      requireExistingDomain: true
+    }),
+    suggestions: { candidates: [{ domain: "fresh-delivrix.com", priceUsd: 15, available: true }] },
+    ownedDomains: ["annualcorpfilings.com"],
+    ownedDomainProvider: "ionos",
+    outcomes: {
+      9: { dkimPublicKey: "v=DKIM1; k=rsa; p=abc" }
+    }
+  });
+  await ctx.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "legacy-adopted",
+      hostname: "smtp.annualcorpfilings.com",
+      ipv4: "45.136.70.47",
+      status: "running"
+    }],
+    runBindings: [{
+      runId: "run-legacy-adopted",
+      serverSlug: "legacy-adopted",
+      domain: "annualcorpfilings.com",
+      boundAt: "2026-05-31T11:45:00.000Z",
+      source: "idempotent_already_exists"
+    }]
+  }));
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-legacy-adopted",
+    domain: "annualcorpfilings.com",
+    provider: "route53",
+    dnsProviderId: "ionos",
+    requireExistingDomain: true
+  }, ctx.deps);
+  const state = await readRunStateFull(ctx.workspace, "run-legacy-adopted");
+
+  assert.equal(result.status, "completed");
+  assert.equal(state.serverCreatedByRun, false);
+});
+
+for (const source of ["adopted", "reused"]) {
+  test(`legacy reconstruction marks ${source} server bindings as not created by this run`, async () => {
+    const ctx = createDeps({
+      env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+      planApproval: signedPlanApproval({
+        runId: `run-legacy-${source}`,
+        domain: "annualcorpfilings.com",
+        requireExistingDomain: true
+      }),
+      suggestions: { candidates: [{ domain: "fresh-delivrix.com", priceUsd: 15, available: true }] },
+      ownedDomains: ["annualcorpfilings.com"],
+      ownedDomainProvider: "ionos",
+      outcomes: {
+        9: { dkimPublicKey: "v=DKIM1; k=rsa; p=abc" }
+      }
+    });
+    await ctx.workspace.updateInventoryJson("webdock-servers.json", () => ({
+      servers: [{
+        slug: `legacy-${source}`,
+        hostname: "smtp.annualcorpfilings.com",
+        ipv4: "45.136.70.47",
+        status: "running"
+      }],
+      runBindings: [{
+        runId: `run-legacy-${source}`,
+        serverSlug: `legacy-${source}`,
+        domain: "annualcorpfilings.com",
+        boundAt: "2026-05-31T11:45:00.000Z",
+        source
+      }]
+    }));
+
+    const result = await configureCompleteSmtp({
+      ...validInput(),
+      runId: `run-legacy-${source}`,
+      domain: "annualcorpfilings.com",
+      provider: "route53",
+      dnsProviderId: "ionos",
+      requireExistingDomain: true
+    }, ctx.deps);
+    const state = await readRunStateFull(ctx.workspace, `run-legacy-${source}`);
+
+    assert.equal(result.status, "completed");
+    assert.equal(state.serverCreatedByRun, false);
+  });
+}
 
 test("DNS#IONOS rejects switching a persisted Route53 run state to IONOS", async () => {
   const ctx = createDeps();
@@ -2766,6 +2955,7 @@ async function writeRunState(
 async function readRunStateFull(workspace: OpenClawWorkspace, runId: string): Promise<{
   serverAccountId?: string;
   providerId?: string;
+  serverCreatedByRun?: boolean;
   dnsProviderId?: string;
   verifiedOwnedDomainProvider?: string;
   serverSlug?: string;
@@ -2775,6 +2965,7 @@ async function readRunStateFull(workspace: OpenClawWorkspace, runId: string): Pr
   return JSON.parse(await workspace.readWorkspaceFile(`inventory/smtp-runs/${runId}.json`)) as {
     serverAccountId?: string;
     providerId?: string;
+    serverCreatedByRun?: boolean;
     dnsProviderId?: string;
     verifiedOwnedDomainProvider?: string;
     serverSlug?: string;
@@ -2795,7 +2986,11 @@ function fourServers(): Array<{ creationDate: string }> {
 // Siembra un runState LEGACY (sin serverAccountId) con los pasos 1-5 ya "done" (server creado),
 // para reanudar y forzar el fallo del bind (step 8) sin re-seleccionar cuenta. hashInput debe
 // coincidir con el de los params que el orquestador recomputa en cada paso, o el resume aborta.
-async function seedLegacyRunStateThroughStep4(workspace: OpenClawWorkspace, runId: string): Promise<void> {
+async function seedLegacyRunStateThroughStep4(
+  workspace: OpenClawWorkspace,
+  runId: string,
+  options: { serverCreatedByRun?: boolean } = {}
+): Promise<void> {
   const hash = (params: Record<string, unknown>) => createHash("sha256").update(stableStringify(params)).digest("hex");
   const done = (step: number, skill: string, params: Record<string, unknown>, outcome: unknown, estimatedCostUsd?: number) => ({
     step,
@@ -2830,6 +3025,7 @@ async function seedLegacyRunStateThroughStep4(workspace: OpenClawWorkspace, runI
     serverSlug: "srv-delivrix",
     serverIpv4: "203.0.113.10",
     // NOTA: serverAccountId AUSENTE a proposito (runState viejo, pre-multicuenta).
+    ...(options.serverCreatedByRun === undefined ? {} : { serverCreatedByRun: options.serverCreatedByRun }),
     selector: "s2026a",
     budgetSpentUsd: 0,
     lastCompletedStep: 5,

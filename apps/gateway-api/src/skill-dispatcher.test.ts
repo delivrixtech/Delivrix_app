@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
-import { dispatchSkillHandler, type SkillDispatcherDeps, type SkillHandlerEntry } from "./skill-dispatcher.ts";
+import {
+  dispatchSkillHandler,
+  resolveContaboBindTiming,
+  type SkillDispatcherDeps,
+  type SkillHandlerEntry
+} from "./skill-dispatcher.ts";
 import { ionosUpsertParamSchema, route53RegisterParamSchema, route53UpsertParamSchema, webdockCreateParamSchema } from "./skill-schemas.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
 import type { WebdockServerCreateAdapter, WebdockServerDeleteAdapter } from "./routes/webdock-servers.ts";
@@ -111,6 +116,87 @@ test("dispatcher maps handler timeout to 504", async () => {
   });
   assert.equal(result.statusCode, 504);
   assert.equal((result.summary as { error: string }).error, "handler_timeout");
+});
+
+test("dispatcher supports provider-specific dynamic handler timeouts", async () => {
+  const dynamicTimeoutEntry: SkillHandlerEntry = {
+    paramSchema: passthroughParamSchema(),
+    timeoutMs: ({ providerId }) => providerId === "contabo" ? 50 : 5,
+    canRollback: true,
+    invoke: async ({ response }) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      json(response, 200, { ok: true });
+    }
+  };
+
+  const webdockResult = await dispatchSkillHandler({
+    skill: "bind_webdock_main_domain",
+    params: { serverSlug: "srv-delivrix", domain: "example.com" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: fakeDeps(),
+    handlers: { bind_webdock_main_domain: dynamicTimeoutEntry }
+  });
+  assert.equal(webdockResult.statusCode, 504);
+  assert.deepEqual(webdockResult.summary, { error: "handler_timeout", timeoutMs: 5 });
+
+  const contaboResult = await dispatchSkillHandler({
+    skill: "bind_webdock_main_domain",
+    params: { serverSlug: "contabo-123", domain: "example.com" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    providerId: "contabo",
+    deps: {
+      ...fakeDeps(),
+      vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", {} as VpsProvider]])
+    },
+    handlers: { bind_webdock_main_domain: dynamicTimeoutEntry }
+  });
+  assert.equal(contaboResult.statusCode, 200);
+});
+
+test("dispatcher clamps Contabo FCrDNS timing env values", () => {
+  assert.deepEqual(
+    resolveContaboBindTiming(undefined, {
+      CONTABO_FCRDNS_MAX_WAIT_MS: "999999",
+      CONTABO_FCRDNS_POLL_INTERVAL_MS: "1"
+    }, 120_000),
+    { handlerTimeoutMs: 120_000 }
+  );
+
+  assert.deepEqual(
+    resolveContaboBindTiming("contabo", {
+      CONTABO_FCRDNS_MAX_WAIT_MS: "abc",
+      CONTABO_FCRDNS_POLL_INTERVAL_MS: "-10"
+    }, 120_000),
+    {
+      handlerTimeoutMs: 240_000,
+      fcrdnsMaxWaitMs: 180_000
+    }
+  );
+
+  assert.deepEqual(
+    resolveContaboBindTiming("contabo", {
+      CONTABO_FCRDNS_MAX_WAIT_MS: "-10",
+      CONTABO_FCRDNS_POLL_INTERVAL_MS: "NaN"
+    }, 120_000),
+    {
+      handlerTimeoutMs: 240_000,
+      fcrdnsMaxWaitMs: 180_000
+    }
+  );
+
+  assert.deepEqual(
+    resolveContaboBindTiming("contabo", {
+      CONTABO_FCRDNS_MAX_WAIT_MS: "999999",
+      CONTABO_FCRDNS_POLL_INTERVAL_MS: "1"
+    }, 120_000),
+    {
+      handlerTimeoutMs: 300_000,
+      fcrdnsMaxWaitMs: 240_000,
+      fcrdnsPollIntervalMs: 5_000
+    }
+  );
 });
 
 test("dispatcher maps thrown handler to 500", async () => {
@@ -586,6 +672,14 @@ function statusEntry(
 
 function fakeDeps(): any {
   return {};
+}
+
+function passthroughParamSchema(): SkillHandlerEntry["paramSchema"] {
+  return {
+    safeParse(value: unknown) {
+      return { success: true, data: value as Record<string, unknown> };
+    }
+  } as SkillHandlerEntry["paramSchema"];
 }
 
 async function readJson(request: AsyncIterable<unknown>): Promise<Record<string, unknown>> {
