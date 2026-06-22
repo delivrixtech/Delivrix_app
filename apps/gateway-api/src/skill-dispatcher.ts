@@ -479,6 +479,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         readCanvasState: deps.readCanvasState,
         env: deps.env,
         providerId,
+        serverAccountId: accountId,
         now: deps.now
       })
   };
