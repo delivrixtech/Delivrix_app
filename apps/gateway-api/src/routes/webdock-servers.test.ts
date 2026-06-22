@@ -323,6 +323,8 @@ test("POST /v1/webdock/servers/create reuses an existing server by hostname", as
     runId: "run-controldelivrix",
     serverSlug: "server10",
     domain: "controldelivrix.app",
+    providerId: "webdock",
+    serverAccountId: "ops",
     boundAt: fixedNow.toISOString(),
     source: "idempotent_already_exists"
   }]);
@@ -529,6 +531,179 @@ test("POST /v1/webdock/servers/create reuses same-run Contabo binding before inv
   );
 });
 
+test("POST /v1/webdock/servers/create reuses scoped Contabo domain binding before degraded inventory", async () => {
+  let createCalled = false;
+  let listCalled = false;
+  const route = await routeHarness({
+    providerId: "contabo",
+    adapter: mockAdapter({
+      getServer: async (slug) => ({
+        slug,
+        name: "smtp-annualcorpfilings-com",
+        hostname: "smtp-annualcorpfilings-com",
+        mainDomain: "smtp-annualcorpfilings-com",
+        ipv4: "",
+        status: "provisioning",
+        accountId: "contabo"
+      }),
+      listServers: async () => {
+        listCalled = true;
+        return {
+          servers: [],
+          source: { ...liveWebdockSource(), responseOk: false, errorMessage: "contabo_inventory_degraded" }
+        };
+      },
+      createServer: async () => {
+        createCalled = true;
+        throw new Error("createServer must not run");
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [],
+    runBindings: [{
+      runId: "run-previous",
+      serverSlug: "contabo-203386827",
+      domain: "smtp.annualcorpfilings.com",
+      providerId: "contabo",
+      serverAccountId: "contabo",
+      boundAt: fixedNow.toISOString(),
+      source: "created"
+    }]
+  }));
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    runId: "run-rerun",
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.annualcorpfilings.com",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "idempotent_already_exists");
+  assert.equal(response.body.serverSlug, "contabo-203386827");
+  assert.equal(response.body.ipv4, null);
+  assert.equal(listCalled, false);
+  assert.equal(createCalled, false);
+});
+
+test("POST /v1/webdock/servers/create ignores cross-provider domain binding and fails closed on degraded inventory", async () => {
+  let createCalled = false;
+  let listCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      getServer: async () => {
+        throw new Error("cross-provider binding must not call getServer");
+      },
+      listServers: async () => {
+        listCalled = true;
+        return {
+          servers: [],
+          source: { ...liveWebdockSource(), responseOk: false, errorMessage: "webdock_inventory_degraded" }
+        };
+      },
+      createServer: async () => {
+        createCalled = true;
+        throw new Error("createServer must not run");
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [],
+    runBindings: [{
+      runId: "run-contabo",
+      serverSlug: "contabo-203386827",
+      domain: "smtp.annualcorpfilings.com",
+      providerId: "contabo",
+      serverAccountId: "contabo",
+      boundAt: fixedNow.toISOString(),
+      source: "created"
+    }]
+  }));
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.annualcorpfilings.com",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body.blockers, ["webdock_inventory_degraded"]);
+  assert.equal(listCalled, true);
+  assert.equal(createCalled, false);
+});
+
+test("POST /v1/webdock/servers/create blocks same-run binding scope mismatch before inventory", async () => {
+  let createCalled = false;
+  let listCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      listServers: async () => {
+        listCalled = true;
+        throw new Error("listServers must not run on same-run scope mismatch");
+      },
+      createServer: async () => {
+        createCalled = true;
+        throw new Error("createServer must not run");
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-webdock-plan",
+      executionId: "exec-webdock-123",
+      approvedAt: "2026-05-27T15:59:00.000Z"
+    }])
+  });
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [],
+    runBindings: [{
+      runId: "run-same",
+      serverSlug: "contabo-203386827",
+      domain: "smtp.annualcorpfilings.com",
+      providerId: "contabo",
+      serverAccountId: "contabo",
+      boundAt: fixedNow.toISOString(),
+      source: "created"
+    }]
+  }));
+  await appendApproval(route.auditLog, "artifact-webdock-plan", "exec-webdock-123");
+
+  const response = await route({
+    runId: "run-same",
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.annualcorpfilings.com",
+    imageSlug: "ubuntu-2404",
+    publicKey,
+    actorId: "operator/juanes",
+    approvalToken: "exec-webdock-123"
+  }, { WEBDOCK_SERVERS_ENABLE_CREATE: "true" });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.body.blockers, ["webdock_run_binding_scope_mismatch"]);
+  assert.equal(listCalled, false);
+  assert.equal(createCalled, false);
+});
+
 test("POST /v1/webdock/servers/create fails closed on ambiguous existing servers", async () => {
   let createCalled = false;
   const route = await routeHarness({
@@ -696,6 +871,7 @@ test("DELETE /v1/webdock/servers/:slug deletes server and removes active invento
   });
   await appendApproval(route.auditLog, "artifact-webdock-delete", "exec-webdock-delete-123");
   await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    metadata: { owner: "qa" },
     servers: [{
       slug: "mail-delivrix-test",
       hostname: "mail.delivrix.test",
@@ -709,7 +885,11 @@ test("DELETE /v1/webdock/servers/:slug deletes server and removes active invento
       createdAt: fixedNow.toISOString(),
       updatedAt: fixedNow.toISOString(),
       port25UnlockRequired: true
-    }]
+    }],
+    runBindings: [
+      { runId: "run-delete", serverSlug: "mail-delivrix-test", domain: "mail.delivrix.test", providerId: "webdock", serverAccountId: "ops", boundAt: fixedNow.toISOString(), source: "created" },
+      { runId: "run-keep", serverSlug: "mail-keep-test", domain: "mail.keep.test", providerId: "webdock", serverAccountId: "ops", boundAt: fixedNow.toISOString(), source: "created" }
+    ]
   }));
 
   const response = await route("Mail-Delivrix-Test", {
@@ -725,12 +905,16 @@ test("DELETE /v1/webdock/servers/:slug deletes server and removes active invento
   assert.deepEqual(deletedSlugs, ["mail-delivrix-test"]);
 
   const inventory = await route.workspace.readInventoryJson<{
+    metadata: { owner: string };
     servers: Array<{ slug: string }>;
     deletedServers: Array<{ slug: string; eventId: string; reason: string }>;
+    runBindings: Array<{ runId: string; serverSlug: string }>;
   }>("webdock-servers.json");
+  assert.equal(inventory?.metadata.owner, "qa");
   assert.equal(inventory?.servers.length, 0);
   assert.equal(inventory?.deletedServers[0].slug, "mail-delivrix-test");
   assert.equal(inventory?.deletedServers[0].reason, "cleanup sprint smoke");
+  assert.deepEqual(inventory?.runBindings, [{ runId: "run-keep", serverSlug: "mail-keep-test", domain: "mail.keep.test", providerId: "webdock", serverAccountId: "ops", boundAt: fixedNow.toISOString(), source: "created" }]);
   assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.webdock.server_deleted");
 });
 
@@ -900,6 +1084,7 @@ async function routeHarness(input: {
   adapter: WebdockServerCreateAdapter;
   canvasState: CanvasLiveStateSnapshot;
   providerId?: string;
+  serverAccountId?: string;
 }) {
   const dir = await mkdtemp(join(tmpdir(), "webdock-create-route-"));
   const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
@@ -930,6 +1115,7 @@ async function routeHarness(input: {
         readCanvasState: () => input.canvasState,
         env,
         providerId: input.providerId,
+        serverAccountId: input.serverAccountId,
         now: () => fixedNow,
         sleep: async () => {}
       });
