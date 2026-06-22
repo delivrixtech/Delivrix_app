@@ -12,7 +12,7 @@
  * commit 52a451d) es la fase siguiente.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from "react";
 import {
   ArrowDown,
   ArrowLeft,
@@ -2295,25 +2295,75 @@ function LiveTab(_props: {
         Demo {demoMode ? "ON" : "OFF"}
         </button>
       </div>
-      <PendingOpenClawApprovalPanel
-        proposals={pendingApprovals.proposals}
-        error={pendingApprovals.error}
-        onRefresh={pendingApprovals.refresh}
-      />
-      <LiveTool
-        tasks={tasks}
-        activeTaskId={activeTaskId}
-        onSelectTask={handleSelectTask}
-        currentAction={currentAction}
-        artifact={artifact}
-        onEditBlock={handleEditBlock}
-        onApprove={handleApprove}
-        onReject={handleReject}
-        isConnected={isConnected}
-        actionPending={actionPending}
-      />
+      <CanvasLocalErrorBoundary resetKey={`approval:${pendingApprovals.proposals.map((proposal) => proposal.id).join(",")}`} title="No pude abrir el panel de firma">
+        <PendingOpenClawApprovalPanel
+          proposals={pendingApprovals.proposals}
+          error={pendingApprovals.error}
+          onRefresh={pendingApprovals.refresh}
+        />
+      </CanvasLocalErrorBoundary>
+      <CanvasLocalErrorBoundary resetKey={`live-tool:${activeTaskId ?? "none"}:${demoMode ? "demo" : liveStream.connection}`} title="No pude abrir el preview del canvas">
+        <LiveTool
+          tasks={tasks}
+          activeTaskId={activeTaskId}
+          onSelectTask={handleSelectTask}
+          currentAction={currentAction}
+          artifact={artifact}
+          onEditBlock={handleEditBlock}
+          onApprove={handleApprove}
+          onReject={handleReject}
+          isConnected={isConnected}
+          actionPending={actionPending}
+        />
+      </CanvasLocalErrorBoundary>
     </div>
   );
+}
+
+class CanvasLocalErrorBoundary extends Component<
+  { children: ReactNode; resetKey: string; title: string },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error(error);
+  }
+
+  componentDidUpdate(prevProps: { resetKey: string }) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+
+    return (
+      <div
+        className="flex flex-col"
+        style={{
+          gap: 8,
+          padding: "12px 16px",
+          background: "var(--color-warning-soft)",
+          borderBottom: "1px solid var(--color-warning-border)",
+          color: "var(--color-warning-fg)"
+        }}
+        role="alert"
+      >
+        <span className="font-[family-name:var(--font-caption)] font-semibold uppercase" style={{ fontSize: 10, letterSpacing: "0.6px" }}>
+          {this.props.title}
+        </span>
+        <span className="font-[family-name:var(--font-mono)]" style={{ fontSize: 11 }}>
+          {this.state.error.message || "Error renderizando este bloque."}
+        </span>
+      </div>
+    );
+  }
 }
 
 function LiveEmptyOrError({

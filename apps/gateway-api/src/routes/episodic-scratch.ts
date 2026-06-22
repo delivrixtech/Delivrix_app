@@ -29,6 +29,7 @@ export async function handleReadEpisodicScratchHttp(deps: EpisodicScratchReadDep
     return json(deps.response, 401, { error: "read_boundary_token_invalid" });
   }
 
+  let grounded = false;
   try {
     const url = requestUrl(deps.request);
     const intentId = optionalParam(url, "intentId");
@@ -38,7 +39,7 @@ export async function handleReadEpisodicScratchHttp(deps: EpisodicScratchReadDep
     const sinceDays = optionalIntegerParam(url, "sinceDays");
     const limit = optionalIntegerParam(url, "limit");
     const weighted = url.searchParams.get("weighted") === "true";
-    const grounded = url.searchParams.get("grounded") === "true";
+    grounded = url.searchParams.get("grounded") === "true";
     const query = optionalParam(url, "query");
     const keywords = optionalCsvParam(url, "keywords");
     const hasGroundingSignals = Boolean(query) || keywords.length > 0;
@@ -98,6 +99,9 @@ export async function handleReadEpisodicScratchHttp(deps: EpisodicScratchReadDep
         details: episodicScratchValidationDetails(error)
       });
     }
+    if (isScratchStoreConnectionError(error)) {
+      return json(deps.response, 200, emptyScratchFallback(grounded));
+    }
     return json(deps.response, 503, {
       error: "episodic_scratch_unavailable",
       details: { _errors: ["Scratch store query failed."] }
@@ -110,6 +114,22 @@ function episodicScratchValidationDetails(error: EpisodicScratchValidationError)
     code: error.code,
     ...(error.details ? error.details : {}),
     _errors: ["Episodic scratch validation failed."]
+  };
+}
+
+function emptyScratchFallback(grounded: boolean): Record<string, unknown> {
+  if (grounded) {
+    return {
+      status: "abstain",
+      reason: "no_verified_relevant_memory",
+      memories: [],
+      discarded: []
+    };
+  }
+
+  return {
+    entries: [],
+    grounded: []
   };
 }
 
@@ -184,3 +204,35 @@ function json(response: ServerResponse, statusCode: number, payload: unknown): v
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+function isScratchStoreConnectionError(error: unknown): boolean {
+  const chain: unknown[] = [];
+  let current: unknown = error;
+  while (current && chain.length < 4) {
+    chain.push(current);
+    current = isRecord(current) ? current.cause : undefined;
+  }
+
+  return chain.some((item) => {
+    if (!isRecord(item)) return false;
+    const code = typeof item.code === "string" ? item.code : "";
+    if (connectionErrorCodes.has(code)) return true;
+    if (/^08/.test(code)) return true;
+    const message = item.message instanceof Error
+      ? item.message.message
+      : typeof item.message === "string" ? item.message : "";
+    return /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|Connection terminated|pool (?:is )?not available|pool unavailable|Cannot use a pool after calling end/i.test(message);
+  });
+}
+
+const connectionErrorCodes = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "53300",
+  "57P01",
+  "57P02",
+  "57P03"
+]);
