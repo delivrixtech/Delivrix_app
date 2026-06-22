@@ -302,6 +302,150 @@ test("OpenClawBedrockBridge builds Bedrock image and text attachment blocks", as
   });
 });
 
+test("OpenClawBedrockBridge marks truncated text attachments in the Bedrock context", async () => {
+  let capturedBody: Record<string, unknown> | null = null;
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    client: {
+      send: async (command) => {
+        capturedBody = JSON.parse(String(command.input.body));
+        return { body: [streamJson({ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } })] };
+      }
+    }
+  });
+
+  await bridge.sendMessage({
+    msgId: "attach-truncated-1",
+    message: "lee el runbook",
+    attachments: [{
+      name: "runbook.md",
+      mimeType: "text/markdown",
+      dataBase64: Buffer.from("a".repeat(50_010)).toString("base64")
+    }]
+  });
+  await bridge.streamHistory("attach-truncated-1", {});
+
+  assert.ok(capturedBody);
+  const messages = (capturedBody as { messages: Array<{ content: Array<Record<string, unknown>> }> }).messages;
+  const context = String(messages[0].content[0].text);
+  assert.match(context, /truncated="true"/);
+  assert.match(context, /este adjunto fue truncado/);
+  assert.match(context, /\.\.\.\[TRUNCATED_AT_50000_CHARS\]/);
+});
+
+test("OpenClawBedrockBridge evicts old attachment payloads from in-memory conversation history", async () => {
+  const payloads: Array<Record<string, unknown>> = [];
+  const firstPng = pngBase64("first");
+  const secondPng = pngBase64("second");
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    client: {
+      send: async (command) => {
+        payloads.push(JSON.parse(String(command.input.body)));
+        return { body: [streamJson({ type: "content_block_delta", delta: { type: "text_delta", text: `ok-${payloads.length}` } })] };
+      }
+    }
+  });
+
+  await bridge.sendMessage({
+    msgId: "attach-memory-1",
+    conversationId: "conv-memory",
+    message: "primer adjunto",
+    attachments: [{ name: "first.png", mimeType: "image/png", dataBase64: firstPng }]
+  });
+  await bridge.streamHistory("attach-memory-1", {});
+  await bridge.sendMessage({
+    msgId: "attach-memory-2",
+    conversationId: "conv-memory",
+    message: "segundo adjunto",
+    attachments: [{ name: "second.png", mimeType: "image/png", dataBase64: secondPng }]
+  });
+  await bridge.streamHistory("attach-memory-2", {});
+  await bridge.sendMessage({ msgId: "attach-memory-3", conversationId: "conv-memory", message: "continua" });
+  await bridge.streamHistory("attach-memory-3", {});
+
+  const thirdPayload = JSON.stringify(payloads[2]);
+  assert.equal(thirdPayload.includes(firstPng), false);
+  assert.equal(thirdPayload.includes(secondPng), true);
+  assert.match(thirdPayload, /attachment payloads evicted from gateway memory/);
+  assert.match(thirdPayload, /first\.png image\/png/);
+});
+
+test("OpenClawBedrockBridge blocks oversized Bedrock input before provider call", async () => {
+  let calls = 0;
+  const canvasEvents: Array<Record<string, unknown>> = [];
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    maxBedrockInputChars: 32,
+    canvasLiveEvents: {
+      async emit(event) {
+        canvasEvents.push(event as Record<string, unknown>);
+        return event;
+      }
+    },
+    client: {
+      send: async () => {
+        calls += 1;
+        return { body: [streamJson({ type: "content_block_delta", delta: { type: "text_delta", text: "unexpected" } })] };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "budget-1", message: "mensaje largo que excede presupuesto" });
+  const events: ChatStreamEvent[] = [];
+  await bridge.streamHistory("budget-1", { onBlocked: (event) => events.push(event) });
+
+  assert.equal(calls, 0);
+  assert.equal(events[0]?.type, "ASSISTANT_BLOCKED");
+  assert.equal(events[0]?.reason, "bedrock_input_budget_exceeded");
+  assert.equal(canvasEvents.at(-1)?.type, "oc.task.update");
+  assert.equal(canvasEvents.at(-1)?.status, "failed");
+});
+
+test("OpenClawBedrockBridge warns the operator when persisted chat history cannot be rehydrated", async () => {
+  const statePath = join(await mkdtemp(join(tmpdir(), "openclaw-chat-bad-")), "not-a-dir");
+  await writeFile(statePath, "not a directory", "utf8");
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    chatHistoryStore: new OpenClawChatHistoryStore({ stateDir: statePath }),
+    client: {
+      send: async () => ({ body: [streamJson({ type: "content_block_delta", delta: { type: "text_delta", text: "respuesta sin historia" } })] })
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "history-fail-1", conversationId: "conv-bad-history", message: "continua" });
+  const events: ChatStreamEvent[] = [];
+  await bridge.streamHistory("history-fail-1", {
+    onDelta: (event) => events.push(event),
+    onDone: (event) => events.push(event)
+  });
+
+  assert.equal(events[0]?.type, "ASSISTANT_DELTA");
+  assert.match(events[0]?.type === "ASSISTANT_DELTA" ? events[0].delta : "", /No pude cargar el historial persistido/);
+  assert.equal(events[1]?.type, "ASSISTANT_DONE");
+  assert.match(events[1]?.type === "ASSISTANT_DONE" ? events[1].content : "", /respuesta sin historia/);
+});
+
 test("OpenClawBedrockBridge falls back to OPENCLAW_SYSTEM_PROMPT path when bundle is missing", async () => {
   const fallbackPath = await promptFile("Fallback system prompt");
   let payload: Record<string, unknown> | null = null;
@@ -980,6 +1124,13 @@ async function promptFile(content: string): Promise<string> {
 
 function streamJson(value: unknown): { chunk: { bytes: Uint8Array } } {
   return { chunk: { bytes: new TextEncoder().encode(JSON.stringify(value)) } };
+}
+
+function pngBase64(label: string): string {
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from(label)
+  ]).toString("base64");
 }
 
 function toolUseStream(toolUseId: string, name: string, inputJson: string): Array<{ chunk: { bytes: Uint8Array } }> {
