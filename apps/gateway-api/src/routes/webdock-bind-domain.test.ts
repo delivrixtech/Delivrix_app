@@ -217,11 +217,12 @@ test("bind_webdock_main_domain rejects PTR opt-out because FCrDNS is mandatory",
 
 // --- CONTABO BIND PATH (providerId no-Webdock) -----------------------------
 
-test("bind: Contabo run sets hostname via SSH, emits manual-PTR audit, gates on FCrDNS, never calls Webdock setServerIdentity", async () => {
+test("bind: Contabo run sets hostname via SSH, updates PTR by API, gates on FCrDNS, never calls Webdock setServerIdentity", async () => {
   let webdockIdentityCalls = 0;
   let webdockGetServerCalls = 0;
   const ssh = okSshRunner();
   const contaboGetCalls: string[] = [];
+  const ptrCalls: Array<{ ip: string; hostname: string }> = [];
   const harness = routeHarness({
     providerId: "contabo",
     sshRunner: ssh,
@@ -232,6 +233,10 @@ test("bind: Contabo run sets hostname via SSH, emits manual-PTR audit, gates on 
         getServer: async (slug) => {
           contaboGetCalls.push(slug);
           return contaboServerFixture();
+        },
+        setReverseDns: async (ip, hostname) => {
+          ptrCalls.push({ ip, hostname });
+          return { ok: true, status: 204 };
         }
       })
     ]]),
@@ -272,27 +277,45 @@ test("bind: Contabo run sets hostname via SSH, emits manual-PTR audit, gates on 
   assert.match(ssh.commands[1], /hostnamectl set-hostname/);
   assert.doesNotMatch(ssh.commands[1], /\bsudo\b/);
   assert.match(ssh.commands[1], /127\.0\.1\.1/);
-  // Audit de PTR manual con IP + PTR objetivo.
-  const ptrEvent = harness.auditEvents.find((e) => e.action === "oc.bind.contabo_manual_ptr_required");
-  assert.ok(ptrEvent, "emits oc.bind.contabo_manual_ptr_required");
+  // PTR API seteado antes del cierre aligned, con IP + PTR objetivo auditados.
+  assert.deepEqual(ptrCalls, [{ ip: "192.0.2.55", hostname: "smtp.example.com" }]);
+  const ptrEvent = harness.auditEvents.find((e) => e.action === "oc.bind.contabo_ptr_set");
+  assert.ok(ptrEvent, "emits oc.bind.contabo_ptr_set");
   assert.equal((ptrEvent?.metadata as Record<string, unknown>).serverIp, "192.0.2.55");
   assert.equal((ptrEvent?.metadata as Record<string, unknown>).targetPtr, "smtp.example.com");
+  assert.equal((ptrEvent?.metadata as Record<string, unknown>).status, 204);
+  assert.equal(harness.auditEvents.some((e) => e.action === "oc.bind.contabo_manual_ptr_required"), false);
   // Cierre aligned (Contabo-specific action).
   assert.equal(harness.auditEvents.some((e) => e.action === "oc.bind.contabo_identity_aligned"), true);
 });
 
 test("bind: Contabo run ends advisory-pending (200) when FCrDNS does not verify yet", async () => {
   const ssh = okSshRunner();
+  const order: string[] = [];
   const harness = routeHarness({
     providerId: "contabo",
     sshRunner: ssh,
     // PTR aun no propagado: reverse NO devuelve smtp.example.com -> FCrDNS no verifica.
     fcrdnsResolver: {
-      resolve4: async () => ["192.0.2.55"],
-      reverse: async () => ["vmiXXXXX.contaboserver.net."]
+      resolve4: async () => {
+        order.push("resolve4");
+        return ["192.0.2.55"];
+      },
+      reverse: async () => {
+        order.push("reverse");
+        return ["vmiXXXXX.contaboserver.net."];
+      }
     },
     fcrdnsMaxWaitMs: 0,
-    vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", vpsProviderMock()]])
+    vpsProviderAdapters: new Map<string, VpsProvider>([[
+      "contabo",
+      vpsProviderMock({
+        setReverseDns: async () => {
+          order.push("ptr");
+          return { ok: true, status: 204 };
+        }
+      })
+    ]])
   });
 
   const response = await harness.request({
@@ -310,13 +333,108 @@ test("bind: Contabo run ends advisory-pending (200) when FCrDNS does not verify 
   assert.equal(response.body.fcrdnsVerified, false);
   assert.equal(response.body.fcrdnsStatus, "pending");
   assert.equal(response.body.error, undefined);
-  assert.match(response.body.operatorAction, /Set rDNS\/PTR for 192\.0\.2\.55 to smtp\.example\.com/);
-  // El hostname SI se seteo (eso no depende del PTR); el manual-PTR audit se emitio igual.
+  assert.match(response.body.operatorAction, /PTR API set 192\.0\.2\.55 to smtp\.example\.com/);
+  // El hostname SI se seteo (eso no depende del PTR); el PUT va antes del FCrDNS.
   assert.match(ssh.commands[1] ?? "", /hostnamectl set-hostname/);
-  assert.equal(harness.auditEvents.some((e) => e.action === "oc.bind.contabo_manual_ptr_required"), true);
+  assert.equal(order[0], "ptr");
+  assert.equal(harness.auditEvents.some((e) => e.action === "oc.bind.contabo_ptr_set"), true);
+  assert.equal(harness.auditEvents.some((e) => e.action === "oc.bind.contabo_manual_ptr_required"), false);
   assert.equal(harness.auditEvents.at(-1)?.action, "oc.bind.contabo_identity_pending_fcrdns");
   assert.equal(harness.auditEvents.at(-1)?.decision, "allow");
   assert.equal((harness.auditEvents.at(-1)?.metadata as Record<string, unknown>).nonBlocking, true);
+  assert.equal((harness.auditEvents.at(-1)?.metadata as Record<string, unknown>).ptrSetByApi, true);
+});
+
+test("bind: Contabo PTR API failure audits the failure and still returns advisory pending", async () => {
+  const order: string[] = [];
+  const harness = routeHarness({
+    providerId: "contabo",
+    sshRunner: okSshRunner(),
+    fcrdnsResolver: {
+      resolve4: async () => {
+        order.push("resolve4");
+        return ["192.0.2.55"];
+      },
+      reverse: async () => {
+        order.push("reverse");
+        return ["vmiXXXXX.contaboserver.net."];
+      }
+    },
+    fcrdnsMaxWaitMs: 0,
+    vpsProviderAdapters: new Map<string, VpsProvider>([[
+      "contabo",
+      vpsProviderMock({
+        setReverseDns: async () => {
+          order.push("ptr");
+          return { ok: false, status: 401, detail: "Unauthorized | invalid token" };
+        }
+      })
+    ]])
+  });
+
+  const response = await harness.request({
+    serverSlug: "contabo-12345",
+    domain: "example.com",
+    setPtr: true,
+    actorId: "operator/juanes",
+    approvalToken: "approval-token"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+  assert.equal(response.body.error, undefined);
+  assert.equal(response.body.ptrSet, false);
+  assert.equal(response.body.ptrSkipReason, "fcrdns_pending");
+  assert.equal(response.body.fcrdnsStatus, "pending");
+  assert.equal(order[0], "ptr");
+  assert.match(response.body.operatorAction, /Set rDNS\/PTR for 192\.0\.2\.55 to smtp\.example\.com/);
+  assert.match(response.body.operatorAction, /Automatic PTR API attempt failed: Unauthorized \| invalid token/);
+
+  const failureEvent = harness.auditEvents.find((e) => e.action === "oc.bind.contabo_ptr_set_failed");
+  assert.ok(failureEvent, "emits oc.bind.contabo_ptr_set_failed");
+  const failureMetadata = failureEvent.metadata as Record<string, unknown>;
+  assert.equal(failureMetadata.status, 401);
+  assert.equal(failureMetadata.detail, "Unauthorized | invalid token");
+  assert.match(String(failureMetadata.operatorAction), /Set rDNS\/PTR/);
+  assert.equal(harness.auditEvents.at(-1)?.action, "oc.bind.contabo_identity_pending_fcrdns");
+  assert.equal((harness.auditEvents.at(-1)?.metadata as Record<string, unknown>).ptrFallbackReason, "api_failed");
+});
+
+test("bind: Contabo adapter without PTR API keeps the manual PTR fallback audit", async () => {
+  const providerWithoutPtrApi: VpsProvider = {
+    isLive: () => true,
+    canWrite: () => true,
+    canCreate: () => true,
+    createServer: async () => {
+      throw new Error("createServer not used in bind");
+    },
+    getServer: async () => contaboServerFixture()
+  };
+  const harness = routeHarness({
+    providerId: "contabo",
+    sshRunner: okSshRunner(),
+    fcrdnsResolver: {
+      resolve4: async () => ["192.0.2.55"],
+      reverse: async () => ["vmiXXXXX.contaboserver.net."]
+    },
+    fcrdnsMaxWaitMs: 0,
+    vpsProviderAdapters: new Map<string, VpsProvider>([["contabo", providerWithoutPtrApi]])
+  });
+
+  const response = await harness.request({
+    serverSlug: "contabo-12345",
+    domain: "example.com",
+    setPtr: true,
+    actorId: "operator/juanes",
+    approvalToken: "approval-token"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ptrSet, false);
+  assert.match(response.body.operatorAction, /Set rDNS\/PTR for 192\.0\.2\.55 to smtp\.example\.com/);
+  assert.equal(harness.auditEvents.some((e) => e.action === "oc.bind.contabo_manual_ptr_required"), true);
+  assert.equal(harness.auditEvents.some((e) => e.action === "oc.bind.contabo_ptr_set"), false);
+  assert.equal((harness.auditEvents.at(-1)?.metadata as Record<string, unknown>).ptrFallbackReason, "api_unavailable");
 });
 
 test("bind: Contabo FCrDNS wait is bounded and returns advisory pending without handler timeout", async () => {
@@ -511,6 +629,7 @@ function vpsProviderMock(overrides: Partial<VpsProvider> = {}): VpsProvider {
       throw new Error("createServer not used in bind");
     },
     getServer: overrides.getServer ?? (async () => contaboServerFixture()),
+    setReverseDns: overrides.setReverseDns ?? (async () => ({ ok: true, status: 204 })),
     ...overrides
   };
 }
