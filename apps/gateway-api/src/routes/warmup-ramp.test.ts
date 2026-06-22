@@ -132,6 +132,7 @@ test("RampScheduler · demo-fast ejecuta 5 batches a 0/2/4/6/8 min con fake time
   assert.equal(final?.state, "completed");
   assert.equal(final?.batches.filter((b) => b.status === "sent").length, 5);
   assert.equal(harness.commands.length, 5);
+  assert.equal(harness.commands.every((command) => command.serverSlug === "mail-delivrix-ramp"), true);
   assert.equal(harness.commands[0].command, "/usr/sbin/sendmail -t -f 'noreply@delivrix-ramp.com'");
   // Email counts crecen 3,9,27,81,150
   assert.deepEqual(

@@ -126,6 +126,135 @@ test("token: fetches once and reuses within TTL, refreshes after expiry", async 
   assert.equal(form.get("username"), "hostlatam@proton.me");
 });
 
+test("token: concurrent compute calls share one in-flight grant", async () => {
+  let tokenHits = 0;
+  let releaseToken!: () => void;
+  const tokenGate = new Promise<void>((resolve) => {
+    releaseToken = resolve;
+  });
+  installFetch([
+    {
+      match: (url) => url.includes("/openid-connect/token"),
+      respond: async () => {
+        tokenHits += 1;
+        await tokenGate;
+        return Response.json({ access_token: "tok-singleflight", expires_in: 300 });
+      }
+    },
+    {
+      match: (url, m) => url.includes("/v1/compute/instances/") && m === "GET",
+      respond: (url) => {
+        const id = url.split("/").at(-1);
+        return Response.json({
+          data: [{ instanceId: Number(id), status: "running", ipConfig: { v4: { ip: "1.2.3.4" } } }]
+        });
+      }
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({ ...baseConfig, cacheTtlMs: 0 });
+  const one = adapter.getServer("contabo-1");
+  const two = adapter.getServer("contabo-2");
+  await Promise.resolve();
+  assert.equal(tokenHits, 1, "second concurrent call waits on the same token promise");
+  releaseToken();
+  const [first, second] = await Promise.all([one, two]);
+
+  assert.equal(first.slug, "contabo-1");
+  assert.equal(second.slug, "contabo-2");
+  assert.equal(tokenHits, 1);
+});
+
+test("token: invalid_grant fails fast with actionable errorReason", async () => {
+  let tokenHits = 0;
+  installFetch([
+    {
+      match: (url) => url.includes("/openid-connect/token"),
+      respond: () => {
+        tokenHits += 1;
+        return Response.json({ error: "invalid_grant", error_description: "Invalid user credentials" }, { status: 401 });
+      }
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({ ...baseConfig, cacheTtlMs: 0 });
+  const inventory = await adapter.listServers();
+
+  assert.equal(tokenHits, 1, "invalid_grant must not retry");
+  assert.equal(inventory.source.responseOk, false);
+  assert.equal(inventory.source.errorMessage, "401_invalid_grant");
+});
+
+test("token: 429 respects Retry-After before retrying the grant", async () => {
+  let tokenHits = 0;
+  const sleeps: number[] = [];
+  installFetch([
+    {
+      match: (url) => url.includes("/openid-connect/token"),
+      respond: () => {
+        tokenHits += 1;
+        if (tokenHits === 1) {
+          return Response.json({ error: "temporarily_unavailable" }, { status: 429, headers: { "retry-after": "2" } });
+        }
+        return Response.json({ access_token: "tok-after-rate-limit", expires_in: 300 });
+      }
+    },
+    {
+      match: (url, m) => url.includes("/v1/compute/instances") && m === "GET",
+      respond: () => Response.json({ data: [] })
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({
+    ...baseConfig,
+    cacheTtlMs: 0,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    }
+  });
+  const inventory = await adapter.listServers();
+
+  assert.equal(inventory.source.responseOk, true);
+  assert.equal(tokenHits, 2);
+  assert.deepEqual(sleeps, [2000]);
+});
+
+test("computeFetch: 401 invalidates the token and retries once with a fresh grant", async () => {
+  let tokenHits = 0;
+  let getHits = 0;
+  const authHeaders: string[] = [];
+  installFetch([
+    {
+      match: (url) => url.includes("/openid-connect/token"),
+      respond: () => {
+        tokenHits += 1;
+        return Response.json({ access_token: `tok-${tokenHits}`, expires_in: 300 });
+      }
+    },
+    {
+      match: (url, m) => url.includes("/v1/compute/instances/55") && m === "GET",
+      respond: (_url, init) => {
+        getHits += 1;
+        authHeaders.push(normalizeHeaders(init.headers).authorization);
+        if (getHits === 1) {
+          return new Response("expired", { status: 401 });
+        }
+        return Response.json({
+          data: [{ instanceId: 55, status: "running", ipConfig: { v4: { ip: "192.0.2.55" } } }]
+        });
+      }
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({ ...baseConfig, cacheTtlMs: 0 });
+  const server = await adapter.getServer("contabo-55");
+
+  assert.equal(server.ipv4, "192.0.2.55");
+  assert.equal(tokenHits, 2);
+  assert.equal(getHits, 2);
+  assert.deepEqual(authHeaders, ["Bearer tok-1", "Bearer tok-2"]);
+});
+
 // --- createServer ----------------------------------------------------------
 
 test("createServer: translates to config region/product, finds-or-creates ssh secret, resolves image, posts instance", async () => {
@@ -392,6 +521,80 @@ test("listServers: missing creds returns empty live-degraded inventory without n
   assert.equal(inventory.source.responseOk, false);
 });
 
+test("listServers: caches provider inventory inside TTL and refreshes after expiry", async () => {
+  let clock = new Date("2026-06-11T12:00:00.000Z").getTime();
+  let listHits = 0;
+  installFetch([
+    tokenRoute("tok-cache"),
+    {
+      match: (url, m) => url.includes("/v1/compute/instances") && m === "GET",
+      respond: () => {
+        listHits += 1;
+        return Response.json({
+          data: [{ instanceId: listHits, displayName: `mail-${listHits}.example`, status: "running" }]
+        });
+      }
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({
+    ...baseConfig,
+    cacheTtlMs: 30_000,
+    now: () => new Date(clock)
+  });
+  const first = await adapter.listServers();
+  const second = await adapter.listServers();
+  clock += 31_000;
+  const third = await adapter.listServers();
+
+  assert.equal(listHits, 2);
+  assert.equal(first.servers[0].slug, "contabo-1");
+  assert.equal(second.servers[0].slug, "contabo-1");
+  assert.equal(third.servers[0].slug, "contabo-2");
+});
+
+test("listServers: createServer invalidates cached inventory after successful create", async () => {
+  let listHits = 0;
+  installFetch([
+    tokenRoute("tok-invalidate"),
+    {
+      match: (url, m) => url.includes("/v1/secrets") && m === "GET",
+      respond: (url) => {
+        const name = decodeURIComponent(new URL(url).searchParams.get("name") ?? "");
+        return Response.json({ data: [{ secretId: 9, name }] });
+      }
+    },
+    {
+      match: (url, m) => url.includes("/v1/compute/instances") && m === "GET",
+      respond: () => {
+        listHits += 1;
+        return Response.json({
+          data: [{ instanceId: listHits, displayName: `mail-${listHits}.example`, status: "running" }]
+        });
+      }
+    },
+    {
+      match: (url, m) => url.includes("/v1/compute/instances") && m === "POST",
+      respond: () => Response.json({ data: [{ instanceId: 99, status: "provisioning" }] }, { status: 201 })
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({ ...baseConfig, imageId: "fixed-image-uuid", cacheTtlMs: 60_000 });
+  await adapter.listServers();
+  await adapter.listServers();
+  await adapter.createServer({
+    profile: "bit",
+    locationId: "dk",
+    hostname: "mail.invalidate.example",
+    imageSlug: "ubuntu-2404",
+    publicKey: SSH_KEY
+  });
+  const refreshed = await adapter.listServers();
+
+  assert.equal(listHits, 2);
+  assert.equal(refreshed.servers[0].slug, "contabo-2");
+});
+
 // --- deleteServer (cancel) -------------------------------------------------
 
 test("deleteServer: hits the cancel endpoint and documents end-of-term", async () => {
@@ -437,6 +640,78 @@ test("ensureServerSshAccess: ensures the secret and returns secretId as publicKe
   assert.equal(result.shellUserId, null);
   assert.equal(result.shellUserEventId, null);
   assert.equal(result.sshSettingsEventId, null);
+});
+
+// --- setReverseDns -----------------------------------------------------------
+
+test("setReverseDns: updates Contabo PTR through DNS API with auth and request id", async () => {
+  installFetch([
+    tokenRoute(),
+    {
+      match: (url, m) => url.endsWith("/v1/dns/ptrs/192.0.2.55") && m === "PUT",
+      respond: () => new Response(null, { status: 204 })
+    }
+  ]);
+
+  const adapter = new ContaboAdapter(baseConfig);
+  const result = await adapter.setReverseDns("192.0.2.55", "SMTP.Example.COM.");
+
+  assert.deepEqual(result, { ok: true, status: 204 });
+  const ptrCall = calls.find((call) => call.url.includes("/v1/dns/ptrs/"));
+  assert.ok(ptrCall);
+  assert.equal(ptrCall.method, "PUT");
+  assert.equal(ptrCall.headers["authorization"], "Bearer tok-1");
+  assert.match(
+    ptrCall.headers["x-request-id"],
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+  );
+  assert.equal(ptrCall.headers["content-type"], "application/json");
+  assert.deepEqual(JSON.parse(ptrCall.body ?? "{}"), { ptr: "smtp.example.com" });
+});
+
+test("setReverseDns: returns non-ok status and detail without throwing", async () => {
+  installFetch([
+    tokenRoute(),
+    {
+      match: (url, m) => url.endsWith("/v1/dns/ptrs/192.0.2.55") && m === "PUT",
+      respond: () => new Response("invalid ptr", { status: 400, statusText: "Bad Request" })
+    }
+  ]);
+
+  const adapter = new ContaboAdapter(baseConfig);
+  const result = await adapter.setReverseDns("192.0.2.55", "smtp.example.com");
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 400);
+  assert.match(result.detail ?? "", /Bad Request/);
+  assert.match(result.detail ?? "", /invalid ptr/);
+});
+
+test("setReverseDns: rejects invalid IP or hostname before network", async () => {
+  installFetch([
+    {
+      match: () => true,
+      respond: () => {
+        throw new Error("setReverseDns validation must not hit network");
+      }
+    }
+  ]);
+
+  const adapter = new ContaboAdapter(baseConfig);
+  for (const [ip, hostname] of [
+    ["999.1.1.1", "smtp.example.com"],
+    ["192.0.2.55", "bad_host"]
+  ]) {
+    await assert.rejects(
+      () => adapter.setReverseDns(ip, hostname),
+      (error: unknown) => {
+        assert.ok(error instanceof ContaboAdapterError);
+        assert.equal(error.code, "contabo_invalid_ptr_input");
+        return true;
+      }
+    );
+  }
+  assert.equal(calls.length, 0);
 });
 
 // --- classifyContaboFailure ------------------------------------------------

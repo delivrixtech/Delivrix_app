@@ -669,7 +669,7 @@ function extractConfigureCompleteSmtpPlanScope(params: unknown): {
 
   const runId = normalizedScopeString(params.runId);
   const domain = normalizedScopeString(params.domain ?? params.approvedDomain)?.toLowerCase();
-  const provider = normalizedScopeString(params.provider)?.toLowerCase();
+  const provider = (normalizedScopeString(params.provider) ?? normalizedScopeString(params.vpsProviderId))?.toLowerCase();
   const requireExistingDomain = optionalScopeBoolean(params.requireExistingDomain);
   const budgetUsdMax = Number(params.budgetUsdMax);
   const recipient = normalizedScopeString(params.testEmailRecipient ?? params.recipient)?.toLowerCase();
@@ -678,7 +678,7 @@ function extractConfigureCompleteSmtpPlanScope(params: unknown): {
   if (!domain || !/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+$/.test(domain)) {
     details.push("params.domain must be a verified domain.");
   }
-  if (!provider) details.push("params.provider is required.");
+  if (!provider) details.push("params.provider or params.vpsProviderId is required.");
   if (requireExistingDomain === null) details.push("params.requireExistingDomain must be boolean when present.");
   if (!Number.isInteger(budgetUsdMax) || budgetUsdMax < 1 || budgetUsdMax > 10_000) {
     details.push("params.budgetUsdMax must be an integer between 1 and 10000.");

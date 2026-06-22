@@ -368,6 +368,9 @@ const smtpRunStepLeaseMs = 45 * 60 * 1000;
  * con N cuentas; este tope alto solo cubre un bug teorico + holgura para agregar muchas cuentas.
  */
 const smtpCreateAccountFailoverMaxAttempts = 25;
+type ServerProvenanceClassification = "created" | "reused" | "unknown";
+const createdServerProvenance = new Set(["created"]);
+const reusedServerProvenance = new Set(["idempotent_already_exists", "adopted", "reused"]);
 const route53DomainRegistrationWaitMaxMs = 1_800_000;
 const route53DomainRegistrationWaitPollMs = 30_000;
 const smtpRunLocalLocks = new Map<string, Promise<void>>();
@@ -445,6 +448,11 @@ interface SmtpRunState {
    * ANTES del create, asi un resume firmado retoma el proveedor correcto. undefined => Webdock.
    */
   providerId?: string;
+  /**
+   * true SOLO cuando este run creo el VPS. false/undefined => server adoptado/reusado/legacy:
+   * no proponer borrado automatico en rollback para no destruir infraestructura preexistente.
+   */
+  serverCreatedByRun?: boolean;
   /**
    * Proveedor DNS elegido para este run. OPCIONAL para backward-compat: runStates viejos sin el campo
    * usan Route53. Va por canal hermano y se persiste antes de las mutaciones DNS.
@@ -826,6 +834,7 @@ export async function configureCompleteSmtp(
     if (vpsProviderId) {
       runState.providerId = vpsProviderId;
     }
+    const createStepWasAlreadyDone = runState.steps["4"]?.status === "done";
     let vps: ConfigureCompleteSmtpStepResult | undefined;
     if (isNonWebdockProviderId(vpsProviderId)) {
       // PROVEEDOR NO-WEBDOCK (Contabo, etc.): el governor y el failover de pago multicuenta son
@@ -944,7 +953,18 @@ export async function configureCompleteSmtp(
     }
     serverSlug = stringFromOutcome(vps.outcome, ["slug", "serverSlug"]);
     const step4Ipv4 = stringFromOutcome(vps.outcome, ["ipv4", "serverIp"], "");
+    const createStatus = stringFromOutcome(vps.outcome, ["status"], "").trim().toLowerCase();
+    const serverProvenance = createStepWasAlreadyDone
+      ? classifyLegacyServerBindingSource(createStatus)
+      : classifyFreshStep4ServerProvenance(createStatus);
     runState.serverSlug = serverSlug;
+    if (runState.serverCreatedByRun === undefined) {
+      if (!createStepWasAlreadyDone) {
+        runState.serverCreatedByRun = serverProvenance === "created";
+      } else if (serverProvenance !== "unknown") {
+        runState.serverCreatedByRun = serverProvenance === "created";
+      }
+    }
     if (step4Ipv4) {
       serverIpv4 = step4Ipv4;
       runState.serverIpv4 = step4Ipv4;
@@ -1247,7 +1267,7 @@ export async function configureCompleteSmtp(
       status: failure.status
     });
 
-    if (serverSlug && failure.step >= 6 && deps.submitRollbackProposal) {
+    if (serverSlug && failure.step >= 6 && deps.submitRollbackProposal && runState?.serverCreatedByRun === true) {
       void logger.warn("openclaw.orchestrator.rollback_proposal_requested", "configure_complete_smtp requested rollback proposal after failure.", {
         runId,
         failedStep: failure.step,
@@ -1270,6 +1290,35 @@ export async function configureCompleteSmtp(
         ...(runState?.providerId ? { providerId: runState.providerId } : {})
       });
       rollbackProposalId = rollback.proposalId;
+    } else if (serverSlug && failure.step >= 6 && deps.submitRollbackProposal) {
+      const rollbackSkipReason = runState?.serverCreatedByRun === false
+        ? "server_not_created_by_current_run"
+        : "server_created_by_run_unknown";
+      const rollbackSkipMessage = runState?.serverCreatedByRun === false
+        ? "configure_complete_smtp skipped VPS delete rollback for reused/adopted server."
+        : "configure_complete_smtp skipped VPS delete rollback because server ownership is unknown.";
+      void logger.warn("openclaw.orchestrator.rollback_delete_skipped_reused_server", rollbackSkipMessage, {
+        runId,
+        failedStep: failure.step,
+        skill: failure.skill,
+        serverSlug,
+        chosenDomain,
+        serverCreatedByRun: runState?.serverCreatedByRun ?? null,
+        serverAccountId: runState?.serverAccountId ?? null,
+        providerId: runState?.providerId ?? null,
+        reason: rollbackSkipReason
+      });
+      await audit(deps, "oc.orchestrator.rollback_delete_skipped_reused_server", "webdock_server", serverSlug, "high", {
+        runId,
+        failedStep: failure.step,
+        skill: failure.skill,
+        serverSlug,
+        chosenDomain,
+        serverCreatedByRun: runState?.serverCreatedByRun ?? null,
+        providerId: runState?.providerId ?? null,
+        serverAccountId: runState?.serverAccountId ?? null,
+        reason: rollbackSkipReason
+      });
     }
 
     await compactRunIntent(deps, {
@@ -1963,6 +2012,7 @@ async function reconstructLegacySmtpRunState(input: {
     hostname: smtpHostForDomain(chosenDomain),
     imageSlug: "ubuntu-2404"
   }, { status: binding.source, serverSlug: binding.serverSlug, slug: binding.serverSlug, ipv4: legacyIpv4 || null, costUsd: 0 });
+  state.serverCreatedByRun = classifyLegacyServerBindingSource(binding.source) === "created";
   if (legacyIpv4) {
     recordLegacyDoneStep(state, 5, "wait_server_running", {
       serverSlug: binding.serverSlug,
@@ -2001,6 +2051,23 @@ function domainFromLegacyBinding(value: string): string | null {
   const normalized = normalizeMaybeDomain(value);
   if (!normalized) return null;
   return normalized.startsWith("smtp.") ? normalizeMaybeDomain(normalized.slice("smtp.".length)) : normalized;
+}
+
+function classifyFreshStep4ServerProvenance(status: string): ServerProvenanceClassification {
+  const normalized = normalizeServerProvenance(status);
+  if (reusedServerProvenance.has(normalized)) return "reused";
+  return "created";
+}
+
+function classifyLegacyServerBindingSource(source: string): ServerProvenanceClassification {
+  const normalized = normalizeServerProvenance(source);
+  if (createdServerProvenance.has(normalized)) return "created";
+  if (reusedServerProvenance.has(normalized)) return "reused";
+  return "unknown";
+}
+
+function normalizeServerProvenance(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function recordLegacyDoneStep(

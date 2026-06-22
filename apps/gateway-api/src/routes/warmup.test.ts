@@ -41,6 +41,7 @@ test("POST /v1/warmup/start blocks without send flag, runner, approval, server I
   assert.deepEqual(response.body.blockers.sort(), [
     "approval_not_found_or_expired",
     "seed_inboxes_must_be_exactly_3",
+    "server_slug_missing",
     "server_ip_missing",
     "warmup_send_flag_disabled",
     "warmup_ssh_runner_missing"
@@ -89,6 +90,7 @@ test("POST /v1/warmup/start sends three seed messages and stores redacted progre
   assert.equal(response.body.sent.length, 3);
   assert.equal(response.body.sent[0].to, "se***@gmail.com");
   assert.equal(commands.length, 3);
+  assert.equal(commands.every((command) => command.serverSlug === "mail-delivrix-test"), true);
   assert.equal(commands.every((command) => command.command === "/usr/sbin/sendmail -t -f 'noreply@delivrix-mail.com'"), true);
   assert.equal(commands.every((command) => command.stdin?.includes("Subject: Delivrix warmup seed")), true);
 

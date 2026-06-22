@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Pool } from "pg";
+import type { GatewayRuntimeLogger } from "../gateway-runtime-log.ts";
 import {
   EpisodicScratchValidationError,
   queryByInputHash,
@@ -17,6 +18,7 @@ interface EpisodicScratchReadDeps {
   response: ServerResponse;
   pool: Pick<Pool, "query">;
   readBoundaryToken?: string;
+  logger?: Pick<GatewayRuntimeLogger, "warn">;
 }
 
 const secretKeyPattern = /token|secret|password|private|api[_-]?key|credential|authorization/i;
@@ -29,8 +31,10 @@ export async function handleReadEpisodicScratchHttp(deps: EpisodicScratchReadDep
     return json(deps.response, 401, { error: "read_boundary_token_invalid" });
   }
 
+  let grounded: boolean | undefined;
   try {
     const url = requestUrl(deps.request);
+    grounded = url.searchParams.get("grounded") === "true";
     const intentId = optionalParam(url, "intentId");
     const inputHash = optionalParam(url, "inputHash");
     const tool = optionalParam(url, "tool");
@@ -38,7 +42,6 @@ export async function handleReadEpisodicScratchHttp(deps: EpisodicScratchReadDep
     const sinceDays = optionalIntegerParam(url, "sinceDays");
     const limit = optionalIntegerParam(url, "limit");
     const weighted = url.searchParams.get("weighted") === "true";
-    const grounded = url.searchParams.get("grounded") === "true";
     const query = optionalParam(url, "query");
     const keywords = optionalCsvParam(url, "keywords");
     const hasGroundingSignals = Boolean(query) || keywords.length > 0;
@@ -98,6 +101,13 @@ export async function handleReadEpisodicScratchHttp(deps: EpisodicScratchReadDep
         details: episodicScratchValidationDetails(error)
       });
     }
+    if (isScratchStoreConnectionError(error)) {
+      void deps.logger?.warn("openclaw.episodic.scratch_connection_degraded", "Episodic scratch store connection failed; returning empty fallback.", {
+        grounded: grounded === true,
+        ...scratchStoreConnectionErrorMetadata(error)
+      });
+      return json(deps.response, 200, emptyScratchFallback(grounded === true));
+    }
     return json(deps.response, 503, {
       error: "episodic_scratch_unavailable",
       details: { _errors: ["Scratch store query failed."] }
@@ -110,6 +120,22 @@ function episodicScratchValidationDetails(error: EpisodicScratchValidationError)
     code: error.code,
     ...(error.details ? error.details : {}),
     _errors: ["Episodic scratch validation failed."]
+  };
+}
+
+function emptyScratchFallback(grounded: boolean): Record<string, unknown> {
+  if (grounded) {
+    return {
+      status: "abstain",
+      reason: "no_verified_relevant_memory",
+      memories: [],
+      discarded: []
+    };
+  }
+
+  return {
+    entries: [],
+    grounded: []
   };
 }
 
@@ -184,3 +210,57 @@ function json(response: ServerResponse, statusCode: number, payload: unknown): v
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+function isScratchStoreConnectionError(error: unknown): boolean {
+  return errorChain(error).some((item) => {
+    if (!isRecord(item)) return false;
+    const code = typeof item.code === "string" ? item.code : "";
+    if (connectionErrorCodes.has(code)) return true;
+    if (/^08/.test(code)) return true;
+    const message = typeof item.message === "string" ? item.message : String(item.message ?? "");
+    return /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|Connection terminated|pool (?:is )?not available|pool unavailable|Cannot use a pool after calling end/i.test(message);
+  });
+}
+
+function scratchStoreConnectionErrorMetadata(error: unknown): Record<string, unknown> {
+  for (const item of errorChain(error)) {
+    if (!isRecord(item)) continue;
+    const code = typeof item.code === "string" ? item.code : undefined;
+    const message = typeof item.message === "string" ? item.message : String(item.message ?? "");
+    return {
+      ...(code ? { code } : {}),
+      message: redactConnectionMessage(message)
+    };
+  }
+
+  return {};
+}
+
+function errorChain(error: unknown): unknown[] {
+  const chain: unknown[] = [];
+  let current: unknown = error;
+  while (current && chain.length < 4) {
+    chain.push(current);
+    current = isRecord(current) ? current.cause : undefined;
+  }
+  return chain;
+}
+
+function redactConnectionMessage(message: string): string {
+  return message
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, "[ip]")
+    .replace(/\b[a-z0-9.-]+\.(?:local|internal|lan)\b/gi, "[host]")
+    .slice(0, 240);
+}
+
+const connectionErrorCodes = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "53300",
+  "57P01",
+  "57P02",
+  "57P03"
+]);
