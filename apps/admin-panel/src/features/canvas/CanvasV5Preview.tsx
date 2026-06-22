@@ -6,8 +6,9 @@
  *   cables PR #4). Si no hay runs activos, estado limpio "sin aprovisionamientos".
  * - Logs: GatewayLogTerminal real.
  *
- * Sin datos de muestra. Montaje: App.tsx caso "canvas" con ?canvasv5 (sticky).
- * No reemplaza CanvasV4. Estilos: tokens.css (var(--color-*) / var(--font-*)), scope `.cv5`.
+ * Sin datos de muestra. Montaje: App.tsx caso "canvas" por defecto.
+ * CanvasV4 queda como rollback temporal via ?canvasv4. Estilos: tokens.css
+ * (var(--color-*) / var(--font-*)), scope `.cv5`.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {

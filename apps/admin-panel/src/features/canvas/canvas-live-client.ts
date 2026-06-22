@@ -98,7 +98,13 @@ export function evictLiveState(state: InternalState, activeTaskId: string | null
   // Preservar las tasks de los artifacts mas recientes, para que el preview no pierda lo ultimo
   // renderizable (los runs zombies en "running" no deben desalojar lo reciente).
   const recentArtifactTaskIds = [...state.artifacts.values()]
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .sort((left, right) => {
+      const artifactRecency = right.createdAt.localeCompare(left.createdAt);
+      if (artifactRecency !== 0) return artifactRecency;
+      const leftTaskCreatedAt = state.tasks.get(left.taskId)?.createdAt ?? "";
+      const rightTaskCreatedAt = state.tasks.get(right.taskId)?.createdAt ?? "";
+      return rightTaskCreatedAt.localeCompare(leftTaskCreatedAt);
+    })
     .slice(0, 12)
     .map((artifact) => artifact.taskId);
   for (const taskId of recentArtifactTaskIds) addWithAncestors(taskId);
