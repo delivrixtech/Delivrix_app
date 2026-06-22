@@ -54,6 +54,90 @@ test("sign records run-scoped plan approval when autonomy flag is on", async () 
   assert.equal(ctx.dispatches.length, 1);
 });
 
+test("sign accepts vpsProviderId as configure_complete_smtp plan scope provider", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    proposal: configureCompleteSmtpProposal({
+      params: {
+        runId: "smtp-contabo-20260622-a",
+        domain: "nationalbizrenewal.com",
+        vpsProviderId: "contabo",
+        requireExistingDomain: true,
+        brand: "nationalbizrenewal",
+        budgetUsdMax: 25,
+        testEmailRecipient: "infra@delivrix.com",
+        testEmailSubject: "Smoke autorizado",
+        testEmailBody: "Prueba autorizada y auditada"
+      }
+    })
+  });
+
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.planApproval.provider, "contabo");
+  assert.equal(ctx.proposals[0].planApproval?.scope.provider, "contabo");
+  assert.match(ctx.proposals[0].planApproval?.scopeHash ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(ctx.events.some((event) => event.action === "oc.plan.signed"), true);
+  assert.equal(ctx.dispatches.length, 1);
+});
+
+test("sign treats empty provider as missing and falls back to vpsProviderId", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    proposal: configureCompleteSmtpProposal({
+      params: {
+        runId: "smtp-contabo-20260622-b",
+        domain: "nationalbizrenewal.com",
+        provider: " ",
+        vpsProviderId: "contabo",
+        budgetUsdMax: 25,
+        testEmailRecipient: "infra@delivrix.com"
+      }
+    })
+  });
+
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(ctx.proposals[0].planApproval?.scope.provider, "contabo");
+  assert.equal(ctx.dispatches.length, 1);
+});
+
+test("sign keeps explicit provider scope hash unchanged when vpsProviderId is also present", async () => {
+  const params = {
+    runId: "smtp-run-2026-06-04-a",
+    domain: "delivrixops.com",
+    provider: "route53-webdock",
+    brand: "Delivrix",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@delivrixops.com",
+    testEmailSubject: "Smoke autorizado",
+    testEmailBody: "Prueba autorizada y auditada"
+  };
+  const baseline = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    proposal: configureCompleteSmtpProposal({ params })
+  });
+  const withSiblingProvider = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    proposal: configureCompleteSmtpProposal({
+      params: { ...params, vpsProviderId: "contabo" }
+    })
+  });
+
+  const baselineResponse = await sign(baseline);
+  const siblingResponse = await sign(withSiblingProvider);
+
+  assert.equal(baselineResponse.statusCode, 200);
+  assert.equal(siblingResponse.statusCode, 200);
+  assert.equal(withSiblingProvider.proposals[0].planApproval?.scope.provider, "route53-webdock");
+  assert.equal(
+    withSiblingProvider.proposals[0].planApproval?.scopeHash,
+    baseline.proposals[0].planApproval?.scopeHash
+  );
+});
+
 test("sign records strict existing-domain adoption in run-scoped plan approval", async () => {
   const ctx = context({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
