@@ -12,7 +12,7 @@
  * commit 52a451d) es la fase siguiente.
  */
 
-import { Component, useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type ReactNode, type SetStateAction } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ErrorInfo, type FormEvent, type ReactNode, type SetStateAction } from "react";
 import {
   ArrowDown,
   ArrowLeft,
@@ -2152,6 +2152,20 @@ function LiveTab(_props: {
 
   const { toast } = useToast();
   const [actionPending, setActionPending] = useState<"approve" | "reject" | null>(null);
+  const [liveToolRecoveryKey, setLiveToolRecoveryKey] = useState(0);
+
+  useEffect(() => {
+    if (!demoMode && liveStream.connection === "connected") {
+      setLiveToolRecoveryKey((value) => value + 1);
+    }
+  }, [demoMode, liveStream.connection]);
+
+  const approvalResetKey = useMemo(() => {
+    const ids = pendingApprovals.proposals.map((proposal) => proposal.id);
+    return `approval:${ids.length}:${ids[0] ?? "none"}:${ids[ids.length - 1] ?? "none"}`;
+  }, [pendingApprovals.proposals]);
+
+  const liveToolResetKey = `live-tool:${activeTaskId ?? "none"}:${demoMode ? "demo" : liveStream.connection}:${liveToolRecoveryKey}`;
 
   const handleEditBlock = useCallback(
     async (blockId: string, content: string) => {
@@ -2295,14 +2309,14 @@ function LiveTab(_props: {
         Demo {demoMode ? "ON" : "OFF"}
         </button>
       </div>
-      <CanvasLocalErrorBoundary resetKey={`approval:${pendingApprovals.proposals.map((proposal) => proposal.id).join(",")}`} title="No pude abrir el panel de firma">
+      <CanvasLocalErrorBoundary resetKey={approvalResetKey} title="No pude abrir el panel de firma">
         <PendingOpenClawApprovalPanel
           proposals={pendingApprovals.proposals}
           error={pendingApprovals.error}
           onRefresh={pendingApprovals.refresh}
         />
       </CanvasLocalErrorBoundary>
-      <CanvasLocalErrorBoundary resetKey={`live-tool:${activeTaskId ?? "none"}:${demoMode ? "demo" : liveStream.connection}`} title="No pude abrir el preview del canvas">
+      <CanvasLocalErrorBoundary resetKey={liveToolResetKey} title="No pude abrir el preview del canvas">
         <LiveTool
           tasks={tasks}
           activeTaskId={activeTaskId}
@@ -2330,8 +2344,14 @@ class CanvasLocalErrorBoundary extends Component<
     return { error };
   }
 
-  componentDidCatch(error: Error) {
-    console.error(error);
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("[CanvasLocalErrorBoundary]", {
+      title: this.props.title,
+      resetKey: this.props.resetKey,
+      message: error.message,
+      stack: error.stack,
+      componentStack: info.componentStack
+    });
   }
 
   componentDidUpdate(prevProps: { resetKey: string }) {

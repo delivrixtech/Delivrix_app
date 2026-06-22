@@ -187,6 +187,29 @@ test("sign rejects incomplete plan scope when autonomy flag is on", async () => 
   assert.equal(ctx.dispatches.length, 0);
 });
 
+test("sign rejects when provider and vpsProviderId are missing or empty", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    proposal: configureCompleteSmtpProposal({
+      params: {
+        runId: "smtp-contabo-20260622-c",
+        domain: "nationalbizrenewal.com",
+        provider: " ",
+        budgetUsdMax: 25,
+        testEmailRecipient: "infra@delivrix.com"
+      }
+    })
+  });
+
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.rejectReason, "plan_scope_missing");
+  assert.equal(response.body.details.includes("params.provider or params.vpsProviderId is required."), true);
+  assert.equal(ctx.events.some((event) => event.action === "oc.plan.signed"), false);
+  assert.equal(ctx.dispatches.length, 0);
+});
+
 test("sign rejects non-boolean requireExistingDomain in plan scope", async () => {
   const ctx = context({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
