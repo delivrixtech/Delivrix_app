@@ -38,6 +38,7 @@ const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 15_000;
 const SNAPSHOT_POLL_MS = 5_000;
 export const MAX_LIVE_TASKS = 50;
+const MAX_RECENT_ARTIFACT_TASKS = 12;
 
 export type LiveConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline";
 
@@ -97,15 +98,17 @@ export function evictLiveState(state: InternalState, activeTaskId: string | null
   if (activeTaskId && state.tasks.has(activeTaskId)) addWithAncestors(activeTaskId);
   // Preservar las tasks de los artifacts mas recientes, para que el preview no pierda lo ultimo
   // renderizable (los runs zombies en "running" no deben desalojar lo reciente).
-  const recentArtifactTaskIds = [...state.artifacts.values()]
+  const artifactSnapshot = [...state.artifacts.values()];
+  const taskCreatedAtSnapshot = new Map([...state.tasks.entries()].map(([taskId, task]) => [taskId, task.createdAt]));
+  const recentArtifactTaskIds = artifactSnapshot
     .sort((left, right) => {
       const artifactRecency = right.createdAt.localeCompare(left.createdAt);
       if (artifactRecency !== 0) return artifactRecency;
-      const leftTaskCreatedAt = state.tasks.get(left.taskId)?.createdAt ?? "";
-      const rightTaskCreatedAt = state.tasks.get(right.taskId)?.createdAt ?? "";
+      const leftTaskCreatedAt = taskCreatedAtSnapshot.get(left.taskId) ?? "";
+      const rightTaskCreatedAt = taskCreatedAtSnapshot.get(right.taskId) ?? "";
       return rightTaskCreatedAt.localeCompare(leftTaskCreatedAt);
     })
-    .slice(0, 12)
+    .slice(0, MAX_RECENT_ARTIFACT_TASKS)
     .map((artifact) => artifact.taskId);
   for (const taskId of recentArtifactTaskIds) addWithAncestors(taskId);
   for (const task of state.tasks.values()) if (task.status === "running") addWithAncestors(task.id);
