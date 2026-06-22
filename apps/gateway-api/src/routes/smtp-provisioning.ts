@@ -28,6 +28,8 @@ import {
 import { readRequestBody } from "../request-body.ts";
 import { ensureDkimKeyPair, findExistingDkimPrivateKeyPath } from "../dkim-keypair.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
+import { getProviderFromServerSlug } from "../server-provider.ts";
+import { runWithTransientSshRetry } from "../ssh-retry.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -39,6 +41,7 @@ interface CanvasEmitter {
 }
 
 export interface SmtpSshCommandInput {
+  serverSlug?: string | null;
   serverIp: string;
   command: string;
   stdin?: string;
@@ -340,11 +343,13 @@ export async function handleSmtpProvisionHttp(
         ? await runSmtpStepWithCloudInitRetry({
             runner: deps.sshRunner,
             step,
+            serverSlug,
             serverIp: serverIp!,
             sleep: deps.sleep ?? sleep
           })
         : {
             result: await deps.sshRunner.run({
+              serverSlug,
               serverIp: serverIp!,
               command: step.command,
               stdin: step.stdin,
@@ -525,21 +530,47 @@ export function createSmtpSshRunnerFromEnv(
   env: Record<string, string | undefined> =
     typeof process !== "undefined" ? process.env : {}
 ): SmtpSshRunner {
-  const user = normalizeEnvValue(env.SMTP_PROVISION_SSH_USER) ?? "root";
+  const defaultUser = normalizeEnvValue(env.SMTP_PROVISION_SSH_USER) ?? "root";
   const keyPath = expandHome(normalizeEnvValue(env.SMTP_PROVISION_SSH_KEY_PATH));
   const port = parsePositiveInt(env.SMTP_PROVISION_SSH_PORT) ?? 22;
   const timeoutMs = parsePositiveInt(env.SMTP_PROVISION_SSH_TIMEOUT_MS) ?? 180_000;
+  const sudoEnabled = env.SMTP_PROVISION_SSH_USE_SUDO !== "false";
 
   return {
     isConfigured: () => Boolean(keyPath),
-    run: async (input) => runSshCommand({
-      ...input,
-      user,
-      keyPath,
-      port,
-      timeoutMs: input.timeoutMs ?? timeoutMs,
-      useSudo: user !== "root" && env.SMTP_PROVISION_SSH_USE_SUDO !== "false"
-    })
+    run: async (input) => {
+      const target = resolveSmtpSshTarget({
+        serverSlug: input.serverSlug,
+        defaultUser,
+        sudoEnabled
+      });
+      return runSshCommand({
+        ...input,
+        user: target.user,
+        keyPath,
+        port,
+        timeoutMs: input.timeoutMs ?? timeoutMs,
+        useSudo: target.useSudo
+      });
+    }
+  };
+}
+
+export function resolveSmtpSshTarget(input: {
+  serverSlug?: string | null;
+  defaultUser: string;
+  sudoEnabled: boolean;
+}): {
+  user: string;
+  useSudo: boolean;
+} {
+  const provider = getProviderFromServerSlug(input.serverSlug);
+  if (provider === "contabo") {
+    return { user: "root", useSudo: false };
+  }
+  return {
+    user: input.defaultUser,
+    useSudo: input.defaultUser !== "root" && input.sudoEnabled
   };
 }
 
@@ -894,6 +925,7 @@ async function runSshCommand(input: SmtpSshCommandInput & {
 async function runSmtpStepWithCloudInitRetry(input: {
   runner: SmtpSshRunner;
   step: SmtpProvisionStep;
+  serverSlug?: string | null;
   serverIp: string;
   sleep: (ms: number) => Promise<void>;
 }): Promise<{
@@ -902,13 +934,11 @@ async function runSmtpStepWithCloudInitRetry(input: {
   cloudInitSettleMs: number;
   progressDetail?: string;
 }> {
-  const retryDelays = [30_000, 60_000];
-  const errors: string[] = [];
-  let cloudInitSettleMs = 0;
-
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
+  const execution = await runWithTransientSshRetry({
+    sleep: input.sleep,
+    operation: async () => {
       const result = await input.runner.run({
+        serverSlug: input.serverSlug,
         serverIp: input.serverIp,
         command: input.step.command,
         stdin: input.step.stdin,
@@ -917,36 +947,18 @@ async function runSmtpStepWithCloudInitRetry(input: {
       if (result.exitCode === 255) {
         throw new Error("SSH command failed with exit 255.");
       }
-      return {
-        result,
-        attempts: attempt,
-        cloudInitSettleMs,
-        progressDetail: attempt > 1
-          ? `esperando cloud-init... intento ${attempt} de 3; espera interna ${Math.round(cloudInitSettleMs / 1000)}s`
-          : undefined
-      };
-    } catch (error) {
-      errors.push(errorMessage(error));
-      if (!isTransientSshConnectError(error) || attempt === 3) {
-        throw new Error(`SSH connect failed after ${attempt} attempt(s): ${errors.join(" | ")}`);
-      }
-
-      const delay = retryDelays[attempt - 1] ?? 0;
-      cloudInitSettleMs += delay;
-      await input.sleep(delay);
+      return result;
     }
-  }
+  });
 
-  throw new Error(`SSH connect failed after 3 attempts: ${errors.join(" | ")}`);
-}
-
-function isTransientSshConnectError(error: unknown): boolean {
-  const message = errorMessage(error).toLowerCase();
-  return message.includes("timed out") ||
-    message.includes("exit 255") ||
-    message.includes("connection refused") ||
-    message.includes("connection reset") ||
-    message.includes("no route to host");
+  return {
+    result: execution.result,
+    attempts: execution.attempts,
+    cloudInitSettleMs: execution.settleMs,
+    progressDetail: execution.attempts > 1
+      ? `esperando cloud-init... intento ${execution.attempts} de 3; espera interna ${Math.round(execution.settleMs / 1000)}s`
+      : undefined
+  };
 }
 
 function sleep(ms: number): Promise<void> {
