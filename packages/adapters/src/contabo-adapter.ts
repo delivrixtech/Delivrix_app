@@ -46,6 +46,11 @@ const DEFAULT_AUTH_URL =
 const DEFAULT_API_BASE = "https://api.contabo.com";
 /** Margen de seguridad para refrescar el token antes de su expiry real. */
 const TOKEN_REFRESH_SKEW_MS = 30_000;
+/** Cache corto para inventario: evita que el panel dispare un list live en cada poll. */
+const DEFAULT_INVENTORY_CACHE_TTL_MS = 30_000;
+const TOKEN_GRANT_MAX_RETRIES = 2;
+const COMPUTE_MAX_RETRIES = 2;
+const MAX_RETRY_AFTER_MS = 60_000;
 /**
  * Producto default (env CONTABO_PRODUCT_ID lo override). "V45" = VPS 1 SSD,
  * tier pequeno y barato; SUPONIDO segun tabla de productos de docs, confirmar
@@ -113,8 +118,12 @@ export interface ContaboAdapterConfig {
   apiBase?: string;
   /** URL del endpoint de token para tests. Default Keycloak Contabo. */
   authUrl?: string;
+  /** TTL del cache de inventario listServers(). Default 30s; 0 lo desactiva en tests. */
+  cacheTtlMs?: number;
   /** Fetch impl para tests (default global fetch). */
   fetchImpl?: typeof fetch;
+  /** Sleep inyectable para tests de backoff/retry. */
+  sleep?: (ms: number) => Promise<void>;
   /** Override del proveedor de timestamps (para tests). */
   now?: () => Date;
 }
@@ -123,6 +132,11 @@ interface CachedToken {
   accessToken: string;
   /** epoch ms en el que el token expira (ya con skew restado). */
   expiresAt: number;
+}
+
+interface InventoryCacheEntry {
+  expiresAt: number;
+  result: WebdockInventoryResult;
 }
 
 export class ContaboAdapter implements VpsProvider {
@@ -139,6 +153,7 @@ export class ContaboAdapter implements VpsProvider {
   private readonly periodMonths: number;
   private readonly apiBase: string;
   private readonly authUrl: string;
+  private readonly cacheTtlMs: number;
   /**
    * Fetch inyectado explicitamente. Si es undefined, se resuelve
    * `globalThis.fetch` en cada llamada (lazy) para no congelar una referencia
@@ -146,9 +161,12 @@ export class ContaboAdapter implements VpsProvider {
    * (sin fetchImpl) y el caller/test reemplaza globalThis.fetch despues.
    */
   private readonly injectedFetch: typeof fetch | undefined;
+  private readonly sleepFn: (ms: number) => Promise<void>;
   private readonly now: () => Date;
 
   private token: CachedToken | null = null;
+  private tokenPromise: Promise<string> | null = null;
+  private inventoryCache: InventoryCacheEntry | null = null;
   private resolvedImageId: string | undefined;
 
   constructor(config: ContaboAdapterConfig = {}) {
@@ -166,7 +184,9 @@ export class ContaboAdapter implements VpsProvider {
     this.periodMonths = normalizePeriod(config.periodMonths) ?? DEFAULT_PERIOD_MONTHS;
     this.apiBase = normalizeEnvValue(config.apiBase) ?? DEFAULT_API_BASE;
     this.authUrl = normalizeEnvValue(config.authUrl) ?? DEFAULT_AUTH_URL;
+    this.cacheTtlMs = normalizeNonNegativeMs(config.cacheTtlMs) ?? DEFAULT_INVENTORY_CACHE_TTL_MS;
     this.injectedFetch = config.fetchImpl;
+    this.sleepFn = config.sleep ?? sleep;
     this.now = config.now ?? (() => new Date());
   }
 
@@ -242,7 +262,7 @@ export class ContaboAdapter implements VpsProvider {
         "[contabo] createServer failed:",
         JSON.stringify({
           status: response.status,
-          body: body.slice(0, 600),
+          body: sanitizeErrorDetail(body).slice(0, 600),
           sentRegion: this.region,
           sentProductId: this.productId,
           sentImageId: imageId
@@ -270,6 +290,7 @@ export class ContaboAdapter implements VpsProvider {
       stringFromUnknown(raw, "requestId") ??
       String(instanceId);
 
+    this.invalidateInventoryCache();
     return {
       serverSlug: toServerSlug(instanceId),
       eventId: requestId,
@@ -310,11 +331,17 @@ export class ContaboAdapter implements VpsProvider {
    */
   async listServers(): Promise<WebdockInventoryResult> {
     const now = this.now();
+    if (this.inventoryCache && this.inventoryCache.expiresAt > now.getTime()) {
+      return this.inventoryCache.result;
+    }
+
     if (!this.isLive()) {
-      return {
+      const result = {
         servers: [],
         source: this.sourceMetadata(now, false, "Contabo credentials missing")
       };
+      this.cacheInventory(now, result);
+      return result;
     }
 
     try {
@@ -330,14 +357,16 @@ export class ContaboAdapter implements VpsProvider {
         );
         if (!response.ok) {
           const body = await response.text().catch(() => "");
-          return {
+          const result = {
             servers,
             source: this.sourceMetadata(
               now,
               false,
-              `Contabo API returned ${response.status} ${response.statusText} | ${body.slice(0, 300)}`
+              contaboHttpErrorReason(response.status, body)
             )
           };
+          this.cacheInventory(now, result);
+          return result;
         }
         const raw = (await response.json().catch(() => ({}))) as unknown;
         const instances = pickInstanceArray(raw);
@@ -349,11 +378,16 @@ export class ContaboAdapter implements VpsProvider {
         if (instances.length < size) break;
         page += 1;
       }
-      return { servers, source: this.sourceMetadata(now, true) };
+      const result = { servers, source: this.sourceMetadata(now, true) };
+      this.cacheInventory(now, result);
+      return result;
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unknown Contabo fetch error";
-      return { servers: [], source: this.sourceMetadata(now, false, message) };
+      const result = {
+        servers: [],
+        source: this.sourceMetadata(now, false, contaboErrorReason(error))
+      };
+      this.cacheInventory(now, result);
+      return result;
     }
   }
 
@@ -393,6 +427,7 @@ export class ContaboAdapter implements VpsProvider {
       stringFromUnknown(raw, "requestId") ??
       instanceId;
 
+    this.invalidateInventoryCache();
     return {
       serverSlug: toServerSlug(instanceId),
       eventId,
@@ -451,7 +486,7 @@ export class ContaboAdapter implements VpsProvider {
       return {
         ok: false,
         status: response.status,
-        detail: `${response.statusText} | ${body.slice(0, 300)}`
+        detail: sanitizeErrorDetail(`${response.statusText} | ${body}`).slice(0, 300)
       };
     }
     return { ok: true, status: response.status };
@@ -480,13 +515,13 @@ export class ContaboAdapter implements VpsProvider {
       return new ContaboAdapterError("contabo_payment_failed", {
         recoverable: true,
         status,
-        metadata: { ...metadata, body: body.slice(0, 600) }
+        metadata: { ...metadata, body: sanitizeErrorDetail(body).slice(0, 600) }
       });
     }
     return new ContaboAdapterError("contabo_api_error", {
       recoverable: false,
       status,
-      metadata: { ...metadata, body: body.slice(0, 600) }
+      metadata: { ...metadata, body: sanitizeErrorDetail(body).slice(0, 600) }
     });
   }
 
@@ -524,7 +559,17 @@ export class ContaboAdapter implements VpsProvider {
     if (this.token && this.token.expiresAt > nowMs) {
       return this.token.accessToken;
     }
+    if (this.tokenPromise) {
+      return this.tokenPromise;
+    }
 
+    this.tokenPromise = this.fetchTokenWithRetry().finally(() => {
+      this.tokenPromise = null;
+    });
+    return this.tokenPromise;
+  }
+
+  private async fetchTokenWithRetry(): Promise<string> {
     const form = new URLSearchParams({
       client_id: this.clientId ?? "",
       client_secret: this.clientSecret ?? "",
@@ -533,45 +578,86 @@ export class ContaboAdapter implements VpsProvider {
       grant_type: "password"
     });
 
-    const response = await this.fetchImpl(this.authUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        accept: "application/json"
-      },
-      body: form.toString()
+    for (let attempt = 0; attempt <= TOKEN_GRANT_MAX_RETRIES; attempt += 1) {
+      let response: Response;
+      try {
+        response = await this.fetchImpl(this.authUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            accept: "application/json"
+          },
+          body: form.toString()
+        });
+      } catch (error) {
+        if (attempt < TOKEN_GRANT_MAX_RETRIES) {
+          await this.sleepFn(retryDelayMs(undefined, attempt));
+          continue;
+        }
+        throw new ContaboAdapterError("contabo_token_request_failed", {
+          recoverable: true,
+          metadata: {
+            errorReason: "network",
+            errorName: error instanceof Error ? error.name : "UnknownError"
+          }
+        });
+      }
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        const oauthError = oauthErrorCode(body);
+        if (response.status === 401 && oauthError === "invalid_grant") {
+          throw new ContaboAdapterError("contabo_token_invalid_grant", {
+            recoverable: false,
+            status: response.status,
+            metadata: {
+              errorReason: "401_invalid_grant",
+              operatorAction: "review CONTABO_API_PASSWORD in gateway.env",
+              body: sanitizeErrorDetail(body).slice(0, 600)
+            }
+          });
+        }
+        if (shouldRetryTokenGrant(response.status) && attempt < TOKEN_GRANT_MAX_RETRIES) {
+          await this.sleepFn(retryDelayMs(response, attempt));
+          continue;
+        }
+        throw new ContaboAdapterError("contabo_token_request_failed", {
+          recoverable: response.status === 429 || response.status >= 500,
+          status: response.status,
+          metadata: {
+            errorReason: contaboHttpErrorReason(response.status, body),
+            body: sanitizeErrorDetail(body).slice(0, 600)
+          }
+        });
+      }
+
+      const raw = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+      const accessToken =
+        typeof raw.access_token === "string" ? raw.access_token : undefined;
+      if (!accessToken) {
+        // El cuerpo del token-grant puede traer access_token/refresh_token (incluso parcialmente,
+        // p.ej. sin access_token pero con refresh_token). Redactarlos ANTES de truncateRaw para que
+        // ningun token se filtre a metadata de error/logs/audit.
+        throw new ContaboAdapterError("contabo_token_missing_access_token", {
+          recoverable: false,
+          metadata: { raw: truncateRaw(redactTokenFields(raw)) }
+        });
+      }
+      const expiresInSec =
+        typeof raw.expires_in === "number" && Number.isFinite(raw.expires_in)
+          ? raw.expires_in
+          : 300;
+      const nowMs = this.now().getTime();
+      this.token = {
+        accessToken,
+        expiresAt: nowMs + expiresInSec * 1000 - TOKEN_REFRESH_SKEW_MS
+      };
+      return accessToken;
+    }
+    throw new ContaboAdapterError("contabo_token_request_failed", {
+      recoverable: true,
+      metadata: { errorReason: "retry_exhausted" }
     });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new ContaboAdapterError("contabo_token_request_failed", {
-        recoverable: false,
-        status: response.status,
-        metadata: { body: body.slice(0, 600) }
-      });
-    }
-
-    const raw = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-    const accessToken =
-      typeof raw.access_token === "string" ? raw.access_token : undefined;
-    if (!accessToken) {
-      // El cuerpo del token-grant puede traer access_token/refresh_token (incluso parcialmente,
-      // p.ej. sin access_token pero con refresh_token). Redactarlos ANTES de truncateRaw para que
-      // ningun token se filtre a metadata de error/logs/audit.
-      throw new ContaboAdapterError("contabo_token_missing_access_token", {
-        recoverable: false,
-        metadata: { raw: truncateRaw(redactTokenFields(raw)) }
-      });
-    }
-    const expiresInSec =
-      typeof raw.expires_in === "number" && Number.isFinite(raw.expires_in)
-        ? raw.expires_in
-        : 300;
-    this.token = {
-      accessToken,
-      expiresAt: nowMs + expiresInSec * 1000 - TOKEN_REFRESH_SKEW_MS
-    };
-    return accessToken;
   }
 
   /**
@@ -579,15 +665,47 @@ export class ContaboAdapter implements VpsProvider {
    * Authorization: Bearer, x-request-id (uuid4 REQUERIDO), Content-Type, Accept.
    */
   private async computeFetch(path: string, init: RequestInit): Promise<Response> {
-    const token = await this.ensureToken();
-    const headers: Record<string, string> = {
-      authorization: `Bearer ${token}`,
-      "x-request-id": randomUUID(),
-      "content-type": "application/json",
-      accept: "application/json",
-      ...((init.headers as Record<string, string> | undefined) ?? {})
-    };
-    return this.fetchImpl(`${this.apiBase}${path}`, { ...init, headers });
+    let unauthorizedRetried = false;
+    for (let attempt = 0; attempt <= COMPUTE_MAX_RETRIES; attempt += 1) {
+      const token = await this.ensureToken();
+      const headers: Record<string, string> = {
+        ...((init.headers as Record<string, string> | undefined) ?? {}),
+        authorization: `Bearer ${token}`,
+        "x-request-id": randomUUID(),
+        "content-type": "application/json",
+        accept: "application/json"
+      };
+      try {
+        const response = await this.fetchImpl(`${this.apiBase}${path}`, { ...init, headers });
+        if (response.status === 401 && !unauthorizedRetried) {
+          unauthorizedRetried = true;
+          this.invalidateToken();
+          continue;
+        }
+        if (shouldRetryCompute(response.status) && attempt < COMPUTE_MAX_RETRIES) {
+          await this.sleepFn(retryDelayMs(response, attempt));
+          continue;
+        }
+        return response;
+      } catch (error) {
+        if (attempt < COMPUTE_MAX_RETRIES) {
+          await this.sleepFn(retryDelayMs(undefined, attempt));
+          continue;
+        }
+        throw new ContaboAdapterError("contabo_api_network_error", {
+          recoverable: true,
+          metadata: {
+            errorReason: "network",
+            path,
+            errorName: error instanceof Error ? error.name : "UnknownError"
+          }
+        });
+      }
+    }
+    throw new ContaboAdapterError("contabo_api_error", {
+      recoverable: true,
+      metadata: { errorReason: "retry_exhausted", path }
+    });
   }
 
   /**
@@ -702,6 +820,18 @@ export class ContaboAdapter implements VpsProvider {
       ...(errorMessage ? { errorMessage } : {})
     };
   }
+
+  private cacheInventory(now: Date, result: WebdockInventoryResult): void {
+    if (this.cacheTtlMs <= 0) return;
+    this.inventoryCache = {
+      expiresAt: now.getTime() + this.cacheTtlMs,
+      result
+    };
+  }
+
+  private invalidateInventoryCache(): void {
+    this.inventoryCache = null;
+  }
 }
 
 /**
@@ -741,6 +871,71 @@ export function createContaboAdaptersFromEnv(
 }
 
 // --- helpers puros --------------------------------------------------------
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeNonNegativeMs(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.max(0, Math.trunc(value));
+}
+
+function shouldRetryTokenGrant(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function shouldRetryCompute(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function retryDelayMs(response: Response | undefined, attempt: number): number {
+  const retryAfter = parseRetryAfterMs(response?.headers.get("retry-after"));
+  if (retryAfter !== null) {
+    return Math.min(retryAfter, MAX_RETRY_AFTER_MS);
+  }
+  return Math.min(250 * 2 ** attempt, MAX_RETRY_AFTER_MS);
+}
+
+function parseRetryAfterMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) {
+    return Number(trimmed) * 1000;
+  }
+  const parsedDate = Date.parse(trimmed);
+  if (!Number.isFinite(parsedDate)) return null;
+  return Math.max(0, parsedDate - Date.now());
+}
+
+function oauthErrorCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    return typeof parsed.error === "string" ? parsed.error : null;
+  } catch {
+    return null;
+  }
+}
+
+function contaboHttpErrorReason(status: number, body = ""): string {
+  if (status === 429) return "429_rate_limited";
+  if (status === 401 && oauthErrorCode(body) === "invalid_grant") return "401_invalid_grant";
+  if (status === 401) return "401_unauthorized";
+  if (status >= 500) return "5xx_server_error";
+  return `contabo_http_${status}`;
+}
+
+function contaboErrorReason(error: unknown): string {
+  if (error instanceof ContaboAdapterError) {
+    const reason = error.metadata.errorReason;
+    return typeof reason === "string" ? reason : error.code;
+  }
+  return error instanceof Error ? sanitizeErrorDetail(error.message) : "contabo_unknown_error";
+}
+
+function sanitizeErrorDetail(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+}
 
 /** `contabo-<id>` para pasar el regex de slug del orquestador. */
 function toServerSlug(instanceId: number | string): string {
