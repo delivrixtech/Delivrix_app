@@ -126,6 +126,135 @@ test("token: fetches once and reuses within TTL, refreshes after expiry", async 
   assert.equal(form.get("username"), "hostlatam@proton.me");
 });
 
+test("token: concurrent compute calls share one in-flight grant", async () => {
+  let tokenHits = 0;
+  let releaseToken!: () => void;
+  const tokenGate = new Promise<void>((resolve) => {
+    releaseToken = resolve;
+  });
+  installFetch([
+    {
+      match: (url) => url.includes("/openid-connect/token"),
+      respond: async () => {
+        tokenHits += 1;
+        await tokenGate;
+        return Response.json({ access_token: "tok-singleflight", expires_in: 300 });
+      }
+    },
+    {
+      match: (url, m) => url.includes("/v1/compute/instances/") && m === "GET",
+      respond: (url) => {
+        const id = url.split("/").at(-1);
+        return Response.json({
+          data: [{ instanceId: Number(id), status: "running", ipConfig: { v4: { ip: "1.2.3.4" } } }]
+        });
+      }
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({ ...baseConfig, cacheTtlMs: 0 });
+  const one = adapter.getServer("contabo-1");
+  const two = adapter.getServer("contabo-2");
+  await Promise.resolve();
+  assert.equal(tokenHits, 1, "second concurrent call waits on the same token promise");
+  releaseToken();
+  const [first, second] = await Promise.all([one, two]);
+
+  assert.equal(first.slug, "contabo-1");
+  assert.equal(second.slug, "contabo-2");
+  assert.equal(tokenHits, 1);
+});
+
+test("token: invalid_grant fails fast with actionable errorReason", async () => {
+  let tokenHits = 0;
+  installFetch([
+    {
+      match: (url) => url.includes("/openid-connect/token"),
+      respond: () => {
+        tokenHits += 1;
+        return Response.json({ error: "invalid_grant", error_description: "Invalid user credentials" }, { status: 401 });
+      }
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({ ...baseConfig, cacheTtlMs: 0 });
+  const inventory = await adapter.listServers();
+
+  assert.equal(tokenHits, 1, "invalid_grant must not retry");
+  assert.equal(inventory.source.responseOk, false);
+  assert.equal(inventory.source.errorMessage, "401_invalid_grant");
+});
+
+test("token: 429 respects Retry-After before retrying the grant", async () => {
+  let tokenHits = 0;
+  const sleeps: number[] = [];
+  installFetch([
+    {
+      match: (url) => url.includes("/openid-connect/token"),
+      respond: () => {
+        tokenHits += 1;
+        if (tokenHits === 1) {
+          return Response.json({ error: "temporarily_unavailable" }, { status: 429, headers: { "retry-after": "2" } });
+        }
+        return Response.json({ access_token: "tok-after-rate-limit", expires_in: 300 });
+      }
+    },
+    {
+      match: (url, m) => url.includes("/v1/compute/instances") && m === "GET",
+      respond: () => Response.json({ data: [] })
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({
+    ...baseConfig,
+    cacheTtlMs: 0,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    }
+  });
+  const inventory = await adapter.listServers();
+
+  assert.equal(inventory.source.responseOk, true);
+  assert.equal(tokenHits, 2);
+  assert.deepEqual(sleeps, [2000]);
+});
+
+test("computeFetch: 401 invalidates the token and retries once with a fresh grant", async () => {
+  let tokenHits = 0;
+  let getHits = 0;
+  const authHeaders: string[] = [];
+  installFetch([
+    {
+      match: (url) => url.includes("/openid-connect/token"),
+      respond: () => {
+        tokenHits += 1;
+        return Response.json({ access_token: `tok-${tokenHits}`, expires_in: 300 });
+      }
+    },
+    {
+      match: (url, m) => url.includes("/v1/compute/instances/55") && m === "GET",
+      respond: (_url, init) => {
+        getHits += 1;
+        authHeaders.push(normalizeHeaders(init.headers).authorization);
+        if (getHits === 1) {
+          return new Response("expired", { status: 401 });
+        }
+        return Response.json({
+          data: [{ instanceId: 55, status: "running", ipConfig: { v4: { ip: "192.0.2.55" } } }]
+        });
+      }
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({ ...baseConfig, cacheTtlMs: 0 });
+  const server = await adapter.getServer("contabo-55");
+
+  assert.equal(server.ipv4, "192.0.2.55");
+  assert.equal(tokenHits, 2);
+  assert.equal(getHits, 2);
+  assert.deepEqual(authHeaders, ["Bearer tok-1", "Bearer tok-2"]);
+});
+
 // --- createServer ----------------------------------------------------------
 
 test("createServer: translates to config region/product, finds-or-creates ssh secret, resolves image, posts instance", async () => {
@@ -390,6 +519,80 @@ test("listServers: missing creds returns empty live-degraded inventory without n
   const inventory = await adapter.listServers();
   assert.equal(inventory.servers.length, 0);
   assert.equal(inventory.source.responseOk, false);
+});
+
+test("listServers: caches provider inventory inside TTL and refreshes after expiry", async () => {
+  let clock = new Date("2026-06-11T12:00:00.000Z").getTime();
+  let listHits = 0;
+  installFetch([
+    tokenRoute("tok-cache"),
+    {
+      match: (url, m) => url.includes("/v1/compute/instances") && m === "GET",
+      respond: () => {
+        listHits += 1;
+        return Response.json({
+          data: [{ instanceId: listHits, displayName: `mail-${listHits}.example`, status: "running" }]
+        });
+      }
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({
+    ...baseConfig,
+    cacheTtlMs: 30_000,
+    now: () => new Date(clock)
+  });
+  const first = await adapter.listServers();
+  const second = await adapter.listServers();
+  clock += 31_000;
+  const third = await adapter.listServers();
+
+  assert.equal(listHits, 2);
+  assert.equal(first.servers[0].slug, "contabo-1");
+  assert.equal(second.servers[0].slug, "contabo-1");
+  assert.equal(third.servers[0].slug, "contabo-2");
+});
+
+test("listServers: createServer invalidates cached inventory after successful create", async () => {
+  let listHits = 0;
+  installFetch([
+    tokenRoute("tok-invalidate"),
+    {
+      match: (url, m) => url.includes("/v1/secrets") && m === "GET",
+      respond: (url) => {
+        const name = decodeURIComponent(new URL(url).searchParams.get("name") ?? "");
+        return Response.json({ data: [{ secretId: 9, name }] });
+      }
+    },
+    {
+      match: (url, m) => url.includes("/v1/compute/instances") && m === "GET",
+      respond: () => {
+        listHits += 1;
+        return Response.json({
+          data: [{ instanceId: listHits, displayName: `mail-${listHits}.example`, status: "running" }]
+        });
+      }
+    },
+    {
+      match: (url, m) => url.includes("/v1/compute/instances") && m === "POST",
+      respond: () => Response.json({ data: [{ instanceId: 99, status: "provisioning" }] }, { status: 201 })
+    }
+  ]);
+
+  const adapter = new ContaboAdapter({ ...baseConfig, imageId: "fixed-image-uuid", cacheTtlMs: 60_000 });
+  await adapter.listServers();
+  await adapter.listServers();
+  await adapter.createServer({
+    profile: "bit",
+    locationId: "dk",
+    hostname: "mail.invalidate.example",
+    imageSlug: "ubuntu-2404",
+    publicKey: SSH_KEY
+  });
+  const refreshed = await adapter.listServers();
+
+  assert.equal(listHits, 2);
+  assert.equal(refreshed.servers[0].slug, "contabo-2");
 });
 
 // --- deleteServer (cancel) -------------------------------------------------
