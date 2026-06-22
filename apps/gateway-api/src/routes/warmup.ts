@@ -116,6 +116,7 @@ export async function handleWarmupStartHttp(deps: WarmupStartDependencies): Prom
   if (env.WARMUP_ENABLE_SEND !== "true") blockers.push("warmup_send_flag_disabled");
   if (!deps.sshRunner.isConfigured()) blockers.push("warmup_ssh_runner_missing");
   if (!approval) blockers.push("approval_not_found_or_expired");
+  if (!serverSlug) blockers.push("server_slug_missing");
   if (!serverIp) blockers.push("server_ip_missing");
   if (seedInboxes.length !== 3) blockers.push("seed_inboxes_must_be_exactly_3");
 
@@ -222,6 +223,7 @@ export async function handleWarmupStartHttp(deps: WarmupStartDependencies): Prom
         now: deps.now?.() ?? new Date()
       });
       const result = await deps.sshRunner.run({
+        serverSlug,
         serverIp: serverIp!,
         command: `/usr/sbin/sendmail -t -f ${shellQuote(`noreply@${domain}`)}`,
         stdin: message,

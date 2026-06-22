@@ -25,6 +25,7 @@ import {
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
+import { getProviderFromServerIdentity } from "../server-provider.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -72,6 +73,8 @@ export interface WebdockServerCreateDependencies {
   env?: Record<string, string | undefined>;
   /** Proveedor destino cuando el dispatcher enruta por canal paralelo. undefined/"webdock" conserva Webdock. */
   providerId?: string;
+  /** Cuenta destino del create cuando el dispatcher enruta Webdock multicuenta. */
+  serverAccountId?: string;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -158,6 +161,8 @@ interface WebdockServerInventory {
     runId: string;
     serverSlug: string;
     domain: string;
+    providerId?: string;
+    serverAccountId?: string;
     boundAt: string;
     source: "created" | "idempotent_already_exists";
   }>;
@@ -179,6 +184,10 @@ export async function handleWebdockServerCreateHttp(
   const body = await readJson<WebdockServerCreateBody>(deps.request);
   const providerId = normalizeRouteProviderId(deps.providerId);
   const providerLabel = providerId ?? "webdock";
+  const bindingScope = {
+    providerId: providerLabel,
+    serverAccountId: normalizeRunBindingServerAccountId(deps.serverAccountId, providerLabel)
+  };
   const polling = resolveProvisioningPolling({
     env,
     providerId,
@@ -274,6 +283,8 @@ export async function handleWebdockServerCreateHttp(
       workspace: deps.workspace,
       hostname,
       runId,
+      providerId: bindingScope.providerId,
+      serverAccountId: bindingScope.serverAccountId,
       allowPendingIpReuse: providerId === "contabo"
     });
     if (existing.status === "blocked") {
@@ -341,6 +352,8 @@ export async function handleWebdockServerCreateHttp(
           runId,
           serverSlug: server.slug,
           domain: hostname,
+          providerId: bindingScope.providerId,
+          serverAccountId: bindingScope.serverAccountId,
           boundAt: (deps.now?.() ?? new Date()).toISOString(),
           source: "idempotent_already_exists"
         });
@@ -466,6 +479,8 @@ export async function handleWebdockServerCreateHttp(
         runId,
         serverSlug: created.serverSlug,
         domain: hostname,
+        providerId: bindingScope.providerId,
+        serverAccountId: bindingScope.serverAccountId,
         boundAt: (deps.now?.() ?? new Date()).toISOString(),
         source: "created"
       });
@@ -907,6 +922,8 @@ async function resolveExistingServerForCreate(input: {
   workspace: OpenClawWorkspace;
   hostname: string;
   runId?: string;
+  providerId: string;
+  serverAccountId: string;
   allowPendingIpReuse: boolean;
 }): Promise<
   | { status: "create" }
@@ -917,6 +934,8 @@ async function resolveExistingServerForCreate(input: {
     const bound = await resolveExistingServerByRunBinding(input);
     if (bound) return bound;
   }
+  const domainBound = await resolveExistingServerByDomainBinding(input);
+  if (domainBound) return domainBound;
 
   if (!input.adapter.listServers) {
     return { status: "blocked", blockers: ["webdock_inventory_read_unavailable"] };
@@ -949,6 +968,8 @@ async function resolveExistingServerByRunBinding(input: {
   workspace: OpenClawWorkspace;
   hostname: string;
   runId: string;
+  providerId: string;
+  serverAccountId: string;
   allowPendingIpReuse: boolean;
 }): Promise<
   | { status: "reuse"; server: WebdockServer }
@@ -958,6 +979,9 @@ async function resolveExistingServerByRunBinding(input: {
   const inventory = await input.workspace.readInventoryJson<WebdockServerInventory>("webdock-servers.json");
   const binding = inventory?.runBindings?.find((entry) => entry.runId === input.runId);
   if (!binding) return null;
+  if (!runBindingMatchesScope(binding, input)) {
+    return { status: "blocked", blockers: ["webdock_run_binding_scope_mismatch"] };
+  }
   if (!hostnamesEquivalent(binding.domain, input.hostname)) {
     return { status: "blocked", blockers: ["webdock_run_binding_hostname_mismatch"] };
   }
@@ -970,6 +994,80 @@ async function resolveExistingServerByRunBinding(input: {
   } catch {
     return { status: "blocked", blockers: ["webdock_run_binding_server_read_failed"] };
   }
+}
+
+async function resolveExistingServerByDomainBinding(input: {
+  adapter: WebdockServerCreateAdapter;
+  workspace: OpenClawWorkspace;
+  hostname: string;
+  providerId: string;
+  serverAccountId: string;
+  allowPendingIpReuse: boolean;
+}): Promise<
+  | { status: "reuse"; server: WebdockServer }
+  | { status: "blocked"; blockers: string[] }
+  | null
+> {
+  const inventory = await input.workspace.readInventoryJson<WebdockServerInventory>("webdock-servers.json");
+  const bindings = dedupeRunBindingsBySlug(
+    (inventory?.runBindings ?? []).filter((entry) =>
+      hostnamesEquivalent(entry.domain, input.hostname) && runBindingMatchesScope(entry, input)
+    )
+  );
+  if (bindings.length === 0) return null;
+  if (bindings.length > 1) {
+    return { status: "blocked", blockers: ["webdock_domain_binding_ambiguous"] };
+  }
+  try {
+    const server = await input.adapter.getServer(bindings[0].serverSlug);
+    if (!server.ipv4 && !input.allowPendingIpReuse) {
+      return { status: "blocked", blockers: ["webdock_existing_server_ipv4_missing"] };
+    }
+    return { status: "reuse", server };
+  } catch {
+    return { status: "blocked", blockers: ["webdock_domain_binding_server_read_failed"] };
+  }
+}
+
+function dedupeRunBindingsBySlug(
+  bindings: NonNullable<WebdockServerInventory["runBindings"]>
+): NonNullable<WebdockServerInventory["runBindings"]> {
+  const seen = new Set<string>();
+  const out: NonNullable<WebdockServerInventory["runBindings"]> = [];
+  for (const binding of bindings) {
+    if (seen.has(binding.serverSlug)) continue;
+    seen.add(binding.serverSlug);
+    out.push(binding);
+  }
+  return out;
+}
+
+function runBindingMatchesScope(
+  binding: NonNullable<WebdockServerInventory["runBindings"]>[number],
+  scope: { providerId: string; serverAccountId: string }
+): boolean {
+  const providerId = normalizeRunBindingProviderId(binding);
+  return (
+    providerId === scope.providerId &&
+    normalizeRunBindingServerAccountId(binding.serverAccountId, providerId) === scope.serverAccountId
+  );
+}
+
+function normalizeRunBindingProviderId(
+  binding: NonNullable<WebdockServerInventory["runBindings"]>[number]
+): string {
+  const explicit = normalizeProviderScopeId(binding.providerId);
+  if (explicit) return explicit;
+  return binding.serverSlug.startsWith("contabo-") ? "contabo" : "webdock";
+}
+
+function normalizeRunBindingServerAccountId(value: string | undefined, providerId: string): string {
+  return normalizeProviderScopeId(value) ?? (providerId === "webdock" ? "ops" : providerId);
+}
+
+function normalizeProviderScopeId(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(normalized) ? normalized : undefined;
 }
 
 function webdockServerMatchesHostname(server: WebdockServer, hostname: string): boolean {
@@ -990,13 +1088,13 @@ function hostnamesEquivalent(left: string, right: string): boolean {
   const normalizedLeft = normalizeDomainLoose(left);
   const normalizedRight = normalizeDomainLoose(right);
   if (normalizedLeft === normalizedRight) return true;
-  // Fallback para Contabo displayName: la API reemplaza puntos por guiones.
-  // Ejemplo: smtp.example.com equivale a smtp-example-com solo en servidores Contabo-like.
+  // Fallback para displayName de proveedores que reemplazan puntos por guiones.
+  // Ejemplo: smtp.example.com equivale a smtp-example-com solo en servidores Contabo.
   return normalizeProviderHostnameLoose(normalizedLeft) === normalizeProviderHostnameLoose(normalizedRight);
 }
 
 function isContaboLikeServer(server: WebdockServer): boolean {
-  return server.accountId === "contabo" || server.slug.startsWith("contabo-");
+  return getProviderFromServerIdentity(server) === "contabo";
 }
 
 function dedupeServers(servers: WebdockServer[]): WebdockServer[] {
@@ -1061,7 +1159,8 @@ async function markWebdockServerDeleted(
       ...(current?.deletedServers ?? []).filter((server) => server.slug !== input.slug),
       input
     ];
-    return { servers, deletedServers };
+    const runBindings = (current?.runBindings ?? []).filter((binding) => binding.serverSlug !== input.slug);
+    return { ...(current ?? {}), servers, deletedServers, runBindings };
   });
 }
 

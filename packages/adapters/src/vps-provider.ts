@@ -47,6 +47,8 @@ export interface VpsProvider {
     publicKey: string;
     username?: string;
   }): Promise<WebdockEnsureSshAccessResult>;
+  /** Setea rDNS/PTR cuando el proveedor lo expone por API. Webdock conserva su propio setServerPtr. */
+  setReverseDns?(ip: string, hostname: string): Promise<{ ok: boolean; status: number; detail?: string }>;
 }
 
 /** Una entrada de proveedor lista para el registry: id + adapter. */

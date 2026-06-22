@@ -185,13 +185,23 @@ export interface DispatchResult {
   settled?: Promise<DispatchResult>;
 }
 
+interface SkillHandlerTimeoutInput {
+  params: Record<string, unknown>;
+  deps: SkillDispatcherDeps;
+  accountId?: string;
+  providerId?: string;
+  dnsProviderId?: string;
+}
+
+type SkillHandlerTimeoutMs = number | ((input: SkillHandlerTimeoutInput) => number);
+
 export interface SkillDispatcher {
   dispatch(input: Omit<DispatchSkillHandlerInput, "deps" | "handlers">): Promise<DispatchResult>;
 }
 
 export interface SkillHandlerEntry {
   paramSchema: SkillParamSchema;
-  timeoutMs: number;
+  timeoutMs: SkillHandlerTimeoutMs;
   canRollback: boolean;
   invoke(input: {
     request: IncomingMessage;
@@ -203,6 +213,17 @@ export interface SkillHandlerEntry {
     dnsProviderId?: string;
   }): Promise<void>;
 }
+
+/**
+ * Contabo rDNS/PTR is panel-only. Step 8 waits briefly for FCrDNS, then returns an advisory pending
+ * response. Defaults: wait 180s, cap operator override at 240s, poll no faster than 5s, and keep the
+ * handler cap at 300s so SSH/audit overhead cannot trigger the shared dispatcher timeout.
+ */
+const contaboBindFcrdnsDefaultMaxWaitMs = 180_000;
+const contaboBindFcrdnsMaxWaitCapMs = 240_000;
+const contaboBindFcrdnsMinPollIntervalMs = 5_000;
+const contaboBindHandlerTimeoutCapMs = 300_000;
+const contaboBindHandlerTimeoutPaddingMs = 60_000;
 
 export function createSkillDispatcher(deps: SkillDispatcherDeps): SkillDispatcher {
   return {
@@ -271,7 +292,13 @@ export async function dispatchSkillHandler(input: DispatchSkillHandlerInput): Pr
   };
   const { request, response, getResponse } = createInternalHttpAdapter({ body });
   const startedAt = Date.now();
-  const timeoutMs = input.timeoutMs ?? entry.timeoutMs;
+  const timeoutMs = input.timeoutMs ?? resolveSkillHandlerTimeoutMs(entry.timeoutMs, {
+    params: paramsValidation.data,
+    deps: input.deps,
+    accountId: input.accountId,
+    providerId: input.providerId,
+    dnsProviderId: input.dnsProviderId
+  });
 
   const killSwitch = await input.deps.readKillSwitch?.();
   if (killSwitch?.enabled) {
@@ -452,12 +479,13 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         readCanvasState: deps.readCanvasState,
         env: deps.env,
         providerId,
+        serverAccountId: accountId,
         now: deps.now
       })
   };
   const bindWebdockMainDomain: SkillHandlerEntry = {
     paramSchema: bindWebdockMainDomainSkillParamSchema,
-    timeoutMs: 120_000,
+    timeoutMs: ({ providerId, deps }) => resolveContaboBindTiming(providerId, deps.env, 120_000).handlerTimeoutMs,
     canRollback: true,
     // providerId (canal HERMANO) viaja por invoke -> el handler elige CONTABO BIND PATH (hostname por
     // SSH + PTR manual + FCrDNS) cuando es un proveedor no-Webdock presente en vpsProviderAdapters;
@@ -478,7 +506,8 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
           vpsProviderAdapters: deps.vpsProviderAdapters,
           sshRunner: deps.smtpSshRunner,
           workspace: deps.workspace,
-          now: () => (deps.now?.() ?? new Date()).getTime()
+          now: () => (deps.now?.() ?? new Date()).getTime(),
+          ...contaboBindFcrdnsDeps(providerId, deps.env)
         }
       })
   };
@@ -723,6 +752,73 @@ function unknownExternalDnsProviderId(providerId: string | undefined, adapters?:
   const provider = providerId?.trim().toLowerCase();
   if (!provider || provider === "route53") return null;
   return adapters?.has(provider) ? null : provider;
+}
+
+function contaboBindFcrdnsMaxWaitMs(
+  providerId: string | undefined,
+  env: Record<string, string | undefined> | undefined
+): number | undefined {
+  if (providerId?.trim().toLowerCase() !== "contabo") return undefined;
+  return boundedEnvMs(
+    env?.CONTABO_FCRDNS_MAX_WAIT_MS,
+    contaboBindFcrdnsDefaultMaxWaitMs,
+    contaboBindFcrdnsMaxWaitCapMs
+  );
+}
+
+function contaboBindFcrdnsPollIntervalMs(
+  providerId: string | undefined,
+  env: Record<string, string | undefined> | undefined
+): number | undefined {
+  if (providerId?.trim().toLowerCase() !== "contabo") return undefined;
+  const parsed = Number(env?.CONTABO_FCRDNS_POLL_INTERVAL_MS);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.max(contaboBindFcrdnsMinPollIntervalMs, Math.floor(parsed));
+}
+
+function boundedEnvMs(value: string | undefined, fallback: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(Math.floor(parsed), max);
+}
+
+function contaboBindFcrdnsDeps(
+  providerId: string | undefined,
+  env: Record<string, string | undefined> | undefined
+): { fcrdnsMaxWaitMs?: number; fcrdnsPollIntervalMs?: number } {
+  const timing = resolveContaboBindTiming(providerId, env, 120_000);
+  const maxWaitMs = timing.fcrdnsMaxWaitMs;
+  if (maxWaitMs === undefined) return {};
+  return {
+    fcrdnsMaxWaitMs: maxWaitMs,
+    ...(timing.fcrdnsPollIntervalMs === undefined ? {} : { fcrdnsPollIntervalMs: timing.fcrdnsPollIntervalMs })
+  };
+}
+
+export function resolveContaboBindTiming(
+  providerId: string | undefined,
+  env: Record<string, string | undefined> | undefined,
+  fallbackMs: number
+): { handlerTimeoutMs: number; fcrdnsMaxWaitMs?: number; fcrdnsPollIntervalMs?: number } {
+  const maxWaitMs = contaboBindFcrdnsMaxWaitMs(providerId, env);
+  if (maxWaitMs === undefined) return { handlerTimeoutMs: fallbackMs };
+  const handlerTimeoutMs = Math.min(
+    contaboBindHandlerTimeoutCapMs,
+    Math.max(fallbackMs, maxWaitMs + contaboBindHandlerTimeoutPaddingMs)
+  );
+  const pollIntervalMs = contaboBindFcrdnsPollIntervalMs(providerId, env);
+  return {
+    handlerTimeoutMs,
+    fcrdnsMaxWaitMs: maxWaitMs,
+    ...(pollIntervalMs === undefined ? {} : { fcrdnsPollIntervalMs: pollIntervalMs })
+  };
+}
+
+function resolveSkillHandlerTimeoutMs(
+  timeoutMs: SkillHandlerTimeoutMs,
+  input: SkillHandlerTimeoutInput
+): number {
+  return typeof timeoutMs === "function" ? timeoutMs(input) : timeoutMs;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
