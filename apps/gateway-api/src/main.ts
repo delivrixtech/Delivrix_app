@@ -1599,7 +1599,8 @@ const server = createServer(async (request, response) => {
         request,
         response,
         pool: episodicScratchPool,
-        readBoundaryToken: sensitiveReadBoundaryToken
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        logger: gatewayRuntimeLog
       });
     }
 

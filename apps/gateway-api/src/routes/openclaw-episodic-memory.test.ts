@@ -118,6 +118,7 @@ test("handleReadEpisodicScratchHttp does not expose raw store errors", async () 
 });
 
 test("handleReadEpisodicScratchHttp degrades scratch connection errors to empty 200", async () => {
+  const logs: Array<{ event: string; message: string; metadata?: Record<string, unknown> }> = [];
   const { request, response, getResponse } = createInternalHttpAdapter({
     method: "GET",
     url: "/v1/openclaw/scratch?intentId=intent-1",
@@ -134,12 +135,26 @@ test("handleReadEpisodicScratchHttp degrades scratch connection errors to empty 
         throw error;
       }
     },
-    readBoundaryToken: "expected-token"
+    readBoundaryToken: "expected-token",
+    logger: {
+      async warn(event, message, metadata) {
+        logs.push({ event, message, metadata });
+      }
+    }
   });
 
   const captured = getResponse();
   assert.equal(captured.statusCode, 200);
   assert.deepEqual(captured.body, { entries: [], grounded: [] });
+  assert.deepEqual(logs, [{
+    event: "openclaw.episodic.scratch_connection_degraded",
+    message: "Episodic scratch store connection failed; returning empty fallback.",
+    metadata: {
+      grounded: false,
+      code: "ECONNREFUSED",
+      message: "connect ECONNREFUSED [ip]:5432"
+    }
+  }]);
 });
 
 test("handleReadEpisodicScratchHttp degrades grounded retrieval connection errors to empty 200", async () => {
