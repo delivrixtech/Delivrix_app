@@ -477,8 +477,8 @@ export async function handleBindWebdockMainDomain(input: {
  *  - Resuelve el server por el adapter del PROVEEDOR (getServer del VpsProvider), NO la API Webdock.
  *  - Setea el HOSTNAME a smtp.<domain> por SSH (Contabo NO tiene identity API), con el MISMO runner y
  *    key de operador que usa el provisioning (step 9). Mirror de WebdockRealAdapter.setServerHostnameViaSsh.
- *  - Emite oc.bind.contabo_manual_ptr_required con IP + PTR objetivo: el rDNS Contabo es panel-only, el
- *    operador lo setea a mano. El FCrDNS verify (reusado tal cual) espera acotado y deja advisory.
+ *  - Si el adapter expone setReverseDns(), setea el PTR por API antes del FCrDNS. Si no existe o falla,
+ *    audita fallback manual y continua al verify para conservar el camino pending/reintentable.
  *  - Si FCrDNS no verifica dentro del wait acotado (operador aun no puso el PTR, o no propago), devuelve
  *    200 advisory/no-bloqueante con operatorAction; un re-run posterior puede confirmar el alignment.
  * Devuelve el MISMO BindWebdockMainDomainResult para que los steps 9-14 sigan sin cambios.
@@ -599,28 +599,112 @@ async function bindNonWebdockMainDomain(input: {
     }
   }
 
-  // PTR MANUAL: el rDNS Contabo es panel-only (no API). Instruccion CLARA al operador via audit, con la
-  // IP exacta y el PTR objetivo. El FCrDNS verify de abajo gatea hasta que el operador lo setee y propague.
-  await deps.auditLog.append({
-    actorType: "operator",
-    actorId: params.actorId,
-    action: "oc.bind.contabo_manual_ptr_required",
-    targetType: "webdock_server",
-    targetId: params.serverSlug,
-    riskLevel: "high",
-    decision: "allow",
-    humanApproved: true,
-    approverIds: [params.actorId],
-    metadata: {
-      provider: providerId,
-      serverSlug: params.serverSlug,
-      serverIp: server.ipv4,
-      targetPtr: identityDomain,
-      instruction: `Set rDNS/PTR for ${server.ipv4} to ${identityDomain} in the ${providerId} panel (no API). FCrDNS remains advisory-pending until it propagates.`,
-      approvalEventId: approval.eventId ?? null,
-      approvalArtifactId: approval.artifactId ?? null
+  let ptrSetByApi = false;
+  let ptrSetStatus: number | null = null;
+  let ptrSetFailureDetail: string | null = null;
+  let ptrFallbackReason: "api_unavailable" | "api_failed" | null = null;
+
+  if (typeof adapter.setReverseDns === "function") {
+    try {
+      const ptrResult = await adapter.setReverseDns(server.ipv4, identityDomain);
+      ptrSetStatus = ptrResult.status;
+      if (ptrResult.ok) {
+        ptrSetByApi = true;
+        await deps.auditLog.append({
+          actorType: "operator",
+          actorId: params.actorId,
+          action: "oc.bind.contabo_ptr_set",
+          targetType: "webdock_server",
+          targetId: params.serverSlug,
+          riskLevel: "high",
+          decision: "allow",
+          humanApproved: true,
+          approverIds: [params.actorId],
+          metadata: {
+            provider: providerId,
+            serverSlug: params.serverSlug,
+            serverIp: server.ipv4,
+            targetPtr: identityDomain,
+            status: ptrResult.status,
+            approvalEventId: approval.eventId ?? null,
+            approvalArtifactId: approval.artifactId ?? null
+          }
+        });
+      } else {
+        ptrFallbackReason = "api_failed";
+        ptrSetFailureDetail = ptrResult.detail ?? null;
+        await deps.auditLog.append({
+          actorType: "operator",
+          actorId: params.actorId,
+          action: "oc.bind.contabo_ptr_set_failed",
+          targetType: "webdock_server",
+          targetId: params.serverSlug,
+          riskLevel: "high",
+          decision: "allow",
+          humanApproved: true,
+          approverIds: [params.actorId],
+          metadata: {
+            provider: providerId,
+            serverSlug: params.serverSlug,
+            serverIp: server.ipv4,
+            targetPtr: identityDomain,
+            status: ptrResult.status,
+            detail: ptrResult.detail ?? null,
+            operatorAction: contaboPtrManualFallbackAction(server.ipv4, identityDomain, providerId, ptrResult.detail),
+            approvalEventId: approval.eventId ?? null,
+            approvalArtifactId: approval.artifactId ?? null
+          }
+        });
+      }
+    } catch (error) {
+      ptrFallbackReason = "api_failed";
+      ptrSetFailureDetail = errorMessage(error);
+      await deps.auditLog.append({
+        actorType: "operator",
+        actorId: params.actorId,
+        action: "oc.bind.contabo_ptr_set_failed",
+        targetType: "webdock_server",
+        targetId: params.serverSlug,
+        riskLevel: "high",
+        decision: "allow",
+        humanApproved: true,
+        approverIds: [params.actorId],
+        metadata: {
+          provider: providerId,
+          serverSlug: params.serverSlug,
+          serverIp: server.ipv4,
+          targetPtr: identityDomain,
+          status: null,
+          detail: ptrSetFailureDetail,
+          operatorAction: contaboPtrManualFallbackAction(server.ipv4, identityDomain, providerId, ptrSetFailureDetail),
+          approvalEventId: approval.eventId ?? null,
+          approvalArtifactId: approval.artifactId ?? null
+        }
+      });
     }
-  });
+  } else {
+    ptrFallbackReason = "api_unavailable";
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId: params.actorId,
+      action: "oc.bind.contabo_manual_ptr_required",
+      targetType: "webdock_server",
+      targetId: params.serverSlug,
+      riskLevel: "high",
+      decision: "allow",
+      humanApproved: true,
+      approverIds: [params.actorId],
+      metadata: {
+        provider: providerId,
+        serverSlug: params.serverSlug,
+        serverIp: server.ipv4,
+        targetPtr: identityDomain,
+        instruction: contaboPtrManualFallbackAction(server.ipv4, identityDomain, providerId),
+        approvalEventId: approval.eventId ?? null,
+        approvalArtifactId: approval.artifactId ?? null
+      }
+    });
+  }
 
   // FCrDNS verify REUSADO tal cual: dig -x IP == smtp.<domain> AND smtp.<domain> -> IP, con retry acotado.
   const fcrdns = await verifyFcrdnsWithRetry({
@@ -634,7 +718,9 @@ async function bindNonWebdockMainDomain(input: {
 
   if (!fcrdns.verified) {
     // PTR aun no propagado (operador no lo puso, o DNS no convergio): advisory no-bloqueante.
-    const operatorAction = `Set rDNS/PTR for ${server.ipv4} to ${identityDomain} in the ${providerId} panel, then rerun verification when DNS has propagated.`;
+    const operatorAction = ptrSetByApi
+      ? `PTR API set ${server.ipv4} to ${identityDomain}; wait for DNS propagation, then rerun verification.`
+      : contaboPtrManualFallbackAction(server.ipv4, identityDomain, providerId, ptrSetFailureDetail ?? undefined);
     const event = await deps.auditLog.append({
       actorType: "operator",
       actorId: params.actorId,
@@ -654,6 +740,10 @@ async function bindNonWebdockMainDomain(input: {
         identitySet,
         ptrSet: false,
         ptrSkipReason: "fcrdns_pending",
+        ptrSetByApi,
+        ptrSetStatus,
+        ptrFallbackReason,
+        ptrSetFailureDetail,
         operatorAction,
         nonBlocking: true,
         fcrdns,
@@ -705,6 +795,10 @@ async function bindNonWebdockMainDomain(input: {
       newMainDomain: identityDomain,
       identitySet,
       ptrSet: true,
+      ptrSetByApi,
+      ptrSetStatus,
+      ptrFallbackReason,
+      ptrSetFailureDetail,
       fcrdns,
       alreadyBound,
       approvalEventId: approval.eventId ?? null,
@@ -821,6 +915,11 @@ function lastNonEmptyLine(value: string): string {
 
 function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function contaboPtrManualFallbackAction(ip: string, ptr: string, providerId: string, detail?: string): string {
+  const suffix = detail ? ` Automatic PTR API attempt failed: ${detail}.` : "";
+  return `Set rDNS/PTR for ${ip} to ${ptr} in the ${providerId} panel, then rerun verification when DNS has propagated.${suffix}`;
 }
 
 export function createBindWebdockMainDomainApprovalGuard(input: {
