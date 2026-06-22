@@ -117,6 +117,136 @@ test("handleReadEpisodicScratchHttp does not expose raw store errors", async () 
   assert.equal(JSON.stringify(captured.body).includes("raw database secret"), false);
 });
 
+test("handleReadEpisodicScratchHttp degrades scratch connection errors to empty 200", async () => {
+  const { request, response, getResponse } = createInternalHttpAdapter({
+    method: "GET",
+    url: "/v1/openclaw/scratch?intentId=intent-1",
+    headers: { "x-delivrix-token": "expected-token" }
+  });
+
+  await handleReadEpisodicScratchHttp({
+    request,
+    response,
+    pool: {
+      async query() {
+        const error = new Error("connect ECONNREFUSED 127.0.0.1:5432") as Error & { code: string };
+        error.code = "ECONNREFUSED";
+        throw error;
+      }
+    },
+    readBoundaryToken: "expected-token"
+  });
+
+  const captured = getResponse();
+  assert.equal(captured.statusCode, 200);
+  assert.deepEqual(captured.body, { entries: [], grounded: [] });
+});
+
+test("handleReadEpisodicScratchHttp degrades grounded retrieval connection errors to empty 200", async () => {
+  const { request, response, getResponse } = createInternalHttpAdapter({
+    method: "GET",
+    url: "/v1/openclaw/scratch?grounded=true&query=contabo",
+    headers: { "x-delivrix-token": "expected-token" }
+  });
+
+  await handleReadEpisodicScratchHttp({
+    request,
+    response,
+    pool: {
+      async query() {
+        const error = new Error("getaddrinfo ENOTFOUND postgres") as Error & { code: string };
+        error.code = "ENOTFOUND";
+        throw error;
+      }
+    },
+    readBoundaryToken: "expected-token"
+  });
+
+  const captured = getResponse();
+  assert.equal(captured.statusCode, 200);
+  assert.deepEqual(captured.body, {
+    status: "abstain",
+    reason: "no_verified_relevant_memory",
+    memories: [],
+    discarded: []
+  });
+});
+
+test("handleReadEpisodicScratchHttp degrades unavailable pool errors to empty 200", async () => {
+  const { request, response, getResponse } = createInternalHttpAdapter({
+    method: "GET",
+    url: "/v1/openclaw/scratch?intentId=intent-1",
+    headers: { "x-delivrix-token": "expected-token" }
+  });
+
+  await handleReadEpisodicScratchHttp({
+    request,
+    response,
+    pool: {
+      async query() {
+        throw new Error("Cannot use a pool after calling end on the pool");
+      }
+    },
+    readBoundaryToken: "expected-token"
+  });
+
+  const captured = getResponse();
+  assert.equal(captured.statusCode, 200);
+  assert.deepEqual(captured.body, { entries: [], grounded: [] });
+});
+
+test("handleReadEpisodicScratchHttp keeps scratch data errors as unavailable", async () => {
+  const { request, response, getResponse } = createInternalHttpAdapter({
+    method: "GET",
+    url: "/v1/openclaw/scratch?intentId=intent-1",
+    headers: { "x-delivrix-token": "expected-token" }
+  });
+
+  await handleReadEpisodicScratchHttp({
+    request,
+    response,
+    pool: {
+      async query() {
+        const error = new Error("relation openclaw_episodic_scratch does not exist") as Error & { code: string };
+        error.code = "42P01";
+        throw error;
+      }
+    },
+    readBoundaryToken: "expected-token"
+  });
+
+  const captured = getResponse();
+  assert.equal(captured.statusCode, 503);
+  assert.equal((captured.body as { error: string }).error, "episodic_scratch_unavailable");
+  assert.equal(JSON.stringify(captured.body).includes("openclaw_episodic_scratch"), false);
+});
+
+test("handleReadEpisodicScratchHttp keeps scratch query errors as unavailable", async () => {
+  const { request, response, getResponse } = createInternalHttpAdapter({
+    method: "GET",
+    url: "/v1/openclaw/scratch?intentId=intent-1",
+    headers: { "x-delivrix-token": "expected-token" }
+  });
+
+  await handleReadEpisodicScratchHttp({
+    request,
+    response,
+    pool: {
+      async query() {
+        const error = new Error("syntax error at or near SELECT") as Error & { code: string };
+        error.code = "42601";
+        throw error;
+      }
+    },
+    readBoundaryToken: "expected-token"
+  });
+
+  const captured = getResponse();
+  assert.equal(captured.statusCode, 503);
+  assert.equal((captured.body as { error: string }).error, "episodic_scratch_unavailable");
+  assert.equal(JSON.stringify(captured.body).includes("syntax error"), false);
+});
+
 test("compactIntent writes entries and appends hash-only audit metadata", async () => {
   const pool = new MemoryScratchPool();
   const auditEvents: Array<{ action: string; targetId: string; metadata?: Record<string, unknown> }> = [
