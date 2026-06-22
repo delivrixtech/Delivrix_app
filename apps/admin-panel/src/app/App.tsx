@@ -687,21 +687,19 @@ function SectionView({
     case "onboarding":
       return <Suspense fallback={<SectionLoadingState />}><OnboardingSection data={data} /></Suspense>;
     case "canvas": {
-      // Preview no-destructivo del rediseño v5: ?canvasv5 lo activa (sticky en la sesión,
-      // sobrevive a la navegación del sidebar), ?canvasv4 lo desactiva. Sin esto se pierde
-      // al clickear "Canvas" en el sidebar (que limpia el query) y se ve el v4.
-      let previewV5 = false;
+      // v5 es el canvas por defecto. ?canvasv4 queda como escape temporal de rollback.
+      let useV4 = false;
       if (typeof window !== "undefined") {
         try {
           const search = window.location.search;
-          if (search.includes("canvasv4")) window.sessionStorage.removeItem("canvasv5");
-          else if (search.includes("canvasv5")) window.sessionStorage.setItem("canvasv5", "1");
-          previewV5 = window.sessionStorage.getItem("canvasv5") === "1";
+          if (search.includes("canvasv5")) window.sessionStorage.removeItem("canvasv4");
+          else if (search.includes("canvasv4")) window.sessionStorage.setItem("canvasv4", "1");
+          useV4 = window.sessionStorage.getItem("canvasv4") === "1";
         } catch {
-          previewV5 = window.location.search.includes("canvasv5");
+          useV4 = window.location.search.includes("canvasv4");
         }
       }
-      return <Suspense fallback={<SectionLoadingState />}>{previewV5 ? <CanvasV5Preview /> : <CanvasV4 />}</Suspense>;
+      return <Suspense fallback={<SectionLoadingState />}>{useV4 ? <CanvasV4 /> : <CanvasV5Preview />}</Suspense>;
     }
     case "hardware":
       return <Suspense fallback={<SectionLoadingState />}><HardwareSection data={data} /></Suspense>;
