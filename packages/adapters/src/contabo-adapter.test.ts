@@ -439,6 +439,78 @@ test("ensureServerSshAccess: ensures the secret and returns secretId as publicKe
   assert.equal(result.sshSettingsEventId, null);
 });
 
+// --- setReverseDns -----------------------------------------------------------
+
+test("setReverseDns: updates Contabo PTR through DNS API with auth and request id", async () => {
+  installFetch([
+    tokenRoute(),
+    {
+      match: (url, m) => url.endsWith("/v1/dns/ptrs/192.0.2.55") && m === "PUT",
+      respond: () => new Response(null, { status: 204 })
+    }
+  ]);
+
+  const adapter = new ContaboAdapter(baseConfig);
+  const result = await adapter.setReverseDns("192.0.2.55", "SMTP.Example.COM.");
+
+  assert.deepEqual(result, { ok: true, status: 204 });
+  const ptrCall = calls.find((call) => call.url.includes("/v1/dns/ptrs/"));
+  assert.ok(ptrCall);
+  assert.equal(ptrCall.method, "PUT");
+  assert.equal(ptrCall.headers["authorization"], "Bearer tok-1");
+  assert.match(
+    ptrCall.headers["x-request-id"],
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+  );
+  assert.equal(ptrCall.headers["content-type"], "application/json");
+  assert.deepEqual(JSON.parse(ptrCall.body ?? "{}"), { ptr: "smtp.example.com" });
+});
+
+test("setReverseDns: returns non-ok status and detail without throwing", async () => {
+  installFetch([
+    tokenRoute(),
+    {
+      match: (url, m) => url.endsWith("/v1/dns/ptrs/192.0.2.55") && m === "PUT",
+      respond: () => new Response("invalid ptr", { status: 400, statusText: "Bad Request" })
+    }
+  ]);
+
+  const adapter = new ContaboAdapter(baseConfig);
+  const result = await adapter.setReverseDns("192.0.2.55", "smtp.example.com");
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 400);
+  assert.match(result.detail ?? "", /Bad Request/);
+  assert.match(result.detail ?? "", /invalid ptr/);
+});
+
+test("setReverseDns: rejects invalid IP or hostname before network", async () => {
+  installFetch([
+    {
+      match: () => true,
+      respond: () => {
+        throw new Error("setReverseDns validation must not hit network");
+      }
+    }
+  ]);
+
+  const adapter = new ContaboAdapter(baseConfig);
+  for (const [ip, hostname] of [
+    ["999.1.1.1", "smtp.example.com"],
+    ["192.0.2.55", "bad_host"]
+  ]) {
+    await assert.rejects(
+      () => adapter.setReverseDns(ip, hostname),
+      (error: unknown) => {
+        assert.ok(error instanceof ContaboAdapterError);
+        assert.equal(error.code, "contabo_invalid_ptr_input");
+        return true;
+      }
+    );
+  }
+  assert.equal(calls.length, 0);
+});
+
 // --- classifyContaboFailure ------------------------------------------------
 
 test("classifyContaboFailure: 402 and quota wording are recoverable; 400 is not", () => {

@@ -35,8 +35,8 @@ import type {
  *   (^[a-z0-9][a-z0-9-]{0,95}$) y se de-prefija al llamar la API.
  * - SSH: se inyecta en la creacion via Secrets API (no shellUsers). El
  *   pubkey se sube como secret type "ssh" y se referencia por secretId.
- * - rDNS/PTR: panel-only, NO API. El FCrDNS verify del step 8 gatea hasta
- *   propagar (igual que el PTR Webdock que ya era manual).
+ * - rDNS/PTR: API publica de Contabo via PUT /v1/dns/ptrs/{ip}. El FCrDNS
+ *   verify del step 8 gatea hasta propagar.
  * - deleteServer(): Contabo "cancel" es FIN-DE-TERMINO, NO destruccion
  *   inmediata. La instancia queda facturable hasta fin de termino.
  */
@@ -431,6 +431,30 @@ export class ContaboAdapter implements VpsProvider {
       shellUserEventId: null,
       sshSettingsEventId: null
     };
+  }
+
+  /**
+   * Edita el PTR/rDNS IPv4 por API. Contabo crea PTRs IPv4 por defecto
+   * (vmi*.contaboserver.net), asi que para SMTP se actualiza idempotentemente.
+   */
+  async setReverseDns(ip: string, hostname: string): Promise<{ ok: boolean; status: number; detail?: string }> {
+    this.assertWritable();
+    const normalizedIp = normalizeContaboPtrIpv4(ip);
+    const normalizedHostname = normalizeContaboPtrHostname(hostname);
+    const response = await this.computeFetch(`/v1/dns/ptrs/${encodeURIComponent(normalizedIp)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ptr: normalizedHostname })
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      return {
+        ok: false,
+        status: response.status,
+        detail: `${response.statusText} | ${body.slice(0, 300)}`
+      };
+    }
+    return { ok: true, status: response.status };
   }
 
   /**
@@ -918,6 +942,38 @@ function normalizePublicKey(value: string): string {
   ) {
     throw new ContaboAdapterError("contabo_invalid_public_key", {
       metadata: { valuePreview: normalized.slice(0, 40) }
+    });
+  }
+  return normalized;
+}
+
+function normalizeContaboPtrIpv4(value: string): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  const octets = trimmed.split(".");
+  if (
+    octets.length !== 4 ||
+    octets.some((octet) => !/^\d{1,3}$/.test(octet) || Number(octet) > 255)
+  ) {
+    throw new ContaboAdapterError("contabo_invalid_ptr_input", {
+      metadata: { field: "ip", valuePreview: trimmed.slice(0, 40) }
+    });
+  }
+  return octets.map((octet) => String(Number(octet))).join(".");
+}
+
+function normalizeContaboPtrHostname(value: string): string {
+  const normalized = (typeof value === "string" ? value.trim() : "")
+    .replace(/\.$/, "")
+    .toLowerCase();
+  const labels = normalized.split(".");
+  const labelsValid = labels.length >= 2 && labels.every((label) =>
+    label.length >= 1 &&
+    label.length <= 63 &&
+    /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)
+  );
+  if (!labelsValid || normalized.length > 253) {
+    throw new ContaboAdapterError("contabo_invalid_ptr_input", {
+      metadata: { field: "hostname", valuePreview: normalized.slice(0, 80) }
     });
   }
   return normalized;
