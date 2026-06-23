@@ -208,7 +208,14 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
         throw new Error("canvas timeout");
       }
       const bodyByPath: Record<string, unknown> = {
-        "/v1/admin/overview": { service: "gateway-api", secret: "should-redact" },
+        "/v1/admin/overview": {
+          service: "gateway-api",
+          secret: "should-redact",
+          smtpCredentialEncrypted: {
+            ciphertext: "ciphertext-should-redact",
+            authTag: "auth-tag-should-redact"
+          }
+        },
         "/v1/kill-switch": { enabled: false, updatedBy: "operator_local" },
         "/v1/audit-events": [{ action: "oc.chat.test", token: "should-redact" }],
         "/v1/infrastructure/inventory": {
@@ -233,6 +240,18 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
               status: "running"
             }]
           }
+        },
+        "/v1/sender-pool/status": {
+          domains: [{
+            domain: "controldelivrix.app",
+            hasCredential: true,
+            smtpCredential: {
+              host: "smtp.controldelivrix.app",
+              username: "mailer@controldelivrix.app",
+              ports: { submission: 587, smtps: 465 },
+              password: "smtp-password-should-redact"
+            }
+          }]
         },
         "/v1/openclaw/scratch": {
           status: "grounded",
@@ -279,6 +298,7 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
     "/v1/infrastructure/inventory",
     "/v1/kill-switch",
     "/v1/openclaw/scratch?grounded=true&limit=5&query=estado",
+    "/v1/sender-pool/status",
     "/v1/webdock/inventory"
   ].sort());
   assert.deepEqual(new Set(seenTokens), new Set(["read-token"]));
@@ -293,11 +313,16 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
   assert.match(system, /"serverIp": "45\.136\.70\.47"/);
   assert.match(system, /## verified_facts \(GET \/v1\/openclaw\/scratch\?grounded=true&query=<operator>\)/);
   assert.match(system, /"plane": "verified_fact"/);
+  assert.match(system, /## sender_pool \(GET \/v1\/sender-pool\/status\)/);
+  assert.match(system, /"hasCredential": true/);
+  assert.match(system, /"username": "mailer@controldelivrix\.app"/);
   assert.match(system, /## kill_switch \(GET \/v1\/kill-switch\)/);
   assert.match(system, /"enabled": false/);
   assert.match(system, /"_error": "canvas timeout"/);
   assert.match(system, /"secret": "\[redacted\]"/);
   assert.match(system, /"token": "\[redacted\]"/);
+  assert.match(system, /"smtpCredentialEncrypted": "\[redacted\]"/);
+  assert.doesNotMatch(system, /ciphertext-should-redact|auth-tag-should-redact|smtp-password-should-redact/);
 });
 
 test("OpenClawBedrockBridge injects explicit abstention when inventory and verified facts are absent", async () => {

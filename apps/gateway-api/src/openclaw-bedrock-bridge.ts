@@ -789,13 +789,14 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
 
     const groundedQuery = encodeURIComponent(operatorQuery.trim().slice(0, 300) || "estado operacional openclaw inventario dominios servidores smtp");
     const groundedPath = `/v1/openclaw/scratch?grounded=true&limit=5&query=${groundedQuery}`;
-    const [overview, killSwitch, canvas, audit, infrastructure, webdock, groundedMemory] = await Promise.all([
+    const [overview, killSwitch, canvas, audit, infrastructure, webdock, senderPool, groundedMemory] = await Promise.all([
       safeGet("/v1/admin/overview"),
       safeGet("/v1/kill-switch"),
       safeGet("/v1/canvas/live/state"),
       safeGet("/v1/audit-events?limit=10"),
       safeGet("/v1/infrastructure/inventory"),
       safeGet("/v1/webdock/inventory"),
+      safeGet("/v1/sender-pool/status"),
       safeGet(groundedPath)
     ]);
     // Runs SMTP en disco: el modelo SIEMPRE ve los runId en curso aunque el turno
@@ -839,6 +840,12 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       "## verified_facts (GET /v1/openclaw/scratch?grounded=true&query=<operator>)",
       "```json",
       stringifyLiveContext(summarizeVerifiedFacts(groundedMemory, this.liveContextItemLimit), 3000),
+      "```",
+      "",
+      "## sender_pool (GET /v1/sender-pool/status)",
+      "Credenciales SMTP: usa solo hasCredential/host/ports/username. Nunca pidas ni muestres passwords; dirige al panel Sender Pool para descargar.",
+      "```json",
+      stringifyLiveContext(senderPool, 3000),
       "```",
       "",
       "## overview (GET /v1/admin/overview)",
@@ -1460,5 +1467,10 @@ function redactSensitiveLiveContext(value: unknown): unknown {
 }
 
 function isSensitiveLiveContextKey(key: string): boolean {
-  return /token|secret|password|private[_-]?key|access[_-]?key|api[_-]?key|authorization/i.test(key);
+  const normalized = key.toLowerCase().replace(/[_-]/g, "");
+  if (normalized === "hascredential" || normalized === "smtpcredential" || normalized === "credentialfingerprint") {
+    return false;
+  }
+  return /token|secret|password|ciphertext|authtag|privatekey|accesskey|apikey|authorization/.test(normalized) ||
+    (normalized.includes("credential") && /encrypted|secret|password|token|key|auth/.test(normalized));
 }
