@@ -216,6 +216,7 @@ import {
   handleSmtpProvisionError,
   handleSmtpProvisionHttp
 } from "./routes/smtp-provisioning.ts";
+import { handleSmtpSaslRetrofitBatchHttp } from "./routes/smtp-sasl-retrofit.ts";
 import {
   handleWarmupStartError,
   handleWarmupStartHttp
@@ -237,6 +238,10 @@ import {
   handlePlacementCheckHttp
 } from "./routes/placement-check.ts";
 import { handleSenderPoolStatusHttp } from "./routes/sender-pool-status.ts";
+import {
+  handleSmtpCredentialDownloadHttp,
+  handleSmtpCredentialInventoryExportHttp
+} from "./routes/smtp-credentials.ts";
 import {
   createGatewayOnboardDomainFlowRunner,
   handleOnboardBatchHttp,
@@ -1568,6 +1573,19 @@ const server = createServer(async (request, response) => {
         }
         throw error;
       }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/smtp/retrofit-sasl-batch") {
+      return await handleSmtpSaslRetrofitBatchHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        auditLog,
+        sshRunner: smtpSshRunner,
+        readCanvasState: () => canvasLiveEvents.snapshot(),
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        env: process.env
+      });
     }
 
     if (request.method === "POST" && (request.url === "/v1/warmup/start" || request.url === "/v1/warmup/seed")) {
@@ -4118,6 +4136,29 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/v1/sender-nodes") {
       return json(response, 200, {
         nodes: await senderNodeRegistry.list()
+      });
+    }
+
+    const smtpCredentialDownloadMatch = requestUrl(request).pathname.match(/^\/v1\/sender-pool\/credentials\/[^/]+\/download$/);
+    if (request.method === "GET" && smtpCredentialDownloadMatch) {
+      return await handleSmtpCredentialDownloadHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        auditLog,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        env: process.env
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/sender-pool/credentials/export") {
+      return await handleSmtpCredentialInventoryExportHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        auditLog,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        env: process.env
       });
     }
 

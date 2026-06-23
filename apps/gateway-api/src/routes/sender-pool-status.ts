@@ -39,6 +39,10 @@
 
 import { getActiveRamps, type WarmupRampRecord } from "../openclaw-workspace.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import {
+  listSmtpCredentialPublicMetadata,
+  type SmtpCredentialPublicMetadata
+} from "../smtp-credentials.ts";
 
 export interface DomainsInventoryRecord {
   domain: string;
@@ -53,8 +57,19 @@ export interface DomainsInventoryRecord {
 export interface DomainsInventory {
   domains?: DomainsInventoryRecord[];
   dnsZones?: unknown[];
-  emailAuth?: unknown[];
+  emailAuth?: Array<{
+    domain?: string;
+    selector?: string;
+    dkimPrivateKeyPath?: string;
+  }>;
   binds?: Array<{
+    domain: string;
+    serverSlug?: string | null;
+    serverIp?: string | null;
+    serverIpV4?: string | null;
+    boundAt?: string;
+  }>;
+  bindings?: Array<{
     domain: string;
     serverSlug?: string | null;
     serverIp?: string | null;
@@ -67,7 +82,10 @@ export interface SenderPoolDomainSummary {
   domain: string;
   status: string;
   registrar?: string;
+  serverSlug?: string | null;
   serverIp?: string | null;
+  hasCredential?: boolean;
+  smtpCredential?: SmtpCredentialPublicMetadata | null;
   warmupDayN?: number | null;
   warmupTargetDays?: number;
   emailsSentToday?: number;
@@ -113,13 +131,21 @@ export function deriveRampSubjectMatcher(rampId: string): string {
 function buildDomainSummary(
   inventory: DomainsInventoryRecord,
   ramp: WarmupRampRecord | null,
-  bind?: { serverIp?: string | null; serverIpV4?: string | null; serverSlug?: string | null }
+  bind: { serverIp?: string | null; serverIpV4?: string | null; serverSlug?: string | null } | undefined,
+  smtpCredential: SmtpCredentialPublicMetadata | null,
+  authComplete: boolean
 ): SenderPoolDomainSummary {
   const serverIp =
     inventory.serverIp ??
     bind?.serverIpV4 ??
     bind?.serverIp ??
     ramp?.serverIp ??
+    null;
+  const serverSlug =
+    inventory.serverSlug ??
+    bind?.serverSlug ??
+    smtpCredential?.serverSlug ??
+    ramp?.serverSlug ??
     null;
   const rampActive =
     ramp !== null &&
@@ -129,10 +155,13 @@ function buildDomainSummary(
     domain: inventory.domain,
     status: inventory.status ?? "owned",
     registrar: inventory.registrar,
+    serverSlug,
     serverIp,
-    authComplete: undefined,
+    hasCredential: smtpCredential?.hasCredential === true,
+    smtpCredential,
+    authComplete,
     blacklistsClean: undefined,
-    emailsSentToday: undefined,
+    emailsSentToday: 0,
     warmupDayN: undefined,
     warmupTargetDays: undefined,
     ramp: rampActive
@@ -162,16 +191,26 @@ export async function buildSenderPoolStatus(
   const { workspace } = deps;
   const now = deps.now ?? (() => new Date());
 
-  const [inventory, ramps] = await Promise.all([
+  const [inventory, ramps, smtpCredentials] = await Promise.all([
     workspace
       .readInventoryJson<DomainsInventory>("domains.json")
       .catch(() => null as DomainsInventory | null),
-    getActiveRamps(workspace).catch(() => [] as WarmupRampRecord[])
+    getActiveRamps(workspace).catch(() => [] as WarmupRampRecord[]),
+    listSmtpCredentialPublicMetadata(workspace).catch(() => [] as SmtpCredentialPublicMetadata[])
   ]);
 
   const records = inventory?.domains ?? [];
   const binds = new Map(
-    (inventory?.binds ?? []).map((bind) => [bind.domain.toLowerCase(), bind])
+    [...(inventory?.binds ?? []), ...(inventory?.bindings ?? [])]
+      .map((bind) => [bind.domain.toLowerCase(), bind])
+  );
+  const authDomains = new Set(
+    (inventory?.emailAuth ?? [])
+      .map((entry) => typeof entry.domain === "string" ? entry.domain.toLowerCase() : "")
+      .filter(Boolean)
+  );
+  const credentialsByDomain = new Map(
+    smtpCredentials.map((credential) => [credential.domain.toLowerCase(), credential])
   );
 
   const rampsByDomain = new Map<string, WarmupRampRecord>();
@@ -183,20 +222,44 @@ export async function buildSenderPoolStatus(
     const key = rec.domain.toLowerCase();
     const ramp = rampsByDomain.get(key) ?? null;
     const bind = binds.get(key);
-    return buildDomainSummary(rec, ramp, bind);
+    const smtpCredential = credentialsByDomain.get(key) ?? null;
+    return buildDomainSummary(rec, ramp, bind, smtpCredential, authDomains.has(key) || smtpCredential?.hasCredential === true);
   });
+
+  const seenDomains = new Set(domains.map((domain) => domain.domain.toLowerCase()));
+  for (const credential of smtpCredentials) {
+    const key = credential.domain.toLowerCase();
+    if (seenDomains.has(key)) continue;
+    seenDomains.add(key);
+    domains.push(
+      buildDomainSummary(
+        {
+          domain: credential.domain,
+          status: credential.hasCredential ? "smtp-auth-ready" : "smtp-auth-pending",
+          serverSlug: credential.serverSlug,
+          serverIp: null
+        },
+        rampsByDomain.get(key) ?? null,
+        binds.get(key),
+        credential,
+        credential.hasCredential
+      )
+    );
+  }
 
   // Dominios que tienen ramp activo pero NO aparecen en inventory (caso edge:
   // ramp arrancó con un dominio que el inventario no terminó de persistir).
   const orphanRamps = ramps.filter(
-    (ramp) => !records.some((rec) => rec.domain.toLowerCase() === ramp.domain.toLowerCase())
+    (ramp) => !seenDomains.has(ramp.domain.toLowerCase())
   );
   for (const ramp of orphanRamps) {
     domains.push(
       buildDomainSummary(
         { domain: ramp.domain, status: "warming", registrar: undefined, serverIp: ramp.serverIp },
         ramp,
-        undefined
+        undefined,
+        credentialsByDomain.get(ramp.domain.toLowerCase()) ?? null,
+        authDomains.has(ramp.domain.toLowerCase()) || credentialsByDomain.get(ramp.domain.toLowerCase())?.hasCredential === true
       )
     );
   }
