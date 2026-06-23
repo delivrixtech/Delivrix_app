@@ -45,6 +45,7 @@ test("enable_smtp_auth configures exactly one domain and returns status only", a
   assert.deepEqual(payload, {
     ok: true,
     domain: "legacy-one.com",
+    mode: "enable",
     status: "configured",
     hasCredential: true
   });
@@ -99,6 +100,7 @@ test("enable_smtp_auth fails closed without encryption key before SSH or partial
   assert.deepEqual(payload, {
     ok: false,
     domain: "legacy-one.com",
+    mode: "enable",
     status: "credential_encryption_key_missing",
     hasCredential: false
   });
@@ -142,6 +144,7 @@ test("enable_smtp_auth redacts SSH error messages that include the generated pas
   assert.deepEqual(JSON.parse(response.body), {
     ok: false,
     domain: "legacy-one.com",
+    mode: "enable",
     status: "install_failed",
     hasCredential: false
   });
@@ -181,6 +184,49 @@ test("enable_smtp_auth rejects ambiguous same-domain candidates before SSH", asy
   assert.equal(commands.length, 0);
   assert.equal(JSON.parse(response.body).status, "ambiguous_domain");
   assert.equal((await auditLog.list()).at(-1)?.metadata.candidateCount, 2);
+});
+
+test("enable_smtp_auth rotate mode regenerates configured credential without leaking material", async () => {
+  const workspace = await setupWorkspace();
+  const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [legacyServer("server85", "legacy-one.com")]
+  }));
+  await handleEnableSmtpAuthHttp({
+    request: request({ actorId: "operator/juanes", domain: "legacy-one.com" }),
+    response: captureResponse() as unknown as ServerResponse,
+    workspace,
+    auditLog,
+    sshRunner: mockRunner(),
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => fixedNow
+  });
+  const before = await workspace.readInventoryJson<{ smtpCredentials: Array<{ smtpCredentialEncrypted: { ciphertext: string } }> }>("smtp-credentials.json");
+  const beforeCiphertext = before?.smtpCredentials[0]?.smtpCredentialEncrypted.ciphertext;
+
+  const response = captureResponse();
+  await handleEnableSmtpAuthHttp({
+    request: request({ actorId: "operator/juanes", domain: "legacy-one.com", mode: "rotate" }),
+    response: response as unknown as ServerResponse,
+    workspace,
+    auditLog,
+    sshRunner: mockRunner(),
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => new Date("2026-06-23T15:00:00.000Z")
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.body) as Record<string, unknown>;
+  assert.equal(payload.mode, "rotate");
+  assert.equal(payload.status, "configured");
+  assert.equal(payload.hasCredential, true);
+  const after = await workspace.readInventoryJson<{ smtpCredentials: Array<{ smtpCredentialEncrypted: { ciphertext: string } }> }>("smtp-credentials.json");
+  assert.notEqual(after?.smtpCredentials[0]?.smtpCredentialEncrypted.ciphertext, beforeCiphertext);
+  const serialized = `${response.body}\n${JSON.stringify(await auditLog.list())}`;
+  for (const forbidden of ["Password:", "smtpCredentialEncrypted", "ciphertext", "authTag"]) {
+    assert.equal(serialized.includes(forbidden), false, `leaked ${forbidden}`);
+  }
+  assert.match(serialized, /"mode":"rotate"/);
 });
 
 async function setupWorkspace(): Promise<OpenClawWorkspace> {

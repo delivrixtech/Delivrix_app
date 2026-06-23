@@ -55,6 +55,29 @@ test("listSmtpSaslRetrofitCandidates can scope retrofit to one domain or server"
   assert.deepEqual(byServer.map((candidate) => candidate.domain), ["legacy-one.com"]);
 });
 
+test("listSmtpSaslRetrofitCandidates recover mode targets configured SMTP auth missing credential", async () => {
+  const workspace = await setupWorkspace();
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      { ...legacyServer("server85", "legacy-one.com"), smtpAuthStatus: "configured" },
+      {
+        ...legacyServer("server88", "ready-one.com"),
+        smtpAuthStatus: "configured",
+        smtpCredential: { hasCredential: true }
+      }
+    ]
+  }));
+
+  const candidates = await listSmtpSaslRetrofitCandidates(workspace, {}, "recover");
+  assert.deepEqual(candidates.map((candidate) => ({
+    serverSlug: candidate.serverSlug,
+    reason: candidate.reason
+  })), [{
+    serverSlug: "server85",
+    reason: "missing_credential"
+  }]);
+});
+
 test("buildSmtpSaslRetrofitPlan is additive, keeps permit_mynetworks, and redacts password from commands", () => {
   const plan = buildSmtpSaslRetrofitPlan({
     domain: "legacy-one.com",

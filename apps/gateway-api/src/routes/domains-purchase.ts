@@ -1119,7 +1119,7 @@ async function safeUpdateDomainInventory(
         ...(typeof input.costUsd === "number" ? { costUsd: input.costUsd } : {}),
         ...(input.errorMessage ? { errorMessage: input.errorMessage } : {})
       });
-      return { domains };
+      return { ...(current ?? {}), domains };
     });
   } catch {
     return null;

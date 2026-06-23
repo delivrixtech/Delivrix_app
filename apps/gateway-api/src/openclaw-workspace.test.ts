@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -61,4 +61,48 @@ test("OpenClawWorkspace writes skills, executions, learnings, and inventory", as
     learning.path,
     skill.path
   ]);
+});
+
+test("OpenClawWorkspace refuses to overwrite corrupt inventory as empty", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "openclaw-workspace-corrupt-"));
+  const workspace = new OpenClawWorkspace({
+    rootDir,
+    now: () => fixedNow
+  });
+  await workspace.ensureBase();
+  const inventoryPath = join(rootDir, "inventory", "domains.json");
+  await writeFile(inventoryPath, "{\"domains\":[\"keep-me\"]", "utf8");
+
+  await assert.rejects(
+    () => workspace.updateInventoryJson<{ domains: string[] }>(
+      "domains.json",
+      (current) => ({ domains: [...(current?.domains ?? []), "new-domain.com"] })
+    ),
+    /could not be read safely/
+  );
+
+  assert.equal(await readFile(inventoryPath, "utf8"), "{\"domains\":[\"keep-me\"]");
+});
+
+test("OpenClawWorkspace serializes concurrent inventory read-modify-write updates", async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), "openclaw-workspace-lock-"));
+  const workspace = new OpenClawWorkspace({
+    rootDir,
+    now: () => fixedNow
+  });
+
+  await Promise.all(
+    Array.from({ length: 20 }, (_, index) =>
+      workspace.updateInventoryJson<{ domains: string[] }>(
+        "domains.json",
+        (current) => ({
+          domains: [...(current?.domains ?? []), `domain-${index}.com`]
+        })
+      )
+    )
+  );
+
+  const inventory = await workspace.readInventoryJson<{ domains: string[] }>("domains.json");
+  assert.equal(inventory?.domains.length, 20);
+  assert.equal(new Set(inventory?.domains).size, 20);
 });

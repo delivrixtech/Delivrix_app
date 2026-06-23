@@ -30,12 +30,26 @@ export interface OpenClawWorkspaceLearning {
   content: string;
 }
 
+export class OpenClawInventoryReadError extends Error {
+  readonly inventoryName: string;
+  readonly cause: unknown;
+
+  constructor(inventoryName: string, cause: unknown) {
+    super(`OpenClaw inventory ${inventoryName} could not be read safely; refusing to treat it as empty.`);
+    this.name = "OpenClawInventoryReadError";
+    this.inventoryName = inventoryName;
+    this.cause = cause;
+  }
+}
+
 const defaultWorkspaceDir = process.platform === "darwin"
   ? "runtime/openclaw-workspace"
   : "/data/.openclaw/workspace";
 const managedDirs = ["skills", "executions", "learnings", "inventory"] as const;
 
 export class OpenClawWorkspace {
+  private static readonly inventoryLocks = new Map<string, Promise<void>>();
+
   private readonly rootDir: string;
   private readonly now: () => Date;
 
@@ -143,15 +157,30 @@ export class OpenClawWorkspace {
   ): Promise<OpenClawWorkspaceFileRef> {
     await this.ensureBase();
     const path = `inventory/${inventoryBaseName(name)}.json`;
-    const current = await this.readInventoryJson<T>(name);
-    return this.writeRelativeAtomic(path, `${JSON.stringify(updater(current), null, 2)}\n`);
+    const lockKey = this.resolveRelative(path);
+    return this.withInventoryLock(lockKey, async () => {
+      const current = await this.readInventoryJson<T>(name);
+      return this.writeRelativeAtomic(path, `${JSON.stringify(updater(current), null, 2)}\n`);
+    });
   }
 
   async readInventoryJson<T>(name: string): Promise<T | null> {
     await this.ensureBase();
-    const absolutePath = this.resolveRelative(`inventory/${inventoryBaseName(name)}.json`);
+    const baseName = `${inventoryBaseName(name)}.json`;
+    const absolutePath = this.resolveRelative(`inventory/${baseName}`);
     try {
       return JSON.parse(await readFile(absolutePath, "utf8")) as T;
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        return null;
+      }
+      throw new OpenClawInventoryReadError(baseName, error);
+    }
+  }
+
+  async readInventoryJsonOrNull<T>(name: string): Promise<T | null> {
+    try {
+      return await this.readInventoryJson<T>(name);
     } catch {
       return null;
     }
@@ -203,6 +232,26 @@ export class OpenClawWorkspace {
   private relativePath(absolutePath: string): string {
     return relative(this.rootDir, absolutePath).split(/[\\/]/g).join("/");
   }
+
+  private async withInventoryLock<T>(lockKey: string, task: () => Promise<T>): Promise<T> {
+    const previous = OpenClawWorkspace.inventoryLocks.get(lockKey) ?? Promise.resolve();
+    let release = (): void => {};
+    const current = new Promise<void>((resolveLock) => {
+      release = resolveLock;
+    });
+    const chained = previous.catch(() => undefined).then(() => current);
+    OpenClawWorkspace.inventoryLocks.set(lockKey, chained);
+
+    await previous.catch(() => undefined);
+    try {
+      return await task();
+    } finally {
+      release();
+      if (OpenClawWorkspace.inventoryLocks.get(lockKey) === chained) {
+        OpenClawWorkspace.inventoryLocks.delete(lockKey);
+      }
+    }
+  }
 }
 
 async function collectFiles(dir: string, rootDir: string, output: string[]): Promise<void> {
@@ -253,6 +302,10 @@ function safeSegment(value: string): string {
 
 function inventoryBaseName(value: string): string {
   return safeSegment(value.replace(/\.json$/i, ""));
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 function stringValue(value: unknown): string | undefined {

@@ -121,6 +121,7 @@ export interface EmailAuthParams extends Record<string, unknown> {
 
 export interface EnableSmtpAuthParams extends Record<string, unknown> {
   domain: string;
+  mode?: "enable" | "recover" | "rotate";
 }
 
 export interface DomainBindParams extends Record<string, unknown> {
@@ -392,7 +393,10 @@ export const emailAuthParamSchema = schema<EmailAuthParams>((value) => {
 export const enableSmtpAuthParamSchema = schema<EnableSmtpAuthParams>((value) => {
   const input = object(value);
   return {
-    domain: domain(input.domain, "domain")
+    domain: domain(input.domain, "domain"),
+    ...(input.mode === undefined || input.mode === null || input.mode === "" ? {} : {
+      mode: oneOf(input.mode, "mode", ["enable", "recover", "rotate"] as const)
+    })
   };
 });
 

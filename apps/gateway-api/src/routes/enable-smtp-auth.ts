@@ -8,7 +8,8 @@ import {
 } from "../smtp-credentials.ts";
 import {
   listSmtpSaslRetrofitCandidates,
-  runSmtpSaslRetrofitBatch
+  runSmtpSaslRetrofitBatch,
+  type SmtpSaslRetrofitMode
 } from "./smtp-sasl-retrofit.ts";
 import type { SmtpSshRunner } from "./smtp-provisioning.ts";
 
@@ -29,6 +30,7 @@ export interface EnableSmtpAuthRouteDeps {
 interface EnableSmtpAuthBody {
   actorId?: unknown;
   domain?: unknown;
+  mode?: unknown;
 }
 
 type EnableSmtpAuthStatus =
@@ -71,12 +73,14 @@ export async function handleEnableSmtpAuthHttp(deps: EnableSmtpAuthRouteDeps): P
   const actorId = typeof body.actorId === "string" && body.actorId.trim()
     ? body.actorId.trim()
     : "openclaw/enable_smtp_auth";
+  const mode = enableSmtpAuthMode(body.mode);
   const target = { domain };
-  const candidates = await listSmtpSaslRetrofitCandidates(deps.workspace, target);
+  const candidates = await listSmtpSaslRetrofitCandidates(deps.workspace, target, mode);
   if (candidates.length > 1) {
     await appendEnableAudit(deps, {
       actorId,
       domain,
+      mode,
       status: "ambiguous_domain",
       hasCredential: false,
       candidateCount: candidates.length
@@ -84,6 +88,7 @@ export async function handleEnableSmtpAuthHttp(deps: EnableSmtpAuthRouteDeps): P
     json(deps.response, 409, {
       ok: false,
       domain,
+      mode,
       status: "ambiguous_domain",
       hasCredential: false
     });
@@ -98,6 +103,7 @@ export async function handleEnableSmtpAuthHttp(deps: EnableSmtpAuthRouteDeps): P
       env: deps.env,
       actorId,
       target,
+      mode,
       now: deps.now
     })
     : { candidates: 0, results: [] };
@@ -113,6 +119,7 @@ export async function handleEnableSmtpAuthHttp(deps: EnableSmtpAuthRouteDeps): P
   await appendEnableAudit(deps, {
     actorId,
     domain,
+    mode,
     status,
     hasCredential,
     credentialFingerprint,
@@ -122,6 +129,7 @@ export async function handleEnableSmtpAuthHttp(deps: EnableSmtpAuthRouteDeps): P
   json(deps.response, ok ? 200 : 409, {
     ok,
     domain,
+    mode,
     status,
     hasCredential
   });
@@ -142,11 +150,16 @@ function enableSmtpAuthStatus(input: {
   return input.hasCredential ? "already_configured" : "no_candidate";
 }
 
+function enableSmtpAuthMode(value: unknown): SmtpSaslRetrofitMode {
+  return value === "recover" || value === "rotate" || value === "enable" ? value : "enable";
+}
+
 async function appendEnableAudit(
   deps: EnableSmtpAuthRouteDeps,
   input: {
     actorId: string;
     domain: string;
+    mode: SmtpSaslRetrofitMode;
     status: EnableSmtpAuthStatus;
     hasCredential: boolean;
     credentialFingerprint?: string;
@@ -163,10 +176,11 @@ async function appendEnableAudit(
     decision: input.hasCredential ? "allow" : "reject",
     humanApproved: true,
     approverIds: [input.actorId],
-    metadata: {
-      domain: input.domain,
-      status: input.status,
-      hasCredential: input.hasCredential,
+      metadata: {
+        domain: input.domain,
+        mode: input.mode,
+        status: input.status,
+        hasCredential: input.hasCredential,
       candidateCount: input.candidateCount,
       ...(input.credentialFingerprint ? { credentialFingerprint: input.credentialFingerprint } : {})
     }

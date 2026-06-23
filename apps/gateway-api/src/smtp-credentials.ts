@@ -56,9 +56,15 @@ interface DomainsInventory {
   smtpCredentials?: SmtpCredentialRecord[];
 }
 
+interface SmtpCredentialsInventory {
+  smtpCredentials?: SmtpCredentialRecord[];
+}
+
 const algorithm = "aes-256-gcm";
 const keyEnvName = "CREDENTIAL_ENCRYPTION_KEY";
 const passwordBytes = 27;
+const durableCredentialsInventory = "smtp-credentials.json";
+const legacyDomainsInventory = "domains.json";
 
 export function smtpCredentialUsername(domain: string): string {
   return `mailer@${normalizeDomain(domain)}`;
@@ -76,6 +82,7 @@ export async function ensureSmtpCredential(input: {
   host?: string;
   now?: () => Date;
   passwordFactory?: () => string;
+  forceRotate?: boolean;
 }): Promise<SmtpCredentialMaterial> {
   const material = await prepareSmtpCredential(input);
   if (material.generated) {
@@ -92,13 +99,14 @@ export async function prepareSmtpCredential(input: {
   host?: string;
   now?: () => Date;
   passwordFactory?: () => string;
+  forceRotate?: boolean;
 }): Promise<SmtpCredentialMaterial> {
   const domain = normalizeDomain(input.domain);
   const host = normalizeHost(input.host ?? smtpHostForDomain(domain));
   const username = smtpCredentialUsername(domain);
   const existing = await findSmtpCredentialRecord(input.workspace, domain, input.serverSlug);
   const key = credentialEncryptionKey(input.env);
-  if (existing) {
+  if (existing && input.forceRotate !== true) {
     return {
       record: existing,
       password: decryptSmtpCredentialPassword(existing, key),
@@ -115,7 +123,7 @@ export async function prepareSmtpCredential(input: {
     username,
     status: "pending_install",
     ports: { submission: 587, smtps: 465 },
-    createdAt: now,
+    createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     smtpCredentialEncrypted: encryptSmtpCredentialPassword(password, key, {
       domain,
@@ -163,8 +171,7 @@ export async function findSmtpCredentialRecord(
 ): Promise<SmtpCredentialRecord | null> {
   const domain = normalizeDomain(domainInput);
   const serverSlug = normalizeOptionalServerSlug(serverSlugInput);
-  const inventory = await workspace.readInventoryJson<DomainsInventory>("domains.json").catch(() => null);
-  const records = inventory?.smtpCredentials ?? [];
+  const records = await readSmtpCredentialRecords(workspace);
   const exact = records.find((record) =>
     record.domain === domain &&
     (serverSlug ? record.serverSlug === serverSlug : true) &&
@@ -177,8 +184,7 @@ export async function findSmtpCredentialRecord(
 export async function listSmtpCredentialPublicMetadata(
   workspace: OpenClawWorkspace
 ): Promise<SmtpCredentialPublicMetadata[]> {
-  const inventory = await workspace.readInventoryJson<DomainsInventory>("domains.json").catch(() => null);
-  return (inventory?.smtpCredentials ?? [])
+  return (await readSmtpCredentialRecords(workspace))
     .filter(isSmtpCredentialRecord)
     .map(publicSmtpCredentialMetadata);
 }
@@ -336,7 +342,37 @@ async function upsertSmtpCredentialRecord(
   workspace: OpenClawWorkspace,
   record: SmtpCredentialRecord
 ): Promise<void> {
-  await workspace.updateInventoryJson<DomainsInventory>("domains.json", (current) => {
+  await upsertCredentialInventoryRecord<SmtpCredentialsInventory>(
+    workspace,
+    durableCredentialsInventory,
+    record
+  );
+  await mirrorSmtpCredentialRecordToDomains(workspace, record);
+}
+
+async function mirrorSmtpCredentialRecordToDomains(
+  workspace: OpenClawWorkspace,
+  record: SmtpCredentialRecord
+): Promise<void> {
+  try {
+    await upsertCredentialInventoryRecord<DomainsInventory>(
+      workspace,
+      legacyDomainsInventory,
+      record
+    );
+  } catch (error) {
+    console.warn(
+      `SMTP credential stored in ${durableCredentialsInventory}; ${legacyDomainsInventory} mirror skipped: ${safeErrorName(error)}`
+    );
+  }
+}
+
+async function upsertCredentialInventoryRecord<T extends { smtpCredentials?: SmtpCredentialRecord[] }>(
+  workspace: OpenClawWorkspace,
+  inventoryName: string,
+  record: SmtpCredentialRecord
+): Promise<void> {
+  await workspace.updateInventoryJson<T>(inventoryName, (current) => {
     const smtpCredentials = [...(current?.smtpCredentials ?? [])];
     const index = smtpCredentials.findIndex((entry) =>
       entry.domain === record.domain &&
@@ -354,8 +390,32 @@ async function upsertSmtpCredentialRecord(
     return {
       ...(current ?? {}),
       smtpCredentials
-    };
+    } as T;
   });
+}
+
+async function readSmtpCredentialRecords(workspace: OpenClawWorkspace): Promise<SmtpCredentialRecord[]> {
+  const [legacy, durable] = await Promise.all([
+    workspace.readInventoryJson<DomainsInventory>(legacyDomainsInventory).catch(() => null),
+    workspace.readInventoryJson<SmtpCredentialsInventory>(durableCredentialsInventory).catch(() => null)
+  ]);
+  const recordsByKey = new Map<string, SmtpCredentialRecord>();
+  for (const record of [
+    ...(legacy?.smtpCredentials ?? []),
+    ...(durable?.smtpCredentials ?? [])
+  ]) {
+    if (!isSmtpCredentialRecord(record)) continue;
+    recordsByKey.set(smtpCredentialRecordKey(record), record);
+  }
+  return [...recordsByKey.values()];
+}
+
+function smtpCredentialRecordKey(record: SmtpCredentialRecord): string {
+  return `${record.domain}\0${record.serverSlug ?? ""}`;
+}
+
+function safeErrorName(error: unknown): string {
+  return error instanceof Error ? error.name : "Error";
 }
 
 function encryptSmtpCredentialPassword(

@@ -656,13 +656,18 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     spec: {
       name: "enable_smtp_auth",
       description: [
-        "Genera e instala una credencial SMTP AUTH para un solo dominio sender ya configurado, usando retrofit SASL single-target.",
+        "Genera, recupera o rota una credencial SMTP AUTH para un solo dominio sender ya configurado, usando retrofit SASL single-target.",
         "Requiere ApprovalGate humano, SSH runner, audit y kill switch. No imprime password ni markdown: la credencial se descarga despues desde Sender Pool."
       ].join(" "),
       input_schema: {
         type: "object",
         properties: {
-          domain: { type: "string", pattern: domainPattern }
+          domain: { type: "string", pattern: domainPattern },
+          mode: {
+            type: "string",
+            enum: ["enable", "recover", "rotate"],
+            description: "enable=default para dominios sin SMTP AUTH; recover=solo stuck smtpAuthStatus configured sin credencial; rotate=regenera passdb y reemplaza la credencial anterior."
+          }
         },
         required: ["domain"]
       }
