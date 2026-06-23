@@ -35,6 +35,9 @@ function healthyEnvFromCatalog(): Record<string, string> {
       case "csv-email":
         env[spec.name] = "a@delivrix.com,b@delivrix.com,c@delivrix.com";
         break;
+      case "secret-32-byte":
+        env[spec.name] = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        break;
       default:
         // hex realista de 48 chars: presente, sin needles de placeholder
         env[spec.name] = "abcdef0123456789abcdef0123456789abcdef0123456789";
@@ -84,6 +87,34 @@ test("checkEnvPreflight: flag del flujo SMTP en false es warning invalido", () =
   assert.equal(result.ok, true); // sigue arrancando: es warn, no fatal
   assert.ok(
     result.warnings.some((i) => i.name === "WEBDOCK_SERVERS_ENABLE_CREATE" && i.reason === "invalid")
+  );
+});
+
+test("checkEnvPreflight: CREDENTIAL_ENCRYPTION_KEY faltante o invalida es warning, no fatal", () => {
+  const missing = healthyEnvFromCatalog();
+  delete missing.CREDENTIAL_ENCRYPTION_KEY;
+  const missingResult = checkEnvPreflight(missing);
+  assert.equal(missingResult.ok, true);
+  assert.ok(
+    missingResult.warnings.some((i) => i.name === "CREDENTIAL_ENCRYPTION_KEY" && i.reason === "missing")
+  );
+
+  const invalid = healthyEnvFromCatalog();
+  invalid.CREDENTIAL_ENCRYPTION_KEY = "too-short";
+  const invalidResult = checkEnvPreflight(invalid);
+  assert.equal(invalidResult.ok, true);
+  assert.ok(
+    invalidResult.warnings.some((i) => i.name === "CREDENTIAL_ENCRYPTION_KEY" && i.reason === "invalid")
+  );
+});
+
+test("checkEnvPreflight: CREDENTIAL_ENCRYPTION_KEY acepta hex de 32 bytes", () => {
+  const env = healthyEnvFromCatalog();
+  env.CREDENTIAL_ENCRYPTION_KEY = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+  const result = checkEnvPreflight(env);
+  assert.equal(
+    result.warnings.some((i) => i.name === "CREDENTIAL_ENCRYPTION_KEY"),
+    false
   );
 });
 

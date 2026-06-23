@@ -9,8 +9,14 @@ import {
   deriveRampSubjectMatcher,
   handleSenderPoolStatusHttp
 } from "./sender-pool-status.ts";
+import {
+  markSmtpCredentialConfigured,
+  prepareSmtpCredential,
+  saveSmtpCredentialRecord
+} from "../smtp-credentials.ts";
 
 const fixedNow = new Date("2026-05-28T20:00:00.000Z");
+const credentialEncryptionKey = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
 async function setupWorkspace(): Promise<OpenClawWorkspace> {
   const root = await mkdtemp(join(tmpdir(), "sender-pool-status-"));
@@ -199,6 +205,52 @@ test("buildSenderPoolStatus uses bind serverIp when inventory lacks one", async 
 
   const result = await buildSenderPoolStatus({ workspace, now: () => fixedNow });
   assert.equal(result.domains[0]!.serverIp, "192.0.2.20");
+});
+
+test("buildSenderPoolStatus accepts bindings and exposes SMTP credential metadata without secrets", async () => {
+  const workspace = await setupWorkspace();
+  await writeInventory(workspace, "domains.json", {
+    domains: [{ domain: "delivrix-auth.com", status: "owned" }],
+    bindings: [
+      {
+        domain: "delivrix-auth.com",
+        serverSlug: "mail-prod-auth",
+        serverIpV4: "192.0.2.55",
+        boundAt: "2026-05-28T01:13:00.000Z"
+      }
+    ],
+    emailAuth: [
+      {
+        domain: "delivrix-auth.com",
+        selector: "default",
+        dkimPrivateKeyPath: "inventory/dkim-keys/delivrix-auth.com/default.private"
+      }
+    ]
+  });
+  const material = await prepareSmtpCredential({
+    workspace,
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    domain: "delivrix-auth.com",
+    serverSlug: "mail-prod-auth",
+    host: "smtp.delivrix-auth.com",
+    now: () => fixedNow,
+    passwordFactory: () => "smtp-secret-password"
+  });
+  await saveSmtpCredentialRecord(workspace, markSmtpCredentialConfigured(material.record, fixedNow));
+
+  const result = await buildSenderPoolStatus({ workspace, now: () => fixedNow });
+  const summary = result.domains[0]!;
+  assert.equal(summary.serverIp, "192.0.2.55");
+  assert.equal(summary.serverSlug, "mail-prod-auth");
+  assert.equal(summary.authComplete, true);
+  assert.equal(summary.hasCredential, true);
+  assert.equal(summary.smtpCredential?.username, "mailer@delivrix-auth.com");
+  assert.equal(summary.smtpCredential?.host, "smtp.delivrix-auth.com");
+  assert.equal(summary.smtpCredential?.ports.submission, 587);
+  const serialized = JSON.stringify(summary);
+  assert.equal(serialized.includes("smtp-secret-password"), false);
+  assert.equal(serialized.includes("ciphertext"), false);
+  assert.equal(serialized.includes("authTag"), false);
 });
 
 test("handleSenderPoolStatusHttp returns 200 with payload on success", async () => {

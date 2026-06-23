@@ -23,6 +23,7 @@ export const READ_ENDPOINTS = Object.freeze({
   mxtoolboxHealth: "/v1/mxtoolbox/health",
   auditEvents: "/v1/audit-events",
   senderPoolStatus: "/v1/sender-pool/status",
+  senderPoolCredentialsExport: "/v1/sender-pool/credentials/export",
   senderNodes: "/v1/sender-nodes",
   ipReputationReports: "/v1/ip-reputation/reports",
   sendResults: "/v1/send-results",

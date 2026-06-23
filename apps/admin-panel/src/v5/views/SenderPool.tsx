@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { AlertTriangle, ArrowRight, CheckCircle2, Pause, Plus, Send, Sparkles } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Download, FileDown, KeyRound, Pause, Plus, Send, Sparkles } from "lucide-react";
 import {
   getJson,
   getJsonWithQuery,
@@ -18,7 +18,6 @@ import { computeWalletTransactions, type WalletTx } from "./sender-pool-wallet";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import {
   Badge,
-  Body,
   BodySm,
   Button,
   Caption,
@@ -26,7 +25,6 @@ import {
   Eyebrow,
   H2,
   H3,
-  MonoCode,
   MonoData,
   Pill,
   type PillProps,
@@ -35,6 +33,7 @@ import {
 import { PageHead } from "./_PageHead";
 import { PlacementLivePanel } from "../components/PlacementLivePanel";
 import { StartWarmupRampInline } from "../components/StartWarmupRampInline";
+import { useToast } from "../../shared/ui/v2";
 
 const POLL_MS = 15_000;
 const CAP_USD = 50;
@@ -44,7 +43,10 @@ interface DomainSummary {
   domain: string;
   status: string;
   registrar?: string;
+  serverSlug?: string | null;
   serverIp?: string | null;
+  hasCredential?: boolean;
+  smtpCredential?: SmtpCredentialMetadata | null;
   warmupDayN?: number | null;
   warmupTargetDays?: number;
   emailsSentToday?: number;
@@ -58,6 +60,21 @@ interface DomainSummary {
   } | null;
   /** Hito 5.12 sub-agente C: ramp gradual de warmup en curso. */
   warmupRampActive?: boolean;
+}
+
+interface SmtpCredentialMetadata {
+  domain: string;
+  serverSlug?: string | null;
+  host: string;
+  username: string;
+  status: "pending_install" | "configured" | "install_failed";
+  ports: {
+    submission: 587;
+    smtps: 465;
+  };
+  createdAt: string;
+  updatedAt: string;
+  hasCredential: boolean;
 }
 
 interface SenderPoolPayload {
@@ -87,6 +104,7 @@ function useWalletTransactions() {
 }
 
 export function SenderPoolV5() {
+  const { toast } = useToast();
   const pool = useSenderPool();
   const audit = useWalletTransactions();
   const transactions = computeWalletTransactions(audit.data?.events ?? []);
@@ -96,6 +114,19 @@ export function SenderPoolV5() {
   const tone = pct >= 95 ? "critical" : pct >= 80 ? "warning" : "success";
   const domains = pool.data?.domains ?? [];
   const noDomains = domains.length === 0;
+  const exportCredentials = useMutation({
+    mutationFn: exportSmtpCredentialInventory,
+    onSuccess: (count) => {
+      toast.success("Inventario exportado", {
+        description: `${count} credenciales SMTP sin secretos.`
+      });
+    },
+    onError: (error) => {
+      toast.error("No se pudo exportar", {
+        description: error instanceof Error ? error.message : "Revisá gateway/read-boundary."
+      });
+    }
+  });
 
   return (
     <motion.div
@@ -110,10 +141,21 @@ export function SenderPoolV5() {
           title="Sender Pool — dominios en producción."
           body="Cada dominio que envía email por Delivrix vive acá con su warmup, deliverability y health. Onboarding nuevo dispara compra + DNS + SMTP + warmup, todo visible en Canvas Live."
           trailing={
-            <Button variant="primary" size="md">
-              <Plus size={13} strokeWidth={1.75} />
-              Onboard dominio
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="md"
+                onClick={() => exportCredentials.mutate()}
+                disabled={exportCredentials.isPending}
+              >
+                <FileDown size={13} strokeWidth={1.75} />
+                {exportCredentials.isPending ? "Exportando" : "Exportar"}
+              </Button>
+              <Button variant="primary" size="md">
+                <Plus size={13} strokeWidth={1.75} />
+                Onboard dominio
+              </Button>
+            </div>
           }
         />
       </motion.div>
@@ -184,6 +226,8 @@ export function SenderPoolV5() {
 /* ----- Domain row ----- */
 
 function DomainRow({ d }: { d: DomainSummary }) {
+  const { toast } = useToast();
+  const [downloading, setDownloading] = useState(false);
   const statusTone: PillTone =
     d.status === "active"
       ? "success"
@@ -212,13 +256,39 @@ function DomainRow({ d }: { d: DomainSummary }) {
         <div className="flex items-center gap-2">
           <MonoData className="text-[13px]">{d.domain}</MonoData>
           {d.authComplete && <CheckCircle2 size={11} className="text-success" strokeWidth={1.75} />}
+          {d.hasCredential && <KeyRound size={11} className="text-success" strokeWidth={1.75} />}
         </div>
         <Caption>
           {d.registrar ? `${d.registrar} · ` : ""}
           {d.serverIp ? `IP ${d.serverIp}` : "sin IP asignada"}
+          {d.smtpCredential ? ` · ${d.smtpCredential.host} · ${d.smtpCredential.username}` : ""}
         </Caption>
       </div>
       <div className="flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={!d.hasCredential || downloading}
+          title={d.hasCredential ? "Descargar credencial SMTP" : "Credencial SMTP pendiente"}
+          onClick={async () => {
+            setDownloading(true);
+            try {
+              await downloadSmtpCredential(d.domain);
+              toast.success("Credencial descargada", {
+                description: d.domain
+              });
+            } catch (error) {
+              toast.error("No se pudo descargar", {
+                description: error instanceof Error ? error.message : "Revisá gateway/read-boundary."
+              });
+            } finally {
+              setDownloading(false);
+            }
+          }}
+        >
+          <Download size={11} strokeWidth={1.75} />
+          {downloading ? "Descargando" : "Credencial"}
+        </Button>
         <Pill tone={statusTone} size="sm">
           {d.status}
         </Pill>
@@ -230,6 +300,62 @@ function DomainRow({ d }: { d: DomainSummary }) {
       </div>
     </Card>
   );
+}
+
+async function exportSmtpCredentialInventory(): Promise<number> {
+  const response = await fetch(READ_ENDPOINTS.senderPoolCredentialsExport, {
+    method: "GET"
+  });
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response));
+  }
+  const payload = await response.json() as { credentials?: SmtpCredentialMetadata[]; generatedAt?: string };
+  const credentials = payload.credentials ?? [];
+  triggerDownload(
+    new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: "application/json" }),
+    `smtp-credentials-inventory-${new Date().toISOString().slice(0, 10)}.json`
+  );
+  return credentials.length;
+}
+
+async function downloadSmtpCredential(domain: string): Promise<void> {
+  const response = await fetch(`/v1/sender-pool/credentials/${encodeURIComponent(domain)}/download`, {
+    method: "GET"
+  });
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response));
+  }
+  const blob = await response.blob();
+  triggerDownload(
+    blob,
+    fileNameFromDisposition(response.headers.get("content-disposition")) ?? `smtp-credentials-${domain}.md`
+  );
+}
+
+function triggerDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function responseErrorMessage(response: Response): Promise<string> {
+  const text = await response.text();
+  try {
+    const payload = JSON.parse(text) as { error?: string; message?: string };
+    return payload.message ?? payload.error ?? response.statusText;
+  } catch {
+    return text || response.statusText;
+  }
+}
+
+function fileNameFromDisposition(value: string | null): string | null {
+  const match = value?.match(/filename="([^"]+)"/);
+  return match?.[1] ?? null;
 }
 
 /* ----- Flow steps ----- */

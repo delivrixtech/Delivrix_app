@@ -40,7 +40,8 @@ const allowedWritePatterns = [
   /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/
 ];
 const allowedReadPatterns = [
-  /^\/v1\/openclaw\/proposals\/[^/]+\/status$/
+  /^\/v1\/openclaw\/proposals\/[^/]+\/status$/,
+  /^\/v1\/sender-pool\/credentials\/[^/]+\/download$/
 ];
 
 const allowedProxyPaths = new Set([
@@ -78,6 +79,8 @@ const allowedProxyPaths = new Set([
   "/v1/mxtoolbox/health",
   "/v1/send-results",
   "/v1/sender-nodes",
+  "/v1/sender-pool/status",
+  "/v1/sender-pool/credentials/export",
   "/v1/stuck-jobs",
   "/v1/webdock/inventory"
 ]);
@@ -153,10 +156,15 @@ async function proxyGatewayChatSend(request, response, requestUrl) {
   }
 
   const body = await upstreamResponse.text();
-  response.writeHead(upstreamResponse.status, {
+  const responseHeaders = {
     "content-type": upstreamResponse.headers.get("content-type") ?? "application/json; charset=utf-8",
     "cache-control": "no-store"
-  });
+  };
+  const contentDisposition = upstreamResponse.headers.get("content-disposition");
+  if (contentDisposition) {
+    responseHeaders["content-disposition"] = contentDisposition;
+  }
+  response.writeHead(upstreamResponse.status, responseHeaders);
   response.end(body);
 }
 
@@ -206,10 +214,15 @@ async function proxyGatewayGet(request, response, requestUrl) {
   }
 
   const body = await upstreamResponse.text();
-  response.writeHead(upstreamResponse.status, {
+  const responseHeaders = {
     "content-type": upstreamResponse.headers.get("content-type") ?? "application/json; charset=utf-8",
     "cache-control": "no-store"
-  });
+  };
+  const contentDisposition = upstreamResponse.headers.get("content-disposition");
+  if (contentDisposition) {
+    responseHeaders["content-disposition"] = contentDisposition;
+  }
+  response.writeHead(upstreamResponse.status, responseHeaders);
   response.end(body);
 }
 
