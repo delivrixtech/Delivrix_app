@@ -1053,6 +1053,191 @@ test("OpenClawBedrockBridge emits typed blacklist artifact from MXToolbox result
   assert.doesNotMatch(JSON.stringify(payload), /raw-ref-must-not-ship/);
 });
 
+test("OpenClawBedrockBridge emits safe SMTP credential artifact from enable_smtp_auth result", async () => {
+  const payloads: Array<Record<string, unknown>> = [];
+  const snapshots: Array<Record<string, unknown>> = [];
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    env: enabledToolEnv(),
+    canvasLiveEvents: {
+      async emit(event) {
+        return event;
+      },
+      async upsertArtifactSnapshot(snapshot) {
+        snapshots.push(snapshot as unknown as Record<string, unknown>);
+        return snapshot;
+      }
+    },
+    processToolUse: async () => ({
+      ok: true,
+      status: "executed",
+      proposalId: "write:toolu-smtp-cred",
+      result: {
+        ok: true,
+        domain: "Example-Mail.COM",
+        status: "configured",
+        hasCredential: true,
+        password: "smtp-password-must-not-ship",
+        smtpCredentialEncrypted: {
+          algorithm: "aes-256-gcm",
+          ciphertext: "ciphertext-must-not-ship",
+          authTag: "auth-tag-must-not-ship"
+        }
+      }
+    }),
+    client: {
+      send: async (command) => {
+        payloads.push(JSON.parse(String(command.input.body)));
+        if (payloads.length === 1) {
+          return {
+            body: toolUseStream("toolu-smtp-cred", "enable_smtp_auth", "{\"domain\":\"example-mail.com\"}")
+          };
+        }
+        return {
+          body: [
+            streamJson({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Credencial lista." } })
+          ]
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-smtp-credential", message: "habilita auth para example-mail.com" });
+  await bridge.streamHistory("msg-smtp-credential", {});
+
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].artifactId, "smtp-credential-example-mail.com");
+  assert.equal(snapshots[0].kind, "smtp_credential");
+  const payload = snapshots[0].payload as Record<string, unknown>;
+  assert.deepEqual(payload, {
+    kind: "smtp_credential",
+    domain: "example-mail.com",
+    host: "smtp.example-mail.com",
+    username: "mailer@example-mail.com",
+    ports: { submission: 587, smtps: 465 },
+    hasCredential: true
+  });
+  const serialized = JSON.stringify(snapshots);
+  assert.doesNotMatch(serialized, /smtp-password-must-not-ship/);
+  assert.doesNotMatch(serialized, /ciphertext-must-not-ship/);
+  assert.doesNotMatch(serialized, /auth-tag-must-not-ship/);
+});
+
+test("OpenClawBedrockBridge skips SMTP credential artifact when credential is unavailable", async () => {
+  const payloads: Array<Record<string, unknown>> = [];
+  const snapshots: Array<Record<string, unknown>> = [];
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    env: enabledToolEnv(),
+    canvasLiveEvents: {
+      async emit(event) {
+        return event;
+      },
+      async upsertArtifactSnapshot(snapshot) {
+        snapshots.push(snapshot as unknown as Record<string, unknown>);
+        return snapshot;
+      }
+    },
+    processToolUse: async () => ({
+      ok: true,
+      status: "executed",
+      proposalId: "write:toolu-smtp-pending",
+      result: {
+        ok: false,
+        domain: "example-mail.com",
+        status: "pending_ssh",
+        hasCredential: false
+      }
+    }),
+    client: {
+      send: async (command) => {
+        payloads.push(JSON.parse(String(command.input.body)));
+        if (payloads.length === 1) {
+          return {
+            body: toolUseStream("toolu-smtp-pending", "enable_smtp_auth", "{\"domain\":\"example-mail.com\"}")
+          };
+        }
+        return {
+          body: [
+            streamJson({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Todavía pendiente." } })
+          ]
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-smtp-pending", message: "habilita auth para example-mail.com" });
+  await bridge.streamHistory("msg-smtp-pending", {});
+
+  assert.equal(snapshots.length, 0);
+});
+
+test("OpenClawBedrockBridge does not fail the chat when SMTP credential artifact upsert fails", async () => {
+  const payloads: Array<Record<string, unknown>> = [];
+  const events: ChatStreamEvent[] = [];
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    env: enabledToolEnv(),
+    canvasLiveEvents: {
+      async emit(event) {
+        return event;
+      },
+      async upsertArtifactSnapshot() {
+        throw new Error("canvas-state-disk-down");
+      }
+    },
+    processToolUse: async () => ({
+      ok: true,
+      status: "executed",
+      proposalId: "write:toolu-smtp-upsert-fails",
+      result: {
+        ok: true,
+        domain: "example-mail.com",
+        status: "configured",
+        hasCredential: true
+      }
+    }),
+    client: {
+      send: async (command) => {
+        payloads.push(JSON.parse(String(command.input.body)));
+        if (payloads.length === 1) {
+          return {
+            body: toolUseStream("toolu-smtp-upsert-fails", "enable_smtp_auth", "{\"domain\":\"example-mail.com\"}")
+          };
+        }
+        return {
+          body: [
+            streamJson({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Credencial lista." } })
+          ]
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-smtp-upsert-fails", message: "habilita auth para example-mail.com" });
+  await bridge.streamHistory("msg-smtp-upsert-fails", {
+    onDone: (event) => events.push(event)
+  });
+
+  assert.equal(events.at(-1)?.type, "ASSISTANT_DONE");
+  assert.equal(events.at(-1)?.type === "ASSISTANT_DONE" ? events.at(-1)?.content : "", "Credencial lista.");
+});
+
 test("OpenClawBedrockBridge emits final prose artifact only for structured deliverables", async () => {
   const snapshots: Array<Record<string, unknown>> = [];
   const bridge = new OpenClawBedrockBridge({

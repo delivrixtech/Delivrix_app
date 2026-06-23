@@ -35,6 +35,8 @@ import {
 interface OpenClawIntentContextValue {
   /** Operador o módulo dispara: navega a Canvas + pre-llena el chat. */
   sendIntent: (prompt: string, source?: string) => void;
+  /** Navegación directa del shell sin crear intent de chat. */
+  navigateTo: (section: string) => void;
   /**
    * El ChatInput consume el intent pendiente al mount. Devuelve el prompt y
    * lo limpia. Si no hay intent, devuelve null.
@@ -81,6 +83,10 @@ export function OpenClawIntentProvider({
     [onNavigate]
   );
 
+  const navigateTo = useCallback((section: string) => {
+    onNavigate?.(section);
+  }, [onNavigate]);
+
   const consumePendingIntent = useCallback(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -104,8 +110,8 @@ export function OpenClawIntentProvider({
   }, []);
 
   const value = useMemo<OpenClawIntentContextValue>(
-    () => ({ sendIntent, consumePendingIntent }),
-    [sendIntent, consumePendingIntent]
+    () => ({ sendIntent, navigateTo, consumePendingIntent }),
+    [sendIntent, navigateTo, consumePendingIntent]
   );
 
   // tick forzaria re-render de consumidores si lo necesitaran (no expuesto).
@@ -127,6 +133,10 @@ export function useOpenClawIntent(): OpenClawIntentContextValue {
   if (ctx) return ctx;
   // Fallback: log a console pero no rompe.
   return {
+    navigateTo: (section) => {
+      // eslint-disable-next-line no-console
+      console.warn("[OpenClawIntent] No provider mounted. Navegación ignorada:", section);
+    },
     sendIntent: (prompt) => {
       // eslint-disable-next-line no-console
       console.warn("[OpenClawIntent] No provider mounted. Intent ignorado:", prompt);
