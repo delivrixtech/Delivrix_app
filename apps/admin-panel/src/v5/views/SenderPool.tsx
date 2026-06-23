@@ -67,7 +67,7 @@ interface SmtpCredentialMetadata {
   serverSlug?: string | null;
   host: string;
   username: string;
-  status: "pending_install" | "configured";
+  status: "pending_install" | "configured" | "install_failed";
   ports: {
     submission: 587;
     smtps: 465;
@@ -150,15 +150,6 @@ export function SenderPoolV5() {
               >
                 <FileDown size={13} strokeWidth={1.75} />
                 {exportCredentials.isPending ? "Exportando" : "Exportar"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="md"
-                disabled
-                title="Export masivo con secretos requiere link expirable y gate adicional."
-              >
-                <KeyRound size={13} strokeWidth={1.75} />
-                Export masivo
               </Button>
               <Button variant="primary" size="md">
                 <Plus size={13} strokeWidth={1.75} />

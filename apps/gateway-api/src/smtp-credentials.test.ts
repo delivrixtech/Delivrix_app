@@ -7,6 +7,7 @@ import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import {
   decryptSmtpCredentialForDownload,
   markSmtpCredentialConfigured,
+  markSmtpCredentialInstallFailed,
   prepareSmtpCredential,
   renderSmtpCredentialMarkdown,
   saveSmtpCredentialRecord,
@@ -59,7 +60,29 @@ test("SMTP credentials are encrypted at rest and downloadable only after configu
   assert.match(markdown, /Host: smtp\.delivrix-mail\.com/);
   assert.match(markdown, /Usuario: mailer@delivrix-mail\.com/);
   assert.match(markdown, /Password: smtp-secret-password/);
+  assert.match(markdown, /no expira automaticamente/i);
   assert.doesNotMatch(markdown, /BEGIN PRIVATE KEY|dkimPrivateKey/);
+});
+
+test("SMTP credential install failure keeps encrypted material non-downloadable", async () => {
+  const workspace = await setupWorkspace();
+  const material = await prepareSmtpCredential({
+    workspace,
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    domain: "delivrix-mail.com",
+    serverSlug: "mail-prod-1",
+    now: () => fixedNow,
+    passwordFactory: () => "smtp-secret-password"
+  });
+  await saveSmtpCredentialRecord(workspace, markSmtpCredentialInstallFailed(material.record, fixedNow));
+  await assert.rejects(
+    () => decryptSmtpCredentialForDownload({
+      workspace,
+      env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+      domain: "delivrix-mail.com"
+    }),
+    (error) => error instanceof SmtpCredentialError && error.code === "smtp_credential_not_ready"
+  );
 });
 
 test("SMTP credential encryption key fails closed when missing or invalid", async () => {
