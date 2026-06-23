@@ -30,6 +30,7 @@ import { ensureDkimKeyPair, findExistingDkimPrivateKeyPath } from "../dkim-keypa
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import {
   prepareSmtpCredential,
+  markSmtpCredentialInstallFailed,
   markSmtpCredentialConfigured,
   publicSmtpCredentialMetadata,
   saveSmtpCredentialRecord,
@@ -37,6 +38,13 @@ import {
   type SmtpCredentialMaterial,
   type SmtpCredentialPublicMetadata
 } from "../smtp-credentials.ts";
+import {
+  renderDovecotAuthConf,
+  renderDovecotLoggingConf,
+  renderDovecotMasterConf,
+  renderDovecotPasswdConf,
+  renderPostfixMasterServiceCommands
+} from "../smtp-sasl-config.ts";
 import { getProviderFromServerSlug } from "../server-provider.ts";
 import { runWithTransientSshRetry } from "../ssh-retry.ts";
 
@@ -121,6 +129,7 @@ interface SmtpProvisionStepResult {
   attempts: number;
   cloudInitSettleSeconds?: number;
   progressDetail?: string;
+  error?: string;
 }
 
 const skillName = "install_smtp_stack";
@@ -275,6 +284,65 @@ export async function handleSmtpProvisionHttp(
     return;
   }
 
+  const configuredButMissingCredential = await findConfiguredSmtpAuthMissingCredentialInventory(deps.workspace, {
+    serverSlug,
+    domain,
+    selector
+  });
+  if (configuredButMissingCredential) {
+    const blocker = "smtp_auth_configured_but_credential_missing";
+    const workspace = await safeWriteExecution(deps.workspace, {
+      skill: skillName,
+      params: { domain, serverSlug, serverIp, selector, actorId },
+      outcome: "blocked",
+      durationMs: Date.now() - startedAt,
+      evidence: {
+        status: blocker,
+        serverIp: configuredButMissingCredential.serverIp,
+        selector,
+        smtpAuthStatus: configuredButMissingCredential.smtpAuthStatus,
+        hasCredential: configuredButMissingCredential.smtpCredential?.hasCredential === true,
+        learningCount: learnings.length
+      }
+    });
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.smtp.provision_blocked",
+      targetType: "webdock_server",
+      targetId: serverSlug,
+      riskLevel: "critical",
+      decision: "reject",
+      humanApproved: false,
+      metadata: {
+        domain,
+        serverIp: configuredButMissingCredential.serverIp,
+        selector,
+        blockers: [blocker],
+        smtpAuthStatus: configuredButMissingCredential.smtpAuthStatus,
+        hasCredential: configuredButMissingCredential.smtpCredential?.hasCredential === true,
+        remediation: "run_smtp_sasl_retrofit_or_rotate_explicitly",
+        workspacePath: workspace?.path
+      }
+    });
+    await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.smtp.provision_blocked", "webdock_server", serverSlug, "critical", deps.now?.() ?? new Date());
+    await emitTaskUpdate(deps.canvasLiveEvents, taskId, "failed", deps.now?.() ?? new Date());
+    json(deps.response, 409, {
+      ok: false,
+      status: "blocked",
+      error: blocker,
+      blockers: [blocker],
+      serverSlug,
+      domain,
+      serverIp: configuredButMissingCredential.serverIp,
+      selector,
+      smtpAuthStatus: configuredButMissingCredential.smtpAuthStatus,
+      remediation: "run_smtp_sasl_retrofit_or_rotate_explicitly",
+      workspace
+    });
+    return;
+  }
+
   let smtpCredential: SmtpCredentialMaterial | null = null;
   if (blockers.length === 0) {
     try {
@@ -382,32 +450,61 @@ export async function handleSmtpProvisionHttp(
     }
   });
 
+  const commandResults: SmtpProvisionStepResult[] = [];
+  let sshConnectAttempts = 1;
+  let cloudInitSettleSeconds = 0;
+  let failedStep: string | undefined;
+
   try {
-    const commandResults: SmtpProvisionStepResult[] = [];
-    let sshConnectAttempts = 1;
-    let cloudInitSettleSeconds = 0;
 
     for (const [index, step] of plan.entries()) {
-      const execution = index === 0
-        ? await runSmtpStepWithCloudInitRetry({
-            runner: deps.sshRunner,
-            step,
-            serverSlug,
-            serverIp: serverIp!,
-            sleep: deps.sleep ?? sleep
-          })
-        : {
-            result: await deps.sshRunner.run({
+      let execution: {
+        result: SmtpSshCommandResult;
+        attempts: number;
+        cloudInitSettleMs: number;
+        progressDetail?: string;
+      };
+      try {
+        execution = index === 0
+          ? await runSmtpStepWithCloudInitRetry({
+              runner: deps.sshRunner,
+              step,
               serverSlug,
               serverIp: serverIp!,
-              command: step.command,
-              stdin: step.stdin,
-              timeoutMs: step.timeoutMs
-            }),
-            attempts: 1,
-            cloudInitSettleMs: 0,
-            progressDetail: undefined
-          };
+              sleep: deps.sleep ?? sleep
+            })
+          : {
+              result: await deps.sshRunner.run({
+                serverSlug,
+                serverIp: serverIp!,
+                command: step.command,
+                stdin: step.stdin,
+                timeoutMs: step.timeoutMs
+              }),
+              attempts: 1,
+              cloudInitSettleMs: 0,
+              progressDetail: undefined
+            };
+      } catch (error) {
+        failedStep = step.label;
+        const message = errorMessage(error);
+        commandResults.push({
+          label: step.label,
+          exitCode: null,
+          attempts: 1,
+          error: message
+        });
+        await emitCommandAction(
+          deps.canvasLiveEvents,
+          taskId,
+          step.auditCommand,
+          1,
+          "",
+          truncate(message),
+          deps.now?.() ?? new Date()
+        );
+        throw error;
+      }
 
       sshConnectAttempts = Math.max(sshConnectAttempts, execution.attempts);
       cloudInitSettleSeconds += Math.round(execution.cloudInitSettleMs / 1000);
@@ -522,6 +619,20 @@ export async function handleSmtpProvisionHttp(
       workspace
     });
   } catch (error) {
+    if (smtpCredential) {
+      await saveSmtpCredentialRecord(
+        deps.workspace,
+        markSmtpCredentialInstallFailed(smtpCredential.record, deps.now?.() ?? new Date())
+      );
+      await emitFileAction(
+        deps.canvasLiveEvents,
+        taskId,
+        "write",
+        "inventory/domains.json",
+        "SMTP AUTH credential marked install_failed after provisioning error",
+        deps.now?.() ?? new Date()
+      );
+    }
     const workspace = await safeWriteExecution(deps.workspace, {
       skill: skillName,
       params: { domain, serverSlug, serverIp, selector, actorId },
@@ -529,6 +640,9 @@ export async function handleSmtpProvisionHttp(
       durationMs: Date.now() - startedAt,
       evidence: {
         error: errorMessage(error),
+        failedStep,
+        commandCount: commandResults.length,
+        commandResults,
         learningCount: learnings.length
       }
     });
@@ -546,6 +660,9 @@ export async function handleSmtpProvisionHttp(
         domain,
         serverIp,
         errorMessage: errorMessage(error),
+        failedStep,
+        commandCount: commandResults.length,
+        commandResults,
         workspacePath: workspace?.path
       }
     });
@@ -653,6 +770,7 @@ export function buildSmtpProvisionPlan(input: {
   const mainCf = renderPostfixMainCf(input.domain, mailHost);
   const opendkimConf = renderOpenDkimConf();
   const dovecotAuthConf = renderDovecotAuthConf();
+  const dovecotLoggingConf = renderDovecotLoggingConf();
   const dovecotMasterConf = renderDovecotMasterConf();
   const dovecotPasswdConf = renderDovecotPasswdConf();
   const keyTable = `${input.selector}._domainkey.${input.domain} ${input.domain}:${input.selector}:${keyDir}/${input.selector}.private\n`;
@@ -696,6 +814,12 @@ export function buildSmtpProvisionPlan(input: {
       command: "install -m 0644 /dev/stdin /etc/dovecot/conf.d/10-auth.conf",
       auditCommand: "write /etc/dovecot/conf.d/10-auth.conf",
       stdin: dovecotAuthConf
+    },
+    {
+      label: "write-dovecot-logging-conf",
+      command: "install -m 0644 /dev/stdin /etc/dovecot/conf.d/10-logging.conf",
+      auditCommand: "write /etc/dovecot/conf.d/10-logging.conf",
+      stdin: dovecotLoggingConf
     },
     {
       label: "write-dovecot-master-conf",
@@ -799,6 +923,21 @@ async function findConfiguredSmtpInventory(
     entry.status === "configured" &&
     entry.smtpAuthStatus === "configured" &&
     entry.smtpCredential?.hasCredential === true
+  ) ?? null;
+}
+
+async function findConfiguredSmtpAuthMissingCredentialInventory(
+  workspace: OpenClawWorkspace,
+  input: { serverSlug: string; domain: string; selector: string }
+): Promise<NonNullable<SmtpInventory["servers"]>[number] | null> {
+  const inventory = await workspace.readInventoryJson<SmtpInventory>("smtp-provisioning.json").catch(() => null);
+  return inventory?.servers?.find((entry) =>
+    entry.serverSlug === input.serverSlug &&
+    entry.domain === input.domain &&
+    entry.selector === input.selector &&
+    entry.status === "configured" &&
+    entry.smtpAuthStatus === "configured" &&
+    entry.smtpCredential?.hasCredential !== true
   ) ?? null;
 }
 
@@ -969,57 +1108,6 @@ function renderOpenDkimConf(): string {
     "InternalHosts /etc/opendkim/trusted.hosts",
     ""
   ].join("\n");
-}
-
-function renderDovecotAuthConf(): string {
-  return [
-    "disable_plaintext_auth = no",
-    "auth_mechanisms = plain login",
-    "!include auth-passwdfile.conf.ext",
-    ""
-  ].join("\n");
-}
-
-function renderDovecotMasterConf(): string {
-  return [
-    "service auth {",
-    "  unix_listener /var/spool/postfix/private/auth {",
-    "    mode = 0660",
-    "    user = postfix",
-    "    group = postfix",
-    "  }",
-    "}",
-    ""
-  ].join("\n");
-}
-
-function renderDovecotPasswdConf(): string {
-  return [
-    "passdb {",
-    "  driver = passwd-file",
-    "  args = scheme=CRYPT username_format=%u /etc/dovecot/passwd.d/delivrix-smtp-users",
-    "}",
-    "userdb {",
-    "  driver = static",
-    "  args = uid=nobody gid=nogroup home=/var/empty",
-    "}",
-    ""
-  ].join("\n");
-}
-
-function renderPostfixMasterServiceCommands(): string {
-  return [
-    "postconf -M submission/inet='submission inet n - y - - smtpd'",
-    "postconf -P submission/inet/syslog_name=postfix/submission",
-    "postconf -P submission/inet/smtpd_tls_security_level=encrypt",
-    "postconf -P submission/inet/smtpd_sasl_auth_enable=yes",
-    "postconf -P submission/inet/smtpd_recipient_restrictions=permit_sasl_authenticated,reject",
-    "postconf -M smtps/inet='smtps inet n - y - - smtpd'",
-    "postconf -P smtps/inet/syslog_name=postfix/smtps",
-    "postconf -P smtps/inet/smtpd_tls_wrappermode=yes",
-    "postconf -P smtps/inet/smtpd_sasl_auth_enable=yes",
-    "postconf -P smtps/inet/smtpd_recipient_restrictions=permit_sasl_authenticated,reject"
-  ].join(" && ");
 }
 
 async function runSshCommand(input: SmtpSshCommandInput & {

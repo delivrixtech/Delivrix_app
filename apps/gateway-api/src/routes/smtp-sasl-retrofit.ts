@@ -1,17 +1,39 @@
-import type { AuditEventInput } from "../../../../packages/domain/src/index.ts";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type {
+  AuditEvent,
+  AuditEventInput,
+  CanvasLiveStateSnapshot
+} from "../../../../packages/domain/src/index.ts";
+import {
+  approvalTokenHash,
+  artifactMatchesAuditApproval,
+  auditApprovalMatchesToken
+} from "../approval-guard.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import { readRequestBody } from "../request-body.ts";
+import { operatorIdFromHeaders } from "../security/gateway-mutation-auth.ts";
+import {
+  renderDovecotAuthConf,
+  renderDovecotLoggingConf,
+  renderDovecotMasterConf,
+  renderDovecotPasswdConf,
+  renderPostfixMasterServiceCommands
+} from "../smtp-sasl-config.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import {
+  markSmtpCredentialInstallFailed,
   markSmtpCredentialConfigured,
   prepareSmtpCredential,
   publicSmtpCredentialMetadata,
   saveSmtpCredentialRecord,
   smtpCredentialFingerprint
 } from "../smtp-credentials.ts";
+import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
 import type { SmtpSshRunner } from "./smtp-provisioning.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
+  list?(): Promise<AuditEvent[]>;
 }
 
 interface SmtpProvisioningInventory {
@@ -53,12 +75,146 @@ export interface SmtpSaslRetrofitResult {
   domain: string;
   status: "configured" | "pending_ssh" | "failed";
   stepCount: number;
+  failedStep?: string;
   error?: string;
 }
 
 export interface SmtpSaslRetrofitBatchResult {
   candidates: number;
   results: SmtpSaslRetrofitResult[];
+}
+
+export interface SmtpSaslRetrofitRouteDeps {
+  request: IncomingMessage;
+  response: ServerResponse;
+  workspace: OpenClawWorkspace;
+  auditLog: AuditSink;
+  sshRunner: SmtpSshRunner;
+  readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
+  readBoundaryToken?: string;
+  env?: Record<string, string | undefined>;
+  now?: () => Date;
+}
+
+interface SmtpSaslRetrofitBody {
+  actorId?: unknown;
+  approvalToken?: unknown;
+}
+
+const approvalMaxAgeMs = 15 * 60 * 1000;
+
+export async function handleSmtpSaslRetrofitBatchHttp(
+  deps: SmtpSaslRetrofitRouteDeps
+): Promise<void> {
+  const now = deps.now?.() ?? new Date();
+  if (deps.request.method !== "POST") {
+    json(deps.response, 405, { error: "method_not_allowed" });
+    return;
+  }
+
+  const auth = authorizeSensitiveRead(
+    deps.request,
+    { readBoundaryToken: deps.readBoundaryToken, now: deps.now },
+    "smtp_sasl_retrofit_batch"
+  );
+  if (!auth.ok) {
+    json(deps.response, auth.statusCode, { error: auth.error });
+    return;
+  }
+
+  let body: SmtpSaslRetrofitBody;
+  try {
+    body = await readJson<SmtpSaslRetrofitBody>(deps.request);
+  } catch (error) {
+    json(deps.response, 400, {
+      error: "invalid_json",
+      message: error instanceof Error ? error.message : "Request body must be valid JSON."
+    });
+    return;
+  }
+
+  const actorId = stringOrDefault(body.actorId, operatorIdFromHeaders(deps.request.headers) ?? "operator/read-boundary");
+  const approvalToken = stringOrDefault(body.approvalToken, "");
+  if (!approvalToken) {
+    json(deps.response, 422, { error: "invalid_smtp_sasl_retrofit_request", message: "approvalToken is required." });
+    return;
+  }
+  const approval = await findRecentRetrofitApproval({
+    auditLog: deps.auditLog,
+    readCanvasState: deps.readCanvasState,
+    approvalToken,
+    now,
+    maxAgeMs: approvalMaxAgeMs
+  });
+  if (!approval) {
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.smtp_sasl.retrofit_batch_blocked",
+      targetType: "sender_pool",
+      targetId: "smtp_sasl_retrofit",
+      riskLevel: "critical",
+      decision: "reject",
+      humanApproved: false,
+      metadata: {
+        reason: "approval_not_found_or_expired",
+        approvalTokenHash: approvalTokenHash(approvalToken)
+      }
+    });
+    json(deps.response, 403, { error: "approval_not_found_or_expired" });
+    return;
+  }
+
+  await deps.auditLog.append({
+    actorType: "operator",
+    actorId,
+    action: "oc.smtp_sasl.retrofit_batch_requested",
+    targetType: "sender_pool",
+    targetId: "smtp_sasl_retrofit",
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: [actorId],
+    metadata: {
+      approvalArtifactId: approval.artifactId,
+      approvalTokenHash: approvalTokenHash(approvalToken)
+    }
+  });
+
+  const result = await runSmtpSaslRetrofitBatch({
+    workspace: deps.workspace,
+    auditLog: deps.auditLog,
+    sshRunner: deps.sshRunner,
+    env: deps.env,
+    actorId,
+    now: deps.now
+  });
+
+  await deps.auditLog.append({
+    actorType: "operator",
+    actorId,
+    action: "oc.smtp_sasl.retrofit_batch_completed",
+    targetType: "sender_pool",
+    targetId: "smtp_sasl_retrofit",
+    riskLevel: "critical",
+    decision: result.results.some((entry) => entry.status === "failed") ? "reject" : "allow",
+    humanApproved: true,
+    approverIds: [actorId],
+    metadata: {
+      approvalArtifactId: approval.artifactId,
+      approvalTokenHash: approvalTokenHash(approvalToken),
+      candidates: result.candidates,
+      configured: result.results.filter((entry) => entry.status === "configured").length,
+      pendingSsh: result.results.filter((entry) => entry.status === "pending_ssh").length,
+      failed: result.results.filter((entry) => entry.status === "failed").length
+    }
+  });
+
+  json(deps.response, 200, {
+    ok: true,
+    status: "completed",
+    ...result
+  });
 }
 
 export async function listSmtpSaslRetrofitCandidates(
@@ -117,14 +273,40 @@ export async function runSmtpSaslRetrofitBatch(input: {
         password: credential.password
       });
 
-      for (const step of plan) {
-        await input.sshRunner.run({
+      let completedSteps = 0;
+      let failedStep: string | undefined;
+      try {
+        for (const step of plan) {
+          try {
+            await input.sshRunner.run({
+              serverSlug: candidate.serverSlug,
+              serverIp: candidate.serverIp,
+              command: step.command,
+              stdin: step.stdin,
+              timeoutMs: step.timeoutMs
+            });
+            completedSteps += 1;
+          } catch (error) {
+            failedStep = step.label;
+            throw error;
+          }
+        }
+      } catch (error) {
+        await saveSmtpCredentialRecord(
+          input.workspace,
+          markSmtpCredentialInstallFailed(credential.record, input.now?.() ?? new Date())
+        );
+        const message = error instanceof Error ? error.message : String(error);
+        results.push({
           serverSlug: candidate.serverSlug,
-          serverIp: candidate.serverIp,
-          command: step.command,
-          stdin: step.stdin,
-          timeoutMs: step.timeoutMs
+          domain: candidate.domain,
+          status: "failed",
+          stepCount: completedSteps,
+          failedStep,
+          error: message
         });
+        await appendRetrofitAudit(input.auditLog, input.actorId, candidate, "failed", completedSteps, message, undefined, failedStep);
+        continue;
       }
 
       const configuredRecord = markSmtpCredentialConfigured(credential.record, input.now?.() ?? new Date());
@@ -184,6 +366,12 @@ export function buildSmtpSaslRetrofitPlan(input: {
       command: "install -m 0644 /dev/stdin /etc/dovecot/conf.d/10-auth.conf",
       auditCommand: "write /etc/dovecot/conf.d/10-auth.conf",
       stdin: renderDovecotAuthConf()
+    },
+    {
+      label: "write-dovecot-logging-conf",
+      command: "install -m 0644 /dev/stdin /etc/dovecot/conf.d/10-logging.conf",
+      auditCommand: "write /etc/dovecot/conf.d/10-logging.conf",
+      stdin: renderDovecotLoggingConf()
     },
     {
       label: "write-dovecot-master-conf",
@@ -270,7 +458,8 @@ async function appendRetrofitAudit(
   status: SmtpSaslRetrofitResult["status"],
   stepCount: number,
   error?: string,
-  credentialFingerprint?: string
+  credentialFingerprint?: string,
+  failedStep?: string
 ): Promise<void> {
   await auditLog.append({
     actorType: "operator",
@@ -289,63 +478,61 @@ async function appendRetrofitAudit(
       status,
       stepCount,
       reason: candidate.reason,
+      ...(failedStep ? { failedStep } : {}),
       ...(error ? { error } : {}),
       ...(credentialFingerprint ? { credentialFingerprint } : {})
     }
   });
 }
 
-function renderDovecotAuthConf(): string {
-  return [
-    "disable_plaintext_auth = no",
-    "auth_mechanisms = plain login",
-    "!include auth-passwdfile.conf.ext",
-    ""
-  ].join("\n");
-}
-
-function renderDovecotMasterConf(): string {
-  return [
-    "service auth {",
-    "  unix_listener /var/spool/postfix/private/auth {",
-    "    mode = 0660",
-    "    user = postfix",
-    "    group = postfix",
-    "  }",
-    "}",
-    ""
-  ].join("\n");
-}
-
-function renderDovecotPasswdConf(): string {
-  return [
-    "passdb {",
-    "  driver = passwd-file",
-    "  args = scheme=CRYPT username_format=%u /etc/dovecot/passwd.d/delivrix-smtp-users",
-    "}",
-    "userdb {",
-    "  driver = static",
-    "  args = uid=nobody gid=nogroup home=/var/empty",
-    "}",
-    ""
-  ].join("\n");
-}
-
-function renderPostfixMasterServiceCommands(): string {
-  return [
-    "postconf -M submission/inet='submission inet n - y - - smtpd'",
-    "postconf -P submission/inet/syslog_name=postfix/submission",
-    "postconf -P submission/inet/smtpd_tls_security_level=encrypt",
-    "postconf -P submission/inet/smtpd_sasl_auth_enable=yes",
-    "postconf -P submission/inet/smtpd_recipient_restrictions=permit_sasl_authenticated,reject",
-    "postconf -M smtps/inet='smtps inet n - y - - smtpd'",
-    "postconf -P smtps/inet/syslog_name=postfix/smtps",
-    "postconf -P smtps/inet/smtpd_tls_wrappermode=yes",
-    "postconf -P smtps/inet/smtpd_sasl_auth_enable=yes",
-    "postconf -P smtps/inet/smtpd_recipient_restrictions=permit_sasl_authenticated,reject"
-  ].join(" && ");
-}
-
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+async function readJson<T>(request: IncomingMessage): Promise<T> {
+  const raw = await readRequestBody(request, { maxBytes: 16_384 });
+  if (!raw) return {} as T;
+  return JSON.parse(raw) as T;
+}
+
+function stringOrDefault(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+async function findRecentRetrofitApproval(input: {
+  auditLog: AuditSink;
+  readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
+  approvalToken: string;
+  now: Date;
+  maxAgeMs: number;
+}) {
+  if (!input.auditLog.list) return null;
+  const events = await input.auditLog.list();
+  const auditEvent = events.toReversed().find((event) => {
+    if (!auditApprovalMatchesToken(event, input.approvalToken)) {
+      return false;
+    }
+    const approvedAt = Date.parse(event.occurredAt);
+    return Number.isFinite(approvedAt) &&
+      input.now.getTime() - approvedAt >= 0 &&
+      input.now.getTime() - approvedAt <= input.maxAgeMs;
+  });
+  if (!auditEvent) return null;
+
+  const state = await input.readCanvasState();
+  return state.artifacts.find((artifact) => artifactMatchesAuditApproval({
+    artifact,
+    approvalEvent: auditEvent,
+    approvalToken: input.approvalToken,
+    now: input.now,
+    maxAgeMs: input.maxAgeMs
+  })) ?? null;
+}
+
+function json(response: ServerResponse, statusCode: number, payload: unknown): void {
+  response.writeHead(statusCode, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store"
+  });
+  response.end(JSON.stringify(payload, null, 2));
 }

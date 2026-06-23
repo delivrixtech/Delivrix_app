@@ -216,6 +216,7 @@ import {
   handleSmtpProvisionError,
   handleSmtpProvisionHttp
 } from "./routes/smtp-provisioning.ts";
+import { handleSmtpSaslRetrofitBatchHttp } from "./routes/smtp-sasl-retrofit.ts";
 import {
   handleWarmupStartError,
   handleWarmupStartHttp
@@ -1532,6 +1533,19 @@ const server = createServer(async (request, response) => {
         }
         throw error;
       }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/smtp/retrofit-sasl-batch") {
+      return await handleSmtpSaslRetrofitBatchHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        auditLog,
+        sshRunner: smtpSshRunner,
+        readCanvasState: () => canvasLiveEvents.snapshot(),
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        env: process.env
+      });
     }
 
     if (request.method === "POST" && (request.url === "/v1/warmup/start" || request.url === "/v1/warmup/seed")) {

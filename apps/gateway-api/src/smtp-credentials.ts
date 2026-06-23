@@ -50,7 +50,7 @@ export interface SmtpCredentialMaterial {
   generated: boolean;
 }
 
-export type SmtpCredentialStatus = "pending_install" | "configured";
+export type SmtpCredentialStatus = "pending_install" | "configured" | "install_failed";
 
 interface DomainsInventory {
   smtpCredentials?: SmtpCredentialRecord[];
@@ -145,6 +145,17 @@ export function markSmtpCredentialConfigured(
   };
 }
 
+export function markSmtpCredentialInstallFailed(
+  record: SmtpCredentialRecord,
+  now: Date = new Date()
+): SmtpCredentialRecord {
+  return {
+    ...record,
+    status: "install_failed",
+    updatedAt: now.toISOString()
+  };
+}
+
 export async function findSmtpCredentialRecord(
   workspace: OpenClawWorkspace,
   domainInput: string,
@@ -216,6 +227,7 @@ export function renderSmtpCredentialMarkdown(input: {
     "",
     "## Seguridad",
     "",
+    "Esta credencial no expira automaticamente. Rotala si sale del circuito aprobado o si hay sospecha de exposicion.",
     "No compartas este archivo por chat. No contiene claves DKIM privadas ni acceso SSH.",
     "Si sospechas exposicion, rota la credencial desde el panel operativo antes de seguir enviando.",
     ""
@@ -339,7 +351,7 @@ function isSmtpCredentialRecord(value: unknown): value is SmtpCredentialRecord {
   return typeof record.domain === "string" &&
     typeof record.host === "string" &&
     typeof record.username === "string" &&
-    (record.status === "pending_install" || record.status === "configured") &&
+    (record.status === "pending_install" || record.status === "configured" || record.status === "install_failed") &&
     typeof record.createdAt === "string" &&
     typeof record.updatedAt === "string" &&
     record.ports?.submission === 587 &&

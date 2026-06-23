@@ -81,11 +81,15 @@ test("buildSmtpProvisionPlan enables SASL only for submission/smtps and preserve
   const mainCf = plan.find((step) => step.label === "write-postfix-main-cf");
   const master = plan.find((step) => step.label === "enable-postfix-submission-smtps");
   const passdb = plan.find((step) => step.label === "write-sasl-passdb");
+  const dovecotAuth = plan.find((step) => step.label === "write-dovecot-auth-conf");
+  const dovecotLogging = plan.find((step) => step.label === "write-dovecot-logging-conf");
 
   assert.match(mainCf?.stdin ?? "", /smtpd_sasl_auth_enable = no/);
   assert.match(mainCf?.stdin ?? "", /permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination/);
   assert.match(master?.command ?? "", /submission\/inet\/smtpd_sasl_auth_enable=yes/);
   assert.match(master?.command ?? "", /smtps\/inet\/smtpd_sasl_auth_enable=yes/);
+  assert.match(dovecotAuth?.stdin ?? "", /disable_plaintext_auth = yes/);
+  assert.match(dovecotLogging?.stdin ?? "", /auth_debug_passwords = no/);
   assert.equal(passdb?.stdin, `${smtpCredential.password}\n`);
   assert.equal(passdb?.command.includes(smtpCredential.password), false);
   assert.equal(passdb?.auditCommand.includes(smtpCredential.password), false);
@@ -261,7 +265,7 @@ test("POST /v1/servers/:slug/provision-smtp runs idempotent SSH plan and records
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.status, "configured");
   assert.equal(response.body.serverIp, "192.0.2.44");
-  assert.equal(commands.length, 18);
+  assert.equal(commands.length, 19);
   assert.equal(commands.every((command) => command.serverSlug === "mail-delivrix-test"), true);
   assert.equal(commands.some((command) => command.stdin === dkimPrivateKey), true);
   assert.equal(commands.every((command) => !command.command.includes("PRIVATE")), true);
@@ -348,6 +352,57 @@ test("POST /v1/servers/:slug/provision-smtp skips SSH when inventory is already 
   assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.smtp.provision_idempotent");
 });
 
+test("POST /v1/servers/:slug/provision-smtp blocks configured SMTP AUTH without credential metadata", async () => {
+  const commands: SmtpSshCommandInput[] = [];
+  const route = await routeHarness({
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-smtp-plan",
+      executionId: "exec-smtp-missing-credential",
+      approvedAt: "2026-05-27T16:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-smtp-plan", "exec-smtp-missing-credential");
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "mail-delivrix-test",
+      hostname: "mail.delivrix-mail.com",
+      ipv4: "192.0.2.44",
+      status: "running"
+    }]
+  }));
+  await route.workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      serverSlug: "mail-delivrix-test",
+      domain: "delivrix-mail.com",
+      serverIp: "192.0.2.44",
+      selector: "default",
+      status: "configured",
+      tlsStatus: "attempted_or_pending_dns",
+      smtpAuthStatus: "configured",
+      configuredAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString()
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-smtp-missing-credential",
+    taskId: "task-smtp-missing-credential"
+  }, { SMTP_PROVISIONING_ENABLE_SSH: "true" });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.error, "smtp_auth_configured_but_credential_missing");
+  assert.equal(commands.length, 0);
+  assert.equal((await route.auditLog.list()).at(-1)?.metadata.remediation, "run_smtp_sasl_retrofit_or_rotate_explicitly");
+});
+
 test("POST /v1/servers/:slug/provision-smtp retrofits legacy configured inventory without SMTP AUTH", async () => {
   const commands: SmtpSshCommandInput[] = [];
   const route = await routeHarness({
@@ -402,8 +457,62 @@ test("POST /v1/servers/:slug/provision-smtp retrofits legacy configured inventor
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.status, "configured");
-  assert.equal(commands.length, 18);
+  assert.equal(commands.length, 19);
   assert.equal(commands.some((command) => command.command.includes("dovecot")), true);
+});
+
+test("POST /v1/servers/:slug/provision-smtp marks credential install_failed on SSH failure", async () => {
+  const commands: SmtpSshCommandInput[] = [];
+  const route = await routeHarness({
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        if (input.command.includes("doveadm pw")) {
+          throw new Error("dovecot passdb failed");
+        }
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-smtp-plan",
+      executionId: "exec-smtp-fail",
+      approvedAt: "2026-05-27T16:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-smtp-plan", "exec-smtp-fail");
+  await route.workspace.writeWorkspaceFile("inventory/dkim-keys/delivrix-mail.com/default.private", dkimPrivateKey);
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    emailAuth: [{
+      domain: "delivrix-mail.com",
+      selector: "default",
+      dkimPrivateKeyPath: "inventory/dkim-keys/delivrix-mail.com/default.private"
+    }]
+  }));
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "mail-delivrix-test",
+      hostname: "mail.delivrix-mail.com",
+      ipv4: "192.0.2.44",
+      status: "running"
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-smtp-fail",
+    taskId: "task-smtp-fail"
+  }, { SMTP_PROVISIONING_ENABLE_SSH: "true" });
+
+  assert.equal(response.statusCode, 502);
+  assert.equal(response.body.status, "failed");
+  const domains = await route.workspace.readInventoryJson<{ smtpCredentials: Array<{ status: string }> }>("domains.json");
+  assert.equal(domains?.smtpCredentials[0]?.status, "install_failed");
+  const events = await route.auditLog.list();
+  const failed = events.at(-1);
+  assert.equal(failed?.action, "oc.smtp.provision_failed");
+  assert.equal(failed?.metadata.failedStep, "write-sasl-passdb");
+  assert.equal(JSON.stringify(events).includes("smtp-password-for-tests"), false);
 });
 
 test("POST /v1/servers/:slug/provision-smtp generates DKIM keypair when missing", async () => {
@@ -505,7 +614,7 @@ test("POST /v1/servers/:slug/provision-smtp retries transient first SSH failure 
   assert.equal(response.body.cloudInitSettleSeconds, 90);
   assert.deepEqual(sleepDelays, [30_000, 60_000]);
   assert.equal(commands.filter((command) => command.command === "cloud-init status --wait || true").length, 3);
-  assert.equal(route.canvasEvents.filter((event) => event.type === "oc.action.now" && event.kind === "command").length, 18);
+  assert.equal(route.canvasEvents.filter((event) => event.type === "oc.action.now" && event.kind === "command").length, 19);
   const firstCommandEvent = route.canvasEvents.find((event) => event.type === "oc.action.now" && event.kind === "command");
   assert.equal(firstCommandEvent?.kind === "command" ? firstCommandEvent.progressDetail : undefined, "esperando cloud-init... intento 3 de 3; espera interna 90s");
 

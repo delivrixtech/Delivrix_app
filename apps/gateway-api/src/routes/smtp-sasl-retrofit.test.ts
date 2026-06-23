@@ -1,15 +1,21 @@
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
+import { approvalTokenHash } from "../approval-guard.ts";
+import type { CanvasLiveStateSnapshot } from "../../../../packages/domain/src/index.ts";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import {
   buildSmtpSaslRetrofitPlan,
+  handleSmtpSaslRetrofitBatchHttp,
   listSmtpSaslRetrofitCandidates,
   runSmtpSaslRetrofitBatch
 } from "./smtp-sasl-retrofit.ts";
+import { resetSensitiveReadAuthBucketsForTests } from "./sensitive-read-auth.ts";
 import type { SmtpSshCommandInput, SmtpSshRunner } from "./smtp-provisioning.ts";
 
 const fixedNow = new Date("2026-06-22T14:00:00.000Z");
@@ -44,8 +50,28 @@ test("buildSmtpSaslRetrofitPlan is additive, keeps permit_mynetworks, and redact
   assert.equal(plan.some((step) => step.label === "write-sasl-passdb"), true);
   assert.equal(plan.some((step) => step.label === "patch-postfix-main-cf-sasl"), true);
   assert.equal(plan.some((step) => step.label === "validate-local-smtp-and-submission"), true);
+  assert.deepEqual(
+    plan.map((step) => step.label),
+    [
+      "install-dovecot",
+      "write-dovecot-auth-conf",
+      "write-dovecot-logging-conf",
+      "write-dovecot-master-conf",
+      "write-dovecot-passwd-conf",
+      "write-sasl-passdb",
+      "patch-postfix-main-cf-sasl",
+      "enable-postfix-submission-smtps",
+      "restart-services",
+      "validate-local-smtp-and-submission"
+    ]
+  );
   const postfixPatch = plan.find((step) => step.label === "patch-postfix-main-cf-sasl");
   assert.match(postfixPatch?.command ?? "", /permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination/);
+  const auth = plan.find((step) => step.label === "write-dovecot-auth-conf");
+  const logging = plan.find((step) => step.label === "write-dovecot-logging-conf");
+  assert.match(auth?.stdin ?? "", /disable_plaintext_auth = yes/);
+  assert.match(logging?.stdin ?? "", /auth_debug = no/);
+  assert.match(logging?.stdin ?? "", /auth_debug_passwords = no/);
   const passdb = plan.find((step) => step.label === "write-sasl-passdb");
   assert.equal(passdb?.stdin, "smtp-secret-password\n");
   assert.equal(plan.some((step) => step.command.includes("smtp-secret-password")), false);
@@ -85,6 +111,8 @@ test("runSmtpSaslRetrofitBatch persists configured credentials and continues aft
   assert.equal(result.candidates, 2);
   assert.equal(result.results.find((entry) => entry.serverSlug === "server85")?.status, "configured");
   assert.equal(result.results.find((entry) => entry.serverSlug === "server88")?.status, "failed");
+  assert.equal(result.results.find((entry) => entry.serverSlug === "server88")?.stepCount, 0);
+  assert.equal(result.results.find((entry) => entry.serverSlug === "server88")?.failedStep, "install-dovecot");
   assert.equal(commands.some((command) => command.serverSlug === "server85"), true);
   assert.equal(commands.some((command) => command.serverSlug === "server88"), true);
 
@@ -101,6 +129,78 @@ test("runSmtpSaslRetrofitBatch persists configured credentials and continues aft
   assert.equal(serializedDomains.includes("smtp-secret-password"), false);
   const audits = await auditLog.list();
   assert.equal(audits.length, 2);
+  assert.equal(JSON.stringify(audits).includes("smtp-secret-password"), false);
+  const domainsAfterFailure = await workspace.readInventoryJson<{
+    smtpCredentials: Array<{ domain: string; status: string }>;
+  }>("domains.json");
+  assert.equal(
+    domainsAfterFailure?.smtpCredentials.find((entry) => entry.domain === "legacy-two.com")?.status,
+    "install_failed"
+  );
+});
+
+test("POST /v1/smtp/retrofit-sasl-batch requires read-boundary token and approval", async () => {
+  resetSensitiveReadAuthBucketsForTests();
+  const workspace = await setupWorkspace();
+  const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
+  const response = captureResponse();
+  await handleSmtpSaslRetrofitBatchHttp({
+    request: request("POST", "/v1/smtp/retrofit-sasl-batch", { approvalToken: "exec-retrofit" }),
+    response: response as unknown as ServerResponse,
+    workspace,
+    auditLog,
+    sshRunner: mockRunner(),
+    readCanvasState: () => canvasState([]),
+    readBoundaryToken: "read-token",
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => fixedNow
+  });
+  assert.equal(response.statusCode, 401);
+  assert.equal((await auditLog.list()).length, 0);
+});
+
+test("POST /v1/smtp/retrofit-sasl-batch runs approved batch and audits without secrets", async () => {
+  resetSensitiveReadAuthBucketsForTests();
+  const workspace = await setupWorkspace();
+  const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
+  await appendApproval(auditLog, "artifact-retrofit", "exec-retrofit");
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [legacyServer("server85", "legacy-one.com")]
+  }));
+  const commands: SmtpSshCommandInput[] = [];
+  const response = captureResponse();
+
+  await handleSmtpSaslRetrofitBatchHttp({
+    request: request("POST", "/v1/smtp/retrofit-sasl-batch", {
+      actorId: "operator/juanes",
+      approvalToken: "exec-retrofit"
+    }, {
+      "x-delivrix-token": "read-token",
+      "x-operator-id": "operator/juanes"
+    }),
+    response: response as unknown as ServerResponse,
+    workspace,
+    auditLog,
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    readCanvasState: () => canvasState([{ artifactId: "artifact-retrofit", executionId: "exec-retrofit" }]),
+    readBoundaryToken: "read-token",
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => fixedNow
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.body) as { candidates: number; results: Array<{ status: string }> };
+  assert.equal(payload.candidates, 1);
+  assert.equal(payload.results[0]?.status, "configured");
+  assert.equal(commands.length, 10);
+  const audits = await auditLog.list();
+  assert.equal(audits.some((event) => event.action === "oc.smtp_sasl.retrofit_batch_requested"), true);
+  assert.equal(audits.at(-1)?.action, "oc.smtp_sasl.retrofit_batch_completed");
   assert.equal(JSON.stringify(audits).includes("smtp-secret-password"), false);
 });
 
@@ -119,5 +219,94 @@ function legacyServer(serverSlug: string, domain: string) {
     tlsStatus: "attempted_or_pending_dns" as const,
     configuredAt: fixedNow.toISOString(),
     updatedAt: fixedNow.toISOString()
+  };
+}
+
+function mockRunner(overrides: Partial<SmtpSshRunner> = {}): SmtpSshRunner {
+  return {
+    isConfigured: () => true,
+    run: async () => ({ stdout: "ok", stderr: "", exitCode: 0 }),
+    ...overrides
+  };
+}
+
+function request(
+  method: string,
+  url: string,
+  body: unknown = {},
+  headers: Record<string, string> = {}
+): IncomingMessage {
+  const stream = Readable.from([JSON.stringify(body)]);
+  return Object.assign(stream, {
+    method,
+    url,
+    headers
+  }) as IncomingMessage;
+}
+
+function captureResponse(): {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: string;
+  writeHead: (statusCode: number, headers?: Record<string, string>) => void;
+  end: (payload?: string) => void;
+} {
+  return {
+    statusCode: 0,
+    headers: {},
+    body: "",
+    writeHead(statusCode: number, headers: Record<string, string> = {}): void {
+      this.statusCode = statusCode;
+      this.headers = headers;
+    },
+    end(payload = ""): void {
+      this.body = payload;
+    }
+  };
+}
+
+async function appendApproval(
+  auditLog: LocalFileAuditLog,
+  artifactId: string,
+  executionId: string
+): Promise<void> {
+  await auditLog.append({
+    occurredAt: fixedNow.toISOString(),
+    actorType: "operator",
+    actorId: "operator/juanes",
+    action: "oc.artifact.approved",
+    targetType: "canvas_artifact",
+    targetId: artifactId,
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: ["operator/juanes"],
+    metadata: {
+      executionId,
+      approvalTokenHash: approvalTokenHash(executionId),
+      blockCount: 1
+    }
+  });
+}
+
+function canvasState(approvals: Array<{ artifactId: string; executionId: string }>): CanvasLiveStateSnapshot {
+  return {
+    schemaVersion: "2026-05-25.canvas-live.v1",
+    generatedAt: fixedNow.toISOString(),
+    tasks: [],
+    artifacts: approvals.map((approval) => ({
+      artifactId: approval.artifactId,
+      taskId: "task-retrofit",
+      kind: "proposal",
+      title: "Retrofit SMTP AUTH",
+      editable: true,
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+      blocks: [],
+      approvalStatus: "approved",
+      executionId: approval.executionId,
+      approvedAt: fixedNow.toISOString()
+    })),
+    artifactToTask: {}
   };
 }

@@ -10,7 +10,7 @@
 // (openclaw-tools-builder.ts enabled(), main.ts, domains-purchase.ts).
 
 export type EnvSeverity = "fatal" | "warn";
-export type EnvKind = "secret" | "token" | "flag" | "money" | "json-contact" | "csv-email";
+export type EnvKind = "secret" | "secret-32-byte" | "token" | "flag" | "money" | "json-contact" | "csv-email";
 
 export interface EnvVarSpec {
   /** Nombre canonico de la variable. */
@@ -278,6 +278,13 @@ export const ENV_PREFLIGHT_CATALOG: readonly EnvVarSpec[] = [
     kind: "csv-email",
     breaks: "el warmup no tiene buzones seed"
   },
+  {
+    name: "CREDENTIAL_ENCRYPTION_KEY",
+    group: "smtp-auth",
+    severity: "warn",
+    kind: "secret-32-byte",
+    breaks: "generacion/descarga de credenciales SMTP AUTH cifradas falla cerrado"
+  },
 
   // --- Credenciales de proveedores ---
   {
@@ -387,10 +394,31 @@ function validateValue(spec: EnvVarSpec, value: string): EnvIssueReason | null {
       const emails = value.split(",").map((part) => part.trim()).filter((part) => part.length > 0);
       return emails.length > 0 && emails.every((email) => EMAIL_RE.test(email)) ? null : "invalid";
     }
+    case "secret-32-byte":
+      return isValid32ByteSecret(value) ? null : "invalid";
     case "secret":
     case "token":
     default:
       return null;
+  }
+}
+
+function isValid32ByteSecret(value: string): boolean {
+  const trimmed = value.trim();
+  const candidates = [
+    safeBufferFrom(trimmed, "base64url"),
+    safeBufferFrom(trimmed, "base64"),
+    /^[0-9a-f]{64}$/i.test(trimmed) ? Buffer.from(trimmed, "hex") : Buffer.alloc(0),
+    Buffer.from(trimmed, "utf8")
+  ];
+  return candidates.some((candidate) => candidate.length === 32);
+}
+
+function safeBufferFrom(value: string, encoding: BufferEncoding): Buffer {
+  try {
+    return Buffer.from(value, encoding);
+  } catch {
+    return Buffer.alloc(0);
   }
 }
 
