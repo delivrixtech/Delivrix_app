@@ -572,6 +572,49 @@ export function ArtifactBody({ artifact, raw }: { artifact: LiveArtifact; raw: b
   return <ProseArtifact artifact={artifact} />;
 }
 
+const SMTP_CREDENTIAL_PREVIEW_WINDOW_MS = 10 * 60 * 1000;
+
+function canvasMessageKeyFromBedrockMsgId(msgId: string): string | null {
+  const safeId = msgId.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  return (safeId || "message").slice(0, 8) || null;
+}
+
+export function canvasMessageKeyFromTaskId(taskId: string): string | null {
+  if (taskId.startsWith("bedrock:")) {
+    return canvasMessageKeyFromBedrockMsgId(taskId.slice("bedrock:".length));
+  }
+  const match = /^chat-(.+)-\d{14}$/.exec(taskId);
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+export function selectPreviewArtifact(
+  candidate: LiveArtifact | null,
+  artifacts: LiveArtifact[]
+): LiveArtifact | null {
+  if (!candidate || candidate.kind !== "report") {
+    return candidate;
+  }
+  const candidateMessageKey = canvasMessageKeyFromTaskId(candidate.taskId);
+  const candidateCreatedAtMs = Date.parse(candidate.createdAt);
+  if (!candidateMessageKey || Number.isNaN(candidateCreatedAtMs)) {
+    return candidate;
+  }
+  return artifacts
+    .filter((artifact) => {
+      if (artifact.payload?.kind !== "smtp_credential") {
+        return false;
+      }
+      if (canvasMessageKeyFromTaskId(artifact.taskId) !== candidateMessageKey) {
+        return false;
+      }
+      const artifactCreatedAtMs = Date.parse(artifact.createdAt);
+      return !Number.isNaN(artifactCreatedAtMs) &&
+        artifactCreatedAtMs <= candidateCreatedAtMs &&
+        candidateCreatedAtMs - artifactCreatedAtMs <= SMTP_CREDENTIAL_PREVIEW_WINDOW_MS;
+    })
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? candidate;
+}
+
 export function CanvasV5Preview() {
   useEffect(() => {
     chatClient.connect();
@@ -609,7 +652,9 @@ export function CanvasV5Preview() {
   // agarrar uno viejo/mock. Gate de recencia: solo mostrarlo si es de esta sesion (<30 min).
   // El preview muestra el ultimo artifact global (el hook ya elige el mas nuevo, no un mock viejo).
   // Sin gate de recencia: filtraba trabajo legitimo de >30min. Precedencia: si hay run, el run gana.
-  const selArt: LiveArtifact | null = runIds.length === 0 ? (live.latestArtifact ?? live.artifact) : null;
+  const selArt: LiveArtifact | null = runIds.length === 0
+    ? selectPreviewArtifact(live.latestArtifact ?? live.artifact, live.artifacts)
+    : null;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {

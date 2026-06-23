@@ -49,6 +49,7 @@ export interface UseLiveCanvasStreamResult {
   currentAction: LiveAction | null;
   artifact: LiveArtifact | null;
   latestArtifact: LiveArtifact | null;
+  artifacts: LiveArtifact[];
   liveRunProgress: LiveRunProgressMap;
   connection: LiveConnectionStatus;
   lastError: string | null;
@@ -534,6 +535,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
   const latestArtifact =
     [...stateRef.current.artifacts.values()]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null;
+  const artifacts = [...stateRef.current.artifacts.values()];
   const liveRunProgress = cloneLiveRunProgressMap(stateRef.current.liveRunProgress);
 
   // Importante: leemos `tick` para que React re-renderee cuando cambia.
@@ -624,6 +626,7 @@ export function useLiveCanvasStream(enabled: boolean): UseLiveCanvasStreamResult
     currentAction,
     artifact,
     latestArtifact,
+    artifacts,
     liveRunProgress,
     connection,
     lastError,
