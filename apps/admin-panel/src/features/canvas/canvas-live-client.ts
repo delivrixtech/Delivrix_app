@@ -39,6 +39,8 @@ const RECONNECT_MAX_MS = 15_000;
 const SNAPSHOT_POLL_MS = 5_000;
 export const MAX_LIVE_TASKS = 50;
 const MAX_RECENT_ARTIFACT_TASKS = 12;
+export const MAX_LIVE_ARTIFACTS = 100;
+const MAX_LIVE_RUNNING_TASKS = 20;
 
 export type LiveConnectionStatus = "connecting" | "connected" | "reconnecting" | "offline";
 
@@ -85,7 +87,7 @@ function emptyState(): InternalState {
 }
 
 export function evictLiveState(state: InternalState, activeTaskId: string | null): void {
-  if (state.tasks.size <= MAX_LIVE_TASKS) return;
+  if (state.tasks.size <= MAX_LIVE_TASKS && state.artifacts.size <= MAX_LIVE_ARTIFACTS) return;
   const preserve = new Set<string>();
   const addWithAncestors = (taskId: string | null | undefined): void => {
     let cursor = taskId ?? null;
@@ -97,22 +99,31 @@ export function evictLiveState(state: InternalState, activeTaskId: string | null
     }
   };
   if (activeTaskId && state.tasks.has(activeTaskId)) addWithAncestors(activeTaskId);
-  // Preservar las tasks de los artifacts mas recientes, para que el preview no pierda lo ultimo
-  // renderizable (los runs zombies en "running" no deben desalojar lo reciente).
   const artifactSnapshot = [...state.artifacts.values()];
   const taskCreatedAtSnapshot = new Map([...state.tasks.entries()].map(([taskId, task]) => [taskId, task.createdAt]));
-  const recentArtifactTaskIds = artifactSnapshot
+  const artifactsByRecency = artifactSnapshot
     .sort((left, right) => {
       const artifactRecency = right.createdAt.localeCompare(left.createdAt);
       if (artifactRecency !== 0) return artifactRecency;
       const leftTaskCreatedAt = taskCreatedAtSnapshot.get(left.taskId) ?? "";
       const rightTaskCreatedAt = taskCreatedAtSnapshot.get(right.taskId) ?? "";
       return rightTaskCreatedAt.localeCompare(leftTaskCreatedAt);
-    })
-    .slice(0, MAX_RECENT_ARTIFACT_TASKS)
-    .map((artifact) => artifact.taskId);
-  for (const taskId of recentArtifactTaskIds) addWithAncestors(taskId);
-  for (const task of state.tasks.values()) if (task.status === "running") addWithAncestors(task.id);
+    });
+  const preserveArtifacts = new Set<string>();
+  const preserveArtifact = (artifactId: string): void => {
+    if (preserveArtifacts.size < MAX_LIVE_ARTIFACTS) preserveArtifacts.add(artifactId);
+  };
+  for (const artifact of artifactsByRecency) {
+    if (activeTaskId && artifact.taskId === activeTaskId) preserveArtifact(artifact.id);
+  }
+  for (const artifact of artifactsByRecency) preserveArtifact(artifact.id);
+  const recentArtifacts = artifactsByRecency.filter((artifact) => preserveArtifacts.has(artifact.id));
+  for (const artifact of recentArtifacts.slice(0, MAX_RECENT_ARTIFACT_TASKS)) addWithAncestors(artifact.taskId);
+  const runningTasks = [...state.tasks.values()]
+    .filter((task) => task.status === "running")
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, MAX_LIVE_RUNNING_TASKS);
+  for (const task of runningTasks) addWithAncestors(task.id);
   if (preserve.size < MAX_LIVE_TASKS) {
     const candidates = [...state.tasks.values()]
       .filter((task) => !preserve.has(task.id))
@@ -122,17 +133,19 @@ export function evictLiveState(state: InternalState, activeTaskId: string | null
       preserve.add(task.id);
     }
   }
-  if (preserve.size >= state.tasks.size) return;
   for (const taskId of [...state.tasks.keys()]) {
     if (preserve.has(taskId)) continue;
     state.tasks.delete(taskId);
     state.lastAction.delete(taskId);
   }
   for (const [artifactId, taskId] of [...state.artifactToTask.entries()]) {
-    if (!state.tasks.has(taskId)) {
+    if (!state.tasks.has(taskId) || !preserveArtifacts.has(artifactId)) {
       state.artifacts.delete(artifactId);
       state.artifactToTask.delete(artifactId);
     }
+  }
+  for (const artifactId of [...state.artifacts.keys()]) {
+    if (!preserveArtifacts.has(artifactId)) state.artifacts.delete(artifactId);
   }
 }
 

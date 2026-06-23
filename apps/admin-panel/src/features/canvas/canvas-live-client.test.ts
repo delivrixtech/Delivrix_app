@@ -24,6 +24,7 @@ interface CanvasLiveClientModule {
     abortCurrent: () => void;
   };
   MAX_LIVE_TASKS: number;
+  MAX_LIVE_ARTIFACTS: number;
   evictLiveState: (state: InternalStateShape, activeTaskId: string | null) => void;
 }
 
@@ -72,14 +73,14 @@ function makeAction(taskId: string): LiveAction {
   };
 }
 
-function makeArtifact(id: string, taskId: string): LiveArtifact {
+function makeArtifact(id: string, taskId: string, createdAt = "2026-06-08T00:00:00.000Z"): LiveArtifact {
   return {
     id,
     taskId,
     kind: "plan",
     title: `artifact ${id}`,
     editable: false,
-    createdAt: "2026-06-08T00:00:00.000Z",
+    createdAt,
     approvalStatus: "pending",
     blocks: []
   };
@@ -228,6 +229,41 @@ test("evictLiveState preserves ALL running tasks even when they are the oldest",
   }
   for (let i = 25; i < total; i += 1) {
     assert.equal(state.tasks.has(`t${i}`), true, `newest t${i} should survive`);
+  }
+});
+
+test("evictLiveState caps artifacts even when task count is already small", async () => {
+  const { evictLiveState, MAX_LIVE_ARTIFACTS } = await loadModule();
+  const state = makeState([makeTask("active", isoAt(0), "completed")]);
+  for (let i = 0; i < MAX_LIVE_ARTIFACTS + 25; i += 1) {
+    state.artifacts.set(`a${i}`, makeArtifact(`a${i}`, "active", isoAt(i)));
+    state.artifactToTask.set(`a${i}`, "active");
+  }
+
+  evictLiveState(state, "active");
+
+  assert.equal(state.tasks.size, 1);
+  assert.equal(state.artifacts.size, MAX_LIVE_ARTIFACTS);
+  assert.equal(state.artifactToTask.size, MAX_LIVE_ARTIFACTS);
+  for (let i = 0; i < 25; i += 1) {
+    assert.equal(state.artifacts.has(`a${i}`), false, `old artifact a${i} should be evicted`);
+  }
+});
+
+test("evictLiveState keeps a hard task cap when running tasks are stale zombies", async () => {
+  const { evictLiveState, MAX_LIVE_TASKS } = await loadModule();
+  const total = MAX_LIVE_TASKS + 30;
+  const tasks = Array.from({ length: total }, (_, i) => makeTask(`running-${i}`, isoAt(i), "running"));
+  const state = makeState(tasks);
+
+  evictLiveState(state, null);
+
+  assert.equal(state.tasks.size, MAX_LIVE_TASKS);
+  for (let i = 0; i < total - MAX_LIVE_TASKS; i += 1) {
+    assert.equal(state.tasks.has(`running-${i}`), false, `old running zombie ${i} should be evicted`);
+  }
+  for (let i = total - MAX_LIVE_TASKS; i < total; i += 1) {
+    assert.equal(state.tasks.has(`running-${i}`), true, `recent running ${i} should survive`);
   }
 });
 

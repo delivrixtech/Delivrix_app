@@ -35,6 +35,10 @@ const maxCanvasValueArrayItems = 50;
 const maxCanvasInventoryServers = 300;
 const maxCanvasValueObjectKeys = 80;
 const maxCanvasValueDepth = 5;
+export const DEFAULT_CANVAS_LIVE_TASK_LIMIT = 120;
+export const DEFAULT_CANVAS_LIVE_ARTIFACT_LIMIT = 100;
+const canvasLiveActiveTaskRetentionMs = 60 * 60 * 1000;
+const canvasLiveApprovedArtifactRetentionMs = 20 * 60 * 1000;
 
 export interface CanvasLiveEventClient {
   sendJson(event: CanvasLiveEvent): void;
@@ -52,6 +56,8 @@ export interface CanvasLiveEventServiceOptions {
   streamToken?: string;
   heartbeatIntervalMs?: number;
   smtpProgressReader?: CanvasLiveSmtpProgressReader;
+  maxTasks?: number;
+  maxArtifacts?: number;
 }
 
 export interface CanvasLiveSmtpProgressReaderInput {
@@ -102,6 +108,8 @@ export class CanvasLiveEventService {
   private readonly streamToken: string;
   private readonly heartbeatIntervalMs: number;
   private readonly smtpProgressReader?: CanvasLiveSmtpProgressReader;
+  private readonly maxTasks: number;
+  private readonly maxArtifacts: number;
   private readonly clients = new Set<ClientEntry>();
   private readonly tasks = new Map<string, CanvasLiveTaskSnapshot>();
   private readonly artifacts = new Map<string, CanvasLiveArtifactSnapshot>();
@@ -115,12 +123,15 @@ export class CanvasLiveEventService {
     this.streamToken = options.streamToken ?? process.env.CANVAS_LIVE_STREAM_TOKEN ?? process.env.DELIVRIX_READ_BOUNDARY_TOKEN ?? process.env.OPENCLAW_GATEWAY_TOKEN ?? "";
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? defaultWebSocketHeartbeatIntervalMs;
     this.smtpProgressReader = options.smtpProgressReader;
+    this.maxTasks = retentionLimit(options.maxTasks, process.env.CANVAS_LIVE_MAX_TASKS, DEFAULT_CANVAS_LIVE_TASK_LIMIT);
+    this.maxArtifacts = retentionLimit(options.maxArtifacts, process.env.CANVAS_LIVE_MAX_ARTIFACTS, DEFAULT_CANVAS_LIVE_ARTIFACT_LIMIT);
   }
 
   async emit(rawEvent: unknown): Promise<CanvasLiveEvent> {
     await this.ensureLoaded();
     const event = normalizeCanvasLiveEvent(rawEvent, this.now);
     this.applyLiveEvent(event);
+    this.enforceRetention();
     await this.persistLiveEvent(event);
     this.broadcast(event);
     return event;
@@ -128,6 +139,7 @@ export class CanvasLiveEventService {
 
   async snapshot(taskId?: string): Promise<CanvasLiveStateSnapshot> {
     await this.ensureLoaded();
+    this.enforceRetention();
     const tasks = [...this.tasks.values()]
       .filter((task) => !taskId || task.taskId === taskId)
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
@@ -294,6 +306,7 @@ export class CanvasLiveEventService {
       ...(input.payload ? { payload: normalizeArtifactPayload(input.payload, input.kind) } : {})
     };
     this.artifacts.set(snapshot.artifactId, snapshot);
+    this.enforceRetention();
 
     const declareEvent: CanvasLiveArtifactDeclareEvent = {
       type: "oc.artifact.declare",
@@ -440,6 +453,7 @@ export class CanvasLiveEventService {
     }
 
     this.loaded = true;
+    this.enforceRetention();
   }
 
   private repairPersistedArtifactRecord(record: unknown): unknown {
@@ -622,6 +636,85 @@ export class CanvasLiveEventService {
     artifact.rejectionReason = record.reason;
   }
 
+  private enforceRetention(): void {
+    const nowMs = this.now().getTime();
+    const originalTaskIds = new Set(this.tasks.keys());
+    const activeTaskIds = new Set(
+      [...this.tasks.values()]
+        .filter((task) =>
+          (task.status === "running" || task.status === "awaiting_approval") &&
+          isRecentCanvasTimestamp(task.updatedAt, nowMs, canvasLiveActiveTaskRetentionMs)
+        )
+        .sort(compareTasksNewestFirst)
+        .map((task) => task.taskId)
+    );
+    for (const client of this.clients) {
+      if (client.taskId) activeTaskIds.add(client.taskId);
+    }
+
+    const preservedArtifactIds = new Set<string>();
+    const preserveArtifact = (artifactId: string): void => {
+      if (preservedArtifactIds.size < this.maxArtifacts) {
+        preservedArtifactIds.add(artifactId);
+      }
+    };
+    const artifactsNewestFirst = [...this.artifacts.values()].sort(compareArtifactsNewestFirst);
+    for (const artifact of artifactsNewestFirst) {
+      if (activeTaskIds.has(artifact.taskId)) preserveArtifact(artifact.artifactId);
+    }
+    for (const artifact of artifactsNewestFirst) {
+      if (
+        artifact.approvalStatus === "approved" &&
+        artifact.approvedAt &&
+        isRecentCanvasTimestamp(artifact.approvedAt, nowMs, canvasLiveApprovedArtifactRetentionMs)
+      ) {
+        preserveArtifact(artifact.artifactId);
+      }
+    }
+    for (const artifact of artifactsNewestFirst) {
+      if (
+        artifact.payload?.kind === "smtp_credential" &&
+        isRecentCanvasTimestamp(artifact.updatedAt, nowMs, canvasLiveApprovedArtifactRetentionMs)
+      ) {
+        preserveArtifact(artifact.artifactId);
+      }
+    }
+    for (const artifact of artifactsNewestFirst) preserveArtifact(artifact.artifactId);
+    for (const artifactId of [...this.artifacts.keys()]) {
+      if (!preservedArtifactIds.has(artifactId)) {
+        this.artifacts.delete(artifactId);
+      }
+    }
+
+    const preserveTaskIds = new Set<string>();
+    const addTaskWithAncestors = (taskId: string | undefined): void => {
+      let cursor = taskId;
+      let guard = 0;
+      while (cursor && this.tasks.has(cursor) && preserveTaskIds.size < this.maxTasks && guard < this.tasks.size + 1) {
+        preserveTaskIds.add(cursor);
+        cursor = this.tasks.get(cursor)?.parentTaskId ?? undefined;
+        guard += 1;
+      }
+    };
+
+    for (const taskId of activeTaskIds) addTaskWithAncestors(taskId);
+    for (const artifact of artifactsNewestFirst) {
+      if (this.artifacts.has(artifact.artifactId)) addTaskWithAncestors(artifact.taskId);
+    }
+    for (const task of [...this.tasks.values()].sort(compareTasksNewestFirst)) addTaskWithAncestors(task.taskId);
+    for (const taskId of [...this.tasks.keys()]) {
+      if (!preserveTaskIds.has(taskId)) {
+        this.tasks.delete(taskId);
+      }
+    }
+
+    for (const [artifactId, artifact] of [...this.artifacts.entries()]) {
+      if (originalTaskIds.has(artifact.taskId) && !this.tasks.has(artifact.taskId)) {
+        this.artifacts.delete(artifactId);
+      }
+    }
+  }
+
   private broadcast(event: CanvasLiveEvent): void {
     for (const entry of this.clients) {
       if (entry.taskId && eventTaskId(event, this.artifacts) !== entry.taskId) {
@@ -643,6 +736,26 @@ export class CanvasLiveEventService {
   private artifactsPath(): string {
     return join(this.stateDir, artifactsFileName);
   }
+}
+
+function compareTasksNewestFirst(left: CanvasLiveTaskSnapshot, right: CanvasLiveTaskSnapshot): number {
+  const updatedAt = right.updatedAt.localeCompare(left.updatedAt);
+  return updatedAt !== 0 ? updatedAt : right.createdAt.localeCompare(left.createdAt);
+}
+
+function compareArtifactsNewestFirst(left: CanvasLiveArtifactSnapshot, right: CanvasLiveArtifactSnapshot): number {
+  const updatedAt = right.updatedAt.localeCompare(left.updatedAt);
+  return updatedAt !== 0 ? updatedAt : right.createdAt.localeCompare(left.createdAt);
+}
+
+function isRecentCanvasTimestamp(value: string, nowMs: number, maxAgeMs: number): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && nowMs - parsed >= 0 && nowMs - parsed <= maxAgeMs;
+}
+
+function retentionLimit(explicit: number | undefined, rawEnv: string | undefined, fallback: number): number {
+  const parsed = explicit ?? Number(rawEnv);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : fallback;
 }
 
 export class CanvasLiveStateError extends Error {

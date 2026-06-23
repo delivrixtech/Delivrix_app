@@ -10,7 +10,7 @@
  * CanvasV4 queda como rollback temporal via ?canvasv4. Estilos: tokens.css
  * (var(--color-*) / var(--font-*)), scope `.cv5`.
  */
-import { Component, useEffect, useRef, useState, type ReactNode } from "react";
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowRight, ArrowUp, BadgeCheck, Box, Check, ChevronDown, CircleDollarSign, CheckCircle2,
   Copy, Download, FileText, Folder, GitCompare, Globe, Hourglass, Inbox, Key, KeyRound, Loader2,
@@ -599,20 +599,27 @@ export function selectPreviewArtifact(
   if (!candidateMessageKey || Number.isNaN(candidateCreatedAtMs)) {
     return candidate;
   }
-  return artifacts
-    .filter((artifact) => {
-      if (artifact.payload?.kind !== "smtp_credential") {
-        return false;
-      }
-      if (canvasMessageKeyFromTaskId(artifact.taskId) !== candidateMessageKey) {
-        return false;
-      }
-      const artifactCreatedAtMs = Date.parse(artifact.createdAt);
-      return !Number.isNaN(artifactCreatedAtMs) &&
-        artifactCreatedAtMs <= candidateCreatedAtMs &&
-        candidateCreatedAtMs - artifactCreatedAtMs <= SMTP_CREDENTIAL_PREVIEW_WINDOW_MS;
-    })
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? candidate;
+  let selected: LiveArtifact | null = null;
+  for (const artifact of artifacts) {
+    if (artifact.payload?.kind !== "smtp_credential") {
+      continue;
+    }
+    if (canvasMessageKeyFromTaskId(artifact.taskId) !== candidateMessageKey) {
+      continue;
+    }
+    const artifactCreatedAtMs = Date.parse(artifact.createdAt);
+    if (
+      Number.isNaN(artifactCreatedAtMs) ||
+      artifactCreatedAtMs > candidateCreatedAtMs ||
+      candidateCreatedAtMs - artifactCreatedAtMs > SMTP_CREDENTIAL_PREVIEW_WINDOW_MS
+    ) {
+      continue;
+    }
+    if (!selected || artifact.createdAt.localeCompare(selected.createdAt) > 0) {
+      selected = artifact;
+    }
+  }
+  return selected ?? candidate;
 }
 
 export function CanvasV5Preview() {
@@ -643,7 +650,7 @@ export function CanvasV5Preview() {
     window.setTimeout(() => chatInputRef.current?.focus(), 0);
   });
 
-  const runIds = Array.from(live.liveRunProgress.keys());
+  const runIds = useMemo(() => Array.from(live.liveRunProgress.keys()), [live.liveRunProgress]);
   const activeRunId = selRunId && live.liveRunProgress.has(selRunId) ? selRunId : (runIds[0] ?? null);
   const run = activeRunId ? live.liveRunProgress.get(activeRunId) ?? null : null;
   const online = chat.connection !== "offline";
@@ -652,9 +659,12 @@ export function CanvasV5Preview() {
   // agarrar uno viejo/mock. Gate de recencia: solo mostrarlo si es de esta sesion (<30 min).
   // El preview muestra el ultimo artifact global (el hook ya elige el mas nuevo, no un mock viejo).
   // Sin gate de recencia: filtraba trabajo legitimo de >30min. Precedencia: si hay run, el run gana.
-  const selArt: LiveArtifact | null = runIds.length === 0
-    ? selectPreviewArtifact(live.latestArtifact ?? live.artifact, live.artifacts)
-    : null;
+  const selArt: LiveArtifact | null = useMemo(
+    () => runIds.length === 0
+      ? selectPreviewArtifact(live.latestArtifact ?? live.artifact, live.artifacts)
+      : null,
+    [live.artifact, live.artifacts, live.latestArtifact, runIds.length]
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
