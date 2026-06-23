@@ -1062,6 +1062,7 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("provision_smtp_postfix", "supervised_local_state"),
   permission("install_smtp_stack", "supervised_local_state"),
   permission("configure_email_auth", "supervised_local_state"),
+  permission("enable_smtp_auth", "supervised_local_state"),
   permission("bind_domain_to_server", "supervised_local_state"),
   permission("update_domain_nameservers", "supervised_live_wallet"),
   permission("route53_domain_nameservers_update", "supervised_live_wallet"),

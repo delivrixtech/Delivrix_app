@@ -1,6 +1,6 @@
 # OpenClaw — Skills Catalog
 
-Fecha: 2026-05-18.
+Fecha: 2026-06-23.
 Hito rector: `HITO_5_11_OPENCLAW_AGENT_HOSTINGER.md`.
 Permisos referenciados: `OPENCLAW_PERMISSIONS_MATRIX.md`.
 
@@ -41,7 +41,7 @@ fallback: rules-engine-local
 `delivrix_actions` se valida contra la permissions matrix antes de cargar la skill.
 Si declara una acción inexistente o `prohibited`, OpenClaw rechaza el load.
 
-## 3. Skills iniciales (7)
+## 3. Skills iniciales (8)
 
 MVP Hito 5.11.B: fleet/report/alert, drift Webdock, publisher HMAC y MXToolbox read-only.
 
@@ -132,6 +132,20 @@ MVP Hito 5.11.B: fleet/report/alert, drift Webdock, publisher HMAC y MXToolbox r
 | Fallback | `mxtoolbox_not_configured`/`status:error`; no inventar reputación |
 | Audit | `oc.mxtoolbox.lookup`; listed diario -> `oc.mxtoolbox.blacklist_detected` |
 | Side-effect | Ninguno |
+
+### 3.8 `enable-smtp-auth`
+
+| Campo | Valor |
+| --- | --- |
+| Trigger natural | "generar credencial SMTP", "crear password SMTP AUTH", "habilitar credencial del dominio" |
+| Acciones matrix | `enable_smtp_auth` |
+| Endpoint interno | Dispatcher canónico `enable_smtp_auth` -> handler interno `handleEnableSmtpAuthHttp`; no expone password ni markdown |
+| Parámetros | `{ domain: string }`, un solo dominio verificado contra inventario/provisioning |
+| Retorna | JSON de estado: `ok`, `domain`, `status`, `hasCredential`; nunca `password`, markdown, ciphertext ni authTag |
+| Errores | `credential_encryption_key_missing`, `ambiguous_domain`, `no_candidate`, `pending_ssh`, `install_failed`, `failed`; no reintenta otros dominios |
+| Fallback | Ninguno. Si falta `CREDENTIAL_ENCRYPTION_KEY`, falla cerrado y pide al operador setearla por canal seguro |
+| Audit | `oc.smtp_auth.enabled` con `status`, `hasCredential`, `candidateCount` y `credentialFingerprint` si quedó configurada |
+| Side-effect permitido | Instala SASL 587/465 para el dominio elegido; puerto 25 y `permit_mynetworks` permanecen intactos |
 
 ## 4. Anatomía estándar de una skill
 

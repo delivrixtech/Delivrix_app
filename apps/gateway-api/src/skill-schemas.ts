@@ -119,6 +119,10 @@ export interface EmailAuthParams extends Record<string, unknown> {
   explicitRepairScope?: string;
 }
 
+export interface EnableSmtpAuthParams extends Record<string, unknown> {
+  domain: string;
+}
+
 export interface DomainBindParams extends Record<string, unknown> {
   domain: string;
   serverSlug?: string;
@@ -383,6 +387,13 @@ export const emailAuthParamSchema = schema<EmailAuthParams>((value) => {
     ...(input.selector === undefined || input.selector === null || input.selector === "" ? {} : { selector: selector(input.selector, "selector") }),
     ...(input.dmarcPolicy === undefined || input.dmarcPolicy === null || input.dmarcPolicy === "" ? {} : { dmarcPolicy: oneOf(input.dmarcPolicy, "dmarcPolicy", ["none", "quarantine", "reject"] as const) })
   }, input), input);
+});
+
+export const enableSmtpAuthParamSchema = schema<EnableSmtpAuthParams>((value) => {
+  const input = object(value);
+  return {
+    domain: domain(input.domain, "domain")
+  };
 });
 
 export const bindDomainParamSchema = schema<DomainBindParams>((value) => {

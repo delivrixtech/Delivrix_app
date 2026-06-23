@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   compactIntentParamSchema,
-  configureCompleteSmtpSkillParamSchema
+  configureCompleteSmtpSkillParamSchema,
+  enableSmtpAuthParamSchema
 } from "./skill-schemas.ts";
 import {
   EpisodicScratchValidationError,
@@ -192,4 +193,21 @@ test("configureCompleteSmtpSkillParamSchema normalizes known DNS providers", () 
   assert.equal(parsed.success, true);
   if (!parsed.success) assert.fail(parsed.error.issues.join("\n"));
   assert.equal(parsed.data.dnsProviderId, "ionos");
+});
+
+test("enableSmtpAuthParamSchema accepts exactly one normalized domain", () => {
+  const parsed = enableSmtpAuthParamSchema.safeParse({
+    domain: "Example-Sender.COM."
+  });
+
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail(parsed.error.issues.join("\n"));
+  assert.deepEqual(parsed.data, { domain: "example-sender.com" });
+});
+
+test("enableSmtpAuthParamSchema rejects missing or invalid domains", () => {
+  for (const payload of [{}, { domain: "../example.com" }, { domain: ["example.com"] }]) {
+    const parsed = enableSmtpAuthParamSchema.safeParse(payload);
+    assert.equal(parsed.success, false, JSON.stringify(payload));
+  }
 });

@@ -24,6 +24,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "bind_webdock_main_domain",
     "provision_smtp_postfix",
     "configure_email_auth",
+    "enable_smtp_auth",
     "bind_domain_to_server",
     "seed_warmup_pool",
     "send_real_email",
@@ -70,6 +71,12 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     tools.find((tool) => tool.name === "read_webdock_servers")?.description ?? "",
     /no requiere ApprovalGate/
   );
+  const enableSmtpAuth = tools.find((tool) => tool.name === "enable_smtp_auth");
+  assert.ok(enableSmtpAuth);
+  assert.match(enableSmtpAuth.description, /ApprovalGate/);
+  assert.match(enableSmtpAuth.description, /un solo dominio/);
+  assert.match(enableSmtpAuth.description, /No imprime password ni markdown/);
+  assert.deepEqual(enableSmtpAuth.input_schema.required, ["domain"]);
 });
 
 test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", () => {
@@ -77,7 +84,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 19);
+  assert.equal(tools.length, 20);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -200,6 +207,7 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "read_dns_ionos",
     "read_webdock_servers",
     "bind_webdock_main_domain",
+    "enable_smtp_auth",
     "send_real_email",
     "compact_intent",
     "configure_complete_smtp"
@@ -323,6 +331,9 @@ function validSample(toolName: string): Record<string, unknown> {
   }
   if (toolName === "configure_email_auth") {
     return { domain: "delivrix.test", mxServerIp: "203.0.113.10", dmarcPolicy: "none" };
+  }
+  if (toolName === "enable_smtp_auth") {
+    return { domain: "delivrix.test" };
   }
   if (toolName === "bind_domain_to_server") {
     return { domain: "delivrix.test", serverIp: "203.0.113.10" };
