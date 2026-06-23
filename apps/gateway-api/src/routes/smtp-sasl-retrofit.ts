@@ -26,7 +26,8 @@ import {
   prepareSmtpCredential,
   publicSmtpCredentialMetadata,
   saveSmtpCredentialRecord,
-  smtpCredentialFingerprint
+  smtpCredentialFingerprint,
+  type SmtpCredentialPublicMetadata
 } from "../smtp-credentials.ts";
 import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
 import type { SmtpSshRunner } from "./smtp-provisioning.ts";
@@ -45,10 +46,7 @@ interface SmtpProvisioningInventory {
     status: "configured";
     tlsStatus: "attempted_or_pending_dns";
     smtpAuthStatus?: "configured";
-    smtpCredential?: {
-      hasCredential?: boolean;
-      [key: string]: unknown;
-    };
+    smtpCredential?: SmtpCredentialPublicMetadata;
     configuredAt: string;
     updatedAt: string;
   }>;
@@ -99,6 +97,8 @@ export interface SmtpSaslRetrofitRouteDeps {
 interface SmtpSaslRetrofitBody {
   actorId?: unknown;
   approvalToken?: unknown;
+  domain?: unknown;
+  serverSlug?: unknown;
 }
 
 const approvalMaxAgeMs = 15 * 60 * 1000;
@@ -135,6 +135,12 @@ export async function handleSmtpSaslRetrofitBatchHttp(
 
   const actorId = stringOrDefault(body.actorId, operatorIdFromHeaders(deps.request.headers) ?? "operator/read-boundary");
   const approvalToken = stringOrDefault(body.approvalToken, "");
+  const targetParse = retrofitTargetFromBody(body);
+  if (!targetParse.ok) {
+    json(deps.response, 422, { error: "invalid_smtp_sasl_retrofit_request", message: targetParse.error });
+    return;
+  }
+  const target = targetParse.target;
   if (!approvalToken) {
     json(deps.response, 422, { error: "invalid_smtp_sasl_retrofit_request", message: "approvalToken is required." });
     return;
@@ -177,7 +183,9 @@ export async function handleSmtpSaslRetrofitBatchHttp(
     approverIds: [actorId],
     metadata: {
       approvalArtifactId: approval.artifactId,
-      approvalTokenHash: approvalTokenHash(approvalToken)
+      approvalTokenHash: approvalTokenHash(approvalToken),
+      ...(target.domain ? { domain: target.domain } : {}),
+      ...(target.serverSlug ? { serverSlug: target.serverSlug } : {})
     }
   });
 
@@ -187,6 +195,7 @@ export async function handleSmtpSaslRetrofitBatchHttp(
     sshRunner: deps.sshRunner,
     env: deps.env,
     actorId,
+    target,
     now: deps.now
   });
 
@@ -203,6 +212,8 @@ export async function handleSmtpSaslRetrofitBatchHttp(
     metadata: {
       approvalArtifactId: approval.artifactId,
       approvalTokenHash: approvalTokenHash(approvalToken),
+      ...(target.domain ? { domain: target.domain } : {}),
+      ...(target.serverSlug ? { serverSlug: target.serverSlug } : {}),
       candidates: result.candidates,
       configured: result.results.filter((entry) => entry.status === "configured").length,
       pendingSsh: result.results.filter((entry) => entry.status === "pending_ssh").length,
@@ -218,11 +229,14 @@ export async function handleSmtpSaslRetrofitBatchHttp(
 }
 
 export async function listSmtpSaslRetrofitCandidates(
-  workspace: OpenClawWorkspace
+  workspace: OpenClawWorkspace,
+  target: SmtpSaslRetrofitTarget = {}
 ): Promise<SmtpSaslRetrofitCandidate[]> {
   const inventory = await workspace.readInventoryJson<SmtpProvisioningInventory>("smtp-provisioning.json").catch(() => null);
   return (inventory?.servers ?? [])
     .filter((server) => server.status === "configured")
+    .filter((server) => target.domain ? server.domain.toLowerCase() === target.domain : true)
+    .filter((server) => target.serverSlug ? server.serverSlug === target.serverSlug : true)
     .filter((server) => server.smtpAuthStatus !== "configured" || server.smtpCredential?.hasCredential !== true)
     .map((server) => ({
       serverSlug: server.serverSlug,
@@ -239,9 +253,10 @@ export async function runSmtpSaslRetrofitBatch(input: {
   sshRunner: SmtpSshRunner;
   env?: Record<string, string | undefined>;
   actorId: string;
+  target?: SmtpSaslRetrofitTarget;
   now?: () => Date;
 }): Promise<SmtpSaslRetrofitBatchResult> {
-  const candidates = await listSmtpSaslRetrofitCandidates(input.workspace);
+  const candidates = await listSmtpSaslRetrofitCandidates(input.workspace, input.target);
   const results: SmtpSaslRetrofitResult[] = [];
 
   for (const candidate of candidates) {
@@ -497,6 +512,37 @@ async function readJson<T>(request: IncomingMessage): Promise<T> {
 
 function stringOrDefault(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+interface SmtpSaslRetrofitTarget {
+  domain?: string;
+  serverSlug?: string;
+}
+
+function retrofitTargetFromBody(body: SmtpSaslRetrofitBody): { ok: true; target: SmtpSaslRetrofitTarget } | { ok: false; error: string } {
+  const domain = typeof body.domain === "string" ? normalizeDomainFilter(body.domain) : undefined;
+  if (typeof body.domain === "string" && body.domain.trim().length > 0 && !domain) {
+    return { ok: false, error: "domain must be a valid DNS domain when provided." };
+  }
+  const serverSlug = typeof body.serverSlug === "string" && body.serverSlug.trim().length > 0
+    ? body.serverSlug.trim()
+    : undefined;
+  return {
+    ok: true,
+    target: {
+      ...(domain ? { domain } : {}),
+      ...(serverSlug ? { serverSlug } : {})
+    }
+  };
+}
+
+function normalizeDomainFilter(value: string): string | undefined {
+  const domain = value.trim().toLowerCase().replace(/\.$/, "");
+  return isValidDomainFilter(domain) ? domain : undefined;
+}
+
+function isValidDomainFilter(value: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+$/.test(value);
 }
 
 async function findRecentRetrofitApproval(input: {

@@ -46,6 +46,13 @@ test("GET /v1/sender-pool/credentials/:domain/download returns markdown and audi
   assert.equal(response.headers["content-disposition"], 'attachment; filename="smtp-credentials-delivrix-mail.com.md"');
   assert.match(response.body, /Password: smtp-secret-password/);
   assert.match(response.body, /Usuario: mailer@delivrix-mail\.com/);
+  assert.match(response.body, /Cliente de correo/);
+  assert.match(response.body, /Nodemailer con puerto 587 STARTTLS/);
+  assert.match(response.body, /secure: false/);
+  assert.match(response.body, /Nodemailer con puerto 465 TLS implicito/);
+  assert.match(response.body, /swaks --server 'smtp\.delivrix-mail\.com'.*--auth LOGIN/);
+  assert.match(response.body, /solo a contactos opt-in/);
+  assert.match(response.body, /No contiene claves DKIM privadas ni acceso SSH/);
 
   const events = await harness.auditLog.list();
   assert.equal(events.at(-1)?.action, "oc.smtp_credential.downloaded");
