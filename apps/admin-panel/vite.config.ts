@@ -43,7 +43,8 @@ const readBoundaryProxyToken =
   "";
 const allowedProxyPaths = new Set([...Object.values(READ_ENDPOINTS), canvasLiveStatePath]);
 const allowedReadPatterns: RegExp[] = [
-  /^\/v1\/openclaw\/proposals\/[^/]+\/status$/
+  /^\/v1\/openclaw\/proposals\/[^/]+\/status$/,
+  /^\/v1\/sender-pool\/credentials\/[^/]+\/download$/
 ];
 
 /**

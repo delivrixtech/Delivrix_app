@@ -245,6 +245,7 @@ test("gateway onboard runner executes T1, T2, T4, T3, T5, T6 without warmup", as
       DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact()),
       WEBDOCK_SERVERS_ENABLE_CREATE: "true",
       SMTP_PROVISIONING_ENABLE_SSH: "true",
+      CREDENTIAL_ENCRYPTION_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
       EMAIL_AUTH_ENABLE_WRITES: "true",
       DOMAIN_BIND_ENABLE: "true"
     },

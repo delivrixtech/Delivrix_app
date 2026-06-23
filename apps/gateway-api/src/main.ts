@@ -238,6 +238,10 @@ import {
 } from "./routes/placement-check.ts";
 import { handleSenderPoolStatusHttp } from "./routes/sender-pool-status.ts";
 import {
+  handleSmtpCredentialDownloadHttp,
+  handleSmtpCredentialInventoryExportHttp
+} from "./routes/smtp-credentials.ts";
+import {
   createGatewayOnboardDomainFlowRunner,
   handleOnboardBatchHttp,
   handleOnboardFlowError,
@@ -4078,6 +4082,29 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/v1/sender-nodes") {
       return json(response, 200, {
         nodes: await senderNodeRegistry.list()
+      });
+    }
+
+    const smtpCredentialDownloadMatch = requestUrl(request).pathname.match(/^\/v1\/sender-pool\/credentials\/[^/]+\/download$/);
+    if (request.method === "GET" && smtpCredentialDownloadMatch) {
+      return await handleSmtpCredentialDownloadHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        auditLog,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        env: process.env
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/sender-pool/credentials/export") {
+      return await handleSmtpCredentialInventoryExportHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        auditLog,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        env: process.env
       });
     }
 
