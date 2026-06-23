@@ -60,6 +60,13 @@ test("SMTP credentials are encrypted at rest and downloadable only after configu
   assert.match(markdown, /Host: smtp\.delivrix-mail\.com/);
   assert.match(markdown, /Usuario: mailer@delivrix-mail\.com/);
   assert.match(markdown, /Password: smtp-secret-password/);
+  assert.match(markdown, /Cliente de correo/);
+  assert.match(markdown, /STARTTLS/);
+  assert.match(markdown, /secure: false/);
+  assert.match(markdown, /secure: true/);
+  assert.match(markdown, /swaks --server 'smtp\.delivrix-mail\.com'.*--auth LOGIN/);
+  assert.match(markdown, /quejas y rebotes combinados por debajo de 5%/);
+  assert.match(markdown, /solo a contactos opt-in/);
   assert.match(markdown, /no expira automaticamente/i);
   assert.doesNotMatch(markdown, /BEGIN PRIVATE KEY|dkimPrivateKey/);
 });

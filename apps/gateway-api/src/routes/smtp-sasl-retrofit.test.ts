@@ -39,6 +39,22 @@ test("listSmtpSaslRetrofitCandidates only returns configured SMTPs missing auth 
   assert.equal(candidates[0]?.reason, "missing_smtp_auth");
 });
 
+test("listSmtpSaslRetrofitCandidates can scope retrofit to one domain or server", async () => {
+  const workspace = await setupWorkspace();
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      legacyServer("server85", "legacy-one.com"),
+      legacyServer("server88", "legacy-two.com")
+    ]
+  }));
+
+  const byDomain = await listSmtpSaslRetrofitCandidates(workspace, { domain: "legacy-two.com" });
+  assert.deepEqual(byDomain.map((candidate) => candidate.serverSlug), ["server88"]);
+
+  const byServer = await listSmtpSaslRetrofitCandidates(workspace, { serverSlug: "server85" });
+  assert.deepEqual(byServer.map((candidate) => candidate.domain), ["legacy-one.com"]);
+});
+
 test("buildSmtpSaslRetrofitPlan is additive, keeps permit_mynetworks, and redacts password from commands", () => {
   const plan = buildSmtpSaslRetrofitPlan({
     domain: "legacy-one.com",
@@ -139,6 +155,42 @@ test("runSmtpSaslRetrofitBatch persists configured credentials and continues aft
   );
 });
 
+test("runSmtpSaslRetrofitBatch with domain only mutates that SMTP", async () => {
+  const workspace = await setupWorkspace();
+  const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      legacyServer("server85", "legacy-one.com"),
+      legacyServer("server88", "legacy-two.com")
+    ]
+  }));
+  const commands: SmtpSshCommandInput[] = [];
+
+  const result = await runSmtpSaslRetrofitBatch({
+    workspace,
+    auditLog,
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    actorId: "operator/juanes",
+    target: { domain: "legacy-one.com" },
+    now: () => fixedNow
+  });
+
+  assert.equal(result.candidates, 1);
+  assert.deepEqual(result.results.map((entry) => entry.serverSlug), ["server85"]);
+  assert.equal(commands.every((command) => command.serverSlug === "server85"), true);
+  const provisioning = await workspace.readInventoryJson<{
+    servers: Array<{ serverSlug: string; smtpAuthStatus?: string; smtpCredential?: { hasCredential?: boolean } }>;
+  }>("smtp-provisioning.json");
+  assert.equal(provisioning?.servers.find((server) => server.serverSlug === "server85")?.smtpAuthStatus, "configured");
+  assert.equal(provisioning?.servers.find((server) => server.serverSlug === "server88")?.smtpAuthStatus, undefined);
+});
+
 test("POST /v1/smtp/retrofit-sasl-batch requires read-boundary token and approval", async () => {
   resetSensitiveReadAuthBucketsForTests();
   const workspace = await setupWorkspace();
@@ -202,6 +254,136 @@ test("POST /v1/smtp/retrofit-sasl-batch runs approved batch and audits without s
   assert.equal(audits.some((event) => event.action === "oc.smtp_sasl.retrofit_batch_requested"), true);
   assert.equal(audits.at(-1)?.action, "oc.smtp_sasl.retrofit_batch_completed");
   assert.equal(JSON.stringify(audits).includes("smtp-secret-password"), false);
+});
+
+test("POST /v1/smtp/retrofit-sasl-batch accepts a single-target domain", async () => {
+  resetSensitiveReadAuthBucketsForTests();
+  const workspace = await setupWorkspace();
+  const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
+  await appendApproval(auditLog, "artifact-retrofit", "exec-retrofit");
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      legacyServer("server85", "legacy-one.com"),
+      legacyServer("server88", "legacy-two.com")
+    ]
+  }));
+  const commands: SmtpSshCommandInput[] = [];
+  const response = captureResponse();
+
+  await handleSmtpSaslRetrofitBatchHttp({
+    request: request("POST", "/v1/smtp/retrofit-sasl-batch", {
+      actorId: "operator/juanes",
+      approvalToken: "exec-retrofit",
+      domain: "legacy-two.com"
+    }, {
+      "x-delivrix-token": "read-token",
+      "x-operator-id": "operator/juanes"
+    }),
+    response: response as unknown as ServerResponse,
+    workspace,
+    auditLog,
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    readCanvasState: () => canvasState([{ artifactId: "artifact-retrofit", executionId: "exec-retrofit" }]),
+    readBoundaryToken: "read-token",
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => fixedNow
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.body) as { candidates: number; results: Array<{ domain: string; status: string }> };
+  assert.equal(payload.candidates, 1);
+  assert.deepEqual(payload.results.map((entry) => entry.domain), ["legacy-two.com"]);
+  assert.equal(commands.every((command) => command.serverSlug === "server88"), true);
+  const audits = await auditLog.list();
+  assert.equal(audits.at(-1)?.metadata.domain, "legacy-two.com");
+});
+
+test("POST /v1/smtp/retrofit-sasl-batch accepts a single-target serverSlug", async () => {
+  resetSensitiveReadAuthBucketsForTests();
+  const workspace = await setupWorkspace();
+  const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
+  await appendApproval(auditLog, "artifact-retrofit", "exec-retrofit");
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      legacyServer("server85", "legacy-one.com"),
+      legacyServer("server88", "legacy-two.com")
+    ]
+  }));
+  const commands: SmtpSshCommandInput[] = [];
+  const response = captureResponse();
+
+  await handleSmtpSaslRetrofitBatchHttp({
+    request: request("POST", "/v1/smtp/retrofit-sasl-batch", {
+      actorId: "operator/juanes",
+      approvalToken: "exec-retrofit",
+      serverSlug: "server85"
+    }, {
+      "x-delivrix-token": "read-token",
+      "x-operator-id": "operator/juanes"
+    }),
+    response: response as unknown as ServerResponse,
+    workspace,
+    auditLog,
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    readCanvasState: () => canvasState([{ artifactId: "artifact-retrofit", executionId: "exec-retrofit" }]),
+    readBoundaryToken: "read-token",
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => fixedNow
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.body) as { candidates: number; results: Array<{ serverSlug: string; status: string }> };
+  assert.equal(payload.candidates, 1);
+  assert.deepEqual(payload.results.map((entry) => entry.serverSlug), ["server85"]);
+  assert.equal(commands.every((command) => command.serverSlug === "server85"), true);
+  const audits = await auditLog.list();
+  assert.equal(audits.at(-1)?.metadata.serverSlug, "server85");
+});
+
+test("POST /v1/smtp/retrofit-sasl-batch rejects invalid target domain before SSH", async () => {
+  resetSensitiveReadAuthBucketsForTests();
+  const workspace = await setupWorkspace();
+  const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
+  const commands: SmtpSshCommandInput[] = [];
+  const response = captureResponse();
+
+  await handleSmtpSaslRetrofitBatchHttp({
+    request: request("POST", "/v1/smtp/retrofit-sasl-batch", {
+      actorId: "operator/juanes",
+      approvalToken: "exec-retrofit",
+      domain: "../legacy-one.com"
+    }, {
+      "x-delivrix-token": "read-token",
+      "x-operator-id": "operator/juanes"
+    }),
+    response: response as unknown as ServerResponse,
+    workspace,
+    auditLog,
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    readCanvasState: () => canvasState([]),
+    readBoundaryToken: "read-token",
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => fixedNow
+  });
+
+  assert.equal(response.statusCode, 422);
+  assert.equal(commands.length, 0);
+  assert.equal((await auditLog.list()).length, 0);
 });
 
 async function setupWorkspace(): Promise<OpenClawWorkspace> {
@@ -306,7 +488,6 @@ function canvasState(approvals: Array<{ artifactId: string; executionId: string 
       approvalStatus: "approved",
       executionId: approval.executionId,
       approvedAt: fixedNow.toISOString()
-    })),
-    artifactToTask: {}
+    }))
   };
 }
