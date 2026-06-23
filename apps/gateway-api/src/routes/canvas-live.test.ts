@@ -560,6 +560,114 @@ test("GET /v1/canvas/live/state returns persisted snapshot", async () => {
   assert.equal(response.body.artifacts.length, 1);
 });
 
+test("GET /v1/canvas/live/state returns capped recent canvas state", async () => {
+  const service = new CanvasLiveEventService({
+    stateDir: await stateDirForTest(),
+    now: () => fixedNow,
+    streamToken: "canvas-token",
+    maxTasks: 20,
+    maxArtifacts: 10
+  });
+  const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-state-audit-")), "audit.jsonl"));
+  for (let index = 0; index < 40; index += 1) {
+    await seedArtifactAt(service, `task-cap-${index}`, `artifact-cap-${index}`, isoMinutes(index), "completed");
+  }
+
+  const response = await runRoute(
+    (request, response) => handleCanvasLiveStateHttp({
+      request,
+      response,
+      service,
+      auditLog,
+      readBoundaryToken: "read-token"
+    }),
+    {
+      method: "GET",
+      url: "/v1/canvas/live/state",
+      headers: { "x-delivrix-token": "read-token" }
+    }
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.tasks.length, 20);
+  assert.equal(response.body.artifacts.length, 10);
+  assert.equal(response.body.artifacts.at(-1).artifactId, "artifact-cap-39");
+  assert.equal(response.body.artifacts.some((artifact: { artifactId: string }) => artifact.artifactId === "artifact-cap-0"), false);
+});
+
+test("canvas-live reload applies retention to oversized persisted JSONL", async () => {
+  const stateDir = await stateDirForTest();
+  const writer = new CanvasLiveEventService({
+    stateDir,
+    now: () => fixedNow,
+    maxTasks: 20,
+    maxArtifacts: 10
+  });
+  for (let index = 0; index < 40; index += 1) {
+    await seedArtifactAt(writer, `task-reload-${index}`, `artifact-reload-${index}`, isoMinutes(index), "completed");
+  }
+  assert.ok((await readFile(join(stateDir, "tasks.jsonl"), "utf8")).trim().split("\n").length > 20);
+  assert.ok((await readFile(join(stateDir, "artifacts.jsonl"), "utf8")).trim().split("\n").length > 10);
+
+  const reloaded = new CanvasLiveEventService({
+    stateDir,
+    now: () => fixedNow,
+    maxTasks: 20,
+    maxArtifacts: 10
+  });
+  const snapshot = await reloaded.snapshot();
+
+  assert.equal(snapshot.tasks.length, 20);
+  assert.equal(snapshot.artifacts.length, 10);
+  assert.equal(snapshot.artifacts.at(-1)?.artifactId, "artifact-reload-39");
+  assert.equal(snapshot.artifacts.some((artifact) => artifact.artifactId === "artifact-reload-0"), false);
+});
+
+test("canvas-live retention keeps recent approved and SMTP credential artifacts inside the cap", async () => {
+  const later = new Date("2026-05-25T22:20:00.000Z");
+  const service = new CanvasLiveEventService({
+    stateDir: await stateDirForTest(),
+    now: () => later,
+    maxTasks: 8,
+    maxArtifacts: 3
+  });
+  await seedArtifactAt(service, "task-approved", "artifact-approved", isoMinutes(1), "completed");
+  await service.approveArtifact({
+    artifactId: "artifact-approved",
+    actorId: "operator-juanes",
+    blocks: []
+  });
+  await service.upsertArtifactSnapshot({
+    artifactId: "smtp-credential-example.com",
+    taskId: "bedrock:0c783c78-1111-4222-8333-123456789abc",
+    kind: "smtp_credential",
+    title: "Credencial SMTP example.com",
+    editable: false,
+    createdAt: isoMinutes(2),
+    updatedAt: isoMinutes(2),
+    approvalStatus: "pending",
+    blocks: [],
+    payload: {
+      kind: "smtp_credential",
+      domain: "example.com",
+      host: "smtp.example.com",
+      username: "mailer@example.com",
+      ports: { submission: 587, smtps: 465 },
+      hasCredential: true
+    }
+  });
+  for (let index = 3; index < 8; index += 1) {
+    await seedArtifactAt(service, `task-new-${index}`, `artifact-new-${index}`, isoMinutes(index), "completed");
+  }
+
+  const snapshot = await service.snapshot();
+  const artifactIds = snapshot.artifacts.map((artifact) => artifact.artifactId);
+
+  assert.equal(snapshot.artifacts.length, 3);
+  assert.equal(artifactIds.includes("artifact-approved"), true);
+  assert.equal(artifactIds.includes("smtp-credential-example.com"), true);
+});
+
 test("GET /v1/canvas/live/state rejects missing read boundary token", async () => {
   const service = await testService();
   const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-state-audit-")), "audit.jsonl"));
@@ -1016,6 +1124,32 @@ async function seedArtifact(
   await service.emit(taskDeclare(taskId));
   await service.emit(artifactDeclare(taskId, artifactId));
   await service.emit(artifactBlock(artifactId, "step-01", "Paso inicial", "complete"));
+}
+
+async function seedArtifactAt(
+  service: CanvasLiveEventService,
+  taskId: string,
+  artifactId: string,
+  at: string,
+  status: "running" | "completed" = "running"
+): Promise<void> {
+  await service.emit({
+    ...taskDeclare(taskId),
+    status,
+    createdAt: at
+  });
+  await service.emit({
+    ...artifactDeclare(taskId, artifactId),
+    createdAt: at
+  });
+  await service.emit({
+    ...artifactBlock(artifactId, "step-01", "Paso inicial", "complete"),
+    occurredAt: at
+  });
+}
+
+function isoMinutes(index: number): string {
+  return new Date(fixedNow.getTime() + index * 60_000).toISOString();
 }
 
 function taskDeclare(taskId: string): CanvasLiveEvent {
