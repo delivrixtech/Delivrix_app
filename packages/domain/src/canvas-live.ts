@@ -12,6 +12,7 @@ export type CanvasLiveArtifactKind =
   | "template"
   | "report"
   | "smtp_run"
+  | "smtp_credential"
   | "inventory"
   | "blacklist_report"
   | "dns_zone";
@@ -231,6 +232,17 @@ export type CanvasLiveArtifactPayload =
       runId: string;
       identity: CanvasLiveRunIdentity;
       steps: CanvasLiveRunProgressStep[];
+    }
+  | {
+      kind: "smtp_credential";
+      domain: string;
+      host: string;
+      username: string;
+      ports: {
+        submission: 587;
+        smtps: 465;
+      };
+      hasCredential: boolean;
     }
   | {
       kind: "inventory";

@@ -11,7 +11,7 @@
     "dev:force": "VITE_FORCE_OPTIMIZE=1 vite --host 127.0.0.1 --port 5173 --force",
     "build": "tsc --noEmit && vite build",
     "serve": "node server.mjs",
-    "check": "tsc --noEmit && node --check server.mjs && node --test src/shared/api/client.test.ts src/shared/lib/formatters.test.ts src/shared/lib/domain-state-copy.test.ts src/shared/ui/realtime/realtime.test.ts src/features/cleanup-fallbacks.test.ts src/features/chat/ChatWidget.test.ts src/v5/views/sender-pool-wallet.test.ts src/features/canvas/live-tool.test.ts src/features/canvas/canvas-live-client.test.ts src/features/canvas/smtp-live-progress.test.ts src/features/canvas/gateway-log-terminal.test.ts && vite build"
+    "check": "tsc --noEmit && node --check server.mjs && node --test src/shared/api/client.test.ts src/shared/api/smtp-credentials.test.ts src/shared/lib/formatters.test.ts src/shared/lib/domain-state-copy.test.ts src/shared/ui/realtime/realtime.test.ts src/features/cleanup-fallbacks.test.ts src/features/chat/ChatWidget.test.ts src/v5/views/sender-pool-wallet.test.ts src/features/canvas/live-tool.test.ts src/features/canvas/CanvasV5Preview.test.ts src/features/canvas/canvas-live-client.test.ts src/features/canvas/smtp-live-progress.test.ts src/features/canvas/gateway-log-terminal.test.ts && vite build"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",

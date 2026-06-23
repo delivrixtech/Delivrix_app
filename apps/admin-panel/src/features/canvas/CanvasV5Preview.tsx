@@ -10,10 +10,10 @@
  * CanvasV4 queda como rollback temporal via ?canvasv4. Estilos: tokens.css
  * (var(--color-*) / var(--font-*)), scope `.cv5`.
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  ArrowUp, BadgeCheck, Box, Check, ChevronDown, CircleDollarSign, CheckCircle2,
-  Copy, FileText, Folder, GitCompare, Globe, Hourglass, Inbox, Key, Loader2,
+  ArrowRight, ArrowUp, BadgeCheck, Box, Check, ChevronDown, CircleDollarSign, CheckCircle2,
+  Copy, Download, FileText, Folder, GitCompare, Globe, Hourglass, Inbox, Key, KeyRound, Loader2,
   Mail, MailCheck, Network, PanelLeftClose, PanelLeftOpen, Paperclip, Plus, Server, ShieldAlert, Sparkles, Square, Terminal, X, XCircle
 } from "lucide-react";
 import { chatClient, useChatStream, type ChatConversationSummary, type ChatAttachmentInput } from "../../shared/api/chat-client.ts";
@@ -47,7 +47,9 @@ import { SMTP_BUILD_STEPS, type LiveRunProgress } from "./smtp-live-progress.ts"
 import { GatewayLogTerminal } from "./gateway-log-terminal.tsx";
 import { usePendingOpenClawProposals, PendingOpenClawApprovalPanel } from "./PendingApprovalGate.tsx";
 import { MarkdownText } from "../../shared/ui/v2/MarkdownText.tsx";
-import { useConsumeIntentOnMount } from "../../shared/ui/v2/OpenClawIntent.tsx";
+import { useConsumeIntentOnMount, useOpenClawIntent } from "../../shared/ui/v2/OpenClawIntent.tsx";
+import { useToast } from "../../shared/ui/v2";
+import { downloadSmtpCredential } from "../../shared/api/smtp-credentials.ts";
 import type { LiveArtifact, CanvasLiveArtifactKindWire, CanvasLiveArtifactPayloadWire } from "./live-tool-types.ts";
 
 type Tab = "run" | "logs" | "files" | "diff";
@@ -432,12 +434,104 @@ function SmtpRunArtifactView({ payload }: { payload: Extract<CanvasLiveArtifactP
   );
 }
 
+type SmtpCredentialPayload = Extract<CanvasLiveArtifactPayloadWire, { kind: "smtp_credential" }>;
+
+function safeText(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function SmtpCredentialArtifact({ payload }: { payload: Partial<SmtpCredentialPayload> & Record<string, unknown> }) {
+  const { toast } = useToast();
+  const { navigateTo } = useOpenClawIntent();
+  const [downloading, setDownloading] = useState(false);
+  const domain = safeText(payload.domain, "dominio pendiente");
+  const host = safeText(payload.host, domain.includes(".") ? `smtp.${domain}` : "host pendiente");
+  const username = safeText(payload.username, domain.includes(".") ? `mailer@${domain}` : "usuario pendiente");
+  const submission = payload.ports?.submission === 587 ? 587 : 587;
+  const smtps = payload.ports?.smtps === 465 ? 465 : 465;
+  const hasCredential = payload.hasCredential === true && domain.includes(".");
+
+  async function download(): Promise<void> {
+    if (!hasCredential) return;
+    setDownloading(true);
+    try {
+      await downloadSmtpCredential(domain);
+      toast.success("Credencial descargada", { description: domain });
+    } catch (error) {
+      toast.error("No se pudo descargar", {
+        description: error instanceof Error ? error.message : "Intentá desde Sender Pool."
+      });
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  return (
+    <div className="runwrap">
+      <div className="rmain">
+        <div className="hero">
+          <div className="icn"><KeyRound size={22} /></div>
+          <div>
+            <h1>{domain}</h1>
+            <div className="meta">
+              <span className="tag"><span className="i"><Globe size={13} /></span>{host}</span>
+              <span className="tag"><span className="i"><Mail size={13} /></span>{username}</span>
+              <span className={`badge ${hasCredential ? "ok" : "mut"}`}>{hasCredential ? "configurada" : "pendiente"}</span>
+            </div>
+          </div>
+        </div>
+        <div className="sec">
+          <div className="sech"><h2>SMTP AUTH</h2><span className="n">2 puertos</span></div>
+          <table className="dt">
+            <thead><tr><th>Modo</th><th>Host</th><th>Puerto</th><th>Usuario</th></tr></thead>
+            <tbody>
+              <tr><td>STARTTLS</td><td>{host}</td><td>{submission}</td><td>{username}</td></tr>
+              <tr><td>SSL/TLS</td><td>{host}</td><td>{smtps}</td><td>{username}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <aside className="rside">
+        <div className="stat"><div className="l"><KeyRound size={13} /> Credencial</div><div className="v">{hasCredential ? <><span>lista</span> <span className="chk"><BadgeCheck size={14} /></span></> : <span style={{ color: "var(--color-text-disabled)" }}>pendiente</span>}</div></div>
+        <button className="btn" type="button" disabled={!hasCredential || downloading} onClick={() => { void download(); }}>
+          {downloading ? <Loader2 size={14} className="spin" /> : <Download size={14} />}
+          {downloading ? "Descargando" : "Descargar credencial"}
+        </button>
+        <button className="btn" type="button" onClick={() => navigateTo("sender-pool")}>
+          <ArrowRight size={14} />
+          Ir a Sender Pool
+        </button>
+      </aside>
+    </div>
+  );
+}
+
+class ArtifactErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError(): { hasError: boolean } {
+    return { hasError: true };
+  }
+
+  render(): ReactNode {
+    if (this.state.hasError) {
+      return (
+        <div className="prose">
+          <p>No se pudo renderizar este artifact. La vista cruda sigue disponible.</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function kindMeta(kind: CanvasLiveArtifactKindWire): { label: string; icon: ReactNode } {
   switch (kind) {
     case "inventory": return { label: "Inventario", icon: <Server size={12} /> };
     case "blacklist_report": return { label: "Blacklist", icon: <ShieldAlert size={12} /> };
     case "dns_zone": return { label: "Zona DNS", icon: <Globe size={12} /> };
     case "smtp_run": return { label: "SMTP run", icon: <Mail size={12} /> };
+    case "smtp_credential": return { label: "Credencial SMTP", icon: <KeyRound size={12} /> };
     case "plan": return { label: "Plan", icon: <FileText size={12} /> };
     case "proposal": return { label: "Propuesta", icon: <FileText size={12} /> };
     case "template": return { label: "Template", icon: <FileText size={12} /> };
@@ -445,16 +539,36 @@ function kindMeta(kind: CanvasLiveArtifactKindWire): { label: string; icon: Reac
   }
 }
 
-function ArtifactBody({ artifact, raw }: { artifact: LiveArtifact; raw: boolean }) {
+function artifactRawDump(artifact: LiveArtifact): string {
+  if (artifact.payload?.kind === "smtp_credential") {
+    const payload = artifact.payload;
+    return JSON.stringify({
+      kind: "smtp_credential",
+      domain: payload.domain,
+      host: payload.host,
+      username: payload.username,
+      ports: {
+        submission: payload.ports?.submission === 587 ? 587 : 587,
+        smtps: payload.ports?.smtps === 465 ? 465 : 465
+      },
+      hasCredential: payload.hasCredential === true
+    }, null, 2);
+  }
+  return artifact.payload
+    ? JSON.stringify(artifact.payload, null, 2)
+    : artifact.blocks.slice().sort((a, b) => a.order - b.order).map((b) => b.content).join("\n\n");
+}
+
+export function ArtifactBody({ artifact, raw }: { artifact: LiveArtifact; raw: boolean }) {
   if (raw) {
-    const dump = artifact.payload ? JSON.stringify(artifact.payload, null, 2) : artifact.blocks.slice().sort((a, b) => a.order - b.order).map((b) => b.content).join("\n\n");
-    return <div className="raw">{dump}</div>;
+    return <div className="raw">{artifactRawDump(artifact)}</div>;
   }
   const p = artifact.payload;
   if (p?.kind === "inventory") return <InventoryArtifact servers={p.servers} />;
   if (p?.kind === "blacklist_report") return <BlacklistArtifact payload={p} />;
   if (p?.kind === "dns_zone") return <DnsZoneTable records={p.records} domain={p.domain} />;
   if (p?.kind === "smtp_run") return <SmtpRunArtifactView payload={p} />;
+  if (p?.kind === "smtp_credential") return <SmtpCredentialArtifact payload={p} />;
   return <ProseArtifact artifact={artifact} />;
 }
 
@@ -717,7 +831,7 @@ export function CanvasV5Preview() {
                   <button type="button" className={raw ? "on" : ""} onClick={() => setRaw(true)}>Crudo</button>
                 </div>
               </div>
-              <div className="scroll"><div className="art"><ArtifactBody artifact={selArt} raw={raw} /></div></div>
+              <div className="scroll"><div className="art"><ArtifactErrorBoundary key={selArt.id}><ArtifactBody artifact={selArt} raw={raw} /></ArtifactErrorBoundary></div></div>
             </>
           ) : (
             <div className="empty">

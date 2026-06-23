@@ -20,6 +20,7 @@ export type CanvasLiveArtifactKindWire =
   | "template"
   | "report"
   | "smtp_run"
+  | "smtp_credential"
   | "inventory"
   | "blacklist_report"
   | "dns_zone";
@@ -244,6 +245,17 @@ export type CanvasLiveArtifactPayloadWire =
       runId: string;
       identity: CanvasLiveRunIdentityWire;
       steps: CanvasLiveRunProgressStepWire[];
+    }
+  | {
+      kind: "smtp_credential";
+      domain: string;
+      host: string;
+      username: string;
+      ports: {
+        submission: 587;
+        smtps: 465;
+      };
+      hasCredential: boolean;
     }
   | {
       kind: "inventory";

@@ -957,6 +957,57 @@ test("canvas-live upsertArtifactSnapshot persists typed payload with version and
   assert.equal(JSON.stringify(reloadedArtifact).includes(pemLine), false);
 });
 
+test("canvas-live persists SMTP credential artifact without credential material", async () => {
+  const stateDir = await stateDirForTest();
+  const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+
+  await service.upsertArtifactSnapshot({
+    artifactId: "smtp-credential-example-mail.com",
+    taskId: "task-smtp-credential",
+    kind: "smtp_credential",
+    title: "Credencial SMTP example-mail.com",
+    editable: false,
+    createdAt: fixedNow.toISOString(),
+    updatedAt: fixedNow.toISOString(),
+    approvalStatus: "pending",
+    blocks: [],
+    payload: {
+      kind: "smtp_credential",
+      domain: "example-mail.com",
+      host: "smtp.example-mail.com",
+      username: "mailer@example-mail.com",
+      ports: { submission: 587, smtps: 465 },
+      hasCredential: true,
+      password: "smtp-password-must-not-ship",
+      smtpCredentialEncrypted: {
+        ciphertext: "ciphertext-must-not-ship",
+        authTag: "auth-tag-must-not-ship"
+      }
+    } as any
+  });
+
+  const snapshot = await service.snapshot();
+  const artifact = snapshot.artifacts[0];
+  assert.equal(artifact.kind, "smtp_credential");
+  assert.deepEqual(artifact.payload, {
+    kind: "smtp_credential",
+    domain: "example-mail.com",
+    host: "smtp.example-mail.com",
+    username: "mailer@example-mail.com",
+    ports: { submission: 587, smtps: 465 },
+    hasCredential: true
+  });
+
+  const persisted = await readFile(join(stateDir, "artifacts.jsonl"), "utf8");
+  const reloaded = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  const reloadedArtifact = (await reloaded.snapshot()).artifacts[0];
+  const combined = `${JSON.stringify(snapshot)}\n${persisted}\n${JSON.stringify(reloadedArtifact)}`;
+
+  assert.doesNotMatch(combined, /smtp-password-must-not-ship/);
+  assert.doesNotMatch(combined, /ciphertext-must-not-ship/);
+  assert.doesNotMatch(combined, /auth-tag-must-not-ship/);
+});
+
 async function seedArtifact(
   service: CanvasLiveEventService,
   taskId: string,

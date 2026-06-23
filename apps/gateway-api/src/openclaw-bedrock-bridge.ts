@@ -37,6 +37,8 @@ import {
   createHttpToolUseProcessor,
   type ToolUseResult
 } from "./tool-use-processor.ts";
+import { smtpCredentialUsername } from "./smtp-credentials.ts";
+import { smtpHostForDomain } from "./smtp-naming.ts";
 import {
   extractOpenClawArtifact,
   shouldOpenArtifact
@@ -1551,6 +1553,9 @@ function typedArtifactFromToolResult(
   if (toolName === "configure_complete_smtp") {
     return smtpRunArtifactFromToolResult(result);
   }
+  if (toolName === "enable_smtp_auth") {
+    return smtpCredentialArtifactFromToolResult(result);
+  }
   return null;
 }
 
@@ -1658,6 +1663,40 @@ function smtpRunArtifactFromToolResult(result: unknown): TypedArtifactBuildResul
       steps
     }
   };
+}
+
+function smtpCredentialArtifactFromToolResult(result: unknown): TypedArtifactBuildResult | null {
+  if (!isRecord(result) || result.hasCredential !== true) {
+    return null;
+  }
+  const rawDomain = stringValue(result.domain);
+  if (!rawDomain) {
+    return null;
+  }
+  const normalized = tryNormalizeStrictDomainName(rawDomain);
+  if (!normalized.ok) {
+    return null;
+  }
+  const domain = normalized.value;
+  try {
+    return {
+      artifactId: `smtp-credential-${safeArtifactIdSegment(domain)}`,
+      title: `Credencial SMTP ${domain}`,
+      payload: {
+        kind: "smtp_credential",
+        domain,
+        host: smtpHostForDomain(domain),
+        username: smtpCredentialUsername(domain),
+        ports: {
+          submission: 587,
+          smtps: 465
+        },
+        hasCredential: true
+      }
+    };
+  } catch {
+    return null;
+  }
 }
 
 function normalizeCanvasRunSteps(value: unknown): CanvasLiveRunProgressStep[] | null {

@@ -1083,6 +1083,7 @@ function normalizeArtifactKind(value: unknown): CanvasLiveArtifactKind {
     value === "template" ||
     value === "report" ||
     value === "smtp_run" ||
+    value === "smtp_credential" ||
     value === "inventory" ||
     value === "blacklist_report" ||
     value === "dns_zone"
@@ -1100,6 +1101,9 @@ function normalizeArtifactPayload(raw: unknown, artifactKind: CanvasLiveArtifact
   }
   if (payloadKind === "smtp_run") {
     return normalizeSmtpRunPayload(raw);
+  }
+  if (payloadKind === "smtp_credential") {
+    return normalizeSmtpCredentialPayload(raw);
   }
   if (payloadKind === "inventory") {
     return normalizeInventoryPayload(raw);
@@ -1119,6 +1123,20 @@ function normalizeSmtpRunPayload(raw: Record<string, unknown>): Extract<CanvasLi
     runId: requiredId(raw.runId, "payload.runId"),
     identity: normalizeRunIdentity(raw.identity),
     steps: arrayValue(raw.steps).map(normalizeRunStep)
+  };
+}
+
+function normalizeSmtpCredentialPayload(raw: Record<string, unknown>): Extract<CanvasLiveArtifactPayload, { kind: "smtp_credential" }> {
+  return {
+    kind: "smtp_credential",
+    domain: redactCanvasLiveText(requiredString(raw.domain, "payload.domain"), 253),
+    host: redactCanvasLiveText(requiredString(raw.host, "payload.host"), 253),
+    username: redactCanvasLiveText(requiredString(raw.username, "payload.username"), 253),
+    ports: {
+      submission: 587,
+      smtps: 465
+    },
+    hasCredential: raw.hasCredential === true
   };
 }
 
