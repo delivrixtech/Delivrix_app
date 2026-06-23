@@ -33,7 +33,8 @@ import {
 import { PageHead } from "./_PageHead";
 import { PlacementLivePanel } from "../components/PlacementLivePanel";
 import { StartWarmupRampInline } from "../components/StartWarmupRampInline";
-import { useToast } from "../../shared/ui/v2";
+import { useOpenClawIntent, useToast } from "../../shared/ui/v2";
+import { buildEnableSmtpAuthIntent } from "./sender-pool-intents";
 
 const POLL_MS = 15_000;
 const CAP_USD = 50;
@@ -227,6 +228,7 @@ export function SenderPoolV5() {
 
 function DomainRow({ d }: { d: DomainSummary }) {
   const { toast } = useToast();
+  const { sendIntent } = useOpenClawIntent();
   const [downloading, setDownloading] = useState(false);
   const statusTone: PillTone =
     d.status === "active"
@@ -265,6 +267,20 @@ function DomainRow({ d }: { d: DomainSummary }) {
         </Caption>
       </div>
       <div className="flex items-center gap-2">
+        {!d.hasCredential ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            title="Generar credencial SMTP AUTH"
+            onClick={() => {
+              const intent = buildEnableSmtpAuthIntent(d.domain);
+              sendIntent(intent.prompt, intent.source);
+            }}
+          >
+            <KeyRound size={11} strokeWidth={1.75} />
+            Generar credencial
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="sm"

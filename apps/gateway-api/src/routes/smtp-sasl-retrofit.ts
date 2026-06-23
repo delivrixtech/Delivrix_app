@@ -311,7 +311,7 @@ export async function runSmtpSaslRetrofitBatch(input: {
           input.workspace,
           markSmtpCredentialInstallFailed(credential.record, input.now?.() ?? new Date())
         );
-        const message = error instanceof Error ? error.message : String(error);
+        const message = redactSmtpCredentialSecret(errorMessage(error), credential.password);
         results.push({
           serverSlug: candidate.serverSlug,
           domain: candidate.domain,
@@ -346,7 +346,7 @@ export async function runSmtpSaslRetrofitBatch(input: {
         smtpCredentialFingerprint(configuredRecord)
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       results.push({
         serverSlug: candidate.serverSlug,
         domain: candidate.domain,
@@ -502,6 +502,14 @@ async function appendRetrofitAudit(
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function redactSmtpCredentialSecret(message: string, password: string): string {
+  return password ? message.split(password).join("[REDACTED_SMTP_PASSWORD]") : message;
 }
 
 async function readJson<T>(request: IncomingMessage): Promise<T> {

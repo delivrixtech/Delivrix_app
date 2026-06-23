@@ -69,6 +69,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["configure_email_auth"]
   },
   {
+    canonicalSkill: "enable_smtp_auth",
+    aliases: ["enable_smtp_auth"],
+    actionIds: ["enable_smtp_auth"]
+  },
+  {
     canonicalSkill: "bind_domain_to_server",
     aliases: ["bind_domain_to_server"],
     actionIds: ["bind_domain_to_server"]

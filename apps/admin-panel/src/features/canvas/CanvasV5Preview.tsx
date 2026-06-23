@@ -47,6 +47,7 @@ import { SMTP_BUILD_STEPS, type LiveRunProgress } from "./smtp-live-progress.ts"
 import { GatewayLogTerminal } from "./gateway-log-terminal.tsx";
 import { usePendingOpenClawProposals, PendingOpenClawApprovalPanel } from "./PendingApprovalGate.tsx";
 import { MarkdownText } from "../../shared/ui/v2/MarkdownText.tsx";
+import { useConsumeIntentOnMount } from "../../shared/ui/v2/OpenClawIntent.tsx";
 import type { LiveArtifact, CanvasLiveArtifactKindWire, CanvasLiveArtifactPayloadWire } from "./live-tool-types.ts";
 
 type Tab = "run" | "logs" | "files" | "diff";
@@ -476,6 +477,14 @@ export function CanvasV5Preview() {
   const [attachments, setAttachments] = useState<ChatAttachmentInput[]>([]);
   const [convosOpen, setConvosOpen] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
+
+  useConsumeIntentOnMount((prompt) => {
+    setDraft(prompt);
+    setChatOpen(true);
+    setConvosOpen(true);
+    window.setTimeout(() => chatInputRef.current?.focus(), 0);
+  });
 
   const runIds = Array.from(live.liveRunProgress.keys());
   const activeRunId = selRunId && live.liveRunProgress.has(selRunId) ? selRunId : (runIds[0] ?? null);
@@ -616,6 +625,7 @@ export function CanvasV5Preview() {
               <button className="attach" type="button" title="Adjuntar archivo o imagen" onClick={() => fileRef.current?.click()}><Paperclip size={16} /></button>
               <input ref={fileRef} type="file" multiple accept=".md,.txt,.png,.jpg,.jpeg,.webp,.gif" style={{ display: "none" }} onChange={(e) => { void addFiles(e.target.files); e.currentTarget.value = ""; }} />
               <input
+                ref={chatInputRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void send(); } }}

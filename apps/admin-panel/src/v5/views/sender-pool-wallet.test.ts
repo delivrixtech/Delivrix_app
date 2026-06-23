@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AuditEvent } from "../../shared/api/client.ts";
+import { buildEnableSmtpAuthIntent } from "./sender-pool-intents.ts";
 import { computeWalletTransactions } from "./sender-pool-wallet.ts";
 
 test("wallet transactions use metadata.costUsd and targetId fallback", () => {
@@ -42,6 +43,16 @@ test("wallet transactions use metadata.costUsd and targetId fallback", () => {
   assert.equal(transactions[0]?.domain, "metadata-domain.com");
   assert.equal(transactions[1]?.domain, "target-domain.com");
   assert.equal(transactions.reduce((sum, tx) => sum + tx.amount, 0), 21.34);
+});
+
+test("enable SMTP auth intent asks OpenClaw for one approved domain without executing inline", () => {
+  const intent = buildEnableSmtpAuthIntent("Example.COM");
+
+  assert.equal(intent.source, "sender-pool:enable-smtp-auth:example.com");
+  assert.match(intent.prompt, /example\.com/);
+  assert.match(intent.prompt, /un solo dominio/);
+  assert.match(intent.prompt, /aprobaci[oó]n/i);
+  assert.doesNotMatch(intent.prompt, /password|contrase(?:ñ|n)a/i);
 });
 
 function auditEvent(input: Partial<AuditEvent>): AuditEvent {

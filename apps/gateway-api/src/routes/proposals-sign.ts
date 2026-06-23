@@ -540,7 +540,7 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
       signatureId,
       statusCode: dispatchResult.statusCode,
       durationMs: dispatchResult.durationMs,
-      outcome: dispatchResult.summary
+      outcome: redactSecrets(dispatchResult.summary)
     }));
 
   return json(deps.response, dispatchResult.ok ? 200 : 502, {
@@ -786,7 +786,7 @@ async function finalizeTimedOutDispatch(input: {
       signatureId: input.signatureId,
       statusCode: input.dispatchResult.statusCode,
       durationMs: input.dispatchResult.durationMs,
-      outcome: input.dispatchResult.summary
+      outcome: redactSecrets(input.dispatchResult.summary)
     }));
 }
 
