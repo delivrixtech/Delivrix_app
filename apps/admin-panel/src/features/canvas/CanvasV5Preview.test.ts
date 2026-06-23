@@ -7,6 +7,8 @@ import type { LiveArtifact } from "./live-tool-types.ts";
 
 interface CanvasV5PreviewModule {
   ArtifactBody: React.ComponentType<{ artifact: LiveArtifact; raw: boolean }>;
+  canvasMessageKeyFromTaskId: (taskId: string) => string | null;
+  selectPreviewArtifact: (candidate: LiveArtifact | null, artifacts: LiveArtifact[]) => LiveArtifact | null;
 }
 
 interface UiV2Module {
@@ -134,6 +136,154 @@ test("CanvasV5Preview still renders the existing typed artifacts", async () => {
   assert.match(markup, /Spamhaus ZEN/);
   assert.match(markup, /smtp\.example-mail\.com/);
   assert.match(markup, /Configurar Postfix/);
+});
+
+test("CanvasV5Preview keeps the SMTP credential artifact visible over the same-message prose report", async () => {
+  const { selectPreviewArtifact } = await loadModules();
+  const msgId = "0c783c78-1111-4222-8333-123456789abc";
+  const credential = makeArtifact({
+    id: "smtp-credential-controlnational.com",
+    taskId: `bedrock:${msgId}`,
+    kind: "smtp_credential",
+    title: "Credencial SMTP controlnational.com",
+    createdAt: "2026-06-23T20:00:00.000Z",
+    payload: {
+      kind: "smtp_credential",
+      domain: "controlnational.com",
+      host: "smtp.controlnational.com",
+      username: "mailer@controlnational.com",
+      ports: { submission: 587, smtps: 465 },
+      hasCredential: true
+    }
+  });
+  const proseReport = makeArtifact({
+    id: "artifact-chat-report",
+    taskId: "chat-0c783c78-20260623200005",
+    kind: "report",
+    title: "SMTP AUTH configurada",
+    createdAt: "2026-06-23T20:00:05.000Z",
+    blocks: [{ id: "summary", order: 1, kind: "paragraph", content: "SMTP AUTH configurada.", editable: false, status: "complete" }]
+  });
+
+  assert.equal(selectPreviewArtifact(proseReport, [credential, proseReport]), credential);
+});
+
+test("CanvasV5Preview keeps a normal report when no SMTP credential sibling exists", async () => {
+  const { selectPreviewArtifact } = await loadModules();
+  const proseReport = makeArtifact({
+    id: "artifact-normal-report",
+    taskId: "chat-0c783c78-20260623200005",
+    kind: "report",
+    title: "Reporte normal",
+    createdAt: "2026-06-23T20:00:05.000Z",
+    blocks: [{ id: "summary", order: 1, kind: "paragraph", content: "Reporte normal.", editable: false, status: "complete" }]
+  });
+
+  assert.equal(selectPreviewArtifact(proseReport, [proseReport]), proseReport);
+});
+
+test("CanvasV5Preview does not promote old SMTP credential artifacts from other messages", async () => {
+  const { selectPreviewArtifact } = await loadModules();
+  const credential = makeArtifact({
+    id: "smtp-credential-old",
+    taskId: "bedrock:11111111-1111-4111-8111-111111111111",
+    kind: "smtp_credential",
+    createdAt: "2026-06-23T19:59:00.000Z",
+    payload: {
+      kind: "smtp_credential",
+      domain: "old.example",
+      host: "smtp.old.example",
+      username: "mailer@old.example",
+      ports: { submission: 587, smtps: 465 },
+      hasCredential: true
+    }
+  });
+  const unrelatedReport = makeArtifact({
+    id: "artifact-current-report",
+    taskId: "chat-22222222-20260623200005",
+    kind: "report",
+    createdAt: "2026-06-23T20:00:05.000Z",
+    blocks: [{ id: "summary", order: 1, kind: "paragraph", content: "Reporte normal.", editable: false, status: "complete" }]
+  });
+
+  assert.equal(selectPreviewArtifact(unrelatedReport, [credential, unrelatedReport]), unrelatedReport);
+});
+
+test("CanvasV5Preview leaves non-report latest artifacts unchanged", async () => {
+  const { selectPreviewArtifact } = await loadModules();
+  const credential = makeArtifact({
+    id: "smtp-credential-example.com",
+    taskId: "bedrock:33333333-3333-4333-8333-333333333333",
+    kind: "smtp_credential",
+    payload: {
+      kind: "smtp_credential",
+      domain: "example.com",
+      host: "smtp.example.com",
+      username: "mailer@example.com",
+      ports: { submission: 587, smtps: 465 },
+      hasCredential: true
+    }
+  });
+  const candidates: LiveArtifact[] = [
+    makeArtifact({
+      id: "inventory-webdock",
+      taskId: "bedrock:33333333-3333-4333-8333-333333333333",
+      kind: "inventory",
+      payload: {
+        kind: "inventory",
+        servers: [{ slug: "server10", status: "running" }]
+      }
+    }),
+    makeArtifact({
+      id: "blacklist-report",
+      taskId: "bedrock:33333333-3333-4333-8333-333333333333",
+      kind: "blacklist_report",
+      payload: {
+        kind: "blacklist_report",
+        target: "smtp.example.com",
+        source: "mxtoolbox",
+        evaluatedAt: "2026-06-23T20:00:00.000Z",
+        checks: []
+      }
+    }),
+    makeArtifact({
+      id: "dns-zone",
+      taskId: "bedrock:33333333-3333-4333-8333-333333333333",
+      kind: "dns_zone",
+      payload: {
+        kind: "dns_zone",
+        domain: "example.com",
+        records: []
+      }
+    }),
+    makeArtifact({
+      id: "smtp-run",
+      taskId: "bedrock:33333333-3333-4333-8333-333333333333",
+      kind: "smtp_run",
+      payload: {
+        kind: "smtp_run",
+        runId: "run-1",
+        identity: { domain: "example.com" },
+        steps: []
+      }
+    }),
+    makeArtifact({ id: "plan", taskId: "bedrock:33333333-3333-4333-8333-333333333333", kind: "plan" }),
+    makeArtifact({ id: "proposal", taskId: "bedrock:33333333-3333-4333-8333-333333333333", kind: "proposal" }),
+    makeArtifact({ id: "template", taskId: "bedrock:33333333-3333-4333-8333-333333333333", kind: "template" })
+  ];
+
+  for (const candidate of candidates) {
+    assert.equal(selectPreviewArtifact(candidate, [candidate, credential]), candidate);
+  }
+});
+
+test("CanvasV5Preview extracts comparable message keys from Bedrock and chat task ids", async () => {
+  const { canvasMessageKeyFromTaskId } = await loadModules();
+  const msgId = "0C783C78-1111-4222-8333-123456789ABC";
+
+  assert.equal(canvasMessageKeyFromTaskId(`bedrock:${msgId}`), "0c783c78");
+  assert.equal(canvasMessageKeyFromTaskId("chat-0c783c78-20260623200005"), "0c783c78");
+  assert.equal(canvasMessageKeyFromTaskId("chat-without-uuid"), null);
 });
 
 function makeArtifact(overrides: Partial<LiveArtifact>): LiveArtifact {
