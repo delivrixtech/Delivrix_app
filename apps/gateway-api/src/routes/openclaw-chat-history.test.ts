@@ -83,6 +83,43 @@ test("OpenClaw chat history routes redact secrets from summaries and turns", asy
   }
 });
 
+test("OpenClaw chat history routes redact SMTP/SASL tokens without hiding operational identifiers", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "openclaw-chat-route-smtp-redact-"));
+  const store = new OpenClawChatHistoryStore({ stateDir });
+  const smtpPassword = "Xk9mPq2vLr7wNb3tQ4sA9vLm";
+  const hexToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  const uuidToken = "123e4567-e89b-12d3-a456-426614174000";
+  await store.appendTurn("conv-smtp-secret", {
+    role: "user",
+    content: [
+      `smtp: ${smtpPassword}`,
+      `smtp_sasl_password_maps mailer@controldelivrix.app:${smtpPassword}`,
+      `standalone token ${hexToken}`,
+      `approval id ${uuidToken}`,
+      "control ip 203.0.113.10",
+      "host smtp.controlnationalreport.com",
+      "slug server10"
+    ].join("\n"),
+    msgId: "smtp-secret-1",
+    createdAt: "2026-06-24T12:00:00.000Z"
+  });
+
+  const history = await invokeHistory(store, "/v1/openclaw/chat/history?conversationId=conv-smtp-secret", {
+    authorization: "Bearer read-token"
+  });
+  assert.equal(history.statusCode, 200);
+  const surface = JSON.stringify(history.body);
+
+  assert.doesNotMatch(surface, new RegExp(smtpPassword));
+  assert.doesNotMatch(surface, new RegExp(hexToken));
+  assert.doesNotMatch(surface, new RegExp(uuidToken));
+  assert.match(surface, /smtp[=:]\[REDACTED\]/);
+  assert.match(surface, /smtp_sasl_password_maps mailer@controldelivrix\.app:\[REDACTED\]/);
+  assert.match(surface, /203\.0\.113\.10/);
+  assert.match(surface, /smtp\.controlnationalreport\.com/);
+  assert.match(surface, /server10/);
+});
+
 async function invokeConversations(
   store: OpenClawChatHistoryStore,
   headers: Record<string, string>

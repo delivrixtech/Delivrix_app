@@ -41,7 +41,7 @@ fallback: rules-engine-local
 `delivrix_actions` se valida contra la permissions matrix antes de cargar la skill.
 Si declara una acción inexistente o `prohibited`, OpenClaw rechaza el load.
 
-## 3. Skills iniciales (8)
+## 3. Skills iniciales (8) + read-tools tipadas
 
 MVP Hito 5.11.B: fleet/report/alert, drift Webdock, publisher HMAC y MXToolbox read-only.
 
@@ -146,6 +146,19 @@ MVP Hito 5.11.B: fleet/report/alert, drift Webdock, publisher HMAC y MXToolbox r
 | Fallback | Ninguno. Si falta `CREDENTIAL_ENCRYPTION_KEY`, falla cerrado y pide al operador setearla por canal seguro |
 | Audit | `oc.smtp_auth.enabled` con `status`, `hasCredential`, `candidateCount` y `credentialFingerprint` si quedó configurada |
 | Side-effect permitido | Instala SASL 587/465 para el dominio elegido; puerto 25 y `permit_mynetworks` permanecen intactos |
+
+### 3.9 `openclaw-chat-history-read`
+
+| Campo | Valor |
+| --- | --- |
+| Trigger natural | "lista conversaciones", "lee esta conversación", "historial de chat", "qué se dijo antes" |
+| Acciones matrix | `list_conversations`, `read_conversation` |
+| Endpoints | `GET /v1/openclaw/chat/conversations`, `GET /v1/openclaw/chat/history?conversationId=<id>` |
+| Retorna | JSON paginado/redactado: summaries o turns; nunca tokens, passwords, credenciales SMTP, PEM, imágenes base64 completas ni adjuntos sensibles |
+| Errores | Sin read-boundary token => `openclaw_chat_history_unauthorized`; `conversationId` inválido => `invalid_conversation_id` |
+| Fallback | Ninguno. Si falta autorización o el historial no existe, responde con estado honesto |
+| Audit | `oc.read.openclaw_chat_conversations` / `oc.read.openclaw_chat_history` vía sensitive-read-auth |
+| Side-effect permitido | Ninguno; read-only estricto |
 
 ## 4. Anatomía estándar de una skill
 
