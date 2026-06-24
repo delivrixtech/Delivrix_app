@@ -14,6 +14,12 @@ test("does not mark dry_run shorthand as hallucination", () => {
   assertNotMarkedAsHallucination("dry_run");
 });
 
+test("does not mark new OpenClaw read-only tool names as hallucinations", () => {
+  assertNotMarkedAsHallucination("read_infrastructure_inventory");
+  assertNotMarkedAsHallucination("list_conversations");
+  assertNotMarkedAsHallucination("read_conversation");
+});
+
 test("still marks unknown permission-shaped tokens as hallucinations", () => {
   assert.deepEqual(
     detectC2HallucinationsByPattern("operator_magic_permission"),

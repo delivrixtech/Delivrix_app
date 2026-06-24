@@ -273,7 +273,11 @@ import {
   handlePorkbunOwnedDomainsHttp,
   handlePorkbunPingHttp
 } from "./routes/domains-porkbun.ts";
-import { handleInfrastructureInventoryHttp, type VpsProviderInventoryResult } from "./routes/infrastructure.ts";
+import {
+  handleInfrastructureInventoryHttp,
+  type VpsProviderInventoryResult,
+  type WebdockAccountInventoryResult
+} from "./routes/infrastructure.ts";
 import {
   handleOpenClawWorkspaceError,
   handleOpenClawWorkspaceFileHttp,
@@ -1027,8 +1031,11 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_compliance_status", "allowed_read_only"),
   permission("read_openclaw_skills_audit", "allowed_read_only"),
   permission("read_openclaw_evidence", "allowed_read_only"),
+  permission("read_infrastructure_inventory", "allowed_read_only"),
   permission("read_webdock_inventory", "allowed_read_only"),
   permission("read_webdock_servers", "allowed_read_only"),
+  permission("list_conversations", "allowed_read_only"),
+  permission("read_conversation", "allowed_read_only"),
   permission("read_episodic_scratch", "allowed_read_only"),
   permission("openclaw_memory_read", "allowed_read_only"),
   permission("read_route53_domain_detail", "allowed_read_only"),
@@ -1844,14 +1851,47 @@ const server = createServer(async (request, response) => {
         request,
         response,
         auditLog,
-        webdockListServers: async () =>
-          Promise.all(
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        webdockListServers: async () => {
+          const settled = await Promise.allSettled(
             webdockAccountAdapters.map(async (account) => ({
               accountId: account.id,
               accountLabel: account.label,
               result: await account.adapter.listServers()
             }))
-          ),
+          );
+          return settled.map((result, index): WebdockAccountInventoryResult => {
+            const account = webdockAccountAdapters[index];
+            if (result.status === "fulfilled") {
+              return result.value;
+            }
+            void gatewayRuntimeLog.warn(
+              "infrastructure.webdock_account_inventory_failed",
+              "Webdock account inventory failed; degrading this account only.",
+              {
+                accountId: account?.id ?? "unknown",
+                errorName: result.reason instanceof Error ? result.reason.name : "UnknownError"
+              }
+            );
+            const fetchedAt = new Date().toISOString();
+            return {
+              accountId: account?.id ?? "unknown",
+              accountLabel: account?.label ?? "Webdock",
+              result: {
+                servers: [],
+                source: {
+                  kind: account?.adapter.isLive() ? "live" : "mock",
+                  apiBase: "webdock",
+                  accountId: account?.id ?? "unknown",
+                  accountLabel: account?.label ?? "Webdock",
+                  fetchedAt,
+                  responseOk: false,
+                  errorMessage: "webdock_account_inventory_failed"
+                }
+              }
+            };
+          });
+        },
         vpsProviderListServers: async () => {
           const providerInventories: VpsProviderInventoryResult[] = [];
           for (const entry of vpsProviderEntries) {

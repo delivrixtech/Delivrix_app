@@ -203,6 +203,42 @@ test("processToolUse invokes read-only episodic scratch without ApprovalGate", a
   assert.deepEqual(calls, [{ readOnly: "read_episodic_scratch", params: { intentId: "intent-1" } }]);
 });
 
+test("processToolUse invokes new inventory and conversation tools as read-only without ApprovalGate", async () => {
+  for (const [toolName, toolInput] of [
+    ["read_infrastructure_inventory", {}],
+    ["list_conversations", { offset: 0, limit: 20 }],
+    ["read_conversation", { conversationId: "conv-a", offset: 0, limit: 6 }]
+  ] as const) {
+    const calls: unknown[] = [];
+    const result = await processToolUse({
+      toolUseId: `toolu-${toolName}`,
+      toolName,
+      toolInput,
+      chatSession: { id: "agent:main:operator" },
+      env: enabledEnv(),
+      deps: {
+        ...memoryDeps({ calls }),
+        async submitProposalFromToolUse() {
+          assert.fail(`${toolName} must not submit an ApprovalGate proposal`);
+        },
+        async waitForProposalDecision() {
+          assert.fail(`${toolName} must not wait for ApprovalGate`);
+        },
+        async invokeReadOnlyTool(input) {
+          calls.push({ readOnly: input.toolName, params: input.params });
+          return { ok: true, toolName: input.toolName };
+        }
+      }
+    });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) assert.fail(`expected ${toolName} read-only success`);
+    assert.equal(result.proposalId, `read_only:toolu-${toolName}`);
+    assert.deepEqual(result.result, { ok: true, toolName });
+    assert.deepEqual(calls, [{ readOnly: toolName, params: toolInput }]);
+  }
+});
+
 test("processToolUse invokes compact_intent as internal memory write without ApprovalGate", async () => {
   const calls: unknown[] = [];
   const result = await processToolUse({
@@ -917,6 +953,191 @@ test("createHttpToolUseProcessor invokes read-only Webdock inventory endpoint di
     "http://127.0.0.1:3000/v1/kill-switch",
     "http://127.0.0.1:3000/v1/webdock/inventory"
   ]);
+});
+
+test("createHttpToolUseProcessor invokes infrastructure inventory endpoint with read-boundary token", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    readBoundaryToken: "read-token",
+    fetchImpl: async (url, init) => {
+      calls.push({
+        url: String(url),
+        headers: init?.headers as Record<string, string> ?? {}
+      });
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).endsWith("/v1/infrastructure/inventory")) {
+        assert.equal(init?.method, "GET");
+        return jsonResponse({
+          providers: [{
+            id: "contabo",
+            kind: "compute",
+            items: [{
+              id: "contabo-1",
+              kind: "contabo_server",
+              detail: { ipv4: "66.94.96.10" }
+            }]
+          }]
+        });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-infra-read",
+    toolName: "read_infrastructure_inventory",
+    toolInput: {},
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected infrastructure inventory read success");
+  assert.deepEqual(result.result, {
+    providers: [{
+      id: "contabo",
+      kind: "compute",
+      items: [{
+        id: "contabo-1",
+        kind: "contabo_server",
+        detail: { ipv4: "66.94.96.10" }
+      }]
+    }]
+  });
+  assert.deepEqual(calls.map((call) => call.url), [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/infrastructure/inventory"
+  ]);
+  assert.equal(calls[1].headers["x-openclaw-skill-invocation"], "delivrix-infra-inventory");
+  assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
+});
+
+test("createHttpToolUseProcessor fails closed for sensitive read tools without read-boundary token", async () => {
+  const urls: string[] = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    fetchImpl: async (url) => {
+      urls.push(String(url));
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  for (const toolName of ["read_infrastructure_inventory", "list_conversations", "read_conversation"]) {
+    const result = await processor({
+      toolUseId: `toolu-${toolName}`,
+      toolName,
+      toolInput: toolName === "read_conversation" ? { conversationId: "conv-a" } : {},
+      chatSession: { id: "agent:main:operator" }
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) assert.fail(`expected ${toolName} to fail closed`);
+    assert.equal(result.error, "read_only_tool_failed");
+    assert.match(String(result.details), /read_boundary_token_unconfigured/);
+  }
+
+  assert.deepEqual(urls, [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/kill-switch"
+  ]);
+});
+
+test("createHttpToolUseProcessor reads chat conversations with pagination and truncation", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    readBoundaryToken: "read-token",
+    fetchImpl: async (url, init) => {
+      calls.push({
+        url: String(url),
+        headers: init?.headers as Record<string, string> ?? {}
+      });
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).endsWith("/v1/openclaw/chat/conversations")) {
+        return jsonResponse({
+          conversations: [
+            { id: "conv-a", title: "A", preview: "uno", updatedAt: "2026-06-01T00:00:00.000Z" },
+            { id: "conv-b", title: "B", preview: "dos", updatedAt: "2026-06-01T00:01:00.000Z" },
+            { id: "conv-c", title: "C", preview: "tres", updatedAt: "2026-06-01T00:02:00.000Z" }
+          ]
+        });
+      }
+      if (String(url).startsWith("http://127.0.0.1:3000/v1/openclaw/chat/history")) {
+        assert.equal(new URL(String(url)).searchParams.get("conversationId"), "conv-b");
+        return jsonResponse({
+          id: "conv-b",
+          turns: [
+            { role: "user", content: "0123456789", createdAt: "2026-06-01T00:00:00.000Z" },
+            { role: "assistant", content: "abcdefghij", createdAt: "2026-06-01T00:01:00.000Z" }
+          ]
+        });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const listed = await processor({
+    toolUseId: "toolu-list-conversations",
+    toolName: "list_conversations",
+    toolInput: { offset: 1, limit: 1 },
+    chatSession: { id: "agent:main:operator" }
+  });
+  assert.equal(listed.ok, true);
+  if (!listed.ok) assert.fail("expected list_conversations success");
+  assert.deepEqual(listed.result, {
+    conversations: [{ id: "conv-b", title: "B", preview: "dos", updatedAt: "2026-06-01T00:01:00.000Z" }],
+    total: 3,
+    offset: 1,
+    limit: 1,
+    hasMore: true
+  });
+
+  const history = await processor({
+    toolUseId: "toolu-read-conversation",
+    toolName: "read_conversation",
+    toolInput: { conversationId: "conv-b", offset: 0, limit: 2, maxCharsPerTurn: 4 },
+    chatSession: { id: "agent:main:operator" }
+  });
+  assert.equal(history.ok, true);
+  if (!history.ok) assert.fail("expected read_conversation success");
+  assert.deepEqual(history.result, {
+    id: "conv-b",
+    turns: [
+      {
+        role: "user",
+        content: "0123",
+        createdAt: "2026-06-01T00:00:00.000Z",
+        contentTruncated: true,
+        originalContentChars: 10
+      },
+      {
+        role: "assistant",
+        content: "abcd",
+        createdAt: "2026-06-01T00:01:00.000Z",
+        contentTruncated: true,
+        originalContentChars: 10
+      }
+    ],
+    total: 2,
+    offset: 0,
+    limit: 2,
+    hasMore: false,
+    truncated: true,
+    truncatedTurns: 2
+  });
+
+  assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
+  assert.equal(calls[3].headers["x-delivrix-token"], "read-token");
 });
 
 test("processToolUse fails read-only suggest_safe_domain when invoker is missing", async () => {

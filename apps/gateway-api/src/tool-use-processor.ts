@@ -747,6 +747,25 @@ async function invokeReadOnlyToolOverHttp(input: {
     return body;
   }
 
+  if (input.input.toolName === "read_infrastructure_inventory") {
+    if (!input.readBoundaryToken) {
+      throw new Error("read_boundary_token_unconfigured");
+    }
+    const response = await input.fetchImpl(`${input.baseUrl}/v1/infrastructure/inventory`, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        "x-openclaw-skill-invocation": "delivrix-infra-inventory",
+        "x-delivrix-token": input.readBoundaryToken
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return body;
+  }
+
   if (input.input.toolName === "read_webdock_servers") {
     const response = await input.fetchImpl(`${input.baseUrl}/v1/webdock/inventory`, {
       method: "GET",
@@ -760,6 +779,44 @@ async function invokeReadOnlyToolOverHttp(input: {
       throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
     }
     return filterWebdockInventoryResult(body, input.input.params);
+  }
+
+  if (input.input.toolName === "list_conversations") {
+    if (!input.readBoundaryToken) {
+      throw new Error("read_boundary_token_unconfigured");
+    }
+    const response = await input.fetchImpl(`${input.baseUrl}/v1/openclaw/chat/conversations`, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return paginateConversations(body, input.input.params);
+  }
+
+  if (input.input.toolName === "read_conversation") {
+    if (!input.readBoundaryToken) {
+      throw new Error("read_boundary_token_unconfigured");
+    }
+    const url = new URL(`${input.baseUrl}/v1/openclaw/chat/history`);
+    url.searchParams.set("conversationId", String(input.input.params.conversationId));
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return paginateConversationHistory(body, input.input.params);
   }
 
   throw new Error(`unsupported_read_only_tool:${input.input.toolName}`);
@@ -829,6 +886,57 @@ function filterWebdockInventoryResult(body: unknown, params: Record<string, unkn
     },
     matchedServers
   };
+}
+
+function paginateConversations(body: unknown, params: Record<string, unknown>): unknown {
+  const payload = isRecord(body) ? body : {};
+  const conversations = Array.isArray(payload.conversations) ? payload.conversations.filter(isRecord) : [];
+  const offset = numberParam(params.offset, 0);
+  const limit = numberParam(params.limit, 20);
+  const page = conversations.slice(offset, offset + limit);
+  return {
+    conversations: page,
+    total: conversations.length,
+    offset,
+    limit,
+    hasMore: offset + page.length < conversations.length
+  };
+}
+
+function paginateConversationHistory(body: unknown, params: Record<string, unknown>): unknown {
+  const payload = isRecord(body) ? body : {};
+  const turns = Array.isArray(payload.turns) ? payload.turns.filter(isRecord) : [];
+  const offset = numberParam(params.offset, 0);
+  const limit = numberParam(params.limit, 6);
+  const maxCharsPerTurn = numberParam(params.maxCharsPerTurn, 500);
+  let truncatedTurns = 0;
+  const page = turns.slice(offset, offset + limit).map((turn) => {
+    const content = typeof turn.content === "string" ? turn.content : "";
+    if (content.length <= maxCharsPerTurn) {
+      return turn;
+    }
+    truncatedTurns += 1;
+    return {
+      ...turn,
+      content: content.slice(0, maxCharsPerTurn),
+      contentTruncated: true,
+      originalContentChars: content.length
+    };
+  });
+  return {
+    id: typeof payload.id === "string" ? payload.id : params.conversationId,
+    turns: page,
+    total: turns.length,
+    offset,
+    limit,
+    hasMore: offset + page.length < turns.length,
+    truncated: truncatedTurns > 0,
+    truncatedTurns
+  };
+}
+
+function numberParam(value: unknown, fallback: number): number {
+  return Number.isInteger(value) ? Number(value) : fallback;
 }
 
 async function waitForProposalDecisionOverHttp(input: {
@@ -1070,7 +1178,10 @@ function isReadOnlyToolUse(toolName: string): boolean {
     toolName === "read_route53_zone_records" ||
     toolName === "read_dns_ionos" ||
     toolName === "read_mxtoolbox_health" ||
-    toolName === "read_webdock_servers";
+    toolName === "read_infrastructure_inventory" ||
+    toolName === "read_webdock_servers" ||
+    toolName === "list_conversations" ||
+    toolName === "read_conversation";
 }
 
 function shouldRouteThroughConfigureCompleteSmtp(

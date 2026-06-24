@@ -108,6 +108,10 @@ export async function handleReadEpisodicScratchHttp(deps: EpisodicScratchReadDep
       });
       return json(deps.response, 200, emptyScratchFallback(grounded === true));
     }
+    void deps.logger?.warn("openclaw.episodic.scratch_schema_or_query_failed", "Episodic scratch store query failed; returning 503.", {
+      grounded: grounded === true,
+      ...scratchStoreQueryErrorMetadata(error)
+    });
     return json(deps.response, 503, {
       error: "episodic_scratch_unavailable",
       details: { _errors: ["Scratch store query failed."] }
@@ -234,6 +238,14 @@ function scratchStoreConnectionErrorMetadata(error: unknown): Record<string, unk
   }
 
   return {};
+}
+
+function scratchStoreQueryErrorMetadata(error: unknown): Record<string, unknown> {
+  const metadata = scratchStoreConnectionErrorMetadata(error);
+  return {
+    ...(metadata.code ? { postgresCode: metadata.code } : {}),
+    ...(metadata.message ? { postgresMessage: metadata.message } : {})
+  };
 }
 
 function errorChain(error: unknown): unknown[] {
