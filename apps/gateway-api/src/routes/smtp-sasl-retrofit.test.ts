@@ -10,9 +10,15 @@ import type { CanvasLiveStateSnapshot } from "../../../../packages/domain/src/in
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import {
+  markSmtpCredentialConfigured,
+  prepareSmtpCredential,
+  saveSmtpCredentialRecord
+} from "../smtp-credentials.ts";
+import {
   buildSmtpSaslRetrofitPlan,
   handleSmtpSaslRetrofitBatchHttp,
   listSmtpSaslRetrofitCandidates,
+  reconcileSmtpProvisioningCredentialFlags,
   runSmtpSaslRetrofitBatch
 } from "./smtp-sasl-retrofit.ts";
 import { resetSensitiveReadAuthBucketsForTests } from "./sensitive-read-auth.ts";
@@ -23,6 +29,7 @@ const credentialEncryptionKey = "00112233445566778899aabbccddeeff001122334455667
 
 test("listSmtpSaslRetrofitCandidates only returns configured SMTPs missing auth credentials", async () => {
   const workspace = await setupWorkspace();
+  await saveConfiguredCredential(workspace, "ready-one.com", "server88");
   await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
     servers: [
       legacyServer("server85", "legacy-one.com"),
@@ -37,6 +44,77 @@ test("listSmtpSaslRetrofitCandidates only returns configured SMTPs missing auth 
   const candidates = await listSmtpSaslRetrofitCandidates(workspace);
   assert.deepEqual(candidates.map((candidate) => candidate.serverSlug), ["server85"]);
   assert.equal(candidates[0]?.reason, "missing_smtp_auth");
+});
+
+test("listSmtpSaslRetrofitCandidates cross-checks real credential store when provisioning flag is stale", async () => {
+  const workspace = await setupWorkspace();
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      {
+        ...legacyServer("server85", "controlnational.com"),
+        smtpAuthStatus: "configured",
+        smtpCredential: { hasCredential: true }
+      }
+    ]
+  }));
+
+  const enableCandidates = await listSmtpSaslRetrofitCandidates(workspace, { domain: "controlnational.com" }, "enable");
+  assert.deepEqual(enableCandidates.map((candidate) => ({
+    serverSlug: candidate.serverSlug,
+    reason: candidate.reason
+  })), [{
+    serverSlug: "server85",
+    reason: "missing_credential"
+  }]);
+
+  const recoverCandidates = await listSmtpSaslRetrofitCandidates(workspace, { domain: "controlnational.com" }, "recover");
+  assert.deepEqual(recoverCandidates.map((candidate) => ({
+    serverSlug: candidate.serverSlug,
+    reason: candidate.reason
+  })), [{
+    serverSlug: "server85",
+    reason: "missing_credential"
+  }]);
+});
+
+test("listSmtpSaslRetrofitCandidates does not regenerate when real credential exists despite stale false flag", async () => {
+  const workspace = await setupWorkspace();
+  await saveConfiguredCredential(workspace, "ready-one.com", "server85");
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      {
+        ...legacyServer("server85", "ready-one.com"),
+        smtpAuthStatus: "configured",
+        smtpCredential: { hasCredential: false }
+      }
+    ]
+  }));
+
+  const enableCandidates = await listSmtpSaslRetrofitCandidates(workspace, { domain: "ready-one.com" }, "enable");
+  assert.deepEqual(enableCandidates, []);
+});
+
+test("listSmtpSaslRetrofitCandidates rotate mode still ignores credential presence", async () => {
+  const workspace = await setupWorkspace();
+  await saveConfiguredCredential(workspace, "ready-one.com", "server85");
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      {
+        ...legacyServer("server85", "ready-one.com"),
+        smtpAuthStatus: "configured",
+        smtpCredential: { hasCredential: true }
+      }
+    ]
+  }));
+
+  const rotateCandidates = await listSmtpSaslRetrofitCandidates(workspace, { domain: "ready-one.com" }, "rotate");
+  assert.deepEqual(rotateCandidates.map((candidate) => ({
+    serverSlug: candidate.serverSlug,
+    reason: candidate.reason
+  })), [{
+    serverSlug: "server85",
+    reason: "rotate"
+  }]);
 });
 
 test("listSmtpSaslRetrofitCandidates can scope retrofit to one domain or server", async () => {
@@ -57,6 +135,7 @@ test("listSmtpSaslRetrofitCandidates can scope retrofit to one domain or server"
 
 test("listSmtpSaslRetrofitCandidates recover mode targets configured SMTP auth missing credential", async () => {
   const workspace = await setupWorkspace();
+  await saveConfiguredCredential(workspace, "ready-one.com", "server88");
   await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
     servers: [
       { ...legacyServer("server85", "legacy-one.com"), smtpAuthStatus: "configured" },
@@ -76,6 +155,70 @@ test("listSmtpSaslRetrofitCandidates recover mode targets configured SMTP auth m
     serverSlug: "server85",
     reason: "missing_credential"
   }]);
+});
+
+test("reconcileSmtpProvisioningCredentialFlags downgrades stale true flags only once", async () => {
+  const workspace = await setupWorkspace();
+  await saveConfiguredCredential(workspace, "ready-one.com", "server88");
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      {
+        ...legacyServer("server85", "missing-material.com"),
+        smtpAuthStatus: "configured",
+        smtpCredential: { hasCredential: true }
+      },
+      {
+        ...legacyServer("server88", "ready-one.com"),
+        smtpAuthStatus: "configured",
+        smtpCredential: { hasCredential: true }
+      },
+      {
+        ...legacyServer("server89", "do-not-upgrade.com"),
+        smtpAuthStatus: "configured",
+        smtpCredential: { hasCredential: false }
+      },
+      {
+        ...legacyServer("server90", "metadata-without-flag.com"),
+        smtpAuthStatus: "configured",
+        smtpCredential: { status: "configured" }
+      }
+    ]
+  }));
+
+  const first = await reconcileSmtpProvisioningCredentialFlags(
+    workspace,
+    () => new Date("2026-06-22T15:00:00.000Z")
+  );
+  assert.deepEqual(first, { scanned: 4, staleDowngraded: 2 });
+  const second = await reconcileSmtpProvisioningCredentialFlags(
+    workspace,
+    () => new Date("2026-06-22T16:00:00.000Z")
+  );
+  assert.deepEqual(second, { scanned: 4, staleDowngraded: 0 });
+
+  const provisioning = await workspace.readInventoryJson<{
+    servers: Array<{ domain: string; smtpCredential?: { hasCredential?: boolean }; updatedAt: string }>;
+  }>("smtp-provisioning.json");
+  assert.equal(
+    provisioning?.servers.find((server) => server.domain === "missing-material.com")?.smtpCredential?.hasCredential,
+    false
+  );
+  assert.equal(
+    provisioning?.servers.find((server) => server.domain === "missing-material.com")?.updatedAt,
+    "2026-06-22T15:00:00.000Z"
+  );
+  assert.equal(
+    provisioning?.servers.find((server) => server.domain === "ready-one.com")?.smtpCredential?.hasCredential,
+    true
+  );
+  assert.equal(
+    provisioning?.servers.find((server) => server.domain === "do-not-upgrade.com")?.smtpCredential?.hasCredential,
+    false
+  );
+  assert.equal(
+    provisioning?.servers.find((server) => server.domain === "metadata-without-flag.com")?.smtpCredential?.hasCredential,
+    false
+  );
 });
 
 test("buildSmtpSaslRetrofitPlan is additive, keeps permit_mynetworks, and redacts password from commands", () => {
@@ -425,6 +568,22 @@ function legacyServer(serverSlug: string, domain: string) {
     configuredAt: fixedNow.toISOString(),
     updatedAt: fixedNow.toISOString()
   };
+}
+
+async function saveConfiguredCredential(
+  workspace: OpenClawWorkspace,
+  domain: string,
+  serverSlug: string
+): Promise<void> {
+  const material = await prepareSmtpCredential({
+    workspace,
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    domain,
+    serverSlug,
+    now: () => fixedNow,
+    passwordFactory: () => "smtp-secret-password"
+  });
+  await saveSmtpCredentialRecord(workspace, markSmtpCredentialConfigured(material.record, fixedNow));
 }
 
 function mockRunner(overrides: Partial<SmtpSshRunner> = {}): SmtpSshRunner {

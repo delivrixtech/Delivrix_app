@@ -216,7 +216,10 @@ import {
   handleSmtpProvisionError,
   handleSmtpProvisionHttp
 } from "./routes/smtp-provisioning.ts";
-import { handleSmtpSaslRetrofitBatchHttp } from "./routes/smtp-sasl-retrofit.ts";
+import {
+  handleSmtpSaslRetrofitBatchHttp,
+  reconcileSmtpProvisioningCredentialFlags
+} from "./routes/smtp-sasl-retrofit.ts";
 import {
   handleWarmupStartError,
   handleWarmupStartHttp
@@ -5250,6 +5253,29 @@ server.listen(port, host, () => {
     bedrockModelId: process.env.AWS_BEDROCK_MODEL_ID ?? null
   });
   void logGatewayDependencyWarnings();
+  void reconcileSmtpProvisioningCredentialFlags(openClawWorkspace)
+    .then((result) => {
+      if (result.staleDowngraded > 0) {
+        void gatewayRuntimeLog.warn(
+          "smtp_auth.credential_flags_reconciled",
+          "Downgraded stale SMTP credential flags that no longer have configured credential material.",
+          result
+        );
+      } else {
+        void gatewayRuntimeLog.info(
+          "smtp_auth.credential_flags_reconciled",
+          "SMTP credential flags checked against credential store.",
+          result
+        );
+      }
+    })
+    .catch((error) => {
+      void gatewayRuntimeLog.error(
+        "smtp_auth.credential_flags_reconcile_failed",
+        "SMTP credential flag reconciliation failed; leaving provisioning inventory unchanged.",
+        runtimeErrorMetadata(error)
+      );
+    });
   void resumeRampsOnStartup();
   if (process.env.OPENCLAW_EPISODIC_SCRATCH_TTL_JOB_ENABLE === "true") {
     startEpisodicScratchTtlJob({
