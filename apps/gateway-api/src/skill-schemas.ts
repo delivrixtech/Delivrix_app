@@ -97,6 +97,20 @@ export interface ReadWebdockServersParams extends Record<string, unknown> {
   ipv4?: string;
 }
 
+export interface ReadInfrastructureInventoryParams extends Record<string, unknown> {}
+
+export interface ListConversationsParams extends Record<string, unknown> {
+  offset?: number;
+  limit?: number;
+}
+
+export interface ReadConversationParams extends Record<string, unknown> {
+  conversationId: string;
+  offset?: number;
+  limit?: number;
+  maxCharsPerTurn?: number;
+}
+
 export interface SmtpProvisionParams extends Record<string, unknown> {
   serverSlug: string;
   domain: string;
@@ -332,6 +346,29 @@ export const readWebdockServersParamSchema = schema<ReadWebdockServersParams>((v
     ...(input.ipv4 === undefined || input.ipv4 === null || input.ipv4 === ""
       ? {}
       : { ipv4: ipv4(input.ipv4, "ipv4") })
+  };
+});
+
+export const readInfrastructureInventoryParamSchema = schema<ReadInfrastructureInventoryParams>((value) => {
+  object(value);
+  return {};
+});
+
+export const listConversationsParamSchema = schema<ListConversationsParams>((value) => {
+  const input = object(value);
+  return {
+    ...(input.offset === undefined || input.offset === null ? {} : { offset: integer(input.offset, "offset", 0, 10_000) }),
+    ...(input.limit === undefined || input.limit === null ? {} : { limit: integer(input.limit, "limit", 1, 50) })
+  };
+});
+
+export const readConversationParamSchema = schema<ReadConversationParams>((value) => {
+  const input = object(value);
+  return {
+    conversationId: boundedId(input.conversationId, "conversationId", 128),
+    ...(input.offset === undefined || input.offset === null ? {} : { offset: integer(input.offset, "offset", 0, 10_000) }),
+    ...(input.limit === undefined || input.limit === null ? {} : { limit: integer(input.limit, "limit", 1, 8) }),
+    ...(input.maxCharsPerTurn === undefined || input.maxCharsPerTurn === null ? {} : { maxCharsPerTurn: integer(input.maxCharsPerTurn, "maxCharsPerTurn", 1, 800) })
   };
 });
 

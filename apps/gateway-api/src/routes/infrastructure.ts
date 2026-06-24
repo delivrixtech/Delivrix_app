@@ -22,6 +22,7 @@ import {
   type Provider,
   type ProviderStatus
 } from "../../../../packages/domain/src/index.ts";
+import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
 
 const infrastructureInventorySkillInvocationHeader = "x-openclaw-skill-invocation";
 const auditedSkillInvocations = new Set([
@@ -39,6 +40,7 @@ export interface InfrastructureInventoryRouteDependencies {
   request: IncomingMessage;
   response: ServerResponse;
   auditLog: AuditSink;
+  readBoundaryToken?: string;
   webdockListServers: () => Promise<WebdockAccountInventoryResult[]>;
   vpsProviderListServers?: () => Promise<VpsProviderInventoryResult[]>;
   awsRoute53DomainsListInventory?: () => Promise<AwsRoute53DomainsInventoryResult>;
@@ -87,14 +89,26 @@ interface AwsBedrockSetupSummary {
 export async function handleInfrastructureInventoryHttp(
   deps: InfrastructureInventoryRouteDependencies
 ): Promise<void> {
+  const isSkillInvocation = shouldAuditInfrastructureInventoryFetch(deps.request.headers);
+  if (isSkillInvocation) {
+    const auth = authorizeSensitiveRead(deps.request, { readBoundaryToken: deps.readBoundaryToken }, "infrastructure_inventory");
+    if (!auth.ok) {
+      json(deps.response, auth.statusCode, {
+        error: auth.error,
+        message: "Missing or invalid read-boundary token for OpenClaw infrastructure inventory read."
+      });
+      return;
+    }
+  }
+
   const [
-    webdockAccounts,
-    vpsProviders,
-    ionosDns,
-    ionosDomains,
-    awsRoute53Domains,
-    porkbun
-  ] = await Promise.all([
+    webdockAccountsResult,
+    vpsProvidersResult,
+    ionosDnsResult,
+    ionosDomainsResult,
+    awsRoute53DomainsResult,
+    porkbunResult
+  ] = await Promise.allSettled([
     deps.webdockListServers(),
     deps.vpsProviderListServers ? deps.vpsProviderListServers() : Promise.resolve([]),
     deps.ionosListDnsInventory ? deps.ionosListDnsInventory() : Promise.resolve(null),
@@ -103,22 +117,26 @@ export async function handleInfrastructureInventoryHttp(
     deps.porkbunListInventory ? deps.porkbunListInventory() : Promise.resolve(null)
   ]);
   const payload = await buildInfrastructureInventoryPayload({
-    webdockAccounts,
-    vpsProviders,
-    awsRoute53Domains,
-    porkbun,
-    ionosDns,
-    ionosDomains,
+    webdockAccounts: settledValue(webdockAccountsResult, []),
+    vpsProviders: settledValue(vpsProvidersResult, []),
+    ionosDns: settledValue(ionosDnsResult, null),
+    ionosDomains: settledValue(ionosDomainsResult, null),
+    awsRoute53Domains: settledValue(awsRoute53DomainsResult, null),
+    porkbun: settledValue(porkbunResult, null),
     awsBedrockSetupLogPath: deps.awsBedrockSetupLogPath,
     env: deps.env,
     now: deps.now?.() ?? new Date()
   });
 
-  if (shouldAuditInfrastructureInventoryFetch(deps.request.headers)) {
+  if (isSkillInvocation) {
     await auditInfrastructureInventoryFetch(deps.auditLog, payload);
   }
 
   json(deps.response, 200, payload);
+}
+
+function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
+  return result.status === "fulfilled" ? result.value : fallback;
 }
 
 export async function buildInfrastructureInventoryPayload(
@@ -139,7 +157,9 @@ export async function buildInfrastructureInventoryPayload(
   for (const account of webdockAccounts) {
     providers.push(buildWebdockProvider(account));
   }
-  for (const provider of input.vpsProviders ?? []) {
+
+  const vpsProviders = input.vpsProviders ?? [];
+  for (const provider of vpsProviders) {
     providers.push(buildExternalVpsProvider(provider));
   }
 
@@ -576,6 +596,7 @@ function webdockServerToInventoryItem(server: WebdockServer): InventoryItem {
       location: server.location ?? null,
       profileSlug: server.profileSlug ?? null,
       imageSlug: server.imageSlug ?? null,
+      ipv4: server.ipv4?.trim() || null,
       accountId: server.accountId ?? null,
       accountLabel: server.accountLabel ?? null,
       createdAt: server.creationDate ?? null,

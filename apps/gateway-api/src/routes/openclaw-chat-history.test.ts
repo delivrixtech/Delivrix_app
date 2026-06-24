@@ -34,6 +34,53 @@ test("OpenClaw chat history routes require read token and return isolated histor
 
   const invalid = await invokeHistory(store, "/v1/openclaw/chat/history?conversationId=../bad", { "x-delivrix-token": "read-token" });
   assert.equal(invalid.statusCode, 422);
+
+  const queryToken = await invokeHistory(store, "/v1/openclaw/chat/history?conversationId=conv-a&token=read-token", {});
+  assert.equal(queryToken.statusCode, 401);
+});
+
+test("OpenClaw chat history routes redact secrets from summaries and turns", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "openclaw-chat-route-redact-"));
+  const store = new OpenClawChatHistoryStore({ stateDir });
+  const sensitive = [
+    "Authorization: Bearer bearer.secret",
+    "password=hunter2",
+    "api_key=api-secret",
+    "approval token is approval-secret",
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB",
+    "-----BEGIN PRIVATE KEY-----",
+    "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDsecretbody",
+    "-----END PRIVATE KEY-----"
+  ].join("\n");
+  await store.appendTurn("conv-secret", {
+    role: "user",
+    content: sensitive,
+    msgId: "secret-1",
+    createdAt: "2026-06-19T12:00:00.000Z"
+  });
+  await store.appendTurn("conv-secret", {
+    role: "assistant",
+    content: `recibido ${sensitive}`,
+    msgId: "secret-1",
+    createdAt: "2026-06-19T12:01:00.000Z"
+  });
+
+  const listed = await invokeConversations(store, { "x-delivrix-token": "read-token" });
+  assert.equal(listed.statusCode, 200);
+  const history = await invokeHistory(store, "/v1/openclaw/chat/history?conversationId=conv-secret", {
+    authorization: "Bearer read-token"
+  });
+  assert.equal(history.statusCode, 200);
+
+  for (const surface of [JSON.stringify(listed.body), JSON.stringify(history.body)]) {
+    assert.doesNotMatch(surface, /bearer\.secret/);
+    assert.doesNotMatch(surface, /hunter2/);
+    assert.doesNotMatch(surface, /api-secret/);
+    assert.doesNotMatch(surface, /approval-secret/);
+    assert.doesNotMatch(surface, /iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB/);
+    assert.doesNotMatch(surface, /BEGIN PRIVATE KEY|END PRIVATE KEY|secretbody/);
+    assert.match(surface, /\[REDACTED/);
+  }
 });
 
 async function invokeConversations(

@@ -14,6 +14,7 @@ Categorías y método de evaluación heredados de `HITO_4_5_RUNBOOK_PERMISOS_KIL
 - **v2.4** (2026-06-09) — `bind_webdock_main_domain`: Server Identity `smtp.<dominio>` + FCrDNS verificado.
 - **v2.5** (2026-06-09) — `provision_webdock_vps`/`create_webdock_server`: governor 4/24h por cuenta antes de crear VPS.
 - **v2.6** (2026-06-23) — `enable_smtp_auth`: genera/instala credencial SMTP AUTH para un único dominio ya configurado; exige ApprovalGate, `SMTP_PROVISIONING_ENABLE_SSH=true`, runner SSH configurado y `CREDENTIAL_ENCRYPTION_KEY` válida en ejecución. La key es warning de preflight, no fatal de boot.
+- **v2.7** (2026-06-24) — `read_infrastructure_inventory` pasa a ser la lectura genérica multiproveedor; `read_webdock_*` queda legacy Webdock-only. Se agregan lecturas paginadas/redactadas de conversaciones OpenClaw.
 
 ## 1. Propósito
 
@@ -80,12 +81,17 @@ agregue al read-boundary debe agregarse acá en el mismo commit.
 | `read_openclaw_evidence` | `GET /v1/openclaw/evidence` | `oc.read.evidence` | `evidence` |
 | `read_mxtoolbox_health` | `GET /v1/mxtoolbox/health` | `oc.mxtoolbox.lookup` | `ip_or_domain_reputation` |
 | `read_mxtoolbox_daily_report` | `GET /v1/mxtoolbox/daily-report` | `oc.mxtoolbox.daily_scan_clean` | `mxtoolbox_report` |
+| `read_infrastructure_inventory` | `GET /v1/infrastructure/inventory` | `oc.infrastructure.inventory.fetch` | `infrastructure_inventory` |
 | `read_webdock_inventory` | `GET /v1/webdock/inventory` | `oc.read.webdock` | `webdock_inventory` |
 | `read_webdock_servers` | `GET /v1/webdock/inventory` | `oc.read.webdock` | `webdock_inventory` |
+| `list_conversations` | `GET /v1/openclaw/chat/conversations` | `oc.read.openclaw_chat_history` | `openclaw_chat_history` |
+| `read_conversation` | `GET /v1/openclaw/chat/history` | `oc.read.openclaw_chat_history` | `openclaw_chat_history` |
 | `suggest_safe_domain` | `POST /v1/skills/suggest-safe-domain` | `oc.naming.candidates_suggested` | `domain_naming` |
 | `naming_suggest` | `POST /v1/skills/suggest-safe-domain` | `oc.naming.candidates_suggested` | `domain_naming` |
 
 `suggest_safe_domain` usa `POST` por payload estructurado, pero es read-only: no registra dominios, no modifica DNS y no requiere firma. Costo `$0`, reversible `n/a`; el único side effect permitido es audit append-only.
+
+`read_webdock_inventory` / `read_webdock_servers` son alias legacy Webdock-only. Para grounding general de flota, proveedores, cuentas o inventario multiproveedor, usar `read_infrastructure_inventory`.
 
 **Regla de sincronización:** cualquier PR que agregue un endpoint al
 `read-boundary.ts` debe agregar una fila a esta tabla en el mismo commit, o el

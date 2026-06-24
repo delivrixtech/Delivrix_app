@@ -50,9 +50,9 @@ MVP Hito 5.11.B: fleet/report/alert, drift Webdock, publisher HMAC y MXToolbox r
 | Campo | Valor |
 | --- | --- |
 | Trigger natural | "estado de la flota", "clústeres", "sender nodes", "nodos activos" |
-| Acciones matrix | `read_admin_clusters`, `read_sender_nodes`, `read_canvas`, `read_webdock_inventory` |
-| Endpoints | `GET /v1/admin/clusters`, `GET /v1/sender-nodes`, `GET /v1/openclaw/live-canvas`, `GET /v1/webdock/inventory` |
-| Retorna | Markdown: clusters, nodos, canvas, Webdock inventory |
+| Acciones matrix | `read_admin_clusters`, `read_sender_nodes`, `read_canvas`, `read_infrastructure_inventory` |
+| Endpoints | `GET /v1/admin/clusters`, `GET /v1/sender-nodes`, `GET /v1/openclaw/live-canvas`, `GET /v1/infrastructure/inventory` |
+| Retorna | Markdown: clusters, nodos, canvas, inventario multiproveedor |
 | Errores | Sigue con endpoints sanos y reporta fallas |
 | Fallback | `evaluateWebdockDrift` local si no llega al Gateway |
 | Audit | `oc.skill.fleet_ops.invoke` + `evidenceRefs` |
@@ -86,7 +86,7 @@ MVP Hito 5.11.B: fleet/report/alert, drift Webdock, publisher HMAC y MXToolbox r
 
 | Campo | Valor |
 | --- | --- |
-| Trigger natural | "servidores Webdock", "VPS corriendo", "inventario" |
+| Trigger natural | "servidores Webdock legacy", "inventario Webdock", "drift Webdock" |
 | Acciones matrix | `read_webdock_inventory` |
 | Endpoints | `GET /v1/webdock/inventory` (gateway local) |
 | Retorna | Lista tabular: slug, name, status, ipv4, location, profileSlug, lastDataReceived |
