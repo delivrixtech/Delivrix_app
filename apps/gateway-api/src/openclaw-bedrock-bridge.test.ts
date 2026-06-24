@@ -698,6 +698,118 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
   assert.doesNotMatch(system, /ciphertext-should-redact|auth-tag-should-redact|smtp-password-should-redact/);
 });
 
+test("OpenClawBedrockBridge keeps multiprovider inventory_servers JSON valid when truncated", async () => {
+  let payload: Record<string, unknown> | null = null;
+  const webdockAccounts = ["primary", "ops", "warmup", "delivery", "reserve"];
+  const webdockItems = webdockAccounts.flatMap((accountId, accountIndex) => {
+    return Array.from({ length: 5 }, (_, serverIndex) => ({
+      id: `${accountId}-server-${serverIndex + 1}`,
+      kind: "webdock_server",
+      displayName: `${accountId}-server-${serverIndex + 1}-with-a-deliberately-long-live-context-label-for-json-budget-pressure`,
+      status: "running",
+      detail: {
+        slug: `${accountId}-server-${serverIndex + 1}`,
+        ipv4: `45.136.${70 + accountIndex}.${10 + serverIndex}`,
+        accountId,
+        accountLabel: `Webdock ${accountId} account with an intentionally long display label`,
+        providerId: `webdock-${accountId}`
+      }
+    }));
+  });
+  const contaboItems = Array.from({ length: 6 }, (_, serverIndex) => ({
+    id: `contabo-us-east-${serverIndex + 1}`,
+    kind: "contabo_server",
+    displayName: `contabo-us-east-${serverIndex + 1}-with-a-deliberately-long-live-context-label-for-json-budget-pressure`,
+    status: "running",
+    detail: {
+      slug: `contabo-us-east-${serverIndex + 1}`,
+      ipv4: `66.94.96.${20 + serverIndex}`,
+      accountId: "contabo",
+      accountLabel: "Contabo Host Latam account with an intentionally long display label",
+      providerId: "contabo"
+    }
+  }));
+  const totalServers = webdockItems.length + contaboItems.length;
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    delivrixBaseUrl: "http://gateway.test/",
+    liveContextItemLimit: 20,
+    fetchImpl: (async (input) => {
+      const url = new URL(String(input));
+      const bodyByPath: Record<string, unknown> = {
+        "/v1/admin/overview": {},
+        "/v1/kill-switch": { enabled: false },
+        "/v1/canvas/live/state": {},
+        "/v1/audit-events": [],
+        "/v1/sender-pool/status": { domains: [] },
+        "/v1/webdock/inventory": { inventory: { servers: [] } },
+        "/v1/openclaw/scratch": { status: "abstain", reason: "no_grounded_match", memories: [] },
+        "/v1/infrastructure/inventory": {
+          providers: [
+            ...webdockAccounts.map((accountId) => ({
+              id: `webdock-${accountId}`,
+              kind: "compute",
+              displayName: `Webdock ${accountId}`,
+              status: "active",
+              itemCount: 5,
+              fetchSourceKind: "live",
+              items: webdockItems.filter((item) => item.detail.accountId === accountId)
+            })),
+            {
+              id: "contabo",
+              kind: "compute",
+              displayName: "Contabo Host Latam",
+              status: "active",
+              itemCount: contaboItems.length,
+              fetchSourceKind: "live",
+              items: contaboItems
+            }
+          ]
+        }
+      };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => bodyByPath[url.pathname] ?? {}
+      } as Response;
+    }) as typeof fetch,
+    client: {
+      send: async (command) => {
+        payload = JSON.parse(String(command.input.body));
+        return { body: [streamJson({ type: "content_block_delta", delta: { type: "text_delta", text: "ok" } })] };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-inventory-json", message: "estado inventario" });
+  await bridge.streamHistory("msg-inventory-json", {});
+
+  const capturedPayload = payload as Record<string, unknown> | null;
+  assert.ok(capturedPayload);
+  const inventoryServersJson = extractLiveContextJsonBlock(String(capturedPayload.system), "inventory_servers");
+  assert.ok(inventoryServersJson.length <= 5_000);
+  const parsed = JSON.parse(inventoryServersJson) as {
+    count: number;
+    displayedCount: number;
+    truncated: boolean;
+    items: Array<{ accountId: string; providerId: string }>;
+  };
+  assert.equal(parsed.count, totalServers);
+  assert.equal(parsed.truncated, true);
+  assert.equal(parsed.displayedCount, parsed.items.length);
+  assert.ok(parsed.items.length <= 20);
+  const accountIds = new Set(parsed.items.map((item) => item.accountId));
+  for (const accountId of webdockAccounts) {
+    assert.equal(accountIds.has(accountId), true);
+  }
+  assert.equal(accountIds.has("contabo"), true);
+  assert.equal(parsed.items.some((item) => item.providerId === "contabo"), true);
+});
+
 test("OpenClawBedrockBridge injects explicit abstention when inventory and verified facts are absent", async () => {
   let payload: Record<string, unknown> | null = null;
   const bridge = new OpenClawBedrockBridge({
@@ -1536,6 +1648,13 @@ function pemBodyLine(pem: string): string {
   const line = pem.split(/\r?\n/).find((candidate) => /^[A-Za-z0-9+/]{48,}={0,2}$/.test(candidate));
   assert.ok(line);
   return line;
+}
+
+function extractLiveContextJsonBlock(system: string, heading: string): string {
+  const fence = "```";
+  const match = new RegExp(`## ${heading}[^\\n]*\\n${fence}json\\n([\\s\\S]*?)\\n${fence}`).exec(system);
+  assert.ok(match, `missing live context block ${heading}`);
+  return match[1];
 }
 
 function liveContextFetchStub(): typeof fetch {

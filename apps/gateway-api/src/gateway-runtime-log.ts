@@ -26,6 +26,7 @@ export const noopGatewayRuntimeLogger: GatewayRuntimeLogger = {
 
 const maxMetadataChars = 4_000;
 const maxMessageChars = 1_000;
+const sensitiveAssignmentKeyPattern = "password|passwd|secret|token|session[_-]?token|api[_-]?key|access[_-]?key|private[_-]?key|signature|hmac";
 
 export function createGatewayRuntimeLogger(options: GatewayRuntimeLoggerOptions = {}): GatewayRuntimeLogger {
   const logPath = resolve(options.logPath ?? process.env.GATEWAY_LOG_PATH ?? "runtime/logs/gateway.log");
@@ -121,7 +122,24 @@ export function redactRuntimeLogSecrets(value: string): string {
     .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED_AWS_ACCESS_KEY]")
     .replace(/\bauthorization\b\s*[:=]\s*Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Authorization: Bearer [REDACTED]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-    .replace(/\b(password|passwd|secret|token|session[_-]?token|api[_-]?key|access[_-]?key|private[_-]?key|signature|hmac)\b\s*[:=]\s*("[^"]+"|'[^']+'|[^\s,;]+)/gi, "$1=[REDACTED]");
+    .replace(new RegExp(`\\b(${sensitiveAssignmentKeyPattern})\\b\\s*[:=]\\s*("[^"]+"|'[^']+'|[^\\s,;]+)`, "gi"), "$1=[REDACTED]")
+    .replace(/\b(smtp|sasl|dovecot)\b\s*[:=]\s*("[^"]+"|'[^']+'|[^\s,;]+)/gi, (match, key: string, rawValue: string) => {
+      return looksLikeSecretLiteral(rawValue) ? `${key}=[REDACTED]` : match;
+    });
+}
+
+function looksLikeSecretLiteral(rawValue: string): boolean {
+  const value = rawValue.replace(/^["']|["']$/g, "");
+  if (/^(?:hash|regexp|texthash):/i.test(value) || value.includes("/") || value.includes(".")) {
+    return false;
+  }
+  if (/^[a-f0-9]{32}$|^[a-f0-9]{40}$|^[a-f0-9]{64}$/i.test(value)) {
+    return true;
+  }
+  return value.length >= 20
+    && /[a-z]/.test(value)
+    && /[A-Z]/.test(value)
+    && /[0-9]/.test(value);
 }
 
 function normalizeMetadata(metadata: GatewayRuntimeLogMetadata): GatewayRuntimeLogMetadata {
