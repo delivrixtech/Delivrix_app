@@ -16,6 +16,7 @@ import {
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import type { SmtpSshRunner } from "./smtp-provisioning.ts";
+import { warmupFromAddress } from "./warmup-sender.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -225,7 +226,7 @@ export async function handleWarmupStartHttp(deps: WarmupStartDependencies): Prom
       const result = await deps.sshRunner.run({
         serverSlug,
         serverIp: serverIp!,
-        command: `/usr/sbin/sendmail -t -f ${shellQuote(`noreply@${domain}`)}`,
+        command: `/usr/sbin/sendmail -t -f ${shellQuote(warmupFromAddress(domain))}`,
         stdin: message,
         timeoutMs: 60_000
       });
@@ -388,7 +389,7 @@ function renderWarmupMessage(input: {
   now: Date;
 }): string {
   return [
-    `From: Delivrix Warmup <noreply@${input.domain}>`,
+    `From: Delivrix Warmup <${warmupFromAddress(input.domain)}>`,
     `To: ${input.to}`,
     `Subject: Delivrix warmup seed · ${input.domain}`,
     `Message-ID: ${input.msgId}`,
