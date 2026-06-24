@@ -161,6 +161,50 @@ test("enable_smtp_auth recovers stale hasCredential flag by checking real creden
   }
 });
 
+test("enable_smtp_auth default enable mode recovers stale hasCredential flag for the panel button", async () => {
+  const workspace = await setupWorkspace();
+  const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      ...legacyServer("server85", "controlnational.com"),
+      smtpAuthStatus: "configured",
+      smtpCredential: { hasCredential: true }
+    }]
+  }));
+  const commands: SmtpSshCommandInput[] = [];
+  const response = captureResponse();
+
+  await handleEnableSmtpAuthHttp({
+    request: request({ actorId: "operator/juanes", domain: "controlnational.com" }),
+    response: response as unknown as ServerResponse,
+    workspace,
+    auditLog,
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => fixedNow
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), {
+    ok: true,
+    domain: "controlnational.com",
+    mode: "enable",
+    status: "configured",
+    hasCredential: true
+  });
+  assert.equal(commands.length, 10);
+  assert.equal(commands.every((command) => command.serverSlug === "server85"), true);
+  const serialized = `${response.body}\n${JSON.stringify(await auditLog.list())}`;
+  for (const forbidden of ["Password:", "smtpCredentialEncrypted", "ciphertext", "authTag", "smtp-secret-password"]) {
+    assert.equal(serialized.includes(forbidden), false, `leaked ${forbidden}`);
+  }
+});
+
 test("enable_smtp_auth does not regenerate when real credential exists", async () => {
   const workspace = await setupWorkspace();
   const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
