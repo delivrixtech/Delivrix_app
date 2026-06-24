@@ -18,6 +18,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "read_dns_ionos",
     "read_mxtoolbox_health",
     "read_infrastructure_inventory",
+    "read_infrastructure_account_health",
     "read_webdock_servers",
     "list_conversations",
     "read_conversation",
@@ -32,7 +33,8 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "seed_warmup_pool",
     "send_real_email",
     "compact_intent",
-    "configure_complete_smtp"
+    "configure_complete_smtp",
+    "retire_infrastructure_account"
   ]);
   assert.equal(
     tools
@@ -45,6 +47,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
         "read_dns_ionos",
         "read_mxtoolbox_health",
         "read_infrastructure_inventory",
+        "read_infrastructure_account_health",
         "read_webdock_servers",
         "list_conversations",
         "read_conversation",
@@ -77,6 +80,10 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
   assert.ok(infrastructureInventory);
   assert.deepEqual(infrastructureInventory.input_schema.required, []);
   assert.match(infrastructureInventory.description, /read-only/);
+  const infrastructureAccountHealth = tools.find((tool) => tool.name === "read_infrastructure_account_health");
+  assert.ok(infrastructureAccountHealth);
+  assert.deepEqual(infrastructureAccountHealth.input_schema.required, []);
+  assert.match(infrastructureAccountHealth.description, /read-only/);
   assert.match(
     tools.find((tool) => tool.name === "read_webdock_servers")?.description ?? "",
     /no requiere ApprovalGate/
@@ -95,6 +102,11 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
   assert.match(enableSmtpAuth.description, /un solo dominio/);
   assert.match(enableSmtpAuth.description, /No imprime password ni markdown/);
   assert.deepEqual(enableSmtpAuth.input_schema.required, ["domain"]);
+  const retireAccount = tools.find((tool) => tool.name === "retire_infrastructure_account");
+  assert.ok(retireAccount);
+  assert.match(retireAccount.description, /ApprovalGate/);
+  assert.match(retireAccount.description, /NO borra VPS/);
+  assert.deepEqual(retireAccount.input_schema.required, ["providerId", "accountId", "reason"]);
 });
 
 test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", () => {
@@ -102,7 +114,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 23);
+  assert.equal(tools.length, 25);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -224,6 +236,7 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "update_domain_nameservers",
     "read_dns_ionos",
     "read_infrastructure_inventory",
+    "read_infrastructure_account_health",
     "read_webdock_servers",
     "list_conversations",
     "read_conversation",
@@ -231,7 +244,8 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "enable_smtp_auth",
     "send_real_email",
     "compact_intent",
-    "configure_complete_smtp"
+    "configure_complete_smtp",
+    "retire_infrastructure_account"
   ]) {
     assert.equal(names.includes(name), true, `${name} should be exposed`);
   }
@@ -324,6 +338,9 @@ function validSample(toolName: string): Record<string, unknown> {
   if (toolName === "read_infrastructure_inventory") {
     return {};
   }
+  if (toolName === "read_infrastructure_account_health") {
+    return {};
+  }
   if (toolName === "read_webdock_servers") {
     return { serverSlug: "server10", ipv4: "45.136.70.47" };
   }
@@ -397,6 +414,13 @@ function validSample(toolName: string): Record<string, unknown> {
           outcome: "success"
         }
       ]
+    };
+  }
+  if (toolName === "retire_infrastructure_account") {
+    return {
+      providerId: "webdock",
+      accountId: "secondary",
+      reason: "Cuenta Webdock perdida permanentemente, retirar del selector."
     };
   }
   return {

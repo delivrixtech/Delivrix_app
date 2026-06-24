@@ -64,7 +64,9 @@ export interface SendResult {
 export interface SenderNode {
   id: string;
   label: string;
-  provider: "webdock" | "proxmox" | "racknerd" | "manual";
+  provider: "webdock" | "contabo" | "proxmox" | "racknerd" | "manual" | (string & {});
+  providerAccountId?: string;
+  providerServerId?: string;
   status: SenderNodeStatus;
   ipAddress?: string;
   hostname?: string;

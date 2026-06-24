@@ -19,6 +19,8 @@ export interface RegisterSenderNodeInput {
   id: string;
   label: string;
   provider: SenderNode["provider"];
+  providerAccountId?: string;
+  providerServerId?: string;
   status?: SenderNode["status"];
   ipAddress?: string;
   hostname?: string;
@@ -205,6 +207,8 @@ function normalizeSenderNode(input: RegisterSenderNodeInput): SenderNode {
     id: input.id.trim(),
     label: input.label.trim(),
     provider: input.provider,
+    providerAccountId: input.providerAccountId?.trim() || undefined,
+    providerServerId: input.providerServerId?.trim() || undefined,
     status: input.status ?? "warming",
     ipAddress: input.ipAddress?.trim() || undefined,
     hostname: input.hostname?.trim() || undefined,

@@ -766,6 +766,24 @@ async function invokeReadOnlyToolOverHttp(input: {
     return body;
   }
 
+  if (input.input.toolName === "read_infrastructure_account_health") {
+    if (!input.readBoundaryToken) {
+      throw new Error("read_boundary_token_unconfigured");
+    }
+    const response = await input.fetchImpl(`${input.baseUrl}/v1/infrastructure/account-health`, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        "x-delivrix-token": input.readBoundaryToken
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return body;
+  }
+
   if (input.input.toolName === "read_webdock_servers") {
     const response = await input.fetchImpl(`${input.baseUrl}/v1/webdock/inventory`, {
       method: "GET",
@@ -1057,6 +1075,9 @@ function toolTarget(toolName: string, params: Record<string, unknown>, fallbackT
   if (toolName === "configure_complete_smtp" && typeof params.brand === "string") {
     return { id: params.brand, type: "openclaw_orchestrator" };
   }
+  if (toolName === "retire_infrastructure_account" && typeof params.accountId === "string") {
+    return { id: params.accountId, type: "infrastructure_account" };
+  }
   if (typeof params.domain === "string") {
     return { id: params.domain, type: "domain" };
   }
@@ -1179,6 +1200,7 @@ function isReadOnlyToolUse(toolName: string): boolean {
     toolName === "read_dns_ionos" ||
     toolName === "read_mxtoolbox_health" ||
     toolName === "read_infrastructure_inventory" ||
+    toolName === "read_infrastructure_account_health" ||
     toolName === "read_webdock_servers" ||
     toolName === "list_conversations" ||
     toolName === "read_conversation";

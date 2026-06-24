@@ -99,6 +99,15 @@ export interface ReadWebdockServersParams extends Record<string, unknown> {
 
 export interface ReadInfrastructureInventoryParams extends Record<string, unknown> {}
 
+export interface ReadInfrastructureAccountHealthParams extends Record<string, unknown> {}
+
+export interface RetireInfrastructureAccountParams extends Record<string, unknown> {
+  providerId: "webdock";
+  accountId: string;
+  reason: string;
+  accountLabel?: string;
+}
+
 export interface ListConversationsParams extends Record<string, unknown> {
   offset?: number;
   limit?: number;
@@ -352,6 +361,23 @@ export const readWebdockServersParamSchema = schema<ReadWebdockServersParams>((v
 export const readInfrastructureInventoryParamSchema = schema<ReadInfrastructureInventoryParams>((value) => {
   object(value);
   return {};
+});
+
+export const readInfrastructureAccountHealthParamSchema = schema<ReadInfrastructureAccountHealthParams>((value) => {
+  object(value);
+  return {};
+});
+
+export const retireInfrastructureAccountParamSchema = schema<RetireInfrastructureAccountParams>((value) => {
+  const input = object(value);
+  return {
+    providerId: oneOf(providerId(input.providerId, "providerId"), "providerId", ["webdock"] as const),
+    accountId: boundedId(input.accountId, "accountId", 64).toLowerCase(),
+    reason: boundedText(input.reason, "reason", 10, 500),
+    ...(input.accountLabel === undefined || input.accountLabel === null || input.accountLabel === ""
+      ? {}
+      : { accountLabel: boundedText(input.accountLabel, "accountLabel", 2, 120) })
+  };
 });
 
 export const listConversationsParamSchema = schema<ListConversationsParams>((value) => {

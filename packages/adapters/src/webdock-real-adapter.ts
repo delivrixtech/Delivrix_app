@@ -73,6 +73,10 @@ export interface WebdockInventorySource {
   fetchedAt: string;
   /** Cuando `kind === "live"`, indica si la API respondió 200. False = degraded. */
   responseOk: boolean;
+  httpStatus?: number;
+  httpStatusText?: string;
+  errorCode?: string;
+  failureKind?: "unauthorized" | "forbidden" | "rate_limited" | "server_error" | "network" | "unknown";
   errorMessage?: string;
 }
 
@@ -313,7 +317,13 @@ export class WebdockRealAdapter {
         const errorMessage = `Webdock API returned ${response.status} ${response.statusText}`;
         const result: WebdockInventoryResult = {
           servers: this.withAccount([]),
-          source: this.sourceMetadata(now, "mock", false, errorMessage)
+          source: this.sourceMetadata(now, "live", false, {
+            errorMessage,
+            httpStatus: response.status,
+            httpStatusText: response.statusText,
+            errorCode: webdockHttpErrorCode(response.status),
+            failureKind: webdockFailureKind(response.status)
+          })
         };
         this.cacheResult(now, result);
         return result;
@@ -332,7 +342,11 @@ export class WebdockRealAdapter {
         error instanceof Error ? error.message : "Unknown Webdock fetch error";
       const result: WebdockInventoryResult = {
         servers: this.withAccount([]),
-        source: this.sourceMetadata(now, "mock", false, errorMessage)
+        source: this.sourceMetadata(now, "live", false, {
+          errorMessage,
+          errorCode: "webdock_network_error",
+          failureKind: "network"
+        })
       };
       this.cacheResult(now, result);
       return result;
@@ -754,7 +768,13 @@ export class WebdockRealAdapter {
     now: Date,
     kind: WebdockInventorySource["kind"],
     responseOk: boolean,
-    errorMessage?: string
+    error?: {
+      errorMessage?: string;
+      httpStatus?: number;
+      httpStatusText?: string;
+      errorCode?: string;
+      failureKind?: WebdockInventorySource["failureKind"];
+    }
   ): WebdockInventorySource {
     return {
       kind,
@@ -763,7 +783,11 @@ export class WebdockRealAdapter {
       accountLabel: this.accountLabel,
       fetchedAt: now.toISOString(),
       responseOk,
-      ...(errorMessage ? { errorMessage } : {})
+      ...(error?.httpStatus ? { httpStatus: error.httpStatus } : {}),
+      ...(error?.httpStatusText ? { httpStatusText: error.httpStatusText } : {}),
+      ...(error?.errorCode ? { errorCode: error.errorCode } : {}),
+      ...(error?.failureKind ? { failureKind: error.failureKind } : {}),
+      ...(error?.errorMessage ? { errorMessage: error.errorMessage } : {})
     };
   }
 
@@ -924,6 +948,22 @@ export class WebdockRealAdapter {
       "user-agent": userAgent
     };
   }
+}
+
+function webdockHttpErrorCode(status: number): string {
+  if (status === 401) return "webdock_auth_401";
+  if (status === 403) return "webdock_forbidden_403";
+  if (status === 429) return "webdock_rate_limited_429";
+  if (status >= 500) return "webdock_server_error";
+  return `webdock_http_${status}`;
+}
+
+function webdockFailureKind(status: number): WebdockInventorySource["failureKind"] {
+  if (status === 401) return "unauthorized";
+  if (status === 403) return "forbidden";
+  if (status === 429) return "rate_limited";
+  if (status >= 500) return "server_error";
+  return "unknown";
 }
 
 export function createWebdockAdaptersFromEnv(

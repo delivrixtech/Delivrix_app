@@ -101,8 +101,10 @@ import {
 } from "../../../packages/domain/src/index.ts";
 import {
   InvalidAuditEventError,
+  infrastructureAccountLifecycleIds,
   LocalFileAuditLog,
   LocalFileBackupSimulationStore,
+  LocalFileInfrastructureAccountLifecycleStore,
   LocalFileIpReputationReportStore,
   LocalFileKillSwitchStore,
   LocalFileProvisioningRunStore,
@@ -140,6 +142,7 @@ import {
 } from "./openclaw-chat.ts";
 import { createRuntimeEnvReloader } from "./runtime-env.ts";
 import {
+  checkEpisodicScratchHealth,
   checkGatewayDependencies,
   defaultPostgresUrl,
   dependencyStatus,
@@ -274,6 +277,8 @@ import {
   handlePorkbunPingHttp
 } from "./routes/domains-porkbun.ts";
 import {
+  buildInfrastructureInventoryPayload,
+  handleInfrastructureAccountHealthHttp,
   handleInfrastructureInventoryHttp,
   type VpsProviderInventoryResult,
   type WebdockAccountInventoryResult
@@ -371,6 +376,7 @@ const suppressionList = new LocalFileSuppressionList();
 const sendQueue = new LocalFileSendQueue();
 const policyEngine = new MailPolicyEngine(suppressionList);
 const senderNodeRegistry = new SenderNodeRegistry(new LocalFileSenderNodeStore());
+const accountLifecycleStore = new LocalFileInfrastructureAccountLifecycleStore();
 const rateLimitStore = new LocalFileRateLimitStore();
 const rateLimitService = new RateLimitService(rateLimitStore);
 const webdockAdapter = new WebdockAdapter();
@@ -395,14 +401,109 @@ const vpsProviderEntries = createContaboAdaptersFromEnv();
 const vpsProviderAdapters = new Map<string, VpsProvider>(
   vpsProviderEntries.map((entry): [string, VpsProvider] => [entry.id, entry.adapter])
 );
+
+async function listWebdockInventoryAccounts(): Promise<WebdockAccountInventoryResult[]> {
+  const inactive = new Set<string>(
+    (await accountLifecycleStore.list())
+      .filter((account) => account.providerId === "webdock" && (account.lifecycleStatus === "disabled" || account.lifecycleStatus === "retired"))
+      .flatMap(infrastructureAccountLifecycleIds)
+  );
+  const activeAdapters = webdockAccountAdapters.filter((account) => !inactive.has(account.id));
+  const settled = await Promise.allSettled(
+    activeAdapters.map(async (account) => ({
+      accountId: account.id,
+      accountLabel: account.label,
+      result: await account.adapter.listServers()
+    }))
+  );
+  return settled.map((result, index): WebdockAccountInventoryResult => {
+    const account = activeAdapters[index];
+    if (result.status === "fulfilled") {
+      return result.value;
+    }
+    void gatewayRuntimeLog.warn(
+      "infrastructure.webdock_account_inventory_failed",
+      "Webdock account inventory failed; degrading this account only.",
+      {
+        accountId: account?.id ?? "unknown",
+        errorName: result.reason instanceof Error ? result.reason.name : "UnknownError"
+      }
+    );
+    const fetchedAt = new Date().toISOString();
+    return {
+      accountId: account?.id ?? "unknown",
+      accountLabel: account?.label ?? "Webdock",
+      result: {
+        servers: [],
+        source: {
+          kind: account?.adapter.isLive() ? "live" : "mock",
+          apiBase: "webdock",
+          accountId: account?.id ?? "unknown",
+          accountLabel: account?.label ?? "Webdock",
+          fetchedAt,
+          responseOk: false,
+          errorCode: "webdock_account_inventory_failed",
+          failureKind: "unknown",
+          errorMessage: "webdock_account_inventory_failed"
+        }
+      }
+    };
+  });
+}
+
+async function listVpsProviderInventories(): Promise<VpsProviderInventoryResult[]> {
+  const providerInventories: VpsProviderInventoryResult[] = [];
+  for (const entry of vpsProviderEntries) {
+    const listServers = entry.adapter.listServers?.bind(entry.adapter);
+    if (!listServers) continue;
+    const fetchedAt = new Date().toISOString();
+    let result: VpsProviderInventoryResult["result"];
+    try {
+      result = await listServers();
+    } catch (error) {
+      void gatewayRuntimeLog.warn(
+        "infrastructure.vps_provider_inventory_failed",
+        "VPS provider inventory failed; degrading this provider only.",
+        {
+          providerId: entry.id,
+          errorName: error instanceof Error ? error.name : "UnknownError"
+        }
+      );
+      result = {
+        servers: [],
+        source: {
+          kind: entry.adapter.isLive() ? "live" : "mock",
+          apiBase: "vps-provider",
+          accountId: entry.id,
+          accountLabel: entry.label,
+          fetchedAt,
+          responseOk: false,
+          errorMessage: "vps_provider_inventory_failed"
+        }
+      };
+    }
+    providerInventories.push({
+      providerId: entry.id,
+      providerLabel: entry.label,
+      result
+    });
+  }
+  return providerInventories;
+}
 // Cuentas write-capable para el selector del orquestador (una por CUENTA real, ya de-dupeada).
 // enabled = canCreate() REAL: la cuenta-1 ("ops") siempre apta; las distintas solo con sus keys.
-function listWebdockCreationAccounts(): Array<{ accountId: string; enabled: boolean }> {
+async function listWebdockCreationAccounts(): Promise<Array<{ accountId: string; enabled: boolean }>> {
+  const retiredOrDisabled = new Set<string>(
+    (await accountLifecycleStore.list())
+      .filter((account) => account.providerId === "webdock" && (account.lifecycleStatus === "disabled" || account.lifecycleStatus === "retired"))
+      .flatMap(infrastructureAccountLifecycleIds)
+  );
   return [...webdockCreateAdapters.entries()].map(([accountId, adapter]) => ({
     accountId,
-    enabled: adapter.canCreate()
+    enabled: adapter.canCreate() && !retiredOrDisabled.has(accountId)
   }));
 }
+
 const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
 const awsRoute53DnsAdapter = new AwsRoute53DnsAdapter();
 const ionosDnsAdapter = new IonosDnsActuator();
@@ -882,6 +983,7 @@ const skillDispatcher = createSkillDispatcher({
   webhookBroadcaster: equipoWebhookBroadcaster,
   readKillSwitch: () => killSwitchStore.get(),
   configureSmtpDeps: configureSmtpRuntimeDeps,
+  accountLifecycleStore,
   env: process.env
 });
 const onboardDomainFlowRunner = createGatewayOnboardDomainFlowRunner({
@@ -1032,6 +1134,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_openclaw_skills_audit", "allowed_read_only"),
   permission("read_openclaw_evidence", "allowed_read_only"),
   permission("read_infrastructure_inventory", "allowed_read_only"),
+  permission("read_infrastructure_account_health", "allowed_read_only"),
+  permission("read_provider_account_health", "allowed_read_only"),
   permission("read_webdock_inventory", "allowed_read_only"),
   permission("read_webdock_servers", "allowed_read_only"),
   permission("list_conversations", "allowed_read_only"),
@@ -1089,6 +1193,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("openclaw_memory_compact", "allowed_dry_run"),
   permission("configure_complete_smtp", "supervised_local_state"),
   permission("configure_smtp_complete", "supervised_local_state"),
+  permission("retire_infrastructure_account", "supervised_local_state"),
+  permission("retire_provider_account_local", "supervised_local_state"),
   permission("proxmox_live_create_vps", "future_live_requires_new_phase"),
   permission("proxmox_live_destroy_vps", "future_live_requires_new_phase"),
   permission("webdock_create_server", "future_live_requires_new_phase"),
@@ -1663,6 +1769,19 @@ const server = createServer(async (request, response) => {
       });
     }
 
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/scratch/health") {
+      if (!sensitiveReadBoundaryToken) {
+        return json(response, 401, { error: "read_boundary_token_required" });
+      }
+      if (request.headers["x-delivrix-token"] !== sensitiveReadBoundaryToken) {
+        return json(response, 401, { error: "read_boundary_token_invalid" });
+      }
+      return json(response, 200, await checkEpisodicScratchHealth({
+        pool: episodicScratchPool,
+        now: () => resolveGatewayNow()
+      }));
+    }
+
     if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/scratch") {
       return await handleReadEpisodicScratchHttp({
         request,
@@ -1852,90 +1971,37 @@ const server = createServer(async (request, response) => {
         response,
         auditLog,
         readBoundaryToken: sensitiveReadBoundaryToken,
-        webdockListServers: async () => {
-          const settled = await Promise.allSettled(
-            webdockAccountAdapters.map(async (account) => ({
-              accountId: account.id,
-              accountLabel: account.label,
-              result: await account.adapter.listServers()
-            }))
-          );
-          return settled.map((result, index): WebdockAccountInventoryResult => {
-            const account = webdockAccountAdapters[index];
-            if (result.status === "fulfilled") {
-              return result.value;
-            }
-            void gatewayRuntimeLog.warn(
-              "infrastructure.webdock_account_inventory_failed",
-              "Webdock account inventory failed; degrading this account only.",
-              {
-                accountId: account?.id ?? "unknown",
-                errorName: result.reason instanceof Error ? result.reason.name : "UnknownError"
-              }
-            );
-            const fetchedAt = new Date().toISOString();
-            return {
-              accountId: account?.id ?? "unknown",
-              accountLabel: account?.label ?? "Webdock",
-              result: {
-                servers: [],
-                source: {
-                  kind: account?.adapter.isLive() ? "live" : "mock",
-                  apiBase: "webdock",
-                  accountId: account?.id ?? "unknown",
-                  accountLabel: account?.label ?? "Webdock",
-                  fetchedAt,
-                  responseOk: false,
-                  errorMessage: "webdock_account_inventory_failed"
-                }
-              }
-            };
-          });
-        },
-        vpsProviderListServers: async () => {
-          const providerInventories: VpsProviderInventoryResult[] = [];
-          for (const entry of vpsProviderEntries) {
-            const listServers = entry.adapter.listServers?.bind(entry.adapter);
-            if (!listServers) continue;
-            const fetchedAt = new Date().toISOString();
-            let result: VpsProviderInventoryResult["result"];
-            try {
-              result = await listServers();
-            } catch (error) {
-              void gatewayRuntimeLog.warn(
-                "infrastructure.vps_provider_inventory_failed",
-                "VPS provider inventory failed; degrading this provider only.",
-                {
-                  providerId: entry.id,
-                  errorName: error instanceof Error ? error.name : "UnknownError"
-                }
-              );
-              result = {
-                servers: [],
-                source: {
-                  kind: entry.adapter.isLive() ? "live" : "mock",
-                  apiBase: "vps-provider",
-                  accountId: entry.id,
-                  accountLabel: entry.label,
-                  fetchedAt,
-                  responseOk: false,
-                  errorMessage: "vps_provider_inventory_failed"
-                }
-              };
-            }
-            providerInventories.push({
-              providerId: entry.id,
-              providerLabel: entry.label,
-              result
-            });
-          }
-          return providerInventories;
-        },
+        webdockListServers: listWebdockInventoryAccounts,
+        vpsProviderListServers: listVpsProviderInventories,
         ionosListDnsInventory: () => ionosDnsAdapter.listInventory(),
         ionosListDomainsInventory: () => ionosDomainsAdapter.listInventory(),
         awsRoute53DomainsListInventory: () => awsRoute53DomainsAdapter.listInventory(),
         porkbunListInventory: () => porkbunAdapter.listInventory(),
+        accountLifecycleStore,
+        senderNodesList: () => senderNodeRegistry.list(),
         env: process.env
+      });
+    }
+
+    if (request.method === "GET" && request.url === "/v1/infrastructure/account-health") {
+      return handleInfrastructureAccountHealthHttp({
+        request,
+        response,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        buildInventory: async () => buildInfrastructureInventoryPayload({
+          webdockAccounts: await listWebdockInventoryAccounts(),
+          vpsProviders: await listVpsProviderInventories(),
+          ionosDns: await ionosDnsAdapter.listInventory(),
+          ionosDomains: await ionosDomainsAdapter.listInventory(),
+          awsRoute53Domains: await awsRoute53DomainsAdapter.listInventory(),
+          porkbun: await porkbunAdapter.listInventory(),
+          accountLifecycleRecords: await accountLifecycleStore.list(),
+          senderNodes: await senderNodeRegistry.list(),
+          env: process.env,
+          now: resolveGatewayNow()
+        }),
+        scratchHealth: () => checkEpisodicScratchHealth({ pool: episodicScratchPool, now: () => resolveGatewayNow() }),
+        now: () => resolveGatewayNow()
       });
     }
 
