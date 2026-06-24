@@ -206,6 +206,34 @@ test("WebdockRealAdapter uses primary key for reads and ops key for writes", asy
   assert.equal((calls[2].init.headers as Record<string, string>).authorization, "Bearer ops-write-key");
 });
 
+test("WebdockRealAdapter preserves live failure metadata for rejected reads", async () => {
+  for (const scenario of [
+    { status: 401, statusText: "Unauthorized", errorCode: "webdock_auth_401", failureKind: "unauthorized" },
+    { status: 403, statusText: "Forbidden", errorCode: "webdock_forbidden_403", failureKind: "forbidden" }
+  ] as const) {
+    const adapter = new WebdockRealAdapter({
+      readApiKey: "bad-read-key",
+      apiBase: "https://api.webdock.test/v1",
+      accountId: "secondary",
+      accountLabel: "Webdock Secondary",
+      cacheTtlMs: 0,
+      now: () => new Date("2026-05-24T17:59:30.000Z"),
+      fetchImpl: async () => new Response("", { status: scenario.status, statusText: scenario.statusText })
+    });
+
+    const result = await adapter.listServers();
+
+    assert.deepEqual(result.servers, []);
+    assert.equal(result.source.kind, "live");
+    assert.equal(result.source.responseOk, false);
+    assert.equal(result.source.httpStatus, scenario.status);
+    assert.equal(result.source.httpStatusText, scenario.statusText);
+    assert.equal(result.source.errorCode, scenario.errorCode);
+    assert.equal(result.source.failureKind, scenario.failureKind);
+    assert.equal(result.source.errorMessage, `Webdock API returned ${scenario.status} ${scenario.statusText}`);
+  }
+});
+
 test("WebdockRealAdapter creates shell user with registered key and enables passwordless sudo", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const adapter = new WebdockRealAdapter({

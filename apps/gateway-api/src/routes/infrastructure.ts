@@ -17,11 +17,25 @@ import type {
 import {
   buildInfrastructureInventoryResponse,
   type AuditEventInput,
+  type SenderNode,
+  type InfrastructureAccountHealth,
+  type InfrastructureAccountHealthItem,
+  type InfrastructureAccountHealthReport,
   type InfrastructureInventoryResponse,
+  type InfrastructureOrphanReport,
   type InventoryItem,
   type Provider,
   type ProviderStatus
 } from "../../../../packages/domain/src/index.ts";
+import type {
+  InfrastructureAccountHealthTransition,
+  InfrastructureAccountLifecycleRecord,
+  ObserveInfrastructureAccountInput
+} from "../../../../packages/local-store/src/index.ts";
+import {
+  accountLifecycleKey,
+  canonicalInfrastructureAccountId
+} from "../../../../packages/local-store/src/index.ts";
 import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
 
 const infrastructureInventorySkillInvocationHeader = "x-openclaw-skill-invocation";
@@ -36,6 +50,11 @@ interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
 }
 
+export interface InfrastructureAccountLifecycleStore {
+  list(): Promise<InfrastructureAccountLifecycleRecord[]>;
+  observe(input: ObserveInfrastructureAccountInput): Promise<InfrastructureAccountHealthTransition>;
+}
+
 export interface InfrastructureInventoryRouteDependencies {
   request: IncomingMessage;
   response: ServerResponse;
@@ -47,8 +66,19 @@ export interface InfrastructureInventoryRouteDependencies {
   porkbunListInventory?: () => Promise<PorkbunInventoryResult>;
   ionosListDnsInventory?: () => Promise<IonosDnsInventoryResult>;
   ionosListDomainsInventory?: () => Promise<IonosDomainsInventoryResult>;
+  accountLifecycleStore?: InfrastructureAccountLifecycleStore;
+  senderNodesList?: () => Promise<SenderNode[]>;
   awsBedrockSetupLogPath?: string;
   env?: Record<string, string | undefined>;
+  now?: () => Date;
+}
+
+export interface InfrastructureAccountHealthRouteDependencies {
+  request: IncomingMessage;
+  response: ServerResponse;
+  readBoundaryToken?: string;
+  buildInventory: () => Promise<InfrastructureInventoryResponse>;
+  scratchHealth?: () => Promise<unknown>;
   now?: () => Date;
 }
 
@@ -73,6 +103,8 @@ export interface BuildInfrastructureInventoryPayloadInput {
   porkbun?: PorkbunInventoryResult | null;
   ionosDns?: IonosDnsInventoryResult | null;
   ionosDomains?: IonosDomainsInventoryResult | null;
+  accountLifecycleRecords?: InfrastructureAccountLifecycleRecord[] | null;
+  senderNodes?: SenderNode[] | null;
   awsBedrockSetupLogPath?: string | null;
   env?: Record<string, string | undefined>;
   includeStaticProviders?: boolean;
@@ -116,16 +148,32 @@ export async function handleInfrastructureInventoryHttp(
     deps.awsRoute53DomainsListInventory ? deps.awsRoute53DomainsListInventory() : Promise.resolve(null),
     deps.porkbunListInventory ? deps.porkbunListInventory() : Promise.resolve(null)
   ]);
+  const webdockAccounts = settledValue(webdockAccountsResult, []);
+  const observedAt = deps.now?.() ?? new Date();
+  if (deps.accountLifecycleStore) {
+    await auditWebdockAccountHealthTransitions({
+      auditLog: deps.auditLog,
+      accountLifecycleStore: deps.accountLifecycleStore,
+      webdockAccounts,
+      observedAt
+    });
+  }
+  const [accountLifecycleRecordsResult, senderNodesResult] = await Promise.allSettled([
+    deps.accountLifecycleStore ? deps.accountLifecycleStore.list() : Promise.resolve([]),
+    deps.senderNodesList ? deps.senderNodesList() : Promise.resolve([])
+  ]);
   const payload = await buildInfrastructureInventoryPayload({
-    webdockAccounts: settledValue(webdockAccountsResult, []),
+    webdockAccounts,
     vpsProviders: settledValue(vpsProvidersResult, []),
     ionosDns: settledValue(ionosDnsResult, null),
     ionosDomains: settledValue(ionosDomainsResult, null),
     awsRoute53Domains: settledValue(awsRoute53DomainsResult, null),
     porkbun: settledValue(porkbunResult, null),
+    accountLifecycleRecords: settledValue(accountLifecycleRecordsResult, []),
+    senderNodes: settledValue(senderNodesResult, []),
     awsBedrockSetupLogPath: deps.awsBedrockSetupLogPath,
     env: deps.env,
-    now: deps.now?.() ?? new Date()
+    now: observedAt
   });
 
   if (isSkillInvocation) {
@@ -133,6 +181,45 @@ export async function handleInfrastructureInventoryHttp(
   }
 
   json(deps.response, 200, payload);
+}
+
+export async function handleInfrastructureAccountHealthHttp(
+  deps: InfrastructureAccountHealthRouteDependencies
+): Promise<void> {
+  const auth = authorizeSensitiveRead(deps.request, { readBoundaryToken: deps.readBoundaryToken }, "infrastructure_account_health");
+  if (!auth.ok) {
+    json(deps.response, auth.statusCode, {
+      error: auth.error,
+      message: "Missing or invalid read-boundary token for infrastructure account health read."
+    });
+    return;
+  }
+
+  const [inventoryResult, scratchHealthResult] = await Promise.allSettled([
+    deps.buildInventory(),
+    deps.scratchHealth ? deps.scratchHealth() : Promise.resolve(null)
+  ]);
+  if (inventoryResult.status !== "fulfilled") {
+    json(deps.response, 503, {
+      error: "infrastructure_account_health_unavailable",
+      generatedAt: (deps.now?.() ?? new Date()).toISOString()
+    });
+    return;
+  }
+  const inventory = inventoryResult.value;
+  json(deps.response, 200, {
+    generatedAt: inventory.generatedAt,
+    accountHealth: inventory.accountHealth ?? { accounts: [], unhealthyCount: 0, retiredCount: 0 },
+    orphanReport: inventory.orphanReport ?? {
+      confirmedSenderNodeOrphans: [],
+      uncertainBecauseAccountDown: [],
+      providerServersWithoutSenderNode: []
+    },
+    scratchHealth: scratchHealthResult.status === "fulfilled" ? scratchHealthResult.value : {
+      status: "down",
+      reason: "scratch_health_failed"
+    }
+  });
 }
 
 function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
@@ -172,8 +259,17 @@ export async function buildInfrastructureInventoryPayload(
     providers.push(buildPhysicalServerProvider());
   }
 
+  const accountHealth = buildAccountHealthReport(webdockAccounts, input.accountLifecycleRecords ?? []);
+  const orphanReport = buildOrphanReport({
+    webdockAccounts,
+    senderNodes: input.senderNodes ?? [],
+    accountHealth
+  });
+
   return buildInfrastructureInventoryResponse({
     providers,
+    ...(accountHealth ? { accountHealth } : {}),
+    ...(orphanReport ? { orphanReport } : {}),
     now: input.now
   });
 }
@@ -233,6 +329,228 @@ export async function auditInfrastructureInventoryFetch(
       errorProviderCount
     }
   });
+}
+
+export async function auditWebdockAccountHealthTransitions(input: {
+  auditLog: AuditSink;
+  accountLifecycleStore: InfrastructureAccountLifecycleStore;
+  webdockAccounts: WebdockAccountInventoryResult[];
+  observedAt: Date;
+}): Promise<void> {
+  for (const account of dedupeWebdockInventoryAccounts(input.webdockAccounts)) {
+    const healthStatus = classifyWebdockAccountHealth(account.result);
+    const source = account.result.source;
+    const transition = await input.accountLifecycleStore.observe({
+      providerId: "webdock",
+      accountId: account.accountId,
+      accountLabel: account.accountLabel,
+      responseOk: source.responseOk,
+      healthStatus,
+      fetchedAt: source.fetchedAt,
+      observedAt: input.observedAt.toISOString(),
+      itemCount: account.result.servers.length,
+      ...(source.httpStatus ? { httpStatus: source.httpStatus } : {}),
+      ...(source.errorCode ? { errorCode: source.errorCode } : {}),
+      ...(source.errorMessage ? { errorReason: source.errorMessage } : {}),
+      aliases: webdockAccountAliases(account.accountId),
+      actorId: "gateway-api"
+    });
+    if (transition.action === "none") continue;
+
+    const unhealthy = transition.action === "unhealthy";
+    await input.auditLog.append({
+      actorType: "system",
+      actorId: "gateway-api",
+      action: unhealthy ? "oc.webdock.account_unhealthy" : "oc.webdock.account_recovered",
+      targetType: "webdock_account",
+      targetId: transition.account.accountId,
+      riskLevel: unhealthy
+        ? (source.httpStatus === 401 || source.httpStatus === 403 ? "high" : "medium")
+        : "low",
+      decision: "n/a",
+      metadata: {
+        providerId: "webdock",
+        accountId: transition.account.accountId,
+        accountLabel: transition.account.accountLabel,
+        previousHealth: transition.previousHealthStatus,
+        currentHealth: transition.currentHealthStatus,
+        responseOk: source.responseOk,
+        ...(source.httpStatus ? { httpStatus: source.httpStatus } : {}),
+        ...(source.httpStatusText ? { httpStatusText: source.httpStatusText } : {}),
+        ...(source.errorCode ? { errorCode: source.errorCode } : {}),
+        ...(source.errorMessage ? { errorMessage: source.errorMessage } : {}),
+        sourceKind: source.kind,
+        fetchedAt: source.fetchedAt,
+        observedAt: input.observedAt.toISOString(),
+        source: "infrastructure_inventory",
+        dedupeKey: `webdock:${transition.account.accountId}:health`
+      }
+    });
+  }
+}
+
+function buildAccountHealthReport(
+  webdockAccounts: WebdockAccountInventoryResult[],
+  lifecycleRecords: InfrastructureAccountLifecycleRecord[]
+): InfrastructureAccountHealthReport | undefined {
+  const accounts: InfrastructureAccountHealthItem[] = [];
+  const seen = new Set<string>();
+  const lifecycleByKey = new Map(lifecycleRecords.map((record) => [record.accountKey, record]));
+
+  for (const account of dedupeWebdockInventoryAccounts(webdockAccounts)) {
+    const key = accountLifecycleKey("webdock", account.accountId);
+    const record = lifecycleByKey.get(key);
+    const health = record?.healthStatus === "retired" ? "retired" : classifyWebdockAccountHealth(account.result);
+    const source = account.result.source;
+    accounts.push({
+      providerId: "webdock",
+      providerKind: "compute",
+      accountId: canonicalInfrastructureAccountId("webdock", account.accountId),
+      accountLabel: account.accountLabel,
+      health,
+      lifecycleStatus: record?.lifecycleStatus ?? lifecycleStatusFromHealth(health),
+      responseOk: source.responseOk,
+      ...(source.httpStatus ? { httpStatus: source.httpStatus } : {}),
+      ...(source.errorCode ? { errorCode: source.errorCode } : {}),
+      ...(source.errorMessage ? { errorReason: source.errorMessage } : {}),
+      liveItemCount: source.responseOk ? account.result.servers.length : 0,
+      ...(record?.lastKnownItemCount === undefined ? {} : { lastKnownItemCount: record.lastKnownItemCount }),
+      lastFetched: source.fetchedAt,
+      ...(record?.retiredAt ? { retiredAt: record.retiredAt } : {}),
+      ...(record?.retiredReason ? { retiredReason: record.retiredReason } : {})
+    });
+    seen.add(key);
+  }
+
+  for (const record of lifecycleRecords) {
+    if (record.providerId !== "webdock" || seen.has(record.accountKey)) continue;
+    if (record.lifecycleStatus !== "retired" && record.lifecycleStatus !== "disabled") continue;
+    accounts.push({
+      providerId: record.providerId,
+      providerKind: "compute",
+      accountId: record.accountId,
+      accountLabel: record.accountLabel,
+      health: record.healthStatus,
+      lifecycleStatus: record.lifecycleStatus,
+      responseOk: record.lastFetchOk ?? false,
+      ...(record.lastHttpStatus ? { httpStatus: record.lastHttpStatus } : {}),
+      ...(record.lastErrorCode ? { errorCode: record.lastErrorCode } : {}),
+      ...(record.lastErrorReason ? { errorReason: record.lastErrorReason } : {}),
+      liveItemCount: 0,
+      lastKnownItemCount: record.lastKnownItemCount ?? 0,
+      lastFetched: record.lastFetchedAt ?? null,
+      ...(record.retiredAt ? { retiredAt: record.retiredAt } : {}),
+      ...(record.retiredReason ? { retiredReason: record.retiredReason } : {})
+    });
+  }
+
+  if (accounts.length === 0) return undefined;
+  return {
+    accounts: accounts.sort((left, right) => left.accountId.localeCompare(right.accountId)),
+    unhealthyCount: accounts.filter((account) => account.health !== "healthy" && account.health !== "retired").length,
+    retiredCount: accounts.filter((account) => account.lifecycleStatus === "retired").length
+  };
+}
+
+function buildOrphanReport(input: {
+  webdockAccounts: WebdockAccountInventoryResult[];
+  senderNodes: SenderNode[];
+  accountHealth?: InfrastructureAccountHealthReport;
+}): InfrastructureOrphanReport | undefined {
+  const webdockServers = input.webdockAccounts
+    .filter((account) => account.result.source.responseOk)
+    .flatMap((account) => account.result.servers.map((server) => webdockServerToInventoryItem(server)));
+  const serverIds = new Set(webdockServers.map((server) => server.id));
+  const serverIps = new Set(webdockServers.map((server) => stringValue(server.detail?.ipv4)).filter((ip): ip is string => Boolean(ip)));
+  const providerServerIds = new Set(webdockServers.map((server) => `webdock:${String(server.detail?.accountId ?? "")}:${server.id}`));
+  const webdockSenderNodes = input.senderNodes.filter((node) => node.provider === "webdock");
+  const confirmedSenderNodeOrphans = input.webdockAccounts.every((account) => account.result.source.responseOk)
+    ? webdockSenderNodes
+        .filter((node) => {
+          const explicitKey = node.providerServerId
+            ? `webdock:${node.providerAccountId ?? ""}:${node.providerServerId}`
+            : null;
+          return !(explicitKey && providerServerIds.has(explicitKey)) &&
+            !serverIds.has(node.providerServerId ?? node.id) &&
+            (!node.ipAddress || !serverIps.has(node.ipAddress));
+        })
+        .map(senderNodeToOrphanItem)
+    : [];
+  const senderNodeIds = new Set(webdockSenderNodes.map((node) => node.id));
+  const senderNodeProviderServerIds = new Set(webdockSenderNodes.map((node) => node.providerServerId).filter((id): id is string => Boolean(id)));
+  const senderNodeIps = new Set(webdockSenderNodes.map((node) => node.ipAddress).filter((ip): ip is string => Boolean(ip)));
+  const providerServersWithoutSenderNode = webdockServers.filter((server) => {
+    const ip = stringValue(server.detail?.ipv4);
+    return !senderNodeIds.has(server.id) &&
+      !senderNodeProviderServerIds.has(server.id) &&
+      (!ip || !senderNodeIps.has(ip));
+  });
+  const uncertainBecauseAccountDown = input.accountHealth?.accounts.filter((account) =>
+    account.providerId === "webdock" &&
+    account.health !== "healthy" &&
+    account.health !== "retired"
+  ) ?? [];
+
+  if (
+    confirmedSenderNodeOrphans.length === 0 &&
+    providerServersWithoutSenderNode.length === 0 &&
+    uncertainBecauseAccountDown.length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    confirmedSenderNodeOrphans,
+    uncertainBecauseAccountDown,
+    providerServersWithoutSenderNode
+  };
+}
+
+function classifyWebdockAccountHealth(webdock: WebdockInventoryResult): InfrastructureAccountHealth {
+  if (!webdock.source.responseOk) {
+    if (
+      webdock.source.httpStatus === 401 ||
+      webdock.source.httpStatus === 403 ||
+      webdock.source.failureKind === "unauthorized" ||
+      webdock.source.failureKind === "forbidden"
+    ) {
+      return "unauthorized";
+    }
+    return "degraded";
+  }
+  if (webdock.servers.some((server) => String(server.status).toLowerCase() === "suspended")) {
+    return "suspended_candidate";
+  }
+  return "healthy";
+}
+
+function lifecycleStatusFromHealth(health: InfrastructureAccountHealth): InfrastructureAccountHealthItem["lifecycleStatus"] {
+  if (health === "unauthorized") return "unauthorized";
+  if (health === "suspended_candidate") return "suspended";
+  if (health === "retired") return "retired";
+  return "active";
+}
+
+function webdockAccountAliases(accountId: string): string[] {
+  const canonical = canonicalInfrastructureAccountId("webdock", accountId);
+  return canonical === "ops" ? ["primary", "ops", "account", "default"] : [accountId];
+}
+
+function senderNodeToOrphanItem(node: SenderNode): InventoryItem {
+  return {
+    id: node.id,
+    kind: "sender_node_orphan",
+    displayName: node.label,
+    status: node.status,
+    detail: {
+      provider: node.provider,
+      providerAccountId: node.providerAccountId ?? null,
+      providerServerId: node.providerServerId ?? null,
+      ipAddress: node.ipAddress ?? null,
+      hostname: node.hostname ?? null,
+      dailyLimit: node.dailyLimit,
+      warmupDay: node.warmupDay
+    }
+  };
 }
 
 function buildWebdockProvider(account: WebdockAccountInventoryResult): Provider {

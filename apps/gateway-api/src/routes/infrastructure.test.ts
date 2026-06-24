@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
+import type { SenderNode } from "../../../../packages/domain/src/index.ts";
 import type {
   AwsRoute53DomainsInventoryResult,
   IonosDnsInventoryResult,
@@ -17,6 +18,7 @@ import { computeAuditHash } from "../audit/hash-chain.ts";
 import {
   auditInfrastructureInventoryFetch,
   buildInfrastructureInventoryPayload,
+  handleInfrastructureAccountHealthHttp,
   handleInfrastructureInventoryHttp,
   shouldAuditInfrastructureInventoryFetch
 } from "./infrastructure.ts";
@@ -166,8 +168,11 @@ test("Infrastructure inventory does not surface adapter fallback servers when We
   });
 
   const result = await adapter.listServers();
-  assert.equal(result.source.kind, "mock");
+  assert.equal(result.source.kind, "live");
   assert.equal(result.source.responseOk, false);
+  assert.equal(result.source.httpStatus, 401);
+  assert.equal(result.source.errorCode, "webdock_auth_401");
+  assert.equal(result.source.failureKind, "unauthorized");
   assert.equal(result.source.errorMessage, "Webdock API returned 401 Unauthorized");
   assert.deepEqual(result.servers, []);
 
@@ -186,6 +191,19 @@ test("Infrastructure inventory does not surface adapter fallback servers when We
   assert.equal(provider.status, "error");
   assert.equal(provider.itemCount, 0);
   assert.deepEqual(provider.items, []);
+  assert.deepEqual(payload.accountHealth?.accounts.map((account) => ({
+    accountId: account.accountId,
+    health: account.health,
+    lifecycleStatus: account.lifecycleStatus,
+    httpStatus: account.httpStatus,
+    errorCode: account.errorCode
+  })), [{
+    accountId: "secondary",
+    health: "unauthorized",
+    lifecycleStatus: "unauthorized",
+    httpStatus: 401,
+    errorCode: "webdock_auth_401"
+  }]);
   assert.equal(payload.itemTotal, 0);
 });
 
@@ -288,6 +306,9 @@ test("Infrastructure inventory marks a failed Webdock account without hiding hea
       webdockAccount("primary", "Webdock Primary", ["running"]),
       webdockAccount("secondary", "Webdock Secondary", ["running", "running", "stopped"], {
         responseOk: false,
+        httpStatus: 401,
+        errorCode: "webdock_auth_401",
+        failureKind: "unauthorized",
         errorMessage: "Webdock API returned 401 Unauthorized"
       })
     ],
@@ -301,7 +322,47 @@ test("Infrastructure inventory marks a failed Webdock account without hiding hea
   assert.equal(payload.providers[1].errorReason, "Webdock API returned 401 Unauthorized");
   assert.equal(payload.providers[1].itemCount, 0);
   assert.deepEqual(payload.providers[1].items, []);
+  assert.equal(payload.accountHealth?.unhealthyCount, 1);
+  assert.equal(payload.accountHealth?.accounts.find((account) => account.accountId === "secondary")?.health, "unauthorized");
   assert.equal(payload.itemTotal, 1);
+});
+
+test("Infrastructure inventory treats Webdock 403 as a live account auth failure", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [
+      webdockAccount("secondary", "Webdock Secondary", ["running"], {
+        responseOk: false,
+        httpStatus: 403,
+        httpStatusText: "Forbidden",
+        errorCode: "webdock_auth_403",
+        failureKind: "forbidden",
+        errorMessage: "Webdock API returned 403 Forbidden"
+      })
+    ],
+    now: fixedNow
+  });
+
+  const provider = payload.providers[0];
+  assert.equal(provider.id, "webdock-secondary");
+  assert.equal(provider.status, "error");
+  assert.equal(provider.fetchSourceKind, "live");
+  assert.equal(provider.errorReason, "Webdock API returned 403 Forbidden");
+  assert.equal(provider.itemCount, 0);
+  assert.deepEqual(provider.items, []);
+  assert.deepEqual(payload.accountHealth?.accounts.map((account) => ({
+    accountId: account.accountId,
+    health: account.health,
+    lifecycleStatus: account.lifecycleStatus,
+    httpStatus: account.httpStatus,
+    errorCode: account.errorCode
+  })), [{
+    accountId: "secondary",
+    health: "unauthorized",
+    lifecycleStatus: "unauthorized",
+    httpStatus: 403,
+    errorCode: "webdock_auth_403"
+  }]);
 });
 
 test("Infrastructure inventory exposes Contabo as connected external VPS provider with zero live servers", async () => {
@@ -347,6 +408,54 @@ test("Infrastructure inventory exposes Contabo live VPS items with provider and 
   assert.equal(provider.items?.[0]?.detail?.accountId, "contabo");
   assert.equal(provider.items?.[0]?.detail?.accountLabel, "Contabo Host Latam");
   assert.equal(provider.items?.[0]?.detail?.ipv4, "203.0.113.10");
+});
+
+test("Infrastructure inventory reports confirmed Webdock sender-node orphans and provider servers without nodes", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [webdockAccount("primary", "Webdock Primary", ["running", "running", "running"])],
+    senderNodes: [
+      senderNode("sender-explicit", { providerAccountId: "primary", providerServerId: "svc-primary-1" }),
+      senderNode("sender-ip", { ipAddress: "185.243.12.32" }),
+      senderNode("sender-orphan", {
+        providerAccountId: "primary",
+        providerServerId: "missing-server",
+        ipAddress: "198.51.100.10"
+      })
+    ],
+    now: fixedNow
+  });
+
+  assert.deepEqual(payload.orphanReport?.confirmedSenderNodeOrphans.map((item) => item.id), ["sender-orphan"]);
+  assert.deepEqual(payload.orphanReport?.providerServersWithoutSenderNode.map((item) => item.id), ["svc-primary-3"]);
+  assert.deepEqual(payload.orphanReport?.uncertainBecauseAccountDown, []);
+});
+
+test("Infrastructure inventory keeps sender-node orphan status uncertain when any Webdock account is down", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [
+      webdockAccount("primary", "Webdock Primary", ["running"]),
+      webdockAccount("secondary", "Webdock Secondary", [], {
+        responseOk: false,
+        httpStatus: 401,
+        errorCode: "webdock_auth_401",
+        failureKind: "unauthorized",
+        errorMessage: "Webdock API returned 401 Unauthorized"
+      })
+    ],
+    senderNodes: [
+      senderNode("sender-secondary", {
+        providerAccountId: "secondary",
+        providerServerId: "unknown-because-account-down",
+        ipAddress: "198.51.100.11"
+      })
+    ],
+    now: fixedNow
+  });
+
+  assert.deepEqual(payload.orphanReport?.confirmedSenderNodeOrphans, []);
+  assert.deepEqual(payload.orphanReport?.uncertainBecauseAccountDown.map((account) => account.accountId), ["secondary"]);
 });
 
 test("Infrastructure inventory hides stale external VPS items when provider fetch fails", async () => {
@@ -434,6 +543,67 @@ test("Infrastructure inventory handler gates OpenClaw skill invocation with read
 
   assert.equal(allowed.result().statusCode, 200);
   assert.equal(auditEvents.length, 1);
+});
+
+test("Infrastructure account health endpoint is read-token gated and sanitizes scratch failures", async () => {
+  const denied = responseRecorder();
+  let buildCalls = 0;
+  await handleInfrastructureAccountHealthHttp({
+    request: requestStub("/v1/infrastructure/account-health", {}),
+    response: denied as unknown as ServerResponse,
+    readBoundaryToken: "read-token",
+    buildInventory: async () => {
+      buildCalls += 1;
+      return buildInfrastructureInventoryPayload({ includeStaticProviders: false, now: fixedNow });
+    },
+    scratchHealth: async () => {
+      throw new Error("raw database secret should not leak");
+    },
+    now: () => fixedNow
+  });
+
+  assert.equal(denied.result().statusCode, 401);
+  assert.equal(buildCalls, 0);
+
+  const allowed = responseRecorder();
+  await handleInfrastructureAccountHealthHttp({
+    request: requestStub("/v1/infrastructure/account-health", { "x-delivrix-token": "read-token" }),
+    response: allowed as unknown as ServerResponse,
+    readBoundaryToken: "read-token",
+    buildInventory: async () => {
+      buildCalls += 1;
+      return buildInfrastructureInventoryPayload({
+        includeStaticProviders: false,
+        webdockAccounts: [webdockAccount("secondary", "Webdock Secondary", [], {
+          responseOk: false,
+          httpStatus: 401,
+          errorCode: "webdock_auth_401",
+          failureKind: "unauthorized",
+          errorMessage: "Webdock API returned 401 Unauthorized"
+        })],
+        now: fixedNow
+      });
+    },
+    scratchHealth: async () => {
+      throw new Error("raw database secret should not leak");
+    },
+    now: () => fixedNow
+  });
+
+  const body = allowed.result().body as {
+    accountHealth: { unhealthyCount: number };
+    orphanReport: { uncertainBecauseAccountDown: unknown[] };
+    scratchHealth: { status: string; reason: string; message?: string };
+  };
+  assert.equal(allowed.result().statusCode, 200);
+  assert.equal(buildCalls, 1);
+  assert.equal(body.accountHealth.unhealthyCount, 1);
+  assert.equal(body.orphanReport.uncertainBecauseAccountDown.length, 1);
+  assert.deepEqual(body.scratchHealth, {
+    status: "down",
+    reason: "scratch_health_failed"
+  });
+  assert.equal(JSON.stringify(body).includes("raw database secret"), false);
 });
 
 test("Infrastructure inventory exposes IONOS Cloud DNS zones and record summaries", async () => {
@@ -737,6 +907,18 @@ function webdockAccount(
         ...source
       }
     }
+  };
+}
+
+function senderNode(id: string, overrides: Partial<SenderNode> = {}): SenderNode {
+  return {
+    id,
+    label: id,
+    provider: "webdock",
+    status: "active",
+    dailyLimit: 100,
+    warmupDay: 1,
+    ...overrides
   };
 }
 

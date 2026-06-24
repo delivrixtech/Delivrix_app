@@ -9,10 +9,12 @@ import {
   ionosUpsertParamSchema,
   listConversationsParamSchema,
   mxtoolboxHealthParamSchema,
+  readInfrastructureAccountHealthParamSchema,
   readConversationParamSchema,
   readEpisodicScratchParamSchema,
   readInfrastructureInventoryParamSchema,
   readWebdockServersParamSchema,
+  retireInfrastructureAccountParamSchema,
   route53DomainDetailParamSchema,
   route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
@@ -49,6 +51,7 @@ export type OpenClawToolName =
   | "read_dns_ionos"
   | "read_mxtoolbox_health"
   | "read_infrastructure_inventory"
+  | "read_infrastructure_account_health"
   | "read_webdock_servers"
   | "list_conversations"
   | "read_conversation"
@@ -63,7 +66,8 @@ export type OpenClawToolName =
   | "seed_warmup_pool"
   | "send_real_email"
   | "compact_intent"
-  | "configure_complete_smtp";
+  | "configure_complete_smtp"
+  | "retire_infrastructure_account";
 
 interface OpenClawToolDefinition {
   spec: BedrockToolSpec;
@@ -492,6 +496,24 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     paramSchema: readInfrastructureInventoryParamSchema,
     enabled: (env) => hmacConfigured(env),
     targetType: "infrastructure_inventory",
+    severity: "high"
+  },
+  read_infrastructure_account_health: {
+    spec: {
+      name: "read_infrastructure_account_health",
+      description: [
+        "Lee el diagnostico read-only de salud de cuentas de infraestructura: cuentas Webdock degradadas, retiradas, ultimo conteo conocido, reporte de huerfanos y salud de memoria episodica.",
+        "No muta infraestructura, no toca credenciales y no requiere ApprovalGate; usar antes de proponer retirar una cuenta."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {},
+        required: []
+      }
+    },
+    paramSchema: readInfrastructureAccountHealthParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "infrastructure_account_health",
     severity: "high"
   },
   list_conversations: {
@@ -962,6 +984,34 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       isOpenClawToolEnabled("compact_intent", env),
     targetType: "openclaw_orchestrator",
     severity: "critical"
+  },
+  retire_infrastructure_account: {
+    spec: {
+      name: "retire_infrastructure_account",
+      description: [
+        "Soft-retira una cuenta de infraestructura localmente para excluirla de inventario operativo y seleccion de creacion.",
+        "Es local-state-only, reversible por operador y NO borra VPS, credenciales ni recursos del proveedor.",
+        "Requiere ApprovalGate firmado, audit log y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          providerId: { type: "string", enum: ["webdock"] },
+          accountId: {
+            type: "string",
+            pattern: selectorPattern,
+            description: "Cuenta o slot canonico. Ejemplos: ops, secondary, tertiary."
+          },
+          accountLabel: { type: "string", minLength: 2, maxLength: 120 },
+          reason: { type: "string", minLength: 10, maxLength: 500 }
+        },
+        required: ["providerId", "accountId", "reason"]
+      }
+    },
+    paramSchema: retireInfrastructureAccountParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "infrastructure_account",
+    severity: "high"
   }
 };
 
@@ -986,6 +1036,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "read_dns_ionos",
     "read_mxtoolbox_health",
     "read_infrastructure_inventory",
+    "read_infrastructure_account_health",
     "read_webdock_servers",
     "list_conversations",
     "read_conversation",
@@ -1000,7 +1051,8 @@ export function openClawToolNames(): OpenClawToolName[] {
     "seed_warmup_pool",
     "send_real_email",
     "compact_intent",
-    "configure_complete_smtp"
+    "configure_complete_smtp",
+    "retire_infrastructure_account"
   ];
 }
 
