@@ -7,8 +7,11 @@ import {
   enableSmtpAuthParamSchema,
   ionosDnsReadParamSchema,
   ionosUpsertParamSchema,
+  listConversationsParamSchema,
   mxtoolboxHealthParamSchema,
+  readConversationParamSchema,
   readEpisodicScratchParamSchema,
+  readInfrastructureInventoryParamSchema,
   readWebdockServersParamSchema,
   route53DomainDetailParamSchema,
   route53NameserverUpdateParamSchema,
@@ -45,7 +48,10 @@ export type OpenClawToolName =
   | "update_domain_nameservers"
   | "read_dns_ionos"
   | "read_mxtoolbox_health"
+  | "read_infrastructure_inventory"
   | "read_webdock_servers"
+  | "list_conversations"
+  | "read_conversation"
   | "upsert_dns_route53"
   | "upsert_dns_ionos"
   | "create_webdock_server"
@@ -467,6 +473,73 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     paramSchema: readWebdockServersParamSchema,
     enabled: (env) => hmacConfigured(env),
     targetType: "webdock_inventory",
+    severity: "high"
+  },
+  read_infrastructure_inventory: {
+    spec: {
+      name: "read_infrastructure_inventory",
+      description: [
+        "Lee el inventario completo de infraestructura vía Gateway Delivrix: cuentas Webdock, proveedores VPS como Contabo, DNS, registrars y estados degradados por proveedor.",
+        "Usar para grounding general de flota/providers/cuentas antes de afirmar qué servidores o cuentas existen.",
+        "Lectura auditada read-only: no muta infraestructura, no crea servidores y no requiere ApprovalGate."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {},
+        required: []
+      }
+    },
+    paramSchema: readInfrastructureInventoryParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "infrastructure_inventory",
+    severity: "high"
+  },
+  list_conversations: {
+    spec: {
+      name: "list_conversations",
+      description: [
+        "Lista conversaciones persistidas de OpenClaw para que el agente pueda ubicar sesiones previas sin depender del historial recortado.",
+        "Lectura read-only gateada por token de lectura; devuelve resúmenes paginados y no requiere ApprovalGate."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          offset: { type: "integer", minimum: 0, maximum: 10000 },
+          limit: { type: "integer", minimum: 1, maximum: 50, default: 20 }
+        },
+        required: []
+      }
+    },
+    paramSchema: listConversationsParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "openclaw_chat_history",
+    severity: "high"
+  },
+  read_conversation: {
+    spec: {
+      name: "read_conversation",
+      description: [
+        "Lee una conversación específica de OpenClaw con paginación y truncado por turno para recuperar contexto previo de forma estructurada.",
+        "Lectura read-only gateada por token de lectura; no requiere ApprovalGate y no debe usarse para extraer secretos."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          conversationId: {
+            type: "string",
+            pattern: taskIdPattern,
+            description: "ID de conversación a leer."
+          },
+          offset: { type: "integer", minimum: 0, maximum: 10000 },
+          limit: { type: "integer", minimum: 1, maximum: 8, default: 6 },
+          maxCharsPerTurn: { type: "integer", minimum: 1, maximum: 800, default: 500 }
+        },
+        required: ["conversationId"]
+      }
+    },
+    paramSchema: readConversationParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "openclaw_chat_history",
     severity: "high"
   },
   upsert_dns_route53: {
@@ -912,7 +985,10 @@ export function openClawToolNames(): OpenClawToolName[] {
     "update_domain_nameservers",
     "read_dns_ionos",
     "read_mxtoolbox_health",
+    "read_infrastructure_inventory",
     "read_webdock_servers",
+    "list_conversations",
+    "read_conversation",
     "upsert_dns_route53",
     "upsert_dns_ionos",
     "create_webdock_server",

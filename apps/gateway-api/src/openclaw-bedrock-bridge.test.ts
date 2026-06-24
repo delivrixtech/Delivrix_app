@@ -536,17 +536,61 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
         "/v1/kill-switch": { enabled: false, updatedBy: "operator_local" },
         "/v1/audit-events": [{ action: "oc.chat.test", token: "should-redact" }],
         "/v1/infrastructure/inventory": {
-          providers: [{
-            id: "aws-route53-domains",
-            kind: "domain-registrar",
-            fetchSourceKind: "live",
-            items: [{
-              id: "controldelivrix.app",
-              kind: "aws_route53_domain",
-              displayName: "controldelivrix.app",
-              status: "active"
-            }]
-          }]
+          providers: [
+            {
+              id: "webdock-primary",
+              kind: "compute",
+              displayName: "Webdock Primary",
+              status: "active",
+              itemCount: 1,
+              fetchSourceKind: "live",
+              items: [{
+                id: "server10",
+                kind: "webdock_server",
+                displayName: "server10",
+                status: "running",
+                detail: {
+                  slug: "server10",
+                  ipv4: "45.136.70.47",
+                  accountId: "primary",
+                  accountLabel: "Webdock Primary",
+                  providerId: "webdock-primary"
+                }
+              }]
+            },
+            {
+              id: "contabo",
+              kind: "compute",
+              displayName: "Contabo Host Latam",
+              status: "active",
+              itemCount: 1,
+              fetchSourceKind: "live",
+              items: [{
+                id: "contabo-1",
+                kind: "contabo_server",
+                displayName: "contabo-1",
+                status: "running",
+                detail: {
+                  slug: "contabo-1",
+                  ipv4: "66.94.96.10",
+                  accountId: "contabo",
+                  accountLabel: "Contabo Host Latam",
+                  providerId: "contabo"
+                }
+              }]
+            },
+            {
+              id: "aws-route53-domains",
+              kind: "domain-registrar",
+              fetchSourceKind: "live",
+              items: [{
+                id: "controldelivrix.app",
+                kind: "aws_route53_domain",
+                displayName: "controldelivrix.app",
+                status: "active"
+              }]
+            }
+          ]
         },
         "/v1/webdock/inventory": {
           inventory: {
@@ -625,9 +669,21 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
   assert.match(system, /<live_context generatedAt="2026-05-29T05:00:00.000Z" grounding="inventory_and_verified_facts">/);
   assert.match(system, /## inventory_domains \(GET \/v1\/infrastructure\/inventory\)/);
   assert.match(system, /"domain": "controldelivrix\.app"/);
+  const accountsIndex = system.indexOf("## inventory_accounts");
+  const serversIndex = system.indexOf("## inventory_servers");
+  const killSwitchIndex = system.indexOf("## kill_switch");
+  assert.ok(accountsIndex > 0);
+  assert.ok(serversIndex > accountsIndex);
+  assert.ok(killSwitchIndex > serversIndex);
+  assert.match(system, /"accountId": "primary"/);
+  assert.match(system, /"accountLabel": "Webdock Primary"/);
+  assert.match(system, /"providerId": "contabo"/);
+  assert.match(system, /"serverCount": 1/);
   assert.match(system, /## inventory_servers \(GET \/v1\/infrastructure\/inventory \+ GET \/v1\/webdock\/inventory\)/);
   assert.match(system, /"serverSlug": "server10"/);
   assert.match(system, /"serverIp": "45\.136\.70\.47"/);
+  assert.match(system, /"serverSlug": "contabo-1"/);
+  assert.match(system, /"serverIp": "66\.94\.96\.10"/);
   assert.match(system, /## verified_facts \(GET \/v1\/openclaw\/scratch\?grounded=true&query=<operator>\)/);
   assert.match(system, /"plane": "verified_fact"/);
   assert.match(system, /## sender_pool \(GET \/v1\/sender-pool\/status\)/);
@@ -781,7 +837,7 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
 
   assert.equal(payloads.length, 2);
   const toolNames = (payloads[0].tools as Array<{ name: string }>).map((tool) => tool.name);
-  assert.equal(toolNames.length, 19);
+  assert.equal(toolNames.length, 22);
   assert.equal(toolNames.includes("read_episodic_scratch"), true);
   assert.equal(toolNames.includes("compact_intent"), true);
   assert.equal(toolNames.includes("enable_smtp_auth"), true);
@@ -789,7 +845,10 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   assert.equal(toolNames.includes("read_route53_zone_records"), true);
   assert.equal(toolNames.includes("read_dns_ionos"), true);
   assert.equal(toolNames.includes("read_mxtoolbox_health"), true);
+  assert.equal(toolNames.includes("read_infrastructure_inventory"), true);
   assert.equal(toolNames.includes("read_webdock_servers"), true);
+  assert.equal(toolNames.includes("list_conversations"), true);
+  assert.equal(toolNames.includes("read_conversation"), true);
   assert.deepEqual(toolCalls, [{
     toolUseId: "toolu-1",
     toolName: "register_domain_route53",
@@ -983,6 +1042,97 @@ test("OpenClawBedrockBridge emits typed inventory artifact and skips duplicate p
   assert.equal(payload.servers[0].slug, "server10");
   assert.equal(payload.servers[0].domain, "controldelivrix.app");
   assert.doesNotMatch(JSON.stringify(payload), /must-not-ship/);
+});
+
+test("OpenClawBedrockBridge emits typed inventory artifact from infrastructure providers", async () => {
+  const payloads: Array<Record<string, unknown>> = [];
+  const snapshots: Array<Record<string, unknown>> = [];
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    env: enabledToolEnv(),
+    canvasLiveEvents: {
+      async emit(event) {
+        return event;
+      },
+      async upsertArtifactSnapshot(snapshot) {
+        snapshots.push(snapshot as unknown as Record<string, unknown>);
+        return snapshot;
+      }
+    },
+    processToolUse: async () => ({
+      ok: true,
+      status: "executed",
+      proposalId: "read_only:toolu-infra-inventory",
+      result: {
+        providers: [
+          {
+            id: "contabo",
+            kind: "compute",
+            displayName: "Contabo Host Latam",
+            items: [{
+              id: "contabo-1",
+              kind: "contabo_server",
+              displayName: "contabo-1",
+              status: "running",
+              detail: {
+                ipv4: "66.94.96.10",
+                accountId: "contabo",
+                accountLabel: "Contabo Host Latam",
+                providerId: "contabo"
+              }
+            }]
+          },
+          {
+            id: "aws-bedrock-us-east-1",
+            kind: "compute",
+            items: [{ id: "model-1", kind: "bedrock_model", displayName: "model-1", status: "active" }]
+          },
+          {
+            id: "aws-route53-domains",
+            kind: "domain-registrar",
+            items: [{ id: "example.com", kind: "aws_route53_domain", displayName: "example.com" }]
+          }
+        ]
+      }
+    }),
+    client: {
+      send: async (command) => {
+        payloads.push(JSON.parse(String(command.input.body)));
+        if (payloads.length === 1) {
+          return {
+            body: toolUseStream("toolu-infra-inventory", "read_infrastructure_inventory", "{}")
+          };
+        }
+        return {
+          body: [
+            streamJson({ type: "message_start", message: { usage: { input_tokens: 9 } } }),
+            streamJson({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Inventario listo." } }),
+            streamJson({ type: "message_delta", usage: { output_tokens: 7 } })
+          ]
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-infra-inventory", message: "lee inventario infra" });
+  await bridge.streamHistory("msg-infra-inventory", {});
+
+  assert.equal(snapshots.length, 1);
+  assert.equal(snapshots[0].kind, "inventory");
+  const payload = snapshots[0].payload as { kind: string; servers: Array<Record<string, unknown>> };
+  assert.equal(payload.kind, "inventory");
+  assert.deepEqual(payload.servers, [{
+    slug: "contabo-1",
+    ipv4: "66.94.96.10",
+    provider: "contabo",
+    status: "running",
+    accountId: "contabo"
+  }]);
 });
 
 test("OpenClawBedrockBridge emits typed blacklist artifact from MXToolbox result", async () => {

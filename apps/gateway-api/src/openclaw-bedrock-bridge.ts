@@ -1064,9 +1064,19 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       stringifyLiveContext(summarizeInventoryDomains(infrastructure, this.liveContextItemLimit), 3000),
       "```",
       "",
+      "## inventory_accounts (GET /v1/infrastructure/inventory)",
+      "```json",
+      stringifyLiveContext(summarizeInventoryAccounts(infrastructure), 1000),
+      "```",
+      "",
       "## inventory_servers (GET /v1/infrastructure/inventory + GET /v1/webdock/inventory)",
       "```json",
-      stringifyLiveContext(summarizeInventoryServers(infrastructure, webdock, this.liveContextItemLimit), 3000),
+      stringifyLiveContext(summarizeInventoryServers(infrastructure, webdock, this.liveContextItemLimit), 5000),
+      "```",
+      "",
+      "## kill_switch (GET /v1/kill-switch)",
+      "```json",
+      stringifyLiveContext(killSwitch, 1500),
       "```",
       "",
       // Colocado temprano a proposito: truncateLiveContext recorta desde el final, asi
@@ -1090,22 +1100,17 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       "",
       "## overview (GET /v1/admin/overview)",
       "```json",
-      stringifyLiveContext(overview, 3500),
-      "```",
-      "",
-      "## kill_switch (GET /v1/kill-switch)",
-      "```json",
-      stringifyLiveContext(killSwitch, 1500),
+      stringifyLiveContext(overview, 2500),
       "```",
       "",
       "## canvas (GET /v1/canvas/live/state)",
       "```json",
-      stringifyLiveContext(canvas, 3500),
+      stringifyLiveContext(canvas, 2500),
       "```",
       "",
       "## audit_recent (GET /v1/audit-events?limit=10)",
       "```json",
-      stringifyLiveContext(audit, 3000),
+      stringifyLiveContext(audit, 2000),
       "```",
       "</live_context>"
     ].join("\n");
@@ -1544,7 +1549,7 @@ function typedArtifactFromToolResult(
   result: unknown,
   occurredAt: string
 ): TypedArtifactBuildResult | null {
-  if (toolName === "read_webdock_servers") {
+  if (toolName === "read_webdock_servers" || toolName === "read_infrastructure_inventory") {
     return inventoryArtifactFromToolResult(result);
   }
   if (toolName === "read_mxtoolbox_health") {
@@ -1566,7 +1571,7 @@ function inventoryArtifactFromToolResult(result: unknown): TypedArtifactBuildRes
     ? payload.matchedServers
     : Array.isArray(inventory.servers)
       ? inventory.servers
-      : [];
+      : infrastructureServersFromProviders(payload);
   const servers = rawServers
     .filter(isRecord)
     .map((server) => {
@@ -1597,6 +1602,28 @@ function inventoryArtifactFromToolResult(result: unknown): TypedArtifactBuildRes
       servers
     }
   };
+}
+
+function infrastructureServersFromProviders(payload: Record<string, unknown>): Record<string, unknown>[] {
+  const servers: Record<string, unknown>[] = [];
+  for (const provider of recordArray(payload.providers)) {
+    const providerId = stringValue(provider.id);
+    for (const item of recordArray(provider.items)) {
+      const kind = stringValue(item.kind) ?? "";
+      if (!/server|compute/i.test(kind) || kind === "bedrock_model") continue;
+      const detail = isRecord(item.detail) ? item.detail : {};
+      servers.push({
+        slug: stringValue(item.id),
+        domain: stringValue(detail.mainDomain) ?? stringValue(detail.domain) ?? stringValue(detail.hostname) ?? stringValue(item.domain),
+        ipv4: stringValue(detail.ipv4),
+        providerId: stringValue(detail.providerId) ?? providerId,
+        status: stringValue(item.status),
+        accountId: stringValue(detail.accountId),
+        accountLabel: stringValue(detail.accountLabel)
+      });
+    }
+  }
+  return servers;
 }
 
 function blacklistArtifactFromToolResult(result: unknown, occurredAt: string): TypedArtifactBuildResult | null {
@@ -1965,40 +1992,146 @@ function summarizeInventoryDomains(infrastructure: unknown, limit: number): Reco
   };
 }
 
+function summarizeInventoryAccounts(infrastructure: unknown): Record<string, unknown> {
+  if (isEndpointError(infrastructure)) {
+    return {
+      status: "abstain",
+      reason: "inventory_accounts_unavailable",
+      error: infrastructure._error,
+      instruction: "No hay cuentas/proveedores verificados disponibles; abstente antes de atribuir servidores a una cuenta."
+    };
+  }
+
+  const accounts: Record<string, unknown>[] = [];
+  for (const provider of collectInfrastructureProviders(infrastructure)) {
+    if (provider.providerKind !== "compute") continue;
+    const providerKey = normalizeInventoryProviderKey(provider.providerId, "");
+    const accountId = deriveInventoryAccountId(providerKey, provider.providerId, null);
+    accounts.push({
+      accountId,
+      accountLabel: provider.providerLabel ?? accountId,
+      status: provider.providerStatus ?? "unknown",
+      serverCount: provider.itemCount,
+      providerId: provider.providerId,
+      providerKind: provider.providerKind,
+      sourceKind: provider.sourceKind,
+      ...(provider.errorReason ? { errorReason: provider.errorReason } : {})
+    });
+  }
+
+  if (accounts.length === 0) {
+    return {
+      status: "abstain",
+      reason: "no_inventory_accounts_available",
+      instruction: "No hay cuentas/proveedores compute verificados; abstente antes de atribuir servidores a una cuenta."
+    };
+  }
+
+  return {
+    status: "grounded",
+    count: accounts.length,
+    accounts
+  };
+}
+
 function summarizeInventoryServers(infrastructure: unknown, webdock: unknown, limit: number): Record<string, unknown> {
-  const servers = new Map<string, Record<string, unknown>>();
+  interface ServerCandidate {
+    key: string;
+    slug: string;
+    groupKey: string;
+    row: Record<string, unknown>;
+  }
+
+  const servers: ServerCandidate[] = [];
+  const byKey = new Map<string, ServerCandidate>();
+  const rawWebdockBySlug = new Map<string, ServerCandidate>();
+
+  const addCandidate = (candidate: ServerCandidate): ServerCandidate => {
+    const existing = byKey.get(candidate.key);
+    if (existing) {
+      existing.row = { ...existing.row, ...candidate.row };
+      existing.groupKey = candidate.groupKey;
+      return existing;
+    }
+    servers.push(candidate);
+    byKey.set(candidate.key, candidate);
+    return candidate;
+  };
+
   for (const server of collectWebdockServers(webdock)) {
     const slug = stringValue(server.slug);
     if (!slug) continue;
     const ipRaw = stringValue(server.ipv4);
     const ip = ipRaw ? tryNormalizeIpv4Address(ipRaw, "serverIp") : null;
-    servers.set(slug, {
+    const providerKey = "webdock";
+    const accountId = stringValue(server.accountId) ?? "default";
+    const accountLabel = stringValue(server.accountLabel);
+    const groupKey = `${providerKey}:${accountId}`;
+    const candidate = addCandidate({
+      key: `${groupKey}:${slug}`,
+      slug,
+      groupKey,
+      row: {
       serverSlug: slug,
       name: stringValue(server.name) ?? stringValue(server.hostname) ?? slug,
       status: stringValue(server.status) ?? "unknown",
       serverIp: ip?.ok ? ip.value : null,
       ipVerified: Boolean(ip?.ok),
+      accountId,
+      ...(accountLabel ? { accountLabel } : {}),
+      providerId: "webdock",
       source: "GET /v1/webdock/inventory"
+      }
     });
+    rawWebdockBySlug.set(slug, candidate);
   }
 
   for (const entry of collectInfrastructureItems(infrastructure)) {
     const kind = stringValue(entry.item.kind) ?? "";
     if (!/server|compute/i.test(kind) || kind === "bedrock_model") continue;
     const slug = stringValue(entry.item.id);
-    if (!slug || servers.has(slug)) continue;
-    servers.set(slug, {
+    if (!slug) continue;
+    const detail = isRecord(entry.item.detail) ? entry.item.detail : {};
+    const providerId = stringValue(detail.providerId) ?? entry.providerId ?? "unknown";
+    const providerKey = normalizeInventoryProviderKey(providerId, kind);
+    const accountId = stringValue(detail.accountId) ?? deriveInventoryAccountId(providerKey, providerId, entry.providerId);
+    const accountLabel = stringValue(detail.accountLabel) ?? entry.providerLabel ?? accountId;
+    const groupKey = `${providerKey}:${accountId}`;
+    const ipRaw = stringValue(detail.ipv4) ?? stringValue(entry.item.ipv4);
+    const ip = ipRaw ? tryNormalizeIpv4Address(ipRaw, "serverIp") : null;
+    const row = {
       serverSlug: slug,
       name: stringValue(entry.item.displayName) ?? slug,
       status: stringValue(entry.item.status) ?? "unknown",
-      serverIp: null,
-      ipVerified: false,
-      providerId: entry.providerId,
+      serverIp: ip?.ok ? ip.value : null,
+      ipVerified: Boolean(ip?.ok),
+      accountId,
+      accountLabel,
+      providerId,
       source: "GET /v1/infrastructure/inventory"
+    };
+    const webdockDuplicate = providerKey === "webdock" ? rawWebdockBySlug.get(slug) : undefined;
+    if (webdockDuplicate) {
+      webdockDuplicate.row = {
+        ...webdockDuplicate.row,
+        ...row,
+        serverIp: webdockDuplicate.row.serverIp ?? row.serverIp,
+        ipVerified: Boolean(webdockDuplicate.row.ipVerified) || Boolean(row.ipVerified),
+        source: "GET /v1/webdock/inventory + GET /v1/infrastructure/inventory"
+      };
+      webdockDuplicate.groupKey = groupKey;
+      continue;
+    }
+    addCandidate({
+      key: `${groupKey}:${slug}`,
+      slug,
+      groupKey,
+      row
     });
   }
 
-  const items = [...servers.values()].slice(0, limit);
+  const ordered = roundRobinServerCandidates(servers);
+  const items = ordered.map((candidate) => candidate.row).slice(0, limit);
   if (items.length === 0) {
     return {
       status: "abstain",
@@ -2008,7 +2141,7 @@ function summarizeInventoryServers(infrastructure: unknown, webdock: unknown, li
   }
   return {
     status: "grounded",
-    count: servers.size,
+    count: servers.length,
     items
   };
 }
@@ -2067,30 +2200,104 @@ function summarizeVerifiedFacts(groundedMemory: unknown, limit: number): Record<
   };
 }
 
-function collectInfrastructureItems(value: unknown): Array<{
+function collectInfrastructureProviders(value: unknown): Array<{
   providerId: string | null;
+  providerLabel: string | null;
   providerKind: string | null;
+  providerStatus: string | null;
   sourceKind: string | null;
-  item: Record<string, unknown>;
+  itemCount: number;
+  errorReason: string | null;
+  items: Record<string, unknown>[];
 }> {
   if (!isRecord(value)) return [];
+  return recordArray(value.providers).map((provider) => {
+    const items = recordArray(provider.items);
+    return {
+      providerId: stringValue(provider.id),
+      providerLabel: stringValue(provider.displayName),
+      providerKind: stringValue(provider.kind),
+      providerStatus: stringValue(provider.status),
+      sourceKind: stringValue(provider.fetchSourceKind),
+      itemCount: numberValue(provider.itemCount) ?? items.length,
+      errorReason: stringValue(provider.errorReason),
+      items
+    };
+  });
+}
+
+function collectInfrastructureItems(value: unknown): Array<{
+  providerId: string | null;
+  providerLabel: string | null;
+  providerKind: string | null;
+  providerStatus: string | null;
+  sourceKind: string | null;
+  errorReason: string | null;
+  item: Record<string, unknown>;
+}> {
   const output: Array<{
     providerId: string | null;
+    providerLabel: string | null;
     providerKind: string | null;
+    providerStatus: string | null;
     sourceKind: string | null;
+    errorReason: string | null;
     item: Record<string, unknown>;
   }> = [];
-  for (const provider of recordArray(value.providers)) {
-    for (const item of recordArray(provider.items)) {
+  for (const provider of collectInfrastructureProviders(value)) {
+    for (const item of provider.items) {
       output.push({
-        providerId: stringValue(provider.id),
-        providerKind: stringValue(provider.kind),
-        sourceKind: stringValue(provider.fetchSourceKind),
+        providerId: provider.providerId,
+        providerLabel: provider.providerLabel,
+        providerKind: provider.providerKind,
+        providerStatus: provider.providerStatus,
+        sourceKind: provider.sourceKind,
+        errorReason: provider.errorReason,
         item
       });
     }
   }
   return output;
+}
+
+function normalizeInventoryProviderKey(providerId: string | null, itemKind: string): string {
+  const normalizedProvider = (providerId ?? "").toLowerCase();
+  const normalizedKind = itemKind.toLowerCase();
+  if (normalizedProvider.startsWith("webdock") || normalizedKind === "webdock_server") {
+    return "webdock";
+  }
+  if (normalizedProvider.includes("contabo") || normalizedKind.startsWith("contabo_")) {
+    return "contabo";
+  }
+  const kindProvider = normalizedKind.match(/^([a-z0-9-]+)_server$/)?.[1];
+  return normalizedProvider || kindProvider || "unknown";
+}
+
+function deriveInventoryAccountId(providerKey: string, providerId: string | null, fallbackProviderId: string | null): string {
+  const rawProvider = providerId ?? fallbackProviderId ?? providerKey;
+  if (providerKey === "webdock" && rawProvider.startsWith("webdock-")) {
+    return rawProvider.slice("webdock-".length) || "default";
+  }
+  return providerKey === "webdock" ? "default" : providerKey;
+}
+
+function roundRobinServerCandidates<T extends { groupKey: string }>(servers: T[]): T[] {
+  const groups = new Map<string, T[]>();
+  for (const server of servers) {
+    const group = groups.get(server.groupKey) ?? [];
+    group.push(server);
+    groups.set(server.groupKey, group);
+  }
+  const ordered: T[] = [];
+  while ([...groups.values()].some((group) => group.length > 0)) {
+    for (const group of groups.values()) {
+      const next = group.shift();
+      if (next) {
+        ordered.push(next);
+      }
+    }
+  }
+  return ordered;
 }
 
 function collectWebdockServers(value: unknown): Record<string, unknown>[] {

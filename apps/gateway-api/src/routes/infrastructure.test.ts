@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +17,7 @@ import { computeAuditHash } from "../audit/hash-chain.ts";
 import {
   auditInfrastructureInventoryFetch,
   buildInfrastructureInventoryPayload,
+  handleInfrastructureInventoryHttp,
   shouldAuditInfrastructureInventoryFetch
 } from "./infrastructure.ts";
 
@@ -87,6 +89,7 @@ test("Infrastructure inventory degrades gracefully when AWS cache exists and ION
   ]);
   assert.equal(payload.providers[0].fetchSourceKind, "live");
   assert.equal(payload.providers[0].itemCount, 1);
+  assert.equal(payload.providers[0].items?.[0]?.detail?.ipv4, "185.243.12.31");
   assert.equal(payload.providers[1].items?.[0]?.id, "us.anthropic.claude-sonnet-4-6");
   assert.equal(payload.providers[2].errorReason, "creds_not_configured");
   assert.equal(payload.providers[3].errorReason, "creds_not_configured");
@@ -123,6 +126,7 @@ test("Infrastructure inventory de-dupes Webdock cuenta madre roles in read-only 
   ]);
   assert.equal(payload.providers[0].items?.[0]?.detail?.accountId, "primary");
   assert.equal(payload.providers[0].items?.[0]?.detail?.accountLabel, "Webdock Primary");
+  assert.equal(payload.providers[0].items?.[0]?.detail?.ipv4, "185.243.12.31");
 });
 
 test("Infrastructure inventory preserves distinct Webdock accounts after cuenta madre de-dupe", async () => {
@@ -326,6 +330,25 @@ test("Infrastructure inventory exposes Contabo as connected external VPS provide
   }]);
 });
 
+test("Infrastructure inventory exposes Contabo live VPS items with provider and IPv4 detail", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    vpsProviders: [vpsProvider("contabo", "Contabo Host Latam", ["running"])],
+    now: fixedNow
+  });
+
+  const provider = payload.providers[0];
+  assert.equal(provider.id, "contabo");
+  assert.equal(provider.kind, "compute");
+  assert.equal(provider.status, "active");
+  assert.equal(provider.itemCount, 1);
+  assert.equal(provider.items?.[0]?.kind, "contabo_server");
+  assert.equal(provider.items?.[0]?.detail?.providerId, "contabo");
+  assert.equal(provider.items?.[0]?.detail?.accountId, "contabo");
+  assert.equal(provider.items?.[0]?.detail?.accountLabel, "Contabo Host Latam");
+  assert.equal(provider.items?.[0]?.detail?.ipv4, "203.0.113.10");
+});
+
 test("Infrastructure inventory hides stale external VPS items when provider fetch fails", async () => {
   const payload = await buildInfrastructureInventoryPayload({
     includeStaticProviders: false,
@@ -345,6 +368,72 @@ test("Infrastructure inventory hides stale external VPS items when provider fetc
   assert.equal(provider.itemCount, 0);
   assert.deepEqual(provider.items, []);
   assert.equal(payload.itemTotal, 0);
+});
+
+test("Infrastructure inventory handler degrades provider fanout failures with allSettled", async () => {
+  const response = responseRecorder();
+  const auditEvents: unknown[] = [];
+
+  await handleInfrastructureInventoryHttp({
+    request: requestStub("/v1/infrastructure/inventory", {}),
+    response: response as unknown as ServerResponse,
+    auditLog: {
+      async append(event) {
+        auditEvents.push(event);
+      }
+    },
+    webdockListServers: async () => {
+      throw new Error("webdock exploded");
+    },
+    vpsProviderListServers: async () => [vpsProvider("contabo", "Contabo Host Latam", ["running"])],
+    now: () => fixedNow,
+    env: {},
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl")
+  });
+
+  assert.equal(response.result().statusCode, 200);
+  const body = response.result().body as { providers: Array<{ id: string; itemCount: number }> };
+  assert.equal(body.providers.find((provider) => provider.id === "contabo")?.itemCount, 1);
+  assert.equal(body.providers.find((provider) => provider.id === "webdock-primary"), undefined);
+  assert.deepEqual(auditEvents, []);
+});
+
+test("Infrastructure inventory handler gates OpenClaw skill invocation with read-boundary token", async () => {
+  const denied = responseRecorder();
+  await handleInfrastructureInventoryHttp({
+    request: requestStub("/v1/infrastructure/inventory", {
+      "x-openclaw-skill-invocation": "delivrix-infra-inventory"
+    }),
+    response: denied as unknown as ServerResponse,
+    auditLog: { async append() {} },
+    webdockListServers: async () => [],
+    readBoundaryToken: "read-token",
+    now: () => fixedNow
+  });
+  assert.equal(denied.result().statusCode, 401);
+
+  const allowed = responseRecorder();
+  const auditEvents: unknown[] = [];
+  await handleInfrastructureInventoryHttp({
+    request: requestStub("/v1/infrastructure/inventory", {
+      "x-openclaw-skill-invocation": "delivrix-infra-inventory",
+      "x-delivrix-token": "read-token"
+    }),
+    response: allowed as unknown as ServerResponse,
+    auditLog: {
+      async append(event) {
+        auditEvents.push(event);
+      }
+    },
+    webdockListServers: async () => [],
+    readBoundaryToken: "read-token",
+    now: () => fixedNow,
+    env: {},
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl")
+  });
+
+  assert.equal(allowed.result().statusCode, 200);
+  assert.equal(auditEvents.length, 1);
 });
 
 test("Infrastructure inventory exposes IONOS Cloud DNS zones and record summaries", async () => {
@@ -591,6 +680,33 @@ test("Infrastructure inventory audit is explicit, privacy-preserving, and keeps 
   assert.equal(metadataJson.includes("smtp-out-01"), false);
   assert.equal(metadataJson.includes("svc-private-01"), false);
 });
+
+function requestStub(url: string, headers: Record<string, string>): IncomingMessage {
+  return { url, headers, socket: { remoteAddress: "127.0.0.1" } } as unknown as IncomingMessage;
+}
+
+function responseRecorder(): {
+  writeHead: (statusCode: number, headers?: Record<string, string>) => void;
+  end: (chunk?: string) => void;
+  result: () => { statusCode: number; body: unknown };
+} {
+  let statusCode = 0;
+  let rawBody = "";
+  return {
+    writeHead(status) {
+      statusCode = status;
+    },
+    end(chunk) {
+      rawBody = chunk ?? "";
+    },
+    result() {
+      return {
+        statusCode,
+        body: rawBody ? JSON.parse(rawBody) : null
+      };
+    }
+  };
+}
 
 function webdockAccount(
   accountId: string,

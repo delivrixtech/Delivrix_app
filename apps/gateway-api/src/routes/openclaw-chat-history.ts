@@ -1,10 +1,11 @@
-import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { redactRuntimeLogSecrets } from "../gateway-runtime-log.ts";
 import {
   normalizeConversationId,
   OPENCLAW_CHAT_SESSION_KEY
 } from "../openclaw-chat.ts";
 import { OpenClawChatHistoryStore } from "../services/openclaw-chat-history-store.ts";
+import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
 
 export interface OpenClawChatHistoryRouteDependencies {
   request: IncomingMessage;
@@ -14,24 +15,28 @@ export interface OpenClawChatHistoryRouteDependencies {
 }
 
 export async function handleOpenClawChatConversationsHttp(deps: OpenClawChatHistoryRouteDependencies): Promise<void> {
-  if (!authorizeSensitiveRead(deps.request, deps.readBoundaryToken)) {
-    json(deps.response, 401, {
+  const auth = authorizeSensitiveRead(deps.request, { readBoundaryToken: deps.readBoundaryToken }, "openclaw_chat_conversations");
+  if (!auth.ok) {
+    json(deps.response, auth.statusCode, {
       error: "openclaw_chat_history_unauthorized",
-      message: "Missing or invalid read-boundary token."
+      message: "Missing or invalid read-boundary token.",
+      reason: auth.error
     });
     return;
   }
 
   json(deps.response, 200, {
-    conversations: await deps.store.listConversations()
+    conversations: redactConversationSummaries(await deps.store.listConversations())
   });
 }
 
 export async function handleOpenClawChatHistoryHttp(deps: OpenClawChatHistoryRouteDependencies): Promise<void> {
-  if (!authorizeSensitiveRead(deps.request, deps.readBoundaryToken)) {
-    json(deps.response, 401, {
+  const auth = authorizeSensitiveRead(deps.request, { readBoundaryToken: deps.readBoundaryToken }, "openclaw_chat_history");
+  if (!auth.ok) {
+    json(deps.response, auth.statusCode, {
       error: "openclaw_chat_history_unauthorized",
-      message: "Missing or invalid read-boundary token."
+      message: "Missing or invalid read-boundary token.",
+      reason: auth.error
     });
     return;
   }
@@ -49,40 +54,43 @@ export async function handleOpenClawChatHistoryHttp(deps: OpenClawChatHistoryRou
     return;
   }
 
-  json(deps.response, 200, await deps.store.history(conversationId));
+  json(deps.response, 200, redactConversationHistory(await deps.store.history(conversationId)));
 }
 
-function authorizeSensitiveRead(request: IncomingMessage, expectedToken: string): boolean {
-  if (!expectedToken) {
-    return false;
-  }
-  const token = readTokenFromRequest(request);
-  if (!token) {
-    return false;
-  }
-  const expected = Buffer.from(expectedToken);
-  const received = Buffer.from(token);
-  return expected.length === received.length && timingSafeEqual(expected, received);
+function redactConversationSummaries(
+  summaries: Awaited<ReturnType<OpenClawChatHistoryStore["listConversations"]>>
+): Awaited<ReturnType<OpenClawChatHistoryStore["listConversations"]>> {
+  return summaries.map((summary) => ({
+    ...summary,
+    title: redactChatHistoryText(summary.title),
+    preview: redactChatHistoryText(summary.preview)
+  }));
 }
 
-function readTokenFromRequest(request: IncomingMessage): string | null {
-  const headerToken = stringHeader(request.headers["x-delivrix-token"]);
-  if (headerToken) {
-    return headerToken;
-  }
-  const authorization = stringHeader(request.headers.authorization);
-  const bearer = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
-  if (bearer) {
-    return bearer;
-  }
-  const url = new URL(request.url ?? "/", "http://127.0.0.1");
-  return url.searchParams.get("token");
+function redactConversationHistory(
+  snapshot: Awaited<ReturnType<OpenClawChatHistoryStore["history"]>>
+): Awaited<ReturnType<OpenClawChatHistoryStore["history"]>> {
+  return {
+    ...snapshot,
+    turns: snapshot.turns.map((turn) => ({
+      ...turn,
+      content: redactChatHistoryText(turn.content),
+      attachments: turn.attachments?.map((attachment) => ({
+        ...attachment,
+        name: redactChatHistoryText(attachment.name)
+      }))
+    }))
+  };
 }
 
-function stringHeader(value: string | string[] | undefined): string | null {
-  const raw = Array.isArray(value) ? value[0] : value;
-  const trimmed = raw?.trim();
-  return trimmed || null;
+function redactChatHistoryText(value: string): string {
+  return redactRuntimeLogSecrets(value)
+    .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, "data:image/[REDACTED_BASE64]")
+    .replace(
+      /\b(smtp[_ -]?password|password|passwd|secret|token|api[_ -]?key|authorization|approval[_ -]?token)\b\s+(?:is|es)\s+("[^"]+"|'[^']+'|[^\s,;]+)/gi,
+      "$1 is [REDACTED]"
+    )
+    .replace(/\b[A-Za-z0-9+/]{80,}={0,2}\b/g, "[REDACTED_LONG_TOKEN]");
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown): void {

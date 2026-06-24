@@ -29,6 +29,21 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["read_webdock_servers", "read_webdock_inventory"]
   },
   {
+    canonicalSkill: "read_infrastructure_inventory",
+    aliases: ["read_infrastructure_inventory", "read_fleet_servers"],
+    actionIds: ["read_infrastructure_inventory"]
+  },
+  {
+    canonicalSkill: "list_conversations",
+    aliases: ["list_conversations", "list_openclaw_conversations"],
+    actionIds: ["list_conversations"]
+  },
+  {
+    canonicalSkill: "read_conversation",
+    aliases: ["read_conversation", "read_openclaw_conversation"],
+    actionIds: ["read_conversation"]
+  },
+  {
     canonicalSkill: "read_dns_ionos",
     aliases: ["read_dns_ionos", "read_ionos_dns"],
     actionIds: ["read_dns_ionos", "read_ionos_dns"]
