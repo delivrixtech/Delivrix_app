@@ -17,7 +17,10 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "update_domain_nameservers",
     "read_dns_ionos",
     "read_mxtoolbox_health",
+    "read_infrastructure_inventory",
     "read_webdock_servers",
+    "list_conversations",
+    "read_conversation",
     "upsert_dns_route53",
     "upsert_dns_ionos",
     "create_webdock_server",
@@ -41,7 +44,10 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
         "read_route53_zone_records",
         "read_dns_ionos",
         "read_mxtoolbox_health",
+        "read_infrastructure_inventory",
         "read_webdock_servers",
+        "list_conversations",
+        "read_conversation",
         "compact_intent"
       ].includes(tool.name))
       .every((tool) => tool.description.includes("ApprovalGate")),
@@ -67,10 +73,22 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     tools.find((tool) => tool.name === "read_mxtoolbox_health")?.description ?? "",
     /read-only/
   );
+  const infrastructureInventory = tools.find((tool) => tool.name === "read_infrastructure_inventory");
+  assert.ok(infrastructureInventory);
+  assert.deepEqual(infrastructureInventory.input_schema.required, []);
+  assert.match(infrastructureInventory.description, /read-only/);
   assert.match(
     tools.find((tool) => tool.name === "read_webdock_servers")?.description ?? "",
     /no requiere ApprovalGate/
   );
+  const listConversations = tools.find((tool) => tool.name === "list_conversations");
+  assert.ok(listConversations);
+  assert.deepEqual(listConversations.input_schema.required, []);
+  assert.match(listConversations.description, /paginados/);
+  const readConversation = tools.find((tool) => tool.name === "read_conversation");
+  assert.ok(readConversation);
+  assert.deepEqual(readConversation.input_schema.required, ["conversationId"]);
+  assert.match(readConversation.description, /read-only/);
   const enableSmtpAuth = tools.find((tool) => tool.name === "enable_smtp_auth");
   assert.ok(enableSmtpAuth);
   assert.match(enableSmtpAuth.description, /ApprovalGate/);
@@ -84,7 +102,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 20);
+  assert.equal(tools.length, 23);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -205,7 +223,10 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "read_route53_zone_records",
     "update_domain_nameservers",
     "read_dns_ionos",
+    "read_infrastructure_inventory",
     "read_webdock_servers",
+    "list_conversations",
+    "read_conversation",
     "bind_webdock_main_domain",
     "enable_smtp_auth",
     "send_real_email",
@@ -300,8 +321,17 @@ function validSample(toolName: string): Record<string, unknown> {
   if (toolName === "read_mxtoolbox_health") {
     return { target: "8.8.8.8", type: "blacklist" };
   }
+  if (toolName === "read_infrastructure_inventory") {
+    return {};
+  }
   if (toolName === "read_webdock_servers") {
     return { serverSlug: "server10", ipv4: "45.136.70.47" };
+  }
+  if (toolName === "list_conversations") {
+    return { offset: 0, limit: 20 };
+  }
+  if (toolName === "read_conversation") {
+    return { conversationId: "conv-a", offset: 0, limit: 6, maxCharsPerTurn: 500 };
   }
   if (toolName === "upsert_dns_route53") {
     return {
