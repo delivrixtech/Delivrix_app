@@ -7,6 +7,11 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import {
+  markSmtpCredentialConfigured,
+  prepareSmtpCredential,
+  saveSmtpCredentialRecord
+} from "../smtp-credentials.ts";
 import { handleEnableSmtpAuthHttp } from "./enable-smtp-auth.ts";
 import type { SmtpSshCommandInput, SmtpSshRunner } from "./smtp-provisioning.ts";
 
@@ -110,6 +115,91 @@ test("enable_smtp_auth fails closed without encryption key before SSH or partial
     servers: Array<{ serverSlug: string; smtpAuthStatus?: string }>;
   }>("smtp-provisioning.json");
   assert.equal(provisioning?.servers[0]?.smtpAuthStatus, undefined);
+});
+
+test("enable_smtp_auth recovers stale hasCredential flag by checking real credential store", async () => {
+  const workspace = await setupWorkspace();
+  const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      ...legacyServer("server85", "controlnational.com"),
+      smtpAuthStatus: "configured",
+      smtpCredential: { hasCredential: true }
+    }]
+  }));
+  const commands: SmtpSshCommandInput[] = [];
+  const response = captureResponse();
+
+  await handleEnableSmtpAuthHttp({
+    request: request({ actorId: "operator/juanes", domain: "controlnational.com", mode: "recover" }),
+    response: response as unknown as ServerResponse,
+    workspace,
+    auditLog,
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => fixedNow
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), {
+    ok: true,
+    domain: "controlnational.com",
+    mode: "recover",
+    status: "configured",
+    hasCredential: true
+  });
+  assert.equal(commands.length, 10);
+  assert.equal(commands.every((command) => command.serverSlug === "server85"), true);
+  const serialized = `${response.body}\n${JSON.stringify(await auditLog.list())}`;
+  for (const forbidden of ["Password:", "smtpCredentialEncrypted", "ciphertext", "authTag", "smtp-secret-password"]) {
+    assert.equal(serialized.includes(forbidden), false, `leaked ${forbidden}`);
+  }
+});
+
+test("enable_smtp_auth does not regenerate when real credential exists", async () => {
+  const workspace = await setupWorkspace();
+  const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
+  await saveConfiguredCredential(workspace, "ready-one.com", "server85");
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      ...legacyServer("server85", "ready-one.com"),
+      smtpAuthStatus: "configured",
+      smtpCredential: { hasCredential: false }
+    }]
+  }));
+  const commands: SmtpSshCommandInput[] = [];
+  const response = captureResponse();
+
+  await handleEnableSmtpAuthHttp({
+    request: request({ actorId: "operator/juanes", domain: "ready-one.com" }),
+    response: response as unknown as ServerResponse,
+    workspace,
+    auditLog,
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => fixedNow
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), {
+    ok: true,
+    domain: "ready-one.com",
+    mode: "enable",
+    status: "already_configured",
+    hasCredential: true
+  });
+  assert.equal(commands.length, 0);
+  assert.equal((await auditLog.list()).at(-1)?.metadata.candidateCount, 0);
 });
 
 test("enable_smtp_auth redacts SSH error messages that include the generated password", async () => {
@@ -245,6 +335,22 @@ function legacyServer(serverSlug: string, domain: string) {
     configuredAt: fixedNow.toISOString(),
     updatedAt: fixedNow.toISOString()
   };
+}
+
+async function saveConfiguredCredential(
+  workspace: OpenClawWorkspace,
+  domain: string,
+  serverSlug: string
+): Promise<void> {
+  const material = await prepareSmtpCredential({
+    workspace,
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    domain,
+    serverSlug,
+    now: () => fixedNow,
+    passwordFactory: () => "smtp-secret-password"
+  });
+  await saveSmtpCredentialRecord(workspace, markSmtpCredentialConfigured(material.record, fixedNow));
 }
 
 function mockRunner(overrides: Partial<SmtpSshRunner> = {}): SmtpSshRunner {

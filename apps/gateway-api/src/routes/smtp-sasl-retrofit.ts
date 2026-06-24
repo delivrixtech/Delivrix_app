@@ -21,6 +21,7 @@ import {
 } from "../smtp-sasl-config.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import {
+  findSmtpCredentialRecord,
   markSmtpCredentialInstallFailed,
   markSmtpCredentialConfigured,
   prepareSmtpCredential,
@@ -80,6 +81,11 @@ export interface SmtpSaslRetrofitResult {
 export interface SmtpSaslRetrofitBatchResult {
   candidates: number;
   results: SmtpSaslRetrofitResult[];
+}
+
+export interface SmtpProvisioningCredentialFlagReconciliationResult {
+  scanned: number;
+  staleDowngraded: number;
 }
 
 export interface SmtpSaslRetrofitRouteDeps {
@@ -249,28 +255,99 @@ export async function listSmtpSaslRetrofitCandidates(
   mode: SmtpSaslRetrofitMode = "enable"
 ): Promise<SmtpSaslRetrofitCandidate[]> {
   const inventory = await workspace.readInventoryJson<SmtpProvisioningInventory>("smtp-provisioning.json").catch(() => null);
-  return (inventory?.servers ?? [])
+  const servers = (inventory?.servers ?? [])
     .filter((server) => server.status === "configured")
     .filter((server) => target.domain ? server.domain.toLowerCase() === target.domain : true)
-    .filter((server) => target.serverSlug ? server.serverSlug === target.serverSlug : true)
-    .filter((server) => shouldRetrofitServer(server, mode))
-    .map((server) => ({
+    .filter((server) => target.serverSlug ? server.serverSlug === target.serverSlug : true);
+
+  const candidates = await Promise.all(servers.map(async (server) => {
+    const hasCredential = await hasConfiguredSmtpCredential(workspace, server);
+    if (!shouldRetrofitServer(server, mode, hasCredential)) {
+      return null;
+    }
+    return {
       serverSlug: server.serverSlug,
       domain: server.domain,
       serverIp: server.serverIp,
       selector: server.selector,
       reason: retrofitReason(server, mode)
-    }));
+    };
+  }));
+
+  return candidates.filter((candidate): candidate is SmtpSaslRetrofitCandidate => candidate !== null);
 }
 
 type SmtpProvisioningServer = NonNullable<SmtpProvisioningInventory["servers"]>[number];
 
-function shouldRetrofitServer(server: SmtpProvisioningServer, mode: SmtpSaslRetrofitMode): boolean {
+function shouldRetrofitServer(
+  server: SmtpProvisioningServer,
+  mode: SmtpSaslRetrofitMode,
+  hasCredential: boolean
+): boolean {
   const hasConfiguredAuth = server.smtpAuthStatus === "configured";
-  const hasCredential = server.smtpCredential?.hasCredential === true;
   if (mode === "rotate") return hasConfiguredAuth;
   if (mode === "recover") return hasConfiguredAuth && !hasCredential;
   return !hasConfiguredAuth || !hasCredential;
+}
+
+async function hasConfiguredSmtpCredential(
+  workspace: OpenClawWorkspace,
+  server: SmtpProvisioningServer
+): Promise<boolean> {
+  const record = await findSmtpCredentialRecord(workspace, server.domain, server.serverSlug);
+  return record?.status === "configured";
+}
+
+export async function reconcileSmtpProvisioningCredentialFlags(
+  workspace: OpenClawWorkspace,
+  now: () => Date = () => new Date()
+): Promise<SmtpProvisioningCredentialFlagReconciliationResult> {
+  const inventory = await workspace.readInventoryJson<SmtpProvisioningInventory>("smtp-provisioning.json").catch(() => null);
+  const servers = inventory?.servers ?? [];
+  let staleDowngraded = 0;
+  const staleServerKeys = new Set<string>();
+
+  for (const server of servers) {
+    if (server.status !== "configured" || !server.smtpCredential || server.smtpCredential.hasCredential === false) {
+      continue;
+    }
+    const hasCredential = await hasConfiguredSmtpCredential(workspace, server);
+    if (!hasCredential) {
+      staleServerKeys.add(smtpProvisioningServerKey(server));
+    }
+  }
+
+  if (staleServerKeys.size === 0) {
+    return { scanned: servers.length, staleDowngraded: 0 };
+  }
+
+  const updatedAt = now().toISOString();
+  await workspace.updateInventoryJson<SmtpProvisioningInventory>("smtp-provisioning.json", (current) => {
+    const currentServers = current?.servers ?? [];
+    return {
+      ...(current ?? {}),
+      servers: currentServers.map((server) => {
+        if (!staleServerKeys.has(smtpProvisioningServerKey(server))) {
+          return server;
+        }
+        staleDowngraded += 1;
+        return {
+          ...server,
+          smtpCredential: {
+            ...server.smtpCredential,
+            hasCredential: false
+          },
+          updatedAt
+        };
+      })
+    };
+  });
+
+  return { scanned: servers.length, staleDowngraded };
+}
+
+function smtpProvisioningServerKey(server: Pick<SmtpProvisioningServer, "serverSlug" | "domain">): string {
+  return `${server.serverSlug}\0${server.domain.toLowerCase()}`;
 }
 
 function retrofitReason(
