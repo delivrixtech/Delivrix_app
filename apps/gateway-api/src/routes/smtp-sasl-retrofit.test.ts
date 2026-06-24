@@ -160,6 +160,7 @@ test("listSmtpSaslRetrofitCandidates recover mode targets configured SMTP auth m
 test("reconcileSmtpProvisioningCredentialFlags downgrades stale true flags only once", async () => {
   const workspace = await setupWorkspace();
   await saveConfiguredCredential(workspace, "ready-one.com", "server88");
+  await saveConfiguredCredential(workspace, "store-configured-flag-false.com", "server91");
   await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
     servers: [
       {
@@ -178,6 +179,11 @@ test("reconcileSmtpProvisioningCredentialFlags downgrades stale true flags only 
         smtpCredential: { hasCredential: false }
       },
       {
+        ...legacyServer("server91", "store-configured-flag-false.com"),
+        smtpAuthStatus: "configured",
+        smtpCredential: { hasCredential: false }
+      },
+      {
         ...legacyServer("server90", "metadata-without-flag.com"),
         smtpAuthStatus: "configured",
         smtpCredential: { status: "configured" }
@@ -189,12 +195,12 @@ test("reconcileSmtpProvisioningCredentialFlags downgrades stale true flags only 
     workspace,
     () => new Date("2026-06-22T15:00:00.000Z")
   );
-  assert.deepEqual(first, { scanned: 4, staleDowngraded: 2 });
+  assert.deepEqual(first, { scanned: 5, staleDowngraded: 2 });
   const second = await reconcileSmtpProvisioningCredentialFlags(
     workspace,
     () => new Date("2026-06-22T16:00:00.000Z")
   );
-  assert.deepEqual(second, { scanned: 4, staleDowngraded: 0 });
+  assert.deepEqual(second, { scanned: 5, staleDowngraded: 0 });
 
   const provisioning = await workspace.readInventoryJson<{
     servers: Array<{ domain: string; smtpCredential?: { hasCredential?: boolean }; updatedAt: string }>;
@@ -213,6 +219,10 @@ test("reconcileSmtpProvisioningCredentialFlags downgrades stale true flags only 
   );
   assert.equal(
     provisioning?.servers.find((server) => server.domain === "do-not-upgrade.com")?.smtpCredential?.hasCredential,
+    false
+  );
+  assert.equal(
+    provisioning?.servers.find((server) => server.domain === "store-configured-flag-false.com")?.smtpCredential?.hasCredential,
     false
   );
   assert.equal(
