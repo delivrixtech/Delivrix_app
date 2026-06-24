@@ -191,36 +191,6 @@ export async function handleSmtpProvisionHttp(
   if (!approval) blockers.push("approval_not_found_or_expired");
   if (entityFailures.length > 0) blockers.push(entityNotResolvedBlocker);
   if (!serverIp) blockers.push("server_ip_missing");
-  let dkimPublicKey: string | undefined;
-  let dkimPublicKeyHash: string | undefined;
-  let dkimKeyGenerated = false;
-  let dkimKeyGenerationError: string | undefined;
-  if (blockers.length === 0 && !dkimPrivateKeyPath) {
-    try {
-      const keyPair = await ensureDkimKeyPair({
-        workspace: deps.workspace,
-        domain,
-        selector,
-        now: deps.now
-      });
-      dkimPrivateKeyPath = keyPair.privateKeyPath;
-      dkimPublicKey = keyPair.publicKeyB64;
-      dkimPublicKeyHash = keyPair.publicKeyHash;
-      dkimKeyGenerated = keyPair.generated;
-      await emitFileAction(
-        deps.canvasLiveEvents,
-        taskId,
-        keyPair.generated ? "write" : "read",
-        keyPair.privateKeyPath,
-        keyPair.generated ? "DKIM private key generated for SMTP provisioning" : "DKIM private key reused for SMTP provisioning",
-        now
-      );
-    } catch (error) {
-      blockers.push("dkim_key_generation_failed");
-      dkimKeyGenerationError = errorMessage(error);
-    }
-  }
-  if (!dkimPrivateKeyPath) blockers.push("dkim_private_key_missing");
 
   const configured = await findConfiguredSmtpInventory(deps.workspace, {
     serverSlug,
@@ -239,7 +209,7 @@ export async function handleSmtpProvisionHttp(
         selector,
         commandCount: 0,
         learningCount: learnings.length,
-        smtpAuthStatus: configured.smtpAuthStatus ?? "configured",
+        smtpAuthStatus: idempotentSmtpAuthStatus(configured),
         hasCredential: configured.smtpCredential?.hasCredential === true
       }
     });
@@ -259,7 +229,7 @@ export async function handleSmtpProvisionHttp(
         selector,
         status: "idempotent_already_configured",
         commandCount: 0,
-        smtpAuthStatus: configured.smtpAuthStatus ?? "configured",
+        smtpAuthStatus: idempotentSmtpAuthStatus(configured),
         hasCredential: configured.smtpCredential?.hasCredential === true,
         approvalToken,
         approvalArtifactId: approval?.artifactId,
@@ -277,7 +247,7 @@ export async function handleSmtpProvisionHttp(
       selector,
       commandCount: 0,
       tlsStatus: configured.tlsStatus,
-      smtpAuthStatus: configured.smtpAuthStatus ?? "configured",
+      smtpAuthStatus: idempotentSmtpAuthStatus(configured),
       smtpCredential: configured.smtpCredential,
       workspace
     });
@@ -342,6 +312,37 @@ export async function handleSmtpProvisionHttp(
     });
     return;
   }
+
+  let dkimPublicKey: string | undefined;
+  let dkimPublicKeyHash: string | undefined;
+  let dkimKeyGenerated = false;
+  let dkimKeyGenerationError: string | undefined;
+  if (blockers.length === 0 && !dkimPrivateKeyPath) {
+    try {
+      const keyPair = await ensureDkimKeyPair({
+        workspace: deps.workspace,
+        domain,
+        selector,
+        now: deps.now
+      });
+      dkimPrivateKeyPath = keyPair.privateKeyPath;
+      dkimPublicKey = keyPair.publicKeyB64;
+      dkimPublicKeyHash = keyPair.publicKeyHash;
+      dkimKeyGenerated = keyPair.generated;
+      await emitFileAction(
+        deps.canvasLiveEvents,
+        taskId,
+        keyPair.generated ? "write" : "read",
+        keyPair.privateKeyPath,
+        keyPair.generated ? "DKIM private key generated for SMTP provisioning" : "DKIM private key reused for SMTP provisioning",
+        now
+      );
+    } catch (error) {
+      blockers.push("dkim_key_generation_failed");
+      dkimKeyGenerationError = errorMessage(error);
+    }
+  }
+  if (!dkimPrivateKeyPath) blockers.push("dkim_private_key_missing");
 
   let smtpCredential: SmtpCredentialMaterial | null = null;
   if (blockers.length === 0) {
@@ -921,9 +922,15 @@ async function findConfiguredSmtpInventory(
     entry.domain === input.domain &&
     entry.selector === input.selector &&
     entry.status === "configured" &&
-    entry.smtpAuthStatus === "configured" &&
-    entry.smtpCredential?.hasCredential === true
+    (
+      entry.smtpAuthStatus == null ||
+      entry.smtpCredential?.hasCredential === true
+    )
   ) ?? null;
+}
+
+function idempotentSmtpAuthStatus(entry: NonNullable<SmtpInventory["servers"]>[number]): "configured" | "legacy_not_configured" {
+  return entry.smtpAuthStatus === "configured" ? "configured" : "legacy_not_configured";
 }
 
 async function findConfiguredSmtpAuthMissingCredentialInventory(

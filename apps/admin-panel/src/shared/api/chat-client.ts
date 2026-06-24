@@ -20,8 +20,15 @@ export interface ChatOperatorParams {
   approvalContract?: string;
 }
 
+export interface ChatAttachmentInput {
+  name: string;
+  mimeType: string;
+  dataBase64: string;
+}
+
 export interface ChatSendOptions {
   operatorParams?: ChatOperatorParams;
+  attachments?: ChatAttachmentInput[];
 }
 
 export interface ChatStreamingState {
@@ -67,6 +74,7 @@ interface QueuedMessage {
   msgId: string;
   content: string;
   operatorParams?: ChatOperatorParams;
+  attachments?: ChatAttachmentInput[];
 }
 
 interface ChatClientOptions {
@@ -101,8 +109,16 @@ const initialState: ChatState = {
   interrupting: false
 };
 
+export interface ChatConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: string;
+  preview: string;
+}
+
 export class ChatClient implements ChatClientLike {
   private state: ChatState;
+  private activeConversationId: string | null = null;
   private readonly listeners = new Set<() => void>();
   private readonly queue: QueuedMessage[] = [];
   private readonly inFlight = new Set<string>();
@@ -134,6 +150,59 @@ export class ChatClient implements ChatClientLike {
       messages: options.initialState?.messages ?? []
     };
     this.syncQueuedCount();
+  }
+
+  getActiveConversationId(): string | null {
+    return this.activeConversationId;
+  }
+
+  setActiveConversation(conversationId: string | null): void {
+    this.activeConversationId = conversationId;
+  }
+
+  startNewConversation(): string {
+    const id = `chat-${globalThis.crypto?.randomUUID?.() ?? String(Date.now())}`;
+    this.activeConversationId = id;
+    this.setState({ messages: [], streaming: null, lastError: null });
+    return id;
+  }
+
+  async fetchConversations(): Promise<ChatConversationSummary[]> {
+    try {
+      const res = await this.fetchImpl("/v1/openclaw/chat/conversations", { headers: { accept: "application/json" } });
+      if (!res.ok) return [];
+      const data = await res.json().catch(() => ({})) as { conversations?: unknown };
+      if (!Array.isArray(data.conversations)) return [];
+      return data.conversations.filter((c): c is ChatConversationSummary =>
+        !!c && typeof c === "object"
+        && typeof (c as ChatConversationSummary).id === "string"
+        && typeof (c as ChatConversationSummary).title === "string");
+    } catch {
+      return [];
+    }
+  }
+
+  async loadHistory(): Promise<void> {
+    const id = this.activeConversationId;
+    const qs = id ? `?conversationId=${encodeURIComponent(id)}` : "";
+    try {
+      const res = await this.fetchImpl(`/v1/openclaw/chat/history${qs}`, { headers: { accept: "application/json" } });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({})) as { turns?: unknown };
+      const turns = Array.isArray(data.turns) ? data.turns : [];
+      const messages: ChatMessage[] = turns
+        .filter((t): t is { role?: unknown; content?: unknown; createdAt?: unknown; msgId?: unknown } => !!t && typeof t === "object")
+        .map((t, index) => ({
+          msgId: typeof t.msgId === "string" ? t.msgId : `hist-${index}`,
+          role: t.role === "assistant" ? "assistant" : "user",
+          content: typeof t.content === "string" ? t.content : "",
+          timestamp: typeof t.createdAt === "string" ? t.createdAt : new Date().toISOString(),
+          status: "sent"
+        }));
+      this.setState({ messages, streaming: null });
+    } catch {
+      /* backend sin endpoint aun: dejar el estado actual */
+    }
   }
 
   connect(): void {
@@ -187,7 +256,8 @@ export class ChatClient implements ChatClientLike {
 
   async sendMessage(content: string, options: ChatSendOptions = {}): Promise<void> {
     const trimmed = content.trim();
-    if (!trimmed) {
+    const attachments = options.attachments ?? [];
+    if (!trimmed && attachments.length === 0) {
       return;
     }
 
@@ -195,7 +265,8 @@ export class ChatClient implements ChatClientLike {
     this.queue.push({
       msgId,
       content: trimmed,
-      ...(options.operatorParams ? { operatorParams: options.operatorParams } : {})
+      ...(options.operatorParams ? { operatorParams: options.operatorParams } : {}),
+      ...(attachments.length > 0 ? { attachments } : {})
     });
     this.state = addOrUpdateMessage(this.state, {
       msgId,
@@ -296,7 +367,9 @@ export class ChatClient implements ChatClientLike {
           body: JSON.stringify({
             msgId: item.msgId,
             message: item.content,
-            ...(item.operatorParams ? { operatorParams: item.operatorParams } : {})
+            ...(this.activeConversationId ? { conversationId: this.activeConversationId } : {}),
+            ...(item.operatorParams ? { operatorParams: item.operatorParams } : {}),
+            ...(item.attachments && item.attachments.length > 0 ? { attachments: item.attachments } : {})
           })
         });
 
@@ -392,7 +465,61 @@ export class ChatClient implements ChatClientLike {
   }
 }
 
-export const chatClient = new ChatClient();
+/* ============================================================
+ * Persistencia local del historial (parche frontend).
+ * Sobrevive recargas del panel. La persistencia server-side real
+ * (disco + GET /chat/history + sessionKey por chat) la hace el gateway.
+ * Guardado bajo typeof guards → no corre en tests/SSR.
+ * ============================================================ */
+const CHAT_HISTORY_KEY = "delivrix.chat.history.v1";
+const CHAT_HISTORY_MAX = 100;
+
+function loadPersistedChatMessages(): ChatMessage[] {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(CHAT_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const valid: ChatMessage[] = [];
+    for (const item of parsed) {
+      if (
+        item && typeof item === "object"
+        && typeof (item as ChatMessage).msgId === "string"
+        && ((item as ChatMessage).role === "user" || (item as ChatMessage).role === "assistant")
+        && typeof (item as ChatMessage).content === "string"
+        && typeof (item as ChatMessage).timestamp === "string"
+      ) {
+        const m = item as ChatMessage;
+        valid.push({ msgId: m.msgId, role: m.role, content: m.content, timestamp: m.timestamp, status: "sent" });
+      }
+    }
+    return valid.slice(-CHAT_HISTORY_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function persistChatMessages(messages: ChatMessage[]): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(messages.slice(-CHAT_HISTORY_MAX)));
+  } catch {
+    /* quota o storage deshabilitado: ignorar */
+  }
+}
+
+export const chatClient = new ChatClient({ initialState: { messages: loadPersistedChatMessages() } });
+
+if (typeof window !== "undefined") {
+  let lastMessagesRef: ChatMessage[] | null = null;
+  chatClient.subscribe(() => {
+    const messages = chatClient.getSnapshot().messages;
+    if (messages === lastMessagesRef) return;
+    lastMessagesRef = messages;
+    persistChatMessages(messages);
+  });
+}
 
 export function useChatStream(client: ChatClientLike = chatClient): ChatState {
   return useSyncExternalStore(

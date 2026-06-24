@@ -36,6 +36,7 @@ import type {
   SmtpSshRunner
 } from "./smtp-provisioning.ts";
 import type { AutoRollbackManager } from "../auto-rollback.ts";
+import { warmupFromAddress } from "./warmup-sender.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -347,7 +348,7 @@ export class RampScheduler {
       result = await this.deps.sshRunner.run({
         serverSlug: ramp.serverSlug,
         serverIp: ramp.serverIp,
-        command: `/usr/sbin/sendmail -t -f ${shellQuote(`noreply@${ramp.domain}`)}`,
+        command: `/usr/sbin/sendmail -t -f ${shellQuote(warmupFromAddress(ramp.domain))}`,
         stdin: renderBatchPayload({
           domain: ramp.domain,
           rampId,
@@ -884,7 +885,7 @@ function renderBatchPayload(input: {
   // sendmail usa los addresses parseados del campo To/Cc/Bcc.
   const toLine = input.recipients.slice(0, 20).join(", ");
   return [
-    `From: Delivrix Ramp <noreply@${input.domain}>`,
+    `From: Delivrix Ramp <${warmupFromAddress(input.domain)}>`,
     `To: ${toLine}`,
     `Subject: Delivrix warmup ramp · ${input.domain} · batch ${input.batchIndex + 1}`,
     `Message-ID: ${msgIdBase}`,

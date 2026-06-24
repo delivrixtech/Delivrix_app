@@ -560,6 +560,114 @@ test("GET /v1/canvas/live/state returns persisted snapshot", async () => {
   assert.equal(response.body.artifacts.length, 1);
 });
 
+test("GET /v1/canvas/live/state returns capped recent canvas state", async () => {
+  const service = new CanvasLiveEventService({
+    stateDir: await stateDirForTest(),
+    now: () => fixedNow,
+    streamToken: "canvas-token",
+    maxTasks: 20,
+    maxArtifacts: 10
+  });
+  const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-state-audit-")), "audit.jsonl"));
+  for (let index = 0; index < 40; index += 1) {
+    await seedArtifactAt(service, `task-cap-${index}`, `artifact-cap-${index}`, isoMinutes(index), "completed");
+  }
+
+  const response = await runRoute(
+    (request, response) => handleCanvasLiveStateHttp({
+      request,
+      response,
+      service,
+      auditLog,
+      readBoundaryToken: "read-token"
+    }),
+    {
+      method: "GET",
+      url: "/v1/canvas/live/state",
+      headers: { "x-delivrix-token": "read-token" }
+    }
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.tasks.length, 20);
+  assert.equal(response.body.artifacts.length, 10);
+  assert.equal(response.body.artifacts.at(-1).artifactId, "artifact-cap-39");
+  assert.equal(response.body.artifacts.some((artifact: { artifactId: string }) => artifact.artifactId === "artifact-cap-0"), false);
+});
+
+test("canvas-live reload applies retention to oversized persisted JSONL", async () => {
+  const stateDir = await stateDirForTest();
+  const writer = new CanvasLiveEventService({
+    stateDir,
+    now: () => fixedNow,
+    maxTasks: 20,
+    maxArtifacts: 10
+  });
+  for (let index = 0; index < 40; index += 1) {
+    await seedArtifactAt(writer, `task-reload-${index}`, `artifact-reload-${index}`, isoMinutes(index), "completed");
+  }
+  assert.ok((await readFile(join(stateDir, "tasks.jsonl"), "utf8")).trim().split("\n").length > 20);
+  assert.ok((await readFile(join(stateDir, "artifacts.jsonl"), "utf8")).trim().split("\n").length > 10);
+
+  const reloaded = new CanvasLiveEventService({
+    stateDir,
+    now: () => fixedNow,
+    maxTasks: 20,
+    maxArtifacts: 10
+  });
+  const snapshot = await reloaded.snapshot();
+
+  assert.equal(snapshot.tasks.length, 20);
+  assert.equal(snapshot.artifacts.length, 10);
+  assert.equal(snapshot.artifacts.at(-1)?.artifactId, "artifact-reload-39");
+  assert.equal(snapshot.artifacts.some((artifact) => artifact.artifactId === "artifact-reload-0"), false);
+});
+
+test("canvas-live retention keeps recent approved and SMTP credential artifacts inside the cap", async () => {
+  const later = new Date("2026-05-25T22:20:00.000Z");
+  const service = new CanvasLiveEventService({
+    stateDir: await stateDirForTest(),
+    now: () => later,
+    maxTasks: 8,
+    maxArtifacts: 3
+  });
+  await seedArtifactAt(service, "task-approved", "artifact-approved", isoMinutes(1), "completed");
+  await service.approveArtifact({
+    artifactId: "artifact-approved",
+    actorId: "operator-juanes",
+    blocks: []
+  });
+  await service.upsertArtifactSnapshot({
+    artifactId: "smtp-credential-example.com",
+    taskId: "bedrock:0c783c78-1111-4222-8333-123456789abc",
+    kind: "smtp_credential",
+    title: "Credencial SMTP example.com",
+    editable: false,
+    createdAt: isoMinutes(2),
+    updatedAt: isoMinutes(2),
+    approvalStatus: "pending",
+    blocks: [],
+    payload: {
+      kind: "smtp_credential",
+      domain: "example.com",
+      host: "smtp.example.com",
+      username: "mailer@example.com",
+      ports: { submission: 587, smtps: 465 },
+      hasCredential: true
+    }
+  });
+  for (let index = 3; index < 8; index += 1) {
+    await seedArtifactAt(service, `task-new-${index}`, `artifact-new-${index}`, isoMinutes(index), "completed");
+  }
+
+  const snapshot = await service.snapshot();
+  const artifactIds = snapshot.artifacts.map((artifact) => artifact.artifactId);
+
+  assert.equal(snapshot.artifacts.length, 3);
+  assert.equal(artifactIds.includes("artifact-approved"), true);
+  assert.equal(artifactIds.includes("smtp-credential-example.com"), true);
+});
+
 test("GET /v1/canvas/live/state rejects missing read boundary token", async () => {
   const service = await testService();
   const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-state-audit-")), "audit.jsonl"));
@@ -885,6 +993,129 @@ test("canvas-live upsertArtifactSnapshot normalizes non-positive block order bef
   assert.equal(artifacts.includes(pemLine), false);
 });
 
+test("canvas-live upsertArtifactSnapshot persists typed payload with version and redaction", async () => {
+  const stateDir = await stateDirForTest();
+  const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  const pem = generatedPrivateKeyPem();
+  const pemLine = pemBodyLine(pem);
+  const later = new Date("2026-05-25T22:05:00.000Z");
+
+  await service.upsertArtifactSnapshot({
+    artifactId: "dns-zone-delivrix-test",
+    taskId: "task-dns-zone",
+    kind: "dns_zone",
+    title: "Zona DNS delivrix.test",
+    editable: false,
+    createdAt: fixedNow.toISOString(),
+    updatedAt: fixedNow.toISOString(),
+    approvalStatus: "pending",
+    blocks: [],
+    payload: {
+      kind: "dns_zone",
+      domain: "delivrix.test",
+      records: [
+        { name: "smtp.delivrix.test", type: "A", value: "203.0.113.10" },
+        { name: "s2026a._domainkey.delivrix.test", type: "TXT", value: pem }
+      ]
+    }
+  });
+
+  await service.upsertArtifactSnapshot({
+    artifactId: "dns-zone-delivrix-test",
+    taskId: "task-dns-zone",
+    kind: "dns_zone",
+    title: "Zona DNS delivrix.test",
+    editable: false,
+    createdAt: later.toISOString(),
+    updatedAt: later.toISOString(),
+    approvalStatus: "pending",
+    blocks: [],
+    payload: {
+      kind: "dns_zone",
+      domain: "delivrix.test",
+      records: [
+        { name: "smtp.delivrix.test", type: "A", value: "203.0.113.10" }
+      ]
+    }
+  });
+
+  const snapshot = await service.snapshot();
+  const artifact = snapshot.artifacts[0];
+  assert.equal(artifact.artifactId, "dns-zone-delivrix-test");
+  assert.equal(artifact.kind, "dns_zone");
+  assert.equal(artifact.version, 2);
+  assert.equal(artifact.createdAt, fixedNow.toISOString());
+  assert.equal(artifact.updatedAt, later.toISOString());
+  assert.equal(artifact.payload?.kind, "dns_zone");
+  assert.deepEqual(artifact.payload?.records, [
+    { name: "smtp.delivrix.test", type: "A", value: "203.0.113.10" }
+  ]);
+
+  const persisted = await readFile(join(stateDir, "artifacts.jsonl"), "utf8");
+  assert.match(persisted, /"version":2/);
+  assert.match(persisted, /"updatedAt":"2026-05-25T22:05:00.000Z"/);
+  assert.equal(persisted.includes(pemLine), false);
+  assert.match(persisted, /\[REDACTED_PRIVATE_KEY\]/);
+
+  const reloaded = new CanvasLiveEventService({ stateDir, now: () => later });
+  const reloadedArtifact = (await reloaded.snapshot()).artifacts[0];
+  assert.equal(reloadedArtifact.version, 2);
+  assert.equal(reloadedArtifact.updatedAt, later.toISOString());
+  assert.equal(reloadedArtifact.payload?.kind, "dns_zone");
+  assert.equal(JSON.stringify(reloadedArtifact).includes(pemLine), false);
+});
+
+test("canvas-live persists SMTP credential artifact without credential material", async () => {
+  const stateDir = await stateDirForTest();
+  const service = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+
+  await service.upsertArtifactSnapshot({
+    artifactId: "smtp-credential-example-mail.com",
+    taskId: "task-smtp-credential",
+    kind: "smtp_credential",
+    title: "Credencial SMTP example-mail.com",
+    editable: false,
+    createdAt: fixedNow.toISOString(),
+    updatedAt: fixedNow.toISOString(),
+    approvalStatus: "pending",
+    blocks: [],
+    payload: {
+      kind: "smtp_credential",
+      domain: "example-mail.com",
+      host: "smtp.example-mail.com",
+      username: "mailer@example-mail.com",
+      ports: { submission: 587, smtps: 465 },
+      hasCredential: true,
+      password: "smtp-password-must-not-ship",
+      smtpCredentialEncrypted: {
+        ciphertext: "ciphertext-must-not-ship",
+        authTag: "auth-tag-must-not-ship"
+      }
+    } as any
+  });
+
+  const snapshot = await service.snapshot();
+  const artifact = snapshot.artifacts[0];
+  assert.equal(artifact.kind, "smtp_credential");
+  assert.deepEqual(artifact.payload, {
+    kind: "smtp_credential",
+    domain: "example-mail.com",
+    host: "smtp.example-mail.com",
+    username: "mailer@example-mail.com",
+    ports: { submission: 587, smtps: 465 },
+    hasCredential: true
+  });
+
+  const persisted = await readFile(join(stateDir, "artifacts.jsonl"), "utf8");
+  const reloaded = new CanvasLiveEventService({ stateDir, now: () => fixedNow });
+  const reloadedArtifact = (await reloaded.snapshot()).artifacts[0];
+  const combined = `${JSON.stringify(snapshot)}\n${persisted}\n${JSON.stringify(reloadedArtifact)}`;
+
+  assert.doesNotMatch(combined, /smtp-password-must-not-ship/);
+  assert.doesNotMatch(combined, /ciphertext-must-not-ship/);
+  assert.doesNotMatch(combined, /auth-tag-must-not-ship/);
+});
+
 async function seedArtifact(
   service: CanvasLiveEventService,
   taskId: string,
@@ -893,6 +1124,32 @@ async function seedArtifact(
   await service.emit(taskDeclare(taskId));
   await service.emit(artifactDeclare(taskId, artifactId));
   await service.emit(artifactBlock(artifactId, "step-01", "Paso inicial", "complete"));
+}
+
+async function seedArtifactAt(
+  service: CanvasLiveEventService,
+  taskId: string,
+  artifactId: string,
+  at: string,
+  status: "running" | "completed" = "running"
+): Promise<void> {
+  await service.emit({
+    ...taskDeclare(taskId),
+    status,
+    createdAt: at
+  });
+  await service.emit({
+    ...artifactDeclare(taskId, artifactId),
+    createdAt: at
+  });
+  await service.emit({
+    ...artifactBlock(artifactId, "step-01", "Paso inicial", "complete"),
+    occurredAt: at
+  });
+}
+
+function isoMinutes(index: number): string {
+  return new Date(fixedNow.getTime() + index * 60_000).toISOString();
 }
 
 function taskDeclare(taskId: string): CanvasLiveEvent {

@@ -4,6 +4,7 @@ import {
   compactIntentParamSchema,
   configureCompleteSmtpSkillParamSchema,
   emailAuthParamSchema,
+  enableSmtpAuthParamSchema,
   ionosDnsReadParamSchema,
   ionosUpsertParamSchema,
   mxtoolboxHealthParamSchema,
@@ -51,6 +52,7 @@ export type OpenClawToolName =
   | "bind_webdock_main_domain"
   | "provision_smtp_postfix"
   | "configure_email_auth"
+  | "enable_smtp_auth"
   | "bind_domain_to_server"
   | "seed_warmup_pool"
   | "send_real_email"
@@ -650,6 +652,34 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     targetType: "domain",
     severity: "critical"
   },
+  enable_smtp_auth: {
+    spec: {
+      name: "enable_smtp_auth",
+      description: [
+        "Genera, recupera o rota una credencial SMTP AUTH para un solo dominio sender ya configurado, usando retrofit SASL single-target.",
+        "Requiere ApprovalGate humano, SSH runner, audit y kill switch. No imprime password ni markdown: la credencial se descarga despues desde Sender Pool."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          mode: {
+            type: "string",
+            enum: ["enable", "recover", "rotate"],
+            description: "enable=default para dominios sin SMTP AUTH; recover=solo stuck smtpAuthStatus configured sin credencial; rotate=regenera passdb y reemplaza la credencial anterior."
+          }
+        },
+        required: ["domain"]
+      }
+    },
+    paramSchema: enableSmtpAuthParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      flagEnabled(env.SMTP_PROVISIONING_ENABLE_SSH) &&
+      hasSshRunnerConfig(env),
+    targetType: "domain",
+    severity: "critical"
+  },
   bind_domain_to_server: {
     spec: {
       name: "bind_domain_to_server",
@@ -889,6 +919,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "bind_webdock_main_domain",
     "provision_smtp_postfix",
     "configure_email_auth",
+    "enable_smtp_auth",
     "bind_domain_to_server",
     "seed_warmup_pool",
     "send_real_email",

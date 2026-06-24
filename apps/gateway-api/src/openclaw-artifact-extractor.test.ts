@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   detectArtifactKind,
   extractOpenClawArtifact,
+  shouldOpenArtifact,
   summarizeOpenClawTaskTitle
 } from "./openclaw-artifact-extractor.ts";
 
@@ -151,4 +152,56 @@ test("summarizeOpenClawTaskTitle extracts purchase target", () => {
 
 test("summarizeOpenClawTaskTitle extracts list intent", () => {
   assert.equal(summarizeOpenClawTaskTitle("lista todos los dominios bajo gestión"), "Listado - todos los dominios bajo gestión");
+});
+
+test("shouldOpenArtifact keeps short conceptual chat in the chat", () => {
+  assert.equal(shouldOpenArtifact("FCrDNS es la coincidencia entre PTR y A/AAAA para una IP."), false);
+});
+
+test("shouldOpenArtifact opens markdown tables, code, numbered plans, and sectioned reports", () => {
+  assert.equal(shouldOpenArtifact([
+    "Inventario",
+    "",
+    "| Server | Estado |",
+    "| --- | --- |",
+    "| server10 | running |"
+  ].join("\n")), true);
+
+  assert.equal(shouldOpenArtifact([
+    "```dns",
+    "example.com TXT v=spf1 -all",
+    "```"
+  ].join("\n")), true);
+
+  assert.equal(shouldOpenArtifact([
+    "Plan",
+    "",
+    "1. Validar inventario",
+    "2. Emitir reporte"
+  ].join("\n")), true);
+
+  assert.equal(shouldOpenArtifact([
+    "## Diagnostico",
+    "- Inventario Webdock leido",
+    "- Blacklist consultada",
+    "- Sin acciones live",
+    "",
+    "Resultado listo."
+  ].join("\n")), true);
+});
+
+test("shouldOpenArtifact opens long multi-section prose but not long single-section prose", () => {
+  const paragraph = "Delivrix mantiene continuidad con Webdock y prioriza auditoria, dry-run, rollback y kill switch antes de cualquier accion de impacto operacional.";
+  assert.equal(shouldOpenArtifact([paragraph, paragraph, paragraph, paragraph, paragraph].join(" ")), false);
+  assert.equal(shouldOpenArtifact([
+    paragraph,
+    "",
+    paragraph,
+    "",
+    paragraph,
+    "",
+    paragraph,
+    "",
+    paragraph
+  ].join("\n")), true);
 });

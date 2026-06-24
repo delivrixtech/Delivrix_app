@@ -403,7 +403,7 @@ test("POST /v1/servers/:slug/provision-smtp blocks configured SMTP AUTH without 
   assert.equal((await route.auditLog.list()).at(-1)?.metadata.remediation, "run_smtp_sasl_retrofit_or_rotate_explicitly");
 });
 
-test("POST /v1/servers/:slug/provision-smtp retrofits legacy configured inventory without SMTP AUTH", async () => {
+test("POST /v1/servers/:slug/provision-smtp keeps legacy configured inventory idempotent without SMTP AUTH", async () => {
   const commands: SmtpSshCommandInput[] = [];
   const route = await routeHarness({
     sshRunner: mockRunner({
@@ -419,14 +419,6 @@ test("POST /v1/servers/:slug/provision-smtp retrofits legacy configured inventor
     }])
   });
   await appendApproval(route.auditLog, "artifact-smtp-plan", "exec-smtp-retrofit");
-  await route.workspace.writeWorkspaceFile("inventory/dkim-keys/delivrix-mail.com/default.private", dkimPrivateKey);
-  await route.workspace.updateInventoryJson("domains.json", () => ({
-    emailAuth: [{
-      domain: "delivrix-mail.com",
-      selector: "default",
-      dkimPrivateKeyPath: "inventory/dkim-keys/delivrix-mail.com/default.private"
-    }]
-  }));
   await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
     servers: [{
       slug: "mail-delivrix-test",
@@ -456,9 +448,11 @@ test("POST /v1/servers/:slug/provision-smtp retrofits legacy configured inventor
   }, { SMTP_PROVISIONING_ENABLE_SSH: "true" });
 
   assert.equal(response.statusCode, 200);
-  assert.equal(response.body.status, "configured");
-  assert.equal(commands.length, 19);
-  assert.equal(commands.some((command) => command.command.includes("dovecot")), true);
+  assert.equal(response.body.status, "idempotent_already_configured");
+  assert.equal(response.body.smtpAuthStatus, "legacy_not_configured");
+  assert.equal(response.body.commandCount, 0);
+  assert.equal(commands.length, 0);
+  assert.equal((await route.auditLog.list()).at(-1)?.action, "oc.smtp.provision_idempotent");
 });
 
 test("POST /v1/servers/:slug/provision-smtp marks credential install_failed on SSH failure", async () => {

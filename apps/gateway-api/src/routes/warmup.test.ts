@@ -16,6 +16,7 @@ import {
   handleWarmupStartError,
   handleWarmupStartHttp
 } from "./warmup.ts";
+import { warmupFromAddress } from "./warmup-sender.ts";
 import type {
   SmtpSshCommandInput,
   SmtpSshRunner
@@ -91,7 +92,18 @@ test("POST /v1/warmup/start sends three seed messages and stores redacted progre
   assert.equal(response.body.sent[0].to, "se***@gmail.com");
   assert.equal(commands.length, 3);
   assert.equal(commands.every((command) => command.serverSlug === "mail-delivrix-test"), true);
-  assert.equal(commands.every((command) => command.command === "/usr/sbin/sendmail -t -f 'noreply@delivrix-mail.com'"), true);
+  assert.equal(
+    commands.every((command) => command.command === `/usr/sbin/sendmail -t -f '${warmupFromAddress("delivrix-mail.com")}'`),
+    true
+  );
+  assert.equal(
+    commands.every((command) => command.stdin?.includes(`From: Delivrix Warmup <${warmupFromAddress("delivrix-mail.com")}>`)),
+    true
+  );
+  assert.equal(
+    commands.some((command) => command.command.includes("noreply@") || command.stdin?.includes("noreply@")),
+    false
+  );
   assert.equal(commands.every((command) => command.stdin?.includes("Subject: Delivrix warmup seed")), true);
 
   const events = await route.auditLog.list();

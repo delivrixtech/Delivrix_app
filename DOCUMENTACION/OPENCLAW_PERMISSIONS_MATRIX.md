@@ -1,6 +1,6 @@
 # OpenClaw — Permissions Matrix
 
-Fecha: 2026-06-09 (v2.5 gobernador creación Webdock).
+Fecha: 2026-06-23 (v2.6 credencial SMTP AUTH gateada por dominio).
 Hito rector: `HITO_5_11_OPENCLAW_AGENT_HOSTINGER.md`.
 Categorías y método de evaluación heredados de `HITO_4_5_RUNBOOK_PERMISOS_KILL_SWITCH.md`.
 
@@ -13,6 +13,7 @@ Categorías y método de evaluación heredados de `HITO_4_5_RUNBOOK_PERMISOS_KIL
 - **v2.3** (2026-06-04) — Fase 0 contrato de permisos: se deprecian rutas legacy `/v1/agent/proposals/*/approve`, `/v1/agent/runbook/execute` y `/v1/agent/runbook/revert`; la autorización canónica es `POST /v1/openclaw/proposals/{id}/sign` con HMAC. Se introduce PlanApproval por `runId` detrás de `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE`, apagado por defecto.
 - **v2.4** (2026-06-09) — `bind_webdock_main_domain`: Server Identity `smtp.<dominio>` + FCrDNS verificado.
 - **v2.5** (2026-06-09) — `provision_webdock_vps`/`create_webdock_server`: governor 4/24h por cuenta antes de crear VPS.
+- **v2.6** (2026-06-23) — `enable_smtp_auth`: genera/instala credencial SMTP AUTH para un único dominio ya configurado; exige ApprovalGate, `SMTP_PROVISIONING_ENABLE_SSH=true`, runner SSH configurado y `CREDENTIAL_ENCRYPTION_KEY` válida en ejecución. La key es warning de preflight, no fatal de boot.
 
 ## 1. Propósito
 
@@ -132,6 +133,7 @@ Requiere `humanApproved: true` + `killSwitch.enabled: false`. Si falla cualquier
 | `provision_webdock_vps` | `oc.webdock.server_created` | `WEBDOCK_SERVERS_ENABLE_CREATE=true`; governor 4/24h/cuenta, bloqueo audit+Canvas, override humano auditado. | operador autorizado |
 | `bind_webdock_main_domain` | `oc.webdock.main_domain_bound` | `WEBDOCK_BIND_MAIN_DOMAIN_ENABLE=true`; requiere A `smtp.<dominio>` propagado; Server Identity `maindomain=smtp.<dominio>`, `removeDefaultAlias=true`; éxito sólo con FCrDNS verificado; si no, pending/fail-closed. | operador autorizado |
 | `install_smtp_stack` | `oc.smtp.stack_installed` | `SMTP_PROVISIONING_ENABLE_SSH=true`; host/HELO/TLS = `smtp.<dominio>` | operador autorizado |
+| `enable_smtp_auth` | `oc.smtp_auth.enabled` | `SMTP_PROVISIONING_ENABLE_SSH=true`; runner SSH configurado; target exacto `domain`; `CREDENTIAL_ENCRYPTION_KEY` válida sólo al ejecutar; salida sin password/markdown/ciphertext/authTag; descarga posterior en Sender Pool. | operador autorizado |
 | `start_warmup_seed` | `oc.warmup.seed_sent` | `WARMUP_ENABLE_SEND=true` | operador autorizado |
 | `start_warmup_ramp` | `oc.warmup.ramp_started` | `WARMUP_RAMP_ENABLE=true` (NUEVO) | operador autorizado |
 | `bind_domain_to_server` | `oc.domain.bound` | `DOMAIN_BIND_ENABLE=true`; escribe `A smtp` + `MX -> smtp` | operador autorizado |

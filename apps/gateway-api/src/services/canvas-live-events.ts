@@ -14,6 +14,7 @@ import type {
   CanvasLiveArtifactBlockStatus,
   CanvasLiveArtifactDeclareEvent,
   CanvasLiveArtifactKind,
+  CanvasLiveArtifactPayload,
   CanvasLiveArtifactSnapshot,
   CanvasLiveArtifactStreamingEvent,
   CanvasLiveEvent,
@@ -31,8 +32,13 @@ const artifactsFileName = "artifacts.jsonl";
 const defaultWebSocketHeartbeatIntervalMs = 30_000;
 const maxCanvasTextChars = 8_000;
 const maxCanvasValueArrayItems = 50;
+const maxCanvasInventoryServers = 300;
 const maxCanvasValueObjectKeys = 80;
 const maxCanvasValueDepth = 5;
+export const DEFAULT_CANVAS_LIVE_TASK_LIMIT = 120;
+export const DEFAULT_CANVAS_LIVE_ARTIFACT_LIMIT = 100;
+const canvasLiveActiveTaskRetentionMs = 60 * 60 * 1000;
+const canvasLiveApprovedArtifactRetentionMs = 20 * 60 * 1000;
 
 export interface CanvasLiveEventClient {
   sendJson(event: CanvasLiveEvent): void;
@@ -50,6 +56,8 @@ export interface CanvasLiveEventServiceOptions {
   streamToken?: string;
   heartbeatIntervalMs?: number;
   smtpProgressReader?: CanvasLiveSmtpProgressReader;
+  maxTasks?: number;
+  maxArtifacts?: number;
 }
 
 export interface CanvasLiveSmtpProgressReaderInput {
@@ -100,6 +108,8 @@ export class CanvasLiveEventService {
   private readonly streamToken: string;
   private readonly heartbeatIntervalMs: number;
   private readonly smtpProgressReader?: CanvasLiveSmtpProgressReader;
+  private readonly maxTasks: number;
+  private readonly maxArtifacts: number;
   private readonly clients = new Set<ClientEntry>();
   private readonly tasks = new Map<string, CanvasLiveTaskSnapshot>();
   private readonly artifacts = new Map<string, CanvasLiveArtifactSnapshot>();
@@ -113,12 +123,15 @@ export class CanvasLiveEventService {
     this.streamToken = options.streamToken ?? process.env.CANVAS_LIVE_STREAM_TOKEN ?? process.env.DELIVRIX_READ_BOUNDARY_TOKEN ?? process.env.OPENCLAW_GATEWAY_TOKEN ?? "";
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? defaultWebSocketHeartbeatIntervalMs;
     this.smtpProgressReader = options.smtpProgressReader;
+    this.maxTasks = retentionLimit(options.maxTasks, process.env.CANVAS_LIVE_MAX_TASKS, DEFAULT_CANVAS_LIVE_TASK_LIMIT);
+    this.maxArtifacts = retentionLimit(options.maxArtifacts, process.env.CANVAS_LIVE_MAX_ARTIFACTS, DEFAULT_CANVAS_LIVE_ARTIFACT_LIMIT);
   }
 
   async emit(rawEvent: unknown): Promise<CanvasLiveEvent> {
     await this.ensureLoaded();
     const event = normalizeCanvasLiveEvent(rawEvent, this.now);
     this.applyLiveEvent(event);
+    this.enforceRetention();
     await this.persistLiveEvent(event);
     this.broadcast(event);
     return event;
@@ -126,6 +139,7 @@ export class CanvasLiveEventService {
 
   async snapshot(taskId?: string): Promise<CanvasLiveStateSnapshot> {
     await this.ensureLoaded();
+    this.enforceRetention();
     const tasks = [...this.tasks.values()]
       .filter((task) => !taskId || task.taskId === taskId)
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
@@ -276,29 +290,40 @@ export class CanvasLiveEventService {
 
   async upsertArtifactSnapshot(input: CanvasLiveArtifactSnapshot): Promise<void> {
     await this.ensureLoaded();
+    const existing = this.artifacts.get(input.artifactId);
+    const version = input.version ?? (existing?.version ?? 0) + 1;
     const snapshot: CanvasLiveArtifactSnapshot = {
       ...input,
+      createdAt: existing?.createdAt ?? input.createdAt,
+      version,
       blocks: input.blocks
         .map((block, index) => ({
           ...block,
           content: redactCanvasLiveText(block.content, maxCanvasTextChars),
           order: normalizeSnapshotBlockOrder(block.order, index + 1)
         }))
-        .sort((left, right) => left.order - right.order)
+        .sort((left, right) => left.order - right.order),
+      ...(input.payload ? { payload: normalizeArtifactPayload(input.payload, input.kind) } : {})
     };
     this.artifacts.set(snapshot.artifactId, snapshot);
+    this.enforceRetention();
 
-    await this.persistArtifactRecord({
+    const declareEvent: CanvasLiveArtifactDeclareEvent = {
       type: "oc.artifact.declare",
       taskId: snapshot.taskId,
       artifactId: snapshot.artifactId,
       kind: snapshot.kind,
       title: snapshot.title,
       editable: snapshot.editable,
-      createdAt: snapshot.createdAt
-    });
+      createdAt: snapshot.createdAt,
+      updatedAt: snapshot.updatedAt,
+      version: snapshot.version,
+      ...(snapshot.payload ? { payload: snapshot.payload } : {})
+    };
+    await this.persistArtifactRecord(declareEvent);
+    this.broadcast(declareEvent);
     for (const block of snapshot.blocks) {
-      await this.persistArtifactRecord({
+      const blockEvent: CanvasLiveArtifactBlockEvent = {
         type: "oc.artifact.block",
         artifactId: snapshot.artifactId,
         blockId: block.blockId,
@@ -308,7 +333,9 @@ export class CanvasLiveEventService {
         editable: block.editable,
         status: block.status,
         occurredAt: block.updatedAt
-      });
+      };
+      await this.persistArtifactRecord(blockEvent);
+      this.broadcast(blockEvent);
     }
 
     if (snapshot.approvalStatus === "approved" && snapshot.approvedBy && snapshot.approvedAt) {
@@ -426,6 +453,7 @@ export class CanvasLiveEventService {
     }
 
     this.loaded = true;
+    this.enforceRetention();
   }
 
   private repairPersistedArtifactRecord(record: unknown): unknown {
@@ -526,7 +554,9 @@ export class CanvasLiveEventService {
           title: event.title,
           editable: event.editable,
           createdAt: event.createdAt,
-          updatedAt: event.createdAt,
+          updatedAt: event.updatedAt ?? event.createdAt,
+          ...(event.version === undefined ? {} : { version: event.version }),
+          ...(event.payload ? { payload: event.payload } : {}),
           approvalStatus: "pending",
           blocks: []
         });
@@ -606,6 +636,85 @@ export class CanvasLiveEventService {
     artifact.rejectionReason = record.reason;
   }
 
+  private enforceRetention(): void {
+    const nowMs = this.now().getTime();
+    const originalTaskIds = new Set(this.tasks.keys());
+    const activeTaskIds = new Set(
+      [...this.tasks.values()]
+        .filter((task) =>
+          (task.status === "running" || task.status === "awaiting_approval") &&
+          isRecentCanvasTimestamp(task.updatedAt, nowMs, canvasLiveActiveTaskRetentionMs)
+        )
+        .sort(compareTasksNewestFirst)
+        .map((task) => task.taskId)
+    );
+    for (const client of this.clients) {
+      if (client.taskId) activeTaskIds.add(client.taskId);
+    }
+
+    const preservedArtifactIds = new Set<string>();
+    const preserveArtifact = (artifactId: string): void => {
+      if (preservedArtifactIds.size < this.maxArtifacts) {
+        preservedArtifactIds.add(artifactId);
+      }
+    };
+    const artifactsNewestFirst = [...this.artifacts.values()].sort(compareArtifactsNewestFirst);
+    for (const artifact of artifactsNewestFirst) {
+      if (activeTaskIds.has(artifact.taskId)) preserveArtifact(artifact.artifactId);
+    }
+    for (const artifact of artifactsNewestFirst) {
+      if (
+        artifact.approvalStatus === "approved" &&
+        artifact.approvedAt &&
+        isRecentCanvasTimestamp(artifact.approvedAt, nowMs, canvasLiveApprovedArtifactRetentionMs)
+      ) {
+        preserveArtifact(artifact.artifactId);
+      }
+    }
+    for (const artifact of artifactsNewestFirst) {
+      if (
+        artifact.payload?.kind === "smtp_credential" &&
+        isRecentCanvasTimestamp(artifact.updatedAt, nowMs, canvasLiveApprovedArtifactRetentionMs)
+      ) {
+        preserveArtifact(artifact.artifactId);
+      }
+    }
+    for (const artifact of artifactsNewestFirst) preserveArtifact(artifact.artifactId);
+    for (const artifactId of [...this.artifacts.keys()]) {
+      if (!preservedArtifactIds.has(artifactId)) {
+        this.artifacts.delete(artifactId);
+      }
+    }
+
+    const preserveTaskIds = new Set<string>();
+    const addTaskWithAncestors = (taskId: string | undefined): void => {
+      let cursor = taskId;
+      let guard = 0;
+      while (cursor && this.tasks.has(cursor) && preserveTaskIds.size < this.maxTasks && guard < this.tasks.size + 1) {
+        preserveTaskIds.add(cursor);
+        cursor = this.tasks.get(cursor)?.parentTaskId ?? undefined;
+        guard += 1;
+      }
+    };
+
+    for (const taskId of activeTaskIds) addTaskWithAncestors(taskId);
+    for (const artifact of artifactsNewestFirst) {
+      if (this.artifacts.has(artifact.artifactId)) addTaskWithAncestors(artifact.taskId);
+    }
+    for (const task of [...this.tasks.values()].sort(compareTasksNewestFirst)) addTaskWithAncestors(task.taskId);
+    for (const taskId of [...this.tasks.keys()]) {
+      if (!preserveTaskIds.has(taskId)) {
+        this.tasks.delete(taskId);
+      }
+    }
+
+    for (const [artifactId, artifact] of [...this.artifacts.entries()]) {
+      if (originalTaskIds.has(artifact.taskId) && !this.tasks.has(artifact.taskId)) {
+        this.artifacts.delete(artifactId);
+      }
+    }
+  }
+
   private broadcast(event: CanvasLiveEvent): void {
     for (const entry of this.clients) {
       if (entry.taskId && eventTaskId(event, this.artifacts) !== entry.taskId) {
@@ -627,6 +736,26 @@ export class CanvasLiveEventService {
   private artifactsPath(): string {
     return join(this.stateDir, artifactsFileName);
   }
+}
+
+function compareTasksNewestFirst(left: CanvasLiveTaskSnapshot, right: CanvasLiveTaskSnapshot): number {
+  const updatedAt = right.updatedAt.localeCompare(left.updatedAt);
+  return updatedAt !== 0 ? updatedAt : right.createdAt.localeCompare(left.createdAt);
+}
+
+function compareArtifactsNewestFirst(left: CanvasLiveArtifactSnapshot, right: CanvasLiveArtifactSnapshot): number {
+  const updatedAt = right.updatedAt.localeCompare(left.updatedAt);
+  return updatedAt !== 0 ? updatedAt : right.createdAt.localeCompare(left.createdAt);
+}
+
+function isRecentCanvasTimestamp(value: string, nowMs: number, maxAgeMs: number): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && nowMs - parsed >= 0 && nowMs - parsed <= maxAgeMs;
+}
+
+function retentionLimit(explicit: number | undefined, rawEnv: string | undefined, fallback: number): number {
+  const parsed = explicit ?? Number(rawEnv);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : fallback;
 }
 
 export class CanvasLiveStateError extends Error {
@@ -680,7 +809,10 @@ export function normalizeCanvasLiveEvent(raw: unknown, now: () => Date = () => n
       kind: normalizeArtifactKind(raw.kind),
       title: requiredString(raw.title, "title"),
       editable: raw.editable === true,
-      createdAt: normalizeDate(raw.createdAt, now)
+      createdAt: normalizeDate(raw.createdAt, now),
+      ...(raw.updatedAt === undefined ? {} : { updatedAt: normalizeDate(raw.updatedAt, now) }),
+      ...(raw.version === undefined ? {} : { version: positiveInteger(raw.version, "version") }),
+      ...(raw.payload === undefined ? {} : { payload: normalizeArtifactPayload(raw.payload, normalizeArtifactKind(raw.kind)) })
     };
   }
 
@@ -1058,8 +1190,174 @@ function normalizeTaskStatus(value: unknown): CanvasLiveTaskStatus {
 }
 
 function normalizeArtifactKind(value: unknown): CanvasLiveArtifactKind {
-  if (value === "plan" || value === "proposal" || value === "template" || value === "report") return value;
+  if (
+    value === "plan" ||
+    value === "proposal" ||
+    value === "template" ||
+    value === "report" ||
+    value === "smtp_run" ||
+    value === "smtp_credential" ||
+    value === "inventory" ||
+    value === "blacklist_report" ||
+    value === "dns_zone"
+  ) return value;
   throw new CanvasLiveStateError(422, "invalid_artifact_kind", "Invalid artifact kind.");
+}
+
+function normalizeArtifactPayload(raw: unknown, artifactKind: CanvasLiveArtifactKind): CanvasLiveArtifactPayload {
+  if (!isRecord(raw)) {
+    throw new CanvasLiveStateError(422, "invalid_artifact_payload", "artifact payload must be an object.");
+  }
+  const payloadKind = normalizeArtifactKind(raw.kind);
+  if (payloadKind !== artifactKind) {
+    throw new CanvasLiveStateError(422, "invalid_artifact_payload", "artifact payload kind must match artifact kind.");
+  }
+  if (payloadKind === "smtp_run") {
+    return normalizeSmtpRunPayload(raw);
+  }
+  if (payloadKind === "smtp_credential") {
+    return normalizeSmtpCredentialPayload(raw);
+  }
+  if (payloadKind === "inventory") {
+    return normalizeInventoryPayload(raw);
+  }
+  if (payloadKind === "blacklist_report") {
+    return normalizeBlacklistPayload(raw);
+  }
+  if (payloadKind === "dns_zone") {
+    return normalizeDnsZonePayload(raw);
+  }
+  throw new CanvasLiveStateError(422, "invalid_artifact_payload", "This artifact kind does not support payload.");
+}
+
+function normalizeSmtpRunPayload(raw: Record<string, unknown>): Extract<CanvasLiveArtifactPayload, { kind: "smtp_run" }> {
+  return {
+    kind: "smtp_run",
+    runId: requiredId(raw.runId, "payload.runId"),
+    identity: normalizeRunIdentity(raw.identity),
+    steps: arrayValue(raw.steps).map(normalizeRunStep)
+  };
+}
+
+function normalizeSmtpCredentialPayload(raw: Record<string, unknown>): Extract<CanvasLiveArtifactPayload, { kind: "smtp_credential" }> {
+  return {
+    kind: "smtp_credential",
+    domain: redactCanvasLiveText(requiredString(raw.domain, "payload.domain"), 253),
+    host: redactCanvasLiveText(requiredString(raw.host, "payload.host"), 253),
+    username: redactCanvasLiveText(requiredString(raw.username, "payload.username"), 253),
+    ports: {
+      submission: 587,
+      smtps: 465
+    },
+    hasCredential: raw.hasCredential === true
+  };
+}
+
+function normalizeInventoryPayload(raw: Record<string, unknown>): Extract<CanvasLiveArtifactPayload, { kind: "inventory" }> {
+  return {
+    kind: "inventory",
+    servers: arrayValue(raw.servers, maxCanvasInventoryServers).map((server) => {
+      const item = isRecord(server) ? server : {};
+      return {
+        slug: requiredString(item.slug, "payload.servers.slug"),
+        ...(stringValue(item.domain) ? { domain: redactCanvasLiveText(stringValue(item.domain)!, 253) } : {}),
+        ...(stringValue(item.ipv4) ? { ipv4: redactCanvasLiveText(stringValue(item.ipv4)!, 64) } : {}),
+        ...(stringValue(item.provider) ? { provider: redactCanvasLiveText(stringValue(item.provider)!, 120) } : {}),
+        status: redactCanvasLiveText(stringValue(item.status) ?? "unknown", 120),
+        ...(stringValue(item.accountId) ? { accountId: redactCanvasLiveText(stringValue(item.accountId)!, 120) } : {})
+      };
+    })
+  };
+}
+
+function normalizeBlacklistPayload(raw: Record<string, unknown>): Extract<CanvasLiveArtifactPayload, { kind: "blacklist_report" }> {
+  return {
+    kind: "blacklist_report",
+    target: redactCanvasLiveText(requiredString(raw.target, "payload.target"), 253),
+    source: redactCanvasLiveText(requiredString(raw.source, "payload.source"), 120),
+    evaluatedAt: normalizeDate(raw.evaluatedAt, () => new Date()),
+    checks: arrayValue(raw.checks).map((check) => {
+      const item = isRecord(check) ? check : {};
+      return {
+        list: redactCanvasLiveText(requiredString(item.list, "payload.checks.list"), 200),
+        status: normalizeBlacklistCheckStatus(item.status),
+        ...(stringValue(item.note) ? { note: redactCanvasLiveText(stringValue(item.note)!, 500) } : {})
+      };
+    })
+  };
+}
+
+function normalizeDnsZonePayload(raw: Record<string, unknown>): Extract<CanvasLiveArtifactPayload, { kind: "dns_zone" }> {
+  return {
+    kind: "dns_zone",
+    domain: redactCanvasLiveText(requiredString(raw.domain, "payload.domain"), 253),
+    records: arrayValue(raw.records).map((record) => {
+      const item = isRecord(record) ? record : {};
+      return {
+        name: redactCanvasLiveText(requiredString(item.name, "payload.records.name"), 253),
+        type: redactCanvasLiveText(requiredString(item.type, "payload.records.type").toUpperCase(), 24),
+        value: redactCanvasLiveText(requiredString(item.value, "payload.records.value"), maxCanvasTextChars)
+      };
+    })
+  };
+}
+
+function normalizeRunIdentity(raw: unknown): NonNullable<Extract<CanvasLiveArtifactPayload, { kind: "smtp_run" }>["identity"]> {
+  if (!isRecord(raw)) {
+    throw new CanvasLiveStateError(422, "invalid_artifact_payload", "payload.identity must be an object.");
+  }
+  return {
+    ...(stringValue(raw.brand) ? { brand: redactCanvasLiveText(stringValue(raw.brand)!, 120) } : {}),
+    ...(stringValue(raw.domain) ? { domain: redactCanvasLiveText(stringValue(raw.domain)!, 253) } : {}),
+    ...(stringValue(raw.smtpHost) ? { smtpHost: redactCanvasLiveText(stringValue(raw.smtpHost)!, 253) } : {}),
+    ...(stringValue(raw.serverSlug) ? { serverSlug: redactCanvasLiveText(stringValue(raw.serverSlug)!, 120) } : {}),
+    ...(stringValue(raw.serverIpv4) ? { serverIpv4: redactCanvasLiveText(stringValue(raw.serverIpv4)!, 64) } : {}),
+    ...(stringValue(raw.serverAccountId) ? { serverAccountId: redactCanvasLiveText(stringValue(raw.serverAccountId)!, 120) } : {}),
+    ...(stringValue(raw.providerId) ? { providerId: redactCanvasLiveText(stringValue(raw.providerId)!, 120) } : {}),
+    ...(stringValue(raw.dkimSelector) ? { dkimSelector: redactCanvasLiveText(stringValue(raw.dkimSelector)!, 120) } : {}),
+    ...(stringValue(raw.dkimPublicKey) ? { dkimPublicKey: redactCanvasLiveText(stringValue(raw.dkimPublicKey)!, maxCanvasTextChars) } : {}),
+    ...(Array.isArray(raw.dnsRecords) ? { dnsRecords: raw.dnsRecords.map(normalizeDnsRecord) } : {}),
+    ...(stringValue(raw.finalDeliveryStatus) ? { finalDeliveryStatus: redactCanvasLiveText(stringValue(raw.finalDeliveryStatus)!, 120) } : {}),
+    ...(stringValue(raw.finalEmailMessageId) ? { finalEmailMessageId: redactCanvasLiveText(stringValue(raw.finalEmailMessageId)!, 300) } : {}),
+    ...(numberValue(raw.budgetSpentUsd) === undefined ? {} : { budgetSpentUsd: numberValue(raw.budgetSpentUsd)! })
+  };
+}
+
+function normalizeRunStep(raw: unknown): Extract<CanvasLiveArtifactPayload, { kind: "smtp_run" }>["steps"][number] {
+  const item = isRecord(raw) ? raw : {};
+  return {
+    step: positiveInteger(item.step, "payload.steps.step"),
+    skill: redactCanvasLiveText(requiredString(item.skill, "payload.steps.skill"), 120),
+    status: normalizeRunStepStatus(item.status),
+    ...(stringValue(item.label) ? { label: redactCanvasLiveText(stringValue(item.label)!, 160) } : {}),
+    ...(stringValue(item.startedAt) ? { startedAt: normalizeDate(stringValue(item.startedAt), () => new Date()) } : {}),
+    ...(stringValue(item.completedAt) ? { completedAt: normalizeDate(stringValue(item.completedAt), () => new Date()) } : {}),
+    ...(numberValue(item.durationMs) === undefined ? {} : { durationMs: Math.max(0, Math.floor(numberValue(item.durationMs)!)) }),
+    ...(stringValue(item.error) ? { error: redactCanvasLiveText(stringValue(item.error)!, 500) } : {})
+  };
+}
+
+function normalizeDnsRecord(raw: unknown): NonNullable<NonNullable<Extract<CanvasLiveArtifactPayload, { kind: "smtp_run" }>["identity"]["dnsRecords"]>[number]> {
+  const item = isRecord(raw) ? raw : {};
+  return {
+    name: redactCanvasLiveText(requiredString(item.name, "payload.identity.dnsRecords.name"), 253),
+    type: redactCanvasLiveText(requiredString(item.type, "payload.identity.dnsRecords.type").toUpperCase(), 24),
+    value: redactCanvasLiveText(requiredString(item.value, "payload.identity.dnsRecords.value"), maxCanvasTextChars)
+  };
+}
+
+function normalizeRunStepStatus(value: unknown): "pending" | "in_flight" | "done" {
+  if (value === "in_flight" || value === "done") return value;
+  return "pending";
+}
+
+function normalizeBlacklistCheckStatus(value: unknown): "pass" | "listed" | "na" {
+  if (value === "pass" || value === "listed" || value === "na") return value;
+  return "na";
+}
+
+function arrayValue(value: unknown, maxItems = maxCanvasValueArrayItems): unknown[] {
+  return Array.isArray(value) ? value.slice(0, maxItems) : [];
 }
 
 function normalizeBlockKind(value: unknown): CanvasLiveArtifactBlockKind {
@@ -1131,6 +1429,11 @@ function stringValue(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function normalizeSnapshotBlockOrder(value: unknown, fallback: number): number {

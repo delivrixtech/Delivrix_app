@@ -203,6 +203,61 @@ test("POST /v1/domains/route53/register registers after approval, cap, contact, 
   }]);
 });
 
+test("POST /v1/domains/route53/register preserves non-domain inventory fields", async () => {
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      listPrices: async () => [{
+        tld: "com",
+        registration: { amount: 14, currency: "USD" },
+        renewal: { amount: 14, currency: "USD" }
+      }],
+      registerDomain: async () => ({
+        operationId: "op-preserve-fields",
+        expectedExpiry: "2027-05-29T11:00:00.000Z"
+      })
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact())
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  await appendDomainApproval(route.auditLog);
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    domains: [],
+    smtpCredentials: [{ domain: "smtp-ready.com", status: "configured", hasCredential: true }],
+    dnsZones: [{ domain: "smtp-ready.com", zoneId: "Z123" }],
+    emailAuth: [{ domain: "smtp-ready.com", dkim: "configured" }],
+    bindings: [{ domain: "smtp-ready.com", serverSlug: "server85" }]
+  }));
+
+  const response = await route({
+    domain: "delivrixops.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 200);
+  const inventory = await route.workspace.readInventoryJson<{
+    smtpCredentials?: unknown[];
+    dnsZones?: unknown[];
+    emailAuth?: unknown[];
+    bindings?: unknown[];
+  }>("domains.json");
+  assert.equal(inventory?.smtpCredentials?.length, 1);
+  assert.equal(inventory?.dnsZones?.length, 1);
+  assert.equal(inventory?.emailAuth?.length, 1);
+  assert.equal(inventory?.bindings?.length, 1);
+});
+
 test("POST /v1/domains/route53/register reports unavailable domain distinctly", async () => {
   const route = await routeHarness({
     adapter: mockAdapter({
