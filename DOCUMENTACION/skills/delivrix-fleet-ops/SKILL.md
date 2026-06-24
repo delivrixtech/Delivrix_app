@@ -6,7 +6,7 @@ delivrix_actions:
   - read_admin_clusters
   - read_sender_nodes
   - read_openclaw_live_canvas
-  - read_webdock_inventory
+  - read_infrastructure_inventory
 returns: structured-markdown
 audit_id_prefix: oc.skill.fleet_ops
 fallback: rules-engine-local
@@ -18,7 +18,7 @@ hito: 5.11.B
 ## Propósito
 
 Da una foto operativa de la flota: cuántos clústeres, cuántos sender nodes,
-cómo van vs el inventario real de Webdock, qué nodos están atorados.
+cómo van vs el inventario real multiproveedor, qué nodos están atorados.
 
 ## Cuándo se invoca
 
@@ -33,7 +33,7 @@ cómo van vs el inventario real de Webdock, qué nodos están atorados.
 | 1 | `GET /v1/admin/clusters` | Lista de clústeres + totales |
 | 2 | `GET /v1/sender-nodes` | Sender nodes con status y warmupDay |
 | 3 | `GET /v1/openclaw/live-canvas` | Estado canvas actual + currentStepId |
-| 4 | `GET /v1/webdock/inventory` | Cruzar con realidad del proveedor |
+| 4 | `GET /v1/infrastructure/inventory` | Cruzar con realidad multiproveedor |
 
 Cada lectura emite `oc.read.<endpoint>` en audit.
 
@@ -45,7 +45,7 @@ Cada lectura emite `oc.read.<endpoint>` en audit.
 **Resumen**
 - Clústeres: {N} ({estado dominante})
 - Sender nodes: {N} activos / {N} warming / {N} pausados
-- Webdock real: {N} running, {N} stopped, {N} suspended
+- Inventario real: {N} running, {N} stopped, {N} suspended por proveedor/cuenta
 - Canvas current step: {currentStepId}
 
 **Por clúster**
@@ -66,7 +66,7 @@ _Evidencia_: {hashes audit ID de cada read}
 | --- | --- |
 | `GET /v1/sender-nodes` falla | Continúa con los otros 3; reporta "registry local no respondió" |
 | Todos los endpoints fallan | Cae al rules engine local (`openclaw-rules.ts`) y reporta degradación |
-| `GET /v1/webdock/inventory` devuelve `source.kind: mock` | Lo advierte en la respuesta |
+| `GET /v1/infrastructure/inventory` devuelve proveedores degradados o mock | Lo advierte en la respuesta |
 
 ## Gates duros heredados
 
@@ -86,7 +86,7 @@ _Evidencia_: {hashes audit ID de cada read}
 **Resumen**
 - Clústeres: 1 (svc-warmup-01 — managed)
 - Sender nodes: 2 warming / 0 activos / 0 pausados
-- Webdock real: 2 running, 1 stopped, 0 suspended
+- Inventario real: 2 Webdock running, 1 Webdock stopped, 0 Contabo suspended
 - Canvas current step: `warming_plan`
 
 **Por clúster**
@@ -101,11 +101,11 @@ _Evidencia_: {hashes audit ID de cada read}
 | svc-warmup-02 | webdock | warming | 185.243.12.32 | 5 | 50 |
 
 **Drift detectado**
-- `svc-prod-eu-01` aparece en Webdock (`stopped`) pero no en sender_node registry.
+- `svc-prod-eu-01` aparece en inventario Webdock (`stopped`) pero no en sender_node registry.
   Sugerencia: ver `drift-monitor` para propuesta de registro o ignorar.
 
 _Evidencia_: `oc.read.admin_clusters#a1b2c3`, `oc.read.sender_nodes#d4e5f6`,
-`oc.read.canvas#7g8h9i`, `oc.read.webdock#j0k1l2`
+`oc.read.canvas#7g8h9i`, `oc.read.infrastructure_inventory#j0k1l2`
 ```
 
 ## Implementación (Codex)

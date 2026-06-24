@@ -39,6 +39,20 @@ test("runtime log redacts common credential forms", () => {
   assert.doesNotMatch(redacted, /supersecret/);
 });
 
+test("runtime log redacts SMTP-adjacent secret assignments without hiding hosts", () => {
+  const redacted = redactRuntimeLogSecrets([
+    "smtp: Xk9mPq2vLr7wNb3tQ4sA9vLm",
+    "sasl=Yp8mQw2nAs6bLc9dRf3tHg7j",
+    "dovecot: smtp.controlnationalreport.com"
+  ].join("\n"));
+
+  assert.doesNotMatch(redacted, /Xk9mPq2vLr7wNb3tQ4sA9vLm/);
+  assert.doesNotMatch(redacted, /Yp8mQw2nAs6bLc9dRf3tHg7j/);
+  assert.match(redacted, /smtp=\[REDACTED\]/);
+  assert.match(redacted, /sasl=\[REDACTED\]/);
+  assert.match(redacted, /smtp\.controlnationalreport\.com/);
+});
+
 test("runtime log redacts complete, partial, and body-only PEM private keys before caps", () => {
   const pem = generatedPrivateKeyPem();
   const keyLine = pemBodyLine(pem);
