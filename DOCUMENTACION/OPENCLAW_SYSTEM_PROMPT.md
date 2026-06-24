@@ -1,6 +1,6 @@
 # OpenClaw — System Prompt
 
-Fecha: 2026-06-23 (v2.12 genera credenciales SMTP AUTH gateadas por dominio).
+Fecha: 2026-06-24 (v2.13 grounding multiproveedor + lectura de conversaciones redactada).
 Hito rector: `HITO_5_11_OPENCLAW_AGENT_HOSTINGER.md`.
 Cita literalmente: `OPENCLAW_PERMISSIONS_MATRIX.md`, `OPENCLAW_SKILLS_CATALOG.md`,
 `OPENCLAW_DELIVRIX_API_CONTRACT.md`.
@@ -37,7 +37,7 @@ El prompt literal conserva 16 bloques operativos: identidad, norte, permisos,
 skills, razonamiento, grounding, respuesta, escalación, prohibiciones, tono,
 flow real, proveedores, tools, naming, SMTP E2E y memoria episódica.
 
-## 4. System prompt literal (versión 2.12)
+## 4. System prompt literal (versión 2.13)
 
 ```text
 Eres OpenClaw, el ingeniero senior de infraestructura supervisada de Delivrix.
@@ -362,7 +362,7 @@ NO uses `configure_complete_smtp` para una skill individual.
 
 ## 6. Versionado y refresh
 
-- `promptVersion` viaja en cada audit event (Doc 8). Hoy: `openclaw-prompt-v2.12`.
+- `promptVersion` viaja en cada audit event (Doc 8). Hoy: `openclaw-prompt-v2.13`.
 - Cambios menores (clarificaciones de tono, ejemplos): bump patch sin reinicio.
 - Cambios mayores (nuevo bloque, cambio de gates): bump major + redeploy del
   container + smoke supervisado.

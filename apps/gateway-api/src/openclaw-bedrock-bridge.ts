@@ -72,6 +72,7 @@ const defaultDelivrixBaseUrl = "http://127.0.0.1:3000";
 const defaultMaxToolIterations = 10;
 const defaultLiveContextItemLimit = 20;
 const defaultLiveContextMaxChars = 18_000;
+const inventoryServersLiveContextMaxChars = 5_000;
 const textAttachmentTruncatedMarker = "...[TRUNCATED_AT_50000_CHARS]";
 
 type FetchLike = typeof fetch;
@@ -1071,7 +1072,10 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       "",
       "## inventory_servers (GET /v1/infrastructure/inventory + GET /v1/webdock/inventory)",
       "```json",
-      stringifyLiveContext(summarizeInventoryServers(infrastructure, webdock, this.liveContextItemLimit), 5000),
+      stringifyLiveContext(summarizeInventoryServers(infrastructure, webdock, {
+        itemLimit: this.liveContextItemLimit,
+        maxJsonChars: inventoryServersLiveContextMaxChars
+      }), inventoryServersLiveContextMaxChars),
       "```",
       "",
       "## kill_switch (GET /v1/kill-switch)",
@@ -2034,7 +2038,16 @@ function summarizeInventoryAccounts(infrastructure: unknown): Record<string, unk
   };
 }
 
-function summarizeInventoryServers(infrastructure: unknown, webdock: unknown, limit: number): Record<string, unknown> {
+interface InventoryServersSummaryOptions {
+  itemLimit: number;
+  maxJsonChars?: number;
+}
+
+function summarizeInventoryServers(
+  infrastructure: unknown,
+  webdock: unknown,
+  options: number | InventoryServersSummaryOptions
+): Record<string, unknown> {
   interface ServerCandidate {
     key: string;
     slug: string;
@@ -2042,6 +2055,8 @@ function summarizeInventoryServers(infrastructure: unknown, webdock: unknown, li
     row: Record<string, unknown>;
   }
 
+  const itemLimit = typeof options === "number" ? options : options.itemLimit;
+  const maxJsonChars = typeof options === "number" ? undefined : options.maxJsonChars;
   const servers: ServerCandidate[] = [];
   const byKey = new Map<string, ServerCandidate>();
   const rawWebdockBySlug = new Map<string, ServerCandidate>();
@@ -2072,15 +2087,15 @@ function summarizeInventoryServers(infrastructure: unknown, webdock: unknown, li
       slug,
       groupKey,
       row: {
-      serverSlug: slug,
-      name: stringValue(server.name) ?? stringValue(server.hostname) ?? slug,
-      status: stringValue(server.status) ?? "unknown",
-      serverIp: ip?.ok ? ip.value : null,
-      ipVerified: Boolean(ip?.ok),
-      accountId,
-      ...(accountLabel ? { accountLabel } : {}),
-      providerId: "webdock",
-      source: "GET /v1/webdock/inventory"
+        serverSlug: slug,
+        name: stringValue(server.name) ?? stringValue(server.hostname) ?? slug,
+        status: stringValue(server.status) ?? "unknown",
+        serverIp: ip?.ok ? ip.value : null,
+        ipVerified: Boolean(ip?.ok),
+        accountId,
+        ...(accountLabel ? { accountLabel } : {}),
+        providerId: "webdock",
+        source: "GET /v1/webdock/inventory"
       }
     });
     rawWebdockBySlug.set(slug, candidate);
@@ -2131,7 +2146,9 @@ function summarizeInventoryServers(infrastructure: unknown, webdock: unknown, li
   }
 
   const ordered = roundRobinServerCandidates(servers);
-  const items = ordered.map((candidate) => candidate.row).slice(0, limit);
+  let items = ordered
+    .map((candidate) => compactInventoryServerRow(candidate.row))
+    .slice(0, Math.max(0, itemLimit));
   if (items.length === 0) {
     return {
       status: "abstain",
@@ -2139,11 +2156,54 @@ function summarizeInventoryServers(infrastructure: unknown, webdock: unknown, li
       instruction: "No hay servidores/IP verificados en inventario; abstente antes de usar serverSlug o ip."
     };
   }
+  let summary = inventoryServersSummary(servers.length, items);
+  if (maxJsonChars) {
+    while (items.length > 0 && JSON.stringify(summary, null, 2).length > maxJsonChars) {
+      items = items.slice(0, -1);
+      summary = inventoryServersSummary(servers.length, items);
+    }
+  }
+  return summary;
+}
+
+function inventoryServersSummary(totalCount: number, items: Array<Record<string, unknown>>): Record<string, unknown> {
   return {
     status: "grounded",
-    count: servers.length,
+    count: totalCount,
+    displayedCount: items.length,
+    truncated: items.length < totalCount,
     items
   };
+}
+
+function compactInventoryServerRow(row: Record<string, unknown>): Record<string, unknown> {
+  const maxCharsByKey: Record<string, number> = {
+    accountId: 64,
+    accountLabel: 80,
+    name: 80,
+    providerId: 64,
+    serverIp: 45,
+    serverSlug: 96,
+    source: 72,
+    status: 40
+  };
+  const compact: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(row)) {
+    if (typeof value === "string") {
+      compact[key] = truncateInventoryContextString(value, maxCharsByKey[key] ?? 96);
+      continue;
+    }
+    compact[key] = value;
+  }
+  return compact;
+}
+
+function truncateInventoryContextString(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  const marker = "...[truncated]";
+  return `${value.slice(0, Math.max(0, maxChars - marker.length))}${marker}`;
 }
 
 function summarizeVerifiedFacts(groundedMemory: unknown, limit: number): Record<string, unknown> {
