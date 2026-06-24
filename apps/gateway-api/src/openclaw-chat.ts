@@ -21,6 +21,10 @@ export const OPENCLAW_CHAT_SESSION_KEY = "agent:main:operator";
 const defaultAgentHttpUrl = "http://2.24.223.240:61175";
 const defaultAgentWsUrl = "ws://2.24.223.240:61175/api/chat.stream";
 const gatewayId = "delivrix-gateway-popayan";
+const maxChatAttachmentsPerTurn = 6;
+const maxChatImagesPerTurn = 3;
+const maxChatImageBytes = 5 * 1024 * 1024;
+const maxChatTextAttachmentChars = 50_000;
 
 export type ChatConnectionState = "connected" | "reconnecting" | "offline";
 
@@ -52,7 +56,9 @@ export interface ChatSendRequest {
   text?: unknown;
   actor?: unknown;
   msgId?: unknown;
+  conversationId?: unknown;
   operatorParams?: unknown;
+  attachments?: unknown;
 }
 
 export interface OpenClawOperatorParams {
@@ -69,6 +75,33 @@ interface SanitizedOperatorMessage {
   operatorParamsSource?: "legacy_inline" | "structured" | "legacy_inline+structured";
   strippedInlineOperatorParams: boolean;
 }
+
+export type ChatAttachmentMimeType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/webp"
+  | "image/gif"
+  | "text/plain"
+  | "text/markdown";
+
+export type ChatAttachment =
+  | {
+      kind: "image";
+      name: string;
+      mimeType: Extract<ChatAttachmentMimeType, `image/${string}`>;
+      dataBase64: string;
+      bytes: number;
+      sha256: string;
+    }
+  | {
+      kind: "text";
+      name: string;
+      mimeType: "text/plain" | "text/markdown";
+      text: string;
+      bytes: number;
+      sha256: string;
+      truncated?: boolean;
+    };
 
 export interface ChatInterruptRequest {
   msgId?: unknown;
@@ -220,13 +253,22 @@ export class OpenClawChatProxy {
           : "";
 
     const sanitized = sanitizeOperatorMessage(rawMessage, input.operatorParams);
+    const conversationId = normalizeConversationId(input.conversationId);
+    const attachments = normalizeChatAttachments(input.attachments);
+    if (attachments.length > 0 && this.bridgeKind !== "bedrock") {
+      throw new ChatProxyError(501, "chat_attachments_require_bedrock", "Chat attachments require the Bedrock bridge.");
+    }
 
-    if (!sanitized.message) {
+    if (!sanitized.message && attachments.length === 0) {
       throw new ChatProxyError(400, "invalid_message", "message is required.");
     }
 
-    const message = sanitized.message;
-    const operatorAuditMetadata = operatorParamsAuditMetadata(sanitized);
+    const message = sanitized.message || "Analiza los adjuntos proporcionados en el contexto operativo de Delivrix.";
+    const operatorAuditMetadata = {
+      ...operatorParamsAuditMetadata(sanitized),
+      ...(conversationId && conversationId !== this.sessionKey ? { conversationId } : {}),
+      ...attachmentAuditMetadata(attachments)
+    };
     const msgId =
       typeof input.msgId === "string" && isSafeChatMessageId(input.msgId)
         ? input.msgId
@@ -240,6 +282,8 @@ export class OpenClawChatProxy {
           ...input,
           msgId,
           message,
+          ...(conversationId ? { conversationId } : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
           ...(sanitized.operatorParams ? { operatorParams: sanitized.operatorParams } : {})
         }, msgId, message, operatorAuditMetadata);
         if (result) {
@@ -270,7 +314,10 @@ export class OpenClawChatProxy {
         }
       }
 
-      const result = await this.sendOperatorMessageViaHttp(msgId, message, operatorAuditMetadata);
+      const result = await this.sendOperatorMessageViaHttp(msgId, message, operatorAuditMetadata, {
+        ...(conversationId ? { conversationId } : {}),
+        ...(attachments.length > 0 ? { attachments } : {})
+      });
       if (result.assistant?.content) {
         void this.handleAgentMessage({
           type: "ASSISTANT_DONE",
@@ -349,17 +396,23 @@ export class OpenClawChatProxy {
   private async sendOperatorMessageViaHttp(
     msgId: string,
     message: string,
-    operatorAuditMetadata: Record<string, unknown> = {}
+    operatorAuditMetadata: Record<string, unknown> = {},
+    options: {
+      conversationId?: string;
+      attachments?: ChatAttachment[];
+    } = {}
   ): Promise<ChatSendResponse> {
     if (!this.gatewayToken) {
       await this.auditOperatorMessage(msgId, message, "reject", "gateway_internal_error", operatorAuditMetadata);
       throw new ChatProxyError(503, "openclaw_gateway_token_missing", "OPENCLAW_GATEWAY_TOKEN is not configured.");
     }
 
+    const sessionKey = options.conversationId ?? this.sessionKey;
     const upstreamPayload = {
-      sessionKey: this.sessionKey,
+      sessionKey,
       msgId,
       message: { role: "user", content: message },
+      ...(options.attachments && options.attachments.length > 0 ? { attachments: options.attachments } : {}),
       context: {
         delivrix_endpoint_token: this.readBoundaryToken,
         delivrix_base_url: this.delivrixBaseUrl
@@ -1272,7 +1325,7 @@ export async function handleChatInterruptHttp(
     void logger.info("openclaw.chat.interrupt", "Operator interrupt processed.", {
       msgId: body.msgId,
       interrupted: result.interrupted,
-      taskId: result.taskId
+      bridgeInterrupted: result.bridgeInterrupted
     });
     jsonResponse(response, 200, result);
   } catch (error) {
@@ -2270,6 +2323,242 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export function normalizeConversationId(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(trimmed) ? trimmed : null;
+}
+
+export function normalizeChatAttachments(value: unknown): ChatAttachment[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new ChatProxyError(400, "invalid_attachments", "attachments must be an array.");
+  }
+  if (value.length > maxChatAttachmentsPerTurn) {
+    throw new ChatProxyError(413, "too_many_attachments", `A chat turn accepts at most ${maxChatAttachmentsPerTurn} attachments.`);
+  }
+
+  const attachments: ChatAttachment[] = [];
+  let imageCount = 0;
+  for (const [index, raw] of value.entries()) {
+    if (!isRecord(raw)) {
+      throw new ChatProxyError(400, "invalid_attachment", "Each attachment must be an object.");
+    }
+    const existing = normalizeExistingChatAttachment(raw);
+    if (existing) {
+      if (existing.kind === "image") {
+        imageCount += 1;
+        if (imageCount > maxChatImagesPerTurn) {
+          throw new ChatProxyError(413, "too_many_image_attachments", `A chat turn accepts at most ${maxChatImagesPerTurn} image attachments.`);
+        }
+        if (existing.bytes > maxChatImageBytes) {
+          throw new ChatProxyError(413, "image_attachment_too_large", "Image attachments must be 5 MiB or smaller before base64 encoding.");
+        }
+      }
+      attachments.push(existing);
+      continue;
+    }
+    const name = sanitizeAttachmentName(stringValue(raw.name) ?? `attachment-${index + 1}`);
+    const claimedMime = normalizeAttachmentMimeType(stringValue(raw.mimeType));
+    const base64 = normalizeBase64Payload(stringValue(raw.dataBase64), claimedMime);
+    if (!base64.data) {
+      throw new ChatProxyError(400, "invalid_attachment_data", "Attachment dataBase64 is required.");
+    }
+
+    const bytes = Buffer.from(base64.data, "base64");
+    const mimeType = detectAttachmentMimeType(bytes, base64.mimeType ?? claimedMime, name);
+    if (mimeType.startsWith("image/")) {
+      imageCount += 1;
+      if (imageCount > maxChatImagesPerTurn) {
+        throw new ChatProxyError(413, "too_many_image_attachments", `A chat turn accepts at most ${maxChatImagesPerTurn} image attachments.`);
+      }
+      if (bytes.length > maxChatImageBytes) {
+        throw new ChatProxyError(413, "image_attachment_too_large", "Image attachments must be 5 MiB or smaller before base64 encoding.");
+      }
+      attachments.push({
+        kind: "image",
+        name,
+        mimeType: mimeType as Extract<ChatAttachmentMimeType, `image/${string}`>,
+        dataBase64: base64.data,
+        bytes: bytes.length,
+        sha256: sha256Hex(bytes)
+      });
+      continue;
+    }
+
+    const text = decodeTextAttachment(bytes, name, mimeType);
+    const truncated = text.length > maxChatTextAttachmentChars;
+    attachments.push({
+      kind: "text",
+      name,
+      mimeType: mimeType as "text/plain" | "text/markdown",
+      text: truncated ? text.slice(0, maxChatTextAttachmentChars) : text,
+      bytes: bytes.length,
+      sha256: sha256Hex(bytes),
+      ...(truncated ? { truncated: true } : {})
+    });
+  }
+  return attachments;
+}
+
+function normalizeExistingChatAttachment(raw: Record<string, unknown>): ChatAttachment | null {
+  if (raw.kind === "image" && isImageAttachmentMime(raw.mimeType) && typeof raw.dataBase64 === "string") {
+    const data = raw.dataBase64.replace(/\s+/g, "");
+    const bytes = Buffer.from(data, "base64");
+    if (bytes.length !== positiveInteger(raw.bytes)) {
+      return null;
+    }
+    const detectedMime = imageMimeFromMagicBytes(bytes);
+    if (detectedMime !== raw.mimeType) {
+      return null;
+    }
+    return {
+      kind: "image",
+      name: sanitizeAttachmentName(stringValue(raw.name) ?? "attachment"),
+      mimeType: raw.mimeType,
+      dataBase64: data,
+      bytes: bytes.length,
+      sha256: typeof raw.sha256 === "string" ? raw.sha256 : sha256Hex(bytes)
+    };
+  }
+  if (raw.kind === "text" && (raw.mimeType === "text/plain" || raw.mimeType === "text/markdown") && typeof raw.text === "string") {
+    const text = raw.text.slice(0, maxChatTextAttachmentChars);
+    const bytes = positiveInteger(raw.bytes) ?? Buffer.byteLength(text, "utf8");
+    return {
+      kind: "text",
+      name: sanitizeAttachmentName(stringValue(raw.name) ?? "attachment"),
+      mimeType: raw.mimeType,
+      text,
+      bytes,
+      sha256: typeof raw.sha256 === "string" ? raw.sha256 : sha256Hex(Buffer.from(text, "utf8")),
+      ...(raw.truncated === true ? { truncated: true } : {})
+    };
+  }
+  return null;
+}
+
+function attachmentAuditMetadata(attachments: ChatAttachment[]): Record<string, unknown> {
+  if (attachments.length === 0) {
+    return {};
+  }
+  return {
+    attachmentCount: attachments.length,
+    attachmentBytes: attachments.reduce((total, attachment) => total + attachment.bytes, 0),
+    attachmentMimeTypes: [...new Set(attachments.map((attachment) => attachment.mimeType))],
+    attachmentSha256: attachments.map((attachment) => attachment.sha256),
+    imageAttachmentCount: attachments.filter((attachment) => attachment.kind === "image").length,
+    textAttachmentCount: attachments.filter((attachment) => attachment.kind === "text").length,
+    ...(attachments.some((attachment) => attachment.kind === "text" && attachment.truncated) ? { textAttachmentTruncated: true } : {})
+  };
+}
+
+function sha256Hex(value: Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function sanitizeAttachmentName(value: string): string {
+  const sanitized = value.trim().replace(/[^a-zA-Z0-9_.:-]/g, "-").replace(/-+/g, "-").slice(0, 96);
+  return sanitized || "attachment";
+}
+
+function normalizeAttachmentMimeType(value: string | null): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized || null;
+}
+
+function normalizeBase64Payload(value: string | null, claimedMime: string | null): { data: string; mimeType: string | null } {
+  const raw = value?.trim();
+  if (!raw) {
+    return { data: "", mimeType: claimedMime };
+  }
+  const dataUrl = raw.match(/^data:([^;,]+);base64,([\s\S]+)$/i);
+  const mimeType = dataUrl ? normalizeAttachmentMimeType(dataUrl[1]) : claimedMime;
+  const data = (dataUrl ? dataUrl[2] : raw).replace(/\s+/g, "");
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data) || data.length % 4 === 1) {
+    throw new ChatProxyError(400, "invalid_attachment_base64", "Attachment dataBase64 must be valid base64.");
+  }
+  return { data, mimeType };
+}
+
+function detectAttachmentMimeType(bytes: Buffer, claimedMime: string | null, name: string): ChatAttachmentMimeType {
+  if (claimedMime === "image/heic" || claimedMime === "image/heif" || /\.(heic|heif)$/i.test(name) || isHeicLike(bytes)) {
+    throw new ChatProxyError(415, "unsupported_attachment_type", "HEIC/HEIF attachments are not supported; convert to PNG or JPEG.");
+  }
+  if (claimedMime === "image/svg+xml" || /\.svg$/i.test(name)) {
+    throw new ChatProxyError(415, "unsupported_attachment_type", "SVG attachments are not supported.");
+  }
+
+  const imageMime = imageMimeFromMagicBytes(bytes);
+  if (imageMime) {
+    if (claimedMime && claimedMime !== imageMime) {
+      throw new ChatProxyError(415, "attachment_mime_mismatch", "Attachment MIME type does not match its file signature.");
+    }
+    return imageMime;
+  }
+
+  const textMime = claimedMime === "text/markdown" || /\.md(?:own)?$/i.test(name)
+    ? "text/markdown"
+    : claimedMime === "text/plain" || /\.txt$/i.test(name)
+      ? "text/plain"
+      : null;
+  if (textMime) {
+    return textMime;
+  }
+
+  throw new ChatProxyError(415, "unsupported_attachment_type", "Attachment type is not supported.");
+}
+
+function imageMimeFromMagicBytes(bytes: Buffer): Extract<ChatAttachmentMimeType, `image/${string}`> | null {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (bytes.length >= 6 && (bytes.subarray(0, 6).toString("ascii") === "GIF87a" || bytes.subarray(0, 6).toString("ascii") === "GIF89a")) {
+    return "image/gif";
+  }
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP") {
+    return "image/webp";
+  }
+  return null;
+}
+
+function isImageAttachmentMime(value: unknown): value is Extract<ChatAttachmentMimeType, `image/${string}`> {
+  return value === "image/png" || value === "image/jpeg" || value === "image/webp" || value === "image/gif";
+}
+
+function isHeicLike(bytes: Buffer): boolean {
+  if (bytes.length < 12 || bytes.subarray(4, 8).toString("ascii") !== "ftyp") {
+    return false;
+  }
+  const brand = bytes.subarray(8, 16).toString("ascii").toLowerCase();
+  return /hei[cfmsx]|heix|hevc|mif1|msf1/.test(brand);
+}
+
+function decodeTextAttachment(bytes: Buffer, name: string, mimeType: ChatAttachmentMimeType): string {
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new ChatProxyError(415, "unsupported_attachment_encoding", "Text attachments must be valid UTF-8.");
+  }
+  if (text.includes("\u0000")) {
+    throw new ChatProxyError(415, "unsupported_attachment_encoding", "Text attachments must not contain binary data.");
+  }
+  if (mimeType === "text/plain" || mimeType === "text/markdown") {
+    const startsLikeSvg = text.trimStart().slice(0, 512).toLowerCase().startsWith("<svg");
+    if (startsLikeSvg || /\.svg$/i.test(name)) {
+      throw new ChatProxyError(415, "unsupported_attachment_type", "SVG attachments are not supported.");
+    }
+  }
+  return text;
+}
+
 function stringValue(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
@@ -2280,6 +2569,11 @@ function stringArray(value: unknown): string[] {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
 }
 
 function isSafeChatMessageId(value: string): boolean {

@@ -49,6 +49,7 @@ function readSidebarCollapsed(): boolean {
 const OverviewSection = lazy(async () => ({ default: (await import("../features/overview/index.tsx")).OverviewSection }));
 const OnboardingSection = lazy(async () => ({ default: (await import("../features/onboarding/index.tsx")).OnboardingSection }));
 const CanvasV4 = lazy(async () => ({ default: (await import("../features/canvas/canvas-v4.tsx")).CanvasV4 }));
+const CanvasV5Preview = lazy(async () => ({ default: (await import("../features/canvas/CanvasV5Preview.tsx")).CanvasV5Preview }));
 const HardwareSection = lazy(async () => ({ default: (await import("../features/hardware/index.tsx")).HardwareSection }));
 const CollectorSection = lazy(async () => ({ default: (await import("../features/collector/index.tsx")).CollectorSection }));
 const ClustersSection = lazy(async () => ({ default: (await import("../v5/views/Clusters.tsx")).ClustersV5 }));
@@ -685,8 +686,21 @@ function SectionView({
       return <Suspense fallback={<SectionLoadingState />}><OverviewSection data={data} onNavigate={(s) => onNavigate(s as SectionId)} /></Suspense>;
     case "onboarding":
       return <Suspense fallback={<SectionLoadingState />}><OnboardingSection data={data} /></Suspense>;
-    case "canvas":
-      return <Suspense fallback={<SectionLoadingState />}><CanvasV4 /></Suspense>;
+    case "canvas": {
+      // v5 es el canvas por defecto. ?canvasv4 queda como escape temporal de rollback.
+      let useV4 = false;
+      if (typeof window !== "undefined") {
+        try {
+          const search = window.location.search;
+          if (search.includes("canvasv5")) window.sessionStorage.removeItem("canvasv4");
+          else if (search.includes("canvasv4")) window.sessionStorage.setItem("canvasv4", "1");
+          useV4 = window.sessionStorage.getItem("canvasv4") === "1";
+        } catch {
+          useV4 = window.location.search.includes("canvasv4");
+        }
+      }
+      return <Suspense fallback={<SectionLoadingState />}>{useV4 ? <CanvasV4 /> : <CanvasV5Preview />}</Suspense>;
+    }
     case "hardware":
       return <Suspense fallback={<SectionLoadingState />}><HardwareSection data={data} /></Suspense>;
     case "collector":

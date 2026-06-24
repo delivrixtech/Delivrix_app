@@ -41,6 +41,7 @@ import {
   handleEmailAuthConfigureHttp,
   type EmailAuthDnsAdapter
 } from "./routes/domains-email-auth.ts";
+import { handleEnableSmtpAuthHttp } from "./routes/enable-smtp-auth.ts";
 import { handleDomainBindHttp } from "./routes/domains-bind.ts";
 import { handleWarmupStartHttp } from "./routes/warmup.ts";
 import {
@@ -67,6 +68,7 @@ import {
   bindDomainParamSchema,
   configureCompleteSmtpSkillParamSchema,
   emailAuthParamSchema,
+  enableSmtpAuthParamSchema,
   ionosUpsertParamSchema,
   route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
@@ -546,6 +548,21 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         now: deps.now
       })
   };
+  const enableSmtpAuth: SkillHandlerEntry = {
+    paramSchema: enableSmtpAuthParamSchema,
+    timeoutMs: 120_000,
+    canRollback: false,
+    invoke: ({ request, response, deps }) =>
+      handleEnableSmtpAuthHttp({
+        request,
+        response,
+        workspace: deps.workspace,
+        auditLog: deps.auditLog,
+        sshRunner: deps.smtpSshRunner,
+        env: deps.env,
+        now: deps.now
+      })
+  };
   const domainBind: SkillHandlerEntry = {
     paramSchema: bindDomainParamSchema,
     timeoutMs: 15_000,
@@ -688,6 +705,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     provision_smtp_postfix: smtpProvision,
     install_smtp_stack: smtpProvision,
     configure_email_auth: emailAuth,
+    enable_smtp_auth: enableSmtpAuth,
     bind_domain_to_server: domainBind,
     seed_warmup_pool: warmupSeed,
     start_warmup_seed: warmupSeed,

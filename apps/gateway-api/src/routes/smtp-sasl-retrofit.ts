@@ -21,12 +21,14 @@ import {
 } from "../smtp-sasl-config.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import {
+  findSmtpCredentialRecord,
   markSmtpCredentialInstallFailed,
   markSmtpCredentialConfigured,
   prepareSmtpCredential,
   publicSmtpCredentialMetadata,
   saveSmtpCredentialRecord,
-  smtpCredentialFingerprint
+  smtpCredentialFingerprint,
+  type SmtpCredentialPublicMetadata
 } from "../smtp-credentials.ts";
 import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
 import type { SmtpSshRunner } from "./smtp-provisioning.ts";
@@ -45,10 +47,7 @@ interface SmtpProvisioningInventory {
     status: "configured";
     tlsStatus: "attempted_or_pending_dns";
     smtpAuthStatus?: "configured";
-    smtpCredential?: {
-      hasCredential?: boolean;
-      [key: string]: unknown;
-    };
+    smtpCredential?: SmtpCredentialPublicMetadata;
     configuredAt: string;
     updatedAt: string;
   }>;
@@ -59,7 +58,7 @@ export interface SmtpSaslRetrofitCandidate {
   domain: string;
   serverIp: string;
   selector: string;
-  reason: "missing_smtp_auth" | "missing_credential";
+  reason: "missing_smtp_auth" | "missing_credential" | "rotate";
 }
 
 export interface SmtpSaslRetrofitStep {
@@ -84,6 +83,11 @@ export interface SmtpSaslRetrofitBatchResult {
   results: SmtpSaslRetrofitResult[];
 }
 
+export interface SmtpProvisioningCredentialFlagReconciliationResult {
+  scanned: number;
+  staleDowngraded: number;
+}
+
 export interface SmtpSaslRetrofitRouteDeps {
   request: IncomingMessage;
   response: ServerResponse;
@@ -99,7 +103,12 @@ export interface SmtpSaslRetrofitRouteDeps {
 interface SmtpSaslRetrofitBody {
   actorId?: unknown;
   approvalToken?: unknown;
+  domain?: unknown;
+  serverSlug?: unknown;
+  mode?: unknown;
 }
+
+export type SmtpSaslRetrofitMode = "enable" | "recover" | "rotate";
 
 const approvalMaxAgeMs = 15 * 60 * 1000;
 
@@ -135,6 +144,20 @@ export async function handleSmtpSaslRetrofitBatchHttp(
 
   const actorId = stringOrDefault(body.actorId, operatorIdFromHeaders(deps.request.headers) ?? "operator/read-boundary");
   const approvalToken = stringOrDefault(body.approvalToken, "");
+  const targetParse = retrofitTargetFromBody(body);
+  if (!targetParse.ok) {
+    json(deps.response, 422, { error: "invalid_smtp_sasl_retrofit_request", message: targetParse.error });
+    return;
+  }
+  const mode = smtpSaslRetrofitModeFromBody(body);
+  if (mode === "rotate" && !targetParse.target.domain && !targetParse.target.serverSlug) {
+    json(deps.response, 422, {
+      error: "invalid_smtp_sasl_retrofit_request",
+      message: "mode=rotate requires domain or serverSlug."
+    });
+    return;
+  }
+  const target = targetParse.target;
   if (!approvalToken) {
     json(deps.response, 422, { error: "invalid_smtp_sasl_retrofit_request", message: "approvalToken is required." });
     return;
@@ -177,7 +200,10 @@ export async function handleSmtpSaslRetrofitBatchHttp(
     approverIds: [actorId],
     metadata: {
       approvalArtifactId: approval.artifactId,
-      approvalTokenHash: approvalTokenHash(approvalToken)
+      approvalTokenHash: approvalTokenHash(approvalToken),
+      mode,
+      ...(target.domain ? { domain: target.domain } : {}),
+      ...(target.serverSlug ? { serverSlug: target.serverSlug } : {})
     }
   });
 
@@ -187,6 +213,8 @@ export async function handleSmtpSaslRetrofitBatchHttp(
     sshRunner: deps.sshRunner,
     env: deps.env,
     actorId,
+    target,
+    mode,
     now: deps.now
   });
 
@@ -203,6 +231,9 @@ export async function handleSmtpSaslRetrofitBatchHttp(
     metadata: {
       approvalArtifactId: approval.artifactId,
       approvalTokenHash: approvalTokenHash(approvalToken),
+      mode,
+      ...(target.domain ? { domain: target.domain } : {}),
+      ...(target.serverSlug ? { serverSlug: target.serverSlug } : {}),
       candidates: result.candidates,
       configured: result.results.filter((entry) => entry.status === "configured").length,
       pendingSsh: result.results.filter((entry) => entry.status === "pending_ssh").length,
@@ -213,24 +244,118 @@ export async function handleSmtpSaslRetrofitBatchHttp(
   json(deps.response, 200, {
     ok: true,
     status: "completed",
+    mode,
     ...result
   });
 }
 
 export async function listSmtpSaslRetrofitCandidates(
-  workspace: OpenClawWorkspace
+  workspace: OpenClawWorkspace,
+  target: SmtpSaslRetrofitTarget = {},
+  mode: SmtpSaslRetrofitMode = "enable"
 ): Promise<SmtpSaslRetrofitCandidate[]> {
   const inventory = await workspace.readInventoryJson<SmtpProvisioningInventory>("smtp-provisioning.json").catch(() => null);
-  return (inventory?.servers ?? [])
+  const servers = (inventory?.servers ?? [])
     .filter((server) => server.status === "configured")
-    .filter((server) => server.smtpAuthStatus !== "configured" || server.smtpCredential?.hasCredential !== true)
-    .map((server) => ({
+    .filter((server) => target.domain ? server.domain.toLowerCase() === target.domain : true)
+    .filter((server) => target.serverSlug ? server.serverSlug === target.serverSlug : true);
+
+  const candidates = await Promise.all(servers.map(async (server) => {
+    const hasCredential = await hasConfiguredSmtpCredential(workspace, server);
+    if (!shouldRetrofitServer(server, mode, hasCredential)) {
+      return null;
+    }
+    return {
       serverSlug: server.serverSlug,
       domain: server.domain,
       serverIp: server.serverIp,
       selector: server.selector,
-      reason: server.smtpAuthStatus !== "configured" ? "missing_smtp_auth" : "missing_credential"
-    }));
+      reason: retrofitReason(server, mode)
+    };
+  }));
+
+  return candidates.filter((candidate): candidate is SmtpSaslRetrofitCandidate => candidate !== null);
+}
+
+type SmtpProvisioningServer = NonNullable<SmtpProvisioningInventory["servers"]>[number];
+
+function shouldRetrofitServer(
+  server: SmtpProvisioningServer,
+  mode: SmtpSaslRetrofitMode,
+  hasCredential: boolean
+): boolean {
+  const hasConfiguredAuth = server.smtpAuthStatus === "configured";
+  if (mode === "rotate") return hasConfiguredAuth;
+  if (mode === "recover") return hasConfiguredAuth && !hasCredential;
+  return !hasConfiguredAuth || !hasCredential;
+}
+
+async function hasConfiguredSmtpCredential(
+  workspace: OpenClawWorkspace,
+  server: SmtpProvisioningServer
+): Promise<boolean> {
+  const record = await findSmtpCredentialRecord(workspace, server.domain, server.serverSlug);
+  return record?.status === "configured";
+}
+
+export async function reconcileSmtpProvisioningCredentialFlags(
+  workspace: OpenClawWorkspace,
+  now: () => Date = () => new Date()
+): Promise<SmtpProvisioningCredentialFlagReconciliationResult> {
+  const inventory = await workspace.readInventoryJson<SmtpProvisioningInventory>("smtp-provisioning.json").catch(() => null);
+  const servers = inventory?.servers ?? [];
+  let staleDowngraded = 0;
+  const staleServerKeys = new Set<string>();
+
+  for (const server of servers) {
+    if (server.status !== "configured" || !server.smtpCredential || server.smtpCredential.hasCredential === false) {
+      continue;
+    }
+    const hasCredential = await hasConfiguredSmtpCredential(workspace, server);
+    if (!hasCredential) {
+      staleServerKeys.add(smtpProvisioningServerKey(server));
+    }
+  }
+
+  if (staleServerKeys.size === 0) {
+    return { scanned: servers.length, staleDowngraded: 0 };
+  }
+
+  const updatedAt = now().toISOString();
+  await workspace.updateInventoryJson<SmtpProvisioningInventory>("smtp-provisioning.json", (current) => {
+    const currentServers = current?.servers ?? [];
+    return {
+      ...(current ?? {}),
+      servers: currentServers.map((server) => {
+        if (!staleServerKeys.has(smtpProvisioningServerKey(server))) {
+          return server;
+        }
+        staleDowngraded += 1;
+        return {
+          ...server,
+          smtpCredential: {
+            ...server.smtpCredential,
+            hasCredential: false
+          },
+          updatedAt
+        };
+      })
+    };
+  });
+
+  return { scanned: servers.length, staleDowngraded };
+}
+
+function smtpProvisioningServerKey(server: Pick<SmtpProvisioningServer, "serverSlug" | "domain">): string {
+  return `${server.serverSlug}\0${server.domain.toLowerCase()}`;
+}
+
+function retrofitReason(
+  server: SmtpProvisioningServer,
+  mode: SmtpSaslRetrofitMode
+): SmtpSaslRetrofitCandidate["reason"] {
+  if (mode === "rotate") return "rotate";
+  return server.smtpAuthStatus !== "configured" ? "missing_smtp_auth" : "missing_credential";
 }
 
 export async function runSmtpSaslRetrofitBatch(input: {
@@ -239,9 +364,12 @@ export async function runSmtpSaslRetrofitBatch(input: {
   sshRunner: SmtpSshRunner;
   env?: Record<string, string | undefined>;
   actorId: string;
+  target?: SmtpSaslRetrofitTarget;
+  mode?: SmtpSaslRetrofitMode;
   now?: () => Date;
 }): Promise<SmtpSaslRetrofitBatchResult> {
-  const candidates = await listSmtpSaslRetrofitCandidates(input.workspace);
+  const mode = input.mode ?? "enable";
+  const candidates = await listSmtpSaslRetrofitCandidates(input.workspace, input.target, mode);
   const results: SmtpSaslRetrofitResult[] = [];
 
   for (const candidate of candidates) {
@@ -264,7 +392,8 @@ export async function runSmtpSaslRetrofitBatch(input: {
         domain: candidate.domain,
         serverSlug: candidate.serverSlug,
         host: smtpHostForDomain(candidate.domain),
-        now: input.now
+        now: input.now,
+        forceRotate: mode === "rotate"
       });
       await saveSmtpCredentialRecord(input.workspace, credential.record);
       const plan = buildSmtpSaslRetrofitPlan({
@@ -296,7 +425,7 @@ export async function runSmtpSaslRetrofitBatch(input: {
           input.workspace,
           markSmtpCredentialInstallFailed(credential.record, input.now?.() ?? new Date())
         );
-        const message = error instanceof Error ? error.message : String(error);
+        const message = redactSmtpCredentialSecret(errorMessage(error), credential.password);
         results.push({
           serverSlug: candidate.serverSlug,
           domain: candidate.domain,
@@ -331,7 +460,7 @@ export async function runSmtpSaslRetrofitBatch(input: {
         smtpCredentialFingerprint(configuredRecord)
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       results.push({
         serverSlug: candidate.serverSlug,
         domain: candidate.domain,
@@ -489,6 +618,14 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function redactSmtpCredentialSecret(message: string, password: string): string {
+  return password ? message.split(password).join("[REDACTED_SMTP_PASSWORD]") : message;
+}
+
 async function readJson<T>(request: IncomingMessage): Promise<T> {
   const raw = await readRequestBody(request, { maxBytes: 16_384 });
   if (!raw) return {} as T;
@@ -497,6 +634,44 @@ async function readJson<T>(request: IncomingMessage): Promise<T> {
 
 function stringOrDefault(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+}
+
+interface SmtpSaslRetrofitTarget {
+  domain?: string;
+  serverSlug?: string;
+}
+
+function retrofitTargetFromBody(body: SmtpSaslRetrofitBody): { ok: true; target: SmtpSaslRetrofitTarget } | { ok: false; error: string } {
+  const domain = typeof body.domain === "string" ? normalizeDomainFilter(body.domain) : undefined;
+  if (typeof body.domain === "string" && body.domain.trim().length > 0 && !domain) {
+    return { ok: false, error: "domain must be a valid DNS domain when provided." };
+  }
+  const serverSlug = typeof body.serverSlug === "string" && body.serverSlug.trim().length > 0
+    ? body.serverSlug.trim()
+    : undefined;
+  return {
+    ok: true,
+    target: {
+      ...(domain ? { domain } : {}),
+      ...(serverSlug ? { serverSlug } : {})
+    }
+  };
+}
+
+function smtpSaslRetrofitModeFromBody(body: SmtpSaslRetrofitBody): SmtpSaslRetrofitMode {
+  if (body.mode === "recover" || body.mode === "rotate" || body.mode === "enable") {
+    return body.mode;
+  }
+  return "enable";
+}
+
+function normalizeDomainFilter(value: string): string | undefined {
+  const domain = value.trim().toLowerCase().replace(/\.$/, "");
+  return isValidDomainFilter(domain) ? domain : undefined;
+}
+
+function isValidDomainFilter(value: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+$/.test(value);
 }
 
 async function findRecentRetrofitApproval(input: {

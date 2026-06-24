@@ -35,6 +35,31 @@ export function extractOpenClawArtifact(responseMd: string, operatorMessage: str
   };
 }
 
+export function shouldOpenArtifact(responseMd: string): boolean {
+  const content = responseMd.trim();
+  if (!content) {
+    return false;
+  }
+
+  const lines = content.split("\n");
+  if (/(^|\n)```/.test(content)) {
+    return true;
+  }
+  if (lines.some((_, index) => isMarkdownTableStart(lines, index))) {
+    return true;
+  }
+  if (hasNumberedStepList(content)) {
+    return true;
+  }
+
+  const hasHeading = lines.some((line) => isHeading(line.trim()));
+  if (hasHeading && countListItems(content) >= 3) {
+    return true;
+  }
+
+  return content.length >= 600 && hasMultipleSections(lines);
+}
+
 export function detectArtifactKind(responseMd: string, operatorMessage: string): CanvasLiveArtifactKind {
   const response = responseMd.toLowerCase();
   const prompt = operatorMessage.toLowerCase();
@@ -229,6 +254,24 @@ function isMarkdownTableStart(lines: string[], index: number): boolean {
 function hasNumberedStepList(value: string): boolean {
   const matches = value.match(/^\s*\d+\.\s+\S+/gm) ?? [];
   return matches.length >= 2;
+}
+
+function countListItems(value: string): number {
+  const matches = value.match(/^\s*(?:\d+\.|[-*])\s+\S+/gm) ?? [];
+  return matches.length;
+}
+
+function hasMultipleSections(lines: string[]): boolean {
+  const headingCount = lines.filter((line) => isHeading(line.trim())).length;
+  if (headingCount >= 2) {
+    return true;
+  }
+  const paragraphCount = lines
+    .join("\n")
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length >= 80).length;
+  return paragraphCount >= 3;
 }
 
 function cleanTitle(value: string): string {

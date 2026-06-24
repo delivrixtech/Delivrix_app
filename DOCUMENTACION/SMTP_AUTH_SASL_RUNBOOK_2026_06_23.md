@@ -43,6 +43,8 @@ El preflight debe reportar `CREDENTIAL_ENCRYPTION_KEY` como warning si falta o s
 npm test -- apps/gateway-api/src/env-preflight.test.ts
 ```
 
+Para go-live de SMTP AUTH, la key sí es bloqueante a nivel operativo: el gateway arranca sin ella, pero cualquier provisioning SMTP nuevo o retrofit que necesite generar credenciales falla cerrado con `credential_encryption_key_missing`. El operador debe setearla antes de provisionar dominios nuevos o ejecutar retrofit real.
+
 ## Retrofit SASL gateado
 
 Endpoint:
@@ -58,7 +60,17 @@ Requisitos:
 - SSH runner configurado.
 - `CREDENTIAL_ENCRYPTION_KEY` valida si hay candidatos sin credencial.
 
-Ejemplo de llamada despues de approval humano:
+Por seguridad operativa, probar primero un solo SMTP:
+
+```bash
+curl -sS -X POST http://127.0.0.1:3000/v1/smtp/retrofit-sasl-batch \
+  -H "content-type: application/json" \
+  -H "x-delivrix-token: $DELIVRIX_READ_BOUNDARY_TOKEN" \
+  -H "x-operator-id: operator/juanes" \
+  --data "{\"actorId\":\"operator/juanes\",\"approvalToken\":\"$APPROVAL_TOKEN\",\"domain\":\"example.com\"}"
+```
+
+Si el single-target queda validado, el batch completo se ejecuta omitiendo `domain`:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:3000/v1/smtp/retrofit-sasl-batch \
@@ -68,7 +80,7 @@ curl -sS -X POST http://127.0.0.1:3000/v1/smtp/retrofit-sasl-batch \
   --data "{\"actorId\":\"operator/juanes\",\"approvalToken\":\"$APPROVAL_TOKEN\"}"
 ```
 
-El batch degrada por servidor: un fallo SSH marca ese candidato como `failed` y sigue con los demas. Si un password fue generado pero la instalacion falla, la credencial queda en `install_failed` y no es descargable.
+El batch degrada por servidor: un fallo SSH marca ese candidato como `failed` y sigue con los demás. Si un password fue generado pero la instalación falla, la credencial queda en `install_failed` y no es descargable.
 
 ## Smoke manual post-deploy
 

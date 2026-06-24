@@ -1,4 +1,8 @@
-import type { CanvasLiveActionNowEventWire, CanvasLiveRunProgressWire } from "./live-tool-types.ts";
+import type {
+  CanvasLiveActionNowEventWire,
+  CanvasLiveRunIdentityWire,
+  CanvasLiveRunProgressWire
+} from "./live-tool-types.ts";
 
 export type LiveRunStatus = "running" | "completed" | "failed" | string;
 export type LiveRunStepStatus = "in_progress" | "ready" | "error";
@@ -12,6 +16,8 @@ export interface LiveRunStepProgress {
   startedAt?: string;
   completedAt?: string;
   updatedAt?: string;
+  durationMs?: number;
+  error?: string;
 }
 
 export interface LiveRunProgress {
@@ -19,6 +25,7 @@ export interface LiveRunProgress {
   currentStep: number | null;
   lastCompletedStep: number;
   steps: Map<number, LiveRunStepProgress>;
+  identity?: CanvasLiveRunIdentityWire;
 }
 
 export type LiveRunProgressMap = Map<string, LiveRunProgress>;
@@ -197,14 +204,22 @@ export function liveRunProgressFromSnapshot(
     for (const step of run.steps) {
       const status = liveStepStatusFromSnapshot(step.status);
       if (!status) continue;
-      steps.set(step.step, { skill: step.skill, status });
+      steps.set(step.step, {
+        skill: step.skill,
+        status,
+        ...(step.startedAt ? { startedAt: step.startedAt } : {}),
+        ...(step.completedAt ? { completedAt: step.completedAt } : {}),
+        ...(typeof step.durationMs === "number" ? { durationMs: step.durationMs } : {}),
+        ...(step.error ? { error: step.error } : {})
+      });
       if (status === "in_progress") currentStep = step.step;
     }
     out.set(run.runId, {
       runStatus: run.status,
       currentStep: run.status === "running" ? currentStep : null,
       lastCompletedStep: run.lastCompletedStep,
-      steps
+      steps,
+      ...(run.identity ? { identity: run.identity } : {})
     });
   }
   return out;
@@ -223,7 +238,8 @@ export function cloneLiveRunProgressMap(progress: LiveRunProgressMap): LiveRunPr
       runStatus: run.runStatus,
       currentStep: run.currentStep,
       lastCompletedStep: run.lastCompletedStep,
-      steps: new Map([...run.steps.entries()].map(([step, value]) => [step, { ...value }]))
+      steps: new Map([...run.steps.entries()].map(([step, value]) => [step, { ...value }])),
+      ...(run.identity ? { identity: run.identity } : {})
     });
   }
   return copy;

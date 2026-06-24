@@ -51,6 +51,8 @@ const allowedProxyPaths = new Set([
   "/v1/admin/workflow",
   "/v1/audit-events",
   canvasLiveStatePath,
+  "/v1/openclaw/chat/conversations",
+  "/v1/openclaw/chat/history",
   "/v1/compliance/status",
   "/v1/devops/collector/snapshot-ingestion",
   "/v1/devops/collector/status",

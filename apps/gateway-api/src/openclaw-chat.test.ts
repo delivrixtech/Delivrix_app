@@ -597,6 +597,118 @@ test("OpenClaw chat send accepts text alias and non-UUID smoke msgId for SSH bri
   assert.equal(audit.events[0].metadata.bridge, "ssh");
 });
 
+test("OpenClaw chat send preserves conversationId and normalized attachments for Bedrock bridge", async () => {
+  const audit = new MemoryAudit();
+  const sent: unknown[] = [];
+  const bridge: OpenClawChatSshBridge = {
+    async sendMessage(input) {
+      sent.push(input);
+      return { msgId: String(input.msgId), queued: true };
+    },
+    async streamHistory() {
+      throw new Error("not reached without panel clients");
+    }
+  };
+  const proxy = new OpenClawChatProxy(audit, {
+    bridgeKind: "bedrock",
+    sshBridge: bridge
+  });
+
+  await proxy.sendOperatorMessage({
+    msgId: "attach-bridge-1",
+    conversationId: "chat:customer-a",
+    message: "revisa estos adjuntos",
+    attachments: [
+      {
+        name: "captura.png",
+        mimeType: "image/png",
+        dataBase64: "iVBORw0KGgo="
+      },
+      {
+        name: "runbook.md",
+        mimeType: "text/markdown",
+        dataBase64: Buffer.from("# Runbook\nNo ejecutes nada sin aprobacion.").toString("base64")
+      }
+    ]
+  });
+
+  assert.equal(sent.length, 1);
+  const forwarded = sent[0] as { conversationId?: string; attachments?: Array<Record<string, unknown>> };
+  assert.equal(forwarded.conversationId, "chat:customer-a");
+  assert.equal(forwarded.attachments?.length, 2);
+  assert.equal(forwarded.attachments?.[0].kind, "image");
+  assert.equal(forwarded.attachments?.[0].mimeType, "image/png");
+  assert.equal(forwarded.attachments?.[1].kind, "text");
+  assert.equal(forwarded.attachments?.[1].mimeType, "text/markdown");
+  assert.equal(String(forwarded.attachments?.[1].text).includes("Runbook"), true);
+
+  const metadata = audit.events[0].metadata as Record<string, unknown>;
+  assert.equal(metadata.conversationId, "chat:customer-a");
+  assert.equal(metadata.attachmentCount, 2);
+  assert.equal(metadata.attachmentBytes, 50);
+  assert.deepEqual(metadata.attachmentMimeTypes, ["image/png", "text/markdown"]);
+  assert.equal(JSON.stringify(metadata).includes("iVBORw0KGgo"), false);
+  assert.equal(JSON.stringify(metadata).includes("Runbook"), false);
+});
+
+test("OpenClaw chat rejects attachments outside Bedrock bridge", async () => {
+  const audit = new MemoryAudit();
+  const proxy = new OpenClawChatProxy(audit, {
+    bridgeKind: "http",
+    gatewayToken: "gateway-token",
+    fetchImpl: async () => {
+      throw new Error("must not send upstream");
+    }
+  });
+
+  await assert.rejects(
+    () => proxy.sendOperatorMessage({
+      msgId: "attach-http-1",
+      message: "revisa imagen",
+      attachments: [{ name: "captura.png", mimeType: "image/png", dataBase64: "iVBORw0KGgo=" }]
+    }),
+    (error) => {
+      assert.ok(error instanceof ChatProxyError);
+      assert.equal(error.code, "chat_attachments_require_bedrock");
+      return true;
+    }
+  );
+  assert.equal(audit.events.length, 0);
+});
+
+test("OpenClaw chat rejects unsupported or spoofed attachments before bridge send", async () => {
+  const audit = new MemoryAudit();
+  const bridge: OpenClawChatSshBridge = {
+    async sendMessage() {
+      throw new Error("must not reach bridge");
+    },
+    async streamHistory() {
+      throw new Error("not reached");
+    }
+  };
+  const proxy = new OpenClawChatProxy(audit, {
+    bridgeKind: "bedrock",
+    sshBridge: bridge
+  });
+
+  await assert.rejects(
+    () => proxy.sendOperatorMessage({
+      msgId: "attach-svg-1",
+      message: "revisa svg",
+      attachments: [{
+        name: "bad.svg",
+        mimeType: "image/svg+xml",
+        dataBase64: Buffer.from("<svg><script>alert(1)</script></svg>").toString("base64")
+      }]
+    }),
+    (error) => {
+      assert.ok(error instanceof ChatProxyError);
+      assert.equal(error.code, "unsupported_attachment_type");
+      return true;
+    }
+  );
+});
+
 test("OpenClaw chat stream normalizes, multiplexes, and audits assistant completion", async () => {
   const audit = new MemoryAudit();
   const proxy = new OpenClawChatProxy(audit, {

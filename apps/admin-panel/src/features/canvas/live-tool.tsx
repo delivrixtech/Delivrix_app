@@ -922,7 +922,12 @@ function ArtifactColumn({
   onReject: () => Promise<void> | void;
   actionPending: "approve" | "reject" | null;
 }) {
-  const isReadOnlyArtifact = artifact?.kind === "report" || artifact?.kind === "template";
+  const isStructuredArtifact =
+    artifact?.kind === "smtp_run" ||
+    artifact?.kind === "inventory" ||
+    artifact?.kind === "blacklist_report" ||
+    artifact?.kind === "dns_zone";
+  const isReadOnlyArtifact = artifact?.kind === "report" || artifact?.kind === "template" || isStructuredArtifact;
   return (
     <aside
       className="flex flex-col"
@@ -962,7 +967,9 @@ function ArtifactColumn({
                 kind="informational"
                 meta="read-only"
                 detail={
-                  artifact.kind === "template"
+                  isStructuredArtifact
+                    ? "Artifact tipado informativo; el renderer especializado consume payload y no ejecuta acciones."
+                    : artifact.kind === "template"
                     ? "Template informativo; se puede copiar o exportar, no ejecuta acciones."
                     : "Reporte informativo; no requiere aprobación ni ejecuta acciones."
                 }

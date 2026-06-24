@@ -61,6 +61,8 @@ export interface ConfigureCompleteSmtpResult {
   stepResults: ConfigureCompleteSmtpStepResult[];
   totalDurationMs: number;
   totalCostUsd: number;
+  identity?: CanvasLiveRunIdentity;
+  steps?: CanvasLiveRunProgress["steps"];
   finalEmailMessageId?: string;
   finalDeliveryStatus?: "queued" | "delivered" | "deferred" | "bounced";
   rollbackProposalId?: string;
@@ -1227,6 +1229,7 @@ export async function configureCompleteSmtp(
       totalDurationMs,
       finalDeliveryStatus: normalizeDeliveryStatus(stringFromOutcome(realEmail.outcome, ["deliveryStatus"], undefined))
     });
+    const progress = smtpRunStateToProgress(runState);
 
     return {
       runId,
@@ -1234,6 +1237,8 @@ export async function configureCompleteSmtp(
       stepResults,
       totalDurationMs,
       totalCostUsd,
+      ...(progress.identity ? { identity: progress.identity } : {}),
+      steps: progress.steps,
       finalEmailMessageId: runState.finalEmailMessageId,
       finalDeliveryStatus: runState.finalDeliveryStatus
     };
@@ -1333,12 +1338,15 @@ export async function configureCompleteSmtp(
       error: failure.message,
       rollbackProposalId
     });
+    const progress = runState ? smtpRunStateToProgress(runState) : null;
     return {
       runId,
       status: failure.status,
       stepResults,
       totalDurationMs: elapsed(deps, startedMs),
       totalCostUsd: roundUsd(totalEstimatedCost(stepResults)),
+      ...(progress?.identity ? { identity: progress.identity } : {}),
+      ...(progress ? { steps: progress.steps } : {}),
       rollbackProposalId,
       error: failure.message,
       failedStep: failure.step
