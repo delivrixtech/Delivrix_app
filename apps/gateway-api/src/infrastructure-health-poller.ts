@@ -50,7 +50,8 @@ export function startInfrastructureAccountHealthPoller(
   };
 
   trigger("startup");
-  const setIntervalImpl = deps.setIntervalFn ?? setInterval;
+  const setIntervalImpl: SetIntervalFn =
+    deps.setIntervalFn ?? ((handler, intervalMs) => setInterval(handler, intervalMs));
   const interval = setIntervalImpl(() => trigger("interval"), deps.intervalMs);
   interval.unref?.();
   void logger.info(
