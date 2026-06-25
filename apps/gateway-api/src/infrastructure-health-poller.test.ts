@@ -27,7 +27,7 @@ test("Infrastructure account health poller runs startup and interval without kee
   assert.deepEqual(calls, ["startup"]);
   assert.equal(unrefCalled, true);
 
-  intervalHandler?.();
+  requireCallback(intervalHandler)();
   await flush();
   assert.deepEqual(calls, ["startup", "interval"]);
 });
@@ -55,14 +55,14 @@ test("Infrastructure account health poller skips overlapping interval polls", as
     }
   });
   await flush();
-  intervalHandler?.();
+  requireCallback(intervalHandler)();
   await flush();
   assert.deepEqual(calls, ["startup"]);
   assert.deepEqual(warnings, ["infrastructure.account_health_poll_skipped"]);
 
-  releaseStartup?.();
+  requireCallback(releaseStartup)();
   await flush();
-  intervalHandler?.();
+  requireCallback(intervalHandler)();
   await flush();
   assert.deepEqual(calls, ["startup", "interval"]);
 });
@@ -80,4 +80,11 @@ function loggerStub(options: { warnings?: string[] } = {}) {
 
 async function flush(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
+}
+
+function requireCallback(callback: (() => void) | null): () => void {
+  if (callback === null) {
+    throw new Error("Expected poller callback to be registered.");
+  }
+  return callback;
 }
