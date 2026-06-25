@@ -277,9 +277,16 @@ test("dispatcher retires infrastructure account as local-only state after Approv
     retiredAt: "2026-06-24T12:00:00.000Z"
   }]);
   assert.equal((result.summary as { physicalDelete?: boolean }).physicalDelete, false);
+  assert.deepEqual((result.summary as { rollbackPlan?: unknown }).rollbackPlan, {
+    mode: "manual_local_state",
+    canRollbackAutomatically: false,
+    procedure: "Edit LOCAL_INFRASTRUCTURE_ACCOUNT_LIFECYCLE_FILE or runtime/infrastructure-account-lifecycle.json and remove the account record, or set lifecycleStatus to active and healthStatus to healthy, then rerun inventory health.",
+    futureSkill: "reactivate_infrastructure_account"
+  });
   assert.equal((auditEvents[0] as any).action, "oc.infrastructure.account_retired");
   assert.equal((auditEvents[0] as any).metadata.physicalDelete, false);
   assert.equal((auditEvents[0] as any).metadata.sideEffects, "local-state-only");
+  assert.deepEqual((auditEvents[0] as any).metadata.rollbackPlan, (result.summary as { rollbackPlan?: unknown }).rollbackPlan);
 });
 
 test("dispatcher rejects invalid infrastructure retire params before touching lifecycle store", async () => {
@@ -319,9 +326,22 @@ test("dispatcher rejects invalid infrastructure retire params before touching li
     approvalToken: token,
     deps
   });
+  const controlCharReason = await dispatchSkillHandler({
+    skill: "retire_infrastructure_account",
+    params: {
+      providerId: "webdock",
+      accountId: "secondary",
+      accountLabel: "Cuenta\n2",
+      reason: "Cuenta perdida permanentemente,\nretirar del selector."
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps
+  });
 
   assert.equal(wrongProvider.statusCode, 400);
   assert.equal(shortReason.statusCode, 400);
+  assert.equal(controlCharReason.statusCode, 400);
   assert.deepEqual(retiredInputs, []);
 });
 

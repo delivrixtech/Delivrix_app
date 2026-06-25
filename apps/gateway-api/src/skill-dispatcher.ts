@@ -712,7 +712,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
   };
   const retireInfrastructureAccount: SkillHandlerEntry = {
     paramSchema: retireInfrastructureAccountParamSchema,
-    timeoutMs: 10_000,
+    timeoutMs: 30_000,
     canRollback: false,
     invoke: async ({ request, response, params, deps }) => {
       if (!deps.accountLifecycleStore) {
@@ -733,6 +733,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         actorId,
         retiredAt
       });
+      const rollbackPlan = infrastructureAccountRetireRollbackPlan();
       await deps.auditLog.append({
         actorType: "operator",
         actorId,
@@ -751,7 +752,8 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
           retiredBy: account.retiredBy ?? actorId,
           retiredReason: account.retiredReason ?? String(params.reason),
           sideEffects: "local-state-only",
-          physicalDelete: false
+          physicalDelete: false,
+          rollbackPlan
         }
       });
       response.writeHead(200, { "content-type": "application/json" });
@@ -759,7 +761,8 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         ok: true,
         account,
         sideEffects: "local-state-only",
-        physicalDelete: false
+        physicalDelete: false,
+        rollbackPlan
       }));
     }
   };
@@ -796,6 +799,15 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     configure_smtp_complete: configureCompleteSmtp,
     retire_infrastructure_account: retireInfrastructureAccount,
     retire_provider_account_local: retireInfrastructureAccount
+  };
+}
+
+function infrastructureAccountRetireRollbackPlan(): Record<string, unknown> {
+  return {
+    mode: "manual_local_state",
+    canRollbackAutomatically: false,
+    procedure: "Edit LOCAL_INFRASTRUCTURE_ACCOUNT_LIFECYCLE_FILE or runtime/infrastructure-account-lifecycle.json and remove the account record, or set lifecycleStatus to active and healthStatus to healthy, then rerun inventory health.",
+    futureSkill: "reactivate_infrastructure_account"
   };
 }
 

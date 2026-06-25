@@ -3,7 +3,8 @@ import test from "node:test";
 import {
   compactIntentParamSchema,
   configureCompleteSmtpSkillParamSchema,
-  enableSmtpAuthParamSchema
+  enableSmtpAuthParamSchema,
+  retireInfrastructureAccountParamSchema
 } from "./skill-schemas.ts";
 import {
   EpisodicScratchValidationError,
@@ -208,6 +209,41 @@ test("enableSmtpAuthParamSchema accepts exactly one normalized domain", () => {
 test("enableSmtpAuthParamSchema rejects missing or invalid domains", () => {
   for (const payload of [{}, { domain: "../example.com" }, { domain: ["example.com"] }]) {
     const parsed = enableSmtpAuthParamSchema.safeParse(payload);
+    assert.equal(parsed.success, false, JSON.stringify(payload));
+  }
+});
+
+test("retireInfrastructureAccountParamSchema rejects control characters in operator metadata", () => {
+  const valid = retireInfrastructureAccountParamSchema.safeParse({
+    providerId: "webdock",
+    accountId: "primary",
+    reason: "Cuenta perdida confirmada por operador.",
+    accountLabel: "Cuenta madre"
+  });
+  assert.equal(valid.success, true);
+  if (!valid.success) assert.fail(valid.error.issues.join("\n"));
+  assert.equal(valid.data.accountId, "primary");
+
+  for (const payload of [
+    {
+      providerId: "webdock",
+      accountId: "primary",
+      reason: "Cuenta perdida\ninyectada",
+      accountLabel: "Cuenta madre"
+    },
+    {
+      providerId: "webdock",
+      accountId: "primary",
+      reason: "Cuenta perdida confirmada por operador.",
+      accountLabel: "Cuenta madre\r"
+    },
+    {
+      providerId: "contabo",
+      accountId: "primary",
+      reason: "Cuenta perdida confirmada por operador."
+    }
+  ]) {
+    const parsed = retireInfrastructureAccountParamSchema.safeParse(payload);
     assert.equal(parsed.success, false, JSON.stringify(payload));
   }
 });

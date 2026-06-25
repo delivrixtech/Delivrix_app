@@ -545,6 +545,30 @@ test("Infrastructure inventory handler gates OpenClaw skill invocation with read
   assert.equal(auditEvents.length, 1);
 });
 
+test("Infrastructure inventory handler degrades account health audit failures", async () => {
+  const response = responseRecorder();
+
+  await handleInfrastructureInventoryHttp({
+    request: requestStub("/v1/infrastructure/inventory", {}),
+    response: response as unknown as ServerResponse,
+    auditLog: { async append() {} },
+    webdockListServers: async () => [webdockAccount("secondary", "Webdock Secondary", ["running"])],
+    accountLifecycleStore: {
+      observe: async () => {
+        throw new Error("lifecycle write failed");
+      },
+      list: async () => []
+    },
+    now: () => fixedNow,
+    env: {},
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl")
+  });
+
+  const body = response.result().body as { providers: Array<{ id: string; itemCount: number }> };
+  assert.equal(response.result().statusCode, 200);
+  assert.equal(body.providers.find((provider) => provider.id === "webdock-secondary")?.itemCount, 1);
+});
+
 test("Infrastructure account health endpoint is read-token gated and sanitizes scratch failures", async () => {
   const denied = responseRecorder();
   let buildCalls = 0;
@@ -591,12 +615,18 @@ test("Infrastructure account health endpoint is read-token gated and sanitizes s
   });
 
   const body = allowed.result().body as {
+    partial: boolean;
+    partialReasons: string[];
+    integrity: { status: string; reasons: string[] };
     accountHealth: { unhealthyCount: number };
     orphanReport: { uncertainBecauseAccountDown: unknown[] };
     scratchHealth: { status: string; reason: string; message?: string };
   };
   assert.equal(allowed.result().statusCode, 200);
   assert.equal(buildCalls, 1);
+  assert.equal(body.partial, true);
+  assert.deepEqual(body.partialReasons, ["scratch_health_down"]);
+  assert.deepEqual(body.integrity, { status: "partial", reasons: ["scratch_health_down"] });
   assert.equal(body.accountHealth.unhealthyCount, 1);
   assert.equal(body.orphanReport.uncertainBecauseAccountDown.length, 1);
   assert.deepEqual(body.scratchHealth, {
@@ -604,6 +634,40 @@ test("Infrastructure account health endpoint is read-token gated and sanitizes s
     reason: "scratch_health_failed"
   });
   assert.equal(JSON.stringify(body).includes("raw database secret"), false);
+});
+
+test("Infrastructure account health endpoint marks schema drift partial and redacts fulfilled scratch reasons", async () => {
+  const response = responseRecorder();
+  await handleInfrastructureAccountHealthHttp({
+    request: requestStub("/v1/infrastructure/account-health", { "x-delivrix-token": "read-token" }),
+    response: response as unknown as ServerResponse,
+    readBoundaryToken: "read-token",
+    buildInventory: async () => buildInfrastructureInventoryPayload({ includeStaticProviders: false, now: fixedNow }),
+    scratchHealth: async () => ({
+      status: "schema_drift",
+      checkedAt: "2026-06-24T12:00:00.000Z",
+      reason: "password=secret host=db.internal",
+      missingColumns: ["plane"]
+    }),
+    now: () => fixedNow
+  });
+
+  const body = response.result().body as {
+    partial: boolean;
+    integrity: { status: string; reasons: string[] };
+    scratchHealth: { status: string; reason: string; missingColumns: string[] };
+  };
+  assert.equal(response.result().statusCode, 200);
+  assert.equal(body.partial, true);
+  assert.deepEqual(body.integrity, { status: "partial", reasons: ["scratch_schema_drift"] });
+  assert.deepEqual(body.scratchHealth, {
+    status: "schema_drift",
+    checkedAt: "2026-06-24T12:00:00.000Z",
+    reason: "scratch_health_failed",
+    missingColumns: ["plane"]
+  });
+  assert.equal(JSON.stringify(body).includes("password"), false);
+  assert.equal(JSON.stringify(body).includes("host=db"), false);
 });
 
 test("Infrastructure inventory exposes IONOS Cloud DNS zones and record summaries", async () => {

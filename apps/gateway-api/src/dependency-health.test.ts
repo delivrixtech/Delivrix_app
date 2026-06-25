@@ -3,7 +3,8 @@ import test from "node:test";
 import {
   checkEpisodicScratchHealth,
   dependencyStatus,
-  type DependencyCheck
+  type DependencyCheck,
+  type QueryablePool
 } from "./dependency-health.ts";
 
 test("dependencyStatus returns the public status enum", () => {
@@ -60,9 +61,26 @@ test("checkEpisodicScratchHealth distinguishes missing table and schema drift", 
   assert.equal(drift.missingColumns?.includes("plane"), true);
 });
 
-function mockScratchPool(columns: Set<string>) {
+test("checkEpisodicScratchHealth sanitizes unexpected dependency failures", async () => {
+  const result = await checkEpisodicScratchHealth({
+    pool: {
+      async query() {
+        throw new Error("password=secret host=db.internal user=delivrix");
+      }
+    },
+    now: () => new Date("2026-06-24T12:00:00.000Z")
+  });
+
+  assert.deepEqual(result, {
+    status: "down",
+    checkedAt: "2026-06-24T12:00:00.000Z",
+    reason: "episodic_scratch_health_failed"
+  });
+});
+
+function mockScratchPool(columns: Set<string>): QueryablePool {
   return {
-    async query(sql: string) {
+    async query(sql: string, _params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> {
       if (sql.includes("to_regclass")) return { rows: [{ table_name: "openclaw_episodic_scratch" }] };
       if (sql.includes("information_schema.columns")) {
         return { rows: [...columns].map((column_name) => ({ column_name })) };

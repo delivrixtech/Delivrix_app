@@ -45,6 +45,7 @@ const auditedSkillInvocations = new Set([
   "fleet-ops",
   "delivrix-fleet-ops"
 ]);
+let webdockAccountHealthAuditQueue: Promise<void> = Promise.resolve();
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -150,18 +151,17 @@ export async function handleInfrastructureInventoryHttp(
   ]);
   const webdockAccounts = settledValue(webdockAccountsResult, []);
   const observedAt = deps.now?.() ?? new Date();
-  if (deps.accountLifecycleStore) {
-    await auditWebdockAccountHealthTransitions({
+  const [auditResult, accountLifecycleRecordsResult, senderNodesResult] = await Promise.allSettled([
+    deps.accountLifecycleStore ? enqueueWebdockAccountHealthAudit({
       auditLog: deps.auditLog,
       accountLifecycleStore: deps.accountLifecycleStore,
       webdockAccounts,
       observedAt
-    });
-  }
-  const [accountLifecycleRecordsResult, senderNodesResult] = await Promise.allSettled([
+    }) : Promise.resolve(),
     deps.accountLifecycleStore ? deps.accountLifecycleStore.list() : Promise.resolve([]),
     deps.senderNodesList ? deps.senderNodesList() : Promise.resolve([])
   ]);
+  void auditResult;
   const payload = await buildInfrastructureInventoryPayload({
     webdockAccounts,
     vpsProviders: settledValue(vpsProvidersResult, []),
@@ -207,23 +207,84 @@ export async function handleInfrastructureAccountHealthHttp(
     return;
   }
   const inventory = inventoryResult.value;
+  const scratchHealth = sanitizeScratchHealth(scratchHealthResult.status === "fulfilled" ? scratchHealthResult.value : {
+    status: "down",
+    reason: "scratch_health_failed"
+  });
+  const partialReasons = infrastructureAccountHealthPartialReasons(scratchHealth);
   json(deps.response, 200, {
     generatedAt: inventory.generatedAt,
+    partial: partialReasons.length > 0,
+    partialReasons,
+    integrity: {
+      status: partialReasons.length > 0 ? "partial" : "complete",
+      reasons: partialReasons
+    },
     accountHealth: inventory.accountHealth ?? { accounts: [], unhealthyCount: 0, retiredCount: 0 },
     orphanReport: inventory.orphanReport ?? {
       confirmedSenderNodeOrphans: [],
       uncertainBecauseAccountDown: [],
       providerServersWithoutSenderNode: []
     },
-    scratchHealth: scratchHealthResult.status === "fulfilled" ? scratchHealthResult.value : {
-      status: "down",
-      reason: "scratch_health_failed"
-    }
+    scratchHealth
   });
 }
 
 function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
   return result.status === "fulfilled" ? result.value : fallback;
+}
+
+function infrastructureAccountHealthPartialReasons(scratchHealth: unknown): string[] {
+  if (!isRecord(scratchHealth)) return ["scratch_health_unavailable"];
+  const status = typeof scratchHealth.status === "string" ? scratchHealth.status : "unknown";
+  if (status === "ok") return [];
+  if (status === "schema_drift") return ["scratch_schema_drift"];
+  if (status === "missing_table") return ["scratch_missing_table"];
+  if (status === "down") return ["scratch_health_down"];
+  return [`scratch_${status}`];
+}
+
+function sanitizeScratchHealth(scratchHealth: unknown): Record<string, unknown> {
+  if (!isRecord(scratchHealth)) {
+    return { status: "down", reason: "scratch_health_failed" };
+  }
+  const sanitized: Record<string, unknown> = {};
+  for (const key of ["status", "checkedAt", "reason", "postgresCode", "missingColumns"]) {
+    if (scratchHealth[key] !== undefined) {
+      sanitized[key] = sanitizeScratchHealthField(key, scratchHealth[key]);
+    }
+  }
+  if (typeof sanitized.status !== "string") {
+    sanitized.status = "down";
+  }
+  return sanitized;
+}
+
+function sanitizeScratchReason(reason: unknown): string {
+  const value = typeof reason === "string" ? reason : "scratch_health_failed";
+  if (/password|secret|token|postgres:\/\/|host=|user=|connection string/i.test(value)) {
+    return "scratch_health_failed";
+  }
+  return value.slice(0, 160);
+}
+
+function sanitizeScratchHealthField(key: string, value: unknown): unknown {
+  if (key === "reason") return sanitizeScratchReason(value);
+  if (key === "status") {
+    return typeof value === "string" && /^[a-z_]{2,40}$/.test(value) ? value : "down";
+  }
+  if (key === "checkedAt") {
+    return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value) ? value.slice(0, 32) : undefined;
+  }
+  if (key === "postgresCode") {
+    return typeof value === "string" && /^[A-Z0-9]{2,8}$/i.test(value) ? value : undefined;
+  }
+  if (key === "missingColumns") {
+    return Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string" && /^[a-z_][a-z0-9_]{0,63}$/i.test(item)).slice(0, 32)
+      : [];
+  }
+  return undefined;
 }
 
 export async function buildInfrastructureInventoryPayload(
@@ -387,6 +448,14 @@ export async function auditWebdockAccountHealthTransitions(input: {
       }
     });
   }
+}
+
+function enqueueWebdockAccountHealthAudit(input: Parameters<typeof auditWebdockAccountHealthTransitions>[0]): Promise<void> {
+  const run = webdockAccountHealthAuditQueue
+    .catch(() => undefined)
+    .then(() => auditWebdockAccountHealthTransitions(input));
+  webdockAccountHealthAuditQueue = run.catch(() => undefined);
+  return run;
 }
 
 function buildAccountHealthReport(
