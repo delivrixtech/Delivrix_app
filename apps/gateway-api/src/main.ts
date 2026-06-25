@@ -506,21 +506,28 @@ async function listVpsProviderInventories(): Promise<VpsProviderInventoryResult[
 }
 // Cuentas write-capable para el selector del orquestador (una por CUENTA real, ya de-dupeada).
 // enabled = canCreate() REAL: la cuenta-1 ("ops") siempre apta; las distintas solo con sus keys.
-async function listWebdockCreationAccounts(): Promise<Array<{ accountId: string; enabled: boolean }>> {
+async function listWebdockCreationAccounts(): Promise<Array<{ accountId: string; enabled: boolean; healthStatus?: string; lifecycleStatus?: string }>> {
   const lifecycleOverlay = await readInfrastructureAccountLifecycleOverlay({
     accountLifecycleStore,
     logger: gatewayRuntimeLog,
     context: "webdock_creation_accounts"
   });
-  const retiredOrDisabled = new Set<string>(
-    lifecycleOverlay.records
-      .filter((account) => account.providerId === "webdock" && (account.lifecycleStatus === "disabled" || account.lifecycleStatus === "retired"))
-      .flatMap(infrastructureAccountLifecycleIds)
-  );
-  return [...webdockCreateAdapters.entries()].map(([accountId, adapter]) => ({
-    accountId,
-    enabled: adapter.canCreate() && !retiredOrDisabled.has(accountId)
-  }));
+  const lifecycleById = new Map<string, InfrastructureAccountLifecycleRecord>();
+  for (const account of lifecycleOverlay.records.filter((entry) => entry.providerId === "webdock")) {
+    for (const accountId of infrastructureAccountLifecycleIds(account)) {
+      lifecycleById.set(accountId, account);
+    }
+  }
+  return [...webdockCreateAdapters.entries()].map(([accountId, adapter]) => {
+    const lifecycle = lifecycleById.get(accountId);
+    const disabled = lifecycle?.lifecycleStatus === "disabled" || lifecycle?.lifecycleStatus === "retired";
+    return {
+      accountId,
+      enabled: adapter.canCreate() && !disabled,
+      ...(lifecycle?.healthStatus ? { healthStatus: lifecycle.healthStatus } : {}),
+      ...(lifecycle?.lifecycleStatus ? { lifecycleStatus: lifecycle.lifecycleStatus } : {})
+    };
+  });
 }
 
 const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
@@ -718,7 +725,7 @@ const configureSmtpRuntimeDeps = {
   },
   resolvePlanApproval: async (input: {
     runId: string;
-    params: { domain?: unknown; provider?: unknown; budgetUsdMax?: unknown; testEmailRecipient?: unknown };
+    params: { domain?: unknown; provider?: unknown; vpsProviderId?: unknown; serverAccountId?: unknown; budgetUsdMax?: unknown; testEmailRecipient?: unknown };
   }) => {
     const nowMs = resolveGatewayNow().getTime();
     const match = proposalsStore
@@ -733,6 +740,8 @@ const configureSmtpRuntimeDeps = {
         if (!plan || Date.parse(plan.expiresAt) <= nowMs) return false;
         if (typeof input.params.domain === "string" && normalizeDomainForPlan(input.params.domain) !== plan.scope.domain) return false;
         if (typeof input.params.provider === "string" && input.params.provider.trim().toLowerCase() !== plan.scope.provider) return false;
+        if (typeof input.params.vpsProviderId === "string" && normalizeProviderIdForPlan(input.params.vpsProviderId) !== plan.scope.vpsProviderId) return false;
+        if (typeof input.params.serverAccountId === "string" && normalizeAccountIdForPlan(input.params.serverAccountId) !== plan.scope.serverAccountId) return false;
         if (typeof input.params.budgetUsdMax === "number" && input.params.budgetUsdMax !== plan.scope.budgetUsdMax) return false;
         if (typeof input.params.testEmailRecipient === "string" && input.params.testEmailRecipient.trim().toLowerCase() !== plan.scope.recipient) return false;
         return true;
@@ -6440,6 +6449,16 @@ function extractDispatchError(summary: unknown): string {
 
 function normalizeDomainForPlan(value: string): string {
   return value.trim().toLowerCase().replace(/\.$/, "");
+}
+
+function normalizeProviderIdForPlan(value: string): string | undefined {
+  const normalized = value.trim().toLowerCase();
+  return normalized && normalized !== "webdock" ? normalized : undefined;
+}
+
+function normalizeAccountIdForPlan(value: string): string | undefined {
+  const normalized = value.trim().toLowerCase();
+  return normalized || undefined;
 }
 
 function tryBuild<T>(response: ServerResponse, factory: () => T): T | undefined {

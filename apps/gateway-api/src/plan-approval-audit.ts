@@ -9,6 +9,8 @@ export function findSignedPlanApprovalInAuditEvents(input: {
   params: {
     domain?: unknown;
     provider?: unknown;
+    vpsProviderId?: unknown;
+    serverAccountId?: unknown;
     budgetUsdMax?: unknown;
     testEmailRecipient?: unknown;
   };
@@ -54,12 +56,16 @@ function planApprovalMatchesParams(
   params: {
     domain?: unknown;
     provider?: unknown;
+    vpsProviderId?: unknown;
+    serverAccountId?: unknown;
     budgetUsdMax?: unknown;
     testEmailRecipient?: unknown;
   }
 ): boolean {
   if (typeof params.domain === "string" && normalizeDomain(params.domain) !== planApproval.scope.domain) return false;
   if (typeof params.provider === "string" && params.provider.trim().toLowerCase() !== planApproval.scope.provider) return false;
+  if (typeof params.vpsProviderId === "string" && normalizeVpsProviderId(params.vpsProviderId) !== planApproval.scope.vpsProviderId) return false;
+  if (typeof params.serverAccountId === "string" && normalizeAccountId(params.serverAccountId) !== planApproval.scope.serverAccountId) return false;
   if (typeof params.budgetUsdMax === "number" && params.budgetUsdMax !== planApproval.scope.budgetUsdMax) return false;
   if (
     typeof params.testEmailRecipient === "string" &&
@@ -73,6 +79,8 @@ function parsePlanApprovalScope(value: unknown): PlanApprovalScope | null {
   const runId = stringValue(value.runId);
   const domain = normalizeDomain(stringValue(value.domain) ?? "");
   const provider = stringValue(value.provider)?.trim().toLowerCase();
+  const vpsProviderId = normalizeVpsProviderId(stringValue(value.vpsProviderId) ?? "");
+  const serverAccountId = normalizeAccountId(stringValue(value.serverAccountId) ?? "");
   const requireExistingDomain = value.requireExistingDomain;
   const budgetUsdMax = value.budgetUsdMax;
   const recipient = stringValue(value.recipient)?.trim().toLowerCase();
@@ -89,12 +97,26 @@ function parsePlanApprovalScope(value: unknown): PlanApprovalScope | null {
     runId,
     domain,
     provider,
+    ...(vpsProviderId ? { vpsProviderId } : {}),
+    ...(serverAccountId ? { serverAccountId } : {}),
     ...(requireExistingDomain === true ? { requireExistingDomain: true } : {}),
     budgetUsdMax: Number(budgetUsdMax),
     recipient,
     plannedSkill,
     plannedSteps: [...plannedSteps]
   };
+}
+
+function normalizeVpsProviderId(value: string): string | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized === "webdock") return undefined;
+  return /^[a-z0-9][a-z0-9_-]{0,31}$/.test(normalized) ? normalized : undefined;
+}
+
+function normalizeAccountId(value: string): string | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(normalized) ? normalized : undefined;
 }
 
 function hashPlanApprovalScope(scope: PlanApprovalScope): string {
