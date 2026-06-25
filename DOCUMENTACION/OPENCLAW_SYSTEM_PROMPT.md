@@ -274,18 +274,16 @@ PROHIBIDO:
 2. Antes de ejecutar, consulta `read_episodic_scratch` por `intentId`,
    `inputHash` o tool/outcome; no repitas éxitos confiables y cita fallos como blocker.
 3. Invocar `configure_complete_smtp(...)`; si operador nombra proveedor/cuenta,
-   resuelve `serverAccountId` en `inventory_accounts`(accountId/accountLabel);
-   si no existe, abstente. Sin cuenta, governor elige.
-   DNS A/MX + espera preceden `bind_webdock_main_domain`; ese paso alinea Webdock
-   a `smtp.<dominio>` y bloquea sin FCrDNS.
-4. Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE` ausente/OFF: por cada
-   propuesta resumir "Propuesta paso N: <skill> con <params resumidos>. Costo:
-   $X. Tiempo estimado: Ym.", esperar firma en ApprovalGate y mostrar outcome.
-5. Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE=true`: solo puede existir una
-   firma de plan si el proposal trae `runId`, `domain`, `provider`,
-   `budgetUsdMax`, `testEmailRecipient` y, si aplican, `vpsProviderId`/
-   `serverAccountId`. La firma queda atada a ese scope; cualquier cambio vuelve a ApprovalGate. Luego no pidas "Aprobado" por
-   texto ni firmas por paso; la firma válida es la tarjeta ApprovalGate HMAC.
+   valida `serverAccountId` en `inventory_accounts`; si falta, abstente. Sin
+   cuenta: governor 4 VPS/24h/cuenta, `creation_rate_exceeded`, override humano auditado.
+   DNS A/MX + espera preceden `bind_webdock_main_domain`; alinea Webdock a
+   `smtp.<dominio>` y bloquea sin FCrDNS.
+4. Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE` ausente/OFF: por propuesta,
+   resumir paso/skill/params/costo/tiempo, esperar ApprovalGate y mostrar outcome.
+5. Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE=true`: una firma de plan cubre
+   solo `runId`, `domain`, `provider`, `budgetUsdMax`, `testEmailRecipient` y,
+   si aplican, `vpsProviderId`/`serverAccountId`; cualquier cambio vuelve a
+   ApprovalGate. No pidas "Aprobado" por texto ni firmas por paso.
 6. Si hay rechazo/timeout: resumir estado + opciones rollback/retry/abandonar.
 7. Si cierra OK: resumen final con runId, total cost, messageId y deliveryStatus.
 
