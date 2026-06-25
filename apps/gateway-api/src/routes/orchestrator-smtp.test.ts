@@ -732,7 +732,7 @@ test("cuenta explicita elegible aterriza exactamente ahi y no entra a params/has
 
   assert.equal(result.status, "completed");
   assert.equal(ctx.creationAccountReads, 2);
-  assert.deepEqual(ctx.creationReads, ["secondary"]);
+  assert.deepEqual(ctx.creationReads, ["secondary", "secondary"]);
   const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
   assert.equal(step4.serverAccountId, "secondary");
   assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "accountId"), false);
@@ -746,6 +746,88 @@ test("cuenta explicita elegible aterriza exactamente ahi y no entra a params/has
     event.action === "oc.orchestrator.creation_account_chosen"
     && (event.metadata as { selectedAccountId?: string; requestedAccountId?: string } | undefined)?.selectedAccountId === "secondary"
     && (event.metadata as { selectedAccountId?: string; requestedAccountId?: string } | undefined)?.requestedAccountId === "secondary"
+  ), true);
+});
+
+test("cuenta explicita sana pero en cap falla en step 0 antes de gastar dominio", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ serverAccountId: "secondary" }),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { servers: [], sourceKind: "live", responseOk: true },
+      secondary: { servers: fourServers(), sourceKind: "live", responseOk: true }
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    serverAccountId: "secondary"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.match(result.error ?? "", /requested_account_ineligible: account=secondary reason=rate_exceeded/);
+  assert.equal(ctx.creationAccountReads, 1);
+  assert.deepEqual(ctx.creationReads, ["secondary"]);
+  assert.equal(ctx.planExecutions.some((entry) => entry.step === 2 || entry.skill === "register_domain_route53"), false);
+  assert.deepEqual(ctx.approvals, []);
+  assert.deepEqual(ctx.route53RegistrationWaits, []);
+  assert.equal(ctx.rollbacks.length, 0);
+  assert.equal(ctx.auditEvents.some((event) =>
+    event.action === "oc.orchestrator.creation_account_rejected"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; createdInWindow?: number } | undefined)?.requestedAccountId === "secondary"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; createdInWindow?: number } | undefined)?.reason === "rate_exceeded"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; createdInWindow?: number } | undefined)?.createdInWindow === 4
+  ), true);
+});
+
+test("cuenta explicita con budget live unverificable reintenta y falla sin gastar dominio", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ serverAccountId: "secondary" }),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      secondary: {
+        servers: [],
+        sourceKind: "live",
+        responseOk: true,
+        readErrors: [new Error("429"), new Error("timeout")]
+      }
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    serverAccountId: "secondary"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.match(result.error ?? "", /requested_account_budget_unverifiable: account=secondary/);
+  assert.equal(ctx.creationAccountReads, 1);
+  assert.deepEqual(ctx.creationReads, ["secondary", "secondary"]);
+  assert.equal(ctx.planExecutions.some((entry) => entry.step === 2 || entry.skill === "register_domain_route53"), false);
+  assert.deepEqual(ctx.approvals, []);
+  assert.deepEqual(ctx.route53RegistrationWaits, []);
+  assert.equal(ctx.rollbacks.length, 0);
+  assert.equal(ctx.auditEvents.some((event) =>
+    event.action === "oc.orchestrator.creation_account_rejected"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; readErrorMessage?: string } | undefined)?.requestedAccountId === "secondary"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; readErrorMessage?: string } | undefined)?.reason === "budget_unverifiable"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; readErrorMessage?: string } | undefined)?.readErrorMessage === "timeout"
   ), true);
 });
 
@@ -2771,6 +2853,7 @@ function createDeps(options: {
     sourceKind?: "live" | "mock" | string;
     responseOk?: boolean;
     readError?: unknown;
+    readErrors?: unknown[];
   }>;
 } = {}): {
   deps: ConfigureCompleteSmtpDeps;
@@ -2846,6 +2929,9 @@ function createDeps(options: {
         // Modo account-aware (multicuenta): inventario/estado por cuenta.
         const perAccount = options.creationByAccount?.[input.accountId];
         if (perAccount) {
+          if (perAccount.readErrors?.length) {
+            throw perAccount.readErrors.shift();
+          }
           if (perAccount.readError) {
             throw perAccount.readError;
           }

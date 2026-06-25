@@ -371,6 +371,7 @@ const smtpRunStepLeaseMs = 45 * 60 * 1000;
  * con N cuentas; este tope alto solo cubre un bug teorico + holgura para agregar muchas cuentas.
  */
 const smtpCreateAccountFailoverMaxAttempts = 25;
+const requestedCreationAccountPreflightRetryDelayMs = 25;
 type ServerProvenanceClassification = "created" | "reused" | "unknown";
 const createdServerProvenance = new Set(["created"]);
 const reusedServerProvenance = new Set(["idempotent_already_exists", "adopted", "reused"]);
@@ -687,10 +688,16 @@ export async function configureCompleteSmtp(
       if (!planApproval && requestedServerAccountId !== DEFAULT_CREATION_ACCOUNT_ID) {
         throw new OrchestratorFailure("failed", 0, "server_account_guard", "gated_multiaccount_unsupported");
       }
-      await assertRequestedCreationAccountSnapshotEligible({
+      const requestedCreationAccounts = await assertRequestedCreationAccountSnapshotEligible({
         deps,
         runId,
         accountId: requestedServerAccountId
+      });
+      await assertRequestedCreationAccountBudgetPreflight({
+        deps,
+        runId,
+        accountId: requestedServerAccountId,
+        accounts: requestedCreationAccounts
       });
       runState.serverAccountId = requestedServerAccountId;
       await persistSmtpRunState(deps, runState);
@@ -4136,11 +4143,11 @@ async function assertRequestedCreationAccountSnapshotEligible(input: {
   deps: ConfigureCompleteSmtpDeps;
   runId: string;
   accountId: string;
-}): Promise<void> {
+}): Promise<WebdockCreationAccount[]> {
   const accounts = await resolveWriteCapableCreationAccounts(input.deps);
   const account = accounts.find((entry) => entry.accountId === input.accountId);
   const reason = account ? creationAccountSnapshotIneligibleReason(account) : "unknown";
-  if (!reason) return;
+  if (!reason) return accounts;
   await audit(input.deps, "oc.orchestrator.creation_account_rejected", "webdock_account", input.accountId, "critical", {
     runId: input.runId,
     step: 0,
@@ -4154,6 +4161,123 @@ async function assertRequestedCreationAccountSnapshotEligible(input: {
     "server_account_guard",
     `requested_account_ineligible: account=${input.accountId} reason=${reason}`
   );
+}
+
+async function assertRequestedCreationAccountBudgetPreflight(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  accountId: string;
+  accounts: WebdockCreationAccount[];
+}): Promise<void> {
+  const enabled = !envFlagDisabled(input.deps.env?.CREATION_RATE_GOVERNOR_ENABLE);
+  if (!enabled) return;
+
+  const account = input.accounts.find((entry) => entry.accountId === input.accountId);
+  const snapshotReason = account ? creationAccountSnapshotIneligibleReason(account) : "unknown";
+  if (snapshotReason) return;
+
+  const cap = nonNegativeInt(input.deps.env?.CREATION_MAX_PER_DAY) ?? 4;
+  const window = creationRateWindow(input.deps.env?.CREATION_RATE_WINDOW);
+  const now = input.deps.now?.() ?? new Date();
+  const inventoryHash = requestedCreationAccountBudgetHash(input.accountId, cap, window);
+  const readResult = await readRequestedCreationAccountInventoryWithRetry({
+    deps: input.deps,
+    accountId: input.accountId
+  });
+
+  if (!readResult.inventory) {
+    const readDecision = evaluateCreationBudgetReadError({
+      now,
+      accountId: input.accountId,
+      cap,
+      enabled: true,
+      window,
+      failMode: "fail_closed",
+      error: readResult.error
+    });
+    await auditRequestedCreationAccountPreflightRejected(input.deps, {
+      runId: input.runId,
+      accountId: input.accountId,
+      reason: "budget_unverifiable",
+      readErrorMessage: readDecision.readErrorMessage
+    });
+    throw new OrchestratorFailure(
+      "failed",
+      0,
+      "server_account_guard",
+      `requested_account_budget_unverifiable: account=${input.accountId}`,
+      undefined,
+      inventoryHash
+    );
+  }
+
+  const decision = evaluateCreationBudget({
+    servers: readResult.inventory.servers,
+    now,
+    cap,
+    accountId: readResult.inventory.accountId ?? input.accountId,
+    window,
+    enabled: true
+  });
+  if (!decision.allowed) {
+    await auditRequestedCreationAccountPreflightRejected(input.deps, {
+      runId: input.runId,
+      accountId: decision.accountId,
+      reason: "rate_exceeded",
+      createdInWindow: decision.createdInWindow
+    });
+    throw new OrchestratorFailure(
+      "failed",
+      0,
+      "server_account_guard",
+      `requested_account_ineligible: account=${decision.accountId} reason=rate_exceeded`,
+      undefined,
+      inventoryHash
+    );
+  }
+}
+
+async function readRequestedCreationAccountInventoryWithRetry(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  accountId: string;
+}): Promise<{ inventory?: WebdockCreationInventoryResult; error?: unknown }> {
+  const reader = input.deps.listWebdockCreationServers;
+  if (!reader) {
+    return { error: "creation_inventory_reader_missing" };
+  }
+
+  let lastError: unknown = "creation_inventory_unverifiable";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const inventory = await reader({ accountId: input.accountId });
+      if (inventory.sourceKind === "live" && inventory.responseOk === true) {
+        return { inventory };
+      }
+      lastError = `creation_inventory_not_live: sourceKind=${inventory.sourceKind ?? "unknown"} responseOk=${String(inventory.responseOk)}`;
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt === 0) {
+      await delay(requestedCreationAccountPreflightRetryDelayMs);
+    }
+  }
+
+  return { error: lastError };
+}
+
+function requestedCreationAccountBudgetHash(
+  accountId: string,
+  cap: number,
+  window: CreationRateWindow
+): string {
+  return hashInput({
+    accountId,
+    cap,
+    window,
+    gate: "creation_rate_governor",
+    requested: true
+  });
 }
 
 async function resolveRequestedCreationAccount(input: {
@@ -4178,13 +4302,7 @@ async function resolveRequestedCreationAccount(input: {
       `requested_account_ineligible: account=${input.requestedAccountId} reason=${snapshotReason}`
     );
   }
-  const inventoryHash = hashInput({
-    accountId: input.requestedAccountId,
-    cap: input.cap,
-    window: input.window,
-    gate: "creation_rate_governor",
-    requested: true
-  });
+  const inventoryHash = requestedCreationAccountBudgetHash(input.requestedAccountId, input.cap, input.window);
   if (!input.deps.listWebdockCreationServers) {
     await auditRequestedCreationAccountRejected(input.deps, input, "unhealthy");
     throw new OrchestratorFailure(
@@ -4276,7 +4394,7 @@ function creationSelectionCandidates(
     const state = governorState.find((entry) => entry.accountId === account.accountId);
     return {
       accountId: account.accountId,
-      enabled: account.enabled,
+      enabled: account.enabled ?? true,
       healthy: account.healthy,
       budgetAllowed: state?.allowed ?? false,
       remaining: state ? Math.max(0, state.cap - state.createdInWindow) : 0
@@ -4309,6 +4427,24 @@ async function auditRequestedCreationAccountRejected(input: ConfigureCompleteSmt
     requestedAccountId: metadata.requestedAccountId,
     reason,
     ...(createdInWindow === undefined ? {} : { createdInWindow })
+  });
+}
+
+async function auditRequestedCreationAccountPreflightRejected(input: ConfigureCompleteSmtpDeps, metadata: {
+  runId: string;
+  accountId: string;
+  reason: string;
+  createdInWindow?: number;
+  readErrorMessage?: string;
+}): Promise<void> {
+  await audit(input, "oc.orchestrator.creation_account_rejected", "webdock_account", metadata.accountId, "critical", {
+    runId: metadata.runId,
+    step: 0,
+    skill: "server_account_guard",
+    requestedAccountId: metadata.accountId,
+    reason: metadata.reason,
+    ...(metadata.createdInWindow === undefined ? {} : { createdInWindow: metadata.createdInWindow }),
+    ...(metadata.readErrorMessage === undefined ? {} : { readErrorMessage: metadata.readErrorMessage })
   });
 }
 
@@ -4376,6 +4512,10 @@ function extractCost(outcome: unknown): number | undefined {
 
 function elapsed(deps: ConfigureCompleteSmtpDeps, startedMs: number): number {
   return Math.max(0, (deps.now?.() ?? new Date()).getTime() - startedMs);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function roundUsd(value: number): number {
