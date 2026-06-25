@@ -3,7 +3,9 @@ import { redactRuntimeLogSecrets } from "../gateway-runtime-log.ts";
 import {
   chatSensitiveAssignmentKeyPattern,
   isAlwaysSensitiveChatKey,
-  looksLikeSecretLiteral
+  looksLikeSecretLiteral,
+  redactAssignmentValue,
+  sensitiveAssignmentRegex
 } from "../secret-redaction.ts";
 import {
   normalizeConversationId,
@@ -88,7 +90,7 @@ function redactConversationHistory(
   };
 }
 
-function redactChatHistoryText(value: string): string {
+export function redactChatHistoryText(value: string): string {
   return redactRuntimeLogSecrets(value)
     .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, "data:image/[REDACTED_BASE64]")
     .replace(
@@ -101,10 +103,10 @@ function redactChatHistoryText(value: string): string {
       }
     )
     .replace(
-      new RegExp(`\\b(${chatSensitiveAssignmentKeyPattern})\\b(\\s*(?::|=|\\bis\\b|\\bes\\b)\\s*)("[^"]+"|'[^']+'|[^\\s,;]+)`, "gi"),
-      (match, key: string, separator: string, rawValue: string) => {
+      sensitiveAssignmentRegex(chatSensitiveAssignmentKeyPattern, ":|=|\\bis\\b|\\bes\\b"),
+      (match, quote: string, key: string, separator: string, rawValue: string) => {
         return isAlwaysSensitiveChatKey(key) || looksLikeSecretLiteral(rawValue)
-          ? `${key}${separator}[REDACTED]`
+          ? `${quote}${key}${quote}${separator}${redactAssignmentValue(rawValue)}`
           : match;
       }
     )

@@ -741,7 +741,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         targetType: "infrastructure_account",
         targetId: account.accountKey,
         riskLevel: "high",
-        decision: "approved",
+        decision: "allow",
         metadata: {
           providerId: account.providerId,
           accountId: account.accountId,

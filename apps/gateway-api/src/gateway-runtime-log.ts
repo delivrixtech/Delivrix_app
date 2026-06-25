@@ -4,6 +4,8 @@ import { stableStringify } from "../../../packages/storage/src/stable-stringify.
 import {
   isSensitiveKeyName,
   looksLikeSecretLiteral,
+  redactAssignmentValue,
+  sensitiveAssignmentRegex,
   sensitiveAssignmentKeyPattern
 } from "./secret-redaction.ts";
 
@@ -125,7 +127,11 @@ export function redactRuntimeLogSecrets(value: string): string {
     .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED_AWS_ACCESS_KEY]")
     .replace(/\bauthorization\b\s*[:=]\s*Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Authorization: Bearer [REDACTED]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-    .replace(new RegExp(`\\b(${sensitiveAssignmentKeyPattern})\\b\\s*[:=]\\s*("[^"]+"|'[^']+'|[^\\s,;]+)`, "gi"), "$1=[REDACTED]")
+    .replace(
+      sensitiveAssignmentRegex(sensitiveAssignmentKeyPattern),
+      (_match, quote: string, key: string, separator: string, rawValue: string) =>
+        `${quote}${key}${quote}${separator}${redactAssignmentValue(rawValue)}`
+    )
     .replace(/\b(smtp|sasl|dovecot)\b\s*[:=]\s*("[^"]+"|'[^']+'|[^\s,;]+)/gi, (match, key: string, rawValue: string) => {
       return looksLikeSecretLiteral(rawValue) ? `${key}=[REDACTED]` : match;
     });

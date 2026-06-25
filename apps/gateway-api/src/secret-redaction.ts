@@ -1,4 +1,19 @@
-export const sensitiveAssignmentKeyPattern = "password|passwd|secret|token|session[_-]?token|api[_-]?key|access[_-]?key|private[_-]?key|signature|hmac";
+export const sensitiveAssignmentKeyPattern = [
+  "smtp[_-]?password",
+  "sasl[_-]?password",
+  "dovecot[_-]?password",
+  "approval[_-]?token",
+  "password",
+  "passwd",
+  "secret",
+  "token",
+  "session[_-]?token",
+  "api[_-]?key",
+  "access[_-]?key",
+  "private[_-]?key",
+  "signature",
+  "hmac"
+].join("|");
 export const chatSensitiveAssignmentKeyPattern = [
   "smtp[_ -]?password",
   "smtp[_ -]?credential",
@@ -26,6 +41,18 @@ export function looksLikeSecretLiteral(rawValue: string): boolean {
     && /[a-z]/.test(value)
     && /[A-Z]/.test(value)
     && /[0-9]/.test(value);
+}
+
+export function sensitiveAssignmentRegex(keyPattern: string, separatorPattern = "[:=]"): RegExp {
+  return new RegExp(
+    `(["']?)\\b(${keyPattern})\\b\\1(\\s*(?:${separatorPattern})\\s*)("[^"]*"|'[^']*'|\\[REDACTED\\]|[^\\s,;}\\]]+)`,
+    "gi"
+  );
+}
+
+export function redactAssignmentValue(rawValue: string): string {
+  const quote = rawValue.startsWith("\"") || rawValue.startsWith("'") ? rawValue[0] : "";
+  return quote ? `${quote}[REDACTED]${quote}` : "[REDACTED]";
 }
 
 export function isAlwaysSensitiveChatKey(key: string): boolean {
