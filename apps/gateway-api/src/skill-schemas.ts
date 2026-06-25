@@ -5,6 +5,8 @@ import {
   tryNormalizeStrictDomainName
 } from "./entity-guard.ts";
 
+const selectorPattern = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+
 export type SkillSafeParseResult<T> =
   | { success: true; data: T }
   | { success: false; error: { issues: string[]; format: () => Record<string, unknown> } };
@@ -372,7 +374,7 @@ export const retireInfrastructureAccountParamSchema = schema<RetireInfrastructur
   const input = object(value);
   return {
     providerId: oneOf(providerId(input.providerId, "providerId"), "providerId", ["webdock"] as const),
-    accountId: boundedId(input.accountId, "accountId", 64).toLowerCase(),
+    accountId: selector(input.accountId, "accountId"),
     reason: boundedText(input.reason, "reason", 10, 500),
     ...(input.accountLabel === undefined || input.accountLabel === null || input.accountLabel === ""
       ? {}
@@ -754,7 +756,7 @@ function slug(value: unknown, field: string): string {
 
 function selector(value: unknown, field: string): string {
   const normalized = string(value, field).toLowerCase();
-  if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(normalized)) {
+  if (!selectorPattern.test(normalized)) {
     throw new SkillSchemaError(`${field} must be DNS-safe`);
   }
   return normalized;

@@ -36,6 +36,11 @@ import {
   accountLifecycleKey,
   canonicalInfrastructureAccountId
 } from "../../../../packages/local-store/src/index.ts";
+import {
+  noopGatewayRuntimeLogger,
+  runtimeErrorMetadata,
+  type GatewayRuntimeLogger
+} from "../gateway-runtime-log.ts";
 import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
 
 const infrastructureInventorySkillInvocationHeader = "x-openclaw-skill-invocation";
@@ -69,6 +74,7 @@ export interface InfrastructureInventoryRouteDependencies {
   ionosListDomainsInventory?: () => Promise<IonosDomainsInventoryResult>;
   accountLifecycleStore?: InfrastructureAccountLifecycleStore;
   senderNodesList?: () => Promise<SenderNode[]>;
+  logger?: GatewayRuntimeLogger;
   awsBedrockSetupLogPath?: string;
   env?: Record<string, string | undefined>;
   now?: () => Date;
@@ -81,6 +87,19 @@ export interface InfrastructureAccountHealthRouteDependencies {
   buildInventory: () => Promise<InfrastructureInventoryResponse>;
   scratchHealth?: () => Promise<unknown>;
   now?: () => Date;
+}
+
+export interface InfrastructureAccountHealthResponse {
+  generatedAt: string;
+  partial: boolean;
+  partialReasons: string[];
+  integrity: {
+    status: "complete" | "partial";
+    reasons: string[];
+  };
+  accountHealth: InfrastructureAccountHealthReport;
+  orphanReport: InfrastructureOrphanReport;
+  scratchHealth: Record<string, unknown>;
 }
 
 export interface WebdockAccountInventoryResult {
@@ -122,6 +141,7 @@ interface AwsBedrockSetupSummary {
 export async function handleInfrastructureInventoryHttp(
   deps: InfrastructureInventoryRouteDependencies
 ): Promise<void> {
+  const logger = deps.logger ?? noopGatewayRuntimeLogger;
   const isSkillInvocation = shouldAuditInfrastructureInventoryFetch(deps.request.headers);
   if (isSkillInvocation) {
     const auth = authorizeSensitiveRead(deps.request, { readBoundaryToken: deps.readBoundaryToken }, "infrastructure_inventory");
@@ -151,17 +171,41 @@ export async function handleInfrastructureInventoryHttp(
   ]);
   const webdockAccounts = settledValue(webdockAccountsResult, []);
   const observedAt = deps.now?.() ?? new Date();
-  const [auditResult, accountLifecycleRecordsResult, senderNodesResult] = await Promise.allSettled([
-    deps.accountLifecycleStore ? enqueueWebdockAccountHealthAudit({
+  if (deps.accountLifecycleStore) {
+    void enqueueWebdockAccountHealthAudit({
       auditLog: deps.auditLog,
       accountLifecycleStore: deps.accountLifecycleStore,
       webdockAccounts,
       observedAt
-    }) : Promise.resolve(),
+    }).catch((error) => {
+      void logger.warn(
+        "infrastructure.webdock_account_health_audit_failed",
+        "Webdock account health transition audit failed after inventory response degraded.",
+        runtimeErrorMetadata(error)
+      );
+    });
+  }
+  const [accountLifecycleRecordsResult, senderNodesResult] = await Promise.allSettled([
     deps.accountLifecycleStore ? deps.accountLifecycleStore.list() : Promise.resolve([]),
     deps.senderNodesList ? deps.senderNodesList() : Promise.resolve([])
   ]);
-  void auditResult;
+  const partialReasons: string[] = [];
+  if (accountLifecycleRecordsResult.status === "rejected") {
+    partialReasons.push("account_lifecycle_unavailable");
+    void logger.warn(
+      "infrastructure.account_lifecycle_read_failed",
+      "Infrastructure account lifecycle store read failed; inventory response is degraded.",
+      runtimeErrorMetadata(accountLifecycleRecordsResult.reason)
+    );
+  }
+  if (senderNodesResult.status === "rejected") {
+    partialReasons.push("sender_nodes_unavailable");
+    void logger.warn(
+      "infrastructure.sender_nodes_read_failed",
+      "Sender-node registry read failed; orphan analysis is degraded.",
+      runtimeErrorMetadata(senderNodesResult.reason)
+    );
+  }
   const payload = await buildInfrastructureInventoryPayload({
     webdockAccounts,
     vpsProviders: settledValue(vpsProvidersResult, []),
@@ -180,7 +224,9 @@ export async function handleInfrastructureInventoryHttp(
     await auditInfrastructureInventoryFetch(deps.auditLog, payload);
   }
 
-  json(deps.response, 200, payload);
+  json(deps.response, 200, partialReasons.length > 0
+    ? { ...payload, degraded: true, partialReasons }
+    : payload);
 }
 
 export async function handleInfrastructureAccountHealthHttp(
@@ -212,7 +258,7 @@ export async function handleInfrastructureAccountHealthHttp(
     reason: "scratch_health_failed"
   });
   const partialReasons = infrastructureAccountHealthPartialReasons(scratchHealth);
-  json(deps.response, 200, {
+  const body: InfrastructureAccountHealthResponse = {
     generatedAt: inventory.generatedAt,
     partial: partialReasons.length > 0,
     partialReasons,
@@ -227,7 +273,8 @@ export async function handleInfrastructureAccountHealthHttp(
       providerServersWithoutSenderNode: []
     },
     scratchHealth
-  });
+  };
+  json(deps.response, 200, body);
 }
 
 function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
@@ -426,7 +473,7 @@ export async function auditWebdockAccountHealthTransitions(input: {
       targetType: "webdock_account",
       targetId: transition.account.accountId,
       riskLevel: unhealthy
-        ? (source.httpStatus === 401 || source.httpStatus === 403 ? "high" : "medium")
+        ? (source.authFailure || source.httpStatus === 401 || source.httpStatus === 403 ? "high" : "medium")
         : "low",
       decision: "n/a",
       metadata: {
@@ -579,6 +626,7 @@ function classifyWebdockAccountHealth(webdock: WebdockInventoryResult): Infrastr
     if (
       webdock.source.httpStatus === 401 ||
       webdock.source.httpStatus === 403 ||
+      webdock.source.authFailure ||
       webdock.source.failureKind === "unauthorized" ||
       webdock.source.failureKind === "forbidden"
     ) {

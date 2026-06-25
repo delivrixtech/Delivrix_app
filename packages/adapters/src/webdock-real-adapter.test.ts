@@ -206,10 +206,33 @@ test("WebdockRealAdapter uses primary key for reads and ops key for writes", asy
   assert.equal((calls[2].init.headers as Record<string, string>).authorization, "Bearer ops-write-key");
 });
 
-test("WebdockRealAdapter preserves live failure metadata for rejected reads", async () => {
+test("WebdockRealAdapter preserves non-auth live failure metadata for rejected reads", async () => {
+  const adapter = new WebdockRealAdapter({
+    readApiKey: "bad-read-key",
+    apiBase: "https://api.webdock.test/v1",
+    accountId: "secondary",
+    accountLabel: "Webdock Secondary",
+    cacheTtlMs: 0,
+    now: () => new Date("2026-05-24T17:59:30.000Z"),
+    fetchImpl: async () => new Response("", { status: 429, statusText: "Too Many Requests" })
+  });
+
+  const result = await adapter.listServers();
+
+  assert.deepEqual(result.servers, []);
+  assert.equal(result.source.kind, "live");
+  assert.equal(result.source.responseOk, false);
+  assert.equal(result.source.httpStatus, 429);
+  assert.equal(result.source.httpStatusText, "Too Many Requests");
+  assert.equal(result.source.errorCode, "webdock_rate_limited_429");
+  assert.equal(result.source.failureKind, "rate_limited");
+  assert.equal(result.source.errorMessage, "Webdock API returned 429 Too Many Requests");
+});
+
+test("WebdockRealAdapter redacts auth failure HTTP details in inventory source", async () => {
   for (const scenario of [
-    { status: 401, statusText: "Unauthorized", errorCode: "webdock_auth_401", failureKind: "unauthorized" },
-    { status: 403, statusText: "Forbidden", errorCode: "webdock_forbidden_403", failureKind: "forbidden" }
+    { status: 401, statusText: "Unauthorized" },
+    { status: 403, statusText: "Forbidden" }
   ] as const) {
     const adapter = new WebdockRealAdapter({
       readApiKey: "bad-read-key",
@@ -226,11 +249,12 @@ test("WebdockRealAdapter preserves live failure metadata for rejected reads", as
     assert.deepEqual(result.servers, []);
     assert.equal(result.source.kind, "live");
     assert.equal(result.source.responseOk, false);
-    assert.equal(result.source.httpStatus, scenario.status);
-    assert.equal(result.source.httpStatusText, scenario.statusText);
-    assert.equal(result.source.errorCode, scenario.errorCode);
-    assert.equal(result.source.failureKind, scenario.failureKind);
-    assert.equal(result.source.errorMessage, `Webdock API returned ${scenario.status} ${scenario.statusText}`);
+    assert.equal(result.source.authFailure, true);
+    assert.equal(result.source.httpStatus, undefined);
+    assert.equal(result.source.httpStatusText, undefined);
+    assert.equal(result.source.errorCode, undefined);
+    assert.equal(result.source.failureKind, undefined);
+    assert.equal(result.source.errorMessage, "webdock_auth_failed");
   }
 });
 

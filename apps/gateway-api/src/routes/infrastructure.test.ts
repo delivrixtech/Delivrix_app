@@ -170,10 +170,11 @@ test("Infrastructure inventory does not surface adapter fallback servers when We
   const result = await adapter.listServers();
   assert.equal(result.source.kind, "live");
   assert.equal(result.source.responseOk, false);
-  assert.equal(result.source.httpStatus, 401);
-  assert.equal(result.source.errorCode, "webdock_auth_401");
-  assert.equal(result.source.failureKind, "unauthorized");
-  assert.equal(result.source.errorMessage, "Webdock API returned 401 Unauthorized");
+  assert.equal(result.source.authFailure, true);
+  assert.equal(result.source.httpStatus, undefined);
+  assert.equal(result.source.errorCode, undefined);
+  assert.equal(result.source.failureKind, undefined);
+  assert.equal(result.source.errorMessage, "webdock_auth_failed");
   assert.deepEqual(result.servers, []);
 
   const payload = await buildInfrastructureInventoryPayload({
@@ -196,13 +197,15 @@ test("Infrastructure inventory does not surface adapter fallback servers when We
     health: account.health,
     lifecycleStatus: account.lifecycleStatus,
     httpStatus: account.httpStatus,
-    errorCode: account.errorCode
+    errorCode: account.errorCode,
+    errorReason: account.errorReason
   })), [{
     accountId: "secondary",
     health: "unauthorized",
     lifecycleStatus: "unauthorized",
-    httpStatus: 401,
-    errorCode: "webdock_auth_401"
+    httpStatus: undefined,
+    errorCode: undefined,
+    errorReason: "webdock_auth_failed"
   }]);
   assert.equal(payload.itemTotal, 0);
 });
@@ -547,6 +550,7 @@ test("Infrastructure inventory handler gates OpenClaw skill invocation with read
 
 test("Infrastructure inventory handler degrades account health audit failures", async () => {
   const response = responseRecorder();
+  const warnings: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
 
   await handleInfrastructureInventoryHttp({
     request: requestStub("/v1/infrastructure/inventory", {}),
@@ -559,6 +563,14 @@ test("Infrastructure inventory handler degrades account health audit failures", 
       },
       list: async () => []
     },
+    logger: {
+      logPath: "",
+      info: async () => undefined,
+      warn: async (event, _message, metadata) => {
+        warnings.push({ event, metadata });
+      },
+      error: async () => undefined
+    },
     now: () => fixedNow,
     env: {},
     awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl")
@@ -567,6 +579,63 @@ test("Infrastructure inventory handler degrades account health audit failures", 
   const body = response.result().body as { providers: Array<{ id: string; itemCount: number }> };
   assert.equal(response.result().statusCode, 200);
   assert.equal(body.providers.find((provider) => provider.id === "webdock-secondary")?.itemCount, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(warnings.some((warning) => warning.event === "infrastructure.webdock_account_health_audit_failed"), true);
+});
+
+test("Infrastructure inventory handler marks lifecycle store read failures as degraded", async () => {
+  const response = responseRecorder();
+  const warnings: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
+
+  await handleInfrastructureInventoryHttp({
+    request: requestStub("/v1/infrastructure/inventory", {}),
+    response: response as unknown as ServerResponse,
+    auditLog: { async append() {} },
+    webdockListServers: async () => [webdockAccount("secondary", "Webdock Secondary", ["running"])],
+    accountLifecycleStore: {
+      observe: async () => ({
+        action: "none",
+        previousHealthStatus: null,
+        currentHealthStatus: "healthy",
+        account: {
+          accountKey: "webdock:secondary",
+          providerId: "webdock",
+          accountId: "secondary",
+          accountLabel: "Webdock Secondary",
+          lifecycleStatus: "active",
+          healthStatus: "healthy",
+          updatedAt: fixedNow.toISOString(),
+          updatedBy: "gateway-api"
+        }
+      }),
+      list: async () => {
+        throw new Error("lifecycle JSON corrupt");
+      }
+    },
+    logger: {
+      logPath: "",
+      info: async () => undefined,
+      warn: async (event, _message, metadata) => {
+        warnings.push({ event, metadata });
+      },
+      error: async () => undefined
+    },
+    now: () => fixedNow,
+    env: {},
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl")
+  });
+
+  const body = response.result().body as {
+    degraded: boolean;
+    partialReasons: string[];
+    providers: Array<{ id: string; itemCount: number }>;
+  };
+  assert.equal(response.result().statusCode, 200);
+  assert.equal(body.degraded, true);
+  assert.deepEqual(body.partialReasons, ["account_lifecycle_unavailable"]);
+  assert.equal(body.providers.find((provider) => provider.id === "webdock-secondary")?.itemCount, 1);
+  assert.equal(warnings.some((warning) => warning.event === "infrastructure.account_lifecycle_read_failed"), true);
+  assert.equal(JSON.stringify(body).includes("lifecycle JSON corrupt"), false);
 });
 
 test("Infrastructure account health endpoint is read-token gated and sanitizes scratch failures", async () => {

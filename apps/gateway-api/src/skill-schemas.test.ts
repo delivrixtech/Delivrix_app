@@ -241,6 +241,16 @@ test("retireInfrastructureAccountParamSchema rejects control characters in opera
       providerId: "contabo",
       accountId: "primary",
       reason: "Cuenta perdida confirmada por operador."
+    },
+    {
+      providerId: "webdock",
+      accountId: "primary.evil",
+      reason: "Cuenta perdida confirmada por operador."
+    },
+    {
+      providerId: "webdock",
+      accountId: "webdock:primary",
+      reason: "Cuenta perdida confirmada por operador."
     }
   ]) {
     const parsed = retireInfrastructureAccountParamSchema.safeParse(payload);

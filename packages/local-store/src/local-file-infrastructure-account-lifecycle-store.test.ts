@@ -195,6 +195,58 @@ test("Infrastructure account lifecycle store preserves Webdock cuenta madre alia
   assert.deepEqual(retired.aliases, ["account", "default", "ops", "primary"]);
 });
 
+test("Infrastructure account lifecycle store accepts manual JSON rollback to active", async (t) => {
+  const { filePath, cleanup } = await tempFile("delivrix-account-life-");
+  t.after(cleanup);
+  const store = new LocalFileInfrastructureAccountLifecycleStore(filePath);
+
+  await store.retire({
+    providerId: "webdock",
+    accountId: "secondary",
+    accountLabel: "Cuenta 2",
+    reason: "Cuenta Webdock retirada temporalmente por prueba de rollback manual.",
+    actorId: "operator-juanes",
+    retiredAt: "2026-06-24T12:00:00.000Z"
+  });
+  assert.equal((await store.get("webdock", "secondary"))?.lifecycleStatus, "retired");
+
+  await writeFile(filePath, JSON.stringify({
+    schemaVersion: "infrastructure-account-lifecycle/v1",
+    updatedAt: "2026-06-24T12:05:00.000Z",
+    accounts: [{
+      accountKey: "webdock:secondary",
+      providerId: "webdock",
+      accountId: "secondary",
+      accountLabel: "Cuenta 2",
+      lifecycleStatus: "active",
+      healthStatus: "healthy",
+      lastKnownItemCount: 0,
+      consecutiveFailures: 0,
+      updatedAt: "2026-06-24T12:05:00.000Z",
+      updatedBy: "operator-manual-rollback"
+    }]
+  }), "utf8");
+
+  const rolledBack = await store.get("webdock", "secondary");
+  assert.equal(rolledBack?.lifecycleStatus, "active");
+  assert.equal(rolledBack?.healthStatus, "healthy");
+  assert.equal(rolledBack?.retiredAt, undefined);
+
+  const observed = await store.observe({
+    providerId: "webdock",
+    accountId: "secondary",
+    accountLabel: "Cuenta 2",
+    responseOk: true,
+    healthStatus: "healthy",
+    fetchedAt: "2026-06-24T12:06:00.000Z",
+    observedAt: "2026-06-24T12:06:01.000Z",
+    itemCount: 2
+  });
+  assert.equal(observed.account.lifecycleStatus, "active");
+  assert.equal(observed.account.healthStatus, "healthy");
+  assert.equal(observed.account.lastKnownItemCount, 2);
+});
+
 test("Infrastructure account lifecycle helpers expand legacy Webdock cuenta madre records", async (t) => {
   const { filePath, cleanup } = await tempFile("delivrix-account-life-");
   t.after(cleanup);

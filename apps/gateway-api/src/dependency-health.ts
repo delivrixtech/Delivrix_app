@@ -55,9 +55,11 @@ export function dependencyStatus(check: DependencyCheck): DependencyStatus {
 
 export async function checkEpisodicScratchHealth(input: {
   pool: QueryablePool;
+  timeoutMs?: number;
   now?: () => Date;
 }): Promise<EpisodicScratchHealth> {
   const now = input.now ?? (() => new Date());
+  const timeoutMs = input.timeoutMs ?? defaultTimeoutMs;
   const checkedAt = now().toISOString();
   const requiredColumns = [
     "id",
@@ -75,20 +77,29 @@ export async function checkEpisodicScratchHealth(input: {
   ];
 
   try {
-    const table = await input.pool.query("SELECT to_regclass('openclaw_episodic_scratch') AS table_name");
+    const table = await withTimeout(
+      input.pool.query("SELECT to_regclass('openclaw_episodic_scratch') AS table_name"),
+      timeoutMs
+    );
     if (!table.rows[0]?.table_name) {
       return { status: "missing_table", checkedAt, reason: "openclaw_episodic_scratch_missing" };
     }
-    const columns = await input.pool.query(
-      "SELECT column_name FROM information_schema.columns WHERE table_name = 'openclaw_episodic_scratch'"
+    const columns = await withTimeout(
+      input.pool.query(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'openclaw_episodic_scratch'"
+      ),
+      timeoutMs
     );
     const present = new Set(columns.rows.map((row) => String(row.column_name)));
     const missingColumns = requiredColumns.filter((column) => !present.has(column));
     if (missingColumns.length > 0) {
       return { status: "schema_drift", checkedAt, reason: "missing_columns", missingColumns };
     }
-    await input.pool.query(
-      "SELECT 1 FROM openclaw_episodic_scratch WHERE false AND ttl_expires_at > NOW() AND invalid_at IS NULL AND plane = 'verified_fact' LIMIT 0"
+    await withTimeout(
+      input.pool.query(
+        "SELECT 1 FROM openclaw_episodic_scratch WHERE false AND ttl_expires_at > NOW() AND invalid_at IS NULL AND plane = 'verified_fact' LIMIT 0"
+      ),
+      timeoutMs
     );
     return { status: "ok", checkedAt };
   } catch (error) {
@@ -102,13 +113,13 @@ export async function checkEpisodicScratchHealth(input: {
     return {
       status: "down",
       checkedAt,
-      reason: sanitizedDependencyFailureReason(error),
+      reason: redactedScratchFailureReason(error),
       ...(code ? { postgresCode: code } : {})
     };
   }
 }
 
-function sanitizedDependencyFailureReason(error: unknown): string {
+function redactedScratchFailureReason(error: unknown): string {
   void error;
   return "episodic_scratch_health_failed";
 }
