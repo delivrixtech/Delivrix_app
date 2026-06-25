@@ -78,6 +78,24 @@ test("checkEpisodicScratchHealth sanitizes unexpected dependency failures", asyn
   });
 });
 
+test("checkEpisodicScratchHealth times out slow scratch queries", async () => {
+  const result = await checkEpisodicScratchHealth({
+    pool: {
+      async query() {
+        return new Promise(() => undefined);
+      }
+    },
+    timeoutMs: 1,
+    now: () => new Date("2026-06-24T12:00:00.000Z")
+  });
+
+  assert.deepEqual(result, {
+    status: "down",
+    checkedAt: "2026-06-24T12:00:00.000Z",
+    reason: "episodic_scratch_health_failed"
+  });
+});
+
 function mockScratchPool(columns: Set<string>): QueryablePool {
   return {
     async query(sql: string, _params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> {

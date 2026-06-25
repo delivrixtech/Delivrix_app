@@ -73,6 +73,8 @@ export interface WebdockInventorySource {
   fetchedAt: string;
   /** Cuando `kind === "live"`, indica si la API respondió 200. False = degraded. */
   responseOk: boolean;
+  /** Fallo de autenticacion/permiso confirmado sin exponer el codigo HTTP crudo en inventario. */
+  authFailure?: boolean;
   httpStatus?: number;
   httpStatusText?: string;
   errorCode?: string;
@@ -314,16 +316,9 @@ export class WebdockRealAdapter {
       });
 
       if (!response.ok) {
-        const errorMessage = `Webdock API returned ${response.status} ${response.statusText}`;
         const result: WebdockInventoryResult = {
           servers: this.withAccount([]),
-          source: this.sourceMetadata(now, "live", false, {
-            errorMessage,
-            httpStatus: response.status,
-            httpStatusText: response.statusText,
-            errorCode: webdockHttpErrorCode(response.status),
-            failureKind: webdockFailureKind(response.status)
-          })
+          source: this.sourceMetadata(now, "live", false, webdockHttpFailureMetadata(response.status, response.statusText))
         };
         this.cacheResult(now, result);
         return result;
@@ -770,6 +765,7 @@ export class WebdockRealAdapter {
     responseOk: boolean,
     error?: {
       errorMessage?: string;
+      authFailure?: boolean;
       httpStatus?: number;
       httpStatusText?: string;
       errorCode?: string;
@@ -783,6 +779,7 @@ export class WebdockRealAdapter {
       accountLabel: this.accountLabel,
       fetchedAt: now.toISOString(),
       responseOk,
+      ...(error?.authFailure ? { authFailure: true } : {}),
       ...(error?.httpStatus ? { httpStatus: error.httpStatus } : {}),
       ...(error?.httpStatusText ? { httpStatusText: error.httpStatusText } : {}),
       ...(error?.errorCode ? { errorCode: error.errorCode } : {}),
@@ -948,6 +945,29 @@ export class WebdockRealAdapter {
       "user-agent": userAgent
     };
   }
+}
+
+function webdockHttpFailureMetadata(status: number, statusText: string): {
+  errorMessage: string;
+  authFailure?: boolean;
+  httpStatus?: number;
+  httpStatusText?: string;
+  errorCode?: string;
+  failureKind?: WebdockInventorySource["failureKind"];
+} {
+  if (status === 401 || status === 403) {
+    return {
+      errorMessage: "webdock_auth_failed",
+      authFailure: true
+    };
+  }
+  return {
+    errorMessage: `Webdock API returned ${status} ${statusText}`,
+    httpStatus: status,
+    httpStatusText: statusText,
+    errorCode: webdockHttpErrorCode(status),
+    failureKind: webdockFailureKind(status)
+  };
 }
 
 function webdockHttpErrorCode(status: number): string {

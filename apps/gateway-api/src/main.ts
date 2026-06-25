@@ -1979,6 +1979,7 @@ const server = createServer(async (request, response) => {
         porkbunListInventory: () => porkbunAdapter.listInventory(),
         accountLifecycleStore,
         senderNodesList: () => senderNodeRegistry.list(),
+        logger: gatewayRuntimeLog,
         env: process.env
       });
     }
