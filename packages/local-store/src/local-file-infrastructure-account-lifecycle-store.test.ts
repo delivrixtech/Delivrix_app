@@ -93,7 +93,7 @@ test("Infrastructure account lifecycle store soft-retires and does not unretire 
       actorId: "operator",
       retiredAt: "2026-06-24T11:00:00.000Z"
     }),
-    /retire_reason_too_short/
+    (error) => error instanceof Error && error.message === "retire_reason_too_short: minimum 10 characters required"
   );
 
   const retired = await store.retire({
@@ -119,6 +119,61 @@ test("Infrastructure account lifecycle store soft-retires and does not unretire 
   assert.equal(observed.account.lifecycleStatus, "retired");
   assert.equal(observed.account.healthStatus, "retired");
   assert.equal(observed.account.retiredBy, "operator-juanes");
+});
+
+test("Infrastructure account lifecycle store remains retired across repeated observe calls", async (t) => {
+  const { filePath, cleanup } = await tempFile("delivrix-account-life-");
+  t.after(cleanup);
+  const store = new LocalFileInfrastructureAccountLifecycleStore(filePath);
+
+  await store.retire({
+    providerId: "webdock",
+    accountId: "tertiary",
+    accountLabel: "Cuenta perdida",
+    reason: "Cuenta Webdock perdida permanentemente, retirar del selector.",
+    actorId: "operator-juanes",
+    retiredAt: "2026-06-24T11:00:00.000Z"
+  });
+  const failed = await store.observe({
+    providerId: "webdock",
+    accountId: "tertiary",
+    accountLabel: "Cuenta perdida",
+    responseOk: false,
+    healthStatus: "unauthorized",
+    fetchedAt: "2026-06-24T11:05:00.000Z",
+    observedAt: "2026-06-24T11:05:01.000Z",
+    itemCount: 0,
+    httpStatus: 401,
+    errorCode: "webdock_auth_401"
+  });
+  const recovered = await store.observe({
+    providerId: "webdock",
+    accountId: "tertiary",
+    accountLabel: "Cuenta perdida",
+    responseOk: true,
+    healthStatus: "healthy",
+    fetchedAt: "2026-06-24T11:10:00.000Z",
+    observedAt: "2026-06-24T11:10:01.000Z",
+    itemCount: 7
+  });
+
+  assert.equal(failed.account.lifecycleStatus, "retired");
+  assert.equal(failed.account.healthStatus, "retired");
+  assert.equal(failed.previousHealthStatus, "retired");
+  assert.equal(failed.currentHealthStatus, "retired");
+  assert.equal(failed.action, "none");
+  assert.equal(failed.account.consecutiveFailures, 1);
+  assert.equal(failed.account.lastKnownItemCount, 0);
+  assert.equal(recovered.account.lifecycleStatus, "retired");
+  assert.equal(recovered.account.healthStatus, "retired");
+  assert.equal(recovered.previousHealthStatus, "retired");
+  assert.equal(recovered.currentHealthStatus, "retired");
+  assert.equal(recovered.action, "none");
+  assert.equal(recovered.account.consecutiveFailures, 0);
+  assert.equal(recovered.account.lastKnownItemCount, 7);
+  assert.equal(recovered.account.updatedAt, "2026-06-24T11:10:01.000Z");
+  assert.equal(recovered.account.retiredAt, "2026-06-24T11:00:00.000Z");
+  assert.equal(recovered.account.retiredReason, "Cuenta Webdock perdida permanentemente, retirar del selector.");
 });
 
 test("Infrastructure account lifecycle store preserves Webdock cuenta madre aliases on retire", async (t) => {

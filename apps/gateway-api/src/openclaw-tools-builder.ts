@@ -990,7 +990,7 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       name: "retire_infrastructure_account",
       description: [
         "Soft-retira una cuenta de infraestructura localmente para excluirla de inventario operativo y seleccion de creacion.",
-        "Es local-state-only, reversible por operador y NO borra VPS, credenciales ni recursos del proveedor.",
+        "Es local-state-only, reversible manualmente por operador y NO borra VPS, credenciales ni recursos del proveedor.",
         "Requiere ApprovalGate firmado, audit log y kill switch desarmado."
       ].join(" "),
       input_schema: {

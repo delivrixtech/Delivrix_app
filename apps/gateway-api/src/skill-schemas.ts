@@ -815,9 +815,15 @@ function boundedId(value: unknown, field: string, max: number): string {
 }
 
 function boundedText(value: unknown, field: string, min: number, max: number): string {
+  if (typeof value === "string" && /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new SkillSchemaError(`${field} must not contain control characters`);
+  }
   const normalized = string(value, field);
   if (normalized.length < min || normalized.length > max) {
     throw new SkillSchemaError(`${field} length is invalid`);
+  }
+  if (/[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw new SkillSchemaError(`${field} must not contain control characters`);
   }
   return normalized;
 }

@@ -15,6 +15,7 @@ export type InfrastructureAccountHealthStatus =
   | "degraded"
   | "retired";
 
+// Wire mirror del contrato de dominio: local-store persiste snapshots JSON y no debe importar domain.
 export interface InfrastructureAccountLifecycleRecord {
   accountKey: string;
   providerId: string;
@@ -160,7 +161,7 @@ export class LocalFileInfrastructureAccountLifecycleStore {
   async retire(input: RetireInfrastructureAccountInput): Promise<InfrastructureAccountLifecycleRecord> {
     const reason = input.reason.trim();
     if (reason.length < 10) {
-      throw new Error("retire_reason_too_short");
+      throw new Error("retire_reason_too_short: minimum 10 characters required");
     }
     if (!input.actorId.trim()) {
       throw new Error("retire_actor_required");

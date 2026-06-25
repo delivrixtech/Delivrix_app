@@ -24,7 +24,7 @@ export type EpisodicScratchHealth = {
   missingColumns?: string[];
 };
 
-interface QueryablePool {
+export interface QueryablePool {
   query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
 }
 
@@ -102,10 +102,15 @@ export async function checkEpisodicScratchHealth(input: {
     return {
       status: "down",
       checkedAt,
-      reason: error instanceof Error ? error.message : "episodic_scratch_health_failed",
+      reason: sanitizedDependencyFailureReason(error),
       ...(code ? { postgresCode: code } : {})
     };
   }
+}
+
+function sanitizedDependencyFailureReason(error: unknown): string {
+  void error;
+  return "episodic_scratch_health_failed";
 }
 
 async function checkPostgres(url: string, timeoutMs: number, now: () => Date): Promise<DependencyCheck> {
