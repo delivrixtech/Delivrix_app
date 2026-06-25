@@ -32,6 +32,7 @@ export interface InfrastructureAccountLifecycleRecord {
   lastErrorReason?: string;
   lastKnownItemCount?: number;
   consecutiveFailures?: number;
+  firstUnhealthyAt?: string;
   retiredAt?: string;
   retiredBy?: string;
   retiredReason?: string;
@@ -117,6 +118,14 @@ export class LocalFileInfrastructureAccountLifecycleStore {
         ? "retired"
         : lifecycleStatusForHealth(input.healthStatus);
       const aliases = accountAliasesFor(input.providerId, canonicalAccountId, input.aliases ?? previous?.aliases);
+      const consecutiveFailures = input.responseOk ? 0 : (previous?.consecutiveFailures ?? 0) + 1;
+      const firstUnhealthyAt = previous?.lifecycleStatus === "retired"
+        ? previous.firstUnhealthyAt ?? (!input.responseOk ? input.observedAt : undefined)
+        : input.responseOk
+            ? undefined
+            : (previous?.consecutiveFailures ?? 0) > 0
+                ? previous?.firstUnhealthyAt ?? previous?.lastSeenAt ?? input.observedAt
+                : input.observedAt;
       const account: InfrastructureAccountLifecycleRecord = {
         accountKey,
         providerId: normalizeId(input.providerId),
@@ -132,7 +141,8 @@ export class LocalFileInfrastructureAccountLifecycleStore {
         ...(input.errorCode ? { lastErrorCode: input.errorCode } : {}),
         ...(input.errorReason ? { lastErrorReason: input.errorReason } : {}),
         lastKnownItemCount: input.responseOk ? Math.max(0, Math.trunc(input.itemCount)) : previous?.lastKnownItemCount ?? 0,
-        consecutiveFailures: input.responseOk ? 0 : (previous?.consecutiveFailures ?? 0) + 1,
+        consecutiveFailures,
+        ...(firstUnhealthyAt ? { firstUnhealthyAt } : {}),
         ...(previous?.retiredAt ? { retiredAt: previous.retiredAt } : {}),
         ...(previous?.retiredBy ? { retiredBy: previous.retiredBy } : {}),
         ...(previous?.retiredReason ? { retiredReason: previous.retiredReason } : {}),
@@ -189,6 +199,7 @@ export class LocalFileInfrastructureAccountLifecycleStore {
         ...(previous?.lastErrorReason ? { lastErrorReason: previous.lastErrorReason } : {}),
         lastKnownItemCount: previous?.lastKnownItemCount ?? 0,
         consecutiveFailures: previous?.consecutiveFailures ?? 0,
+        ...(previous?.firstUnhealthyAt ? { firstUnhealthyAt: previous.firstUnhealthyAt } : {}),
         retiredAt: input.retiredAt,
         retiredBy: input.actorId.trim(),
         retiredReason: reason,
@@ -260,6 +271,7 @@ function normalizeRecord(record: InfrastructureAccountLifecycleRecord): Infrastr
     ...(record.lastErrorReason ? { lastErrorReason: record.lastErrorReason } : {}),
     lastKnownItemCount: Number.isFinite(record.lastKnownItemCount) ? Math.max(0, Math.trunc(record.lastKnownItemCount ?? 0)) : 0,
     consecutiveFailures: Number.isFinite(record.consecutiveFailures) ? Math.max(0, Math.trunc(record.consecutiveFailures ?? 0)) : 0,
+    ...(record.firstUnhealthyAt ? { firstUnhealthyAt: record.firstUnhealthyAt } : {}),
     ...(record.retiredAt ? { retiredAt: record.retiredAt } : {}),
     ...(record.retiredBy ? { retiredBy: record.retiredBy } : {}),
     ...(record.retiredReason ? { retiredReason: record.retiredReason } : {}),

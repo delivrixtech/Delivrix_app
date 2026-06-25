@@ -19,6 +19,7 @@ import type {
 import { WebdockRealAdapter } from "../../../../packages/adapters/src/index.ts";
 import { computeAuditHash } from "../audit/hash-chain.ts";
 import {
+  auditInfrastructureAccountHealthTransitions,
   auditInfrastructureInventoryFetch,
   buildInfrastructureInventoryPayload,
   handleInfrastructureAccountHealthHttp,
@@ -396,6 +397,17 @@ test("Infrastructure inventory exposes Contabo as connected external VPS provide
     itemCount: 0,
     fetchSourceKind: "live"
   }]);
+  assert.deepEqual(payload.accountHealth?.accounts.map((account) => ({
+    providerId: account.providerId,
+    accountId: account.accountId,
+    health: account.health,
+    liveItemCount: account.liveItemCount
+  })), [{
+    providerId: "contabo",
+    accountId: "contabo",
+    health: "healthy",
+    liveItemCount: 0
+  }]);
 });
 
 test("Infrastructure inventory exposes Contabo live VPS items with provider and IPv4 detail", async () => {
@@ -415,6 +427,7 @@ test("Infrastructure inventory exposes Contabo live VPS items with provider and 
   assert.equal(provider.items?.[0]?.detail?.accountId, "contabo");
   assert.equal(provider.items?.[0]?.detail?.accountLabel, "Contabo Host Latam");
   assert.equal(provider.items?.[0]?.detail?.ipv4, "203.0.113.10");
+  assert.equal(payload.accountHealth?.accounts.find((account) => account.providerId === "contabo")?.liveItemCount, 1);
 });
 
 test("Infrastructure inventory reports confirmed Webdock sender-node orphans and provider servers without nodes", async () => {
@@ -483,7 +496,129 @@ test("Infrastructure inventory hides stale external VPS items when provider fetc
   assert.equal(provider.errorReason, "Contabo API returned 401 Unauthorized");
   assert.equal(provider.itemCount, 0);
   assert.deepEqual(provider.items, []);
+  assert.deepEqual(payload.accountHealth?.accounts.map((account) => ({
+    providerId: account.providerId,
+    accountId: account.accountId,
+    health: account.health,
+    lifecycleStatus: account.lifecycleStatus,
+    errorReason: account.errorReason
+  })), [{
+    providerId: "contabo",
+    accountId: "contabo",
+    health: "degraded",
+    lifecycleStatus: "active",
+    errorReason: "Contabo API returned 401 Unauthorized"
+  }]);
   assert.equal(payload.itemTotal, 0);
+});
+
+test("Infrastructure account health includes Contabo lifecycle streak metadata", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    vpsProviders: [
+      vpsProvider("contabo", "Contabo Host Latam", ["running"], {
+        responseOk: false,
+        httpStatus: 401,
+        errorCode: "contabo_auth_401",
+        failureKind: "unauthorized",
+        errorMessage: "Contabo API returned 401 Unauthorized"
+      })
+    ],
+    accountLifecycleRecords: [{
+      accountKey: "contabo:contabo",
+      providerId: "contabo",
+      accountId: "contabo",
+      accountLabel: "Contabo Host Latam",
+      lifecycleStatus: "unauthorized",
+      healthStatus: "unauthorized",
+      lastKnownItemCount: 8,
+      consecutiveFailures: 3,
+      firstUnhealthyAt: "2026-06-24T10:05:01.000Z",
+      updatedAt: "2026-06-24T10:15:01.000Z",
+      updatedBy: "gateway-api"
+    }],
+    now: fixedNow
+  });
+
+  assert.deepEqual(payload.accountHealth?.accounts.map((account) => ({
+    providerId: account.providerId,
+    accountId: account.accountId,
+    health: account.health,
+    consecutiveFailures: account.consecutiveFailures,
+    firstUnhealthyAt: account.firstUnhealthyAt,
+    lastKnownItemCount: account.lastKnownItemCount
+  })), [{
+    providerId: "contabo",
+    accountId: "contabo",
+    health: "unauthorized",
+    consecutiveFailures: 3,
+    firstUnhealthyAt: "2026-06-24T10:05:01.000Z",
+    lastKnownItemCount: 8
+  }]);
+});
+
+test("Infrastructure health audit emits generic transitions for external VPS providers", async () => {
+  const auditEvents: unknown[] = [];
+  const observed: unknown[] = [];
+
+  await auditInfrastructureAccountHealthTransitions({
+    auditLog: {
+      async append(event) {
+        auditEvents.push(event);
+        return event as never;
+      }
+    },
+    accountLifecycleStore: {
+      list: async () => [],
+      observe: async (input) => {
+        observed.push(input);
+        return {
+          action: "unhealthy",
+          previousHealthStatus: "healthy",
+          currentHealthStatus: "unauthorized",
+          account: {
+            accountKey: "contabo:contabo",
+            providerId: "contabo",
+            accountId: "contabo",
+            accountLabel: "Contabo Host Latam",
+            lifecycleStatus: "unauthorized",
+            healthStatus: "unauthorized",
+            updatedAt: fixedNow.toISOString(),
+            updatedBy: "gateway-api"
+          }
+        };
+      }
+    },
+    webdockAccounts: [],
+    vpsProviders: [
+      vpsProvider("contabo", "Contabo Host Latam", [], {
+        responseOk: false,
+        httpStatus: 401,
+        errorCode: "contabo_auth_401",
+        failureKind: "unauthorized",
+        errorMessage: "Contabo API returned 401 Unauthorized"
+      })
+    ],
+    observedAt: fixedNow
+  });
+
+  assert.deepEqual(observed, [{
+    providerId: "contabo",
+    accountId: "contabo",
+    accountLabel: "Contabo Host Latam",
+    responseOk: false,
+    healthStatus: "unauthorized",
+    fetchedAt: "2026-05-24T17:59:30.000Z",
+    observedAt: "2026-05-24T18:00:00.000Z",
+    itemCount: 0,
+    httpStatus: 401,
+    errorCode: "contabo_auth_401",
+    errorReason: "Contabo API returned 401 Unauthorized",
+    actorId: "gateway-api"
+  }]);
+  assert.equal((auditEvents[0] as any).action, "oc.infrastructure.account_unhealthy");
+  assert.equal((auditEvents[0] as any).targetType, "infrastructure_account");
+  assert.equal((auditEvents[0] as any).metadata.providerId, "contabo");
 });
 
 test("Infrastructure inventory handler degrades provider fanout failures with allSettled", async () => {

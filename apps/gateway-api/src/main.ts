@@ -100,6 +100,7 @@ import {
   type StuckJobRecoveryAction
 } from "../../../packages/domain/src/index.ts";
 import {
+  accountLifecycleKey,
   InvalidAuditEventError,
   infrastructureAccountLifecycleIds,
   LocalFileAuditLog,
@@ -112,7 +113,8 @@ import {
   LocalFileRunbookExecutionStore,
   LocalFileSendResultStore,
   LocalFileSenderNodeStore,
-  LocalFileSuppressionList
+  LocalFileSuppressionList,
+  type InfrastructureAccountLifecycleRecord
 } from "../../../packages/local-store/src/index.ts";
 import { LocalFileSendQueue } from "../../../packages/queue/src/index.ts";
 import {
@@ -277,6 +279,7 @@ import {
   handlePorkbunPingHttp
 } from "./routes/domains-porkbun.ts";
 import {
+  auditInfrastructureAccountHealthTransitions,
   buildInfrastructureInventoryPayload,
   handleInfrastructureAccountHealthHttp,
   handleInfrastructureInventoryHttp,
@@ -284,6 +287,11 @@ import {
   type VpsProviderInventoryResult,
   type WebdockAccountInventoryResult
 } from "./routes/infrastructure.ts";
+import { startInfrastructureAccountHealthPoller } from "./infrastructure-health-poller.ts";
+import {
+  buildInfrastructureAccountRetireProposal,
+  isSustainedUnauthorizedWebdockRetireCandidate
+} from "./infrastructure-account-retire-proposal.ts";
 import {
   handleOpenClawWorkspaceError,
   handleOpenClawWorkspaceFileHttp,
@@ -5414,12 +5422,261 @@ server.listen(port, host, () => {
       intervalMs: positiveIntegerOrDefault(process.env.OPENCLAW_EPISODIC_SCRATCH_TTL_INTERVAL_MS, 6 * 60 * 60 * 1000)
     });
   }
+  if (process.env.WEBDOCK_HEALTH_POLL_ENABLE !== "false") {
+    startInfrastructureAccountHealthPoller({
+      intervalMs: positiveIntegerOrDefault(process.env.WEBDOCK_HEALTH_POLL_MS, 5 * 60 * 1000),
+      runPoll: runInfrastructureAccountHealthPoll,
+      logger: gatewayRuntimeLog
+    });
+  }
   if (flagEnabled(process.env.MXTOOLBOX_DAILY_SCAN_ENABLE)) {
     startMxtoolboxDailyScan(
       positiveIntegerOrDefault(process.env.MXTOOLBOX_DAILY_SCAN_INTERVAL_MS, 24 * 60 * 60 * 1000)
     );
   }
 });
+
+async function runInfrastructureAccountHealthPoll(trigger: "startup" | "interval"): Promise<void> {
+  const observedAt = resolveGatewayNow();
+  const [webdockAccountsResult, vpsProvidersResult] = await Promise.allSettled([
+    listWebdockInventoryAccounts(),
+    listVpsProviderInventories()
+  ]);
+  const webdockAccounts = webdockAccountsResult.status === "fulfilled" ? webdockAccountsResult.value : [];
+  const vpsProviders = vpsProvidersResult.status === "fulfilled" ? vpsProvidersResult.value : [];
+
+  if (webdockAccountsResult.status === "rejected") {
+    void gatewayRuntimeLog.warn(
+      "infrastructure.account_health_poll_webdock_failed",
+      "Webdock account health poll could not list accounts.",
+      runtimeErrorMetadata(webdockAccountsResult.reason)
+    );
+  }
+  if (vpsProvidersResult.status === "rejected") {
+    void gatewayRuntimeLog.warn(
+      "infrastructure.account_health_poll_vps_provider_failed",
+      "VPS provider health poll could not list providers.",
+      runtimeErrorMetadata(vpsProvidersResult.reason)
+    );
+  }
+
+  await auditInfrastructureAccountHealthTransitions({
+    auditLog,
+    accountLifecycleStore,
+    webdockAccounts,
+    vpsProviders,
+    observedAt
+  });
+
+  const observedKeys = new Set<string>([
+    ...webdockAccounts.map((account) => accountLifecycleKey("webdock", account.accountId)),
+    ...vpsProviders.map((provider) =>
+      accountLifecycleKey(provider.providerId, provider.result.source.accountId ?? provider.providerId)
+    )
+  ]);
+  const lifecycleRecords = (await readInfrastructureAccountLifecycleOverlay({
+    accountLifecycleStore,
+    logger: gatewayRuntimeLog,
+    context: "infrastructure_account_health_poll"
+  })).records;
+  const observedRecords = lifecycleRecords.filter((record) => observedKeys.has(record.accountKey));
+  await proposeRetireForSustainedUnauthorizedWebdockAccounts({
+    records: observedRecords,
+    observedAt,
+    trigger
+  });
+
+  void gatewayRuntimeLog.info(
+    "infrastructure.account_health_poll_completed",
+    "Infrastructure account health live poll completed.",
+    {
+      trigger,
+      observedAt: observedAt.toISOString(),
+      webdockAccountCount: webdockAccounts.length,
+      vpsProviderCount: vpsProviders.length,
+      healthyCount: observedRecords.filter((record) => record.healthStatus === "healthy").length,
+      unhealthyCount: observedRecords.filter((record) => record.healthStatus !== "healthy" && record.healthStatus !== "retired").length,
+      retiredCount: observedRecords.filter((record) => record.healthStatus === "retired").length
+    }
+  );
+}
+
+async function proposeRetireForSustainedUnauthorizedWebdockAccounts(input: {
+  records: InfrastructureAccountLifecycleRecord[];
+  observedAt: Date;
+  trigger: "startup" | "interval";
+}): Promise<void> {
+  if (process.env.WEBDOCK_AUTO_PROPOSE_RETIRE_ENABLE === "false") {
+    return;
+  }
+  const threshold = positiveIntegerOrDefault(
+    process.env.WEBDOCK_UNAUTHORIZED_RETIRE_PROPOSE_FAILURES ??
+      process.env.INFRASTRUCTURE_ACCOUNT_RETIRE_PROPOSE_FAILURES,
+    3
+  );
+  const candidates = input.records.filter((record) =>
+    isSustainedUnauthorizedWebdockRetireCandidate(record, threshold)
+  );
+  if (candidates.length === 0) {
+    return;
+  }
+
+  let killSwitchEnabled: boolean;
+  try {
+    killSwitchEnabled = (await killSwitchStore.get()).enabled;
+  } catch (error) {
+    void gatewayRuntimeLog.warn(
+      "infrastructure.account_retire_proposal_skipped",
+      "Infrastructure account retire proposal skipped because kill switch could not be read.",
+      {
+        reason: "kill_switch_read_failed",
+        ...runtimeErrorMetadata(error)
+      }
+    );
+    return;
+  }
+  if (killSwitchEnabled) {
+    void gatewayRuntimeLog.warn(
+      "infrastructure.account_retire_proposal_skipped",
+      "Infrastructure account retire proposal skipped because kill switch is armed.",
+      { reason: "kill_switch_armed" }
+    );
+    return;
+  }
+
+  for (const record of candidates) {
+    await submitInfrastructureAccountRetireProposal({
+      record,
+      threshold,
+      observedAt: input.observedAt,
+      trigger: input.trigger
+    });
+  }
+}
+
+async function submitInfrastructureAccountRetireProposal(input: {
+  record: InfrastructureAccountLifecycleRecord;
+  threshold: number;
+  observedAt: Date;
+  trigger: "startup" | "interval";
+}): Promise<void> {
+  const proposal: AgentProposal = buildInfrastructureAccountRetireProposal({
+    record: input.record,
+    threshold: input.threshold,
+    observedAt: input.observedAt
+  });
+  const now = input.observedAt;
+  pruneExpiredProposals(now);
+  const proposalHash = hashProposal(proposal);
+  const existing = findPendingProposalByHash(proposalHash, now);
+  if (existing) {
+    void gatewayRuntimeLog.info(
+      "infrastructure.account_retire_proposal_deduped",
+      "Infrastructure account retire proposal already pending.",
+      {
+        proposalId: existing.id,
+        providerId: input.record.providerId,
+        accountId: input.record.accountId,
+        threshold: input.threshold
+      }
+    );
+    return;
+  }
+
+  const permissions = proposal.delivrix_actions_required.map((actionId) =>
+    evaluateAgentActionPermission(actionId, {
+      humanApproved: false,
+      killSwitchEnabled: false,
+      schemaVersion: "2026-05-18.v1"
+    })
+  );
+  const terminalRejection = permissions.find(
+    (decision) => decision.decision === "reject" && decision.rejectReason !== "human_approval_missing"
+  );
+  if (terminalRejection?.rejectReason) {
+    void gatewayRuntimeLog.warn(
+      "infrastructure.account_retire_proposal_rejected",
+      "Infrastructure account retire proposal blocked by permission matrix.",
+      {
+        providerId: input.record.providerId,
+        accountId: input.record.accountId,
+        rejectReason: terminalRejection.rejectReason
+      }
+    );
+    return;
+  }
+  const skillSlug = canonicalSkillSlug(proposal.skillSlug ?? proposal.category);
+  const skillBinding = validateSkillActionBinding({
+    skill: skillSlug,
+    actionIds: proposal.delivrix_actions_required
+  });
+  if (!skillBinding.ok) {
+    void gatewayRuntimeLog.warn(
+      "infrastructure.account_retire_proposal_rejected",
+      "Infrastructure account retire proposal blocked by skill binding.",
+      {
+        providerId: input.record.providerId,
+        accountId: input.record.accountId,
+        rejectReason: skillBinding.rejectReason,
+        expectedActionIds: skillBinding.expectedActionIds ?? []
+      }
+    );
+    return;
+  }
+
+  const executionContextHash = hashSkillExecutionContext({
+    proposalId: proposal.id,
+    skill: skillSlug,
+    actionIds: proposal.delivrix_actions_required,
+    targetType: proposal.targetType ?? "infrastructure_account",
+    targetId: proposal.targetRef,
+    params: proposal.params ?? {}
+  });
+  const stored: StoredProposal = {
+    ...proposal,
+    skillSlug,
+    proposalHash,
+    receivedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + proposalTtlMs).toISOString(),
+    status: "pending",
+    requiresApproval: true,
+    requiredApprovals: getRequiredApprovalsForRunbook(getRunbookIdForProposal(proposal))
+  };
+  proposalsStore.push(stored);
+  await auditLog.append({
+    actorType: "system",
+    actorId: "gateway-api",
+    action: "oc.webdock.account_retire_proposed",
+    targetType: "proposal",
+    targetId: proposal.id,
+    riskLevel: "high",
+    decision: "n/a",
+    metadata: {
+      providerId: input.record.providerId,
+      accountId: input.record.accountId,
+      accountLabel: input.record.accountLabel,
+      proposalHash,
+      executionContextHash,
+      skillSlug,
+      threshold: input.threshold,
+      consecutiveFailures: input.record.consecutiveFailures ?? 0,
+      firstUnhealthyAt: input.record.firstUnhealthyAt ?? null,
+      lastSeenAt: input.record.lastSeenAt ?? null,
+      trigger: input.trigger
+    }
+  });
+  void gatewayRuntimeLog.warn(
+    "infrastructure.account_retire_proposed",
+    "Infrastructure account retire proposal submitted to ApprovalGate.",
+    {
+      proposalId: proposal.id,
+      providerId: input.record.providerId,
+      accountId: input.record.accountId,
+      consecutiveFailures: input.record.consecutiveFailures ?? 0,
+      threshold: input.threshold
+    }
+  );
+}
 
 function startMxtoolboxDailyScan(intervalMs: number): void {
   setInterval(() => {
