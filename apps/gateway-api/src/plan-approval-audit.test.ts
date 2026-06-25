@@ -70,6 +70,40 @@ test("findSignedPlanApprovalInAuditEvents enforces request scope filters", () =>
   }), null);
 });
 
+test("findSignedPlanApprovalInAuditEvents enforces provider/account scope filters", () => {
+  const scope = planScope({ vpsProviderId: "contabo", serverAccountId: "quaternary" });
+  const plan = planSignedEvent(scope);
+
+  const match = findSignedPlanApprovalInAuditEvents({
+    events: [plan],
+    runId: scope.runId,
+    params: {
+      domain: scope.domain,
+      provider: scope.provider,
+      vpsProviderId: "CONTABO",
+      serverAccountId: "QUATERNARY",
+      budgetUsdMax: scope.budgetUsdMax,
+      testEmailRecipient: scope.recipient
+    },
+    now: new Date("2026-06-05T06:10:00.000Z")
+  });
+
+  assert.equal(match?.scope.vpsProviderId, "contabo");
+  assert.equal(match?.scope.serverAccountId, "quaternary");
+  assert.equal(findSignedPlanApprovalInAuditEvents({
+    events: [plan],
+    runId: scope.runId,
+    params: { vpsProviderId: "webdock" },
+    now: new Date("2026-06-05T06:10:00.000Z")
+  }), null);
+  assert.equal(findSignedPlanApprovalInAuditEvents({
+    events: [plan],
+    runId: scope.runId,
+    params: { serverAccountId: "ops" },
+    now: new Date("2026-06-05T06:10:00.000Z")
+  }), null);
+});
+
 function planScope(overrides: Partial<PlanApprovalScope> = {}): PlanApprovalScope {
   return {
     runId: "smtp-controlfiling-20260605-v2",

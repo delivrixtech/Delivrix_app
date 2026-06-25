@@ -192,6 +192,11 @@ export interface ConfigureCompleteSmtpParams extends Record<string, unknown> {
    * el hashInput/plan-signature). NO es el `provider` (registrar DNS route53). undefined => Webdock.
    */
   vpsProviderId?: string;
+  /**
+   * Cuenta de proveedor destino para el VPS. PR1 aplica a Webdock: canal paralelo hermano de
+   * vpsProviderId; NO entra a step params/hashInput. undefined => el governor elige cuenta.
+   */
+  serverAccountId?: string;
   requireExistingDomain?: boolean;
   brand: string;
   intent?: string;
@@ -211,6 +216,8 @@ export interface ConfigureCompleteSmtpSkillParams extends Record<string, unknown
   dnsProviderId?: string;
   /** Proveedor de VPS (Webdock=default, "contabo"=segundo). Canal paralelo; NO es el registrar DNS. */
   vpsProviderId?: string;
+  /** Cuenta de proveedor destino. PR1: Webdock accountId; undefined => governor. */
+  serverAccountId?: string;
   requireExistingDomain?: boolean;
   brand: string;
   intent?: string;
@@ -514,6 +521,9 @@ export const configureCompleteSmtpSkillParamSchema = schema<ConfigureCompleteSmt
     // Canal PARALELO HERMANO (5.12 provider): sibling top-level con guarda undefined -> {} (igual que
     // provider/runId). NUNCA va dentro de un step `params:{}`; el orquestador lo enruta por providerId.
     ...(input.vpsProviderId === undefined || input.vpsProviderId === null || input.vpsProviderId === "" ? {} : { vpsProviderId: vpsProviderId(input.vpsProviderId, "vpsProviderId") }),
+    // Canal PARALELO HERMANO (provider account): PR1 solo Webdock. Runtime valida el par proveedor/cuenta
+    // contra inventario vivo; el schema solo preserva el valor para que no se descarte en silencio.
+    ...(input.serverAccountId === undefined || input.serverAccountId === null || input.serverAccountId === "" ? {} : { serverAccountId: accountId(input.serverAccountId, "serverAccountId") }),
     ...(input.requireExistingDomain === undefined || input.requireExistingDomain === null ? {} : { requireExistingDomain: boolean(input.requireExistingDomain, "requireExistingDomain") }),
     brand: string(input.brand, "brand"),
     ...(input.intent === undefined || input.intent === null || input.intent === "" ? {} : { intent: string(input.intent, "intent") }),
@@ -784,6 +794,14 @@ function vpsProviderId(value: unknown, field: string): "webdock" | "contabo" {
 
 function dnsProviderId(value: unknown, field: string): "route53" | "ionos" {
   return oneOf(providerId(value, field), field, ["route53", "ionos"] as const);
+}
+
+function accountId(value: unknown, field: string): string {
+  const normalized = string(value, field).toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(normalized)) {
+    throw new SkillSchemaError(`${field} must be account id-safe`);
+  }
+  return normalized;
 }
 
 function publicKey(value: unknown, field: string): string {
