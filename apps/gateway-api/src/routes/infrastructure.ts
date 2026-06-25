@@ -176,12 +176,14 @@ export async function handleInfrastructureInventoryHttp(
     deps.porkbunListInventory ? deps.porkbunListInventory() : Promise.resolve(null)
   ]);
   const webdockAccounts = settledValue(webdockAccountsResult, []);
+  const vpsProviders = settledValue(vpsProvidersResult, []);
   const observedAt = deps.now?.() ?? new Date();
   if (deps.accountLifecycleStore) {
-    void enqueueWebdockAccountHealthAudit({
+    void enqueueInfrastructureAccountHealthAudit({
       auditLog: deps.auditLog,
       accountLifecycleStore: deps.accountLifecycleStore,
       webdockAccounts,
+      vpsProviders,
       observedAt
     }).catch((error) => {
       void logger.warn(
@@ -222,7 +224,7 @@ export async function handleInfrastructureInventoryHttp(
   }
   const payload = await buildInfrastructureInventoryPayload({
     webdockAccounts,
-    vpsProviders: settledValue(vpsProvidersResult, []),
+    vpsProviders,
     ionosDns: settledValue(ionosDnsResult, null),
     ionosDomains: settledValue(ionosDomainsResult, null),
     awsRoute53Domains: settledValue(awsRoute53DomainsResult, null),
@@ -423,7 +425,7 @@ export async function buildInfrastructureInventoryPayload(
     providers.push(buildPhysicalServerProvider());
   }
 
-  const accountHealth = buildAccountHealthReport(webdockAccounts, input.accountLifecycleRecords ?? []);
+  const accountHealth = buildAccountHealthReport(webdockAccounts, vpsProviders, input.accountLifecycleRecords ?? []);
   const orphanReport = buildOrphanReport({
     webdockAccounts,
     senderNodes: input.senderNodes ?? [],
@@ -501,11 +503,24 @@ export async function auditWebdockAccountHealthTransitions(input: {
   webdockAccounts: WebdockAccountInventoryResult[];
   observedAt: Date;
 }): Promise<void> {
-  for (const account of dedupeWebdockInventoryAccounts(input.webdockAccounts)) {
-    const healthStatus = classifyWebdockAccountHealth(account.result);
+  await auditInfrastructureAccountHealthTransitions({
+    ...input,
+    vpsProviders: []
+  });
+}
+
+export async function auditInfrastructureAccountHealthTransitions(input: {
+  auditLog: AuditSink;
+  accountLifecycleStore: InfrastructureAccountLifecycleStore;
+  webdockAccounts: WebdockAccountInventoryResult[];
+  vpsProviders?: VpsProviderInventoryResult[];
+  observedAt: Date;
+}): Promise<void> {
+  for (const account of infrastructureAccountObservations(input.webdockAccounts, input.vpsProviders ?? [])) {
+    const healthStatus = account.healthStatus;
     const source = account.result.source;
     const transition = await input.accountLifecycleStore.observe({
-      providerId: "webdock",
+      providerId: account.providerId,
       accountId: account.accountId,
       accountLabel: account.accountLabel,
       responseOk: source.responseOk,
@@ -516,24 +531,25 @@ export async function auditWebdockAccountHealthTransitions(input: {
       ...(source.httpStatus ? { httpStatus: source.httpStatus } : {}),
       ...(source.errorCode ? { errorCode: source.errorCode } : {}),
       ...(source.errorMessage ? { errorReason: source.errorMessage } : {}),
-      aliases: webdockAccountAliases(account.accountId),
+      ...(account.aliases ? { aliases: account.aliases } : {}),
       actorId: "gateway-api"
     });
     if (transition.action === "none") continue;
 
     const unhealthy = transition.action === "unhealthy";
+    const actionPrefix = account.providerId === "webdock" ? "oc.webdock" : "oc.infrastructure";
     await input.auditLog.append({
       actorType: "system",
       actorId: "gateway-api",
-      action: unhealthy ? "oc.webdock.account_unhealthy" : "oc.webdock.account_recovered",
-      targetType: "webdock_account",
+      action: unhealthy ? `${actionPrefix}.account_unhealthy` : `${actionPrefix}.account_recovered`,
+      targetType: account.providerId === "webdock" ? "webdock_account" : "infrastructure_account",
       targetId: transition.account.accountId,
       riskLevel: unhealthy
         ? (source.authFailure || source.httpStatus === 401 || source.httpStatus === 403 ? "high" : "medium")
         : "low",
       decision: "n/a",
       metadata: {
-        providerId: "webdock",
+        providerId: account.providerId,
         accountId: transition.account.accountId,
         accountLabel: transition.account.accountLabel,
         previousHealth: transition.previousHealthStatus,
@@ -547,37 +563,39 @@ export async function auditWebdockAccountHealthTransitions(input: {
         fetchedAt: source.fetchedAt,
         observedAt: input.observedAt.toISOString(),
         source: "infrastructure_inventory",
-        dedupeKey: `webdock:${transition.account.accountId}:health`
+        dedupeKey: `${account.providerId}:${transition.account.accountId}:health`
       }
     });
   }
 }
 
-function enqueueWebdockAccountHealthAudit(input: Parameters<typeof auditWebdockAccountHealthTransitions>[0]): Promise<void> {
+function enqueueInfrastructureAccountHealthAudit(input: Parameters<typeof auditInfrastructureAccountHealthTransitions>[0]): Promise<void> {
   const run = webdockAccountHealthAuditQueue
     .catch(() => undefined)
-    .then(() => auditWebdockAccountHealthTransitions(input));
+    .then(() => auditInfrastructureAccountHealthTransitions(input));
   webdockAccountHealthAuditQueue = run.catch(() => undefined);
   return run;
 }
 
 function buildAccountHealthReport(
   webdockAccounts: WebdockAccountInventoryResult[],
+  vpsProviders: VpsProviderInventoryResult[],
   lifecycleRecords: InfrastructureAccountLifecycleRecord[]
 ): InfrastructureAccountHealthReport | undefined {
   const accounts: InfrastructureAccountHealthItem[] = [];
   const seen = new Set<string>();
   const lifecycleByKey = new Map(lifecycleRecords.map((record) => [record.accountKey, record]));
 
-  for (const account of dedupeWebdockInventoryAccounts(webdockAccounts)) {
-    const key = accountLifecycleKey("webdock", account.accountId);
+  for (const account of infrastructureAccountObservations(webdockAccounts, vpsProviders)) {
+    const key = accountLifecycleKey(account.providerId, account.accountId);
     const record = lifecycleByKey.get(key);
-    const health = record?.healthStatus === "retired" ? "retired" : classifyWebdockAccountHealth(account.result);
+    const health = record?.healthStatus === "retired" ? "retired" : account.healthStatus;
     const source = account.result.source;
+    const isActiveUnhealthy = health !== "healthy" && health !== "retired";
     accounts.push({
-      providerId: "webdock",
+      providerId: account.providerId,
       providerKind: "compute",
-      accountId: canonicalInfrastructureAccountId("webdock", account.accountId),
+      accountId: canonicalInfrastructureAccountId(account.providerId, account.accountId),
       accountLabel: account.accountLabel,
       health,
       lifecycleStatus: record?.lifecycleStatus ?? lifecycleStatusFromHealth(health),
@@ -587,6 +605,8 @@ function buildAccountHealthReport(
       ...(source.errorMessage ? { errorReason: source.errorMessage } : {}),
       liveItemCount: source.responseOk ? account.result.servers.length : 0,
       ...(record?.lastKnownItemCount === undefined ? {} : { lastKnownItemCount: record.lastKnownItemCount }),
+      ...(record?.consecutiveFailures === undefined ? {} : { consecutiveFailures: record.consecutiveFailures }),
+      ...(isActiveUnhealthy && record?.firstUnhealthyAt ? { firstUnhealthyAt: record.firstUnhealthyAt } : {}),
       lastFetched: source.fetchedAt,
       ...(record?.retiredAt ? { retiredAt: record.retiredAt } : {}),
       ...(record?.retiredReason ? { retiredReason: record.retiredReason } : {})
@@ -595,7 +615,7 @@ function buildAccountHealthReport(
   }
 
   for (const record of lifecycleRecords) {
-    if (record.providerId !== "webdock" || seen.has(record.accountKey)) continue;
+    if (seen.has(record.accountKey)) continue;
     if (record.lifecycleStatus !== "retired" && record.lifecycleStatus !== "disabled") continue;
     accounts.push({
       providerId: record.providerId,
@@ -610,6 +630,7 @@ function buildAccountHealthReport(
       ...(record.lastErrorReason ? { errorReason: record.lastErrorReason } : {}),
       liveItemCount: 0,
       lastKnownItemCount: record.lastKnownItemCount ?? 0,
+      consecutiveFailures: record.consecutiveFailures ?? 0,
       lastFetched: record.lastFetchedAt ?? null,
       ...(record.retiredAt ? { retiredAt: record.retiredAt } : {}),
       ...(record.retiredReason ? { retiredReason: record.retiredReason } : {})
@@ -622,6 +643,38 @@ function buildAccountHealthReport(
     unhealthyCount: accounts.filter((account) => account.health !== "healthy" && account.health !== "retired").length,
     retiredCount: accounts.filter((account) => account.lifecycleStatus === "retired").length
   };
+}
+
+interface InfrastructureAccountObservation {
+  providerId: string;
+  accountId: string;
+  accountLabel: string;
+  result: WebdockInventoryResult;
+  healthStatus: InfrastructureAccountHealth;
+  aliases?: string[];
+}
+
+function infrastructureAccountObservations(
+  webdockAccounts: WebdockAccountInventoryResult[],
+  vpsProviders: VpsProviderInventoryResult[]
+): InfrastructureAccountObservation[] {
+  return [
+    ...dedupeWebdockInventoryAccounts(webdockAccounts).map((account): InfrastructureAccountObservation => ({
+      providerId: "webdock",
+      accountId: account.accountId,
+      accountLabel: account.accountLabel,
+      result: account.result,
+      healthStatus: classifyWebdockAccountHealth(account.result),
+      aliases: webdockAccountAliases(account.accountId)
+    })),
+    ...vpsProviders.map((provider): InfrastructureAccountObservation => ({
+      providerId: provider.providerId,
+      accountId: provider.result.source.accountId ?? provider.providerId,
+      accountLabel: provider.result.source.accountLabel ?? provider.providerLabel,
+      result: provider.result,
+      healthStatus: classifyVpsProviderHealth(provider.result)
+    }))
+  ];
 }
 
 function buildOrphanReport(input: {
@@ -678,6 +731,14 @@ function buildOrphanReport(input: {
 }
 
 function classifyWebdockAccountHealth(webdock: WebdockInventoryResult): InfrastructureAccountHealth {
+  return classifyComputeAccountHealth(webdock);
+}
+
+function classifyVpsProviderHealth(inventory: WebdockInventoryResult): InfrastructureAccountHealth {
+  return classifyComputeAccountHealth(inventory);
+}
+
+function classifyComputeAccountHealth(webdock: WebdockInventoryResult): InfrastructureAccountHealth {
   if (!webdock.source.responseOk) {
     if (
       webdock.source.httpStatus === 401 ||

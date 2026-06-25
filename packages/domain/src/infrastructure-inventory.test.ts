@@ -34,6 +34,8 @@ test("Infrastructure inventory response normalizes account health and orphan rep
         errorReason: "Webdock API returned 401 Unauthorized",
         liveItemCount: -4,
         lastKnownItemCount: 2.9,
+        consecutiveFailures: 2.8,
+        firstUnhealthyAt: "2026-06-24T10:05:01.000Z",
         lastFetched: "2026-06-24T10:00:00.000Z"
       }]
     },
@@ -65,5 +67,7 @@ test("Infrastructure inventory response normalizes account health and orphan rep
   assert.equal(response.accountHealth?.retiredCount, 1);
   assert.equal(response.accountHealth?.accounts[0].liveItemCount, 0);
   assert.equal(response.accountHealth?.accounts[0].lastKnownItemCount, 2);
+  assert.equal(response.accountHealth?.accounts[0].consecutiveFailures, 2);
+  assert.equal(response.accountHealth?.accounts[0].firstUnhealthyAt, "2026-06-24T10:05:01.000Z");
   assert.equal(response.orphanReport?.providerServersWithoutSenderNode[0].detail?.ipv4, "203.0.113.10");
 });
