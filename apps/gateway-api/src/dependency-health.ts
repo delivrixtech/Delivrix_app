@@ -14,6 +14,20 @@ export type GatewayDependencyHealth = {
   redis: DependencyCheck;
 };
 
+export type EpisodicScratchHealthStatus = "ok" | "missing_table" | "schema_drift" | "down";
+
+export type EpisodicScratchHealth = {
+  status: EpisodicScratchHealthStatus;
+  checkedAt: string;
+  reason?: string;
+  postgresCode?: string;
+  missingColumns?: string[];
+};
+
+export interface QueryablePool {
+  query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
+}
+
 export const defaultPostgresUrl = "postgres://delivrix:delivrix_dev_password@localhost:5432/delivrix_mailops";
 export const defaultRedisUrl = "redis://localhost:6379";
 
@@ -37,6 +51,77 @@ export async function checkGatewayDependencies(input: {
 
 export function dependencyStatus(check: DependencyCheck): DependencyStatus {
   return check.status;
+}
+
+export async function checkEpisodicScratchHealth(input: {
+  pool: QueryablePool;
+  timeoutMs?: number;
+  now?: () => Date;
+}): Promise<EpisodicScratchHealth> {
+  const now = input.now ?? (() => new Date());
+  const timeoutMs = input.timeoutMs ?? defaultTimeoutMs;
+  const checkedAt = now().toISOString();
+  const requiredColumns = [
+    "id",
+    "intent_id",
+    "tool",
+    "input_hash",
+    "outcome",
+    "outcome_data",
+    "ttl_expires_at",
+    "plane",
+    "provenance",
+    "reliability",
+    "valid_at",
+    "invalid_at"
+  ];
+
+  try {
+    const table = await withTimeout(
+      input.pool.query("SELECT to_regclass('openclaw_episodic_scratch') AS table_name"),
+      timeoutMs
+    );
+    if (!table.rows[0]?.table_name) {
+      return { status: "missing_table", checkedAt, reason: "openclaw_episodic_scratch_missing" };
+    }
+    const columns = await withTimeout(
+      input.pool.query(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'openclaw_episodic_scratch'"
+      ),
+      timeoutMs
+    );
+    const present = new Set(columns.rows.map((row) => String(row.column_name)));
+    const missingColumns = requiredColumns.filter((column) => !present.has(column));
+    if (missingColumns.length > 0) {
+      return { status: "schema_drift", checkedAt, reason: "missing_columns", missingColumns };
+    }
+    await withTimeout(
+      input.pool.query(
+        "SELECT 1 FROM openclaw_episodic_scratch WHERE false AND ttl_expires_at > NOW() AND invalid_at IS NULL AND plane = 'verified_fact' LIMIT 0"
+      ),
+      timeoutMs
+    );
+    return { status: "ok", checkedAt };
+  } catch (error) {
+    const code = postgresErrorCode(error);
+    if (code === "42P01") {
+      return { status: "missing_table", checkedAt, reason: "openclaw_episodic_scratch_missing", postgresCode: code };
+    }
+    if (code === "42703") {
+      return { status: "schema_drift", checkedAt, reason: "scratch_schema_column_missing", postgresCode: code };
+    }
+    return {
+      status: "down",
+      checkedAt,
+      reason: redactedScratchFailureReason(error),
+      ...(code ? { postgresCode: code } : {})
+    };
+  }
+}
+
+function redactedScratchFailureReason(error: unknown): string {
+  void error;
+  return "episodic_scratch_health_failed";
 }
 
 async function checkPostgres(url: string, timeoutMs: number, now: () => Date): Promise<DependencyCheck> {
@@ -105,6 +190,16 @@ function down(now: () => Date, error: unknown): DependencyCheck {
     checkedAt: now().toISOString(),
     message: error instanceof Error ? error.message : "Dependency health check failed."
   };
+}
+
+function postgresErrorCode(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let index = 0; index < 4; index += 1) {
+    if (!current || typeof current !== "object") return undefined;
+    if ("code" in current && typeof current.code === "string") return current.code;
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return undefined;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

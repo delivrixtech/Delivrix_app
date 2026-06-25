@@ -66,3 +66,27 @@ test("read-only inventory and conversation tools are known action bindings", () 
     requireKnownSkill: true
   }).ok, true);
 });
+
+test("infrastructure account health and retire actions are known ApprovalGate bindings", () => {
+  assert.equal(canonicalSkillSlug("read_provider_account_health"), "read_infrastructure_account_health");
+  assert.equal(validateSkillActionBinding({
+    skill: "read_infrastructure_account_health",
+    actionIds: ["read_infrastructure_account_health"],
+    requireKnownSkill: true
+  }).ok, true);
+
+  assert.equal(canonicalSkillSlug("retire_provider_account_local"), "retire_infrastructure_account");
+  assert.deepEqual(validateSkillActionBinding({
+    skill: "retire_infrastructure_account",
+    actionIds: ["retire_infrastructure_account"],
+    requireKnownSkill: true
+  }), {
+    ok: true,
+    canonicalSkill: "retire_infrastructure_account",
+    binding: {
+      canonicalSkill: "retire_infrastructure_account",
+      aliases: ["retire_infrastructure_account", "retire_provider_account_local"],
+      actionIds: ["retire_infrastructure_account", "retire_provider_account_local"]
+    }
+  });
+});

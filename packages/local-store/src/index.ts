@@ -1,4 +1,5 @@
 export * from "./json-file-store.ts";
+export * from "./local-file-infrastructure-account-lifecycle-store.ts";
 export * from "./local-file-audit-log.ts";
 export * from "./local-file-kill-switch-store.ts";
 export * from "./local-file-phase-3-store.ts";

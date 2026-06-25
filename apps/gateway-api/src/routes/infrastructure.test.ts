@@ -4,7 +4,11 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
+import {
+  LocalFileAuditLog,
+  LocalFileInfrastructureAccountLifecycleStore
+} from "../../../../packages/local-store/src/index.ts";
+import type { SenderNode } from "../../../../packages/domain/src/index.ts";
 import type {
   AwsRoute53DomainsInventoryResult,
   IonosDnsInventoryResult,
@@ -17,7 +21,9 @@ import { computeAuditHash } from "../audit/hash-chain.ts";
 import {
   auditInfrastructureInventoryFetch,
   buildInfrastructureInventoryPayload,
+  handleInfrastructureAccountHealthHttp,
   handleInfrastructureInventoryHttp,
+  readInfrastructureAccountLifecycleOverlay,
   shouldAuditInfrastructureInventoryFetch
 } from "./infrastructure.ts";
 
@@ -166,9 +172,13 @@ test("Infrastructure inventory does not surface adapter fallback servers when We
   });
 
   const result = await adapter.listServers();
-  assert.equal(result.source.kind, "mock");
+  assert.equal(result.source.kind, "live");
   assert.equal(result.source.responseOk, false);
-  assert.equal(result.source.errorMessage, "Webdock API returned 401 Unauthorized");
+  assert.equal(result.source.authFailure, true);
+  assert.equal(result.source.httpStatus, undefined);
+  assert.equal(result.source.errorCode, undefined);
+  assert.equal(result.source.failureKind, undefined);
+  assert.equal(result.source.errorMessage, "webdock_auth_failed");
   assert.deepEqual(result.servers, []);
 
   const payload = await buildInfrastructureInventoryPayload({
@@ -186,6 +196,21 @@ test("Infrastructure inventory does not surface adapter fallback servers when We
   assert.equal(provider.status, "error");
   assert.equal(provider.itemCount, 0);
   assert.deepEqual(provider.items, []);
+  assert.deepEqual(payload.accountHealth?.accounts.map((account) => ({
+    accountId: account.accountId,
+    health: account.health,
+    lifecycleStatus: account.lifecycleStatus,
+    httpStatus: account.httpStatus,
+    errorCode: account.errorCode,
+    errorReason: account.errorReason
+  })), [{
+    accountId: "secondary",
+    health: "unauthorized",
+    lifecycleStatus: "unauthorized",
+    httpStatus: undefined,
+    errorCode: undefined,
+    errorReason: "webdock_auth_failed"
+  }]);
   assert.equal(payload.itemTotal, 0);
 });
 
@@ -288,6 +313,9 @@ test("Infrastructure inventory marks a failed Webdock account without hiding hea
       webdockAccount("primary", "Webdock Primary", ["running"]),
       webdockAccount("secondary", "Webdock Secondary", ["running", "running", "stopped"], {
         responseOk: false,
+        httpStatus: 401,
+        errorCode: "webdock_auth_401",
+        failureKind: "unauthorized",
         errorMessage: "Webdock API returned 401 Unauthorized"
       })
     ],
@@ -301,7 +329,47 @@ test("Infrastructure inventory marks a failed Webdock account without hiding hea
   assert.equal(payload.providers[1].errorReason, "Webdock API returned 401 Unauthorized");
   assert.equal(payload.providers[1].itemCount, 0);
   assert.deepEqual(payload.providers[1].items, []);
+  assert.equal(payload.accountHealth?.unhealthyCount, 1);
+  assert.equal(payload.accountHealth?.accounts.find((account) => account.accountId === "secondary")?.health, "unauthorized");
   assert.equal(payload.itemTotal, 1);
+});
+
+test("Infrastructure inventory treats Webdock 403 as a live account auth failure", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [
+      webdockAccount("secondary", "Webdock Secondary", ["running"], {
+        responseOk: false,
+        httpStatus: 403,
+        httpStatusText: "Forbidden",
+        errorCode: "webdock_auth_403",
+        failureKind: "forbidden",
+        errorMessage: "Webdock API returned 403 Forbidden"
+      })
+    ],
+    now: fixedNow
+  });
+
+  const provider = payload.providers[0];
+  assert.equal(provider.id, "webdock-secondary");
+  assert.equal(provider.status, "error");
+  assert.equal(provider.fetchSourceKind, "live");
+  assert.equal(provider.errorReason, "Webdock API returned 403 Forbidden");
+  assert.equal(provider.itemCount, 0);
+  assert.deepEqual(provider.items, []);
+  assert.deepEqual(payload.accountHealth?.accounts.map((account) => ({
+    accountId: account.accountId,
+    health: account.health,
+    lifecycleStatus: account.lifecycleStatus,
+    httpStatus: account.httpStatus,
+    errorCode: account.errorCode
+  })), [{
+    accountId: "secondary",
+    health: "unauthorized",
+    lifecycleStatus: "unauthorized",
+    httpStatus: 403,
+    errorCode: "webdock_auth_403"
+  }]);
 });
 
 test("Infrastructure inventory exposes Contabo as connected external VPS provider with zero live servers", async () => {
@@ -347,6 +415,54 @@ test("Infrastructure inventory exposes Contabo live VPS items with provider and 
   assert.equal(provider.items?.[0]?.detail?.accountId, "contabo");
   assert.equal(provider.items?.[0]?.detail?.accountLabel, "Contabo Host Latam");
   assert.equal(provider.items?.[0]?.detail?.ipv4, "203.0.113.10");
+});
+
+test("Infrastructure inventory reports confirmed Webdock sender-node orphans and provider servers without nodes", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [webdockAccount("primary", "Webdock Primary", ["running", "running", "running"])],
+    senderNodes: [
+      senderNode("sender-explicit", { providerAccountId: "primary", providerServerId: "svc-primary-1" }),
+      senderNode("sender-ip", { ipAddress: "185.243.12.32" }),
+      senderNode("sender-orphan", {
+        providerAccountId: "primary",
+        providerServerId: "missing-server",
+        ipAddress: "198.51.100.10"
+      })
+    ],
+    now: fixedNow
+  });
+
+  assert.deepEqual(payload.orphanReport?.confirmedSenderNodeOrphans.map((item) => item.id), ["sender-orphan"]);
+  assert.deepEqual(payload.orphanReport?.providerServersWithoutSenderNode.map((item) => item.id), ["svc-primary-3"]);
+  assert.deepEqual(payload.orphanReport?.uncertainBecauseAccountDown, []);
+});
+
+test("Infrastructure inventory keeps sender-node orphan status uncertain when any Webdock account is down", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [
+      webdockAccount("primary", "Webdock Primary", ["running"]),
+      webdockAccount("secondary", "Webdock Secondary", [], {
+        responseOk: false,
+        httpStatus: 401,
+        errorCode: "webdock_auth_401",
+        failureKind: "unauthorized",
+        errorMessage: "Webdock API returned 401 Unauthorized"
+      })
+    ],
+    senderNodes: [
+      senderNode("sender-secondary", {
+        providerAccountId: "secondary",
+        providerServerId: "unknown-because-account-down",
+        ipAddress: "198.51.100.11"
+      })
+    ],
+    now: fixedNow
+  });
+
+  assert.deepEqual(payload.orphanReport?.confirmedSenderNodeOrphans, []);
+  assert.deepEqual(payload.orphanReport?.uncertainBecauseAccountDown.map((account) => account.accountId), ["secondary"]);
 });
 
 test("Infrastructure inventory hides stale external VPS items when provider fetch fails", async () => {
@@ -434,6 +550,284 @@ test("Infrastructure inventory handler gates OpenClaw skill invocation with read
 
   assert.equal(allowed.result().statusCode, 200);
   assert.equal(auditEvents.length, 1);
+});
+
+test("Infrastructure inventory handler degrades account health audit failures", async () => {
+  const response = responseRecorder();
+  const warnings: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
+
+  await handleInfrastructureInventoryHttp({
+    request: requestStub("/v1/infrastructure/inventory", {}),
+    response: response as unknown as ServerResponse,
+    auditLog: { async append() {} },
+    webdockListServers: async () => [webdockAccount("secondary", "Webdock Secondary", ["running"])],
+    accountLifecycleStore: {
+      observe: async () => {
+        throw new Error("lifecycle write failed");
+      },
+      list: async () => []
+    },
+    logger: {
+      logPath: "",
+      info: async () => undefined,
+      warn: async (event, _message, metadata) => {
+        warnings.push({ event, metadata });
+      },
+      error: async () => undefined
+    },
+    now: () => fixedNow,
+    env: {},
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl")
+  });
+
+  const body = response.result().body as { providers: Array<{ id: string; itemCount: number }> };
+  assert.equal(response.result().statusCode, 200);
+  assert.equal(body.providers.find((provider) => provider.id === "webdock-secondary")?.itemCount, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(warnings.some((warning) => warning.event === "infrastructure.webdock_account_health_audit_failed"), true);
+});
+
+test("Infrastructure inventory handler marks lifecycle store read failures as degraded", async () => {
+  const response = responseRecorder();
+  const warnings: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
+
+  await handleInfrastructureInventoryHttp({
+    request: requestStub("/v1/infrastructure/inventory", {}),
+    response: response as unknown as ServerResponse,
+    auditLog: { async append() {} },
+    webdockListServers: async () => [webdockAccount("secondary", "Webdock Secondary", ["running"])],
+    accountLifecycleStore: {
+      observe: async () => ({
+        action: "none",
+        previousHealthStatus: null,
+        currentHealthStatus: "healthy",
+        account: {
+          accountKey: "webdock:secondary",
+          providerId: "webdock",
+          accountId: "secondary",
+          accountLabel: "Webdock Secondary",
+          lifecycleStatus: "active",
+          healthStatus: "healthy",
+          updatedAt: fixedNow.toISOString(),
+          updatedBy: "gateway-api"
+        }
+      }),
+      list: async () => {
+        throw new Error("lifecycle JSON corrupt");
+      }
+    },
+    logger: {
+      logPath: "",
+      info: async () => undefined,
+      warn: async (event, _message, metadata) => {
+        warnings.push({ event, metadata });
+      },
+      error: async () => undefined
+    },
+    now: () => fixedNow,
+    env: {},
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl")
+  });
+
+  const body = response.result().body as {
+    degraded: boolean;
+    partialReasons: string[];
+    providers: Array<{ id: string; itemCount: number }>;
+  };
+  assert.equal(response.result().statusCode, 200);
+  assert.equal(body.degraded, true);
+  assert.deepEqual(body.partialReasons, ["webdock_lifecycle_overlay_unavailable"]);
+  assert.equal(body.providers.find((provider) => provider.id === "webdock-secondary")?.itemCount, 1);
+  assert.equal(warnings.some((warning) => warning.event === "infrastructure.webdock_lifecycle_overlay_unavailable"), true);
+  assert.equal(JSON.stringify(body).includes("lifecycle JSON corrupt"), false);
+});
+
+test("Infrastructure routes degrade corrupt lifecycle JSON without hiding Webdock inventory", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "delivrix-corrupt-lifecycle-"));
+  const lifecyclePath = join(dir, "infrastructure-account-lifecycle.json");
+  await writeFile(lifecyclePath, "{not-valid-json", "utf8");
+  const lifecycleStore = new LocalFileInfrastructureAccountLifecycleStore(lifecyclePath);
+  const warnings: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
+  const logger = {
+    logPath: "",
+    info: async () => undefined,
+    warn: async (event: string, _message: string, metadata?: Record<string, unknown>) => {
+      warnings.push({ event, metadata });
+    },
+    error: async () => undefined
+  };
+
+  const inventoryResponse = responseRecorder();
+  await handleInfrastructureInventoryHttp({
+    request: requestStub("/v1/infrastructure/inventory", {}),
+    response: inventoryResponse as unknown as ServerResponse,
+    auditLog: { async append() {} },
+    webdockListServers: async () => [webdockAccount("secondary", "Webdock Secondary", ["running"])],
+    accountLifecycleStore: lifecycleStore,
+    logger,
+    now: () => fixedNow,
+    env: {},
+    awsBedrockSetupLogPath: join(tmpdir(), "missing-openclaw-bedrock-setup.jsonl")
+  });
+
+  const inventoryBody = inventoryResponse.result().body as {
+    degraded: boolean;
+    partialReasons: string[];
+    providers: Array<{ id: string; itemCount: number }>;
+  };
+  assert.equal(inventoryResponse.result().statusCode, 200);
+  assert.equal(inventoryBody.degraded, true);
+  assert.deepEqual(inventoryBody.partialReasons, ["webdock_lifecycle_overlay_unavailable"]);
+  assert.equal(inventoryBody.providers.find((provider) => provider.id === "webdock-secondary")?.itemCount, 1);
+  assert.equal(JSON.stringify(inventoryBody).includes("not-valid-json"), false);
+
+  const healthResponse = responseRecorder();
+  await handleInfrastructureAccountHealthHttp({
+    request: requestStub("/v1/infrastructure/account-health", { "x-delivrix-token": "read-token" }),
+    response: healthResponse as unknown as ServerResponse,
+    readBoundaryToken: "read-token",
+    buildInventory: async () => {
+      const overlay = await readInfrastructureAccountLifecycleOverlay({
+        accountLifecycleStore: lifecycleStore,
+        logger,
+        context: "test_account_health"
+      });
+      const inventory = await buildInfrastructureInventoryPayload({
+        includeStaticProviders: false,
+        webdockAccounts: [webdockAccount("secondary", "Webdock Secondary", ["running"])],
+        accountLifecycleRecords: overlay.records,
+        now: fixedNow
+      });
+      return overlay.partialReasons.length > 0
+        ? { ...inventory, degraded: true, partialReasons: overlay.partialReasons }
+        : inventory;
+    },
+    scratchHealth: async () => ({
+      status: "ok",
+      checkedAt: "2026-06-24T12:00:00.000Z"
+    }),
+    now: () => fixedNow
+  });
+
+  const healthBody = healthResponse.result().body as {
+    partial: boolean;
+    integrity: { status: string; reasons: string[] };
+    partialReasons: string[];
+    accountHealth: { accounts: Array<{ accountId: string; health: string }> };
+  };
+  assert.equal(healthResponse.result().statusCode, 200);
+  assert.equal(healthBody.partial, true);
+  assert.deepEqual(healthBody.partialReasons, ["webdock_lifecycle_overlay_unavailable"]);
+  assert.deepEqual(healthBody.integrity, {
+    status: "partial",
+    reasons: ["webdock_lifecycle_overlay_unavailable"]
+  });
+  assert.deepEqual(healthBody.accountHealth.accounts.map((account) => [account.accountId, account.health]), [
+    ["secondary", "healthy"]
+  ]);
+  assert.equal(warnings.some((warning) => warning.event === "infrastructure.webdock_lifecycle_overlay_unavailable"), true);
+  assert.equal(JSON.stringify(healthBody).includes("not-valid-json"), false);
+});
+
+test("Infrastructure account health endpoint is read-token gated and sanitizes scratch failures", async () => {
+  const denied = responseRecorder();
+  let buildCalls = 0;
+  await handleInfrastructureAccountHealthHttp({
+    request: requestStub("/v1/infrastructure/account-health", {}),
+    response: denied as unknown as ServerResponse,
+    readBoundaryToken: "read-token",
+    buildInventory: async () => {
+      buildCalls += 1;
+      return buildInfrastructureInventoryPayload({ includeStaticProviders: false, now: fixedNow });
+    },
+    scratchHealth: async () => {
+      throw new Error("raw database secret should not leak");
+    },
+    now: () => fixedNow
+  });
+
+  assert.equal(denied.result().statusCode, 401);
+  assert.equal(buildCalls, 0);
+
+  const allowed = responseRecorder();
+  await handleInfrastructureAccountHealthHttp({
+    request: requestStub("/v1/infrastructure/account-health", { "x-delivrix-token": "read-token" }),
+    response: allowed as unknown as ServerResponse,
+    readBoundaryToken: "read-token",
+    buildInventory: async () => {
+      buildCalls += 1;
+      return buildInfrastructureInventoryPayload({
+        includeStaticProviders: false,
+        webdockAccounts: [webdockAccount("secondary", "Webdock Secondary", [], {
+          responseOk: false,
+          httpStatus: 401,
+          errorCode: "webdock_auth_401",
+          failureKind: "unauthorized",
+          errorMessage: "Webdock API returned 401 Unauthorized"
+        })],
+        now: fixedNow
+      });
+    },
+    scratchHealth: async () => {
+      throw new Error("raw database secret should not leak");
+    },
+    now: () => fixedNow
+  });
+
+  const body = allowed.result().body as {
+    partial: boolean;
+    partialReasons: string[];
+    integrity: { status: string; reasons: string[] };
+    accountHealth: { unhealthyCount: number };
+    orphanReport: { uncertainBecauseAccountDown: unknown[] };
+    scratchHealth: { status: string; reason: string; message?: string };
+  };
+  assert.equal(allowed.result().statusCode, 200);
+  assert.equal(buildCalls, 1);
+  assert.equal(body.partial, true);
+  assert.deepEqual(body.partialReasons, ["scratch_health_down"]);
+  assert.deepEqual(body.integrity, { status: "partial", reasons: ["scratch_health_down"] });
+  assert.equal(body.accountHealth.unhealthyCount, 1);
+  assert.equal(body.orphanReport.uncertainBecauseAccountDown.length, 1);
+  assert.deepEqual(body.scratchHealth, {
+    status: "down",
+    reason: "scratch_health_failed"
+  });
+  assert.equal(JSON.stringify(body).includes("raw database secret"), false);
+});
+
+test("Infrastructure account health endpoint marks schema drift partial and redacts fulfilled scratch reasons", async () => {
+  const response = responseRecorder();
+  await handleInfrastructureAccountHealthHttp({
+    request: requestStub("/v1/infrastructure/account-health", { "x-delivrix-token": "read-token" }),
+    response: response as unknown as ServerResponse,
+    readBoundaryToken: "read-token",
+    buildInventory: async () => buildInfrastructureInventoryPayload({ includeStaticProviders: false, now: fixedNow }),
+    scratchHealth: async () => ({
+      status: "schema_drift",
+      checkedAt: "2026-06-24T12:00:00.000Z",
+      reason: "password=secret host=db.internal",
+      missingColumns: ["plane"]
+    }),
+    now: () => fixedNow
+  });
+
+  const body = response.result().body as {
+    partial: boolean;
+    integrity: { status: string; reasons: string[] };
+    scratchHealth: { status: string; reason: string; missingColumns: string[] };
+  };
+  assert.equal(response.result().statusCode, 200);
+  assert.equal(body.partial, true);
+  assert.deepEqual(body.integrity, { status: "partial", reasons: ["scratch_schema_drift"] });
+  assert.deepEqual(body.scratchHealth, {
+    status: "schema_drift",
+    checkedAt: "2026-06-24T12:00:00.000Z",
+    reason: "scratch_health_failed",
+    missingColumns: ["plane"]
+  });
+  assert.equal(JSON.stringify(body).includes("password"), false);
+  assert.equal(JSON.stringify(body).includes("host=db"), false);
 });
 
 test("Infrastructure inventory exposes IONOS Cloud DNS zones and record summaries", async () => {
@@ -737,6 +1131,18 @@ function webdockAccount(
         ...source
       }
     }
+  };
+}
+
+function senderNode(id: string, overrides: Partial<SenderNode> = {}): SenderNode {
+  return {
+    id,
+    label: id,
+    provider: "webdock",
+    status: "active",
+    dailyLimit: 100,
+    warmupDay: 1,
+    ...overrides
   };
 }
 

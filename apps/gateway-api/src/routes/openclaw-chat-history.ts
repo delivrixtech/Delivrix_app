@@ -1,6 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { redactRuntimeLogSecrets } from "../gateway-runtime-log.ts";
 import {
+  chatSensitiveAssignmentKeyPattern,
+  isAlwaysSensitiveChatKey,
+  looksLikeSecretLiteral,
+  redactAssignmentValue,
+  sensitiveAssignmentRegex
+} from "../secret-redaction.ts";
+import {
   normalizeConversationId,
   OPENCLAW_CHAT_SESSION_KEY
 } from "../openclaw-chat.ts";
@@ -83,7 +90,7 @@ function redactConversationHistory(
   };
 }
 
-function redactChatHistoryText(value: string): string {
+export function redactChatHistoryText(value: string): string {
   return redactRuntimeLogSecrets(value)
     .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, "data:image/[REDACTED_BASE64]")
     .replace(
@@ -96,34 +103,16 @@ function redactChatHistoryText(value: string): string {
       }
     )
     .replace(
-      /\b(smtp[_ -]?password|smtp[_ -]?credential|smtp|sasl|dovecot|password|passwd|secret|token|api[_ -]?key|authorization|approval[_ -]?token)\b(\s*(?::|=|\bis\b|\bes\b)\s*)("[^"]+"|'[^']+'|[^\s,;]+)/gi,
-      (match, key: string, separator: string, rawValue: string) => {
-        return isAlwaysSensitiveChatKey(key) || looksLikeChatSecret(rawValue)
-          ? `${key}${separator}[REDACTED]`
+      sensitiveAssignmentRegex(chatSensitiveAssignmentKeyPattern, ":|=|\\bis\\b|\\bes\\b"),
+      (match, quote: string, key: string, separator: string, rawValue: string) => {
+        return isAlwaysSensitiveChatKey(key) || looksLikeSecretLiteral(rawValue)
+          ? `${quote}${key}${quote}${separator}${redactAssignmentValue(rawValue)}`
           : match;
       }
     )
     .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, "[REDACTED_UUID_TOKEN]")
     .replace(/\b(?:[a-f0-9]{32}|[a-f0-9]{40}|[a-f0-9]{64})\b/gi, "[REDACTED_HEX_TOKEN]")
     .replace(/\b[A-Za-z0-9+/]{80,}={0,2}\b/g, "[REDACTED_LONG_TOKEN]");
-}
-
-function isAlwaysSensitiveChatKey(key: string): boolean {
-  return !/^(smtp|sasl|dovecot)$/i.test(key);
-}
-
-function looksLikeChatSecret(rawValue: string): boolean {
-  const value = rawValue.replace(/^["']|["']$/g, "");
-  if (/^(?:hash|regexp|texthash):/i.test(value) || value.includes("/") || value.includes(".")) {
-    return false;
-  }
-  if (/^[a-f0-9]{32}$|^[a-f0-9]{40}$|^[a-f0-9]{64}$/i.test(value)) {
-    return true;
-  }
-  return value.length >= 20
-    && /[a-z]/.test(value)
-    && /[A-Z]/.test(value)
-    && /[0-9]/.test(value);
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown): void {

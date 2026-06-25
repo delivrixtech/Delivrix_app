@@ -221,6 +221,130 @@ test("dispatcher maps thrown handler to 500", async () => {
   assert.equal((result.summary as { message: string }).message, "boom");
 });
 
+test("dispatcher retires infrastructure account as local-only state after ApprovalGate dispatch", async () => {
+  const retiredInputs: unknown[] = [];
+  const auditEvents: unknown[] = [];
+  const result = await dispatchSkillHandler({
+    skill: "retire_infrastructure_account",
+    params: {
+      providerId: "webdock",
+      accountId: "secondary",
+      accountLabel: "Cuenta 2",
+      reason: "Cuenta Webdock perdida permanentemente, retirar del selector."
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...webdockDispatchDeps({
+        webdockAdapter: makeSpyCreateAdapter("ops", []),
+        webdockCreateAdapters: new Map()
+      }),
+      now: () => new Date("2026-06-24T12:00:00.000Z"),
+      auditLog: {
+        append: async (event: unknown) => {
+          auditEvents.push(event);
+          return {};
+        },
+        list: async () => []
+      },
+      accountLifecycleStore: {
+        retire: async (input: any) => {
+          retiredInputs.push(input);
+          return {
+            accountKey: "webdock:secondary",
+            providerId: "webdock",
+            accountId: "secondary",
+            accountLabel: input.accountLabel,
+            lifecycleStatus: "retired",
+            healthStatus: "retired",
+            retiredAt: input.retiredAt,
+            retiredBy: input.actorId,
+            retiredReason: input.reason
+          };
+        }
+      }
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(retiredInputs, [{
+    providerId: "webdock",
+    accountId: "secondary",
+    accountLabel: "Cuenta 2",
+    reason: "Cuenta Webdock perdida permanentemente, retirar del selector.",
+    actorId: "operator-juanes",
+    retiredAt: "2026-06-24T12:00:00.000Z"
+  }]);
+  assert.equal((result.summary as { physicalDelete?: boolean }).physicalDelete, false);
+  assert.deepEqual((result.summary as { rollbackPlan?: unknown }).rollbackPlan, {
+    mode: "manual_local_state",
+    canRollbackAutomatically: false,
+    procedure: "Edit LOCAL_INFRASTRUCTURE_ACCOUNT_LIFECYCLE_FILE or runtime/infrastructure-account-lifecycle.json and remove the account record, or set lifecycleStatus to active and healthStatus to healthy, then rerun inventory health.",
+    futureSkill: "reactivate_infrastructure_account"
+  });
+  assert.equal((auditEvents[0] as any).action, "oc.infrastructure.account_retired");
+  assert.equal((auditEvents[0] as any).metadata.physicalDelete, false);
+  assert.equal((auditEvents[0] as any).metadata.sideEffects, "local-state-only");
+  assert.deepEqual((auditEvents[0] as any).metadata.rollbackPlan, (result.summary as { rollbackPlan?: unknown }).rollbackPlan);
+});
+
+test("dispatcher rejects invalid infrastructure retire params before touching lifecycle store", async () => {
+  const retiredInputs: unknown[] = [];
+  const deps: SkillDispatcherDeps = {
+    ...webdockDispatchDeps({
+      webdockAdapter: makeSpyCreateAdapter("ops", []),
+      webdockCreateAdapters: new Map()
+    }),
+    accountLifecycleStore: {
+      retire: async (input: any) => {
+        retiredInputs.push(input);
+        throw new Error("should_not_call_retire");
+      }
+    }
+  };
+
+  const wrongProvider = await dispatchSkillHandler({
+    skill: "retire_infrastructure_account",
+    params: {
+      providerId: "contabo",
+      accountId: "secondary",
+      reason: "Cuenta perdida permanentemente, retirar del selector."
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps
+  });
+  const shortReason = await dispatchSkillHandler({
+    skill: "retire_infrastructure_account",
+    params: {
+      providerId: "webdock",
+      accountId: "secondary",
+      reason: "short"
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps
+  });
+  const controlCharReason = await dispatchSkillHandler({
+    skill: "retire_infrastructure_account",
+    params: {
+      providerId: "webdock",
+      accountId: "secondary",
+      accountLabel: "Cuenta\n2",
+      reason: "Cuenta perdida permanentemente,\nretirar del selector."
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps
+  });
+
+  assert.equal(wrongProvider.statusCode, 400);
+  assert.equal(shortReason.statusCode, 400);
+  assert.equal(controlCharReason.statusCode, 400);
+  assert.deepEqual(retiredInputs, []);
+});
+
 test("route53 register schema accepts durationYears alias and normalizes to years", async () => {
   const calls: Array<Record<string, unknown>> = [];
   const result = await dispatchSkillHandler({

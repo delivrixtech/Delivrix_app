@@ -5,6 +5,8 @@ import {
   tryNormalizeStrictDomainName
 } from "./entity-guard.ts";
 
+const selectorPattern = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+
 export type SkillSafeParseResult<T> =
   | { success: true; data: T }
   | { success: false; error: { issues: string[]; format: () => Record<string, unknown> } };
@@ -98,6 +100,15 @@ export interface ReadWebdockServersParams extends Record<string, unknown> {
 }
 
 export interface ReadInfrastructureInventoryParams extends Record<string, unknown> {}
+
+export interface ReadInfrastructureAccountHealthParams extends Record<string, unknown> {}
+
+export interface RetireInfrastructureAccountParams extends Record<string, unknown> {
+  providerId: "webdock";
+  accountId: string;
+  reason: string;
+  accountLabel?: string;
+}
 
 export interface ListConversationsParams extends Record<string, unknown> {
   offset?: number;
@@ -352,6 +363,23 @@ export const readWebdockServersParamSchema = schema<ReadWebdockServersParams>((v
 export const readInfrastructureInventoryParamSchema = schema<ReadInfrastructureInventoryParams>((value) => {
   object(value);
   return {};
+});
+
+export const readInfrastructureAccountHealthParamSchema = schema<ReadInfrastructureAccountHealthParams>((value) => {
+  object(value);
+  return {};
+});
+
+export const retireInfrastructureAccountParamSchema = schema<RetireInfrastructureAccountParams>((value) => {
+  const input = object(value);
+  return {
+    providerId: oneOf(providerId(input.providerId, "providerId"), "providerId", ["webdock"] as const),
+    accountId: selector(input.accountId, "accountId"),
+    reason: boundedText(input.reason, "reason", 10, 500),
+    ...(input.accountLabel === undefined || input.accountLabel === null || input.accountLabel === ""
+      ? {}
+      : { accountLabel: boundedText(input.accountLabel, "accountLabel", 2, 120) })
+  };
 });
 
 export const listConversationsParamSchema = schema<ListConversationsParams>((value) => {
@@ -728,7 +756,7 @@ function slug(value: unknown, field: string): string {
 
 function selector(value: unknown, field: string): string {
   const normalized = string(value, field).toLowerCase();
-  if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(normalized)) {
+  if (!selectorPattern.test(normalized)) {
     throw new SkillSchemaError(`${field} must be DNS-safe`);
   }
   return normalized;
@@ -789,9 +817,15 @@ function boundedId(value: unknown, field: string, max: number): string {
 }
 
 function boundedText(value: unknown, field: string, min: number, max: number): string {
+  if (typeof value === "string" && /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new SkillSchemaError(`${field} must not contain control characters`);
+  }
   const normalized = string(value, field);
   if (normalized.length < min || normalized.length > max) {
     throw new SkillSchemaError(`${field} length is invalid`);
+  }
+  if (/[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw new SkillSchemaError(`${field} must not contain control characters`);
   }
   return normalized;
 }
