@@ -6,6 +6,7 @@ import {
   redactRuntimeLogSecrets,
   summarizeOperationalParams
 } from "./gateway-runtime-log.ts";
+import { isAlwaysSensitiveChatKey, looksLikeSecretLiteral } from "./secret-redaction.ts";
 
 test("runtime log line is structured and redacts sensitive metadata", () => {
   const line = formatGatewayRuntimeLogLine({
@@ -51,6 +52,16 @@ test("runtime log redacts SMTP-adjacent secret assignments without hiding hosts"
   assert.match(redacted, /smtp=\[REDACTED\]/);
   assert.match(redacted, /sasl=\[REDACTED\]/);
   assert.match(redacted, /smtp\.controlnationalreport\.com/);
+});
+
+test("shared secret heuristic distinguishes tokens from operational identifiers", () => {
+  assert.equal(looksLikeSecretLiteral("Xk9mPq2vLr7wNb3tQ4sA9vLm"), true);
+  assert.equal(looksLikeSecretLiteral("0123456789abcdef0123456789abcdef"), true);
+  assert.equal(looksLikeSecretLiteral("smtp.controlnationalreport.com"), false);
+  assert.equal(looksLikeSecretLiteral("inventory/dkim-keys/example/s.private"), false);
+  assert.equal(looksLikeSecretLiteral("hash:abcdef0123456789"), false);
+  assert.equal(isAlwaysSensitiveChatKey("password"), true);
+  assert.equal(isAlwaysSensitiveChatKey("smtp"), false);
 });
 
 test("runtime log redacts complete, partial, and body-only PEM private keys before caps", () => {

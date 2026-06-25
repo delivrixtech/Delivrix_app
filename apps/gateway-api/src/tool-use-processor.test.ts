@@ -1015,6 +1015,48 @@ test("createHttpToolUseProcessor invokes infrastructure inventory endpoint with 
   assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
 });
 
+test("createHttpToolUseProcessor invokes infrastructure account health endpoint with read-boundary token", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    readBoundaryToken: "read-token",
+    fetchImpl: async (url, init) => {
+      calls.push({
+        url: String(url),
+        headers: init?.headers as Record<string, string> ?? {}
+      });
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).endsWith("/v1/infrastructure/account-health")) {
+        assert.equal(init?.method, "GET");
+        return jsonResponse({
+          accountHealth: { accounts: [], unhealthyCount: 0, retiredCount: 0 },
+          orphanReport: { confirmedSenderNodeOrphans: [], uncertainBecauseAccountDown: [], providerServersWithoutSenderNode: [] },
+          scratchHealth: { status: "ok" }
+        });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-infra-health",
+    toolName: "read_infrastructure_account_health",
+    toolInput: {},
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected infrastructure account health read success");
+  assert.deepEqual(calls.map((call) => call.url), [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/infrastructure/account-health"
+  ]);
+  assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
+});
+
 test("createHttpToolUseProcessor fails closed for sensitive read tools without read-boundary token", async () => {
   const urls: string[] = [];
   const processor = createHttpToolUseProcessor({
@@ -1029,7 +1071,7 @@ test("createHttpToolUseProcessor fails closed for sensitive read tools without r
     }
   });
 
-  for (const toolName of ["read_infrastructure_inventory", "list_conversations", "read_conversation"]) {
+  for (const toolName of ["read_infrastructure_inventory", "read_infrastructure_account_health", "list_conversations", "read_conversation"]) {
     const result = await processor({
       toolUseId: `toolu-${toolName}`,
       toolName,
@@ -1043,6 +1085,7 @@ test("createHttpToolUseProcessor fails closed for sensitive read tools without r
   }
 
   assert.deepEqual(urls, [
+    "http://127.0.0.1:3000/v1/kill-switch",
     "http://127.0.0.1:3000/v1/kill-switch",
     "http://127.0.0.1:3000/v1/kill-switch",
     "http://127.0.0.1:3000/v1/kill-switch"
@@ -1344,6 +1387,27 @@ test("buildProposalPayloadFromToolUse produces HMAC-submittable proposal envelop
   assert.deepEqual(payload.proposal.delivrix_actions_required, ["bind_domain_to_server"]);
   assert.equal(payload.proposal.targetRef, "delivrix.test");
   assert.equal(payload.proposal.targetType, "domain");
+  assert.match(payload.proposal.body, /ApprovalGate/);
+});
+
+test("buildProposalPayloadFromToolUse targets infrastructure account retire locally", () => {
+  const payload = buildProposalPayloadFromToolUse({
+    toolUseId: "toolu-retire-account",
+    toolName: "retire_infrastructure_account",
+    params: {
+      providerId: "webdock",
+      accountId: "secondary",
+      reason: "Cuenta Webdock perdida permanentemente, retirar del selector."
+    },
+    chatSession: { id: "agent:main:operator", msgId: "msg-99" },
+    env: enabledEnv(),
+    now: new Date("2026-06-24T12:00:00.000Z")
+  });
+
+  assert.equal(payload.proposal.skillSlug, "retire_infrastructure_account");
+  assert.deepEqual(payload.proposal.delivrix_actions_required, ["retire_infrastructure_account"]);
+  assert.equal(payload.proposal.targetRef, "secondary");
+  assert.equal(payload.proposal.targetType, "infrastructure_account");
   assert.match(payload.proposal.body, /ApprovalGate/);
 });
 

@@ -2177,6 +2177,8 @@ function inventoryServersSummary(totalCount: number, items: Array<Record<string,
 }
 
 function compactInventoryServerRow(row: Record<string, unknown>): Record<string, unknown> {
+  // Defensivo para el presupuesto de contexto de OpenClaw: el inventario completo queda en runtime/API.
+  // Los nombres operativos deben seguir la convencion corta; si hubiera colisiones, agregar hash corto aqui.
   const maxCharsByKey: Record<string, number> = {
     accountId: 64,
     accountLabel: 80,

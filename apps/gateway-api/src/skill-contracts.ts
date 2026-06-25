@@ -34,6 +34,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["read_infrastructure_inventory"]
   },
   {
+    canonicalSkill: "read_infrastructure_account_health",
+    aliases: ["read_infrastructure_account_health", "read_provider_account_health"],
+    actionIds: ["read_infrastructure_account_health", "read_provider_account_health"]
+  },
+  {
     canonicalSkill: "list_conversations",
     aliases: ["list_conversations", "list_openclaw_conversations"],
     actionIds: ["list_conversations"]
@@ -122,6 +127,11 @@ const skillActionBindings: SkillActionBinding[] = [
     canonicalSkill: "configure_complete_smtp",
     aliases: ["configure_complete_smtp", "configure_smtp_complete"],
     actionIds: ["configure_complete_smtp", "configure_smtp_complete"]
+  },
+  {
+    canonicalSkill: "retire_infrastructure_account",
+    aliases: ["retire_infrastructure_account", "retire_provider_account_local"],
+    actionIds: ["retire_infrastructure_account", "retire_provider_account_local"]
   }
 ];
 

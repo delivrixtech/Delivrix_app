@@ -70,6 +70,7 @@ import {
   emailAuthParamSchema,
   enableSmtpAuthParamSchema,
   ionosUpsertParamSchema,
+  retireInfrastructureAccountParamSchema,
   route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
   route53UpsertParamSchema,
@@ -104,6 +105,27 @@ interface BroadcastSink {
 
 interface KillSwitchProvider {
   enabled: boolean;
+}
+
+interface InfrastructureAccountLifecycleStore {
+  retire(input: {
+    providerId: string;
+    accountId: string;
+    accountLabel?: string;
+    reason: string;
+    actorId: string;
+    retiredAt: string;
+  }): Promise<{
+    accountKey: string;
+    providerId: string;
+    accountId: string;
+    accountLabel: string;
+    lifecycleStatus: string;
+    healthStatus: string;
+    retiredAt?: string;
+    retiredBy?: string;
+    retiredReason?: string;
+  }>;
 }
 
 export interface SkillDispatcherDeps {
@@ -148,6 +170,7 @@ export interface SkillDispatcherDeps {
     ConfigureCompleteSmtpDeps,
     "invokeSkill" | "submitAndAwaitApproval" | "submitRollbackProposal" | "verifyAuditChain"
   >;
+  accountLifecycleStore?: InfrastructureAccountLifecycleStore;
   env?: Record<string, string | undefined>;
   now?: () => Date;
 }
@@ -687,6 +710,62 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
       });
     }
   };
+  const retireInfrastructureAccount: SkillHandlerEntry = {
+    paramSchema: retireInfrastructureAccountParamSchema,
+    timeoutMs: 30_000,
+    canRollback: false,
+    invoke: async ({ request, response, params, deps }) => {
+      if (!deps.accountLifecycleStore) {
+        response.writeHead(503, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "account_lifecycle_store_missing" }));
+        return;
+      }
+      const body = await readInternalJson(request);
+      const actorId = typeof body.actorId === "string" && body.actorId.trim()
+        ? body.actorId.trim()
+        : "openclaw";
+      const retiredAt = (deps.now?.() ?? new Date()).toISOString();
+      const account = await deps.accountLifecycleStore.retire({
+        providerId: String(params.providerId),
+        accountId: String(params.accountId),
+        ...(typeof params.accountLabel === "string" ? { accountLabel: params.accountLabel } : {}),
+        reason: String(params.reason),
+        actorId,
+        retiredAt
+      });
+      const rollbackPlan = infrastructureAccountRetireRollbackPlan();
+      await deps.auditLog.append({
+        actorType: "operator",
+        actorId,
+        action: "oc.infrastructure.account_retired",
+        targetType: "infrastructure_account",
+        targetId: account.accountKey,
+        riskLevel: "high",
+        decision: "allow",
+        metadata: {
+          providerId: account.providerId,
+          accountId: account.accountId,
+          accountLabel: account.accountLabel,
+          lifecycleStatus: account.lifecycleStatus,
+          healthStatus: account.healthStatus,
+          retiredAt: account.retiredAt ?? retiredAt,
+          retiredBy: account.retiredBy ?? actorId,
+          retiredReason: account.retiredReason ?? String(params.reason),
+          sideEffects: "local-state-only",
+          physicalDelete: false,
+          rollbackPlan
+        }
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        ok: true,
+        account,
+        sideEffects: "local-state-only",
+        physicalDelete: false,
+        rollbackPlan
+      }));
+    }
+  };
 
   return {
     register_domain_route53: registerDomain,
@@ -717,8 +796,29 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     smtp_send_real: sendRealEmail,
     smtp_send_real_email: sendRealEmail,
     configure_complete_smtp: configureCompleteSmtp,
-    configure_smtp_complete: configureCompleteSmtp
+    configure_smtp_complete: configureCompleteSmtp,
+    retire_infrastructure_account: retireInfrastructureAccount,
+    retire_provider_account_local: retireInfrastructureAccount
   };
+}
+
+function infrastructureAccountRetireRollbackPlan(): Record<string, unknown> {
+  return {
+    mode: "manual_local_state",
+    canRollbackAutomatically: false,
+    procedure: "Edit LOCAL_INFRASTRUCTURE_ACCOUNT_LIFECYCLE_FILE or runtime/infrastructure-account-lifecycle.json and remove the account record, or set lifecycleStatus to active and healthStatus to healthy, then rerun inventory health.",
+    futureSkill: "reactivate_infrastructure_account"
+  };
+}
+
+async function readInternalJson(request: AsyncIterable<unknown>): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw.trim()) return {};
+  return JSON.parse(raw) as Record<string, unknown>;
 }
 
 function requiredPorkbunDomainAdapter(deps: SkillDispatcherDeps): DomainAvailabilityAdapter {
