@@ -54,6 +54,8 @@ export interface InfrastructureAccountHealthItem {
   errorReason?: string;
   liveItemCount: number;
   lastKnownItemCount?: number;
+  consecutiveFailures?: number;
+  firstUnhealthyAt?: string;
   lastFetched: string | null;
   retiredAt?: string;
   retiredReason?: string;
@@ -143,6 +145,8 @@ function normalizeAccountHealthReport(report: InfrastructureAccountHealthReport)
     ...(account.errorReason ? { errorReason: account.errorReason } : {}),
     liveItemCount: Math.max(0, Math.trunc(account.liveItemCount)),
     ...(account.lastKnownItemCount === undefined ? {} : { lastKnownItemCount: Math.max(0, Math.trunc(account.lastKnownItemCount)) }),
+    ...(account.consecutiveFailures === undefined ? {} : { consecutiveFailures: Math.max(0, Math.trunc(account.consecutiveFailures)) }),
+    ...(account.firstUnhealthyAt ? { firstUnhealthyAt: account.firstUnhealthyAt } : {}),
     lastFetched: account.lastFetched,
     ...(account.retiredAt ? { retiredAt: account.retiredAt } : {}),
     ...(account.retiredReason ? { retiredReason: account.retiredReason } : {})
