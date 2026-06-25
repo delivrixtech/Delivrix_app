@@ -51,6 +51,7 @@ const auditedSkillInvocations = new Set([
   "delivrix-fleet-ops"
 ]);
 let webdockAccountHealthAuditQueue: Promise<void> = Promise.resolve();
+const webdockLifecycleOverlayUnavailableReason = "webdock_lifecycle_overlay_unavailable";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -100,6 +101,11 @@ export interface InfrastructureAccountHealthResponse {
   accountHealth: InfrastructureAccountHealthReport;
   orphanReport: InfrastructureOrphanReport;
   scratchHealth: Record<string, unknown>;
+}
+
+export interface InfrastructureAccountLifecycleOverlayRead {
+  records: InfrastructureAccountLifecycleRecord[];
+  partialReasons: string[];
 }
 
 export interface WebdockAccountInventoryResult {
@@ -185,17 +191,25 @@ export async function handleInfrastructureInventoryHttp(
       );
     });
   }
-  const [accountLifecycleRecordsResult, senderNodesResult] = await Promise.allSettled([
-    deps.accountLifecycleStore ? deps.accountLifecycleStore.list() : Promise.resolve([]),
+  const [accountLifecycleOverlayResult, senderNodesResult] = await Promise.allSettled([
+    readInfrastructureAccountLifecycleOverlay({
+      accountLifecycleStore: deps.accountLifecycleStore,
+      logger,
+      context: "infrastructure_inventory"
+    }),
     deps.senderNodesList ? deps.senderNodesList() : Promise.resolve([])
   ]);
   const partialReasons: string[] = [];
-  if (accountLifecycleRecordsResult.status === "rejected") {
-    partialReasons.push("account_lifecycle_unavailable");
+  const accountLifecycleOverlay = settledValue(accountLifecycleOverlayResult, {
+    records: [],
+    partialReasons: [webdockLifecycleOverlayUnavailableReason]
+  });
+  partialReasons.push(...accountLifecycleOverlay.partialReasons);
+  if (accountLifecycleOverlayResult.status === "rejected") {
     void logger.warn(
       "infrastructure.account_lifecycle_read_failed",
       "Infrastructure account lifecycle store read failed; inventory response is degraded.",
-      runtimeErrorMetadata(accountLifecycleRecordsResult.reason)
+      runtimeErrorMetadata(accountLifecycleOverlayResult.reason)
     );
   }
   if (senderNodesResult.status === "rejected") {
@@ -213,7 +227,7 @@ export async function handleInfrastructureInventoryHttp(
     ionosDomains: settledValue(ionosDomainsResult, null),
     awsRoute53Domains: settledValue(awsRoute53DomainsResult, null),
     porkbun: settledValue(porkbunResult, null),
-    accountLifecycleRecords: settledValue(accountLifecycleRecordsResult, []),
+    accountLifecycleRecords: accountLifecycleOverlay.records,
     senderNodes: settledValue(senderNodesResult, []),
     awsBedrockSetupLogPath: deps.awsBedrockSetupLogPath,
     env: deps.env,
@@ -225,7 +239,7 @@ export async function handleInfrastructureInventoryHttp(
   }
 
   json(deps.response, 200, partialReasons.length > 0
-    ? { ...payload, degraded: true, partialReasons }
+    ? { ...payload, degraded: true, partialReasons: uniqueStrings(partialReasons) }
     : payload);
 }
 
@@ -257,7 +271,10 @@ export async function handleInfrastructureAccountHealthHttp(
     status: "down",
     reason: "scratch_health_failed"
   });
-  const partialReasons = infrastructureAccountHealthPartialReasons(scratchHealth);
+  const partialReasons = uniqueStrings([
+    ...inventoryPartialReasons(inventory),
+    ...infrastructureAccountHealthPartialReasons(scratchHealth)
+  ]);
   const body: InfrastructureAccountHealthResponse = {
     generatedAt: inventory.generatedAt,
     partial: partialReasons.length > 0,
@@ -277,8 +294,47 @@ export async function handleInfrastructureAccountHealthHttp(
   json(deps.response, 200, body);
 }
 
+export async function readInfrastructureAccountLifecycleOverlay(input: {
+  accountLifecycleStore?: InfrastructureAccountLifecycleStore;
+  logger?: GatewayRuntimeLogger;
+  context?: string;
+}): Promise<InfrastructureAccountLifecycleOverlayRead> {
+  if (!input.accountLifecycleStore) {
+    return { records: [], partialReasons: [] };
+  }
+  try {
+    return {
+      records: await input.accountLifecycleStore.list(),
+      partialReasons: []
+    };
+  } catch (error) {
+    void (input.logger ?? noopGatewayRuntimeLogger).warn(
+      "infrastructure.webdock_lifecycle_overlay_unavailable",
+      "Webdock lifecycle overlay is unavailable; serving live inventory without retired-account overlay.",
+      {
+        context: input.context ?? "unknown",
+        ...runtimeErrorMetadata(error)
+      }
+    );
+    return {
+      records: [],
+      partialReasons: [webdockLifecycleOverlayUnavailableReason]
+    };
+  }
+}
+
 function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
   return result.status === "fulfilled" ? result.value : fallback;
+}
+
+function inventoryPartialReasons(inventory: InfrastructureInventoryResponse): string[] {
+  const partialReasons = (inventory as InfrastructureInventoryResponse & { partialReasons?: unknown }).partialReasons;
+  if (!Array.isArray(partialReasons)) return [];
+  return partialReasons.filter((reason): reason is string => typeof reason === "string" && /^[a-z0-9_:-]{2,80}$/.test(reason));
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function infrastructureAccountHealthPartialReasons(scratchHealth: unknown): string[] {

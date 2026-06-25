@@ -280,6 +280,7 @@ import {
   buildInfrastructureInventoryPayload,
   handleInfrastructureAccountHealthHttp,
   handleInfrastructureInventoryHttp,
+  readInfrastructureAccountLifecycleOverlay,
   type VpsProviderInventoryResult,
   type WebdockAccountInventoryResult
 } from "./routes/infrastructure.ts";
@@ -403,8 +404,13 @@ const vpsProviderAdapters = new Map<string, VpsProvider>(
 );
 
 async function listWebdockInventoryAccounts(): Promise<WebdockAccountInventoryResult[]> {
+  const lifecycleOverlay = await readInfrastructureAccountLifecycleOverlay({
+    accountLifecycleStore,
+    logger: gatewayRuntimeLog,
+    context: "webdock_inventory_accounts"
+  });
   const inactive = new Set<string>(
-    (await accountLifecycleStore.list())
+    lifecycleOverlay.records
       .filter((account) => account.providerId === "webdock" && (account.lifecycleStatus === "disabled" || account.lifecycleStatus === "retired"))
       .flatMap(infrastructureAccountLifecycleIds)
   );
@@ -493,8 +499,13 @@ async function listVpsProviderInventories(): Promise<VpsProviderInventoryResult[
 // Cuentas write-capable para el selector del orquestador (una por CUENTA real, ya de-dupeada).
 // enabled = canCreate() REAL: la cuenta-1 ("ops") siempre apta; las distintas solo con sus keys.
 async function listWebdockCreationAccounts(): Promise<Array<{ accountId: string; enabled: boolean }>> {
+  const lifecycleOverlay = await readInfrastructureAccountLifecycleOverlay({
+    accountLifecycleStore,
+    logger: gatewayRuntimeLog,
+    context: "webdock_creation_accounts"
+  });
   const retiredOrDisabled = new Set<string>(
-    (await accountLifecycleStore.list())
+    lifecycleOverlay.records
       .filter((account) => account.providerId === "webdock" && (account.lifecycleStatus === "disabled" || account.lifecycleStatus === "retired"))
       .flatMap(infrastructureAccountLifecycleIds)
   );
@@ -1989,18 +2000,28 @@ const server = createServer(async (request, response) => {
         request,
         response,
         readBoundaryToken: sensitiveReadBoundaryToken,
-        buildInventory: async () => buildInfrastructureInventoryPayload({
-          webdockAccounts: await listWebdockInventoryAccounts(),
-          vpsProviders: await listVpsProviderInventories(),
-          ionosDns: await ionosDnsAdapter.listInventory(),
-          ionosDomains: await ionosDomainsAdapter.listInventory(),
-          awsRoute53Domains: await awsRoute53DomainsAdapter.listInventory(),
-          porkbun: await porkbunAdapter.listInventory(),
-          accountLifecycleRecords: await accountLifecycleStore.list(),
-          senderNodes: await senderNodeRegistry.list(),
-          env: process.env,
-          now: resolveGatewayNow()
-        }),
+        buildInventory: async () => {
+          const lifecycleOverlay = await readInfrastructureAccountLifecycleOverlay({
+            accountLifecycleStore,
+            logger: gatewayRuntimeLog,
+            context: "infrastructure_account_health"
+          });
+          const inventory = await buildInfrastructureInventoryPayload({
+            webdockAccounts: await listWebdockInventoryAccounts(),
+            vpsProviders: await listVpsProviderInventories(),
+            ionosDns: await ionosDnsAdapter.listInventory(),
+            ionosDomains: await ionosDomainsAdapter.listInventory(),
+            awsRoute53Domains: await awsRoute53DomainsAdapter.listInventory(),
+            porkbun: await porkbunAdapter.listInventory(),
+            accountLifecycleRecords: lifecycleOverlay.records,
+            senderNodes: await senderNodeRegistry.list(),
+            env: process.env,
+            now: resolveGatewayNow()
+          });
+          return lifecycleOverlay.partialReasons.length > 0
+            ? { ...inventory, degraded: true, partialReasons: lifecycleOverlay.partialReasons }
+            : inventory;
+        },
         scratchHealth: () => checkEpisodicScratchHealth({ pool: episodicScratchPool, now: () => resolveGatewayNow() }),
         now: () => resolveGatewayNow()
       });
