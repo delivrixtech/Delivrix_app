@@ -80,6 +80,54 @@ test("Infrastructure account lifecycle store tracks failure and recovery without
   assert.equal(recovered.account.lastKnownItemCount, 1);
 });
 
+test("Infrastructure account lifecycle store preserves first unhealthy timestamp across a failure streak", async (t) => {
+  const { filePath, cleanup } = await tempFile("delivrix-account-life-");
+  t.after(cleanup);
+  const store = new LocalFileInfrastructureAccountLifecycleStore(filePath);
+
+  const failedOnce = await store.observe({
+    providerId: "webdock",
+    accountId: "secondary",
+    accountLabel: "Cuenta 2",
+    responseOk: false,
+    healthStatus: "unauthorized",
+    fetchedAt: "2026-06-24T10:05:00.000Z",
+    observedAt: "2026-06-24T10:05:01.000Z",
+    itemCount: 0,
+    httpStatus: 401,
+    errorCode: "webdock_auth_401"
+  });
+  const failedTwice = await store.observe({
+    providerId: "webdock",
+    accountId: "secondary",
+    accountLabel: "Cuenta 2",
+    responseOk: false,
+    healthStatus: "unauthorized",
+    fetchedAt: "2026-06-24T10:10:00.000Z",
+    observedAt: "2026-06-24T10:10:01.000Z",
+    itemCount: 0,
+    httpStatus: 401,
+    errorCode: "webdock_auth_401"
+  });
+  const recovered = await store.observe({
+    providerId: "webdock",
+    accountId: "secondary",
+    accountLabel: "Cuenta 2",
+    responseOk: true,
+    healthStatus: "healthy",
+    fetchedAt: "2026-06-24T10:15:00.000Z",
+    observedAt: "2026-06-24T10:15:01.000Z",
+    itemCount: 1
+  });
+
+  assert.equal(failedOnce.account.consecutiveFailures, 1);
+  assert.equal(failedOnce.account.firstUnhealthyAt, "2026-06-24T10:05:01.000Z");
+  assert.equal(failedTwice.account.consecutiveFailures, 2);
+  assert.equal(failedTwice.account.firstUnhealthyAt, "2026-06-24T10:05:01.000Z");
+  assert.equal(recovered.account.consecutiveFailures, 0);
+  assert.equal(recovered.account.firstUnhealthyAt, undefined);
+});
+
 test("Infrastructure account lifecycle store soft-retires and does not unretire on observe", async (t) => {
   const { filePath, cleanup } = await tempFile("delivrix-account-life-");
   t.after(cleanup);
