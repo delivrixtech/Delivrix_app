@@ -49,6 +49,8 @@ export interface PlanApprovalScope {
   runId: string;
   domain: string;
   provider: string;
+  vpsProviderId?: string;
+  serverAccountId?: string;
   requireExistingDomain?: boolean;
   budgetUsdMax: number;
   recipient: string;
@@ -670,6 +672,8 @@ function extractConfigureCompleteSmtpPlanScope(params: unknown): {
   const runId = normalizedScopeString(params.runId);
   const domain = normalizedScopeString(params.domain ?? params.approvedDomain)?.toLowerCase();
   const provider = (normalizedScopeString(params.provider) ?? normalizedScopeString(params.vpsProviderId))?.toLowerCase();
+  const vpsProviderId = normalizedProviderId(params.vpsProviderId, "vpsProviderId", details);
+  const serverAccountId = normalizedAccountId(params.serverAccountId, "serverAccountId", details);
   const requireExistingDomain = optionalScopeBoolean(params.requireExistingDomain);
   const budgetUsdMax = Number(params.budgetUsdMax);
   const recipient = normalizedScopeString(params.testEmailRecipient ?? params.recipient)?.toLowerCase();
@@ -697,6 +701,8 @@ function extractConfigureCompleteSmtpPlanScope(params: unknown): {
       runId: runId!,
       domain: domain!,
       provider: provider!,
+      ...(vpsProviderId ? { vpsProviderId } : {}),
+      ...(serverAccountId ? { serverAccountId } : {}),
       ...(requireExistingDomain === true ? { requireExistingDomain: true } : {}),
       budgetUsdMax,
       recipient: recipient!,
@@ -710,6 +716,28 @@ function normalizedScopeString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized ? normalized : null;
+}
+
+function normalizedProviderId(value: unknown, field: string, details: string[]): string | undefined {
+  const raw = normalizedScopeString(value);
+  if (!raw) return undefined;
+  const normalized = raw.toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(normalized)) {
+    details.push(`params.${field} must be provider id-safe.`);
+    return undefined;
+  }
+  return normalized === "webdock" ? undefined : normalized;
+}
+
+function normalizedAccountId(value: unknown, field: string, details: string[]): string | undefined {
+  const raw = normalizedScopeString(value);
+  if (!raw) return undefined;
+  const normalized = raw.toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(normalized)) {
+    details.push(`params.${field} must be account id-safe.`);
+    return undefined;
+  }
+  return normalized;
 }
 
 function optionalScopeBoolean(value: unknown): boolean | null | undefined {
@@ -726,6 +754,8 @@ function publicPlanApproval(planApproval: PlanApprovalRecord): {
   runId: string;
   domain: string;
   provider: string;
+  vpsProviderId?: string;
+  serverAccountId?: string;
   expiresAt: string;
 } {
   return {
@@ -733,6 +763,8 @@ function publicPlanApproval(planApproval: PlanApprovalRecord): {
     runId: planApproval.scope.runId,
     domain: planApproval.scope.domain,
     provider: planApproval.scope.provider,
+    ...(planApproval.scope.vpsProviderId ? { vpsProviderId: planApproval.scope.vpsProviderId } : {}),
+    ...(planApproval.scope.serverAccountId ? { serverAccountId: planApproval.scope.serverAccountId } : {}),
     expiresAt: planApproval.expiresAt
   };
 }

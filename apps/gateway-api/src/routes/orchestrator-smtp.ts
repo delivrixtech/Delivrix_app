@@ -155,6 +155,9 @@ export interface WebdockCreationAccount {
   accountId: string;
   /** canCreate() REAL del adapter (post Fase 0): salvaguarda contra elegir una cuenta sin write. */
   enabled: boolean;
+  /** Snapshot pulido por health/lifecycle poller. Ausente => legacy healthy. */
+  healthStatus?: string;
+  lifecycleStatus?: string;
 }
 
 export interface WebdockCreationInventoryInput {
@@ -368,6 +371,7 @@ const smtpRunStepLeaseMs = 45 * 60 * 1000;
  * con N cuentas; este tope alto solo cubre un bug teorico + holgura para agregar muchas cuentas.
  */
 const smtpCreateAccountFailoverMaxAttempts = 25;
+const requestedCreationAccountPreflightRetryDelayMs = 25;
 type ServerProvenanceClassification = "created" | "reused" | "unknown";
 const createdServerProvenance = new Set(["created"]);
 const reusedServerProvenance = new Set(["idempotent_already_exists", "adopted", "reused"]);
@@ -593,6 +597,7 @@ export async function configureCompleteSmtp(
     brand: input.brand,
     domain: input.domain,
     provider: input.provider,
+    serverAccountId: input.serverAccountId,
     dnsProviderId: input.dnsProviderId,
     intent: input.intent,
     budgetUsdMax: input.budgetUsdMax,
@@ -614,6 +619,7 @@ export async function configureCompleteSmtp(
     budgetUsdMax: input.budgetUsdMax,
     domain: input.domain,
     provider: input.provider,
+    serverAccountId: input.serverAccountId,
     dnsProviderId: input.dnsProviderId,
     actorId: input.actorId,
     planSignatureAutonomy: envFlagEnabled(deps.env?.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)
@@ -643,7 +649,7 @@ export async function configureCompleteSmtp(
     verifiedOwnedProvider = runState.verifiedOwnedDomainProvider ?? null;
     await verifyAuditChain(deps);
     planApproval = envFlagEnabled(deps.env?.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)
-      ? await resolveAndValidatePlanApproval({ deps, runId, input: effectiveInput })
+      ? await resolveAndValidatePlanApproval({ deps, runId, input: effectiveInput, request: input })
       : null;
     validateResumeScopeAgainstRunState({
       state: runState,
@@ -665,6 +671,36 @@ export async function configureCompleteSmtp(
         signatureId: planApproval.signatureId,
         expiresAt: planApproval.expiresAt
       });
+    }
+
+    const requestedServerAccountId = normalizeServerAccountId(effectiveInput.serverAccountId);
+    const initialVpsProviderId = resolveVpsProviderId(effectiveInput, runState);
+    assertKnownNonWebdockVpsProviderId(initialVpsProviderId);
+    if (requestedServerAccountId) {
+      if (isNonWebdockProviderId(initialVpsProviderId)) {
+        throw new OrchestratorFailure(
+          "failed",
+          0,
+          "server_account_guard",
+          `requested_account_unsupported_for_provider: provider=${initialVpsProviderId} account=${requestedServerAccountId}`
+        );
+      }
+      if (!planApproval && requestedServerAccountId !== DEFAULT_CREATION_ACCOUNT_ID) {
+        throw new OrchestratorFailure("failed", 0, "server_account_guard", "gated_multiaccount_unsupported");
+      }
+      const requestedCreationAccounts = await assertRequestedCreationAccountSnapshotEligible({
+        deps,
+        runId,
+        accountId: requestedServerAccountId
+      });
+      await assertRequestedCreationAccountBudgetPreflight({
+        deps,
+        runId,
+        accountId: requestedServerAccountId,
+        accounts: requestedCreationAccounts
+      });
+      runState.serverAccountId = requestedServerAccountId;
+      await persistSmtpRunState(deps, runState);
     }
 
     const suggestions = await runReadOnlyStepWithState({
@@ -875,7 +911,8 @@ export async function configureCompleteSmtp(
     // El break por "" (todas las write-capable excluidas) es el terminador real -> cubre CUALQUIER
     // numero de cuentas; smtpCreateAccountFailoverMaxAttempts es solo safety contra loop infinito.
     for (let attempt = 0; attempt < smtpCreateAccountFailoverMaxAttempts; attempt++) {
-      const reuseAccountId = attempt === 0
+      const reuseAccountId = !requestedServerAccountId
+        && attempt === 0
         && runState.serverAccountId
         && !excludedFailoverAccounts.has(runState.serverAccountId)
         ? runState.serverAccountId
@@ -886,6 +923,7 @@ export async function configureCompleteSmtp(
           runId,
           step: 4,
           skill: "create_webdock_server",
+          requestedAccountId: requestedServerAccountId,
           excludeAccounts: excludedFailoverAccounts
         });
       if (!serverAccountId || excludedFailoverAccounts.has(serverAccountId)) {
@@ -925,6 +963,9 @@ export async function configureCompleteSmtp(
         const createFailure = normalizeFailure(createError);
         if (!isRecoverablePaymentFailure(createFailure, stepResults[stepResults.length - 1])) {
           throw createError; // no es un rechazo de pago -> propagar (no failover a ciegas)
+        }
+        if (requestedServerAccountId) {
+          throw createError; // cuenta explicita = exactamente ahi; nunca failover silencioso.
         }
         // La cuenta rechazo el pago: excluirla, liberar su lease del step 4 y probar la siguiente.
         excludedFailoverAccounts.add(serverAccountId);
@@ -1854,6 +1895,8 @@ function inputFromRunState(
     runId: state.runId,
     ...(state.chosenDomain ? { domain: state.chosenDomain } : input.domain ? { domain: input.domain } : {}),
     ...(state.params.provider ? { provider: state.params.provider } : input.provider ? { provider: input.provider } : {}),
+    ...(state.providerId ? { vpsProviderId: state.providerId } : input.vpsProviderId ? { vpsProviderId: input.vpsProviderId } : {}),
+    ...(state.serverAccountId ? { serverAccountId: state.serverAccountId } : input.serverAccountId ? { serverAccountId: input.serverAccountId } : {}),
     ...(state.dnsProviderId ? { dnsProviderId: state.dnsProviderId } : input.dnsProviderId ? { dnsProviderId: input.dnsProviderId } : {}),
     requireExistingDomain: state.params.requireExistingDomain,
     budgetUsdMax: state.params.budgetUsdMax,
@@ -1875,6 +1918,8 @@ function validateResumeScopeAgainstRunState(input: {
     const details: string[] = [];
     if (state.chosenDomain && input.planApproval.scope.domain !== state.chosenDomain) details.push("domain");
     if (state.params.provider && input.planApproval.scope.provider !== state.params.provider) details.push("provider");
+    if (input.planApproval.scope.vpsProviderId && state.providerId && input.planApproval.scope.vpsProviderId !== state.providerId) details.push("vpsProviderId");
+    if (input.planApproval.scope.serverAccountId && state.serverAccountId && input.planApproval.scope.serverAccountId !== state.serverAccountId) details.push("serverAccountId");
     if (input.planApproval.scope.recipient !== state.params.testEmailRecipient) details.push("recipient");
     if ((input.planApproval.scope.requireExistingDomain === true) !== state.params.requireExistingDomain) details.push("requireExistingDomain");
     if (input.planApproval.scope.budgetUsdMax < state.budgetSpentUsd) details.push("budgetUsdMax");
@@ -3246,13 +3291,18 @@ async function resolveAndValidatePlanApproval(input: {
   deps: ConfigureCompleteSmtpDeps;
   runId: string;
   input: ConfigureCompleteSmtpParams;
+  request: ConfigureCompleteSmtpParams;
 }): Promise<PlanApprovalRecord> {
   if (!input.deps.resolvePlanApproval) {
     throw new OrchestratorFailure("failed", 0, "plan_approval", "plan_approval_resolver_missing");
   }
+  const planParams: ConfigureCompleteSmtpParams = { ...input.input };
+  if (normalizeServerAccountId(input.request.serverAccountId) === undefined) {
+    delete planParams.serverAccountId;
+  }
   const planApproval = await input.deps.resolvePlanApproval({
     runId: input.runId,
-    params: input.input
+    params: planParams
   });
   if (!planApproval) {
     throw new OrchestratorFailure("failed", 0, "plan_approval", "plan_approval_missing");
@@ -3273,10 +3323,16 @@ async function resolveAndValidatePlanApproval(input: {
   }
   const expectedDomain = input.input.domain ? normalizeDomain(input.input.domain) : planApproval.scope.domain;
   const expectedProvider = input.input.provider?.trim().toLowerCase() ?? planApproval.scope.provider;
+  const expectedVpsProviderId = normalizeVpsProviderId(input.input.vpsProviderId);
+  const expectedServerAccountId = normalizeServerAccountId(input.input.serverAccountId);
+  const requestedVpsProviderId = normalizeVpsProviderId(input.request.vpsProviderId);
+  const requestedServerAccountId = normalizeServerAccountId(input.request.serverAccountId);
   const expectedRecipient = input.input.testEmailRecipient.trim().toLowerCase();
   const details: string[] = [];
   if (planApproval.scope.domain !== expectedDomain) details.push("domain");
   if (planApproval.scope.provider !== expectedProvider) details.push("provider");
+  if (planApproval.scope.vpsProviderId ? planApproval.scope.vpsProviderId !== expectedVpsProviderId : requestedVpsProviderId !== undefined) details.push("vpsProviderId");
+  if (planApproval.scope.serverAccountId ? planApproval.scope.serverAccountId !== expectedServerAccountId : requestedServerAccountId !== undefined) details.push("serverAccountId");
   if (planApproval.scope.budgetUsdMax !== input.input.budgetUsdMax) details.push("budgetUsdMax");
   if (planApproval.scope.recipient !== expectedRecipient) details.push("recipient");
   if (planApproval.scope.plannedSkill !== "configure_complete_smtp") details.push("plannedSkill");
@@ -3308,6 +3364,8 @@ function validatePlanApprovedStepScope(
     step: number;
     skill: string;
     params: Record<string, unknown>;
+    serverAccountId?: string;
+    providerId?: string;
     dnsProviderId?: string;
   },
   inputHash: string
@@ -3318,6 +3376,12 @@ function validatePlanApprovedStepScope(
   }
   if (!plannedScopeAllowsStepSkill(scope.plannedSteps, input.step, input.skill, input.dnsProviderId)) {
     throw new OrchestratorFailure("failed", input.step, input.skill, "plan_scope_mismatch:skill", undefined, inputHash);
+  }
+  if (input.skill === "create_webdock_server" && normalizeVpsProviderId(input.providerId) !== scope.vpsProviderId) {
+    throw new OrchestratorFailure("failed", input.step, input.skill, "plan_scope_mismatch:vpsProviderId", undefined, inputHash);
+  }
+  if (input.skill === "create_webdock_server" && scope.serverAccountId && normalizeServerAccountId(input.serverAccountId) !== scope.serverAccountId) {
+    throw new OrchestratorFailure("failed", input.step, input.skill, "plan_scope_mismatch:serverAccountId", undefined, inputHash);
   }
   for (const value of domainValuesInParams(input.params)) {
     if (!isSubdomainOrSame(value, scope.domain)) {
@@ -3815,6 +3879,8 @@ async function resolveCreationAccount(input: {
   runId: string;
   step: 4;
   skill: "create_webdock_server";
+  /** Cuenta Webdock nombrada por el operador. Si existe, se usa exactamente esa o se falla. */
+  requestedAccountId?: string;
   /** Cuentas a EXCLUIR (ya rechazaron el pago en este run): el failover prueba las demas. */
   excludeAccounts?: ReadonlySet<string>;
 }): Promise<string> {
@@ -3831,6 +3897,16 @@ async function resolveCreationAccount(input: {
   // Cuentas write-capable a evaluar. Sin la dep multicuenta (o vacia) => single-account "ops"
   // de hoy (1 iteracion, byte-identico). De-dup ya viene resuelto por el productor (1 por cuenta).
   const allWriteCapable = await resolveWriteCapableCreationAccounts(input.deps);
+  if (input.requestedAccountId) {
+    return resolveRequestedCreationAccount({
+      ...input,
+      requestedAccountId: input.requestedAccountId,
+      accounts: allWriteCapable,
+      cap,
+      window,
+      now
+    });
+  }
   const accounts = input.excludeAccounts && input.excludeAccounts.size > 0
     ? allWriteCapable.filter((account) => !input.excludeAccounts!.has(account.accountId))
     : allWriteCapable;
@@ -3927,6 +4003,14 @@ async function resolveCreationAccount(input: {
 
   if (selection.selectedAccountId) {
     const winner = evaluations.find((entry) => entry.accountId === selection.selectedAccountId) ?? evaluations[0];
+    await auditCreationAccountChosen(input.deps, {
+      runId: input.runId,
+      step: input.step,
+      skill: input.skill,
+      selectedAccountId: winner.decision.accountId,
+      selectionReason: selection.reason,
+      candidates: creationSelectionCandidates(selectionAccounts, governorState)
+    });
     void (input.deps.logger ?? noopGatewayRuntimeLogger).info("openclaw.orchestrator.creation_rate_allowed", "Creation-rate governor allowed Webdock create step.", {
       runId: input.runId,
       step: input.step,
@@ -4045,9 +4129,323 @@ async function resolveWriteCapableCreationAccounts(
   }
   const accounts = await deps.listCreationAccounts();
   const normalized = accounts
-    .map((account) => ({ accountId: account.accountId.trim(), enabled: account.enabled }))
+    .map((account) => ({
+      accountId: account.accountId.trim().toLowerCase(),
+      enabled: account.enabled,
+      ...(account.healthStatus ? { healthStatus: account.healthStatus } : {}),
+      ...(account.lifecycleStatus ? { lifecycleStatus: account.lifecycleStatus } : {})
+    }))
     .filter((account) => account.accountId.length > 0);
   return normalized.length > 0 ? normalized : [{ accountId: DEFAULT_CREATION_ACCOUNT_ID, enabled: true }];
+}
+
+async function assertRequestedCreationAccountSnapshotEligible(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  accountId: string;
+}): Promise<WebdockCreationAccount[]> {
+  const accounts = await resolveWriteCapableCreationAccounts(input.deps);
+  const account = accounts.find((entry) => entry.accountId === input.accountId);
+  const reason = account ? creationAccountSnapshotIneligibleReason(account) : "unknown";
+  if (!reason) return accounts;
+  await audit(input.deps, "oc.orchestrator.creation_account_rejected", "webdock_account", input.accountId, "critical", {
+    runId: input.runId,
+    step: 0,
+    skill: "server_account_guard",
+    requestedAccountId: input.accountId,
+    reason
+  });
+  throw new OrchestratorFailure(
+    "failed",
+    0,
+    "server_account_guard",
+    `requested_account_ineligible: account=${input.accountId} reason=${reason}`
+  );
+}
+
+async function assertRequestedCreationAccountBudgetPreflight(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  accountId: string;
+  accounts: WebdockCreationAccount[];
+}): Promise<void> {
+  const enabled = !envFlagDisabled(input.deps.env?.CREATION_RATE_GOVERNOR_ENABLE);
+  if (!enabled) return;
+
+  const account = input.accounts.find((entry) => entry.accountId === input.accountId);
+  const snapshotReason = account ? creationAccountSnapshotIneligibleReason(account) : "unknown";
+  if (snapshotReason) return;
+
+  const cap = nonNegativeInt(input.deps.env?.CREATION_MAX_PER_DAY) ?? 4;
+  const window = creationRateWindow(input.deps.env?.CREATION_RATE_WINDOW);
+  const now = input.deps.now?.() ?? new Date();
+  const inventoryHash = requestedCreationAccountBudgetHash(input.accountId, cap, window);
+  const readResult = await readRequestedCreationAccountInventoryWithRetry({
+    deps: input.deps,
+    accountId: input.accountId
+  });
+
+  if (!readResult.inventory) {
+    const readDecision = evaluateCreationBudgetReadError({
+      now,
+      accountId: input.accountId,
+      cap,
+      enabled: true,
+      window,
+      failMode: "fail_closed",
+      error: readResult.error
+    });
+    await auditRequestedCreationAccountPreflightRejected(input.deps, {
+      runId: input.runId,
+      accountId: input.accountId,
+      reason: "budget_unverifiable",
+      readErrorMessage: readDecision.readErrorMessage
+    });
+    throw new OrchestratorFailure(
+      "failed",
+      0,
+      "server_account_guard",
+      `requested_account_budget_unverifiable: account=${input.accountId}`,
+      undefined,
+      inventoryHash
+    );
+  }
+
+  const decision = evaluateCreationBudget({
+    servers: readResult.inventory.servers,
+    now,
+    cap,
+    accountId: readResult.inventory.accountId ?? input.accountId,
+    window,
+    enabled: true
+  });
+  if (!decision.allowed) {
+    await auditRequestedCreationAccountPreflightRejected(input.deps, {
+      runId: input.runId,
+      accountId: decision.accountId,
+      reason: "rate_exceeded",
+      createdInWindow: decision.createdInWindow
+    });
+    throw new OrchestratorFailure(
+      "failed",
+      0,
+      "server_account_guard",
+      `requested_account_ineligible: account=${decision.accountId} reason=rate_exceeded`,
+      undefined,
+      inventoryHash
+    );
+  }
+}
+
+async function readRequestedCreationAccountInventoryWithRetry(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  accountId: string;
+}): Promise<{ inventory?: WebdockCreationInventoryResult; error?: unknown }> {
+  const reader = input.deps.listWebdockCreationServers;
+  if (!reader) {
+    return { error: "creation_inventory_reader_missing" };
+  }
+
+  let lastError: unknown = "creation_inventory_unverifiable";
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const inventory = await reader({ accountId: input.accountId });
+      if (inventory.sourceKind === "live" && inventory.responseOk === true) {
+        return { inventory };
+      }
+      lastError = `creation_inventory_not_live: sourceKind=${inventory.sourceKind ?? "unknown"} responseOk=${String(inventory.responseOk)}`;
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt === 0) {
+      await delay(requestedCreationAccountPreflightRetryDelayMs);
+    }
+  }
+
+  return { error: lastError };
+}
+
+function requestedCreationAccountBudgetHash(
+  accountId: string,
+  cap: number,
+  window: CreationRateWindow
+): string {
+  return hashInput({
+    accountId,
+    cap,
+    window,
+    gate: "creation_rate_governor",
+    requested: true
+  });
+}
+
+async function resolveRequestedCreationAccount(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  step: 4;
+  skill: "create_webdock_server";
+  requestedAccountId: string;
+  accounts: WebdockCreationAccount[];
+  cap: number;
+  window: CreationRateWindow;
+  now: Date;
+}): Promise<string> {
+  const account = input.accounts.find((entry) => entry.accountId === input.requestedAccountId);
+  const snapshotReason = account ? creationAccountSnapshotIneligibleReason(account) : "unknown";
+  if (snapshotReason) {
+    await auditRequestedCreationAccountRejected(input.deps, input, snapshotReason);
+    throw new OrchestratorFailure(
+      "failed",
+      input.step,
+      input.skill,
+      `requested_account_ineligible: account=${input.requestedAccountId} reason=${snapshotReason}`
+    );
+  }
+  const inventoryHash = requestedCreationAccountBudgetHash(input.requestedAccountId, input.cap, input.window);
+  if (!input.deps.listWebdockCreationServers) {
+    await auditRequestedCreationAccountRejected(input.deps, input, "unhealthy");
+    throw new OrchestratorFailure(
+      "failed",
+      input.step,
+      input.skill,
+      `requested_account_ineligible: account=${input.requestedAccountId} reason=unhealthy`,
+      undefined,
+      inventoryHash
+    );
+  }
+  let inventory: WebdockCreationInventoryResult;
+  try {
+    inventory = await input.deps.listWebdockCreationServers({ accountId: input.requestedAccountId });
+  } catch {
+    await auditRequestedCreationAccountRejected(input.deps, input, "unhealthy");
+    throw new OrchestratorFailure(
+      "failed",
+      input.step,
+      input.skill,
+      `requested_account_ineligible: account=${input.requestedAccountId} reason=unhealthy`,
+      undefined,
+      inventoryHash
+    );
+  }
+  if (inventory.sourceKind !== "live" || inventory.responseOk !== true) {
+    await auditRequestedCreationAccountRejected(input.deps, input, "unhealthy");
+    throw new OrchestratorFailure(
+      "failed",
+      input.step,
+      input.skill,
+      `requested_account_ineligible: account=${input.requestedAccountId} reason=unhealthy`,
+      undefined,
+      inventoryHash
+    );
+  }
+  const decision = evaluateCreationBudget({
+    servers: inventory.servers,
+    now: input.now,
+    cap: input.cap,
+    accountId: inventory.accountId ?? input.requestedAccountId,
+    window: input.window,
+    enabled: true
+  });
+  if (!decision.allowed) {
+    await auditRequestedCreationAccountRejected(input.deps, input, "rate_exceeded", decision.createdInWindow);
+    throw new OrchestratorFailure(
+      "failed",
+      input.step,
+      input.skill,
+      `requested_account_ineligible: account=${decision.accountId} reason=rate_exceeded`,
+      undefined,
+      inventoryHash
+    );
+  }
+  await auditCreationAccountChosen(input.deps, {
+    runId: input.runId,
+    step: input.step,
+    skill: input.skill,
+    selectedAccountId: decision.accountId,
+    requestedAccountId: input.requestedAccountId,
+    selectionReason: "operator_requested",
+    candidates: [{
+      accountId: decision.accountId,
+      enabled: true,
+      healthy: true,
+      budgetAllowed: true,
+      remaining: Math.max(0, decision.cap - decision.createdInWindow)
+    }]
+  });
+  return decision.accountId;
+}
+
+function creationAccountSnapshotIneligibleReason(account: WebdockCreationAccount): "not_write_capable" | "unhealthy" | undefined {
+  if (!account.enabled) return "not_write_capable";
+  const lifecycleStatus = account.lifecycleStatus?.trim().toLowerCase();
+  const healthStatus = account.healthStatus?.trim().toLowerCase();
+  if (lifecycleStatus === "disabled" || lifecycleStatus === "retired") return "not_write_capable";
+  if (lifecycleStatus === "unauthorized" || lifecycleStatus === "suspended") return "unhealthy";
+  if (healthStatus === "unauthorized" || healthStatus === "suspended_candidate" || healthStatus === "retired") return "unhealthy";
+  return undefined;
+}
+
+function creationSelectionCandidates(
+  accounts: CreationAccountForSelection[],
+  governorState: CreationAccountGovernorState[]
+): Array<{ accountId: string; enabled: boolean; healthy: boolean; budgetAllowed: boolean; remaining: number }> {
+  return accounts.map((account) => {
+    const state = governorState.find((entry) => entry.accountId === account.accountId);
+    return {
+      accountId: account.accountId,
+      enabled: account.enabled ?? true,
+      healthy: account.healthy,
+      budgetAllowed: state?.allowed ?? false,
+      remaining: state ? Math.max(0, state.cap - state.createdInWindow) : 0
+    };
+  });
+}
+
+async function auditCreationAccountChosen(input: ConfigureCompleteSmtpDeps, metadata: {
+  runId: string;
+  step: 4;
+  skill: "create_webdock_server";
+  selectedAccountId: string;
+  requestedAccountId?: string;
+  selectionReason: string;
+  candidates: Array<{ accountId: string; enabled: boolean; healthy: boolean; budgetAllowed: boolean; remaining: number }>;
+}): Promise<void> {
+  await audit(input, "oc.orchestrator.creation_account_chosen", "webdock_account", metadata.selectedAccountId, "high", metadata);
+}
+
+async function auditRequestedCreationAccountRejected(input: ConfigureCompleteSmtpDeps, metadata: {
+  runId: string;
+  step: 4;
+  skill: "create_webdock_server";
+  requestedAccountId: string;
+}, reason: string, createdInWindow?: number): Promise<void> {
+  await audit(input, "oc.orchestrator.creation_account_rejected", "webdock_account", metadata.requestedAccountId, "critical", {
+    runId: metadata.runId,
+    step: metadata.step,
+    skill: metadata.skill,
+    requestedAccountId: metadata.requestedAccountId,
+    reason,
+    ...(createdInWindow === undefined ? {} : { createdInWindow })
+  });
+}
+
+async function auditRequestedCreationAccountPreflightRejected(input: ConfigureCompleteSmtpDeps, metadata: {
+  runId: string;
+  accountId: string;
+  reason: string;
+  createdInWindow?: number;
+  readErrorMessage?: string;
+}): Promise<void> {
+  await audit(input, "oc.orchestrator.creation_account_rejected", "webdock_account", metadata.accountId, "critical", {
+    runId: metadata.runId,
+    step: 0,
+    skill: "server_account_guard",
+    requestedAccountId: metadata.accountId,
+    reason: metadata.reason,
+    ...(metadata.createdInWindow === undefined ? {} : { createdInWindow: metadata.createdInWindow }),
+    ...(metadata.readErrorMessage === undefined ? {} : { readErrorMessage: metadata.readErrorMessage })
+  });
 }
 
 async function handleCreationRateReadError(input: {
@@ -4116,6 +4514,10 @@ function elapsed(deps: ConfigureCompleteSmtpDeps, startedMs: number): number {
   return Math.max(0, (deps.now?.() ?? new Date()).getTime() - startedMs);
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function roundUsd(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -4173,6 +4575,16 @@ function normalizeVpsProviderId(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
   if (!normalized || normalized === "webdock") return undefined;
+  return normalized;
+}
+
+function normalizeServerAccountId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(normalized)) {
+    throw new OrchestratorFailure("failed", 0, "server_account_guard", "invalid_server_account_id");
+  }
   return normalized;
 }
 

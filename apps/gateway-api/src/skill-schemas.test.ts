@@ -162,6 +162,35 @@ test("configureCompleteSmtpSkillParamSchema normalizes known VPS providers", () 
   assert.equal(parsed.data.vpsProviderId, "contabo");
 });
 
+test("configureCompleteSmtpSkillParamSchema preserves dynamic provider account ids", () => {
+  const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
+    brand: "delivrix",
+    domain: "example.com",
+    provider: "route53",
+    serverAccountId: "Quaternary",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@example.com",
+    testEmailSubject: "Smoke",
+    testEmailBody: "Smoke body"
+  });
+
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail(parsed.error.issues.join("\n"));
+  assert.equal(parsed.data.serverAccountId, "quaternary");
+
+  const unsafe = configureCompleteSmtpSkillParamSchema.safeParse({
+    brand: "delivrix",
+    domain: "example.com",
+    provider: "route53",
+    serverAccountId: "webdock:ops",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@example.com",
+    testEmailSubject: "Smoke",
+    testEmailBody: "Smoke body"
+  });
+  assert.equal(unsafe.success, false);
+});
+
 test("configureCompleteSmtpSkillParamSchema rejects unknown DNS providers fail-closed", () => {
   const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
     brand: "delivrix",

@@ -708,6 +708,166 @@ test("DoD#2 multicuenta selecciona la cuenta con budget y propaga su accountId a
   assert.equal(ctx.rollbacks[0].serverAccountId, "secondary");
 });
 
+test("cuenta explicita elegible aterriza exactamente ahi y no entra a params/hashInput", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ serverAccountId: "secondary" }),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { servers: fourServers(), sourceKind: "live", responseOk: true },
+      secondary: { servers: [], sourceKind: "live", responseOk: true }
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    serverAccountId: "Secondary"
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.equal(ctx.creationAccountReads, 2);
+  assert.deepEqual(ctx.creationReads, ["secondary", "secondary"]);
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  assert.equal(step4.serverAccountId, "secondary");
+  assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "accountId"), false);
+  const expectedStep4Hash = createHash("sha256").update(stableStringify({
+    runId: "run-1", profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404"
+  })).digest("hex");
+  assert.equal(step4.inputHash, expectedStep4Hash);
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.serverAccountId, "secondary");
+  assert.equal(ctx.auditEvents.some((event) =>
+    event.action === "oc.orchestrator.creation_account_chosen"
+    && (event.metadata as { selectedAccountId?: string; requestedAccountId?: string } | undefined)?.selectedAccountId === "secondary"
+    && (event.metadata as { selectedAccountId?: string; requestedAccountId?: string } | undefined)?.requestedAccountId === "secondary"
+  ), true);
+});
+
+test("cuenta explicita sana pero en cap falla en step 0 antes de gastar dominio", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ serverAccountId: "secondary" }),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { servers: [], sourceKind: "live", responseOk: true },
+      secondary: { servers: fourServers(), sourceKind: "live", responseOk: true }
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    serverAccountId: "secondary"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.match(result.error ?? "", /requested_account_ineligible: account=secondary reason=rate_exceeded/);
+  assert.equal(ctx.creationAccountReads, 1);
+  assert.deepEqual(ctx.creationReads, ["secondary"]);
+  assert.equal(ctx.planExecutions.some((entry) => entry.step === 2 || entry.skill === "register_domain_route53"), false);
+  assert.deepEqual(ctx.approvals, []);
+  assert.deepEqual(ctx.route53RegistrationWaits, []);
+  assert.equal(ctx.rollbacks.length, 0);
+  assert.equal(ctx.auditEvents.some((event) =>
+    event.action === "oc.orchestrator.creation_account_rejected"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; createdInWindow?: number } | undefined)?.requestedAccountId === "secondary"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; createdInWindow?: number } | undefined)?.reason === "rate_exceeded"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; createdInWindow?: number } | undefined)?.createdInWindow === 4
+  ), true);
+});
+
+test("cuenta explicita con budget live unverificable reintenta y falla sin gastar dominio", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ serverAccountId: "secondary" }),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      secondary: {
+        servers: [],
+        sourceKind: "live",
+        responseOk: true,
+        readErrors: [new Error("429"), new Error("timeout")]
+      }
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    serverAccountId: "secondary"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.match(result.error ?? "", /requested_account_budget_unverifiable: account=secondary/);
+  assert.equal(ctx.creationAccountReads, 1);
+  assert.deepEqual(ctx.creationReads, ["secondary", "secondary"]);
+  assert.equal(ctx.planExecutions.some((entry) => entry.step === 2 || entry.skill === "register_domain_route53"), false);
+  assert.deepEqual(ctx.approvals, []);
+  assert.deepEqual(ctx.route53RegistrationWaits, []);
+  assert.equal(ctx.rollbacks.length, 0);
+  assert.equal(ctx.auditEvents.some((event) =>
+    event.action === "oc.orchestrator.creation_account_rejected"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; readErrorMessage?: string } | undefined)?.requestedAccountId === "secondary"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; readErrorMessage?: string } | undefined)?.reason === "budget_unverifiable"
+    && (event.metadata as { requestedAccountId?: string; reason?: string; readErrorMessage?: string } | undefined)?.readErrorMessage === "timeout"
+  ), true);
+});
+
+test("cuenta explicita desconocida falla claro antes de gastar y sin fallback a ops", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ serverAccountId: "quaternary" }),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { servers: [], sourceKind: "live", responseOk: true },
+      secondary: { servers: [], sourceKind: "live", responseOk: true }
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    serverAccountId: "quaternary"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.match(result.error ?? "", /requested_account_ineligible: account=quaternary reason=unknown/);
+  assert.equal(ctx.creationAccountReads, 1);
+  assert.deepEqual(ctx.creationReads, []);
+  assert.deepEqual(ctx.planExecutions, []);
+  assert.deepEqual(ctx.approvals, []);
+  assert.equal(ctx.rollbacks.length, 0);
+  assert.equal(ctx.auditEvents.some((event) =>
+    event.action === "oc.orchestrator.creation_account_rejected"
+    && (event.metadata as { requestedAccountId?: string; reason?: string } | undefined)?.requestedAccountId === "quaternary"
+    && (event.metadata as { requestedAccountId?: string; reason?: string } | undefined)?.reason === "unknown"
+  ), true);
+});
+
 test("failover de pago: si una cuenta rechaza el pago en step 4, el orquestador crea en la siguiente solo", async () => {
   // ops y secondary con budget; el governor elige "ops" por tie-break. ops rechaza el PAGO -> el
   // orquestador excluye ops y reintenta en secondary, sin intervencion humana.
@@ -1081,9 +1241,8 @@ test("PROVIDER#guard unknown vpsProviderId falla antes de pasos mutantes", async
   assert.equal(ctx.rollbacks.length, 0);
 });
 
-test("PROVIDER#d plan-signed con vpsProviderId='contabo' NO cambia el scope hash firmado; el create viaja por canal paralelo", async () => {
-  const plan = signedPlanApproval();
-  const scopeHashBefore = plan.scopeHash;
+test("PROVIDER#d plan-signed con vpsProviderId='contabo' sella el provider y el create viaja por canal paralelo", async () => {
+  const plan = signedPlanApproval({ vpsProviderId: "contabo" });
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
     planApproval: plan
@@ -1091,8 +1250,7 @@ test("PROVIDER#d plan-signed con vpsProviderId='contabo' NO cambia el scope hash
   const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53", vpsProviderId: "contabo" }, ctx.deps);
 
   assert.equal(result.status, "completed");
-  // La firma del plan NO se altera por el providerId (es un canal HERMANO, no entra al scope).
-  assert.equal(plan.scopeHash, scopeHashBefore);
+  assert.equal(plan.scope.vpsProviderId, "contabo");
   const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
   // El create (step 4) viaja con providerId="contabo" por canal paralelo; SUS params siguen byte-identicos.
   assert.equal(step4.providerId, "contabo");
@@ -1117,7 +1275,7 @@ test("PROVIDER#d plan-signed con vpsProviderId='contabo' NO cambia el scope hash
 test("PROVIDER#d2 Contabo: step 4 puede devolver slug sin IP y step 5 resuelve la IP para DNS", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
-    planApproval: signedPlanApproval(),
+    planApproval: signedPlanApproval({ vpsProviderId: "contabo" }),
     outcomes: {
       4: { serverSlug: "contabo-203386827", ipv4: null, status: "provisioning" },
       5: { serverSlug: "contabo-203386827", ipv4: "203.0.113.77", status: "running" }
@@ -1160,7 +1318,7 @@ test("PROVIDER#d2 Contabo: step 4 puede devolver slug sin IP y step 5 resuelve l
 test("PROVIDER#d3 resume Contabo con step 4 done sin IP ejecuta step 5 sin recrear VPS", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
-    planApproval: signedPlanApproval(),
+    planApproval: signedPlanApproval({ vpsProviderId: "contabo" }),
     outcomes: {
       5: { serverSlug: "contabo-203386827", ipv4: "203.0.113.88", status: "running" }
     }
@@ -1243,7 +1401,7 @@ test("PROVIDER#f governor short-circuit: un step-4 Contabo NO llama resolveCreat
   // write-capable: si el governor corriera, creationReads tendria entradas. Para Contabo debe quedar vacio.
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
-    planApproval: signedPlanApproval(),
+    planApproval: signedPlanApproval({ vpsProviderId: "contabo" }),
     creationAccounts: [
       { accountId: "ops", enabled: true },
       { accountId: "secondary", enabled: true }
@@ -1275,7 +1433,7 @@ test("PROVIDER#g failover guard: un error recuperable en step-4 Contabo PROPAGA 
   // (un solo intento de create). Sembramos 2 cuentas Webdock para probar que NO se usan en el failover.
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
-    planApproval: signedPlanApproval(),
+    planApproval: signedPlanApproval({ vpsProviderId: "contabo" }),
     creationAccounts: [
       { accountId: "ops", enabled: true },
       { accountId: "secondary", enabled: true }
@@ -2660,7 +2818,7 @@ function signedPlanApproval(overrides: Partial<PlanApprovalRecord["scope"]> = {}
     signedAt: "2026-05-31T11:59:00.000Z",
     expiresAt: "2026-05-31T13:00:00.000Z",
     signatureId: "sig-plan-1",
-    scopeHash: "plan-scope-hash-1",
+    scopeHash: createHash("sha256").update(stableStringify(scope)).digest("hex"),
     scope,
     flagEnabled: true
   };
@@ -2689,12 +2847,13 @@ function createDeps(options: {
   creationOverride?: CreationRateOverrideDecision;
   ownedDomainProvider?: OwnedDomainVerification["provider"];
   // 5.12 multicuenta: cuentas write-capable + inventario/estado por cuenta (account-aware).
-  creationAccounts?: Array<{ accountId: string; enabled: boolean }>;
+  creationAccounts?: Array<{ accountId: string; enabled: boolean; healthStatus?: string; lifecycleStatus?: string }>;
   creationByAccount?: Record<string, {
     servers?: Array<{ creationDate?: string }>;
     sourceKind?: "live" | "mock" | string;
     responseOk?: boolean;
     readError?: unknown;
+    readErrors?: unknown[];
   }>;
 } = {}): {
   deps: ConfigureCompleteSmtpDeps;
@@ -2770,6 +2929,9 @@ function createDeps(options: {
         // Modo account-aware (multicuenta): inventario/estado por cuenta.
         const perAccount = options.creationByAccount?.[input.accountId];
         if (perAccount) {
+          if (perAccount.readErrors?.length) {
+            throw perAccount.readErrors.shift();
+          }
           if (perAccount.readError) {
             throw perAccount.readError;
           }
