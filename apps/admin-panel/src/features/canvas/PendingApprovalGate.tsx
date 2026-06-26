@@ -261,6 +261,9 @@ function buildPendingProposalGates(proposal: OpenClawPendingProposal) {
 }
 
 function formatPendingProposalDryRun(proposal: OpenClawPendingProposal): string {
+  const params = isRecord(proposal.params) ? proposal.params : {};
+  const provider = params.provider ?? params.vpsProviderId;
+  const account = params.serverAccountId;
   const lines = [
     proposal.body?.trim() || proposal.headline || `Propuesta ${proposal.id}`,
     "",
@@ -269,6 +272,8 @@ function formatPendingProposalDryRun(proposal: OpenClawPendingProposal): string 
     `severity: ${proposal.severity ?? "unknown"}`,
     `runbook: ${proposal.runbookRef ?? "n/a"}`,
     `target: ${formatProposalTarget(proposal.targetRef)}`,
+    `provider: ${formatProposalTarget(provider ?? "-")}`,
+    `account: ${formatProposalTarget(account ?? "-")}`,
     `expiresAt: ${proposal.expiresAt ?? "n/a"}`
   ];
   if (Array.isArray(proposal.delivrixActionsRequired) && proposal.delivrixActionsRequired.length > 0) {
@@ -278,6 +283,10 @@ function formatPendingProposalDryRun(proposal: OpenClawPendingProposal): string 
     lines.push("", "evidence:", ...proposal.evidenceRefs.map((ref) => `- ${ref}`));
   }
   return lines.join("\n");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function formatProposalTarget(value: unknown): string {

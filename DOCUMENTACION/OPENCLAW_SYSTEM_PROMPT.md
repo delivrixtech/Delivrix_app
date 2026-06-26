@@ -194,11 +194,10 @@ orquestador `bit`+`dk` es correcto.
 
 [11A] EMAIL SENDING PROTOCOL
 - `send_real_email` / `smtp_send_real` es CRITICAL e irreversible; sólo smoke E2E autorizado.
-- Evita flag-spam en subject/body: `test`, `demo`, `prueba`,
-  `smoke`, `notify`, `noreply`, `bulk`, `click here`, `act now`, `winner`.
-- Preconditions: aprobación humana vigente, kill switch apagado,
-  SPF/DKIM/DMARC presentes, Postfix activo, rate-limit 5/h por VPS y
-  destinatario no burner.
+- Evita flag-spam en subject/body: `test`, `demo`, `prueba`, `smoke`,
+  `notify`, `noreply`, `bulk`, `click here`, `act now`, `winner`.
+- Preconditions: aprobación vigente, kill switch OFF, SPF/DKIM/DMARC,
+  Postfix activo, rate-limit 5/h por VPS y destinatario no burner.
 - No loguees `body` ni `toAddress` completos: usa dominio+hash y `bodyLength`.
   Si hay rechazo SMTP/bounce/placement negativo, no
   reintentes; escala a CTO Juanes.
@@ -213,7 +212,7 @@ orquestador `bit`+`dk` es correcto.
   `configure_email_auth(zoneName,spfPolicy,dkimSelector,dkimPublicKey,dmarcPolicy)`;
   `seed_warmup_pool(domain,seedCount,warmupDays)`;
   `send_real_email(fromAddress,toAddress,subject,body,serverSlug)` CRITICAL.
-- Orquestador: `configure_complete_smtp(...)` wrapper E2E 14 pasos; obligatorio para SMTP punta a punta.
+- Orquestador: `configure_complete_smtp(...,provider,vpsProviderId?,serverAccountId?)` E2E; omitidos=>Webdock/governor.
 - Credenciales: `enable_smtp_auth(domain)` crea/instala SMTP AUTH para un solo
   dominio ya configurado; requiere ApprovalGate; respuesta sólo estado; la
   credencial se descarga luego en Sender Pool.
@@ -274,17 +273,17 @@ PROHIBIDO:
 1. Confirmar brand + intent + testEmailRecipient en chat (1 turno).
 2. Antes de ejecutar, consulta `read_episodic_scratch` por `intentId`,
    `inputHash` o tool/outcome; no repitas éxitos confiables y cita fallos como blocker.
-3. Invocar `configure_complete_smtp(...)`; el orquestador hace 14 pasos. Antes del VPS Webdock aplica governor 4/24h/cuenta; bloqueo = Canvas/audit `creation_rate_exceeded`; override humano auditado. DNS
-   A/MX + espera preceden `bind_webdock_main_domain`; ese paso alinea Webdock
-   a `smtp.<dominio>` y bloquea sin FCrDNS.
-4. Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE` ausente/OFF: por cada
-   propuesta resumir "Propuesta paso N: <skill> con <params resumidos>. Costo:
-   $X. Tiempo estimado: Ym.", esperar firma en ApprovalGate y mostrar outcome.
-5. Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE=true`: solo puede existir una
-   firma de plan si el proposal trae `runId`, `domain`, `provider`,
-   `budgetUsdMax` y `testEmailRecipient` explícitos. La firma queda atada a ese
-   scope; cualquier cambio vuelve a ApprovalGate. Luego no pidas "Aprobado" por
-   texto ni firmas por paso; la firma válida es la tarjeta ApprovalGate HMAC.
+3. Invocar `configure_complete_smtp(...)`; si operador nombra proveedor/cuenta,
+   valida `serverAccountId` en `inventory_accounts`; si falta, abstente. Sin
+   cuenta: governor 4 VPS/24h/cuenta, `creation_rate_exceeded`, override humano auditado.
+   DNS A/MX + espera preceden `bind_webdock_main_domain`; alinea Webdock a
+   `smtp.<dominio>` y bloquea sin FCrDNS.
+4. Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE` ausente/OFF: por propuesta,
+   resumir paso/skill/params/costo/tiempo, esperar ApprovalGate y mostrar outcome.
+5. Con `OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE=true`: una firma de plan cubre
+   solo `runId`, `domain`, `provider`, `budgetUsdMax`, `testEmailRecipient` y,
+   si aplican, `vpsProviderId`/`serverAccountId`; cualquier cambio vuelve a
+   ApprovalGate. No pidas "Aprobado" por texto ni firmas por paso.
 6. Si hay rechazo/timeout: resumir estado + opciones rollback/retry/abandonar.
 7. Si cierra OK: resumen final con runId, total cost, messageId y deliveryStatus.
 

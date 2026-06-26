@@ -76,7 +76,9 @@ test("sign accepts vpsProviderId as configure_complete_smtp plan scope provider"
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.planApproval.provider, "contabo");
+  assert.equal(response.body.planApproval.vpsProviderId, "contabo");
   assert.equal(ctx.proposals[0].planApproval?.scope.provider, "contabo");
+  assert.equal(ctx.proposals[0].planApproval?.scope.vpsProviderId, "contabo");
   assert.match(ctx.proposals[0].planApproval?.scopeHash ?? "", /^[a-f0-9]{64}$/);
   assert.equal(ctx.events.some((event) => event.action === "oc.plan.signed"), true);
   assert.equal(ctx.dispatches.length, 1);
@@ -101,10 +103,11 @@ test("sign treats empty provider as missing and falls back to vpsProviderId", as
 
   assert.equal(response.statusCode, 200);
   assert.equal(ctx.proposals[0].planApproval?.scope.provider, "contabo");
+  assert.equal(ctx.proposals[0].planApproval?.scope.vpsProviderId, "contabo");
   assert.equal(ctx.dispatches.length, 1);
 });
 
-test("sign keeps explicit provider scope hash unchanged when vpsProviderId is also present", async () => {
+test("sign seals sibling provider/account channels in configure_complete_smtp plan scope", async () => {
   const params = {
     runId: "smtp-run-2026-06-04-a",
     domain: "delivrixops.com",
@@ -122,7 +125,7 @@ test("sign keeps explicit provider scope hash unchanged when vpsProviderId is al
   const withSiblingProvider = context({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
     proposal: configureCompleteSmtpProposal({
-      params: { ...params, vpsProviderId: "contabo" }
+      params: { ...params, vpsProviderId: "contabo", serverAccountId: "Quaternary" }
     })
   });
 
@@ -132,10 +135,13 @@ test("sign keeps explicit provider scope hash unchanged when vpsProviderId is al
   assert.equal(baselineResponse.statusCode, 200);
   assert.equal(siblingResponse.statusCode, 200);
   assert.equal(withSiblingProvider.proposals[0].planApproval?.scope.provider, "route53-webdock");
-  assert.equal(
-    withSiblingProvider.proposals[0].planApproval?.scopeHash,
-    baseline.proposals[0].planApproval?.scopeHash
-  );
+  assert.equal(withSiblingProvider.proposals[0].planApproval?.scope.vpsProviderId, "contabo");
+  assert.equal(withSiblingProvider.proposals[0].planApproval?.scope.serverAccountId, "quaternary");
+  assert.equal(withSiblingProvider.proposals[0].planApproval?.scopeHash === baseline.proposals[0].planApproval?.scopeHash, false);
+  assert.equal(withSiblingProvider.events.some((event) =>
+    event.action === "oc.plan.signed"
+    && (event.metadata as { scope?: { serverAccountId?: string } } | undefined)?.scope?.serverAccountId === "quaternary"
+  ), true);
 });
 
 test("sign records strict existing-domain adoption in run-scoped plan approval", async () => {
