@@ -9,12 +9,15 @@ import {
 } from "./skill-dispatcher.ts";
 import { ionosUpsertParamSchema, route53RegisterParamSchema, route53UpsertParamSchema, webdockCreateParamSchema } from "./skill-schemas.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
+import { approvalTokenHash } from "./approval-guard.ts";
 import type { WebdockServerCreateAdapter, WebdockServerDeleteAdapter } from "./routes/webdock-servers.ts";
+import type { BindWebdockMainDomainAdapter } from "./routes/webdock-bind-domain.ts";
 import {
   createIonosDnsProviderFromEnv,
   createRoute53DnsProviderFromEnv,
   type DnsProvider,
-  type VpsProvider
+  type VpsProvider,
+  type WebdockServer
 } from "../../../packages/adapters/src/index.ts";
 
 const token: ApprovalToken = {
@@ -490,6 +493,55 @@ test("DoD#2 routing: create_webdock_server sin accountId usa el webdockAdapter (
   assert.deepEqual(secondaryCalls, [], "no toca la cuenta-2");
 });
 
+test("routing: bind_webdock_main_domain con accountId='secondary' usa el adapter de esa cuenta", async () => {
+  const opsCalls: string[] = [];
+  const secondaryCalls: string[] = [];
+  const opsAdapter = makeSpyBindAdapter("ops", opsCalls);
+  const secondaryAdapter = makeSpyBindAdapter("secondary", secondaryCalls);
+  const deps = webdockBindDispatchDeps({
+    webdockAdapter: opsAdapter,
+    webdockCreateAdapters: new Map([["ops", opsAdapter], ["secondary", secondaryAdapter]])
+  });
+
+  const result = await dispatchSkillHandler({
+    skill: "bind_webdock_main_domain",
+    params: { serverSlug: "server140", domain: "bizreport-control.com" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    accountId: "secondary",
+    deps
+  });
+
+  assert.equal(result.statusCode, 424);
+  assert.equal((result.summary as { error?: string }).error, "ipv4_missing");
+  assert.deepEqual(secondaryCalls, ["getServer:server140"], "bind consulto el adapter de la cuenta-2");
+  assert.deepEqual(opsCalls, [], "bind NO consulto el adapter default ops");
+});
+
+test("routing: bind_webdock_main_domain sin accountId usa webdockAdapter ops, byte-identico", async () => {
+  const opsCalls: string[] = [];
+  const secondaryCalls: string[] = [];
+  const opsAdapter = makeSpyBindAdapter("ops", opsCalls);
+  const secondaryAdapter = makeSpyBindAdapter("secondary", secondaryCalls);
+  const deps = webdockBindDispatchDeps({
+    webdockAdapter: opsAdapter,
+    webdockCreateAdapters: new Map([["ops", opsAdapter], ["secondary", secondaryAdapter]])
+  });
+
+  const result = await dispatchSkillHandler({
+    skill: "bind_webdock_main_domain",
+    params: { serverSlug: "server140", domain: "bizreport-control.com" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps
+  });
+
+  assert.equal(result.statusCode, 424);
+  assert.equal((result.summary as { error?: string }).error, "ipv4_missing");
+  assert.deepEqual(opsCalls, ["getServer:server140"], "bind sin accountId conserva ops");
+  assert.deepEqual(secondaryCalls, [], "bind default no toca la cuenta secundaria");
+});
+
 test("PROVIDER#b routing: create_webdock_server con providerId='contabo' usa el adapter del proveedor (no Webdock)", async () => {
   // El handler real de create bloquea sin approval/flag, pero ANTES consulta canCreate() del adapter
   // RESUELTO. Espiamos canCreate de cada adapter para probar que el providerId enruta a Contabo.
@@ -741,9 +793,35 @@ function makeSpyCreateAdapter(
   };
 }
 
+function makeSpyBindAdapter(
+  id: string,
+  calls: string[]
+): WebdockServerCreateAdapter & WebdockServerDeleteAdapter & BindWebdockMainDomainAdapter {
+  return {
+    isLive: () => true,
+    canWrite: () => true,
+    canCreate: () => true,
+    async createServer() { calls.push("createServer"); throw new Error(`createServer should not run for ${id} in bind path`); },
+    async getServer(serverSlug: string): Promise<WebdockServer> {
+      calls.push(`getServer:${serverSlug}`);
+      return {
+        slug: serverSlug,
+        name: `${id}.example.test`,
+        mainDomain: `${id}.example.test`,
+        ipv4: "",
+        status: "running"
+      };
+    },
+    async deleteServer() { calls.push("deleteServer"); throw new Error("deleteServer not expected"); },
+    async setServerIdentity() { calls.push("setServerIdentity"); throw new Error("setServerIdentity not expected without ipv4"); },
+    async setServerMainDomain() { calls.push("setServerMainDomain"); throw new Error("setServerMainDomain not expected without ipv4"); },
+    async setServerPtr() { calls.push("setServerPtr"); throw new Error("setServerPtr not expected without ipv4"); }
+  };
+}
+
 function webdockDispatchDeps(overrides: {
   webdockAdapter: WebdockServerCreateAdapter;
-  webdockCreateAdapters: Map<string, WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter>>;
+  webdockCreateAdapters: Map<string, WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter> & Partial<BindWebdockMainDomainAdapter>>;
   vpsProviderAdapters?: SkillDispatcherDeps["vpsProviderAdapters"];
 }): SkillDispatcherDeps {
   return {
@@ -763,6 +841,44 @@ function webdockDispatchDeps(overrides: {
     smtpSshRunner: {} as never,
     rampScheduler: {} as never,
     env: { WEBDOCK_SERVERS_ENABLE_CREATE: "false" }
+  };
+}
+
+function webdockBindDispatchDeps(overrides: {
+  webdockAdapter: WebdockServerCreateAdapter & BindWebdockMainDomainAdapter;
+  webdockCreateAdapters: Map<string, WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter> & Partial<BindWebdockMainDomainAdapter>>;
+  vpsProviderAdapters?: SkillDispatcherDeps["vpsProviderAdapters"];
+}): SkillDispatcherDeps {
+  const approvedAt = "2026-05-29T21:02:00.000Z";
+  return {
+    ...webdockDispatchDeps(overrides),
+    auditLog: {
+      append: async () => ({}),
+      list: async () => [{
+        id: "audit-approved-1",
+        occurredAt: approvedAt,
+        action: "oc.artifact.approved",
+        actorType: "operator",
+        actorId: "operator-juanes",
+        targetType: "artifact",
+        targetId: "artifact-bind-1",
+        riskLevel: "high",
+        decision: "allow",
+        humanApproved: true,
+        metadata: { approvalTokenHash: approvalTokenHash(token.tokenId) }
+      }]
+    },
+    readCanvasState: () => ({
+      tasks: [],
+      actions: [],
+      artifacts: [{
+        artifactId: "artifact-bind-1",
+        executionId: token.tokenId,
+        approvalStatus: "approved",
+        approvedAt
+      }]
+    }) as never,
+    now: () => new Date("2026-05-29T21:03:00.000Z")
   };
 }
 

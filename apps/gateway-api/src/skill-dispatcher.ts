@@ -137,12 +137,12 @@ export interface SkillDispatcherDeps {
   ionosDnsAdapter: IonosDnsUpsertAdapter;
   webdockAdapter: WebdockServerCreateAdapter & Partial<BindWebdockMainDomainAdapter>;
   /**
-   * Registry id->adapter para crear/borrar en N cuentas Webdock (5.12 multicuenta).
+   * Registry id->adapter para operaciones account-aware en N cuentas Webdock (5.12 multicuenta).
    * Solo cuentas write-capable (canCreate()===true). La resolucion del accountId pedido
    * cae al webdockAdapter (cuenta-1 "ops") cuando el accountId es undefined, "ops", o no
    * esta en el registry, para preservar el comportamiento single-account byte-identico.
    */
-  webdockCreateAdapters?: Map<string, WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter>>;
+  webdockCreateAdapters?: Map<string, WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter> & Partial<BindWebdockMainDomainAdapter>>;
   /**
    * Registry providerId->adapter para crear/borrar en proveedores NO-Webdock (Contabo, etc.).
    * Canal PARALELO HERMANO de webdockCreateAdapters. Se consulta SOLO cuando el providerId del
@@ -182,13 +182,13 @@ export interface DispatchSkillHandlerInput {
   approvalToken: ApprovalToken;
   timeoutMs?: number;
   /**
-   * Cuenta Webdock destino para create/delete (5.12 multicuenta). Canal PARALELO:
+   * Cuenta Webdock destino para operaciones account-aware (create/bind/delete). Canal PARALELO:
    * NO entra a `params` (no toca el hashInput/idempotencia del orquestador). undefined
    * o "ops" => cuenta-1 (webdockAdapter), byte-identico al comportamiento de hoy.
    */
   accountId?: string;
   /**
-   * Proveedor de VPS destino para create/delete. Canal PARALELO HERMANO de accountId:
+   * Proveedor de VPS destino para operaciones account-aware. Canal PARALELO HERMANO de accountId:
    * NO entra a `params`. undefined o "webdock" => Webdock (resuelve por accountId, sin cambios).
    * Presente y != "webdock" => el vpsProviderAdapters de esa key (Contabo, etc.).
    */
@@ -512,10 +512,10 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     paramSchema: bindWebdockMainDomainSkillParamSchema,
     timeoutMs: ({ providerId, deps }) => resolveContaboBindTiming(providerId, deps.env, 120_000).handlerTimeoutMs,
     canRollback: true,
-    // providerId (canal HERMANO) viaja por invoke -> el handler elige CONTABO BIND PATH (hostname por
-    // SSH + PTR manual + FCrDNS) cuando es un proveedor no-Webdock presente en vpsProviderAdapters;
-    // undefined/"webdock"/desconocido => bind Webdock (setServerIdentity) byte-identico.
-    invoke: ({ request, response, deps, providerId }) =>
+    // providerId/accountId (canales HERMANOS) viajan por invoke: providerId enruta binds no-Webdock;
+    // accountId enruta binds Webdock no-default al adapter de esa cuenta. undefined/"webdock" + ops
+    // preservan el bind Webdock single-account byte-identico.
+    invoke: ({ request, response, deps, accountId, providerId }) =>
       handleBindWebdockMainDomain({
         request,
         response,
@@ -527,7 +527,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
             readCanvasState: deps.readCanvasState,
             now: deps.now
           }),
-          webdockAdapter: deps.webdockAdapter as BindWebdockMainDomainAdapter,
+          webdockAdapter: resolveWebdockCreateAdapter(deps, accountId, providerId) as BindWebdockMainDomainAdapter,
           vpsProviderAdapters: deps.vpsProviderAdapters,
           sshRunner: deps.smtpSshRunner,
           workspace: deps.workspace,
@@ -829,7 +829,7 @@ function requiredPorkbunDomainAdapter(deps: SkillDispatcherDeps): DomainAvailabi
 }
 
 /**
- * Resuelve el adapter de create/delete para el provider/account pedido.
+ * Resuelve el adapter account-aware para el provider/account pedido.
  *
  * PRECEDENCIA (canal HERMANO providerId primero): si providerId esta presente y != "webdock" y
  * vpsProviderAdapters tiene esa key, enruta a ESE proveedor (Contabo, etc.). Si providerId apunta a
@@ -845,7 +845,7 @@ function resolveWebdockCreateAdapter(
   deps: SkillDispatcherDeps,
   accountId: string | undefined,
   providerId?: string
-): WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter> {
+): WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter> & Partial<BindWebdockMainDomainAdapter> {
   // Normalizar a lowercase: la KEY del registry es lowercase ("contabo"); un providerId capitalizado
   // ("Contabo") debe seguir enrutando. Coincide con normalizeVpsProviderId del orquestador.
   const provider = providerId?.trim().toLowerCase();
