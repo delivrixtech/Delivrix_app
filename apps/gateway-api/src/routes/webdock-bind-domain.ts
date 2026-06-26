@@ -111,6 +111,7 @@ export interface FcrdnsResolver {
 export interface BindWebdockMainDomainDeps {
   auditLog: AuditSink;
   approvalGuard: BindWebdockMainDomainApprovalGuard;
+  /** Adapter Webdock ya resuelto por cuenta por el dispatcher. */
   webdockAdapter: BindWebdockMainDomainAdapter;
   /**
    * Registry providerId->adapter de proveedores NO-Webdock (Contabo, etc.). Canal HERMANO de

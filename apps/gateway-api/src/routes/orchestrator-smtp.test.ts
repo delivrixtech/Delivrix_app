@@ -422,6 +422,7 @@ test("Webdock identity bind runs after DNS A propagation", async () => {
   const step8 = ctx.approvals.find((entry) => entry.step === 8);
   assert.equal(step8?.skill, "bind_webdock_main_domain");
   assert.deepEqual(step8?.params, { serverSlug: "srv-delivrix", domain: "delivrixops.com" });
+  assert.equal(step8?.serverAccountId, undefined);
 });
 
 test("SMTP provisioning includes server, domain, IP and DKIM selector", async () => {
@@ -656,6 +657,10 @@ test("DoD#1 regresion single-account byte-identico: serverAccountId=ops, step4 p
     runId: "run-1", profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404"
   })).digest("hex");
   assert.equal(step4.inputHash, expectedStep4Hash);
+  // El bind default sigue sin canal accountId: el dispatcher cae a deps.webdockAdapter (ops).
+  const step8 = ctx.planExecutions.find((entry) => entry.step === 8)!;
+  assert.equal(step8.serverAccountId, undefined);
+  assert.equal(Object.prototype.hasOwnProperty.call(step8.params, "accountId"), false);
   // runState persiste serverAccountId="ops"; el rollback/delete enruta a "ops".
   const state = await readRunStateFull(ctx.workspace, "run-1");
   assert.equal(state.serverAccountId, "ops");
@@ -736,6 +741,10 @@ test("cuenta explicita elegible aterriza exactamente ahi y no entra a params/has
   const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
   assert.equal(step4.serverAccountId, "secondary");
   assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "accountId"), false);
+  const step8 = ctx.planExecutions.find((entry) => entry.step === 8)!;
+  assert.equal(step8.serverAccountId, "secondary");
+  assert.deepEqual(step8.params, { serverSlug: "srv-delivrix", domain: "delivrixops.com" });
+  assert.equal(Object.prototype.hasOwnProperty.call(step8.params, "accountId"), false);
   const expectedStep4Hash = createHash("sha256").update(stableStringify({
     runId: "run-1", profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404"
   })).digest("hex");
