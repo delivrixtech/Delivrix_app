@@ -194,7 +194,7 @@ export interface PlanApprovedStepInput extends SkillInvocationInput {
   estimatedCostUsd?: number;
   planApproval: PlanApprovalRecord;
   /**
-   * Cuenta Webdock destino del create (5.12 multicuenta). Canal PARALELO fuera de `params`/
+   * Cuenta Webdock destino de operaciones account-aware. Canal PARALELO fuera de `params`/
    * hashInput. undefined => cuenta-1 "ops" (single-account byte-identico).
    */
   serverAccountId?: string;
@@ -1031,6 +1031,10 @@ export async function configureCompleteSmtp(
     runState.serverIpv4 = serverIpv4;
     await persistSmtpRunState(deps, runState);
 
+    const bindServerAccountId = runState.serverAccountId && runState.serverAccountId !== DEFAULT_CREATION_ACCOUNT_ID
+      ? runState.serverAccountId
+      : undefined;
+
     await runMutatingStepWithState({
       deps,
       runState,
@@ -1078,11 +1082,10 @@ export async function configureCompleteSmtp(
       approvalTimeoutMs,
       budgetUsdMax: effectiveInput.budgetUsdMax,
       params: { serverSlug, domain: chosenDomain },
-      // providerId por canal HERMANO (NO en params): un run no-Webdock toma el CONTABO BIND PATH en el
-      // dispatcher (getServer + hostname por SSH + PTR manual + FCrDNS) en vez de getServer/setServerIdentity
-      // contra la API Webdock (que daria 404 para un slug contabo-<id> y tumbaria el run). undefined/"webdock"
-      // => bind Webdock byte-identico. El bind no necesita serverAccountId: el Webdock bind usa siempre la
-      // cuenta-1 (deps.webdockAdapter) y el Contabo bind resuelve por providerId -> vpsProviderAdapters.
+      // Canales HERMANOS (NO en params/hash): providerId enruta binds no-Webdock al path del proveedor;
+      // serverAccountId enruta binds Webdock no-default al adapter de esa cuenta. undefined/"webdock" + ops
+      // preservan el bind Webdock single-account byte-identico.
+      serverAccountId: bindServerAccountId,
       providerId: vpsProviderId,
       stepResults
     });
