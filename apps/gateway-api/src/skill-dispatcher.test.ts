@@ -808,7 +808,7 @@ function makeSpyBindAdapter(
         slug: serverSlug,
         name: `${id}.example.test`,
         mainDomain: `${id}.example.test`,
-        hostname: `${id}.example.test`,
+        ipv4: "",
         status: "running"
       };
     },
