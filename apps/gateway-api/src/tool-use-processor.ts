@@ -847,7 +847,13 @@ async function invokeMemoryToolOverHttp(input: {
   env: Record<string, string | undefined>;
   now: () => Date;
 }): Promise<unknown> {
-  if (input.input.toolName !== "compact_intent") {
+  const memoryToolPaths: Record<string, string> = {
+    compact_intent: "/v1/openclaw/compact-intent",
+    semantic_remember: "/v1/openclaw/memory/remember",
+    semantic_recall: "/v1/openclaw/memory/recall"
+  };
+  const memoryToolPath = memoryToolPaths[input.input.toolName];
+  if (!memoryToolPath) {
     throw new Error(`unsupported_memory_tool:${input.input.toolName}`);
   }
 
@@ -862,7 +868,7 @@ async function invokeMemoryToolOverHttp(input: {
   });
   const timestamp = Math.floor(input.now().getTime() / 1000);
   const signature = signOpenClawPayload(raw, timestamp, secret);
-  const response = await input.fetchImpl(`${input.baseUrl}/v1/openclaw/compact-intent`, {
+  const response = await input.fetchImpl(`${input.baseUrl}${memoryToolPath}`, {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -1238,7 +1244,9 @@ function envFlagEnabled(value: string | undefined): boolean {
 }
 
 function isMemoryToolUse(toolName: string): boolean {
-  return toolName === "compact_intent";
+  return toolName === "compact_intent" ||
+    toolName === "semantic_remember" ||
+    toolName === "semantic_recall";
 }
 
 function sleep(ms: number): Promise<void> {

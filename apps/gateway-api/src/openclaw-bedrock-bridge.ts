@@ -70,9 +70,12 @@ const defaultMaxAttachmentTurnsInMemory = 1;
 const defaultMaxBedrockInputChars = 720_000;
 const defaultDelivrixBaseUrl = "http://127.0.0.1:3000";
 const defaultMaxToolIterations = 10;
-const defaultLiveContextItemLimit = 20;
-const defaultLiveContextMaxChars = 18_000;
-const inventoryServersLiveContextMaxChars = 5_000;
+const defaultLiveContextItemLimit = 50;
+const defaultLiveContextMaxChars = 55_000;
+const inventoryServersLiveContextMaxChars = 16_000;
+const activeSmtpRunsLiveContextMaxChars = 14_000;
+const defaultToolResultPreviewMaxChars = 4_096;
+const readInventoryToolResultPreviewMaxChars = 16_000;
 const textAttachmentTruncatedMarker = "...[TRUNCATED_AT_50000_CHARS]";
 
 type FetchLike = typeof fetch;
@@ -630,7 +633,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
               iteration,
               toolUse,
               inputHash: toolInputHash
-            }))
+            }), toolUse.name)
           });
         }
 
@@ -1088,7 +1091,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       "## active_smtp_runs (runs de configure_complete_smtp persistidos en disco)",
       "Si el operador pide CONTINUAR o seguir un SMTP, NO empieces de cero: pasá el runId exacto a configure_complete_smtp para reanudar desde lastCompletedStep (la idempotencia adopta dominio y VPS existentes). status=failed/running son candidatos a continuar.",
       "```json",
-      stringifyLiveContext(activeRuns, 2500),
+      stringifyLiveContext(activeRuns, activeSmtpRunsLiveContextMaxChars),
       "```",
       "",
       "## verified_facts (GET /v1/openclaw/scratch?grounded=true&query=<operator>)",
@@ -1852,9 +1855,12 @@ function enrichToolResultForModel(
   };
 }
 
-function stringifyToolResult(result: unknown): string {
+function stringifyToolResult(result: unknown, toolName?: string): string {
   const raw = redactRuntimeLogSecrets(JSON.stringify(redactSensitiveLiveContext(result)));
-  if (raw.length <= 4096) {
+  const maxChars = toolName === "read_infrastructure_inventory" || toolName === "read_webdock_servers"
+    ? readInventoryToolResultPreviewMaxChars
+    : defaultToolResultPreviewMaxChars;
+  if (raw.length <= maxChars) {
     return raw;
   }
   const metadata = isRecord(result) && isRecord(result._openclaw) ? result._openclaw : undefined;
@@ -1862,7 +1868,7 @@ function stringifyToolResult(result: unknown): string {
     ok: isRecord(result) ? result.ok : undefined,
     ...(metadata ? { _openclaw: metadata } : {}),
     truncated: true,
-    preview: raw.slice(0, 4096)
+    preview: raw.slice(0, maxChars)
   });
 }
 
