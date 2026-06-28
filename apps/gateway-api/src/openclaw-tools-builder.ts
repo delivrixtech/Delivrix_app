@@ -12,6 +12,8 @@ import {
   readInfrastructureAccountHealthParamSchema,
   readConversationParamSchema,
   readEpisodicScratchParamSchema,
+  semanticRememberParamSchema,
+  semanticRecallParamSchema,
   readInfrastructureInventoryParamSchema,
   readWebdockServersParamSchema,
   retireInfrastructureAccountParamSchema,
@@ -239,6 +241,61 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       }
     },
     paramSchema: readEpisodicScratchParamSchema,
+    enabled: (env) => hmacConfigured(env) && postgresConfigured(env),
+    targetType: "openclaw_memory",
+    severity: "high"
+  },
+  semantic_remember: {
+    spec: {
+      name: "semantic_remember",
+      description: [
+        "Guarda un hallazgo, aprendizaje o hecho verificado en la memoria semántica de OpenClaw (vector + full-text en español).",
+        "Escritura interna auditada, sin side effects externos ni ApprovalGate: sirve para recordar conocimiento entre turnos y recuperarlo luego por significado.",
+        "Si los embeddings no están configurados, la memoria se guarda igual en modo full-text."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          memoryType: { type: "string", minLength: 1, maxLength: 64, description: "Categoría del recuerdo: finding, learning, fact, decision, etc." },
+          content: { type: "string", minLength: 1, maxLength: 8000, description: "El conocimiento a recordar, en texto claro." },
+          visibility: { type: "string", enum: ["private", "shared_family", "shared_global", "human_authored"], default: "private" },
+          metadata: { type: "object", description: "Metadata estructurada opcional (dominio, IP, runId, etc.)." },
+          taskId: { type: "string", minLength: 1, maxLength: 128 },
+          sourcePath: { type: "string", minLength: 1, maxLength: 512 }
+        },
+        required: ["memoryType", "content"]
+      }
+    },
+    paramSchema: semanticRememberParamSchema,
+    enabled: (env) => hmacConfigured(env) && postgresConfigured(env),
+    targetType: "openclaw_memory",
+    severity: "high"
+  },
+  semantic_recall: {
+    spec: {
+      name: "semantic_recall",
+      description: [
+        "Recupera memoria relevante por significado con búsqueda híbrida (vector + full-text en español, fusión RRF).",
+        "Read-only, sin ApprovalGate: úsalo al inicio de una decisión para traer hallazgos, aprendizajes y hechos verificados previos sin repetir trabajo.",
+        "Si los embeddings no están configurados, degrada a búsqueda full-text."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          query: { type: "string", minLength: 3, maxLength: 1000, description: "Pregunta o necesidad de decisión para buscar memoria relevante." },
+          limit: { type: "integer", minimum: 1, maximum: 50, default: 8 },
+          memoryType: { type: "string", minLength: 1, maxLength: 64 },
+          visibilities: {
+            type: "array",
+            minItems: 1,
+            maxItems: 4,
+            items: { type: "string", enum: ["private", "shared_family", "shared_global", "human_authored"] }
+          }
+        },
+        required: ["query"]
+      }
+    },
+    paramSchema: semanticRecallParamSchema,
     enabled: (env) => hmacConfigured(env) && postgresConfigured(env),
     targetType: "openclaw_memory",
     severity: "high"

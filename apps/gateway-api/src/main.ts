@@ -340,6 +340,11 @@ import {
   handleCompactIntentHttp
 } from "./routes/openclaw-compact-intent.ts";
 import {
+  handleSemanticRememberHttp,
+  handleSemanticRecallHttp
+} from "./routes/openclaw-semantic-memory.ts";
+import { embeddingServiceFromEnv } from "./openclaw-embedding-service.ts";
+import {
   handleOpenClawChatConversationsHttp,
   handleOpenClawChatHistoryHttp
 } from "./routes/openclaw-chat-history.ts";
@@ -570,6 +575,7 @@ const episodicScratchPool = new Pool({
   connectionString: process.env.POSTGRES_URL ?? defaultPostgresUrl,
   application_name: "delivrix-openclaw-episodic-scratch"
 });
+const semanticMemoryEmbeddingService = embeddingServiceFromEnv(process.env);
 const gatewayLogStream = new GatewayLogStreamService({ logPath: gatewayRuntimeLog.logPath });
 const equipoWebhookBroadcaster = new EquipoWebhookBroadcaster({
   killSwitchProvider: async () => (await killSwitchStore.get()).enabled
@@ -1827,6 +1833,28 @@ const server = createServer(async (request, response) => {
         pool: episodicScratchPool,
         auditLog,
         canvasLiveEvents,
+        allowUnsignedLocal: process.env.OPENCLAW_COMPACT_INTENT_ALLOW_UNSIGNED_LOCAL === "true",
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/openclaw/memory/remember") {
+      return await handleSemanticRememberHttp({
+        request,
+        response,
+        pool: episodicScratchPool,
+        embeddingService: semanticMemoryEmbeddingService,
+        allowUnsignedLocal: process.env.OPENCLAW_COMPACT_INTENT_ALLOW_UNSIGNED_LOCAL === "true",
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/openclaw/memory/recall") {
+      return await handleSemanticRecallHttp({
+        request,
+        response,
+        pool: episodicScratchPool,
+        embeddingService: semanticMemoryEmbeddingService,
         allowUnsignedLocal: process.env.OPENCLAW_COMPACT_INTENT_ALLOW_UNSIGNED_LOCAL === "true",
         now: () => resolveGatewayNow()
       });
@@ -5803,10 +5831,12 @@ async function listActiveSmtpRuns(): Promise<SmtpRunSummary[]> {
         }
       })
     );
+    const parsedRunsLimit = Number.parseInt(process.env.OPENCLAW_ACTIVE_SMTP_RUNS_LIMIT ?? "", 10);
+    const activeRunsLimit = Number.isInteger(parsedRunsLimit) && parsedRunsLimit > 0 ? parsedRunsLimit : 50;
     return entries
       .filter((entry): entry is { mtimeMs: number; summary: SmtpRunSummary } => entry !== null)
       .sort((left, right) => right.mtimeMs - left.mtimeMs)
-      .slice(0, 12)
+      .slice(0, activeRunsLimit)
       .map((entry) => entry.summary);
   } catch {
     return [];

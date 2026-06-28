@@ -263,6 +263,24 @@ export interface CompactIntentParams extends Record<string, unknown> {
   }>;
 }
 
+export interface SemanticRememberParams extends Record<string, unknown> {
+  memoryType: string;
+  content: string;
+  visibility?: "private" | "shared_family" | "shared_global" | "human_authored";
+  metadata?: Record<string, unknown>;
+  taskId?: string;
+  sourcePath?: string;
+  agentId?: string;
+}
+
+export interface SemanticRecallParams extends Record<string, unknown> {
+  query: string;
+  limit?: number;
+  memoryType?: string;
+  visibilities?: Array<"private" | "shared_family" | "shared_global" | "human_authored">;
+  agentId?: string;
+}
+
 export const route53RegisterParamSchema = schema<Route53RegisterParams>((value) => {
   const input = object(value);
   const years = integer(input.years ?? input.durationYears, "years", 1, 10);
@@ -601,6 +619,67 @@ export const readEpisodicScratchParamSchema = schema<ReadEpisodicScratchParams>(
   }
   if (output.tool && !output.outcome && output.weighted !== true && output.grounded !== true) {
     throw new SkillSchemaError("tool queries require outcome or weighted=true");
+  }
+  return output;
+});
+
+const MEMORY_VISIBILITIES = ["private", "shared_family", "shared_global", "human_authored"] as const;
+
+function memoryVisibility(
+  value: unknown,
+  field: string
+): "private" | "shared_family" | "shared_global" | "human_authored" {
+  if (typeof value === "string" && (MEMORY_VISIBILITIES as readonly string[]).includes(value)) {
+    return value as "private" | "shared_family" | "shared_global" | "human_authored";
+  }
+  throw new SkillSchemaError(`${field} must be one of ${MEMORY_VISIBILITIES.join(", ")}`);
+}
+
+export const semanticRememberParamSchema = schema<SemanticRememberParams>((value) => {
+  const input = object(value);
+  const output: SemanticRememberParams = {
+    memoryType: boundedText(input.memoryType, "memoryType", 1, 64),
+    content: boundedText(input.content, "content", 1, 8000)
+  };
+  if (input.visibility !== undefined && input.visibility !== null && input.visibility !== "") {
+    output.visibility = memoryVisibility(input.visibility, "visibility");
+  }
+  if (input.metadata !== undefined && input.metadata !== null) {
+    output.metadata = object(input.metadata);
+  }
+  if (input.taskId !== undefined && input.taskId !== null && input.taskId !== "") {
+    output.taskId = boundedText(input.taskId, "taskId", 1, 128);
+  }
+  if (input.sourcePath !== undefined && input.sourcePath !== null && input.sourcePath !== "") {
+    output.sourcePath = boundedText(input.sourcePath, "sourcePath", 1, 512);
+  }
+  if (input.agentId !== undefined && input.agentId !== null && input.agentId !== "") {
+    output.agentId = boundedText(input.agentId, "agentId", 1, 128);
+  }
+  return output;
+});
+
+export const semanticRecallParamSchema = schema<SemanticRecallParams>((value) => {
+  const input = object(value);
+  const output: SemanticRecallParams = {
+    query: boundedText(input.query, "query", 3, 1000)
+  };
+  if (input.limit !== undefined && input.limit !== null) {
+    output.limit = integer(input.limit, "limit", 1, 50);
+  }
+  if (input.memoryType !== undefined && input.memoryType !== null && input.memoryType !== "") {
+    output.memoryType = boundedText(input.memoryType, "memoryType", 1, 64);
+  }
+  if (input.visibilities !== undefined && input.visibilities !== null) {
+    if (!Array.isArray(input.visibilities) || input.visibilities.length === 0) {
+      throw new SkillSchemaError("visibilities must be a non-empty array");
+    }
+    output.visibilities = input.visibilities.map((entry, index) =>
+      memoryVisibility(entry, `visibilities[${index}]`)
+    );
+  }
+  if (input.agentId !== undefined && input.agentId !== null && input.agentId !== "") {
+    output.agentId = boundedText(input.agentId, "agentId", 1, 128);
   }
   return output;
 });

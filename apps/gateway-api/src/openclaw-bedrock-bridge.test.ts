@@ -76,9 +76,12 @@ test("OpenClawBedrockBridge inyecta active_smtp_runs en el contexto para poder c
     systemPromptPath: await promptFile("System prompt demo"),
     now: fixedNow(),
     fetchImpl: liveContextFetchStub(),
-    smtpRunsReader: async () => [
-      { runId: "exec-continuity-1", status: "failed", lastCompletedStep: 8, chosenDomain: "controlledgerdesk.com" }
-    ],
+    smtpRunsReader: async () => Array.from({ length: 50 }, (_, index) => ({
+      runId: `exec-continuity-${index + 1}`,
+      status: index % 2 === 0 ? "failed" : "completed",
+      lastCompletedStep: index % 2 === 0 ? 8 : 14,
+      chosenDomain: `controlledgerdesk-${index + 1}.com`
+    })),
     client: {
       send: async (command) => {
         capturedBody = String((command as { input: { body: unknown } }).input.body);
@@ -97,7 +100,9 @@ test("OpenClawBedrockBridge inyecta active_smtp_runs en el contexto para poder c
   // El runId, su estado y dominio deben llegar al modelo para que pueda reanudar.
   assert.match(capturedBody, /active_smtp_runs/);
   assert.match(capturedBody, /exec-continuity-1/);
-  assert.match(capturedBody, /controlledgerdesk\.com/);
+  assert.match(capturedBody, /controlledgerdesk-1\.com/);
+  assert.match(capturedBody, /exec-continuity-50/);
+  assert.match(capturedBody, /controlledgerdesk-50\.com/);
 });
 
 test("OpenClawBedrockBridge keeps in-memory conversation history across turns", async () => {
@@ -698,7 +703,7 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
   assert.doesNotMatch(system, /ciphertext-should-redact|auth-tag-should-redact|smtp-password-should-redact/);
 });
 
-test("OpenClawBedrockBridge keeps multiprovider inventory_servers JSON valid when truncated", async () => {
+test("OpenClawBedrockBridge keeps multiprovider inventory_servers complete under the default live-context limit", async () => {
   let payload: Record<string, unknown> | null = null;
   const webdockAccounts = ["primary", "ops", "warmup", "delivery", "reserve"];
   const webdockItems = webdockAccounts.flatMap((accountId, accountIndex) => {
@@ -737,7 +742,7 @@ test("OpenClawBedrockBridge keeps multiprovider inventory_servers JSON valid whe
     systemPromptPath: await promptFile("System prompt demo"),
     now: fixedNow(),
     delivrixBaseUrl: "http://gateway.test/",
-    liveContextItemLimit: 20,
+    liveContextItemLimit: 50,
     fetchImpl: (async (input) => {
       const url = new URL(String(input));
       const bodyByPath: Record<string, unknown> = {
@@ -791,7 +796,7 @@ test("OpenClawBedrockBridge keeps multiprovider inventory_servers JSON valid whe
   const capturedPayload = payload as Record<string, unknown> | null;
   assert.ok(capturedPayload);
   const inventoryServersJson = extractLiveContextJsonBlock(String(capturedPayload.system), "inventory_servers");
-  assert.ok(inventoryServersJson.length <= 5_000);
+  assert.ok(inventoryServersJson.length <= 16_000);
   const parsed = JSON.parse(inventoryServersJson) as {
     count: number;
     displayedCount: number;
@@ -799,9 +804,9 @@ test("OpenClawBedrockBridge keeps multiprovider inventory_servers JSON valid whe
     items: Array<{ accountId: string; providerId: string }>;
   };
   assert.equal(parsed.count, totalServers);
-  assert.equal(parsed.truncated, true);
+  assert.equal(parsed.truncated, false);
   assert.equal(parsed.displayedCount, parsed.items.length);
-  assert.ok(parsed.items.length <= 20);
+  assert.equal(parsed.items.length, totalServers);
   const accountIds = new Set(parsed.items.map((item) => item.accountId));
   for (const accountId of webdockAccounts) {
     assert.equal(accountIds.has(accountId), true);
