@@ -18,6 +18,7 @@ import {
   readWebdockServersParamSchema,
   retireInfrastructureAccountParamSchema,
   route53DomainDetailParamSchema,
+  deliveryReasonParamSchema,
   route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
   route53ZoneRecordsParamSchema,
@@ -49,6 +50,7 @@ export type OpenClawToolName =
   | "wait_for_dns_propagation"
   | "read_route53_domain_detail"
   | "read_route53_zone_records"
+  | "read_delivery_reason"
   | "update_domain_nameservers"
   | "read_dns_ionos"
   | "read_mxtoolbox_health"
@@ -356,6 +358,40 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hmacConfigured(env) &&
       hasAwsRoute53DomainCredentials(env),
     targetType: "domain",
+    severity: "high"
+  },
+  read_delivery_reason: {
+    spec: {
+      name: "read_delivery_reason",
+      description: "Devuelve el motivo REAL de entrega/rebote de un correo en un servidor SMTP propio leyendo mail.log de Postfix por SSH del lado del gateway (el agente NO ejecuta SSH). Resuelve el queue-id desde el message-id y reporta status final (sent/bounced/deferred/expired), codigo SMTP (ej 550), codigo DSN (ej 5.7.1), destinatario, relay y motivo textual. Invocar para diagnosticar por que rebota un mensaje en vez de asumir 'puerto 25 bloqueado' u otras causas sin evidencia. Lectura auditada: no envia ni muta nada y no requiere ApprovalGate.",
+      input_schema: {
+        type: "object",
+        required: ["serverSlug", "serverIp", "messageId"],
+        properties: {
+          serverSlug: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Slug del servidor SMTP (de read_webdock_servers / read_sender_nodes)."
+          },
+          serverIp: {
+            type: "string",
+            pattern: ipv4Pattern,
+            description: "IP del servidor (de read_webdock_servers / read_sender_nodes)."
+          },
+          messageId: {
+            type: "string",
+            minLength: 1,
+            maxLength: 255,
+            description: "Message-ID del correo, ej <delivrix-abc123@dominio.com> (lo retorna send_real_email)."
+          }
+        }
+      }
+    },
+    paramSchema: deliveryReasonParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      hasSshRunnerConfig(env),
+    targetType: "webdock_server",
     severity: "high"
   },
   read_route53_zone_records: {
@@ -1095,6 +1131,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "read_delivery_reason",
     "update_domain_nameservers",
     "read_dns_ionos",
     "read_mxtoolbox_health",

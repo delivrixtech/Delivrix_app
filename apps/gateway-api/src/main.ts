@@ -175,6 +175,7 @@ import {
   handleRoute53DnsUpsertHttp
 } from "./routes/domains-dns.ts";
 import { handleReadRoute53DomainDetail } from "./routes/route53-domain-detail.ts";
+import { handleReadDeliveryReason } from "./routes/openclaw-delivery-reason.ts";
 import { handleReadRoute53ZoneRecords } from "./routes/route53-zone-records.ts";
 import { handleReadIonosDns } from "./routes/read-dns-ionos.ts";
 import {
@@ -1160,6 +1161,7 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_sender_nodes", "allowed_read_only"),
   permission("read_ip_reputation_reports", "allowed_read_only"),
   permission("read_send_results", "allowed_read_only"),
+  permission("read_delivery_reason", "allowed_read_only"),
   permission("read_stuck_jobs", "allowed_read_only"),
   permission("read_operational_summary", "allowed_read_only"),
   permission("read_iam_roles", "allowed_read_only"),
@@ -2139,6 +2141,16 @@ const server = createServer(async (request, response) => {
       return await handleReadRoute53DomainDetail(request, response, {
         canvasLiveEvents,
         emitAudit: appendRoute53ReadAudit,
+        logger: gatewayRuntimeLog,
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/delivery-reason") {
+      return await handleReadDeliveryReason(request, response, {
+        sshRunner: smtpSshRunner,
+        emitAudit: appendDeliveryReadAudit,
         logger: gatewayRuntimeLog,
         now: () => new Date(),
         readBoundaryToken: sensitiveReadBoundaryToken
@@ -6295,6 +6307,23 @@ async function appendRoute53ReadAudit(event: { type: string; [key: string]: unkn
     humanApproved: false,
     metadata: {
       provider: isIonos ? "ionos-dns" : "aws-route53",
+      ...event
+    }
+  });
+}
+
+async function appendDeliveryReadAudit(event: { type: string; [key: string]: unknown }): Promise<void> {
+  const serverSlug = typeof event.serverSlug === "string" ? event.serverSlug : undefined;
+  await auditLog.append({
+    actorType: "openclaw",
+    actorId: "openclaw-smtp-read-tools",
+    action: event.type,
+    targetType: "webdock_server",
+    targetId: serverSlug ?? "unknown",
+    riskLevel: "low",
+    decision: "allow",
+    humanApproved: false,
+    metadata: {
       ...event
     }
   });
