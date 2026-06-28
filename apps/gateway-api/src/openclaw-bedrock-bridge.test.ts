@@ -1013,6 +1013,51 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   assert.doesNotMatch(JSON.stringify(canvasEvents), /secret-result-token/);
 });
 
+test("OpenClawBedrockBridge stops repeated identical tool-use loops before exhausting budget", async () => {
+  let providerCalls = 0;
+  let toolCalls = 0;
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    env: enabledToolEnv(),
+    processToolUse: async () => {
+      toolCalls += 1;
+      return { ok: true, status: "executed", result: { ok: true } };
+    },
+    client: {
+      send: async () => {
+        providerCalls += 1;
+        return {
+          body: toolUseStream(
+            `toolu-loop-${providerCalls}`,
+            "read_infrastructure_inventory",
+            "{}"
+          )
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-tool-loop", message: "lee inventario hasta que cierre" });
+  const events: ChatStreamEvent[] = [];
+  await bridge.streamHistory("msg-tool-loop", {
+    onDone: (event) => events.push(event)
+  });
+
+  const done = events.find((event): event is Extract<ChatStreamEvent, { type: "ASSISTANT_DONE" }> =>
+    event.type === "ASSISTANT_DONE"
+  );
+  assert.ok(done);
+  assert.match(done.content, /Detuve este turno/);
+  assert.match(done.content, /read_infrastructure_inventory/);
+  assert.equal(providerCalls, 3);
+  assert.equal(toolCalls, 2);
+});
+
 test("OpenClawBedrockBridge redacts PEM tool failures before Canvas and Bedrock tool_result", async () => {
   const payloads: Array<Record<string, unknown>> = [];
   const canvasEvents: Array<Record<string, unknown>> = [];

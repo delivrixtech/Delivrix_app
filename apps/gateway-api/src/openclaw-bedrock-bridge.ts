@@ -76,6 +76,8 @@ const inventoryServersLiveContextMaxChars = 16_000;
 const activeSmtpRunsLiveContextMaxChars = 14_000;
 const defaultToolResultPreviewMaxChars = 4_096;
 const readInventoryToolResultPreviewMaxChars = 16_000;
+const toolLoopDetectionWindow = 4;
+const repeatedToolSignatureThreshold = 3;
 const textAttachmentTruncatedMarker = "...[TRUNCATED_AT_50000_CHARS]";
 
 type FetchLike = typeof fetch;
@@ -484,6 +486,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     const toolsInvoked: string[] = [];
     const turnIntentId = intentIdForMsgId(msgId);
     let emittedTypedArtifact = false;
+    const recentToolSignatures: string[] = [];
 
     try {
       for (let iteration = 0; iteration < this.maxToolIterations; iteration += 1) {
@@ -537,6 +540,39 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
             ...(toolsInvoked.length > 0 ? { toolsInvoked } : {})
           };
         }
+
+        const currentToolSignatures = toolUses.map(toolUseLoopSignature);
+        const repeatedTool = detectRepeatedToolLoop(currentToolSignatures, recentToolSignatures);
+        if (repeatedTool) {
+          const durationMs = Math.max(0, this.now().getTime() - startedAt);
+          const text =
+            `Detuve este turno porque la herramienta ${repeatedTool.toolName} pidio el mismo input ` +
+            `${repeatedTool.repeats} veces dentro de las ultimas ${toolLoopDetectionWindow} llamadas. ` +
+            "Lee el resultado anterior, cambia el filtro o pide confirmacion del operador antes de reintentar.";
+          await this.logger.warn("openclaw.bedrock.tool_loop_detected", "Repeated Bedrock tool-use loop stopped.", {
+            msgId,
+            iteration,
+            toolName: repeatedTool.toolName,
+            repeatedSignature: repeatedTool.signature,
+            repeats: repeatedTool.repeats,
+            window: toolLoopDetectionWindow
+          });
+          await this.emitCanvasTaskUpdate({
+            type: "oc.task.update",
+            taskId: canvasTaskId,
+            status: "completed",
+            updatedAt: this.now().toISOString()
+          });
+          return {
+            text,
+            modelId: this.modelId,
+            ...(sawInputTokens ? { inputTokens } : {}),
+            ...(sawOutputTokens ? { outputTokens } : {}),
+            durationMs,
+            ...(toolsInvoked.length > 0 ? { toolsInvoked } : {})
+          };
+        }
+        rememberToolSignatures(recentToolSignatures, currentToolSignatures);
 
         messages.push({
           role: "assistant",
@@ -1878,6 +1914,41 @@ function intentIdForMsgId(msgId: string): string {
 
 function hashToolInput(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+interface ToolLoopDetection {
+  signature: string;
+  toolName: string;
+  repeats: number;
+}
+
+function toolUseLoopSignature(toolUse: Extract<BedrockContentBlock, { type: "tool_use" }>): string {
+  return `${toolUse.name}:${hashToolInput(toolUse.input)}`;
+}
+
+function detectRepeatedToolLoop(
+  currentSignatures: string[],
+  recentSignatures: string[]
+): ToolLoopDetection | null {
+  const window = [...recentSignatures, ...currentSignatures].slice(-toolLoopDetectionWindow);
+  for (const signature of currentSignatures) {
+    const repeats = window.filter((candidate) => candidate === signature).length;
+    if (repeats >= repeatedToolSignatureThreshold) {
+      return {
+        signature,
+        toolName: signature.split(":", 1)[0] ?? "unknown",
+        repeats
+      };
+    }
+  }
+  return null;
+}
+
+function rememberToolSignatures(recentSignatures: string[], currentSignatures: string[]): void {
+  recentSignatures.push(...currentSignatures);
+  while (recentSignatures.length > toolLoopDetectionWindow) {
+    recentSignatures.shift();
+  }
 }
 
 async function* toAsyncIterable<T>(value: AsyncIterable<T> | Iterable<T>): AsyncIterable<T> {

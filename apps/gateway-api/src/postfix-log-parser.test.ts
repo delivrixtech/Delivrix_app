@@ -71,6 +71,18 @@ test("ignores non-delivery log noise", () => {
   assert.deepEqual(parsePostfixDeliveryLog(log), []);
 });
 
+test("skips oversized log lines before applying delivery regex", () => {
+  const hugeReason = "x".repeat(5000);
+  const log = [
+    `Jun 28 10:00:00 smtp postfix/smtp[1]: EE44FF55AA: to=<a@x.com>, status=bounced (${hugeReason})`,
+    "Jun 28 10:01:00 smtp postfix/smtp[2]: FF55AA66BB: to=<b@x.com>, status=sent (250 2.0.0 OK)"
+  ].join("\n");
+
+  const results = parsePostfixDeliveryLog(log);
+  assert.equal(byQueue(results, "EE44FF55AA"), undefined);
+  assert.equal(byQueue(results, "FF55AA66BB")?.status, "sent");
+});
+
 test("summarizeDeliveryResults counts by final status", () => {
   const log = [
     "Jun 28 10:15:03 smtp postfix/smtp[1]: AA11BB22CC: to=<a@x.com>, status=sent (250 2.0.0 OK)",

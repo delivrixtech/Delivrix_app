@@ -14,6 +14,7 @@ import {
   hybridSearchMemoryVectors,
   insertMemoryVector,
   MemoryVectorValidationError,
+  parseMemoryVisibility,
   type MemoryVectorEntry,
   type MemoryVectorQueryablePool,
   type MemoryVisibility
@@ -21,13 +22,6 @@ import {
 import type { EmbeddingService } from "../openclaw-embedding-service.ts";
 import { validateOpenClawHmac } from "../security/hmac.ts";
 import { readRequestBody } from "../request-body.ts";
-
-const VISIBILITIES: readonly MemoryVisibility[] = [
-  "private",
-  "shared_family",
-  "shared_global",
-  "human_authored"
-];
 
 export interface SemanticMemoryDeps {
   pool: MemoryVectorQueryablePool;
@@ -269,11 +263,14 @@ function wrapStorageError(error: unknown): Error {
 }
 
 function parseVisibility(value: unknown): MemoryVisibility {
-  if (value === undefined || value === null) return "private";
-  if (typeof value === "string" && (VISIBILITIES as readonly string[]).includes(value)) {
-    return value as MemoryVisibility;
+  try {
+    return parseMemoryVisibility(value);
+  } catch (error) {
+    if (error instanceof MemoryVectorValidationError) {
+      throw new SemanticMemoryValidationError(error.code, error.message);
+    }
+    throw error;
   }
-  throw new SemanticMemoryValidationError("invalid_visibility", `visibility must be one of ${VISIBILITIES.join(", ")}.`);
 }
 
 function parseLimit(value: unknown): number {
