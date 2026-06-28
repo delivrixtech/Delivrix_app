@@ -673,6 +673,25 @@ async function invokeReadOnlyToolOverHttp(input: {
     return body;
   }
 
+  if (input.input.toolName === "read_delivery_reason") {
+    const url = new URL(`${input.baseUrl}/v1/openclaw/delivery-reason`);
+    url.searchParams.set("serverSlug", String(input.input.params.serverSlug));
+    url.searchParams.set("serverIp", String(input.input.params.serverIp));
+    url.searchParams.set("messageId", String(input.input.params.messageId));
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return body;
+  }
+
   if (input.input.toolName === "read_route53_zone_records") {
     const url = new URL(`${input.baseUrl}/v1/route53/zone-records`);
     url.searchParams.set("zoneId", String(input.input.params.zoneId));
@@ -1203,6 +1222,7 @@ function isReadOnlyToolUse(toolName: string): boolean {
     toolName === "read_episodic_scratch" ||
     toolName === "read_route53_domain_detail" ||
     toolName === "read_route53_zone_records" ||
+    toolName === "read_delivery_reason" ||
     toolName === "read_dns_ionos" ||
     toolName === "read_mxtoolbox_health" ||
     toolName === "read_infrastructure_inventory" ||

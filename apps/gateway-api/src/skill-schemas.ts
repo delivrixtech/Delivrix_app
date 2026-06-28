@@ -323,6 +323,21 @@ export const route53DomainDetailParamSchema = schema<Route53DomainDetailParams>(
   };
 });
 
+export interface DeliveryReasonParams {
+  serverSlug: string;
+  serverIp: string;
+  messageId: string;
+}
+
+export const deliveryReasonParamSchema = schema<DeliveryReasonParams>((value) => {
+  const input = object(value);
+  return {
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    serverIp: ipv4(input.serverIp, "serverIp"),
+    messageId: deliveryMessageId(input.messageId, "messageId")
+  };
+});
+
 export const route53ZoneRecordsParamSchema = schema<Route53ZoneRecordsParams>((value) => {
   const input = object(value);
   return {
@@ -822,6 +837,14 @@ function ipv4(value: unknown, field: string): string {
     throw new SkillSchemaError(`${field} must be a valid IPv4 address`);
   }
   return parts.map((part) => String(Number(part))).join(".");
+}
+
+function deliveryMessageId(value: unknown, field: string): string {
+  const normalized = string(value, field).trim();
+  if (normalized.length < 1 || normalized.length > 255 || !/^[A-Za-z0-9<>@._+-]+$/.test(normalized)) {
+    throw new SkillSchemaError(`${field} must be a Message-ID (e.g. <delivrix-...@domain>)`);
+  }
+  return normalized;
 }
 
 function mxtoolboxTarget(value: unknown, field: string): string {

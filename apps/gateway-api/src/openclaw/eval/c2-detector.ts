@@ -28,6 +28,7 @@ export const C2_MATRIX_ACTIONS = [
   "read_sender_nodes",
   "read_ip_reputation_reports",
   "read_send_results",
+  "read_delivery_reason",
   "read_stuck_jobs",
   "read_operational_summary",
   "read_iam_roles",
