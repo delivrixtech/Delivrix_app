@@ -38,6 +38,7 @@ const MESSAGE_ID_RE = /\bmessage-id=<?([^>\s,]+)>?/i;
 const SMTP_DSN_RE = /\b([245]\d\d)\s+([245]\.\d{1,3}\.\d{1,3})\b/;
 const SMTP_SAID_RE = /(?:said:\s*|^\s*)([245]\d\d)\b/i;
 const REASON_RE = /\bstatus=[a-z]+\s+\((.*)\)\s*$/;
+const MAX_POSTFIX_LOG_LINE_CHARS = 4096;
 
 const STATUS_RANK: Record<PostfixDeliveryStatus, number> = {
   unknown: 0,
@@ -56,6 +57,7 @@ export function parsePostfixDeliveryLog(log: string): PostfixDeliveryResult[] {
   const byQueue = new Map<string, PostfixDeliveryResult>();
 
   for (const rawLine of log.split(/\r?\n/)) {
+    if (rawLine.length > MAX_POSTFIX_LOG_LINE_CHARS) continue;
     const line = rawLine.trim();
     if (!line) continue;
     const match = QUEUE_LINE.exec(line);

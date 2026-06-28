@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { conformOutcomeData, machineErrorCode } from "../../../packages/storage/src/index.ts";
+import {
+  conformOutcomeData,
+  MemoryVectorValidationError,
+  parseMemoryVisibility,
+  type MemoryVisibility,
+  machineErrorCode
+} from "../../../packages/storage/src/index.ts";
 import {
   tryNormalizeServerSlug,
   tryNormalizeStrictDomainName
@@ -623,16 +629,15 @@ export const readEpisodicScratchParamSchema = schema<ReadEpisodicScratchParams>(
   return output;
 });
 
-const MEMORY_VISIBILITIES = ["private", "shared_family", "shared_global", "human_authored"] as const;
-
-function memoryVisibility(
-  value: unknown,
-  field: string
-): "private" | "shared_family" | "shared_global" | "human_authored" {
-  if (typeof value === "string" && (MEMORY_VISIBILITIES as readonly string[]).includes(value)) {
-    return value as "private" | "shared_family" | "shared_global" | "human_authored";
+function memoryVisibility(value: unknown, field: string): MemoryVisibility {
+  try {
+    return parseMemoryVisibility(value);
+  } catch (error) {
+    if (error instanceof MemoryVectorValidationError) {
+      throw new SkillSchemaError(`${field} ${error.message}`);
+    }
+    throw error;
   }
-  throw new SkillSchemaError(`${field} must be one of ${MEMORY_VISIBILITIES.join(", ")}`);
 }
 
 export const semanticRememberParamSchema = schema<SemanticRememberParams>((value) => {

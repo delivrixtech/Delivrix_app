@@ -20,7 +20,7 @@ export type MemoryVisibility =
   | "shared_global"
   | "human_authored";
 
-const VISIBILITIES: readonly MemoryVisibility[] = [
+export const MEMORY_VISIBILITIES: readonly MemoryVisibility[] = [
   "private",
   "shared_family",
   "shared_global",
@@ -115,6 +115,17 @@ export class MemoryVectorValidationError extends Error {
     this.name = "MemoryVectorValidationError";
     this.code = code;
   }
+}
+
+export function parseMemoryVisibility(value: unknown, fallback: MemoryVisibility = "private"): MemoryVisibility {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "string" && (MEMORY_VISIBILITIES as readonly string[]).includes(value)) {
+    return value as MemoryVisibility;
+  }
+  throw new MemoryVectorValidationError(
+    "invalid_visibility",
+    `visibility must be one of ${MEMORY_VISIBILITIES.join(", ")}.`
+  );
 }
 
 const SELECT_COLUMNS = `
@@ -397,14 +408,7 @@ function toVectorLiteral(embedding: number[]): string {
 }
 
 function normalizeVisibility(value: unknown): MemoryVisibility {
-  if (value === undefined || value === null) return "private";
-  if (typeof value === "string" && (VISIBILITIES as readonly string[]).includes(value)) {
-    return value as MemoryVisibility;
-  }
-  throw new MemoryVectorValidationError(
-    "invalid_visibility",
-    `visibility must be one of ${VISIBILITIES.join(", ")}.`
-  );
+  return parseMemoryVisibility(value);
 }
 
 function normalizeVisibilities(value: MemoryVisibility[] | undefined): MemoryVisibility[] {

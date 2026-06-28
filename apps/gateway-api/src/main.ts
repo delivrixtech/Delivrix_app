@@ -1844,7 +1844,7 @@ const server = createServer(async (request, response) => {
         response,
         pool: episodicScratchPool,
         embeddingService: semanticMemoryEmbeddingService,
-        allowUnsignedLocal: process.env.OPENCLAW_COMPACT_INTENT_ALLOW_UNSIGNED_LOCAL === "true",
+        allowUnsignedLocal: process.env.NODE_ENV === "test" && process.env.OPENCLAW_MEMORY_ALLOW_UNSIGNED_LOCAL === "true",
         now: () => resolveGatewayNow()
       });
     }
@@ -1855,7 +1855,7 @@ const server = createServer(async (request, response) => {
         response,
         pool: episodicScratchPool,
         embeddingService: semanticMemoryEmbeddingService,
-        allowUnsignedLocal: process.env.OPENCLAW_COMPACT_INTENT_ALLOW_UNSIGNED_LOCAL === "true",
+        allowUnsignedLocal: process.env.NODE_ENV === "test" && process.env.OPENCLAW_MEMORY_ALLOW_UNSIGNED_LOCAL === "true",
         now: () => resolveGatewayNow()
       });
     }
