@@ -173,6 +173,9 @@ export function isDomainInventoryIntent(message: string): boolean {
   if (isOperationalOpenClawPrompt(normalized)) {
     return false;
   }
+  if (isDiagnosticIntent(normalized)) {
+    return false;
+  }
 
   const mentionsDomain =
     /\bdominios?\b/.test(normalized) ||
@@ -203,6 +206,28 @@ function isOperationalOpenClawPrompt(normalized: string): boolean {
     /\bsmtp\b/.test(normalized) ||
     /\b(configura\w*|configuremos|crea\w*|creemos|crear|monta\w*|montemos|arma\w*|armemos|aprovecha\w*|setup|provisiona\w*)\b/.test(normalized) ||
     /\b(presupuesto|budget|correo de prueba|smoke|message[ -]?id|destinatario|warmup)\b/.test(normalized)
+  );
+}
+
+// Intenciones de DIAGNÓSTICO deben ir al modelo (Bedrock), donde viven los tools
+// read_dkim_status / read_smtp_reachability / read_run_state_integrity /
+// read_delivery_reason. Sin esto, el atajo local de inventario IONOS las secuestra
+// solo porque mencionan "dominio" + un verbo como "revisa" — y el tool de
+// diagnóstico nunca se llega a invocar (auditado en vivo 2026-06-29).
+function isDiagnosticIntent(normalized: string): boolean {
+  return (
+    /\bdkim\b/.test(normalized) ||
+    /\bselector(es)?\b/.test(normalized) ||
+    /\b(spf|dmarc)\b/.test(normalized) ||
+    /\b(outbound|egress|reachability)\b/.test(normalized) ||
+    /\b(puerto|port)\s*25\b/.test(normalized) ||
+    /:25\b/.test(normalized) ||
+    /\b(run[- ]?state|huerfan\w*|integridad)\b/.test(normalized) ||
+    /\bsin\s+(un\s+)?run\b/.test(normalized) ||
+    /\bruns?\b[\s\S]*\b(fallid\w*|failed|cancelad\w*|en estado)\b/.test(normalized) ||
+    /\b(rebot\w*|bounce|deferred|deferid\w*|mail\.?log|message[- ]?id)\b/.test(normalized) ||
+    /\bmotivo de (entrega|rebote)\b/.test(normalized) ||
+    /\bread_(dkim_status|smtp_reachability|run_state_integrity|delivery_reason)\b/.test(normalized)
   );
 }
 
