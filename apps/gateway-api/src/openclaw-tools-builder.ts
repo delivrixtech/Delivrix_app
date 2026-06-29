@@ -12,10 +12,16 @@ import {
   readInfrastructureAccountHealthParamSchema,
   readConversationParamSchema,
   readEpisodicScratchParamSchema,
+  semanticRememberParamSchema,
+  semanticRecallParamSchema,
   readInfrastructureInventoryParamSchema,
   readWebdockServersParamSchema,
   retireInfrastructureAccountParamSchema,
   route53DomainDetailParamSchema,
+  deliveryReasonParamSchema,
+  smtpReachabilityParamSchema,
+  dkimStatusParamSchema,
+  runStateIntegrityParamSchema,
   route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
   route53ZoneRecordsParamSchema,
@@ -47,6 +53,10 @@ export type OpenClawToolName =
   | "wait_for_dns_propagation"
   | "read_route53_domain_detail"
   | "read_route53_zone_records"
+  | "read_delivery_reason"
+  | "read_smtp_reachability"
+  | "read_dkim_status"
+  | "read_run_state_integrity"
   | "update_domain_nameservers"
   | "read_dns_ionos"
   | "read_mxtoolbox_health"
@@ -243,6 +253,61 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     targetType: "openclaw_memory",
     severity: "high"
   },
+  semantic_remember: {
+    spec: {
+      name: "semantic_remember",
+      description: [
+        "Guarda un hallazgo, aprendizaje o hecho verificado en la memoria semántica de OpenClaw (vector + full-text en español).",
+        "Escritura interna auditada, sin side effects externos ni ApprovalGate: sirve para recordar conocimiento entre turnos y recuperarlo luego por significado.",
+        "Si los embeddings no están configurados, la memoria se guarda igual en modo full-text."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          memoryType: { type: "string", minLength: 1, maxLength: 64, description: "Categoría del recuerdo: finding, learning, fact, decision, etc." },
+          content: { type: "string", minLength: 1, maxLength: 8000, description: "El conocimiento a recordar, en texto claro." },
+          visibility: { type: "string", enum: ["private", "shared_family", "shared_global", "human_authored"], default: "private" },
+          metadata: { type: "object", description: "Metadata estructurada opcional (dominio, IP, runId, etc.)." },
+          taskId: { type: "string", minLength: 1, maxLength: 128 },
+          sourcePath: { type: "string", minLength: 1, maxLength: 512 }
+        },
+        required: ["memoryType", "content"]
+      }
+    },
+    paramSchema: semanticRememberParamSchema,
+    enabled: (env) => hmacConfigured(env) && postgresConfigured(env),
+    targetType: "openclaw_memory",
+    severity: "high"
+  },
+  semantic_recall: {
+    spec: {
+      name: "semantic_recall",
+      description: [
+        "Recupera memoria relevante por significado con búsqueda híbrida (vector + full-text en español, fusión RRF).",
+        "Read-only, sin ApprovalGate: úsalo al inicio de una decisión para traer hallazgos, aprendizajes y hechos verificados previos sin repetir trabajo.",
+        "Si los embeddings no están configurados, degrada a búsqueda full-text."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          query: { type: "string", minLength: 3, maxLength: 1000, description: "Pregunta o necesidad de decisión para buscar memoria relevante." },
+          limit: { type: "integer", minimum: 1, maximum: 50, default: 8 },
+          memoryType: { type: "string", minLength: 1, maxLength: 64 },
+          visibilities: {
+            type: "array",
+            minItems: 1,
+            maxItems: 4,
+            items: { type: "string", enum: ["private", "shared_family", "shared_global", "human_authored"] }
+          }
+        },
+        required: ["query"]
+      }
+    },
+    paramSchema: semanticRecallParamSchema,
+    enabled: (env) => hmacConfigured(env) && postgresConfigured(env),
+    targetType: "openclaw_memory",
+    severity: "high"
+  },
   wait_for_dns_propagation: {
     spec: {
       name: "wait_for_dns_propagation",
@@ -299,6 +364,109 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hmacConfigured(env) &&
       hasAwsRoute53DomainCredentials(env),
     targetType: "domain",
+    severity: "high"
+  },
+  read_delivery_reason: {
+    spec: {
+      name: "read_delivery_reason",
+      description: "Devuelve el motivo REAL de entrega/rebote de un correo en un servidor SMTP propio leyendo mail.log de Postfix por SSH del lado del gateway (el agente NO ejecuta SSH). Resuelve el queue-id desde el message-id y reporta status final (sent/bounced/deferred/expired), codigo SMTP (ej 550), codigo DSN (ej 5.7.1), destinatario, relay y motivo textual. Invocar para diagnosticar por que rebota un mensaje en vez de asumir 'puerto 25 bloqueado' u otras causas sin evidencia. Lectura auditada: no envia ni muta nada y no requiere ApprovalGate.",
+      input_schema: {
+        type: "object",
+        required: ["serverSlug", "serverIp", "messageId"],
+        properties: {
+          serverSlug: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Slug del servidor SMTP (de read_webdock_servers / read_sender_nodes)."
+          },
+          serverIp: {
+            type: "string",
+            pattern: ipv4Pattern,
+            description: "IP del servidor (de read_webdock_servers / read_sender_nodes)."
+          },
+          messageId: {
+            type: "string",
+            minLength: 1,
+            maxLength: 255,
+            description: "Message-ID del correo, ej <delivrix-abc123@dominio.com> (lo retorna send_real_email)."
+          }
+        }
+      }
+    },
+    paramSchema: deliveryReasonParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      hasSshRunnerConfig(env),
+    targetType: "webdock_server",
+    severity: "high"
+  },
+  read_smtp_reachability: {
+    spec: {
+      name: "read_smtp_reachability",
+      description: "Diagnostica si un servidor SMTP propio realmente puede ENTREGAR correo. Corre por SSH del lado gateway DOS chequeos separados: inbound (postfix activo y escuchando en :25 = puede recibir) y OUTBOUND (puede abrir TCP a un MX publico en :25 = puede enviar). Invocar para no confundir 'escucha en 25' con 'entrega', y para no declarar 'puerto 25 bloqueado' sin evidencia. Si el probe no corre devuelve outbound 'unknown' (nunca un 'blocked' falso). Lectura auditada: no envia ni muta nada.",
+      input_schema: {
+        type: "object",
+        required: ["serverSlug", "serverIp"],
+        properties: {
+          serverSlug: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Slug del servidor SMTP (de read_webdock_servers / read_sender_nodes)."
+          },
+          serverIp: {
+            type: "string",
+            pattern: ipv4Pattern,
+            description: "IP del servidor (de read_webdock_servers / read_sender_nodes)."
+          }
+        }
+      }
+    },
+    paramSchema: smtpReachabilityParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      hasSshRunnerConfig(env),
+    targetType: "webdock_server",
+    severity: "high"
+  },
+  read_dkim_status: {
+    spec: {
+      name: "read_dkim_status",
+      description: "Diagnostica DKIM de un dominio probando los selectores REALES (la convencion Delivrix s<anio>a, ej s2026a, + 'default' y comunes), no solo 'default'. Distingue valid / revoked (registro presente pero p= vacio) / absent / unknown. Invocar antes de declarar 'DKIM missing': el preflight puede pegar al selector equivocado y dar un falso negativo, o contar una clave revocada como OK. Si DNS no responde devuelve 'unknown' (nunca un 'absent' falso). Lectura auditada: no muta DNS.",
+      input_schema: {
+        type: "object",
+        required: ["domain"],
+        properties: {
+          domain: {
+            type: "string",
+            pattern: domainPattern,
+            description: "Dominio sin protocolo ni path. Ejemplo: bizreport-control.com"
+          },
+          expectedSelector: {
+            type: "string",
+            pattern: selectorPattern,
+            description: "Selector esperado, opcional. Se prueba primero antes de la convencion Delivrix y los comunes."
+          }
+        }
+      }
+    },
+    paramSchema: dkimStatusParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "domain",
+    severity: "high"
+  },
+  read_run_state_integrity: {
+    spec: {
+      name: "read_run_state_integrity",
+      description: "Audita la completitud del run-state de provisioning: cruza los dominios que ENVIARON correo real (de los eventos auditados) contra los runs registrados y reporta los dominios que envian SIN run (ej. annualcorpfilings 10/10 sin run) mas los runs en estado failed/cancelled. Invocar para detectar servers fuera del flujo auditado y runs colgados antes de declarar la flota sana. Sin parametros. Lectura auditada: no muta nada y no requiere ApprovalGate.",
+      input_schema: {
+        type: "object",
+        required: [],
+        properties: {}
+      }
+    },
+    paramSchema: runStateIntegrityParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "openclaw_orchestrator",
     severity: "high"
   },
   read_route53_zone_records: {
@@ -1038,6 +1206,10 @@ export function openClawToolNames(): OpenClawToolName[] {
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "read_delivery_reason",
+    "read_smtp_reachability",
+    "read_dkim_status",
+    "read_run_state_integrity",
     "update_domain_nameservers",
     "read_dns_ionos",
     "read_mxtoolbox_health",

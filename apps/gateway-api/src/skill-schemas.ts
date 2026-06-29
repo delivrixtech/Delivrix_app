@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { conformOutcomeData, machineErrorCode } from "../../../packages/storage/src/index.ts";
+import {
+  conformOutcomeData,
+  MemoryVectorValidationError,
+  parseMemoryVisibility,
+  type MemoryVisibility,
+  machineErrorCode
+} from "../../../packages/storage/src/index.ts";
 import {
   tryNormalizeServerSlug,
   tryNormalizeStrictDomainName
@@ -263,6 +269,24 @@ export interface CompactIntentParams extends Record<string, unknown> {
   }>;
 }
 
+export interface SemanticRememberParams extends Record<string, unknown> {
+  memoryType: string;
+  content: string;
+  visibility?: "private" | "shared_family" | "shared_global" | "human_authored";
+  metadata?: Record<string, unknown>;
+  taskId?: string;
+  sourcePath?: string;
+  agentId?: string;
+}
+
+export interface SemanticRecallParams extends Record<string, unknown> {
+  query: string;
+  limit?: number;
+  memoryType?: string;
+  visibilities?: Array<"private" | "shared_family" | "shared_global" | "human_authored">;
+  agentId?: string;
+}
+
 export const route53RegisterParamSchema = schema<Route53RegisterParams>((value) => {
   const input = object(value);
   const years = integer(input.years ?? input.durationYears, "years", 1, 10);
@@ -298,6 +322,53 @@ export const route53DomainDetailParamSchema = schema<Route53DomainDetailParams>(
     domain: domain(input.domain, "domain")
   };
 });
+
+export interface DeliveryReasonParams {
+  serverSlug: string;
+  serverIp: string;
+  messageId: string;
+}
+
+export const deliveryReasonParamSchema = schema<DeliveryReasonParams>((value) => {
+  const input = object(value);
+  return {
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    serverIp: ipv4(input.serverIp, "serverIp"),
+    messageId: deliveryMessageId(input.messageId, "messageId")
+  };
+});
+
+export interface SmtpReachabilityParams {
+  serverSlug: string;
+  serverIp: string;
+}
+
+export const smtpReachabilityParamSchema = schema<SmtpReachabilityParams>((value) => {
+  const input = object(value);
+  return {
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    serverIp: ipv4(input.serverIp, "serverIp")
+  };
+});
+
+export interface DkimStatusParams {
+  domain: string;
+  expectedSelector?: string;
+}
+
+export const dkimStatusParamSchema = schema<DkimStatusParams>((value) => {
+  const input = object(value);
+  return {
+    domain: domain(input.domain, "domain"),
+    ...(input.expectedSelector === undefined || input.expectedSelector === null || input.expectedSelector === ""
+      ? {}
+      : { expectedSelector: selector(input.expectedSelector, "expectedSelector") })
+  };
+});
+
+export type RunStateIntegrityParams = Record<string, never>;
+
+export const runStateIntegrityParamSchema = schema<RunStateIntegrityParams>(() => ({}));
 
 export const route53ZoneRecordsParamSchema = schema<Route53ZoneRecordsParams>((value) => {
   const input = object(value);
@@ -605,6 +676,66 @@ export const readEpisodicScratchParamSchema = schema<ReadEpisodicScratchParams>(
   return output;
 });
 
+function memoryVisibility(value: unknown, field: string): MemoryVisibility {
+  try {
+    return parseMemoryVisibility(value);
+  } catch (error) {
+    if (error instanceof MemoryVectorValidationError) {
+      throw new SkillSchemaError(`${field} ${error.message}`);
+    }
+    throw error;
+  }
+}
+
+export const semanticRememberParamSchema = schema<SemanticRememberParams>((value) => {
+  const input = object(value);
+  const output: SemanticRememberParams = {
+    memoryType: boundedText(input.memoryType, "memoryType", 1, 64),
+    content: boundedText(input.content, "content", 1, 8000)
+  };
+  if (input.visibility !== undefined && input.visibility !== null && input.visibility !== "") {
+    output.visibility = memoryVisibility(input.visibility, "visibility");
+  }
+  if (input.metadata !== undefined && input.metadata !== null) {
+    output.metadata = object(input.metadata);
+  }
+  if (input.taskId !== undefined && input.taskId !== null && input.taskId !== "") {
+    output.taskId = boundedText(input.taskId, "taskId", 1, 128);
+  }
+  if (input.sourcePath !== undefined && input.sourcePath !== null && input.sourcePath !== "") {
+    output.sourcePath = boundedText(input.sourcePath, "sourcePath", 1, 512);
+  }
+  if (input.agentId !== undefined && input.agentId !== null && input.agentId !== "") {
+    output.agentId = boundedText(input.agentId, "agentId", 1, 128);
+  }
+  return output;
+});
+
+export const semanticRecallParamSchema = schema<SemanticRecallParams>((value) => {
+  const input = object(value);
+  const output: SemanticRecallParams = {
+    query: boundedText(input.query, "query", 3, 1000)
+  };
+  if (input.limit !== undefined && input.limit !== null) {
+    output.limit = integer(input.limit, "limit", 1, 50);
+  }
+  if (input.memoryType !== undefined && input.memoryType !== null && input.memoryType !== "") {
+    output.memoryType = boundedText(input.memoryType, "memoryType", 1, 64);
+  }
+  if (input.visibilities !== undefined && input.visibilities !== null) {
+    if (!Array.isArray(input.visibilities) || input.visibilities.length === 0) {
+      throw new SkillSchemaError("visibilities must be a non-empty array");
+    }
+    output.visibilities = input.visibilities.map((entry, index) =>
+      memoryVisibility(entry, `visibilities[${index}]`)
+    );
+  }
+  if (input.agentId !== undefined && input.agentId !== null && input.agentId !== "") {
+    output.agentId = boundedText(input.agentId, "agentId", 1, 128);
+  }
+  return output;
+});
+
 export const compactIntentParamSchema = schema<CompactIntentParams>((value) => {
   const input = object(value);
   return {
@@ -738,6 +869,14 @@ function ipv4(value: unknown, field: string): string {
     throw new SkillSchemaError(`${field} must be a valid IPv4 address`);
   }
   return parts.map((part) => String(Number(part))).join(".");
+}
+
+function deliveryMessageId(value: unknown, field: string): string {
+  const normalized = string(value, field).trim();
+  if (normalized.length < 1 || normalized.length > 255 || !/^[A-Za-z0-9<>@._+-]+$/.test(normalized)) {
+    throw new SkillSchemaError(`${field} must be a Message-ID (e.g. <delivrix-...@domain>)`);
+  }
+  return normalized;
 }
 
 function mxtoolboxTarget(value: unknown, field: string): string {

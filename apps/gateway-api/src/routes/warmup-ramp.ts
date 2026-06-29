@@ -16,6 +16,10 @@ import {
   isWarmupRampSchedule,
   materializeRampBatches
 } from "../../../../packages/domain/src/warmup/ramp-plan.ts";
+import {
+  evaluateWarmupBreaker,
+  type WarmupBreakerMetrics
+} from "../../../../packages/domain/src/warmup/warmup-breaker.ts";
 import { readRequestBody } from "../request-body.ts";
 import {
   appendWarmupRamp,
@@ -55,6 +59,17 @@ type Timer = ReturnType<typeof setTimeout>;
 type TimerFactory = (handler: () => void, ms: number) => Timer;
 type TimerCanceler = (timer: Timer) => void;
 
+/**
+ * Señales externas de reputación por dominio (W4). Se alimentan del skill
+ * placement-check (inbox vs spam de seeds) y/o FBL (quejas). Opcional: sin
+ * ellas el breaker solo ve bounce y el comportamiento no cambia.
+ */
+export interface WarmupExternalSignals {
+  complaints?: number;
+  seedInbox?: number;
+  seedSpam?: number;
+}
+
 export interface RampSchedulerDependencies {
   auditLog: AuditSink;
   sshRunner: SmtpSshRunner;
@@ -67,6 +82,12 @@ export interface RampSchedulerDependencies {
   clearTimer?: TimerCanceler;
   autoRollbackManager?: AutoRollbackManager;
   webhookBroadcaster?: WebhookBroadcaster;
+  getWarmupSignals?: (input: {
+    domain: string;
+    serverSlug: string | null;
+    serverIp: string;
+    rampId: string;
+  }) => Promise<WarmupExternalSignals> | WarmupExternalSignals;
 }
 
 export interface StartRampInput {
@@ -458,10 +479,40 @@ export class RampScheduler {
       bounceRate
     };
 
-    if (autoPauseDecision.pause) {
+    // W4: cerrar el lazo — además del bounce, pausar por quejas-spam o placement
+    // (caída en Spam) cuando hay señales externas. Sin getWarmupSignals el breaker
+    // solo ve bounce y el comportamiento previo no cambia.
+    let externalSignals: WarmupExternalSignals = {};
+    try {
+      externalSignals =
+        (await this.deps.getWarmupSignals?.({
+          domain: ramp.domain,
+          serverSlug: ramp.serverSlug,
+          serverIp: ramp.serverIp,
+          rampId
+        })) ?? {};
+    } catch {
+      externalSignals = {};
+    }
+    const breakerMetrics: WarmupBreakerMetrics = {
+      sent: totalSent,
+      bounced: totalBounced,
+      complaints: externalSignals.complaints,
+      seedInbox: externalSignals.seedInbox,
+      seedSpam: externalSignals.seedSpam
+    };
+    const breaker = evaluateWarmupBreaker(breakerMetrics);
+    const breakerNewSignalPause =
+      breaker.action === "pause" &&
+      (breaker.reason === "auto_spam_rate" || breaker.reason === "auto_placement");
+    const pauseReason: WarmupRampPauseReason = autoPauseDecision.pause
+      ? "auto_bounce_rate"
+      : breaker.reason ?? "auto_bounce_rate";
+
+    if (autoPauseDecision.pause || breakerNewSignalPause) {
       await this.pauseRamp({
         rampId,
-        reason: "auto_bounce_rate",
+        reason: pauseReason,
         actorId: "ramp-scheduler"
       });
       await appendWarmupRampEvent(this.deps.workspace, {
@@ -473,8 +524,10 @@ export class RampScheduler {
           domain: ramp.domain,
           totalSent,
           totalBounced,
-          reason: autoPauseDecision.reason,
-          bounceRate: Number(autoPauseDecision.bounceRate.toFixed(4))
+          reason: pauseReason,
+          bounceRate: Number(autoPauseDecision.bounceRate.toFixed(4)),
+          breakerReason: breaker.reason ?? null,
+          breakerDetail: breaker.detail
         }
       });
       const autoPauseAudit: AuditEventInput = {
@@ -491,8 +544,10 @@ export class RampScheduler {
           batchIndex,
           totalSent,
           totalBounced,
-          reason: autoPauseDecision.reason,
-          bounceRate: Number(autoPauseDecision.bounceRate.toFixed(4))
+          reason: pauseReason,
+          bounceRate: Number(autoPauseDecision.bounceRate.toFixed(4)),
+          breakerReason: breaker.reason ?? null,
+          breakerDetail: breaker.detail
         }
       };
       await this.deps.auditLog.append(autoPauseAudit);

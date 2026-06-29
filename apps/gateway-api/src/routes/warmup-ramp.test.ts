@@ -226,6 +226,56 @@ test("RampScheduler · auto-pausa cuando bounce >5%", async () => {
   assert.equal(harness.commands.length, 2);
 });
 
+test("RampScheduler · auto-pausa por placement (cae en Spam), no solo bounce (W4)", async () => {
+  const clock = new FakeClock(fixedNow);
+  const harness = await schedulerHarness({
+    clock,
+    run: async () => ({ stdout: "queued", stderr: "", exitCode: 0 }), // sin bounces
+    getWarmupSignals: () => ({ seedInbox: 4, seedSpam: 6 }) // 40% inbox < piso 80%
+  });
+
+  const ramp = await harness.scheduler.startRamp({
+    domain: "placement-ramp.com",
+    serverSlug: null,
+    serverIp: "192.0.2.77",
+    schedule: "demo-fast",
+    recipientPool: ["a@x.com", "b@x.com", "c@x.com"],
+    actorId: "operator/juanes",
+    approvalToken: "exec-ramp-placement"
+  });
+
+  await drain();
+
+  const after = await harness.scheduler.getRamp(ramp.rampId);
+  assert.equal(after?.state, "auto_paused");
+  assert.equal(after?.pauseReason, "auto_placement");
+});
+
+test("RampScheduler · auto-pausa por quejas-spam, sin bounces (W4)", async () => {
+  const clock = new FakeClock(fixedNow);
+  const harness = await schedulerHarness({
+    clock,
+    run: async () => ({ stdout: "queued", stderr: "", exitCode: 0 }), // sin bounces
+    getWarmupSignals: () => ({ complaints: 1 }) // 1/3 del batch 0 = 33% > 0.30%
+  });
+
+  const ramp = await harness.scheduler.startRamp({
+    domain: "spam-ramp.com",
+    serverSlug: null,
+    serverIp: "192.0.2.88",
+    schedule: "demo-fast",
+    recipientPool: ["a@x.com", "b@x.com", "c@x.com"],
+    actorId: "operator/juanes",
+    approvalToken: "exec-ramp-spam"
+  });
+
+  await drain();
+
+  const after = await harness.scheduler.getRamp(ramp.rampId);
+  assert.equal(after?.state, "auto_paused");
+  assert.equal(after?.pauseReason, "auto_spam_rate");
+});
+
 test("POST /v1/warmup/ramp/start · happy path responde 202 con rampId", async () => {
   const clock = new FakeClock(fixedNow);
   const harness = await schedulerHarness({ clock });
@@ -327,6 +377,11 @@ async function schedulerHarness(input: {
   clock: FakeClock;
   run?: (input: SmtpSshCommandInput) => Promise<SmtpSshCommandResult>;
   sshRunner?: SmtpSshRunner;
+  getWarmupSignals?: (input: {
+    domain: string;
+    serverSlug: string | null;
+    serverIp: string;
+  }) => { complaints?: number; seedInbox?: number; seedSpam?: number };
 }) {
   const dir = await mkdtemp(join(tmpdir(), "warmup-ramp-"));
   const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
@@ -376,7 +431,8 @@ async function schedulerHarness(input: {
     env: { WARMUP_ENABLE_SEND: "true" },
     now: () => input.clock.now(),
     setTimer: input.clock.setTimer as never,
-    clearTimer: input.clock.clearTimer as never
+    clearTimer: input.clock.clearTimer as never,
+    getWarmupSignals: input.getWarmupSignals
   });
 
   return { scheduler, auditLog, workspace, canvasEvents, commands, sshRunner };

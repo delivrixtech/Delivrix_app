@@ -673,6 +673,79 @@ async function invokeReadOnlyToolOverHttp(input: {
     return body;
   }
 
+  if (input.input.toolName === "read_delivery_reason") {
+    const url = new URL(`${input.baseUrl}/v1/openclaw/delivery-reason`);
+    url.searchParams.set("serverSlug", String(input.input.params.serverSlug));
+    url.searchParams.set("serverIp", String(input.input.params.serverIp));
+    url.searchParams.set("messageId", String(input.input.params.messageId));
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return body;
+  }
+
+  if (input.input.toolName === "read_run_state_integrity") {
+    const url = new URL(`${input.baseUrl}/v1/openclaw/run-state-integrity`);
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return body;
+  }
+
+  if (input.input.toolName === "read_smtp_reachability") {
+    const url = new URL(`${input.baseUrl}/v1/openclaw/smtp-reachability`);
+    url.searchParams.set("serverSlug", String(input.input.params.serverSlug));
+    url.searchParams.set("serverIp", String(input.input.params.serverIp));
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return body;
+  }
+
+  if (input.input.toolName === "read_dkim_status") {
+    const url = new URL(`${input.baseUrl}/v1/openclaw/dkim-status`);
+    url.searchParams.set("domain", String(input.input.params.domain));
+    if (typeof input.input.params.expectedSelector === "string") {
+      url.searchParams.set("expectedSelector", input.input.params.expectedSelector);
+    }
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return body;
+  }
+
   if (input.input.toolName === "read_route53_zone_records") {
     const url = new URL(`${input.baseUrl}/v1/route53/zone-records`);
     url.searchParams.set("zoneId", String(input.input.params.zoneId));
@@ -847,7 +920,13 @@ async function invokeMemoryToolOverHttp(input: {
   env: Record<string, string | undefined>;
   now: () => Date;
 }): Promise<unknown> {
-  if (input.input.toolName !== "compact_intent") {
+  const memoryToolPaths: Record<string, string> = {
+    compact_intent: "/v1/openclaw/compact-intent",
+    semantic_remember: "/v1/openclaw/memory/remember",
+    semantic_recall: "/v1/openclaw/memory/recall"
+  };
+  const memoryToolPath = memoryToolPaths[input.input.toolName];
+  if (!memoryToolPath) {
     throw new Error(`unsupported_memory_tool:${input.input.toolName}`);
   }
 
@@ -862,7 +941,7 @@ async function invokeMemoryToolOverHttp(input: {
   });
   const timestamp = Math.floor(input.now().getTime() / 1000);
   const signature = signOpenClawPayload(raw, timestamp, secret);
-  const response = await input.fetchImpl(`${input.baseUrl}/v1/openclaw/compact-intent`, {
+  const response = await input.fetchImpl(`${input.baseUrl}${memoryToolPath}`, {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -1197,6 +1276,10 @@ function isReadOnlyToolUse(toolName: string): boolean {
     toolName === "read_episodic_scratch" ||
     toolName === "read_route53_domain_detail" ||
     toolName === "read_route53_zone_records" ||
+    toolName === "read_delivery_reason" ||
+    toolName === "read_smtp_reachability" ||
+    toolName === "read_dkim_status" ||
+    toolName === "read_run_state_integrity" ||
     toolName === "read_dns_ionos" ||
     toolName === "read_mxtoolbox_health" ||
     toolName === "read_infrastructure_inventory" ||
@@ -1238,7 +1321,9 @@ function envFlagEnabled(value: string | undefined): boolean {
 }
 
 function isMemoryToolUse(toolName: string): boolean {
-  return toolName === "compact_intent";
+  return toolName === "compact_intent" ||
+    toolName === "semantic_remember" ||
+    toolName === "semantic_recall";
 }
 
 function sleep(ms: number): Promise<void> {
