@@ -17,6 +17,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "read_delivery_reason",
     "read_smtp_reachability",
     "read_dkim_status",
+    "read_run_state_integrity",
     "update_domain_nameservers",
     "read_dns_ionos",
     "read_mxtoolbox_health",
@@ -50,6 +51,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
         "read_delivery_reason",
         "read_smtp_reachability",
         "read_dkim_status",
+        "read_run_state_integrity",
         "read_dns_ionos",
         "read_mxtoolbox_health",
         "read_infrastructure_inventory",
@@ -120,7 +122,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 28);
+  assert.equal(tools.length, 29);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -325,6 +327,9 @@ function validSample(toolName: string): Record<string, unknown> {
   }
   if (toolName === "read_dkim_status") {
     return { domain: "controldelivrix.app", expectedSelector: "s2026a" };
+  }
+  if (toolName === "read_run_state_integrity") {
+    return {};
   }
   if (toolName === "read_route53_zone_records") {
     return {
