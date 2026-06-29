@@ -35,7 +35,7 @@ Decisiones tomadas: infra puente = Cool (Proxmox+LXC) · IPs = /26 · panel de i
 > No replicar la malla recíproca de Instantly (peor caso con infra propia). Modelo = volumen real guiado por placement + IA local. Detalle: `WARMUP_IA_DELIVRIX`.
 - [ ] **W1 [S]** (Dev) Generador de contenido de warmup con IA local; tag por dominio; randomización. **DoD:** correos variados, no plantilla.
 - [ ] **W2 [S]** (Dev) Rampa adaptativa guiada por placement (techo 30-50/buzón/día). **DoD:** la pendiente cambia según placement.
-- [ ] **W3 [S]** (Dev) Circuit-breaker por spam-rate (umbral ~0.30%); enforce delivery floor. **DoD:** auto-pausa por placement/spam, no solo bounce.
+- [ ] **W3 [S]** (Dev) Circuit-breaker por spam-rate (umbral ~0.30%); enforce delivery floor. **DoD:** auto-pausa por placement/spam, no solo bounce. [Motor hecho + testeado (10/10), aislado y sin commitear: `packages/domain/src/warmup/warmup-breaker.ts` — `evaluateWarmupBreaker` pesa bounce + spam-complaint (~0.30%) + placement (piso inbox 80%) y devuelve continue/throttle/pause con razón (`auto_bounce_rate`/`auto_spam_rate`/`auto_placement`). Root-cause: el scheduler (`warmup-ramp.ts:456`) hoy solo mira `bounceRate>0.05`; `placement-check.ts` ya mide inbox/spam pero no está cableado. Pendiente W4: plumbear placement/FBL al scheduler usando este motor + sumar los pause reasons nuevos al tipo `WarmupRampPauseReason`.]
 - [ ] **W4 [S]** (Dev) Wire-up placement-check → scheduler (cerrar el lazo). **DoD:** las dos rutas quedan realimentadas.
 - [ ] **W5 [F2+]** (Dev) Seed-list multi-ESP + ingesta Postmaster/SNDS. **DoD:** placement medido contra varios proveedores.
 - [ ] **W6 [F2+]** (Dev) Motor recíproco interno acotado (solo calentar stack; topado/auditado). **DoD:** existe y está topado.
