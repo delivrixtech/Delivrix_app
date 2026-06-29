@@ -338,6 +338,34 @@ export const deliveryReasonParamSchema = schema<DeliveryReasonParams>((value) =>
   };
 });
 
+export interface SmtpReachabilityParams {
+  serverSlug: string;
+  serverIp: string;
+}
+
+export const smtpReachabilityParamSchema = schema<SmtpReachabilityParams>((value) => {
+  const input = object(value);
+  return {
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    serverIp: ipv4(input.serverIp, "serverIp")
+  };
+});
+
+export interface DkimStatusParams {
+  domain: string;
+  expectedSelector?: string;
+}
+
+export const dkimStatusParamSchema = schema<DkimStatusParams>((value) => {
+  const input = object(value);
+  return {
+    domain: domain(input.domain, "domain"),
+    ...(input.expectedSelector === undefined || input.expectedSelector === null || input.expectedSelector === ""
+      ? {}
+      : { expectedSelector: selector(input.expectedSelector, "expectedSelector") })
+  };
+});
+
 export const route53ZoneRecordsParamSchema = schema<Route53ZoneRecordsParams>((value) => {
   const input = object(value);
   return {

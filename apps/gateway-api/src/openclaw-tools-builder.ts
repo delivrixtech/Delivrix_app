@@ -19,6 +19,8 @@ import {
   retireInfrastructureAccountParamSchema,
   route53DomainDetailParamSchema,
   deliveryReasonParamSchema,
+  smtpReachabilityParamSchema,
+  dkimStatusParamSchema,
   route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
   route53ZoneRecordsParamSchema,
@@ -51,6 +53,8 @@ export type OpenClawToolName =
   | "read_route53_domain_detail"
   | "read_route53_zone_records"
   | "read_delivery_reason"
+  | "read_smtp_reachability"
+  | "read_dkim_status"
   | "update_domain_nameservers"
   | "read_dns_ionos"
   | "read_mxtoolbox_health"
@@ -392,6 +396,60 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hmacConfigured(env) &&
       hasSshRunnerConfig(env),
     targetType: "webdock_server",
+    severity: "high"
+  },
+  read_smtp_reachability: {
+    spec: {
+      name: "read_smtp_reachability",
+      description: "Diagnostica si un servidor SMTP propio realmente puede ENTREGAR correo. Corre por SSH del lado gateway DOS chequeos separados: inbound (postfix activo y escuchando en :25 = puede recibir) y OUTBOUND (puede abrir TCP a un MX publico en :25 = puede enviar). Invocar para no confundir 'escucha en 25' con 'entrega', y para no declarar 'puerto 25 bloqueado' sin evidencia. Si el probe no corre devuelve outbound 'unknown' (nunca un 'blocked' falso). Lectura auditada: no envia ni muta nada.",
+      input_schema: {
+        type: "object",
+        required: ["serverSlug", "serverIp"],
+        properties: {
+          serverSlug: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Slug del servidor SMTP (de read_webdock_servers / read_sender_nodes)."
+          },
+          serverIp: {
+            type: "string",
+            pattern: ipv4Pattern,
+            description: "IP del servidor (de read_webdock_servers / read_sender_nodes)."
+          }
+        }
+      }
+    },
+    paramSchema: smtpReachabilityParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      hasSshRunnerConfig(env),
+    targetType: "webdock_server",
+    severity: "high"
+  },
+  read_dkim_status: {
+    spec: {
+      name: "read_dkim_status",
+      description: "Diagnostica DKIM de un dominio probando los selectores REALES (la convencion Delivrix s<anio>a, ej s2026a, + 'default' y comunes), no solo 'default'. Distingue valid / revoked (registro presente pero p= vacio) / absent / unknown. Invocar antes de declarar 'DKIM missing': el preflight puede pegar al selector equivocado y dar un falso negativo, o contar una clave revocada como OK. Si DNS no responde devuelve 'unknown' (nunca un 'absent' falso). Lectura auditada: no muta DNS.",
+      input_schema: {
+        type: "object",
+        required: ["domain"],
+        properties: {
+          domain: {
+            type: "string",
+            pattern: domainPattern,
+            description: "Dominio sin protocolo ni path. Ejemplo: bizreport-control.com"
+          },
+          expectedSelector: {
+            type: "string",
+            pattern: selectorPattern,
+            description: "Selector esperado, opcional. Se prueba primero antes de la convencion Delivrix y los comunes."
+          }
+        }
+      }
+    },
+    paramSchema: dkimStatusParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "domain",
     severity: "high"
   },
   read_route53_zone_records: {
@@ -1132,6 +1190,8 @@ export function openClawToolNames(): OpenClawToolName[] {
     "read_route53_domain_detail",
     "read_route53_zone_records",
     "read_delivery_reason",
+    "read_smtp_reachability",
+    "read_dkim_status",
     "update_domain_nameservers",
     "read_dns_ionos",
     "read_mxtoolbox_health",

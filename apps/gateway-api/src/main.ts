@@ -176,6 +176,8 @@ import {
 } from "./routes/domains-dns.ts";
 import { handleReadRoute53DomainDetail } from "./routes/route53-domain-detail.ts";
 import { handleReadDeliveryReason } from "./routes/openclaw-delivery-reason.ts";
+import { handleReadSmtpReachability } from "./routes/openclaw-smtp-reachability.ts";
+import { handleReadDkimStatus } from "./routes/openclaw-dkim-status.ts";
 import { handleReadRoute53ZoneRecords } from "./routes/route53-zone-records.ts";
 import { handleReadIonosDns } from "./routes/read-dns-ionos.ts";
 import {
@@ -1162,6 +1164,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_ip_reputation_reports", "allowed_read_only"),
   permission("read_send_results", "allowed_read_only"),
   permission("read_delivery_reason", "allowed_read_only"),
+  permission("read_smtp_reachability", "allowed_read_only"),
+  permission("read_dkim_status", "allowed_read_only"),
   permission("read_stuck_jobs", "allowed_read_only"),
   permission("read_operational_summary", "allowed_read_only"),
   permission("read_iam_roles", "allowed_read_only"),
@@ -2151,6 +2155,25 @@ const server = createServer(async (request, response) => {
       return await handleReadDeliveryReason(request, response, {
         sshRunner: smtpSshRunner,
         emitAudit: appendDeliveryReadAudit,
+        logger: gatewayRuntimeLog,
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/smtp-reachability") {
+      return await handleReadSmtpReachability(request, response, {
+        sshRunner: smtpSshRunner,
+        emitAudit: appendDeliveryReadAudit,
+        logger: gatewayRuntimeLog,
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/dkim-status") {
+      return await handleReadDkimStatus(request, response, {
+        emitAudit: appendDkimReadAudit,
         logger: gatewayRuntimeLog,
         now: () => new Date(),
         readBoundaryToken: sensitiveReadBoundaryToken
@@ -6320,6 +6343,23 @@ async function appendDeliveryReadAudit(event: { type: string; [key: string]: unk
     action: event.type,
     targetType: "webdock_server",
     targetId: serverSlug ?? "unknown",
+    riskLevel: "low",
+    decision: "allow",
+    humanApproved: false,
+    metadata: {
+      ...event
+    }
+  });
+}
+
+async function appendDkimReadAudit(event: { type: string; [key: string]: unknown }): Promise<void> {
+  const domain = typeof event.domain === "string" ? event.domain : undefined;
+  await auditLog.append({
+    actorType: "openclaw",
+    actorId: "openclaw-dkim-read",
+    action: event.type,
+    targetType: "domain",
+    targetId: domain ?? "unknown",
     riskLevel: "low",
     decision: "allow",
     humanApproved: false,
