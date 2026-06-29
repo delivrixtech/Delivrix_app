@@ -175,6 +175,11 @@ import {
   handleRoute53DnsUpsertHttp
 } from "./routes/domains-dns.ts";
 import { handleReadRoute53DomainDetail } from "./routes/route53-domain-detail.ts";
+import { handleReadDeliveryReason } from "./routes/openclaw-delivery-reason.ts";
+import { handleReadSmtpReachability } from "./routes/openclaw-smtp-reachability.ts";
+import { handleReadDkimStatus } from "./routes/openclaw-dkim-status.ts";
+import { handleReadRunStateIntegrity } from "./routes/openclaw-run-state-integrity.ts";
+import { createWarmupSignalsReader } from "./warmup-signals-source.ts";
 import { handleReadRoute53ZoneRecords } from "./routes/route53-zone-records.ts";
 import { handleReadIonosDns } from "./routes/read-dns-ionos.ts";
 import {
@@ -339,6 +344,11 @@ import {
   compactIntent,
   handleCompactIntentHttp
 } from "./routes/openclaw-compact-intent.ts";
+import {
+  handleSemanticRememberHttp,
+  handleSemanticRecallHttp
+} from "./routes/openclaw-semantic-memory.ts";
+import { embeddingServiceFromEnv } from "./openclaw-embedding-service.ts";
 import {
   handleOpenClawChatConversationsHttp,
   handleOpenClawChatHistoryHttp
@@ -570,6 +580,7 @@ const episodicScratchPool = new Pool({
   connectionString: process.env.POSTGRES_URL ?? defaultPostgresUrl,
   application_name: "delivrix-openclaw-episodic-scratch"
 });
+const semanticMemoryEmbeddingService = embeddingServiceFromEnv(process.env);
 const gatewayLogStream = new GatewayLogStreamService({ logPath: gatewayRuntimeLog.logPath });
 const equipoWebhookBroadcaster = new EquipoWebhookBroadcaster({
   killSwitchProvider: async () => (await killSwitchStore.get()).enabled
@@ -585,7 +596,10 @@ const rampScheduler = new RampScheduler({
   readCanvasState: () => canvasLiveEvents.snapshot(),
   env: process.env,
   autoRollbackManager,
-  webhookBroadcaster: equipoWebhookBroadcaster
+  webhookBroadcaster: equipoWebhookBroadcaster,
+  // W4 production feed: closes the loop by reading the latest placement-check
+  // result for the ramp from the audit log (no IMAP on the hot path).
+  getWarmupSignals: createWarmupSignalsReader({ auditLog })
 });
 const gatewaySelfBaseUrl = process.env.DELIVRIX_GATEWAY_INTERNAL_BASE_URL ?? `http://${host}:${port}`;
 const sensitiveReadBoundaryToken =
@@ -1154,6 +1168,10 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_sender_nodes", "allowed_read_only"),
   permission("read_ip_reputation_reports", "allowed_read_only"),
   permission("read_send_results", "allowed_read_only"),
+  permission("read_delivery_reason", "allowed_read_only"),
+  permission("read_smtp_reachability", "allowed_read_only"),
+  permission("read_dkim_status", "allowed_read_only"),
+  permission("read_run_state_integrity", "allowed_read_only"),
   permission("read_stuck_jobs", "allowed_read_only"),
   permission("read_operational_summary", "allowed_read_only"),
   permission("read_iam_roles", "allowed_read_only"),
@@ -1832,6 +1850,28 @@ const server = createServer(async (request, response) => {
       });
     }
 
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/openclaw/memory/remember") {
+      return await handleSemanticRememberHttp({
+        request,
+        response,
+        pool: episodicScratchPool,
+        embeddingService: semanticMemoryEmbeddingService,
+        allowUnsignedLocal: process.env.NODE_ENV === "test" && process.env.OPENCLAW_MEMORY_ALLOW_UNSIGNED_LOCAL === "true",
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/openclaw/memory/recall") {
+      return await handleSemanticRecallHttp({
+        request,
+        response,
+        pool: episodicScratchPool,
+        embeddingService: semanticMemoryEmbeddingService,
+        allowUnsignedLocal: process.env.NODE_ENV === "test" && process.env.OPENCLAW_MEMORY_ALLOW_UNSIGNED_LOCAL === "true",
+        now: () => resolveGatewayNow()
+      });
+    }
+
     {
       const rampPauseMatch = request.method === "POST" && request.url
         ? /^\/v1\/warmup\/ramp\/(ramp-[A-Za-z0-9-]+)\/pause$/.exec(request.url)
@@ -2111,6 +2151,63 @@ const server = createServer(async (request, response) => {
       return await handleReadRoute53DomainDetail(request, response, {
         canvasLiveEvents,
         emitAudit: appendRoute53ReadAudit,
+        logger: gatewayRuntimeLog,
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/delivery-reason") {
+      return await handleReadDeliveryReason(request, response, {
+        sshRunner: smtpSshRunner,
+        emitAudit: appendDeliveryReadAudit,
+        logger: gatewayRuntimeLog,
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/smtp-reachability") {
+      return await handleReadSmtpReachability(request, response, {
+        sshRunner: smtpSshRunner,
+        emitAudit: appendDeliveryReadAudit,
+        logger: gatewayRuntimeLog,
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/dkim-status") {
+      return await handleReadDkimStatus(request, response, {
+        emitAudit: appendDkimReadAudit,
+        logger: gatewayRuntimeLog,
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/run-state-integrity") {
+      return await handleReadRunStateIntegrity(request, response, {
+        listRuns: async () =>
+          (await listActiveSmtpRuns()).map((run) => ({
+            runId: run.runId,
+            status: run.status,
+            ...(run.chosenDomain ? { chosenDomain: run.chosenDomain } : {})
+          })),
+        listSends: async () => {
+          const events = await auditLog.list();
+          const sends: Array<{ domain: string; serverSlug?: string; occurredAt?: string }> = [];
+          for (const event of events) {
+            if (event.action !== "oc.smtp.real_email_sent") continue;
+            const from = typeof event.metadata?.fromAddress === "string" ? event.metadata.fromAddress : undefined;
+            const sendingDomain = from && from.includes("@") ? from.split("@")[1]?.trim().toLowerCase() : undefined;
+            if (!sendingDomain) continue;
+            const serverSlug = typeof event.metadata?.serverSlug === "string" ? event.metadata.serverSlug : undefined;
+            sends.push({ domain: sendingDomain, ...(serverSlug ? { serverSlug } : {}), occurredAt: event.occurredAt });
+          }
+          return sends;
+        },
+        emitAudit: appendRunStateIntegrityAudit,
         logger: gatewayRuntimeLog,
         now: () => new Date(),
         readBoundaryToken: sensitiveReadBoundaryToken
@@ -5803,10 +5900,12 @@ async function listActiveSmtpRuns(): Promise<SmtpRunSummary[]> {
         }
       })
     );
+    const parsedRunsLimit = Number.parseInt(process.env.OPENCLAW_ACTIVE_SMTP_RUNS_LIMIT ?? "", 10);
+    const activeRunsLimit = Number.isInteger(parsedRunsLimit) && parsedRunsLimit > 0 ? parsedRunsLimit : 50;
     return entries
       .filter((entry): entry is { mtimeMs: number; summary: SmtpRunSummary } => entry !== null)
       .sort((left, right) => right.mtimeMs - left.mtimeMs)
-      .slice(0, 12)
+      .slice(0, activeRunsLimit)
       .map((entry) => entry.summary);
   } catch {
     return [];
@@ -6265,6 +6364,56 @@ async function appendRoute53ReadAudit(event: { type: string; [key: string]: unkn
     humanApproved: false,
     metadata: {
       provider: isIonos ? "ionos-dns" : "aws-route53",
+      ...event
+    }
+  });
+}
+
+async function appendDeliveryReadAudit(event: { type: string; [key: string]: unknown }): Promise<void> {
+  const serverSlug = typeof event.serverSlug === "string" ? event.serverSlug : undefined;
+  await auditLog.append({
+    actorType: "openclaw",
+    actorId: "openclaw-smtp-read-tools",
+    action: event.type,
+    targetType: "webdock_server",
+    targetId: serverSlug ?? "unknown",
+    riskLevel: "low",
+    decision: "allow",
+    humanApproved: false,
+    metadata: {
+      ...event
+    }
+  });
+}
+
+async function appendRunStateIntegrityAudit(event: { type: string; [key: string]: unknown }): Promise<void> {
+  await auditLog.append({
+    actorType: "openclaw",
+    actorId: "openclaw-provisioning-read",
+    action: event.type,
+    targetType: "openclaw_orchestrator",
+    targetId: "run-state",
+    riskLevel: "low",
+    decision: "allow",
+    humanApproved: false,
+    metadata: {
+      ...event
+    }
+  });
+}
+
+async function appendDkimReadAudit(event: { type: string; [key: string]: unknown }): Promise<void> {
+  const domain = typeof event.domain === "string" ? event.domain : undefined;
+  await auditLog.append({
+    actorType: "openclaw",
+    actorId: "openclaw-dkim-read",
+    action: event.type,
+    targetType: "domain",
+    targetId: domain ?? "unknown",
+    riskLevel: "low",
+    decision: "allow",
+    humanApproved: false,
+    metadata: {
       ...event
     }
   });

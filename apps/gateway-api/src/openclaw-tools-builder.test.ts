@@ -14,6 +14,10 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
+    "read_delivery_reason",
+    "read_smtp_reachability",
+    "read_dkim_status",
+    "read_run_state_integrity",
     "update_domain_nameservers",
     "read_dns_ionos",
     "read_mxtoolbox_health",
@@ -44,6 +48,10 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
         "read_episodic_scratch",
         "read_route53_domain_detail",
         "read_route53_zone_records",
+        "read_delivery_reason",
+        "read_smtp_reachability",
+        "read_dkim_status",
+        "read_run_state_integrity",
         "read_dns_ionos",
         "read_mxtoolbox_health",
         "read_infrastructure_inventory",
@@ -114,7 +122,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 25);
+  assert.equal(tools.length, 29);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -310,6 +318,18 @@ function validSample(toolName: string): Record<string, unknown> {
   }
   if (toolName === "read_route53_domain_detail") {
     return { domain: "controldelivrix.app" };
+  }
+  if (toolName === "read_delivery_reason") {
+    return { serverSlug: "smtp-1", serverIp: "1.1.1.1", messageId: "<delivrix-abc@controldelivrix.app>" };
+  }
+  if (toolName === "read_smtp_reachability") {
+    return { serverSlug: "smtp-1", serverIp: "1.1.1.1" };
+  }
+  if (toolName === "read_dkim_status") {
+    return { domain: "controldelivrix.app", expectedSelector: "s2026a" };
+  }
+  if (toolName === "read_run_state_integrity") {
+    return {};
   }
   if (toolName === "read_route53_zone_records") {
     return {

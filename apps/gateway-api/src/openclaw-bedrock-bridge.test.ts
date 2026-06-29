@@ -76,9 +76,12 @@ test("OpenClawBedrockBridge inyecta active_smtp_runs en el contexto para poder c
     systemPromptPath: await promptFile("System prompt demo"),
     now: fixedNow(),
     fetchImpl: liveContextFetchStub(),
-    smtpRunsReader: async () => [
-      { runId: "exec-continuity-1", status: "failed", lastCompletedStep: 8, chosenDomain: "controlledgerdesk.com" }
-    ],
+    smtpRunsReader: async () => Array.from({ length: 50 }, (_, index) => ({
+      runId: `exec-continuity-${index + 1}`,
+      status: index % 2 === 0 ? "failed" : "completed",
+      lastCompletedStep: index % 2 === 0 ? 8 : 14,
+      chosenDomain: `controlledgerdesk-${index + 1}.com`
+    })),
     client: {
       send: async (command) => {
         capturedBody = String((command as { input: { body: unknown } }).input.body);
@@ -97,7 +100,9 @@ test("OpenClawBedrockBridge inyecta active_smtp_runs en el contexto para poder c
   // El runId, su estado y dominio deben llegar al modelo para que pueda reanudar.
   assert.match(capturedBody, /active_smtp_runs/);
   assert.match(capturedBody, /exec-continuity-1/);
-  assert.match(capturedBody, /controlledgerdesk\.com/);
+  assert.match(capturedBody, /controlledgerdesk-1\.com/);
+  assert.match(capturedBody, /exec-continuity-50/);
+  assert.match(capturedBody, /controlledgerdesk-50\.com/);
 });
 
 test("OpenClawBedrockBridge keeps in-memory conversation history across turns", async () => {
@@ -698,7 +703,7 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
   assert.doesNotMatch(system, /ciphertext-should-redact|auth-tag-should-redact|smtp-password-should-redact/);
 });
 
-test("OpenClawBedrockBridge keeps multiprovider inventory_servers JSON valid when truncated", async () => {
+test("OpenClawBedrockBridge keeps multiprovider inventory_servers complete under the default live-context limit", async () => {
   let payload: Record<string, unknown> | null = null;
   const webdockAccounts = ["primary", "ops", "warmup", "delivery", "reserve"];
   const webdockItems = webdockAccounts.flatMap((accountId, accountIndex) => {
@@ -737,7 +742,7 @@ test("OpenClawBedrockBridge keeps multiprovider inventory_servers JSON valid whe
     systemPromptPath: await promptFile("System prompt demo"),
     now: fixedNow(),
     delivrixBaseUrl: "http://gateway.test/",
-    liveContextItemLimit: 20,
+    liveContextItemLimit: 50,
     fetchImpl: (async (input) => {
       const url = new URL(String(input));
       const bodyByPath: Record<string, unknown> = {
@@ -791,7 +796,7 @@ test("OpenClawBedrockBridge keeps multiprovider inventory_servers JSON valid whe
   const capturedPayload = payload as Record<string, unknown> | null;
   assert.ok(capturedPayload);
   const inventoryServersJson = extractLiveContextJsonBlock(String(capturedPayload.system), "inventory_servers");
-  assert.ok(inventoryServersJson.length <= 5_000);
+  assert.ok(inventoryServersJson.length <= 16_000);
   const parsed = JSON.parse(inventoryServersJson) as {
     count: number;
     displayedCount: number;
@@ -799,9 +804,9 @@ test("OpenClawBedrockBridge keeps multiprovider inventory_servers JSON valid whe
     items: Array<{ accountId: string; providerId: string }>;
   };
   assert.equal(parsed.count, totalServers);
-  assert.equal(parsed.truncated, true);
+  assert.equal(parsed.truncated, false);
   assert.equal(parsed.displayedCount, parsed.items.length);
-  assert.ok(parsed.items.length <= 20);
+  assert.equal(parsed.items.length, totalServers);
   const accountIds = new Set(parsed.items.map((item) => item.accountId));
   for (const accountId of webdockAccounts) {
     assert.equal(accountIds.has(accountId), true);
@@ -949,11 +954,15 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
 
   assert.equal(payloads.length, 2);
   const toolNames = (payloads[0].tools as Array<{ name: string }>).map((tool) => tool.name);
-  assert.equal(toolNames.length, 24);
+  assert.equal(toolNames.length, 28);
   assert.equal(toolNames.includes("read_episodic_scratch"), true);
   assert.equal(toolNames.includes("compact_intent"), true);
   assert.equal(toolNames.includes("enable_smtp_auth"), true);
   assert.equal(toolNames.includes("read_route53_domain_detail"), true);
+  assert.equal(toolNames.includes("read_delivery_reason"), true);
+  assert.equal(toolNames.includes("read_smtp_reachability"), true);
+  assert.equal(toolNames.includes("read_dkim_status"), true);
+  assert.equal(toolNames.includes("read_run_state_integrity"), true);
   assert.equal(toolNames.includes("read_route53_zone_records"), true);
   assert.equal(toolNames.includes("read_dns_ionos"), true);
   assert.equal(toolNames.includes("read_mxtoolbox_health"), true);
@@ -1006,6 +1015,51 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   assert.equal(canvasEvents[3].kind, "audit");
   assert.equal(canvasEvents[4].status, "completed");
   assert.doesNotMatch(JSON.stringify(canvasEvents), /secret-result-token/);
+});
+
+test("OpenClawBedrockBridge stops repeated identical tool-use loops before exhausting budget", async () => {
+  let providerCalls = 0;
+  let toolCalls = 0;
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    env: enabledToolEnv(),
+    processToolUse: async () => {
+      toolCalls += 1;
+      return { ok: true, status: "executed", result: { ok: true } };
+    },
+    client: {
+      send: async () => {
+        providerCalls += 1;
+        return {
+          body: toolUseStream(
+            `toolu-loop-${providerCalls}`,
+            "read_infrastructure_inventory",
+            "{}"
+          )
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-tool-loop", message: "lee inventario hasta que cierre" });
+  const events: ChatStreamEvent[] = [];
+  await bridge.streamHistory("msg-tool-loop", {
+    onDone: (event) => events.push(event)
+  });
+
+  const done = events.find((event): event is Extract<ChatStreamEvent, { type: "ASSISTANT_DONE" }> =>
+    event.type === "ASSISTANT_DONE"
+  );
+  assert.ok(done);
+  assert.match(done.content, /Detuve este turno/);
+  assert.match(done.content, /read_infrastructure_inventory/);
+  assert.equal(providerCalls, 3);
+  assert.equal(toolCalls, 2);
 });
 
 test("OpenClawBedrockBridge redacts PEM tool failures before Canvas and Bedrock tool_result", async () => {
