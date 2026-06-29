@@ -87,6 +87,8 @@ export type WarmupRampState =
 export type WarmupRampPauseReason =
   | "manual"
   | "auto_bounce_rate"
+  | "auto_spam_rate"
+  | "auto_placement"
   | "auto_delivery_floor"
   | "send_failed";
 
