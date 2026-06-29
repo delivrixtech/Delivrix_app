@@ -270,6 +270,27 @@ test("domain chat skill sigue detectando inventario PURO", () => {
   assert.equal(isDomainInventoryIntent("enlistame los dominios de ionos"), true);
   assert.equal(isDomainInventoryIntent("muestra los dominios registrados"), true);
   assert.equal(isDomainInventoryIntent("cuales dominios tengo en ionos"), true);
+  // Caso histórico: "revisar DNS de dominios" sigue siendo inventario (no diagnóstico).
+  assert.equal(isDomainInventoryIntent("necesito revisar DNS de dominios"), true);
+});
+
+test("domain chat skill deja DIAGNÓSTICOS a Bedrock (regresión audit 2026-06-29)", () => {
+  // El atajo de inventario IONOS los secuestraba solo por mencionar 'dominio',
+  // así que read_dkim_status / read_run_state_integrity nunca se invocaban.
+  // DKIM:
+  assert.equal(isDomainInventoryIntent("Revisá el DKIM del dominio bizreport-control.com, ¿está válido?"), false);
+  assert.equal(isDomainInventoryIntent(
+    "No uses el inventario de dominios IONOS. Diagnóstico DKIM por selector s2026a para bizreport-control.com: ¿válido, revocado o ausente?"
+  ), false);
+  // Run-state integrity:
+  assert.equal(isDomainInventoryIntent(
+    "¿hay dominios que estén enviando correo sin un run de provisioning registrado, y cuántos runs en estado failed?"
+  ), false);
+  assert.equal(isDomainInventoryIntent("corré la auditoría de integridad del run-state; ¿algún dominio huérfano?"), false);
+  // Reachability / outbound 25:
+  assert.equal(isDomainInventoryIntent("revisá el dominio y su conectividad outbound al puerto 25"), false);
+  // Bounce / delivery:
+  assert.equal(isDomainInventoryIntent("¿por qué rebotó el correo de este dominio? dame el motivo de rebote del mail.log"), false);
 });
 
 test("domain inventory report blocks nunca emiten content vacio con 0 dominios (regresion content is required)", () => {
