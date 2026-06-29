@@ -86,6 +86,7 @@ export interface RampSchedulerDependencies {
     domain: string;
     serverSlug: string | null;
     serverIp: string;
+    rampId: string;
   }) => Promise<WarmupExternalSignals> | WarmupExternalSignals;
 }
 
@@ -487,7 +488,8 @@ export class RampScheduler {
         (await this.deps.getWarmupSignals?.({
           domain: ramp.domain,
           serverSlug: ramp.serverSlug,
-          serverIp: ramp.serverIp
+          serverIp: ramp.serverIp,
+          rampId
         })) ?? {};
     } catch {
       externalSignals = {};

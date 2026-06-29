@@ -178,6 +178,7 @@ import { handleReadRoute53DomainDetail } from "./routes/route53-domain-detail.ts
 import { handleReadDeliveryReason } from "./routes/openclaw-delivery-reason.ts";
 import { handleReadSmtpReachability } from "./routes/openclaw-smtp-reachability.ts";
 import { handleReadDkimStatus } from "./routes/openclaw-dkim-status.ts";
+import { createWarmupSignalsReader } from "./warmup-signals-source.ts";
 import { handleReadRoute53ZoneRecords } from "./routes/route53-zone-records.ts";
 import { handleReadIonosDns } from "./routes/read-dns-ionos.ts";
 import {
@@ -594,7 +595,10 @@ const rampScheduler = new RampScheduler({
   readCanvasState: () => canvasLiveEvents.snapshot(),
   env: process.env,
   autoRollbackManager,
-  webhookBroadcaster: equipoWebhookBroadcaster
+  webhookBroadcaster: equipoWebhookBroadcaster,
+  // W4 production feed: closes the loop by reading the latest placement-check
+  // result for the ramp from the audit log (no IMAP on the hot path).
+  getWarmupSignals: createWarmupSignalsReader({ auditLog })
 });
 const gatewaySelfBaseUrl = process.env.DELIVRIX_GATEWAY_INTERNAL_BASE_URL ?? `http://${host}:${port}`;
 const sensitiveReadBoundaryToken =
