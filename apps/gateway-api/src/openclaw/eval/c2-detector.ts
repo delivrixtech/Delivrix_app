@@ -31,6 +31,7 @@ export const C2_MATRIX_ACTIONS = [
   "read_delivery_reason",
   "read_smtp_reachability",
   "read_dkim_status",
+  "read_run_state_integrity",
   "read_stuck_jobs",
   "read_operational_summary",
   "read_iam_roles",

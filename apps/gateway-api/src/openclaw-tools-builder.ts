@@ -21,6 +21,7 @@ import {
   deliveryReasonParamSchema,
   smtpReachabilityParamSchema,
   dkimStatusParamSchema,
+  runStateIntegrityParamSchema,
   route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
   route53ZoneRecordsParamSchema,
@@ -55,6 +56,7 @@ export type OpenClawToolName =
   | "read_delivery_reason"
   | "read_smtp_reachability"
   | "read_dkim_status"
+  | "read_run_state_integrity"
   | "update_domain_nameservers"
   | "read_dns_ionos"
   | "read_mxtoolbox_health"
@@ -450,6 +452,21 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     paramSchema: dkimStatusParamSchema,
     enabled: (env) => hmacConfigured(env),
     targetType: "domain",
+    severity: "high"
+  },
+  read_run_state_integrity: {
+    spec: {
+      name: "read_run_state_integrity",
+      description: "Audita la completitud del run-state de provisioning: cruza los dominios que ENVIARON correo real (de los eventos auditados) contra los runs registrados y reporta los dominios que envian SIN run (ej. annualcorpfilings 10/10 sin run) mas los runs en estado failed/cancelled. Invocar para detectar servers fuera del flujo auditado y runs colgados antes de declarar la flota sana. Sin parametros. Lectura auditada: no muta nada y no requiere ApprovalGate.",
+      input_schema: {
+        type: "object",
+        required: [],
+        properties: {}
+      }
+    },
+    paramSchema: runStateIntegrityParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "openclaw_orchestrator",
     severity: "high"
   },
   read_route53_zone_records: {
@@ -1192,6 +1209,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "read_delivery_reason",
     "read_smtp_reachability",
     "read_dkim_status",
+    "read_run_state_integrity",
     "update_domain_nameservers",
     "read_dns_ionos",
     "read_mxtoolbox_health",

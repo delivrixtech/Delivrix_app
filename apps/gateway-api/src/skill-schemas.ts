@@ -366,6 +366,10 @@ export const dkimStatusParamSchema = schema<DkimStatusParams>((value) => {
   };
 });
 
+export type RunStateIntegrityParams = Record<string, never>;
+
+export const runStateIntegrityParamSchema = schema<RunStateIntegrityParams>(() => ({}));
+
 export const route53ZoneRecordsParamSchema = schema<Route53ZoneRecordsParams>((value) => {
   const input = object(value);
   return {

@@ -178,6 +178,7 @@ import { handleReadRoute53DomainDetail } from "./routes/route53-domain-detail.ts
 import { handleReadDeliveryReason } from "./routes/openclaw-delivery-reason.ts";
 import { handleReadSmtpReachability } from "./routes/openclaw-smtp-reachability.ts";
 import { handleReadDkimStatus } from "./routes/openclaw-dkim-status.ts";
+import { handleReadRunStateIntegrity } from "./routes/openclaw-run-state-integrity.ts";
 import { createWarmupSignalsReader } from "./warmup-signals-source.ts";
 import { handleReadRoute53ZoneRecords } from "./routes/route53-zone-records.ts";
 import { handleReadIonosDns } from "./routes/read-dns-ionos.ts";
@@ -1170,6 +1171,7 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_delivery_reason", "allowed_read_only"),
   permission("read_smtp_reachability", "allowed_read_only"),
   permission("read_dkim_status", "allowed_read_only"),
+  permission("read_run_state_integrity", "allowed_read_only"),
   permission("read_stuck_jobs", "allowed_read_only"),
   permission("read_operational_summary", "allowed_read_only"),
   permission("read_iam_roles", "allowed_read_only"),
@@ -2178,6 +2180,34 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/dkim-status") {
       return await handleReadDkimStatus(request, response, {
         emitAudit: appendDkimReadAudit,
+        logger: gatewayRuntimeLog,
+        now: () => new Date(),
+        readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/run-state-integrity") {
+      return await handleReadRunStateIntegrity(request, response, {
+        listRuns: async () =>
+          (await listActiveSmtpRuns()).map((run) => ({
+            runId: run.runId,
+            status: run.status,
+            ...(run.chosenDomain ? { chosenDomain: run.chosenDomain } : {})
+          })),
+        listSends: async () => {
+          const events = await auditLog.list();
+          const sends: Array<{ domain: string; serverSlug?: string; occurredAt?: string }> = [];
+          for (const event of events) {
+            if (event.action !== "oc.smtp.real_email_sent") continue;
+            const from = typeof event.metadata?.fromAddress === "string" ? event.metadata.fromAddress : undefined;
+            const sendingDomain = from && from.includes("@") ? from.split("@")[1]?.trim().toLowerCase() : undefined;
+            if (!sendingDomain) continue;
+            const serverSlug = typeof event.metadata?.serverSlug === "string" ? event.metadata.serverSlug : undefined;
+            sends.push({ domain: sendingDomain, ...(serverSlug ? { serverSlug } : {}), occurredAt: event.occurredAt });
+          }
+          return sends;
+        },
+        emitAudit: appendRunStateIntegrityAudit,
         logger: gatewayRuntimeLog,
         now: () => new Date(),
         readBoundaryToken: sensitiveReadBoundaryToken
@@ -6347,6 +6377,22 @@ async function appendDeliveryReadAudit(event: { type: string; [key: string]: unk
     action: event.type,
     targetType: "webdock_server",
     targetId: serverSlug ?? "unknown",
+    riskLevel: "low",
+    decision: "allow",
+    humanApproved: false,
+    metadata: {
+      ...event
+    }
+  });
+}
+
+async function appendRunStateIntegrityAudit(event: { type: string; [key: string]: unknown }): Promise<void> {
+  await auditLog.append({
+    actorType: "openclaw",
+    actorId: "openclaw-provisioning-read",
+    action: event.type,
+    targetType: "openclaw_orchestrator",
+    targetId: "run-state",
     riskLevel: "low",
     decision: "allow",
     humanApproved: false,

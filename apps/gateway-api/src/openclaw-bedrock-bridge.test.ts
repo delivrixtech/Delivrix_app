@@ -954,7 +954,7 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
 
   assert.equal(payloads.length, 2);
   const toolNames = (payloads[0].tools as Array<{ name: string }>).map((tool) => tool.name);
-  assert.equal(toolNames.length, 27);
+  assert.equal(toolNames.length, 28);
   assert.equal(toolNames.includes("read_episodic_scratch"), true);
   assert.equal(toolNames.includes("compact_intent"), true);
   assert.equal(toolNames.includes("enable_smtp_auth"), true);
@@ -962,6 +962,7 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   assert.equal(toolNames.includes("read_delivery_reason"), true);
   assert.equal(toolNames.includes("read_smtp_reachability"), true);
   assert.equal(toolNames.includes("read_dkim_status"), true);
+  assert.equal(toolNames.includes("read_run_state_integrity"), true);
   assert.equal(toolNames.includes("read_route53_zone_records"), true);
   assert.equal(toolNames.includes("read_dns_ionos"), true);
   assert.equal(toolNames.includes("read_mxtoolbox_health"), true);
