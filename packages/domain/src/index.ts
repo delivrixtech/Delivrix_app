@@ -58,4 +58,5 @@ export * from "./suppression-list.ts";
 export * from "./supervised-collector-plan.ts";
 export * from "./types.ts";
 export * from "./warmup/ramp-plan.ts";
+export * from "./warmup/warmup-breaker.ts";
 export * from "./webdock-inventory.ts";
