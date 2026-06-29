@@ -10,7 +10,15 @@
 // (openclaw-tools-builder.ts enabled(), main.ts, domains-purchase.ts).
 
 export type EnvSeverity = "fatal" | "warn";
-export type EnvKind = "secret" | "secret-32-byte" | "token" | "flag" | "money" | "json-contact" | "csv-email";
+export type EnvKind =
+  | "secret"
+  | "secret-32-byte"
+  | "token"
+  | "flag"
+  | "money"
+  | "json-contact"
+  | "csv-email"
+  | "url";
 
 export interface EnvVarSpec {
   /** Nombre canonico de la variable. */
@@ -349,6 +357,42 @@ export const ENV_PREFLIGHT_CATALOG: readonly EnvVarSpec[] = [
     severity: "warn",
     kind: "secret",
     breaks: "lecturas MXtoolbox fallan"
+  },
+  {
+    name: "PROXMOX_API_URL",
+    group: "providers",
+    severity: "warn",
+    kind: "url",
+    breaks: "provider proxmox no puede leer ni crear LXCs"
+  },
+  {
+    name: "PROXMOX_TOKEN_ID",
+    group: "providers",
+    severity: "warn",
+    kind: "token",
+    breaks: "provider proxmox no puede autenticar contra PVE"
+  },
+  {
+    name: "PROXMOX_TOKEN_SECRET",
+    group: "providers",
+    severity: "warn",
+    kind: "secret",
+    breaks: "provider proxmox no puede autenticar contra PVE"
+  },
+  {
+    name: "PROXMOX_HOST_SSH_TARGET",
+    group: "providers",
+    severity: "warn",
+    kind: "token",
+    breaks: "provider proxmox no puede resetear identidad ni inyectar la pubkey por pct exec"
+  },
+  {
+    name: "PROXMOX_IP_POOL",
+    group: "providers",
+    severity: "warn",
+    kind: "token",
+    anyOf: ["PROXMOX_TEST_NET0"],
+    breaks: "provider proxmox no puede crear LXCs con red (usa IP pool publico o TEST_NET0 de smoke)"
   }
 ];
 
@@ -393,6 +437,14 @@ function validateValue(spec: EnvVarSpec, value: string): EnvIssueReason | null {
     case "csv-email": {
       const emails = value.split(",").map((part) => part.trim()).filter((part) => part.length > 0);
       return emails.length > 0 && emails.every((email) => EMAIL_RE.test(email)) ? null : "invalid";
+    }
+    case "url": {
+      try {
+        const url = new URL(value);
+        return url.protocol === "http:" || url.protocol === "https:" ? null : "invalid";
+      } catch {
+        return "invalid";
+      }
     }
     case "secret-32-byte":
       return isValid32ByteSecret(value) ? null : "invalid";

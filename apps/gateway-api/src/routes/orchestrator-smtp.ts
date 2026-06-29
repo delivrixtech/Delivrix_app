@@ -361,7 +361,8 @@ export interface ConfigureCompleteSmtpDeps {
 
 const defaultApprovalTimeoutMs = 10 * 60 * 1000;
 const longRunningStepTimeoutPaddingMs = 2 * 60 * 1000;
-const minEstimatedCostUsd = 15 + 4.30 / 30;
+const domainRegistrationEstimatedCostUsd = 15;
+const paidVpsEstimatedCostUsd = 4.30 / 30;
 const smtpRunStateVersion = "smtp-run-state/v1";
 const smtpRunStateLockLeaseMs = 40 * 60 * 1000;
 const smtpRunStepLeaseMs = 45 * 60 * 1000;
@@ -553,6 +554,7 @@ export async function handleConfigureCompleteSmtp(
     return json(deps.response, 423, { error: "kill_switch_armed" });
   }
 
+  const minEstimatedCostUsd = minimumEstimatedCostUsdForRun(parsed.data.vpsProviderId);
   if (parsed.data.budgetUsdMax < minEstimatedCostUsd) {
     return json(deps.response, 422, {
       error: "budget_too_low",
@@ -789,7 +791,7 @@ export async function configureCompleteSmtp(
         skill: "register_domain_route53",
         actorId: effectiveInput.actorId,
         approvalTimeoutMs,
-        estimatedCostUsd: verifiedOwnedDomain === chosenDomain ? 0 : 15,
+        estimatedCostUsd: verifiedOwnedDomain === chosenDomain ? 0 : domainRegistrationEstimatedCostUsd,
         budgetUsdMax: effectiveInput.budgetUsdMax,
         params: route53RegistrationParams,
         stepResults
@@ -799,7 +801,7 @@ export async function configureCompleteSmtp(
         runId,
         result: domainRegistration,
         domain: chosenDomain,
-        costUsd: verifiedOwnedDomain === chosenDomain ? 0 : 15
+        costUsd: verifiedOwnedDomain === chosenDomain ? 0 : domainRegistrationEstimatedCostUsd
       });
     }
 
@@ -891,7 +893,7 @@ export async function configureCompleteSmtp(
         skill: "create_webdock_server",
         actorId: effectiveInput.actorId,
         approvalTimeoutMs,
-        estimatedCostUsd: 4.30 / 30,
+        estimatedCostUsd: estimatedVpsCreateCostUsd(vpsProviderId),
         budgetUsdMax: effectiveInput.budgetUsdMax,
         // params byte-identicos al camino Webdock: el adapter del proveedor TRADUCE el vocabulario
         // (profile/locationId/imageSlug) a su propia API. providerId va por canal HERMANO (no en params).
@@ -943,7 +945,7 @@ export async function configureCompleteSmtp(
           skill: "create_webdock_server",
           actorId: effectiveInput.actorId,
           approvalTimeoutMs,
-          estimatedCostUsd: 4.30 / 30,
+          estimatedCostUsd: estimatedVpsCreateCostUsd(vpsProviderId),
           budgetUsdMax: effectiveInput.budgetUsdMax,
           // accountId/providerId NO entran a params (idempotencia/resume + el allowlist del schema los
           // descartaria): viajan por los canales paralelos serverAccountId / providerId.
@@ -4592,13 +4594,21 @@ function normalizeServerAccountId(value: unknown): string | undefined {
 }
 
 function assertKnownNonWebdockVpsProviderId(value: string | undefined): void {
-  if (value === undefined || value === "contabo") return;
+  if (value === undefined || value === "contabo" || value === "proxmox") return;
   throw new OrchestratorFailure("failed", 0, "vps_provider_guard", `unknown_vps_provider:${value}`);
 }
 
 /** True si hay un proveedor de VPS explicito distinto de Webdock (dispara el guard gated). */
 function isNonWebdockProviderId(value: string | undefined): boolean {
   return normalizeVpsProviderId(value) !== undefined;
+}
+
+function minimumEstimatedCostUsdForRun(vpsProviderId: unknown): number {
+  return domainRegistrationEstimatedCostUsd + estimatedVpsCreateCostUsd(normalizeVpsProviderId(vpsProviderId));
+}
+
+function estimatedVpsCreateCostUsd(vpsProviderId: string | undefined): number {
+  return vpsProviderId === "proxmox" ? 0 : paidVpsEstimatedCostUsd;
 }
 
 /**

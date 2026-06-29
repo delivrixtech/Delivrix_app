@@ -1092,8 +1092,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     spec: {
       name: "configure_complete_smtp",
       description: [
-        "Orquesta SMTP completo desde cero: dominio seguro, compra Route53 (o adopción IONOS/Route53), VPS elegible (Webdock o Contabo via vpsProviderId), Main domain/PTR, DNS (Route53 o IONOS via dnsProviderId), Postfix/OpenDKIM, SPF/DKIM/DMARC, warmup mínimo y un correo real autorizado.",
-        "Requiere ApprovalGate por cada acción real cuando OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE está OFF. Con el flag ON, una firma de plan puede cubrir solo el runId/domain/provider/budget/recipient explícitos. Audit/canvas events, kill switch, rollback proposal para VPS y presupuesto máximo siguen obligatorios. Tiempo estimado: 1-3 horas. Costo referencial: USD 15 dominio + USD 4.30/mes VPS prorrateado."
+        "Orquesta SMTP completo desde cero: dominio seguro, compra Route53 (o adopción IONOS/Route53), VPS elegible (Webdock, Contabo o Proxmox via vpsProviderId), Main domain/PTR, DNS (Route53 o IONOS via dnsProviderId), Postfix/OpenDKIM, SPF/DKIM/DMARC, warmup mínimo y un correo real autorizado.",
+        "Requiere ApprovalGate por cada acción real cuando OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE está OFF. Con el flag ON, una firma de plan puede cubrir solo el runId/domain/provider/budget/recipient explícitos. Audit/canvas events, kill switch, rollback proposal para VPS y presupuesto máximo siguen obligatorios. Tiempo estimado: 1-3 horas. Costo referencial: USD 15 dominio + VPS externo prorrateado cuando aplique."
       ].join(" "),
       input_schema: {
         type: "object",
@@ -1112,8 +1112,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           },
           vpsProviderId: {
             type: "string",
-            enum: ["webdock", "contabo"],
-            description: "Proveedor de VPS del run (elegible). Omitido/webdock = Webdock (default); contabo = crea el VPS en Contabo (cuenta propia; PTR/rDNS manual en el panel Contabo). El campo 'provider' NO rutea el VPS."
+            enum: ["webdock", "contabo", "proxmox"],
+            description: "Proveedor de VPS del run (elegible). Omitido/webdock = Webdock (default); contabo = crea el VPS en Contabo; proxmox = crea el LXC en Proxmox propio. PTR/rDNS es manual para providers sin setReverseDns. El campo 'provider' NO rutea el VPS."
           },
           serverAccountId: {
             type: "string",

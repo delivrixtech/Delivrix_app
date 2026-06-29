@@ -1281,6 +1281,31 @@ test("PROVIDER#d plan-signed con vpsProviderId='contabo' sella el provider y el 
   assert.equal(state.providerId, "contabo");
 });
 
+test("PROVIDER#d3 plan-signed con vpsProviderId='proxmox' usa canal paralelo y costo VPS cero", async () => {
+  const plan = signedPlanApproval({ vpsProviderId: "proxmox" });
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: plan
+  });
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53", vpsProviderId: "proxmox" }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.equal(plan.scope.vpsProviderId, "proxmox");
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  assert.equal(step4.providerId, "proxmox");
+  assert.equal(step4.estimatedCostUsd, 0);
+  assert.deepEqual(step4.params, {
+    runId: "run-1",
+    profile: "bit",
+    locationId: "dk",
+    hostname: "smtp.delivrixops.com",
+    imageSlug: "ubuntu-2404"
+  });
+  assert.equal(Object.prototype.hasOwnProperty.call(step4.params, "providerId"), false);
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.providerId, "proxmox");
+});
+
 test("PROVIDER#d2 Contabo: step 4 puede devolver slug sin IP y step 5 resuelve la IP para DNS", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },

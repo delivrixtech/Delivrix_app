@@ -61,3 +61,13 @@ test("shared redaction covers JSON and bare secret assignments on runtime logs a
     assert.match(redacted, /server85/);
   }
 });
+
+test("runtime redaction covers Proxmox PVE API tokens", () => {
+  const token =
+    "Authorization: PVEAPIToken=delivrix@pve!provisioner=secret-token-that-must-not-log";
+  const redacted = redactRuntimeLogSecrets(token);
+
+  assert.doesNotMatch(redacted, /secret-token-that-must-not-log/);
+  assert.doesNotMatch(redacted, /delivrix@pve!provisioner=/);
+  assert.match(redacted, /PVEAPIToken=\[REDACTED\]/);
+});

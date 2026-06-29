@@ -162,6 +162,23 @@ test("configureCompleteSmtpSkillParamSchema normalizes known VPS providers", () 
   assert.equal(parsed.data.vpsProviderId, "contabo");
 });
 
+test("configureCompleteSmtpSkillParamSchema accepts proxmox as a known VPS provider", () => {
+  const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
+    brand: "delivrix",
+    domain: "example.com",
+    provider: "route53",
+    vpsProviderId: "Proxmox",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@example.com",
+    testEmailSubject: "Smoke",
+    testEmailBody: "Smoke body"
+  });
+
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail(parsed.error.issues.join("\n"));
+  assert.equal(parsed.data.vpsProviderId, "proxmox");
+});
+
 test("configureCompleteSmtpSkillParamSchema preserves dynamic provider account ids", () => {
   const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
     brand: "delivrix",

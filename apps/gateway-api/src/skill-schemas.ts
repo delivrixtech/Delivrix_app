@@ -927,8 +927,8 @@ function providerId(value: unknown, field: string): string {
   return normalized;
 }
 
-function vpsProviderId(value: unknown, field: string): "webdock" | "contabo" {
-  return oneOf(providerId(value, field), field, ["webdock", "contabo"] as const);
+function vpsProviderId(value: unknown, field: string): "webdock" | "contabo" | "proxmox" {
+  return oneOf(providerId(value, field), field, ["webdock", "contabo", "proxmox"] as const);
 }
 
 function dnsProviderId(value: unknown, field: string): "route53" | "ionos" {

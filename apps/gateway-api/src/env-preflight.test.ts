@@ -35,6 +35,9 @@ function healthyEnvFromCatalog(): Record<string, string> {
       case "csv-email":
         env[spec.name] = "a@delivrix.com,b@delivrix.com,c@delivrix.com";
         break;
+      case "url":
+        env[spec.name] = "https://127.0.0.1:8006/api2/json";
+        break;
       case "secret-32-byte":
         env[spec.name] = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
         break;

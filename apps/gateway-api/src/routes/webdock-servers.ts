@@ -623,10 +623,12 @@ export async function handleWebdockServerDeleteHttp(
   const requestedAccountId =
     (typeof body.accountId === "string" && body.accountId.trim()) || deps.accountId?.trim() || undefined;
   // Proveedor destino del delete (canal HERMANO): body.providerId tiene prioridad, luego deps.providerId.
-  // undefined/"webdock"/desconocido => logica Webdock por accountId, SIN CAMBIOS.
+  // undefined/"webdock" => logica Webdock por accountId; provider externo explicito debe resolver.
   const requestedProviderId =
     (typeof body.providerId === "string" && body.providerId.trim()) || deps.providerId?.trim() || undefined;
-  const adapter = resolveWebdockDeleteAdapter(deps, requestedAccountId, requestedProviderId);
+  const normalizedProviderId = normalizeRouteProviderId(requestedProviderId);
+  const providerLabel = normalizedProviderId ?? "webdock";
+  const adapter = resolveWebdockDeleteAdapter(deps, requestedAccountId, normalizedProviderId);
 
   await emitTaskDeclare(deps.canvasLiveEvents, taskId, `Cleanup Webdock VPS · ${serverSlug}`, actorId, now);
   const approval = await findRecentApproval({
@@ -664,7 +666,7 @@ export async function handleWebdockServerDeleteHttp(
       humanApproved: false,
       metadata: {
         blockers,
-        provider: "webdock",
+        provider: providerLabel,
         reason,
         workspacePath: workspace?.path
       }
@@ -720,7 +722,7 @@ export async function handleWebdockServerDeleteHttp(
       humanApproved: true,
       approverIds: [actorId],
       metadata: {
-        provider: "webdock",
+        provider: providerLabel,
         eventId: deleted.eventId,
         status: deleted.status,
         reason,
@@ -758,7 +760,7 @@ export async function handleWebdockServerDeleteHttp(
       humanApproved: true,
       approverIds: [actorId],
       metadata: {
-        provider: "webdock",
+        provider: providerLabel,
         reason,
         errorMessage: errorMessage(error),
         workspacePath: workspace?.path
@@ -798,9 +800,9 @@ export class WebdockServerDeleteInputError extends Error {
 /**
  * Resuelve el adapter de delete para el provider/account pedido.
  *
- * PRECEDENCIA (canal HERMANO providerId primero): si providerId esta presente y != "webdock" y el
- * vpsProviderAdapters tiene esa key con un deleteServer() disponible, enruta a ESE proveedor (rollback
- * del VPS Contabo). En CUALQUIER otro caso cae a la logica Webdock por accountId EXISTENTE, SIN CAMBIOS:
+ * PRECEDENCIA (canal HERMANO providerId primero): si providerId esta presente y != "webdock", debe
+ * existir un adapter con deleteServer() y se enruta a ESE proveedor (rollback de VPS no-Webdock).
+ * En CUALQUIER caso Webdock cae a la logica por accountId EXISTENTE, SIN CAMBIOS:
  * undefined/"ops"/cuenta-desconocida => el `adapter` escalar (cuenta-1 "ops"), byte-identico al delete previo.
  */
 function resolveWebdockDeleteAdapter(
@@ -808,15 +810,17 @@ function resolveWebdockDeleteAdapter(
   accountId: string | undefined,
   providerId?: string
 ): WebdockServerDeleteAdapter {
-  // Normalizar a lowercase: la KEY del registry es lowercase ("contabo"); un providerId capitalizado
-  // ("Contabo") debe seguir enrutando el rollback/delete al proveedor correcto.
-  const provider = providerId?.trim().toLowerCase();
-  if (provider && provider !== "webdock" && deps.vpsProviderAdapters?.has(provider)) {
-    const candidate = deps.vpsProviderAdapters.get(provider)!;
+  const provider = normalizeRouteProviderId(providerId);
+  if (provider) {
+    const candidate = deps.vpsProviderAdapters?.get(provider);
+    if (!candidate) {
+      throw new WebdockServerDeleteInputError(`unknown_vps_provider:${provider}`);
+    }
     if (typeof candidate.deleteServer === "function") {
       // VpsProvider con deleteServer presente satisface estructuralmente WebdockServerDeleteAdapter.
       return candidate as WebdockServerDeleteAdapter;
     }
+    throw new WebdockServerDeleteInputError(`delete_unsupported_for_vps_provider:${provider}`);
   }
   if (!accountId || accountId === "ops" || !deps.accountAdapters) {
     return deps.adapter;
@@ -931,7 +935,7 @@ async function resolveExistingServerForCreate(input: {
   | { status: "blocked"; blockers: string[] }
 > {
   if (input.runId) {
-    const bound = await resolveExistingServerByRunBinding(input);
+    const bound = await resolveExistingServerByRunBinding({ ...input, runId: input.runId });
     if (bound) return bound;
   }
   const domainBound = await resolveExistingServerByDomainBinding(input);
@@ -1058,7 +1062,8 @@ function normalizeRunBindingProviderId(
 ): string {
   const explicit = normalizeProviderScopeId(binding.providerId);
   if (explicit) return explicit;
-  return binding.serverSlug.startsWith("contabo-") ? "contabo" : "webdock";
+  const provider = getProviderFromServerIdentity({ slug: binding.serverSlug });
+  return provider === "unknown" ? "webdock" : provider;
 }
 
 function normalizeRunBindingServerAccountId(value: string | undefined, providerId: string): string {
@@ -1371,9 +1376,11 @@ function resolveProvisioningPolling(input: {
   };
 }
 
-function normalizeRouteProviderId(value: string | undefined): "contabo" | undefined {
+function normalizeRouteProviderId(value: string | undefined): string | undefined {
   const normalized = value?.trim().toLowerCase();
-  return normalized && normalized !== "webdock" ? normalized === "contabo" ? "contabo" : undefined : undefined;
+  return normalized && normalized !== "webdock" && /^[a-z0-9][a-z0-9_-]{0,31}$/.test(normalized)
+    ? normalized
+    : undefined;
 }
 
 function parseNonNegativeInteger(value: string | undefined): number | null {

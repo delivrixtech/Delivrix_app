@@ -10,6 +10,7 @@ import {
   buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
   createContaboAdaptersFromEnv,
+  createProxmoxAdaptersFromEnv,
   createIonosDnsProviderFromEnv,
   createMxtoolboxAdapterFromEnv,
   createRoute53DnsProviderFromEnv,
@@ -413,10 +414,13 @@ const webdockAccountAdapters = createWebdockAdaptersFromEnv();
 // webdockOpsAdapter de hoy: mismo objeto/keys => single-account byte-identico). Las cuentas DISTINTAS
 // entran solo si canCreate()===true (post Fase 0). Logica de de-dup unica y testeada en el adapter.
 const webdockCreateAdapters = buildWebdockCreateRegistry(webdockAccountAdapters, webdockOpsAdapter);
-// Registry providerId->adapter para proveedores NO-Webdock (Contabo, etc.). Canal PARALELO HERMANO de
-// webdockCreateAdapters. Se construye desde env: si no hay credenciales Contabo queda VACIO y NINGUN
-// providerId distinto de "webdock" resuelve a nada -> el camino Webdock queda byte-identico.
-const vpsProviderEntries = createContaboAdaptersFromEnv();
+// Registry providerId->adapter para proveedores NO-Webdock (Contabo, Proxmox, etc.). Canal PARALELO HERMANO de
+// webdockCreateAdapters. Se construye desde env: si faltan credenciales de un provider, ese provider
+// no entra al registry -> el camino Webdock queda byte-identico.
+const vpsProviderEntries = [
+  ...createContaboAdaptersFromEnv(),
+  ...createProxmoxAdaptersFromEnv()
+];
 const vpsProviderAdapters = new Map<string, VpsProvider>(
   vpsProviderEntries.map((entry): [string, VpsProvider] => [entry.id, entry.adapter])
 );

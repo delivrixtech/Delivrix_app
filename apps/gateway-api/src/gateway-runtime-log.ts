@@ -125,6 +125,8 @@ export function redactRuntimeLogSecrets(value: string): string {
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*$/g, "[REDACTED_PARTIAL_KEY]")
     .replace(/^[A-Za-z0-9+/]{48,}={0,2}$/gm, "[REDACTED_PEM_BODY]")
     .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED_AWS_ACCESS_KEY]")
+    .replace(/\bauthorization\b\s*[:=]\s*PVEAPIToken\s*=\s*[^\s,;"]+/gi, "Authorization: PVEAPIToken=[REDACTED]")
+    .replace(/\bPVEAPIToken\s*=\s*[^\s,;"]+/gi, "PVEAPIToken=[REDACTED]")
     .replace(/\bauthorization\b\s*[:=]\s*Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Authorization: Bearer [REDACTED]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
     .replace(
