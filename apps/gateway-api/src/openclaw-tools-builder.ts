@@ -5,6 +5,7 @@ import {
   configureCompleteSmtpSkillParamSchema,
   emailAuthParamSchema,
   enableSmtpAuthParamSchema,
+  inspectSmtpInventoryParamSchema,
   ionosDnsReadParamSchema,
   ionosUpsertParamSchema,
   listConversationsParamSchema,
@@ -16,7 +17,10 @@ import {
   semanticRecallParamSchema,
   readInfrastructureInventoryParamSchema,
   readWebdockServersParamSchema,
+  reassignDomainServerParamSchema,
+  resolveAmbiguousDomainParamSchema,
   retireInfrastructureAccountParamSchema,
+  retireSmtpEntryParamSchema,
   route53DomainDetailParamSchema,
   deliveryReasonParamSchema,
   smtpReachabilityParamSchema,
@@ -27,6 +31,7 @@ import {
   route53ZoneRecordsParamSchema,
   route53UpsertParamSchema,
   smtpProvisionParamSchema,
+  updateSmtpEntryParamSchema,
   warmupSeedParamSchema,
   webdockCreateParamSchema
 } from "./skill-schemas.ts";
@@ -61,6 +66,7 @@ export type OpenClawToolName =
   | "read_dns_ionos"
   | "read_mxtoolbox_health"
   | "read_infrastructure_inventory"
+  | "inspect_smtp_inventory"
   | "read_infrastructure_account_health"
   | "read_webdock_servers"
   | "list_conversations"
@@ -72,6 +78,10 @@ export type OpenClawToolName =
   | "provision_smtp_postfix"
   | "configure_email_auth"
   | "enable_smtp_auth"
+  | "resolve_ambiguous_domain"
+  | "retire_smtp_entry"
+  | "reassign_domain_server"
+  | "update_smtp_entry"
   | "bind_domain_to_server"
   | "seed_warmup_pool"
   | "send_real_email"
@@ -666,6 +676,28 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     targetType: "infrastructure_inventory",
     severity: "high"
   },
+  inspect_smtp_inventory: {
+    spec: {
+      name: "inspect_smtp_inventory",
+      description: [
+        "Inspecciona el inventario SMTP local y lo cruza con la flota viva para detectar dominios ambiguos, entradas superseded/retired y servidores ausentes.",
+        "Lectura sensible read-only: no muta infraestructura, no expone passwords ni credenciales cifradas y no requiere ApprovalGate."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          serverSlug: { type: "string", pattern: slugPattern },
+          status: { type: "string", enum: ["configured", "superseded", "retired", "archived"] }
+        },
+        required: []
+      }
+    },
+    paramSchema: inspectSmtpInventoryParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "smtp_inventory",
+    severity: "high"
+  },
   read_infrastructure_account_health: {
     spec: {
       name: "read_infrastructure_account_health",
@@ -926,6 +958,11 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
         type: "object",
         properties: {
           domain: { type: "string", pattern: domainPattern },
+          serverSlug: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Servidor SMTP especifico para desambiguar dominios con historial duplicado. Opcional; si se omite y hay mas de un configured, la tool rechaza ambiguous_domain."
+          },
           mode: {
             type: "string",
             enum: ["enable", "recover", "rotate"],
@@ -942,6 +979,107 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hasSshRunnerConfig(env),
     targetType: "domain",
     severity: "critical"
+  },
+  resolve_ambiguous_domain: {
+    spec: {
+      name: "resolve_ambiguous_domain",
+      description: [
+        "Resuelve un dominio ambiguo en inventory/smtp-provisioning.json eligiendo un servidor canonico vivo y marcando los otros configured como superseded.",
+        "Mutacion local-state-only: no toca DNS, SSH ni proveedor; requiere ApprovalGate firmado, audit log y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          keepServerSlug: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Servidor canonico a conservar. Si se omite, OpenClaw desempata con flota viva + run SMTP completed; si la evidencia sigue ambigua, rechaza fail-closed."
+          },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: { type: "boolean", default: false }
+        },
+        required: ["domain"]
+      }
+    },
+    paramSchema: resolveAmbiguousDomainParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "domain",
+    severity: "high"
+  },
+  retire_smtp_entry: {
+    spec: {
+      name: "retire_smtp_entry",
+      description: [
+        "Marca una entrada SMTP concreta como retired en el inventario local preservando historial.",
+        "Mutacion local-state-only: no borra VPS, no toca DNS/SSH ni credenciales; requiere ApprovalGate firmado, audit log y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          serverSlug: { type: "string", pattern: slugPattern },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: { type: "boolean", default: false }
+        },
+        required: ["domain", "serverSlug", "reason"]
+      }
+    },
+    paramSchema: retireSmtpEntryParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "smtp_inventory_entry",
+    severity: "high"
+  },
+  reassign_domain_server: {
+    spec: {
+      name: "reassign_domain_server",
+      description: [
+        "Reasigna el servidor canonico de un dominio en el inventario SMTP local, verificando que el destino exista en la flota viva.",
+        "Mutacion local-state-only: no cambia DNS/SSH/proveedor; requiere ApprovalGate firmado, audit log y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          fromServerSlug: { type: "string", pattern: slugPattern },
+          toServerSlug: { type: "string", pattern: slugPattern },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: { type: "boolean", default: false }
+        },
+        required: ["domain", "fromServerSlug", "toServerSlug", "reason"]
+      }
+    },
+    paramSchema: reassignDomainServerParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "smtp_inventory_entry",
+    severity: "high"
+  },
+  update_smtp_entry: {
+    spec: {
+      name: "update_smtp_entry",
+      description: [
+        "Actualiza metadata controlada de una entrada SMTP local: selector, status, tlsStatus o smtpAuthStatus.",
+        "Mutacion local-state-only: si status pasa a configured, aplica el invariante de un solo configured por dominio. Requiere ApprovalGate firmado, audit log y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          serverSlug: { type: "string", pattern: slugPattern },
+          selector: { type: "string", pattern: selectorPattern },
+          status: { type: "string", enum: ["configured", "superseded", "retired", "archived"] },
+          tlsStatus: { type: "string", minLength: 3, maxLength: 120 },
+          smtpAuthStatus: { type: "string", enum: ["configured"] },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: { type: "boolean", default: false }
+        },
+        required: ["domain", "serverSlug"]
+      }
+    },
+    paramSchema: updateSmtpEntryParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "smtp_inventory_entry",
+    severity: "high"
   },
   bind_domain_to_server: {
     spec: {
@@ -1214,6 +1352,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "read_dns_ionos",
     "read_mxtoolbox_health",
     "read_infrastructure_inventory",
+    "inspect_smtp_inventory",
     "read_infrastructure_account_health",
     "read_webdock_servers",
     "list_conversations",
@@ -1225,6 +1364,10 @@ export function openClawToolNames(): OpenClawToolName[] {
     "provision_smtp_postfix",
     "configure_email_auth",
     "enable_smtp_auth",
+    "resolve_ambiguous_domain",
+    "retire_smtp_entry",
+    "reassign_domain_server",
+    "update_smtp_entry",
     "bind_domain_to_server",
     "seed_warmup_pool",
     "send_real_email",

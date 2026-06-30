@@ -30,6 +30,7 @@ export interface EnableSmtpAuthRouteDeps {
 interface EnableSmtpAuthBody {
   actorId?: unknown;
   domain?: unknown;
+  serverSlug?: unknown;
   mode?: unknown;
 }
 
@@ -74,12 +75,14 @@ export async function handleEnableSmtpAuthHttp(deps: EnableSmtpAuthRouteDeps): P
     ? body.actorId.trim()
     : "openclaw/enable_smtp_auth";
   const mode = enableSmtpAuthMode(body.mode);
-  const target = { domain };
+  const serverSlug = normalizeServerSlug(body.serverSlug);
+  const target = serverSlug ? { domain, serverSlug } : { domain };
   const candidates = await listSmtpSaslRetrofitCandidates(deps.workspace, target, mode);
   if (candidates.length > 1) {
     await appendEnableAudit(deps, {
       actorId,
       domain,
+      serverSlug,
       mode,
       status: "ambiguous_domain",
       hasCredential: false,
@@ -88,6 +91,7 @@ export async function handleEnableSmtpAuthHttp(deps: EnableSmtpAuthRouteDeps): P
     json(deps.response, 409, {
       ok: false,
       domain,
+      ...(serverSlug ? { serverSlug } : {}),
       mode,
       status: "ambiguous_domain",
       hasCredential: false
@@ -108,7 +112,7 @@ export async function handleEnableSmtpAuthHttp(deps: EnableSmtpAuthRouteDeps): P
     })
     : { candidates: 0, results: [] };
   const outcome = result.results[0];
-  const record = await findSmtpCredentialRecord(deps.workspace, domain);
+  const record = await findSmtpCredentialRecord(deps.workspace, domain, serverSlug);
   const hasCredential = record?.status === "configured";
   const credentialFingerprint = hasCredential && record
     ? smtpCredentialFingerprint(record)
@@ -119,6 +123,7 @@ export async function handleEnableSmtpAuthHttp(deps: EnableSmtpAuthRouteDeps): P
   await appendEnableAudit(deps, {
     actorId,
     domain,
+    serverSlug,
     mode,
     status,
     hasCredential,
@@ -129,6 +134,7 @@ export async function handleEnableSmtpAuthHttp(deps: EnableSmtpAuthRouteDeps): P
   json(deps.response, ok ? 200 : 409, {
     ok,
     domain,
+    ...(serverSlug ? { serverSlug } : {}),
     mode,
     status,
     hasCredential
@@ -159,6 +165,7 @@ async function appendEnableAudit(
   input: {
     actorId: string;
     domain: string;
+    serverSlug?: string;
     mode: SmtpSaslRetrofitMode;
     status: EnableSmtpAuthStatus;
     hasCredential: boolean;
@@ -176,11 +183,12 @@ async function appendEnableAudit(
     decision: input.hasCredential ? "allow" : "reject",
     humanApproved: true,
     approverIds: [input.actorId],
-      metadata: {
-        domain: input.domain,
-        mode: input.mode,
-        status: input.status,
-        hasCredential: input.hasCredential,
+    metadata: {
+      domain: input.domain,
+      ...(input.serverSlug ? { serverSlug: input.serverSlug } : {}),
+      mode: input.mode,
+      status: input.status,
+      hasCredential: input.hasCredential,
       candidateCount: input.candidateCount,
       ...(input.credentialFingerprint ? { credentialFingerprint: input.credentialFingerprint } : {})
     }
@@ -199,6 +207,12 @@ function normalizeDomain(value: unknown): string | null {
   return /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)+$/.test(domain)
     ? domain
     : null;
+}
+
+function normalizeServerSlug(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const slug = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(slug) ? slug : undefined;
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown): void {

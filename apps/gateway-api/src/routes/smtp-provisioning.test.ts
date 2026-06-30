@@ -289,6 +289,63 @@ test("POST /v1/servers/:slug/provision-smtp runs idempotent SSH plan and records
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "command"));
 });
 
+test("POST /v1/servers/:slug/provision-smtp keeps at most one configured inventory entry per domain", async () => {
+  const route = await routeHarness({
+    sshRunner: mockRunner(),
+    canvasState: canvasState([{
+      artifactId: "artifact-smtp-plan",
+      executionId: "exec-smtp-dedupe",
+      approvedAt: "2026-05-27T16:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-smtp-plan", "exec-smtp-dedupe");
+  await route.workspace.writeWorkspaceFile("inventory/dkim-keys/delivrix-mail.com/default.private", dkimPrivateKey);
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    emailAuth: [{
+      domain: "delivrix-mail.com",
+      selector: "default",
+      dkimPrivateKeyPath: "inventory/dkim-keys/delivrix-mail.com/default.private"
+    }]
+  }));
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "mail-delivrix-test",
+      hostname: "mail.delivrix-mail.com",
+      ipv4: "192.0.2.44",
+      status: "running"
+    }]
+  }));
+  await route.workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      serverSlug: "old-server",
+      domain: "delivrix-mail.com",
+      serverIp: "192.0.2.43",
+      selector: "default",
+      status: "configured",
+      tlsStatus: "attempted_or_pending_dns",
+      configuredAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString()
+    }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-smtp-dedupe",
+    taskId: "task-smtp-dedupe"
+  });
+
+  assert.equal(response.statusCode, 200);
+  const inventory = await route.workspace.readInventoryJson<{
+    servers: Array<{ serverSlug: string; domain: string; status: string; supersededBy?: string }>;
+  }>("smtp-provisioning.json");
+  const domainEntries = inventory?.servers.filter((server) => server.domain === "delivrix-mail.com") ?? [];
+  assert.equal(domainEntries.filter((server) => server.status === "configured").length, 1);
+  assert.equal(domainEntries.find((server) => server.serverSlug === "old-server")?.status, "superseded");
+  assert.equal(domainEntries.find((server) => server.serverSlug === "old-server")?.supersededBy, "mail-delivrix-test");
+  assert.equal(domainEntries.find((server) => server.serverSlug === "mail-delivrix-test")?.status, "configured");
+});
+
 test("POST /v1/servers/:slug/provision-smtp skips SSH when inventory is already configured", async () => {
   const commands: SmtpSshCommandInput[] = [];
   const route = await routeHarness({

@@ -1592,7 +1592,7 @@ function typedArtifactFromToolResult(
   result: unknown,
   occurredAt: string
 ): TypedArtifactBuildResult | null {
-  if (toolName === "read_webdock_servers" || toolName === "read_infrastructure_inventory") {
+  if (toolName === "read_webdock_servers" || toolName === "read_infrastructure_inventory" || toolName === "inspect_smtp_inventory") {
     return inventoryArtifactFromToolResult(result);
   }
   if (toolName === "read_mxtoolbox_health") {
@@ -1893,7 +1893,7 @@ function enrichToolResultForModel(
 
 function stringifyToolResult(result: unknown, toolName?: string): string {
   const raw = redactRuntimeLogSecrets(JSON.stringify(redactSensitiveLiveContext(result)));
-  const maxChars = toolName === "read_infrastructure_inventory" || toolName === "read_webdock_servers"
+  const maxChars = toolName === "read_infrastructure_inventory" || toolName === "read_webdock_servers" || toolName === "inspect_smtp_inventory"
     ? readInventoryToolResultPreviewMaxChars
     : defaultToolResultPreviewMaxChars;
   if (raw.length <= maxChars) {

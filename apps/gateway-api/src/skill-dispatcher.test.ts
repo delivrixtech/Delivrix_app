@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
 import type { ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   dispatchSkillHandler,
   resolveContaboBindTiming,
@@ -10,6 +13,7 @@ import {
 import { ionosUpsertParamSchema, route53RegisterParamSchema, route53UpsertParamSchema, webdockCreateParamSchema } from "./skill-schemas.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
 import { approvalTokenHash } from "./approval-guard.ts";
+import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import type { WebdockServerCreateAdapter, WebdockServerDeleteAdapter } from "./routes/webdock-servers.ts";
 import type { BindWebdockMainDomainAdapter } from "./routes/webdock-bind-domain.ts";
 import {
@@ -290,6 +294,115 @@ test("dispatcher retires infrastructure account as local-only state after Approv
   assert.equal((auditEvents[0] as any).metadata.physicalDelete, false);
   assert.equal((auditEvents[0] as any).metadata.sideEffects, "local-state-only");
   assert.deepEqual((auditEvents[0] as any).metadata.rollbackPlan, (result.summary as { rollbackPlan?: unknown }).rollbackPlan);
+});
+
+test("dispatcher resolves ambiguous SMTP inventory as local-only state after ApprovalGate dispatch", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "dispatcher-smtp-inventory-"))
+  });
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      {
+        serverSlug: "server85",
+        domain: "legacy-one.com",
+        serverIp: "192.0.2.85",
+        selector: "default",
+        status: "configured",
+        tlsStatus: "attempted_or_pending_dns",
+        configuredAt: "2026-06-30T20:00:00.000Z",
+        updatedAt: "2026-06-30T20:00:00.000Z"
+      },
+      {
+        serverSlug: "server88",
+        domain: "legacy-one.com",
+        serverIp: "192.0.2.88",
+        selector: "default",
+        status: "configured",
+        tlsStatus: "attempted_or_pending_dns",
+        configuredAt: "2026-06-30T20:00:00.000Z",
+        updatedAt: "2026-06-30T20:00:00.000Z"
+      }
+    ]
+  }));
+  const auditEvents: Array<Record<string, unknown>> = [];
+
+  const result = await dispatchSkillHandler({
+    skill: "resolve_ambiguous_domain",
+    params: {
+      domain: "legacy-one.com",
+      keepServerSlug: "server88",
+      reason: "Resolver duplicado tras retry confirmado."
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      workspace,
+      auditLog: {
+        append: async (event: Record<string, unknown>) => { auditEvents.push(event); },
+        list: async () => []
+      },
+      readKillSwitch: async () => ({ enabled: false }),
+      readSmtpInventoryLiveServers: async () => [{ serverSlug: "server88", ipv4: "192.0.2.88", status: "running" }]
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.statusCode, 200);
+  const inventory = await workspace.readInventoryJson<{
+    servers: Array<{ serverSlug: string; status: string; supersededBy?: string }>;
+  }>("smtp-provisioning.json");
+  assert.equal(inventory?.servers.find((server) => server.serverSlug === "server85")?.status, "superseded");
+  assert.equal(inventory?.servers.find((server) => server.serverSlug === "server85")?.supersededBy, "server88");
+  assert.equal(auditEvents.at(-1)?.action, "oc.smtp_inventory.ambiguous_domain_resolved");
+  const metadata = auditEvents.at(-1)?.metadata as Record<string, unknown>;
+  assert.equal(metadata.sideEffects, "local-state-only");
+  assert.match(String((metadata.rollbackPlan as Record<string, unknown>).procedure), /No automatic inventory backup/);
+  assert.deepEqual((metadata.plan as Record<string, unknown>).previousStatuses, [
+    { serverSlug: "server85", status: "configured" },
+    { serverSlug: "server88", status: "configured" }
+  ]);
+});
+
+test("dispatcher fails SMTP inventory mutators closed without a live inventory source", async () => {
+  for (const mutator of smtpInventoryDispatchCases()) {
+    const result = await dispatchSkillHandler({
+      skill: mutator.skill,
+      params: mutator.params,
+      actorId: "operator-juanes",
+      approvalToken: token,
+      deps: fakeDeps()
+    });
+
+    assert.equal(result.ok, false, mutator.skill);
+    assert.equal(result.statusCode, 503, mutator.skill);
+    assert.deepEqual(result.summary, { error: "smtp_inventory_live_source_missing" }, mutator.skill);
+  }
+});
+
+test("dispatcher blocks SMTP inventory mutators with kill-switch before reading live source", async () => {
+  for (const mutator of smtpInventoryDispatchCases()) {
+    let liveSourceRead = false;
+    const result = await dispatchSkillHandler({
+      skill: mutator.skill,
+      params: mutator.params,
+      actorId: "operator-juanes",
+      approvalToken: token,
+      deps: {
+        ...fakeDeps(),
+        readKillSwitch: async () => ({ enabled: true }),
+        readSmtpInventoryLiveServers: async () => {
+          liveSourceRead = true;
+          return [];
+        }
+      }
+    });
+
+    assert.equal(result.ok, false, mutator.skill);
+    assert.equal(result.statusCode, 423, mutator.skill);
+    assert.deepEqual(result.summary, { error: "kill_switch_armed" }, mutator.skill);
+    assert.equal(liveSourceRead, false, mutator.skill);
+  }
 });
 
 test("dispatcher rejects invalid infrastructure retire params before touching lifecycle store", async () => {
@@ -912,6 +1025,45 @@ function statusEntry(
 
 function fakeDeps(): any {
   return {};
+}
+
+function smtpInventoryDispatchCases(): Array<{ skill: string; params: Record<string, unknown> }> {
+  return [
+    {
+      skill: "resolve_ambiguous_domain",
+      params: {
+        domain: "legacy-one.com",
+        keepServerSlug: "server88",
+        reason: "Resolver duplicado confirmado por inventario vivo."
+      }
+    },
+    {
+      skill: "retire_smtp_entry",
+      params: {
+        domain: "legacy-one.com",
+        serverSlug: "server92",
+        reason: "Retirar entrada espuria confirmada por auditoria."
+      }
+    },
+    {
+      skill: "reassign_domain_server",
+      params: {
+        domain: "legacy-one.com",
+        fromServerSlug: "server92",
+        toServerSlug: "server88",
+        reason: "Reasignar canonico tras drift confirmado."
+      }
+    },
+    {
+      skill: "update_smtp_entry",
+      params: {
+        domain: "legacy-one.com",
+        serverSlug: "server88",
+        status: "configured",
+        reason: "Actualizar estado local confirmado por operador."
+      }
+    }
+  ];
 }
 
 function passthroughParamSchema(): SkillHandlerEntry["paramSchema"] {
