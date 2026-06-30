@@ -69,12 +69,17 @@ import {
   configureCompleteSmtpSkillParamSchema,
   emailAuthParamSchema,
   enableSmtpAuthParamSchema,
+  inspectSmtpInventoryParamSchema,
   ionosUpsertParamSchema,
+  reassignDomainServerParamSchema,
+  resolveAmbiguousDomainParamSchema,
   retireInfrastructureAccountParamSchema,
+  retireSmtpEntryParamSchema,
   route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
   route53UpsertParamSchema,
   smtpProvisionParamSchema,
+  updateSmtpEntryParamSchema,
   warmupRampParamSchema,
   warmupSeedParamSchema,
   webdockCreateParamSchema,
@@ -89,6 +94,13 @@ import {
   handleDomainNameserverUpdateHttp,
   type DomainNameserverRegistrarAdapter
 } from "./routes/domain-nameservers.ts";
+import {
+  reassignSmtpDomainServer,
+  resolveAmbiguousSmtpDomain,
+  retireSmtpInventoryEntry,
+  updateSmtpInventoryEntry,
+  type SmtpInventoryLiveServer
+} from "./smtp-inventory-management.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -171,6 +183,7 @@ export interface SkillDispatcherDeps {
     "invokeSkill" | "submitAndAwaitApproval" | "submitRollbackProposal" | "verifyAuditChain"
   >;
   accountLifecycleStore?: InfrastructureAccountLifecycleStore;
+  readSmtpInventoryLiveServers?: () => Promise<SmtpInventoryLiveServer[]>;
   env?: Record<string, string | undefined>;
   now?: () => Date;
 }
@@ -766,6 +779,102 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
       }));
     }
   };
+  const resolveAmbiguousDomain: SkillHandlerEntry = {
+    paramSchema: resolveAmbiguousDomainParamSchema,
+    timeoutMs: 30_000,
+    canRollback: false,
+    invoke: async ({ request, response, params, deps }) => {
+      const actorId = await readActorId(request);
+      const liveServers = await readRequiredSmtpLiveServers(response, deps);
+      if (!liveServers) return;
+      const result = await resolveAmbiguousSmtpDomain({
+        workspace: deps.workspace,
+        domain: String(params.domain),
+        ...(typeof params.keepServerSlug === "string" ? { keepServerSlug: params.keepServerSlug } : {}),
+        liveServers,
+        actorId,
+        ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
+        dryRun: params.dryRun === true,
+        now: deps.now
+      });
+      await appendSmtpInventoryMutationAudit(deps, actorId, "oc.smtp_inventory.ambiguous_domain_resolved", result);
+      writeJson(response, result.ok ? 200 : 409, result);
+    }
+  };
+  const retireSmtpEntry: SkillHandlerEntry = {
+    paramSchema: retireSmtpEntryParamSchema,
+    timeoutMs: 30_000,
+    canRollback: false,
+    invoke: async ({ request, response, params, deps }) => {
+      const actorId = await readActorId(request);
+      const liveServers = await readRequiredSmtpLiveServers(response, deps);
+      if (!liveServers) return;
+      const result = await retireSmtpInventoryEntry({
+        workspace: deps.workspace,
+        domain: String(params.domain),
+        serverSlug: String(params.serverSlug),
+        liveServers,
+        actorId,
+        reason: String(params.reason),
+        dryRun: params.dryRun === true,
+        now: deps.now
+      });
+      await appendSmtpInventoryMutationAudit(deps, actorId, "oc.smtp_inventory.entry_retired", result);
+      writeJson(response, result.ok ? 200 : 409, result);
+    }
+  };
+  const reassignDomainServer: SkillHandlerEntry = {
+    paramSchema: reassignDomainServerParamSchema,
+    timeoutMs: 30_000,
+    canRollback: false,
+    invoke: async ({ request, response, params, deps }) => {
+      const actorId = await readActorId(request);
+      const liveServers = await readRequiredSmtpLiveServers(response, deps);
+      if (!liveServers) return;
+      const result = await reassignSmtpDomainServer({
+        workspace: deps.workspace,
+        domain: String(params.domain),
+        fromServerSlug: String(params.fromServerSlug),
+        toServerSlug: String(params.toServerSlug),
+        liveServers,
+        actorId,
+        reason: String(params.reason),
+        dryRun: params.dryRun === true,
+        now: deps.now
+      });
+      await appendSmtpInventoryMutationAudit(deps, actorId, "oc.smtp_inventory.domain_reassigned", result);
+      writeJson(response, result.ok ? 200 : 409, result);
+    }
+  };
+  const updateSmtpEntry: SkillHandlerEntry = {
+    paramSchema: updateSmtpEntryParamSchema,
+    timeoutMs: 30_000,
+    canRollback: false,
+    invoke: async ({ request, response, params, deps }) => {
+      const actorId = await readActorId(request);
+      const liveServers = await readRequiredSmtpLiveServers(response, deps);
+      if (!liveServers) return;
+      const patch = {
+        ...(typeof params.selector === "string" ? { selector: params.selector } : {}),
+        ...(typeof params.status === "string" ? { status: params.status as "configured" | "superseded" | "retired" | "archived" } : {}),
+        ...(typeof params.tlsStatus === "string" ? { tlsStatus: params.tlsStatus } : {}),
+        ...(typeof params.smtpAuthStatus === "string" ? { smtpAuthStatus: params.smtpAuthStatus as "configured" } : {})
+      };
+      const result = await updateSmtpInventoryEntry({
+        workspace: deps.workspace,
+        domain: String(params.domain),
+        serverSlug: String(params.serverSlug),
+        patch,
+        liveServers,
+        actorId,
+        ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
+        dryRun: params.dryRun === true,
+        now: deps.now
+      });
+      await appendSmtpInventoryMutationAudit(deps, actorId, "oc.smtp_inventory.entry_updated", result);
+      writeJson(response, result.ok ? 200 : 409, result);
+    }
+  };
 
   return {
     register_domain_route53: registerDomain,
@@ -798,7 +907,11 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     configure_complete_smtp: configureCompleteSmtp,
     configure_smtp_complete: configureCompleteSmtp,
     retire_infrastructure_account: retireInfrastructureAccount,
-    retire_provider_account_local: retireInfrastructureAccount
+    retire_provider_account_local: retireInfrastructureAccount,
+    resolve_ambiguous_domain: resolveAmbiguousDomain,
+    retire_smtp_entry: retireSmtpEntry,
+    reassign_domain_server: reassignDomainServer,
+    update_smtp_entry: updateSmtpEntry
   };
 }
 
@@ -819,6 +932,75 @@ async function readInternalJson(request: AsyncIterable<unknown>): Promise<Record
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw.trim()) return {};
   return JSON.parse(raw) as Record<string, unknown>;
+}
+
+async function readActorId(request: AsyncIterable<unknown>): Promise<string> {
+  const body = await readInternalJson(request);
+  return typeof body.actorId === "string" && body.actorId.trim()
+    ? body.actorId.trim()
+    : "openclaw";
+}
+
+async function readRequiredSmtpLiveServers(
+  response: ServerResponse,
+  deps: SkillDispatcherDeps
+): Promise<SmtpInventoryLiveServer[] | null> {
+  if (!deps.readSmtpInventoryLiveServers) {
+    writeJson(response, 503, { error: "smtp_inventory_live_source_missing" });
+    return null;
+  }
+  return deps.readSmtpInventoryLiveServers();
+}
+
+async function appendSmtpInventoryMutationAudit(
+  deps: SkillDispatcherDeps,
+  actorId: string,
+  action: string,
+  result: { ok: boolean; domain?: string; serverSlug?: string; canonicalServerSlug?: string; status: string; dryRun: boolean; changed: boolean; reason?: string; plan?: Record<string, unknown>; error?: string }
+): Promise<void> {
+  await deps.auditLog.append({
+    actorType: "operator",
+    actorId,
+    action,
+    targetType: result.domain ? "domain" : "smtp_inventory",
+    targetId: result.domain ?? result.serverSlug ?? "smtp-provisioning",
+    riskLevel: "high",
+    decision: result.ok ? "allow" : "reject",
+    humanApproved: true,
+    approverIds: [actorId],
+    metadata: {
+      domain: result.domain,
+      serverSlug: result.serverSlug,
+      canonicalServerSlug: result.canonicalServerSlug,
+      status: result.status,
+      dryRun: result.dryRun,
+      changed: result.changed,
+      reason: result.reason,
+      error: result.error,
+      sideEffects: "local-state-only",
+      rollbackPlan: smtpInventoryRollbackPlan(result),
+      plan: result.plan
+    }
+  });
+}
+
+function smtpInventoryRollbackPlan(result: { domain?: string; serverSlug?: string; plan?: Record<string, unknown> }): Record<string, unknown> {
+  return {
+    mode: "manual_local_state",
+    canRollbackAutomatically: false,
+    procedure: "Inspect SMTP inventory and apply the inverse local status/field change with update_smtp_entry. No automatic inventory backup is created by this mutation.",
+    futureSkill: "inspect_smtp_inventory",
+    domain: result.domain,
+    serverSlug: result.serverSlug,
+    previousStatus: result.plan?.previousStatus,
+    previousStatuses: result.plan?.previousStatuses,
+    previousValues: result.plan?.previousValues
+  };
+}
+
+function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {
+  response.writeHead(statusCode, { "content-type": "application/json" });
+  response.end(JSON.stringify(payload));
 }
 
 function requiredPorkbunDomainAdapter(deps: SkillDispatcherDeps): DomainAvailabilityAdapter {
