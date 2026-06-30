@@ -90,3 +90,31 @@ test("infrastructure account health and retire actions are known ApprovalGate bi
     }
   });
 });
+
+test("SMTP inventory management tools are known ApprovalGate bindings", () => {
+  for (const skill of [
+    "inspect_smtp_inventory",
+    "resolve_ambiguous_domain",
+    "retire_smtp_entry",
+    "reassign_domain_server",
+    "update_smtp_entry"
+  ]) {
+    assert.equal(canonicalSkillSlug(skill), skill);
+    assert.equal(validateSkillActionBinding({
+      skill,
+      actionIds: [skill],
+      requireKnownSkill: true
+    }).ok, true);
+  }
+
+  assert.deepEqual(validateSkillActionBinding({
+    skill: "resolve_ambiguous_domain",
+    actionIds: ["retire_smtp_entry"],
+    requireKnownSkill: true
+  }), {
+    ok: false,
+    rejectReason: "skill_action_mismatch",
+    canonicalSkill: "resolve_ambiguous_domain",
+    expectedActionIds: ["resolve_ambiguous_domain"]
+  });
+});

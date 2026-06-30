@@ -954,7 +954,7 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
 
   assert.equal(payloads.length, 2);
   const toolNames = (payloads[0].tools as Array<{ name: string }>).map((tool) => tool.name);
-  assert.equal(toolNames.length, 28);
+  assert.equal(toolNames.length, 33);
   assert.equal(toolNames.includes("read_episodic_scratch"), true);
   assert.equal(toolNames.includes("compact_intent"), true);
   assert.equal(toolNames.includes("enable_smtp_auth"), true);
@@ -967,8 +967,13 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   assert.equal(toolNames.includes("read_dns_ionos"), true);
   assert.equal(toolNames.includes("read_mxtoolbox_health"), true);
   assert.equal(toolNames.includes("read_infrastructure_inventory"), true);
+  assert.equal(toolNames.includes("inspect_smtp_inventory"), true);
   assert.equal(toolNames.includes("read_infrastructure_account_health"), true);
   assert.equal(toolNames.includes("retire_infrastructure_account"), true);
+  assert.equal(toolNames.includes("resolve_ambiguous_domain"), true);
+  assert.equal(toolNames.includes("retire_smtp_entry"), true);
+  assert.equal(toolNames.includes("reassign_domain_server"), true);
+  assert.equal(toolNames.includes("update_smtp_entry"), true);
   assert.equal(toolNames.includes("read_webdock_servers"), true);
   assert.equal(toolNames.includes("list_conversations"), true);
   assert.equal(toolNames.includes("read_conversation"), true);
