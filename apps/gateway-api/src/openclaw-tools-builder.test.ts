@@ -22,6 +22,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "read_dns_ionos",
     "read_mxtoolbox_health",
     "read_infrastructure_inventory",
+    "inspect_smtp_inventory",
     "read_infrastructure_account_health",
     "read_webdock_servers",
     "list_conversations",
@@ -33,6 +34,10 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "provision_smtp_postfix",
     "configure_email_auth",
     "enable_smtp_auth",
+    "resolve_ambiguous_domain",
+    "retire_smtp_entry",
+    "reassign_domain_server",
+    "update_smtp_entry",
     "bind_domain_to_server",
     "seed_warmup_pool",
     "send_real_email",
@@ -55,6 +60,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
         "read_dns_ionos",
         "read_mxtoolbox_health",
         "read_infrastructure_inventory",
+        "inspect_smtp_inventory",
         "read_infrastructure_account_health",
         "read_webdock_servers",
         "list_conversations",
@@ -88,6 +94,10 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
   assert.ok(infrastructureInventory);
   assert.deepEqual(infrastructureInventory.input_schema.required, []);
   assert.match(infrastructureInventory.description, /read-only/);
+  const smtpInventory = tools.find((tool) => tool.name === "inspect_smtp_inventory");
+  assert.ok(smtpInventory);
+  assert.deepEqual(smtpInventory.input_schema.required, []);
+  assert.match(smtpInventory.description, /read-only/);
   const infrastructureAccountHealth = tools.find((tool) => tool.name === "read_infrastructure_account_health");
   assert.ok(infrastructureAccountHealth);
   assert.deepEqual(infrastructureAccountHealth.input_schema.required, []);
@@ -110,6 +120,13 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
   assert.match(enableSmtpAuth.description, /un solo dominio/);
   assert.match(enableSmtpAuth.description, /No imprime password ni markdown/);
   assert.deepEqual(enableSmtpAuth.input_schema.required, ["domain"]);
+  assert.ok("serverSlug" in enableSmtpAuth.input_schema.properties);
+  for (const toolName of ["resolve_ambiguous_domain", "retire_smtp_entry", "reassign_domain_server", "update_smtp_entry"]) {
+    const tool = tools.find((candidate) => candidate.name === toolName);
+    assert.ok(tool, `${toolName} should be exposed`);
+    assert.match(tool.description, /ApprovalGate/);
+    assert.match(tool.description, /local-state-only/);
+  }
   const retireAccount = tools.find((tool) => tool.name === "retire_infrastructure_account");
   assert.ok(retireAccount);
   assert.match(retireAccount.description, /ApprovalGate/);
@@ -122,7 +139,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 29);
+  assert.equal(tools.length, 34);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -244,12 +261,17 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "update_domain_nameservers",
     "read_dns_ionos",
     "read_infrastructure_inventory",
+    "inspect_smtp_inventory",
     "read_infrastructure_account_health",
     "read_webdock_servers",
     "list_conversations",
     "read_conversation",
     "bind_webdock_main_domain",
     "enable_smtp_auth",
+    "resolve_ambiguous_domain",
+    "retire_smtp_entry",
+    "reassign_domain_server",
+    "update_smtp_entry",
     "send_real_email",
     "compact_intent",
     "configure_complete_smtp",
@@ -358,6 +380,9 @@ function validSample(toolName: string): Record<string, unknown> {
   if (toolName === "read_infrastructure_inventory") {
     return {};
   }
+  if (toolName === "inspect_smtp_inventory") {
+    return { domain: "delivrix.test", status: "configured" };
+  }
   if (toolName === "read_infrastructure_account_health") {
     return {};
   }
@@ -400,7 +425,37 @@ function validSample(toolName: string): Record<string, unknown> {
     return { domain: "delivrix.test", mxServerIp: "203.0.113.10", dmarcPolicy: "none" };
   }
   if (toolName === "enable_smtp_auth") {
-    return { domain: "delivrix.test" };
+    return { domain: "delivrix.test", serverSlug: "server69" };
+  }
+  if (toolName === "resolve_ambiguous_domain") {
+    return {
+      domain: "delivrix.test",
+      keepServerSlug: "server69",
+      reason: "Resolver duplicado tras retry de provisioning."
+    };
+  }
+  if (toolName === "retire_smtp_entry") {
+    return {
+      domain: "delivrix.test",
+      serverSlug: "server68",
+      reason: "Servidor reemplazado por retry exitoso."
+    };
+  }
+  if (toolName === "reassign_domain_server") {
+    return {
+      domain: "delivrix.test",
+      fromServerSlug: "server68",
+      toServerSlug: "server69",
+      reason: "Servidor nuevo verificado como canonico."
+    };
+  }
+  if (toolName === "update_smtp_entry") {
+    return {
+      domain: "delivrix.test",
+      serverSlug: "server69",
+      status: "configured",
+      reason: "Correccion auditada de metadata local."
+    };
   }
   if (toolName === "bind_domain_to_server") {
     return { domain: "delivrix.test", serverIp: "203.0.113.10" };

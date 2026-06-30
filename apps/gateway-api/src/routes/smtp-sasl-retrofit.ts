@@ -27,30 +27,18 @@ import {
   prepareSmtpCredential,
   publicSmtpCredentialMetadata,
   saveSmtpCredentialRecord,
-  smtpCredentialFingerprint,
-  type SmtpCredentialPublicMetadata
+  smtpCredentialFingerprint
 } from "../smtp-credentials.ts";
+import type {
+  SmtpProvisioningInventory,
+  SmtpProvisioningServer
+} from "../smtp-inventory-management.ts";
 import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
 import type { SmtpSshRunner } from "./smtp-provisioning.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
   list?(): Promise<AuditEvent[]>;
-}
-
-interface SmtpProvisioningInventory {
-  servers?: Array<{
-    serverSlug: string;
-    domain: string;
-    serverIp: string;
-    selector: string;
-    status: "configured";
-    tlsStatus: "attempted_or_pending_dns";
-    smtpAuthStatus?: "configured";
-    smtpCredential?: SmtpCredentialPublicMetadata;
-    configuredAt: string;
-    updatedAt: string;
-  }>;
 }
 
 export interface SmtpSaslRetrofitCandidate {
@@ -277,8 +265,6 @@ export async function listSmtpSaslRetrofitCandidates(
   return candidates.filter((candidate): candidate is SmtpSaslRetrofitCandidate => candidate !== null);
 }
 
-type SmtpProvisioningServer = NonNullable<SmtpProvisioningInventory["servers"]>[number];
-
 function shouldRetrofitServer(
   server: SmtpProvisioningServer,
   mode: SmtpSaslRetrofitMode,
@@ -330,11 +316,15 @@ export async function reconcileSmtpProvisioningCredentialFlags(
         if (!staleServerKeys.has(smtpProvisioningServerKey(server))) {
           return server;
         }
+        const credential = server.smtpCredential;
+        if (!credential) {
+          return server;
+        }
         staleDowngraded += 1;
         return {
           ...server,
           smtpCredential: {
-            ...server.smtpCredential,
+            ...credential,
             hasCredential: false
           },
           updatedAt

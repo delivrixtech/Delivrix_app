@@ -179,6 +179,8 @@ import { handleReadDeliveryReason } from "./routes/openclaw-delivery-reason.ts";
 import { handleReadSmtpReachability } from "./routes/openclaw-smtp-reachability.ts";
 import { handleReadDkimStatus } from "./routes/openclaw-dkim-status.ts";
 import { handleReadRunStateIntegrity } from "./routes/openclaw-run-state-integrity.ts";
+import { handleInspectSmtpInventoryHttp } from "./routes/openclaw-smtp-inventory.ts";
+import type { SmtpInventoryLiveServer } from "./smtp-inventory-management.ts";
 import { createWarmupSignalsReader } from "./warmup-signals-source.ts";
 import { handleReadRoute53ZoneRecords } from "./routes/route53-zone-records.ts";
 import { handleReadIonosDns } from "./routes/read-dns-ionos.ts";
@@ -513,6 +515,41 @@ async function listVpsProviderInventories(): Promise<VpsProviderInventoryResult[
     });
   }
   return providerInventories;
+}
+
+async function listSmtpInventoryLiveServers(): Promise<SmtpInventoryLiveServer[]> {
+  const [webdockAccounts, vpsProviders] = await Promise.all([
+    listWebdockInventoryAccounts(),
+    listVpsProviderInventories()
+  ]);
+  const servers: SmtpInventoryLiveServer[] = [];
+  for (const account of webdockAccounts) {
+    for (const server of account.result.servers) {
+      servers.push({
+        serverSlug: server.slug,
+        ipv4: server.ipv4,
+        status: server.status,
+        providerId: "webdock",
+        accountId: server.accountId ?? account.accountId,
+        accountLabel: server.accountLabel ?? account.accountLabel,
+        accountHealthStatus: account.result.source.responseOk ? "healthy" : "degraded"
+      });
+    }
+  }
+  for (const provider of vpsProviders) {
+    for (const server of provider.result.servers) {
+      servers.push({
+        serverSlug: server.slug,
+        ipv4: server.ipv4,
+        status: server.status,
+        providerId: provider.providerId,
+        accountId: server.accountId ?? provider.result.source.accountId ?? provider.providerId,
+        accountLabel: server.accountLabel ?? provider.result.source.accountLabel ?? provider.providerLabel,
+        accountHealthStatus: provider.result.source.responseOk ? "healthy" : "degraded"
+      });
+    }
+  }
+  return servers;
 }
 // Cuentas write-capable para el selector del orquestador (una por CUENTA real, ya de-dupeada).
 // enabled = canCreate() REAL: la cuenta-1 ("ops") siempre apta; las distintas solo con sus keys.
@@ -1026,6 +1063,7 @@ const skillDispatcher = createSkillDispatcher({
   readKillSwitch: () => killSwitchStore.get(),
   configureSmtpDeps: configureSmtpRuntimeDeps,
   accountLifecycleStore,
+  readSmtpInventoryLiveServers: listSmtpInventoryLiveServers,
   env: process.env
 });
 const onboardDomainFlowRunner = createGatewayOnboardDomainFlowRunner({
@@ -1193,6 +1231,7 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_dns_ionos", "allowed_read_only"),
   permission("read_mxtoolbox_health", "allowed_read_only"),
   permission("read_mxtoolbox_daily_report", "allowed_read_only"),
+  permission("inspect_smtp_inventory", "allowed_read_only"),
   permission("suggest_safe_domain", "allowed_read_only"),
   permission("naming_suggest", "allowed_read_only"),
   permission("propose_warming_step", "allowed_dry_run"),
@@ -1223,6 +1262,10 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("install_smtp_stack", "supervised_local_state"),
   permission("configure_email_auth", "supervised_local_state"),
   permission("enable_smtp_auth", "supervised_local_state"),
+  permission("resolve_ambiguous_domain", "supervised_local_state"),
+  permission("retire_smtp_entry", "supervised_local_state"),
+  permission("reassign_domain_server", "supervised_local_state"),
+  permission("update_smtp_entry", "supervised_local_state"),
   permission("bind_domain_to_server", "supervised_local_state"),
   permission("update_domain_nameservers", "supervised_live_wallet"),
   permission("route53_domain_nameservers_update", "supervised_live_wallet"),
@@ -2211,6 +2254,28 @@ const server = createServer(async (request, response) => {
         logger: gatewayRuntimeLog,
         now: () => new Date(),
         readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/smtp-inventory") {
+      return handleInspectSmtpInventoryHttp(request, response, {
+        workspace: openClawWorkspace,
+        listLiveServers: listSmtpInventoryLiveServers,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        logger: gatewayRuntimeLog,
+        now: () => resolveGatewayNow(),
+        emitAudit: async (event) => {
+          await auditLog.append({
+            actorType: "openclaw",
+            actorId: "openclaw",
+            action: String(event.type),
+            targetType: "smtp_inventory",
+            targetId: typeof event.domain === "string" ? event.domain : "smtp-provisioning",
+            riskLevel: "low",
+            decision: "allow",
+            metadata: event
+          });
+        }
       });
     }
 

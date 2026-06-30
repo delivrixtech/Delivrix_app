@@ -94,6 +94,31 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["enable_smtp_auth"]
   },
   {
+    canonicalSkill: "inspect_smtp_inventory",
+    aliases: ["inspect_smtp_inventory"],
+    actionIds: ["inspect_smtp_inventory"]
+  },
+  {
+    canonicalSkill: "resolve_ambiguous_domain",
+    aliases: ["resolve_ambiguous_domain"],
+    actionIds: ["resolve_ambiguous_domain"]
+  },
+  {
+    canonicalSkill: "retire_smtp_entry",
+    aliases: ["retire_smtp_entry"],
+    actionIds: ["retire_smtp_entry"]
+  },
+  {
+    canonicalSkill: "reassign_domain_server",
+    aliases: ["reassign_domain_server"],
+    actionIds: ["reassign_domain_server"]
+  },
+  {
+    canonicalSkill: "update_smtp_entry",
+    aliases: ["update_smtp_entry"],
+    actionIds: ["update_smtp_entry"]
+  },
+  {
     canonicalSkill: "bind_domain_to_server",
     aliases: ["bind_domain_to_server"],
     actionIds: ["bind_domain_to_server"]

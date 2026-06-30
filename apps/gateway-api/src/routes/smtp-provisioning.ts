@@ -36,8 +36,12 @@ import {
   saveSmtpCredentialRecord,
   smtpCredentialFingerprint,
   type SmtpCredentialMaterial,
-  type SmtpCredentialPublicMetadata
 } from "../smtp-credentials.ts";
+import {
+  upsertConfiguredSmtpInventoryEntry,
+  type SmtpProvisioningInventory,
+  type SmtpProvisioningServer
+} from "../smtp-inventory-management.ts";
 import {
   renderDovecotAuthConf,
   renderDovecotLoggingConf,
@@ -98,21 +102,6 @@ interface SmtpProvisionBody {
   actorId?: unknown;
   approvalToken?: unknown;
   taskId?: unknown;
-}
-
-interface SmtpInventory {
-  servers?: Array<{
-    serverSlug: string;
-    domain: string;
-    serverIp: string;
-    selector: string;
-    status: "configured";
-    tlsStatus: "attempted_or_pending_dns";
-    smtpAuthStatus?: "configured";
-    smtpCredential?: SmtpCredentialPublicMetadata;
-    configuredAt: string;
-    updatedAt: string;
-  }>;
 }
 
 interface SmtpProvisionStep {
@@ -542,7 +531,7 @@ export async function handleSmtpProvisionHttp(
       smtpCredential: smtpCredentialMetadata,
       configuredAt: now.toISOString(),
       updatedAt: (deps.now?.() ?? new Date()).toISOString()
-    });
+    }, deps.now);
 
     const workspace = await safeWriteExecution(deps.workspace, {
       skill: skillName,
@@ -903,20 +892,17 @@ export function buildSmtpProvisionPlan(input: {
 
 async function updateSmtpInventory(
   workspace: OpenClawWorkspace,
-  input: NonNullable<SmtpInventory["servers"]>[number]
+  input: SmtpProvisioningServer,
+  now?: () => Date
 ): Promise<void> {
-  await workspace.updateInventoryJson<SmtpInventory>("smtp-provisioning.json", (current) => {
-    const servers = (current?.servers ?? []).filter((server) => server.serverSlug !== input.serverSlug || server.domain !== input.domain);
-    servers.push(input);
-    return { servers };
-  });
+  await upsertConfiguredSmtpInventoryEntry(workspace, input, now);
 }
 
 async function findConfiguredSmtpInventory(
   workspace: OpenClawWorkspace,
   input: { serverSlug: string; domain: string; selector: string }
-): Promise<NonNullable<SmtpInventory["servers"]>[number] | null> {
-  const inventory = await workspace.readInventoryJson<SmtpInventory>("smtp-provisioning.json").catch(() => null);
+): Promise<SmtpProvisioningServer | null> {
+  const inventory = await workspace.readInventoryJson<SmtpProvisioningInventory>("smtp-provisioning.json").catch(() => null);
   return inventory?.servers?.find((entry) =>
     entry.serverSlug === input.serverSlug &&
     entry.domain === input.domain &&
@@ -929,15 +915,15 @@ async function findConfiguredSmtpInventory(
   ) ?? null;
 }
 
-function idempotentSmtpAuthStatus(entry: NonNullable<SmtpInventory["servers"]>[number]): "configured" | "legacy_not_configured" {
+function idempotentSmtpAuthStatus(entry: SmtpProvisioningServer): "configured" | "legacy_not_configured" {
   return entry.smtpAuthStatus === "configured" ? "configured" : "legacy_not_configured";
 }
 
 async function findConfiguredSmtpAuthMissingCredentialInventory(
   workspace: OpenClawWorkspace,
   input: { serverSlug: string; domain: string; selector: string }
-): Promise<NonNullable<SmtpInventory["servers"]>[number] | null> {
-  const inventory = await workspace.readInventoryJson<SmtpInventory>("smtp-provisioning.json").catch(() => null);
+): Promise<SmtpProvisioningServer | null> {
+  const inventory = await workspace.readInventoryJson<SmtpProvisioningInventory>("smtp-provisioning.json").catch(() => null);
   return inventory?.servers?.find((entry) =>
     entry.serverSlug === input.serverSlug &&
     entry.domain === input.domain &&
