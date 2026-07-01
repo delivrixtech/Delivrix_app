@@ -122,6 +122,13 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
   assert.match(enableSmtpAuth.description, /No imprime password ni markdown/);
   assert.deepEqual(enableSmtpAuth.input_schema.required, ["domain"]);
   assert.ok("serverSlug" in enableSmtpAuth.input_schema.properties);
+  const configureCompleteSmtp = tools.find((tool) => tool.name === "configure_complete_smtp");
+  assert.ok(configureCompleteSmtp);
+  assert.ok("reuseServerSlug" in configureCompleteSmtp.input_schema.properties);
+  assert.match(
+    String((configureCompleteSmtp.input_schema.properties.reuseServerSlug as { description?: string }).description ?? ""),
+    /Reusa\/adopta/
+  );
   for (const toolName of ["resolve_ambiguous_domain", "retire_smtp_entry", "reassign_domain_server", "update_smtp_entry"]) {
     const tool = tools.find((candidate) => candidate.name === toolName);
     assert.ok(tool, `${toolName} should be exposed`);

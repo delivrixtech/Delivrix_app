@@ -63,7 +63,7 @@ interface CompletedSmtpRunSignal {
 }
 
 export async function upsertConfiguredSmtpInventoryEntry(
-  workspace: OpenClawWorkspace,
+  workspace: Pick<OpenClawWorkspace, "updateInventoryJson">,
   input: SmtpProvisioningServer,
   now: () => Date = () => new Date()
 ): Promise<void> {
