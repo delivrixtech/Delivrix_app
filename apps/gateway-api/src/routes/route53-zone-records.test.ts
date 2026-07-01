@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { Readable } from "node:stream";
+import type {
+  AwsRoute53HostedZoneSummary,
+  AwsRoute53ResourceRecordSet
+} from "../../../../packages/adapters/src/index.ts";
+import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import {
   handleReadRoute53ZoneRecords,
   route53ZoneRecordsClientConfigFromEnv
@@ -65,6 +73,88 @@ test("GET /v1/route53/zone-records filters recordName=smtp.controldelivrix.app",
     ttl: 300,
     values: ["45.136.70.47"]
   }]);
+});
+
+test("GET /v1/route53/zone-records discovers authoritative duplicate zone by domain", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "route53-zone-records-")),
+    now: () => fixedNow
+  });
+  const adapter = new FakeRoute53ZoneRecordsAdapter({
+    zones: [
+      {
+        zoneId: "ZSTALE123456",
+        name: "controlcorpfiling.com.",
+        nameServers: ["ns-stale-1.awsdns-01.com", "ns-stale-2.awsdns-02.net"]
+      },
+      {
+        zoneId: "Z01313019Q8DEA3UGP8G",
+        name: "controlcorpfiling.com.",
+        nameServers: ["ns-real-1.awsdns-11.com", "ns-real-2.awsdns-12.net"]
+      }
+    ],
+    recordsByZone: {
+      Z01313019Q8DEA3UGP8G: [
+        { name: "controlcorpfiling.com.", type: "NS", ttl: 172800, values: ["ns-real-1.awsdns-11.com.", "ns-real-2.awsdns-12.net."] },
+        { name: "smtp.controlcorpfiling.com.", type: "A", ttl: 300, values: ["193.180.211.182"] }
+      ]
+    }
+  });
+  const response = await route("/v1/route53/zone-records?domain=controlcorpfiling.com&recordName=smtp.controlcorpfiling.com", {
+    adapter,
+    workspace,
+    getDomainNameservers: async () => ["ns-real-2.awsdns-12.net", "ns-real-1.awsdns-11.com"]
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.zoneId, "Z01313019Q8DEA3UGP8G");
+  assert.equal(response.body.zoneResolution.source, "aws-authoritative-ns");
+  assert.equal(response.body.zoneResolution.authoritativeNameserverMatch, true);
+  assert.deepEqual(response.body.records, [{
+    name: "smtp.controlcorpfiling.com.",
+    type: "A",
+    ttl: 300,
+    values: ["193.180.211.182"]
+  }]);
+  assert.deepEqual(adapter.listHostedZonesByNameCalls, ["controlcorpfiling.com"]);
+});
+
+test("GET /v1/route53/zone-records rejects stale zoneId when domain resolves to another authoritative zone", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "route53-zone-records-")),
+    now: () => fixedNow
+  });
+  const adapter = new FakeRoute53ZoneRecordsAdapter({
+    zones: [
+      {
+        zoneId: "ZSTALE123456",
+        name: "controlcorpfiling.com.",
+        nameServers: ["ns-stale-1.awsdns-01.com", "ns-stale-2.awsdns-02.net"]
+      },
+      {
+        zoneId: "Z01313019Q8DEA3UGP8G",
+        name: "controlcorpfiling.com.",
+        nameServers: ["ns-real-1.awsdns-11.com", "ns-real-2.awsdns-12.net"]
+      }
+    ],
+    recordsByZone: {}
+  });
+  const response = await route("/v1/route53/zone-records?domain=controlcorpfiling.com&zoneId=ZSTALE123456", {
+    adapter,
+    workspace,
+    getDomainNameservers: async () => ["ns-real-1.awsdns-11.com", "ns-real-2.awsdns-12.net"]
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.error, "zone_not_authoritative_nameservers_mismatch");
+  assert.equal(response.body.details.authoritativeZoneId, "Z01313019Q8DEA3UGP8G");
+});
+
+test("GET /v1/route53/zone-records requires domain or zoneId", async () => {
+  const response = await route("/v1/route53/zone-records");
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.body.error, "domain_or_zone_id_required");
 });
 
 test("GET /v1/route53/zone-records preserves Route53 truncation state", async () => {
@@ -171,6 +261,9 @@ async function route(
   url: string,
   deps: {
     client?: { send(command: unknown): Promise<unknown> };
+    adapter?: FakeRoute53ZoneRecordsAdapter;
+    workspace?: OpenClawWorkspace;
+    getDomainNameservers?: (domain: string) => Promise<string[]>;
     emitAudit?: (event: { type: string; [k: string]: unknown }) => Promise<void>;
     headers?: Record<string, string>;
     readBoundaryToken?: string | null;
@@ -182,6 +275,9 @@ async function route(
     response as unknown as ServerResponse,
     {
       client: deps.client as any,
+      adapter: deps.adapter as any,
+      workspace: deps.workspace,
+      getDomainNameservers: deps.getDomainNameservers,
       emitAudit: deps.emitAudit,
       now: () => fixedNow,
       readBoundaryToken: deps.readBoundaryToken === null ? undefined : deps.readBoundaryToken ?? readToken
@@ -238,6 +334,37 @@ function sampleRecords(): unknown[] {
       ResourceRecords: [{ Value: "\"v=spf1 ip4:45.136.70.47 -all\"" }]
     }
   ];
+}
+
+class FakeRoute53ZoneRecordsAdapter {
+  readonly listHostedZonesByNameCalls: string[] = [];
+  private readonly zones: AwsRoute53HostedZoneSummary[];
+  private readonly recordsByZone: Record<string, AwsRoute53ResourceRecordSet[]>;
+
+  constructor(input: {
+    zones: AwsRoute53HostedZoneSummary[];
+    recordsByZone: Record<string, AwsRoute53ResourceRecordSet[]>;
+  }) {
+    this.zones = input.zones;
+    this.recordsByZone = input.recordsByZone;
+  }
+
+  async createHostedZone(): Promise<{ zoneId: string; nameServers: string[] }> {
+    throw new Error("unexpected createHostedZone");
+  }
+
+  async listHostedZones(): Promise<AwsRoute53HostedZoneSummary[]> {
+    return this.zones;
+  }
+
+  async listHostedZonesByName(domain: string): Promise<AwsRoute53HostedZoneSummary[]> {
+    this.listHostedZonesByNameCalls.push(domain);
+    return this.zones;
+  }
+
+  async listResourceRecordSets(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]> {
+    return this.recordsByZone[zoneId] ?? [];
+  }
 }
 
 function request(url: string, headers: Record<string, string>): IncomingMessage {

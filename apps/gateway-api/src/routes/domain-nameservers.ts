@@ -153,6 +153,7 @@ export async function handleDomainNameserverUpdateHttp(
       domain,
       mode: "reuse-only",
       preferredZoneId,
+      getDomainNameservers: deps.registrarAdapter.getDomainNameservers,
       now: deps.now
     });
     const records = await requireRoute53ZoneWithApexMailRecords({

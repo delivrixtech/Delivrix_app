@@ -1261,6 +1261,7 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("provision_smtp_postfix", "supervised_local_state"),
   permission("install_smtp_stack", "supervised_local_state"),
   permission("configure_email_auth", "supervised_local_state"),
+  permission("reconcile_dns_to_live_smtp", "supervised_local_state"),
   permission("enable_smtp_auth", "supervised_local_state"),
   permission("resolve_ambiguous_domain", "supervised_local_state"),
   permission("retire_smtp_entry", "supervised_local_state"),
@@ -2281,6 +2282,9 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "GET" && requestUrl(request).pathname === "/v1/route53/zone-records") {
       return await handleReadRoute53ZoneRecords(request, response, {
+        adapter: awsRoute53DnsAdapter,
+        workspace: openClawWorkspace,
+        getDomainNameservers: (domain) => awsRoute53DomainsAdapter.getDomainNameservers(domain),
         canvasLiveEvents,
         emitAudit: appendRoute53ReadAudit,
         now: () => new Date(),
@@ -2326,6 +2330,7 @@ const server = createServer(async (request, response) => {
           auditLog,
           adapter: awsRoute53DnsAdapter,
           workspace: openClawWorkspace,
+          getDomainNameservers: (domain) => awsRoute53DomainsAdapter.getDomainNameservers(domain),
           canvasLiveEvents,
           autoRollbackManager,
           webhookBroadcaster: equipoWebhookBroadcaster,
@@ -2409,6 +2414,7 @@ const server = createServer(async (request, response) => {
           auditLog,
           dnsAdapter: awsRoute53DnsAdapter,
           workspace: openClawWorkspace,
+          getDomainNameservers: (domain) => awsRoute53DomainsAdapter.getDomainNameservers(domain),
           canvasLiveEvents,
           readCanvasState: () => canvasLiveEvents.snapshot(),
           env: process.env

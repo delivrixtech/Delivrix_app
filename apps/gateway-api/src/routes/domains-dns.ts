@@ -42,6 +42,7 @@ export interface Route53DnsAdapter {
   currentSource(responseOk?: boolean, errorMessage?: string): AwsRoute53DnsSource;
   createHostedZone(domain: string): Promise<AwsRoute53HostedZoneResult>;
   listHostedZones(): Promise<AwsRoute53HostedZoneSummary[]>;
+  listHostedZonesByName?(domain: string): Promise<AwsRoute53HostedZoneSummary[]>;
   upsertRecord(zoneId: string, opts: AwsRoute53DnsRecordInput): Promise<AwsRoute53DnsChangeResult>;
   deleteRecord?(zoneId: string, opts: AwsRoute53DnsRecordInput): Promise<AwsRoute53DnsChangeResult>;
   listResourceRecordSets(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]>;
@@ -76,6 +77,7 @@ export interface Route53DnsUpsertDependencies {
   auditLog: AuditSink;
   adapter: Route53DnsAdapter;
   workspace: OpenClawWorkspace;
+  getDomainNameservers?: (domain: string) => Promise<string[]>;
   canvasLiveEvents?: CanvasEmitter;
   autoRollbackManager?: AutoRollbackManager;
   awaitAutoRollbackCheck?: boolean;
@@ -228,6 +230,7 @@ export async function handleRoute53DnsUpsertHttp(
       adapter: deps.adapter,
       domain,
       mode: "reuse-or-create",
+      getDomainNameservers: deps.getDomainNameservers,
       now: deps.now
     });
     const zone = zoneResolution.zone;
@@ -293,6 +296,7 @@ export async function handleRoute53DnsUpsertHttp(
         zoneResolution: {
           status: zoneResolution.status,
           source: zoneResolution.source,
+          authoritativeNameserverMatch: zoneResolution.authoritativeNameserverMatch === true,
           smtpSetup: zoneResolution.smtpSetup ?? null,
           cleanupSuggested: zoneResolution.cleanupSuggested ?? []
         },
@@ -325,6 +329,7 @@ export async function handleRoute53DnsUpsertHttp(
         zoneResolution: {
           status: zoneResolution.status,
           source: zoneResolution.source,
+          authoritativeNameserverMatch: zoneResolution.authoritativeNameserverMatch === true,
           smtpSetup: zoneResolution.smtpSetup ?? null,
           cleanupSuggested: zoneResolution.cleanupSuggested ?? []
         },
@@ -359,6 +364,7 @@ export async function handleRoute53DnsUpsertHttp(
       zoneResolution: {
         status: zoneResolution.status,
         source: zoneResolution.source,
+        authoritativeNameserverMatch: zoneResolution.authoritativeNameserverMatch === true,
         smtpSetup: zoneResolution.smtpSetup ?? null,
         cleanupSuggested: zoneResolution.cleanupSuggested ?? []
       },

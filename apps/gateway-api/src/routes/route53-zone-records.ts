@@ -5,6 +5,15 @@ import {
   type RRType
 } from "@aws-sdk/client-route-53";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type {
+  AwsRoute53HostedZoneSummary,
+  AwsRoute53ResourceRecordSet
+} from "../../../../packages/adapters/src/index.ts";
+import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import {
+  resolveRoute53HostedZone,
+  Route53ZonePolicyError
+} from "./route53-zone-policy.ts";
 import { authorizeSensitiveRead, type SensitiveReadAuthDeps } from "./sensitive-read-auth.ts";
 
 interface CanvasLiveEvents {
@@ -15,6 +24,13 @@ interface Route53ZoneRecordsClient {
   send(command: ListResourceRecordSetsCommand): Promise<ListResourceRecordSetsCommandOutput>;
 }
 
+interface Route53ZoneRecordsAdapter {
+  listHostedZones(): Promise<AwsRoute53HostedZoneSummary[]>;
+  listHostedZonesByName?(domain: string): Promise<AwsRoute53HostedZoneSummary[]>;
+  listResourceRecordSets(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]>;
+  createHostedZone(domain: string): Promise<{ zoneId: string; nameServers: string[] }>;
+}
+
 interface AwsClientCredentials {
   accessKeyId: string;
   secretAccessKey: string;
@@ -23,6 +39,9 @@ interface AwsClientCredentials {
 
 export interface ReadZoneRecordsDeps {
   client?: Route53ZoneRecordsClient;
+  adapter?: Route53ZoneRecordsAdapter;
+  workspace?: OpenClawWorkspace;
+  getDomainNameservers?: (domain: string) => Promise<string[]>;
   canvasLiveEvents?: CanvasLiveEvents;
   emitAudit?: (event: { type: string; [k: string]: unknown }) => Promise<void>;
   now?: () => Date;
@@ -42,9 +61,16 @@ export interface ZoneRecord {
 
 export interface ZoneRecordsResponse {
   zoneId: string;
+  domain?: string;
   records: ZoneRecord[];
   isTruncated: boolean;
   totalRecords: number;
+  zoneResolution?: {
+    status: string;
+    source: string;
+    authoritativeNameserverMatch?: boolean;
+    cleanupSuggested?: unknown[];
+  };
 }
 
 const validRecordTypes = new Set([
@@ -72,11 +98,21 @@ export async function handleReadRoute53ZoneRecords(
   }
 
   const url = new URL(request.url ?? "", "http://localhost");
-  const zoneId = normalizeZoneId(url.searchParams.get("zoneId") ?? "");
+  const domain = normalizeDomain(url.searchParams.get("domain") ?? "");
+  const requestedZoneId = normalizeZoneId(url.searchParams.get("zoneId") ?? "");
+  let zoneId = requestedZoneId;
   const recordType = normalizeRecordType(url.searchParams.get("recordType"));
   const recordName = normalizeRecordName(url.searchParams.get("recordName"));
 
-  if (!isValidZoneId(zoneId)) {
+  if (!domain && !zoneId) {
+    json(response, 400, { error: "domain_or_zone_id_required" });
+    return;
+  }
+  if (domain && !isValidDomain(domain)) {
+    json(response, 400, { error: "invalid_domain_format" });
+    return;
+  }
+  if (requestedZoneId && !isValidZoneId(requestedZoneId)) {
     json(response, 400, { error: "invalid_zone_id" });
     return;
   }
@@ -86,58 +122,72 @@ export async function handleReadRoute53ZoneRecords(
     return;
   }
 
-  const client: Route53ZoneRecordsClient = deps.client ?? new Route53Client(route53ZoneRecordsClientConfigFromEnv());
-
   try {
-    const apiResponse = await client.send(
-      new ListResourceRecordSetsCommand({
-        HostedZoneId: zoneId,
-        ...(recordName ? { StartRecordName: recordName } : {}),
-        ...(recordName && recordType ? { StartRecordType: recordType as RRType } : {}),
-        MaxItems: 300
-      })
-    );
+    let zoneResolution: ZoneRecordsResponse["zoneResolution"] | undefined;
+    if (domain) {
+      if (!deps.adapter || !deps.workspace) {
+        json(response, 503, { error: "route53_zone_discovery_unavailable", domain });
+        return;
+      }
+      const resolved = await resolveRoute53HostedZone({
+        workspace: deps.workspace,
+        adapter: deps.adapter,
+        domain,
+        mode: "reuse-only",
+        preferredZoneId: requestedZoneId || undefined,
+        getDomainNameservers: deps.getDomainNameservers
+      });
+      zoneId = resolved.zone.zoneId;
+      zoneResolution = {
+        status: resolved.status,
+        source: resolved.source,
+        ...(resolved.authoritativeNameserverMatch === true ? { authoritativeNameserverMatch: true } : {}),
+        ...(resolved.cleanupSuggested ? { cleanupSuggested: resolved.cleanupSuggested } : {})
+      };
+    }
 
-    const records: ZoneRecord[] = (apiResponse.ResourceRecordSets ?? [])
-      .filter((recordSet) => {
-        if (recordType && recordSet.Type !== recordType) return false;
-        if (recordName && normalizeRecordName(recordSet.Name ?? "") !== recordName) return false;
-        return true;
-      })
-      .map((recordSet) => ({
-        name: recordSet.Name ?? "",
-        type: recordSet.Type ?? "",
-        ttl: recordSet.TTL,
-        values: (recordSet.ResourceRecords ?? [])
-          .map((record) => record.Value ?? "")
-          .filter((value) => value.length > 0),
-        setIdentifier: recordSet.SetIdentifier,
-        weight: recordSet.Weight,
-        aliasTarget: recordSet.AliasTarget
-          ? {
-              dnsName: recordSet.AliasTarget.DNSName ?? "",
-              hostedZoneId: recordSet.AliasTarget.HostedZoneId ?? ""
-            }
-          : undefined
-      }));
+    const listed = deps.adapter
+      ? {
+        records: filterRecords((await deps.adapter.listResourceRecordSets(zoneId)).map(adapterRecordToZoneRecord), recordType, recordName),
+        isTruncated: false
+      }
+      : await listRecordsWithSdk({
+        client: deps.client ?? new Route53Client(route53ZoneRecordsClientConfigFromEnv()),
+        zoneId,
+        recordType,
+        recordName
+      });
 
     const result: ZoneRecordsResponse = {
       zoneId,
-      records,
-      isTruncated: apiResponse.IsTruncated === true,
-      totalRecords: records.length
+      ...(domain ? { domain } : {}),
+      records: listed.records,
+      isTruncated: listed.isTruncated,
+      totalRecords: listed.records.length,
+      ...(zoneResolution ? { zoneResolution } : {})
     };
 
     await deps.emitAudit?.({
       type: "oc.route53.zone_records_read",
       zoneId,
-      recordCount: records.length,
+      ...(domain ? { domain } : {}),
+      ...(zoneResolution?.source ? { zoneResolutionSource: zoneResolution.source } : {}),
+      recordCount: listed.records.length,
       isTruncated: result.isTruncated,
       timestamp: (deps.now ?? (() => new Date()))().toISOString()
     });
 
     json(response, 200, result);
   } catch (error) {
+    if (error instanceof Route53ZonePolicyError) {
+      json(response, error.statusCode, {
+        error: error.code,
+        message: error.message,
+        domain,
+        details: error.details
+      });
+      return;
+    }
     const message = errorMessage(error);
     const isNotFound = /NoSuchHostedZone/i.test(`${errorName(error)} ${message}`);
     json(response, isNotFound ? 404 : 502, {
@@ -146,6 +196,59 @@ export async function handleReadRoute53ZoneRecords(
       zoneId
     });
   }
+}
+
+async function listRecordsWithSdk(input: {
+  client: Route53ZoneRecordsClient;
+  zoneId: string;
+  recordType?: string;
+  recordName?: string;
+}): Promise<{ records: ZoneRecord[]; isTruncated: boolean }> {
+  const apiResponse = await input.client.send(
+    new ListResourceRecordSetsCommand({
+      HostedZoneId: input.zoneId,
+      ...(input.recordName ? { StartRecordName: input.recordName } : {}),
+      ...(input.recordName && input.recordType ? { StartRecordType: input.recordType as RRType } : {}),
+      MaxItems: 300
+    })
+  );
+
+  return {
+    records: filterRecords((apiResponse.ResourceRecordSets ?? []).map((recordSet) => ({
+      name: recordSet.Name ?? "",
+      type: recordSet.Type ?? "",
+      ttl: recordSet.TTL,
+      values: (recordSet.ResourceRecords ?? [])
+        .map((record) => record.Value ?? "")
+        .filter((value) => value.length > 0),
+      setIdentifier: recordSet.SetIdentifier,
+      weight: recordSet.Weight,
+      aliasTarget: recordSet.AliasTarget
+        ? {
+            dnsName: recordSet.AliasTarget.DNSName ?? "",
+            hostedZoneId: recordSet.AliasTarget.HostedZoneId ?? ""
+          }
+        : undefined
+    })), input.recordType, input.recordName),
+    isTruncated: apiResponse.IsTruncated === true
+  };
+}
+
+function adapterRecordToZoneRecord(record: AwsRoute53ResourceRecordSet): ZoneRecord {
+  return {
+    name: record.name,
+    type: record.type,
+    ttl: record.ttl,
+    values: record.values
+  };
+}
+
+function filterRecords(records: ZoneRecord[], recordType: string | undefined, recordName: string | undefined): ZoneRecord[] {
+  return records.filter((recordSet) => {
+    if (recordType && recordSet.type !== recordType) return false;
+    if (recordName && normalizeRecordName(recordSet.name) !== recordName) return false;
+    return true;
+  });
 }
 
 function authorizeRoute53Read(
@@ -209,6 +312,14 @@ function firstNonEmpty(...values: Array<string | undefined>): string | undefined
 
 function isValidZoneId(zoneId: string): boolean {
   return /^Z[A-Z0-9]{10,32}$/.test(zoneId);
+}
+
+function isValidDomain(domain: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(domain);
+}
+
+function normalizeDomain(value: string): string {
+  return value.trim().toLowerCase().replace(/\.$/, "");
 }
 
 function normalizeRecordType(value: string | null): string | undefined {
