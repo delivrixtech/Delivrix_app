@@ -47,7 +47,8 @@ export interface Route53DomainDetailParams extends Record<string, unknown> {
 }
 
 export interface Route53ZoneRecordsParams extends Record<string, unknown> {
-  zoneId: string;
+  domain?: string;
+  zoneId?: string;
   recordType?: "A" | "AAAA" | "CNAME" | "MX" | "TXT" | "NS" | "SOA" | "PTR" | "SRV" | "CAA";
   recordName?: string;
 }
@@ -184,6 +185,17 @@ export interface EmailAuthParams extends Record<string, unknown> {
   zoneId?: string;
   selector?: string;
   dmarcPolicy?: "none" | "quarantine" | "reject";
+  taskId?: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
+}
+
+export interface ReconcileDnsToLiveSmtpParams extends Record<string, unknown> {
+  domain: string;
+  serverSlug: string;
+  serverIp?: string;
+  selector?: string;
+  dryRun?: boolean;
   taskId?: string;
   repairReason?: string;
   explicitRepairScope?: string;
@@ -412,8 +424,14 @@ export const runStateIntegrityParamSchema = schema<RunStateIntegrityParams>(() =
 
 export const route53ZoneRecordsParamSchema = schema<Route53ZoneRecordsParams>((value) => {
   const input = object(value);
+  const hasDomain = input.domain !== undefined && input.domain !== null && input.domain !== "";
+  const hasZoneId = input.zoneId !== undefined && input.zoneId !== null && input.zoneId !== "";
+  if (!hasDomain) {
+    throw new SkillSchemaError("domain is required");
+  }
   return {
-    zoneId: route53ZoneId(input.zoneId, "zoneId"),
+    domain: domain(input.domain, "domain"),
+    ...(hasZoneId ? { zoneId: route53ZoneId(input.zoneId, "zoneId") } : {}),
     ...(input.recordType === undefined || input.recordType === null || input.recordType === ""
       ? {}
       : { recordType: oneOf(String(input.recordType).toUpperCase(), "recordType", route53ReadRecordTypes) }),
@@ -638,6 +656,17 @@ export const emailAuthParamSchema = schema<EmailAuthParams>((value) => {
     ...(input.zoneId === undefined || input.zoneId === null || input.zoneId === "" ? {} : { zoneId: string(input.zoneId, "zoneId") }),
     ...(input.selector === undefined || input.selector === null || input.selector === "" ? {} : { selector: selector(input.selector, "selector") }),
     ...(input.dmarcPolicy === undefined || input.dmarcPolicy === null || input.dmarcPolicy === "" ? {} : { dmarcPolicy: oneOf(input.dmarcPolicy, "dmarcPolicy", ["none", "quarantine", "reject"] as const) })
+  }, input), input);
+});
+
+export const reconcileDnsToLiveSmtpParamSchema = schema<ReconcileDnsToLiveSmtpParams>((value) => {
+  const input = object(value);
+  return withOptionalRepairScope(withOptionalTaskId({
+    domain: domain(input.domain, "domain"),
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    ...(input.serverIp === undefined || input.serverIp === null || input.serverIp === "" ? {} : { serverIp: ipv4(input.serverIp, "serverIp") }),
+    ...(input.selector === undefined || input.selector === null || input.selector === "" ? {} : { selector: selector(input.selector, "selector") }),
+    ...(input.dryRun === undefined || input.dryRun === null ? {} : { dryRun: boolean(input.dryRun, "dryRun") })
   }, input), input);
 });
 

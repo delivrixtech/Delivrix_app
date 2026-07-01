@@ -55,6 +55,7 @@ export interface EmailAuthConfigureDependencies {
   auditLog: AuditSink;
   dnsAdapter: EmailAuthDnsAdapter;
   workspace: OpenClawWorkspace;
+  getDomainNameservers?: (domain: string) => Promise<string[]>;
   canvasLiveEvents?: CanvasEmitter;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
   env?: Record<string, string | undefined>;
@@ -143,6 +144,7 @@ export async function handleEmailAuthConfigureHttp(
         domain,
         mode: "reuse-or-create",
         preferredZoneId,
+        getDomainNameservers: deps.getDomainNameservers,
         now: deps.now
       });
       zoneId = zoneResolution.zone.zoneId;

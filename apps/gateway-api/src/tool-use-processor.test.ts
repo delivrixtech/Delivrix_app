@@ -690,7 +690,8 @@ test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint
       if (String(url).startsWith("http://127.0.0.1:3000/v1/route53/zone-records")) {
         const parsed = new URL(String(url));
         assert.equal(init?.method, "GET");
-        assert.equal(parsed.searchParams.get("zoneId"), "Z03595092JW2AXJBZGN4E");
+        assert.equal(parsed.searchParams.get("domain"), "controldelivrix.app");
+        assert.equal(parsed.searchParams.get("zoneId"), null);
         assert.equal(parsed.searchParams.get("recordType"), "A");
         assert.equal(parsed.searchParams.get("recordName"), "smtp.controldelivrix.app");
         return jsonResponse({
@@ -708,7 +709,7 @@ test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint
     toolUseId: "toolu-route53-zone",
     toolName: "read_route53_zone_records",
     toolInput: {
-      zoneId: "Z03595092JW2AXJBZGN4E",
+      domain: "controldelivrix.app",
       recordType: "A",
       recordName: "smtp.controldelivrix.app"
     },
@@ -725,7 +726,7 @@ test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint
   });
   assert.deepEqual(calls.map((call) => call.url), [
     "http://127.0.0.1:3000/v1/kill-switch",
-    "http://127.0.0.1:3000/v1/route53/zone-records?zoneId=Z03595092JW2AXJBZGN4E&recordType=A&recordName=smtp.controldelivrix.app"
+    "http://127.0.0.1:3000/v1/route53/zone-records?domain=controldelivrix.app&recordType=A&recordName=smtp.controldelivrix.app"
   ]);
   assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
 });

@@ -1645,8 +1645,36 @@ test("createOpenClawBedrockBridgeFromEnv requires bedrock mode and critical env 
     AWS_BEDROCK_MODEL_ID: "model-test",
     AWS_BEDROCK_REGION: "us-east-1",
     OPENCLAW_GATEWAY_TOKEN: "gateway-token"
-  }) as unknown as { readBoundaryToken: string } | null;
+  }) as unknown as { readBoundaryToken: string; maxToolIterations: number } | null;
   assert.equal(fallbackTokenBridge?.readBoundaryToken, "gateway-token");
+  assert.equal(fallbackTokenBridge?.maxToolIterations, 40);
+
+  const explicitToolCapBridge = createOpenClawBedrockBridgeFromEnv({
+    OPENCLAW_BRIDGE_KIND: "bedrock",
+    AWS_BEARER_TOKEN_BEDROCK: "bedrock-api-key",
+    AWS_BEDROCK_MODEL_ID: "model-test",
+    AWS_BEDROCK_REGION: "us-east-1",
+    OPENCLAW_TOOL_MAX_ITERATIONS: "25"
+  }) as unknown as { maxToolIterations: number } | null;
+  assert.equal(explicitToolCapBridge?.maxToolIterations, 25);
+
+  const invalidToolCapBridge = createOpenClawBedrockBridgeFromEnv({
+    OPENCLAW_BRIDGE_KIND: "bedrock",
+    AWS_BEARER_TOKEN_BEDROCK: "bedrock-api-key",
+    AWS_BEDROCK_MODEL_ID: "model-test",
+    AWS_BEDROCK_REGION: "us-east-1",
+    OPENCLAW_TOOL_MAX_ITERATIONS: "not-a-number"
+  }) as unknown as { maxToolIterations: number } | null;
+  assert.equal(invalidToolCapBridge?.maxToolIterations, 40);
+
+  const clampedToolCapBridge = createOpenClawBedrockBridgeFromEnv({
+    OPENCLAW_BRIDGE_KIND: "bedrock",
+    AWS_BEARER_TOKEN_BEDROCK: "bedrock-api-key",
+    AWS_BEDROCK_MODEL_ID: "model-test",
+    AWS_BEDROCK_REGION: "us-east-1",
+    OPENCLAW_TOOL_MAX_ITERATIONS: "80"
+  }) as unknown as { maxToolIterations: number } | null;
+  assert.equal(clampedToolCapBridge?.maxToolIterations, 40);
 });
 
 async function promptFile(content: string): Promise<string> {

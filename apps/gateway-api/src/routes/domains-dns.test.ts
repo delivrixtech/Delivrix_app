@@ -298,6 +298,61 @@ test("POST /v1/domains/route53/dns/upsert prefers canonical smtp zone over legac
   assert.deepEqual(upsertZones, ["ZCANONICALSMTP"]);
 });
 
+test("POST /v1/domains/route53/dns/upsert chooses duplicate hosted zone matching registrar NS", async () => {
+  const upsertZones: string[] = [];
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isWriteEnabled: () => true,
+      listHostedZonesByName: async () => [
+        { zoneId: "ZSTALECACHE", name: "controlcorpfiling.com.", nameServers: ["ns-stale.awsdns.com"] },
+        { zoneId: "Z01313019Q8DEA3UGP8G", name: "controlcorpfiling.com.", nameServers: [] }
+      ],
+      listResourceRecordSets: async (zoneId) => zoneId === "Z01313019Q8DEA3UGP8G"
+        ? [
+            { name: "controlcorpfiling.com.", type: "NS", ttl: 172800, values: ["ns-real-1.awsdns.com.", "ns-real-2.awsdns.net."] },
+            { name: "controlcorpfiling.com.", type: "SOA", ttl: 900, values: ["ns-real-1.awsdns.com. hostmaster.awsdns.com. 1 7200 900 1209600 86400"] }
+          ]
+        : [
+            { name: "controlcorpfiling.com.", type: "NS", ttl: 172800, values: ["ns-stale.awsdns.com."] }
+          ],
+      createHostedZone: async () => {
+        throw new Error("createHostedZone should not run when authoritative Route53 zone exists");
+      },
+      upsertRecord: async (zoneId, record) => {
+        upsertZones.push(zoneId);
+        return { changeId: `C-${record.type}` };
+      }
+    }),
+    getDomainNameservers: async () => ["ns-real-1.awsdns.com", "ns-real-2.awsdns.net"],
+    canvasState: canvasState([{
+      artifactId: "artifact-dns-plan",
+      executionId: "exec-dns-authoritative",
+      approvedAt: "2026-05-27T11:58:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-dns-plan", "exec-dns-authoritative");
+
+  const response = await route({
+    domain: "controlcorpfiling.com",
+    records: [{ name: "smtp", type: "A", ttl: 300, values: ["193.180.211.182"] }],
+    actorId: "operator/juanes",
+    approvalToken: "exec-dns-authoritative",
+    taskId: "task-dns-authoritative"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.zoneId, "Z01313019Q8DEA3UGP8G");
+  assert.equal(response.body.zoneResolution.source, "aws-authoritative-ns");
+  assert.equal(response.body.zoneResolution.authoritativeNameserverMatch, true);
+  assert.deepEqual(response.body.zoneResolution.cleanupSuggested, [{
+    zoneId: "ZSTALECACHE",
+    name: "controlcorpfiling.com.",
+    reason: "duplicate_route53_hosted_zone"
+  }]);
+  assert.deepEqual(upsertZones, ["Z01313019Q8DEA3UGP8G"]);
+});
+
 test("POST /v1/domains/route53/dns/upsert auto-rolls back when propagation times out", async () => {
   let nowMs = fixedNow.getTime();
   const snapshotDir = await mkdtemp(join(tmpdir(), "route53-rollback-"));
@@ -455,6 +510,7 @@ test("DELETE /v1/domains/route53/hosted-zones/:zoneId deletes zone and removes a
 async function routeHarness(input: {
   adapter: Route53DnsAdapter;
   canvasState: CanvasLiveStateSnapshot;
+  getDomainNameservers?: (domain: string) => Promise<string[]>;
   autoRollbackManager?: AutoRollbackManager;
   awaitAutoRollbackCheck?: boolean;
   dnsDigFn?: (domain: string, type: string) => Promise<string[]>;
@@ -476,6 +532,7 @@ async function routeHarness(input: {
         auditLog,
         adapter: input.adapter,
         workspace,
+        getDomainNameservers: input.getDomainNameservers,
         canvasLiveEvents: {
           emit: async (event) => {
             canvasEvents.push(event);

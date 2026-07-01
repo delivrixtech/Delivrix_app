@@ -33,6 +33,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "bind_webdock_main_domain",
     "provision_smtp_postfix",
     "configure_email_auth",
+    "reconcile_dns_to_live_smtp",
     "enable_smtp_auth",
     "resolve_ambiguous_domain",
     "retire_smtp_entry",
@@ -139,7 +140,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 34);
+  assert.equal(tools.length, 35);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -166,6 +167,7 @@ test("buildToolsForOpenClaw omits Route53 tools when AWS credentials are missing
   assert.equal(names.includes("update_domain_nameservers"), false);
   assert.equal(names.includes("upsert_dns_route53"), false);
   assert.equal(names.includes("configure_email_auth"), false);
+  assert.equal(names.includes("reconcile_dns_to_live_smtp"), false);
   assert.equal(names.includes("bind_domain_to_server"), false);
   assert.equal(names.includes("configure_complete_smtp"), false);
   assert.equal(names.includes("upsert_dns_ionos"), true);
@@ -205,13 +207,14 @@ test("Bedrock catalog contains Route53 read tools with validated schemas", () =>
   }).success, true);
 
   assert.ok(zoneRecords);
-  assert.deepEqual(zoneRecords.input_schema.required, ["zoneId"]);
+  assert.deepEqual(zoneRecords.input_schema.required, ["domain"]);
   assert.deepEqual(zoneRecords.input_schema.properties.recordType, {
     type: "string",
     enum: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "PTR", "SRV", "CAA"],
     description: "Filtrar por tipo de record. Opcional."
   });
   assert.equal(getOpenClawToolDefinition("read_route53_zone_records")?.paramSchema.safeParse({
+    domain: "controldelivrix.app",
     zoneId: "Z03595092JW2AXJBZGN4E",
     recordType: "A",
     recordName: "smtp.controldelivrix.app"
@@ -268,6 +271,7 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "read_conversation",
     "bind_webdock_main_domain",
     "enable_smtp_auth",
+    "reconcile_dns_to_live_smtp",
     "resolve_ambiguous_domain",
     "retire_smtp_entry",
     "reassign_domain_server",
@@ -316,7 +320,8 @@ function allEnabledEnv(): Record<string, string | undefined> {
     WARMUP_ENABLE_SEND: "true",
     WARMUP_RAMP_ENABLE: "true",
     SMTP_SEND_REAL_EMAIL_ENABLE: "true",
-    OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true"
+    OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true",
+    OPENCLAW_RECONCILE_DNS_SMTP_ENABLE: "true"
   };
 }
 
@@ -355,7 +360,7 @@ function validSample(toolName: string): Record<string, unknown> {
   }
   if (toolName === "read_route53_zone_records") {
     return {
-      zoneId: "Z03595092JW2AXJBZGN4E",
+      domain: "controldelivrix.app",
       recordType: "A",
       recordName: "smtp.controldelivrix.app"
     };
@@ -372,6 +377,17 @@ function validSample(toolName: string): Record<string, unknown> {
       domain: "nationalcorphub.app",
       recordType: "TXT",
       recordName: "_dmarc.nationalcorphub.app"
+    };
+  }
+  if (toolName === "reconcile_dns_to_live_smtp") {
+    return {
+      domain: "controlcorpfiling.com",
+      serverSlug: "server60",
+      serverIp: "193.180.211.182",
+      selector: "s2026a",
+      dryRun: true,
+      repairReason: "Reconciliar DNS a SMTP vivo aprobado por operador.",
+      explicitRepairScope: "controlcorpfiling-dns-repoint"
     };
   }
   if (toolName === "read_mxtoolbox_health") {
