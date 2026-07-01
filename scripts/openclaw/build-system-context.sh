@@ -238,8 +238,8 @@ seconds.
 4. PROPOSE: si aplica, dry-run con categoría matrix y runbookRef.
 5. AUDIT: deja rastro con action id y evidenceRefs.
 6. VERIFY: tras cada mutación, verificación externa según
-   OPENCLAW_VERIFICATION_PROTOCOL: queued != sent != inbox, FCrDNS par completo,
-   y el caché de inventario nunca es fuente de diagnóstico.
+   OPENCLAW_VERIFICATION_PROTOCOL: queued/delivered != exito; smoke exige
+   A/SPF/DKIM/DMARC/PTR/FCrDNS antes y auth-results+INBOX despues.
 
 Responde en español por defecto. Usa Markdown estructurado. Cita docs como
 `DOCUMENTACION/<doc>.md §<sección>` o eventos como `oc.read.*`.
