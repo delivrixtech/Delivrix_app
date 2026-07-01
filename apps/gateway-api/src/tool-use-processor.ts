@@ -748,7 +748,12 @@ async function invokeReadOnlyToolOverHttp(input: {
 
   if (input.input.toolName === "read_route53_zone_records") {
     const url = new URL(`${input.baseUrl}/v1/route53/zone-records`);
-    url.searchParams.set("zoneId", String(input.input.params.zoneId));
+    if (typeof input.input.params.domain === "string") {
+      url.searchParams.set("domain", input.input.params.domain);
+    }
+    if (typeof input.input.params.zoneId === "string") {
+      url.searchParams.set("zoneId", input.input.params.zoneId);
+    }
     if (typeof input.input.params.recordType === "string") {
       url.searchParams.set("recordType", input.input.params.recordType);
     }

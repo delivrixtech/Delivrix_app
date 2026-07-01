@@ -18,6 +18,7 @@ import {
   readInfrastructureInventoryParamSchema,
   readWebdockServersParamSchema,
   reassignDomainServerParamSchema,
+  reconcileDnsToLiveSmtpParamSchema,
   resolveAmbiguousDomainParamSchema,
   retireInfrastructureAccountParamSchema,
   retireSmtpEntryParamSchema,
@@ -77,6 +78,7 @@ export type OpenClawToolName =
   | "bind_webdock_main_domain"
   | "provision_smtp_postfix"
   | "configure_email_auth"
+  | "reconcile_dns_to_live_smtp"
   | "enable_smtp_auth"
   | "resolve_ambiguous_domain"
   | "retire_smtp_entry"
@@ -482,15 +484,20 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
   read_route53_zone_records: {
     spec: {
       name: "read_route53_zone_records",
-      description: "Lista todos los registros DNS dentro de una hosted zone Route53 (NS, SOA, A, AAAA, MX, TXT, CNAME, PTR, SRV, CAA). Invocar SIEMPRE ANTES de proponer upsert_dns_route53 para no escribir sobre registros que ya coinciden con lo deseado, y ANTES de diagnosticar fallos de propagacion DNS. Reemplaza dig. Lectura auditada: no muta DNS y no requiere ApprovalGate.",
+      description: "Lista registros DNS Route53 por domain. El Gateway descubre la hosted zone por nombre en runtime y, si hay duplicados, elige la autoritativa comparando NS del registrador. Si se envia zoneId junto con domain, se valida contra la zona autoritativa y se rechaza si es stale. Invocar SIEMPRE ANTES de proponer upsert_dns_route53 para no escribir sobre registros que ya coinciden con lo deseado, y ANTES de diagnosticar fallos de propagacion DNS. Lectura auditada: no muta DNS y no requiere ApprovalGate.",
       input_schema: {
         type: "object",
-        required: ["zoneId"],
+        required: ["domain"],
         properties: {
+          domain: {
+            type: "string",
+            pattern: domainPattern,
+            description: "Dominio apex para descubrir la hosted zone autoritativa en runtime. Ejemplo: controlcorpfiling.com"
+          },
           zoneId: {
             type: "string",
             pattern: "^Z[A-Z0-9]{10,32}$",
-            description: "ID de la hosted zone Route53. Formato Z seguido de 10-32 caracteres. Ejemplo: Z03595092JW2AXJBZGN4E"
+            description: "ID opcional solo como evidencia; debe coincidir con la zona autoritativa descubierta por domain."
           },
           recordType: {
             type: "string",
@@ -947,6 +954,46 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     targetType: "domain",
     severity: "critical"
   },
+  reconcile_dns_to_live_smtp: {
+    spec: {
+      name: "reconcile_dns_to_live_smtp",
+      description: [
+        "Reconciliacion firmada DNS->SMTP vivo para dominios ya provisionados: descubre la hosted zone Route53 por domain en runtime, valida NS autoritativo, verifica que serverSlug exista vivo en inventario y alinea smtp A, apex SPF y MX al serverIp vivo.",
+        "No crea VPS, no toca cuentas ops/quaternary y no regenera DKIM en silencio; si falta DKIM del selector, bloquea con dkim_regenerate_required para ejecutar el flujo DKIM/email-auth antes del cutover.",
+        "Usar dryRun=true primero para presentar el plan; la ejecucion real requiere ApprovalGate, writes Route53, audit y kill switch."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          serverSlug: { type: "string", pattern: slugPattern },
+          serverIp: {
+            type: "string",
+            pattern: ipv4Pattern,
+            description: "IPv4 esperada del servidor vivo. Opcional: si se omite se toma del inventario live/server."
+          },
+          selector: {
+            type: "string",
+            pattern: selectorPattern,
+            default: "s2026a",
+            description: "Selector DKIM que debe existir antes de repuntar DNS. No se regenera en esta tool."
+          },
+          dryRun: { type: "boolean", default: true },
+          ...optionalTaskId,
+          ...optionalRepairScope
+        },
+        required: ["domain", "serverSlug"]
+      }
+    },
+    paramSchema: reconcileDnsToLiveSmtpParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      flagEnabled(env.OPENCLAW_RECONCILE_DNS_SMTP_ENABLE) &&
+      anyFlagEnabled(env, ["AWS_ROUTE53_DNS_ENABLE_WRITES", "AWS_ROUTE53_ENABLE_DNS_WRITES"]) &&
+      hasAwsRoute53DnsCredentials(env),
+    targetType: "domain",
+    severity: "critical"
+  },
   enable_smtp_auth: {
     spec: {
       name: "enable_smtp_auth",
@@ -1363,6 +1410,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "bind_webdock_main_domain",
     "provision_smtp_postfix",
     "configure_email_auth",
+    "reconcile_dns_to_live_smtp",
     "enable_smtp_auth",
     "resolve_ambiguous_domain",
     "retire_smtp_entry",

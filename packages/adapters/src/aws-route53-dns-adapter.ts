@@ -173,6 +173,36 @@ export class AwsRoute53DnsAdapter {
     }
   }
 
+  async listHostedZonesByName(domain: string): Promise<AwsRoute53HostedZoneSummary[]> {
+    this.assertLive("AWS Route53 hosted zone listing requires live credentials.");
+    const domainName = absoluteDnsName(normalizeDomainName(domain));
+    const zones: AwsRoute53HostedZoneSummary[] = [];
+    let dnsName: string | undefined = domainName;
+    let hostedZoneId: string | undefined;
+
+    while (true) {
+      const query = new URLSearchParams();
+      query.set("dnsname", dnsName ?? domainName);
+      query.set("maxitems", "100");
+      if (hostedZoneId) query.set("hostedzoneid", hostedZoneId);
+      const response = await this.awsXml("GET", `/${API_VERSION}/hostedzonesbyname?${query.toString()}`);
+      const page = parseHostedZonesByNamePage(response);
+      zones.push(...page.zones.filter((zone) => normalizeZoneName(zone.name) === normalizeZoneName(domainName)));
+
+      if (!page.isTruncated) {
+        return uniqueZones(zones);
+      }
+      if (!page.nextDnsName || !page.nextHostedZoneId) {
+        throw new Error("AWS Route53 ListHostedZonesByName response was truncated without next cursor.");
+      }
+      if (normalizeZoneName(page.nextDnsName) !== normalizeZoneName(domainName)) {
+        return uniqueZones(zones);
+      }
+      dnsName = page.nextDnsName;
+      hostedZoneId = page.nextHostedZoneId;
+    }
+  }
+
   async upsertRecord(
     zoneId: string,
     opts: AwsRoute53DnsRecordInput
@@ -353,7 +383,7 @@ export function signAwsRestRequest(input: {
   const canonicalRequest = [
     input.method,
     input.url.pathname || "/",
-    input.url.searchParams.toString(),
+    awsCanonicalQuery(input.url),
     canonicalHeaders,
     signedHeaderNames.join(";"),
     bodyHash
@@ -376,6 +406,27 @@ export function signAwsRestRequest(input: {
       `Signature=${signature}`
     ].join(", ")
   };
+}
+
+function awsCanonicalQuery(url: URL): string {
+  const pairs: Array<[string, string]> = [];
+  url.searchParams.forEach((value, key) => {
+    pairs.push([key, value]);
+  });
+  return pairs
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+      leftKey === rightKey
+        ? leftValue.localeCompare(rightValue)
+        : leftKey.localeCompare(rightKey)
+    )
+    .map(([key, value]) => `${awsPercentEncode(key)}=${awsPercentEncode(value)}`)
+    .join("&");
+}
+
+function awsPercentEncode(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (char) =>
+    `%${char.charCodeAt(0).toString(16).toUpperCase()}`
+  );
 }
 
 function createHostedZoneXml(domain: string): string {
@@ -482,6 +533,33 @@ function parseHostedZonesPage(xml: string): {
   };
 }
 
+function parseHostedZonesByNamePage(xml: string): {
+  zones: AwsRoute53HostedZoneSummary[];
+  isTruncated: boolean;
+  nextDnsName?: string;
+  nextHostedZoneId?: string;
+} {
+  const hostedZonesSection = firstXmlBlock(xml, "HostedZones") ?? "";
+  return {
+    zones: xmlBlocks(hostedZonesSection, "HostedZone").map((block) => ({
+      zoneId: normalizeHostedZoneId(firstXmlValue(block, "Id")) ?? "",
+      name: firstXmlValue(block, "Name") ?? "",
+      nameServers: xmlValues(block, "NameServer")
+    })).filter((zone) => zone.zoneId && zone.name),
+    isTruncated: (firstXmlValue(xml, "IsTruncated") ?? "false").toLowerCase() === "true",
+    nextDnsName: firstXmlValue(xml, "NextDNSName"),
+    nextHostedZoneId: normalizeHostedZoneId(firstXmlValue(xml, "NextHostedZoneId"))
+  };
+}
+
+function uniqueZones(zones: AwsRoute53HostedZoneSummary[]): AwsRoute53HostedZoneSummary[] {
+  const byId = new Map<string, AwsRoute53HostedZoneSummary>();
+  for (const zone of zones) {
+    byId.set(zone.zoneId, zone);
+  }
+  return [...byId.values()];
+}
+
 function isDeletableRecord(record: AwsRoute53ResourceRecordSet): record is AwsRoute53DnsRecordInput {
   if (
     record.type !== "A" &&
@@ -546,6 +624,10 @@ function firstXmlBlock(xml: string, tag: string): string | undefined {
 function normalizeHostedZoneId(value: string | undefined): string | undefined {
   const normalized = value?.replace(/^\/hostedzone\//, "").trim();
   return normalized && /^[A-Z0-9]+$/.test(normalized) ? normalized : undefined;
+}
+
+function normalizeZoneName(value: string): string {
+  return value.trim().toLowerCase().replace(/\.$/, "");
 }
 
 function normalizeChangeId(value: string | undefined): string | undefined {
