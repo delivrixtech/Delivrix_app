@@ -70,6 +70,7 @@ export interface AwsRoute53DnsAdapterOptions {
 const DEFAULT_REGION = "us-east-1";
 const DEFAULT_API_BASE = "https://route53.amazonaws.com";
 const API_VERSION = "2013-04-01";
+const maxRoute53PaginationPages = 100;
 const SERVICE = "route53";
 const XMLNS = "https://route53.amazonaws.com/doc/2013-04-01/";
 
@@ -154,8 +155,9 @@ export class AwsRoute53DnsAdapter {
     this.assertLive("AWS Route53 hosted zone listing requires live credentials.");
     const zones: AwsRoute53HostedZoneSummary[] = [];
     let marker: string | undefined;
+    const visitedMarkers = new Set<string>();
 
-    while (true) {
+    for (let pageNumber = 1; pageNumber <= maxRoute53PaginationPages; pageNumber += 1) {
       const query = new URLSearchParams();
       query.set("maxitems", "100");
       if (marker) query.set("marker", marker);
@@ -169,8 +171,14 @@ export class AwsRoute53DnsAdapter {
       if (!page.nextMarker) {
         throw new Error("AWS Route53 ListHostedZones response was truncated without NextMarker.");
       }
+      if (visitedMarkers.has(page.nextMarker)) {
+        throw new Error("AWS Route53 ListHostedZones pagination cursor repeated.");
+      }
+      visitedMarkers.add(page.nextMarker);
       marker = page.nextMarker;
     }
+
+    throw new Error(`AWS Route53 ListHostedZones exceeded ${maxRoute53PaginationPages} pagination pages.`);
   }
 
   async listHostedZonesByName(domain: string): Promise<AwsRoute53HostedZoneSummary[]> {
@@ -179,8 +187,9 @@ export class AwsRoute53DnsAdapter {
     const zones: AwsRoute53HostedZoneSummary[] = [];
     let dnsName: string | undefined = domainName;
     let hostedZoneId: string | undefined;
+    const visitedCursors = new Set<string>();
 
-    while (true) {
+    for (let pageNumber = 1; pageNumber <= maxRoute53PaginationPages; pageNumber += 1) {
       const query = new URLSearchParams();
       query.set("dnsname", dnsName ?? domainName);
       query.set("maxitems", "100");
@@ -198,9 +207,16 @@ export class AwsRoute53DnsAdapter {
       if (normalizeZoneName(page.nextDnsName) !== normalizeZoneName(domainName)) {
         return uniqueZones(zones);
       }
+      const nextCursor = `${normalizeZoneName(page.nextDnsName)}|${page.nextHostedZoneId}`;
+      if (visitedCursors.has(nextCursor)) {
+        throw new Error("AWS Route53 ListHostedZonesByName pagination cursor repeated.");
+      }
+      visitedCursors.add(nextCursor);
       dnsName = page.nextDnsName;
       hostedZoneId = page.nextHostedZoneId;
     }
+
+    throw new Error(`AWS Route53 ListHostedZonesByName exceeded ${maxRoute53PaginationPages} pagination pages.`);
   }
 
   async upsertRecord(
@@ -555,7 +571,9 @@ function parseHostedZonesByNamePage(xml: string): {
 function uniqueZones(zones: AwsRoute53HostedZoneSummary[]): AwsRoute53HostedZoneSummary[] {
   const byId = new Map<string, AwsRoute53HostedZoneSummary>();
   for (const zone of zones) {
-    byId.set(zone.zoneId, zone);
+    if (!byId.has(zone.zoneId)) {
+      byId.set(zone.zoneId, zone);
+    }
   }
   return [...byId.values()];
 }

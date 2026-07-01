@@ -471,7 +471,9 @@ async function findWorkspaceZone(
 function uniqueZones(zones: AwsRoute53HostedZoneSummary[]): AwsRoute53HostedZoneSummary[] {
   const byId = new Map<string, AwsRoute53HostedZoneSummary>();
   for (const zone of zones) {
-    byId.set(zone.zoneId, zone);
+    if (!byId.has(zone.zoneId)) {
+      byId.set(zone.zoneId, zone);
+    }
   }
   return [...byId.values()];
 }

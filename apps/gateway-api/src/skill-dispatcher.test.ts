@@ -17,6 +17,12 @@ import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import type { WebdockServerCreateAdapter, WebdockServerDeleteAdapter } from "./routes/webdock-servers.ts";
 import type { BindWebdockMainDomainAdapter } from "./routes/webdock-bind-domain.ts";
 import {
+  type AwsRoute53DnsChangeResult,
+  type AwsRoute53DnsRecordInput,
+  type AwsRoute53DnsSource,
+  type AwsRoute53HostedZoneResult,
+  type AwsRoute53HostedZoneSummary,
+  type AwsRoute53ResourceRecordSet,
   createIonosDnsProviderFromEnv,
   createRoute53DnsProviderFromEnv,
   type DnsProvider,
@@ -362,6 +368,73 @@ test("dispatcher resolves ambiguous SMTP inventory as local-only state after App
     { serverSlug: "server85", status: "configured" },
     { serverSlug: "server88", status: "configured" }
   ]);
+});
+
+test("dispatcher reconciles live SMTP DNS after ApprovalGate dispatch and audits rollback plan", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "dispatcher-reconcile-dns-")),
+    now: () => new Date("2026-07-01T12:00:00.000Z")
+  });
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      serverSlug: "server60",
+      domain: "controlcorpfiling.com",
+      serverIp: "193.180.211.182",
+      selector: "s2026a",
+      status: "configured"
+    }]
+  }));
+  const route53DnsAdapter = new FakeDispatcherRoute53Adapter();
+  const auditEvents: Array<Record<string, unknown>> = [];
+
+  const result = await dispatchSkillHandler({
+    skill: "reconcile_dns_to_live_smtp",
+    params: {
+      domain: "controlcorpfiling.com",
+      serverSlug: "server60",
+      repairReason: "Reconciliar DNS contra SMTP vivo confirmado.",
+      dryRun: false
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      workspace,
+      route53DnsAdapter: route53DnsAdapter as never,
+      domainPurchaseAdapter: {
+        getDomainNameservers: async () => ["ns-real-1.awsdns-11.com", "ns-real-2.awsdns-12.net"]
+      } as never,
+      auditLog: {
+        append: async (event: Record<string, unknown>) => { auditEvents.push(event); },
+        list: async () => []
+      },
+      readKillSwitch: async () => ({ enabled: false }),
+      readCanvasState: () => ({ tasks: [], actions: [], artifacts: [] } as never),
+      readSmtpInventoryLiveServers: async () => [{
+        serverSlug: "server60",
+        ipv4: "193.180.211.182",
+        status: "running"
+      }]
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(route53DnsAdapter.upserts.map((entry) => ({
+    zoneId: entry.zoneId,
+    name: entry.record.name,
+    type: entry.record.type
+  })), [
+    { zoneId: "ZLIVE123456", name: "smtp.controlcorpfiling.com", type: "A" },
+    { zoneId: "ZLIVE123456", name: "controlcorpfiling.com", type: "TXT" },
+    { zoneId: "ZLIVE123456", name: "controlcorpfiling.com", type: "MX" }
+  ]);
+  assert.equal(auditEvents.length, 1);
+  assert.equal(auditEvents[0].action, "oc.dns.smtp_reconciled");
+  const auditMetadata = auditEvents[0].metadata as Record<string, unknown>;
+  assert.equal(auditMetadata.status, "reconciled");
+  assert.match(String((auditMetadata.rollbackPlan as Record<string, unknown>).procedure), /upsert_dns_route53/);
+  assert.equal((result.summary as { changed?: boolean }).changed, true);
 });
 
 test("dispatcher fails SMTP inventory mutators closed without a live inventory source", async () => {
@@ -1021,6 +1094,72 @@ function statusEntry(
       json(response, statusCode, body);
     }
   };
+}
+
+class FakeDispatcherRoute53Adapter {
+  readonly upserts: Array<{ zoneId: string; record: AwsRoute53DnsRecordInput }> = [];
+
+  isLive(): boolean {
+    return true;
+  }
+
+  isWriteEnabled(): boolean {
+    return true;
+  }
+
+  currentSource(): AwsRoute53DnsSource {
+    return {
+      kind: "live",
+      region: "us-east-1",
+      apiBase: "https://route53.amazonaws.com",
+      fetchedAt: "2026-07-01T12:00:00.000Z",
+      responseOk: true,
+      writeEnabled: true
+    };
+  }
+
+  async createHostedZone(): Promise<AwsRoute53HostedZoneResult> {
+    throw new Error("unexpected createHostedZone");
+  }
+
+  async listHostedZones(): Promise<AwsRoute53HostedZoneSummary[]> {
+    return this.hostedZones();
+  }
+
+  async listHostedZonesByName(): Promise<AwsRoute53HostedZoneSummary[]> {
+    return this.hostedZones();
+  }
+
+  async upsertRecord(zoneId: string, record: AwsRoute53DnsRecordInput): Promise<AwsRoute53DnsChangeResult> {
+    this.upserts.push({ zoneId, record });
+    return { changeId: `change-${this.upserts.length}` };
+  }
+
+  async listResourceRecordSets(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]> {
+    if (zoneId !== "ZLIVE123456") return [];
+    return [
+      {
+        name: "controlcorpfiling.com.",
+        type: "NS",
+        ttl: 172800,
+        values: ["ns-real-1.awsdns-11.com.", "ns-real-2.awsdns-12.net."]
+      },
+      {
+        name: "s2026a._domainkey.controlcorpfiling.com.",
+        type: "TXT",
+        ttl: 300,
+        values: ["v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A"]
+      }
+    ];
+  }
+
+  private hostedZones(): AwsRoute53HostedZoneSummary[] {
+    return [{
+      zoneId: "ZLIVE123456",
+      name: "controlcorpfiling.com.",
+      nameServers: ["ns-real-1.awsdns-11.com.", "ns-real-2.awsdns-12.net."]
+    }];
+  }
 }
 
 function fakeDeps(): any {

@@ -445,7 +445,7 @@ async function appendAndReturn(
       rollbackPlan: {
         mode: "manual_dns_restore",
         canRollbackAutomatically: false,
-        procedure: "Use the existingRecords in this audit event to restore previous smtp A, apex SPF/MX, or DKIM TXT values through upsert_dns_route53.",
+        procedure: "Manual only: locate this oc.dns.smtp_reconciled audit event, copy metadata.rollbackPlan.previousRecords, and submit one signed upsert_dns_route53 ApprovalGate proposal per previous smtp A, apex SPF/MX, or DKIM TXT record. If a previous record is absent, remove the new record manually in Route53 after operator approval.",
         previousRecords: result.plan.existingRecords
       },
       plan: result.plan
