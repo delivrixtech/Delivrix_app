@@ -144,6 +144,38 @@ test("sign seals sibling provider/account channels in configure_complete_smtp pl
   ), true);
 });
 
+test("sign seals reuseServerSlug in configure_complete_smtp plan scope", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    proposal: configureCompleteSmtpProposal({
+      params: {
+        runId: "smtp-reuse-2026-07-01-a",
+        domain: "delivrixops.com",
+        provider: "route53-webdock",
+        reuseServerSlug: "Server-60",
+        serverAccountId: "Secondary",
+        brand: "Delivrix",
+        budgetUsdMax: 25,
+        testEmailRecipient: "ops@delivrixops.com",
+        testEmailSubject: "Smoke autorizado",
+        testEmailBody: "Prueba autorizada y auditada"
+      }
+    })
+  });
+
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(ctx.proposals[0].planApproval?.scope.reuseServerSlug, "server-60");
+  assert.equal(ctx.proposals[0].planApproval?.scope.serverAccountId, "secondary");
+  assert.equal(response.body.planApproval.reuseServerSlug, "server-60");
+  assert.match(ctx.proposals[0].planApproval?.scopeHash ?? "", /^[a-f0-9]{64}$/);
+  assert.equal(ctx.events.some((event) =>
+    event.action === "oc.plan.signed"
+    && (event.metadata as { scope?: { reuseServerSlug?: string } } | undefined)?.scope?.reuseServerSlug === "server-60"
+  ), true);
+});
+
 test("sign records strict existing-domain adoption in run-scoped plan approval", async () => {
   const ctx = context({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },

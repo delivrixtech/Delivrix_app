@@ -191,6 +191,35 @@ test("configureCompleteSmtpSkillParamSchema preserves dynamic provider account i
   assert.equal(unsafe.success, false);
 });
 
+test("configureCompleteSmtpSkillParamSchema preserves reuseServerSlug for existing VPS adoption", () => {
+  const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
+    brand: "delivrix",
+    domain: "example.com",
+    provider: "route53",
+    reuseServerSlug: "Server-60",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@example.com",
+    testEmailSubject: "Smoke",
+    testEmailBody: "Smoke body"
+  });
+
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail(parsed.error.issues.join("\n"));
+  assert.equal(parsed.data.reuseServerSlug, "server-60");
+
+  const unsafe = configureCompleteSmtpSkillParamSchema.safeParse({
+    brand: "delivrix",
+    domain: "example.com",
+    provider: "route53",
+    reuseServerSlug: "server/60",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@example.com",
+    testEmailSubject: "Smoke",
+    testEmailBody: "Smoke body"
+  });
+  assert.equal(unsafe.success, false);
+});
+
 test("configureCompleteSmtpSkillParamSchema rejects unknown DNS providers fail-closed", () => {
   const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
     brand: "delivrix",

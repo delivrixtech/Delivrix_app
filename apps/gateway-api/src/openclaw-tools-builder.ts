@@ -1306,6 +1306,11 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
             maxLength: 64,
             description: "Cuenta destino del proveedor para el VPS. PR1 aplica a Webdock: usar accountId de inventory_accounts; omitido = el governor elige cuenta."
           },
+          reuseServerSlug: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Reusa/adopta un VPS Webdock existente por slug en vez de crear uno nuevo. DNS, auth y smoke se alinean a la IP viva de ese server; no aplica a Contabo."
+          },
           brand: { type: "string", minLength: 1 },
           intent: { type: "string", minLength: 1 },
           budgetUsdMax: { type: "integer", minimum: 1, maximum: 10000, default: 25 },

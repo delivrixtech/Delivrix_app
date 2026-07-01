@@ -255,6 +255,8 @@ export interface ConfigureCompleteSmtpParams extends Record<string, unknown> {
    * vpsProviderId; NO entra a step params/hashInput. undefined => el governor elige cuenta.
    */
   serverAccountId?: string;
+  /** Reusa/adopta un VPS existente por slug en vez de crear uno nuevo. */
+  reuseServerSlug?: string;
   requireExistingDomain?: boolean;
   brand: string;
   intent?: string;
@@ -276,6 +278,8 @@ export interface ConfigureCompleteSmtpSkillParams extends Record<string, unknown
   vpsProviderId?: string;
   /** Cuenta de proveedor destino. PR1: Webdock accountId; undefined => governor. */
   serverAccountId?: string;
+  /** Reusa/adopta un VPS existente por slug en vez de crear uno nuevo. */
+  reuseServerSlug?: string;
   requireExistingDomain?: boolean;
   brand: string;
   intent?: string;
@@ -733,6 +737,7 @@ export const configureCompleteSmtpSkillParamSchema = schema<ConfigureCompleteSmt
     // Canal PARALELO HERMANO (provider account): PR1 solo Webdock. Runtime valida el par proveedor/cuenta
     // contra inventario vivo; el schema solo preserva el valor para que no se descarte en silencio.
     ...(input.serverAccountId === undefined || input.serverAccountId === null || input.serverAccountId === "" ? {} : { serverAccountId: accountId(input.serverAccountId, "serverAccountId") }),
+    ...(input.reuseServerSlug === undefined || input.reuseServerSlug === null || input.reuseServerSlug === "" ? {} : { reuseServerSlug: slug(input.reuseServerSlug, "reuseServerSlug").toLowerCase() }),
     ...(input.requireExistingDomain === undefined || input.requireExistingDomain === null ? {} : { requireExistingDomain: boolean(input.requireExistingDomain, "requireExistingDomain") }),
     brand: string(input.brand, "brand"),
     ...(input.intent === undefined || input.intent === null || input.intent === "" ? {} : { intent: string(input.intent, "intent") }),
