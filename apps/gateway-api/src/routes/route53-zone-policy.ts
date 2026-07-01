@@ -11,6 +11,7 @@ import { smtpHostForDomain } from "../smtp-naming.ts";
 export interface Route53ZonePolicyAdapter {
   createHostedZone(domain: string): Promise<AwsRoute53HostedZoneResult>;
   listHostedZones(): Promise<AwsRoute53HostedZoneSummary[]>;
+  listHostedZonesByName?(domain: string): Promise<AwsRoute53HostedZoneSummary[]>;
   listResourceRecordSets(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]>;
 }
 
@@ -34,8 +35,9 @@ export interface Route53ZonePolicyInventory {
 export interface Route53ZoneResolution {
   zone: AwsRoute53HostedZoneResult;
   status: "created" | "reused";
-  source: "aws-single" | "aws-disambiguated" | "workspace-verified" | "created";
+  source: "aws-single" | "aws-authoritative-ns" | "aws-disambiguated" | "workspace-verified" | "created";
   smtpSetup?: Route53SmtpSetupKind;
+  authoritativeNameserverMatch?: boolean;
   cleanupSuggested?: Array<{
     zoneId: string;
     name: string;
@@ -66,12 +68,23 @@ export async function resolveRoute53HostedZone(input: {
   domain: string;
   mode: Route53ZoneResolveMode;
   preferredZoneId?: string | null;
+  getDomainNameservers?: (domain: string) => Promise<string[]>;
   now?: () => Date;
 }): Promise<Route53ZoneResolution> {
   const domain = normalizeDomainName(input.domain);
-  const allZones = await input.adapter.listHostedZones();
+  const allZones = input.adapter.listHostedZonesByName
+    ? await input.adapter.listHostedZonesByName(domain)
+    : await input.adapter.listHostedZones();
   const domainZones = uniqueZones(allZones.filter((zone) => normalizeZoneName(zone.name) === domain));
   const preferredZoneId = normalizeHostedZoneId(input.preferredZoneId ?? undefined);
+  const authoritative = domainZones.length > 1
+    ? await resolveAuthoritativeRoute53Zone({
+      adapter: input.adapter,
+      domain,
+      domainZones,
+      getDomainNameservers: input.getDomainNameservers
+    })
+    : undefined;
 
   if (preferredZoneId) {
     const preferred = domainZones.find((zone) => normalizeHostedZoneId(zone.zoneId) === preferredZoneId);
@@ -80,6 +93,46 @@ export async function resolveRoute53HostedZone(input: {
         domain,
         preferredZoneId,
         matchingZoneIds: domainZones.map((zone) => zone.zoneId)
+      });
+    }
+    if (authoritative?.status === "matched") {
+      if (normalizeHostedZoneId(authoritative.zone.zoneId) !== preferredZoneId) {
+        throw new Route53ZonePolicyError("zone_not_authoritative_nameservers_mismatch", "Preferred Route53 zone is not the authoritative hosted zone for the registrar nameservers.", {
+          domain,
+          preferredZoneId,
+          authoritativeZoneId: authoritative.zone.zoneId,
+          registrarNameservers: authoritative.registrarNameservers,
+          cleanupSuggested: duplicateCleanup(domainZones, authoritative.zone.zoneId)
+        });
+      }
+      await rememberRoute53Zone(input.workspace, {
+        domain,
+        zone: authoritative.zone,
+        updatedAt: (input.now?.() ?? new Date()).toISOString()
+      });
+      return {
+        zone: authoritative.zone,
+        status: "reused",
+        source: "aws-authoritative-ns",
+        authoritativeNameserverMatch: true,
+        cleanupSuggested: duplicateCleanup(domainZones, authoritative.zone.zoneId)
+      };
+    }
+    if (authoritative?.status === "ambiguous") {
+      throw new Route53ZonePolicyError("zone_ambiguous_authoritative_ns", "Multiple Route53 hosted zones match the registrar nameservers.", {
+        domain,
+        registrarNameservers: authoritative.registrarNameservers,
+        matchingZoneIds: authoritative.matchingZoneIds,
+        cleanupSuggested: duplicateCleanup(domainZones, null)
+      });
+    }
+    if (authoritative?.status === "no_match" && authoritative.registrarNameservers.length > 0) {
+      throw new Route53ZonePolicyError("zone_not_authoritative_nameservers_mismatch", "No Route53 hosted zone in this AWS account matches the registrar nameservers.", {
+        domain,
+        preferredZoneId,
+        registrarNameservers: authoritative.registrarNameservers,
+        matchingZoneIds: domainZones.map((zone) => zone.zoneId),
+        cleanupSuggested: duplicateCleanup(domainZones, null)
       });
     }
     const zone = await zoneResultWithNameservers(input.adapter, domain, preferred);
@@ -149,6 +202,37 @@ export async function resolveRoute53HostedZone(input: {
     };
   }
 
+  if (authoritative?.status === "matched") {
+    await rememberRoute53Zone(input.workspace, {
+      domain,
+      zone: authoritative.zone,
+      updatedAt: (input.now?.() ?? new Date()).toISOString()
+    });
+    return {
+      zone: authoritative.zone,
+      status: "reused",
+      source: "aws-authoritative-ns",
+      authoritativeNameserverMatch: true,
+      cleanupSuggested: duplicateCleanup(domainZones, authoritative.zone.zoneId)
+    };
+  }
+  if (authoritative?.status === "ambiguous") {
+    throw new Route53ZonePolicyError("zone_ambiguous_authoritative_ns", "Multiple Route53 hosted zones match the registrar nameservers.", {
+      domain,
+      registrarNameservers: authoritative.registrarNameservers,
+      matchingZoneIds: authoritative.matchingZoneIds,
+      cleanupSuggested: duplicateCleanup(domainZones, null)
+    });
+  }
+  if (authoritative?.status === "no_match" && authoritative.registrarNameservers.length > 0) {
+    throw new Route53ZonePolicyError("zone_not_authoritative_nameservers_mismatch", "No Route53 hosted zone in this AWS account matches the registrar nameservers.", {
+      domain,
+      registrarNameservers: authoritative.registrarNameservers,
+      matchingZoneIds: domainZones.map((zone) => zone.zoneId),
+      cleanupSuggested: duplicateCleanup(domainZones, null)
+    });
+  }
+
   const candidates = await Promise.all(domainZones.map(async (zone) => {
     const records = await input.adapter.listResourceRecordSets(zone.zoneId);
     const smtpSetup = classifyRoute53SmtpRecords(records, domain);
@@ -200,6 +284,8 @@ export async function resolveRoute53HostedZone(input: {
       name: candidate.zone.name,
       smtpSetup: candidate.smtpSetup.kind,
       targetHost: candidate.smtpSetup.targetHost,
+      registrarNameserverMatchAttempted: authoritative !== undefined && authoritative.status !== "not_configured",
+      registrarNameservers: authoritative?.status === "no_match" ? authoritative.registrarNameservers : undefined,
       recordCount: candidate.recordCount
     })),
     cleanupSuggested: duplicateCleanup(domainZones, null)
@@ -338,6 +424,41 @@ async function zoneResultWithNameservers(
   };
 }
 
+async function resolveAuthoritativeRoute53Zone(input: {
+  adapter: Route53ZonePolicyAdapter;
+  domain: string;
+  domainZones: AwsRoute53HostedZoneSummary[];
+  getDomainNameservers?: (domain: string) => Promise<string[]>;
+}): Promise<
+  | { status: "matched"; zone: AwsRoute53HostedZoneResult; registrarNameservers: string[] }
+  | { status: "ambiguous"; matchingZoneIds: string[]; registrarNameservers: string[] }
+  | { status: "no_match"; registrarNameservers: string[] }
+  | { status: "not_configured" }
+> {
+  if (!input.getDomainNameservers) {
+    return { status: "not_configured" };
+  }
+  const registrarNameservers = normalizeRoute53Nameservers(await input.getDomainNameservers(input.domain));
+  if (registrarNameservers.length === 0) {
+    return { status: "no_match", registrarNameservers };
+  }
+  const zones = await Promise.all(input.domainZones.map(async (zone) =>
+    await zoneResultWithNameservers(input.adapter, input.domain, zone)
+  ));
+  const matching = zones.filter((zone) => sameNameservers(zone.nameServers, registrarNameservers));
+  if (matching.length === 1) {
+    return { status: "matched", zone: matching[0], registrarNameservers };
+  }
+  if (matching.length > 1) {
+    return {
+      status: "ambiguous",
+      matchingZoneIds: matching.map((zone) => zone.zoneId),
+      registrarNameservers
+    };
+  }
+  return { status: "no_match", registrarNameservers };
+}
+
 async function findWorkspaceZone(
   workspace: OpenClawWorkspace,
   domain: string
@@ -350,7 +471,9 @@ async function findWorkspaceZone(
 function uniqueZones(zones: AwsRoute53HostedZoneSummary[]): AwsRoute53HostedZoneSummary[] {
   const byId = new Map<string, AwsRoute53HostedZoneSummary>();
   for (const zone of zones) {
-    byId.set(zone.zoneId, zone);
+    if (!byId.has(zone.zoneId)) {
+      byId.set(zone.zoneId, zone);
+    }
   }
   return [...byId.values()];
 }
@@ -363,6 +486,12 @@ function duplicateCleanup(zones: AwsRoute53HostedZoneSummary[], selectedZoneId: 
       name: zone.name,
       reason: "duplicate_route53_hosted_zone" as const
     }));
+}
+
+function sameNameservers(left: string[], right: string[]): boolean {
+  const a = normalizeRoute53Nameservers(left);
+  const b = normalizeRoute53Nameservers(right);
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 function normalizeZoneName(value: string): string {

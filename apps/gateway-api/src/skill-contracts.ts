@@ -89,6 +89,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["configure_email_auth"]
   },
   {
+    canonicalSkill: "reconcile_dns_to_live_smtp",
+    aliases: ["reconcile_dns_to_live_smtp"],
+    actionIds: ["reconcile_dns_to_live_smtp"]
+  },
+  {
     canonicalSkill: "enable_smtp_auth",
     aliases: ["enable_smtp_auth"],
     actionIds: ["enable_smtp_auth"]

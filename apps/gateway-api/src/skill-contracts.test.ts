@@ -94,6 +94,7 @@ test("infrastructure account health and retire actions are known ApprovalGate bi
 test("SMTP inventory management tools are known ApprovalGate bindings", () => {
   for (const skill of [
     "inspect_smtp_inventory",
+    "reconcile_dns_to_live_smtp",
     "resolve_ambiguous_domain",
     "retire_smtp_entry",
     "reassign_domain_server",

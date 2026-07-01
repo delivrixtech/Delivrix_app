@@ -72,6 +72,7 @@ import {
   inspectSmtpInventoryParamSchema,
   ionosUpsertParamSchema,
   reassignDomainServerParamSchema,
+  reconcileDnsToLiveSmtpParamSchema,
   resolveAmbiguousDomainParamSchema,
   retireInfrastructureAccountParamSchema,
   retireSmtpEntryParamSchema,
@@ -101,6 +102,7 @@ import {
   updateSmtpInventoryEntry,
   type SmtpInventoryLiveServer
 } from "./smtp-inventory-management.ts";
+import { reconcileDnsToLiveSmtp } from "./reconcile-dns-live-smtp.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -448,6 +450,9 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         auditLog: deps.auditLog,
         adapter: deps.route53DnsAdapter,
         workspace: deps.workspace,
+        getDomainNameservers: typeof deps.domainPurchaseAdapter.getDomainNameservers === "function"
+          ? (domain) => deps.domainPurchaseAdapter.getDomainNameservers?.(domain) ?? Promise.resolve([])
+          : undefined,
         canvasLiveEvents: deps.canvasLiveEvents,
         autoRollbackManager: deps.autoRollbackManager,
         webhookBroadcaster: deps.webhookBroadcaster,
@@ -578,11 +583,43 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         auditLog: deps.auditLog,
         dnsAdapter: deps.route53DnsAdapter,
         workspace: deps.workspace,
+        getDomainNameservers: typeof deps.domainPurchaseAdapter.getDomainNameservers === "function"
+          ? (domain) => deps.domainPurchaseAdapter.getDomainNameservers?.(domain) ?? Promise.resolve([])
+          : undefined,
         canvasLiveEvents: deps.canvasLiveEvents,
         readCanvasState: deps.readCanvasState,
         env: deps.env,
         now: deps.now
       })
+  };
+  const reconcileDnsToLiveSmtpHandler: SkillHandlerEntry = {
+    paramSchema: reconcileDnsToLiveSmtpParamSchema,
+    timeoutMs: 45_000,
+    canRollback: false,
+    invoke: async ({ request, response, params, deps }) => {
+      const actorId = await readActorId(request);
+      const liveServers = await readRequiredSmtpLiveServers(response, deps);
+      if (!liveServers) return;
+      const result = await reconcileDnsToLiveSmtp({
+        workspace: deps.workspace,
+        route53DnsAdapter: deps.route53DnsAdapter,
+        auditLog: deps.auditLog,
+        liveServers,
+        domain: String(params.domain),
+        serverSlug: String(params.serverSlug),
+        ...(typeof params.serverIp === "string" ? { serverIp: params.serverIp } : {}),
+        ...(typeof params.selector === "string" ? { selector: params.selector } : {}),
+        actorId,
+        dryRun: params.dryRun === true,
+        ...(typeof params.taskId === "string" ? { taskId: params.taskId } : {}),
+        ...(typeof params.repairReason === "string" ? { reason: params.repairReason } : {}),
+        getDomainNameservers: typeof deps.domainPurchaseAdapter.getDomainNameservers === "function"
+          ? (domain) => deps.domainPurchaseAdapter.getDomainNameservers?.(domain) ?? Promise.resolve([])
+          : undefined,
+        now: deps.now
+      });
+      writeJson(response, result.ok ? 200 : 409, result);
+    }
   };
   const enableSmtpAuth: SkillHandlerEntry = {
     paramSchema: enableSmtpAuthParamSchema,
@@ -893,6 +930,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     provision_smtp_postfix: smtpProvision,
     install_smtp_stack: smtpProvision,
     configure_email_auth: emailAuth,
+    reconcile_dns_to_live_smtp: reconcileDnsToLiveSmtpHandler,
     enable_smtp_auth: enableSmtpAuth,
     bind_domain_to_server: domainBind,
     seed_warmup_pool: warmupSeed,
