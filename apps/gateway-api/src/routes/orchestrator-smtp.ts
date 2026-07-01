@@ -35,6 +35,15 @@ import { conformOutcomeData, machineErrorCode } from "../../../../packages/stora
 import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
 import type { PlanApprovalRecord } from "./proposals-sign.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
+import {
+  defaultSmokeAuthDnsResolver,
+  verifySmokeAuthGate,
+  type SmokeAuthDnsResolver
+} from "./smoke-auth-gate.ts";
+import {
+  upsertConfiguredSmtpInventoryEntry,
+  type SmtpProvisioningInventory
+} from "../smtp-inventory-management.ts";
 
 export type ConfigureSmtpStatus =
   | "completed"
@@ -345,6 +354,7 @@ export interface ConfigureCompleteSmtpDeps {
   readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
   canvasLiveEvents?: CanvasEmitter;
   compactIntent?: CompactIntentSink;
+  smokeAuthDnsResolver?: SmokeAuthDnsResolver;
   workspace?: Pick<OpenClawWorkspace,
     "ensureBase" |
     "getRootDir" |
@@ -439,6 +449,8 @@ interface SmtpRunState {
   chosenDomain?: string;
   smtpHost?: string;
   serverSlug?: string;
+  /** Slug de VPS existente que este run adopta; preserva resume/idempotencia sin crear VPS. */
+  reuseServerSlug?: string;
   serverIpv4?: string;
   /**
    * Cuenta Webdock donde se creo el server (5.12 multicuenta). OPCIONAL para backward-compat:
@@ -496,6 +508,8 @@ interface WebdockInventoryForResume {
     hostname?: string;
     ipv4: string | null;
     status?: string;
+    accountId?: string;
+    serverAccountId?: string;
   }>;
   runBindings?: Array<{
     runId: string;
@@ -598,6 +612,7 @@ export async function configureCompleteSmtp(
     domain: input.domain,
     provider: input.provider,
     serverAccountId: input.serverAccountId,
+    reuseServerSlug: input.reuseServerSlug,
     dnsProviderId: input.dnsProviderId,
     intent: input.intent,
     budgetUsdMax: input.budgetUsdMax,
@@ -620,6 +635,7 @@ export async function configureCompleteSmtp(
     domain: input.domain,
     provider: input.provider,
     serverAccountId: input.serverAccountId,
+    reuseServerSlug: input.reuseServerSlug,
     dnsProviderId: input.dnsProviderId,
     actorId: input.actorId,
     planSignatureAutonomy: envFlagEnabled(deps.env?.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)
@@ -675,7 +691,11 @@ export async function configureCompleteSmtp(
 
     const requestedServerAccountId = normalizeServerAccountId(effectiveInput.serverAccountId);
     const initialVpsProviderId = resolveVpsProviderId(effectiveInput, runState);
+    const initialReuseServerSlug = normalizeReuseServerSlug(effectiveInput.reuseServerSlug);
     assertKnownNonWebdockVpsProviderId(initialVpsProviderId);
+    if (initialReuseServerSlug && isNonWebdockProviderId(initialVpsProviderId)) {
+      throw new OrchestratorFailure("failed", 0, "reuse_server_guard", `reuse_server_unsupported_for_provider:${initialVpsProviderId}`);
+    }
     if (requestedServerAccountId) {
       if (isNonWebdockProviderId(initialVpsProviderId)) {
         throw new OrchestratorFailure(
@@ -685,20 +705,22 @@ export async function configureCompleteSmtp(
           `requested_account_unsupported_for_provider: provider=${initialVpsProviderId} account=${requestedServerAccountId}`
         );
       }
-      if (!planApproval && requestedServerAccountId !== DEFAULT_CREATION_ACCOUNT_ID) {
+      if (!initialReuseServerSlug && !planApproval && requestedServerAccountId !== DEFAULT_CREATION_ACCOUNT_ID) {
         throw new OrchestratorFailure("failed", 0, "server_account_guard", "gated_multiaccount_unsupported");
       }
-      const requestedCreationAccounts = await assertRequestedCreationAccountSnapshotEligible({
-        deps,
-        runId,
-        accountId: requestedServerAccountId
-      });
-      await assertRequestedCreationAccountBudgetPreflight({
-        deps,
-        runId,
-        accountId: requestedServerAccountId,
-        accounts: requestedCreationAccounts
-      });
+      if (!initialReuseServerSlug) {
+        const requestedCreationAccounts = await assertRequestedCreationAccountSnapshotEligible({
+          deps,
+          runId,
+          accountId: requestedServerAccountId
+        });
+        await assertRequestedCreationAccountBudgetPreflight({
+          deps,
+          runId,
+          accountId: requestedServerAccountId,
+          accounts: requestedCreationAccounts
+        });
+      }
       runState.serverAccountId = requestedServerAccountId;
       await persistSmtpRunState(deps, runState);
     }
@@ -870,9 +892,52 @@ export async function configureCompleteSmtp(
     if (vpsProviderId) {
       runState.providerId = vpsProviderId;
     }
+    const reuseServerSlug = normalizeReuseServerSlug(effectiveInput.reuseServerSlug);
+    if (reuseServerSlug && isNonWebdockProviderId(vpsProviderId)) {
+      throw new OrchestratorFailure("failed", 0, "reuse_server_guard", `reuse_server_unsupported_for_provider:${vpsProviderId}`);
+    }
     const createStepWasAlreadyDone = runState.steps["4"]?.status === "done";
     let vps: ConfigureCompleteSmtpStepResult | undefined;
-    if (isNonWebdockProviderId(vpsProviderId)) {
+    if (reuseServerSlug) {
+      const reusableServer = await readReusableWebdockServer(deps, reuseServerSlug);
+      if (requestedServerAccountId && reusableServer.serverAccountId && requestedServerAccountId !== reusableServer.serverAccountId) {
+        throw new OrchestratorFailure("failed", 0, "server_account_guard", "reuse_server_account_mismatch");
+      }
+      runState.serverSlug = reusableServer.slug;
+      runState.reuseServerSlug = reuseServerSlug;
+      runState.serverIpv4 = reusableServer.ipv4;
+      runState.serverCreatedByRun = false;
+      if (reusableServer.serverAccountId) {
+        runState.serverAccountId = reusableServer.serverAccountId;
+      } else if (requestedServerAccountId) {
+        runState.serverAccountId = requestedServerAccountId;
+      }
+      await persistSmtpRunState(deps, runState);
+      vps = await recordSyntheticDoneStepWithState({
+        deps,
+        runState,
+        runId,
+        step: 4,
+        skill: "create_webdock_server",
+        params: {
+          runId,
+          profile: "bit",
+          locationId: "dk",
+          hostname: smtpHost,
+          imageSlug: "ubuntu-2404",
+          reuseServerSlug
+        },
+        outcome: {
+          status: "reused",
+          slug: reusableServer.slug,
+          serverSlug: reusableServer.slug,
+          ipv4: reusableServer.ipv4,
+          costUsd: 0
+        },
+        estimatedCostUsd: 0,
+        stepResults
+      });
+    } else if (isNonWebdockProviderId(vpsProviderId)) {
       // PROVEEDOR NO-WEBDOCK (Contabo, etc.): el governor y el failover de pago multicuenta son
       // construcciones Webdock (eligen entre cuentas Webdock write-capable, cuentan por creationDate
       // contra el cap Webdock). NO aplican a otro proveedor:
@@ -1189,6 +1254,34 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
+    const smokeAuthGate = await verifySmokeAuthGate({
+      domain: chosenDomain,
+      smtpHost,
+      serverIpv4,
+      selector,
+      resolver: deps.smokeAuthDnsResolver ?? defaultSmokeAuthDnsResolver
+    });
+    if (!smokeAuthGate.ok) {
+      delete runState.steps[String(14)];
+      runState.status = "failed";
+      await persistSmtpRunState(deps, runState);
+      await audit(deps, "oc.orchestrator.smoke_blocked_auth_not_ready", "openclaw_orchestrator_run", runId, "critical", {
+        error: "smoke_blocked_auth_not_ready",
+        domain: chosenDomain,
+        smtpHost,
+        serverIpv4,
+        selector,
+        missing: smokeAuthGate.missing,
+        checks: smokeAuthGate.checks
+      });
+      throw new OrchestratorFailure(
+        "failed",
+        14,
+        "send_real_email",
+        `smoke_blocked_auth_not_ready: ${smokeAuthGate.missing.join(",")}`
+      );
+    }
+
     const realEmail = await runMutatingStepWithState({
       deps,
       runState,
@@ -1246,6 +1339,37 @@ export async function configureCompleteSmtp(
         realEmail.inputHash
       );
     }
+
+    const postSmokeAuth = evaluatePostSmokeAuthenticationOutcome(realEmail.outcome);
+    if (!postSmokeAuth.ok) {
+      delete runState.steps[String(14)];
+      runState.status = "failed";
+      await persistSmtpRunState(deps, runState);
+      await audit(deps, "oc.orchestrator.smoke_auth_result_failed", "openclaw_orchestrator_run", runId, "critical", {
+        error: "smoke_authentication_result_failed",
+        domain: chosenDomain,
+        smtpHost,
+        serverIpv4,
+        selector,
+        details: postSmokeAuth.details,
+        failures: postSmokeAuth.failures
+      });
+      throw new OrchestratorFailure(
+        "failed",
+        14,
+        "send_real_email",
+        `smoke_authentication_result_failed: ${postSmokeAuth.failures.join(",")}`,
+        realEmail.proposalId,
+        realEmail.inputHash
+      );
+    }
+
+    await persistConfiguredSmtpInventoryForRun(deps, {
+      domain: chosenDomain,
+      serverSlug,
+      serverIp: serverIpv4,
+      selector
+    });
 
     const totalDurationMs = elapsed(deps, startedMs);
     const totalCostUsd = roundUsd(totalEstimatedCost(stepResults));
@@ -1311,7 +1435,8 @@ export async function configureCompleteSmtp(
       status: failure.status
     });
 
-    if (serverSlug && failure.step >= 6 && deps.submitRollbackProposal && runState?.serverCreatedByRun === true) {
+    const skipRollbackForSmokeAuth = isSmokeAuthReadinessFailure(failure);
+    if (serverSlug && failure.step >= 6 && deps.submitRollbackProposal && runState?.serverCreatedByRun === true && !skipRollbackForSmokeAuth) {
       void logger.warn("openclaw.orchestrator.rollback_proposal_requested", "configure_complete_smtp requested rollback proposal after failure.", {
         runId,
         failedStep: failure.step,
@@ -1335,10 +1460,14 @@ export async function configureCompleteSmtp(
       });
       rollbackProposalId = rollback.proposalId;
     } else if (serverSlug && failure.step >= 6 && deps.submitRollbackProposal) {
-      const rollbackSkipReason = runState?.serverCreatedByRun === false
+      const rollbackSkipReason = skipRollbackForSmokeAuth
+        ? "smoke_auth_not_ready_retryable"
+        : runState?.serverCreatedByRun === false
         ? "server_not_created_by_current_run"
         : "server_created_by_run_unknown";
-      const rollbackSkipMessage = runState?.serverCreatedByRun === false
+      const rollbackSkipMessage = skipRollbackForSmokeAuth
+        ? "configure_complete_smtp skipped VPS delete rollback because smoke auth readiness can be retried."
+        : runState?.serverCreatedByRun === false
         ? "configure_complete_smtp skipped VPS delete rollback for reused/adopted server."
         : "configure_complete_smtp skipped VPS delete rollback because server ownership is unknown.";
       void logger.warn("openclaw.orchestrator.rollback_delete_skipped_reused_server", rollbackSkipMessage, {
@@ -1533,6 +1662,7 @@ async function loadOrCreateSmtpRunState(input: {
       testEmailBody: input.params.testEmailBody,
       seedInboxes: seedInboxesForRun(input.params, input.deps.env)
     },
+    ...(input.params.reuseServerSlug ? { reuseServerSlug: normalizeReuseServerSlug(input.params.reuseServerSlug) } : {}),
     ...(input.params.domain ? { chosenDomain: normalizeDomain(input.params.domain), smtpHost: smtpHostForDomain(normalizeDomain(input.params.domain)) } : {}),
     selector: "s2026a",
     budgetSpentUsd: 0,
@@ -1900,6 +2030,7 @@ function inputFromRunState(
     ...(state.params.provider ? { provider: state.params.provider } : input.provider ? { provider: input.provider } : {}),
     ...(state.providerId ? { vpsProviderId: state.providerId } : input.vpsProviderId ? { vpsProviderId: input.vpsProviderId } : {}),
     ...(state.serverAccountId ? { serverAccountId: state.serverAccountId } : input.serverAccountId ? { serverAccountId: input.serverAccountId } : {}),
+    ...(state.reuseServerSlug ? { reuseServerSlug: state.reuseServerSlug } : input.reuseServerSlug ? { reuseServerSlug: input.reuseServerSlug } : {}),
     ...(state.dnsProviderId ? { dnsProviderId: state.dnsProviderId } : input.dnsProviderId ? { dnsProviderId: input.dnsProviderId } : {}),
     requireExistingDomain: state.params.requireExistingDomain,
     budgetUsdMax: state.params.budgetUsdMax,
@@ -1923,6 +2054,8 @@ function validateResumeScopeAgainstRunState(input: {
     if (state.params.provider && input.planApproval.scope.provider !== state.params.provider) details.push("provider");
     if (input.planApproval.scope.vpsProviderId && state.providerId && input.planApproval.scope.vpsProviderId !== state.providerId) details.push("vpsProviderId");
     if (input.planApproval.scope.serverAccountId && state.serverAccountId && input.planApproval.scope.serverAccountId !== state.serverAccountId) details.push("serverAccountId");
+    const stateReuseServerSlug = state.reuseServerSlug ?? state.serverSlug;
+    if (input.planApproval.scope.reuseServerSlug && stateReuseServerSlug && input.planApproval.scope.reuseServerSlug !== stateReuseServerSlug) details.push("reuseServerSlug");
     if (input.planApproval.scope.recipient !== state.params.testEmailRecipient) details.push("recipient");
     if ((input.planApproval.scope.requireExistingDomain === true) !== state.params.requireExistingDomain) details.push("requireExistingDomain");
     if (input.planApproval.scope.budgetUsdMax < state.budgetSpentUsd) details.push("budgetUsdMax");
@@ -1966,6 +2099,33 @@ function assertDnsProviderResumeCompatible(
 function smtpRunStateHasProviderLockedProgress(state: SmtpRunState): boolean {
   if (state.lastCompletedStep > 0 || state.serverSlug || state.serverIpv4) return true;
   return Object.values(state.steps).some((step) => step.status === "done" || step.status === "in_flight");
+}
+
+async function readReusableWebdockServer(
+  deps: ConfigureCompleteSmtpDeps,
+  reuseServerSlug: string
+): Promise<{ slug: string; ipv4: string; serverAccountId?: string }> {
+  const inventory = await requireRunStateWorkspace(deps)
+    .readInventoryJson<WebdockInventoryForResume>("webdock-servers.json")
+    .catch(() => null);
+  const server = inventory?.servers?.find((entry) => entry.slug.trim().toLowerCase() === reuseServerSlug);
+  if (!server) {
+    throw new OrchestratorFailure("failed", 4, "create_webdock_server", `reuse_server_not_found:${reuseServerSlug}`);
+  }
+  const status = typeof server.status === "string" ? server.status.trim().toLowerCase() : "running";
+  if (status && !["running", "active", "online"].includes(status)) {
+    throw new OrchestratorFailure("failed", 4, "create_webdock_server", `reuse_server_not_running:${reuseServerSlug}`);
+  }
+  const ipv4 = typeof server.ipv4 === "string" && server.ipv4.trim() ? server.ipv4.trim() : "";
+  if (!ipv4) {
+    throw new OrchestratorFailure("failed", 4, "create_webdock_server", `reuse_server_ipv4_missing:${reuseServerSlug}`);
+  }
+  const serverAccountId = normalizeServerAccountId(server.accountId ?? server.serverAccountId);
+  return {
+    slug: server.slug.trim().toLowerCase(),
+    ipv4,
+    ...(serverAccountId ? { serverAccountId } : {})
+  };
 }
 
 async function reconstructLegacySmtpRunState(input: {
@@ -3328,14 +3488,17 @@ async function resolveAndValidatePlanApproval(input: {
   const expectedProvider = input.input.provider?.trim().toLowerCase() ?? planApproval.scope.provider;
   const expectedVpsProviderId = normalizeVpsProviderId(input.input.vpsProviderId);
   const expectedServerAccountId = normalizeServerAccountId(input.input.serverAccountId);
+  const expectedReuseServerSlug = normalizeReuseServerSlug(input.input.reuseServerSlug);
   const requestedVpsProviderId = normalizeVpsProviderId(input.request.vpsProviderId);
   const requestedServerAccountId = normalizeServerAccountId(input.request.serverAccountId);
+  const requestedReuseServerSlug = normalizeReuseServerSlug(input.request.reuseServerSlug);
   const expectedRecipient = input.input.testEmailRecipient.trim().toLowerCase();
   const details: string[] = [];
   if (planApproval.scope.domain !== expectedDomain) details.push("domain");
   if (planApproval.scope.provider !== expectedProvider) details.push("provider");
   if (planApproval.scope.vpsProviderId ? planApproval.scope.vpsProviderId !== expectedVpsProviderId : requestedVpsProviderId !== undefined) details.push("vpsProviderId");
   if (planApproval.scope.serverAccountId ? planApproval.scope.serverAccountId !== expectedServerAccountId : requestedServerAccountId !== undefined) details.push("serverAccountId");
+  if (planApproval.scope.reuseServerSlug ? planApproval.scope.reuseServerSlug !== expectedReuseServerSlug : requestedReuseServerSlug !== undefined) details.push("reuseServerSlug");
   if (planApproval.scope.budgetUsdMax !== input.input.budgetUsdMax) details.push("budgetUsdMax");
   if (planApproval.scope.recipient !== expectedRecipient) details.push("recipient");
   if (planApproval.scope.plannedSkill !== "configure_complete_smtp") details.push("plannedSkill");
@@ -3518,6 +3681,95 @@ function normalizeDeliveryStatus(value: string | undefined): "queued" | "deliver
   if (value === "queued" || value === "deferred" || value === "bounced") return value;
   if (value === "sent" || value === "delivered") return "delivered";
   return undefined;
+}
+
+async function persistConfiguredSmtpInventoryForRun(
+  deps: ConfigureCompleteSmtpDeps,
+  input: { domain: string; serverSlug: string; serverIp: string; selector: string }
+): Promise<void> {
+  const workspace = requireRunStateWorkspace(deps);
+  const domain = normalizeDomain(input.domain);
+  const now = deps.now ?? (() => new Date());
+  const existingInventory = await workspace.readInventoryJson<SmtpProvisioningInventory>("smtp-provisioning.json").catch(() => null);
+  const existing = existingInventory?.servers?.find((entry) =>
+    normalizeDomain(entry.domain) === domain &&
+    entry.serverSlug === input.serverSlug
+  );
+  await upsertConfiguredSmtpInventoryEntry(workspace, {
+    ...existing,
+    domain,
+    serverSlug: input.serverSlug,
+    serverIp: input.serverIp,
+    selector: input.selector,
+    status: "configured",
+    configuredAt: existing?.configuredAt ?? now().toISOString()
+  }, now);
+}
+
+function evaluatePostSmokeAuthenticationOutcome(outcome: unknown):
+  | { ok: true; status: "not_reported" | "pass"; details?: Record<string, unknown> }
+  | { ok: false; status: "failed"; failures: string[]; details: Record<string, unknown> } {
+  const auth = findAuthenticationResults(outcome);
+  if (auth === null) {
+    return { ok: true, status: "not_reported" };
+  }
+
+  const details = authenticationResultDetails(auth);
+  const failures = ["spf", "dkim", "dmarc"].filter((key) => details[key] !== "pass");
+  if (failures.length > 0) {
+    return { ok: false, status: "failed", failures, details };
+  }
+  return { ok: true, status: "pass", details };
+}
+
+function findAuthenticationResults(outcome: unknown): unknown | null {
+  if (!isRecord(outcome)) return null;
+  const direct = outcome.authenticationResults ?? outcome.authResults ?? outcome.authentication_results;
+  if (direct !== undefined) return direct;
+  const nested = outcome.verification;
+  if (isRecord(nested)) {
+    return nested.authenticationResults ?? nested.authResults ?? nested.authentication_results ?? null;
+  }
+  return null;
+}
+
+function authenticationResultDetails(value: unknown): Record<string, string> {
+  if (typeof value === "string") return authenticationResultDetailsFromString(value);
+  if (isRecord(value)) {
+    return {
+      spf: authStatusFromUnknown(value.spf),
+      dkim: authStatusFromUnknown(value.dkim),
+      dmarc: authStatusFromUnknown(value.dmarc)
+    };
+  }
+  return { spf: "missing", dkim: "missing", dmarc: "missing" };
+}
+
+function authenticationResultDetailsFromString(value: string): Record<string, string> {
+  return {
+    spf: authStatusFromHeader(value, "spf"),
+    dkim: authStatusFromHeader(value, "dkim"),
+    dmarc: authStatusFromHeader(value, "dmarc")
+  };
+}
+
+function authStatusFromHeader(value: string, key: string): string {
+  const match = new RegExp(`(?:^|\\s|;)${key}=([a-z0-9_-]+)`, "i").exec(value);
+  return match?.[1]?.toLowerCase() ?? "missing";
+}
+
+function authStatusFromUnknown(value: unknown): string {
+  if (typeof value === "string") return value.trim().toLowerCase() || "missing";
+  if (isRecord(value)) {
+    const result = value.result ?? value.status;
+    return typeof result === "string" && result.trim() ? result.trim().toLowerCase() : "missing";
+  }
+  if (value === true) return "pass";
+  return "missing";
+}
+
+function isSmokeAuthReadinessFailure(failure: OrchestratorFailure): boolean {
+  return failure.step === 14 && failure.message.startsWith("smoke_blocked_auth_not_ready");
 }
 
 function normalizeFailure(error: unknown): OrchestratorFailure {
@@ -4587,6 +4839,16 @@ function normalizeServerAccountId(value: unknown): string | undefined {
   if (!normalized) return undefined;
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(normalized)) {
     throw new OrchestratorFailure("failed", 0, "server_account_guard", "invalid_server_account_id");
+  }
+  return normalized;
+}
+
+function normalizeReuseServerSlug(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (!/^[a-z0-9][a-z0-9-]{1,118}[a-z0-9]$/.test(normalized)) {
+    throw new OrchestratorFailure("failed", 0, "reuse_server_guard", "invalid_reuse_server_slug");
   }
   return normalized;
 }
