@@ -224,6 +224,9 @@ export interface CanvasLiveRunProgress {
   lastCompletedStep: number;
   steps: CanvasLiveRunProgressStep[];
   identity?: CanvasLiveRunIdentity;
+  retryableFailure?: boolean;
+  failureCategory?: string;
+  failureRetryAfterMs?: number;
 }
 
 export type CanvasLiveArtifactPayload =

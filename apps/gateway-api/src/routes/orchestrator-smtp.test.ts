@@ -141,6 +141,9 @@ test("configureCompleteSmtp writes DNS with the provisioned IP and blocks smoke 
   assert.equal(result.status, "failed");
   assert.equal(result.failedStep, 14);
   assert.match(result.error ?? "", /^smoke_blocked_auth_not_ready/);
+  assert.equal(result.retryable, true);
+  assert.equal(result.failureKind, "smoke_auth_not_ready");
+  assert.equal(result.retryAfterMs, 300000);
   assert.equal(ctx.approvals.some((entry) => entry.step === 14 || entry.skill === "send_real_email"), false);
   assert.equal(ctx.rollbacks.length, 0);
 
@@ -162,6 +165,14 @@ test("configureCompleteSmtp writes DNS with the provisioned IP and blocks smoke 
 
   const state = await readRunState(ctx.workspace, "run-1");
   assert.equal(state.steps["14"], undefined);
+  const fullState = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(fullState.retryableFailure, true);
+  assert.equal(fullState.failureCategory, "smoke_auth_not_ready");
+  assert.equal(fullState.failureRetryAfterMs, 300000);
+
+  const progress = await readSmtpRunProgress(ctx.deps, "run-1");
+  assert.equal(progress?.retryableFailure, true);
+  assert.equal(progress?.failureCategory, "smoke_auth_not_ready");
 });
 
 test("configureCompleteSmtp fails if post-smoke Authentication-Results reports auth failure", async () => {
@@ -182,6 +193,66 @@ test("configureCompleteSmtp fails if post-smoke Authentication-Results reports a
   assert.match(result.error ?? "", /^smoke_authentication_result_failed: dkim/);
   const state = await readRunState(ctx.workspace, "run-1");
   assert.equal(state.steps["14"], undefined);
+});
+
+test("configureCompleteSmtp accepts post-smoke Authentication-Results with spacing", async () => {
+  const ctx = createDeps({
+    outcomes: {
+      14: {
+        messageId: "<delivrix-authpass@delivrixops.com>",
+        deliveryStatus: "sent",
+        authenticationResults: "mx.google.com; spf = pass smtp.mailfrom=delivrixops.com; dkim = pass header.d=delivrixops.com; dmarc = pass"
+      }
+    }
+  });
+
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "completed", result.error);
+  assert.equal(result.finalEmailMessageId, "<delivrix-authpass@delivrixops.com>");
+});
+
+test("configureCompleteSmtp audits post-smoke Authentication-Results anomalies", async () => {
+  const ctx = createDeps({
+    outcomes: {
+      14: {
+        messageId: "<delivrix-authunknown@delivrixops.com>",
+        deliveryStatus: "sent",
+        authenticationResults: "mx.google.com; spf = pass smtp.mailfrom=delivrixops.com; dkim = weird header.d=delivrixops.com; dmarc = pass"
+      }
+    }
+  });
+
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 14);
+  assert.match(result.error ?? "", /^smoke_authentication_result_failed: dkim/);
+  const anomaly = ctx.auditEvents.find((event) => event.action === "oc.orchestrator.smoke_auth_result_parse_anomaly");
+  assert.ok(anomaly);
+  assert.deepEqual((anomaly.metadata as { anomalies?: unknown }).anomalies, ["dkim"]);
+  assert.equal(((anomaly.metadata as { details?: Record<string, string> }).details ?? {}).dkim, "unknown");
+});
+
+test("configureCompleteSmtp fails when post-smoke Authentication-Results misses a required method", async () => {
+  const ctx = createDeps({
+    outcomes: {
+      14: {
+        messageId: "<delivrix-authmissing@delivrixops.com>",
+        deliveryStatus: "sent",
+        authenticationResults: "mx.google.com; spf=pass smtp.mailfrom=delivrixops.com; dkim=pass header.d=delivrixops.com"
+      }
+    }
+  });
+
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 14);
+  assert.match(result.error ?? "", /^smoke_authentication_result_failed: dmarc/);
+  const failure = ctx.auditEvents.find((event) => event.action === "oc.orchestrator.smoke_auth_result_failed");
+  assert.ok(failure);
+  assert.equal(((failure.metadata as { details?: Record<string, string> }).details ?? {}).dmarc, "missing");
 });
 
 test("configureCompleteSmtp chooses the first suggested domain", async () => {
@@ -521,7 +592,8 @@ test("create_webdock_server uses canonical smtp host as hostname", async () => {
 test("configureCompleteSmtp can reuse an existing Webdock server without creating a VPS", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
-    planApproval: signedPlanApproval({ reuseServerSlug: "server60" })
+    planApproval: signedPlanApproval({ reuseServerSlug: "server60" }),
+    smokeAuthDnsResolver: healthySmokeAuthDnsResolver("203.0.113.60")
   });
   await ctx.workspace.updateInventoryJson("webdock-servers.json", () => ({
     servers: [{
@@ -573,6 +645,20 @@ test("configureCompleteSmtp can reuse an existing Webdock server without creatin
   assert.equal(state.serverAccountId, "secondary");
   assert.equal(state.serverCreatedByRun, false);
   assert.equal(ctx.rollbacks.length, 0);
+  const reuseAudit = ctx.auditEvents.find((event) => event.action === "oc.orchestrator.webdock_server_reused");
+  assert.ok(reuseAudit);
+  assert.equal(reuseAudit.targetId, "server60");
+  assert.deepEqual(reuseAudit.metadata, {
+    runId: "run-1",
+    actorId: "op-1",
+    reuseServerSlug: "server60",
+    serverSlug: "server60",
+    serverIpv4: "203.0.113.60",
+    serverAccountId: "secondary",
+    domain: "delivrixops.com",
+    smtpHost: "smtp.delivrixops.com",
+    source: "webdock-servers.json"
+  });
 
   const replay = await configureCompleteSmtp({
     ...validInput(),
@@ -584,6 +670,37 @@ test("configureCompleteSmtp can reuse an existing Webdock server without creatin
   assert.equal(replay.status, "completed", replay.error);
   assert.equal(ctx.approvals.some((entry) => entry.step === 4 || entry.skill === "create_webdock_server"), false);
   assert.equal(ctx.planExecutions.some((entry) => entry.step === 4 || entry.skill === "create_webdock_server"), false);
+});
+
+test("configureCompleteSmtp rejects reuseServerSlug when inventory hostname conflicts with smtp host", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ reuseServerSlug: "server60" })
+  });
+  await ctx.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "server60",
+      hostname: "smtp.otherdomain.com",
+      ipv4: "203.0.113.60",
+      status: "running",
+      accountId: "secondary"
+    }]
+  }));
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    reuseServerSlug: "server60"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 4);
+  assert.equal(result.error, "reuse_server_hostname_mismatch");
+  assert.equal(ctx.planExecutions.some((entry) => entry.step === 6 || entry.skill === "upsert_dns_route53"), false);
+  assert.equal(ctx.approvals.some((entry) => entry.step === 14 || entry.skill === "send_real_email"), false);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.webdock_server_reused"), false);
 });
 
 test("route53 DNS step writes canonical smtp A and MX records", async () => {
@@ -2213,6 +2330,7 @@ test("DNS#IONOS legacy reconstruction skips Route53 registration and awsdns NS w
     suggestions: { candidates: [{ domain: "fresh-delivrix.com", priceUsd: 15, available: true }] },
     ownedDomains: ["annualcorpfilings.com"],
     ownedDomainProvider: "ionos",
+    smokeAuthDnsResolver: healthySmokeAuthDnsResolver("45.136.70.47"),
     outcomes: {
       9: { dkimPublicKey: "v=DKIM1; k=rsa; p=abc" }
     }
@@ -2270,6 +2388,7 @@ test("legacy reconstruction marks idempotent server bindings as not created by t
     suggestions: { candidates: [{ domain: "fresh-delivrix.com", priceUsd: 15, available: true }] },
     ownedDomains: ["annualcorpfilings.com"],
     ownedDomainProvider: "ionos",
+    smokeAuthDnsResolver: healthySmokeAuthDnsResolver("45.136.70.47"),
     outcomes: {
       9: { dkimPublicKey: "v=DKIM1; k=rsa; p=abc" }
     }
@@ -2316,6 +2435,7 @@ for (const source of ["adopted", "reused"]) {
       suggestions: { candidates: [{ domain: "fresh-delivrix.com", priceUsd: 15, available: true }] },
       ownedDomains: ["annualcorpfilings.com"],
       ownedDomainProvider: "ionos",
+      smokeAuthDnsResolver: healthySmokeAuthDnsResolver("45.136.70.47"),
       outcomes: {
         9: { dkimPublicKey: "v=DKIM1; k=rsa; p=abc" }
       }
@@ -3256,7 +3376,7 @@ function createDeps(options: {
           return { entriesWritten: input.steps.length };
         }
       } : {}),
-      smokeAuthDnsResolver: options.smokeAuthDnsResolver ?? healthySmokeAuthDnsResolver(),
+      smokeAuthDnsResolver: options.smokeAuthDnsResolver ?? healthySmokeAuthDnsResolver(smokeAuthIpv4FromOutcomes(options.outcomes)),
       env: options.env ?? {},
       now: () => new Date("2026-05-31T12:00:00.000Z"),
       randomId: () => "run-1",
@@ -3322,6 +3442,9 @@ async function readRunStateFull(workspace: OpenClawWorkspace, runId: string): Pr
   serverSlug?: string;
   reuseServerSlug?: string;
   serverIpv4?: string;
+  retryableFailure?: boolean;
+  failureCategory?: string;
+  failureRetryAfterMs?: number;
   steps: Record<string, { status: string; inputHash?: string }>;
 }> {
   return JSON.parse(await workspace.readWorkspaceFile(`inventory/smtp-runs/${runId}.json`)) as {
@@ -3333,6 +3456,9 @@ async function readRunStateFull(workspace: OpenClawWorkspace, runId: string): Pr
     serverSlug?: string;
     reuseServerSlug?: string;
     serverIpv4?: string;
+    retryableFailure?: boolean;
+    failureCategory?: string;
+    failureRetryAfterMs?: number;
     steps: Record<string, { status: string; inputHash?: string }>;
   };
 }
@@ -3467,19 +3593,29 @@ function defaultOutcome(step: number): unknown {
   return { ok: true };
 }
 
-function healthySmokeAuthDnsResolver(): SmokeAuthDnsResolver {
-  const ips = ["203.0.113.10", "203.0.113.42", "203.0.113.60", "203.0.113.77", "203.0.113.88", "45.136.70.47"];
+function smokeAuthIpv4FromOutcomes(outcomes: Record<number, unknown> | undefined): string {
+  for (const step of [5, 4]) {
+    const outcome = outcomes?.[step];
+    if (outcome && typeof outcome === "object" && "ipv4" in outcome) {
+      const ipv4 = (outcome as { ipv4?: unknown }).ipv4;
+      if (typeof ipv4 === "string" && ipv4.trim()) return ipv4.trim();
+    }
+  }
+  return "203.0.113.10";
+}
+
+function healthySmokeAuthDnsResolver(serverIpv4 = "203.0.113.10"): SmokeAuthDnsResolver {
   let smtpHost = "smtp.delivrixops.com";
   return {
     async resolve4(hostname: string) {
       smtpHost = hostname.trim().toLowerCase().replace(/\.$/, "");
-      return ips;
+      return [serverIpv4];
     },
     async resolveTxt(hostname: string) {
       const normalized = hostname.trim().toLowerCase().replace(/\.$/, "");
       if (normalized.includes("._domainkey.")) return [["v=DKIM1; k=rsa; p=abc"]];
       if (normalized.startsWith("_dmarc.")) return [["v=DMARC1; p=quarantine"]];
-      return [[`v=spf1 ${ips.map((ip) => `ip4:${ip}`).join(" ")} -all`]];
+      return [[`v=spf1 ip4:${serverIpv4} -all`]];
     },
     async reverse() {
       return [`${smtpHost}.`];

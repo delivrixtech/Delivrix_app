@@ -1,6 +1,8 @@
 import { promises as dns } from "node:dns";
+import { isIP } from "node:net";
 
 export type SmokeAuthGateCheckName = "smtp_a" | "spf" | "dkim" | "dmarc" | "ptr" | "fcrdns";
+export type SmokeAuthGateFailureName = SmokeAuthGateCheckName | "invalid_precondition";
 
 export interface SmokeAuthDnsResolver {
   resolve4(hostname: string): Promise<string[]>;
@@ -17,8 +19,9 @@ export interface SmokeAuthGateCheck {
 
 export interface SmokeAuthGateResult {
   ok: boolean;
-  missing: SmokeAuthGateCheckName[];
+  missing: SmokeAuthGateFailureName[];
   checks: Record<SmokeAuthGateCheckName, SmokeAuthGateCheck>;
+  error?: string;
 }
 
 export const defaultSmokeAuthDnsResolver: SmokeAuthDnsResolver = {
@@ -37,6 +40,7 @@ export async function verifySmokeAuthGate(input: {
   const resolver = input.resolver ?? defaultSmokeAuthDnsResolver;
   const domain = normalizeDnsName(input.domain);
   const smtpHost = normalizeDnsName(input.smtpHost);
+  const serverIpv4 = input.serverIpv4.trim();
   const selector = input.selector.trim().toLowerCase() || "s2026a";
   const expectedPtr = `${smtpHost}.`;
   const checks: Record<SmokeAuthGateCheckName, SmokeAuthGateCheck> = {
@@ -47,19 +51,28 @@ export async function verifySmokeAuthGate(input: {
     ptr: { ok: false },
     fcrdns: { ok: false }
   };
+  const preconditionError = smokeAuthPreconditionError({ domain, smtpHost, serverIpv4 });
+  if (preconditionError) {
+    return {
+      ok: false,
+      missing: ["invalid_precondition"],
+      checks: smokeAuthPreconditionChecks(checks, preconditionError, { domain, smtpHost, serverIpv4 }),
+      error: preconditionError
+    };
+  }
 
   let smtpA: string[] = [];
   try {
     smtpA = await resolver.resolve4(smtpHost);
     checks.smtp_a = {
-      ok: smtpA.includes(input.serverIpv4),
-      expected: { host: smtpHost, ipv4: input.serverIpv4 },
+      ok: smtpA.length === 1 && smtpA[0] === serverIpv4,
+      expected: { host: smtpHost, ipv4: serverIpv4, mode: "exact_single_a" },
       observed: smtpA
     };
   } catch (error) {
     checks.smtp_a = {
       ok: false,
-      expected: { host: smtpHost, ipv4: input.serverIpv4 },
+      expected: { host: smtpHost, ipv4: serverIpv4, mode: "exact_single_a" },
       error: errorMessage(error)
     };
   }
@@ -68,14 +81,14 @@ export async function verifySmokeAuthGate(input: {
     const spfRecords = flattenTxt(await resolver.resolveTxt(domain))
       .filter((entry) => /^v=spf1\b/i.test(entry.trim()));
     checks.spf = {
-      ok: spfRecords.some((record) => spfRecordIncludesIpv4(record, input.serverIpv4)),
-      expected: `ip4:${input.serverIpv4}`,
+      ok: spfRecords.some((record) => spfRecordIncludesIpv4(record, serverIpv4)),
+      expected: `ip4:${serverIpv4}`,
       observed: spfRecords
     };
   } catch (error) {
     checks.spf = {
       ok: false,
-      expected: `ip4:${input.serverIpv4}`,
+      expected: `ip4:${serverIpv4}`,
       error: errorMessage(error)
     };
   }
@@ -118,7 +131,7 @@ export async function verifySmokeAuthGate(input: {
 
   let ptrHostnames: string[] = [];
   try {
-    ptrHostnames = (await resolver.reverse(input.serverIpv4)).map(normalizeDnsName);
+    ptrHostnames = (await resolver.reverse(serverIpv4)).map(normalizeDnsName);
     checks.ptr = {
       ok: ptrHostnames.includes(smtpHost),
       expected: expectedPtr,
@@ -141,14 +154,46 @@ export async function verifySmokeAuthGate(input: {
     }
   }
   checks.fcrdns = {
-    ok: checks.ptr.ok && Boolean(ptrForwardA[smtpHost]?.includes(input.serverIpv4)),
-    expected: { ptr: expectedPtr, forwardIp: input.serverIpv4 },
+    ok: checks.ptr.ok && Boolean(ptrForwardA[smtpHost]?.includes(serverIpv4)),
+    expected: { ptr: expectedPtr, forwardIp: serverIpv4 },
     observed: ptrForwardA
   };
 
   const missing = (Object.keys(checks) as SmokeAuthGateCheckName[])
     .filter((check) => !checks[check].ok);
   return { ok: missing.length === 0, missing, checks };
+}
+
+function smokeAuthPreconditionError(input: {
+  domain: string;
+  smtpHost: string;
+  serverIpv4: string;
+}): string | undefined {
+  if (!input.domain) return "invalid_domain";
+  if (!input.smtpHost) return "invalid_smtp_host";
+  if (isIP(input.serverIpv4) !== 4) return "invalid_server_ipv4";
+  const expectedSmtpHost = `smtp.${input.domain}`;
+  if (input.smtpHost !== expectedSmtpHost) {
+    return "smtp_host_domain_mismatch";
+  }
+  return undefined;
+}
+
+function smokeAuthPreconditionChecks(
+  checks: Record<SmokeAuthGateCheckName, SmokeAuthGateCheck>,
+  error: string,
+  input: { domain: string; smtpHost: string; serverIpv4: string }
+): Record<SmokeAuthGateCheckName, SmokeAuthGateCheck> {
+  const expectedSmtpHost = input.domain ? `smtp.${input.domain}` : "smtp.<domain>";
+  return {
+    ...checks,
+    smtp_a: {
+      ok: false,
+      expected: { host: expectedSmtpHost, ipv4: input.serverIpv4 },
+      observed: { domain: input.domain, smtpHost: input.smtpHost, serverIpv4: input.serverIpv4 },
+      error
+    }
+  };
 }
 
 function flattenTxt(records: string[][]): string[] {
