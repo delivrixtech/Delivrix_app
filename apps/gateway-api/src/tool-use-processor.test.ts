@@ -5,6 +5,7 @@ import {
   buildProposalPayloadFromToolUse,
   createHttpToolUseProcessor,
   processToolUse,
+  type SubmitProposalFromToolUseInput,
   type ToolUseProcessorDeps,
   type ToolUseProposalDecision,
   type ToolUseProposalSubmission
@@ -78,6 +79,56 @@ test("processToolUse submits update_domain_nameservers through ApprovalGate", as
     buildProposalPayloadFromToolUse(calls[0]).proposal.delivrix_actions_required,
     ["update_domain_nameservers"]
   );
+});
+
+test("processToolUse submits reconcile_dns_to_live_smtp through ApprovalGate", async () => {
+  const calls: unknown[] = [];
+  const rollbackPlan = {
+    mode: "manual_dns_restore",
+    canRollbackAutomatically: false,
+    procedure: "Manual restore through upsert_dns_route53.",
+    previousRecords: []
+  };
+  const result = await processToolUse({
+    toolUseId: "toolu-reconcile",
+    toolName: "reconcile_dns_to_live_smtp",
+    toolInput: {
+      domain: "controlcorpfiling.com",
+      serverSlug: "server60",
+      repairReason: "Reconciliar DNS contra inventario SMTP vivo confirmado.",
+      dryRun: false
+    },
+    chatSession: { id: "agent:main:operator", msgId: "msg-reconcile" },
+    env: enabledEnv(),
+    deps: memoryDeps({
+      calls,
+      decision: {
+        status: "executed",
+        proposalId: "proposal-reconcile",
+        ok: true,
+        signatureId: "sig-reconcile",
+        outcome: {
+          ok: true,
+          status: "reconciled",
+          changed: true,
+          domain: "controlcorpfiling.com",
+          rollbackPlan
+        },
+        durationMs: 40,
+        statusCode: 200
+      }
+    })
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  const call = calls[0] as SubmitProposalFromToolUseInput;
+  assert.equal(call.toolName, "reconcile_dns_to_live_smtp");
+  assert.deepEqual(
+    buildProposalPayloadFromToolUse(call).proposal.delivrix_actions_required,
+    ["reconcile_dns_to_live_smtp"]
+  );
+  assert.deepEqual((result.result as { rollbackPlan?: unknown }).rollbackPlan, rollbackPlan);
 });
 
 test("processToolUse rejects unknown tool names before submission", async () => {
@@ -1614,7 +1665,8 @@ function enabledEnv(): Record<string, string | undefined> {
     WARMUP_RAMP_ENABLE: "true",
     WEBDOCK_BIND_MAIN_DOMAIN_ENABLE: "true",
     SEND_REAL_EMAIL_ENABLE: "true",
-    OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true"
+    OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true",
+    OPENCLAW_RECONCILE_DNS_SMTP_ENABLE: "true"
   };
 }
 

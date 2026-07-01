@@ -62,6 +62,31 @@ test("resolveRoute53HostedZone fails closed when registrar NS do not match any d
   );
 });
 
+test("resolveRoute53HostedZone falls back to SMTP setup when registrar NS are empty", async () => {
+  const workspace = await makeWorkspace();
+  const adapter = new FakePolicyAdapter({
+    zones: duplicateZones(),
+    recordsByZone: {
+      Z01313019Q8DEA3UGP8G: [
+        { name: "smtp.controlcorpfiling.com.", type: "A", ttl: 300, values: ["193.180.211.182"] },
+        { name: "controlcorpfiling.com.", type: "MX", ttl: 300, values: ["10 smtp.controlcorpfiling.com."] }
+      ]
+    }
+  });
+
+  const result = await resolveRoute53HostedZone({
+    workspace,
+    adapter,
+    domain: "controlcorpfiling.com",
+    mode: "reuse-only",
+    getDomainNameservers: async () => []
+  });
+
+  assert.equal(result.zone.zoneId, "Z01313019Q8DEA3UGP8G");
+  assert.equal(result.source, "aws-disambiguated");
+  assert.equal(result.smtpSetup, "canonical");
+});
+
 async function makeWorkspace(): Promise<OpenClawWorkspace> {
   return new OpenClawWorkspace({
     rootDir: await mkdtemp(join(tmpdir(), "route53-zone-policy-")),

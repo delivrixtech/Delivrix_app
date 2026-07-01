@@ -2026,11 +2026,11 @@ function normalizeMaxToolIterations(
     ? Number(value)
     : defaultMaxToolIterations;
   if (requested > maxToolIterationsCap) {
-    void logger.warn("openclaw.bedrock.max_tool_iterations_clamped", "OPENCLAW_TOOL_MAX_ITERATIONS exceeded the safety cap and was clamped.", {
+    logger.warn("openclaw.bedrock.max_tool_iterations_clamped", "OPENCLAW_TOOL_MAX_ITERATIONS exceeded the safety cap and was clamped.", {
       requested,
       maxToolIterationsCap,
       effectiveMaxToolIterations: maxToolIterationsCap
-    });
+    }).catch(() => undefined);
     return maxToolIterationsCap;
   }
   return requested;
