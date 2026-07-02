@@ -93,7 +93,7 @@ prompt_version = prompt_version_match.group(0) if prompt_version_match else "ope
 
 system_literal = section(system_prompt, "## 4. System prompt literal")
 permissions_categories = section(permissions, "## 2. Categorías canónicas")
-permissions_matrix = compact_lines(section(permissions, "## 3. Matriz literal"), 2800)
+permissions_matrix = compact_lines(section(permissions, "## 3. Matriz literal"), 2400)
 permissions_gates = section(permissions, "## 7. Gates duros")
 permissions_core = "\n\n".join(part for part in (
     permissions_categories,
