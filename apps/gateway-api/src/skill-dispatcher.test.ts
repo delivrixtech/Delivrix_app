@@ -481,6 +481,136 @@ test("dispatcher blocks create_smtp_entry before liveness reads when kill-switch
   assert.equal(inventory?.servers.length, 0);
 });
 
+test("dispatcher adopts a live quinary orphan into webdock-servers.json and audits critical approval hash", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "dispatcher-adopt-server-")),
+    now: () => new Date("2026-07-02T12:00:00.000Z")
+  });
+  await workspace.updateInventoryJson("webdock-servers.json", () => ({ servers: [] }));
+  const auditEvents: Array<Record<string, unknown>> = [];
+
+  const result = await dispatchSkillHandler({
+    skill: "adopt_webdock_server",
+    params: {
+      serverSlug: "server57",
+      serverIp: "193.180.211.146",
+      serverAccountId: "quinary",
+      reason: "Adoptar server huerfano verificado en la flota viva multi-cuenta.",
+      dryRun: false
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      workspace,
+      auditLog: {
+        append: async (event: Record<string, unknown>) => { auditEvents.push(event); },
+        list: async () => []
+      },
+      readKillSwitch: async () => ({ enabled: false }),
+      readSmtpInventoryLiveServers: async () => [{
+        serverSlug: "server57",
+        ipv4: "193.180.211.146",
+        status: "running",
+        providerId: "webdock",
+        accountId: "quinary",
+        accountHealthStatus: "healthy"
+      }]
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.statusCode, 200);
+  const inventory = await workspace.readInventoryJson<{
+    servers: Array<{ slug: string; ipv4: string; hostname: string; accountId?: string; adopted?: boolean }>;
+  }>("webdock-servers.json");
+  const adopted = inventory?.servers.find((server) => server.slug === "server57");
+  assert.equal(adopted?.ipv4, "193.180.211.146");
+  assert.equal(adopted?.hostname, "");
+  assert.equal(adopted?.accountId, "quinary");
+  assert.equal(adopted?.adopted, true);
+
+  const audit = auditEvents.at(-1);
+  assert.equal(audit?.action, "oc.webdock_servers.server_adopted");
+  assert.equal(audit?.riskLevel, "critical");
+  assert.equal(audit?.targetType, "webdock_server");
+  assert.equal(audit?.targetId, "server57");
+  const metadata = audit?.metadata as Record<string, unknown>;
+  assert.equal(metadata.approvalTokenHash, approvalTokenHash(token.tokenId));
+  assert.equal(metadata.sideEffects, "local-state-only");
+  assert.match(String((metadata.rollbackPlan as Record<string, unknown>).procedure), /webdock-servers\.json/);
+
+  const conflict = await dispatchSkillHandler({
+    skill: "adopt_webdock_server",
+    params: {
+      serverSlug: "server57",
+      serverIp: "193.180.211.146",
+      serverAccountId: "quinary",
+      reason: "Reintento de adopcion sobre entrada ya existente.",
+      dryRun: false
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      workspace,
+      auditLog: {
+        append: async (event: Record<string, unknown>) => { auditEvents.push(event); },
+        list: async () => []
+      },
+      readKillSwitch: async () => ({ enabled: false }),
+      readSmtpInventoryLiveServers: async () => [{
+        serverSlug: "server57",
+        ipv4: "193.180.211.146",
+        status: "running",
+        providerId: "webdock",
+        accountId: "quinary",
+        accountHealthStatus: "healthy"
+      }]
+    }
+  });
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.statusCode, 409);
+  const afterConflict = await workspace.readInventoryJson<{ servers: Array<{ slug: string }> }>("webdock-servers.json");
+  assert.equal(afterConflict?.servers.filter((server) => server.slug === "server57").length, 1);
+});
+
+test("dispatcher blocks adopt_webdock_server before liveness reads when kill-switch is armed", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "dispatcher-adopt-kill-")),
+    now: () => new Date("2026-07-02T12:05:00.000Z")
+  });
+  await workspace.updateInventoryJson("webdock-servers.json", () => ({ servers: [] }));
+  let liveRead = false;
+  const result = await dispatchSkillHandler({
+    skill: "adopt_webdock_server",
+    params: {
+      serverSlug: "server57",
+      serverIp: "193.180.211.146",
+      serverAccountId: "quinary",
+      reason: "Adoptar server huerfano verificado en la flota viva.",
+      dryRun: false
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      workspace,
+      readKillSwitch: async () => ({ enabled: true }),
+      readSmtpInventoryLiveServers: async () => {
+        liveRead = true;
+        return [{ serverSlug: "server57", ipv4: "193.180.211.146", status: "running", accountId: "quinary", accountHealthStatus: "healthy" }];
+      }
+    }
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.statusCode, 423);
+  assert.equal(liveRead, false);
+  const adoptInventory = await workspace.readInventoryJson<{ servers: unknown[] }>("webdock-servers.json");
+  assert.equal(adoptInventory?.servers.length, 0);
+});
+
 test("dispatcher reconciles live SMTP DNS after ApprovalGate dispatch and audits rollback plan", async () => {
   const workspace = new OpenClawWorkspace({
     rootDir: await mkdtemp(join(tmpdir(), "dispatcher-reconcile-dns-")),
@@ -788,6 +918,32 @@ test("DoD#2 routing: create_webdock_server sin accountId usa el webdockAdapter (
 
   assert.deepEqual(opsCalls, ["canCreate"], "sin accountId enruta a la cuenta-1 (ops)");
   assert.deepEqual(secondaryCalls, [], "no toca la cuenta-2");
+});
+
+test("routing fail-closed: create_webdock_server con accountId desconocido responde 409 sin caer a la cuenta-1", async () => {
+  const opsCalls: string[] = [];
+  const secondaryCalls: string[] = [];
+  const opsAdapter = makeSpyCreateAdapter("ops", opsCalls);
+  const secondaryAdapter = makeSpyCreateAdapter("secondary", secondaryCalls);
+  const deps = webdockDispatchDeps({
+    webdockAdapter: opsAdapter,
+    webdockCreateAdapters: new Map([["ops", opsAdapter], ["secondary", secondaryAdapter]])
+  });
+
+  const result = await dispatchSkillHandler({
+    skill: "create_webdock_server",
+    params: { profile: "bit", locationId: "dk", hostname: "smtp.controltypo.com", imageSlug: "ubuntu-2404", publicKey: "ssh-ed25519 AAAA test" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    accountId: "quinarie",
+    deps
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.statusCode, 409);
+  assert.equal((result.summary as { error?: string }).error, "unknown_server_account");
+  assert.deepEqual(opsCalls, [], "NO cae silenciosamente a la cuenta-1");
+  assert.deepEqual(secondaryCalls, [], "no toca otras cuentas");
 });
 
 test("routing: bind_webdock_main_domain con accountId='secondary' usa el adapter de esa cuenta", async () => {

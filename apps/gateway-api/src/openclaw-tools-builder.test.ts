@@ -39,6 +39,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "retire_smtp_entry",
     "reassign_domain_server",
     "create_smtp_entry",
+    "adopt_webdock_server",
     "update_smtp_entry",
     "bind_domain_to_server",
     "seed_warmup_pool",
@@ -148,7 +149,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 36);
+  assert.equal(tools.length, 37);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -284,6 +285,7 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "retire_smtp_entry",
     "reassign_domain_server",
     "create_smtp_entry",
+    "adopt_webdock_server",
     "update_smtp_entry",
     "send_real_email",
     "compact_intent",
@@ -482,6 +484,15 @@ function validSample(toolName: string): Record<string, unknown> {
       selector: "s2026a",
       status: "configured",
       reason: "Crear entrada verificada contra inventario vivo.",
+      dryRun: true
+    };
+  }
+  if (toolName === "adopt_webdock_server") {
+    return {
+      serverSlug: "server57",
+      serverIp: "203.0.113.57",
+      serverAccountId: "quinary",
+      reason: "Adoptar server huerfano verificado en la flota viva.",
       dryRun: true
     };
   }

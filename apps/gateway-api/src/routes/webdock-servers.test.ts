@@ -20,6 +20,7 @@ import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import { approvalTokenHash } from "../approval-guard.ts";
 import {
+  adoptWebdockServerInventoryEntry,
   handleWebdockServerCreateError,
   handleWebdockServerCreateHttp,
   handleWebdockServerDeleteError,
@@ -30,6 +31,108 @@ import {
 
 const fixedNow = new Date("2026-05-27T16:00:00.000Z");
 const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOperatortestkey operator@delivrix";
+
+test("adoptWebdockServerInventoryEntry dry-runs by default and adopts only verified live quinary servers", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "webdock-adopt-")),
+    now: () => fixedNow
+  });
+  await workspace.updateInventoryJson("webdock-servers.json", () => ({ servers: [] }));
+  const liveServers = [{
+    serverSlug: "server57",
+    ipv4: "193.180.211.146",
+    status: "running",
+    providerId: "webdock",
+    accountId: "quinary",
+    accountHealthStatus: "healthy"
+  }];
+  const baseInput = {
+    workspace,
+    serverSlug: "server57",
+    serverIp: "193.180.211.146",
+    serverAccountId: "quinary",
+    liveServers,
+    actorId: "operator-juanes",
+    reason: "Adoptar server huerfano verificado en la flota viva.",
+    now: () => fixedNow
+  };
+
+  const dryRun = await adoptWebdockServerInventoryEntry(baseInput);
+  assert.equal(dryRun.ok, true);
+  assert.equal(dryRun.status, "dry_run");
+  assert.equal(dryRun.changed, false);
+  assert.equal(dryRun.plan?.inventoryMutationKind, "created_new");
+  const afterDryRun = await workspace.readInventoryJson<{ servers: Array<{ slug: string }> }>("webdock-servers.json");
+  assert.equal(afterDryRun?.servers.length, 0);
+
+  const adopted = await adoptWebdockServerInventoryEntry({ ...baseInput, dryRun: false });
+  assert.equal(adopted.ok, true);
+  assert.equal(adopted.status, "adopted");
+  assert.equal(adopted.changed, true);
+  const inventory = await workspace.readInventoryJson<{
+    servers: Array<{ slug: string; ipv4: string; hostname: string; status: string; accountId?: string; adopted?: boolean }>;
+  }>("webdock-servers.json");
+  const entry = inventory?.servers.find((server) => server.slug === "server57");
+  assert.equal(entry?.ipv4, "193.180.211.146");
+  assert.equal(entry?.hostname, "");
+  assert.equal(entry?.status, "running");
+  assert.equal(entry?.accountId, "quinary");
+  assert.equal(entry?.adopted, true);
+
+  const conflict = await adoptWebdockServerInventoryEntry({ ...baseInput, dryRun: false });
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.status, "server_already_adopted");
+  const afterConflict = await workspace.readInventoryJson<{ servers: Array<{ slug: string }> }>("webdock-servers.json");
+  assert.equal(afterConflict?.servers.filter((server) => server.slug === "server57").length, 1);
+});
+
+test("adoptWebdockServerInventoryEntry rejects non-live, IP/account mismatch, non-webdock and unhealthy servers", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "webdock-adopt-reject-")),
+    now: () => fixedNow
+  });
+  await workspace.updateInventoryJson("webdock-servers.json", () => ({ servers: [] }));
+  const base = {
+    workspace,
+    serverSlug: "server57",
+    serverIp: "193.180.211.146",
+    serverAccountId: "quinary",
+    actorId: "operator-juanes",
+    reason: "Adoptar server huerfano verificado en la flota viva.",
+    dryRun: false as const,
+    now: () => fixedNow
+  };
+  const live = (overrides: Record<string, unknown>) => [{
+    serverSlug: "server57",
+    ipv4: "193.180.211.146",
+    status: "running",
+    providerId: "webdock",
+    accountId: "quinary",
+    accountHealthStatus: "healthy",
+    ...overrides
+  }];
+
+  const missing = await adoptWebdockServerInventoryEntry({ ...base, liveServers: [] });
+  assert.equal(missing.status, "server_not_live");
+
+  const ipMismatch = await adoptWebdockServerInventoryEntry({ ...base, liveServers: live({ ipv4: "193.180.211.99" }) });
+  assert.equal(ipMismatch.status, "server_ip_mismatch");
+
+  const accountMismatch = await adoptWebdockServerInventoryEntry({ ...base, liveServers: live({ accountId: "ops" }) });
+  assert.equal(accountMismatch.status, "server_account_mismatch");
+
+  const nonWebdock = await adoptWebdockServerInventoryEntry({ ...base, liveServers: live({ providerId: "contabo" }) });
+  assert.equal(nonWebdock.status, "provider_not_webdock");
+
+  const stopped = await adoptWebdockServerInventoryEntry({ ...base, liveServers: live({ status: "stopped" }) });
+  assert.equal(stopped.status, "server_status_not_running");
+
+  const degraded = await adoptWebdockServerInventoryEntry({ ...base, liveServers: live({ accountHealthStatus: "degraded" }) });
+  assert.equal(degraded.status, "account_not_healthy");
+
+  const inventory = await workspace.readInventoryJson<{ servers: unknown[] }>("webdock-servers.json");
+  assert.equal(inventory?.servers.length, 0);
+});
 
 test("POST /v1/webdock/servers/create blocks without ops key, write flag, and approval", async () => {
   const route = await routeHarness({
