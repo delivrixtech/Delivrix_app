@@ -6,6 +6,7 @@ import {
   configureCompleteSmtpSkillParamSchema,
   createSmtpEntryParamSchema,
   enableSmtpAuthParamSchema,
+  ensureServerSshAccessParamSchema,
   retireInfrastructureAccountParamSchema
 } from "./skill-schemas.ts";
 import {
@@ -389,6 +390,45 @@ test("adoptWebdockServerParamSchema is dry-run by default, requires reason and r
     reason: validReason
   });
   assert.equal(invalidSlug.success, false);
+});
+
+test("ensureServerSshAccessParamSchema is dry-run by default, requires reason and account", () => {
+  const validReason = "Instalar la pubkey del operador en el server adoptado.";
+  const parsed = ensureServerSshAccessParamSchema.safeParse({
+    serverSlug: "server57",
+    serverAccountId: "quinary",
+    reason: validReason
+  });
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail("ensure_server_ssh_access sample should parse");
+  assert.deepEqual(parsed.data, {
+    serverSlug: "server57",
+    serverAccountId: "quinary",
+    reason: validReason,
+    dryRun: true
+  });
+
+  const writable = ensureServerSshAccessParamSchema.safeParse({
+    serverSlug: "server57",
+    serverAccountId: "quinary",
+    reason: validReason,
+    dryRun: false
+  });
+  assert.equal(writable.success, true);
+  if (!writable.success) assert.fail("ensure_server_ssh_access writable sample should parse");
+  assert.equal(writable.data.dryRun, false);
+
+  const missingReason = ensureServerSshAccessParamSchema.safeParse({
+    serverSlug: "server57",
+    serverAccountId: "quinary"
+  });
+  assert.equal(missingReason.success, false);
+
+  const missingAccount = ensureServerSshAccessParamSchema.safeParse({
+    serverSlug: "server57",
+    reason: validReason
+  });
+  assert.equal(missingAccount.success, false);
 });
 
 test("configureCompleteSmtpSkillParamSchema normalizes known DNS providers", () => {

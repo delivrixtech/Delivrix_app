@@ -611,6 +611,144 @@ test("dispatcher blocks adopt_webdock_server before liveness reads when kill-swi
   assert.equal(adoptInventory?.servers.length, 0);
 });
 
+function sshSpyAdapter(calls: Array<Record<string, unknown>>): WebdockServerCreateAdapter & {
+  ensureServerSshAccess: (opts: { serverSlug: string; publicKey: string; username?: string }) => Promise<{
+    publicKeyId: number; username: string; shellUserId: number | null; shellUserEventId: string | null; sshSettingsEventId: string | null;
+  }>;
+} {
+  return {
+    isLive: () => true,
+    canWrite: () => true,
+    canCreate: () => true,
+    async createServer() { throw new Error("createServer not expected"); },
+    async getServer() { throw new Error("getServer not expected"); },
+    async ensureServerSshAccess(opts) {
+      calls.push({ ...opts });
+      return { publicKeyId: 4242, username: opts.username ?? "delivrixops", shellUserId: 77, shellUserEventId: "evt-shell", sshSettingsEventId: "evt-ssh" };
+    }
+  };
+}
+
+const OPERATOR_PUBKEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEY delivrix-ops";
+
+async function ensureSshDeps(overrides: {
+  workspace: OpenClawWorkspace;
+  calls: Array<Record<string, unknown>>;
+  auditEvents: Array<Record<string, unknown>>;
+  withAccount?: boolean;
+  withPubkey?: boolean;
+}): Promise<any> {
+  const adapter = sshSpyAdapter(overrides.calls);
+  return {
+    ...fakeDeps(),
+    workspace: overrides.workspace,
+    auditLog: {
+      append: async (event: Record<string, unknown>) => { overrides.auditEvents.push(event); },
+      list: async () => []
+    },
+    readKillSwitch: async () => ({ enabled: false }),
+    webdockAdapter: adapter,
+    webdockCreateAdapters: overrides.withAccount === false ? new Map() : new Map([["quinary", adapter]]),
+    env: overrides.withPubkey === false ? {} : { WEBDOCK_OPERATOR_SSH_PUBLIC_KEY: OPERATOR_PUBKEY }
+  };
+}
+
+async function seedAdoptedServer(prefix: string): Promise<OpenClawWorkspace> {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), prefix)),
+    now: () => new Date("2026-07-02T13:00:00.000Z")
+  });
+  await workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{ slug: "server57", hostname: "", ipv4: "193.180.211.146", status: "running", accountId: "quinary", adopted: true }]
+  }));
+  return workspace;
+}
+
+test("dispatcher ensure_server_ssh_access dry-runs without touching the provider and audits provider side effects", async () => {
+  const workspace = await seedAdoptedServer("dispatcher-ensure-ssh-dry-");
+  const calls: Array<Record<string, unknown>> = [];
+  const auditEvents: Array<Record<string, unknown>> = [];
+
+  const result = await dispatchSkillHandler({
+    skill: "ensure_server_ssh_access",
+    params: { serverSlug: "server57", serverAccountId: "quinary", reason: "Instalar pubkey del operador en el server adoptado.", dryRun: true },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: await ensureSshDeps({ workspace, calls, auditEvents })
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.statusCode, 200);
+  assert.equal((result.summary as { status?: string }).status, "dry_run");
+  assert.deepEqual(calls, [], "el provider NO debe ejecutarse en dry-run");
+  const audit = auditEvents.at(-1);
+  assert.equal(audit?.action, "oc.webdock_servers.ssh_access_ensured");
+  assert.equal(audit?.riskLevel, "critical");
+  const metadata = audit?.metadata as Record<string, unknown>;
+  assert.equal(metadata.sideEffects, "provider-shell-user-and-ssh-settings");
+  assert.equal(metadata.approvalTokenHash, approvalTokenHash(token.tokenId));
+  assert.match(String((metadata.rollbackPlan as Record<string, unknown>).procedure), /Webdock console/);
+});
+
+test("dispatcher ensure_server_ssh_access installs the operator key via the account adapter when signed", async () => {
+  const workspace = await seedAdoptedServer("dispatcher-ensure-ssh-real-");
+  const calls: Array<Record<string, unknown>> = [];
+  const auditEvents: Array<Record<string, unknown>> = [];
+
+  const result = await dispatchSkillHandler({
+    skill: "ensure_server_ssh_access",
+    params: { serverSlug: "server57", serverAccountId: "quinary", reason: "Instalar pubkey del operador en el server adoptado.", dryRun: false },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: await ensureSshDeps({ workspace, calls, auditEvents })
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.statusCode, 200);
+  assert.equal((result.summary as { status?: string }).status, "ssh_access_ensured");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].serverSlug, "server57");
+  assert.equal(calls[0].publicKey, OPERATOR_PUBKEY);
+  assert.equal(calls[0].username, "delivrixops");
+});
+
+test("dispatcher ensure_server_ssh_access fails closed on unknown account, missing pubkey and un-adopted server", async () => {
+  const unknownAccount = await dispatchSkillHandler({
+    skill: "ensure_server_ssh_access",
+    params: { serverSlug: "server57", serverAccountId: "ghost", reason: "Intento sobre cuenta desconocida.", dryRun: false },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: await ensureSshDeps({ workspace: await seedAdoptedServer("dispatcher-ensure-ssh-acct-"), calls: [], auditEvents: [], withAccount: false })
+  });
+  assert.equal(unknownAccount.ok, false);
+  assert.equal(unknownAccount.statusCode, 409);
+  assert.equal((unknownAccount.summary as { error?: string }).error, "unknown_server_account");
+
+  const noPubkey = await dispatchSkillHandler({
+    skill: "ensure_server_ssh_access",
+    params: { serverSlug: "server57", serverAccountId: "quinary", reason: "Intento sin pubkey del operador.", dryRun: false },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: await ensureSshDeps({ workspace: await seedAdoptedServer("dispatcher-ensure-ssh-nokey-"), calls: [], auditEvents: [], withPubkey: false })
+  });
+  assert.equal(noPubkey.ok, false);
+  assert.equal(noPubkey.statusCode, 409);
+  assert.equal((noPubkey.summary as { error?: string }).error, "operator_pubkey_unconfigured");
+
+  const emptyWorkspace = new OpenClawWorkspace({ rootDir: await mkdtemp(join(tmpdir(), "dispatcher-ensure-ssh-empty-")), now: () => new Date("2026-07-02T13:10:00.000Z") });
+  await emptyWorkspace.updateInventoryJson("webdock-servers.json", () => ({ servers: [] }));
+  const notAdopted = await dispatchSkillHandler({
+    skill: "ensure_server_ssh_access",
+    params: { serverSlug: "server57", serverAccountId: "quinary", reason: "Intento sobre server no adoptado.", dryRun: false },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: await ensureSshDeps({ workspace: emptyWorkspace, calls: [], auditEvents: [] })
+  });
+  assert.equal(notAdopted.ok, false);
+  assert.equal(notAdopted.statusCode, 409);
+  assert.equal((notAdopted.summary as { error?: string }).error, "server_not_in_inventory");
+});
+
 test("dispatcher reconciles live SMTP DNS after ApprovalGate dispatch and audits rollback plan", async () => {
   const workspace = new OpenClawWorkspace({
     rootDir: await mkdtemp(join(tmpdir(), "dispatcher-reconcile-dns-")),

@@ -129,6 +129,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["adopt_webdock_server"]
   },
   {
+    canonicalSkill: "ensure_server_ssh_access",
+    aliases: ["ensure_server_ssh_access"],
+    actionIds: ["ensure_server_ssh_access"]
+  },
+  {
     canonicalSkill: "update_smtp_entry",
     aliases: ["update_smtp_entry"],
     actionIds: ["update_smtp_entry"]
