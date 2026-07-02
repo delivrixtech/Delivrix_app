@@ -67,6 +67,48 @@ test("OpenClawBedrockBridge sendMessage queues and streamHistory emits typing, d
   assert.equal(events[2].audit?.tokensUsed, 20);
 });
 
+test("streamHistory surfaces bedrock_call_idle_timeout when the model stream hangs (no infinite spinner)", async () => {
+  const abortError = (): Error => Object.assign(new Error("aborted"), { name: "AbortError" });
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    bedrockCallIdleTimeoutMs: 40,
+    client: {
+      send: async (_command: unknown, options?: { abortSignal?: AbortSignal }) => {
+        const signal = options?.abortSignal;
+        // Stream que nunca entrega chunks y solo termina si el signal aborta (idle-timeout).
+        return {
+          body: {
+            [Symbol.asyncIterator]() {
+              return {
+                next: () => new Promise((_resolve, reject) => {
+                  if (signal?.aborted) { reject(abortError()); return; }
+                  signal?.addEventListener("abort", () => reject(abortError()), { once: true });
+                })
+              };
+            }
+          }
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-hang", message: "hola" });
+  const events: ChatStreamEvent[] = [];
+  await bridge.streamHistory("msg-hang", {
+    onTyping: (event) => events.push(event),
+    onBlocked: (event) => events.push(event)
+  });
+
+  const blocked = events.find((event) => event.type === "ASSISTANT_BLOCKED");
+  assert.ok(blocked, "debe emitir ASSISTANT_BLOCKED en vez de colgarse");
+  assert.equal((blocked as Extract<ChatStreamEvent, { type: "ASSISTANT_BLOCKED" }>).reason, "bedrock_call_idle_timeout");
+});
+
 test("OpenClawBedrockBridge inyecta active_smtp_runs en el contexto para poder continuar runs", async () => {
   let capturedBody = "";
   const bridge = new OpenClawBedrockBridge({
