@@ -703,6 +703,12 @@ export async function configureCompleteSmtp(
     if (initialReuseServerSlug && isNonWebdockProviderId(initialVpsProviderId)) {
       throw new OrchestratorFailure("failed", 0, "reuse_server_guard", `reuse_server_unsupported_for_provider:${initialVpsProviderId}`);
     }
+    if (initialReuseServerSlug) {
+      // Guard temprano: el slug a reusar debe existir en webdock-servers.json ANTES de cualquier
+      // paso con costo (la compra de dominio del step 2). Un slug inexistente no debe dejar un run
+      // failed con un dominio ya comprado. El step 4 re-valida incluyendo el hostname.
+      await readReusableWebdockServer(deps, initialReuseServerSlug, undefined, { step: 0, skill: "reuse_server_guard" });
+    }
     if (requestedServerAccountId) {
       if (isNonWebdockProviderId(initialVpsProviderId)) {
         throw new OrchestratorFailure(
@@ -2176,26 +2182,28 @@ function smtpRunStateHasProviderLockedProgress(state: SmtpRunState): boolean {
 async function readReusableWebdockServer(
   deps: ConfigureCompleteSmtpDeps,
   reuseServerSlug: string,
-  expectedHostname: string
+  // undefined => guard temprano pre-run: valida existencia/status/ipv4 sin conocer aun el smtpHost.
+  expectedHostname: string | undefined,
+  failure: { step: number; skill: string } = { step: 4, skill: "create_webdock_server" }
 ): Promise<{ slug: string; ipv4: string; serverAccountId?: string }> {
   const inventory = await requireRunStateWorkspace(deps)
     .readInventoryJson<WebdockInventoryForResume>("webdock-servers.json")
     .catch(() => null);
   const server = inventory?.servers?.find((entry) => entry.slug.trim().toLowerCase() === reuseServerSlug);
   if (!server) {
-    throw new OrchestratorFailure("failed", 4, "create_webdock_server", `reuse_server_not_found:${reuseServerSlug}`);
+    throw new OrchestratorFailure("failed", failure.step, failure.skill, `reuse_server_not_found:${reuseServerSlug}`);
   }
   const status = typeof server.status === "string" ? server.status.trim().toLowerCase() : "running";
   if (status && !["running", "active", "online"].includes(status)) {
-    throw new OrchestratorFailure("failed", 4, "create_webdock_server", `reuse_server_not_running:${reuseServerSlug}`);
+    throw new OrchestratorFailure("failed", failure.step, failure.skill, `reuse_server_not_running:${reuseServerSlug}`);
   }
   const ipv4 = typeof server.ipv4 === "string" && server.ipv4.trim() ? server.ipv4.trim() : "";
   if (!ipv4) {
-    throw new OrchestratorFailure("failed", 4, "create_webdock_server", `reuse_server_ipv4_missing:${reuseServerSlug}`);
+    throw new OrchestratorFailure("failed", failure.step, failure.skill, `reuse_server_ipv4_missing:${reuseServerSlug}`);
   }
   const hostname = typeof server.hostname === "string" ? normalizeHostnameForReuse(server.hostname) : "";
-  if (hostname && hostname !== normalizeHostnameForReuse(expectedHostname)) {
-    throw new OrchestratorFailure("failed", 4, "create_webdock_server", "reuse_server_hostname_mismatch");
+  if (expectedHostname !== undefined && hostname && hostname !== normalizeHostnameForReuse(expectedHostname)) {
+    throw new OrchestratorFailure("failed", failure.step, failure.skill, "reuse_server_hostname_mismatch");
   }
   const serverAccountId = normalizeServerAccountId(server.accountId ?? server.serverAccountId);
   return {

@@ -26,6 +26,10 @@ import {
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import { getProviderFromServerIdentity } from "../server-provider.ts";
+import type {
+  SmtpInventoryLiveServer,
+  SmtpInventoryMutationResult
+} from "../smtp-inventory-management.ts";
 
 interface AuditSink {
   append(event: AuditEventInput): Promise<unknown>;
@@ -1133,6 +1137,195 @@ async function updateWebdockInventory(
     servers.push(input);
     return { ...(current ?? {}), servers };
   });
+}
+
+export async function adoptWebdockServerInventoryEntry(input: {
+  workspace: OpenClawWorkspace;
+  serverSlug: string;
+  serverIp: string;
+  serverAccountId: string;
+  liveServers: SmtpInventoryLiveServer[];
+  actorId: string;
+  reason: string;
+  dryRun?: boolean;
+  now?: () => Date;
+}): Promise<SmtpInventoryMutationResult> {
+  const serverSlug = input.serverSlug.trim().toLowerCase();
+  const requestedAccountId = input.serverAccountId.trim().toLowerCase();
+  const dryRun = input.dryRun !== false;
+  const liveServer = input.liveServers.find((server) => server.serverSlug.trim().toLowerCase() === serverSlug);
+  if (!liveServer) {
+    return {
+      ok: false,
+      status: "server_not_live",
+      dryRun,
+      changed: false,
+      serverSlug,
+      error: "server_not_live"
+    };
+  }
+  const basePlan = {
+    action: "adopt_webdock_server",
+    serverSlug,
+    serverIp: input.serverIp,
+    serverAccountId: requestedAccountId,
+    liveStatus: liveServer.status,
+    providerId: liveServer.providerId,
+    accountId: liveServer.accountId,
+    accountHealthStatus: liveServer.accountHealthStatus,
+    sideEffects: "local-state-only"
+  };
+  const providerId = liveServer.providerId?.trim().toLowerCase();
+  if (providerId && providerId !== "webdock") {
+    // webdock-servers.json alimenta reuse/SSH/send solo para servers Webdock; adoptar
+    // un server de otro proveedor corrompería esos flujos.
+    return {
+      ok: false,
+      status: "provider_not_webdock",
+      dryRun,
+      changed: false,
+      serverSlug,
+      error: "provider_not_webdock",
+      plan: basePlan
+    };
+  }
+  if (liveServer.ipv4 !== input.serverIp) {
+    return {
+      ok: false,
+      status: "server_ip_mismatch",
+      dryRun,
+      changed: false,
+      serverSlug,
+      error: "server_ip_mismatch",
+      plan: { ...basePlan, requestedServerIp: input.serverIp, liveServerIp: liveServer.ipv4 }
+    };
+  }
+  const liveAccountId = liveServer.accountId?.trim().toLowerCase();
+  if (!liveAccountId || liveAccountId !== requestedAccountId) {
+    return {
+      ok: false,
+      status: "server_account_mismatch",
+      dryRun,
+      changed: false,
+      serverSlug,
+      error: "server_account_mismatch",
+      plan: { ...basePlan, requestedAccountId, liveAccountId: liveAccountId ?? null }
+    };
+  }
+  const liveStatus = liveServer.status?.trim().toLowerCase();
+  const lifecycleStatus = liveServer.lifecycleStatus?.trim().toLowerCase();
+  if (liveStatus !== "running" || lifecycleStatus === "retired" || lifecycleStatus === "disabled") {
+    return {
+      ok: false,
+      status: "server_status_not_running",
+      dryRun,
+      changed: false,
+      serverSlug,
+      error: "server_status_not_running",
+      plan: { ...basePlan, lifecycleStatus: liveServer.lifecycleStatus }
+    };
+  }
+  const health = liveServer.accountHealthStatus?.trim().toLowerCase();
+  if (health !== undefined && health !== "healthy") {
+    return {
+      ok: false,
+      status: "account_not_healthy",
+      dryRun,
+      changed: false,
+      serverSlug,
+      error: "account_not_healthy",
+      plan: basePlan
+    };
+  }
+
+  const inventory = await input.workspace.readInventoryJson<WebdockServerInventory>("webdock-servers.json").catch(() => null);
+  const existing = inventory?.servers?.find((server) => server.slug.trim().toLowerCase() === serverSlug);
+  if (existing) {
+    // Adopción create-only: nunca sobrescribe una entrada existente (creada o ya adoptada).
+    return {
+      ok: false,
+      status: "server_already_adopted",
+      dryRun,
+      changed: false,
+      serverSlug,
+      error: "server_already_adopted",
+      plan: {
+        ...basePlan,
+        previousValues: {
+          status: existing.status,
+          ipv4: existing.ipv4,
+          hostname: existing.hostname
+        },
+        conflictHint: "entry_exists_use_configure_complete_smtp_reuse_or_manual_review"
+      }
+    };
+  }
+
+  const timestamp = (input.now?.() ?? new Date()).toISOString();
+  const plan = {
+    ...basePlan,
+    inventoryMutationKind: "created_new",
+    rollbackHint: "rollback_remove_adopted_entry_from_webdock_servers_json",
+    adoptedAt: timestamp
+  };
+  if (dryRun) {
+    return {
+      ok: true,
+      status: "dry_run",
+      dryRun: true,
+      changed: false,
+      serverSlug,
+      reason: input.reason,
+      plan
+    };
+  }
+
+  // Entrada adoptada: solo los campos verificados contra la flota viva. hostname queda vacío
+  // a propósito (el guard de reuse del orquestador solo compara hostnames no vacíos) y los
+  // campos de aprovisionamiento (profile/imageSlug/eventId...) no existen porque este server
+  // no nació por create_webdock_server. Los consumidores (entity-guard, send, reuse) solo
+  // exigen slug+ipv4+status.
+  const adoptedEntry = {
+    slug: serverSlug,
+    hostname: "",
+    status: liveServer.status ?? "running",
+    ipv4: input.serverIp,
+    accountId: requestedAccountId,
+    adopted: true,
+    adoptedBy: input.actorId,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  } as unknown as NonNullable<WebdockServerInventory["servers"]>[number];
+  let raced = false;
+  await input.workspace.updateInventoryJson<WebdockServerInventory>("webdock-servers.json", (current) => {
+    const servers = [...(current?.servers ?? [])];
+    if (servers.some((server) => server.slug.trim().toLowerCase() === serverSlug)) {
+      raced = true;
+      return current ?? { servers };
+    }
+    servers.push(adoptedEntry);
+    return { ...(current ?? {}), servers };
+  });
+  if (raced) {
+    return {
+      ok: false,
+      status: "server_already_adopted",
+      dryRun: false,
+      changed: false,
+      serverSlug,
+      error: "server_already_adopted",
+      plan
+    };
+  }
+  return {
+    ok: true,
+    status: "adopted",
+    dryRun: false,
+    changed: true,
+    serverSlug,
+    reason: input.reason,
+    plan
+  };
 }
 
 async function upsertWebdockRunBinding(

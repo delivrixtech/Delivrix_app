@@ -703,6 +703,37 @@ test("configureCompleteSmtp rejects reuseServerSlug when inventory hostname conf
   assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.webdock_server_reused"), false);
 });
 
+test("configureCompleteSmtp fails an unknown reuseServerSlug BEFORE any paid step (no domain purchase)", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ reuseServerSlug: "nationalcorp" })
+  });
+  await ctx.workspace.updateInventoryJson("webdock-servers.json", () => ({ servers: [] }));
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    reuseServerSlug: "nationalcorp"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.equal(result.error, "reuse_server_not_found:nationalcorp");
+  assert.equal(result.totalCostUsd, 0);
+  assert.equal(
+    ctx.approvals.some((entry) => entry.step === 2 || entry.skill === "register_domain_route53"),
+    false,
+    "el guard debe cortar antes de la compra de dominio (step 2)"
+  );
+  assert.equal(
+    ctx.planExecutions.some((entry) => entry.step === 2 || entry.skill === "register_domain_route53"),
+    false
+  );
+  assert.equal(ctx.planExecutions.length, 0, "ningun paso mutante debe ejecutarse");
+});
+
 test("route53 DNS step writes canonical smtp A and MX records", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);

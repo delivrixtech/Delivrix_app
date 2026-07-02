@@ -24,6 +24,7 @@ import {
   type IonosDnsUpsertAdapter
 } from "./routes/dns-ionos-upsert.ts";
 import {
+  adoptWebdockServerInventoryEntry,
   handleWebdockServerCreateHttp,
   type WebdockServerCreateAdapter,
   type WebdockServerDeleteAdapter
@@ -66,6 +67,7 @@ import {
   sendRealEmailSkillParamSchema
 } from "./routes/send-email.ts";
 import {
+  adoptWebdockServerParamSchema,
   bindDomainParamSchema,
   configureCompleteSmtpSkillParamSchema,
   createSmtpEntryParamSchema,
@@ -514,12 +516,17 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     paramSchema: webdockCreateParamSchema,
     timeoutMs: 120_000,
     canRollback: false,
-    invoke: ({ request, response, deps, accountId, providerId }) =>
-      handleWebdockServerCreateHttp({
+    invoke: async ({ request, response, deps, accountId, providerId }) => {
+      const adapter = resolveWebdockCreateAdapter(deps, accountId, providerId);
+      if (!adapter) {
+        writeJson(response, 409, { ok: false, error: "unknown_server_account", serverAccountId: accountId });
+        return;
+      }
+      return handleWebdockServerCreateHttp({
         request,
         response,
         auditLog: deps.auditLog,
-        adapter: resolveWebdockCreateAdapter(deps, accountId, providerId),
+        adapter,
         workspace: deps.workspace,
         canvasLiveEvents: deps.canvasLiveEvents,
         readCanvasState: deps.readCanvasState,
@@ -527,7 +534,8 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         providerId,
         serverAccountId: accountId,
         now: deps.now
-      })
+      });
+    }
   };
   const bindWebdockMainDomain: SkillHandlerEntry = {
     paramSchema: bindWebdockMainDomainSkillParamSchema,
@@ -536,8 +544,13 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     // providerId/accountId (canales HERMANOS) viajan por invoke: providerId enruta binds no-Webdock;
     // accountId enruta binds Webdock no-default al adapter de esa cuenta. undefined/"webdock" + ops
     // preservan el bind Webdock single-account byte-identico.
-    invoke: ({ request, response, deps, accountId, providerId }) =>
-      handleBindWebdockMainDomain({
+    invoke: async ({ request, response, deps, accountId, providerId }) => {
+      const adapter = resolveWebdockCreateAdapter(deps, accountId, providerId);
+      if (!adapter) {
+        writeJson(response, 409, { ok: false, error: "unknown_server_account", serverAccountId: accountId });
+        return;
+      }
+      return handleBindWebdockMainDomain({
         request,
         response,
         providerId,
@@ -548,14 +561,15 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
             readCanvasState: deps.readCanvasState,
             now: deps.now
           }),
-          webdockAdapter: resolveWebdockCreateAdapter(deps, accountId, providerId) as BindWebdockMainDomainAdapter,
+          webdockAdapter: adapter as BindWebdockMainDomainAdapter,
           vpsProviderAdapters: deps.vpsProviderAdapters,
           sshRunner: deps.smtpSshRunner,
           workspace: deps.workspace,
           now: () => (deps.now?.() ?? new Date()).getTime(),
           ...contaboBindFcrdnsDeps(providerId, deps.env)
         }
-      })
+      });
+    }
   };
   const smtpProvision: SkillHandlerEntry = {
     paramSchema: smtpProvisionParamSchema,
@@ -915,6 +929,35 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
       writeJson(response, result.ok ? 200 : 409, result);
     }
   };
+  const adoptWebdockServer: SkillHandlerEntry = {
+    paramSchema: adoptWebdockServerParamSchema,
+    timeoutMs: 30_000,
+    canRollback: false,
+    invoke: async ({ request, response, params, deps }) => {
+      const body = await readInternalJson(request);
+      const auditContext = parseAuditContextFromBody(body);
+      // ProposalSign/HMAC is the approval boundary; the handler keeps only a nonsecret hash for audit.
+      const liveServers = await readRequiredSmtpLiveServers(response, deps);
+      if (!liveServers) return;
+      const result = await adoptWebdockServerInventoryEntry({
+        workspace: deps.workspace,
+        serverSlug: String(params.serverSlug),
+        serverIp: String(params.serverIp),
+        serverAccountId: String(params.serverAccountId),
+        liveServers,
+        actorId: auditContext.actorId,
+        reason: String(params.reason),
+        dryRun: params.dryRun === true,
+        now: deps.now
+      });
+      await appendSmtpInventoryMutationAudit(deps, auditContext.actorId, "oc.webdock_servers.server_adopted", result, {
+        riskLevel: "critical",
+        targetType: "webdock_server",
+        ...(auditContext.approvalTokenHash ? { approvalTokenHash: auditContext.approvalTokenHash } : {})
+      });
+      writeJson(response, result.ok ? 200 : 409, result);
+    }
+  };
   const updateSmtpEntry: SkillHandlerEntry = {
     paramSchema: updateSmtpEntryParamSchema,
     timeoutMs: 30_000,
@@ -982,6 +1025,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     retire_smtp_entry: retireSmtpEntry,
     reassign_domain_server: reassignDomainServer,
     create_smtp_entry: createSmtpEntry,
+    adopt_webdock_server: adoptWebdockServer,
     update_smtp_entry: updateSmtpEntry
   };
 }
@@ -1041,13 +1085,14 @@ async function appendSmtpInventoryMutationAudit(
   options: {
     riskLevel?: "high" | "critical";
     approvalTokenHash?: string;
+    targetType?: string;
   } = {}
 ): Promise<void> {
   await deps.auditLog.append({
     actorType: "operator",
     actorId,
     action,
-    targetType: result.domain ? "domain" : "smtp_inventory",
+    targetType: options.targetType ?? (result.domain ? "domain" : "smtp_inventory"),
     targetId: result.domain ?? result.serverSlug ?? "smtp-provisioning",
     riskLevel: options.riskLevel ?? "high",
     decision: result.ok ? "allow" : "reject",
@@ -1074,12 +1119,15 @@ function smtpInventoryRollbackPlan(result: { domain?: string; serverSlug?: strin
   const createRollbackProcedure = result.plan?.inventoryMutationKind === "no_change_existing"
     ? "No inventory rollback is needed: create_smtp_entry made no change (changed=false). No automatic inventory backup is created by this mutation."
     : "Inspect SMTP inventory; if this create was wrong, retire the new entry with retire_smtp_entry and restore the previously configured server from previousStatuses with update_smtp_entry if one was superseded. No automatic inventory backup is created by this mutation.";
+  const adoptRollbackProcedure = "Remove the adopted entry from webdock-servers.json (manual local edit; there is no dedicated retire tool for adopted servers yet). The adoption performed no remote side effects, so nothing else needs to be reverted.";
   return {
     mode: "manual_local_state",
     canRollbackAutomatically: false,
     procedure: result.plan?.action === "create_smtp_entry"
       ? createRollbackProcedure
-      : "Inspect SMTP inventory and apply the inverse local status/field change with update_smtp_entry. No automatic inventory backup is created by this mutation.",
+      : result.plan?.action === "adopt_webdock_server"
+        ? adoptRollbackProcedure
+        : "Inspect SMTP inventory and apply the inverse local status/field change with update_smtp_entry. No automatic inventory backup is created by this mutation.",
     futureSkill: "inspect_smtp_inventory",
     domain: result.domain,
     serverSlug: result.serverSlug,
@@ -1114,14 +1162,15 @@ function requiredPorkbunDomainAdapter(deps: SkillDispatcherDeps): DomainAvailabi
  * EXISTENTE, SIN CAMBIOS:
  * - Invariante single-provider/single-account byte-identico: providerId undefined/"webdock" +
  *   accountId undefined/"ops" => el webdockAdapter de hoy (cuenta-1 "ops"), tal cual.
- * - Solo un accountId distinto presente en el registry write-capable enruta a otra cuenta; cualquier
- *   accountId desconocido cae tambien a la cuenta-1 (defensivo).
+ * - Solo un accountId distinto presente en el registry write-capable enruta a otra cuenta; un
+ *   accountId desconocido devuelve null (fail-closed) para que el handler responda 409 en vez de
+ *   caer silenciosamente a la cuenta-1 (cuyo token puede estar muerto).
  */
 function resolveWebdockCreateAdapter(
   deps: SkillDispatcherDeps,
   accountId: string | undefined,
   providerId?: string
-): WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter> & Partial<BindWebdockMainDomainAdapter> {
+): (WebdockServerCreateAdapter & Partial<WebdockServerDeleteAdapter> & Partial<BindWebdockMainDomainAdapter>) | null {
   // Normalizar a lowercase: la KEY del registry es lowercase ("contabo"); un providerId capitalizado
   // ("Contabo") debe seguir enrutando. Coincide con normalizeVpsProviderId del orquestador.
   const provider = providerId?.trim().toLowerCase();
@@ -1129,11 +1178,11 @@ function resolveWebdockCreateAdapter(
     // VpsProvider es asignable estructuralmente a WebdockServerCreateAdapter & Partial<...Delete>.
     return deps.vpsProviderAdapters.get(provider)!;
   }
-  const normalized = accountId?.trim();
+  const normalized = accountId?.trim().toLowerCase();
   if (!normalized || normalized === "ops" || !deps.webdockCreateAdapters) {
     return deps.webdockAdapter;
   }
-  return deps.webdockCreateAdapters.get(normalized) ?? deps.webdockAdapter;
+  return deps.webdockCreateAdapters.get(normalized) ?? null;
 }
 
 function unknownExternalVpsProviderId(providerId: string | undefined, adapters?: Map<string, VpsProvider>): string | null {
