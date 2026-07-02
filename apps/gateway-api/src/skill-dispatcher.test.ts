@@ -1133,6 +1133,37 @@ test("routing: bind_webdock_main_domain sin accountId usa webdockAdapter ops, by
   assert.deepEqual(secondaryCalls, [], "bind default no toca la cuenta secundaria");
 });
 
+test("routing: bind_webdock_main_domain resuelve la cuenta desde la flota viva cuando no viene accountId", async () => {
+  // Huérfano adoptado en una cuenta no-default (p.ej. quinary): el bind no lleva serverAccountId,
+  // así que debe resolver la cuenta desde la flota viva por serverSlug y NO caer al adapter ops.
+  const opsCalls: string[] = [];
+  const secondaryCalls: string[] = [];
+  const opsAdapter = makeSpyBindAdapter("ops", opsCalls);
+  const secondaryAdapter = makeSpyBindAdapter("secondary", secondaryCalls);
+  const deps: SkillDispatcherDeps = {
+    ...webdockBindDispatchDeps({
+      webdockAdapter: opsAdapter,
+      webdockCreateAdapters: new Map([["ops", opsAdapter], ["secondary", secondaryAdapter]])
+    }),
+    readSmtpInventoryLiveServers: async () => [
+      { serverSlug: "server140", ipv4: "203.0.113.140", status: "running", accountId: "secondary", accountHealthStatus: "healthy" }
+    ]
+  };
+
+  const result = await dispatchSkillHandler({
+    skill: "bind_webdock_main_domain",
+    params: { serverSlug: "server140", domain: "bizreport-control.com" },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    // sin accountId a propósito: se resuelve desde la flota viva
+    deps
+  });
+
+  assert.equal(result.statusCode, 424);
+  assert.deepEqual(secondaryCalls, ["getServer:server140"], "resolvió la cuenta secondary desde la flota viva");
+  assert.deepEqual(opsCalls, [], "NO cayó al adapter default ops");
+});
+
 test("PROVIDER#b routing: create_webdock_server con providerId='contabo' usa el adapter del proveedor (no Webdock)", async () => {
   // El handler real de create bloquea sin approval/flag, pero ANTES consulta canCreate() del adapter
   // RESUELTO. Espiamos canCreate de cada adapter para probar que el providerId enruta a Contabo.
