@@ -954,7 +954,7 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
 
   assert.equal(payloads.length, 2);
   const toolNames = (payloads[0].tools as Array<{ name: string }>).map((tool) => tool.name);
-  assert.equal(toolNames.length, 35);
+  assert.equal(toolNames.length, 36);
   assert.equal(toolNames.includes("read_episodic_scratch"), true);
   assert.equal(toolNames.includes("compact_intent"), true);
   assert.equal(toolNames.includes("enable_smtp_auth"), true);
@@ -975,6 +975,7 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   assert.equal(toolNames.includes("reassign_domain_server"), true);
   assert.equal(toolNames.includes("create_smtp_entry"), true);
   assert.equal(toolNames.includes("adopt_webdock_server"), true);
+  assert.equal(toolNames.includes("ensure_server_ssh_access"), true);
   assert.equal(toolNames.includes("update_smtp_entry"), true);
   assert.equal(toolNames.includes("read_webdock_servers"), true);
   assert.equal(toolNames.includes("list_conversations"), true);
@@ -1832,6 +1833,7 @@ function enabledToolEnv(): Record<string, string | undefined> {
     MXTOOLBOX_API_KEY: "mxtoolbox-key",
     WEBDOCK_SERVERS_ENABLE_CREATE: "true",
     WEBDOCK_API_KEY_OPS: "webdock-ops",
+    WEBDOCK_OPERATOR_SSH_PUBLIC_KEY: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEY delivrix-ops",
     SMTP_PROVISIONING_ENABLE_SSH: "true",
     SMTP_PROVISION_SSH_KEY_PATH: "/tmp/delivrix-smoke-key",
     EMAIL_AUTH_ENABLE_WRITES: "true",

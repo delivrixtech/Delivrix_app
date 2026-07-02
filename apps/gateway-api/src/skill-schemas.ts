@@ -163,6 +163,13 @@ export interface AdoptWebdockServerParams extends Record<string, unknown> {
   dryRun?: boolean;
 }
 
+export interface EnsureServerSshAccessParams extends Record<string, unknown> {
+  serverSlug: string;
+  serverAccountId: string;
+  reason: string;
+  dryRun?: boolean;
+}
+
 export interface UpdateSmtpEntryParams extends Record<string, unknown> {
   domain: string;
   serverSlug: string;
@@ -602,6 +609,16 @@ export const adoptWebdockServerParamSchema = schema<AdoptWebdockServerParams>((v
   return {
     serverSlug: slug(input.serverSlug, "serverSlug"),
     serverIp: ipv4(input.serverIp, "serverIp"),
+    serverAccountId: slug(input.serverAccountId, "serverAccountId"),
+    reason: boundedText(input.reason, "reason", 10, 500),
+    dryRun: input.dryRun === undefined || input.dryRun === null ? true : boolean(input.dryRun, "dryRun")
+  };
+});
+
+export const ensureServerSshAccessParamSchema = schema<EnsureServerSshAccessParams>((value) => {
+  const input = object(value);
+  return {
+    serverSlug: slug(input.serverSlug, "serverSlug"),
     serverAccountId: slug(input.serverAccountId, "serverAccountId"),
     reason: boundedText(input.reason, "reason", 10, 500),
     dryRun: input.dryRun === undefined || input.dryRun === null ? true : boolean(input.dryRun, "dryRun")
