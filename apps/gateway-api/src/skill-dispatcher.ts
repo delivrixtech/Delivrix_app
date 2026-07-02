@@ -892,7 +892,8 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     canRollback: false,
     invoke: async ({ request, response, params, deps }) => {
       const body = await readInternalJson(request);
-      const actorId = actorIdFromBody(body);
+      const auditContext = parseAuditContextFromBody(body);
+      // ProposalSign/HMAC is the approval boundary; the handler keeps only a nonsecret hash for audit.
       const liveServers = await readRequiredSmtpLiveServers(response, deps);
       if (!liveServers) return;
       const result = await createConfiguredSmtpInventoryEntry({
@@ -902,14 +903,14 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         serverIp: String(params.serverIp),
         selector: String(params.selector),
         liveServers,
-        actorId,
+        actorId: auditContext.actorId,
         ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
         dryRun: params.dryRun === true,
         now: deps.now
       });
-      await appendSmtpInventoryMutationAudit(deps, actorId, "oc.smtp_inventory.entry_created", result, {
+      await appendSmtpInventoryMutationAudit(deps, auditContext.actorId, "oc.smtp_inventory.entry_created", result, {
         riskLevel: "critical",
-        ...approvalTokenHashMetadata(body)
+        ...(auditContext.approvalTokenHash ? { approvalTokenHash: auditContext.approvalTokenHash } : {})
       });
       writeJson(response, result.ok ? 200 : 409, result);
     }
@@ -1006,19 +1007,19 @@ async function readInternalJson(request: AsyncIterable<unknown>): Promise<Record
 
 async function readActorId(request: AsyncIterable<unknown>): Promise<string> {
   const body = await readInternalJson(request);
-  return actorIdFromBody(body);
+  return parseAuditContextFromBody(body).actorId;
 }
 
-function actorIdFromBody(body: Record<string, unknown>): string {
-  return typeof body.actorId === "string" && body.actorId.trim()
+function parseAuditContextFromBody(body: Record<string, unknown>): { actorId: string; approvalTokenHash?: string } {
+  const actorId = typeof body.actorId === "string" && body.actorId.trim()
     ? body.actorId.trim()
     : "openclaw";
-}
-
-function approvalTokenHashMetadata(body: Record<string, unknown>): Record<string, string> {
-  return typeof body.approvalToken === "string" && body.approvalToken.trim()
-    ? { approvalTokenHash: approvalTokenHash(body.approvalToken.trim()) }
-    : {};
+  return {
+    actorId,
+    ...(typeof body.approvalToken === "string" && body.approvalToken.trim()
+      ? { approvalTokenHash: approvalTokenHash(body.approvalToken.trim()) }
+      : {})
+  };
 }
 
 async function readRequiredSmtpLiveServers(
@@ -1070,15 +1071,21 @@ async function appendSmtpInventoryMutationAudit(
 }
 
 function smtpInventoryRollbackPlan(result: { domain?: string; serverSlug?: string; plan?: Record<string, unknown> }): Record<string, unknown> {
+  const createRollbackProcedure = result.plan?.inventoryMutationKind === "updated_existing" ||
+    result.plan?.inventoryMutationKind === "no_change_existing"
+    ? "Inspect SMTP inventory; rollback this create_smtp_entry by restoring previousValues on the same domain/serverSlug with update_smtp_entry. If changed=false, no inventory rollback is needed. No automatic inventory backup is created by this mutation."
+    : "Inspect SMTP inventory; if this create was wrong, retire/archive the new entry with update_smtp_entry and restore the previous configured server from previousStatuses/previousValues if one was superseded. No automatic inventory backup is created by this mutation.";
   return {
     mode: "manual_local_state",
     canRollbackAutomatically: false,
     procedure: result.plan?.action === "create_smtp_entry"
-      ? "Inspect SMTP inventory; if this create was wrong, retire/archive the new entry with update_smtp_entry and restore the previous configured server from previousStatuses/previousValues if one was superseded. No automatic inventory backup is created by this mutation."
+      ? createRollbackProcedure
       : "Inspect SMTP inventory and apply the inverse local status/field change with update_smtp_entry. No automatic inventory backup is created by this mutation.",
     futureSkill: "inspect_smtp_inventory",
     domain: result.domain,
     serverSlug: result.serverSlug,
+    inventoryMutationKind: result.plan?.inventoryMutationKind,
+    rollbackHint: result.plan?.rollbackHint,
     previousStatus: result.plan?.previousStatus,
     previousStatuses: result.plan?.previousStatuses,
     previousValues: result.plan?.previousValues,
