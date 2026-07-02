@@ -145,6 +145,16 @@ export interface ReassignDomainServerParams extends Record<string, unknown> {
   dryRun?: boolean;
 }
 
+export interface CreateSmtpEntryParams extends Record<string, unknown> {
+  domain: string;
+  serverSlug: string;
+  serverIp: string;
+  selector: string;
+  status: "configured";
+  reason?: string;
+  dryRun?: boolean;
+}
+
 export interface UpdateSmtpEntryParams extends Record<string, unknown> {
   domain: string;
   serverSlug: string;
@@ -563,6 +573,19 @@ export const reassignDomainServerParamSchema = schema<ReassignDomainServerParams
     toServerSlug: slug(input.toServerSlug, "toServerSlug"),
     reason: boundedText(input.reason, "reason", 10, 500),
     ...(input.dryRun === undefined || input.dryRun === null ? {} : { dryRun: boolean(input.dryRun, "dryRun") })
+  };
+});
+
+export const createSmtpEntryParamSchema = schema<CreateSmtpEntryParams>((value) => {
+  const input = object(value);
+  return {
+    domain: domain(input.domain, "domain"),
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    serverIp: ipv4(input.serverIp, "serverIp"),
+    selector: selector(input.selector, "selector"),
+    status: oneOf(input.status ?? "configured", "status", ["configured"] as const),
+    ...(input.reason === undefined || input.reason === null || input.reason === "" ? {} : { reason: boundedText(input.reason, "reason", 10, 500) }),
+    dryRun: input.dryRun === undefined || input.dryRun === null ? true : boolean(input.dryRun, "dryRun")
   };
 });
 

@@ -20,6 +20,14 @@ test("does not mark new OpenClaw read-only tool names as hallucinations", () => 
   assertNotMarkedAsHallucination("read_conversation");
 });
 
+test("does not mark SMTP inventory mutator tool names as hallucinations", () => {
+  assertNotMarkedAsHallucination("resolve_ambiguous_domain");
+  assertNotMarkedAsHallucination("retire_smtp_entry");
+  assertNotMarkedAsHallucination("reassign_domain_server");
+  assertNotMarkedAsHallucination("create_smtp_entry");
+  assertNotMarkedAsHallucination("update_smtp_entry");
+});
+
 test("still marks unknown permission-shaped tokens as hallucinations", () => {
   assert.deepEqual(
     detectC2HallucinationsByPattern("operator_magic_permission"),

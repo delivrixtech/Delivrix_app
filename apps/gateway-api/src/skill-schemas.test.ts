@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   compactIntentParamSchema,
   configureCompleteSmtpSkillParamSchema,
+  createSmtpEntryParamSchema,
   enableSmtpAuthParamSchema,
   retireInfrastructureAccountParamSchema
 } from "./skill-schemas.ts";
@@ -235,6 +236,56 @@ test("configureCompleteSmtpSkillParamSchema rejects unknown DNS providers fail-c
   assert.equal(parsed.success, false);
   if (parsed.success) assert.fail("unknown DNS provider should be rejected");
   assert.match(parsed.error.issues.join("\n"), /dnsProviderId/);
+});
+
+test("createSmtpEntryParamSchema is dry-run by default and rejects invalid states", () => {
+  const parsed = createSmtpEntryParamSchema.safeParse({
+    domain: "Example.COM",
+    serverSlug: "Server-88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a"
+  });
+
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail(parsed.error.issues.join("\n"));
+  assert.deepEqual(parsed.data, {
+    domain: "example.com",
+    serverSlug: "Server-88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    status: "configured",
+    dryRun: true
+  });
+
+  const writable = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    status: "configured",
+    dryRun: false,
+    reason: "Entrada verificada contra inventario vivo."
+  });
+  assert.equal(writable.success, true);
+  if (!writable.success) assert.fail(writable.error.issues.join("\n"));
+  assert.equal(writable.data.dryRun, false);
+
+  const wrongStatus = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    status: "retired"
+  });
+  assert.equal(wrongStatus.success, false);
+
+  const invalidIp = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com",
+    serverSlug: "server88",
+    serverIp: "999.0.2.88",
+    selector: "s2026a"
+  });
+  assert.equal(invalidIp.success, false);
 });
 
 test("configureCompleteSmtpSkillParamSchema normalizes known DNS providers", () => {

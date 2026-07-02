@@ -119,6 +119,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["reassign_domain_server"]
   },
   {
+    canonicalSkill: "create_smtp_entry",
+    aliases: ["create_smtp_entry"],
+    actionIds: ["create_smtp_entry"]
+  },
+  {
     canonicalSkill: "update_smtp_entry",
     aliases: ["update_smtp_entry"],
     actionIds: ["update_smtp_entry"]
