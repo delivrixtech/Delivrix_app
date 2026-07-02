@@ -71,6 +71,7 @@ import {
   bindDomainParamSchema,
   configureCompleteSmtpSkillParamSchema,
   createSmtpEntryParamSchema,
+  ensureServerSshAccessParamSchema,
   emailAuthParamSchema,
   enableSmtpAuthParamSchema,
   inspectSmtpInventoryParamSchema,
@@ -958,6 +959,102 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
       writeJson(response, result.ok ? 200 : 409, result);
     }
   };
+  const ensureServerSshAccess: SkillHandlerEntry = {
+    paramSchema: ensureServerSshAccessParamSchema,
+    timeoutMs: 120_000,
+    canRollback: false,
+    invoke: async ({ request, response, params, deps, providerId }) => {
+      const body = await readInternalJson(request);
+      const auditContext = parseAuditContextFromBody(body);
+      const serverSlug = String(params.serverSlug).trim().toLowerCase();
+      const serverAccountId = String(params.serverAccountId).trim().toLowerCase();
+      const reason = String(params.reason);
+      const dryRun = params.dryRun !== false;
+      const emit = (statusCode: number, result: {
+        ok: boolean; status: string; error?: string; plan?: Record<string, unknown>;
+      }) => {
+        void appendSmtpInventoryMutationAudit(
+          deps,
+          auditContext.actorId,
+          "oc.webdock_servers.ssh_access_ensured",
+          { ...result, dryRun, changed: result.ok && !dryRun, serverSlug, reason },
+          {
+            riskLevel: "critical",
+            targetType: "webdock_server",
+            ...(auditContext.approvalTokenHash ? { approvalTokenHash: auditContext.approvalTokenHash } : {})
+          }
+        );
+        writeJson(response, statusCode, { ...result, dryRun, serverSlug, serverAccountId, reason });
+      };
+      const publicKey = deps.env?.WEBDOCK_OPERATOR_SSH_PUBLIC_KEY?.trim();
+      if (!publicKey) {
+        emit(409, { ok: false, status: "operator_pubkey_unconfigured", error: "operator_pubkey_unconfigured" });
+        return;
+      }
+      // Fail-closed account routing: una cuenta desconocida NO cae a la cuenta-1 muerta.
+      const adapter = resolveWebdockCreateAdapter(deps, serverAccountId, providerId);
+      if (!adapter) {
+        emit(409, { ok: false, status: "unknown_server_account", error: "unknown_server_account" });
+        return;
+      }
+      if (typeof adapter.ensureServerSshAccess !== "function") {
+        emit(409, { ok: false, status: "ssh_access_unsupported_for_account", error: "ssh_access_unsupported_for_account" });
+        return;
+      }
+      // El server debe estar en el inventario local (creado o adoptado): rail explicito
+      // adopt_webdock_server -> ensure_server_ssh_access, en vez de adivinar slugs.
+      const inventory = await deps.workspace
+        .readInventoryJson<{ servers?: Array<{ slug: string }> }>("webdock-servers.json")
+        .catch(() => null);
+      const known = inventory?.servers?.some((server) => server.slug.trim().toLowerCase() === serverSlug);
+      if (!known) {
+        emit(409, {
+          ok: false,
+          status: "server_not_in_inventory",
+          error: "server_not_in_inventory",
+          plan: { action: "ensure_server_ssh_access", serverSlug, serverAccountId, nextStep: "adopt_webdock_server" }
+        });
+        return;
+      }
+      const username = deps.env?.SMTP_PROVISION_SSH_USER?.trim()
+        || deps.env?.WEBDOCK_OPERATOR_SSH_USERNAME?.trim()
+        || "delivrixops";
+      const plan = {
+        action: "ensure_server_ssh_access",
+        serverSlug,
+        serverAccountId,
+        username,
+        publicKeyRef: approvalTokenHash(publicKey).slice(0, 16),
+        sideEffects: "provider-shell-user-and-ssh-settings",
+        rollbackHint: "rollback_remove_shell_user_or_key_via_webdock_console"
+      };
+      if (dryRun) {
+        emit(200, { ok: true, status: "dry_run", plan });
+        return;
+      }
+      try {
+        const sshAccess = await adapter.ensureServerSshAccess({ serverSlug, publicKey, username });
+        emit(200, {
+          ok: true,
+          status: "ssh_access_ensured",
+          plan: {
+            ...plan,
+            publicKeyId: sshAccess.publicKeyId,
+            shellUserId: sshAccess.shellUserId,
+            shellUserEventId: sshAccess.shellUserEventId,
+            sshSettingsEventId: sshAccess.sshSettingsEventId
+          }
+        });
+      } catch (error) {
+        emit(502, {
+          ok: false,
+          status: "ssh_access_provider_error",
+          error: errorMessage(error),
+          plan
+        });
+      }
+    }
+  };
   const updateSmtpEntry: SkillHandlerEntry = {
     paramSchema: updateSmtpEntryParamSchema,
     timeoutMs: 30_000,
@@ -1026,6 +1123,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     reassign_domain_server: reassignDomainServer,
     create_smtp_entry: createSmtpEntry,
     adopt_webdock_server: adoptWebdockServer,
+    ensure_server_ssh_access: ensureServerSshAccess,
     update_smtp_entry: updateSmtpEntry
   };
 }
@@ -1108,7 +1206,7 @@ async function appendSmtpInventoryMutationAudit(
       reason: result.reason,
       error: result.error,
       ...(options.approvalTokenHash ? { approvalTokenHash: options.approvalTokenHash } : {}),
-      sideEffects: "local-state-only",
+      sideEffects: (result.plan?.sideEffects as string | undefined) ?? "local-state-only",
       rollbackPlan: smtpInventoryRollbackPlan(result),
       plan: result.plan
     }
@@ -1120,14 +1218,19 @@ function smtpInventoryRollbackPlan(result: { domain?: string; serverSlug?: strin
     ? "No inventory rollback is needed: create_smtp_entry made no change (changed=false). No automatic inventory backup is created by this mutation."
     : "Inspect SMTP inventory; if this create was wrong, retire the new entry with retire_smtp_entry and restore the previously configured server from previousStatuses with update_smtp_entry if one was superseded. No automatic inventory backup is created by this mutation.";
   const adoptRollbackProcedure = "Remove the adopted entry from webdock-servers.json (manual local edit; there is no dedicated retire tool for adopted servers yet). The adoption performed no remote side effects, so nothing else needs to be reverted.";
+  const ensureSshRollbackProcedure = "This tool created/updated the delivrixops shell user and its SSH key on the Webdock server (real provider write). To revert, remove that shell user or the key from the server via the Webdock console/API. No local inventory change was made.";
+  const action = result.plan?.action;
+  const procedure = action === "create_smtp_entry"
+    ? createRollbackProcedure
+    : action === "adopt_webdock_server"
+      ? adoptRollbackProcedure
+      : action === "ensure_server_ssh_access"
+        ? ensureSshRollbackProcedure
+        : "Inspect SMTP inventory and apply the inverse local status/field change with update_smtp_entry. No automatic inventory backup is created by this mutation.";
   return {
-    mode: "manual_local_state",
+    mode: action === "ensure_server_ssh_access" ? "manual_provider_state" : "manual_local_state",
     canRollbackAutomatically: false,
-    procedure: result.plan?.action === "create_smtp_entry"
-      ? createRollbackProcedure
-      : result.plan?.action === "adopt_webdock_server"
-        ? adoptRollbackProcedure
-        : "Inspect SMTP inventory and apply the inverse local status/field change with update_smtp_entry. No automatic inventory backup is created by this mutation.",
+    procedure,
     futureSkill: "inspect_smtp_inventory",
     domain: result.domain,
     serverSlug: result.serverSlug,

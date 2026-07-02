@@ -5,6 +5,7 @@ import {
   compactIntentParamSchema,
   configureCompleteSmtpSkillParamSchema,
   createSmtpEntryParamSchema,
+  ensureServerSshAccessParamSchema,
   emailAuthParamSchema,
   enableSmtpAuthParamSchema,
   inspectSmtpInventoryParamSchema,
@@ -87,6 +88,7 @@ export type OpenClawToolName =
   | "reassign_domain_server"
   | "create_smtp_entry"
   | "adopt_webdock_server"
+  | "ensure_server_ssh_access"
   | "update_smtp_entry"
   | "bind_domain_to_server"
   | "seed_warmup_pool"
@@ -1176,6 +1178,39 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     targetType: "webdock_server",
     severity: "critical"
   },
+  ensure_server_ssh_access: {
+    spec: {
+      name: "ensure_server_ssh_access",
+      description: [
+        "Instala/asegura la clave SSH del operador en un VPS Webdock ya conocido (creado o adoptado), via la API del proveedor — NO requiere acceso SSH previo al server.",
+        "Crea o actualiza el shell user del operador, le adjunta la pubkey WEBDOCK_OPERATOR_SSH_PUBLIC_KEY y fija sshSettings (sin password, sudo passwordless, puerto 22). Escritura REAL en el proveedor.",
+        "Es el eslabon que hace autonomo el rescate: tras adopt_webdock_server, llamar esta tool deja el server accesible por SSH para provision_smtp_postfix/enable_smtp_auth/send. Si el server no esta en el inventario devuelve server_not_in_inventory (adoptar primero).",
+        "Requiere ApprovalGate firmado, audit log critical y kill switch desarmado. Rollback: quitar el shell user/key por la consola Webdock."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          serverSlug: { type: "string", pattern: slugPattern },
+          serverAccountId: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Cuenta Webdock write-capable duena del server (p.ej. quinary). Un accountId desconocido se rechaza (unknown_server_account)."
+          },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: {
+            type: "boolean",
+            default: true,
+            description: "Default seguro: si se omite, solo planifica. Para escribir en el proveedor debe venir dryRun:false en una propuesta firmada."
+          }
+        },
+        required: ["serverSlug", "serverAccountId", "reason"]
+      }
+    },
+    paramSchema: ensureServerSshAccessParamSchema,
+    enabled: (env) => hmacConfigured(env) && hasWebdockOpsCredentials(env) && Boolean(firstNonEmpty(env.WEBDOCK_OPERATOR_SSH_PUBLIC_KEY)),
+    targetType: "webdock_server",
+    severity: "critical"
+  },
   update_smtp_entry: {
     spec: {
       name: "update_smtp_entry",
@@ -1497,6 +1532,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "reassign_domain_server",
     "create_smtp_entry",
     "adopt_webdock_server",
+    "ensure_server_ssh_access",
     "update_smtp_entry",
     "bind_domain_to_server",
     "seed_warmup_pool",

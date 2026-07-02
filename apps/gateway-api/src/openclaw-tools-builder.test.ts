@@ -40,6 +40,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "reassign_domain_server",
     "create_smtp_entry",
     "adopt_webdock_server",
+    "ensure_server_ssh_access",
     "update_smtp_entry",
     "bind_domain_to_server",
     "seed_warmup_pool",
@@ -149,7 +150,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 37);
+  assert.equal(tools.length, 38);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -286,6 +287,7 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "reassign_domain_server",
     "create_smtp_entry",
     "adopt_webdock_server",
+    "ensure_server_ssh_access",
     "update_smtp_entry",
     "send_real_email",
     "compact_intent",
@@ -350,6 +352,7 @@ function allEnabledEnv(): Record<string, string | undefined> {
     WEBDOCK_SERVERS_ENABLE_CREATE: "true",
     WEBDOCK_MAIN_DOMAIN_BIND_ENABLE: "true",
     WEBDOCK_API_KEY_OPS: "webdock-ops",
+    WEBDOCK_OPERATOR_SSH_PUBLIC_KEY: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEY delivrix-ops",
     SMTP_PROVISIONING_ENABLE_SSH: "true",
     SMTP_PROVISION_SSH_KEY_PATH: "/tmp/delivrix-smoke-key",
     EMAIL_AUTH_ENABLE_WRITES: "true",
@@ -519,6 +522,14 @@ function validSample(toolName: string): Record<string, unknown> {
       serverIp: "203.0.113.57",
       serverAccountId: "quinary",
       reason: "Adoptar server huerfano verificado en la flota viva.",
+      dryRun: true
+    };
+  }
+  if (toolName === "ensure_server_ssh_access") {
+    return {
+      serverSlug: "server57",
+      serverAccountId: "quinary",
+      reason: "Instalar la pubkey del operador en el server adoptado.",
       dryRun: true
     };
   }
