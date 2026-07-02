@@ -1107,7 +1107,8 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     spec: {
       name: "create_smtp_entry",
       description: [
-        "Crea o actualiza una entrada configured en el inventario SMTP local para un dominio+server ya verificado en la flota viva multi-proveedor.",
+        "Crea una entrada configured NUEVA en el inventario SMTP local para un dominio+server ya verificado en la flota viva multi-proveedor.",
+        "Es create-only: si ya existe una entrada para ese dominio+server (en cualquier estado) devuelve conflicto entry_already_exists; para modificarla usar update_smtp_entry y para retirarla retire_smtp_entry.",
         "Antes de escribir valida serverSlug+serverIp contra el inventario vivo y exige que el server este running y la cuenta saludable.",
         "Mutacion local-state-only: no toca DNS, SSH, proveedor ni credenciales; requiere ApprovalGate firmado, audit log critical y kill switch desarmado."
       ].join(" "),
@@ -1131,7 +1132,7 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
             description: "Default seguro: si se omite, solo planifica. Para escribir debe venir dryRun:false en una propuesta firmada."
           }
         },
-        required: ["domain", "serverSlug", "serverIp", "selector"]
+        required: ["domain", "serverSlug", "serverIp", "selector", "reason"]
       }
     },
     paramSchema: createSmtpEntryParamSchema,

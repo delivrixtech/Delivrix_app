@@ -93,12 +93,87 @@ test("createConfiguredSmtpInventoryEntry dry-runs by default and writes only wit
     now: () => new Date("2026-06-30T20:16:00.000Z")
   });
   assert.equal(idempotent.ok, true);
-  assert.equal(idempotent.status, "updated");
+  assert.equal(idempotent.status, "no_change");
   assert.equal(idempotent.changed, false);
   assert.equal(idempotent.plan?.inventoryMutationKind, "no_change_existing");
   const afterIdempotent = await readInventory(workspace);
   assert.equal(afterIdempotent.servers.filter((server) => server.serverSlug === "server88").length, 1);
   assert.equal(afterIdempotent.servers.find((server) => server.serverSlug === "server88")?.updatedAt, fixedNow.toISOString());
+});
+
+test("createConfiguredSmtpInventoryEntry rejects existing entries instead of overwriting or resurrecting them", async () => {
+  const workspace = await setupWorkspace();
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      ...entry("server88", "legacy-one.com", "configured"),
+      serverIp: "192.0.2.88",
+      selector: "old-selector"
+    }]
+  }));
+  const liveServers = [{ serverSlug: "server88", ipv4: "192.0.2.88", status: "running", accountHealthStatus: "healthy" }];
+
+  const conflict = await createConfiguredSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    liveServers,
+    actorId: "operator-juanes",
+    reason: "Intento de create sobre entrada existente con selector distinto.",
+    dryRun: false,
+    now: () => fixedNow
+  });
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.status, "entry_already_exists");
+  assert.equal(conflict.changed, false);
+  assert.equal((conflict.plan?.previousValues as Record<string, unknown>).selector, "old-selector");
+  assert.equal(conflict.plan?.conflictHint, "entry_exists_use_update_smtp_entry_or_retire_smtp_entry_first");
+  const untouched = await readInventory(workspace);
+  assert.equal(untouched.servers.find((server) => server.serverSlug === "server88")?.selector, "old-selector");
+
+  const dryRunConflict = await createConfiguredSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    liveServers,
+    actorId: "operator-juanes",
+    reason: "Dry-run de create sobre entrada existente.",
+    now: () => fixedNow
+  });
+  assert.equal(dryRunConflict.ok, false);
+  assert.equal(dryRunConflict.status, "entry_already_exists");
+  assert.equal(dryRunConflict.dryRun, true);
+
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      ...entry("server88", "legacy-one.com", "retired"),
+      serverIp: "192.0.2.88",
+      selector: "s2026a",
+      retiredAt: "2026-06-01T00:00:00.000Z",
+      retiredReason: "Servidor retirado en auditoria previa."
+    }]
+  }));
+  const retiredConflict = await createConfiguredSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    liveServers,
+    actorId: "operator-juanes",
+    reason: "Intento de create sobre entrada retirada del mismo server.",
+    dryRun: false,
+    now: () => fixedNow
+  });
+  assert.equal(retiredConflict.ok, false);
+  assert.equal(retiredConflict.status, "entry_already_exists");
+  const afterRetired = await readInventory(workspace);
+  const retained = afterRetired.servers.find((server) => server.serverSlug === "server88") as Record<string, unknown> | undefined;
+  assert.equal(retained?.status, "retired");
+  assert.equal(retained?.retiredReason, "Servidor retirado en auditoria previa.");
 });
 
 test("createConfiguredSmtpInventoryEntry rejects non-live, IP mismatch, non-running and degraded accounts", async () => {

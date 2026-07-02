@@ -190,15 +190,46 @@ export async function createConfiguredSmtpInventoryEntry(input: {
     existing.serverIp === input.serverIp &&
     existing.selector === input.selector &&
     superseded.length === 0;
+  if (existing && !alreadyConfiguredSameValues) {
+    // Create is create-only: an existing domain+server entry (any status, or a
+    // value mismatch) is a conflict, never an overwrite or a resurrection.
+    return {
+      ok: false,
+      status: "entry_already_exists",
+      dryRun,
+      changed: false,
+      domain,
+      serverSlug: input.serverSlug,
+      error: "entry_already_exists",
+      plan: {
+        action: "create_smtp_entry",
+        domain,
+        serverSlug: input.serverSlug,
+        requestedServerIp: input.serverIp,
+        requestedSelector: input.selector,
+        previousValues: {
+          serverIp: existing.serverIp,
+          selector: existing.selector,
+          status: existing.status,
+          tlsStatus: existing.tlsStatus,
+          smtpAuthStatus: existing.smtpAuthStatus,
+          configuredAt: existing.configuredAt,
+          updatedAt: existing.updatedAt
+        },
+        previousStatuses,
+        conflictHint: "entry_exists_use_update_smtp_entry_or_retire_smtp_entry_first",
+        sideEffects: "local-state-only"
+      }
+    };
+  }
   const timestamp = (input.now?.() ?? new Date()).toISOString();
   const entry: SmtpProvisioningServer = {
-    ...(existing ?? {}),
     serverSlug: input.serverSlug,
     domain,
     serverIp: input.serverIp,
     selector: input.selector,
     status: "configured",
-    configuredAt: existing?.configuredAt ?? timestamp,
+    configuredAt: timestamp,
     updatedAt: timestamp
   };
   const plan = {
@@ -211,25 +242,10 @@ export async function createConfiguredSmtpInventoryEntry(input: {
     providerId: liveServer.providerId,
     accountId: liveServer.accountId,
     accountHealthStatus: liveServer.accountHealthStatus,
-    inventoryMutationKind: existing
-      ? alreadyConfiguredSameValues ? "no_change_existing" : "updated_existing"
-      : "created_new",
-    ...(existing ? {
-      previousValues: {
-        serverIp: existing.serverIp,
-        selector: existing.selector,
-        status: existing.status,
-        tlsStatus: existing.tlsStatus,
-        smtpAuthStatus: existing.smtpAuthStatus,
-        configuredAt: existing.configuredAt,
-        updatedAt: existing.updatedAt
-      }
-    } : {}),
+    inventoryMutationKind: existing ? "no_change_existing" : "created_new",
     previousStatuses,
     supersededServerSlugs: superseded,
-    rollbackHint: existing
-      ? "rollback_restore_previous_values_for_same_domain_server"
-      : "rollback_retire_new_entry_and_restore_superseded_configured_if_any",
+    rollbackHint: "rollback_retire_new_entry_and_restore_superseded_configured_if_any",
     sideEffects: "local-state-only"
   };
   if (dryRun) {
@@ -250,7 +266,7 @@ export async function createConfiguredSmtpInventoryEntry(input: {
   if (alreadyConfiguredSameValues) {
     return {
       ok: true,
-      status: "updated",
+      status: "no_change",
       dryRun: false,
       changed: false,
       domain,
@@ -265,7 +281,7 @@ export async function createConfiguredSmtpInventoryEntry(input: {
   await upsertConfiguredSmtpInventoryEntry(input.workspace, entry, input.now);
   return {
     ok: true,
-    status: existing ? "updated" : "created",
+    status: "created",
     dryRun: false,
     changed: true,
     domain,
