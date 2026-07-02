@@ -329,7 +329,8 @@ echo "AGENTS chars=${AGENTS_CHARS}"
 
 # 10700: +200 sobre el 10500 historico para alojar [11B] ubicaciones Webdock (regla anti-alucinacion de datacenters). Trivial vs contexto Bedrock 200k.
 # 11800: +1100 para alojar OPENCLAW_VERIFICATION_PROTOCOL core (incidente 2026-06-10: queued!=inbox, FCrDNS, cache no es fuente de verdad).
-MAX_CONTEXT_TOKEN_EST="${MAX_CONTEXT_TOKEN_EST:-11800}"
+# 12200: +400 para [0] PRINCIPIOS DE OPERACION + fuente-de-verdad de inventario en [5A] (incidente 2026-07-02: OpenClaw tiro de read_webdock_servers legacy/mock y adivino ante errores sin next-step). Trivial vs 200k.
+MAX_CONTEXT_TOKEN_EST="${MAX_CONTEXT_TOKEN_EST:-12200}"
 
 if [ "${TOKEN_EST}" -gt "${MAX_CONTEXT_TOKEN_EST}" ]; then
   echo "FAIL: Capa 1 excede ${MAX_CONTEXT_TOKEN_EST} tokens estimados (${TOKEN_EST})" >&2
