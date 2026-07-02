@@ -908,9 +908,28 @@ export async function configureCompleteSmtp(
     if (vpsProviderId) {
       runState.providerId = vpsProviderId;
     }
-    const reuseServerSlug = normalizeReuseServerSlug(effectiveInput.reuseServerSlug);
+    let reuseServerSlug = normalizeReuseServerSlug(effectiveInput.reuseServerSlug);
     if (reuseServerSlug && isNonWebdockProviderId(vpsProviderId)) {
       throw new OrchestratorFailure("failed", 0, "reuse_server_guard", `reuse_server_unsupported_for_provider:${vpsProviderId}`);
+    }
+    // Safety + autonomía: si NO vino reuseServerSlug pero smtp.<dominio> ya resuelve a un server vivo
+    // de la flota local, REUSAR ese server en vez de crear uno nuevo. Evita que un rescate donde el
+    // modelo omitió reuseServerSlug termine creando un VPS por accidente. Es self-gating: solo reusa
+    // cuando el dominio YA apunta a infraestructura conocida; si no resuelve o apunta a una IP
+    // desconocida, cae al create (comportamiento byte-idéntico para dominios frescos).
+    let reuseServerAutoDerived = false;
+    if (!reuseServerSlug && !isNonWebdockProviderId(vpsProviderId) && !runState.serverCreatedByRun) {
+      const derived = await deriveReuseServerFromLiveDomain(deps, smtpHost, runId).catch(() => undefined);
+      if (derived) {
+        reuseServerSlug = derived;
+        reuseServerAutoDerived = true;
+        void logger.info("openclaw.orchestrator.reuse_server_auto_derived", "configure_complete_smtp derivó el server de reuse desde el A record del dominio.", {
+          runId,
+          serverSlug: derived,
+          domain: chosenDomain,
+          smtpHost
+        });
+      }
     }
     const createStepWasAlreadyDone = runState.steps["4"]?.status === "done";
     let vps: ConfigureCompleteSmtpStepResult | undefined;
@@ -945,12 +964,13 @@ export async function configureCompleteSmtp(
         runId,
         actorId: effectiveInput.actorId,
         reuseServerSlug,
+        autoDerived: reuseServerAutoDerived,
         serverSlug: reusableServer.slug,
         serverIpv4: reusableServer.ipv4,
         serverAccountId: runState.serverAccountId ?? null,
         domain: chosenDomain,
         smtpHost,
-        source: "webdock-servers.json"
+        source: reuseServerAutoDerived ? "dns_a_record+webdock-servers.json" : "webdock-servers.json"
       });
       vps = await recordSyntheticDoneStepWithState({
         deps,
@@ -2188,6 +2208,40 @@ function smtpRunStateHasProviderLockedProgress(state: SmtpRunState): boolean {
 type ReuseServerValidation =
   | { mode: "pre-run"; failure: { step: number; skill: string } }
   | { mode: "full"; expectedHostname: string; failure?: { step: number; skill: string } };
+
+/**
+ * Deriva el server de reuse cuando el operador/modelo NO pasó reuseServerSlug: resuelve el A record
+ * de smtp.<dominio> y busca un server RUNNING en webdock-servers.json cuyo ipv4 coincida. Devuelve el
+ * slug o undefined. Fail-safe: cualquier error de resolución/lectura => undefined (=> el orquestador
+ * crea, comportamiento byte-idéntico). Self-gating: solo matchea si el dominio ya apunta a un server
+ * conocido de la flota, evitando crear un VPS nuevo por accidente en un rescate.
+ */
+async function deriveReuseServerFromLiveDomain(
+  deps: ConfigureCompleteSmtpDeps,
+  smtpHost: string,
+  runId: string
+): Promise<string | undefined> {
+  const resolver = deps.smokeAuthDnsResolver;
+  if (!resolver) return undefined;
+  const inventory = await requireRunStateWorkspace(deps)
+    .readInventoryJson<WebdockInventoryForResume>("webdock-servers.json")
+    .catch(() => null);
+  // Si este run YA tiene un binding (resume o reconstrucción legacy), ese path resuelve el server;
+  // no derivamos por DNS para no pisar su lógica.
+  const alreadyBound = inventory?.runBindings?.some((binding) => binding.runId === runId);
+  if (alreadyBound) return undefined;
+  const ips = await resolver.resolve4(smtpHost).catch(() => [] as string[]);
+  if (!ips || ips.length === 0) return undefined;
+  const ipSet = new Set(ips.map((ip) => ip.trim()).filter(Boolean));
+  if (ipSet.size === 0) return undefined;
+  const match = inventory?.servers?.find((server) => {
+    const status = typeof server.status === "string" ? server.status.trim().toLowerCase() : "running";
+    const running = !status || ["running", "active", "online"].includes(status);
+    const ipv4 = typeof server.ipv4 === "string" ? server.ipv4.trim() : "";
+    return running && Boolean(ipv4) && ipSet.has(ipv4);
+  });
+  return match ? match.slug.trim().toLowerCase() : undefined;
+}
 
 async function readReusableWebdockServer(
   deps: ConfigureCompleteSmtpDeps,

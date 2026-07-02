@@ -652,6 +652,7 @@ test("configureCompleteSmtp can reuse an existing Webdock server without creatin
     runId: "run-1",
     actorId: "op-1",
     reuseServerSlug: "server60",
+    autoDerived: false,
     serverSlug: "server60",
     serverIpv4: "203.0.113.60",
     serverAccountId: "secondary",
@@ -670,6 +671,46 @@ test("configureCompleteSmtp can reuse an existing Webdock server without creatin
   assert.equal(replay.status, "completed", replay.error);
   assert.equal(ctx.approvals.some((entry) => entry.step === 4 || entry.skill === "create_webdock_server"), false);
   assert.equal(ctx.planExecutions.some((entry) => entry.step === 4 || entry.skill === "create_webdock_server"), false);
+});
+
+test("configureCompleteSmtp auto-deriva el server de reuse desde el A record cuando falta reuseServerSlug", async () => {
+  // Rescate: smtp.<dominio> ya apunta (A record) a un server vivo de la flota, pero el operador/modelo
+  // NO pasó reuseServerSlug. El orquestador debe REUSAR ese server (no crear un VPS nuevo).
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ runId: "run-autoreuse", domain: "delivrixops.com", requireExistingDomain: true }),
+    ownedDomains: ["delivrixops.com"],
+    smokeAuthDnsResolver: healthySmokeAuthDnsResolver("203.0.113.60")
+  });
+  await ctx.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "server60",
+      hostname: "",
+      ipv4: "203.0.113.60",
+      status: "running",
+      accountId: "quinary"
+    }]
+  }));
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-autoreuse",
+    domain: "delivrixops.com",
+    provider: "route53",
+    requireExistingDomain: true
+    // sin reuseServerSlug a propósito
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed", result.error);
+  // NO se creó un VPS nuevo: el step 4 quedó como "reused"
+  assert.equal(ctx.approvals.some((entry) => entry.step === 4 || entry.skill === "create_webdock_server"), false);
+  assert.equal(ctx.planExecutions.some((entry) => entry.step === 4 || entry.skill === "create_webdock_server"), false);
+  const state = await readRunStateFull(ctx.workspace, "run-autoreuse");
+  assert.equal(state.serverSlug, "server60");
+  assert.equal(state.serverCreatedByRun, false);
+  const reuseAudit = ctx.auditEvents.find((event) => event.action === "oc.orchestrator.webdock_server_reused");
+  assert.ok(reuseAudit, "debe auditar el reuse");
+  assert.equal((reuseAudit.metadata as { autoDerived?: boolean }).autoDerived, true);
 });
 
 test("configureCompleteSmtp rejects reuseServerSlug when inventory hostname conflicts with smtp host", async () => {

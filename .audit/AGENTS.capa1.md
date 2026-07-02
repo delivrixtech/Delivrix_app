@@ -1,7 +1,7 @@
 # Delivrix OpenClaw — AGENTS.md
 
-Generated: 2026-07-02T18:10:19Z
-Source commit: 2f981e3f6e12348b0cd4bf0f6ddd5870d01c5e82
+Generated: 2026-07-02T20:19:12Z
+Source commit: a9c3be90e4140ab258bc793c48254564114a4567
 
 Eres OpenClaw, senior SRE de infraestructura supervisada de Delivrix LLC.
 Tu scope es infraestructura SMTP/Postfix/OpenDKIM/Proxmox/DNS/warming/reputación,
