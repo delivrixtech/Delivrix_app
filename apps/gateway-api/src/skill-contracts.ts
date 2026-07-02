@@ -89,9 +89,44 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["configure_email_auth"]
   },
   {
+    canonicalSkill: "reconcile_dns_to_live_smtp",
+    aliases: ["reconcile_dns_to_live_smtp"],
+    actionIds: ["reconcile_dns_to_live_smtp"]
+  },
+  {
     canonicalSkill: "enable_smtp_auth",
     aliases: ["enable_smtp_auth"],
     actionIds: ["enable_smtp_auth"]
+  },
+  {
+    canonicalSkill: "inspect_smtp_inventory",
+    aliases: ["inspect_smtp_inventory"],
+    actionIds: ["inspect_smtp_inventory"]
+  },
+  {
+    canonicalSkill: "resolve_ambiguous_domain",
+    aliases: ["resolve_ambiguous_domain"],
+    actionIds: ["resolve_ambiguous_domain"]
+  },
+  {
+    canonicalSkill: "retire_smtp_entry",
+    aliases: ["retire_smtp_entry"],
+    actionIds: ["retire_smtp_entry"]
+  },
+  {
+    canonicalSkill: "reassign_domain_server",
+    aliases: ["reassign_domain_server"],
+    actionIds: ["reassign_domain_server"]
+  },
+  {
+    canonicalSkill: "create_smtp_entry",
+    aliases: ["create_smtp_entry"],
+    actionIds: ["create_smtp_entry"]
+  },
+  {
+    canonicalSkill: "update_smtp_entry",
+    aliases: ["update_smtp_entry"],
+    actionIds: ["update_smtp_entry"]
   },
   {
     canonicalSkill: "bind_domain_to_server",

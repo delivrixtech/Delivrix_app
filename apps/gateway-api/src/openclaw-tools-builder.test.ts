@@ -22,6 +22,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "read_dns_ionos",
     "read_mxtoolbox_health",
     "read_infrastructure_inventory",
+    "inspect_smtp_inventory",
     "read_infrastructure_account_health",
     "read_webdock_servers",
     "list_conversations",
@@ -32,7 +33,13 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "bind_webdock_main_domain",
     "provision_smtp_postfix",
     "configure_email_auth",
+    "reconcile_dns_to_live_smtp",
     "enable_smtp_auth",
+    "resolve_ambiguous_domain",
+    "retire_smtp_entry",
+    "reassign_domain_server",
+    "create_smtp_entry",
+    "update_smtp_entry",
     "bind_domain_to_server",
     "seed_warmup_pool",
     "send_real_email",
@@ -55,6 +62,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
         "read_dns_ionos",
         "read_mxtoolbox_health",
         "read_infrastructure_inventory",
+        "inspect_smtp_inventory",
         "read_infrastructure_account_health",
         "read_webdock_servers",
         "list_conversations",
@@ -88,6 +96,10 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
   assert.ok(infrastructureInventory);
   assert.deepEqual(infrastructureInventory.input_schema.required, []);
   assert.match(infrastructureInventory.description, /read-only/);
+  const smtpInventory = tools.find((tool) => tool.name === "inspect_smtp_inventory");
+  assert.ok(smtpInventory);
+  assert.deepEqual(smtpInventory.input_schema.required, []);
+  assert.match(smtpInventory.description, /read-only/);
   const infrastructureAccountHealth = tools.find((tool) => tool.name === "read_infrastructure_account_health");
   assert.ok(infrastructureAccountHealth);
   assert.deepEqual(infrastructureAccountHealth.input_schema.required, []);
@@ -110,6 +122,20 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
   assert.match(enableSmtpAuth.description, /un solo dominio/);
   assert.match(enableSmtpAuth.description, /No imprime password ni markdown/);
   assert.deepEqual(enableSmtpAuth.input_schema.required, ["domain"]);
+  assert.ok("serverSlug" in enableSmtpAuth.input_schema.properties);
+  const configureCompleteSmtp = tools.find((tool) => tool.name === "configure_complete_smtp");
+  assert.ok(configureCompleteSmtp);
+  assert.ok("reuseServerSlug" in configureCompleteSmtp.input_schema.properties);
+  assert.match(
+    String((configureCompleteSmtp.input_schema.properties.reuseServerSlug as { description?: string }).description ?? ""),
+    /Reusa\/adopta/
+  );
+  for (const toolName of ["resolve_ambiguous_domain", "retire_smtp_entry", "reassign_domain_server", "create_smtp_entry", "update_smtp_entry"]) {
+    const tool = tools.find((candidate) => candidate.name === toolName);
+    assert.ok(tool, `${toolName} should be exposed`);
+    assert.match(tool.description, /ApprovalGate/);
+    assert.match(tool.description, /local-state-only/);
+  }
   const retireAccount = tools.find((tool) => tool.name === "retire_infrastructure_account");
   assert.ok(retireAccount);
   assert.match(retireAccount.description, /ApprovalGate/);
@@ -122,7 +148,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 29);
+  assert.equal(tools.length, 36);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -149,6 +175,7 @@ test("buildToolsForOpenClaw omits Route53 tools when AWS credentials are missing
   assert.equal(names.includes("update_domain_nameservers"), false);
   assert.equal(names.includes("upsert_dns_route53"), false);
   assert.equal(names.includes("configure_email_auth"), false);
+  assert.equal(names.includes("reconcile_dns_to_live_smtp"), false);
   assert.equal(names.includes("bind_domain_to_server"), false);
   assert.equal(names.includes("configure_complete_smtp"), false);
   assert.equal(names.includes("upsert_dns_ionos"), true);
@@ -188,13 +215,14 @@ test("Bedrock catalog contains Route53 read tools with validated schemas", () =>
   }).success, true);
 
   assert.ok(zoneRecords);
-  assert.deepEqual(zoneRecords.input_schema.required, ["zoneId"]);
+  assert.deepEqual(zoneRecords.input_schema.required, ["domain"]);
   assert.deepEqual(zoneRecords.input_schema.properties.recordType, {
     type: "string",
     enum: ["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "PTR", "SRV", "CAA"],
     description: "Filtrar por tipo de record. Opcional."
   });
   assert.equal(getOpenClawToolDefinition("read_route53_zone_records")?.paramSchema.safeParse({
+    domain: "controldelivrix.app",
     zoneId: "Z03595092JW2AXJBZGN4E",
     recordType: "A",
     recordName: "smtp.controldelivrix.app"
@@ -244,12 +272,19 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "update_domain_nameservers",
     "read_dns_ionos",
     "read_infrastructure_inventory",
+    "inspect_smtp_inventory",
     "read_infrastructure_account_health",
     "read_webdock_servers",
     "list_conversations",
     "read_conversation",
     "bind_webdock_main_domain",
     "enable_smtp_auth",
+    "reconcile_dns_to_live_smtp",
+    "resolve_ambiguous_domain",
+    "retire_smtp_entry",
+    "reassign_domain_server",
+    "create_smtp_entry",
+    "update_smtp_entry",
     "send_real_email",
     "compact_intent",
     "configure_complete_smtp",
@@ -294,7 +329,8 @@ function allEnabledEnv(): Record<string, string | undefined> {
     WARMUP_ENABLE_SEND: "true",
     WARMUP_RAMP_ENABLE: "true",
     SMTP_SEND_REAL_EMAIL_ENABLE: "true",
-    OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true"
+    OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true",
+    OPENCLAW_RECONCILE_DNS_SMTP_ENABLE: "true"
   };
 }
 
@@ -333,7 +369,7 @@ function validSample(toolName: string): Record<string, unknown> {
   }
   if (toolName === "read_route53_zone_records") {
     return {
-      zoneId: "Z03595092JW2AXJBZGN4E",
+      domain: "controldelivrix.app",
       recordType: "A",
       recordName: "smtp.controldelivrix.app"
     };
@@ -352,11 +388,25 @@ function validSample(toolName: string): Record<string, unknown> {
       recordName: "_dmarc.nationalcorphub.app"
     };
   }
+  if (toolName === "reconcile_dns_to_live_smtp") {
+    return {
+      domain: "controlcorpfiling.com",
+      serverSlug: "server60",
+      serverIp: "193.180.211.182",
+      selector: "s2026a",
+      dryRun: true,
+      repairReason: "Reconciliar DNS a SMTP vivo aprobado por operador.",
+      explicitRepairScope: "controlcorpfiling-dns-repoint"
+    };
+  }
   if (toolName === "read_mxtoolbox_health") {
     return { target: "8.8.8.8", type: "blacklist" };
   }
   if (toolName === "read_infrastructure_inventory") {
     return {};
+  }
+  if (toolName === "inspect_smtp_inventory") {
+    return { domain: "delivrix.test", status: "configured" };
   }
   if (toolName === "read_infrastructure_account_health") {
     return {};
@@ -400,7 +450,48 @@ function validSample(toolName: string): Record<string, unknown> {
     return { domain: "delivrix.test", mxServerIp: "203.0.113.10", dmarcPolicy: "none" };
   }
   if (toolName === "enable_smtp_auth") {
-    return { domain: "delivrix.test" };
+    return { domain: "delivrix.test", serverSlug: "server69" };
+  }
+  if (toolName === "resolve_ambiguous_domain") {
+    return {
+      domain: "delivrix.test",
+      keepServerSlug: "server69",
+      reason: "Resolver duplicado tras retry de provisioning."
+    };
+  }
+  if (toolName === "retire_smtp_entry") {
+    return {
+      domain: "delivrix.test",
+      serverSlug: "server68",
+      reason: "Servidor reemplazado por retry exitoso."
+    };
+  }
+  if (toolName === "reassign_domain_server") {
+    return {
+      domain: "delivrix.test",
+      fromServerSlug: "server68",
+      toServerSlug: "server69",
+      reason: "Servidor nuevo verificado como canonico."
+    };
+  }
+  if (toolName === "create_smtp_entry") {
+    return {
+      domain: "delivrix.test",
+      serverSlug: "server69",
+      serverIp: "203.0.113.10",
+      selector: "s2026a",
+      status: "configured",
+      reason: "Crear entrada verificada contra inventario vivo.",
+      dryRun: true
+    };
+  }
+  if (toolName === "update_smtp_entry") {
+    return {
+      domain: "delivrix.test",
+      serverSlug: "server69",
+      status: "configured",
+      reason: "Correccion auditada de metadata local."
+    };
   }
   if (toolName === "bind_domain_to_server") {
     return { domain: "delivrix.test", serverIp: "203.0.113.10" };

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   compactIntentParamSchema,
   configureCompleteSmtpSkillParamSchema,
+  createSmtpEntryParamSchema,
   enableSmtpAuthParamSchema,
   retireInfrastructureAccountParamSchema
 } from "./skill-schemas.ts";
@@ -208,6 +209,35 @@ test("configureCompleteSmtpSkillParamSchema preserves dynamic provider account i
   assert.equal(unsafe.success, false);
 });
 
+test("configureCompleteSmtpSkillParamSchema preserves reuseServerSlug for existing VPS adoption", () => {
+  const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
+    brand: "delivrix",
+    domain: "example.com",
+    provider: "route53",
+    reuseServerSlug: "Server-60",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@example.com",
+    testEmailSubject: "Smoke",
+    testEmailBody: "Smoke body"
+  });
+
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail(parsed.error.issues.join("\n"));
+  assert.equal(parsed.data.reuseServerSlug, "server-60");
+
+  const unsafe = configureCompleteSmtpSkillParamSchema.safeParse({
+    brand: "delivrix",
+    domain: "example.com",
+    provider: "route53",
+    reuseServerSlug: "server/60",
+    budgetUsdMax: 25,
+    testEmailRecipient: "ops@example.com",
+    testEmailSubject: "Smoke",
+    testEmailBody: "Smoke body"
+  });
+  assert.equal(unsafe.success, false);
+});
+
 test("configureCompleteSmtpSkillParamSchema rejects unknown DNS providers fail-closed", () => {
   const parsed = configureCompleteSmtpSkillParamSchema.safeParse({
     brand: "delivrix",
@@ -223,6 +253,98 @@ test("configureCompleteSmtpSkillParamSchema rejects unknown DNS providers fail-c
   assert.equal(parsed.success, false);
   if (parsed.success) assert.fail("unknown DNS provider should be rejected");
   assert.match(parsed.error.issues.join("\n"), /dnsProviderId/);
+});
+
+test("createSmtpEntryParamSchema is dry-run by default, requires reason and rejects invalid states", () => {
+  const validReason = "Crear entrada tras verificacion multi-proveedor.";
+  const parsed = createSmtpEntryParamSchema.safeParse({
+    domain: "Example.COM",
+    serverSlug: "Server-88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    reason: validReason
+  });
+
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail(parsed.error.issues.join("\n"));
+  assert.deepEqual(parsed.data, {
+    domain: "example.com",
+    serverSlug: "Server-88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    status: "configured",
+    reason: validReason,
+    dryRun: true
+  });
+
+  const writable = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    status: "configured",
+    dryRun: false,
+    reason: "Entrada verificada contra inventario vivo."
+  });
+  assert.equal(writable.success, true);
+  if (!writable.success) assert.fail(writable.error.issues.join("\n"));
+  assert.equal(writable.data.dryRun, false);
+
+  const missingReason = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a"
+  });
+  assert.equal(missingReason.success, false);
+
+  const shortReason = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    reason: "corto"
+  });
+  assert.equal(shortReason.success, false);
+
+  const wrongStatus = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    status: "retired",
+    reason: validReason
+  });
+  assert.equal(wrongStatus.success, false);
+
+  const invalidIp = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com",
+    serverSlug: "server88",
+    serverIp: "999.0.2.88",
+    selector: "s2026a",
+    reason: validReason
+  });
+  assert.equal(invalidIp.success, false);
+
+  for (const selector of ["", "inv@lid!", "selector with space"]) {
+    const invalidSelector = createSmtpEntryParamSchema.safeParse({
+      domain: "example.com",
+      serverSlug: "server88",
+      serverIp: "192.0.2.88",
+      selector,
+      reason: validReason
+    });
+    assert.equal(invalidSelector.success, false, `selector ${JSON.stringify(selector)} should be rejected`);
+  }
+
+  const invalidDomain = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com;rm -rf /",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    reason: validReason
+  });
+  assert.equal(invalidDomain.success, false);
 });
 
 test("configureCompleteSmtpSkillParamSchema normalizes known DNS providers", () => {

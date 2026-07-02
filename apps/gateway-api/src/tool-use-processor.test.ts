@@ -5,6 +5,7 @@ import {
   buildProposalPayloadFromToolUse,
   createHttpToolUseProcessor,
   processToolUse,
+  type SubmitProposalFromToolUseInput,
   type ToolUseProcessorDeps,
   type ToolUseProposalDecision,
   type ToolUseProposalSubmission
@@ -78,6 +79,56 @@ test("processToolUse submits update_domain_nameservers through ApprovalGate", as
     buildProposalPayloadFromToolUse(calls[0]).proposal.delivrix_actions_required,
     ["update_domain_nameservers"]
   );
+});
+
+test("processToolUse submits reconcile_dns_to_live_smtp through ApprovalGate", async () => {
+  const calls: unknown[] = [];
+  const rollbackPlan = {
+    mode: "manual_dns_restore",
+    canRollbackAutomatically: false,
+    procedure: "Manual restore through upsert_dns_route53.",
+    previousRecords: []
+  };
+  const result = await processToolUse({
+    toolUseId: "toolu-reconcile",
+    toolName: "reconcile_dns_to_live_smtp",
+    toolInput: {
+      domain: "controlcorpfiling.com",
+      serverSlug: "server60",
+      repairReason: "Reconciliar DNS contra inventario SMTP vivo confirmado.",
+      dryRun: false
+    },
+    chatSession: { id: "agent:main:operator", msgId: "msg-reconcile" },
+    env: enabledEnv(),
+    deps: memoryDeps({
+      calls,
+      decision: {
+        status: "executed",
+        proposalId: "proposal-reconcile",
+        ok: true,
+        signatureId: "sig-reconcile",
+        outcome: {
+          ok: true,
+          status: "reconciled",
+          changed: true,
+          domain: "controlcorpfiling.com",
+          rollbackPlan
+        },
+        durationMs: 40,
+        statusCode: 200
+      }
+    })
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  const call = calls[0] as SubmitProposalFromToolUseInput;
+  assert.equal(call.toolName, "reconcile_dns_to_live_smtp");
+  assert.deepEqual(
+    buildProposalPayloadFromToolUse(call).proposal.delivrix_actions_required,
+    ["reconcile_dns_to_live_smtp"]
+  );
+  assert.deepEqual((result.result as { rollbackPlan?: unknown }).rollbackPlan, rollbackPlan);
 });
 
 test("processToolUse rejects unknown tool names before submission", async () => {
@@ -206,6 +257,7 @@ test("processToolUse invokes read-only episodic scratch without ApprovalGate", a
 test("processToolUse invokes new inventory and conversation tools as read-only without ApprovalGate", async () => {
   for (const [toolName, toolInput] of [
     ["read_infrastructure_inventory", {}],
+    ["inspect_smtp_inventory", { domain: "legacy-one.com" }],
     ["list_conversations", { offset: 0, limit: 20 }],
     ["read_conversation", { conversationId: "conv-a", offset: 0, limit: 6 }]
   ] as const) {
@@ -689,7 +741,8 @@ test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint
       if (String(url).startsWith("http://127.0.0.1:3000/v1/route53/zone-records")) {
         const parsed = new URL(String(url));
         assert.equal(init?.method, "GET");
-        assert.equal(parsed.searchParams.get("zoneId"), "Z03595092JW2AXJBZGN4E");
+        assert.equal(parsed.searchParams.get("domain"), "controldelivrix.app");
+        assert.equal(parsed.searchParams.get("zoneId"), null);
         assert.equal(parsed.searchParams.get("recordType"), "A");
         assert.equal(parsed.searchParams.get("recordName"), "smtp.controldelivrix.app");
         return jsonResponse({
@@ -707,7 +760,7 @@ test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint
     toolUseId: "toolu-route53-zone",
     toolName: "read_route53_zone_records",
     toolInput: {
-      zoneId: "Z03595092JW2AXJBZGN4E",
+      domain: "controldelivrix.app",
       recordType: "A",
       recordName: "smtp.controldelivrix.app"
     },
@@ -724,7 +777,7 @@ test("createHttpToolUseProcessor invokes read-only Route53 zone records endpoint
   });
   assert.deepEqual(calls.map((call) => call.url), [
     "http://127.0.0.1:3000/v1/kill-switch",
-    "http://127.0.0.1:3000/v1/route53/zone-records?zoneId=Z03595092JW2AXJBZGN4E&recordType=A&recordName=smtp.controldelivrix.app"
+    "http://127.0.0.1:3000/v1/route53/zone-records?domain=controldelivrix.app&recordType=A&recordName=smtp.controldelivrix.app"
   ]);
   assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
 });
@@ -1057,6 +1110,48 @@ test("createHttpToolUseProcessor invokes infrastructure account health endpoint 
   assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
 });
 
+test("createHttpToolUseProcessor invokes SMTP inventory inspect endpoint with read-boundary token", async () => {
+  const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+  const processor = createHttpToolUseProcessor({
+    delivrixBaseUrl: "http://127.0.0.1:3000",
+    env: enabledEnv(),
+    readBoundaryToken: "read-token",
+    fetchImpl: async (url, init) => {
+      calls.push({
+        url: String(url),
+        headers: init?.headers as Record<string, string> ?? {}
+      });
+      if (String(url).endsWith("/v1/kill-switch")) {
+        return jsonResponse({ killSwitch: { enabled: false } });
+      }
+      if (String(url).startsWith("http://127.0.0.1:3000/v1/openclaw/smtp-inventory")) {
+        assert.equal(init?.method, "GET");
+        return jsonResponse({
+          ok: false,
+          totals: { ambiguousDomains: 1 },
+          ambiguousDomains: [{ domain: "legacy-one.com", configuredCount: 2 }]
+        });
+      }
+      return jsonResponse({ error: "unexpected_url" }, 404);
+    }
+  });
+
+  const result = await processor({
+    toolUseId: "toolu-smtp-inventory",
+    toolName: "inspect_smtp_inventory",
+    toolInput: { domain: "legacy-one.com", status: "configured" },
+    chatSession: { id: "agent:main:operator" }
+  });
+
+  assert.equal(result.ok, true);
+  if (!result.ok) assert.fail("expected SMTP inventory read success");
+  assert.deepEqual(calls.map((call) => call.url), [
+    "http://127.0.0.1:3000/v1/kill-switch",
+    "http://127.0.0.1:3000/v1/openclaw/smtp-inventory?domain=legacy-one.com&status=configured"
+  ]);
+  assert.equal(calls[1].headers["x-delivrix-token"], "read-token");
+});
+
 test("createHttpToolUseProcessor fails closed for sensitive read tools without read-boundary token", async () => {
   const urls: string[] = [];
   const processor = createHttpToolUseProcessor({
@@ -1071,7 +1166,7 @@ test("createHttpToolUseProcessor fails closed for sensitive read tools without r
     }
   });
 
-  for (const toolName of ["read_infrastructure_inventory", "read_infrastructure_account_health", "list_conversations", "read_conversation"]) {
+  for (const toolName of ["read_infrastructure_inventory", "inspect_smtp_inventory", "read_infrastructure_account_health", "list_conversations", "read_conversation"]) {
     const result = await processor({
       toolUseId: `toolu-${toolName}`,
       toolName,
@@ -1085,6 +1180,7 @@ test("createHttpToolUseProcessor fails closed for sensitive read tools without r
   }
 
   assert.deepEqual(urls, [
+    "http://127.0.0.1:3000/v1/kill-switch",
     "http://127.0.0.1:3000/v1/kill-switch",
     "http://127.0.0.1:3000/v1/kill-switch",
     "http://127.0.0.1:3000/v1/kill-switch",
@@ -1281,6 +1377,74 @@ test("processToolUse maps operator rejection and approval timeout", async () => 
   assert.equal(timeout.timeoutMs, 10);
 });
 
+test("processToolUse routes SMTP inventory mutators through ApprovalGate", async () => {
+  for (const mutator of smtpInventoryMutatorCases()) {
+    const calls: any[] = [];
+    const result = await processToolUse({
+      toolUseId: `toolu-${mutator.toolName}`,
+      toolName: mutator.toolName,
+      toolInput: mutator.input,
+      chatSession: { id: "agent:main:operator", msgId: "msg-smtp-inventory" },
+      env: enabledEnv(),
+      deps: memoryDeps({
+        calls,
+        decision: {
+          status: "executed",
+          proposalId: "proposal-smtp-inventory",
+          ok: true,
+          signatureId: "sig-smtp-inventory",
+          outcome: { ok: true, status: "dry_run" },
+          statusCode: 200
+        }
+      })
+    });
+
+    assert.equal(result.ok, true, mutator.toolName);
+    assert.equal(calls.length, 1, mutator.toolName);
+    assert.equal(calls[0].toolName, mutator.toolName);
+    assert.deepEqual(buildProposalPayloadFromToolUse(calls[0]).proposal.delivrix_actions_required, [mutator.toolName]);
+  }
+});
+
+test("processToolUse disables SMTP inventory mutators without HMAC signing config", async () => {
+  const env = { ...enabledEnv(), OPENCLAW_HMAC_SECRET: undefined };
+  for (const mutator of smtpInventoryMutatorCases()) {
+    const calls: unknown[] = [];
+    const result = await processToolUse({
+      toolUseId: `toolu-no-hmac-${mutator.toolName}`,
+      toolName: mutator.toolName,
+      toolInput: mutator.input,
+      chatSession: { id: "agent:main:operator" },
+      env,
+      deps: memoryDeps({ calls })
+    });
+
+    assert.equal(result.ok, false, mutator.toolName);
+    if (result.ok) assert.fail("expected tool_disabled failure");
+    assert.equal(result.error, "tool_disabled", mutator.toolName);
+    assert.equal(calls.length, 0, mutator.toolName);
+  }
+});
+
+test("processToolUse aborts SMTP inventory mutators before proposal submit when kill switch is armed", async () => {
+  for (const mutator of smtpInventoryMutatorCases()) {
+    const calls: unknown[] = [];
+    const result = await processToolUse({
+      toolUseId: `toolu-kill-${mutator.toolName}`,
+      toolName: mutator.toolName,
+      toolInput: mutator.input,
+      chatSession: { id: "agent:main:operator" },
+      env: enabledEnv(),
+      deps: memoryDeps({ calls, killSwitchEnabled: true })
+    });
+
+    assert.equal(result.ok, false, mutator.toolName);
+    if (result.ok) assert.fail("expected kill_switch_armed failure");
+    assert.equal(result.error, "kill_switch_armed", mutator.toolName);
+    assert.equal(calls.length, 0, mutator.toolName);
+  }
+});
+
 test("processToolUse invokes read-only wait_for_dns_propagation without proposal wait", async () => {
   const calls: unknown[] = [];
   const result = await processToolUse({
@@ -1411,6 +1575,30 @@ test("buildProposalPayloadFromToolUse targets infrastructure account retire loca
   assert.match(payload.proposal.body, /ApprovalGate/);
 });
 
+test("buildProposalPayloadFromToolUse targets create_smtp_entry as smtp inventory entry", () => {
+  const payload = buildProposalPayloadFromToolUse({
+    toolUseId: "toolu-create-smtp-entry",
+    toolName: "create_smtp_entry",
+    params: {
+      domain: "legacy-one.com",
+      serverSlug: "server88",
+      serverIp: "192.0.2.88",
+      selector: "s2026a",
+      status: "configured",
+      dryRun: false
+    },
+    chatSession: { id: "agent:main:operator", msgId: "msg-100" },
+    env: enabledEnv(),
+    now: new Date("2026-07-02T12:00:00.000Z")
+  });
+
+  assert.equal(payload.proposal.skillSlug, "create_smtp_entry");
+  assert.deepEqual(payload.proposal.delivrix_actions_required, ["create_smtp_entry"]);
+  assert.equal(payload.proposal.targetRef, "server88");
+  assert.equal(payload.proposal.targetType, "smtp_inventory_entry");
+  assert.match(payload.proposal.body, /ApprovalGate/);
+});
+
 function memoryDeps(options: {
   calls?: unknown[];
   killSwitchEnabled?: boolean;
@@ -1436,6 +1624,61 @@ function memoryDeps(options: {
   };
 }
 
+function smtpInventoryMutatorCases(): Array<{ toolName: string; input: Record<string, unknown> }> {
+  return [
+    {
+      toolName: "resolve_ambiguous_domain",
+      input: {
+        domain: "legacy-one.com",
+        keepServerSlug: "server88",
+        reason: "Resolver duplicado confirmado por inventario vivo.",
+        dryRun: true
+      }
+    },
+    {
+      toolName: "retire_smtp_entry",
+      input: {
+        domain: "legacy-one.com",
+        serverSlug: "server92",
+        reason: "Retirar entrada espuria confirmada por auditoria.",
+        dryRun: true
+      }
+    },
+    {
+      toolName: "reassign_domain_server",
+      input: {
+        domain: "legacy-one.com",
+        fromServerSlug: "server92",
+        toServerSlug: "server88",
+        reason: "Reasignar canonico tras drift confirmado.",
+        dryRun: true
+      }
+    },
+    {
+      toolName: "create_smtp_entry",
+      input: {
+        domain: "legacy-one.com",
+        serverSlug: "server88",
+        serverIp: "192.0.2.88",
+        selector: "s2026a",
+        status: "configured",
+        reason: "Crear entrada local confirmada por operador.",
+        dryRun: true
+      }
+    },
+    {
+      toolName: "update_smtp_entry",
+      input: {
+        domain: "legacy-one.com",
+        serverSlug: "server88",
+        status: "configured",
+        reason: "Actualizar estado local confirmado por operador.",
+        dryRun: true
+      }
+    }
+  ];
+}
+
 function enabledEnv(): Record<string, string | undefined> {
   return {
     OPENCLAW_HMAC_SECRET: "test-hmac",
@@ -1458,7 +1701,8 @@ function enabledEnv(): Record<string, string | undefined> {
     WARMUP_RAMP_ENABLE: "true",
     WEBDOCK_BIND_MAIN_DOMAIN_ENABLE: "true",
     SEND_REAL_EMAIL_ENABLE: "true",
-    OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true"
+    OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true",
+    OPENCLAW_RECONCILE_DNS_SMTP_ENABLE: "true"
   };
 }
 

@@ -954,7 +954,7 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
 
   assert.equal(payloads.length, 2);
   const toolNames = (payloads[0].tools as Array<{ name: string }>).map((tool) => tool.name);
-  assert.equal(toolNames.length, 28);
+  assert.equal(toolNames.length, 34);
   assert.equal(toolNames.includes("read_episodic_scratch"), true);
   assert.equal(toolNames.includes("compact_intent"), true);
   assert.equal(toolNames.includes("enable_smtp_auth"), true);
@@ -967,8 +967,14 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
   assert.equal(toolNames.includes("read_dns_ionos"), true);
   assert.equal(toolNames.includes("read_mxtoolbox_health"), true);
   assert.equal(toolNames.includes("read_infrastructure_inventory"), true);
+  assert.equal(toolNames.includes("inspect_smtp_inventory"), true);
   assert.equal(toolNames.includes("read_infrastructure_account_health"), true);
   assert.equal(toolNames.includes("retire_infrastructure_account"), true);
+  assert.equal(toolNames.includes("resolve_ambiguous_domain"), true);
+  assert.equal(toolNames.includes("retire_smtp_entry"), true);
+  assert.equal(toolNames.includes("reassign_domain_server"), true);
+  assert.equal(toolNames.includes("create_smtp_entry"), true);
+  assert.equal(toolNames.includes("update_smtp_entry"), true);
   assert.equal(toolNames.includes("read_webdock_servers"), true);
   assert.equal(toolNames.includes("list_conversations"), true);
   assert.equal(toolNames.includes("read_conversation"), true);
@@ -1060,6 +1066,67 @@ test("OpenClawBedrockBridge stops repeated identical tool-use loops before exhau
   assert.match(done.content, /read_infrastructure_inventory/);
   assert.equal(providerCalls, 3);
   assert.equal(toolCalls, 2);
+});
+
+test("OpenClawBedrockBridge logs near-limit once and fails closed at tool iteration cap", async () => {
+  let providerCalls = 0;
+  let toolCalls = 0;
+  const warnEvents: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
+  const errorEvents: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: fixedNow(),
+    fetchImpl: liveContextFetchStub(),
+    env: enabledToolEnv(),
+    maxToolIterations: 40,
+    logger: {
+      logPath: "",
+      info: async () => undefined,
+      warn: async (event, _message, metadata) => {
+        warnEvents.push({ event, metadata });
+      },
+      error: async (event, _message, metadata) => {
+        errorEvents.push({ event, metadata });
+      }
+    },
+    processToolUse: async () => {
+      toolCalls += 1;
+      return { ok: true, status: "executed", result: { ok: true } };
+    },
+    client: {
+      send: async () => {
+        providerCalls += 1;
+        return {
+          body: toolUseStream(
+            `toolu-cap-${providerCalls}`,
+            "read_infrastructure_inventory",
+            `{"page":${providerCalls}}`
+          )
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "msg-tool-cap", message: "lee inventario con muchos pasos" });
+  const blocked: ChatStreamEvent[] = [];
+  await bridge.streamHistory("msg-tool-cap", {
+    onBlocked: (event) => blocked.push(event)
+  });
+
+  const nearLimitEvents = warnEvents.filter((event) => event.event === "openclaw.bedrock.tool_iterations_near_limit");
+  const exceededEvents = warnEvents.filter((event) => event.event === "openclaw.bedrock.tool_iterations_exceeded");
+  assert.equal(providerCalls, 40);
+  assert.equal(toolCalls, 40);
+  assert.equal(nearLimitEvents.length, 1);
+  assert.equal(nearLimitEvents[0].metadata?.iteration, 32);
+  assert.equal(exceededEvents.length, 1);
+  assert.equal(exceededEvents[0].metadata?.toolsInvokedCount, 40);
+  assert.equal(blocked[0]?.type, "ASSISTANT_BLOCKED");
+  assert.equal(blocked[0]?.reason, "bedrock_tool_loop_exceeded");
+  assert.equal(errorEvents.at(-1)?.event, "openclaw.bedrock.invoke_failed");
 });
 
 test("OpenClawBedrockBridge redacts PEM tool failures before Canvas and Bedrock tool_result", async () => {
@@ -1640,8 +1707,36 @@ test("createOpenClawBedrockBridgeFromEnv requires bedrock mode and critical env 
     AWS_BEDROCK_MODEL_ID: "model-test",
     AWS_BEDROCK_REGION: "us-east-1",
     OPENCLAW_GATEWAY_TOKEN: "gateway-token"
-  }) as unknown as { readBoundaryToken: string } | null;
+  }) as unknown as { readBoundaryToken: string; maxToolIterations: number } | null;
   assert.equal(fallbackTokenBridge?.readBoundaryToken, "gateway-token");
+  assert.equal(fallbackTokenBridge?.maxToolIterations, 40);
+
+  const explicitToolCapBridge = createOpenClawBedrockBridgeFromEnv({
+    OPENCLAW_BRIDGE_KIND: "bedrock",
+    AWS_BEARER_TOKEN_BEDROCK: "bedrock-api-key",
+    AWS_BEDROCK_MODEL_ID: "model-test",
+    AWS_BEDROCK_REGION: "us-east-1",
+    OPENCLAW_TOOL_MAX_ITERATIONS: "25"
+  }) as unknown as { maxToolIterations: number } | null;
+  assert.equal(explicitToolCapBridge?.maxToolIterations, 25);
+
+  const invalidToolCapBridge = createOpenClawBedrockBridgeFromEnv({
+    OPENCLAW_BRIDGE_KIND: "bedrock",
+    AWS_BEARER_TOKEN_BEDROCK: "bedrock-api-key",
+    AWS_BEDROCK_MODEL_ID: "model-test",
+    AWS_BEDROCK_REGION: "us-east-1",
+    OPENCLAW_TOOL_MAX_ITERATIONS: "not-a-number"
+  }) as unknown as { maxToolIterations: number } | null;
+  assert.equal(invalidToolCapBridge?.maxToolIterations, 40);
+
+  const clampedToolCapBridge = createOpenClawBedrockBridgeFromEnv({
+    OPENCLAW_BRIDGE_KIND: "bedrock",
+    AWS_BEARER_TOKEN_BEDROCK: "bedrock-api-key",
+    AWS_BEDROCK_MODEL_ID: "model-test",
+    AWS_BEDROCK_REGION: "us-east-1",
+    OPENCLAW_TOOL_MAX_ITERATIONS: "80"
+  }) as unknown as { maxToolIterations: number } | null;
+  assert.equal(clampedToolCapBridge?.maxToolIterations, 40);
 });
 
 async function promptFile(content: string): Promise<string> {

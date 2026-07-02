@@ -51,6 +51,7 @@ export interface PlanApprovalScope {
   provider: string;
   vpsProviderId?: string;
   serverAccountId?: string;
+  reuseServerSlug?: string;
   requireExistingDomain?: boolean;
   budgetUsdMax: number;
   recipient: string;
@@ -674,6 +675,7 @@ function extractConfigureCompleteSmtpPlanScope(params: unknown): {
   const provider = (normalizedScopeString(params.provider) ?? normalizedScopeString(params.vpsProviderId))?.toLowerCase();
   const vpsProviderId = normalizedProviderId(params.vpsProviderId, "vpsProviderId", details);
   const serverAccountId = normalizedAccountId(params.serverAccountId, "serverAccountId", details);
+  const reuseServerSlug = normalizedServerSlug(params.reuseServerSlug, "reuseServerSlug", details);
   const requireExistingDomain = optionalScopeBoolean(params.requireExistingDomain);
   const budgetUsdMax = Number(params.budgetUsdMax);
   const recipient = normalizedScopeString(params.testEmailRecipient ?? params.recipient)?.toLowerCase();
@@ -703,6 +705,7 @@ function extractConfigureCompleteSmtpPlanScope(params: unknown): {
       provider: provider!,
       ...(vpsProviderId ? { vpsProviderId } : {}),
       ...(serverAccountId ? { serverAccountId } : {}),
+      ...(reuseServerSlug ? { reuseServerSlug } : {}),
       ...(requireExistingDomain === true ? { requireExistingDomain: true } : {}),
       budgetUsdMax,
       recipient: recipient!,
@@ -740,6 +743,17 @@ function normalizedAccountId(value: unknown, field: string, details: string[]): 
   return normalized;
 }
 
+function normalizedServerSlug(value: unknown, field: string, details: string[]): string | undefined {
+  const raw = normalizedScopeString(value);
+  if (!raw) return undefined;
+  const normalized = raw.toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]{1,118}[a-z0-9]$/.test(normalized)) {
+    details.push(`params.${field} must be server slug-safe.`);
+    return undefined;
+  }
+  return normalized;
+}
+
 function optionalScopeBoolean(value: unknown): boolean | null | undefined {
   if (value === undefined || value === null) return undefined;
   return typeof value === "boolean" ? value : null;
@@ -756,6 +770,7 @@ function publicPlanApproval(planApproval: PlanApprovalRecord): {
   provider: string;
   vpsProviderId?: string;
   serverAccountId?: string;
+  reuseServerSlug?: string;
   expiresAt: string;
 } {
   return {
@@ -765,6 +780,7 @@ function publicPlanApproval(planApproval: PlanApprovalRecord): {
     provider: planApproval.scope.provider,
     ...(planApproval.scope.vpsProviderId ? { vpsProviderId: planApproval.scope.vpsProviderId } : {}),
     ...(planApproval.scope.serverAccountId ? { serverAccountId: planApproval.scope.serverAccountId } : {}),
+    ...(planApproval.scope.reuseServerSlug ? { reuseServerSlug: planApproval.scope.reuseServerSlug } : {}),
     expiresAt: planApproval.expiresAt
   };
 }

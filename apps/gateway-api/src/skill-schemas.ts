@@ -47,7 +47,8 @@ export interface Route53DomainDetailParams extends Record<string, unknown> {
 }
 
 export interface Route53ZoneRecordsParams extends Record<string, unknown> {
-  zoneId: string;
+  domain?: string;
+  zoneId?: string;
   recordType?: "A" | "AAAA" | "CNAME" | "MX" | "TXT" | "NS" | "SOA" | "PTR" | "SRV" | "CAA";
   recordName?: string;
 }
@@ -109,11 +110,60 @@ export interface ReadInfrastructureInventoryParams extends Record<string, unknow
 
 export interface ReadInfrastructureAccountHealthParams extends Record<string, unknown> {}
 
+export interface InspectSmtpInventoryParams extends Record<string, unknown> {
+  domain?: string;
+  serverSlug?: string;
+  status?: "configured" | "superseded" | "retired" | "archived";
+}
+
 export interface RetireInfrastructureAccountParams extends Record<string, unknown> {
   providerId: "webdock";
   accountId: string;
   reason: string;
   accountLabel?: string;
+}
+
+export interface ResolveAmbiguousDomainParams extends Record<string, unknown> {
+  domain: string;
+  keepServerSlug?: string;
+  reason?: string;
+  dryRun?: boolean;
+}
+
+export interface RetireSmtpEntryParams extends Record<string, unknown> {
+  domain: string;
+  serverSlug: string;
+  reason: string;
+  dryRun?: boolean;
+}
+
+export interface ReassignDomainServerParams extends Record<string, unknown> {
+  domain: string;
+  fromServerSlug: string;
+  toServerSlug: string;
+  reason: string;
+  dryRun?: boolean;
+}
+
+export interface CreateSmtpEntryParams extends Record<string, unknown> {
+  domain: string;
+  serverSlug: string;
+  serverIp: string;
+  selector: string;
+  status: "configured";
+  reason: string;
+  dryRun?: boolean;
+}
+
+export interface UpdateSmtpEntryParams extends Record<string, unknown> {
+  domain: string;
+  serverSlug: string;
+  selector?: string;
+  status?: "configured" | "superseded" | "retired" | "archived";
+  tlsStatus?: string;
+  smtpAuthStatus?: "configured";
+  reason?: string;
+  dryRun?: boolean;
 }
 
 export interface ListConversationsParams extends Record<string, unknown> {
@@ -150,8 +200,20 @@ export interface EmailAuthParams extends Record<string, unknown> {
   explicitRepairScope?: string;
 }
 
+export interface ReconcileDnsToLiveSmtpParams extends Record<string, unknown> {
+  domain: string;
+  serverSlug: string;
+  serverIp?: string;
+  selector?: string;
+  dryRun?: boolean;
+  taskId?: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
+}
+
 export interface EnableSmtpAuthParams extends Record<string, unknown> {
   domain: string;
+  serverSlug?: string;
   mode?: "enable" | "recover" | "rotate";
 }
 
@@ -203,6 +265,8 @@ export interface ConfigureCompleteSmtpParams extends Record<string, unknown> {
    * vpsProviderId; NO entra a step params/hashInput. undefined => el governor elige cuenta.
    */
   serverAccountId?: string;
+  /** Reusa/adopta un VPS existente por slug en vez de crear uno nuevo. */
+  reuseServerSlug?: string;
   requireExistingDomain?: boolean;
   brand: string;
   intent?: string;
@@ -224,6 +288,8 @@ export interface ConfigureCompleteSmtpSkillParams extends Record<string, unknown
   vpsProviderId?: string;
   /** Cuenta de proveedor destino. PR1: Webdock accountId; undefined => governor. */
   serverAccountId?: string;
+  /** Reusa/adopta un VPS existente por slug en vez de crear uno nuevo. */
+  reuseServerSlug?: string;
   requireExistingDomain?: boolean;
   brand: string;
   intent?: string;
@@ -372,8 +438,14 @@ export const runStateIntegrityParamSchema = schema<RunStateIntegrityParams>(() =
 
 export const route53ZoneRecordsParamSchema = schema<Route53ZoneRecordsParams>((value) => {
   const input = object(value);
+  const hasDomain = input.domain !== undefined && input.domain !== null && input.domain !== "";
+  const hasZoneId = input.zoneId !== undefined && input.zoneId !== null && input.zoneId !== "";
+  if (!hasDomain) {
+    throw new SkillSchemaError("domain is required");
+  }
   return {
-    zoneId: route53ZoneId(input.zoneId, "zoneId"),
+    domain: domain(input.domain, "domain"),
+    ...(hasZoneId ? { zoneId: route53ZoneId(input.zoneId, "zoneId") } : {}),
     ...(input.recordType === undefined || input.recordType === null || input.recordType === ""
       ? {}
       : { recordType: oneOf(String(input.recordType).toUpperCase(), "recordType", route53ReadRecordTypes) }),
@@ -448,6 +520,17 @@ export const readInfrastructureAccountHealthParamSchema = schema<ReadInfrastruct
   return {};
 });
 
+export const inspectSmtpInventoryParamSchema = schema<InspectSmtpInventoryParams>((value) => {
+  const input = object(value);
+  return {
+    ...(input.domain === undefined || input.domain === null || input.domain === "" ? {} : { domain: domain(input.domain, "domain") }),
+    ...(input.serverSlug === undefined || input.serverSlug === null || input.serverSlug === "" ? {} : { serverSlug: slug(input.serverSlug, "serverSlug") }),
+    ...(input.status === undefined || input.status === null || input.status === "" ? {} : {
+      status: oneOf(input.status, "status", ["configured", "superseded", "retired", "archived"] as const)
+    })
+  };
+});
+
 export const retireInfrastructureAccountParamSchema = schema<RetireInfrastructureAccountParams>((value) => {
   const input = object(value);
   return {
@@ -457,6 +540,76 @@ export const retireInfrastructureAccountParamSchema = schema<RetireInfrastructur
     ...(input.accountLabel === undefined || input.accountLabel === null || input.accountLabel === ""
       ? {}
       : { accountLabel: boundedText(input.accountLabel, "accountLabel", 2, 120) })
+  };
+});
+
+export const resolveAmbiguousDomainParamSchema = schema<ResolveAmbiguousDomainParams>((value) => {
+  const input = object(value);
+  return {
+    domain: domain(input.domain, "domain"),
+    ...(input.keepServerSlug === undefined || input.keepServerSlug === null || input.keepServerSlug === ""
+      ? {}
+      : { keepServerSlug: slug(input.keepServerSlug, "keepServerSlug") }),
+    ...(input.reason === undefined || input.reason === null || input.reason === "" ? {} : { reason: boundedText(input.reason, "reason", 10, 500) }),
+    ...(input.dryRun === undefined || input.dryRun === null ? {} : { dryRun: boolean(input.dryRun, "dryRun") })
+  };
+});
+
+export const retireSmtpEntryParamSchema = schema<RetireSmtpEntryParams>((value) => {
+  const input = object(value);
+  return {
+    domain: domain(input.domain, "domain"),
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    reason: boundedText(input.reason, "reason", 10, 500),
+    ...(input.dryRun === undefined || input.dryRun === null ? {} : { dryRun: boolean(input.dryRun, "dryRun") })
+  };
+});
+
+export const reassignDomainServerParamSchema = schema<ReassignDomainServerParams>((value) => {
+  const input = object(value);
+  return {
+    domain: domain(input.domain, "domain"),
+    fromServerSlug: slug(input.fromServerSlug, "fromServerSlug"),
+    toServerSlug: slug(input.toServerSlug, "toServerSlug"),
+    reason: boundedText(input.reason, "reason", 10, 500),
+    ...(input.dryRun === undefined || input.dryRun === null ? {} : { dryRun: boolean(input.dryRun, "dryRun") })
+  };
+});
+
+export const createSmtpEntryParamSchema = schema<CreateSmtpEntryParams>((value) => {
+  const input = object(value);
+  return {
+    domain: domain(input.domain, "domain"),
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    serverIp: ipv4(input.serverIp, "serverIp"),
+    selector: selector(input.selector, "selector"),
+    status: oneOf(input.status ?? "configured", "status", ["configured"] as const),
+    reason: boundedText(input.reason, "reason", 10, 500),
+    dryRun: input.dryRun === undefined || input.dryRun === null ? true : boolean(input.dryRun, "dryRun")
+  };
+});
+
+export const updateSmtpEntryParamSchema = schema<UpdateSmtpEntryParams>((value) => {
+  const input = object(value);
+  const patch = {
+    ...(input.selector === undefined || input.selector === null || input.selector === "" ? {} : { selector: selector(input.selector, "selector") }),
+    ...(input.status === undefined || input.status === null || input.status === "" ? {} : {
+      status: oneOf(input.status, "status", ["configured", "superseded", "retired", "archived"] as const)
+    }),
+    ...(input.tlsStatus === undefined || input.tlsStatus === null || input.tlsStatus === "" ? {} : { tlsStatus: boundedText(input.tlsStatus, "tlsStatus", 3, 120) }),
+    ...(input.smtpAuthStatus === undefined || input.smtpAuthStatus === null || input.smtpAuthStatus === "" ? {} : {
+      smtpAuthStatus: oneOf(input.smtpAuthStatus, "smtpAuthStatus", ["configured"] as const)
+    })
+  };
+  if (Object.keys(patch).length === 0) {
+    throw new SkillSchemaError("at least one of selector, status, tlsStatus or smtpAuthStatus is required");
+  }
+  return {
+    domain: domain(input.domain, "domain"),
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    ...patch,
+    ...(input.reason === undefined || input.reason === null || input.reason === "" ? {} : { reason: boundedText(input.reason, "reason", 10, 500) }),
+    ...(input.dryRun === undefined || input.dryRun === null ? {} : { dryRun: boolean(input.dryRun, "dryRun") })
   };
 });
 
@@ -533,10 +686,22 @@ export const emailAuthParamSchema = schema<EmailAuthParams>((value) => {
   }, input), input);
 });
 
+export const reconcileDnsToLiveSmtpParamSchema = schema<ReconcileDnsToLiveSmtpParams>((value) => {
+  const input = object(value);
+  return withOptionalRepairScope(withOptionalTaskId({
+    domain: domain(input.domain, "domain"),
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    ...(input.serverIp === undefined || input.serverIp === null || input.serverIp === "" ? {} : { serverIp: ipv4(input.serverIp, "serverIp") }),
+    ...(input.selector === undefined || input.selector === null || input.selector === "" ? {} : { selector: selector(input.selector, "selector") }),
+    ...(input.dryRun === undefined || input.dryRun === null ? {} : { dryRun: boolean(input.dryRun, "dryRun") })
+  }, input), input);
+});
+
 export const enableSmtpAuthParamSchema = schema<EnableSmtpAuthParams>((value) => {
   const input = object(value);
   return {
     domain: domain(input.domain, "domain"),
+    ...(input.serverSlug === undefined || input.serverSlug === null || input.serverSlug === "" ? {} : { serverSlug: slug(input.serverSlug, "serverSlug") }),
     ...(input.mode === undefined || input.mode === null || input.mode === "" ? {} : {
       mode: oneOf(input.mode, "mode", ["enable", "recover", "rotate"] as const)
     })
@@ -595,6 +760,7 @@ export const configureCompleteSmtpSkillParamSchema = schema<ConfigureCompleteSmt
     // Canal PARALELO HERMANO (provider account): PR1 solo Webdock. Runtime valida el par proveedor/cuenta
     // contra inventario vivo; el schema solo preserva el valor para que no se descarte en silencio.
     ...(input.serverAccountId === undefined || input.serverAccountId === null || input.serverAccountId === "" ? {} : { serverAccountId: accountId(input.serverAccountId, "serverAccountId") }),
+    ...(input.reuseServerSlug === undefined || input.reuseServerSlug === null || input.reuseServerSlug === "" ? {} : { reuseServerSlug: slug(input.reuseServerSlug, "reuseServerSlug").toLowerCase() }),
     ...(input.requireExistingDomain === undefined || input.requireExistingDomain === null ? {} : { requireExistingDomain: boolean(input.requireExistingDomain, "requireExistingDomain") }),
     brand: string(input.brand, "brand"),
     ...(input.intent === undefined || input.intent === null || input.intent === "" ? {} : { intent: string(input.intent, "intent") }),

@@ -224,6 +224,124 @@ test("AwsRoute53DnsAdapter lists hosted zones across Route53 cursors", async () 
   assert.equal(new URL(calls[1]).searchParams.get("marker"), "Z222222222");
 });
 
+test("AwsRoute53DnsAdapter lists hosted zones by exact apex name", async () => {
+  const calls: string[] = [];
+  const adapter = new AwsRoute53DnsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    writeEnabled: false,
+    fetchImpl: (async (url: string | URL | Request) => {
+      calls.push(url.toString());
+      return xmlResponse([
+        "<ListHostedZonesByNameResponse>",
+        "<HostedZones>",
+        "<HostedZone><Id>/hostedzone/Z01313019Q8DEA3UGP8G</Id><Name>controlcorpfiling.com.</Name></HostedZone>",
+        "<HostedZone><Id>/hostedzone/ZOTHERDOMAIN</Id><Name>controlcorpfiling.com.evil.</Name></HostedZone>",
+        "</HostedZones>",
+        "<IsTruncated>false</IsTruncated>",
+        "</ListHostedZonesByNameResponse>"
+      ].join(""));
+    }) as typeof fetch,
+    now: () => fixedNow
+  });
+
+  const zones = await adapter.listHostedZonesByName("ControlCorpFiling.COM.");
+
+  assert.deepEqual(zones, [{
+    zoneId: "Z01313019Q8DEA3UGP8G",
+    name: "controlcorpfiling.com.",
+    nameServers: []
+  }]);
+  const url = new URL(calls[0]);
+  assert.equal(url.pathname, "/2013-04-01/hostedzonesbyname");
+  assert.equal(url.searchParams.get("dnsname"), "controlcorpfiling.com.");
+});
+
+test("AwsRoute53DnsAdapter follows ListHostedZonesByName cursor for duplicate apex zones", async () => {
+  const calls: string[] = [];
+  const adapter = new AwsRoute53DnsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    writeEnabled: false,
+    fetchImpl: (async (url: string | URL | Request) => {
+      calls.push(url.toString());
+      if (calls.length === 1) {
+        return xmlResponse([
+          "<ListHostedZonesByNameResponse>",
+          "<HostedZones>",
+          "<HostedZone><Id>/hostedzone/ZONE1</Id><Name>controldelivrix.app.</Name></HostedZone>",
+          "</HostedZones>",
+          "<IsTruncated>true</IsTruncated>",
+          "<NextDNSName>controldelivrix.app.</NextDNSName>",
+          "<NextHostedZoneId>ZONE2</NextHostedZoneId>",
+          "</ListHostedZonesByNameResponse>"
+        ].join(""));
+      }
+      return xmlResponse([
+        "<ListHostedZonesByNameResponse>",
+        "<HostedZones>",
+        "<HostedZone><Id>/hostedzone/ZONE2</Id><Name>controldelivrix.app.</Name></HostedZone>",
+        "</HostedZones>",
+        "<IsTruncated>false</IsTruncated>",
+        "</ListHostedZonesByNameResponse>"
+      ].join(""));
+    }) as typeof fetch,
+    now: () => fixedNow
+  });
+
+  const zones = await adapter.listHostedZonesByName("controldelivrix.app");
+
+  assert.deepEqual(zones.map((zone) => zone.zoneId), ["ZONE1", "ZONE2"]);
+  assert.equal(new URL(calls[1]).searchParams.get("hostedzoneid"), "ZONE2");
+});
+
+test("AwsRoute53DnsAdapter rejects repeated hosted zone pagination cursors", async () => {
+  const adapter = new AwsRoute53DnsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    writeEnabled: false,
+    fetchImpl: (async () => xmlResponse([
+      "<ListHostedZonesResponse>",
+      "<HostedZones>",
+      "<HostedZone><Id>/hostedzone/Z111111111</Id><Name>delivrix-mail.com.</Name></HostedZone>",
+      "</HostedZones>",
+      "<IsTruncated>true</IsTruncated>",
+      "<NextMarker>Z111111111</NextMarker>",
+      "</ListHostedZonesResponse>"
+    ].join(""))) as typeof fetch,
+    now: () => fixedNow
+  });
+
+  await assert.rejects(
+    () => adapter.listHostedZones(),
+    /ListHostedZones pagination cursor repeated/
+  );
+});
+
+test("AwsRoute53DnsAdapter rejects repeated ListHostedZonesByName cursors", async () => {
+  const adapter = new AwsRoute53DnsAdapter({
+    accessKeyId: "AKIAEXAMPLE",
+    secretAccessKey: "secret",
+    writeEnabled: false,
+    fetchImpl: (async () => xmlResponse([
+      "<ListHostedZonesByNameResponse>",
+      "<HostedZones>",
+      "<HostedZone><Id>/hostedzone/ZONE1</Id><Name>controldelivrix.app.</Name></HostedZone>",
+      "</HostedZones>",
+      "<IsTruncated>true</IsTruncated>",
+      "<NextDNSName>controldelivrix.app.</NextDNSName>",
+      "<NextHostedZoneId>ZONE1</NextHostedZoneId>",
+      "</ListHostedZonesByNameResponse>"
+    ].join(""))) as typeof fetch,
+    now: () => fixedNow
+  });
+
+  await assert.rejects(
+    () => adapter.listHostedZonesByName("controldelivrix.app"),
+    /ListHostedZonesByName pagination cursor repeated/
+  );
+});
+
 test("AwsRoute53DnsAdapter lists resource records when writes are disabled", async () => {
   let fetchCalled = false;
   const adapter = new AwsRoute53DnsAdapter({

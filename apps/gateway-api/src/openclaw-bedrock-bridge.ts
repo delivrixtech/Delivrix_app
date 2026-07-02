@@ -69,7 +69,9 @@ const defaultMaxInMemoryConversations = 12;
 const defaultMaxAttachmentTurnsInMemory = 1;
 const defaultMaxBedrockInputChars = 720_000;
 const defaultDelivrixBaseUrl = "http://127.0.0.1:3000";
-const defaultMaxToolIterations = 10;
+const defaultMaxToolIterations = 40;
+const maxToolIterationsCap = 40;
+const toolIterationsNearLimitRatio = 0.8;
 const defaultLiveContextItemLimit = 50;
 const defaultLiveContextMaxChars = 55_000;
 const inventoryServersLiveContextMaxChars = 16_000;
@@ -266,10 +268,10 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     this.fetchImpl = config.fetchImpl ?? fetch.bind(globalThis);
     this.now = config.now ?? (() => new Date());
     this.env = runtimeEnv;
-    this.maxToolIterations = config.maxToolIterations ?? defaultMaxToolIterations;
+    this.logger = config.logger ?? noopGatewayRuntimeLogger;
+    this.maxToolIterations = normalizeMaxToolIterations(config.maxToolIterations, this.logger);
     this.liveContextItemLimit = config.liveContextItemLimit ?? parsePositiveInt(runtimeEnv.OPENCLAW_LIVE_CONTEXT_ITEM_LIMIT) ?? defaultLiveContextItemLimit;
     this.liveContextMaxChars = config.liveContextMaxChars ?? parsePositiveInt(runtimeEnv.OPENCLAW_LIVE_CONTEXT_MAX_CHARS) ?? defaultLiveContextMaxChars;
-    this.logger = config.logger ?? noopGatewayRuntimeLogger;
     this.auditLog = config.auditLog ?? null;
     this.canvasLiveEvents = config.canvasLiveEvents ?? null;
     this.chatHistoryStore = config.chatHistoryStore ?? null;
@@ -486,6 +488,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     const toolsInvoked: string[] = [];
     const turnIntentId = intentIdForMsgId(msgId);
     let emittedTypedArtifact = false;
+    let nearToolIterationLimitLogged = false;
     const recentToolSignatures: string[] = [];
 
     try {
@@ -539,6 +542,19 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
             durationMs,
             ...(toolsInvoked.length > 0 ? { toolsInvoked } : {})
           };
+        }
+
+        const oneBasedIteration = iteration + 1;
+        if (!nearToolIterationLimitLogged && oneBasedIteration >= Math.ceil(this.maxToolIterations * toolIterationsNearLimitRatio)) {
+          nearToolIterationLimitLogged = true;
+          await this.logger.warn("openclaw.bedrock.tool_iterations_near_limit", "Bedrock tool loop is approaching the configured iteration cap.", {
+            msgId,
+            iteration: oneBasedIteration,
+            maxToolIterations: this.maxToolIterations,
+            remainingIterations: Math.max(0, this.maxToolIterations - oneBasedIteration),
+            toolNames: toolUses.map((toolUse) => toolUse.name),
+            toolsInvokedCount: toolsInvoked.length
+          });
         }
 
         const currentToolSignatures = toolUses.map(toolUseLoopSignature);
@@ -679,6 +695,12 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
         });
       }
 
+      await this.logger.warn("openclaw.bedrock.tool_iterations_exceeded", "Bedrock tool-use loop exhausted the configured iteration cap.", {
+        msgId,
+        maxToolIterations: this.maxToolIterations,
+        toolsInvokedCount: toolsInvoked.length,
+        uniqueToolNames: [...new Set(toolsInvoked)]
+      });
       throw new OpenClawBedrockBridgeError(
         "bedrock_tool_loop_exceeded",
         `OpenClaw Bedrock exceeded ${this.maxToolIterations} tool-use iterations.`
@@ -1592,7 +1614,7 @@ function typedArtifactFromToolResult(
   result: unknown,
   occurredAt: string
 ): TypedArtifactBuildResult | null {
-  if (toolName === "read_webdock_servers" || toolName === "read_infrastructure_inventory") {
+  if (toolName === "read_webdock_servers" || toolName === "read_infrastructure_inventory" || toolName === "inspect_smtp_inventory") {
     return inventoryArtifactFromToolResult(result);
   }
   if (toolName === "read_mxtoolbox_health") {
@@ -1893,7 +1915,7 @@ function enrichToolResultForModel(
 
 function stringifyToolResult(result: unknown, toolName?: string): string {
   const raw = redactRuntimeLogSecrets(JSON.stringify(redactSensitiveLiveContext(result)));
-  const maxChars = toolName === "read_infrastructure_inventory" || toolName === "read_webdock_servers"
+  const maxChars = toolName === "read_infrastructure_inventory" || toolName === "read_webdock_servers" || toolName === "inspect_smtp_inventory"
     ? readInventoryToolResultPreviewMaxChars
     : defaultToolResultPreviewMaxChars;
   if (raw.length <= maxChars) {
@@ -1994,6 +2016,24 @@ function normalizeEnvValue(value: string | undefined): string | undefined {
 function parsePositiveInt(value: string | undefined): number | undefined {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function normalizeMaxToolIterations(
+  value: number | undefined,
+  logger: GatewayRuntimeLogger = noopGatewayRuntimeLogger
+): number {
+  const requested = Number.isInteger(value) && Number(value) > 0
+    ? Number(value)
+    : defaultMaxToolIterations;
+  if (requested > maxToolIterationsCap) {
+    logger.warn("openclaw.bedrock.max_tool_iterations_clamped", "OPENCLAW_TOOL_MAX_ITERATIONS exceeded the safety cap and was clamped.", {
+      requested,
+      maxToolIterationsCap,
+      effectiveMaxToolIterations: maxToolIterationsCap
+    }).catch(() => undefined);
+    return maxToolIterationsCap;
+  }
+  return requested;
 }
 
 function parseTemperature(value: string | undefined): number | undefined {

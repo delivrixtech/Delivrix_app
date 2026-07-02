@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
 import type { ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   dispatchSkillHandler,
   resolveContaboBindTiming,
@@ -10,9 +13,16 @@ import {
 import { ionosUpsertParamSchema, route53RegisterParamSchema, route53UpsertParamSchema, webdockCreateParamSchema } from "./skill-schemas.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
 import { approvalTokenHash } from "./approval-guard.ts";
+import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import type { WebdockServerCreateAdapter, WebdockServerDeleteAdapter } from "./routes/webdock-servers.ts";
 import type { BindWebdockMainDomainAdapter } from "./routes/webdock-bind-domain.ts";
 import {
+  type AwsRoute53DnsChangeResult,
+  type AwsRoute53DnsRecordInput,
+  type AwsRoute53DnsSource,
+  type AwsRoute53HostedZoneResult,
+  type AwsRoute53HostedZoneSummary,
+  type AwsRoute53ResourceRecordSet,
   createIonosDnsProviderFromEnv,
   createRoute53DnsProviderFromEnv,
   type DnsProvider,
@@ -290,6 +300,293 @@ test("dispatcher retires infrastructure account as local-only state after Approv
   assert.equal((auditEvents[0] as any).metadata.physicalDelete, false);
   assert.equal((auditEvents[0] as any).metadata.sideEffects, "local-state-only");
   assert.deepEqual((auditEvents[0] as any).metadata.rollbackPlan, (result.summary as { rollbackPlan?: unknown }).rollbackPlan);
+});
+
+test("dispatcher resolves ambiguous SMTP inventory as local-only state after ApprovalGate dispatch", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "dispatcher-smtp-inventory-"))
+  });
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      {
+        serverSlug: "server85",
+        domain: "legacy-one.com",
+        serverIp: "192.0.2.85",
+        selector: "default",
+        status: "configured",
+        tlsStatus: "attempted_or_pending_dns",
+        configuredAt: "2026-06-30T20:00:00.000Z",
+        updatedAt: "2026-06-30T20:00:00.000Z"
+      },
+      {
+        serverSlug: "server88",
+        domain: "legacy-one.com",
+        serverIp: "192.0.2.88",
+        selector: "default",
+        status: "configured",
+        tlsStatus: "attempted_or_pending_dns",
+        configuredAt: "2026-06-30T20:00:00.000Z",
+        updatedAt: "2026-06-30T20:00:00.000Z"
+      }
+    ]
+  }));
+  const auditEvents: Array<Record<string, unknown>> = [];
+
+  const result = await dispatchSkillHandler({
+    skill: "resolve_ambiguous_domain",
+    params: {
+      domain: "legacy-one.com",
+      keepServerSlug: "server88",
+      reason: "Resolver duplicado tras retry confirmado."
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      workspace,
+      auditLog: {
+        append: async (event: Record<string, unknown>) => { auditEvents.push(event); },
+        list: async () => []
+      },
+      readKillSwitch: async () => ({ enabled: false }),
+      readSmtpInventoryLiveServers: async () => [{ serverSlug: "server88", ipv4: "192.0.2.88", status: "running" }]
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.statusCode, 200);
+  const inventory = await workspace.readInventoryJson<{
+    servers: Array<{ serverSlug: string; status: string; supersededBy?: string }>;
+  }>("smtp-provisioning.json");
+  assert.equal(inventory?.servers.find((server) => server.serverSlug === "server85")?.status, "superseded");
+  assert.equal(inventory?.servers.find((server) => server.serverSlug === "server85")?.supersededBy, "server88");
+  assert.equal(auditEvents.at(-1)?.action, "oc.smtp_inventory.ambiguous_domain_resolved");
+  const metadata = auditEvents.at(-1)?.metadata as Record<string, unknown>;
+  assert.equal(metadata.sideEffects, "local-state-only");
+  assert.match(String((metadata.rollbackPlan as Record<string, unknown>).procedure), /No automatic inventory backup/);
+  assert.deepEqual((metadata.plan as Record<string, unknown>).previousStatuses, [
+    { serverSlug: "server85", status: "configured" },
+    { serverSlug: "server88", status: "configured" }
+  ]);
+});
+
+test("dispatcher creates SMTP inventory entry only for a live running server and audits critical approval hash", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "dispatcher-create-smtp-entry-")),
+    now: () => new Date("2026-07-02T12:00:00.000Z")
+  });
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      serverSlug: "server57",
+      domain: "controlcorpfiling.com",
+      serverIp: "192.0.2.57",
+      selector: "default",
+      status: "configured",
+      tlsStatus: "attempted_or_pending_dns"
+    }]
+  }));
+  const auditEvents: Array<Record<string, unknown>> = [];
+
+  const result = await dispatchSkillHandler({
+    skill: "create_smtp_entry",
+    params: {
+      domain: "controlcorpfiling.com",
+      serverSlug: "server58",
+      serverIp: "45.136.70.174",
+      selector: "s2026a",
+      status: "configured",
+      reason: "Crear entrada tras verificacion multi-proveedor.",
+      dryRun: false
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      workspace,
+      auditLog: {
+        append: async (event: Record<string, unknown>) => { auditEvents.push(event); },
+        list: async () => []
+      },
+      readKillSwitch: async () => ({ enabled: false }),
+      readSmtpInventoryLiveServers: async () => [{
+        serverSlug: "server58",
+        ipv4: "45.136.70.174",
+        status: "running",
+        providerId: "webdock",
+        accountId: "quinary",
+        accountHealthStatus: "healthy"
+      }]
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.statusCode, 200);
+  const inventory = await workspace.readInventoryJson<{
+    servers: Array<{ serverSlug: string; domain: string; serverIp: string; selector: string; status: string; supersededBy?: string }>;
+  }>("smtp-provisioning.json");
+  assert.equal(inventory?.servers.find((server) => server.serverSlug === "server57")?.status, "superseded");
+  assert.equal(inventory?.servers.find((server) => server.serverSlug === "server57")?.supersededBy, "server58");
+  const created = inventory?.servers.find((server) => server.serverSlug === "server58");
+  assert.equal(created?.status, "configured");
+  assert.equal(created?.serverIp, "45.136.70.174");
+  assert.equal(created?.selector, "s2026a");
+
+  const audit = auditEvents.at(-1);
+  assert.equal(audit?.action, "oc.smtp_inventory.entry_created");
+  assert.equal(audit?.riskLevel, "critical");
+  const metadata = audit?.metadata as Record<string, unknown>;
+  assert.equal(metadata.approvalTokenHash, approvalTokenHash(token.tokenId));
+  assert.equal(metadata.sideEffects, "local-state-only");
+  assert.equal((metadata.rollbackPlan as Record<string, unknown>).futureSkill, "inspect_smtp_inventory");
+  assert.equal((metadata.rollbackPlan as Record<string, unknown>).inventoryMutationKind, "created_new");
+  assert.deepEqual((metadata.plan as Record<string, unknown>).supersededServerSlugs, ["server57"]);
+});
+
+test("dispatcher blocks create_smtp_entry before liveness reads when kill-switch is armed", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "dispatcher-create-smtp-entry-kill-")),
+    now: () => new Date("2026-07-02T12:05:00.000Z")
+  });
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({ servers: [] }));
+  let liveRead = false;
+  const result = await dispatchSkillHandler({
+    skill: "create_smtp_entry",
+    params: {
+      domain: "controlcorpfiling.com",
+      serverSlug: "server58",
+      serverIp: "45.136.70.174",
+      selector: "s2026a",
+      status: "configured",
+      reason: "Crear entrada tras verificacion multi-proveedor.",
+      dryRun: false
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      workspace,
+      readKillSwitch: async () => ({ enabled: true }),
+      readSmtpInventoryLiveServers: async () => {
+        liveRead = true;
+        return [{ serverSlug: "server58", ipv4: "45.136.70.174", status: "running", accountHealthStatus: "healthy" }];
+      }
+    }
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.statusCode, 423);
+  assert.deepEqual(result.summary, { error: "kill_switch_armed" });
+  assert.equal(liveRead, false);
+  const inventory = await workspace.readInventoryJson<{ servers: unknown[] }>("smtp-provisioning.json");
+  assert.equal(inventory?.servers.length, 0);
+});
+
+test("dispatcher reconciles live SMTP DNS after ApprovalGate dispatch and audits rollback plan", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "dispatcher-reconcile-dns-")),
+    now: () => new Date("2026-07-01T12:00:00.000Z")
+  });
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      serverSlug: "server60",
+      domain: "controlcorpfiling.com",
+      serverIp: "193.180.211.182",
+      selector: "s2026a",
+      status: "configured"
+    }]
+  }));
+  const route53DnsAdapter = new FakeDispatcherRoute53Adapter();
+  const auditEvents: Array<Record<string, unknown>> = [];
+
+  const result = await dispatchSkillHandler({
+    skill: "reconcile_dns_to_live_smtp",
+    params: {
+      domain: "controlcorpfiling.com",
+      serverSlug: "server60",
+      repairReason: "Reconciliar DNS contra SMTP vivo confirmado.",
+      dryRun: false
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      workspace,
+      route53DnsAdapter: route53DnsAdapter as never,
+      domainPurchaseAdapter: {
+        getDomainNameservers: async () => ["ns-real-1.awsdns-11.com", "ns-real-2.awsdns-12.net"]
+      } as never,
+      auditLog: {
+        append: async (event: Record<string, unknown>) => { auditEvents.push(event); },
+        list: async () => []
+      },
+      readKillSwitch: async () => ({ enabled: false }),
+      readCanvasState: () => ({ tasks: [], actions: [], artifacts: [] } as never),
+      readSmtpInventoryLiveServers: async () => [{
+        serverSlug: "server60",
+        ipv4: "193.180.211.182",
+        status: "running"
+      }]
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(route53DnsAdapter.upserts.map((entry) => ({
+    zoneId: entry.zoneId,
+    name: entry.record.name,
+    type: entry.record.type
+  })), [
+    { zoneId: "ZLIVE123456", name: "smtp.controlcorpfiling.com", type: "A" },
+    { zoneId: "ZLIVE123456", name: "controlcorpfiling.com", type: "TXT" },
+    { zoneId: "ZLIVE123456", name: "controlcorpfiling.com", type: "MX" }
+  ]);
+  assert.equal(auditEvents.length, 1);
+  assert.equal(auditEvents[0].action, "oc.dns.smtp_reconciled");
+  const auditMetadata = auditEvents[0].metadata as Record<string, unknown>;
+  assert.equal(auditMetadata.status, "reconciled");
+  assert.match(String((auditMetadata.rollbackPlan as Record<string, unknown>).procedure), /upsert_dns_route53/);
+  assert.equal((result.summary as { changed?: boolean }).changed, true);
+});
+
+test("dispatcher fails SMTP inventory mutators closed without a live inventory source", async () => {
+  for (const mutator of smtpInventoryDispatchCases()) {
+    const result = await dispatchSkillHandler({
+      skill: mutator.skill,
+      params: mutator.params,
+      actorId: "operator-juanes",
+      approvalToken: token,
+      deps: fakeDeps()
+    });
+
+    assert.equal(result.ok, false, mutator.skill);
+    assert.equal(result.statusCode, 503, mutator.skill);
+    assert.deepEqual(result.summary, { error: "smtp_inventory_live_source_missing" }, mutator.skill);
+  }
+});
+
+test("dispatcher blocks SMTP inventory mutators with kill-switch before reading live source", async () => {
+  for (const mutator of smtpInventoryDispatchCases()) {
+    let liveSourceRead = false;
+    const result = await dispatchSkillHandler({
+      skill: mutator.skill,
+      params: mutator.params,
+      actorId: "operator-juanes",
+      approvalToken: token,
+      deps: {
+        ...fakeDeps(),
+        readKillSwitch: async () => ({ enabled: true }),
+        readSmtpInventoryLiveServers: async () => {
+          liveSourceRead = true;
+          return [];
+        }
+      }
+    });
+
+    assert.equal(result.ok, false, mutator.skill);
+    assert.equal(result.statusCode, 423, mutator.skill);
+    assert.deepEqual(result.summary, { error: "kill_switch_armed" }, mutator.skill);
+    assert.equal(liveSourceRead, false, mutator.skill);
+  }
 });
 
 test("dispatcher rejects invalid infrastructure retire params before touching lifecycle store", async () => {
@@ -910,8 +1207,124 @@ function statusEntry(
   };
 }
 
+class FakeDispatcherRoute53Adapter {
+  readonly upserts: Array<{ zoneId: string; record: AwsRoute53DnsRecordInput }> = [];
+
+  isLive(): boolean {
+    return true;
+  }
+
+  isWriteEnabled(): boolean {
+    return true;
+  }
+
+  currentSource(): AwsRoute53DnsSource {
+    return {
+      kind: "live",
+      region: "us-east-1",
+      apiBase: "https://route53.amazonaws.com",
+      fetchedAt: "2026-07-01T12:00:00.000Z",
+      responseOk: true,
+      writeEnabled: true
+    };
+  }
+
+  async createHostedZone(): Promise<AwsRoute53HostedZoneResult> {
+    throw new Error("unexpected createHostedZone");
+  }
+
+  async listHostedZones(): Promise<AwsRoute53HostedZoneSummary[]> {
+    return this.hostedZones();
+  }
+
+  async listHostedZonesByName(): Promise<AwsRoute53HostedZoneSummary[]> {
+    return this.hostedZones();
+  }
+
+  async upsertRecord(zoneId: string, record: AwsRoute53DnsRecordInput): Promise<AwsRoute53DnsChangeResult> {
+    this.upserts.push({ zoneId, record });
+    return { changeId: `change-${this.upserts.length}` };
+  }
+
+  async listResourceRecordSets(zoneId: string): Promise<AwsRoute53ResourceRecordSet[]> {
+    if (zoneId !== "ZLIVE123456") return [];
+    return [
+      {
+        name: "controlcorpfiling.com.",
+        type: "NS",
+        ttl: 172800,
+        values: ["ns-real-1.awsdns-11.com.", "ns-real-2.awsdns-12.net."]
+      },
+      {
+        name: "s2026a._domainkey.controlcorpfiling.com.",
+        type: "TXT",
+        ttl: 300,
+        values: ["v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A"]
+      }
+    ];
+  }
+
+  private hostedZones(): AwsRoute53HostedZoneSummary[] {
+    return [{
+      zoneId: "ZLIVE123456",
+      name: "controlcorpfiling.com.",
+      nameServers: ["ns-real-1.awsdns-11.com.", "ns-real-2.awsdns-12.net."]
+    }];
+  }
+}
+
 function fakeDeps(): any {
   return {};
+}
+
+function smtpInventoryDispatchCases(): Array<{ skill: string; params: Record<string, unknown> }> {
+  return [
+    {
+      skill: "resolve_ambiguous_domain",
+      params: {
+        domain: "legacy-one.com",
+        keepServerSlug: "server88",
+        reason: "Resolver duplicado confirmado por inventario vivo."
+      }
+    },
+    {
+      skill: "retire_smtp_entry",
+      params: {
+        domain: "legacy-one.com",
+        serverSlug: "server92",
+        reason: "Retirar entrada espuria confirmada por auditoria."
+      }
+    },
+    {
+      skill: "reassign_domain_server",
+      params: {
+        domain: "legacy-one.com",
+        fromServerSlug: "server92",
+        toServerSlug: "server88",
+        reason: "Reasignar canonico tras drift confirmado."
+      }
+    },
+    {
+      skill: "create_smtp_entry",
+      params: {
+        domain: "legacy-one.com",
+        serverSlug: "server88",
+        serverIp: "192.0.2.88",
+        selector: "s2026a",
+        status: "configured",
+        reason: "Crear entrada confirmada por inventario vivo."
+      }
+    },
+    {
+      skill: "update_smtp_entry",
+      params: {
+        domain: "legacy-one.com",
+        serverSlug: "server88",
+        status: "configured",
+        reason: "Actualizar estado local confirmado por operador."
+      }
+    }
+  ];
 }
 
 function passthroughParamSchema(): SkillHandlerEntry["paramSchema"] {

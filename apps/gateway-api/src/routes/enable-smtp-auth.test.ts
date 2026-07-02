@@ -320,6 +320,46 @@ test("enable_smtp_auth rejects ambiguous same-domain candidates before SSH", asy
   assert.equal((await auditLog.list()).at(-1)?.metadata.candidateCount, 2);
 });
 
+test("enable_smtp_auth scopes ambiguous domains by serverSlug when provided", async () => {
+  const workspace = await setupWorkspace();
+  const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [
+      legacyServer("server85", "legacy-one.com"),
+      { ...legacyServer("server88", "legacy-one.com"), serverIp: "192.0.2.88" }
+    ]
+  }));
+  const commands: SmtpSshCommandInput[] = [];
+  const response = captureResponse();
+
+  await handleEnableSmtpAuthHttp({
+    request: request({ actorId: "operator/juanes", domain: "legacy-one.com", serverSlug: "server88" }),
+    response: response as unknown as ServerResponse,
+    workspace,
+    auditLog,
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => fixedNow
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = JSON.parse(response.body);
+  assert.equal(payload.status, "configured");
+  assert.equal(payload.serverSlug, "server88");
+  assert.equal(commands.length, 10);
+  assert.equal(commands.every((command) => command.serverSlug === "server88"), true);
+  const credential = await workspace.readInventoryJson<{
+    smtpCredentials: Array<{ domain: string; serverSlug: string; status: string }>;
+  }>("smtp-credentials.json");
+  assert.equal(credential?.smtpCredentials[0]?.serverSlug, "server88");
+  assert.equal((await auditLog.list()).at(-1)?.metadata.serverSlug, "server88");
+});
+
 test("enable_smtp_auth rotate mode regenerates configured credential without leaking material", async () => {
   const workspace = await setupWorkspace();
   const auditLog = new LocalFileAuditLog(join(workspace.getRootDir(), "audit-events.jsonl"));

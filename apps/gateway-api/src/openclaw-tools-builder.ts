@@ -3,8 +3,10 @@ import {
   bindDomainParamSchema,
   compactIntentParamSchema,
   configureCompleteSmtpSkillParamSchema,
+  createSmtpEntryParamSchema,
   emailAuthParamSchema,
   enableSmtpAuthParamSchema,
+  inspectSmtpInventoryParamSchema,
   ionosDnsReadParamSchema,
   ionosUpsertParamSchema,
   listConversationsParamSchema,
@@ -16,7 +18,11 @@ import {
   semanticRecallParamSchema,
   readInfrastructureInventoryParamSchema,
   readWebdockServersParamSchema,
+  reassignDomainServerParamSchema,
+  reconcileDnsToLiveSmtpParamSchema,
+  resolveAmbiguousDomainParamSchema,
   retireInfrastructureAccountParamSchema,
+  retireSmtpEntryParamSchema,
   route53DomainDetailParamSchema,
   deliveryReasonParamSchema,
   smtpReachabilityParamSchema,
@@ -27,6 +33,7 @@ import {
   route53ZoneRecordsParamSchema,
   route53UpsertParamSchema,
   smtpProvisionParamSchema,
+  updateSmtpEntryParamSchema,
   warmupSeedParamSchema,
   webdockCreateParamSchema
 } from "./skill-schemas.ts";
@@ -61,6 +68,7 @@ export type OpenClawToolName =
   | "read_dns_ionos"
   | "read_mxtoolbox_health"
   | "read_infrastructure_inventory"
+  | "inspect_smtp_inventory"
   | "read_infrastructure_account_health"
   | "read_webdock_servers"
   | "list_conversations"
@@ -71,7 +79,13 @@ export type OpenClawToolName =
   | "bind_webdock_main_domain"
   | "provision_smtp_postfix"
   | "configure_email_auth"
+  | "reconcile_dns_to_live_smtp"
   | "enable_smtp_auth"
+  | "resolve_ambiguous_domain"
+  | "retire_smtp_entry"
+  | "reassign_domain_server"
+  | "create_smtp_entry"
+  | "update_smtp_entry"
   | "bind_domain_to_server"
   | "seed_warmup_pool"
   | "send_real_email"
@@ -472,15 +486,20 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
   read_route53_zone_records: {
     spec: {
       name: "read_route53_zone_records",
-      description: "Lista todos los registros DNS dentro de una hosted zone Route53 (NS, SOA, A, AAAA, MX, TXT, CNAME, PTR, SRV, CAA). Invocar SIEMPRE ANTES de proponer upsert_dns_route53 para no escribir sobre registros que ya coinciden con lo deseado, y ANTES de diagnosticar fallos de propagacion DNS. Reemplaza dig. Lectura auditada: no muta DNS y no requiere ApprovalGate.",
+      description: "Lista registros DNS Route53 por domain. El Gateway descubre la hosted zone por nombre en runtime y, si hay duplicados, elige la autoritativa comparando NS del registrador. Si se envia zoneId junto con domain, se valida contra la zona autoritativa y se rechaza si es stale. Invocar SIEMPRE ANTES de proponer upsert_dns_route53 para no escribir sobre registros que ya coinciden con lo deseado, y ANTES de diagnosticar fallos de propagacion DNS. Lectura auditada: no muta DNS y no requiere ApprovalGate.",
       input_schema: {
         type: "object",
-        required: ["zoneId"],
+        required: ["domain"],
         properties: {
+          domain: {
+            type: "string",
+            pattern: domainPattern,
+            description: "Dominio apex para descubrir la hosted zone autoritativa en runtime. Ejemplo: controlcorpfiling.com"
+          },
           zoneId: {
             type: "string",
             pattern: "^Z[A-Z0-9]{10,32}$",
-            description: "ID de la hosted zone Route53. Formato Z seguido de 10-32 caracteres. Ejemplo: Z03595092JW2AXJBZGN4E"
+            description: "ID opcional solo como evidencia; debe coincidir con la zona autoritativa descubierta por domain."
           },
           recordType: {
             type: "string",
@@ -664,6 +683,28 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     paramSchema: readInfrastructureInventoryParamSchema,
     enabled: (env) => hmacConfigured(env),
     targetType: "infrastructure_inventory",
+    severity: "high"
+  },
+  inspect_smtp_inventory: {
+    spec: {
+      name: "inspect_smtp_inventory",
+      description: [
+        "Inspecciona el inventario SMTP local y lo cruza con la flota viva para detectar dominios ambiguos, entradas superseded/retired y servidores ausentes.",
+        "Lectura sensible read-only: no muta infraestructura, no expone passwords ni credenciales cifradas y no requiere ApprovalGate."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          serverSlug: { type: "string", pattern: slugPattern },
+          status: { type: "string", enum: ["configured", "superseded", "retired", "archived"] }
+        },
+        required: []
+      }
+    },
+    paramSchema: inspectSmtpInventoryParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "smtp_inventory",
     severity: "high"
   },
   read_infrastructure_account_health: {
@@ -915,6 +956,46 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     targetType: "domain",
     severity: "critical"
   },
+  reconcile_dns_to_live_smtp: {
+    spec: {
+      name: "reconcile_dns_to_live_smtp",
+      description: [
+        "Reconciliacion firmada DNS->SMTP vivo para dominios ya provisionados: descubre la hosted zone Route53 por domain en runtime, valida NS autoritativo, verifica que serverSlug exista vivo en inventario y alinea smtp A, apex SPF y MX al serverIp vivo.",
+        "No crea VPS, no toca cuentas ops/quaternary y no regenera DKIM en silencio; si falta DKIM del selector, bloquea con dkim_regenerate_required para ejecutar el flujo DKIM/email-auth antes del cutover.",
+        "Usar dryRun=true primero para presentar el plan; la ejecucion real requiere ApprovalGate, writes Route53, audit y kill switch."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          serverSlug: { type: "string", pattern: slugPattern },
+          serverIp: {
+            type: "string",
+            pattern: ipv4Pattern,
+            description: "IPv4 esperada del servidor vivo. Opcional: si se omite se toma del inventario live/server."
+          },
+          selector: {
+            type: "string",
+            pattern: selectorPattern,
+            default: "s2026a",
+            description: "Selector DKIM que debe existir antes de repuntar DNS. No se regenera en esta tool."
+          },
+          dryRun: { type: "boolean", default: true },
+          ...optionalTaskId,
+          ...optionalRepairScope
+        },
+        required: ["domain", "serverSlug"]
+      }
+    },
+    paramSchema: reconcileDnsToLiveSmtpParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      flagEnabled(env.OPENCLAW_RECONCILE_DNS_SMTP_ENABLE) &&
+      anyFlagEnabled(env, ["AWS_ROUTE53_DNS_ENABLE_WRITES", "AWS_ROUTE53_ENABLE_DNS_WRITES"]) &&
+      hasAwsRoute53DnsCredentials(env),
+    targetType: "domain",
+    severity: "critical"
+  },
   enable_smtp_auth: {
     spec: {
       name: "enable_smtp_auth",
@@ -926,6 +1007,11 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
         type: "object",
         properties: {
           domain: { type: "string", pattern: domainPattern },
+          serverSlug: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Servidor SMTP especifico para desambiguar dominios con historial duplicado. Opcional; si se omite y hay mas de un configured, la tool rechaza ambiguous_domain."
+          },
           mode: {
             type: "string",
             enum: ["enable", "recover", "rotate"],
@@ -942,6 +1028,144 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hasSshRunnerConfig(env),
     targetType: "domain",
     severity: "critical"
+  },
+  resolve_ambiguous_domain: {
+    spec: {
+      name: "resolve_ambiguous_domain",
+      description: [
+        "Resuelve un dominio ambiguo en inventory/smtp-provisioning.json eligiendo un servidor canonico vivo y marcando los otros configured como superseded.",
+        "Mutacion local-state-only: no toca DNS, SSH ni proveedor; requiere ApprovalGate firmado, audit log y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          keepServerSlug: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Servidor canonico a conservar. Si se omite, OpenClaw desempata con flota viva + run SMTP completed; si la evidencia sigue ambigua, rechaza fail-closed."
+          },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: { type: "boolean", default: false }
+        },
+        required: ["domain"]
+      }
+    },
+    paramSchema: resolveAmbiguousDomainParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "domain",
+    severity: "high"
+  },
+  retire_smtp_entry: {
+    spec: {
+      name: "retire_smtp_entry",
+      description: [
+        "Marca una entrada SMTP concreta como retired en el inventario local preservando historial.",
+        "Mutacion local-state-only: no borra VPS, no toca DNS/SSH ni credenciales; requiere ApprovalGate firmado, audit log y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          serverSlug: { type: "string", pattern: slugPattern },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: { type: "boolean", default: false }
+        },
+        required: ["domain", "serverSlug", "reason"]
+      }
+    },
+    paramSchema: retireSmtpEntryParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "smtp_inventory_entry",
+    severity: "high"
+  },
+  reassign_domain_server: {
+    spec: {
+      name: "reassign_domain_server",
+      description: [
+        "Reasigna el servidor canonico de un dominio en el inventario SMTP local, verificando que el destino exista en la flota viva.",
+        "Mutacion local-state-only: no cambia DNS/SSH/proveedor; requiere ApprovalGate firmado, audit log y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          fromServerSlug: { type: "string", pattern: slugPattern },
+          toServerSlug: { type: "string", pattern: slugPattern },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: { type: "boolean", default: false }
+        },
+        required: ["domain", "fromServerSlug", "toServerSlug", "reason"]
+      }
+    },
+    paramSchema: reassignDomainServerParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "smtp_inventory_entry",
+    severity: "high"
+  },
+  create_smtp_entry: {
+    spec: {
+      name: "create_smtp_entry",
+      description: [
+        "Crea una entrada configured NUEVA en el inventario SMTP local para un dominio+server ya verificado en la flota viva multi-proveedor.",
+        "Es create-only: si ya existe una entrada para ese dominio+server (en cualquier estado) devuelve conflicto entry_already_exists; para modificarla usar update_smtp_entry y para retirarla retire_smtp_entry.",
+        "Antes de escribir valida serverSlug+serverIp contra el inventario vivo y exige que el server este running y la cuenta saludable.",
+        "Mutacion local-state-only: no toca DNS, SSH, proveedor ni credenciales; requiere ApprovalGate firmado, audit log critical y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          serverSlug: { type: "string", pattern: slugPattern },
+          serverIp: { type: "string", pattern: ipv4Pattern },
+          selector: { type: "string", pattern: selectorPattern },
+          status: {
+            type: "string",
+            enum: ["configured"],
+            default: "configured",
+            description: "Fijo en configured; cualquier otro estado se rechaza."
+          },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: {
+            type: "boolean",
+            default: true,
+            description: "Default seguro: si se omite, solo planifica. Para escribir debe venir dryRun:false en una propuesta firmada."
+          }
+        },
+        required: ["domain", "serverSlug", "serverIp", "selector", "reason"]
+      }
+    },
+    paramSchema: createSmtpEntryParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "smtp_inventory_entry",
+    severity: "critical"
+  },
+  update_smtp_entry: {
+    spec: {
+      name: "update_smtp_entry",
+      description: [
+        "Actualiza metadata controlada de una entrada SMTP local: selector, status, tlsStatus o smtpAuthStatus.",
+        "Mutacion local-state-only: si status pasa a configured, aplica el invariante de un solo configured por dominio. Requiere ApprovalGate firmado, audit log y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          serverSlug: { type: "string", pattern: slugPattern },
+          selector: { type: "string", pattern: selectorPattern },
+          status: { type: "string", enum: ["configured", "superseded", "retired", "archived"] },
+          tlsStatus: { type: "string", minLength: 3, maxLength: 120 },
+          smtpAuthStatus: { type: "string", enum: ["configured"] },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: { type: "boolean", default: false }
+        },
+        required: ["domain", "serverSlug"]
+      }
+    },
+    paramSchema: updateSmtpEntryParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "smtp_inventory_entry",
+    severity: "high"
   },
   bind_domain_to_server: {
     spec: {
@@ -1121,6 +1345,11 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
             maxLength: 64,
             description: "Cuenta destino del proveedor para el VPS. PR1 aplica a Webdock: usar accountId de inventory_accounts; omitido = el governor elige cuenta."
           },
+          reuseServerSlug: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Reusa/adopta un VPS Webdock existente por slug en vez de crear uno nuevo. DNS, auth y smoke se alinean a la IP viva de ese server; no aplica a Contabo."
+          },
           brand: { type: "string", minLength: 1 },
           intent: { type: "string", minLength: 1 },
           budgetUsdMax: { type: "integer", minimum: 1, maximum: 10000, default: 25 },
@@ -1214,6 +1443,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "read_dns_ionos",
     "read_mxtoolbox_health",
     "read_infrastructure_inventory",
+    "inspect_smtp_inventory",
     "read_infrastructure_account_health",
     "read_webdock_servers",
     "list_conversations",
@@ -1224,7 +1454,13 @@ export function openClawToolNames(): OpenClawToolName[] {
     "bind_webdock_main_domain",
     "provision_smtp_postfix",
     "configure_email_auth",
+    "reconcile_dns_to_live_smtp",
     "enable_smtp_auth",
+    "resolve_ambiguous_domain",
+    "retire_smtp_entry",
+    "reassign_domain_server",
+    "create_smtp_entry",
+    "update_smtp_entry",
     "bind_domain_to_server",
     "seed_warmup_pool",
     "send_real_email",

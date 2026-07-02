@@ -748,7 +748,12 @@ async function invokeReadOnlyToolOverHttp(input: {
 
   if (input.input.toolName === "read_route53_zone_records") {
     const url = new URL(`${input.baseUrl}/v1/route53/zone-records`);
-    url.searchParams.set("zoneId", String(input.input.params.zoneId));
+    if (typeof input.input.params.domain === "string") {
+      url.searchParams.set("domain", input.input.params.domain);
+    }
+    if (typeof input.input.params.zoneId === "string") {
+      url.searchParams.set("zoneId", input.input.params.zoneId);
+    }
     if (typeof input.input.params.recordType === "string") {
       url.searchParams.set("recordType", input.input.params.recordType);
     }
@@ -829,6 +834,31 @@ async function invokeReadOnlyToolOverHttp(input: {
       headers: {
         accept: "application/json",
         "x-openclaw-skill-invocation": "delivrix-infra-inventory",
+        "x-delivrix-token": input.readBoundaryToken
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return body;
+  }
+
+  if (input.input.toolName === "inspect_smtp_inventory") {
+    if (!input.readBoundaryToken) {
+      throw new Error("read_boundary_token_unconfigured");
+    }
+    const url = new URL(`${input.baseUrl}/v1/openclaw/smtp-inventory`);
+    for (const key of ["domain", "serverSlug", "status"]) {
+      const value = input.input.params[key];
+      if (value !== undefined && value !== null && value !== "") {
+        url.searchParams.set(key, String(value));
+      }
+    }
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
         "x-delivrix-token": input.readBoundaryToken
       }
     });
@@ -1157,6 +1187,12 @@ function toolTarget(toolName: string, params: Record<string, unknown>, fallbackT
   if (toolName === "retire_infrastructure_account" && typeof params.accountId === "string") {
     return { id: params.accountId, type: "infrastructure_account" };
   }
+  if ((toolName === "retire_smtp_entry" || toolName === "create_smtp_entry" || toolName === "update_smtp_entry") && typeof params.serverSlug === "string") {
+    return { id: params.serverSlug, type: "smtp_inventory_entry" };
+  }
+  if (toolName === "reassign_domain_server" && typeof params.toServerSlug === "string") {
+    return { id: params.toServerSlug, type: "smtp_inventory_entry" };
+  }
   if (typeof params.domain === "string") {
     return { id: params.domain, type: "domain" };
   }
@@ -1283,6 +1319,7 @@ function isReadOnlyToolUse(toolName: string): boolean {
     toolName === "read_dns_ionos" ||
     toolName === "read_mxtoolbox_health" ||
     toolName === "read_infrastructure_inventory" ||
+    toolName === "inspect_smtp_inventory" ||
     toolName === "read_infrastructure_account_health" ||
     toolName === "read_webdock_servers" ||
     toolName === "list_conversations" ||
