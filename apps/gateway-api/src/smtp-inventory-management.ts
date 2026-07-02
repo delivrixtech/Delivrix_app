@@ -108,7 +108,7 @@ export async function createConfiguredSmtpInventoryEntry(input: {
 }): Promise<SmtpInventoryMutationResult> {
   const domain = normalizeDomain(input.domain);
   const dryRun = input.dryRun !== false;
-  const liveServer = liveServerMap(input.liveServers).get(input.serverSlug);
+  const liveServer = indexLiveServersBySlug(input.liveServers).get(input.serverSlug);
   if (!liveServer) {
     return {
       ok: false,
@@ -186,6 +186,10 @@ export async function createConfiguredSmtpInventoryEntry(input: {
     .filter((server) => normalizeDomain(server.domain) === domain && server.status === "configured" && server.serverSlug !== input.serverSlug)
     .map((server) => server.serverSlug);
   const existing = inventory.servers.find((server) => sameDomainServer(server, domain, input.serverSlug));
+  const alreadyConfiguredSameValues = existing?.status === "configured" &&
+    existing.serverIp === input.serverIp &&
+    existing.selector === input.selector &&
+    superseded.length === 0;
   const timestamp = (input.now?.() ?? new Date()).toISOString();
   const entry: SmtpProvisioningServer = {
     ...(existing ?? {}),
@@ -207,6 +211,9 @@ export async function createConfiguredSmtpInventoryEntry(input: {
     providerId: liveServer.providerId,
     accountId: liveServer.accountId,
     accountHealthStatus: liveServer.accountHealthStatus,
+    inventoryMutationKind: existing
+      ? alreadyConfiguredSameValues ? "no_change_existing" : "updated_existing"
+      : "created_new",
     ...(existing ? {
       previousValues: {
         serverIp: existing.serverIp,
@@ -220,6 +227,9 @@ export async function createConfiguredSmtpInventoryEntry(input: {
     } : {}),
     previousStatuses,
     supersededServerSlugs: superseded,
+    rollbackHint: existing
+      ? "rollback_restore_previous_values_for_same_domain_server"
+      : "rollback_retire_new_entry_and_restore_superseded_configured_if_any",
     sideEffects: "local-state-only"
   };
   if (dryRun) {
@@ -227,6 +237,21 @@ export async function createConfiguredSmtpInventoryEntry(input: {
       ok: true,
       status: "dry_run",
       dryRun: true,
+      changed: false,
+      domain,
+      serverSlug: input.serverSlug,
+      canonicalServerSlug: input.serverSlug,
+      supersededServerSlugs: superseded,
+      reason: input.reason,
+      plan
+    };
+  }
+
+  if (alreadyConfiguredSameValues) {
+    return {
+      ok: true,
+      status: "updated",
+      dryRun: false,
       changed: false,
       domain,
       serverSlug: input.serverSlug,
@@ -260,7 +285,7 @@ export async function inspectSmtpInventory(input: {
   liveServers?: SmtpInventoryLiveServer[];
 }): Promise<Record<string, unknown>> {
   const inventory = await input.workspace.readInventoryJson<SmtpProvisioningInventory>("smtp-provisioning.json").catch(() => null);
-  const liveBySlug = liveServerMap(input.liveServers ?? []);
+  const liveBySlug = indexLiveServersBySlug(input.liveServers ?? []);
   const domainFilter = input.domain ? normalizeDomain(input.domain) : undefined;
   const servers = (inventory?.servers ?? [])
     .filter((entry) => domainFilter ? normalizeDomain(entry.domain) === domainFilter : true)
@@ -323,7 +348,7 @@ export async function resolveAmbiguousSmtpDomain(input: {
     };
   }
 
-  const liveBySlug = liveServerMap(input.liveServers);
+  const liveBySlug = indexLiveServersBySlug(input.liveServers);
   const completedRunSignals = input.keepServerSlug
     ? []
     : await readCompletedSmtpRunSignals(input.workspace, domain);
@@ -415,7 +440,7 @@ export async function retireSmtpInventoryEntry(input: {
     domain,
     serverSlug: input.serverSlug,
     previousStatus: entry.status,
-    liveServerExists: liveServerMap(input.liveServers).has(input.serverSlug),
+    liveServerExists: indexLiveServersBySlug(input.liveServers).has(input.serverSlug),
     sideEffects: "local-state-only"
   };
   if (input.dryRun === true) {
@@ -456,7 +481,7 @@ export async function reassignSmtpDomainServer(input: {
   if (!source) {
     return { ok: false, status: "source_entry_not_found", dryRun: input.dryRun === true, changed: false, domain, serverSlug: input.fromServerSlug, error: "source_entry_not_found" };
   }
-  const liveTarget = liveServerMap(input.liveServers).get(input.toServerSlug);
+  const liveTarget = indexLiveServersBySlug(input.liveServers).get(input.toServerSlug);
   if (!liveTarget) {
     return { ok: false, status: "target_server_not_live", dryRun: input.dryRun === true, changed: false, domain, serverSlug: input.toServerSlug, error: "target_server_not_live" };
   }
@@ -530,7 +555,7 @@ export async function updateSmtpInventoryEntry(input: {
   if (!entry) {
     return { ok: false, status: "entry_not_found", dryRun: input.dryRun === true, changed: false, domain, serverSlug: input.serverSlug, error: "entry_not_found" };
   }
-  if (input.patch.status === "configured" && !liveServerMap(input.liveServers).has(input.serverSlug)) {
+  if (input.patch.status === "configured" && !indexLiveServersBySlug(input.liveServers).has(input.serverSlug)) {
     return { ok: false, status: "server_not_live", dryRun: input.dryRun === true, changed: false, domain, serverSlug: input.serverSlug, error: "server_not_live" };
   }
   const updatedEntry = {
@@ -766,7 +791,7 @@ function statusCounts(entries: SmtpProvisioningServer[]): Record<string, number>
   return counts;
 }
 
-function liveServerMap(liveServers: SmtpInventoryLiveServer[]): Map<string, SmtpInventoryLiveServer> {
+function indexLiveServersBySlug(liveServers: SmtpInventoryLiveServer[]): Map<string, SmtpInventoryLiveServer> {
   return new Map(liveServers.map((server) => [server.serverSlug, server]));
 }
 
@@ -778,6 +803,8 @@ function isRunningLiveServer(server: SmtpInventoryLiveServer): boolean {
 
 function isHealthyLiveServerAccount(server: SmtpInventoryLiveServer): boolean {
   const health = server.accountHealthStatus?.toLowerCase();
+  // Fail closed for future adapter health states: only an omitted value from
+  // legacy sources or the explicit healthy state can create configured entries.
   return health === undefined || health === "healthy";
 }
 
