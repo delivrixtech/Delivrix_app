@@ -1395,7 +1395,12 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       input_schema: {
         type: "object",
         properties: {
-          runId: { type: "string", minLength: 1, maxLength: 64 },
+          runId: {
+            type: "string",
+            minLength: 1,
+            maxLength: 64,
+            description: "OBLIGATORIO. Identificador único del run (p.ej. 'smtp-<dominio>-rescate-<n>'). La firma de plan del ApprovalGate valida el scope contra este runId; sin él la firma falla (plan_scope_missing). Generá uno estable por run y reusalo si reanudás."
+          },
           domain: { type: "string", minLength: 1 },
           provider: { type: "string", minLength: 1, maxLength: 32 },
           dnsProviderId: {
@@ -1436,7 +1441,7 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
             items: { type: "string", pattern: emailPattern }
           }
         },
-        required: ["brand", "budgetUsdMax", "testEmailRecipient", "testEmailSubject", "testEmailBody"]
+        required: ["runId", "brand", "budgetUsdMax", "testEmailRecipient", "testEmailSubject", "testEmailBody"]
       }
     },
     paramSchema: configureCompleteSmtpSkillParamSchema,
