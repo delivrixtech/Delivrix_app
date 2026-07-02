@@ -13,6 +13,9 @@ export interface EntityResolutionFailure {
   reason: string;
   rawValueHash: string;
   normalized?: string;
+  /** Tool a invocar para desbloquear, machine-coded (evita que el agente improvise). */
+  nextStep?: string;
+  hint?: string;
 }
 
 export type EntityResolution<T> =
@@ -100,7 +103,10 @@ export async function resolveWorkspaceServer(
   if (!match) {
     return {
       ok: false,
-      failure: unresolved("serverSlug", rawServerSlug, "webdock_server", "server_slug_not_in_inventory", slug.value).failure
+      failure: unresolved("serverSlug", rawServerSlug, "webdock_server", "server_slug_not_in_inventory", slug.value, {
+        nextStep: "adopt_webdock_server",
+        hint: "El server no está en el inventario local (webdock-servers.json), aunque puede ser un huérfano vivo en read_infrastructure_inventory. Antes de provisionar/SSH: adopt_webdock_server y luego ensure_server_ssh_access. No inventes el slug ni saltees esos pasos."
+      }).failure
     };
   }
 
@@ -162,7 +168,9 @@ export function entityFailureMetadata(failures: EntityResolutionFailure[]): Reco
       valueClass: failure.valueClass,
       reason: failure.reason,
       rawValueHash: failure.rawValueHash,
-      ...(failure.normalized ? { normalized: failure.normalized } : {})
+      ...(failure.normalized ? { normalized: failure.normalized } : {}),
+      ...(failure.nextStep ? { nextStep: failure.nextStep } : {}),
+      ...(failure.hint ? { hint: failure.hint } : {})
     }))
   };
 }
@@ -172,7 +180,8 @@ function unresolved(
   rawValue: string,
   valueClass: EntityResolutionFailure["valueClass"],
   reason: string,
-  normalized?: string
+  normalized?: string,
+  remediation?: { nextStep: string; hint: string }
 ): Extract<EntityResolution<never>, { ok: false }> {
   return {
     ok: false,
@@ -183,7 +192,8 @@ function unresolved(
       valueClass,
       reason,
       rawValueHash: createHash("sha256").update(rawValue).digest("hex"),
-      ...(normalized ? { normalized } : {})
+      ...(normalized ? { normalized } : {}),
+      ...(remediation ? { nextStep: remediation.nextStep, hint: remediation.hint } : {})
     }
   };
 }

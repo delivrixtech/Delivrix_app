@@ -220,6 +220,9 @@ test("POST /v1/servers/:slug/provision-smtp blocks serverSlug that is absent fro
   assert.equal(response.body.blockers.includes("entity_not_resolved"), true);
   assert.equal(response.body.blockers.includes("server_ip_missing"), true);
   assert.equal(response.body.entityResolution.failures[0].reason, "server_slug_not_in_inventory");
+  // El error trae el next-step machine-coded para que el agente adopte en vez de improvisar.
+  assert.equal(response.body.entityResolution.failures[0].nextStep, "adopt_webdock_server");
+  assert.match(response.body.entityResolution.failures[0].hint, /huérfano|adopt/i);
 });
 
 test("POST /v1/servers/:slug/provision-smtp runs idempotent SSH plan and records workspace inventory", async () => {
