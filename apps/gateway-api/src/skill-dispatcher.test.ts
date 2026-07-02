@@ -438,7 +438,47 @@ test("dispatcher creates SMTP inventory entry only for a live running server and
   assert.equal(metadata.approvalTokenHash, approvalTokenHash(token.tokenId));
   assert.equal(metadata.sideEffects, "local-state-only");
   assert.equal((metadata.rollbackPlan as Record<string, unknown>).futureSkill, "inspect_smtp_inventory");
+  assert.equal((metadata.rollbackPlan as Record<string, unknown>).inventoryMutationKind, "created_new");
   assert.deepEqual((metadata.plan as Record<string, unknown>).supersededServerSlugs, ["server57"]);
+});
+
+test("dispatcher blocks create_smtp_entry before liveness reads when kill-switch is armed", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "dispatcher-create-smtp-entry-kill-")),
+    now: () => new Date("2026-07-02T12:05:00.000Z")
+  });
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({ servers: [] }));
+  let liveRead = false;
+  const result = await dispatchSkillHandler({
+    skill: "create_smtp_entry",
+    params: {
+      domain: "controlcorpfiling.com",
+      serverSlug: "server58",
+      serverIp: "45.136.70.174",
+      selector: "s2026a",
+      status: "configured",
+      reason: "Crear entrada tras verificacion multi-proveedor.",
+      dryRun: false
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      workspace,
+      readKillSwitch: async () => ({ enabled: true }),
+      readSmtpInventoryLiveServers: async () => {
+        liveRead = true;
+        return [{ serverSlug: "server58", ipv4: "45.136.70.174", status: "running", accountHealthStatus: "healthy" }];
+      }
+    }
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.statusCode, 423);
+  assert.deepEqual(result.summary, { error: "kill_switch_armed" });
+  assert.equal(liveRead, false);
+  const inventory = await workspace.readInventoryJson<{ servers: unknown[] }>("smtp-provisioning.json");
+  assert.equal(inventory?.servers.length, 0);
 });
 
 test("dispatcher reconciles live SMTP DNS after ApprovalGate dispatch and audits rollback plan", async () => {
