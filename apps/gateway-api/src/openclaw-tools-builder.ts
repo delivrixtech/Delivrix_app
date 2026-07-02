@@ -3,6 +3,7 @@ import {
   bindDomainParamSchema,
   compactIntentParamSchema,
   configureCompleteSmtpSkillParamSchema,
+  createSmtpEntryParamSchema,
   emailAuthParamSchema,
   enableSmtpAuthParamSchema,
   inspectSmtpInventoryParamSchema,
@@ -83,6 +84,7 @@ export type OpenClawToolName =
   | "resolve_ambiguous_domain"
   | "retire_smtp_entry"
   | "reassign_domain_server"
+  | "create_smtp_entry"
   | "update_smtp_entry"
   | "bind_domain_to_server"
   | "seed_warmup_pool"
@@ -1101,6 +1103,42 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     targetType: "smtp_inventory_entry",
     severity: "high"
   },
+  create_smtp_entry: {
+    spec: {
+      name: "create_smtp_entry",
+      description: [
+        "Crea o actualiza una entrada configured en el inventario SMTP local para un dominio+server ya verificado en la flota viva multi-proveedor.",
+        "Antes de escribir valida serverSlug+serverIp contra el inventario vivo y exige que el server este running y la cuenta saludable.",
+        "Mutacion local-state-only: no toca DNS, SSH, proveedor ni credenciales; requiere ApprovalGate firmado, audit log critical y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          serverSlug: { type: "string", pattern: slugPattern },
+          serverIp: { type: "string", pattern: ipv4Pattern },
+          selector: { type: "string", pattern: selectorPattern },
+          status: {
+            type: "string",
+            enum: ["configured"],
+            default: "configured",
+            description: "Fijo en configured; cualquier otro estado se rechaza."
+          },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: {
+            type: "boolean",
+            default: true,
+            description: "Default seguro: si se omite, solo planifica. Para escribir debe venir dryRun:false en una propuesta firmada."
+          }
+        },
+        required: ["domain", "serverSlug", "serverIp", "selector"]
+      }
+    },
+    paramSchema: createSmtpEntryParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "smtp_inventory_entry",
+    severity: "critical"
+  },
   update_smtp_entry: {
     spec: {
       name: "update_smtp_entry",
@@ -1420,6 +1458,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "resolve_ambiguous_domain",
     "retire_smtp_entry",
     "reassign_domain_server",
+    "create_smtp_entry",
     "update_smtp_entry",
     "bind_domain_to_server",
     "seed_warmup_pool",

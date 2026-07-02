@@ -94,6 +94,164 @@ export async function upsertConfiguredSmtpInventoryEntry(
   });
 }
 
+export async function createConfiguredSmtpInventoryEntry(input: {
+  workspace: OpenClawWorkspace;
+  domain: string;
+  serverSlug: string;
+  serverIp: string;
+  selector: string;
+  liveServers: SmtpInventoryLiveServer[];
+  actorId: string;
+  reason?: string;
+  dryRun?: boolean;
+  now?: () => Date;
+}): Promise<SmtpInventoryMutationResult> {
+  const domain = normalizeDomain(input.domain);
+  const dryRun = input.dryRun !== false;
+  const liveServer = liveServerMap(input.liveServers).get(input.serverSlug);
+  if (!liveServer) {
+    return {
+      ok: false,
+      status: "server_not_live",
+      dryRun,
+      changed: false,
+      domain,
+      serverSlug: input.serverSlug,
+      error: "server_not_live"
+    };
+  }
+  if (liveServer.ipv4 !== input.serverIp) {
+    return {
+      ok: false,
+      status: "server_ip_mismatch",
+      dryRun,
+      changed: false,
+      domain,
+      serverSlug: input.serverSlug,
+      error: "server_ip_mismatch",
+      plan: {
+        action: "create_smtp_entry",
+        domain,
+        serverSlug: input.serverSlug,
+        requestedServerIp: input.serverIp,
+        liveServerIp: liveServer.ipv4,
+        sideEffects: "local-state-only"
+      }
+    };
+  }
+  if (!isRunningLiveServer(liveServer)) {
+    return {
+      ok: false,
+      status: "server_status_not_running",
+      dryRun,
+      changed: false,
+      domain,
+      serverSlug: input.serverSlug,
+      error: "server_status_not_running",
+      plan: {
+        action: "create_smtp_entry",
+        domain,
+        serverSlug: input.serverSlug,
+        liveStatus: liveServer.status,
+        lifecycleStatus: liveServer.lifecycleStatus,
+        sideEffects: "local-state-only"
+      }
+    };
+  }
+  if (!isHealthyLiveServerAccount(liveServer)) {
+    return {
+      ok: false,
+      status: "account_not_healthy",
+      dryRun,
+      changed: false,
+      domain,
+      serverSlug: input.serverSlug,
+      error: "account_not_healthy",
+      plan: {
+        action: "create_smtp_entry",
+        domain,
+        serverSlug: input.serverSlug,
+        accountHealthStatus: liveServer.accountHealthStatus,
+        lifecycleStatus: liveServer.lifecycleStatus,
+        sideEffects: "local-state-only"
+      }
+    };
+  }
+
+  const inventory = await readSmtpInventory(input.workspace);
+  const previousStatuses = inventory.servers
+    .filter((server) => normalizeDomain(server.domain) === domain)
+    .map((server) => ({ serverSlug: server.serverSlug, status: server.status }));
+  const superseded = inventory.servers
+    .filter((server) => normalizeDomain(server.domain) === domain && server.status === "configured" && server.serverSlug !== input.serverSlug)
+    .map((server) => server.serverSlug);
+  const existing = inventory.servers.find((server) => sameDomainServer(server, domain, input.serverSlug));
+  const timestamp = (input.now?.() ?? new Date()).toISOString();
+  const entry: SmtpProvisioningServer = {
+    ...(existing ?? {}),
+    serverSlug: input.serverSlug,
+    domain,
+    serverIp: input.serverIp,
+    selector: input.selector,
+    status: "configured",
+    configuredAt: existing?.configuredAt ?? timestamp,
+    updatedAt: timestamp
+  };
+  const plan = {
+    action: "create_smtp_entry",
+    domain,
+    serverSlug: input.serverSlug,
+    serverIp: input.serverIp,
+    selector: input.selector,
+    liveStatus: liveServer.status,
+    providerId: liveServer.providerId,
+    accountId: liveServer.accountId,
+    accountHealthStatus: liveServer.accountHealthStatus,
+    ...(existing ? {
+      previousValues: {
+        serverIp: existing.serverIp,
+        selector: existing.selector,
+        status: existing.status,
+        tlsStatus: existing.tlsStatus,
+        smtpAuthStatus: existing.smtpAuthStatus,
+        configuredAt: existing.configuredAt,
+        updatedAt: existing.updatedAt
+      }
+    } : {}),
+    previousStatuses,
+    supersededServerSlugs: superseded,
+    sideEffects: "local-state-only"
+  };
+  if (dryRun) {
+    return {
+      ok: true,
+      status: "dry_run",
+      dryRun: true,
+      changed: false,
+      domain,
+      serverSlug: input.serverSlug,
+      canonicalServerSlug: input.serverSlug,
+      supersededServerSlugs: superseded,
+      reason: input.reason,
+      plan
+    };
+  }
+
+  await upsertConfiguredSmtpInventoryEntry(input.workspace, entry, input.now);
+  return {
+    ok: true,
+    status: existing ? "updated" : "created",
+    dryRun: false,
+    changed: true,
+    domain,
+    serverSlug: input.serverSlug,
+    canonicalServerSlug: input.serverSlug,
+    supersededServerSlugs: superseded,
+    reason: input.reason,
+    plan
+  };
+}
+
 export async function inspectSmtpInventory(input: {
   workspace: OpenClawWorkspace;
   domain?: string;
@@ -610,6 +768,17 @@ function statusCounts(entries: SmtpProvisioningServer[]): Record<string, number>
 
 function liveServerMap(liveServers: SmtpInventoryLiveServer[]): Map<string, SmtpInventoryLiveServer> {
   return new Map(liveServers.map((server) => [server.serverSlug, server]));
+}
+
+function isRunningLiveServer(server: SmtpInventoryLiveServer): boolean {
+  const status = server.status?.toLowerCase();
+  const lifecycleStatus = server.lifecycleStatus?.toLowerCase();
+  return status === "running" && lifecycleStatus !== "retired" && lifecycleStatus !== "disabled";
+}
+
+function isHealthyLiveServerAccount(server: SmtpInventoryLiveServer): boolean {
+  const health = server.accountHealthStatus?.toLowerCase();
+  return health === undefined || health === "healthy";
 }
 
 function sameEntry(left: SmtpProvisioningServer, right: SmtpProvisioningServer): boolean {

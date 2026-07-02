@@ -38,6 +38,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "resolve_ambiguous_domain",
     "retire_smtp_entry",
     "reassign_domain_server",
+    "create_smtp_entry",
     "update_smtp_entry",
     "bind_domain_to_server",
     "seed_warmup_pool",
@@ -129,7 +130,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     String((configureCompleteSmtp.input_schema.properties.reuseServerSlug as { description?: string }).description ?? ""),
     /Reusa\/adopta/
   );
-  for (const toolName of ["resolve_ambiguous_domain", "retire_smtp_entry", "reassign_domain_server", "update_smtp_entry"]) {
+  for (const toolName of ["resolve_ambiguous_domain", "retire_smtp_entry", "reassign_domain_server", "create_smtp_entry", "update_smtp_entry"]) {
     const tool = tools.find((candidate) => candidate.name === toolName);
     assert.ok(tool, `${toolName} should be exposed`);
     assert.match(tool.description, /ApprovalGate/);
@@ -147,7 +148,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 35);
+  assert.equal(tools.length, 36);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -282,6 +283,7 @@ test("buildToolsForOpenClaw exposes Fase A tools directly to Bedrock", () => {
     "resolve_ambiguous_domain",
     "retire_smtp_entry",
     "reassign_domain_server",
+    "create_smtp_entry",
     "update_smtp_entry",
     "send_real_email",
     "compact_intent",
@@ -470,6 +472,16 @@ function validSample(toolName: string): Record<string, unknown> {
       fromServerSlug: "server68",
       toServerSlug: "server69",
       reason: "Servidor nuevo verificado como canonico."
+    };
+  }
+  if (toolName === "create_smtp_entry") {
+    return {
+      domain: "delivrix.test",
+      serverSlug: "server69",
+      serverIp: "203.0.113.10",
+      selector: "s2026a",
+      status: "configured",
+      dryRun: true
     };
   }
   if (toolName === "update_smtp_entry") {

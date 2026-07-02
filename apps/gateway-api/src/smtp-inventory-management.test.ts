@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import {
+  createConfiguredSmtpInventoryEntry,
   inspectSmtpInventory,
   reassignSmtpDomainServer,
   resolveAmbiguousSmtpDomain,
@@ -32,6 +33,105 @@ test("upsertConfiguredSmtpInventoryEntry supersedes previous configured entries 
   assert.equal(inventory.servers.find((server) => server.serverSlug === "server85")?.status, "superseded");
   assert.equal(inventory.servers.find((server) => server.serverSlug === "server85")?.supersededBy, "server88");
   assert.equal(inventory.servers.find((server) => server.serverSlug === "server88")?.status, "configured");
+});
+
+test("createConfiguredSmtpInventoryEntry dry-runs by default and writes only with dryRun false", async () => {
+  const workspace = await setupWorkspace();
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [entry("server85", "legacy-one.com", "configured")]
+  }));
+  const liveServers = [{ serverSlug: "server88", ipv4: "192.0.2.88", status: "running", accountHealthStatus: "healthy" }];
+
+  const defaultDryRun = await createConfiguredSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    liveServers,
+    actorId: "operator-juanes",
+    now: () => fixedNow
+  });
+  assert.equal(defaultDryRun.status, "dry_run");
+  assert.equal(defaultDryRun.changed, false);
+  assert.equal((await readInventory(workspace)).servers.find((server) => server.serverSlug === "server88"), undefined);
+
+  const created = await createConfiguredSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    liveServers,
+    actorId: "operator-juanes",
+    reason: "Crear entrada tras verificacion live.",
+    dryRun: false,
+    now: () => fixedNow
+  });
+  assert.equal(created.ok, true);
+  assert.equal(created.status, "created");
+  assert.deepEqual(created.supersededServerSlugs, ["server85"]);
+  assert.equal((created.plan?.previousStatuses as unknown[]).length, 1);
+  const inventory = await readInventory(workspace);
+  assert.equal(inventory.servers.find((server) => server.serverSlug === "server85")?.status, "superseded");
+  const server88 = inventory.servers.find((server) => server.serverSlug === "server88");
+  assert.equal(server88?.status, "configured");
+  assert.equal(server88?.serverIp, "192.0.2.88");
+  assert.equal(server88?.selector, "s2026a");
+});
+
+test("createConfiguredSmtpInventoryEntry rejects non-live, IP mismatch, non-running and degraded accounts", async () => {
+  const workspace = await setupWorkspace();
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({ servers: [] }));
+
+  const missing = await createConfiguredSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    liveServers: [],
+    actorId: "operator-juanes",
+    dryRun: false
+  });
+  assert.equal(missing.status, "server_not_live");
+
+  const ipMismatch = await createConfiguredSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.99",
+    selector: "s2026a",
+    liveServers: [{ serverSlug: "server88", ipv4: "192.0.2.88", status: "running", accountHealthStatus: "healthy" }],
+    actorId: "operator-juanes",
+    dryRun: false
+  });
+  assert.equal(ipMismatch.status, "server_ip_mismatch");
+
+  const stopped = await createConfiguredSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    liveServers: [{ serverSlug: "server88", ipv4: "192.0.2.88", status: "stopped", accountHealthStatus: "healthy" }],
+    actorId: "operator-juanes",
+    dryRun: false
+  });
+  assert.equal(stopped.status, "server_status_not_running");
+
+  const degraded = await createConfiguredSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    liveServers: [{ serverSlug: "server88", ipv4: "192.0.2.88", status: "running", accountHealthStatus: "degraded" }],
+    actorId: "operator-juanes",
+    dryRun: false
+  });
+  assert.equal(degraded.status, "account_not_healthy");
+  assert.equal((await readInventory(workspace)).servers.length, 0);
 });
 
 test("resolveAmbiguousSmtpDomain keeps the explicit live server and supersedes the rest", async () => {
