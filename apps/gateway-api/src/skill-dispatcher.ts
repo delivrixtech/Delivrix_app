@@ -551,13 +551,25 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     // providerId/accountId (canales HERMANOS) viajan por invoke: providerId enruta binds no-Webdock;
     // accountId enruta binds Webdock no-default al adapter de esa cuenta. undefined/"webdock" + ops
     // preservan el bind Webdock single-account byte-identico.
-    invoke: async ({ request, response, deps, accountId, providerId }) => {
-      const adapter = resolveWebdockCreateAdapter(deps, accountId, providerId);
+    invoke: async ({ request, response, deps, params, accountId, providerId }) => {
+      // El bind no lleva serverAccountId como parámetro; sin él caía al adapter default (cuenta-1
+      // "ops"). Para servers multi-cuenta (p.ej. huérfanos adoptados en quinary) eso da 404
+      // server_not_found. Si no vino la cuenta y es Webdock, la resolvemos desde la flota viva por
+      // serverSlug para enrutar al adapter correcto.
+      let effectiveAccountId = accountId;
+      const isWebdock = !providerId || providerId.trim().toLowerCase() === "webdock";
+      if (!effectiveAccountId && isWebdock && typeof params.serverSlug === "string") {
+        const slug = params.serverSlug.trim().toLowerCase();
+        const live = await deps.readSmtpInventoryLiveServers?.().catch(() => undefined);
+        const match = live?.find((server) => server.serverSlug.trim().toLowerCase() === slug);
+        if (match?.accountId) effectiveAccountId = match.accountId;
+      }
+      const adapter = resolveWebdockCreateAdapter(deps, effectiveAccountId, providerId);
       if (!adapter) {
         writeJson(response, 409, {
           ok: false,
           error: "unknown_server_account",
-          serverAccountId: accountId,
+          serverAccountId: effectiveAccountId ?? accountId,
           nextStep: "read_infrastructure_inventory",
           hint: "El serverAccountId no es una cuenta write-capable conocida. Lee read_infrastructure_inventory y usa un accountId de inventory_accounts; no reintentes con otra cuenta al azar."
         });
