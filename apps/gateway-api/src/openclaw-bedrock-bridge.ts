@@ -72,6 +72,10 @@ const defaultDelivrixBaseUrl = "http://127.0.0.1:3000";
 const defaultMaxToolIterations = 40;
 const maxToolIterationsCap = 40;
 const toolIterationsNearLimitRatio = 0.8;
+// Robustez: un stream de Bedrock que queda idle (throttle/backoff) sin estos timeouts
+// deja el chat en spinner infinito (incidente 2026-07-02). Idle = sin chunks por N ms.
+const defaultBedrockCallIdleTimeoutMs = 90_000;
+const defaultBedrockConversationTimeoutMs = 300_000;
 const defaultLiveContextItemLimit = 50;
 const defaultLiveContextMaxChars = 55_000;
 const inventoryServersLiveContextMaxChars = 16_000;
@@ -177,6 +181,8 @@ export interface OpenClawBedrockBridgeConfig {
   now?: () => Date;
   env?: Record<string, string | undefined>;
   maxToolIterations?: number;
+  bedrockCallIdleTimeoutMs?: number;
+  bedrockConversationTimeoutMs?: number;
   liveContextItemLimit?: number;
   liveContextMaxChars?: number;
   logger?: GatewayRuntimeLogger;
@@ -210,6 +216,8 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
   private readonly now: () => Date;
   private readonly env: Record<string, string | undefined>;
   private readonly maxToolIterations: number;
+  private readonly bedrockCallIdleTimeoutMs: number;
+  private readonly bedrockConversationTimeoutMs: number;
   private readonly liveContextItemLimit: number;
   private readonly liveContextMaxChars: number;
   private readonly logger: GatewayRuntimeLogger;
@@ -270,6 +278,10 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     this.env = runtimeEnv;
     this.logger = config.logger ?? noopGatewayRuntimeLogger;
     this.maxToolIterations = normalizeMaxToolIterations(config.maxToolIterations, this.logger);
+    this.bedrockCallIdleTimeoutMs = config.bedrockCallIdleTimeoutMs
+      ?? parsePositiveInt(runtimeEnv.OPENCLAW_BEDROCK_CALL_TIMEOUT_MS) ?? defaultBedrockCallIdleTimeoutMs;
+    this.bedrockConversationTimeoutMs = config.bedrockConversationTimeoutMs
+      ?? parsePositiveInt(runtimeEnv.OPENCLAW_BEDROCK_CONVERSATION_TIMEOUT_MS) ?? defaultBedrockConversationTimeoutMs;
     this.liveContextItemLimit = config.liveContextItemLimit ?? parsePositiveInt(runtimeEnv.OPENCLAW_LIVE_CONTEXT_ITEM_LIMIT) ?? defaultLiveContextItemLimit;
     this.liveContextMaxChars = config.liveContextMaxChars ?? parsePositiveInt(runtimeEnv.OPENCLAW_LIVE_CONTEXT_MAX_CHARS) ?? defaultLiveContextMaxChars;
     this.auditLog = config.auditLog ?? null;
@@ -420,11 +432,27 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
         msgId,
         ...runtimeErrorMetadata(error)
       });
+      const reason = error instanceof OpenClawBedrockBridgeError ? error.code : "bedrock_invoke_error";
       callbacks.onBlocked?.({
         type: "ASSISTANT_BLOCKED",
         msgId,
-        reason: error instanceof OpenClawBedrockBridgeError ? error.code : "bedrock_invoke_error"
+        reason
       });
+      // Persistir un turn de assistant para que chat/history no quede vacío tras un fallo/timeout
+      // (antes: el operador veía spinner infinito sin rastro). No se persiste en interrupt manual.
+      const conversationId = this.msgToConvKey.get(msgId);
+      if (conversationId) {
+        const timedOut = reason === "bedrock_call_idle_timeout" || reason === "bedrock_conversation_timeout";
+        const message = timedOut
+          ? "⏱️ Se agotó el tiempo de respuesta del modelo. Reintentá o reformulá el pedido (más acotado)."
+          : "⚠️ Hubo un error generando la respuesta. Reintentá o reformulá el pedido.";
+        await this.persistConversationTurn(conversationId, {
+          role: "assistant",
+          content: message,
+          msgId,
+          createdAt: this.now().toISOString()
+        }).catch(() => undefined);
+      }
     } finally {
       this.pendingResponses.delete(msgId);
       this.pendingControllers.delete(msgId);
@@ -491,9 +519,16 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     let nearToolIterationLimitLogged = false;
     const recentToolSignatures: string[] = [];
 
+    const conversationDeadline = this.now().getTime() + this.bedrockConversationTimeoutMs;
     try {
       for (let iteration = 0; iteration < this.maxToolIterations; iteration += 1) {
         throwIfAborted(signal);
+        if (this.now().getTime() > conversationDeadline) {
+          throw new OpenClawBedrockBridgeError(
+            "bedrock_conversation_timeout",
+            `Conversación excedió ${this.bedrockConversationTimeoutMs}ms de generación.`
+          );
+        }
         const response = await this.invokeBedrockOnce({
           messages,
           system,
@@ -973,7 +1008,19 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       accept: "application/json",
       body: JSON.stringify(payload)
     } satisfies InvokeModelWithResponseStreamCommandInput);
-    const result = await this.client.send(command, { abortSignal: input.signal });
+
+    // Idle-timeout: si el stream de Bedrock no entrega chunks por N ms (throttle/backoff/socket
+    // colgado), abortamos la llamada con un error claro en vez de dejar el chat en spinner infinito.
+    // El AbortController propio se encadena al signal del operador (interrupt manual sigue funcionando).
+    const idleController = new AbortController();
+    const combinedSignal = input.signal
+      ? AbortSignal.any([input.signal, idleController.signal])
+      : idleController.signal;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const armIdle = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => idleController.abort(), this.bedrockCallIdleTimeoutMs);
+    };
 
     const content = new Map<number, MutableBedrockContentBlock>();
     let currentIndex = 0;
@@ -981,9 +1028,14 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     let outputTokens: number | undefined;
     let stopReason: string | undefined;
 
-    for await (const event of toAsyncIterable(result.body ?? [])) {
-      throwIfAborted(input.signal);
-      if (!event.chunk?.bytes) continue;
+    try {
+      armIdle();
+      const result = await this.client.send(command, { abortSignal: combinedSignal });
+
+      for await (const event of toAsyncIterable(result.body ?? [])) {
+        armIdle();
+        throwIfAborted(input.signal);
+        if (!event.chunk?.bytes) continue;
       const parsed = parseJson(new TextDecoder().decode(event.chunk.bytes));
       if (!isRecord(parsed)) continue;
 
@@ -1052,13 +1104,25 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       .sort(([left], [right]) => left - right)
       .map(([, block]) => finalizeContentBlock(block));
 
-    return {
-      content: blocks,
-      text: blocks.filter(isTextBlock).map((block) => block.text).join(""),
-      ...(inputTokens === undefined ? {} : { inputTokens }),
-      ...(outputTokens === undefined ? {} : { outputTokens }),
-      ...(stopReason ? { stopReason } : {})
-    };
+      return {
+        content: blocks,
+        text: blocks.filter(isTextBlock).map((block) => block.text).join(""),
+        ...(inputTokens === undefined ? {} : { inputTokens }),
+        ...(outputTokens === undefined ? {} : { outputTokens }),
+        ...(stopReason ? { stopReason } : {})
+      };
+    } catch (error) {
+      // Idle-timeout propio (no interrupt del operador) => error claro que sube por streamHistory.
+      if (idleController.signal.aborted && !(input.signal?.aborted)) {
+        throw new OpenClawBedrockBridgeError(
+          "bedrock_call_idle_timeout",
+          `Bedrock stream idle > ${this.bedrockCallIdleTimeoutMs}ms; llamada abortada.`
+        );
+      }
+      throw error;
+    } finally {
+      if (idleTimer) clearTimeout(idleTimer);
+    }
   }
 
   private async fetchLiveContext(operatorQuery: string): Promise<string> {
