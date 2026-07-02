@@ -713,6 +713,46 @@ test("configureCompleteSmtp auto-deriva el server de reuse desde el A record cua
   assert.equal((reuseAudit.metadata as { autoDerived?: boolean }).autoDerived, true);
 });
 
+test("configureCompleteSmtp permite reuseServerSlug cuando el hostname guardado es base, no un endpoint smtp.<dominio> dedicado", async () => {
+  // server60 fue creado con hostname base "controldelivrix.app" (no "smtp.<dominio>"), y smtp.delivrixops.com
+  // ya apunta a su IP: es un mail server multi-dominio. Un hostname base distinto NO debe bloquear el reuse
+  // deliberado (a diferencia de "smtp.otherdomain.com", que sí es un endpoint dedicado de otro dominio).
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ runId: "run-multidom", domain: "delivrixops.com", reuseServerSlug: "server60", requireExistingDomain: true }),
+    ownedDomains: ["delivrixops.com"],
+    smokeAuthDnsResolver: healthySmokeAuthDnsResolver("203.0.113.60")
+  });
+  await ctx.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "server60",
+      hostname: "controldelivrix.app",
+      ipv4: "203.0.113.60",
+      status: "running",
+      accountId: "quinary"
+    }]
+  }));
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-multidom",
+    domain: "delivrixops.com",
+    provider: "route53",
+    reuseServerSlug: "server60",
+    requireExistingDomain: true
+  }, ctx.deps);
+
+  assert.notEqual(result.error, "reuse_server_hostname_mismatch");
+  assert.equal(result.status, "completed", result.error);
+  const state = await readRunStateFull(ctx.workspace, "run-multidom");
+  assert.equal(state.serverSlug, "server60");
+  assert.equal(state.serverCreatedByRun, false);
+  assert.ok(
+    ctx.auditEvents.find((event) => event.action === "oc.orchestrator.webdock_server_reused"),
+    "debe auditar el reuse"
+  );
+});
+
 test("configureCompleteSmtp rejects reuseServerSlug when inventory hostname conflicts with smtp host", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
