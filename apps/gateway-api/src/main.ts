@@ -1266,6 +1266,7 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("resolve_ambiguous_domain", "supervised_local_state"),
   permission("retire_smtp_entry", "supervised_local_state"),
   permission("reassign_domain_server", "supervised_local_state"),
+  permission("create_smtp_entry", "supervised_local_state"),
   permission("update_smtp_entry", "supervised_local_state"),
   permission("bind_domain_to_server", "supervised_local_state"),
   permission("update_domain_nameservers", "supervised_live_wallet"),

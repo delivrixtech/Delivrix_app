@@ -98,6 +98,7 @@ test("SMTP inventory management tools are known ApprovalGate bindings", () => {
     "resolve_ambiguous_domain",
     "retire_smtp_entry",
     "reassign_domain_server",
+    "create_smtp_entry",
     "update_smtp_entry"
   ]) {
     assert.equal(canonicalSkillSlug(skill), skill);

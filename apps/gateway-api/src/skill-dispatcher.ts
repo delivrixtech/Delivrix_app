@@ -8,6 +8,7 @@ import type {
 import type { DnsProvider, VpsProvider } from "../../../packages/adapters/src/index.ts";
 import type { ApprovalToken } from "./security/approval-token.ts";
 import { createInternalHttpAdapter } from "./internal-http-adapter.ts";
+import { approvalTokenHash } from "./approval-guard.ts";
 import type { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import type { AutoRollbackManager, DnsDigFn } from "./auto-rollback.ts";
 import {
@@ -67,6 +68,7 @@ import {
 import {
   bindDomainParamSchema,
   configureCompleteSmtpSkillParamSchema,
+  createSmtpEntryParamSchema,
   emailAuthParamSchema,
   enableSmtpAuthParamSchema,
   inspectSmtpInventoryParamSchema,
@@ -96,6 +98,7 @@ import {
   type DomainNameserverRegistrarAdapter
 } from "./routes/domain-nameservers.ts";
 import {
+  createConfiguredSmtpInventoryEntry,
   reassignSmtpDomainServer,
   resolveAmbiguousSmtpDomain,
   retireSmtpInventoryEntry,
@@ -883,6 +886,34 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
       writeJson(response, result.ok ? 200 : 409, result);
     }
   };
+  const createSmtpEntry: SkillHandlerEntry = {
+    paramSchema: createSmtpEntryParamSchema,
+    timeoutMs: 30_000,
+    canRollback: false,
+    invoke: async ({ request, response, params, deps }) => {
+      const body = await readInternalJson(request);
+      const actorId = actorIdFromBody(body);
+      const liveServers = await readRequiredSmtpLiveServers(response, deps);
+      if (!liveServers) return;
+      const result = await createConfiguredSmtpInventoryEntry({
+        workspace: deps.workspace,
+        domain: String(params.domain),
+        serverSlug: String(params.serverSlug),
+        serverIp: String(params.serverIp),
+        selector: String(params.selector),
+        liveServers,
+        actorId,
+        ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
+        dryRun: params.dryRun === true,
+        now: deps.now
+      });
+      await appendSmtpInventoryMutationAudit(deps, actorId, "oc.smtp_inventory.entry_created", result, {
+        riskLevel: "critical",
+        ...approvalTokenHashMetadata(body)
+      });
+      writeJson(response, result.ok ? 200 : 409, result);
+    }
+  };
   const updateSmtpEntry: SkillHandlerEntry = {
     paramSchema: updateSmtpEntryParamSchema,
     timeoutMs: 30_000,
@@ -949,6 +980,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     resolve_ambiguous_domain: resolveAmbiguousDomain,
     retire_smtp_entry: retireSmtpEntry,
     reassign_domain_server: reassignDomainServer,
+    create_smtp_entry: createSmtpEntry,
     update_smtp_entry: updateSmtpEntry
   };
 }
@@ -974,9 +1006,19 @@ async function readInternalJson(request: AsyncIterable<unknown>): Promise<Record
 
 async function readActorId(request: AsyncIterable<unknown>): Promise<string> {
   const body = await readInternalJson(request);
+  return actorIdFromBody(body);
+}
+
+function actorIdFromBody(body: Record<string, unknown>): string {
   return typeof body.actorId === "string" && body.actorId.trim()
     ? body.actorId.trim()
     : "openclaw";
+}
+
+function approvalTokenHashMetadata(body: Record<string, unknown>): Record<string, string> {
+  return typeof body.approvalToken === "string" && body.approvalToken.trim()
+    ? { approvalTokenHash: approvalTokenHash(body.approvalToken.trim()) }
+    : {};
 }
 
 async function readRequiredSmtpLiveServers(
@@ -994,7 +1036,11 @@ async function appendSmtpInventoryMutationAudit(
   deps: SkillDispatcherDeps,
   actorId: string,
   action: string,
-  result: { ok: boolean; domain?: string; serverSlug?: string; canonicalServerSlug?: string; status: string; dryRun: boolean; changed: boolean; reason?: string; plan?: Record<string, unknown>; error?: string }
+  result: { ok: boolean; domain?: string; serverSlug?: string; canonicalServerSlug?: string; status: string; dryRun: boolean; changed: boolean; reason?: string; plan?: Record<string, unknown>; error?: string },
+  options: {
+    riskLevel?: "high" | "critical";
+    approvalTokenHash?: string;
+  } = {}
 ): Promise<void> {
   await deps.auditLog.append({
     actorType: "operator",
@@ -1002,7 +1048,7 @@ async function appendSmtpInventoryMutationAudit(
     action,
     targetType: result.domain ? "domain" : "smtp_inventory",
     targetId: result.domain ?? result.serverSlug ?? "smtp-provisioning",
-    riskLevel: "high",
+    riskLevel: options.riskLevel ?? "high",
     decision: result.ok ? "allow" : "reject",
     humanApproved: true,
     approverIds: [actorId],
@@ -1015,6 +1061,7 @@ async function appendSmtpInventoryMutationAudit(
       changed: result.changed,
       reason: result.reason,
       error: result.error,
+      ...(options.approvalTokenHash ? { approvalTokenHash: options.approvalTokenHash } : {}),
       sideEffects: "local-state-only",
       rollbackPlan: smtpInventoryRollbackPlan(result),
       plan: result.plan
@@ -1026,13 +1073,16 @@ function smtpInventoryRollbackPlan(result: { domain?: string; serverSlug?: strin
   return {
     mode: "manual_local_state",
     canRollbackAutomatically: false,
-    procedure: "Inspect SMTP inventory and apply the inverse local status/field change with update_smtp_entry. No automatic inventory backup is created by this mutation.",
+    procedure: result.plan?.action === "create_smtp_entry"
+      ? "Inspect SMTP inventory; if this create was wrong, retire/archive the new entry with update_smtp_entry and restore the previous configured server from previousStatuses/previousValues if one was superseded. No automatic inventory backup is created by this mutation."
+      : "Inspect SMTP inventory and apply the inverse local status/field change with update_smtp_entry. No automatic inventory backup is created by this mutation.",
     futureSkill: "inspect_smtp_inventory",
     domain: result.domain,
     serverSlug: result.serverSlug,
     previousStatus: result.plan?.previousStatus,
     previousStatuses: result.plan?.previousStatuses,
-    previousValues: result.plan?.previousValues
+    previousValues: result.plan?.previousValues,
+    supersededServerSlugs: result.plan?.supersededServerSlugs
   };
 }
 

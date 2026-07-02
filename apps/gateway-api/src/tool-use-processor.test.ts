@@ -1575,6 +1575,30 @@ test("buildProposalPayloadFromToolUse targets infrastructure account retire loca
   assert.match(payload.proposal.body, /ApprovalGate/);
 });
 
+test("buildProposalPayloadFromToolUse targets create_smtp_entry as smtp inventory entry", () => {
+  const payload = buildProposalPayloadFromToolUse({
+    toolUseId: "toolu-create-smtp-entry",
+    toolName: "create_smtp_entry",
+    params: {
+      domain: "legacy-one.com",
+      serverSlug: "server88",
+      serverIp: "192.0.2.88",
+      selector: "s2026a",
+      status: "configured",
+      dryRun: false
+    },
+    chatSession: { id: "agent:main:operator", msgId: "msg-100" },
+    env: enabledEnv(),
+    now: new Date("2026-07-02T12:00:00.000Z")
+  });
+
+  assert.equal(payload.proposal.skillSlug, "create_smtp_entry");
+  assert.deepEqual(payload.proposal.delivrix_actions_required, ["create_smtp_entry"]);
+  assert.equal(payload.proposal.targetRef, "server88");
+  assert.equal(payload.proposal.targetType, "smtp_inventory_entry");
+  assert.match(payload.proposal.body, /ApprovalGate/);
+});
+
 function memoryDeps(options: {
   calls?: unknown[];
   killSwitchEnabled?: boolean;
@@ -1627,6 +1651,18 @@ function smtpInventoryMutatorCases(): Array<{ toolName: string; input: Record<st
         fromServerSlug: "server92",
         toServerSlug: "server88",
         reason: "Reasignar canonico tras drift confirmado.",
+        dryRun: true
+      }
+    },
+    {
+      toolName: "create_smtp_entry",
+      input: {
+        domain: "legacy-one.com",
+        serverSlug: "server88",
+        serverIp: "192.0.2.88",
+        selector: "s2026a",
+        status: "configured",
+        reason: "Crear entrada local confirmada por operador.",
         dryRun: true
       }
     },
