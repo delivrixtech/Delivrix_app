@@ -370,6 +370,77 @@ test("dispatcher resolves ambiguous SMTP inventory as local-only state after App
   ]);
 });
 
+test("dispatcher creates SMTP inventory entry only for a live running server and audits critical approval hash", async () => {
+  const workspace = new OpenClawWorkspace({
+    rootDir: await mkdtemp(join(tmpdir(), "dispatcher-create-smtp-entry-")),
+    now: () => new Date("2026-07-02T12:00:00.000Z")
+  });
+  await workspace.updateInventoryJson("smtp-provisioning.json", () => ({
+    servers: [{
+      serverSlug: "server57",
+      domain: "controlcorpfiling.com",
+      serverIp: "192.0.2.57",
+      selector: "default",
+      status: "configured",
+      tlsStatus: "attempted_or_pending_dns"
+    }]
+  }));
+  const auditEvents: Array<Record<string, unknown>> = [];
+
+  const result = await dispatchSkillHandler({
+    skill: "create_smtp_entry",
+    params: {
+      domain: "controlcorpfiling.com",
+      serverSlug: "server58",
+      serverIp: "45.136.70.174",
+      selector: "s2026a",
+      status: "configured",
+      reason: "Crear entrada tras verificacion multi-proveedor.",
+      dryRun: false
+    },
+    actorId: "operator-juanes",
+    approvalToken: token,
+    deps: {
+      ...fakeDeps(),
+      workspace,
+      auditLog: {
+        append: async (event: Record<string, unknown>) => { auditEvents.push(event); },
+        list: async () => []
+      },
+      readKillSwitch: async () => ({ enabled: false }),
+      readSmtpInventoryLiveServers: async () => [{
+        serverSlug: "server58",
+        ipv4: "45.136.70.174",
+        status: "running",
+        providerId: "webdock",
+        accountId: "quinary",
+        accountHealthStatus: "healthy"
+      }]
+    }
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.statusCode, 200);
+  const inventory = await workspace.readInventoryJson<{
+    servers: Array<{ serverSlug: string; domain: string; serverIp: string; selector: string; status: string; supersededBy?: string }>;
+  }>("smtp-provisioning.json");
+  assert.equal(inventory?.servers.find((server) => server.serverSlug === "server57")?.status, "superseded");
+  assert.equal(inventory?.servers.find((server) => server.serverSlug === "server57")?.supersededBy, "server58");
+  const created = inventory?.servers.find((server) => server.serverSlug === "server58");
+  assert.equal(created?.status, "configured");
+  assert.equal(created?.serverIp, "45.136.70.174");
+  assert.equal(created?.selector, "s2026a");
+
+  const audit = auditEvents.at(-1);
+  assert.equal(audit?.action, "oc.smtp_inventory.entry_created");
+  assert.equal(audit?.riskLevel, "critical");
+  const metadata = audit?.metadata as Record<string, unknown>;
+  assert.equal(metadata.approvalTokenHash, approvalTokenHash(token.tokenId));
+  assert.equal(metadata.sideEffects, "local-state-only");
+  assert.equal((metadata.rollbackPlan as Record<string, unknown>).futureSkill, "inspect_smtp_inventory");
+  assert.deepEqual((metadata.plan as Record<string, unknown>).supersededServerSlugs, ["server57"]);
+});
+
 test("dispatcher reconciles live SMTP DNS after ApprovalGate dispatch and audits rollback plan", async () => {
   const workspace = new OpenClawWorkspace({
     rootDir: await mkdtemp(join(tmpdir(), "dispatcher-reconcile-dns-")),
@@ -1191,6 +1262,17 @@ function smtpInventoryDispatchCases(): Array<{ skill: string; params: Record<str
         fromServerSlug: "server92",
         toServerSlug: "server88",
         reason: "Reasignar canonico tras drift confirmado."
+      }
+    },
+    {
+      skill: "create_smtp_entry",
+      params: {
+        domain: "legacy-one.com",
+        serverSlug: "server88",
+        serverIp: "192.0.2.88",
+        selector: "s2026a",
+        status: "configured",
+        reason: "Crear entrada confirmada por inventario vivo."
       }
     },
     {
