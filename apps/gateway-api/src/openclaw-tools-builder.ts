@@ -1561,7 +1561,17 @@ function hasIonosDnsCredentials(env: Record<string, string | undefined>): boolea
 }
 
 function hasWebdockOpsCredentials(env: Record<string, string | undefined>): boolean {
-  return Boolean(firstNonEmpty(env.WEBDOCK_API_KEY_OPS, env.WEBDOCK_API_KEY, env.WEBDOCK_API_KEY_PRIMARY));
+  if (firstNonEmpty(env.WEBDOCK_API_KEY_OPS, env.WEBDOCK_API_KEY, env.WEBDOCK_API_KEY_PRIMARY)) {
+    return true;
+  }
+  // Cuentas Webdock aisladas (secondary..quinary): cuentan como credencial utilizable solo si son
+  // write-capable (par _WRITE + _ACCOUNT), espejo de canCreate() del adapter multi-cuenta. Sin esto,
+  // retirar las keys de la cuenta-1 muerta apagaba create/bind/configure_complete_smtp aunque
+  // quinary siguiera viva y escribible.
+  return ["SECONDARY", "TERTIARY", "QUATERNARY", "QUINARY"].some((role) =>
+    Boolean(firstNonEmpty(env[`WEBDOCK_API_KEY_${role}_WRITE`])) &&
+    Boolean(firstNonEmpty(env[`WEBDOCK_API_KEY_${role}_ACCOUNT`]))
+  );
 }
 
 function hasSshRunnerConfig(env: Record<string, string | undefined>): boolean {
