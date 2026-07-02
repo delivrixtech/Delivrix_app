@@ -1000,7 +1000,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
       };
       const publicKey = deps.env?.WEBDOCK_OPERATOR_SSH_PUBLIC_KEY?.trim();
       if (!publicKey) {
-        emit(409, { ok: false, status: "operator_pubkey_unconfigured", error: "operator_pubkey_unconfigured" });
+        emit(409, { ok: false, status: "operator_pubkey_unconfigured", error: "operator_pubkey_unconfigured", plan: { action: "ensure_server_ssh_access", serverSlug, hint: "Falta WEBDOCK_OPERATOR_SSH_PUBLIC_KEY en el entorno del gateway. No es algo que resuelvas por tool: reportá el blocker al operador para que configure la pubkey del operador." } });
         return;
       }
       // Fail-closed account routing: una cuenta desconocida NO cae a la cuenta-1 muerta.
@@ -1015,7 +1015,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         return;
       }
       if (typeof adapter.ensureServerSshAccess !== "function") {
-        emit(409, { ok: false, status: "ssh_access_unsupported_for_account", error: "ssh_access_unsupported_for_account" });
+        emit(409, { ok: false, status: "ssh_access_unsupported_for_account", error: "ssh_access_unsupported_for_account", plan: { action: "ensure_server_ssh_access", serverSlug, serverAccountId, nextStep: "read_infrastructure_inventory", hint: "La cuenta no soporta instalar SSH (no es write-capable). Verificá la cuenta del server con read_infrastructure_inventory; solo cuentas con keys write pueden instalar la pubkey." } });
         return;
       }
       // El server debe estar en el inventario local (creado o adoptado): rail explicito

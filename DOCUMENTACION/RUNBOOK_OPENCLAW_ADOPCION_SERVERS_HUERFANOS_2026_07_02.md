@@ -6,6 +6,15 @@
 
 Hay un VPS Webdock vivo (running) en la flota multi-cuenta (p.ej. cuenta `quinary` / InfraVPS) que NO está en `webdock-servers.json` (server "huérfano"), y un dominio owned en Route53 que necesita stack SMTP (dominio libre, o dominio zombie cuya entrada apunta a un server muerto).
 
+## DECISIÓN OBLIGATORIA antes de armar CUALQUIER plan (no la saltes)
+
+¿El server destino ya lo provisionamos nosotros (está en `webdock-servers.json`) o es un HUÉRFANO vivo (aparece en `read_infrastructure_inventory` pero NO en `webdock-servers.json`)?
+
+- **Huérfano** (el caso típico de rescate): el plan DEBE empezar con `adopt_webdock_server` → `ensure_server_ssh_access` ANTES de cualquier `provision_smtp_postfix`, `bind_webdock_main_domain`, `configure_complete_smtp` o `send_real_email`. Saltar esos dos pasos hace fallar la provisión con `server_slug_not_in_inventory` (y sin la key SSH, todo SSH da Permission denied).
+- **Ya provisionado por nosotros**: podés ir directo al reconfigure/DNS.
+
+Regla dura: NUNCA propongas provisión/SSH/DNS/envío sobre un server que no esté en `webdock-servers.json`. Si dudás, es huérfano → adoptá primero.
+
 ## Secuencia por dominio (máx 2-3 SMTPs por día — regla anti-snowshoe)
 
 1. **Descubrir**: `read_infrastructure_inventory` (AUTORITATIVA multi-cuenta) para confirmar slug, IP y cuenta del huérfano; `inspect_smtp_inventory` para el estado del dominio. NO uses `read_webdock_servers` para esto (es legacy y puede devolver `unavailable`/`mock`).
