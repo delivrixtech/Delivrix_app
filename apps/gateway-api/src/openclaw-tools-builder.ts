@@ -1,5 +1,6 @@
 import type { SkillParamSchema } from "./skill-schemas.ts";
 import {
+  adoptWebdockServerParamSchema,
   bindDomainParamSchema,
   compactIntentParamSchema,
   configureCompleteSmtpSkillParamSchema,
@@ -85,6 +86,7 @@ export type OpenClawToolName =
   | "retire_smtp_entry"
   | "reassign_domain_server"
   | "create_smtp_entry"
+  | "adopt_webdock_server"
   | "update_smtp_entry"
   | "bind_domain_to_server"
   | "seed_warmup_pool"
@@ -1140,6 +1142,40 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     targetType: "smtp_inventory_entry",
     severity: "critical"
   },
+  adopt_webdock_server: {
+    spec: {
+      name: "adopt_webdock_server",
+      description: [
+        "Adopta (registra) en el inventario local webdock-servers.json un VPS Webdock ya existente, verificado running en la flota viva multi-cuenta (p.ej. cuenta quinary/InfraVPS) y sin entrada previa.",
+        "Es create-only: si el slug ya esta en el inventario devuelve conflicto server_already_adopted; valida serverSlug+serverIp+serverAccountId contra la flota viva y exige cuenta saludable y proveedor webdock.",
+        "Es el paso previo para reusar un server huerfano con configure_complete_smtp (reuseServerSlug) y para habilitar SSH/send sobre el (el server ademas necesita la pubkey del operador instalada).",
+        "Mutacion local-state-only: no toca DNS, SSH, proveedor ni credenciales; requiere ApprovalGate firmado, audit log critical y kill switch desarmado."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          serverSlug: { type: "string", pattern: slugPattern },
+          serverIp: { type: "string", pattern: ipv4Pattern },
+          serverAccountId: {
+            type: "string",
+            pattern: slugPattern,
+            description: "Cuenta Webdock duena del server en la flota viva (p.ej. quinary). Debe coincidir con el accountId live."
+          },
+          reason: { type: "string", minLength: 10, maxLength: 500 },
+          dryRun: {
+            type: "boolean",
+            default: true,
+            description: "Default seguro: si se omite, solo planifica. Para escribir debe venir dryRun:false en una propuesta firmada."
+          }
+        },
+        required: ["serverSlug", "serverIp", "serverAccountId", "reason"]
+      }
+    },
+    paramSchema: adoptWebdockServerParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "webdock_server",
+    severity: "critical"
+  },
   update_smtp_entry: {
     spec: {
       name: "update_smtp_entry",
@@ -1460,6 +1496,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "retire_smtp_entry",
     "reassign_domain_server",
     "create_smtp_entry",
+    "adopt_webdock_server",
     "update_smtp_entry",
     "bind_domain_to_server",
     "seed_warmup_pool",

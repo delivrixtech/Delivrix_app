@@ -35,6 +35,7 @@ CORE_DOCS=(
   "NORTE_OPERATIVO_DELIVRIX.md"
   "OPENCLAW_DELIVRIX_API_CONTRACT.md"
   "OPENCLAW_VERIFICATION_PROTOCOL.md"
+  "RUNBOOK_OPENCLAW_ADOPCION_SERVERS_HUERFANOS_2026_07_02.md"
 )
 
 for doc in "${CORE_DOCS[@]}"; do
@@ -86,12 +87,13 @@ skills = read_doc("OPENCLAW_SKILLS_CATALOG.md")
 norte = read_doc("NORTE_OPERATIVO_DELIVRIX.md")
 api = read_doc("OPENCLAW_DELIVRIX_API_CONTRACT.md")
 verification = read_doc("OPENCLAW_VERIFICATION_PROTOCOL.md")
+adoption_runbook = read_doc("RUNBOOK_OPENCLAW_ADOPCION_SERVERS_HUERFANOS_2026_07_02.md")
 prompt_version_match = re.search(r"openclaw-prompt-v[0-9.]+", system_prompt)
 prompt_version = prompt_version_match.group(0) if prompt_version_match else "openclaw-prompt-unknown"
 
 system_literal = section(system_prompt, "## 4. System prompt literal")
 permissions_categories = section(permissions, "## 2. Categorías canónicas")
-permissions_matrix = compact_lines(section(permissions, "## 3. Matriz literal"), 5600)
+permissions_matrix = compact_lines(section(permissions, "## 3. Matriz literal"), 2800)
 permissions_gates = section(permissions, "## 7. Gates duros")
 permissions_core = "\n\n".join(part for part in (
     permissions_categories,
@@ -121,6 +123,7 @@ verification_core = sections(verification, [
     "## 4. Auto-reparación y escalada",
     "## 5. Aprendizaje permanente",
 ])
+adoption_runbook_core = compact_lines(adoption_runbook, 2800)
 
 generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -153,6 +156,10 @@ context = f"""# Delivrix OpenClaw — System Context Bundle
 ----- BEGIN OPENCLAW_VERIFICATION_PROTOCOL.md core -----
 {verification_core}
 ----- END OPENCLAW_VERIFICATION_PROTOCOL.md core -----
+
+----- BEGIN RUNBOOK_OPENCLAW_ADOPCION_SERVERS_HUERFANOS_2026_07_02.md core -----
+{adoption_runbook_core}
+----- END RUNBOOK_OPENCLAW_ADOPCION_SERVERS_HUERFANOS_2026_07_02.md core -----
 """
 
 out_context.write_text(context, encoding="utf-8")
@@ -365,7 +372,7 @@ print(json.dumps({
     "approverIds": ["juanes@delivrix"],
     "schemaVersion": "2026-05-18.v1",
     "metadata": {
-        "docsBundled": 5,
+        "docsBundled": 7,
         "charCount": int(char_count),
         "tokenEstimate": int(token_est),
         "sha256": sha,

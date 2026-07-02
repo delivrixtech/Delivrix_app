@@ -124,6 +124,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["create_smtp_entry"]
   },
   {
+    canonicalSkill: "adopt_webdock_server",
+    aliases: ["adopt_webdock_server"],
+    actionIds: ["adopt_webdock_server"]
+  },
+  {
     canonicalSkill: "update_smtp_entry",
     aliases: ["update_smtp_entry"],
     actionIds: ["update_smtp_entry"]

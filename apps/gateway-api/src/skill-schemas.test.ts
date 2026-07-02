@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  adoptWebdockServerParamSchema,
   compactIntentParamSchema,
   configureCompleteSmtpSkillParamSchema,
   createSmtpEntryParamSchema,
@@ -328,6 +329,66 @@ test("createSmtpEntryParamSchema is dry-run by default, requires reason and reje
     reason: validReason
   });
   assert.equal(invalidDomain.success, false);
+});
+
+test("adoptWebdockServerParamSchema is dry-run by default, requires reason and rejects invalid inputs", () => {
+  const validReason = "Adoptar server huerfano verificado en la flota viva.";
+  const parsed = adoptWebdockServerParamSchema.safeParse({
+    serverSlug: "server57",
+    serverIp: "193.180.211.146",
+    serverAccountId: "quinary",
+    reason: validReason
+  });
+  assert.equal(parsed.success, true);
+  if (!parsed.success) assert.fail("adopt_webdock_server sample should parse");
+  assert.deepEqual(parsed.data, {
+    serverSlug: "server57",
+    serverIp: "193.180.211.146",
+    serverAccountId: "quinary",
+    reason: validReason,
+    dryRun: true
+  });
+
+  const writable = adoptWebdockServerParamSchema.safeParse({
+    serverSlug: "server57",
+    serverIp: "193.180.211.146",
+    serverAccountId: "quinary",
+    reason: validReason,
+    dryRun: false
+  });
+  assert.equal(writable.success, true);
+  if (!writable.success) assert.fail("adopt_webdock_server writable sample should parse");
+  assert.equal(writable.data.dryRun, false);
+
+  const missingReason = adoptWebdockServerParamSchema.safeParse({
+    serverSlug: "server57",
+    serverIp: "193.180.211.146",
+    serverAccountId: "quinary"
+  });
+  assert.equal(missingReason.success, false);
+
+  const missingAccount = adoptWebdockServerParamSchema.safeParse({
+    serverSlug: "server57",
+    serverIp: "193.180.211.146",
+    reason: validReason
+  });
+  assert.equal(missingAccount.success, false);
+
+  const invalidIp = adoptWebdockServerParamSchema.safeParse({
+    serverSlug: "server57",
+    serverIp: "999.180.211.146",
+    serverAccountId: "quinary",
+    reason: validReason
+  });
+  assert.equal(invalidIp.success, false);
+
+  const invalidSlug = adoptWebdockServerParamSchema.safeParse({
+    serverSlug: "server 57;rm",
+    serverIp: "193.180.211.146",
+    serverAccountId: "quinary",
+    reason: validReason
+  });
+  assert.equal(invalidSlug.success, false);
 });
 
 test("configureCompleteSmtpSkillParamSchema normalizes known DNS providers", () => {

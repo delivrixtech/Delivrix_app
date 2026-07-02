@@ -1190,6 +1190,9 @@ function toolTarget(toolName: string, params: Record<string, unknown>, fallbackT
   if ((toolName === "retire_smtp_entry" || toolName === "create_smtp_entry" || toolName === "update_smtp_entry") && typeof params.serverSlug === "string") {
     return { id: params.serverSlug, type: "smtp_inventory_entry" };
   }
+  if (toolName === "adopt_webdock_server" && typeof params.serverSlug === "string") {
+    return { id: params.serverSlug, type: "webdock_server" };
+  }
   if (toolName === "reassign_domain_server" && typeof params.toServerSlug === "string") {
     return { id: params.toServerSlug, type: "smtp_inventory_entry" };
   }
