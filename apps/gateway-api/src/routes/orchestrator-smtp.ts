@@ -707,7 +707,10 @@ export async function configureCompleteSmtp(
       // Guard temprano: el slug a reusar debe existir en webdock-servers.json ANTES de cualquier
       // paso con costo (la compra de dominio del step 2). Un slug inexistente no debe dejar un run
       // failed con un dominio ya comprado. El step 4 re-valida incluyendo el hostname.
-      await readReusableWebdockServer(deps, initialReuseServerSlug, undefined, { step: 0, skill: "reuse_server_guard" });
+      await readReusableWebdockServer(deps, initialReuseServerSlug, {
+        mode: "pre-run",
+        failure: { step: 0, skill: "reuse_server_guard" }
+      });
     }
     if (requestedServerAccountId) {
       if (isNonWebdockProviderId(initialVpsProviderId)) {
@@ -912,7 +915,10 @@ export async function configureCompleteSmtp(
     const createStepWasAlreadyDone = runState.steps["4"]?.status === "done";
     let vps: ConfigureCompleteSmtpStepResult | undefined;
     if (reuseServerSlug) {
-      const reusableServer = await readReusableWebdockServer(deps, reuseServerSlug, smtpHost);
+      const reusableServer = await readReusableWebdockServer(deps, reuseServerSlug, {
+        mode: "full",
+        expectedHostname: smtpHost
+      });
       if (requestedServerAccountId && reusableServer.serverAccountId && requestedServerAccountId !== reusableServer.serverAccountId) {
         throw new OrchestratorFailure("failed", 0, "server_account_guard", "reuse_server_account_mismatch");
       }
@@ -2179,13 +2185,16 @@ function smtpRunStateHasProviderLockedProgress(state: SmtpRunState): boolean {
   return Object.values(state.steps).some((step) => step.status === "done" || step.status === "in_flight");
 }
 
+type ReuseServerValidation =
+  | { mode: "pre-run"; failure: { step: number; skill: string } }
+  | { mode: "full"; expectedHostname: string; failure?: { step: number; skill: string } };
+
 async function readReusableWebdockServer(
   deps: ConfigureCompleteSmtpDeps,
   reuseServerSlug: string,
-  // undefined => guard temprano pre-run: valida existencia/status/ipv4 sin conocer aun el smtpHost.
-  expectedHostname: string | undefined,
-  failure: { step: number; skill: string } = { step: 4, skill: "create_webdock_server" }
+  validation: ReuseServerValidation
 ): Promise<{ slug: string; ipv4: string; serverAccountId?: string }> {
+  const failure = validation.failure ?? { step: 4, skill: "create_webdock_server" };
   const inventory = await requireRunStateWorkspace(deps)
     .readInventoryJson<WebdockInventoryForResume>("webdock-servers.json")
     .catch(() => null);
@@ -2202,7 +2211,7 @@ async function readReusableWebdockServer(
     throw new OrchestratorFailure("failed", failure.step, failure.skill, `reuse_server_ipv4_missing:${reuseServerSlug}`);
   }
   const hostname = typeof server.hostname === "string" ? normalizeHostnameForReuse(server.hostname) : "";
-  if (expectedHostname !== undefined && hostname && hostname !== normalizeHostnameForReuse(expectedHostname)) {
+  if (validation.mode === "full" && hostname && hostname !== normalizeHostnameForReuse(validation.expectedHostname)) {
     throw new OrchestratorFailure("failed", failure.step, failure.skill, "reuse_server_hostname_mismatch");
   }
   const serverAccountId = normalizeServerAccountId(server.accountId ?? server.serverAccountId);

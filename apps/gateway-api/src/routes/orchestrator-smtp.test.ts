@@ -734,6 +734,44 @@ test("configureCompleteSmtp fails an unknown reuseServerSlug BEFORE any paid ste
   assert.equal(ctx.planExecutions.length, 0, "ningun paso mutante debe ejecutarse");
 });
 
+test("configureCompleteSmtp fails non-runnable reused servers BEFORE any paid step", async () => {
+  const cases = [
+    {
+      name: "stopped",
+      server: { slug: "server57", hostname: "", ipv4: "203.0.113.57", status: "stopped", accountId: "quinary" },
+      expectedError: "reuse_server_not_running:server57"
+    },
+    {
+      name: "missing-ipv4",
+      server: { slug: "server57", hostname: "", ipv4: "", status: "running", accountId: "quinary" },
+      expectedError: "reuse_server_ipv4_missing:server57"
+    }
+  ];
+
+  for (const testCase of cases) {
+    const ctx = createDeps({
+      env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+      planApproval: signedPlanApproval({ reuseServerSlug: "server57" })
+    });
+    await ctx.workspace.updateInventoryJson("webdock-servers.json", () => ({ servers: [testCase.server] }));
+
+    const result = await configureCompleteSmtp({
+      ...validInput(),
+      runId: "run-1",
+      domain: "delivrixops.com",
+      provider: "route53",
+      reuseServerSlug: "server57"
+    }, ctx.deps);
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.failedStep, 0);
+    assert.equal(result.error, testCase.expectedError);
+    assert.equal(result.totalCostUsd, 0);
+    assert.equal(ctx.approvals.some((entry) => entry.step === 2 || entry.skill === "register_domain_route53"), false);
+    assert.equal(ctx.planExecutions.length, 0, "ningun paso mutante debe ejecutarse antes del guard");
+  }
+});
+
 test("route53 DNS step writes canonical smtp A and MX records", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);
