@@ -104,11 +104,21 @@ test("createWebdockAdaptersFromEnv keeps a mock default adapter when no key exis
   assert.equal(accounts[0].adapter.isLive(), false);
 
   const result = await accounts[0].adapter.listServers();
+  // Fail-closed por defecto: sin key NO fabrica flota fantasma.
+  assert.equal(result.source.kind, "unavailable");
+  assert.equal(result.source.responseOk, false);
+  assert.equal(result.source.errorCode, "read_key_unconfigured");
+  assert.equal(result.servers.length, 0);
+});
+
+test("WebdockRealAdapter returns the mock snapshot only when WEBDOCK_ALLOW_MOCK is set", async () => {
+  const adapter = new WebdockRealAdapter({
+    env: { WEBDOCK_ALLOW_MOCK: "1" },
+    now: () => new Date("2026-05-24T18:00:00.000Z")
+  });
+  const result = await adapter.listServers();
   assert.equal(result.source.kind, "mock");
-  assert.equal(result.source.accountId, "default");
-  assert.equal(result.source.accountLabel, "Webdock");
   assert.equal(result.servers.length > 0, true);
-  assert.equal(result.servers[0].accountId, "default");
 });
 
 test("WebdockRealAdapter creates a server from the safe demo profile aliases", async () => {
@@ -378,7 +388,9 @@ test("WebdockRealAdapter does not use ops key for reads", async () => {
   assert.equal(adapter.canWrite(), true);
   const result = await adapter.listServers();
 
-  assert.equal(result.source.kind, "mock");
+  // Sin read key el colector es fail-closed (unavailable + vacío), no usa la write key para leer.
+  assert.equal(result.source.kind, "unavailable");
+  assert.equal(result.servers.length, 0);
   assert.equal(calls.length, 0);
 });
 

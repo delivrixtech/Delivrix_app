@@ -401,7 +401,25 @@ const accountLifecycleStore = new LocalFileInfrastructureAccountLifecycleStore()
 const rateLimitStore = new LocalFileRateLimitStore();
 const rateLimitService = new RateLimitService(rateLimitStore);
 const webdockAdapter = new WebdockAdapter();
-const webdockRealAdapter = new WebdockRealAdapter();
+// Colector legacy single-account (feed de read_webdock_servers y el panel Webdock del Canvas).
+// Se apunta a la cuenta write-capable viva (quinary/InfraVPS) para que muestre la flota REAL en
+// vez de caer al fallback. La fuente autoritativa de la flota multi-cuenta sigue siendo
+// listWebdockInventoryAccounts / read_infrastructure_inventory; este colector es secundario.
+const webdockLegacyReadApiKey =
+  process.env.WEBDOCK_API_KEY_QUINARY ??
+  process.env.WEBDOCK_API_KEY_PRIMARY ??
+  process.env.WEBDOCK_API_KEY;
+const webdockLegacyUsesQuinary = Boolean(process.env.WEBDOCK_API_KEY_QUINARY) &&
+  !process.env.WEBDOCK_API_KEY_PRIMARY;
+const webdockRealAdapter = webdockLegacyReadApiKey
+  ? new WebdockRealAdapter({
+      readApiKey: webdockLegacyReadApiKey,
+      accountId: webdockLegacyUsesQuinary ? "quinary" : "default",
+      accountLabel: webdockLegacyUsesQuinary
+        ? (process.env.WEBDOCK_ACCOUNT_QUINARY_LABEL ?? "InfraVPS")
+        : undefined
+    })
+  : new WebdockRealAdapter();
 const webdockOpsAdapter = new WebdockRealAdapter({
   readApiKey: process.env.WEBDOCK_API_KEY_PRIMARY,
   writeApiKey: process.env.WEBDOCK_API_KEY_OPS,

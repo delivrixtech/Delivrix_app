@@ -520,7 +520,13 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     invoke: async ({ request, response, deps, accountId, providerId }) => {
       const adapter = resolveWebdockCreateAdapter(deps, accountId, providerId);
       if (!adapter) {
-        writeJson(response, 409, { ok: false, error: "unknown_server_account", serverAccountId: accountId });
+        writeJson(response, 409, {
+          ok: false,
+          error: "unknown_server_account",
+          serverAccountId: accountId,
+          nextStep: "read_infrastructure_inventory",
+          hint: "El serverAccountId no es una cuenta write-capable conocida. Lee read_infrastructure_inventory y usa un accountId de inventory_accounts; no reintentes con otra cuenta al azar."
+        });
         return;
       }
       return handleWebdockServerCreateHttp({
@@ -548,7 +554,13 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     invoke: async ({ request, response, deps, accountId, providerId }) => {
       const adapter = resolveWebdockCreateAdapter(deps, accountId, providerId);
       if (!adapter) {
-        writeJson(response, 409, { ok: false, error: "unknown_server_account", serverAccountId: accountId });
+        writeJson(response, 409, {
+          ok: false,
+          error: "unknown_server_account",
+          serverAccountId: accountId,
+          nextStep: "read_infrastructure_inventory",
+          hint: "El serverAccountId no es una cuenta write-capable conocida. Lee read_infrastructure_inventory y usa un accountId de inventory_accounts; no reintentes con otra cuenta al azar."
+        });
         return;
       }
       return handleBindWebdockMainDomain({
@@ -994,7 +1006,12 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
       // Fail-closed account routing: una cuenta desconocida NO cae a la cuenta-1 muerta.
       const adapter = resolveWebdockCreateAdapter(deps, serverAccountId, providerId);
       if (!adapter) {
-        emit(409, { ok: false, status: "unknown_server_account", error: "unknown_server_account" });
+        emit(409, {
+          ok: false,
+          status: "unknown_server_account",
+          error: "unknown_server_account",
+          plan: { action: "ensure_server_ssh_access", serverSlug, serverAccountId, nextStep: "read_infrastructure_inventory", hint: "Cuenta no write-capable; usa un accountId de inventory_accounts." }
+        });
         return;
       }
       if (typeof adapter.ensureServerSshAccess !== "function") {
