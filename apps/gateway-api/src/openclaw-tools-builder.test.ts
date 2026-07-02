@@ -481,6 +481,7 @@ function validSample(toolName: string): Record<string, unknown> {
       serverIp: "203.0.113.10",
       selector: "s2026a",
       status: "configured",
+      reason: "Crear entrada verificada contra inventario vivo.",
       dryRun: true
     };
   }
