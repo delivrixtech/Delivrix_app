@@ -66,7 +66,7 @@ export interface WebdockServer {
 }
 
 export interface WebdockInventorySource {
-  kind: "live" | "mock";
+  kind: "live" | "mock" | "unavailable";
   apiBase: string;
   accountId?: string;
   accountLabel?: string;
@@ -243,10 +243,15 @@ export class WebdockRealAdapter {
   private readonly sshRunner: WebdockSshRunner | undefined;
   private readonly logger: WebdockAdapterLogger;
   private readonly now: () => Date;
+  private readonly allowMock: boolean;
   private cache: CacheEntry | null = null;
 
   constructor(options: WebdockRealAdapterOptions = {}) {
     const env = options.env ?? (typeof process !== "undefined" ? process.env : {});
+    // El fallback mock solo se permite explícitamente (dev/tests). En producción, sin read key
+    // el inventario devuelve "unavailable" en vez de fabricar servers fantasma.
+    this.allowMock = normalizeEnvValue(env?.WEBDOCK_ALLOW_MOCK) === "1" ||
+      normalizeEnvValue(env?.WEBDOCK_ALLOW_MOCK)?.toLowerCase() === "true";
     const legacyApiKey =
       normalizeEnvValue(options.apiKey) ?? normalizeEnvValue(env?.WEBDOCK_API_KEY);
     this.readApiKey =
@@ -297,10 +302,19 @@ export class WebdockRealAdapter {
 
     const readApiKey = this.readApiKey;
     if (!readApiKey) {
-      const result: WebdockInventoryResult = {
-        servers: this.withAccount(mockWebdockServers()),
-        source: this.sourceMetadata(now, "mock", true)
-      };
+      const result: WebdockInventoryResult = this.allowMock
+        ? {
+            servers: this.withAccount(mockWebdockServers()),
+            source: this.sourceMetadata(now, "mock", true)
+          }
+        : {
+            // Fail-closed: sin read key NO fabricamos flota fantasma. Vacío + señal honesta.
+            servers: [],
+            source: this.sourceMetadata(now, "unavailable", false, {
+              errorCode: "read_key_unconfigured",
+              errorMessage: "No Webdock read API key configured for this collector; use the multi-account infrastructure inventory (read_infrastructure_inventory) for the live fleet."
+            })
+          };
       this.cacheResult(now, result);
       return result;
     }
@@ -724,6 +738,9 @@ export class WebdockRealAdapter {
   async getServer(slug: string): Promise<WebdockServer> {
     const readApiKey = this.readApiKey;
     if (!readApiKey) {
+      if (!this.allowMock) {
+        throw new Error("webdock_read_key_unconfigured: cannot read server without a Webdock read API key.");
+      }
       const server = this.withAccount(mockWebdockServers()).find((item) => item.slug === slug);
       if (!server) {
         throw new Error(`Webdock mock server not found: ${slug}`);

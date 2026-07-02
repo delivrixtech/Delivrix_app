@@ -1,6 +1,6 @@
 export type ProviderKind = "compute" | "dns" | "domain-registrar" | "physical";
 export type ProviderStatus = "active" | "paused" | "error" | "planned";
-export type ProviderFetchSourceKind = "live" | "mock";
+export type ProviderFetchSourceKind = "live" | "mock" | "unavailable";
 
 export interface InventoryItem {
   id: string;
