@@ -11,13 +11,14 @@ Hay un VPS Webdock vivo (running) en la flota multi-cuenta (p.ej. cuenta `quinar
 1. **Descubrir**: `read_infrastructure_inventory` / `read_webdock_servers` para confirmar slug, IP y cuenta del huérfano; `inspect_smtp_inventory` para el estado del dominio.
 2. **Si el dominio es zombie** (entrada `configured` apuntando a server muerto): `retire_smtp_entry` de la entrada vieja (dry-run → firmado).
 3. **Adoptar el server**: `adopt_webdock_server { serverSlug, serverIp, serverAccountId, reason }` (dry-run → firmado). Valida contra la flota viva (slug+IP+cuenta+running+cuenta sana) y registra la entrada en `webdock-servers.json`. Es create-only: `server_already_adopted` significa que ya está registrado (no es error de flujo).
-4. **Prerequisito SSH (humano, una sola vez por server)**: la pubkey del operador (`WEBDOCK_OPERATOR_SSH_PUBLIC_KEY`) debe estar instalada en el server adoptado; si el paso 9 del orquestador falla con Permission denied, pedir al operador instalarla por consola Webdock.
-5. **Configurar el stack completo**: `configure_complete_smtp { domain, requireExistingDomain: true, reuseServerSlug: <slug>, serverAccountId: <cuenta>, ... }`.
+4. **Verificación post-adopción (obligatoria, read-only)**: volver a invocar `read_webdock_servers` y confirmar que `slug`, `ipv4` y `accountId` coinciden con lo adoptado. Si no coinciden, NO usar `configure_complete_smtp`; abrir rollback manual auditado y corregir el inventario antes de cualquier paso con costo.
+5. **Prerequisito SSH (humano, una sola vez por server)**: la pubkey del operador (`WEBDOCK_OPERATOR_SSH_PUBLIC_KEY`) debe estar instalada en el server adoptado. Antes del orquestador, verificar acceso sin mutación con `ssh -o BatchMode=yes <usuario>@<ip> 'echo ok'`; si falla, instalar/corregir la pubkey por consola Webdock.
+6. **Configurar el stack completo**: `configure_complete_smtp { domain, requireExistingDomain: true, reuseServerSlug: <slug>, serverAccountId: <cuenta>, ... }`.
    - `requireExistingDomain: true` es OBLIGATORIO en rescates: evita compras de dominio accidentales.
    - El guard temprano valida el slug ANTES de cualquier paso con costo; un slug malo falla a costo $0.
    - Al completar, el orquestador escribe la entrada `configured` en `smtp-provisioning.json`.
-6. **SASL**: `enable_smtp_auth { domain, serverSlug }` (firmado).
-7. **Smoke**: envío real a un destinatario NO-Gmail primero (Gmail después, según warmup/reputación).
+7. **SASL**: `enable_smtp_auth { domain, serverSlug }` (firmado).
+8. **Smoke**: envío real a un destinatario NO-Gmail primero (Gmail después, según warmup/reputación).
 
 ## Prioridades vigentes (matriz 2026-07-02)
 
@@ -30,6 +31,7 @@ Hay un VPS Webdock vivo (running) en la flota multi-cuenta (p.ej. cuenta `quinar
 ## Guardrails que este flujo respeta (no intentar saltarlos)
 
 - `adopt_webdock_server` y todos los pasos mutantes requieren propuesta firmada (ApprovalGate) y kill switch desarmado.
+- Los `serverSlug` adoptados deben ser únicos operacionalmente; si aparece una colisión o ambigüedad entre proveedores/cuentas, detener y resolver identidad antes de firmar.
 - `serverAccountId` desconocido → `unknown_server_account` (fail-closed; no hay fallback silencioso a otra cuenta).
 - Cuenta con `accountHealthStatus` distinto de healthy → `account_not_healthy` (no adoptar sobre cuentas degradadas).
 - El rollback de una adopción es manual (retirar la entrada de `webdock-servers.json`); la adopción en sí no toca DNS/SSH/proveedor.
