@@ -117,7 +117,13 @@ export async function createConfiguredSmtpInventoryEntry(input: {
       changed: false,
       domain,
       serverSlug: input.serverSlug,
-      error: "server_not_live"
+      error: "server_not_live",
+      plan: {
+        action: "create_smtp_entry",
+        serverSlug: input.serverSlug,
+        nextStep: "read_infrastructure_inventory",
+        hint: "El serverSlug no está en la flota viva multi-cuenta. Verifica el slug/cuenta con read_infrastructure_inventory (autoritativa); si el server existe pero es huérfano, adóptalo con adopt_webdock_server primero."
+      }
     };
   }
   if (liveServer.ipv4 !== input.serverIp) {

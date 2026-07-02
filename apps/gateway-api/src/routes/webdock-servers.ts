@@ -1161,7 +1161,13 @@ export async function adoptWebdockServerInventoryEntry(input: {
       dryRun,
       changed: false,
       serverSlug,
-      error: "server_not_live"
+      error: "server_not_live",
+      plan: {
+        action: "adopt_webdock_server",
+        serverSlug,
+        nextStep: "read_infrastructure_inventory",
+        hint: "El serverSlug no aparece en la flota viva multi-cuenta. Lee read_infrastructure_inventory (autoritativa) para ver los slugs reales; NO uses read_webdock_servers legacy ni inventes el slug."
+      }
     };
   }
   const basePlan = {

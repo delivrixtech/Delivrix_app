@@ -44,7 +44,7 @@ export interface WebdockInventorySummary {
 }
 
 export interface WebdockInventorySourceInfo {
-  kind: "live" | "mock";
+  kind: "live" | "mock" | "unavailable";
   apiBase: string;
   fetchedAt: string;
   responseOk: boolean;

@@ -644,8 +644,9 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     spec: {
       name: "read_webdock_servers",
       description: [
-        "Lee el inventario Webdock real vía Gateway Delivrix, incluyendo slug, status, IPv4, profileSlug, imageSlug, hostname/mainDomain cuando Webdock lo expone, y drift contra sender_node local.",
-        "Invocar antes de asumir que un VPS existe, crear otro VPS, bindear dominio o provisionar SMTP en un server.",
+        "Colector Webdock LEGACY single-account (drift + campos webdock-specific). NO es la fuente autoritativa de la flota.",
+        "Usar SOLO para: (a) drift Webdock contra sender_node local, (b) inputs de create_webdock_server/bind_webdock_main_domain, (c) scope explicito provider=webdock.",
+        "Para saber que servidores/cuentas EXISTEN o estan vivos usa SIEMPRE read_infrastructure_inventory primero (autoritativa multi-cuenta). Si source.kind es 'unavailable' o 'mock', NO hay datos reales aca: no actues sobre estas filas.",
         "Lectura auditada: no muta infraestructura, no crea servidores y no requiere ApprovalGate."
       ].join(" "),
       input_schema: {
@@ -674,8 +675,9 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     spec: {
       name: "read_infrastructure_inventory",
       description: [
-        "Lee el inventario completo de infraestructura vía Gateway Delivrix: cuentas Webdock, proveedores VPS como Contabo, DNS, registrars y estados degradados por proveedor.",
-        "Usar para grounding general de flota/providers/cuentas antes de afirmar qué servidores o cuentas existen.",
+        "FUENTE AUTORITATIVA de la flota multi-cuenta: cuentas Webdock (incl. quinary/InfraVPS), proveedores VPS como Contabo, DNS, registrars y estados degradados por proveedor.",
+        "Es la verdad sobre que servidores y cuentas EXISTEN y estan vivos. Invocala PRIMERO antes de afirmar que un VPS existe, adoptar/crear un server, bindear dominio o provisionar SMTP.",
+        "Ante conflicto con read_webdock_servers (legacy), gana esta; la divergencia se audita como drift.",
         "Lectura auditada read-only: no muta infraestructura, no crea servidores y no requiere ApprovalGate."
       ].join(" "),
       input_schema: {
