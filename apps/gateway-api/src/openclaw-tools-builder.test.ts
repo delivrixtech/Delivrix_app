@@ -307,6 +307,32 @@ test("configure_complete_smtp fail-closes when a required subtool is disabled", 
   assert.equal(names.includes("configure_complete_smtp"), false);
 });
 
+test("Webdock write tools stay enabled with only an isolated write-capable account (quinary), and disable with none", () => {
+  const onlyQuinary = buildToolsForOpenClaw({
+    ...allEnabledEnv(),
+    WEBDOCK_API_KEY_OPS: undefined,
+    WEBDOCK_API_KEY: undefined,
+    WEBDOCK_API_KEY_PRIMARY: undefined,
+    WEBDOCK_API_KEY_QUINARY: "webdock-quinary-read",
+    WEBDOCK_API_KEY_QUINARY_WRITE: "webdock-quinary-write",
+    WEBDOCK_API_KEY_QUINARY_ACCOUNT: "webdock-quinary-account"
+  }).map((tool) => tool.name);
+  for (const name of ["create_webdock_server", "bind_webdock_main_domain", "configure_complete_smtp"]) {
+    assert.equal(onlyQuinary.includes(name), true, `${name} should stay enabled with quinary write keys`);
+  }
+
+  const readOnlyQuinary = buildToolsForOpenClaw({
+    ...allEnabledEnv(),
+    WEBDOCK_API_KEY_OPS: undefined,
+    WEBDOCK_API_KEY: undefined,
+    WEBDOCK_API_KEY_PRIMARY: undefined,
+    WEBDOCK_API_KEY_QUINARY: "webdock-quinary-read"
+  }).map((tool) => tool.name);
+  for (const name of ["create_webdock_server", "bind_webdock_main_domain", "configure_complete_smtp"]) {
+    assert.equal(readOnlyQuinary.includes(name), false, `${name} should disable without a write-capable account`);
+  }
+});
+
 function allEnabledEnv(): Record<string, string | undefined> {
   return {
     OPENCLAW_HMAC_SECRET: "test-hmac",
