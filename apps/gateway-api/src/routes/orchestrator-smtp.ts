@@ -2265,7 +2265,18 @@ async function readReusableWebdockServer(
     throw new OrchestratorFailure("failed", failure.step, failure.skill, `reuse_server_ipv4_missing:${reuseServerSlug}`);
   }
   const hostname = typeof server.hostname === "string" ? normalizeHostnameForReuse(server.hostname) : "";
-  if (validation.mode === "full" && hostname && hostname !== normalizeHostnameForReuse(validation.expectedHostname)) {
+  // El guard protege contra reusar por accidente un server que YA es el endpoint SMTP DEDICADO de
+  // otro dominio (hostname "smtp.<otro-dominio>"). Un hostname base (p.ej. "controldelivrix.app") NO
+  // es un endpoint dedicado: un mismo VPS sirve smtp.<dominio> para varios dominios, así que un
+  // hostname base distinto es esperable en un reuse multi-dominio y no debe bloquear — el operador
+  // elige el slug explícitamente y firma el ApprovalGate, y el A record de smtp.<dominio> ya
+  // corrobora el server. Solo los hostnames "smtp.*" cargan identidad de endpoint dedicado.
+  const storedIsDedicatedSmtpHost = hostname.startsWith("smtp.");
+  if (
+    validation.mode === "full" &&
+    storedIsDedicatedSmtpHost &&
+    hostname !== normalizeHostnameForReuse(validation.expectedHostname)
+  ) {
     throw new OrchestratorFailure("failed", failure.step, failure.skill, "reuse_server_hostname_mismatch");
   }
   const serverAccountId = normalizeServerAccountId(server.accountId ?? server.serverAccountId);
