@@ -286,6 +286,24 @@ test("createSmtpEntryParamSchema is dry-run by default and rejects invalid state
     selector: "s2026a"
   });
   assert.equal(invalidIp.success, false);
+
+  for (const selector of ["", "inv@lid!", "selector with space"]) {
+    const invalidSelector = createSmtpEntryParamSchema.safeParse({
+      domain: "example.com",
+      serverSlug: "server88",
+      serverIp: "192.0.2.88",
+      selector
+    });
+    assert.equal(invalidSelector.success, false, `selector ${JSON.stringify(selector)} should be rejected`);
+  }
+
+  const invalidDomain = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com;rm -rf /",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a"
+  });
+  assert.equal(invalidDomain.success, false);
 });
 
 test("configureCompleteSmtpSkillParamSchema normalizes known DNS providers", () => {

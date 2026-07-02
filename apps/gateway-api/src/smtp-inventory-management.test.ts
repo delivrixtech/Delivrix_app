@@ -72,12 +72,33 @@ test("createConfiguredSmtpInventoryEntry dry-runs by default and writes only wit
   assert.equal(created.status, "created");
   assert.deepEqual(created.supersededServerSlugs, ["server85"]);
   assert.equal((created.plan?.previousStatuses as unknown[]).length, 1);
+  assert.equal(created.plan?.inventoryMutationKind, "created_new");
   const inventory = await readInventory(workspace);
   assert.equal(inventory.servers.find((server) => server.serverSlug === "server85")?.status, "superseded");
   const server88 = inventory.servers.find((server) => server.serverSlug === "server88");
   assert.equal(server88?.status, "configured");
   assert.equal(server88?.serverIp, "192.0.2.88");
   assert.equal(server88?.selector, "s2026a");
+
+  const idempotent = await createConfiguredSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    liveServers,
+    actorId: "operator-juanes",
+    reason: "Reintento firmado con los mismos parametros.",
+    dryRun: false,
+    now: () => new Date("2026-06-30T20:16:00.000Z")
+  });
+  assert.equal(idempotent.ok, true);
+  assert.equal(idempotent.status, "updated");
+  assert.equal(idempotent.changed, false);
+  assert.equal(idempotent.plan?.inventoryMutationKind, "no_change_existing");
+  const afterIdempotent = await readInventory(workspace);
+  assert.equal(afterIdempotent.servers.filter((server) => server.serverSlug === "server88").length, 1);
+  assert.equal(afterIdempotent.servers.find((server) => server.serverSlug === "server88")?.updatedAt, fixedNow.toISOString());
 });
 
 test("createConfiguredSmtpInventoryEntry rejects non-live, IP mismatch, non-running and degraded accounts", async () => {
@@ -131,6 +152,18 @@ test("createConfiguredSmtpInventoryEntry rejects non-live, IP mismatch, non-runn
     dryRun: false
   });
   assert.equal(degraded.status, "account_not_healthy");
+
+  const unknownHealth = await createConfiguredSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    liveServers: [{ serverSlug: "server88", ipv4: "192.0.2.88", status: "running", accountHealthStatus: "maintenance" }],
+    actorId: "operator-juanes",
+    dryRun: false
+  });
+  assert.equal(unknownHealth.status, "account_not_healthy");
   assert.equal((await readInventory(workspace)).servers.length, 0);
 });
 
