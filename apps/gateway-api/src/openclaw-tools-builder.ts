@@ -1421,7 +1421,7 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           reuseServerSlug: {
             type: "string",
             pattern: slugPattern,
-            description: "Reusa/adopta un VPS Webdock existente por slug en vez de crear uno nuevo. DNS, auth y smoke se alinean a la IP viva de ese server; no aplica a Contabo."
+            description: "Reusa/adopta un VPS Webdock existente por slug en vez de crear uno nuevo. OBLIGATORIO en rescates de dominios existentes (mover un dominio a un server ya adoptado): pásalo SIEMPRE con el slug destino. Si lo omitís y smtp.<dominio> ya apunta a un server vivo de la flota, el orquestador lo deriva solo para no crear un VPS por accidente; pero no dependas de eso, pasalo explícito. DNS, auth y smoke se alinean a la IP viva de ese server; no aplica a Contabo."
           },
           brand: { type: "string", minLength: 1 },
           intent: { type: "string", minLength: 1 },
