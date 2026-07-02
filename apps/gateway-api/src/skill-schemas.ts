@@ -151,7 +151,7 @@ export interface CreateSmtpEntryParams extends Record<string, unknown> {
   serverIp: string;
   selector: string;
   status: "configured";
-  reason?: string;
+  reason: string;
   dryRun?: boolean;
 }
 
@@ -584,7 +584,7 @@ export const createSmtpEntryParamSchema = schema<CreateSmtpEntryParams>((value) 
     serverIp: ipv4(input.serverIp, "serverIp"),
     selector: selector(input.selector, "selector"),
     status: oneOf(input.status ?? "configured", "status", ["configured"] as const),
-    ...(input.reason === undefined || input.reason === null || input.reason === "" ? {} : { reason: boundedText(input.reason, "reason", 10, 500) }),
+    reason: boundedText(input.reason, "reason", 10, 500),
     dryRun: input.dryRun === undefined || input.dryRun === null ? true : boolean(input.dryRun, "dryRun")
   };
 });

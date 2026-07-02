@@ -238,12 +238,14 @@ test("configureCompleteSmtpSkillParamSchema rejects unknown DNS providers fail-c
   assert.match(parsed.error.issues.join("\n"), /dnsProviderId/);
 });
 
-test("createSmtpEntryParamSchema is dry-run by default and rejects invalid states", () => {
+test("createSmtpEntryParamSchema is dry-run by default, requires reason and rejects invalid states", () => {
+  const validReason = "Crear entrada tras verificacion multi-proveedor.";
   const parsed = createSmtpEntryParamSchema.safeParse({
     domain: "Example.COM",
     serverSlug: "Server-88",
     serverIp: "192.0.2.88",
-    selector: "s2026a"
+    selector: "s2026a",
+    reason: validReason
   });
 
   assert.equal(parsed.success, true);
@@ -254,6 +256,7 @@ test("createSmtpEntryParamSchema is dry-run by default and rejects invalid state
     serverIp: "192.0.2.88",
     selector: "s2026a",
     status: "configured",
+    reason: validReason,
     dryRun: true
   });
 
@@ -270,12 +273,30 @@ test("createSmtpEntryParamSchema is dry-run by default and rejects invalid state
   if (!writable.success) assert.fail(writable.error.issues.join("\n"));
   assert.equal(writable.data.dryRun, false);
 
+  const missingReason = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a"
+  });
+  assert.equal(missingReason.success, false);
+
+  const shortReason = createSmtpEntryParamSchema.safeParse({
+    domain: "example.com",
+    serverSlug: "server88",
+    serverIp: "192.0.2.88",
+    selector: "s2026a",
+    reason: "corto"
+  });
+  assert.equal(shortReason.success, false);
+
   const wrongStatus = createSmtpEntryParamSchema.safeParse({
     domain: "example.com",
     serverSlug: "server88",
     serverIp: "192.0.2.88",
     selector: "s2026a",
-    status: "retired"
+    status: "retired",
+    reason: validReason
   });
   assert.equal(wrongStatus.success, false);
 
@@ -283,7 +304,8 @@ test("createSmtpEntryParamSchema is dry-run by default and rejects invalid state
     domain: "example.com",
     serverSlug: "server88",
     serverIp: "999.0.2.88",
-    selector: "s2026a"
+    selector: "s2026a",
+    reason: validReason
   });
   assert.equal(invalidIp.success, false);
 
@@ -292,7 +314,8 @@ test("createSmtpEntryParamSchema is dry-run by default and rejects invalid state
       domain: "example.com",
       serverSlug: "server88",
       serverIp: "192.0.2.88",
-      selector
+      selector,
+      reason: validReason
     });
     assert.equal(invalidSelector.success, false, `selector ${JSON.stringify(selector)} should be rejected`);
   }
@@ -301,7 +324,8 @@ test("createSmtpEntryParamSchema is dry-run by default and rejects invalid state
     domain: "example.com;rm -rf /",
     serverSlug: "server88",
     serverIp: "192.0.2.88",
-    selector: "s2026a"
+    selector: "s2026a",
+    reason: validReason
   });
   assert.equal(invalidDomain.success, false);
 });

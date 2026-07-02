@@ -904,7 +904,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         selector: String(params.selector),
         liveServers,
         actorId: auditContext.actorId,
-        ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
+        reason: String(params.reason),
         dryRun: params.dryRun === true,
         now: deps.now
       });
@@ -1071,10 +1071,9 @@ async function appendSmtpInventoryMutationAudit(
 }
 
 function smtpInventoryRollbackPlan(result: { domain?: string; serverSlug?: string; plan?: Record<string, unknown> }): Record<string, unknown> {
-  const createRollbackProcedure = result.plan?.inventoryMutationKind === "updated_existing" ||
-    result.plan?.inventoryMutationKind === "no_change_existing"
-    ? "Inspect SMTP inventory; rollback this create_smtp_entry by restoring previousValues on the same domain/serverSlug with update_smtp_entry. If changed=false, no inventory rollback is needed. No automatic inventory backup is created by this mutation."
-    : "Inspect SMTP inventory; if this create was wrong, retire/archive the new entry with update_smtp_entry and restore the previous configured server from previousStatuses/previousValues if one was superseded. No automatic inventory backup is created by this mutation.";
+  const createRollbackProcedure = result.plan?.inventoryMutationKind === "no_change_existing"
+    ? "No inventory rollback is needed: create_smtp_entry made no change (changed=false). No automatic inventory backup is created by this mutation."
+    : "Inspect SMTP inventory; if this create was wrong, retire the new entry with retire_smtp_entry and restore the previously configured server from previousStatuses with update_smtp_entry if one was superseded. No automatic inventory backup is created by this mutation.";
   return {
     mode: "manual_local_state",
     canRollbackAutomatically: false,
