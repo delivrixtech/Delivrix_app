@@ -753,6 +753,42 @@ test("configureCompleteSmtp permite reuseServerSlug cuando el hostname guardado 
   );
 });
 
+test("configureCompleteSmtp reintenta el smoke auth gate hasta que propaga (no exige resume manual)", async () => {
+  // El PTR/FCrDNS no propagó al primer chequeo del gate; con OPENCLAW_SMOKE_AUTH_GATE_MAX_WAIT_MS>0
+  // el orquestador espera y reintenta hasta que propaga, y el run completa en un solo pase.
+  const ctx = createDeps({
+    env: {
+      OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true",
+      OPENCLAW_SMOKE_AUTH_GATE_MAX_WAIT_MS: "500",
+      OPENCLAW_SMOKE_AUTH_GATE_POLL_MS: "5"
+    },
+    planApproval: signedPlanApproval({ runId: "run-smokeretry", domain: "delivrixops.com", reuseServerSlug: "server60", requireExistingDomain: true }),
+    ownedDomains: ["delivrixops.com"],
+    smokeAuthDnsResolver: healsAfterFirstSmokeAuthAttempt("203.0.113.60", "smtp.delivrixops.com")
+  });
+  await ctx.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{
+      slug: "server60",
+      hostname: "smtp.delivrixops.com",
+      ipv4: "203.0.113.60",
+      status: "running",
+      accountId: "quinary"
+    }]
+  }));
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-smokeretry",
+    domain: "delivrixops.com",
+    provider: "route53",
+    reuseServerSlug: "server60",
+    requireExistingDomain: true
+  }, ctx.deps);
+
+  assert.notEqual(result.error, "smoke_blocked_auth_not_ready");
+  assert.equal(result.status, "completed", result.error);
+});
+
 test("configureCompleteSmtp rejects reuseServerSlug when inventory hostname conflicts with smtp host", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
@@ -3769,6 +3805,29 @@ function healthySmokeAuthDnsResolver(serverIpv4 = "203.0.113.10"): SmokeAuthDnsR
     },
     async reverse() {
       return [`${smtpHost}.`];
+    }
+  };
+}
+
+// Resolver que simula propagación tardía: el PTR/FCrDNS falla en el 1er intento del gate y se
+// sana a partir del 2do. Con el retry activado, el run debe completar sin resume manual.
+function healsAfterFirstSmokeAuthAttempt(serverIpv4: string, smtpHost: string): SmokeAuthDnsResolver {
+  const host = smtpHost.trim().toLowerCase().replace(/\.$/, "");
+  let ptrCalls = 0;
+  return {
+    async resolve4() {
+      return [serverIpv4];
+    },
+    async resolveTxt(hostname: string) {
+      const normalized = hostname.trim().toLowerCase().replace(/\.$/, "");
+      if (normalized.includes("._domainkey.")) return [["v=DKIM1; k=rsa; p=abc"]];
+      if (normalized.startsWith("_dmarc.")) return [["v=DMARC1; p=quarantine"]];
+      return [[`v=spf1 ip4:${serverIpv4} -all`]];
+    },
+    async reverse() {
+      ptrCalls += 1;
+      if (ptrCalls <= 1) return ["stale.invalid."];
+      return [`${host}.`];
     }
   };
 }
