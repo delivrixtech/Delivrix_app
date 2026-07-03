@@ -107,7 +107,12 @@ export function summarizeOperationalParams(value: unknown): GatewayRuntimeLogMet
     "selector",
     "dmarcPolicy",
     "maxWaitMs",
-    "pollIntervalMs"
+    "pollIntervalMs",
+    // Escape hatch de reparación puntual: si un subtool SMTP se ejecuta fuera
+    // del orquestador, el motivo tiene que quedar legible en el log/audit —
+    // no solo embebido en inputHash/proposalHash.
+    "repairReason",
+    "explicitRepairScope"
   ];
   const summary: GatewayRuntimeLogMetadata = {};
   for (const key of allowed) {

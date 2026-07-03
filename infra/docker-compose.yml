@@ -2,6 +2,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: delivrix-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: delivrix_mailops
       POSTGRES_USER: delivrix
@@ -19,6 +20,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: delivrix-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]

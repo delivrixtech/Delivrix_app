@@ -13,6 +13,7 @@ import {
   handleSendRealEmailHttp,
   type SendRealEmailParams
 } from "./send-email.ts";
+import type { SmokeAuthDnsResolver } from "./smoke-auth-gate.ts";
 import type {
   SmtpSshCommandInput,
   SmtpSshRunner
@@ -340,6 +341,45 @@ test("sendmail fallback is used when swaks is missing", async () => {
   assert.equal(response.commands.some((command) => command.command.startsWith("swaks --to")), false);
 });
 
+test("smoke auth gate blocks direct send when smtp A record is missing", async () => {
+  const route = await routeHarness({
+    smokeAuthDnsResolver: {
+      resolve4: async () => [],
+      resolveTxt: validDns,
+      reverse: async () => ["smtp.sender.example"]
+    }
+  });
+  const response = await route(validBody());
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.error, "smoke_blocked_auth_not_ready");
+  assert.equal(response.body.details.missing.includes("smtp_a"), true);
+  assert.equal(response.body.details.retryable, true);
+  assert.equal(response.commands.length, 0);
+
+  const event = (await route.auditLog.list()).at(-1);
+  assert.equal(event?.action, "oc.smtp.smoke_blocked_auth_not_ready");
+  assert.equal(event?.decision, "reject");
+  assert.equal(event?.targetId, "sender.example");
+});
+
+test("smoke auth gate blocks direct send when PTR points at another domain", async () => {
+  const route = await routeHarness({
+    smokeAuthDnsResolver: {
+      resolve4: async (hostname) => (hostname === "smtp.sender.example" ? ["192.0.2.44"] : []),
+      resolveTxt: validDns,
+      reverse: async () => ["smtp.other-domain.example"]
+    }
+  });
+  const response = await route(validBody());
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.error, "smoke_blocked_auth_not_ready");
+  assert.equal(response.body.details.missing.includes("ptr"), true);
+  assert.equal(response.body.details.missing.includes("fcrdns"), true);
+  assert.equal(response.commands.length, 0);
+});
+
 test("kill switch blocks send_real_email before approval lookup effects beyond reads", async () => {
   const route = await routeHarness({ killSwitchEnabled: true });
   const response = await route(validBody());
@@ -353,6 +393,7 @@ async function routeHarness(input: {
   approved?: boolean;
   killSwitchEnabled?: boolean;
   resolveTxt?: (domain: string) => Promise<string[][]>;
+  smokeAuthDnsResolver?: SmokeAuthDnsResolver;
   runnerFactory?: (commands: SmtpSshCommandInput[]) => SmtpSshRunner;
 } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "send-email-route-"));
@@ -395,6 +436,7 @@ async function routeHarness(input: {
       readCanvasState: () => state,
       readKillSwitch: () => ({ enabled: input.killSwitchEnabled ?? false }),
       resolveTxt: input.resolveTxt ?? validDns,
+      smokeAuthDnsResolver: input.smokeAuthDnsResolver ?? passingSmokeAuthResolver(input.resolveTxt ?? validDns),
       now: () => fixedNow
     });
     return {
@@ -447,6 +489,16 @@ function mockRunner(
       }
       throw new Error(`Unexpected SSH command: ${input.command}`);
     })
+  };
+}
+
+function passingSmokeAuthResolver(
+  resolveTxt: (domain: string) => Promise<string[][]>
+): SmokeAuthDnsResolver {
+  return {
+    resolve4: async (hostname) => (hostname === "smtp.sender.example" ? ["192.0.2.44"] : []),
+    resolveTxt: (hostname) => resolveTxt(hostname),
+    reverse: async (ip) => (ip === "192.0.2.44" ? ["smtp.sender.example"] : [])
   };
 }
 

@@ -1148,6 +1148,7 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       // que los runId en curso (lo accionable para CONTINUAR) deben sobrevivir bajo carga.
       "## active_smtp_runs (runs de configure_complete_smtp persistidos en disco)",
       "Si el operador pide CONTINUAR o seguir un SMTP, NO empieces de cero: pasá el runId exacto a configure_complete_smtp para reanudar desde lastCompletedStep (la idempotencia adopta dominio y VPS existentes). status=failed/running son candidatos a continuar.",
+      "Si el operador pide REINTENTAR un SMTP bloqueado y NO aparece en esta lista, IGUAL usa configure_complete_smtp (nuevo runId con sufijo -v2; la idempotencia salta lo ya hecho). PROHIBIDO completar un flujo SMTP encadenando subtools sueltos con repairReason: eso salta el A+MX (paso 6), el PTR/FCrDNS (paso 8) y el gate del smoke. repairReason es SOLO para re-ejecutar UN paso puntual de un run que ya terminó completo.",
       "```json",
       stringifyLiveContext(activeRuns, activeSmtpRunsLiveContextMaxChars),
       "```",

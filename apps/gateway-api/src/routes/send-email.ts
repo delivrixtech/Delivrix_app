@@ -13,6 +13,12 @@ import {
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import type { SkillParamSchema, SkillSafeParseResult } from "../skill-schemas.ts";
+import { smtpHostForDomain } from "../smtp-naming.ts";
+import {
+  defaultSmokeAuthDnsResolver,
+  verifySmokeAuthGate,
+  type SmokeAuthDnsResolver
+} from "./smoke-auth-gate.ts";
 import type { SmtpSshRunner } from "./smtp-provisioning.ts";
 
 interface AuditSink {
@@ -29,6 +35,7 @@ export interface SendRealEmailDependencies {
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
   readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
   resolveTxt?: (domain: string) => Promise<string[][]>;
+  smokeAuthDnsResolver?: SmokeAuthDnsResolver;
   now?: () => Date;
 }
 
@@ -262,6 +269,51 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
   const serverIp = await findServerIp(deps.workspace, params.serverSlug);
   if (!serverIp) {
     json(deps.response, 400, { error: "server_ip_missing" });
+    return;
+  }
+
+  // Mismo gate que el paso 14 del orquestador (A del smtp host, SPF, DKIM,
+  // DMARC, PTR, FCrDNS). Un send directo — incluso como reparación puntual con
+  // repairReason — no puede saltarse el posture completo: sin esto un smoke
+  // sale con A/MX/PTR incompletos y quema la reputación del dominio.
+  const smtpHost = smtpHostForDomain(fromDomain);
+  const smokeAuthGate = await verifySmokeAuthGate({
+    domain: fromDomain,
+    smtpHost,
+    serverIpv4: serverIp,
+    // Mismo default que validateEmailAuth: el gate valida el selector que
+    // realmente se prevalida, no el default s2026a del orquestador.
+    selector: params.selector ?? "default",
+    resolver: deps.smokeAuthDnsResolver ?? defaultSmokeAuthDnsResolver
+  });
+  if (!smokeAuthGate.ok) {
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId: params.actorId,
+      action: "oc.smtp.smoke_blocked_auth_not_ready",
+      targetType: "domain",
+      targetId: fromDomain,
+      riskLevel: "critical",
+      decision: "reject",
+      rejectReason: `smoke_blocked_auth_not_ready: ${smokeAuthGate.missing.join(",")}`,
+      metadata: {
+        smtpHost,
+        serverSlug: params.serverSlug,
+        serverIp,
+        missing: smokeAuthGate.missing,
+        checks: smokeAuthGate.checks,
+        gateError: smokeAuthGate.error,
+        retryable: true
+      }
+    });
+    json(deps.response, 409, {
+      error: "smoke_blocked_auth_not_ready",
+      details: {
+        missing: smokeAuthGate.missing,
+        checks: smokeAuthGate.checks,
+        retryable: true
+      }
+    });
     return;
   }
 

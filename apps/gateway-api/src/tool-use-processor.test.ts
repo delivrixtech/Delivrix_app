@@ -942,6 +942,43 @@ test("processToolUse allows direct SMTP subtool only with explicit repair scope"
   assert.equal(calls[0].params.explicitRepairScope, "delivrix.test/server69");
 });
 
+test("processToolUse logs repair_escape_used with plaintext reason when hatch bypasses the orchestrator", async () => {
+  const logs: Array<{ event: string; metadata?: Record<string, unknown> }> = [];
+  const result = await processToolUse({
+    toolUseId: "toolu-repair-escape-audit",
+    toolName: "provision_smtp_postfix",
+    toolInput: {
+      serverSlug: "server69",
+      domain: "delivrix.test",
+      serverIp: "203.0.113.10",
+      repairReason: "retry postfix after audited DKIM key generation",
+      explicitRepairScope: "delivrix.test/server69"
+    },
+    chatSession: { id: "agent:main:operator" },
+    env: {
+      ...enabledEnv(),
+      OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE: "true",
+      OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true"
+    },
+    logger: {
+      logPath: "",
+      async info() {},
+      async warn(event, _message, metadata) {
+        logs.push({ event, metadata });
+      },
+      async error() {}
+    },
+    deps: memoryDeps({ calls: [] })
+  });
+
+  assert.equal(result.ok, true);
+  const escape = logs.find((entry) => entry.event === "openclaw.tool_use.repair_escape_used");
+  assert.ok(escape, "expected repair_escape_used log event");
+  assert.equal(escape?.metadata?.repairReason, "retry postfix after audited DKIM key generation");
+  assert.equal(escape?.metadata?.explicitRepairScope, "delivrix.test/server69");
+  assert.equal(escape?.metadata?.toolName, "provision_smtp_postfix");
+});
+
 test("processToolUse blocks bind_domain_to_server alias when plan autonomy is enabled", async () => {
   const calls: unknown[] = [];
   const result = await processToolUse({

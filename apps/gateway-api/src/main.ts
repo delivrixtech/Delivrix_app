@@ -3990,7 +3990,15 @@ const server = createServer(async (request, response) => {
           skillSlug,
           modelVersion: audit.modelVersion,
           promptVersion: audit.promptVersion,
-          tokensUsed: audit.tokensUsed
+          tokensUsed: audit.tokensUsed,
+          // Escape hatch de reparación puntual: el motivo debe quedar legible
+          // en la cadena de auditoría, no solo dentro de proposalHash.
+          ...(typeof proposal.params?.repairReason === "string" && proposal.params.repairReason.trim()
+            ? { repairReason: proposal.params.repairReason.trim() }
+            : {}),
+          ...(typeof proposal.params?.explicitRepairScope === "string" && proposal.params.explicitRepairScope.trim()
+            ? { explicitRepairScope: proposal.params.explicitRepairScope.trim() }
+            : {})
         }
       });
 

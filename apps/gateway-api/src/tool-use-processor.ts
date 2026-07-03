@@ -193,6 +193,20 @@ export async function processToolUse(input: ProcessToolUseInput): Promise<ToolUs
     };
   }
 
+  const repairEscape = repairEscapeFields(canonicalToolName, input.toolInput, env);
+  if (repairEscape) {
+    void logger.warn(
+      "openclaw.tool_use.repair_escape_used",
+      "SMTP subtool bypassed configure_complete_smtp via repair escape hatch.",
+      {
+        toolUseId: input.toolUseId,
+        toolName: canonicalToolName,
+        repairReason: repairEscape.repairReason,
+        explicitRepairScope: repairEscape.explicitRepairScope
+      }
+    );
+  }
+
   const killSwitch = await readKillSwitchFailClosed(input.deps);
   if (!killSwitch.ok) {
     void logger.error("openclaw.tool_use.kill_switch_read_failed", "Tool-use failed closed because kill switch could not be read.", {
@@ -1334,10 +1348,24 @@ function shouldRouteThroughConfigureCompleteSmtp(
   if (!envFlagEnabled(env.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)) return false;
   if (!envFlagEnabled(env.OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE)) return false;
   if (!smtpPlanSubtools.has(toolName)) return false;
-  if (!isRecord(rawInput)) return true;
+  return repairEscapeFields(toolName, rawInput, env) === null;
+}
+
+// Devuelve los campos del escape hatch solo cuando este efectivamente
+// bypaseó el ruteo al orquestador (flags ON + subtool SMTP + campos válidos).
+function repairEscapeFields(
+  toolName: string,
+  rawInput: unknown,
+  env: Record<string, string | undefined>
+): { repairReason: string; explicitRepairScope: string } | null {
+  if (!envFlagEnabled(env.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)) return null;
+  if (!envFlagEnabled(env.OPENCLAW_CONFIGURE_COMPLETE_SMTP_ENABLE)) return null;
+  if (!smtpPlanSubtools.has(toolName)) return null;
+  if (!isRecord(rawInput)) return null;
   const repairReason = typeof rawInput.repairReason === "string" ? rawInput.repairReason.trim() : "";
   const repairScope = typeof rawInput.explicitRepairScope === "string" ? rawInput.explicitRepairScope.trim() : "";
-  return repairReason.length < 10 || repairScope.length < 3;
+  if (repairReason.length < 10 || repairScope.length < 3) return null;
+  return { repairReason, explicitRepairScope: repairScope };
 }
 
 const smtpPlanSubtools = new Set([
