@@ -268,6 +268,51 @@ test("OpenClawBedrockBridge isolates conversationId histories and tool sessions"
   assert.deepEqual(toolSessions, ["conv-a"]);
 });
 
+test("OpenClawBedrockBridge no dispara bedrock_conversation_timeout por el tiempo de ejecución de una tool larga", async () => {
+  let clock = Date.parse("2026-05-29T05:00:00.000Z");
+  let calls = 0;
+  const bridge = new OpenClawBedrockBridge({
+    accessKeyId: "test-access",
+    secretAccessKey: "test-secret",
+    modelId: "model-test",
+    systemPromptPath: await promptFile("System prompt demo"),
+    now: () => new Date(clock),
+    fetchImpl: liveContextFetchStub(),
+    bedrockConversationTimeoutMs: 1000,
+    processToolUse: async () => {
+      // La tool "tarda" 5s, más que el deadline de generación (1s). Ese tiempo NO debe contar contra
+      // el deadline: sin la extensión, la 2da iteración saltaría con bedrock_conversation_timeout.
+      clock += 5000;
+      return {
+        ok: true,
+        status: "executed",
+        proposalId: "read_only:toolu-a",
+        result: { ok: true }
+      };
+    },
+    client: {
+      send: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return { body: toolUseStream("toolu-a", "read_webdock_servers", "{}") };
+        }
+        return {
+          body: [
+            streamJson({ type: "content_block_delta", delta: { type: "text_delta", text: "listo" } })
+          ]
+        };
+      }
+    }
+  });
+
+  await bridge.sendMessage({ msgId: "long-1", conversationId: "conv-long", message: "corré una tool larga" });
+  await bridge.streamHistory("long-1", {});
+
+  // La 2da generación de Bedrock DEBE ocurrir (respuesta final tras la tool). Sin la extensión del
+  // deadline, la tool de 5s haría saltar el deadline de 1s antes de la 2da iteración y calls quedaría en 1.
+  assert.equal(calls, 2);
+});
+
 test("OpenClawBedrockBridge rehydrates persisted conversation history", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "openclaw-chat-rehydrate-"));
   const store = new OpenClawChatHistoryStore({ stateDir });
