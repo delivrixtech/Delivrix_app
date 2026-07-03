@@ -519,7 +519,11 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     let nearToolIterationLimitLogged = false;
     const recentToolSignatures: string[] = [];
 
-    const conversationDeadline = this.now().getTime() + this.bedrockConversationTimeoutMs;
+    // Deadline de generación de Bedrock. Se EXTIENDE por el tiempo de ejecución de cada tool (abajo),
+    // porque tools como configure_complete_smtp corren minutos (crear VPS + provision + smoke retry) y
+    // ese tiempo NO es generación de Bedrock — sin la extensión, una tool larga hace saltar el deadline
+    // en la iteración siguiente (bedrock_conversation_timeout) aunque el run haya completado bien.
+    let conversationDeadline = this.now().getTime() + this.bedrockConversationTimeoutMs;
     try {
       for (let iteration = 0; iteration < this.maxToolIterations; iteration += 1) {
         throwIfAborted(signal);
@@ -659,6 +663,10 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
             error: "tool_use_processor_failed",
             details: error instanceof Error ? error.message : "Unknown tool-use processor error"
           }));
+          // La ejecución de la tool no cuenta contra el deadline de generación: lo extendemos por su
+          // duración wall-clock. Así configure_complete_smtp (VPS create + provision + smoke retry, que
+          // puede tardar varios minutos) no dispara bedrock_conversation_timeout en la iteración siguiente.
+          conversationDeadline += Math.max(0, this.now().getTime() - toolStartedAt);
           await (result.ok
             ? this.logger.info("openclaw.bedrock.tool_use_completed", "Delivrix tool completed for Bedrock.", {
               msgId,
