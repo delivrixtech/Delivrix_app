@@ -69,7 +69,10 @@ const allowedReadPatterns: RegExp[] = [
 const allowedWritePaths = new Set<string>([
   "/v1/kill-switch",
   "/v1/openclaw/onboarding/evaluate",
-  "/v1/devops/collector/manual-snapshots/ingest"
+  "/v1/devops/collector/manual-snapshots/ingest",
+  // Interrupción del operador: corta el turno activo de OpenClaw (aborta el stream de Bedrock).
+  // Control benigno, no muta infra; el backend (handleChatInterruptHttp) audita openclaw.chat.interrupt.
+  "/v1/openclaw/chat/interrupt"
 ]);
 
 /**
