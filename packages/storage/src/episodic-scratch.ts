@@ -561,6 +561,16 @@ export async function retrieveGroundedDecisionMemory(
   };
 }
 
+// Evaluacion pura del gate CRAG sobre candidatos ya cargados (sin pool).
+// La usa scripts/db/calibrate-grounded-gate.mjs para barrer umbrales contra
+// el corpus real y elegir minScore/ambiguousScore con datos, no por impresion.
+export function assessGroundedMemoryCandidates(
+  entries: EpisodicEntry[],
+  input: GroundedMemoryRetrievalInput
+): GroundedMemoryCandidate[] {
+  return scoreGroundedEntries(entries, input).map(toGroundedCandidate);
+}
+
 async function queryVerifiedMemoryCandidates(
   pool: QueryablePool,
   criteria: { tool?: string; outcome?: ScratchOutcome; inputHash?: string },
@@ -1501,7 +1511,13 @@ function scoreGroundedEntries(
   input: GroundedMemoryRetrievalInput
 ): ScoredEntry[] {
   const now = input.now ?? new Date();
-  const minScore = boundedScore(input.minScore ?? 0.52, "minScore");
+  // Defaults calibrados contra el corpus real local (2026-07-06, 645 hechos
+  // verificados, 74 queries doradas): minScore=0.58 es el primer umbral que
+  // elimina el grounding cruzado de dominio equivocado (fp-x 0) manteniendo
+  // recall positivo 0.583. Ver scripts/db/calibrate-grounded-gate.mjs y
+  // DOCUMENTACION/CALIBRACION_GATE_GROUNDED.md; override por request o via
+  // OPENCLAW_GROUNDED_MIN_SCORE / OPENCLAW_GROUNDED_AMBIGUOUS_SCORE en el gateway.
+  const minScore = boundedScore(input.minScore ?? 0.58, "minScore");
   const ambiguousScore = boundedScore(input.ambiguousScore ?? 0.35, "ambiguousScore");
   return entries
     .map((entry) => scoreGroundedEntry(entry, input, now, minScore, ambiguousScore))

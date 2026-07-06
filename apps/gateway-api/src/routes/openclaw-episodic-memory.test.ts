@@ -603,7 +603,7 @@ test("handleCompactIntentHttp rejects unsigned local mode outside tests", async 
 });
 
 test("groundedConfidenceGateFromEnv aplica defaults, overrides y falla cerrado", () => {
-  assert.deepEqual(groundedConfidenceGateFromEnv({}), { minScore: 0.52, ambiguousScore: 0.35 });
+  assert.deepEqual(groundedConfidenceGateFromEnv({}), { minScore: 0.58, ambiguousScore: 0.35 });
   assert.deepEqual(
     groundedConfidenceGateFromEnv({
       OPENCLAW_GROUNDED_MIN_SCORE: "0.6",
