@@ -1,0 +1,85 @@
+# Delivrix QA Senior - auditoria automatica de Pull Requests y despliegues.
+#
+# Dispara con: PR (opened/synchronize/reopened/ready_for_review), deployment y
+# push a ramas de despliegue. Corre el agente QA Senior (tools/qa-auditor) que
+# coordina 3 subagentes contra la API de Anthropic y publica el reporte como
+# comentario del PR + check run.
+#
+# Hardening:
+# - permisos minimos del GITHUB_TOKEN (contents:read, pull-requests:write, checks:write).
+# - NO se usa pull_request_target: los PR de fork corren sin secretos (la API key
+#   no se expone a codigo no confiable) y el auditor solo LEE texto del diff.
+# - el checkout usa la rama base, asi un PR no puede modificar el propio auditor
+#   para exfiltrar secretos.
+# - kill-switch por variable de repo: QA_AUDITOR_ENABLED=false apaga el job.
+# - PENDIENTE de hardening: fijar cada action a un SHA completo en vez del tag
+#   mayor (ver DOCUMENTACION/QA_AUDITOR/ARQUITECTURA.md, seccion Seguridad).
+
+name: QA Senior Audit
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  deployment: {}
+  push:
+    branches:
+      - produ
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+concurrency:
+  group: qa-audit-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    if: ${{ vars.QA_AUDITOR_ENABLED != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      # Evaluamos los secretos aqui (no se permite el contexto secrets en if: de step).
+      HAS_APP_CREDS: ${{ secrets.QA_APP_ID != '' && secrets.QA_APP_PRIVATE_KEY != '' }}
+    steps:
+      - name: Checkout (auditor desde la rama base, no el HEAD del PR)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Mint GitHub App token (opcional, identidad de bot)
+        id: app-token
+        if: ${{ env.HAS_APP_CREDS == 'true' }}
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.QA_APP_ID }}
+          private-key: ${{ secrets.QA_APP_PRIVATE_KEY }}
+
+      - name: Run QA Senior audit
+        env:
+          # Token de la GitHub App si esta configurada; si no, el GITHUB_TOKEN del job.
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          QA_MODEL: ${{ vars.QA_MODEL || 'claude-sonnet-4-6' }}
+          QA_FAIL_ON: ${{ vars.QA_FAIL_ON || 'blocker' }}
+          QA_EXIT_ON_FAIL: ${{ vars.QA_EXIT_ON_FAIL || 'false' }}
+          QA_MAX_FILES: ${{ vars.QA_MAX_FILES || '60' }}
+          QA_MAX_DIFF_BYTES: ${{ vars.QA_MAX_DIFF_BYTES || '240000' }}
+        run: node tools/qa-auditor/src/main.ts
+
+      - name: Upload audit artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-audit-report
+          path: |
+            qa-audit-report.md
+            qa-audit-report.json
+          if-no-files-found: ignore
