@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { insertEpisodicEntry, type InsertEntryInput } from "../../../../packages/storage/src/index.ts";
 import { createInternalHttpAdapter } from "../internal-http-adapter.ts";
-import { handleReadEpisodicScratchHttp } from "./episodic-scratch.ts";
+import { groundedConfidenceGateFromEnv, handleReadEpisodicScratchHttp } from "./episodic-scratch.ts";
 import { compactIntent, handleCompactIntentHttp } from "./openclaw-compact-intent.ts";
 
 test("handleReadEpisodicScratchHttp returns redacted scratch rows by intent", async () => {
@@ -600,6 +600,65 @@ test("handleCompactIntentHttp rejects unsigned local mode outside tests", async 
   assert.equal(captured.statusCode, 401);
   assert.equal((captured.body as { error: string }).error, "hmac_secret_unconfigured");
   assert.equal(pool.rows.length, 0);
+});
+
+test("groundedConfidenceGateFromEnv aplica defaults, overrides y falla cerrado", () => {
+  assert.deepEqual(groundedConfidenceGateFromEnv({}), { minScore: 0.52, ambiguousScore: 0.35 });
+  assert.deepEqual(
+    groundedConfidenceGateFromEnv({
+      OPENCLAW_GROUNDED_MIN_SCORE: "0.6",
+      OPENCLAW_GROUNDED_AMBIGUOUS_SCORE: "0.4"
+    }),
+    { minScore: 0.6, ambiguousScore: 0.4 }
+  );
+  assert.throws(() => groundedConfidenceGateFromEnv({ OPENCLAW_GROUNDED_MIN_SCORE: "1.5" }));
+  assert.throws(() => groundedConfidenceGateFromEnv({ OPENCLAW_GROUNDED_MIN_SCORE: "high" }));
+  assert.throws(() => groundedConfidenceGateFromEnv({
+    OPENCLAW_GROUNDED_MIN_SCORE: "0.3",
+    OPENCLAW_GROUNDED_AMBIGUOUS_SCORE: "0.5"
+  }));
+});
+
+test("handleReadEpisodicScratchHttp respeta el gate de confianza configurado", async () => {
+  const pool = new MemoryScratchPool();
+  await insertEpisodicEntry(pool, entry({
+    source: "tool_output",
+    metadata: { toolUseId: "toolu-gate" },
+    outcomeData: { domain: "alpha.example", decisionCode: "domain_candidate_safe" }
+  }));
+
+  const queryUrl = "/v1/openclaw/scratch?grounded=true&query=suggest%20safe%20domain%20alpha.example";
+
+  const relaxed = createInternalHttpAdapter({
+    method: "GET",
+    url: queryUrl,
+    headers: { "x-delivrix-token": "expected-token" }
+  });
+  await handleReadEpisodicScratchHttp({
+    request: relaxed.request,
+    response: relaxed.response,
+    pool,
+    readBoundaryToken: "expected-token"
+  });
+  const relaxedBody = relaxed.getResponse().body as { status: string; memories: unknown[] };
+  assert.equal(relaxedBody.status, "grounded");
+  assert.equal(relaxedBody.memories.length, 1);
+
+  const strict = createInternalHttpAdapter({
+    method: "GET",
+    url: queryUrl,
+    headers: { "x-delivrix-token": "expected-token" }
+  });
+  await handleReadEpisodicScratchHttp({
+    request: strict.request,
+    response: strict.response,
+    pool,
+    readBoundaryToken: "expected-token",
+    groundedGate: { minScore: 0.99, ambiguousScore: 0.9 }
+  });
+  const strictBody = strict.getResponse().body as { status: string; memories: unknown[] };
+  assert.notEqual(strictBody.status, "grounded");
+  assert.equal(strictBody.memories.length, 0);
 });
 
 function entry(overrides: Partial<InsertEntryInput> = {}): InsertEntryInput {

@@ -13,12 +13,59 @@ import {
   type ScratchOutcome
 } from "../../../../packages/storage/src/index.ts";
 
+export interface GroundedConfidenceGate {
+  minScore: number;
+  ambiguousScore: number;
+}
+
 interface EpisodicScratchReadDeps {
   request: IncomingMessage;
   response: ServerResponse;
   pool: Pick<Pool, "query">;
   readBoundaryToken?: string;
   logger?: Pick<GatewayRuntimeLogger, "warn">;
+  groundedGate?: GroundedConfidenceGate;
+}
+
+// Defaults del gate CRAG (B1). Calibrados contra el corpus real local con
+// scripts/db/calibrate-grounded-gate.mjs; ver DOCUMENTACION/CALIBRACION_GATE_GROUNDED.md.
+export const defaultGroundedConfidenceGate: GroundedConfidenceGate = {
+  minScore: 0.52,
+  ambiguousScore: 0.35
+};
+
+// Lee los umbrales del gate de confianza grounded desde el entorno.
+// Falla en el arranque (fail-closed) si hay un valor invalido, en vez de
+// degradar silenciosamente a un umbral que nadie eligio.
+export function groundedConfidenceGateFromEnv(
+  env: Record<string, string | undefined> = process.env
+): GroundedConfidenceGate {
+  const minScore = gateScoreFromEnv(env, "OPENCLAW_GROUNDED_MIN_SCORE", defaultGroundedConfidenceGate.minScore);
+  const ambiguousScore = gateScoreFromEnv(
+    env,
+    "OPENCLAW_GROUNDED_AMBIGUOUS_SCORE",
+    defaultGroundedConfidenceGate.ambiguousScore
+  );
+  if (ambiguousScore > minScore) {
+    throw new Error(
+      `OPENCLAW_GROUNDED_AMBIGUOUS_SCORE (${ambiguousScore}) must be <= OPENCLAW_GROUNDED_MIN_SCORE (${minScore}).`
+    );
+  }
+  return { minScore, ambiguousScore };
+}
+
+function gateScoreFromEnv(
+  env: Record<string, string | undefined>,
+  name: string,
+  fallback: number
+): number {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`${name} must be a number between 0 and 1; got "${raw}".`);
+  }
+  return parsed;
 }
 
 const secretKeyPattern = /token|secret|password|private|api[_-]?key|credential|authorization/i;
@@ -61,12 +108,15 @@ export async function handleReadEpisodicScratchHttp(deps: EpisodicScratchReadDep
 
     let entries: EpisodicEntry[];
     if (grounded) {
+      const gate = deps.groundedGate ?? defaultGroundedConfidenceGate;
       const groundedMemory = await retrieveGroundedDecisionMemory(deps.pool, {
         ...(tool ? { tool } : {}),
         ...(outcome ? { outcome: outcomeValue(outcome) } : {}),
         ...(inputHash ? { inputHash } : {}),
         ...(query ? { query } : {}),
         ...(keywords.length > 0 ? { keywords } : {}),
+        minScore: gate.minScore,
+        ambiguousScore: gate.ambiguousScore,
         limit: limit ?? 10
       });
       return json(deps.response, 200, redactObject(groundedMemory));
