@@ -12,6 +12,7 @@ export * from "./domains-discover.ts";
 export * from "./domains-porkbun.ts";
 export * from "./hardware-inventory.ts";
 export * from "./hardware-telemetry.ts";
+export * from "./health-autoflag.ts";
 export * from "./iam-supervised.ts";
 export * from "./ids.ts";
 export * from "./infrastructure-inventory.ts";
