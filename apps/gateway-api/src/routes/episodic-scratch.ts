@@ -30,7 +30,7 @@ interface EpisodicScratchReadDeps {
 // Defaults del gate CRAG (B1). Calibrados contra el corpus real local con
 // scripts/db/calibrate-grounded-gate.mjs; ver DOCUMENTACION/CALIBRACION_GATE_GROUNDED.md.
 export const defaultGroundedConfidenceGate: GroundedConfidenceGate = {
-  minScore: 0.52,
+  minScore: 0.58,
   ambiguousScore: 0.35
 };
 
