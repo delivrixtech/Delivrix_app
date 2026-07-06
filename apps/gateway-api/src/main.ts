@@ -10,6 +10,7 @@ import {
   buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
   createContaboAdaptersFromEnv,
+  createNamecheapAdaptersFromEnv,
   createIonosDnsProviderFromEnv,
   createMxtoolboxAdapterFromEnv,
   createRoute53DnsProviderFromEnv,
@@ -440,6 +441,10 @@ const vpsProviderEntries = createContaboAdaptersFromEnv();
 const vpsProviderAdapters = new Map<string, VpsProvider>(
   vpsProviderEntries.map((entry): [string, VpsProvider] => [entry.id, entry.adapter])
 );
+// Namecheap multicuenta (registrador de dominios, read-only; compra gated por
+// NAMECHEAP_ENABLE_PURCHASE). Sin cuentas en env queda [] y el inventario
+// muestra el placeholder "planned".
+const namecheapAccountEntries = createNamecheapAdaptersFromEnv();
 
 async function listWebdockInventoryAccounts(): Promise<WebdockAccountInventoryResult[]> {
   const lifecycleOverlay = await readInfrastructureAccountLifecycleOverlay({
@@ -2106,6 +2111,8 @@ const server = createServer(async (request, response) => {
         readBoundaryToken: sensitiveReadBoundaryToken,
         webdockListServers: listWebdockInventoryAccounts,
         vpsProviderListServers: listVpsProviderInventories,
+        namecheapListInventories: () =>
+          Promise.all(namecheapAccountEntries.map((entry) => entry.adapter.listInventory())),
         ionosListDnsInventory: () => ionosDnsAdapter.listInventory(),
         ionosListDomainsInventory: () => ionosDomainsAdapter.listInventory(),
         awsRoute53DomainsListInventory: () => awsRoute53DomainsAdapter.listInventory(),
