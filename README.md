@@ -11,15 +11,27 @@ Ver `NOTICE.md`.
 
 ## Norte
 
-Delivrix en el MVP actual:
+Delivrix gobierna infraestructura real, pero ninguna mutacion contra el mundo
+ocurre sin pasar por tres candados independientes:
 
-- valida, planifica, simula, audita y gobierna capacidad;
-- no envia correo real;
-- no ejecuta SSH, DNS live, Proxmox live ni SMTP real;
-- no escribe en NFC productivo;
-- exige gates, auditoria y aprobacion humana antes de cualquier mutacion futura.
+- **Kill switch** centralizado (fail-closed): clasifica toda accion live y
+  bloquea con `423` antes de ejecutar.
+- **Flags de runtime** por operacion (`*_ENABLE_*` en `.env.local`, hot-reload
+  ~1s sin redeploy): las escrituras nacen en `false`.
+- **ApprovalGate humano**: cada mutacion real exige firma del operador.
 
-Documento rector: `DOCUMENTACION/NORTE_OPERATIVO_DELIVRIX.md`.
+Todo queda en audit chain append-only. Documento rector:
+`DOCUMENTACION/NORTE_OPERATIVO_DELIVRIX.md`.
+
+## Flujo de ramas
+
+- **`produ`** es la rama de integracion. Todo feature nace de `produ` y vuelve
+  a `produ` por Pull Request (con la suite verde).
+- **`main`** es espejo estable de `produ`: se sincroniza por fast-forward
+  periodico (`git push origin origin/produ:main`). No se commitea directo.
+- Las ramas de feature se borran despues del merge. No se acumulan ramas
+  muertas: si esta mergeada, se borra; si tiene trabajo unico, tiene dueno y
+  destino (PR o archivo).
 
 ## Estructura
 
@@ -27,21 +39,44 @@ Documento rector: `DOCUMENTACION/NORTE_OPERATIVO_DELIVRIX.md`.
 - `apps/worker`: worker local seguro, sin SMTP real.
 - `apps/admin-panel`: UI local read-only separada del backend.
 - `packages/domain`: reglas, contratos, gates, auditoria y decisiones.
-- `packages/adapters`: adaptadores externos en modo seguro/mock.
+- `packages/adapters`: adaptadores de proveedores externos.
 - `packages/local-store`: persistencia local de desarrollo.
 - `packages/queue`: cola local de desarrollo.
+- `services/openclaw-skills`: skills del agente OpenClaw.
 - `DOCUMENTACION`: documentos rectores, fases e hitos.
+
+## Proveedores (multi-provider / multicuenta)
+
+Inventario unificado en `GET /v1/infrastructure/inventory` y panel
+Infraestructura. Lecturas degradan a mock si un proveedor falla; escrituras
+siempre gated.
+
+| Capa | Proveedores |
+|---|---|
+| Compute (VPS) | Webdock (multicuenta), Contabo (multicuenta: flat + `CONTABO_ACCOUNT_{n}_*`) |
+| Registradores de dominio | AWS Route53, Namecheap (multicuenta `NAMECHEAP_ACCOUNT_{n}_*`), Porkbun, IONOS |
+| DNS | AWS Route53, IONOS Cloud DNS |
+| Salud/reputacion | MXToolbox |
+| Fisico | Servidor propio (placeholder; Tampa/colo en camino) |
+
+Las cuentas se agregan por variables de entorno indexadas (ver
+`.env.example`), sin tocar codigo. Namecheap exige whitelistear la IP del
+gateway en cada cuenta. Llamadas nuevas van por `provider-fetch` (timeout,
+retry idempotente, circuit breaker por cuenta). Spec:
+`DOCUMENTACION/HITO_PROVIDER_FABRIC_2026_07_06.md`.
 
 ## Comandos
 
 ```bash
-node --test packages/domain/src/*.test.ts packages/adapters/src/*.test.ts
-node --test apps/admin-panel/src/shared/api/client.test.mjs apps/admin-panel/src/shared/lib/formatters.test.mjs
+npm test               # suite completa (domain + adapters + storage + gateway)
+npm run test:admin     # panel: tsc + tests + build
 
-node apps/gateway-api/src/main.ts
-node apps/worker/src/main.ts
-node apps/admin-panel/server.mjs
+npm run dev:gateway    # gateway en http://127.0.0.1:3000
+npm run dev:worker
+npm run dev:admin      # panel en http://127.0.0.1:5173
 ```
+
+Requiere Node >= 24 (local con Node 22 reciente tambien corre la suite).
 
 ## URLs locales
 
@@ -65,21 +100,14 @@ El panel vive separado del backend y consume solo contratos `GET`:
 - `GET /v1/admin/clusters`
 - `GET /v1/admin/overview`
 - `GET /v1/admin/workflow`
+- `GET /v1/infrastructure/inventory`
 - `GET /v1/openclaw/learning-plan`
 - `GET /v1/operating-north`
 - `GET /v1/kill-switch`
 
-El proxy local del panel bloquea `POST`, `PUT`, `PATCH` y `DELETE` con `405`.
-
-Documentos:
-
-- `DOCUMENTACION/HITO_5_4_ADMIN_PANEL_VISUAL_ARQUITECTURA.md`
-- `DOCUMENTACION/HITO_5_4A_ADMIN_PANEL_READ_ONLY.md`
-- `DOCUMENTACION/HITO_5_4B_ADMIN_PANEL_WORKFLOW.md`
-- `DOCUMENTACION/HITO_5_4C_ADMIN_CLUSTERS_OPENCLAW_LEARNING.md`
-- `DOCUMENTACION/HITO_5_5_AUDITORIA_FRONTEND_UI_PROCESOS.md`
-- `DOCUMENTACION/HITO_5_5A_CANVAS_OPENCLAW_TELEMETRIA_HARDWARE.md`
-- `DOCUMENTACION/HITO_5_6_CONTRATOS_CANVAS_HARDWARE_ML_DEVOPS.md`
+El proxy local del panel bloquea `POST`, `PUT`, `PATCH` y `DELETE` con `405`
+(salvo rutas explicitamente permitidas en `allowedWritePaths`, con audit y
+gate en backend).
 
 ## Documentacion principal
 
@@ -92,4 +120,5 @@ Leer en este orden:
 5. `DOCUMENTACION/ESTANDARES_INGENIERIA.md`
 6. Documento del hito en curso.
 
-Los documentos de hito son historicos/operativos. El README no duplica sus endpoints ni sus notas de seguridad para evitar ruido.
+Los documentos de hito son historicos/operativos. El README no duplica sus
+endpoints ni sus notas de seguridad para evitar ruido.
