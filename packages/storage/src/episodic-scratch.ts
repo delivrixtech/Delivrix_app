@@ -173,6 +173,27 @@ const injectionPattern =
 const zeroWidthPattern = /[\u200B-\u200D\uFEFF]/g;
 const zeroWidthPresencePattern = /[\u200B-\u200D\uFEFF]/;
 const structuredOutcomeStringPattern = /^[A-Za-z0-9][A-Za-z0-9_.:@/<>\-]{0,199}$/;
+// I5: identificadores maquina para campos clave del write-gate estructural.
+const machineCodePattern = /^[a-z0-9_.:-]+$/i;
+const intentIdPattern = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/;
+const toolNamePattern = /^[a-z0-9][a-z0-9_-]{0,127}$/i;
+// I5: fragmentos prohibidos en claves de metadata/provenance (normalizadas),
+// mas alla del match exacto historico de walkPayload.
+const forbiddenMetadataKeyFragments = [
+  "prompt",
+  "instruction",
+  "developermessage",
+  "assistantmessage",
+  "systemmessage",
+  "jailbreak",
+  "apikey",
+  "credential",
+  "authorization",
+  "token",
+  "secret",
+  "password",
+  "privatekey"
+];
 const forbiddenOutcomeKeyFragments = [
   "prompt",
   "instruction",
@@ -617,8 +638,8 @@ export async function invalidateEpisodicFacts(
 
   const params: unknown[] = [
     input.invalidAt ?? new Date(),
-    boundedString(input.reason, "reason", 1, 240),
-    boundedString(input.invalidatedBy, "invalidatedBy", 1, 128)
+    machineCodeString(input.reason, "reason", 1, 240),
+    machineCodeString(input.invalidatedBy, "invalidatedBy", 1, 128)
   ];
   const filters = ["plane = 'verified_fact'", "invalid_at IS NULL"];
   if (input.tool !== undefined) {
@@ -688,13 +709,13 @@ function normalizeInsert(entry: InsertEntryInput): InsertEntryInput & {
   const reliability = entry.reliability ?? defaultReliability(source);
   const errorClass = entry.errorClass === undefined
     ? undefined
-    : boundedString(entry.errorClass, "errorClass", 1, 128);
+    : machineCodeString(entry.errorClass, "errorClass", 1, 128);
   const errorMessage = entry.errorMessage === undefined
     ? undefined
     : guardedText(entry.errorMessage, "errorMessage", 1, 2000);
-  const intentId = boundedString(entry.intentId, "intentId", 1, 64);
+  const intentId = identifierString(entry.intentId, "intentId", intentIdPattern);
   const step = positiveInteger(entry.step, "step", 1, 10_000);
-  const tool = boundedString(entry.tool, "tool", 1, 128);
+  const tool = identifierString(entry.tool, "tool", toolNamePattern);
   const inputHash = inputHashValue(entry.inputHash);
   const outcome = outcomeValue(entry.outcome);
 
@@ -998,6 +1019,31 @@ function boundedString(value: unknown, field: string, min: number, max: number):
   return trimmed;
 }
 
+function machineCodeString(value: unknown, field: string, min: number, max: number): string {
+  const trimmed = boundedString(value, field, min, max);
+  assertStructuredText(trimmed, field);
+  if (!machineCodePattern.test(trimmed)) {
+    throw new EpisodicScratchValidationError(
+      "memory_payload_free_text_forbidden",
+      `${field} must be a structured machine code, not free text.`,
+      validationDetails("structured_value_invalid", field, trimmed)
+    );
+  }
+  return trimmed;
+}
+
+function identifierString(value: unknown, field: string, pattern: RegExp): string {
+  const trimmed = boundedString(value, field, 1, 200);
+  if (!pattern.test(trimmed)) {
+    throw new EpisodicScratchValidationError(
+      `invalid_${field}`,
+      `${field} must be a structured machine identifier.`,
+      validationDetails("structured_value_invalid", field, trimmed)
+    );
+  }
+  return trimmed;
+}
+
 function guardedText(value: unknown, field: string, min: number, max: number): string {
   const trimmed = boundedString(value, field, min, max);
   assertStructuredText(trimmed, field);
@@ -1069,6 +1115,7 @@ function assertStructuredOutcomeData(value: unknown, field: string): void {
 function walkPayload(value: unknown, path: string): void {
   if (typeof value === "string") {
     assertStructuredText(value, path);
+    assertStructuredMetadataString(value, path);
     return;
   }
   if (Array.isArray(value)) {
@@ -1083,7 +1130,33 @@ function walkPayload(value: unknown, path: string): void {
         `${path}.${key} is not allowed in episodic scratch writes.`
       );
     }
+    assertStructuredMetadataKey(key, `${path}.${key}`, item);
     walkPayload(item, `${path}.${key}`);
+  }
+}
+
+// I5 estructural: metadata/provenance solo transportan datos maquina
+// (identificadores, hashes, timestamps), nunca prosa libre. Complementa el
+// deny por patron de instrucciones de assertStructuredText.
+function assertStructuredMetadataString(value: string, path: string): void {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return;
+  if (structuredOutcomeStringPattern.test(trimmed)) return;
+  throw new EpisodicScratchValidationError(
+    "memory_payload_free_text_forbidden",
+    `${path} must be structured machine data, not free text.`,
+    validationDetails("structured_value_invalid", path, value)
+  );
+}
+
+function assertStructuredMetadataKey(key: string, path: string, value: unknown): void {
+  const normalized = normalizeMemoryKey(key);
+  if (forbiddenMetadataKeyFragments.some((fragment) => normalized.includes(fragment))) {
+    throw new EpisodicScratchValidationError(
+      "memory_payload_free_text_forbidden",
+      `${path} is not allowed in episodic scratch writes.`,
+      validationDetails("forbidden_key_fragment", path, value, key)
+    );
   }
 }
 
