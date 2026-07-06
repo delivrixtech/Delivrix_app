@@ -18,6 +18,7 @@ export * from "./infrastructure-inventory.ts";
 export * from "./ip-reputation.ts";
 export * from "./kill-switch.ts";
 export * from "./mail-policy.engine.ts";
+export * from "./multi-agent.ts";
 export * from "./mvp-demo-blueprint.ts";
 export * from "./mvp-final-demo-report.ts";
 export * from "./mvp-demo-runner.ts";
