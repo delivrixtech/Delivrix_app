@@ -9,6 +9,8 @@ import type {
   IonosDnsZone,
   IonosDomainsInventoryResult,
   IonosDomainItem,
+  NamecheapInventoryResult,
+  NamecheapOwnedDomain,
   PorkbunInventoryResult,
   PorkbunOwnedDomain,
   WebdockInventoryResult,
@@ -69,6 +71,7 @@ export interface InfrastructureInventoryRouteDependencies {
   readBoundaryToken?: string;
   webdockListServers: () => Promise<WebdockAccountInventoryResult[]>;
   vpsProviderListServers?: () => Promise<VpsProviderInventoryResult[]>;
+  namecheapListInventories?: () => Promise<NamecheapInventoryResult[]>;
   awsRoute53DomainsListInventory?: () => Promise<AwsRoute53DomainsInventoryResult>;
   porkbunListInventory?: () => Promise<PorkbunInventoryResult>;
   ionosListDnsInventory?: () => Promise<IonosDnsInventoryResult>;
@@ -125,6 +128,8 @@ export interface BuildInfrastructureInventoryPayloadInput {
   /** Compat legacy para tests/consumidores internos previos a multi-cuenta. */
   webdock?: WebdockInventoryResult | null;
   vpsProviders?: VpsProviderInventoryResult[] | null;
+  /** undefined = consumidor legacy (no agrega providers); [] = placeholder "planned". */
+  namecheapAccounts?: NamecheapInventoryResult[] | null;
   awsRoute53Domains?: AwsRoute53DomainsInventoryResult | null;
   porkbun?: PorkbunInventoryResult | null;
   ionosDns?: IonosDnsInventoryResult | null;
@@ -166,14 +171,16 @@ export async function handleInfrastructureInventoryHttp(
     ionosDnsResult,
     ionosDomainsResult,
     awsRoute53DomainsResult,
-    porkbunResult
+    porkbunResult,
+    namecheapAccountsResult
   ] = await Promise.allSettled([
     deps.webdockListServers(),
     deps.vpsProviderListServers ? deps.vpsProviderListServers() : Promise.resolve([]),
     deps.ionosListDnsInventory ? deps.ionosListDnsInventory() : Promise.resolve(null),
     deps.ionosListDomainsInventory ? deps.ionosListDomainsInventory() : Promise.resolve(null),
     deps.awsRoute53DomainsListInventory ? deps.awsRoute53DomainsListInventory() : Promise.resolve(null),
-    deps.porkbunListInventory ? deps.porkbunListInventory() : Promise.resolve(null)
+    deps.porkbunListInventory ? deps.porkbunListInventory() : Promise.resolve(null),
+    deps.namecheapListInventories ? deps.namecheapListInventories() : Promise.resolve(undefined)
   ]);
   const webdockAccounts = settledValue(webdockAccountsResult, []);
   const vpsProviders = settledValue(vpsProvidersResult, []);
@@ -229,6 +236,9 @@ export async function handleInfrastructureInventoryHttp(
     ionosDomains: settledValue(ionosDomainsResult, null),
     awsRoute53Domains: settledValue(awsRoute53DomainsResult, null),
     porkbun: settledValue(porkbunResult, null),
+    ...(deps.namecheapListInventories
+      ? { namecheapAccounts: settledValue(namecheapAccountsResult, []) }
+      : {}),
     accountLifecycleRecords: accountLifecycleOverlay.records,
     senderNodes: settledValue(senderNodesResult, []),
     awsBedrockSetupLogPath: deps.awsBedrockSetupLogPath,
@@ -414,6 +424,18 @@ export async function buildInfrastructureInventoryPayload(
   const vpsProviders = input.vpsProviders ?? [];
   for (const provider of vpsProviders) {
     providers.push(buildExternalVpsProvider(provider));
+  }
+
+  // Namecheap multicuenta (Provider Fabric): undefined = consumidor legacy
+  // (payload identico); [] = sin cuentas configuradas (placeholder "planned").
+  if (input.namecheapAccounts !== undefined) {
+    const namecheapAccounts = input.namecheapAccounts ?? [];
+    if (namecheapAccounts.length === 0) {
+      providers.push(buildNamecheapPlaceholderProvider(input.env ?? process.env));
+    }
+    for (const account of namecheapAccounts) {
+      providers.push(buildNamecheapProvider(input.env ?? process.env, account));
+    }
   }
 
   if (input.includeStaticProviders ?? true) {
@@ -975,6 +997,85 @@ function awsRoute53DomainsCapabilities(env: Record<string, string | undefined>):
     capabilities.push("register_domain_requires_approval");
   }
   return capabilities;
+}
+
+function buildNamecheapProvider(
+  env: Record<string, string | undefined>,
+  inventory: NamecheapInventoryResult
+): Provider {
+  const status = resolveNamecheapProviderStatus(inventory);
+  const errorReason = inventory.source.responseOk
+    ? undefined
+    : inventory.source.errorMessage ?? "namecheap_unavailable";
+  return {
+    id: sanitizeProviderId(inventory.accountId),
+    displayName: inventory.accountLabel,
+    kind: "domain-registrar",
+    status,
+    itemCount: inventory.domains.length,
+    lastFetched: inventory.source.fetchedAt,
+    fetchSourceKind: inventory.source.kind,
+    ...(errorReason ? { errorReason } : {}),
+    capabilities: namecheapCapabilities(env),
+    items: inventory.domains.map(namecheapDomainToInventoryItem)
+  };
+}
+
+function buildNamecheapPlaceholderProvider(env: Record<string, string | undefined>): Provider {
+  return {
+    id: "namecheap-domains",
+    displayName: "Namecheap",
+    kind: "domain-registrar",
+    status: "planned",
+    itemCount: 0,
+    lastFetched: null,
+    fetchSourceKind: "mock",
+    errorReason: "creds_not_configured",
+    capabilities: namecheapCapabilities(env),
+    items: []
+  };
+}
+
+function namecheapCapabilities(env: Record<string, string | undefined>): string[] {
+  const capabilities = [
+    "list_registered_domains",
+    "check_domain_availability",
+    "draft_domain_purchase_proposal",
+    "compare_registrar_prices"
+  ];
+  if (env.NAMECHEAP_ENABLE_PURCHASE === "true") {
+    capabilities.push("register_domain_requires_approval");
+  }
+  return capabilities;
+}
+
+function resolveNamecheapProviderStatus(inventory: NamecheapInventoryResult): ProviderStatus {
+  if (inventory.accountStatus === "paused") {
+    return "paused";
+  }
+  if (!inventory.source.responseOk) {
+    return "error";
+  }
+  if (inventory.source.kind === "mock" || inventory.domains.length === 0) {
+    return "planned";
+  }
+  return "active";
+}
+
+function namecheapDomainToInventoryItem(domain: NamecheapOwnedDomain): InventoryItem {
+  return {
+    id: domain.domainName,
+    kind: "namecheap_domain",
+    displayName: domain.domainName,
+    status: domain.status,
+    detail: {
+      tld: domain.tld,
+      createdAt: domain.createdAt ?? null,
+      expiry: domain.expiry ?? null,
+      autoRenew: domain.autoRenew ?? null,
+      whoisPrivacy: domain.whoisPrivacy ?? null
+    }
+  };
 }
 
 function buildPorkbunDomainsProvider(

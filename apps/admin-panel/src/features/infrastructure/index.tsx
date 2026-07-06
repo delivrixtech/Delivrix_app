@@ -366,12 +366,16 @@ const KIND_META: Record<ProviderKind, { label: string; icon: typeof Server }> = 
 function brandName(provider: Provider): string {
   const id = provider.id.toLowerCase();
   if (id.startsWith("webdock")) return "Webdock";
+  if (id.startsWith("contabo")) return "Contabo";
+  if (id.startsWith("namecheap")) return "Namecheap";
   if (id.startsWith("aws-")) return "AWS";
   if (id.startsWith("ionos-")) return "IONOS";
   if (id.startsWith("physical-")) return "Servidor físico";
   // fallback: si el backend usa otro slug, intentar inferir del displayName.
   const dn = provider.displayName.toLowerCase();
   if (dn.includes("webdock")) return "Webdock";
+  if (dn.includes("contabo")) return "Contabo";
+  if (dn.includes("namecheap")) return "Namecheap";
   if (dn.includes("aws")) return "AWS";
   if (dn.includes("ionos")) return "IONOS";
   if (dn.includes("físico") || dn.includes("fisico")) return "Servidor físico";
