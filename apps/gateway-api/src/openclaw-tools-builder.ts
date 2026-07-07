@@ -1491,14 +1491,14 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           },
           vpsProviderId: {
             type: "string",
-            enum: ["webdock", "contabo"],
-            description: "Proveedor de VPS del run (elegible). Omitido/webdock = Webdock (default); contabo = crea el VPS en Contabo (cuenta propia; PTR/rDNS manual en el panel Contabo). El campo 'provider' NO rutea el VPS."
+            pattern: "^(webdock|contabo(-[0-9]+)?)$",
+            description: "Proveedor+cuenta de VPS del run. Omitido/webdock = Webdock; contabo = Contabo cuenta flat (hostlatam); contabo-2, contabo-3… = cuentas Contabo indexadas (ej. contabo-2 = infravps). La cuenta Contabo va COMPLETA aquí. PTR/rDNS manual en panel Contabo. El campo 'provider' NO rutea el VPS."
           },
           serverAccountId: {
             type: "string",
             minLength: 1,
             maxLength: 64,
-            description: "Cuenta destino del proveedor para el VPS. PR1 aplica a Webdock: usar accountId de inventory_accounts; omitido = el governor elige cuenta."
+            description: "Cuenta destino SOLO para Webdock (usar accountId de inventory_accounts; omitido = governor elige). NO uses este campo para Contabo: la cuenta Contabo se selecciona ENTERA por vpsProviderId (contabo, contabo-2, …)."
           },
           reuseServerSlug: {
             type: "string",
