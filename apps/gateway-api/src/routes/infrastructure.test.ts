@@ -1384,3 +1384,70 @@ function ionosDomainsInventory(input: {
     }
   };
 }
+
+test("Namecheap multicuenta: una provider card por cuenta, paused se respeta y legacy queda intacto", async () => {
+  const namecheapAccounts = [
+    {
+      accountId: "namecheap-1",
+      accountLabel: "Namecheap Principal",
+      accountStatus: "active" as const,
+      domains: [{
+        domainName: "delivrix.com",
+        tld: "com",
+        status: "active",
+        expiry: "04/22/2027",
+        autoRenew: true,
+        whoisPrivacy: true
+      }],
+      source: {
+        kind: "live" as const,
+        apiBase: "https://api.namecheap.com/xml.response",
+        fetchedAt: "2026-07-06T12:00:00.000Z",
+        responseOk: true
+      }
+    },
+    {
+      accountId: "namecheap-2",
+      accountLabel: "Namecheap Respaldo",
+      accountStatus: "paused" as const,
+      domains: [],
+      source: {
+        kind: "live" as const,
+        apiBase: "https://api.namecheap.com/xml.response",
+        fetchedAt: "2026-07-06T12:00:00.000Z",
+        responseOk: true
+      }
+    }
+  ];
+
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    namecheapAccounts,
+    now: fixedNow
+  });
+  assert.equal(payload.providers.length, 2);
+  const [principal, respaldo] = payload.providers;
+  assert.equal(principal.id, "namecheap-1");
+  assert.equal(principal.kind, "domain-registrar");
+  assert.equal(principal.status, "active");
+  assert.equal(principal.items?.[0].kind, "namecheap_domain");
+  assert.equal(respaldo.status, "paused");
+
+  const legacy = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    now: fixedNow
+  });
+  assert.deepEqual(legacy.providers, []);
+});
+
+test("Namecheap sin cuentas configuradas produce placeholder planned", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    namecheapAccounts: [],
+    now: fixedNow
+  });
+  assert.equal(payload.providers.length, 1);
+  assert.equal(payload.providers[0].id, "namecheap-domains");
+  assert.equal(payload.providers[0].status, "planned");
+  assert.equal(payload.providers[0].errorReason, "creds_not_configured");
+});

@@ -196,6 +196,7 @@ function brandName(provider: Provider): string {
   const id = provider.id.toLowerCase();
   if (id.startsWith("webdock")) return "Webdock";
   if (id.startsWith("contabo")) return "Contabo";
+  if (id.startsWith("namecheap")) return "Namecheap";
   if (id.startsWith("aws-")) return "AWS";
   if (id.startsWith("ionos-")) return "IONOS";
   if (id.startsWith("porkbun")) return "Porkbun";
@@ -203,6 +204,7 @@ function brandName(provider: Provider): string {
   const dn = provider.displayName.toLowerCase();
   if (dn.includes("webdock")) return "Webdock";
   if (dn.includes("contabo")) return "Contabo";
+  if (dn.includes("namecheap")) return "Namecheap";
   if (dn.includes("aws")) return "AWS";
   if (dn.includes("ionos")) return "IONOS";
   if (dn.includes("porkbun")) return "Porkbun";
