@@ -74,7 +74,7 @@ interface DomainsInventory {
   }>;
 }
 
-const approvalMaxAgeMs = 15 * 60 * 1000;
+export const approvalMaxAgeMs = 15 * 60 * 1000;
 const skillName = "register_domain_route53";
 const monthlySpendLocks = new Map<string, Promise<void>>();
 const defaultRoute53RegistrationWaitMs = 1_800_000;
@@ -664,7 +664,7 @@ export function handleRoute53DomainPurchaseError(error: unknown, response: Serve
   return false;
 }
 
-async function findRecentApproval(input: {
+export async function findRecentApproval(input: {
   auditLog: AuditSink;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
   approvalToken: string;

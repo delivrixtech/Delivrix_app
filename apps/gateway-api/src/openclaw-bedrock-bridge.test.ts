@@ -672,6 +672,15 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
               }]
             },
             {
+              id: "contabo-2",
+              kind: "compute",
+              displayName: "Contabo infravps",
+              status: "active",
+              itemCount: 0,
+              fetchSourceKind: "live",
+              items: []
+            },
+            {
               id: "aws-route53-domains",
               kind: "domain-registrar",
               fetchSourceKind: "live",
@@ -771,6 +780,10 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
   assert.match(system, /"accountLabel": "Webdock Primary"/);
   assert.match(system, /"providerId": "contabo"/);
   assert.match(system, /"serverCount": 1/);
+  // accountId único por cuenta Contabo: la cuenta indexada NO debe colapsar a
+  // "contabo" (antes ambas cuentas colisionaban en accountId="contabo").
+  assert.match(system, /"accountId": "contabo-2"/);
+  assert.match(system, /"providerId": "contabo-2"/);
   assert.match(system, /## inventory_servers \(GET \/v1\/infrastructure\/inventory \+ GET \/v1\/webdock\/inventory\)/);
   assert.match(system, /"serverSlug": "server10"/);
   assert.match(system, /"serverIp": "45\.136\.70\.47"/);

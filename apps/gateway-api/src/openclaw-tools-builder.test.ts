@@ -184,6 +184,31 @@ test("buildToolsForOpenClaw omits Route53 tools when AWS credentials are missing
   assert.equal(names.includes("read_dns_ionos"), true);
 });
 
+test("register_domain_namecheap solo aparece con flag + credenciales + hmac", () => {
+  const namecheapCreds = {
+    OPENCLAW_HMAC_SECRET: "test-hmac",
+    NAMECHEAP_ACCOUNT_1_API_USER: "infradelix",
+    NAMECHEAP_ACCOUNT_1_API_KEY: "nc-key"
+  };
+  // Sin flag → ausente (default de producción).
+  assert.equal(
+    buildToolsForOpenClaw({ ...namecheapCreds }).map((t) => t.name).includes("register_domain_namecheap"),
+    false
+  );
+  // Con flag pero sin credenciales → ausente.
+  assert.equal(
+    buildToolsForOpenClaw({ OPENCLAW_HMAC_SECRET: "test-hmac", NAMECHEAP_ENABLE_PURCHASE: "true" })
+      .map((t) => t.name).includes("register_domain_namecheap"),
+    false
+  );
+  // Con flag + credenciales + hmac → presente.
+  assert.equal(
+    buildToolsForOpenClaw({ ...namecheapCreds, NAMECHEAP_ENABLE_PURCHASE: "true" })
+      .map((t) => t.name).includes("register_domain_namecheap"),
+    true
+  );
+});
+
 test("buildToolsForOpenClaw fail-closes when HMAC secret is missing", () => {
   const tools = buildToolsForOpenClaw({
     ...allEnabledEnv(),

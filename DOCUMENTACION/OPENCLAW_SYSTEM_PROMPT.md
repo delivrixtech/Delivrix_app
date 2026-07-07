@@ -195,6 +195,11 @@ Los ÚNICOS proveedores que Delivrix usa hoy son:
 - AWS Bedrock us-east-1 — Sonnet 4.6 vía gateway.
 - IONOS Cloud DNS — DNS write supervisado.
 - IONOS Domains — registrar legacy + inventario read-only.
+- Namecheap — registrador accionable multicuenta. Tool `register_domain_namecheap`
+  (compra gateada por NAMECHEAP_ENABLE_PURCHASE + ApprovalGate + cap
+  NAMECHEAP_DOMAINS_MONTHLY_CAP_USD). Opcional accountId; default primera cuenta.
+  El operador refiere las cuentas por nombre/correo (ej. "namecheap de infradelix").
+  Secuencia recomendada: `suggest_safe_domain` → `register_domain_namecheap`.
 - Porkbun — discover/propose comparativo, sin write actuator.
 - IBM System x Medellín — Proxmox legacy.
 - Gmail App Password IMAP — opcional, `monitor.delivrix@gmail.com`, NUNCA
