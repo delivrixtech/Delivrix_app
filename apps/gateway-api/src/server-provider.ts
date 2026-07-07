@@ -14,7 +14,10 @@ export function getProviderFromServerIdentity(input: {
   accountId?: string | null;
   slug?: string | null;
 }): ServerProviderId {
-  if (input.accountId === "contabo" || getProviderFromServerSlug(input.slug) === "contabo") {
+  // Familia Contabo: accountId "contabo" (flat) o "contabo-N" (indexadas) clasifica como contabo,
+  // igual que el prefijo de slug "contabo-".
+  const accountId = typeof input.accountId === "string" ? input.accountId : "";
+  if (accountId === "contabo" || /^contabo-\d+$/.test(accountId) || getProviderFromServerSlug(input.slug) === "contabo") {
     return "contabo";
   }
   if (input.accountId === "webdock" || input.accountId === "ops" || input.accountId === "default") {
