@@ -114,6 +114,7 @@ export interface NamecheapAdapterOptions {
   now?: () => Date;
   env?: Record<string, string | undefined>;
   purchaseEnabled?: boolean;
+  dnsWriteEnabled?: boolean;
 }
 
 export interface NamecheapAccountAdapterEntry {
@@ -125,6 +126,7 @@ export interface NamecheapAccountAdapterEntry {
 const DEFAULT_API_BASE = "https://api.namecheap.com/xml.response";
 const DEFAULT_TTL_MS = 300_000;
 const PURCHASE_FLAG = "NAMECHEAP_ENABLE_PURCHASE";
+const DNS_WRITE_FLAG = "NAMECHEAP_DNS_ENABLE_WRITES";
 const MAX_INDEXED_ACCOUNTS = 50;
 
 interface CacheEntry<T> {
@@ -146,6 +148,7 @@ export class NamecheapDomainsAdapter {
   private readonly now: () => Date;
   private readonly env: Record<string, string | undefined>;
   private readonly purchaseEnabledOverride: boolean | undefined;
+  private readonly dnsWriteEnabledOverride: boolean | undefined;
   private inventoryCache: CacheEntry<NamecheapInventoryResult> | null = null;
 
   constructor(options: NamecheapAdapterOptions = {}) {
@@ -170,6 +173,7 @@ export class NamecheapDomainsAdapter {
       createProviderFetch({ env, ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) });
     this.now = options.now ?? (() => new Date());
     this.purchaseEnabledOverride = options.purchaseEnabled;
+    this.dnsWriteEnabledOverride = options.dnsWriteEnabled;
   }
 
   isLive(): boolean {
@@ -179,6 +183,15 @@ export class NamecheapDomainsAdapter {
   purchaseEnabled(): boolean {
     // Se lee del env en cada llamada para que aplique el hot-reload de runtime-env.
     return this.purchaseEnabledOverride ?? normalizeEnvValue(this.env[PURCHASE_FLAG]) === "true";
+  }
+
+  /**
+   * Habilita las escrituras de DNS (setHosts/setDefault) en la zona propia de Namecheap.
+   * Kill switch de escrituras DNS, hot-reload via runtime-env (espejo de IONOS_DNS_ENABLE_WRITES).
+   * Independiente del flag de compra: se puede gestionar DNS sin poder comprar dominios.
+   */
+  isWriteEnabled(): boolean {
+    return this.dnsWriteEnabledOverride ?? normalizeEnvValue(this.env[DNS_WRITE_FLAG]) === "true";
   }
 
   async checkAvailability(domainName: string): Promise<NamecheapDomainCandidate> {
