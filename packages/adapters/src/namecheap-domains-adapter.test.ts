@@ -141,6 +141,80 @@ test("registerDomain executes when the flag is enabled", async () => {
   assert.equal(result.chargedAmountUsd, 9.06);
 });
 
+test("getHosts parses the BasicDNS host records and IsUsingOurDNS", async () => {
+  const GETHOSTS_XML = `<?xml version="1.0"?>
+<ApiResponse Status="OK">
+  <CommandResponse Type="namecheap.domains.dns.getHosts">
+    <DomainDNSGetHostsResult Domain="corpfiling-ops.com" IsUsingOurDNS="true">
+      <host Name="@" Type="A" Address="1.2.3.4" MXPref="10" TTL="1800"/>
+      <host Name="@" Type="TXT" Address="v=spf1 ip4:1.2.3.4 -all" MXPref="10" TTL="1800"/>
+      <host Name="@" Type="MX" Address="smtp.corpfiling-ops.com." MXPref="10" TTL="1800"/>
+    </DomainDNSGetHostsResult>
+  </CommandResponse>
+</ApiResponse>`;
+  const adapter = new NamecheapDomainsAdapter({ ...LIVE_OPTIONS, env: {}, fetchImpl: async () => xmlResponse(GETHOSTS_XML) });
+  const result = await adapter.getHosts("corpfiling-ops.com");
+  assert.equal(result.isUsingOurDns, true);
+  assert.equal(result.hosts.length, 3);
+  assert.deepEqual(result.hosts[0], { hostName: "@", recordType: "A", address: "1.2.3.4", ttl: 1800 });
+  assert.equal(result.hosts[2].recordType, "MX");
+  assert.equal(result.hosts[2].mxPref, 10);
+});
+
+test("setHosts posts the full record set with indexed params, MX pref and EmailType", async () => {
+  let requestedUrl = "";
+  const SETHOSTS_XML = `<?xml version="1.0"?>
+<ApiResponse Status="OK">
+  <CommandResponse Type="namecheap.domains.dns.setHosts">
+    <DomainDNSSetHostsResult Domain="corpfiling-ops.com" IsSuccess="true"/>
+  </CommandResponse>
+</ApiResponse>`;
+  const adapter = new NamecheapDomainsAdapter({
+    ...LIVE_OPTIONS,
+    accountId: "namecheap-1",
+    env: {},
+    fetchImpl: async (url) => { requestedUrl = String(url); return xmlResponse(SETHOSTS_XML); }
+  });
+
+  const result = await adapter.setHosts("corpfiling-ops.com", [
+    { hostName: "smtp", recordType: "A", address: "1.2.3.4" },
+    { hostName: "@", recordType: "MX", address: "smtp.corpfiling-ops.com.", mxPref: 10 }
+  ]);
+  assert.equal(result.updated, true);
+  assert.equal(result.accountId, "namecheap-1");
+  assert.ok(requestedUrl.includes("Command=namecheap.domains.dns.setHosts"));
+  assert.ok(requestedUrl.includes("HostName1=smtp"));
+  assert.ok(requestedUrl.includes("RecordType1=A"));
+  assert.ok(requestedUrl.includes("Address1=1.2.3.4"));
+  assert.ok(requestedUrl.includes("HostName2=%40"));
+  assert.ok(requestedUrl.includes("MXPref2=10"));
+  assert.ok(requestedUrl.includes("EmailType=MX"));
+});
+
+test("setHosts fails closed without credentials and with an empty record set", async () => {
+  let calls = 0;
+  const noCreds = new NamecheapDomainsAdapter({ env: {}, fetchImpl: async () => { calls += 1; return xmlResponse(""); } });
+  await assert.rejects(noCreds.setHosts("corpfiling-ops.com", [{ hostName: "@", recordType: "A", address: "1.2.3.4" }]), /namecheap_credentials_missing/);
+
+  const live = new NamecheapDomainsAdapter({ ...LIVE_OPTIONS, env: {}, fetchImpl: async () => { calls += 1; return xmlResponse(""); } });
+  await assert.rejects(live.setHosts("corpfiling-ops.com", []), /namecheap_hosts_empty/);
+  assert.equal(calls, 0);
+});
+
+test("setDefaultNameservers resets the domain to Namecheap BasicDNS", async () => {
+  let requestedUrl = "";
+  const SETDEFAULT_XML = `<?xml version="1.0"?>
+<ApiResponse Status="OK">
+  <CommandResponse Type="namecheap.domains.dns.setDefault">
+    <DomainDNSSetDefaultResult Domain="corpfiling-ops.com" Updated="true"/>
+  </CommandResponse>
+</ApiResponse>`;
+  const adapter = new NamecheapDomainsAdapter({ ...LIVE_OPTIONS, env: {}, fetchImpl: async (url) => { requestedUrl = String(url); return xmlResponse(SETDEFAULT_XML); } });
+  const result = await adapter.setDefaultNameservers("corpfiling-ops.com");
+  assert.equal(result.updated, true);
+  assert.ok(requestedUrl.includes("Command=namecheap.domains.dns.setDefault"));
+});
+
 test("createNamecheapAdaptersFromEnv builds one entry per indexed account and tolerates holes", () => {
   const entries = createNamecheapAdaptersFromEnv({
     NAMECHEAP_ACCOUNT_1_API_USER: "ops",
