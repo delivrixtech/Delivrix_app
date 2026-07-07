@@ -865,6 +865,9 @@ export async function configureCompleteSmtp(
         estimatedCostUsd: 15,
         budgetUsdMax: effectiveInput.budgetUsdMax,
         params: namecheapRegistrationParams,
+        // Canal HERMANO (NO en params/hash): habilita el alias de plan-scope del registro Namecheap
+        // (register_domain_namecheap ocupa el slot firmado register_domain_route53).
+        dnsProviderId,
         stepResults
       });
     } else {
