@@ -250,6 +250,18 @@ export class NamecheapDomainsAdapter {
         blockedReason: "namecheap_credentials_missing"
       };
     }
+    // Namecheap exige los contactos WHOIS del registrante para namecheap.domains.create (incluso con
+    // WhoisGuard, que solo los OCULTA). Fail-closed claro si falta alguno: el operador los configura en
+    // env (NAMECHEAP_REGISTRANT_*). WhoisGuard sigue protegiendo la privacidad pública.
+    const contact = resolveNamecheapRegistrantContact(this.env);
+    if (!contact.ok) {
+      return {
+        accountId: this.accountId,
+        domainName: input.domainName,
+        status: "blocked",
+        blockedReason: `namecheap_registrant_contact_missing:${contact.missing.join(",")}`
+      };
+    }
 
     const xml = await this.namecheapXml(
       "namecheap.domains.create",
@@ -257,7 +269,8 @@ export class NamecheapDomainsAdapter {
         DomainName: input.domainName,
         Years: String(clampYears(input.years)),
         AddFreeWhoisguard: input.whoisPrivacy === false ? "no" : "yes",
-        WGEnabled: input.whoisPrivacy === false ? "no" : "yes"
+        WGEnabled: input.whoisPrivacy === false ? "no" : "yes",
+        ...expandNamecheapContactRoles(contact.value)
       },
       false
     );
@@ -498,6 +511,69 @@ export function parseNamecheapOwnedDomains(xml: string): NamecheapOwnedDomain[] 
       whoisPrivacy: whoisGuardEnabled(attrString(tag, "WhoisGuard"))
     }];
   });
+}
+
+interface NamecheapRegistrantContact {
+  firstName: string;
+  lastName: string;
+  address1: string;
+  city: string;
+  stateProvince: string;
+  postalCode: string;
+  country: string;
+  phone: string;
+  emailAddress: string;
+}
+
+// Campos de contacto WHOIS requeridos por namecheap.domains.create. Se leen de env
+// NAMECHEAP_REGISTRANT_* (el operador los provee una vez). Namecheap exige el bloque completo
+// para Registrant/Tech/Admin/AuxBilling; con WhoisGuard quedan ocultos al público.
+const NAMECHEAP_CONTACT_FIELDS: Array<{ key: keyof NamecheapRegistrantContact; env: string }> = [
+  { key: "firstName", env: "NAMECHEAP_REGISTRANT_FIRST_NAME" },
+  { key: "lastName", env: "NAMECHEAP_REGISTRANT_LAST_NAME" },
+  { key: "address1", env: "NAMECHEAP_REGISTRANT_ADDRESS1" },
+  { key: "city", env: "NAMECHEAP_REGISTRANT_CITY" },
+  { key: "stateProvince", env: "NAMECHEAP_REGISTRANT_STATE_PROVINCE" },
+  { key: "postalCode", env: "NAMECHEAP_REGISTRANT_POSTAL_CODE" },
+  { key: "country", env: "NAMECHEAP_REGISTRANT_COUNTRY" },
+  { key: "phone", env: "NAMECHEAP_REGISTRANT_PHONE" },
+  { key: "emailAddress", env: "NAMECHEAP_REGISTRANT_EMAIL_ADDRESS" }
+];
+
+function resolveNamecheapRegistrantContact(
+  env: Record<string, string | undefined>
+): { ok: true; value: NamecheapRegistrantContact } | { ok: false; missing: string[] } {
+  const value = {} as NamecheapRegistrantContact;
+  const missing: string[] = [];
+  for (const { key, env: envKey } of NAMECHEAP_CONTACT_FIELDS) {
+    const raw = normalizeEnvValue(env[envKey]);
+    if (!raw) {
+      missing.push(envKey);
+    } else {
+      value[key] = raw;
+    }
+  }
+  return missing.length > 0 ? { ok: false, missing } : { ok: true, value };
+}
+
+/**
+ * Namecheap exige el bloque de contacto para los 4 roles (Registrant/Tech/Admin/AuxBilling).
+ * Reusamos el mismo contacto en los 4 (patron estandar). Phone debe ir en formato +NNN.NNNNNNNNNN.
+ */
+function expandNamecheapContactRoles(contact: NamecheapRegistrantContact): Record<string, string> {
+  const params: Record<string, string> = {};
+  for (const role of ["Registrant", "Tech", "Admin", "AuxBilling"]) {
+    params[`${role}FirstName`] = contact.firstName;
+    params[`${role}LastName`] = contact.lastName;
+    params[`${role}Address1`] = contact.address1;
+    params[`${role}City`] = contact.city;
+    params[`${role}StateProvince`] = contact.stateProvince;
+    params[`${role}PostalCode`] = contact.postalCode;
+    params[`${role}Country`] = contact.country;
+    params[`${role}Phone`] = contact.phone;
+    params[`${role}EmailAddress`] = contact.emailAddress;
+  }
+  return params;
 }
 
 function accountStatus(raw: string | undefined): NamecheapAccountStatus {

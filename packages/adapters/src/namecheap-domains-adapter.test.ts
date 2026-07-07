@@ -122,7 +122,21 @@ test("registerDomain is blocked by default (purchase flag off) without touching 
   assert.equal(calls, 0);
 });
 
-test("registerDomain executes when the flag is enabled", async () => {
+const REGISTRANT_ENV = {
+  NAMECHEAP_ENABLE_PURCHASE: "true",
+  NAMECHEAP_REGISTRANT_FIRST_NAME: "Juan",
+  NAMECHEAP_REGISTRANT_LAST_NAME: "Escanar",
+  NAMECHEAP_REGISTRANT_ADDRESS1: "Calle 1",
+  NAMECHEAP_REGISTRANT_CITY: "Medellin",
+  NAMECHEAP_REGISTRANT_STATE_PROVINCE: "Antioquia",
+  NAMECHEAP_REGISTRANT_POSTAL_CODE: "050001",
+  NAMECHEAP_REGISTRANT_COUNTRY: "CO",
+  NAMECHEAP_REGISTRANT_PHONE: "+57.3000000000",
+  NAMECHEAP_REGISTRANT_EMAIL_ADDRESS: "ops@example.com"
+};
+
+test("registerDomain executes when the flag is enabled and sends WHOIS contacts for all 4 roles", async () => {
+  let requestedUrl = "";
   const CREATE_XML = `<?xml version="1.0"?>
 <ApiResponse Status="OK">
   <CommandResponse Type="namecheap.domains.create">
@@ -131,14 +145,32 @@ test("registerDomain executes when the flag is enabled", async () => {
 </ApiResponse>`;
   const adapter = new NamecheapDomainsAdapter({
     ...LIVE_OPTIONS,
-    env: { NAMECHEAP_ENABLE_PURCHASE: "true" },
-    fetchImpl: async () => xmlResponse(CREATE_XML)
+    env: REGISTRANT_ENV,
+    fetchImpl: async (url) => { requestedUrl = String(url); return xmlResponse(CREATE_XML); }
   });
 
   const result = await adapter.registerDomain({ domainName: "delivrixmail.com" });
   assert.equal(result.status, "registered");
   assert.equal(result.transactionId, "tx-123");
   assert.equal(result.chargedAmountUsd, 9.06);
+  for (const role of ["Registrant", "Tech", "Admin", "AuxBilling"]) {
+    assert.ok(requestedUrl.includes(`${role}FirstName=Juan`), `${role}FirstName present`);
+    assert.ok(requestedUrl.includes(`${role}EmailAddress=ops%40example.com`), `${role}EmailAddress present`);
+  }
+});
+
+test("registerDomain fails closed with clear reason when registrant contact env is missing", async () => {
+  let calls = 0;
+  const adapter = new NamecheapDomainsAdapter({
+    ...LIVE_OPTIONS,
+    env: { NAMECHEAP_ENABLE_PURCHASE: "true" }, // flag on but no NAMECHEAP_REGISTRANT_*
+    fetchImpl: async () => { calls += 1; return xmlResponse(""); }
+  });
+  const result = await adapter.registerDomain({ domainName: "delivrixmail.com" });
+  assert.equal(result.status, "blocked");
+  assert.ok(result.blockedReason?.startsWith("namecheap_registrant_contact_missing:"));
+  assert.ok(result.blockedReason?.includes("NAMECHEAP_REGISTRANT_FIRST_NAME"));
+  assert.equal(calls, 0);
 });
 
 test("getHosts parses the BasicDNS host records and IsUsingOurDNS", async () => {
