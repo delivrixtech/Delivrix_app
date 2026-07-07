@@ -11,6 +11,7 @@ import {
   createWebdockAdaptersFromEnv,
   createContaboAdaptersFromEnv,
   createNamecheapAdaptersFromEnv,
+  createNamecheapDnsProviderFromEnv,
   createIonosDnsProviderFromEnv,
   createMxtoolboxAdapterFromEnv,
   createRoute53DnsProviderFromEnv,
@@ -202,6 +203,10 @@ import {
   handleIonosDnsUpsertError,
   handleIonosDnsUpsertHttp
 } from "./routes/dns-ionos-upsert.ts";
+import {
+  handleNamecheapDnsUpsertError,
+  handleNamecheapDnsUpsertHttp
+} from "./routes/dns-namecheap-upsert.ts";
 import {
   handleEmailAuthConfigureHttp,
   handleEmailAuthError
@@ -616,9 +621,12 @@ async function listWebdockCreationAccounts(): Promise<Array<{ accountId: string;
 const awsRoute53DomainsAdapter = new AwsRoute53DomainsAdapter();
 const awsRoute53DnsAdapter = new AwsRoute53DnsAdapter();
 const ionosDnsAdapter = new IonosDnsActuator();
+// Namecheap DNS autoritativo INDEPENDIENTE: una entry por cuenta (id "namecheap-N"), sin default.
+const namecheapDnsProviderEntries = createNamecheapDnsProviderFromEnv();
 const dnsProviderEntries = [
   ...createRoute53DnsProviderFromEnv(process.env, { adapter: awsRoute53DnsAdapter }),
-  ...createIonosDnsProviderFromEnv(process.env, { adapter: ionosDnsAdapter })
+  ...createIonosDnsProviderFromEnv(process.env, { adapter: ionosDnsAdapter }),
+  ...namecheapDnsProviderEntries
 ];
 const dnsProviderAdapters = new Map<string, DnsProvider>(
   dnsProviderEntries.map((entry): [string, DnsProvider] => [entry.id, entry.adapter])
@@ -1018,6 +1026,8 @@ const configureSmtpRuntimeDeps = {
     return verifyOwnedDomainAcrossRegistrars(domain, {
       route53: awsRoute53DomainsAdapter,
       ionos: ionosDomainsAdapter,
+      // Namecheap: registrador INDEPENDIENTE. Reader = primera cuenta live (idempotencia de compra).
+      ...(namecheapAccountEntries[0] ? { namecheap: namecheapAccountEntries[0].adapter } : {}),
       logger: {
         info: (event, metadata) => gatewayRuntimeLog.info(event, "Domain ownership registrar check completed.", metadata),
         warn: (event, metadata) => gatewayRuntimeLog.warn(event, "Domain ownership registrar check failed.", metadata)
@@ -1112,6 +1122,12 @@ const skillDispatcher = createSkillDispatcher({
     const entry = accountId
       ? namecheapAccountEntries.find((e) => e.id === accountId)
       : namecheapAccountEntries[0];
+    return entry?.adapter ?? null;
+  },
+  namecheapDnsResolveProvider: (accountId?: string) => {
+    const entry = accountId
+      ? namecheapDnsProviderEntries.find((e) => e.id === accountId || e.label === accountId)
+      : namecheapDnsProviderEntries[0];
     return entry?.adapter ?? null;
   },
   route53DnsAdapter: awsRoute53DnsAdapter,
@@ -1327,6 +1343,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("route53_dns_upsert", "supervised_local_state"),
   permission("upsert_dns_ionos", "supervised_local_state"),
   permission("ionos_dns_upsert", "supervised_local_state"),
+  permission("upsert_dns_namecheap", "supervised_local_state"),
+  permission("namecheap_dns_upsert", "supervised_local_state"),
   permission("create_webdock_server", "supervised_local_state"),
   permission("provision_webdock_vps", "supervised_local_state"),
   permission("bind_webdock_main_domain", "supervised_local_state"),
@@ -2472,6 +2490,30 @@ const server = createServer(async (request, response) => {
         });
       } catch (error) {
         if (handleIonosDnsUpsertError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/dns/namecheap/upsert") {
+      try {
+        return await handleNamecheapDnsUpsertHttp({
+          request,
+          response,
+          auditLog,
+          resolveProvider: (accountId?: string) => {
+            const entry = accountId
+              ? namecheapDnsProviderEntries.find((e) => e.id === accountId || e.label === accountId)
+              : namecheapDnsProviderEntries[0];
+            return entry?.adapter ?? null;
+          },
+          workspace: openClawWorkspace,
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          env: process.env
+        });
+      } catch (error) {
+        if (handleNamecheapDnsUpsertError(error, response)) {
           return;
         }
         throw error;

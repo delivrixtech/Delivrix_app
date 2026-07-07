@@ -8,6 +8,11 @@ import {
   type IonosDnsRecordSnapshot,
   type IonosDnsRecordWriteInput
 } from "./ionos-dns-actuator.ts";
+import {
+  NamecheapDomainsAdapter,
+  createNamecheapAdaptersFromEnv,
+  type NamecheapHostRecord
+} from "./namecheap-domains-adapter.ts";
 
 export type DnsRecordType = "A" | "MX" | "TXT" | "CNAME";
 
@@ -59,7 +64,14 @@ export interface IonosDnsProviderOptions {
   env?: Record<string, string | undefined>;
 }
 
+export interface NamecheapDnsProviderOptions {
+  env?: Record<string, string | undefined>;
+}
+
 const defaultTtl = 300;
+
+// Nameservers por default de Namecheap BasicDNS (Namecheap autoritativo del dominio).
+const NAMECHEAP_BASIC_DNS_NAMESERVERS = ["dns1.registrar-servers.com", "dns2.registrar-servers.com"];
 
 export class Route53DnsProvider implements DnsProvider {
   readonly providerId = "route53";
@@ -152,6 +164,62 @@ export class IonosDnsProvider implements DnsProvider {
   }
 }
 
+/**
+ * Namecheap como proveedor DNS AUTORITATIVO e INDEPENDIENTE (espejo de IonosDnsProvider).
+ * NO hay zoneId: la zona es el propio dominio. `setHosts` es full-set replace, así que
+ * upsertRecords hace getHosts + merge (preserva records ajenos, reemplaza los del SMTP) + setHosts.
+ * ensureZone reestablece BasicDNS (setDefault) para que Namecheap sea autoritativo. Sin dependencia
+ * de Route53 ni de ningún otro proveedor.
+ */
+export class NamecheapDnsProvider implements DnsProvider {
+  readonly providerId = "namecheap";
+  private readonly adapter: NamecheapDomainsAdapter;
+
+  constructor(adapter: NamecheapDomainsAdapter) {
+    this.adapter = adapter;
+  }
+
+  isLive(): boolean {
+    return this.adapter.isLive();
+  }
+
+  isWriteEnabled(): boolean {
+    return this.adapter.isWriteEnabled();
+  }
+
+  async ensureZone(domainOrZoneName: string): Promise<DnsZoneResult> {
+    const domain = normalizeNamecheapDomain(domainOrZoneName);
+    await this.adapter.setDefaultNameservers(domain);
+    return { zoneId: domain, nameServers: [...NAMECHEAP_BASIC_DNS_NAMESERVERS] };
+  }
+
+  async upsertRecords(zoneId: string, records: DnsRecordSpec[]): Promise<DnsUpsertResult> {
+    const domain = normalizeNamecheapDomain(zoneId);
+    const current = await this.adapter.getHosts(domain);
+    const incoming = records.flatMap((record) => specToNamecheapHosts(record, domain));
+    const merged = mergeNamecheapHosts(current.hosts, incoming);
+    const idempotent = sameHostSet(current.hosts, merged);
+    if (!idempotent) {
+      await this.adapter.setHosts(domain, merged);
+    }
+    return { changeIds: [domain], idempotent };
+  }
+
+  async listRecords(zoneId: string): Promise<DnsRecordSpec[]> {
+    const domain = normalizeNamecheapDomain(zoneId);
+    const current = await this.adapter.getHosts(domain);
+    return current.hosts
+      .filter((host): host is NamecheapHostRecord & { recordType: DnsRecordType } => isDnsRecordType(host.recordType))
+      .map((host) => ({
+        name: namecheapHostToFqdn(host.hostName, domain),
+        type: host.recordType,
+        ...(typeof host.ttl === "number" ? { ttl: host.ttl } : {}),
+        values: [host.address],
+        ...(host.recordType === "MX" && typeof host.mxPref === "number" ? { prio: host.mxPref } : {})
+      }));
+  }
+}
+
 export function createRoute53DnsProviderFromEnv(
   env: Record<string, string | undefined> = defaultEnv(),
   options: Route53DnsProviderOptions = {}
@@ -180,6 +248,111 @@ export function createIonosDnsProviderFromEnv(
     label: "IONOS DNS",
     adapter: provider
   }];
+}
+
+/**
+ * Una entry por cuenta Namecheap (id propio: "namecheap-1", etc.), NUNCA "default/cuenta 1/2":
+ * el agente y el dispatcher direccionan por id/label. Espejo de createNamecheapAdaptersFromEnv,
+ * pero sólo incluye cuentas write-capable con DNS (isLive). El DNS de un dominio vive en la MISMA
+ * cuenta Namecheap que lo posee, de modo independiente por cuenta.
+ */
+export function createNamecheapDnsProviderFromEnv(
+  env: Record<string, string | undefined> = defaultEnv(),
+  options: NamecheapDnsProviderOptions = {}
+): DnsProviderEntry[] {
+  const accountEnv = options.env ?? env;
+  return createNamecheapAdaptersFromEnv(accountEnv)
+    .filter((entry) => entry.adapter.isLive())
+    .map((entry) => ({
+      id: entry.id,
+      label: entry.label,
+      adapter: new NamecheapDnsProvider(entry.adapter)
+    }));
+}
+
+function normalizeNamecheapDomain(value: string): string {
+  return value.trim().toLowerCase().replace(/\.$/, "");
+}
+
+/**
+ * FQDN -> hostName relativo de Namecheap. apex -> "@"; "smtp.<domain>" -> "smtp".
+ * Un nombre ya relativo (sin el dominio) se conserva. "@"/"" -> "@".
+ */
+function fqdnToNamecheapHost(name: string, domain: string): string {
+  const normalized = name.trim().toLowerCase().replace(/\.$/, "");
+  if (!normalized || normalized === "@" || normalized === domain) return "@";
+  if (normalized.endsWith(`.${domain}`)) {
+    const host = normalized.slice(0, normalized.length - domain.length - 1);
+    return host || "@";
+  }
+  return normalized;
+}
+
+function namecheapHostToFqdn(hostName: string, domain: string): string {
+  const host = hostName.trim().toLowerCase().replace(/\.$/, "");
+  if (!host || host === "@") return domain;
+  if (host === domain || host.endsWith(`.${domain}`)) return host;
+  return `${host}.${domain}`;
+}
+
+function specToNamecheapHosts(record: DnsRecordSpec, domain: string): NamecheapHostRecord[] {
+  if (!isNamecheapHostType(record.type)) return [];
+  const hostName = fqdnToNamecheapHost(record.name, domain);
+  return record.values.map((value) => ({
+    hostName,
+    recordType: record.type as NamecheapHostRecord["recordType"],
+    address: namecheapAddressForValue(record.type, value),
+    ...(record.type === "MX" ? { mxPref: record.prio ?? 10 } : {}),
+    ...(typeof record.ttl === "number" ? { ttl: record.ttl } : {})
+  }));
+}
+
+// Para MX, el spec neutro puede traer el valor con prioridad embebida ("10 mail.dom.");
+// Namecheap separa la prioridad (mxPref), así que el address es sólo el host de correo.
+function namecheapAddressForValue(type: DnsRecordType, value: string): string {
+  const trimmed = value.trim();
+  if (type !== "MX") return trimmed;
+  const withPriority = trimmed.match(/^(\d+)\s+(.+)$/);
+  return withPriority ? withPriority[2].trim() : trimmed;
+}
+
+/** Clasifica un TXT para no pisar TXT ajenos (SPF/DKIM/DMARC vs otros). */
+function namecheapTxtClass(host: NamecheapHostRecord): string {
+  const hostName = host.hostName.toLowerCase();
+  if (hostName === "_dmarc") return "dmarc";
+  if (hostName.endsWith("_domainkey")) return "dkim";
+  if (host.address.toLowerCase().startsWith("v=spf1")) return "spf";
+  return `txt:${hostName}:${host.address.toLowerCase()}`;
+}
+
+function namecheapConflictKey(host: NamecheapHostRecord): string {
+  const hostName = host.hostName.toLowerCase();
+  if (host.recordType === "TXT") return `TXT|${hostName}|${namecheapTxtClass(host)}`;
+  return `${host.recordType}|${hostName}`;
+}
+
+/**
+ * Merge full-set: conserva los host records existentes que NO colisionan con los entrantes
+ * (por hostName+type, y para TXT por clase SPF/DKIM/DMARC), y agrega los entrantes. Así el SMTP
+ * escribe/actualiza sus records de forma idempotente sin borrar records ajenos del dominio.
+ */
+function mergeNamecheapHosts(existing: NamecheapHostRecord[], incoming: NamecheapHostRecord[]): NamecheapHostRecord[] {
+  const incomingKeys = new Set(incoming.map(namecheapConflictKey));
+  const preserved = existing.filter((host) => !incomingKeys.has(namecheapConflictKey(host)));
+  return [...preserved, ...incoming];
+}
+
+function sameHostSet(left: NamecheapHostRecord[], right: NamecheapHostRecord[]): boolean {
+  const encode = (hosts: NamecheapHostRecord[]): string =>
+    hosts
+      .map((host) => `${host.hostName.toLowerCase()}|${host.recordType}|${host.address.toLowerCase()}|${host.mxPref ?? ""}`)
+      .sort()
+      .join("\n");
+  return encode(left) === encode(right);
+}
+
+function isNamecheapHostType(type: DnsRecordType): boolean {
+  return type === "A" || type === "MX" || type === "TXT" || type === "CNAME";
 }
 
 function route53RecordInput(record: DnsRecordSpec): AwsRoute53DnsRecordInput {

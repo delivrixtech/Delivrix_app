@@ -123,7 +123,7 @@ export interface PlanApprovalLookupInput {
 
 export interface OwnedDomainVerification {
   owned: boolean;
-  provider: "route53" | "ionos";
+  provider: "route53" | "ionos" | "namecheap";
   reason?: string;
   sourceKind?: string;
   responseOk?: boolean;
@@ -477,7 +477,7 @@ interface SmtpRunState {
    * Proveedor DNS elegido para este run. OPCIONAL para backward-compat: runStates viejos sin el campo
    * usan Route53. Va por canal hermano y se persiste antes de las mutaciones DNS.
    */
-  dnsProviderId?: "ionos";
+  dnsProviderId?: "ionos" | "namecheap";
   selector: string;
   verifiedOwnedDomain?: string;
   verifiedOwnedDomainProvider?: OwnedDomainVerification["provider"];
@@ -660,8 +660,8 @@ export async function configureCompleteSmtp(
     assertKnownNonWebdockVpsProviderId(resolveVpsProviderId(effectiveInput, runState));
     const dnsProviderId = resolveDnsProviderId(effectiveInput, runState);
     assertKnownDnsProviderId(dnsProviderId);
-    if (dnsProviderId === "ionos") {
-      runState.dnsProviderId = "ionos";
+    if (dnsProviderId === "ionos" || dnsProviderId === "namecheap") {
+      runState.dnsProviderId = dnsProviderId;
       await persistSmtpRunState(deps, runState);
     }
     selector = runState.selector;
@@ -760,7 +760,7 @@ export async function configureCompleteSmtp(
     });
     const explicitDomain = explicitDomainForRun(effectiveInput, planApproval);
     const requireExistingDomain = requiresExistingDomainForRun(effectiveInput, planApproval);
-    if (explicitDomain && (requireExistingDomain || dnsProviderId === "ionos" || !domainInSuggestions(suggestions, explicitDomain))) {
+    if (explicitDomain && (requireExistingDomain || dnsProviderId === "ionos" || dnsProviderId === "namecheap" || !domainInSuggestions(suggestions, explicitDomain))) {
       const ownership = await resolveExistingDomainOwnership({
         deps,
         runId,
@@ -781,6 +781,7 @@ export async function configureCompleteSmtp(
     await persistSmtpRunState(deps, runState);
 
     const route53RegistrationParams = { domain: chosenDomain, years: 1, autoRenew: false };
+    const namecheapRegistrationParams = { domain: chosenDomain, years: 1, whoisPrivacy: true };
     const ionosAdoptedDnsRun =
       dnsProviderId === "ionos" &&
       verifiedOwnedDomain === chosenDomain &&
@@ -793,6 +794,15 @@ export async function configureCompleteSmtp(
         "ionos_dns_requires_ionos_owned_domain"
       );
     }
+    // Namecheap: registrador + DNS autoritativo INDEPENDIENTE (espejo de IONOS, pero con COMPRA in-run).
+    // Si el dominio ya es propio en Namecheap se SALTA el registro (idempotente); si no, se registra en
+    // Namecheap (paso 2, dinero). En ambos casos Namecheap es autoritativo de su zona -> el wait de NS
+    // awsdns se salta (no hay delegacion a Route53). El DNS del SMTP se escribe en Namecheap (paso 6/10).
+    const namecheapDnsRun = dnsProviderId === "namecheap";
+    const namecheapOwnedRun =
+      namecheapDnsRun &&
+      verifiedOwnedDomain === chosenDomain &&
+      verifiedOwnedProvider === "namecheap";
 
     if (ionosAdoptedDnsRun) {
       await recordSyntheticDoneStepWithState({
@@ -816,6 +826,49 @@ export async function configureCompleteSmtp(
         runId,
         provider: "ionos",
         reason: "ionos_owned_domain"
+      });
+    } else if (namecheapOwnedRun) {
+      await recordSyntheticDoneStepWithState({
+        deps,
+        runState,
+        runId,
+        step: 2,
+        skill: "register_domain_namecheap",
+        params: namecheapRegistrationParams,
+        outcome: {
+          ok: true,
+          status: "skipped",
+          reason: "namecheap_owned_domain",
+          provider: "namecheap",
+          domain: chosenDomain
+        },
+        estimatedCostUsd: 0,
+        stepResults
+      });
+      await audit(deps, "oc.domain.registration_skipped", "domain", chosenDomain, "high", {
+        runId,
+        provider: "namecheap",
+        reason: "namecheap_owned_domain"
+      });
+    } else if (namecheapDnsRun) {
+      // Compra REAL del dominio en Namecheap (sincrona: el adapter devuelve "registered"; NO hay poll de
+      // propagacion de registro como Route53 porque Namecheap es autoritativo desde el registro).
+      await runMutatingStepWithState({
+        deps,
+        runState,
+        planApproval,
+        runId,
+        step: 2,
+        skill: "register_domain_namecheap",
+        actorId: effectiveInput.actorId,
+        approvalTimeoutMs,
+        estimatedCostUsd: 15,
+        budgetUsdMax: effectiveInput.budgetUsdMax,
+        params: namecheapRegistrationParams,
+        // Canal HERMANO (NO en params/hash): habilita el alias de plan-scope del registro Namecheap
+        // (register_domain_namecheap ocupa el slot firmado register_domain_route53).
+        dnsProviderId,
+        stepResults
       });
     } else {
       const domainRegistration = await runMutatingStepWithState({
@@ -872,6 +925,32 @@ export async function configureCompleteSmtp(
         runId,
         provider: "ionos",
         reason: "ionos_authoritative_nameservers"
+      });
+    } else if (namecheapDnsRun) {
+      await recordSyntheticDoneStepWithState({
+        deps,
+        runState,
+        runId,
+        step: 3,
+        skill: "wait_for_dns_propagation",
+        params: {
+          domain: chosenDomain,
+          expectedRecord: { type: "NS", value: "skipped:namecheap-authoritative" },
+          maxWaitMs: 0,
+          pollIntervalMs: 0
+        },
+        outcome: {
+          ok: true,
+          status: "skipped",
+          reason: "namecheap_authoritative_nameservers",
+          provider: "namecheap"
+        },
+        stepResults
+      });
+      await audit(deps, "oc.dns.nameserver_wait_skipped", "domain", chosenDomain, "high", {
+        runId,
+        provider: "namecheap",
+        reason: "namecheap_authoritative_nameservers"
       });
     } else {
       await runMutatingStepWithState({
@@ -1165,13 +1244,19 @@ export async function configureCompleteSmtp(
       planApproval,
       runId,
       step: 6,
-      skill: dnsProviderId === "ionos" ? "upsert_dns_ionos" : "upsert_dns_route53",
+      skill: dnsProviderId === "ionos"
+        ? "upsert_dns_ionos"
+        : dnsProviderId === "namecheap"
+          ? "upsert_dns_namecheap"
+          : "upsert_dns_route53",
       actorId: effectiveInput.actorId,
       approvalTimeoutMs,
       budgetUsdMax: effectiveInput.budgetUsdMax,
       params: dnsProviderId === "ionos"
         ? ionosSmtpRouteDnsParams({ domain: chosenDomain, smtpHost, serverIpv4 })
-        : route53SmtpRouteDnsParams({ domain: chosenDomain, smtpHost, serverIpv4 }),
+        : dnsProviderId === "namecheap"
+          ? namecheapSmtpRouteDnsParams({ domain: chosenDomain, smtpHost, serverIpv4 })
+          : route53SmtpRouteDnsParams({ domain: chosenDomain, smtpHost, serverIpv4 }),
       dnsProviderId,
       stepResults
     });
@@ -1230,8 +1315,13 @@ export async function configureCompleteSmtp(
 
     const dkimPublicKey = stringFromOutcome(smtp.outcome, ["dkimPublicKey"], "");
     const dkimDnsValue = dkimDnsRecordValue(dkimPublicKey);
-    if (dnsProviderId === "ionos" && !dkimDnsValue) {
-      throw new OrchestratorFailure("failed", 10, "upsert_dns_ionos", "dkim_public_key_missing");
+    if ((dnsProviderId === "ionos" || dnsProviderId === "namecheap") && !dkimDnsValue) {
+      throw new OrchestratorFailure(
+        "failed",
+        10,
+        dnsProviderId === "ionos" ? "upsert_dns_ionos" : "upsert_dns_namecheap",
+        "dkim_public_key_missing"
+      );
     }
 
     await runMutatingStepWithState({
@@ -1240,7 +1330,11 @@ export async function configureCompleteSmtp(
       planApproval,
       runId,
       step: 10,
-      skill: dnsProviderId === "ionos" ? "upsert_dns_ionos" : "configure_email_auth",
+      skill: dnsProviderId === "ionos"
+        ? "upsert_dns_ionos"
+        : dnsProviderId === "namecheap"
+          ? "upsert_dns_namecheap"
+          : "configure_email_auth",
       actorId: effectiveInput.actorId,
       approvalTimeoutMs,
       budgetUsdMax: effectiveInput.budgetUsdMax,
@@ -1251,13 +1345,20 @@ export async function configureCompleteSmtp(
           selector,
           dkimDnsValue
         })
-        : {
-          domain: chosenDomain,
-          mxServerIp: serverIpv4,
-          selector,
-          dmarcPolicy: "quarantine",
-          dkimPublicKey
-        },
+        : dnsProviderId === "namecheap"
+          ? namecheapEmailAuthDnsParams({
+            domain: chosenDomain,
+            serverIpv4,
+            selector,
+            dkimDnsValue
+          })
+          : {
+            domain: chosenDomain,
+            mxServerIp: serverIpv4,
+            selector,
+            dmarcPolicy: "quarantine",
+            dkimPublicKey
+          },
       dnsProviderId,
       stepResults
     });
@@ -2017,6 +2118,45 @@ function ionosEmailAuthDnsParams(input: {
         type: "TXT",
         ttl: 300,
         content: "v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@delivrix.com; ruf=mailto:dmarc-forensics@delivrix.com; fo=1"
+      }
+    ]
+  };
+}
+
+// Namecheap DNS autoritativo: mismo shape de records {name,type,content,ttl,prio} que IONOS; el
+// upsert Namecheap traduce FQDN->host relativo y prio->mxPref. La zona se referencia por `domain`.
+function namecheapSmtpRouteDnsParams(input: {
+  domain: string;
+  smtpHost: string;
+  serverIpv4: string;
+}): Record<string, unknown> {
+  return {
+    domain: input.domain,
+    records: [
+      { name: input.smtpHost, type: "A", ttl: 300, content: input.serverIpv4 },
+      { name: input.domain, type: "MX", ttl: 300, content: `${input.smtpHost}.`, prio: 10 }
+    ]
+  };
+}
+
+function namecheapEmailAuthDnsParams(input: {
+  domain: string;
+  serverIpv4: string;
+  selector: string;
+  dkimDnsValue: string;
+}): Record<string, unknown> {
+  // DMARC rua/ruf AUTO-referenciados al propio dominio (dmarc@<domain>): dominio de envío
+  // independiente y sin fuga de marca en el DNS público (opsec: los dominios de envío no revelan marca).
+  return {
+    domain: input.domain,
+    records: [
+      { name: input.domain, type: "TXT", ttl: 300, content: `v=spf1 ip4:${input.serverIpv4} -all` },
+      { name: `${input.selector}._domainkey.${input.domain}`, type: "TXT", ttl: 300, content: input.dkimDnsValue },
+      {
+        name: `_dmarc.${input.domain}`,
+        type: "TXT",
+        ttl: 300,
+        content: `v=DMARC1; p=quarantine; rua=mailto:dmarc@${input.domain}; ruf=mailto:dmarc@${input.domain}; fo=1`
       }
     ]
   };
@@ -3763,9 +3903,21 @@ function plannedScopeAllowsStepSkill(
   dnsProviderId: string | undefined
 ): boolean {
   if (plannedSteps.includes(skill)) return true;
-  if (dnsProviderId !== "ionos" || skill !== "upsert_dns_ionos") return false;
-  if (step === 6) return plannedSteps.includes("upsert_dns_route53");
-  if (step === 10) return plannedSteps.includes("configure_email_auth");
+  // IONOS: el upsert autoritativo IONOS ocupa los slots del upsert Route53 (6) y del email-auth (10).
+  if (dnsProviderId === "ionos" && skill === "upsert_dns_ionos") {
+    if (step === 6) return plannedSteps.includes("upsert_dns_route53");
+    if (step === 10) return plannedSteps.includes("configure_email_auth");
+  }
+  // Namecheap (registrador + DNS autoritativo independiente): el registro Namecheap ocupa el slot del
+  // registro Route53 (2), y el upsert autoritativo Namecheap ocupa los slots del upsert Route53 (6) y
+  // del email-auth (10). El plan firmado usa los nombres canonicos Route53; el alias los mapea.
+  if (dnsProviderId === "namecheap") {
+    if (step === 2 && skill === "register_domain_namecheap") return plannedSteps.includes("register_domain_route53");
+    if (skill === "upsert_dns_namecheap") {
+      if (step === 6) return plannedSteps.includes("upsert_dns_route53");
+      if (step === 10) return plannedSteps.includes("configure_email_auth");
+    }
+  }
   return false;
 }
 
@@ -5059,8 +5211,17 @@ function normalizeReuseServerSlug(value: unknown): string | undefined {
   return normalized;
 }
 
+/**
+ * Familia Contabo: cuenta flat "contabo" + cuentas indexadas "contabo-N" (multicuenta).
+ * El registry/dispatcher ya rutean cualquiera de estas por lookup en el map; el orquestador
+ * debe aceptar toda la familia para no bloquear un SMTP en la cuenta nueva (contabo-2, etc.).
+ */
+function isContaboProviderId(value: string | undefined): boolean {
+  return value === "contabo" || (typeof value === "string" && /^contabo-\d+$/.test(value));
+}
+
 function assertKnownNonWebdockVpsProviderId(value: string | undefined): void {
-  if (value === undefined || value === "contabo") return;
+  if (value === undefined || isContaboProviderId(value)) return;
   throw new OrchestratorFailure("failed", 0, "vps_provider_guard", `unknown_vps_provider:${value}`);
 }
 
@@ -5090,7 +5251,7 @@ function normalizeDnsProviderId(value: unknown): string | undefined {
 }
 
 function assertKnownDnsProviderId(value: string | undefined): void {
-  if (value === undefined || value === "ionos") return;
+  if (value === undefined || value === "ionos" || value === "namecheap") return;
   throw new OrchestratorFailure("failed", 0, "dns_provider_guard", `unknown_dns_provider:${value}`);
 }
 
