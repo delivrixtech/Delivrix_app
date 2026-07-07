@@ -66,6 +66,20 @@ export interface WebdockServerDeleteAdapter {
   deleteServer(slug: string): Promise<WebdockDeleteServerResult>;
 }
 
+/** Ledger de recursos (Provider Fabric fase C). Opcional y no-fatal: un fallo del ledger jamas rompe el flujo. */
+export interface ProviderResourceLedgerSink {
+  append(input: {
+    provider: string;
+    accountId: string;
+    resourceType: string;
+    externalId: string;
+    action: "created" | "deleted";
+    displayName?: string;
+    flowId?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<unknown>;
+}
+
 export interface WebdockServerCreateDependencies {
   request: IncomingMessage;
   response: ServerResponse;
@@ -79,6 +93,7 @@ export interface WebdockServerCreateDependencies {
   providerId?: string;
   /** Cuenta destino del create cuando el dispatcher enruta Webdock multicuenta. */
   serverAccountId?: string;
+  resourceLedger?: ProviderResourceLedgerSink;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -102,6 +117,7 @@ export interface WebdockServerDeleteDependencies {
   request: IncomingMessage;
   response: ServerResponse;
   auditLog: AuditSink;
+  resourceLedger?: ProviderResourceLedgerSink;
   adapter: WebdockServerDeleteAdapter;
   /**
    * Registry write-capable id->adapter (5.12 multicuenta). Si la cuenta pedida (body.accountId o
@@ -462,6 +478,17 @@ export async function handleWebdockServerCreateHttp(
       }
     }
 
+    if (deps.resourceLedger) {
+      await deps.resourceLedger.append({
+        provider: providerLabel,
+        accountId: bindingScope.serverAccountId ?? providerLabel,
+        resourceType: "vps_server",
+        externalId: created.serverSlug,
+        action: "created",
+        displayName: hostname,
+        ...(runId ? { flowId: runId } : {})
+      }).catch(() => undefined);
+    }
     await updateWebdockInventory(deps.workspace, {
       slug: created.serverSlug,
       hostname,
@@ -699,6 +726,16 @@ export async function handleWebdockServerDeleteHttp(
       reason,
       deletedAt: now.toISOString()
     });
+    if (deps.resourceLedger) {
+      await deps.resourceLedger.append({
+        provider: requestedProviderId ?? "webdock",
+        accountId: requestedAccountId ?? "ops",
+        resourceType: "vps_server",
+        externalId: deleted.serverSlug,
+        action: "deleted",
+        metadata: { reason }
+      }).catch(() => undefined);
+    }
 
     const workspace = await safeWriteExecution(deps.workspace, {
       skill: "cleanup_webdock_vps",
