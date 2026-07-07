@@ -29,6 +29,15 @@ export interface Route53RegisterParams extends Record<string, unknown> {
   explicitRepairScope?: string;
 }
 
+export interface NamecheapRegisterParams extends Record<string, unknown> {
+  domain: string;
+  years: number;
+  whoisPrivacy: boolean;
+  accountId?: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
+}
+
 export interface Route53UpsertParams extends Record<string, unknown> {
   domain: string;
   records: Array<{
@@ -375,6 +384,17 @@ export const route53RegisterParamSchema = schema<Route53RegisterParams>((value) 
     domain: domain(input.domain, "domain"),
     years,
     autoRenew: input.autoRenew === undefined ? false : boolean(input.autoRenew, "autoRenew")
+  }, input);
+});
+
+export const namecheapRegisterParamSchema = schema<NamecheapRegisterParams>((value) => {
+  const input = object(value);
+  const years = integer(input.years ?? input.durationYears, "years", 1, 10);
+  return withOptionalRepairScope({
+    domain: domain(input.domain, "domain"),
+    years,
+    whoisPrivacy: input.whoisPrivacy === undefined ? true : boolean(input.whoisPrivacy, "whoisPrivacy"),
+    ...(input.accountId === undefined ? {} : { accountId: string(input.accountId, "accountId") })
   }, input);
 });
 

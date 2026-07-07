@@ -2529,7 +2529,10 @@ function deriveInventoryAccountId(providerKey: string, providerId: string | null
   if (providerKey === "webdock" && rawProvider.startsWith("webdock-")) {
     return rawProvider.slice("webdock-".length) || "default";
   }
-  return providerKey === "webdock" ? "default" : providerKey;
+  // Para no-webdock, devolver el providerId REAL (p.ej. "contabo-2"), no el
+  // family key colapsado ("contabo"). Antes ambas cuentas Contabo colisionaban
+  // en accountId="contabo"; el agente no podía distinguirlas para enrutar.
+  return providerKey === "webdock" ? "default" : rawProvider;
 }
 
 function roundRobinServerCandidates<T extends { groupKey: string }>(servers: T[]): T[] {

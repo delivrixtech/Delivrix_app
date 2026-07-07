@@ -173,6 +173,10 @@ import {
   waitForRoute53DomainRegistration
 } from "./routes/domains-purchase.ts";
 import {
+  handleNamecheapDomainPurchaseError,
+  handleNamecheapDomainRegisterHttp
+} from "./routes/domains-namecheap-purchase.ts";
+import {
   handleRoute53DnsError,
   handleRoute53HostedZoneDeleteHttp,
   handleRoute53DnsUpsertHttp
@@ -1104,6 +1108,12 @@ const skillDispatcher = createSkillDispatcher({
   workspace: openClawWorkspace,
   readCanvasState: () => canvasLiveEvents.snapshot(),
   domainPurchaseAdapter: awsRoute53DomainsAdapter,
+  namecheapResolveAdapter: (accountId?: string) => {
+    const entry = accountId
+      ? namecheapAccountEntries.find((e) => e.id === accountId)
+      : namecheapAccountEntries[0];
+    return entry?.adapter ?? null;
+  },
   route53DnsAdapter: awsRoute53DnsAdapter,
   ionosDnsAdapter,
   webdockAdapter: webdockOpsAdapter,
@@ -1312,6 +1322,7 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("snooze_proposal", "supervised_local_state"),
   permission("record_human_decision", "supervised_local_state"),
   permission("register_domain_route53", "supervised_local_state"),
+  permission("register_domain_namecheap", "supervised_local_state"),
   permission("upsert_dns_route53", "supervised_local_state"),
   permission("route53_dns_upsert", "supervised_local_state"),
   permission("upsert_dns_ionos", "supervised_local_state"),
@@ -2263,6 +2274,30 @@ const server = createServer(async (request, response) => {
         });
       } catch (error) {
         if (handleRoute53DomainPurchaseError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    if (request.method === "POST" && request.url === "/v1/domains/namecheap/register") {
+      try {
+        return await handleNamecheapDomainRegisterHttp({
+          request,
+          response,
+          auditLog,
+          resolveAdapter: (accountId?: string) => {
+            const entry = accountId
+              ? namecheapAccountEntries.find((e) => e.id === accountId)
+              : namecheapAccountEntries[0];
+            return entry?.adapter ?? null;
+          },
+          workspace: openClawWorkspace,
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          env: process.env
+        });
+      } catch (error) {
+        if (handleNamecheapDomainPurchaseError(error, response)) {
           return;
         }
         throw error;

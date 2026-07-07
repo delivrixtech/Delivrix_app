@@ -16,6 +16,10 @@ import {
   type Route53DomainPurchaseAdapter
 } from "./routes/domains-purchase.ts";
 import {
+  handleNamecheapDomainRegisterHttp,
+  type NamecheapPurchaseAdapter
+} from "./routes/domains-namecheap-purchase.ts";
+import {
   handleRoute53DnsUpsertHttp,
   type Route53DnsAdapter
 } from "./routes/domains-dns.ts";
@@ -83,6 +87,7 @@ import {
   retireSmtpEntryParamSchema,
   route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
+  namecheapRegisterParamSchema,
   route53UpsertParamSchema,
   smtpProvisionParamSchema,
   updateSmtpEntryParamSchema,
@@ -153,6 +158,8 @@ export interface SkillDispatcherDeps {
   workspace: OpenClawWorkspace;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
   domainPurchaseAdapter: Route53DomainPurchaseAdapter & Partial<DomainNameserverRegistrarAdapter>;
+  /** Resuelve la cuenta Namecheap destino por accountId (opcional; registrador accionable v1). */
+  namecheapResolveAdapter?: (accountId?: string) => NamecheapPurchaseAdapter | null;
   route53DnsAdapter: Route53DnsAdapter & EmailAuthDnsAdapter;
   ionosDnsAdapter: IonosDnsUpsertAdapter;
   webdockAdapter: WebdockServerCreateAdapter & Partial<BindWebdockMainDomainAdapter>;
@@ -439,6 +446,22 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         response,
         auditLog: deps.auditLog,
         adapter: deps.domainPurchaseAdapter,
+        workspace: deps.workspace,
+        readCanvasState: deps.readCanvasState,
+        env: deps.env,
+        now: deps.now
+      })
+  };
+  const registerDomainNamecheap: SkillHandlerEntry = {
+    paramSchema: namecheapRegisterParamSchema,
+    timeoutMs: 60_000,
+    canRollback: true,
+    invoke: ({ request, response, deps }) =>
+      handleNamecheapDomainRegisterHttp({
+        request,
+        response,
+        auditLog: deps.auditLog,
+        resolveAdapter: deps.namecheapResolveAdapter ?? (() => null),
         workspace: deps.workspace,
         readCanvasState: deps.readCanvasState,
         env: deps.env,
@@ -1116,6 +1139,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
 
   return {
     register_domain_route53: registerDomain,
+    register_domain_namecheap: registerDomainNamecheap,
     suggest_safe_domain: suggestSafeDomain,
     naming_suggest: suggestSafeDomain,
     upsert_dns_route53: route53Dns,
