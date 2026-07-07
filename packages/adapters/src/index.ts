@@ -11,3 +11,5 @@ export * from "./webdock-adapter.ts";
 export * from "./webdock-real-adapter.ts";
 export * from "./vps-provider.ts";
 export * from "./contabo-adapter.ts";
+export * from "./namecheap-domains-adapter.ts";
+export * from "./provider-fetch.ts";

@@ -23,7 +23,8 @@ export const runtimeFlagKeys = [
   "OPENCLAW_SIGN_ALLOW_UNSIGNED_LOCAL_PANEL",
   "OPENCLAW_MEMORY_ALLOW_UNSIGNED_LOCAL",
   "GMAIL_IMAP_ENABLE",
-  "PORKBUN_ENABLE_PURCHASE"
+  "PORKBUN_ENABLE_PURCHASE",
+  "NAMECHEAP_ENABLE_PURCHASE"
 ] as const;
 
 export type RuntimeFlagKey = typeof runtimeFlagKeys[number];

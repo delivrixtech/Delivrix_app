@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Delivrix QA Senior - receptor del webhook de la GitHub App en AWS.
+  Receiver (Function URL publica, verifica HMAC, ack 202) + Worker (auditoria
+  con los 3 subagentes). Secretos en Secrets Manager. Codigo bundleado con
+  esbuild a dist/ (ver infra/deploy.sh).
+
+Parameters:
+  QaModel:
+    Type: String
+    Default: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+    Description: Inference profile de Bedrock (Claude) para los subagentes.
+  QaFailOn:
+    Type: String
+    Default: blocker
+    AllowedValues: [blocker, high, medium, low, info]
+    Description: Severidad minima para marcar el check run como failure.
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures: [arm64]
+    Environment:
+      Variables:
+        QA_SECRETS_ID: !Ref QaSecret
+
+Resources:
+  # Secret unico (JSON). El valor real se carga POST-deploy con
+  # `aws secretsmanager put-secret-value` (ver infra/RUNBOOK.md). El placeholder
+  # no se sobrescribe en updates: tu valor persiste.
+  QaSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: delivrix/qa-auditor
+      Description: "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_WEBHOOK_SECRET (Bedrock via IAM; sin API key)"
+      # SIN SecretString a proposito: el valor se carga con put-secret-value
+      # post-deploy. Si CloudFormation gestiona SecretString, cada `sam deploy`
+      # PISA el secreto con el placeholder (bug observado 2026-06-19). Se crea
+      # vacio y se puebla aparte; asi los updates de stack no lo tocan.
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: delivrix-qa-auditor-worker
+      CodeUri: ../dist
+      Handler: worker.handler
+      Timeout: 120
+      MemorySize: 1024
+      Environment:
+        Variables:
+          QA_MODEL: !Ref QaModel
+          QA_FAIL_ON: !Ref QaFailOn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref QaSecret
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:*::foundation-model/anthropic.*
+                - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
+
+  WebhookApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+
+  ReceiverFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: delivrix-qa-auditor-receiver
+      CodeUri: ../dist
+      Handler: receiver.handler
+      Timeout: 15
+      MemorySize: 256
+      Environment:
+        Variables:
+          QA_WORKER_FUNCTION: !Ref WorkerFunction
+      Events:
+        Webhook:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WebhookApi
+            Path: /webhook
+            Method: POST
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref QaSecret
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !GetAtt WorkerFunction.Arn
+
+Outputs:
+  ReceiverFunctionUrl:
+    Description: URL publica del webhook (API Gateway). Pegar en la GitHub App (Webhook URL).
+    Value: !Sub "https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/webhook"
+  SecretId:
+    Description: Secret a poblar con put-secret-value.
+    Value: !Ref QaSecret
