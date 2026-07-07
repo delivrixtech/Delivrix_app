@@ -32,6 +32,7 @@ import {
   runStateIntegrityParamSchema,
   route53NameserverUpdateParamSchema,
   route53RegisterParamSchema,
+  namecheapRegisterParamSchema,
   route53ZoneRecordsParamSchema,
   route53UpsertParamSchema,
   smtpProvisionParamSchema,
@@ -57,6 +58,7 @@ export interface BedrockToolSpec {
 
 export type OpenClawToolName =
   | "register_domain_route53"
+  | "register_domain_namecheap"
   | "suggest_safe_domain"
   | "read_episodic_scratch"
   | "wait_for_dns_propagation"
@@ -191,6 +193,34 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hmacConfigured(env) &&
       anyFlagEnabled(env, ["AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE", "AWS_ROUTE53_ENABLE_PURCHASE", "AWS_ROUTE53_DOMAINS_PURCHASE_ENABLED"]) &&
       hasAwsRoute53DomainCredentials(env),
+    targetType: "domain",
+    severity: "critical"
+  },
+  register_domain_namecheap: {
+    spec: {
+      name: "register_domain_namecheap",
+      description: [
+        "Registra un dominio nuevo vía Namecheap (registrador multicuenta).",
+        "Riesgo crítico: compra irreversible o con costo externo; requiere ApprovalGate, audit chain íntegra y cap de presupuesto mensual (NAMECHEAP_DOMAINS_MONTHLY_CAP_USD).",
+        "Opcional accountId para elegir cuenta Namecheap; por defecto la primera. La IP del gateway debe estar whitelisteada en la cuenta Namecheap."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          years: { type: "integer", minimum: 1, maximum: 10 },
+          whoisPrivacy: { type: "boolean", default: true },
+          accountId: { type: "string" },
+          ...optionalRepairScope
+        },
+        required: ["domain", "years"]
+      }
+    },
+    paramSchema: namecheapRegisterParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      anyFlagEnabled(env, ["NAMECHEAP_ENABLE_PURCHASE"]) &&
+      hasNamecheapCredentials(env),
     targetType: "domain",
     severity: "critical"
   },
@@ -1508,6 +1538,7 @@ export function buildToolsForOpenClaw(
 export function openClawToolNames(): OpenClawToolName[] {
   return [
     "register_domain_route53",
+    "register_domain_namecheap",
     "suggest_safe_domain",
     "read_episodic_scratch",
     "wait_for_dns_propagation",
@@ -1623,6 +1654,20 @@ function hasSshRunnerConfig(env: Record<string, string | undefined>): boolean {
 
 function hasPorkbunCredentials(env: Record<string, string | undefined>): boolean {
   return Boolean(firstNonEmpty(env.PORKBUN_API_KEY, env.PORKBUN_SECRET_API_KEY));
+}
+
+function hasNamecheapCredentials(env: Record<string, string | undefined>): boolean {
+  // Cuentas indexadas NAMECHEAP_ACCOUNT_{n}_API_USER + _API_KEY (mismo escaneo
+  // que createNamecheapAdaptersFromEnv). Basta una cuenta con ambas llaves.
+  for (let index = 1; index <= 50; index += 1) {
+    if (
+      nonEmpty(env[`NAMECHEAP_ACCOUNT_${index}_API_USER`]) &&
+      nonEmpty(env[`NAMECHEAP_ACCOUNT_${index}_API_KEY`])
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function hasMxtoolboxCredentials(env: Record<string, string | undefined>): boolean {
