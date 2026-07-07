@@ -1608,8 +1608,12 @@ function resolveProvisioningPolling(input: {
 }
 
 function normalizeRouteProviderId(value: string | undefined): "contabo" | undefined {
+  // Colapsa la FAMILIA Contabo (contabo flat + contabo-N indexadas) a la etiqueta "contabo" para que
+  // el create rutee/etiquete/polinee como Contabo (no Webdock). El adapter concreto por cuenta lo
+  // resuelve el registry por el providerId real; aquí solo importa la familia para timing/labeling.
   const normalized = value?.trim().toLowerCase();
-  return normalized && normalized !== "webdock" ? normalized === "contabo" ? "contabo" : undefined : undefined;
+  if (!normalized || normalized === "webdock") return undefined;
+  return normalized === "contabo" || /^contabo-\d+$/.test(normalized) ? "contabo" : undefined;
 }
 
 function parseNonNegativeInteger(value: string | undefined): number | null {

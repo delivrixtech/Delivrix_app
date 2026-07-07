@@ -37,7 +37,9 @@ export async function waitForServerRunning(input: {
     serverAccountId: input.serverAccountId,
     adapters: input.adapters
   });
-  const pollIntervalMs = provider === "contabo"
+  // Familia Contabo (contabo / contabo-N): cadencia de polling de Contabo (más lenta que Webdock).
+  const isContaboFamily = provider === "contabo" || /^contabo-\d+$/.test(provider ?? "");
+  const pollIntervalMs = isContaboFamily
     ? positiveIntegerOrDefault(env.CONTABO_PROVISION_POLL_INTERVAL_MS, 10_000)
     : positiveIntegerOrDefault(env.WEBDOCK_PROVISION_POLL_INTERVAL_MS, 5_000);
   const now = input.now ?? (() => Date.now());
