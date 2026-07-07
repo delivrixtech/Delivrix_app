@@ -838,37 +838,76 @@ export class ContaboAdapter implements VpsProvider {
  * Factory que espeja `createWebdockAdaptersFromEnv`. Lee SOLO las 4 creds
  * OAuth2 Contabo (+ region/product/label opcionales) de env, con disciplina
  * `normalizeEnvValue` (trim, vacio->undefined). NO lee NINGUNA key WEBDOCK_*.
- * Con las 4 creds presentes devuelve un unico VpsProviderEntry id="contabo";
- * si falta alguna, devuelve [].
+ * Con las 4 creds flat presentes devuelve el VpsProviderEntry id="contabo";
+ * cuentas adicionales via CONTABO_ACCOUNT_{n}_* (id="contabo-{n}"). Sin
+ * ninguna credencial devuelve [].
  */
 export function createContaboAdaptersFromEnv(
   env: Record<string, string | undefined> =
     typeof process !== "undefined" ? process.env : {}
 ): VpsProviderEntry[] {
+  const entries: VpsProviderEntry[] = [];
+
   const clientId = normalizeEnvValue(env.CONTABO_CLIENT_ID);
   const clientSecret = normalizeEnvValue(env.CONTABO_CLIENT_SECRET);
   const username = normalizeEnvValue(env.CONTABO_API_USER);
   const password = normalizeEnvValue(env.CONTABO_API_PASSWORD);
 
-  if (!clientId || !clientSecret || !username || !password) {
-    return [];
+  if (clientId && clientSecret && username && password) {
+    const label = normalizeEnvValue(env.CONTABO_ACCOUNT_LABEL) ?? "Contabo Host Latam";
+    const adapter = new ContaboAdapter({
+      clientId,
+      clientSecret,
+      username,
+      password,
+      region: normalizeEnvValue(env.CONTABO_REGION) ?? DEFAULT_REGION,
+      productId: normalizeEnvValue(env.CONTABO_PRODUCT_ID),
+      imageId: normalizeEnvValue(env.CONTABO_IMAGE_ID),
+      accountId: "contabo",
+      accountLabel: label
+    });
+    entries.push({ id: "contabo", label, adapter });
   }
 
-  const label = normalizeEnvValue(env.CONTABO_ACCOUNT_LABEL) ?? "Contabo Host Latam";
-  const adapter = new ContaboAdapter({
-    clientId,
-    clientSecret,
-    username,
-    password,
-    region: normalizeEnvValue(env.CONTABO_REGION) ?? DEFAULT_REGION,
-    productId: normalizeEnvValue(env.CONTABO_PRODUCT_ID),
-    imageId: normalizeEnvValue(env.CONTABO_IMAGE_ID),
-    accountId: "contabo",
-    accountLabel: label
-  });
+  // Cuentas adicionales indexadas: CONTABO_ACCOUNT_{n}_CLIENT_ID/CLIENT_SECRET/
+  // API_USER/API_PASSWORD (+ _LABEL/_REGION/_PRODUCT_ID/_IMAGE_ID opcionales con
+  // fallback a los globales). Huecos de numeracion permitidos para poder retirar
+  // una cuenta sin renumerar. La cuenta flat de arriba sigue siendo id="contabo"
+  // (byte-identica); las indexadas son id="contabo-{n}".
+  for (let index = 1; index <= MAX_INDEXED_ACCOUNTS; index += 1) {
+    const readKey = (key: string): string | undefined =>
+      normalizeEnvValue(env[`CONTABO_ACCOUNT_${index}_${key}`]);
 
-  return [{ id: "contabo", label, adapter }];
+    const accountClientId = readKey("CLIENT_ID");
+    const accountClientSecret = readKey("CLIENT_SECRET");
+    const accountUsername = readKey("API_USER");
+    const accountPassword = readKey("API_PASSWORD");
+    if (!accountClientId || !accountClientSecret || !accountUsername || !accountPassword) {
+      continue;
+    }
+    if ((readKey("STATUS") ?? "active").toLowerCase() === "deprecated") {
+      continue;
+    }
+
+    const label = readKey("LABEL") ?? `Contabo #${index}`;
+    const adapter = new ContaboAdapter({
+      clientId: accountClientId,
+      clientSecret: accountClientSecret,
+      username: accountUsername,
+      password: accountPassword,
+      region: readKey("REGION") ?? normalizeEnvValue(env.CONTABO_REGION) ?? DEFAULT_REGION,
+      productId: readKey("PRODUCT_ID") ?? normalizeEnvValue(env.CONTABO_PRODUCT_ID),
+      imageId: readKey("IMAGE_ID") ?? normalizeEnvValue(env.CONTABO_IMAGE_ID),
+      accountId: `contabo-${index}`,
+      accountLabel: label
+    });
+    entries.push({ id: `contabo-${index}`, label, adapter });
+  }
+
+  return entries;
 }
+
+const MAX_INDEXED_ACCOUNTS = 50;
 
 // --- helpers puros --------------------------------------------------------
 
