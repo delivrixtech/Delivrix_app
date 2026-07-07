@@ -925,3 +925,39 @@ test("token error path: redacts access_token/refresh_token before truncateRaw (n
   assert.match(rawStr, /\[redacted\]/, "sensitive fields replaced with [redacted]");
   assert.match(rawStr, /kept/, "non-sensitive fields are preserved");
 });
+
+test("createContaboAdaptersFromEnv agrega cuentas indexadas CONTABO_ACCOUNT_{n}_* junto a la flat", () => {
+  const entries = createContaboAdaptersFromEnv({
+    CONTABO_CLIENT_ID: "flat-id",
+    CONTABO_CLIENT_SECRET: "flat-secret",
+    CONTABO_API_USER: "flat@delivrix.com",
+    CONTABO_API_PASSWORD: "flat-pass",
+    CONTABO_ACCOUNT_2_CLIENT_ID: "c2",
+    CONTABO_ACCOUNT_2_CLIENT_SECRET: "s2",
+    CONTABO_ACCOUNT_2_API_USER: "u2@delivrix.com",
+    CONTABO_ACCOUNT_2_API_PASSWORD: "p2",
+    CONTABO_ACCOUNT_2_LABEL: "Contabo Respaldo"
+  });
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0].id, "contabo");
+  assert.equal(entries[1].id, "contabo-2");
+  assert.equal(entries[1].label, "Contabo Respaldo");
+});
+
+test("createContaboAdaptersFromEnv: cuentas indexadas funcionan sin la flat y las deprecated se excluyen", () => {
+  const entries = createContaboAdaptersFromEnv({
+    CONTABO_ACCOUNT_1_CLIENT_ID: "c1",
+    CONTABO_ACCOUNT_1_CLIENT_SECRET: "s1",
+    CONTABO_ACCOUNT_1_API_USER: "u1@delivrix.com",
+    CONTABO_ACCOUNT_1_API_PASSWORD: "p1",
+    CONTABO_ACCOUNT_2_CLIENT_ID: "c2",
+    CONTABO_ACCOUNT_2_CLIENT_SECRET: "s2",
+    CONTABO_ACCOUNT_2_API_USER: "u2@delivrix.com",
+    CONTABO_ACCOUNT_2_API_PASSWORD: "p2",
+    CONTABO_ACCOUNT_2_STATUS: "deprecated"
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].id, "contabo-1");
+});

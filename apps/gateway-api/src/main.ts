@@ -10,6 +10,7 @@ import {
   buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
   createContaboAdaptersFromEnv,
+  createNamecheapAdaptersFromEnv,
   createIonosDnsProviderFromEnv,
   createMxtoolboxAdapterFromEnv,
   createRoute53DnsProviderFromEnv,
@@ -105,11 +106,13 @@ import {
   infrastructureAccountLifecycleIds,
   LocalFileAuditLog,
   LocalFileBackupSimulationStore,
+  LocalFileHealthAutoFlagStore,
   LocalFileInfrastructureAccountLifecycleStore,
   LocalFileIpReputationReportStore,
   LocalFileKillSwitchStore,
   LocalFileProvisioningRunStore,
   LocalFileRateLimitStore,
+  LocalFileProviderResourceLedger,
   LocalFileRunbookExecutionStore,
   LocalFileSendResultStore,
   LocalFileSenderNodeStore,
@@ -218,6 +221,7 @@ import {
   handleWebdockServerDeleteError,
   handleWebdockServerDeleteHttp
 } from "./routes/webdock-servers.ts";
+import { handleTeardownPlanHttp } from "./routes/teardown-plan.ts";
 import {
   createBindWebdockMainDomainApprovalGuard,
   handleBindWebdockMainDomain,
@@ -253,6 +257,12 @@ import {
   handlePlacementCheckHttp
 } from "./routes/placement-check.ts";
 import { handleSenderPoolStatusHttp } from "./routes/sender-pool-status.ts";
+import {
+  handleHealthAutoFlagRun,
+  runHealthAutoFlag,
+  type HealthAutoFlagDeps
+} from "./routes/health-autoflag.ts";
+import { createNotionBugsBlockersDepsFromEnv } from "./services/notion-bugs-blockers.ts";
 import {
   handleSmtpCredentialDownloadHttp,
   handleSmtpCredentialInventoryExportHttp
@@ -341,7 +351,7 @@ import {
   type OwnedDomainVerification
 } from "./routes/orchestrator-smtp.ts";
 import { verifyOwnedDomainAcrossRegistrars } from "./domain-ownership.ts";
-import { handleReadEpisodicScratchHttp } from "./routes/episodic-scratch.ts";
+import { groundedConfidenceGateFromEnv, handleReadEpisodicScratchHttp } from "./routes/episodic-scratch.ts";
 import {
   compactIntent,
   handleCompactIntentHttp
@@ -440,6 +450,10 @@ const vpsProviderEntries = createContaboAdaptersFromEnv();
 const vpsProviderAdapters = new Map<string, VpsProvider>(
   vpsProviderEntries.map((entry): [string, VpsProvider] => [entry.id, entry.adapter])
 );
+// Namecheap multicuenta (registrador de dominios, read-only; compra gated por
+// NAMECHEAP_ENABLE_PURCHASE). Sin cuentas en env queda [] y el inventario
+// muestra el placeholder "planned".
+const namecheapAccountEntries = createNamecheapAdaptersFromEnv();
 
 async function listWebdockInventoryAccounts(): Promise<WebdockAccountInventoryResult[]> {
   const lifecycleOverlay = await readInfrastructureAccountLifecycleOverlay({
@@ -611,6 +625,7 @@ const mxtoolboxAdapter = createMxtoolboxAdapterFromEnv(process.env);
 const proxmoxAdapter = new ProxmoxAdapter();
 const provisioningRunStore = new LocalFileProvisioningRunStore();
 const ipReputationReportStore = new LocalFileIpReputationReportStore();
+const healthAutoFlagStateStore = new LocalFileHealthAutoFlagStore();
 const backupSimulationStore = new LocalFileBackupSimulationStore();
 const safetyRealtimeCache = new SafetyRealtimeCache();
 const learningRealtimeCache = new SafetyRealtimeCache();
@@ -661,6 +676,33 @@ const sensitiveReadBoundaryToken =
   process.env.DELIVRIX_READ_BOUNDARY_TOKEN?.trim() ||
   process.env.DELIVRIX_OPENCLAW_TOKEN?.trim() ||
   process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
+// Umbrales del gate CRAG de memoria grounded; falla en el arranque si el env es invalido.
+const groundedConfidenceGate = groundedConfidenceGateFromEnv();
+// Health Auto-Flag — deps compartidas entre la ruta HTTP y el hook del scan
+// diario de MXToolbox. HEALTH_AUTOFLAG_ENABLE=true activa la escritura real a
+// la base Notion "Bugs & Blockers"; sin eso, todo run es dry-run (solo audita).
+function healthAutoFlagDeps(): HealthAutoFlagDeps {
+  return {
+    readBoundaryToken: sensitiveReadBoundaryToken,
+    getSenderNodes: () => senderNodeRegistry.list(),
+    getSendResults: () => sendResultStore.list(),
+    stateStore: healthAutoFlagStateStore,
+    notion: createNotionBugsBlockersDepsFromEnv(process.env),
+    autoFlagEnabled: process.env.HEALTH_AUTOFLAG_ENABLE === "true",
+    emitAudit: async (event) => {
+      await auditLog.append({
+        actorType: "system",
+        actorId: "gateway-api",
+        action: event.action,
+        targetType: event.targetType,
+        targetId: event.targetId,
+        riskLevel: event.riskLevel,
+        metadata: { ...event.metadata, smtpEnabled: false }
+      });
+    }
+  };
+}
+
 const configureSmtpToolProcessor = createHttpToolUseProcessor({
   delivrixBaseUrl: gatewaySelfBaseUrl,
   env: process.env,
@@ -1199,6 +1241,8 @@ interface AgentPermissionEntry {
 const proposalsStore: StoredProposal[] = [];
 const planStepExecutions = new Set<string>();
 const runbookExecutionStore = new LocalFileRunbookExecutionStore();
+// Provider Fabric fase C: ledger append-only de recursos reales por proveedor/cuenta.
+const providerResourceLedger = new LocalFileProviderResourceLedger();
 const proposalTtlMs = 60 * 60 * 1000;
 const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_health", "allowed_read_only"),
@@ -1716,6 +1760,7 @@ const server = createServer(async (request, response) => {
           response,
           auditLog,
           adapter: webdockOpsAdapter,
+          resourceLedger: providerResourceLedger,
           workspace: openClawWorkspace,
           canvasLiveEvents,
           readCanvasState: () => canvasLiveEvents.snapshot(),
@@ -1761,6 +1806,7 @@ const server = createServer(async (request, response) => {
           response,
           auditLog,
           adapter: webdockOpsAdapter,
+          resourceLedger: providerResourceLedger,
           // Registry write-capable (5.12): si el body trae accountId de otra cuenta, el delete va a
           // ESA cuenta (evita server huerfano). Sin accountId/"ops" => webdockOpsAdapter (cuenta-1).
           accountAdapters: webdockCreateAdapters,
@@ -1899,7 +1945,8 @@ const server = createServer(async (request, response) => {
         response,
         pool: episodicScratchPool,
         readBoundaryToken: sensitiveReadBoundaryToken,
-        logger: gatewayRuntimeLog
+        logger: gatewayRuntimeLog,
+        groundedGate: groundedConfidenceGate
       });
     }
 
@@ -2098,6 +2145,14 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    if (request.method === "GET" && request.url?.startsWith("/v1/infrastructure/teardown-plan")) {
+      return handleTeardownPlanHttp({
+        request,
+        response,
+        ledgerList: () => providerResourceLedger.list()
+      });
+    }
+
     if (request.method === "GET" && request.url === "/v1/infrastructure/inventory") {
       return handleInfrastructureInventoryHttp({
         request,
@@ -2106,6 +2161,8 @@ const server = createServer(async (request, response) => {
         readBoundaryToken: sensitiveReadBoundaryToken,
         webdockListServers: listWebdockInventoryAccounts,
         vpsProviderListServers: listVpsProviderInventories,
+        namecheapListInventories: () =>
+          Promise.all(namecheapAccountEntries.map((entry) => entry.adapter.listInventory())),
         ionosListDnsInventory: () => ionosDnsAdapter.listInventory(),
         ionosListDomainsInventory: () => ionosDomainsAdapter.listInventory(),
         awsRoute53DomainsListInventory: () => awsRoute53DomainsAdapter.listInventory(),
@@ -4911,6 +4968,10 @@ const server = createServer(async (request, response) => {
       });
     }
 
+    if (request.method === "POST" && request.url === "/v1/health-autoflag/run") {
+      return await handleHealthAutoFlagRun(request, response, healthAutoFlagDeps());
+    }
+
     const retirementApprovalRoute = parseSenderNodeRetirementApprovalRoute(request);
 
     if (request.method === "POST" && retirementApprovalRoute) {
@@ -5935,6 +5996,7 @@ async function runMxtoolboxDailyScan(): Promise<void> {
         occurredAt: report.generatedAt
       });
     }
+    await runHealthAutoFlagAfterBlacklistScan(report);
     await recordMxtoolboxDailyReportScratch(report).catch(() => undefined);
     void gatewayRuntimeLog.info("mxtoolbox.daily_scan_completed", "MXToolbox daily scan completed.", {
       totalTargets: report.totalTargets,
@@ -5943,6 +6005,52 @@ async function runMxtoolboxDailyScan(): Promise<void> {
     });
   } catch (error) {
     void gatewayRuntimeLog.warn("mxtoolbox.daily_scan_failed", "MXToolbox daily scan failed.", runtimeErrorMetadata(error));
+  }
+}
+
+/**
+ * Hook del health agent: tras cada scan diario de blacklist (MXToolbox),
+ * evalúa TODOS los umbrales de auto-flag (spam >10%, bounce >5%, reply rate
+ * <5% x3 días, blacklist hit) y crea las entradas en Bugs & Blockers si
+ * HEALTH_AUTOFLAG_ENABLE=true (si no, dry-run auditado).
+ */
+async function runHealthAutoFlagAfterBlacklistScan(report: MxtoolboxDailyReportResponse): Promise<void> {
+  try {
+    const nodes = await senderNodeRegistry.list();
+    const listedTargets = new Map(report.criticalAlerts.map((alert) => [alert.target, alert]));
+    const blacklistSignals = nodes.flatMap((node) => {
+      const targets = [node.ipAddress, node.hostname, node.label].filter(
+        (target): target is string => Boolean(target && listedTargets.has(target))
+      );
+      return targets.map((target) => {
+        const alert = listedTargets.get(target);
+        return {
+          senderNodeId: node.id,
+          type: "blacklist" as const,
+          source: `mxtoolbox:${target}`,
+          severity: "critical" as const,
+          message: alert?.failedChecks?.length
+            ? `Listado en: ${alert.failedChecks.join(", ")}`
+            : undefined
+        };
+      });
+    });
+
+    const result = await runHealthAutoFlag(healthAutoFlagDeps(), {
+      blacklistSignals,
+      blacklistScanPerformed: true,
+      trigger: "mxtoolbox_daily_scan"
+    });
+    void gatewayRuntimeLog.info("health_autoflag.scan_completed", "Health auto-flag evaluated after blacklist scan.", {
+      dryRun: result.dryRun,
+      wouldFlag: result.wouldFlag.length,
+      created: result.created.length,
+      skipped: result.skipped.length,
+      failed: result.failed.length,
+      resolved: result.resolved.length
+    });
+  } catch (error) {
+    void gatewayRuntimeLog.warn("health_autoflag.scan_failed", "Health auto-flag evaluation failed.", runtimeErrorMetadata(error));
   }
 }
 
