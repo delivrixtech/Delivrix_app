@@ -1186,8 +1186,8 @@ function vpsProviderId(value: unknown, field: string): "webdock" | "contabo" {
   return oneOf(providerId(value, field), field, ["webdock", "contabo"] as const);
 }
 
-function dnsProviderId(value: unknown, field: string): "route53" | "ionos" {
-  return oneOf(providerId(value, field), field, ["route53", "ionos"] as const);
+function dnsProviderId(value: unknown, field: string): "route53" | "ionos" | "namecheap" {
+  return oneOf(providerId(value, field), field, ["route53", "ionos", "namecheap"] as const);
 }
 
 function accountId(value: unknown, field: string): string {
