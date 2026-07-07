@@ -111,6 +111,7 @@ import {
   LocalFileKillSwitchStore,
   LocalFileProvisioningRunStore,
   LocalFileRateLimitStore,
+  LocalFileProviderResourceLedger,
   LocalFileRunbookExecutionStore,
   LocalFileSendResultStore,
   LocalFileSenderNodeStore,
@@ -219,6 +220,7 @@ import {
   handleWebdockServerDeleteError,
   handleWebdockServerDeleteHttp
 } from "./routes/webdock-servers.ts";
+import { handleTeardownPlanHttp } from "./routes/teardown-plan.ts";
 import {
   createBindWebdockMainDomainApprovalGuard,
   handleBindWebdockMainDomain,
@@ -1204,6 +1206,8 @@ interface AgentPermissionEntry {
 const proposalsStore: StoredProposal[] = [];
 const planStepExecutions = new Set<string>();
 const runbookExecutionStore = new LocalFileRunbookExecutionStore();
+// Provider Fabric fase C: ledger append-only de recursos reales por proveedor/cuenta.
+const providerResourceLedger = new LocalFileProviderResourceLedger();
 const proposalTtlMs = 60 * 60 * 1000;
 const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_health", "allowed_read_only"),
@@ -1721,6 +1725,7 @@ const server = createServer(async (request, response) => {
           response,
           auditLog,
           adapter: webdockOpsAdapter,
+          resourceLedger: providerResourceLedger,
           workspace: openClawWorkspace,
           canvasLiveEvents,
           readCanvasState: () => canvasLiveEvents.snapshot(),
@@ -1766,6 +1771,7 @@ const server = createServer(async (request, response) => {
           response,
           auditLog,
           adapter: webdockOpsAdapter,
+          resourceLedger: providerResourceLedger,
           // Registry write-capable (5.12): si el body trae accountId de otra cuenta, el delete va a
           // ESA cuenta (evita server huerfano). Sin accountId/"ops" => webdockOpsAdapter (cuenta-1).
           accountAdapters: webdockCreateAdapters,
@@ -2101,6 +2107,14 @@ const server = createServer(async (request, response) => {
         }
         throw error;
       }
+    }
+
+    if (request.method === "GET" && request.url?.startsWith("/v1/infrastructure/teardown-plan")) {
+      return handleTeardownPlanHttp({
+        request,
+        response,
+        ledgerList: () => providerResourceLedger.list()
+      });
     }
 
     if (request.method === "GET" && request.url === "/v1/infrastructure/inventory") {

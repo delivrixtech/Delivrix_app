@@ -15,6 +15,7 @@ export * from "./hardware-telemetry.ts";
 export * from "./iam-supervised.ts";
 export * from "./ids.ts";
 export * from "./infrastructure-inventory.ts";
+export * from "./provider-resource-ledger.ts";
 export * from "./ip-reputation.ts";
 export * from "./kill-switch.ts";
 export * from "./mail-policy.engine.ts";
