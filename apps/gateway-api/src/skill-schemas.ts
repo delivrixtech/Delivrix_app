@@ -1182,8 +1182,15 @@ function providerId(value: unknown, field: string): string {
   return normalized;
 }
 
-function vpsProviderId(value: unknown, field: string): "webdock" | "contabo" {
-  return oneOf(providerId(value, field), field, ["webdock", "contabo"] as const);
+function vpsProviderId(value: unknown, field: string): string {
+  // Acepta Webdock y la familia Contabo multicuenta (contabo flat + contabo-N indexadas),
+  // igual que el registry/orquestador. La cuenta Contabo va COMPLETA en vpsProviderId; el
+  // canal serverAccountId es EXCLUSIVO de Webdock.
+  const normalized = providerId(value, field);
+  if (normalized === "webdock" || normalized === "contabo" || /^contabo-\d+$/.test(normalized)) {
+    return normalized;
+  }
+  throw new SkillSchemaError(`${field} must be one of: webdock, contabo, contabo-<n>`);
 }
 
 function dnsProviderId(value: unknown, field: string): "route53" | "ionos" | "namecheap" {
