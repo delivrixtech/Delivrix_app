@@ -1,10 +1,11 @@
 import type {
   AwsRoute53DomainsInventoryResult,
-  IonosDomainsInventoryResult
+  IonosDomainsInventoryResult,
+  NamecheapInventoryResult
 } from "../../../packages/adapters/src/index.ts";
 import type { OwnedDomainVerification } from "./routes/orchestrator-smtp.ts";
 
-export const REGISTRAR_PRECEDENCE = ["route53", "ionos"] as const;
+export const REGISTRAR_PRECEDENCE = ["route53", "ionos", "namecheap"] as const;
 
 export interface DomainOwnershipInventoryReaders {
   route53: {
@@ -12,6 +13,9 @@ export interface DomainOwnershipInventoryReaders {
   };
   ionos: {
     listInventory(): Promise<IonosDomainsInventoryResult> | IonosDomainsInventoryResult;
+  };
+  namecheap?: {
+    listInventory(): Promise<NamecheapInventoryResult> | NamecheapInventoryResult;
   };
   logger?: {
     warn(event: string, metadata: Record<string, unknown>): unknown;
@@ -47,18 +51,18 @@ function registrarChecks(
   normalizedDomain: string,
   readers: DomainOwnershipInventoryReaders
 ): RegistrarOwnershipCheck[] {
-  return REGISTRAR_PRECEDENCE.map((id): RegistrarOwnershipCheck => {
+  const checks: RegistrarOwnershipCheck[] = [];
+  for (const id of REGISTRAR_PRECEDENCE) {
     if (id === "route53") {
-      return {
-        id,
-        verify: async () => verifyRoute53Ownership(normalizedDomain, await readers.route53.listInventory())
-      };
+      checks.push({ id, verify: async () => verifyRoute53Ownership(normalizedDomain, await readers.route53.listInventory()) });
+    } else if (id === "ionos") {
+      checks.push({ id, verify: async () => verifyIonosOwnership(normalizedDomain, await readers.ionos.listInventory()) });
+    } else if (id === "namecheap" && readers.namecheap) {
+      const namecheap = readers.namecheap;
+      checks.push({ id, verify: async () => verifyNamecheapOwnership(normalizedDomain, await namecheap.listInventory()) });
     }
-    return {
-      id,
-      verify: async () => verifyIonosOwnership(normalizedDomain, await readers.ionos.listInventory())
-    };
-  });
+  }
+  return checks;
 }
 
 function verifyRoute53Ownership(
@@ -107,6 +111,31 @@ function verifyIonosOwnership(
     owned,
     provider: "ionos",
     reason: owned ? "listed_in_ionos_domains_inventory" : "domain_not_listed_in_ionos_domains_inventory",
+    sourceKind: inventory.source.kind,
+    responseOk: inventory.source.responseOk
+  };
+}
+
+function verifyNamecheapOwnership(
+  normalizedDomain: string,
+  inventory: NamecheapInventoryResult
+): OwnedDomainVerification {
+  if (inventory.source.kind !== "live" || inventory.source.responseOk !== true) {
+    return {
+      owned: false,
+      provider: "namecheap",
+      reason: "namecheap_domain_inventory_not_live",
+      sourceKind: inventory.source.kind,
+      responseOk: inventory.source.responseOk
+    };
+  }
+  const owned = inventory.domains.some((entry) =>
+    normalizeDomainForOwnership(entry.domainName) === normalizedDomain
+  );
+  return {
+    owned,
+    provider: "namecheap",
+    reason: owned ? "listed_in_namecheap_domains_inventory" : "domain_not_listed_in_namecheap_domains_inventory",
     sourceKind: inventory.source.kind,
     responseOk: inventory.source.responseOk
   };

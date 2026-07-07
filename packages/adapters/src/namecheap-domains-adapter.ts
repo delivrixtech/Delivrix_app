@@ -72,6 +72,33 @@ export interface NamecheapRegisterDomainResult {
   chargedAmountUsd?: number;
 }
 
+/**
+ * Un host record de la zona BasicDNS de Namecheap (namecheap.domains.dns.getHosts/setHosts).
+ * La "zona" es el propio dominio; Namecheap es autoritativo (NS por default de Namecheap).
+ * NO hay delegacion a terceros: es el modelo INDEPENDIENTE (espejo de IONOS autoritativo).
+ */
+export interface NamecheapHostRecord {
+  hostName: string;
+  recordType: "A" | "AAAA" | "CNAME" | "MX" | "TXT" | "NS" | "URL" | "URL301" | "FRAME";
+  address: string;
+  mxPref?: number;
+  ttl?: number;
+}
+
+export interface NamecheapHostsResult {
+  accountId: string;
+  domainName: string;
+  hosts: NamecheapHostRecord[];
+  isUsingOurDns: boolean;
+}
+
+export interface NamecheapSetHostsResult {
+  accountId: string;
+  domainName: string;
+  hosts: NamecheapHostRecord[];
+  updated: boolean;
+}
+
 export interface NamecheapAdapterOptions {
   accountId?: string;
   accountLabel?: string;
@@ -87,6 +114,7 @@ export interface NamecheapAdapterOptions {
   now?: () => Date;
   env?: Record<string, string | undefined>;
   purchaseEnabled?: boolean;
+  dnsWriteEnabled?: boolean;
 }
 
 export interface NamecheapAccountAdapterEntry {
@@ -98,6 +126,7 @@ export interface NamecheapAccountAdapterEntry {
 const DEFAULT_API_BASE = "https://api.namecheap.com/xml.response";
 const DEFAULT_TTL_MS = 300_000;
 const PURCHASE_FLAG = "NAMECHEAP_ENABLE_PURCHASE";
+const DNS_WRITE_FLAG = "NAMECHEAP_DNS_ENABLE_WRITES";
 const MAX_INDEXED_ACCOUNTS = 50;
 
 interface CacheEntry<T> {
@@ -119,6 +148,7 @@ export class NamecheapDomainsAdapter {
   private readonly now: () => Date;
   private readonly env: Record<string, string | undefined>;
   private readonly purchaseEnabledOverride: boolean | undefined;
+  private readonly dnsWriteEnabledOverride: boolean | undefined;
   private inventoryCache: CacheEntry<NamecheapInventoryResult> | null = null;
 
   constructor(options: NamecheapAdapterOptions = {}) {
@@ -143,6 +173,7 @@ export class NamecheapDomainsAdapter {
       createProviderFetch({ env, ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) });
     this.now = options.now ?? (() => new Date());
     this.purchaseEnabledOverride = options.purchaseEnabled;
+    this.dnsWriteEnabledOverride = options.dnsWriteEnabled;
   }
 
   isLive(): boolean {
@@ -152,6 +183,15 @@ export class NamecheapDomainsAdapter {
   purchaseEnabled(): boolean {
     // Se lee del env en cada llamada para que aplique el hot-reload de runtime-env.
     return this.purchaseEnabledOverride ?? normalizeEnvValue(this.env[PURCHASE_FLAG]) === "true";
+  }
+
+  /**
+   * Habilita las escrituras de DNS (setHosts/setDefault) en la zona propia de Namecheap.
+   * Kill switch de escrituras DNS, hot-reload via runtime-env (espejo de IONOS_DNS_ENABLE_WRITES).
+   * Independiente del flag de compra: se puede gestionar DNS sin poder comprar dominios.
+   */
+  isWriteEnabled(): boolean {
+    return this.dnsWriteEnabledOverride ?? normalizeEnvValue(this.env[DNS_WRITE_FLAG]) === "true";
   }
 
   async checkAvailability(domainName: string): Promise<NamecheapDomainCandidate> {
@@ -232,6 +272,91 @@ export class NamecheapDomainsAdapter {
       status: registered ? "registered" : "failed",
       ...(transactionId ? { transactionId } : {}),
       ...(chargedAmount !== undefined ? { chargedAmountUsd: chargedAmount } : {})
+    };
+  }
+
+  /**
+   * Lee los host records actuales de la zona BasicDNS del dominio
+   * (namecheap.domains.dns.getHosts). Lectura idempotente. Sin creds -> lanza
+   * (el caller ya gatea con isLive()).
+   */
+  async getHosts(domainName: string): Promise<NamecheapHostsResult> {
+    if (!this.isLive()) {
+      throw new Error("namecheap_credentials_missing");
+    }
+    const { sld, tld } = splitSldTld(domainName);
+    const xml = await this.namecheapXml(
+      "namecheap.domains.dns.getHosts",
+      { SLD: sld, TLD: tld },
+      true
+    );
+    const result = firstTag(xml, "DomainDNSGetHostsResult");
+    return {
+      accountId: this.accountId,
+      domainName,
+      hosts: parseNamecheapHosts(xml),
+      isUsingOurDns: attrBoolean(result, "IsUsingOurDNS") ?? false
+    };
+  }
+
+  /**
+   * Reemplaza la lista COMPLETA de host records de la zona BasicDNS del dominio
+   * (namecheap.domains.dns.setHosts es full-set: lo que no mandes se borra). El caller
+   * (actuator) hace getHosts + merge + setHosts para preservar records ajenos. Namecheap
+   * queda como DNS autoritativo del dominio; sin dependencia de terceros (modelo
+   * independiente). MUTANTE: el gating (approval/flag/kill-switch) vive en la capa de skill.
+   */
+  async setHosts(domainName: string, hosts: NamecheapHostRecord[]): Promise<NamecheapSetHostsResult> {
+    if (!this.isLive()) {
+      throw new Error("namecheap_credentials_missing");
+    }
+    const normalized = normalizeHosts(hosts);
+    if (normalized.length === 0) {
+      throw new Error("namecheap_hosts_empty");
+    }
+    const { sld, tld } = splitSldTld(domainName);
+    const params: Record<string, string> = { SLD: sld, TLD: tld };
+    normalized.forEach((host, index) => {
+      const n = index + 1;
+      params[`HostName${n}`] = host.hostName;
+      params[`RecordType${n}`] = host.recordType;
+      params[`Address${n}`] = host.address;
+      params[`TTL${n}`] = String(host.ttl ?? 1800);
+      if (host.recordType === "MX") {
+        params[`MXPref${n}`] = String(host.mxPref ?? 10);
+      }
+    });
+    // Con al menos un MX, Namecheap exige EmailType=MX para respetar los MX custom.
+    if (normalized.some((host) => host.recordType === "MX")) {
+      params.EmailType = "MX";
+    }
+    const xml = await this.namecheapXml("namecheap.domains.dns.setHosts", params, false);
+    const result = firstTag(xml, "DomainDNSSetHostsResult");
+    return {
+      accountId: this.accountId,
+      domainName,
+      hosts: normalized,
+      updated: attrBoolean(result, "IsSuccess") ?? true
+    };
+  }
+
+  /**
+   * Reestablece el dominio a los nameservers por default de Namecheap (BasicDNS) para que
+   * Namecheap sea autoritativo y setHosts aplique (namecheap.domains.dns.setDefault).
+   * Idempotente en efecto (si ya usa BasicDNS no cambia nada). MUTANTE en la API.
+   */
+  async setDefaultNameservers(domainName: string): Promise<NamecheapSetHostsResult> {
+    if (!this.isLive()) {
+      throw new Error("namecheap_credentials_missing");
+    }
+    const { sld, tld } = splitSldTld(domainName);
+    const xml = await this.namecheapXml("namecheap.domains.dns.setDefault", { SLD: sld, TLD: tld }, false);
+    const result = firstTag(xml, "DomainDNSSetDefaultResult");
+    return {
+      accountId: this.accountId,
+      domainName,
+      hosts: [],
+      updated: attrBoolean(result, "Updated") ?? true
     };
   }
 
@@ -452,6 +577,70 @@ function clampYears(raw: number | undefined): number {
 
 function domainTld(domainName: string): string | undefined {
   return domainName.split(".").filter(Boolean).at(-1)?.toLowerCase();
+}
+
+/**
+ * Namecheap parte el dominio en SLD (etiqueta de 2do nivel) + TLD (el resto). Split en el
+ * primer punto: "corpfiling-ops.com" -> {sld:"corpfiling-ops", tld:"com"};
+ * "x.co.uk" -> {sld:"x", tld:"co.uk"}.
+ */
+function splitSldTld(domainName: string): { sld: string; tld: string } {
+  const normalized = domainName.trim().toLowerCase().replace(/\.$/, "");
+  const idx = normalized.indexOf(".");
+  if (idx <= 0 || idx >= normalized.length - 1) {
+    throw new Error(`namecheap_invalid_domain:${domainName}`);
+  }
+  return { sld: normalized.slice(0, idx), tld: normalized.slice(idx + 1) };
+}
+
+const NAMECHEAP_HOST_TYPES = new Set<NamecheapHostRecord["recordType"]>([
+  "A", "AAAA", "CNAME", "MX", "TXT", "NS", "URL", "URL301", "FRAME"
+]);
+
+function parseNamecheapHosts(xml: string): NamecheapHostRecord[] {
+  return allTags(xml, "host").flatMap((tag) => {
+    const hostName = attrString(tag, "Name");
+    const recordType = attrString(tag, "Type") as NamecheapHostRecord["recordType"] | undefined;
+    const address = attrString(tag, "Address");
+    if (!hostName || !recordType || !NAMECHEAP_HOST_TYPES.has(recordType) || address === undefined) {
+      return [];
+    }
+    const mxPref = attrNumber(tag, "MXPref");
+    const ttl = attrNumber(tag, "TTL");
+    return [{
+      hostName,
+      recordType,
+      address,
+      ...(recordType === "MX" && mxPref !== undefined ? { mxPref } : {}),
+      ...(ttl !== undefined ? { ttl } : {})
+    }];
+  });
+}
+
+/**
+ * Normaliza y de-duplica host records (misma hostName+type+address+mxPref = uno solo).
+ * Namecheap usa "@" para el apex; se acepta "@" tal cual.
+ */
+function normalizeHosts(hosts: NamecheapHostRecord[]): NamecheapHostRecord[] {
+  const seen = new Set<string>();
+  const normalized: NamecheapHostRecord[] = [];
+  for (const raw of hosts) {
+    if (!raw || !raw.recordType || !NAMECHEAP_HOST_TYPES.has(raw.recordType)) continue;
+    const hostName = raw.hostName?.trim() || "@";
+    const address = raw.address?.trim();
+    if (!address) continue;
+    const key = `${hostName.toLowerCase()}|${raw.recordType}|${address.toLowerCase()}|${raw.mxPref ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push({
+      hostName,
+      recordType: raw.recordType,
+      address,
+      ...(raw.recordType === "MX" ? { mxPref: raw.mxPref ?? 10 } : {}),
+      ...(raw.ttl !== undefined ? { ttl: raw.ttl } : {})
+    });
+  }
+  return normalized;
 }
 
 function trimTrailingSlash(value: string): string {

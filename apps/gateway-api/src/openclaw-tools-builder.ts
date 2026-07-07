@@ -11,6 +11,7 @@ import {
   inspectSmtpInventoryParamSchema,
   ionosDnsReadParamSchema,
   ionosUpsertParamSchema,
+  namecheapUpsertParamSchema,
   listConversationsParamSchema,
   mxtoolboxHealthParamSchema,
   readInfrastructureAccountHealthParamSchema,
@@ -79,6 +80,7 @@ export type OpenClawToolName =
   | "read_conversation"
   | "upsert_dns_route53"
   | "upsert_dns_ionos"
+  | "upsert_dns_namecheap"
   | "create_webdock_server"
   | "bind_webdock_main_domain"
   | "provision_smtp_postfix"
@@ -139,6 +141,19 @@ const ionosRecordSchema = {
     type: { type: "string", enum: ["A", "AAAA", "MX", "TXT", "CNAME", "NS", "CAA", "SRV"] },
     content: { type: "string", minLength: 1 },
     ttl: { type: "integer", minimum: 30, maximum: 604800 },
+    prio: { type: "integer", minimum: 0, maximum: 65535 }
+  },
+  required: ["name", "type", "content"],
+  additionalProperties: false
+};
+
+const namecheapRecordSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string", minLength: 1 },
+    type: { type: "string", enum: ["A", "MX", "TXT", "CNAME"] },
+    content: { type: "string", minLength: 1 },
+    ttl: { type: "integer", minimum: 60, maximum: 604800 },
     prio: { type: "integer", minimum: 0, maximum: 65535 }
   },
   required: ["name", "type", "content"],
@@ -870,6 +885,38 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     targetType: "ionos_dns_zone",
     severity: "high"
   },
+  upsert_dns_namecheap: {
+    spec: {
+      name: "upsert_dns_namecheap",
+      description: [
+        "Crea o actualiza registros DNS (A/MX/TXT/CNAME) en la zona propia de Namecheap (BasicDNS) del dominio.",
+        "Namecheap es autoritativo e INDEPENDIENTE: no delega a Route53 ni a otro proveedor. La cuenta se direcciona por accountId (id/label), nunca por defecto.",
+        "Riesgo alto: afecta resolución y autenticación de correo; requiere ApprovalGate, audit, NAMECHEAP_DNS_ENABLE_WRITES y kill switch."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", pattern: domainPattern },
+          records: {
+            type: "array",
+            minItems: 1,
+            maxItems: 50,
+            items: namecheapRecordSchema
+          },
+          accountId: { type: "string", description: "Cuenta Namecheap destino (id/label). Omitir sólo si hay una única cuenta." },
+          ...optionalRepairScope
+        },
+        required: ["domain", "records"]
+      }
+    },
+    paramSchema: namecheapUpsertParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      flagEnabled(env.NAMECHEAP_DNS_ENABLE_WRITES) &&
+      hasNamecheapCredentials(env),
+    targetType: "namecheap_dns_zone",
+    severity: "high"
+  },
   create_webdock_server: {
     spec: {
       name: "create_webdock_server",
@@ -1435,12 +1482,12 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           provider: { type: "string", minLength: 1, maxLength: 32 },
           dnsProviderId: {
             type: "string",
-            enum: ["route53", "ionos"],
-            description: "Proveedor DNS del run. Omitido/route53 conserva Route53; ionos requiere dominio owned en IONOS y escribe DNS en IONOS."
+            enum: ["route53", "ionos", "namecheap"],
+            description: "Proveedor DNS/registrador del run (independiente). Omitido/route53 conserva Route53; ionos requiere dominio owned en IONOS y escribe DNS en IONOS; namecheap registra en Namecheap (o reusa el owned) y escribe su DNS autoritativo en Namecheap, sin depender de Route53."
           },
           requireExistingDomain: {
             type: "boolean",
-            description: "true para adopción estricta de un dominio ya owned (Route53 o IONOS); false/omitido permite compra fresca Route53 si no es owned."
+            description: "true para adopción estricta de un dominio ya owned (Route53/IONOS/Namecheap); false/omitido permite compra fresca (Route53 o Namecheap) si no es owned."
           },
           vpsProviderId: {
             type: "string",
@@ -1559,6 +1606,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "read_conversation",
     "upsert_dns_route53",
     "upsert_dns_ionos",
+    "upsert_dns_namecheap",
     "create_webdock_server",
     "bind_webdock_main_domain",
     "provision_smtp_postfix",

@@ -69,6 +69,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["upsert_dns_ionos", "ionos_dns_upsert"]
   },
   {
+    canonicalSkill: "upsert_dns_namecheap",
+    aliases: ["upsert_dns_namecheap", "namecheap_dns_upsert"],
+    actionIds: ["upsert_dns_namecheap", "namecheap_dns_upsert"]
+  },
+  {
     canonicalSkill: "create_webdock_server",
     aliases: ["create_webdock_server", "provision_webdock_vps"],
     actionIds: ["create_webdock_server", "provision_webdock_vps"]

@@ -3,12 +3,15 @@ import test from "node:test";
 import type { AwsRoute53DnsAdapter } from "./aws-route53-dns-adapter.ts";
 import {
   createIonosDnsProviderFromEnv,
+  createNamecheapDnsProviderFromEnv,
   createRoute53DnsProviderFromEnv,
   IonosDnsProvider,
+  NamecheapDnsProvider,
   Route53DnsProvider,
   type DnsRecordSpec
 } from "./dns-provider.ts";
 import type { IonosDnsActuator } from "./ionos-dns-actuator.ts";
+import { NamecheapDomainsAdapter } from "./namecheap-domains-adapter.ts";
 
 test("Route53DnsProvider adapts plural records to Route53 singular upserts", async () => {
   const upserts: unknown[] = [];
@@ -181,4 +184,75 @@ test("DNS provider factories only register providers with credentials", () => {
   assert.equal(ionos[0].id, "ionos");
   assert.equal(ionos[0].adapter.providerId, "ionos");
   assert.equal(ionos[0].adapter.isWriteEnabled(), true);
+});
+
+function namecheapDnsAdapter(existingHostsXml: string, captured: { url?: string }): NamecheapDomainsAdapter {
+  return new NamecheapDomainsAdapter({
+    apiUser: "ops",
+    apiKey: "key",
+    clientIp: "10.0.0.1",
+    dnsWriteEnabled: true,
+    env: {},
+    fetchImpl: async (url) => {
+      const u = String(url);
+      const body =
+        u.includes("getHosts") ? existingHostsXml
+        : u.includes("setHosts") ? ((captured.url = u), `<ApiResponse Status="OK"><CommandResponse Type="namecheap.domains.dns.setHosts"><DomainDNSSetHostsResult Domain="corpfiling-ops.com" IsSuccess="true"/></CommandResponse></ApiResponse>`)
+        : `<ApiResponse Status="OK"><CommandResponse Type="namecheap.domains.dns.setDefault"><DomainDNSSetDefaultResult Domain="corpfiling-ops.com" Updated="true"/></CommandResponse></ApiResponse>`;
+      return new Response(body, { status: 200, headers: { "content-type": "application/xml" } });
+    }
+  });
+}
+
+const NAMECHEAP_SMTP_SPECS: DnsRecordSpec[] = [
+  { name: "mail.corpfiling-ops.com", type: "A", ttl: 300, values: ["203.0.113.20"] },
+  { name: "corpfiling-ops.com", type: "MX", ttl: 300, values: ["mail.corpfiling-ops.com."], prio: 10 },
+  { name: "corpfiling-ops.com", type: "TXT", ttl: 300, values: ["v=spf1 ip4:203.0.113.20 -all"] },
+  { name: "default._domainkey.corpfiling-ops.com", type: "TXT", ttl: 300, values: ["v=DKIM1; k=rsa; p=MIIBI"] },
+  { name: "_dmarc.corpfiling-ops.com", type: "TXT", ttl: 300, values: ["v=DMARC1; p=quarantine"] }
+];
+
+test("NamecheapDnsProvider merges SMTP records, preserves unrelated hosts, and converts FQDN->relative", async () => {
+  const existing = `<ApiResponse Status="OK"><CommandResponse Type="namecheap.domains.dns.getHosts">
+    <DomainDNSGetHostsResult Domain="corpfiling-ops.com" IsUsingOurDNS="true">
+      <host Name="@" Type="A" Address="1.1.1.1" TTL="1800"/>
+      <host Name="@" Type="TXT" Address="v=spf1 -all" TTL="1800"/>
+      <host Name="www" Type="CNAME" Address="parkingpage.namecheap.com." TTL="1800"/>
+    </DomainDNSGetHostsResult></CommandResponse></ApiResponse>`;
+  const captured: { url?: string } = {};
+  const provider = new NamecheapDnsProvider(namecheapDnsAdapter(existing, captured));
+
+  const result = await provider.upsertRecords("corpfiling-ops.com", NAMECHEAP_SMTP_SPECS);
+  assert.equal(result.idempotent, false);
+  const u = captured.url ?? "";
+  // Unrelated hosts are preserved (independent-provider semantics); the apex SPF (same TXT class)
+  // is replaced by the new SPF; the apex A (different host than 'mail') is unrelated and kept.
+  assert.ok(u.includes("www"), "preserves unrelated www CNAME");
+  assert.ok(u.includes("1.1.1.1"), "preserves unrelated apex A (host @, not 'mail')");
+  assert.ok(u.includes("mail"), "writes relative host 'mail' (not FQDN)");
+  assert.ok(u.includes("_dmarc"), "writes DMARC host");
+  assert.ok(u.includes("default._domainkey"), "writes DKIM host");
+  assert.ok(u.includes("EmailType=MX"), "sets EmailType=MX for MX record");
+  assert.ok(u.includes("ip4%3A203.0.113.20"), "writes the new SPF value");
+  assert.ok(!/Address\d+=v%3Dspf1\+-all/.test(u), "old bare apex SPF replaced (same TXT class)");
+});
+
+test("NamecheapDnsProvider.ensureZone resets to BasicDNS and reports Namecheap authoritative NS", async () => {
+  const provider = new NamecheapDnsProvider(namecheapDnsAdapter("<ApiResponse Status=\"OK\"></ApiResponse>", {}));
+  const zone = await provider.ensureZone("corpfiling-ops.com");
+  assert.equal(zone.zoneId, "corpfiling-ops.com");
+  assert.ok(zone.nameServers[0].includes("registrar-servers.com"));
+});
+
+test("createNamecheapDnsProviderFromEnv yields one entry per account addressed by id", () => {
+  const entries = createNamecheapDnsProviderFromEnv({
+    NAMECHEAP_ACCOUNT_1_API_USER: "ops",
+    NAMECHEAP_ACCOUNT_1_API_KEY: "key-1",
+    NAMECHEAP_ACCOUNT_1_CLIENT_IP: "10.0.0.1",
+    NAMECHEAP_ACCOUNT_1_LABEL: "Namecheap infravps"
+  });
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].id, "namecheap-1");
+  assert.equal(entries[0].label, "Namecheap infravps");
+  assert.equal(entries[0].adapter.providerId, "namecheap");
 });
