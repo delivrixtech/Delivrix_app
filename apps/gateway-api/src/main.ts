@@ -631,6 +631,14 @@ const dnsProviderEntries = [
 const dnsProviderAdapters = new Map<string, DnsProvider>(
   dnsProviderEntries.map((entry): [string, DnsProvider] => [entry.id, entry.adapter])
 );
+// Alias de FAMILIA para el dispatcher: el orquestador despacha dnsProviderId por familia
+// ("namecheap"), pero las entries Namecheap multicuenta tienen id "namecheap-N". Route53/IONOS
+// no necesitan alias porque su id ya es la familia. Registramos "namecheap" -> primera cuenta live
+// (misma que resuelve namecheapDnsResolveProvider por default) para que unknownExternalDnsProviderId
+// reconozca "namecheap" como proveedor conocido.
+if (namecheapDnsProviderEntries[0] && !dnsProviderAdapters.has("namecheap")) {
+  dnsProviderAdapters.set("namecheap", namecheapDnsProviderEntries[0].adapter);
+}
 const ionosDomainsAdapter = new IonosDomainsAdapter();
 const porkbunAdapter = new PorkbunAdapter();
 const mxtoolboxAdapter = createMxtoolboxAdapterFromEnv(process.env);
