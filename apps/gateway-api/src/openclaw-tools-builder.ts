@@ -1482,12 +1482,12 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           provider: { type: "string", minLength: 1, maxLength: 32 },
           dnsProviderId: {
             type: "string",
-            enum: ["route53", "ionos"],
-            description: "Proveedor DNS del run. Omitido/route53 conserva Route53; ionos requiere dominio owned en IONOS y escribe DNS en IONOS."
+            enum: ["route53", "ionos", "namecheap"],
+            description: "Proveedor DNS/registrador del run (independiente). Omitido/route53 conserva Route53; ionos requiere dominio owned en IONOS y escribe DNS en IONOS; namecheap registra en Namecheap (o reusa el owned) y escribe su DNS autoritativo en Namecheap, sin depender de Route53."
           },
           requireExistingDomain: {
             type: "boolean",
-            description: "true para adopción estricta de un dominio ya owned (Route53 o IONOS); false/omitido permite compra fresca Route53 si no es owned."
+            description: "true para adopción estricta de un dominio ya owned (Route53/IONOS/Namecheap); false/omitido permite compra fresca (Route53 o Namecheap) si no es owned."
           },
           vpsProviderId: {
             type: "string",

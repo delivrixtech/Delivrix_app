@@ -1026,6 +1026,8 @@ const configureSmtpRuntimeDeps = {
     return verifyOwnedDomainAcrossRegistrars(domain, {
       route53: awsRoute53DomainsAdapter,
       ionos: ionosDomainsAdapter,
+      // Namecheap: registrador INDEPENDIENTE. Reader = primera cuenta live (idempotencia de compra).
+      ...(namecheapAccountEntries[0] ? { namecheap: namecheapAccountEntries[0].adapter } : {}),
       logger: {
         info: (event, metadata) => gatewayRuntimeLog.info(event, "Domain ownership registrar check completed.", metadata),
         warn: (event, metadata) => gatewayRuntimeLog.warn(event, "Domain ownership registrar check failed.", metadata)
