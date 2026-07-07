@@ -23,6 +23,7 @@ import {
   ChevronRight,
   CircleDot,
   Command,
+  Menu,
   MessageSquare,
   Moon,
   PanelLeftClose,
@@ -31,7 +32,8 @@ import {
   RefreshCw,
   Search,
   Sparkles,
-  Sun
+  Sun,
+  X
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import { sidebarSlide, durations, easeOutExpo } from "../lib/motion";
@@ -78,6 +80,26 @@ export interface ShellProps {
 }
 
 const COLLAPSED_KEY = "delivrix-v5-sidebar-collapsed";
+const MOBILE_QUERY = "(max-width: 767px)";
+
+/**
+ * Mobile (<768px): el sidebar in-flow de 256px dejaba ~130px de contenido en un
+ * iPhone (HIGH-1 post-audit). Bajo `md` el sidebar pasa a drawer overlay con
+ * hamburguesa en el topbar; en desktop nada cambia.
+ */
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia(MOBILE_QUERY).matches;
+  });
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_QUERY);
+    const onChange = (event: MediaQueryListEvent) => setIsMobile(event.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return isMobile;
+}
 
 export function Shell({
   groups,
@@ -106,6 +128,11 @@ export function Shell({
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(COLLAPSED_KEY) === "1";
   });
+  const isMobile = useIsMobile();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  useEffect(() => {
+    if (!isMobile) setMobileNavOpen(false);
+  }, [isMobile]);
   useEffect(() => {
     try {
       window.localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
@@ -138,12 +165,23 @@ export function Shell({
         onToggle={() => setCollapsed((v) => !v)}
         groups={groups}
         activeSection={activeSection}
-        onSelect={onSelect}
+        onSelect={(id) => {
+          onSelect(id);
+          setMobileNavOpen(false);
+        }}
         killSwitchArmed={killSwitchArmed}
-        killSwitchOnClick={killSwitchOnClick}
+        killSwitchOnClick={() => {
+          killSwitchOnClick?.();
+          setMobileNavOpen(false);
+        }}
+        isMobile={isMobile}
+        mobileOpen={mobileNavOpen}
+        onCloseMobile={() => setMobileNavOpen(false)}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar
+          mobileNavOpen={mobileNavOpen}
+          onToggleMobileNav={() => setMobileNavOpen((v) => !v)}
           breadcrumb={breadcrumb}
           agentState={agentState}
           envLabel={envLabel}
@@ -181,13 +219,16 @@ export function Shell({
  * ============================================================ */
 
 function Sidebar({
-  collapsed,
+  collapsed: collapsedProp,
   onToggle,
   groups,
   activeSection,
   onSelect,
   killSwitchArmed,
-  killSwitchOnClick
+  killSwitchOnClick,
+  isMobile,
+  mobileOpen,
+  onCloseMobile
 }: {
   collapsed: boolean;
   onToggle: () => void;
@@ -196,16 +237,15 @@ function Sidebar({
   onSelect: (id: string) => void;
   killSwitchArmed: boolean;
   killSwitchOnClick?: () => void;
+  isMobile: boolean;
+  mobileOpen: boolean;
+  onCloseMobile: () => void;
 }) {
-  return (
-    <motion.aside
-      initial={false}
-      animate={collapsed ? "collapsed" : "expanded"}
-      variants={sidebarSlide}
-      transition={{ duration: durations.base, ease: easeOutExpo }}
-      className="flex shrink-0 flex-col border-r border-border bg-surface-sunken"
-      style={{ overflow: "hidden" }}
-    >
+  // En mobile el drawer siempre se muestra expandido: colapsar a 64px icon-only
+  // no tiene sentido en un overlay que se cierra tocando fuera.
+  const collapsed = isMobile ? false : collapsedProp;
+  const body = (
+    <>
       {/* Brand row */}
       <div
         className={cn(
@@ -239,12 +279,12 @@ function Sidebar({
         )}
         <button
           type="button"
-          onClick={onToggle}
-          aria-label={collapsed ? "Expandir sidebar" : "Colapsar sidebar"}
-          title={collapsed ? "Expandir · ⌘\\" : "Colapsar · ⌘\\"}
+          onClick={isMobile ? onCloseMobile : onToggle}
+          aria-label={isMobile ? "Cerrar navegación" : collapsed ? "Expandir sidebar" : "Colapsar sidebar"}
+          title={isMobile ? "Cerrar navegación" : collapsed ? "Expandir · ⌘\\" : "Colapsar · ⌘\\"}
           className="grid h-7 w-7 shrink-0 place-items-center rounded text-fg-subtle transition-colors hover:bg-surface hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
         >
-          {collapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
+          {isMobile ? <X size={14} /> : collapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
         </button>
       </div>
 
@@ -282,6 +322,45 @@ function Sidebar({
       <div className={cn("border-t border-border", collapsed ? "px-2 py-3" : "px-3 py-3")}>
         <KillSwitch armed={killSwitchArmed} collapsed={collapsed} onClick={killSwitchOnClick} />
       </div>
+    </>
+  );
+
+  if (isMobile) {
+    return (
+      <>
+        <div
+          aria-hidden="true"
+          onClick={onCloseMobile}
+          className={cn(
+            "fixed inset-0 z-30 transition-opacity duration-200",
+            mobileOpen ? "opacity-100" : "pointer-events-none opacity-0"
+          )}
+          style={{ background: "color-mix(in srgb, #000 55%, transparent)" }}
+        />
+        <aside
+          aria-label="Navegación del panel"
+          aria-hidden={!mobileOpen}
+          className={cn(
+            "fixed inset-y-0 left-0 z-40 flex w-[min(82vw,300px)] flex-col border-r border-border bg-surface-sunken shadow-[var(--shadow-lg)] transition-transform duration-200 ease-out",
+            mobileOpen ? "translate-x-0" : "-translate-x-full"
+          )}
+        >
+          {body}
+        </aside>
+      </>
+    );
+  }
+
+  return (
+    <motion.aside
+      initial={false}
+      animate={collapsed ? "collapsed" : "expanded"}
+      variants={sidebarSlide}
+      transition={{ duration: durations.base, ease: easeOutExpo }}
+      className="flex shrink-0 flex-col border-r border-border bg-surface-sunken"
+      style={{ overflow: "hidden" }}
+    >
+      {body}
     </motion.aside>
   );
 }
@@ -418,7 +497,9 @@ function Topbar({
   onOpenCommand,
   chatOpen,
   onToggleChat,
-  user
+  user,
+  mobileNavOpen,
+  onToggleMobileNav
 }: {
   breadcrumb: { group: string; section: string };
   agentState: "idle" | "thinking" | "executing";
@@ -431,11 +512,30 @@ function Topbar({
   chatOpen: boolean;
   onToggleChat?: () => void;
   user: { initial: string; label: string };
+  mobileNavOpen: boolean;
+  onToggleMobileNav: () => void;
 }) {
   return (
     <header
-      className="flex h-[52px] shrink-0 items-center gap-3 border-b border-border bg-bg px-5"
+      className="flex h-[52px] shrink-0 items-center gap-3 border-b border-border bg-bg px-4 sm:px-5"
     >
+      {/* Hamburguesa mobile — el sidebar es drawer bajo md (HIGH-1 post-audit) */}
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={mobileNavOpen ? "Cerrar navegación del panel" : "Abrir navegación del panel"}
+        aria-expanded={mobileNavOpen}
+        title={mobileNavOpen ? "Cerrar navegación" : "Abrir navegación"}
+        onClick={onToggleMobileNav}
+        className="md:hidden"
+      >
+        {mobileNavOpen ? (
+          <X size={15} strokeWidth={1.75} aria-hidden="true" />
+        ) : (
+          <Menu size={15} strokeWidth={1.75} aria-hidden="true" />
+        )}
+      </Button>
+
       {/* Breadcrumb */}
       <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2">
         <Caption className="shrink-0">{breadcrumb.group}</Caption>
