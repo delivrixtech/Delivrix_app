@@ -14,6 +14,11 @@ const skillActionBindings: SkillActionBinding[] = [
     actionIds: ["register_domain_route53"]
   },
   {
+    canonicalSkill: "register_domain_namecheap",
+    aliases: ["register_domain_namecheap"],
+    actionIds: ["register_domain_namecheap"]
+  },
+  {
     canonicalSkill: "suggest_safe_domain",
     aliases: ["suggest_safe_domain", "naming_suggest"],
     actionIds: ["suggest_safe_domain", "naming_suggest"]

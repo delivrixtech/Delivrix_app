@@ -1377,11 +1377,18 @@ function unknownExternalDnsProviderId(providerId: string | undefined, adapters?:
   return adapters?.has(provider) ? null : provider;
 }
 
+// Familia Contabo: cuenta flat "contabo" + indexadas "contabo-N". El timing/gating FCrDNS del bind
+// debe aplicar a toda la familia (el PTR/rDNS manual de Contabo es igual en cualquier cuenta Contabo).
+function isContaboFamilyProviderId(value: string | undefined): boolean {
+  const p = value?.trim().toLowerCase();
+  return p === "contabo" || (typeof p === "string" && /^contabo-\d+$/.test(p));
+}
+
 function contaboBindFcrdnsMaxWaitMs(
   providerId: string | undefined,
   env: Record<string, string | undefined> | undefined
 ): number | undefined {
-  if (providerId?.trim().toLowerCase() !== "contabo") return undefined;
+  if (!isContaboFamilyProviderId(providerId)) return undefined;
   return boundedEnvMs(
     env?.CONTABO_FCRDNS_MAX_WAIT_MS,
     contaboBindFcrdnsDefaultMaxWaitMs,
@@ -1393,7 +1400,7 @@ function contaboBindFcrdnsPollIntervalMs(
   providerId: string | undefined,
   env: Record<string, string | undefined> | undefined
 ): number | undefined {
-  if (providerId?.trim().toLowerCase() !== "contabo") return undefined;
+  if (!isContaboFamilyProviderId(providerId)) return undefined;
   const parsed = Number(env?.CONTABO_FCRDNS_POLL_INTERVAL_MS);
   if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
   return Math.max(contaboBindFcrdnsMinPollIntervalMs, Math.floor(parsed));
