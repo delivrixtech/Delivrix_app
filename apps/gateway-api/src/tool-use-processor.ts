@@ -1169,6 +1169,9 @@ function toolTarget(toolName: string, params: Record<string, unknown>, fallbackT
   if (toolName === "upsert_dns_ionos" && typeof params.zone === "string") {
     return { id: params.zone, type: "ionos_dns_zone" };
   }
+  if (toolName === "upsert_dns_namecheap" && typeof params.domain === "string") {
+    return { id: params.domain, type: "namecheap_dns_zone" };
+  }
   if (toolName === "create_webdock_server" && typeof params.hostname === "string") {
     return { id: params.hostname, type: "webdock_server" };
   }
@@ -1345,8 +1348,10 @@ function shouldRouteThroughConfigureCompleteSmtp(
 
 const smtpPlanSubtools = new Set([
   "register_domain_route53",
+  "register_domain_namecheap",
   "upsert_dns_route53",
   "upsert_dns_ionos",
+  "upsert_dns_namecheap",
   "create_webdock_server",
   "bind_webdock_main_domain",
   "bind_domain_to_server",

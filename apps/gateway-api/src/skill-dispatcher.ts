@@ -28,6 +28,10 @@ import {
   type IonosDnsUpsertAdapter
 } from "./routes/dns-ionos-upsert.ts";
 import {
+  handleNamecheapDnsUpsertHttp,
+  type NamecheapDnsProviderResolver
+} from "./routes/dns-namecheap-upsert.ts";
+import {
   adoptWebdockServerInventoryEntry,
   handleWebdockServerCreateHttp,
   type WebdockServerCreateAdapter,
@@ -80,6 +84,7 @@ import {
   enableSmtpAuthParamSchema,
   inspectSmtpInventoryParamSchema,
   ionosUpsertParamSchema,
+  namecheapUpsertParamSchema,
   reassignDomainServerParamSchema,
   reconcileDnsToLiveSmtpParamSchema,
   resolveAmbiguousDomainParamSchema,
@@ -160,6 +165,7 @@ export interface SkillDispatcherDeps {
   domainPurchaseAdapter: Route53DomainPurchaseAdapter & Partial<DomainNameserverRegistrarAdapter>;
   /** Resuelve la cuenta Namecheap destino por accountId (opcional; registrador accionable v1). */
   namecheapResolveAdapter?: (accountId?: string) => NamecheapPurchaseAdapter | null;
+  namecheapDnsResolveProvider?: NamecheapDnsProviderResolver;
   route53DnsAdapter: Route53DnsAdapter & EmailAuthDnsAdapter;
   ionosDnsAdapter: IonosDnsUpsertAdapter;
   webdockAdapter: WebdockServerCreateAdapter & Partial<BindWebdockMainDomainAdapter>;
@@ -532,6 +538,22 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         readCanvasState: deps.readCanvasState,
         autoRollbackManager: deps.autoRollbackManager,
         webhookBroadcaster: deps.webhookBroadcaster,
+        env: deps.env,
+        now: deps.now
+      })
+  };
+  const namecheapDns: SkillHandlerEntry = {
+    paramSchema: namecheapUpsertParamSchema,
+    timeoutMs: 30_000,
+    canRollback: false,
+    invoke: ({ request, response, deps }) =>
+      handleNamecheapDnsUpsertHttp({
+        request,
+        response,
+        auditLog: deps.auditLog,
+        resolveProvider: deps.namecheapDnsResolveProvider ?? (() => null),
+        workspace: deps.workspace,
+        readCanvasState: deps.readCanvasState,
         env: deps.env,
         now: deps.now
       })
@@ -1148,6 +1170,8 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     route53_domain_nameservers_update: route53NameserverUpdate,
     upsert_dns_ionos: ionosDns,
     ionos_dns_upsert: ionosDns,
+    upsert_dns_namecheap: namecheapDns,
+    namecheap_dns_upsert: namecheapDns,
     create_webdock_server: webdockCreate,
     provision_webdock_vps: webdockCreate,
     bind_webdock_main_domain: bindWebdockMainDomain,

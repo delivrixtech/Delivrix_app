@@ -95,6 +95,20 @@ export interface IonosUpsertParams extends Record<string, unknown> {
   explicitRepairScope?: string;
 }
 
+export interface NamecheapUpsertParams extends Record<string, unknown> {
+  domain: string;
+  records: Array<{
+    name: string;
+    type: "A" | "MX" | "TXT" | "CNAME";
+    content: string;
+    ttl?: number;
+    prio?: number;
+  }>;
+  accountId?: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
+}
+
 export interface WebdockCreateParams extends Record<string, unknown> {
   profile: "bit" | "nibble" | "byte" | "kilobyte";
   locationId: string;
@@ -702,6 +716,25 @@ export const ionosUpsertParamSchema = schema<IonosUpsertParams>((value) => {
   return withOptionalRepairScope({
     zone: domain(input.zone ?? input.zoneName ?? input.domain, "zone"),
     records
+  }, input);
+});
+
+export const namecheapUpsertParamSchema = schema<NamecheapUpsertParams>((value) => {
+  const input = object(value);
+  const records = array(input.records, "records", 1, 50).map((record, index) => {
+    const item = object(record, `records[${index}]`);
+    return {
+      name: string(item.name, `records[${index}].name`),
+      type: oneOf(item.type, `records[${index}].type`, ["A", "MX", "TXT", "CNAME"] as const),
+      content: string(item.content, `records[${index}].content`),
+      ...(item.ttl === undefined || item.ttl === null ? {} : { ttl: integer(item.ttl, `records[${index}].ttl`, 60, 604800) }),
+      ...(item.prio === undefined || item.prio === null ? {} : { prio: integer(item.prio, `records[${index}].prio`, 0, 65535) })
+    };
+  });
+  return withOptionalRepairScope({
+    domain: domain(input.domain ?? input.zone ?? input.zoneName, "domain"),
+    records,
+    ...(input.accountId === undefined || input.accountId === null || input.accountId === "" ? {} : { accountId: boundedId(input.accountId, "accountId", 64) })
   }, input);
 });
 
