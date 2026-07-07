@@ -2505,6 +2505,93 @@ test("DNS#IONOS configureCompleteSmtp adopted domain stays in IONOS for DNS writ
   assert.equal(JSON.stringify(state).includes("contains:awsdns"), false);
 });
 
+test("DNS#NAMECHEAP fresh purchase registers at Namecheap, skips awsdns wait, writes authoritative DNS in Namecheap", async () => {
+  const planApproval = signedPlanApproval({ domain: "corpfiling-ops.com" });
+  // El plan firmado usa los nombres canonicos Route53; el alias permite register/upsert Namecheap.
+  assert.equal(planApproval.scope.plannedSteps.includes("register_domain_route53"), true);
+  assert.equal(planApproval.scope.plannedSteps.includes("register_domain_namecheap"), false);
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval,
+    suggestions: { candidates: [{ domain: "corpfiling-ops.com", priceUsd: 15, available: true }] },
+    ownedDomains: [],
+    outcomes: {
+      4: { status: "idempotent_already_exists", serverSlug: "contabo-777", ipv4: "45.136.70.47", costUsd: 0 },
+      9: { dkimPublicKey: "v=DKIM1; k=rsa; p=abc" }
+    }
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "corpfiling-ops.com",
+    provider: "route53",
+    dnsProviderId: "namecheap"
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  // Step 2 = COMPRA REAL en Namecheap (no Route53), sincrona (sin poll de registro Route53).
+  const step2 = ctx.planExecutions.find((entry) => entry.step === 2)!;
+  assert.equal(step2.skill, "register_domain_namecheap");
+  assert.equal(step2.estimatedCostUsd, 15);
+  assert.deepEqual(step2.params, { domain: "corpfiling-ops.com", years: 1, whoisPrivacy: true });
+  assert.deepEqual(ctx.route53RegistrationWaits, []);
+  // Step 3 = wait de NS awsdns SALTADO (Namecheap autoritativo, sin delegacion a Route53).
+  assert.equal(ctx.planExecutions.some((entry) =>
+    entry.skill === "wait_for_dns_propagation" && JSON.stringify(entry.params).includes("contains:awsdns")
+  ), false);
+  // Steps 6/10 = DNS del SMTP escrito en la zona propia de Namecheap.
+  const step6 = ctx.planExecutions.find((entry) => entry.step === 6)!;
+  assert.equal(step6.skill, "upsert_dns_namecheap");
+  assert.equal(step6.dnsProviderId, "namecheap");
+  assert.equal(Object.prototype.hasOwnProperty.call(step6.params, "dnsProviderId"), false);
+  assert.deepEqual(step6.params, {
+    domain: "corpfiling-ops.com",
+    records: [
+      { name: "smtp.corpfiling-ops.com", type: "A", ttl: 300, content: "45.136.70.47" },
+      { name: "corpfiling-ops.com", type: "MX", ttl: 300, content: "smtp.corpfiling-ops.com.", prio: 10 }
+    ]
+  });
+  const step10 = ctx.planExecutions.find((entry) => entry.step === 10)!;
+  assert.equal(step10.skill, "upsert_dns_namecheap");
+  assert.equal(step10.dnsProviderId, "namecheap");
+  assert.deepEqual(step10.params, {
+    domain: "corpfiling-ops.com",
+    records: [
+      { name: "corpfiling-ops.com", type: "TXT", ttl: 300, content: "v=spf1 ip4:45.136.70.47 -all" },
+      { name: "s2026a._domainkey.corpfiling-ops.com", type: "TXT", ttl: 300, content: "v=DKIM1; k=rsa; p=abc" },
+      { name: "_dmarc.corpfiling-ops.com", type: "TXT", ttl: 300, content: "v=DMARC1; p=quarantine; rua=mailto:dmarc@corpfiling-ops.com; ruf=mailto:dmarc@corpfiling-ops.com; fo=1" }
+    ]
+  });
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.dnsProviderId, "namecheap");
+  assert.equal(state.steps["2"].status, "done");
+  assert.equal(state.steps["3"].status, "done");
+  assert.equal(JSON.stringify(state).includes("contains:awsdns"), false);
+});
+
+test("PROVIDER#contabo-2 la familia contabo-N pasa el guard (SMTP en la cuenta Contabo nueva)", async () => {
+  const plan = signedPlanApproval({ vpsProviderId: "contabo-2" });
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: plan
+  });
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    vpsProviderId: "contabo-2"
+  }, ctx.deps);
+
+  assert.equal(result.status, "completed");
+  assert.notEqual(result.error, "unknown_vps_provider:contabo-2");
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  assert.equal(step4.providerId, "contabo-2");
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.providerId, "contabo-2");
+});
+
 test("DNS#IONOS legacy reconstruction skips Route53 registration and awsdns NS wait", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
