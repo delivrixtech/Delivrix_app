@@ -351,7 +351,7 @@ import {
   type OwnedDomainVerification
 } from "./routes/orchestrator-smtp.ts";
 import { verifyOwnedDomainAcrossRegistrars } from "./domain-ownership.ts";
-import { handleReadEpisodicScratchHttp } from "./routes/episodic-scratch.ts";
+import { groundedConfidenceGateFromEnv, handleReadEpisodicScratchHttp } from "./routes/episodic-scratch.ts";
 import {
   compactIntent,
   handleCompactIntentHttp
@@ -676,6 +676,8 @@ const sensitiveReadBoundaryToken =
   process.env.DELIVRIX_READ_BOUNDARY_TOKEN?.trim() ||
   process.env.DELIVRIX_OPENCLAW_TOKEN?.trim() ||
   process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
+// Umbrales del gate CRAG de memoria grounded; falla en el arranque si el env es invalido.
+const groundedConfidenceGate = groundedConfidenceGateFromEnv();
 // Health Auto-Flag — deps compartidas entre la ruta HTTP y el hook del scan
 // diario de MXToolbox. HEALTH_AUTOFLAG_ENABLE=true activa la escritura real a
 // la base Notion "Bugs & Blockers"; sin eso, todo run es dry-run (solo audita).
@@ -1943,7 +1945,8 @@ const server = createServer(async (request, response) => {
         response,
         pool: episodicScratchPool,
         readBoundaryToken: sensitiveReadBoundaryToken,
-        logger: gatewayRuntimeLog
+        logger: gatewayRuntimeLog,
+        groundedGate: groundedConfidenceGate
       });
     }
 
