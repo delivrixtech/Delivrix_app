@@ -439,9 +439,14 @@ const webdockRealAdapter = webdockLegacyReadApiKey
         : undefined
     })
   : new WebdockRealAdapter();
+// Adapter default/"ops" (lo usa el reuse-read del orquestador y el bind single-account). Los API keys
+// caen a la FAMILIA de la cuenta única cuando no hay slot primary/ops explícito: read -> PRIMARY ??
+// legacy(quinary/base); write -> OPS ?? QUINARY_WRITE. Así, con una sola cuenta configurada como
+// quinary (modo legacy, sin PRIMARY/OPS), el adapter default sigue siendo funcional SIN forzar a crear
+// slots "primary"/"ops" separados (que duplicarían la cuenta y romperían la resolución de bind).
 const webdockOpsAdapter = new WebdockRealAdapter({
-  readApiKey: process.env.WEBDOCK_API_KEY_PRIMARY,
-  writeApiKey: process.env.WEBDOCK_API_KEY_OPS,
+  readApiKey: process.env.WEBDOCK_API_KEY_PRIMARY ?? webdockLegacyReadApiKey,
+  writeApiKey: process.env.WEBDOCK_API_KEY_OPS ?? process.env.WEBDOCK_API_KEY_QUINARY_WRITE,
   accountId: "ops",
   accountLabel: process.env.WEBDOCK_ACCOUNT_OPS_LABEL ?? "Webdock Ops",
   cacheTtlMs: 0
