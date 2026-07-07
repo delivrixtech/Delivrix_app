@@ -9,3 +9,4 @@ export * from "./local-file-runbook-execution-store.ts";
 export * from "./local-file-send-result-store.ts";
 export * from "./local-file-sender-node-store.ts";
 export * from "./local-file-suppression-list.ts";
+export * from "./local-file-provider-resource-ledger.ts";

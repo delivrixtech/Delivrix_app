@@ -10,6 +10,7 @@ import {
   buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
   createContaboAdaptersFromEnv,
+  createNamecheapAdaptersFromEnv,
   createIonosDnsProviderFromEnv,
   createMxtoolboxAdapterFromEnv,
   createRoute53DnsProviderFromEnv,
@@ -111,6 +112,7 @@ import {
   LocalFileKillSwitchStore,
   LocalFileProvisioningRunStore,
   LocalFileRateLimitStore,
+  LocalFileProviderResourceLedger,
   LocalFileRunbookExecutionStore,
   LocalFileSendResultStore,
   LocalFileSenderNodeStore,
@@ -219,6 +221,7 @@ import {
   handleWebdockServerDeleteError,
   handleWebdockServerDeleteHttp
 } from "./routes/webdock-servers.ts";
+import { handleTeardownPlanHttp } from "./routes/teardown-plan.ts";
 import {
   createBindWebdockMainDomainApprovalGuard,
   handleBindWebdockMainDomain,
@@ -447,6 +450,10 @@ const vpsProviderEntries = createContaboAdaptersFromEnv();
 const vpsProviderAdapters = new Map<string, VpsProvider>(
   vpsProviderEntries.map((entry): [string, VpsProvider] => [entry.id, entry.adapter])
 );
+// Namecheap multicuenta (registrador de dominios, read-only; compra gated por
+// NAMECHEAP_ENABLE_PURCHASE). Sin cuentas en env queda [] y el inventario
+// muestra el placeholder "planned".
+const namecheapAccountEntries = createNamecheapAdaptersFromEnv();
 
 async function listWebdockInventoryAccounts(): Promise<WebdockAccountInventoryResult[]> {
   const lifecycleOverlay = await readInfrastructureAccountLifecycleOverlay({
@@ -1232,6 +1239,8 @@ interface AgentPermissionEntry {
 const proposalsStore: StoredProposal[] = [];
 const planStepExecutions = new Set<string>();
 const runbookExecutionStore = new LocalFileRunbookExecutionStore();
+// Provider Fabric fase C: ledger append-only de recursos reales por proveedor/cuenta.
+const providerResourceLedger = new LocalFileProviderResourceLedger();
 const proposalTtlMs = 60 * 60 * 1000;
 const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_health", "allowed_read_only"),
@@ -1749,6 +1758,7 @@ const server = createServer(async (request, response) => {
           response,
           auditLog,
           adapter: webdockOpsAdapter,
+          resourceLedger: providerResourceLedger,
           workspace: openClawWorkspace,
           canvasLiveEvents,
           readCanvasState: () => canvasLiveEvents.snapshot(),
@@ -1794,6 +1804,7 @@ const server = createServer(async (request, response) => {
           response,
           auditLog,
           adapter: webdockOpsAdapter,
+          resourceLedger: providerResourceLedger,
           // Registry write-capable (5.12): si el body trae accountId de otra cuenta, el delete va a
           // ESA cuenta (evita server huerfano). Sin accountId/"ops" => webdockOpsAdapter (cuenta-1).
           accountAdapters: webdockCreateAdapters,
@@ -2131,6 +2142,14 @@ const server = createServer(async (request, response) => {
       }
     }
 
+    if (request.method === "GET" && request.url?.startsWith("/v1/infrastructure/teardown-plan")) {
+      return handleTeardownPlanHttp({
+        request,
+        response,
+        ledgerList: () => providerResourceLedger.list()
+      });
+    }
+
     if (request.method === "GET" && request.url === "/v1/infrastructure/inventory") {
       return handleInfrastructureInventoryHttp({
         request,
@@ -2139,6 +2158,8 @@ const server = createServer(async (request, response) => {
         readBoundaryToken: sensitiveReadBoundaryToken,
         webdockListServers: listWebdockInventoryAccounts,
         vpsProviderListServers: listVpsProviderInventories,
+        namecheapListInventories: () =>
+          Promise.all(namecheapAccountEntries.map((entry) => entry.adapter.listInventory())),
         ionosListDnsInventory: () => ionosDnsAdapter.listInventory(),
         ionosListDomainsInventory: () => ionosDomainsAdapter.listInventory(),
         awsRoute53DomainsListInventory: () => awsRoute53DomainsAdapter.listInventory(),
