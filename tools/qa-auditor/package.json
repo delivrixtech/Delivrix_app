@@ -1,0 +1,17 @@
+{
+  "name": "@delivrix/qa-auditor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Auditor automatico de Pull Requests y despliegues: agente QA Senior que coordina 3 subagentes (calidad de codigo, seguridad/compliance, QA funcional/deploy). Corre en GitHub Actions contra la API de Anthropic. Cero dependencias en runtime.",
+  "author": "JECT",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "audit": "node src/main.ts",
+    "audit:dry": "node src/main.ts --dry-run",
+    "test": "node --test \"src/**/*.test.ts\""
+  }
+}
