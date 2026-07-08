@@ -811,7 +811,8 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
   };
   const sendRealEmail: SkillHandlerEntry = {
     paramSchema: sendRealEmailSkillParamSchema,
-    timeoutMs: 90_000,
+    // 240s: acomoda el wait de propagación de auth (SPF/DKIM/DMARC) en send-email.ts (~150s max) + el envío.
+    timeoutMs: 240_000,
     canRollback: false,
     invoke: ({ request, response, deps }) =>
       handleSendRealEmailHttp({
