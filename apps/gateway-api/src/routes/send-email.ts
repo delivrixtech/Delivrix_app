@@ -224,11 +224,30 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
   }
 
   const fromDomain = domainFromEmail(params.fromAddress);
-  const auth = await validateEmailAuth({
+  // Los registros SPF/DKIM/DMARC se escriben en un paso previo del orquestador y pueden tardar en
+  // propagar al resolver (dominios frescos, o resumes idempotentes rápidos donde el wait de
+  // propagación se saltó). Reintentar con backoff hasta ~150s evita el falso "email_auth_incomplete"
+  // por propagación transitoria; recién si sigue faltando tras el deadline, se falla de verdad.
+  // (El handler timeout de send_real_email se subió a 240s en skill-dispatcher para acomodar la espera.)
+  const authMaxWaitMs = Number(process.env.EMAIL_AUTH_PROPAGATION_MAX_WAIT_MS) || 150_000;
+  const authPollMs = Number(process.env.EMAIL_AUTH_PROPAGATION_POLL_MS) || 15_000;
+  const authDeadline = Date.now() + authMaxWaitMs;
+  let auth = await validateEmailAuth({
     domain: fromDomain,
     selector: params.selector,
     resolveTxt: deps.resolveTxt ?? dns.resolveTxt
   });
+  while (
+    (!auth.spfPresent || !auth.dkimPresent || !auth.dmarcPresent) &&
+    Date.now() + authPollMs <= authDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, authPollMs));
+    auth = await validateEmailAuth({
+      domain: fromDomain,
+      selector: params.selector,
+      resolveTxt: deps.resolveTxt ?? dns.resolveTxt
+    });
+  }
   if (!auth.spfPresent || !auth.dkimPresent || !auth.dmarcPresent) {
     json(deps.response, 400, {
       error: "email_auth_incomplete",
