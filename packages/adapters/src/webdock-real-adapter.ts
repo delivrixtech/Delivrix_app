@@ -1003,6 +1003,58 @@ function webdockFailureKind(status: number): WebdockInventorySource["failureKind
   return "unknown";
 }
 
+/**
+ * FUENTE ÚNICA de los roles de cuentas Webdock DISTINTAS (no cuenta-1). Agregar un rol acá
+ * habilita a la vez: el factory (createWebdockAdaptersFromEnv), el gate del catálogo de tools
+ * (hasWriteCapableWebdockCreationAccountEnv) y el env-preflight. Antes la lista vivía
+ * duplicada en el factory y en openclaw-tools-builder — desincronizarlas fue la raíz del
+ * incidente "solo QUINARY viva y configure_complete_smtp desapareció del catálogo".
+ */
+export const WEBDOCK_DISTINCT_ACCOUNT_ROLES = ["SECONDARY", "TERTIARY", "QUATERNARY", "QUINARY"] as const;
+
+function webdockRoleLabel(role: string): string {
+  return `Webdock ${role[0]}${role.slice(1).toLowerCase()}`;
+}
+
+/**
+ * Espejo puro-env de "existe >=1 cuenta Webdock capaz de un create real". Cláusula 1: cuenta-1
+ * (OPS/legacy/PRIMARY — nota: PRIMARY es solo-read pero cuenta como write por compat con el gate
+ * histórico; mentira preexistente preservada a propósito para byte-identidad). Cláusula 2:
+ * cualquier rol distinct con par _WRITE + _ACCOUNT (espejo de canCreate()).
+ */
+export function hasWriteCapableWebdockCreationAccountEnv(
+  env: Record<string, string | undefined>
+): boolean {
+  if (
+    normalizeEnvValue(env.WEBDOCK_API_KEY_OPS) ??
+    normalizeEnvValue(env.WEBDOCK_API_KEY) ??
+    normalizeEnvValue(env.WEBDOCK_API_KEY_PRIMARY)
+  ) {
+    return true;
+  }
+  return WEBDOCK_DISTINCT_ACCOUNT_ROLES.some((role) =>
+    Boolean(normalizeEnvValue(env[`WEBDOCK_API_KEY_${role}_WRITE`])) &&
+    Boolean(normalizeEnvValue(env[`WEBDOCK_API_KEY_${role}_ACCOUNT`]))
+  );
+}
+
+/** Espejo puro-env de "existe >=1 read key Webdock" (inventario/lecturas; para env-preflight). */
+export function hasAnyWebdockReadCredentialEnv(
+  env: Record<string, string | undefined>
+): boolean {
+  if (
+    normalizeEnvValue(env.WEBDOCK_API_KEY_PRIMARY) ??
+    normalizeEnvValue(env.WEBDOCK_API_KEY) ??
+    normalizeEnvValue(env.WEBDOCK_API_KEY_OPS) ??
+    normalizeEnvValue(env.WEBDOCK_API_KEY_ACCOUNT)
+  ) {
+    return true;
+  }
+  return WEBDOCK_DISTINCT_ACCOUNT_ROLES.some((role) =>
+    Boolean(normalizeEnvValue(env[`WEBDOCK_API_KEY_${role}`]))
+  );
+}
+
 export function createWebdockAdaptersFromEnv(
   env: Record<string, string | undefined> =
     typeof process !== "undefined" ? process.env : {},
@@ -1012,8 +1064,8 @@ export function createWebdockAdaptersFromEnv(
   // preservar byte-identidad del comportamiento single-account de hoy. Sus
   // write/account keys quedan undefined -> el constructor cae al fallback de
   // los singletons OPS/ACCOUNT (correcto: son la misma cuenta-1).
-  // Specs de cuentas DISTINTAS (secondary/tertiary/quaternary/quinary): write
-  // y account keys PROPIAS inyectadas explicitas + env aislado, para que NO
+  // Specs de cuentas DISTINTAS (WEBDOCK_DISTINCT_ACCOUNT_ROLES): write y
+  // account keys PROPIAS inyectadas explicitas + env aislado, para que NO
   // caigan al fallback de los singletons de la cuenta-1 (bug latente: un
   // create "secondary" escribiria en la cuenta-1). Sin sus _WRITE/_ACCOUNT
   // propias quedan read-only (canCreate()===false real, no enganoso).
@@ -1033,10 +1085,9 @@ export function createWebdockAdaptersFromEnv(
       apiKey: normalizeEnvValue(env.WEBDOCK_API_KEY_ACCOUNT),
       label: normalizeEnvValue(env.WEBDOCK_ACCOUNT_ACCOUNT_LABEL) ?? "Webdock Account"
     },
-    buildDistinctAccountSpec("secondary", "SECONDARY", "Webdock Secondary", env),
-    buildDistinctAccountSpec("tertiary", "TERTIARY", "Webdock Tertiary", env),
-    buildDistinctAccountSpec("quaternary", "QUATERNARY", "Webdock Quaternary", env),
-    buildDistinctAccountSpec("quinary", "QUINARY", "Webdock Quinary", env)
+    ...WEBDOCK_DISTINCT_ACCOUNT_ROLES.map((role) =>
+      buildDistinctAccountSpec(role.toLowerCase(), role, webdockRoleLabel(role), env)
+    )
   ];
 
   const configuredAccounts = accountSpecs
