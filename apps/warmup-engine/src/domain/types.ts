@@ -1,5 +1,5 @@
 // Núcleo determinista del warmup — tipos y constantes de política.
-// Source of truth: Delivrix-Warmup-Sistema-AI.md (§2 defaults, §4 mesh, §6 placement, §102 estados).
+// Source of truth: Delivrix-Warmup-Diseno-v1.md (§2 defaults, §4 mesh, §6 placement, §102 estados).
 // Este módulo NO hace I/O: solo modela el estado y las decisiones puras del mesh.
 
 export type NodeState = "fresh" | "warming" | "warm" | "paused";
