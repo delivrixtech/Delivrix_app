@@ -346,6 +346,15 @@ export interface ConfigureCompleteSmtpDeps {
   listCreationAccounts?: () =>
     | Promise<WebdockCreationAccount[]>
     | WebdockCreationAccount[];
+  /**
+   * Preflight LIVE de credenciales de la cuenta elegida para el create (2 GETs baratos contra
+   * la API del proveedor). Detecta tokens presentes-pero-revocados ANTES de gastar, cubriendo
+   * los caminos que el governor no valida (reuseAccountId de un resume, governor apagado, y
+   * write/account token muerto con read vivo). Opcional: sin la dep, comportamiento identico.
+   */
+  preflightCreationAccount?: (input: { accountId: string }) =>
+    | Promise<{ ok: boolean; reason?: string }>
+    | { ok: boolean; reason?: string };
   resolveCreationRateOverride?: (
     input: CreationRateOverrideInput
   ) => Promise<CreationRateOverrideDecision> | CreationRateOverrideDecision;
@@ -1144,6 +1153,29 @@ export async function configureCompleteSmtp(
         });
       if (!serverAccountId || excludedFailoverAccounts.has(serverAccountId)) {
         break; // no quedan cuentas write-capable con las que reintentar
+      }
+      // Preflight LIVE de credenciales de la cuenta elegida (2 GETs): un token revocado del
+      // lado del proveedor ya no revienta a mitad del create. Cuenta explicita => falla exacta;
+      // elegida por governor/reuse => se excluye y se prueba la siguiente (mismo patron que el
+      // payment-failover). Apagable con CREATION_ACCOUNT_LIVE_PREFLIGHT_ENABLE=false.
+      const livePreflight = await runCreationAccountLivePreflight({ deps, runId, accountId: serverAccountId });
+      if (!livePreflight.ok) {
+        if (requestedServerAccountId) {
+          throw new OrchestratorFailure(
+            "failed",
+            0,
+            "server_account_guard",
+            `requested_account_ineligible: account=${serverAccountId} reason=credentials_${livePreflight.reason}`
+          );
+        }
+        excludedFailoverAccounts.add(serverAccountId);
+        lastCreateFailure = new OrchestratorFailure(
+          "failed",
+          4,
+          "create_webdock_server",
+          `creation_account_credentials_rejected: account=${serverAccountId} reason=credentials_${livePreflight.reason}`
+        );
+        continue;
       }
       // Persistir la cuenta ANTES del create: si el create corre y el proceso muere, un resume
       // (firma POSTERIOR) enruta rollback/delete a ESTA cuenta. Va por estado, no closure.
@@ -4570,6 +4602,34 @@ interface CreationAccountEvaluation {
  * - evaluateAccountSelection (no-throw) distingue en audit `creation_rate_exceeded_all_accounts`
  *   vs `no_eligible_accounts`. El override humano sigue aplicando a la cuenta exhausta.
  */
+/**
+ * Preflight LIVE de la cuenta elegida para el create. Devuelve ok:true si la dep no esta
+ * inyectada o el flag CREATION_ACCOUNT_LIVE_PREFLIGHT_ENABLE esta en false (default: activo
+ * cuando hay dep). Audita cada rechazo con oc.orchestrator.creation_account_rejected.
+ */
+async function runCreationAccountLivePreflight(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  runId: string;
+  accountId: string;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (!input.deps.preflightCreationAccount) return { ok: true };
+  if (envFlagDisabled(input.deps.env?.CREATION_ACCOUNT_LIVE_PREFLIGHT_ENABLE)) return { ok: true };
+  let result: { ok: boolean; reason?: string };
+  try {
+    result = await input.deps.preflightCreationAccount({ accountId: input.accountId });
+  } catch (error) {
+    result = { ok: false, reason: `preflight_error:${error instanceof Error ? error.message.slice(0, 120) : "unknown"}` };
+  }
+  if (result.ok) return { ok: true };
+  const reason = result.reason ?? "unknown";
+  await audit(input.deps, "oc.orchestrator.creation_account_rejected", "webdock_account", input.accountId, "high", {
+    runId: input.runId,
+    accountId: input.accountId,
+    reason: `credentials_${reason}`
+  });
+  return { ok: false, reason };
+}
+
 async function resolveCreationAccount(input: {
   deps: ConfigureCompleteSmtpDeps;
   runId: string;
