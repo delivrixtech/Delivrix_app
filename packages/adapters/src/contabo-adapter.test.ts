@@ -4,6 +4,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import {
   ContaboAdapter,
   ContaboAdapterError,
+  contaboMigrationAlias,
   createContaboAdaptersFromEnv
 } from "./contabo-adapter.ts";
 
@@ -960,4 +961,57 @@ test("createContaboAdaptersFromEnv: cuentas indexadas funcionan sin la flat y la
 
   assert.equal(entries.length, 1);
   assert.equal(entries[0].id, "contabo-1");
+});
+
+// --- contaboMigrationAlias ---------------------------------------------------
+
+const FLAT_ENV = {
+  CONTABO_CLIENT_ID: "cid",
+  CONTABO_CLIENT_SECRET: "csecret",
+  CONTABO_API_USER: "user@delivrix.test",
+  CONTABO_API_PASSWORD: "pw"
+};
+const INDEXED1_ENV = {
+  CONTABO_ACCOUNT_1_CLIENT_ID: "cid1",
+  CONTABO_ACCOUNT_1_CLIENT_SECRET: "csecret1",
+  CONTABO_ACCOUNT_1_API_USER: "user1@delivrix.test",
+  CONTABO_ACCOUNT_1_API_PASSWORD: "pw1"
+};
+
+test("contaboMigrationAlias: flat sin indexada-1 => alias contabo-1 al MISMO adapter", () => {
+  const entries = createContaboAdaptersFromEnv(FLAT_ENV);
+  const alias = contaboMigrationAlias(entries);
+  assert.ok(alias);
+  assert.equal(alias.aliasId, "contabo-1");
+  assert.equal(alias.adapter, entries.find((entry) => entry.id === "contabo")!.adapter);
+});
+
+test("contaboMigrationAlias: indexada-1 sin flat => alias contabo (migracion de credenciales)", () => {
+  const entries = createContaboAdaptersFromEnv(INDEXED1_ENV);
+  const alias = contaboMigrationAlias(entries);
+  assert.ok(alias);
+  assert.equal(alias.aliasId, "contabo");
+  assert.equal(alias.adapter, entries.find((entry) => entry.id === "contabo-1")!.adapter);
+});
+
+test("contaboMigrationAlias: ambas formas presentes son cuentas DISTINTAS => sin alias", () => {
+  const entries = createContaboAdaptersFromEnv({ ...FLAT_ENV, ...INDEXED1_ENV });
+  assert.equal(contaboMigrationAlias(entries), null);
+});
+
+test("contaboMigrationAlias: sin ninguna forma => sin alias", () => {
+  assert.equal(contaboMigrationAlias([]), null);
+  // Indexadas != 1 tampoco aliasean (contabo-2 es otra cuenta real, no una migracion).
+  const entries = createContaboAdaptersFromEnv({
+    CONTABO_ACCOUNT_2_CLIENT_ID: "cid2",
+    CONTABO_ACCOUNT_2_CLIENT_SECRET: "csecret2",
+    CONTABO_ACCOUNT_2_API_USER: "user2@delivrix.test",
+    CONTABO_ACCOUNT_2_API_PASSWORD: "pw2"
+  });
+  assert.equal(contaboMigrationAlias(entries), null);
+});
+
+test("regresion: createContaboAdaptersFromEnv sigue byte-identico (ids flat + indexadas)", () => {
+  const entries = createContaboAdaptersFromEnv({ ...FLAT_ENV, ...INDEXED1_ENV });
+  assert.deepEqual(entries.map((entry) => entry.id), ["contabo", "contabo-1"]);
 });
