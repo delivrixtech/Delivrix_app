@@ -1,4 +1,4 @@
--- Warmup engine — esquema inicial (§7 de Delivrix-Warmup-Sistema-AI.md).
+-- Warmup engine — esquema inicial (§7 de Delivrix-Warmup-Diseno-v1.md).
 -- Mesh propio de nodos Postfix/Dovecot: nodes ↔ pairings, placement por seed_checks,
 -- hilos conversacionales para replies coherentes multi-turno.
 

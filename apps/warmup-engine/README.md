@@ -2,7 +2,7 @@
 
 Servicio **standalone** de calentamiento (warmup) de inboxes por **mesh propio**.
 
-> **Source of truth:** `Delivrix-Warmup-Sistema-AI.md` (2026-07-07). Leerlo ante cualquier duda.
+> **Source of truth:** `Delivrix-Warmup-Diseno-v1.md` (2026-07-07). Leerlo ante cualquier duda.
 > El `ADR-Delivrix-Warmup-Agent.md` (ADR-WARMUP-01) está **SUPERADO** — era para flota hosted
 > (Gmail Workspace/M365 + pools + vendor + Gmail API). No sacar decisiones de ahí.
 
@@ -58,6 +58,21 @@ el núcleo determinista no toca red, disco ni modelos — solo decide, y por eso
 
 **Estado actual:** Fase 0 — andamiaje del módulo + núcleo determinista con tests. Los workers de
 SMTP/IMAP y el runtime se cablean cuando existan los buzones (infra).
+
+## Refinamientos del Diseño-v1 (rigen de la malla y el contenido en adelante)
+
+El diseño v1 corrige el borrador inicial en puntos que importan al llegar a la malla y al contenido.
+El runtime y las fases 1+ se construyen contra ESTO, no contra los números del borrador:
+
+- **Seed core pequeño ~5–15 dominios**, NO 100–150. Un core grande *es* el fingerprint que
+  queremos evitar. No escalar el mesh por volumen de dominios.
+- **Banco de contenido generado en batch** (offline, consumido de caché), NO un LLM por-correo.
+- **Malla sparse / anclada / rotativa**, no un grafo denso todos-contra-todos.
+- **Aislamiento por tenant** (sin mallas de reply cross-tenant) desde que entren clientes.
+- **Caveat de reputación (clave para el runtime):** un mesh interno Postfix↔Postfix construye
+  ~cero reputación ante Gmail. El lift real del v1 es **placement medido + tráfico transaccional
+  real**, no el volumen de intercambio interno. El runtime prioriza medir placement y mover
+  tráfico real, no inflar el mesh.
 
 ## No-negociables (§9)
 
