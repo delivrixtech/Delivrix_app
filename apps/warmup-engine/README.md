@@ -54,6 +54,12 @@ apps/warmup-engine/
     reader/          Inbox Reader de placement (§9):
       imap-placement-reader.ts  lee los seed inboxes EXTERNOS por IMAP, clasifica LandedIn
                                 (Gmail labels: tabs=inbox, spam gana; missing≠spam) + grace window t+2m…t+6h
+    live/            ADAPTERS de I/O REAL (el único código que toca la red) + composition root:
+      dns-adapters.ts  DNS/RBL/DBL/TLS reales (node:dns/tls); DI para tests sin red; NXDOMAIN≠error
+      mail-adapters.ts SMTP (nodemailer) + IMAP (imapflow) reales; credenciales por SecretResolver
+                       (por referencia, nunca en claro; scrub de secretos en el detail)
+      compose.ts       ata los adapters reales a checkers/reader/transporte, GUARDED por el flag:
+                       con WARMUP_ENGINE_ENABLE OFF lanza — nada real se construye ni conecta
     runtime/         RUNTIME (§7/§8/§13) — la costura hacia el mundo real:
       auth-gate.ts             gate FAIL-CLOSED (§8): "ningún nodo envía sin contrato `ready`".
       auth-contract-builder.ts corre los checkers → agrega verdicts → firma el AuthReadinessContract
@@ -84,10 +90,12 @@ El transporte queda **pluggable desde el día 1** para enchufar M365 en v2 sin r
 están implementados como funciones puras con resolvers/probes inyectables (DNS: SPF/DKIM/DMARC/MX ·
 IP/red: PTR-FCrDNS/RBL/TLS/HELO/dedicated-IP · liveness: SMTP_AUTH/IMAP_AUTH/TRACKING_DOMAIN_CLEAN/
 ONECLICK_UNSUB_CAP). El `auth-contract-builder` los agrega en un `AuthReadinessContract` firmado que
-el gate fail-closed consume (`PENDING_V1_CHECKS` ya está vacío). Además, el **Inbox Reader IMAP**
-clasifica el placement desde los seed inboxes externos. Todo **sobre mocks**: el cableado de los
-resolvers/probes/transporte **reales** (DNS/RBL/SMTP/IMAP en vivo) y el scheduler/colas solo se
-conectan detrás de `WARMUP_ENGINE_ENABLE`; nada corre ni envía en deploy.
+el gate fail-closed consume (`PENDING_V1_CHECKS` ya está vacío). El **Inbox Reader IMAP** clasifica el
+placement desde los seed inboxes externos. Y los **adapters de I/O real** (`live/`) implementan cada
+interfaz sobre `node:dns`/`node:tls` + nodemailer/imapflow, pero **solo se cablean detrás de
+`WARMUP_ENGINE_ENABLE`** (default OFF: `compose.ts` lanza si el flag no está activo). Todos los tests
+corren con fakes inyectados: **ninguno toca la red ni manda correo**. El scheduler/colas y la
+persistencia Postgres son el siguiente paso; nada corre ni envía en deploy hasta activar el flag.
 
 ## v2 — diferido (solo si entra cold outreach de agencia)
 
