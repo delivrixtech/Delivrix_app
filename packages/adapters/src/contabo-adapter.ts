@@ -909,6 +909,25 @@ export function createContaboAdaptersFromEnv(
 
 const MAX_INDEXED_ACCOUNTS = 50;
 
+/**
+ * Alias de MIGRACIÓN flat<->indexada-1. Si el operador mueve las credenciales de la cuenta
+ * flat (CONTABO_*) a la forma indexada (CONTABO_ACCOUNT_1_*) — o al revés — el providerId
+ * cambia de "contabo" a "contabo-1" y cualquier RESUME de un run persistido con el id viejo
+ * muere con unknown_vps_provider. Este alias registra el id faltante apuntando al MISMO
+ * adapter, SOLO cuando existe exactamente una de las dos formas (con ambas presentes son
+ * cuentas distintas y aliasear enrutaría a otra cuenta: null). Los runs nuevos siguen
+ * persistiendo el id real de su entry; el alias solo resuelve resumes.
+ */
+export function contaboMigrationAlias(
+  entries: VpsProviderEntry[]
+): { aliasId: string; adapter: VpsProvider } | null {
+  const flat = entries.find((entry) => entry.id === "contabo");
+  const indexed1 = entries.find((entry) => entry.id === "contabo-1");
+  if (flat && !indexed1) return { aliasId: "contabo-1", adapter: flat.adapter };
+  if (indexed1 && !flat) return { aliasId: "contabo", adapter: indexed1.adapter };
+  return null;
+}
+
 // --- helpers puros --------------------------------------------------------
 
 async function sleep(ms: number): Promise<void> {

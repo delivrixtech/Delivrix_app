@@ -9,6 +9,7 @@ import {
   AwsRoute53DnsAdapter,
   buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
+  contaboMigrationAlias,
   createContaboAdaptersFromEnv,
   createNamecheapAdaptersFromEnv,
   createNamecheapDnsProviderFromEnv,
@@ -464,6 +465,16 @@ const vpsProviderEntries = createContaboAdaptersFromEnv();
 const vpsProviderAdapters = new Map<string, VpsProvider>(
   vpsProviderEntries.map((entry): [string, VpsProvider] => [entry.id, entry.adapter])
 );
+// Alias de migración contabo<->contabo-1 (patrón espejo del alias de familia Namecheap de más
+// abajo): SOLO se agrega al Map de resolución — NO a vpsProviderEntries, que alimenta el
+// inventario (evita listar la misma cuenta dos veces). Cubre resumes de runs persistidos con
+// el id anterior a una migración de credenciales flat->indexada (o viceversa).
+{
+  const contaboAlias = contaboMigrationAlias(vpsProviderEntries);
+  if (contaboAlias && !vpsProviderAdapters.has(contaboAlias.aliasId)) {
+    vpsProviderAdapters.set(contaboAlias.aliasId, contaboAlias.adapter);
+  }
+}
 // Namecheap multicuenta (registrador de dominios, read-only; compra gated por
 // NAMECHEAP_ENABLE_PURCHASE). Sin cuentas en env queda [] y el inventario
 // muestra el placeholder "planned".
