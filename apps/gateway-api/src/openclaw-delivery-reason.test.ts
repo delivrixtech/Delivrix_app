@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildMailLogReadCommand,
   collectDeliveryReason,
   describeDeliveryFromLog,
   selectDeliveryResult,
@@ -99,6 +100,47 @@ test("collectDeliveryReason resolves the queue id from the message-id, then read
   assert.equal(calls.length, 2);
   assert.match(calls[0], /delivrix-deadbeef/);
   assert.match(calls[1], /B2C3D4E5F6/);
+});
+
+test("buildMailLogReadCommand lee file y journald en un solo round-trip", () => {
+  const command = buildMailLogReadCommand("/var/log/mail.log", 400);
+  assert.match(command, /tail -400 '\/var\/log\/mail\.log' 2>\/dev\/null/);
+  assert.match(command, /journalctl -q --no-pager -o short -u 'postfix\*' -n 400 2>\/dev\/null/);
+  // Grupo cerrado: cada fuente silencia su error y el pipeline del caller termina en tail (exit 0).
+  assert.match(command, /^\{ .*; \}$/);
+});
+
+test("buildMailLogReadCommand escapa un logPath con comilla simple", () => {
+  const command = buildMailLogReadCommand("/var/log/it's.log", 100);
+  assert.equal(command.includes("'/var/log/it'\\''s.log'"), true);
+});
+
+test("collectDeliveryReason funciona en un VPS journald-only (mail.log ausente)", async () => {
+  // El fakeRunner devuelve las MISMAS lineas (formato journalctl -o short == syslog):
+  // lo que valida este test es que el comando enviado incluye el fallback journald.
+  const calls: string[] = [];
+  const runner = fakeRunner(
+    {
+      "delivrix-deadbeef@bizreport.com": CLEANUP_LINE,
+      B2C3D4E5F6: QUEUE_LOG
+    },
+    calls
+  );
+
+  const out = await collectDeliveryReason({
+    sshRunner: runner,
+    serverSlug: "smtp-contabo-1",
+    serverIp: "2.2.2.2",
+    messageId: "<delivrix-deadbeef@bizreport.com>"
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.reason?.finalStatus, "bounced");
+  assert.equal(calls.length, 2);
+  for (const command of calls) {
+    assert.match(command, /journalctl -q --no-pager -o short -u 'postfix\*'/);
+    assert.match(command, /tail -400 '\/var\/log\/mail\.log'/);
+  }
 });
 
 test("collectDeliveryReason never throws when SSH fails", async () => {

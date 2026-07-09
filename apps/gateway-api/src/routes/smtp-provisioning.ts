@@ -777,8 +777,10 @@ export function buildSmtpProvisionPlan(input: {
     },
     {
       label: "install-packages",
-      command: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y postfix opendkim opendkim-tools certbot dovecot-core",
-      auditCommand: "apt-get update -qq && apt-get install postfix opendkim opendkim-tools certbot dovecot-core",
+      // rsyslog: los Debian/Ubuntu modernos son journald-only y sin el no existe
+      // /var/log/mail.log persistente (lo lee read_delivery_reason para confirmar el DSN).
+      command: "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y postfix opendkim opendkim-tools certbot dovecot-core rsyslog",
+      auditCommand: "apt-get update -qq && apt-get install postfix opendkim opendkim-tools certbot dovecot-core rsyslog",
       timeoutMs: 300_000
     },
     {
@@ -879,8 +881,8 @@ export function buildSmtpProvisionPlan(input: {
     },
     {
       label: "restart-services",
-      command: "install -d -m 0755 -o opendkim -g opendkim /run/opendkim && systemctl enable dovecot opendkim postfix && systemctl restart dovecot opendkim postfix",
-      auditCommand: "systemctl enable/restart dovecot opendkim postfix"
+      command: "install -d -m 0755 -o opendkim -g opendkim /run/opendkim && systemctl enable rsyslog dovecot opendkim postfix && systemctl restart rsyslog dovecot opendkim postfix",
+      auditCommand: "systemctl enable/restart rsyslog dovecot opendkim postfix"
     },
     {
       label: "validate-local-smtp",
