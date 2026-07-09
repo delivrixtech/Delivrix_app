@@ -76,3 +76,66 @@ test("normalizes domains (trailing dot, case, spaces)", () => {
   });
   assert.deepEqual(report.domainsWithoutRun, []);
 });
+
+test("a failed run superseded by a later successful send is not real debt", () => {
+  const report = checkRunStateIntegrity({
+    runs: [{ runId: "r1", status: "failed", chosenDomain: "a.com", updatedAt: "2026-07-01T10:00:00.000Z" }],
+    sends: [{ domain: "a.com", occurredAt: "2026-07-01T11:00:00.000Z", ok: true }]
+  });
+  assert.equal(report.failedRuns.length, 0);
+  assert.equal(report.supersededFailedRuns.length, 1);
+  assert.equal(report.supersededFailedRuns[0].runId, "r1");
+  assert.equal(report.supersededFailedRuns[0].reason, "delivered_after_failure");
+  assert.equal(report.ok, true);
+  assert.match(report.summary, /superseded/);
+});
+
+test("a send BEFORE the failure does not supersede the failed run", () => {
+  const report = checkRunStateIntegrity({
+    runs: [{ runId: "r1", status: "failed", chosenDomain: "a.com", updatedAt: "2026-07-01T10:00:00.000Z" }],
+    sends: [{ domain: "a.com", occurredAt: "2026-07-01T09:00:00.000Z", ok: true }]
+  });
+  assert.equal(report.failedRuns.length, 1);
+  assert.equal(report.supersededFailedRuns.length, 0);
+  assert.equal(report.ok, false);
+});
+
+test("a rejected send (ok:false) is not delivery evidence nor a sending domain", () => {
+  const report = checkRunStateIntegrity({
+    runs: [{ runId: "r1", status: "failed", chosenDomain: "a.com", updatedAt: "2026-07-01T10:00:00.000Z" }],
+    sends: [
+      { domain: "a.com", occurredAt: "2026-07-01T11:00:00.000Z", ok: false },
+      { domain: "orphan.com", ok: false }
+    ]
+  });
+  assert.equal(report.failedRuns.length, 1);
+  assert.equal(report.supersededFailedRuns.length, 0);
+  assert.deepEqual(report.domainsWithoutRun, []);
+});
+
+test("a newer completed run for the same domain supersedes the failed one", () => {
+  const report = checkRunStateIntegrity({
+    runs: [
+      { runId: "r1", status: "failed", chosenDomain: "a.com", updatedAt: "2026-07-01T10:00:00.000Z" },
+      { runId: "r2", status: "completed", chosenDomain: "a.com", updatedAt: "2026-07-02T10:00:00.000Z" }
+    ],
+    sends: [{ domain: "a.com" }]
+  });
+  assert.equal(report.failedRuns.length, 0);
+  assert.equal(report.supersededFailedRuns.length, 1);
+  assert.equal(report.supersededFailedRuns[0].reason, "newer_completed_run");
+  assert.equal(report.ok, true);
+});
+
+test("an OLDER completed run does not supersede a newer failed run", () => {
+  const report = checkRunStateIntegrity({
+    runs: [
+      { runId: "r1", status: "failed", chosenDomain: "a.com", updatedAt: "2026-07-02T10:00:00.000Z" },
+      { runId: "r2", status: "completed", chosenDomain: "a.com", updatedAt: "2026-07-01T10:00:00.000Z" }
+    ],
+    sends: []
+  });
+  assert.equal(report.failedRuns.length, 1);
+  assert.equal(report.supersededFailedRuns.length, 0);
+  assert.equal(report.ok, false);
+});

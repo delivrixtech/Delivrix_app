@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -160,6 +160,72 @@ test("failed send (decision reject) is not replayed by idempotency", async () =>
   assert.notEqual(response.body.messageId, "<delivrix-failed@sender.example>");
   assert.notEqual(response.body.postfixLogTail, "idempotent_replay_suppressed");
   assert.equal(response.commands.some((command) => command.command.startsWith("swaks --to")), true);
+});
+
+test("successful send reconciles failed run-states of the sending domain", async () => {
+  const route = await routeHarness();
+  await writeFailedRunState(route.workspace, "run-ghost", "sender.example");
+  await writeFailedRunState(route.workspace, "run-other-domain", "otro.example");
+
+  const response = await route(validBody());
+  assert.equal(response.statusCode, 200);
+
+  const reconciledRaw = await readRunStateRaw(route.workspace, "run-ghost");
+  assert.equal(reconciledRaw.status, "completed");
+  assert.equal((reconciledRaw.reconciledBy as { source?: string }).source, "send_real_email");
+  assert.equal(reconciledRaw.retryableFailure, undefined);
+  assert.equal(reconciledRaw.failureCategory, undefined);
+  assert.equal(reconciledRaw.finalDeliveryStatus, "delivered");
+
+  const untouched = await readRunStateRaw(route.workspace, "run-other-domain");
+  assert.equal(untouched.status, "failed");
+
+  const reconcileAudit = (await route.auditLog.list()).find((event) => event.action === "oc.smtp.run_state_reconciled");
+  assert.ok(reconcileAudit);
+  assert.equal(reconcileAudit.metadata.runId, "run-ghost");
+  assert.equal(reconcileAudit.metadata.previousStatus, "failed");
+  assert.equal(reconcileAudit.metadata.domain, "sender.example");
+});
+
+test("failed send does NOT reconcile failed run-states", async () => {
+  const route = await routeHarness({
+    runnerFactory: (commands) => mockRunner(commands, {
+      sendStdout: "550 5.1.1 recipient rejected",
+      sendExitCode: 1
+    })
+  });
+  await writeFailedRunState(route.workspace, "run-ghost", "sender.example");
+
+  const response = await route(validBody());
+  assert.equal(response.statusCode, 502);
+
+  const raw = await readRunStateRaw(route.workspace, "run-ghost");
+  assert.equal(raw.status, "failed");
+  assert.equal((await route.auditLog.list()).some((event) => event.action === "oc.smtp.run_state_reconciled"), false);
+});
+
+test("idempotent replay also reconciles failed run-states of the domain", async () => {
+  const route = await routeHarness();
+  await appendSentEvent(route.auditLog, {
+    occurredAt: "2026-05-31T17:59:30.000Z",
+    idempotencyKey: "run-idem-3",
+    runId: "run-idem-3",
+    messageId: "<delivrix-existing@sender.example>"
+  });
+  await writeFailedRunState(route.workspace, "run-ghost", "sender.example");
+
+  const response = await route(validBody({
+    idempotencyKey: "run-idem-3",
+    runId: "run-idem-3"
+  }));
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.postfixLogTail, "idempotent_replay_suppressed");
+
+  const raw = await readRunStateRaw(route.workspace, "run-ghost");
+  assert.equal(raw.status, "completed");
+  assert.equal(raw.finalEmailMessageId, "<delivrix-existing@sender.example>");
+  const reconcileAudit = (await route.auditLog.list()).find((event) => event.action === "oc.smtp.run_state_reconciled");
+  assert.ok(reconcileAudit);
 });
 
 test("Postfix not running blocks before send command", async () => {
@@ -514,6 +580,25 @@ async function appendApproval(
       blockCount: 1
     }
   });
+}
+
+async function writeFailedRunState(workspace: OpenClawWorkspace, runId: string, chosenDomain: string): Promise<void> {
+  await workspace.writeWorkspaceFileAtomic(`inventory/smtp-runs/${runId}.json`, `${JSON.stringify({
+    schemaVersion: "smtp-run-state/v1",
+    runId,
+    status: "failed",
+    chosenDomain,
+    lastCompletedStep: 13,
+    retryableFailure: true,
+    failureCategory: "send_retry_exhausted",
+    updatedAt: "2026-05-31T10:00:00.000Z",
+    steps: {}
+  }, null, 2)}\n`);
+}
+
+async function readRunStateRaw(workspace: OpenClawWorkspace, runId: string): Promise<Record<string, unknown>> {
+  const raw = await readFile(join(workspace.getRootDir(), "inventory", "smtp-runs", `${runId}.json`), "utf8");
+  return JSON.parse(raw) as Record<string, unknown>;
 }
 
 async function appendSentEvents(auditLog: LocalFileAuditLog, count: number): Promise<void> {
