@@ -165,6 +165,24 @@ function extractQueueId(log: string): string | undefined {
   return parsePostfixDeliveryLog(log)[0]?.queueId;
 }
 
+/**
+ * Reads the Postfix log from BOTH sources in one round-trip: the classic file
+ * (rsyslog) and journald. VPSs provisioned on modern Debian/Ubuntu are
+ * journald-only — /var/log/mail.log is missing/empty there, which used to make
+ * this collector blind (`delivery_log_unavailable`, DSN never confirmed).
+ * Concatenating also covers a present-but-stale mail.log: the parser groups by
+ * queue-id and keeps the most final status, so duplicated lines are harmless.
+ *
+ * `-u 'postfix*'` is a journalctl unit glob (constant, nothing interpolated)
+ * covering both `postfix.service` and Debian's instanced `postfix@-.service`;
+ * `-o short` is the syslog-like format the parser already understands. Each
+ * source silences its own errors and the pipeline ends in `tail`, so the remote
+ * command always exits 0 (the SSH runner rejects non-zero exits).
+ */
+export function buildMailLogReadCommand(logPath: string, scanLines: number): string {
+  return `{ tail -${scanLines} ${shellSingleQuote(logPath)} 2>/dev/null; journalctl -q --no-pager -o short -u 'postfix*' -n ${scanLines} 2>/dev/null; }`;
+}
+
 async function runTailGrep(
   input: CollectDeliveryReasonInput,
   logPath: string,
@@ -174,7 +192,7 @@ async function runTailGrep(
   const result = await input.sshRunner.run({
     serverSlug: input.serverSlug,
     serverIp: input.serverIp,
-    command: `tail -${scanLines} ${shellSingleQuote(logPath)} | grep -F ${shellSingleQuote(needle)} | tail -40`,
+    command: `${buildMailLogReadCommand(logPath, scanLines)} | grep -F ${shellSingleQuote(needle)} | tail -40`,
     timeoutMs: 30_000
   });
   return result.stdout;
@@ -206,7 +224,7 @@ export async function collectDeliveryReason(
       const result = await input.sshRunner.run({
         serverSlug: input.serverSlug,
         serverIp: input.serverIp,
-        command: `tail -${scanLines} ${shellSingleQuote(logPath)}`,
+        command: `${buildMailLogReadCommand(logPath, scanLines)} | tail -${scanLines}`,
         timeoutMs: 30_000
       });
       queueLog = result.stdout;
