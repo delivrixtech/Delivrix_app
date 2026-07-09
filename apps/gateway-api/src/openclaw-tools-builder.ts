@@ -432,7 +432,7 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
   read_delivery_reason: {
     spec: {
       name: "read_delivery_reason",
-      description: "Devuelve el motivo REAL de entrega/rebote de un correo en un servidor SMTP propio leyendo mail.log de Postfix por SSH del lado del gateway (el agente NO ejecuta SSH). Resuelve el queue-id desde el message-id y reporta status final (sent/bounced/deferred/expired), codigo SMTP (ej 550), codigo DSN (ej 5.7.1), destinatario, relay y motivo textual. Invocar para diagnosticar por que rebota un mensaje en vez de asumir 'puerto 25 bloqueado' u otras causas sin evidencia. Lectura auditada: no envia ni muta nada y no requiere ApprovalGate.",
+      description: "Devuelve el motivo REAL de entrega/rebote de un correo en un servidor SMTP propio leyendo mail.log/journald de Postfix por SSH del lado del gateway (el agente NO ejecuta SSH). Resuelve el queue-id desde el message-id y reporta status final (sent/bounced/deferred/expired), codigo SMTP (ej 550), codigo DSN (ej 5.7.1), destinatario, relay y motivo textual. Invocar para diagnosticar por que rebota un mensaje en vez de asumir 'puerto 25 bloqueado' u otras causas sin evidencia. Lectura auditada: no envia ni muta nada y no requiere ApprovalGate.",
       input_schema: {
         type: "object",
         required: ["serverSlug", "serverIp", "messageId"],
