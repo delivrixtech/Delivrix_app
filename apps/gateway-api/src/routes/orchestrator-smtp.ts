@@ -4593,6 +4593,19 @@ async function resolveCreationAccount(input: {
   // Cuentas write-capable a evaluar. Sin la dep multicuenta (o vacia) => single-account "ops"
   // de hoy (1 iteracion, byte-identico). De-dup ya viene resuelto por el productor (1 por cuenta).
   const allWriteCapable = await resolveWriteCapableCreationAccounts(input.deps);
+  if (allWriteCapable.length === 0) {
+    await audit(input.deps, "oc.orchestrator.no_write_capable_account", "openclaw_orchestrator_run", input.runId, "critical", {
+      runId: input.runId,
+      error: "no_write_capable_account",
+      detail: "ninguna cuenta Webdock write-capable configurada (par _WRITE+_ACCOUNT u ops)"
+    });
+    throw new OrchestratorFailure(
+      "failed",
+      input.step,
+      input.skill,
+      "no_write_capable_account: none_configured"
+    );
+  }
   if (input.requestedAccountId) {
     return resolveRequestedCreationAccount({
       ...input,
@@ -4821,6 +4834,8 @@ async function resolveWriteCapableCreationAccounts(
   deps: ConfigureCompleteSmtpDeps
 ): Promise<WebdockCreationAccount[]> {
   if (!deps.listCreationAccounts) {
+    // Compat de harness/tests: en produccion main.ts SIEMPRE inyecta la dep. Sin ella se asume
+    // el single-account "ops" de siempre (quitar este branch romperia el harness de tests).
     return [{ accountId: DEFAULT_CREATION_ACCOUNT_ID, enabled: true }];
   }
   const accounts = await deps.listCreationAccounts();
@@ -4832,7 +4847,10 @@ async function resolveWriteCapableCreationAccounts(
       ...(account.lifecycleStatus ? { lifecycleStatus: account.lifecycleStatus } : {})
     }))
     .filter((account) => account.accountId.length > 0);
-  return normalized.length > 0 ? normalized : [{ accountId: DEFAULT_CREATION_ACCOUNT_ID, enabled: true }];
+  // Dep presente y lista vacia = NO hay ninguna cuenta write-capable real. Antes se inventaba
+  // una cuenta "ops" fantasma con enabled=true (aunque no tuviera keys) y el fallo aparecia
+  // recien en el create real. Ahora se devuelve vacio y el caller falla limpio.
+  return normalized;
 }
 
 async function assertRequestedCreationAccountSnapshotEligible(input: {

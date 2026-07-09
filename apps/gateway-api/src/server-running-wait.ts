@@ -137,7 +137,13 @@ function resolveServerRunningAdapter(input: {
   }
   const accountId = input.serverAccountId?.trim() || "ops";
   if (accountId === "ops") return input.adapters.webdockOpsAdapter;
-  return input.adapters.webdockCreateAdapters.get(accountId) ?? input.adapters.webdockOpsAdapter;
+  const accountAdapter = input.adapters.webdockCreateAdapters.get(accountId);
+  if (!accountAdapter) {
+    // Espejo del throw de provider de arriba: una cuenta desconocida no debe caer en
+    // silencio a la cuenta-1 (esperaria el server en la cuenta equivocada, timeouts falsos).
+    throw new Error(`unknown_server_account:${accountId}`);
+  }
+  return accountAdapter;
 }
 
 function normalizeRuntimeProviderId(value: string | undefined): string | undefined {
