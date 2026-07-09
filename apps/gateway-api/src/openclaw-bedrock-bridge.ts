@@ -1232,8 +1232,9 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       "",
       "## sender_pool (GET /v1/sender-pool/status)",
       "Credenciales SMTP: usa solo hasCredential/host/ports/username. Nunca pidas ni muestres passwords; dirige al panel Sender Pool para descargar.",
+      "Dominios en needs_reconciliation NO son elegibles para nuevas tandas: primero reconcilia (register_domain_route53 idempotente o resume del run existente). Van excluidos del listado (ver excludedNeedsReconciliation).",
       "```json",
-      stringifyLiveContext(senderPool, 3000),
+      stringifyLiveContext(summarizeSenderPool(senderPool), 3000),
       "```",
       "",
       "## overview (GET /v1/admin/overview)",
@@ -2144,6 +2145,29 @@ function truncateLiveContext(value: string, maxLength: number): string {
   }
   const closing = "\n<!-- live_context_truncated -->\n</live_context>";
   return `${value.replace(/\n<\/live_context>$/, "").slice(0, Math.max(0, maxLength - closing.length))}${closing}`;
+}
+
+/**
+ * Filtra del live-context los dominios en needs_reconciliation: el agente los sugería para
+ * tandas nuevas y el run moría en la reconciliación pendiente. Se listan aparte en
+ * excludedNeedsReconciliation (transparencia) y el panel del operador NO se toca — este filtro
+ * vive solo en el contexto del agente (buildSenderPoolStatus sigue devolviendo todo).
+ */
+function summarizeSenderPool(senderPool: unknown): unknown {
+  if (!senderPool || typeof senderPool !== "object" || isEndpointError(senderPool)) return senderPool;
+  const record = senderPool as Record<string, unknown>;
+  if (!Array.isArray(record.domains)) return senderPool;
+  const excluded: string[] = [];
+  const domains = record.domains.filter((entry) => {
+    if (entry && typeof entry === "object" && (entry as Record<string, unknown>).status === "needs_reconciliation") {
+      const domain = (entry as Record<string, unknown>).domain;
+      excluded.push(typeof domain === "string" ? domain : "unknown");
+      return false;
+    }
+    return true;
+  });
+  if (excluded.length === 0) return senderPool;
+  return { ...record, domains, excludedNeedsReconciliation: excluded };
 }
 
 function summarizeInventoryDomains(infrastructure: unknown, limit: number): Record<string, unknown> {

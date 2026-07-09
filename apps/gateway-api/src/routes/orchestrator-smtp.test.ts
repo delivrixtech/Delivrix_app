@@ -1966,6 +1966,51 @@ test("configureCompleteSmtp backfills serverIpv4 from completed step outcomes on
   assert.equal(state.serverIpv4, "203.0.113.10");
 });
 
+test("PROVIDER#reuse-tolerante contabo + reuseServerSlug se IGNORA (audit) y el run sigue sin reuse", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ vpsProviderId: "contabo", reuseServerSlug: "server60" })
+  });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    vpsProviderId: "contabo",
+    reuseServerSlug: "server60"
+  }, ctx.deps);
+
+  // Antes: reuse_server_unsupported_for_provider tumbaba el run. Ahora el param se ignora.
+  assert.equal(result.status, "completed", result.error);
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4);
+  assert.ok(step4, "el create (step 4) debe ejecutarse: sin reuse");
+  assert.equal(step4.providerId, "contabo");
+  const ignoreAudit = ctx.auditEvents.find((event) => event.action === "oc.orchestrator.reuse_server_slug_ignored");
+  assert.ok(ignoreAudit);
+  const ignoreMetadata = ignoreAudit.metadata as { vpsProviderId?: unknown; requestedReuseServerSlug?: unknown };
+  assert.equal(ignoreMetadata.vpsProviderId, "contabo");
+  assert.equal(ignoreMetadata.requestedReuseServerSlug, "server60");
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.reuseServerSlug, undefined);
+});
+
+test("PROVIDER#reuse-tolerante webdock + reuseServerSlug malformado SIGUE fallando (reuse si aplica ahi)", async () => {
+  const ctx = createDeps();
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    reuseServerSlug: "-bad-"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.match(result.error ?? "", /invalid_reuse_server_slug/);
+  assert.equal(ctx.approvals.some((entry) => entry.step === 4), false);
+});
+
 test("PROVIDER#e gated + vpsProviderId='contabo' => falla LIMPIO gated_provider_unsupported ANTES de crear (no VPS huerfano)", async () => {
   // Camino GATED (sin OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE): el processor gated single-account NO
   // recibe el providerId, asi que crearia el VPS en Webdock mientras el rollback enrutaria a Contabo
