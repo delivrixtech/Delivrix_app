@@ -784,6 +784,16 @@ const configureSmtpRuntimeDeps = {
     throw new Error(`unsupported_read_only_orchestrator_step:${input.skill}`);
   },
   listCreationAccounts: () => listWebdockCreationAccounts(),
+  preflightCreationAccount: async (input: { accountId: string }) => {
+    // Mismo lookup fail-clean que listWebdockCreationServers: cuenta desconocida = rechazo.
+    const adapter = input.accountId === "ops"
+      ? webdockOpsAdapter
+      : webdockCreateAdapters.get(input.accountId);
+    if (!adapter) {
+      return { ok: false, reason: `unknown_server_account:${input.accountId}` };
+    }
+    return adapter.verifyCreateCredentials();
+  },
   listWebdockCreationServers: async (input: { accountId: string }) => {
     // Resolver el adapter de la cuenta pedida (5.12). "ops" => webdockOpsAdapter (cuenta-1,
     // byte-identico). Cuenta DESCONOCIDA => error limpio: el fallback silencioso a cuenta-1
