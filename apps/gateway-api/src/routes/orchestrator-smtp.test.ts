@@ -255,6 +255,104 @@ test("configureCompleteSmtp fails when post-smoke Authentication-Results misses 
   assert.equal(((failure.metadata as { details?: Record<string, string> }).details ?? {}).dmarc, "missing");
 });
 
+test("configureCompleteSmtp auto-reintenta el step 14 retryable y completa al segundo intento", async () => {
+  const ctx = createDeps({
+    env: {
+      OPENCLAW_SEND_REAL_EMAIL_MAX_ATTEMPTS: "3",
+      OPENCLAW_SEND_REAL_EMAIL_RETRY_BACKOFF_MS: "5"
+    },
+    outcomeSequences: {
+      14: [
+        { error: "email_auth_incomplete", details: { spf: true, dkim: false, dmarc: true } },
+        { messageId: "<delivrix-retry-ok@delivrixops.com>", deliveryStatus: "sent" }
+      ]
+    }
+  });
+
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "completed", result.error);
+  assert.equal(result.finalEmailMessageId, "<delivrix-retry-ok@delivrixops.com>");
+  assert.equal(ctx.approvals.filter((entry) => entry.step === 14).length, 2);
+  const retryAudit = ctx.auditEvents.find((event) => event.action === "oc.orchestrator.send_retry_scheduled");
+  assert.ok(retryAudit);
+  const retryMetadata = retryAudit.metadata as { attempt?: unknown; maxAttempts?: unknown; errorCode?: unknown };
+  assert.equal(retryMetadata.attempt, 1);
+  assert.equal(retryMetadata.maxAttempts, 3);
+  assert.equal(retryMetadata.errorCode, "email_auth_incomplete");
+  const fullState = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(fullState.status, "completed");
+  assert.equal(fullState.sendAttempts, 2);
+});
+
+test("configureCompleteSmtp NO reintenta un error de envio no retryable", async () => {
+  const ctx = createDeps({
+    env: {
+      OPENCLAW_SEND_REAL_EMAIL_MAX_ATTEMPTS: "3",
+      OPENCLAW_SEND_REAL_EMAIL_RETRY_BACKOFF_MS: "5"
+    },
+    outcomes: {
+      14: { error: "recipient_burner", details: { reason: "recipient_is_burner_domain" } }
+    }
+  });
+
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 14);
+  assert.match(result.error ?? "", /^recipient_burner/);
+  assert.equal(ctx.approvals.filter((entry) => entry.step === 14).length, 1);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.send_retry_scheduled"), false);
+  const fullState = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(fullState.failureCategory, undefined);
+});
+
+test("configureCompleteSmtp agota los reintentos retryables y clasifica send_retry_exhausted", async () => {
+  const ctx = createDeps({
+    env: {
+      OPENCLAW_SEND_REAL_EMAIL_MAX_ATTEMPTS: "2",
+      OPENCLAW_SEND_REAL_EMAIL_RETRY_BACKOFF_MS: "5"
+    },
+    outcomes: {
+      14: { error: "email_auth_incomplete", details: { spf: true, dkim: false, dmarc: true } }
+    }
+  });
+
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 14);
+  assert.match(result.error ?? "", /^email_auth_incomplete/);
+  assert.equal(result.retryable, true);
+  assert.equal(result.failureKind, "send_retry_exhausted");
+  assert.equal(ctx.approvals.filter((entry) => entry.step === 14).length, 2);
+  assert.equal(ctx.rollbacks.length, 0);
+  const state = await readRunState(ctx.workspace, "run-1");
+  assert.equal(state.steps["14"], undefined);
+  const fullState = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(fullState.failureCategory, "send_retry_exhausted");
+  assert.equal(fullState.retryableFailure, true);
+  assert.equal(fullState.sendAttempts, 2);
+});
+
+test("configureCompleteSmtp sin env vars de retry mantiene 1 solo intento de envio", async () => {
+  const ctx = createDeps({
+    outcomes: {
+      14: { error: "email_auth_incomplete", details: { spf: true, dkim: false, dmarc: true } }
+    }
+  });
+
+  const result = await configureCompleteSmtp(validInput(), ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 14);
+  assert.equal(ctx.approvals.filter((entry) => entry.step === 14).length, 1);
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.send_retry_scheduled"), false);
+  const fullState = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(fullState.failureCategory, undefined);
+  assert.equal(fullState.sendAttempts, undefined);
+});
+
 test("configureCompleteSmtp chooses the first suggested domain", async () => {
   const ctx = createDeps();
   await configureCompleteSmtp(validInput(), ctx.deps);
@@ -3418,6 +3516,8 @@ function createDeps(options: {
   decisions?: Record<number, ApprovalStepDecision>;
   planDecisions?: Record<number, PlanApprovedStepDecision>;
   outcomes?: Record<number, unknown>;
+  // Outcome por invocacion del mismo step (se consume con shift); al agotarse cae a outcomes.
+  outcomeSequences?: Record<number, unknown[]>;
   suggestions?: unknown;
   killSwitchEnabled?: boolean;
   auditOk?: boolean;
@@ -3486,6 +3586,11 @@ function createDeps(options: {
     steps: Array<{ step: number; tool: string; inputHash: string; outcome: string; proposalId?: string; outcomeData?: Record<string, unknown> }>;
   }> = [];
   let verifyCount = 0;
+  const stepOutcome = (step: number): unknown => {
+    const sequence = options.outcomeSequences?.[step];
+    if (sequence && sequence.length > 0) return sequence.shift();
+    return options.outcomes?.[step] ?? defaultOutcome(step);
+  };
   const workspace = new OpenClawWorkspace({
     rootDir: mkdtempSync(join(tmpdir(), "openclaw-smtp-orchestrator-test-")),
     now: () => new Date("2026-05-31T12:00:00.000Z")
@@ -3573,7 +3678,7 @@ function createDeps(options: {
           status: "executed",
           proposalId: `proposal-${input.step}`,
           signatureId: `sig-${input.step}`,
-          outcome: options.outcomes?.[input.step] ?? defaultOutcome(input.step),
+          outcome: stepOutcome(input.step),
           durationMs: input.step
         };
       },
@@ -3589,7 +3694,7 @@ function createDeps(options: {
           status: "executed" as const,
           planStepTokenId: `plan-step-${input.step}`,
           signatureId: input.planApproval.signatureId,
-          outcome: options.outcomes?.[input.step] ?? defaultOutcome(input.step),
+          outcome: stepOutcome(input.step),
           durationMs: input.step,
           statusCode: 200
         };
