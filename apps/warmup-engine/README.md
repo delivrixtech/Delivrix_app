@@ -49,6 +49,11 @@ apps/warmup-engine/
     checks/          CHECKS de auth de Fase 1 (§8) — puros, con resolvers/probes INYECTABLES:
       dns-auth-checks.ts   SPF / DKIM / DMARC / MX (DnsResolver inyectable)
       ip-network-checks.ts PTR-FCrDNS / RBL (Spamhaus/Barracuda/SpamCop) / TLS / HELO / dedicated-IP
+      liveness-checks.ts   SMTP_AUTH / IMAP_AUTH (probes; credenciales por REFERENCIA, nunca en claro)
+                           / TRACKING_DOMAIN_CLEAN (DBL/SURBL/URIBL) / ONECLICK_UNSUB_CAP (RFC 8058)
+    reader/          Inbox Reader de placement (§9):
+      imap-placement-reader.ts  lee los seed inboxes EXTERNOS por IMAP, clasifica LandedIn
+                                (Gmail labels: tabs=inbox, spam gana; missing≠spam) + grace window t+2m…t+6h
     runtime/         RUNTIME (§7/§8/§13) — la costura hacia el mundo real:
       auth-gate.ts             gate FAIL-CLOSED (§8): "ningún nodo envía sin contrato `ready`".
       auth-contract-builder.ts corre los checkers → agrega verdicts → firma el AuthReadinessContract
@@ -75,13 +80,14 @@ El transporte queda **pluggable desde el día 1** para enchufar M365 en v2 sin r
 | **4** | Rampa lenta + auto-pause por placement + observabilidad | FRESH→WARM por placement; auto-pausa a <0.70 |
 | **5** | Endurecimiento: RBL/ASN monitoring, bounce handling, runbooks | Track A autosuficiente y monitoreado |
 
-**Estado actual:** Fase 0 completa + **Fase 1 (auth) sobre mocks**. Los checks del §8 están
-implementados como funciones puras con resolvers inyectables (SPF/DKIM/DMARC/MX + PTR-FCrDNS/RBL/TLS/
-HELO/dedicated-IP) y el `auth-contract-builder` los agrega en un `AuthReadinessContract` firmado que
-el gate fail-closed consume. **Pendiente del §8 (siguiente slice):** `SMTP_AUTH`, `IMAP_AUTH`,
-`TRACKING_DOMAIN_CLEAN`, `ONECLICK_UNSUB_CAP` — hasta implementarlos quedan `unknown` (fail-closed:
-un nodo NO llega a `ready`). El cableado de los resolvers/transporte **reales** (DNS/RBL/SMTP/IMAP en
-vivo) y el scheduler/colas solo se conectan detrás de `WARMUP_ENGINE_ENABLE`; nada corre en deploy.
+**Estado actual:** Fase 0 completa + **Fase 1 auth completa sobre mocks**. Los **13 checks del §8**
+están implementados como funciones puras con resolvers/probes inyectables (DNS: SPF/DKIM/DMARC/MX ·
+IP/red: PTR-FCrDNS/RBL/TLS/HELO/dedicated-IP · liveness: SMTP_AUTH/IMAP_AUTH/TRACKING_DOMAIN_CLEAN/
+ONECLICK_UNSUB_CAP). El `auth-contract-builder` los agrega en un `AuthReadinessContract` firmado que
+el gate fail-closed consume (`PENDING_V1_CHECKS` ya está vacío). Además, el **Inbox Reader IMAP**
+clasifica el placement desde los seed inboxes externos. Todo **sobre mocks**: el cableado de los
+resolvers/probes/transporte **reales** (DNS/RBL/SMTP/IMAP en vivo) y el scheduler/colas solo se
+conectan detrás de `WARMUP_ENGINE_ENABLE`; nada corre ni envía en deploy.
 
 ## v2 — diferido (solo si entra cold outreach de agencia)
 

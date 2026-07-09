@@ -9,9 +9,13 @@ export * from "./domain/placement.ts";
 export * from "./domain/node-state.ts";
 export * from "./domain/auth-checks.ts";
 
-// --- Checks de auth de Fase 1 (§8): puros, con resolvers inyectables (mocks en tests) ---
+// --- Checks de auth de Fase 1 (§8): puros, con resolvers/probes inyectables (mocks en tests) ---
 export * from "./checks/dns-auth-checks.ts";
 export * from "./checks/ip-network-checks.ts";
+export * from "./checks/liveness-checks.ts";
+
+// --- Inbox Reader de placement (§9): clasifica LandedIn desde los seed inboxes externos por IMAP ---
+export * from "./reader/imap-placement-reader.ts";
 
 // --- Runtime de la Fase 0 (§7/§8/§13): el gate "ningún nodo envía sin contrato ready" ---
 export {
