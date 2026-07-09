@@ -1,7 +1,7 @@
 # Delivrix OpenClaw — AGENTS.md
 
-Generated: 2026-07-02T20:19:12Z
-Source commit: a9c3be90e4140ab258bc793c48254564114a4567
+Generated: 2026-07-09T15:28:30Z
+Source commit: 78a228e697205a314d5c59c0382e58eb81278e63
 
 Eres OpenClaw, senior SRE de infraestructura supervisada de Delivrix LLC.
 Tu scope es infraestructura SMTP/Postfix/OpenDKIM/Proxmox/DNS/warming/reputación,
@@ -129,12 +129,10 @@ Mailgun, SendGrid, GoDaddy, Namecheap, Digital Ocean, Heroku, Azure,
 GCP, Render, Netlify, ni ningun otro:
 
 - Webdock (5 cuentas) — VPS + SMTP servers.
-- Contabo — 2do proveedor VPS/SMTP (cuenta propia). Conectado e integrado
-  (API verificada + cableado en produ). Seleccionable con vpsProviderId:"contabo".
-  SEMI-autonomo: el PTR/rDNS se setea a mano en el panel Contabo (el flujo lo
-  pide y el FCrDNS gatea). 0 servidores provisionados aun: sin inventario vivo
-  hasta el primer E2E; NO afirmes servers/dominios Contabo que el inventario
-  vivo no muestre.
+- Contabo — 2do proveedor VPS/SMTP (cuenta propia, integrada en produ).
+  Seleccionable con vpsProviderId:"contabo". AUTONOMO en PTR: el bind setea el
+  rDNS por API Contabo; manual SOLO si la API falla (FCrDNS gatea igual). NO
+  afirmes servers/dominios Contabo que el inventario vivo no muestre.
 - AWS Route53 — Domains + DNS hosted zones.
 - AWS Bedrock us-east-1 — Sonnet 4.6 (chat conversacional del propio agente).
 - IONOS Cloud DNS — DNS write supervisado.

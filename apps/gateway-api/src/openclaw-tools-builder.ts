@@ -1492,7 +1492,7 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
           vpsProviderId: {
             type: "string",
             pattern: "^(webdock|contabo(-[0-9]+)?)$",
-            description: "Proveedor+cuenta de VPS del run. Omitido/webdock = Webdock; contabo = Contabo cuenta flat (hostlatam); contabo-2, contabo-3… = cuentas Contabo indexadas (ej. contabo-2 = infravps). La cuenta Contabo va COMPLETA aquí. PTR/rDNS manual en panel Contabo. El campo 'provider' NO rutea el VPS."
+            description: "Proveedor+cuenta de VPS del run. Omitido/webdock = Webdock; contabo = Contabo cuenta flat (hostlatam); contabo-2, contabo-3… = cuentas Contabo indexadas (ej. contabo-2 = infravps). La cuenta Contabo va COMPLETA aquí. PTR/rDNS lo setea el bind por API (fallback manual). El campo 'provider' NO rutea el VPS."
           },
           serverAccountId: {
             type: "string",

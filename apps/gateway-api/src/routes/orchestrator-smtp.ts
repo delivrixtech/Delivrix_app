@@ -699,11 +699,14 @@ export async function configureCompleteSmtp(
 
     const requestedServerAccountId = normalizeServerAccountId(effectiveInput.serverAccountId);
     const initialVpsProviderId = resolveVpsProviderId(effectiveInput, runState);
-    const initialReuseServerSlug = normalizeReuseServerSlug(effectiveInput.reuseServerSlug);
     assertKnownNonWebdockVpsProviderId(initialVpsProviderId);
-    if (initialReuseServerSlug && isNonWebdockProviderId(initialVpsProviderId)) {
-      throw new OrchestratorFailure("failed", 0, "reuse_server_guard", `reuse_server_unsupported_for_provider:${initialVpsProviderId}`);
-    }
+    const initialReuseServerSlug = await resolveReuseServerSlugForProvider({
+      deps,
+      rawValue: effectiveInput.reuseServerSlug,
+      vpsProviderId: initialVpsProviderId,
+      runId,
+      auditIgnore: true
+    });
     if (initialReuseServerSlug) {
       // Guard temprano: el slug a reusar debe existir en webdock-servers.json ANTES de cualquier
       // paso con costo (la compra de dominio del step 2). Un slug inexistente no debe dejar un run
@@ -988,9 +991,18 @@ export async function configureCompleteSmtp(
     if (vpsProviderId) {
       runState.providerId = vpsProviderId;
     }
-    let reuseServerSlug = normalizeReuseServerSlug(effectiveInput.reuseServerSlug);
-    if (reuseServerSlug && isNonWebdockProviderId(vpsProviderId)) {
-      throw new OrchestratorFailure("failed", 0, "reuse_server_guard", `reuse_server_unsupported_for_provider:${vpsProviderId}`);
+    let reuseServerSlug = await resolveReuseServerSlugForProvider({
+      deps,
+      rawValue: effectiveInput.reuseServerSlug,
+      vpsProviderId,
+      runId,
+      // el guard temprano (pre-run) ya audito el ignore; aca solo se aplica.
+      auditIgnore: false
+    });
+    if (!reuseServerSlug && isNonWebdockProviderId(vpsProviderId) && runState.reuseServerSlug) {
+      // Limpia un slug persistido por un run-state viejo para que el resume firmado no compare
+      // contra un valor que este flujo ignora.
+      delete runState.reuseServerSlug;
     }
     // Safety + autonomía: si NO vino reuseServerSlug pero smtp.<dominio> ya resuelve a un server vivo
     // de la flota local, REUSAR ese server en vez de crear uno nuevo. Evita que un rescate donde el
@@ -1914,7 +1926,11 @@ async function loadOrCreateSmtpRunState(input: {
       testEmailBody: input.params.testEmailBody,
       seedInboxes: seedInboxesForRun(input.params, input.deps.env)
     },
-    ...(input.params.reuseServerSlug ? { reuseServerSlug: normalizeReuseServerSlug(input.params.reuseServerSlug) } : {}),
+    // reuse solo esta soportado en Webdock: para proveedores no-Webdock el slug se ignora aca
+    // (el guard tolerante del flujo lo audita) en vez de tumbar el run por un param del agente.
+    ...(input.params.reuseServerSlug && !isNonWebdockProviderId(normalizeVpsProviderId(input.params.vpsProviderId))
+      ? { reuseServerSlug: normalizeReuseServerSlug(input.params.reuseServerSlug) }
+      : {}),
     ...(input.params.domain ? { chosenDomain: normalizeDomain(input.params.domain), smtpHost: smtpHostForDomain(normalizeDomain(input.params.domain)) } : {}),
     selector: "s2026a",
     budgetSpentUsd: 0,
@@ -5276,6 +5292,40 @@ function normalizeReuseServerSlug(value: unknown): string | undefined {
     throw new OrchestratorFailure("failed", 0, "reuse_server_guard", "invalid_reuse_server_slug");
   }
   return normalized;
+}
+
+/**
+ * Guard TOLERANTE de reuseServerSlug: reuse solo esta soportado en Webdock. Si el run pide un
+ * proveedor no-Webdock (familia Contabo) con reuseServerSlug — un error tipico del agente — el
+ * parametro se IGNORA (log + audit) y el run sigue sin reuse, en vez de tumbarlo. El chequeo de
+ * provider corre ANTES de normalizar, asi un slug malformado tampoco tumba el run en Contabo.
+ * Para Webdock se mantiene el throw por formato invalido: ahi reuse SI aplica y "ignorar" un
+ * typo podria crear un VPS con costo.
+ */
+async function resolveReuseServerSlugForProvider(input: {
+  deps: ConfigureCompleteSmtpDeps;
+  rawValue: unknown;
+  vpsProviderId: string | undefined;
+  runId: string;
+  auditIgnore: boolean;
+}): Promise<string | undefined> {
+  if (isNonWebdockProviderId(input.vpsProviderId) && typeof input.rawValue === "string" && input.rawValue.trim()) {
+    const requested = input.rawValue.trim().toLowerCase().slice(0, 120);
+    void (input.deps.logger ?? noopGatewayRuntimeLogger).info(
+      "openclaw.orchestrator.reuse_server_slug_ignored",
+      "configure_complete_smtp ignoró reuseServerSlug: reuse solo está soportado en Webdock.",
+      { runId: input.runId, vpsProviderId: input.vpsProviderId, requestedReuseServerSlug: requested }
+    );
+    if (input.auditIgnore) {
+      await audit(input.deps, "oc.orchestrator.reuse_server_slug_ignored", "openclaw_orchestrator_run", input.runId, "medium", {
+        runId: input.runId,
+        vpsProviderId: input.vpsProviderId,
+        requestedReuseServerSlug: requested
+      });
+    }
+    return undefined;
+  }
+  return normalizeReuseServerSlug(input.rawValue);
 }
 
 /**
