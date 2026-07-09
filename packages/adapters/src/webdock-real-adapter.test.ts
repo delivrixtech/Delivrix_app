@@ -3,6 +3,9 @@ import test from "node:test";
 import {
   buildWebdockCreateRegistry,
   createWebdockAdaptersFromEnv,
+  hasAnyWebdockReadCredentialEnv,
+  hasWriteCapableWebdockCreationAccountEnv,
+  WEBDOCK_DISTINCT_ACCOUNT_ROLES,
   WebdockAdapterError,
   WebdockRealAdapter
 } from "./webdock-real-adapter.ts";
@@ -628,4 +631,72 @@ test("DoD#4 de-dup: una cuenta DISTINTA write-capable entra al registry SIN infl
   assert.deepEqual([...registry.keys()].sort(), ["ops", "secondary"], "ops (cuenta-1 de-dupeada) + secondary write-capable; tertiary read-only excluida");
   const secondary = entries.find((e) => e.id === "secondary");
   assert.equal(registry.get("secondary"), secondary?.adapter, "secondary apunta a su adapter aislado (token propio)");
+});
+
+// --- Fuente única de roles (WEBDOCK_DISTINCT_ACCOUNT_ROLES) -------------------
+
+test("la constante de roles gobierna el factory: ids y labels byte-identicos a la lista previa", () => {
+  const accounts = createWebdockAdaptersFromEnv({
+    WEBDOCK_API_KEY_SECONDARY: "s-read",
+    WEBDOCK_API_KEY_TERTIARY: "t-read",
+    WEBDOCK_API_KEY_QUATERNARY: "q4-read",
+    WEBDOCK_API_KEY_QUINARY: "q5-read"
+  });
+
+  assert.deepEqual(accounts.map((account) => [account.id, account.label]), [
+    ["secondary", "Webdock Secondary"],
+    ["tertiary", "Webdock Tertiary"],
+    ["quaternary", "Webdock Quaternary"],
+    ["quinary", "Webdock Quinary"]
+  ]);
+  assert.deepEqual([...WEBDOCK_DISTINCT_ACCOUNT_ROLES], ["SECONDARY", "TERTIARY", "QUATERNARY", "QUINARY"]);
+});
+
+test("hasWriteCapableWebdockCreationAccountEnv: matriz de combinaciones", () => {
+  // Cuenta distinta write-capable (par _WRITE + _ACCOUNT) => true, sin cuenta-1.
+  assert.equal(hasWriteCapableWebdockCreationAccountEnv({
+    WEBDOCK_API_KEY_QUINARY_WRITE: "w",
+    WEBDOCK_API_KEY_QUINARY_ACCOUNT: "a"
+  }), true);
+  // Solo read de la cuenta distinta => false (no puede crear).
+  assert.equal(hasWriteCapableWebdockCreationAccountEnv({
+    WEBDOCK_API_KEY_QUINARY: "r"
+  }), false);
+  // Write sin account => false (canCreate exige el par).
+  assert.equal(hasWriteCapableWebdockCreationAccountEnv({
+    WEBDOCK_API_KEY_SECONDARY_WRITE: "w"
+  }), false);
+  // Cuenta-1: OPS o legacy => true.
+  assert.equal(hasWriteCapableWebdockCreationAccountEnv({ WEBDOCK_API_KEY_OPS: "k" }), true);
+  assert.equal(hasWriteCapableWebdockCreationAccountEnv({ WEBDOCK_API_KEY: "k" }), true);
+  // PRIMARY solo-read cuenta como write: mentira PREEXISTENTE del gate historico,
+  // preservada a proposito por byte-identidad (documentada en la funcion).
+  assert.equal(hasWriteCapableWebdockCreationAccountEnv({ WEBDOCK_API_KEY_PRIMARY: "k" }), true);
+  // Vacio => false.
+  assert.equal(hasWriteCapableWebdockCreationAccountEnv({}), false);
+});
+
+test("hasAnyWebdockReadCredentialEnv: cualquier read key de cuenta-1 o distinct satisface", () => {
+  assert.equal(hasAnyWebdockReadCredentialEnv({ WEBDOCK_API_KEY_PRIMARY: "k" }), true);
+  assert.equal(hasAnyWebdockReadCredentialEnv({ WEBDOCK_API_KEY: "k" }), true);
+  assert.equal(hasAnyWebdockReadCredentialEnv({ WEBDOCK_API_KEY_QUINARY: "k" }), true);
+  assert.equal(hasAnyWebdockReadCredentialEnv({ WEBDOCK_API_KEY_SECONDARY: "k" }), true);
+  assert.equal(hasAnyWebdockReadCredentialEnv({ WEBDOCK_API_KEY_QUINARY_WRITE: "w" }), false);
+  assert.equal(hasAnyWebdockReadCredentialEnv({}), false);
+});
+
+test("consistencia gate <-> canCreate() del registry para cuentas distinct", () => {
+  const writeCapableEnv = {
+    WEBDOCK_API_KEY_QUINARY: "r",
+    WEBDOCK_API_KEY_QUINARY_WRITE: "w",
+    WEBDOCK_API_KEY_QUINARY_ACCOUNT: "a"
+  };
+  const readOnlyEnv = { WEBDOCK_API_KEY_QUINARY: "r" };
+
+  for (const [env, expected] of [[writeCapableEnv, true], [readOnlyEnv, false]] as const) {
+    const quinary = createWebdockAdaptersFromEnv(env).find((entry) => entry.id === "quinary");
+    assert.ok(quinary);
+    assert.equal(quinary.adapter.canCreate(), expected);
+    assert.equal(hasWriteCapableWebdockCreationAccountEnv(env), expected);
+  }
 });

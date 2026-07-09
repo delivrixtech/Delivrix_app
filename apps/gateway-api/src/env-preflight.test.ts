@@ -168,3 +168,40 @@ test("consistencia: el catalogo sano habilita configure_complete_smtp en el buil
     `configure_complete_smtp deberia estar habilitado; tools: ${names.join(", ")}`
   );
 });
+
+test("checkEnvPreflight: setup solo-QUINARY valido no da warnings Webdock (fuente unica)", () => {
+  const env = healthyEnvFromCatalog();
+  delete env.WEBDOCK_API_KEY_PRIMARY;
+  delete env.WEBDOCK_API_KEY_OPS;
+  delete env.WEBDOCK_API_KEY;
+  env.WEBDOCK_API_KEY_QUINARY = "abcdef0123456789abcdef0123456789abcdef0123456789";
+  env.WEBDOCK_API_KEY_QUINARY_WRITE = "abcdef0123456789abcdef0123456789abcdef0123456789";
+  env.WEBDOCK_API_KEY_QUINARY_ACCOUNT = "abcdef0123456789abcdef0123456789abcdef0123456789";
+
+  const result = checkEnvPreflight(env);
+  assert.equal(
+    result.warnings.some((i) => i.name === "WEBDOCK_API_KEY_PRIMARY" || i.name === "WEBDOCK_API_KEY_OPS"),
+    false,
+    "un setup solo-QUINARY write-capable no debe advertir sobre Webdock"
+  );
+});
+
+test("checkEnvPreflight: sin NINGUNA cuenta Webdock write-capable advierte claro", () => {
+  const env = healthyEnvFromCatalog();
+  delete env.WEBDOCK_API_KEY_PRIMARY;
+  delete env.WEBDOCK_API_KEY_OPS;
+  delete env.WEBDOCK_API_KEY;
+  // Solo read de una cuenta distinct: lecturas ok, escritura NO.
+  env.WEBDOCK_API_KEY_QUINARY = "abcdef0123456789abcdef0123456789abcdef0123456789";
+
+  const result = checkEnvPreflight(env);
+  assert.equal(
+    result.warnings.some((i) => i.name === "WEBDOCK_API_KEY_PRIMARY"),
+    false,
+    "hay read key (quinary), la lectura no debe advertir"
+  );
+  assert.ok(
+    result.warnings.some((i) => i.name === "WEBDOCK_API_KEY_OPS" && i.reason === "missing"),
+    "sin par _WRITE+_ACCOUNT en ninguna cuenta debe advertir la escritura"
+  );
+});
