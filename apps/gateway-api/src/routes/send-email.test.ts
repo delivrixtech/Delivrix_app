@@ -140,6 +140,28 @@ test("idempotency key suppresses duplicate real send before SSH", async () => {
   assert.equal(response.commands.length, 0);
 });
 
+test("failed send (decision reject) is not replayed by idempotency", async () => {
+  const route = await routeHarness();
+  await appendSentEvent(route.auditLog, {
+    occurredAt: "2026-05-31T17:59:30.000Z",
+    idempotencyKey: "run-idem-2",
+    runId: "run-idem-2",
+    messageId: "<delivrix-failed@sender.example>",
+    decision: "reject"
+  });
+
+  const response = await route(validBody({
+    idempotencyKey: "run-idem-2",
+    runId: "run-idem-2"
+  }));
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+  assert.notEqual(response.body.messageId, "<delivrix-failed@sender.example>");
+  assert.notEqual(response.body.postfixLogTail, "idempotent_replay_suppressed");
+  assert.equal(response.commands.some((command) => command.command.startsWith("swaks --to")), true);
+});
+
 test("Postfix not running blocks before send command", async () => {
   const route = await routeHarness({
     runnerFactory: (commands) => mockRunner(commands, {
@@ -504,7 +526,7 @@ async function appendSentEvents(auditLog: LocalFileAuditLog, count: number): Pro
 
 async function appendSentEvent(
   auditLog: LocalFileAuditLog,
-  input: { occurredAt: string; reservationEventId?: string; idempotencyKey?: string; runId?: string; messageId?: string }
+  input: { occurredAt: string; reservationEventId?: string; idempotencyKey?: string; runId?: string; messageId?: string; decision?: "allow" | "reject" }
 ): Promise<void> {
   await auditLog.append({
     occurredAt: input.occurredAt,
@@ -514,7 +536,7 @@ async function appendSentEvent(
     targetType: "webdock_server",
     targetId: "mail-sender-example",
     riskLevel: "critical",
-    decision: "allow",
+    decision: input.decision ?? "allow",
     humanApproved: true,
     metadata: {
       serverSlug: "mail-sender-example",
