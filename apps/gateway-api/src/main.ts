@@ -785,11 +785,17 @@ const configureSmtpRuntimeDeps = {
   },
   listCreationAccounts: () => listWebdockCreationAccounts(),
   listWebdockCreationServers: async (input: { accountId: string }) => {
-    // Resolver el adapter de la cuenta pedida (5.12). "ops"/desconocida => webdockOpsAdapter
-    // (cuenta-1, byte-identico al comportamiento previo: este mismo objeto se consultaba antes).
+    // Resolver el adapter de la cuenta pedida (5.12). "ops" => webdockOpsAdapter (cuenta-1,
+    // byte-identico). Cuenta DESCONOCIDA => error limpio: el fallback silencioso a cuenta-1
+    // hacia que el governor/preflight "validara" la cuenta equivocada (leia ops en vez de la
+    // pedida) y un typo de accountId pasara inadvertido. Los consumidores ya capturan el throw
+    // en categorias limpias (cuenta unhealthy / budget_unverifiable / requested_account_ineligible).
     const adapter = input.accountId === "ops"
       ? webdockOpsAdapter
-      : webdockCreateAdapters.get(input.accountId) ?? webdockOpsAdapter;
+      : webdockCreateAdapters.get(input.accountId);
+    if (!adapter) {
+      throw new Error(`unknown_server_account:${input.accountId}`);
+    }
     const result = await adapter.listServers();
     return {
       accountId: result.source.accountId ?? input.accountId,

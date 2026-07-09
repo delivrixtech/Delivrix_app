@@ -1302,6 +1302,47 @@ test("DoD#2 multicuenta selecciona la cuenta con budget y propaga su accountId a
   assert.equal(ctx.rollbacks[0].serverAccountId, "secondary");
 });
 
+test("sin NINGUNA cuenta write-capable el run falla limpio (no_write_capable_account, sin ops fantasma)", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    creationAccounts: []
+  });
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 4);
+  assert.match(result.error ?? "", /^no_write_capable_account/);
+  // NO se intento crear con la cuenta fantasma "ops".
+  assert.equal(ctx.planExecutions.some((entry) => entry.step === 4), false);
+  assert.deepEqual(ctx.creationReads, []);
+  assert.ok(ctx.auditEvents.some((event) => event.action === "oc.orchestrator.no_write_capable_account"));
+});
+
+test("governor: cuenta cuyo reader lanza unknown_server_account queda excluida y gana la siguiente", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    creationAccounts: [
+      { accountId: "cuenta-rota", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      "cuenta-rota": { readError: new Error("unknown_server_account:cuenta-rota") },
+      secondary: { servers: [], sourceKind: "live", responseOk: true }
+    }
+  });
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  assert.equal(result.status, "completed", result.error);
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  assert.equal(step4.serverAccountId, "secondary");
+  const state = await readRunStateFull(ctx.workspace, "run-1");
+  assert.equal(state.serverAccountId, "secondary");
+});
+
 test("cuenta explicita elegible aterriza exactamente ahi y no entra a params/hashInput", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },

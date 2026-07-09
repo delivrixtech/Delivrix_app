@@ -67,3 +67,23 @@ function registry(adapter: ServerRunningAdapter): ServerRunningAdapterRegistry {
     vpsProviderAdapters: new Map()
   };
 }
+
+test("waitForServerRunning con serverAccountId desconocido falla limpio sin consultar ops", async () => {
+  let opsCalls = 0;
+  const opsAdapter = provisioningAdapter(() => {
+    opsCalls += 1;
+  });
+
+  await assert.rejects(
+    waitForServerRunning({
+      params: { serverSlug: "server10", maxWaitMs: 5 },
+      adapters: registry(opsAdapter),
+      serverAccountId: "cuenta-typo",
+      env: { WEBDOCK_PROVISION_POLL_INTERVAL_MS: "1" },
+      sleep: async () => {},
+      now: () => 1_000
+    }),
+    /unknown_server_account:cuenta-typo/
+  );
+  assert.equal(opsCalls, 0, "el fallback silencioso a ops esperaria el server en la cuenta equivocada");
+});
