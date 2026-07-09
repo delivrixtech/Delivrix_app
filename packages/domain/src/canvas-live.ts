@@ -227,6 +227,7 @@ export interface CanvasLiveRunProgress {
   retryableFailure?: boolean;
   failureCategory?: string;
   failureRetryAfterMs?: number;
+  sendAttempts?: number;
 }
 
 export type CanvasLiveArtifactPayload =
