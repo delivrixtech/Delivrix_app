@@ -60,6 +60,19 @@ apps/warmup-engine/
                        (por referencia, nunca en claro; scrub de secretos en el detail)
       compose.ts       ata los adapters reales a checkers/reader/transporte, GUARDED por el flag:
                        con WARMUP_ENGINE_ENABLE OFF lanza — nada real se construye ni conecta
+    store/           PERSISTENCIA (§12) — puertos + implementación Postgres:
+      ports.ts         interfaces de los 5 repos (nodes/sends/signals/seeds/placement) — contrato
+      pg-stores.ts     implementación sobre PgClient inyectable; idempotencia por slot (ON CONFLICT),
+                       todo parametrizado (anti-inyección); tests con cliente fake (sin DB real)
+    scheduler/       ORQUESTACIÓN (§7/§9/§10) — ticks puros que componen dominio + stores:
+      scheduler.ts     planNodeDay (cupo del día + auth-gate + seeds ≤10%, idempotente por slot) ·
+                       processQueuedSends (send-worker + estados + signals) · reconcilePlacement
+                       (reader → rollup Wilson/EWMA → transición FSM)
+    service/         SERVICIO:
+      service.ts       runWarmupTick (una iteración, GUARDED por el flag) + getWarmupStatusSnapshot
+                       (read-only, base para "verlo en delivrix" en el panel)
+      main.ts          entrypoint/daemon INERTE por default (flag OFF ⇒ loguea y sale; no autoarranca
+                       al importarse) — el deployment cablea las deps reales y llama startWarmupDaemon
     runtime/         RUNTIME (§7/§8/§13) — la costura hacia el mundo real:
       auth-gate.ts             gate FAIL-CLOSED (§8): "ningún nodo envía sin contrato `ready`".
       auth-contract-builder.ts corre los checkers → agrega verdicts → firma el AuthReadinessContract
@@ -91,11 +104,14 @@ están implementados como funciones puras con resolvers/probes inyectables (DNS:
 IP/red: PTR-FCrDNS/RBL/TLS/HELO/dedicated-IP · liveness: SMTP_AUTH/IMAP_AUTH/TRACKING_DOMAIN_CLEAN/
 ONECLICK_UNSUB_CAP). El `auth-contract-builder` los agrega en un `AuthReadinessContract` firmado que
 el gate fail-closed consume (`PENDING_V1_CHECKS` ya está vacío). El **Inbox Reader IMAP** clasifica el
-placement desde los seed inboxes externos. Y los **adapters de I/O real** (`live/`) implementan cada
-interfaz sobre `node:dns`/`node:tls` + nodemailer/imapflow, pero **solo se cablean detrás de
-`WARMUP_ENGINE_ENABLE`** (default OFF: `compose.ts` lanza si el flag no está activo). Todos los tests
-corren con fakes inyectados: **ninguno toca la red ni manda correo**. El scheduler/colas y la
-persistencia Postgres son el siguiente paso; nada corre ni envía en deploy hasta activar el flag.
+placement desde los seed inboxes externos. Los **adapters de I/O real** (`live/`) implementan cada
+interfaz sobre `node:dns`/`node:tls` + nodemailer/imapflow. La **persistencia Postgres** (`store/`,
+§12), el **scheduler** (`scheduler/`) y el **servicio** (`service/`: tick + snapshot + daemon) cierran
+el runtime v1. **Todo detrás de `WARMUP_ENGINE_ENABLE`** (default OFF): `compose.ts` y `runWarmupTick`
+lanzan si el flag no está activo, y el daemon es inerte por default. Todos los tests corren con fakes
+inyectados: **ninguno toca la red, la DB ni manda correo**. Falta solo el cableado de deployment
+(Postgres/secretos reales) + exponer el snapshot en el panel de Delivrix; nada corre ni envía en
+deploy hasta activar el flag.
 
 ## v2 — diferido (solo si entra cold outreach de agencia)
 
