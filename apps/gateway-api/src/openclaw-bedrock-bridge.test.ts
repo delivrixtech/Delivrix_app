@@ -713,6 +713,10 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
               ports: { submission: 587, smtps: 465 },
               password: "smtp-password-should-redact"
             }
+          }, {
+            domain: "bizfiling-ops.com",
+            status: "needs_reconciliation",
+            hasCredential: false
           }]
         },
         "/v1/openclaw/scratch": {
@@ -794,6 +798,10 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
   assert.match(system, /## sender_pool \(GET \/v1\/sender-pool\/status\)/);
   assert.match(system, /"hasCredential": true/);
   assert.match(system, /"username": "mailer@controldelivrix\.app"/);
+  // needs_reconciliation queda fuera del listado del agente y visible solo como excluido.
+  assert.match(system, /Dominios en needs_reconciliation NO son elegibles/);
+  assert.match(system, /"excludedNeedsReconciliation": \[\s*"bizfiling-ops\.com"\s*\]/);
+  assert.doesNotMatch(system, /"status": "needs_reconciliation"/);
   assert.match(system, /## kill_switch \(GET \/v1\/kill-switch\)/);
   assert.match(system, /"enabled": false/);
   assert.match(system, /"_error": "canvas timeout"/);
