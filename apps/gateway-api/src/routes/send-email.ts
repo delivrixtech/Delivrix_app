@@ -459,6 +459,9 @@ async function findExistingSendByIdempotency(input: {
   const events = await input.auditLog.list?.() ?? [];
   const match = events.toReversed().find((event) => {
     if (event.action !== "oc.smtp.real_email_sent") return false;
+    // Solo un envío EXITOSO se replaya: los eventos decision "reject" (fallo a mitad de SSH)
+    // no deben suprimir el reintento devolviendo ok:true por un envío que nunca salió.
+    if (event.decision !== "allow") return false;
     if (metadataString(event.metadata, "serverSlug") !== input.serverSlug) return false;
     const idempotencyKey = metadataString(event.metadata, "idempotencyKey");
     const runId = metadataString(event.metadata, "runId");
