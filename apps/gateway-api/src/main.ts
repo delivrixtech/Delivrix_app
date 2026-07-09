@@ -2380,18 +2380,24 @@ const server = createServer(async (request, response) => {
           (await listActiveSmtpRuns()).map((run) => ({
             runId: run.runId,
             status: run.status,
-            ...(run.chosenDomain ? { chosenDomain: run.chosenDomain } : {})
+            ...(run.chosenDomain ? { chosenDomain: run.chosenDomain } : {}),
+            ...(run.updatedAt ? { updatedAt: run.updatedAt } : {})
           })),
         listSends: async () => {
           const events = await auditLog.list();
-          const sends: Array<{ domain: string; serverSlug?: string; occurredAt?: string }> = [];
+          const sends: Array<{ domain: string; serverSlug?: string; occurredAt?: string; ok?: boolean }> = [];
           for (const event of events) {
             if (event.action !== "oc.smtp.real_email_sent") continue;
             const from = typeof event.metadata?.fromAddress === "string" ? event.metadata.fromAddress : undefined;
             const sendingDomain = from && from.includes("@") ? from.split("@")[1]?.trim().toLowerCase() : undefined;
             if (!sendingDomain) continue;
             const serverSlug = typeof event.metadata?.serverSlug === "string" ? event.metadata.serverSlug : undefined;
-            sends.push({ domain: sendingDomain, ...(serverSlug ? { serverSlug } : {}), occurredAt: event.occurredAt });
+            sends.push({
+              domain: sendingDomain,
+              ...(serverSlug ? { serverSlug } : {}),
+              occurredAt: event.occurredAt,
+              ok: event.decision === "allow"
+            });
           }
           return sends;
         },
@@ -6182,6 +6188,9 @@ async function listActiveSmtpRuns(): Promise<SmtpRunSummary[]> {
             lastCompletedStep: typeof raw.lastCompletedStep === "number" ? raw.lastCompletedStep : 0,
             ...(typeof raw.chosenDomain === "string" && raw.chosenDomain.length > 0
               ? { chosenDomain: raw.chosenDomain }
+              : {}),
+            ...(typeof raw.updatedAt === "string" && raw.updatedAt.length > 0
+              ? { updatedAt: raw.updatedAt }
               : {})
           };
           return { mtimeMs: fileStat.mtimeMs, summary };

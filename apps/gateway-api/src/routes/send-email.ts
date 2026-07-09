@@ -13,6 +13,7 @@ import {
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import type { SkillParamSchema, SkillSafeParseResult } from "../skill-schemas.ts";
+import { reconcileSmtpRunStatesAfterRealSend } from "../smtp-run-send-reconcile.ts";
 import type { SmtpSshRunner } from "./smtp-provisioning.ts";
 
 interface AuditSink {
@@ -205,6 +206,13 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
     runId: params.runId
   });
   if (duplicate) {
+    // El envío previo exitoso es evidencia de entrega: reconciliar run-states failed
+    // del dominio también en el replay (cubre el fantasma creado DESPUÉS del envío).
+    await reconcileRunStatesForRealSend(deps, params, {
+      messageId: duplicate.messageId,
+      deliveryStatus: duplicate.deliveryStatus,
+      sendEventId: duplicate.eventId
+    });
     json(deps.response, 200, {
       ok: true,
       messageId: duplicate.messageId,
@@ -365,6 +373,14 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
     }
   });
 
+  if (sendResult.ok) {
+    await reconcileRunStatesForRealSend(deps, params, {
+      messageId: sendResult.messageId,
+      deliveryStatus: sendResult.deliveryStatus,
+      sendEventId: eventId(auditEvent)
+    });
+  }
+
   const payload: SendRealEmailResult = {
     ok: sendResult.ok,
     messageId: sendResult.messageId,
@@ -442,6 +458,51 @@ export function checkRecipientNotBurner(to: string): { ok: true } | { ok: false;
   const domain = domainFromEmail(to);
   const blocked = SEED_POOL_BURNER_DOMAINS.some((burner) => domain === burner || domain.endsWith(`.${burner}`));
   return blocked ? { ok: false, reason: "recipient_is_burner_domain" } : { ok: true };
+}
+
+/**
+ * Best-effort tras un envío real exitoso (o su replay idempotente): reconcilia los run-states
+ * `failed` del dominio remitente a `completed` y audita cada reconciliación. Nunca lanza — un
+ * fallo acá no debe afectar la respuesta del envío.
+ */
+async function reconcileRunStatesForRealSend(
+  deps: SendRealEmailDependencies,
+  params: SendRealEmailParams,
+  send: { messageId: string | null; deliveryStatus: SendRealEmailResult["deliveryStatus"]; sendEventId: string | null }
+): Promise<void> {
+  try {
+    const reconciled = await reconcileSmtpRunStatesAfterRealSend({
+      workspace: deps.workspace,
+      fromDomain: domainFromEmail(params.fromAddress),
+      messageId: send.messageId,
+      deliveryStatus: send.deliveryStatus,
+      sendEventId: send.sendEventId,
+      now: deps.now?.() ?? new Date()
+    });
+    for (const run of reconciled) {
+      await deps.auditLog.append({
+        occurredAt: (deps.now?.() ?? new Date()).toISOString(),
+        actorType: "operator",
+        actorId: params.actorId,
+        action: "oc.smtp.run_state_reconciled",
+        targetType: "openclaw_orchestrator_run",
+        targetId: run.runId,
+        riskLevel: "high",
+        decision: "allow",
+        humanApproved: true,
+        approverIds: [params.actorId],
+        metadata: {
+          runId: run.runId,
+          domain: run.chosenDomain,
+          previousStatus: run.previousStatus,
+          sendEventId: send.sendEventId,
+          messageId: send.messageId
+        }
+      });
+    }
+  } catch {
+    // Best-effort: la reconciliación jamás rompe el envío.
+  }
 }
 
 async function findExistingSendByIdempotency(input: {

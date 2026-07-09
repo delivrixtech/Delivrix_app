@@ -156,6 +156,7 @@ export interface SmtpRunSummary {
   status: string;
   lastCompletedStep: number;
   chosenDomain?: string;
+  updatedAt?: string;
 }
 
 export interface OpenClawBedrockBridgeConfig {
