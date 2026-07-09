@@ -1379,7 +1379,8 @@ function unknownExternalDnsProviderId(providerId: string | undefined, adapters?:
 }
 
 // Familia Contabo: cuenta flat "contabo" + indexadas "contabo-N". El timing/gating FCrDNS del bind
-// debe aplicar a toda la familia (el PTR/rDNS manual de Contabo es igual en cualquier cuenta Contabo).
+// debe aplicar a toda la familia (el PTR/rDNS de Contabo — API con fallback manual — es igual en
+// cualquier cuenta Contabo).
 function isContaboFamilyProviderId(value: string | undefined): boolean {
   const p = value?.trim().toLowerCase();
   return p === "contabo" || (typeof p === "string" && /^contabo-\d+$/.test(p));
