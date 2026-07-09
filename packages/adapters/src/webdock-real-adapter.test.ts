@@ -700,3 +700,67 @@ test("consistencia gate <-> canCreate() del registry para cuentas distinct", () 
     assert.equal(hasWriteCapableWebdockCreationAccountEnv(env), expected);
   }
 });
+
+// --- verifyCreateCredentials (preflight live de cuenta) -----------------------
+
+function preflightAccounts(fetchImpl: (url: unknown, init?: RequestInit) => Promise<Response>) {
+  return createWebdockAdaptersFromEnv({
+    WEBDOCK_API_KEY_SECONDARY: "secondary-read",
+    WEBDOCK_API_KEY_SECONDARY_WRITE: "secondary-write",
+    WEBDOCK_API_KEY_SECONDARY_ACCOUNT: "secondary-account"
+  }, { apiBase: "https://api.webdock.test/v1", fetchImpl: fetchImpl as typeof fetch });
+}
+
+test("verifyCreateCredentials: write y account tokens vivos => ok con 2 GETs", async () => {
+  const calls: Array<{ url: string; method: string; auth: string }> = [];
+  const [secondary] = preflightAccounts(async (url, init) => {
+    calls.push({
+      url: String(url),
+      method: init?.method ?? "GET",
+      auth: (init?.headers as Record<string, string>)?.authorization ?? ""
+    });
+    return Response.json([]);
+  });
+
+  const result = await secondary.adapter.verifyCreateCredentials();
+  assert.deepEqual(result, { ok: true });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url.endsWith("/servers"), true);
+  assert.equal(calls[0].auth, "Bearer secondary-write");
+  assert.equal(calls[1].url.endsWith("/account/publicKeys"), true);
+  assert.equal(calls[1].auth, "Bearer secondary-account");
+  assert.ok(calls.every((call) => call.method === "GET"), "solo lecturas, nada mutante");
+});
+
+test("verifyCreateCredentials: write token revocado (401) => write_token_rejected", async () => {
+  const [secondary] = preflightAccounts(async () => new Response("unauthorized", { status: 401 }));
+  const result = await secondary.adapter.verifyCreateCredentials();
+  assert.deepEqual(result, { ok: false, reason: "write_token_rejected" });
+});
+
+test("verifyCreateCredentials: account token revocado => account_token_rejected", async () => {
+  const [secondary] = preflightAccounts(async (url) =>
+    String(url).endsWith("/servers") ? Response.json([]) : new Response("forbidden", { status: 403 })
+  );
+  const result = await secondary.adapter.verifyCreateCredentials();
+  assert.deepEqual(result, { ok: false, reason: "account_token_rejected" });
+});
+
+test("verifyCreateCredentials: sin write key => no_write_key sin tocar la red", async () => {
+  let fetches = 0;
+  const accounts = createWebdockAdaptersFromEnv(
+    { WEBDOCK_API_KEY_SECONDARY: "secondary-read" },
+    { apiBase: "https://api.webdock.test/v1", fetchImpl: (async () => { fetches += 1; return Response.json([]); }) as typeof fetch }
+  );
+  const result = await accounts[0].adapter.verifyCreateCredentials();
+  assert.deepEqual(result, { ok: false, reason: "no_write_key" });
+  assert.equal(fetches, 0);
+});
+
+test("verifyCreateCredentials: error de red => network_error sin lanzar", async () => {
+  const [secondary] = preflightAccounts(async () => {
+    throw new Error("ECONNRESET");
+  });
+  const result = await secondary.adapter.verifyCreateCredentials();
+  assert.deepEqual(result, { ok: false, reason: "network_error" });
+});

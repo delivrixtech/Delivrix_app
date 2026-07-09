@@ -362,6 +362,35 @@ export class WebdockRealAdapter {
     }
   }
 
+  /**
+   * Preflight barato de un create real: valida EN VIVO que el write token (GET /servers) y el
+   * account token (GET /account/publicKeys) sirvan, sin mutar nada (2 GETs). Un token presente
+   * pero revocado del lado del proveedor pasa canCreate() y revienta recien a mitad del run;
+   * este check lo detecta antes de gastar. Nunca lanza.
+   */
+  async verifyCreateCredentials(): Promise<{
+    ok: boolean;
+    reason?: "no_write_key" | "no_account_key" | "write_token_rejected" | "account_token_rejected" | "network_error";
+  }> {
+    if (!this.writeApiKey) return { ok: false, reason: "no_write_key" };
+    if (!this.accountApiKey) return { ok: false, reason: "no_account_key" };
+    try {
+      const writeResponse = await this.fetchImpl(`${this.apiBase}/servers`, {
+        method: "GET",
+        headers: this.jsonHeaders(this.writeApiKey, "Delivrix-MailOps/0.1 (webdock-account-preflight)")
+      });
+      if (!writeResponse.ok) return { ok: false, reason: "write_token_rejected" };
+      const accountResponse = await this.fetchImpl(`${this.apiBase}/account/publicKeys`, {
+        method: "GET",
+        headers: this.jsonHeaders(this.accountApiKey, "Delivrix-MailOps/0.1 (webdock-account-preflight)")
+      });
+      if (!accountResponse.ok) return { ok: false, reason: "account_token_rejected" };
+      return { ok: true };
+    } catch {
+      return { ok: false, reason: "network_error" };
+    }
+  }
+
   async createServer(opts: WebdockCreateServerInput): Promise<WebdockCreateServerResult> {
     if (!this.writeApiKey) {
       throw new Error("WEBDOCK_API_KEY_OPS is required for Webdock writes.");

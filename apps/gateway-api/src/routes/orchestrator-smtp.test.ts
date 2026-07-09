@@ -1343,6 +1343,86 @@ test("governor: cuenta cuyo reader lanza unknown_server_account queda excluida y
   assert.equal(state.serverAccountId, "secondary");
 });
 
+test("preflight live: cuenta elegida con credenciales revocadas => failover a la siguiente", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval(),
+    creationAccounts: [
+      { accountId: "cuenta-revocada", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      "cuenta-revocada": { servers: [], sourceKind: "live", responseOk: true },
+      secondary: { servers: [], sourceKind: "live", responseOk: true }
+    }
+  });
+  const preflights: string[] = [];
+  ctx.deps.preflightCreationAccount = async (input: { accountId: string }) => {
+    preflights.push(input.accountId);
+    return input.accountId === "cuenta-revocada"
+      ? { ok: false, reason: "write_token_rejected" }
+      : { ok: true };
+  };
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  assert.equal(result.status, "completed", result.error);
+  assert.deepEqual(preflights, ["cuenta-revocada", "secondary"]);
+  const step4 = ctx.planExecutions.find((entry) => entry.step === 4)!;
+  assert.equal(step4.serverAccountId, "secondary");
+  const rejected = ctx.auditEvents.find((event) => event.action === "oc.orchestrator.creation_account_rejected");
+  assert.ok(rejected);
+  assert.equal((rejected.metadata as { reason?: unknown }).reason, "credentials_write_token_rejected");
+});
+
+test("preflight live: cuenta EXPLICITA con credenciales revocadas => requested_account_ineligible exacto (sin failover)", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ serverAccountId: "secondary" }),
+    creationAccounts: [
+      { accountId: "ops", enabled: true },
+      { accountId: "secondary", enabled: true }
+    ],
+    creationByAccount: {
+      ops: { servers: [], sourceKind: "live", responseOk: true },
+      secondary: { servers: [], sourceKind: "live", responseOk: true }
+    }
+  });
+  ctx.deps.preflightCreationAccount = async () => ({ ok: false, reason: "account_token_rejected" });
+
+  const result = await configureCompleteSmtp({
+    ...validInput(),
+    runId: "run-1",
+    domain: "delivrixops.com",
+    provider: "route53",
+    serverAccountId: "secondary"
+  }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.match(result.error ?? "", /requested_account_ineligible: account=secondary reason=credentials_account_token_rejected/);
+  assert.equal(ctx.planExecutions.some((entry) => entry.step === 4), false, "no debe crear en ninguna cuenta");
+});
+
+test("preflight live: flag CREATION_ACCOUNT_LIVE_PREFLIGHT_ENABLE=false no llama la dep", async () => {
+  const ctx = createDeps({
+    env: {
+      OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true",
+      CREATION_ACCOUNT_LIVE_PREFLIGHT_ENABLE: "false"
+    },
+    planApproval: signedPlanApproval()
+  });
+  let preflights = 0;
+  ctx.deps.preflightCreationAccount = async () => {
+    preflights += 1;
+    return { ok: false, reason: "write_token_rejected" };
+  };
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" }, ctx.deps);
+
+  assert.equal(result.status, "completed", result.error);
+  assert.equal(preflights, 0);
+});
+
 test("cuenta explicita elegible aterriza exactamente ahi y no entra a params/hashInput", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
