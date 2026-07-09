@@ -486,8 +486,9 @@ interface SmtpRunState {
   finalEmailMessageId?: string;
   finalDeliveryStatus?: "queued" | "delivered" | "deferred" | "bounced";
   retryableFailure?: boolean;
-  failureCategory?: "smoke_auth_not_ready";
+  failureCategory?: "smoke_auth_not_ready" | "send_retry_exhausted";
   failureRetryAfterMs?: number;
+  sendAttempts?: number;
   legacyReconstructed?: boolean;
   steps: Record<string, SmtpRunStepState>;
 }
@@ -1464,40 +1465,76 @@ export async function configureCompleteSmtp(
       );
     }
 
-    const realEmail = await runMutatingStepWithState({
-      deps,
-      runState,
-      planApproval,
-      runId,
-      step: 14,
-      skill: "send_real_email",
-      actorId: effectiveInput.actorId,
-      approvalTimeoutMs,
-      budgetUsdMax: effectiveInput.budgetUsdMax,
-      params: {
-        fromAddress: `hello@${chosenDomain}`,
-        toAddress: runState.params.testEmailRecipient,
-        subject: coerceSafeSmokeSubject(runState.params.testEmailSubject, chosenDomain),
-        body: coerceSafeSmokeBody(runState.params.testEmailBody, chosenDomain),
-        serverSlug,
-        selector,
-        idempotencyKey: runId,
-        runId
-      },
-      stepResults
-    });
+    // Auto-retry del envio DENTRO del run: un fallo retryable del step 14 (auth propagando,
+    // transitorio de SSH/Postfix) no debe tumbar el run y exigir un resume manual. Default 1
+    // intento (comportamiento previo intacto); el gateway lo activa via
+    // OPENCLAW_SEND_REAL_EMAIL_MAX_ATTEMPTS. El SMOKE_AUTH_GATE de arriba y el polling interno
+    // del handler (~150s) ya cubren la espera de propagacion; este loop solo reintenta el step.
+    const sendMaxAttempts = positiveInt(deps.env?.OPENCLAW_SEND_REAL_EMAIL_MAX_ATTEMPTS) ?? 1;
+    const sendRetryBackoffMs = positiveInt(deps.env?.OPENCLAW_SEND_REAL_EMAIL_RETRY_BACKOFF_MS) ?? 60_000;
+    const sendRetryMaxWaitMs = positiveInt(deps.env?.OPENCLAW_SEND_REAL_EMAIL_RETRY_MAX_WAIT_MS) ?? 900_000;
+    const sendRetryDeadline = Date.now() + sendRetryMaxWaitMs;
 
-    // El handler send_real_email devuelve HTTP 400 {error,details} cuando la auth aun no esta
-    // completa (p.ej. el DKIM no termino de propagar al momento del envio). El dispatcher lo
-    // marca executed igual (corrio), de modo que sin esta guarda el step 14 quedaria "done",
-    // el run "completed" pese a que NO se envio, y el parser de abajo lanzaria un confuso
-    // "missing messageId". Detectamos el error aca: reportamos la causa REAL y borramos el
-    // step 14 del estado para que un resume reintente el envio cuando el DNS termine de propagar.
-    const sendErrorCode =
-      isRecord(realEmail.outcome) && typeof realEmail.outcome.error === "string"
-        ? realEmail.outcome.error.trim()
-        : "";
-    if (sendErrorCode) {
+    let realEmail: Awaited<ReturnType<typeof runMutatingStepWithState>>;
+    let sendAttempt = 0;
+    for (;;) {
+      sendAttempt += 1;
+      // Solo se persiste cuando hubo reintento: los runs de 1 intento conservan el shape previo.
+      if (sendAttempt > 1) runState.sendAttempts = sendAttempt;
+      realEmail = await runMutatingStepWithState({
+        deps,
+        runState,
+        planApproval,
+        runId,
+        step: 14,
+        skill: "send_real_email",
+        actorId: effectiveInput.actorId,
+        approvalTimeoutMs,
+        budgetUsdMax: effectiveInput.budgetUsdMax,
+        params: {
+          fromAddress: `hello@${chosenDomain}`,
+          toAddress: runState.params.testEmailRecipient,
+          subject: coerceSafeSmokeSubject(runState.params.testEmailSubject, chosenDomain),
+          body: coerceSafeSmokeBody(runState.params.testEmailBody, chosenDomain),
+          serverSlug,
+          selector,
+          idempotencyKey: runId,
+          runId
+        },
+        stepResults
+      });
+
+      // El handler send_real_email devuelve HTTP 400 {error,details} cuando la auth aun no esta
+      // completa (p.ej. el DKIM no termino de propagar al momento del envio). El dispatcher lo
+      // marca executed igual (corrio), de modo que sin esta guarda el step 14 quedaria "done",
+      // el run "completed" pese a que NO se envio, y el parser de abajo lanzaria un confuso
+      // "missing messageId". Detectamos el error aca: reportamos la causa REAL y borramos el
+      // step 14 del estado para que un reintento (in-run o resume) reenvie cuando propague.
+      const sendErrorCode =
+        isRecord(realEmail.outcome) && typeof realEmail.outcome.error === "string"
+          ? realEmail.outcome.error.trim()
+          : "";
+      if (!sendErrorCode) break;
+
+      const retryableSendError = isRetryableSendErrorCode(sendErrorCode);
+      if (
+        retryableSendError &&
+        sendAttempt < sendMaxAttempts &&
+        Date.now() + sendRetryBackoffMs <= sendRetryDeadline
+      ) {
+        delete runState.steps[String(14)];
+        await persistSmtpRunState(deps, runState);
+        await audit(deps, "oc.orchestrator.send_retry_scheduled", "openclaw_orchestrator_run", runId, "high", {
+          attempt: sendAttempt,
+          maxAttempts: sendMaxAttempts,
+          errorCode: sendErrorCode,
+          backoffMs: sendRetryBackoffMs,
+          domain: chosenDomain
+        });
+        await delay(sendRetryBackoffMs);
+        continue;
+      }
+
       const detailObj =
         isRecord(realEmail.outcome) && isRecord(realEmail.outcome.details)
           ? realEmail.outcome.details
@@ -1507,11 +1544,18 @@ export async function configureCompleteSmtp(
         : "";
       delete runState.steps[String(14)];
       runState.status = "failed";
-      clearRunFailureClassification(runState);
+      // Solo se clasifica como agotado si hubo reintentos reales: con el default de 1 intento
+      // el comportamiento (y el shape del estado) queda identico al previo.
+      if (retryableSendError && sendAttempt > 1) {
+        markRunFailureClassification(runState, "send_retry_exhausted");
+      } else {
+        clearRunFailureClassification(runState);
+      }
       await persistSmtpRunState(deps, runState);
       await emitStep(deps, "oc.orchestrator.step_failed", runId, 14, "send_real_email", {
         error: sendErrorCode,
-        ...(detailObj ? { details: detailObj } : {})
+        ...(detailObj ? { details: detailObj } : {}),
+        ...(sendAttempt > 1 ? { sendAttempts: sendAttempt } : {})
       });
       throw new OrchestratorFailure(
         "failed",
@@ -1621,7 +1665,8 @@ export async function configureCompleteSmtp(
       runState.status = failure.status === "cancelled_by_operator" ? "cancelled_by_operator" : "failed";
       if (retryableSmokeAuthFailure) {
         markRunFailureClassification(runState, "smoke_auth_not_ready");
-      } else {
+      } else if (runState.failureCategory !== "send_retry_exhausted") {
+        // send_retry_exhausted ya fue clasificado por el retry-loop del step 14: se preserva.
         clearRunFailureClassification(runState);
       }
       await persistSmtpRunState(deps, runState).catch(() => undefined);
@@ -1637,7 +1682,9 @@ export async function configureCompleteSmtp(
       status: failure.status
     });
 
-    const skipRollbackForSmokeAuth = retryableSmokeAuthFailure;
+    // No proponer delete del VPS ante fallos retryables del step 14: un resume puede completar
+    // el envio sin re-provisionar (smoke auth propagando, o reintentos de envio agotados).
+    const skipRollbackForSmokeAuth = retryableSmokeAuthFailure || runState?.failureCategory === "send_retry_exhausted";
     if (serverSlug && failure.step >= 6 && deps.submitRollbackProposal && runState?.serverCreatedByRun === true && !skipRollbackForSmokeAuth) {
       void logger.warn("openclaw.orchestrator.rollback_proposal_requested", "configure_complete_smtp requested rollback proposal after failure.", {
         runId,
@@ -1663,12 +1710,12 @@ export async function configureCompleteSmtp(
       rollbackProposalId = rollback.proposalId;
     } else if (serverSlug && failure.step >= 6 && deps.submitRollbackProposal) {
       const rollbackSkipReason = skipRollbackForSmokeAuth
-        ? "smoke_auth_not_ready_retryable"
+        ? (retryableSmokeAuthFailure ? "smoke_auth_not_ready_retryable" : "send_retry_exhausted_retryable")
         : runState?.serverCreatedByRun === false
         ? "server_not_created_by_current_run"
         : "server_created_by_run_unknown";
       const rollbackSkipMessage = skipRollbackForSmokeAuth
-        ? "configure_complete_smtp skipped VPS delete rollback because smoke auth readiness can be retried."
+        ? "configure_complete_smtp skipped VPS delete rollback because the send step can be retried."
         : runState?.serverCreatedByRun === false
         ? "configure_complete_smtp skipped VPS delete rollback for reused/adopted server."
         : "configure_complete_smtp skipped VPS delete rollback because server ownership is unknown.";
@@ -1968,7 +2015,8 @@ function smtpRunStateToProgress(state: SmtpRunState): CanvasLiveRunProgress {
     ...(identity ? { identity } : {}),
     ...(state.retryableFailure ? { retryableFailure: true } : {}),
     ...(state.failureCategory ? { failureCategory: state.failureCategory } : {}),
-    ...(state.failureRetryAfterMs ? { failureRetryAfterMs: state.failureRetryAfterMs } : {})
+    ...(state.failureRetryAfterMs ? { failureRetryAfterMs: state.failureRetryAfterMs } : {}),
+    ...(state.sendAttempts ? { sendAttempts: state.sendAttempts } : {})
   };
 }
 
@@ -2980,6 +3028,25 @@ const STEP_LOCK_CONTENTION_FAILURES = new Set([
   "step_already_done",
   "step_reconciliation_required"
 ]);
+
+/**
+ * Errores del step 14 (send_real_email) que ameritan auto-retry dentro del run: propagacion de
+ * auth aun en curso o transitorios de Postfix/SSH. Todo lo demas (burner, approval, kill switch,
+ * rate_limit_exceeded que escala por hora) es terminal: reintentar no cambia el resultado.
+ */
+const SEND_RETRYABLE_ERROR_CODES = new Set([
+  "email_auth_incomplete",
+  "postfix_not_running",
+  "rate_limit_reservation_failed"
+]);
+const SEND_RETRYABLE_ERROR_PREFIXES = ["send_command_failed", "send_preflight_failed"];
+
+function isRetryableSendErrorCode(code: string): boolean {
+  return (
+    SEND_RETRYABLE_ERROR_CODES.has(code) ||
+    SEND_RETRYABLE_ERROR_PREFIXES.some((prefix) => code.startsWith(prefix))
+  );
+}
 
 /**
  * Libera el lease de un step que quedo in_flight tras un fallo de EJECUCION, para que un reintento no
