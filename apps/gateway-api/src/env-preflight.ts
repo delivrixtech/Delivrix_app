@@ -9,6 +9,11 @@
 // degradado en silencio. El catalogo refleja exactamente lo que el codigo lee
 // (openclaw-tools-builder.ts enabled(), main.ts, domains-purchase.ts).
 
+import {
+  hasAnyWebdockReadCredentialEnv,
+  hasWriteCapableWebdockCreationAccountEnv
+} from "../../../packages/adapters/src/webdock-real-adapter.ts";
+
 export type EnvSeverity = "fatal" | "warn";
 export type EnvKind = "secret" | "secret-32-byte" | "token" | "flag" | "money" | "json-contact" | "csv-email";
 
@@ -22,6 +27,12 @@ export interface EnvVarSpec {
   kind: EnvKind;
   /** Nombres alternativos: la var se satisface con cualquiera (flags/creds con alias). */
   anyOf?: string[];
+  /**
+   * Check custom: si devuelve true, el spec esta satisfecho (ignora name/anyOf). Para
+   * features cuya satisfaccion real es una combinacion (p.ej. multicuenta Webdock: cualquier
+   * cuenta write-capable), replicando la MISMA funcion que usa el codigo de produccion.
+   */
+  satisfiedBy?: (env: EnvLike) => boolean;
   /** Solo para flags: exige valor "true" (replica flagEnabled del codigo). */
   mustBeTrue?: boolean;
   /** Que se rompe si falta -- se imprime en el reporte. */
@@ -287,13 +298,17 @@ export const ENV_PREFLIGHT_CATALOG: readonly EnvVarSpec[] = [
   },
 
   // --- Credenciales de proveedores ---
+  // Webdock multicuenta: la satisfaccion real es "alguna cuenta con la capacidad", replicando
+  // las MISMAS funciones que usan el factory y el gate del catalogo (fuente unica). Antes este
+  // preflight solo conocia PRIMARY/OPS y daba warnings falsos con un setup solo-QUINARY valido.
   {
     name: "WEBDOCK_API_KEY_PRIMARY",
     group: "providers",
     severity: "warn",
     kind: "secret",
     anyOf: ["WEBDOCK_API_KEY"],
-    breaks: "lecturas Webdock (inventario) fallan"
+    satisfiedBy: hasAnyWebdockReadCredentialEnv,
+    breaks: "lecturas Webdock (inventario) fallan (ninguna read key en cuenta-1 ni cuentas distinct)"
   },
   {
     name: "WEBDOCK_API_KEY_OPS",
@@ -301,7 +316,8 @@ export const ENV_PREFLIGHT_CATALOG: readonly EnvVarSpec[] = [
     severity: "warn",
     kind: "secret",
     anyOf: ["WEBDOCK_API_KEY"],
-    breaks: "creacion/escritura de VPS Webdock falla"
+    satisfiedBy: hasWriteCapableWebdockCreationAccountEnv,
+    breaks: "creacion/escritura de VPS Webdock falla (ninguna cuenta write-capable: OPS o par _WRITE+_ACCOUNT)"
   },
   {
     name: "AWS_ROUTE53_DOMAINS_ACCESS_KEY_ID",
@@ -423,6 +439,7 @@ function safeBufferFrom(value: string, encoding: BufferEncoding): Buffer {
 }
 
 function evaluateSpec(spec: EnvVarSpec, env: EnvLike): EnvIssue | null {
+  if (spec.satisfiedBy?.(env)) return null;
   const names = [spec.name, ...(spec.anyOf ?? [])];
   const present = firstPresentValue(env, names);
 

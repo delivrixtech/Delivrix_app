@@ -42,6 +42,7 @@ import {
   webdockCreateParamSchema
 } from "./skill-schemas.ts";
 import { canonicalSkillSlug } from "./skill-contracts.ts";
+import { hasWriteCapableWebdockCreationAccountEnv } from "../../../packages/adapters/src/webdock-real-adapter.ts";
 import { suggestSafeDomainParamSchema } from "./routes/domains-suggest.ts";
 import { waitForDnsPropagationSkillParamSchema } from "./routes/dns-wait.ts";
 import { bindWebdockMainDomainSkillParamSchema } from "./routes/webdock-bind-domain.ts";
@@ -1683,17 +1684,11 @@ function hasIonosDnsCredentials(env: Record<string, string | undefined>): boolea
 }
 
 function hasWebdockOpsCredentials(env: Record<string, string | undefined>): boolean {
-  if (firstNonEmpty(env.WEBDOCK_API_KEY_OPS, env.WEBDOCK_API_KEY, env.WEBDOCK_API_KEY_PRIMARY)) {
-    return true;
-  }
-  // Cuentas Webdock aisladas (secondary..quinary): cuentan como credencial utilizable solo si son
-  // write-capable (par _WRITE + _ACCOUNT), espejo de canCreate() del adapter multi-cuenta. Sin esto,
-  // retirar las keys de la cuenta-1 muerta apagaba create/bind/configure_complete_smtp aunque
-  // quinary siguiera viva y escribible.
-  return ["SECONDARY", "TERTIARY", "QUATERNARY", "QUINARY"].some((role) =>
-    Boolean(firstNonEmpty(env[`WEBDOCK_API_KEY_${role}_WRITE`])) &&
-    Boolean(firstNonEmpty(env[`WEBDOCK_API_KEY_${role}_ACCOUNT`]))
-  );
+  // Fuente única compartida con el factory de adapters y el env-preflight
+  // (WEBDOCK_DISTINCT_ACCOUNT_ROLES): agregar un rol de cuenta nuevo en el adapter
+  // habilita este gate sin tocar el builder — la lista duplicada fue la raíz del
+  // incidente "solo QUINARY viva y configure_complete_smtp fuera del catálogo".
+  return hasWriteCapableWebdockCreationAccountEnv(env);
 }
 
 function hasSshRunnerConfig(env: Record<string, string | undefined>): boolean {

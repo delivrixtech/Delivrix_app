@@ -360,6 +360,23 @@ test("Webdock write tools stay enabled with only an isolated write-capable accou
   }
 });
 
+test("cualquier rol de la fuente unica cuenta para el gate (SECONDARY write-capable)", () => {
+  // La lista de roles vive en WEBDOCK_DISTINCT_ACCOUNT_ROLES (packages/adapters): el gate del
+  // catalogo debe reconocer cualquier rol de la constante, no solo quinary.
+  const onlySecondary = buildToolsForOpenClaw({
+    ...allEnabledEnv(),
+    WEBDOCK_API_KEY_OPS: undefined,
+    WEBDOCK_API_KEY: undefined,
+    WEBDOCK_API_KEY_PRIMARY: undefined,
+    WEBDOCK_API_KEY_SECONDARY: "webdock-secondary-read",
+    WEBDOCK_API_KEY_SECONDARY_WRITE: "webdock-secondary-write",
+    WEBDOCK_API_KEY_SECONDARY_ACCOUNT: "webdock-secondary-account"
+  }).map((tool) => tool.name);
+  for (const name of ["create_webdock_server", "bind_webdock_main_domain", "configure_complete_smtp"]) {
+    assert.equal(onlySecondary.includes(name), true, `${name} should stay enabled with secondary write keys`);
+  }
+});
+
 function allEnabledEnv(): Record<string, string | undefined> {
   return {
     OPENCLAW_HMAC_SECRET: "test-hmac",
