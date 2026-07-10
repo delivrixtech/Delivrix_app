@@ -9,6 +9,14 @@ Before planning, coding, reviewing, or changing architecture, read the project d
 
 Use the PDF as the primary source of truth and the summary as the fast working map. If they disagree, trust the PDF and update the summary.
 
+## Memoria y verdad
+
+- Cipher (memoria) guarda SOLO decisiones, porqués y preferencias. Nunca es fuente de qué hace el código.
+- Graphify (grafo) es la verdad del código: se regenera del AST, no se equivoca sobre la estructura.
+- Antes de actuar sobre algo que la memoria afirme del código, verificalo contra el grafo.
+- Si memoria y grafo se contradicen → gana el grafo. Marcá esa memoria como obsoleta y corregila.
+- Cuando algo salga mal, registralo como lección (nodo "contested") con reflect, no como decisión válida.
+
 ## Working rule
 
 Every task should be interpreted through the project route:
