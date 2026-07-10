@@ -430,10 +430,122 @@ test("upsertRollup: INSERT ... ON CONFLICT (node_id, window_start, window_end) D
   assert.deepEqual(calls[1].params, ["n1", ws, we, 0, 0, 0, 0, null, null]);
 });
 
+test("countRecent: FILTER por kind sobre occurred_at>=since; mapea bounces/complaints", async () => {
+  const since = new Date("2026-06-09T00:00:00Z");
+  const { client, calls } = fakeClient([
+    { rows: [{ bounces: "3", complaints: "1" }], rowCount: 1 }
+  ]);
+  const stores = createPgWarmupStores(client);
+  const counts = await stores.signals.countRecent(since);
+  const q = sql(calls[0].text);
+  assert.match(q, /COUNT\(\*\) FILTER \(WHERE kind = 'bounce'\) AS bounces/);
+  assert.match(q, /COUNT\(\*\) FILTER \(WHERE kind = 'complaint'\) AS complaints/);
+  assert.match(q, /FROM warmup_signals WHERE occurred_at >= \$1/);
+  assert.deepEqual(calls[0].params, [since]);
+  assert.deepEqual(counts, { bounces: 3, complaints: 1 });
+});
+
+test("countRecent: sin filas ⇒ ceros (no rompe)", async () => {
+  const { client } = fakeClient([{ rows: [], rowCount: 0 }]);
+  const stores = createPgWarmupStores(client);
+  assert.deepEqual(await stores.signals.countRecent(new Date()), { bounces: 0, complaints: 0 });
+});
+
+// ================== EngagedRecipientStore ==================
+
+test("engaged.listEnabled: SELECT WHERE enabled=true; mapea a EngagedRecipient source='curated'", async () => {
+  const { client, calls } = fakeClient([
+    { rows: [{ address: "team@delivrix.io", weight: "3" }], rowCount: 1 }
+  ]);
+  const stores = createPgWarmupStores(client);
+  const engaged = await stores.engaged.listEnabled();
+  assert.match(sql(calls[0].text), /FROM warmup_engaged_recipients WHERE enabled = true ORDER BY created_at/);
+  assert.deepEqual(engaged, [{ address: "team@delivrix.io", source: "curated", weight: 3 }]);
+});
+
+test("engaged.listEnabled: sin filas ⇒ array vacío", async () => {
+  const { client } = fakeClient([{ rows: [], rowCount: 0 }]);
+  const stores = createPgWarmupStores(client);
+  assert.deepEqual(await stores.engaged.listEnabled(), []);
+});
+
+// ================== PlacementStore: tendencia ==================
+
+test("listRecentRollups: ORDER BY window_end DESC LIMIT $1; spam_rate con NULLIF; mapea opcionales", async () => {
+  const { client, calls } = fakeClient([
+    {
+      rows: [
+        {
+          window_end: new Date("2026-07-09T00:00:00Z"),
+          inbox_wilson_lb: "0.72",
+          inbox_ewma: "0.75",
+          spam_rate: "0.1",
+          samples: 30
+        },
+        // ventana sin muestras: opcionales nulos ⇒ se omiten
+        { window_end: "2026-07-08", inbox_wilson_lb: null, inbox_ewma: null, spam_rate: null, samples: 0 }
+      ],
+      rowCount: 2
+    }
+  ]);
+  const stores = createPgWarmupStores(client);
+  const series = await stores.placement.listRecentRollups(30);
+  const q = sql(calls[0].text);
+  assert.match(q, /FROM warmup_placement_rollups ORDER BY window_end DESC LIMIT \$1/);
+  assert.match(q, /spam_count::numeric \/ NULLIF\(samples, 0\) AS spam_rate/);
+  assert.deepEqual(calls[0].params, [30]);
+
+  assert.equal(series[0].windowEnd, "2026-07-09T00:00:00.000Z");
+  assert.equal(series[0].inboxWilsonLb, 0.72);
+  assert.equal(series[0].inboxEwma, 0.75);
+  assert.equal(series[0].spamRate, 0.1);
+  assert.equal(series[0].samples, 30);
+
+  assert.equal(series[1].samples, 0);
+  assert.equal("inboxWilsonLb" in series[1], false);
+  assert.equal("inboxEwma" in series[1], false);
+  assert.equal("spamRate" in series[1], false);
+});
+
+test("aggregateByProvider: FILTER por landed_in; WHERE read_at>=since AND landed_in NOT NULL; inboxRate", async () => {
+  const since = new Date("2026-07-02T00:00:00Z");
+  const { client, calls } = fakeClient([
+    {
+      rows: [
+        { provider: "gmail", inbox: "8", tabs: "2", spam: "1", missing: "1", total: "10" },
+        { provider: "outlook", inbox: "0", tabs: "0", spam: "0", missing: "0", total: "0" }
+      ],
+      rowCount: 2
+    }
+  ]);
+  const stores = createPgWarmupStores(client);
+  const providers = await stores.placement.aggregateByProvider(since);
+  const q = sql(calls[0].text);
+  assert.match(q, /FROM warmup_placement_results WHERE read_at >= \$1 AND landed_in IS NOT NULL/);
+  assert.match(q, /COUNT\(\*\) FILTER \(WHERE landed_in IN \('primary', 'tabs'\)\) AS inbox/);
+  assert.match(q, /GROUP BY provider ORDER BY provider/);
+  assert.deepEqual(calls[0].params, [since]);
+
+  assert.deepEqual(providers[0], {
+    provider: "gmail",
+    inbox: 8,
+    tabs: 2,
+    spam: 1,
+    missing: 1,
+    total: 10,
+    inboxRate: 0.8
+  });
+  // total 0 ⇒ sin inboxRate (evita división por cero)
+  assert.equal("inboxRate" in providers[1], false);
+  assert.equal(providers[1].total, 0);
+});
+
 // ================== Factory ==================
 
-test("createPgWarmupStores: expone las 5 stores", async () => {
+test("createPgWarmupStores: expone las 6 stores (incluye engaged)", async () => {
   const { client } = fakeClient();
   const stores = createPgWarmupStores(client);
-  assert.ok(stores.nodes && stores.sends && stores.signals && stores.seeds && stores.placement);
+  assert.ok(
+    stores.nodes && stores.sends && stores.signals && stores.seeds && stores.placement && stores.engaged
+  );
 });
