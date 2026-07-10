@@ -7,6 +7,7 @@
 // una cola externa en v1.
 
 import type { LandedIn, NodeState, SeedProvider, WarmupNode } from "../domain/types.ts";
+import type { EngagedRecipient, PlacementTrendPoint, ProviderPlacement } from "../domain/trends.ts";
 
 /** Fila de send tal como la ve el worker (subset de warmup_sends). */
 export interface StoredSend {
@@ -52,10 +53,17 @@ export interface SendStore {
 
 export interface SignalStore {
   record(input: { nodeId: string; kind: "bounce" | "complaint" | "deferral"; detail?: unknown }): Promise<void>;
+  /** Conteo de señales recientes (desde `since`) para el dashboard. */
+  countRecent(since: Date): Promise<{ bounces: number; complaints: number }>;
 }
 
 export interface SeedStore {
   listEnabled(): Promise<StoredSeed[]>;
+}
+
+/** Lista curada de destinatarios engaged (estrategia A+B, §5). */
+export interface EngagedRecipientStore {
+  listEnabled(): Promise<EngagedRecipient[]>;
 }
 
 /** Medición de placement (§9): tests, resultados y rollups. */
@@ -79,6 +87,10 @@ export interface PlacementStore {
     inboxWilsonLb?: number;
     inboxEwma?: number;
   }): Promise<void>;
+  /** Serie global reciente de rollups (para la tendencia del dashboard), más nuevos primero. */
+  listRecentRollups(limit: number): Promise<PlacementTrendPoint[]>;
+  /** Desglose de colocación por proveedor sobre la ventana [since, now) (para las barras). */
+  aggregateByProvider(since: Date): Promise<ProviderPlacement[]>;
 }
 
 /** Bundle de stores que el scheduler/servicio recibe inyectado. */
@@ -88,4 +100,5 @@ export interface WarmupStores {
   signals: SignalStore;
   seeds: SeedStore;
   placement: PlacementStore;
+  engaged: EngagedRecipientStore;
 }

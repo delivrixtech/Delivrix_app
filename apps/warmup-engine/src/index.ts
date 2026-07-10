@@ -22,6 +22,12 @@ export * from "./live/dns-adapters.ts";
 export * from "./live/mail-adapters.ts";
 export * from "./live/compose.ts";
 
+// --- Gaps v1: destinatarios engaged (A+B) + tendencia + ingesta de bounces/DSN ---
+export * from "./domain/trends.ts";
+export * from "./domain/recipient-pool.ts";
+export * from "./service/ingest.ts";
+export { getWarmupTrends } from "./service/trends-service.ts";
+
 // --- Persistencia (§12) + scheduler/loops + servicio (tick guarded + snapshot para el panel) ---
 export * from "./store/ports.ts";
 export * from "./store/pg-stores.ts";
