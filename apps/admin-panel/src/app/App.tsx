@@ -59,6 +59,7 @@ const MxtoolboxHealthSection = lazy(async () => ({ default: (await import("../v5
 const InfrastructureSection = lazy(async () => ({ default: (await import("../v5/views/Infrastructure.tsx")).InfrastructureV5 }));
 const DomainsSection = lazy(async () => ({ default: (await import("../v5/views/Domains.tsx")).DomainsV5 }));
 const SenderPoolSection = lazy(async () => ({ default: (await import("../v5/views/SenderPool.tsx")).SenderPoolV5 }));
+const WarmupSection = lazy(async () => ({ default: (await import("../v5/views/Warmup.tsx")).WarmupV5 }));
 const ChatWidget = lazy(async () => ({ default: (await import("../features/chat/ChatWidget.tsx")).ChatWidget }));
 
 function readInitialSection(): SectionId {
@@ -719,6 +720,8 @@ function SectionView({
       return <Suspense fallback={<SectionLoadingState />}><DomainsSection /></Suspense>;
     case "sender-pool":
       return <Suspense fallback={<SectionLoadingState />}><SenderPoolSection /></Suspense>;
+    case "warmup":
+      return <Suspense fallback={<SectionLoadingState />}><WarmupSection /></Suspense>;
     default: {
       const _exhaustive: never = section;
       void _exhaustive;
@@ -889,6 +892,11 @@ function toneForSection(section: SectionId, data: DashboardData | undefined): To
     case "sender-pool":
       // Bloque 10 demo viernes — endpoint pending hasta que Codex termine.
       // Neutral mientras tanto; cuando haya datos, tono según estado warmup global.
+      return "neutral";
+    case "warmup":
+      // Warmup engine — vista con su propia query a /v1/warmup/status. El
+      // dashboard global no carga ese endpoint, así que el badge queda neutral;
+      // el estado real vive dentro de la vista (engine ON/OFF, byState).
       return "neutral";
     default: {
       const _exhaustive: never = section;
