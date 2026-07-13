@@ -186,6 +186,55 @@ test("checkEnvPreflight: setup solo-QUINARY valido no da warnings Webdock (fuent
   );
 });
 
+test("checkEnvPreflight: cuenta Contabo indexada incompleta advierte las claves faltantes", () => {
+  const env = healthyEnvFromCatalog();
+  // Solo CLIENT_ID presente para contabo-2: la cuenta esta referenciada pero a medias.
+  env.CONTABO_ACCOUNT_2_CLIENT_ID = "abcdef0123456789abcdef0123456789abcdef0123456789";
+
+  const result = checkEnvPreflight(env);
+  assert.equal(result.ok, true, "credenciales de provider a medias son warn, no fatal");
+  assert.ok(
+    result.warnings.some((i) => i.name === "CONTABO_ACCOUNT_2_CLIENT_SECRET" && i.reason === "missing"),
+    "debe advertir CLIENT_SECRET faltante de contabo-2"
+  );
+  assert.ok(
+    result.warnings.some((i) => i.name === "CONTABO_ACCOUNT_2_API_USER" && i.reason === "missing")
+  );
+  assert.ok(
+    result.warnings.some((i) => i.name === "CONTABO_ACCOUNT_2_API_PASSWORD" && i.reason === "missing")
+  );
+  assert.equal(
+    result.warnings.some((i) => i.name === "CONTABO_ACCOUNT_2_CLIENT_ID"),
+    false,
+    "CLIENT_ID esta presente: no debe advertir"
+  );
+});
+
+test("checkEnvPreflight: cuenta Contabo indexada completa no advierte", () => {
+  const env = healthyEnvFromCatalog();
+  const secret = "abcdef0123456789abcdef0123456789abcdef0123456789";
+  env.CONTABO_ACCOUNT_2_CLIENT_ID = secret;
+  env.CONTABO_ACCOUNT_2_CLIENT_SECRET = secret;
+  env.CONTABO_ACCOUNT_2_API_USER = "ops@delivrix.com";
+  env.CONTABO_ACCOUNT_2_API_PASSWORD = secret;
+
+  const result = checkEnvPreflight(env);
+  assert.equal(
+    result.warnings.some((i) => i.name.startsWith("CONTABO_ACCOUNT_2_")),
+    false,
+    "una cuenta Contabo indexada completa no debe generar warnings"
+  );
+});
+
+test("checkEnvPreflight: sin claves Contabo no agrega specs dinamicas (entorno sano intacto)", () => {
+  const result = checkEnvPreflight(healthyEnvFromCatalog());
+  assert.equal(
+    result.warnings.some((i) => i.name.startsWith("CONTABO_")),
+    false
+  );
+  assert.equal(result.okCount, result.checkedCount);
+});
+
 test("checkEnvPreflight: sin NINGUNA cuenta Webdock write-capable advierte claro", () => {
   const env = healthyEnvFromCatalog();
   delete env.WEBDOCK_API_KEY_PRIMARY;

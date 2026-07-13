@@ -26,6 +26,10 @@ interface CanvasLiveClientModule {
   MAX_LIVE_TASKS: number;
   MAX_LIVE_ARTIFACTS: number;
   evictLiveState: (state: InternalStateShape, activeTaskId: string | null) => void;
+  matchesLiveEventType: (
+    raw: unknown,
+    eventTypes: readonly string[]
+  ) => { type: string; payload: Record<string, unknown> } | null;
 }
 
 let server: ViteDevServer | null = null;
@@ -104,6 +108,72 @@ function makeState(tasks: LiveTask[]): InternalStateShape {
 function isoAt(index: number): string {
   return new Date(Date.UTC(2026, 5, 8, 0, 0, 0, 0) + index * 60_000).toISOString();
 }
+
+test("matchesLiveEventType parses a string frame and matches by type (PR-08)", async () => {
+  const { matchesLiveEventType } = await loadModule();
+  const types = ["infra.inventory.updated", "senderpool.inventory.updated"];
+
+  const match = matchesLiveEventType(
+    JSON.stringify({ type: "infra.inventory.updated", hash: "abc" }),
+    types
+  );
+  assert.equal(match?.type, "infra.inventory.updated");
+  assert.equal(match?.payload.hash, "abc");
+
+  const objMatch = matchesLiveEventType({ type: "senderpool.inventory.updated" }, types);
+  assert.equal(objMatch?.type, "senderpool.inventory.updated");
+});
+
+test("matchesLiveEventType matches the real oc.action.now audit-envelope frame emitted by the backend (PR-08)", async () => {
+  const { matchesLiveEventType } = await loadModule();
+  const types = [
+    "infra.inventory.updated",
+    "infra.smtp_health.updated",
+    "senderpool.inventory.updated"
+  ];
+
+  // Forma exacta que emite emitInventoryUpdatedSignal() en el backend: el
+  // top-level `type` es SIEMPRE "oc.action.now" y el nombre real del evento
+  // viaja en `action`. Este es el frame que llega por el socket.
+  const infraFrame = JSON.stringify({
+    type: "oc.action.now",
+    taskId: "infra-inventory-live",
+    kind: "audit",
+    action: "infra.inventory.updated",
+    targetType: "infrastructure_inventory",
+    targetId: "inventory",
+    riskLevel: "low",
+    metadata: { hash: "deadbeef" },
+    occurredAt: "2026-07-13T00:00:00.000Z"
+  });
+  const infraMatch = matchesLiveEventType(infraFrame, types);
+  assert.equal(infraMatch?.type, "infra.inventory.updated");
+  assert.equal((infraMatch?.payload.metadata as { hash?: string }).hash, "deadbeef");
+
+  const senderMatch = matchesLiveEventType(
+    { type: "oc.action.now", kind: "audit", action: "senderpool.inventory.updated" },
+    types
+  );
+  assert.equal(senderMatch?.type, "senderpool.inventory.updated");
+
+  // Un oc.action.now cuyo `action` NO está en la lista no debe matchear.
+  assert.equal(
+    matchesLiveEventType({ type: "oc.action.now", action: "smtp.run.progress" }, types),
+    null
+  );
+  // Un oc.action.now sin `action` string no rompe ni matchea.
+  assert.equal(matchesLiveEventType({ type: "oc.action.now" }, types), null);
+});
+
+test("matchesLiveEventType ignores unrelated, malformed and non-typed frames (PR-08)", async () => {
+  const { matchesLiveEventType } = await loadModule();
+  const types = ["infra.inventory.updated"];
+
+  assert.equal(matchesLiveEventType(JSON.stringify({ type: "oc.task.declare" }), types), null);
+  assert.equal(matchesLiveEventType("{not-json", types), null);
+  assert.equal(matchesLiveEventType({ noType: true }, types), null);
+  assert.equal(matchesLiveEventType(null, types), null);
+});
 
 test("snapshot request gate aborts the previous request and marks it stale", async () => {
   const { createSnapshotRequestGate } = await loadModule();

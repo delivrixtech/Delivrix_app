@@ -318,6 +318,12 @@ import {
 } from "./routes/infrastructure.ts";
 import { startInfrastructureAccountHealthPoller } from "./infrastructure-health-poller.ts";
 import {
+  handleAccountSmtpHealthHttp,
+  readSmtpHealthWorkspaceInventories,
+  type SmtpHealthLiveServer,
+  type SmtpRunRecord
+} from "./routes/infrastructure-smtp-health.ts";
+import {
   buildInfrastructureAccountRetireProposal,
   isSustainedUnauthorizedWebdockRetireCandidate
 } from "./infrastructure-account-retire-proposal.ts";
@@ -352,13 +358,15 @@ import { classifyLiveActionMutation } from "./live-action-kill-switch.ts";
 import { createSkillDispatcher } from "./skill-dispatcher.ts";
 import { createHttpToolUseProcessor } from "./tool-use-processor.ts";
 import { routeGatewayWebSocketUpgrade } from "./gateway-upgrade-router.ts";
-import { handleProposalSign, type PlanApprovalRecord } from "./routes/proposals-sign.ts";
+import { computeProposalPreflight, handleProposalSign, type PlanApprovalRecord } from "./routes/proposals-sign.ts";
 import { findSignedPlanApprovalInAuditEvents } from "./plan-approval-audit.ts";
 import { handleProposalReject } from "./routes/proposals-reject.ts";
 import { handleLegacyAuthorizationDeprecated } from "./routes/legacy-authorization.ts";
 import {
   handleConfigureCompleteSmtp,
   readSmtpRunProgress,
+  releaseOwnSmtpRunLocks,
+  sweepDeadSmtpRunLocks,
   type ApprovalStepDecision,
   type OwnedDomainVerification
 } from "./routes/orchestrator-smtp.ts";
@@ -610,6 +618,114 @@ async function listSmtpInventoryLiveServers(): Promise<SmtpInventoryLiveServer[]
   }
   return servers;
 }
+
+// PR-09: reúne los snapshots (flota viva de la cuenta + inventarios workspace + warmup + smtp-runs) que
+// alimentan el builder puro buildAccountSmtpHealth. Read-only, sin SSH, tolerante a JSON parcial.
+async function loadAccountSmtpHealthInput(providerId: string, accountId: string): Promise<{
+  accountLabel?: string;
+  liveServers: SmtpHealthLiveServer[];
+  allLiveServerSlugs: string[];
+  smtpRuns: SmtpRunRecord[];
+  warmupByDomain: Record<string, { status?: string; day?: number }>;
+  ambiguousDomains: string[];
+  domainsInventory: Awaited<ReturnType<typeof readSmtpHealthWorkspaceInventories>>["domainsInventory"];
+  provisioningInventory: Awaited<ReturnType<typeof readSmtpHealthWorkspaceInventories>>["provisioningInventory"];
+  credentialsInventory: Awaited<ReturnType<typeof readSmtpHealthWorkspaceInventories>>["credentialsInventory"];
+  webdockServersInventory: Awaited<ReturnType<typeof readSmtpHealthWorkspaceInventories>>["webdockServersInventory"];
+}> {
+  const allLive = await listSmtpInventoryLiveServers();
+  const normalizedProvider = providerId.toLowerCase();
+  const normalizedAccount = accountId.toLowerCase();
+  const liveServers: SmtpHealthLiveServer[] = allLive
+    .filter((server) => {
+      const serverProvider = (server.providerId ?? "").toLowerCase();
+      const serverAccount = (server.accountId ?? "").toLowerCase();
+      return serverProvider === normalizedProvider &&
+        (serverAccount === normalizedAccount || normalizedAccount === normalizedProvider || !server.accountId);
+    })
+    .map((server) => ({
+      slug: server.serverSlug,
+      ...(server.ipv4 ? { ipv4: server.ipv4 } : {}),
+      ...(server.status ? { status: server.status } : {}),
+      ...(server.accountId ? { accountId: server.accountId } : {})
+    }));
+  const accountLabel = allLive.find((server) =>
+    (server.providerId ?? "").toLowerCase() === normalizedProvider &&
+    (server.accountId ?? "").toLowerCase() === normalizedAccount
+  )?.accountLabel;
+
+  const inventories = await readSmtpHealthWorkspaceInventories(openClawWorkspace);
+  const [smtpRuns, warmupByDomain] = await Promise.all([
+    readAllSmtpRunRecords(),
+    readWarmupStatusByDomain()
+  ]);
+  const ambiguousDomains = ambiguousSmtpDomains(inventories.provisioningInventory);
+
+  return {
+    ...(accountLabel ? { accountLabel } : {}),
+    liveServers,
+    allLiveServerSlugs: allLive.map((server) => server.serverSlug),
+    smtpRuns,
+    warmupByDomain,
+    ambiguousDomains,
+    ...inventories
+  };
+}
+
+async function readAllSmtpRunRecords(): Promise<SmtpRunRecord[]> {
+  const dir = join(openClawWorkspace.getRootDir(), "inventory", "smtp-runs");
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const records: SmtpRunRecord[] = [];
+  await Promise.all(entries
+    .filter((name) => name.endsWith(".json"))
+    .map(async (name) => {
+      try {
+        const parsed = JSON.parse(await readFile(join(dir, name), "utf8")) as Record<string, unknown>;
+        if (typeof parsed.runId === "string") {
+          records.push({
+            runId: parsed.runId,
+            ...(typeof parsed.status === "string" ? { status: parsed.status } : {}),
+            ...(typeof parsed.chosenDomain === "string" ? { chosenDomain: parsed.chosenDomain } : {}),
+            ...(typeof parsed.serverSlug === "string" ? { serverSlug: parsed.serverSlug } : {}),
+            ...(typeof parsed.providerId === "string" ? { providerId: parsed.providerId } : {}),
+            ...(typeof parsed.budgetSpentUsd === "number" ? { budgetSpentUsd: parsed.budgetSpentUsd } : {}),
+            ...(typeof parsed.lastCompletedStep === "number" ? { lastCompletedStep: parsed.lastCompletedStep } : {})
+          });
+        }
+      } catch {
+        // JSON parcial de un run en vuelo: ignorar esta entrada.
+      }
+    }));
+  return records;
+}
+
+async function readWarmupStatusByDomain(): Promise<Record<string, { status?: string; day?: number }>> {
+  const inventory = await openClawWorkspace
+    .readInventoryJsonOrNull<{ runs?: Array<{ domain?: string; status?: string }> }>("warmup-progress.json");
+  const byDomain: Record<string, { status?: string; day?: number }> = {};
+  for (const run of inventory?.runs ?? []) {
+    if (typeof run.domain === "string") {
+      byDomain[run.domain.toLowerCase()] = { ...(run.status ? { status: run.status } : {}) };
+    }
+  }
+  return byDomain;
+}
+
+function ambiguousSmtpDomains(provisioning: { servers?: Array<{ domain: string; status: string }> } | null): string[] {
+  const configuredCountByDomain = new Map<string, number>();
+  for (const entry of provisioning?.servers ?? []) {
+    if (entry.status !== "configured") continue;
+    const domain = entry.domain.toLowerCase();
+    configuredCountByDomain.set(domain, (configuredCountByDomain.get(domain) ?? 0) + 1);
+  }
+  return [...configuredCountByDomain.entries()].filter(([, count]) => count > 1).map(([domain]) => domain);
+}
+
 // Cuentas write-capable para el selector del orquestador (una por CUENTA real, ya de-dupeada).
 // enabled = canCreate() REAL: la cuenta-1 ("ops") siempre apta; las distintas solo con sus keys.
 async function listWebdockCreationAccounts(): Promise<Array<{ accountId: string; enabled: boolean; healthStatus?: string; lifecycleStatus?: string }>> {
@@ -797,6 +913,9 @@ const configureSmtpRuntimeDeps = {
     throw new Error(`unsupported_read_only_orchestrator_step:${input.skill}`);
   },
   listCreationAccounts: () => listWebdockCreationAccounts(),
+  // Fail-fast del provider en el orquestador (step 0): consulta el registry providerId->adapter para
+  // abortar ANTES de gastar si el contabo-N referenciado no tiene credenciales cargadas.
+  hasVpsProviderAdapter: (providerId: string) => vpsProviderAdapters.has(providerId),
   preflightCreationAccount: async (input: { accountId: string }) => {
     // Mismo lookup fail-clean que listWebdockCreationServers: cuenta desconocida = rechazo.
     const adapter = input.accountId === "ops"
@@ -2277,6 +2396,25 @@ const server = createServer(async (request, response) => {
       });
     }
 
+    {
+      const smtpHealthMatch = request.method === "GET"
+        ? requestUrl(request).pathname.match(/^\/v1\/infrastructure\/accounts\/([^/]+)\/([^/]+)\/smtp-health$/)
+        : null;
+      if (smtpHealthMatch) {
+        const providerId = decodeURIComponent(smtpHealthMatch[1] ?? "");
+        const accountId = decodeURIComponent(smtpHealthMatch[2] ?? "");
+        return await handleAccountSmtpHealthHttp({
+          request,
+          response,
+          readBoundaryToken: sensitiveReadBoundaryToken,
+          providerId,
+          accountId,
+          loadInput: () => loadAccountSmtpHealthInput(providerId, accountId),
+          now: () => resolveGatewayNow()
+        });
+      }
+    }
+
     if (request.method === "GET" && request.url?.startsWith("/v1/infrastructure/domain-discovery")) {
       try {
         return await handleAwsDomainDiscoveryHttp({
@@ -2323,7 +2461,7 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && request.url === "/v1/domains/route53/register") {
       try {
-        return await handleRoute53DomainRegisterHttp({
+        await handleRoute53DomainRegisterHttp({
           request,
           response,
           auditLog,
@@ -2332,6 +2470,12 @@ const server = createServer(async (request, response) => {
           readCanvasState: () => canvasLiveEvents.snapshot(),
           env: process.env
         });
+        // PR-08: una compra/registro de dominio exitoso muta el Sender Pool → avisar al panel para que
+        // haga pull del inventario (push-to-pull; el fetch sigue siendo el endpoint auditado).
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          void emitInventoryUpdatedSignal("senderpool.inventory.updated", "route53-domains");
+        }
+        return;
       } catch (error) {
         if (handleRoute53DomainPurchaseError(error, response)) {
           return;
@@ -4334,6 +4478,23 @@ const server = createServer(async (request, response) => {
       });
     }
 
+    {
+      const preflightMatch = request.method === "GET"
+        ? requestUrl(request).pathname.match(/^\/v1\/openclaw\/proposals\/([^/]+)\/preflight$/)
+        : null;
+      if (preflightMatch) {
+        const proposalId = decodeURIComponent(preflightMatch[1] ?? "");
+        const proposal = proposalsStore.find((candidate) => candidate.id === proposalId);
+        const preflight = await computeProposalPreflight({
+          proposal,
+          workspaceRootDir: openClawWorkspace.getRootDir(),
+          now: resolveGatewayNow(),
+          hasVpsProviderAdapter: (providerId: string) => vpsProviderAdapters.has(providerId)
+        });
+        return json(response, proposal ? 200 : 404, preflight);
+      }
+    }
+
     if (request.method === "POST") {
       const signMatch = requestUrl(request).pathname.match(/^\/v1\/openclaw\/proposals\/([^/]+)\/sign$/);
       if (signMatch) {
@@ -4351,6 +4512,7 @@ const server = createServer(async (request, response) => {
           webhookBroadcaster: equipoWebhookBroadcaster,
           dispatcher: skillDispatcher,
           readKillSwitch: () => killSwitchStore.get(),
+          hasVpsProviderAdapter: (providerId: string) => vpsProviderAdapters.has(providerId),
           env: process.env,
           logger: gatewayRuntimeLog
         });
@@ -5817,6 +5979,26 @@ server.listen(port, host, () => {
       );
     });
   void resumeRampsOnStartup();
+  // Barrido de arranque: si el gateway se reinicio a mitad de un run, el lock del run pudo quedar
+  // huerfano (su proceso murio sin liberarlo). Borramos los locks cuyo pid este muerto en este host
+  // para que el operador pueda reintentar el mismo runId sin esperar los 40 min del lease.
+  void sweepDeadSmtpRunLocks(openClawWorkspace, gatewayRuntimeLog)
+    .then((result) => {
+      if (result.removed.length > 0) {
+        void gatewayRuntimeLog.warn(
+          "openclaw.orchestrator.orphan_run_locks_swept",
+          "Swept orphan SMTP run locks left by a previous crashed/restarted process.",
+          { removed: result.removed }
+        );
+      }
+    })
+    .catch((error) => {
+      void gatewayRuntimeLog.error(
+        "openclaw.orchestrator.orphan_run_lock_sweep_failed",
+        "Failed to sweep orphan SMTP run locks at boot.",
+        runtimeErrorMetadata(error)
+      );
+    });
   if (process.env.OPENCLAW_EPISODIC_SCRATCH_TTL_JOB_ENABLE === "true") {
     startEpisodicScratchTtlJob({
       pool: episodicScratchPool,
@@ -5839,6 +6021,84 @@ server.listen(port, host, () => {
     );
   }
 });
+
+// Shutdown graceful: al recibir SIGTERM/SIGINT liberamos los locks de run que tomo ESTE proceso, para
+// que un reinicio inmediato no herede un lock huerfano (el barrido de arranque ya cubre el caso de un
+// crash sin senal). Idempotente: solo se corre una vez.
+let smtpRunLocksShuttingDown = false;
+function gracefulShutdownReleaseRunLocks(signal: NodeJS.Signals): void {
+  if (smtpRunLocksShuttingDown) return;
+  smtpRunLocksShuttingDown = true;
+  void gatewayRuntimeLog.info(
+    "gateway.shutdown_signal",
+    "Received shutdown signal; releasing own SMTP run locks.",
+    { signal }
+  );
+  void releaseOwnSmtpRunLocks(openClawWorkspace, gatewayRuntimeLog)
+    .catch((error) => {
+      void gatewayRuntimeLog.error(
+        "openclaw.orchestrator.run_lock_release_on_shutdown_failed",
+        "Failed to release own SMTP run locks during shutdown.",
+        runtimeErrorMetadata(error)
+      );
+    })
+    .finally(() => {
+      server.close(() => process.exit(0));
+      // Red de seguridad: si server.close cuelga (conexiones vivas), salir igual.
+      setTimeout(() => process.exit(0), 5_000).unref();
+    });
+}
+process.once("SIGTERM", gracefulShutdownReleaseRunLocks);
+process.once("SIGINT", gracefulShutdownReleaseRunLocks);
+
+// PR-08 (realtime push-to-pull): el hub canvas-live no tiene un tipo de evento propio para
+// invalidaciones de inventario, así que reutilizamos el evento `oc.action.now` (kind "audit") YA
+// difundido a todos los sockets del panel como portador de la señal. El panel escucha por
+// `action === "infra.inventory.updated" | "senderpool.inventory.updated"` y hace pull del endpoint
+// auditado (el WS solo AVISA, nunca lleva datos de inventario). El taskId sintético no crea ninguna
+// tarea (applyLiveEvent ignora action.now sobre tareas inexistentes); solo se emite ante un cambio
+// real, así que el crecimiento del log de estado queda acotado a la frecuencia de cambios (baja).
+let lastInfraInventoryHash: string | null = null;
+
+function emitInventoryUpdatedSignal(
+  action: "infra.inventory.updated" | "senderpool.inventory.updated",
+  targetId: string,
+  metadata: Record<string, unknown> = {}
+): void {
+  void canvasLiveEvents
+    .emit({
+      type: "oc.action.now",
+      taskId: "infra-inventory-live",
+      kind: "audit",
+      action,
+      targetType: action === "senderpool.inventory.updated" ? "sender_pool_inventory" : "infrastructure_inventory",
+      targetId,
+      riskLevel: "low",
+      metadata,
+      occurredAt: resolveGatewayNow().toISOString()
+    })
+    .catch((error) => {
+      void gatewayRuntimeLog.warn(
+        "infrastructure.inventory_updated_signal_failed",
+        "Failed to emit inventory-updated realtime signal; panel falls back to poll.",
+        { action, ...runtimeErrorMetadata(error) }
+      );
+    });
+}
+
+function hashInfrastructureInventory(
+  webdockAccounts: WebdockAccountInventoryResult[],
+  vpsProviders: VpsProviderInventoryResult[]
+): string {
+  const parts: string[] = [];
+  for (const account of webdockAccounts) {
+    parts.push(`webdock:${account.accountId}:${account.result.source.responseOk ? "ok" : "down"}:${account.result.servers.map((server) => `${server.slug}=${server.status}`).sort().join(",")}`);
+  }
+  for (const provider of vpsProviders) {
+    parts.push(`${provider.providerId}:${provider.result.source.responseOk ? "ok" : "down"}:${provider.result.servers.map((server) => `${server.slug}=${server.status}`).sort().join(",")}`);
+  }
+  return createHash("sha256").update(parts.sort().join("|")).digest("hex");
+}
 
 async function runInfrastructureAccountHealthPoll(trigger: "startup" | "interval"): Promise<void> {
   const observedAt = resolveGatewayNow();
@@ -5903,6 +6163,15 @@ async function runInfrastructureAccountHealthPoll(trigger: "startup" | "interval
       retiredCount: observedRecords.filter((record) => record.healthStatus === "retired").length
     }
   );
+
+  // PR-08: si el inventario cambió respecto al último poll, avisamos al panel (push-to-pull). En el
+  // primer poll (hash previo null) sembramos el hash sin emitir para no disparar una invalidación
+  // espuria en cada arranque del gateway.
+  const inventoryHash = hashInfrastructureInventory(webdockAccounts, vpsProviders);
+  if (lastInfraInventoryHash !== null && lastInfraInventoryHash !== inventoryHash) {
+    emitInventoryUpdatedSignal("infra.inventory.updated", "all", { trigger, hash: inventoryHash.slice(0, 12) });
+  }
+  lastInfraInventoryHash = inventoryHash;
 }
 
 async function proposeRetireForSustainedUnauthorizedWebdockAccounts(input: {

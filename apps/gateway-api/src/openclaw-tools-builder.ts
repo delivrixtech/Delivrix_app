@@ -1477,7 +1477,7 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
             type: "string",
             minLength: 1,
             maxLength: 64,
-            description: "OBLIGATORIO. Identificador único del run (p.ej. 'smtp-<dominio>-rescate-<n>'). La firma de plan del ApprovalGate valida el scope contra este runId; sin él la firma falla (plan_scope_missing). Generá uno estable por run y reusalo si reanudás."
+            description: "OBLIGATORIO. Identificador único del run (p.ej. 'smtp-<dominio>-rescate-<n>'). La firma de plan del ApprovalGate valida el scope contra este runId; sin él la firma falla (plan_scope_missing). Generá uno estable por run y reusalo si reanudás. Si recibís 'run_already_in_progress' (HTTP 423) hay un run en curso o un lock huérfano: esperá o pedí al operador que limpie el lock y reintentá el MISMO runId. NUNCA arranques un run con OTRO dominio para sortear el bloqueo: cada compra de dominio cuesta dinero."
           },
           domain: { type: "string", minLength: 1 },
           provider: { type: "string", minLength: 1, maxLength: 32 },

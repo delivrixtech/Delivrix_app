@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { AuditEvent, AuditEventInput, CanvasLiveArtifactSnapshot } from "../../../../packages/domain/src/index.ts";
 import { createInternalHttpAdapter } from "../internal-http-adapter.ts";
-import { handleProposalSign, type ProposalSignStoredProposal } from "./proposals-sign.ts";
+import {
+  handleProposalSign,
+  preflightConfigureCompleteSmtpProposal,
+  type ProposalSignStoredProposal
+} from "./proposals-sign.ts";
 import { signOpenClawPayload } from "../security/hmac.ts";
 
 process.env.OPENCLAW_HMAC_SECRET = "test-openclaw-secret";
@@ -81,6 +85,57 @@ test("sign accepts vpsProviderId as configure_complete_smtp plan scope provider"
   assert.equal(ctx.proposals[0].planApproval?.scope.vpsProviderId, "contabo");
   assert.match(ctx.proposals[0].planApproval?.scopeHash ?? "", /^[a-f0-9]{64}$/);
   assert.equal(ctx.events.some((event) => event.action === "oc.plan.signed"), true);
+  assert.equal(ctx.dispatches.length, 1);
+});
+
+test("sign rejects configure_complete_smtp plan when vpsProviderId has no adapter loaded", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    hasVpsProviderAdapter: (providerId) => providerId === "contabo",
+    proposal: configureCompleteSmtpProposal({
+      params: {
+        runId: "smtp-contabo9-20260713-a",
+        domain: "nationalbizrenewal.com",
+        vpsProviderId: "contabo-9",
+        brand: "nationalbizrenewal",
+        budgetUsdMax: 25,
+        testEmailRecipient: "infra@delivrix.com",
+        testEmailSubject: "Smoke autorizado",
+        testEmailBody: "Prueba autorizada y auditada"
+      }
+    })
+  });
+
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.rejectReason, "unknown_vps_provider");
+  assert.ok(response.body.details.some((d: string) => d.includes("contabo-9")));
+  assert.equal(ctx.dispatches.length, 0, "no debe despachar una firma condenada por provider sin adapter");
+});
+
+test("sign accepts configure_complete_smtp plan when vpsProviderId adapter is loaded", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    hasVpsProviderAdapter: (providerId) => providerId === "contabo-2",
+    proposal: configureCompleteSmtpProposal({
+      params: {
+        runId: "smtp-contabo2-20260713-a",
+        domain: "nationalbizrenewal.com",
+        vpsProviderId: "contabo-2",
+        brand: "nationalbizrenewal",
+        budgetUsdMax: 25,
+        testEmailRecipient: "infra@delivrix.com",
+        testEmailSubject: "Smoke autorizado",
+        testEmailBody: "Prueba autorizada y auditada"
+      }
+    })
+  });
+
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(ctx.proposals[0].planApproval?.scope.vpsProviderId, "contabo-2");
   assert.equal(ctx.dispatches.length, 1);
 });
 
@@ -509,6 +564,7 @@ function context(options: {
   dispatchResult?: { ok: boolean; statusCode: number; summary: unknown; durationMs: number };
   webhookThrows?: boolean;
   env?: Record<string, string | undefined>;
+  hasVpsProviderAdapter?: (providerId: string) => boolean;
 } = {}): TestContext {
   const proposals = options.proposals ?? [options.proposal ?? baseProposal()];
   const events: AuditEvent[] = [];
@@ -581,6 +637,7 @@ function context(options: {
       }
     },
     readKillSwitch: async () => ({ enabled: options.killSwitchEnabled ?? false }),
+    hasVpsProviderAdapter: options.hasVpsProviderAdapter,
     env: options.env,
     now: () => now
   } satisfies Omit<Parameters<typeof handleProposalSign>[0], "request" | "response"> & {
@@ -670,3 +727,97 @@ function configureCompleteSmtpProposal(overrides: Partial<ProposalSignStoredProp
     ...overrides
   });
 }
+
+const preflightParams = {
+  runId: "smtp-annualfilinginfra-contabo2-20260713-v1",
+  domain: "annualfilinginfra.com",
+  provider: "contabo-2",
+  vpsProviderId: "contabo-2",
+  budgetUsdMax: 25,
+  testEmailRecipient: "ops@annualfilinginfra.com"
+};
+
+test("preflight: non configure_complete_smtp skill never fails", () => {
+  const result = preflightConfigureCompleteSmtpProposal({
+    params: {},
+    skill: "read_infrastructure_inventory",
+    runState: null,
+    lockHeld: false
+  });
+  assert.equal(result.willFail, false);
+});
+
+test("preflight: held run lock is a doomed signature", () => {
+  const result = preflightConfigureCompleteSmtpProposal({
+    params: preflightParams,
+    skill: "configure_complete_smtp",
+    runState: null,
+    lockHeld: true
+  });
+  assert.equal(result.willFail, true);
+  assert.equal(result.reason, "run_already_in_progress");
+});
+
+test("preflight: unknown_vps_provider when adapter is missing", () => {
+  const result = preflightConfigureCompleteSmtpProposal({
+    params: preflightParams,
+    skill: "configure_complete_smtp",
+    runState: null,
+    lockHeld: false,
+    hasVpsProviderAdapter: () => false
+  });
+  assert.equal(result.willFail, true);
+  assert.equal(result.reason, "unknown_vps_provider");
+});
+
+test("preflight: requireExistingDomain mismatch BEFORE purchase is doomed", () => {
+  const result = preflightConfigureCompleteSmtpProposal({
+    params: { ...preflightParams, requireExistingDomain: true },
+    skill: "configure_complete_smtp",
+    runState: { params: { requireExistingDomain: false }, steps: { "1": { status: "done" } }, lastCompletedStep: 1 },
+    lockHeld: false,
+    hasVpsProviderAdapter: () => true
+  });
+  assert.equal(result.willFail, true);
+  assert.equal(result.reason, "plan_scope_mismatch: requireExistingDomain");
+});
+
+test("preflight: requireExistingDomain mismatch AFTER purchase is reconciled (not doomed)", () => {
+  const result = preflightConfigureCompleteSmtpProposal({
+    params: { ...preflightParams, requireExistingDomain: true },
+    skill: "configure_complete_smtp",
+    runState: { params: { requireExistingDomain: false }, steps: { "2": { status: "done" } }, chosenDomain: "annualfilinginfra.com", budgetSpentUsd: 16, lastCompletedStep: 8 },
+    lockHeld: false,
+    hasVpsProviderAdapter: () => true
+  });
+  assert.equal(result.willFail, false);
+});
+
+test("preflight: requireExistingDomain mismatch with verifiedOwnedDomain is reconciled (owned-domain run, no purchase step)", () => {
+  // Run de dominio propio: verifiedOwnedDomain está seteado pero el step 2 no corrió ni hubo gasto.
+  // smtpRunPurchaseSecured debe espejar runStatePurchaseSettled y considerar la compra asegurada.
+  const result = preflightConfigureCompleteSmtpProposal({
+    params: { ...preflightParams, requireExistingDomain: true },
+    skill: "configure_complete_smtp",
+    runState: {
+      params: { requireExistingDomain: false },
+      steps: { "1": { status: "done" } },
+      verifiedOwnedDomain: "annualfilinginfra.com",
+      lastCompletedStep: 1
+    },
+    lockHeld: false,
+    hasVpsProviderAdapter: () => true
+  });
+  assert.equal(result.willFail, false);
+});
+
+test("preflight: healthy fresh proposal passes", () => {
+  const result = preflightConfigureCompleteSmtpProposal({
+    params: preflightParams,
+    skill: "configure_complete_smtp",
+    runState: null,
+    lockHeld: false,
+    hasVpsProviderAdapter: () => true
+  });
+  assert.equal(result.willFail, false);
+});

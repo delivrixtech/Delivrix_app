@@ -156,6 +156,39 @@ test("Infrastructure inventory preserves distinct Webdock accounts after cuenta 
   ]);
 });
 
+test("Infrastructure inventory collapses Webdock accounts that share a credential fingerprint (no doble conteo)", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [
+      { ...webdockAccount("primary", "InfraVPS", ["running", "running"]), credentialFingerprint: "541804ad5d0b" },
+      // alias legacy QUINARY: misma cuenta física, mismo fingerprint => NO debe contar aparte
+      { ...webdockAccount("quinary", "InfraVPS", ["running", "running"]), credentialFingerprint: "541804ad5d0b" }
+    ],
+    now: fixedNow
+  });
+
+  assert.deepEqual(payload.providers.map((provider) => [provider.id, provider.itemCount]), [
+    ["webdock-primary", 2]
+  ]);
+  assert.equal(payload.itemTotal, 2, "20→2 en el fixture: no se duplican los servidores del alias");
+});
+
+test("Infrastructure inventory keeps Webdock accounts with distinct credential fingerprints", async () => {
+  const payload = await buildInfrastructureInventoryPayload({
+    includeStaticProviders: false,
+    webdockAccounts: [
+      { ...webdockAccount("primary", "InfraVPS", ["running", "running"]), credentialFingerprint: "aaaaaaaaaaaa" },
+      { ...webdockAccount("quinary", "Otra Cuenta", ["running"]), credentialFingerprint: "bbbbbbbbbbbb" }
+    ],
+    now: fixedNow
+  });
+
+  assert.deepEqual(payload.providers.map((provider) => [provider.id, provider.itemCount]), [
+    ["webdock-primary", 2],
+    ["webdock-quinary", 1]
+  ]);
+});
+
 test("Infrastructure inventory does not surface adapter fallback servers when Webdock read is rejected", async () => {
   const adapter = new WebdockRealAdapter({
     readApiKey: "bad-read-key",

@@ -52,6 +52,12 @@ export interface DomainsInventoryRecord {
   serverIp?: string | null;
   registeredAt?: string;
   costUsd?: number;
+  /**
+   * Causa textual del fallo cuando `status === "needs_reconciliation"`.
+   * La escribe `safeMarkDomainPurchaseNeedsReconciliation` en domains-purchase.ts
+   * (p.ej. payload AWS DomainLimitExceeded / InvalidInput).
+   */
+  errorMessage?: string;
 }
 
 export interface DomainsInventory {
@@ -97,6 +103,17 @@ export interface SenderPoolDomainSummary {
     status?: WarmupRampRecord["state"];
   } | null;
   warmupRampActive?: boolean;
+  /**
+   * Timestamp de registro del dominio (ISO 8601). Fallback a
+   * `smtpCredential.createdAt` para los dominios credential-only que no
+   * están en `domains.json`. `null` cuando no hay ninguna fecha conocida.
+   */
+  registeredAt?: string | null;
+  /**
+   * Causa textual del fallo (dominios en `needs_reconciliation`). Opcional:
+   * solo presente cuando el inventario trae un mensaje de error.
+   */
+  errorMessage?: string | null;
 }
 
 export interface SenderPoolStatusResponse {
@@ -171,10 +188,24 @@ function buildDomainSummary(
           status: ramp!.state
         }
       : null,
-    warmupRampActive: rampActive
+    warmupRampActive: rampActive,
+    registeredAt: inventory.registeredAt ?? smtpCredential?.createdAt ?? null,
+    errorMessage: inventory.errorMessage ?? null
   };
 
   return summary;
+}
+
+/**
+ * Devuelve el epoch (ms) usado para ordenar cronológicamente, o `null` si el
+ * dominio no tiene ninguna fecha parseable. Defensivo ante timestamps nulos /
+ * inválidos para que la lista no se desordene (NaN) ni rompa el sort.
+ */
+function sortTimestampMs(summary: SenderPoolDomainSummary): number | null {
+  const raw = summary.registeredAt ?? summary.smtpCredential?.createdAt ?? null;
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export interface BuildSenderPoolStatusDeps {
@@ -267,6 +298,18 @@ export async function buildSenderPoolStatus(
   const activeDomains = domains.filter(
     (d) => d.status === "active" || d.status === "warming" || d.warmupRampActive === true
   ).length;
+
+  // Orden cronológico descendente (más reciente primero). Sort defensivo:
+  // los dominios sin timestamp parseable quedan al final, preservando su
+  // orden relativo de inserción.
+  domains.sort((a, b) => {
+    const tsA = sortTimestampMs(a);
+    const tsB = sortTimestampMs(b);
+    if (tsA === null && tsB === null) return 0;
+    if (tsA === null) return 1;
+    if (tsB === null) return -1;
+    return tsB - tsA;
+  });
 
   return {
     domains,
