@@ -620,6 +620,18 @@ export interface OnboardMailboxResult {
 }
 
 /**
+ * Resultado por-item de un onboard MASIVO (idempotente). `created` = se insertó ahora; false = ya
+ * existía (o falló). `state` = estado del nodo tras el onboard (blocked al nacer, o el preservado si
+ * ya existía). `error` presente ⇒ ESE item falló (p.ej. write DB); no tumba al resto del batch.
+ */
+export interface OnboardMailboxItemResult {
+  email: string;
+  created: boolean;
+  state?: NodeState;
+  error?: string;
+}
+
+/**
  * Contrato de /warm (roadmap 5.5): SÓLO buzones WARM. `warmedAt` = updated_at (última transición de
  * estado; proxy — v1 no tiene columna dedicada). `smtpRef` = referencia de vault, no la credencial.
  */
@@ -669,6 +681,12 @@ export interface ListMailboxesFilters {
 
 export interface WarmupMailboxStore {
   onboardMailbox(input: OnboardMailboxInput): Promise<OnboardMailboxResult>;
+  /**
+   * Onboard MASIVO idempotente: envuelve onboardMailbox por item con MISMA idempotencia (create-only
+   * por mailbox). Un item que falle NO tumba al resto: se devuelve con `error` en su resultado y el
+   * loop sigue. Devuelve un resultado por input, en el mismo orden.
+   */
+  onboardMany(inputs: OnboardMailboxInput[]): Promise<OnboardMailboxItemResult[]>;
   listWarmMailboxes(placementMin?: number): Promise<WarmMailbox[]>;
   getMailbox(id: string): Promise<WarmupMailboxRecord | null>;
   listMailboxes(filters?: ListMailboxesFilters): Promise<WarmupMailboxRecord[]>;
@@ -724,34 +742,60 @@ function clampOffset(value: number | undefined): number {
   return Math.floor(value);
 }
 
+/**
+ * Onboard create-only idempotente de UN buzón. Compartido por onboardMailbox (single) y onboardMany
+ * (batch) para una sola fuente de verdad de la idempotencia: ON CONFLICT (mailbox) DO NOTHING preserva
+ * el estado del nodo vivo; el nodo nuevo NO fija state → cae al default 'blocked' (§8 fail-closed).
+ */
+async function onboardMailboxOnce(client: PgClient, input: OnboardMailboxInput): Promise<OnboardMailboxResult> {
+  const inserted = await client.query(
+    "INSERT INTO warmup_nodes " +
+      "(mailbox, domain, infra_type, daily_limit, increase_by_day, weekdays_only, sending_ip, helo_fqdn) " +
+      "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) " +
+      "ON CONFLICT (mailbox) DO NOTHING",
+    [
+      input.email,
+      input.domain,
+      input.infraType ?? "postfix",
+      input.dailyLimit ?? 10,
+      input.increaseByDay ?? 1,
+      input.weekdaysOnly ?? false,
+      input.sendingIp ?? null,
+      input.heloFqdn ?? null
+    ]
+  );
+  const created = (inserted.rowCount ?? 0) > 0;
+  const { rows } = await client.query<MailboxRow>(
+    `SELECT ${MAILBOX_COLUMNS} FROM warmup_nodes WHERE mailbox = $1`,
+    [input.email]
+  );
+  return { mailbox: mapMailboxRow(rows[0]), created };
+}
+
 /** Store de la Warmup API sobre un PgClient inyectado. Aditivo: no toca las 6 stores del core. */
 export function createWarmupMailboxStore(client: PgClient): WarmupMailboxStore {
   return {
     async onboardMailbox(input: OnboardMailboxInput): Promise<OnboardMailboxResult> {
-      // create-only idempotente: ON CONFLICT (mailbox) DO NOTHING preserva el estado del nodo vivo.
-      // El nodo nuevo NO fija state → cae al default 'blocked' de la columna (§8 fail-closed).
-      const inserted = await client.query(
-        "INSERT INTO warmup_nodes " +
-          "(mailbox, domain, infra_type, daily_limit, increase_by_day, weekdays_only, sending_ip, helo_fqdn) " +
-          "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) " +
-          "ON CONFLICT (mailbox) DO NOTHING",
-        [
-          input.email,
-          input.domain,
-          input.infraType ?? "postfix",
-          input.dailyLimit ?? 10,
-          input.increaseByDay ?? 1,
-          input.weekdaysOnly ?? false,
-          input.sendingIp ?? null,
-          input.heloFqdn ?? null
-        ]
-      );
-      const created = (inserted.rowCount ?? 0) > 0;
-      const { rows } = await client.query<MailboxRow>(
-        `SELECT ${MAILBOX_COLUMNS} FROM warmup_nodes WHERE mailbox = $1`,
-        [input.email]
-      );
-      return { mailbox: mapMailboxRow(rows[0]), created };
+      return onboardMailboxOnce(client, input);
+    },
+
+    async onboardMany(inputs: OnboardMailboxInput[]): Promise<OnboardMailboxItemResult[]> {
+      // Loop secuencial sobre onboardMailboxOnce (misma idempotencia create-only). Un item que falle
+      // (p.ej. write DB) se captura como `error` en su resultado y NO tumba al resto del batch.
+      const results: OnboardMailboxItemResult[] = [];
+      for (const input of inputs) {
+        try {
+          const { created, mailbox } = await onboardMailboxOnce(client, input);
+          results.push({ email: input.email, created, state: mailbox.state });
+        } catch (error) {
+          results.push({
+            email: input.email,
+            created: false,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+      return results;
     },
 
     async listWarmMailboxes(placementMin: number = WARM_PLACEMENT_DEFAULT_MIN): Promise<WarmMailbox[]> {

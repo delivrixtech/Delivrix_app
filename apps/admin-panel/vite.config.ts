@@ -51,12 +51,23 @@ function isWarmupApiPath(pathname: string): boolean {
   return (
     pathname === "/v1/mailboxes" ||
     pathname.startsWith("/v1/mailboxes/") ||
+    // onboard masivo desde el Sender Pool (sibling con ':' de :onboard). El proxy inyecta la llave.
+    pathname === "/v1/mailboxes:onboard-batch" ||
     pathname === "/v1/warmup/mailboxes-health"
   );
 }
 const chatConversationsPath = "/v1/openclaw/chat/conversations";
 const chatHistoryPath = "/v1/openclaw/chat/history";
-const allowedProxyPaths = new Set([...Object.values(READ_ENDPOINTS), canvasLiveStatePath, chatConversationsPath, chatHistoryPath]);
+// Warmup API (carril B): listado de nodos de warmup. Read-only; el selector del Sender Pool lo usa para
+// cruzar qué dominios YA están en warmup. El proxy inyecta auth same-origin (x-warmup-api-key / read-boundary).
+const warmupMailboxesListPath = "/v1/mailboxes";
+const allowedProxyPaths = new Set([
+  ...Object.values(READ_ENDPOINTS),
+  canvasLiveStatePath,
+  chatConversationsPath,
+  chatHistoryPath,
+  warmupMailboxesListPath
+]);
 const allowedReadPatterns: RegExp[] = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/status$/,
   /^\/v1\/openclaw\/proposals\/[^/]+\/preflight$/,
@@ -92,7 +103,10 @@ const allowedWritePaths = new Set<string>([
   "/v1/openclaw/chat/interrupt",
   // Warmup API (carril B): carga manual de un buzón. El gateway exige WARMUP_API_KEY (fail-closed);
   // el proxy inyecta la llave desde el entorno. create-only idempotente + node nace 'blocked' (§8).
-  "/v1/mailboxes"
+  "/v1/mailboxes",
+  // Warmup API: onboard masivo desde el Sender Pool. Mismo gate (WARMUP_API_KEY), misma idempotencia
+  // por email; re-calentar un buzón ya presente es seguro (queda 'exists', no duplica ni resetea).
+  "/v1/mailboxes:onboard-batch"
 ]);
 
 /**
