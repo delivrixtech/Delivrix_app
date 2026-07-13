@@ -45,14 +45,20 @@ apps/warmup-engine/
       ramp.ts          rampa LINEAL: cupo diario + clamps duros (<3×/48h, Gmail <50, techo del contrato)
       placement.ts     rollup desde seeds: Wilson-LB + EWMA (tabs=inbox, missing≠spam) — §9
       node-state.ts    FSM: blocked/fresh/warm/paused/quarantined + auth-gate + auto-pause — §8/§9
-    runtime/         RUNTIME de la Fase 0 (§7/§8/§13) — la costura hacia el mundo real:
-      auth-gate.ts     gate FAIL-CLOSED (§8): evalúa el contrato de auth y decide si el nodo envía.
-                       Corazón de la Fase 0: "ningún nodo envía sin contrato `ready`".
-      transport.ts     transporte PLUGGABLE (§7): interface WarmupTransport + PostfixTransport (SMTP
-                       vía cliente inyectado, compat. nodemailer) + MockTransport para tests.
-      send-worker.ts   Send Worker (§7): consulta el gate ANTES de tocar el transporte + idempotencia
-                       por slot (exactly-once) + bounce/DLQ (§12).
-    index.ts         superficie pública (núcleo + runtime)
+      auth-checks.ts   contrato de los checks de auth (§8): ids canónicos + sets common/self-hosted
+    checks/          CHECKS de auth de Fase 1 (§8) — puros, con resolvers/probes INYECTABLES:
+      dns-auth-checks.ts   SPF / DKIM / DMARC / MX (DnsResolver inyectable)
+      ip-network-checks.ts PTR-FCrDNS / RBL (Spamhaus/Barracuda/SpamCop) / TLS / HELO / dedicated-IP
+    runtime/         RUNTIME (§7/§8/§13) — la costura hacia el mundo real:
+      auth-gate.ts             gate FAIL-CLOSED (§8): "ningún nodo envía sin contrato `ready`".
+      auth-contract-builder.ts corre los checkers → agrega verdicts → firma el AuthReadinessContract
+                               con TTL. Los checks aún sin checker quedan `unknown` (fail-closed).
+      transport.ts             transporte PLUGGABLE (§7): WarmupTransport + PostfixTransport (SMTP por
+                               cliente inyectado) + MockTransport.
+      send-worker.ts           Send Worker (§7): gate ANTES del transporte + idempotencia + bounce/DLQ.
+      config.ts                FEATURE FLAG WARMUP_ENGINE_ENABLE (default OFF): el engine no arranca ni
+                               envía en deploy sin activarlo explícitamente.
+    index.ts         superficie pública (núcleo + checks + runtime)
 ```
 
 El transporte queda **pluggable desde el día 1** para enchufar M365 en v2 sin refactor. El núcleo
@@ -69,9 +75,13 @@ El transporte queda **pluggable desde el día 1** para enchufar M365 en v2 sin r
 | **4** | Rampa lenta + auto-pause por placement + observabilidad | FRESH→WARM por placement; auto-pausa a <0.70 |
 | **5** | Endurecimiento: RBL/ASN monitoring, bounce handling, runbooks | Track A autosuficiente y monitoreado |
 
-**Estado actual:** Fase 0 — núcleo determinista (ramp/placement/FSM) + runtime (auth-gate + send-worker
-+ transporte pluggable), todo con tests. El Inbox Reader IMAP, el scheduler/colas y el harness de
-placement en vivo se cablean sobre este núcleo en las fases 1–4.
+**Estado actual:** Fase 0 completa + **Fase 1 (auth) sobre mocks**. Los checks del §8 están
+implementados como funciones puras con resolvers inyectables (SPF/DKIM/DMARC/MX + PTR-FCrDNS/RBL/TLS/
+HELO/dedicated-IP) y el `auth-contract-builder` los agrega en un `AuthReadinessContract` firmado que
+el gate fail-closed consume. **Pendiente del §8 (siguiente slice):** `SMTP_AUTH`, `IMAP_AUTH`,
+`TRACKING_DOMAIN_CLEAN`, `ONECLICK_UNSUB_CAP` — hasta implementarlos quedan `unknown` (fail-closed:
+un nodo NO llega a `ready`). El cableado de los resolvers/transporte **reales** (DNS/RBL/SMTP/IMAP en
+vivo) y el scheduler/colas solo se conectan detrás de `WARMUP_ENGINE_ENABLE`; nada corre en deploy.
 
 ## v2 — diferido (solo si entra cold outreach de agencia)
 
