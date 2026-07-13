@@ -17,6 +17,11 @@ export * from "./checks/liveness-checks.ts";
 // --- Inbox Reader de placement (§9): clasifica LandedIn desde los seed inboxes externos por IMAP ---
 export * from "./reader/imap-placement-reader.ts";
 
+// --- Adapters de I/O EN VIVO (DNS/RBL/TLS + SMTP/IMAP) + composition root guarded por el flag ---
+export * from "./live/dns-adapters.ts";
+export * from "./live/mail-adapters.ts";
+export * from "./live/compose.ts";
+
 // --- Runtime de la Fase 0 (§7/§8/§13): el gate "ningún nodo envía sin contrato ready" ---
 export {
   evaluateAuthContract,
