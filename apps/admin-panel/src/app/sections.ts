@@ -12,6 +12,7 @@ import {
   Compass,
   Cpu,
   Database,
+  Flame,
   Globe,
   GraduationCap,
   LayoutDashboard,
@@ -35,7 +36,8 @@ export type SectionId =
   | "mxtoolbox"
   | "infrastructure"
   | "domains"
-  | "sender-pool";
+  | "sender-pool"
+  | "warmup";
 
 export type SectionGroup = "estado" | "operacion" | "barandillas";
 
@@ -182,6 +184,17 @@ export const sections: SectionDescriptor[] = [
     description:
       "Estado actual de los dominios sender pool: cuáles están provisionados, en qué etapa de warmup, su deliverability. Onboarding nuevo dispara flow end-to-end con OpenClaw (compra + DNS + SMTP + warmup).",
     endpoint: READ_ENDPOINTS.senderPoolStatus
+  },
+  {
+    id: "warmup",
+    navLabel: "Warmup",
+    group: "operacion",
+    icon: Flame,
+    eyebrow: "Warmup engine",
+    title: "Estado del calentamiento de nodos de envío.",
+    description:
+      "Visibilidad read-only del warmup-engine: nodos activos, envíos encolados, desglose por estado y rampa por mailbox. Solo observabilidad — esta vista no dispara envíos ni pausas.",
+    endpoint: READ_ENDPOINTS.warmupStatus
   }
 ];
 

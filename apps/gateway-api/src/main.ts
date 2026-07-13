@@ -188,6 +188,7 @@ import { handleReadDeliveryReason } from "./routes/openclaw-delivery-reason.ts";
 import { handleReadSmtpReachability } from "./routes/openclaw-smtp-reachability.ts";
 import { handleReadDkimStatus } from "./routes/openclaw-dkim-status.ts";
 import { handleReadRunStateIntegrity } from "./routes/openclaw-run-state-integrity.ts";
+import { handleWarmupStatus } from "./routes/warmup-status.ts";
 import { handleInspectSmtpInventoryHttp } from "./routes/openclaw-smtp-inventory.ts";
 import type { SmtpInventoryLiveServer } from "./smtp-inventory-management.ts";
 import { createWarmupSignalsReader } from "./warmup-signals-source.ts";
@@ -2432,6 +2433,16 @@ const server = createServer(async (request, response) => {
         logger: gatewayRuntimeLog,
         now: () => new Date(),
         readBoundaryToken: sensitiveReadBoundaryToken
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/warmup/status") {
+      return await handleWarmupStatus(request, response, {
+        pgClient: episodicScratchPool,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        now: () => new Date(),
+        logger: gatewayRuntimeLog,
+        env: process.env
       });
     }
 
