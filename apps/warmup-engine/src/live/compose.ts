@@ -7,7 +7,12 @@
 // toca cuando un checker/reader/transport se INVOCA. Aun así, el gate del flag vive aquí para que el
 // cableado en vivo sea un acto explícito.
 
-import { assertWarmupEngineEnabled, type WarmupEnv } from "../runtime/config.ts";
+import {
+  assertWarmupEngineEnabled,
+  readWarmupSmtpConfig,
+  warmupTransportKind,
+  type WarmupEnv
+} from "../runtime/config.ts";
 import {
   createNodeDnsResolver,
   createNodeReverseDnsResolver,
@@ -28,7 +33,7 @@ import { createDnsAuthChecker } from "../checks/dns-auth-checks.ts";
 import { createIpNetworkCheckers, type DedicatedIpScheduleProvider } from "../checks/ip-network-checks.ts";
 import { createLivenessCheckers, type UnsubCapabilityProvider } from "../checks/liveness-checks.ts";
 import type { AuthChecker } from "../domain/auth-checks.ts";
-import { PostfixTransport, type WarmupTransport } from "../runtime/transport.ts";
+import { MockTransport, PostfixTransport, type WarmupTransport } from "../runtime/transport.ts";
 import type { ImapClient } from "../reader/imap-placement-reader.ts";
 
 /**
@@ -97,4 +102,51 @@ export function createLivePostfixTransport(
 ): WarmupTransport {
   assertWarmupEngineEnabled(env);
   return new PostfixTransport(createNodemailerSmtpClient(config.secretResolver, opts));
+}
+
+/**
+ * Credenciales de submission del nodo emisor que el transporte postfix necesita más allá del
+ * host/port (que vienen del env 5.1). NO son secreto: `secretRef` es una referencia opaca que el
+ * SecretResolver canjea. Se inyectan; el selector no decide credenciales ni las guarda.
+ */
+export interface WarmupTransportCredentials {
+  user: string;
+  secretRef: string;
+}
+
+export interface CreateWarmupTransportOptions {
+  /** Requerido solo cuando WARMUP_TRANSPORT=postfix (el mock no usa credenciales). */
+  smtp?: WarmupTransportCredentials;
+}
+
+/**
+ * SELECTOR de transporte por flag (§7, roadmap 5.1). Elige según WARMUP_TRANSPORT:
+ *   - "mock"    ⇒ MockTransport (default fail-safe; nunca toca red).
+ *   - "postfix" ⇒ createLivePostfixTransport contra WARMUP_SMTP_HOST/PORT (SMTP real, perezoso).
+ * Todo gated por WARMUP_ENGINE_ENABLE: con el flag OFF LANZA (fail-closed) — nada se construye.
+ * No abre conexiones: solo decide y arma el adapter (la red se toca recién al invocar `send`).
+ */
+export function createWarmupTransport(
+  config: LiveWarmupConfig,
+  opts: CreateWarmupTransportOptions = {},
+  env: WarmupEnv = process.env
+): WarmupTransport {
+  assertWarmupEngineEnabled(env);
+  const kind = warmupTransportKind(env);
+  if (kind === "mock") {
+    return new MockTransport();
+  }
+  // kind === "postfix": destino desde el env 5.1; credenciales del nodo inyectadas.
+  const smtp = readWarmupSmtpConfig(env);
+  if (!opts.smtp) {
+    throw new Error(
+      "warmup_transport_postfix_requires_credentials: WARMUP_TRANSPORT=postfix necesita " +
+      "opts.smtp { user, secretRef } del nodo emisor."
+    );
+  }
+  return createLivePostfixTransport(
+    config,
+    { host: smtp.host, port: smtp.port, user: opts.smtp.user, secretRef: opts.smtp.secretRef },
+    env
+  );
 }

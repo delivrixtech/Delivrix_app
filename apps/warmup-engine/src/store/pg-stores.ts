@@ -11,7 +11,7 @@
 //  - Idempotencia exactly-once por slot: la maneja la unicidad (node_id, slot_key) de warmup_sends
 //    vía `ON CONFLICT DO NOTHING` — enqueue devuelve true sólo si insertó (rowCount>0).
 
-import type { LandedIn, NodeState, SeedProvider, WarmupNode } from "../domain/types.ts";
+import type { InfraType, LandedIn, NodeState, SeedProvider, WarmupNode } from "../domain/types.ts";
 import type {
   EngagedRecipient,
   PlacementTrendPoint,
@@ -550,5 +550,361 @@ export function createPgWarmupStores(client: PgClient): WarmupStores {
     seeds: createSeedStore(client),
     placement: createPlacementStore(client),
     engaged: createEngagedRecipientStore(client)
+  };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// Warmup Mailbox API store (Track B) — superficie aditiva para las rutas de la Warmup API del gateway.
+// Reutiliza el esquema real de migrations/001_init.sql (warmup_nodes / warmup_sends / warmup_signals);
+// NO agrega columnas ni rompe las 6 stores de arriba. Mapea mailbox→email para el contrato externo.
+//
+// REGLAS DURAS materializadas aquí:
+//  - listWarmMailboxes entrega SÓLO state='warm' AND placement_score>=umbral (default 0.80). NUNCA
+//    buzones fríos: es la barra del §9 (placement_score = Wilson-LB de inbox, ver 001_init.sql:22).
+//  - onboardMailbox es create-only idempotente por mailbox (UNIQUE): un reintento NO duplica y NUNCA
+//    resetea el estado de un nodo ya vivo (un buzón warm sigue warm). El nodo nuevo nace 'blocked'
+//    (default de la columna, §8 fail-closed: sin contrato de auth no envía).
+//  - smtp_ref NO es un secreto: es una REFERENCIA de vault derivada del id del nodo. El consumidor
+//    (Delivrix) resuelve la credencial SMTP real contra el secret store con esta clave. Jamás la credencial.
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** Umbral de placement por defecto para graduar/entregar WARM (§9: Wilson-LB ≥ 0.80). */
+export const WARM_PLACEMENT_DEFAULT_MIN = 0.8;
+
+/**
+ * Referencia de vault (NO la credencial) para la cuenta SMTP del nodo. Determinista por id: el
+ * consumidor resuelve el secreto real contra su secret store con esta clave. Exponerla es seguro.
+ */
+export function warmupSmtpRef(nodeId: string): string {
+  return `vault:warmup/smtp/${nodeId}`;
+}
+
+export interface OnboardMailboxInput {
+  email: string;
+  domain: string;
+  infraType?: InfraType;
+  dailyLimit?: number;
+  increaseByDay?: number;
+  weekdaysOnly?: boolean;
+  sendingIp?: string;
+  heloFqdn?: string;
+}
+
+/** Vista completa de un buzón de warmup (mapea mailbox→email; nunca expone la credencial SMTP). */
+export interface WarmupMailboxRecord {
+  id: string;
+  email: string;
+  domain: string;
+  infraType: InfraType;
+  state: NodeState;
+  authReady: boolean;
+  dayIndex: number;
+  dailyLimit: number;
+  increaseByDay: number;
+  weekdaysOnly: boolean;
+  placementScore?: number;
+  healthScore?: number;
+  sendingIp?: string;
+  heloFqdn?: string;
+  contractExpiresAt?: string;
+  /** Referencia de vault (NO la credencial). */
+  smtpRef: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OnboardMailboxResult {
+  mailbox: WarmupMailboxRecord;
+  /** true = insertado ahora; false = ya existía (reintento idempotente, estado preservado). */
+  created: boolean;
+}
+
+/**
+ * Contrato de /warm (roadmap 5.5): SÓLO buzones WARM. `warmedAt` = updated_at (última transición de
+ * estado; proxy — v1 no tiene columna dedicada). `smtpRef` = referencia de vault, no la credencial.
+ */
+export interface WarmMailbox {
+  id: string;
+  email: string;
+  domain: string;
+  state: "warm";
+  placementScore: number;
+  warmedAt: string;
+  smtpRef: string;
+}
+
+/** Evento del historial de un buzón (merge de warmup_sends + warmup_signals, más nuevo primero). */
+export interface WarmupMailboxEvent {
+  kind: "send" | "signal";
+  id: string;
+  at: string;
+  /** send: status del envío; signal: kind de la señal (bounce|complaint|deferral). */
+  status?: string;
+  toAddress?: string;
+  attempts?: number;
+  lastError?: string;
+  sentAt?: string;
+  detail?: unknown;
+}
+
+export interface WarmupMailboxesHealth {
+  generatedAt: string;
+  totals: {
+    nodes: number;
+    warm: number;
+    queuedSends: number;
+    deadLetteredSends: number;
+    failedSends: number;
+  };
+  byState: Partial<Record<NodeState, number>>;
+  bySendStatus: Record<string, number>;
+}
+
+export interface ListMailboxesFilters {
+  state?: NodeState;
+  domain?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface WarmupMailboxStore {
+  onboardMailbox(input: OnboardMailboxInput): Promise<OnboardMailboxResult>;
+  listWarmMailboxes(placementMin?: number): Promise<WarmMailbox[]>;
+  getMailbox(id: string): Promise<WarmupMailboxRecord | null>;
+  listMailboxes(filters?: ListMailboxesFilters): Promise<WarmupMailboxRecord[]>;
+  listMailboxEvents(id: string, limit?: number): Promise<WarmupMailboxEvent[]>;
+  warmupHealth(now?: Date): Promise<WarmupMailboxesHealth>;
+}
+
+interface MailboxRow extends NodeRow {
+  created_at: unknown;
+  updated_at: unknown;
+}
+
+// Igual que NODE_COLUMNS pero con created_at/updated_at para el contrato externo.
+const MAILBOX_COLUMNS = `${NODE_COLUMNS}, created_at, updated_at`;
+
+function mapMailboxRow(row: MailboxRow): WarmupMailboxRecord {
+  const record: WarmupMailboxRecord = {
+    id: row.id,
+    email: row.mailbox,
+    domain: row.domain,
+    infraType: row.infra_type as InfraType,
+    state: row.state as NodeState,
+    authReady: row.auth_ready === true,
+    dayIndex: Number(row.day_index),
+    dailyLimit: Number(row.daily_limit),
+    increaseByDay: Number(row.increase_by_day),
+    weekdaysOnly: row.weekdays_only === true,
+    smtpRef: warmupSmtpRef(row.id),
+    createdAt: isoDate(row.created_at),
+    updatedAt: isoDate(row.updated_at)
+  };
+  const placementScore = numberOrUndefined(row.placement_score);
+  if (placementScore !== undefined) record.placementScore = placementScore;
+  const healthScore = numberOrUndefined(row.health_score);
+  if (healthScore !== undefined) record.healthScore = healthScore;
+  const sendingIp = stringOrUndefined(row.sending_ip);
+  if (sendingIp !== undefined) record.sendingIp = sendingIp;
+  const heloFqdn = stringOrUndefined(row.helo_fqdn);
+  if (heloFqdn !== undefined) record.heloFqdn = heloFqdn;
+  const contractExpiresAt = dateOrUndefined(row.contract_expires_at);
+  if (contractExpiresAt !== undefined) record.contractExpiresAt = contractExpiresAt.toISOString();
+  return record;
+}
+
+/** Clampa el limit de paginación a [1, 200]; default 100. */
+function clampListLimit(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 100;
+  return Math.min(200, Math.max(1, Math.floor(value)));
+}
+
+function clampOffset(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return 0;
+  return Math.floor(value);
+}
+
+/** Store de la Warmup API sobre un PgClient inyectado. Aditivo: no toca las 6 stores del core. */
+export function createWarmupMailboxStore(client: PgClient): WarmupMailboxStore {
+  return {
+    async onboardMailbox(input: OnboardMailboxInput): Promise<OnboardMailboxResult> {
+      // create-only idempotente: ON CONFLICT (mailbox) DO NOTHING preserva el estado del nodo vivo.
+      // El nodo nuevo NO fija state → cae al default 'blocked' de la columna (§8 fail-closed).
+      const inserted = await client.query(
+        "INSERT INTO warmup_nodes " +
+          "(mailbox, domain, infra_type, daily_limit, increase_by_day, weekdays_only, sending_ip, helo_fqdn) " +
+          "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) " +
+          "ON CONFLICT (mailbox) DO NOTHING",
+        [
+          input.email,
+          input.domain,
+          input.infraType ?? "postfix",
+          input.dailyLimit ?? 10,
+          input.increaseByDay ?? 1,
+          input.weekdaysOnly ?? false,
+          input.sendingIp ?? null,
+          input.heloFqdn ?? null
+        ]
+      );
+      const created = (inserted.rowCount ?? 0) > 0;
+      const { rows } = await client.query<MailboxRow>(
+        `SELECT ${MAILBOX_COLUMNS} FROM warmup_nodes WHERE mailbox = $1`,
+        [input.email]
+      );
+      return { mailbox: mapMailboxRow(rows[0]), created };
+    },
+
+    async listWarmMailboxes(placementMin: number = WARM_PLACEMENT_DEFAULT_MIN): Promise<WarmMailbox[]> {
+      // REGLA DURA: sólo state='warm' AND placement_score>=umbral. placement_score IS NOT NULL evita
+      // emitir un buzón sin score real. Nunca entrega buzones fríos.
+      const { rows } = await client.query<{
+        id: string;
+        mailbox: string;
+        domain: string;
+        placement_score: unknown;
+        updated_at: unknown;
+      }>(
+        "SELECT id, mailbox, domain, placement_score, updated_at FROM warmup_nodes " +
+          "WHERE state = 'warm' AND placement_score IS NOT NULL AND placement_score >= $1 " +
+          "ORDER BY updated_at DESC",
+        [placementMin]
+      );
+      return rows.map((row) => ({
+        id: row.id,
+        email: row.mailbox,
+        domain: row.domain,
+        state: "warm" as const,
+        placementScore: numberOrUndefined(row.placement_score) ?? 0,
+        warmedAt: isoDate(row.updated_at),
+        smtpRef: warmupSmtpRef(row.id)
+      }));
+    },
+
+    async getMailbox(id: string): Promise<WarmupMailboxRecord | null> {
+      const { rows } = await client.query<MailboxRow>(
+        `SELECT ${MAILBOX_COLUMNS} FROM warmup_nodes WHERE id = $1`,
+        [id]
+      );
+      return rows.length > 0 ? mapMailboxRow(rows[0]) : null;
+    },
+
+    async listMailboxes(filters: ListMailboxesFilters = {}): Promise<WarmupMailboxRecord[]> {
+      const conditions: string[] = [];
+      const params: unknown[] = [];
+      let i = 1;
+      if (filters.state !== undefined) {
+        conditions.push(`state = $${i}`);
+        params.push(filters.state);
+        i++;
+      }
+      if (filters.domain !== undefined) {
+        conditions.push(`domain = $${i}`);
+        params.push(filters.domain);
+        i++;
+      }
+      const whereSql = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")} ` : "";
+      const limit = clampListLimit(filters.limit);
+      const offset = clampOffset(filters.offset);
+      params.push(limit);
+      const limitIdx = i;
+      i++;
+      params.push(offset);
+      const offsetIdx = i;
+      const { rows } = await client.query<MailboxRow>(
+        `SELECT ${MAILBOX_COLUMNS} FROM warmup_nodes ${whereSql}` +
+          `ORDER BY created_at DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+        params
+      );
+      return rows.map(mapMailboxRow);
+    },
+
+    async listMailboxEvents(id: string, limit: number = 50): Promise<WarmupMailboxEvent[]> {
+      const cap = clampListLimit(limit);
+      const [sendsRes, signalsRes] = await Promise.all([
+        client.query<{
+          id: string;
+          to_address: string;
+          status: string;
+          attempts: number | string;
+          last_error: unknown;
+          created_at: unknown;
+          sent_at: unknown;
+        }>(
+          "SELECT id, to_address, status, attempts, last_error, created_at, sent_at FROM warmup_sends " +
+            "WHERE node_id = $1 ORDER BY created_at DESC LIMIT $2",
+          [id, cap]
+        ),
+        client.query<{ id: string; kind: string; detail: unknown; occurred_at: unknown }>(
+          "SELECT id, kind, detail, occurred_at FROM warmup_signals " +
+            "WHERE node_id = $1 ORDER BY occurred_at DESC LIMIT $2",
+          [id, cap]
+        )
+      ]);
+
+      const events: WarmupMailboxEvent[] = [];
+      for (const row of sendsRes.rows) {
+        const event: WarmupMailboxEvent = {
+          kind: "send",
+          id: row.id,
+          at: isoDate(row.created_at),
+          status: row.status,
+          toAddress: row.to_address,
+          attempts: Number(row.attempts)
+        };
+        const lastError = stringOrUndefined(row.last_error);
+        if (lastError !== undefined) event.lastError = lastError;
+        const sentAt = dateOrUndefined(row.sent_at);
+        if (sentAt !== undefined) event.sentAt = sentAt.toISOString();
+        events.push(event);
+      }
+      for (const row of signalsRes.rows) {
+        const event: WarmupMailboxEvent = {
+          kind: "signal",
+          id: row.id,
+          at: isoDate(row.occurred_at),
+          status: row.kind
+        };
+        if (row.detail !== null && row.detail !== undefined) event.detail = row.detail;
+        events.push(event);
+      }
+      // Merge cronológico global (más nuevo primero) y recorta al tope combinado.
+      events.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+      return events.slice(0, cap);
+    },
+
+    async warmupHealth(now: Date = new Date()): Promise<WarmupMailboxesHealth> {
+      const [stateRes, sendRes] = await Promise.all([
+        client.query<{ state: string; n: number | string }>(
+          "SELECT state, COUNT(*) AS n FROM warmup_nodes GROUP BY state"
+        ),
+        client.query<{ status: string; n: number | string }>(
+          "SELECT status, COUNT(*) AS n FROM warmup_sends GROUP BY status"
+        )
+      ]);
+
+      const byState: Partial<Record<NodeState, number>> = {};
+      let nodes = 0;
+      for (const row of stateRes.rows) {
+        const count = Number(row.n);
+        byState[row.state as NodeState] = count;
+        nodes += count;
+      }
+      const bySendStatus: Record<string, number> = {};
+      for (const row of sendRes.rows) {
+        bySendStatus[row.status] = Number(row.n);
+      }
+      return {
+        generatedAt: now.toISOString(),
+        totals: {
+          nodes,
+          warm: byState.warm ?? 0,
+          queuedSends: bySendStatus.queued ?? 0,
+          deadLetteredSends: bySendStatus.dead_lettered ?? 0,
+          failedSends: bySendStatus.failed ?? 0
+        },
+        byState,
+        bySendStatus
+      };
+    }
   };
 }

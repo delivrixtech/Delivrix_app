@@ -31,6 +31,12 @@ export { getWarmupTrends } from "./service/trends-service.ts";
 // --- Persistencia (§12) + scheduler/loops + servicio (tick guarded + snapshot para el panel) ---
 export * from "./store/ports.ts";
 export * from "./store/pg-stores.ts";
+// --- Warmup API store (Track B) + runner de migraciones idempotente ---
+export {
+  runWarmupMigrations,
+  type RunWarmupMigrationsOptions,
+  type WarmupMigrationResult
+} from "./store/warmup-migrate.ts";
 export * from "./scheduler/scheduler.ts";
 export {
   runWarmupTick,

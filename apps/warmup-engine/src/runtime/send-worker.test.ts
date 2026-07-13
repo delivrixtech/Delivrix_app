@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { WarmupNode, WarmupSend } from "../domain/types.ts";
 import { MockTransport } from "./transport.ts";
-import { DEFAULT_MAX_ATTEMPTS, processSend } from "./send-worker.ts";
+import {
+  DEFAULT_MAX_ATTEMPTS,
+  WARMUP_ID_HEADER,
+  applyWarmupMarker,
+  buildDefaultMessage,
+  processSend
+} from "./send-worker.ts";
 
 const NOW = new Date("2026-07-09T12:00:00Z");
 
@@ -77,11 +83,17 @@ test("gate ok ⇒ invoca transporte y marca sent", async () => {
   assert.equal(r.messageId, "mock-1");
 });
 
-test("usa el mensaje inyectado si se provee", async () => {
+test("usa el mensaje inyectado si se provee (preservando sus campos)", async () => {
   const transport = new MockTransport();
   const msg = { from: "a@b.com", to: "c@d.com", subject: "s", body: "b" };
   await processSend({ node: node(), send: send(), transport, now: NOW, message: msg });
-  assert.deepEqual(transport.sent[0], msg);
+  // Se respetan from/to/subject/body del mensaje inyectado…
+  assert.equal(transport.sent[0].from, "a@b.com");
+  assert.equal(transport.sent[0].to, "c@d.com");
+  assert.equal(transport.sent[0].subject, "s");
+  assert.equal(transport.sent[0].body, "b");
+  // …pero el aislamiento garantiza SIEMPRE la marca X-Warmup-Id, aunque el mensaje venga sin headers.
+  assert.equal(transport.sent[0].headers?.[WARMUP_ID_HEADER], "n1");
 });
 
 test("mensaje por defecto ancla el slotKey (idempotencia por slot)", async () => {
@@ -143,4 +155,35 @@ test("fallo TRANSITORIO en el último intento por defecto (DEFAULT_MAX_ATTEMPTS)
   const transport = MockTransport.transientFailure();
   const r = await processSend({ node: node(), send: send(), transport, now: NOW, attempt: DEFAULT_MAX_ATTEMPTS });
   assert.equal(r.status, "dead_lettered");
+});
+
+// ================== AISLAMIENTO DE TRÁFICO (invariante X-Warmup-Id) ==================
+
+test("AISLAMIENTO: el mensaje por defecto lleva X-Warmup-Id = id del nodo (además del slot)", async () => {
+  const transport = new MockTransport();
+  await processSend({ node: node({ id: "node-42" }), send: send(), transport, now: NOW });
+  assert.equal(transport.sent[0].headers?.[WARMUP_ID_HEADER], "node-42");
+  assert.equal(transport.sent[0].headers?.["X-Delivrix-Slot"], "2026-07-09T12:00:00Z#n1#0");
+});
+
+test("AISLAMIENTO: buildDefaultMessage ya incluye la marca X-Warmup-Id", () => {
+  const msg = buildDefaultMessage(node({ id: "node-7" }), send());
+  assert.equal(msg.headers?.[WARMUP_ID_HEADER], "node-7");
+});
+
+test("AISLAMIENTO: applyWarmupMarker NO pisa un X-Warmup-Id ya seteado por el scheduler", () => {
+  const marked = applyWarmupMarker(
+    { from: "a@b.com", to: "c@d.com", subject: "s", body: "b", headers: { [WARMUP_ID_HEADER]: "custom-send-id" } },
+    node({ id: "node-9" })
+  );
+  assert.equal(marked.headers?.[WARMUP_ID_HEADER], "custom-send-id");
+});
+
+test("AISLAMIENTO: applyWarmupMarker preserva otros headers y no muta el mensaje original", () => {
+  const original = { from: "a@b.com", to: "c@d.com", subject: "s", body: "b", headers: { "X-Delivrix-Slot": "slot-1" } };
+  const marked = applyWarmupMarker(original, node({ id: "node-3" }));
+  assert.equal(marked.headers?.["X-Delivrix-Slot"], "slot-1");
+  assert.equal(marked.headers?.[WARMUP_ID_HEADER], "node-3");
+  // el original queda intacto (sin la marca)
+  assert.equal(original.headers[WARMUP_ID_HEADER as keyof typeof original.headers], undefined);
 });
