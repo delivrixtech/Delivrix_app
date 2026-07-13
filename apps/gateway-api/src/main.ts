@@ -359,6 +359,8 @@ import { handleLegacyAuthorizationDeprecated } from "./routes/legacy-authorizati
 import {
   handleConfigureCompleteSmtp,
   readSmtpRunProgress,
+  releaseOwnSmtpRunLocks,
+  sweepDeadSmtpRunLocks,
   type ApprovalStepDecision,
   type OwnedDomainVerification
 } from "./routes/orchestrator-smtp.ts";
@@ -797,6 +799,9 @@ const configureSmtpRuntimeDeps = {
     throw new Error(`unsupported_read_only_orchestrator_step:${input.skill}`);
   },
   listCreationAccounts: () => listWebdockCreationAccounts(),
+  // Fail-fast del provider en el orquestador (step 0): consulta el registry providerId->adapter para
+  // abortar ANTES de gastar si el contabo-N referenciado no tiene credenciales cargadas.
+  hasVpsProviderAdapter: (providerId: string) => vpsProviderAdapters.has(providerId),
   preflightCreationAccount: async (input: { accountId: string }) => {
     // Mismo lookup fail-clean que listWebdockCreationServers: cuenta desconocida = rechazo.
     const adapter = input.accountId === "ops"
@@ -4351,6 +4356,7 @@ const server = createServer(async (request, response) => {
           webhookBroadcaster: equipoWebhookBroadcaster,
           dispatcher: skillDispatcher,
           readKillSwitch: () => killSwitchStore.get(),
+          hasVpsProviderAdapter: (providerId: string) => vpsProviderAdapters.has(providerId),
           env: process.env,
           logger: gatewayRuntimeLog
         });
@@ -5817,6 +5823,26 @@ server.listen(port, host, () => {
       );
     });
   void resumeRampsOnStartup();
+  // Barrido de arranque: si el gateway se reinicio a mitad de un run, el lock del run pudo quedar
+  // huerfano (su proceso murio sin liberarlo). Borramos los locks cuyo pid este muerto en este host
+  // para que el operador pueda reintentar el mismo runId sin esperar los 40 min del lease.
+  void sweepDeadSmtpRunLocks(openClawWorkspace, gatewayRuntimeLog)
+    .then((result) => {
+      if (result.removed.length > 0) {
+        void gatewayRuntimeLog.warn(
+          "openclaw.orchestrator.orphan_run_locks_swept",
+          "Swept orphan SMTP run locks left by a previous crashed/restarted process.",
+          { removed: result.removed }
+        );
+      }
+    })
+    .catch((error) => {
+      void gatewayRuntimeLog.error(
+        "openclaw.orchestrator.orphan_run_lock_sweep_failed",
+        "Failed to sweep orphan SMTP run locks at boot.",
+        runtimeErrorMetadata(error)
+      );
+    });
   if (process.env.OPENCLAW_EPISODIC_SCRATCH_TTL_JOB_ENABLE === "true") {
     startEpisodicScratchTtlJob({
       pool: episodicScratchPool,
@@ -5839,6 +5865,35 @@ server.listen(port, host, () => {
     );
   }
 });
+
+// Shutdown graceful: al recibir SIGTERM/SIGINT liberamos los locks de run que tomo ESTE proceso, para
+// que un reinicio inmediato no herede un lock huerfano (el barrido de arranque ya cubre el caso de un
+// crash sin senal). Idempotente: solo se corre una vez.
+let smtpRunLocksShuttingDown = false;
+function gracefulShutdownReleaseRunLocks(signal: NodeJS.Signals): void {
+  if (smtpRunLocksShuttingDown) return;
+  smtpRunLocksShuttingDown = true;
+  void gatewayRuntimeLog.info(
+    "gateway.shutdown_signal",
+    "Received shutdown signal; releasing own SMTP run locks.",
+    { signal }
+  );
+  void releaseOwnSmtpRunLocks(openClawWorkspace, gatewayRuntimeLog)
+    .catch((error) => {
+      void gatewayRuntimeLog.error(
+        "openclaw.orchestrator.run_lock_release_on_shutdown_failed",
+        "Failed to release own SMTP run locks during shutdown.",
+        runtimeErrorMetadata(error)
+      );
+    })
+    .finally(() => {
+      server.close(() => process.exit(0));
+      // Red de seguridad: si server.close cuelga (conexiones vivas), salir igual.
+      setTimeout(() => process.exit(0), 5_000).unref();
+    });
+}
+process.once("SIGTERM", gracefulShutdownReleaseRunLocks);
+process.once("SIGINT", gracefulShutdownReleaseRunLocks);
 
 async function runInfrastructureAccountHealthPoll(trigger: "startup" | "interval"): Promise<void> {
   const observedAt = resolveGatewayNow();

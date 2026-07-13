@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
@@ -14,6 +14,8 @@ import {
   configureCompleteSmtp,
   handleConfigureCompleteSmtp,
   readSmtpRunProgress,
+  releaseOwnSmtpRunLocks,
+  sweepDeadSmtpRunLocks,
   type ApprovalStepDecision,
   type ApprovalStepInput,
   type ConfigureCompleteSmtpDeps,
@@ -75,6 +77,33 @@ test("configureCompleteSmtp completes the 14-step happy path", async () => {
     configuredAt: "2026-05-31T12:00:00.000Z",
     updatedAt: "2026-05-31T12:00:00.000Z"
   });
+});
+
+test("configureCompleteSmtp fails at step 0 with unknown_vps_provider when contabo-N has no adapter (no money spent)", async () => {
+  const ctx = createDeps({ hasVpsProviderAdapter: (id) => id === "contabo-2" });
+  const result = await configureCompleteSmtp(
+    { ...validInput(), runId: "run-contabo9", vpsProviderId: "contabo-9" },
+    ctx.deps
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.match(result.error ?? "", /unknown_vps_provider:contabo-9/);
+  // Fail-fast: aborta ANTES de cualquier gasto — no invoca suggest_safe_domain (step 1) ni
+  // register_domain_route53 (step 2), y no somete ninguna aprobacion de compra.
+  assert.equal(ctx.invocations.length, 0);
+  assert.equal(ctx.approvals.some((a) => a.skill === "register_domain_route53"), false);
+});
+
+test("configureCompleteSmtp allows a contabo-N provider when its adapter is loaded", async () => {
+  const ctx = createDeps({ hasVpsProviderAdapter: (id) => id === "contabo-2" });
+  const result = await configureCompleteSmtp(
+    { ...validInput(), runId: "run-contabo2", vpsProviderId: "contabo-2" },
+    ctx.deps
+  );
+
+  // No debe morir por el guard de provider en step 0 (el flujo sigue su curso normal).
+  assert.notEqual(result.failedStep, 0);
 });
 
 test("configureCompleteSmtp preserves SMTP AUTH metadata when refreshing configured inventory", async () => {
@@ -2572,6 +2601,113 @@ test("configureCompleteSmtp blocks post-signature downgrade from strict adoption
   assert.equal(ctx.planExecutions.length, 0);
 });
 
+test("resume with settled purchase reconciles plan requireExistingDomain=true over state false", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ requireExistingDomain: true }),
+    // El dominio YA es propio tras la compra del run original: por eso el plan reanudado trae true.
+    ownedDomains: ["delivrixops.com"]
+  });
+  // Run reanudado con la compra YA asentada (paso 2 done, lastCompletedStep 5). El estado nacio con
+  // requireExistingDomain=false; el plan recien firmado trae true (dominio ya propio). No debe condenar.
+  await seedLegacyRunStateThroughStep4(ctx.workspace, "run-1");
+
+  const result = await configureCompleteSmtp(
+    { ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53", requireExistingDomain: true },
+    ctx.deps
+  );
+
+  assert.notEqual(result.error, "plan_scope_mismatch: requireExistingDomain");
+  assert.equal(result.failedStep, undefined);
+  assert.equal(result.status, "completed");
+  const reconciled = ctx.auditEvents.find((event) => event.action === "oc.plan.scope_field_reconciled");
+  assert.ok(reconciled, "debe auditar la reconciliacion del flag derivado");
+  assert.equal((reconciled!.metadata as Record<string, unknown>).field, "requireExistingDomain");
+  assert.equal((reconciled!.metadata as Record<string, unknown>).from, false);
+  assert.equal((reconciled!.metadata as Record<string, unknown>).to, true);
+
+  const state = JSON.parse(await ctx.workspace.readWorkspaceFile("inventory/smtp-runs/run-1.json")) as {
+    params: { requireExistingDomain: boolean };
+  };
+  assert.equal(state.params.requireExistingDomain, true);
+});
+
+test("resume before purchase still enforces requireExistingDomain equality (protege el gasto)", async () => {
+  const ctx = createDeps({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    planApproval: signedPlanApproval({ requireExistingDomain: true })
+  });
+  // Estado SIN compra asentada: solo el paso 1 corrio, budgetSpentUsd 0, step 2 pendiente. Aca el flag
+  // aun decide si se gasta dinero, asi que la igualdad estricta se mantiene.
+  const hash = (params: Record<string, unknown>) => createHash("sha256").update(stableStringify(params)).digest("hex");
+  const step1Params = { brand: "delivrix", intent: "ops", count: 5, actorId: "op-1" };
+  await ctx.workspace.writeWorkspaceFileAtomic("inventory/smtp-runs/run-1.json", `${JSON.stringify({
+    schemaVersion: "smtp-run-state/v1",
+    runId: "run-1",
+    status: "running",
+    createdAt: "2026-05-31T12:00:00.000Z",
+    updatedAt: "2026-05-31T12:00:00.000Z",
+    params: {
+      brand: "delivrix",
+      intent: "ops",
+      provider: "route53",
+      requireExistingDomain: false,
+      budgetUsdMax: 25,
+      testEmailRecipient: "operator@example.com",
+      testEmailSubject: "Operational readiness report",
+      testEmailBody: "Authorized operational readiness message for Delivrix infrastructure.",
+      seedInboxes: ["seed-a@example.com", "seed-b@example.com", "seed-c@example.com"]
+    },
+    chosenDomain: "delivrixops.com",
+    smtpHost: "smtp.delivrixops.com",
+    selector: "s2026a",
+    budgetSpentUsd: 0,
+    lastCompletedStep: 1,
+    steps: {
+      "1": {
+        step: 1,
+        skill: "suggest_safe_domain",
+        status: "done",
+        inputHash: hash(step1Params),
+        result: { step: 1, skill: "suggest_safe_domain", inputHash: hash(step1Params), outcome: { candidates: [{ domain: "delivrixops.com", priceUsd: 15, available: true }] }, durationMs: 0 },
+        startedAt: "2026-05-31T12:00:00.000Z",
+        completedAt: "2026-05-31T12:00:00.000Z",
+        updatedAt: "2026-05-31T12:00:00.000Z"
+      }
+    }
+  }, null, 2)}\n`);
+
+  const result = await configureCompleteSmtp(
+    { ...validInput(), runId: "run-1", domain: "delivrixops.com", provider: "route53" },
+    ctx.deps
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.failedStep, 0);
+  assert.equal(result.error, "plan_scope_mismatch: requireExistingDomain");
+  assert.equal(ctx.auditEvents.some((event) => event.action === "oc.plan.scope_field_reconciled"), false);
+});
+
+test("resume replays step 1 (suggest_safe_domain) when request brand differs from persisted state brand", async () => {
+  const ctx = createDeps();
+  // El run nacio con brand "controlannualfiling"; OpenClaw reanuda mandando "annualfiling" (no memoriza
+  // el literal). brand/intent son derivados del estado: el replay del paso 1 debe reusarse sin drift.
+  await seedLegacyRunStateThroughStep4(ctx.workspace, "run-brand", { brand: "controlannualfiling" });
+
+  const result = await configureCompleteSmtp(
+    { ...validInput(), runId: "run-brand", brand: "annualfiling" },
+    ctx.deps
+  );
+
+  assert.notEqual(result.error, "resume_scope_drift: step_input_changed");
+  assert.equal(result.status, "completed");
+  assert.equal(
+    ctx.invocations.some((invocation) => invocation.skill === "suggest_safe_domain"),
+    false,
+    "el paso 1 ya done debe reusarse, no re-invocarse"
+  );
+});
+
 test("configureCompleteSmtp verifies strict adoption even when domain is suggested", async () => {
   const ctx = createDeps({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
@@ -3554,6 +3690,8 @@ test("configureCompleteSmtp resume uses signed-state recipient (no false drift) 
   }, ctx.deps);
   assert.equal(domainDrift.status, "failed");
   assert.equal(domainDrift.error, "resume_scope_drift: domain");
+  // `guidance` es undefined por defecto: solo run_already_in_progress lo puebla (contrato aditivo).
+  assert.equal(domainDrift.guidance, undefined);
 });
 
 test("configureCompleteSmtp blocks concurrent runs for the same runId", async () => {
@@ -3585,6 +3723,88 @@ test("configureCompleteSmtp blocks concurrent runs for the same runId", async ()
   releaseStep2();
   const firstResult = await first;
   assert.equal(firstResult.status, "completed");
+});
+
+test("releases orphan run lock when lease pid is dead even if lease not expired", async () => {
+  const ctx = createDeps();
+  const runId = "run-orphan-lock";
+  const lockDir = join(ctx.workspace.getRootDir(), "inventory", ".locks", `run-${runId}.lock`);
+  await mkdir(lockDir, { recursive: true });
+  // Lease FRESCO (mtime dentro del lease de 40 min) pero de un pid MUERTO en este host: sin el chequeo
+  // de pid el segundo run daria 423 hasta 40 min. Con el fix debe adquirir el lock y completar.
+  await writeFile(join(lockDir, "lease.json"), JSON.stringify({
+    runId,
+    pid: 999999,
+    hostname: hostname(),
+    acquiredAt: new Date().toISOString(),
+    leaseUntil: new Date(Date.now() + 40 * 60 * 1000).toISOString()
+  }), "utf8");
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId }, ctx.deps);
+
+  assert.notEqual(result.error, "run_already_in_progress");
+  assert.equal(result.status, "completed");
+});
+
+test("does NOT release an orphan-looking lock whose pid is alive (this process)", async () => {
+  const ctx = createDeps();
+  const runId = "run-live-lock";
+  const lockDir = join(ctx.workspace.getRootDir(), "inventory", ".locks", `run-${runId}.lock`);
+  await mkdir(lockDir, { recursive: true });
+  // pid vivo (este proceso) + mtime fresco: el lock es legitimo, el segundo run debe recibir 423.
+  await writeFile(join(lockDir, "lease.json"), JSON.stringify({
+    runId,
+    pid: process.pid,
+    hostname: hostname(),
+    acquiredAt: new Date().toISOString(),
+    leaseUntil: new Date(Date.now() + 40 * 60 * 1000).toISOString()
+  }), "utf8");
+
+  const result = await configureCompleteSmtp({ ...validInput(), runId }, ctx.deps);
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.error, "run_already_in_progress");
+  // El campo aditivo `guidance` debe poblarse en el path run_already_in_progress: guia al operador
+  // a NO iniciar un run con otro dominio (cada compra cuesta dinero) y reintentar el MISMO runId.
+  assert.equal(typeof result.guidance, "string");
+  assert.ok((result.guidance ?? "").length > 0);
+  assert.match(result.guidance ?? "", /MISMO runId/);
+});
+
+test("sweepDeadSmtpRunLocks removes dead-pid locks and keeps live-pid locks", async () => {
+  const ctx = createDeps();
+  const locksRoot = join(ctx.workspace.getRootDir(), "inventory", ".locks");
+  const deadDir = join(locksRoot, "run-dead.lock");
+  const liveDir = join(locksRoot, "run-live.lock");
+  await mkdir(deadDir, { recursive: true });
+  await mkdir(liveDir, { recursive: true });
+  await writeFile(join(deadDir, "lease.json"), JSON.stringify({ runId: "dead", pid: 999999, hostname: hostname() }), "utf8");
+  await writeFile(join(liveDir, "lease.json"), JSON.stringify({ runId: "live", pid: process.pid, hostname: hostname() }), "utf8");
+
+  const result = await sweepDeadSmtpRunLocks(ctx.workspace);
+
+  assert.equal(result.removed.length, 1);
+  assert.ok(result.removed[0].endsWith("run-dead.lock"));
+  await assert.rejects(stat(deadDir), "el lock de pid muerto debe borrarse");
+  await stat(liveDir); // el lock vivo sigue existiendo
+});
+
+test("releaseOwnSmtpRunLocks removes only this process locks", async () => {
+  const ctx = createDeps();
+  const locksRoot = join(ctx.workspace.getRootDir(), "inventory", ".locks");
+  const ownDir = join(locksRoot, "run-own.lock");
+  const otherDir = join(locksRoot, "run-other.lock");
+  await mkdir(ownDir, { recursive: true });
+  await mkdir(otherDir, { recursive: true });
+  await writeFile(join(ownDir, "lease.json"), JSON.stringify({ runId: "own", pid: process.pid, hostname: hostname() }), "utf8");
+  await writeFile(join(otherDir, "lease.json"), JSON.stringify({ runId: "other", pid: 999999, hostname: hostname() }), "utf8");
+
+  const result = await releaseOwnSmtpRunLocks(ctx.workspace);
+
+  assert.equal(result.removed.length, 1);
+  assert.ok(result.removed[0].endsWith("run-own.lock"));
+  await assert.rejects(stat(ownDir));
+  await stat(otherDir); // el lock de otro pid no se toca
 });
 
 test("configureCompleteSmtp run lock outlives 30 minute waits and step lease outlives run lock", async () => {
@@ -3712,6 +3932,7 @@ function createDeps(options: {
     readErrors?: unknown[];
   }>;
   smokeAuthDnsResolver?: SmokeAuthDnsResolver;
+  hasVpsProviderAdapter?: (providerId: string) => boolean;
 } = {}): {
   deps: ConfigureCompleteSmtpDeps;
   approvals: ApprovalStepInput[];
@@ -3921,6 +4142,7 @@ function createDeps(options: {
         }
       } : {}),
       smokeAuthDnsResolver: options.smokeAuthDnsResolver ?? healthySmokeAuthDnsResolver(smokeAuthIpv4FromOutcomes(options.outcomes)),
+      ...(options.hasVpsProviderAdapter ? { hasVpsProviderAdapter: options.hasVpsProviderAdapter } : {}),
       env: options.env ?? {},
       now: () => new Date("2026-05-31T12:00:00.000Z"),
       randomId: () => "run-1",
@@ -4022,8 +4244,9 @@ function fourServers(): Array<{ creationDate: string }> {
 async function seedLegacyRunStateThroughStep4(
   workspace: OpenClawWorkspace,
   runId: string,
-  options: { serverCreatedByRun?: boolean } = {}
+  options: { serverCreatedByRun?: boolean; brand?: string } = {}
 ): Promise<void> {
+  const brand = options.brand ?? "delivrix";
   const hash = (params: Record<string, unknown>) => createHash("sha256").update(stableStringify(params)).digest("hex");
   const done = (step: number, skill: string, params: Record<string, unknown>, outcome: unknown, estimatedCostUsd?: number) => ({
     step,
@@ -4043,7 +4266,7 @@ async function seedLegacyRunStateThroughStep4(
     createdAt: "2026-05-31T12:00:00.000Z",
     updatedAt: "2026-05-31T12:00:00.000Z",
     params: {
-      brand: "delivrix",
+      brand,
       intent: "ops",
       provider: "route53",
       requireExistingDomain: false,
@@ -4063,7 +4286,7 @@ async function seedLegacyRunStateThroughStep4(
     budgetSpentUsd: 0,
     lastCompletedStep: 5,
     steps: {
-      "1": done(1, "suggest_safe_domain", { brand: "delivrix", intent: "ops", count: 5, actorId: "op-1" }, { candidates: [{ domain: "delivrixops.com", priceUsd: 15, available: true }] }),
+      "1": done(1, "suggest_safe_domain", { brand, intent: "ops", count: 5, actorId: "op-1" }, { candidates: [{ domain: "delivrixops.com", priceUsd: 15, available: true }] }),
       "2": done(2, "register_domain_route53", { domain: "delivrixops.com", years: 1, autoRenew: false }, { ok: true, status: "owned", operationId: "op-2" }, 0),
       "3": done(3, "wait_for_dns_propagation", { domain: "delivrixops.com", expectedRecord: { type: "NS", value: "contains:awsdns" }, maxWaitMs: 1_800_000, pollIntervalMs: 60_000 }, { ok: true }),
       "4": done(4, "create_webdock_server", { runId, profile: "bit", locationId: "dk", hostname: "smtp.delivrixops.com", imageSlug: "ubuntu-2404" }, { slug: "srv-delivrix", ipv4: "203.0.113.10" }),

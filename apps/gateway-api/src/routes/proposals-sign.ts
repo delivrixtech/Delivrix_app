@@ -108,6 +108,13 @@ export interface HandleProposalSignDeps {
   webhookBroadcaster?: WebhookBroadcaster;
   dispatcher: SkillDispatcher;
   readKillSwitch: () => Promise<KillSwitchState> | KillSwitchState;
+  /**
+   * True si hay un adapter de VPS cargado para el providerId no-Webdock. Permite rechazar la firma de
+   * un plan configure_complete_smtp que referencia un contabo-N sin credenciales cargadas ANTES de que
+   * el operador gaste una firma condenada (el run moriria en el step 4 tras comprar el dominio).
+   * Opcional: sin la dep no se valida (byte-identico).
+   */
+  hasVpsProviderAdapter?: (providerId: string) => boolean;
   env?: Record<string, string | undefined>;
   now?: () => Date;
   logger?: GatewayRuntimeLogger;
@@ -285,7 +292,8 @@ export async function handleProposalSign(deps: HandleProposalSignDeps): Promise<
     skill: actionBinding.canonicalSkill,
     actorId: parsed.actorId,
     signatureId,
-    now
+    now,
+    hasVpsProviderAdapter: deps.hasVpsProviderAdapter
   });
   if (planApprovalResolution.enabled && !planApprovalResolution.ok) {
     void logger.warn("openclaw.proposal.sign_rejected", "Plan approval scope failed validation.", {
@@ -613,6 +621,7 @@ function resolvePlanApproval(input: {
   actorId: string;
   signatureId: string;
   now: Date;
+  hasVpsProviderAdapter?: (providerId: string) => boolean;
 }): { enabled: false } | {
   enabled: true;
   ok: true;
@@ -620,7 +629,7 @@ function resolvePlanApproval(input: {
 } | {
   enabled: true;
   ok: false;
-  rejectReason: "plan_scope_missing";
+  rejectReason: "plan_scope_missing" | "unknown_vps_provider";
   details: string[];
 } {
   if (!envFlagEnabled(input.env?.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)) {
@@ -637,6 +646,18 @@ function resolvePlanApproval(input: {
       ok: false,
       rejectReason: "plan_scope_missing",
       details: scope.details
+    };
+  }
+
+  // Fail-fast del provider en la firma (P1): no dejar firmar un plan que referencia un VPS no-Webdock
+  // sin adapter cargado. Sin la firma condenada, el operador no gasta un acto de confianza en un run
+  // que moriria en el step 4 tras haber comprado el dominio. Solo se valida si la dep esta presente.
+  if (scope.value.vpsProviderId && input.hasVpsProviderAdapter && !input.hasVpsProviderAdapter(scope.value.vpsProviderId)) {
+    return {
+      enabled: true,
+      ok: false,
+      rejectReason: "unknown_vps_provider",
+      details: [`No hay adapter cargado para vpsProviderId=${scope.value.vpsProviderId}. Cargá sus credenciales antes de firmar.`]
     };
   }
 

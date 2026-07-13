@@ -84,6 +84,57 @@ test("sign accepts vpsProviderId as configure_complete_smtp plan scope provider"
   assert.equal(ctx.dispatches.length, 1);
 });
 
+test("sign rejects configure_complete_smtp plan when vpsProviderId has no adapter loaded", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    hasVpsProviderAdapter: (providerId) => providerId === "contabo",
+    proposal: configureCompleteSmtpProposal({
+      params: {
+        runId: "smtp-contabo9-20260713-a",
+        domain: "nationalbizrenewal.com",
+        vpsProviderId: "contabo-9",
+        brand: "nationalbizrenewal",
+        budgetUsdMax: 25,
+        testEmailRecipient: "infra@delivrix.com",
+        testEmailSubject: "Smoke autorizado",
+        testEmailBody: "Prueba autorizada y auditada"
+      }
+    })
+  });
+
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.body.rejectReason, "unknown_vps_provider");
+  assert.ok(response.body.details.some((d: string) => d.includes("contabo-9")));
+  assert.equal(ctx.dispatches.length, 0, "no debe despachar una firma condenada por provider sin adapter");
+});
+
+test("sign accepts configure_complete_smtp plan when vpsProviderId adapter is loaded", async () => {
+  const ctx = context({
+    env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
+    hasVpsProviderAdapter: (providerId) => providerId === "contabo-2",
+    proposal: configureCompleteSmtpProposal({
+      params: {
+        runId: "smtp-contabo2-20260713-a",
+        domain: "nationalbizrenewal.com",
+        vpsProviderId: "contabo-2",
+        brand: "nationalbizrenewal",
+        budgetUsdMax: 25,
+        testEmailRecipient: "infra@delivrix.com",
+        testEmailSubject: "Smoke autorizado",
+        testEmailBody: "Prueba autorizada y auditada"
+      }
+    })
+  });
+
+  const response = await sign(ctx);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(ctx.proposals[0].planApproval?.scope.vpsProviderId, "contabo-2");
+  assert.equal(ctx.dispatches.length, 1);
+});
+
 test("sign treats empty provider as missing and falls back to vpsProviderId", async () => {
   const ctx = context({
     env: { OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE: "true" },
@@ -509,6 +560,7 @@ function context(options: {
   dispatchResult?: { ok: boolean; statusCode: number; summary: unknown; durationMs: number };
   webhookThrows?: boolean;
   env?: Record<string, string | undefined>;
+  hasVpsProviderAdapter?: (providerId: string) => boolean;
 } = {}): TestContext {
   const proposals = options.proposals ?? [options.proposal ?? baseProposal()];
   const events: AuditEvent[] = [];
@@ -581,6 +633,7 @@ function context(options: {
       }
     },
     readKillSwitch: async () => ({ enabled: options.killSwitchEnabled ?? false }),
+    hasVpsProviderAdapter: options.hasVpsProviderAdapter,
     env: options.env,
     now: () => now
   } satisfies Omit<Parameters<typeof handleProposalSign>[0], "request" | "response"> & {
