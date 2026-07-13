@@ -41,6 +41,19 @@ const readBoundaryProxyToken =
   process.env.DELIVRIX_OPENCLAW_TOKEN ??
   process.env.OPENCLAW_GATEWAY_TOKEN ??
   "";
+// Llave de la Warmup API (carril B). El browser NUNCA la embebe: el proxy same-origin la inyecta desde
+// el entorno al proxear las rutas de la Warmup API. Los WRITES (POST /v1/mailboxes) son fail-closed en
+// el gateway y EXIGEN esta llave; si no está seteada en dev, la carga manual responde 503 (esperado).
+const warmupApiKeyProxy = process.env.WARMUP_API_KEY ?? "";
+// Rutas de la Warmup API que el gateway autentica con x-warmup-api-key (o read-boundary como fallback
+// SÓLO en lecturas). Inyectamos la llave en todas para que la misma llamada same-origin quede autenticada.
+function isWarmupApiPath(pathname: string): boolean {
+  return (
+    pathname === "/v1/mailboxes" ||
+    pathname.startsWith("/v1/mailboxes/") ||
+    pathname === "/v1/warmup/mailboxes-health"
+  );
+}
 const chatConversationsPath = "/v1/openclaw/chat/conversations";
 const chatHistoryPath = "/v1/openclaw/chat/history";
 const allowedProxyPaths = new Set([...Object.values(READ_ENDPOINTS), canvasLiveStatePath, chatConversationsPath, chatHistoryPath]);
@@ -48,7 +61,9 @@ const allowedReadPatterns: RegExp[] = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/status$/,
   /^\/v1\/openclaw\/proposals\/[^/]+\/preflight$/,
   /^\/v1\/infrastructure\/accounts\/[^/]+\/[^/]+\/smtp-health$/,
-  /^\/v1\/sender-pool\/credentials\/[^/]+\/download$/
+  /^\/v1\/sender-pool\/credentials\/[^/]+\/download$/,
+  // Warmup API (carril B): historial por buzón. Read-only; el proxy inyecta auth same-origin.
+  /^\/v1\/mailboxes\/[^/]+\/events$/
 ];
 
 /**
@@ -74,7 +89,10 @@ const allowedWritePaths = new Set<string>([
   "/v1/devops/collector/manual-snapshots/ingest",
   // Interrupción del operador: corta el turno activo de OpenClaw (aborta el stream de Bedrock).
   // Control benigno, no muta infra; el backend (handleChatInterruptHttp) audita openclaw.chat.interrupt.
-  "/v1/openclaw/chat/interrupt"
+  "/v1/openclaw/chat/interrupt",
+  // Warmup API (carril B): carga manual de un buzón. El gateway exige WARMUP_API_KEY (fail-closed);
+  // el proxy inyecta la llave desde el entorno. create-only idempotente + node nace 'blocked' (§8).
+  "/v1/mailboxes"
 ]);
 
 /**
@@ -118,6 +136,15 @@ export default defineConfig({
                 allowedReadPatterns.some((re) => re.test(requestUrl.pathname)));
             if (isAllowedRead && readBoundaryProxyToken && !req.headers["x-delivrix-token"]) {
               proxyReq.setHeader("x-delivrix-token", readBoundaryProxyToken);
+            }
+            // Warmup API: inyecta x-warmup-api-key en sus rutas (POST /v1/mailboxes, GET .../events,
+            // health) para que la llamada same-origin del panel quede autenticada sin embeber la llave.
+            if (
+              warmupApiKeyProxy &&
+              isWarmupApiPath(requestUrl.pathname) &&
+              !req.headers["x-warmup-api-key"]
+            ) {
+              proxyReq.setHeader("x-warmup-api-key", warmupApiKeyProxy);
             }
           });
           proxy.on("proxyReqWs", (_proxyReq, _req, socket) => {
