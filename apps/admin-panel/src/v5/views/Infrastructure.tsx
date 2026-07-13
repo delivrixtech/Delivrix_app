@@ -27,8 +27,8 @@
  * No requiere props del shell.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
   AlertCircle,
@@ -36,10 +36,13 @@ import {
   Cloud,
   KeyRound,
   PowerOff,
+  ShieldAlert,
   TriangleAlert
 } from "lucide-react";
 import { getJson } from "../../shared/api/client";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
+import { RealtimeTick, StaleBadge } from "../../shared/ui/realtime";
+import { useCanvasLiveEventSubscription } from "../../features/canvas/canvas-live-client";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import {
   Badge,
@@ -186,6 +189,281 @@ function useInventory(): FetchState {
     };
   }
   return { status: "loading" };
+}
+
+/* ============================================================
+ * PR-10 — Salud SMTP por cuenta (drill-down read-only).
+ *
+ * Contrato consumido (aditivo, aún no en el read-boundary estático porque
+ * lleva path params):
+ *   GET /v1/infrastructure/accounts/:providerId/:accountId/smtp-health
+ *
+ * El backend puede responder dos formas equivalentes; el normalizador tolera
+ * ambas y también un endpoint aún no desplegado (404 → estado vacío):
+ *   A) Envelope: { generatedAt?, dataSource?, summary?, units[], unattachedOrphans[] }
+ *   B) Array simple de items { smtpHost, domain, state, since?, evidence?, suggestedFix? }
+ *
+ * Cada unidad se clasifica por `state` en grupos de UI (active / down / error /
+ * huérfano / sin SMTP / pendiente). La `suggestedFix` del catálogo del backend
+ * se renderiza como TEXTO: esta vista es read-only estricta, no dispara acciones.
+ * ============================================================ */
+
+const SMTP_HEALTH_POLL_MS = 45_000;
+
+export interface NormalizedSmtpFix {
+  text: string;
+  docRef?: string;
+  kind?: string;
+}
+
+export interface NormalizedSmtpIssue {
+  code?: string;
+  severity?: string;
+  message?: string;
+  fix?: NormalizedSmtpFix;
+}
+
+export interface NormalizedSmtpUnit {
+  key: string;
+  state: string;
+  domain?: string;
+  smtpHost?: string;
+  serverSlug?: string;
+  serverIp?: string;
+  since?: string;
+  credentialStatus?: string;
+  tlsStatus?: string;
+  evidence: string[];
+  issues: NormalizedSmtpIssue[];
+  fixes: NormalizedSmtpFix[];
+}
+
+export interface NormalizedSmtpHealth {
+  available: boolean;
+  generatedAt?: string;
+  dataSource?: string;
+  units: NormalizedSmtpUnit[];
+  summary: Record<string, number> | null;
+}
+
+export type SmtpStateGroup =
+  | "active"
+  | "down"
+  | "error"
+  | "orphan"
+  | "no_smtp"
+  | "pending"
+  | "other";
+
+export function smtpStateGroup(state: string | undefined): SmtpStateGroup {
+  const value = (state ?? "").toLowerCase();
+  if (value === "active") return "active";
+  if (value === "down") return "down";
+  if (value === "error") return "error";
+  if (value.startsWith("orphan")) return "orphan";
+  if (value === "no_smtp") return "no_smtp";
+  if (value.startsWith("pending")) return "pending";
+  return "other";
+}
+
+const SMTP_GROUP_ORDER: SmtpStateGroup[] = [
+  "error",
+  "down",
+  "orphan",
+  "pending",
+  "no_smtp",
+  "active",
+  "other"
+];
+
+const SMTP_GROUP_LABEL: Record<SmtpStateGroup, string> = {
+  active: "Activos",
+  down: "Caídos",
+  error: "Con error",
+  orphan: "Huérfanos",
+  no_smtp: "Sin SMTP",
+  pending: "Registro pendiente",
+  other: "Otros"
+};
+
+const SMTP_GROUP_TONE: Record<SmtpStateGroup, "success" | "warning" | "critical" | "neutral"> = {
+  active: "success",
+  down: "critical",
+  error: "critical",
+  orphan: "warning",
+  no_smtp: "neutral",
+  pending: "warning",
+  other: "neutral"
+};
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function normalizeSmtpFix(raw: unknown): NormalizedSmtpFix | undefined {
+  if (typeof raw === "string") {
+    const text = raw.trim();
+    return text ? { text } : undefined;
+  }
+  if (raw && typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    const text = stringField(obj.text) ?? stringField(obj.message) ?? stringField(obj.detail);
+    if (!text) return undefined;
+    return {
+      text,
+      docRef: stringField(obj.docRef) ?? stringField(obj.runbookRef),
+      kind: stringField(obj.kind)
+    };
+  }
+  return undefined;
+}
+
+function normalizeSmtpEvidence(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry === "string") {
+      const text = entry.trim();
+      if (text) out.push(text);
+      continue;
+    }
+    if (entry && typeof entry === "object") {
+      const obj = entry as Record<string, unknown>;
+      const source = stringField(obj.source);
+      const detail =
+        stringField(obj.detail) ??
+        stringField(obj.message) ??
+        stringField(obj.runStatus) ??
+        stringField(obj.lastCompletedStep != null ? String(obj.lastCompletedStep) : undefined);
+      const runId = stringField(obj.runId);
+      const parts = [source, detail].filter(Boolean).join(": ");
+      const suffix = runId ? ` (${runId})` : "";
+      const text = `${parts}${suffix}`.trim();
+      if (text) out.push(text);
+    }
+  }
+  return out;
+}
+
+function normalizeSmtpIssues(raw: unknown): NormalizedSmtpIssue[] {
+  if (!Array.isArray(raw)) return [];
+  const out: NormalizedSmtpIssue[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const obj = entry as Record<string, unknown>;
+    out.push({
+      code: stringField(obj.code),
+      severity: stringField(obj.severity),
+      message: stringField(obj.message),
+      fix: normalizeSmtpFix(obj.suggestedFix ?? obj.fix)
+    });
+  }
+  return out;
+}
+
+function normalizeSmtpUnit(raw: unknown, index: number): NormalizedSmtpUnit | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const state = stringField(obj.state) ?? "other";
+  const domain = stringField(obj.domain);
+  const serverSlug = stringField(obj.serverSlug);
+  const issues = normalizeSmtpIssues(obj.issues);
+  const fixes: NormalizedSmtpFix[] = [];
+  const seenFix = new Set<string>();
+  const pushFix = (fix: NormalizedSmtpFix | undefined) => {
+    if (!fix) return;
+    if (seenFix.has(fix.text)) return;
+    seenFix.add(fix.text);
+    fixes.push(fix);
+  };
+  pushFix(normalizeSmtpFix(obj.suggestedFix));
+  for (const issue of issues) pushFix(issue.fix);
+  return {
+    key: [domain ?? "?", serverSlug ?? "?", state, index].join("|"),
+    state,
+    domain,
+    smtpHost: stringField(obj.smtpHost) ?? stringField(obj.host),
+    serverSlug,
+    serverIp: stringField(obj.serverIp) ?? stringField(obj.ipv4),
+    since: stringField(obj.since) ?? stringField(obj.observedAt),
+    credentialStatus: stringField(obj.credentialStatus),
+    tlsStatus: stringField(obj.tlsStatus),
+    evidence: normalizeSmtpEvidence(obj.evidence),
+    issues,
+    fixes
+  };
+}
+
+export function normalizeSmtpHealth(raw: unknown): NormalizedSmtpHealth {
+  const collect = (list: unknown): NormalizedSmtpUnit[] => {
+    if (!Array.isArray(list)) return [];
+    return list
+      .map((entry, index) => normalizeSmtpUnit(entry, index))
+      .filter((unit): unit is NormalizedSmtpUnit => unit !== null);
+  };
+
+  if (Array.isArray(raw)) {
+    return { available: true, units: collect(raw), summary: null };
+  }
+  if (raw && typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    const units = [...collect(obj.units), ...collect(obj.unattachedOrphans)];
+    const summary =
+      obj.summary && typeof obj.summary === "object"
+        ? (obj.summary as Record<string, number>)
+        : null;
+    return {
+      available: true,
+      generatedAt: stringField(obj.generatedAt),
+      dataSource: stringField(obj.dataSource),
+      units,
+      summary
+    };
+  }
+  return { available: false, units: [], summary: null };
+}
+
+/**
+ * Deriva el target del endpoint smtp-health desde el provider del inventario.
+ * Solo cuentas de cómputo con SMTP (Webdock / Contabo); el modelo Bedrock y los
+ * registradores/DNS quedan fuera. Devuelve null cuando no aplica.
+ */
+export function deriveSmtpHealthTarget(
+  provider: Provider
+): { providerId: string; accountId: string } | null {
+  if (provider.kind !== "compute") return null;
+  const id = provider.id.toLowerCase();
+  if (id.includes("bedrock")) return null;
+  const brand = brandName(provider).toLowerCase();
+  if (brand !== "webdock" && brand !== "contabo") return null;
+  return { providerId: brand, accountId: provider.id };
+}
+
+async function fetchAccountSmtpHealth(
+  providerId: string,
+  accountId: string
+): Promise<NormalizedSmtpHealth> {
+  const url = `/v1/infrastructure/accounts/${encodeURIComponent(providerId)}/${encodeURIComponent(
+    accountId
+  )}/smtp-health`;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+    cache: "no-store"
+  });
+  if (response.status === 404) {
+    // Endpoint aún no desplegado o cuenta sin SMTP: estado vacío con gracia.
+    return { available: false, units: [], summary: null };
+  }
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      payload && typeof payload === "object" && typeof (payload as { message?: unknown }).message === "string"
+        ? (payload as { message: string }).message
+        : `GET ${url} falló (${response.status}).`;
+    throw new Error(message);
+  }
+  return normalizeSmtpHealth(payload);
 }
 
 /* ============================================================
@@ -501,11 +779,53 @@ function isIonosDnsActuator(p: Provider | undefined): boolean {
 }
 
 /* ============================================================
+ * PR-08 — Realtime push-to-pull.
+ *
+ * El WSS del hub Canvas Live solo AVISA que cambió el inventario; el fetch
+ * auditado sigue siendo el endpoint. Al recibir el evento invalidamos la query
+ * y react-query refetchea sin recargar la página.
+ * ============================================================ */
+
+function useInfrastructureLiveInvalidation(): void {
+  const queryClient = useQueryClient();
+  const onEvent = useCallback(
+    ({ type }: { type: string }) => {
+      if (type === "infra.inventory.updated") {
+        void queryClient.invalidateQueries({ queryKey: ["v5", "infrastructure", "inventory"] });
+        // El drill-down de salud SMTP también depende del inventario live.
+        void queryClient.invalidateQueries({
+          predicate: (query) =>
+            query.queryKey[0] === "v5" &&
+            query.queryKey[1] === "infrastructure" &&
+            query.queryKey[2] === "smtp-health"
+        });
+      } else if (type === "infra.smtp_health.updated") {
+        void queryClient.invalidateQueries({
+          predicate: (query) =>
+            query.queryKey[0] === "v5" &&
+            query.queryKey[1] === "infrastructure" &&
+            query.queryKey[2] === "smtp-health"
+        });
+      } else if (type === "senderpool.inventory.updated") {
+        // La vista Sender Pool comparte el mismo QueryClient de la app.
+        void queryClient.invalidateQueries({ queryKey: ["sender-pool", "status"] });
+      }
+    },
+    [queryClient]
+  );
+  useCanvasLiveEventSubscription(
+    ["infra.inventory.updated", "infra.smtp_health.updated", "senderpool.inventory.updated"],
+    onEvent
+  );
+}
+
+/* ============================================================
  * Vista principal.
  * ============================================================ */
 
 export function InfrastructureV5() {
   const state = useInventory();
+  useInfrastructureLiveInvalidation();
   return (
     <motion.div
       variants={staggerContainer}
@@ -1278,35 +1598,256 @@ function ProviderDetail({
   id: string;
   className?: string;
 }) {
+  const smtpTarget = deriveSmtpHealthTarget(provider);
   return (
     <div
       id={id}
       className={[
-        "rounded-md border border-border bg-surface-sunken px-3 py-2",
+        "flex flex-col gap-3 rounded-md border border-border bg-surface-sunken px-3 py-2",
         className ?? ""
       ].join(" ")}
     >
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <Eyebrow>Detalle read-only</Eyebrow>
-        <Badge>{sourceLabel(provider)}</Badge>
+      <div>
+        <div className="mb-2 flex items-center justify-between gap-3">
+          <Eyebrow>Detalle read-only</Eyebrow>
+          <Badge>{sourceLabel(provider)}</Badge>
+        </div>
+        {provider.items && provider.items.length > 0 ? (
+          <ul className="m-0 flex list-none flex-col gap-1 p-0">
+            {provider.items.map((item) => (
+              <li
+                key={item.id}
+                className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)_auto] gap-3"
+              >
+                <MonoData className="truncate text-[11px] text-fg-subtle">{item.id}</MonoData>
+                <Caption className="truncate">{item.displayName}</Caption>
+                <MonoData className="text-[11px] text-fg-subtle">{item.status}</MonoData>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <Caption>Sin recursos reportados en este fetch.</Caption>
+        )}
       </div>
-      {provider.items && provider.items.length > 0 ? (
-        <ul className="m-0 flex list-none flex-col gap-1 p-0">
-          {provider.items.map((item) => (
-            <li
-              key={item.id}
-              className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)_auto] gap-3"
-            >
-              <MonoData className="truncate text-[11px] text-fg-subtle">{item.id}</MonoData>
-              <Caption className="truncate">{item.displayName}</Caption>
-              <MonoData className="text-[11px] text-fg-subtle">{item.status}</MonoData>
-            </li>
-          ))}
-        </ul>
+      {smtpTarget ? (
+        <AccountSmtpHealthDetail
+          providerId={smtpTarget.providerId}
+          accountId={smtpTarget.accountId}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/* ============================================================
+ * PR-10 — AccountSmtpHealthDetail (drill-down salud SMTP, read-only).
+ * ============================================================ */
+
+function AccountSmtpHealthDetail({
+  providerId,
+  accountId
+}: {
+  providerId: string;
+  accountId: string;
+}) {
+  const query = useQuery({
+    queryKey: ["v5", "infrastructure", "smtp-health", providerId, accountId],
+    queryFn: () => fetchAccountSmtpHealth(providerId, accountId),
+    refetchInterval: SMTP_HEALTH_POLL_MS,
+    refetchIntervalInBackground: false,
+    staleTime: SMTP_HEALTH_POLL_MS / 2
+  });
+
+  const groups = useMemo(() => groupSmtpUnits(query.data?.units ?? []), [query.data]);
+  const staleMinutes = query.dataUpdatedAt
+    ? Math.max(0, Math.floor((Date.now() - query.dataUpdatedAt) / 60_000))
+    : 0;
+
+  return (
+    <div className="rounded-md border border-border bg-surface px-3 py-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <ShieldAlert size={13} strokeWidth={1.75} className="text-fg-muted" aria-hidden="true" />
+          <Eyebrow>Salud SMTP de la cuenta</Eyebrow>
+          <RealtimeTick active={query.isFetching} />
+        </div>
+        <div className="flex items-center gap-2">
+          {query.dataUpdatedAt ? <StaleBadge minutesAgo={staleMinutes} /> : null}
+          <MonoCode className="text-[10.5px] text-fg-subtle">
+            {providerId}/{accountId}
+          </MonoCode>
+        </div>
+      </div>
+
+      {query.isLoading ? (
+        <Caption>Consultando salud SMTP…</Caption>
+      ) : query.isError ? (
+        <div className="flex flex-col gap-1">
+          <Caption>No se pudo leer la salud SMTP de esta cuenta.</Caption>
+          <MonoCode className="break-all text-[10.5px] text-fg-subtle">
+            {query.error instanceof Error ? query.error.message : "error desconocido"}
+          </MonoCode>
+        </div>
+      ) : !query.data || query.data.units.length === 0 ? (
+        <Caption>
+          {query.data && !query.data.available
+            ? "Endpoint smtp-health aún no disponible para esta cuenta."
+            : "Sin SMTPs reportados para esta cuenta en este fetch."}
+        </Caption>
       ) : (
-        <Caption>Sin recursos reportados en este fetch.</Caption>
+        <div className="flex flex-col gap-3">
+          <SmtpHealthSummary groups={groups} />
+          {SMTP_GROUP_ORDER.map((group) => {
+            const units = groups[group];
+            if (!units || units.length === 0) return null;
+            return <SmtpHealthGroup key={group} group={group} units={units} />;
+          })}
+        </div>
       )}
     </div>
+  );
+}
+
+function groupSmtpUnits(units: NormalizedSmtpUnit[]): Record<SmtpStateGroup, NormalizedSmtpUnit[]> {
+  const out: Record<SmtpStateGroup, NormalizedSmtpUnit[]> = {
+    active: [],
+    down: [],
+    error: [],
+    orphan: [],
+    no_smtp: [],
+    pending: [],
+    other: []
+  };
+  for (const unit of units) out[smtpStateGroup(unit.state)].push(unit);
+  return out;
+}
+
+function SmtpHealthSummary({
+  groups
+}: {
+  groups: Record<SmtpStateGroup, NormalizedSmtpUnit[]>;
+}) {
+  const chips = SMTP_GROUP_ORDER.map((group) => ({
+    group,
+    count: groups[group]?.length ?? 0
+  })).filter((chip) => chip.count > 0);
+  if (chips.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {chips.map((chip) => (
+        <Pill key={chip.group} tone={SMTP_GROUP_TONE[chip.group]} size="sm">
+          {SMTP_GROUP_LABEL[chip.group]} {chip.count}
+        </Pill>
+      ))}
+    </div>
+  );
+}
+
+function SmtpHealthGroup({
+  group,
+  units
+}: {
+  group: SmtpStateGroup;
+  units: NormalizedSmtpUnit[];
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2">
+        <Pill tone={SMTP_GROUP_TONE[group]} size="sm">
+          {SMTP_GROUP_LABEL[group]}
+        </Pill>
+        <Caption>{units.length}</Caption>
+      </div>
+      <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
+        {units.map((unit) => (
+          <SmtpHealthUnitRow key={unit.key} unit={unit} tone={SMTP_GROUP_TONE[group]} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function SmtpHealthUnitRow({
+  unit,
+  tone
+}: {
+  unit: NormalizedSmtpUnit;
+  tone: "success" | "warning" | "critical" | "neutral";
+}) {
+  const [open, setOpen] = useState(false);
+  const detailsId = `smtp-unit-${unit.key.replace(/[^a-z0-9]+/gi, "-")}`;
+  const hasDetail = unit.evidence.length > 0 || unit.issues.length > 0 || unit.fixes.length > 0;
+  const label = unit.domain ?? unit.smtpHost ?? unit.serverSlug ?? "SMTP sin dominio";
+  return (
+    <li className="rounded-md border border-border bg-surface-sunken px-2.5 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-0 truncate font-sans text-[12.5px] font-medium text-fg">
+          {label}
+        </span>
+        <Pill tone={tone} size="sm">
+          {unit.state}
+        </Pill>
+        {unit.tlsStatus ? (
+          <Caption className="text-[10.5px]">tls {unit.tlsStatus}</Caption>
+        ) : null}
+        {hasDetail ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            className="ml-auto"
+            onClick={() => setOpen((value) => !value)}
+          >
+            {open ? "Ocultar" : "Evidencia"}
+          </Button>
+        ) : null}
+      </div>
+      {unit.smtpHost || unit.serverSlug || unit.serverIp ? (
+        <MonoData className="mt-1 block truncate text-[10.5px] text-fg-subtle">
+          {[unit.smtpHost, unit.serverSlug, unit.serverIp].filter(Boolean).join(" · ")}
+        </MonoData>
+      ) : null}
+      {open && hasDetail ? (
+        <div id={detailsId} className="mt-2 flex flex-col gap-2">
+          {unit.evidence.length > 0 ? (
+            <div className="flex flex-col gap-1">
+              <Eyebrow>Evidencia</Eyebrow>
+              <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
+                {unit.evidence.map((line, index) => (
+                  <li key={index}>
+                    <MonoData className="text-[10.5px] text-fg-subtle">{line}</MonoData>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {unit.fixes.length > 0 ? (
+            <div className="flex flex-col gap-1">
+              <Eyebrow>Solución sugerida</Eyebrow>
+              {unit.fixes.map((fix, index) => (
+                <div key={index} className="flex flex-col gap-1">
+                  <BodySm>{fix.text}</BodySm>
+                  {fix.docRef ? (
+                    <Caption className="text-[10.5px]">ref: {fix.docRef}</Caption>
+                  ) : null}
+                </div>
+              ))}
+              <div className="mt-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled
+                  title="Read-only: la remediación exige contrato de ejecución, approval gate y rollback. Firmá desde el chat de OpenClaw."
+                >
+                  Requiere approval gate
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </li>
   );
 }
 

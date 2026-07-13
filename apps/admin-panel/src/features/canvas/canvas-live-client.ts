@@ -777,3 +777,148 @@ function normalizeMethod(m: string): "GET" | "POST" | "PUT" | "DELETE" | "PATCH"
   if (up === "GET" || up === "POST" || up === "PUT" || up === "DELETE" || up === "PATCH") return up;
   return "GET";
 }
+
+/* ============================================================
+ * PR-08 — Suscripción liviana a eventos de inventario / sender-pool.
+ *
+ * El poller server-side (runInfrastructureAccountHealthPoll) emite eventos
+ * incrementales por el MISMO hub WSS de Canvas Live:
+ *   - infra.inventory.updated       { hash? }
+ *   - senderpool.inventory.updated  { hash? }
+ *   - infra.smtp_health.updated     { providerId?, accountId? }
+ *
+ * Las vistas de inventario y sender-pool NO montan useLiveCanvasStream (ese
+ * hook es del LiveTool, con su propio ciclo de tasks/artifacts). Para no
+ * duplicar esa maquinaria exponemos una suscripción mínima "push-to-pull":
+ * el WebSocket solo AVISA que hubo un cambio; el fetch real sigue siendo el
+ * endpoint auditado (GET /v1/infrastructure/inventory, etc.). La vista
+ * invalida su react-query en el callback y refresca sin recargar la página.
+ *
+ * Reusa buildCanvasLiveStreamUrl (token Bearer por query) y la política de
+ * reconexión exponencial del cliente Canvas Live.
+ * ============================================================ */
+
+export type CanvasLiveInvalidationEventType =
+  | "infra.inventory.updated"
+  | "senderpool.inventory.updated"
+  | "infra.smtp_health.updated";
+
+export interface CanvasLiveEventMatch {
+  type: string;
+  payload: Record<string, unknown>;
+}
+
+/**
+ * Parsea un frame WSS (string JSON o ya deserializado) y devuelve el match si
+ * su tipo efectivo está en `eventTypes`. Pura y testeable: no toca el socket.
+ *
+ * El backend (PR-08) NO tiene un tipo de frame propio para invalidaciones de
+ * inventario: reutiliza el frame `oc.action.now` (kind "audit") como portador,
+ * y el nombre real del evento (infra.inventory.updated / senderpool.inventory.updated
+ * / infra.smtp_health.updated) viaja en el campo `action`. Por eso, cuando el
+ * frame es un `oc.action.now`, el tipo efectivo es su `action`. Para cualquier
+ * otro frame el tipo efectivo es su `type` directo (retrocompatible con frames
+ * cuyo top-level `type` ya es el nombre del evento).
+ */
+export function matchesLiveEventType(
+  raw: unknown,
+  eventTypes: readonly string[]
+): CanvasLiveEventMatch | null {
+  let frame: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      frame = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!frame || typeof frame !== "object") return null;
+  const frameType = (frame as { type?: unknown }).type;
+  if (typeof frameType !== "string") return null;
+  const effectiveType =
+    frameType === "oc.action.now" ? (frame as { action?: unknown }).action : frameType;
+  if (typeof effectiveType !== "string" || !eventTypes.includes(effectiveType)) return null;
+  return { type: effectiveType, payload: frame as Record<string, unknown> };
+}
+
+/**
+ * Suscribe a un conjunto de eventos del hub Canvas Live y llama `onEvent`
+ * por cada frame que matchee. Devuelve el estado de conexión para UI opcional.
+ * El callback se lee por ref para no re-abrir el socket en cada render.
+ */
+export function useCanvasLiveEventSubscription(
+  eventTypes: readonly string[],
+  onEvent: (match: CanvasLiveEventMatch) => void,
+  enabled = true
+): LiveConnectionStatus {
+  const [status, setStatus] = useState<LiveConnectionStatus>("offline");
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent;
+  const typesKey = [...eventTypes].join(",");
+
+  useEffect(() => {
+    if (!enabled || typeof window === "undefined" || eventTypes.length === 0) {
+      setStatus("offline");
+      return;
+    }
+    let cancelled = false;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let attempts = 0;
+
+    const scheduleReconnect = () => {
+      if (cancelled) return;
+      attempts += 1;
+      const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempts - 1), RECONNECT_MAX_MS);
+      reconnectTimer = window.setTimeout(open, delay);
+    };
+
+    function open() {
+      if (cancelled) return;
+      setStatus(attempts === 0 ? "connecting" : "reconnecting");
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(buildCanvasLiveStreamUrl(window.location));
+      } catch {
+        scheduleReconnect();
+        return;
+      }
+      socket = ws;
+      ws.addEventListener("open", () => {
+        if (cancelled) return;
+        attempts = 0;
+        setStatus("connected");
+      });
+      ws.addEventListener("message", (ev) => {
+        if (cancelled) return;
+        const match = matchesLiveEventType(ev.data, eventTypes);
+        if (match) onEventRef.current(match);
+      });
+      ws.addEventListener("close", () => {
+        if (cancelled) return;
+        setStatus("reconnecting");
+        scheduleReconnect();
+      });
+      ws.addEventListener("error", () => {
+        // 'close' se encarga del reconnect; evitamos doble-schedule.
+      });
+    }
+
+    open();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer != null) window.clearTimeout(reconnectTimer);
+      if (socket) {
+        try {
+          socket.close();
+        } catch {
+          // noop
+        }
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, typesKey]);
+
+  return status;
+}
