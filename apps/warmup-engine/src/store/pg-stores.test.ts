@@ -580,6 +580,61 @@ function mailboxRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+test("onboardMany: loop create-only por item; created/existing con estado del nodo; mismo orden", async () => {
+  const { client, calls } = fakeClient([
+    // item 1 → insertó (created=true), nace 'blocked'
+    { rows: [], rowCount: 1 },
+    { rows: [mailboxRow({ id: "m1", mailbox: "a@x.io", state: "blocked" })], rowCount: 1 },
+    // item 2 → ya existía (created=false), estado preservado 'warm'
+    { rows: [], rowCount: 0 },
+    { rows: [mailboxRow({ id: "m2", mailbox: "b@x.io", state: "warm" })], rowCount: 1 }
+  ]);
+  const store = createWarmupMailboxStore(client);
+  const results = await store.onboardMany([
+    { email: "a@x.io", domain: "x.io" },
+    { email: "b@x.io", domain: "x.io" }
+  ]);
+
+  assert.deepEqual(results, [
+    { email: "a@x.io", created: true, state: "blocked" },
+    { email: "b@x.io", created: false, state: "warm" }
+  ]);
+  // Misma idempotencia que el single: ON CONFLICT (mailbox) DO NOTHING por cada item.
+  assert.match(sql(calls[0].text), /ON CONFLICT \(mailbox\) DO NOTHING/);
+  assert.match(sql(calls[2].text), /ON CONFLICT \(mailbox\) DO NOTHING/);
+});
+
+test("onboardMany: un item que falla NO tumba el batch (error aislado, el resto sigue)", async () => {
+  let idx = 0;
+  const client: PgClient = {
+    async query<T = any>(text: string) {
+      idx += 1;
+      // item 1: insert (call 1) + select (call 2) OK; item 2: insert (call 3) revienta.
+      if (idx === 3) throw new Error("db down");
+      if (/INSERT/i.test(text)) return { rows: [] as T[], rowCount: 1 };
+      return { rows: [mailboxRow({ id: "m1", mailbox: "a@x.io", state: "blocked" }) as unknown as T], rowCount: 1 };
+    }
+  };
+  const store = createWarmupMailboxStore(client);
+  const results = await store.onboardMany([
+    { email: "a@x.io", domain: "x.io" },
+    { email: "b@x.io", domain: "x.io" }
+  ]);
+  assert.equal(results.length, 2);
+  assert.deepEqual(results[0], { email: "a@x.io", created: true, state: "blocked" });
+  assert.equal(results[1].email, "b@x.io");
+  assert.equal(results[1].created, false);
+  assert.equal(results[1].error, "db down");
+});
+
+test("onboardMany: lista vacía ⇒ [] sin tocar la DB", async () => {
+  const { client, calls } = fakeClient([]);
+  const store = createWarmupMailboxStore(client);
+  const results = await store.onboardMany([]);
+  assert.deepEqual(results, []);
+  assert.equal(calls.length, 0);
+});
+
 test("warmupSmtpRef: referencia de vault derivada del id (NO la credencial)", () => {
   assert.equal(warmupSmtpRef("abc"), "vault:warmup/smtp/abc");
   assert.equal(WARM_PLACEMENT_DEFAULT_MIN, 0.8);
