@@ -229,3 +229,209 @@ export async function postWarmupMailbox(
     status: payload.created === false ? "exists" : "created"
   };
 }
+
+/* ============================================================
+ * GET /v1/mailboxes — listado de nodos de warmup (para cruzar con el Sender Pool).
+ * ============================================================ */
+
+/** Un buzón ya presente en el engine de warmup (subconjunto del WarmupMailboxRecord del carril B). */
+export interface WarmupMailboxListItem {
+  id: string;
+  email: string;
+  domain?: string;
+  state: WarmupMailboxState;
+}
+
+export interface WarmupMailboxesListResult {
+  mailboxes: WarmupMailboxListItem[];
+  /** aviso del backend cuando Postgres/tablas no están disponibles (estado vacío con gracia). */
+  note?: string;
+}
+
+/**
+ * Normaliza GET /v1/mailboxes → `{ mailboxes, note }`. Tolera:
+ *   - envelope `{ generatedAt, mailboxes, note }` (contrato real del carril B)
+ *   - array pelado `[ ...mailboxes ]`
+ * Cada item conserva sólo lo que el selector necesita para cruzar por email. Nunca lanza.
+ */
+export function normalizeMailboxList(raw: unknown): WarmupMailboxesListResult {
+  const envelope = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const rawList = Array.isArray(raw)
+    ? raw
+    : Array.isArray(envelope.mailboxes)
+    ? (envelope.mailboxes as unknown[])
+    : [];
+  const mailboxes: WarmupMailboxListItem[] = rawList
+    .filter((m): m is Record<string, unknown> => Boolean(m) && typeof m === "object")
+    .map((m, index) => ({
+      id: asString(m.id) ?? `mb-${index}`,
+      email: (asString(m.email) ?? "").toLowerCase(),
+      domain: asString(m.domain),
+      state: asString(m.state) ?? "blocked"
+    }))
+    .filter((m) => m.email.length > 0);
+  return { mailboxes, note: asString(envelope.note) };
+}
+
+/**
+ * Lista los buzones ya presentes en el engine de warmup. El selector la usa para marcar qué dominios
+ * del Sender Pool YA están en warmup (y con qué estado). 404/entrada basura ⇒ lista vacía con gracia.
+ */
+export async function listWarmupMailboxes(): Promise<WarmupMailboxesListResult> {
+  const url = "/v1/mailboxes";
+  const response = await fetch(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+    cache: "no-store"
+  });
+  if (response.status === 404) {
+    return { mailboxes: [] };
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message =
+      payload && typeof payload === "object" && typeof (payload as { message?: unknown }).message === "string"
+        ? (payload as { message: string }).message
+        : `GET ${url} failed (${response.status}).`;
+    throw new Error(message);
+  }
+  return normalizeMailboxList(payload);
+}
+
+/* ============================================================
+ * POST /v1/mailboxes:onboard-batch — onboard masivo desde el Sender Pool.
+ * ============================================================ */
+
+/** Un buzón a calentar en el batch. El email = mailer del dominio; el domain se infiere si se omite. */
+export interface WarmupBatchItemInput {
+  email: string;
+  domain?: string;
+}
+
+export interface WarmupBatchInput {
+  mailboxes: WarmupBatchItemInput[];
+  /** operador que dispara el batch (para auditoría). */
+  actorId?: string;
+}
+
+/** Resultado por buzón del batch. `created` = nuevo; `exists` = ya estaba (idempotente); `failed` = error. */
+export type WarmupBatchItemStatus = "created" | "exists" | "failed" | string;
+
+export interface WarmupBatchItemResult {
+  email: string;
+  status: WarmupBatchItemStatus;
+  id?: string;
+  state?: WarmupMailboxState;
+  error?: string;
+}
+
+export interface WarmupBatchSummary {
+  requested: number;
+  created: number;
+  existed: number;
+  failed: number;
+}
+
+export interface WarmupBatchResult {
+  summary: WarmupBatchSummary;
+  results: WarmupBatchItemResult[];
+}
+
+/**
+ * Normaliza la respuesta del batch a `{ summary, results }`. Tolera:
+ *   - envelope completo `{ summary, results }`
+ *   - envelope sólo con `results` (o `mailboxes`) → deriva el summary contando por status
+ * Mapea el status del backend (`created`/`exists`/`failed`, o `created:boolean`) a nuestra unión. El
+ * summary derivado nunca miente: cuenta lo que realmente vino en `results`. Nunca lanza.
+ */
+export function normalizeBatchResult(raw: unknown): WarmupBatchResult {
+  const envelope = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const rawResults = Array.isArray(envelope.results)
+    ? (envelope.results as unknown[])
+    : Array.isArray(envelope.mailboxes)
+    ? (envelope.mailboxes as unknown[])
+    : Array.isArray(raw)
+    ? raw
+    : [];
+  const results: WarmupBatchItemResult[] = rawResults
+    .filter((r): r is Record<string, unknown> => Boolean(r) && typeof r === "object")
+    .map((r) => {
+      const email = (asString(r.email) ?? "").toLowerCase();
+      // El backend puede mandar `status` textual o `created:boolean` (mismo criterio que el onboard simple).
+      let status: WarmupBatchItemStatus;
+      const explicit = asString(r.status);
+      const error = asString(r.error) ?? asString(r.message);
+      if (explicit) {
+        status = explicit;
+      } else if (error) {
+        status = "failed";
+      } else if (r.created === false) {
+        status = "exists";
+      } else {
+        status = "created";
+      }
+      const item: WarmupBatchItemResult = { email, status };
+      const mailbox = (r.mailbox && typeof r.mailbox === "object" ? r.mailbox : {}) as Record<string, unknown>;
+      const id = asString(r.id) ?? asString(mailbox.id);
+      if (id) item.id = id;
+      const state = asString(r.state) ?? asString(mailbox.state);
+      if (state) item.state = state;
+      if (error) item.error = error;
+      return item;
+    });
+
+  const rawSummary = (envelope.summary && typeof envelope.summary === "object"
+    ? envelope.summary
+    : {}) as Record<string, unknown>;
+  const derived: WarmupBatchSummary = {
+    requested: results.length,
+    created: results.filter((r) => r.status === "created").length,
+    existed: results.filter((r) => r.status === "exists").length,
+    failed: results.filter((r) => r.status === "failed").length
+  };
+  const summary: WarmupBatchSummary = {
+    requested: numberOr(rawSummary.requested, derived.requested),
+    created: numberOr(rawSummary.created, derived.created),
+    // El backend (warmup-mailboxes.ts) emite `existing`; toleramos también `existed`/`exists` (variantes).
+    existed: numberOr(rawSummary.existing ?? rawSummary.existed ?? rawSummary.exists, derived.existed),
+    failed: numberOr(rawSummary.failed, derived.failed)
+  };
+  return { summary, results };
+}
+
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Onboardea VARIOS buzones al warmup de una (POST /v1/mailboxes:onboard-batch). Idempotente por email
+ * igual que el onboard simple: re-calentar un buzón que ya existe es seguro (queda `exists`, no duplica
+ * ni resetea el estado del nodo vivo). El gateway exige WARMUP_API_KEY (fail-closed); el proxy inyecta
+ * la llave desde el entorno (misma llamada same-origin).
+ *
+ * Contrato asumido del carril backend (anotado): request `{ mailboxes:[{email,domain?}], actorId? }`,
+ * response `{ summary:{requested,created,existed,failed}, results:[{email,status,id?,state?,error?}] }`.
+ * Si el backend lo materializa distinto, `normalizeBatchResult` tolera variantes (deriva el summary).
+ */
+export async function postWarmupMailboxBatch(input: WarmupBatchInput): Promise<WarmupBatchResult> {
+  const url = "/v1/mailboxes:onboard-batch";
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message =
+      payload && typeof payload === "object"
+        ? asString((payload as Record<string, unknown>).error) ??
+          asString((payload as Record<string, unknown>).message) ??
+          `POST ${url} failed (${response.status}).`
+        : `POST ${url} failed (${response.status}).`;
+    throw new Error(message);
+  }
+  return normalizeBatchResult(payload);
+}

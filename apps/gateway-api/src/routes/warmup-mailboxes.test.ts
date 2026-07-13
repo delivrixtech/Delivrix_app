@@ -5,6 +5,7 @@ import test from "node:test";
 import type { PgClient } from "../../../warmup-engine/src/store/pg-stores.ts";
 import {
   handleWarmupMailboxOnboard,
+  handleWarmupMailboxOnboardBatch,
   handleWarmupMailboxesWarm,
   handleWarmupMailboxGet,
   handleWarmupMailboxesHealth,
@@ -177,6 +178,144 @@ test("onboard: pgClient null ⇒ 503", async () => {
   const response = captureResponse();
   await handleWarmupMailboxOnboard(
     postRequest("/v1/mailboxes:onboard", { email: "x@y.io" }, { "x-warmup-api-key": API_KEY }),
+    response as unknown as ServerResponse,
+    baseDeps({ pgClient: null })
+  );
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.json().error, "warmup_db_unavailable");
+});
+
+// ================== Onboard batch ==================
+
+/** Fila cruda de warmup_nodes (shape de MAILBOX_COLUMNS) para el fake del store. */
+function mailboxRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "m1",
+    mailbox: "a@x.io",
+    domain: "x.io",
+    infra_type: "postfix",
+    state: "blocked",
+    auth_ready: false,
+    contract_expires_at: null,
+    sending_ip: null,
+    helo_fqdn: null,
+    daily_limit: 10,
+    increase_by_day: 1,
+    day_index: 0,
+    weekdays_only: false,
+    health_score: null,
+    placement_score: null,
+    created_at: new Date("2026-07-13T00:00:00Z"),
+    updated_at: new Date("2026-07-13T00:00:00Z"),
+    ...overrides
+  };
+}
+
+/** Cliente que siempre responde OK: INSERT ⇒ rowCount 1 (created), otra ⇒ un row canned. */
+function alwaysOkClient(): PgClient {
+  return {
+    async query<T = any>(text: string) {
+      if (/INSERT/i.test(text)) return { rows: [] as T[], rowCount: 1 };
+      return { rows: [mailboxRow() as unknown as T], rowCount: 1 };
+    }
+  };
+}
+
+test("batch: mezcla creado/existente/inválido; failed no tumba el batch; orden preservado", async () => {
+  const response = captureResponse();
+  const pg = fakePgClient([
+    // item a@x.io → insertó (created), nace 'blocked'
+    { rows: [], rowCount: 1 },
+    { rows: [mailboxRow({ id: "m1", mailbox: "a@x.io", state: "blocked" })], rowCount: 1 },
+    // item b@x.io → ya existía (existing), estado preservado 'warm'
+    { rows: [], rowCount: 0 },
+    { rows: [mailboxRow({ id: "m2", mailbox: "b@x.io", state: "warm" })], rowCount: 1 }
+  ]);
+  await handleWarmupMailboxOnboardBatch(
+    postRequest(
+      "/v1/mailboxes:onboard-batch",
+      { mailboxes: [{ email: "a@x.io" }, { email: "no-arroba" }, { email: "b@x.io" }] },
+      { "x-warmup-api-key": API_KEY }
+    ),
+    response as unknown as ServerResponse,
+    baseDeps({ pgClient: pg })
+  );
+  assert.equal(response.statusCode, 200);
+  const payload = response.json();
+  assert.deepEqual(payload.summary, { requested: 3, created: 1, existing: 1, failed: 1 });
+  assert.deepEqual(payload.results, [
+    { email: "a@x.io", created: true, state: "blocked" },
+    { email: "no-arroba", created: false, error: "email_required" },
+    { email: "b@x.io", created: false, state: "warm" }
+  ]);
+});
+
+test("batch: idempotencia — 2do batch idéntico ⇒ todo existing", async () => {
+  const response = captureResponse();
+  const pg = fakePgClient([
+    { rows: [], rowCount: 0 }, // a ya existía
+    { rows: [mailboxRow({ id: "m1", mailbox: "a@x.io", state: "warm" })], rowCount: 1 },
+    { rows: [], rowCount: 0 }, // b ya existía
+    { rows: [mailboxRow({ id: "m2", mailbox: "b@x.io", state: "fresh" })], rowCount: 1 }
+  ]);
+  await handleWarmupMailboxOnboardBatch(
+    postRequest(
+      "/v1/mailboxes:onboard-batch",
+      { mailboxes: [{ email: "a@x.io" }, { email: "b@x.io" }] },
+      { "x-warmup-api-key": API_KEY }
+    ),
+    response as unknown as ServerResponse,
+    baseDeps({ pgClient: pg })
+  );
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().summary, { requested: 2, created: 0, existing: 2, failed: 0 });
+});
+
+test("batch: clamp de tamaño a 200 (los excedentes se descartan, no rompe)", async () => {
+  const response = captureResponse();
+  const mailboxes = Array.from({ length: 205 }, (_, k) => ({ email: `u${k}@x.io` }));
+  await handleWarmupMailboxOnboardBatch(
+    postRequest("/v1/mailboxes:onboard-batch", { mailboxes }, { "x-warmup-api-key": API_KEY }),
+    response as unknown as ServerResponse,
+    baseDeps({ pgClient: alwaysOkClient() })
+  );
+  assert.equal(response.statusCode, 200);
+  const payload = response.json();
+  assert.equal(payload.summary.requested, 200);
+  assert.equal(payload.summary.created, 200);
+  assert.equal(payload.results.length, 200);
+});
+
+test("batch: escritura fail-closed ⇒ 503 sin WARMUP_API_KEY (nunca cae al read-boundary)", async () => {
+  const response = captureResponse();
+  await handleWarmupMailboxOnboardBatch(
+    postRequest(
+      "/v1/mailboxes:onboard-batch",
+      { mailboxes: [{ email: "x@y.io" }] },
+      { "x-delivrix-token": "rb-token" }
+    ),
+    response as unknown as ServerResponse,
+    baseDeps({ warmupApiKey: undefined, readBoundaryToken: "rb-token" })
+  );
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.json().error, "warmup_api_key_not_configured");
+});
+
+test("batch: mailboxes ausente ⇒ 422", async () => {
+  const response = captureResponse();
+  await handleWarmupMailboxOnboardBatch(
+    postRequest("/v1/mailboxes:onboard-batch", { nope: [] }, { "x-warmup-api-key": API_KEY }),
+    response as unknown as ServerResponse,
+    baseDeps()
+  );
+  assert.equal(response.statusCode, 422);
+  assert.equal(response.json().error, "mailboxes_required");
+});
+
+test("batch: pgClient null ⇒ 503", async () => {
+  const response = captureResponse();
+  await handleWarmupMailboxOnboardBatch(
+    postRequest("/v1/mailboxes:onboard-batch", { mailboxes: [{ email: "x@y.io" }] }, { "x-warmup-api-key": API_KEY }),
     response as unknown as ServerResponse,
     baseDeps({ pgClient: null })
   );
