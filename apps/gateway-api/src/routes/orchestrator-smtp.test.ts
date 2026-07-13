@@ -3794,10 +3794,14 @@ test("releaseOwnSmtpRunLocks removes only this process locks", async () => {
   const locksRoot = join(ctx.workspace.getRootDir(), "inventory", ".locks");
   const ownDir = join(locksRoot, "run-own.lock");
   const otherDir = join(locksRoot, "run-other.lock");
+  const otherHostDir = join(locksRoot, "run-other-host.lock");
   await mkdir(ownDir, { recursive: true });
   await mkdir(otherDir, { recursive: true });
+  await mkdir(otherHostDir, { recursive: true });
   await writeFile(join(ownDir, "lease.json"), JSON.stringify({ runId: "own", pid: process.pid, hostname: hostname() }), "utf8");
   await writeFile(join(otherDir, "lease.json"), JSON.stringify({ runId: "other", pid: 999999, hostname: hostname() }), "utf8");
+  // Mismo pid numérico pero OTRO host (workspace compartido/NFS): no debe liberarse.
+  await writeFile(join(otherHostDir, "lease.json"), JSON.stringify({ runId: "other-host", pid: process.pid, hostname: `${hostname()}-remote` }), "utf8");
 
   const result = await releaseOwnSmtpRunLocks(ctx.workspace);
 
@@ -3805,6 +3809,7 @@ test("releaseOwnSmtpRunLocks removes only this process locks", async () => {
   assert.ok(result.removed[0].endsWith("run-own.lock"));
   await assert.rejects(stat(ownDir));
   await stat(otherDir); // el lock de otro pid no se toca
+  await stat(otherHostDir); // mismo pid pero otro host tampoco se toca
 });
 
 test("configureCompleteSmtp run lock outlives 30 minute waits and step lease outlives run lock", async () => {
