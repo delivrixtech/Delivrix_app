@@ -31,6 +31,7 @@ import {
   SectionHead
 } from "../components/primitives";
 import { PageHead } from "./_PageHead";
+import { WarmupOnboardSelector } from "./WarmupOnboardSelector";
 import { PlacementLivePanel } from "../components/PlacementLivePanel";
 import { StartWarmupRampInline } from "../components/StartWarmupRampInline";
 import { useOpenClawIntent, useToast } from "../../shared/ui/v2";
@@ -297,6 +298,7 @@ export function SenderPoolV5() {
               ))}
             </div>
           )}
+          {noDomains ? null : <WarmupOnboardSelector recent={recent} rest={rest} />}
           <FlowSteps />
         </div>
         <div className="flex flex-col gap-4">
