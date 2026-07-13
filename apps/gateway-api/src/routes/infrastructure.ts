@@ -115,6 +115,13 @@ export interface WebdockAccountInventoryResult {
   accountId: string;
   accountLabel: string;
   result: WebdockInventoryResult;
+  /**
+   * Fingerprint corto de la credencial de la cuenta (sha256[:12], provisto por el factory de
+   * adapters). Cuando dos cuentas comparten fingerprint son la MISMA cuenta física vista por env
+   * vars alias (residuo de la promoción QUINARY→PRIMARY) y se colapsan en el inventario. Opcional
+   * por compat con consumidores legacy; si falta, el dedupe cae al colapso por nombre de rol.
+   */
+  credentialFingerprint?: string;
 }
 
 export interface VpsProviderInventoryResult {
@@ -466,6 +473,59 @@ const cuenta1WebdockRoleIds = new Set(["primary", "ops", "account", "default"]);
 const cuenta1WebdockRolePriority = ["primary", "ops", "account", "default"];
 
 function dedupeWebdockInventoryAccounts(accounts: WebdockAccountInventoryResult[]): WebdockAccountInventoryResult[] {
+  return dedupeCuenta1WebdockRoles(collapseWebdockAccountsByCredentialFingerprint(accounts));
+}
+
+/**
+ * Colapsa cuentas que comparten `credentialFingerprint` (misma cuenta física vista por env vars
+ * alias). Conserva por grupo la de mejor salud y, a igualdad, la de rol de cuenta-1 con más
+ * prioridad; preserva el orden por primera aparición. Cuentas sin fingerprint pasan sin tocar
+ * (compat legacy: el colapso real lo hace el factory de adapters por fingerprint aguas arriba).
+ */
+function collapseWebdockAccountsByCredentialFingerprint(
+  accounts: WebdockAccountInventoryResult[]
+): WebdockAccountInventoryResult[] {
+  const winnerByFingerprint = new Map<string, WebdockAccountInventoryResult>();
+  for (const account of accounts) {
+    const fingerprint = account.credentialFingerprint;
+    if (!fingerprint) continue;
+    const current = winnerByFingerprint.get(fingerprint);
+    if (!current || compareWebdockAccountsForCredentialDedup(account, current) < 0) {
+      winnerByFingerprint.set(fingerprint, account);
+    }
+  }
+
+  const emitted = new Set<string>();
+  const result: WebdockAccountInventoryResult[] = [];
+  for (const account of accounts) {
+    const fingerprint = account.credentialFingerprint;
+    if (!fingerprint) {
+      result.push(account);
+      continue;
+    }
+    if (emitted.has(fingerprint)) continue;
+    emitted.add(fingerprint);
+    result.push(winnerByFingerprint.get(fingerprint) ?? account);
+  }
+  return result;
+}
+
+function compareWebdockAccountsForCredentialDedup(
+  a: WebdockAccountInventoryResult,
+  b: WebdockAccountInventoryResult
+): number {
+  const aHealthy = a.result.source.responseOk ? 0 : 1;
+  const bHealthy = b.result.source.responseOk ? 0 : 1;
+  if (aHealthy !== bHealthy) return aHealthy - bHealthy;
+  return webdockRoleRank(a.accountId) - webdockRoleRank(b.accountId);
+}
+
+function webdockRoleRank(accountId: string): number {
+  const index = cuenta1WebdockRolePriority.indexOf(accountId.toLowerCase());
+  return index === -1 ? cuenta1WebdockRolePriority.length : index;
+}
+
+function dedupeCuenta1WebdockRoles(accounts: WebdockAccountInventoryResult[]): WebdockAccountInventoryResult[] {
   const cuenta1Accounts = accounts.filter((account) => cuenta1WebdockRoleIds.has(account.accountId.toLowerCase()));
   if (cuenta1Accounts.length <= 1) {
     return accounts;

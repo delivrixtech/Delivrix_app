@@ -1081,7 +1081,10 @@ function ProviderGroup({
                 {brand}
               </span>
               <Caption>
-                {formatCount(summary.totalAccounts, "cuenta", "cuentas")} ·{" "}
+                {summary.totalAccounts > 1
+                  ? `${summary.totalAccounts} cuentas distintas`
+                  : formatCount(summary.totalAccounts, "cuenta", "cuentas")}{" "}
+                ·{" "}
                 {formatCount(summary.realResourceCount, `${noun.singular} real`, `${noun.plural} reales`)}
               </Caption>
             </div>
@@ -1096,7 +1099,12 @@ function ProviderGroup({
       </div>
       <ul className="m-0 flex list-none flex-col p-0">
         {providers.map((provider, index) => (
-          <ProviderRow key={provider.id} provider={provider} index={index} />
+          <ProviderRow
+            key={provider.id}
+            provider={provider}
+            index={index}
+            accountPosition={{ index: index + 1, total: providers.length }}
+          />
         ))}
       </ul>
     </Card>
@@ -1158,10 +1166,24 @@ function ProviderList({ providers }: { providers: Provider[] }) {
   );
 }
 
-function ProviderRow({ provider, index }: { provider: Provider; index: number }) {
+function ProviderRow({
+  provider,
+  index,
+  accountPosition
+}: {
+  provider: Provider;
+  index: number;
+  /**
+   * Posición de la cuenta dentro de un grupo de marca con MÚLTIPLES cuentas reales distintas
+   * (ej. Contabo "Host Latam" vs "infravps"). Cuando total > 1 mostramos "cuenta N de M" para que
+   * dos cuentas legítimas no se lean como un duplicado.
+   */
+  accountPosition?: { index: number; total: number };
+}) {
   const [expanded, setExpanded] = useState(false);
   const canExpand = canExpandProvider(provider);
   const detailsId = `provider-detail-${provider.id}`;
+  const showAccountPosition = accountPosition !== undefined && accountPosition.total > 1;
   return (
     <li
       className="grid grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 md:grid-cols-[36px_minmax(160px,1.15fr)_minmax(140px,0.9fr)_auto_auto_auto_auto_auto]"
@@ -1184,6 +1206,16 @@ function ProviderRow({ provider, index }: { provider: Provider; index: number })
             <span className="truncate font-sans text-[12.5px] text-fg-muted">
               · {accountSuffix(provider)}
             </span>
+          ) : null}
+          {showAccountPosition ? (
+            <Pill
+              tone="neutral"
+              size="sm"
+              className="shrink-0"
+              title={`Cuenta real distinta ${accountPosition.index} de ${accountPosition.total} · ${provider.id}`}
+            >
+              cuenta {accountPosition.index} de {accountPosition.total}
+            </Pill>
           ) : null}
         </div>
         <Caption className="truncate md:hidden" title={technicalSummary(provider)}>

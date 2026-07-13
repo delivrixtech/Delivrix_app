@@ -221,6 +221,13 @@ export interface WebdockAccountAdapterEntry {
   id: string;
   label: string;
   adapter: WebdockRealAdapter;
+  /**
+   * Fingerprint corto y estable (sha256[:12]) de la credencial de lectura de la cuenta.
+   * Sirve para detectar alias: dos entries con el MISMO fingerprint = la misma cuenta
+   * física vista por env vars distintas (residuo de la promoción QUINARY→PRIMARY). Nunca
+   * expone la key. Ausente si la cuenta no tiene read key.
+   */
+  credentialFingerprint?: string;
 }
 
 export interface CreateWebdockAdaptersFromEnvOptions
@@ -1119,9 +1126,20 @@ export function createWebdockAdaptersFromEnv(
     )
   ];
 
-  const configuredAccounts = accountSpecs
-    .filter((account) => account.apiKey)
-    .map((account) => buildAccountAdapterEntry(account, env, options));
+  // Dedupe estructural por FINGERPRINT de credencial: si un rol distinct
+  // (secondary/…/quinary) reusa la misma API key que la cuenta-1 o que otro
+  // rol distinct ya visto, es un alias de la MISMA cuenta física (residuo de la
+  // promoción QUINARY→PRIMARY). Colapsarlo acá arregla a la vez inventario,
+  // health poller y buildWebdockCreateRegistry, porque todos consumen el factory.
+  const dedupedSpecs = dedupeAccountSpecsByCredentialFingerprint(
+    accountSpecs.filter((account) => account.apiKey),
+    options.logger
+  );
+  const configuredAccounts = dedupedSpecs.map((account) => {
+    const entry = buildAccountAdapterEntry(account, env, options);
+    const fingerprint = account.apiKey ? webdockCredentialFingerprint(account.apiKey) : undefined;
+    return fingerprint ? { ...entry, credentialFingerprint: fingerprint } : entry;
+  });
 
   if (configuredAccounts.length > 0) {
     return configuredAccounts;
@@ -1140,6 +1158,54 @@ export function createWebdockAdaptersFromEnv(
 const CUENTA1_ROLE_IDS: ReadonlySet<string> = new Set(["primary", "ops", "account", "default"]);
 
 /**
+ * Fingerprint corto y estable de una credencial Webdock (sha256[:12]). Se usa SOLO para
+ * agrupar/detectar alias (misma key en varias env vars). Nunca se loguea ni expone la key.
+ */
+export function webdockCredentialFingerprint(apiKey: string): string {
+  return createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12);
+}
+
+/**
+ * Colapsa specs de cuentas que comparten credencial. Regla:
+ * - Los roles de la cuenta-1 (primary/ops/account/default) SIEMPRE se conservan (byte-identidad del
+ *   comportamiento single-account: son 3 keys legítimas de la misma cuenta, ya de-dupeadas aguas
+ *   abajo por buildWebdockCreateRegistry y dedupeWebdockInventoryAccounts).
+ * - Un rol DISTINCT (secondary/…/quinary) cuya API key ya apareció (en cuenta-1 o en un distinct
+ *   anterior) es un ALIAS: se descarta y se emite `webdock.account_alias_detected`. Así 6 env vars
+ *   con la misma credencial colapsan a UNA cuenta lógica.
+ */
+function dedupeAccountSpecsByCredentialFingerprint(
+  specs: AccountSpec[],
+  logger?: WebdockAdapterLogger
+): AccountSpec[] {
+  const canonicalRoleByFingerprint = new Map<string, string>();
+  const kept: AccountSpec[] = [];
+  for (const spec of specs) {
+    const apiKey = spec.apiKey;
+    if (!apiKey) {
+      kept.push(spec);
+      continue;
+    }
+    const fingerprint = webdockCredentialFingerprint(apiKey);
+    const canonicalRole = canonicalRoleByFingerprint.get(fingerprint);
+    const isCuenta1 = CUENTA1_ROLE_IDS.has(spec.id);
+    if (canonicalRole && !isCuenta1) {
+      logger?.error("webdock.account_alias_detected", {
+        aliasRole: spec.id,
+        canonicalRole,
+        fingerprint
+      });
+      continue;
+    }
+    if (!canonicalRole) {
+      canonicalRoleByFingerprint.set(fingerprint, spec.id);
+    }
+    kept.push(spec);
+  }
+  return kept;
+}
+
+/**
  * Construye el registry write-capable id->adapter para create/delete multicuenta (5.12), de-dupeando
  * la cuenta-1. La clave "ops" SIEMPRE apunta a `opsAdapter` (el webdockOpsAdapter de produccion:
  * mismo objeto/keys => single-account byte-identico). Las cuentas DISTINTAS (secondary/tertiary/...)
@@ -1151,9 +1217,20 @@ export function buildWebdockCreateRegistry(
   opsAdapter: WebdockRealAdapter
 ): Map<string, WebdockRealAdapter> {
   const registry = new Map<string, WebdockRealAdapter>([["ops", opsAdapter]]);
+  // Defensa en profundidad: aunque el factory ya de-dupea por fingerprint, colapsamos
+  // acá también por credencial. Los fingerprints de la cuenta-1 se siembran para que un
+  // rol distinct que aliasee la cuenta-1 tampoco entre como cuenta creadora "adicional".
+  const seenFingerprints = new Set<string>();
   for (const entry of entries) {
-    if (CUENTA1_ROLE_IDS.has(entry.id)) continue;
+    if (CUENTA1_ROLE_IDS.has(entry.id)) {
+      if (entry.credentialFingerprint) seenFingerprints.add(entry.credentialFingerprint);
+      continue;
+    }
     if (!entry.adapter.canCreate()) continue;
+    if (entry.credentialFingerprint) {
+      if (seenFingerprints.has(entry.credentialFingerprint)) continue;
+      seenFingerprints.add(entry.credentialFingerprint);
+    }
     registry.set(entry.id, entry.adapter);
   }
   return registry;
