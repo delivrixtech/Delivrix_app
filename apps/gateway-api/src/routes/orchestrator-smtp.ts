@@ -2045,7 +2045,9 @@ export async function releaseOwnSmtpRunLocks(
   const removed: string[] = [];
   for (const lockDir of await listSmtpRunLockDirs(lockRoot)) {
     const lease = await readSmtpRunLockLease(lockDir);
-    if (!lease || lease.pid !== process.pid) continue;
+    // Same-host guard: en un workspace compartido (NFS) otro host podría tener un lease con el mismo
+    // pid numérico; solo liberamos locks que ESTE proceso tomó en ESTE host (igual que sweep/expired).
+    if (!lease || lease.pid !== process.pid || lease.hostname !== hostname()) continue;
     await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
     removed.push(lockDir);
     void (logger ?? noopGatewayRuntimeLogger).info(

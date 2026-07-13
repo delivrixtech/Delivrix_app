@@ -332,6 +332,11 @@ test("buildSenderPoolStatus falls back to smtpCredential.createdAt for credentia
   // registeredAt cae al createdAt de la credencial (no hay registro en inventory)
   assert.equal(summary.registeredAt, summary.smtpCredential?.createdAt);
   assert.equal(summary.registeredAt, fixedNow.toISOString());
+  // Redacción (defensa en profundidad): el secreto nunca debe serializarse en la vista de salud.
+  const serialized = JSON.stringify(summary);
+  assert.equal(serialized.includes("smtp-secret-password"), false);
+  assert.equal(serialized.includes("ciphertext"), false);
+  assert.equal(serialized.includes("authTag"), false);
 });
 
 test("handleSenderPoolStatusHttp returns 200 with payload on success", async () => {

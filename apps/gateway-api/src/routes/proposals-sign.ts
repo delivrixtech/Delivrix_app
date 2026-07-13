@@ -1,5 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { hostname } from "node:os";
+import { join } from "node:path";
 import type {
   AuditEvent,
   AuditEventInput,
@@ -734,6 +737,207 @@ function extractConfigureCompleteSmtpPlanScope(params: unknown): {
       plannedSteps: [...configureCompleteSmtpPlanSteps]
     }
   };
+}
+
+// ---------------------------------------------------------------------------
+// PR-05 — Preflight de firma (read-only). Función PURA que, dado un proposal de
+// configure_complete_smtp, dice si la firma va a fallar y por qué, reusando los predicados frios del
+// Sprint 1 (lock del run, unknown_vps_provider sin adapter, requireExistingDomain vs estado del run).
+// El endpoint GET /v1/openclaw/proposals/:id/preflight expone el resultado para que el ApprovalGate
+// no deje firmar propuestas condenadas (I6). No tiene efectos: solo lee estado ya persistido.
+// ---------------------------------------------------------------------------
+
+export interface ProposalPreflightResult {
+  willFail: boolean;
+  reason?: string;
+  detail?: string;
+}
+
+export interface SmtpPreflightRunState {
+  params?: { requireExistingDomain?: boolean };
+  steps?: Record<string, { status?: string } | undefined>;
+  chosenDomain?: string;
+  budgetSpentUsd?: number;
+  lastCompletedStep?: number;
+  verifiedOwnedDomain?: string;
+}
+
+export interface ConfigureCompleteSmtpPreflightInput {
+  params: unknown;
+  /** Skill canónico del proposal; solo se evalúa configure_complete_smtp. */
+  skill: string;
+  runState: SmtpPreflightRunState | null;
+  /** true si hay un lock de run vigente (dir presente y no expirado) para este runId. */
+  lockHeld: boolean;
+  hasVpsProviderAdapter?: (providerId: string) => boolean;
+}
+
+const smtpRunStateLockLeaseMs = 40 * 60 * 1000;
+
+/**
+ * PURA. Devuelve el veredicto de preflight sin tocar disco ni red. Orden de bloqueo (más severo
+ * primero): lock del run vigente → provider sin adapter → mismatch de requireExistingDomain cuando la
+ * compra aún NO ocurrió (post-compra el resume ya reconcilia, así que no bloquea).
+ */
+export function preflightConfigureCompleteSmtpProposal(
+  input: ConfigureCompleteSmtpPreflightInput
+): ProposalPreflightResult {
+  if (input.skill !== "configure_complete_smtp") {
+    return { willFail: false };
+  }
+  const scope = extractConfigureCompleteSmtpPlanScope(input.params);
+  if (!scope.ok) {
+    return {
+      willFail: true,
+      reason: "plan_scope_missing",
+      detail: scope.details.join(" ")
+    };
+  }
+  if (input.lockHeld) {
+    return {
+      willFail: true,
+      reason: "run_already_in_progress",
+      detail: "Hay un run en curso o un lock huérfano para este runId; reintentá el mismo runId o pedí limpiar el lock antes de firmar."
+    };
+  }
+  const vpsProviderId = scope.value.vpsProviderId;
+  if (vpsProviderId && input.hasVpsProviderAdapter && !input.hasVpsProviderAdapter(vpsProviderId)) {
+    return {
+      willFail: true,
+      reason: "unknown_vps_provider",
+      detail: `No hay adapter cargado para vpsProviderId=${vpsProviderId}. Cargá sus credenciales antes de firmar; el run moriría tras comprar el dominio.`
+    };
+  }
+  if (input.runState) {
+    const planRequireExistingDomain = scope.value.requireExistingDomain === true;
+    const stateRequireExistingDomain = input.runState.params?.requireExistingDomain;
+    if (
+      typeof stateRequireExistingDomain === "boolean" &&
+      stateRequireExistingDomain !== planRequireExistingDomain &&
+      !smtpRunPurchaseSecured(input.runState)
+    ) {
+      return {
+        willFail: true,
+        reason: "plan_scope_mismatch: requireExistingDomain",
+        detail: `El plan firma requireExistingDomain=${planRequireExistingDomain} pero el estado del run tiene ${stateRequireExistingDomain} y la compra aún no ocurrió.`
+      };
+    }
+  }
+  return { willFail: false };
+}
+
+function smtpRunPurchaseSecured(state: SmtpPreflightRunState): boolean {
+  // Espeja runStatePurchaseSettled() del orquestador: para un run de dominio propio,
+  // verifiedOwnedDomain ya asegura la compra aunque el step 2 no haya corrido ni haya gasto.
+  if (state.steps?.["2"]?.status === "done") return true;
+  if ((state.lastCompletedStep ?? 0) >= 2) return true;
+  if (state.verifiedOwnedDomain) return true;
+  return Boolean(state.chosenDomain) && (state.budgetSpentUsd ?? 0) > 0;
+}
+
+/**
+ * Orquesta el preflight completo para un proposal: resuelve skill, lee el run-state y el lock del run
+ * (read-only, tolerante a JSON parcial) y aplica el predicado puro. Toda la IO vive en este módulo para
+ * que el endpoint de main.ts sea trivial.
+ */
+export async function computeProposalPreflight(input: {
+  proposal: ProposalSignStoredProposal | undefined;
+  workspaceRootDir: string;
+  now: Date;
+  hasVpsProviderAdapter?: (providerId: string) => boolean;
+}): Promise<ProposalPreflightResult> {
+  if (!input.proposal) {
+    return { willFail: true, reason: "proposal_not_found" };
+  }
+  const skill = skillForProposal(input.proposal);
+  if (skill !== "configure_complete_smtp") {
+    return { willFail: false };
+  }
+  const runId = isRecord(input.proposal.params) && typeof input.proposal.params.runId === "string"
+    ? input.proposal.params.runId
+    : undefined;
+  const [runState, lockHeld] = await Promise.all([
+    runId ? readSmtpPreflightRunState(input.workspaceRootDir, runId) : Promise.resolve(null),
+    runId ? readSmtpRunLockHeld({ workspaceRootDir: input.workspaceRootDir, runId, now: input.now }) : Promise.resolve(false)
+  ]);
+  return preflightConfigureCompleteSmtpProposal({
+    params: input.proposal.params,
+    skill,
+    runState,
+    lockHeld,
+    ...(input.hasVpsProviderAdapter ? { hasVpsProviderAdapter: input.hasVpsProviderAdapter } : {})
+  });
+}
+
+export async function readSmtpPreflightRunState(
+  workspaceRootDir: string,
+  runId: string
+): Promise<SmtpPreflightRunState | null> {
+  const path = join(workspaceRootDir, "inventory", "smtp-runs", `${safeWorkspaceRunSegment(runId)}.json`);
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+    return isRecord(parsed) ? (parsed as SmtpPreflightRunState) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read-only: replica smtpRunFileLockExpired del orquestador SIN borrar nada. held = el lock existe y no
+ * expiró (pid vivo same-host, o mtime dentro del lease). Un lock huérfano de pid muerto NO cuenta como
+ * held (el barrido ya lo limpiaría).
+ */
+export async function readSmtpRunLockHeld(input: {
+  workspaceRootDir: string;
+  runId: string;
+  now: Date;
+  leaseMs?: number;
+}): Promise<boolean> {
+  const leaseMs = input.leaseMs ?? smtpRunStateLockLeaseMs;
+  const lockDir = join(input.workspaceRootDir, "inventory", ".locks", `run-${safeWorkspaceRunSegment(input.runId)}.lock`);
+  let info: Awaited<ReturnType<typeof stat>>;
+  try {
+    info = await stat(lockDir);
+  } catch {
+    return false;
+  }
+  const withinLease = input.now.getTime() - info.mtimeMs <= leaseMs;
+  const lease = await readSmtpRunLockLease(lockDir);
+  if (lease && typeof lease.pid === "number" && typeof lease.hostname === "string" && lease.hostname === hostname()) {
+    // pid muerto same-host → expira de inmediato (como smtpRunFileLockExpired). pid vivo → sigue held
+    // SOLO mientras el lease por mtime no venció: el orquestador cae al fallback por mtime y trataría
+    // un lock same-host demasiado viejo como libre, así que no reportamos held sin ese tope.
+    return isPidAlive(lease.pid) && withinLease;
+  }
+  return withinLease;
+}
+
+async function readSmtpRunLockLease(lockDir: string): Promise<{ pid?: number; hostname?: string } | null> {
+  try {
+    const parsed = JSON.parse(await readFile(join(lockDir, "lease.json"), "utf8")) as unknown;
+    return isRecord(parsed) ? (parsed as { pid?: number; hostname?: string }) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function safeWorkspaceRunSegment(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96) || "unknown";
 }
 
 function normalizedScopeString(value: unknown): string | null {
