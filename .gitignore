@@ -12,6 +12,8 @@ yarn-error.log*
 .turbo/
 .cache/
 runtime/
+# runtime/ (global) se tragaba el modulo fuente del warmup-engine; excepcion explicita:
+!apps/warmup-engine/src/runtime/
 state/canvas-live/*.jsonl
 clonado/
 .aws-secrets/
