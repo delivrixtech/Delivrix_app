@@ -14,7 +14,7 @@
  * Wiring: la vista hace su propia query. No requiere props del shell.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
@@ -24,14 +24,21 @@ import {
   Flame,
   LineChart,
   PauseCircle,
+  Plus,
   TrendingUp
 } from "lucide-react";
 import { getJson } from "../../shared/api/client";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
+import {
+  postWarmupMailbox,
+  type WarmupMailboxCreateResult
+} from "../../shared/api/warmup-mailboxes-client";
+import { WarmupMailboxLog } from "./WarmupMailboxLog";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import {
   Badge,
   BodySm,
+  Button,
   Caption,
   Card,
   Eyebrow,
@@ -276,8 +283,15 @@ function formatRelative(iso: string | null): string {
  * Vista principal.
  * ============================================================ */
 
+/** Buzón seleccionado para ver su historial (carril C). */
+interface SelectedMailbox {
+  id: string;
+  mailbox: string;
+}
+
 export function WarmupV5() {
   const state = useWarmupStatus();
+  const [selected, setSelected] = useState<SelectedMailbox | null>(null);
   return (
     <motion.div
       variants={staggerContainer}
@@ -300,7 +314,26 @@ export function WarmupV5() {
         />
       </motion.div>
 
-      <Body state={state} />
+      <motion.section variants={staggerItem} className="flex flex-col gap-3">
+        <SectionHead
+          eyebrow="Carga manual"
+          title="Agregar un buzón al warmup"
+          caption="Alta manual mínima contra POST /v1/mailboxes (Warmup API). El calentamiento real por envío lo hace el cliente con sus campañas."
+        />
+        <ManualMailboxForm />
+      </motion.section>
+
+      <Body state={state} onSelectMailbox={setSelected} selectedId={selected?.id ?? null} />
+
+      {selected ? (
+        <motion.section variants={staggerItem}>
+          <WarmupMailboxLog
+            mailboxId={selected.id}
+            mailbox={selected.mailbox}
+            onClose={() => setSelected(null)}
+          />
+        </motion.section>
+      ) : null}
 
       <motion.section variants={staggerItem} className="flex flex-col gap-3">
         <SectionHead
@@ -314,7 +347,15 @@ export function WarmupV5() {
   );
 }
 
-function Body({ state }: { state: FetchState }) {
+function Body({
+  state,
+  onSelectMailbox,
+  selectedId
+}: {
+  state: FetchState;
+  onSelectMailbox: (mailbox: SelectedMailbox) => void;
+  selectedId: string | null;
+}) {
   if (state.status === "loading") {
     return (
       <motion.div variants={staggerItem}>
@@ -329,7 +370,7 @@ function Body({ state }: { state: FetchState }) {
       </motion.div>
     );
   }
-  return <Loaded payload={state.payload} />;
+  return <Loaded payload={state.payload} onSelectMailbox={onSelectMailbox} selectedId={selectedId} />;
 }
 
 function LivePollSide({
@@ -358,7 +399,15 @@ function LivePollSide({
  * Loaded — estructura principal.
  * ============================================================ */
 
-function Loaded({ payload }: { payload: WarmupStatusSnapshot }) {
+function Loaded({
+  payload,
+  onSelectMailbox,
+  selectedId
+}: {
+  payload: WarmupStatusSnapshot;
+  onSelectMailbox: (mailbox: SelectedMailbox) => void;
+  selectedId: string | null;
+}) {
   const { enabled, totals, byState, nodes, note } = payload;
   return (
     <>
@@ -393,17 +442,158 @@ function Loaded({ payload }: { payload: WarmupStatusSnapshot }) {
         <SectionHead
           eyebrow="Nodos"
           title="Nodos en warmup"
-          caption="Mailbox, dominio, etapa, día de rampa, readiness de auth y placement score."
+          caption="Mailbox, dominio, etapa, día de rampa, readiness de auth y placement score. Clic en una fila para ver su historial."
           count={nodes.length}
           countTone="neutral"
         />
-        {nodes.length > 0 ? <NodesTable nodes={nodes} /> : <NodesEmpty />}
+        {nodes.length > 0 ? (
+          <NodesTable nodes={nodes} onSelectMailbox={onSelectMailbox} selectedId={selectedId} />
+        ) : (
+          <NodesEmpty />
+        )}
       </motion.section>
 
       <motion.div variants={staggerItem}>
         <FooterMeta generatedAt={payload.generatedAt} />
       </motion.div>
     </>
+  );
+}
+
+/* ============================================================
+ * Carga manual — form mínimo → POST /v1/mailboxes (Warmup API).
+ *
+ * UI mínima (el grueso vive en warmup-mailboxes-client). Idempotente del lado
+ * del backend: reintentar el mismo email no duplica ni resetea el estado. La
+ * referencia SMTP (vault) la deriva el backend del id del nodo; no se carga a mano
+ * ni viaja la credencial. Tolera exists/error con gracia.
+ * ============================================================ */
+
+type ManualSubmitState =
+  | { status: "idle" }
+  | { status: "submitting" }
+  | { status: "done"; result: WarmupMailboxCreateResult }
+  | { status: "error"; message: string };
+
+function ManualMailboxForm() {
+  const [email, setEmail] = useState("");
+  const [domain, setDomain] = useState("");
+  const [submit, setSubmit] = useState<ManualSubmitState>({ status: "idle" });
+
+  const derivedDomain = domain.trim() || email.split("@")[1]?.trim() || "";
+  const canSubmit = email.includes("@") && derivedDomain.length > 0 && submit.status !== "submitting";
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setSubmit({ status: "submitting" });
+    try {
+      const result = await postWarmupMailbox({
+        email: email.trim(),
+        domain: derivedDomain
+      });
+      setSubmit({ status: "done", result });
+      if (result.ok) {
+        setEmail("");
+        setDomain("");
+      }
+    } catch (err) {
+      setSubmit({
+        status: "error",
+        message: err instanceof Error ? err.message : "no se pudo agregar el buzón"
+      });
+    }
+  }
+
+  return (
+    <Card padding="relaxed" className="flex flex-col gap-4">
+      <form onSubmit={onSubmit} className="flex flex-col gap-3">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <ManualField label="Email del buzón" htmlFor="wm-email">
+            <input
+              id="wm-email"
+              type="email"
+              value={email}
+              onChange={(ev) => setEmail(ev.target.value)}
+              placeholder="warm@delivrix.io"
+              autoComplete="off"
+              className="h-8 w-full rounded-md border border-border bg-surface px-2.5 font-mono text-[12.5px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none"
+            />
+          </ManualField>
+          <ManualField label="Dominio" htmlFor="wm-domain" hint="se infiere del email si se deja vacío">
+            <input
+              id="wm-domain"
+              type="text"
+              value={domain}
+              onChange={(ev) => setDomain(ev.target.value)}
+              placeholder={email.split("@")[1] ?? "delivrix.io"}
+              autoComplete="off"
+              className="h-8 w-full rounded-md border border-border bg-surface px-2.5 font-mono text-[12.5px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none"
+            />
+          </ManualField>
+        </div>
+        <Caption className="text-[10.5px] text-fg-subtle">
+          La referencia SMTP (vault) la deriva el backend del id del nodo — no se carga a mano ni viaja la
+          credencial. El nodo nace <span className="font-mono">blocked</span> hasta tener contrato de auth vigente (§8).
+        </Caption>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button type="submit" size="sm" disabled={!canSubmit}>
+            <Plus size={14} strokeWidth={1.75} />
+            {submit.status === "submitting" ? "Agregando…" : "Agregar al warmup"}
+          </Button>
+          <MonoCode>POST /v1/mailboxes</MonoCode>
+        </div>
+      </form>
+
+      <ManualResult submit={submit} />
+    </Card>
+  );
+}
+
+function ManualField({
+  label,
+  htmlFor,
+  hint,
+  children
+}: {
+  label: string;
+  htmlFor: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label htmlFor={htmlFor} className="flex flex-col gap-1.5">
+      <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
+        {label}
+      </span>
+      {children}
+      {hint ? <Caption className="text-[10.5px]">{hint}</Caption> : null}
+    </label>
+  );
+}
+
+function ManualResult({ submit }: { submit: ManualSubmitState }) {
+  if (submit.status === "idle" || submit.status === "submitting") return null;
+  if (submit.status === "error") {
+    return (
+      <div className="flex items-center gap-2 border-t border-border pt-3">
+        <Pill tone="critical" size="sm">
+          error
+        </Pill>
+        <MonoCode className="break-all">{submit.message}</MonoCode>
+      </div>
+    );
+  }
+  const { result } = submit;
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+      <Pill tone="success" size="sm">
+        {result.status === "exists" ? "ya existía" : "agregado"}
+      </Pill>
+      {result.id ? <MonoData className="text-[12px]">{result.id}</MonoData> : null}
+      {result.state ? <Badge>estado {result.state}</Badge> : null}
+      {result.message ? <BodySm className="text-fg-muted">{result.message}</BodySm> : null}
+    </div>
   );
 }
 
@@ -510,7 +700,15 @@ function StateBreakdown({ byState }: { byState: Record<string, number> }) {
  * NodesTable — tabla densa de nodos.
  * ============================================================ */
 
-function NodesTable({ nodes }: { nodes: WarmupNode[] }) {
+function NodesTable({
+  nodes,
+  onSelectMailbox,
+  selectedId
+}: {
+  nodes: WarmupNode[];
+  onSelectMailbox: (mailbox: SelectedMailbox) => void;
+  selectedId: string | null;
+}) {
   return (
     <Card padding="none" className="overflow-hidden">
       <div className="overflow-x-auto">
@@ -529,6 +727,9 @@ function NodesTable({ nodes }: { nodes: WarmupNode[] }) {
             {nodes.map((node, index) => (
               <tr
                 key={node.id}
+                onClick={() => onSelectMailbox({ id: node.id, mailbox: node.mailbox })}
+                aria-selected={selectedId === node.id}
+                className="cursor-pointer hover:bg-surface-sunken aria-selected:bg-surface-sunken"
                 style={{ borderTop: index === 0 ? "none" : "1px solid var(--color-border)" }}
               >
                 <Td>

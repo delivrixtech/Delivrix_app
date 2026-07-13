@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PgClient } from "./pg-stores.ts";
-import { createPgWarmupStores } from "./pg-stores.ts";
+import {
+  createPgWarmupStores,
+  createWarmupMailboxStore,
+  warmupSmtpRef,
+  WARM_PLACEMENT_DEFAULT_MIN
+} from "./pg-stores.ts";
 
 // ── Fake PgClient: registra cada (text, params) y devuelve filas canned en orden ─────────────────
 // NINGÚN test toca una DB real. El fake sólo observa el SQL emitido y regurgita respuestas.
@@ -548,4 +553,242 @@ test("createPgWarmupStores: expone las 6 stores (incluye engaged)", async () => 
   assert.ok(
     stores.nodes && stores.sends && stores.signals && stores.seeds && stores.placement && stores.engaged
   );
+});
+
+// ================== WarmupMailboxStore (Track B) ==================
+
+function mailboxRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "m1",
+    mailbox: "warm@delivrix.io",
+    domain: "delivrix.io",
+    infra_type: "postfix",
+    state: "warm",
+    auth_ready: true,
+    contract_expires_at: new Date("2026-07-20T00:00:00Z"),
+    sending_ip: "203.0.113.5",
+    helo_fqdn: "mail.delivrix.io",
+    daily_limit: 20,
+    increase_by_day: 1,
+    day_index: 7,
+    weekdays_only: false,
+    health_score: "0.9",
+    placement_score: "0.85",
+    created_at: new Date("2026-07-01T00:00:00Z"),
+    updated_at: new Date("2026-07-12T00:00:00Z"),
+    ...overrides
+  };
+}
+
+test("warmupSmtpRef: referencia de vault derivada del id (NO la credencial)", () => {
+  assert.equal(warmupSmtpRef("abc"), "vault:warmup/smtp/abc");
+  assert.equal(WARM_PLACEMENT_DEFAULT_MIN, 0.8);
+});
+
+test("onboardMailbox: INSERT ON CONFLICT (mailbox) DO NOTHING; created=true si insertó; mapea mailbox→email", async () => {
+  const { client, calls } = fakeClient([
+    { rows: [], rowCount: 1 },
+    { rows: [mailboxRow({ state: "blocked", auth_ready: false })], rowCount: 1 }
+  ]);
+  const store = createWarmupMailboxStore(client);
+  const result = await store.onboardMailbox({ email: "warm@delivrix.io", domain: "delivrix.io" });
+
+  const q0 = sql(calls[0].text);
+  assert.match(q0, /INSERT INTO warmup_nodes \(mailbox, domain, infra_type, daily_limit, increase_by_day, weekdays_only, sending_ip, helo_fqdn\)/);
+  assert.match(q0, /ON CONFLICT \(mailbox\) DO NOTHING/);
+  // no fija state → cae al default 'blocked' de la columna (§8 fail-closed)
+  assert.doesNotMatch(q0, /state/);
+  assert.deepEqual(calls[0].params, ["warm@delivrix.io", "delivrix.io", "postfix", 10, 1, false, null, null]);
+  // anti-inyección: el email no aparece interpolado
+  assert.doesNotMatch(q0, /warm@delivrix\.io/);
+
+  assert.equal(result.created, true);
+  assert.equal(result.mailbox.email, "warm@delivrix.io");
+  assert.equal(result.mailbox.smtpRef, "vault:warmup/smtp/m1");
+  assert.equal(result.mailbox.state, "blocked");
+});
+
+test("onboardMailbox: reintento idempotente ⇒ created=false, estado preservado", async () => {
+  const { client } = fakeClient([
+    { rows: [], rowCount: 0 }, // ON CONFLICT DO NOTHING no insertó
+    { rows: [mailboxRow({ state: "warm" })], rowCount: 1 }
+  ]);
+  const store = createWarmupMailboxStore(client);
+  const result = await store.onboardMailbox({ email: "warm@delivrix.io", domain: "delivrix.io" });
+  assert.equal(result.created, false);
+  assert.equal(result.mailbox.state, "warm"); // no se reseteó
+});
+
+test("onboardMailbox: campos opcionales viajan como params", async () => {
+  const { client, calls } = fakeClient([
+    { rows: [], rowCount: 1 },
+    { rows: [mailboxRow()], rowCount: 1 }
+  ]);
+  const store = createWarmupMailboxStore(client);
+  await store.onboardMailbox({
+    email: "x@y.io",
+    domain: "y.io",
+    infraType: "m365",
+    dailyLimit: 5,
+    increaseByDay: 2,
+    weekdaysOnly: true,
+    sendingIp: "198.51.100.7",
+    heloFqdn: "mail.y.io"
+  });
+  assert.deepEqual(calls[0].params, ["x@y.io", "y.io", "m365", 5, 2, true, "198.51.100.7", "mail.y.io"]);
+});
+
+test("listWarmMailboxes: SOLO state=warm AND placement_score>=umbral (regla dura); nunca fríos", async () => {
+  const { client, calls } = fakeClient([
+    {
+      rows: [
+        {
+          id: "m1",
+          mailbox: "warm@delivrix.io",
+          domain: "delivrix.io",
+          placement_score: "0.93",
+          updated_at: new Date("2026-07-12T00:00:00Z")
+        }
+      ],
+      rowCount: 1
+    }
+  ]);
+  const store = createWarmupMailboxStore(client);
+  const warm = await store.listWarmMailboxes(0.8);
+  const q = sql(calls[0].text);
+  assert.match(q, /WHERE state = 'warm' AND placement_score IS NOT NULL AND placement_score >= \$1/);
+  assert.deepEqual(calls[0].params, [0.8]);
+  assert.deepEqual(warm, [
+    {
+      id: "m1",
+      email: "warm@delivrix.io",
+      domain: "delivrix.io",
+      state: "warm",
+      placementScore: 0.93,
+      warmedAt: "2026-07-12T00:00:00.000Z",
+      smtpRef: "vault:warmup/smtp/m1"
+    }
+  ]);
+});
+
+test("listWarmMailboxes: umbral por defecto 0.80 cuando no se pasa", async () => {
+  const { client, calls } = fakeClient([{ rows: [], rowCount: 0 }]);
+  const store = createWarmupMailboxStore(client);
+  await store.listWarmMailboxes();
+  assert.deepEqual(calls[0].params, [0.8]);
+});
+
+test("getMailbox: SELECT por id con created_at/updated_at; null si no existe", async () => {
+  const { client, calls } = fakeClient([
+    { rows: [mailboxRow()], rowCount: 1 },
+    { rows: [], rowCount: 0 }
+  ]);
+  const store = createWarmupMailboxStore(client);
+  const found = await store.getMailbox("m1");
+  assert.match(sql(calls[0].text), /FROM warmup_nodes WHERE id = \$1/);
+  assert.match(sql(calls[0].text), /created_at, updated_at/);
+  assert.ok(found);
+  assert.equal(found!.email, "warm@delivrix.io");
+  assert.equal(found!.placementScore, 0.85);
+  assert.equal(found!.contractExpiresAt, "2026-07-20T00:00:00.000Z");
+  assert.equal(found!.createdAt, "2026-07-01T00:00:00.000Z");
+
+  const missing = await store.getMailbox("nope");
+  assert.equal(missing, null);
+});
+
+test("listMailboxes: filtros dinámicos state/domain + LIMIT/OFFSET clampados", async () => {
+  const { client, calls } = fakeClient([{ rows: [mailboxRow()], rowCount: 1 }]);
+  const store = createWarmupMailboxStore(client);
+  await store.listMailboxes({ state: "warm", domain: "delivrix.io", limit: 999, offset: 5 });
+  const q = sql(calls[0].text);
+  assert.match(q, /WHERE state = \$1 AND domain = \$2/);
+  assert.match(q, /ORDER BY created_at DESC LIMIT \$3 OFFSET \$4/);
+  // limit clamp a 200; offset respetado
+  assert.deepEqual(calls[0].params, ["warm", "delivrix.io", 200, 5]);
+});
+
+test("listMailboxes: sin filtros ⇒ sin WHERE; defaults limit 100 offset 0", async () => {
+  const { client, calls } = fakeClient([{ rows: [], rowCount: 0 }]);
+  const store = createWarmupMailboxStore(client);
+  await store.listMailboxes();
+  const q = sql(calls[0].text);
+  assert.doesNotMatch(q, /WHERE/);
+  assert.match(q, /LIMIT \$1 OFFSET \$2/);
+  assert.deepEqual(calls[0].params, [100, 0]);
+});
+
+test("listMailboxEvents: merge de warmup_sends + warmup_signals, más nuevo primero", async () => {
+  const { client, calls } = fakeClient([
+    {
+      rows: [
+        {
+          id: "s1",
+          to_address: "a@x.com",
+          status: "sent",
+          attempts: 1,
+          last_error: null,
+          created_at: new Date("2026-07-10T10:00:00Z"),
+          sent_at: new Date("2026-07-10T10:00:05Z")
+        }
+      ],
+      rowCount: 1
+    },
+    {
+      rows: [
+        { id: "g1", kind: "bounce", detail: { code: 550 }, occurred_at: new Date("2026-07-11T09:00:00Z") }
+      ],
+      rowCount: 1
+    }
+  ]);
+  const store = createWarmupMailboxStore(client);
+  const events = await store.listMailboxEvents("m1", 50);
+  assert.match(sql(calls[0].text), /FROM warmup_sends WHERE node_id = \$1 ORDER BY created_at DESC LIMIT \$2/);
+  assert.match(sql(calls[1].text), /FROM warmup_signals WHERE node_id = \$1 ORDER BY occurred_at DESC LIMIT \$2/);
+  assert.deepEqual(calls[0].params, ["m1", 50]);
+  // signal (07-11) es más nuevo que send (07-10) ⇒ va primero
+  assert.equal(events[0].kind, "signal");
+  assert.equal(events[0].status, "bounce");
+  assert.deepEqual(events[0].detail, { code: 550 });
+  assert.equal(events[1].kind, "send");
+  assert.equal(events[1].status, "sent");
+  assert.equal(events[1].toAddress, "a@x.com");
+  assert.equal(events[1].sentAt, "2026-07-10T10:00:05.000Z");
+});
+
+test("warmupHealth: conteos por estado y por status de send", async () => {
+  const now = new Date("2026-07-13T00:00:00Z");
+  const { client, calls } = fakeClient([
+    {
+      rows: [
+        { state: "warm", n: 2 },
+        { state: "fresh", n: 3 },
+        { state: "blocked", n: 1 }
+      ],
+      rowCount: 3
+    },
+    {
+      rows: [
+        { status: "queued", n: 4 },
+        { status: "sent", n: 10 },
+        { status: "dead_lettered", n: 1 },
+        { status: "failed", n: 2 }
+      ],
+      rowCount: 4
+    }
+  ]);
+  const store = createWarmupMailboxStore(client);
+  const health = await store.warmupHealth(now);
+  assert.match(sql(calls[0].text), /SELECT state, COUNT\(\*\) AS n FROM warmup_nodes GROUP BY state/);
+  assert.match(sql(calls[1].text), /SELECT status, COUNT\(\*\) AS n FROM warmup_sends GROUP BY status/);
+  assert.equal(health.generatedAt, "2026-07-13T00:00:00.000Z");
+  assert.deepEqual(health.totals, {
+    nodes: 6,
+    warm: 2,
+    queuedSends: 4,
+    deadLetteredSends: 1,
+    failedSends: 2
+  });
+  assert.deepEqual(health.byState, { warm: 2, fresh: 3, blocked: 1 });
+  assert.equal(health.bySendStatus.sent, 10);
 });
