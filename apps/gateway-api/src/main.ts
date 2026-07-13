@@ -190,6 +190,16 @@ import { handleReadDkimStatus } from "./routes/openclaw-dkim-status.ts";
 import { handleReadRunStateIntegrity } from "./routes/openclaw-run-state-integrity.ts";
 import { handleWarmupStatus } from "./routes/warmup-status.ts";
 import { handleWarmupTrends } from "./routes/warmup-trends.ts";
+import {
+  handleWarmupMailboxOnboard,
+  handleWarmupMailboxCreate,
+  handleWarmupMailboxesWarm,
+  handleWarmupMailboxesList,
+  handleWarmupMailboxGet,
+  handleWarmupMailboxEvents,
+  handleWarmupMailboxesHealth,
+  type WarmupMailboxesDeps
+} from "./routes/warmup-mailboxes.ts";
 import { handleInspectSmtpInventoryHttp } from "./routes/openclaw-smtp-inventory.ts";
 import type { SmtpInventoryLiveServer } from "./smtp-inventory-management.ts";
 import { createWarmupSignalsReader } from "./warmup-signals-source.ts";
@@ -804,6 +814,19 @@ const episodicScratchPool = new Pool({
   connectionString: process.env.POSTGRES_URL ?? defaultPostgresUrl,
   application_name: "delivrix-openclaw-episodic-scratch"
 });
+// Warmup API (Track B): pool configurable por WARMUP_DB_URL con FALLBACK a POSTGRES_URL. Cuando
+// WARMUP_DB_URL no está seteada apuntamos al MISMO pool que ya usan /v1/warmup/status y /trends (no se
+// abre una segunda conexión ni se rompe nada existente); cuando está, la Warmup API queda aislada en su
+// propia instancia/DB. Las tablas warmup_* viven en `public` en ambos casos.
+const warmupDbUrl = process.env.WARMUP_DB_URL?.trim();
+const warmupDbPool =
+  warmupDbUrl && warmupDbUrl !== (process.env.POSTGRES_URL ?? defaultPostgresUrl)
+    ? new Pool({ connectionString: warmupDbUrl, application_name: "delivrix-warmup-api" })
+    : episodicScratchPool;
+// Auth de la Warmup API. Si WARMUP_API_KEY no está seteada, las rutas caen al read-boundary (dev).
+const warmupApiKey = process.env.WARMUP_API_KEY?.trim();
+// Umbral de placement para /v1/mailboxes/warm (piso duro 0.80 en la ruta, §9).
+const warmupPlacementMin = Number(process.env.WARMUP_PLACEMENT_MIN);
 const semanticMemoryEmbeddingService = embeddingServiceFromEnv(process.env);
 const gatewayLogStream = new GatewayLogStreamService({ logPath: gatewayRuntimeLog.logPath });
 const equipoWebhookBroadcaster = new EquipoWebhookBroadcaster({
@@ -2599,6 +2622,54 @@ const server = createServer(async (request, response) => {
         logger: gatewayRuntimeLog,
         env: process.env
       });
+    }
+
+    // ── Warmup API (Track B): rutas montadas en el gateway (no un servicio separado) ──────────────
+    {
+      const warmupMailboxDeps: WarmupMailboxesDeps = {
+        pgClient: warmupDbPool,
+        ...(warmupApiKey ? { warmupApiKey } : {}),
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        ...(Number.isFinite(warmupPlacementMin) ? { placementMin: warmupPlacementMin } : {}),
+        now: () => new Date(),
+        logger: gatewayRuntimeLog
+      };
+      const warmupUrl = requestUrl(request);
+      const warmupPath = warmupUrl.pathname;
+
+      if (request.method === "POST" && warmupPath === "/v1/mailboxes:onboard") {
+        return await handleWarmupMailboxOnboard(request, response, warmupMailboxDeps);
+      }
+      if (request.method === "POST" && warmupPath === "/v1/mailboxes") {
+        return await handleWarmupMailboxCreate(request, response, warmupMailboxDeps);
+      }
+      if (request.method === "GET" && warmupPath === "/v1/mailboxes/warm") {
+        return await handleWarmupMailboxesWarm(request, response, warmupMailboxDeps);
+      }
+      if (request.method === "GET" && warmupPath === "/v1/mailboxes") {
+        return await handleWarmupMailboxesList(request, response, warmupMailboxDeps, warmupUrl.searchParams);
+      }
+      if (request.method === "GET" && warmupPath === "/v1/warmup/mailboxes-health") {
+        return await handleWarmupMailboxesHealth(request, response, warmupMailboxDeps);
+      }
+      const eventsMatch =
+        request.method === "GET"
+          ? /^\/v1\/mailboxes\/([A-Za-z0-9-]+)\/events$/.exec(warmupPath)
+          : null;
+      if (eventsMatch) {
+        return await handleWarmupMailboxEvents(
+          request,
+          response,
+          warmupMailboxDeps,
+          eventsMatch[1],
+          warmupUrl.searchParams
+        );
+      }
+      const mailboxMatch =
+        request.method === "GET" ? /^\/v1\/mailboxes\/([A-Za-z0-9-]+)$/.exec(warmupPath) : null;
+      if (mailboxMatch) {
+        return await handleWarmupMailboxGet(request, response, warmupMailboxDeps, mailboxMatch[1]);
+      }
     }
 
     if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/smtp-inventory") {
