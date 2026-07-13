@@ -192,6 +192,7 @@ import { handleWarmupStatus } from "./routes/warmup-status.ts";
 import { handleWarmupTrends } from "./routes/warmup-trends.ts";
 import {
   handleWarmupMailboxOnboard,
+  handleWarmupMailboxOnboardBatch,
   handleWarmupMailboxCreate,
   handleWarmupMailboxesWarm,
   handleWarmupMailboxesList,
@@ -2639,6 +2640,9 @@ const server = createServer(async (request, response) => {
 
       if (request.method === "POST" && warmupPath === "/v1/mailboxes:onboard") {
         return await handleWarmupMailboxOnboard(request, response, warmupMailboxDeps);
+      }
+      if (request.method === "POST" && warmupPath === "/v1/mailboxes:onboard-batch") {
+        return await handleWarmupMailboxOnboardBatch(request, response, warmupMailboxDeps);
       }
       if (request.method === "POST" && warmupPath === "/v1/mailboxes") {
         return await handleWarmupMailboxCreate(request, response, warmupMailboxDeps);

@@ -36,6 +36,9 @@ import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
 
 const VALID_STATES: readonly NodeState[] = ["blocked", "fresh", "warm", "paused", "quarantined"];
 
+/** Tope duro de items por request de onboard masivo. Se clampa (no se rechaza) para no perder el resto. */
+const MAX_ONBOARD_BATCH = 200;
+
 export interface WarmupMailboxesDeps {
   pgClient: PgClient | null;
   /** Llave de la Warmup API. Si falta, se usa el read-boundary como fallback de dev. */
@@ -192,6 +195,111 @@ function parseOnboardBody(body: unknown): { ok: true; input: ParsedOnboard } | {
   if (typeof record.sendingIp === "string" && record.sendingIp.trim()) input.sendingIp = record.sendingIp.trim();
   if (typeof record.heloFqdn === "string" && record.heloFqdn.trim()) input.heloFqdn = record.heloFqdn.trim();
   return { ok: true, input };
+}
+
+// ── POST /v1/mailboxes:onboard-batch  (onboard MASIVO idempotente) ─────────────────────────────────
+// Toma el checklist del Sender Pool ("Calentar seleccionados") y onboardea VARIOS buzones de una.
+// Cada item se onboardea con la MISMA lógica create-only idempotente (reintento NO duplica; el nodo
+// nace 'blocked'). Un item inválido/fallido NO tumba el batch: se marca `failed` en su result y sigue.
+// Auth: misma x-warmup-api-key fail-closed que el onboard single (crear nodos emisores es escritura).
+//
+// Body:    { mailboxes: Array<{ email, domain?, infraType?, dailyLimit?, increaseByDay?,
+//                               weekdaysOnly?, sendingIp?, heloFqdn? }> }   (máx 200; se clampa)
+// Respuesta 200: { summary: { requested, created, existing, failed },
+//                  results: Array<{ email, created:boolean, state?, error? }> }
+//   - created  = insertado ahora (nodo nuevo, state 'blocked')
+//   - existing = ya existía (idempotente, estado preservado; created=false, sin error)
+//   - failed   = item con `error` (inválido o write DB); no cuenta como created ni existing
+
+export async function handleWarmupMailboxOnboardBatch(
+  request: IncomingMessage,
+  response: ServerResponse,
+  deps: WarmupMailboxesDeps
+): Promise<void> {
+  const auth = authorizeWarmupApi(request, deps, "warmup_mailboxes_write", true);
+  if (!auth.ok) {
+    json(response, auth.statusCode, { error: auth.error });
+    return;
+  }
+  if (!deps.pgClient) {
+    json(response, 503, { error: "warmup_db_unavailable" });
+    return;
+  }
+
+  let body: unknown;
+  try {
+    const raw = await readRequestBody(request);
+    body = raw ? JSON.parse(raw) : {};
+  } catch {
+    json(response, 400, { error: "invalid_json_body" });
+    return;
+  }
+
+  if (typeof body !== "object" || body === null || !Array.isArray((body as Record<string, unknown>).mailboxes)) {
+    json(response, 422, { error: "mailboxes_required" });
+    return;
+  }
+  // Clamp de tamaño: nos quedamos con los primeros MAX (no rechazamos todo el batch).
+  const rawItems = ((body as { mailboxes: unknown[] }).mailboxes).slice(0, MAX_ONBOARD_BATCH);
+  const requested = rawItems.length;
+
+  // Validación por item: los válidos van al store; los inválidos ya quedan resueltos como failed.
+  type ItemResult = { email: string; created: boolean; state?: string; error?: string };
+  const results: ItemResult[] = new Array(requested);
+  const validInputs: ParsedOnboard[] = [];
+  const validIndex: number[] = [];
+  rawItems.forEach((item, idx) => {
+    const parsed = parseOnboardBody(item);
+    if (parsed.ok) {
+      validInputs.push(parsed.input);
+      validIndex.push(idx);
+    } else {
+      results[idx] = { email: itemEmail(item), created: false, error: parsed.error };
+    }
+  });
+
+  if (validInputs.length > 0) {
+    try {
+      const store = createWarmupMailboxStore(deps.pgClient);
+      const onboarded = await store.onboardMany(validInputs);
+      onboarded.forEach((r, k) => {
+        const idx = validIndex[k];
+        results[idx] =
+          r.error !== undefined
+            ? { email: r.email, created: false, error: r.error }
+            : { email: r.email, created: r.created, ...(r.state ? { state: r.state } : {}) };
+      });
+    } catch (error) {
+      // Falla dura del store (no debería ocurrir: onboardMany aísla por item). Marcamos los válidos
+      // como failed para que el batch devuelva un reporte coherente en vez de 503 todo-o-nada.
+      void deps.logger?.warn("warmup.mailbox_onboard_batch_failed", "Warmup mailbox onboard batch failed.", {
+        message: errorMessage(error)
+      });
+      validIndex.forEach((idx, k) => {
+        results[idx] = { email: validInputs[k].email, created: false, error: "warmup_db_write_failed" };
+      });
+    }
+  }
+
+  let created = 0;
+  let existing = 0;
+  let failed = 0;
+  for (const r of results) {
+    if (r.error !== undefined) failed++;
+    else if (r.created) created++;
+    else existing++;
+  }
+
+  json(response, 200, { summary: { requested, created, existing, failed }, results });
+}
+
+/** Best-effort del email de un item crudo para el result de un item inválido (sin romper). */
+function itemEmail(item: unknown): string {
+  if (typeof item === "object" && item !== null) {
+    const raw = (item as Record<string, unknown>).email;
+    if (typeof raw === "string") return raw.trim();
+  }
+  return "";
 }
 
 // ── GET /v1/mailboxes/warm ───────────────────────────────────────────────────────────────────────
