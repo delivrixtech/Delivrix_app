@@ -46,6 +46,8 @@ const chatHistoryPath = "/v1/openclaw/chat/history";
 const allowedProxyPaths = new Set([...Object.values(READ_ENDPOINTS), canvasLiveStatePath, chatConversationsPath, chatHistoryPath]);
 const allowedReadPatterns: RegExp[] = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/status$/,
+  /^\/v1\/openclaw\/proposals\/[^/]+\/preflight$/,
+  /^\/v1\/infrastructure\/accounts\/[^/]+\/[^/]+\/smtp-health$/,
   /^\/v1\/sender-pool\/credentials\/[^/]+\/download$/
 ];
 
