@@ -40,9 +40,12 @@ import {
   triggerDownload
 } from "../../shared/api/smtp-credentials";
 import { buildEnableSmtpAuthIntent } from "./sender-pool-intents";
+import { RealtimeTick, StaleBadge } from "../../shared/ui/realtime";
 
 const POLL_MS = 15_000;
 const CAP_USD = 50;
+/** Ventana rolling que define un dominio "recién creado". */
+const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 type PillTone = NonNullable<PillProps["tone"]>;
 
 interface DomainSummary {
@@ -66,6 +69,10 @@ interface DomainSummary {
   } | null;
   /** Hito 5.12 sub-agente C: ramp gradual de warmup en curso. */
   warmupRampActive?: boolean;
+  /** PR-07: timestamp de registro (ISO) para orden cronológico / partición reciente. */
+  registeredAt?: string | null;
+  /** PR-07: causa textual del fallo (dominios en needs_reconciliation). */
+  errorMessage?: string | null;
 }
 
 interface SmtpCredentialMetadata {
@@ -87,6 +94,56 @@ interface SenderPoolPayload {
   domains: DomainSummary[];
   capacity?: { activeDomains: number; totalDomains: number; plannedDomains: number };
   source?: { kind: "live" | "mock" };
+  /** PR-07: reloj del server, usado como "ahora" para el divisor de 24h. */
+  generatedAt?: string;
+}
+
+/** Epoch (ms) del dominio para ordenar / particionar; null si no hay fecha parseable. */
+function domainTimestampMs(d: DomainSummary): number | null {
+  const raw = d.registeredAt ?? d.smtpCredential?.createdAt ?? null;
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Particiona la flota en "recientes" (registrados dentro de las últimas 24h
+ * respecto al reloj del server) y el "resto". Orden defensivo desc por
+ * timestamp (nulos al final) por si el contrato viejo llega sin ordenar.
+ */
+function partitionByRecency(
+  domains: DomainSummary[],
+  nowMs: number
+): { recent: DomainSummary[]; rest: DomainSummary[] } {
+  const sorted = [...domains].sort((a, b) => {
+    const ta = domainTimestampMs(a);
+    const tb = domainTimestampMs(b);
+    if (ta === null && tb === null) return 0;
+    if (ta === null) return 1;
+    if (tb === null) return -1;
+    return tb - ta;
+  });
+  const recent: DomainSummary[] = [];
+  const rest: DomainSummary[] = [];
+  for (const d of sorted) {
+    const ts = domainTimestampMs(d);
+    if (ts !== null && nowMs - ts <= RECENT_WINDOW_MS && ts <= nowMs) {
+      recent.push(d);
+    } else {
+      rest.push(d);
+    }
+  }
+  return { recent, rest };
+}
+
+/** "hace Xh" / "hace Xm" para el badge de dominios recientes. */
+function formatAge(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "recién";
+  const min = Math.floor(ms / 60_000);
+  if (min < 1) return "recién";
+  if (min < 60) return `hace ${min}m`;
+  const h = Math.floor(min / 60);
+  return `hace ${h}h`;
 }
 
 function useSenderPool() {
@@ -120,6 +177,13 @@ export function SenderPoolV5() {
   const tone = pct >= 95 ? "critical" : pct >= 80 ? "warning" : "success";
   const domains = pool.data?.domains ?? [];
   const noDomains = domains.length === 0;
+  // Reloj del server para el divisor de 24h (evita parpadeo por skew de cliente).
+  const generatedAtMs = pool.data?.generatedAt ? Date.parse(pool.data.generatedAt) : NaN;
+  const nowMs = Number.isFinite(generatedAtMs) ? generatedAtMs : Date.now();
+  const { recent, rest } = partitionByRecency(domains, nowMs);
+  const staleMinutes = pool.dataUpdatedAt
+    ? Math.max(0, Math.floor((Date.now() - pool.dataUpdatedAt) / 60_000))
+    : 0;
   const exportCredentials = useMutation({
     mutationFn: exportSmtpCredentialInventory,
     onSuccess: (count) => {
@@ -174,6 +238,12 @@ export function SenderPoolV5() {
             caption={noDomains ? "Sin dominios provisionados aún" : `${domains.length} dominios activos`}
             count={domains.length}
             countTone={noDomains ? "neutral" : "success"}
+            trailing={
+              <div className="flex items-center gap-2">
+                <RealtimeTick active={pool.isFetching} />
+                {staleMinutes >= 1 ? <StaleBadge minutesAgo={staleMinutes} /> : null}
+              </div>
+            }
           />
           {noDomains ? (
             <Card padding="hero" className="flex items-start gap-4">
@@ -200,22 +270,30 @@ export function SenderPoolV5() {
             </Card>
           ) : (
             <div className="flex flex-col gap-2">
-              {domains.map((d) => (
-                <div key={d.domain} className="flex flex-col gap-2">
-                  <DomainRow d={d} />
-                  {d.warmupRampActive === true ? (
-                    <WarmupRampPanel domain={d.domain} />
-                  ) : (
-                    <StartWarmupRampInline domain={d.domain} />
-                  )}
-                  {d.ramp && d.ramp.subjectMatcher ? (
-                    <PlacementLivePanel
-                      rampId={d.ramp.rampId}
-                      matcher={d.ramp.subjectMatcher}
-                      domain={d.domain}
-                    />
-                  ) : null}
-                </div>
+              {recent.length > 0 ? (
+                <>
+                  <SectionHead
+                    eyebrow="Recién creados"
+                    title="Últimas 24h"
+                    caption="Provisionados hace poco · generá su credencial primero"
+                    count={recent.length}
+                    countTone="warning"
+                  />
+                  {recent.map((d) => (
+                    <DomainBlock key={d.domain} d={d} nowMs={nowMs} hot />
+                  ))}
+                </>
+              ) : null}
+              {recent.length > 0 && rest.length > 0 ? (
+                <SectionHead
+                  eyebrow="Flota"
+                  title="Resto del pool"
+                  count={rest.length}
+                  countTone="neutral"
+                />
+              ) : null}
+              {rest.map((d) => (
+                <DomainBlock key={d.domain} d={d} nowMs={nowMs} />
               ))}
             </div>
           )}
@@ -229,22 +307,74 @@ export function SenderPoolV5() {
   );
 }
 
+/* ----- Domain block (row + warmup/placement panels) ----- */
+
+function DomainBlock({ d, nowMs, hot = false }: { d: DomainSummary; nowMs: number; hot?: boolean }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <DomainRow d={d} nowMs={nowMs} hot={hot} />
+      {d.warmupRampActive === true ? (
+        <WarmupRampPanel domain={d.domain} />
+      ) : (
+        <StartWarmupRampInline domain={d.domain} />
+      )}
+      {d.ramp && d.ramp.subjectMatcher ? (
+        <PlacementLivePanel
+          rampId={d.ramp.rampId}
+          matcher={d.ramp.subjectMatcher}
+          domain={d.domain}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 /* ----- Domain row ----- */
 
-function DomainRow({ d }: { d: DomainSummary }) {
+/**
+ * Mapea el estado del dominio a un tono de Pill. needs_reconciliation y los
+ * fallos de instalación de credencial deben leer como fallo (critical); pending
+ * y estados en curso como atención (warning). El resto neutro.
+ */
+function domainStatusTone(d: DomainSummary): PillTone {
+  const credFailed = d.smtpCredential?.status === "install_failed";
+  switch (d.status) {
+    case "active":
+      return "success";
+    case "warming":
+      return "warning";
+    case "burned":
+    case "failed":
+    case "needs_reconciliation":
+      return "critical";
+    case "pending":
+    case "smtp-auth-pending":
+      return "warning";
+    default:
+      return credFailed ? "critical" : "neutral";
+  }
+}
+
+function DomainRow({ d, nowMs, hot = false }: { d: DomainSummary; nowMs: number; hot?: boolean }) {
   const { toast } = useToast();
   const { sendIntent } = useOpenClawIntent();
   const [downloading, setDownloading] = useState(false);
-  const statusTone: PillTone =
-    d.status === "active"
-      ? "success"
-      : d.status === "warming"
-      ? "warning"
-      : d.status === "burned" || d.status === "failed"
-      ? "critical"
-      : "neutral";
+  const statusTone: PillTone = domainStatusTone(d);
+  const ts = domainTimestampMs(d);
+  const ageLabel = hot && ts !== null ? formatAge(nowMs - ts) : null;
   return (
-    <Card padding="default" className="flex items-center gap-4">
+    <Card
+      padding="default"
+      className="flex items-center gap-4"
+      style={
+        hot
+          ? {
+              boxShadow: "inset 0 0 0 1px var(--color-warning-border)",
+              background: "var(--color-warning-soft)"
+            }
+          : undefined
+      }
+    >
       <span
         aria-hidden="true"
         className="inline-block size-1.5 rounded-full"
@@ -264,17 +394,28 @@ function DomainRow({ d }: { d: DomainSummary }) {
           <MonoData className="text-[13px]">{d.domain}</MonoData>
           {d.authComplete && <CheckCircle2 size={11} className="text-success" strokeWidth={1.75} />}
           {d.hasCredential && <KeyRound size={11} className="text-success" strokeWidth={1.75} />}
+          {ageLabel ? (
+            <Badge className="text-warning-fg" style={{ background: "var(--color-warning-soft)" }}>
+              Nuevo · {ageLabel}
+            </Badge>
+          ) : null}
         </div>
         <Caption>
           {d.registrar ? `${d.registrar} · ` : ""}
           {d.serverIp ? `IP ${d.serverIp}` : "sin IP asignada"}
           {d.smtpCredential ? ` · ${d.smtpCredential.host} · ${d.smtpCredential.username}` : ""}
         </Caption>
+        {d.errorMessage ? (
+          <Caption className="flex items-center gap-1 text-critical" title={d.errorMessage}>
+            <AlertTriangle size={10} strokeWidth={1.75} className="shrink-0" />
+            <span className="truncate">{d.errorMessage}</span>
+          </Caption>
+        ) : null}
       </div>
       <div className="flex items-center gap-2">
         {!d.hasCredential ? (
           <Button
-            variant="ghost"
+            variant={hot ? "primary" : "ghost"}
             size="sm"
             title="Generar credencial SMTP AUTH"
             onClick={() => {
