@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import type {
   AuditEventInput,
@@ -76,6 +77,11 @@ export interface ConfigureCompleteSmtpResult {
   finalDeliveryStatus?: "queued" | "delivered" | "deferred" | "bounced";
   rollbackProposalId?: string;
   error?: string;
+  /**
+   * Guia operativa legible para el agente/operador ante errores accionables (p.ej. un run en curso o
+   * un lock huerfano). ADITIVO: solo se agrega para errores conocidos; nunca reemplaza `error`.
+   */
+  guidance?: string;
   failedStep?: number;
   retryable?: boolean;
   failureKind?: "smoke_auth_not_ready";
@@ -335,6 +341,14 @@ export interface ConfigureCompleteSmtpDeps {
   resolvePlanApproval?: (input: PlanApprovalLookupInput) => Promise<PlanApprovalRecord | null> | PlanApprovalRecord | null;
   executePlanApprovedStep?: (input: PlanApprovedStepInput) => Promise<PlanApprovedStepDecision>;
   verifyOwnedDomain?: (domain: string) => Promise<OwnedDomainVerification> | OwnedDomainVerification;
+  /**
+   * True si hay un adapter cargado para el providerId de VPS no-Webdock (Contabo, etc.). Permite el
+   * FAIL-FAST en el step 0 (antes de gastar en el step 2): si el operador/agente referencia un
+   * contabo-N sin credenciales cargadas, el run muere ANTES de comprar el dominio en vez de morir en
+   * el step 4 (create server) con el dominio ya comprado. Opcional: sin la dep no se valida (el
+   * dispatcher sigue siendo la ultima linea) y el comportamiento es byte-identico al de hoy.
+   */
+  hasVpsProviderAdapter?: (providerId: string) => boolean;
   listWebdockCreationServers?: (
     input: WebdockCreationInventoryInput
   ) => Promise<WebdockCreationInventoryResult> | WebdockCreationInventoryResult;
@@ -668,6 +682,9 @@ export async function configureCompleteSmtp(
     assertDnsProviderResumeCompatible(runState, input);
     effectiveInput = inputFromRunState(input, runState);
     assertKnownNonWebdockVpsProviderId(resolveVpsProviderId(effectiveInput, runState));
+    // Fail-fast semantico (P1): si el provider no-Webdock no tiene adapter cargado, abortar en el
+    // step 0 ANTES del gasto del step 2, en vez de morir en el step 4 con el dominio ya comprado.
+    assertVpsProviderAdapterLoaded(resolveVpsProviderId(effectiveInput, runState), deps);
     const dnsProviderId = resolveDnsProviderId(effectiveInput, runState);
     assertKnownDnsProviderId(dnsProviderId);
     if (dnsProviderId === "ionos" || dnsProviderId === "namecheap") {
@@ -682,7 +699,7 @@ export async function configureCompleteSmtp(
     verifiedOwnedProvider = runState.verifiedOwnedDomainProvider ?? null;
     await verifyAuditChain(deps);
     planApproval = envFlagEnabled(deps.env?.OPENCLAW_PLAN_SIGNATURE_AUTONOMY_ENABLE)
-      ? await resolveAndValidatePlanApproval({ deps, runId, input: effectiveInput, request: input })
+      ? await resolveAndValidatePlanApproval({ deps, runId, input: effectiveInput, request: input, runState })
       : null;
     validateResumeScopeAgainstRunState({
       state: runState,
@@ -1805,6 +1822,7 @@ export async function configureCompleteSmtp(
       rollbackProposalId
     });
     const progress = runState ? smtpRunStateToProgress(runState) : null;
+    const failureGuidance = guidanceForFailure(failure.message);
     return {
       runId,
       status: failure.status,
@@ -1815,6 +1833,7 @@ export async function configureCompleteSmtp(
       ...(progress ? { steps: progress.steps } : {}),
       rollbackProposalId,
       error: failure.message,
+      ...(failureGuidance ? { guidance: failureGuidance } : {}),
       failedStep: failure.step,
       ...(runState?.retryableFailure ? { retryable: true } : {}),
       ...(runState?.failureCategory ? { failureKind: runState.failureCategory } : {}),
@@ -1884,7 +1903,10 @@ async function acquireSmtpRunFileLock(
         runId,
         acquiredAt: now.toISOString(),
         leaseUntil: new Date(now.getTime() + smtpRunStateLockLeaseMs).toISOString(),
-        pid: process.pid
+        pid: process.pid,
+        // hostname habilita el chequeo de pid vivo SOLO same-host: en otro host un pid puede existir
+        // y pertenecer a otro proceso, asi que sin coincidencia de host caemos al lease por mtime.
+        hostname: hostname()
       }, null, 2), "utf8");
       return async () => {
         await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
@@ -1906,12 +1928,135 @@ async function acquireSmtpRunFileLock(
 }
 
 async function smtpRunFileLockExpired(lockDir: string, now: Date): Promise<boolean> {
+  // 1) pid muerto en ESTE host: el proceso que tomo el lock ya no existe (p.ej. reinicio del gateway a
+  //    mitad de run). Expira de inmediato sin esperar los 40 min del lease. Solo valido same-host.
+  const lease = await readSmtpRunLockLease(lockDir);
+  if (
+    lease &&
+    typeof lease.pid === "number" &&
+    typeof lease.hostname === "string" &&
+    lease.hostname === hostname() &&
+    !isPidAlive(lease.pid)
+  ) {
+    return true;
+  }
+  // 2) Fallback por mtime (lease sin pid legible, o host distinto): proteccion anti-doble-efecto igual
+  //    que antes.
   try {
     const info = await stat(lockDir);
     return now.getTime() - info.mtimeMs > smtpRunStateLockLeaseMs;
   } catch {
     return false;
   }
+}
+
+interface SmtpRunLockLease {
+  runId?: string;
+  pid?: number;
+  hostname?: string;
+  acquiredAt?: string;
+  leaseUntil?: string;
+}
+
+async function readSmtpRunLockLease(lockDir: string): Promise<SmtpRunLockLease | null> {
+  try {
+    return JSON.parse(await readFile(join(lockDir, "lease.json"), "utf8")) as SmtpRunLockLease;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * true si el pid sigue vivo en este host. `process.kill(pid, 0)` no envia senal, solo chequea:
+ * ESRCH => no existe (muerto); EPERM => existe pero sin permiso (vivo). Cualquier otro error se trata
+ * como vivo (fail-safe: no liberar un lock por un error inesperado).
+ */
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // Solo ESRCH (no existe el proceso) cuenta como muerto y habilita liberar el lock. EPERM
+    // (existe, sin permiso) y CUALQUIER otro errno inesperado => vivo, para no soltar por error
+    // un lock que gatea runs que gastan dinero.
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+const smtpRunLockDirPattern = /^run-.*\.lock$/;
+
+function smtpRunLocksRoot(workspace: Pick<OpenClawWorkspace, "getRootDir">): string {
+  return join(workspace.getRootDir(), "inventory", ".locks");
+}
+
+async function listSmtpRunLockDirs(lockRoot: string): Promise<string[]> {
+  try {
+    const entries = await readdir(lockRoot, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory() && smtpRunLockDirPattern.test(entry.name))
+      .map((entry) => join(lockRoot, entry.name));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Barrido de arranque: borra los locks de run cuyo lease tenga un pid MUERTO en este host. Cierra el
+ * disparador del incidente 2026-07-13 (reinicio del gateway a mitad de run -> lock huerfano -> HTTP 423
+ * hasta 40 min). No toca locks de otro host (mtime sigue protegiendo) ni con pid vivo.
+ */
+export async function sweepDeadSmtpRunLocks(
+  workspace: Pick<OpenClawWorkspace, "getRootDir" | "ensureBase">,
+  logger?: GatewayRuntimeLogger
+): Promise<{ removed: string[] }> {
+  await workspace.ensureBase().catch(() => undefined);
+  const lockRoot = smtpRunLocksRoot(workspace);
+  const removed: string[] = [];
+  for (const lockDir of await listSmtpRunLockDirs(lockRoot)) {
+    const lease = await readSmtpRunLockLease(lockDir);
+    const deadSameHost =
+      lease &&
+      typeof lease.pid === "number" &&
+      typeof lease.hostname === "string" &&
+      lease.hostname === hostname() &&
+      !isPidAlive(lease.pid);
+    if (!deadSameHost) continue;
+    await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+    removed.push(lockDir);
+    void (logger ?? noopGatewayRuntimeLogger).warn(
+      "openclaw.orchestrator.orphan_run_lock_swept",
+      "Removed orphan SMTP run lock whose owner process is dead.",
+      { lockDir, runId: lease?.runId, pid: lease?.pid }
+    );
+  }
+  return { removed };
+}
+
+/**
+ * Shutdown graceful (SIGTERM): libera los locks de run que tomo ESTE proceso (lease.pid === process.pid)
+ * para que un reinicio inmediato no herede un lock huerfano. Idempotente y fail-safe.
+ */
+export async function releaseOwnSmtpRunLocks(
+  workspace: Pick<OpenClawWorkspace, "getRootDir">,
+  logger?: GatewayRuntimeLogger
+): Promise<{ removed: string[] }> {
+  const lockRoot = smtpRunLocksRoot(workspace);
+  const removed: string[] = [];
+  for (const lockDir of await listSmtpRunLockDirs(lockRoot)) {
+    const lease = await readSmtpRunLockLease(lockDir);
+    // Same-host guard: en un workspace compartido (NFS) otro host podría tener un lease con el mismo
+    // pid numérico; solo liberamos locks que ESTE proceso tomó en ESTE host (igual que sweep/expired).
+    if (!lease || lease.pid !== process.pid || lease.hostname !== hostname()) continue;
+    await rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+    removed.push(lockDir);
+    void (logger ?? noopGatewayRuntimeLogger).info(
+      "openclaw.orchestrator.run_lock_released_on_shutdown",
+      "Released own SMTP run lock during graceful shutdown.",
+      { lockDir, runId: lease.runId }
+    );
+  }
+  return { removed };
 }
 
 function requireRunStateWorkspace(
@@ -2384,6 +2529,13 @@ function inputFromRunState(
   return {
     ...input,
     runId: state.runId,
+    // brand/intent son DERIVADOS del estado en un resume: OpenClaw no memoriza el literal exacto al
+    // reanudar (mandaba "annualfiling" cuando el run nacio con "controlannualfiling"), y el replay del
+    // paso 1 recomputa su hash con estos valores -> sin propagarlos el resume moria con
+    // resume_scope_drift: step_input_changed. Se pisan SIEMPRE (incluido intent undefined) para
+    // reproducir byte-identico el input del run original.
+    brand: state.params.brand,
+    intent: state.params.intent,
     ...(state.chosenDomain ? { domain: state.chosenDomain } : input.domain ? { domain: input.domain } : {}),
     ...(state.params.provider ? { provider: state.params.provider } : input.provider ? { provider: input.provider } : {}),
     ...(state.providerId ? { vpsProviderId: state.providerId } : input.vpsProviderId ? { vpsProviderId: input.vpsProviderId } : {}),
@@ -3891,6 +4043,7 @@ async function resolveAndValidatePlanApproval(input: {
   runId: string;
   input: ConfigureCompleteSmtpParams;
   request: ConfigureCompleteSmtpParams;
+  runState: SmtpRunState;
 }): Promise<PlanApprovalRecord> {
   if (!input.deps.resolvePlanApproval) {
     throw new OrchestratorFailure("failed", 0, "plan_approval", "plan_approval_resolver_missing");
@@ -3949,14 +4102,44 @@ async function resolveAndValidatePlanApproval(input: {
   const expectedRequireExistingDomain = input.input.requireExistingDomain === true;
   const approvedRequireExistingDomain = planApproval.scope.requireExistingDomain === true;
   if (approvedRequireExistingDomain !== expectedRequireExistingDomain) {
-    throw new OrchestratorFailure(
-      "failed",
-      0,
-      "plan_approval",
-      "plan_scope_mismatch: requireExistingDomain"
-    );
+    // requireExistingDomain SOLO gobierna si el paso 2 puede COMPRAR. Cuando la compra ya quedo
+    // asentada en este run (paso 2 done / dominio propio / dinero gastado), el flag es DERIVADO: exigir
+    // igualdad estricta contra el snapshot de nacimiento condena todo resume legitimo (16 fallos el
+    // 2026-07-13). Adoptamos el valor del plan recien firmado, lo persistimos y lo auditamos. Mantenemos
+    // la igualdad estricta SOLO cuando el paso 2 aun NO corrio (ahi el flag decide si se gasta dinero).
+    if (!runStatePurchaseSettled(input.runState)) {
+      throw new OrchestratorFailure(
+        "failed",
+        0,
+        "plan_approval",
+        "plan_scope_mismatch: requireExistingDomain"
+      );
+    }
+    if (input.runState.params.requireExistingDomain !== approvedRequireExistingDomain) {
+      input.runState.params.requireExistingDomain = approvedRequireExistingDomain;
+      await persistSmtpRunState(input.deps, input.runState);
+      await audit(input.deps, "oc.plan.scope_field_reconciled", "openclaw_orchestrator_run", input.runId, "high", {
+        runId: input.runId,
+        field: "requireExistingDomain",
+        from: expectedRequireExistingDomain,
+        to: approvedRequireExistingDomain,
+        reason: "purchase_already_settled"
+      });
+    }
   }
   return planApproval;
+}
+
+/**
+ * True si la compra de dominio (paso 2) ya quedo asentada en este run: el paso ya corrio, el dominio
+ * ya es propio, o ya se gasto presupuesto con un dominio elegido. En ese estado requireExistingDomain
+ * es DERIVADO (ya no decide un gasto) y no debe condenar un resume por igualdad estricta.
+ */
+function runStatePurchaseSettled(state: SmtpRunState): boolean {
+  if (state.lastCompletedStep >= 2) return true;
+  if (state.verifiedOwnedDomain) return true;
+  if (state.chosenDomain && state.budgetSpentUsd > 0) return true;
+  return state.steps["2"]?.status === "done";
 }
 
 function validatePlanApprovedStepScope(
@@ -5420,6 +5603,24 @@ function assertKnownNonWebdockVpsProviderId(value: string | undefined): void {
   throw new OrchestratorFailure("failed", 0, "vps_provider_guard", `unknown_vps_provider:${value}`);
 }
 
+/**
+ * FAIL-FAST semantico del provider en el step 0 (antes de cualquier gasto). El guard sintactico
+ * (assertKnownNonWebdockVpsProviderId) acepta cualquier contabo-N bien formado sin mirar si existe
+ * adapter cargado; por eso hoy un contabo-N sin credenciales pasa los pasos 1-3 (incluida la compra
+ * del dominio en el step 2) y recien muere en el step 4. Aca, si hay dep para consultar el registry de
+ * adapters, abortamos ANTES de gastar. Sin la dep no se valida (byte-identico; el dispatcher del step 4
+ * sigue siendo la ultima linea de defensa).
+ */
+function assertVpsProviderAdapterLoaded(
+  providerId: string | undefined,
+  deps: ConfigureCompleteSmtpDeps
+): void {
+  if (providerId === undefined) return;
+  if (!deps.hasVpsProviderAdapter) return;
+  if (deps.hasVpsProviderAdapter(providerId)) return;
+  throw new OrchestratorFailure("failed", 0, "vps_provider_guard", `unknown_vps_provider:${providerId}`);
+}
+
 /** True si hay un proveedor de VPS explicito distinto de Webdock (dispara el guard gated). */
 function isNonWebdockProviderId(value: string | undefined): boolean {
   return normalizeVpsProviderId(value) !== undefined;
@@ -5470,6 +5671,19 @@ function json(response: ServerResponse, statusCode: number, payload: unknown): v
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown orchestrator error";
+}
+
+/**
+ * Guia operativa para errores accionables del orquestador. Devuelve un texto que el agente/operador
+ * debe leer para NO tomar la decision costosa equivocada (p.ej. cambiar de dominio ante un run en
+ * curso). Devuelve undefined para errores sin guia especifica (comportamiento aditivo, byte-identico).
+ */
+function guidanceForFailure(message: string): string | undefined {
+  if (message === "run_already_in_progress") {
+    return "Hay un run en curso o un lock huerfano para este runId. Espera a que termine o pedi al operador " +
+      "que limpie el lock; NO inicies un run con otro dominio (cada compra cuesta dinero). Reintenta el MISMO runId.";
+  }
+  return undefined;
 }
 
 class OrchestratorFailure extends Error {

@@ -253,6 +253,92 @@ test("buildSenderPoolStatus accepts bindings and exposes SMTP credential metadat
   assert.equal(serialized.includes("authTag"), false);
 });
 
+test("buildSenderPoolStatus exposes registeredAt and orders domains newest-first", async () => {
+  const workspace = await setupWorkspace();
+  await writeInventory(workspace, "domains.json", {
+    domains: [
+      { domain: "old.com", status: "owned", registeredAt: "2026-05-01T00:00:00.000Z" },
+      { domain: "newest.com", status: "owned", registeredAt: "2026-05-27T12:00:00.000Z" },
+      { domain: "middle.com", status: "owned", registeredAt: "2026-05-15T00:00:00.000Z" }
+    ]
+  });
+
+  const result = await buildSenderPoolStatus({ workspace, now: () => fixedNow });
+  assert.deepEqual(
+    result.domains.map((d) => d.domain),
+    ["newest.com", "middle.com", "old.com"]
+  );
+  assert.equal(result.domains[0]!.registeredAt, "2026-05-27T12:00:00.000Z");
+  assert.equal(result.domains[2]!.registeredAt, "2026-05-01T00:00:00.000Z");
+});
+
+test("buildSenderPoolStatus sorts domains without timestamp to the end (defensive nulls)", async () => {
+  const workspace = await setupWorkspace();
+  await writeInventory(workspace, "domains.json", {
+    domains: [
+      { domain: "no-date.com", status: "owned" },
+      { domain: "dated.com", status: "owned", registeredAt: "2026-05-20T00:00:00.000Z" }
+    ]
+  });
+
+  const result = await buildSenderPoolStatus({ workspace, now: () => fixedNow });
+  assert.deepEqual(
+    result.domains.map((d) => d.domain),
+    ["dated.com", "no-date.com"]
+  );
+  assert.equal(result.domains[1]!.registeredAt, null);
+});
+
+test("buildSenderPoolStatus surfaces errorMessage for needs_reconciliation domains", async () => {
+  const workspace = await setupWorkspace();
+  await writeInventory(workspace, "domains.json", {
+    domains: [
+      {
+        domain: "broken.com",
+        status: "needs_reconciliation",
+        registeredAt: "2026-05-26T00:00:00.000Z",
+        errorMessage: "AWS Route 53 Domains API returned 400: DomainLimitExceeded"
+      },
+      { domain: "healthy.com", status: "owned", registeredAt: "2026-05-25T00:00:00.000Z" }
+    ]
+  });
+
+  const result = await buildSenderPoolStatus({ workspace, now: () => fixedNow });
+  const broken = result.domains.find((d) => d.domain === "broken.com")!;
+  assert.equal(broken.status, "needs_reconciliation");
+  assert.equal(broken.errorMessage, "AWS Route 53 Domains API returned 400: DomainLimitExceeded");
+  const healthy = result.domains.find((d) => d.domain === "healthy.com")!;
+  assert.equal(healthy.errorMessage, null);
+});
+
+test("buildSenderPoolStatus falls back to smtpCredential.createdAt for credential-only domains", async () => {
+  const workspace = await setupWorkspace();
+  // inventory sin este dominio; solo existe la credencial SMTP
+  await writeInventory(workspace, "domains.json", { domains: [] });
+  const material = await prepareSmtpCredential({
+    workspace,
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    domain: "credential-only.com",
+    serverSlug: "mail-prod-cred",
+    host: "smtp.credential-only.com",
+    now: () => fixedNow,
+    passwordFactory: () => "smtp-secret-password"
+  });
+  await saveSmtpCredentialRecord(workspace, markSmtpCredentialConfigured(material.record, fixedNow));
+
+  const result = await buildSenderPoolStatus({ workspace, now: () => fixedNow });
+  const summary = result.domains.find((d) => d.domain === "credential-only.com")!;
+  assert.ok(summary);
+  // registeredAt cae al createdAt de la credencial (no hay registro en inventory)
+  assert.equal(summary.registeredAt, summary.smtpCredential?.createdAt);
+  assert.equal(summary.registeredAt, fixedNow.toISOString());
+  // Redacción (defensa en profundidad): el secreto nunca debe serializarse en la vista de salud.
+  const serialized = JSON.stringify(summary);
+  assert.equal(serialized.includes("smtp-secret-password"), false);
+  assert.equal(serialized.includes("ciphertext"), false);
+  assert.equal(serialized.includes("authTag"), false);
+});
+
 test("handleSenderPoolStatusHttp returns 200 with payload on success", async () => {
   const workspace = await setupWorkspace();
   await writeInventory(workspace, "domains.json", { domains: [] });

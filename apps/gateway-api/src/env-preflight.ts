@@ -368,6 +368,44 @@ export const ENV_PREFLIGHT_CATALOG: readonly EnvVarSpec[] = [
   }
 ];
 
+const CONTABO_MAX_INDEXED_ACCOUNTS = 50;
+const CONTABO_ACCOUNT_REQUIRED_KEYS = ["CLIENT_ID", "CLIENT_SECRET", "API_USER", "API_PASSWORD"] as const;
+
+function envKeyPresent(env: EnvLike, name: string): boolean {
+  const raw = env[name];
+  return typeof raw === "string" && raw.trim().length > 0;
+}
+
+/**
+ * Specs DINAMICAS de credenciales Contabo. Por CADA cuenta REFERENCIADA en el env (flat CONTABO_* o
+ * indexada CONTABO_ACCOUNT_{n}_*, detectada por la presencia de al menos una de sus 4 claves) exige las
+ * 4 claves completas (CLIENT_ID/CLIENT_SECRET/API_USER/API_PASSWORD). Asi el preflight avisa cuando hay
+ * credenciales a medias — la causa estructural del run que compra el dominio (step 2) y recien muere en
+ * el step 4 (create_webdock_server) con unknown_vps_provider porque el adapter Contabo nunca se cargo.
+ * Sin ninguna clave Contabo en el env NO genera specs (byte-identico al catalogo estatico de hoy).
+ */
+export function contaboAccountSpecs(env: EnvLike): EnvVarSpec[] {
+  const specs: EnvVarSpec[] = [];
+  const pushAccount = (providerId: string, keyFor: (key: string) => string): void => {
+    const anyPresent = CONTABO_ACCOUNT_REQUIRED_KEYS.some((key) => envKeyPresent(env, keyFor(key)));
+    if (!anyPresent) return;
+    for (const key of CONTABO_ACCOUNT_REQUIRED_KEYS) {
+      specs.push({
+        name: keyFor(key),
+        group: "providers",
+        severity: "warn",
+        kind: "secret",
+        breaks: `credenciales Contabo incompletas para ${providerId}: un run con vpsProviderId=${providerId} muere en create_webdock_server (unknown_vps_provider) tras comprar el dominio`
+      });
+    }
+  };
+  pushAccount("contabo", (key) => `CONTABO_${key}`);
+  for (let index = 1; index <= CONTABO_MAX_INDEXED_ACCOUNTS; index += 1) {
+    pushAccount(`contabo-${index}`, (key) => `CONTABO_ACCOUNT_${index}_${key}`);
+  }
+  return specs;
+}
+
 function isPlaceholder(value: string): boolean {
   const lower = value.trim().toLowerCase();
   if (lower.length === 0) return false; // vacio se trata como missing, no placeholder
@@ -476,14 +514,21 @@ export function checkEnvPreflight(
   const fatal: EnvIssue[] = [];
   const warnings: EnvIssue[] = [];
 
-  for (const spec of catalog) {
+  // Cuando se usa el catalogo canonico, sumamos las specs dinamicas de Contabo derivadas del env: asi
+  // el preflight cubre CADA cuenta Contabo referenciada (flat o indexada) sin hardcodearlas. Con un
+  // catalogo explicito (tests puntuales) se respeta tal cual.
+  const effectiveCatalog = catalog === ENV_PREFLIGHT_CATALOG
+    ? [...catalog, ...contaboAccountSpecs(env)]
+    : catalog;
+
+  for (const spec of effectiveCatalog) {
     const issue = evaluateSpec(spec, env);
     if (!issue) continue;
     if (issue.severity === "fatal") fatal.push(issue);
     else warnings.push(issue);
   }
 
-  const checkedCount = catalog.length;
+  const checkedCount = effectiveCatalog.length;
   const okCount = checkedCount - fatal.length - warnings.length;
   const ok = fatal.length === 0;
   const report = formatPreflightReport({ ok, fatal, warnings, okCount, checkedCount, report: "" });

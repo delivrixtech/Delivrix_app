@@ -633,6 +633,65 @@ test("DoD#4 de-dup: una cuenta DISTINTA write-capable entra al registry SIN infl
   assert.equal(registry.get("secondary"), secondary?.adapter, "secondary apunta a su adapter aislado (token propio)");
 });
 
+test("dedupe por fingerprint: 6 env vars con la MISMA credencial colapsan a 1 cuenta lógica + alias log", () => {
+  const aliasLogs: Array<{ message: string; metadata?: Record<string, unknown> }> = [];
+  const sameKey = "identical-webdock-key";
+  const accounts = createWebdockAdaptersFromEnv({
+    WEBDOCK_API_KEY_PRIMARY: sameKey,
+    WEBDOCK_ACCOUNT_PRIMARY_LABEL: "InfraVPS",
+    WEBDOCK_API_KEY_OPS: sameKey,
+    WEBDOCK_API_KEY_ACCOUNT: sameKey,
+    // alias legacy de la cuenta QUINARY promovida: misma credencial
+    WEBDOCK_API_KEY_QUINARY: sameKey,
+    WEBDOCK_ACCOUNT_QUINARY_LABEL: "InfraVPS",
+    WEBDOCK_API_KEY_QUINARY_WRITE: sameKey,
+    WEBDOCK_API_KEY_QUINARY_ACCOUNT: sameKey
+  }, {
+    logger: { error: (message, metadata) => aliasLogs.push({ message, metadata }) }
+  });
+
+  // La cuenta-1 (primary/ops/account) se conserva; quinary (alias) desaparece.
+  assert.deepEqual(accounts.map((account) => account.id), ["primary", "ops", "account"]);
+  assert.equal(accounts.find((account) => account.id === "quinary"), undefined);
+
+  // Todas las entries de la cuenta-1 comparten el mismo fingerprint (misma cuenta física).
+  const fingerprints = new Set(accounts.map((account) => account.credentialFingerprint));
+  assert.equal(fingerprints.size, 1);
+  assert.ok([...fingerprints][0]);
+
+  // Se emitió exactamente un aviso de alias detectado, apuntando a la cuenta-1.
+  const alias = aliasLogs.filter((log) => log.message === "webdock.account_alias_detected");
+  assert.equal(alias.length, 1);
+  assert.equal(alias[0].metadata?.aliasRole, "quinary");
+  assert.equal(alias[0].metadata?.canonicalRole, "primary");
+  assert.ok(alias[0].metadata?.fingerprint);
+  // Nunca se loguea la key completa.
+  assert.notEqual(alias[0].metadata?.fingerprint, sameKey);
+
+  // El registry write-capable cuenta la cuenta física UNA sola vez.
+  const opsAdapter = new WebdockRealAdapter({ writeApiKey: sameKey, accountApiKey: sameKey, accountId: "ops" });
+  const registry = buildWebdockCreateRegistry(accounts, opsAdapter);
+  assert.deepEqual([...registry.keys()], ["ops"]);
+});
+
+test("dedupe por fingerprint: quinary con credencial DISTINTA sobrevive como cuenta real (regresión multicuenta)", () => {
+  const accounts = createWebdockAdaptersFromEnv({
+    WEBDOCK_API_KEY_PRIMARY: "primary-key",
+    WEBDOCK_API_KEY_OPS: "ops-key",
+    WEBDOCK_API_KEY_ACCOUNT: "account-key",
+    // quinary como cuenta REALMENTE distinta: otra credencial
+    WEBDOCK_API_KEY_QUINARY: "quinary-distinct-read"
+  });
+
+  assert.deepEqual(accounts.map((account) => account.id), ["primary", "ops", "account", "quinary"]);
+  const quinary = accounts.find((account) => account.id === "quinary");
+  assert.ok(quinary);
+  assert.notEqual(
+    quinary.credentialFingerprint,
+    accounts.find((account) => account.id === "primary")?.credentialFingerprint
+  );
+});
+
 // --- Fuente única de roles (WEBDOCK_DISTINCT_ACCOUNT_ROLES) -------------------
 
 test("la constante de roles gobierna el factory: ids y labels byte-identicos a la lista previa", () => {

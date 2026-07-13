@@ -948,6 +948,121 @@ test("POST /v1/domains/route53/register reserves the full multi-year registratio
   assert.equal(registerCalled, false);
 });
 
+test("POST /v1/domains/route53/register blocks orphan_domain_cap_exceeded when a same-day run already spent budget without completing", async () => {
+  let registerCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      listPrices: async () => [{
+        tld: "com",
+        registration: { amount: 14, currency: "USD" },
+        renewal: { amount: 14, currency: "USD" }
+      }],
+      registerDomain: async () => {
+        registerCalled = true;
+        return { operationId: "should-not-run", expectedExpiry: fixedNow.toISOString() };
+      }
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "500",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact())
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  await appendDomainApproval(route.auditLog);
+  await route.workspace.writeWorkspaceFileAtomic(
+    "inventory/smtp-runs/smtp-orphanbrand-contabo2-v1.json",
+    `${JSON.stringify({
+      runId: "smtp-orphanbrand-contabo2-v1",
+      status: "failed",
+      createdAt: fixedNow.toISOString(),
+      updatedAt: fixedNow.toISOString(),
+      budgetSpentUsd: 16,
+      chosenDomain: "orphanbrand.com"
+    }, null, 2)}\n`
+  );
+
+  const response = await route({
+    domain: "delivrixops.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.status, "blocked");
+  assert.deepEqual(response.body.blockers, ["orphan_domain_cap_exceeded"]);
+  assert.equal(response.body.orphanDomainsToday, 1);
+  assert.equal(response.body.maxOrphanPurchasesPerDay, 1);
+  assert.deepEqual(response.body.orphanDomains, ["orphanbrand.com"]);
+  assert.equal(typeof response.body.guidance, "string");
+  assert.equal(registerCalled, false);
+
+  const events = await route.auditLog.list();
+  assert.equal(events.at(-1)?.action, "oc.domain.register_blocked");
+  assert.equal(events.at(-1)?.metadata.orphanDomainsToday, 1);
+});
+
+test("POST /v1/domains/route53/register allows purchase when orphan cap raised above same-day orphan count", async () => {
+  let registerCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      listPrices: async () => [{
+        tld: "com",
+        registration: { amount: 14, currency: "USD" },
+        renewal: { amount: 14, currency: "USD" }
+      }],
+      registerDomain: async () => {
+        registerCalled = true;
+        return { operationId: "op-allowed", expectedExpiry: "2027-05-29T11:00:00.000Z" };
+      }
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "500",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact()),
+      DOMAINS_MAX_ORPHAN_PURCHASES_PER_DAY: "2"
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  await appendDomainApproval(route.auditLog);
+  // Un huerfano de hoy + uno de ayer (ignorado) + uno completado (ignorado): conteo efectivo = 1 < 2.
+  await route.workspace.writeWorkspaceFileAtomic(
+    "inventory/smtp-runs/smtp-today-v1.json",
+    `${JSON.stringify({ runId: "smtp-today-v1", status: "failed", createdAt: fixedNow.toISOString(), budgetSpentUsd: 16, chosenDomain: "todaybrand.com" }, null, 2)}\n`
+  );
+  await route.workspace.writeWorkspaceFileAtomic(
+    "inventory/smtp-runs/smtp-yesterday-v1.json",
+    `${JSON.stringify({ runId: "smtp-yesterday-v1", status: "failed", createdAt: "2026-05-28T09:00:00.000Z", budgetSpentUsd: 16, chosenDomain: "yesterbrand.com" }, null, 2)}\n`
+  );
+  await route.workspace.writeWorkspaceFileAtomic(
+    "inventory/smtp-runs/smtp-completed-v1.json",
+    `${JSON.stringify({ runId: "smtp-completed-v1", status: "completed", createdAt: fixedNow.toISOString(), budgetSpentUsd: 16, chosenDomain: "donebrand.com" }, null, 2)}\n`
+  );
+
+  const response = await route({
+    domain: "delivrixops.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(registerCalled, true);
+});
+
 async function routeHarness(input: {
   adapter: Route53DomainPurchaseAdapter;
   env: Record<string, string | undefined>;

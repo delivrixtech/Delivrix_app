@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rmdir } from "node:fs/promises";
+import { mkdir, readdir, readFile, rmdir } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import type {
@@ -445,6 +445,76 @@ export async function handleRoute53DomainRegisterHttp(
       blockers,
       costUsd,
       monthlyCapUsd,
+      source,
+      workspace
+    });
+    return;
+  }
+
+  // Guard anti-compra de dominios huerfanos (P0): antes de comprometer gasto, contamos los runs SMTP
+  // creados HOY que ya gastaron presupuesto (compraron dominio) pero NO terminaron. Si ese conteo ya
+  // esta en el tope diario configurable, bloqueamos la compra de un dominio NUEVO. Esto frena el patron
+  // "el run se traba -> el agente cambia de dominio y compra otro" que sangra dinero sin intervencion.
+  // El path idempotente (dominio ya owned) retorna antes de llegar aca, asi que un resume del MISMO run
+  // no dispara el guard.
+  const maxOrphanPurchases = parseNonNegativeInt(env.DOMAINS_MAX_ORPHAN_PURCHASES_PER_DAY) ?? 1;
+  const orphanPurchases = await countOrphanDomainPurchasesToday({
+    workspace: deps.workspace,
+    now,
+    excludeDomain: domain
+  });
+  if (orphanPurchases.count >= maxOrphanPurchases) {
+    const orphanEvidence = {
+      orphanDomainsToday: orphanPurchases.count,
+      maxOrphanPurchasesPerDay: maxOrphanPurchases,
+      orphanDomains: orphanPurchases.domains,
+      orphanRunIds: orphanPurchases.runIds
+    };
+    const workspace = await safeWriteExecution(deps.workspace, {
+      skill: skillName,
+      params: { domain, years, autoRenew, actorId },
+      outcome: "blocked",
+      durationMs: Date.now() - startedAt,
+      evidence: {
+        blockers: ["orphan_domain_cap_exceeded"],
+        sourceKind: source.kind,
+        monthlyCapUsd,
+        costUsd,
+        ...orphanEvidence,
+        approvalMatched: Boolean(approval)
+      }
+    });
+
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.domain.register_blocked",
+      targetType: "domain",
+      targetId: domain,
+      riskLevel: "critical",
+      decision: "reject",
+      humanApproved: false,
+      metadata: {
+        registrar: "aws-route53",
+        blockers: ["orphan_domain_cap_exceeded"],
+        sourceKind: source.kind,
+        ...orphanEvidence,
+        guidance:
+          "Ya hay dominios comprados hoy cuyo run SMTP no termino. NO compres otro dominio: reintenta el mismo runId o pedi al operador que limpie/complete el run huerfano.",
+        workspacePath: workspace?.path
+      }
+    });
+
+    json(deps.response, 409, {
+      ok: false,
+      status: "blocked",
+      domain,
+      blockers: ["orphan_domain_cap_exceeded"],
+      costUsd,
+      monthlyCapUsd,
+      ...orphanEvidence,
+      guidance:
+        "Ya hay dominios comprados hoy cuyo run SMTP no termino. NO compres otro dominio: reintenta el mismo runId o pedi al operador que limpie/complete el run huerfano.",
       source,
       workspace
     });
@@ -1211,6 +1281,67 @@ function registrationCostForTld(prices: AwsRoute53DomainPrice[], tld: string): n
 function parsePositiveMoney(value: string | undefined): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseNonNegativeInt(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+interface OrphanSmtpRunState {
+  runId?: string;
+  status?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  budgetSpentUsd?: number;
+  chosenDomain?: string;
+}
+
+/**
+ * Cuenta los runs SMTP creados HOY (dia UTC de `now`) que ya gastaron presupuesto (budgetSpentUsd > 0,
+ * es decir compraron un dominio) y NO terminaron (status != "completed"). Son "huerfanos": dinero
+ * comprometido sin SMTP entregado. Lee inventory/smtp-runs/*.json de forma tolerante (cualquier archivo
+ * ilegible/corrupto se ignora). Si el directorio no existe todavia devuelve cero. Excluye el dominio
+ * que se esta por comprar para no contar un resume del mismo run como huerfano.
+ */
+async function countOrphanDomainPurchasesToday(input: {
+  workspace: OpenClawWorkspace;
+  now: Date;
+  excludeDomain: string;
+}): Promise<{ count: number; domains: string[]; runIds: string[] }> {
+  await input.workspace.ensureBase();
+  const dir = join(input.workspace.getRootDir(), "inventory", "smtp-runs");
+  let entries: string[];
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return { count: 0, domains: [], runIds: [] };
+  }
+  const today = input.now.toISOString().slice(0, 10);
+  const domains: string[] = [];
+  const runIds: string[] = [];
+  for (const name of entries) {
+    if (!name.endsWith(".json")) continue;
+    let state: OrphanSmtpRunState;
+    try {
+      state = JSON.parse(await readFile(join(dir, name), "utf8")) as OrphanSmtpRunState;
+    } catch {
+      continue;
+    }
+    const spent = typeof state.budgetSpentUsd === "number" ? state.budgetSpentUsd : 0;
+    if (spent <= 0) continue;
+    if (state.status === "completed") continue;
+    const stamp = state.createdAt ?? state.updatedAt;
+    if (typeof stamp !== "string" || stamp.slice(0, 10) !== today) continue;
+    const chosenDomain = typeof state.chosenDomain === "string"
+      ? state.chosenDomain.trim().toLowerCase().replace(/\.$/, "")
+      : "";
+    if (chosenDomain && chosenDomain === input.excludeDomain) continue;
+    domains.push(chosenDomain || name.replace(/\.json$/, ""));
+    runIds.push(typeof state.runId === "string" ? state.runId : name.replace(/\.json$/, ""));
+  }
+  return { count: domains.length, domains, runIds };
 }
 
 function roundUsd(value: number): number {

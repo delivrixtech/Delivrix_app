@@ -42,6 +42,104 @@ interface OpenClawProposalsPayload {
   proposals?: OpenClawPendingProposal[];
 }
 
+/* ============================================================
+ * PR-05 — Preflight de la propuesta antes de firmar.
+ *
+ * Antes de que el operador firme (típicamente un configure_complete_smtp) el
+ * gateway ya sabe si la propuesta va a fallar (ej. provider sin credenciales,
+ * dominio comprado sin SMTP, scope drift). Consultamos
+ *   GET /v1/openclaw/proposals/:id/preflight
+ * y, si willFail=true, mostramos un aviso claro. NO bloquea la firma: solo
+ * advierte (el operador sigue siendo la autoridad).
+ * ============================================================ */
+
+export interface ProposalPreflight {
+  willFail: boolean;
+  reason: string | null;
+}
+
+/**
+ * Normaliza el shape del preflight tolerando variantes del backend:
+ *   { willFail, reason } | { willFail, reasons: string[] } | { willFail, message }
+ * Devuelve null si el payload no es interpretable (endpoint ausente, etc.).
+ */
+export function normalizeProposalPreflight(raw: unknown): ProposalPreflight | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.willFail !== "boolean") return null;
+  const reasons = Array.isArray(obj.reasons)
+    ? obj.reasons.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : [];
+  const reason =
+    (typeof obj.reason === "string" && obj.reason.trim().length > 0 ? obj.reason : null) ??
+    (reasons.length > 0 ? reasons.join(" · ") : null) ??
+    (typeof obj.message === "string" && obj.message.trim().length > 0 ? obj.message : null);
+  return { willFail: obj.willFail, reason };
+}
+
+export function useProposalPreflight(proposalId: string | null): ProposalPreflight | null {
+  const [preflight, setPreflight] = useState<ProposalPreflight | null>(null);
+
+  useEffect(() => {
+    if (!proposalId) {
+      setPreflight(null);
+      return;
+    }
+    let cancelled = false;
+    setPreflight(null);
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/v1/openclaw/proposals/${encodeURIComponent(proposalId)}/preflight`,
+          { headers: { accept: "application/json" }, cache: "no-store" }
+        );
+        if (!response.ok) return;
+        const payload = await response.json().catch(() => null);
+        if (cancelled) return;
+        setPreflight(normalizeProposalPreflight(payload));
+      } catch {
+        // Endpoint ausente o red caída: sin aviso, la firma sigue disponible.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [proposalId]);
+
+  return preflight;
+}
+
+function ProposalPreflightWarning({ preflight }: { preflight: ProposalPreflight | null }) {
+  if (!preflight || !preflight.willFail) return null;
+  const detail = preflight.reason ?? "el gateway anticipa un fallo en la ejecución";
+  return (
+    <div
+      role="alert"
+      style={{
+        padding: "10px 12px",
+        borderRadius: 8,
+        border: "1px solid var(--color-critical-border)",
+        background: "var(--color-critical-soft)",
+        color: "var(--color-critical-fg)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 4
+      }}
+      data-testid="proposal-preflight-warning"
+    >
+      <span
+        className="font-[family-name:var(--font-caption)] font-semibold uppercase"
+        style={{ fontSize: 10, letterSpacing: "0.6px" }}
+      >
+        Preflight: esta propuesta va a fallar
+      </span>
+      <span className="font-[family-name:var(--font-sans)]" style={{ fontSize: 12, lineHeight: 1.45 }}>
+        Motivo: {detail}. Revisá antes de firmar; podés firmar igual, pero el run probablemente no complete.
+      </span>
+    </div>
+  );
+}
+
 export function usePendingOpenClawProposals(enabled: boolean, pollMs = 3_000): {
   proposals: OpenClawPendingProposal[];
   error: string | null;
@@ -107,6 +205,7 @@ export function PendingOpenClawApprovalPanel({
   const { toast } = useToast();
   const [dismissedIds, setDismissedIds] = useState<Set<string>>(() => new Set());
   const activeProposal = proposals.find((proposal) => !dismissedIds.has(proposal.id)) ?? null;
+  const preflight = useProposalPreflight(activeProposal?.id ?? null);
 
   useEffect(() => {
     setDismissedIds((current) => {
@@ -182,6 +281,8 @@ export function PendingOpenClawApprovalPanel({
           {proposals.length} propuesta{proposals.length === 1 ? "" : "s"} esperando aprobación del operador
         </span>
       </div>
+
+      {activeProposal ? <ProposalPreflightWarning preflight={preflight} /> : null}
 
       {activeProposal ? (
         <ApprovalGate
