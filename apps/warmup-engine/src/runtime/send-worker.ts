@@ -11,6 +11,35 @@ import type { WarmupMessage, WarmupTransport } from "./transport.ts";
 /** Intentos por defecto antes de mandar un send a la DLQ (§12). */
 export const DEFAULT_MAX_ATTEMPTS = 3;
 
+/**
+ * Header de AISLAMIENTO de tráfico (invariante §12/roadmap): TODO envío de warmup lo lleva, con el id
+ * del nodo de warmup como valor. Es la marca inequívoca que permite que el correo de warmup NO aparezca
+ * en las vistas de correo de Delivrix (send-results / conversaciones / inbox). El valor coincide con
+ * `warmup_sends.node_id` en Postgres, así que la marca on-the-wire y su persistencia son el mismo id.
+ */
+export const WARMUP_ID_HEADER = "X-Warmup-Id";
+
+/** Id de warmup que marca el envío (identidad estable del nodo). */
+export function warmupIdFor(node: WarmupNode): string {
+  return node.id;
+}
+
+/**
+ * Garantiza que el mensaje lleve `X-Warmup-Id` sin pisar el resto de headers. Si el llamador (scheduler)
+ * ya seteó un `X-Warmup-Id` propio (p.ej. un id de envío más específico), se respeta; si no, se ancla el
+ * id del nodo. Devuelve una copia — no muta el mensaje de entrada.
+ */
+export function applyWarmupMarker(message: WarmupMessage, node: WarmupNode): WarmupMessage {
+  const existing = message.headers?.[WARMUP_ID_HEADER];
+  return {
+    ...message,
+    headers: {
+      ...message.headers,
+      [WARMUP_ID_HEADER]: existing ?? warmupIdFor(node)
+    }
+  };
+}
+
 /** Estados terminales: un send acá NO se reenvía (exactly-once por slot, §12). */
 const TERMINAL_STATUSES: ReadonlySet<WarmupSend["status"]> = new Set<WarmupSend["status"]>([
   "sent",
@@ -46,14 +75,21 @@ export interface ProcessSendResult {
   messageId?: string;
 }
 
-/** Arma un mensaje de warmup mínimo con el slotKey como ancla idempotente (X-Delivrix-Slot). */
+/**
+ * Arma un mensaje de warmup mínimo con el slotKey como ancla idempotente (`X-Delivrix-Slot`) y la marca
+ * de aislamiento (`X-Warmup-Id` = id del nodo). Cualquiera que llame a esta función directo ya obtiene
+ * un mensaje marcable como tráfico de warmup.
+ */
 export function buildDefaultMessage(node: WarmupNode, send: WarmupSend): WarmupMessage {
   return {
     from: node.mailbox,
     to: send.toAddress,
     subject: "Delivrix warmup",
     body: `warmup slot ${send.slotKey}`,
-    headers: { "X-Delivrix-Slot": send.slotKey }
+    headers: {
+      "X-Delivrix-Slot": send.slotKey,
+      [WARMUP_ID_HEADER]: warmupIdFor(node)
+    }
   };
 }
 
@@ -82,8 +118,11 @@ export async function processSend(input: ProcessSendInput): Promise<ProcessSendR
     return { status: "queued", reason };
   }
 
-  // 3) Envío real por el transporte pluggable.
-  const message = input.message ?? buildDefaultMessage(node, send);
+  // 3) Envío real por el transporte pluggable. AISLAMIENTO (invariante): sin importar si el mensaje es
+  //    el default o uno inyectado por el scheduler, se le garantiza la marca `X-Warmup-Id` antes de
+  //    tocar el transporte. Así NINGÚN envío de warmup sale sin su marca de tráfico aislado.
+  const baseMessage = input.message ?? buildDefaultMessage(node, send);
+  const message = applyWarmupMarker(baseMessage, node);
   const result = await transport.send(message);
 
   if (result.ok) {
