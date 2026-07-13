@@ -13,6 +13,12 @@
 
 import type { LandedIn, NodeState, SeedProvider, WarmupNode } from "../domain/types.ts";
 import type {
+  EngagedRecipient,
+  PlacementTrendPoint,
+  ProviderPlacement
+} from "../domain/trends.ts";
+import type {
+  EngagedRecipientStore,
   NodeStore,
   PlacementStore,
   SeedStore,
@@ -57,6 +63,12 @@ function dateOrUndefined(value: unknown): Date | undefined {
 function stringOrUndefined(value: unknown): string | undefined {
   if (value === null || value === undefined) return undefined;
   return String(value);
+}
+
+/** date/timestamptz → ISO string. node-postgres devuelve `date` como Date o string según el parser. */
+function isoDate(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return new Date(value as string | number).toISOString();
 }
 
 interface NodeRow {
@@ -252,6 +264,21 @@ function createSignalStore(client: PgClient): SignalStore {
         "INSERT INTO warmup_signals (node_id, kind, detail) VALUES ($1, $2, $3)",
         [input.nodeId, input.kind, input.detail === undefined ? null : input.detail]
       );
+    },
+
+    async countRecent(since: Date): Promise<{ bounces: number; complaints: number }> {
+      // Un solo scan de la ventana [since, now): cuenta cada kind con FILTER en vez de N queries.
+      const { rows } = await client.query<{ bounces: unknown; complaints: unknown }>(
+        "SELECT COUNT(*) FILTER (WHERE kind = 'bounce') AS bounces, " +
+          "COUNT(*) FILTER (WHERE kind = 'complaint') AS complaints " +
+          "FROM warmup_signals WHERE occurred_at >= $1",
+        [since]
+      );
+      const row = rows[0];
+      return {
+        bounces: row ? Number(row.bounces ?? 0) : 0,
+        complaints: row ? Number(row.complaints ?? 0) : 0
+      };
     }
   };
 }
@@ -279,6 +306,28 @@ function createSeedStore(client: PgClient): SeedStore {
   };
 }
 
+// ── EngagedRecipientStore ────────────────────────────────────────────────────────────────────────
+
+interface EngagedRow {
+  address: string;
+  weight: number | string;
+}
+
+function createEngagedRecipientStore(client: PgClient): EngagedRecipientStore {
+  return {
+    async listEnabled(): Promise<EngagedRecipient[]> {
+      const { rows } = await client.query<EngagedRow>(
+        "SELECT address, weight FROM warmup_engaged_recipients WHERE enabled = true ORDER BY created_at"
+      );
+      return rows.map((row) => ({
+        address: row.address,
+        source: "curated" as const,
+        weight: Number(row.weight)
+      }));
+    }
+  };
+}
+
 // ── PlacementStore ───────────────────────────────────────────────────────────────────────────────
 
 interface PendingTestRow {
@@ -296,6 +345,23 @@ interface RollupResultRow {
   seed_provider: string;
   landed_in: string | null;
   read_at: unknown;
+}
+
+interface RollupTrendRow {
+  window_end: unknown;
+  inbox_wilson_lb: unknown;
+  inbox_ewma: unknown;
+  spam_rate: unknown;
+  samples: number | string;
+}
+
+interface ProviderPlacementRow {
+  provider: string;
+  inbox: number | string;
+  tabs: number | string;
+  spam: number | string;
+  missing: number | string;
+  total: number | string;
 }
 
 function createPlacementStore(client: PgClient): PlacementStore {
@@ -412,19 +478,77 @@ function createPlacementStore(client: PgClient): PlacementStore {
           input.inboxEwma === undefined ? null : input.inboxEwma
         ]
       );
+    },
+
+    async listRecentRollups(limit: number): Promise<PlacementTrendPoint[]> {
+      // Serie global (todos los nodos), más nuevos primero. spam_rate se computa en SQL con NULLIF
+      // para no dividir por cero cuando la ventana no tuvo muestras. El servicio la invierte a orden
+      // cronológico para el dashboard.
+      const { rows } = await client.query<RollupTrendRow>(
+        "SELECT window_end, inbox_wilson_lb, inbox_ewma, " +
+          "spam_count::numeric / NULLIF(samples, 0) AS spam_rate, samples " +
+          "FROM warmup_placement_rollups ORDER BY window_end DESC LIMIT $1",
+        [limit]
+      );
+      return rows.map((row) => {
+        const point: PlacementTrendPoint = {
+          windowEnd: isoDate(row.window_end),
+          samples: Number(row.samples)
+        };
+        const wilson = numberOrUndefined(row.inbox_wilson_lb);
+        if (wilson !== undefined) point.inboxWilsonLb = wilson;
+        const ewma = numberOrUndefined(row.inbox_ewma);
+        if (ewma !== undefined) point.inboxEwma = ewma;
+        const spamRate = numberOrUndefined(row.spam_rate);
+        if (spamRate !== undefined) point.spamRate = spamRate;
+        return point;
+      });
+    },
+
+    async aggregateByProvider(since: Date): Promise<ProviderPlacement[]> {
+      // Desglose por proveedor sobre [since, now). `provider` ya está denormalizado en results (lo
+      // escribe recordResult desde el seed), así que agrupamos directo — no hace falta JOIN. Sólo
+      // resultados clasificados (landed_in NOT NULL). tabs cuenta como inbox (§9); missing ≠ spam.
+      const { rows } = await client.query<ProviderPlacementRow>(
+        "SELECT provider, " +
+          "COUNT(*) FILTER (WHERE landed_in IN ('primary', 'tabs')) AS inbox, " +
+          "COUNT(*) FILTER (WHERE landed_in = 'tabs') AS tabs, " +
+          "COUNT(*) FILTER (WHERE landed_in = 'spam') AS spam, " +
+          "COUNT(*) FILTER (WHERE landed_in = 'missing') AS missing, " +
+          "COUNT(*) AS total " +
+          "FROM warmup_placement_results " +
+          "WHERE read_at >= $1 AND landed_in IS NOT NULL " +
+          "GROUP BY provider ORDER BY provider",
+        [since]
+      );
+      return rows.map((row) => {
+        const total = Number(row.total);
+        const inbox = Number(row.inbox);
+        const out: ProviderPlacement = {
+          provider: row.provider as SeedProvider,
+          inbox,
+          tabs: Number(row.tabs),
+          spam: Number(row.spam),
+          missing: Number(row.missing),
+          total
+        };
+        if (total > 0) out.inboxRate = inbox / total;
+        return out;
+      });
     }
   };
 }
 
 // ── Factory ──────────────────────────────────────────────────────────────────────────────────────
 
-/** Construye las 5 stores Postgres sobre un PgClient inyectado (Pool.query-compatible). */
+/** Construye las stores Postgres sobre un PgClient inyectado (Pool.query-compatible). */
 export function createPgWarmupStores(client: PgClient): WarmupStores {
   return {
     nodes: createNodeStore(client),
     sends: createSendStore(client),
     signals: createSignalStore(client),
     seeds: createSeedStore(client),
-    placement: createPlacementStore(client)
+    placement: createPlacementStore(client),
+    engaged: createEngagedRecipientStore(client)
   };
 }
