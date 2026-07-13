@@ -22,6 +22,20 @@ export * from "./live/dns-adapters.ts";
 export * from "./live/mail-adapters.ts";
 export * from "./live/compose.ts";
 
+// --- Persistencia (§12) + scheduler/loops + servicio (tick guarded + snapshot para el panel) ---
+export * from "./store/ports.ts";
+export * from "./store/pg-stores.ts";
+export * from "./scheduler/scheduler.ts";
+export {
+  runWarmupTick,
+  getWarmupStatusSnapshot,
+  type WarmupTickDeps,
+  type WarmupTickResult,
+  type WarmupStatusSnapshot,
+  type WarmupNodeStatus
+} from "./service/service.ts";
+export { startWarmupDaemon } from "./service/main.ts";
+
 // --- Runtime de la Fase 0 (§7/§8/§13): el gate "ningún nodo envía sin contrato ready" ---
 export {
   evaluateAuthContract,
