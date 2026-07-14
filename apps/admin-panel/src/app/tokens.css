@@ -223,13 +223,17 @@
    *                   explícitamente (no-default).
    */
   --font-heading:
-    "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
+    "Montserrat Variable", "Montserrat", system-ui, -apple-system,
+    "Segoe UI", sans-serif;
   --font-sans:
-    "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
+    "Montserrat Variable", "Montserrat", system-ui, -apple-system,
+    "Segoe UI", sans-serif;
   --font-body:
-    "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
+    "Montserrat Variable", "Montserrat", system-ui, -apple-system,
+    "Segoe UI", sans-serif;
   --font-caption:
-    "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
+    "Montserrat Variable", "Montserrat", system-ui, -apple-system,
+    "Segoe UI", sans-serif;
   --font-mono:
     "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   /* --font-display antes apuntaba a Caveat (manuscrita). Eliminada
@@ -237,7 +241,8 @@
    * demos a stakeholders. El alias queda apuntando a Montserrat italic
    * por si alguna superficie aún lo referencia (HumanNote ya migró). */
   --font-display:
-    "Montserrat", system-ui, -apple-system, "Segoe UI", sans-serif;
+    "Montserrat Variable", "Montserrat", system-ui, -apple-system,
+    "Segoe UI", sans-serif;
 
   /* Type scale (sin cambios — funciona con cualquier sans) */
   --text-2xs: 10px;
