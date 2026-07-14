@@ -1,9 +1,10 @@
 /**
- * Onboarding Wizard — port LITERAL desde Pencil frame `T9osf` / `GygQG`.
+ * Onboarding Wizard — layout basado en Pencil frame `T9osf` / `GygQG`.
  *
- * Cada texto, color, padding e icono viene del .pen. Los campos del formulario
- * muestran los placeholders literales (hostname `vps-edge-01.delivrix.io`,
- * datacenter `mad-2 · Madrid Norte`, etc.) tal como Pencil los dibuja.
+ * El layout (colores, padding, iconos) viene del .pen, pero los campos del
+ * formulario ya NO son placeholders de Pencil: son display-only de datos reales
+ * del contrato (`physicalHost`, `operatingNorth`, `onboardingState`), y muestran
+ * "—" cuando el contrato no trae el dato.
  */
 
 import {
