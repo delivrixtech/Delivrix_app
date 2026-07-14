@@ -5,9 +5,6 @@
  * por Claude + portados a React directamente. Reusables, tokens.css only,
  * sin hex hardcoded.
  *
- * Canvas-specific blocks (PromptStripTop, LaneCard, TimelineLive,
- * DetailPanelFreshness) viven inline en features/canvas/index.tsx porque
- * son demasiado específicos para reuso.
  */
 
 export { LiveIndicator, type LiveIndicatorProps } from "./LiveIndicator.tsx";

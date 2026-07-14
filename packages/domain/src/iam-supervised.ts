@@ -156,10 +156,6 @@ export interface IamSessionsSource {
   now?: Date;
 }
 
-function minutesAgo(now: Date, minutes: number): string {
-  return new Date(now.getTime() - minutes * 60_000).toISOString();
-}
-
 export function buildIamSessions(input: Date | IamSessionsSource = new Date()): IamSessionsContract {
   if (input instanceof Date) {
     return fallbackIamSessions(input);
@@ -229,33 +225,11 @@ function cloneRoles(roles: readonly IamRole[]): IamRole[] {
 }
 
 function fallbackIamSessions(now: Date): IamSessionsContract {
+  // Sin eventos de auditoría no hay sesiones reales que reportar. Antes esta rama
+  // fabricaba tres sesiones con actores y ciudades inventadas (Popayán/Bogotá/Madrid)
+  // presentadas como telemetría; eso es teatro. Estado vacío honesto: "sin datos".
   return {
-    sessions: [
-      {
-        actor: "operador@delivrix",
-        location: "Popayán · CO",
-        transport: "vpn",
-        startedAt: minutesAgo(now, 124),
-        lastSeenAt: minutesAgo(now, 7),
-        risk: "low"
-      },
-      {
-        actor: "sre-01@delivrix",
-        location: "Bogotá · CO",
-        transport: "internal",
-        startedAt: minutesAgo(now, 96),
-        lastSeenAt: minutesAgo(now, 23),
-        risk: "low"
-      },
-      {
-        actor: "auditor-ext@delivrix",
-        location: "Madrid · ES",
-        transport: "mfa",
-        startedAt: minutesAgo(now, 58),
-        lastSeenAt: minutesAgo(now, 58),
-        risk: "medium"
-      }
-    ],
+    sessions: [],
     meta: buildRealTimeMeta({ dataSource: "fallback", now })
   };
 }

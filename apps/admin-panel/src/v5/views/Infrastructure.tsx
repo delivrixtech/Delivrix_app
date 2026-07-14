@@ -930,6 +930,10 @@ function Loaded({ payload }: { payload: InfrastructureInventoryResponse }) {
     (p) => p.kind === "dns" || p.kind === "domain-registrar"
   );
   const physical = visibleProviders.filter((p) => p.kind === "physical");
+  const physicalDetail = (physical[0]?.items?.[0]?.detail ?? {}) as Record<string, unknown>;
+  const physicalCaption = `${stringOrDash(physicalDetail.model)} en ${stringOrDash(
+    physicalDetail.location
+  )}. Garantía vencida; rol de respaldo y laboratorio.`;
   const computeCount = connectedCompute.length + queuedCompute.length;
   const dnsCount = connectedDns.length + queuedDns.length;
   const ionosDnsProvider = providers.find((p) => p.id === "ionos-cloud-dns");
@@ -1018,7 +1022,7 @@ function Loaded({ payload }: { payload: InfrastructureInventoryResponse }) {
           <SectionHead
             eyebrow="Hardware"
             title="Servidor físico"
-            caption="IBM System x 2U en Medellín. Garantía vencida; rol de respaldo y laboratorio."
+            caption={physicalCaption}
             count={physical.length}
             countTone="neutral"
           />

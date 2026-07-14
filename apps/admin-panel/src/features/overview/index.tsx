@@ -44,7 +44,7 @@ export function OverviewSection({ data, onNavigate }: { data: DashboardData; onN
         caption="onboarding → planificación → provisionamiento → calentamiento → reputación"
         countTone="success"
       />
-      <Pipeline onNavigate={onNavigate} />
+      <Pipeline data={data} onNavigate={onNavigate} />
       <BottomRow data={data} />
     </section>
   );
@@ -55,12 +55,23 @@ export function OverviewSection({ data, onNavigate }: { data: DashboardData; onN
  * ============================================================ */
 function HeaderRow({ data }: { data: DashboardData }) {
   const lastUpdate = new Date(data.overview.generatedAt).getTime();
+  const approvals = data.canvas.requiresHumanApproval ?? [];
+  const sender =
+    data.operationalSummary.senderNodesByStatus ??
+    data.overview.summary.senderNodesByStatus ??
+    {};
+  const warming = sender.warming ?? 0;
+  const hasWork = approvals.length > 0 || warming > 0;
   return (
     <div className="flex flex-col" style={{ gap: 16 }}>
       <Welcome generatedAt={data.overview.generatedAt} lastUpdateMs={lastUpdate} />
       <BannerOpenClawV2
-        title="OpenClaw propone un plan dry-run"
-        body="2 clústeres de envío esperan aprobación humana. Las quejas del clúster A superaron 0,18% en los últimos 4 snapshots — preparé un plan de degradación."
+        title={hasWork ? "OpenClaw tiene acciones para revisar" : "OpenClaw en observación"}
+        body={
+          hasWork
+            ? `${approvals.length} ${approvals.length === 1 ? "acción espera" : "acciones esperan"} aprobación humana${warming > 0 ? ` · ${warming} ${warming === 1 ? "IP" : "IPs"} en calentamiento` : ""}. Cada acción real pasa por un gate humano.`
+            : "Sin acciones pendientes. OpenClaw observa la infraestructura en modo solo lectura y avisa cuando haya algo que aprobar."
+        }
         primaryCta="Revisar plan"
         secondaryCta="Abrir chat"
       />
@@ -463,7 +474,12 @@ function KpiGates({ value, gates }: { value: number; gates: string[] }) {
 /* ============================================================
  * Pipeline — 5 stages literales Pencil + chevron entre cada uno
  * ============================================================ */
-function Pipeline({ onNavigate }: { onNavigate?: (section: string) => void }) {
+function Pipeline({ data, onNavigate }: { data: DashboardData; onNavigate?: (section: string) => void }) {
+  const sender =
+    data.operationalSummary.senderNodesByStatus ??
+    data.overview.summary.senderNodesByStatus ??
+    {};
+  const warming = sender.warming ?? 0;
   return (
     <section
       className="bg-[var(--color-surface)]"
@@ -479,6 +495,13 @@ function Pipeline({ onNavigate }: { onNavigate?: (section: string) => void }) {
         <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
           Cada transición tiene un gate humano · ningún provisionamiento toca producción sin aprobación.
         </p>
+        <span
+          className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
+          style={{ padding: "2px 6px", borderRadius: 4, background: "var(--color-neutral-soft)", color: "var(--color-text-tertiary)", letterSpacing: "var(--tracking-wide)" }}
+          title="Flujo de referencia — el estado por etapa aún no viene de un contrato en vivo"
+        >
+          Flujo de referencia
+        </span>
         <span className="flex-1" aria-hidden="true" />
         <button
           type="button"
@@ -501,7 +524,7 @@ function Pipeline({ onNavigate }: { onNavigate?: (section: string) => void }) {
           <StageCard
             title="Onboarding"
             body="Servidor, IPs y dominios capturados"
-            footer="100% · 6/6 pasos"
+            footer="captura manual · /v1/onboarding"
             variant="success"
           />
           <StageConnector />
@@ -515,14 +538,17 @@ function Pipeline({ onNavigate }: { onNavigate?: (section: string) => void }) {
           <StageCard
             title="Provisionamiento"
             body="Dry-run · Postfix, DKIM, TLS, DNS, plan de calentamiento"
-            footer={null}
+            footer="dry-run · sin escritura real"
             variant="in_progress"
-            progress={62}
           />
           <StageConnector />
           <StageCard
             title="Calentamiento"
-            body="42 IPs en calentamiento · espera aprobación"
+            body={
+              warming > 0
+                ? `${warming} ${warming === 1 ? "IP" : "IPs"} en calentamiento · espera aprobación`
+                : "Sin IPs en calentamiento activo"
+            }
             footer="requiere aprobación humana"
             variant="warning"
           />
@@ -550,14 +576,12 @@ function StageCard({
   title,
   body,
   footer,
-  variant,
-  progress
+  variant
 }: {
   title: string;
   body: string;
   footer: string | null;
   variant: StageVariant;
-  progress?: number;
 }) {
   const style = stageStyle(variant);
   return (
@@ -577,22 +601,6 @@ function StageCard({
       <p className="m-0 text-[11px] font-[family-name:var(--font-sans)] leading-[1.4] text-[var(--color-text-primary)]">
         {body}
       </p>
-      {variant === "in_progress" && progress !== undefined ? (
-        <div
-          className="overflow-hidden"
-          style={{ height: 5, borderRadius: 3, background: "var(--color-surface)" }}
-          aria-hidden="true"
-        >
-          <span
-            className="block"
-            style={{
-              width: `${progress}%`,
-              height: "100%",
-              background: "var(--color-accent)"
-            }}
-          />
-        </div>
-      ) : null}
       {footer ? (
         <span className="text-[10px] font-[family-name:var(--font-mono)] font-medium" style={{ color: style.footerFg }}>
           {footer}
