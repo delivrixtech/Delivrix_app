@@ -37,7 +37,7 @@
   /* === FOREGROUND === Negro 100/72/56/40 + inverse */
   --color-text-primary: #0a0a0a;      /* near-black, AAA contrast */
   --color-text-secondary: #525252;    /* 70% body */
-  --color-text-tertiary: #8a8a8a;     /* 55% captions/meta */
+  --color-text-tertiary: #6f6f6f;     /* captions/meta — WCAG AA ~5.0:1 sobre blanco (antes #8a8a8a ~3.45:1) */
   --color-text-disabled: #b5b5b5;
   --color-text-inverse: #ffffff;      /* texto sobre dark blocks */
 
