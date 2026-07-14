@@ -10,14 +10,10 @@
 
     <!-- Rebrand B/W (2026-05-28): Montserrat (sans/body/heading principal),
          JetBrains Mono (código/datos/audit). Caveat (manuscrita decorativa)
-         eliminada el 2026-05-28 — el CTO la sintió fuera de tono profesional;
-         HumanNote ahora usa Montserrat italic regular. Preconnect para CLS. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Montserrat:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,400;1,500;1,600&display=swap"
-      rel="stylesheet"
-    />
+         eliminada el 2026-05-28; HumanNote usa Montserrat italic.
+         Fuentes empaquetadas offline via @fontsource en src/main.tsx
+         (2026-07-13) — se quitó la carga por Google Fonts para funcionar
+         sin red y bajo CSP estricta. -->
     <script>
       // v5 rebrand 2026-05-28: dark-first by default.
       // Operadores trabajan en dark; light disponible para presentaciones

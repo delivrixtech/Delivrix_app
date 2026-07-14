@@ -1,14 +1,13 @@
-// Fonts (consolidación 2026-05-24): Funnel Sans (display H1/H2 ≥24px),
-// Geist (body + UI + caption con tracking-wider), IBM Plex Mono (data/code).
-// Inter eliminado para evitar 3-sans-stack que se sentía AI-generated.
-// Offline-first via @fontsource.
-import "@fontsource/funnel-sans/400.css";
-import "@fontsource/funnel-sans/500.css";
-import "@fontsource/funnel-sans/600.css";
-import "@fontsource/funnel-sans/700.css";
-import "@fontsource-variable/geist/index.css";
-import "@fontsource/ibm-plex-mono/400.css";
-import "@fontsource/ibm-plex-mono/500.css";
+// Fonts (rebrand B/W 2026-05-28, empaquetado offline 2026-07-13):
+// Montserrat (heading H1/H2, UI, body, caption + italic para HumanNote) y
+// JetBrains Mono (datos/audit/code). Una sola familia de marca, servida
+// 100% offline via @fontsource — sin Google Fonts ni fallback a system-ui.
+import "@fontsource-variable/montserrat/index.css";
+import "@fontsource-variable/montserrat/wght-italic.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
+import "@fontsource/jetbrains-mono/600.css";
+import "@fontsource/jetbrains-mono/700.css";
 
 import "@xyflow/react/dist/style.css";
 import "./app/tokens.css";
