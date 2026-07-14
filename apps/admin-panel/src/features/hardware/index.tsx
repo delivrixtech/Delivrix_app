@@ -2,26 +2,21 @@
  * Hardware Telemetry — port LITERAL desde Pencil frame `q71MQL` / `ZMHuy`.
  *
  * Estructura literal:
- *   Hero (kx9np):  HostCard + OpenClawPrompt (380w gradient border)
+ *   Head:          PageHead (identidad host) + OpenClawPrompt banner
  *   TwoColumn:     Inventario (7 rows) + Historial 420w (3 charts)
  *   UnknownsRow:   CamposDesconocidos (4 priority cards) + DatosFaltantes 340w
  *   AuditFooter:   6 audit rows con timestamps reales del diseño
  */
 
 import {
-  Activity,
   Camera,
   CheckCircle,
-  ChevronRight,
-  FileText,
   Hash,
   Info,
   Layers,
   MapPin,
   Radio,
   Shield,
-  Siren,
-  Sparkles,
   Triangle
 } from "lucide-react";
 import { useCallback, useState } from "react";
@@ -29,27 +24,18 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { DashboardData } from "../../shared/api/client.ts";
 import { BannerOpenClawV2, useToast } from "../../shared/ui/v2/index.ts";
 import { filterAuditEvents } from "../../shared/lib/formatters.ts";
+import { Badge, Button, Card, EmptyState, Pill, SectionHead } from "../../v5/components/primitives";
+import { PageHead } from "../../v5/views/_PageHead";
 
 export function HardwareSection({ data }: { data: DashboardData }) {
   return (
     <section className="flex flex-col" style={{ gap: 20 }}>
-      <Hero data={data} />
+      <HardwareHead data={data} />
+      <OpenClawPrompt data={data} />
       <TwoColumn data={data} />
       <UnknownsRow data={data} />
       <AuditFooter data={data} />
     </section>
-  );
-}
-
-/* ============================================================
- * Hero — HostCard + OpenClaw prompt
- * ============================================================ */
-function Hero({ data }: { data: DashboardData }) {
-  return (
-    <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] items-start">
-      <HostCard data={data} />
-      <OpenClawPrompt data={data} />
-    </div>
   );
 }
 
@@ -71,7 +57,7 @@ function shortHash(iso: string | null | undefined, fallback = "—"): string {
   return iso.replace(/[^0-9a-f]/gi, "").slice(0, 8) || fallback;
 }
 
-function HostCard({ data }: { data: DashboardData }) {
+function HardwareHead({ data }: { data: DashboardData }) {
   const ph = data.physicalHost;
   const on = data.operatingNorth;
   const hostName = ph.identity.label || ph.identity.hostId || "host desconocido";
@@ -80,99 +66,34 @@ function HostCard({ data }: { data: DashboardData }) {
   const lastSeen = formatRelative(data.telemetry.source.collectedAt);
   const hash = shortHash(data.telemetry.source.collectedAt);
   const readinessOk = ph.readiness.status === "ready";
+  const stale = data.telemetry.summary.stale;
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        gap: 16,
-        padding: 20,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
-      <header className="flex items-center" style={{ gap: 16 }}>
-        <div className="flex flex-col flex-1" style={{ gap: 4 }}>
-          <h2 className="m-0 text-[20px] font-[family-name:var(--font-heading)] font-bold text-[var(--color-text-primary)]">
-            {hostName} · {role}
-          </h2>
-          <span
-            className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]"
-            style={{ letterSpacing: "var(--tracking-wide)" }}
-          >
-            Identidad de host · plano de control {ph.schemaVersion}
-          </span>
-        </div>
-        <span
-          className="inline-flex items-center text-[11px] font-[family-name:var(--font-caption)] font-semibold"
-          style={{
-            gap: 6,
-            padding: "4px 10px",
-            borderRadius: 4,
-            background: readinessOk ? "var(--color-success-soft)" : "var(--color-warning-soft)",
-            color: readinessOk ? "var(--color-success)" : "var(--color-warning)",
-            letterSpacing: "var(--tracking-wider)"
-          }}
-        >
-          <span
-            aria-hidden="true"
-            style={{ width: 6, height: 6, borderRadius: 999, background: readinessOk ? "var(--color-success)" : "var(--color-warning)" }}
-          />
+    <PageHead
+      eyebrow="Identidad de host"
+      title={`${hostName} · ${role}`}
+      meta={`plano de control ${ph.schemaVersion}`}
+      trailing={
+        <Pill tone={readinessOk ? "success" : "warning"}>
           {(readinessOk ? "LISTO" : ph.readiness.status?.toUpperCase()) || "PENDIENTE"}
-        </span>
-      </header>
-
-      <div className="flex flex-wrap" style={{ gap: 10 }}>
-        <Chip icon={<MapPin size={12} strokeWidth={1.75} aria-hidden="true" />} text={`datacenter · ${dc}`} />
-        <Chip icon={<Layers size={12} strokeWidth={1.75} aria-hidden="true" />} text={`rol · ${role}`} />
-        <Chip
-          icon={<Radio size={12} strokeWidth={1.75} aria-hidden="true" style={{ color: data.telemetry.summary.stale ? "var(--color-warning)" : "var(--color-success)" }} />}
-          text={`Telemetría ${data.telemetry.summary.stale ? "desactualizada" : "actualizada"} ${lastSeen}`}
-          mono
-        />
-        <Chip
-          icon={<Hash size={12} strokeWidth={1.75} aria-hidden="true" />}
-          text={`hash · ${hash}`}
-          color="var(--color-text-tertiary)"
-          mono
-        />
-      </div>
-    </section>
-  );
-}
-
-function Chip({
-  icon,
-  text,
-  mono,
-  color = "var(--color-text-secondary)"
-}: {
-  icon: React.ReactNode;
-  text: string;
-  mono?: boolean;
-  color?: string;
-}) {
-  return (
-    <span
-      className="inline-flex items-center"
-      style={{
-        gap: 6,
-        padding: "4px 10px",
-        borderRadius: 4,
-        background: "var(--color-surface-sunken)",
-        border: "1px solid var(--color-border)",
-        color
-      }}
-    >
-      <span style={{ color }} aria-hidden="true">
-        {icon}
-      </span>
-      <span
-        className={`text-[11px] font-medium ${mono ? "font-[family-name:var(--font-mono)]" : "font-[family-name:var(--font-caption)]"}`}
-      >
-        {text}
-      </span>
-    </span>
+        </Pill>
+      }
+      body={
+        <div className="flex flex-wrap items-center gap-2">
+          <Pill tone="neutral" dot={false}>
+            <MapPin size={12} strokeWidth={1.75} aria-hidden="true" /> datacenter · {dc}
+          </Pill>
+          <Pill tone="neutral" dot={false}>
+            <Layers size={12} strokeWidth={1.75} aria-hidden="true" /> rol · {role}
+          </Pill>
+          <Pill tone={stale ? "warning" : "success"} dot={false}>
+            <Radio size={12} strokeWidth={1.75} aria-hidden="true" /> Telemetría {stale ? "desactualizada" : "actualizada"} {lastSeen}
+          </Pill>
+          <Pill tone="neutral" dot={false}>
+            <Hash size={12} strokeWidth={1.75} aria-hidden="true" /> hash · {hash}
+          </Pill>
+        </div>
+      }
+    />
   );
 }
 
@@ -294,39 +215,17 @@ function Inventario({ data }: { data: DashboardData }) {
   const INVENTORY_ROWS = buildInventoryRows(data);
   const unknownCount = data.physicalHost.quality.unknownFields?.length ?? 0;
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        gap: 14,
-        padding: 20,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
-      <header className="flex items-center" style={{ gap: 12 }}>
-        <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-            Inventario
-          </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-            {INVENTORY_ROWS.length} componentes verificados contra el contrato
-          </span>
-        </div>
-        <span
-          className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-semibold"
-          style={{
-            gap: 4,
-            padding: "4px 8px",
-            borderRadius: 4,
-            background: unknownCount === 0 ? "var(--color-success-soft)" : "var(--color-warning-soft)",
-            color: unknownCount === 0 ? "var(--color-success)" : "var(--color-warning)"
-          }}
-        >
-          <CheckCircle size={11} strokeWidth={1.75} aria-hidden="true" />
-          {unknownCount === 0 ? "sin huérfanos" : `${unknownCount} unknown`}
-        </span>
-      </header>
+    <Card padding="relaxed" className="flex flex-col" style={{ gap: 14 }}>
+      <SectionHead
+        title="Inventario"
+        caption={`${INVENTORY_ROWS.length} componentes verificados contra el contrato`}
+        trailing={
+          <Pill tone={unknownCount === 0 ? "success" : "warning"} dot={false}>
+            <CheckCircle size={11} strokeWidth={1.75} aria-hidden="true" />
+            {unknownCount === 0 ? "sin huérfanos" : `${unknownCount} unknown`}
+          </Pill>
+        }
+      />
 
       {/* colHeader — wrap en overflow-x-auto para scroll lateral en mobile */}
       <div className="overflow-x-auto">
@@ -396,7 +295,7 @@ function Inventario({ data }: { data: DashboardData }) {
         ))}
       </div>
       </div>
-    </section>
+    </Card>
   );
 }
 
@@ -406,42 +305,21 @@ function Historial({ data }: { data: DashboardData }) {
   const memSeries = series.find((s) => s.metric.toLowerCase().includes("mem") || s.metric.toLowerCase().includes("ram"));
   const tempSeries = series.find((s) => s.metric.toLowerCase().includes("temp"));
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        gap: 16,
-        padding: 20,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
-      <header className="flex items-center" style={{ gap: 8 }}>
-        <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-            Historial de telemetría
-          </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-            {series.length > 0 ? `${series.length} series · ventana ${data.telemetryHistory.window}` : "Sin series disponibles"}
-          </span>
-        </div>
-        <span
-          className="inline-block text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]"
-          style={{
-            padding: "4px 8px",
-            borderRadius: 4,
-            background: "var(--color-surface-sunken)",
-            border: "1px solid var(--color-border)"
-          }}
-        >
-          {data.telemetryHistory.window || "ventana —"}
-        </span>
-      </header>
+    <Card padding="relaxed" className="flex flex-col" style={{ gap: 16 }}>
+      <SectionHead
+        title="Historial de telemetría"
+        caption={
+          series.length > 0
+            ? `${series.length} series · ventana ${data.telemetryHistory.window}`
+            : "Sin series disponibles"
+        }
+        trailing={<Badge>{data.telemetryHistory.window || "ventana —"}</Badge>}
+      />
 
       <ChartFromSeries title="USO CPU" pillSuffix="%" series={cpuSeries} fallbackBars={[30, 36, 42, 46, 52, 54, 60, 56, 52, 48, 42, 38]} />
       <ChartFromSeries title="USO RAM" pillSuffix="%" series={memSeries} fallbackBars={[42, 48, 52, 50, 56, 58, 62, 64, 68, 72, 70, 66]} />
       <ChartFromSeries title="TEMP CPU" pillSuffix="°C" series={tempSeries} fallbackBars={[22, 26, 30, 32, 36, 40, 46, 50, 54, 60, 52, 48]} />
-    </section>
+    </Card>
   );
 }
 
@@ -606,53 +484,26 @@ function CamposDesconocidos({
 }) {
   if (rows.length === 0) {
     return (
-      <section
-        className="flex flex-col bg-[var(--color-surface)]"
-        style={{
-          gap: 14,
-          padding: 20,
-          borderRadius: 8,
-          border: "1px solid var(--color-border)",
-          boxShadow: "var(--shadow-sm)"
-        }}
-      >
-        <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-          Campos desconocidos
-        </h2>
-        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
-          El contrato no reporta campos sin valor en el snapshot actual.
-        </p>
-      </section>
+      <Card padding="none" className="flex flex-col">
+        <EmptyState
+          title="Campos desconocidos"
+          body="El contrato no reporta campos sin valor en el snapshot actual."
+        />
+      </Card>
     );
   }
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        gap: 14,
-        padding: 20,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
-      <header className="flex items-center" style={{ gap: 12 }}>
-        <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-            Campos desconocidos
-          </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-            El contrato no devolvió valor en 4 campos · ordenados por prioridad
-          </span>
-        </div>
-        <span
-          className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-semibold"
-          style={{ gap: 4, padding: "4px 8px", borderRadius: 4, background: "var(--color-unknown-soft)", color: "var(--color-unknown)" }}
-        >
-          <Info size={11} strokeWidth={1.75} aria-hidden="true" />
-          4 sin valor
-        </span>
-      </header>
+    <Card padding="relaxed" className="flex flex-col" style={{ gap: 14 }}>
+      <SectionHead
+        title="Campos desconocidos"
+        caption="El contrato no devolvió valor en 4 campos · ordenados por prioridad"
+        trailing={
+          <Pill tone="info" dot={false}>
+            <Info size={11} strokeWidth={1.75} aria-hidden="true" />
+            4 sin valor
+          </Pill>
+        }
+      />
 
       <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 8 }}>
         {rows.map((row) => (
@@ -702,7 +553,7 @@ function CamposDesconocidos({
           </li>
         ))}
       </ul>
-    </section>
+    </Card>
   );
 }
 
@@ -802,23 +653,10 @@ function ManualSnapshotButton() {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="inline-flex items-center justify-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
-        style={{
-          gap: 6,
-          padding: "9px 12px",
-          borderRadius: 6,
-          background: "var(--color-accent)",
-          color: "var(--color-accent-fg)",
-          border: "1px solid var(--color-accent)",
-          cursor: "pointer"
-        }}
-      >
+      <Button type="button" variant="primary" size="md" onClick={() => setOpen(true)}>
         <Camera size={14} strokeWidth={1.75} aria-hidden="true" />
         Solicitar snapshot manual
-      </button>
+      </Button>
       {open ? <ManualSnapshotModal onClose={() => setOpen(false)} /> : null}
     </>
   );
@@ -1003,40 +841,13 @@ function ManualSnapshotModal({ onClose }: { onClose: () => void }) {
             borderTop: "1px solid var(--color-border)"
           }}
         >
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={mutation.isPending}
-            className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:bg-[var(--color-surface)] disabled:cursor-not-allowed disabled:opacity-60"
-            style={{
-              padding: "8px 14px",
-              borderRadius: 6,
-              background: "transparent",
-              color: "var(--color-text-secondary)",
-              border: "1px solid var(--color-border)",
-              cursor: mutation.isPending ? "not-allowed" : "pointer"
-            }}
-          >
+          <Button type="button" variant="secondary" size="md" onClick={onClose} disabled={mutation.isPending}>
             Cancelar
-          </button>
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={mutation.isPending}
-            className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-            style={{
-              gap: 6,
-              padding: "8px 14px",
-              borderRadius: 6,
-              background: "var(--color-accent)",
-              color: "var(--color-accent-fg)",
-              border: "none",
-              cursor: mutation.isPending ? "not-allowed" : "pointer"
-            }}
-          >
+          </Button>
+          <Button type="button" variant="primary" size="md" onClick={handleSubmit} disabled={mutation.isPending}>
             <Camera size={12} strokeWidth={2} aria-hidden="true" />
             {mutation.isPending ? "Ingestando…" : "Ingestar snapshot"}
-          </button>
+          </Button>
         </footer>
       </div>
     </div>
@@ -1106,33 +917,17 @@ function AuditFooter({ data }: { data: DashboardData }) {
         }
       ];
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        gap: 12,
-        padding: 20,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
-      <header className="flex items-center" style={{ gap: 12 }}>
-        <div className="flex flex-col flex-1" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-            Registro de auditoría
-          </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-            Últimas 6 acciones · trazabilidad sólo lectura
-          </span>
-        </div>
-        <span
-          className="inline-flex items-center text-[10px] font-[family-name:var(--font-caption)] font-semibold"
-          style={{ gap: 4, padding: "4px 8px", borderRadius: 4, background: "var(--color-info-soft)", color: "var(--color-info)" }}
-        >
-          <Shield size={11} strokeWidth={1.75} aria-hidden="true" />
-          hashes verificados
-        </span>
-      </header>
+    <Card padding="relaxed" className="flex flex-col" style={{ gap: 12 }}>
+      <SectionHead
+        title="Registro de auditoría"
+        caption="Últimas 6 acciones · trazabilidad sólo lectura"
+        trailing={
+          <Pill tone="info" dot={false}>
+            <Shield size={11} strokeWidth={1.75} aria-hidden="true" />
+            hashes verificados
+          </Pill>
+        }
+      />
 
       {/* colHeader — wrap en overflow-x-auto para scroll lateral en mobile */}
       <div className="overflow-x-auto">
@@ -1199,6 +994,6 @@ function AuditFooter({ data }: { data: DashboardData }) {
         ))}
       </ul>
       </div>
-    </section>
+    </Card>
   );
 }
