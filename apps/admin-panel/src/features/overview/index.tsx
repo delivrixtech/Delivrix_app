@@ -24,22 +24,23 @@ import {
   ApprovalRow as ApprovalRowV2,
   type ApprovalSeverity,
   BannerOpenClawV2,
-  LiveIndicator,
-  SectionDivider
+  LiveIndicator
 } from "../../shared/ui/v2/index.ts";
 import { Tooltip } from "../../shared/ui/tooltip.tsx";
+import { Badge, Button, Card, EmptyState, Eyebrow, SectionHead } from "../../v5/components/primitives.tsx";
+import { PageHead } from "../../v5/views/_PageHead.tsx";
 
 export function OverviewSection({ data, onNavigate }: { data: DashboardData; onNavigate?: (section: string) => void }) {
   return (
     <section className="flex flex-col gap-5" style={{ width: "100%" }}>
       <HeaderRow data={data} />
-      <SectionDivider
+      <SectionHead
         title="Métricas operativas"
         caption="dataSource: panel agregados · actualizado cada 5s"
         countTone="success"
       />
       <KpiRow data={data} />
-      <SectionDivider
+      <SectionHead
         title="Flujo operativo"
         caption="onboarding → planificación → provisionamiento → calentamiento → reputación"
         countTone="success"
@@ -81,35 +82,13 @@ function HeaderRow({ data }: { data: DashboardData }) {
 
 function Welcome({ generatedAt, lastUpdateMs }: { generatedAt: string; lastUpdateMs: number }) {
   return (
-    <header className="flex items-start" style={{ gap: 16 }}>
-      <div className="flex flex-col min-w-0 flex-1" style={{ gap: 6 }}>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          <span
-            className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
-            style={{ letterSpacing: "var(--tracking-widest)" }}
-          >
-            Inicio operativo
-          </span>
-          <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
-          <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-            Actualizado {formatDateTime(generatedAt)}
-          </span>
-        </div>
-        <h1
-          className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
-          style={{ letterSpacing: "var(--tracking-tightest)" }}
-        >
-          Capacidad preparada, sin envíos reales.
-        </h1>
-        <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
-          Delivrix gobierna infraestructura de correo autorizada en modo solo lectura. OpenClaw
-          observa, valida y propone — los humanos aprueban cada acción real.
-        </p>
-      </div>
-      <div className="shrink-0">
-        <LiveIndicator pollIntervalSec={5} lastUpdateAt={lastUpdateMs} tone="success" />
-      </div>
-    </header>
+    <PageHead
+      eyebrow="Inicio operativo"
+      meta={`Actualizado ${formatDateTime(generatedAt)}`}
+      title="Capacidad preparada, sin envíos reales."
+      body="Delivrix gobierna infraestructura de correo autorizada en modo solo lectura. OpenClaw observa, valida y propone — los humanos aprueban cada acción real."
+      trailing={<LiveIndicator pollIntervalSec={5} lastUpdateAt={lastUpdateMs} tone="success" />}
+    />
   );
 }
 
@@ -155,19 +134,12 @@ function KpiShell({
   tooltipHint?: React.ReactNode;
 }) {
   const card = (
-    <article
-      className="flex flex-col bg-[var(--color-surface)] transition-shadow hover:shadow-[var(--shadow-md)]"
-      style={{
-        gap: 12,
-        padding: 16,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)",
-        cursor: tooltipHint ? "help" : "default"
-      }}
+    <Card
+      className="flex flex-col gap-3"
+      style={{ cursor: tooltipHint ? "help" : "default" }}
     >
       {children}
-    </article>
+    </Card>
   );
   if (!tooltipHint) return card;
   return (
@@ -180,12 +152,7 @@ function KpiShell({
 function KpiHead({ label, pillBg, pillFg, pillText }: { label: string; pillBg: string; pillFg: string; pillText: string }) {
   return (
     <div className="flex items-center" style={{ gap: 8 }}>
-      <span
-        className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]"
-        style={{ letterSpacing: "var(--tracking-wide)" }}
-      >
-        {label}
-      </span>
+      <Eyebrow>{label}</Eyebrow>
       <span className="flex-1" aria-hidden="true" />
       <span
         className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
@@ -201,13 +168,13 @@ function KpiValue({ value, unit }: { value: string; unit?: string }) {
   return (
     <div className="flex items-end" style={{ gap: 8 }}>
       <span
-        className="text-[32px] font-[family-name:var(--font-mono)] font-bold leading-none text-[var(--color-text-primary)] tabular-nums"
-        style={{ letterSpacing: "var(--tracking-tightest)" }}
+        className="text-[30px] font-[family-name:var(--font-mono)] font-semibold leading-none text-[var(--color-text-primary)] tabular-nums"
+        style={{ letterSpacing: "0" }}
       >
         {value}
       </span>
       {unit ? (
-        <span className="text-[14px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)] leading-none">
+        <span className="text-[12px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)] leading-none">
           {unit}
         </span>
       ) : null}
@@ -481,15 +448,7 @@ function Pipeline({ data, onNavigate }: { data: DashboardData; onNavigate?: (sec
     {};
   const warming = sender.warming ?? 0;
   return (
-    <section
-      className="bg-[var(--color-surface)]"
-      style={{
-        borderRadius: 8,
-        padding: 20,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
+    <Card padding="relaxed">
       {/* pipeHead — sin h2 (el SectionDivider del Overview ya lo introduce). Solo CTA. */}
       <header className="flex items-center" style={{ gap: 12, marginBottom: 16 }}>
         <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
@@ -503,16 +462,15 @@ function Pipeline({ data, onNavigate }: { data: DashboardData; onNavigate?: (sec
           Flujo de referencia
         </span>
         <span className="flex-1" aria-hidden="true" />
-        <button
-          type="button"
+        <Button
+          variant="outline"
+          size="sm"
           onClick={() => onNavigate?.("canvas")}
           disabled={!onNavigate}
-          className="inline-flex items-center text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed disabled:opacity-55"
-          style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-strong)", background: "transparent", cursor: onNavigate ? "pointer" : "not-allowed" }}
         >
           Abrir canvas
           <ArrowRight size={13} strokeWidth={1.75} aria-hidden="true" />
-        </button>
+        </Button>
       </header>
 
       {/* Stages row */}
@@ -566,7 +524,7 @@ function Pipeline({ data, onNavigate }: { data: DashboardData; onNavigate?: (sec
           style={{ background: "linear-gradient(90deg, transparent 0%, var(--color-surface) 100%)" }}
         />
       </div>
-    </section>
+    </Card>
   );
 }
 
@@ -692,7 +650,7 @@ function ApprovalsCard({ data }: { data: DashboardData }) {
   };
   return (
     <section className="flex flex-col" style={{ gap: 12 }}>
-      <SectionDivider
+      <SectionHead
         title="Aprobaciones pendientes"
         count={count}
         countTone={count === 0 ? "neutral" : "critical"}
@@ -700,19 +658,12 @@ function ApprovalsCard({ data }: { data: DashboardData }) {
       />
 
       {count === 0 ? (
-        <div
-          className="bg-[var(--color-surface)]"
-          style={{
-            borderRadius: "var(--radius-md)",
-            border: "1px solid var(--color-border)",
-            padding: "16px 20px"
-          }}
-        >
-          <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
-            Cola de aprobaciones vacía. Todas las acciones supervisadas están autorizadas o no
-            requieren intervención humana.
-          </p>
-        </div>
+        <Card padding="none">
+          <EmptyState
+            title="Cola de aprobaciones vacía."
+            body="Todas las acciones supervisadas están autorizadas o no requieren intervención humana."
+          />
+        </Card>
       ) : (
         <div className="flex flex-col" style={{ gap: 8 }}>
           {approvalIds.slice(0, 3).map((id) => {
@@ -780,16 +731,7 @@ function GatesCard({ data }: { data: DashboardData }) {
   const gates = [...base, ...opGates];
   const okCount = gates.filter((g) => g.kind === "ok").length;
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        gap: 12,
-        padding: 18,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
+    <Card className="flex flex-col gap-3" padding="relaxed">
       {/* gHead — H2 en Geist semibold para mantener jerarquía sin invocar display Funnel.
           Counter como pill compacto Linear-style. */}
       <header className="flex items-center" style={{ gap: 8 }}>
@@ -797,17 +739,9 @@ function GatesCard({ data }: { data: DashboardData }) {
           Gates no negociables
         </h2>
         <span className="flex-1" aria-hidden="true" />
-        <span
-          className="text-[11px] font-[family-name:var(--font-mono)] tabular-nums"
-          style={{
-            padding: "2px 8px",
-            borderRadius: 999,
-            background: "var(--color-surface-sunken)",
-            color: "var(--color-text-secondary)"
-          }}
-        >
+        <Badge>
           {okCount}/{gates.length}
-        </span>
+        </Badge>
       </header>
 
       {/* gateList */}
@@ -825,7 +759,7 @@ function GatesCard({ data }: { data: DashboardData }) {
           );
         })}
       </ul>
-    </section>
+    </Card>
   );
 }
 
@@ -935,17 +869,7 @@ function SystemHealthDark({ data }: { data: DashboardData }) {
     }
   ];
   return (
-    <section
-      className="flex flex-col"
-      style={{
-        gap: 14,
-        padding: 18,
-        borderRadius: 8,
-        background: "var(--color-always-dark-surface)",
-        border: "1px solid var(--color-always-dark-border)",
-        boxShadow: "none"
-      }}
-    >
+    <Card tone="inverse" padding="relaxed" className="flex flex-col gap-3.5">
       {/* shHead — eyebrow estilo Linear: izquierda neutra, derecha estado live */}
       <header className="flex items-center" style={{ gap: 8 }}>
         <span
@@ -998,6 +922,6 @@ function SystemHealthDark({ data }: { data: DashboardData }) {
           </li>
         ))}
       </ul>
-    </section>
+    </Card>
   );
 }
