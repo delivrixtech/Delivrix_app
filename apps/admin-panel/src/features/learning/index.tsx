@@ -11,12 +11,8 @@
  */
 
 import {
-  ArrowUp,
   Eye,
-  History,
-  ShieldAlert,
-  Sparkles,
-  WandSparkles
+  History
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -46,6 +42,14 @@ import {
   staleMinutesFromMeta
 } from "../../shared/ui/realtime/index.ts";
 import { BannerOpenClawV2 } from "../../shared/ui/v2/index.ts";
+import {
+  Card,
+  EmptyState,
+  MonoCode,
+  Pill,
+  Stat
+} from "../../v5/components/primitives";
+import { PageHead } from "../../v5/views/_PageHead";
 
 const LEARNING_POLL_INTERVAL_MS = 30_000;
 const LEARNING_POLL_INTERVAL_SECONDS = LEARNING_POLL_INTERVAL_MS / 1_000;
@@ -159,39 +163,17 @@ function staleBadgeFor(meta: RealTimeMeta | null | undefined): ReactNode {
  * ============================================================ */
 function Header({ generatedAt }: { generatedAt: string }) {
   return (
-    <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-start">
-      <Welcome generatedAt={generatedAt} />
-      <OpenClawPrompt />
-    </div>
-  );
-}
-
-function Welcome({ generatedAt }: { generatedAt: string }) {
-  return (
-    <header className="flex flex-col" style={{ gap: 6 }}>
-      <div className="flex items-center" style={{ gap: 8 }}>
-        <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
-          style={{ letterSpacing: "var(--tracking-widest)" }}
-        >
-          APRENDIZAJE SUPERVISADO
-        </span>
-        <span aria-hidden="true" className="rounded-[2px]" style={{ width: 4, height: 4, background: "var(--color-text-tertiary)" }} />
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-          Actualizado {formatDateTime(generatedAt)}
-        </span>
-      </div>
-      <h1
-        className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
-        style={{ letterSpacing: "var(--tracking-tightest)" }}
-      >
-        OpenClaw aprende con humanos al volante.
-      </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
-        Ninguna habilidad se promueve sin evidencia curada, dry-run estable, evaluación auditada
-        y aprobación humana.
-      </p>
-    </header>
+    <PageHead
+      eyebrow="Aprendizaje supervisado"
+      meta={`Actualizado ${formatDateTime(generatedAt)}`}
+      title="OpenClaw aprende con humanos al volante."
+      body="Ninguna habilidad se promueve sin evidencia curada, dry-run estable, evaluación auditada y aprobación humana."
+      trailing={
+        <div className="w-full lg:w-[440px]">
+          <OpenClawPrompt />
+        </div>
+      }
+    />
   );
 }
 
@@ -228,175 +210,109 @@ function KpiRow({ data }: { data: DashboardData }) {
   );
 }
 
-function KpiShell({ children }: { children: ReactNode }) {
+type KpiTone = "neutral" | "success" | "warning" | "critical" | "info" | "accent";
+
+function KpiCard({
+  label,
+  value,
+  unit,
+  pillText,
+  pillTone,
+  detail,
+  chips,
+  chipsTone
+}: {
+  label: string;
+  value: string;
+  unit?: string;
+  pillText: string;
+  pillTone: KpiTone;
+  detail: ReactNode;
+  chips?: string[];
+  chipsTone?: KpiTone;
+}) {
   return (
-    <article
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        gap: 12,
-        padding: 16,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
-      {children}
-    </article>
+    <Card padding="default" className="flex flex-col gap-3">
+      <Stat
+        label={label}
+        value={value}
+        unit={unit}
+        trend={
+          <Pill tone={pillTone} size="sm">
+            {pillText}
+          </Pill>
+        }
+        hint={detail}
+      />
+      {chips && chips.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {chips.map((c) => (
+            <Pill key={c} tone={chipsTone} size="sm" dot={false}>
+              {c}
+            </Pill>
+          ))}
+        </div>
+      ) : null}
+    </Card>
   );
 }
 
 function KpiHabilidades({ total, ready }: { total: number; ready: number }) {
   return (
-    <KpiShell>
-      <KpiHead
-        label="Habilidades supervisadas"
-        pillBg="var(--color-success-soft)"
-        pillFg="var(--color-success)"
-        pillText={`${ready} / ${total} listos`}
-      />
-      <KpiValue value={String(total)} />
-      <KpiDetail
-        icon={<Sparkles size={12} strokeWidth={1.75} />}
-        text="todas supervisadas"
-        color="var(--color-accent-tertiary)"
-        endpoint="/v1/openclaw/skills"
-      />
-      <div className="flex flex-wrap" style={{ gap: 6 }}>
-        {["DNS", "warming", "cumplimiento"].map((c) => (
-          <span
-            key={c}
-            className="inline-block text-[10px] font-[family-name:var(--font-mono)]"
-            style={{ padding: "3px 8px", borderRadius: 4, background: "var(--color-success-soft)", color: "var(--color-success)" }}
-          >
-            {c}
-          </span>
-        ))}
-      </div>
-    </KpiShell>
+    <KpiCard
+      label="Habilidades supervisadas"
+      value={String(total)}
+      pillText={`${ready} / ${total} listos`}
+      pillTone="success"
+      detail={
+        <>
+          todas supervisadas ·{" "}
+          <span className="font-[family-name:var(--font-mono)]">/v1/openclaw/skills</span>
+        </>
+      }
+      chips={["DNS", "warming", "cumplimiento"]}
+      chipsTone="success"
+    />
   );
 }
 
 function KpiLecciones({ signals }: { signals: number }) {
   return (
-    <KpiShell>
-      <KpiHead label="Signals de readiness" pillBg="var(--color-info-soft)" pillFg="var(--color-info)" pillText={`${signals} capacidades`} />
-      <KpiValue value={String(signals)} />
-      <KpiDetail endpoint="/v1/openclaw/lessons" />
-    </KpiShell>
+    <KpiCard
+      label="Signals de readiness"
+      value={String(signals)}
+      pillText={`${signals} capacidades`}
+      pillTone="info"
+      detail={<span className="font-[family-name:var(--font-mono)]">/v1/openclaw/lessons</span>}
+    />
   );
 }
 
 function KpiPrecision({ blocked, total }: { blocked: number; total: number }) {
   const pct = total === 0 ? 0 : ((total - blocked) / total) * 100;
   return (
-    <KpiShell>
-      <KpiHead
-        label="Signals saludables"
-        pillBg={blocked === 0 ? "var(--color-success-soft)" : "var(--color-warning-soft)"}
-        pillFg={blocked === 0 ? "var(--color-success)" : "var(--color-warning)"}
-        pillText={blocked === 0 ? "todas ok" : `${blocked} bloqueadas`}
-      />
-      <KpiValue value={`${pct.toFixed(1).replace(".", ",")}%`} unit={`${total - blocked} / ${total}`} />
-      <KpiDetail endpoint="/v1/openclaw/eval" />
-    </KpiShell>
+    <KpiCard
+      label="Signals saludables"
+      value={`${pct.toFixed(1).replace(".", ",")}%`}
+      unit={`${total - blocked} / ${total}`}
+      pillText={blocked === 0 ? "todas ok" : `${blocked} bloqueadas`}
+      pillTone={blocked === 0 ? "success" : "warning"}
+      detail={<span className="font-[family-name:var(--font-mono)]">/v1/openclaw/eval</span>}
+    />
   );
 }
 
 function KpiPendientes({ count }: { count: number }) {
   return (
-    <KpiShell>
-      <KpiHead
-        label="Pendientes de revisión"
-        pillBg={count === 0 ? "var(--color-success-soft)" : "var(--color-critical-soft)"}
-        pillFg={count === 0 ? "var(--color-success)" : "var(--color-critical)"}
-        pillText={count === 0 ? "cola vacía" : "esperan humano"}
-      />
-      <KpiValue value={String(count)} />
-      <KpiDetail
-        icon={<ShieldAlert size={12} strokeWidth={1.75} />}
-        text="esperan humano"
-        color="var(--color-critical)"
-        endpoint="/v1/openclaw/queue"
-      />
-      <div className="flex flex-wrap" style={{ gap: 6 }}>
-        {["DNS drift", "warming step", "ingreso de evidencia"].map((c) => (
-          <span
-            key={c}
-            className="inline-block text-[10px] font-[family-name:var(--font-mono)]"
-            style={{ padding: "3px 8px", borderRadius: 4, background: "var(--color-critical-soft)", color: "var(--color-critical)" }}
-          >
-            {c}
-          </span>
-        ))}
-      </div>
-    </KpiShell>
-  );
-}
-
-function KpiHead({ label, pillBg, pillFg, pillText }: { label: string; pillBg: string; pillFg: string; pillText: string }) {
-  return (
-    <div className="flex items-center" style={{ gap: 8 }}>
-      <span
-        className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]"
-        style={{ letterSpacing: "var(--tracking-wide)" }}
-      >
-        {label}
-      </span>
-      <span className="flex-1" aria-hidden="true" />
-      <span
-        className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-        style={{ padding: "2px 6px", borderRadius: 4, background: pillBg, color: pillFg }}
-      >
-        {pillText}
-      </span>
-    </div>
-  );
-}
-
-function KpiValue({ value, unit }: { value: string; unit?: string }) {
-  return (
-    <div className="flex items-end" style={{ gap: 8 }}>
-      <span
-        className="text-[32px] font-[family-name:var(--font-mono)] font-bold leading-none text-[var(--color-text-primary)] tabular-nums"
-        style={{ letterSpacing: "var(--tracking-tightest)" }}
-      >
-        {value}
-      </span>
-      {unit ? (
-        <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)] leading-none">
-          {unit}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function KpiDetail({
-  icon,
-  text,
-  color,
-  endpoint
-}: {
-  icon?: ReactNode;
-  text?: string;
-  color?: string;
-  endpoint: string;
-}) {
-  return (
-    <div className="flex items-center" style={{ gap: 6 }}>
-      {icon ? (
-        <span style={{ color }} aria-hidden="true">
-          {icon}
-        </span>
-      ) : null}
-      {text ? (
-        <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold" style={{ color }}>
-          {text}
-        </span>
-      ) : null}
-      <span className="flex-1" aria-hidden="true" />
-      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{endpoint}</span>
-    </div>
+    <KpiCard
+      label="Pendientes de revisión"
+      value={String(count)}
+      pillText={count === 0 ? "cola vacía" : "esperan humano"}
+      pillTone={count === 0 ? "success" : "critical"}
+      detail={<span className="font-[family-name:var(--font-mono)]">/v1/openclaw/queue</span>}
+      chips={["DNS drift", "warming step", "ingreso de evidencia"]}
+      chipsTone="critical"
+    />
   );
 }
 
@@ -433,14 +349,7 @@ function PlanCard({ data }: { data: DashboardData }) {
     return { bg: "var(--color-success-soft)", fg: "var(--color-success)", text: "al día" };
   })();
   return (
-    <section
-      className="flex min-w-0 flex-col bg-[var(--color-surface)]"
-      style={{
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
+    <Card padding="none" className="flex min-w-0 flex-col">
       <header
         className="flex items-center"
         style={{
@@ -525,7 +434,7 @@ function PlanCard({ data }: { data: DashboardData }) {
           );
         })}
       </ol>
-    </section>
+    </Card>
   );
 }
 
@@ -548,14 +457,7 @@ export function buildSkillRows(readinessSignals: DashboardData["readinessSignals
 function SkillsCard({ data }: { data: DashboardData }) {
   const skills = buildSkillRows(data.readinessSignals);
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
+    <Card padding="none" className="flex flex-col">
       <header
         className="flex items-center"
         style={{ gap: 12, padding: "16px 18px 14px 18px", borderBottom: "1px solid var(--color-border)" }}
@@ -613,23 +515,17 @@ function SkillsCard({ data }: { data: DashboardData }) {
       ) : (
         <SkillsEmptyState />
       )}
-    </section>
+    </Card>
   );
 }
 
 function SkillsEmptyState() {
   return (
-    <div className="flex flex-col" style={{ gap: 6, padding: "18px" }}>
-      <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-        Sin recomendaciones de readiness
-      </span>
-      <span className="text-[11px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-secondary)]">
-        El contrato no devolvió recomendaciones activas para OpenClaw.
-      </span>
-      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-        {READ_ENDPOINTS.openClawReadinessSignals}
-      </span>
-    </div>
+    <EmptyState
+      title="Sin recomendaciones de readiness"
+      body="El contrato no devolvió recomendaciones activas para OpenClaw."
+      action={<MonoCode>{READ_ENDPOINTS.openClawReadinessSignals}</MonoCode>}
+    />
   );
 }
 
@@ -671,14 +567,7 @@ function EvidenciaCurada({
   const rows = buildEvidenceRows(items);
   const stale = staleBadgeFor(meta);
   return (
-    <section
-      className="flex min-w-0 flex-col bg-[var(--color-surface)]"
-      style={{
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
+    <Card padding="none" className="flex min-w-0 flex-col">
       <header
         className="flex min-w-0 flex-wrap items-start sm:items-center"
         style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid var(--color-border)" }}
@@ -805,7 +694,7 @@ function EvidenciaCurada({
         </div>
       </div>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -844,17 +733,7 @@ function AuditStrip({
   const auditLines = buildLearningAuditLines(events);
   const stale = staleBadgeFor(meta);
   return (
-    <section
-      className="flex min-w-0 flex-col"
-      style={{
-        gap: 10,
-        padding: "14px 18px",
-        borderRadius: 8,
-        background: "var(--color-surface-raised)",
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
+    <Card padding="none" className="flex min-w-0 flex-col" style={{ gap: 10, padding: "14px 18px" }}>
       <header className="flex min-w-0 flex-wrap items-center" style={{ gap: 8 }}>
         <History size={14} strokeWidth={1.75} aria-hidden="true" style={{ color: "var(--color-accent-secondary)" }} />
         <span className="text-[13px] font-[family-name:var(--font-sans)] font-semibold" style={{ color: "var(--color-text-primary)" }}>
@@ -914,6 +793,6 @@ function AuditStrip({
         ))}
       </ul>
       )}
-    </section>
+    </Card>
   );
 }

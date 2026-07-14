@@ -28,6 +28,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { DashboardData } from "../../shared/api/client.ts";
 import { filterAuditEvents, formatTimeOnly, shortAuditHash } from "../../shared/lib/formatters.ts";
 import { BannerOpenClawV2, useToast } from "../../shared/ui/v2/index.ts";
+import { Button, Card, Pill, SectionHead } from "../../v5/components/primitives";
+import { PageHead } from "../../v5/views/_PageHead";
 
 export function CollectorSection({ data }: { data: DashboardData }) {
   const [activeTab, setActiveTab] = useState<"sources" | "manual">("sources");
@@ -59,21 +61,11 @@ export function CollectorSection({ data }: { data: DashboardData }) {
  * ============================================================ */
 function Hero() {
   return (
-    <header className="flex flex-col" style={{ gap: 10 }}>
-      <span
-        className="text-[11px] font-[family-name:var(--font-caption)] font-bold text-[var(--color-accent-tertiary)]"
-        style={{ letterSpacing: "var(--tracking-widest)" }}
-      >
-        EVIDENCIA SUPERVISADA
-      </span>
-      <h1 className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]">
-        Recolector y captura manual
-      </h1>
-      <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]" style={{ maxWidth: 760 }}>
-        El panel es solo lectura. La evidencia entra desde fuentes supervisadas o desde un
-        endpoint manual auditado fuera del panel.
-      </p>
-    </header>
+    <PageHead
+      eyebrow="Evidencia supervisada"
+      title="Recolector y captura manual"
+      body="El panel es solo lectura. La evidencia entra desde fuentes supervisadas o desde un endpoint manual auditado fuera del panel."
+    />
   );
 }
 
@@ -251,16 +243,7 @@ function ManualCaptureTab() {
   }, [actorId, rawJson, mutation]);
 
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        gap: 16,
-        padding: 20,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
+    <Card padding="none" className="flex flex-col" style={{ gap: 16, padding: 20 }}>
       <header className="flex items-start" style={{ gap: 12 }}>
         <span
           aria-hidden="true"
@@ -330,50 +313,37 @@ function ManualCaptureTab() {
       ) : null}
 
       <div className="flex items-center" style={{ gap: 10 }}>
-        <button
-          type="button"
-          onClick={handleSubmit}
-          disabled={mutation.isPending}
-          className="inline-flex items-center text-[13px] font-[family-name:var(--font-sans)] font-semibold transition-colors hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed disabled:opacity-60"
-          style={{
-            gap: 8,
-            padding: "10px 18px",
-            borderRadius: 6,
-            background: "var(--color-accent)",
-            color: "var(--color-accent-fg)",
-            border: "none",
-            cursor: mutation.isPending ? "not-allowed" : "pointer"
-          }}
-        >
+        <Button type="button" onClick={handleSubmit} disabled={mutation.isPending} size="lg">
           <Upload size={14} strokeWidth={2} aria-hidden="true" />
           {mutation.isPending ? "Ingestando…" : "Ingestar snapshot"}
-        </button>
+        </Button>
         <span className="text-[11px] font-[family-name:var(--font-caption)]" style={{ color: "var(--color-text-tertiary)" }}>
           Endpoint <code className="font-[family-name:var(--font-mono)]">/v1/devops/collector/manual-snapshots/ingest</code>
         </span>
       </div>
-    </section>
+    </Card>
   );
 }
 
 /* ============================================================
  * SourcesRow (KFzUx) — 4 source cards
  * ============================================================ */
+type SourceTone = "neutral" | "success" | "warning" | "critical" | "info";
+
 function statusStyle(status: string): {
   state: string;
-  stateBg: string;
-  stateFg: string;
+  tone: SourceTone;
 } {
   const t = status.toLowerCase();
   if (t === "ready" || t === "ok" || t === "fresh")
-    return { state: "LISTO", stateBg: "var(--color-success-soft)", stateFg: "var(--color-success)" };
+    return { state: "LISTO", tone: "success" };
   if (t === "needs_review" || t === "stale")
-    return { state: "DESACTUALIZADO", stateBg: "var(--color-warning-soft)", stateFg: "var(--color-warning)" };
+    return { state: "DESACTUALIZADO", tone: "warning" };
   if (t === "blocked" || t === "critical")
-    return { state: "BLOQUEADO", stateBg: "var(--color-critical-soft)", stateFg: "var(--color-critical)" };
+    return { state: "BLOQUEADO", tone: "critical" };
   if (t === "unknown")
-    return { state: "DESCONOCIDO", stateBg: "var(--color-unknown-soft)", stateFg: "var(--color-unknown)" };
-  return { state: status.toUpperCase(), stateBg: "var(--color-neutral-soft)", stateFg: "var(--color-text-secondary)" };
+    return { state: "DESCONOCIDO", tone: "neutral" };
+  return { state: status.toUpperCase(), tone: "neutral" };
 }
 
 function sourceIcon(kind: string): React.ReactNode {
@@ -410,8 +380,7 @@ function SourcesRow({ data }: { data: DashboardData }) {
             name={s.label}
             icon={sourceIcon(s.kind)}
             state={style.state}
-            stateBg={style.stateBg}
-            stateFg={style.stateFg}
+            tone={style.tone}
             endpoint={
               s.safeCollection.endpoint
                 ? `${s.safeCollection.transport.toUpperCase()} · ${s.safeCollection.endpoint}`
@@ -430,8 +399,7 @@ function SourceCard({
   name,
   icon,
   state,
-  stateBg,
-  stateFg,
+  tone,
   endpoint,
   mode,
   lastSeen
@@ -439,23 +407,13 @@ function SourceCard({
   name: string;
   icon: React.ReactNode;
   state: string;
-  stateBg: string;
-  stateFg: string;
+  tone: SourceTone;
   endpoint: string;
   mode: string;
   lastSeen: string;
 }) {
   return (
-    <article
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        gap: 14,
-        padding: 16,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
+    <Card padding="none" className="flex flex-col" style={{ gap: 14, padding: 16 }}>
       <header className="flex items-center" style={{ gap: 10 }}>
         <span
           aria-hidden="true"
@@ -474,20 +432,9 @@ function SourceCard({
           {name}
         </h3>
         <span className="flex-1" aria-hidden="true" />
-        <span
-          className="inline-flex items-center text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
-          style={{
-            gap: 4,
-            padding: "2px 8px",
-            borderRadius: 4,
-            background: stateBg,
-            color: stateFg,
-            letterSpacing: "var(--tracking-wide)"
-          }}
-        >
-          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: stateFg }} />
+        <Pill tone={tone} size="sm">
           {state}
-        </span>
+        </Pill>
       </header>
 
       <div className="flex flex-col" style={{ gap: 6 }}>
@@ -503,7 +450,7 @@ function SourceCard({
           <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{lastSeen}</span>
         </div>
       </div>
-    </article>
+    </Card>
   );
 }
 
@@ -607,51 +554,40 @@ function AcceptedFieldsTable({
   const ACCEPTED_FIELDS = rows;
   return (
     <section className="flex flex-col" style={{ gap: 12 }}>
-      <header className="flex items-end justify-between" style={{ gap: 16 }}>
-        <div className="flex flex-col" style={{ gap: 4 }}>
-          <h2 className="m-0 text-[18px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-            Campos aceptados
-          </h2>
-          <span className="text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
-            Contrato firmado · valida cada snapshot antes de aceptarlo
-          </span>
-        </div>
-        <div className="flex items-center" style={{ gap: 10 }}>
-          <span
-            className="inline-flex items-center text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]"
-            style={{
-              gap: 6,
-              padding: "4px 8px",
-              borderRadius: 4,
-              background: "var(--color-surface-sunken)",
-              border: "1px solid var(--color-border)"
-            }}
-          >
-            schema · {schemaVersion}
-          </span>
-          <span
-            className="inline-flex items-center text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]"
-            style={{
-              gap: 6,
-              padding: "4px 8px",
-              borderRadius: 4,
-              background: "var(--color-surface-sunken)",
-              border: "1px solid var(--color-border)"
-            }}
-          >
-            {requiredCount} / {ACCEPTED_FIELDS.length} requeridos
-          </span>
-        </div>
-      </header>
+      <SectionHead
+        title="Campos aceptados"
+        caption="Contrato firmado · valida cada snapshot antes de aceptarlo"
+        trailing={
+          <div className="flex items-center" style={{ gap: 10 }}>
+            <span
+              className="inline-flex items-center text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]"
+              style={{
+                gap: 6,
+                padding: "4px 8px",
+                borderRadius: 4,
+                background: "var(--color-surface-sunken)",
+                border: "1px solid var(--color-border)"
+              }}
+            >
+              schema · {schemaVersion}
+            </span>
+            <span
+              className="inline-flex items-center text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]"
+              style={{
+                gap: 6,
+                padding: "4px 8px",
+                borderRadius: 4,
+                background: "var(--color-surface-sunken)",
+                border: "1px solid var(--color-border)"
+              }}
+            >
+              {requiredCount} / {ACCEPTED_FIELDS.length} requeridos
+            </span>
+          </div>
+        }
+      />
 
-      <div
-        className="bg-[var(--color-surface)] overflow-x-auto"
-        style={{
-          borderRadius: 8,
-          border: "1px solid var(--color-border)",
-          boxShadow: "var(--shadow-sm)"
-        }}
-      >
+      <Card padding="none" className="overflow-x-auto">
         <div
           className="grid items-center"
           style={{
@@ -739,7 +675,7 @@ function AcceptedFieldsTable({
             </span>
           </div>
         ))}
-      </div>
+      </Card>
     </section>
   );
 }
@@ -772,10 +708,7 @@ function AuditSection({ data }: { data: DashboardData }) {
 
 function AuditTable({ rows }: { rows: Array<[string, string, string, string, string]> }) {
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
-    >
+    <Card padding="none" className="flex flex-col" style={{ gap: 12, padding: 20 }}>
       <header className="flex items-center" style={{ gap: 12 }}>
         <div className="flex flex-col" style={{ gap: 2 }}>
           <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
@@ -851,7 +784,7 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
         ))}
       </ul>
       </div>
-    </section>
+    </Card>
   );
 }
 
@@ -872,10 +805,7 @@ function ExplainerText({ data }: { data: DashboardData }) {
       "sensors.ipmi.* → tabla sensors"
     ];
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{ gap: 12, padding: 20, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
-    >
+    <Card padding="none" className="flex flex-col" style={{ gap: 12, padding: 20 }}>
       <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
         Por qué la ingesta vive fuera del panel
       </h2>
@@ -901,6 +831,6 @@ function ExplainerText({ data }: { data: DashboardData }) {
           </li>
         ))}
       </ul>
-    </section>
+    </Card>
   );
 }
