@@ -316,9 +316,9 @@ function Historial({ data }: { data: DashboardData }) {
         trailing={<Badge>{data.telemetryHistory.window || "ventana —"}</Badge>}
       />
 
-      <ChartFromSeries title="USO CPU" pillSuffix="%" series={cpuSeries} fallbackBars={[30, 36, 42, 46, 52, 54, 60, 56, 52, 48, 42, 38]} />
-      <ChartFromSeries title="USO RAM" pillSuffix="%" series={memSeries} fallbackBars={[42, 48, 52, 50, 56, 58, 62, 64, 68, 72, 70, 66]} />
-      <ChartFromSeries title="TEMP CPU" pillSuffix="°C" series={tempSeries} fallbackBars={[22, 26, 30, 32, 36, 40, 46, 50, 54, 60, 52, 48]} />
+      <ChartFromSeries title="USO CPU" pillSuffix="%" series={cpuSeries} />
+      <ChartFromSeries title="USO RAM" pillSuffix="%" series={memSeries} />
+      <ChartFromSeries title="TEMP CPU" pillSuffix="°C" series={tempSeries} />
     </Card>
   );
 }
@@ -326,38 +326,37 @@ function Historial({ data }: { data: DashboardData }) {
 function ChartFromSeries({
   title,
   pillSuffix,
-  series,
-  fallbackBars
+  series
 }: {
   title: string;
   pillSuffix: string;
   series: DashboardData["telemetryHistory"]["series"][number] | undefined;
-  fallbackBars: number[];
 }) {
   const points = (series?.points ?? []).filter((p) => typeof p.value === "number") as Array<{
     timestamp: string;
     value: number;
     quality: string;
   }>;
-  const bars = points.length > 0
-    ? points.slice(-12).map((p) => p.value)
-    : fallbackBars;
+  // A19: sin datos reales no se dibujan barras/ejes sintéticos. El recolector
+  // aún no reportó esta serie → estado honesto en vez de una curva inventada.
+  if (points.length === 0) {
+    return <ChartEmpty title={title} />;
+  }
+  const bars = points.slice(-12).map((p) => p.value);
   const lastValue = bars[bars.length - 1];
   const max = Math.max(...bars, 1);
   const normalized = bars.map((v) => Math.max(6, Math.min(60, (v / max) * 60)));
   const highlightedIndex = bars.length - 1;
-  const axis = points.length > 0
-    ? [
-        new Date(points[0].timestamp).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
-        points.length > 1
-          ? new Date(points[Math.floor(points.length / 2)].timestamp).toLocaleTimeString("es-CO", {
-              hour: "2-digit",
-              minute: "2-digit"
-            })
-          : "—",
-        "ahora"
-      ]
-    : ["-12h", "-6h", "ahora"];
+  const axis = [
+    new Date(points[0].timestamp).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
+    points.length > 1
+      ? new Date(points[Math.floor(points.length / 2)].timestamp).toLocaleTimeString("es-CO", {
+          hour: "2-digit",
+          minute: "2-digit"
+        })
+      : "—",
+    "ahora"
+  ];
   return (
     <ChartShell
       title={title}
@@ -368,6 +367,44 @@ function ChartFromSeries({
       axis={axis}
       highlightedIndex={highlightedIndex}
     />
+  );
+}
+
+function ChartEmpty({ title }: { title: string }) {
+  return (
+    <div
+      className="flex flex-col"
+      style={{
+        gap: 10,
+        padding: 14,
+        borderRadius: 6,
+        background: "var(--color-bg)",
+        border: "1px solid var(--color-border)"
+      }}
+    >
+      <header className="flex items-center justify-between" style={{ gap: 8 }}>
+        <span
+          className="text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-text-tertiary)]"
+          style={{ letterSpacing: "var(--tracking-wider)" }}
+        >
+          {title}
+        </span>
+        <span
+          className="inline-block text-[10px] font-[family-name:var(--font-mono)] font-semibold"
+          style={{
+            padding: "2px 6px",
+            borderRadius: 4,
+            background: "var(--color-neutral-soft)",
+            color: "var(--color-text-tertiary)"
+          }}
+        >
+          sin datos
+        </span>
+      </header>
+      <p className="m-0 text-[11px] font-[family-name:var(--font-caption)] leading-[1.45] text-[var(--color-text-secondary)]">
+        El recolector no ha reportado esta serie en la ventana actual.
+      </p>
+    </div>
   );
 }
 
@@ -471,16 +508,18 @@ function UnknownsRow({ data }: { data: DashboardData }) {
   }));
   return (
     <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] items-start">
-      <CamposDesconocidos rows={rows} />
+      <CamposDesconocidos rows={rows} total={allUnknowns.length} />
       <DatosFaltantes count={allUnknowns.length} />
     </div>
   );
 }
 
 function CamposDesconocidos({
-  rows
+  rows,
+  total
 }: {
   rows: Array<{ order: string; path: string; desc: string }>;
+  total: number;
 }) {
   if (rows.length === 0) {
     return (
@@ -496,11 +535,11 @@ function CamposDesconocidos({
     <Card padding="relaxed" className="flex flex-col" style={{ gap: 14 }}>
       <SectionHead
         title="Campos desconocidos"
-        caption="El contrato no devolvió valor en 4 campos · ordenados por prioridad"
+        caption={`El contrato no devolvió valor en ${total} campo${total === 1 ? "" : "s"} · ordenados por prioridad`}
         trailing={
           <Pill tone="info" dot={false}>
             <Info size={11} strokeWidth={1.75} aria-hidden="true" />
-            4 sin valor
+            {total} sin valor
           </Pill>
         }
       />

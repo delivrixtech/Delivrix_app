@@ -7,12 +7,15 @@
  * cableo en `App.tsx`.
  *
  * Disciplina:
- *   - Cap mensual $50 USD hardcoded · visible en strip de guardrails + footer.
+ *   - Cap mensual $50 USD (límite hardcoded); el consumo del mes es REAL,
+ *     derivado del audit chain vía `computeWalletTransactions` (mismo cálculo
+ *     que el Wallet de Sender Pool). Cero gasto inventado.
  *   - Compra real bloqueada (`AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE=false`) ·
  *     la UI muestra el lock semánticamente en cada CTA crítico.
  *   - WHOIS privacy hardcoded true · chip permanent.
  *   - Cada propuesta queda en audit chain · footer recuerda runbook.
- *   - Comparativa Route53 vs Porkbun (Δ$) en cada card de propuesta.
+ *   - Precio real de Route53 por TLD; sin comparativas fabricadas de otros
+ *     registrars (no hay adapter de mercado en el read-boundary v5).
  *   - Una sola `HumanNote` (en el banner OpenClaw).
  *   - staggerContainer + staggerItem para entrance.
  *   - Sin pills redundantes en KPIs.
@@ -22,12 +25,7 @@
  *   GET /v1/domains/suggestions?seed=...&count=10
  *   GET /v1/domains/prices?tlds=com,net,io,co
  *   GET /v1/domains/owned
- *
- * Porkbun: el endpoint comparativo aún no está en el read-boundary v5; el
- * tile usa el precio Route53 + estimación Porkbun derivada de la matriz
- * conocida (.com −$5, .io −$2, .net −$3, .co −$4) hasta que Codex publique
- * `/v1/domains/prices/compare`. Si el TLD no está en la matriz, se muestra
- * "—" en lugar de inventar.
+ *   GET /v1/audit-events  (consumo real del cap mensual)
  */
 
 import { useEffect, useMemo, useState, type FormEvent } from "react";
@@ -44,8 +42,10 @@ import {
   Sparkles,
   TriangleAlert
 } from "lucide-react";
-import { getJson, getJsonWithQuery } from "../../shared/api/client";
+import { getJson, getJsonWithQuery, type AuditEventsPayload } from "../../shared/api/client";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
+import { computeWalletTransactions } from "./sender-pool-wallet";
+import { useOpenClawIntent } from "../../shared/ui/v2";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import {
   Badge,
@@ -71,21 +71,13 @@ import { PageHead } from "./_PageHead";
  * ============================================================ */
 
 const MONTHLY_CAP_USD = 50;
-const SPENT_THIS_MONTH_USD = 0; // Fase 1: discover/propose, sin compras reales.
 const PURCHASE_ENABLED = false;
 const WHOIS_PRIVACY_ENABLED = true;
 const RUNBOOK_PATH = "DOCUMENTACION/runbooks-demo-viernes/flip-purchase-flag.sh";
 const DEFAULT_TLDS = ["com", "net", "io", "co"];
 const POLL_PRICES_MS = 5 * 60_000;
 const POLL_OWNED_MS = 60_000;
-
-/** Δ aproximada Porkbun − Route53 (USD). Negativo = Porkbun más barato. */
-const PORKBUN_DELTA_USD: Record<string, number> = {
-  com: -5,
-  net: -3,
-  io: -2,
-  co: -4
-};
+const POLL_WALLET_MS = 30_000;
 
 /* ============================================================
  * Contract types — mirror del paquete @delivrix/domain.
@@ -162,6 +154,27 @@ function useOwnedCount() {
   });
 }
 
+/**
+ * Consumo REAL del cap mensual: suma `costUsd` de los eventos de registro de
+ * dominio del mes en curso (mismo cálculo que el Wallet de Sender Pool). Si no
+ * hay eventos de compra, el gasto es 0 real (Fase 1 no ejecuta compras).
+ */
+function useMonthlySpent() {
+  const query = useQuery({
+    queryKey: ["v5", "domains", "wallet"],
+    queryFn: () =>
+      getJsonWithQuery<AuditEventsPayload>(READ_ENDPOINTS.auditEvents, { limit: 50 }),
+    refetchInterval: POLL_WALLET_MS,
+    staleTime: POLL_WALLET_MS / 2,
+    retry: 1
+  });
+  const spent = computeWalletTransactions(query.data?.events ?? []).reduce(
+    (sum, t) => sum + t.amount,
+    0
+  );
+  return { spent, isLoading: query.isLoading };
+}
+
 function useAvailability(query: string) {
   const debounced = useDebounced(query.trim().toLowerCase(), 350);
   const valid = isPlausibleDomain(debounced);
@@ -206,6 +219,7 @@ export function DomainsV5() {
   const suggestions = useSuggestions(seed);
   const prices = usePrices();
   const owned = useOwnedCount();
+  const { spent: spentThisMonth } = useMonthlySpent();
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -221,8 +235,8 @@ export function DomainsV5() {
   });
 
   const ownedCount = Array.isArray(owned.data?.domains) ? owned.data!.domains.length : 0;
-  const spentRemaining = MONTHLY_CAP_USD - SPENT_THIS_MONTH_USD;
-  const capPct = (SPENT_THIS_MONTH_USD / MONTHLY_CAP_USD) * 100;
+  const spentRemaining = MONTHLY_CAP_USD - spentThisMonth;
+  const capPct = (spentThisMonth / MONTHLY_CAP_USD) * 100;
 
   return (
     <motion.div
@@ -238,10 +252,10 @@ export function DomainsV5() {
           title="Buscar, valorar y proponer dominios."
           body={
             <Body className="max-w-[640px]">
-              Discover/propose vía AWS Route53 Domains con comparativa frente a
-              Porkbun. OpenClaw sugiere candidatos y el operador firma la
-              propuesta; la compra real queda detrás de doble aprobación humana
-              (Fase 2) y todavía no está habilitada.
+              Discover/propose vía AWS Route53 Domains con precio real por TLD.
+              OpenClaw sugiere candidatos y el operador firma la propuesta; la
+              compra real queda detrás de doble aprobación humana (Fase 2) y
+              todavía no está habilitada.
             </Body>
           }
           trailing={
@@ -256,7 +270,7 @@ export function DomainsV5() {
 
       <motion.section variants={staggerItem}>
         <GuardrailStrip
-          spent={SPENT_THIS_MONTH_USD}
+          spent={spentThisMonth}
           cap={MONTHLY_CAP_USD}
           capPct={capPct}
           ownedCount={ownedCount}
@@ -292,7 +306,7 @@ export function DomainsV5() {
           caption={
             proposals.length === 0
               ? "Submit una búsqueda para ver propuestas"
-              : "Cada candidato lleva comparativa Route53 vs Porkbun"
+              : "Cada candidato muestra disponibilidad y precio real de Route53"
           }
           count={proposals.length || undefined}
           countTone={proposals.length > 0 ? "success" : "neutral"}
@@ -516,7 +530,6 @@ interface ProposalRow {
   availability: DomainAvailabilityStatus | null;
   score: number;
   route53Price: DomainPrice | undefined;
-  porkbunDelta: number | null;
   source: "submitted" | "suggestion";
 }
 
@@ -565,6 +578,7 @@ function ProposalsList({
 }
 
 function ProposalCard({ proposal }: { proposal: ProposalRow }) {
+  const { sendIntent } = useOpenClawIntent();
   const tone: "success" | "warning" | "critical" | "neutral" =
     proposal.availability === "AVAILABLE"
       ? "success"
@@ -574,17 +588,16 @@ function ProposalCard({ proposal }: { proposal: ProposalRow }) {
       ? "warning"
       : "neutral";
 
-  const route53Label = proposal.route53Price
-    ? formatUsd(proposal.route53Price.registration)
-    : "—";
-  const porkbunLabel =
-    proposal.route53Price && proposal.porkbunDelta !== null
-      ? formatUsd((proposal.route53Price.registration ?? 0) + proposal.porkbunDelta)
-      : "—";
-  const deltaLabel = proposal.porkbunDelta !== null
-    ? `${proposal.porkbunDelta < 0 ? "−" : "+"}$${Math.abs(proposal.porkbunDelta).toFixed(2)}`
-    : "—";
-  const cheaperOnPorkbun = (proposal.porkbunDelta ?? 0) < 0;
+  const registrationLabel = formatUsd(proposal.route53Price?.registration);
+  const renewalLabel = formatUsd(proposal.route53Price?.renewal);
+  const currency = proposal.route53Price?.currency ?? "USD";
+  const available = proposal.availability === "AVAILABLE";
+
+  const requestApproval = () =>
+    sendIntent(
+      `Prepará la propuesta de registro de ${proposal.domain} en Route53 (WHOIS privacy activada, cap mensual $${MONTHLY_CAP_USD}). No ejecutes la compra: dejala firmada en el ApprovalGate para revisión humana.`,
+      `domains:request-approval:${proposal.domain}`
+    );
 
   return (
     <Card padding="relaxed" className="flex flex-col gap-3">
@@ -619,21 +632,25 @@ function ProposalCard({ proposal }: { proposal: ProposalRow }) {
         </Pill>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 border-t border-border pt-3">
-        <PriceColumn label="Route53" value={route53Label} />
-        <PriceColumn label="Porkbun" value={porkbunLabel} hint={proposal.porkbunDelta === null ? "sin matriz" : undefined} />
+      <div className="grid grid-cols-2 gap-2 border-t border-border pt-3">
         <PriceColumn
-          label="Δ Porkbun"
-          value={deltaLabel}
-          tone={cheaperOnPorkbun ? "success" : proposal.porkbunDelta !== null ? "warning" : "neutral"}
+          label="Registro Route53"
+          value={registrationLabel}
+          hint={proposal.route53Price ? currency : "sin precio publicado"}
+        />
+        <PriceColumn
+          label="Renovación Route53"
+          value={renewalLabel}
+          hint={proposal.route53Price?.renewal != null ? `${currency}/año` : "sin precio publicado"}
         />
       </div>
 
       <div className="flex items-center gap-2">
         <Button
-          variant={proposal.availability === "AVAILABLE" ? "primary" : "secondary"}
+          variant={available ? "primary" : "secondary"}
           size="sm"
-          disabled={proposal.availability !== "AVAILABLE"}
+          disabled={!available}
+          onClick={available ? requestApproval : undefined}
           aria-label={`Solicitar aprobación para ${proposal.domain}`}
         >
           <Lock size={11} strokeWidth={1.75} />
@@ -676,6 +693,7 @@ function PriceColumn({
  * ============================================================ */
 
 function BannerOpenClawV2({ count }: { count: number }) {
+  const { sendIntent, navigateTo } = useOpenClawIntent();
   return (
     <Card padding="relaxed" className="flex items-start gap-4">
       <div className="grid size-9 shrink-0 place-items-center rounded-md bg-warning-soft text-warning">
@@ -700,11 +718,20 @@ function BannerOpenClawV2({ count }: { count: number }) {
           Si quieres revisamos cada candidata antes de firmar — abro el chat y te lo explico.
         </HumanNote>
         <div className="mt-1 flex items-center gap-2">
-          <Button variant="primary" size="sm">
+          <Button variant="primary" size="sm" onClick={() => navigateTo("canvas")}>
             Revisar en Canvas Live
             <ArrowRight size={12} strokeWidth={1.75} />
           </Button>
-          <Button variant="ghost" size="sm">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              sendIntent(
+                `Repasá conmigo las ${count} propuesta(s) de dominio disponibles antes de firmar ninguna.`,
+                "domains:banner-open-chat"
+              )
+            }
+          >
             Abrir chat
           </Button>
         </div>
@@ -769,7 +796,6 @@ function buildProposals(args: {
       availability: availability.availability,
       score: scoreFor(availability.domain, availability.availability),
       route53Price: priceByTld.get(tld),
-      porkbunDelta: porkbunDeltaFor(tld),
       source: "submitted"
     });
     seen.add(availability.domain);
@@ -785,7 +811,6 @@ function buildProposals(args: {
       availability: s.availability,
       score: scoreFor(s.domain, s.availability),
       route53Price: priceByTld.get(tld),
-      porkbunDelta: porkbunDeltaFor(tld),
       source: "suggestion"
     });
   }
@@ -799,11 +824,6 @@ function scoreFor(domain: string, status: DomainAvailabilityStatus | null): numb
   const lengthScore = Math.max(0, 10 - Math.max(0, len - 6));
   const availBonus = status === "AVAILABLE" ? 0 : status === "UNAVAILABLE" ? -3 : -1;
   return Math.max(1, Math.min(10, lengthScore + availBonus));
-}
-
-function porkbunDeltaFor(tld: string): number | null {
-  if (!tld) return null;
-  return PORKBUN_DELTA_USD[tld] ?? null;
 }
 
 function tldOf(domain: string): string | null {
