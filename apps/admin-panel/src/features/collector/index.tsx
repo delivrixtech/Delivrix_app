@@ -363,25 +363,17 @@ function statusStyle(status: string): {
   state: string;
   stateBg: string;
   stateFg: string;
-  confidenceColor: string;
-  confidence: number;
 } {
   const t = status.toLowerCase();
   if (t === "ready" || t === "ok" || t === "fresh")
-    return { state: "LISTO", stateBg: "var(--color-success-soft)", stateFg: "var(--color-success)", confidenceColor: "var(--color-success)", confidence: 95 };
+    return { state: "LISTO", stateBg: "var(--color-success-soft)", stateFg: "var(--color-success)" };
   if (t === "needs_review" || t === "stale")
-    return {
-      state: "DESACTUALIZADO",
-      stateBg: "var(--color-warning-soft)",
-      stateFg: "var(--color-warning)",
-      confidenceColor: "var(--color-warning)",
-      confidence: 45
-    };
+    return { state: "DESACTUALIZADO", stateBg: "var(--color-warning-soft)", stateFg: "var(--color-warning)" };
   if (t === "blocked" || t === "critical")
-    return { state: "BLOQUEADO", stateBg: "var(--color-critical-soft)", stateFg: "var(--color-critical)", confidenceColor: "var(--color-critical)", confidence: 15 };
+    return { state: "BLOQUEADO", stateBg: "var(--color-critical-soft)", stateFg: "var(--color-critical)" };
   if (t === "unknown")
-    return { state: "DESCONOCIDO", stateBg: "var(--color-unknown-soft)", stateFg: "var(--color-unknown)", confidenceColor: "var(--color-unknown)", confidence: 0 };
-  return { state: status.toUpperCase(), stateBg: "var(--color-neutral-soft)", stateFg: "var(--color-text-secondary)", confidenceColor: "var(--color-text-secondary)", confidence: 50 };
+    return { state: "DESCONOCIDO", stateBg: "var(--color-unknown-soft)", stateFg: "var(--color-unknown)" };
+  return { state: status.toUpperCase(), stateBg: "var(--color-neutral-soft)", stateFg: "var(--color-text-secondary)" };
 }
 
 function sourceIcon(kind: string): React.ReactNode {
@@ -420,8 +412,6 @@ function SourcesRow({ data }: { data: DashboardData }) {
             state={style.state}
             stateBg={style.stateBg}
             stateFg={style.stateFg}
-            confidence={style.confidence}
-            confidenceColor={style.confidenceColor}
             endpoint={
               s.safeCollection.endpoint
                 ? `${s.safeCollection.transport.toUpperCase()} · ${s.safeCollection.endpoint}`
@@ -442,8 +432,6 @@ function SourceCard({
   state,
   stateBg,
   stateFg,
-  confidence,
-  confidenceColor,
   endpoint,
   mode,
   lastSeen
@@ -453,8 +441,6 @@ function SourceCard({
   state: string;
   stateBg: string;
   stateFg: string;
-  confidence: number;
-  confidenceColor: string;
   endpoint: string;
   mode: string;
   lastSeen: string;
@@ -503,36 +489,6 @@ function SourceCard({
           {state}
         </span>
       </header>
-
-      <div className="flex items-end" style={{ gap: 8 }}>
-        <span
-          className="text-[26px] font-[family-name:var(--font-mono)] font-bold leading-none tabular-nums"
-          style={{ letterSpacing: "var(--tracking-tightest)", color: confidenceColor }}
-        >
-          {confidence === 0 ? "—" : `${confidence}%`}
-        </span>
-        <span className="text-[10px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)] leading-none">
-          confianza
-        </span>
-      </div>
-
-      <div
-        className="relative overflow-hidden w-full"
-        style={{ height: 6, borderRadius: 3, background: "var(--color-surface-sunken)" }}
-        aria-hidden="true"
-      >
-        <span
-          className="block"
-          style={{
-            width: `${confidence}%`,
-            height: 6,
-            borderRadius: 3,
-            background: confidenceColor,
-            opacity: confidence === 0 ? 0.4 : 1,
-            minWidth: confidence === 0 ? 8 : undefined
-          }}
-        />
-      </div>
 
       <div className="flex flex-col" style={{ gap: 6 }}>
         <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{endpoint}</span>
@@ -903,12 +859,7 @@ function AuditTable({ rows }: { rows: Array<[string, string, string, string, str
  * ExplainerSplit
  * ============================================================ */
 function ExplainerSplit({ data }: { data: DashboardData }) {
-  return (
-    <div className="grid gap-5 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-      <ExplainerText data={data} />
-      <CliSnippet />
-    </div>
-  );
+  return <ExplainerText data={data} />;
 }
 
 function ExplainerText({ data }: { data: DashboardData }) {
@@ -950,87 +901,6 @@ function ExplainerText({ data }: { data: DashboardData }) {
           </li>
         ))}
       </ul>
-    </section>
-  );
-}
-
-function CliSnippet() {
-  const { toast } = useToast();
-  const lines = [
-    { tone: "input" as const, text: "$ delivrix collector capture --source proxmox" },
-    { tone: "info" as const, text: "› authenticating with operator role…" },
-    { tone: "success" as const, text: "OK snapshot signed sha256:a3f1bd…" },
-    { tone: "info" as const, text: "› posting to /v1/devops/collector/snapshots" },
-    { tone: "success" as const, text: "OK accepted, schema 5.10.0" },
-    { tone: "info" as const, text: "› hash registered in audit log" }
-  ];
-  const handleCopy = async () => {
-    const text = lines.map((l) => l.text).join("\n");
-    try {
-      await navigator.clipboard.writeText(text);
-      toast.success("Copiado al portapapeles", {
-        description: `${lines.length} líneas del snippet CLI.`,
-        duration: 2000
-      });
-    } catch (e) {
-      toast.error("No se pudo copiar", {
-        description: e instanceof Error ? e.message : "Permiso del navegador denegado."
-      });
-    }
-  };
-  const colors: Record<"input" | "info" | "success" | "error", string> = {
-    input: "var(--color-on-dark-strong)",
-    info: "var(--color-accent-secondary)",
-    success: "var(--color-success-border)",
-    error: "var(--color-critical)"
-  };
-  return (
-    <section
-      style={{
-        borderRadius: 8,
-        background: "var(--color-always-dark-surface)",
-        border: "1px solid var(--color-always-dark-border)",
-        overflow: "hidden",
-        boxShadow: "none"
-      }}
-    >
-      <header
-        className="flex items-center justify-between"
-        style={{ gap: 12, padding: "10px 14px", borderBottom: "1px solid var(--color-on-dark-faint)" }}
-      >
-        <div className="flex items-center" style={{ gap: 8 }}>
-          {[0, 1, 2].map((i) => (
-            <span
-              key={i}
-              aria-hidden="true"
-              style={{ width: 10, height: 10, borderRadius: 999, background: "var(--color-on-dark-faint)" }}
-            />
-          ))}
-          <span
-            className="ml-2 text-[11px] font-[family-name:var(--font-mono)]"
-            style={{ color: "var(--color-on-dark-medium)" }}
-          >
-            delivrix-cli — captura manual
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="inline-flex items-center text-[10px] font-[family-name:var(--font-mono)] transition-colors hover:bg-[var(--color-on-dark-faint)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
-          style={{ gap: 6, padding: "4px 8px", borderRadius: 4, background: "var(--color-on-dark-hint)", color: "var(--color-on-dark-strong)", border: "none", cursor: "pointer" }}
-        >
-          copy
-        </button>
-      </header>
-      <pre className="m-0 overflow-x-auto" style={{ padding: "16px 20px" }}>
-        <code className="block text-[12px] font-[family-name:var(--font-mono)] leading-relaxed">
-          {lines.map((line, i) => (
-            <span key={i} className="block whitespace-pre" style={{ color: colors[line.tone] }}>
-              {line.text}
-            </span>
-          ))}
-        </code>
-      </pre>
     </section>
   );
 }
