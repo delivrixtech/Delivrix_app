@@ -21,7 +21,8 @@ test("safety real-time builders return MVP fallback for empty audit logs", () =>
   assert.equal(roles.roles.find((role) => role.id === "read-only")?.displayName, "Sólo lectura");
 
   assert.equal(sessions.meta.dataSource, "fallback");
-  assert.equal(sessions.sessions.length, 3);
+  // Estado vacío honesto: sin eventos de auditoría no se fabrican sesiones.
+  assert.deepEqual(sessions.sessions, []);
 });
 
 test("safety real-time builders derive compliance, role counts and sessions from audit events", () => {
