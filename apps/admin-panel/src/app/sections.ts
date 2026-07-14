@@ -179,7 +179,7 @@ export const sections: SectionDescriptor[] = [
     navLabel: "Sender Pool",
     group: "operacion",
     icon: SendHorizontal,
-    eyebrow: "Bloque 10 · Demo viernes",
+    eyebrow: "Pipeline de envío",
     title: "Dominios sender en producción y warmup.",
     description:
       "Estado actual de los dominios sender pool: cuáles están provisionados, en qué etapa de warmup, su deliverability. Onboarding nuevo dispara flow end-to-end con OpenClaw (compra + DNS + SMTP + warmup).",

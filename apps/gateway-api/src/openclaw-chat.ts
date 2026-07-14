@@ -20,7 +20,7 @@ import {
 export const OPENCLAW_CHAT_SESSION_KEY = "agent:main:operator";
 const defaultAgentHttpUrl = "http://2.24.223.240:61175";
 const defaultAgentWsUrl = "ws://2.24.223.240:61175/api/chat.stream";
-const gatewayId = "delivrix-gateway-popayan";
+const gatewayId = process.env.OPENCLAW_GATEWAY_ID ?? "delivrix-gateway-us-east";
 const maxChatAttachmentsPerTurn = 6;
 const maxChatImagesPerTurn = 3;
 const maxChatImageBytes = 5 * 1024 * 1024;
