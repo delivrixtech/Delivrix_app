@@ -796,14 +796,11 @@ function ExplainerSplit({ data }: { data: DashboardData }) {
 }
 
 function ExplainerText({ data }: { data: DashboardData }) {
-  const outputs =
-    data.snapshotIngestion.parserOutputs?.slice(0, 4) ??
-    [
-      "physical_host.identity.* → tabla physical_hosts",
-      "physical_host.capacity.* → tabla capacities",
-      "telemetry.* → series timescaled · 60 s",
-      "sensors.ipmi.* → tabla sensors"
-    ];
+  // Solo salidas reales del contrato. Antes había un fallback fabricado de 4
+  // mapeos inventados (physical_host.*, telemetry.*→series 60s, sensors.ipmi.*)
+  // que se pintaban como si fueran la config real del parser cuando el backend
+  // no devolvía nada. Si no hay salidas reales → estado vacío honesto.
+  const outputs = data.snapshotIngestion.parserOutputs?.slice(0, 4) ?? [];
   return (
     <Card padding="none" className="flex flex-col" style={{ gap: 12, padding: 20 }}>
       <h2 className="m-0 text-[14px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
@@ -814,23 +811,39 @@ function ExplainerText({ data }: { data: DashboardData }) {
         rol elevado corriendo el CLI fuera del panel. Esto preserva la barandilla read-only del
         norte operativo y evita un POST cliente que pudiera ser comprometido.
       </p>
-      <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 6 }}>
-        {outputs.map((l) => (
-          <li
-            key={l}
-            className="inline-flex items-center"
-            style={{
-              gap: 8,
-              padding: "8px 12px",
-              borderRadius: 6,
-              background: "var(--color-surface-sunken)"
-            }}
-          >
-            <ArrowRight size={11} strokeWidth={2} className="text-[var(--color-accent-tertiary)]" aria-hidden="true" />
-            <code className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{l}</code>
-          </li>
-        ))}
-      </ul>
+      {outputs.length > 0 ? (
+        <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 6 }}>
+          {outputs.map((l) => (
+            <li
+              key={l}
+              className="inline-flex items-center"
+              style={{
+                gap: 8,
+                padding: "8px 12px",
+                borderRadius: 6,
+                background: "var(--color-surface-sunken)"
+              }}
+            >
+              <ArrowRight size={11} strokeWidth={2} className="text-[var(--color-accent-tertiary)]" aria-hidden="true" />
+              <code className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{l}</code>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <span
+          className="inline-flex items-center text-[11px] font-[family-name:var(--font-caption)]"
+          style={{
+            gap: 8,
+            padding: "8px 12px",
+            borderRadius: 6,
+            background: "var(--color-surface-sunken)",
+            color: "var(--color-text-tertiary)"
+          }}
+        >
+          <Info size={11} strokeWidth={1.75} aria-hidden="true" />
+          El contrato aún no publicó salidas del parser.
+        </span>
+      )}
     </Card>
   );
 }

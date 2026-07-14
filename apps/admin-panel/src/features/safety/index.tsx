@@ -441,10 +441,20 @@ function buildSafetyGates(data: DashboardData) {
   const live = data.operatingNorth.liveInfrastructureWritesEnabled;
   const smtp = data.operatingNorth.delivrixSendsRealEmail;
   const nfc = data.operatingNorth.nfcProductionWritesEnabled;
-  const base: Array<{ check: true | "warn" | "bad" | "off"; label: string; state: string; tone: string }> = [
-    { check: true, label: "Log de auditoría append-only", state: "verificado", tone: "var(--color-success)" },
-    { check: true, label: "Dry-run obligatorio antes de escribir", state: "verificado", tone: "var(--color-success)" },
-    { check: true, label: "Read-boundary + ApprovalGate", state: "verificado", tone: "var(--color-success)" },
+  const base: Array<{
+    check: true | "warn" | "bad" | "off";
+    label: string;
+    state: string;
+    tone: string;
+    declared?: boolean;
+  }> = [
+    // Estos 3 gates son afirmaciones de diseño hardcodeadas (check:true fijo):
+    // el panel NO verifica en runtime que se cumplan. Se muestran como
+    // "declarado · sin verificar" con tono neutro para no afirmar una
+    // verificación que no ocurrió (A19). La lógica de gates no cambia.
+    { check: true, declared: true, label: "Log de auditoría append-only", state: "declarado · sin verificar", tone: "var(--color-text-tertiary)" },
+    { check: true, declared: true, label: "Dry-run obligatorio antes de escribir", state: "declarado · sin verificar", tone: "var(--color-text-tertiary)" },
+    { check: true, declared: true, label: "Read-boundary + ApprovalGate", state: "declarado · sin verificar", tone: "var(--color-text-tertiary)" },
     {
       check: ks.enabled ? "bad" : true,
       label: "Kill switch probado",
@@ -475,16 +485,23 @@ function buildSafetyGates(data: DashboardData) {
     label: humanize(g),
     rawLabel: g,
     state: "revisión pendiente",
-    tone: "var(--color-warning)"
+    tone: "var(--color-warning)",
+    declared: false
   }));
   // El subset de base no tiene rawLabel, agregamos uno igual al label para uniformar
-  const baseWithRaw = base.map((b) => ({ ...b, rawLabel: b.label }));
+  const baseWithRaw = base.map((b) => ({ ...b, rawLabel: b.label, declared: b.declared ?? false }));
   return [...baseWithRaw, ...opGates];
 }
 
 function GatesCard({ data }: { data: DashboardData }) {
   const GATE_ROWS = buildSafetyGates(data);
-  const okCount = GATE_ROWS.filter((g) => g.check === true).length;
+  // Solo cuentan como "OK" los gates que el panel verifica en runtime.
+  // Los gates `declared` (check:true fijo por diseño, no verificado en vivo)
+  // se excluyen del rollup verde y se reportan aparte como "sin verificar",
+  // para que el resumen no afirme como satisfechos controles que no comprueba (A19).
+  const declaredCount = GATE_ROWS.filter((g) => g.declared).length;
+  const okCount = GATE_ROWS.filter((g) => g.check === true && !g.declared).length;
+  const verifiableTotal = GATE_ROWS.length - declaredCount;
   return (
     <Card padding="none" className="flex flex-col">
       <header
@@ -500,8 +517,13 @@ function GatesCard({ data }: { data: DashboardData }) {
           </span>
         </div>
         <span className="flex-1" aria-hidden="true" />
+        {declaredCount > 0 ? (
+          <Pill tone="neutral" dot={false}>
+            {declaredCount} sin verificar
+          </Pill>
+        ) : null}
         <Pill tone="success" dot={false}>
-          {okCount} / {GATE_ROWS.length}
+          {okCount} / {verifiableTotal} verificados
         </Pill>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
@@ -529,6 +551,23 @@ function GatesCard({ data }: { data: DashboardData }) {
             >
               {row.label}
             </span>
+            {row.declared ? (
+              <span
+                className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase shrink-0"
+                style={{
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  background: "var(--color-neutral-soft)",
+                  color: "var(--color-text-secondary)",
+                  border: "1px solid var(--color-border)",
+                  letterSpacing: "var(--tracking-wide)",
+                  whiteSpace: "nowrap"
+                }}
+                title="Declarado por diseño; el panel no verifica este control en runtime."
+              >
+                sin verificar
+              </span>
+            ) : null}
             <span
               className="text-[10px] font-[family-name:var(--font-mono)] shrink-0"
               style={{ color: row.tone, whiteSpace: "nowrap" }}
@@ -715,6 +754,10 @@ function SesionesCard({
 }
 
 function SecretsCard() {
+  // Estas líneas son la política de secretos DECLARADA (configuración esperada),
+  // no una verificación en vivo: el panel no consulta AWS Secrets Manager ni
+  // audita el repo en runtime. Se presenta con tono neutro y tag "sin verificar"
+  // para no afirmar una verificación que no ocurrió (A19).
   const lines = [
     "0 secretos en el repositorio",
     "Rotación SMTP cada 30 d",
@@ -727,15 +770,30 @@ function SecretsCard() {
         <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
           Secrets management
         </h3>
+        <span className="flex-1" aria-hidden="true" />
+        <span
+          className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase shrink-0"
+          style={{
+            padding: "2px 6px",
+            borderRadius: 4,
+            background: "var(--color-neutral-soft)",
+            color: "var(--color-text-secondary)",
+            border: "1px solid var(--color-border)",
+            letterSpacing: "var(--tracking-wide)"
+          }}
+          title="Política declarada; el panel no verifica el estado de los secretos en runtime."
+        >
+          sin verificar
+        </span>
       </header>
       <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.4] text-[var(--color-text-secondary)]">
-        AWS Secrets Manager activo · 0 secretos en repo · todos los SMTP cifrados.
+        Política declarada: AWS Secrets Manager, 0 secretos en repo y SMTP cifrado. El panel no verifica este estado en vivo.
       </p>
       <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 6 }}>
         {lines.map((l) => (
           <li key={l} className="flex items-center" style={{ gap: 6 }}>
-            <ShieldCheck size={11} strokeWidth={1.75} className="text-[var(--color-success)]" aria-hidden="true" />
-            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{l}</span>
+            <Lock size={11} strokeWidth={1.75} className="text-[var(--color-text-tertiary)]" aria-hidden="true" />
+            <span className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-secondary)]">{l}</span>
           </li>
         ))}
       </ul>
