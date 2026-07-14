@@ -44,9 +44,10 @@ import {
 import {
   BannerOpenClawV2,
   LiveIndicator,
-  SectionDivider,
   useToast
 } from "../../shared/ui/v2/index.ts";
+import { Button, Card, EmptyState, Eyebrow, Pill, SectionHead } from "../../v5/components/primitives.tsx";
+import { PageHead } from "../../v5/views/_PageHead.tsx";
 
 export function SafetySection({ data }: { data: DashboardData }) {
   const hasFallback = [
@@ -62,25 +63,25 @@ export function SafetySection({ data }: { data: DashboardData }) {
     <section className="flex flex-col" style={{ gap: 20 }}>
       {hasFallback ? <FallbackBanner /> : null}
       <Hero data={data} />
-      <SectionDivider
+      <SectionHead
         title="Estado del gobierno"
         caption="Permisos, kill switch, sesiones · poll 30s"
         countTone="success"
       />
       <KpiRow data={data} />
-      <SectionDivider
+      <SectionHead
         title="Permisos y sesiones"
         caption="IAM · sesiones activas · secretos"
         countTone="success"
       />
       <TwoCol data={data} rolesPulse={rolesPulse} sessionsPulse={sessionsPulse} />
-      <SectionDivider
+      <SectionHead
         title="Auditoría reciente"
         caption="Append-only · log inmutable · SHA-256"
         countTone="success"
       />
       <Audit data={data} />
-      <SectionDivider
+      <SectionHead
         title="Compliance"
         caption="Estados evaluados continuamente"
         countTone="success"
@@ -144,31 +145,12 @@ function HeroLeft() {
   // reflejando que la página está "viva" (poll 30s safety realtime).
   const mountedAt = useRef<number>(Date.now()).current;
   return (
-    <header className="flex items-start" style={{ gap: 16 }}>
-      <div className="flex flex-col min-w-0 flex-1" style={{ gap: 6 }}>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          <span
-            className="text-[11px] font-[family-name:var(--font-caption)] font-bold uppercase text-[var(--color-accent-tertiary)]"
-            style={{ letterSpacing: "var(--tracking-widest)" }}
-          >
-            Seguridad y gobierno
-          </span>
-        </div>
-        <h1
-          className="m-0 text-[28px] font-[family-name:var(--font-heading)] font-bold leading-[1.1] text-[var(--color-text-primary)]"
-          style={{ letterSpacing: "var(--tracking-tightest)" }}
-        >
-          Sin acciones reales, con todas las barandillas.
-        </h1>
-        <p className="m-0 text-[14px] font-[family-name:var(--font-sans)] leading-[1.5] text-[var(--color-text-secondary)]">
-          El panel opera con read-boundary y ApprovalGate. Toda acción operativa requiere
-          firma humana, dry-run previo, log auditable y kill switch probado.
-        </p>
-      </div>
-      <div className="shrink-0">
-        <LiveIndicator pollIntervalSec={30} lastUpdateAt={mountedAt} tone="success" />
-      </div>
-    </header>
+    <PageHead
+      eyebrow="Seguridad y gobierno"
+      title="Sin acciones reales, con todas las barandillas."
+      body="El panel opera con read-boundary y ApprovalGate. Toda acción operativa requiere firma humana, dry-run previo, log auditable y kill switch probado."
+      trailing={<LiveIndicator pollIntervalSec={30} lastUpdateAt={mountedAt} tone="success" />}
+    />
   );
 }
 
@@ -295,23 +277,9 @@ function Kpi({
   pillText: string;
 }) {
   return (
-    <article
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        gap: 12,
-        padding: 16,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
+    <Card className="flex flex-col gap-3">
       <div className="flex items-center" style={{ gap: 8 }}>
-        <span
-          className="text-[11px] font-[family-name:var(--font-caption)] font-semibold text-[var(--color-text-secondary)]"
-          style={{ letterSpacing: "var(--tracking-wide)" }}
-        >
-          {label}
-        </span>
+        <Eyebrow>{label}</Eyebrow>
         <span className="flex-1" aria-hidden="true" />
         <span
           className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
@@ -322,8 +290,8 @@ function Kpi({
       </div>
       <div className="flex items-end" style={{ gap: 8 }}>
         <span
-          className="text-[32px] font-[family-name:var(--font-mono)] font-bold leading-none text-[var(--color-text-primary)] tabular-nums"
-          style={{ letterSpacing: "var(--tracking-tightest)" }}
+          className="text-[30px] font-[family-name:var(--font-mono)] font-semibold leading-none text-[var(--color-text-primary)] tabular-nums"
+          style={{ letterSpacing: "0" }}
         >
           {value}
         </span>
@@ -341,7 +309,7 @@ function Kpi({
         <span className="flex-1" aria-hidden="true" />
         <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{endpoint}</span>
       </div>
-    </article>
+    </Card>
   );
 }
 
@@ -382,15 +350,7 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
     ? `Actualizado · ${new Date(ks.updatedAt).toLocaleString("es-CO")}`
     : "Sin movimientos registrados";
   return (
-    <section
-      className="flex flex-col overflow-hidden"
-      style={{
-        borderRadius: 8,
-        background: "var(--color-always-dark-surface)",
-        border: "1px solid var(--color-always-dark-border)",
-        boxShadow: "none"
-      }}
-    >
+    <Card tone="inverse" padding="none" className="flex flex-col overflow-hidden">
       <div
         className="flex items-center"
         style={{ gap: 16, padding: "20px 24px" }}
@@ -456,7 +416,7 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
         <KillStat label="fase del norte" value={data.operatingNorth.phase || "—"} />
         <KillStat label="último uso real" value={ks.enabled ? "ahora" : "nunca"} />
       </div>
-    </section>
+    </Card>
   );
 }
 
@@ -526,10 +486,7 @@ function GatesCard({ data }: { data: DashboardData }) {
   const GATE_ROWS = buildSafetyGates(data);
   const okCount = GATE_ROWS.filter((g) => g.check === true).length;
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
-    >
+    <Card padding="none" className="flex flex-col">
       <header
         className="flex items-center"
         style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid var(--color-border)" }}
@@ -543,12 +500,9 @@ function GatesCard({ data }: { data: DashboardData }) {
           </span>
         </div>
         <span className="flex-1" aria-hidden="true" />
-        <span
-          className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-          style={{ padding: "3px 8px", borderRadius: 4, background: "var(--color-success-soft)", color: "var(--color-success)" }}
-        >
+        <Pill tone="success" dot={false}>
           {okCount} / {GATE_ROWS.length}
-        </span>
+        </Pill>
       </header>
       <ul className="m-0 p-0 list-none flex flex-col">
         {GATE_ROWS.map((row, i) => (
@@ -584,7 +538,7 @@ function GatesCard({ data }: { data: DashboardData }) {
           </li>
         ))}
       </ul>
-    </section>
+    </Card>
   );
 }
 
@@ -642,10 +596,7 @@ function RolesCard({
         }))
       : [{ name: "Sin roles del contrato", count: 0, color: "var(--color-text-secondary)" }];
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
-    >
+    <Card padding="none" className="flex flex-col">
       <header
         className="flex items-center"
         style={{ gap: 8, padding: "14px 16px 12px 16px", borderBottom: "1px solid var(--color-border)" }}
@@ -679,7 +630,7 @@ function RolesCard({
           </li>
         ))}
       </ul>
-    </section>
+    </Card>
   );
 }
 
@@ -723,10 +674,7 @@ function SesionesCard({
   }
 
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
-    >
+    <Card padding="none" className="flex flex-col">
       <header
         className="flex items-center"
         style={{ gap: 8, padding: "14px 16px 12px 16px", borderBottom: "1px solid var(--color-border)" }}
@@ -762,7 +710,7 @@ function SesionesCard({
           </li>
         ))}
       </ul>
-    </section>
+    </Card>
   );
 }
 
@@ -773,16 +721,7 @@ function SecretsCard() {
     "Acceso JIT al kill switch"
   ];
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        gap: 10,
-        padding: 16,
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
+    <Card className="flex flex-col gap-2.5">
       <header className="flex items-center" style={{ gap: 8 }}>
         <Lock size={13} strokeWidth={1.75} className="text-[var(--color-unknown)]" aria-hidden="true" />
         <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
@@ -800,7 +739,7 @@ function SecretsCard() {
           </li>
         ))}
       </ul>
-    </section>
+    </Card>
   );
 }
 
@@ -909,10 +848,7 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
   };
 
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{ borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
-    >
+    <Card padding="none" className="flex flex-col">
       <header
         className="flex items-center"
         style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid var(--color-border)" }}
@@ -945,16 +881,15 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
             </span>
           ))}
         </div>
-        <button
-          type="button"
+        <Button
+          variant="outline"
+          size="sm"
           onClick={handleExport}
           disabled={rows.length === 0}
-          className="inline-flex items-center text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)] disabled:cursor-not-allowed disabled:opacity-55"
-          style={{ gap: 6, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-strong)", background: "transparent", cursor: rows.length === 0 ? "not-allowed" : "pointer" }}
         >
           <Download size={12} strokeWidth={1.75} aria-hidden="true" />
           Exportar
-        </button>
+        </Button>
       </header>
 
       <div className="overflow-x-auto">
@@ -1031,17 +966,16 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
 
       {hasMore ? (
         <div className="flex items-center justify-center" style={{ padding: "10px 12px 12px 12px" }}>
-          <button
-            type="button"
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => setVisibleCount((c) => Math.min(c + AUDIT_PAGE_SIZE, rows.length))}
-            className="inline-flex items-center text-[11.5px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-secondary)] transition-colors hover:text-[var(--color-text-primary)] hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
-            style={{ gap: 6, padding: "8px 14px", borderRadius: 6, background: "transparent", border: "1px solid var(--color-border)", cursor: "pointer" }}
           >
             Mostrar {Math.min(AUDIT_PAGE_SIZE, remaining)} entradas más
             <span className="text-[10px] font-[family-name:var(--font-mono)]" style={{ color: "var(--color-text-tertiary)" }}>
               {visibleCount}/{rows.length}
             </span>
-          </button>
+          </Button>
         </div>
       ) : rows.length > 0 ? (
         <div className="flex items-center justify-center" style={{ padding: "10px 12px 12px 12px" }}>
@@ -1050,23 +984,21 @@ function AuditTable({ rows }: { rows: AuditRow[] }) {
           </span>
         </div>
       ) : null}
-    </section>
+    </Card>
   );
 }
 
 function AuditEmptyState() {
   return (
-    <div className="flex flex-col" style={{ gap: 6, padding: "18px 20px" }}>
-      <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-        Sin eventos de auditoría
-      </span>
-      <span className="text-[11px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-secondary)]">
-        El contrato no devolvió eventos para la tabla de seguridad.
-      </span>
-      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
-        /v1/audit-events
-      </span>
-    </div>
+    <EmptyState
+      title="Sin eventos de auditoría"
+      body="El contrato no devolvió eventos para la tabla de seguridad."
+      action={
+        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
+          /v1/audit-events
+        </span>
+      }
+    />
   );
 }
 
@@ -1123,14 +1055,11 @@ function ComplianceRow({ data, pulseActive }: { data: DashboardData; pulseActive
   const stale = staleBadgeFor(data.safetyRealtime.complianceStatus);
   if (controls.length === 0) {
     return (
-      <section
-        className="flex items-center bg-[var(--color-surface)]"
-        style={{ gap: 8, padding: "14px 16px", borderRadius: 8, border: "1px solid var(--color-border)" }}
-      >
+      <Card padding="compact" className="flex items-center gap-2">
         <p className="m-0 text-[12px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">
           El contrato /v1/compliance/status no devuelve controles todavía.
         </p>
-      </section>
+      </Card>
     );
   }
   return (
@@ -1181,10 +1110,7 @@ function ComplianceCard({
   pulseActive: boolean;
 }) {
   return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{ gap: 10, padding: 16, borderRadius: 8, border: "1px solid var(--color-border)", boxShadow: "var(--shadow-sm)" }}
-    >
+    <Card className="flex flex-col gap-2.5">
       <header className="flex items-center" style={{ gap: 8 }}>
         <span
           aria-hidden="true"
@@ -1215,7 +1141,7 @@ function ComplianceCard({
           </li>
         ))}
       </ul>
-    </section>
+    </Card>
   );
 }
 
