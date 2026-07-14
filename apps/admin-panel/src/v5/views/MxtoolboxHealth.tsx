@@ -53,9 +53,9 @@ interface MxtoolboxDailyReportResponse {
 const lookupTypes = ["blacklist", "smtp", "mx", "spf", "dkim", "dmarc", "ptr"] as const;
 
 export function MxtoolboxHealthV5() {
-  const [target, setTarget] = useState("8.8.8.8");
+  const [target, setTarget] = useState("");
   const [type, setType] = useState<(typeof lookupTypes)[number]>("blacklist");
-  const [lookupParams, setLookupParams] = useState({ target: "8.8.8.8", type: "blacklist" });
+  const [lookupParams, setLookupParams] = useState({ target: "", type: "blacklist" });
 
   const daily = useQuery({
     queryKey: ["mxtoolbox", "daily-report"],
@@ -164,6 +164,7 @@ export function MxtoolboxHealthV5() {
             <input
               value={target}
               onChange={(event) => setTarget(event.target.value)}
+              placeholder="IP o dominio del sender pool"
               className="h-9 rounded-md border border-border bg-surface px-3 font-mono text-[13px] text-fg outline-none transition-colors focus:border-border-strong"
             />
           </label>

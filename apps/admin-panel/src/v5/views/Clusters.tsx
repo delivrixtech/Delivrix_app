@@ -16,7 +16,7 @@
  * Una sola HumanNote (en el banner OpenClaw cuando aplica).
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -293,10 +293,6 @@ function ClusterCard({ cluster }: { cluster: ClusterT }) {
     return s.includes("active") || s.includes("ready");
   }).length;
 
-  // Sparkline determinístico por id del cluster (estable entre re-renders, sin Math.random)
-  const spark = useMemo(() => buildSpark(cluster.id, 14), [cluster.id]);
-  const reputation = useMemo(() => 88 + (hashStr(cluster.id) % 10), [cluster.id]);
-
   return (
     <Card padding="relaxed" className="flex flex-col gap-4">
       <header className="flex items-start justify-between gap-3">
@@ -314,7 +310,7 @@ function ClusterCard({ cluster }: { cluster: ClusterT }) {
         <Badge>{nodes.length} IPs</Badge>
       </header>
 
-      <SparkBar series={spark} reputation={reputation} />
+      <ReputationPlaceholder />
 
       {warmingCount > 0 ? (
         <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface-sunken px-3 py-2">
@@ -399,26 +395,11 @@ function NodeRow({ node }: { node: ClusterT["senderNodes"][number] }) {
   );
 }
 
-function SparkBar({ series, reputation }: { series: number[]; reputation: number }) {
-  const max = Math.max(1, ...series);
+function ReputationPlaceholder() {
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-end justify-between gap-[3px] h-[36px]" aria-hidden="true">
-        {series.map((v, i) => {
-          const h = Math.max(3, Math.round((v / max) * 32));
-          return (
-            <span
-              key={i}
-              className="flex-1 rounded-sm bg-border-strong"
-              style={{ height: h, opacity: 0.5 + (i / series.length) * 0.5 }}
-            />
-          );
-        })}
-      </div>
-      <div className="flex items-center justify-between">
-        <Caption className="text-[10px]">Reputación · 14 d</Caption>
-        <MonoData className="text-[11px] text-fg">{reputation}.0</MonoData>
-      </div>
+    <div className="flex items-center justify-between gap-2 rounded-md border border-dashed border-border px-3 py-2">
+      <Caption className="text-[10px]">Reputación · 14 d</Caption>
+      <Caption className="text-[10px] text-fg-subtle">sin medición aún</Caption>
     </div>
   );
 }
@@ -874,20 +855,3 @@ function statusLabel(s: ClusterStatus): string {
   }
 }
 
-function hashStr(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (h * 31 + s.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h);
-}
-
-function buildSpark(seed: string, n: number): number[] {
-  const base = hashStr(seed);
-  const out: number[] = [];
-  for (let i = 0; i < n; i++) {
-    const x = (base + i * 37) % 100;
-    out.push(20 + (x % 60));
-  }
-  return out;
-}
