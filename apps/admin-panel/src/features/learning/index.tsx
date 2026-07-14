@@ -11,14 +11,11 @@
  */
 
 import {
-  ArrowRight,
   ArrowUp,
-  BookOpen,
   Eye,
   History,
   ShieldAlert,
   Sparkles,
-  TrendingUp,
   WandSparkles
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -48,7 +45,7 @@ import {
   isFallbackMeta,
   staleMinutesFromMeta
 } from "../../shared/ui/realtime/index.ts";
-import { BannerOpenClawV2, useToast } from "../../shared/ui/v2/index.ts";
+import { BannerOpenClawV2 } from "../../shared/ui/v2/index.ts";
 
 const LEARNING_POLL_INTERVAL_MS = 30_000;
 const LEARNING_POLL_INTERVAL_SECONDS = LEARNING_POLL_INTERVAL_MS / 1_000;
@@ -89,7 +86,6 @@ export function LearningSection({ data }: { data: DashboardData }) {
         meta={evidencePayload.meta}
         pulseActive={evidencePulse}
       />
-      <ColaRetroalimentacion />
       <AuditStrip
         events={skillsAuditPayload.events}
         isLoading={skillsAuditQuery.isLoading}
@@ -285,27 +281,7 @@ function KpiLecciones({ signals }: { signals: number }) {
     <KpiShell>
       <KpiHead label="Signals de readiness" pillBg="var(--color-info-soft)" pillFg="var(--color-info)" pillText={`${signals} capacidades`} />
       <KpiValue value={String(signals)} />
-      <KpiDetail
-        icon={<BookOpen size={12} strokeWidth={1.75} />}
-        text="+12 esta semana"
-        color="var(--color-info)"
-        endpoint="/v1/openclaw/lessons"
-      />
-      <div
-        className="relative overflow-hidden w-full"
-        style={{ height: 6, borderRadius: 3, background: "var(--color-surface-sunken)" }}
-        aria-hidden="true"
-      >
-        <span
-          className="block"
-          style={{
-            width: "75%",
-            height: "100%",
-            background: "var(--color-accent)",
-            borderRadius: 3
-          }}
-        />
-      </div>
+      <KpiDetail endpoint="/v1/openclaw/lessons" />
     </KpiShell>
   );
 }
@@ -321,19 +297,7 @@ function KpiPrecision({ blocked, total }: { blocked: number; total: number }) {
         pillText={blocked === 0 ? "todas ok" : `${blocked} bloqueadas`}
       />
       <KpiValue value={`${pct.toFixed(1).replace(".", ",")}%`} unit={`${total - blocked} / ${total}`} />
-      <KpiDetail
-        icon={<TrendingUp size={12} strokeWidth={1.75} />}
-        text="+1,8 vs sem prev"
-        color="var(--color-success)"
-        endpoint="/v1/openclaw/eval"
-      />
-      <div
-        className="relative overflow-hidden w-full"
-        style={{ height: 6, borderRadius: 3, background: "var(--color-surface-sunken)" }}
-        aria-hidden="true"
-      >
-        <span className="block" style={{ width: "92%", height: "100%", background: "var(--color-warning)", borderRadius: 3 }} />
-      </div>
+      <KpiDetail endpoint="/v1/openclaw/eval" />
     </KpiShell>
   );
 }
@@ -413,19 +377,23 @@ function KpiDetail({
   color,
   endpoint
 }: {
-  icon: ReactNode;
-  text: string;
-  color: string;
+  icon?: ReactNode;
+  text?: string;
+  color?: string;
   endpoint: string;
 }) {
   return (
     <div className="flex items-center" style={{ gap: 6 }}>
-      <span style={{ color }} aria-hidden="true">
-        {icon}
-      </span>
-      <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold" style={{ color }}>
-        {text}
-      </span>
+      {icon ? (
+        <span style={{ color }} aria-hidden="true">
+          {icon}
+        </span>
+      ) : null}
+      {text ? (
+        <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold" style={{ color }}>
+          {text}
+        </span>
+      ) : null}
       <span className="flex-1" aria-hidden="true" />
       <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{endpoint}</span>
     </div>
@@ -838,149 +806,6 @@ function EvidenciaCurada({
       </div>
       )}
     </section>
-  );
-}
-
-/* ============================================================
- * Cola de retroalimentación humana — 3 sugerencias
- * ============================================================ */
-function ColaRetroalimentacion() {
-  return (
-    <section
-      className="flex flex-col bg-[var(--color-surface)]"
-      style={{
-        borderRadius: 8,
-        border: "1px solid var(--color-border)",
-        boxShadow: "var(--shadow-sm)"
-      }}
-    >
-      <header
-        className="flex items-center"
-        style={{ gap: 12, padding: "16px 20px 14px 20px", borderBottom: "1px solid var(--color-border)" }}
-      >
-        <div className="flex flex-col" style={{ gap: 2 }}>
-          <h2 className="m-0 text-[16px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-            Cola de retroalimentación humana
-          </h2>
-          <span className="text-[11px] font-[family-name:var(--font-caption)] text-[var(--color-text-tertiary)]">
-            Sugerencias listas para que el operador acepte o rechace fuera del panel
-          </span>
-        </div>
-        <span className="flex-1" aria-hidden="true" />
-        <span
-          className="inline-block text-[9px] font-[family-name:var(--font-caption)] font-bold"
-          style={{
-            padding: "3px 8px",
-            borderRadius: 4,
-            background: "var(--color-info-soft)",
-            color: "var(--color-info)",
-            letterSpacing: "var(--tracking-wider)"
-          }}
-        >
-          Read-boundary · ApprovalGate
-        </span>
-      </header>
-
-      <FeedbackRow
-        iconBg="var(--color-warning-soft)"
-        iconColor="var(--color-warning)"
-        title="Subir warming clúster A al día 10"
-        desc="OpenClaw recomienda continuar el plan. Quejas se mantienen bajo 0,18%."
-        meta="contrato · /v1/warming/plan · hace 2 min"
-      />
-      <FeedbackRow
-        iconBg="var(--color-info-soft)"
-        iconColor="var(--color-info)"
-        title="Curar drift DNS delivrix.io"
-        desc="Detecta cambios SPF/DKIM/DMARC desde el último snapshot estable."
-        meta="contrato · /v1/dns/plan · hace 18 min"
-        showBorder
-      />
-      <FeedbackRow
-        iconBg="var(--color-critical-soft)"
-        iconColor="var(--color-critical)"
-        title="Bloquear adaptador SSH nodo-envio-04"
-        desc="Sin firma explícita de operador. OpenClaw mantiene SSH apagado."
-        meta="runbook · ssh-gate.md · hace 1 h"
-        last
-      />
-    </section>
-  );
-}
-
-function useFeedbackToast() {
-  const { toast } = useToast();
-  return (title: string, meta: string) => {
-    toast.info(`Revisar · ${title}`, {
-      description: `Sección informativa (roadmap). Las acciones reales sobre evidencia viven en la tabla "Evidencia curada" arriba. ${meta}`,
-      duration: 5000
-    });
-  };
-}
-
-function FeedbackRow({
-  iconBg,
-  iconColor,
-  title,
-  desc,
-  meta,
-  showBorder,
-  last
-}: {
-  iconBg: string;
-  iconColor: string;
-  title: string;
-  desc: string;
-  meta: string;
-  showBorder?: boolean;
-  last?: boolean;
-}) {
-  const notify = useFeedbackToast();
-  return (
-    <div
-      className="flex items-center"
-      style={{
-        gap: 14,
-        padding: "14px 20px",
-        borderBottom: last ? "none" : "1px solid var(--color-border)",
-        background: showBorder ? "var(--color-surface)" : "var(--color-surface)"
-      }}
-    >
-      <span
-        aria-hidden="true"
-        className="grid place-items-center shrink-0"
-        style={{ width: 36, height: 36, borderRadius: 8, background: iconBg, color: iconColor }}
-      >
-        <Sparkles size={16} strokeWidth={1.75} aria-hidden="true" />
-      </span>
-      <div className="flex flex-col flex-1 min-w-0" style={{ gap: 2 }}>
-        <h3 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-          {title}
-        </h3>
-        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] leading-[1.45] text-[var(--color-text-secondary)]">
-          {desc}
-        </p>
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{meta}</span>
-      </div>
-      <div className="flex flex-col" style={{ gap: 6 }}>
-        <button
-          type="button"
-          onClick={() => notify(title, meta)}
-          className="inline-flex items-center text-[11px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
-          style={{
-            gap: 6,
-            padding: "6px 12px",
-            borderRadius: 6,
-            border: "1px solid var(--color-border-strong)",
-            background: "transparent",
-            cursor: "pointer"
-          }}
-        >
-          Revisar
-          <ArrowRight size={11} strokeWidth={1.75} aria-hidden="true" />
-        </button>
-      </div>
-    </div>
   );
 }
 

@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { AlertTriangle, ArrowRight, CheckCircle2, Download, FileDown, KeyRound, Pause, Plus, Send, Sparkles } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, FileDown, KeyRound, Pause, Send, Sparkles } from "lucide-react";
 import {
   getJson,
   getJsonWithQuery,
@@ -208,25 +208,19 @@ export function SenderPoolV5() {
     >
       <motion.div variants={staggerItem}>
         <PageHead
-          eyebrow="Bloque 10 · Demo viernes"
+          eyebrow="Pipeline de envío"
           title="Sender Pool — dominios en producción."
           body="Cada dominio que envía email por Delivrix vive acá con su warmup, deliverability y health. Onboarding nuevo dispara compra + DNS + SMTP + warmup, todo visible en Canvas Live."
           trailing={
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="md"
-                onClick={() => exportCredentials.mutate()}
-                disabled={exportCredentials.isPending}
-              >
-                <FileDown size={13} strokeWidth={1.75} />
-                {exportCredentials.isPending ? "Exportando" : "Exportar"}
-              </Button>
-              <Button variant="primary" size="md">
-                <Plus size={13} strokeWidth={1.75} />
-                Onboard dominio
-              </Button>
-            </div>
+            <Button
+              variant="ghost"
+              size="md"
+              onClick={() => exportCredentials.mutate()}
+              disabled={exportCredentials.isPending}
+            >
+              <FileDown size={13} strokeWidth={1.75} />
+              {exportCredentials.isPending ? "Exportando" : "Exportar"}
+            </Button>
           }
         />
       </motion.div>
@@ -257,16 +251,6 @@ export function SenderPoolV5() {
                   Cuando OpenClaw aprovisione el primer dominio sender (compra · DNS · SMTP · warmup),
                   aparece acá con su estado de capacity en vivo.
                 </BodySm>
-                <div className="mt-1 flex items-center gap-2">
-                  <Button variant="primary" size="sm">
-                    <Plus size={11} strokeWidth={1.75} />
-                    Onboard con OpenClaw
-                  </Button>
-                  <Button variant="ghost" size="sm">
-                    Ver flow paso a paso
-                    <ArrowRight size={11} strokeWidth={1.75} />
-                  </Button>
-                </div>
               </div>
             </Card>
           ) : (
