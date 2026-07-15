@@ -1,37 +1,95 @@
 /**
- * Onboarding Wizard — layout basado en Pencil frame `T9osf` / `GygQG`.
+ * Onboarding Wizard — migrado al MOLDE Aivora (features/overview/TravigueOverviewProto.tsx).
  *
- * El layout (colores, padding, iconos) viene del .pen, pero los campos del
- * formulario ya NO son placeholders de Pencil: son display-only de datos reales
- * del contrato (`physicalHost`, `operatingNorth`, `onboardingState`), y muestran
- * "—" cuando el contrato no trae el dato.
+ * Los primitivos vienen de shared/ui/aivora (Card radius 18 + hairline + shadow-sm,
+ * KpiCard tile+número tabular, SectionHead eyebrow+h1 light, AdvisorCard gradient).
+ * Los colores salen SOLO de tokens var(--color-*), por lo que la vista es theme-aware.
+ *
+ * DATOS REALES: los campos son display-only del contrato (`physicalHost`,
+ * `operatingNorth`, `onboardingState`, `telemetry`) y caen a "—" cuando el
+ * contrato no trae el dato. Nada de series/valores decorativos: los KpiCard no
+ * llevan sparkline ni delta porque el contrato no expone histórico de readiness.
  */
 
 import {
   ArrowLeft,
+  ArrowRight,
   CheckCircle2,
+  CircleDashed,
   Cpu,
   Info,
   KeyRound,
+  ListChecks,
   Lock,
   Network,
   Save,
   Send,
   ShieldAlert,
-  ShieldX
+  ShieldCheck,
+  Sparkles
 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { DashboardData } from "../../shared/api/client.ts";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary.ts";
 import { useToast } from "../../shared/ui/v2/index.ts";
-import { BannerOpenClawV2 } from "../../shared/ui/v2/index.ts";
-import { Button, Card, EmptyState, Eyebrow, MonoCode, Pill, SectionHead } from "../../v5/components/primitives";
-import { PageHead } from "../../v5/views/_PageHead";
+import { useOpenClawIntent } from "../../shared/ui/v2/index.ts";
+import type { ReactNode } from "react";
+import {
+  AdvisorCard,
+  aivoraGradient,
+  Button,
+  Card,
+  Eyebrow,
+  Heading,
+  KpiCard,
+  Pill,
+  SectionHead
+} from "../../shared/ui/aivora/index.tsx";
+
+/* MonoCode / EmptyState locales al molde Aivora (tokens · sin B/N de v5). El módulo
+ * aivora no exporta estas dos piezas y no se debe tocar, así que viven acá calcadas
+ * con los mismos tokens del demo (mono 11px dim; empty-state con Heading + Caption). */
+function MonoCode({ children }: { children: ReactNode }) {
+  return (
+    <span
+      className="font-[family-name:var(--font-mono)]"
+      style={{ fontSize: 11, lineHeight: 1.5, color: "var(--color-text-tertiary)" }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function EmptyState({
+  title,
+  body,
+  action
+}: {
+  title: string;
+  body?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col items-start" style={{ gap: 8, padding: "24px 16px" }}>
+      <Heading level={3}>{title}</Heading>
+      {body ? (
+        <p
+          className="m-0 font-[family-name:var(--font-body)]"
+          style={{ fontSize: 13, color: "var(--color-text-secondary)", maxWidth: 520 }}
+        >
+          {body}
+        </p>
+      ) : null}
+      {action ? <div style={{ marginTop: 8 }}>{action}</div> : null}
+    </div>
+  );
+}
 
 export function OnboardingSection({ data }: { data: DashboardData }) {
   return (
-    <section className="flex flex-col" style={{ gap: 20 }}>
+    <section className="flex flex-col" style={{ gap: 24 }}>
       <PageHeader />
+      <OnboardingKpis data={data} />
       <Stepper data={data} />
       <WizardBody data={data} />
       <GatesHead />
@@ -42,20 +100,56 @@ export function OnboardingSection({ data }: { data: DashboardData }) {
 }
 
 /* ============================================================
- * PageHeader (M5gN0)
+ * PageHeader — eyebrow + h1 light (molde SectionHead)
  * ============================================================ */
 function PageHeader() {
   return (
-    <PageHead
+    <SectionHead
       eyebrow="Paso 1 de 6 · Inventario físico"
       title="Onboarding del servidor de envío"
-      body="El asistente captura y valida el servidor físico, sus IPs, dominios, DNS, límites y permisos antes de pedir el visto bueno humano. OpenClaw observa la evidencia y recomienda, pero nunca ejecuta cambios por su cuenta."
+      subtitle="El asistente captura y valida el servidor físico, sus IPs, dominios, DNS, límites y permisos antes de pedir el visto bueno humano. OpenClaw observa la evidencia y recomienda, pero nunca ejecuta cambios por su cuenta."
     />
   );
 }
 
 /* ============================================================
- * Stepper (cL78x) — 6 pasos con conectores horizontales
+ * OnboardingKpis — resumen real derivado de onboardingState.
+ * Sin sparkline/delta: el contrato no expone histórico de readiness.
+ * ============================================================ */
+function OnboardingKpis({ data }: { data: DashboardData }) {
+  const readiness = data.onboardingState.readinessByCategory ?? {};
+  // `total` es el readiness global autoritativo del backend (0..100), ya calculado
+  // como round((infra+network+dns+compliance+security+autonomy)/6) en
+  // packages/domain/src/openclaw-onboarding.ts. Lo usamos tal cual: NO promediamos
+  // las categorías nosotros (eso incluiría `total` dentro del promedio e inflaría el
+  // número, contradiciendo la fuente de verdad). Cae a "—" cuando el contrato no lo trae.
+  const total = readiness.total;
+  const readinessPct =
+    typeof total === "number" && Number.isFinite(total) ? Math.round(total) : null;
+
+  const pending = data.onboardingState.pendingQuestions?.length ?? 0;
+  const blockers = data.onboardingState.blockers?.length ?? 0;
+  const unknowns =
+    (data.physicalHost.quality.unknownFields?.length ?? 0) +
+    (data.telemetry.quality.unknownFields?.length ?? 0);
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4" style={{ gap: 20 }}>
+      <KpiCard
+        label="Readiness global"
+        value={readinessPct === null ? "—" : readinessPct}
+        suffix={readinessPct === null ? undefined : "%"}
+        icon={ShieldCheck}
+      />
+      <KpiCard label="Preguntas pendientes" value={pending} icon={ListChecks} />
+      <KpiCard label="Bloqueos" value={blockers} icon={ShieldAlert} />
+      <KpiCard label="Campos sin completar" value={unknowns} icon={CircleDashed} />
+    </div>
+  );
+}
+
+/* ============================================================
+ * Stepper — 6 pasos con conectores horizontales
  * ============================================================ */
 interface OnboardingStepConfig {
   title: string;
@@ -187,64 +281,64 @@ function Stepper({ data }: { data: DashboardData }) {
   }
 
   return (
-    <Card asChild padding="none">
+    <Card>
       <ol
         className="m-0 p-0 list-none flex items-center overflow-x-auto snap-x snap-mandatory [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         style={{ gap: 14, padding: "16px 20px" }}
       >
-      {steps.map((step, i) => {
-        const active = i === activeIdx;
-        return (
-        <li key={step.kicker} className="flex items-center shrink-0 snap-start" style={{ gap: 10 }}>
-          <div className="flex items-center" style={{ gap: 10 }}>
-            <span
-              aria-hidden="true"
-              className="grid place-items-center"
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 999,
-                background: active ? "var(--color-accent)" : "var(--color-bg)",
-                color: active ? "var(--color-bg)" : "var(--color-text-tertiary)",
-                fontFamily: "var(--font-mono)",
-                fontSize: 13,
-                fontWeight: active ? 700 : 600,
-                boxShadow: !active ? "inset 0 0 0 1px var(--color-border)" : undefined
-              }}
-            >
-              {i + 1}
-            </span>
-            <div className="flex flex-col" style={{ gap: 2 }}>
-              <span
-                className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
-                style={{
-                  color: active ? "var(--color-accent-tertiary)" : "var(--color-text-tertiary)",
-                  letterSpacing: "var(--tracking-widest)"
-                }}
-              >
-                {step.kicker}
-              </span>
-              <span
-                className="text-[13px] font-[family-name:var(--font-sans)]"
-                style={{
-                  color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-                  fontWeight: active ? 600 : 500
-                }}
-              >
-                {step.title}
-              </span>
-            </div>
-          </div>
-          {i < steps.length - 1 ? (
-            <span
-              aria-hidden="true"
-              className="block"
-              style={{ height: 1, flex: 1, minWidth: 16, background: "var(--color-border)" }}
-            />
-          ) : null}
-        </li>
-        );
-      })}
+        {steps.map((step, i) => {
+          const active = i === activeIdx;
+          return (
+            <li key={step.kicker} className="flex items-center shrink-0 snap-start" style={{ gap: 10 }}>
+              <div className="flex items-center" style={{ gap: 10 }}>
+                <span
+                  aria-hidden="true"
+                  className="grid place-items-center"
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 999,
+                    background: active ? "var(--color-accent)" : "var(--color-surface-sunken)",
+                    color: active ? "var(--color-accent-fg)" : "var(--color-text-tertiary)",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 13,
+                    fontWeight: active ? 700 : 600,
+                    boxShadow: !active ? "inset 0 0 0 1px var(--color-border)" : undefined
+                  }}
+                >
+                  {i + 1}
+                </span>
+                <div className="flex flex-col" style={{ gap: 2 }}>
+                  <span
+                    className="text-[9px] font-[family-name:var(--font-caption)] font-bold uppercase"
+                    style={{
+                      color: active ? "var(--color-accent)" : "var(--color-text-tertiary)",
+                      letterSpacing: "var(--tracking-widest)"
+                    }}
+                  >
+                    {step.kicker}
+                  </span>
+                  <span
+                    className="text-[13px] font-[family-name:var(--font-sans)]"
+                    style={{
+                      color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)",
+                      fontWeight: active ? 600 : 500
+                    }}
+                  >
+                    {step.title}
+                  </span>
+                </div>
+              </div>
+              {i < steps.length - 1 ? (
+                <span
+                  aria-hidden="true"
+                  className="block"
+                  style={{ height: 1, flex: 1, minWidth: 16, background: "var(--color-border)" }}
+                />
+              ) : null}
+            </li>
+          );
+        })}
       </ol>
     </Card>
   );
@@ -252,7 +346,7 @@ function Stepper({ data }: { data: DashboardData }) {
 
 function OnboardingStepsEmptyState() {
   return (
-    <Card padding="none" className="flex flex-col">
+    <Card>
       <EmptyState
         title="Sin pasos de onboarding disponibles"
         body="El contrato no devolvió categorías de readiness ni preguntas pendientes."
@@ -263,7 +357,7 @@ function OnboardingStepsEmptyState() {
 }
 
 /* ============================================================
- * WizardBody (uqjXO) — Form (3 cards) + OpenClawColumn (360w)
+ * WizardBody — Form (3 cards) + OpenClawColumn (360w)
  * ============================================================ */
 function WizardBody({ data }: { data: DashboardData }) {
   return (
@@ -292,32 +386,44 @@ function Form({ data }: { data: DashboardData }) {
   const storageLine = cap.storageUsableGb ? `${cap.storageUsableGb} GB usables` : "—";
   const linkLine = cap.networkInterfaces ? `${cap.networkInterfaces} interfaces` : "—";
 
+  // Sección 3 — SOLO datos reales del contrato. El recolector captura AGREGADOS
+  // (conteo de interfaces `cap.networkInterfaces`, tamaño del pool `cap.ipPoolSize`)
+  // y el onboarding declara `domainsCount`/`totalIps` en inputSummary. NO existe un
+  // desglose por-interfaz (inputSummary solo trae serverModel/proxmoxStatus/totalIps/
+  // domainsCount/targetDailyVolume/autonomyMode), así que no se inventan filas
+  // BOND0/ETH2/IPMI con una topología que el sistema nunca capturó.
+  const domainsCount = typeof known["domainsCount"] === "number" ? (known["domainsCount"] as number) : null;
+  const totalIps = typeof known["totalIps"] === "number" ? (known["totalIps"] as number) : null;
+  const poolSize = cap.ipPoolSize ?? totalIps;
+  const interfacesCount = cap.networkInterfaces ?? null;
+  const hasNetworkFacts =
+    (interfacesCount ?? 0) > 0 || poolSize !== null || domainsCount !== null;
+
   return (
     <div className="flex flex-col" style={{ gap: 16 }}>
       {/* Sección 1 — Identidad (datos reales de physicalHost.identity + operatingNorth) */}
       <SectionCard
-        iconBg="var(--color-warning-soft)"
-        iconColor="var(--color-warning)"
         icon={<ShieldAlert size={16} strokeWidth={1.75} aria-hidden="true" />}
         kicker="SECCIÓN 1"
         title="Identidad del servidor"
-        pillTone="warning"
+        pillTone="neutral"
         pillText="campos requeridos"
       >
         <FieldRow label="HOSTNAME" value={ph.identity.label || knownStr("hostname", "—")} />
         <FieldRow label="DATACENTER" value={ph.identity.location || knownStr("datacenter", "—")} />
         <FieldRow label="ROL" value={on.delivrixRole || knownStr("role", "—")} />
-        <FieldRow label="ENTORNO" value={data.health.phase || knownStr("environment", "—")} />
+        <FieldRow
+          label="ENTORNO"
+          value={on.environment || data.onboardingState.environment || knownStr("environment", "—")}
+        />
       </SectionCard>
 
       {/* Sección 2 — Inventario de cómputo (capacidad real desde el contrato) */}
       <SectionCard
-        iconBg="var(--color-info-soft)"
-        iconColor="var(--color-info)"
         icon={<Cpu size={16} strokeWidth={1.75} aria-hidden="true" />}
         kicker="SECCIÓN 2"
         title="Inventario de cómputo"
-        pillTone="info"
+        pillTone="neutral"
         pillText="detectado por el recolector"
       >
         <FieldRow label="CPU" value={cpuLine} badge={cap.cpuCores ? "DETECTADO" : undefined} />
@@ -326,35 +432,51 @@ function Form({ data }: { data: DashboardData }) {
         <FieldRow label="ENLACE PRIMARIO" value={linkLine} badge={cap.networkInterfaces ? "DETECTADO" : undefined} />
       </SectionCard>
 
-      {/* Sección 3 — Interfaces de red (knownInputs cuando exista; placeholder cuando falte) */}
+      {/* Sección 3 — Red y direccionamiento (agregados reales del contrato; sin
+          topología por-interfaz inventada). Empty-state honesto si no hay dato. */}
       <SectionCard
-        iconBg="var(--color-success-soft)"
-        iconColor="var(--color-success)"
         icon={<Network size={16} strokeWidth={1.75} aria-hidden="true" />}
         kicker="SECCIÓN 3"
-        title="Interfaces de red"
-        pillTone="success"
-        pillText={`${cap.networkInterfaces ?? 0} interfaces declaradas`}
+        title="Red y direccionamiento"
+        pillTone="neutral"
+        pillText={
+          interfacesCount !== null
+            ? `${interfacesCount} interfaz${interfacesCount === 1 ? "" : "es"} detectada${interfacesCount === 1 ? "" : "s"}`
+            : "sin datos de red"
+        }
       >
-        <FieldRow label="BOND0 · ENVÍO" value={knownStr("interface_primary", "—")} />
-        <FieldRow label="ETH2 · GESTIÓN" value={knownStr("interface_management", "—")} />
-        <FieldRow
-          label="IPMI · FUERA DE BANDA"
-          value={knownStr("interface_ipmi", "—")}
-          badge={known["interface_ipmi"] ? "DETECTADO" : undefined}
-        />
-        <FieldRow
-          label="DOMINIO PÚBLICO"
-          value={knownStr("public_domain", cap.ipPoolSize ? `${cap.ipPoolSize} IPs · pool` : "—")}
-        />
+        {hasNetworkFacts ? (
+          <>
+            <FieldRow
+              label="INTERFACES DE RED"
+              value={interfacesCount !== null ? `${interfacesCount}` : "—"}
+              badge={interfacesCount !== null ? "DETECTADO" : undefined}
+            />
+            <FieldRow
+              label="POOL DE IPs"
+              value={poolSize !== null ? `${poolSize} IPs` : "—"}
+              badge={cap.ipPoolSize !== null && cap.ipPoolSize !== undefined ? "DETECTADO" : undefined}
+            />
+            <FieldRow
+              label="DOMINIOS DECLARADOS"
+              value={domainsCount !== null ? `${domainsCount}` : "—"}
+            />
+          </>
+        ) : (
+          <div className="sm:col-span-2">
+            <EmptyState
+              title="Sin datos de red capturados aún"
+              body="El recolector todavía no reporta interfaces, pool de IPs ni dominios para este servidor. El desglose por-interfaz (bonding, gestión, IPMI) no forma parte del snapshot actual."
+              action={<MonoCode>{READ_ENDPOINTS.openClawOnboardingState}</MonoCode>}
+            />
+          </div>
+        )}
       </SectionCard>
     </div>
   );
 }
 
 function SectionCard({
-  iconBg,
-  iconColor,
   icon,
   kicker,
   title,
@@ -362,8 +484,6 @@ function SectionCard({
   pillText,
   children
 }: {
-  iconBg: string;
-  iconColor: string;
   icon: React.ReactNode;
   kicker: string;
   title: string;
@@ -372,14 +492,23 @@ function SectionCard({
   children: React.ReactNode;
 }) {
   return (
-    <Card padding="relaxed" className="flex flex-col" style={{ gap: 18 }}>
+    <Card className="flex flex-col" style={{ gap: 18, padding: 20 }}>
       {/* SecHead */}
       <header className="flex items-center justify-between" style={{ gap: 10 }}>
         <div className="flex items-center" style={{ gap: 10 }}>
+          {/* tile NEUTRO del molde (KpiCard): sin relleno semántico decorativo.
+              El color/estado vive en el Pill y en los badges por campo, no en el ícono. */}
           <span
             aria-hidden="true"
             className="grid place-items-center"
-            style={{ width: 32, height: 32, borderRadius: 6, background: iconBg, color: iconColor }}
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 8,
+              background: "color-mix(in srgb, var(--color-text-primary) 5%, transparent)",
+              border: "1px solid var(--color-border)",
+              color: "var(--color-text-secondary)"
+            }}
           >
             {icon}
           </span>
@@ -403,7 +532,7 @@ function SectionCard({
 
 function FieldRow({ label, value, badge }: { label: string; value: string; badge?: string }) {
   return (
-    <div className="flex flex-col" style={{ gap: 6 }}>
+    <div className="flex flex-col min-w-0" style={{ gap: 6 }}>
       <div className="flex items-center" style={{ gap: 8 }}>
         <Eyebrow>{label}</Eyebrow>
         {badge ? (
@@ -422,21 +551,21 @@ function FieldRow({ label, value, badge }: { label: string; value: string; badge
         ) : null}
       </div>
       <div
-        className="bg-[var(--color-surface)]"
         style={{
           padding: "12px 10px",
-          borderRadius: 6,
+          borderRadius: 8,
+          background: "var(--color-surface-sunken)",
           border: "1px solid var(--color-border)"
         }}
       >
-        <span className="text-[13px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">{value}</span>
+        <span className="text-[13px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)] break-words [overflow-wrap:anywhere]">{value}</span>
       </div>
     </div>
   );
 }
 
 /* ============================================================
- * OpenClawColumn (vBXlY, 360w)
+ * OpenClawColumn (360w) — Advisor gradient del molde
  * ============================================================ */
 function OpenClawColumn({ data }: { data: DashboardData }) {
   const unknownsCount =
@@ -451,8 +580,15 @@ function OpenClawColumn({ data }: { data: DashboardData }) {
   );
 }
 
+/**
+ * OpenClawCard — superficie Advisor del molde (AdvisorCard: gradient + sparkle).
+ * Los CTAs conservan la funcionalidad real: pre-llenan el chat OpenClaw vía
+ * useOpenClawIntent (SSH bridge ya cableado), no son botones muertos.
+ */
 function OpenClawCard({ unknownsCount, blockers }: { unknownsCount: number; blockers: number }) {
-  // Migrado a BannerOpenClawV2 — ~130 LOC duplicadas eliminadas (gradient bulky + ocInput + ocActions)
+  const { sendIntent } = useOpenClawIntent();
+  const { toast } = useToast();
+
   const title =
     blockers > 0
       ? `${blockers} bloqueo${blockers === 1 ? "" : "s"} en onboarding`
@@ -465,19 +601,108 @@ function OpenClawCard({ unknownsCount, blockers }: { unknownsCount: number; bloc
       : unknownsCount > 0
         ? `Detecté ${unknownsCount} campo${unknownsCount === 1 ? "" : "s"} sin completar en tu inventario. ¿Quieres que resuma lo que falta antes del gate de cumplimiento?`
         : "Inventario completo. Puedo proponer el plan de topología cuando lo autorices.";
+
+  const send = (label: string) => {
+    const prompt = `Acción del operador: ${label}.\n\nContexto del onboarding: ${title} · ${body}\n\nPor favor tráeme la evidencia o la recomendación ordenada por impacto, y dime qué decisión humana necesitas antes del gate. Cita los snapshots y eventos del audit chain.`;
+    sendIntent(prompt, `onboarding:${label}`);
+    toast.info(`Enviando a OpenClaw · ${label}`, {
+      description: "Prompt pre-llenado en el chat. Revisa y presiona Enter para ejecutar.",
+      duration: 2500
+    });
+  };
+
   return (
-    <BannerOpenClawV2
-      title={title}
-      body={body}
-      primaryCta="Revisar recomendación"
-      secondaryCta="Ver evidencia"
-    />
+    <AdvisorCard>
+      <div style={{ padding: 18 }}>
+        <div className="flex items-center" style={{ gap: 9 }}>
+          <div
+            aria-hidden="true"
+            className="grid place-items-center"
+            style={{ width: 30, height: 30, borderRadius: 9, background: aivoraGradient }}
+          >
+            <Sparkles size={16} color="var(--color-accent-fg)" />
+          </div>
+          <div className="text-[14.5px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-primary)]">
+            Advisor · OpenClaw
+          </div>
+        </div>
+
+        <div
+          style={{
+            marginTop: 14,
+            borderLeft: "2px solid var(--color-accent)",
+            paddingLeft: 12
+          }}
+        >
+          <div className="text-[13.5px] font-[family-name:var(--font-sans)] font-semibold leading-snug text-[var(--color-text-primary)]">
+            {title}
+          </div>
+          <div
+            className="text-[13px] font-[family-name:var(--font-body)] text-[var(--color-text-secondary)]"
+            style={{ marginTop: 4, lineHeight: 1.5 }}
+          >
+            {body}
+          </div>
+          <div className="flex flex-wrap items-center" style={{ gap: 6, marginTop: 10 }}>
+            {blockers > 0 ? (
+              <Pill tone="critical">{blockers} bloqueo{blockers === 1 ? "" : "s"}</Pill>
+            ) : null}
+            <Pill tone={unknownsCount > 0 ? "neutral" : "success"}>
+              {unknownsCount > 0 ? `${unknownsCount} campo${unknownsCount === 1 ? "" : "s"} sin completar` : "inventario completo"}
+            </Pill>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center" style={{ gap: 8, marginTop: 14 }}>
+          <button
+            type="button"
+            onClick={() => send("Revisar recomendación")}
+            className="inline-flex items-center font-[family-name:var(--font-caption)] font-semibold leading-none transition-[filter] hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+            style={{
+              gap: 6,
+              padding: "8px 14px",
+              borderRadius: 10,
+              background: aivoraGradient,
+              color: "var(--color-accent-fg)",
+              fontSize: 13,
+              border: "none",
+              cursor: "pointer"
+            }}
+          >
+            Revisar recomendación
+            <ArrowRight size={13} strokeWidth={2.25} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={() => send("Ver evidencia")}
+            className="inline-flex items-center font-[family-name:var(--font-caption)] font-medium leading-none transition-colors hover:bg-[var(--color-surface-sunken)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-border-focus)]"
+            style={{
+              padding: "8px 14px",
+              borderRadius: 10,
+              background: "transparent",
+              color: "var(--color-text-secondary)",
+              border: "1px solid var(--color-border)",
+              fontSize: 13,
+              cursor: "pointer"
+            }}
+          >
+            Ver evidencia
+          </button>
+        </div>
+      </div>
+    </AdvisorCard>
   );
 }
 
+/**
+ * OpenClawMeta — hermana OSCURA del Advisor: en modo claro va `ink` para que la
+ * columna derecha (Advisor + Meta) forme UN bloque negro cohesivo (borde derecho
+ * del marco), no una card oscura suelta flotando entre las claras del formulario.
+ * En modo oscuro no cambia nada.
+ */
 function OpenClawMeta() {
   return (
-    <Card tone="quiet" padding="none" className="flex flex-col" style={{ gap: 8, padding: 14 }}>
+    <Card ink className="flex flex-col" style={{ gap: 8, padding: 14 }}>
       <header className="flex items-center" style={{ gap: 8 }}>
         <Info size={13} strokeWidth={1.75} className="text-[var(--color-text-secondary)]" aria-hidden="true" />
         <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
@@ -504,39 +729,126 @@ function GatesHead() {
   );
 }
 
+type GateTone = "success" | "warning" | "critical" | "info" | "neutral";
+
+interface GateStatus {
+  tone: GateTone;
+  title: string;
+  pillText: string;
+  desc: string;
+}
+
+const GATE_TONE_STYLE: Record<GateTone, { bg: string; color: string }> = {
+  success: { bg: "var(--color-success-soft)", color: "var(--color-success)" },
+  warning: { bg: "var(--color-warning-soft)", color: "var(--color-warning)" },
+  critical: { bg: "var(--color-critical-soft)", color: "var(--color-critical)" },
+  info: { bg: "var(--color-info-soft)", color: "var(--color-info)" },
+  neutral: { bg: "var(--color-unknown-soft)", color: "var(--color-unknown)" }
+};
+
+/**
+ * Deriva el estado real de un gate desde el contrato: si hay un blocker que lo
+ * afecta, si el readiness de su categoría está completo (100), a medias, o si el
+ * contrato aún no reporta readiness para esa categoría. NUNCA afirma "no validado"
+ * sin evidencia: cuando no hay dato, el estado es "sin evaluar" (neutral).
+ */
+function resolveGate(opts: {
+  label: string;
+  readiness: number | undefined;
+  hasBlocker: boolean;
+  copy: { validated: string; pending: string; blocked: string; unknown: string };
+}): GateStatus {
+  const { label, readiness, hasBlocker, copy } = opts;
+  if (hasBlocker) {
+    return { tone: "critical", title: `${label} bloqueado`, pillText: "bloqueado", desc: copy.blocked };
+  }
+  if (typeof readiness !== "number" || !Number.isFinite(readiness)) {
+    return { tone: "neutral", title: `${label} sin evaluar`, pillText: "sin datos", desc: copy.unknown };
+  }
+  if (readiness >= 100) {
+    return { tone: "success", title: `${label} validado`, pillText: "validado", desc: copy.validated };
+  }
+  // Readiness parcial = "en progreso" → tono INFO (cyan). El slot `warning` (ámbar)
+  // queda reservado EXCLUSIVAMENTE a PAUSED (doc §3, cero ámbar fuera de paused);
+  // un readiness a medias no es un estado "pausado".
+  return { tone: "info", title: `${label} en validación`, pillText: `${Math.round(readiness)}%`, desc: copy.pending };
+}
+
 function GatesStrip({ data }: { data: DashboardData }) {
+  const readiness = data.onboardingState.readinessByCategory ?? {};
   const blockers = data.onboardingState.blockers ?? [];
-  const blockersCount = blockers.length;
-  const dnsBlocker = blockers.some((b) => b.toLowerCase().includes("dns"));
-  const sshBlocker = blockers.some((b) => b.toLowerCase().includes("ssh"));
+  const hasBlocker = (...terms: string[]) =>
+    blockers.some((b) => terms.some((t) => b.toLowerCase().includes(t)));
+
+  const compliance = resolveGate({
+    label: "Cumplimiento",
+    readiness: readiness.compliance,
+    hasBlocker: hasBlocker("compliance", "opt_out", "suppression", "consent", "physical_address", "authorization"),
+    copy: {
+      validated: "Un revisor humano firmó el cumplimiento de políticas y quedó registrada la evidencia.",
+      pending: "A la espera de que un revisor humano firme el cumplimiento de políticas y registre la evidencia.",
+      blocked: "Hay bloqueos de cumplimiento que deben resolverse antes de firmar el gate.",
+      unknown: "El contrato aún no reporta readiness de cumplimiento para este servidor."
+    }
+  });
+  const dns = resolveGate({
+    label: "DNS",
+    readiness: readiness.dns,
+    hasBlocker: hasBlocker("dns"),
+    copy: {
+      validated: "Las zonas y registros están verificados contra los resolvers internos del clúster de envío.",
+      pending: "Las zonas y registros aún no se verifican contra los resolvers internos del clúster de envío.",
+      blocked: "Hay bloqueos de DNS que impiden habilitar el servidor para envío.",
+      unknown: "El contrato aún no reporta readiness de DNS para este servidor."
+    }
+  });
+
+  // SSH no tiene categoría de readiness propia en el contrato; su gate se deriva
+  // solo del blocker declarado. El estado por defecto describe el proceso estándar
+  // (autorización manual en cada alta) sin afirmar que el acceso esté hoy denegado.
+  const sshBlocked = hasBlocker("ssh");
+  const ssh: GateStatus = sshBlocked
+    ? {
+      tone: "critical",
+      title: "Acceso SSH bloqueado",
+      pillText: "bloqueado",
+      desc: "Hay un bloqueo de SSH declarado en el onboarding; requiere resolución del operador con rol elevado."
+    }
+    : {
+      tone: "info",
+      title: "Acceso SSH · autorización manual",
+      pillText: "autorizar manualmente",
+      desc: "El acceso SSH de OpenClaw requiere autorización manual del operador con rol elevado en cada alta de servidor."
+    };
+
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3" style={{ gap: 14 }}>
+    <div className="grid grid-cols-1 md:grid-cols-3" style={{ gap: 20 }}>
       <GateCard
-        iconBg="var(--color-warning-soft)"
-        iconColor="var(--color-warning)"
-        icon={<ShieldAlert size={18} strokeWidth={1.75} aria-hidden="true" />}
-        title="Cumplimiento pendiente"
-        pillTone="warning"
-        pillText={blockersCount > 0 ? `${blockersCount} bloqueos` : "revisión humana"}
-        desc="A la espera de que un revisor humano firme el cumplimiento de políticas y registre la evidencia."
+        iconBg={GATE_TONE_STYLE[compliance.tone].bg}
+        iconColor={GATE_TONE_STYLE[compliance.tone].color}
+        icon={<ShieldCheck size={18} strokeWidth={1.75} aria-hidden="true" />}
+        title={compliance.title}
+        pillTone={compliance.tone}
+        pillText={compliance.pillText}
+        desc={compliance.desc}
       />
       <GateCard
-        iconBg={dnsBlocker ? "var(--color-critical-soft)" : "var(--color-warning-soft)"}
-        iconColor={dnsBlocker ? "var(--color-critical)" : "var(--color-warning)"}
-        icon={<ShieldX size={18} strokeWidth={1.75} aria-hidden="true" />}
-        title="DNS no validado"
-        pillTone={dnsBlocker ? "critical" : "warning"}
-        pillText={dnsBlocker ? "crítico" : "pendiente"}
-        desc="Las zonas y registros aún no se verifican contra los resolvers internos del clúster de envío."
+        iconBg={GATE_TONE_STYLE[dns.tone].bg}
+        iconColor={GATE_TONE_STYLE[dns.tone].color}
+        icon={<Network size={18} strokeWidth={1.75} aria-hidden="true" />}
+        title={dns.title}
+        pillTone={dns.tone}
+        pillText={dns.pillText}
+        desc={dns.desc}
       />
       <GateCard
-        iconBg="var(--color-unknown-soft)"
-        iconColor="var(--color-unknown)"
+        iconBg={GATE_TONE_STYLE[ssh.tone].bg}
+        iconColor={GATE_TONE_STYLE[ssh.tone].color}
         icon={<KeyRound size={18} strokeWidth={1.75} aria-hidden="true" />}
-        title="SSH no autorizado"
-        pillTone="info"
-        pillText={sshBlocker ? "ssh bloqueado" : "autorizar manualmente"}
-        desc="OpenClaw no tiene credenciales para acceder por SSH. Necesita autorización manual del operador con rol elevado."
+        title={ssh.title}
+        pillTone={ssh.tone}
+        pillText={ssh.pillText}
+        desc={ssh.desc}
       />
     </div>
   );
@@ -560,11 +872,11 @@ function GateCard({
   desc: string;
 }) {
   return (
-    <Card padding="none" className="flex" style={{ gap: 14, padding: 16 }}>
+    <Card className="flex" style={{ gap: 14, padding: 16 }}>
       <span
         aria-hidden="true"
         className="grid place-items-center shrink-0"
-        style={{ width: 36, height: 36, borderRadius: 4, background: iconBg, color: iconColor }}
+        style={{ width: 36, height: 36, borderRadius: 8, background: iconBg, color: iconColor }}
       >
         {icon}
       </span>
@@ -574,7 +886,7 @@ function GateCard({
             {title}
           </h3>
           <span className="flex-1" aria-hidden="true" />
-          <Pill tone={pillTone} dot={false}>
+          <Pill tone={pillTone}>
             {pillText}
           </Pill>
         </header>
@@ -675,7 +987,6 @@ function ActionBar({ data }: { data: DashboardData }) {
 
   return (
     <Card
-      padding="none"
       className="flex flex-wrap items-center"
       style={{ gap: 12, padding: "14px 18px", justifyContent: "space-between" }}
     >
@@ -686,17 +997,17 @@ function ActionBar({ data }: { data: DashboardData }) {
 
       <div className="flex flex-wrap items-center" style={{ gap: 12 }}>
         {blockers > 0 ? (
-          <Pill tone="warning" dot={false}>
+          <Pill tone="critical">
             <Lock size={12} strokeWidth={1.75} aria-hidden="true" />
             {blockers} bloqueo{blockers === 1 ? "" : "s"} · {unknowns} campo{unknowns === 1 ? "" : "s"} sin completar
           </Pill>
         ) : (
-          <Pill tone="success" dot={false}>
+          <Pill tone="success">
             <CheckCircle2 size={12} strokeWidth={1.75} aria-hidden="true" />
             Sin bloqueos · listo para evaluación
           </Pill>
         )}
-        <Button type="button" variant="secondary" size="md" onClick={() => void handleRefresh()}>
+        <Button type="button" variant="ghost" size="md" onClick={() => void handleRefresh()}>
           <ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" />
           Refrescar estado
         </Button>

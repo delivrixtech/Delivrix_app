@@ -1,8 +1,10 @@
 /* Delivrix admin panel — Design tokens.
  *
  * Rebrand B/W (2026-05-28): el CTO pidió rediseño completo a colores
- * oficiales NEGRO + BLANCO. Fuentes: Montserrat (sans/heading), JetBrains
- * Mono (mono/datos/audit), Caveat (decorativa para "human notes").
+ * oficiales NEGRO + BLANCO.
+ * Tipografía (2026-07-14, dir. Aivora): UNA sola familia en TODO el sitio —
+ * Inter (variable, self-host offline). Todos los --font-* (incluido mono/display)
+ * apuntan a Inter; sin Montserrat / JetBrains Mono / Satoshi / Caveat.
  *
  * Estrategia de color:
  *   - Paleta base monocromática con tinted neutrals (chroma muy bajo
@@ -21,84 +23,85 @@
 [data-theme="light"] {
   color-scheme: light;
 
-  /* === SURFACES === Puro B/W con grises neutros */
-  --color-bg: #ffffff;                /* canvas */
-  --color-surface: #ffffff;           /* cards */
-  --color-surface-raised: #ffffff;
-  --color-surface-sunken: #f6f6f6;    /* dimmed surfaces, sidebar bg */
+  /* === SURFACES === valores EXACTOS del demo (THEMES.light) === */
+  --color-bg: #f5f6f8;                /* demo bg (off-white) */
+  --color-surface: #ffffff;           /* demo surface (cards) */
+  --color-surface-raised: #eef0f3;    /* demo raised (hover/popover) */
+  --color-surface-sunken: #f1f2f5;    /* demo inset (wells) */
   --color-surface-overlay: #ffffff;
-  --color-surface-inverse: #0a0a0a;   /* dark blocks (kill switch, code) */
+  --color-surface-inverse: #08080b;   /* dark blocks / inlays (= demo negro bg) */
 
-  /* === BORDERS === Hairlines neutrales */
-  --color-border: #e5e5e5;            /* default hairline */
-  --color-border-strong: #d1d1d1;     /* emphasized */
-  --color-border-focus: #0a0a0a;      /* focus = el accent (negro puro) */
+  /* === BORDERS === hairlines exactos del demo === */
+  --color-border: rgba(17, 20, 28, 0.09);        /* demo border */
+  --color-border-strong: rgba(17, 20, 28, 0.15); /* demo borderS */
+  --color-border-focus: #3766b0;      /* focus = acento claro del demo */
 
-  /* === FOREGROUND === Negro 100/72/56/40 + inverse */
-  --color-text-primary: #0a0a0a;      /* near-black, AAA contrast */
-  --color-text-secondary: #525252;    /* 70% body */
-  --color-text-tertiary: #6f6f6f;     /* captions/meta — WCAG AA ~5.0:1 sobre blanco (antes #8a8a8a ~3.45:1) */
-  --color-text-disabled: #b5b5b5;
+  /* === FOREGROUND === demo hi / mid / dim === */
+  --color-text-primary: #14161c;      /* demo hi */
+  --color-text-secondary: #565a63;    /* demo mid */
+  --color-text-tertiary: #8b8f98;     /* demo dim */
+  --color-text-disabled: #a6aab2;
   --color-text-inverse: #ffffff;      /* texto sobre dark blocks */
 
-  /* === ACCENT === Negro puro (es la marca) */
-  --color-accent: #0a0a0a;            /* CTAs, active states */
-  --color-accent-hover: #262626;
-  --color-accent-soft: #f0f0f0;       /* subtle surface tint */
+  /* === ACCENT === demo claro = shade(#4C8DF5,-.28) = #3766B0 (+ soft/grad derivados igual) === */
+  --color-accent: #3766b0;            /* CTAs, active states */
+  --color-accent-hover: #2e5896;
+  --color-accent-soft: rgba(55, 102, 176, 0.14); /* demo accentSoft = hexa(#3766B0,.14) */
   --color-accent-fg: #ffffff;         /* texto sobre accent */
-  --color-accent-secondary: #404040;  /* graphite */
-  --color-accent-tertiary: #0a0a0a;
+  --color-accent-secondary: #5f7fb0;
+  --color-accent-tertiary: #3766b0;
 
-  /* Sin gradients de marca — clean B/W */
-  --color-gradient-start: #0a0a0a;
-  --color-gradient-mid: #262626;
-  --color-gradient-end: #404040;
+  --color-gradient-start: #7d9ccc;    /* demo shade(#3766B0,+.35) */
+  --color-gradient-mid: #3766b0;      /* demo ACCENT_LIGHT */
+  --color-gradient-end: #254578;      /* demo shade(#3766B0,-.32) */
 
-  /* === SEMANTIC === Desaturados, sobrios, profesionales */
-  /* Verde sutil para success — Linear-style */
-  --color-success: #2f6f3a;
-  --color-success-soft: #ecf6ee;
-  --color-success-border: #c8e2cf;
-  --color-success-fg: #1f4a26;
+  /* === SEMANTIC === OFICIALES del documento Aivora, oscurecidos para AA sobre blanco. Sin ámbar salvo PAUSED. */
+  --color-success: #178a63;
+  --color-success-soft: rgba(23, 138, 99, 0.12);
+  --color-success-border: rgba(23, 138, 99, 0.28);
+  --color-success-fg: #0e5a42;
 
-  /* Azul sobrio para info — sin saturar */
-  --color-info: #2c5283;
-  --color-info-soft: #eef3fa;
-  --color-info-border: #cad9ec;
-  --color-info-fg: #1d3a5f;
+  --color-info: #0c7cb5;                             /* cyan del documento, oscurecido */
+  --color-info-soft: rgba(12, 124, 181, 0.11);
+  --color-info-border: rgba(12, 124, 181, 0.26);
+  --color-info-fg: #0a4e72;
 
-  /* Ámbar muy desaturado para warning — atención sin alarma */
-  --color-warning: #8a5a00;
-  --color-warning-soft: #fbf3e1;
-  --color-warning-border: #ecd9a3;
-  --color-warning-fg: #5e3d00;
+  --color-warning: #b85818;                          /* NARANJA oscuro (cero ámbar) — atención/paused */
+  --color-warning-soft: rgba(184, 88, 24, 0.12);
+  --color-warning-border: rgba(184, 88, 24, 0.3);
+  --color-warning-fg: #7a3a10;
 
-  /* Rojo desaturado para critical — serio sin gritar */
-  --color-critical: #a02525;
-  --color-critical-soft: #fbecec;
-  --color-critical-border: #ecc8c8;
-  --color-critical-fg: #6e1818;
+  --color-critical: #ce3355;                         /* danger del documento, oscurecido */
+  --color-critical-soft: rgba(206, 51, 85, 0.1);
+  --color-critical-border: rgba(206, 51, 85, 0.26);
+  --color-critical-fg: #8a2138;
 
-  --color-unknown: #525252;
-  --color-unknown-soft: #f0f0f0;
-  --color-unknown-border: #d1d1d1;
-  --color-unknown-fg: #262626;
+  /* WARMING = info cyan del documento (oscurecido), NO ámbar/naranja */
+  --color-warming: #0c7cb5;
+  --color-warming-soft: rgba(12, 124, 181, 0.11);
+  --color-warming-border: rgba(12, 124, 181, 0.26);
+  --color-warming-fg: #0a4e72;
 
-  --color-stale: #8a5a00;
-  --color-stale-soft: #fbf3e1;
-  --color-stale-border: #ecd9a3;
-  --color-stale-fg: #5e3d00;
+  --color-unknown: #565a63;
+  --color-unknown-soft: rgba(17, 20, 28, 0.05);
+  --color-unknown-border: rgba(17, 20, 28, 0.12);
+  --color-unknown-fg: #2e323a;
 
-  --color-neutral: #525252;
-  --color-neutral-soft: #f6f6f6;
-  --color-neutral-border: #e5e5e5;
-  --color-neutral-fg: #262626;
+  --color-stale: #b85818;
+  --color-stale-soft: rgba(184, 88, 24, 0.12);
+  --color-stale-border: rgba(184, 88, 24, 0.3);
+  --color-stale-fg: #7a3a10;
 
-  /* === SHADOWS === Neutras, muy sutiles, B/W */
-  --shadow-sm: 0 1px 2px rgba(10, 10, 10, 0.04);
-  --shadow-md: 0 2px 4px rgba(10, 10, 10, 0.05), 0 4px 8px rgba(10, 10, 10, 0.04);
-  --shadow-lg: 0 8px 24px rgba(10, 10, 10, 0.08), 0 2px 6px rgba(10, 10, 10, 0.04);
-  --shadow-focus: 0 0 0 3px rgba(10, 10, 10, 0.15);
+  --color-neutral: #565a63;
+  --color-neutral-soft: rgba(17, 20, 28, 0.05);
+  --color-neutral-border: rgba(17, 20, 28, 0.12);
+  --color-neutral-fg: #2e323a;
+
+  /* === SHADOWS === sombra de card del demo (light: profundidad por sombra suave) === */
+  --shadow-sm: 0 1px 2px rgba(17, 20, 28, 0.06);
+  --shadow-md: 0 1px 2px rgba(17, 20, 28, 0.06), 0 2px 6px -2px rgba(17, 20, 28, 0.06);
+  --shadow-lg: 0 12px 32px -8px rgba(17, 20, 28, 0.12), 0 2px 6px rgba(17, 20, 28, 0.05);
+  --shadow-focus: 0 0 0 3px rgba(55, 102, 176, 0.22);
 
   /* "On dark" — siempre blancos sobre dark blocks (no se invierten con tema) */
   --color-on-dark-strong: rgba(255, 255, 255, 1);
@@ -116,133 +119,126 @@
    * --color-surface-inverse, pero ese token SÍ invierte (es blanco en dark),
    * causando cards blancas ilegibles dentro de dark mode (bug 2026-05-28).
    */
-  --color-always-dark-bg: #0a0a0a;
-  --color-always-dark-surface: #141414;
-  --color-always-dark-raised: #1a1a1a;
-  --color-always-dark-border: rgba(255, 255, 255, 0.15);
-  --color-always-dark-border-strong: rgba(255, 255, 255, 0.22);
+  --color-always-dark-bg: #08080b;
+  --color-always-dark-surface: #101015;
+  --color-always-dark-raised: #191920;
+  --color-always-dark-border: rgba(255, 255, 255, 0.1);
+  --color-always-dark-border-strong: rgba(255, 255, 255, 0.16);
 }
 
 [data-theme="dark"] {
   color-scheme: dark;
 
-  /* === SURFACES === Negros profundos */
-  --color-bg: #0a0a0a;
-  --color-surface: #141414;
-  --color-surface-raised: #1a1a1a;
-  --color-surface-sunken: #050505;
-  --color-surface-overlay: #1a1a1a;
+  /* === SURFACES === valores EXACTOS del demo aprobado (THEMES.dark "negro") === */
+  --color-bg: #08080b;              /* demo bg */
+  --color-surface: #101015;         /* demo surface */
+  --color-surface-raised: #191920;  /* demo raised */
+  --color-surface-sunken: #050507;  /* demo inset */
+  --color-surface-overlay: #191920; /* = raised */
   --color-surface-inverse: #ffffff;
 
-  /* === BORDERS === Grises oscuros */
-  --color-border: #262626;
-  --color-border-strong: #3a3a3a;
-  --color-border-focus: #ffffff;
+  /* === BORDERS === hairlines exactos del demo === */
+  --color-border: rgba(255, 255, 255, 0.06);       /* demo border */
+  --color-border-strong: rgba(255, 255, 255, 0.1); /* demo borderS */
+  --color-border-focus: #4c8df5;
 
-  /* === FOREGROUND === Blanco con stops */
-  --color-text-primary: #f5f5f5;
-  --color-text-secondary: #b5b5b5;
-  --color-text-tertiary: #8a8a8a;
-  --color-text-disabled: #525252;
-  --color-text-inverse: #0a0a0a;
+  /* === FOREGROUND === demo hi / mid / dim === */
+  --color-text-primary: #f5f6f8;    /* demo hi */
+  --color-text-secondary: #8f9198;  /* demo mid */
+  --color-text-tertiary: #55575e;   /* demo dim */
+  --color-text-disabled: #3f4147;
+  --color-text-inverse: #08080b;
 
-  /* === ACCENT === Blanco puro en dark */
-  --color-accent: #ffffff;
-  --color-accent-hover: #e5e5e5;
-  --color-accent-soft: #1f1f1f;
-  --color-accent-fg: #0a0a0a;
-  --color-accent-secondary: #b5b5b5;
-  --color-accent-tertiary: #ffffff;
+  /* === ACCENT === azul demo #4C8DF5 + soft/gradiente derivados igual que accentTokens === */
+  --color-accent: #4c8df5;
+  --color-accent-hover: #6ba0f7;
+  --color-accent-soft: rgba(76, 141, 245, 0.14);   /* demo accentSoft = hexa(base,.14) */
+  --color-accent-fg: #ffffff;
+  --color-accent-secondary: #8bb5f9;
+  --color-accent-tertiary: #4c8df5;
 
-  --color-gradient-start: #ffffff;
-  --color-gradient-mid: #d1d1d1;
-  --color-gradient-end: #8a8a8a;
+  --color-gradient-start: #8bb5f9;  /* demo shade(base,+.35) */
+  --color-gradient-mid: #4c8df5;    /* demo base */
+  --color-gradient-end: #3460a7;    /* demo shade(base,-.32) */
 
-  /* === SEMANTIC === Más luminosos para contraste sobre dark */
-  --color-success: #6dbe7c;
-  --color-success-soft: #122a18;
-  --color-success-border: #245a30;
-  --color-success-fg: #a8d9b0;
+  /* === SEMANTIC === OFICIALES del documento Aivora §3/§4 (dark AI-SaaS). Sin ámbar salvo PAUSED. */
+  --color-success: #35d0a0;
+  --color-success-soft: rgba(53, 208, 160, 0.14);
+  --color-success-border: rgba(53, 208, 160, 0.3);
+  --color-success-fg: #9fe9cf;
 
-  --color-info: #7eaee0;
-  --color-info-soft: #122131;
-  --color-info-border: #2c5283;
-  --color-info-fg: #b3cfe9;
+  --color-info: #4cc5ff;                             /* cyan del documento */
+  --color-info-soft: rgba(76, 197, 255, 0.14);
+  --color-info-border: rgba(76, 197, 255, 0.3);
+  --color-info-fg: #b3e6ff;
 
-  --color-warning: #d4a04c;
-  --color-warning-soft: #2a1f0c;
-  --color-warning-border: #6e4d10;
-  --color-warning-fg: #e8c98a;
+  --color-warning: #f5834a;                          /* NARANJA (cero ámbar) — atención/paused */
+  --color-warning-soft: rgba(245, 131, 74, 0.14);
+  --color-warning-border: rgba(245, 131, 74, 0.3);
+  --color-warning-fg: #f9b48c;
 
-  --color-critical: #d96868;
-  --color-critical-soft: #2a1414;
-  --color-critical-border: #6e2222;
-  --color-critical-fg: #e8a8a8;
+  --color-critical: #ff5d7d;                         /* danger del documento */
+  --color-critical-soft: rgba(255, 93, 125, 0.14);
+  --color-critical-border: rgba(255, 93, 125, 0.3);
+  --color-critical-fg: #ffb3c2;
 
-  --color-unknown: #b5b5b5;
-  --color-unknown-soft: #1f1f1f;
-  --color-unknown-border: #3a3a3a;
-  --color-unknown-fg: #d1d1d1;
+  /* WARMING = info cyan del documento (§4), NO ámbar/naranja — el estado más común va en cyan */
+  --color-warming: #4cc5ff;
+  --color-warming-soft: rgba(76, 197, 255, 0.14);
+  --color-warming-border: rgba(76, 197, 255, 0.3);
+  --color-warming-fg: #b3e6ff;
 
-  --color-stale: #d4a04c;
-  --color-stale-soft: #2a1f0c;
-  --color-stale-border: #6e4d10;
-  --color-stale-fg: #e8c98a;
+  --color-unknown: #9698a0;
+  --color-unknown-soft: rgba(150, 152, 160, 0.14);   /* demo neutralSoft */
+  --color-unknown-border: rgba(150, 152, 160, 0.26);
+  --color-unknown-fg: #c9cad0;
 
-  --color-neutral: #8a8a8a;
-  --color-neutral-soft: #1f1f1f;
-  --color-neutral-border: #3a3a3a;
-  --color-neutral-fg: #d1d1d1;
+  --color-stale: #f5834a;
+  --color-stale-soft: rgba(245, 131, 74, 0.14);
+  --color-stale-border: rgba(245, 131, 74, 0.3);
+  --color-stale-fg: #f9b48c;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
-  --shadow-focus: 0 0 0 3px rgba(255, 255, 255, 0.15);
+  --color-neutral: #9698a0;
+  --color-neutral-soft: rgba(150, 152, 160, 0.12);
+  --color-neutral-border: rgba(150, 152, 160, 0.24);
+  --color-neutral-fg: #c9cad0;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);         /* demo negro shadow */
+  --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 14px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.55);
+  --shadow-focus: 0 0 0 3px rgba(76, 141, 245, 0.3);
 }
 
 :root {
-  /* === TYPOGRAPHY === Rebrand 2026-05-28
+  /* === TYPOGRAPHY === Tipografía UNICA (2026-07-14, dirección Aivora)
    *
-   * Stack oficial:
-   *   - Montserrat: sans + body + heading (todo lo no-mono).
-   *     Pesos en uso: 400 (regular), 500 (medium), 600 (semibold), 700 (bold).
-   *     800/900 disponibles para display gigante si hace falta.
-   *   - JetBrains Mono: datos, código, audit chains, IDs, timestamps,
-   *     terminal-like elements, números tabulares.
-   *   - Caveat: "human notes" decorativas (tags hechos a mano, anotaciones
-   *     marginales, eyebrows con personalidad). Uso muy sparingly.
+   * Una sola familia en TODO el sitio: Inter (variable, self-host offline).
+   * Sin mezcla de fuentes. TODOS los alias --font-* apuntan a Inter; los
+   * números usan font-variant-numeric:tabular-nums para alinear en tablas/KPIs.
    *
-   * Alias semánticos:
-   *   --font-heading: H1-H2 displays. Montserrat 600-800.
-   *   --font-sans:    UI general, body, controles. Montserrat 400-500.
-   *   --font-body:    alias de --font-sans para no romper imports residuales.
-   *   --font-caption: pills/eyebrows 10-12px uppercase. Montserrat 500-600
-   *                   con tracking-wider/widest.
-   *   --font-mono:    JetBrains Mono para datos/audit/code.
-   *   --font-display: alias para Caveat — solo en componentes que la usen
-   *                   explícitamente (no-default).
+   * Alias semánticos (todos = Inter, se conservan para no romper imports):
+   *   --font-heading: H1-H2 displays.               Inter 600-800.
+   *   --font-sans:    UI general, body, controles.  Inter 400-500.
+   *   --font-body:    alias de --font-sans.
+   *   --font-caption: pills/eyebrows 10-12px upper.  Inter 500-600 + tracking.
+   *   --font-mono:    datos/logs/código/IDs.         Inter (alineación por tnum).
+   *   --font-display: alias histórico.               Inter.
    */
   --font-heading:
-    "Montserrat Variable", "Montserrat", system-ui, -apple-system,
-    "Segoe UI", sans-serif;
+    "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-sans:
-    "Montserrat Variable", "Montserrat", system-ui, -apple-system,
-    "Segoe UI", sans-serif;
+    "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-body:
-    "Montserrat Variable", "Montserrat", system-ui, -apple-system,
-    "Segoe UI", sans-serif;
+    "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-caption:
-    "Montserrat Variable", "Montserrat", system-ui, -apple-system,
-    "Segoe UI", sans-serif;
+    "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Fuente UNICA en todo el sitio (decision 2026-07-14, dir. Aivora): Inter en
+   * TODOS los roles, incluido mono y display. Sin mezcla de familias. Los numeros
+   * usan font-variant-numeric:tabular-nums para alinear en tablas/KPIs (Inter lo trae). */
   --font-mono:
-    "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  /* --font-display antes apuntaba a Caveat (manuscrita). Eliminada
-   * 2026-05-28 por feedback del CTO — fuera de tono profesional para
-   * demos a stakeholders. El alias queda apuntando a Montserrat italic
-   * por si alguna superficie aún lo referencia (HumanNote ya migró). */
+    "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-display:
-    "Montserrat Variable", "Montserrat", system-ui, -apple-system,
-    "Segoe UI", sans-serif;
+    "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
 
   /* Type scale (sin cambios — funciona con cualquier sans) */
   --text-2xs: 10px;
@@ -335,73 +331,76 @@
   --shadow: var(--shadow-md);
 }
 
-/* Honor OS preference when no explicit theme is set. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme]) {
-    color-scheme: dark;
+/* Preferencia del SO: la maneja el boot script de index.html (siembra data-theme
+ * desde prefers-color-scheme antes del paint). :root siempre tiene data-theme, así
+ * que un bloque @media aquí sería código muerto — se eliminó a propósito. */
 
-    --color-bg: #0a0a0a;
-    --color-surface: #141414;
-    --color-surface-raised: #1a1a1a;
-    --color-surface-sunken: #050505;
-    --color-surface-overlay: #1a1a1a;
-    --color-surface-inverse: #ffffff;
+/* "Isla de tinta" (inlay del demo): subárbol que fuerza la paleta NEGRA del demo sin
+ * importar el tema activo — sidebar y superficies-inlay del modo claro. Sobreescribe SOLO
+ * los tokens base (surfaces/borders/fg/accent) a negro; los semánticos (success/warning/
+ * critical/warming) se heredan del tema para que los estados sigan leyendo. Valores = demo
+ * (panel #0B0B0F, raise #191920, hi/mid/dim, accento azul #4C8DF5). */
+.theme-ink-island {
+  color-scheme: dark;
+  --color-bg: #08080b;
+  --color-surface: #191920;         /* demo raise: pill activo / hover / card */
+  --color-surface-raised: #26262e;
+  --color-surface-sunken: #0b0b0f;  /* demo panel: fondo del sidebar */
+  --color-surface-overlay: #191920;
+  --color-surface-inverse: #ffffff;
+  --color-border: rgba(255, 255, 255, 0.06);
+  --color-border-strong: rgba(255, 255, 255, 0.1);
+  --color-border-focus: #4c8df5;
+  --color-text-primary: #f5f6f8;    /* demo hi */
+  --color-text-secondary: #8f9198;  /* demo mid */
+  --color-text-tertiary: #55575e;   /* demo dim */
+  --color-text-disabled: #3f4147;
+  --color-text-inverse: #08080b;
+  --color-accent: #4c8df5;          /* acento azul brillante del demo (sobre negro) */
+  --color-accent-hover: #6ba0f7;
+  --color-accent-soft: rgba(76, 141, 245, 0.14);
+  --color-accent-fg: #ffffff;
+  --color-gradient-start: #8bb5f9;
+  --color-gradient-mid: #4c8df5;
+  --color-gradient-end: #3460a7;
+  /* semánticos BRILLANTES (documento) para badges/dots sobre negro */
+  --color-success: #35d0a0; --color-success-soft: rgba(53, 208, 160, 0.14); --color-success-border: rgba(53, 208, 160, 0.3); --color-success-fg: #9fe9cf;
+  --color-info: #4cc5ff; --color-info-soft: rgba(76, 197, 255, 0.14); --color-info-border: rgba(76, 197, 255, 0.3); --color-info-fg: #b3e6ff;
+  --color-warning: #f5834a; --color-warning-soft: rgba(245, 131, 74, 0.14); --color-warning-border: rgba(245, 131, 74, 0.3); --color-warning-fg: #f9b48c;
+  --color-critical: #ff5d7d; --color-critical-soft: rgba(255, 93, 125, 0.14); --color-critical-border: rgba(255, 93, 125, 0.3); --color-critical-fg: #ffb3c2;
+  --color-warming: #4cc5ff; --color-warming-soft: rgba(76, 197, 255, 0.14); --color-warming-border: rgba(76, 197, 255, 0.3); --color-warming-fg: #b3e6ff;
+  --color-neutral-soft: rgba(150, 152, 160, 0.12);
+}
 
-    --color-border: #262626;
-    --color-border-strong: #3a3a3a;
-    --color-border-focus: #ffffff;
-
-    --color-text-primary: #f5f5f5;
-    --color-text-secondary: #b5b5b5;
-    --color-text-tertiary: #8a8a8a;
-    --color-text-disabled: #525252;
-    --color-text-inverse: #0a0a0a;
-
-    --color-accent: #ffffff;
-    --color-accent-hover: #e5e5e5;
-    --color-accent-soft: #1f1f1f;
-    --color-accent-fg: #0a0a0a;
-    --color-accent-secondary: #b5b5b5;
-    --color-accent-tertiary: #ffffff;
-
-    --color-success: #6dbe7c;
-    --color-success-soft: #122a18;
-    --color-success-border: #245a30;
-    --color-success-fg: #a8d9b0;
-
-    --color-info: #7eaee0;
-    --color-info-soft: #122131;
-    --color-info-border: #2c5283;
-    --color-info-fg: #b3cfe9;
-
-    --color-warning: #d4a04c;
-    --color-warning-soft: #2a1f0c;
-    --color-warning-border: #6e4d10;
-    --color-warning-fg: #e8c98a;
-
-    --color-critical: #d96868;
-    --color-critical-soft: #2a1414;
-    --color-critical-border: #6e2222;
-    --color-critical-fg: #e8a8a8;
-
-    --color-unknown: #b5b5b5;
-    --color-unknown-soft: #1f1f1f;
-    --color-unknown-border: #3a3a3a;
-    --color-unknown-fg: #d1d1d1;
-
-    --color-stale: #d4a04c;
-    --color-stale-soft: #2a1f0c;
-    --color-stale-border: #6e4d10;
-    --color-stale-fg: #e8c98a;
-
-    --color-neutral: #8a8a8a;
-    --color-neutral-soft: #1f1f1f;
-    --color-neutral-border: #3a3a3a;
-    --color-neutral-fg: #d1d1d1;
-
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
-    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
-    --shadow-focus: 0 0 0 3px rgba(255, 255, 255, 0.15);
-  }
+/* "Card inlay" (demo): card NEGRA en modo claro, idéntica al ambiente en modo oscuro.
+ * A diferencia de .theme-ink-island (sidebar, surface=#191920 para el pill), acá surface=#101015
+ * = surface del demo en oscuro, así una KpiCard/AdvisorCard con .ink-card se ve IGUAL que el resto
+ * en modo oscuro y se vuelve inlay negro en modo claro (como el demo aprobado). Semánticos heredados. */
+.ink-card {
+  color-scheme: dark;
+  --color-bg: #08080b;
+  --color-surface: #101015;         /* = surface del demo en oscuro */
+  --color-surface-raised: #191920;
+  --color-surface-sunken: #050507;
+  --color-surface-overlay: #191920;
+  --color-border: rgba(255, 255, 255, 0.06);
+  --color-border-strong: rgba(255, 255, 255, 0.1);
+  --color-border-focus: #4c8df5;
+  --color-text-primary: #f5f6f8;
+  --color-text-secondary: #8f9198;
+  --color-text-tertiary: #55575e;
+  --color-accent: #4c8df5;
+  --color-accent-hover: #6ba0f7;
+  --color-accent-soft: rgba(76, 141, 245, 0.14);
+  --color-accent-fg: #ffffff;
+  --color-gradient-start: #8bb5f9;
+  --color-gradient-mid: #4c8df5;
+  --color-gradient-end: #3460a7;
+  /* semánticos BRILLANTES (documento) para badges/dots sobre negro */
+  --color-success: #35d0a0; --color-success-soft: rgba(53, 208, 160, 0.14); --color-success-border: rgba(53, 208, 160, 0.3); --color-success-fg: #9fe9cf;
+  --color-info: #4cc5ff; --color-info-soft: rgba(76, 197, 255, 0.14); --color-info-border: rgba(76, 197, 255, 0.3); --color-info-fg: #b3e6ff;
+  --color-warning: #f5834a; --color-warning-soft: rgba(245, 131, 74, 0.14); --color-warning-border: rgba(245, 131, 74, 0.3); --color-warning-fg: #f9b48c;
+  --color-critical: #ff5d7d; --color-critical-soft: rgba(255, 93, 125, 0.14); --color-critical-border: rgba(255, 93, 125, 0.3); --color-critical-fg: #ffb3c2;
+  --color-warming: #4cc5ff; --color-warming-soft: rgba(76, 197, 255, 0.14); --color-warming-border: rgba(76, 197, 255, 0.3); --color-warming-fg: #b3e6ff;
+  --color-neutral-soft: rgba(150, 152, 160, 0.12);
 }

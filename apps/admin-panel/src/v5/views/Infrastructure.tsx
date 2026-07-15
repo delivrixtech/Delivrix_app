@@ -27,16 +27,27 @@
  * No requiere props del shell.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type HTMLAttributes,
+  type ReactNode
+} from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
   AlertCircle,
   ArrowRight,
+  Clock,
   Cloud,
   KeyRound,
   PowerOff,
+  Server,
   ShieldAlert,
+  Sparkles,
   TriangleAlert
 } from "lucide-react";
 import { getJson } from "../../shared/api/client";
@@ -44,22 +55,202 @@ import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
 import { RealtimeTick, StaleBadge } from "../../shared/ui/realtime";
 import { useCanvasLiveEventSubscription } from "../../features/canvas/canvas-live-client";
 import { staggerContainer, staggerItem } from "../lib/motion";
+import { cn } from "../lib/cn";
+// MOLDE OFICIAL Aivora (src/shared/ui/aivora) — fuente ÚNICA del sistema visual:
+// Card radius 18 + hairline + shadow, KpiCard con tile, StateBadge dot+icono,
+// AdvisorCard (superficie gradiente de OpenClaw) y Button del demo. Los textos/pills/
+// badges/section-heads se construyen abajo con los MISMOS tokens del demo (var(--color-*)),
+// para no arrastrar los primitivos B/N de v5/components/primitives (design system muerto).
 import {
-  Badge,
-  BodySm,
+  aivoraGradient,
+  AdvisorCard,
   Button,
-  Caption,
   Card,
-  Eyebrow,
-  H3,
-  HumanNote,
-  MonoCode,
-  MonoData,
-  Pill,
-  SectionHead,
-  Stat
-} from "../components/primitives";
+  KpiCard,
+  StateBadge
+} from "../../shared/ui/aivora";
 import { PageHead } from "./_PageHead";
+
+/* ============================================================
+ * Primitivos de texto/pill/badge al MOLDE del demo.
+ *
+ * aivora exporta Eyebrow/Caption/Pill "mínimos" (solo children+style); acá los
+ * recreamos con los MISMOS tokens y tipografía del demo pero con paso de
+ * `className`/`title`/aria — que estas vistas densas necesitan para truncado,
+ * tooltips de IDs y accesibilidad. Mismo lenguaje visual que aivora, cero B/N.
+ * ============================================================ */
+
+/** Eyebrow del demo: sans 11px uppercase, tracking .16em, texto terciario. */
+function Eyebrow({ className, children, style, ...rest }: HTMLAttributes<HTMLSpanElement>) {
+  return (
+    <span
+      className={cn("font-sans text-[11px] font-semibold uppercase leading-none text-fg-subtle", className)}
+      style={{ letterSpacing: "0.16em", ...style }}
+      {...rest}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** Caption: meta/subcopy 12px terciaria (demo dim). */
+function Caption({ className, children, ...rest }: HTMLAttributes<HTMLSpanElement>) {
+  return (
+    <span
+      className={cn("font-sans text-[12px] font-normal leading-[1.4] text-fg-subtle", className)}
+      {...rest}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** Body corto: 13px texto secundario (demo mid). */
+function BodySm({ className, children, ...rest }: HTMLAttributes<HTMLParagraphElement>) {
+  return (
+    <p
+      className={cn("m-0 font-sans text-[13px] font-normal leading-[1.5] text-fg-muted", className)}
+      {...rest}
+    >
+      {children}
+    </p>
+  );
+}
+
+/** Título de card/sección al demo: sans 15px peso 500, texto primario. */
+function H3({ className, children, ...rest }: HTMLAttributes<HTMLHeadingElement>) {
+  return (
+    <h3
+      className={cn("m-0 font-sans text-[15px] font-medium leading-[1.3] text-fg", className)}
+      {...rest}
+    >
+      {children}
+    </h3>
+  );
+}
+
+/** Voz suave de OpenClaw: sans italic 13px secundaria. Máx 1 por vista. */
+function HumanNote({ className, children, ...rest }: HTMLAttributes<HTMLSpanElement>) {
+  return (
+    <span className={cn("font-sans text-[13px] italic leading-[1.5] text-fg-muted", className)} {...rest}>
+      {children}
+    </span>
+  );
+}
+
+/** Dato mono tabular (IDs, IPs, conteos). */
+function MonoData({ className, children, ...rest }: HTMLAttributes<HTMLSpanElement>) {
+  return (
+    <span
+      className={cn("font-mono text-[12px] font-medium leading-[1.4] tabular-nums text-fg", className)}
+      {...rest}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** Código/endpoint mono, texto secundario. */
+function MonoCode({ className, children, ...rest }: HTMLAttributes<HTMLSpanElement>) {
+  return (
+    <span className={cn("font-mono text-[11px] font-normal leading-[1.5] text-fg-muted", className)} {...rest}>
+      {children}
+    </span>
+  );
+}
+
+/** Badge — chip neutro discreto (conteo/etiqueta sin color de estado). */
+function Badge({ className, children, ...rest }: HTMLAttributes<HTMLSpanElement>) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center rounded-full px-2 py-[2px] font-sans text-[11px] font-medium leading-[1.3] text-fg-muted",
+        className
+      )}
+      style={{ background: "var(--color-neutral-soft)" }}
+      {...rest}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** Pill del demo: chip redondeado soft por tono semántico, SIN dot ni borde
+ * (el dot es firma exclusiva del StateBadge). Acepta size/className/title. */
+type PillTone = "neutral" | "accent" | "success" | "warning" | "critical" | "warming" | "info";
+const PILL_TONES: Record<PillTone, { bg: string; fg: string }> = {
+  neutral: { bg: "var(--color-neutral-soft)", fg: "var(--color-text-secondary)" },
+  accent: { bg: "var(--color-accent-soft)", fg: "var(--color-accent)" },
+  success: { bg: "var(--color-success-soft)", fg: "var(--color-success)" },
+  warning: { bg: "var(--color-warning-soft)", fg: "var(--color-warning)" },
+  critical: { bg: "var(--color-critical-soft)", fg: "var(--color-critical)" },
+  warming: { bg: "var(--color-warming-soft)", fg: "var(--color-warming)" },
+  info: { bg: "var(--color-info-soft)", fg: "var(--color-info)" }
+};
+interface PillProps extends Omit<HTMLAttributes<HTMLSpanElement>, "style"> {
+  tone?: PillTone;
+  size?: "sm" | "md";
+  style?: CSSProperties;
+}
+function Pill({ tone = "neutral", size = "md", className, children, style, ...rest }: PillProps) {
+  const t = PILL_TONES[tone] ?? PILL_TONES.neutral;
+  return (
+    <span
+      className={cn("inline-flex items-center gap-1 rounded-full font-sans font-semibold leading-[1.3] whitespace-nowrap", className)}
+      style={{
+        padding: size === "sm" ? "2px 8px" : "3px 9px",
+        fontSize: size === "sm" ? 11 : 11.5,
+        background: t.bg,
+        color: t.fg,
+        ...style
+      }}
+      {...rest}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** SectionHead al molde: eyebrow sans + título (h2 peso 500) + Pill de conteo +
+ * caption terciaria, con hairline inferior. NO es el h1 de página (ese es PageHead). */
+interface SectionHeadProps {
+  eyebrow?: string;
+  title: string;
+  caption?: ReactNode;
+  count?: number;
+  countTone?: PillTone;
+  trailing?: ReactNode;
+  className?: string;
+}
+function SectionHead({
+  eyebrow,
+  title,
+  caption,
+  count,
+  countTone = "neutral",
+  trailing,
+  className
+}: SectionHeadProps) {
+  return (
+    <div className={cn("flex items-end justify-between gap-4 border-b border-border pb-2", className)}>
+      <div className="flex min-w-0 flex-col gap-1">
+        {eyebrow ? <Eyebrow>{eyebrow}</Eyebrow> : null}
+        <div className="flex items-center gap-3">
+          <h2 className="m-0 font-sans text-[17px] font-medium leading-[1.2] tracking-[-0.01em] text-fg">
+            {title}
+          </h2>
+          {typeof count === "number" ? (
+            <Pill tone={countTone} size="sm">
+              {count}
+            </Pill>
+          ) : null}
+        </div>
+        {caption ? <Caption>{caption}</Caption> : null}
+      </div>
+      {trailing ? <div className="shrink-0">{trailing}</div> : null}
+    </div>
+  );
+}
 
 /* ============================================================
  * Contrato Hito 5.12 § 2.3 — mirror local.
@@ -562,16 +753,6 @@ function technicalSummary(provider: Provider): string {
  * Estado helpers.
  * ============================================================ */
 
-const STATUS_TONE: Record<
-  ProviderStatus,
-  "success" | "warning" | "critical" | "neutral"
-> = {
-  active: "success",
-  paused: "warning",
-  error: "critical",
-  planned: "neutral"
-};
-
 const STATUS_LABEL_FALLBACK: Record<ProviderStatus, string> = {
   active: "activo",
   paused: "pausado",
@@ -593,14 +774,44 @@ function isProviderStale(p: Provider): boolean {
   return Date.now() - fetchedAt > STALE_FETCH_MS;
 }
 
-function providerStatusTone(p: Provider): "success" | "warning" | "critical" | "neutral" {
-  if (isProviderStale(p)) return "warning";
-  return STATUS_TONE[p.status];
-}
-
 function providerStatusLabel(p: Provider): string {
   if (isProviderStale(p)) return "dato viejo";
   return statusLabelOf(p);
+}
+
+/**
+ * Puente estado REAL del provider → key visual del StateBadge del molde (§4:
+ * dot + icono + label). El ícono lucide DEBE coincidir con el estado real, no
+ * con un tono colapsado: por eso mapeamos desde `p.status` (no desde un tono
+ * "warning" que aplastaría paused/stale/offline en un mismo badge ámbar).
+ *
+ * Regla de tokens aprobada: el ÁMBAR (warning) queda reservado EXCLUSIVAMENTE
+ * para `paused`. Ningún otro estado se pinta ámbar. El LABEL real lo pone
+ * providerStatusLabel() (activo / pausado / error / dato viejo / planeado).
+ */
+function providerBadgeStatus(p: Provider): string {
+  // §4 BLOCKED: host muerto / sin respuesta → grafito neutro + ícono `ban`
+  // ("muerto-conocido"). Nunca ámbar ni el rojo caliente de QUARANTINED.
+  if (isOfflineLike(p)) return "BLOCKED";
+  // "dato viejo" NO es un estado del §4: es un dato stale de una cuenta viva →
+  // neutral + ícono `clock` (tiempo). Jamás ámbar (ámbar = solo paused).
+  if (isProviderStale(p)) return "retired_pending_approval";
+  switch (p.status) {
+    // §4 PAUSED → warning ámbar + `pause` (el ÚNICO estado ámbar).
+    case "paused":
+      return "paused";
+    // §4 QUARANTINED → danger caliente + `shield-alert` (decisión ya).
+    case "error":
+      return "quarantined";
+    // §4 READY → neutral + `circle-dot`: staged/en cola, NO muerto.
+    case "planned":
+      return "READY";
+    // §4 (activo/entregando) → success + `circle-check`.
+    case "active":
+      return "active";
+    default:
+      return "READY";
+  }
 }
 
 function itemTotalOf(providers: Provider[]): number {
@@ -1079,54 +1290,34 @@ function KpiStrip({
 
   const realTotal =
     byKind.compute + byKind.dns + byKind["domain-registrar"] + byKind.physical;
-  const okHint = `${byKind.compute} compute · ${byKind.dns + byKind["domain-registrar"]} dns/dom · de ${itemTotal} configurados`;
-  const attentionHint =
-    attentionCount === 0
-      ? "Sin proveedores bloqueados"
-      : `${attentionCount === 1 ? "1 proveedor" : `${attentionCount} proveedores`} requiere acción`;
-  const plannedHint =
-    plannedCount === 0 ? "Sin proveedores en cola" : "Esperan onboarding";
-  const staleHint =
-    staleOrMockCount === 0
-      ? "Lecturas frescas"
-      : `${staleOrMockCount === 1 ? "1 fuente" : `${staleOrMockCount} fuentes`} con mock o dato viejo`;
-  const freshnessHint = plannedCount > 0
-    ? `${staleHint} · ${plannedHint}`
-    : staleHint;
 
+  // KPIs del molde Aivora: tile + número tabular + label. Sin delta ni sparkline
+  // porque no existe serie/serie-comparativa real para el inventario (nada mock).
+  void itemTotal;
+  void plannedCount;
   return (
-    <Card padding="relaxed">
-      <div className="grid grid-cols-2 gap-6 lg:grid-cols-4">
-        <Stat
-          label="Recursos reales"
-          value={realTotal}
-          unit={realTotal === 1 ? "recurso" : "recursos"}
-          tone={realTotal > 0 ? "success" : "default"}
-          hint={okHint}
-        />
-        <Stat
-          label="Proveedores conectados"
-          value={okCount}
-          unit={okCount === 1 ? "proveedor" : "proveedores"}
-          tone={okCount > 0 ? "success" : "default"}
-          hint={`${okCount} activos · ${plannedCount} en cola`}
-        />
-        <Stat
-          label="Atención"
-          value={attentionCount}
-          unit={attentionCount === 1 ? "caso" : "casos"}
-          tone={attentionCount > 0 ? "critical" : "default"}
-          hint={attentionHint}
-        />
-        <Stat
-          label="Datos viejos/mock"
-          value={staleOrMockCount}
-          unit={staleOrMockCount === 1 ? "fuente" : "fuentes"}
-          tone={staleOrMockCount > 0 ? "warning" : "default"}
-          hint={freshnessHint}
-        />
-      </div>
-    </Card>
+    <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+      <KpiCard
+        label="Recursos reales"
+        value={realTotal}
+        icon={Server}
+      />
+      <KpiCard
+        label="Proveedores conectados"
+        value={okCount}
+        icon={Cloud}
+      />
+      <KpiCard
+        label="Atención"
+        value={attentionCount}
+        icon={TriangleAlert}
+      />
+      <KpiCard
+        label="Datos viejos/mock"
+        value={staleOrMockCount}
+        icon={Clock}
+      />
+    </div>
   );
 }
 
@@ -1142,21 +1333,22 @@ function AttentionRow({
   kind: "error" | "offline";
 }) {
   const [expanded, setExpanded] = useState(false);
-  const borderColor =
-    kind === "error" ? "var(--color-critical-border)" : "var(--color-warning-border)";
-  const accent =
-    kind === "error" ? "var(--color-critical)" : "var(--color-warning)";
-  const accentSoft =
-    kind === "error" ? "var(--color-critical-soft)" : "var(--color-warning-soft)";
-  const Icon = kind === "error" ? KeyRound : PowerOff;
-  const ctaLabel = kind === "error" ? "Reautenticar" : "Marcar online";
-  const reasonLabel = kind === "error" ? "Credencial rechazada" : "Sin respuesta";
+  const isError = kind === "error";
+  // §4: dos tratamientos para los "malos". error = QUARANTINED (rojo caliente,
+  // accionable). offline = BLOCKED: chip/host FRÍO grafito-neutro + dot DANGER
+  // ("muerto-conocido"), para no competir con el rojo accionable. El ámbar queda
+  // reservado SOLO para `paused`, así que offline nunca se pinta ámbar.
+  const borderColor = isError ? "var(--color-critical-border)" : "var(--color-border)";
+  const accent = isError ? "var(--color-critical)" : "var(--color-text-tertiary)";
+  const accentSoft = isError ? "var(--color-critical-soft)" : "var(--color-neutral-soft)";
+  const Icon = isError ? KeyRound : PowerOff;
+  const ctaLabel = isError ? "Reautenticar" : "Marcar online";
+  const reasonLabel = isError ? "Credencial rechazada" : "Sin respuesta";
   const detailsId = `attention-detail-${provider.id}`;
   const canExpand = canExpandProvider(provider);
   return (
     <Card
-      padding="default"
-      className="flex flex-col gap-3"
+      className="flex flex-col gap-3 p-4"
       style={{ borderColor, background: "var(--color-surface)" }}
     >
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-4">
@@ -1175,7 +1367,14 @@ function AttentionRow({
             {accountSuffix(provider) ? (
               <Caption className="truncate">· {accountSuffix(provider)}</Caption>
             ) : null}
-            <Pill tone={kind === "error" ? "critical" : "warning"} size="sm">
+            <Pill tone={isError ? "critical" : "neutral"} size="sm">
+              {isError ? null : (
+                <span
+                  aria-hidden="true"
+                  className="size-1.5 shrink-0 rounded-full"
+                  style={{ background: "var(--color-critical)" }}
+                />
+              )}
               {reasonLabel}
             </Pill>
           </div>
@@ -1189,7 +1388,7 @@ function AttentionRow({
         <div className="flex shrink-0 items-center gap-2 self-start md:self-auto">
           {canExpand ? (
             <Button
-              variant="outline"
+              variant="ghost"
               size="sm"
               aria-expanded={expanded}
               aria-controls={detailsId}
@@ -1233,96 +1432,61 @@ function BannerOpenClawV2({
       ? `${errorCount === 1 ? "1 cuenta" : `${errorCount} cuentas`} requieren reautenticación`
       : `${offlineCount === 1 ? "1 host" : `${offlineCount} hosts`} sin respuesta`;
   return (
-    <div
-      className="rounded-[10px] p-5"
-      style={{
-        background: "var(--color-always-dark-bg)",
-        border: "1px solid var(--color-always-dark-border)",
-        color: "var(--color-on-dark-strong)"
-      }}
-    >
-      <div className="flex items-start gap-4">
-        <div
-          aria-hidden="true"
-          className="grid size-9 shrink-0 place-items-center rounded-md"
-          style={{
-            background: "var(--color-always-dark-raised)",
-            color: "var(--color-on-dark-strong)",
-            border: "1px solid var(--color-always-dark-border-strong)"
-          }}
-        >
-          <TriangleAlert size={16} strokeWidth={1.75} />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
-          <div className="flex items-center gap-2">
-            <span
-              className="font-mono text-[10px] font-semibold uppercase leading-none"
-              style={{
-                letterSpacing: "0.14em",
-                color: "var(--color-on-dark-medium)"
-              }}
-            >
-              OpenClaw propone
-            </span>
-            <span
-              aria-hidden="true"
-              className="inline-block size-[3px] rounded-full"
-              style={{ background: "var(--color-on-dark-faint)" }}
-            />
-            <span
-              className="font-mono text-[10px] leading-none"
-              style={{ color: "var(--color-on-dark-medium)" }}
-            >
-              dry-run
-            </span>
-          </div>
-          <h3
-            className="m-0 font-heading text-[13px] font-semibold leading-[1.3]"
-            style={{ color: "var(--color-on-dark-strong)" }}
+    <AdvisorCard>
+      <div className="flex flex-col gap-3 p-5">
+        <div className="flex items-center gap-2.5">
+          <div
+            aria-hidden="true"
+            className="grid size-[30px] shrink-0 place-items-center rounded-[9px]"
+            style={{ background: aivoraGradient, color: "var(--color-accent-fg)" }}
           >
+            <Sparkles size={16} strokeWidth={1.75} />
+          </div>
+          <span className="font-sans text-[14.5px] font-medium text-[color:var(--color-text-primary)]">
+            Advisor · OpenClaw
+          </span>
+          <Pill tone="neutral" size="sm" className="ml-auto">
+            dry-run
+          </Pill>
+        </div>
+        <div
+          className="flex flex-col gap-2 pl-3"
+          style={{ borderLeft: "2px solid var(--color-accent)" }}
+        >
+          <h3 className="m-0 font-heading text-[13.5px] font-semibold leading-[1.3] text-[color:var(--color-text-primary)]">
             Coordinar la remediación de {total === 1 ? "1 proveedor" : `${total} proveedores`}
           </h3>
-          <p
-            className="m-0 font-sans text-[13px] leading-[1.5]"
-            style={{ color: "var(--color-on-dark-medium)" }}
-          >
+          <p className="m-0 font-sans text-[13px] leading-[1.5] text-[color:var(--color-text-secondary)]">
             {summary}. Puedo preparar el plan con human-in-the-loop: rotar la
             API key, revalidar el endpoint o agendar reinicio físico. Nada se
             ejecuta sin tu firma.
           </p>
-          <HumanNote
-            className="mt-1"
-            style={{ color: "var(--color-on-dark-soft)" }}
-          >
+          <HumanNote className="mt-1">
             Plan de remediación pendiente de contrato de ejecución aprobado.
           </HumanNote>
-          <div className="mt-2 flex items-center gap-2">
-            <Button
-              variant="primary"
-              size="sm"
-              disabled
-              title="Pendiente de approval gate, audit log y rollback verificado."
-              style={{
-                background: "var(--color-accent)",
-                color: "var(--color-accent-fg)"
-              }}
-            >
-              Preparar plan
-              <ArrowRight size={11} strokeWidth={1.75} />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled
-              title="El chat operativo no está conectado desde esta vista."
-              style={{ color: "var(--color-on-dark-medium)" }}
-            >
-              Abrir chat
-            </Button>
-          </div>
+        </div>
+        <div className="mt-1 flex items-center gap-2">
+          <Button
+            variant="primary"
+            size="sm"
+            disabled
+            title="Pendiente de approval gate, audit log y rollback verificado."
+            style={{ background: aivoraGradient, color: "var(--color-accent-fg)" }}
+          >
+            Preparar plan
+            <ArrowRight size={11} strokeWidth={1.75} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled
+            title="El chat operativo no está conectado desde esta vista."
+          >
+            Abrir chat
+          </Button>
         </div>
       </div>
-    </div>
+    </AdvisorCard>
   );
 }
 
@@ -1385,12 +1549,12 @@ function ProviderGroup({
   const noun = providers[0] ? providerResourceNoun(providers[0]) : { singular: "recurso", plural: "recursos" };
   const statusParts = [
     summary.connectedCount > 0 ? `${summary.connectedCount} conectada${summary.connectedCount === 1 ? "" : "s"}` : null,
-    summary.attentionCount > 0 ? `${summary.attentionCount} en atención ↑` : null,
-    summary.queuedCount > 0 ? `${summary.queuedCount} en cola ↓` : null
+    summary.attentionCount > 0 ? `${summary.attentionCount} en atención` : null,
+    summary.queuedCount > 0 ? `${summary.queuedCount} en cola` : null
   ].filter(Boolean);
 
   return (
-    <Card padding="none" className="overflow-hidden">
+    <Card className="overflow-hidden">
       <div className="flex flex-col gap-2 border-b border-border px-4 py-3 md:flex-row md:items-center md:justify-between">
         <div className="flex min-w-0 items-center gap-3">
           <div
@@ -1417,7 +1581,7 @@ function ProviderGroup({
             ) : null}
           </div>
         </div>
-        <Pill tone="success" size="sm">
+        <Pill tone="neutral" size="sm">
           grupo
         </Pill>
       </div>
@@ -1480,7 +1644,7 @@ function CollapsibleSection({
 
 function ProviderList({ providers }: { providers: Provider[] }) {
   return (
-    <Card padding="none" className="overflow-hidden">
+    <Card className="overflow-hidden">
       <ul className="m-0 flex list-none flex-col p-0">
         {providers.map((provider, index) => (
           <ProviderRow key={provider.id} provider={provider} index={index} />
@@ -1567,12 +1731,13 @@ function ProviderRow({
           actuator
         </Pill>
       ) : null}
-      <Pill tone={providerStatusTone(provider)} size="sm">
-        {providerStatusLabel(provider)}
-      </Pill>
+      <StateBadge
+        status={providerBadgeStatus(provider)}
+        label={providerStatusLabel(provider)}
+      />
       {canExpand ? (
         <Button
-          variant="outline"
+          variant="ghost"
           size="sm"
           aria-expanded={expanded}
           aria-controls={detailsId}
@@ -1621,7 +1786,7 @@ function ProviderDetail({
             {provider.items.map((item) => (
               <li
                 key={item.id}
-                className="grid grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)_auto] gap-3"
+                className="grid grid-cols-1 gap-1 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.2fr)_auto] sm:gap-3"
               >
                 <MonoData className="truncate text-[11px] text-fg-subtle">{item.id}</MonoData>
                 <Caption className="truncate">{item.displayName}</Caption>
@@ -1839,7 +2004,7 @@ function SmtpHealthUnitRow({
               ))}
               <div className="mt-1">
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
                   disabled
                   title="Read-only: la remediación exige contrato de ejecución, approval gate y rollback. Firmá desde el chat de OpenClaw."
@@ -1866,7 +2031,7 @@ function PhysicalCard({ provider }: { provider: Provider }) {
   const location = stringOrDash(detail.location);
   const role = stringOrDash(detail.role);
   return (
-    <Card padding="relaxed" className="flex flex-col gap-4">
+    <Card className="flex flex-col gap-4 p-5">
       <div className="flex items-start gap-4">
         <div
           aria-hidden="true"
@@ -1886,12 +2051,10 @@ function PhysicalCard({ provider }: { provider: Provider }) {
             producción.
           </BodySm>
         </div>
-        <Pill
-          tone={offline ? "warning" : providerStatusTone(provider)}
-          size="sm"
-        >
-          {offline ? "sin respuesta" : providerStatusLabel(provider)}
-        </Pill>
+        <StateBadge
+          status={providerBadgeStatus(provider)}
+          label={offline ? "sin respuesta" : providerStatusLabel(provider)}
+        />
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <MetaField label="Modelo" value={model} />
@@ -1932,7 +2095,7 @@ function FooterMeta({ providers }: { providers: Provider[] }) {
         </Caption>
       </div>
       <Button
-        variant="outline"
+        variant="ghost"
         size="sm"
         disabled
         title="Pendiente de enlace interno a documentación versionada."
@@ -1950,9 +2113,9 @@ function FooterMeta({ providers }: { providers: Provider[] }) {
 
 function LoadingBlock() {
   return (
-    <Card padding="relaxed" className="flex flex-col gap-3">
+    <Card className="flex flex-col gap-3 p-5">
       <Eyebrow>Cargando</Eyebrow>
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <div key={i} className="flex flex-col gap-2">
             <div
@@ -1973,7 +2136,7 @@ function LoadingBlock() {
 
 function BackendUnavailable({ message }: { message: string }) {
   return (
-    <Card padding="relaxed" className="flex items-start gap-4">
+    <Card className="flex items-start gap-4 p-5">
       <div
         aria-hidden="true"
         className="grid size-9 shrink-0 place-items-center rounded-md bg-warning-soft text-warning"
@@ -1994,7 +2157,7 @@ function BackendUnavailable({ message }: { message: string }) {
 
 function RegistryEmpty() {
   return (
-    <Card padding="relaxed" className="flex items-start gap-4">
+    <Card className="flex items-start gap-4 p-5">
       <div
         aria-hidden="true"
         className="grid size-9 shrink-0 place-items-center rounded-md bg-surface-sunken text-fg-muted"
@@ -2010,7 +2173,7 @@ function RegistryEmpty() {
         </BodySm>
         <div className="mt-1">
           <Button
-            variant="outline"
+            variant="ghost"
             size="sm"
             disabled
             title="Pendiente de ruta de onboarding conectada desde esta vista."

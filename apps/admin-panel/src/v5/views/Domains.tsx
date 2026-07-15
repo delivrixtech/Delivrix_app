@@ -1,24 +1,23 @@
 /**
  * v5 Domains — Fase 1 discover/propose (Hito 5.12).
  *
- * Reescritura desde 0 con el sistema v5 (Three Dials VARIANCE=2 / MOTION=1 /
- * DENSITY=4). Sustituye la legacy `features/domains/index.tsx` cuando el shell
- * v5 la cablee. La propia legacy se mantiene intacta como referencia hasta el
- * cableo en `App.tsx`.
+ * Restyle al MOLDE oficial "Aivora" (src/shared/ui/aivora): mismos primitivos
+ * que el demo aprobado (features/overview/TravigueOverviewProto) — Card radius
+ * 18 + hairline, KpiCard tile+número tabular, StateBadge dot+icono, SectionHead
+ * eyebrow+h1 light, AdvisorCard para OpenClaw. Colores 100% desde tokens
+ * (var(--color-*)); cero hex hardcodeado.
  *
- * Disciplina:
- *   - Cap mensual $50 USD (límite hardcoded); el consumo del mes es REAL,
+ * Disciplina de DATOS:
+ *   - Cap mensual $50 USD (config real hardcoded); el consumo del mes es REAL,
  *     derivado del audit chain vía `computeWalletTransactions` (mismo cálculo
  *     que el Wallet de Sender Pool). Cero gasto inventado.
- *   - Compra real bloqueada (`AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE=false`) ·
- *     la UI muestra el lock semánticamente en cada CTA crítico.
- *   - WHOIS privacy hardcoded true · chip permanent.
- *   - Cada propuesta queda en audit chain · footer recuerda runbook.
- *   - Precio real de Route53 por TLD; sin comparativas fabricadas de otros
- *     registrars (no hay adapter de mercado en el read-boundary v5).
- *   - Una sola `HumanNote` (en el banner OpenClaw).
- *   - staggerContainer + staggerItem para entrance.
- *   - Sin pills redundantes en KPIs.
+ *   - Compra real bloqueada (`PURCHASE_ENABLED=false`, config real) · la UI lo
+ *     muestra semánticamente en el strip de guardrails y en cada CTA.
+ *   - WHOIS privacy config real hardcoded true.
+ *   - Precio real de Route53 por TLD; sin comparativas fabricadas.
+ *   - Sin scoring fabricado: el heurístico anterior (scoreFor) se eliminó por no
+ *     reflejar dato real. Los KPIs y gráficas sólo muestran series/valores reales.
+ *   - Una sola `HumanNote` (en el AdvisorCard OpenClaw).
  *
  * Endpoints (read-only · features 5104fd9 + ff622f9):
  *   GET /v1/domains/availability?name=...
@@ -28,18 +27,21 @@
  *   GET /v1/audit-events  (consumo real del cap mensual)
  */
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import {
   ArrowRight,
   CheckCircle2,
-  CircleHelp,
   ExternalLink,
+  Globe,
   Lock,
+  Rocket,
+  RotateCw,
   Search,
   ShieldCheck,
   Sparkles,
+  TrendingUp,
   TriangleAlert
 } from "lucide-react";
 import { getJson, getJsonWithQuery, type AuditEventsPayload } from "../../shared/api/client";
@@ -48,26 +50,71 @@ import { computeWalletTransactions } from "./sender-pool-wallet";
 import { useOpenClawIntent } from "../../shared/ui/v2";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import {
-  Badge,
-  Body,
-  BodySm,
+  AdvisorCard,
+  aivoraGradient,
   Button,
   Caption,
   Card,
   Eyebrow,
-  H2,
-  H3,
-  HumanNote,
-  MonoCode,
-  MonoData,
+  KpiCard,
   Pill,
-  SectionHead
-} from "../components/primitives";
-import { cn } from "../lib/cn";
-import { PageHead } from "./_PageHead";
+  SectionHead,
+  StateBadge
+} from "../../shared/ui/aivora";
 
 /* ============================================================
- * Constants — guardrails hardcoded para la Fase 1.
+ * Text primitives locales — el molde Aivora no exporta las piezas de texto
+ * de párrafo/mono, así que se definen acá con la MISMA tipografía del demo
+ * pero 100% por tokens var(--color-*) (cero clases B/N de primitives.tsx).
+ * ============================================================ */
+
+function Body({ children, style }: { children: ReactNode; style?: CSSProperties }) {
+  return (
+    <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.55, color: "var(--color-text-secondary)", ...style }}>
+      {children}
+    </p>
+  );
+}
+
+function BodySm({ children, style }: { children: ReactNode; style?: CSSProperties }) {
+  return (
+    <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "var(--color-text-secondary)", ...style }}>
+      {children}
+    </p>
+  );
+}
+
+function MonoData({ children, style, title }: { children: ReactNode; style?: CSSProperties; title?: string }) {
+  return (
+    <span
+      title={title}
+      style={{ fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 500, fontVariantNumeric: "tabular-nums", color: "var(--color-text-primary)", ...style }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function MonoCode({ children, style }: { children: ReactNode; style?: CSSProperties }) {
+  return (
+    <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-text-secondary)", ...style }}>
+      {children}
+    </span>
+  );
+}
+
+/** HumanNote — voz suave de OpenClaw (rationale). Máximo 1 por vista. Sans
+ * italic, tono secundario: diferencia tonal sin salir del registro. */
+function HumanNote({ children, style }: { children: ReactNode; style?: CSSProperties }) {
+  return (
+    <span style={{ fontStyle: "italic", fontSize: 13, lineHeight: 1.5, color: "var(--color-text-secondary)", ...style }}>
+      {children}
+    </span>
+  );
+}
+
+/* ============================================================
+ * Constants — guardrails de config REAL para la Fase 1.
  * ============================================================ */
 
 const MONTHLY_CAP_USD = 50;
@@ -172,7 +219,10 @@ function useMonthlySpent() {
     (sum, t) => sum + t.amount,
     0
   );
-  return { spent, isLoading: query.isLoading };
+  // `isLoading` = primera carga sin dato; `isError` = tras `retry:1` la query cayó.
+  // En ambos casos el `spent=0` NO está confirmado y el consumidor debe tratarlo
+  // como "sin dato" en vez de renderizarlo como gasto real $0 / cap saludable.
+  return { spent, isLoading: query.isLoading, isError: query.isError };
 }
 
 function useAvailability(query: string) {
@@ -207,6 +257,34 @@ function useSuggestions(seed: string) {
 }
 
 /* ============================================================
+ * CardHead — cabecera interna de card, calcada del demo (título 15/500 +
+ * subtítulo tertiary + slot derecho). No es un primitivo Aivora (SectionHead es
+ * el h1 de página), así que se define local para no duplicar estilos ad-hoc.
+ * ============================================================ */
+
+function CardHead({
+  title,
+  subtitle,
+  right
+}: {
+  title: ReactNode;
+  subtitle?: ReactNode;
+  right?: ReactNode;
+}) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 15, fontWeight: 500, color: "var(--color-text-primary)" }}>{title}</div>
+        {subtitle ? (
+          <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginTop: 2 }}>{subtitle}</div>
+        ) : null}
+      </div>
+      {right ? <div style={{ flex: "none" }}>{right}</div> : null}
+    </div>
+  );
+}
+
+/* ============================================================
  * <DomainsV5> — root
  * ============================================================ */
 
@@ -219,7 +297,14 @@ export function DomainsV5() {
   const suggestions = useSuggestions(seed);
   const prices = usePrices();
   const owned = useOwnedCount();
-  const { spent: spentThisMonth } = useMonthlySpent();
+  const {
+    spent: spentThisMonth,
+    isLoading: walletLoading,
+    isError: walletError
+  } = useMonthlySpent();
+  // El gasto solo es dato real cuando la query resolvió sin error. Mientras carga
+  // o si el audit chain cayó, `spentThisMonth` (=0) NO está confirmado.
+  const spentKnown = !walletLoading && !walletError;
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -235,60 +320,63 @@ export function DomainsV5() {
   });
 
   const ownedCount = Array.isArray(owned.data?.domains) ? owned.data!.domains.length : 0;
-  const spentRemaining = MONTHLY_CAP_USD - spentThisMonth;
-  const capPct = (spentThisMonth / MONTHLY_CAP_USD) * 100;
+  const availableCount = proposals.filter((p) => p.availability === "AVAILABLE").length;
+  const spentRemaining = spentKnown ? MONTHLY_CAP_USD - spentThisMonth : null;
+  const capPct = spentKnown ? (spentThisMonth / MONTHLY_CAP_USD) * 100 : null;
+  const proposalsError = availability.isError || suggestions.isError;
+  // `prefers-reduced-motion`: al arrancar en el estado final (`initial={false}`) los
+  // hijos heredan animate sin entrada escalonada → nada de fade/slide. (§8 doc, DoD F).
+  const reduce = useReducedMotion();
 
   return (
     <motion.div
       variants={staggerContainer}
-      initial="initial"
+      initial={reduce ? false : "initial"}
       animate="animate"
-      className="flex flex-col gap-6"
+      style={{ display: "flex", flexDirection: "column", gap: 24 }}
     >
       <motion.div variants={staggerItem}>
-        <PageHead
-          eyebrow="Discover & propose"
-          meta="Sin compra real"
+        <SectionHead
+          eyebrow="DISCOVER & PROPOSE"
           title="Buscar, valorar y proponer dominios."
-          body={
-            <Body className="max-w-[640px]">
-              Discover/propose vía AWS Route53 Domains con precio real por TLD.
-              OpenClaw sugiere candidatos y el operador firma la propuesta; la
-              compra real queda detrás de doble aprobación humana (Fase 2) y
-              todavía no está habilitada.
-            </Body>
-          }
-          trailing={
-            <Card tone="quiet" padding="compact" className="hidden shrink-0 flex-col items-end gap-1 lg:flex">
+          subtitle="Discover/propose vía AWS Route53 Domains con precio real por TLD · sin compra real (Fase 2 tras doble aprobación humana)."
+          right={
+            <Card ink style={{ padding: "10px 14px", textAlign: "right" }}>
               <Eyebrow>Cap restante</Eyebrow>
-              <MonoData className="text-[14px]">${spentRemaining.toFixed(0)} USD</MonoData>
-              <Caption>de ${MONTHLY_CAP_USD} mensual</Caption>
+              <div style={{ fontSize: 15, fontWeight: 600, color: "var(--color-text-primary)", marginTop: 4, fontVariantNumeric: "tabular-nums" }}>
+                {spentRemaining != null ? `$${spentRemaining.toFixed(0)} USD` : "—"}
+              </div>
+              <Caption style={walletError ? { color: "var(--color-critical)" } : undefined}>
+                {walletError ? "audit chain sin datos" : walletLoading ? "cargando consumo…" : `de $${MONTHLY_CAP_USD} mensual`}
+              </Caption>
             </Card>
           }
         />
       </motion.div>
 
-      <motion.section variants={staggerItem}>
-        <GuardrailStrip
-          spent={spentThisMonth}
-          cap={MONTHLY_CAP_USD}
-          capPct={capPct}
-          ownedCount={ownedCount}
+      {/* KPI row — métricas REALES (sin delta ni sparkline: no hay serie real). */}
+      <motion.section
+        variants={staggerItem}
+        style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 20 }}
+      >
+        <KpiCard
+          label="Cap consumido"
+          value={spentKnown ? `$${spentThisMonth.toFixed(0)}` : "—"}
+          suffix={` / $${MONTHLY_CAP_USD}`}
+          icon={ShieldCheck}
         />
+        <KpiCard label="Dominios en cartera" value={ownedCount} icon={Globe} />
+        <KpiCard label="Propuestas" value={proposals.length} icon={Sparkles} />
+        <KpiCard label="Disponibles ahora" value={availableCount} icon={CheckCircle2} />
       </motion.section>
 
-      <motion.section variants={staggerItem} className="flex flex-col gap-3">
-        <SectionHead
-          eyebrow="Discover"
-          title="Sugerir con OpenClaw"
-          caption={
-            <>
-              Escribe un dominio completo (<MonoCode>delivrix-mail.com</MonoCode>)
-              o una keyword para que OpenClaw proponga alternativas. Cada
-              consulta queda firmada en audit chain.
-            </>
-          }
-        />
+      {/* Guardrails — CONFIG REAL, etiquetada como tal. */}
+      <motion.section variants={staggerItem}>
+        <GuardrailStrip capPct={capPct} walletError={walletError} />
+      </motion.section>
+
+      {/* Discover */}
+      <motion.section variants={staggerItem}>
         <DiscoverForm
           input={input}
           onInputChange={setInput}
@@ -299,157 +387,139 @@ export function DomainsV5() {
         />
       </motion.section>
 
-      <motion.section variants={staggerItem} className="flex flex-col gap-3">
-        <SectionHead
-          eyebrow="Propuestas"
+      {/* Propuestas */}
+      <motion.section variants={staggerItem} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <CardHead
           title="Resultados sugeridos"
-          caption={
+          subtitle={
             proposals.length === 0
               ? "Submit una búsqueda para ver propuestas"
               : "Cada candidato muestra disponibilidad y precio real de Route53"
           }
-          count={proposals.length || undefined}
-          countTone={proposals.length > 0 ? "success" : "neutral"}
+          right={
+            proposals.length > 0 ? (
+              <Pill tone="neutral">{`${proposals.length} candidato${proposals.length === 1 ? "" : "s"}`}</Pill>
+            ) : null
+          }
         />
         <ProposalsList
           proposals={proposals}
           loading={availability.isFetching || suggestions.isFetching}
+          error={proposalsError}
+          onRetry={() => {
+            void availability.refetch();
+            void suggestions.refetch();
+          }}
           submitted={submitted}
         />
       </motion.section>
 
-      {proposals.some((p) => p.availability === "AVAILABLE") ? (
+      {availableCount > 0 ? (
         <motion.div variants={staggerItem}>
-          <BannerOpenClawV2 count={proposals.filter((p) => p.availability === "AVAILABLE").length} />
+          <AdvisorOpenClaw count={availableCount} />
         </motion.div>
       ) : null}
 
       <motion.footer variants={staggerItem}>
-        <FooterStrip spentRemaining={spentRemaining} />
+        <FooterStrip />
       </motion.footer>
     </motion.div>
   );
 }
 
 /* ============================================================
- * GuardrailStrip — 4 chips/stats visibles arriba.
+ * GuardrailStrip — config real (topes / flags) mostrada con StateBadge.
  * ============================================================ */
 
-function GuardrailStrip({
-  spent,
-  cap,
-  capPct,
-  ownedCount
-}: {
-  spent: number;
-  cap: number;
-  capPct: number;
-  ownedCount: number;
-}) {
-  const capTone: "success" | "warning" | "critical" = capPct >= 95 ? "critical" : capPct >= 80 ? "warning" : "success";
+function GuardrailStrip({ capPct, walletError }: { capPct: number | null; walletError: boolean }) {
+  // El cap NO es un estado de warmup: no reusar el molde StateBadge para una caución
+  // de PRESUPUESTO. `paused` traería ámbar + glifo Pause (§3/§9 ámbar = SOLO PAUSED;
+  // §4/§8 el ícono es señal redundante de estado → "pausa" se lee mal si nada está
+  // pausado) y `quarantined` prestaría ShieldAlert (glifo de cuarentena). Los umbrales
+  // van como Pill semántico con ícono propio de budget (TrendingUp = trepando al tope,
+  // TriangleAlert = tope cruzado). Los no-umbral (saludable/sin dato/cargando) sí son
+  // estados legítimos y se quedan en StateBadge neutro/verde.
+  const capBadge: ReactNode = walletError ? (
+    <StateBadge status="retired" label="Sin datos" /> // neutral: unknown ≠ warning
+  ) : capPct == null ? (
+    <StateBadge status="READY" label="Cargando…" />
+  ) : capPct >= 95 ? (
+    <Pill tone="critical">
+      <TriangleAlert size={12.5} strokeWidth={2} />
+      Excedido
+    </Pill>
+  ) : capPct >= 80 ? (
+    <Pill tone="critical">
+      <TrendingUp size={12.5} strokeWidth={2} />
+      Vigilar
+    </Pill>
+  ) : (
+    <StateBadge status="active" label="Saludable" />
+  );
+
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      <GuardrailTile
-        label="Cap mensual"
-        value={`$${spent.toFixed(0)} / $${cap.toFixed(0)}`}
-        unit="USD"
-        hint={`${(100 - capPct).toFixed(0)}% disponible · ${ownedCount} dominios en cartera`}
-        pillLabel={capTone === "critical" ? "excedido" : capTone === "warning" ? "vigilar" : "saludable"}
-        pillTone={capTone}
-        icon={<ShieldCheck size={14} strokeWidth={1.75} />}
-        progress={capPct}
-        progressTone={capTone}
+    <Card ink style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
+      <CardHead
+        title="Guardrails"
+        subtitle="Configuración real de la Fase 1 · no editable desde el panel"
+        right={<Eyebrow>config</Eyebrow>}
       />
-      <GuardrailTile
-        label="WHOIS privacy"
-        value="Activada"
-        hint="Hardcoded · oculta contacto del registrante en todos los registros"
-        pillLabel="forzado"
-        pillTone="success"
-        icon={<ShieldCheck size={14} strokeWidth={1.75} />}
-      />
-      <GuardrailTile
-        label="Aprobación"
-        value="1 firma operador"
-        hint="ApprovalGate confirma el operador y audit chain firma cada paso"
-        pillLabel="live gate"
-        pillTone="warning"
-        icon={<CircleHelp size={14} strokeWidth={1.75} />}
-      />
-      <GuardrailTile
-        label="Compra real"
-        value={PURCHASE_ENABLED ? "Habilitada" : "Bloqueada"}
-        hint={
-          PURCHASE_ENABLED
-            ? "Flag de demo activada · cuidado con cada propuesta"
-            : "Fase 2 deshabilitada · el panel solo propone, no ejecuta"
-        }
-        pillLabel={PURCHASE_ENABLED ? "demo on" : "lock"}
-        pillTone={PURCHASE_ENABLED ? "warning" : "critical"}
-        icon={<Lock size={14} strokeWidth={1.75} />}
-      />
-    </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))",
+          gap: 12,
+          borderTop: "1px solid var(--color-border)",
+          paddingTop: 16
+        }}
+      >
+        <GuardrailItem
+          label="Cap mensual"
+          value={`$${MONTHLY_CAP_USD} USD`}
+          badge={capBadge}
+        />
+        <GuardrailItem
+          label="WHOIS privacy"
+          value={WHOIS_PRIVACY_ENABLED ? "Activada" : "Desactivada"}
+          badge={<StateBadge status={WHOIS_PRIVACY_ENABLED ? "active" : "quarantined"} label="Forzado" />}
+        />
+        <GuardrailItem
+          label="Aprobación"
+          value="1 firma operador"
+          badge={<StateBadge status="active" label="Exigido" />}
+        />
+        <GuardrailItem
+          label="Compra real"
+          value={PURCHASE_ENABLED ? "Habilitada" : "Bloqueada"}
+          badge={
+            <StateBadge
+              status={PURCHASE_ENABLED ? "paused" : "BLOCKED"}
+              label={PURCHASE_ENABLED ? "Demo on" : "Bloqueada"}
+            />
+          }
+        />
+      </div>
+    </Card>
   );
 }
 
-interface GuardrailTileProps {
-  label: string;
-  value: string;
-  unit?: string;
-  hint: string;
-  pillLabel: string;
-  pillTone: "success" | "warning" | "critical" | "neutral";
-  icon: React.ReactNode;
-  progress?: number;
-  progressTone?: "success" | "warning" | "critical";
-}
-
-function GuardrailTile({
+function GuardrailItem({
   label,
   value,
-  unit,
-  hint,
-  pillLabel,
-  pillTone,
-  icon,
-  progress,
-  progressTone
-}: GuardrailTileProps) {
+  badge
+}: {
+  label: string;
+  value: string;
+  badge: ReactNode;
+}) {
   return (
-    <Card padding="relaxed" className="flex flex-col gap-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-fg-subtle">{icon}</span>
-          <Eyebrow className="leading-[1.2]">{label}</Eyebrow>
-        </div>
-        <Pill tone={pillTone} size="sm">
-          {pillLabel}
-        </Pill>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <Eyebrow>{label}</Eyebrow>
+      <div style={{ fontSize: 18, fontWeight: 600, color: "var(--color-text-primary)", fontVariantNumeric: "tabular-nums" }}>
+        {value}
       </div>
-      <div className="flex items-baseline gap-1.5">
-        <MonoData className="text-[22px] font-semibold leading-none tabular-nums">
-          {value}
-        </MonoData>
-        {unit ? <Caption className="text-fg-subtle">{unit}</Caption> : null}
-      </div>
-      {typeof progress === "number" ? (
-        <div className="relative h-1 w-full overflow-hidden rounded-full bg-surface-sunken">
-          <span
-            className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-500"
-            style={{
-              width: `${Math.max(2, Math.min(100, progress))}%`,
-              background:
-                progressTone === "critical"
-                  ? "var(--color-critical)"
-                  : progressTone === "warning"
-                  ? "var(--color-warning)"
-                  : "var(--color-success)"
-            }}
-          />
-        </div>
-      ) : null}
-      <Caption className="text-fg-subtle">{hint}</Caption>
-    </Card>
+      <div>{badge}</div>
+    </div>
   );
 }
 
@@ -477,10 +547,25 @@ function DiscoverForm({
   const fetching = availability.isFetching || suggestionsFetching;
 
   return (
-    <Card padding="hero" className="flex flex-col gap-4">
+    <Card style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
+      <CardHead
+        title="Sugerir con OpenClaw"
+        subtitle="Escribe un dominio completo o una keyword · cada consulta queda firmada en audit chain"
+      />
       <form onSubmit={onSubmit} className="flex flex-col gap-3 sm:flex-row sm:items-stretch">
-        <label className="flex flex-1 items-center gap-3 rounded-md border border-border-strong bg-surface px-4 transition-colors focus-within:border-border-focus">
-          <Search size={16} strokeWidth={1.75} className="shrink-0 text-fg-subtle" aria-hidden="true" />
+        <label
+          style={{
+            display: "flex",
+            flex: 1,
+            alignItems: "center",
+            gap: 12,
+            borderRadius: 12,
+            border: "1px solid var(--color-border-strong)",
+            background: "var(--color-surface)",
+            padding: "0 14px"
+          }}
+        >
+          <Search size={16} strokeWidth={1.75} style={{ flex: "none", color: "var(--color-text-tertiary)" }} aria-hidden="true" />
           <input
             type="text"
             value={input}
@@ -489,16 +574,25 @@ function DiscoverForm({
             spellCheck={false}
             autoCapitalize="off"
             autoCorrect="off"
-            className="h-12 flex-1 bg-transparent font-mono text-[14px] text-fg outline-none placeholder:text-fg-subtle"
+            style={{
+              height: 48,
+              flex: 1,
+              background: "transparent",
+              border: "none",
+              outline: "none",
+              fontFamily: "var(--font-mono)",
+              fontSize: 14,
+              color: "var(--color-text-primary)"
+            }}
             aria-label="Dominio o keyword a explorar"
           />
         </label>
         <Button
           type="submit"
           variant="primary"
-          size="lg"
+          size="md"
           disabled={!plausible || fetching}
-          className="sm:min-w-[220px]"
+          className="w-full sm:w-auto sm:min-w-[220px]"
         >
           <Sparkles size={13} strokeWidth={1.75} />
           Sugerir con OpenClaw
@@ -506,17 +600,48 @@ function DiscoverForm({
         </Button>
       </form>
 
-      <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
-        <Caption className="text-fg-subtle">
-          {submitted
-            ? <>Última búsqueda: <MonoCode>{submitted}</MonoCode></>
-            : "Sin búsquedas en esta sesión."}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: 12,
+          borderTop: "1px solid var(--color-border)",
+          paddingTop: 12
+        }}
+      >
+        <Caption>
+          {submitted ? (
+            <>
+              Última búsqueda: <MonoCode>{submitted}</MonoCode>
+            </>
+          ) : (
+            "Sin búsquedas en esta sesión."
+          )}
         </Caption>
-        <span className="flex-1" aria-hidden="true" />
-        <Badge>cache 5 min</Badge>
-        <Badge>read-only</Badge>
+        <span style={{ flex: 1 }} aria-hidden="true" />
+        <MetaTag>cache 5 min</MetaTag>
+        <MetaTag>read-only</MetaTag>
       </div>
     </Card>
+  );
+}
+
+function MetaTag({ children }: { children: ReactNode }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        borderRadius: 999,
+        background: "var(--color-neutral-soft)",
+        color: "var(--color-text-secondary)",
+        fontSize: 11.5,
+        padding: "3px 9px"
+      }}
+    >
+      {children}
+    </span>
   );
 }
 
@@ -528,7 +653,6 @@ interface ProposalRow {
   domain: string;
   tld: string;
   availability: DomainAvailabilityStatus | null;
-  score: number;
   route53Price: DomainPrice | undefined;
   source: "submitted" | "suggestion";
 }
@@ -536,32 +660,96 @@ interface ProposalRow {
 function ProposalsList({
   proposals,
   loading,
+  error,
+  onRetry,
   submitted
 }: {
   proposals: ProposalRow[];
   loading: boolean;
+  error: boolean;
+  onRetry: () => void;
   submitted: string;
 }) {
   if (proposals.length === 0) {
     if (loading) {
       return (
-        <Card padding="hero" className="flex items-center gap-3">
-          <span className="inline-block size-1.5 animate-pulse rounded-full bg-fg-subtle" aria-hidden="true" />
-          <Caption className="text-fg-muted">Consultando Route53 …</Caption>
+        <Card style={{ padding: 24, display: "flex", alignItems: "center", gap: 12 }}>
+          <span
+            aria-hidden="true"
+            style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--color-text-tertiary)" }}
+            className="animate-pulse"
+          />
+          <Caption>Consultando Route53 …</Caption>
+        </Card>
+      );
+    }
+    // Error de red/endpoint tras un submit: NO es un empty-state. Se muestra
+    // explícito (icono crítico + reintentar) para no leer un 500 como "no hay
+    // resultados".
+    if (error && submitted) {
+      return (
+        <Card style={{ padding: 24, display: "flex", alignItems: "flex-start", gap: 16 }}>
+          <div
+            style={{
+              width: 38,
+              height: 38,
+              flex: "none",
+              display: "grid",
+              placeItems: "center",
+              borderRadius: 12,
+              background: "var(--color-critical-soft)",
+              color: "var(--color-critical)"
+            }}
+          >
+            <TriangleAlert size={16} strokeWidth={1.75} />
+          </div>
+          <div style={{ display: "flex", minWidth: 0, flex: 1, flexDirection: "column", gap: 6 }}>
+            <div style={{ fontSize: 15, fontWeight: 500, color: "var(--color-text-primary)" }}>
+              No se pudo consultar Route53
+            </div>
+            <BodySm>
+              La búsqueda de disponibilidad o sugerencias para <MonoCode>{submitted}</MonoCode> falló
+              (error de red o del endpoint). Esto no significa que no haya candidatos.
+            </BodySm>
+            <div style={{ marginTop: 4 }}>
+              <Button variant="ghost" size="sm" onClick={onRetry}>
+                <RotateCw size={12} strokeWidth={1.75} />
+                Reintentar
+              </Button>
+            </div>
+          </div>
         </Card>
       );
     }
     return (
-      <Card padding="hero" className="flex items-start gap-4">
-        <div className="grid size-9 shrink-0 place-items-center rounded-md bg-surface-sunken text-fg-subtle">
+      <Card style={{ padding: 24, display: "flex", alignItems: "flex-start", gap: 16 }}>
+        <div
+          style={{
+            width: 38,
+            height: 38,
+            flex: "none",
+            display: "grid",
+            placeItems: "center",
+            borderRadius: 12,
+            background: "var(--color-neutral-soft)",
+            color: "var(--color-text-tertiary)"
+          }}
+        >
           <Search size={16} strokeWidth={1.75} />
         </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <H3>{submitted ? "Sin candidatos para esta búsqueda" : "Empieza con una búsqueda"}</H3>
+        <div style={{ display: "flex", minWidth: 0, flex: 1, flexDirection: "column", gap: 6 }}>
+          <div style={{ fontSize: 15, fontWeight: 500, color: "var(--color-text-primary)" }}>
+            {submitted ? "Sin candidatos para esta búsqueda" : "Empieza con una búsqueda"}
+          </div>
           <BodySm>
-            {submitted
-              ? <>OpenClaw no encontró sugerencias para <MonoCode>{submitted}</MonoCode>. Prueba un seed más específico de 3 o más caracteres alfanuméricos.</>
-              : "Escribe un dominio completo o una keyword. OpenClaw propondrá hasta 10 alternativas comparando precio y disponibilidad."}
+            {submitted ? (
+              <>
+                OpenClaw no encontró sugerencias para <MonoCode>{submitted}</MonoCode>. Prueba un seed
+                más específico de 3 o más caracteres alfanuméricos.
+              </>
+            ) : (
+              "Escribe un dominio completo o una keyword. OpenClaw propondrá hasta 10 alternativas comparando precio y disponibilidad."
+            )}
           </BodySm>
         </div>
       </Card>
@@ -569,7 +757,13 @@ function ProposalsList({
   }
 
   return (
-    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 320px), 1fr))",
+        gap: 12
+      }}
+    >
       {proposals.map((p) => (
         <ProposalCard key={p.domain} proposal={p} />
       ))}
@@ -579,14 +773,7 @@ function ProposalsList({
 
 function ProposalCard({ proposal }: { proposal: ProposalRow }) {
   const { sendIntent } = useOpenClawIntent();
-  const tone: "success" | "warning" | "critical" | "neutral" =
-    proposal.availability === "AVAILABLE"
-      ? "success"
-      : proposal.availability === "UNAVAILABLE"
-      ? "critical"
-      : proposal.availability === "RESERVED"
-      ? "warning"
-      : "neutral";
+  const badge = availabilityBadge(proposal.availability);
 
   const registrationLabel = formatUsd(proposal.route53Price?.registration);
   const renewalLabel = formatUsd(proposal.route53Price?.renewal);
@@ -600,39 +787,26 @@ function ProposalCard({ proposal }: { proposal: ProposalRow }) {
     );
 
   return (
-    <Card padding="relaxed" className="flex flex-col gap-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <span
-              aria-hidden="true"
-              className="inline-block size-1.5 rounded-full"
-              style={{
-                background:
-                  tone === "success"
-                    ? "var(--color-success)"
-                    : tone === "warning"
-                    ? "var(--color-warning)"
-                    : tone === "critical"
-                    ? "var(--color-critical)"
-                    : "var(--color-fg-subtle)"
-              }}
-            />
-            <MonoData className="truncate text-[14px]" title={proposal.domain}>
-              {proposal.domain}
-            </MonoData>
-          </div>
-          <Caption className="text-fg-subtle">
-            {labelForAvailability(proposal.availability)} · score {proposal.score}/10
-            {proposal.source === "submitted" ? " · búsqueda directa" : " · sugerido"}
-          </Caption>
+    <Card style={{ padding: 18, display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+          <MonoData style={{ fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={proposal.domain}>
+            {proposal.domain}
+          </MonoData>
+          <Caption>{proposal.source === "submitted" ? "Búsqueda directa" : "Sugerido por OpenClaw"}</Caption>
         </div>
-        <Pill tone={tone as never} size="sm">
-          {pillLabelForAvailability(proposal.availability)}
-        </Pill>
+        <StateBadge status={badge.status} label={badge.label} />
       </div>
 
-      <div className="grid grid-cols-2 gap-2 border-t border-border pt-3">
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 8,
+          borderTop: "1px solid var(--color-border)",
+          paddingTop: 14
+        }}
+      >
         <PriceColumn
           label="Registro Route53"
           value={registrationLabel}
@@ -645,9 +819,9 @@ function ProposalCard({ proposal }: { proposal: ProposalRow }) {
         />
       </div>
 
-      <div className="flex items-center gap-2">
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <Button
-          variant={available ? "primary" : "secondary"}
+          variant={available ? "primary" : "ghost"}
           size="sm"
           disabled={!available}
           onClick={available ? requestApproval : undefined}
@@ -657,68 +831,63 @@ function ProposalCard({ proposal }: { proposal: ProposalRow }) {
           Solicitar aprobación
           <ArrowRight size={11} strokeWidth={1.75} />
         </Button>
-        <span className="flex-1" aria-hidden="true" />
-        <Caption className="text-fg-subtle">No ejecuta compra · gate Fase 2</Caption>
+        <span style={{ flex: 1 }} aria-hidden="true" />
+        <Caption>No ejecuta compra · gate Fase 2</Caption>
       </div>
     </Card>
   );
 }
 
-function PriceColumn({
-  label,
-  value,
-  hint,
-  tone = "neutral"
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-  tone?: "neutral" | "success" | "warning";
-}) {
-  const valueClass =
-    tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : "text-fg";
+function PriceColumn({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
-    <div className="flex flex-col gap-1">
-      <Eyebrow className="text-[9.5px]">{label}</Eyebrow>
-      <MonoData className={cn("text-[14px] font-semibold tabular-nums", valueClass)}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <Eyebrow>{label}</Eyebrow>
+      <div style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-primary)", fontVariantNumeric: "tabular-nums" }}>
         {value}
-      </MonoData>
-      {hint ? <Caption className="text-[10px] text-fg-subtle">{hint}</Caption> : null}
+      </div>
+      {hint ? <Caption>{hint}</Caption> : null}
     </div>
   );
 }
 
 /* ============================================================
- * BannerOpenClawV2 — única HumanNote de la vista.
+ * AdvisorOpenClaw — única superficie con gradiente/sparkle (patrón demo).
+ * Contiene la única HumanNote de la vista.
  * ============================================================ */
 
-function BannerOpenClawV2({ count }: { count: number }) {
+function AdvisorOpenClaw({ count }: { count: number }) {
   const { sendIntent, navigateTo } = useOpenClawIntent();
   return (
-    <Card padding="relaxed" className="flex items-start gap-4">
-      <div className="grid size-9 shrink-0 place-items-center rounded-md bg-warning-soft text-warning">
-        <TriangleAlert size={16} strokeWidth={1.75} />
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div className="flex items-center gap-2">
-          <Eyebrow>OpenClaw recuerda</Eyebrow>
-          <Pill tone="warning" size="sm">1 firma operador</Pill>
+    <AdvisorCard>
+      <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 30, height: 30, borderRadius: 9, background: aivoraGradient, display: "grid", placeItems: "center" }}>
+            <Sparkles size={16} color="#fff" />
+          </div>
+          <div style={{ fontSize: 14.5, fontWeight: 500, color: "var(--color-text-primary)" }}>Advisor · OpenClaw</div>
+          <span style={{ marginLeft: "auto" }}>
+            <StateBadge status="retired_pending_approval" label="1 firma operador" />
+          </span>
         </div>
-        <H3>
-          {count === 1
-            ? "1 propuesta espera aprobación humana"
-            : `${count} propuestas esperan aprobación humana`}
-        </H3>
-        <BodySm>
-          La compra real queda detrás de ApprovalGate con una firma humana.
-          Cuando firmes la propuesta, OpenClaw ejecuta sólo dentro del flujo
-          auditado visible en Canvas Live.
-        </BodySm>
-        <HumanNote className="mt-1 max-w-[560px]">
-          Si quieres revisamos cada candidata antes de firmar — abro el chat y te lo explico.
-        </HumanNote>
-        <div className="mt-1 flex items-center gap-2">
+
+        <div style={{ borderLeft: "2px solid transparent", borderImage: `${aivoraGradient} 1`, paddingLeft: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 15, fontWeight: 500, color: "var(--color-text-primary)" }}>
+            {count === 1
+              ? "1 propuesta espera aprobación humana"
+              : `${count} propuestas esperan aprobación humana`}
+          </div>
+          <Body>
+            La compra real queda detrás de ApprovalGate con una firma humana. Cuando firmes la
+            propuesta, OpenClaw ejecuta sólo dentro del flujo auditado visible en Canvas Live.
+          </Body>
+          <HumanNote style={{ maxWidth: 560 }}>
+            Si quieres revisamos cada candidata antes de firmar — abro el chat y te lo explico.
+          </HumanNote>
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, rowGap: 8 }}>
           <Button variant="primary" size="sm" onClick={() => navigateTo("canvas")}>
+            <Rocket size={13} strokeWidth={1.75} />
             Revisar en Canvas Live
             <ArrowRight size={12} strokeWidth={1.75} />
           </Button>
@@ -736,38 +905,35 @@ function BannerOpenClawV2({ count }: { count: number }) {
           </Button>
         </div>
       </div>
-    </Card>
+    </AdvisorCard>
   );
 }
 
 /* ============================================================
- * FooterStrip — runbook + endpoint + cap.
+ * FooterStrip — chrome de ops (runbook + endpoint). Va en `ink` (inlay negro en
+ * modo claro): junto al AdvisorCard cierra el borde INFERIOR del marco cohesivo
+ * (banda KPI arriba + sidebar a la izq + este baseboard abajo = marco en U), y
+ * como consola/ops es una superficie conceptualmente siempre-oscura (SPEC §1.3).
+ * El cap ya vive en el hero (restante) y en el KPI (consumido): no se repite acá.
  * ============================================================ */
 
-function FooterStrip({ spentRemaining }: { spentRemaining: number }) {
+function FooterStrip() {
   return (
-    <Card tone="quiet" padding="relaxed" className="flex flex-wrap items-center gap-x-5 gap-y-2">
-      <div className="flex items-center gap-2">
+    <Card ink style={{ padding: "14px 20px", display: "flex", flexWrap: "wrap", alignItems: "center", columnGap: 20, rowGap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         <Eyebrow>Runbook</Eyebrow>
         <a
           href="#"
-          className="inline-flex items-center gap-1 font-mono text-[11px] text-fg-muted underline-offset-4 hover:text-fg hover:underline"
+          style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-text-secondary)", minWidth: 0, wordBreak: "break-all" }}
         >
           {RUNBOOK_PATH}
           <ExternalLink size={10} strokeWidth={1.75} />
         </a>
       </div>
-      <span aria-hidden="true" className="inline-block size-[3px] rounded-full bg-border-strong" />
-      <div className="flex items-center gap-2">
+      <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: "50%", background: "var(--color-border-strong)" }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <Eyebrow>Endpoint</Eyebrow>
         <MonoCode>GET {READ_ENDPOINTS.domainAvailability}</MonoCode>
-      </div>
-      <span className="flex-1" aria-hidden="true" />
-      <div className="flex items-center gap-2">
-        <Eyebrow>Cap restante</Eyebrow>
-        <MonoData className="text-[13px] tabular-nums">
-          ${spentRemaining.toFixed(0)} / ${MONTHLY_CAP_USD} USD
-        </MonoData>
       </div>
     </Card>
   );
@@ -794,7 +960,6 @@ function buildProposals(args: {
       domain: availability.domain,
       tld,
       availability: availability.availability,
-      score: scoreFor(availability.domain, availability.availability),
       route53Price: priceByTld.get(tld),
       source: "submitted"
     });
@@ -809,7 +974,6 @@ function buildProposals(args: {
       domain: s.domain,
       tld,
       availability: s.availability,
-      score: scoreFor(s.domain, s.availability),
       route53Price: priceByTld.get(tld),
       source: "suggestion"
     });
@@ -818,12 +982,14 @@ function buildProposals(args: {
   return rows;
 }
 
-function scoreFor(domain: string, status: DomainAvailabilityStatus | null): number {
-  // Heurística simple Fase 1: brandability ≈ inverso de longitud + bonus disponibilidad.
-  const len = domain.split(".")[0]?.length ?? domain.length;
-  const lengthScore = Math.max(0, 10 - Math.max(0, len - 6));
-  const availBonus = status === "AVAILABLE" ? 0 : status === "UNAVAILABLE" ? -3 : -1;
-  return Math.max(1, Math.min(10, lengthScore + availBonus));
+/** Availability → visual del StateBadge (reusa el molde; label semántico real). */
+function availabilityBadge(status: DomainAvailabilityStatus | null): { status: string; label: string } {
+  if (status === "AVAILABLE") return { status: "active", label: "Disponible" };
+  if (status === "UNAVAILABLE") return { status: "retired", label: "Registrado" };
+  // RESERVED/PENDING = espera, no caución → neutral (Clock), NO ámbar (ámbar solo PAUSED).
+  if (status === "RESERVED") return { status: "retired_pending_approval", label: "Reservado" };
+  if (status === "PENDING") return { status: "retired_pending_approval", label: "Pendiente" };
+  return { status: "READY", label: "Sin confirmar" };
 }
 
 function tldOf(domain: string): string | null {
@@ -842,33 +1008,7 @@ function isPlausibleDomain(value: string): boolean {
   return /^[a-z0-9][a-z0-9-]{0,62}\.[a-z]{2,}$/.test(value);
 }
 
-function labelForAvailability(status: DomainAvailabilityStatus | null): string {
-  if (status === "AVAILABLE") return "Disponible";
-  if (status === "UNAVAILABLE") return "Registrado";
-  if (status === "RESERVED") return "Reservado";
-  if (status === "PENDING") return "Pendiente";
-  if (status === "DONT_KNOW") return "Sin confirmar";
-  return "Sin verificar";
-}
-
-function pillLabelForAvailability(status: DomainAvailabilityStatus | null): string {
-  if (status === "AVAILABLE") return "disponible";
-  if (status === "UNAVAILABLE") return "ocupado";
-  if (status === "RESERVED") return "reservado";
-  if (status === "PENDING") return "pendiente";
-  return "sin confirmar";
-}
-
 function formatUsd(amount: number | null | undefined): string {
   if (typeof amount !== "number" || !Number.isFinite(amount)) return "—";
   return `$${amount.toFixed(2)}`;
 }
-
-/* ============================================================
- * Sanity helpers — explicit reference so unused-imports lint clean.
- * ============================================================ */
-
-// `H2` y `CheckCircle2` reservados para evolutivos cercanos (Wallet tile +
-// status chip de aprobaciones). Evitar tree-shake quirks dejando referencia.
-export const __h2Reserved = H2;
-export const __checkReserved = CheckCircle2;

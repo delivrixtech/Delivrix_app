@@ -47,6 +47,11 @@
   --color-critical-border: var(--color-critical-border);
   --color-critical-fg: var(--color-critical-fg);
 
+  --color-warming: var(--color-warming);
+  --color-warming-soft: var(--color-warming-soft);
+  --color-warming-border: var(--color-warming-border);
+  --color-warming-fg: var(--color-warming-fg);
+
   --color-unknown: var(--color-unknown);
   --color-unknown-soft: var(--color-unknown-soft);
   --color-unknown-border: var(--color-unknown-border);
