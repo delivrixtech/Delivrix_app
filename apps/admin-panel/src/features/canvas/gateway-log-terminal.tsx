@@ -255,9 +255,9 @@ export function GatewayLogTerminal() {
           style={{
             gap: 8,
             padding: "7px 14px",
-            borderBottom: "1px solid rgba(255,255,255,0.08)",
-            color: "#f5c36a",
-            background: "rgba(245,195,106,0.08)",
+            borderBottom: "1px solid var(--color-warning-border)",
+            color: "var(--color-warning)",
+            background: "var(--color-warning-soft)",
             fontFamily: "var(--font-mono)",
             fontSize: 11
           }}

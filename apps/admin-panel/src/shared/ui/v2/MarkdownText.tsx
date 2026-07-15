@@ -18,6 +18,7 @@
 
 import type { ReactNode } from "react";
 import { Fragment } from "react";
+import { DataTable } from "../aivora/index.tsx";
 
 interface MarkdownTextProps {
   /** Texto markdown crudo. */
@@ -289,53 +290,15 @@ function renderBlock(block: Block, baseFontSize: number): ReactNode {
     );
   }
   if (block.kind === "table") {
+    // Tabla unificada con el primitivo Aivora DataTable (mismo look en chat y canvas).
+    // Celdas en modo `plain`: el código va mono plano (sin chip) para no llenar la
+    // tabla de cajitas — el acento se reserva, no se pone en cada valor.
     return (
-      <div style={{ margin: "8px 0", overflowX: "auto" }}>
-        <table
-          style={{
-            borderCollapse: "collapse",
-            fontSize: baseFontSize - 1,
-            width: "100%"
-          }}
-        >
-          <thead>
-            <tr>
-              {block.header.map((h, i) => (
-                <th
-                  key={i}
-                  style={{
-                    textAlign: "left",
-                    padding: "6px 10px",
-                    borderBottom: "1px solid var(--color-border-strong)",
-                    background: "var(--color-surface-sunken)",
-                    fontWeight: 600,
-                    color: "var(--color-text-primary)"
-                  }}
-                >
-                  {renderInline(h)}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {block.rows.map((row, ri) => (
-              <tr key={ri}>
-                {row.map((cell, ci) => (
-                  <td
-                    key={ci}
-                    style={{
-                      padding: "6px 10px",
-                      borderBottom: "1px solid var(--color-border)",
-                      verticalAlign: "top"
-                    }}
-                  >
-                    {renderInline(cell)}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div style={{ margin: "8px 0" }}>
+        <DataTable
+          headers={block.header.map((h) => renderInline(h, true))}
+          rows={block.rows.map((row) => row.map((cell) => renderInline(cell, true)))}
+        />
       </div>
     );
   }
@@ -355,7 +318,7 @@ function renderBlock(block: Block, baseFontSize: number): ReactNode {
  */
 const INLINE_RE = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
 
-function renderInline(text: string): ReactNode {
+function renderInline(text: string, plain = false): ReactNode {
   const parts: ReactNode[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -365,7 +328,7 @@ function renderInline(text: string): ReactNode {
       parts.push(text.slice(lastIndex, match.index));
     }
     const token = match[0];
-    parts.push(renderInlineToken(token, parts.length));
+    parts.push(renderInlineToken(token, parts.length, plain));
     lastIndex = match.index + token.length;
   }
   if (lastIndex < text.length) {
@@ -374,9 +337,19 @@ function renderInline(text: string): ReactNode {
   return parts.map((p, i) => <Fragment key={i}>{p}</Fragment>);
 }
 
-function renderInlineToken(token: string, idx: number): ReactNode {
+function renderInlineToken(token: string, idx: number, plain = false): ReactNode {
   // `code`
   if (token.startsWith("`") && token.endsWith("`")) {
+    const content = token.slice(1, -1);
+    // En celdas de tabla: mono plano, sin chip ni fondo (evita el mar de cajitas).
+    if (plain) {
+      return (
+        <code key={idx} style={{ fontFamily: "var(--font-mono)", fontSize: "0.92em", color: "var(--color-text-secondary)" }}>
+          {content}
+        </code>
+      );
+    }
+    // Inline normal: chip NEUTRO (texto primario, no acento) — el azul se reserva.
     return (
       <code
         key={idx}
@@ -384,12 +357,12 @@ function renderInlineToken(token: string, idx: number): ReactNode {
           fontFamily: "var(--font-mono)",
           fontSize: "0.92em",
           padding: "1px 5px",
-          borderRadius: 3,
+          borderRadius: 4,
           background: "var(--color-surface-sunken)",
-          color: "var(--color-accent-tertiary)"
+          color: "var(--color-text-primary)"
         }}
       >
-        {token.slice(1, -1)}
+        {content}
       </code>
     );
   }

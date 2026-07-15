@@ -1,30 +1,27 @@
 /**
- * v5 Shell — Sidebar + Topbar + Main + Footer desde cero.
+ * Shell — Sidebar + Topbar + Main, calcado del demo Aivora
+ * (features/overview/TravigueOverviewProto.tsx).
  *
- * Arquitectura:
  *   ┌──────────────────────────────────────────┐
- *   │ Topbar 52px · breadcrumb + agent + utils │
+ *   │ Topbar 60 sticky · Buscar + CTA + avatar │
  *   ├────────┬─────────────────────────────────┤
  *   │ Sidebar│                                 │
- *   │ 256/64 │  Main (1440 max, gutter 24)     │
- *   │        │                                 │
- *   │        ├─────────────────────────────────┤
- *   │        │ Footer 36 · operational status  │
+ *   │ 240/64 │  Main (1440 max, gutter 24)     │
+ *   │  (ink) │                                 │
  *   └────────┴─────────────────────────────────┘
  *
- * Linear/Vercel/Cursor lead. Dark-first. Sidebar colapsable a 64px icon-only.
- * Topbar minimal con breadcrumb + AgentPulse + user. Footer compacto con
- * operational status (audit chain count, kill switch state, env).
+ * El sidebar es "ink island" (siempre negro, clase theme-ink-island): dentro de
+ * él los tokens var(--color-*) resuelven a la paleta oscura. El chrome se
+ * construye con elementos crudos + TOKENS (como el demo), no con primitivos B/N.
+ * Superficie de gradiente única: la CTA "Preguntar a Delivrix" (aivoraGradient).
  */
 
 import { useEffect, useState, type ReactNode } from "react";
 import { motion } from "framer-motion";
 import {
-  ChevronRight,
-  CircleDot,
+  Bell,
   Command,
   Menu,
-  MessageSquare,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
@@ -37,7 +34,7 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import { sidebarSlide, durations, easeOutExpo } from "../lib/motion";
-import { AgentPulse, Badge, Button, Caption, Eyebrow, MonoCode, Pill } from "../components/primitives";
+import { aivoraGradient } from "../../shared/ui/aivora/index.tsx";
 
 export interface NavItem {
   id: string;
@@ -55,23 +52,28 @@ export interface NavGroup {
   items: NavItem[];
 }
 
+export interface ShellAlert {
+  severity: string;
+  title: string;
+  message: string;
+}
+
 export interface ShellProps {
   groups: NavGroup[];
   activeSection: string;
   onSelect: (id: string) => void;
-  breadcrumb: { group: string; section: string };
-  agentState?: "idle" | "thinking" | "executing";
+  /** Se conserva por compat con App; el topbar del demo no muestra breadcrumb. */
+  breadcrumb?: { group: string; section: string };
   killSwitchArmed?: boolean;
   killSwitchOnClick?: () => void;
-  envLabel?: string;
-  buildSha?: string;
-  postgresOk?: boolean;
-  redisOk?: boolean;
   onRefresh?: () => void | Promise<void>;
   isRefreshing?: boolean;
   onOpenCommand?: () => void;
   chatOpen?: boolean;
   onToggleChat?: () => void;
+  /** Alertas REALES del backend (overview.alerts) para la campana. */
+  alerts?: ShellAlert[];
+  /** Placeholder dev: aún no hay sesión autenticada. */
   user?: { initial: string; label: string };
   rightDrawer?: ReactNode;
   contentClassName?: string;
@@ -82,8 +84,27 @@ export interface ShellProps {
 const COLLAPSED_KEY = "delivrix-v5-sidebar-collapsed";
 const MOBILE_QUERY = "(max-width: 767px)";
 
+/* Pastilla translúcida del nav activo (demo `T.pill`): overlay del texto → theme-aware. */
+const NAV_ACTIVE = "color-mix(in srgb, var(--color-text-primary) 7%, transparent)";
+
+/** Estilos de hover/transición del chrome (el demo también inyecta un <style>). */
+const SHELL_STYLE = `
+.shell-root{ height: 100vh; height: 100dvh; }
+.shell-topbar{ background: var(--color-bg); background: color-mix(in srgb, var(--color-bg) 85%, transparent); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.shell-nav{ transition: background-color .15s ease, color .15s ease; }
+.shell-nav:hover:not([data-active="true"]){ background: color-mix(in srgb, var(--color-text-primary) 5%, transparent); color: var(--color-text-primary); }
+.shell-iconbtn{ transition: background-color .15s ease, color .15s ease, border-color .15s ease; }
+.shell-iconbtn:hover{ color: var(--color-text-primary); border-color: var(--color-border-strong); }
+.shell-search{ transition: border-color .15s ease, color .15s ease; }
+.shell-search:hover{ border-color: var(--color-border-strong); color: var(--color-text-secondary); }
+.shell-cta{ transition: filter .15s ease, box-shadow .15s ease; }
+.shell-cta:hover{ filter: brightness(1.06); }
+.shell-killswitch{ transition: border-color .15s ease; }
+.shell-killswitch:hover{ border-color: var(--color-border-strong); }
+`;
+
 /**
- * Mobile (<768px): el sidebar in-flow de 256px dejaba ~130px de contenido en un
+ * Mobile (<768px): el sidebar in-flow de 240px dejaba ~130px de contenido en un
  * iPhone (HIGH-1 post-audit). Bajo `md` el sidebar pasa a drawer overlay con
  * hamburguesa en el topbar; en desktop nada cambia.
  */
@@ -105,19 +126,14 @@ export function Shell({
   groups,
   activeSection,
   onSelect,
-  breadcrumb,
-  agentState = "idle",
   killSwitchArmed = true,
   killSwitchOnClick,
-  envLabel = "fase-1 · live gates",
-  buildSha = "dev",
-  postgresOk = true,
-  redisOk = true,
   onRefresh,
   isRefreshing = false,
   onOpenCommand,
   chatOpen = false,
   onToggleChat,
+  alerts = [],
   user = { initial: "J", label: "operador" },
   rightDrawer,
   contentClassName,
@@ -159,7 +175,8 @@ export function Shell({
   }, [onOpenCommand]);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-bg text-fg">
+    <div className="shell-root flex w-full overflow-hidden bg-bg text-fg">
+      <style>{SHELL_STYLE}</style>
       <Sidebar
         collapsed={collapsed}
         onToggle={() => setCollapsed((v) => !v)}
@@ -182,40 +199,35 @@ export function Shell({
         <Topbar
           mobileNavOpen={mobileNavOpen}
           onToggleMobileNav={() => setMobileNavOpen((v) => !v)}
-          breadcrumb={breadcrumb}
-          agentState={agentState}
-          envLabel={envLabel}
-          postgresOk={postgresOk}
-          redisOk={redisOk}
           onRefresh={onRefresh}
           isRefreshing={isRefreshing}
           onOpenCommand={onOpenCommand}
           chatOpen={chatOpen}
           onToggleChat={onToggleChat}
+          alerts={alerts}
           user={user}
         />
         <main className="relative flex min-h-0 flex-1 overflow-hidden">
           <motion.div
-            key={breadcrumb.section}
+            key={activeSection}
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: durations.page, ease: easeOutExpo }}
             className={cn("flex-1 overflow-y-auto", contentClassName)}
           >
-            <div className={cn("mx-auto w-full max-w-[1440px] px-6 py-6", contentInnerClassName)}>
+            <div className={cn("mx-auto w-full max-w-[1440px] px-4 py-4 sm:px-6 sm:py-6", contentInnerClassName)}>
               {children}
             </div>
           </motion.div>
           {rightDrawer}
         </main>
-        <Footer killSwitchArmed={killSwitchArmed} />
       </div>
     </div>
   );
 }
 
 /* ============================================================
- * Sidebar
+ * Sidebar (ink island)
  * ============================================================ */
 
 function Sidebar({
@@ -241,70 +253,66 @@ function Sidebar({
   mobileOpen: boolean;
   onCloseMobile: () => void;
 }) {
-  // En mobile el drawer siempre se muestra expandido: colapsar a 64px icon-only
-  // no tiene sentido en un overlay que se cierra tocando fuera.
+  // En mobile el drawer siempre se muestra expandido.
   const collapsed = isMobile ? false : collapsedProp;
   const body = (
     <>
-      {/* Brand row */}
+      {/* Brand row — tile radius 9 gradiente + "Delivrix" (sin subtítulo, sin border) */}
       <div
         className={cn(
-          "flex items-center border-b border-border",
+          "flex items-center",
           collapsed ? "flex-col gap-2 px-2 py-3" : "gap-2.5 px-3.5 py-3.5"
         )}
       >
-        <div className="grid size-8 shrink-0 place-items-center rounded-[7px] bg-fg text-bg">
-          <span
-            className="font-heading text-[14px] font-bold"
-            style={{ letterSpacing: "-0.04em" }}
-          >
+        <div
+          className="grid shrink-0 place-items-center text-white"
+          style={{
+            width: 30,
+            height: 30,
+            borderRadius: 9,
+            background: aivoraGradient
+          }}
+        >
+          <span className="font-heading" style={{ fontSize: 15, fontWeight: 700 }}>
             D
           </span>
         </div>
         {!collapsed && (
-          <div className="flex min-w-0 flex-1 flex-col leading-none">
-            <span
-              className="font-heading text-[13.5px] font-semibold text-fg"
-              style={{ letterSpacing: "-0.015em" }}
-            >
-              Delivrix
-            </span>
-            <span
-              className="mt-1 font-mono text-[9.5px] font-medium uppercase text-fg-subtle"
-              style={{ letterSpacing: "0.16em" }}
-            >
-              control plane
-            </span>
-          </div>
+          <span
+            className="min-w-0 flex-1 truncate font-heading"
+            style={{ fontSize: 15.5, fontWeight: 500, letterSpacing: "-0.01em", color: "var(--color-text-primary)" }}
+          >
+            Delivrix
+          </span>
         )}
         <button
           type="button"
           onClick={isMobile ? onCloseMobile : onToggle}
           aria-label={isMobile ? "Cerrar navegación" : collapsed ? "Expandir sidebar" : "Colapsar sidebar"}
           title={isMobile ? "Cerrar navegación" : collapsed ? "Expandir · ⌘\\" : "Colapsar · ⌘\\"}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded text-fg-subtle transition-colors hover:bg-surface hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+          className="shell-iconbtn grid h-7 w-7 shrink-0 place-items-center rounded"
+          style={{ color: "var(--color-text-tertiary)" }}
         >
           {isMobile ? <X size={14} /> : collapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
         </button>
       </div>
 
-      {/* Nav */}
+      {/* Nav — un solo eyebrow "MENU" + lista plana */}
       <nav
-        className={cn("flex flex-1 flex-col gap-4 overflow-y-auto py-4", collapsed ? "px-2" : "px-3")}
+        className={cn("flex flex-1 flex-col gap-1 overflow-y-auto py-3", collapsed ? "px-2" : "px-3")}
         aria-label="Secciones"
       >
+        {!collapsed && (
+          <div
+            className="mb-1 px-2"
+            style={{ fontSize: 10.5, letterSpacing: ".14em", color: "var(--color-text-tertiary)", fontWeight: 600, textTransform: "uppercase" }}
+          >
+            MENU
+          </div>
+        )}
         {groups.map((group, gi) => (
           <div key={group.id} className="flex flex-col gap-0.5">
-            {!collapsed ? (
-              <div
-                className="mb-1 px-2.5 font-mono text-[9.5px] font-semibold uppercase text-fg-subtle"
-                style={{ letterSpacing: "0.16em" }}
-              >
-                {group.label}
-              </div>
-            ) : gi > 0 ? (
-              <div className="mx-1 my-1 h-px bg-border" />
-            ) : null}
+            {collapsed && gi > 0 ? <div className="mx-1 my-1 h-px" style={{ background: "var(--color-border)" }} /> : null}
             {group.items.map((item) => (
               <NavRow
                 key={item.id}
@@ -318,8 +326,8 @@ function Sidebar({
         ))}
       </nav>
 
-      {/* Kill Switch */}
-      <div className={cn("border-t border-border", collapsed ? "px-2 py-3" : "px-3 py-3")}>
+      {/* Kill Switch — card radius 18 minimal (dot + label + estado real) */}
+      <div className={cn(collapsed ? "px-2 py-3" : "px-3 py-3")}>
         <KillSwitch armed={killSwitchArmed} collapsed={collapsed} onClick={killSwitchOnClick} />
       </div>
     </>
@@ -341,7 +349,7 @@ function Sidebar({
           aria-label="Navegación del panel"
           aria-hidden={!mobileOpen}
           className={cn(
-            "fixed inset-y-0 left-0 z-40 flex w-[min(82vw,300px)] flex-col border-r border-border bg-surface-sunken shadow-[var(--shadow-lg)] transition-transform duration-200 ease-out",
+            "theme-ink-island fixed inset-y-0 left-0 z-40 flex w-[min(82vw,300px)] flex-col border-r border-border bg-surface-sunken shadow-[var(--shadow-lg)] transition-transform duration-200 ease-out",
             mobileOpen ? "translate-x-0" : "-translate-x-full"
           )}
         >
@@ -357,7 +365,7 @@ function Sidebar({
       animate={collapsed ? "collapsed" : "expanded"}
       variants={sidebarSlide}
       transition={{ duration: durations.base, ease: easeOutExpo }}
-      className="flex shrink-0 flex-col border-r border-border bg-surface-sunken"
+      className="theme-ink-island flex shrink-0 flex-col border-r border-border bg-surface-sunken"
       style={{ overflow: "hidden" }}
     >
       {body}
@@ -390,25 +398,43 @@ function NavRow({
     <button
       type="button"
       onClick={onClick}
-      data-active={active}
+      data-active={active ? "true" : undefined}
       title={collapsed ? item.label : undefined}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "v5-nav-row group relative flex items-center rounded text-[12.5px] font-medium transition-colors duration-150",
-        collapsed ? "h-8 w-full justify-center px-0" : "gap-2.5 px-2.5 py-1.5",
-        active
-          ? "bg-surface text-fg"
-          : "text-fg-muted hover:bg-surface hover:text-fg"
+        "shell-nav group relative flex items-center",
+        collapsed ? "h-9 w-full justify-center px-0" : "gap-[11px] px-[11px] py-[9px]"
       )}
+      style={{
+        borderRadius: 10,
+        fontSize: 13.5,
+        fontWeight: active ? 500 : 400,
+        background: active ? NAV_ACTIVE : "transparent",
+        color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)"
+      }}
     >
-      <span className={cn("inline-flex shrink-0", active ? "text-fg" : "text-fg-subtle group-hover:text-fg-muted")}>
+      <span
+        className="inline-flex shrink-0"
+        style={{ color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)" }}
+      >
         {item.icon}
       </span>
       {!collapsed && (
         <>
-          <span className="flex-1 truncate text-left font-sans">{item.label}</span>
+          <span className="flex-1 truncate text-left">{item.label}</span>
           {item.badge != null && (
-            <Badge className="px-1.5 text-[10px]">{item.badge}</Badge>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: "var(--color-critical)",
+                background: "var(--color-critical-soft)",
+                borderRadius: 999,
+                padding: "1px 7px"
+              }}
+            >
+              {item.badge}
+            </span>
           )}
           {statusColor && (
             <span
@@ -447,8 +473,8 @@ function KillSwitch({
         type="button"
         onClick={onClick}
         aria-label={`Kill switch ${label}`}
-        title={`Kill switch · ${label} · click para gestionar`}
-        className="grid h-8 w-full place-items-center rounded transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+        title={`Kill switch · ${label}`}
+        className="shell-iconbtn grid h-8 w-full place-items-center rounded-[10px]"
       >
         <span className="relative inline-grid size-6 place-items-center">
           <Power size={14} style={{ color }} aria-hidden="true" />
@@ -465,19 +491,23 @@ function KillSwitch({
     <button
       type="button"
       onClick={onClick}
-      className="flex w-full flex-col gap-2 rounded-md border border-border bg-surface px-3 py-2.5 text-left transition-colors hover:border-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+      title="Gestionar kill switch"
+      className="shell-killswitch flex w-full items-center gap-2 text-left"
+      style={{
+        background: "var(--color-surface-sunken)",
+        border: "1px solid var(--color-border)",
+        borderRadius: 18,
+        padding: "10px 12px",
+        fontSize: 12
+      }}
     >
-      <div className="flex items-center gap-2">
-        <Power size={13} style={{ color }} aria-hidden="true" />
-        <span className="font-sans text-[12px] font-semibold text-fg">Kill Switch</span>
-        <span className="flex-1" aria-hidden="true" />
-        <Pill tone={armed ? "success" : "critical"} size="sm">
-          {label}
-        </Pill>
-      </div>
-      <span className="font-sans text-[10.5px] leading-[1.4] text-fg-subtle">
-        1 firma operador · audit SHA-256 · click para gestionar
-      </span>
+      <span
+        aria-hidden="true"
+        className="inline-block shrink-0 rounded-full"
+        style={{ width: 7, height: 7, background: color }}
+      />
+      <span style={{ color: "var(--color-text-secondary)" }}>Kill switch</span>
+      <b style={{ marginLeft: "auto", color, fontWeight: 600 }}>{label}</b>
     </button>
   );
 }
@@ -486,163 +516,316 @@ function KillSwitch({
  * Topbar
  * ============================================================ */
 
+function IconBtn({
+  onClick,
+  label,
+  title,
+  active,
+  className,
+  children
+}: {
+  onClick?: () => void;
+  label: string;
+  title?: string;
+  active?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      aria-pressed={active}
+      title={title ?? label}
+      className={cn("shell-iconbtn grid shrink-0 place-items-center", className)}
+      style={{
+        width: 36,
+        height: 36,
+        borderRadius: 10,
+        background: active ? "var(--color-accent-soft)" : "var(--color-surface-sunken)",
+        border: "1px solid var(--color-border)",
+        color: active ? "var(--color-accent)" : "var(--color-text-secondary)",
+        cursor: "pointer"
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 function Topbar({
-  breadcrumb,
-  agentState,
-  envLabel,
-  postgresOk,
-  redisOk,
   onRefresh,
   isRefreshing,
   onOpenCommand,
   chatOpen,
   onToggleChat,
+  alerts,
   user,
   mobileNavOpen,
   onToggleMobileNav
 }: {
-  breadcrumb: { group: string; section: string };
-  agentState: "idle" | "thinking" | "executing";
-  envLabel: string;
-  postgresOk: boolean;
-  redisOk: boolean;
   onRefresh?: () => void | Promise<void>;
   isRefreshing: boolean;
   onOpenCommand?: () => void;
   chatOpen: boolean;
   onToggleChat?: () => void;
+  alerts: ShellAlert[];
   user: { initial: string; label: string };
   mobileNavOpen: boolean;
   onToggleMobileNav: () => void;
 }) {
   return (
     <header
-      className="flex h-[52px] shrink-0 items-center gap-3 border-b border-border bg-bg px-4 sm:px-5"
+      className="shell-topbar flex shrink-0 items-center gap-3.5 px-4 sm:px-6"
+      style={{
+        height: 60,
+        borderBottom: "1px solid var(--color-border)",
+        position: "sticky",
+        top: 0,
+        zIndex: 5
+      }}
     >
-      {/* Hamburguesa mobile — el sidebar es drawer bajo md (HIGH-1 post-audit) */}
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label={mobileNavOpen ? "Cerrar navegación del panel" : "Abrir navegación del panel"}
-        aria-expanded={mobileNavOpen}
-        title={mobileNavOpen ? "Cerrar navegación" : "Abrir navegación"}
+      {/* Hamburguesa mobile — el sidebar es drawer bajo md */}
+      <IconBtn
         onClick={onToggleMobileNav}
+        label={mobileNavOpen ? "Cerrar navegación del panel" : "Abrir navegación del panel"}
+        active={mobileNavOpen}
         className="md:hidden"
       >
         {mobileNavOpen ? (
-          <X size={15} strokeWidth={1.75} aria-hidden="true" />
+          <X size={16} strokeWidth={1.8} aria-hidden="true" />
         ) : (
-          <Menu size={15} strokeWidth={1.75} aria-hidden="true" />
+          <Menu size={16} strokeWidth={1.8} aria-hidden="true" />
         )}
-      </Button>
+      </IconBtn>
 
-      {/* Breadcrumb */}
-      <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2">
-        <Caption className="shrink-0">{breadcrumb.group}</Caption>
-        <ChevronRight size={12} className="shrink-0 text-fg-subtle" strokeWidth={2} aria-hidden="true" />
-        <span
-          className="truncate font-heading text-[14px] font-semibold text-fg"
-          style={{ letterSpacing: "-0.015em" }}
-        >
-          {breadcrumb.section}
-        </span>
-      </nav>
-
-      <span className="mx-2 h-4 w-px bg-border" aria-hidden="true" />
-
-      {/* AgentPulse */}
-      <AgentPulse state={agentState} />
-
-      <span className="flex-1" aria-hidden="true" />
-
-      {/* Command palette trigger */}
+      {/* Buscar — píldora a la izquierda, width 280, radius 999 */}
       {onOpenCommand && (
         <button
           type="button"
           onClick={onOpenCommand}
           title="Buscar · ⌘K"
-          className="hidden h-7 items-center gap-2 rounded border border-border bg-surface px-2.5 text-fg-subtle transition-colors hover:border-border-strong hover:text-fg sm:inline-flex"
+          className="shell-search hidden items-center gap-2 sm:flex"
+          style={{
+            width: 280,
+            maxWidth: "40vw",
+            borderRadius: 999,
+            padding: "7px 12px",
+            background: "var(--color-surface-sunken)",
+            border: "1px solid var(--color-border)",
+            color: "var(--color-text-tertiary)",
+            fontSize: 13,
+            cursor: "pointer"
+          }}
         >
-          <Search size={11} strokeWidth={1.75} aria-hidden="true" />
-          <span className="font-sans text-[12px] font-medium">Buscar</span>
-          <kbd
-            className="ml-2 inline-flex items-center gap-0.5 rounded bg-surface-sunken px-1 font-mono text-[9.5px] font-medium text-fg-subtle"
-            style={{ paddingTop: 1, paddingBottom: 1 }}
+          <Search size={15} strokeWidth={1.75} aria-hidden="true" />
+          <span className="flex-1 truncate text-left">Buscar cualquier cosa...</span>
+          <span
+            className="inline-flex items-center gap-0.5"
+            style={{ fontSize: 11 }}
+            aria-hidden="true"
           >
-            <Command size={9} /> K
-          </kbd>
+            <Command size={11} />K
+          </span>
         </button>
       )}
 
-      {/* Status chips eliminadas del topbar 2026-05-28: pg/redis/branch
-       * eran metadata de dev/ops que ruido visual para demos. El footer
-       * ya muestra envLabel + buildSha + audit chain — ahí está la verdad
-       * de telemetría para los curiosos. Los props quedan en la API por
-       * si se quiere reactivar tras un toggle dev-mode. */}
+      <span className="flex-1" aria-hidden="true" />
 
       {/* Theme toggle */}
       <ThemeToggle />
 
       {/* Refresh */}
       {onRefresh && (
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Actualizar datos"
-          title="Actualizar datos"
-          onClick={() => void onRefresh()}
-        >
+        <IconBtn onClick={() => void onRefresh()} label="Actualizar datos">
           <RefreshCw
-            size={13}
+            size={16}
             strokeWidth={1.75}
             className={cn(isRefreshing && "animate-spin")}
             aria-hidden="true"
           />
-        </Button>
+        </IconBtn>
       )}
 
+      {/* CTA firma — "Preguntar a Delivrix" (única superficie de gradiente del chrome) */}
       {onToggleChat && (
-        <Button
-          variant={chatOpen ? "primary" : "ghost"}
-          size="icon"
-          aria-label={chatOpen ? "Cerrar chat con OpenClaw" : "Abrir chat con OpenClaw"}
-          aria-pressed={chatOpen}
-          title={chatOpen ? "Cerrar chat" : "Abrir chat"}
+        <button
+          type="button"
           onClick={onToggleChat}
+          aria-pressed={chatOpen}
+          aria-label={chatOpen ? "Cerrar chat con OpenClaw" : "Preguntar a Delivrix"}
+          title={chatOpen ? "Cerrar chat" : "Preguntar a Delivrix"}
+          className="shell-cta inline-flex shrink-0 items-center gap-2"
+          style={{
+            background: aivoraGradient,
+            color: "#fff",
+            border: "none",
+            borderRadius: 12,
+            padding: "9px 15px",
+            fontSize: 13.5,
+            fontWeight: 600,
+            cursor: "pointer",
+            boxShadow: "var(--shadow-md)"
+          }}
         >
-          <MessageSquare size={13} strokeWidth={1.75} aria-hidden="true" />
-        </Button>
+          <Sparkles size={15} aria-hidden="true" />
+          <span className="hidden sm:inline">Preguntar a Delivrix</span>
+        </button>
       )}
 
-      {/* User */}
-      <div className="flex items-center gap-2 rounded-full border border-border bg-surface py-0.5 pl-0.5 pr-2.5">
-        <span
-          aria-hidden="true"
-          className="grid size-6 place-items-center rounded-full bg-fg font-heading text-[10px] font-semibold text-bg"
-        >
-          {user.initial}
-        </span>
-        <span className="hidden font-sans text-[11.5px] font-medium text-fg sm:inline">
-          {user.label}
-        </span>
-      </div>
+      {/* Bell — alertas REALES del backend (overview.alerts) */}
+      <NotificationsBell alerts={alerts} />
+
+      {/* Avatar — círculo raised con iniciales, sin inversión (placeholder dev, sin auth) */}
+      <span
+        aria-hidden="true"
+        title={`${user.label} · sesión local (sin autenticación)`}
+        className="grid shrink-0 place-items-center"
+        style={{
+          width: 30,
+          height: 30,
+          borderRadius: "50%",
+          background: "var(--color-surface-raised)",
+          border: "1px solid var(--color-border)",
+          color: "var(--color-text-secondary)",
+          fontSize: 12,
+          fontWeight: 600
+        }}
+      >
+        {user.initial}
+      </span>
     </header>
   );
 }
 
-function DepChip({ label, ok }: { label: string; ok: boolean }) {
+/* Color de token por severidad de alerta (contrato ContractStatus). */
+function alertColor(sev: string): string {
+  const s = sev.toLowerCase();
+  if (/(crit|error|danger|blocked|fail)/.test(s)) return "var(--color-critical)";
+  if (/(warn|review|stale|pending)/.test(s)) return "var(--color-warning)";
+  if (/(ok|success|healthy|ready|active)/.test(s)) return "var(--color-success)";
+  return "var(--color-info)";
+}
+
+/* Campana con alertas REALES (overview.alerts): badge de conteo + dropdown. */
+function NotificationsBell({ alerts }: { alerts: ShellAlert[] }) {
+  const [open, setOpen] = useState(false);
+  const count = alerts.length;
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t || !t.closest("[data-notif-root]")) setOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [open]);
+
   return (
-    <span
-      title={`${label} · ${ok ? "ok" : "down"}`}
-      className="inline-flex items-center gap-1.5 rounded border border-border bg-surface px-2 py-1"
-    >
-      <span
-        aria-hidden="true"
-        className="inline-block size-1.5 rounded-full"
-        style={{ background: ok ? "var(--color-success)" : "var(--color-critical)" }}
-      />
-      <span className="hidden font-mono text-[10.5px] font-medium text-fg-muted sm:inline">{label}</span>
-    </span>
+    <div data-notif-root style={{ position: "relative" }}>
+      <IconBtn
+        onClick={() => setOpen((v) => !v)}
+        label={count > 0 ? `Notificaciones (${count})` : "Notificaciones"}
+        title={count > 0 ? `${count} alerta${count === 1 ? "" : "s"}` : "Sin alertas"}
+        active={open}
+      >
+        <Bell size={17} strokeWidth={1.75} aria-hidden="true" />
+      </IconBtn>
+      {count > 0 && (
+        <span
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            top: -1,
+            right: -1,
+            minWidth: 15,
+            height: 15,
+            padding: "0 3px",
+            borderRadius: 999,
+            background: "var(--color-critical)",
+            color: "#fff",
+            fontSize: 9.5,
+            fontWeight: 700,
+            display: "grid",
+            placeItems: "center",
+            lineHeight: 1,
+            pointerEvents: "none",
+            boxShadow: "0 0 0 2px var(--color-bg)"
+          }}
+        >
+          {count > 9 ? "9+" : count}
+        </span>
+      )}
+      {open && (
+        <div
+          role="dialog"
+          aria-label="Alertas"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 8px)",
+            right: 0,
+            width: 340,
+            maxWidth: "90vw",
+            maxHeight: 420,
+            overflowY: "auto",
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border)",
+            borderRadius: 16,
+            boxShadow: "var(--shadow-lg)",
+            zIndex: 50
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "12px 15px",
+              borderBottom: "1px solid var(--color-border)"
+            }}
+          >
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)" }}>Alertas</span>
+            <span style={{ fontSize: 11.5, color: "var(--color-text-tertiary)" }}>
+              {count} activa{count === 1 ? "" : "s"}
+            </span>
+          </div>
+          {count === 0 ? (
+            <div style={{ padding: "26px 15px", textAlign: "center", fontSize: 12.5, color: "var(--color-text-tertiary)" }}>
+              Sin alertas · todo en orden
+            </div>
+          ) : (
+            alerts.map((a, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  padding: "11px 15px",
+                  borderBottom: i < count - 1 ? "1px solid var(--color-border)" : "none"
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  style={{ width: 7, height: 7, borderRadius: "50%", background: alertColor(a.severity), marginTop: 5, flex: "none" }}
+                />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--color-text-primary)" }}>{a.title}</div>
+                  <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2, lineHeight: 1.4 }}>{a.message}</div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -664,76 +847,16 @@ function ThemeToggle() {
 
   const next = theme === "dark" ? "light" : "dark";
   return (
-    <Button
-      variant="ghost"
-      size="icon"
-      aria-label={`Cambiar a tema ${next}`}
-      title={`Tema actual: ${theme} · click para ${next}`}
+    <IconBtn
       onClick={() => setTheme(next)}
+      label={`Cambiar a tema ${next}`}
+      title={`Tema actual: ${theme} · click para ${next}`}
     >
       {theme === "dark" ? (
-        <Sun size={13} strokeWidth={1.75} aria-hidden="true" />
+        <Sun size={17} strokeWidth={1.8} aria-hidden="true" />
       ) : (
-        <Moon size={13} strokeWidth={1.75} aria-hidden="true" />
+        <Moon size={17} strokeWidth={1.8} aria-hidden="true" />
       )}
-    </Button>
-  );
-}
-
-function EnvChip({ label }: { label: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded border border-border bg-surface px-2 py-1">
-      <Sparkles size={10} className="text-fg-subtle" strokeWidth={1.75} aria-hidden="true" />
-      <span className="hidden font-mono text-[10.5px] font-medium text-fg-muted sm:inline">{label}</span>
-    </span>
-  );
-}
-
-/* ============================================================
- * Footer
- * ============================================================ */
-
-function Footer({
-  killSwitchArmed
-}: {
-  /** envLabel + buildSha quedan en la API por compat; el footer no los
-   * renderiza — eran metadata de dev. Para 'dev mode' futuro, basta
-   * reincorporarlos aquí. */
-  envLabel?: string;
-  buildSha?: string;
-  killSwitchArmed: boolean;
-}) {
-  return (
-    <footer className="flex h-8 shrink-0 items-center gap-4 border-t border-border bg-surface-sunken px-5 text-fg-subtle">
-      {/* Izquierda: marca discreta */}
-      <div className="flex items-center gap-2">
-        <span
-          aria-hidden="true"
-          className="grid size-4 place-items-center rounded-[3px] bg-fg text-bg font-mono text-[8.5px] font-bold leading-none"
-        >
-          D
-        </span>
-        <Caption className="text-[10.5px] font-medium tracking-tight">Delivrix</Caption>
-      </div>
-
-      <span className="flex-1" aria-hidden="true" />
-
-      {/* Derecha: solo el estado funcional clave.
-       *
-       * Antes vivían acá 'Audit chain · Append-only · 1 firma operador'
-       * — jerga técnica que el stakeholder no entiende y que ya se cuenta
-       * mejor en banners, Vista General y la sección de Seguridad. El
-       * footer queda minimal estilo Linear/Stripe/Vercel. */}
-      <span className="inline-flex items-center gap-1.5">
-        <span
-          aria-hidden="true"
-          className="inline-block size-1.5 rounded-full"
-          style={{ background: killSwitchArmed ? "var(--color-success)" : "var(--color-critical)" }}
-        />
-        <Caption className="text-[10.5px] font-medium tracking-tight">
-          {killSwitchArmed ? "Solo lectura" : "Escritura en vivo"}
-        </Caption>
-      </span>
-    </footer>
+    </IconBtn>
   );
 }

@@ -6,15 +6,21 @@
  * tabla de nodos). NO dispara nada — cada arranque/pausa de ramp vive en otras
  * superficies gated. Esta vista solo lee.
  *
- * Replica 1:1 el patrón de Infrastructure.tsx:
- *   - fetch con getJson(READ_ENDPOINTS.warmupStatus) dentro del read boundary.
- *   - useQuery con polling + estados loading/error/ok.
- *   - PageHead + staggerContainer/staggerItem + primitivos v5 (Card, Stat, Pill).
+ * Diseño: molde oficial "Aivora" (shared/ui/aivora) — Card radius 18 + hairline,
+ * KpiCard tile+número tabular, StateBadge dot+icono, SectionHead eyebrow+h1 light.
+ * Color SOLO por tokens var(--color-*). PROHIBIDO v5/components/primitives (B/N):
+ * los textos que el molde no expone (body/mono) se resuelven con helpers locales
+ * token-aware, no con los primitivos B/N. Los 3 gráficos SVG conservan su SERIE
+ * REAL (GET /v1/warmup/trends) y ya se pintan con acento/tokens (cero hex).
+ *
+ * Anti-mock: cada dato sale del backend; no hay conteos ni series inventadas. Los
+ * TOPES de config (PLACEMENT_FLOOR, RAMP_CLAMP) se muestran etiquetados "config"
+ * (declarados, no medidos). isLoading/isError/vacío se distinguen honestamente.
  *
  * Wiring: la vista hace su propia query. No requiere props del shell.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
@@ -23,6 +29,7 @@ import {
   BarChart3,
   Flame,
   LineChart,
+  Layers,
   PauseCircle,
   Plus,
   TrendingUp
@@ -36,20 +43,46 @@ import {
 import { WarmupMailboxLog } from "./WarmupMailboxLog";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import {
-  Badge,
-  BodySm,
   Button,
   Caption,
   Card,
-  Eyebrow,
-  H3,
-  MonoCode,
-  MonoData,
+  Heading,
+  KpiCard,
   Pill,
   SectionHead,
-  Stat
-} from "../components/primitives";
-import { PageHead } from "./_PageHead";
+  StateBadge,
+  stateColor,
+  stateNeedsLeftBorder
+} from "../../shared/ui/aivora";
+
+/* ============================================================
+ * Texto del molde — helpers locales token-aware.
+ *
+ * El molde Aivora expone Heading/Caption/Pill pero NO un body ni un mono (datos/
+ * código/IDs). Estos helpers cubren ese hueco SIN volver a v5/components/primitives
+ * (B/N): color/tipografía salen de tokens (text-fg/-muted/-subtle, font-mono). Así
+ * la vista queda 100% en el sistema de tokens del demo, sin hex ni clases viejas.
+ * ============================================================ */
+
+function cx(...parts: Array<string | false | undefined>): string {
+  return parts.filter(Boolean).join(" ");
+}
+
+function BodyText({ className, children }: { className?: string; children: ReactNode }) {
+  return <p className={cx("m-0 font-sans text-[13px] leading-[1.5] text-fg-muted", className)}>{children}</p>;
+}
+
+function Mono({ className, children }: { className?: string; children: ReactNode }) {
+  return <span className={cx("font-mono text-[11px] leading-[1.5] text-fg-muted", className)}>{children}</span>;
+}
+
+function MonoStrong({ className, children }: { className?: string; children: ReactNode }) {
+  return (
+    <span className={cx("font-mono text-[12px] font-medium leading-[1.4] tabular-nums text-fg", className)}>
+      {children}
+    </span>
+  );
+}
 
 /* ============================================================
  * Contrato del endpoint — mirror local.
@@ -178,18 +211,19 @@ function useWarmupTrends(): TrendsState {
 }
 
 /* ============================================================
- * Estado helpers — tono + copy por estado de nodo.
+ * Estado helpers — mapeo al StateBadge del molde + copy por estado.
+ *
+ * StateBadge (aivora) resuelve icono/color/soft desde su STATE_MAP. Los estados
+ * del warmup-engine llegan en minúscula; los mapeamos a las claves canónicas del
+ * molde para heredar el mismo tratamiento visual (dot + icono + token semántico).
  * ============================================================ */
 
-const STATE_TONE: Record<
-  WarmupNodeState,
-  "success" | "warning" | "critical" | "info" | "neutral"
-> = {
-  fresh: "info",
-  warm: "success",
-  paused: "warning",
-  blocked: "critical",
-  quarantined: "critical"
+const AIV_STATE: Record<WarmupNodeState, string> = {
+  fresh: "FRESH",
+  warm: "WARM",
+  paused: "PAUSED",
+  blocked: "BLOCKED",
+  quarantined: "QUARANTINED"
 };
 
 const STATE_LABEL: Record<WarmupNodeState, string> = {
@@ -209,8 +243,8 @@ const STATE_ORDER: WarmupNodeState[] = [
   "quarantined"
 ];
 
-function stateTone(state: string): "success" | "warning" | "critical" | "info" | "neutral" {
-  return STATE_TONE[state as WarmupNodeState] ?? "neutral";
+function aivStatus(state: string): string {
+  return AIV_STATE[state as WarmupNodeState] ?? state;
 }
 
 function stateLabel(state: string): string {
@@ -280,6 +314,85 @@ function formatRelative(iso: string | null): string {
 }
 
 /* ============================================================
+ * Superficie del molde — constantes + header interno de card.
+ *
+ * El molde Aivora usa una sola geometría de card (radius 18 + hairline, vía el
+ * primitivo Card). El padding va por style; el título interno de cada panel
+ * replica el patrón del demo (15px/500 + subtítulo tertiary), que no existe como
+ * primitivo propio (SectionHead es el header de PÁGINA, 30px light).
+ * ============================================================ */
+
+const PAD_RELAXED = 20;
+const PAD_DEFAULT = 16;
+
+function PanelHead({
+  title,
+  sub,
+  right
+}: {
+  title: ReactNode;
+  sub?: ReactNode;
+  right?: ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 15, fontWeight: 500, color: "var(--color-text-primary)" }}>
+          {title}
+        </div>
+        {sub ? (
+          <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginTop: 2 }}>
+            {sub}
+          </div>
+        ) : null}
+      </div>
+      {right ? <div style={{ flex: "none" }}>{right}</div> : null}
+    </div>
+  );
+}
+
+/** Tile de icono neutro del molde (misma geometría que el KpiCard/banner del demo). */
+function IconTile({ children }: { children: ReactNode }) {
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        width: 38,
+        height: 38,
+        borderRadius: 12,
+        flex: "none",
+        background: "color-mix(in srgb, var(--color-text-primary) 5%, transparent)",
+        border: "1px solid var(--color-border)",
+        display: "grid",
+        placeItems: "center",
+        color: "var(--color-text-secondary)"
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Etiqueta "config" — marca un tope declarado (no un valor medido). Molde: Pill neutro. */
+function ConfigCaption({ children }: { children: ReactNode }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <Caption style={{ fontSize: 11 }}>{children}</Caption>
+      <Pill tone="neutral" style={{ fontSize: 10, padding: "2px 7px" }}>
+        config
+      </Pill>
+    </span>
+  );
+}
+
+/* ============================================================
  * Vista principal.
  * ============================================================ */
 
@@ -300,12 +413,11 @@ export function WarmupV5() {
       className="flex flex-col gap-6"
     >
       <motion.div variants={staggerItem}>
-        <PageHead
-          eyebrow="Warmup engine"
-          meta="Solo lectura"
-          title="Estado del calentamiento de nodos de envío."
-          body="Observabilidad del warmup-engine: nodos activos, envíos encolados, desglose por estado y rampa por mailbox. Solo lectura — esta vista no dispara envíos ni pausas."
-          trailing={
+        <SectionHead
+          eyebrow="Warmup engine · solo lectura"
+          title="Estado del calentamiento de nodos de envío"
+          subtitle="Observabilidad del warmup-engine: nodos activos, envíos encolados, desglose por estado y rampa por mailbox. Esta vista no dispara envíos ni pausas."
+          right={
             <LivePollSide
               lastUpdateAt={state.status === "ok" ? state.lastUpdateAt : null}
               isError={state.status === "error"}
@@ -313,15 +425,6 @@ export function WarmupV5() {
           }
         />
       </motion.div>
-
-      <motion.section variants={staggerItem} className="flex flex-col gap-3">
-        <SectionHead
-          eyebrow="Carga manual"
-          title="Agregar un buzón al warmup"
-          caption="Alta manual mínima contra POST /v1/mailboxes (Warmup API). El calentamiento real por envío lo hace el cliente con sus campañas."
-        />
-        <ManualMailboxForm />
-      </motion.section>
 
       <Body state={state} onSelectMailbox={setSelected} selectedId={selected?.id ?? null} />
 
@@ -335,12 +438,11 @@ export function WarmupV5() {
         </motion.section>
       ) : null}
 
-      <motion.section variants={staggerItem} className="flex flex-col gap-3">
-        <SectionHead
-          eyebrow="Tendencias"
-          title="Observabilidad del ramp"
-          caption="Placement en el tiempo, colocación por proveedor y curva de rampa. Solo lectura — GET /v1/warmup/trends."
-        />
+      <motion.section variants={staggerItem}>
+        <ManualMailboxForm />
+      </motion.section>
+
+      <motion.section variants={staggerItem}>
         <WarmupTrendsPanel />
       </motion.section>
     </motion.div>
@@ -385,10 +487,8 @@ function LivePollSide({
     : "sin datos";
   return (
     <div className="flex flex-col items-end gap-1.5">
-      <Pill tone={isError ? "critical" : "success"} size="sm">
-        {isError ? "fallo" : "en vivo"}
-      </Pill>
-      <Caption className="text-[11px]">
+      <StateBadge status={isError ? "quarantined" : "active"} label={isError ? "fallo" : "en vivo"} />
+      <Caption style={{ fontSize: 11 }}>
         poll {POLL_MS / 1000}s · {relative}
       </Caption>
     </div>
@@ -427,25 +527,11 @@ function Loaded({
         <KpiStrip enabled={enabled} totals={totals} nodeCount={nodes.length} />
       </motion.section>
 
-      <motion.section variants={staggerItem} className="flex flex-col gap-3">
-        <SectionHead
-          eyebrow="Distribución"
-          title="Nodos por estado"
-          caption="Cómo se reparte el pool de nodos entre las etapas del calentamiento."
-          count={Object.values(byState).reduce((a, b) => a + b, 0)}
-          countTone="neutral"
-        />
+      <motion.section variants={staggerItem}>
         <StateBreakdown byState={byState} />
       </motion.section>
 
-      <motion.section variants={staggerItem} className="flex flex-col gap-3">
-        <SectionHead
-          eyebrow="Nodos"
-          title="Nodos en warmup"
-          caption="Mailbox, dominio, etapa, día de rampa, readiness de auth y placement score. Clic en una fila para ver su historial."
-          count={nodes.length}
-          countTone="neutral"
-        />
+      <motion.section variants={staggerItem}>
         {nodes.length > 0 ? (
           <NodesTable nodes={nodes} onSelectMailbox={onSelectMailbox} selectedId={selectedId} />
         ) : (
@@ -506,7 +592,12 @@ function ManualMailboxForm() {
   }
 
   return (
-    <Card padding="relaxed" className="flex flex-col gap-4">
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
+      <PanelHead
+        title="Agregar un buzón al warmup"
+        sub="Alta manual mínima contra POST /v1/mailboxes. El calentamiento real por envío lo hace el cliente con sus campañas."
+        right={<Mono>POST /v1/mailboxes</Mono>}
+      />
       <form onSubmit={onSubmit} className="flex flex-col gap-3">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <ManualField label="Email del buzón" htmlFor="wm-email">
@@ -517,7 +608,7 @@ function ManualMailboxForm() {
               onChange={(ev) => setEmail(ev.target.value)}
               placeholder="warm@delivrix.io"
               autoComplete="off"
-              className="h-8 w-full rounded-md border border-border bg-surface px-2.5 font-mono text-[12.5px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none"
+              className="h-8 w-full rounded-md border border-border bg-surface px-2.5 font-mono text-[16px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none sm:text-[12.5px]"
             />
           </ManualField>
           <ManualField label="Dominio" htmlFor="wm-domain" hint="se infiere del email si se deja vacío">
@@ -528,11 +619,11 @@ function ManualMailboxForm() {
               onChange={(ev) => setDomain(ev.target.value)}
               placeholder={email.split("@")[1] ?? "delivrix.io"}
               autoComplete="off"
-              className="h-8 w-full rounded-md border border-border bg-surface px-2.5 font-mono text-[12.5px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none"
+              className="h-8 w-full rounded-md border border-border bg-surface px-2.5 font-mono text-[16px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none sm:text-[12.5px]"
             />
           </ManualField>
         </div>
-        <Caption className="text-[10.5px] text-fg-subtle">
+        <Caption style={{ fontSize: 10.5 }}>
           La referencia SMTP (vault) la deriva el backend del id del nodo — no se carga a mano ni viaja la
           credencial. El nodo nace <span className="font-mono">blocked</span> hasta tener contrato de auth vigente (§8).
         </Caption>
@@ -541,7 +632,6 @@ function ManualMailboxForm() {
             <Plus size={14} strokeWidth={1.75} />
             {submit.status === "submitting" ? "Agregando…" : "Agregar al warmup"}
           </Button>
-          <MonoCode>POST /v1/mailboxes</MonoCode>
         </div>
       </form>
 
@@ -567,7 +657,7 @@ function ManualField({
         {label}
       </span>
       {children}
-      {hint ? <Caption className="text-[10.5px]">{hint}</Caption> : null}
+      {hint ? <Caption style={{ fontSize: 10.5 }}>{hint}</Caption> : null}
     </label>
   );
 }
@@ -577,28 +667,27 @@ function ManualResult({ submit }: { submit: ManualSubmitState }) {
   if (submit.status === "error") {
     return (
       <div className="flex items-center gap-2 border-t border-border pt-3">
-        <Pill tone="critical" size="sm">
-          error
-        </Pill>
-        <MonoCode className="break-all">{submit.message}</MonoCode>
+        <Pill tone="critical">error</Pill>
+        <Mono className="break-all">{submit.message}</Mono>
       </div>
     );
   }
   const { result } = submit;
   return (
     <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-      <Pill tone="success" size="sm">
-        {result.status === "exists" ? "ya existía" : "agregado"}
-      </Pill>
-      {result.id ? <MonoData className="text-[12px]">{result.id}</MonoData> : null}
-      {result.state ? <Badge>estado {result.state}</Badge> : null}
-      {result.message ? <BodySm className="text-fg-muted">{result.message}</BodySm> : null}
+      <Pill tone="success">{result.status === "exists" ? "ya existía" : "agregado"}</Pill>
+      {result.id ? <MonoStrong className="text-[12px]">{result.id}</MonoStrong> : null}
+      {result.state ? <Pill tone="neutral">estado {result.state}</Pill> : null}
+      {result.message ? <BodyText className="text-fg-muted">{result.message}</BodyText> : null}
     </div>
   );
 }
 
 /* ============================================================
- * KPI Strip — engine ON/OFF + totales.
+ * KPI Strip — engine ON/OFF + totales (grid de KpiCards del molde).
+ *
+ * DATOS REALES: los KPIs no traen serie histórica ni baseline, así que van sin
+ * sparkline ni delta (nada decorativo). El estado del motor va como StateBadge.
  * ============================================================ */
 
 function KpiStrip({
@@ -611,60 +700,42 @@ function KpiStrip({
   nodeCount: number;
 }) {
   return (
-    <Card padding="relaxed">
-      <div className="flex flex-col gap-5">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div
-              aria-hidden="true"
-              className="grid size-9 shrink-0 place-items-center rounded-md"
-              style={{
-                background: enabled ? "var(--color-success-soft)" : "var(--color-surface-sunken)",
-                color: enabled ? "var(--color-success)" : "var(--color-text-tertiary)"
-              }}
-            >
-              <Flame size={16} strokeWidth={1.75} />
-            </div>
-            <div className="flex flex-col gap-0.5">
-              <Eyebrow>Engine</Eyebrow>
-              <span className="font-sans text-[14px] font-semibold leading-none text-fg">
-                {enabled ? "Motor activo" : "Motor inactivo"}
-              </span>
-            </div>
-          </div>
-          <Pill tone={enabled ? "success" : "neutral"} size="lg">
-            {enabled ? "ON" : "OFF"}
-          </Pill>
-        </div>
-        <div className="grid grid-cols-2 gap-6 lg:grid-cols-3">
-          <Stat
-            label="Nodos activos"
-            value={totals.activeNodes}
-            unit={totals.activeNodes === 1 ? "nodo" : "nodos"}
-            tone={totals.activeNodes > 0 ? "success" : "default"}
-            hint={`${nodeCount} en el pool`}
-          />
-          <Stat
-            label="Envíos encolados"
-            value={totals.queuedSends}
-            unit={totals.queuedSends === 1 ? "envío" : "envíos"}
-            tone={totals.queuedSends > 0 ? "warning" : "default"}
-            hint="pendientes de despacho"
-          />
-          <Stat
-            label="Nodos en pool"
-            value={nodeCount}
-            unit={nodeCount === 1 ? "nodo" : "nodos"}
-            hint="incluye pausados y bloqueados"
-          />
-        </div>
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center gap-2.5">
+        <IconTile>
+          <Flame size={18} strokeWidth={1.7} color="var(--color-text-secondary)" />
+        </IconTile>
+        <span className="font-sans text-[14px] font-medium text-fg">
+          {enabled ? "Motor activo" : "Motor inactivo"}
+        </span>
+        <StateBadge
+          status={enabled ? "active" : "paused"}
+          label={enabled ? "engine ON" : "engine OFF"}
+        />
       </div>
-    </Card>
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
+        <KpiCard
+          label="Nodos activos"
+          value={totals.activeNodes}
+          icon={Activity}
+        />
+        <KpiCard
+          label="Envíos encolados"
+          value={totals.queuedSends}
+          icon={LineChart}
+        />
+        <KpiCard
+          label="Nodos en pool"
+          value={nodeCount}
+          icon={Layers}
+        />
+      </div>
+    </div>
   );
 }
 
 /* ============================================================
- * StateBreakdown — chips de color por estado.
+ * StateBreakdown — StateBadge del molde + conteo por estado.
  * ============================================================ */
 
 function StateBreakdown({ byState }: { byState: Record<string, number> }) {
@@ -676,29 +747,45 @@ function StateBreakdown({ byState }: { byState: Record<string, number> }) {
     return [...known, ...extra];
   }, [byState]);
 
-  if (entries.length === 0) {
-    return (
-      <Card padding="default">
-        <Caption>Sin nodos reportados en este snapshot.</Caption>
-      </Card>
-    );
-  }
+  const total = entries.reduce((a, [, count]) => a + count, 0);
 
   return (
-    <div className="flex flex-wrap gap-2">
-      {entries.map(([state, count]) => (
-        <Pill key={state} tone={stateTone(state)} size="lg">
-          {stateLabel(state)}
-          <span className="font-mono font-semibold tabular-nums">{count}</span>
-        </Pill>
-      ))}
-    </div>
+    // ink: stat-card. Agrupada por adyacencia bajo la banda de KpiCards (también ink)
+    // → forman la "banda superior" oscura del marco cohesivo (demo §1). Tablas/forms/
+    // detalle quedan claros en el centro. Sus internos (StateBadge/count/Caption) salen
+    // de var(--color-*), re-escalados por .ink-card a la rampa oscura sin hex.
+    <Card ink style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
+      <PanelHead
+        title="Nodos por estado"
+        sub="Cómo se reparte el pool de nodos entre las etapas del calentamiento."
+        right={<Caption style={{ fontSize: 12.5 }}>{total} en total</Caption>}
+      />
+      {entries.length === 0 ? (
+        <Caption>Sin nodos reportados en este snapshot.</Caption>
+      ) : (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+          {entries.map(([state, count]) => (
+            <span key={state} className="inline-flex items-center gap-2">
+              <StateBadge status={aivStatus(state)} label={stateLabel(state)} />
+              <span
+                className="font-sans text-[13px] font-semibold tabular-nums"
+                style={{ color: "var(--color-text-primary)" }}
+              >
+                {count}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
 /* ============================================================
- * NodesTable — tabla densa de nodos.
+ * NodesTable — filas grid del molde (StateBadge + left-border por estado).
  * ============================================================ */
+
+const NODE_COLS = "minmax(0,1.6fr) auto auto auto auto";
 
 function NodesTable({
   nodes,
@@ -710,106 +797,86 @@ function NodesTable({
   selectedId: string | null;
 }) {
   return (
-    <Card padding="none" className="overflow-hidden">
+    <Card className="overflow-hidden">
+      <div style={{ padding: `${PAD_RELAXED}px ${PAD_RELAXED}px 14px` }}>
+        <PanelHead
+          title="Nodos en warmup"
+          sub="Mailbox, dominio, etapa, día de rampa, readiness de auth y placement. Clic en una fila para ver su historial."
+          right={<Caption style={{ fontSize: 12.5 }}>{nodes.length} en el pool</Caption>}
+        />
+      </div>
       <div className="overflow-x-auto">
-        <table className="w-full border-collapse text-left">
-          <thead>
-            <tr className="border-b border-border">
-              <Th>Mailbox</Th>
-              <Th>Dominio</Th>
-              <Th>Estado</Th>
-              <Th align="right">Día rampa</Th>
-              <Th>Auth</Th>
-              <Th align="right">Placement</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {nodes.map((node, index) => (
-              <tr
+        <div style={{ minWidth: 640 }}>
+          <div
+            className="grid items-center gap-3 border-b border-border px-5 py-2"
+            style={{
+              gridTemplateColumns: NODE_COLS,
+              fontSize: 11,
+              letterSpacing: ".05em",
+              textTransform: "uppercase",
+              color: "var(--color-text-tertiary)"
+            }}
+          >
+            <span>Mailbox</span>
+            <span style={{ textAlign: "right" }}>Estado</span>
+            <span style={{ textAlign: "right" }}>Día</span>
+            <span style={{ textAlign: "right" }}>Auth</span>
+            <span style={{ textAlign: "right" }}>Placement</span>
+          </div>
+          {nodes.map((node) => {
+            const status = aivStatus(node.state);
+            const lb = stateNeedsLeftBorder(status);
+            const isSel = selectedId === node.id;
+            return (
+              <button
                 key={node.id}
+                type="button"
                 onClick={() => onSelectMailbox({ id: node.id, mailbox: node.mailbox })}
-                aria-selected={selectedId === node.id}
-                className="cursor-pointer hover:bg-surface-sunken aria-selected:bg-surface-sunken"
-                style={{ borderTop: index === 0 ? "none" : "1px solid var(--color-border)" }}
+                aria-selected={isSel}
+                className="grid w-full items-center gap-3 border-b border-border px-5 py-3 text-left transition-colors hover:bg-surface-sunken aria-selected:bg-surface-sunken"
+                style={{
+                  gridTemplateColumns: NODE_COLS,
+                  borderLeft: lb ? `2px solid ${stateColor(status)}` : "2px solid transparent"
+                }}
               >
-                <Td>
-                  <MonoData className="text-[12px] text-fg">{node.mailbox}</MonoData>
-                </Td>
-                <Td>
-                  <span className="font-sans text-[12.5px] text-fg-muted">{node.domain}</span>
-                </Td>
-                <Td>
-                  <Pill tone={stateTone(node.state)} size="sm">
-                    {stateLabel(node.state)}
-                  </Pill>
-                </Td>
-                <Td align="right">
-                  <Badge>día {node.dayIndex}</Badge>
-                </Td>
-                <Td>
+                <span className="min-w-0">
+                  <MonoStrong className="block truncate text-[12.5px] text-fg">{node.mailbox}</MonoStrong>
+                  <span className="block truncate font-sans text-[11.5px] text-fg-subtle">
+                    {node.domain}
+                  </span>
+                </span>
+                <span style={{ justifySelf: "end" }}>
+                  <StateBadge status={status} label={stateLabel(node.state)} />
+                </span>
+                <span style={{ justifySelf: "end" }}>
+                  <Pill tone="neutral">día {node.dayIndex}</Pill>
+                </span>
+                <span style={{ justifySelf: "end" }}>
                   {node.authReady ? (
-                    <Pill tone="success" size="sm">
-                      lista
-                    </Pill>
+                    <Pill tone="success">lista</Pill>
                   ) : (
-                    <Pill tone="warning" size="sm">
-                      pendiente
-                    </Pill>
+                    <Pill tone="warning">pendiente</Pill>
                   )}
-                </Td>
-                <Td align="right">
+                </span>
+                <span style={{ justifySelf: "end" }}>
                   {typeof node.placementScore === "number" ? (
                     <span
-                      className="font-mono text-[12.5px] font-semibold tabular-nums"
+                      className="font-sans text-[13px] font-semibold tabular-nums"
                       style={{ color: placementColor(node.placementScore) }}
                       title={`placement score ${node.placementScore.toFixed(2)}`}
                     >
                       {formatPercent(node.placementScore)}
                     </span>
                   ) : (
-                    <MonoCode className="text-fg-subtle">sin dato</MonoCode>
+                    <Mono className="text-fg-subtle">sin dato</Mono>
                   )}
-                </Td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
     </Card>
-  );
-}
-
-function Th({
-  children,
-  align = "left"
-}: {
-  children: React.ReactNode;
-  align?: "left" | "right";
-}) {
-  return (
-    <th
-      className="px-4 py-2.5 font-mono text-[10px] font-semibold uppercase text-fg-subtle"
-      style={{ letterSpacing: "0.12em", textAlign: align }}
-    >
-      {children}
-    </th>
-  );
-}
-
-function Td({
-  children,
-  align = "left"
-}: {
-  children: React.ReactNode;
-  align?: "left" | "right";
-}) {
-  return (
-    <td
-      className="px-4 py-2.5 align-middle"
-      style={{ textAlign: align }}
-    >
-      {children}
-    </td>
   );
 }
 
@@ -819,24 +886,17 @@ function Td({
 
 function EngineOffBanner() {
   return (
-    <Card
-      padding="default"
-      className="flex items-start gap-4"
-      style={{ borderColor: "var(--color-border-strong)" }}
-    >
-      <div
-        aria-hidden="true"
-        className="grid size-9 shrink-0 place-items-center rounded-md bg-surface-sunken text-fg-muted"
-      >
-        <PauseCircle size={16} strokeWidth={1.75} />
-      </div>
+    <Card style={{ padding: PAD_DEFAULT, borderColor: "var(--color-border-strong)" }} className="flex items-start gap-4">
+      <IconTile>
+        <PauseCircle size={16} strokeWidth={1.75} color="var(--color-text-secondary)" />
+      </IconTile>
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <H3>Warmup engine inactivo</H3>
-        <BodySm>
-          El flag <MonoCode>WARMUP_ENGINE_ENABLE</MonoCode> está apagado. El motor
+        <Heading level={2}>Warmup engine inactivo</Heading>
+        <BodyText>
+          El flag <Mono>WARMUP_ENGINE_ENABLE</Mono> está apagado. El motor
           no procesa rampas; los conteos abajo reflejan el último estado
           persistido, sin actividad nueva.
-        </BodySm>
+        </BodyText>
       </div>
     </Card>
   );
@@ -845,21 +905,17 @@ function EngineOffBanner() {
 function NoteBanner({ note }: { note: string }) {
   const copy = noteCopy(note);
   return (
-    <Card
-      padding="default"
-      className="flex items-start gap-4"
-      style={{ borderColor: "var(--color-warning-border)" }}
-    >
+    <Card style={{ padding: PAD_DEFAULT, borderColor: "var(--color-warning-border)" }} className="flex items-start gap-4">
       <div
         aria-hidden="true"
-        className="grid size-9 shrink-0 place-items-center rounded-md bg-warning-soft text-warning"
+        className="grid size-9 shrink-0 place-items-center rounded-xl bg-warning-soft text-warning"
       >
         <AlertCircle size={16} strokeWidth={1.75} />
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <H3>{copy.title}</H3>
-        <BodySm>{copy.body}</BodySm>
-        <MonoCode className="break-all">note: {note}</MonoCode>
+        <Heading level={2}>{copy.title}</Heading>
+        <BodyText>{copy.body}</BodyText>
+        <Mono className="break-all">note: {note}</Mono>
       </div>
     </Card>
   );
@@ -871,11 +927,11 @@ function NoteBanner({ note }: { note: string }) {
 
 function LoadingBlock() {
   return (
-    <Card padding="relaxed" className="flex flex-col gap-3">
-      <Eyebrow>Cargando</Eyebrow>
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
         {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="flex flex-col gap-2">
+          <div key={i} className="flex flex-col gap-3">
+            <div className="h-9 w-9 rounded-xl bg-surface-sunken" aria-hidden="true" />
             <div className="h-3 w-20 rounded bg-surface-sunken" aria-hidden="true" />
             <div className="h-8 w-16 rounded bg-surface-sunken" aria-hidden="true" />
           </div>
@@ -888,20 +944,20 @@ function LoadingBlock() {
 
 function BackendUnavailable({ message }: { message: string }) {
   return (
-    <Card padding="relaxed" className="flex items-start gap-4">
+    <Card style={{ padding: PAD_RELAXED }} className="flex items-start gap-4">
       <div
         aria-hidden="true"
-        className="grid size-9 shrink-0 place-items-center rounded-md bg-warning-soft text-warning"
+        className="grid size-9 shrink-0 place-items-center rounded-xl bg-warning-soft text-warning"
       >
         <AlertCircle size={16} strokeWidth={1.75} />
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <H3>Endpoint /v1/warmup/status no responde</H3>
-        <BodySm>
+        <Heading level={2}>Endpoint /v1/warmup/status no responde</Heading>
+        <BodyText>
           El backend todavía no expuso el estado del warmup engine. Cuando esté
           disponible, esta vista se llena sin redeploy.
-        </BodySm>
-        <MonoCode className="break-all">{message}</MonoCode>
+        </BodyText>
+        <Mono className="break-all">{message}</Mono>
       </div>
     </Card>
   );
@@ -909,19 +965,16 @@ function BackendUnavailable({ message }: { message: string }) {
 
 function NodesEmpty() {
   return (
-    <Card padding="relaxed" className="flex items-start gap-4">
-      <div
-        aria-hidden="true"
-        className="grid size-9 shrink-0 place-items-center rounded-md bg-surface-sunken text-fg-muted"
-      >
-        <Flame size={16} strokeWidth={1.75} />
-      </div>
+    <Card style={{ padding: PAD_RELAXED }} className="flex items-start gap-4">
+      <IconTile>
+        <Flame size={16} strokeWidth={1.75} color="var(--color-text-secondary)" />
+      </IconTile>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <H3>Sin nodos en warmup</H3>
-        <BodySm>
+        <Heading level={2}>Sin nodos en warmup</Heading>
+        <BodyText>
           El engine no reporta nodos en calentamiento en este snapshot. Cuando se
           registre un ramp, sus nodos aparecen acá.
-        </BodySm>
+        </BodyText>
       </div>
     </Card>
   );
@@ -935,7 +988,7 @@ function FooterMeta({ generatedAt }: { generatedAt: string }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
       <div className="flex items-center gap-2">
-        <MonoCode>GET /v1/warmup/status</MonoCode>
+        <Mono>GET /v1/warmup/status</Mono>
         <span
           aria-hidden="true"
           className="inline-block size-[3px] rounded-full bg-border-strong"
@@ -952,18 +1005,20 @@ function FooterMeta({ generatedAt }: { generatedAt: string }) {
  * Sin librerías de charting: los line/area son <svg> con paths a mano y
  * `vector-effect="non-scaling-stroke"` para que el trazo quede fino aunque
  * el viewBox se estire al 100% del ancho; las barras apiladas son <div> con
- * anchos en %. Todo el color sale de var(--color-*) del panel, así que los
- * gráficos siguen el tema dark/light sin hex fijos.
+ * anchos en %. Todo el color sale de var(--color-*), así que los gráficos
+ * siguen el tema dark/light sin hex fijos. El sparkline de placement va en
+ * ACENTO (molde); los segmentos por proveedor conservan su token semántico
+ * porque son categorías (inbox/tabs/spam/missing) con significado propio.
  * ============================================================ */
 
-const PLACEMENT_FLOOR = 0.8; // umbral de inbox placement — mismo que el engine.
-const RAMP_CLAMP = 50; // techo de quota/día (clamp de seguridad del ramp).
+const PLACEMENT_FLOOR = 0.8; // umbral de inbox placement — mismo que el engine (config).
+const RAMP_CLAMP = 50; // techo de quota/día (clamp de seguridad del ramp) (config).
 
 const PROVIDER_SEGMENTS = [
   { key: "inbox", label: "inbox", color: "var(--color-success)" },
   { key: "tabs", label: "tabs", color: "var(--color-warning)" },
   { key: "spam", label: "spam", color: "var(--color-critical)" },
-  { key: "missing", label: "missing", color: "var(--color-fg-subtle)" }
+  { key: "missing", label: "missing", color: "var(--color-text-tertiary)" }
 ] as const;
 
 // Geometría compartida de los <svg> de línea/área.
@@ -1013,10 +1068,10 @@ function TrendsLoaded({ payload }: { payload: WarmupTrends }) {
     placementSeries.length === 0 && perProvider.length === 0 && ramp.length === 0;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       {note || isEmpty ? <TrendsNoteBanner note={note} /> : null}
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <PlacementTrendCard series={placementSeries} signals={signals} />
         <RampCurveCard ramp={ramp} />
       </div>
@@ -1025,7 +1080,7 @@ function TrendsLoaded({ payload }: { payload: WarmupTrends }) {
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
         <div className="flex items-center gap-2">
-          <MonoCode>GET /v1/warmup/trends</MonoCode>
+          <Mono>GET /v1/warmup/trends</Mono>
           <span
             aria-hidden="true"
             className="inline-block size-[3px] rounded-full bg-border-strong"
@@ -1038,7 +1093,7 @@ function TrendsLoaded({ payload }: { payload: WarmupTrends }) {
 }
 
 /* ------------------------------------------------------------
- * 1) Tendencia de inbox placement — sparkline area + línea.
+ * 1) Tendencia de inbox placement — sparkline área + línea (ACENTO).
  * ------------------------------------------------------------ */
 
 function PlacementTrendCard({
@@ -1063,31 +1118,38 @@ function PlacementTrendCard({
   const last = points.length > 0 ? points[points.length - 1].v : null;
   const first = points.length > 0 ? points[0].v : null;
   const delta = last !== null && first !== null ? last - first : null;
-  const lineColor = last !== null ? placementColor(last) : "var(--color-fg-subtle)";
   const refY = scaleY(PLACEMENT_FLOOR);
 
   return (
-    <Card padding="relaxed" className="flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <TrendingUp size={14} strokeWidth={1.75} className="text-fg-subtle" />
-          <Eyebrow>Inbox placement</Eyebrow>
-        </div>
-        <Caption className="text-[11px]">meta ≥ {formatPercent(PLACEMENT_FLOOR)}</Caption>
-      </div>
+    // Tendencia = contenido de trabajo CLARO en el centro (demo: "Línea de rampa" es
+    // clara; SPEC_UXUI §1.3 lista charts/timelines como CENTRO CLARO). Solo la banda de
+    // KpiCards queda ink. Sus internos salen de var(--color-*) y re-valúan al tema claro.
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
+      <PanelHead
+        title={
+          <span className="inline-flex items-center gap-2">
+            <TrendingUp size={15} strokeWidth={1.75} className="text-fg-subtle" />
+            Inbox placement
+          </span>
+        }
+        right={<ConfigCaption>meta ≥ {formatPercent(PLACEMENT_FLOOR)}</ConfigCaption>}
+      />
 
       {last !== null ? (
         <div className="flex items-baseline gap-2.5">
           <span
-            className="font-mono text-[30px] font-semibold leading-none tabular-nums"
-            style={{ color: lineColor }}
+            className="font-sans text-[32px] font-semibold leading-none tabular-nums"
+            style={{ color: placementColor(last) }}
           >
             {formatPercent(last)}
           </span>
           {delta !== null ? (
-            <Pill tone={delta >= 0 ? "success" : "critical"} size="sm">
+            <span
+              className="text-[12.5px] font-semibold"
+              style={{ color: delta >= 0 ? "var(--color-success)" : "var(--color-critical)" }}
+            >
               {formatDeltaPp(delta)}
-            </Pill>
+            </span>
           ) : null}
         </div>
       ) : (
@@ -1115,12 +1177,12 @@ function PlacementTrendCard({
             strokeDasharray="4 4"
             vectorEffect="non-scaling-stroke"
           />
-          <path d={areaPath(points)} fill={lineColor} fillOpacity={0.12} stroke="none" />
+          <path d={areaPath(points)} fill="var(--color-accent)" fillOpacity={0.14} stroke="none" />
           <path
             d={linePath(points)}
             fill="none"
-            stroke={lineColor}
-            strokeWidth={1.75}
+            stroke="var(--color-accent)"
+            strokeWidth={2}
             strokeLinejoin="round"
             strokeLinecap="round"
             vectorEffect="non-scaling-stroke"
@@ -1130,7 +1192,7 @@ function PlacementTrendCard({
             cx={points[points.length - 1].x}
             cy={points[points.length - 1].y}
             r={3}
-            fill={lineColor}
+            fill="var(--color-accent)"
             stroke="var(--color-surface)"
             strokeWidth={1.5}
             vectorEffect="non-scaling-stroke"
@@ -1139,13 +1201,13 @@ function PlacementTrendCard({
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-        <Caption className="text-[11px]">señales de daño</Caption>
-        <Pill tone={signals.bounces > 0 ? "critical" : "neutral"} size="sm">
-          bounces <span className="font-mono font-semibold tabular-nums">{signals.bounces}</span>
+        <Caption style={{ fontSize: 11 }}>señales de daño</Caption>
+        <Pill tone={signals.bounces > 0 ? "critical" : "neutral"}>
+          bounces <span className="font-sans font-semibold tabular-nums">{signals.bounces}</span>
         </Pill>
-        <Pill tone={signals.complaints > 0 ? "critical" : "neutral"} size="sm">
+        <Pill tone={signals.complaints > 0 ? "critical" : "neutral"}>
           complaints{" "}
-          <span className="font-mono font-semibold tabular-nums">{signals.complaints}</span>
+          <span className="font-sans font-semibold tabular-nums">{signals.complaints}</span>
         </Pill>
       </div>
     </Card>
@@ -1153,30 +1215,34 @@ function PlacementTrendCard({
 }
 
 /* ------------------------------------------------------------
- * 2) Colocación por proveedor — barras apiladas.
+ * 2) Colocación por proveedor — barras apiladas (categorías semánticas).
  * ------------------------------------------------------------ */
 
 function ProviderPlacementCard({ rows }: { rows: WarmupProviderRow[] }) {
   return (
-    <Card padding="relaxed" className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <BarChart3 size={14} strokeWidth={1.75} className="text-fg-subtle" />
-          <Eyebrow>Colocación por proveedor</Eyebrow>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          {PROVIDER_SEGMENTS.map((seg) => (
-            <span key={seg.key} className="flex items-center gap-1.5">
-              <span
-                aria-hidden="true"
-                className="inline-block size-2 rounded-[2px]"
-                style={{ background: seg.color }}
-              />
-              <Caption className="text-[11px]">{seg.label}</Caption>
-            </span>
-          ))}
-        </div>
-      </div>
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
+      <PanelHead
+        title={
+          <span className="inline-flex items-center gap-2">
+            <BarChart3 size={15} strokeWidth={1.75} className="text-fg-subtle" />
+            Colocación por proveedor
+          </span>
+        }
+        right={
+          <div className="flex flex-wrap items-center gap-3">
+            {PROVIDER_SEGMENTS.map((seg) => (
+              <span key={seg.key} className="flex items-center gap-1.5">
+                <span
+                  aria-hidden="true"
+                  className="inline-block size-2 rounded-[2px]"
+                  style={{ background: seg.color }}
+                />
+                <Caption style={{ fontSize: 11 }}>{seg.label}</Caption>
+              </span>
+            ))}
+          </div>
+        }
+      />
 
       {rows.length === 0 ? (
         <Caption>Sin desglose por proveedor en este snapshot.</Caption>
@@ -1206,7 +1272,7 @@ function ProviderBar({ row }: { row: WarmupProviderRow }) {
       <div className="flex items-center justify-between gap-3">
         <span className="font-sans text-[12.5px] font-medium text-fg">{row.provider}</span>
         <span
-          className="font-mono text-[12.5px] font-semibold tabular-nums"
+          className="font-sans text-[12.5px] font-semibold tabular-nums"
           style={{ color: placementColor(inboxRate) }}
           title={`inbox rate ${inboxRate.toFixed(2)}`}
         >
@@ -1236,7 +1302,7 @@ function ProviderBar({ row }: { row: WarmupProviderRow }) {
 }
 
 /* ------------------------------------------------------------
- * 3) Curva de rampa — line chart quota vs dayIndex.
+ * 3) Curva de rampa — line chart quota vs dayIndex (ACENTO).
  * ------------------------------------------------------------ */
 
 function RampCurveCard({ ramp }: { ramp: WarmupRampPoint[] }) {
@@ -1257,21 +1323,23 @@ function RampCurveCard({ ramp }: { ramp: WarmupRampPoint[] }) {
   const lastQuota = ramp.length > 0 ? geo?.points[geo.points.length - 1].quota ?? null : null;
 
   return (
-    <Card padding="relaxed" className="flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <LineChart size={14} strokeWidth={1.75} className="text-fg-subtle" />
-          <Eyebrow>Curva de rampa</Eyebrow>
-        </div>
-        <Caption className="text-[11px]">clamp {RAMP_CLAMP}/día</Caption>
-      </div>
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
+      <PanelHead
+        title={
+          <span className="inline-flex items-center gap-2">
+            <LineChart size={15} strokeWidth={1.75} className="text-fg-subtle" />
+            Curva de rampa
+          </span>
+        }
+        right={<ConfigCaption>clamp {RAMP_CLAMP}/día</ConfigCaption>}
+      />
 
       {lastQuota !== null ? (
         <div className="flex items-baseline gap-1.5">
-          <span className="font-mono text-[30px] font-semibold leading-none tabular-nums text-fg">
+          <span className="font-sans text-[32px] font-semibold leading-none tabular-nums text-fg">
             {lastQuota}
           </span>
-          <span className="font-mono text-[12px] leading-none text-fg-subtle">envíos/día</span>
+          <span className="font-sans text-[12px] leading-none text-fg-subtle">envíos/día</span>
         </div>
       ) : (
         <Caption>Sin curva de rampa en este snapshot.</Caption>
@@ -1301,14 +1369,14 @@ function RampCurveCard({ ramp }: { ramp: WarmupRampPoint[] }) {
           <path
             d={areaPath(geo.points)}
             fill="var(--color-accent)"
-            fillOpacity={0.1}
+            fillOpacity={0.14}
             stroke="none"
           />
           <path
             d={linePath(geo.points)}
             fill="none"
             stroke="var(--color-accent)"
-            strokeWidth={1.75}
+            strokeWidth={2}
             strokeLinejoin="round"
             strokeLinecap="round"
             vectorEffect="non-scaling-stroke"
@@ -1329,7 +1397,7 @@ function RampCurveCard({ ramp }: { ramp: WarmupRampPoint[] }) {
       ) : null}
 
       {geo ? (
-        <Caption className="text-[11px]">
+        <Caption style={{ fontSize: 11 }}>
           día {geo.points[0].day} → día {geo.points[geo.points.length - 1].day} ·{" "}
           {geo.points.length} {geo.points.length === 1 ? "punto" : "puntos"}
         </Caption>
@@ -1344,14 +1412,18 @@ function RampCurveCard({ ramp }: { ramp: WarmupRampPoint[] }) {
 
 function TrendsLoading() {
   return (
-    <Card padding="relaxed" className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
-        <Activity size={14} strokeWidth={1.75} className="text-fg-subtle" />
-        <Eyebrow>Cargando tendencias</Eyebrow>
-      </div>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-3">
+      <PanelHead
+        title={
+          <span className="inline-flex items-center gap-2">
+            <Activity size={15} strokeWidth={1.75} className="text-fg-subtle" />
+            Cargando tendencias
+          </span>
+        }
+      />
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         {Array.from({ length: 2 }).map((_, i) => (
-          <div key={i} className="h-[140px] w-full rounded bg-surface-sunken" aria-hidden="true" />
+          <div key={i} className="h-[140px] w-full rounded-xl bg-surface-sunken" aria-hidden="true" />
         ))}
       </div>
       <span className="sr-only">Cargando tendencias del warmup engine…</span>
@@ -1361,20 +1433,20 @@ function TrendsLoading() {
 
 function TrendsUnavailable({ message }: { message: string }) {
   return (
-    <Card padding="relaxed" className="flex items-start gap-4">
+    <Card style={{ padding: PAD_RELAXED }} className="flex items-start gap-4">
       <div
         aria-hidden="true"
-        className="grid size-9 shrink-0 place-items-center rounded-md bg-warning-soft text-warning"
+        className="grid size-9 shrink-0 place-items-center rounded-xl bg-warning-soft text-warning"
       >
         <AlertCircle size={16} strokeWidth={1.75} />
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <H3>Endpoint /v1/warmup/trends no responde</H3>
-        <BodySm>
+        <Heading level={2}>Endpoint /v1/warmup/trends no responde</Heading>
+        <BodyText>
           El backend todavía no expuso las tendencias del warmup engine. Cuando
           esté disponible, los gráficos se llenan sin redeploy.
-        </BodySm>
-        <MonoCode className="break-all">{message}</MonoCode>
+        </BodyText>
+        <Mono className="break-all">{message}</Mono>
       </div>
     </Card>
   );
@@ -1388,21 +1460,14 @@ function TrendsNoteBanner({ note }: { note?: string }) {
         body: "El engine aún no acumuló suficientes envíos para construir las series de placement, la colocación por proveedor ni la curva de rampa. Los gráficos se llenan solos a medida que llegan resultados."
       };
   return (
-    <Card
-      padding="default"
-      className="flex items-start gap-4"
-      style={{ borderColor: "var(--color-border-strong)" }}
-    >
-      <div
-        aria-hidden="true"
-        className="grid size-9 shrink-0 place-items-center rounded-md bg-surface-sunken text-fg-muted"
-      >
-        <Activity size={16} strokeWidth={1.75} />
-      </div>
+    <Card style={{ padding: PAD_DEFAULT, borderColor: "var(--color-border-strong)" }} className="flex items-start gap-4">
+      <IconTile>
+        <Activity size={16} strokeWidth={1.75} color="var(--color-text-secondary)" />
+      </IconTile>
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <H3>{copy.title}</H3>
-        <BodySm>{copy.body}</BodySm>
-        {note ? <MonoCode className="break-all">note: {note}</MonoCode> : null}
+        <Heading level={2}>{copy.title}</Heading>
+        <BodyText>{copy.body}</BodyText>
+        {note ? <Mono className="break-all">note: {note}</Mono> : null}
       </div>
     </Card>
   );

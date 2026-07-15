@@ -1,927 +1,810 @@
 /**
- * Overview Dashboard — port LITERAL desde Pencil frame `e1ashz`.
+ * Overview Dashboard — molde oficial "Aivora" con DATOS REALES.
  *
- * Cada texto, color, padding e icono viene del .pen (leído con
- * mcp__pencil-desktop__batch_get + resolveVariables). Los valores numéricos
- * (148, 42, 94,2, 3) se reemplazan con datos reales del backend cuando aplica;
- * los textos descriptivos del diseño se mantienen literales.
+ * Reescritura de referencia sobre los primitivos de src/shared/ui/aivora
+ * (Card, SectionHead, KpiCard, StateBadge, PlacementGauge, AvatarGroup,
+ * AdvisorCard). La vista replica el demo aprobado (TravigueOverviewProto)
+ * pero cada número, badge, track y gauge sale de `data: DashboardData`.
+ *
+ * Nada mock: donde no hay serie/medición real se muestra un estado vacío
+ * honesto ("—" / "sin medición aún") en vez de barritas decorativas.
  */
-
 import {
   ArrowRight,
-  Check,
   Flame,
-  Minus,
-  ShieldAlert,
-  TrendingDown,
-  TrendingUp,
-  TriangleAlert,
-  X
+  HardDrive,
+  ListX,
+  Server,
+  ShieldCheck,
+  Sparkles,
+  Sprout,
+  Target,
+  type LucideIcon
 } from "lucide-react";
-import type { DashboardData } from "../../shared/api/client.ts";
-import { formatDateTime, formatNumber, humanize } from "../../shared/lib/formatters.ts";
+import type {
+  DashboardData,
+  IpReputationReport,
+  OpenClawCanvasLane,
+  OpenClawCanvasPromptAction,
+  SenderNodeContract
+} from "../../shared/api/client.ts";
+import { formatNumber } from "../../shared/lib/formatters.ts";
 import {
-  ApprovalRow as ApprovalRowV2,
-  type ApprovalSeverity,
-  BannerOpenClawV2,
-  LiveIndicator
-} from "../../shared/ui/v2/index.ts";
-import { Tooltip } from "../../shared/ui/tooltip.tsx";
-import { Badge, Button, Card, EmptyState, Eyebrow, SectionHead } from "../../v5/components/primitives.tsx";
-import { PageHead } from "../../v5/views/_PageHead.tsx";
+  AdvisorCard,
+  AvatarGroup,
+  Card,
+  KpiCard,
+  PlacementGauge,
+  SectionHead,
+  StateBadge,
+  aivoraGradient,
+  stateColor,
+  stateNeedsLeftBorder
+} from "../../shared/ui/aivora/index.tsx";
 
-export function OverviewSection({ data, onNavigate }: { data: DashboardData; onNavigate?: (section: string) => void }) {
+/* ============================================================
+ * Helpers de datos reales (sin mock)
+ * ============================================================ */
+
+/** Reputación agregada = (sent + delivered) / total de envíos. null si no hay envíos. */
+function computeReputation(data: DashboardData): number | null {
+  const byStatus =
+    data.operationalSummary.sendResultsByStatus ??
+    data.overview.summary.sendResultsByStatus ??
+    {};
+  const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
+  if (total === 0) return null;
+  const ok = (byStatus.sent ?? 0) + (byStatus.delivered ?? 0);
+  return Math.round((ok / total) * 1000) / 10;
+}
+
+/** Placement promedio (score) sobre los reportes de reputación. null si no hay reportes. */
+function averagePlacement(reports: IpReputationReport[]): number | null {
+  if (reports.length === 0) return null;
+  const sum = reports.reduce((a, r) => a + (r.score ?? 0), 0);
+  return Math.round(sum / reports.length);
+}
+
+/** Último reporte por senderNodeId (gana el generatedAt más reciente). */
+function latestReportsByNode(reports: IpReputationReport[]): Map<string, IpReputationReport> {
+  const map = new Map<string, IpReputationReport>();
+  for (const r of reports) {
+    const prev = map.get(r.senderNodeId);
+    if (!prev || new Date(r.generatedAt).getTime() > new Date(prev.generatedAt).getTime()) {
+      map.set(r.senderNodeId, r);
+    }
+  }
+  return map;
+}
+
+/** Iniciales de un label para el AvatarGroup (2 chars). */
+function initials(value: string): string {
+  const words = value.replace(/[^a-zA-Z0-9]+/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "··";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
+}
+
+const placementColor = (v: number | null): string =>
+  v === null
+    ? "var(--color-text-tertiary)"
+    : v >= 75
+      ? "var(--color-success)"
+      : v >= 45
+        ? "var(--color-warning)"
+        : "var(--color-critical)";
+
+/**
+ * Etiqueta honesta para una acción del prompt en esta superficie de SOLO LECTURA.
+ *
+ * El overview no aplica / aprueba / descarta / pospone nada: su único efecto es
+ * navegar al canvas, donde la acción real (`kind`) se ejecuta con su gate de
+ * aprobación. Por eso NO reutilizamos `action.label` ("Aplicar"/"Descartar"/
+ * "Aprobar"), que prometería una mutación que aquí no ocurre. La etiqueta refleja
+ * el `kind` del contrato y deja claro que se resuelve "en canvas", en línea con el
+ * badge "Solo lectura".
+ */
+function readonlyActionLabel(action: OpenClawCanvasPromptAction): string {
+  switch (action.kind) {
+    case "open_runbook":
+      return "Ver runbook en canvas";
+    case "view_evidence":
+      return "Ver evidencia en canvas";
+    case "ack":
+      return "Revisar y aprobar en canvas";
+    case "snooze":
+      return "Posponer en canvas";
+    default:
+      return "Ver en canvas";
+  }
+}
+
+/* ============================================================
+ * Overview
+ * ============================================================ */
+export function OverviewSection({
+  data,
+  onNavigate
+}: {
+  data: DashboardData;
+  /** Requerido: App.tsx siempre lo provee. La navegación al canvas es el único
+   *  efecto que esta vista de solo lectura puede disparar. */
+  onNavigate: (section: string) => void;
+}) {
   return (
-    <section className="flex flex-col gap-5" style={{ width: "100%" }}>
-      <HeaderRow data={data} />
-      <SectionHead
-        title="Métricas operativas"
-        caption="dataSource: panel agregados · actualizado cada 5s"
-        countTone="success"
-      />
+    <section style={{ display: "flex", flexDirection: "column", gap: 24, width: "100%" }}>
+      <Welcome data={data} />
       <KpiRow data={data} />
-      <SectionHead
-        title="Flujo operativo"
-        caption="onboarding → planificación → provisionamiento → calentamiento → reputación"
-        countTone="success"
-      />
-      <Pipeline data={data} onNavigate={onNavigate} />
-      <BottomRow data={data} />
+      <RampTimeline data={data} onNavigate={onNavigate} />
+      <div className="grid grid-cols-1 lg:grid-cols-[1.55fr_1fr] items-start" style={{ gap: 20 }}>
+        <BandejasTable data={data} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          <PlacementByProvider data={data} />
+          <Advisor data={data} onNavigate={onNavigate} />
+        </div>
+      </div>
     </section>
   );
 }
 
-/* ============================================================
- * Header row — Welcome + LiveIndicator + Banner OpenClaw v2
- * ============================================================ */
-function HeaderRow({ data }: { data: DashboardData }) {
-  const lastUpdate = new Date(data.overview.generatedAt).getTime();
-  const approvals = data.canvas.requiresHumanApproval ?? [];
+/* ── Welcome — eyebrow + h1 light + subtítulo con conteos reales ── */
+function Welcome({ data }: { data: DashboardData }) {
+  const total = data.senderNodes.length;
   const sender =
     data.operationalSummary.senderNodesByStatus ??
     data.overview.summary.senderNodesByStatus ??
     {};
   const warming = sender.warming ?? 0;
-  const hasWork = approvals.length > 0 || warming > 0;
-  return (
-    <div className="flex flex-col" style={{ gap: 16 }}>
-      <Welcome generatedAt={data.overview.generatedAt} lastUpdateMs={lastUpdate} />
-      <BannerOpenClawV2
-        title={hasWork ? "OpenClaw tiene acciones para revisar" : "OpenClaw en observación"}
-        body={
-          hasWork
-            ? `${approvals.length} ${approvals.length === 1 ? "acción espera" : "acciones esperan"} aprobación humana${warming > 0 ? ` · ${warming} ${warming === 1 ? "IP" : "IPs"} en calentamiento` : ""}. Cada acción real pasa por un gate humano.`
-            : "Sin acciones pendientes. OpenClaw observa la infraestructura en modo solo lectura y avisa cuando haya algo que aprobar."
-        }
-        primaryCta="Revisar plan"
-        secondaryCta="Abrir chat"
-      />
-    </div>
-  );
-}
+  const placement = averagePlacement(data.ipReputationReports);
 
-function Welcome({ generatedAt, lastUpdateMs }: { generatedAt: string; lastUpdateMs: number }) {
+  const byStatus =
+    data.operationalSummary.sendResultsByStatus ??
+    data.overview.summary.sendResultsByStatus ??
+    {};
+  const totalSends = Object.values(byStatus).reduce((a, b) => a + b, 0);
+  const hasSends = totalSends > 0;
+
+  const parts = [
+    `${total} ${total === 1 ? "nodo de envío" : "nodos de envío"}`,
+    warming > 0 ? `${warming} en calentamiento` : "sin calentamiento activo",
+    placement !== null ? `placement promedio ${placement}%` : "sin medición de placement aún"
+  ];
+
   return (
-    <PageHead
-      eyebrow="Inicio operativo"
-      meta={`Actualizado ${formatDateTime(generatedAt)}`}
-      title="Capacidad preparada, sin envíos reales."
-      body="Delivrix gobierna infraestructura de correo autorizada en modo solo lectura. OpenClaw observa, valida y propone — los humanos aprueban cada acción real."
-      trailing={<LiveIndicator pollIntervalSec={5} lastUpdateAt={lastUpdateMs} tone="success" />}
+    <SectionHead
+      eyebrow="Panel operativo"
+      title={
+        hasSends ? (
+          <>
+            Capacidad activa,{" "}
+            <span style={{ fontWeight: 500 }}>
+              {formatNumber(totalSends)} {totalSends === 1 ? "envío registrado" : "envíos registrados"}
+            </span>
+            .
+          </>
+        ) : (
+          <>
+            Capacidad preparada, <span style={{ fontWeight: 500 }}>sin envíos reales</span>.
+          </>
+        )
+      }
+      subtitle={parts.join(" · ")}
+      // Copy estático intencional: el contrato DashboardData no expone un flag de
+      // capacidades/permisos, y toda la vista es de solo lectura (ninguna acción
+      // muta estado desde aquí). Coherente con el Advisor, cuyos botones solo
+      // navegan al canvas en lugar de prometer "Aplicar/Descartar".
+      right={
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "5px 11px",
+            borderRadius: 999,
+            background: "var(--color-success-soft)",
+            color: "var(--color-success)",
+            fontSize: 12,
+            fontWeight: 600
+          }}
+        >
+          <span
+            style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--color-success)" }}
+            aria-hidden="true"
+          />
+          Solo lectura
+        </span>
+      }
     />
   );
 }
 
-/* ============================================================
- * KPI row — 4 cards literales Pencil
- * ============================================================ */
+/* ── KPI row — 4 KpiCards con datos reales (sin delta/spark: no hay serie histórica) ── */
 function KpiRow({ data }: { data: DashboardData }) {
-  // Preferir /v1/operational-summary cuando exista (ya agrega audit, jobs y
-  // sendResults). Caer a data.overview cuando el endpoint nuevo está vacío.
-  const opSummary = data.operationalSummary;
-  const sender = opSummary.senderNodesByStatus ?? data.overview.summary.senderNodesByStatus ?? {};
-  const senderTotal = data.senderNodes.length || Object.values(sender).reduce((a, b) => a + b, 0);
-  const ipsWarming = sender.warming ?? 0;
-  const sendResultsByStatus =
-    opSummary.sendResultsByStatus ?? data.overview.summary.sendResultsByStatus ?? {};
-  const totalSends = Object.values(sendResultsByStatus).reduce((a, b) => a + b, 0);
-  const acceptedOk = sendResultsByStatus.sent ?? sendResultsByStatus.delivered ?? 0;
-  const reputation = totalSends === 0 ? null : Math.round((acceptedOk / totalSends) * 1000) / 10;
-  const gatesOpen = data.operatingNorth.gates?.length ?? 0;
-
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4" style={{ gap: 14 }}>
-      <KpiSenderNodes total={senderTotal} />
-      <KpiWarming value={ipsWarming} />
-      <KpiReputation value={reputation} />
-      <KpiGates value={gatesOpen} gates={data.operatingNorth.gates ?? []} />
-    </div>
-  );
-}
-
-/**
- * KpiShell — contenedor de KPI card.
- *
- * `tooltipHint` opcional: si se provee, la card entera se vuelve trigger del
- * Tooltip al hover. Convención: pasar un fragmento con structure
- * source / endpoint / lastFetch / calculation.
- */
-function KpiShell({
-  children,
-  tooltipHint
-}: {
-  children: React.ReactNode;
-  tooltipHint?: React.ReactNode;
-}) {
-  const card = (
-    <Card
-      className="flex flex-col gap-3"
-      style={{ cursor: tooltipHint ? "help" : "default" }}
-    >
-      {children}
-    </Card>
-  );
-  if (!tooltipHint) return card;
-  return (
-    <Tooltip hint={tooltipHint} side="bottom" delayMs={400}>
-      {card}
-    </Tooltip>
-  );
-}
-
-function KpiHead({ label, pillBg, pillFg, pillText }: { label: string; pillBg: string; pillFg: string; pillText: string }) {
-  return (
-    <div className="flex items-center" style={{ gap: 8 }}>
-      <Eyebrow>{label}</Eyebrow>
-      <span className="flex-1" aria-hidden="true" />
-      <span
-        className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold"
-        style={{ padding: "2px 6px", borderRadius: 4, background: pillBg, color: pillFg }}
-      >
-        {pillText}
-      </span>
-    </div>
-  );
-}
-
-function KpiValue({ value, unit }: { value: string; unit?: string }) {
-  return (
-    <div className="flex items-end" style={{ gap: 8 }}>
-      <span
-        className="text-[30px] font-[family-name:var(--font-mono)] font-semibold leading-none text-[var(--color-text-primary)] tabular-nums"
-        style={{ letterSpacing: "0" }}
-      >
-        {value}
-      </span>
-      {unit ? (
-        <span className="text-[12px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)] leading-none">
-          {unit}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function KpiDetail({
-  icon,
-  text,
-  color,
-  endpoint
-}: {
-  icon: React.ReactNode;
-  text: string;
-  color: string;
-  endpoint: string;
-}) {
-  return (
-    <div className="flex items-center" style={{ gap: 6 }}>
-      <span style={{ color }} aria-hidden="true">
-        {icon}
-      </span>
-      <span className="text-[11px] font-[family-name:var(--font-mono)] font-semibold" style={{ color }}>
-        {text}
-      </span>
-      <span className="flex-1" aria-hidden="true" />
-      <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]">{endpoint}</span>
-    </div>
-  );
-}
-
-/**
- * KpiTooltipHint — contenido estructurado del tooltip de una KPI card.
- * Muestra fuente (endpoint), última actualización y método de cálculo.
- */
-function KpiTooltipHint({
-  endpoint,
-  source,
-  calculation,
-  lastFetch
-}: {
-  endpoint: string;
-  source: string;
-  calculation: string;
-  lastFetch?: string;
-}) {
-  return (
-    <div className="flex flex-col" style={{ gap: 6, maxWidth: 280 }}>
-      <span
-        className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase"
-        style={{ letterSpacing: "var(--tracking-widest)", color: "var(--color-text-tertiary)" }}
-      >
-        Fuente
-      </span>
-      <code className="text-[11px] font-[family-name:var(--font-mono)] text-[var(--color-text-primary)]">
-        {endpoint}
-      </code>
-      <p className="m-0 text-[11px] font-[family-name:var(--font-sans)] leading-snug text-[var(--color-text-secondary)]">
-        {source}
-      </p>
-      <span
-        className="text-[10px] font-[family-name:var(--font-caption)] font-medium uppercase"
-        style={{ letterSpacing: "var(--tracking-wider)", color: "var(--color-text-tertiary)", marginTop: 2 }}
-      >
-        Cálculo
-      </span>
-      <p className="m-0 text-[11px] font-[family-name:var(--font-sans)] leading-snug text-[var(--color-text-secondary)]">
-        {calculation}
-      </p>
-      {lastFetch ? (
-        <span className="text-[10px] font-[family-name:var(--font-mono)] text-[var(--color-text-tertiary)]" style={{ marginTop: 2 }}>
-          últ. fetch · {lastFetch}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-/* K1 — Nodos de envío (literal Pencil) */
-function KpiSenderNodes({ total }: { total: number }) {
-  const bars = [
-    { h: 18, op: 0.35, color: "var(--color-accent-secondary)" },
-    { h: 24, op: 0.45, color: "var(--color-accent-secondary)" },
-    { h: 20, op: 0.4, color: "var(--color-accent-secondary)" },
-    { h: 28, op: 0.55, color: "var(--color-accent)" },
-    { h: 30, op: 0.7, color: "var(--color-accent)" },
-    { h: 24, op: 0.6, color: "var(--color-accent)" },
-    { h: 32, op: 0.8, color: "var(--color-accent-tertiary)" },
-    { h: 36, op: 1.0, color: "var(--color-accent-tertiary)" }
-  ];
-  return (
-    <KpiShell
-      tooltipHint={
-        <KpiTooltipHint
-          endpoint="GET /v1/sender-nodes"
-          source="Lista activa de IPs/dominios autorizados para envío."
-          calculation="total = length(data.senderNodes)"
-        />
-      }
-    >
-      <KpiHead
-        label="Nodos de envío"
-        pillBg={total > 0 ? "var(--color-success-soft)" : "var(--color-neutral-soft)"}
-        pillFg={total > 0 ? "var(--color-success)" : "var(--color-text-tertiary)"}
-        pillText={total > 0 ? "activos" : "sin nodos"}
-      />
-      <KpiValue value={formatNumber(total)} />
-      <KpiDetail
-        icon={<TrendingUp size={12} strokeWidth={1.75} />}
-        text={total === 0 ? "ningún nodo registrado" : `${total} ${total === 1 ? "nodo registrado" : "nodos registrados"}`}
-        color={total > 0 ? "var(--color-success)" : "var(--color-text-tertiary)"}
-        endpoint="/v1/sender-nodes"
-      />
-      <div className="flex items-end w-full" style={{ gap: 3, height: 36 }}>
-        {bars.map((b, i) => (
-          <span
-            key={i}
-            className="flex-1"
-            style={{ height: b.h, background: b.color, opacity: b.op, borderRadius: 2 }}
-            aria-hidden="true"
-          />
-        ))}
-      </div>
-    </KpiShell>
-  );
-}
-
-/* K2 — IPs en calentamiento (literal Pencil) */
-function KpiWarming({ value }: { value: number }) {
-  return (
-    <KpiShell
-      tooltipHint={
-        <KpiTooltipHint
-          endpoint="GET /v1/sender-nodes ?status=warming"
-          source="IPs en fase de calentamiento (warming) controlado para reputación."
-          calculation="value = senderNodesByStatus.warming ?? 0"
-        />
-      }
-    >
-      <KpiHead
-        label="IPs en calentamiento"
-        pillBg={value > 0 ? "var(--color-info-soft)" : "var(--color-neutral-soft)"}
-        pillFg={value > 0 ? "var(--color-info)" : "var(--color-text-tertiary)"}
-        pillText={value > 0 ? "en curso" : "ninguna"}
-      />
-      <KpiValue value={formatNumber(value)} />
-      <KpiDetail
-        icon={<Flame size={12} strokeWidth={1.75} />}
-        text={value === 0 ? "sin ciclos de warming activos" : `${value} ${value === 1 ? "IP" : "IPs"} en warming`}
-        color={value > 0 ? "var(--color-accent-tertiary)" : "var(--color-text-tertiary)"}
-        endpoint="/v1/sender-nodes"
-      />
-      <div
-        className="relative w-full overflow-hidden"
-        style={{ height: 6, borderRadius: 3, background: "var(--color-surface-sunken)" }}
-        aria-hidden="true"
-      >
-        <div className="flex h-full" style={{ gap: 4 }}>
-          {[0, 1, 2].map((i) => (
-            <span
-              key={i}
-              style={{
-                width: 48,
-                height: "100%",
-                borderRadius: 3,
-                background: "var(--color-accent)"
-              }}
-            />
-          ))}
-        </div>
-      </div>
-    </KpiShell>
-  );
-}
-
-/* K3 — Índice de reputación */
-function KpiReputation({ value }: { value: number | null }) {
-  const display = value === null ? "—" : value.toFixed(1).replace(".", ",");
-  const pct = value === null ? 0 : Math.max(0, Math.min(100, value));
-  // Clasificación semántica del nivel actual de reputación.
-  const tone =
-    value === null
-      ? { label: "sin datos", bg: "var(--color-neutral-soft)", fg: "var(--color-text-tertiary)", barFg: "var(--color-border-strong)" }
-      : value >= 95
-        ? { label: "excelente", bg: "var(--color-success-soft)", fg: "var(--color-success)", barFg: "var(--color-success)" }
-        : value >= 85
-          ? { label: "estable", bg: "var(--color-info-soft)", fg: "var(--color-info)", barFg: "var(--color-info)" }
-          : value >= 70
-            ? { label: "vigilancia", bg: "var(--color-warning-soft)", fg: "var(--color-warning)", barFg: "var(--color-warning)" }
-            : { label: "crítico", bg: "var(--color-critical-soft)", fg: "var(--color-critical)", barFg: "var(--color-critical)" };
-  return (
-    <KpiShell
-      tooltipHint={
-        <KpiTooltipHint
-          endpoint="GET /v1/send-results · /v1/ip-reputation/reports"
-          source="Ratio agregado de envíos aceptados sobre total de envíos."
-          calculation="reputation = (accepted ÷ totalSends) × 100, redondeo 1 decimal"
-        />
-      }
-    >
-      <KpiHead label="Índice de reputación" pillBg={tone.bg} pillFg={tone.fg} pillText={tone.label} />
-      <KpiValue value={display} unit="/ 100" />
-      <KpiDetail
-        icon={<TrendingDown size={12} strokeWidth={1.75} />}
-        text={value === null ? "Esperando primeras métricas" : `${pct.toFixed(1)} de 100 puntos`}
-        color={tone.fg}
-        endpoint="/v1/send-results"
-      />
-      <div
-        className="relative w-full overflow-hidden"
-        style={{ height: 6, borderRadius: 3, background: "var(--color-surface-sunken)" }}
-        aria-hidden="true"
-      >
-        <span
-          className="block"
-          style={{ width: `${pct}%`, height: 8, borderRadius: 3, background: tone.barFg }}
-        />
-      </div>
-    </KpiShell>
-  );
-}
-
-/* K4 — Gates abiertos */
-function KpiGates({ value, gates }: { value: number; gates: string[] }) {
-  return (
-    <KpiShell
-      tooltipHint={
-        <KpiTooltipHint
-          endpoint="GET /v1/operating-north"
-          source="Gates de aprobación humana pendientes antes de tocar producción."
-          calculation="value = length(operatingNorth.gates ?? [])"
-        />
-      }
-    >
-      <KpiHead
-        label="Gates abiertos"
-        pillBg={value === 0 ? "var(--color-success-soft)" : "var(--color-critical-soft)"}
-        pillFg={value === 0 ? "var(--color-success)" : "var(--color-critical)"}
-        pillText={value === 0 ? "todo verde" : "esperan aprobación"}
-      />
-      <KpiValue value={formatNumber(value)} />
-      <KpiDetail
-        icon={<ShieldAlert size={12} strokeWidth={1.75} />}
-        text={value === 0 ? "sin gates pendientes" : `${value} ${value === 1 ? "gate pendiente" : "gates pendientes"}`}
-        color={value === 0 ? "var(--color-success)" : "var(--color-critical)"}
-        endpoint="/v1/operating-north"
-      />
-      <div className="flex flex-wrap" style={{ gap: 6 }}>
-        {gates.slice(0, 3).map((g) => (
-          <span
-            key={g}
-            className="inline-block text-[10px] font-[family-name:var(--font-mono)]"
-            style={{ padding: "3px 8px", borderRadius: 4, background: "var(--color-critical-soft)", color: "var(--color-critical)" }}
-          >
-            {g.replace(/_/g, " ")}
-          </span>
-        ))}
-      </div>
-    </KpiShell>
-  );
-}
-
-/* ============================================================
- * Pipeline — 5 stages literales Pencil + chevron entre cada uno
- * ============================================================ */
-function Pipeline({ data, onNavigate }: { data: DashboardData; onNavigate?: (section: string) => void }) {
+  const total = data.senderNodes.length;
   const sender =
     data.operationalSummary.senderNodesByStatus ??
     data.overview.summary.senderNodesByStatus ??
     {};
   const warming = sender.warming ?? 0;
+  const dlq = data.stuckJobs.count;
+  const reputation = computeReputation(data);
+
   return (
-    <Card padding="relaxed">
-      {/* pipeHead — sin h2 (el SectionDivider del Overview ya lo introduce). Solo CTA. */}
-      <header className="flex items-center" style={{ gap: 12, marginBottom: 16 }}>
-        <p className="m-0 text-[12px] font-[family-name:var(--font-sans)] text-[var(--color-text-secondary)]">
-          Cada transición tiene un gate humano · ningún provisionamiento toca producción sin aprobación.
-        </p>
-        <span
-          className="inline-block text-[10px] font-[family-name:var(--font-caption)] font-bold uppercase"
-          style={{ padding: "2px 6px", borderRadius: 4, background: "var(--color-neutral-soft)", color: "var(--color-text-tertiary)", letterSpacing: "var(--tracking-wide)" }}
-          title="Flujo de referencia — el estado por etapa aún no viene de un contrato en vivo"
-        >
-          Flujo de referencia
-        </span>
-        <span className="flex-1" aria-hidden="true" />
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => onNavigate?.("canvas")}
-          disabled={!onNavigate}
-        >
-          Abrir canvas
-          <ArrowRight size={13} strokeWidth={1.75} aria-hidden="true" />
-        </Button>
-      </header>
-
-      {/* Stages row */}
-      <div className="relative">
-        <div
-          aria-label="Pipeline operativo"
-          className="flex snap-x snap-mandatory items-stretch gap-3 overflow-x-auto pb-2 md:gap-0 md:overflow-visible md:pb-0"
-        >
-          <StageCard
-            title="Onboarding"
-            body="Servidor, IPs y dominios capturados"
-            footer="captura manual · /v1/onboarding"
-            variant="success"
-          />
-          <StageConnector />
-          <StageCard
-            title="Planificación"
-            body="Plan de topología generado dry-run"
-            footer="contrato · /v1/clusters/plan"
-            variant="success"
-          />
-          <StageConnector />
-          <StageCard
-            title="Provisionamiento"
-            body="Dry-run · Postfix, DKIM, TLS, DNS, plan de calentamiento"
-            footer="dry-run · sin escritura real"
-            variant="in_progress"
-          />
-          <StageConnector />
-          <StageCard
-            title="Calentamiento"
-            body={
-              warming > 0
-                ? `${warming} ${warming === 1 ? "IP" : "IPs"} en calentamiento · espera aprobación`
-                : "Sin IPs en calentamiento activo"
-            }
-            footer="requiere aprobación humana"
-            variant="warning"
-          />
-          <StageConnector />
-          <StageCard
-            title="Reputación"
-            body="Observadores listos · tráfico simulado"
-            footer="sin envíos reales en el MVP"
-            variant="neutral"
-          />
-        </div>
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-y-0 right-0 w-8 md:hidden"
-          style={{ background: "linear-gradient(90deg, transparent 0%, var(--color-surface) 100%)" }}
-        />
-      </div>
-    </Card>
-  );
-}
-
-type StageVariant = "success" | "in_progress" | "warning" | "neutral";
-
-function StageCard({
-  title,
-  body,
-  footer,
-  variant
-}: {
-  title: string;
-  body: string;
-  footer: string | null;
-  variant: StageVariant;
-}) {
-  const style = stageStyle(variant);
-  return (
-    <div
-      className="flex min-w-[280px] flex-[0_0_280px] snap-start flex-col md:min-w-0 md:flex-1"
-      style={{
-        gap: 10,
-        padding: 14,
-        borderRadius: 8,
-        background: style.bg,
-        border: `1px solid ${style.border}`
-      }}
-    >
-      <span className="text-[12px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-        {title}
-      </span>
-      <p className="m-0 text-[11px] font-[family-name:var(--font-sans)] leading-[1.4] text-[var(--color-text-primary)]">
-        {body}
-      </p>
-      {footer ? (
-        <span className="text-[10px] font-[family-name:var(--font-mono)] font-medium" style={{ color: style.footerFg }}>
-          {footer}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-function StageConnector() {
-  return (
-    <div
-      aria-hidden="true"
-      className="hidden md:flex items-center justify-center self-stretch"
-      style={{ width: 12 }}
-    >
-      <span
-        style={{
-          width: 8,
-          height: 1,
-          background: "var(--color-border-strong)"
-        }}
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4" style={{ gap: 20 }}>
+      <KpiCard label="Nodos de envío" value={formatNumber(total)} icon={Server} />
+      <KpiCard label="Calentando" value={formatNumber(warming)} icon={Flame} />
+      <KpiCard label="Errores DLQ" value={formatNumber(dlq)} icon={ListX} />
+      <KpiCard
+        label="Índice de reputación"
+        value={reputation === null ? "—" : reputation.toFixed(1).replace(".", ",")}
+        suffix={reputation === null ? undefined : "%"}
+        icon={Target}
       />
     </div>
   );
-}
-
-function stageStyle(variant: StageVariant) {
-  if (variant === "success")
-    return { bg: "var(--color-success-soft)", border: "var(--color-success)", footerFg: "var(--color-text-secondary)" };
-  if (variant === "in_progress")
-    return {
-      bg: "var(--color-warning-soft)",
-      border: "var(--color-warning)",
-      footerFg: "var(--color-warning)"
-    };
-  if (variant === "warning")
-    return { bg: "var(--color-warning-soft)", border: "var(--color-warning)", footerFg: "var(--color-warning)" };
-  return { bg: "var(--color-neutral-soft)", border: "var(--color-border)", footerFg: "var(--color-text-tertiary)" };
 }
 
 /* ============================================================
- * Bottom row — Aprobaciones + Side pane (Gates + System health)
+ * Línea de rampa — canvas.nodes agrupados por lane
  * ============================================================ */
-function BottomRow({ data }: { data: DashboardData }) {
-  return (
-    <div className="grid gap-4 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_380px] items-start">
-      <ApprovalsCard data={data} />
-      <SidePane data={data} />
-    </div>
-  );
-}
+type LaneDef = { id: OpenClawCanvasLane; label: string; sub: string; Icon: LucideIcon };
 
-function ApprovalsCard({ data }: { data: DashboardData }) {
-  const approvalIds = data.canvas.requiresHumanApproval ?? [];
-  const count = approvalIds.length;
-  // Mapping de IDs → severidad + descripción del v2. ApprovalRow v2 standardiza
-  // el icono (AlertOctagon) y el chrome — sólo necesitamos severity + cuerpo.
-  type Variant = { key: string; severity: ApprovalSeverity; severityLabel: string; desc: string };
-  const VARIANTS: Variant[] = [
-    {
-      key: "warming",
-      severity: "medium",
-      severityLabel: "warming",
-      desc: "OpenClaw propone avanzar el ciclo de calentamiento. Vigilancia de reputación activa."
-    },
-    {
-      key: "dns",
-      severity: "critical",
-      severityLabel: "dns drift",
-      desc: "Drift SPF/DKIM/DMARC detectado · plan dry-run listo, no se realizó escritura real."
-    },
-    {
-      key: "ssh",
-      severity: "high",
-      severityLabel: "ssh gate",
-      desc: "Alcance del permiso desconocido hasta firma explícita de operador. SSH desactivado por defecto."
-    },
-    {
-      key: "generic",
-      severity: "low",
-      severityLabel: "humano",
-      desc: "Acción que requiere autorización humana antes de avanzar."
-    }
-  ];
-  const pickVariant = (id: string): Variant => {
-    const lower = id.toLowerCase();
-    return VARIANTS.find((v) => v.key !== "generic" && lower.includes(v.key)) ?? VARIANTS[3];
-  };
-  return (
-    <section className="flex flex-col" style={{ gap: 12 }}>
-      <SectionHead
-        title="Aprobaciones pendientes"
-        count={count}
-        countTone={count === 0 ? "neutral" : "critical"}
-        caption="Cada acción que un humano debe validar antes de tocar producción"
-      />
+const LANES: LaneDef[] = [
+  { id: "onboarding", label: "Onboarding", sub: "Alta + DNS/DKIM", Icon: Sprout },
+  { id: "hardware", label: "Hardware", sub: "Host físico + red", Icon: Server },
+  { id: "provisioning", label: "Provisionamiento", sub: "VPS + Postfix", Icon: HardDrive },
+  { id: "warming", label: "Calentamiento", sub: "Rampa gradual", Icon: Flame },
+  { id: "reputation", label: "Reputación", sub: "Placement estable", Icon: ShieldCheck }
+];
 
-      {count === 0 ? (
-        <Card padding="none">
-          <EmptyState
-            title="Cola de aprobaciones vacía."
-            body="Todas las acciones supervisadas están autorizadas o no requieren intervención humana."
-          />
-        </Card>
+function RampTimeline({
+  data,
+  onNavigate
+}: {
+  data: DashboardData;
+  onNavigate: (section: string) => void;
+}) {
+  const nodes = data.canvas.nodes ?? [];
+  const currentNode = nodes.find((n) => n.id === data.canvas.currentStepId);
+  const activeLane = currentNode?.lane;
+  const activeLaneDef = LANES.find((l) => l.id === activeLane);
+
+  return (
+    <Card style={{ padding: "18px 20px 22px" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+          marginBottom: 16,
+          flexWrap: "wrap"
+        }}
+      >
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 500, color: "var(--color-text-primary)" }}>
+            Línea de rampa
+          </div>
+          <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", marginTop: 2 }}>
+            Onboarding → Reputación · progreso en vivo
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {activeLaneDef ? (
+            <span
+              style={{
+                fontSize: 12,
+                color: "var(--color-warming)",
+                background: "var(--color-warming-soft)",
+                borderRadius: 999,
+                padding: "3px 10px",
+                fontWeight: 500
+              }}
+            >
+              Fase actual: {activeLaneDef.label}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => onNavigate("canvas")}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              background: "transparent",
+              color: "var(--color-text-secondary)",
+              border: "1px solid var(--color-border)",
+              borderRadius: 10,
+              padding: "6px 12px",
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: "pointer"
+            }}
+          >
+            Abrir canvas
+            <ArrowRight size={13} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+
+      {nodes.length === 0 ? (
+        <div
+          style={{
+            fontSize: 13,
+            color: "var(--color-text-tertiary)",
+            padding: "18px 2px"
+          }}
+        >
+          El canvas no reporta nodos todavía. Sin datos de rampa que graficar.
+        </div>
       ) : (
-        <div className="flex flex-col" style={{ gap: 8 }}>
-          {approvalIds.slice(0, 3).map((id) => {
-            const v = pickVariant(id);
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {LANES.map((lane) => {
+            const laneNodes = nodes.filter((n) => n.lane === lane.id);
+            const isActive = lane.id === activeLane;
+            // Subtítulo real del carril: resumen del nodo relevante (el paso actual
+            // si cae en este carril, si no el primero). `lane.sub` solo se usa como
+            // fallback estático cuando el nodo no trae `summary`.
+            const repNode = laneNodes.find((n) => n.id === data.canvas.currentStepId) ?? laneNodes[0];
+            const laneSub =
+              laneNodes.length === 0 ? "sin nodos" : repNode?.summary?.trim() || lane.sub;
+            const progress =
+              laneNodes.length === 0
+                ? 0
+                : Math.round(
+                    laneNodes.reduce((a, n) => a + (n.progressPercent ?? 0), 0) / laneNodes.length
+                  );
+            const done = progress >= 100;
+            const color = isActive
+              ? "var(--color-warming)"
+              : done
+                ? "var(--color-success)"
+                : "var(--color-text-tertiary)";
+            const avatars = laneNodes.slice(0, 3).map((n) => initials(n.label));
+            if (laneNodes.length > 3) avatars.push(`+${laneNodes.length - 3}`);
+
             return (
-              <ApprovalRowV2
-                key={id}
-                title={id.replace(/_/g, " ")}
-                body={v.desc}
-                severity={v.severity}
-                severityLabel={v.severityLabel}
-              />
+              <div
+                key={lane.id}
+                className="grid grid-cols-[104px_1fr] sm:grid-cols-[132px_1fr]"
+                style={{
+                  gap: 16,
+                  alignItems: "center"
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
+                  <div
+                    style={{
+                      width: 26,
+                      height: 26,
+                      borderRadius: 8,
+                      background: "color-mix(in srgb, var(--color-text-primary) 5%, transparent)",
+                      border: "1px solid var(--color-border)",
+                      display: "grid",
+                      placeItems: "center",
+                      flex: "none"
+                    }}
+                  >
+                    <lane.Icon size={14} color={color} strokeWidth={1.8} />
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, color: "var(--color-text-primary)", fontWeight: 500 }}>
+                      {lane.label}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "var(--color-text-tertiary)",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis"
+                      }}
+                      title={laneSub}
+                    >
+                      {laneSub}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ position: "relative", height: 34 }}>
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: "50%",
+                      left: 0,
+                      right: 0,
+                      height: 2,
+                      background: "color-mix(in srgb, var(--color-text-primary) 8%, transparent)",
+                      borderRadius: 2,
+                      transform: "translateY(-50%)"
+                    }}
+                  />
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      left: 0,
+                      width: `${Math.max(progress, laneNodes.length ? 4 : 0)}%`,
+                      height: 8,
+                      borderRadius: 999,
+                      background: done ? color : `color-mix(in srgb, ${color} 45%, transparent)`,
+                      border: isActive ? `1px solid ${color}` : "none",
+                      boxShadow: isActive
+                        ? `0 0 0 3px color-mix(in srgb, ${color} 15%, transparent)`
+                        : "none"
+                    }}
+                  />
+                  {laneNodes.length > 0 ? (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: "50%",
+                        left: 6,
+                        transform: "translateY(-50%)"
+                      }}
+                    >
+                      <AvatarGroup items={avatars} tint={color} />
+                    </div>
+                  ) : null}
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: -2,
+                      right: 0,
+                      fontSize: 11,
+                      color: "var(--color-text-tertiary)",
+                      fontVariantNumeric: "tabular-nums"
+                    }}
+                  >
+                    {laneNodes.length === 0 ? "—" : `${progress}%`}
+                  </div>
+                </div>
+              </div>
             );
           })}
         </div>
       )}
-    </section>
+    </Card>
   );
 }
 
-/* Side pane: Gates + System health dark */
-function SidePane({ data }: { data: DashboardData }) {
+/* ============================================================
+ * Bandejas — senderNodes JOIN ipReputationReports
+ * ============================================================ */
+function BandejasTable({ data }: { data: DashboardData }) {
+  const nodes = data.senderNodes;
+  const reports = latestReportsByNode(data.ipReputationReports);
+
   return (
-    <div className="flex flex-col" style={{ gap: 16 }}>
-      <GatesCard data={data} />
-      <SystemHealthDark data={data} />
+    <Card style={{ overflow: "hidden" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "16px 20px",
+          borderBottom: "1px solid var(--color-border)"
+        }}
+      >
+        <div style={{ fontSize: 15, fontWeight: 500, color: "var(--color-text-primary)" }}>
+          Nodos de envío
+        </div>
+        <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>
+          {nodes.length} {nodes.length === 1 ? "nodo" : "nodos"}
+        </span>
+      </div>
+
+      {nodes.length === 0 ? (
+        <div style={{ padding: "28px 20px", fontSize: 13, color: "var(--color-text-tertiary)" }}>
+          Sin nodos de envío registrados todavía.
+        </div>
+      ) : (
+        <>
+          <div
+            className="grid grid-cols-[1fr_auto_auto] sm:grid-cols-[1fr_auto_auto_auto]"
+            style={{
+              fontSize: 11,
+              color: "var(--color-text-tertiary)",
+              padding: "8px 20px",
+              borderBottom: "1px solid var(--color-border)",
+              gap: 12,
+              textTransform: "uppercase",
+              letterSpacing: ".05em"
+            }}
+          >
+            <span>Bandeja</span>
+            <span>Estado</span>
+            <span style={{ textAlign: "right" }}>Placement</span>
+            <span className="hidden sm:block" style={{ textAlign: "right" }}>
+              Warmup
+            </span>
+          </div>
+          {nodes.map((node) => (
+            <BandejaRow key={node.id} node={node} report={reports.get(node.id)} />
+          ))}
+        </>
+      )}
+    </Card>
+  );
+}
+
+function BandejaRow({
+  node,
+  report
+}: {
+  node: SenderNodeContract;
+  report?: IpReputationReport;
+}) {
+  const placement = report ? Math.round(report.score) : null;
+  const host = node.hostname ?? node.ipAddress ?? node.provider;
+  const leftBorder = stateNeedsLeftBorder(node.status);
+
+  return (
+    <div
+      className="grid grid-cols-[1fr_auto_auto] sm:grid-cols-[1fr_auto_auto_auto]"
+      style={{
+        alignItems: "center",
+        gap: 12,
+        padding: "12px 20px",
+        borderBottom: "1px solid var(--color-border)",
+        borderLeft: leftBorder
+          ? `2px solid ${stateColor(node.status)}`
+          : "2px solid transparent"
+      }}
+    >
+      <div style={{ minWidth: 0 }}>
+        <div
+          style={{
+            fontSize: 13.5,
+            color: "var(--color-text-primary)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap"
+          }}
+        >
+          {node.label}
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--color-text-tertiary)" }}>
+          {node.provider} · {host}
+        </div>
+      </div>
+      <StateBadge status={node.status} />
+      <div
+        style={{
+          textAlign: "right",
+          fontSize: 14,
+          color: placementColor(placement),
+          fontWeight: 600,
+          fontVariantNumeric: "tabular-nums"
+        }}
+        title={placement === null ? "sin medición aún" : undefined}
+      >
+        {placement === null ? "—" : `${placement}%`}
+      </div>
+      <div
+        className="hidden sm:block"
+        style={{
+          textAlign: "right",
+          fontSize: 12,
+          color: "var(--color-text-secondary)",
+          fontVariantNumeric: "tabular-nums"
+        }}
+      >
+        {node.warmupDay > 0 ? `día ${node.warmupDay}` : "—"}
+      </div>
     </div>
   );
 }
 
-/* Gates no negociables — base canónica + gates reales de operatingNorth */
-function GatesCard({ data }: { data: DashboardData }) {
-  const ks = data.killSwitch;
-  const live = data.operatingNorth.liveInfrastructureWritesEnabled;
-  const nfc = data.operatingNorth.nfcProductionWritesEnabled;
-  const base: Array<{ kind: "ok" | "warn" | "bad" | "off"; label: string; note: string }> = [
-    { kind: "ok", label: "Log de auditoría append-only", note: "verificado" },
-    {
-      kind: ks.enabled ? "bad" : "ok",
-      label: "Interruptor probado",
-      note: ks.updatedAt ? new Date(ks.updatedAt).toLocaleDateString("es-CO") : "sin uso"
-    },
-    { kind: "ok", label: "Dry-run antes de escribir", note: "verificado" },
-    { kind: "ok", label: "Panel solo GET", note: "verificado" },
-    {
-      kind: live ? "warn" : "ok",
-      label: "Live infrastructure writes",
-      note: live ? "enabled · revisar" : "disabled"
-    },
-    {
-      kind: nfc ? "warn" : "off",
-      label: "Puente NFC",
-      note: nfc ? "enabled" : "deshabilitado"
-    }
-  ];
-  // gates específicos del operating-north — humanize() convierte
-  // `admin_panel_reads_canvas_and_hardware_from_backend_contracts` en
-  // "admin panel reads canvas and hardware from backend contracts".
-  const opGates = (data.operatingNorth.gates ?? []).map((g) => ({
-    kind: "warn" as const,
-    label: humanize(g),
-    rawLabel: g,
-    note: "revisión pendiente"
-  }));
-  const gates = [...base, ...opGates];
-  const okCount = gates.filter((g) => g.kind === "ok").length;
-  return (
-    <Card className="flex flex-col gap-3" padding="relaxed">
-      {/* gHead — H2 en Geist semibold para mantener jerarquía sin invocar display Funnel.
-          Counter como pill compacto Linear-style. */}
-      <header className="flex items-center" style={{ gap: 8 }}>
-        <h2 className="m-0 text-[13px] font-[family-name:var(--font-sans)] font-semibold text-[var(--color-text-primary)]">
-          Gates no negociables
-        </h2>
-        <span className="flex-1" aria-hidden="true" />
-        <Badge>
-          {okCount}/{gates.length}
-        </Badge>
-      </header>
-
-      {/* gateList */}
-      <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 8 }}>
-        {gates.map((g, i) => {
-          const raw = "rawLabel" in g && typeof g.rawLabel === "string" ? g.rawLabel : g.label;
-          return (
-            <GateRow
-              key={`${i}-${raw}`}
-              kind={g.kind}
-              label={g.label}
-              rawLabel={raw}
-              note={g.note}
-            />
-          );
-        })}
-      </ul>
-    </Card>
-  );
-}
-
-function GateRow({
-  kind,
-  label,
-  rawLabel,
-  note
-}: {
-  kind: "ok" | "warn" | "bad" | "off";
-  label: string;
-  rawLabel: string;
-  note: string;
-}) {
-  const dot =
-    kind === "ok"
-      ? { bg: "var(--color-success)", icon: <Check size={10} strokeWidth={2} aria-hidden="true" /> }
-      : kind === "warn"
-        ? { bg: "var(--color-warning)", icon: <TriangleAlert size={10} strokeWidth={2} aria-hidden="true" /> }
-        : kind === "bad"
-          ? { bg: "var(--color-critical)", icon: <X size={10} strokeWidth={2} aria-hidden="true" /> }
-          : { bg: "var(--color-neutral)", icon: <Minus size={10} strokeWidth={2} aria-hidden="true" /> };
-  const noteColor =
-    kind === "ok" ? "var(--color-success)" : kind === "warn" ? "var(--color-warning)" : kind === "bad" ? "var(--color-critical)" : "var(--color-text-tertiary)";
+/* ============================================================
+ * Placement por proveedor — gauges agregados desde los reportes
+ * ============================================================ */
+function PlacementByProvider({ data }: { data: DashboardData }) {
+  const byProvider = new Map<string, { sum: number; n: number }>();
+  for (const r of data.ipReputationReports) {
+    const acc = byProvider.get(r.provider) ?? { sum: 0, n: 0 };
+    acc.sum += r.score ?? 0;
+    acc.n += 1;
+    byProvider.set(r.provider, acc);
+  }
+  const gauges = [...byProvider.entries()]
+    .map(([provider, { sum, n }]) => ({ provider, value: Math.round(sum / n) }))
+    .slice(0, 3);
 
   return (
-    <li className="flex items-center min-w-0" style={{ gap: 8 }} title={rawLabel}>
-      <span
-        aria-hidden="true"
-        className="grid place-items-center text-[var(--color-text-inverse)]"
-        style={{ width: 16, height: 16, borderRadius: 8, background: dot.bg, flexShrink: 0 }}
+    <Card ink style={{ padding: "16px 20px" }}>
+      <div
+        style={{
+          fontSize: 14,
+          fontWeight: 500,
+          marginBottom: 6,
+          color: "var(--color-text-primary)"
+        }}
       >
-        {dot.icon}
-      </span>
-      <span
-        className="text-[12px] font-[family-name:var(--font-sans)] font-medium text-[var(--color-text-primary)] truncate"
-        style={{ flex: "1 1 auto", minWidth: 0 }}
-      >
-        {label}
-      </span>
-      <span
-        className="text-[10px] font-[family-name:var(--font-mono)]"
-        style={{ color: noteColor, whiteSpace: "nowrap", flexShrink: 0 }}
-      >
-        {note}
-      </span>
-    </li>
-  );
-}
-
-/* System health (dark) — alimentado por data.health.operatingNorth real */
-function SystemHealthDark({ data }: { data: DashboardData }) {
-  const on = data.health.operatingNorth;
-  const sched = data.health.openClaw["scheduler"];
-  const fresh = data.supervisedCollector.freshness.lastCollectedAt;
-  const freshAge = fresh
-    ? (() => {
-        const t = new Date(fresh).getTime();
-        const diff = Math.max(0, Date.now() - t);
-        if (diff < 60_000) return `${Math.round(diff / 1000)}s`;
-        if (diff < 3_600_000) return `${Math.round(diff / 60_000)} min`;
-        return `${Math.round(diff / 3_600_000)} h`;
-      })()
-    : "sin datos";
-  const jobsTotal = data.operationalSummary.totals.jobs;
-  const stuckCount = data.stuckJobs.count;
-  const rows = [
-    {
-      label: "Gateway",
-      value: data.health.status === "ok" ? "OK" : data.health.status,
-      valueColor: data.health.status === "ok" ? "var(--color-success)" : "var(--color-critical)"
-    },
-    {
-      label: "Cola del worker",
-      value: `${jobsTotal} jobs · ${stuckCount} atascados`,
-      valueColor: stuckCount === 0 ? "var(--color-success)" : "var(--color-accent-secondary)"
-    },
-    {
-      label: "Phase",
-      value: data.health.phase,
-      valueColor: "var(--color-accent-secondary)"
-    },
-    {
-      label: "Frescura recolector",
-      value: freshAge,
-      valueColor: data.supervisedCollector.freshness.staleSources > 0 ? "var(--color-accent-secondary)" : "var(--color-success)"
-    },
-    {
-      label: "Scheduler OpenClaw",
-      value: sched ? String(sched) : "no reportado",
-      valueColor: "var(--color-accent-secondary)"
-    },
-    {
-      label: "Infra writes",
-      value: on.liveInfrastructureWritesEnabled ? "enabled · revisar" : "disabled",
-      valueColor: on.liveInfrastructureWritesEnabled ? "var(--color-critical)" : "var(--color-success)"
-    },
-    {
-      label: "SMTP real",
-      value: on.delivrixSendsRealEmail ? "enabled" : "simulación",
-      valueColor: on.delivrixSendsRealEmail ? "var(--color-critical)" : "var(--color-success)"
-    },
-    {
-      label: "Puente NFC",
-      value: on.nfcProductionWritesEnabled ? "enabled" : "deshabilitado",
-      valueColor: on.nfcProductionWritesEnabled ? "var(--color-critical)" : "var(--color-text-tertiary)"
-    }
-  ];
-  return (
-    <Card tone="inverse" padding="relaxed" className="flex flex-col gap-3.5">
-      {/* shHead — eyebrow estilo Linear: izquierda neutra, derecha estado live */}
-      <header className="flex items-center" style={{ gap: 8 }}>
-        <span
-          className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase"
-          style={{ letterSpacing: "var(--tracking-widest)", color: "var(--color-on-dark-soft)" }}
-        >
-          Sistema
-        </span>
-        <span className="flex-1" aria-hidden="true" />
-        <span
-          className="inline-flex items-center"
+        Placement por proveedor
+      </div>
+      {gauges.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: "var(--color-text-tertiary)", padding: "16px 0" }}>
+          Sin medición de placement aún.
+        </div>
+      ) : (
+        <div
           style={{
-            gap: 6,
-            padding: "3px 8px",
-            borderRadius: 999,
-            background: "var(--color-on-dark-success-overlay)"
+            display: "grid",
+            // Responsive: en desktop entran los N gauges en una fila; en angosto
+            // envuelven a 2 (o 1) columnas sin desbordar, gracias a auto-fit.
+            gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, 110px), 1fr))`,
+            gap: 6
           }}
         >
-          <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: 999, background: "var(--color-success)" }} />
-          <span
-            className="text-[10px] font-[family-name:var(--font-caption)] font-semibold uppercase"
-            style={{ letterSpacing: "var(--tracking-wider)", color: "var(--color-success)" }}
-          >
-            Operativo
-          </span>
-        </span>
-      </header>
-
-      <h2
-        className="m-0 text-[15px] font-[family-name:var(--font-sans)] font-semibold leading-tight"
-        style={{ letterSpacing: "var(--tracking-tight)", color: "var(--color-on-dark-strong)" }}
-      >
-        Todos los gateways responden.
-      </h2>
-
-      {/* shGrid */}
-      <ul className="m-0 p-0 list-none flex flex-col" style={{ gap: 8 }}>
-        {rows.map((r) => (
-          <li key={r.label} className="flex items-center" style={{ gap: 8 }}>
-            <span
-              className="text-[12px] font-[family-name:var(--font-sans)]"
-              style={{ color: "var(--color-on-dark-medium)" }}
-            >
-              {r.label}
-            </span>
-            <span className="flex-1" aria-hidden="true" />
-            <span className="text-[11px] font-[family-name:var(--font-mono)] tabular-nums" style={{ color: r.valueColor }}>
-              {r.value}
-            </span>
-          </li>
-        ))}
-      </ul>
+          {gauges.map((g) => (
+            <PlacementGauge key={g.provider} value={g.value} label={g.provider} />
+          ))}
+        </div>
+      )}
     </Card>
+  );
+}
+
+/* ============================================================
+ * Advisor OpenClaw — canvas.prompt o readinessSignals.recommendations
+ * ============================================================ */
+function Advisor({
+  data,
+  onNavigate
+}: {
+  data: DashboardData;
+  onNavigate: (section: string) => void;
+}) {
+  const prompt = data.canvas.prompt;
+  const recommendation = data.readinessSignals.recommendations[0];
+
+  let body: string;
+  let primaryLabel: string;
+  let secondaryLabel: string | null;
+  // Título (tooltip) que preserva la acción real del contrato para que el operador
+  // sepa qué se ejecutará al llegar al canvas, sin que el botón la prometa aquí.
+  let primaryTitle: string | undefined;
+  let secondaryTitle: string | undefined;
+  if (prompt) {
+    body = prompt.body || prompt.headline;
+    // Honramos `kind`, no el label crudo ("Aplicar"/"Descartar"): esta superficie
+    // es solo lectura y únicamente navega al canvas donde la acción se resuelve.
+    primaryLabel = readonlyActionLabel(prompt.primaryAction);
+    secondaryLabel = readonlyActionLabel(prompt.secondaryAction);
+    primaryTitle = `Acción "${prompt.primaryAction.label}" — se ejecuta en el canvas`;
+    secondaryTitle = `Acción "${prompt.secondaryAction.label}" — se ejecuta en el canvas`;
+  } else if (recommendation) {
+    body = recommendation.label;
+    primaryLabel = "Ver en canvas";
+    secondaryLabel = null;
+  } else {
+    body =
+      "OpenClaw observa la infraestructura en modo solo lectura. Sin recomendaciones pendientes.";
+    primaryLabel = "Ver en canvas";
+    secondaryLabel = null;
+  }
+
+  const chips: string[] = [];
+  if (prompt?.severity) chips.push(`severidad ${prompt.severity}`);
+  if (prompt && typeof prompt.currentApprovals === "number" && typeof prompt.requiredApprovals === "number") {
+    chips.push(`aprobaciones ${prompt.currentApprovals}/${prompt.requiredApprovals}`);
+  }
+
+  return (
+    <AdvisorCard>
+      <div style={{ padding: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <div
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 9,
+              background: aivoraGradient,
+              display: "grid",
+              placeItems: "center"
+            }}
+          >
+            <Sparkles size={16} color="var(--color-accent-fg)" />
+          </div>
+          <div style={{ fontSize: 14.5, fontWeight: 500, color: "var(--color-text-primary)" }}>
+            Advisor · OpenClaw
+          </div>
+        </div>
+
+        <div
+          style={{
+            marginTop: 14,
+            borderLeft: "2px solid transparent",
+            borderImage: `${aivoraGradient} 1`,
+            paddingLeft: 12
+          }}
+        >
+          {prompt?.headline ? (
+            <div
+              style={{
+                fontSize: 13.5,
+                color: "var(--color-text-primary)",
+                fontWeight: 600,
+                marginBottom: 4
+              }}
+            >
+              {prompt.headline}
+            </div>
+          ) : null}
+          <div
+            style={{
+              fontSize: 13.5,
+              color: "var(--color-text-secondary)",
+              lineHeight: 1.5,
+              fontWeight: 300
+            }}
+          >
+            {body}
+          </div>
+          {chips.length > 0 ? (
+            <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+              {chips.map((c) => (
+                <span
+                  key={c}
+                  style={{
+                    fontSize: 11.5,
+                    color: "var(--color-accent)",
+                    background: "var(--color-accent-soft)",
+                    borderRadius: 999,
+                    padding: "3px 9px"
+                  }}
+                >
+                  {c}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <button
+            type="button"
+            onClick={() => onNavigate("canvas")}
+            title={primaryTitle}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              background: aivoraGradient,
+              color: "var(--color-accent-fg)",
+              border: "none",
+              borderRadius: 10,
+              padding: "8px 16px",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer"
+            }}
+          >
+            {primaryLabel}
+            <ArrowRight size={14} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+          {secondaryLabel ? (
+            <button
+              type="button"
+              onClick={() => onNavigate("canvas")}
+              title={secondaryTitle}
+              style={{
+                background: "transparent",
+                color: "var(--color-text-secondary)",
+                border: "1px solid var(--color-border)",
+                borderRadius: 10,
+                padding: "8px 16px",
+                fontSize: 13,
+                cursor: "pointer"
+              }}
+            >
+              {secondaryLabel}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </AdvisorCard>
   );
 }

@@ -7,9 +7,14 @@
  *
  * Solo lectura. Tolera estado vacío (buzón sin historial) y error del backend con gracia — cuando el
  * endpoint del carril B esté vivo, se llena sin redeploy.
+ *
+ * Diseño: molde oficial "Aivora" (shared/ui/aivora) — Card radius 18 + hairline, Pill por tono
+ * semántico, Eyebrow/Heading/Caption del molde. Color SOLO por tokens var(--color-*). PROHIBIDO
+ * v5/components/primitives (B/N): el body/mono que el molde no expone se resuelve con helpers
+ * locales token-aware. Todo dato sale del backend (cero mock); loading/error/vacío son honestos.
  */
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, Inbox, Mailbox, Radio, Send, Shuffle, X } from "lucide-react";
 import {
@@ -18,18 +23,37 @@ import {
   type WarmupMailboxEvent,
   type WarmupMailboxEventsResult
 } from "../../shared/api/warmup-mailboxes-client";
-import {
-  BodySm,
-  Caption,
-  Card,
-  Eyebrow,
-  H3,
-  MonoCode,
-  MonoData,
-  Pill
-} from "../components/primitives";
+import { Caption, Card, Eyebrow, Heading, Pill } from "../../shared/ui/aivora";
 
 const POLL_MS = 30_000;
+
+/* ============================================================
+ * Texto del molde — helpers locales token-aware.
+ *
+ * El molde Aivora no expone un body ni un mono (datos/código/IDs). Estos helpers
+ * cubren ese hueco SIN volver a v5/components/primitives (B/N): color/tipografía
+ * salen de tokens (text-fg/-muted/-subtle, font-mono, text-critical).
+ * ============================================================ */
+
+function cx(...parts: Array<string | false | undefined>): string {
+  return parts.filter(Boolean).join(" ");
+}
+
+function BodyText({ className, children }: { className?: string; children: ReactNode }) {
+  return <p className={cx("m-0 font-sans text-[13px] leading-[1.5] text-fg-muted", className)}>{children}</p>;
+}
+
+function Mono({ className, children }: { className?: string; children: ReactNode }) {
+  return <span className={cx("font-mono text-[11px] leading-[1.5] text-fg-muted", className)}>{children}</span>;
+}
+
+function MonoStrong({ className, children }: { className?: string; children: ReactNode }) {
+  return (
+    <span className={cx("font-mono text-[12px] font-medium leading-[1.4] tabular-nums text-fg", className)}>
+      {children}
+    </span>
+  );
+}
 
 /* ============================================================
  * Helpers puros — tono + copy por evento (testeable sin render).
@@ -164,11 +188,11 @@ export function WarmupMailboxLog({
   const state = useMailboxEvents(mailboxId);
 
   return (
-    <Card padding="relaxed" className="flex flex-col gap-4">
+    <Card style={{ padding: 20 }} className="flex flex-col gap-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
           <Eyebrow>Historial del buzón</Eyebrow>
-          <MonoData className="text-[13px] text-fg">{mailbox ?? mailboxId}</MonoData>
+          <MonoStrong className="text-[13px] text-fg">{mailbox ?? mailboxId}</MonoStrong>
         </div>
         {onClose ? (
           <button
@@ -185,7 +209,7 @@ export function WarmupMailboxLog({
       <LogBody state={state} />
 
       <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-        <MonoCode>GET /v1/mailboxes/{mailboxId}/events</MonoCode>
+        <Mono>GET /v1/mailboxes/{mailboxId}/events</Mono>
       </div>
     </Card>
   );
@@ -212,8 +236,8 @@ function LogBody({ state }: { state: LogState }) {
           <AlertTriangle size={15} strokeWidth={1.75} />
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <BodySm>El endpoint de historial por buzón todavía no responde. Cuando el carril B lo exponga, esta línea de tiempo se llena sin redeploy.</BodySm>
-          <MonoCode className="break-all">{state.message}</MonoCode>
+          <BodyText>El endpoint de historial por buzón todavía no responde. Cuando el carril B lo exponga, esta línea de tiempo se llena sin redeploy.</BodyText>
+          <Mono className="break-all">{state.message}</Mono>
         </div>
       </div>
     );
@@ -239,12 +263,12 @@ function LogLoaded({ payload }: { payload: WarmupMailboxEventsResult }) {
           <Mailbox size={15} strokeWidth={1.75} />
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <H3>Sin eventos todavía</H3>
-          <BodySm>
+          <Heading level={2}>Sin eventos todavía</Heading>
+          <BodyText>
             {note
               ? "Las tablas del warmup aún no están disponibles en esta base; el historial se llena cuando el engine registre actividad."
               : "Este buzón no tiene envíos, recepción ni cambios de estado registrados aún."}
-          </BodySm>
+          </BodyText>
         </div>
       </div>
     );
@@ -277,22 +301,20 @@ function EventRow({ event }: { event: WarmupMailboxEvent }) {
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex flex-wrap items-center gap-2">
-          <Pill tone={tone} size="sm">
-            {eventLabel(event)}
-          </Pill>
+          <Pill tone={tone}>{eventLabel(event)}</Pill>
           {event.provider && event.type !== "receive" ? (
-            <Caption className="text-[11px]">{event.provider}</Caption>
+            <Caption style={{ fontSize: 11 }}>{event.provider}</Caption>
           ) : null}
           {event.toAddress ? (
-            <Caption className="text-[11px] text-fg-subtle">→ {event.toAddress}</Caption>
+            <Caption style={{ fontSize: 11 }}>→ {event.toAddress}</Caption>
           ) : null}
-          <Caption className="text-[11px] text-fg-subtle">{formatWhen(event.occurredAt)}</Caption>
+          <Caption style={{ fontSize: 11 }}>{formatWhen(event.occurredAt)}</Caption>
         </div>
-        {event.detail ? <BodySm className="text-fg-muted">{event.detail}</BodySm> : null}
+        {event.detail ? <BodyText className="text-fg-muted">{event.detail}</BodyText> : null}
         {event.lastError ? (
-          <BodySm className="text-critical">{event.lastError}</BodySm>
+          <BodyText className="text-critical">{event.lastError}</BodyText>
         ) : null}
-        {event.slotKey ? <MonoCode className="break-all text-fg-subtle">{event.slotKey}</MonoCode> : null}
+        {event.slotKey ? <Mono className="break-all text-fg-subtle">{event.slotKey}</Mono> : null}
       </div>
     </div>
   );
@@ -305,9 +327,8 @@ function EventRow({ event }: { event: WarmupMailboxEvent }) {
 function DlqBanner({ entries }: { entries: WarmupMailboxEvent[] }) {
   return (
     <Card
-      padding="default"
       className="flex items-start gap-3"
-      style={{ borderColor: "var(--color-critical-border, var(--color-border-strong))" }}
+      style={{ padding: 16, borderColor: "var(--color-critical-border, var(--color-border-strong))" }}
     >
       <div
         aria-hidden="true"
@@ -317,15 +338,13 @@ function DlqBanner({ entries }: { entries: WarmupMailboxEvent[] }) {
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <div className="flex items-center gap-2">
-          <H3>Dead-letter queue</H3>
-          <Pill tone="critical" size="sm">
-            {entries.length}
-          </Pill>
+          <Heading level={2}>Dead-letter queue</Heading>
+          <Pill tone="critical">{entries.length}</Pill>
         </div>
-        <BodySm>
+        <BodyText>
           Envíos que agotaron reintentos o fallaron de forma terminal (dead_lettered/failed). Requieren
           revisión: no se reintentan solos.
-        </BodySm>
+        </BodyText>
       </div>
     </Card>
   );

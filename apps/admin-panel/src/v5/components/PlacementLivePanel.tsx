@@ -11,25 +11,47 @@
  *  - Empty (matched=0): "Sin emails todavía. Gmail puede tardar 5-30s en indexar."
  *  - Lista 5 samples con folder pill + subject truncado.
  *  - Última lectura IMAP hace Xs + query elapsedMs.
+ *
+ * MOLDE: superficie Aivora (card radius 18 + hairline + shadow), tipografía sans del demo.
  */
+import type { CSSProperties, ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   postPlacementCheck,
   type PlacementCheckResult,
   type PlacementSample
 } from "../../shared/api/client";
-import {
-  Badge,
-  BodySm,
-  Caption,
-  Card,
-  Eyebrow,
-  H3,
-  Pill
-} from "./primitives";
+import { Card, Caption, Eyebrow, Heading, Pill } from "../../shared/ui/aivora";
 
 const REFETCH_MS = 30_000;
 const ACTOR_ID = "panel/placement-live";
+
+/* ----- helpers de texto (tokens del demo, sin primitivos v5 B/N) ----- */
+
+function BodySm({ children, style }: { children: ReactNode; style?: CSSProperties }) {
+  return <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "var(--color-text-secondary)", ...style }}>{children}</p>;
+}
+
+function Badge({ children }: { children: ReactNode }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        borderRadius: 6,
+        border: "1px solid var(--color-border)",
+        background: "var(--color-surface)",
+        padding: "1px 6px",
+        fontSize: 11,
+        fontWeight: 500,
+        fontVariantNumeric: "tabular-nums",
+        color: "var(--color-text-secondary)"
+      }}
+    >
+      {children}
+    </span>
+  );
+}
 
 export interface PlacementLivePanelProps {
   rampId?: string;
@@ -82,47 +104,37 @@ export function PlacementLivePanel({
   const elapsedMs = data?.meta.elapsedMs ?? null;
 
   return (
-    <Card padding="hero" className="flex flex-col gap-4">
+    <Card className="flex flex-col gap-4" style={{ padding: 24 }}>
       <header className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
           <Eyebrow>Placement live · Gmail IMAP</Eyebrow>
-          <H3>{domain}</H3>
-          <Caption className="font-mono text-[10.5px]">{matcher}</Caption>
+          <Heading level={3}>{domain}</Heading>
+          <Caption style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 10.5 }}>{matcher}</Caption>
         </div>
         <PlacementHeaderPill matched={matched} loading={query.isFetching && !data} />
       </header>
 
       {!enabled ? (
-        <BodySm className="text-fg-subtle">
+        <BodySm style={{ color: "var(--color-text-tertiary)" }}>
           Sin matcher activo. Cuando el ramp esté corriendo, aparece acá.
         </BodySm>
       ) : query.isLoading && !data ? (
-        <BodySm className="text-fg-subtle">
+        <BodySm style={{ color: "var(--color-text-tertiary)" }}>
           esperando indexación 0/3 · reintento en 30s
         </BodySm>
       ) : query.isError ? (
-        <BodySm className="text-critical">
+        <BodySm style={{ color: "var(--color-critical)" }}>
           {(query.error as Error | undefined)?.message ?? "Error consultando IMAP."}
         </BodySm>
       ) : matched === 0 ? (
-        <BodySm className="text-fg-subtle">
+        <BodySm style={{ color: "var(--color-text-tertiary)" }}>
           Sin emails todavía. Gmail puede tardar 5-30s en indexar.
         </BodySm>
       ) : (
         <>
           <div className="flex flex-col gap-3">
-            <ProgressRow
-              label="INBOX"
-              count={inbox}
-              total={matched}
-              tone="success"
-            />
-            <ProgressRow
-              label="SPAM"
-              count={spam}
-              total={matched}
-              tone="critical"
-            />
+            <ProgressRow label="INBOX" count={inbox} total={matched} tone="success" />
+            <ProgressRow label="SPAM" count={spam} total={matched} tone="critical" />
             {promotions > 0 ? (
               <div className="flex items-center justify-between gap-2">
                 <Caption>Promotions</Caption>
@@ -142,7 +154,7 @@ export function PlacementLivePanel({
         </>
       )}
 
-      <Caption className="text-[10px]">
+      <Caption style={{ fontSize: 10 }}>
         Última lectura IMAP {formatLastRead(lastReadAt)}
         {elapsedMs != null ? ` · query ${elapsedMs}ms` : ""}
       </Caption>
@@ -152,12 +164,12 @@ export function PlacementLivePanel({
 
 function PlacementHeaderPill({ matched, loading }: { matched: number; loading: boolean }) {
   if (loading) {
-    return <Pill tone="neutral" size="sm">cargando</Pill>;
+    return <Pill tone="neutral">cargando</Pill>;
   }
   if (matched === 0) {
-    return <Pill tone="neutral" size="sm">{matched} matched</Pill>;
+    return <Pill tone="neutral">{matched} matched</Pill>;
   }
-  return <Pill tone="info" size="sm">{matched} matched</Pill>;
+  return <Pill tone="info">{matched} matched</Pill>;
 }
 
 function ProgressRow({
@@ -178,7 +190,7 @@ function ProgressRow({
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2">
         <Eyebrow>{label}</Eyebrow>
-        <span className="font-mono text-[12px] tabular-nums text-fg">
+        <span className="text-[12px] font-semibold tabular-nums text-fg">
           {count}/{total}
         </span>
       </div>
@@ -214,9 +226,7 @@ function SampleRow({ sample }: { sample: PlacementSample }) {
       : "OTHER";
   return (
     <li className="flex items-center gap-2 text-[12px]">
-      <Pill tone={tone as never} size="sm">
-        {label}
-      </Pill>
+      <Pill tone={tone}>{label}</Pill>
       <span className="min-w-0 flex-1 truncate font-sans text-fg">
         {sample.subject || "(sin asunto)"}
       </span>
