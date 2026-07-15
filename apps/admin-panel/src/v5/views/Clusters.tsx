@@ -1,29 +1,28 @@
 /**
  * v5 Clústeres — flota de nodos de envío supervisada.
  *
- * Diseño desde cero. Linear + Vercel Observability + Datadog + Stripe.
+ * Restyle al MOLDE oficial "Aivora" (features/overview/TravigueOverviewProto.tsx):
+ * cards radius 18 + hairline + shadow-sm, KpiCard con tile+número tabular, StateBadge
+ * dot+icono, SectionHead eyebrow + h1 light, AdvisorCard para el patrón OpenClaw.
+ * Todo el color sale de tokens var(--color-*); nada de hex ni paletas nuevas.
  *
- * Estructura:
- *   1. PageHead — eyebrow "FLOTA SUPERVISADA" + título + body + LiveIndicator.
- *   2. KPI strip (4 stats) — Clústeres / IPs en pool / Nodos activos / Warmup.
- *   3. BannerOpenClawV2 condicional — propuesta de warmup o degradación.
- *   4. Grid de cards de clúster — status, sparkline reputación, plan warmup,
- *      IPs colapsables, CTA "Ver detalle".
- *   5. KillSwitchBlock — superficie siempre-dark, 1 firma + audit chain, modal.
- *   6. Footer — runbook link + endpoint mono.
- *
- * Three Dials: VARIANCE 2/5 · MOTION 1/5 · DENSITY 4/5.
- * Una sola HumanNote (en el banner OpenClaw cuando aplica).
+ * DATOS REALES: data.clusters, data.operationalSummary.senderNodesByStatus,
+ * data.senderNodes (warmupDay/dailyLimit reales del contrato), data.killSwitch,
+ * data.canvas.requiresHumanApproval/blockedBy. Kill switch + modal (POST /v1/kill-switch)
+ * intactos. Placeholders falsos ("14d sin medición", "Día 9 · 50k/d") → dato real si
+ * existe, o estado vacío honesto con el molde.
  */
 
-import { useCallback, useRef, useState } from "react";
-import { motion } from "framer-motion";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useState } from "react";
+import type { CSSProperties } from "react";
+import { motion, useReducedMotion } from "framer-motion";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
   BookOpen,
   ChevronDown,
   ChevronRight,
+  CircleCheck,
   Flame,
   Network,
   Power,
@@ -32,35 +31,133 @@ import {
   Sparkles,
   X
 } from "lucide-react";
-import type { DashboardData } from "../../shared/api/client";
+import { loadDashboardData } from "../../shared/api/client";
+import type { DashboardData, SenderNodeContract } from "../../shared/api/client";
 import { staggerContainer, staggerItem } from "../lib/motion";
-import {
-  Badge,
-  BodySm,
-  Button,
-  Caption,
-  Card,
-  Eyebrow,
-  H2,
-  H3,
-  HumanNote,
-  MonoCode,
-  MonoData,
-  Pill,
-  SectionHead,
-  Stat
-} from "../components/primitives";
-import { BannerOpenClawV2, LiveIndicator, useToast } from "../../shared/ui/v2";
-import { PageHead } from "./_PageHead";
+import { Card, SectionHead, KpiCard, StateBadge, AdvisorCard, Button, Pill, Eyebrow, aivoraGradient } from "../../shared/ui/aivora";
+import { useToast } from "../../shared/ui/v2";
 
 const POLL_SEC = 30;
+
+/* Estilos mono/label reusados — todos derivados de tokens. --font-mono está
+ * congelado a Inter (tabular-nums) a propósito: una sola familia, nada ad-hoc. */
+const MONO: CSSProperties = { fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums" };
+
+/** Compacta un tope diario real (config): 50000 → "50k". */
+function compactLimit(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  if (n >= 1000) {
+    const k = n / 1000;
+    return `${Number.isInteger(k) ? k : k.toFixed(1)}k`;
+  }
+  return String(n);
+}
+
+/* ============================================================
+ * LivePulse — indicador de frescura del dashboard (dot + label + pulso).
+ *
+ * NO es un adorno siempre-verde: el tono y el "hace Xs" salen de la señal REAL
+ * del query de react-query (dataUpdatedAt = último fetch exitoso, isError = último
+ * fetch falló), no de un reloj congelado al montar. Reglas (POLL_SEC = intervalo de
+ * refetch de App.tsx):
+ *   • último fetch OK y fresco (< 2 ciclos de poll)  → success "En vivo" + pulso.
+ *   • sin refetch exitoso hace > 2 ciclos            → warning "Datos atrasados", sin pulso.
+ *   • último fetch con error                          → critical "Sin conexión", sin pulso.
+ *   • sin ninguna lectura (updatedAt = 0)             → estado neutro honesto, sin "en vivo".
+ * El pulso (que en el documento §4 "dice en vivo") corre SOLO en success: nunca fingimos
+ * liveness cuando el backend está caído o el dato quedó viejo. prefers-reduced-motion lo apaga.
+ * ============================================================ */
+
+type LiveTone = "success" | "warning" | "critical";
+
+function formatRelative(ms: number): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (seconds < 60) return `hace ${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `hace ${minutes}m`;
+  return `hace ${Math.floor(minutes / 60)}h`;
+}
+
+function LivePulse({ pollSec, updatedAt, isError }: { pollSec: number; updatedAt: number; isError: boolean }) {
+  const reduce = useReducedMotion();
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    // Tick de 1s: hace avanzar el "hace Xs" y deja que el tono vire a "atrasado"
+    // aunque no llegue un re-render nuevo del query (p. ej. el poll dejó de refrescar).
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const hasSignal = updatedAt > 0;
+  const ageSec = hasSignal ? Math.max(0, Math.floor((Date.now() - updatedAt) / 1000)) : null;
+  // "Atrasado" = el loop de poll no entregó dato fresco en 2 ciclos + gracia.
+  const staleThreshold = pollSec * 2 + 5;
+
+  const tone: LiveTone = isError
+    ? "critical"
+    : !hasSignal || (ageSec != null && ageSec > staleThreshold)
+    ? "warning"
+    : "success";
+  const live = tone === "success";
+
+  const color =
+    tone === "warning" ? "var(--color-warning)" : tone === "critical" ? "var(--color-critical)" : "var(--color-success)";
+  const soft =
+    tone === "warning"
+      ? "var(--color-warning-soft)"
+      : tone === "critical"
+      ? "var(--color-critical-soft)"
+      : "var(--color-success-soft)";
+  const label = isError ? "Sin conexión" : tone === "warning" ? "Datos atrasados" : "En vivo";
+  const rel = hasSignal ? formatRelative(updatedAt) : null;
+
+  return (
+    <span
+      aria-label={rel ? `${label}: actualizado ${rel}` : `${label}: sin lectura de frescura`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 12px",
+        borderRadius: 999,
+        background: soft,
+        color
+      }}
+    >
+      <span aria-hidden="true" style={{ position: "relative", width: 8, height: 8, display: "inline-block" }}>
+        {reduce || !live ? null : (
+          <motion.span
+            style={{ position: "absolute", inset: 0, borderRadius: "50%", background: color }}
+            initial={{ scale: 1, opacity: 0.4 }}
+            animate={{ scale: 2.2, opacity: 0 }}
+            transition={{ duration: 1.6, repeat: Infinity, ease: "easeOut" }}
+          />
+        )}
+        <span
+          style={{ position: "absolute", top: 2, left: 2, width: 4, height: 4, borderRadius: "50%", background: color }}
+        />
+      </span>
+      <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.01em", fontVariantNumeric: "tabular-nums" }}>
+        {label} · poll {pollSec}s{rel ? ` · ${rel}` : ""}
+      </span>
+    </span>
+  );
+}
 
 export interface ClustersV5Props {
   data: DashboardData;
 }
 
 export function ClustersV5({ data }: ClustersV5Props) {
-  const mountedAt = useRef<number>(Date.now()).current;
+  // Nos re-suscribimos al MISMO query del dashboard (la fuente que App.tsx refresca
+  // cada 30s) solo para LEER su frescura real: dataUpdatedAt (último fetch OK) e isError.
+  // enabled:false → este observador no dispara un segundo loop de poll; refleja el estado
+  // compartido del cache de forma reactiva. Así el badge deja de colgar de un reloj de montaje.
+  const dashboardQuery = useQuery({
+    queryKey: ["admin-panel", "dashboard"],
+    queryFn: loadDashboardData,
+    enabled: false
+  });
 
   const clusters = data.clusters.clusters ?? [];
   const totals = data.clusters.totals ?? {};
@@ -68,6 +165,11 @@ export function ClustersV5({ data }: ClustersV5Props) {
     data.operationalSummary.senderNodesByStatus ??
     data.overview.summary.senderNodesByStatus ??
     {};
+
+  // Índice de contratos reales de nodos (warmupDay + dailyLimit) por id.
+  const nodeContractById = new Map<string, SenderNodeContract>(
+    (data.senderNodes ?? []).map((n) => [n.id, n])
+  );
 
   const totalClusters = totals.clusters ?? clusters.length;
   const totalNodes =
@@ -94,50 +196,36 @@ export function ClustersV5({ data }: ClustersV5Props) {
       className="flex flex-col gap-6"
     >
       <motion.div variants={staggerItem}>
-        <PageHead
+        <SectionHead
           eyebrow="Flota supervisada"
-          meta="poll 30s · /v1/admin/clusters"
           title="Clústeres y nodos de envío."
-          body="Capacidad preparada, observada y gobernada por gates humanos. Cada clúster agrupa IPs y nodos con su propio plan de warmup, reputación y kill switch local."
-          trailing={
-            <LiveIndicator pollIntervalSec={POLL_SEC} lastUpdateAt={mountedAt} tone="success" />
+          subtitle="Capacidad preparada, observada y gobernada por gates humanos. Cada clúster agrupa IPs y nodos con su propio plan de warmup, reputación y kill switch local."
+          right={
+            <LivePulse
+              pollSec={POLL_SEC}
+              updatedAt={dashboardQuery.dataUpdatedAt}
+              isError={dashboardQuery.isError}
+            />
           }
         />
       </motion.div>
 
-      <motion.section variants={staggerItem} className="flex flex-col gap-3">
+      <motion.section variants={staggerItem} className="flex flex-col gap-4">
         <SectionHead
           eyebrow="Estado actual"
           title="Capacidad de la flota"
-          caption={<>Snapshot derivado del overview agregado · <MonoCode>panel-aggregator</MonoCode></>}
+          subtitle={
+            <>
+              Snapshot derivado del overview agregado ·{" "}
+              <span style={{ ...MONO, color: "var(--color-text-tertiary)" }}>panel-aggregator</span>
+            </>
+          }
         />
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <KpiTile
-            icon={<Server size={13} strokeWidth={1.75} />}
-            label="Clústeres totales"
-            value={totalClusters}
-            hint={`${totalClusters} bajo gobierno`}
-          />
-          <KpiTile
-            icon={<Network size={13} strokeWidth={1.75} />}
-            label="IPs en pool"
-            value={totalNodes}
-            hint="nodos registrados"
-          />
-          <KpiTile
-            icon={<Sparkles size={13} strokeWidth={1.75} />}
-            label="Nodos activos"
-            value={activeNodes}
-            hint={activeNodes > 0 ? "enviando" : "sin tráfico"}
-            tone={activeNodes > 0 ? "success" : "default"}
-          />
-          <KpiTile
-            icon={<Flame size={13} strokeWidth={1.75} />}
-            label="Clústeres en warmup"
-            value={clustersInWarmup}
-            hint={warmingNodes > 0 ? `${warmingNodes} IPs en ramp-up` : "sin warmup"}
-            tone={clustersInWarmup > 0 ? "warning" : "default"}
-          />
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+          <KpiCard icon={Server} label="Clústeres totales" value={totalClusters} />
+          <KpiCard icon={Network} label="IPs en pool" value={totalNodes} />
+          <KpiCard icon={CircleCheck} label="Nodos activos" value={activeNodes} />
+          <KpiCard icon={Flame} label="Clústeres en warmup" value={clustersInWarmup} />
         </div>
       </motion.section>
 
@@ -151,35 +239,45 @@ export function ClustersV5({ data }: ClustersV5Props) {
         </motion.div>
       ) : null}
 
-      <motion.section variants={staggerItem} className="flex flex-col gap-3">
+      <motion.section variants={staggerItem} className="flex flex-col gap-4">
         <SectionHead
           eyebrow="Flota"
           title="Clústeres de envío"
-          caption={
+          subtitle={
             clusters.length === 0
               ? "Sin clústeres bajo gobierno todavía"
               : `${clusters.length} clúster${clusters.length === 1 ? "" : "es"} supervisado${clusters.length === 1 ? "" : "s"}`
           }
-          count={clusters.length}
-          countTone={clusters.length === 0 ? "neutral" : "success"}
         />
         {clusters.length === 0 ? (
-          <Card padding="hero" className="flex items-start gap-4">
-            <div className="grid size-10 shrink-0 place-items-center rounded-md bg-surface-sunken text-fg-subtle">
-              <Server size={16} strokeWidth={1.75} />
+          <Card style={{ padding: 20 }} className="flex items-start gap-4">
+            <div
+              className="grid shrink-0 place-items-center"
+              style={{
+                width: 38,
+                height: 38,
+                borderRadius: 12,
+                background: "color-mix(in srgb, var(--color-text-primary) 5%, transparent)",
+                border: "1px solid var(--color-border)",
+                color: "var(--color-text-tertiary)"
+              }}
+            >
+              <Server size={18} strokeWidth={1.7} />
             </div>
             <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <H3>Aún no hay clústeres provisionados</H3>
-              <BodySm>
-                Cuando OpenClaw aprovisione el primer clúster, aparece acá con su
-                estado, plan de warmup e IPs registradas en audit chain.
-              </BodySm>
+              <div style={{ fontSize: 15, fontWeight: 500, color: "var(--color-text-primary)" }}>
+                Aún no hay clústeres provisionados
+              </div>
+              <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "var(--color-text-secondary)" }}>
+                Cuando OpenClaw aprovisione el primer clúster, aparece acá con su estado, plan de
+                warmup e IPs registradas en audit chain.
+              </p>
             </div>
           </Card>
         ) : (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
             {clusters.map((c) => (
-              <ClusterCard key={c.id} cluster={c} />
+              <ClusterCard key={c.id} cluster={c} nodeContractById={nodeContractById} />
             ))}
           </div>
         )}
@@ -197,39 +295,7 @@ export function ClustersV5({ data }: ClustersV5Props) {
 }
 
 /* ============================================================
- * KPI Tile
- * ============================================================ */
-
-interface KpiTileProps {
-  icon: React.ReactNode;
-  label: string;
-  value: number | string;
-  hint: string;
-  tone?: "default" | "success" | "warning" | "critical";
-}
-
-function KpiTile({ icon, label, value, hint, tone = "default" }: KpiTileProps) {
-  return (
-    <Card padding="relaxed" className="flex flex-col gap-3">
-      <div className="flex items-center gap-2">
-        <span aria-hidden="true" className="grid size-6 place-items-center rounded-sm bg-surface-sunken text-fg-subtle">
-          {icon}
-        </span>
-        <Eyebrow className="leading-[1.2]">{label}</Eyebrow>
-      </div>
-      <Stat
-        label=""
-        value={String(value)}
-        hint={hint}
-        tone={tone}
-        className="min-h-[64px] gap-1"
-      />
-    </Card>
-  );
-}
-
-/* ============================================================
- * Banner OpenClaw (condicional)
+ * Banner OpenClaw (condicional) — molde AdvisorCard
  * ============================================================ */
 
 function OpenClawBanner({
@@ -251,82 +317,217 @@ function OpenClawBanner({
     blockers > 0
       ? `Detecté ${blockers} bloqueo${blockers === 1 ? "" : "s"} activos en la topología del canvas. Te marco cuáles afectan la flota antes de proponer el siguiente paso.`
       : approvals > 0
-      ? `${approvals} aprobación${approvals === 1 ? "" : "es"} humana${approvals === 1 ? "" : "s"} pendiente${approvals === 1 ? "" : "s"} para avanzar el ciclo de warmup. Preparé el plan en dry-run; firma cuando lo revises.`
-      : `Hay ${warming} IP${warming === 1 ? "" : "s"} en ramp-up. Propongo subir el target del día siguiente respetando el cap de 50k/día.`;
+      ? `${approvals} aprobación${approvals === 1 ? "" : "es"} humana${approvals === 1 ? "" : "s"} pendiente${approvals === 1 ? "" : "s"} para avanzar el ciclo de warmup. Preparé el plan en dry-run; firmá cuando lo revises.`
+      : `Hay ${warming} IP${warming === 1 ? "" : "s"} en ramp-up. Propongo subir el target del día siguiente respetando el tope diario configurado.`;
+
+  // Disciplina de color del documento: el acento AZUL nunca codifica estado (solo CTA/
+  // alcance neutro). Bloqueos = critical (rojo). Warmup = warming (cyan), que significa
+  // "proceso". Aprobaciones = neutral (atención sin gastar cyan ni el ámbar reservado a
+  // paused). Cero azul-como-estado, cero cyan fuera de warmup.
+  const chips: Array<{ label: string; tone: "neutral" | "warming" | "critical" }> = [];
+  if (blockers > 0) chips.push({ label: `${blockers} bloqueo${blockers === 1 ? "" : "s"}`, tone: "critical" });
+  if (approvals > 0) chips.push({ label: `${approvals} aprobación${approvals === 1 ? "" : "es"}`, tone: "neutral" });
+  if (warming > 0) chips.push({ label: `${warming} en ramp-up`, tone: "warming" });
+
   return (
-    <div className="flex flex-col gap-2">
-      <BannerOpenClawV2
-        title={title}
-        body={body}
-        primaryCta="Revisar plan"
-        secondaryCta="Abrir canvas"
-      />
-      <HumanNote className="px-1">
-        Si querés que te lo explique paso a paso antes de firmar, abrí el chat.
-      </HumanNote>
-    </div>
+    <AdvisorCard>
+      <div style={{ padding: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <div
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 9,
+              background: aivoraGradient,
+              display: "grid",
+              placeItems: "center"
+            }}
+          >
+            <Sparkles size={16} color="#fff" />
+          </div>
+          <div style={{ fontSize: 14.5, fontWeight: 500, color: "var(--color-text-primary)" }}>
+            Advisor · OpenClaw
+          </div>
+        </div>
+
+        <div
+          style={{
+            marginTop: 14,
+            borderLeft: "2px solid var(--color-accent-soft)",
+            paddingLeft: 12
+          }}
+        >
+          <div style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-primary)", letterSpacing: "-0.01em" }}>
+            {title}
+          </div>
+          <div style={{ marginTop: 4, fontSize: 13, lineHeight: 1.5, color: "var(--color-text-secondary)", fontWeight: 300 }}>
+            {body}
+          </div>
+          {chips.length > 0 ? (
+            <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+              {chips.map((c) => (
+                <Pill key={c.label} tone={c.tone}>
+                  {c.label}
+                </Pill>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+          <Button variant="gradient">
+            <Sparkles size={14} />
+            Revisar plan
+          </Button>
+          <Button variant="ghost">
+            Abrir canvas
+            <ArrowRight size={13} strokeWidth={1.9} />
+          </Button>
+        </div>
+
+        <div style={{ marginTop: 12, fontSize: 12.5, fontStyle: "italic", color: "var(--color-text-tertiary)" }}>
+          Si querés que te lo explique paso a paso antes de firmar, abrí el chat.
+        </div>
+      </div>
+    </AdvisorCard>
   );
 }
 
 /* ============================================================
- * Cluster Card
+ * Cluster Card — molde Card + StateBadge
  * ============================================================ */
 
 type ClusterT = DashboardData["clusters"]["clusters"][number];
 
-function ClusterCard({ cluster }: { cluster: ClusterT }) {
+const STATUS_BADGE: Record<ClusterStatus, { status: string; label: string }> = {
+  active: { status: "active", label: "Activo" },
+  warmup: { status: "warming", label: "Warmup" },
+  paused: { status: "paused", label: "Pausado" },
+  error: { status: "quarantined", label: "Error" }
+};
+
+function ClusterCard({
+  cluster,
+  nodeContractById
+}: {
+  cluster: ClusterT;
+  nodeContractById: Map<string, SenderNodeContract>;
+}) {
   const [expanded, setExpanded] = useState(false);
   const nodes = cluster.senderNodes ?? [];
   const status = inferClusterStatus(cluster);
-  const statusTone =
-    status === "active"
-      ? "success"
-      : status === "warmup"
-      ? "warning"
-      : status === "paused"
-      ? "neutral"
-      : "critical";
+  const badge = STATUS_BADGE[status];
 
-  const warmingCount = nodes.filter((n) => n.status.toLowerCase().includes("warming")).length;
+  const warmingNodes = nodes.filter((n) => n.status.toLowerCase().includes("warming"));
   const activeCount = nodes.filter((n) => {
     const s = n.status.toLowerCase();
     return s.includes("active") || s.includes("ready");
   }).length;
 
+  // Plan de warmup REAL: warmupDay + dailyLimit del contrato de cada nodo calentando.
+  const warmupReal = warmingNodes.reduce(
+    (acc, n) => {
+      const c = nodeContractById.get(n.id);
+      if (!c) return acc;
+      return {
+        day: Math.max(acc.day, c.warmupDay ?? 0),
+        limit: Math.max(acc.limit, c.dailyLimit ?? 0),
+        matched: acc.matched + 1
+      };
+    },
+    { day: 0, limit: 0, matched: 0 }
+  );
+
   return (
-    <Card padding="relaxed" className="flex flex-col gap-4">
+    <Card style={{ padding: 20 }} className="flex flex-col gap-4">
       <header className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex min-w-0 flex-col gap-1.5">
           <div className="flex items-center gap-2">
-            <MonoData className="text-[13px] font-semibold">{cluster.id}</MonoData>
-            <Pill tone={statusTone} size="sm">
-              {statusLabel(status)}
-            </Pill>
+            <span style={{ ...MONO, fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)" }}>
+              {cluster.id}
+            </span>
+            <StateBadge status={badge.status} label={badge.label} />
           </div>
-          <Caption>
-            {cluster.provider} · estado <MonoCode>{cluster.managementState}</MonoCode>
-          </Caption>
+          <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
+            {cluster.provider} · estado{" "}
+            <span style={{ ...MONO, color: "var(--color-text-secondary)" }}>{cluster.managementState}</span>
+          </span>
         </div>
-        <Badge>{nodes.length} IPs</Badge>
+        <span
+          style={{
+            ...MONO,
+            fontSize: 11,
+            fontWeight: 600,
+            color: "var(--color-text-secondary)",
+            background: "color-mix(in srgb, var(--color-text-primary) 5%, transparent)",
+            border: "1px solid var(--color-border)",
+            borderRadius: 8,
+            padding: "3px 8px",
+            whiteSpace: "nowrap"
+          }}
+        >
+          {nodes.length} IPs
+        </span>
       </header>
 
-      <ReputationPlaceholder />
+      {/* Reputación — sin serie real disponible: estado vacío honesto con el molde. */}
+      <div
+        className="flex items-center justify-between gap-2"
+        style={{
+          borderRadius: 12,
+          border: "1px dashed var(--color-border)",
+          padding: "8px 12px"
+        }}
+      >
+        <Eyebrow>Reputación</Eyebrow>
+        <span style={{ fontSize: 11.5, color: "var(--color-text-tertiary)" }}>pendiente · sin medición</span>
+      </div>
 
-      {warmingCount > 0 ? (
-        <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface-sunken px-3 py-2">
-          <div className="flex items-center gap-2">
-            <Flame size={12} strokeWidth={1.75} className="text-warning" />
-            <Caption className="text-fg">Plan warmup · Día 9 · 50k/d</Caption>
+      {/* Plan de warmup — dato REAL (warmupDay/dailyLimit) o estado honesto. */}
+      {warmingNodes.length > 0 ? (
+        <div
+          className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5"
+          style={{
+            borderRadius: 12,
+            border: "1px solid var(--color-border)",
+            background: "color-mix(in srgb, var(--color-text-primary) 5%, transparent)",
+            padding: "8px 12px"
+          }}
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Flame size={13} strokeWidth={1.9} color="var(--color-warming)" />
+            <span style={{ fontSize: 12.5, color: "var(--color-text-primary)" }}>
+              {warmupReal.matched > 0 && warmupReal.day > 0
+                ? `Plan warmup · Día ${warmupReal.day}`
+                : "Plan warmup en curso"}
+            </span>
+            {warmupReal.limit > 0 ? (
+              <Pill tone="neutral" style={{ fontWeight: 500 }}>
+                cap {compactLimit(warmupReal.limit)}/día · config
+              </Pill>
+            ) : null}
           </div>
-          <MonoCode>{warmingCount} en ramp-up</MonoCode>
+          <span style={{ ...MONO, fontSize: 11.5, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
+            {warmingNodes.length} en ramp-up
+          </span>
         </div>
       ) : (
-        <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface-sunken px-3 py-2">
+        <div
+          className="flex items-center justify-between gap-2"
+          style={{
+            borderRadius: 12,
+            border: "1px solid var(--color-border)",
+            background: "color-mix(in srgb, var(--color-text-primary) 5%, transparent)",
+            padding: "8px 12px"
+          }}
+        >
           <div className="flex items-center gap-2">
-            <Sparkles size={12} strokeWidth={1.75} className="text-fg-subtle" />
-            <Caption>Sin warmup en curso</Caption>
+            <Sparkles size={13} strokeWidth={1.9} color="var(--color-text-tertiary)" />
+            <span style={{ fontSize: 12.5, color: "var(--color-text-secondary)" }}>Sin warmup en curso</span>
           </div>
-          <MonoCode>{activeCount} activos</MonoCode>
+          <span style={{ ...MONO, fontSize: 11.5, color: "var(--color-text-tertiary)" }}>
+            {activeCount} activos
+          </span>
         </div>
       )}
 
@@ -334,12 +535,13 @@ function ClusterCard({ cluster }: { cluster: ClusterT }) {
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="flex items-center gap-1.5 self-start text-[12px] font-medium text-fg-muted transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus rounded-sm"
+        className="flex items-center gap-1.5 self-start rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+        style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-secondary)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
       >
         {expanded ? (
-          <ChevronDown size={12} strokeWidth={1.75} />
+          <ChevronDown size={13} strokeWidth={1.9} />
         ) : (
-          <ChevronRight size={12} strokeWidth={1.75} />
+          <ChevronRight size={13} strokeWidth={1.9} />
         )}
         {expanded ? "Ocultar IPs" : `Ver ${nodes.length} IP${nodes.length === 1 ? "" : "s"}`}
       </button>
@@ -347,20 +549,21 @@ function ClusterCard({ cluster }: { cluster: ClusterT }) {
       {expanded ? (
         <ul className="m-0 flex list-none flex-col gap-1 p-0">
           {nodes.length === 0 ? (
-            <Caption>Sin nodos asignados.</Caption>
+            <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>Sin nodos asignados.</span>
           ) : (
             nodes.map((n) => <NodeRow key={n.id} node={n} />)
           )}
         </ul>
       ) : null}
 
-      <div className="flex items-center justify-end gap-2 border-t border-border pt-3">
-        <Button variant="ghost" size="sm">
-          Configurar
-        </Button>
-        <Button variant="secondary" size="sm">
+      <div
+        className="flex items-center justify-end gap-2"
+        style={{ borderTop: "1px solid var(--color-border)", paddingTop: 14 }}
+      >
+        <Button variant="ghost">Configurar</Button>
+        <Button variant="ghost">
           Ver detalle
-          <ArrowRight size={11} strokeWidth={1.75} />
+          <ArrowRight size={12} strokeWidth={1.9} />
         </Button>
       </div>
     </Card>
@@ -368,44 +571,25 @@ function ClusterCard({ cluster }: { cluster: ClusterT }) {
 }
 
 function NodeRow({ node }: { node: ClusterT["senderNodes"][number] }) {
-  const s = node.status.toLowerCase();
-  const tone = s.includes("active") || s.includes("ready")
-    ? "success"
-    : s.includes("warming")
-    ? "warning"
-    : s.includes("paused") || s.includes("standby")
-    ? "neutral"
-    : "critical";
-  const dotColor =
-    tone === "success"
-      ? "var(--color-success)"
-      : tone === "warning"
-      ? "var(--color-warning)"
-      : tone === "critical"
-      ? "var(--color-critical)"
-      : "var(--color-fg-subtle)";
   return (
-    <li className="flex items-center gap-3 rounded border border-transparent px-2 py-1.5 transition-colors hover:border-border">
-      <span aria-hidden="true" className="inline-block size-1.5 rounded-full" style={{ background: dotColor }} />
-      <MonoData className="flex-1 truncate text-[11.5px]">{node.label || node.id}</MonoData>
-      <Pill tone={tone as never} size="sm">
-        {node.status}
-      </Pill>
+    <li
+      className="flex items-center gap-3"
+      style={{ borderRadius: 8, padding: "6px 8px" }}
+    >
+      <span
+        aria-hidden="true"
+        style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: statusDot(node.status) }}
+      />
+      <span style={{ ...MONO, flex: 1, minWidth: 0, fontSize: 11.5, color: "var(--color-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {node.label || node.id}
+      </span>
+      <StateBadge status={normalizeNodeStatus(node.status)} label={node.status} />
     </li>
   );
 }
 
-function ReputationPlaceholder() {
-  return (
-    <div className="flex items-center justify-between gap-2 rounded-md border border-dashed border-border px-3 py-2">
-      <Caption className="text-[10px]">Reputación · 14 d</Caption>
-      <Caption className="text-[10px] text-fg-subtle">sin medición aún</Caption>
-    </div>
-  );
-}
-
 /* ============================================================
- * Kill Switch Block (always-dark)
+ * Kill Switch Block (always-dark) — intacto
  * ============================================================ */
 
 interface KillSwitchBlockProps {
@@ -461,10 +645,6 @@ function KillSwitchBlock({ ks }: KillSwitchBlockProps) {
       })
     : "—";
 
-  // Botón: cuando armed=bg always-dark-bg; cuando activating (= !armed seguido de
-  // intent de activar) y mientras está pending → critical. Aquí simplificamos:
-  // si está armed (verde "listo"), el CTA arma la acción (activar) → bg dark.
-  // Si está activo (rojo), el CTA es rearmar → bg dark también.
   const buttonBg = "var(--color-always-dark-bg)";
   const buttonBorder = "1px solid var(--color-always-dark-border-strong)";
 
@@ -485,7 +665,7 @@ function KillSwitchBlock({ ks }: KillSwitchBlockProps) {
             className="grid size-10 shrink-0 place-items-center rounded-md"
             style={{
               background: armed
-                ? "rgba(109, 190, 124, 0.16)"
+                ? "var(--color-on-dark-success-overlay)"
                 : "var(--color-on-dark-critical-overlay)",
               color: "var(--color-on-dark-strong)"
             }}
@@ -505,7 +685,7 @@ function KillSwitchBlock({ ks }: KillSwitchBlockProps) {
                 className="inline-flex items-center gap-1.5 rounded-full px-2 py-[2px] text-[10px] font-medium"
                 style={{
                   background: armed
-                    ? "rgba(109, 190, 124, 0.16)"
+                    ? "var(--color-on-dark-success-overlay)"
                     : "var(--color-on-dark-critical-overlay)",
                   color: "var(--color-on-dark-strong)"
                 }}
@@ -601,7 +781,7 @@ function KillSwitchBlock({ ks }: KillSwitchBlockProps) {
 }
 
 /* ============================================================
- * Modal de confirmación KillSwitch
+ * Modal de confirmación KillSwitch — intacto
  * ============================================================ */
 
 function KillSwitchModal({
@@ -618,7 +798,6 @@ function KillSwitchModal({
   const [reason, setReason] = useState("");
   const [actorId, setActorId] = useState("");
 
-  // armed=true ⇒ acción = activar (botón critical). armed=false ⇒ rearmar (success).
   const activating = armed;
   const reasonValid = !activating || reason.trim().length >= 4;
   const actorValid = actorId.trim().length >= 2;
@@ -634,9 +813,11 @@ function KillSwitchModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="cluster-killswitch-modal-title"
-      className="fixed inset-0 z-[9990] flex items-center justify-center px-4"
+      className="fixed inset-0 z-[9990] flex items-start justify-center overflow-y-auto px-4 py-4"
       style={{
-        background: "color-mix(in srgb, #000 55%, transparent)",
+        background: "color-mix(in srgb, var(--color-always-dark-bg) 62%, transparent)",
+        // Safari exige el prefijo -webkit para el desenfoque del scrim del modal.
+        WebkitBackdropFilter: "blur(4px)",
         backdropFilter: "blur(4px)"
       }}
       onClick={(e) => {
@@ -644,15 +825,16 @@ function KillSwitchModal({
       }}
     >
       <div
-        className="flex w-full max-w-[460px] flex-col overflow-hidden rounded-[10px]"
+        className="my-auto flex w-full max-w-[460px] flex-col overflow-hidden rounded-[10px]"
         style={{
           background: "var(--color-always-dark-surface)",
           border: "1px solid var(--color-always-dark-border-strong)",
-          boxShadow: "var(--shadow-lg)"
+          boxShadow: "var(--shadow-lg)",
+          maxHeight: "calc(100dvh - 32px)"
         }}
       >
         <header
-          className="flex items-start gap-3 p-5"
+          className="flex shrink-0 items-start gap-3 p-5"
           style={{ borderBottom: "1px solid var(--color-always-dark-border)" }}
         >
           <div
@@ -696,7 +878,7 @@ function KillSwitchModal({
           </button>
         </header>
 
-        <div className="flex flex-col gap-4 p-5">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5">
           {activating ? (
             <label className="flex flex-col gap-1.5">
               <span
@@ -759,7 +941,7 @@ function KillSwitchModal({
         </div>
 
         <footer
-          className="flex items-center justify-end gap-2 p-4"
+          className="flex shrink-0 items-center justify-end gap-2 p-4"
           style={{
             background: "var(--color-always-dark-bg)",
             borderTop: "1px solid var(--color-always-dark-border)"
@@ -804,22 +986,25 @@ function KillSwitchModal({
 }
 
 /* ============================================================
- * Footer
+ * Footer — molde Card
  * ============================================================ */
 
 function FooterBar() {
   return (
-    <Card tone="quiet" padding="compact" className="flex items-center justify-between gap-3">
+    <Card style={{ padding: "12px 16px" }} className="flex flex-wrap items-center justify-between gap-3">
       <a
         href="https://docs.delivrix.dev/runbooks/clusters"
         target="_blank"
         rel="noreferrer"
-        className="inline-flex items-center gap-2 text-[12px] font-medium text-fg-muted transition-colors hover:text-fg"
+        className="inline-flex items-center gap-2"
+        style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-secondary)" }}
       >
-        <BookOpen size={12} strokeWidth={1.75} />
+        <BookOpen size={13} strokeWidth={1.75} />
         Runbook · clústeres y kill switch
       </a>
-      <MonoCode>GET /v1/admin/clusters · POST /v1/kill-switch</MonoCode>
+      <span style={{ ...MONO, fontSize: 11, color: "var(--color-text-tertiary)" }}>
+        GET /v1/admin/clusters · POST /v1/kill-switch
+      </span>
     </Card>
   );
 }
@@ -842,16 +1027,31 @@ function inferClusterStatus(c: ClusterT): ClusterStatus {
   return "paused";
 }
 
-function statusLabel(s: ClusterStatus): string {
-  switch (s) {
-    case "active":
-      return "activo";
-    case "warmup":
-      return "warmup";
-    case "paused":
-      return "pausado";
-    case "error":
-      return "error";
-  }
+/** Mapea el status real del nodo al enum que reconoce StateBadge del molde. */
+function normalizeNodeStatus(raw: string): string {
+  const s = raw.toLowerCase();
+  if (s.includes("active") || s.includes("ready")) return "active";
+  if (s.includes("warming")) return "warming";
+  if (s.includes("quarantin")) return "quarantined";
+  if (s.includes("degrad")) return "degraded";
+  if (s.includes("paused") || s.includes("standby")) return "paused";
+  if (s.includes("retired")) return "retired";
+  return raw;
 }
 
+function statusDot(raw: string): string {
+  const s = normalizeNodeStatus(raw);
+  switch (s) {
+    case "active":
+      return "var(--color-success)";
+    case "warming":
+      return "var(--color-warming)";
+    case "quarantined":
+      return "var(--color-critical)";
+    case "degraded":
+    case "paused":
+      return "var(--color-warning)";
+    default:
+      return "var(--color-text-tertiary)";
+  }
+}
