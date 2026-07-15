@@ -11,7 +11,7 @@
  * Cruza con GET /v1/mailboxes: los dominios cuyo mailer YA es un nodo de warmup se marcan `en warmup` con
  * su estado (blocked/fresh/warm/paused) y quedan fuera de la selección por defecto (re-seleccionar es opt-in).
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, Flame, CheckCircle2, AlertTriangle } from "lucide-react";
 import {
@@ -21,21 +21,33 @@ import {
   type WarmupBatchResult,
   type WarmupMailboxState
 } from "../../shared/api/warmup-mailboxes-client";
-import {
-  Badge,
-  BodySm,
-  Button,
-  Caption,
-  Card,
-  Eyebrow,
-  MonoData,
-  Pill,
-  type PillProps,
-  SectionHead
-} from "../components/primitives";
+// MOLDE ÚNICO Aivora — card radius 18 + hairline + shadow; tipografía sans del demo.
+import { Button, Caption, Card, Eyebrow, Pill, SectionHead } from "../../shared/ui/aivora";
 import { useToast } from "../../shared/ui/v2";
 
-type PillTone = NonNullable<PillProps["tone"]>;
+/** Tono semántico compartido con el Pill de Aivora. */
+type PillTone = "neutral" | "accent" | "success" | "warning" | "critical" | "warming" | "info";
+
+/* ----- helpers de texto (tokens del demo, sin primitivos v5 B/N) ----- */
+
+function BodySm({ children, className, style }: { children: ReactNode; className?: string; style?: CSSProperties }) {
+  return <p className={className} style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "var(--color-text-secondary)", ...style }}>{children}</p>;
+}
+
+function MonoData({ children, className, style }: { children: ReactNode; className?: string; style?: CSSProperties }) {
+  return <span className={className} style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 12, fontWeight: 500, fontVariantNumeric: "tabular-nums", color: "var(--color-text-primary)", ...style }}>{children}</span>;
+}
+
+function Badge({ children, className, style }: { children: ReactNode; className?: string; style?: CSSProperties }) {
+  return (
+    <span
+      className={className}
+      style={{ display: "inline-flex", alignItems: "center", borderRadius: 6, border: "1px solid var(--color-border)", background: "var(--color-surface)", padding: "1px 6px", fontSize: 11, fontWeight: 500, fontVariantNumeric: "tabular-nums", color: "var(--color-text-secondary)", ...style }}
+    >
+      {children}
+    </span>
+  );
+}
 
 /**
  * Forma mínima del dominio que necesita el selector (subconjunto estructural del DomainSummary del
@@ -146,16 +158,19 @@ function indexWarmup(
   return map;
 }
 
+// Mapa de estados → tono semántico del documento (§4): FRESH neutro (el más callado, sin
+// alarma), WARM verde, PAUSED ámbar (único uso del ámbar), QUARANTINED rojo caliente,
+// BLOCKED neutro (muerto-conocido, no compite con quarantined).
 function warmupStateTone(state: WarmupMailboxState): PillTone {
   switch (state) {
     case "warm":
       return "success";
-    case "fresh":
-      return "warning";
     case "paused":
+      return "warning";
     case "quarantined":
-    case "blocked":
       return "critical";
+    case "fresh":
+    case "blocked":
     default:
       return "neutral";
   }
@@ -288,15 +303,15 @@ export function WarmupOnboardSelector({
 
   if (selectableTotal === 0) {
     return (
-      <Card tone="quiet" padding="relaxed" className="flex items-start gap-3">
+      <Card className="flex items-start gap-3" style={{ padding: 20, background: "var(--color-surface-sunken)" }}>
         <div className="grid size-9 shrink-0 place-items-center rounded-md bg-surface-sunken text-fg-subtle">
           <Flame size={15} strokeWidth={1.75} />
         </div>
         <div className="flex flex-col gap-1">
-          <Eyebrow>Calentar buzones</Eyebrow>
+          <Eyebrow>Warmup masivo · onboard al mesh</Eyebrow>
           <BodySm className="text-fg-subtle">
             Ningún dominio tiene todavía un mailer SMTP resoluble. Generá la credencial de un dominio y
-            aparecerá acá seleccionable para el warmup masivo.
+            aparecerá acá seleccionable para calentar varios buzones de una (POST idempotente al mesh).
           </BodySm>
         </div>
       </Card>
@@ -304,19 +319,26 @@ export function WarmupOnboardSelector({
   }
 
   return (
-    <Card padding="relaxed" className="flex flex-col gap-4">
+    <Card className="flex flex-col gap-4" style={{ padding: 20 }}>
       <SectionHead
-        eyebrow="Warmup masivo"
+        eyebrow="Warmup masivo · onboard al mesh"
         title="Calentar buzones del Sender Pool"
-        caption={
-          warmupQuery.isError
-            ? "No se pudo leer el estado de warmup · igual podés seleccionar"
-            : `${selectableTotal} con mailer · ${selectedCount} seleccionados`
+        subtitle={
+          <span className="flex flex-col gap-0.5">
+            <span>
+              {warmupQuery.isError
+                ? "No se pudo leer el estado de warmup · igual podés seleccionar"
+                : `${selectableTotal} con mailer · ${selectedCount} seleccionados`}
+            </span>
+            <span style={{ color: "var(--color-text-tertiary)", fontSize: 12 }}>
+              Onboard masivo idempotente (no resetea): distinto del &ldquo;Iniciar warmup&rdquo; por dominio, que
+              dispara un ramp con seeds manuales.
+            </span>
+          </span>
         }
-        count={selectedCount}
-        countTone={selectedCount > 0 ? "success" : "neutral"}
-        trailing={
+        right={
           <div className="flex items-center gap-2">
+            <Pill tone={selectedCount > 0 ? "success" : "neutral"}>{selectedCount}</Pill>
             <Button variant="ghost" size="sm" onClick={selectRecent} disabled={recentRows.length === 0}>
               Recientes
             </Button>
@@ -332,10 +354,11 @@ export function WarmupOnboardSelector({
         }
       />
 
-      <div className="flex flex-col gap-2">
+      {/* Rows APLANADAS: hairline separador dentro del Card padre (sin card-in-card). */}
+      <div className="flex flex-col">
         {recentRows.length > 0 ? (
           <>
-            <Eyebrow className="text-[9.5px]">Recién creados · últimas 24h</Eyebrow>
+            <Eyebrow style={{ fontSize: 9.5, padding: "4px 0" }}>Recién creados · últimas 24h</Eyebrow>
             {recentRows.map((r) => (
               <SelectorRowView
                 key={r.domain}
@@ -350,7 +373,7 @@ export function WarmupOnboardSelector({
           </>
         ) : null}
         {recentRows.length > 0 && restRows.length > 0 ? (
-          <Eyebrow className="mt-1 text-[9.5px]">Resto del pool</Eyebrow>
+          <Eyebrow style={{ fontSize: 9.5, padding: "10px 0 4px" }}>Resto del pool</Eyebrow>
         ) : null}
         {restRows.map((r) => (
           <SelectorRowView
@@ -405,17 +428,16 @@ function SelectorRowView({
 }) {
   const inWarmup = row.warmupState !== null;
   return (
-    <Card
-      padding="default"
+    <div
       className="flex flex-col gap-2"
-      style={
-        hot
-          ? {
-              boxShadow: "inset 0 0 0 1px var(--color-warning-border)",
-              background: "var(--color-warning-soft)"
-            }
-          : undefined
-      }
+      style={{
+        borderBottom: "1px solid var(--color-border)",
+        padding: hot ? "12px" : "12px 4px",
+        borderRadius: hot ? 10 : 0,
+        // Recencia = agrupación con superficie raised neutra, no relleno ámbar (la recencia
+        // no es un estado; el ámbar queda reservado a PAUSED).
+        ...(hot ? { background: "var(--color-surface-raised)" } : {})
+      }}
     >
       <div className="flex items-center gap-3">
         <input
@@ -440,7 +462,7 @@ function SelectorRowView({
             className="shrink-0 text-fg-subtle transition-transform duration-150"
             style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)" }}
           />
-          <MonoData className="truncate text-[13px]">{row.domain}</MonoData>
+          <MonoData className="truncate" style={{ fontSize: 13 }}>{row.domain}</MonoData>
           {inWarmup ? (
             <Badge className="shrink-0" style={{ background: "var(--color-surface-sunken)" }}>
               en warmup
@@ -449,29 +471,25 @@ function SelectorRowView({
         </button>
         <div className="flex shrink-0 items-center gap-2">
           {inWarmup && row.warmupState ? (
-            <Pill tone={warmupStateTone(row.warmupState)} size="sm">
-              {row.warmupState}
-            </Pill>
+            <Pill tone={warmupStateTone(row.warmupState)}>{row.warmupState}</Pill>
           ) : null}
-          <Pill tone="neutral" size="sm">
-            {row.status}
-          </Pill>
+          <Pill tone="neutral">{row.status}</Pill>
         </div>
       </div>
       {open ? (
         <div className="flex flex-col gap-1 border-t border-border pl-7 pt-2">
           <DetailLine label="Mailer">
             {row.email ? (
-              <MonoData className="text-[12px]">{row.email}</MonoData>
+              <MonoData style={{ fontSize: 12 }}>{row.email}</MonoData>
             ) : (
-              <Caption className="flex items-center gap-1 text-warning">
+              <Caption style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--color-warning)" }}>
                 <AlertTriangle size={10} strokeWidth={1.75} />
                 sin credencial SMTP · generá el mailer primero
               </Caption>
             )}
           </DetailLine>
           <DetailLine label="SMTP host">
-            {row.smtpHost ? <MonoData className="text-[12px]">{row.smtpHost}</MonoData> : <Caption>—</Caption>}
+            {row.smtpHost ? <MonoData style={{ fontSize: 12 }}>{row.smtpHost}</MonoData> : <Caption>—</Caption>}
           </DetailLine>
           <DetailLine label="Warmup">
             {inWarmup && row.warmupState ? (
@@ -485,14 +503,14 @@ function SelectorRowView({
           </DetailLine>
         </div>
       ) : null}
-    </Card>
+    </div>
   );
 }
 
 function DetailLine({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2">
-      <Eyebrow className="w-20 shrink-0 text-[9px]">{label}</Eyebrow>
+      <Eyebrow style={{ width: 80, flexShrink: 0, fontSize: 9 }}>{label}</Eyebrow>
       <div className="min-w-0 flex-1">{children}</div>
     </div>
   );
@@ -504,29 +522,21 @@ function BatchResultSummary({ result }: { result: WarmupBatchResult }) {
   const { requested, created, existed, failed } = result.summary;
   const failedRows = result.results.filter((r) => r.status === "failed");
   return (
-    <Card tone="quiet" padding="default" className="flex flex-col gap-2">
+    <Card className="flex flex-col gap-2" style={{ padding: 16, background: "var(--color-surface-sunken)" }}>
       <div className="flex items-center gap-3">
         <Eyebrow>Último batch</Eyebrow>
         <Caption>{requested} solicitados</Caption>
-        <Pill tone="success" size="sm">
-          {created} nuevos
-        </Pill>
-        <Pill tone="neutral" size="sm">
-          {existed} ya estaban
-        </Pill>
-        {failed > 0 ? (
-          <Pill tone="critical" size="sm">
-            {failed} fallidos
-          </Pill>
-        ) : null}
+        <Pill tone="success">{created} nuevos</Pill>
+        <Pill tone="neutral">{existed} ya estaban</Pill>
+        {failed > 0 ? <Pill tone="critical">{failed} fallidos</Pill> : null}
       </div>
       {failedRows.length > 0 ? (
         <ul className="m-0 flex list-none flex-col gap-1 p-0">
           {failedRows.slice(0, 5).map((r) => (
             <li key={r.email} className="flex items-center gap-2 text-[11px]">
               <AlertTriangle size={10} className="shrink-0 text-critical" strokeWidth={1.75} />
-              <MonoData className="truncate text-[11px]">{r.email}</MonoData>
-              <Caption className="truncate text-[10px]">{r.error ?? "fallo desconocido"}</Caption>
+              <MonoData className="truncate" style={{ fontSize: 11 }}>{r.email}</MonoData>
+              <Caption style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.error ?? "fallo desconocido"}</Caption>
             </li>
           ))}
         </ul>

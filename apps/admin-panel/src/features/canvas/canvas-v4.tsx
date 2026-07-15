@@ -523,7 +523,7 @@ function highlightJson(line: string): React.ReactNode {
     }
     const tok = match[0];
     let color = "#e6edf3";
-    if (tok.endsWith(":") || tok.endsWith(": ")) color = "#f59e0b"; // key
+    if (tok.endsWith(":") || tok.endsWith(": ")) color = "#f9b48c"; // key
     else if (tok.startsWith('"')) color = "#a5d6a7"; // string
     else if (tok === "true" || tok === "false" || tok === "null") color = "#c4b5fd"; // bool/null
     else color = "#7dd3fc"; // number
@@ -3485,7 +3485,7 @@ function TerminalLine({ action }: { action: Action }) {
               : "AWAIT";
   const verbColor =
     action.kind === "detect"
-      ? "#f59e0b"
+      ? "#4cc5ff"
       : action.kind === "http"
         ? "#3b82f6"
         : action.kind === "diff"
@@ -3493,7 +3493,7 @@ function TerminalLine({ action }: { action: Action }) {
           : action.kind === "command"
             ? "#34d399"
             : action.kind === "await"
-              ? "#fbbf24"
+              ? "#f9b48c"
               : "#8b949e";
   const detail =
     action.kind === "read"

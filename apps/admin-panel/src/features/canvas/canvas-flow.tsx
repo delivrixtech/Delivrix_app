@@ -427,7 +427,7 @@ function layoutEdges(canvasEdges: CanvasEdge[]): Edge[] {
       : isReady
         ? "#4ade80"
         : isProgress
-          ? "#fbbf24"
+          ? "#4cc5ff"
           : isPending
             ? "rgba(255,255,255,0.22)"
             : "rgba(255,255,255,0.22)";

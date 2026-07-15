@@ -1,13 +1,9 @@
-// Fonts (rebrand B/W 2026-05-28, empaquetado offline 2026-07-13):
-// Montserrat (heading H1/H2, UI, body, caption + italic para HumanNote) y
-// JetBrains Mono (datos/audit/code). Una sola familia de marca, servida
-// 100% offline via @fontsource — sin Google Fonts ni fallback a system-ui.
-import "@fontsource-variable/montserrat/index.css";
-import "@fontsource-variable/montserrat/wght-italic.css";
-import "@fontsource/jetbrains-mono/400.css";
-import "@fontsource/jetbrains-mono/500.css";
-import "@fontsource/jetbrains-mono/600.css";
-import "@fontsource/jetbrains-mono/700.css";
+// Tipografia UNICA del sitio (decision 2026-07-14, direccion Aivora): Inter
+// (variable, self-host 100% offline via @fontsource — sin Google Fonts).
+// UNA sola familia en TODO el panel, sin mezcla: fuera Montserrat, JetBrains
+// Mono y Satoshi. Los tokens --font-* (incluido --font-mono) apuntan todos a
+// Inter en tokens.css; los numeros usan font-variant-numeric:tabular-nums.
+import "@fontsource-variable/inter";
 
 import "@xyflow/react/dist/style.css";
 import "./app/tokens.css";

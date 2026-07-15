@@ -15,13 +15,20 @@
          (2026-07-13) — se quitó la carga por Google Fonts para funcionar
          sin red y bajo CSP estricta. -->
     <script>
-      // v5 rebrand 2026-05-28: dark-first by default.
-      // Operadores trabajan en dark; light disponible para presentaciones
-      // diurnas. Si el usuario forzó light en localStorage, respetar.
+      // Tema inicial (pre-paint, sin FOUC): prioridad 1) elección guardada del
+      // usuario en localStorage; 2) ajuste del DISPOSITIVO (prefers-color-scheme);
+      // 3) fallback oscuro (superficie de ops). Corre antes de React.
       (function applyInitialTheme() {
         try {
           var stored = window.localStorage.getItem("delivrix-admin-theme");
-          var theme = stored === "light" || stored === "dark" ? stored : "dark";
+          var theme;
+          if (stored === "light" || stored === "dark") {
+            theme = stored;
+          } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
+            theme = "light";
+          } else {
+            theme = "dark";
+          }
           document.documentElement.setAttribute("data-theme", theme);
         } catch (error) {
           document.documentElement.setAttribute("data-theme", "dark");

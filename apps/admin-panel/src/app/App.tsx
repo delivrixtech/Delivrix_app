@@ -88,20 +88,29 @@ function writeRouteToHistory({ section, tab }: RouteState) {
   window.history.pushState(null, "", nextPath);
 }
 
-const shellGroups: NavGroup[] = navGroups.map((group) => ({
-  id: group.id,
-  label: group.label,
-  items: group.items.map((id) => {
-    const section = navSectionsById[id];
-    const Icon = section.icon;
-    return {
-      id: section.id,
-      label: section.navLabel,
-      icon: <Icon size={14} strokeWidth={1.75} aria-hidden="true" />,
-      status: section.id === "canvas" ? "ok" : null
-    };
-  })
-}));
+/**
+ * Grupos de nav para el shell. `badges` inyecta conteos reales desde el
+ * dashboard (p.ej. DLQ/jobs atascados) sin hardcodear números plausibles:
+ * si el dato no existe o es 0, no se pinta badge.
+ */
+function buildShellGroups(badges: Partial<Record<NavSectionId, number>>): NavGroup[] {
+  return navGroups.map((group) => ({
+    id: group.id,
+    label: group.label,
+    items: group.items.map((id) => {
+      const section = navSectionsById[id];
+      const Icon = section.icon;
+      const badge = badges[section.id];
+      return {
+        id: section.id,
+        label: section.navLabel,
+        icon: <Icon size={17} strokeWidth={1.6} aria-hidden="true" />,
+        status: null,
+        badge: badge && badge > 0 ? badge : null
+      };
+    })
+  }));
+}
 
 export function App() {
   const [route, setRoute] = useState<RouteState>(readInitialRoute);
@@ -244,6 +253,12 @@ function AppShellFrame({
   const section = navSectionsById[activeSection];
   const isCanvas = activeSection === "canvas";
   const killSwitchArmed = !(dashboard.data?.killSwitch.enabled ?? false);
+  // Badge DLQ/jobs atascados desde datos reales (0/undefined → sin badge).
+  const dlqCount = dashboard.data?.stuckJobs.count ?? 0;
+  const shellGroups = useMemo<NavGroup[]>(
+    () => buildShellGroups({ envio: dlqCount }),
+    [dlqCount]
+  );
 
   const handleRefresh = async () => {
     const result = await dashboard.refetch();
@@ -266,7 +281,6 @@ function AppShellFrame({
         activeSection={activeSection}
         onSelect={(id) => onNavigate(id)}
         breadcrumb={{ group: navGroupLabelFor(activeSection), section: section.navLabel }}
-        agentState="idle"
         killSwitchArmed={killSwitchArmed}
         killSwitchOnClick={() => onNavigate("clusters")}
         onRefresh={handleRefresh}
@@ -274,6 +288,7 @@ function AppShellFrame({
         onOpenCommand={palette.open}
         chatOpen={chatOpen}
         onToggleChat={onToggleChat}
+        alerts={dashboard.data?.overview.alerts ?? []}
         user={{ initial: "J", label: "operador" }}
         contentClassName={isCanvas ? "overflow-hidden" : undefined}
         contentInnerClassName={isCanvas ? "h-full max-w-none px-0 py-0" : undefined}
