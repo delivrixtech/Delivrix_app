@@ -135,7 +135,7 @@ const STYLE = `
 .cv5 .cvcollapse{width:26px;height:26px;border-radius:7px;background:none;border:1px solid transparent;color:var(--t3);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto}
 .cv5 .cvcollapse:hover{background:var(--s1);color:var(--t1);border-color:var(--line)}
 
-.cv5 .view{flex:1;display:flex;flex-direction:column;min-width:400px;background:var(--bg)}
+.cv5 .view{flex:1;display:flex;flex-direction:column;min-width:400px;background:var(--bg);container-type:inline-size;container-name:cv5view}
 .cv5 .tabs{display:flex;align-items:center;gap:2px;padding:0 24px;height:46px;flex:0 0 46px;border-bottom:1px solid var(--line);background:var(--s1)}
 .cv5 .tab{display:flex;align-items:center;gap:7px;height:46px;padding:0 13px;color:var(--t3);font-size:13px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent;position:relative;top:1px;background:none;border-left:none;border-right:none;border-top:none;font-family:inherit}
 .cv5 .tab .cnt{font-size:11px;color:var(--t3);background:var(--s2);border:1px solid var(--line);border-radius:5px;padding:0 5px;line-height:16px}
@@ -161,7 +161,10 @@ const STYLE = `
 .cv5 .scroll{flex:1;overflow:auto;min-height:0}
 .cv5 .art{padding:28px 32px 56px;max-width:1180px;width:100%;margin:0 auto}
 .cv5 .runwrap{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:32px;align-items:start}
-@media (max-width:1120px){.cv5 .runwrap{grid-template-columns:1fr;gap:24px}}
+/* El corte mide el ANCHO DE LA COLUMNA .view (no el viewport): con convos+chat abiertos
+   la columna puede quedar en ~400px aunque el viewport sea ancho, y el grid de 2 columnas
+   (1fr + 360px) trituraba la línea de tiempo. 830px = 360 side + 32 gap + ~438 mínimos del main. */
+@container cv5view (max-width:829px){.cv5 .runwrap{grid-template-columns:1fr;gap:24px}}
 .cv5 .rmain{min-width:0}.cv5 .rside{display:flex;flex-direction:column;gap:12px;min-width:0}
 .cv5 .hero{display:flex;align-items:flex-start;gap:16px;padding-bottom:20px;border-bottom:1px solid var(--line)}
 .cv5 .hero .icn{width:44px;height:44px;border-radius:12px;background:var(--s2);border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;color:var(--t1);flex:0 0 auto}
