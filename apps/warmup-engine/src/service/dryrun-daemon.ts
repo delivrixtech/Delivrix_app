@@ -22,9 +22,20 @@
 
 import { pathToFileURL } from "node:url";
 import { Pool } from "pg";
-import { warmupTransportKind, type WarmupEnv } from "../runtime/config.ts";
+import {
+  warmupTransportKind,
+  warmupGmailOAuthEnabled,
+  readWarmupGmailSeedConfig,
+  type WarmupEnv
+} from "../runtime/config.ts";
 import { MockTransport } from "../runtime/transport.ts";
 import type { ImapClient } from "../reader/imap-placement-reader.ts";
+import {
+  createGoogleOAuthTokenProvider,
+  loadGoogleOAuthConfig
+} from "../live/google-oauth-token-provider.ts";
+import { createGmailOAuthImapClient } from "../live/mail-adapters.ts";
+import { verifyGmailRead } from "./verify-gmail-read.ts";
 import type { WarmupNode } from "../domain/types.ts";
 import { createPgWarmupStores, type PgClient } from "../store/pg-stores.ts";
 import { runWarmupMigrations } from "../store/warmup-migrate.ts";
@@ -45,6 +56,79 @@ export const noopImapClient: ImapClient = {
     return [];
   }
 };
+
+/** Logger mínimo del selector de IMAP (info/warn). Inyectable ⇒ tests silenciosos y aseverables. */
+export interface DryRunImapLogger {
+  info(msg: string): void;
+  warn(msg: string): void;
+}
+
+const defaultDryRunImapLogger: DryRunImapLogger = {
+  info: (m) => console.log(`[warmup-dryrun] ${m}`),
+  warn: (m) => console.warn(`[warmup-dryrun] ${m}`)
+};
+
+/** Seams inyectables del selector de IMAP (para testear el gating sin tocar red ni el config real). */
+export interface ResolveImapDeps {
+  logger?: DryRunImapLogger;
+  /**
+   * Construye el ImapClient OAuth real: valida el OAuth config (fail-closed) y arma el cliente XOAUTH2.
+   * Inyectable en tests (para simular config OK ⇒ cliente, o config inválida ⇒ throw).
+   */
+  buildOAuthImapClient?: (env: WarmupEnv) => Promise<ImapClient>;
+}
+
+/**
+ * Construye el ImapClient OAuth REAL para leer el seed inbox: valida el OAuth config de forma temprana
+ * (fail-closed; lanza si falta/está mal SIN exponer valores) y arma el cliente XOAUTH2 (el access token
+ * se mintea perezosamente en el primer `search`, nunca aquí). Cero envío de correo.
+ */
+async function buildRealOAuthImapClient(env: WarmupEnv): Promise<ImapClient> {
+  const seed = readWarmupGmailSeedConfig(env);
+  // Validación temprana del config: si falta o está inválido, esto lanza (fail-closed) antes de cablear.
+  await loadGoogleOAuthConfig(seed.configPath);
+  const tokenProvider = createGoogleOAuthTokenProvider(
+    seed.configPath ? { configPath: seed.configPath } : {}
+  );
+  return createGmailOAuthImapClient(tokenProvider, { host: seed.host, user: seed.user });
+}
+
+/**
+ * Selecciona el ImapClient del dry-run según WARMUP_GMAIL_OAUTH_ENABLE (default OFF).
+ *   - Flag OFF ⇒ noopImapClient (no se lee ningún seed real; cero I/O IMAP).
+ *   - Flag ON + config OK ⇒ cliente OAuth XOAUTH2 real (LECTURA del seed inbox; el ENVÍO sigue mock).
+ *   - Flag ON + config ausente/inválida ⇒ log claro (SIN secretos) + fallback al no-op. NUNCA crashea
+ *     el daemon (fail-closed a "no leer" en vez de a "romper").
+ *
+ * IMPORTANTE: esto SOLO decide la LECTURA. El transporte de ENVÍO es MockTransport SIEMPRE en dry-run
+ * (ver createDryRunTransport); este selector no lo toca.
+ */
+export async function resolveDryRunImapClient(
+  env: WarmupEnv = process.env,
+  deps: ResolveImapDeps = {}
+): Promise<ImapClient> {
+  if (!warmupGmailOAuthEnabled(env)) {
+    return noopImapClient;
+  }
+  const logger = deps.logger ?? defaultDryRunImapLogger;
+  const build = deps.buildOAuthImapClient ?? buildRealOAuthImapClient;
+  try {
+    const client = await build(env);
+    logger.info(
+      "WARMUP_GMAIL_OAUTH_ENABLE=on ⇒ LECTURA real del seed inbox por OAuth (XOAUTH2). " +
+        "El ENVÍO sigue MockTransport (cero correo real)."
+    );
+    return client;
+  } catch (err) {
+    // El .message de nuestros errores lleva un CÓDIGO snake_case (+ a lo sumo el path), nunca secretos.
+    const detail = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      `WARMUP_GMAIL_OAUTH_ENABLE=on pero no se pudo armar la lectura OAuth: ${detail}. ` +
+        "Usando IMAP no-op (el dry-run sigue sin leer el seed real). El ENVÍO sigue MockTransport."
+    );
+    return noopImapClient;
+  }
+}
 
 /**
  * Destinatario sintético determinista para dry-run. `.invalid` es un TLD reservado (RFC 2606) que NUNCA
@@ -116,7 +200,8 @@ export async function runDryRunOnce(
 ): Promise<{ result: WarmupTickResult; transport: MockTransport }> {
   await runWarmupMigrations(pool, { logger: { info: (m) => console.log(`[warmup-dryrun] ${m}`) } });
   const stores = createPgWarmupStores(pool);
-  const { deps, transport } = buildDryRunDeps(stores, { now: new Date(), env });
+  const imapClient = await resolveDryRunImapClient(env);
+  const { deps, transport } = buildDryRunDeps(stores, { now: new Date(), env, imapClient });
   const result = await runWarmupTick(deps, env);
   return { result, transport };
 }
@@ -174,8 +259,11 @@ export async function startWarmupDryRunDaemon(
     await runWarmupMigrations(pool, { logger: { info: (m) => console.log(`[warmup-dryrun] ${m}`) } });
     const stores = createPgWarmupStores(pool);
     const transport = createDryRunTransport(env); // uno estable para toda la vida del daemon.
+    // Selección de IMAP una sola vez al arrancar (valida el OAuth config si el flag está on; fail-closed
+    // al no-op si falta/está mal). El ENVÍO sigue MockTransport SIEMPRE.
+    const imapClient = await resolveDryRunImapClient(env);
     const runTick = async (): Promise<WarmupTickResult> => {
-      const { deps } = buildDryRunDeps(stores, { now: new Date(), env, transport });
+      const { deps } = buildDryRunDeps(stores, { now: new Date(), env, transport, imapClient });
       return runWarmupTick(deps, env);
     };
     await startWarmupDaemon(runTick, { intervalMs: resolveIntervalMs(env), env });
@@ -188,7 +276,12 @@ export async function startWarmupDryRunDaemon(
 // pathToFileURL resuelve la ruta relativa contra cwd y codifica espacios (el repo vive en "delivrix app"),
 // así la comparación con import.meta.url es robusta — una comparación `file://${argv[1]}` fallaría aquí.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  startWarmupDryRunDaemon().catch((error) => {
+  // --verify-gmail-read: conecta al seed inbox real vía OAuth y muestra SOLO un resumen seguro (conteos
+  // por carpeta). NO migra, NO toca el transporte, NO envía correo. Cualquier otro modo ⇒ dry-run daemon.
+  const main = process.argv.includes("--verify-gmail-read")
+    ? verifyGmailRead().then(() => undefined)
+    : startWarmupDryRunDaemon();
+  main.catch((error) => {
     console.error("[warmup-dryrun] fallo fatal:", error instanceof Error ? error.message : error);
     process.exit(1);
   });
