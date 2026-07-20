@@ -6,7 +6,11 @@ import {
   warmupTransportKind,
   readWarmupSmtpConfig,
   warmupPlacementMin,
-  DEFAULT_WARMUP_PLACEMENT_MIN
+  DEFAULT_WARMUP_PLACEMENT_MIN,
+  warmupGmailOAuthEnabled,
+  readWarmupGmailSeedConfig,
+  DEFAULT_WARMUP_GMAIL_SEED_USER,
+  DEFAULT_WARMUP_GMAIL_IMAP_HOST
 } from "./config.ts";
 
 /** Silencia console.warn dentro de `fn` (los fallbacks de config avisan por warning). */
@@ -32,6 +36,30 @@ test("ON solo con true/1 explícito", () => {
   assert.equal(warmupEngineEnabled({ WARMUP_ENGINE_ENABLE: "true" }), true);
   assert.equal(warmupEngineEnabled({ WARMUP_ENGINE_ENABLE: "TRUE" }), true);
   assert.equal(warmupEngineEnabled({ WARMUP_ENGINE_ENABLE: "1" }), true);
+});
+
+test("warmupGmailOAuthEnabled: default OFF; ON solo con true/1 explícito", () => {
+  assert.equal(warmupGmailOAuthEnabled({}), false);
+  assert.equal(warmupGmailOAuthEnabled({ WARMUP_GMAIL_OAUTH_ENABLE: "false" }), false);
+  assert.equal(warmupGmailOAuthEnabled({ WARMUP_GMAIL_OAUTH_ENABLE: "0" }), false);
+  assert.equal(warmupGmailOAuthEnabled({ WARMUP_GMAIL_OAUTH_ENABLE: "true" }), true);
+  assert.equal(warmupGmailOAuthEnabled({ WARMUP_GMAIL_OAUTH_ENABLE: "1" }), true);
+});
+
+test("readWarmupGmailSeedConfig: defaults del seed + overrides; configPath opcional", () => {
+  const def = readWarmupGmailSeedConfig({});
+  assert.equal(def.host, DEFAULT_WARMUP_GMAIL_IMAP_HOST);
+  assert.equal(def.user, DEFAULT_WARMUP_GMAIL_SEED_USER);
+  assert.equal(def.configPath, undefined);
+
+  const over = readWarmupGmailSeedConfig({
+    WARMUP_GMAIL_IMAP_HOST: "imap.custom.test",
+    WARMUP_GMAIL_SEED_USER: "seed@custom.test",
+    WARMUP_GMAIL_OAUTH_CONFIG: "/tmp/oauth.json"
+  });
+  assert.equal(over.host, "imap.custom.test");
+  assert.equal(over.user, "seed@custom.test");
+  assert.equal(over.configPath, "/tmp/oauth.json");
 });
 
 test("assertWarmupEngineEnabled lanza si está OFF y no lanza si está ON", () => {

@@ -5,11 +5,14 @@ import {
   createDryRunTransport,
   dryRunRecipient,
   dryRunTestId,
-  noopImapClient
+  noopImapClient,
+  resolveDryRunImapClient,
+  type DryRunImapLogger
 } from "./dryrun-daemon.ts";
 import { MockTransport } from "../runtime/transport.ts";
 import type { WarmupNode } from "../domain/types.ts";
 import type { WarmupStores } from "../store/ports.ts";
+import type { ImapClient } from "../reader/imap-placement-reader.ts";
 
 function node(over: Partial<WarmupNode> = {}): WarmupNode {
   return {
@@ -72,4 +75,49 @@ test("buildDryRunDeps: rechaza WARMUP_TRANSPORT=postfix vía createDryRunTranspo
     () => buildDryRunDeps(stores, { now: new Date(), env: { WARMUP_TRANSPORT: "postfix" } }),
     /warmup_dryrun_requires_mock_transport/
   );
+});
+
+// ── Gating de la LECTURA OAuth (WARMUP_GMAIL_OAUTH_ENABLE) ───────────────────────────────────────────
+
+function recordingLogger(): DryRunImapLogger & { infos: string[]; warns: string[] } {
+  const infos: string[] = [];
+  const warns: string[] = [];
+  return { infos, warns, info: (m) => infos.push(m), warn: (m) => warns.push(m) };
+}
+
+test("resolveDryRunImapClient: flag OFF ⇒ no-op (no lee el seed real)", async () => {
+  const logger = recordingLogger();
+  const c = await resolveDryRunImapClient({}, { logger });
+  assert.equal(c, noopImapClient);
+  assert.equal(logger.infos.length, 0);
+  assert.equal(logger.warns.length, 0);
+});
+
+test("resolveDryRunImapClient: flag ON + config OK ⇒ usa el cliente OAuth (no el no-op)", async () => {
+  const logger = recordingLogger();
+  const sentinel: ImapClient = { async search() { return []; } };
+  const c = await resolveDryRunImapClient(
+    { WARMUP_GMAIL_OAUTH_ENABLE: "true" },
+    { logger, buildOAuthImapClient: async () => sentinel }
+  );
+  assert.equal(c, sentinel);
+  assert.ok(logger.infos.some((l) => l.includes("LECTURA real")));
+  assert.ok(logger.infos.some((l) => l.includes("MockTransport")));
+});
+
+test("resolveDryRunImapClient: flag ON + config inválida ⇒ fallback no-op (fail-closed, no crashea)", async () => {
+  const logger = recordingLogger();
+  const c = await resolveDryRunImapClient(
+    { WARMUP_GMAIL_OAUTH_ENABLE: "1" },
+    {
+      logger,
+      buildOAuthImapClient: async () => {
+        throw new Error("warmup_oauth_config_missing: no such file");
+      }
+    }
+  );
+  assert.equal(c, noopImapClient);
+  assert.ok(logger.warns.some((l) => l.includes("no-op")));
+  // El warning lleva el código del error, no secretos.
+  assert.ok(logger.warns.some((l) => l.includes("warmup_oauth_config_missing")));
 });

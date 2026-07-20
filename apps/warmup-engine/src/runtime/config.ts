@@ -16,6 +16,18 @@ export interface WarmupEnv {
   WARMUP_SMTP_PORT?: string;
   /** Piso de placement (Wilson-LB) que expone el filtro /warm (roadmap 5.1). Default 0.80. */
   WARMUP_PLACEMENT_MIN?: string;
+  /**
+   * Activa la LECTURA real del seed inbox por OAuth (XOAUTH2) en el dry-run. Default OFF.
+   * OJO: SOLO afecta la LECTURA (IMAP). El ENVÍO sigue MockTransport SIEMPRE en dry-run — este flag
+   * NO habilita enviar correo real.
+   */
+  WARMUP_GMAIL_OAUTH_ENABLE?: string;
+  /** Ruta al OAuth config del seed inbox (default config/warmup-oauth.local.json). */
+  WARMUP_GMAIL_OAUTH_CONFIG?: string;
+  /** Usuario (dirección) del seed inbox Gmail (default infradelivrixdemo@gmail.com). */
+  WARMUP_GMAIL_SEED_USER?: string;
+  /** Host IMAP del seed inbox (default imap.gmail.com). */
+  WARMUP_GMAIL_IMAP_HOST?: string;
 }
 
 /** true solo si WARMUP_ENGINE_ENABLE está explícitamente en "true"/"1". Default OFF (fail-safe). */
@@ -120,4 +132,38 @@ export function warmupPlacementMin(env: WarmupEnv = process.env): number {
     `usando ${DEFAULT_WARMUP_PLACEMENT_MIN}.`
   );
   return DEFAULT_WARMUP_PLACEMENT_MIN;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lectura OAuth del seed inbox (XOAUTH2) — SOLO afecta la LECTURA en dry-run.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Default del seed inbox de placement (nuestro setup de warmup). NO es secreto: es una dirección. */
+export const DEFAULT_WARMUP_GMAIL_SEED_USER = "infradelivrixdemo@gmail.com";
+/** Host IMAP del seed inbox por defecto. */
+export const DEFAULT_WARMUP_GMAIL_IMAP_HOST = "imap.gmail.com";
+
+/**
+ * true solo si WARMUP_GMAIL_OAUTH_ENABLE está explícitamente en "true"/"1". Default OFF (fail-safe).
+ * OJO: habilita SOLO la LECTURA real del seed inbox por OAuth; el ENVÍO en dry-run sigue mock.
+ */
+export function warmupGmailOAuthEnabled(env: WarmupEnv = process.env): boolean {
+  const raw = env.WARMUP_GMAIL_OAUTH_ENABLE?.trim().toLowerCase();
+  return raw === "true" || raw === "1";
+}
+
+/** Config del seed inbox (host/user/ruta del OAuth config), con defaults del setup de warmup. */
+export interface WarmupGmailSeedConfig {
+  host: string;
+  user: string;
+  /** Ruta del OAuth config; ausente ⇒ el proveedor usa su default relativo al repo root. */
+  configPath?: string;
+}
+
+/** Lee host/user/configPath del seed inbox desde el env, con defaults. `configPath` opcional. */
+export function readWarmupGmailSeedConfig(env: WarmupEnv = process.env): WarmupGmailSeedConfig {
+  const host = env.WARMUP_GMAIL_IMAP_HOST?.trim() || DEFAULT_WARMUP_GMAIL_IMAP_HOST;
+  const user = env.WARMUP_GMAIL_SEED_USER?.trim() || DEFAULT_WARMUP_GMAIL_SEED_USER;
+  const configPath = env.WARMUP_GMAIL_OAUTH_CONFIG?.trim();
+  return { host, user, ...(configPath ? { configPath } : {}) };
 }
