@@ -190,6 +190,7 @@ import { handleReadDkimStatus } from "./routes/openclaw-dkim-status.ts";
 import { handleReadRunStateIntegrity } from "./routes/openclaw-run-state-integrity.ts";
 import { handleWarmupStatus } from "./routes/warmup-status.ts";
 import { handleWarmupTrends } from "./routes/warmup-trends.ts";
+import { handleWarmupActivity } from "./routes/warmup-activity.ts";
 import {
   handleWarmupMailboxOnboard,
   handleWarmupMailboxOnboardBatch,
@@ -2622,6 +2623,15 @@ const server = createServer(async (request, response) => {
         now: () => new Date(),
         logger: gatewayRuntimeLog,
         env: process.env
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/warmup/activity") {
+      return await handleWarmupActivity(request, response, {
+        pgClient: episodicScratchPool,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        now: () => new Date(),
+        logger: gatewayRuntimeLog
       });
     }
 
