@@ -1,0 +1,89 @@
+{
+  "_comment": "Banco de contenido v1 del warmup — conversaciones COTIDIANAS y variadas para calentar bandejas sin levantar sospechas. Cada entrada es un hilo natural (asunto + cuerpo + respuesta esperada), sin links, sin marketing, sin CTA. Distinto tema/tono para que el tráfico parezca humano. NO es un LLM por correo: es un banco curado que el runner rota. Español rioplatense/neutro.",
+  "conversations": [
+    {
+      "topic": "reunion",
+      "subject": "Coordinamos la revisión del reporte",
+      "body": "Hola, te paso el borrador para que le des una mirada antes del viernes. Son un par de puntos nomás; si te parece lo cerramos en una llamada corta. Avisame qué horario te sirve. Gracias!",
+      "reply": "Perfecto, lo miro hoy y te confirmo. El viernes a las 10 me sirve. Gracias por el adelanto!"
+    },
+    {
+      "topic": "cafe",
+      "subject": "Café la semana que viene?",
+      "body": "Che, hace mil que no nos vemos. Andás por el centro la semana que viene? Me tomaría un café con vos y ponernos al día. Decime qué día te queda cómodo.",
+      "reply": "Dale, me encanta. El martes a la tarde estoy por ahí. Elegí el lugar y voy."
+    },
+    {
+      "topic": "planilla",
+      "subject": "Duda con la planilla de gastos",
+      "body": "Buenas, tengo una duda con la columna de reintegros del mes pasado: van con IVA incluido o lo separamos? No quiero cargarlo mal. Cualquier cosa te llamo.",
+      "reply": "Va sin IVA, esa columna es neto. Si querés después lo repasamos juntos en cinco minutos."
+    },
+    {
+      "topic": "envio",
+      "subject": "Llegó el paquete?",
+      "body": "Hola! Te llegó lo que te mandé la semana pasada? Me dijeron que lo entregaban el jueves pero quería confirmar que esté todo bien. Avisame.",
+      "reply": "Sí, llegó justo ayer y perfecto. Muchas gracias por acordarte de avisar!"
+    },
+    {
+      "topic": "agenda",
+      "subject": "Cambio de horario mañana",
+      "body": "Buenas, mañana se me corrió una cosa a la mañana. Podemos mover lo nuestro para después de las 3? Si no te sirve buscamos otro día sin drama. Gracias por la mano.",
+      "reply": "No hay problema, después de las 3 me viene bien igual. Nos hablamos mañana entonces."
+    },
+    {
+      "topic": "receta",
+      "subject": "La receta que te debía",
+      "body": "Como quedamos, te paso los pasos de la tarta que te gustó: masa común, relleno de verdura y bien de queso arriba. El secreto es hornearla fuerte los primeros diez minutos. Después me contás cómo salió!",
+      "reply": "Buenísimo, la hago el finde. Gracias! Te mando foto cuando la saque del horno."
+    },
+    {
+      "topic": "libro",
+      "subject": "El libro que me recomendaste",
+      "body": "Arranqué el libro que me dijiste y no lo puedo soltar. Vas por la mitad vos también? No me spoilees el final igual jaja. Me encantó la recomendación.",
+      "reply": "Jaja tranquilo, no digo nada. La segunda parte se pone todavía mejor. Después lo comentamos."
+    },
+    {
+      "topic": "presupuesto",
+      "subject": "Repaso del presupuesto del trimestre",
+      "body": "Hola, junté los números del trimestre y quedaron bastante en línea con lo previsto. Hay un par de rubros que conviene mirar con calma. Cuando tengas un rato lo vemos sin apuro.",
+      "reply": "Genial que haya cerrado bien. La semana que viene tengo aire, agendemos media hora."
+    },
+    {
+      "topic": "mudanza",
+      "subject": "Me mudo el mes que viene",
+      "body": "Novedad: por fin conseguí el departamento que buscaba y me mudo a fin de mes. Zona tranquila, cerca de todo. Cuando esté instalado te invito a conocerlo. Estoy chocho.",
+      "reply": "Qué grande! Me alegro un montón. Contá conmigo para la mudanza si necesitás una mano."
+    },
+    {
+      "topic": "viaje",
+      "subject": "Fotos del viaje",
+      "body": "Volví del viaje ayer, estuvo increíble. Caminamos muchísimo y comimos bárbaro. Te cuento todo cuando nos veamos, tengo mil anécdotas. Ya con ganas de la próxima escapada.",
+      "reply": "Qué envidia sana! Me muero por que me cuentes. Organizamos algo nosotros pronto también."
+    },
+    {
+      "topic": "factura",
+      "subject": "Confirmación de la factura de marzo",
+      "body": "Buenas, quería confirmar que recibiste la factura de marzo y que esté todo correcto. Si ves algo raro en algún ítem avisame y lo corrijo enseguida. Gracias!",
+      "reply": "Recibida y revisada, está todo perfecto. Gracias por la prolijidad de siempre."
+    },
+    {
+      "topic": "cumple",
+      "subject": "Juntada por el cumple",
+      "body": "Estoy organizando algo chiquito por mi cumple el sábado a la noche. Nada formal, picada y charla. Ojalá puedas venir, me encantaría verte. Confirmame así calculo.",
+      "reply": "Ahí voy fijo! Gracias por invitarme. Llevo algo para picar. Nos vemos el sábado."
+    },
+    {
+      "topic": "clima",
+      "subject": "Se largó a llover justo",
+      "body": "Che, viste cómo se largó a llover recién? Menos mal que llegué antes a casa. Vos pudiste volver bien? Avisame que llegaste sin problema. Abrigate que refrescó.",
+      "reply": "Llegué justo antes también, por suerte. Sí, bajó un montón la temperatura de golpe."
+    },
+    {
+      "topic": "proyecto",
+      "subject": "Avance del proyecto esta semana",
+      "body": "Hola, te hago un resumen rápido: cerramos la primera etapa y quedó todo probado. La semana que viene arrancamos con lo que sigue. Vamos bien de tiempos. Después lo charlamos con más detalle.",
+      "reply": "Excelente noticia, gracias por el update. Cualquier cosa que necesites de mi lado, avisame."
+    }
+  ]
+}

@@ -442,6 +442,11 @@ export function WarmupV5() {
         />
       </motion.div>
 
+      {/* Lo primero que ve el operador: el loop de warmup ocurriendo en tiempo real. */}
+      <motion.section variants={staggerItem}>
+        <WarmupActivityFeed />
+      </motion.section>
+
       <Body
         state={state}
         trends={trends}
@@ -507,10 +512,12 @@ function Body({
 
 function LivePollSide({
   lastUpdateAt,
-  isError
+  isError,
+  pollMs = POLL_MS
 }: {
   lastUpdateAt: number | null;
   isError: boolean;
+  pollMs?: number;
 }) {
   const relative = lastUpdateAt
     ? formatRelative(new Date(lastUpdateAt).toISOString())
@@ -519,9 +526,393 @@ function LivePollSide({
     <div className="flex flex-col items-end gap-1.5">
       <StateBadge status={isError ? "quarantined" : "active"} label={isError ? "fallo" : "en vivo"} />
       <Caption style={{ fontSize: 11 }}>
-        poll {POLL_MS / 1000}s · {relative}
+        poll {pollMs / 1000}s · {relative}
       </Caption>
     </div>
+  );
+}
+
+/* ============================================================
+ * Actividad en vivo — el loop de warmup ocurriendo, vuelta por vuelta.
+ *
+ * GET /v1/warmup/activity (read-only): eventos de cada ciclo (una "vuelta") con sus
+ * 4 etapas — ① envío → ② medición → ③ interacción → ④ respuesta — anotadas con el
+ * asunto cotidiano, el placement medido, la caja emisora → el buzón semilla. Poll más
+ * rápido (8s) que el resto de la vista para que se sienta VIVO. Anti-mock estricto: sin
+ * eventos (o con `note`) → estado vacío honesto, nunca vueltas inventadas. Sin ámbar:
+ * envío=warming, interacción=acento, respuesta=success, medición=neutral, error=warning.
+ * ============================================================ */
+
+interface WarmupActivityEvent {
+  id: string;
+  occurredAt: string;
+  cycleId: string;
+  nodeDomain: string;
+  seedInbox: string;
+  kind: "sent" | "measured" | "engaged" | "replied" | "error";
+  placement: string | null;
+  subject: string | null;
+  detail: Record<string, unknown>;
+  testId: string | null;
+}
+
+interface WarmupActivitySnapshot {
+  generatedAt: string;
+  events: WarmupActivityEvent[];
+  note?: string; // p.ej. "postgres_unavailable" cuando degrada — se trata como feed vacío
+}
+
+const ACTIVITY_STAGE_ORDER = ["sent", "measured", "engaged", "replied"] as const;
+type ActivityStageKey = (typeof ACTIVITY_STAGE_ORDER)[number];
+
+/** Una vuelta de calentamiento: las 4 etapas de UN ciclo, con su asunto/placement. */
+export interface WarmupCycle {
+  cycleId: string;
+  subject: string | null;
+  nodeDomain: string;
+  seedInbox: string;
+  occurredAt: string; // etapa más reciente del ciclo (orden + tiempo relativo)
+  stages: Record<ActivityStageKey, boolean>;
+  placement: string | null;
+  hasError: boolean;
+  brokeAtStage: ActivityStageKey | null;
+  eventCount: number;
+}
+
+function toTime(iso: string): number {
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Agrupa eventos por cycleId en "vueltas". Pura y testeable: detecta qué etapas
+ * dispararon, levanta el placement medido (prefiere la etapa de medición), marca si
+ * hubo error y en qué etapa se cortó, y ordena las vueltas más-reciente-primero (cap
+ * en `limit`). Entrada vacía/basura o eventos sin cycleId ⇒ se descartan sin lanzar.
+ */
+export function groupActivityByCycle(
+  events: WarmupActivityEvent[] | null | undefined,
+  limit = 12
+): WarmupCycle[] {
+  if (!Array.isArray(events) || events.length === 0) return [];
+
+  const groups = new Map<string, WarmupActivityEvent[]>();
+  for (const ev of events) {
+    if (!ev || typeof ev.cycleId !== "string" || ev.cycleId.length === 0) continue;
+    const list = groups.get(ev.cycleId) ?? [];
+    list.push(ev);
+    groups.set(ev.cycleId, list);
+  }
+
+  const cycles: WarmupCycle[] = [];
+  for (const [cycleId, list] of groups) {
+    const stages: Record<ActivityStageKey, boolean> = {
+      sent: false,
+      measured: false,
+      engaged: false,
+      replied: false
+    };
+    let placement: string | null = null;
+    let subject: string | null = null;
+    let nodeDomain = "";
+    let seedInbox = "";
+    let occurredAt = "";
+    let hasError = false;
+    let errorDetailStage: ActivityStageKey | null = null;
+
+    for (const ev of list) {
+      if (ev.kind === "error") {
+        hasError = true;
+        const s = ev.detail?.stage;
+        if (typeof s === "string" && (ACTIVITY_STAGE_ORDER as readonly string[]).includes(s)) {
+          errorDetailStage = s as ActivityStageKey;
+        }
+      } else if (ev.kind in stages) {
+        stages[ev.kind as ActivityStageKey] = true;
+      }
+      // placement: preferir la etapa de medición; si no, cualquier placement no nulo.
+      if (ev.placement && (ev.kind === "measured" || placement === null)) {
+        placement = ev.placement;
+      }
+      if (!subject && typeof ev.subject === "string" && ev.subject.length > 0) subject = ev.subject;
+      if (!nodeDomain && ev.nodeDomain) nodeDomain = ev.nodeDomain;
+      if (!seedInbox && ev.seedInbox) seedInbox = ev.seedInbox;
+      if (!occurredAt || toTime(ev.occurredAt) > toTime(occurredAt)) occurredAt = ev.occurredAt;
+    }
+
+    const brokeAtStage = hasError
+      ? errorDetailStage ?? ACTIVITY_STAGE_ORDER.find((k) => !stages[k]) ?? null
+      : null;
+
+    cycles.push({
+      cycleId,
+      subject,
+      nodeDomain,
+      seedInbox,
+      occurredAt,
+      stages,
+      placement,
+      hasError,
+      brokeAtStage,
+      eventCount: list.length
+    });
+  }
+
+  cycles.sort((a, b) => toTime(b.occurredAt) - toTime(a.occurredAt));
+  return cycles.slice(0, Math.max(0, limit));
+}
+
+const ACTIVITY_POLL_MS = 8_000; // poll más rápido que POLL_MS (30s) → sensación de "en vivo".
+
+type ActivityState =
+  | { status: "loading" }
+  | { status: "ok"; payload: WarmupActivitySnapshot; lastUpdateAt: number }
+  | { status: "error"; message: string };
+
+function useWarmupActivity(): ActivityState {
+  const query = useQuery({
+    queryKey: ["v5", "warmup", "activity"],
+    queryFn: () => getJson<WarmupActivitySnapshot>(READ_ENDPOINTS.warmupActivity),
+    refetchInterval: ACTIVITY_POLL_MS,
+    refetchIntervalInBackground: false,
+    staleTime: ACTIVITY_POLL_MS / 2
+  });
+
+  if (query.isLoading) return { status: "loading" };
+  if (query.isError) {
+    return {
+      status: "error",
+      message:
+        query.error instanceof Error
+          ? query.error.message
+          : "no se pudo obtener la actividad del warmup"
+    };
+  }
+  if (query.data) return { status: "ok", payload: query.data, lastUpdateAt: query.dataUpdatedAt };
+  return { status: "loading" };
+}
+
+/* Etapas del feed — color por token, SIN ámbar (envío=warming, medición=neutral,
+ * interacción=acento, respuesta=success). Icono lucide por etapa. */
+interface ActivityStageMeta {
+  key: ActivityStageKey;
+  label: string;
+  icon: typeof Send;
+  color: string;
+  soft: string;
+}
+
+const ACTIVITY_STAGES: ActivityStageMeta[] = [
+  { key: "sent", label: "envío", icon: Send, color: "var(--color-warming)", soft: "var(--color-warming-soft)" },
+  { key: "measured", label: "medición", icon: BarChart3, color: "var(--color-text-secondary)", soft: "var(--color-neutral-soft)" },
+  { key: "engaged", label: "interacción", icon: Activity, color: "var(--color-accent)", soft: "var(--color-accent-soft)" },
+  { key: "replied", label: "respuesta", icon: Reply, color: "var(--color-success)", soft: "var(--color-success-soft)" }
+];
+
+const ACTIVITY_STAGE_LABEL: Record<ActivityStageKey, string> = {
+  sent: "envío",
+  measured: "medición",
+  engaged: "interacción",
+  replied: "respuesta"
+};
+
+/** Tono del badge de placement: INBOX=success, SPAM=warning, resto (PROMOTIONS/OTHER)=neutral. */
+function placementBadgeTone(placement: string): "success" | "warning" | "neutral" {
+  const p = placement.toUpperCase();
+  if (p === "INBOX") return "success";
+  if (p === "SPAM") return "warning";
+  return "neutral";
+}
+
+/**
+ * WarmupActivityFeed — lo primero que ve el operador: cada vuelta de calentamiento
+ * ocurriendo en vivo. Self-contained (hace su propia query como WarmupTrendsPanel).
+ */
+function WarmupActivityFeed() {
+  const state = useWarmupActivity();
+
+  if (state.status === "loading") return <ActivityLoading />;
+  if (state.status === "error") return <ActivityUnavailable message={state.message} />;
+
+  const { events, note } = state.payload;
+  const cycles = groupActivityByCycle(events);
+
+  return (
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
+      <PanelHead
+        title={
+          <span className="inline-flex items-center gap-2">
+            <Activity size={15} strokeWidth={1.75} className="text-fg-subtle" />
+            Actividad en vivo
+          </span>
+        }
+        sub="Cada vuelta de calentamiento en tiempo real: envío → medición → interacción → respuesta, con el asunto de la conversación, dónde cayó (inbox/spam…) y la caja emisora → el buzón semilla."
+        right={
+          <LivePollSide lastUpdateAt={state.lastUpdateAt} isError={false} pollMs={ACTIVITY_POLL_MS} />
+        }
+      />
+
+      {note || cycles.length === 0 ? (
+        <ActivityEmpty />
+      ) : (
+        <div className="flex flex-col gap-2.5">
+          {cycles.map((cycle, i) => (
+            <ActivityCycleRow key={cycle.cycleId} cycle={cycle} index={i} />
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** Una vuelta: asunto + caja→semilla + tiempo relativo + placement + línea de 4 etapas. */
+function ActivityCycleRow({ cycle, index }: { cycle: WarmupCycle; index: number }) {
+  const reduce = useReducedMotion();
+  return (
+    <motion.div
+      initial={reduce ? false : { opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reduce ? undefined : { duration: 0.28, delay: Math.min(index, 6) * 0.02 }}
+      className="flex flex-col gap-3 rounded-[14px] p-3.5"
+      style={{
+        border: "1px solid var(--color-border)",
+        // error: hairline izquierda en warning (naranja), no rojo.
+        borderLeft: cycle.hasError ? "2px solid var(--color-warning)" : "1px solid var(--color-border)"
+      }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="min-w-0 truncate font-sans text-[13.5px] font-medium text-fg">
+            {cycle.subject ?? "conversación sin asunto registrado"}
+          </span>
+          <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11.5px]">
+            <MonoStrong className="text-[11.5px]">{cycle.nodeDomain || "—"}</MonoStrong>
+            <ArrowRight size={12} strokeWidth={2} className="text-fg-subtle" aria-hidden="true" />
+            <Mono className="text-fg-subtle">{cycle.seedInbox || "—"}</Mono>
+          </span>
+        </div>
+        <div className="flex flex-none flex-col items-end gap-1.5">
+          {cycle.placement ? (
+            <Pill tone={placementBadgeTone(cycle.placement)}>{cycle.placement.toLowerCase()}</Pill>
+          ) : null}
+          <Caption style={{ fontSize: 11 }}>{formatRelative(cycle.occurredAt)}</Caption>
+        </div>
+      </div>
+
+      <ActivityStageLine cycle={cycle} />
+
+      {cycle.hasError ? (
+        <div className="flex items-center gap-1.5 text-warning">
+          <AlertCircle size={13} strokeWidth={1.9} aria-hidden="true" />
+          <span className="font-sans text-[11.5px] font-medium">
+            se cortó en {cycle.brokeAtStage ? ACTIVITY_STAGE_LABEL[cycle.brokeAtStage] : "una etapa"}
+          </span>
+        </div>
+      ) : null}
+    </motion.div>
+  );
+}
+
+/** Línea compacta de las 4 etapas: encendidas en su token, apagadas en subtle, error en warning. */
+function ActivityStageLine({ cycle }: { cycle: WarmupCycle }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {ACTIVITY_STAGES.map((stage, i) => {
+        const fired = cycle.stages[stage.key];
+        const broke = cycle.hasError && cycle.brokeAtStage === stage.key;
+        const Icon = broke ? AlertCircle : stage.icon;
+        const color = broke
+          ? "var(--color-warning)"
+          : fired
+          ? stage.color
+          : "var(--color-text-tertiary)";
+        const bg = broke ? "var(--color-warning-soft)" : fired ? stage.soft : "transparent";
+        const on = fired || broke;
+        return (
+          <span key={stage.key} className="inline-flex items-center gap-1.5">
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full px-2 py-1"
+              style={{
+                background: bg,
+                color,
+                border: on ? "1px solid transparent" : "1px solid var(--color-border)",
+                opacity: on ? 1 : 0.6
+              }}
+            >
+              <Icon size={12} strokeWidth={2} aria-hidden="true" />
+              <span className="font-sans text-[11px] font-medium">{stage.label}</span>
+            </span>
+            {i < ACTIVITY_STAGES.length - 1 ? (
+              <ArrowRight size={12} strokeWidth={2} className="text-fg-subtle" aria-hidden="true" />
+            ) : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Estado vacío honesto — nunca inventa vueltas. */
+function ActivityEmpty() {
+  return (
+    <div
+      className="flex items-start gap-4 rounded-[14px] p-4"
+      style={{ border: "1px dashed var(--color-border-strong)" }}
+    >
+      <IconTile>
+        <Activity size={16} strokeWidth={1.75} color="var(--color-text-secondary)" />
+      </IconTile>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <Heading level={2}>Sin actividad todavía</Heading>
+        <BodyText>
+          Cuando corra una vuelta de calentamiento, cada etapa — envío → medición → interacción →
+          respuesta — aparece acá en vivo, con el asunto de la conversación y dónde cayó (inbox,
+          spam…).
+        </BodyText>
+      </div>
+    </div>
+  );
+}
+
+function ActivityLoading() {
+  return (
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-3">
+      <PanelHead
+        title={
+          <span className="inline-flex items-center gap-2">
+            <Activity size={15} strokeWidth={1.75} className="text-fg-subtle" />
+            Actividad en vivo
+          </span>
+        }
+      />
+      <div className="flex flex-col gap-2.5">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="h-16 w-full rounded-[14px] bg-surface-sunken" aria-hidden="true" />
+        ))}
+      </div>
+      <span className="sr-only">Cargando actividad del warmup engine…</span>
+    </Card>
+  );
+}
+
+function ActivityUnavailable({ message }: { message: string }) {
+  return (
+    <Card style={{ padding: PAD_RELAXED }} className="flex items-start gap-4">
+      <div
+        aria-hidden="true"
+        className="grid size-9 shrink-0 place-items-center rounded-xl bg-warning-soft text-warning"
+      >
+        <AlertCircle size={16} strokeWidth={1.75} />
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <Heading level={2}>Endpoint /v1/warmup/activity no responde</Heading>
+        <BodyText>
+          El backend todavía no expuso la actividad en vivo del warmup engine. Cuando esté
+          disponible, la lista de vueltas se llena sola, sin redeploy.
+        </BodyText>
+        <Mono className="break-all">{message}</Mono>
+      </div>
+    </Card>
   );
 }
 
