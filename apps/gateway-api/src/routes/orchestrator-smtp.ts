@@ -1313,13 +1313,31 @@ export async function configureCompleteSmtp(
       stepResults
     });
 
-    const smokeAuthGate = await verifySmokeAuthGate({
+    const runSmokeAuthGate = () => verifySmokeAuthGate({
       domain: chosenDomain,
       smtpHost,
       serverIpv4,
       selector,
       resolver: deps.smokeAuthDnsResolver ?? defaultSmokeAuthDnsResolver
     });
+    let smokeAuthGate = await runSmokeAuthGate();
+    // Retry acotado: tras repuntar/crear el DNS de un rescate, spf/ptr/fcrdns pueden no haber
+    // propagado todavía al resolver (TTL del A viejo cacheado). En vez de fallar y exigir un
+    // resume manual, esperamos a que propague hasta un techo y recién ahí fallamos-cerrado si
+    // siguen mal. NO se reintenta ante invalid_precondition (error de config duro, no de
+    // propagación). Default 0 => sin espera (comportamiento previo intacto para los tests); el
+    // gateway lo activa vía OPENCLAW_SMOKE_AUTH_GATE_MAX_WAIT_MS.
+    const smokeAuthGateMaxWaitMs = positiveInt(deps.env?.OPENCLAW_SMOKE_AUTH_GATE_MAX_WAIT_MS) ?? 0;
+    const smokeAuthGatePollMs = positiveInt(deps.env?.OPENCLAW_SMOKE_AUTH_GATE_POLL_MS) ?? 20_000;
+    if (!smokeAuthGate.ok && smokeAuthGateMaxWaitMs > 0 && !smokeAuthGate.missing.includes("invalid_precondition")) {
+      const smokeAuthDeadline = Date.now() + smokeAuthGateMaxWaitMs;
+      while (!smokeAuthGate.ok && !smokeAuthGate.missing.includes("invalid_precondition") && Date.now() < smokeAuthDeadline) {
+        const wait = Math.min(smokeAuthGatePollMs, Math.max(0, smokeAuthDeadline - Date.now()));
+        if (wait <= 0) break;
+        await delay(wait);
+        smokeAuthGate = await runSmokeAuthGate();
+      }
+    }
     if (!smokeAuthGate.ok) {
       delete runState.steps[String(14)];
       runState.status = "failed";
@@ -2265,7 +2283,18 @@ async function readReusableWebdockServer(
     throw new OrchestratorFailure("failed", failure.step, failure.skill, `reuse_server_ipv4_missing:${reuseServerSlug}`);
   }
   const hostname = typeof server.hostname === "string" ? normalizeHostnameForReuse(server.hostname) : "";
-  if (validation.mode === "full" && hostname && hostname !== normalizeHostnameForReuse(validation.expectedHostname)) {
+  // El guard protege contra reusar por accidente un server que YA es el endpoint SMTP DEDICADO de
+  // otro dominio (hostname "smtp.<otro-dominio>"). Un hostname base (p.ej. "controldelivrix.app") NO
+  // es un endpoint dedicado: un mismo VPS sirve smtp.<dominio> para varios dominios, así que un
+  // hostname base distinto es esperable en un reuse multi-dominio y no debe bloquear — el operador
+  // elige el slug explícitamente y firma el ApprovalGate, y el A record de smtp.<dominio> ya
+  // corrobora el server. Solo los hostnames "smtp.*" cargan identidad de endpoint dedicado.
+  const storedIsDedicatedSmtpHost = hostname.startsWith("smtp.");
+  if (
+    validation.mode === "full" &&
+    storedIsDedicatedSmtpHost &&
+    hostname !== normalizeHostnameForReuse(validation.expectedHostname)
+  ) {
     throw new OrchestratorFailure("failed", failure.step, failure.skill, "reuse_server_hostname_mismatch");
   }
   const serverAccountId = normalizeServerAccountId(server.accountId ?? server.serverAccountId);
