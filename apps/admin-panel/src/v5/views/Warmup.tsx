@@ -1,37 +1,59 @@
 /**
- * v5 Warmup — visibilidad read-only del warmup-engine.
+ * v5 Warmup — el warmup-engine como SISTEMA EN MOVIMIENTO (read-only).
  *
- * Observabilidad pura: consume GET /v1/warmup/status y muestra el estado del
- * motor de calentamiento (activeNodes, queuedSends, desglose por estado y la
- * tabla de nodos). NO dispara nada — cada arranque/pausa de ramp vive en otras
- * superficies gated. Esta vista solo lee.
+ * No es una tabla de metadata: la vista visualiza el ESQUEMA de funcionamiento del
+ * calentamiento — el "loop interno" de 3 etapas (① SEND → ② ENGAGE → ③ REPLY /
+ * reputación que se acumula en cada vuelta) — anotado con AGREGADOS REALES de los
+ * dos endpoints read-only:
+ *   · GET /v1/warmup/status → enabled, totals {activeNodes, queuedSends}, byState,
+ *     nodes[{ mailbox, domain, state, dayIndex, authReady, placementScore? }].
+ *   · GET /v1/warmup/trends → placementSeries (inboxWilsonLb/inboxEwma/spamRate),
+ *     perProvider, ramp (curva de referencia), signals {bounces, complaints}.
+ * NO dispara nada — cada arranque/pausa de ramp vive en otras superficies gated.
+ *
+ * Secciones (narrativa funcional):
+ *   1. WarmupLoop — el ciclo de 3 etapas con sus cantidades reales (hero).
+ *   2. KPI strip + Recorrido del nodo (fresh→warm, con paused/blocked fuera del ciclo).
+ *   3. Nodos en warmup — dónde está cada emisor en su viaje (mailbox/día/auth/placement).
+ *   4. Placement gate — inbox % vs el piso 0.80 (la puerta que habilita escalar).
+ *   5. Curva + plan de rampa por semanas, colocación por proveedor.
  *
  * Diseño: molde oficial "Aivora" (shared/ui/aivora) — Card radius 18 + hairline,
  * KpiCard tile+número tabular, StateBadge dot+icono, SectionHead eyebrow+h1 light.
- * Color SOLO por tokens var(--color-*). PROHIBIDO v5/components/primitives (B/N):
- * los textos que el molde no expone (body/mono) se resuelven con helpers locales
- * token-aware, no con los primitivos B/N. Los 3 gráficos SVG conservan su SERIE
- * REAL (GET /v1/warmup/trends) y ya se pintan con acento/tokens (cero hex).
+ * Color SOLO por tokens var(--color-*), CERO hex. La referencia usa ÁMBAR para el
+ * SEND; acá el SEND va en warming/cyan (paleta oficial SIN ámbar): SEND=warming,
+ * ENGAGE=acento, REPLY=success. Iconos lucide. Movimiento sutil y respetuoso de
+ * prefers-reduced-motion (useReducedMotion).
  *
- * Anti-mock: cada dato sale del backend; no hay conteos ni series inventadas. Los
- * TOPES de config (PLACEMENT_FLOOR, RAMP_CLAMP) se muestran etiquetados "config"
- * (declarados, no medidos). isLoading/isError/vacío se distinguen honestamente.
+ * Anti-mock: cada cifra sale del backend; no hay conteos ni series inventadas. Si un
+ * dato aún no existe (p.ej. un nodo fresh sin placementScore, o trends sin serie), se
+ * muestra "midiendo…/pendiente", nunca un número falso. Los TOPES de config
+ * (PLACEMENT_FLOOR, RAMP_CLAMP) van etiquetados "config" (declarados, no medidos).
  *
- * Wiring: la vista hace su propia query. No requiere props del shell.
+ * Wiring: la vista hace sus dos queries. No requiere props del shell.
  */
 
 import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import {
   Activity,
   AlertCircle,
+  ArrowDown,
+  ArrowRight,
   BarChart3,
+  CheckCircle2,
   Flame,
+  Inbox,
   LineChart,
   Layers,
   PauseCircle,
   Plus,
+  Reply,
+  Repeat,
+  Send,
+  ShieldCheck,
+  Sprout,
   TrendingUp
 } from "lucide-react";
 import { getJson } from "../../shared/api/client";
@@ -234,15 +256,6 @@ const STATE_LABEL: Record<WarmupNodeState, string> = {
   quarantined: "quarantined"
 };
 
-// Orden canónico para los chips de desglose: de "sano" a "crítico".
-const STATE_ORDER: WarmupNodeState[] = [
-  "warm",
-  "fresh",
-  "paused",
-  "blocked",
-  "quarantined"
-];
-
 function aivStatus(state: string): string {
   return AIV_STATE[state as WarmupNodeState] ?? state;
 }
@@ -404,6 +417,9 @@ interface SelectedMailbox {
 
 export function WarmupV5() {
   const state = useWarmupStatus();
+  // El loop combina agregados de AMBOS endpoints. react-query deduplica por queryKey,
+  // así que WarmupTrendsPanel reusa esta misma lectura sin un fetch extra.
+  const trends = useWarmupTrends();
   const [selected, setSelected] = useState<SelectedMailbox | null>(null);
   return (
     <motion.div
@@ -415,8 +431,8 @@ export function WarmupV5() {
       <motion.div variants={staggerItem}>
         <SectionHead
           eyebrow="Warmup engine · solo lectura"
-          title="Estado del calentamiento de nodos de envío"
-          subtitle="Observabilidad del warmup-engine: nodos activos, envíos encolados, desglose por estado y rampa por mailbox. Esta vista no dispara envíos ni pausas."
+          title="Cómo se calientan los nodos de envío"
+          subtitle="El calentamiento como sistema en movimiento: el ciclo enviar → interactuar → responder, el recorrido de cada nodo y la puerta de placement que habilita escalar. Todo con datos reales; esta vista no dispara envíos ni pausas."
           right={
             <LivePollSide
               lastUpdateAt={state.status === "ok" ? state.lastUpdateAt : null}
@@ -426,7 +442,17 @@ export function WarmupV5() {
         />
       </motion.div>
 
-      <Body state={state} onSelectMailbox={setSelected} selectedId={selected?.id ?? null} />
+      {/* Lo primero que ve el operador: el loop de warmup ocurriendo en tiempo real. */}
+      <motion.section variants={staggerItem}>
+        <WarmupActivityFeed />
+      </motion.section>
+
+      <Body
+        state={state}
+        trends={trends}
+        onSelectMailbox={setSelected}
+        selectedId={selected?.id ?? null}
+      />
 
       {selected ? (
         <motion.section variants={staggerItem}>
@@ -451,10 +477,12 @@ export function WarmupV5() {
 
 function Body({
   state,
+  trends,
   onSelectMailbox,
   selectedId
 }: {
   state: FetchState;
+  trends: TrendsState;
   onSelectMailbox: (mailbox: SelectedMailbox) => void;
   selectedId: string | null;
 }) {
@@ -472,15 +500,24 @@ function Body({
       </motion.div>
     );
   }
-  return <Loaded payload={state.payload} onSelectMailbox={onSelectMailbox} selectedId={selectedId} />;
+  return (
+    <Loaded
+      payload={state.payload}
+      trends={trends}
+      onSelectMailbox={onSelectMailbox}
+      selectedId={selectedId}
+    />
+  );
 }
 
 function LivePollSide({
   lastUpdateAt,
-  isError
+  isError,
+  pollMs = POLL_MS
 }: {
   lastUpdateAt: number | null;
   isError: boolean;
+  pollMs?: number;
 }) {
   const relative = lastUpdateAt
     ? formatRelative(new Date(lastUpdateAt).toISOString())
@@ -489,9 +526,393 @@ function LivePollSide({
     <div className="flex flex-col items-end gap-1.5">
       <StateBadge status={isError ? "quarantined" : "active"} label={isError ? "fallo" : "en vivo"} />
       <Caption style={{ fontSize: 11 }}>
-        poll {POLL_MS / 1000}s · {relative}
+        poll {pollMs / 1000}s · {relative}
       </Caption>
     </div>
+  );
+}
+
+/* ============================================================
+ * Actividad en vivo — el loop de warmup ocurriendo, vuelta por vuelta.
+ *
+ * GET /v1/warmup/activity (read-only): eventos de cada ciclo (una "vuelta") con sus
+ * 4 etapas — ① envío → ② medición → ③ interacción → ④ respuesta — anotadas con el
+ * asunto cotidiano, el placement medido, la caja emisora → el buzón semilla. Poll más
+ * rápido (8s) que el resto de la vista para que se sienta VIVO. Anti-mock estricto: sin
+ * eventos (o con `note`) → estado vacío honesto, nunca vueltas inventadas. Sin ámbar:
+ * envío=warming, interacción=acento, respuesta=success, medición=neutral, error=warning.
+ * ============================================================ */
+
+interface WarmupActivityEvent {
+  id: string;
+  occurredAt: string;
+  cycleId: string;
+  nodeDomain: string;
+  seedInbox: string;
+  kind: "sent" | "measured" | "engaged" | "replied" | "error";
+  placement: string | null;
+  subject: string | null;
+  detail: Record<string, unknown>;
+  testId: string | null;
+}
+
+interface WarmupActivitySnapshot {
+  generatedAt: string;
+  events: WarmupActivityEvent[];
+  note?: string; // p.ej. "postgres_unavailable" cuando degrada — se trata como feed vacío
+}
+
+const ACTIVITY_STAGE_ORDER = ["sent", "measured", "engaged", "replied"] as const;
+type ActivityStageKey = (typeof ACTIVITY_STAGE_ORDER)[number];
+
+/** Una vuelta de calentamiento: las 4 etapas de UN ciclo, con su asunto/placement. */
+export interface WarmupCycle {
+  cycleId: string;
+  subject: string | null;
+  nodeDomain: string;
+  seedInbox: string;
+  occurredAt: string; // etapa más reciente del ciclo (orden + tiempo relativo)
+  stages: Record<ActivityStageKey, boolean>;
+  placement: string | null;
+  hasError: boolean;
+  brokeAtStage: ActivityStageKey | null;
+  eventCount: number;
+}
+
+function toTime(iso: string): number {
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Agrupa eventos por cycleId en "vueltas". Pura y testeable: detecta qué etapas
+ * dispararon, levanta el placement medido (prefiere la etapa de medición), marca si
+ * hubo error y en qué etapa se cortó, y ordena las vueltas más-reciente-primero (cap
+ * en `limit`). Entrada vacía/basura o eventos sin cycleId ⇒ se descartan sin lanzar.
+ */
+export function groupActivityByCycle(
+  events: WarmupActivityEvent[] | null | undefined,
+  limit = 12
+): WarmupCycle[] {
+  if (!Array.isArray(events) || events.length === 0) return [];
+
+  const groups = new Map<string, WarmupActivityEvent[]>();
+  for (const ev of events) {
+    if (!ev || typeof ev.cycleId !== "string" || ev.cycleId.length === 0) continue;
+    const list = groups.get(ev.cycleId) ?? [];
+    list.push(ev);
+    groups.set(ev.cycleId, list);
+  }
+
+  const cycles: WarmupCycle[] = [];
+  for (const [cycleId, list] of groups) {
+    const stages: Record<ActivityStageKey, boolean> = {
+      sent: false,
+      measured: false,
+      engaged: false,
+      replied: false
+    };
+    let placement: string | null = null;
+    let subject: string | null = null;
+    let nodeDomain = "";
+    let seedInbox = "";
+    let occurredAt = "";
+    let hasError = false;
+    let errorDetailStage: ActivityStageKey | null = null;
+
+    for (const ev of list) {
+      if (ev.kind === "error") {
+        hasError = true;
+        const s = ev.detail?.stage;
+        if (typeof s === "string" && (ACTIVITY_STAGE_ORDER as readonly string[]).includes(s)) {
+          errorDetailStage = s as ActivityStageKey;
+        }
+      } else if (ev.kind in stages) {
+        stages[ev.kind as ActivityStageKey] = true;
+      }
+      // placement: preferir la etapa de medición; si no, cualquier placement no nulo.
+      if (ev.placement && (ev.kind === "measured" || placement === null)) {
+        placement = ev.placement;
+      }
+      if (!subject && typeof ev.subject === "string" && ev.subject.length > 0) subject = ev.subject;
+      if (!nodeDomain && ev.nodeDomain) nodeDomain = ev.nodeDomain;
+      if (!seedInbox && ev.seedInbox) seedInbox = ev.seedInbox;
+      if (!occurredAt || toTime(ev.occurredAt) > toTime(occurredAt)) occurredAt = ev.occurredAt;
+    }
+
+    const brokeAtStage = hasError
+      ? errorDetailStage ?? ACTIVITY_STAGE_ORDER.find((k) => !stages[k]) ?? null
+      : null;
+
+    cycles.push({
+      cycleId,
+      subject,
+      nodeDomain,
+      seedInbox,
+      occurredAt,
+      stages,
+      placement,
+      hasError,
+      brokeAtStage,
+      eventCount: list.length
+    });
+  }
+
+  cycles.sort((a, b) => toTime(b.occurredAt) - toTime(a.occurredAt));
+  return cycles.slice(0, Math.max(0, limit));
+}
+
+const ACTIVITY_POLL_MS = 8_000; // poll más rápido que POLL_MS (30s) → sensación de "en vivo".
+
+type ActivityState =
+  | { status: "loading" }
+  | { status: "ok"; payload: WarmupActivitySnapshot; lastUpdateAt: number }
+  | { status: "error"; message: string };
+
+function useWarmupActivity(): ActivityState {
+  const query = useQuery({
+    queryKey: ["v5", "warmup", "activity"],
+    queryFn: () => getJson<WarmupActivitySnapshot>(READ_ENDPOINTS.warmupActivity),
+    refetchInterval: ACTIVITY_POLL_MS,
+    refetchIntervalInBackground: false,
+    staleTime: ACTIVITY_POLL_MS / 2
+  });
+
+  if (query.isLoading) return { status: "loading" };
+  if (query.isError) {
+    return {
+      status: "error",
+      message:
+        query.error instanceof Error
+          ? query.error.message
+          : "no se pudo obtener la actividad del warmup"
+    };
+  }
+  if (query.data) return { status: "ok", payload: query.data, lastUpdateAt: query.dataUpdatedAt };
+  return { status: "loading" };
+}
+
+/* Etapas del feed — color por token, SIN ámbar (envío=warming, medición=neutral,
+ * interacción=acento, respuesta=success). Icono lucide por etapa. */
+interface ActivityStageMeta {
+  key: ActivityStageKey;
+  label: string;
+  icon: typeof Send;
+  color: string;
+  soft: string;
+}
+
+const ACTIVITY_STAGES: ActivityStageMeta[] = [
+  { key: "sent", label: "envío", icon: Send, color: "var(--color-warming)", soft: "var(--color-warming-soft)" },
+  { key: "measured", label: "medición", icon: BarChart3, color: "var(--color-text-secondary)", soft: "var(--color-neutral-soft)" },
+  { key: "engaged", label: "interacción", icon: Activity, color: "var(--color-accent)", soft: "var(--color-accent-soft)" },
+  { key: "replied", label: "respuesta", icon: Reply, color: "var(--color-success)", soft: "var(--color-success-soft)" }
+];
+
+const ACTIVITY_STAGE_LABEL: Record<ActivityStageKey, string> = {
+  sent: "envío",
+  measured: "medición",
+  engaged: "interacción",
+  replied: "respuesta"
+};
+
+/** Tono del badge de placement: INBOX=success, SPAM=warning, resto (PROMOTIONS/OTHER)=neutral. */
+function placementBadgeTone(placement: string): "success" | "warning" | "neutral" {
+  const p = placement.toUpperCase();
+  if (p === "INBOX") return "success";
+  if (p === "SPAM") return "warning";
+  return "neutral";
+}
+
+/**
+ * WarmupActivityFeed — lo primero que ve el operador: cada vuelta de calentamiento
+ * ocurriendo en vivo. Self-contained (hace su propia query como WarmupTrendsPanel).
+ */
+function WarmupActivityFeed() {
+  const state = useWarmupActivity();
+
+  if (state.status === "loading") return <ActivityLoading />;
+  if (state.status === "error") return <ActivityUnavailable message={state.message} />;
+
+  const { events, note } = state.payload;
+  const cycles = groupActivityByCycle(events);
+
+  return (
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
+      <PanelHead
+        title={
+          <span className="inline-flex items-center gap-2">
+            <Activity size={15} strokeWidth={1.75} className="text-fg-subtle" />
+            Actividad en vivo
+          </span>
+        }
+        sub="Cada vuelta de calentamiento en tiempo real: envío → medición → interacción → respuesta, con el asunto de la conversación, dónde cayó (inbox/spam…) y la caja emisora → el buzón semilla."
+        right={
+          <LivePollSide lastUpdateAt={state.lastUpdateAt} isError={false} pollMs={ACTIVITY_POLL_MS} />
+        }
+      />
+
+      {note || cycles.length === 0 ? (
+        <ActivityEmpty />
+      ) : (
+        <div className="flex flex-col gap-2.5">
+          {cycles.map((cycle, i) => (
+            <ActivityCycleRow key={cycle.cycleId} cycle={cycle} index={i} />
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** Una vuelta: asunto + caja→semilla + tiempo relativo + placement + línea de 4 etapas. */
+function ActivityCycleRow({ cycle, index }: { cycle: WarmupCycle; index: number }) {
+  const reduce = useReducedMotion();
+  return (
+    <motion.div
+      initial={reduce ? false : { opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reduce ? undefined : { duration: 0.28, delay: Math.min(index, 6) * 0.02 }}
+      className="flex flex-col gap-3 rounded-[14px] p-3.5"
+      style={{
+        border: "1px solid var(--color-border)",
+        // error: hairline izquierda en warning (naranja), no rojo.
+        borderLeft: cycle.hasError ? "2px solid var(--color-warning)" : "1px solid var(--color-border)"
+      }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-1">
+          <span className="min-w-0 truncate font-sans text-[13.5px] font-medium text-fg">
+            {cycle.subject ?? "conversación sin asunto registrado"}
+          </span>
+          <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11.5px]">
+            <MonoStrong className="text-[11.5px]">{cycle.nodeDomain || "—"}</MonoStrong>
+            <ArrowRight size={12} strokeWidth={2} className="text-fg-subtle" aria-hidden="true" />
+            <Mono className="text-fg-subtle">{cycle.seedInbox || "—"}</Mono>
+          </span>
+        </div>
+        <div className="flex flex-none flex-col items-end gap-1.5">
+          {cycle.placement ? (
+            <Pill tone={placementBadgeTone(cycle.placement)}>{cycle.placement.toLowerCase()}</Pill>
+          ) : null}
+          <Caption style={{ fontSize: 11 }}>{formatRelative(cycle.occurredAt)}</Caption>
+        </div>
+      </div>
+
+      <ActivityStageLine cycle={cycle} />
+
+      {cycle.hasError ? (
+        <div className="flex items-center gap-1.5 text-warning">
+          <AlertCircle size={13} strokeWidth={1.9} aria-hidden="true" />
+          <span className="font-sans text-[11.5px] font-medium">
+            se cortó en {cycle.brokeAtStage ? ACTIVITY_STAGE_LABEL[cycle.brokeAtStage] : "una etapa"}
+          </span>
+        </div>
+      ) : null}
+    </motion.div>
+  );
+}
+
+/** Línea compacta de las 4 etapas: encendidas en su token, apagadas en subtle, error en warning. */
+function ActivityStageLine({ cycle }: { cycle: WarmupCycle }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {ACTIVITY_STAGES.map((stage, i) => {
+        const fired = cycle.stages[stage.key];
+        const broke = cycle.hasError && cycle.brokeAtStage === stage.key;
+        const Icon = broke ? AlertCircle : stage.icon;
+        const color = broke
+          ? "var(--color-warning)"
+          : fired
+          ? stage.color
+          : "var(--color-text-tertiary)";
+        const bg = broke ? "var(--color-warning-soft)" : fired ? stage.soft : "transparent";
+        const on = fired || broke;
+        return (
+          <span key={stage.key} className="inline-flex items-center gap-1.5">
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full px-2 py-1"
+              style={{
+                background: bg,
+                color,
+                border: on ? "1px solid transparent" : "1px solid var(--color-border)",
+                opacity: on ? 1 : 0.6
+              }}
+            >
+              <Icon size={12} strokeWidth={2} aria-hidden="true" />
+              <span className="font-sans text-[11px] font-medium">{stage.label}</span>
+            </span>
+            {i < ACTIVITY_STAGES.length - 1 ? (
+              <ArrowRight size={12} strokeWidth={2} className="text-fg-subtle" aria-hidden="true" />
+            ) : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Estado vacío honesto — nunca inventa vueltas. */
+function ActivityEmpty() {
+  return (
+    <div
+      className="flex items-start gap-4 rounded-[14px] p-4"
+      style={{ border: "1px dashed var(--color-border-strong)" }}
+    >
+      <IconTile>
+        <Activity size={16} strokeWidth={1.75} color="var(--color-text-secondary)" />
+      </IconTile>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <Heading level={2}>Sin actividad todavía</Heading>
+        <BodyText>
+          Cuando corra una vuelta de calentamiento, cada etapa — envío → medición → interacción →
+          respuesta — aparece acá en vivo, con el asunto de la conversación y dónde cayó (inbox,
+          spam…).
+        </BodyText>
+      </div>
+    </div>
+  );
+}
+
+function ActivityLoading() {
+  return (
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-3">
+      <PanelHead
+        title={
+          <span className="inline-flex items-center gap-2">
+            <Activity size={15} strokeWidth={1.75} className="text-fg-subtle" />
+            Actividad en vivo
+          </span>
+        }
+      />
+      <div className="flex flex-col gap-2.5">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="h-16 w-full rounded-[14px] bg-surface-sunken" aria-hidden="true" />
+        ))}
+      </div>
+      <span className="sr-only">Cargando actividad del warmup engine…</span>
+    </Card>
+  );
+}
+
+function ActivityUnavailable({ message }: { message: string }) {
+  return (
+    <Card style={{ padding: PAD_RELAXED }} className="flex items-start gap-4">
+      <div
+        aria-hidden="true"
+        className="grid size-9 shrink-0 place-items-center rounded-xl bg-warning-soft text-warning"
+      >
+        <AlertCircle size={16} strokeWidth={1.75} />
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <Heading level={2}>Endpoint /v1/warmup/activity no responde</Heading>
+        <BodyText>
+          El backend todavía no expuso la actividad en vivo del warmup engine. Cuando esté
+          disponible, la lista de vueltas se llena sola, sin redeploy.
+        </BodyText>
+        <Mono className="break-all">{message}</Mono>
+      </div>
+    </Card>
   );
 }
 
@@ -501,10 +922,12 @@ function LivePollSide({
 
 function Loaded({
   payload,
+  trends,
   onSelectMailbox,
   selectedId
 }: {
   payload: WarmupStatusSnapshot;
+  trends: TrendsState;
   onSelectMailbox: (mailbox: SelectedMailbox) => void;
   selectedId: string | null;
 }) {
@@ -522,6 +945,10 @@ function Loaded({
           <NoteBanner note={note} />
         </motion.div>
       ) : null}
+
+      <motion.section variants={staggerItem}>
+        <WarmupLoop payload={payload} trends={trends} />
+      </motion.section>
 
       <motion.section variants={staggerItem}>
         <KpiStrip enabled={enabled} totals={totals} nodeCount={nodes.length} />
@@ -684,6 +1111,323 @@ function ManualResult({ submit }: { submit: ManualSubmitState }) {
 }
 
 /* ============================================================
+ * WarmupLoop — el ESQUEMA de funcionamiento como ciclo de 3 etapas.
+ *
+ * Traduce el "Internal Warmup Loop" de la referencia a la narrativa del panel:
+ *   ① SEND    — nuestros nodos SMTP empujan volumen rampado (queuedSends, activeNodes,
+ *               meta de rampa de referencia según el día del pool).
+ *   ② ENGAGE  — los buzones que hospedamos actúan como usuarios reales (abren, responden,
+ *               marcan no-spam). Cantidad = pool de nodos; warm = confiables, fresh = midiendo.
+ *   ③ REPLY   — las respuestas y señales vuelven; la reputación se acumula. Placement de
+ *   /REPUTACIÓN  inbox más reciente (trends) vs el piso; spam rate y señales de daño.
+ *
+ * Anti-mock: SEND/ENGAGE salen de /status (siempre presentes). REPLY depende de /trends;
+ * si trends carga o no tiene serie, la etapa muestra "midiendo…", nunca un número falso.
+ * Sin ámbar: SEND=warming(cyan), ENGAGE=acento, REPLY=success. Movimiento sutil,
+ * respeta prefers-reduced-motion.
+ * ============================================================ */
+
+/** Último punto REAL de placement (wilsonLb, o ewma como fallback) recorriendo hacia atrás. */
+function latestPlacement(series: WarmupPlacementPoint[]): {
+  value: number | null;
+  spamRate: number | null;
+  samples: number;
+} {
+  for (let i = series.length - 1; i >= 0; i -= 1) {
+    const p = series[i];
+    const v =
+      typeof p.inboxWilsonLb === "number"
+        ? p.inboxWilsonLb
+        : typeof p.inboxEwma === "number"
+        ? p.inboxEwma
+        : null;
+    if (v !== null && Number.isFinite(v)) {
+      return {
+        value: v,
+        spamRate: typeof p.spamRate === "number" ? p.spamRate : null,
+        samples: p.samples
+      };
+    }
+  }
+  return { value: null, spamRate: null, samples: 0 };
+}
+
+/**
+ * Meta de rampa del pool: mapea el día más avanzado del pool contra la curva de
+ * referencia (ramp de /trends). Es un agregado DERIVADO de dos datos reales
+ * (node.dayIndex + curva de referencia), etiquetado como "referencia" — no medido.
+ */
+function rampTargetForPool(
+  nodes: WarmupNode[],
+  ramp: WarmupRampPoint[]
+): { day: number; quota: number } | null {
+  if (nodes.length === 0 || ramp.length === 0) return null;
+  const maxDay = Math.max(...nodes.map((n) => n.dayIndex));
+  const sorted = [...ramp].sort((a, b) => a.dayIndex - b.dayIndex);
+  let match = sorted[0];
+  for (const p of sorted) {
+    if (p.dayIndex <= maxDay) match = p;
+    else break;
+  }
+  return { day: maxDay, quota: match.quota };
+}
+
+interface StageAccent {
+  color: string; // token del acento de la etapa
+  soft: string; // token soft para el chip del número de etapa
+}
+
+const STAGE_SEND: StageAccent = { color: "var(--color-warming)", soft: "var(--color-warming-soft)" };
+const STAGE_ENGAGE: StageAccent = { color: "var(--color-accent)", soft: "var(--color-accent-soft)" };
+const STAGE_REPLY: StageAccent = { color: "var(--color-success)", soft: "var(--color-success-soft)" };
+
+function WarmupLoop({ payload, trends }: { payload: WarmupStatusSnapshot; trends: TrendsState }) {
+  const reduce = useReducedMotion();
+  const { enabled, totals, byState, nodes } = payload;
+
+  const trendsOk = trends.status === "ok" ? trends.payload : null;
+  const placement = trendsOk ? latestPlacement(trendsOk.placementSeries) : null;
+  const rampTarget = trendsOk ? rampTargetForPool(nodes, trendsOk.ramp) : null;
+  const signals = trendsOk?.signals ?? null;
+
+  const warm = byState.warm ?? 0;
+  const fresh = byState.fresh ?? 0;
+
+  // Movimiento sutil: el flujo "respira" salvo reduced-motion.
+  const flow = reduce
+    ? undefined
+    : { animate: { opacity: [0.35, 1, 0.35] }, transition: { duration: 2.4, repeat: Infinity, ease: "easeInOut" } };
+
+  return (
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-5">
+      <PanelHead
+        title="Cómo funciona el calentamiento"
+        sub="El ciclo interno: enviamos volumen rampado → los buzones que hospedamos interactúan → responden y la reputación se acumula en cada vuelta. Las cantidades son reales."
+        right={
+          <StateBadge
+            status={enabled ? "active" : "paused"}
+            label={enabled ? "ciclo activo" : "ciclo en pausa"}
+          />
+        }
+      />
+
+      <div className="flex flex-col gap-2 lg:flex-row lg:items-stretch">
+        {/* ① SEND */}
+        <StageTile
+          n="1"
+          accent={STAGE_SEND}
+          icon={Send}
+          name="Enviamos"
+          concept="volumen rampado · DKIM/PTR alineados"
+        >
+          <StageMetric
+            value={<span className="tabular-nums">{totals.queuedSends}</span>}
+            unit="encolados"
+            hint="envíos que el motor tiene en cola ahora"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Pill tone="neutral">
+              <Activity size={12} strokeWidth={1.9} />
+              {totals.activeNodes} nodos activos
+            </Pill>
+            {rampTarget ? (
+              <Pill tone="warming" style={{ opacity: 0.95 }}>
+                meta ≈ {rampTarget.quota}/día · día {rampTarget.day}
+              </Pill>
+            ) : (
+              <Pill tone="neutral">meta de rampa —</Pill>
+            )}
+          </div>
+        </StageTile>
+
+        <StageConnector flow={flow} />
+
+        {/* ② ENGAGE */}
+        <StageTile
+          n="2"
+          accent={STAGE_ENGAGE}
+          icon={Inbox}
+          name="Los buzones interactúan"
+          concept="abren · responden · marcan no-spam · destacan"
+        >
+          <StageMetric
+            value={<span className="tabular-nums">{nodes.length}</span>}
+            unit={nodes.length === 1 ? "buzón" : "buzones"}
+            hint="buzones que hospedamos en la red de calentamiento"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Pill tone="success">
+              <CheckCircle2 size={12} strokeWidth={1.9} />
+              {warm} warm
+            </Pill>
+            <Pill tone="warming">
+              <Sprout size={12} strokeWidth={1.9} />
+              {fresh} fresh
+            </Pill>
+          </div>
+        </StageTile>
+
+        <StageConnector flow={flow} />
+
+        {/* ③ REPLY / REPUTACIÓN */}
+        <StageTile
+          n="3"
+          accent={STAGE_REPLY}
+          icon={Reply}
+          name="Responden · reputación"
+          concept="las respuestas vuelven · la reputación se acumula"
+        >
+          {placement && placement.value !== null ? (
+            <StageMetric
+              value={
+                <span className="tabular-nums" style={{ color: placementColor(placement.value) }}>
+                  {formatPercent(placement.value)}
+                </span>
+              }
+              unit="inbox"
+              hint={`placement de inbox más reciente · ${placement.samples} muestras`}
+            />
+          ) : (
+            <StageMetric
+              value={<span style={{ color: "var(--color-text-tertiary)" }}>midiendo…</span>}
+              unit=""
+              hint={
+                trends.status === "loading"
+                  ? "cargando tendencias"
+                  : "aún sin muestras de placement suficientes"
+              }
+            />
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {placement && placement.spamRate !== null ? (
+              <Pill tone={placement.spamRate > 0 ? "critical" : "neutral"}>
+                spam {formatPercent(placement.spamRate)}
+              </Pill>
+            ) : null}
+            {signals ? (
+              <>
+                <Pill tone={signals.bounces > 0 ? "critical" : "neutral"}>bounces {signals.bounces}</Pill>
+                <Pill tone={signals.complaints > 0 ? "critical" : "neutral"}>
+                  complaints {signals.complaints}
+                </Pill>
+              </>
+            ) : (
+              <Pill tone="neutral">señales pendientes</Pill>
+            )}
+          </div>
+        </StageTile>
+      </div>
+
+      {/* cierre del loop: la reputación vuelve al SEND */}
+      <div className="flex items-center gap-2.5 border-t border-border pt-3">
+        <span
+          aria-hidden="true"
+          className="grid size-7 shrink-0 place-items-center rounded-full"
+          style={{ background: "var(--color-accent-soft)", color: "var(--color-accent)" }}
+        >
+          <motion.span
+            style={{ display: "grid", placeItems: "center" }}
+            animate={reduce ? undefined : { rotate: 360 }}
+            transition={reduce ? undefined : { duration: 9, repeat: Infinity, ease: "linear" }}
+          >
+            <Repeat size={13} strokeWidth={2} />
+          </motion.span>
+        </span>
+        <Caption style={{ fontSize: 12 }}>
+          La reputación se acumula en cada vuelta: cada pase de buenas señales calienta las IPs y
+          dominios antes de que salga tráfico real.
+        </Caption>
+      </div>
+    </Card>
+  );
+}
+
+/** Una etapa del loop. Tile con hairline dentro del Card padre (aplana card-in-card). */
+function StageTile({
+  n,
+  accent,
+  icon: Icon,
+  name,
+  concept,
+  children
+}: {
+  n: string;
+  accent: StageAccent;
+  icon: typeof Send;
+  name: string;
+  concept: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className="flex min-w-0 flex-1 flex-col gap-3 rounded-[14px] p-4"
+      style={{ border: "1px solid var(--color-border)", borderTop: `2px solid ${accent.color}` }}
+    >
+      <div className="flex items-center gap-2.5">
+        <span
+          aria-hidden="true"
+          className="grid size-6 shrink-0 place-items-center rounded-full text-[12px] font-semibold tabular-nums"
+          style={{ background: accent.soft, color: accent.color }}
+        >
+          {n}
+        </span>
+        <Icon size={16} strokeWidth={1.8} style={{ color: accent.color }} aria-hidden="true" />
+        <span className="min-w-0 truncate font-sans text-[13.5px] font-semibold text-fg">{name}</span>
+      </div>
+      {children}
+      <Caption style={{ fontSize: 11 }}>{concept}</Caption>
+    </div>
+  );
+}
+
+/** Número grande + unidad + hint honesto de una etapa. */
+function StageMetric({
+  value,
+  unit,
+  hint
+}: {
+  value: ReactNode;
+  unit: string;
+  hint: string;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-baseline gap-1.5">
+        <span className="font-sans text-[28px] font-semibold leading-none text-fg">{value}</span>
+        {unit ? <span className="font-sans text-[12px] leading-none text-fg-subtle">{unit}</span> : null}
+      </div>
+      <Caption style={{ fontSize: 10.5 }}>{hint}</Caption>
+    </div>
+  );
+}
+
+/** Conector entre etapas: flecha → en desktop, ↓ en móvil. Flujo sutil opcional. */
+function StageConnector({
+  flow
+}: {
+  flow?: { animate: { opacity: number[] }; transition: object };
+}) {
+  return (
+    <div className="flex items-center justify-center py-1 lg:px-1 lg:py-0" aria-hidden="true">
+      <motion.span
+        className="hidden text-fg-subtle lg:inline-flex"
+        animate={flow?.animate}
+        transition={flow?.transition}
+      >
+        <ArrowRight size={18} strokeWidth={2} />
+      </motion.span>
+      <motion.span
+        className="inline-flex text-fg-subtle lg:hidden"
+        animate={flow?.animate}
+        transition={flow?.transition}
+      >
+        <ArrowDown size={18} strokeWidth={2} />
+      </motion.span>
+    </div>
+  );
+}
+
+/* ============================================================
  * KPI Strip — engine ON/OFF + totales (grid de KpiCards del molde).
  *
  * DATOS REALES: los KPIs no traen serie histórica ni baseline, así que van sin
@@ -735,47 +1479,104 @@ function KpiStrip({
 }
 
 /* ============================================================
- * StateBreakdown — StateBadge del molde + conteo por estado.
+ * StateBreakdown — "Recorrido del nodo": el viaje fresh → warm como un stepper, con
+ * los estados fuera del ciclo activo (paused/blocked/quarantined) a un lado. Reencuadra
+ * el desglose por estado como una LÍNEA DE VIDA, no un conteo plano. Datos: byState.
  * ============================================================ */
 
-function StateBreakdown({ byState }: { byState: Record<string, number> }) {
-  const entries = useMemo(() => {
-    const known = STATE_ORDER.filter((s) => s in byState).map((s) => [s, byState[s]] as const);
-    const extra = Object.entries(byState).filter(
-      ([key]) => !STATE_ORDER.includes(key as WarmupNodeState)
-    );
-    return [...known, ...extra];
-  }, [byState]);
+// La ruta feliz del calentamiento: nace midiendo (fresh) y madura a confiable (warm).
+const LIFECYCLE_PATH: Array<{ state: WarmupNodeState; caption: string }> = [
+  { state: "fresh", caption: "recién ingresado · midiendo señales" },
+  { state: "warm", caption: "señales sostenidas · emisor confiable" }
+];
+// Estados que SALEN del ciclo activo (atención). El backend excluye blocked/quarantined
+// del pool activo, así que normalmente solo aparece paused; los demás se muestran si llegan.
+const LIFECYCLE_ATTENTION: WarmupNodeState[] = ["paused", "blocked", "quarantined"];
 
-  const total = entries.reduce((a, [, count]) => a + count, 0);
+function StateBreakdown({ byState }: { byState: Record<string, number> }) {
+  const total = useMemo(
+    () => Object.values(byState).reduce((a, c) => a + c, 0),
+    [byState]
+  );
+  const attention = LIFECYCLE_ATTENTION.filter((s) => (byState[s] ?? 0) > 0).map(
+    (s) => [s, byState[s]] as const
+  );
+  // Estados desconocidos (defensa): cualquiera que no esté en la ruta ni en atención.
+  const extra = Object.entries(byState).filter(
+    ([key]) =>
+      !LIFECYCLE_PATH.some((p) => p.state === key) &&
+      !LIFECYCLE_ATTENTION.includes(key as WarmupNodeState)
+  );
 
   return (
     // ink: stat-card. Agrupada por adyacencia bajo la banda de KpiCards (también ink)
-    // → forman la "banda superior" oscura del marco cohesivo (demo §1). Tablas/forms/
-    // detalle quedan claros en el centro. Sus internos (StateBadge/count/Caption) salen
-    // de var(--color-*), re-escalados por .ink-card a la rampa oscura sin hex.
+    // → forman la "banda superior" oscura del marco cohesivo. Sus internos salen de
+    // var(--color-*), re-escalados por .ink-card a la rampa oscura sin hex.
     <Card ink style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
       <PanelHead
-        title="Nodos por estado"
-        sub="Cómo se reparte el pool de nodos entre las etapas del calentamiento."
+        title="Recorrido del nodo"
+        sub="Dónde está cada emisor en su viaje: nace fresh (midiendo) y madura a warm (confiable)."
         right={<Caption style={{ fontSize: 12.5 }}>{total} en total</Caption>}
       />
-      {entries.length === 0 ? (
+
+      {total === 0 ? (
         <Caption>Sin nodos reportados en este snapshot.</Caption>
       ) : (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-          {entries.map(([state, count]) => (
-            <span key={state} className="inline-flex items-center gap-2">
-              <StateBadge status={aivStatus(state)} label={stateLabel(state)} />
-              <span
-                className="font-sans text-[13px] font-semibold tabular-nums"
-                style={{ color: "var(--color-text-primary)" }}
-              >
-                {count}
-              </span>
-            </span>
-          ))}
-        </div>
+        <>
+          {/* Ruta feliz: fresh → warm */}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+            {LIFECYCLE_PATH.map((stage, i) => (
+              <div key={stage.state} className="flex flex-1 items-stretch gap-2">
+                <div
+                  className="flex min-w-0 flex-1 flex-col gap-2 rounded-[14px] p-3.5"
+                  style={{ border: "1px solid var(--color-border)" }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <StateBadge status={aivStatus(stage.state)} label={stateLabel(stage.state)} />
+                    <span
+                      className="font-sans text-[20px] font-semibold tabular-nums"
+                      style={{ color: "var(--color-text-primary)" }}
+                    >
+                      {byState[stage.state] ?? 0}
+                    </span>
+                  </div>
+                  <Caption style={{ fontSize: 11 }}>{stage.caption}</Caption>
+                </div>
+                {i < LIFECYCLE_PATH.length - 1 ? (
+                  <span
+                    className="hidden items-center text-fg-subtle sm:flex"
+                    aria-hidden="true"
+                  >
+                    <ArrowRight size={16} strokeWidth={2} />
+                  </span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+
+          {/* Fuera del ciclo activo */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-3">
+            <Caption style={{ fontSize: 11 }}>fuera del ciclo activo</Caption>
+            {attention.length === 0 && extra.length === 0 ? (
+              <Pill tone="success">
+                <CheckCircle2 size={12} strokeWidth={1.9} />
+                ninguno en pausa o bloqueo
+              </Pill>
+            ) : (
+              [...attention, ...extra].map(([state, count]) => (
+                <span key={state} className="inline-flex items-center gap-2">
+                  <StateBadge status={aivStatus(state)} label={stateLabel(state)} />
+                  <span
+                    className="font-sans text-[13px] font-semibold tabular-nums"
+                    style={{ color: "var(--color-text-primary)" }}
+                  >
+                    {count}
+                  </span>
+                </span>
+              ))
+            )}
+          </div>
+        </>
       )}
     </Card>
   );
@@ -800,8 +1601,8 @@ function NodesTable({
     <Card className="overflow-hidden">
       <div style={{ padding: `${PAD_RELAXED}px ${PAD_RELAXED}px 14px` }}>
         <PanelHead
-          title="Nodos en warmup"
-          sub="Mailbox, dominio, etapa, día de rampa, readiness de auth y placement. Clic en una fila para ver su historial."
+          title="Dónde está cada emisor"
+          sub="El viaje de cada nodo: mailbox, dominio, etapa, día de rampa, readiness de auth y placement. Clic en una fila para ver su historial."
           right={<Caption style={{ fontSize: 12.5 }}>{nodes.length} en el pool</Caption>}
         />
       </div>
@@ -1119,24 +1920,25 @@ function PlacementTrendCard({
   const first = points.length > 0 ? points[0].v : null;
   const delta = last !== null && first !== null ? last - first : null;
   const refY = scaleY(PLACEMENT_FLOOR);
+  const overFloor = last !== null ? last >= PLACEMENT_FLOOR : null;
 
   return (
-    // Tendencia = contenido de trabajo CLARO en el centro (demo: "Línea de rampa" es
-    // clara; SPEC_UXUI §1.3 lista charts/timelines como CENTRO CLARO). Solo la banda de
-    // KpiCards queda ink. Sus internos salen de var(--color-*) y re-valúan al tema claro.
+    // El placement es la PUERTA (gate): mientras el inbox % esté bajo el piso, la rampa
+    // no escala. Contenido de trabajo CLARO en el centro. Sus internos salen de tokens.
     <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
       <PanelHead
         title={
           <span className="inline-flex items-center gap-2">
-            <TrendingUp size={15} strokeWidth={1.75} className="text-fg-subtle" />
-            Inbox placement
+            <ShieldCheck size={15} strokeWidth={1.75} className="text-fg-subtle" />
+            Placement gate
           </span>
         }
-        right={<ConfigCaption>meta ≥ {formatPercent(PLACEMENT_FLOOR)}</ConfigCaption>}
+        sub="El inbox % es la puerta que habilita escalar volumen: bajo el piso, la rampa se frena."
+        right={<ConfigCaption>piso ≥ {formatPercent(PLACEMENT_FLOOR)}</ConfigCaption>}
       />
 
       {last !== null ? (
-        <div className="flex items-baseline gap-2.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <span
             className="font-sans text-[32px] font-semibold leading-none tabular-nums"
             style={{ color: placementColor(last) }}
@@ -1145,11 +1947,22 @@ function PlacementTrendCard({
           </span>
           {delta !== null ? (
             <span
-              className="text-[12.5px] font-semibold"
+              className="inline-flex items-center gap-1 text-[12.5px] font-semibold"
               style={{ color: delta >= 0 ? "var(--color-success)" : "var(--color-critical)" }}
+              title="cambio desde el inicio de la serie"
             >
+              <TrendingUp
+                size={13}
+                strokeWidth={2}
+                style={{ transform: delta >= 0 ? "none" : "scaleY(-1)" }}
+              />
               {formatDeltaPp(delta)}
             </span>
+          ) : null}
+          {overFloor !== null ? (
+            <Pill tone={overFloor ? "success" : placementTone(last) === "critical" ? "critical" : "warning"}>
+              {overFloor ? "sobre el piso · escala habilitada" : "bajo el piso · escala frenada"}
+            </Pill>
           ) : null}
         </div>
       ) : (
@@ -1305,7 +2118,45 @@ function ProviderBar({ row }: { row: WarmupProviderRow }) {
  * 3) Curva de rampa — line chart quota vs dayIndex (ACENTO).
  * ------------------------------------------------------------ */
 
+/**
+ * Plan de rampa por semanas: agrupa la curva de referencia (ramp) en ventanas de 7
+ * días y reporta el rango de cupo por semana. DERIVADO de datos reales (no inventado):
+ * refleja exactamente la curva que devuelve /trends, resumida por semana.
+ */
+interface RampWeek {
+  week: number;
+  dayFrom: number;
+  dayTo: number;
+  quotaFrom: number;
+  quotaTo: number;
+}
+
+function rampWeeks(ramp: WarmupRampPoint[]): RampWeek[] {
+  if (ramp.length === 0) return [];
+  const ordered = [...ramp].sort((a, b) => a.dayIndex - b.dayIndex);
+  const buckets = new Map<number, WarmupRampPoint[]>();
+  for (const p of ordered) {
+    const week = Math.floor((p.dayIndex - 1) / 7) + 1;
+    const list = buckets.get(week) ?? [];
+    list.push(p);
+    buckets.set(week, list);
+  }
+  return [...buckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([week, pts]) => {
+      const quotas = pts.map((p) => p.quota);
+      return {
+        week,
+        dayFrom: pts[0].dayIndex,
+        dayTo: pts[pts.length - 1].dayIndex,
+        quotaFrom: Math.min(...quotas),
+        quotaTo: Math.max(...quotas)
+      };
+    });
+}
+
 function RampCurveCard({ ramp }: { ramp: WarmupRampPoint[] }) {
+  const weeks = useMemo(() => rampWeeks(ramp), [ramp]);
   const geo = useMemo(() => {
     if (ramp.length === 0) return null;
     const ordered = [...ramp].sort((a, b) => a.dayIndex - b.dayIndex);
@@ -1396,7 +2247,30 @@ function RampCurveCard({ ramp }: { ramp: WarmupRampPoint[] }) {
         </svg>
       ) : null}
 
-      {geo ? (
+      {weeks.length > 0 ? (
+        <div className="flex flex-col gap-2 border-t border-border pt-3">
+          <ConfigCaption>plan por semanas · referencia</ConfigCaption>
+          <div className="flex flex-wrap gap-2">
+            {weeks.map((w) => (
+              <div
+                key={w.week}
+                className="flex flex-col gap-0.5 rounded-[10px] px-2.5 py-1.5"
+                style={{ border: "1px solid var(--color-border)" }}
+              >
+                <span className="font-sans text-[11px] font-semibold text-fg">
+                  Semana {w.week}
+                </span>
+                <span className="font-sans text-[11px] tabular-nums text-fg-subtle">
+                  días {w.dayFrom}–{w.dayTo} ·{" "}
+                  {w.quotaFrom === w.quotaTo
+                    ? `${w.quotaTo}/día`
+                    : `${w.quotaFrom}→${w.quotaTo}/día`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : geo ? (
         <Caption style={{ fontSize: 11 }}>
           día {geo.points[0].day} → día {geo.points[geo.points.length - 1].day} ·{" "}
           {geo.points.length} {geo.points.length === 1 ? "punto" : "puntos"}

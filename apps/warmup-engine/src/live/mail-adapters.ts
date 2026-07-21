@@ -32,6 +32,7 @@ import type {
   ImapSearchOptions
 } from "../reader/imap-placement-reader.ts";
 import type { SmtpClient, SmtpSendInfo } from "../runtime/transport.ts";
+import type { AccessTokenProvider } from "./google-oauth-token-provider.ts";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Credenciales por REFERENCIA — el resolver inyectado canjea el secretRef opaco.
@@ -381,11 +382,11 @@ function isRelevantFolder(path: string, gmail: boolean): boolean {
 
 async function resolveFolders(
   client: ImapFlowLike,
-  opts: ImapflowClientOptions,
+  folders: readonly string[] | undefined,
   gmail: boolean
 ): Promise<string[]> {
   // Carpetas explícitas ⇒ se confía en el caller (evita depender de list()).
-  if (opts.folders && opts.folders.length > 0) return opts.folders;
+  if (folders && folders.length > 0) return [...folders];
   let boxes: Array<{ path: string }> = [];
   try {
     boxes = await client.list();
@@ -411,13 +412,55 @@ function toImapMessage(folder: string, fetched: ImapFetchLike, gmail: boolean): 
 }
 
 /**
- * ImapClient real (imapflow) para el placement reader (§9): connect+login, recorre las carpetas
- * relevantes buscando por cabecera (`search({header:{[name]:value}})`), y mapea cada mensaje a
- * ImapMessage. En Gmail (CAPABILITY X-GM-EXT-1) pide labels:true (X-GM-LABELS) y marca gmailRaw ⇒ el
- * reader clasifica por labels; el resto se clasifica por carpeta. Constructor ImapFlow inyectable (DI).
+ * NÚCLEO COMPARTIDO del Inbox Reader (§9), agnóstico al método de auth: recibe una `config` de conexión
+ * YA armada (con su bloque `auth`, sea password o XOAUTH2) y el constructor ImapFlow. connect+login,
+ * recorre las carpetas relevantes buscando por cabecera y mapea cada mensaje a ImapMessage. En Gmail
+ * (CAPABILITY X-GM-EXT-1) pide labels:true (X-GM-LABELS) y marca gmailRaw ⇒ el reader clasifica por
+ * labels; el resto por carpeta. NO abre sockets en tests: los fakes implementan connect/list/search/
+ * fetchAll/logout. Esta función NO conoce el secreto: quien la llama arma `config.auth`.
+ */
+async function searchSeedInbox(
+  Ctor: ImapFlowCtor,
+  config: Record<string, unknown>,
+  searchOpts: ImapSearchOptions,
+  folders: readonly string[] | undefined
+): Promise<ImapMessage[]> {
+  const client = new Ctor(config);
+  const results: ImapMessage[] = [];
+  await client.connect();
+  try {
+    const gmail = hasGmail(client);
+    const useFolders = await resolveFolders(client, folders, gmail);
+    const query = { header: { [searchOpts.headerName]: searchOpts.headerValue } };
+    for (const folder of useFolders) {
+      const lock = await client.getMailboxLock(folder);
+      try {
+        const uids = await client.search(query, { uid: true });
+        if (!uids || uids.length === 0) continue;
+        const fetched = await client.fetchAll(uids, { headers: true, labels: gmail }, { uid: true });
+        for (const f of fetched) {
+          results.push(toImapMessage(folder, f, gmail));
+        }
+      } finally {
+        lock.release();
+      }
+    }
+  } finally {
+    try {
+      await client.logout();
+    } catch {
+      // best-effort.
+    }
+  }
+  return results;
+}
+
+/**
+ * ImapClient real (imapflow) para el placement reader (§9) con auth por PASSWORD.
  *
  * La credencial va por REFERENCIA: se resuelve por cada `search`, justo antes de connect, y nunca se
- * loguea. NO abre sockets en tests: los fakes implementan connect/list/search/fetchAll/logout.
+ * loguea. Reusa el núcleo compartido `searchSeedInbox` (folder-walk + clasificación). Constructor
+ * ImapFlow inyectable (DI).
  */
 export function createImapflowClient(
   secretResolver: SecretResolver,
@@ -428,46 +471,59 @@ export function createImapflowClient(
   return {
     async search(searchOpts: ImapSearchOptions): Promise<ImapMessage[]> {
       const secret = await secretResolver.resolve(opts.secretRef);
-      const client = new Ctor(
-        buildImapConfig(
-          opts.host,
-          opts.port || IMAPS_PORT,
-          opts.secure ?? true,
-          opts.user,
-          secret
-        )
+      const config = buildImapConfig(
+        opts.host,
+        opts.port || IMAPS_PORT,
+        opts.secure ?? true,
+        opts.user,
+        secret
       );
-      const results: ImapMessage[] = [];
-      await client.connect();
-      try {
-        const gmail = hasGmail(client);
-        const folders = await resolveFolders(client, opts, gmail);
-        const query = { header: { [searchOpts.headerName]: searchOpts.headerValue } };
-        for (const folder of folders) {
-          const lock = await client.getMailboxLock(folder);
-          try {
-            const uids = await client.search(query, { uid: true });
-            if (!uids || uids.length === 0) continue;
-            const fetched = await client.fetchAll(
-              uids,
-              { headers: true, labels: gmail },
-              { uid: true }
-            );
-            for (const f of fetched) {
-              results.push(toImapMessage(folder, f, gmail));
-            }
-          } finally {
-            lock.release();
-          }
-        }
-      } finally {
-        try {
-          await client.logout();
-        } catch {
-          // best-effort.
-        }
-      }
-      return results;
+      return searchSeedInbox(Ctor, config, searchOpts, opts.folders);
+    }
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cliente IMAP OAuth (XOAUTH2) para el placement reader — variante Gmail/Workspace.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Opciones del cliente IMAP OAuth. Sin secretRef: el access token lo mintea el AccessTokenProvider. */
+export interface OAuthImapClientOptions {
+  host: string;
+  port?: number;
+  /** Usuario del seed inbox (dirección del buzón). NO es secreto. */
+  user: string;
+  secure?: boolean;
+  /** Carpetas a recorrer; si se omite se derivan de list() (INBOX + spam-like [+ All Mail en Gmail]). */
+  folders?: string[];
+}
+
+/**
+ * ImapClient real (imapflow) para el placement reader (§9) con auth XOAUTH2 (OAuth2).
+ *
+ * En cada `search` mintea/usa un access token vía el AccessTokenProvider (que cachea+refresca por dentro)
+ * y arma `auth:{ user, accessToken }` — la forma XOAUTH2 que imapflow espera. Reusa el MISMO núcleo
+ * compartido `searchSeedInbox` que la variante password (folder-walk + clasificación idénticas). El
+ * access token NUNCA se loguea. Constructor ImapFlow inyectable (DI) ⇒ tests sin sockets.
+ */
+export function createGmailOAuthImapClient(
+  tokenProvider: AccessTokenProvider,
+  opts: OAuthImapClientOptions,
+  deps: ImapDeps = {}
+): ImapClient {
+  const Ctor: ImapFlowCtor = deps.ImapFlow ?? (ImapFlow as unknown as ImapFlowCtor);
+  return {
+    async search(searchOpts: ImapSearchOptions): Promise<ImapMessage[]> {
+      const accessToken = await tokenProvider.getAccessToken();
+      const config: Record<string, unknown> = {
+        host: opts.host,
+        port: opts.port || IMAPS_PORT,
+        secure: opts.secure ?? true,
+        // Forma XOAUTH2 de imapflow: presencia de accessToken ⇒ SASL XOAUTH2 (sin `type`).
+        auth: { user: opts.user, accessToken },
+        logger: false
+      };
+      return searchSeedInbox(Ctor, config, searchOpts, opts.folders);
     }
   };
 }
