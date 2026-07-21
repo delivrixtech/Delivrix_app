@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Delivrix · Canvas Live — Run Artifact (prototipo)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Funnel+Display:wght@400;500;600;700&family=Geist:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3/dist/tabler-icons.min.css">
+<style>
+  :root{
+    --bg:#0A0C0F; --bg2:#0F1217; --card:#14181E; --card2:#181D24;
+    --line:#222831; --line2:#2C333D;
+    --text:#E8EAED; --text2:#98A0AC; --text3:#646C78;
+    --green:#3DD68C; --greenD:rgba(61,214,140,.12);
+    --blue:#5C9DF5; --blueD:rgba(92,157,245,.12);
+    --amber:#E5B567; --amberD:rgba(229,181,103,.12);
+    --red:#F2706F; --redD:rgba(242,112,111,.12);
+    --purple:#A98BFB; --purpleD:rgba(169,139,251,.14);
+    --sans:'Geist','Inter',system-ui,-apple-system,sans-serif;
+    --display:'Funnel Display','Geist',sans-serif;
+    --mono:'IBM Plex Mono','JetBrains Mono',ui-monospace,monospace;
+    --r:10px; --r-sm:7px; --r-lg:14px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  ::selection{background:rgba(169,139,251,.3)}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:#262d36;border-radius:6px;border:2px solid var(--bg)}
+  ::-webkit-scrollbar-thumb:hover{background:#323a45}
+  .mono{font-family:var(--mono)}
+  .app{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+
+  /* Top bar */
+  .topbar{height:52px;flex:0 0 52px;display:flex;align-items:center;gap:14px;padding:0 18px;border-bottom:1px solid var(--line);background:var(--bg2)}
+  .logo{display:flex;align-items:center;gap:9px;font-family:var(--display);font-weight:600;letter-spacing:-.01em}
+  .logo .mark{width:24px;height:24px;border-radius:7px;background:linear-gradient(135deg,#3DD68C,#2BA876);display:flex;align-items:center;justify-content:center;color:#06120c;font-weight:700;font-size:14px}
+  .crumb{display:flex;align-items:center;gap:8px;color:var(--text3);font-size:13px}
+  .crumb b{color:var(--text2);font-weight:500}
+  .crumb .here{color:var(--text);font-weight:500}
+  .spacer{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:500;border:1px solid var(--line2)}
+  .pill.live{color:var(--green);border-color:rgba(61,214,140,.3);background:var(--greenD)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(61,214,140,.6);animation:pulse 2s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(61,214,140,.5)}70%{box-shadow:0 0 0 6px rgba(61,214,140,0)}100%{box-shadow:0 0 0 0 rgba(61,214,140,0)}}
+  .who{display:flex;align-items:center;gap:8px;color:var(--text2);font-size:13px}
+  .ava{width:26px;height:26px;border-radius:50%;background:#222a33;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:var(--text2)}
+
+  /* Main split */
+  .main{flex:1;display:flex;min-height:0}
+  .chat{width:340px;flex:0 0 340px;border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--bg)}
+  .chat-head{padding:14px 16px 10px;border-bottom:1px solid var(--line)}
+  .chat-title{display:flex;align-items:center;gap:8px;font-family:var(--display);font-weight:600;font-size:15px}
+  .chat-sub{color:var(--text3);font-size:12px;margin-top:3px}
+  .chat-body{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+  .msg{display:flex;flex-direction:column;gap:5px;max-width:96%}
+  .msg .role{font-size:11px;color:var(--text3);font-weight:500;letter-spacing:.02em;text-transform:uppercase;display:flex;gap:6px;align-items:center}
+  .bubble{padding:10px 12px;border-radius:var(--r);font-size:13.5px;line-height:1.55;border:1px solid var(--line)}
+  .msg.op{align-self:flex-end;align-items:flex-end}
+  .msg.op .bubble{background:#1a212b;border-color:#26303b}
+  .msg.oc .bubble{background:var(--card)}
+  .bubble code{font-family:var(--mono);font-size:12px;background:#0d1218;border:1px solid var(--line);padding:1px 5px;border-radius:5px;color:var(--green)}
+  .chat-input{border-top:1px solid var(--line);padding:12px;background:var(--bg2)}
+  .chat-params{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+  .chip{font-size:11px;color:var(--text2);background:var(--card);border:1px solid var(--line);border-radius:999px;padding:3px 9px;display:inline-flex;gap:5px;align-items:center}
+  .chip i{font-size:13px;color:var(--text3)}
+  .field{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line2);border-radius:var(--r);padding:9px 11px}
+  .field input{flex:1;background:none;border:none;outline:none;color:var(--text);font-family:var(--sans);font-size:13px}
+  .field input::placeholder{color:var(--text3)}
+  .send{width:30px;height:30px;border-radius:8px;background:var(--green);color:#06120c;border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px}
+
+  /* Viewport */
+  .view{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+  .tabs{display:flex;align-items:center;gap:2px;padding:0 14px;height:46px;flex:0 0 46px;border-bottom:1px solid var(--line);background:var(--bg2)}
+  .tab{display:flex;align-items:center;gap:7px;height:46px;padding:0 13px;color:var(--text2);font-size:13px;font-weight:500;cursor:pointer;border-bottom:2px solid transparent;position:relative;top:1px}
+  .tab i{font-size:16px}
+  .tab .cnt{font-size:11px;color:var(--text3);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:0 5px;line-height:16px}
+  .tab:hover{color:var(--text)}
+  .tab.active{color:var(--text);border-bottom-color:var(--green)}
+  .tab .stream{font-size:10px;color:var(--green);background:var(--greenD);border:1px solid rgba(61,214,140,.25);border-radius:5px;padding:0 5px;line-height:15px;letter-spacing:.03em}
+
+  .panel{flex:1;overflow:auto;min-height:0}
+  .panel[hidden]{display:none}
+
+  /* Artifact toolbar */
+  .art-bar{display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:5}
+  .art-bar .lbl{display:flex;flex-direction:column;gap:2px}
+  .art-bar .k{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--purple);font-weight:600;display:flex;align-items:center;gap:6px}
+  .art-bar .t{font-family:var(--mono);font-size:14px;color:var(--text)}
+  .seg{display:flex;background:var(--card);border:1px solid var(--line2);border-radius:9px;padding:3px}
+  .seg button{border:none;background:none;color:var(--text2);font-family:var(--sans);font-size:12.5px;font-weight:500;padding:5px 13px;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:6px}
+  .seg button i{font-size:14px}
+  .seg button.on{background:#222a34;color:var(--text)}
+  .btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:8px;background:var(--card);border:1px solid var(--line2);color:var(--text2);font-size:12.5px;font-weight:500;cursor:pointer}
+  .btn:hover{background:var(--card2);color:var(--text)}
+  .btn i{font-size:15px}
+
+  .art{padding:22px 22px 40px;max-width:920px}
+  .art[hidden]{display:none}
+
+  /* Hero */
+  .hero{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--line)}
+  .hero .icn{width:46px;height:46px;border-radius:12px;background:var(--purpleD);border:1px solid rgba(169,139,251,.3);display:flex;align-items:center;justify-content:center;color:var(--purple);font-size:24px;flex:0 0 auto}
+  .hero h1{font-family:var(--display);font-size:23px;font-weight:600;letter-spacing:-.02em;line-height:1.1}
+  .hero .meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:9px}
+  .tag{display:inline-flex;align-items:center;gap:6px;font-size:12px;height:24px;padding:0 9px;border-radius:7px;background:var(--card);border:1px solid var(--line);color:var(--text2);font-family:var(--mono)}
+  .tag i{font-size:13px;color:var(--text3)}
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;height:28px;padding:0 12px;border-radius:8px;margin-left:auto}
+  .badge.ok{color:var(--green);background:var(--greenD);border:1px solid rgba(61,214,140,.3)}
+  .badge i{font-size:15px}
+
+  /* Identity grid */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:18px 0 6px}
+  .stat{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r);padding:13px 14px}
+  .stat .l{font-size:11px;color:var(--text3);letter-spacing:.04em;text-transform:uppercase;display:flex;align-items:center;gap:6px;margin-bottom:7px}
+  .stat .l i{font-size:14px}
+  .stat .v{font-family:var(--mono);font-size:14px;color:var(--text);display:flex;align-items:center;gap:8px;word-break:break-all}
+  .stat .v .chk{color:var(--green);font-size:14px}
+
+  /* Section */
+  .sec{margin-top:26px}
+  .sec-h{display:flex;align-items:center;gap:9px;margin-bottom:13px}
+  .sec-h h2{font-family:var(--display);font-size:15px;font-weight:600}
+  .sec-h .n{font-size:12px;color:var(--text3);margin-left:auto;font-family:var(--mono)}
+  .sec-h i{color:var(--text3);font-size:17px}
+
+  /* Timeline */
+  .tl{position:relative;padding-left:4px}
+  .step{display:flex;align-items:center;gap:13px;padding:7px 0}
+  .step .ic{width:24px;height:24px;border-radius:50%;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-size:13px;border:1px solid var(--line2);background:var(--card);position:relative;z-index:2}
+  .step.done .ic{background:var(--greenD);border-color:rgba(61,214,140,.4);color:var(--green)}
+  .step.run .ic{background:var(--amberD);border-color:rgba(229,181,103,.5);color:var(--amber)}
+  .step.run .ic i{animation:spin 1.4s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .step .line{position:absolute;left:15px;top:0;bottom:0;width:1px;background:var(--line);z-index:1}
+  .step .nm{flex:1;font-size:13.5px;color:var(--text)}
+  .step.pend .nm{color:var(--text3)}
+  .step .sk{font-family:var(--mono);font-size:11.5px;color:var(--text3);margin-left:8px}
+  .step .du{font-family:var(--mono);font-size:12px;color:var(--text3)}
+  .step.run .du{color:var(--amber)}
+
+  /* DNS table */
+  .dns{border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+  .dns .row{display:grid;grid-template-columns:64px 1fr auto;gap:12px;align-items:center;padding:11px 13px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12.5px}
+  .dns .row:last-child{border-bottom:none}
+  .dns .row:hover{background:var(--bg2)}
+  .dns .ty{font-weight:500;color:var(--blue);font-size:11px;text-align:center;background:var(--blueD);border:1px solid rgba(92,157,245,.25);border-radius:6px;padding:3px 0}
+  .dns .val{color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dns .val b{color:var(--text);font-weight:500}
+  .cp{width:26px;height:26px;border-radius:7px;border:1px solid var(--line);background:var(--card);color:var(--text3);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px;flex:0 0 auto}
+  .cp:hover{color:var(--text);background:var(--card2)}
+  .cp.ok{color:var(--green);border-color:rgba(61,214,140,.3)}
+
+  /* DKIM block */
+  .keyblock{background:var(--bg2);border:1px solid var(--line);border-radius:var(--r);padding:13px 14px}
+  .keyblock .top{display:flex;align-items:center;gap:8px;margin-bottom:9px}
+  .keyblock .top .nm{font-family:var(--mono);font-size:12px;color:var(--text2)}
+  .keyblock .top .st{margin-left:auto;font-size:11px;color:var(--green);display:flex;align-items:center;gap:5px}
+  .keyblock pre{font-family:var(--mono);font-size:11.5px;color:var(--text2);white-space:pre-wrap;word-break:break-all;line-height:1.6;max-height:84px;overflow:hidden;position:relative}
+  .keyblock pre::after{content:'';position:absolute;left:0;right:0;bottom:0;height:28px;background:linear-gradient(transparent,var(--bg2))}
+
+  /* Delivery card */
+  .deliv{display:flex;align-items:center;gap:16px;background:var(--greenD);border:1px solid rgba(61,214,140,.25);border-radius:var(--r);padding:15px 16px}
+  .deliv .big{width:40px;height:40px;border-radius:11px;background:rgba(61,214,140,.18);display:flex;align-items:center;justify-content:center;color:var(--green);font-size:22px;flex:0 0 auto}
+  .deliv .info{flex:1}
+  .deliv .info .t{font-weight:600;font-size:14px}
+  .deliv .info .s{color:var(--text2);font-size:12.5px;font-family:var(--mono);margin-top:3px}
+  .deliv .right{text-align:right}
+  .deliv .right .t{color:var(--green);font-weight:600;font-size:13px}
+  .deliv .right .s{color:var(--text3);font-size:11px;font-family:var(--mono);margin-top:2px}
+
+  /* Raw view */
+  .raw{padding:22px;max-width:920px}
+  .raw[hidden]{display:none}
+  .raw .note{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--amber);background:var(--amberD);border:1px solid rgba(229,181,103,.25);border-radius:var(--r);padding:10px 13px;margin-bottom:14px}
+  .raw pre{font-family:var(--mono);font-size:12px;line-height:1.65;color:var(--text2);background:var(--bg2);border:1px solid var(--line);border-radius:var(--r);padding:16px;overflow:auto}
+  .raw .jk{color:var(--blue)}.raw .js{color:var(--green)}.raw .jn{color:var(--amber)}.raw .jb{color:var(--purple)}
+
+  /* Files panel */
+  .files{display:flex;min-height:0;height:100%}
+  .tree{width:260px;flex:0 0 260px;border-right:1px solid var(--line);padding:12px 8px;overflow:auto;background:var(--bg2)}
+  .tnode{display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:7px;font-size:13px;color:var(--text2);cursor:pointer}
+  .tnode:hover{background:var(--card)}
+  .tnode.on{background:var(--card2);color:var(--text)}
+  .tnode i{font-size:15px;color:var(--text3)}
+  .tnode.on i{color:var(--green)}
+  .tnode.ind{margin-left:16px}
+  .fview{flex:1;overflow:auto;padding:22px 26px;max-width:760px}
+  .fview h1{font-family:var(--display);font-size:20px;font-weight:600;margin-bottom:4px}
+  .fview .fp{font-family:var(--mono);font-size:11.5px;color:var(--text3);margin-bottom:18px;display:flex;align-items:center;gap:7px}
+  .fview h3{font-family:var(--display);font-size:15px;margin:20px 0 8px;font-weight:600}
+  .fview p{color:var(--text2);font-size:13.5px;margin-bottom:10px}
+  .fview ul{margin:0 0 12px 18px;color:var(--text2);font-size:13.5px}
+  .fview li{margin-bottom:5px}
+  .fview code{font-family:var(--mono);font-size:12px;background:var(--bg2);border:1px solid var(--line);padding:1px 5px;border-radius:5px;color:var(--green)}
+  .fview .kv{display:flex;gap:10px;font-family:var(--mono);font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--line)}
+  .fview .kv .k{color:var(--text3);width:130px}
+  .fview .kv .v{color:var(--text)}
+
+  /* generic empty */
+  .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text3);gap:10px;text-align:center;padding:40px}
+  .empty i{font-size:34px;opacity:.6}
+  .empty .h{font-family:var(--display);font-size:15px;color:var(--text2)}
+
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);background:#1b2129;border:1px solid var(--line2);color:var(--text);padding:9px 15px;border-radius:9px;font-size:13px;opacity:0;transition:.25s;display:flex;align-items:center;gap:8px;pointer-events:none;z-index:50}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast i{color:var(--green)}
+  .ghost{font-size:11px;color:var(--text3);text-align:center;padding:9px;border-top:1px solid var(--line);background:var(--bg2)}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="topbar">
+    <div class="logo"><span class="mark">D</span> Delivrix</div>
+    <div class="crumb"><span>Operación</span> <i class="ti ti-chevron-right" style="font-size:13px"></i> <span class="here">Canvas</span></div>
+    <span class="pill live"><span class="dot"></span> OpenClaw · Live</span>
+    <div class="spacer"></div>
+    <span class="pill"><i class="ti ti-shield-check" style="font-size:14px;color:var(--green)"></i> Kill switch · armado</span>
+    <div class="who"><span class="ava">JC</span> operador</div>
+  </div>
+
+  <div class="main">
+
+    <!-- Chat -->
+    <div class="chat">
+      <div class="chat-head">
+        <div class="chat-title"><i class="ti ti-sparkles" style="color:var(--purple)"></i> OpenClaw</div>
+        <div class="chat-sub">operador supervisado · agent:main · feed hace 0s</div>
+      </div>
+      <div class="chat-body">
+        <div class="msg op"><span class="role">operador</span><div class="bubble">Configurá un SMTP completo para <code>nationalcorpops.com</code> con Webdock.</div></div>
+        <div class="msg oc"><span class="role"><i class="ti ti-sparkles" style="font-size:12px;color:var(--purple)"></i> openclaw</span><div class="bubble">Plan firmado y ejecutando <code>configure_complete_smtp</code> (1 firma / runId). Seguí el progreso en vivo en el viewport derecho → <b>Run · nationalcorpops.com</b>.</div></div>
+        <div class="msg oc"><span class="role"><i class="ti ti-sparkles" style="font-size:12px;color:var(--purple)"></i> openclaw</span><div class="bubble">Run completo. SMTP entregando a inbox, DKIM/SPF/DMARC alineados y FCrDNS OK. Abrí la ficha para DNS, clave DKIM y el smoke test.</div></div>
+      </div>
+      <div class="chat-input">
+        <div class="chat-params">
+          <span class="chip"><i class="ti ti-adjustments"></i> consulta</span>
+          <span class="chip"><i class="ti ti-stack-2"></i> skill auto</span>
+          <span class="chip"><i class="ti ti-eye"></i> read-only</span>
+        </div>
+        <div class="field"><input placeholder="Prompt para OpenClaw, evidencia o instrucción…"><button class="send"><i class="ti ti-arrow-up"></i></button></div>
+      </div>
+    </div>
+
+    <!-- Viewport -->
+    <div class="view">
+      <div class="tabs">
+        <div class="tab active" data-tab="live"><i class="ti ti-broadcast"></i> Live</div>
+        <div class="tab" data-tab="files"><i class="ti ti-folder"></i> Files <span class="cnt">7</span></div>
+        <div class="tab" data-tab="term"><i class="ti ti-terminal-2"></i> Terminal <span class="stream">stream</span></div>
+        <div class="tab" data-tab="diff"><i class="ti ti-git-compare"></i> Diff <span class="cnt">3</span></div>
+        <div class="tab" data-tab="topo"><i class="ti ti-sitemap"></i> Topología</div>
+      </div>
+
+      <!-- LIVE -->
+      <div class="panel" data-panel="live">
+        <div class="art-bar">
+          <div class="lbl">
+            <span class="k"><i class="ti ti-cube" style="font-size:13px"></i> Run artifact</span>
+            <span class="t">nationalcorpops.com · smtp-run-7f3a9c21</span>
+          </div>
+          <div class="spacer" style="flex:1"></div>
+          <div class="seg">
+            <button class="on" data-mode="preview"><i class="ti ti-layout-2"></i> Preview</button>
+            <button data-mode="raw"><i class="ti ti-code"></i> Raw</button>
+          </div>
+          <button class="btn" data-copy="md"><i class="ti ti-file-text"></i> Copiar .md</button>
+          <button class="btn"><i class="ti ti-download"></i> Exportar</button>
+        </div>
+
+        <!-- PREVIEW -->
+        <div class="art" data-art="preview">
+          <div class="hero">
+            <div class="icn"><i class="ti ti-mail-cog"></i></div>
+            <div>
+              <h1>nationalcorpops.com</h1>
+              <div class="meta">
+                <span class="tag"><i class="ti ti-server-2"></i> Webdock · dk</span>
+                <span class="tag"><i class="ti ti-world"></i> smtp.nationalcorpops.com</span>
+                <span class="tag"><i class="ti ti-clock"></i> 31m 04s</span>
+              </div>
+            </div>
+            <span class="badge ok"><i class="ti ti-circle-check"></i> Entregado a inbox</span>
+          </div>
+
+          <div class="grid">
+            <div class="stat"><div class="l"><i class="ti ti-network"></i> IPv4</div><div class="v">185.121.83.40 <i class="ti ti-discount-check chk" title="FCrDNS OK"></i></div></div>
+            <div class="stat"><div class="l"><i class="ti ti-server"></i> Servidor</div><div class="v">delivrix-smtp-natl-01</div></div>
+            <div class="stat"><div class="l"><i class="ti ti-key"></i> Selector DKIM</div><div class="v">oc2026</div></div>
+            <div class="stat"><div class="l"><i class="ti ti-shield-lock"></i> Reputación 7d</div><div class="v" style="color:var(--green)">limpia · 4 DNSBL</div></div>
+          </div>
+
+          <div class="sec">
+            <div class="sec-h"><i class="ti ti-timeline"></i><h2>Línea de tiempo del aprovisionamiento</h2><span class="n">14 / 14 pasos</span></div>
+            <div class="tl" id="timeline"></div>
+          </div>
+
+          <div class="sec">
+            <div class="sec-h"><i class="ti ti-dns"></i><h2>Zona DNS aplicada</h2><span class="n">5 registros · propagados</span></div>
+            <div class="dns" id="dns"></div>
+          </div>
+
+          <div class="sec">
+            <div class="sec-h"><i class="ti ti-key"></i><h2>Clave pública DKIM</h2><span class="n">oc2026._domainkey · 2048-bit</span></div>
+            <div class="keyblock">
+              <div class="top"><span class="nm">oc2026._domainkey.nationalcorpops.com  TXT</span><span class="st"><i class="ti ti-circle-check" style="font-size:13px"></i> verificada</span></div>
+              <pre>v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4Vx2gK0n7nQ1m9fZpQ3tF8sVdRcW2bYh6Jl0oP9uXeKqA3sDfG1hJ2kLmN4oP5qR6sT7uV8wX9yZ0aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX2yZ3aB4cD5eF6gH7iJ8kQEAB</pre>
+            </div>
+          </div>
+
+          <div class="sec">
+            <div class="sec-h"><i class="ti ti-send"></i><h2>Smoke test · entrega real</h2><span class="n">paso 14</span></div>
+            <div class="deliv">
+              <div class="big"><i class="ti ti-inbox"></i></div>
+              <div class="info">
+                <div class="t">Correo entregado a la bandeja de entrada</div>
+                <div class="s">&lt;20260618.7f3a9c21@smtp.nationalcorpops.com&gt; → seed-pool</div>
+              </div>
+              <div class="right">
+                <div class="t">delivered</div>
+                <div class="s">1.8s · spam 0%</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- RAW -->
+        <div class="raw" data-art="raw" hidden>
+          <div class="note"><i class="ti ti-alert-triangle"></i> Esto es lo que el operador ve HOY en el viewport: el <b style="margin:0 3px">SmtpRunState</b> crudo. Misma data, cero lectura.</div>
+          <pre id="rawjson"></pre>
+        </div>
+      </div>
+
+      <!-- FILES -->
+      <div class="panel" data-panel="files" hidden>
+        <div class="files">
+          <div class="tree">
+            <div class="tnode"><i class="ti ti-folder"></i> inventory</div>
+            <div class="tnode ind on" data-file="run"><i class="ti ti-file-code"></i> smtp-run-7f3a9c21.json</div>
+            <div class="tnode ind" data-file="warm"><i class="ti ti-file-code"></i> warmup-progress.json</div>
+            <div class="tnode"><i class="ti ti-folder"></i> executions / 2026-06-18</div>
+            <div class="tnode ind" data-file="exec"><i class="ti ti-file-text"></i> configure_complete_smtp.md</div>
+            <div class="tnode"><i class="ti ti-folder"></i> learnings</div>
+            <div class="tnode ind" data-file="learn"><i class="ti ti-file-text"></i> dkim-propagation.md</div>
+          </div>
+          <div class="fview" id="fview"></div>
+        </div>
+      </div>
+
+      <!-- TERMINAL -->
+      <div class="panel" data-panel="term" hidden>
+        <div class="empty">
+          <i class="ti ti-terminal-2"></i>
+          <div class="h">Terminal del VPS en vivo</div>
+          <div>Stream real de stdout/stderr del provisioning por SSH.<br>Hoy es placeholder — en la propuesta, stream real.</div>
+        </div>
+      </div>
+      <div class="panel" data-panel="diff" hidden>
+        <div class="empty"><i class="ti ti-git-compare"></i><div class="h">Diffs de configuración</div><div>main.cf · opendkim.conf · zona DNS — antes/después.</div></div>
+      </div>
+      <div class="panel" data-panel="topo" hidden>
+        <div class="empty"><i class="ti ti-sitemap"></i><div class="h">Mapa de la operación</div><div>Topología run-aware (no mock) alimentada por SmtpRunState.</div></div>
+      </div>
+
+    </div>
+  </div>
+  <div class="ghost">Prototipo de diseño · Claude (frontend) · datos con forma real de SmtpRunState — no es el panel productivo</div>
+</div>
+
+<div class="toast" id="toast"><i class="ti ti-check"></i> <span>Copiado</span></div>
+
+<script>
+const steps=[
+ ["Eligiendo dominio seguro","suggest_domain","2s"],
+ ["Registrando dominio","register_route53","28s"],
+ ["Esperando propagación NS","wait_dns","9m 02s"],
+ ["Creando VPS","create_webdock","2m 51s"],
+ ["Esperando VPS listo","wait_running","1m 12s"],
+ ["Configurando DNS (A/MX)","upsert_dns","6s"],
+ ["Esperando propagación A","wait_dns","4m 10s"],
+ ["Alineando identidad + FCrDNS","bind_domain","1m 40s"],
+ ["Instalando Postfix + DKIM + TLS","provision_smtp","1m 28s"],
+ ["Configurando SPF/DKIM/DMARC","configure_auth","5s"],
+ ["Esperando propagación DKIM","wait_dns","7m 06s"],
+ ["Iniciando warmup","seed_warmup","11s"],
+ ["Calentamiento inicial","wait_warmup","48s"],
+ ["Enviando correo de prueba","send_real_email","1.8s"]
+];
+const tl=document.getElementById('timeline');
+tl.innerHTML=steps.map((s,i)=>`<div class="step done">
+  <div class="ic"><i class="ti ti-check"></i><span class="line"></span></div>
+  <span class="nm">${s[0]}<span class="sk">${s[1]}</span></span>
+  <span class="du">${s[2]}</span></div>`).join('');
+
+const dns=[
+ ["MX","nationalcorpops.com","10 smtp.nationalcorpops.com"],
+ ["A","smtp.nationalcorpops.com","185.121.83.40"],
+ ["TXT","SPF","v=spf1 ip4:185.121.83.40 -all"],
+ ["TXT","DKIM oc2026._domainkey","v=DKIM1; k=rsa; p=MIIBIjANBgk…QEAB"],
+ ["TXT","DMARC _dmarc","v=DMARC1; p=quarantine; rua=mailto:dmarc@nationalcorpops.com"]
+];
+document.getElementById('dns').innerHTML=dns.map(r=>`<div class="row">
+  <span class="ty">${r[0]}</span>
+  <span class="val"><b>${r[1]}</b> &nbsp;${r[2]}</span>
+  <button class="cp" title="Copiar"><i class="ti ti-copy"></i></button></div>`).join('');
+
+const rawObj={
+ runId:"smtp-run-7f3a9c21", status:"completed", chosenDomain:"nationalcorpops.com",
+ smtpHost:"smtp.nationalcorpops.com", serverSlug:"delivrix-smtp-natl-01",
+ serverIpv4:"185.121.83.40", providerId:"webdock", serverAccountId:"acct-2a1e",
+ dkimSelector:"oc2026", dkimPublicKey:"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A…QEAB",
+ lastCompletedStep:14, finalEmailMessageId:"20260618.7f3a9c21@smtp.nationalcorpops.com",
+ finalDeliveryStatus:"delivered",
+ steps:steps.map((s,i)=>({step:i+1,skill:s[1],status:"done",durationMs:0}))
+};
+function synJson(o){let j=JSON.stringify(o,null,2);
+ return j.replace(/&/g,'&amp;').replace(/</g,'&lt;')
+ .replace(/"(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?/g,m=>m.endsWith(':')||/":$/.test(m)?'<span class="jk">'+m+'</span>':'<span class="js">'+m+'</span>')
+ .replace(/\b(true|false|null)\b/g,'<span class="jb">$1</span>')
+ .replace(/\b(-?\d+\.?\d*)\b/g,'<span class="jn">$1</span>');}
+document.getElementById('rawjson').innerHTML=synJson(rawObj);
+
+document.querySelectorAll('.seg button').forEach(b=>b.onclick=()=>{
+ document.querySelectorAll('.seg button').forEach(x=>x.classList.remove('on'));
+ b.classList.add('on');
+ const raw=b.dataset.mode==='raw';
+ document.querySelector('[data-art="preview"]').hidden=raw;
+ document.querySelector('[data-art="raw"]').hidden=!raw;
+});
+
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+ t.classList.add('active');
+ document.querySelectorAll('.panel').forEach(p=>p.hidden=p.dataset.panel!==t.dataset.tab);
+});
+
+const toast=document.getElementById('toast');
+function ping(msg){toast.querySelector('span').textContent=msg||'Copiado';toast.classList.add('show');setTimeout(()=>toast.classList.remove('show'),1400);}
+document.addEventListener('click',e=>{
+ const cp=e.target.closest('.cp');
+ if(cp){cp.classList.add('ok');cp.innerHTML='<i class="ti ti-check"></i>';ping('Registro copiado');setTimeout(()=>{cp.classList.remove('ok');cp.innerHTML='<i class="ti ti-copy"></i>';},1300);}
+ const b=e.target.closest('[data-copy]'); if(b) ping('Reporte .md copiado');
+});
+
+const files={
+ run:`<h1>smtp-run-7f3a9c21.json</h1><div class="fp"><i class="ti ti-folder"></i> inventory / smtp-run-7f3a9c21.json · 4.1 KB · vivo</div>
+  <div class="kv"><span class="k">chosenDomain</span><span class="v">nationalcorpops.com</span></div>
+  <div class="kv"><span class="k">smtpHost</span><span class="v">smtp.nationalcorpops.com</span></div>
+  <div class="kv"><span class="k">serverIpv4</span><span class="v">185.121.83.40</span></div>
+  <div class="kv"><span class="k">providerId</span><span class="v">webdock</span></div>
+  <div class="kv"><span class="k">finalDeliveryStatus</span><span class="v" style="color:var(--green)">delivered</span></div>
+  <p style="margin-top:16px;color:var(--text3)">El archivo real servido por <code>/v1/openclaw/workspace/file</code> — read-only, auditado, secretos redactados.</p>`,
+ exec:`<h1>configure_complete_smtp.md</h1><div class="fp"><i class="ti ti-folder"></i> executions / 2026-06-18 / configure_complete_smtp.md</div>
+  <h3>Resumen</h3><p>Run <code>smtp-run-7f3a9c21</code> completó los 14 pasos para <code>nationalcorpops.com</code> en 31m 04s. Entrega verificada a inbox.</p>
+  <h3>Evidencia</h3><ul><li>VPS Webdock <code>dk</code> · 185.121.83.40</li><li>FCrDNS validado (A ↔ PTR)</li><li>DKIM oc2026 propagado, SPF -all, DMARC quarantine</li><li>Smoke test: delivered, 1.8s, 0% spam</li></ul>`,
+ warm:`<h1>warmup-progress.json</h1><div class="fp"><i class="ti ti-folder"></i> inventory / warmup-progress.json</div>
+  <div class="kv"><span class="k">day</span><span class="v">1 / 30</span></div>
+  <div class="kv"><span class="k">dailyLimit</span><span class="v">20</span></div>
+  <div class="kv"><span class="k">seedPool</span><span class="v">10</span></div>`,
+ learn:`<h1>dkim-propagation.md</h1><div class="fp"><i class="ti ti-folder"></i> learnings / dkim-propagation.md</div>
+  <p>Aprendizaje: la propagación DKIM en IONOS tardó ~7m; gate <code>wait_dns</code> evita firmar antes de tiempo.</p>`
+};
+function showFile(k){document.getElementById('fview').innerHTML=files[k]||files.run;}
+showFile('run');
+document.querySelectorAll('.tnode[data-file]').forEach(n=>n.onclick=()=>{
+ document.querySelectorAll('.tnode').forEach(x=>x.classList.remove('on'));
+ n.classList.add('on');showFile(n.dataset.file);
+});
+</script>
+</body>
+</html>
