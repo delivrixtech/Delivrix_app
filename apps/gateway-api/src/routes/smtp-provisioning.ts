@@ -30,6 +30,8 @@ import { readRequestBody } from "../request-body.ts";
 import { ensureDkimKeyPair, findExistingDkimPrivateKeyPath } from "../dkim-keypair.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import {
+  attachSshAccessToRecord,
+  findSmtpCredentialRecord,
   prepareSmtpCredential,
   markSmtpCredentialInstallFailed,
   markSmtpCredentialConfigured,
@@ -38,6 +40,7 @@ import {
   smtpCredentialFingerprint,
   type SmtpCredentialMaterial,
 } from "../smtp-credentials.ts";
+import { generateOpsSshKeyPair } from "../ssh-ops-key.ts";
 import {
   upsertConfiguredSmtpInventoryEntry,
   type SmtpProvisioningInventory,
@@ -891,6 +894,248 @@ export function buildSmtpProvisionPlan(input: {
       auditCommand: "validate local SMTP listener"
     }
   ];
+}
+
+const opsSshSkillName = "provision_ops_ssh";
+const opsSshDefaultUser = "delivrix-ops";
+
+interface ProvisionOpsSshBody {
+  domain?: unknown;
+  serverIp?: unknown;
+  actorId?: unknown;
+  approvalToken?: unknown;
+  opsUser?: unknown;
+}
+
+export interface ProvisionOpsSshDependencies {
+  request: IncomingMessage;
+  response: ServerResponse;
+  serverSlug: string;
+  auditLog: AuditSink;
+  sshRunner: SmtpSshRunner;
+  workspace: OpenClawWorkspace;
+  readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
+  env?: Record<string, string | undefined>;
+  now?: () => Date;
+}
+
+/**
+ * Paso idempotente que crea (o rota) el usuario SSH "ops" dedicado con sudo NOPASSWD
+ * e instala su clave pública. La pública llega por stdin (nunca interpolada en el
+ * comando). Distinto del root de la automatización; revocable con buildOpsUserRevokeStep.
+ */
+export function buildOpsUserProvisionStep(input: {
+  opsUser: string;
+  authorizedKeysLine: string;
+}): SmtpProvisionStep {
+  const user = input.opsUser;
+  const command = [
+    "set -euo pipefail",
+    `OPS_USER=${shellQuote(user)}`,
+    'id "$OPS_USER" >/dev/null 2>&1 || useradd -m -s /bin/bash "$OPS_USER"',
+    'OPS_HOME=$(getent passwd "$OPS_USER" | cut -d: -f6)',
+    'install -d -m 0700 -o "$OPS_USER" -g "$OPS_USER" "$OPS_HOME/.ssh"',
+    "IFS= read -r OPS_PUBKEY",
+    'printf \'%s\\n\' "$OPS_PUBKEY" > "$OPS_HOME/.ssh/authorized_keys"',
+    'chown "$OPS_USER":"$OPS_USER" "$OPS_HOME/.ssh/authorized_keys"',
+    'chmod 0600 "$OPS_HOME/.ssh/authorized_keys"',
+    'printf \'%s ALL=(ALL) NOPASSWD:ALL\\n\' "$OPS_USER" > /etc/sudoers.d/"$OPS_USER"',
+    'chmod 0440 /etc/sudoers.d/"$OPS_USER"',
+    'visudo -cf /etc/sudoers.d/"$OPS_USER"'
+  ].join("\n");
+  return {
+    label: "create-ops-user",
+    command,
+    auditCommand: `useradd/authorized_keys/sudoers for ${user} <public key redacted>`,
+    stdin: `${input.authorizedKeysLine}\n`,
+    timeoutMs: 60_000
+  };
+}
+
+/** Paso de revocación: quita el sudoers y borra el usuario ops (no toca la automatización). */
+export function buildOpsUserRevokeStep(opsUser: string): SmtpProvisionStep {
+  const command = [
+    "set -uo pipefail",
+    `OPS_USER=${shellQuote(opsUser)}`,
+    'rm -f /etc/sudoers.d/"$OPS_USER"',
+    'if id "$OPS_USER" >/dev/null 2>&1; then userdel -r "$OPS_USER" 2>/dev/null || userdel "$OPS_USER"; fi'
+  ].join("\n");
+  return {
+    label: "revoke-ops-user",
+    command,
+    auditCommand: `revoke sudoers + userdel for ${opsUser}`,
+    timeoutMs: 60_000
+  };
+}
+
+function normalizeOpsUser(value: unknown, env: Record<string, string | undefined>): string {
+  const candidate = typeof value === "string" && value.trim()
+    ? value.trim()
+    : (normalizeEnvValue(env.SMTP_OPS_SSH_USER) ?? opsSshDefaultUser);
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(candidate)) {
+    throw new SmtpProvisionInputError("opsUser must be a valid unix username.");
+  }
+  return candidate;
+}
+
+/**
+ * Provisiona (o rota) el acceso SSH "ops" dedicado de un nodo y adjunta la clave privada
+ * cifrada al record de credenciales, para que se entregue como complemento por el endpoint
+ * de descarga ya existente. Approval-gated igual que install_smtp_stack; gateado por
+ * SMTP_OPS_SSH_ENABLE (off por defecto ⇒ inerte).
+ */
+export async function handleProvisionOpsSshHttp(
+  deps: ProvisionOpsSshDependencies
+): Promise<void> {
+  const startedAt = Date.now();
+  const now = deps.now?.() ?? new Date();
+  const env = deps.env ?? process.env;
+  let body: ProvisionOpsSshBody;
+  let serverSlug: string;
+  let domain: string;
+  let actorId: string;
+  let approvalToken: string;
+  let opsUser: string;
+  try {
+    body = await readJson<ProvisionOpsSshBody>(deps.request);
+    serverSlug = normalizeSlug(deps.serverSlug, "serverSlug");
+    const rawDomain = requiredString(body.domain, "domain");
+    const domainResolution = tryNormalizeStrictDomainName(rawDomain);
+    domain = domainResolution.ok
+      ? domainResolution.value
+      : rawDomain.trim().toLowerCase().replace(/\.$/, "");
+    actorId = requiredString(body.actorId, "actorId");
+    approvalToken = requiredString(body.approvalToken, "approvalToken");
+    opsUser = normalizeOpsUser(body.opsUser, env);
+  } catch (error) {
+    if (error instanceof SmtpProvisionInputError) {
+      json(deps.response, 400, { error: "invalid_request", message: error.message });
+      return;
+    }
+    throw error;
+  }
+
+  const serverResolution = await resolveWorkspaceServer(deps.workspace, serverSlug);
+  const explicitServerIp = typeof body.serverIp === "string" && body.serverIp.trim()
+    ? await resolveWorkspaceServerIp(deps.workspace, body.serverIp, serverSlug)
+    : null;
+  const serverIp = explicitServerIp
+    ? explicitServerIp.ok ? explicitServerIp.value : null
+    : serverResolution.ok ? serverResolution.value.serverIp : null;
+
+  const approval = await findRecentApproval({
+    auditLog: deps.auditLog,
+    readCanvasState: deps.readCanvasState,
+    approvalToken,
+    now,
+    maxAgeMs: approvalMaxAgeMs
+  });
+  const credentialRecord = await findSmtpCredentialRecord(deps.workspace, domain, serverSlug);
+
+  const blockers: string[] = [];
+  if (env.SMTP_OPS_SSH_ENABLE !== "true") blockers.push("ops_ssh_flag_disabled");
+  if (!deps.sshRunner.isConfigured()) blockers.push("smtp_ssh_runner_missing");
+  if (!approval) blockers.push("approval_not_found_or_expired");
+  if (!serverIp) blockers.push("server_ip_missing");
+  if (!credentialRecord) blockers.push("smtp_credential_not_found");
+
+  if (blockers.length > 0) {
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.smtp.ops_ssh_blocked",
+      targetType: "webdock_server",
+      targetId: serverSlug,
+      riskLevel: "medium",
+      decision: "block",
+      humanApproved: false,
+      approverIds: [],
+      metadata: { domain, serverSlug, opsUser, blockers }
+    });
+    json(deps.response, blockers.includes("approval_not_found_or_expired") ? 403 : 409, {
+      ok: false,
+      status: "blocked",
+      blockers
+    });
+    return;
+  }
+
+  const keyPair = generateOpsSshKeyPair(`${opsUser}@${domain}`);
+  const step = buildOpsUserProvisionStep({ opsUser, authorizedKeysLine: keyPair.authorizedKeysLine });
+
+  try {
+    const result = await deps.sshRunner.run({
+      serverSlug,
+      serverIp: serverIp as string,
+      command: step.command,
+      stdin: step.stdin,
+      timeoutMs: step.timeoutMs
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(`create-ops-user exited ${result.exitCode ?? "unknown"}`);
+    }
+  } catch (error) {
+    await deps.auditLog.append({
+      actorType: "operator",
+      actorId,
+      action: "oc.smtp.ops_ssh_failed",
+      targetType: "webdock_server",
+      targetId: serverSlug,
+      riskLevel: "critical",
+      decision: "allow",
+      humanApproved: true,
+      approverIds: [actorId],
+      metadata: { domain, serverSlug, opsUser, error: error instanceof Error ? error.message : "unknown" }
+    });
+    json(deps.response, 502, {
+      ok: false,
+      status: "ssh_step_failed",
+      message: error instanceof Error ? error.message : "unknown error"
+    });
+    return;
+  }
+
+  const updated = attachSshAccessToRecord({
+    record: credentialRecord!,
+    env,
+    user: opsUser,
+    host: serverIp as string,
+    privateKeyPem: keyPair.privateKeyPem,
+    now: () => now
+  });
+  await saveSmtpCredentialRecord(deps.workspace, updated);
+
+  await deps.auditLog.append({
+    actorType: "operator",
+    actorId,
+    action: "oc.smtp.ops_ssh_provisioned",
+    targetType: "webdock_server",
+    targetId: serverSlug,
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: [actorId],
+    metadata: {
+      domain,
+      serverSlug,
+      serverIp,
+      opsUser,
+      sudo: "nopasswd",
+      approvalTokenHash: approvalTokenHash(approvalToken),
+      durationMs: Date.now() - startedAt
+    }
+  });
+
+  json(deps.response, 200, {
+    ok: true,
+    status: "provisioned",
+    domain,
+    serverSlug,
+    sshUser: opsUser,
+    host: serverIp,
+    port: 22,
+    downloadPath: `/v1/sender-pool/credentials/${domain}/download`
+  });
 }
 
 async function updateSmtpInventory(

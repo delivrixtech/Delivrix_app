@@ -254,7 +254,8 @@ import {
 import {
   createSmtpSshRunnerFromEnv,
   handleSmtpProvisionError,
-  handleSmtpProvisionHttp
+  handleSmtpProvisionHttp,
+  handleProvisionOpsSshHttp
 } from "./routes/smtp-provisioning.ts";
 import {
   handleSmtpSaslRetrofitBatchHttp,
@@ -2053,6 +2054,27 @@ const server = createServer(async (request, response) => {
           sshRunner: smtpSshRunner,
           workspace: openClawWorkspace,
           canvasLiveEvents,
+          readCanvasState: () => canvasLiveEvents.snapshot(),
+          env: process.env
+        });
+      } catch (error) {
+        if (handleSmtpProvisionError(error, response)) {
+          return;
+        }
+        throw error;
+      }
+    }
+
+    const opsSshMatch = request.url?.match(/^\/v1\/servers\/([^/]+)\/provision-ops-ssh$/);
+    if (request.method === "POST" && opsSshMatch) {
+      try {
+        return await handleProvisionOpsSshHttp({
+          request,
+          response,
+          serverSlug: opsSshMatch[1]!,
+          auditLog,
+          sshRunner: smtpSshRunner,
+          workspace: openClawWorkspace,
           readCanvasState: () => canvasLiveEvents.snapshot(),
           env: process.env
         });

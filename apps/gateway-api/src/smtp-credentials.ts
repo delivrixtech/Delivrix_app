@@ -14,6 +14,18 @@ export interface SmtpCredentialEncryptedPayload {
   ciphertext: string;
 }
 
+export interface SmtpCredentialSshAccess {
+  /** Usuario SSH dedicado creado en el box (distinto del root de la automatización). */
+  user: string;
+  /** Host al que el operador hace SSH (IP o hostname del box). */
+  host: string;
+  /** Puerto SSH (por defecto 22). */
+  port: number;
+  /** Clave privada PKCS#8 PEM, cifrada en reposo (AES-256-GCM). */
+  privateKeyEncrypted: SmtpCredentialEncryptedPayload;
+  createdAt: string;
+}
+
 export interface SmtpCredentialRecord {
   domain: string;
   serverSlug?: string | null;
@@ -27,6 +39,8 @@ export interface SmtpCredentialRecord {
   createdAt: string;
   updatedAt: string;
   smtpCredentialEncrypted: SmtpCredentialEncryptedPayload;
+  /** Acceso SSH "ops" complementario (opcional, provisionado aparte y revocable). */
+  sshAccess?: SmtpCredentialSshAccess | null;
 }
 
 export interface SmtpCredentialPublicMetadata {
@@ -42,6 +56,8 @@ export interface SmtpCredentialPublicMetadata {
   createdAt: string;
   updatedAt: string;
   hasCredential: boolean;
+  hasSshAccess: boolean;
+  sshUser?: string | null;
 }
 
 export interface SmtpCredentialMaterial {
@@ -193,7 +209,7 @@ export async function decryptSmtpCredentialForDownload(input: {
   workspace: OpenClawWorkspace;
   env?: Record<string, string | undefined>;
   domain: string;
-}): Promise<{ record: SmtpCredentialRecord; password: string }> {
+}): Promise<{ record: SmtpCredentialRecord; password: string; sshPrivateKey: string | null }> {
   const record = await findSmtpCredentialRecord(input.workspace, input.domain);
   if (!record) {
     throw new SmtpCredentialError("smtp_credential_not_found");
@@ -201,19 +217,81 @@ export async function decryptSmtpCredentialForDownload(input: {
   if (record.status !== "configured") {
     throw new SmtpCredentialError("smtp_credential_not_ready");
   }
+  const key = credentialEncryptionKey(input.env);
   return {
     record,
-    password: decryptSmtpCredentialPassword(record, credentialEncryptionKey(input.env))
+    password: decryptSmtpCredentialPassword(record, key),
+    sshPrivateKey: record.sshAccess
+      ? decryptSecret(record.sshAccess.privateKeyEncrypted, key, sshPrivateKeyAad(record.domain, record.sshAccess.user))
+      : null
   };
+}
+
+/**
+ * Cifra la clave privada SSH generada y la adjunta al record (sin persistir).
+ * El caller guarda con saveSmtpCredentialRecord. La AAD ata el ciphertext al
+ * dominio + usuario + propósito, así un ciphertext no se puede mover de slot.
+ */
+export function attachSshAccessToRecord(input: {
+  record: SmtpCredentialRecord;
+  env?: Record<string, string | undefined>;
+  user: string;
+  host: string;
+  port?: number;
+  privateKeyPem: string;
+  now?: () => Date;
+}): SmtpCredentialRecord {
+  const key = credentialEncryptionKey(input.env);
+  const createdAt = (input.now?.() ?? new Date()).toISOString();
+  return {
+    ...input.record,
+    updatedAt: createdAt,
+    sshAccess: {
+      user: input.user,
+      host: input.host,
+      port: input.port ?? 22,
+      privateKeyEncrypted: encryptSecret(
+        input.privateKeyPem,
+        key,
+        sshPrivateKeyAad(input.record.domain, input.user)
+      ),
+      createdAt
+    }
+  };
+}
+
+/** Descifra la clave privada SSH del record, o null si no tiene acceso SSH. */
+export function decryptSshPrivateKey(
+  record: SmtpCredentialRecord,
+  env?: Record<string, string | undefined>
+): string | null {
+  if (!record.sshAccess) return null;
+  return decryptSecret(
+    record.sshAccess.privateKeyEncrypted,
+    credentialEncryptionKey(env),
+    sshPrivateKeyAad(record.domain, record.sshAccess.user)
+  );
+}
+
+/** Quita el acceso SSH del record (para revocación). No borra el usuario del box. */
+export function removeSshAccessFromRecord(
+  record: SmtpCredentialRecord,
+  now: Date = new Date()
+): SmtpCredentialRecord {
+  const { sshAccess: _dropped, ...rest } = record;
+  return { ...rest, sshAccess: null, updatedAt: now.toISOString() };
 }
 
 export function renderSmtpCredentialMarkdown(input: {
   record: SmtpCredentialRecord;
   password: string;
   generatedAt?: string;
+  sshPrivateKey?: string | null;
 }): string {
   const generatedAt = input.generatedAt ?? new Date().toISOString();
-  return [
+  const sshAccess = input.record.sshAccess;
+  const includeSsh = Boolean(sshAccess && input.sshPrivateKey);
+  const lines: string[] = [
     `# Credenciales SMTP - ${input.record.domain}`,
     "",
     `Generado: ${generatedAt}`,
@@ -297,10 +375,55 @@ export function renderSmtpCredentialMarkdown(input: {
     "## Seguridad",
     "",
     "Esta credencial no expira automaticamente. Rotala si sale del circuito aprobado o si hay sospecha de exposicion.",
-    "No compartas este archivo por chat. No contiene claves DKIM privadas ni acceso SSH.",
+    includeSsh
+      ? "No compartas este archivo por chat. Ademas del SMTP incluye una clave SSH privada (acceso ops); tratalo como material sensible."
+      : "No compartas este archivo por chat. No contiene claves DKIM privadas ni acceso SSH.",
     "Si sospechas exposicion, rota la credencial desde el panel operativo antes de seguir enviando.",
     ""
-  ].join("\n");
+  ];
+
+  if (includeSsh && sshAccess && input.sshPrivateKey) {
+    lines.push(...renderSshAccessSection(sshAccess, input.sshPrivateKey));
+  }
+
+  return lines.join("\n");
+}
+
+function renderSshAccessSection(
+  sshAccess: SmtpCredentialSshAccess,
+  privateKeyPem: string
+): string[] {
+  const keyFile = "delivrix-ops.pem";
+  const trimmedKey = privateKeyPem.endsWith("\n") ? privateKeyPem.slice(0, -1) : privateKeyPem;
+  return [
+    "## Acceso SSH (operaciones)",
+    "",
+    "Acceso administrativo dedicado a este nodo para monitoreo/operacion (por ejemplo instalar",
+    "un script que reporte bounces). Es un usuario propio con sudo, con clave separada de la",
+    "automatizacion, y es revocable/rotable por nodo sin afectar el envio.",
+    "",
+    `- Usuario: ${sshAccess.user}`,
+    `- Host: ${sshAccess.host}`,
+    `- Puerto: ${sshAccess.port}`,
+    `- Sudo: si (NOPASSWD)`,
+    "",
+    `Guarda la clave privada como \`${keyFile}\` con permisos 600 y conecta:`,
+    "",
+    "```bash",
+    `chmod 600 ${keyFile}`,
+    `ssh -i ${keyFile} -o IdentitiesOnly=yes -p ${sshAccess.port} ${sshAccess.user}@${sshAccess.host}`,
+    "```",
+    "",
+    "Clave privada (PEM):",
+    "",
+    "```",
+    trimmedKey,
+    "```",
+    "",
+    "- Esta NO es la clave root de la automatizacion; es exclusiva de este nodo.",
+    "- Si sale del circuito aprobado, pedi que se revoque/rote el acceso ops de este nodo.",
+    ""
+  ];
 }
 
 function shellArg(value: string): string {
@@ -317,7 +440,9 @@ export function publicSmtpCredentialMetadata(record: SmtpCredentialRecord): Smtp
     ports: record.ports,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
-    hasCredential: record.status === "configured"
+    hasCredential: record.status === "configured",
+    hasSshAccess: Boolean(record.sshAccess),
+    sshUser: record.sshAccess?.user ?? null
   };
 }
 
@@ -433,6 +558,44 @@ function encryptSmtpCredentialPassword(
     authTag: cipher.getAuthTag().toString("base64url"),
     ciphertext: ciphertext.toString("base64url")
   };
+}
+
+function encryptSecret(
+  plaintext: string,
+  key: Buffer,
+  aad: Record<string, string>
+): SmtpCredentialEncryptedPayload {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv(algorithm, key, iv);
+  cipher.setAAD(Buffer.from(JSON.stringify(aad)));
+  const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  return {
+    algorithm,
+    iv: iv.toString("base64url"),
+    authTag: cipher.getAuthTag().toString("base64url"),
+    ciphertext: ciphertext.toString("base64url")
+  };
+}
+
+function decryptSecret(
+  payload: SmtpCredentialEncryptedPayload,
+  key: Buffer,
+  aad: Record<string, string>
+): string {
+  if (payload.algorithm !== algorithm) {
+    throw new SmtpCredentialError("smtp_credential_unsupported_algorithm");
+  }
+  const decipher = createDecipheriv(algorithm, key, Buffer.from(payload.iv, "base64url"));
+  decipher.setAAD(Buffer.from(JSON.stringify(aad)));
+  decipher.setAuthTag(Buffer.from(payload.authTag, "base64url"));
+  return Buffer.concat([
+    decipher.update(Buffer.from(payload.ciphertext, "base64url")),
+    decipher.final()
+  ]).toString("utf8");
+}
+
+function sshPrivateKeyAad(domain: string, user: string): Record<string, string> {
+  return { domain, user, kind: "ssh_private_key" };
 }
 
 function decryptSmtpCredentialPassword(record: SmtpCredentialRecord, key: Buffer): string {

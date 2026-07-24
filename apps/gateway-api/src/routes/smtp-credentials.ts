@@ -63,6 +63,7 @@ export async function handleSmtpCredentialDownloadHttp(
     const markdown = renderSmtpCredentialMarkdown({
       record: material.record,
       password: material.password,
+      sshPrivateKey: material.sshPrivateKey,
       generatedAt: (deps.now?.() ?? new Date()).toISOString()
     });
     const actorId = operatorIdFromHeaders(deps.request.headers) ?? "operator/read-boundary";
@@ -82,7 +83,9 @@ export async function handleSmtpCredentialDownloadHttp(
         host: material.record.host,
         username: material.record.username,
         ports: material.record.ports,
-        credentialFingerprint: smtpCredentialFingerprint(material.record)
+        credentialFingerprint: smtpCredentialFingerprint(material.record),
+        includedSshAccess: Boolean(material.sshPrivateKey),
+        sshUser: material.record.sshAccess?.user ?? null
       }
     });
 
