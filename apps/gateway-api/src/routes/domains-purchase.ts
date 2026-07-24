@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rmdir } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
@@ -22,12 +22,14 @@ import type {
 } from "../openclaw-workspace.ts";
 import {
   artifactMatchesAuditApproval,
+  auditApprovalCanvasBindingAllows,
   auditApprovalDomainTarget,
   auditApprovalMatchesToken,
   normalizeApprovalDomain
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import { validateDomainNaming } from "../services/naming-validator.ts";
+import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
 
 export interface Route53DomainPurchaseAdapter {
   isLive(): boolean;
@@ -78,6 +80,33 @@ interface DomainsInventory {
 
 export const approvalMaxAgeMs = 15 * 60 * 1000;
 const skillName = "register_domain_route53";
+
+/**
+ * Binds a canvas-artifact approval to the concrete registration it authorizes.
+ * `skill` is the plan-step skill (e.g. `register_domain_route53`) and `inputHash`
+ * is the hash of the skill params the approval was signed for; a register
+ * handler recomputes both from its request so a canvas token issued for one
+ * domain cannot authorize registering another. See `auditApprovalCanvasBindingAllows`.
+ */
+export interface PlanStepApprovalBinding {
+  skill: string;
+  inputHash: string;
+}
+
+/**
+ * Recomputes the plan-step `inputHash` for a domain-registration skill exactly as
+ * the orchestrator issuer does (`hashInput` in orchestrator-smtp.ts:
+ * `sha256(stableStringify(params))`). The register handlers use this to bind a
+ * canvas-artifact approval to the concrete domain it was signed for: the plan
+ * step hashes `{ domain, years, autoRenew }` (Route53) / `{ domain, years,
+ * whoisPrivacy }` (Namecheap), and the handler recomputes the same shape from its
+ * already-normalized request. The `params` field NAMES/shape MUST mirror
+ * `route53RegistrationParams` / `namecheapRegistrationParams` in
+ * orchestrator-smtp.ts for the recomputation to match issuance.
+ */
+export function planStepRegistrationInputHash(params: Record<string, unknown>): string {
+  return createHash("sha256").update(stableStringify(params)).digest("hex");
+}
 const monthlySpendLocks = new Map<string, Promise<void>>();
 const defaultRoute53RegistrationWaitMs = 1_800_000;
 const defaultRoute53RegistrationPollMs = 30_000;
@@ -163,7 +192,14 @@ export async function handleRoute53DomainRegisterHttp(
     approvalToken,
     now,
     maxAgeMs: approvalMaxAgeMs,
-    expectedDomain: domain
+    expectedDomain: domain,
+    // Bind a canvas-artifact (plan-step) approval to this exact domain: the plan
+    // step signs `hashInput({ domain, years, autoRenew })`, so a token signed for
+    // another domain will not match here (confused-deputy replay -> rejected).
+    expectedCanvasBinding: {
+      skill: skillName,
+      inputHash: planStepRegistrationInputHash({ domain, years, autoRenew })
+    }
   });
   if (!approval) blockers.push("approval_not_found_or_expired");
 
@@ -752,6 +788,15 @@ export async function findRecentApproval(input: {
    * their existing behaviour.
    */
   expectedDomain?: string;
+  /**
+   * Binds a canvas-artifact (plan-step) approval to the concrete skill/params it
+   * was issued for. When provided, a matched canvas-artifact approval that
+   * records an `inputHash` is only honored if its recorded `skill`/`inputHash`
+   * match this binding — closing the confused-deputy hole for the paid
+   * registration routes without touching issuance. See
+   * `auditApprovalCanvasBindingAllows`.
+   */
+  expectedCanvasBinding?: PlanStepApprovalBinding;
 }): Promise<CanvasLiveArtifactSnapshot | null> {
   const state = await input.readCanvasState();
   const auditApproval = await findRecentAuditApproval({
@@ -759,7 +804,8 @@ export async function findRecentApproval(input: {
     approvalToken: input.approvalToken,
     now: input.now,
     maxAgeMs: input.maxAgeMs,
-    expectedDomain: input.expectedDomain
+    expectedDomain: input.expectedDomain,
+    expectedCanvasBinding: input.expectedCanvasBinding
   });
   if (!auditApproval) {
     return null;
@@ -785,6 +831,7 @@ async function findRecentAuditApproval(input: {
   now: Date;
   maxAgeMs: number;
   expectedDomain?: string;
+  expectedCanvasBinding?: PlanStepApprovalBinding;
 }): Promise<AuditEvent | null> {
   if (!input.auditLog.list) {
     return null;
@@ -808,6 +855,14 @@ async function findRecentAuditApproval(input: {
     // target (e.g. targetType "canvas_artifact") are left unbound as before.
     const approvedDomain = auditApprovalDomainTarget(event);
     if (approvedDomain && expectedDomain && approvedDomain !== expectedDomain) {
+      continue;
+    }
+    // Confused-deputy guard for the canvas-artifact (plan-step) issuance path,
+    // which records no domain target but does record the skill + inputHash of
+    // the concrete registration it authorized. Reject when those don't match the
+    // recomputed binding for this request (a token signed for one domain being
+    // replayed to register another).
+    if (input.expectedCanvasBinding && !auditApprovalCanvasBindingAllows(event, input.expectedCanvasBinding)) {
       continue;
     }
     return event;

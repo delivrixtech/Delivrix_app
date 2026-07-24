@@ -36,6 +36,58 @@ export function normalizeApprovalDomain(value: string | null | undefined): strin
   return normalized.length > 0 ? normalized : null;
 }
 
+/**
+ * When a send approval was recorded against a concrete message, returns the
+ * recorded `inputHash` — the `sha256(stableStringify(params))` the orchestrator
+ * hashed at issuance over the exact send step params
+ * (fromAddress/toAddress/subject/body/serverSlug/selector/idempotencyKey/runId).
+ * Returns `null` when the approval records no well-formed `inputHash` (e.g. a
+ * proposal-sign or plain canvas artifact approval), so callers keep their
+ * existing unbound behaviour. This lets the send handler reject a confused-deputy
+ * replay — an approval bound to one message reused to send a different
+ * recipient/body/server — without changing how approvals are issued.
+ */
+export function auditApprovalSendInputHash(event: AuditEvent): string | null {
+  if (event.action !== "oc.artifact.approved") return null;
+  const value = metadataString(event.metadata, "inputHash");
+  return value && /^[a-f0-9]{64}$/i.test(value) ? value : null;
+}
+
+/**
+ * Binds a canvas-artifact approval (`targetType !== "domain"`) to the concrete
+ * skill and params it was issued for, so a verifier can reject a confused-deputy
+ * replay of such a token onto a different domain WITHOUT changing how approvals
+ * are issued.
+ *
+ * The only issuance path that records an `approvalTokenHash` on a
+ * `canvas_artifact` `oc.artifact.approved` event — the orchestrator plan step
+ * (`executePlanApprovedStep`) — always also records the executed `skill` and its
+ * `inputHash`, where `inputHash === sha256(stableStringify(skillParams))` and the
+ * params include the target domain. A caller that recomputes that same hash from
+ * its request can therefore confirm the approval was issued for exactly this
+ * domain/skill.
+ *
+ * Returns `true` (binding not applicable, keep prior behaviour) for non-approval
+ * events, for domain-scoped approvals (bound separately via
+ * `auditApprovalDomainTarget`), and for canvas approvals that record no
+ * `inputHash` — no matchable production issuance path produces the latter, so
+ * their previous unbound behaviour is preserved rather than newly rejected.
+ * Returns `false` only when a canvas approval records a `skill`/`inputHash` that
+ * contradicts the expected binding.
+ */
+export function auditApprovalCanvasBindingAllows(
+  event: AuditEvent,
+  expected: { skill: string; inputHash: string }
+): boolean {
+  if (event.action !== "oc.artifact.approved") return true;
+  if (event.targetType === "domain") return true;
+  const recordedInputHash = metadataString(event.metadata, "inputHash");
+  if (!recordedInputHash) return true;
+  const recordedSkill = metadataString(event.metadata, "skill");
+  if (recordedSkill !== null && recordedSkill !== expected.skill) return false;
+  return hashesEqual(recordedInputHash, expected.inputHash);
+}
+
 export function artifactMatchesAuditApproval(input: {
   artifact: CanvasLiveArtifactSnapshot;
   approvalEvent: AuditEvent;

@@ -15,7 +15,7 @@ import type {
 import { approvalTokenHash } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import { validateDomainNaming } from "../services/naming-validator.ts";
-import { approvalMaxAgeMs, findRecentApproval } from "./domains-purchase.ts";
+import { approvalMaxAgeMs, findRecentApproval, planStepRegistrationInputHash } from "./domains-purchase.ts";
 
 /**
  * Registro de dominios vía Namecheap — camino accionable v1 (compra).
@@ -143,7 +143,14 @@ export async function handleNamecheapDomainRegisterHttp(
     approvalToken,
     now,
     maxAgeMs: approvalMaxAgeMs,
-    expectedDomain: domain
+    expectedDomain: domain,
+    // Bind a canvas-artifact (plan-step) approval to this exact domain: the plan
+    // step signs `hashInput({ domain, years, whoisPrivacy })`, so a token signed
+    // for another domain will not match here (confused-deputy replay -> rejected).
+    expectedCanvasBinding: {
+      skill: skillName,
+      inputHash: planStepRegistrationInputHash({ domain, years, whoisPrivacy })
+    }
   });
   if (!approval) blockers.push("approval_not_found_or_expired");
 

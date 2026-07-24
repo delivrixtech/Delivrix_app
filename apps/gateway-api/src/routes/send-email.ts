@@ -9,9 +9,11 @@ import type {
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import {
   artifactMatchesAuditApproval,
-  auditApprovalMatchesToken
+  auditApprovalMatchesToken,
+  auditApprovalSendInputHash
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
+import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
 import type { SkillParamSchema, SkillSafeParseResult } from "../skill-schemas.ts";
 import { reconcileSmtpRunStatesAfterRealSend } from "../smtp-run-send-reconcile.ts";
 import type { SmtpSshRunner } from "./smtp-provisioning.ts";
@@ -196,6 +198,20 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
   });
   if (!approval) {
     json(deps.response, 403, { error: "approval_invalid" });
+    return;
+  }
+
+  // Confused-deputy binding (F6 residual): a plan-step send approval records inputHash =
+  // sha256(stableStringify(params)) over the EXACT send the plan authorized (recipient/body/server/
+  // subject/selector/idempotencyKey/runId). Bind this request to that message — recompute the same
+  // hash from the request params and reject when it differs — so a single valid approval cannot be
+  // reused to send a DIFFERENT message. The single-use gate below already stops replay-to-many; this
+  // stops one-approval-authorizes-an-arbitrary-message. Approvals with no recorded inputHash
+  // (proposal-sign / plain canvas artifact approvals) keep their prior UNBOUND behaviour, so this only
+  // narrows; it never widens. Recompute mirrors the orchestrator's hashInput byte-for-byte (send step
+  // in orchestrator-smtp.ts) so a legitimate plan-approved send always matches.
+  if (approval.inputHash && approval.inputHash !== computeSendApprovalInputHash(params)) {
+    json(deps.response, 403, { error: "approval_message_mismatch" });
     return;
   }
 
@@ -1045,7 +1061,7 @@ async function findRecentApproval(input: {
   approvalToken: string;
   now: Date;
   maxAgeMs: number;
-}): Promise<{ artifactId: string; eventId: string } | null> {
+}): Promise<{ artifactId: string; eventId: string; inputHash: string | null } | null> {
   if (!input.auditLog.list) return null;
   const events = await input.auditLog.list();
   const auditEvent = events.toReversed().find((event) => {
@@ -1064,7 +1080,30 @@ async function findRecentApproval(input: {
     maxAgeMs: input.maxAgeMs
   }));
 
-  return artifact ? { artifactId: artifact.artifactId, eventId: auditEvent.id } : null;
+  return artifact
+    ? { artifactId: artifact.artifactId, eventId: auditEvent.id, inputHash: auditApprovalSendInputHash(auditEvent) }
+    : null;
+}
+
+/**
+ * Recomputes the plan-step approval's `inputHash` from the concrete send params, EXACTLY as the
+ * orchestrator's `runPlanApprovedStep` did at issuance: `hashInput(params)` =
+ * `sha256(stableStringify(params))` over the send step's param object
+ * (see the step-14 `send_real_email` params in orchestrator-smtp.ts). The field set, the field
+ * values (already schema-normalized here as they were at issuance) and the serialization must mirror
+ * the orchestrator byte-for-byte, or a legitimate plan-approved send would be rejected.
+ */
+function computeSendApprovalInputHash(params: SendRealEmailParams): string {
+  return createHash("sha256").update(stableStringify({
+    fromAddress: params.fromAddress,
+    toAddress: params.toAddress,
+    subject: params.subject,
+    body: params.body,
+    serverSlug: params.serverSlug,
+    selector: params.selector,
+    idempotencyKey: params.idempotencyKey,
+    runId: params.runId
+  })).digest("hex");
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

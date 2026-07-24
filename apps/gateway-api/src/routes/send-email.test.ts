@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import { Readable } from "node:stream";
 import test from "node:test";
 import type { CanvasLiveStateSnapshot } from "../../../../packages/domain/src/index.ts";
 import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts";
+import { stableStringify } from "../../../../packages/storage/src/stable-stringify.ts";
 import { approvalTokenHash } from "../approval-guard.ts";
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import {
@@ -294,6 +296,73 @@ test("a fresh approval still authorizes a send after a prior approval was consum
   const second = await route(validBody({ approvalToken: secondApprovalToken }));
   assert.equal(second.statusCode, 200);
   assert.equal(second.body.ok, true);
+});
+
+test("approval bound (inputHash) to one message rejects a send to a different recipient", async () => {
+  const route = await routeHarness();
+  const boundToken = "exec-send-bound";
+  const boundArtifactId = "artifact-send-bound";
+  await appendBoundApproval(route.auditLog, boundArtifactId, boundToken, boundInputHash({
+    idempotencyKey: "run-bound-1",
+    runId: "run-bound-1"
+  }));
+  route.state.artifacts.push(boundArtifact(boundArtifactId, boundToken));
+
+  // Same valid, recent approval, but a recipient different from the one the plan-step approval was
+  // bound to: the confused-deputy binding recomputes the send-params hash and refuses before any SSH.
+  const mismatch = await route(validBody({
+    approvalToken: boundToken,
+    toAddress: "someone-else@operator.example",
+    idempotencyKey: "run-bound-1",
+    runId: "run-bound-1"
+  }));
+
+  assert.equal(mismatch.statusCode, 403);
+  assert.equal(mismatch.body.error, "approval_message_mismatch");
+  assert.equal(mismatch.commands.length, 0);
+});
+
+test("approval bound (inputHash) to one message rejects a send with a different body", async () => {
+  const route = await routeHarness();
+  const boundToken = "exec-send-bound-body";
+  const boundArtifactId = "artifact-send-bound-body";
+  await appendBoundApproval(route.auditLog, boundArtifactId, boundToken, boundInputHash({
+    idempotencyKey: "run-bound-body",
+    runId: "run-bound-body"
+  }));
+  route.state.artifacts.push(boundArtifact(boundArtifactId, boundToken));
+
+  const mismatch = await route(validBody({
+    approvalToken: boundToken,
+    body: "A different operational message riding the same bound approval token entirely.",
+    idempotencyKey: "run-bound-body",
+    runId: "run-bound-body"
+  }));
+
+  assert.equal(mismatch.statusCode, 403);
+  assert.equal(mismatch.body.error, "approval_message_mismatch");
+  assert.equal(mismatch.commands.length, 0);
+});
+
+test("approval bound (inputHash) to a message still authorizes the exact matching send", async () => {
+  const route = await routeHarness();
+  const boundToken = "exec-send-bound-ok";
+  const boundArtifactId = "artifact-send-bound-ok";
+  await appendBoundApproval(route.auditLog, boundArtifactId, boundToken, boundInputHash({
+    idempotencyKey: "run-bound-2",
+    runId: "run-bound-2"
+  }));
+  route.state.artifacts.push(boundArtifact(boundArtifactId, boundToken));
+
+  const ok = await route(validBody({
+    approvalToken: boundToken,
+    idempotencyKey: "run-bound-2",
+    runId: "run-bound-2"
+  }));
+
+  assert.equal(ok.statusCode, 200);
+  assert.equal(ok.body.ok, true);
+  assert.equal(ok.commands.some((command) => command.command.startsWith("swaks --to")), true);
 });
 
 test("Postfix not running blocks before send command", async () => {
@@ -648,6 +717,77 @@ async function appendApproval(
       blockCount: 1
     }
   });
+}
+
+// Mirrors the plan-step send approval issued by the orchestrator: an oc.artifact.approved that
+// records inputHash = sha256(stableStringify(sendParams)) over the exact send it authorized.
+async function appendBoundApproval(
+  auditLog: LocalFileAuditLog,
+  artifactId: string,
+  executionId: string,
+  inputHash: string
+): Promise<void> {
+  await auditLog.append({
+    occurredAt: "2026-05-31T17:59:00.000Z",
+    actorType: "operator",
+    actorId: "operator/juanes",
+    action: "oc.artifact.approved",
+    targetType: "canvas_artifact",
+    targetId: artifactId,
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: ["operator/juanes"],
+    metadata: {
+      executionId,
+      approvalTokenHash: approvalTokenHash(executionId),
+      inputHash,
+      step: 14,
+      skill: "send_real_email"
+    }
+  });
+}
+
+// The inputHash the handler recomputes from the request: the same field set/serialization the
+// orchestrator's send step hashes. Defaults match validBody(); selector defaults to "default"
+// (validBody() omits selector, so the schema fills "default").
+function boundInputHash(overrides: {
+  fromAddress?: string;
+  toAddress?: string;
+  subject?: string;
+  body?: string;
+  serverSlug?: string;
+  selector?: string;
+  idempotencyKey?: string;
+  runId?: string;
+} = {}): string {
+  return createHash("sha256").update(stableStringify({
+    fromAddress: overrides.fromAddress ?? "ops@sender.example",
+    toAddress: overrides.toAddress ?? "recipient@operator.example",
+    subject: overrides.subject ?? "Delivrix relay readiness report",
+    body: overrides.body ?? safeBody,
+    serverSlug: overrides.serverSlug ?? "mail-sender-example",
+    selector: overrides.selector ?? "default",
+    idempotencyKey: overrides.idempotencyKey,
+    runId: overrides.runId
+  })).digest("hex");
+}
+
+function boundArtifact(artifactId: string, executionId: string): CanvasLiveStateSnapshot["artifacts"][number] {
+  return {
+    artifactId,
+    taskId: "task-send-real-email",
+    kind: "proposal",
+    title: "Send real email",
+    editable: false,
+    createdAt: "2026-05-31T17:58:00.000Z",
+    updatedAt: "2026-05-31T17:59:00.000Z",
+    approvalStatus: "approved",
+    approvedBy: "operator/juanes",
+    approvedAt: "2026-05-31T17:59:00.000Z",
+    executionId,
+    blocks: []
+  };
 }
 
 async function writeFailedRunState(workspace: OpenClawWorkspace, runId: string, chosenDomain: string): Promise<void> {

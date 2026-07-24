@@ -18,6 +18,7 @@ import {
   handleNamecheapDomainRegisterHttp,
   type NamecheapPurchaseAdapter
 } from "./domains-namecheap-purchase.ts";
+import { planStepRegistrationInputHash } from "./domains-purchase.ts";
 
 const fixedNow = new Date("2026-07-07T11:00:00.000Z");
 
@@ -123,6 +124,44 @@ test("happy path: todos los gates pasan → registered + inventario registrar:na
   assert.equal(events.at(-1)?.decision, "allow");
   const inv = await route.workspace.readInventoryJson<{ domains?: Array<{ domain: string; registrar?: string }> }>("domains.json");
   assert.equal(inv?.domains?.find((d) => d.domain === "delivrixops.com")?.registrar, "namecheap");
+});
+
+test("aprobación canvas ligada por inputHash al mismo dominio → registra", async () => {
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      accountId: "namecheap-1",
+      purchaseEnabled: () => true,
+      listInventory: async () => inventoryWith([]),
+      registerDomain: async () => ({ accountId: "namecheap-1", domainName: "delivrixops.com", status: "registered", transactionId: "tx-9", chargedAmountUsd: 9.06 })
+    }),
+    env: { NAMECHEAP_ENABLE_PURCHASE: "true", NAMECHEAP_DOMAINS_MONTHLY_CAP_USD: "100" },
+    canvasState: canvasState([{ artifactId: "a", executionId: "exec-ok", approvedAt: "2026-07-07T10:58:00.000Z" }])
+  });
+  await appendPlanStepNamecheapApproval(route.auditLog, "a", "exec-ok", { domain: "delivrixops.com", years: 1, whoisPrivacy: true });
+  const response = await route({ domain: "delivrixops.com", years: 1, actorId: "operator/juanes", approvalToken: "exec-ok" });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "registered");
+});
+
+test("aprobación canvas ligada por inputHash a otro dominio → NO autoriza (confused deputy)", async () => {
+  let registerCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      accountId: "namecheap-1",
+      purchaseEnabled: () => true,
+      listInventory: async () => inventoryWith([]),
+      registerDomain: async () => { registerCalled = true; return anyRegistered(); }
+    }),
+    env: { NAMECHEAP_ENABLE_PURCHASE: "true", NAMECHEAP_DOMAINS_MONTHLY_CAP_USD: "100" },
+    canvasState: canvasState([{ artifactId: "a", executionId: "exec-ok", approvedAt: "2026-07-07T10:58:00.000Z" }])
+  });
+  // Aprobación firmada (por inputHash) para delivrixops.com no debe autorizar delivrixcorp.com.
+  await appendPlanStepNamecheapApproval(route.auditLog, "a", "exec-ok", { domain: "delivrixops.com", years: 1, whoisPrivacy: true });
+  const response = await route({ domain: "delivrixcorp.com", years: 1, actorId: "operator/juanes", approvalToken: "exec-ok" });
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.status, "blocked");
+  assert.ok(response.body.blockers.includes("approval_not_found_or_expired"));
+  assert.equal(registerCalled, false);
 });
 
 test("resolveAdapter=null → bloquea con namecheap_account_not_found", async () => {
@@ -232,6 +271,40 @@ async function appendDomainApproval(auditLog: LocalFileAuditLog, artifactId: str
     humanApproved: true,
     approverIds: ["operator/juanes"],
     metadata: { executionId, approvalTokenHash: approvalTokenHash(executionId), blockCount: 1 }
+  });
+}
+
+// Espeja lo que registra el emisor plan-step (executePlanApprovedStep) para un
+// paso register: aprobación canvas_artifact cuyo metadata lleva el skill y el
+// inputHash de los params concretos (hashInput({ domain, years, whoisPrivacy })).
+async function appendPlanStepNamecheapApproval(
+  auditLog: LocalFileAuditLog,
+  artifactId: string,
+  executionId: string,
+  params: { domain: string; years: number; whoisPrivacy: boolean }
+): Promise<void> {
+  await auditLog.append({
+    id: "audit-approved",
+    occurredAt: "2026-07-07T10:58:00.000Z",
+    actorType: "operator",
+    actorId: "operator/juanes",
+    action: "oc.artifact.approved",
+    targetType: "canvas_artifact",
+    targetId: artifactId,
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: ["operator/juanes"],
+    metadata: {
+      executionId,
+      approvalTokenHash: approvalTokenHash(executionId),
+      skill: "register_domain_namecheap",
+      inputHash: planStepRegistrationInputHash({
+        domain: params.domain,
+        years: params.years,
+        whoisPrivacy: params.whoisPrivacy
+      })
+    }
   });
 }
 
