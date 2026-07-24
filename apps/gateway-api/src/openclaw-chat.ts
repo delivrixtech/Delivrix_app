@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Socket } from "node:net";
 import type {
@@ -725,6 +725,11 @@ export class OpenClawChatProxy {
       return;
     }
 
+    if (!isAuthorizedChatStream(request, this.readBoundaryToken)) {
+      rejectWebSocket(socket, 401, "Unauthorized");
+      return;
+    }
+
     const key = request.headers["sec-websocket-key"];
     if (typeof key !== "string") {
       socket.destroy();
@@ -1426,6 +1431,59 @@ function hasCloseFrame(chunk: Buffer): boolean {
 
 function isWebSocketUpgrade(request: IncomingMessage): boolean {
   return request.headers.upgrade?.toLowerCase() === "websocket";
+}
+
+function isAuthorizedChatStream(request: IncomingMessage, expectedToken: string): boolean {
+  if (!expectedToken) {
+    return false;
+  }
+  const supplied = bearerToken(request.headers.authorization) ??
+    headerValue(request.headers["x-openclaw-gateway-token"]) ??
+    headerValue(request.headers["x-delivrix-token"]) ??
+    tokenQueryParam(request.url);
+  return typeof supplied === "string" && safeTokenEqual(supplied, expectedToken);
+}
+
+function bearerToken(value: string | string[] | undefined): string | null {
+  const normalized = headerValue(value);
+  if (!normalized) {
+    return null;
+  }
+  const match = /^Bearer\s+(.+)$/i.exec(normalized.trim());
+  return match?.[1] ?? null;
+}
+
+function tokenQueryParam(url: string | undefined): string | null {
+  if (!url) {
+    return null;
+  }
+  const parsed = new URL(url, "http://127.0.0.1");
+  return parsed.searchParams.get("token");
+}
+
+function headerValue(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+  return value ?? null;
+}
+
+function safeTokenEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function rejectWebSocket(socket: Socket, statusCode: number, reason: string): void {
+  const body = JSON.stringify({ error: reason.toLowerCase(), message: reason });
+  socket.end([
+    `HTTP/1.1 ${statusCode} ${reason}`,
+    "Connection: close",
+    "Content-Type: application/json; charset=utf-8",
+    `Content-Length: ${Buffer.byteLength(body)}`,
+    "",
+    body
+  ].join("\r\n"));
 }
 
 function normalizeBaseUrl(value: string): string {

@@ -17,7 +17,8 @@ import {
   handleCanvasArtifactRejectHttp,
   handleCanvasLiveError,
   handleCanvasLiveEventIngestHttp,
-  handleCanvasLiveStateHttp
+  handleCanvasLiveStateHttp,
+  routeCanvasArtifactMutation
 } from "./canvas-live.ts";
 
 const fixedNow = new Date("2026-05-25T22:00:00.000Z");
@@ -530,6 +531,126 @@ test("PATCH block updates content without marking artifact approved", async () =
   assert.equal(snapshot.artifacts[0].blocks[0].content.includes(pemLine), false);
   assert.match(snapshot.artifacts[0].blocks[0].content, /\[REDACTED_PARTIAL_KEY\]/);
   assert.equal(snapshot.artifacts[0].approvalStatus, "pending");
+  const events = await auditLog.list();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].action, "oc.artifact.block_edited");
+});
+
+test("routeCanvasArtifactMutation rejects approve without a gateway token (blocks forged approval)", async () => {
+  const previousToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  process.env.OPENCLAW_GATEWAY_TOKEN = "canvas-token";
+  const service = await testService();
+  const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-artifact-unauth-")), "audit.jsonl"));
+  await seedArtifact(service, "task-guard", "artifact-guard");
+  let response: Awaited<ReturnType<typeof runRoute>>;
+  try {
+    response = await runRoute(
+      (request, response) =>
+        routeCanvasArtifactMutation({ request, response, service, auditLog }) ?? Promise.resolve(),
+      {
+        method: "POST",
+        url: "/v1/canvas/artifact/artifact-guard/approve",
+        body: {
+          actorId: "operator/juanes",
+          blocks: [{ blockId: "step-01", content: "Plan aprobado" }]
+        }
+      }
+    );
+  } finally {
+    process.env.OPENCLAW_GATEWAY_TOKEN = previousToken;
+  }
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.body.error, "canvas_live_unauthorized");
+  assert.equal((await auditLog.list()).length, 0);
+  assert.equal((await service.snapshot()).artifacts[0].approvalStatus, "pending");
+});
+
+test("routeCanvasArtifactMutation fails closed when the gateway token is unconfigured", async () => {
+  const previousToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  delete process.env.OPENCLAW_GATEWAY_TOKEN;
+  const service = await testService();
+  const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-artifact-closed-")), "audit.jsonl"));
+  await seedArtifact(service, "task-guard-closed", "artifact-guard-closed");
+  let response: Awaited<ReturnType<typeof runRoute>>;
+  try {
+    response = await runRoute(
+      (request, response) =>
+        routeCanvasArtifactMutation({ request, response, service, auditLog }) ?? Promise.resolve(),
+      {
+        method: "POST",
+        url: "/v1/canvas/artifact/artifact-guard-closed/reject",
+        headers: { authorization: "Bearer canvas-token" },
+        body: { actorId: "operator/juanes", reason: "Ajustar alcance" }
+      }
+    );
+  } finally {
+    process.env.OPENCLAW_GATEWAY_TOKEN = previousToken;
+  }
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.body.error, "canvas_live_unauthorized");
+  assert.equal((await auditLog.list()).length, 0);
+  assert.equal((await service.snapshot()).artifacts[0].approvalStatus, "pending");
+});
+
+test("routeCanvasArtifactMutation allows approve with a valid gateway token", async () => {
+  const previousToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  process.env.OPENCLAW_GATEWAY_TOKEN = "canvas-token";
+  const service = await testService();
+  const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-artifact-ok-")), "audit.jsonl"));
+  await seedArtifact(service, "task-guard-ok", "artifact-guard-ok");
+  let response: Awaited<ReturnType<typeof runRoute>>;
+  try {
+    response = await runRoute(
+      (request, response) =>
+        routeCanvasArtifactMutation({ request, response, service, auditLog }) ?? Promise.resolve(),
+      {
+        method: "POST",
+        url: "/v1/canvas/artifact/artifact-guard-ok/approve",
+        headers: { authorization: "Bearer canvas-token" },
+        body: {
+          actorId: "operator/juanes",
+          blocks: [{ blockId: "step-01", content: "Plan aprobado" }]
+        }
+      }
+    );
+  } finally {
+    process.env.OPENCLAW_GATEWAY_TOKEN = previousToken;
+  }
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
+  const events = await auditLog.list();
+  assert.equal(events.length, 1);
+  assert.equal(events[0].action, "oc.artifact.approved");
+  assert.equal((await service.snapshot()).artifacts[0].approvalStatus, "approved");
+});
+
+test("routeCanvasArtifactMutation allows block patch with the x-openclaw-gateway-token header", async () => {
+  const previousToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+  process.env.OPENCLAW_GATEWAY_TOKEN = "canvas-token";
+  const service = await testService();
+  const auditLog = new LocalFileAuditLog(join(await mkdtemp(join(tmpdir(), "canvas-live-artifact-patch-ok-")), "audit.jsonl"));
+  await seedArtifact(service, "task-guard-patch", "artifact-guard-patch");
+  let response: Awaited<ReturnType<typeof runRoute>>;
+  try {
+    response = await runRoute(
+      (request, response) =>
+        routeCanvasArtifactMutation({ request, response, service, auditLog }) ?? Promise.resolve(),
+      {
+        method: "PATCH",
+        url: "/v1/canvas/artifact/artifact-guard-patch/block/step-01",
+        headers: { "x-openclaw-gateway-token": "canvas-token" },
+        body: { actorId: "operator/juanes", content: "Contenido editado" }
+      }
+    );
+  } finally {
+    process.env.OPENCLAW_GATEWAY_TOKEN = previousToken;
+  }
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.ok, true);
   const events = await auditLog.list();
   assert.equal(events.length, 1);
   assert.equal(events[0].action, "oc.artifact.block_edited");

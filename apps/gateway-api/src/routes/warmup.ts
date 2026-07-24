@@ -11,6 +11,7 @@ import type {
   OpenClawWorkspaceFileRef
 } from "../openclaw-workspace.ts";
 import {
+  approvalTokenHash,
   artifactMatchesAuditApproval,
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
@@ -192,7 +193,7 @@ export async function handleWarmupStartHttp(deps: WarmupStartDependencies): Prom
         serverIp: existingWarmup.serverIp,
         seedCount: existingWarmup.seedCount,
         status: "idempotent_already_started",
-        approvalToken,
+        approvalTokenHash: approvalTokenHash(approvalToken),
         approvalArtifactId: approval?.artifactId,
         workspacePath: workspace?.path
       }
@@ -290,7 +291,7 @@ export async function handleWarmupStartHttp(deps: WarmupStartDependencies): Prom
         seedCount: seedInboxes.length,
         seedDomains: sent.map((entry) => entry.seedDomain),
         messageIds: sent.map((entry) => entry.msgId),
-        approvalToken,
+        approvalTokenHash: approvalTokenHash(approvalToken),
         approvalArtifactId: approval?.artifactId,
         workspacePath: workspace?.path
       }

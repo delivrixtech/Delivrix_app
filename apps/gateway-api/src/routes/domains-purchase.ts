@@ -22,7 +22,9 @@ import type {
 } from "../openclaw-workspace.ts";
 import {
   artifactMatchesAuditApproval,
-  auditApprovalMatchesToken
+  auditApprovalDomainTarget,
+  auditApprovalMatchesToken,
+  normalizeApprovalDomain
 } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import { validateDomainNaming } from "../services/naming-validator.ts";
@@ -160,7 +162,8 @@ export async function handleRoute53DomainRegisterHttp(
     readCanvasState: deps.readCanvasState,
     approvalToken,
     now,
-    maxAgeMs: approvalMaxAgeMs
+    maxAgeMs: approvalMaxAgeMs,
+    expectedDomain: domain
   });
   if (!approval) blockers.push("approval_not_found_or_expired");
 
@@ -740,13 +743,23 @@ export async function findRecentApproval(input: {
   approvalToken: string;
   now: Date;
   maxAgeMs: number;
+  /**
+   * Domain the caller is about to act on. When the matched approval was
+   * recorded against a concrete domain target, the approval is only honored if
+   * that domain matches. This binds the approval token to the domain it was
+   * approved for so a token signed for one domain cannot authorize a mutation
+   * on another (confused deputy). Approvals that record no domain target keep
+   * their existing behaviour.
+   */
+  expectedDomain?: string;
 }): Promise<CanvasLiveArtifactSnapshot | null> {
   const state = await input.readCanvasState();
   const auditApproval = await findRecentAuditApproval({
     auditLog: input.auditLog,
     approvalToken: input.approvalToken,
     now: input.now,
-    maxAgeMs: input.maxAgeMs
+    maxAgeMs: input.maxAgeMs,
+    expectedDomain: input.expectedDomain
   });
   if (!auditApproval) {
     return null;
@@ -771,10 +784,12 @@ async function findRecentAuditApproval(input: {
   approvalToken: string;
   now: Date;
   maxAgeMs: number;
+  expectedDomain?: string;
 }): Promise<AuditEvent | null> {
   if (!input.auditLog.list) {
     return null;
   }
+  const expectedDomain = normalizeApprovalDomain(input.expectedDomain);
   const events = await input.auditLog.list();
   for (const event of events.toReversed()) {
     if (!auditApprovalMatchesToken(event, input.approvalToken)) {
@@ -785,9 +800,17 @@ async function findRecentAuditApproval(input: {
       continue;
     }
     const ageMs = input.now.getTime() - approvedAt;
-    if (ageMs >= 0 && ageMs <= input.maxAgeMs) {
-      return event;
+    if (ageMs < 0 || ageMs > input.maxAgeMs) {
+      continue;
     }
+    // Confused-deputy guard: if the approval was recorded against a concrete
+    // domain, only honor it for that same domain. Approvals without a domain
+    // target (e.g. targetType "canvas_artifact") are left unbound as before.
+    const approvedDomain = auditApprovalDomainTarget(event);
+    if (approvedDomain && expectedDomain && approvedDomain !== expectedDomain) {
+      continue;
+    }
+    return event;
   }
   return null;
 }

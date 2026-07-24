@@ -228,6 +228,74 @@ test("idempotent replay also reconciles failed run-states of the domain", async 
   assert.ok(reconcileAudit);
 });
 
+test("approval is single-use: a second send under the same approval is rejected before SSH", async () => {
+  const route = await routeHarness();
+
+  const first = await route(validBody());
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.body.ok, true);
+  assert.equal(first.commands.filter((command) => command.command.startsWith("swaks --to")).length, 1);
+
+  // Same recent approval token, but a different recipient/body/server would be authorized under the
+  // old replayable gate. Single-use consumption now rejects the reused approval before any SSH.
+  const replay = await route(validBody({
+    toAddress: "someone-else@operator.example",
+    subject: "Second unrelated relay attempt",
+    body: "A different operational message riding the same approval token."
+  }));
+
+  assert.equal(replay.statusCode, 403);
+  assert.equal(replay.body.error, "approval_already_consumed");
+  // No additional SSH send command ran for the replayed approval.
+  assert.equal(replay.commands.filter((command) => command.command.startsWith("swaks --to")).length, 1);
+});
+
+test("consumed approval still honors idempotent replay of the same message", async () => {
+  const route = await routeHarness();
+
+  const first = await route(validBody({ idempotencyKey: "run-single-use", runId: "run-single-use" }));
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.body.ok, true);
+
+  // The idempotent short-circuit runs before the single-use gate, so a genuine retry of the SAME
+  // message returns the prior send instead of a single-use rejection.
+  const replay = await route(validBody({ idempotencyKey: "run-single-use", runId: "run-single-use" }));
+
+  assert.equal(replay.statusCode, 200);
+  assert.equal(replay.body.postfixLogTail, "idempotent_replay_suppressed");
+  assert.notEqual(replay.body.error, "approval_already_consumed");
+});
+
+test("a fresh approval still authorizes a send after a prior approval was consumed", async () => {
+  const route = await routeHarness();
+
+  const first = await route(validBody());
+  assert.equal(first.statusCode, 200);
+
+  // A distinct approval token (own audit event) is not blocked by an already-consumed one.
+  const secondApprovalToken = "exec-send-real-email-2";
+  const secondArtifactId = "artifact-send-real-email-2";
+  await appendApproval(route.auditLog, secondArtifactId, secondApprovalToken);
+  route.state.artifacts.push({
+    artifactId: secondArtifactId,
+    taskId: "task-send-real-email",
+    kind: "proposal",
+    title: "Send real email",
+    editable: true,
+    createdAt: "2026-05-31T17:58:00.000Z",
+    updatedAt: "2026-05-31T17:59:00.000Z",
+    approvalStatus: "approved",
+    approvedBy: "operator/juanes",
+    approvedAt: "2026-05-31T17:59:00.000Z",
+    executionId: secondApprovalToken,
+    blocks: []
+  });
+
+  const second = await route(validBody({ approvalToken: secondApprovalToken }));
+  assert.equal(second.statusCode, 200);
+  assert.equal(second.body.ok, true);
+});
+
 test("Postfix not running blocks before send command", async () => {
   const route = await routeHarness({
     runnerFactory: (commands) => mockRunner(commands, {
@@ -492,7 +560,7 @@ async function routeHarness(input: {
     };
   };
 
-  return Object.assign(route, { auditLog, workspace, commands });
+  return Object.assign(route, { auditLog, workspace, commands, state });
 }
 
 function mockRunner(

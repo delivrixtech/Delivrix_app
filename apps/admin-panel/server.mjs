@@ -32,9 +32,20 @@ const readBoundaryProxyToken =
   process.env.DELIVRIX_OPENCLAW_TOKEN ??
   process.env.OPENCLAW_GATEWAY_TOKEN ??
   "";
+// Token del emisor OpenClaw. El browser NUNCA lo embebe: el proxy same-origin lo inyecta desde el
+// entorno al proxear los WRITES de canvas artifact (approve/reject/block), que el gateway autentica
+// fail-closed con este mismo token. Sin él, una aprobación forjada quedaría bloqueada con 401.
+const openClawGatewayProxyToken = process.env.OPENCLAW_GATEWAY_TOKEN ?? "";
 const allowedWritePatterns = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/sign$/,
   /^\/v1\/openclaw\/proposals\/[^/]+\/reject$/,
+  /^\/v1\/canvas\/artifact\/[^/]+\/approve$/,
+  /^\/v1\/canvas\/artifact\/[^/]+\/reject$/,
+  /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/
+];
+// Subconjunto de allowedWritePatterns que el gateway autentica con el token del emisor OpenClaw.
+// El proxy inyecta x-openclaw-gateway-token SOLO en estas rutas (las de proposals usan otro carril).
+const canvasArtifactWritePatterns = [
   /^\/v1\/canvas\/artifact\/[^/]+\/approve$/,
   /^\/v1\/canvas\/artifact\/[^/]+\/reject$/,
   /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/
@@ -235,15 +246,26 @@ async function proxyGatewayWrite(request, response, requestUrl) {
   }
 
   const upstreamUrl = new URL(requestUrl.pathname, gatewayOrigin);
+  const headers = {
+    accept: "application/json",
+    "content-type": firstHeader(request.headers["content-type"]) ?? "application/json",
+    origin: `http://${host}:${port}`
+  };
+  // Canvas artifact writes: el gateway exige el token del emisor OpenClaw (fail-closed). Inyectamos
+  // x-openclaw-gateway-token desde el entorno para que la mutación same-origin del operador quede
+  // autenticada sin exponer el token al browser (mismo patrón que la inyección de x-delivrix-token).
+  if (
+    openClawGatewayProxyToken &&
+    canvasArtifactWritePatterns.some((pattern) => pattern.test(requestUrl.pathname)) &&
+    !firstHeader(request.headers["x-openclaw-gateway-token"])
+  ) {
+    headers["x-openclaw-gateway-token"] = openClawGatewayProxyToken;
+  }
   let upstreamResponse;
   try {
     upstreamResponse = await fetch(upstreamUrl, {
       method: request.method,
-      headers: {
-        accept: "application/json",
-        "content-type": firstHeader(request.headers["content-type"]) ?? "application/json",
-        origin: `http://${host}:${port}`
-      },
+      headers,
       body: await readBody(request)
     });
   } catch (error) {

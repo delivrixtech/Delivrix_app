@@ -14,6 +14,7 @@ import type {
   OpenClawWorkspaceFileRef
 } from "../openclaw-workspace.ts";
 import {
+  approvalTokenHash,
   artifactMatchesAuditApproval,
   auditApprovalMatchesToken
 } from "../approval-guard.ts";
@@ -220,7 +221,7 @@ export async function handleSmtpProvisionHttp(
         commandCount: 0,
         smtpAuthStatus: idempotentSmtpAuthStatus(configured),
         hasCredential: configured.smtpCredential?.hasCredential === true,
-        approvalToken,
+        approvalTokenHash: approvalTokenHash(approvalToken),
         approvalArtifactId: approval?.artifactId,
         workspacePath: workspace?.path
       }
@@ -581,7 +582,7 @@ export async function handleSmtpProvisionHttp(
         smtpCredential: smtpCredentialMetadata,
         smtpCredentialGenerated: smtpCredential!.generated,
         smtpCredentialFingerprint: smtpCredentialFingerprint(configuredCredentialRecord),
-        approvalToken,
+        approvalTokenHash: approvalTokenHash(approvalToken),
         approvalArtifactId: approval?.artifactId,
         workspacePath: workspace?.path
       }

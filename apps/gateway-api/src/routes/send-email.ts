@@ -225,6 +225,22 @@ export async function handleSendRealEmailHttp(deps: SendRealEmailDependencies): 
     return;
   }
 
+  // Single-use: una aprobación autoriza UN envío real, no una ventana de envíos arbitrarios. Si esta
+  // aprobación ya autorizó un envío EXITOSO previo (que no sea el replay idempotente del MISMO mensaje,
+  // ya resuelto arriba), se rechaza. Sin esto, un token reciente podía reutilizarse para enviar a otro
+  // destinatario/cuerpo/servidor dentro de la ventana de 15 min (bounded solo por 5/hora/servidor).
+  // Se identifica la aprobación por su eventId de auditoría (1:1 con la acción de aprobación), que el
+  // evento oc.smtp.real_email_sent ya registra en approvalEventId. Los envíos fallidos (decision
+  // "reject") NO consumen la aprobación: el reintento legítimo sigue igual que la idempotencia previa.
+  const approvalAlreadyUsed = await findSuccessfulSendForApproval({
+    auditLog: deps.auditLog,
+    approvalEventId: approval.eventId
+  });
+  if (approvalAlreadyUsed) {
+    json(deps.response, 403, { error: "approval_already_consumed" });
+    return;
+  }
+
   const burnerCheck = checkRecipientNotBurner(params.toAddress);
   if (!burnerCheck.ok) {
     json(deps.response, 400, { error: "recipient_burner", details: burnerCheck.reason });
@@ -539,6 +555,21 @@ async function findExistingSendByIdempotency(input: {
     deliveryStatus: deliveryStatusFromMetadata(metadata.deliveryStatus),
     preValidations: preValidationsFromMetadata(metadata.preValidations)
   };
+}
+
+async function findSuccessfulSendForApproval(input: {
+  auditLog: AuditSink;
+  approvalEventId: string;
+}): Promise<boolean> {
+  if (!input.approvalEventId) return false;
+  const events = await input.auditLog.list?.() ?? [];
+  return events.some((event) => {
+    if (event.action !== "oc.smtp.real_email_sent") return false;
+    // Solo un envío EXITOSO consume la aprobación (mismo criterio que la idempotencia): un fallo a
+    // mitad de SSH (decision "reject") no debe bloquear el reintento legítimo del mismo mensaje.
+    if (event.decision !== "allow") return false;
+    return metadataString(event.metadata, "approvalEventId") === input.approvalEventId;
+  });
 }
 
 function deliveryStatusFromMetadata(value: unknown): SendRealEmailResult["deliveryStatus"] {

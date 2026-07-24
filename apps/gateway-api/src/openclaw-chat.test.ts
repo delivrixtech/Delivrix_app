@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import type { IncomingMessage } from "node:http";
+import type { Socket } from "node:net";
 import test from "node:test";
 import type { AuditEventInput, CanvasLiveEvent, CanvasLiveStateSnapshot } from "../../../packages/domain/src/index.ts";
 import {
@@ -1001,4 +1004,95 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   assert.equal(predicate(), true);
+}
+
+test("acceptPanelSocket rejects chat stream upgrades without a valid stream token", () => {
+  const proxy = new OpenClawChatProxy(new MemoryAudit(), {
+    readBoundaryToken: "read-token",
+    webSocketCtor: undefined
+  });
+
+  const missing = connectFakeChatSocket(proxy, "/v1/openclaw/chat/stream", null);
+  assert.ok(missing.handshake().includes("401 Unauthorized"));
+  assert.equal(proxy.connectedClients, 0);
+
+  const wrong = connectFakeChatSocket(proxy, "/v1/openclaw/chat/stream", "not-the-token");
+  assert.ok(wrong.handshake().includes("401 Unauthorized"));
+  assert.equal(proxy.connectedClients, 0);
+
+  proxy.close();
+});
+
+test("acceptPanelSocket completes the handshake for a valid stream token", () => {
+  const proxy = new OpenClawChatProxy(new MemoryAudit(), {
+    readBoundaryToken: "read-token",
+    webSocketCtor: undefined
+  });
+
+  const authorized = connectFakeChatSocket(proxy, "/v1/openclaw/chat/stream", "read-token");
+  assert.ok(authorized.handshake().includes("101 Switching Protocols"));
+  assert.equal(proxy.connectedClients, 1);
+
+  proxy.close();
+});
+
+test("acceptPanelSocket fails closed when no stream token is configured", () => {
+  const proxy = new OpenClawChatProxy(new MemoryAudit(), {
+    readBoundaryToken: "",
+    webSocketCtor: undefined
+  });
+
+  const socket = connectFakeChatSocket(proxy, "/v1/openclaw/chat/stream", "read-token");
+  assert.ok(socket.handshake().includes("401 Unauthorized"));
+  assert.equal(proxy.connectedClients, 0);
+
+  proxy.close();
+});
+
+function connectFakeChatSocket(proxy: OpenClawChatProxy, path: string, token: string | null): FakeChatSocket {
+  const url = new URL(path, "http://127.0.0.1");
+  if (token !== null) {
+    url.searchParams.set("token", token);
+  }
+  const request = {
+    method: "GET",
+    url: `${url.pathname}${url.search}`,
+    headers: {
+      upgrade: "websocket",
+      "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ=="
+    }
+  } as unknown as IncomingMessage;
+  const socket = new FakeChatSocket();
+  proxy.acceptPanelSocket(request, socket as unknown as Socket);
+  return socket;
+}
+
+class FakeChatSocket extends EventEmitter {
+  private readonly writes: Array<string | Buffer> = [];
+
+  write(chunk: string | Buffer): boolean {
+    this.writes.push(chunk);
+    return true;
+  }
+
+  end(chunk?: string | Buffer): void {
+    if (chunk) {
+      this.writes.push(chunk);
+    }
+    this.emit("close");
+  }
+
+  destroy(): void {
+    this.emit("close");
+  }
+
+  unshift(chunk: Buffer): void {
+    this.writes.push(chunk);
+  }
+
+  handshake(): string {
+    return this.writes
+      .filter((chunk): chunk is string => typeof chunk === "string")
+      .join("");
+  }
 }

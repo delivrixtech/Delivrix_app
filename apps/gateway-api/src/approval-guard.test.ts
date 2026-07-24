@@ -4,6 +4,7 @@ import type { AuditEvent, CanvasLiveArtifactSnapshot } from "../../../packages/d
 import {
   approvalTokenHash,
   artifactMatchesAuditApproval,
+  auditApprovalDomainTarget,
   auditApprovalMatchesToken
 } from "./approval-guard.ts";
 
@@ -43,6 +44,22 @@ test("approval guard rejects legacy executionId-only approvals", () => {
     }),
     true
   );
+});
+
+test("auditApprovalDomainTarget returns the normalized domain only for domain-scoped approvals", () => {
+  const domainApproval: AuditEvent = {
+    ...approvalEvent({ executionId: "sig", approvalTokenHash: approvalTokenHash("tok") }),
+    targetType: "domain",
+    targetId: "DelivrixOps.COM."
+  };
+  assert.equal(auditApprovalDomainTarget(domainApproval), "delivrixops.com");
+
+  const artifactApproval: AuditEvent = {
+    ...approvalEvent({ executionId: "sig", approvalTokenHash: approvalTokenHash("tok") }),
+    targetType: "canvas_artifact",
+    targetId: "artifact-domain-plan"
+  };
+  assert.equal(auditApprovalDomainTarget(artifactApproval), null);
 });
 
 function approvalEvent(metadata: Record<string, unknown>): AuditEvent {

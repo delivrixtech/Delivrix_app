@@ -12,6 +12,7 @@ import type {
   OpenClawWorkspace,
   OpenClawWorkspaceFileRef
 } from "../openclaw-workspace.ts";
+import { approvalTokenHash } from "../approval-guard.ts";
 import { readRequestBody } from "../request-body.ts";
 import { validateDomainNaming } from "../services/naming-validator.ts";
 import { approvalMaxAgeMs, findRecentApproval } from "./domains-purchase.ts";
@@ -141,7 +142,8 @@ export async function handleNamecheapDomainRegisterHttp(
     readCanvasState: deps.readCanvasState,
     approvalToken,
     now,
-    maxAgeMs: approvalMaxAgeMs
+    maxAgeMs: approvalMaxAgeMs,
+    expectedDomain: domain
   });
   if (!approval) blockers.push("approval_not_found_or_expired");
 
@@ -173,7 +175,7 @@ export async function handleNamecheapDomainRegisterHttp(
         decision: "allow",
         humanApproved: true,
         approverIds: [actorId],
-        metadata: { registrar, status: "idempotent_already_owned", costUsd: 0, accountId: adapter.accountId, approvalToken }
+        metadata: { registrar, status: "idempotent_already_owned", costUsd: 0, accountId: adapter.accountId, approvalTokenHash: approvalTokenHash(approvalToken) }
       });
       json(deps.response, 200, { ok: true, domain, status: "idempotent_already_owned", costUsd: 0, accountId: adapter.accountId, workspace });
       return;
@@ -285,7 +287,7 @@ export async function handleNamecheapDomainRegisterHttp(
     decision: "allow",
     humanApproved: true,
     approverIds: [actorId],
-    metadata: { registrar, accountId: adapter.accountId, costUsd, transactionId: result.transactionId, approvalToken, workspacePath: workspace?.path }
+    metadata: { registrar, accountId: adapter.accountId, costUsd, transactionId: result.transactionId, approvalTokenHash: approvalTokenHash(approvalToken), workspacePath: workspace?.path }
   });
 
   json(deps.response, 200, {

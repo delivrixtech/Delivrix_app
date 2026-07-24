@@ -203,6 +203,96 @@ test("POST /v1/domains/route53/register registers after approval, cap, contact, 
   }]);
 });
 
+test("POST /v1/domains/route53/register honors a domain-bound approval for the matching domain", async () => {
+  const calls: AwsRoute53RegisterDomainInput[] = [];
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      listPrices: async () => [{
+        tld: "com",
+        registration: { amount: 14, currency: "USD" },
+        renewal: { amount: 14, currency: "USD" }
+      }],
+      registerDomain: async (input) => {
+        calls.push(input);
+        return { operationId: "op-bound-ok", expectedExpiry: "2027-05-29T11:00:00.000Z" };
+      }
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact())
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  await appendDomainScopedApproval(route.auditLog, "delivrixops.com");
+
+  const response = await route({
+    domain: "delivrixops.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "pending");
+  assert.equal(response.body.domain, "delivrixops.com");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].domain, "delivrixops.com");
+});
+
+test("POST /v1/domains/route53/register rejects a domain-bound approval used for a different domain", async () => {
+  let registerCalled = false;
+  const route = await routeHarness({
+    adapter: mockAdapter({
+      isLive: () => true,
+      isPurchaseEnabled: () => true,
+      listPrices: async () => [{
+        tld: "com",
+        registration: { amount: 14, currency: "USD" },
+        renewal: { amount: 14, currency: "USD" }
+      }],
+      registerDomain: async () => {
+        registerCalled = true;
+        return { operationId: "should-not-run", expectedExpiry: fixedNow.toISOString() };
+      }
+    }),
+    env: {
+      AWS_ROUTE53_DOMAINS_MONTHLY_CAP_USD: "50",
+      DELIVRIX_ADMIN_CONTACT_JSON: JSON.stringify(route53Contact())
+    },
+    canvasState: canvasState([{
+      artifactId: "artifact-domain-plan",
+      executionId: "exec-approved-123",
+      approvedAt: "2026-05-29T10:58:00.000Z"
+    }])
+  });
+  // Approval signed for delivrixops.com must NOT authorize registering delivrixcorp.com.
+  await appendDomainScopedApproval(route.auditLog, "delivrixops.com");
+
+  const response = await route({
+    domain: "delivrixcorp.com",
+    years: 1,
+    autoRenew: false,
+    actorId: "operator/juanes",
+    approvalToken: "exec-approved-123"
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.body.status, "blocked");
+  assert.ok(response.body.blockers.includes("approval_not_found_or_expired"));
+  assert.equal(registerCalled, false);
+
+  const events = await route.auditLog.list();
+  assert.equal(events.at(-1)?.action, "oc.domain.register_blocked");
+  assert.equal(events.at(-1)?.decision, "reject");
+});
+
 test("POST /v1/domains/route53/register preserves non-domain inventory fields", async () => {
   const route = await routeHarness({
     adapter: mockAdapter({
@@ -1164,6 +1254,31 @@ async function appendDomainApproval(
     action: "oc.artifact.approved",
     targetType: "canvas_artifact",
     targetId: artifactId,
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: ["operator/juanes"],
+    metadata: {
+      executionId,
+      approvalTokenHash: approvalTokenHash(executionId),
+      blockCount: 1
+    }
+  });
+}
+
+async function appendDomainScopedApproval(
+  auditLog: LocalFileAuditLog,
+  domain: string,
+  executionId = "exec-approved-123"
+): Promise<void> {
+  await auditLog.append({
+    id: "audit-approved",
+    occurredAt: "2026-05-29T10:58:00.000Z",
+    actorType: "operator",
+    actorId: "operator/juanes",
+    action: "oc.artifact.approved",
+    targetType: "domain",
+    targetId: domain,
     riskLevel: "critical",
     decision: "allow",
     humanApproved: true,

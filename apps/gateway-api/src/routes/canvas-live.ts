@@ -195,24 +195,47 @@ export function routeCanvasArtifactMutation(
   const url = new URL(deps.request.url ?? "/", "http://127.0.0.1");
   const approveMatch = url.pathname.match(/^\/v1\/canvas\/artifact\/([^/]+)\/approve$/);
   if (deps.request.method === "POST" && approveMatch) {
-    return handleCanvasArtifactApproveHttp(deps, decodeURIComponent(approveMatch[1]));
+    return (
+      rejectUnauthorizedArtifactMutation(deps) ??
+      handleCanvasArtifactApproveHttp(deps, decodeURIComponent(approveMatch[1]))
+    );
   }
 
   const rejectMatch = url.pathname.match(/^\/v1\/canvas\/artifact\/([^/]+)\/reject$/);
   if (deps.request.method === "POST" && rejectMatch) {
-    return handleCanvasArtifactRejectHttp(deps, decodeURIComponent(rejectMatch[1]));
+    return (
+      rejectUnauthorizedArtifactMutation(deps) ??
+      handleCanvasArtifactRejectHttp(deps, decodeURIComponent(rejectMatch[1]))
+    );
   }
 
   const patchMatch = url.pathname.match(/^\/v1\/canvas\/artifact\/([^/]+)\/block\/([^/]+)$/);
   if (deps.request.method === "PATCH" && patchMatch) {
-    return handleCanvasArtifactBlockPatchHttp(
-      deps,
-      decodeURIComponent(patchMatch[1]),
-      decodeURIComponent(patchMatch[2])
+    return (
+      rejectUnauthorizedArtifactMutation(deps) ??
+      handleCanvasArtifactBlockPatchHttp(
+        deps,
+        decodeURIComponent(patchMatch[1]),
+        decodeURIComponent(patchMatch[2])
+      )
     );
   }
 
   return null;
+}
+
+// Las mutaciones de canvas artifact (approve/reject/edit) representan una aprobación humana crítica.
+// Exigen el mismo token del emisor OpenClaw que el ingest, fail-closed, para que un POST forjado no
+// pueda fabricar una aprobación. El proxy same-origin del panel inyecta el token server-side.
+function rejectUnauthorizedArtifactMutation(deps: CanvasLiveRouteDependencies): Promise<void> | null {
+  if (isAuthorizedOpenClawEmitter(deps.request)) {
+    return null;
+  }
+  json(deps.response, 401, {
+    error: "canvas_live_unauthorized",
+    message: "Missing or invalid OpenClaw gateway token."
+  });
+  return Promise.resolve();
 }
 
 export function handleCanvasLiveError(error: unknown, response: ServerResponse): boolean {

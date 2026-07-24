@@ -45,6 +45,10 @@ const readBoundaryProxyToken =
 // el entorno al proxear las rutas de la Warmup API. Los WRITES (POST /v1/mailboxes) son fail-closed en
 // el gateway y EXIGEN esta llave; si no está seteada en dev, la carga manual responde 503 (esperado).
 const warmupApiKeyProxy = process.env.WARMUP_API_KEY ?? "";
+// Token del emisor OpenClaw para los WRITES de canvas artifact (approve/reject/block). El browser NUNCA
+// lo embebe: el proxy same-origin lo inyecta desde el entorno (mismo patrón que x-warmup-api-key). El
+// gateway es fail-closed y EXIGE este token en esas mutaciones (misma env var OPENCLAW_GATEWAY_TOKEN).
+const openClawGatewayProxyToken = process.env.OPENCLAW_GATEWAY_TOKEN ?? "";
 // Rutas de la Warmup API que el gateway autentica con x-warmup-api-key (o read-boundary como fallback
 // SÓLO en lecturas). Inyectamos la llave en todas para que la misma llamada same-origin quede autenticada.
 function isWarmupApiPath(pathname: string): boolean {
@@ -54,6 +58,15 @@ function isWarmupApiPath(pathname: string): boolean {
     // onboard masivo desde el Sender Pool (sibling con ':' de :onboard). El proxy inyecta la llave.
     pathname === "/v1/mailboxes:onboard-batch" ||
     pathname === "/v1/warmup/mailboxes-health"
+  );
+}
+// Rutas de WRITE de canvas artifact que el gateway autentica con el token del emisor OpenClaw. El proxy
+// inyecta x-openclaw-gateway-token para que la mutación same-origin del operador quede autenticada.
+function isCanvasArtifactWritePath(pathname: string): boolean {
+  return (
+    /^\/v1\/canvas\/artifact\/[^/]+\/approve$/.test(pathname) ||
+    /^\/v1\/canvas\/artifact\/[^/]+\/reject$/.test(pathname) ||
+    /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/.test(pathname)
   );
 }
 const chatConversationsPath = "/v1/openclaw/chat/conversations";
@@ -159,6 +172,16 @@ export default defineConfig({
               !req.headers["x-warmup-api-key"]
             ) {
               proxyReq.setHeader("x-warmup-api-key", warmupApiKeyProxy);
+            }
+            // Canvas artifact writes: inyecta x-openclaw-gateway-token en approve/reject/block para que
+            // la mutación same-origin del operador quede autenticada. El gateway es fail-closed y sin el
+            // token responde 401; el token nunca se expone al browser (inyectado sólo aquí server-side).
+            if (
+              openClawGatewayProxyToken &&
+              isCanvasArtifactWritePath(requestUrl.pathname) &&
+              !req.headers["x-openclaw-gateway-token"]
+            ) {
+              proxyReq.setHeader("x-openclaw-gateway-token", openClawGatewayProxyToken);
             }
           });
           proxy.on("proxyReqWs", (_proxyReq, _req, socket) => {

@@ -14,6 +14,28 @@ export function auditApprovalMatchesToken(event: AuditEvent, approvalToken: stri
   return !!hash && hashesEqual(hash, approvalTokenHash(approvalToken));
 }
 
+/**
+ * When an approval was recorded against a concrete domain target
+ * (`targetType === "domain"`), returns the normalized domain the approval
+ * authorizes so callers can bind a mutation request to it. Returns `null` when
+ * the approval records no domain target (e.g. a generic canvas artifact or
+ * proposal target), in which case callers keep their existing unbound
+ * behaviour. This lets a verifier reject a confused-deputy replay — an approval
+ * signed for one domain being used to act on a different domain — without
+ * changing how approvals are issued.
+ */
+export function auditApprovalDomainTarget(event: AuditEvent): string | null {
+  if (event.action !== "oc.artifact.approved") return null;
+  if (event.targetType !== "domain") return null;
+  return normalizeApprovalDomain(event.targetId);
+}
+
+export function normalizeApprovalDomain(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase().replace(/\.$/, "");
+  return normalized.length > 0 ? normalized : null;
+}
+
 export function artifactMatchesAuditApproval(input: {
   artifact: CanvasLiveArtifactSnapshot;
   approvalEvent: AuditEvent;
