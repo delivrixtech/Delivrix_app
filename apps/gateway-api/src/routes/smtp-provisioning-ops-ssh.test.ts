@@ -10,6 +10,7 @@ import { LocalFileAuditLog } from "../../../../packages/local-store/src/index.ts
 import { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import { approvalTokenHash } from "../approval-guard.ts";
 import {
+  backfillOpsSshForFleet,
   buildOpsUserProvisionStep,
   buildOpsUserRevokeStep,
   handleProvisionOpsSshHttp,
@@ -17,6 +18,7 @@ import {
   type SmtpSshRunner
 } from "./smtp-provisioning.ts";
 import {
+  attachSshAccessToRecord,
   decryptSmtpCredentialForDownload,
   markSmtpCredentialConfigured,
   prepareSmtpCredential,
@@ -108,6 +110,42 @@ test("buildOpsUserRevokeStep: borra sudoers y el usuario", () => {
   const step = buildOpsUserRevokeStep("delivrix-ops");
   assert.match(step.command, /rm -f \/etc\/sudoers\.d/);
   assert.match(step.command, /userdel/);
+});
+
+test("backfillOpsSshForFleet: provisiona los que no tienen SSH y saltea los que ya", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ops-ssh-backfill-"));
+  const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
+  const workspace = new OpenClawWorkspace({ rootDir: join(dir, "workspace"), now: () => fixedNow });
+  const env = { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey };
+  const commands: SmtpSshCommandInput[] = [];
+
+  // dominio A: sin SSH. dominio B: ya con SSH.
+  const a = await prepareSmtpCredential({ workspace, env, domain: "alpha-ops.com", serverSlug: "contabo-1", host: "smtp.alpha-ops.com", now: () => fixedNow, passwordFactory: () => "pw" });
+  await saveSmtpCredentialRecord(workspace, markSmtpCredentialConfigured(a.record, fixedNow));
+  const b = await prepareSmtpCredential({ workspace, env, domain: "beta-ops.com", serverSlug: "contabo-2", host: "smtp.beta-ops.com", now: () => fixedNow, passwordFactory: () => "pw" });
+  const bConfigured = markSmtpCredentialConfigured(b.record, fixedNow);
+  await saveSmtpCredentialRecord(workspace, attachSshAccessToRecord({ record: bConfigured, env, user: "delivrix-ops", host: "10.0.0.2", privateKeyPem: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n", now: () => fixedNow }));
+
+  const sshRunner: SmtpSshRunner = {
+    isConfigured: () => true,
+    run: async (c) => { commands.push(c); return { stdout: "", stderr: "", exitCode: 0 }; }
+  };
+
+  const summary = await backfillOpsSshForFleet({
+    workspace, sshRunner, auditLog, env, now: () => fixedNow,
+    actorId: "operator/juanes", opsUser: "delivrix-ops",
+    nodes: [
+      { domain: "alpha-ops.com", serverSlug: "contabo-1", serverIp: "10.0.0.1" },
+      { domain: "beta-ops.com", serverSlug: "contabo-2", serverIp: "10.0.0.2" }
+    ]
+  });
+
+  assert.deepEqual(summary.provisioned, ["alpha-ops.com"]);
+  assert.deepEqual(summary.skippedAlready, ["beta-ops.com"]);
+  assert.deepEqual(summary.failed, []);
+  // Solo corrió el create-ops-user para alpha (beta se salteó).
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0]!.serverIp, "10.0.0.1");
 });
 
 async function opsHarness(input: { withApproval?: boolean } = {}): Promise<{

@@ -39,6 +39,7 @@ import {
   saveSmtpCredentialRecord,
   smtpCredentialFingerprint,
   type SmtpCredentialMaterial,
+  type SmtpCredentialRecord,
 } from "../smtp-credentials.ts";
 import { generateOpsSshKeyPair } from "../ssh-ops-key.ts";
 import {
@@ -593,6 +594,28 @@ export async function handleSmtpProvisionHttp(
     await emitAuditAction(deps.canvasLiveEvents, taskId, "oc.smtp.provisioned", "webdock_server", serverSlug, "critical", deps.now?.() ?? new Date());
     await emitTaskUpdate(deps.canvasLiveEvents, taskId, "completed", deps.now?.() ?? new Date());
 
+    // Ops SSH automático: cada nodo nuevo queda con el acceso ops (delivrix-ops + sudo) para
+    // monitoreo de bounces, y su credential doc trae la sección SSH desde el minuto cero.
+    // Best-effort y flag-gated: si falla, NO tumba el provisioning SMTP (ya exitoso).
+    let opsSshProvisioned = false;
+    if (env.SMTP_OPS_SSH_ENABLE === "true") {
+      const opsOutcome = await provisionOpsSshForNode({
+        workspace: deps.workspace,
+        sshRunner: deps.sshRunner,
+        auditLog: deps.auditLog,
+        env,
+        now: deps.now,
+        domain,
+        serverSlug,
+        serverIp: serverIp!,
+        opsUser: normalizeEnvValue(env.SMTP_OPS_SSH_USER) ?? opsSshDefaultUser,
+        credentialRecord: configuredCredentialRecord,
+        actorId,
+        trigger: "auto_provision"
+      }).catch((error) => ({ ok: false, error: error instanceof Error ? error.message : "unknown" } as const));
+      opsSshProvisioned = opsOutcome.ok;
+    }
+
     json(deps.response, 200, {
       ok: true,
       status: "configured",
@@ -600,6 +623,7 @@ export async function handleSmtpProvisionHttp(
       domain,
       serverIp,
       selector,
+      opsSshProvisioned,
       commandCount: commandResults.length,
       sshConnectAttempts,
       cloudInitSettleSeconds,
@@ -1060,71 +1084,25 @@ export async function handleProvisionOpsSshHttp(
     return;
   }
 
-  const keyPair = generateOpsSshKeyPair(`${opsUser}@${domain}`);
-  const step = buildOpsUserProvisionStep({ opsUser, authorizedKeysLine: keyPair.authorizedKeysLine });
-
-  try {
-    const result = await deps.sshRunner.run({
-      serverSlug,
-      serverIp: serverIp as string,
-      command: step.command,
-      stdin: step.stdin,
-      timeoutMs: step.timeoutMs
-    });
-    if (result.exitCode !== 0) {
-      throw new Error(`create-ops-user exited ${result.exitCode ?? "unknown"}`);
-    }
-  } catch (error) {
-    await deps.auditLog.append({
-      actorType: "operator",
-      actorId,
-      action: "oc.smtp.ops_ssh_failed",
-      targetType: "webdock_server",
-      targetId: serverSlug,
-      riskLevel: "critical",
-      decision: "allow",
-      humanApproved: true,
-      approverIds: [actorId],
-      metadata: { domain, serverSlug, opsUser, error: error instanceof Error ? error.message : "unknown" }
-    });
-    json(deps.response, 502, {
-      ok: false,
-      status: "ssh_step_failed",
-      message: error instanceof Error ? error.message : "unknown error"
-    });
+  const outcome = await provisionOpsSshForNode({
+    workspace: deps.workspace,
+    sshRunner: deps.sshRunner,
+    auditLog: deps.auditLog,
+    env,
+    now: () => now,
+    domain,
+    serverSlug,
+    serverIp: serverIp as string,
+    opsUser,
+    credentialRecord,
+    actorId,
+    trigger: "operator_endpoint",
+    auditMetadata: { approvalTokenHash: approvalTokenHash(approvalToken) }
+  });
+  if (!outcome.ok) {
+    json(deps.response, 502, { ok: false, status: "ssh_step_failed", message: outcome.error });
     return;
   }
-
-  const updated = attachSshAccessToRecord({
-    record: credentialRecord!,
-    env,
-    user: opsUser,
-    host: serverIp as string,
-    privateKeyPem: keyPair.privateKeyPem,
-    now: () => now
-  });
-  await saveSmtpCredentialRecord(deps.workspace, updated);
-
-  await deps.auditLog.append({
-    actorType: "operator",
-    actorId,
-    action: "oc.smtp.ops_ssh_provisioned",
-    targetType: "webdock_server",
-    targetId: serverSlug,
-    riskLevel: "critical",
-    decision: "allow",
-    humanApproved: true,
-    approverIds: [actorId],
-    metadata: {
-      domain,
-      serverSlug,
-      serverIp,
-      opsUser,
-      sudo: "nopasswd",
-      approvalTokenHash: approvalTokenHash(approvalToken),
-      durationMs: Date.now() - startedAt
-    }
-  });
 
   json(deps.response, 200, {
     ok: true,
@@ -1136,6 +1114,150 @@ export async function handleProvisionOpsSshHttp(
     port: 22,
     downloadPath: `/v1/sender-pool/credentials/${domain}/download`
   });
+}
+
+/**
+ * Núcleo reusable de la provisión de acceso SSH ops de un nodo: genera el par de
+ * claves, crea/rota el usuario ops en el box (via el runner), adjunta la clave privada
+ * cifrada al credential record y audita. NO hace approval-gate ni responde HTTP — eso es
+ * del caller. Lo usan el endpoint del agente (approval-gated), el provisioning automático
+ * de nodos nuevos y el backfill de la flota.
+ */
+export async function provisionOpsSshForNode(input: {
+  workspace: OpenClawWorkspace;
+  sshRunner: SmtpSshRunner;
+  auditLog: AuditSink;
+  env: Record<string, string | undefined>;
+  now?: () => Date;
+  domain: string;
+  serverSlug: string;
+  serverIp: string;
+  opsUser: string;
+  credentialRecord: SmtpCredentialRecord | null;
+  actorId: string;
+  trigger: "operator_endpoint" | "auto_provision" | "backfill";
+  auditMetadata?: Record<string, unknown>;
+}): Promise<{ ok: true; opsUser: string; host: string } | { ok: false; error: string }> {
+  const startedAt = Date.now();
+  const now = input.now?.() ?? new Date();
+  const keyPair = generateOpsSshKeyPair(`${input.opsUser}@${input.domain}`);
+  const step = buildOpsUserProvisionStep({ opsUser: input.opsUser, authorizedKeysLine: keyPair.authorizedKeysLine });
+
+  try {
+    const result = await input.sshRunner.run({
+      serverSlug: input.serverSlug,
+      serverIp: input.serverIp,
+      command: step.command,
+      stdin: step.stdin,
+      timeoutMs: step.timeoutMs
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(`create-ops-user exited ${result.exitCode ?? "unknown"}`);
+    }
+  } catch (error) {
+    await input.auditLog.append({
+      actorType: "operator",
+      actorId: input.actorId,
+      action: "oc.smtp.ops_ssh_failed",
+      targetType: "webdock_server",
+      targetId: input.serverSlug,
+      riskLevel: "critical",
+      decision: "allow",
+      humanApproved: true,
+      approverIds: [input.actorId],
+      metadata: { domain: input.domain, serverSlug: input.serverSlug, opsUser: input.opsUser, trigger: input.trigger, error: error instanceof Error ? error.message : "unknown" }
+    });
+    return { ok: false, error: error instanceof Error ? error.message : "unknown error" };
+  }
+
+  if (input.credentialRecord) {
+    const updated = attachSshAccessToRecord({
+      record: input.credentialRecord,
+      env: input.env,
+      user: input.opsUser,
+      host: input.serverIp,
+      privateKeyPem: keyPair.privateKeyPem,
+      now: () => now
+    });
+    await saveSmtpCredentialRecord(input.workspace, updated);
+  }
+
+  await input.auditLog.append({
+    actorType: "operator",
+    actorId: input.actorId,
+    action: "oc.smtp.ops_ssh_provisioned",
+    targetType: "webdock_server",
+    targetId: input.serverSlug,
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: [input.actorId],
+    metadata: {
+      domain: input.domain,
+      serverSlug: input.serverSlug,
+      serverIp: input.serverIp,
+      opsUser: input.opsUser,
+      sudo: "nopasswd",
+      trigger: input.trigger,
+      ...(input.auditMetadata ?? {}),
+      durationMs: Date.now() - startedAt
+    }
+  });
+
+  return { ok: true, opsUser: input.opsUser, host: input.serverIp };
+}
+
+/**
+ * Backfill del acceso SSH ops sobre una lista de nodos existentes. Idempotente: saltea los
+ * que ya tienen sshAccess. Secuencial (un nodo a la vez) para no abrir N conexiones. Cubre
+ * los SMTP "viejos" — los nuevos ya lo reciben automático en el provisioning.
+ */
+export async function backfillOpsSshForFleet(input: {
+  workspace: OpenClawWorkspace;
+  sshRunner: SmtpSshRunner;
+  auditLog: AuditSink;
+  env: Record<string, string | undefined>;
+  now?: () => Date;
+  actorId: string;
+  opsUser: string;
+  nodes: Array<{ domain: string; serverSlug: string; serverIp: string }>;
+}): Promise<{
+  provisioned: string[];
+  skippedAlready: string[];
+  failed: Array<{ domain: string; error: string }>;
+}> {
+  const provisioned: string[] = [];
+  const skippedAlready: string[] = [];
+  const failed: Array<{ domain: string; error: string }> = [];
+
+  for (const node of input.nodes) {
+    const record = await findSmtpCredentialRecord(input.workspace, node.domain, node.serverSlug);
+    if (record?.sshAccess) {
+      skippedAlready.push(node.domain);
+      continue;
+    }
+    const outcome = await provisionOpsSshForNode({
+      workspace: input.workspace,
+      sshRunner: input.sshRunner,
+      auditLog: input.auditLog,
+      env: input.env,
+      now: input.now,
+      domain: node.domain,
+      serverSlug: node.serverSlug,
+      serverIp: node.serverIp,
+      opsUser: input.opsUser,
+      credentialRecord: record ?? null,
+      actorId: input.actorId,
+      trigger: "backfill"
+    });
+    if (outcome.ok) {
+      provisioned.push(node.domain);
+    } else {
+      failed.push({ domain: node.domain, error: outcome.error });
+    }
+  }
+
+  return { provisioned, skippedAlready, failed };
 }
 
 async function updateSmtpInventory(

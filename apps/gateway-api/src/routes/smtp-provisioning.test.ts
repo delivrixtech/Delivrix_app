@@ -292,6 +292,48 @@ test("POST /v1/servers/:slug/provision-smtp runs idempotent SSH plan and records
   assert.ok(route.canvasEvents.some((event) => event.type === "oc.action.now" && event.kind === "command"));
 });
 
+test("provision-smtp con SMTP_OPS_SSH_ENABLE también deja el acceso ops (nodo nuevo trae SSH)", async () => {
+  const commands: SmtpSshCommandInput[] = [];
+  const route = await routeHarness({
+    sshRunner: mockRunner({
+      run: async (input) => {
+        commands.push(input);
+        return { stdout: "ok", stderr: "", exitCode: 0 };
+      }
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-smtp-plan",
+      executionId: "exec-smtp-ops",
+      approvedAt: "2026-05-27T16:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-smtp-plan", "exec-smtp-ops");
+  await route.workspace.writeWorkspaceFile("inventory/dkim-keys/delivrix-mail.com/default.private", dkimPrivateKey);
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    emailAuth: [{ domain: "delivrix-mail.com", selector: "default", dkimPrivateKeyPath: "inventory/dkim-keys/delivrix-mail.com/default.private" }]
+  }));
+  await route.workspace.updateInventoryJson("webdock-servers.json", () => ({
+    servers: [{ slug: "mail-delivrix-test", hostname: "mail.delivrix-mail.com", ipv4: "192.0.2.44", status: "running" }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    actorId: "operator/juanes",
+    approvalToken: "exec-smtp-ops"
+  }, { SMTP_PROVISIONING_ENABLE_SSH: "true", SMTP_OPS_SSH_ENABLE: "true" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, "configured");
+  assert.equal(response.body.opsSshProvisioned, true);
+  // Corrió el paso create-ops-user (useradd + sudoers) además del stack SMTP.
+  assert.equal(commands.some((c) => c.command.includes("/etc/sudoers.d") && c.command.includes("useradd")), true);
+  // El evento de auditoría del ops quedó con trigger auto_provision.
+  const events = await route.auditLog.list();
+  const opsEvent = events.find((e) => e.action === "oc.smtp.ops_ssh_provisioned");
+  assert.ok(opsEvent);
+  assert.equal((opsEvent?.metadata as any)?.trigger, "auto_provision");
+});
+
 test("POST /v1/servers/:slug/provision-smtp keeps at most one configured inventory entry per domain", async () => {
   const route = await routeHarness({
     sshRunner: mockRunner(),
