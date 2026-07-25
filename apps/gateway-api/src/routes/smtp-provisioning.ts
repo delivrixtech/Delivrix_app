@@ -30,6 +30,12 @@ import { readRequestBody } from "../request-body.ts";
 import { ensureDkimKeyPair, findExistingDkimPrivateKeyPath } from "../dkim-keypair.ts";
 import { smtpHostForDomain } from "../smtp-naming.ts";
 import {
+  reconcileNodeIp,
+  verifyNodeOwnership,
+  type NodeIpReconciliation,
+  type NodeOwnershipVerdict
+} from "../smtp-node-ownership.ts";
+import {
   attachSshAccessToRecord,
   findSmtpCredentialRecord,
   prepareSmtpCredential,
@@ -1207,10 +1213,49 @@ export async function provisionOpsSshForNode(input: {
   return { ok: true, opsUser: input.opsUser, host: input.serverIp };
 }
 
+export type OpsSshBackfillNodeStatus =
+  | "provisioned"
+  | "would_provision"
+  | "skipped_already"
+  | "skipped_not_owned"
+  | "skipped_unverifiable"
+  | "skipped_ip_mismatch"
+  | "failed";
+
+export interface OpsSshBackfillNodeResult {
+  domain: string;
+  serverSlug: string;
+  inventoryIp: string;
+  effectiveIp: string;
+  status: OpsSshBackfillNodeStatus;
+  ownership?: NodeOwnershipVerdict;
+  ipReconciliation?: NodeIpReconciliation;
+  error?: string;
+}
+
+export interface OpsSshBackfillSummary {
+  dryRun: boolean;
+  /** Nombres preservados por compatibilidad con los callers existentes. */
+  provisioned: string[];
+  skippedAlready: string[];
+  failed: Array<{ domain: string; error: string }>;
+  wouldProvision: string[];
+  skippedNotOwned: string[];
+  skippedUnverifiable: string[];
+  skippedIpMismatch: string[];
+  results: OpsSshBackfillNodeResult[];
+}
+
 /**
  * Backfill del acceso SSH ops sobre una lista de nodos existentes. Idempotente: saltea los
  * que ya tienen sshAccess. Secuencial (un nodo a la vez) para no abrir N conexiones. Cubre
  * los SMTP "viejos" — los nuevos ya lo reciben automático en el provisioning.
+ *
+ * La verificación de propiedad vive ACÁ, no en el caller. La primera corrida del backfill
+ * usó un pre-filtro externo con `root@<ip>` hardcodeado que descartó 14 nodos vivos como
+ * ajenos: el invariante de seguridad tiene que estar donde está el efecto, y tiene que
+ * correr por el mismo `sshRunner` que provisiona (así hereda usuario y sudo por provider).
+ * `verifyOwnership` existe solo como override tipado para tests — no hay forma de apagarla.
  */
 export async function backfillOpsSshForFleet(input: {
   workspace: OpenClawWorkspace;
@@ -1221,21 +1266,81 @@ export async function backfillOpsSshForFleet(input: {
   actorId: string;
   opsUser: string;
   nodes: Array<{ domain: string; serverSlug: string; serverIp: string }>;
-}): Promise<{
-  provisioned: string[];
-  skippedAlready: string[];
-  failed: Array<{ domain: string; error: string }>;
-}> {
-  const provisioned: string[] = [];
-  const skippedAlready: string[] = [];
-  const failed: Array<{ domain: string; error: string }> = [];
+  /** Sin efectos: reporta qué haría. El script arranca en true. */
+  dryRun?: boolean;
+  /** Sin esto no hay chequeo de DNS (la verificación de propiedad sigue siendo obligatoria). */
+  resolve4?: (host: string) => Promise<string[]>;
+  /** Permite provisionar contra la IP del DNS cuando difiere del inventario. */
+  allowDnsIpFallback?: boolean;
+  /** Override SOLO para tests. Siempre devuelve un veredicto; no desactiva nada. */
+  verifyOwnership?: (node: {
+    domain: string;
+    serverSlug: string;
+    serverIp: string;
+  }) => Promise<NodeOwnershipVerdict>;
+}): Promise<OpsSshBackfillSummary> {
+  const startedAt = Date.now();
+  const dryRun = input.dryRun === true;
+  const results: OpsSshBackfillNodeResult[] = [];
+  const verify = input.verifyOwnership
+    ?? ((node: { domain: string; serverSlug: string; serverIp: string }) =>
+      verifyNodeOwnership({ sshRunner: input.sshRunner, ...node }));
 
   for (const node of input.nodes) {
     const record = await findSmtpCredentialRecord(input.workspace, node.domain, node.serverSlug);
+    const base = {
+      domain: node.domain,
+      serverSlug: node.serverSlug,
+      inventoryIp: node.serverIp,
+      effectiveIp: node.serverIp
+    };
+
+    // Ya tiene acceso: ni siquiera abrimos SSH.
     if (record?.sshAccess) {
-      skippedAlready.push(node.domain);
+      results.push({ ...base, status: "skipped_already" });
       continue;
     }
+
+    // Reconciliación de IP: el inventario se desactualiza (server60 cambió de IP y nadie
+    // se enteró). Una IP que el inventario no respalda no recibe un usuario con sudo.
+    let effectiveIp = node.serverIp;
+    let ipReconciliation: NodeIpReconciliation | undefined;
+    if (input.resolve4) {
+      ipReconciliation = await reconcileNodeIp({
+        domain: node.domain,
+        inventoryIp: node.serverIp,
+        resolve4: input.resolve4
+      });
+      if (ipReconciliation.status === "mismatch") {
+        if (!input.allowDnsIpFallback) {
+          results.push({ ...base, status: "skipped_ip_mismatch", ipReconciliation });
+          continue;
+        }
+        effectiveIp = ipReconciliation.dnsIp ?? node.serverIp;
+      }
+    }
+
+    const ownership = await verify({
+      domain: node.domain,
+      serverSlug: node.serverSlug,
+      serverIp: effectiveIp
+    });
+    if (ownership.status !== "owned") {
+      results.push({
+        ...base,
+        effectiveIp,
+        status: ownership.status === "not_owned" ? "skipped_not_owned" : "skipped_unverifiable",
+        ownership,
+        ipReconciliation
+      });
+      continue;
+    }
+
+    if (dryRun) {
+      results.push({ ...base, effectiveIp, status: "would_provision", ownership, ipReconciliation });
+      continue;
+    }
+
     const outcome = await provisionOpsSshForNode({
       workspace: input.workspace,
       sshRunner: input.sshRunner,
@@ -1244,20 +1349,123 @@ export async function backfillOpsSshForFleet(input: {
       now: input.now,
       domain: node.domain,
       serverSlug: node.serverSlug,
-      serverIp: node.serverIp,
+      serverIp: effectiveIp,
       opsUser: input.opsUser,
       credentialRecord: record ?? null,
       actorId: input.actorId,
-      trigger: "backfill"
+      trigger: "backfill",
+      auditMetadata: {
+        ownership: {
+          hostname: ownership.hostname,
+          mailname: ownership.mailname,
+          dkimKeysPresent: ownership.dkimKeysPresent
+        },
+        ...(ipReconciliation ? { ipReconciliation } : {})
+      }
     });
-    if (outcome.ok) {
-      provisioned.push(node.domain);
-    } else {
-      failed.push({ domain: node.domain, error: outcome.error });
+    results.push({
+      ...base,
+      effectiveIp,
+      status: outcome.ok ? "provisioned" : "failed",
+      ownership,
+      ipReconciliation,
+      ...(outcome.ok ? {} : { error: outcome.error })
+    });
+  }
+
+  const pick = (status: OpsSshBackfillNodeStatus): string[] =>
+    results.filter((r) => r.status === status).map((r) => r.domain);
+
+  // Los descartes se auditan: la primera corrida solo los imprimió en consola y por eso
+  // "17 salteados" pasó por bueno durante días. En dry-run alcanza con el evento final.
+  if (!dryRun) {
+    for (const result of results) {
+      const reason = skipReasonFor(result.status);
+      if (!reason) continue;
+      await input.auditLog.append({
+        actorType: "operator",
+        actorId: input.actorId,
+        action: "oc.smtp.ops_ssh_skipped",
+        targetType: "webdock_server",
+        targetId: result.serverSlug,
+        riskLevel: "medium",
+        decision: "block",
+        humanApproved: false,
+        approverIds: [],
+        metadata: {
+          domain: result.domain,
+          serverSlug: result.serverSlug,
+          inventoryIp: result.inventoryIp,
+          effectiveIp: result.effectiveIp,
+          reason,
+          trigger: "backfill",
+          detail: result.ownership?.detail ?? null,
+          hint: result.ownership?.hint ?? null,
+          hostname: result.ownership?.hostname ?? null,
+          dkimKeysPresent: result.ownership?.dkimKeysPresent ?? null,
+          dnsIps: result.ipReconciliation?.dnsIps ?? null
+        }
+      });
     }
   }
 
-  return { provisioned, skippedAlready, failed };
+  const summary: OpsSshBackfillSummary = {
+    dryRun,
+    provisioned: pick("provisioned"),
+    skippedAlready: pick("skipped_already"),
+    failed: results
+      .filter((r) => r.status === "failed")
+      .map((r) => ({ domain: r.domain, error: r.error ?? "unknown error" })),
+    wouldProvision: pick("would_provision"),
+    skippedNotOwned: pick("skipped_not_owned"),
+    skippedUnverifiable: pick("skipped_unverifiable"),
+    skippedIpMismatch: pick("skipped_ip_mismatch"),
+    results
+  };
+
+  await input.auditLog.append({
+    actorType: "operator",
+    actorId: input.actorId,
+    action: "oc.smtp.ops_ssh_backfill_completed",
+    targetType: "sender_pool",
+    targetId: "smtp_ops_ssh",
+    riskLevel: "medium",
+    decision: "allow",
+    humanApproved: true,
+    approverIds: [input.actorId],
+    metadata: {
+      dryRun,
+      nodes: input.nodes.length,
+      counts: {
+        provisioned: summary.provisioned.length,
+        wouldProvision: summary.wouldProvision.length,
+        skippedAlready: summary.skippedAlready.length,
+        skippedNotOwned: summary.skippedNotOwned.length,
+        skippedUnverifiable: summary.skippedUnverifiable.length,
+        skippedIpMismatch: summary.skippedIpMismatch.length,
+        failed: summary.failed.length
+      },
+      discarded: results
+        .filter((r) => skipReasonFor(r.status))
+        .map((r) => ({ domain: r.domain, reason: skipReasonFor(r.status) })),
+      durationMs: Date.now() - startedAt
+    }
+  });
+
+  return summary;
+}
+
+function skipReasonFor(status: OpsSshBackfillNodeStatus): string | null {
+  switch (status) {
+    case "skipped_not_owned":
+      return "not_owned";
+    case "skipped_unverifiable":
+      return "unverifiable";
+    case "skipped_ip_mismatch":
+      return "ip_mismatch";
+    default:
+      return null;
+  }
 }
 
 async function updateSmtpInventory(

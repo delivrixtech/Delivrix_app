@@ -14,12 +14,14 @@ import {
   buildOpsUserProvisionStep,
   buildOpsUserRevokeStep,
   handleProvisionOpsSshHttp,
+  resolveSmtpSshTarget,
   type SmtpSshCommandInput,
   type SmtpSshRunner
 } from "./smtp-provisioning.ts";
 import {
   attachSshAccessToRecord,
   decryptSmtpCredentialForDownload,
+  findSmtpCredentialRecord,
   markSmtpCredentialConfigured,
   prepareSmtpCredential,
   renderSmtpCredentialMarkdown,
@@ -112,27 +114,23 @@ test("buildOpsUserRevokeStep: borra sudoers y el usuario", () => {
   assert.match(step.command, /userdel/);
 });
 
+test("resolveSmtpSshTarget: contabo entra como root; el resto como delivrixops + sudo", () => {
+  // Ésta es la pieza que el script suelto del backfill bypasseaba al hardcodear root@.
+  assert.deepEqual(
+    resolveSmtpSshTarget({ serverSlug: "contabo-9001", defaultUser: "delivrixops", sudoEnabled: true }),
+    { user: "root", useSudo: false }
+  );
+  assert.deepEqual(
+    resolveSmtpSshTarget({ serverSlug: "server60", defaultUser: "delivrixops", sudoEnabled: true }),
+    { user: "delivrixops", useSudo: true }
+  );
+});
+
 test("backfillOpsSshForFleet: provisiona los que no tienen SSH y saltea los que ya", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "ops-ssh-backfill-"));
-  const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
-  const workspace = new OpenClawWorkspace({ rootDir: join(dir, "workspace"), now: () => fixedNow });
-  const env = { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey };
-  const commands: SmtpSshCommandInput[] = [];
-
-  // dominio A: sin SSH. dominio B: ya con SSH.
-  const a = await prepareSmtpCredential({ workspace, env, domain: "alpha-ops.com", serverSlug: "contabo-1", host: "smtp.alpha-ops.com", now: () => fixedNow, passwordFactory: () => "pw" });
-  await saveSmtpCredentialRecord(workspace, markSmtpCredentialConfigured(a.record, fixedNow));
-  const b = await prepareSmtpCredential({ workspace, env, domain: "beta-ops.com", serverSlug: "contabo-2", host: "smtp.beta-ops.com", now: () => fixedNow, passwordFactory: () => "pw" });
-  const bConfigured = markSmtpCredentialConfigured(b.record, fixedNow);
-  await saveSmtpCredentialRecord(workspace, attachSshAccessToRecord({ record: bConfigured, env, user: "delivrix-ops", host: "10.0.0.2", privateKeyPem: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n", now: () => fixedNow }));
-
-  const sshRunner: SmtpSshRunner = {
-    isConfigured: () => true,
-    run: async (c) => { commands.push(c); return { stdout: "", stderr: "", exitCode: 0 }; }
-  };
+  const { workspace, auditLog, env, commands, runner } = await fleetHarness();
 
   const summary = await backfillOpsSshForFleet({
-    workspace, sshRunner, auditLog, env, now: () => fixedNow,
+    workspace, sshRunner: runner(), auditLog, env, now: () => fixedNow,
     actorId: "operator/juanes", opsUser: "delivrix-ops",
     nodes: [
       { domain: "alpha-ops.com", serverSlug: "contabo-1", serverIp: "10.0.0.1" },
@@ -143,10 +141,219 @@ test("backfillOpsSshForFleet: provisiona los que no tienen SSH y saltea los que 
   assert.deepEqual(summary.provisioned, ["alpha-ops.com"]);
   assert.deepEqual(summary.skippedAlready, ["beta-ops.com"]);
   assert.deepEqual(summary.failed, []);
-  // Solo corrió el create-ops-user para alpha (beta se salteó).
-  assert.equal(commands.length, 1);
-  assert.equal(commands[0]!.serverIp, "10.0.0.1");
+  // alpha: probe de propiedad + create-ops-user. beta ni siquiera abre SSH.
+  assert.equal(commands.length, 2);
+  assert.equal(commands.every((c) => c.serverIp === "10.0.0.1"), true);
+  assert.equal(commands.filter((c) => c.command.includes("## HOSTNAME")).length, 1);
+  assert.equal(commands.filter((c) => c.command.includes("useradd")).length, 1);
 });
+
+test("backfillOpsSshForFleet: nodo que se declara de otro dominio ⇒ not_owned, no se toca", async () => {
+  const { workspace, auditLog, env, commands, runner } = await fleetHarness();
+
+  const summary = await backfillOpsSshForFleet({
+    workspace, sshRunner: runner({ "alpha-ops.com": ownershipStdout("smtp.otracosa.com", true) }),
+    auditLog, env, now: () => fixedNow, actorId: "operator/juanes", opsUser: "delivrix-ops",
+    nodes: [{ domain: "alpha-ops.com", serverSlug: "contabo-1", serverIp: "10.0.0.1" }]
+  });
+
+  assert.deepEqual(summary.skippedNotOwned, ["alpha-ops.com"]);
+  assert.deepEqual(summary.provisioned, []);
+  // Corrió el probe, nunca el create-ops-user.
+  assert.equal(commands.filter((c) => c.command.includes("useradd")).length, 0);
+
+  const record = await findSmtpCredentialRecord(workspace, "alpha-ops.com", "contabo-1");
+  assert.equal(record?.sshAccess, undefined);
+
+  const events = await auditLog.list();
+  const skipped = events.find((e) => e.action === "oc.smtp.ops_ssh_skipped");
+  assert.equal((skipped?.metadata as any)?.reason, "not_owned");
+});
+
+// La regresión de los 15 nodos Webdock: SSH que rechaza la llave NO es evidencia de
+// que el nodo sea ajeno.
+test("backfillOpsSshForFleet: Permission denied ⇒ unverifiable, jamás not_owned", async () => {
+  const { workspace, auditLog, env, commands, runner } = await fleetHarness();
+
+  const summary = await backfillOpsSshForFleet({
+    workspace,
+    sshRunner: runner({ "alpha-ops.com": new Error("SSH command failed with exit 255.\nPermission denied (publickey).") }),
+    auditLog, env, now: () => fixedNow, actorId: "operator/juanes", opsUser: "delivrix-ops",
+    nodes: [{ domain: "alpha-ops.com", serverSlug: "contabo-1", serverIp: "10.0.0.1" }]
+  });
+
+  assert.deepEqual(summary.skippedUnverifiable, ["alpha-ops.com"]);
+  assert.deepEqual(summary.skippedNotOwned, []);
+  assert.deepEqual(summary.provisioned, []);
+  assert.equal(commands.filter((c) => c.command.includes("useradd")).length, 0);
+
+  const events = await auditLog.list();
+  const skipped = events.find((e) => e.action === "oc.smtp.ops_ssh_skipped");
+  assert.equal((skipped?.metadata as any)?.reason, "unverifiable");
+  assert.match(String((skipped?.metadata as any)?.hint), /SMTP_PROVISION_SSH_USER/);
+});
+
+test("backfillOpsSshForFleet: el probe y la provisión llegan con el serverSlug del nodo", async () => {
+  const { workspace, auditLog, env, commands, runner } = await fleetHarness({ alphaSlug: "server60" });
+
+  await backfillOpsSshForFleet({
+    workspace, sshRunner: runner({}, "server60"), auditLog, env, now: () => fixedNow,
+    actorId: "operator/juanes", opsUser: "delivrix-ops",
+    nodes: [{ domain: "alpha-ops.com", serverSlug: "server60", serverIp: "10.0.0.1" }]
+  });
+
+  // Sin el slug, el runner no puede elegir delivrixops+sudo y vuelve el bug.
+  assert.equal(commands.length, 2);
+  assert.equal(commands.every((c) => c.serverSlug === "server60"), true);
+});
+
+test("backfillOpsSshForFleet: dry-run no toca nada y solo audita el cierre", async () => {
+  const { workspace, auditLog, env, commands, runner } = await fleetHarness();
+
+  const summary = await backfillOpsSshForFleet({
+    workspace, sshRunner: runner(), auditLog, env, now: () => fixedNow,
+    actorId: "operator/juanes", opsUser: "delivrix-ops", dryRun: true,
+    nodes: [{ domain: "alpha-ops.com", serverSlug: "contabo-1", serverIp: "10.0.0.1" }]
+  });
+
+  assert.equal(summary.dryRun, true);
+  assert.deepEqual(summary.wouldProvision, ["alpha-ops.com"]);
+  assert.deepEqual(summary.provisioned, []);
+  assert.equal(commands.filter((c) => c.command.includes("useradd")).length, 0);
+
+  const record = await findSmtpCredentialRecord(workspace, "alpha-ops.com", "contabo-1");
+  assert.equal(record?.sshAccess, undefined);
+
+  const events = await auditLog.list();
+  assert.equal(events.some((e) => e.action === "oc.smtp.ops_ssh_provisioned"), false);
+  const completed = events.find((e) => e.action === "oc.smtp.ops_ssh_backfill_completed");
+  assert.equal((completed?.metadata as any)?.dryRun, true);
+});
+
+// El caso controlcorpfiling.com: el inventario quedó con la IP vieja.
+test("backfillOpsSshForFleet: IP del inventario distinta a la del DNS ⇒ no provisiona", async () => {
+  const { workspace, auditLog, env, commands, runner } = await fleetHarness();
+
+  const summary = await backfillOpsSshForFleet({
+    workspace, sshRunner: runner(), auditLog, env, now: () => fixedNow,
+    actorId: "operator/juanes", opsUser: "delivrix-ops",
+    resolve4: async () => ["45.136.70.174"],
+    nodes: [{ domain: "alpha-ops.com", serverSlug: "contabo-1", serverIp: "10.0.0.1" }]
+  });
+
+  assert.deepEqual(summary.skippedIpMismatch, ["alpha-ops.com"]);
+  // Ni el probe: una IP que el inventario no respalda no recibe conexión.
+  assert.equal(commands.length, 0);
+
+  const events = await auditLog.list();
+  const skipped = events.find((e) => e.action === "oc.smtp.ops_ssh_skipped");
+  assert.equal((skipped?.metadata as any)?.reason, "ip_mismatch");
+});
+
+test("backfillOpsSshForFleet: con --allow-dns-ip verifica y provisiona contra la IP del DNS", async () => {
+  const { workspace, auditLog, env, commands, runner } = await fleetHarness();
+
+  const summary = await backfillOpsSshForFleet({
+    workspace, sshRunner: runner(), auditLog, env, now: () => fixedNow,
+    actorId: "operator/juanes", opsUser: "delivrix-ops",
+    resolve4: async () => ["45.136.70.174"],
+    allowDnsIpFallback: true,
+    nodes: [{ domain: "alpha-ops.com", serverSlug: "contabo-1", serverIp: "10.0.0.1" }]
+  });
+
+  assert.deepEqual(summary.provisioned, ["alpha-ops.com"]);
+  // La propiedad se verifica contra la IP nueva, no se confía en el DNS a secas.
+  assert.equal(commands.every((c) => c.serverIp === "45.136.70.174"), true);
+
+  const record = await findSmtpCredentialRecord(workspace, "alpha-ops.com", "contabo-1");
+  assert.equal(record?.sshAccess?.host, "45.136.70.174");
+});
+
+test("backfillOpsSshForFleet: un DNS que no resuelve no bloquea", async () => {
+  const { workspace, auditLog, env, runner } = await fleetHarness();
+
+  const summary = await backfillOpsSshForFleet({
+    workspace, sshRunner: runner(), auditLog, env, now: () => fixedNow,
+    actorId: "operator/juanes", opsUser: "delivrix-ops",
+    resolve4: async () => { throw new Error("queryA ENOTFOUND"); },
+    nodes: [{ domain: "alpha-ops.com", serverSlug: "contabo-1", serverIp: "10.0.0.1" }]
+  });
+
+  assert.deepEqual(summary.provisioned, ["alpha-ops.com"]);
+});
+
+test("backfillOpsSshForFleet: idempotente ⇒ la segunda corrida no abre SSH", async () => {
+  const { workspace, auditLog, env, commands, runner } = await fleetHarness();
+  const nodes = [{ domain: "alpha-ops.com", serverSlug: "contabo-1", serverIp: "10.0.0.1" }];
+  const shared = runner();
+
+  const first = await backfillOpsSshForFleet({
+    workspace, sshRunner: shared, auditLog, env, now: () => fixedNow,
+    actorId: "operator/juanes", opsUser: "delivrix-ops", nodes
+  });
+  assert.deepEqual(first.provisioned, ["alpha-ops.com"]);
+  const afterFirst = commands.length;
+
+  const second = await backfillOpsSshForFleet({
+    workspace, sshRunner: shared, auditLog, env, now: () => fixedNow,
+    actorId: "operator/juanes", opsUser: "delivrix-ops", nodes
+  });
+  assert.deepEqual(second.skippedAlready, ["alpha-ops.com"]);
+  assert.deepEqual(second.provisioned, []);
+  assert.equal(commands.length, afterFirst);
+});
+
+function ownershipStdout(hostname: string, dkim: boolean): string {
+  return [
+    "## HOSTNAME", hostname,
+    "## MAILNAME", "__NO_MAILNAME__",
+    "## DKIM", dkim ? "__DKIM_PRESENT__" : "__DKIM_ABSENT__",
+    "## END", ""
+  ].join("\n");
+}
+
+/**
+ * Flota de prueba: alpha sin acceso ops, beta con acceso ya puesto. El runner falso
+ * distingue el probe de propiedad del create-ops-user y responde por dominio.
+ */
+async function fleetHarness(options: { alphaSlug?: string } = {}): Promise<{
+  workspace: OpenClawWorkspace;
+  auditLog: LocalFileAuditLog;
+  env: Record<string, string | undefined>;
+  commands: SmtpSshCommandInput[];
+  runner: (responses?: Record<string, string | Error>, alphaSlug?: string) => SmtpSshRunner;
+}> {
+  const alphaSlug = options.alphaSlug ?? "contabo-1";
+  const dir = await mkdtemp(join(tmpdir(), "ops-ssh-backfill-"));
+  const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
+  const workspace = new OpenClawWorkspace({ rootDir: join(dir, "workspace"), now: () => fixedNow });
+  const env = { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey };
+  const commands: SmtpSshCommandInput[] = [];
+
+  const a = await prepareSmtpCredential({ workspace, env, domain: "alpha-ops.com", serverSlug: alphaSlug, host: "smtp.alpha-ops.com", now: () => fixedNow, passwordFactory: () => "pw" });
+  await saveSmtpCredentialRecord(workspace, markSmtpCredentialConfigured(a.record, fixedNow));
+  const b = await prepareSmtpCredential({ workspace, env, domain: "beta-ops.com", serverSlug: "contabo-2", host: "smtp.beta-ops.com", now: () => fixedNow, passwordFactory: () => "pw" });
+  const bConfigured = markSmtpCredentialConfigured(b.record, fixedNow);
+  await saveSmtpCredentialRecord(workspace, attachSshAccessToRecord({ record: bConfigured, env, user: "delivrix-ops", host: "10.0.0.2", privateKeyPem: "-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n", now: () => fixedNow }));
+
+  const runner = (responses: Record<string, string | Error> = {}): SmtpSshRunner => ({
+    isConfigured: () => true,
+    run: async (c) => {
+      commands.push(c);
+      if (!c.command.includes("## HOSTNAME")) {
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      // El probe de propiedad: el dominio se deduce del path de claves DKIM del comando.
+      const domainMatch = /\/etc\/opendkim\/keys\/([a-z0-9.-]+)/.exec(c.command);
+      const probed = domainMatch?.[1] ?? "";
+      const configured = responses[probed];
+      if (configured instanceof Error) throw configured;
+      return { stdout: configured ?? ownershipStdout(`smtp.${probed}`, true), stderr: "", exitCode: 0 };
+    }
+  });
+
+  return { workspace, auditLog, env, commands, runner };
+}
 
 async function opsHarness(input: { withApproval?: boolean } = {}): Promise<{
   commands: SmtpSshCommandInput[];
