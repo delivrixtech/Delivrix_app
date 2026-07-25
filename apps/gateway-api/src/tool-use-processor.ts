@@ -1181,6 +1181,9 @@ function toolTarget(toolName: string, params: Record<string, unknown>, fallbackT
   if (toolName === "provision_smtp_postfix" && typeof params.serverSlug === "string") {
     return { id: params.serverSlug, type: "webdock_server" };
   }
+  if (toolName === "provision_ops_ssh" && typeof params.serverSlug === "string") {
+    return { id: params.serverSlug, type: "webdock_server" };
+  }
   if (toolName === "send_real_email" && typeof params.serverSlug === "string") {
     return { id: params.serverSlug, type: "webdock_server" };
   }

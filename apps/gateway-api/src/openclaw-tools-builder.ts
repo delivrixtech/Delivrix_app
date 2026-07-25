@@ -37,6 +37,7 @@ import {
   route53ZoneRecordsParamSchema,
   route53UpsertParamSchema,
   smtpProvisionParamSchema,
+  provisionOpsSshParamSchema,
   updateSmtpEntryParamSchema,
   warmupSeedParamSchema,
   webdockCreateParamSchema
@@ -85,6 +86,7 @@ export type OpenClawToolName =
   | "create_webdock_server"
   | "bind_webdock_main_domain"
   | "provision_smtp_postfix"
+  | "provision_ops_ssh"
   | "configure_email_auth"
   | "reconcile_dns_to_live_smtp"
   | "enable_smtp_auth"
@@ -1010,6 +1012,35 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
     targetType: "webdock_server",
     severity: "critical"
   },
+  provision_ops_ssh: {
+    spec: {
+      name: "provision_ops_ssh",
+      description: [
+        "Provisiona (o rota) un acceso SSH 'ops' dedicado por nodo SMTP: crea un usuario con sudo",
+        "y su propio par de claves (distinto del root de la automatizacion), y adjunta la clave privada",
+        "cifrada al documento de credenciales del dominio para que el operador la descargue.",
+        "Riesgo critico: crea un usuario con sudo en el VPS; requiere ApprovalGate, audit, runner SSH y kill switch."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          serverSlug: { type: "string", pattern: slugPattern },
+          domain: { type: "string", pattern: domainPattern },
+          opsUser: { type: "string", pattern: "^[a-z_][a-z0-9_-]{0,31}$" },
+          ...optionalTaskId,
+          ...optionalRepairScope
+        },
+        required: ["serverSlug", "domain"]
+      }
+    },
+    paramSchema: provisionOpsSshParamSchema,
+    enabled: (env) =>
+      hmacConfigured(env) &&
+      flagEnabled(env.SMTP_OPS_SSH_ENABLE) &&
+      hasSshRunnerConfig(env),
+    targetType: "webdock_server",
+    severity: "critical"
+  },
   configure_email_auth: {
     spec: {
       name: "configure_email_auth",
@@ -1611,6 +1642,7 @@ export function openClawToolNames(): OpenClawToolName[] {
     "create_webdock_server",
     "bind_webdock_main_domain",
     "provision_smtp_postfix",
+    "provision_ops_ssh",
     "configure_email_auth",
     "reconcile_dns_to_live_smtp",
     "enable_smtp_auth",

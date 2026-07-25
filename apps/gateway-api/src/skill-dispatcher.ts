@@ -45,6 +45,7 @@ import {
 } from "./routes/webdock-bind-domain.ts";
 import {
   handleSmtpProvisionHttp,
+  handleProvisionOpsSshHttp,
   type SmtpSshRunner
 } from "./routes/smtp-provisioning.ts";
 import {
@@ -95,6 +96,7 @@ import {
   namecheapRegisterParamSchema,
   route53UpsertParamSchema,
   smtpProvisionParamSchema,
+  provisionOpsSshParamSchema,
   updateSmtpEntryParamSchema,
   warmupRampParamSchema,
   warmupSeedParamSchema,
@@ -659,6 +661,23 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         now: deps.now
       })
   };
+  const provisionOpsSsh: SkillHandlerEntry = {
+    paramSchema: provisionOpsSshParamSchema,
+    timeoutMs: 90_000,
+    canRollback: false,
+    invoke: ({ request, response, params, deps }) =>
+      handleProvisionOpsSshHttp({
+        request,
+        response,
+        serverSlug: String(params.serverSlug),
+        auditLog: deps.auditLog,
+        sshRunner: deps.smtpSshRunner,
+        workspace: deps.workspace,
+        readCanvasState: deps.readCanvasState,
+        env: deps.env,
+        now: deps.now
+      })
+  };
   const emailAuth: SkillHandlerEntry = {
     paramSchema: emailAuthParamSchema,
     timeoutMs: 30_000,
@@ -1179,6 +1198,7 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
     webdock_main_domain_bind: bindWebdockMainDomain,
     provision_smtp_postfix: smtpProvision,
     install_smtp_stack: smtpProvision,
+    provision_ops_ssh: provisionOpsSsh,
     configure_email_auth: emailAuth,
     reconcile_dns_to_live_smtp: reconcileDnsToLiveSmtpHandler,
     enable_smtp_auth: enableSmtpAuth,

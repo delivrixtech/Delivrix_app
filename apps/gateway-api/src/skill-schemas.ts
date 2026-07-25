@@ -227,6 +227,15 @@ export interface SmtpProvisionParams extends Record<string, unknown> {
   explicitRepairScope?: string;
 }
 
+export interface ProvisionOpsSshParams extends Record<string, unknown> {
+  serverSlug: string;
+  domain: string;
+  opsUser?: string;
+  taskId?: string;
+  repairReason?: string;
+  explicitRepairScope?: string;
+}
+
 export interface EmailAuthParams extends Record<string, unknown> {
   domain: string;
   mxServerIp: string;
@@ -764,6 +773,15 @@ export const smtpProvisionParamSchema = schema<SmtpProvisionParams>((value) => {
   }, input), input);
 });
 
+export const provisionOpsSshParamSchema = schema<ProvisionOpsSshParams>((value) => {
+  const input = object(value);
+  return withOptionalRepairScope(withOptionalTaskId({
+    serverSlug: slug(input.serverSlug, "serverSlug"),
+    domain: domain(input.domain, "domain"),
+    ...(input.opsUser === undefined || input.opsUser === null || input.opsUser === "" ? {} : { opsUser: opsUsername(input.opsUser, "opsUser") })
+  }, input), input);
+});
+
 export const emailAuthParamSchema = schema<EmailAuthParams>((value) => {
   const input = object(value);
   return withOptionalRepairScope(withOptionalTaskId({
@@ -1162,6 +1180,14 @@ function selector(value: unknown, field: string): string {
   const normalized = string(value, field).toLowerCase();
   if (!selectorPattern.test(normalized)) {
     throw new SkillSchemaError(`${field} must be DNS-safe`);
+  }
+  return normalized;
+}
+
+function opsUsername(value: unknown, field: string): string {
+  const normalized = string(value, field).trim();
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(normalized)) {
+    throw new SkillSchemaError(`${field} must be a valid unix username`);
   }
   return normalized;
 }

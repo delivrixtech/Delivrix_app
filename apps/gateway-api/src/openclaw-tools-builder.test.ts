@@ -32,6 +32,7 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "create_webdock_server",
     "bind_webdock_main_domain",
     "provision_smtp_postfix",
+    "provision_ops_ssh",
     "configure_email_auth",
     "reconcile_dns_to_live_smtp",
     "enable_smtp_auth",
@@ -150,7 +151,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 38);
+  assert.equal(tools.length, 39);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -205,6 +206,30 @@ test("register_domain_namecheap solo aparece con flag + credenciales + hmac", ()
   assert.equal(
     buildToolsForOpenClaw({ ...namecheapCreds, NAMECHEAP_ENABLE_PURCHASE: "true" })
       .map((t) => t.name).includes("register_domain_namecheap"),
+    true
+  );
+});
+
+test("provision_ops_ssh solo aparece con flag + hmac + runner SSH", () => {
+  const base = {
+    OPENCLAW_HMAC_SECRET: "test-hmac",
+    SMTP_PROVISION_SSH_KEY_PATH: "/tmp/delivrix-smoke-key"
+  };
+  // Sin flag → ausente (default de producción, inerte).
+  assert.equal(
+    buildToolsForOpenClaw({ ...base }).map((t) => t.name).includes("provision_ops_ssh"),
+    false
+  );
+  // Con flag pero sin runner SSH → ausente.
+  assert.equal(
+    buildToolsForOpenClaw({ OPENCLAW_HMAC_SECRET: "test-hmac", SMTP_OPS_SSH_ENABLE: "true" })
+      .map((t) => t.name).includes("provision_ops_ssh"),
+    false
+  );
+  // Con flag + hmac + runner → presente.
+  assert.equal(
+    buildToolsForOpenClaw({ ...base, SMTP_OPS_SSH_ENABLE: "true" })
+      .map((t) => t.name).includes("provision_ops_ssh"),
     true
   );
 });
@@ -396,6 +421,7 @@ function allEnabledEnv(): Record<string, string | undefined> {
     WEBDOCK_API_KEY_OPS: "webdock-ops",
     WEBDOCK_OPERATOR_SSH_PUBLIC_KEY: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITESTKEY delivrix-ops",
     SMTP_PROVISIONING_ENABLE_SSH: "true",
+    SMTP_OPS_SSH_ENABLE: "true",
     SMTP_PROVISION_SSH_KEY_PATH: "/tmp/delivrix-smoke-key",
     EMAIL_AUTH_ENABLE_WRITES: "true",
     DOMAIN_BIND_ENABLE: "true",
@@ -518,6 +544,9 @@ function validSample(toolName: string): Record<string, unknown> {
   }
   if (toolName === "provision_smtp_postfix") {
     return { serverSlug: "server69", domain: "delivrix.test", serverIp: "203.0.113.10" };
+  }
+  if (toolName === "provision_ops_ssh") {
+    return { serverSlug: "server69", domain: "delivrix.test", opsUser: "delivrix-ops" };
   }
   if (toolName === "configure_email_auth") {
     return { domain: "delivrix.test", mxServerIp: "203.0.113.10", dmarcPolicy: "none" };

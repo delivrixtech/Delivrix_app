@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, FileDown, Flame, KeyRound, Pause, Search, Send, Workflow } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, FileDown, Flame, KeyRound, Pause, Search, Send, Terminal, Workflow } from "lucide-react";
 import {
   getJson,
   getJsonWithQuery,
@@ -122,6 +122,8 @@ interface SmtpCredentialMetadata {
   createdAt: string;
   updatedAt: string;
   hasCredential: boolean;
+  hasSshAccess?: boolean;
+  sshUser?: string | null;
 }
 
 interface SenderPoolPayload {
@@ -662,6 +664,14 @@ function DomainRow({ d, nowMs, hot = false, expanded, onToggle }: { d: DomainSum
           <MonoData style={{ fontSize: 12.5 }} className="truncate">{d.domain}</MonoData>
           {d.authComplete && <CheckCircle2 size={11} className="shrink-0 text-success" strokeWidth={1.75} />}
           {d.hasCredential && <KeyRound size={11} className="shrink-0 text-success" strokeWidth={1.75} />}
+          {d.smtpCredential?.hasSshAccess && (
+            <span
+              className="inline-flex shrink-0"
+              title={`Acceso SSH ops${d.smtpCredential?.sshUser ? " · " + d.smtpCredential.sshUser : ""} (incluido en la descarga)`}
+            >
+              <Terminal size={11} className="text-success" strokeWidth={1.75} aria-label="Acceso SSH ops" />
+            </span>
+          )}
           {ageLabel ? (
             <Badge style={{ background: "var(--color-accent-soft)", color: "var(--color-accent)", borderColor: "transparent" }}>
               Nuevo · {ageLabel}
@@ -710,7 +720,7 @@ function DomainRow({ d, nowMs, hot = false, expanded, onToggle }: { d: DomainSum
           <button
             type="button"
             disabled={downloading}
-            title="Descargar credencial SMTP"
+            title={d.smtpCredential?.hasSshAccess ? "Descargar credencial SMTP + acceso SSH ops" : "Descargar credencial SMTP"}
             className="grid size-7 shrink-0 place-items-center rounded-md text-fg-subtle transition-colors hover:bg-[var(--color-surface-raised)] hover:text-fg disabled:opacity-50"
             onClick={async () => {
               setDownloading(true);
