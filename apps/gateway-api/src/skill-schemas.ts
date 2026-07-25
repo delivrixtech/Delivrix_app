@@ -200,6 +200,8 @@ export interface UpdateSmtpEntryParams extends Record<string, unknown> {
   status?: "configured" | "superseded" | "retired" | "archived";
   tlsStatus?: string;
   smtpAuthStatus?: "configured";
+  /** Corrige la IP cuando el box cambió de dirección y el inventario quedó viejo. */
+  serverIp?: string;
   reason?: string;
   dryRun?: boolean;
 }
@@ -678,10 +680,13 @@ export const updateSmtpEntryParamSchema = schema<UpdateSmtpEntryParams>((value) 
     ...(input.tlsStatus === undefined || input.tlsStatus === null || input.tlsStatus === "" ? {} : { tlsStatus: boundedText(input.tlsStatus, "tlsStatus", 3, 120) }),
     ...(input.smtpAuthStatus === undefined || input.smtpAuthStatus === null || input.smtpAuthStatus === "" ? {} : {
       smtpAuthStatus: oneOf(input.smtpAuthStatus, "smtpAuthStatus", ["configured"] as const)
+    }),
+    ...(input.serverIp === undefined || input.serverIp === null || input.serverIp === "" ? {} : {
+      serverIp: ipv4(input.serverIp, "serverIp")
     })
   };
   if (Object.keys(patch).length === 0) {
-    throw new SkillSchemaError("at least one of selector, status, tlsStatus or smtpAuthStatus is required");
+    throw new SkillSchemaError("at least one of selector, status, tlsStatus, smtpAuthStatus or serverIp is required");
   }
   return {
     domain: domain(input.domain, "domain"),

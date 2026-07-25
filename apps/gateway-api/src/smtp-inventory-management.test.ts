@@ -386,6 +386,24 @@ test("SMTP inventory mutations support dry-run, retire, reassign and guarded upd
   assert.equal(updated.status, "updated");
   assert.equal((await readInventory(workspace)).servers.find((server) => server.serverSlug === "server88")?.selector, "s2026a");
 
+  // Corrección de IP: un box que cambió de dirección deja la entrada apuntando a la vieja
+  // (caso server60 → 45.136.70.174). Tiene que poder arreglarse por el camino auditado.
+  const previousIp = (await readInventory(workspace)).servers.find((server) => server.serverSlug === "server88")?.serverIp;
+  const reIped = await updateSmtpInventoryEntry({
+    workspace,
+    domain: "legacy-one.com",
+    serverSlug: "server88",
+    patch: { serverIp: "45.136.70.174" },
+    liveServers,
+    actorId: "operator/juanes",
+    reason: "El box cambio de IP y el inventario quedo viejo.",
+    now: () => fixedNow
+  });
+  assert.equal(reIped.status, "updated");
+  assert.equal((await readInventory(workspace)).servers.find((server) => server.serverSlug === "server88")?.serverIp, "45.136.70.174");
+  // La IP anterior queda en el plan para que el audit conserve el antes/después.
+  assert.equal((reIped.plan as any)?.previousValues?.serverIp, previousIp);
+
   const retired = await retireSmtpInventoryEntry({
     workspace,
     domain: "legacy-one.com",

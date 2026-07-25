@@ -33,10 +33,14 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
-domains=("$@")
-if [ ${#domains[@]} -eq 0 ]; then
-  # Los que el sender pool declara con acceso ops.
-  mapfile -t domains < <(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/v1/sender-pool/status" \
+domains=()
+if [ "$#" -gt 0 ]; then
+  domains=("$@")
+else
+  # Los que el sender pool declara con acceso ops. Sin `mapfile`: el bash de macOS es 3.2.
+  while IFS= read -r line; do
+    [ -n "$line" ] && domains+=("$line")
+  done < <(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/v1/sender-pool/status" \
     | python3 -c 'import sys,json;[print(d["domain"]) for d in json.load(sys.stdin).get("domains",[]) if (d.get("smtpCredential") or {}).get("hasSshAccess")]' 2>/dev/null)
 fi
 if [ ${#domains[@]} -eq 0 ]; then
