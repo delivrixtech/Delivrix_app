@@ -198,11 +198,113 @@ llamando funciones inexistentes. Las dos salidas honestas: terminarlo o borrarlo
 
 ---
 
+# Auditoría de la rama — 2026-07-28
+
+Se auditaron los 4 commits nuevos (`d591bcb`, `a906970`, `c5911be`, `6c4c808`) con 6 lentes
+independientes y refutación adversarial de cada defecto. **44 hallazgos crudos; sobrevivieron 7.**
+
+**Lo que quedó verificado y en verde:**
+
+- Los 4 commits **no tocan un solo archivo de warmup**. Cero envío accidental introducido.
+- El árbol es autosuficiente: exportado limpio con `git archive`, los **1778 imports relativos
+  de 693 fuentes resuelven** (0 rotos) y `npm test` da 2165/2165 ahí adentro, sin
+  `config/gateway.env`, sin `runtime/`, sin `.env`. El caso `zip-archive` era el único.
+- El módulo ZIP es correcto: CRC-32 contra vectores de referencia, offsets verificados con un
+  parser independiente, leído por `zipfile`, libarchive y `ditto`, y `unzip -t` limpio.
+- El mapa: 320 citas, 100% existentes y en rango; JSON embebido idéntico al standalone.
+- Las 4 afirmaciones del ledger que sostienen E-03 y E-04 son **ciertas**: se pueden ejecutar
+  tal como están escritas.
+
+**Corrección importante:** el bloque de seguridad del `download-all` (token compartido sin RBAC,
+rate limit spoofeable, kill switch ignorado) **es falso**. La ruta autoriza fail-closed, el
+gateway escucha en loopback, los 3 tokens están seteados y son distintos, y el endpoint por
+dominio que existe desde junio entrega *más* (clave SSH privada). `d591bcb` es neto
+neutro-a-mejor. Cinco de los fixes que proponía la primera pasada **habrían roto producción**.
+
+---
+
+## A-01 · Procedencia de la memoria semántica
+
+**Estado:** 🟡 hecho, sin auditar · **Commit:** `80985ee` · **Riesgo:** bajo (aditivo, sin migración)
+
+`tool-use-processor.ts:968` ya firmaba el `actorId` con el id de la sesión y `parseRememberInput`
+lo tiraba. Importa porque `openclaw_memory_vectors` **no tiene ningún camino de baja** — ni
+DELETE, ni TTL, ni `expires_at` (verificado en todo el repo). Sin procedencia, una fila
+envenenada es indistinguible de una legítima. Ahora `metadata.provenance` es clave reservada,
+se escribe siempre y se aplica *después* del metadata del modelo, así que no se puede falsificar.
+
+**Qué auditar:** que `provenance` sea realmente inforjable (hay test), y que `actorId: null`
+distinga "vino sin atribuir" de "fila anterior al cambio". Consultable por
+`metadata->'provenance'->>'actorId'`.
+
+**Pendiente aparte:** el camino de baja no existe todavía. La procedencia lo habilita, no lo
+reemplaza.
+
+---
+
+## A-02 · El borde de lectura de `server.mjs`
+
+**Estado:** 🟡 hecho, sin auditar · **Commit:** `eb5b206` · **Riesgo:** bajo
+
+Dos allowlists paralelas: `vite.config.ts` la deriva de `READ_ENDPOINTS`, `server.mjs` la lleva
+a mano. Habían divergido en **12 rutas**, entre ellas las 4 de warmup y las 4 de compra de
+dominios. Detrás había un segundo bug que el primero tapaba: el proxy pasaba el cuerpo por
+`.text()`, que corrompe cualquier binario. Medido: 14371 → 20040 bytes, `unzip -t` con
+`invalid compressed data`.
+
+**Qué auditar:** el guard de `server.listen` (solo escucha si se ejecuta directo) y el test de
+paridad, que corre en `npm run test:admin`, **no** en el gate raíz.
+
+> **Dato que falta:** ¿qué corre el panel en Hostinger? Si es `server.mjs`, el botón de descarga
+> devolvía 404 y la vista de Warmup estaba muerta. Si es Vite, era una bomba con temporizador.
+
+---
+
+## A-03 · Paridad del catálogo de tools
+
+**Estado:** 🟡 hecho, sin auditar · **Commit:** `b6f701f` · **Riesgo:** nulo (solo test + un export)
+
+El test de E-01 cierra el bug, no la clase. Ahora se compara `toolDefinitions` contra
+`openClawToolNames()`. Comprobado por mutación: agregando una tool 46 definida pero no listada,
+**16 tests quedan en verde y solo cae el nuevo**.
+
+**Qué auditar:** que `openClawToolNames()` siga **sin** derivarse de `Object.keys` — medido, los
+órdenes difieren en 9 posiciones y el de la lista es el que ve el modelo en cada request.
+
+---
+
+## A-04 · El vecindario SSH del mapa
+
+**Estado:** 🟡 hecho, sin auditar · **Commit:** `21548a6` · **Riesgo:** nulo (documentación)
+
+El nodo `ssh-bridge` apuntaba a `openclaw-ssh-bridge.ts`, que es el puente de chat contra el
+container del agente, no el ejecutor de la flota (ese es `routes/smtp-provisioning.ts`). Tercer
+error del mismo vecindario: la arista `e80` daba a `postfix-log-parser.ts` como el que lee
+mail.log por SSH, y ese módulo es una función pura sin I/O. 66→68 nodos, 82→84 aristas.
+
+**Qué auditar:** **existir no es ser correcta.** Las 320 citas del mapa existen y caen en rango,
+pero `ssh-bridge` tenía citas válidas apuntando al módulo equivocado. Nadie revisó los otros 65
+nodos con ese criterio. Si vas a usar el mapa para orientarte en warmup, chequeá esa capa a mano.
+
+---
+
 ## Fuera de este ledger
 
-- **`ChatWidget.test.ts` en rojo** — preexistente, verificado con `git stash`. No es de este plan.
-- **6 commits en la rama sin llegar a `produ`** (2026-07-28): `6a87096`, `904a32e`, `0ac3d78`,
-  `d591bcb`, `a906970`, `c5911be`. Ninguno se pusheó; subir a `produ` es decisión aparte.
+- **`ChatWidget.test.ts` en rojo** — preexistente. Reverificado 2026-07-28 corriéndolo sobre un
+  export limpio de HEAD: ya fallaba. Viene del rediseño Aivora (`6de8052`). No es de este plan.
+- **11 commits en la rama sin llegar a `produ`** (2026-07-28): `6a87096`, `904a32e`, `0ac3d78`,
+  `d591bcb`, `a906970`, `c5911be`, `6c4c808`, `eb5b206`, `80985ee`, `21548a6`, `b6f701f`.
+  Ninguno se pusheó; subir a `produ` es decisión aparte.
+- **Defectos de la auditoría que quedaron sin cerrar**, ninguno bloqueante: el camino de baja de
+  la memoria semántica (A-01 lo habilita), 4 citas del mapa con off-by-one sobre 218,
+  `cdn.tailwindcss.com` en el HTML del mapa (estilo de casa, hay 6 más iguales), y
+  `_deploy_mapa/` sin trackear con una versión anterior del mapa — verificado que no está
+  publicado, así que se borra y listo.
+- **Trampa de configuración:** `main.ts:856-859` cae en cascada
+  `DELIVRIX_READ_BOUNDARY_TOKEN || DELIVRIX_OPENCLAW_TOKEN || OPENCLAW_GATEWAY_TOKEN`. Hoy las
+  tres están seteadas y son distintas. El día que vacíes la primera en una rotación, el token de
+  lectura del panel pasa a ser el de mutaciones **en silencio**. Vale una línea en el runbook de
+  rotación de secretos.
 - **`.audit/audit-events.jsonl`** queda sin commitear a propósito: es dato de runtime que appendea
   el gateway, no un cambio de código.
 - **`apps/admin-panel/src/assets/fonts/`** (Satoshi) sin trackear. Verificado: no lo importa
