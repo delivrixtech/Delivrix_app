@@ -295,6 +295,19 @@ import {
 } from "./routes/smtp-credentials.ts";
 import { resolveReadBoundaryToken } from "./routes/sensitive-read-auth.ts";
 import {
+  handleAgentsStateHttp,
+  handleWarmupAuditHttp
+} from "./routes/agents-warmup-audit.ts";
+import { AgentEventBus } from "./agents/agent-event-bus.ts";
+import { AgentSessionManager } from "./agents/agent-session-manager.ts";
+import {
+  MockAgentModelClient,
+  setSystemPromptFallbackReporter
+} from "./agents/bedrock-agent-session.ts";
+import { diagnosticToolSpecsForRole } from "./agents/agent-tool-specs.ts";
+import { warmupDiagnosticToolExecutor } from "./agents/warmup-tool-executor.ts";
+import { warmupAuditDefinitionForRole } from "./agents/warmup-audit-run.ts";
+import {
   createGatewayOnboardDomainFlowRunner,
   handleOnboardBatchHttp,
   handleOnboardFlowError,
@@ -896,6 +909,36 @@ const configureSmtpToolProcessor = createHttpToolUseProcessor({
   pollIntervalMs: positiveIntegerOrDefault(process.env.OPENCLAW_CONFIGURE_SMTP_POLL_INTERVAL_MS, 1_000),
   logger: gatewayRuntimeLog
 });
+// --- Runtime multi-agente: abanico de diagnostico (M1) ----------------------
+//
+// Read-only de punta a punta. El modelo es MOCK por defecto: el cliente Bedrock del agente es
+// M2 y todavia no existe, asi que sin MULTI_AGENT_MODE=bedrock esto ejercita el fan-out, el
+// executor y las 5 tools REALES contra la flota, sin llamar al modelo.
+//
+// definitionForRole NO es opcional: BedrockAgentSession filtra cada tool_use contra
+// definition.toolNames, y el registry declara para warmup 8 nombres sin handler. Sin esto el
+// abanico rechaza sus 5 tools, no ejecuta nada y reporta todo ok.
+setSystemPromptFallbackReporter((notice) => {
+  void gatewayRuntimeLog.warn(
+    "agents.system_prompt_fallback",
+    `El agente ${notice.role} corre con el prompt embebido: es un agente generico.`,
+    { role: notice.role, path: notice.path, reason: notice.reason }
+  );
+});
+const warmupAuditToolProcessor = createHttpToolUseProcessor({
+  delivrixBaseUrl: gatewaySelfBaseUrl,
+  env: process.env,
+  readBoundaryToken: sensitiveReadBoundaryToken,
+  logger: gatewayRuntimeLog
+});
+const warmupAuditSessionManager = new AgentSessionManager({
+  eventBus: new AgentEventBus({ actorId: "supervisor/warmup-audit" }),
+  modelClientFactory: () => new MockAgentModelClient(),
+  toolExecutorFactory: () => warmupDiagnosticToolExecutor(warmupAuditToolProcessor),
+  toolSpecsForRole: (role) => diagnosticToolSpecsForRole(role, process.env).specs,
+  definitionForRole: warmupAuditDefinitionForRole
+});
+
 const configureSmtpRuntimeDeps = {
   workspace: openClawWorkspace,
   invokeSkill: async (input: {
@@ -2223,6 +2266,31 @@ const server = createServer(async (request, response) => {
         pool: episodicScratchPool,
         embeddingService: semanticMemoryEmbeddingService,
         allowUnsignedLocal: process.env.NODE_ENV === "test" && process.env.OPENCLAW_MEMORY_ALLOW_UNSIGNED_LOCAL === "true",
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    // Abanico de diagnostico: un agente de IA por dominio, read-only, N en paralelo.
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/openclaw/agents/warmup/audit") {
+      return await handleWarmupAuditHttp({
+        request,
+        response,
+        sessionManager: warmupAuditSessionManager,
+        workspace: openClawWorkspace,
+        auditLog,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        readKillSwitch: () => killSwitchStore.get(),
+        env: process.env,
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/openclaw/agents/state") {
+      return handleAgentsStateHttp({
+        request,
+        response,
+        sessionManager: warmupAuditSessionManager,
+        readBoundaryToken: sensitiveReadBoundaryToken,
         now: () => resolveGatewayNow()
       });
     }
