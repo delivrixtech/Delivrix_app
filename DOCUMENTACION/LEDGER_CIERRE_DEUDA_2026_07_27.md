@@ -275,13 +275,72 @@ No era "borrar tres archivos".
 
 ---
 
-## E-08 · DECISIÓN: ¿el runtime multi-agente va o se borra?
+## E-08 · Runtime multi-agente — **DECISIÓN TOMADA: SE TERMINA**
 
-**Estado:** ⬜ pendiente · **Deuda:** `debt-multiagent` · **No toca código todavía**
+**Estado:** ⬜ pendiente, decidido · **Deuda:** `debt-multiagent` · **Decisión de Juanes 2026-07-28**
 
-Verificado: los tool specs son placeholders (`"Dispatch real: día 4"`, schemas vacíos) y tools
-como `dns_zone_create` no tienen handler en ningún lado. Cablearlo hoy produciría agentes
-llamando funciones inexistentes. Las dos salidas honestas: terminarlo o borrarlo (queda en git).
+**Por qué se termina:** el objetivo de producto es tener varios subagentes de IA calentando
+bandejas y creando SMTPs **en simultáneo, sin cometer errores**. Borrarlo era la salida barata;
+la que sirve al producto es terminarlo.
+
+### Estado real, medido 2026-07-28
+
+**Lo que ya está y funciona** — 2123 líneas, 31 tests, **todos en verde**:
+
+```
+agents/orchestrator.ts            317   agents/agent-event-bus.ts        257
+agents/bedrock-agent-session.ts   489   agents/agent-session-manager.ts  169
+agents/agent-registry.ts          160   agents/multi-agent-runtime.ts    103
+```
+
+El diseño está bien: orquestador + 4 seniors (`dns`, `smtp`, `warmup`, `qa-security`),
+delegación **sólo** desde el orquestador (validado en el registry), `qa-security` read-only.
+Mapea exactamente al objetivo.
+
+**Los tres huecos, medidos:**
+
+1. **Los 5 system prompts NO EXISTEN.** El registry apunta a
+   `DOCUMENTACION/OPENCLAW_ORCHESTRATOR_DELEGATION_PROTOCOL.md`, `OPENCLAW_AGENT_DNS_SENIOR.md`,
+   `..._SMTP_SENIOR.md`, `..._WARMUP_SENIOR.md`, `..._QA_SECURITY_SENIOR.md`. **Ninguno de los
+   cinco está en el repo.** Hay `fallbackSystemPrompt` de 2-3 líneas, que alcanza para que
+   arranque y no para que trabaje.
+
+2. **Las 55 tools declaradas: CERO tienen handler.** No "algunas": cero. El registry inventó
+   nombres paralelos (`dns_zone_create`, `install_smtp_stack`, `start_warmup_ramp`) en vez de
+   usar el catálogo real.
+
+3. **`main.ts` no importa nada de `agents/`.** Nada de esto se instancia al arrancar.
+
+### El hallazgo que cambia el tamaño del trabajo
+
+**No hay que implementar 55 tools.** Hay 45 tools reales, probadas y en producción, y cubren
+casi todo lo que los agentes declaran:
+
+| Senior | Declara | Tools reales que ya cubren su rol |
+|---|---|---|
+| **dns** | 9 | **16** — register/upsert Route53+IONOS+Namecheap, propagación, nameservers, binding |
+| **smtp** | 10 | **15** — provision_smtp_postfix, configure_email_auth, enable_smtp_auth, create/adopt server, ops_ssh |
+| **warmup** | 8 | **3** ⚠️ — sólo `seed_warmup_pool`, `send_real_email`, `read_delivery_reason` |
+| **qa-security** | 12 | parcial — los `read_*` existen, los de auditoría propia no |
+
+**El trabajo real es re-apuntar, no construir.** Excepto tres cosas que sí son nuevas:
+
+- **El mecanismo de delegación** (`delegate_to_*`). Es el corazón y no existe.
+- **El warmup senior está sub-equipado**: 3 tools contra 8 declaradas. Las de rampa
+  (`start/pause/resume_warmup_ramp`) están **deliberadamente fuera** del catálogo —
+  `openclaw-chat.ts:2099` le dice al modelo que use el endpoint HTTP. Ponerlas en manos de un
+  agente es una decisión de riesgo, no un cableado.
+- **La contabilidad del orquestador**: `register_task`, `update_task_status`, `pause_all_agents`,
+  `escalate_to_operator`.
+
+### Lo que hay que resolver antes de escribir código
+
+⚠️ **"En simultáneo sin cometer errores" es el requisito difícil, no el multi-agente.** N agentes
+creando SMTPs en paralelo van a competir por los mismos recursos: locks del run state (hay
+antecedente de locks huérfanos al reiniciar el gateway), cuotas de proveedor (Route53 ya pegó
+contra `DomainLimitExceeded`), y el ApprovalGate, que hoy asume **un** actor pidiendo firma.
+La concurrencia hay que diseñarla explícita: si no, el multi-agente multiplica los errores en
+vez de evitarlos.
 
 ---
 
