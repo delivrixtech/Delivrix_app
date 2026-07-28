@@ -191,7 +191,8 @@ daemons. Es una capa diseñada y nunca ejercitada, que los daemons de su propio 
 
 ### Lo que hay que decidir
 
-Son **dos** preguntas, no una:
+Eran dos preguntas. **(a) quedó resuelta por verificación** (abajo): son complementarios.
+**Queda solo (b), y es barata.**
 
 **(a) ¿Cuál es el camino de envío canónico — la rampa (1) o el daemon LIVE (2)?**
 
@@ -202,13 +203,24 @@ No hacen lo mismo, y esto es lo que hay que mirar antes de elegir:
   (`live/warmup-content-bank.ts`), OAuth de Google (`live/google-oauth-token-provider.ts`),
   descifrado de credenciales (`live/smtp-credential-decrypt.ts`).
 
-**Puede que sean complementarios, no rivales** — uno hace volumen y el otro placement. Si es así,
-la decisión no es "cuál gana" sino documentar el reparto y desarmar el solapamiento. **Lo que NO
-puede quedar es indefinido:** si los dos apuntan al mismo dominio, mandan los dos.
+**VERIFICADO 2026-07-28 — son complementarios, no rivales. La pregunta (a) se disuelve.**
 
-> **No verificado:** si los conjuntos de destinatarios se solapan. La rampa usa
-> `pickRecipients(ramp.recipientPool, …)`; el LIVE usa el banco de conversaciones. Nadie comparó
-> los dos pools. **Esto hay que mirarlo antes de decidir**, no después.
+- El **daemon LIVE** manda a **un solo destinatario**: el seed inbox
+  (`WARMUP_GMAIL_SEED_USER`, default `infradelivrixdemo@gmail.com`, `live-warmup-daemon.ts:83`).
+  El log de cada vuelta es literalmente `${box} → ${cfg.seedInbox}` (`:305`). No es un camino de
+  volumen: es un **lazo de medición de placement** — manda al seed y después lee por Gmail OAuth
+  si cayó en INBOX o en spam.
+- La **rampa** manda a `recipientPool`, un array que provee el operador al crearla
+  (`warmup-ramp.ts:682`, con mínimo `plan.recipientPoolMin`). Ese sí es el camino de volumen.
+
+**Solo chocan si alguien mete el seed inbox dentro del `recipientPool` de una rampa.** Hoy no
+puede pasar: `runtime/openclaw-workspace/inventory/warmup-progress.json` ni siquiera tiene la
+clave `ramps` — solo `runs`. **Cero rampas activas.**
+
+> **Deuda chica que salió de esto:** no hay ningún guard que impida meter el seed inbox en un
+> `recipientPool`. Si pasa, la rampa bombardea la casilla de medición y **envenena la señal de
+> placement**, que es justamente lo que gatea todo el warmup v1. Es un `if` en
+> `parseRecipientPool`.
 
 **(b) ¿La capa de abstracción se termina o se borra?**
 
