@@ -31,6 +31,8 @@ import {
 } from "./bedrock-agent-session.ts";
 
 const defaultMaxDelegationDepth = 3;
+/** Alcanza para un abanico de la flota entera sin retener transcripts. */
+const defaultFinishedRetention = 200;
 
 export interface AgentSessionManagerOptions {
   eventBus: AgentEventBus;
@@ -54,12 +56,26 @@ export interface AgentSessionManagerOptions {
    */
   definitionForRole?: (role: AgentRole) => AgentDefinition;
   maxDelegationDepth?: number;
+  /** Cuantos snapshots de sesiones terminadas se retienen. Default 200. */
+  finishedRetention?: number;
   now?: () => Date;
 }
 
+/**
+ * Quien pide una invocacion.
+ *
+ * - `operator`: el humano. Solo habla con el orquestador (modelo mental de la spec).
+ * - `orchestrator`: delegacion conversacional, decidida por el modelo.
+ * - `supervisor`: un abanico determinista. NO es un humano ni un modelo: es codigo que reparte
+ *   trabajo sobre items independientes. Se distingue de los otros dos a proposito, porque el
+ *   audit trail tiene que poder decir quien pidio cada sesion. Marcar un abanico como
+ *   `orchestrator` seria registrar que un modelo delego cuando no hubo ningun modelo decidiendo.
+ */
+export type AgentInvoker = AgentRole | "operator" | "supervisor";
+
 export interface InvokeAgentOptions {
-  /** Rol del actor que pide la invocación ("operator" para el humano). */
-  invokedByRole: AgentRole | "operator";
+  /** Rol del actor que pide la invocación. */
+  invokedByRole: AgentInvoker;
   /** Cadena de taskIds ancestros para detección de ciclos. */
   taskChain?: string[];
 }
@@ -73,6 +89,15 @@ export class AgentSessionManager {
   private readonly maxDelegationDepth: number;
   private readonly now: () => Date;
   private readonly sessions = new Map<string, BedrockAgentSession>();
+  /**
+   * Snapshots de sesiones ya terminadas, acotados.
+   *
+   * La sesion viva retiene su transcript entero; con un abanico de 59 dominios eso es memoria
+   * que nunca se libera (antes NO habia un solo delete en toda la clase). Se borra la sesion al
+   * terminar y se guarda su snapshot, que es solo metadata: rol, estado, tokens, costo.
+   */
+  private readonly finished: AgentSessionSnapshot[] = [];
+  private readonly finishedRetention: number;
   private paused = false;
 
   constructor(options: AgentSessionManagerOptions) {
@@ -83,6 +108,7 @@ export class AgentSessionManager {
     this.toolSpecsForRole = options.toolSpecsForRole ?? (() => []);
     this.definitionForRole = options.definitionForRole ?? ((role) => AGENT_DEFINITIONS[role]);
     this.maxDelegationDepth = options.maxDelegationDepth ?? defaultMaxDelegationDepth;
+    this.finishedRetention = options.finishedRetention ?? defaultFinishedRetention;
     this.now = options.now ?? (() => new Date());
   }
 
@@ -99,8 +125,14 @@ export class AgentSessionManager {
     this.paused = false;
   }
 
+  /** Sesiones vivas + las terminadas retenidas, en ese orden. */
   listSessions(): AgentSessionSnapshot[] {
-    return [...this.sessions.values()].map((session) => session.snapshot());
+    return [...this.sessions.values()].map((session) => session.snapshot()).concat(this.finished);
+  }
+
+  /** Cuantas sesiones estan realmente vivas (sin contar el historial retenido). */
+  get liveSessionCount(): number {
+    return this.sessions.size;
   }
 
   getSession(sessionId: string): BedrockAgentSession | undefined {
@@ -157,11 +189,38 @@ export class AgentSessionManager {
     });
     this.sessions.set(session.sessionId, session);
 
-    const result = await session.run(input.instructions);
-    return { sessionId: session.sessionId, result };
+    try {
+      const result = await session.run(input.instructions);
+      return { sessionId: session.sessionId, result };
+    } finally {
+      // `finally` y no despues del return: si `run` tira, la sesion tambien tiene que salir del
+      // Map o queda zombi reteniendo su transcript para siempre.
+      this.retire(session);
+    }
   }
 
-  private assertAuthority(target: AgentRole, invokedBy: AgentRole | "operator"): void {
+  /** Saca la sesion del Map y conserva solo su snapshot, con retencion acotada. */
+  private retire(session: BedrockAgentSession): void {
+    this.sessions.delete(session.sessionId);
+    this.finished.push(session.snapshot());
+    if (this.finished.length > this.finishedRetention) {
+      this.finished.splice(0, this.finished.length - this.finishedRetention);
+    }
+  }
+
+  private assertAuthority(target: AgentRole, invokedBy: AgentInvoker): void {
+    if (invokedBy === "supervisor") {
+      // Un abanico reparte trabajo sobre items independientes; no conversa ni consolida.
+      // Por eso NO puede invocar al orquestador: eso seria delegacion, y la delegacion la
+      // decide el modelo, no el codigo.
+      if (target === "orchestrator") {
+        throw new AgentSessionError(
+          "agent_invoke_forbidden",
+          "Un abanico (supervisor) no puede invocar al orquestador: eso es delegacion conversacional."
+        );
+      }
+      return;
+    }
     if (invokedBy === "operator") {
       // El operador humano solo interactúa con el Orquestador (spec, modelo mental).
       if (target !== "orchestrator") {

@@ -32,8 +32,16 @@ export interface FanOutItemResult<T> {
   /** Presente aunque el agente falle: la sesion se crea antes de correr. */
   sessionId?: string;
   result?: AgentSessionResult;
-  /** Mensaje de error si la invocacion tiro. Excluyente con `result`. */
+  /** Mensaje de error si la invocacion tiro. Excluyente con `result` y con `cancelled`. */
   error?: string;
+  /**
+   * El item nunca se despacho porque el abanico se corto (kill switch).
+   *
+   * Es un campo aparte y NO un error a proposito: si el corte se reportara como falla, el
+   * operador no podria distinguir "lo pare yo" de "59 dominios estan rotos" — que es
+   * exactamente la decision que va a tener que tomar leyendo el reporte.
+   */
+  cancelled?: true;
   startedAt: string;
   finishedAt: string;
 }
@@ -43,6 +51,10 @@ export interface FanOutSummary<T> {
   results: FanOutItemResult<T>[];
   ok: number;
   failed: number;
+  /** Items que no se despacharon porque el abanico se corto. */
+  cancelled: number;
+  /** true si el abanico se corto antes de despachar todos los items. */
+  aborted: boolean;
   /** Concurrencia maxima efectivamente observada. Sirve para verificar el semaforo. */
   peakInFlight: number;
 }
@@ -56,6 +68,14 @@ export interface RunFanOutInput<T> {
   /** Quien pide el abanico. Ver nota de autoridad abajo. */
   invokedByRole: Parameters<AgentSessionManager["invokeAgent"]>[2]["invokedByRole"];
   concurrency?: number;
+  /**
+   * Corta el abanico antes de despachar el proximo item. Default: el `isPaused` del manager.
+   *
+   * Sin esto el kill switch no aborta: el bucle sigue, cada invocacion tira
+   * `multi_agent_runtime_paused` y los items restantes se marcan como fallidos — indistinguibles
+   * de una falla real de diagnostico.
+   */
+  shouldAbort?: () => boolean;
   now?: () => Date;
   /** Se llama al cerrar cada item. Para progreso en vivo sin esperar al final. */
   onItemSettled?: (result: FanOutItemResult<T>) => void;
@@ -75,15 +95,30 @@ export async function runFanOut<T>(input: RunFanOutInput<T>): Promise<FanOutSumm
   const concurrency = normalizeConcurrency(input.concurrency);
   const results = new Array<FanOutItemResult<T>>(input.items.length);
 
+  const shouldAbort =
+    input.shouldAbort ?? (() => Boolean((input.sessionManager as { isPaused?: boolean }).isPaused));
+
   let cursor = 0;
   let inFlight = 0;
   let peakInFlight = 0;
+  let aborted = false;
 
   async function worker(): Promise<void> {
     for (;;) {
       const index = cursor++;
       if (index >= input.items.length) return;
       const item = input.items[index] as T;
+
+      // Se chequea ANTES de despachar, no despues: el objetivo del kill switch es que no
+      // arranque una sesion mas, no enterarse de que arrancaron.
+      if (shouldAbort()) {
+        aborted = true;
+        const at = now().toISOString();
+        const settled: FanOutItemResult<T> = { item, cancelled: true, startedAt: at, finishedAt: at };
+        results[index] = settled;
+        input.onItemSettled?.(settled);
+        continue;
+      }
 
       inFlight += 1;
       if (inFlight > peakInFlight) peakInFlight = inFlight;
@@ -125,11 +160,23 @@ export async function runFanOut<T>(input: RunFanOutInput<T>): Promise<FanOutSumm
     Array.from({ length: Math.min(concurrency, input.items.length) }, () => worker())
   );
 
-  const settledResults = results.filter(Boolean);
+  // `filter(Boolean)` perderia silenciosamente cualquier hueco. Si lo hay es un bug del
+  // worker, y el operador tiene que verlo: se completa con un resultado explicito.
+  const settledResults = results.map((entry, index) =>
+    entry ?? {
+      item: input.items[index] as T,
+      error: "fan_out_item_unsettled: el worker no dejo resultado para este item.",
+      startedAt: now().toISOString(),
+      finishedAt: now().toISOString()
+    }
+  );
+
   return {
     results: settledResults,
     ok: settledResults.filter((entry) => entry.result !== undefined).length,
     failed: settledResults.filter((entry) => entry.error !== undefined).length,
+    cancelled: settledResults.filter((entry) => entry.cancelled === true).length,
+    aborted,
     peakInFlight
   };
 }
