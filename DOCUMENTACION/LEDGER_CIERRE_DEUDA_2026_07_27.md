@@ -248,9 +248,9 @@ resume-on-boot del gateway no dispara nada. Decidir hoy no interrumpe ningún en
 
 ---
 
-## E-06 · Contrato de auth del warmup — congelada hasta E-05
+## E-06 · Contrato de auth del warmup
 
-**Estado:** ⬜ bloqueada por E-05 · **Deuda:** `debt-auth-contract` · **Riesgo:** bajo
+**Estado:** 🟡 cerrada POR BORRADO, sin auditar · **Commit:** `a593e30` (2026-07-28) · **Deuda:** `debt-auth-contract`
 
 Rama A: llamar `buildAuthReadinessContract` en el composition root. Los 13 checks son
 **lecturas** (DNS, RBL, TLS, PTR, probes de auth) — no escriben ni envían, y el engine corre en
@@ -259,13 +259,19 @@ Rama B: borrar el subsistema.
 
 ---
 
-## E-07 · `PostfixTransport` — congelada hasta E-05 y E-06
+## E-07 · `PostfixTransport`
 
-**Estado:** ⬜ bloqueada · **Deuda:** `debt-transport` · **Riesgo:** ALTO
+**Estado:** 🟡 cerrada POR BORRADO, sin auditar · **Commit:** `a593e30` (2026-07-28) · **Deuda:** `debt-transport`
 
-⚠️ **No es limpieza.** Cablear `createWarmupTransport` quita la última barrera *física* que
-impide que el engine v1 mande correo: hoy no puede porque nada lo llama. Sólo después de A y
-de tener el contrato de auth funcionando y medido.
+Se resolvió al revés de como estaba planteado: en vez de cablear `createWarmupTransport` —que
+habría quitado la última barrera *física* al envío— **se borró**. Sin él no queda ningún camino
+de construcción para que esa capa mande correo.
+
+**Qué auditar:** que no haya quedado nada vivo apuntando a lo borrado. Se midió consumidor por
+consumidor, export por export, antes de tocar: `runtime/transport.ts` **se queda** (el
+`WarmupTransport` lo usan scheduler, send-worker y service; `MockTransport` lo usa el daemon
+dry-run) y `live/mail-adapters.ts` **se queda** (el dry-run le importa `createGmailOAuthImapClient`).
+No era "borrar tres archivos".
 
 ---
 
@@ -351,6 +357,44 @@ El test de E-01 cierra el bug, no la clase. Ahora se compara `toolDefinitions` c
 
 **Qué auditar:** que `openClawToolNames()` siga **sin** derivarse de `Object.keys` — medido, los
 órdenes difieren en 9 posiciones y el de la lista es el que ve el modelo en cada request.
+
+---
+
+## A-05 · Guard de la casilla de medición
+
+**Estado:** 🟡 hecho, sin auditar · **Commit:** `e30b897` (2026-07-28) · **Riesgo:** bajo
+
+Salió de verificar E-05(a). No había nada que impidiera meter el seed inbox en el
+`recipientPool` de una rampa; si pasaba, la rampa lo bombardeaba y envenenaba la señal de
+placement que gatea todo el warmup v1. Ahora `parseRecipientPool` lo rechaza con 422.
+
+**Qué auditar:** el guard **canonicaliza antes de comparar**. Gmail ignora los puntos del local
+part y todo lo que siga a un `+`, así que `me.dic.ion+rampa@gmail.com` es la misma casilla que
+`medicion@gmail.com` — un guard que compare strings se saltea con un punto. Y usa el mismo
+default que `live-warmup-daemon.ts:83`, para que proteja la casilla real aunque el gateway no
+tenga la env seteada.
+
+---
+
+## A-06 · Baja de la memoria semántica
+
+**Estado:** 🟡 hecho, sin auditar · **Commit:** `a3878bc` (2026-07-28) · **Riesgo:** medio (acción destructiva nueva)
+
+Cierra el otro extremo de A-01: ese commit hizo identificable cada fila, pero sin forma de
+borrarla la procedencia sola no servía. `deleteMemoryVectors` en storage y
+`POST /v1/openclaw/memory/forget` en el gateway.
+
+**Qué auditar — son decisiones, no código:**
+- **No es tool del modelo y no debe serlo.** Un agente que puede borrar su propia memoria puede
+  tapar lo que escribió. Verificado: no aparece en `openclaw-tools-builder`.
+- **Nunca borra en masa:** sin `ids` ni `actorId` tira `invalid_delete_filter` sin tocar la base.
+- **Por `actorId` = la sesión entera.** Es el caso real y lo habilitó A-01.
+- **`dryRun`** para ver qué se llevaría antes de llevárselo.
+- **Se audita siempre, incluido el dry-run**, con `riskLevel: critical`. El evento guarda los
+  **ids, no el contenido**: el audit log no es lugar para el texto que se está sacando.
+- Hay test de que el `DELETE` consulta `metadata -> 'provenance' ->> 'actorId'`, la misma ruta
+  donde `remember` la escribe. Si no coincidieran, el borrado por sesión no matchearía nada y
+  fallaría **en silencio**.
 
 ---
 
