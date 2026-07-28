@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, FileDown, Flame, KeyRound, Pause, Search, Send, Terminal, Workflow } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, FileArchive, FileDown, Flame, KeyRound, Pause, Search, Send, Terminal, Workflow } from "lucide-react";
 import {
   getJson,
   getJsonWithQuery,
@@ -38,6 +38,7 @@ import { PlacementLivePanel } from "../components/PlacementLivePanel";
 import { StartWarmupRampInline } from "../components/StartWarmupRampInline";
 import { useOpenClawIntent, useToast } from "../../shared/ui/v2";
 import {
+  downloadAllSmtpCredentials,
   downloadSmtpCredential,
   responseErrorMessage,
   triggerDownload
@@ -246,6 +247,21 @@ export function SenderPoolV5() {
       });
     }
   });
+  // ZIP con el .md de cada dominio configurado. Un solo request: bajar los 70+
+  // uno por uno choca contra el rate limit del read-boundary y llena la auditoría.
+  const downloadAllCredentials = useMutation({
+    mutationFn: downloadAllSmtpCredentials,
+    onSuccess: () => {
+      toast.success("Credenciales descargadas", {
+        description: `${credCount} ${credCount === 1 ? "dominio" : "dominios"} en el ZIP · sin claves SSH.`
+      });
+    },
+    onError: (error) => {
+      toast.error("No se pudo descargar el ZIP", {
+        description: error instanceof Error ? error.message : "Revisá gateway/read-boundary."
+      });
+    }
+  });
 
   // Fila expandible: solo el dominio elegido despliega su warmup/placement — evita el
   // scroll infinito de renderizar el formulario de warmup para los 55 dominios a la vez.
@@ -280,6 +296,20 @@ export function SenderPoolV5() {
               >
                 <FileDown size={13} strokeWidth={1.75} />
                 {exportCredentials.isPending ? "Exportando" : "Exportar"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="md"
+                onClick={() => downloadAllCredentials.mutate()}
+                disabled={downloadAllCredentials.isPending || credCount === 0}
+                title={
+                  credCount === 0
+                    ? "Ningún dominio tiene credencial configurada todavía"
+                    : `ZIP con el .md de ${credCount} ${credCount === 1 ? "dominio" : "dominios"} (sin claves SSH)`
+                }
+              >
+                <FileArchive size={13} strokeWidth={1.75} />
+                {downloadAllCredentials.isPending ? "Empaquetando" : "Descargar todas"}
               </Button>
             </div>
           }

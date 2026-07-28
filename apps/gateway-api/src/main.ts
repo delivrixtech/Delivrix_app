@@ -289,6 +289,7 @@ import {
 } from "./routes/health-autoflag.ts";
 import { createNotionBugsBlockersDepsFromEnv } from "./services/notion-bugs-blockers.ts";
 import {
+  handleSmtpCredentialBulkDownloadHttp,
   handleSmtpCredentialDownloadHttp,
   handleSmtpCredentialInventoryExportHttp
 } from "./routes/smtp-credentials.ts";
@@ -4945,6 +4946,17 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/v1/sender-nodes") {
       return json(response, 200, {
         nodes: await senderNodeRegistry.list()
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/sender-pool/credentials/download-all") {
+      return await handleSmtpCredentialBulkDownloadHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        auditLog,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        env: process.env
       });
     }
 
