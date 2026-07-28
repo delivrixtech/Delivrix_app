@@ -679,7 +679,7 @@ export async function handleRampStartHttp(deps: WarmupRampStartHttpDeps): Promis
       "schedule must be 'demo-fast' or 'production-14d'."
     );
   }
-  const recipientPool = parseRecipientPool(body.recipientPool);
+  const recipientPool = parseRecipientPool(body.recipientPool, deps.env);
   const serverSlug =
     typeof body.serverSlug === "string" && body.serverSlug.trim()
       ? normalizeSlug(body.serverSlug)
@@ -1038,10 +1038,40 @@ async function safeEmit(service: CanvasEmitter | undefined, event: CanvasLiveEve
   }
 }
 
-function parseRecipientPool(value: unknown): string[] {
+/**
+ * Casilla de medicion del warmup. El daemon LIVE le manda a ESTA y despues lee por Gmail OAuth
+ * si cayo en INBOX o en spam: es la señal de placement sobre la que se apoya todo el warmup v1.
+ *
+ * Mismo default que `live-warmup-daemon.ts:83` a proposito. Si el gateway no tiene la env
+ * seteada igual protege la casilla real, en vez de dejar el guard abierto por omision.
+ */
+function measurementInbox(env: Record<string, string | undefined>): string {
+  return (env.WARMUP_GMAIL_SEED_USER ?? "infradelivrixdemo@gmail.com").trim().toLowerCase();
+}
+
+/**
+ * Gmail ignora los puntos del local part y todo lo que venga despues de un `+`.
+ * `infra.delivrix.demo+loquesea@gmail.com` y `infradelivrixdemo@gmail.com` son la MISMA casilla.
+ * Sin canonicalizar, el guard de abajo se saltea con un punto.
+ */
+function canonicalMailbox(address: string): string {
+  const at = address.lastIndexOf("@");
+  if (at < 0) return address;
+  const local = address.slice(0, at);
+  const domain = address.slice(at + 1);
+  if (domain !== "gmail.com" && domain !== "googlemail.com") return address;
+  const bare = local.split("+")[0]?.replace(/\./g, "") ?? "";
+  return `${bare}@gmail.com`;
+}
+
+function parseRecipientPool(
+  value: unknown,
+  env: Record<string, string | undefined> = typeof process !== "undefined" ? process.env : {}
+): string[] {
   if (!Array.isArray(value)) {
     throw new WarmupRampInputError("recipientPool must be an array of email strings.");
   }
+  const seed = canonicalMailbox(measurementInbox(env));
   return value.map((item) => {
     if (typeof item !== "string") {
       throw new WarmupRampInputError("recipientPool must contain only strings.");
@@ -1049,6 +1079,14 @@ function parseRecipientPool(value: unknown): string[] {
     const normalized = item.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
       throw new WarmupRampInputError(`Invalid recipient: ${item}`);
+    }
+    // La rampa manda VOLUMEN. Si la casilla de medicion entra al pool, la rampa la bombardea y
+    // envenena la señal de placement que gatea el warmup entero. Los dos caminos de envio son
+    // complementarios justamente porque no comparten destinatarios.
+    if (canonicalMailbox(normalized) === seed) {
+      throw new WarmupRampInputError(
+        `Recipient ${item} is the warmup measurement inbox: a ramp would poison the placement signal.`
+      );
     }
     return normalized;
   });
