@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildToolsForOpenClaw,
-  getOpenClawToolDefinition
+  getOpenClawToolDefinition,
+  openClawToolDefinitionNames,
+  openClawToolNames
 } from "./openclaw-tools-builder.ts";
 
 test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are enabled", () => {
@@ -11,6 +13,8 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "register_domain_route53",
     "suggest_safe_domain",
     "read_episodic_scratch",
+    "semantic_remember",
+    "semantic_recall",
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
@@ -151,7 +155,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 39);
+  assert.equal(tools.length, 41);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });
@@ -240,6 +244,35 @@ test("buildToolsForOpenClaw fail-closes when HMAC secret is missing", () => {
     OPENCLAW_HMAC_SECRET: ""
   });
   assert.deepEqual(tools, []);
+});
+
+test("las tools de memoria llegan al catalogo que ve el modelo", () => {
+  // Regresion: semantic_remember y semantic_recall existian en toolDefinitions, tenian endpoint
+  // y estaban ruteadas en tool-use-processor, pero faltaban en el union OpenClawToolName y en
+  // openClawToolNames(), asi que nunca llegaban a Bedrock. Como el build es `node --check` y no
+  // `tsc`, el desfasaje no lo detectaba nada. Este test es el que lo detecta.
+  const catalogo = openClawToolNames() as string[];
+  for (const memoryTool of ["compact_intent", "semantic_remember", "semantic_recall"]) {
+    assert.ok(getOpenClawToolDefinition(memoryTool), `${memoryTool} deberia tener definicion`);
+    assert.ok(catalogo.includes(memoryTool), `${memoryTool} tiene definicion pero no llega al modelo`);
+  }
+
+  const conTodo = buildToolsForOpenClaw(allEnabledEnv()).map((tool) => tool.name);
+  assert.ok(conTodo.includes("semantic_remember"));
+  assert.ok(conTodo.includes("semantic_recall"));
+
+  // Comparten gate con read_episodic_scratch: OPENCLAW_EPISODIC_SCRATCH_ENABLE=false las apaga.
+  // (Ojo: `postgresConfigured()` no mira POSTGRES_URL, es ese flag; el nombre miente.)
+  const memoriaApagada = buildToolsForOpenClaw({
+    ...allEnabledEnv(),
+    OPENCLAW_EPISODIC_SCRATCH_ENABLE: "false"
+  }).map((tool) => tool.name);
+  assert.equal(memoriaApagada.includes("semantic_remember"), false);
+  assert.equal(memoriaApagada.includes("semantic_recall"), false);
+  assert.equal(memoriaApagada.includes("read_episodic_scratch"), false);
+
+  // Sin secreto HMAC no hay catalogo en absoluto (fail-closed).
+  assert.deepEqual(buildToolsForOpenClaw({ ...allEnabledEnv(), OPENCLAW_HMAC_SECRET: "" }), []);
 });
 
 test("Bedrock tool input schemas align with gateway skill schemas for valid samples", () => {
@@ -450,6 +483,17 @@ function validSample(toolName: string): Record<string, unknown> {
   }
   if (toolName === "read_episodic_scratch") {
     return { tool: "suggest_safe_domain", query: "warmup domain reputation", limit: 5 };
+  }
+  if (toolName === "semantic_remember") {
+    return {
+      memoryType: "finding",
+      content: "Gmail rechaza nodos con 550-5.7.1 aunque la IP esté limpia en listas negras.",
+      visibility: "shared_family",
+      metadata: { domain: "controldelivrix.app" }
+    };
+  }
+  if (toolName === "semantic_recall") {
+    return { query: "por que Gmail rechaza nodos con IP limpia", limit: 8 };
   }
   if (toolName === "read_route53_domain_detail") {
     return { domain: "controldelivrix.app" };
@@ -663,3 +707,30 @@ function validSample(toolName: string): Record<string, unknown> {
     seedInboxes: ["seed-1@example.com", "seed-2@example.com", "seed-3@example.com"]
   };
 }
+
+test("toda tool definida llega a la lista del catalogo, y al reves", () => {
+  // El test de arriba cierra el bug de semantic_*, no la CLASE de bug. `toolDefinitions` y
+  // `openClawToolNames()` se mantienen a mano por separado: si alguien agrega la tool 46 al
+  // union y al Record pero se olvida de la lista, buildToolsForOpenClaw nunca la itera, el
+  // modelo no la ve, y el gate queda en verde. Es exactamente lo que ya paso una vez.
+  //
+  // Se comparan ORDENADOS a proposito: el orden de insercion del objeto NO coincide con el de
+  // la lista (difieren en 9 posiciones), y el de la lista es el que ve el modelo en cada
+  // request. Por eso `openClawToolNames()` no se deriva de `Object.keys(toolDefinitions)`.
+  const definidas = [...openClawToolDefinitionNames()].sort();
+  const enElCatalogo = [...openClawToolNames()].sort();
+
+  assert.deepEqual(
+    enElCatalogo,
+    definidas,
+    "toolDefinitions y openClawToolNames() se desincronizaron: la diferencia son tools que " +
+      "existen pero no llegan a Bedrock, o nombres listados sin definicion."
+  );
+});
+
+test("la lista del catalogo no tiene nombres repetidos", () => {
+  // Un duplicado no rompe el deepEqual ordenado de arriba si esta en los dos lados, pero si
+  // manda la misma tool dos veces en el payload a Bedrock.
+  const nombres = openClawToolNames();
+  assert.equal(new Set(nombres).size, nombres.length);
+});

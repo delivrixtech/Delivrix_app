@@ -289,9 +289,11 @@ import {
 } from "./routes/health-autoflag.ts";
 import { createNotionBugsBlockersDepsFromEnv } from "./services/notion-bugs-blockers.ts";
 import {
+  handleSmtpCredentialBulkDownloadHttp,
   handleSmtpCredentialDownloadHttp,
   handleSmtpCredentialInventoryExportHttp
 } from "./routes/smtp-credentials.ts";
+import { resolveReadBoundaryToken } from "./routes/sensitive-read-auth.ts";
 import {
   createGatewayOnboardDomainFlowRunner,
   handleOnboardBatchHttp,
@@ -390,6 +392,7 @@ import {
   handleCompactIntentHttp
 } from "./routes/openclaw-compact-intent.ts";
 import {
+  handleSemanticForgetHttp,
   handleSemanticRememberHttp,
   handleSemanticRecallHttp
 } from "./routes/openclaw-semantic-memory.ts";
@@ -852,10 +855,13 @@ const rampScheduler = new RampScheduler({
   getWarmupSignals: createWarmupSignalsReader({ auditLog })
 });
 const gatewaySelfBaseUrl = process.env.DELIVRIX_GATEWAY_INTERNAL_BASE_URL ?? `http://${host}:${port}`;
-const sensitiveReadBoundaryToken =
-  process.env.DELIVRIX_READ_BOUNDARY_TOKEN?.trim() ||
-  process.env.DELIVRIX_OPENCLAW_TOKEN?.trim() ||
-  process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
+// La cascada se mantiene (sacarla dejaria sin panel a un despliegue que solo tenga el token
+// viejo), pero deja de ser silenciosa: este borde entrega las credenciales SMTP de la flota.
+const readBoundaryTokenResolution = resolveReadBoundaryToken(process.env);
+const sensitiveReadBoundaryToken = readBoundaryTokenResolution.token;
+if (readBoundaryTokenResolution.warning) {
+  console.warn(`[read-boundary] ${readBoundaryTokenResolution.warning}`);
+}
 // Umbrales del gate CRAG de memoria grounded; falla en el arranque si el env es invalido.
 const groundedConfidenceGate = groundedConfidenceGateFromEnv();
 // Health Auto-Flag — deps compartidas entre la ruta HTTP y el hook del scan
@@ -2216,6 +2222,19 @@ const server = createServer(async (request, response) => {
         response,
         pool: episodicScratchPool,
         embeddingService: semanticMemoryEmbeddingService,
+        allowUnsignedLocal: process.env.NODE_ENV === "test" && process.env.OPENCLAW_MEMORY_ALLOW_UNSIGNED_LOCAL === "true",
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    // Baja de memoria semántica. NO está en el catálogo de tools y no debe estarlo: un agente que
+    // puede borrar su propia memoria puede tapar lo que escribió. Es acción de operador.
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/openclaw/memory/forget") {
+      return await handleSemanticForgetHttp({
+        request,
+        response,
+        pool: episodicScratchPool,
+        auditLog,
         allowUnsignedLocal: process.env.NODE_ENV === "test" && process.env.OPENCLAW_MEMORY_ALLOW_UNSIGNED_LOCAL === "true",
         now: () => resolveGatewayNow()
       });
@@ -4945,6 +4964,17 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/v1/sender-nodes") {
       return json(response, 200, {
         nodes: await senderNodeRegistry.list()
+      });
+    }
+
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/sender-pool/credentials/download-all") {
+      return await handleSmtpCredentialBulkDownloadHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        auditLog,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        env: process.env
       });
     }
 

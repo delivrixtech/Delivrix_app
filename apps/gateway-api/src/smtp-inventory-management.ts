@@ -564,7 +564,10 @@ export async function updateSmtpInventoryEntry(input: {
   workspace: OpenClawWorkspace;
   domain: string;
   serverSlug: string;
-  patch: Partial<Pick<SmtpProvisioningServer, "selector" | "status" | "tlsStatus" | "smtpAuthStatus">>;
+  // serverIp: el inventario se desactualiza cuando un box cambia de IP (server60 pasó a
+  // 45.136.70.174 y la entrada quedó apuntando a la vieja). Sin poder corregirlo por el
+  // camino auditado, la única salida era editar el JSON a mano.
+  patch: Partial<Pick<SmtpProvisioningServer, "selector" | "status" | "tlsStatus" | "smtpAuthStatus" | "serverIp">>;
   liveServers: SmtpInventoryLiveServer[];
   actorId: string;
   reason?: string;
@@ -596,7 +599,8 @@ export async function updateSmtpInventoryEntry(input: {
       selector: entry.selector,
       status: entry.status,
       tlsStatus: entry.tlsStatus,
-      smtpAuthStatus: entry.smtpAuthStatus
+      smtpAuthStatus: entry.smtpAuthStatus,
+      serverIp: entry.serverIp
     },
     sideEffects: "local-state-only"
   };

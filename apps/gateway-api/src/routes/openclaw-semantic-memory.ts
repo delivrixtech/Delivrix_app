@@ -11,6 +11,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  deleteMemoryVectors,
   hybridSearchMemoryVectors,
   insertMemoryVector,
   MemoryVectorValidationError,
@@ -19,6 +20,11 @@ import {
   type MemoryVectorQueryablePool,
   type MemoryVisibility
 } from "../../../../packages/storage/src/index.ts";
+import type { AuditEventInput } from "../../../../packages/domain/src/index.ts";
+
+interface AuditSink {
+  append(event: AuditEventInput): Promise<unknown>;
+}
 import type { EmbeddingService } from "../openclaw-embedding-service.ts";
 import { validateOpenClawHmac } from "../security/hmac.ts";
 import { readRequestBody } from "../request-body.ts";
@@ -38,6 +44,27 @@ export interface SemanticRememberInput {
   metadata?: Record<string, unknown>;
   taskId?: string;
   sourcePath?: string;
+  /** Quien origino la escritura. Lo firma el tool-use-processor con el id de la sesion de chat. */
+  actorId?: string;
+}
+
+/**
+ * Clave RESERVADA dentro de `metadata`: identifica quien escribio la fila.
+ *
+ * Existe porque `openclaw_memory_vectors` no tiene ningun camino de baja — ni DELETE, ni TTL,
+ * ni `expires_at` (verificado en todo el repo). Lo que entra, queda. Si el modelo guarda texto
+ * de terceros que trae instrucciones, `semantic_recall` se lo devuelve como conocimiento propio
+ * en cualquier sesion posterior, y sin procedencia esa fila es indistinguible de una legitima:
+ * no hay forma de encontrarla para darla de baja cuando exista el camino.
+ *
+ * Se escribe SIEMPRE y se aplica al final, asi que pisa cualquier `provenance` que venga en el
+ * metadata del modelo. Queda cubierta por `audit_hash`, que ya incluye `metadata`.
+ */
+export const PROVENANCE_METADATA_KEY = "provenance";
+
+export interface MemoryProvenance {
+  /** Id de la sesion de chat que origino la escritura, o null si la llamada no vino atribuida. */
+  actorId: string | null;
 }
 
 export interface SemanticRememberOutput {
@@ -91,8 +118,8 @@ export async function semanticRemember(
       memoryType: normalized.memoryType,
       content: normalized.content,
       visibility: normalized.visibility,
+      metadata: withProvenance(normalized.metadata, normalized.actorId),
       ...(embedding ? { embedding } : {}),
-      ...(normalized.metadata ? { metadata: normalized.metadata } : {}),
       ...(normalized.taskId ? { taskId: normalized.taskId } : {}),
       ...(normalized.sourcePath ? { sourcePath: normalized.sourcePath } : {})
     });
@@ -124,6 +151,118 @@ export async function semanticRecall(
   }
 }
 
+export interface SemanticForgetInput {
+  /** Ids exactos. */
+  ids?: string[];
+  /** La sesión entera, vía la procedencia que sella `semantic_remember`. */
+  actorId?: string;
+  /** Devuelve qué se borraría sin borrar. */
+  dryRun?: boolean;
+  /** Por qué. Obligatorio: queda en el audit log. */
+  reason: string;
+  /** Quién pide la baja. */
+  operatorId: string;
+}
+
+export interface SemanticForgetOutput {
+  matched: { id: string; memoryType: string; visibility: MemoryVisibility; actorId: string | null }[];
+  deleted: number;
+  dryRun: boolean;
+}
+
+/**
+ * Da de baja memoria semántica. **No es una tool del modelo y no debe serlo:** un agente que
+ * puede borrar su propia memoria puede tapar lo que escribió. Es una acción de operador.
+ *
+ * Cierra el otro extremo de la procedencia: `semantic_remember` sella quién escribió cada fila,
+ * y esto permite encontrar la sesión envenenada y llevarse todo lo que dejó.
+ */
+export async function semanticForget(
+  input: SemanticForgetInput,
+  deps: SemanticMemoryDeps & { auditLog: AuditSink }
+): Promise<SemanticForgetOutput> {
+  const normalized = parseForgetInput(input);
+
+  let result;
+  try {
+    result = await deleteMemoryVectors(deps.pool, {
+      ...(normalized.ids.length > 0 ? { ids: normalized.ids } : {}),
+      ...(normalized.actorId ? { actorId: normalized.actorId } : {}),
+      dryRun: normalized.dryRun
+    });
+  } catch (error) {
+    throw wrapStorageError(error);
+  }
+
+  // Se audita SIEMPRE, incluido el dry-run: saber quién estuvo mirando qué borrar también importa.
+  await deps.auditLog.append({
+    actorType: "operator",
+    actorId: normalized.operatorId,
+    action: normalized.dryRun ? "oc.memory.forget_preview" : "oc.memory.forget",
+    targetType: "memory",
+    targetId: normalized.actorId ?? (normalized.ids.join(",").slice(0, 128) || "none"),
+    riskLevel: "critical",
+    decision: "allow",
+    humanApproved: false,
+    metadata: {
+      reason: normalized.reason,
+      dryRun: normalized.dryRun,
+      byIds: normalized.ids.length,
+      byActorId: normalized.actorId ?? null,
+      // Los ids, no el contenido: el audit log no es lugar para el texto que se está sacando.
+      matchedIds: result.matched.map((row) => row.id),
+      deleted: result.deleted
+    }
+  });
+
+  return {
+    matched: result.matched.map((row) => ({
+      id: row.id,
+      memoryType: row.memoryType,
+      visibility: row.visibility,
+      actorId: row.actorId
+    })),
+    deleted: result.deleted,
+    dryRun: result.dryRun
+  };
+}
+
+function parseForgetInput(input: SemanticForgetInput): {
+  ids: string[];
+  actorId?: string;
+  dryRun: boolean;
+  reason: string;
+  operatorId: string;
+} {
+  const value = object(input, "params");
+  const ids: string[] = [];
+  if (value.ids !== undefined && value.ids !== null) {
+    if (!Array.isArray(value.ids)) {
+      throw new SemanticMemoryValidationError("invalid_ids", "ids must be an array of strings.");
+    }
+    for (const id of value.ids) ids.push(boundedText(id, "id", 1, 128));
+  }
+  const actorId =
+    value.actorId === undefined || value.actorId === null || value.actorId === ""
+      ? undefined
+      : boundedText(value.actorId, "actorId", 1, 128);
+
+  if (ids.length === 0 && actorId === undefined) {
+    throw new SemanticMemoryValidationError(
+      "invalid_delete_filter",
+      "Pass ids or actorId: a blanket delete is never allowed."
+    );
+  }
+
+  return {
+    ids,
+    ...(actorId ? { actorId } : {}),
+    dryRun: value.dryRun === true,
+    reason: boundedText(value.reason, "reason", 3, 500),
+    operatorId: boundedText(value.operatorId, "operatorId", 1, 128)
+  };
+}
+
 // --- HTTP wrappers ---------------------------------------------------------
 
 export async function handleSemanticRememberHttp(
@@ -136,6 +275,16 @@ export async function handleSemanticRecallHttp(
   deps: SemanticMemoryDeps & { request: IncomingMessage; response: ServerResponse }
 ): Promise<void> {
   await handle(deps, (body) => semanticRecall(body as SemanticRecallInput, deps));
+}
+
+export async function handleSemanticForgetHttp(
+  deps: SemanticMemoryDeps & {
+    request: IncomingMessage;
+    response: ServerResponse;
+    auditLog: AuditSink;
+  }
+): Promise<void> {
+  await handle(deps, (body) => semanticForget(body as SemanticForgetInput, deps));
 }
 
 async function handle(
@@ -188,6 +337,19 @@ interface NormalizedRemember {
   metadata?: Record<string, unknown>;
   taskId?: string;
   sourcePath?: string;
+  actorId?: string;
+}
+
+/**
+ * Sella la procedencia dentro del metadata. Se aplica DESPUES del metadata del modelo a
+ * proposito: `provenance` es reservada y no se puede falsificar desde el input de la tool.
+ */
+function withProvenance(
+  metadata: Record<string, unknown> | undefined,
+  actorId: string | undefined
+): Record<string, unknown> {
+  const provenance: MemoryProvenance = { actorId: actorId ?? null };
+  return { ...(metadata ?? {}), [PROVENANCE_METADATA_KEY]: provenance };
 }
 
 function parseRememberInput(input: SemanticRememberInput): NormalizedRemember {
@@ -209,6 +371,9 @@ function parseRememberInput(input: SemanticRememberInput): NormalizedRemember {
   }
   if (value.sourcePath !== undefined && value.sourcePath !== null) {
     normalized.sourcePath = boundedText(value.sourcePath, "sourcePath", 1, 512);
+  }
+  if (value.actorId !== undefined && value.actorId !== null && value.actorId !== "") {
+    normalized.actorId = boundedText(value.actorId, "actorId", 1, 128);
   }
   return normalized;
 }

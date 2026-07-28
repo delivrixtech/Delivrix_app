@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  deleteMemoryVectors,
   hybridSearchMemoryVectors,
   insertMemoryVector,
   keywordSearchMemoryVectors,
@@ -214,4 +215,75 @@ test("hybridSearchMemoryVectors degrades to keyword-only without an embedding", 
 
   assert.equal(seen.length, 1, "only the FTS query runs when no embedding is supplied");
   assert.match(seen[0], /websearch_to_tsquery/);
+});
+
+// --- baja ------------------------------------------------------------------
+
+test("deleteMemoryVectors nunca borra sin filtro", async () => {
+  const pool = new FakeVectorPool();
+
+  await assert.rejects(
+    () => deleteMemoryVectors(pool, {}),
+    (error: unknown) =>
+      error instanceof MemoryVectorValidationError && error.code === "invalid_delete_filter"
+  );
+  await assert.rejects(
+    () => deleteMemoryVectors(pool, { ids: [] }),
+    (error: unknown) =>
+      error instanceof MemoryVectorValidationError && error.code === "invalid_delete_filter"
+  );
+  assert.equal(pool.calls.length, 0, "no debio tocar la base");
+});
+
+test("deleteMemoryVectors busca la procedencia en la MISMA ruta donde remember la escribe", async () => {
+  // Si estas dos no coinciden, el borrado por sesion no matchea nada y falla en silencio, que
+  // es peor que fallar ruidoso: el operador cree que limpio y no limpio.
+  // remember escribe: metadata.provenance.actorId  (PROVENANCE_METADATA_KEY = "provenance")
+  const pool = new FakeVectorPool();
+
+  await deleteMemoryVectors(pool, { actorId: "chat-envenenado" });
+
+  const call = pool.calls.at(-1);
+  assert.match(call?.sql ?? "", /DELETE FROM openclaw_memory_vectors/);
+  assert.match(call?.sql ?? "", /metadata -> 'provenance' ->> 'actorId' = \$1/);
+  assert.deepEqual(call?.params, ["chat-envenenado"]);
+});
+
+test("deleteMemoryVectors por ids usa un ANY tipado, no interpolacion", async () => {
+  const pool = new FakeVectorPool();
+
+  await deleteMemoryVectors(pool, { ids: ["mem-1", "mem-2"] });
+
+  const call = pool.calls.at(-1);
+  assert.match(call?.sql ?? "", /id = ANY\(\$1::uuid\[\]\)/);
+  assert.deepEqual(call?.params, [["mem-1", "mem-2"]]);
+});
+
+test("deleteMemoryVectors con ids y actorId combina con OR", async () => {
+  const pool = new FakeVectorPool();
+
+  await deleteMemoryVectors(pool, { ids: ["mem-1"], actorId: "chat-9" });
+
+  assert.match(pool.lastSql, /id = ANY\(\$1::uuid\[\]\) OR metadata -> 'provenance' ->> 'actorId' = \$2/);
+});
+
+test("deleteMemoryVectors en dryRun hace SELECT y no DELETE", async () => {
+  const pool = new FakeVectorPool(() => [
+    {
+      id: "mem-1",
+      agent_id: "openclaw",
+      memory_type: "finding",
+      visibility: "private",
+      provenance_actor_id: "chat-9",
+      created_at: "2026-07-28T00:00:00.000Z"
+    } as unknown as MemoryVectorDbRow
+  ]);
+
+  const out = await deleteMemoryVectors(pool, { actorId: "chat-9", dryRun: true });
+
+  assert.equal(out.dryRun, true);
+  assert.equal(out.deleted, 0, "dryRun no borra");
+  assert.equal(out.matched.length, 1, "pero sí dice qué se llevaría");
+  assert.equal(out.matched[0]?.actorId, "chat-9");
+  assert.ok(pool.calls.every((call) => !/DELETE/.test(call.sql)), "no debio correr ningun DELETE");
 });

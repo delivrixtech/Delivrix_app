@@ -13,6 +13,79 @@ export type SensitiveReadAuthResult =
 
 const buckets = new Map<string, { windowMs: number; count: number }>();
 
+/** Variables de las que puede salir el token del borde de lectura, en orden de preferencia. */
+export const READ_BOUNDARY_TOKEN_VARS = [
+  "DELIVRIX_READ_BOUNDARY_TOKEN",
+  "DELIVRIX_OPENCLAW_TOKEN",
+  "OPENCLAW_GATEWAY_TOKEN"
+] as const;
+
+export type ReadBoundaryTokenSource = (typeof READ_BOUNDARY_TOKEN_VARS)[number];
+
+export interface ReadBoundaryTokenResolution {
+  token?: string;
+  source?: ReadBoundaryTokenSource;
+  /**
+   * true cuando el token que autoriza LEER credenciales es tambien el que autoriza MUTAR.
+   * Pasa de dos formas: por cascada (la variable dedicada esta vacia) o porque la dedicada
+   * esta seteada con el mismo VALOR que una de las de mutacion.
+   */
+  sharesMutationToken: boolean;
+  /** Texto listo para loguear cuando hay algo que avisar. */
+  warning?: string;
+}
+
+/**
+ * Resuelve el token del borde de lectura y avisa cuando termina siendo el de mutaciones.
+ *
+ * La cascada se mantiene a proposito: sacarla dejaria sin panel a cualquier despliegue que hoy
+ * solo tenga `OPENCLAW_GATEWAY_TOKEN`. Lo que no puede seguir pasando es que ocurra en silencio:
+ * el borde de lectura entrega credenciales SMTP de la flota entera, y el dia que alguien vacie
+ * `DELIVRIX_READ_BOUNDARY_TOKEN` en una rotacion, ese permiso se lo lleva el token de mutaciones
+ * sin que nada lo diga.
+ */
+export function resolveReadBoundaryToken(
+  env: Record<string, string | undefined>
+): ReadBoundaryTokenResolution {
+  const valueOf = (name: ReadBoundaryTokenSource): string | undefined => {
+    const trimmed = env[name]?.trim();
+    return trimmed ? trimmed : undefined;
+  };
+
+  const source = READ_BOUNDARY_TOKEN_VARS.find((name) => valueOf(name) !== undefined);
+  if (!source) {
+    return {
+      sharesMutationToken: false,
+      warning:
+        "El borde de lectura no tiene token configurado: las rutas de lectura sensible van a " +
+        `responder 503. Configura una de ${READ_BOUNDARY_TOKEN_VARS.join(", ")}.`
+    };
+  }
+
+  const token = valueOf(source) as string;
+  const compartidoCon = READ_BOUNDARY_TOKEN_VARS.filter(
+    (name) => name !== "DELIVRIX_READ_BOUNDARY_TOKEN" && valueOf(name) === token
+  );
+
+  if (compartidoCon.length === 0) {
+    return { token, source, sharesMutationToken: false };
+  }
+
+  const porCascada = source !== "DELIVRIX_READ_BOUNDARY_TOKEN";
+  return {
+    token,
+    source,
+    sharesMutationToken: true,
+    warning:
+      `El token del borde de lectura es el MISMO que ${compartidoCon.join(" y ")}` +
+      (porCascada
+        ? " porque DELIVRIX_READ_BOUNDARY_TOKEN esta vacia y se cayo en cascada."
+        : " (DELIVRIX_READ_BOUNDARY_TOKEN esta seteada con ese mismo valor).") +
+      " Cualquiera que pueda mutar puede tambien descargar las credenciales SMTP de toda la " +
+      "flota. Configura DELIVRIX_READ_BOUNDARY_TOKEN con un valor propio."
+  };
+}
+
 export function authorizeSensitiveRead(
   request: IncomingMessage,
   deps: SensitiveReadAuthDeps,
