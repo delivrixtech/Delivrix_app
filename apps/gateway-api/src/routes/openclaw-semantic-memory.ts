@@ -38,6 +38,27 @@ export interface SemanticRememberInput {
   metadata?: Record<string, unknown>;
   taskId?: string;
   sourcePath?: string;
+  /** Quien origino la escritura. Lo firma el tool-use-processor con el id de la sesion de chat. */
+  actorId?: string;
+}
+
+/**
+ * Clave RESERVADA dentro de `metadata`: identifica quien escribio la fila.
+ *
+ * Existe porque `openclaw_memory_vectors` no tiene ningun camino de baja — ni DELETE, ni TTL,
+ * ni `expires_at` (verificado en todo el repo). Lo que entra, queda. Si el modelo guarda texto
+ * de terceros que trae instrucciones, `semantic_recall` se lo devuelve como conocimiento propio
+ * en cualquier sesion posterior, y sin procedencia esa fila es indistinguible de una legitima:
+ * no hay forma de encontrarla para darla de baja cuando exista el camino.
+ *
+ * Se escribe SIEMPRE y se aplica al final, asi que pisa cualquier `provenance` que venga en el
+ * metadata del modelo. Queda cubierta por `audit_hash`, que ya incluye `metadata`.
+ */
+export const PROVENANCE_METADATA_KEY = "provenance";
+
+export interface MemoryProvenance {
+  /** Id de la sesion de chat que origino la escritura, o null si la llamada no vino atribuida. */
+  actorId: string | null;
 }
 
 export interface SemanticRememberOutput {
@@ -91,8 +112,8 @@ export async function semanticRemember(
       memoryType: normalized.memoryType,
       content: normalized.content,
       visibility: normalized.visibility,
+      metadata: withProvenance(normalized.metadata, normalized.actorId),
       ...(embedding ? { embedding } : {}),
-      ...(normalized.metadata ? { metadata: normalized.metadata } : {}),
       ...(normalized.taskId ? { taskId: normalized.taskId } : {}),
       ...(normalized.sourcePath ? { sourcePath: normalized.sourcePath } : {})
     });
@@ -188,6 +209,19 @@ interface NormalizedRemember {
   metadata?: Record<string, unknown>;
   taskId?: string;
   sourcePath?: string;
+  actorId?: string;
+}
+
+/**
+ * Sella la procedencia dentro del metadata. Se aplica DESPUES del metadata del modelo a
+ * proposito: `provenance` es reservada y no se puede falsificar desde el input de la tool.
+ */
+function withProvenance(
+  metadata: Record<string, unknown> | undefined,
+  actorId: string | undefined
+): Record<string, unknown> {
+  const provenance: MemoryProvenance = { actorId: actorId ?? null };
+  return { ...(metadata ?? {}), [PROVENANCE_METADATA_KEY]: provenance };
 }
 
 function parseRememberInput(input: SemanticRememberInput): NormalizedRemember {
@@ -209,6 +243,9 @@ function parseRememberInput(input: SemanticRememberInput): NormalizedRemember {
   }
   if (value.sourcePath !== undefined && value.sourcePath !== null) {
     normalized.sourcePath = boundedText(value.sourcePath, "sourcePath", 1, 512);
+  }
+  if (value.actorId !== undefined && value.actorId !== null && value.actorId !== "") {
+    normalized.actorId = boundedText(value.actorId, "actorId", 1, 128);
   }
   return normalized;
 }

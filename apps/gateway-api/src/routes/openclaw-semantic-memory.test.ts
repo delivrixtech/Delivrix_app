@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  PROVENANCE_METADATA_KEY,
   semanticRecall,
   semanticRemember,
   SemanticMemoryValidationError
@@ -151,5 +152,84 @@ test("semanticRecall rejects a too-short query", async () => {
   await assert.rejects(
     () => semanticRecall({ agentId: "openclaw", query: "x" }, { pool }),
     (error: unknown) => error instanceof SemanticMemoryValidationError && error.code === "invalid_query"
+  );
+});
+
+// --- procedencia -----------------------------------------------------------
+//
+// La tabla openclaw_memory_vectors no tiene DELETE, ni TTL, ni expires_at: lo que entra queda.
+// Si el modelo guarda texto de terceros con instrucciones, semantic_recall se lo devuelve como
+// conocimiento propio en cualquier sesion posterior. Sin procedencia esa fila es indistinguible
+// de una legitima, asi que no hay forma de encontrarla para darla de baja.
+
+function metadataDeLaInsercion(pool: FakeVectorPool): Record<string, unknown> {
+  const insert = pool.calls.find((call) => /INSERT INTO openclaw_memory_vectors/.test(call.sql));
+  assert.ok(insert, "no se ejecuto ningun INSERT");
+  // El metadata es el 7mo parametro del INSERT y viaja serializado.
+  return JSON.parse(insert.params[6] as string) as Record<string, unknown>;
+}
+
+test("semanticRemember sella el actorId firmado dentro del metadata", async () => {
+  const pool = new FakeVectorPool(() => [dbRow()]);
+
+  await semanticRemember(
+    {
+      agentId: "openclaw",
+      memoryType: "finding",
+      content: "el nodo contabo-3 quedo sin base SASL",
+      actorId: "chat-session-42"
+    },
+    { pool, embeddingService: fakeEmbedding({ enabled: true }) }
+  );
+
+  assert.deepEqual(metadataDeLaInsercion(pool)[PROVENANCE_METADATA_KEY], { actorId: "chat-session-42" });
+});
+
+test("semanticRemember deja la procedencia explicita cuando la llamada no viene atribuida", async () => {
+  const pool = new FakeVectorPool(() => [dbRow()]);
+
+  await semanticRemember(
+    { agentId: "openclaw", memoryType: "finding", content: "escritura sin sesion" },
+    { pool }
+  );
+
+  // null, no ausente: distingue "vino sin atribuir" de "fila anterior a este cambio".
+  assert.deepEqual(metadataDeLaInsercion(pool)[PROVENANCE_METADATA_KEY], { actorId: null });
+});
+
+test("semanticRemember no deja falsificar la procedencia desde el metadata del modelo", async () => {
+  const pool = new FakeVectorPool(() => [dbRow()]);
+
+  await semanticRemember(
+    {
+      agentId: "openclaw",
+      memoryType: "finding",
+      content: "intento de suplantacion",
+      actorId: "chat-session-42",
+      metadata: { [PROVENANCE_METADATA_KEY]: { actorId: "operator/juanes" }, nota: "se conserva" }
+    },
+    { pool }
+  );
+
+  const metadata = metadataDeLaInsercion(pool);
+  assert.deepEqual(metadata[PROVENANCE_METADATA_KEY], { actorId: "chat-session-42" });
+  assert.equal(metadata.nota, "se conserva", "el resto del metadata del modelo no se toca");
+});
+
+test("semanticRemember rechaza un actorId que no es string", async () => {
+  const pool = new FakeVectorPool(() => [dbRow()]);
+
+  await assert.rejects(
+    () =>
+      semanticRemember(
+        {
+          agentId: "openclaw",
+          memoryType: "finding",
+          content: "actorId invalido",
+          actorId: 42 as unknown as string
+        },
+        { pool }
+      ),
+    (error: unknown) => error instanceof SemanticMemoryValidationError && error.code === "invalid_actorId"
   );
 });
