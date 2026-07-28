@@ -147,3 +147,75 @@ test("las instrucciones llevan los datos que las tools exigen y prohiben escribi
   assert.match(texto, /rechazado por el destino/);
   assert.match(texto, /No envies correo/);
 });
+
+// --- message-id: sin el, read_delivery_reason es inllamable ------------------
+
+const auditWith = (events: Array<{ action?: string; metadata?: Record<string, unknown> }>) => ({
+  list: async () => events
+});
+
+test("saca el messageId mas reciente por dominio del audit log", async () => {
+  const workspace = await workspaceWith({ bindings: [binding("uno.com"), binding("dos.com")] });
+  const auditLog = auditWith([
+    { action: "oc.smtp.real_email_sent", metadata: { messageId: "<delivrix-viejo@uno.com>" } },
+    { action: "oc.warmup.seed_sent", metadata: { messageId: "<ignorado@uno.com>" } },
+    { action: "oc.smtp.real_email_sent", metadata: { messageId: "<delivrix-nuevo@uno.com>" } },
+    { action: "oc.smtp.real_email_sent", metadata: { messageId: "<delivrix-x@ajeno.com>" } }
+  ]);
+
+  const fleet = await loadWarmupFleet({ workspace, auditLog });
+
+  // El audit esta en orden cronologico: gana el ultimo.
+  assert.equal(fleet.domains.find((e) => e.domain === "uno.com")?.recentMessageId, "<delivrix-nuevo@uno.com>");
+  // Un dominio sin envios no inventa messageId.
+  assert.equal(fleet.domains.find((e) => e.domain === "dos.com")?.recentMessageId, undefined);
+});
+
+test("solo cuentan los oc.smtp.real_email_sent, no cualquier evento con messageId", async () => {
+  const workspace = await workspaceWith({ bindings: [binding("uno.com")] });
+  const auditLog = auditWith([
+    { action: "oc.warmup.seed_sent", metadata: { messageId: "<no-cuenta@uno.com>" } },
+    { action: "oc.smtp.run_state_reconciled", metadata: { messageId: "<tampoco@uno.com>" } }
+  ]);
+
+  const fleet = await loadWarmupFleet({ workspace, auditLog });
+  assert.equal(fleet.domains[0]?.recentMessageId, undefined);
+});
+
+test("sin auditLog el abanico corre igual, con una tool menos", async () => {
+  const workspace = await workspaceWith({ bindings: [binding("uno.com")] });
+  const fleet = await loadWarmupFleet({ workspace });
+  assert.equal(fleet.domains.length, 1);
+  assert.equal(fleet.domains[0]?.recentMessageId, undefined);
+});
+
+test("un audit log que tira no rompe el abanico", async () => {
+  const workspace = await workspaceWith({ bindings: [binding("uno.com")] });
+  const roto = { list: async () => { throw new Error("audit ilegible"); } };
+  const fleet = await loadWarmupFleet({ workspace, auditLog: roto });
+  assert.equal(fleet.domains.length, 1, "la flota se carga igual");
+  assert.equal(fleet.domains[0]?.recentMessageId, undefined);
+});
+
+test("las instrucciones dicen que hacer en los dos casos", async () => {
+  const conId = buildDiagnosticInstructions({
+    domain: "ejemplo.com",
+    serverSlug: "contabo-1",
+    serverIp: "192.0.2.1",
+    hasCredential: true,
+    recentMessageId: "<delivrix-abc@ejemplo.com>"
+  });
+  assert.match(conId, /<delivrix-abc@ejemplo\.com>/);
+  assert.match(conId, /Usa el messageId de arriba con read_delivery_reason/);
+
+  const sinId = buildDiagnosticInstructions({
+    domain: "ejemplo.com",
+    serverSlug: "contabo-1",
+    serverIp: "192.0.2.1",
+    hasCredential: true
+  });
+  assert.match(sinId, /NO HAY/);
+  // Sin esto el agente pide la tool, recibe invalid_params y no sabe por que.
+  assert.match(sinId, /Sin messageId no podes usar read_delivery_reason/);
+  assert.match(sinId, /no hay evidencia de entrega reciente/);
+});

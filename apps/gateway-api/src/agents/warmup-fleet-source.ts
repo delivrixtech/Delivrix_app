@@ -17,6 +17,19 @@ export interface FleetDomain {
   serverIp: string;
   /** true si el dominio tiene una credencial SMTP `configured` en el inventario. */
   hasCredential: boolean;
+  /**
+   * Message-id de un envio real reciente de este dominio, si lo hay.
+   *
+   * `read_delivery_reason` resuelve el queue-id DESDE el message-id: sin uno concreto, la tool
+   * mas valiosa del diagnostico es inllamable. Se saca del audit log, que es el unico lugar
+   * donde queda registrado (`oc.smtp.real_email_sent`).
+   */
+  recentMessageId?: string;
+}
+
+/** Fuente de message-ids: lo minimo que el abanico necesita del audit log. */
+export interface AuditEventReader {
+  list(): Promise<Array<{ action?: string; metadata?: Record<string, unknown> }>>;
 }
 
 export interface LoadFleetInput {
@@ -28,6 +41,14 @@ export interface LoadFleetInput {
    * credencial es justamente uno de los casos que interesa diagnosticar.
    */
   requireCredential?: boolean;
+  /**
+   * Audit log del que sacar un message-id reciente por dominio. Opcional: sin el, los agentes
+   * corren con 4 tools utiles en vez de 5.
+   *
+   * Se lee UNA vez por abanico, no una por agente: el archivo pesa megabytes y releerlo 59
+   * veces es el cuello de botella que ya identificamos en el bus de eventos.
+   */
+  auditLog?: AuditEventReader;
 }
 
 export interface FleetSelection {
@@ -66,6 +87,9 @@ export async function loadWarmupFleet(input: LoadFleetInput): Promise<FleetSelec
   const bindings = inventory?.bindings ?? [];
 
   const credentialed = await loadCredentialedDomains(input.workspace);
+  const messageIds = input.auditLog
+    ? await loadRecentMessageIds(input.auditLog)
+    : new Map<string, string>();
 
   const usable: FleetDomain[] = [];
   for (const binding of bindings) {
@@ -74,11 +98,13 @@ export async function loadWarmupFleet(input: LoadFleetInput): Promise<FleetSelec
     const serverIp = nonEmptyString(binding.serverIp);
     // Sin slug o sin ip, las tools de lectura no pueden ni construir su request.
     if (!domain || !serverSlug || !serverIp) continue;
+    const recentMessageId = messageIds.get(domain);
     usable.push({
       domain,
       serverSlug,
       serverIp,
-      hasCredential: credentialed.has(domain)
+      hasCredential: credentialed.has(domain),
+      ...(recentMessageId === undefined ? {} : { recentMessageId })
     });
   }
 
@@ -118,6 +144,26 @@ async function loadCredentialedDomains(workspace: OpenClawWorkspace): Promise<Se
   return out;
 }
 
+/**
+ * Message-id mas reciente por dominio, desde los `oc.smtp.real_email_sent` del audit log.
+ *
+ * El dominio se saca del propio message-id (`<delivrix-xxxx@dominio.com>`), que es la unica
+ * forma de asociarlos: el evento no lleva el dominio en un campo aparte.
+ */
+export async function loadRecentMessageIds(auditLog: AuditEventReader): Promise<Map<string, string>> {
+  const events = await auditLog.list().catch(() => []);
+  const byDomain = new Map<string, string>();
+  for (const event of events) {
+    if (event.action !== "oc.smtp.real_email_sent") continue;
+    const messageId = event.metadata?.messageId;
+    if (typeof messageId !== "string" || !messageId.includes("@")) continue;
+    const domain = normalizeDomain(messageId.slice(messageId.lastIndexOf("@") + 1).replace(/>$/, ""));
+    // El audit log esta en orden cronologico: el ultimo que se ve gana.
+    if (domain) byDomain.set(domain, messageId);
+  }
+  return byDomain;
+}
+
 /** Mismo criterio que el resto del gateway: minusculas y sin punto final. */
 function normalizeDomain(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -147,10 +193,21 @@ export function buildDiagnosticInstructions(target: FleetDomain): string {
     `  serverSlug: ${target.serverSlug}`,
     `  serverIp: ${target.serverIp}`,
     `  credencial SMTP en inventario: ${target.hasCredential ? "si, configured" : "NO"}`,
+    target.recentMessageId
+      ? `  messageId de un envio reciente: ${target.recentMessageId}`
+      : "  messageId de un envio reciente: NO HAY",
     "",
     "Objetivo: emitir un veredicto sobre por que este dominio entrega o no entrega, apoyado",
     "en el resultado de tus tools. Distingui explicitamente entre el nodo caido o incomunicado",
     "y el correo rechazado por el destino: son dos fallas distintas y se arreglan distinto.",
+    "",
+    target.recentMessageId
+      ? "Usa el messageId de arriba con read_delivery_reason: es el motivo REAL del ultimo envio."
+      : [
+          "Sin messageId no podes usar read_delivery_reason: esa tool resuelve el queue-id",
+          "desde el message-id. Diagnostica con las otras cuatro y deci en el veredicto que",
+          "no hay evidencia de entrega reciente para este dominio."
+        ].join("\n"),
     "",
     "No envies correo, no arranques rampas y no modifiques nada: solo lees."
   ].join("\n");
