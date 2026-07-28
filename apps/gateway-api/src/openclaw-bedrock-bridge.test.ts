@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   createOpenClawBedrockBridgeFromEnv,
+  modelAcceptsSamplingParams,
   OpenClawBedrockBridge
 } from "./openclaw-bedrock-bridge.ts";
 import {
@@ -1952,3 +1953,40 @@ function enabledToolEnv(): Record<string, string | undefined> {
     WARMUP_RAMP_ENABLE: "true"
   };
 }
+
+// --- sampling params: lo que hoy clava el gateway en Sonnet 4.6 --------------
+
+test("modelAcceptsSamplingParams: los modelos actuales rechazan temperature", () => {
+  // De Opus 4.7 y Sonnet 5 en adelante el parametro fue removido: mandarlo devuelve 400.
+  for (const modelId of [
+    "us.anthropic.claude-sonnet-5",
+    "anthropic.claude-sonnet-5",
+    "anthropic.claude-opus-5",
+    "claude-opus-4-7",
+    "anthropic.claude-opus-4-8",
+    "claude-fable-5"
+  ]) {
+    assert.equal(modelAcceptsSamplingParams(modelId), false, `${modelId} deberia omitirlo`);
+  }
+});
+
+test("modelAcceptsSamplingParams: los de generacion anterior lo siguen aceptando", () => {
+  // El env canonico corre us.anthropic.claude-sonnet-4-6: su comportamiento no cambia.
+  for (const modelId of [
+    "us.anthropic.claude-sonnet-4-6",
+    "anthropic.claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-haiku-4-5",
+    "anthropic.claude-3-5-sonnet-20241022"
+  ]) {
+    assert.equal(modelAcceptsSamplingParams(modelId), true, `${modelId} deberia mandarlo`);
+  }
+});
+
+test("un modelo desconocido cae del lado de OMITIR", () => {
+  // Direccion del riesgo: equivocarse omitiendo cambia levemente el sampling; equivocarse
+  // mandando rompe todas las llamadas con un 400. Un id desconocido es, casi siempre, uno
+  // mas nuevo — y los nuevos son los que rechazan.
+  assert.equal(modelAcceptsSamplingParams("anthropic.claude-modelo-del-futuro"), false);
+  assert.equal(modelAcceptsSamplingParams(""), false);
+});
