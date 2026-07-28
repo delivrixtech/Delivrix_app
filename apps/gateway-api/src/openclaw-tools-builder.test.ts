@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   buildToolsForOpenClaw,
   getOpenClawToolDefinition,
+  openClawToolDefinitionNames,
   openClawToolNames
 } from "./openclaw-tools-builder.ts";
 
@@ -706,3 +707,30 @@ function validSample(toolName: string): Record<string, unknown> {
     seedInboxes: ["seed-1@example.com", "seed-2@example.com", "seed-3@example.com"]
   };
 }
+
+test("toda tool definida llega a la lista del catalogo, y al reves", () => {
+  // El test de arriba cierra el bug de semantic_*, no la CLASE de bug. `toolDefinitions` y
+  // `openClawToolNames()` se mantienen a mano por separado: si alguien agrega la tool 46 al
+  // union y al Record pero se olvida de la lista, buildToolsForOpenClaw nunca la itera, el
+  // modelo no la ve, y el gate queda en verde. Es exactamente lo que ya paso una vez.
+  //
+  // Se comparan ORDENADOS a proposito: el orden de insercion del objeto NO coincide con el de
+  // la lista (difieren en 9 posiciones), y el de la lista es el que ve el modelo en cada
+  // request. Por eso `openClawToolNames()` no se deriva de `Object.keys(toolDefinitions)`.
+  const definidas = [...openClawToolDefinitionNames()].sort();
+  const enElCatalogo = [...openClawToolNames()].sort();
+
+  assert.deepEqual(
+    enElCatalogo,
+    definidas,
+    "toolDefinitions y openClawToolNames() se desincronizaron: la diferencia son tools que " +
+      "existen pero no llegan a Bedrock, o nombres listados sin definicion."
+  );
+});
+
+test("la lista del catalogo no tiene nombres repetidos", () => {
+  // Un duplicado no rompe el deepEqual ordenado de arriba si esta en los dos lados, pero si
+  // manda la misma tool dos veces en el payload a Bedrock.
+  const nombres = openClawToolNames();
+  assert.equal(new Set(nombres).size, nombres.length);
+});
