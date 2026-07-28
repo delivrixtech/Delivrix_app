@@ -2,7 +2,7 @@
 // v1 = Postfix-only (Track A). Enchufar M365 en v2 no debe costar refactor: por eso el Send Worker
 // depende de la INTERFACE `WarmupTransport`, no de Postfix ni de nodemailer. Este módulo trae:
 //   - la costura (interface),
-//   - `PostfixTransport` (SMTP real vía un cliente inyectado, compatible con nodemailer.sendMail),
+//   - `MockTransport` (simula el envío; es el único transporte cableado hoy, vía dryrun-daemon),
 //   - `MockTransport` (para tests: registra mensajes y simula bounce permanente vs transitorio).
 
 /** Mensaje de warmup a enviar (unidad mínima del transporte). */
@@ -33,7 +33,7 @@ export interface WarmupTransport {
 }
 
 /**
- * Cliente SMTP mínimo que necesita `PostfixTransport`. La firma es compatible con el
+ * Cliente SMTP mínimo, con firma compatible con nodemailer. Lo consume mail-adapters.ts. El
  * `transporter.sendMail` de nodemailer (presente en el árbol, v8), así que un transporter real se
  * inyecta directo sin adaptador. No lo instanciamos acá: mantiene el módulo sin dep dura de red.
  */
@@ -59,43 +59,6 @@ export interface SmtpSendInfo {
 interface SmtpErrorLike {
   responseCode?: number;
   message?: string;
-}
-
-/**
- * Transporte Postfix real vía SMTP. El cliente se INYECTA por constructor (típicamente un
- * `nodemailer.createTransport({...})`), así este módulo no acopla una dep de red ni agrega paquetes.
- * Mapea el bounce 5xx a `permanent: true` (⇒ el worker lo marca `bounced`) y 4xx/red a transitorio.
- */
-export class PostfixTransport implements WarmupTransport {
-  readonly kind = "postfix";
-  private readonly client: SmtpClient;
-
-  constructor(client: SmtpClient) {
-    this.client = client;
-  }
-
-  async send(msg: WarmupMessage): Promise<WarmupSendResult> {
-    try {
-      const info = await this.client.sendMail({
-        from: msg.from,
-        to: msg.to,
-        subject: msg.subject,
-        text: msg.body,
-        headers: msg.headers
-      });
-      // Rechazo a nivel de destinatario reportado sin throw ⇒ bounce permanente.
-      if (Array.isArray(info.rejected) && info.rejected.length > 0) {
-        return { ok: false, error: "recipient_rejected", permanent: true, messageId: info.messageId };
-      }
-      return { ok: true, messageId: info.messageId };
-    } catch (err) {
-      const e = err as SmtpErrorLike;
-      const code = typeof e?.responseCode === "number" ? e.responseCode : undefined;
-      // 5xx = permanente (no reintar); 4xx / sin código (fallo de red/conexión) = transitorio.
-      const permanent = code != null && code >= 500 && code < 600;
-      return { ok: false, error: e?.message ?? "smtp_send_failed", permanent };
-    }
-  }
 }
 
 /** Comportamiento por mensaje para el MockTransport (undefined ⇒ éxito por defecto). */

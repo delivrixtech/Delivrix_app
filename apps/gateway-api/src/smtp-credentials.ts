@@ -227,6 +227,62 @@ export async function decryptSmtpCredentialForDownload(input: {
   };
 }
 
+export interface SmtpCredentialBulkEntry {
+  record: SmtpCredentialRecord;
+  password: string;
+}
+
+export interface SmtpCredentialBulkFailure {
+  domain: string;
+  serverSlug: string | null;
+  code: string;
+}
+
+/**
+ * Descifra todas las credenciales SMTP listas para descarga masiva.
+ *
+ * Nunca devuelve claves SSH privadas: el paquete masivo concentra demasiado
+ * material sensible en un solo archivo, así que el acceso ops se sigue bajando
+ * dominio por dominio con decryptSmtpCredentialForDownload.
+ *
+ * Los dominios que no se pueden descifrar no rompen el lote: salen en
+ * `failures` para que el caller los reporte junto al resto.
+ */
+export async function decryptAllSmtpCredentialsForDownload(input: {
+  workspace: OpenClawWorkspace;
+  env?: Record<string, string | undefined>;
+}): Promise<{ entries: SmtpCredentialBulkEntry[]; failures: SmtpCredentialBulkFailure[]; total: number }> {
+  // Si falta la llave de cifrado falla el request completo, no dominio por dominio.
+  const key = credentialEncryptionKey(input.env);
+  const records = (await readSmtpCredentialRecords(input.workspace))
+    .filter(isSmtpCredentialRecord)
+    .sort((left, right) => left.domain.localeCompare(right.domain));
+  const entries: SmtpCredentialBulkEntry[] = [];
+  const failures: SmtpCredentialBulkFailure[] = [];
+
+  for (const record of records) {
+    if (record.status !== "configured") {
+      failures.push({
+        domain: record.domain,
+        serverSlug: record.serverSlug ?? null,
+        code: "smtp_credential_not_ready"
+      });
+      continue;
+    }
+    try {
+      entries.push({ record, password: decryptSmtpCredentialPassword(record, key) });
+    } catch (error) {
+      failures.push({
+        domain: record.domain,
+        serverSlug: record.serverSlug ?? null,
+        code: error instanceof SmtpCredentialError ? error.code : "smtp_credential_decrypt_failed"
+      });
+    }
+  }
+
+  return { entries, failures, total: records.length };
+}
+
 /**
  * Cifra la clave privada SSH generada y la adjunta al record (sin persistir).
  * El caller guarda con saveSmtpCredentialRecord. La AAD ata el ciphertext al

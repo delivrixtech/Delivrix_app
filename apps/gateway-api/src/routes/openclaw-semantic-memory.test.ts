@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  PROVENANCE_METADATA_KEY,
+  semanticForget,
   semanticRecall,
   semanticRemember,
   SemanticMemoryValidationError
@@ -151,5 +153,155 @@ test("semanticRecall rejects a too-short query", async () => {
   await assert.rejects(
     () => semanticRecall({ agentId: "openclaw", query: "x" }, { pool }),
     (error: unknown) => error instanceof SemanticMemoryValidationError && error.code === "invalid_query"
+  );
+});
+
+// --- procedencia -----------------------------------------------------------
+//
+// La tabla openclaw_memory_vectors no tiene DELETE, ni TTL, ni expires_at: lo que entra queda.
+// Si el modelo guarda texto de terceros con instrucciones, semantic_recall se lo devuelve como
+// conocimiento propio en cualquier sesion posterior. Sin procedencia esa fila es indistinguible
+// de una legitima, asi que no hay forma de encontrarla para darla de baja.
+
+function metadataDeLaInsercion(pool: FakeVectorPool): Record<string, unknown> {
+  const insert = pool.calls.find((call) => /INSERT INTO openclaw_memory_vectors/.test(call.sql));
+  assert.ok(insert, "no se ejecuto ningun INSERT");
+  // El metadata es el 7mo parametro del INSERT y viaja serializado.
+  return JSON.parse(insert.params[6] as string) as Record<string, unknown>;
+}
+
+test("semanticRemember sella el actorId firmado dentro del metadata", async () => {
+  const pool = new FakeVectorPool(() => [dbRow()]);
+
+  await semanticRemember(
+    {
+      agentId: "openclaw",
+      memoryType: "finding",
+      content: "el nodo contabo-3 quedo sin base SASL",
+      actorId: "chat-session-42"
+    },
+    { pool, embeddingService: fakeEmbedding({ enabled: true }) }
+  );
+
+  assert.deepEqual(metadataDeLaInsercion(pool)[PROVENANCE_METADATA_KEY], { actorId: "chat-session-42" });
+});
+
+test("semanticRemember deja la procedencia explicita cuando la llamada no viene atribuida", async () => {
+  const pool = new FakeVectorPool(() => [dbRow()]);
+
+  await semanticRemember(
+    { agentId: "openclaw", memoryType: "finding", content: "escritura sin sesion" },
+    { pool }
+  );
+
+  // null, no ausente: distingue "vino sin atribuir" de "fila anterior a este cambio".
+  assert.deepEqual(metadataDeLaInsercion(pool)[PROVENANCE_METADATA_KEY], { actorId: null });
+});
+
+test("semanticRemember no deja falsificar la procedencia desde el metadata del modelo", async () => {
+  const pool = new FakeVectorPool(() => [dbRow()]);
+
+  await semanticRemember(
+    {
+      agentId: "openclaw",
+      memoryType: "finding",
+      content: "intento de suplantacion",
+      actorId: "chat-session-42",
+      metadata: { [PROVENANCE_METADATA_KEY]: { actorId: "operator/juanes" }, nota: "se conserva" }
+    },
+    { pool }
+  );
+
+  const metadata = metadataDeLaInsercion(pool);
+  assert.deepEqual(metadata[PROVENANCE_METADATA_KEY], { actorId: "chat-session-42" });
+  assert.equal(metadata.nota, "se conserva", "el resto del metadata del modelo no se toca");
+});
+
+test("semanticRemember rechaza un actorId que no es string", async () => {
+  const pool = new FakeVectorPool(() => [dbRow()]);
+
+  await assert.rejects(
+    () =>
+      semanticRemember(
+        {
+          agentId: "openclaw",
+          memoryType: "finding",
+          content: "actorId invalido",
+          actorId: 42 as unknown as string
+        },
+        { pool }
+      ),
+    (error: unknown) => error instanceof SemanticMemoryValidationError && error.code === "invalid_actorId"
+  );
+});
+
+// --- baja de memoria --------------------------------------------------------
+//
+// El otro extremo de la procedencia: remember sella QUIEN escribio cada fila, esto permite
+// encontrar la sesion envenenada y llevarse todo lo que dejo. Antes no habia forma de borrar:
+// ni DELETE, ni TTL, ni expires_at.
+
+function fakeAudit() {
+  const events: Record<string, unknown>[] = [];
+  return { events, append: async (e: Record<string, unknown>) => void events.push(e) };
+}
+
+test("semanticForget borra por actorId y audita los ids, no el contenido", async () => {
+  const pool = new FakeVectorPool((sql) =>
+    /DELETE FROM openclaw_memory_vectors/.test(sql)
+      ? ([{ id: "mem-1", agent_id: "openclaw", memory_type: "finding", visibility: "private", provenance_actor_id: "chat-envenenado", created_at: "2026-07-28T00:00:00.000Z" }] as never)
+      : []
+  );
+  const audit = fakeAudit();
+
+  const out = await semanticForget(
+    { actorId: "chat-envenenado", reason: "tool_result de un tercero con instrucciones", operatorId: "operator/juanes" },
+    { pool, auditLog: audit as never }
+  );
+
+  assert.equal(out.deleted, 1);
+  assert.equal(out.dryRun, false);
+  assert.equal(out.matched[0]?.actorId, "chat-envenenado");
+
+  const evento = audit.events[0] as { action: string; riskLevel: string; metadata: Record<string, unknown> };
+  assert.equal(evento.action, "oc.memory.forget");
+  assert.equal(evento.riskLevel, "critical");
+  assert.deepEqual(evento.metadata.matchedIds, ["mem-1"]);
+  assert.equal(JSON.stringify(evento).includes("content"), false, "el contenido borrado no va al audit log");
+});
+
+test("semanticForget en dryRun no ejecuta ningun DELETE y igual audita", async () => {
+  const pool = new FakeVectorPool(() => [] as never);
+  const audit = fakeAudit();
+
+  const out = await semanticForget(
+    { actorId: "chat-42", dryRun: true, reason: "revision previa", operatorId: "operator/juanes" },
+    { pool, auditLog: audit as never }
+  );
+
+  assert.equal(out.dryRun, true);
+  assert.equal(out.deleted, 0);
+  assert.ok(pool.calls.every((c) => !/DELETE/.test(c.sql)), "no debio correr ningun DELETE");
+  assert.equal((audit.events[0] as { action: string }).action, "oc.memory.forget_preview");
+});
+
+test("semanticForget rechaza un borrado sin filtro", async () => {
+  const pool = new FakeVectorPool(() => [] as never);
+  const audit = fakeAudit();
+
+  await assert.rejects(
+    () => semanticForget({ reason: "vaciar todo", operatorId: "operator/juanes" }, { pool, auditLog: audit as never }),
+    (error: unknown) =>
+      error instanceof SemanticMemoryValidationError && error.code === "invalid_delete_filter"
+  );
+  assert.equal(pool.calls.length, 0, "no debio tocar la base");
+  assert.equal(audit.events.length, 0);
+});
+
+test("semanticForget exige un motivo", async () => {
+  const pool = new FakeVectorPool(() => [] as never);
+  await assert.rejects(
+    () => semanticForget({ ids: ["mem-1"], reason: "", operatorId: "operator/juanes" } as never, { pool, auditLog: fakeAudit() as never }),
+    (error: unknown) => error instanceof SemanticMemoryValidationError && error.code === "invalid_reason"
   );
 });

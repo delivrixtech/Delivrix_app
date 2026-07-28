@@ -1,0 +1,2889 @@
+{
+  "meta": {
+    "project": "Delivrix — Deliverability OS",
+    "generatedAt": "2026-07-27",
+    "commit": "0ac3d78",
+    "branch": "fix/ops-ssh-ownership-verification",
+    "repo": "delivrixtech/Delivrix_app",
+    "scale": {
+      "apps": 4,
+      "packages": 5,
+      "approxSourceLines": 205000,
+      "gatewayRoutes": 60,
+      "openclawToolsInCatalog": 45
+    },
+    "method": "Mapa derivado de lectura directa del código. Cada nodo, arista y paso lleva 'evidence' con path:line del repo. Lo que no se pudo verificar está marcado, no inferido.",
+    "legend": {
+      "status": {
+        "live": "Cableado y ejecutándose en el camino de producción.",
+        "partial": "Existe y funciona, pero sólo parte de su superficie está cableada o está gateado por un flag apagado.",
+        "not-wired": "Código escrito y testeado, pero sin ningún caller en producción.",
+        "mock": "Simula el efecto en vez de producirlo. No toca el mundo real."
+      },
+      "edgeKind": {
+        "http": "Llamada HTTP entre procesos",
+        "ws": "WebSocket",
+        "import": "Dependencia de código (import directo)",
+        "sql": "Lectura/escritura en Postgres",
+        "file": "Lectura/escritura en archivo local (JSON/JSONL/SQLite)",
+        "ssh": "Ejecución remota por SSH",
+        "smtp": "Envío SMTP",
+        "imap": "Lectura IMAP",
+        "api": "API externa del proveedor",
+        "hmac": "Llamada firmada con HMAC-SHA256"
+      }
+    },
+    "changelog": [
+      {
+        "date": "2026-07-28",
+        "change": "Corregido el vecindario SSH. El nodo 'ssh-bridge' apuntaba a openclaw-ssh-bridge.ts, que es el puente de chat contra el container del agente, no el ejecutor de la flota (ese es routes/smtp-provisioning.ts). Se separo en dos nodos y se agrego delivery-reason-collector, que es el que realmente trae mail.log por SSH: postfix-log-parser.ts es una funcion pura y la arista e80 lo daba como origen del SSH."
+      },
+      {
+        "date": "2026-07-27",
+        "change": "Cerrado debt-semantic-tools: semantic_remember y semantic_recall repuestas en el union OpenClawToolName y en openClawToolNames(), con test de regresión. El catálogo pasa de 43 a 45 tools. Cambio en el árbol de trabajo, todavía sin mergear a produ."
+      },
+      {
+        "date": "2026-07-27",
+        "change": "Corregido: 'nadie aplica las migraciones del gateway' era falso. approval-token.ts:259 las auto-aplica al abrir la base SQLite. El hallazgo venía de una lectura marcada como 'no verificado' que se afirmó de más. Retirado del listado de deuda."
+      },
+      {
+        "date": "2026-07-27",
+        "change": "Deuda reorganizada por tipo de cierre y dependencias: 7 ítems → 2 limpiezas gratis + 2 decisiones + 1 roadmap. Añadido debtPlan con tiers y orden sugerido."
+      }
+    ]
+  },
+  "layers": [
+    {
+      "id": "ui",
+      "label": "Panel de operador",
+      "description": "React + Vite. Todo lo que ve y toca Juanes."
+    },
+    {
+      "id": "edge",
+      "label": "Borde read-only",
+      "description": "El proxy del panel: default-deny, inyecta tokens server-side."
+    },
+    {
+      "id": "control",
+      "label": "Gateway (control plane)",
+      "description": "El proceso que decide, gatea, audita y despacha."
+    },
+    {
+      "id": "agent",
+      "label": "OpenClaw (agente IA)",
+      "description": "El bridge a Bedrock, su catálogo de tools y su memoria."
+    },
+    {
+      "id": "domain",
+      "label": "Dominio puro",
+      "description": "Reglas sin I/O: política de correo, FSM de warmup, tipos."
+    },
+    {
+      "id": "runners",
+      "label": "Ejecutores",
+      "description": "Procesos y daemons que hacen el trabajo fuera del request."
+    },
+    {
+      "id": "data",
+      "label": "Persistencia",
+      "description": "Postgres, archivos locales, cadena de auditoría, SQLite."
+    },
+    {
+      "id": "providers",
+      "label": "Proveedores externos",
+      "description": "Adapters hacia AWS, registradores, VPS y reputación."
+    },
+    {
+      "id": "fleet",
+      "label": "Flota de envío",
+      "description": "Los VPS con Postfix y las casillas semilla."
+    }
+  ],
+  "nodes": [
+    {
+      "id": "panel-shell",
+      "label": "Admin Panel",
+      "layer": "ui",
+      "kind": "app",
+      "path": "apps/admin-panel",
+      "purpose": "Panel del operador: 5 secciones de nav, routing manual por pathname, sin router lib.",
+      "status": "live",
+      "tech": [
+        "React",
+        "Vite",
+        "Tailwind",
+        "framer-motion",
+        "lucide"
+      ],
+      "endpoints": [],
+      "envFlags": [],
+      "evidence": [
+        "apps/admin-panel/src/app/sections.ts:29",
+        "apps/admin-panel/src/app/App.tsx:66"
+      ],
+      "notes": "Secciones: overview · canvas · envio · infraestructura · gobierno. 12 leaf ids con deep-link. 'hardware' quedó fuera del nav pero conserva redirect."
+    },
+    {
+      "id": "panel-canvas",
+      "label": "Canvas Live",
+      "layer": "ui",
+      "kind": "module",
+      "path": "apps/admin-panel/src/features/canvas",
+      "purpose": "Cockpit en vivo: chat real, stream de eventos, terminal de logs del gateway y artefactos editables.",
+      "status": "live",
+      "tech": [
+        "WebSocket",
+        "React"
+      ],
+      "evidence": [
+        "apps/admin-panel/src/features/canvas/canvas-live-client.ts:35",
+        "apps/admin-panel/src/features/canvas/CanvasV5Preview.tsx:1"
+      ],
+      "notes": "El WS es un notificador, no la fuente de verdad: avisa que hubo cambio y el fetch real sigue siendo el GET (canvas-live-client.ts:793). v4 legacy accesible con ?canvasv4."
+    },
+    {
+      "id": "panel-warmup-view",
+      "label": "Vista Warmup",
+      "layer": "ui",
+      "kind": "module",
+      "path": "apps/admin-panel/src/v5/views/Warmup.tsx",
+      "purpose": "Lectura del motor de warmup: estado por buzón, tendencias y el feed de actividad en vivo.",
+      "status": "live",
+      "evidence": [
+        "apps/admin-panel/src/v5/views/Warmup.tsx:1"
+      ],
+      "notes": "2348 líneas. Lee de /v1/warmup/status, /trends, /activity y /v1/mailboxes*, que a su vez leen tres subsistemas distintos."
+    },
+    {
+      "id": "panel-safety",
+      "label": "Gobierno / Safety",
+      "layer": "ui",
+      "kind": "module",
+      "path": "apps/admin-panel/src/features/safety",
+      "purpose": "Kill switch, gates, roles y auditoría desde la UI.",
+      "status": "live",
+      "evidence": [
+        "apps/admin-panel/src/features/safety/index.tsx:1"
+      ]
+    },
+    {
+      "id": "panel-approval-gate",
+      "label": "ApprovalGate (UI)",
+      "layer": "ui",
+      "kind": "module",
+      "path": "apps/admin-panel/src/v5/components/ApprovalGate.tsx",
+      "purpose": "El botón donde el humano firma: una firma de operador, espera mínima de 5s antes de habilitar.",
+      "status": "live",
+      "evidence": [
+        "apps/admin-panel/src/v5/components/ApprovalGate.tsx:1"
+      ],
+      "notes": "La espera de 5s es deliberada: evita el click reflejo sobre una acción irreversible."
+    },
+    {
+      "id": "read-boundary",
+      "label": "Read-only proxy boundary",
+      "layer": "edge",
+      "kind": "module",
+      "path": "apps/admin-panel/vite.config.ts",
+      "purpose": "Middleware default-deny en el propio dev server: el panel sólo alcanza la superficie enumerada.",
+      "status": "live",
+      "endpoints": [
+        "47 rutas GET en lista congelada",
+        "6 writes nominados",
+        "5 patrones regex"
+      ],
+      "envFlags": [
+        "ADMIN_PANEL_GATEWAY_ORIGIN",
+        "DELIVRIX_READ_BOUNDARY_TOKEN",
+        "OPENCLAW_GATEWAY_TOKEN",
+        "WARMUP_API_KEY",
+        "CANVAS_LIVE_STREAM_TOKEN",
+        "GATEWAY_LOG_STREAM_TOKEN"
+      ],
+      "evidence": [
+        "apps/admin-panel/vite.config.ts:228",
+        "apps/admin-panel/src/shared/api/read-boundary.ts:1",
+        "apps/admin-panel/vite.config.ts:110"
+      ],
+      "notes": "GET fuera de lista → 404 unknown_read_endpoint. Método distinto de GET sin excepción nominada → 405. Los tokens se inyectan server-side: el browser nunca los embebe."
+    },
+    {
+      "id": "panel-ws",
+      "label": "3 WebSockets",
+      "layer": "edge",
+      "kind": "module",
+      "path": "apps/admin-panel/vite.config.ts",
+      "purpose": "Canvas live, logs del gateway y chat de OpenClaw, todos same-origin vía el proxy.",
+      "status": "live",
+      "endpoints": [
+        "/v1/canvas/live/stream",
+        "/v1/gateway/logs/stream",
+        "/v1/openclaw/chat/stream"
+      ],
+      "evidence": [
+        "apps/admin-panel/vite.config.ts:141",
+        "apps/admin-panel/vite.config.ts:314",
+        "apps/admin-panel/src/shared/api/chat-client.ts:651"
+      ],
+      "notes": "Si el cliente no manda ?token=, el proxy lo agrega server-side."
+    },
+    {
+      "id": "gateway-main",
+      "label": "gateway-api / main.ts",
+      "layer": "control",
+      "kind": "app",
+      "path": "apps/gateway-api/src/main.ts",
+      "purpose": "El proceso de control: router a mano de todos los endpoints, composición de stores y arranque de daemons.",
+      "status": "live",
+      "tech": [
+        "Node 20+",
+        "node:http",
+        "TypeScript directo (sin build)"
+      ],
+      "envFlags": [
+        "POSTGRES_URL",
+        "WARMUP_DB_URL",
+        "OPENCLAW_HMAC_SECRET",
+        "CREDENTIAL_ENCRYPTION_KEY"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/main.ts:1",
+        "apps/gateway-api/package.json:7"
+      ],
+      "notes": "7.435 líneas y sin router: el dispatch es una cadena de comparaciones. El build es 'node --check src/main.ts' — no hay tsc en el gate, por eso un union desincronizado no lo detecta nada."
+    },
+    {
+      "id": "route-orchestrator-smtp",
+      "label": "Orquestador SMTP",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/routes/orchestrator-smtp.ts",
+      "purpose": "configure_complete_smtp: los 14 pasos que van de un dominio inexistente a un SMTP que entrega.",
+      "status": "live",
+      "endpoints": [
+        "POST /v1/openclaw/skills/configure-complete-smtp"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/routes/orchestrator-smtp.ts:420",
+        "apps/gateway-api/src/routes/orchestrator-smtp.ts:49"
+      ],
+      "notes": "5.711 líneas. Estados del run: completed · executing · failed · rolled_back · cancelled_by_operator. serverAccountId, providerId y dnsProvider viajan por canal paralelo, fuera de params, para no romper el inputHash."
+    },
+    {
+      "id": "route-warmup",
+      "label": "Rutas de warmup",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/routes/warmup*.ts",
+      "purpose": "17 endpoints: start/seed, ramp, status, trends, activity y toda la API de mailboxes.",
+      "status": "live",
+      "endpoints": [
+        "POST /v1/warmup/start",
+        "POST /v1/warmup/seed",
+        "POST /v1/warmup/ramp/start",
+        "GET /v1/warmup/status",
+        "GET /v1/warmup/trends",
+        "GET /v1/warmup/activity",
+        "POST /v1/mailboxes:onboard",
+        "GET /v1/mailboxes/warm"
+      ],
+      "envFlags": [
+        "WARMUP_ENABLE_SEND",
+        "WARMUP_RAMP_ENABLE",
+        "WARMUP_API_KEY"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/routes/warmup.ts:89",
+        "apps/gateway-api/src/routes/warmup-status.ts:39",
+        "apps/gateway-api/src/routes/warmup-mailboxes.ts:61"
+      ],
+      "notes": "status/trends/activity nunca devuelven 500: degradan con note ('postgres_unavailable', 'warmup_tables_unavailable') para que el panel no se caiga con la base abajo."
+    },
+    {
+      "id": "ramp-scheduler",
+      "label": "RampScheduler",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/routes/warmup-ramp.ts",
+      "purpose": "Rampa de envío por batches, in-process, con resume-on-boot.",
+      "status": "live",
+      "envFlags": [
+        "WARMUP_RAMP_ENABLE"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/routes/warmup-ramp.ts:111",
+        "apps/gateway-api/src/routes/warmup-ramp.ts:352",
+        "apps/gateway-api/src/routes/warmup-ramp.ts:832"
+      ],
+      "notes": "Explícitamente sin BullMQ: setTimeout + persistencia en warmup-progress.json. Envía ejecutando /usr/sbin/sendmail por SSH en el VPS. Auto-pausa si el bounce supera 5%."
+    },
+    {
+      "id": "route-domains-dns",
+      "label": "Dominios y DNS",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/routes/domains*.ts, dns-*.ts, route53-*.ts",
+      "purpose": "Compra de dominios, upsert de registros, espera de propagación, auth de email (SPF/DKIM/DMARC).",
+      "status": "live",
+      "endpoints": [
+        "POST /v1/domains/route53/register",
+        "POST /v1/domains/route53/dns/upsert",
+        "POST /v1/dns/ionos/upsert",
+        "POST /v1/domains/auth/configure",
+        "POST /v1/domains/bind"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/routes/domains-purchase.ts:1",
+        "apps/gateway-api/src/routes/dns-wait.ts:361",
+        "apps/gateway-api/src/routes/domains-email-auth.ts:1"
+      ]
+    },
+    {
+      "id": "route-infra",
+      "label": "Infraestructura y SMTP",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/routes/infrastructure*.ts, webdock-servers.ts, smtp-*.ts",
+      "purpose": "Inventario multi-proveedor, alta y adopción de servidores, provisión de Postfix, credenciales y SSH ops.",
+      "status": "live",
+      "endpoints": [
+        "POST /v1/webdock/servers/create",
+        "POST /v1/servers/:slug/provision-smtp",
+        "POST /v1/servers/:slug/provision-ops-ssh",
+        "GET /v1/infrastructure/inventory"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/routes/smtp-provisioning.ts:1",
+        "apps/gateway-api/src/routes/infrastructure.ts:1",
+        "apps/gateway-api/src/routes/smtp-credentials.ts:11"
+      ]
+    },
+    {
+      "id": "security-chain",
+      "label": "Cadena de seguridad",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/security/",
+      "purpose": "HMAC de entrada, tokens de aprobación con nonce, auth de mutaciones y quórum por horario.",
+      "status": "live",
+      "envFlags": [
+        "OPENCLAW_HMAC_SECRET",
+        "GATEWAY_SQLITE_FILE",
+        "OPENCLAW_SIGN_ALLOW_UNSIGNED_LOCAL_PANEL"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/security/hmac.ts:21",
+        "apps/gateway-api/src/security/approval-token.ts:46",
+        "apps/gateway-api/src/security/gateway-mutation-auth.ts:12"
+      ],
+      "notes": "HMAC-SHA256 sobre `${timestamp}.${rawBody}`, ventana ±60s. Token de aprobación: TTL 5 min, nonce de 32 bytes en SQLite, consumo one-shot con UPDATE condicional issued→consumed."
+    },
+    {
+      "id": "proposals-sign",
+      "label": "Firma de propuestas",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/routes/proposals-sign.ts",
+      "purpose": "El cuello de botella de todo efecto real: 9 gates antes de emitir el token y despachar.",
+      "status": "live",
+      "endpoints": [
+        "POST /v1/openclaw/proposals/:id/sign",
+        "POST /v1/openclaw/proposals/:id/reject"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/routes/proposals-sign.ts:133",
+        "apps/gateway-api/src/routes/proposals-sign.ts:247",
+        "apps/gateway-api/src/routes/proposals-reject.ts:53"
+      ],
+      "notes": "Una de las gates es verificar la cadena de auditoría entera: si está rota, 503 audit_chain_broken y no se firma nada. Los endpoints legacy de approve/runbook devuelven 410."
+    },
+    {
+      "id": "approval-guard",
+      "label": "Approval guard",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/approval-guard.ts",
+      "purpose": "Liga cada aprobación al dominio, skill e inputHash exactos. Anti confused-deputy.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/approval-guard.ts:11",
+        "apps/gateway-api/src/approval-guard.ts:27",
+        "apps/gateway-api/src/approval-guard.ts:50"
+      ],
+      "notes": "Sin esto, una aprobación para un dominio se podría reusar para otro. auditApprovalSendInputHash ata la aprobación al mensaje exacto que se va a enviar."
+    },
+    {
+      "id": "kill-switch",
+      "label": "Kill switch de acciones live",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/live-action-kill-switch.ts",
+      "purpose": "Clasifica 19 rutas como acción viva y las corta en seco cuando el switch está armado.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/live-action-kill-switch.ts:11",
+        "apps/gateway-api/src/main.ts:1802"
+      ],
+      "notes": "423 + evento oc.live_action.blocked_by_kill_switch. Se re-chequea antes de firmar, antes de despachar y en cada vuelta del polling del agente. Pausar warmup NO está en la lista: pausar siempre debe poder."
+    },
+    {
+      "id": "entity-guard",
+      "label": "Entity guard",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/entity-guard.ts",
+      "purpose": "Resuelve domain/serverSlug/serverIp contra el inventario real antes de dejar actuar.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/entity-guard.ts:1"
+      ],
+      "notes": "Bloquea con entity_not_resolved: el agente no puede operar sobre una entidad que no existe en el inventario."
+    },
+    {
+      "id": "skill-dispatcher",
+      "label": "Skill dispatcher",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/skill-dispatcher.ts",
+      "purpose": "Traduce (skill, params, token) en una llamada HTTP interna al handler correspondiente.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/skill-dispatcher.ts:326",
+        "apps/gateway-api/src/skill-dispatcher.ts:344",
+        "apps/gateway-api/src/internal-http-adapter.ts:1"
+      ],
+      "notes": "El token viaja en el body como approvalToken, no en header. Timeout síncrono de 60s: pasado eso responde 202 executing con un pollEndpoint."
+    },
+    {
+      "id": "audit-chain",
+      "label": "Cadena de auditoría",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/audit/hash-chain.ts",
+      "purpose": "Hash encadenado sobre eventos canónicos, verificación completa y ancla firmada del head.",
+      "status": "live",
+      "endpoints": [
+        "GET /v1/audit-events",
+        "GET /v1/audit-chain/verify",
+        "GET /v1/audit-chain/anchor"
+      ],
+      "envFlags": [
+        "LOCAL_AUDIT_LOG_FILE",
+        "AUDIT_ANCHOR_KEY"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/audit/hash-chain.ts:3",
+        "apps/gateway-api/src/audit-chain.ts:109",
+        "apps/gateway-api/src/audit-chain-anchor.ts:11"
+      ],
+      "notes": "hash = sha256(prevHash + JSON canónico del evento), desde GENESIS. La ingesta batch descarta los hashes entrantes, fuerza el actor real y strippea humanApproved sin firma probada."
+    },
+    {
+      "id": "canvas-live-svc",
+      "label": "Canvas live events",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/services/canvas-live-events.ts",
+      "purpose": "Proyecta tareas y artefactos del agente hacia el panel, por WS y por GET.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/services/canvas-live-events.ts:29",
+        "apps/gateway-api/src/services/canvas-live-events.ts:123"
+      ]
+    },
+    {
+      "id": "auto-rollback",
+      "label": "Auto-rollback",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/auto-rollback.ts",
+      "purpose": "Snapshots en disco y watchdogs: propagación DNS, auto-pausa por bounce, timeout de cloud-init.",
+      "status": "partial",
+      "envFlags": [
+        "ROLLBACK_SNAPSHOT_DIR"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/auto-rollback.ts:77",
+        "apps/gateway-api/src/auto-rollback.ts:181"
+      ],
+      "notes": "La clase y la factory existen; no se rastrearon todos los call sites en runtime. Auto-pausa de warmup con bounce >5% sobre al menos 10 envíos."
+    },
+    {
+      "id": "rollback-sqlite",
+      "label": "Rollback snapshots (SQLite)",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/security/rollback-snapshot.ts",
+      "purpose": "Snapshots de rollback en SQLite con TTL de 7 días y consumo idempotente.",
+      "status": "not-wired",
+      "evidence": [
+        "apps/gateway-api/src/security/rollback-snapshot.ts:27"
+      ],
+      "notes": "DEUDA: cero imports fuera del propio archivo. Convive con auto-rollback.ts, que hace lo mismo sobre archivos JSON. Hay dos implementaciones de rollback desconectadas entre sí."
+    },
+    {
+      "id": "env-preflight",
+      "label": "Env preflight",
+      "layer": "control",
+      "kind": "module",
+      "path": "apps/gateway-api/src/env-preflight.ts",
+      "purpose": "Chequeo de 43 variables al arrancar: separa fatales de warnings antes de escuchar.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/env-preflight.ts:1"
+      ],
+      "notes": "En el arranque verificado del 2026-07-27: 42/43 OK, 0 fatal, 1 warning (SMTP_SEND_REAL_EMAIL_ENABLE)."
+    },
+    {
+      "id": "bedrock-bridge",
+      "label": "Bedrock bridge",
+      "layer": "agent",
+      "kind": "module",
+      "path": "apps/gateway-api/src/openclaw-bedrock-bridge.ts",
+      "purpose": "El agente real: system prompt + contexto vivo, loop de tool-use en streaming, artefactos e historial.",
+      "status": "live",
+      "tech": [
+        "AWS Bedrock",
+        "us.anthropic.claude-sonnet-4-6",
+        "Anthropic Messages API"
+      ],
+      "envFlags": [
+        "OPENCLAW_BRIDGE_KIND",
+        "AWS_BEDROCK_MODEL_ID",
+        "OPENCLAW_LIVE_CONTEXT_MAX_CHARS"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/openclaw-bedrock-bridge.ts:1014",
+        "apps/gateway-api/src/openclaw-bedrock-bridge.ts:1137",
+        "config/gateway.env:52"
+      ],
+      "notes": "maxTokens 4096, temperature 0.3, 40 turnos de historial, 40 iteraciones de tools, timeout de conversación 300s. Antes de cada turno inyecta contexto vivo con 8 GET en paralelo (overview, kill switch, canvas, auditoría, inventarios, sender pool, scratch)."
+    },
+    {
+      "id": "tools-builder",
+      "label": "Catálogo de tools (45)",
+      "layer": "agent",
+      "kind": "module",
+      "path": "apps/gateway-api/src/openclaw-tools-builder.ts",
+      "purpose": "Construye las tools que ve el modelo, con schema y gate por entorno.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/openclaw-tools-builder.ts:1610",
+        "apps/gateway-api/src/openclaw-tools-builder.ts:1619",
+        "apps/gateway-api/src/openclaw-tools-builder.ts:62"
+      ],
+      "notes": "CORREGIDO el 2026-07-27 (sin mergear a produ todavía): toolDefinitions tenía 45 claves y el union OpenClawToolName sólo 43 — semantic_remember y semantic_recall quedaban fuera del catálogo pese a estar definidas, ruteadas y con endpoint. Se repusieron en el union y en openClawToolNames(), con un test de regresión que fija el invariante. Sin tsc en el gate, era el único modo de detectarlo. Todas las tools exigen OPENCLAW_HMAC_SECRET."
+    },
+    {
+      "id": "tool-use-processor",
+      "label": "Tool-use processor",
+      "layer": "agent",
+      "kind": "module",
+      "path": "apps/gateway-api/src/tool-use-processor.ts",
+      "purpose": "Decide qué hacer con cada tool_use: ejecutar directo, ir a memoria, o pasar por aprobación humana.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/tool-use-processor.ts:130",
+        "apps/gateway-api/src/tool-use-processor.ts:1318",
+        "apps/gateway-api/src/tool-use-processor.ts:195"
+      ],
+      "notes": "3 ramas: 17 read-only directas, 3 de memoria firmadas con HMAC, el resto al ApprovalGate. Antes de todo: tool desconocida, tool deshabilitada, params inválidos y kill switch fail-closed."
+    },
+    {
+      "id": "openclaw-workspace",
+      "label": "Workspace de OpenClaw",
+      "layer": "agent",
+      "kind": "module",
+      "path": "apps/gateway-api/src/openclaw-workspace.ts",
+      "purpose": "Disco del agente: skills, ejecuciones, aprendizajes e inventario, con locks e IO atómico.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/openclaw-workspace.ts:1"
+      ],
+      "notes": "Acá vive runtime/openclaw-workspace/inventory/smtp-credentials.json, que el daemon LIVE de warmup lee y descifra."
+    },
+    {
+      "id": "episodic-scratch",
+      "label": "Memoria episódica",
+      "layer": "agent",
+      "kind": "module",
+      "path": "packages/storage/src/episodic-scratch.ts",
+      "purpose": "Lo que el agente vivió: pasos, resultados y hechos, con dos planos y recuperación que sabe abstenerse.",
+      "status": "live",
+      "endpoints": [
+        "GET /v1/openclaw/scratch",
+        "POST /v1/openclaw/compact-intent"
+      ],
+      "tables": [
+        "openclaw_episodic_scratch",
+        "openclaw_episodic_scratch_quarantine"
+      ],
+      "evidence": [
+        "packages/storage/src/episodic-scratch.ts:15",
+        "packages/storage/src/episodic-scratch.ts:518",
+        "apps/gateway-api/src/routes/openclaw-compact-intent.ts:146"
+      ],
+      "notes": "Planos: observation (lo dijo el agente) vs verified_fact (lo dijo el operador o una tool). El retrieval devuelve grounded, ambiguous o abstain — prefiere callarse antes que alucinar. compact_intent exige que el intentId exista en la cadena de auditoría."
+    },
+    {
+      "id": "semantic-memory",
+      "label": "Memoria semántica",
+      "layer": "agent",
+      "kind": "module",
+      "path": "apps/gateway-api/src/routes/openclaw-semantic-memory.ts",
+      "purpose": "Recuerdo por embeddings con búsqueda híbrida (vector + keyword, fusión RRF).",
+      "status": "live",
+      "endpoints": [
+        "POST /v1/openclaw/memory/remember",
+        "POST /v1/openclaw/memory/recall"
+      ],
+      "tables": [
+        "openclaw_memory_vectors"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/routes/openclaw-semantic-memory.ts:146",
+        "packages/storage/src/memory-vectors.ts:276",
+        "packages/storage/src/memory-vectors.ts:15"
+      ],
+      "notes": "Desde el 2026-07-27 el agente sí la alcanza: las tools semantic_remember/semantic_recall entran al catálogo. Vector de 1024 dims, búsqueda híbrida con fusión RRF. Si el embedding falla, degrada a full-text en vez de romper. Gate compartido con read_episodic_scratch: OPENCLAW_EPISODIC_SCRATCH_ENABLE=false las apaga (ojo, postgresConfigured() no mira POSTGRES_URL: el nombre miente)."
+    },
+    {
+      "id": "embedding-service",
+      "label": "Embeddings",
+      "layer": "agent",
+      "kind": "module",
+      "path": "apps/gateway-api/src/openclaw-embedding-service.ts",
+      "purpose": "Embeddings de 1024 dims vía Bedrock, con degradación fail-soft.",
+      "status": "live",
+      "tech": [
+        "amazon.titan-embed-text-v2:0"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/openclaw-embedding-service.ts:19"
+      ]
+    },
+    {
+      "id": "multi-agent-runtime",
+      "label": "Runtime multi-agente (5 seniors)",
+      "layer": "agent",
+      "kind": "module",
+      "path": "apps/gateway-api/src/agents/",
+      "purpose": "Orquestador + 4 especialistas (DNS, SMTP, warmup, QA-security) con matriz de autoridad y 55 tools.",
+      "status": "not-wired",
+      "evidence": [
+        "apps/gateway-api/src/agents/multi-agent-runtime.ts:46",
+        "apps/gateway-api/src/agents/orchestrator.test.ts:5",
+        "packages/domain/src/multi-agent.ts:9"
+      ],
+      "notes": "DEUDA GRANDE: 6 módulos completos, con matriz de autoridad, detección de ciclos, cap de 50k tokens por sesión y pricing — y su único consumidor es su propio test. main.ts no importa nada de agents/. Los endpoints que anuncia en su comentario no existen. Los tool specs se generan con schema vacío."
+    },
+    {
+      "id": "domain-pkg",
+      "label": "packages/domain",
+      "layer": "domain",
+      "kind": "module",
+      "path": "packages/domain/src",
+      "purpose": "~110 módulos de lógica pura sin I/O: política, kill switch, runbooks, ledger, canvas, inventarios.",
+      "status": "live",
+      "evidence": [
+        "packages/domain/src/repositories.ts:5",
+        "packages/domain/src/types.ts:1"
+      ],
+      "notes": "Define 4 puertos (audit, supresión, send jobs, sender nodes) que los stores de archivo implementan."
+    },
+    {
+      "id": "mail-policy",
+      "label": "Motor de política de correo",
+      "layer": "domain",
+      "kind": "module",
+      "path": "packages/domain/src/mail-policy.engine.ts",
+      "purpose": "Decide si un envío puede salir: clasificación, consentimiento, supresión, cumplimiento.",
+      "status": "live",
+      "evidence": [
+        "packages/domain/src/mail-policy.engine.ts:1",
+        "apps/worker/src/main.ts:78"
+      ],
+      "notes": "Fail-closed en el worker: si la evaluación tira error, el job queda bloqueado, no pasa."
+    },
+    {
+      "id": "warmup-domain",
+      "label": "Dominio de warmup",
+      "layer": "domain",
+      "kind": "module",
+      "path": "apps/warmup-engine/src/domain",
+      "purpose": "FSM de estados, rampa con clamps y placement por Wilson lower-bound. Todo determinista, sin I/O.",
+      "status": "live",
+      "evidence": [
+        "apps/warmup-engine/src/domain/node-state.ts:90",
+        "apps/warmup-engine/src/domain/ramp.ts:67",
+        "apps/warmup-engine/src/domain/placement.ts:6"
+      ],
+      "notes": "Estados: blocked · fresh · warm · paused · quarantined. El gate de auth precede a todo. Lo que gatea es el Wilson-LB al 95%, no la proporción cruda: 'placement real medido > score interno'. Los tabs de Gmail cuentan como inbox; 'missing' no es spam."
+    },
+    {
+      "id": "worker",
+      "label": "Worker de envío",
+      "layer": "runners",
+      "kind": "app",
+      "path": "apps/worker/src/main.ts",
+      "purpose": "Reclama UN job de la cola, lo pasa por todos los gates y persiste el resultado.",
+      "status": "mock",
+      "evidence": [
+        "apps/worker/src/main.ts:59",
+        "apps/worker/src/main.ts:182",
+        "apps/worker/src/main.ts:37"
+      ],
+      "notes": "No es un daemon: reclama un job y termina. Y NO envía correo — simulateSendResult, con el log diciéndolo literal: 'SMTP is disabled in Base 1/2'. Banner de arranque: delivrix_smtp_enabled=false."
+    },
+    {
+      "id": "send-queue",
+      "label": "Cola de envío",
+      "layer": "runners",
+      "kind": "store",
+      "path": "packages/queue/src/local-file-send-queue.ts",
+      "purpose": "Cola de SendJob sobre un archivo JSON, con claim transaccional y recuperación de colgados.",
+      "status": "live",
+      "envFlags": [
+        "LOCAL_SEND_QUEUE_FILE"
+      ],
+      "evidence": [
+        "packages/queue/src/local-file-send-queue.ts:39",
+        "packages/queue/src/local-file-send-queue.ts:110"
+      ],
+      "notes": "No hay BullMQ ni Redis: el claim es una transacción sobre runtime/send-jobs.json. Estados: queued → processing → completed | failed | blocked."
+    },
+    {
+      "id": "warmup-dryrun",
+      "label": "Daemon dry-run (engine v1)",
+      "layer": "runners",
+      "kind": "app",
+      "path": "apps/warmup-engine/src/service/dryrun-daemon.ts",
+      "purpose": "Corre el tick del motor v1 contra MockTransport: cero correo, toda la mecánica.",
+      "status": "live",
+      "envFlags": [
+        "WARMUP_ENGINE_ENABLE",
+        "WARMUP_TRANSPORT=mock",
+        "WARMUP_DRYRUN_INTERVAL_MS",
+        "WARMUP_GMAIL_OAUTH_ENABLE"
+      ],
+      "evidence": [
+        "apps/warmup-engine/src/service/dryrun-daemon.ts:235",
+        "apps/warmup-engine/src/service/dryrun-daemon.ts:152",
+        "apps/warmup-engine/src/service/dryrun-daemon.ts:138"
+      ],
+      "notes": "Se rehúsa a arrancar si WARMUP_TRANSPORT no es mock. Destinatarios en .invalid (TLD reservado). Los nodos nacen 'blocked' y listActiveNodes los excluye, así que el tick planifica 0 envíos hasta que alguien los habilite."
+    },
+    {
+      "id": "warmup-live",
+      "label": "Daemon LIVE de warmup",
+      "layer": "runners",
+      "kind": "app",
+      "path": "apps/warmup-engine/src/service/live-warmup-daemon.ts",
+      "purpose": "El que SÍ manda correo real: ciclo SEND → MEASURE → ENGAGE → REPLY contra casillas semilla.",
+      "status": "live",
+      "envFlags": [
+        "WARMUP_LIVE_ENABLE",
+        "WARMUP_LIVE_KILL_FILE",
+        "WARMUP_LIVE_MAX_PER_DAY",
+        "WARMUP_LIVE_PLACEMENT_FLOOR",
+        "WARMUP_LIVE_INTERVAL_MS"
+      ],
+      "evidence": [
+        "apps/warmup-engine/src/service/live-warmup-daemon.ts:257",
+        "apps/warmup-engine/src/service/live-warmup-daemon.ts:113",
+        "apps/warmup-engine/src/live/warmup-live-cycle.ts:96"
+      ],
+      "notes": "DIVERGENCIA: no pasa por el auth-gate, ni por la rampa, ni por la FSM del engine v1. Usa su propio vocabulario (INBOX/SPAM/PROMOTIONS/OTHER) y sólo escribe warmup_activity. Además usa la Gmail REST API, que el README declara como no-negociable evitar. Barreras: apagado por defecto, kill-file, tope de 3 ciclos/día y piso de placement."
+    },
+    {
+      "id": "warmup-scheduler",
+      "label": "Scheduler del engine",
+      "layer": "runners",
+      "kind": "module",
+      "path": "apps/warmup-engine/src/scheduler/scheduler.ts",
+      "purpose": "Las 3 funciones del tick: planear el día, drenar la cola y reconciliar placement.",
+      "status": "live",
+      "evidence": [
+        "apps/warmup-engine/src/scheduler/scheduler.ts:109",
+        "apps/warmup-engine/src/scheduler/scheduler.ts:203",
+        "apps/warmup-engine/src/scheduler/scheduler.ts:299"
+      ],
+      "notes": "slotKey determinista (nodeId:fecha:i) + UNIQUE en la tabla = idempotencia exactly-once. Los seeds se topean al 10% de la cuota."
+    },
+    {
+      "id": "warmup-send-worker",
+      "label": "Send worker + transporte",
+      "layer": "runners",
+      "kind": "module",
+      "path": "apps/warmup-engine/src/runtime/send-worker.ts",
+      "purpose": "Idempotencia → gate → transporte, con mapeo de error permanente vs transitorio y DLQ a los 3 intentos.",
+      "status": "partial",
+      "envFlags": [
+        "WARMUP_TRANSPORT",
+        "WARMUP_SMTP_HOST",
+        "WARMUP_SMTP_PORT"
+      ],
+      "evidence": [
+        "apps/warmup-engine/src/runtime/send-worker.ts:106",
+        "apps/warmup-engine/src/runtime/transport.ts:77",
+        "apps/warmup-engine/src/live/compose.ts:129"
+      ],
+      "notes": "PostfixTransport existe y está testeado, pero createWarmupTransport no tiene ningún caller: el cableado real a Postfix no está hecho. Todo mensaje lleva header X-Warmup-Id para aislamiento."
+    },
+    {
+      "id": "warmup-auth-gate",
+      "label": "Auth gate + 13 checks",
+      "layer": "runners",
+      "kind": "module",
+      "path": "apps/warmup-engine/src/runtime/auth-gate.ts",
+      "purpose": "Contrato firmado de autenticación: SPF, DKIM, DMARC, MX, PTR, RBL, TLS, HELO, SMTP/IMAP auth, unsub.",
+      "status": "not-wired",
+      "evidence": [
+        "apps/warmup-engine/src/runtime/auth-gate.ts:35",
+        "apps/warmup-engine/src/runtime/auth-contract-builder.ts:66",
+        "apps/warmup-engine/src/checks/dns-auth-checks.ts:352"
+      ],
+      "notes": "DEUDA: el gate es fail-closed y los 13 checkers están implementados sobre resolvers reales, pero buildAuthReadinessContract no tiene callers en producción — el contrato nunca se construye en runtime. Sin contrato, el gate bloquea todo por 'contract_missing'."
+    },
+    {
+      "id": "imap-reader",
+      "label": "Lector IMAP de placement",
+      "layer": "runners",
+      "kind": "module",
+      "path": "apps/warmup-engine/src/reader/imap-placement-reader.ts",
+      "purpose": "Mide dónde cayó el mensaje: primary, tabs, spam o missing.",
+      "status": "live",
+      "evidence": [
+        "apps/warmup-engine/src/reader/imap-placement-reader.ts:150",
+        "apps/warmup-engine/src/reader/imap-placement-reader.ts:65",
+        "apps/warmup-engine/src/reader/imap-placement-reader.ts:210"
+      ],
+      "notes": "Ventana de gracia de 6h con sondeos a 2m/10m/30m/2h. Si el cliente IMAP falla devuelve null: nunca inventa un resultado. Un no-encontrado dentro de la ventana es 'pendiente', no 'missing'."
+    },
+    {
+      "id": "episodic-ttl-job",
+      "label": "Job de TTL episódico",
+      "layer": "runners",
+      "kind": "module",
+      "path": "apps/gateway-api/src/episodic-scratch-ttl.ts",
+      "purpose": "Cada 6h expira memoria vieja y lo deja auditado.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/episodic-scratch-ttl.ts:75"
+      ]
+    },
+    {
+      "id": "infra-health-poller",
+      "label": "Poller de salud de cuentas",
+      "layer": "runners",
+      "kind": "module",
+      "path": "apps/gateway-api/src/infrastructure-health-poller.ts",
+      "purpose": "Sondea la salud de cada cuenta de proveedor en segundo plano.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/infrastructure-health-poller.ts:1",
+        "apps/gateway-api/src/main.ts:332"
+      ]
+    },
+    {
+      "id": "postfix-log-parser",
+      "label": "Lector de mail.log",
+      "layer": "runners",
+      "kind": "module",
+      "path": "apps/gateway-api/src/postfix-log-parser.ts",
+      "purpose": "Señal pasiva de entrega leída del mail.log de cada nodo, sin mandar nada.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/postfix-log-parser.ts:1"
+      ],
+      "notes": "Lo último que entró al repo (commit 0ac3d78): mide entregabilidad mirando lo que ya pasó, en vez de generar tráfico para medir."
+    },
+    {
+      "id": "postgres",
+      "label": "PostgreSQL 16 + pgvector",
+      "layer": "data",
+      "kind": "store",
+      "path": "infra/postgres",
+      "purpose": "Memoria del agente y todo el subsistema de warmup.",
+      "status": "live",
+      "tech": [
+        "pgvector/pgvector:pg16"
+      ],
+      "tables": [
+        "openclaw_episodic_scratch",
+        "openclaw_memory_vectors",
+        "audit_events",
+        "operators",
+        "campaigns",
+        "send_jobs",
+        "send_results",
+        "sender_nodes",
+        "clusters",
+        "wallets"
+      ],
+      "envFlags": [
+        "POSTGRES_URL",
+        "WARMUP_DB_URL"
+      ],
+      "evidence": [
+        "infra/postgres/migrations/001_init.sql:9",
+        "infra/postgres/migrations/002_pgvector.sql:8",
+        "scripts/db/migrate.mjs:14"
+      ],
+      "notes": "Contenedor delivrix-postgres. Ojo: el esquema de dominio (campaigns, send_jobs…) existe pero el estado operativo vivo NO está ahí, está en archivos."
+    },
+    {
+      "id": "warmup-tables",
+      "label": "Tablas warmup_*",
+      "layer": "data",
+      "kind": "store",
+      "path": "apps/warmup-engine/migrations",
+      "purpose": "Nodos, envíos, señales, seeds, tests de placement, rollups y el feed de actividad.",
+      "status": "live",
+      "tables": [
+        "warmup_nodes",
+        "warmup_sends",
+        "warmup_signals",
+        "warmup_seed_accounts",
+        "warmup_placement_tests",
+        "warmup_placement_results",
+        "warmup_placement_rollups",
+        "warmup_engaged_recipients",
+        "warmup_activity"
+      ],
+      "evidence": [
+        "apps/warmup-engine/migrations/001_init.sql:7",
+        "apps/warmup-engine/migrations/001_init.sql:42",
+        "apps/warmup-engine/migrations/003_activity.sql:7"
+      ],
+      "notes": "Migrador propio, separado de db:migrate. La idempotencia exactly-once vive en el UNIQUE (node_id, slot_key) de warmup_sends. Los 3 caminos de warmup escriben en tablas distintas de esta misma base."
+    },
+    {
+      "id": "local-store",
+      "label": "Estado en archivos (runtime/)",
+      "layer": "data",
+      "kind": "store",
+      "path": "packages/local-store/src",
+      "purpose": "La fuente de verdad operativa real: kill switch, sender nodes, resultados, supresión, rate limits, ledger.",
+      "status": "live",
+      "evidence": [
+        "packages/local-store/src/json-file-store.ts:30",
+        "packages/local-store/src/local-file-kill-switch-store.ts:12",
+        "apps/gateway-api/src/main.ts:434"
+      ],
+      "notes": "14 stores sobre JsonFileStore con escritura atómica (tmp + rename), mutex in-process y lock de archivo. El gateway instancia 14, el worker 7. Ninguno de los dos abre un Pool para estas entidades."
+    },
+    {
+      "id": "audit-jsonl",
+      "label": ".audit/audit-events.jsonl",
+      "layer": "data",
+      "kind": "store",
+      "path": ".audit/audit-events.jsonl",
+      "purpose": "La cadena de auditoría append-only. Es lo único versionado en git de todo el estado.",
+      "status": "live",
+      "evidence": [
+        "packages/local-store/src/local-file-audit-log.ts:27",
+        "packages/local-store/src/local-file-audit-log.ts:39"
+      ],
+      "notes": "Cada append toma un file lock, lee el último hash del disco y encadena. La firma de una propuesta y el token emitido quedan acá — y de acá los relee el approval-guard para validar el token en el handler."
+    },
+    {
+      "id": "state-jsonl",
+      "label": "state/ (canvas + chat)",
+      "layer": "data",
+      "kind": "store",
+      "path": "state/",
+      "purpose": "Tareas y artefactos del canvas, y un JSONL por conversación de chat.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/services/canvas-live-events.ts:29",
+        "apps/gateway-api/src/services/openclaw-chat-history-store.ts:9"
+      ]
+    },
+    {
+      "id": "sqlite",
+      "label": "SQLite del gateway",
+      "layer": "data",
+      "kind": "store",
+      "path": "runtime/gateway.sqlite",
+      "purpose": "Nonces de aprobación (anti-replay) y snapshots de rollback.",
+      "status": "live",
+      "tables": [
+        "approval_nonces",
+        "rollback_snapshots"
+      ],
+      "envFlags": [
+        "GATEWAY_SQLITE_FILE"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/security/approval-token.ts:259",
+        "apps/gateway-api/src/security/approval-token.ts:12",
+        "apps/gateway-api/migrations/0007_approval_nonces.sql:1"
+      ],
+      "notes": "Las migraciones se auto-aplican: openApprovalDatabase() lee y ejecuta 0007_approval_nonces.sql cada vez que abre la base (approval-token.ts:259-268). Ambas tablas existen en runtime/gateway.sqlite. approval_nonces está en uso real (anti-replay); rollback_snapshots existe pero su módulo no lo importa nadie."
+    },
+    {
+      "id": "redis",
+      "label": "Redis",
+      "layer": "data",
+      "kind": "store",
+      "path": "infra/docker-compose.yml",
+      "purpose": "Aparece en el healthcheck del gateway.",
+      "status": "partial",
+      "envFlags": [
+        "REDIS_URL"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/dependency-health.ts:32",
+        "apps/gateway-api/src/main.ts:1610"
+      ],
+      "notes": "DEUDA / MALENTENDIDO COMÚN: pese a que la doc del proyecto declara 'Redis + BullMQ' como stack de colas, no se encontró ningún productor ni consumidor real. Redis sólo se pinguea para reportar 'ok' en /health. Las colas son archivos JSON."
+    },
+    {
+      "id": "bedrock",
+      "label": "AWS Bedrock",
+      "layer": "providers",
+      "kind": "external",
+      "path": "@aws-sdk/client-bedrock-runtime",
+      "purpose": "El LLM que razona: chat del agente y embeddings de memoria.",
+      "status": "live",
+      "tech": [
+        "us.anthropic.claude-sonnet-4-6",
+        "amazon.titan-embed-text-v2:0"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/openclaw-bedrock-bridge.ts:1004",
+        "config/gateway.env:51",
+        ".audit/bedrock-policy.json:12"
+      ],
+      "notes": "Región us-east-1. La política IAM habilita Sonnet 4-6 y Haiku 4-5."
+    },
+    {
+      "id": "route53",
+      "label": "AWS Route 53",
+      "layer": "providers",
+      "kind": "external",
+      "path": "packages/adapters/src/aws-route53-*.ts",
+      "purpose": "Registro de dominios y zonas DNS. El proveedor por defecto del orquestador.",
+      "status": "live",
+      "envFlags": [
+        "AWS_ROUTE53_ENABLE_DNS_WRITES",
+        "AWS_ROUTE53_ENABLE_PURCHASE"
+      ],
+      "evidence": [
+        "packages/adapters/src/aws-route53-dns-adapter.ts:71",
+        "packages/adapters/src/aws-route53-domains-adapter.ts:207"
+      ],
+      "notes": "Las escrituras y las compras van detrás de flags separados del simple 'tener credenciales'."
+    },
+    {
+      "id": "namecheap",
+      "label": "Namecheap",
+      "layer": "providers",
+      "kind": "external",
+      "path": "packages/adapters/src/namecheap-domains-adapter.ts",
+      "purpose": "Registro alternativo de dominios, multi-cuenta.",
+      "status": "live",
+      "evidence": [
+        "packages/adapters/src/namecheap-domains-adapter.ts:126",
+        "packages/adapters/src/namecheap-domains-adapter.ts:455"
+      ],
+      "notes": "Exige IP whitelisteada. Cuentas indexadas NAMECHEAP_ACCOUNT_{n}_*; las marcadas deprecated se saltan. El único adapter que usa provider-fetch (timeout + circuit breaker)."
+    },
+    {
+      "id": "ionos",
+      "label": "IONOS",
+      "layer": "providers",
+      "kind": "external",
+      "path": "packages/adapters/src/ionos-*.ts",
+      "purpose": "DNS y dominios de IONOS: un lector y un actuador que lo extiende para escribir.",
+      "status": "live",
+      "envFlags": [
+        "IONOS_DNS_ENABLE_WRITES"
+      ],
+      "evidence": [
+        "packages/adapters/src/ionos-dns-adapter.ts:43",
+        "packages/adapters/src/ionos-dns-actuator.ts:84"
+      ]
+    },
+    {
+      "id": "porkbun",
+      "label": "Porkbun",
+      "layer": "providers",
+      "kind": "external",
+      "path": "packages/adapters/src/porkbun-adapter.ts",
+      "purpose": "Sugerencia y compra de dominios.",
+      "status": "partial",
+      "envFlags": [
+        "PORKBUN_ENABLE_PURCHASE"
+      ],
+      "evidence": [
+        "packages/adapters/src/porkbun-adapter.ts:157"
+      ],
+      "notes": "Sin credenciales devuelve heurística marcada como tal: 'heuristic_mock_no_porkbun_credentials'. No miente sobre el origen del dato."
+    },
+    {
+      "id": "webdock",
+      "label": "Webdock",
+      "layer": "providers",
+      "kind": "external",
+      "path": "packages/adapters/src/webdock-real-adapter.ts",
+      "purpose": "VPS: crear, listar, bindear dominio, SSH. Multi-cuenta con roles.",
+      "status": "live",
+      "envFlags": [
+        "WEBDOCK_API_KEY_PRIMARY",
+        "WEBDOCK_API_KEY_OPS",
+        "WEBDOCK_ALLOW_MOCK"
+      ],
+      "evidence": [
+        "packages/adapters/src/webdock-real-adapter.ts:284",
+        "packages/adapters/src/webdock-real-adapter.ts:258"
+      ],
+      "notes": "Lectura y escritura tienen keys distintas. El fallback a mock es EXPLÍCITO: sin WEBDOCK_ALLOW_MOCK y sin read key no cae a mock, reporta 'unavailable'. Dedupe de cuentas por fingerprint de credencial."
+    },
+    {
+      "id": "contabo",
+      "label": "Contabo",
+      "layer": "providers",
+      "kind": "external",
+      "path": "packages/adapters/src/contabo-adapter.ts",
+      "purpose": "VPS alternativo con OAuth. Implementa el puerto VpsProvider.",
+      "status": "live",
+      "evidence": [
+        "packages/adapters/src/contabo-adapter.ts:142",
+        "packages/adapters/src/contabo-adapter.ts:845"
+      ],
+      "notes": "Multi-cuenta CONTABO_ACCOUNT_{n}_*. En Contabo la cuenta ES el vpsProviderId: pasarle un serverAccountId falla con requested_account_unsupported_for_provider."
+    },
+    {
+      "id": "proxmox",
+      "label": "Proxmox",
+      "layer": "providers",
+      "kind": "external",
+      "path": "packages/adapters/src/proxmox-adapter.ts",
+      "purpose": "Infra propia sobre hardware físico: planificar y simular provisioning.",
+      "status": "mock",
+      "evidence": [
+        "packages/adapters/src/proxmox-adapter.ts:41",
+        "packages/adapters/src/proxmox-adapter.ts:50"
+      ],
+      "notes": "100% dry-run declarado: mode mock, dryRun true, proxmoxApiEnabled false. Bloquea explícitamente proxmox-api-create, ssh, dns-live-change y send-mail. No existe modo real."
+    },
+    {
+      "id": "mxtoolbox",
+      "label": "MXToolbox",
+      "layer": "providers",
+      "kind": "external",
+      "path": "packages/adapters/src/mxtoolbox-adapter.ts",
+      "purpose": "Reputación y listas negras de IP y dominio.",
+      "status": "live",
+      "evidence": [
+        "packages/adapters/src/mxtoolbox-adapter.ts:90",
+        "packages/adapters/src/mxtoolbox-adapter.ts:411"
+      ],
+      "notes": "Cuando falta la API key marca el resultado como mock en vez de disfrazarlo de real."
+    },
+    {
+      "id": "gmail-api",
+      "label": "Gmail API + IMAP",
+      "layer": "providers",
+      "kind": "external",
+      "path": "apps/warmup-engine/src/live/mail-adapters.ts",
+      "purpose": "Leer, etiquetar y responder en las casillas semilla para medir placement real.",
+      "status": "live",
+      "evidence": [
+        "apps/warmup-engine/src/service/live-warmup-daemon.ts:200",
+        "apps/warmup-engine/src/live/mail-adapters.ts:509",
+        "apps/warmup-engine/src/live/google-oauth-token-provider.ts:77"
+      ],
+      "notes": "OAuth XOAUTH2 con cache y refresh proactivo. El daemon LIVE la usa para medir y para el engagement (sacar de spam, marcar importante)."
+    },
+    {
+      "id": "smtp-nodes",
+      "label": "Nodos SMTP (VPS)",
+      "layer": "fleet",
+      "kind": "fleet",
+      "path": "flota Webdock / Contabo",
+      "purpose": "Los servidores que realmente entregan: Postfix + OpenDKIM + Dovecot, IP dedicada y PTR.",
+      "status": "live",
+      "tech": [
+        "Postfix",
+        "OpenDKIM",
+        "Dovecot",
+        "Ubuntu 24.04"
+      ],
+      "evidence": [
+        "apps/gateway-api/src/routes/smtp-provisioning.ts:1",
+        "apps/gateway-api/src/routes/warmup-ramp.ts:365"
+      ],
+      "notes": "Realidad medida el 2026-07-25: Gmail rechaza 38 de 64 nodos con 550-5.7.1 'unsolicited' teniendo TODAS las IPs limpias en listas negras. Es reputación interna de Google, invisible al chequeo de blacklists."
+    },
+    {
+      "id": "ssh-bridge",
+      "label": "Ejecutor SSH de la flota",
+      "layer": "fleet",
+      "kind": "module",
+      "path": "apps/gateway-api/src/routes/smtp-provisioning.ts",
+      "purpose": "Ejecucion remota en los nodos SMTP: provision, retrofit de SASL, sendmail de la rampa, traida del tail de mail.log.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/routes/smtp-provisioning.ts:734",
+        "apps/gateway-api/src/routes/smtp-provisioning.ts:1684",
+        "apps/gateway-api/src/main.ts:840",
+        "apps/gateway-api/src/routes/warmup-ramp.ts:372"
+      ],
+      "notes": "Tambien provisiona el usuario SSH 'ops' dedicado por nodo (RSA-3072 PKCS#8, cifrado, revocable) como complemento del doc de credenciales: provisionOpsSshForNode en smtp-provisioning.ts:608. NO confundir con agent-chat-bridge, que es SSH contra el container del agente, no contra la flota."
+    },
+    {
+      "id": "seed-inboxes",
+      "label": "Casillas semilla",
+      "layer": "fleet",
+      "kind": "fleet",
+      "path": "Gmail / Workspace / Outlook",
+      "purpose": "Donde se mide si el correo cayó en inbox, en tabs o en spam.",
+      "status": "live",
+      "evidence": [
+        "apps/warmup-engine/src/runtime/config.ts:142",
+        "apps/warmup-engine/src/domain/placement.ts:25"
+      ],
+      "notes": "Proveedores mayores que gatean la graduación: gmail, workspace, outlook, m365, yahoo. gmx y web.de se miden pero no bloquean."
+    },
+    {
+      "id": "agent-chat-bridge",
+      "label": "Puente SSH al container del agente",
+      "layer": "agent",
+      "kind": "module",
+      "path": "apps/gateway-api/src/openclaw-ssh-bridge.ts",
+      "purpose": "Habla por SSH con el container donde corre el agente OpenClaw, para chat e historial. No toca la flota SMTP.",
+      "status": "partial",
+      "evidence": [
+        "apps/gateway-api/src/openclaw-ssh-bridge.ts:4",
+        "apps/gateway-api/src/openclaw-ssh-bridge.ts:8",
+        "apps/gateway-api/src/main.ts:815",
+        "apps/gateway-api/src/main.ts:816"
+      ],
+      "notes": "Es el camino de reserva: main.ts:815 solo lo instancia si NO hay bridge de Bedrock (openClawChatBridge = openClawBedrockBridge ?? openClawSshBridge). Estaba fusionado con el ejecutor de la flota en el nodo ssh-bridge, que apuntaba a este archivo."
+    },
+    {
+      "id": "delivery-reason-collector",
+      "label": "Colector de motivo de entrega",
+      "layer": "runners",
+      "kind": "module",
+      "path": "apps/gateway-api/src/openclaw-delivery-reason.ts",
+      "purpose": "Trae el tail de mail.log de un nodo por SSH y se lo pasa al parser puro para obtener el motivo de entrega por mensaje.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/openclaw-delivery-reason.ts:120",
+        "apps/gateway-api/src/openclaw-delivery-reason.ts:17"
+      ],
+      "notes": "Este es el que hace I/O. postfix-log-parser.ts es una funcion pura: su encabezado dice explicitamente que convierte el tail en resultados 'WITHOUT OpenClaw ever touching SSH'."
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "panel-shell",
+      "to": "read-boundary",
+      "kind": "http",
+      "label": "todo el tráfico del panel",
+      "evidence": "apps/admin-panel/vite.config.ts:141"
+    },
+    {
+      "id": "e2",
+      "from": "panel-canvas",
+      "to": "panel-ws",
+      "kind": "ws",
+      "label": "canvas + logs",
+      "evidence": "apps/admin-panel/src/features/canvas/canvas-live-client.ts:379"
+    },
+    {
+      "id": "e3",
+      "from": "panel-warmup-view",
+      "to": "read-boundary",
+      "kind": "http",
+      "label": "status · trends · activity",
+      "evidence": "apps/admin-panel/src/shared/api/read-boundary.ts:1"
+    },
+    {
+      "id": "e4",
+      "from": "panel-safety",
+      "to": "read-boundary",
+      "kind": "http",
+      "label": "kill switch · auditoría",
+      "evidence": "apps/admin-panel/vite.config.ts:110"
+    },
+    {
+      "id": "e5",
+      "from": "panel-approval-gate",
+      "to": "read-boundary",
+      "kind": "http",
+      "label": "sign / reject (write nominado)",
+      "evidence": "apps/admin-panel/vite.config.ts:129"
+    },
+    {
+      "id": "e6",
+      "from": "read-boundary",
+      "to": "gateway-main",
+      "kind": "http",
+      "label": "proxy + inyección de tokens",
+      "evidence": "apps/admin-panel/vite.config.ts:158"
+    },
+    {
+      "id": "e7",
+      "from": "panel-ws",
+      "to": "gateway-main",
+      "kind": "ws",
+      "label": "3 streams",
+      "evidence": "apps/admin-panel/vite.config.ts:314"
+    },
+    {
+      "id": "e10",
+      "from": "gateway-main",
+      "to": "route-orchestrator-smtp",
+      "kind": "import",
+      "label": "dispatch",
+      "evidence": "apps/gateway-api/src/main.ts:205"
+    },
+    {
+      "id": "e11",
+      "from": "gateway-main",
+      "to": "route-warmup",
+      "kind": "import",
+      "label": "dispatch",
+      "evidence": "apps/gateway-api/src/main.ts:191"
+    },
+    {
+      "id": "e12",
+      "from": "gateway-main",
+      "to": "route-domains-dns",
+      "kind": "import",
+      "label": "dispatch",
+      "evidence": "apps/gateway-api/src/main.ts:186"
+    },
+    {
+      "id": "e13",
+      "from": "gateway-main",
+      "to": "route-infra",
+      "kind": "import",
+      "label": "dispatch",
+      "evidence": "apps/gateway-api/src/main.ts:284"
+    },
+    {
+      "id": "e14",
+      "from": "gateway-main",
+      "to": "kill-switch",
+      "kind": "import",
+      "label": "middleware global",
+      "evidence": "apps/gateway-api/src/main.ts:1802"
+    },
+    {
+      "id": "e15",
+      "from": "gateway-main",
+      "to": "env-preflight",
+      "kind": "import",
+      "label": "al arrancar",
+      "evidence": "apps/gateway-api/src/env-preflight.ts:1"
+    },
+    {
+      "id": "e16",
+      "from": "gateway-main",
+      "to": "proposals-sign",
+      "kind": "import",
+      "label": "POST /sign",
+      "evidence": "apps/gateway-api/src/main.ts:4606"
+    },
+    {
+      "id": "e17",
+      "from": "gateway-main",
+      "to": "bedrock-bridge",
+      "kind": "import",
+      "label": "chat del agente",
+      "evidence": "apps/gateway-api/src/main.ts:159"
+    },
+    {
+      "id": "e18",
+      "from": "gateway-main",
+      "to": "canvas-live-svc",
+      "kind": "import",
+      "label": "proyección al panel",
+      "evidence": "apps/gateway-api/src/main.ts:349"
+    },
+    {
+      "id": "e19",
+      "from": "gateway-main",
+      "to": "ramp-scheduler",
+      "kind": "import",
+      "label": "resume-on-boot",
+      "evidence": "apps/gateway-api/src/main.ts:6585"
+    },
+    {
+      "id": "e20",
+      "from": "gateway-main",
+      "to": "infra-health-poller",
+      "kind": "import",
+      "label": "poller de fondo",
+      "evidence": "apps/gateway-api/src/main.ts:332"
+    },
+    {
+      "id": "e21",
+      "from": "gateway-main",
+      "to": "episodic-ttl-job",
+      "kind": "import",
+      "label": "cada 6h",
+      "evidence": "apps/gateway-api/src/episodic-scratch-ttl.ts:75"
+    },
+    {
+      "id": "e22",
+      "from": "gateway-main",
+      "to": "local-store",
+      "kind": "file",
+      "label": "14 stores",
+      "evidence": "apps/gateway-api/src/main.ts:434"
+    },
+    {
+      "id": "e23",
+      "from": "gateway-main",
+      "to": "postgres",
+      "kind": "sql",
+      "label": "pool episódico + warmup",
+      "evidence": "apps/gateway-api/src/main.ts:816"
+    },
+    {
+      "id": "e24",
+      "from": "gateway-main",
+      "to": "redis",
+      "kind": "http",
+      "label": "sólo healthcheck",
+      "evidence": "apps/gateway-api/src/dependency-health.ts:32"
+    },
+    {
+      "id": "e25",
+      "from": "gateway-main",
+      "to": "domain-pkg",
+      "kind": "import",
+      "label": "reglas puras",
+      "evidence": "apps/gateway-api/src/main.ts:7"
+    },
+    {
+      "id": "e30",
+      "from": "bedrock-bridge",
+      "to": "bedrock",
+      "kind": "api",
+      "label": "InvokeModelWithResponseStream",
+      "evidence": "apps/gateway-api/src/openclaw-bedrock-bridge.ts:1014"
+    },
+    {
+      "id": "e31",
+      "from": "bedrock-bridge",
+      "to": "tools-builder",
+      "kind": "import",
+      "label": "catálogo de 45 tools",
+      "evidence": "apps/gateway-api/src/openclaw-tools-builder.ts:1610"
+    },
+    {
+      "id": "e32",
+      "from": "bedrock-bridge",
+      "to": "tool-use-processor",
+      "kind": "import",
+      "label": "cada tool_use",
+      "evidence": "apps/gateway-api/src/tool-use-processor.ts:130"
+    },
+    {
+      "id": "e33",
+      "from": "bedrock-bridge",
+      "to": "gateway-main",
+      "kind": "http",
+      "label": "contexto vivo: 8 GET",
+      "evidence": "apps/gateway-api/src/openclaw-bedrock-bridge.ts:1167"
+    },
+    {
+      "id": "e34",
+      "from": "tool-use-processor",
+      "to": "kill-switch",
+      "kind": "http",
+      "label": "fail-closed en cada vuelta",
+      "evidence": "apps/gateway-api/src/tool-use-processor.ts:195"
+    },
+    {
+      "id": "e35",
+      "from": "tool-use-processor",
+      "to": "proposals-sign",
+      "kind": "hmac",
+      "label": "propuesta + polling",
+      "evidence": "apps/gateway-api/src/tool-use-processor.ts:571"
+    },
+    {
+      "id": "e36",
+      "from": "tool-use-processor",
+      "to": "episodic-scratch",
+      "kind": "hmac",
+      "label": "compact_intent",
+      "evidence": "apps/gateway-api/src/tool-use-processor.ts:954"
+    },
+    {
+      "id": "e37",
+      "from": "tool-use-processor",
+      "to": "semantic-memory",
+      "kind": "hmac",
+      "label": "remember / recall",
+      "evidence": "apps/gateway-api/src/tool-use-processor.ts:955"
+    },
+    {
+      "id": "e38",
+      "from": "bedrock-bridge",
+      "to": "openclaw-workspace",
+      "kind": "file",
+      "label": "skills · ejecuciones · inventario",
+      "evidence": "apps/gateway-api/src/openclaw-workspace.ts:1"
+    },
+    {
+      "id": "e39",
+      "from": "semantic-memory",
+      "to": "embedding-service",
+      "kind": "import",
+      "label": "embeddings",
+      "evidence": "apps/gateway-api/src/routes/openclaw-semantic-memory.ts:173"
+    },
+    {
+      "id": "e40",
+      "from": "embedding-service",
+      "to": "bedrock",
+      "kind": "api",
+      "label": "titan-embed-text-v2",
+      "evidence": "apps/gateway-api/src/openclaw-embedding-service.ts:19"
+    },
+    {
+      "id": "e41",
+      "from": "semantic-memory",
+      "to": "postgres",
+      "kind": "sql",
+      "label": "openclaw_memory_vectors",
+      "evidence": "packages/storage/src/memory-vectors.ts:145"
+    },
+    {
+      "id": "e42",
+      "from": "episodic-scratch",
+      "to": "postgres",
+      "kind": "sql",
+      "label": "openclaw_episodic_scratch",
+      "evidence": "packages/storage/src/episodic-scratch.ts:1"
+    },
+    {
+      "id": "e43",
+      "from": "multi-agent-runtime",
+      "to": "bedrock",
+      "kind": "api",
+      "label": "sin cablear (mock por defecto)",
+      "evidence": "apps/gateway-api/src/agents/bedrock-agent-session.ts:135"
+    },
+    {
+      "id": "e50",
+      "from": "proposals-sign",
+      "to": "security-chain",
+      "kind": "import",
+      "label": "HMAC + emisión de token",
+      "evidence": "apps/gateway-api/src/routes/proposals-sign.ts:313"
+    },
+    {
+      "id": "e51",
+      "from": "proposals-sign",
+      "to": "audit-chain",
+      "kind": "import",
+      "label": "verify + append de la firma",
+      "evidence": "apps/gateway-api/src/routes/proposals-sign.ts:247"
+    },
+    {
+      "id": "e52",
+      "from": "proposals-sign",
+      "to": "skill-dispatcher",
+      "kind": "import",
+      "label": "dispatch con token",
+      "evidence": "apps/gateway-api/src/routes/proposals-sign.ts:461"
+    },
+    {
+      "id": "e53",
+      "from": "security-chain",
+      "to": "sqlite",
+      "kind": "file",
+      "label": "nonce anti-replay",
+      "evidence": "apps/gateway-api/src/security/approval-token.ts:12"
+    },
+    {
+      "id": "e54",
+      "from": "audit-chain",
+      "to": "audit-jsonl",
+      "kind": "file",
+      "label": "append con lock",
+      "evidence": "packages/local-store/src/local-file-audit-log.ts:39"
+    },
+    {
+      "id": "e55",
+      "from": "skill-dispatcher",
+      "to": "route-domains-dns",
+      "kind": "http",
+      "label": "HTTP interno",
+      "evidence": "apps/gateway-api/src/skill-dispatcher.ts:344"
+    },
+    {
+      "id": "e56",
+      "from": "skill-dispatcher",
+      "to": "route-infra",
+      "kind": "http",
+      "label": "HTTP interno",
+      "evidence": "apps/gateway-api/src/skill-dispatcher.ts:344"
+    },
+    {
+      "id": "e57",
+      "from": "skill-dispatcher",
+      "to": "route-orchestrator-smtp",
+      "kind": "http",
+      "label": "configure_complete_smtp",
+      "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:664"
+    },
+    {
+      "id": "e58",
+      "from": "route-domains-dns",
+      "to": "approval-guard",
+      "kind": "import",
+      "label": "valida token vs cadena",
+      "evidence": "apps/gateway-api/src/routes/dns-wait.ts:361"
+    },
+    {
+      "id": "e59",
+      "from": "approval-guard",
+      "to": "audit-jsonl",
+      "kind": "file",
+      "label": "relee la aprobación",
+      "evidence": "apps/gateway-api/src/approval-guard.ts:11"
+    },
+    {
+      "id": "e60",
+      "from": "route-orchestrator-smtp",
+      "to": "entity-guard",
+      "kind": "import",
+      "label": "resuelve entidades",
+      "evidence": "apps/gateway-api/src/entity-guard.ts:1"
+    },
+    {
+      "id": "e61",
+      "from": "canvas-live-svc",
+      "to": "state-jsonl",
+      "kind": "file",
+      "label": "tasks + artifacts",
+      "evidence": "apps/gateway-api/src/services/canvas-live-events.ts:29"
+    },
+    {
+      "id": "e62",
+      "from": "rollback-sqlite",
+      "to": "sqlite",
+      "kind": "file",
+      "label": "sin callers",
+      "evidence": "apps/gateway-api/src/security/rollback-snapshot.ts:27"
+    },
+    {
+      "id": "e63",
+      "from": "auto-rollback",
+      "to": "local-store",
+      "kind": "file",
+      "label": "snapshots JSON",
+      "evidence": "apps/gateway-api/src/auto-rollback.ts:87"
+    },
+    {
+      "id": "e70",
+      "from": "route-domains-dns",
+      "to": "route53",
+      "kind": "api",
+      "label": "registrar + upsert",
+      "evidence": "packages/adapters/src/aws-route53-dns-adapter.ts:71"
+    },
+    {
+      "id": "e71",
+      "from": "route-domains-dns",
+      "to": "namecheap",
+      "kind": "api",
+      "label": "registrar",
+      "evidence": "packages/adapters/src/namecheap-domains-adapter.ts:126"
+    },
+    {
+      "id": "e72",
+      "from": "route-domains-dns",
+      "to": "ionos",
+      "kind": "api",
+      "label": "upsert DNS",
+      "evidence": "packages/adapters/src/ionos-dns-actuator.ts:84"
+    },
+    {
+      "id": "e73",
+      "from": "route-domains-dns",
+      "to": "porkbun",
+      "kind": "api",
+      "label": "sugerir / comprar",
+      "evidence": "packages/adapters/src/porkbun-adapter.ts:72"
+    },
+    {
+      "id": "e74",
+      "from": "route-infra",
+      "to": "webdock",
+      "kind": "api",
+      "label": "crear · bindear · listar",
+      "evidence": "packages/adapters/src/webdock-real-adapter.ts:181"
+    },
+    {
+      "id": "e75",
+      "from": "route-infra",
+      "to": "contabo",
+      "kind": "api",
+      "label": "crear VPS",
+      "evidence": "packages/adapters/src/contabo-adapter.ts:142"
+    },
+    {
+      "id": "e76",
+      "from": "route-infra",
+      "to": "proxmox",
+      "kind": "api",
+      "label": "sólo simulación",
+      "evidence": "packages/adapters/src/proxmox-adapter.ts:41"
+    },
+    {
+      "id": "e77",
+      "from": "route-infra",
+      "to": "mxtoolbox",
+      "kind": "api",
+      "label": "reputación",
+      "evidence": "packages/adapters/src/mxtoolbox-adapter.ts:90"
+    },
+    {
+      "id": "e78",
+      "from": "route-infra",
+      "to": "ssh-bridge",
+      "kind": "import",
+      "label": "provisión remota",
+      "evidence": "apps/gateway-api/src/routes/smtp-provisioning.ts:734"
+    },
+    {
+      "id": "e79",
+      "from": "ssh-bridge",
+      "to": "smtp-nodes",
+      "kind": "ssh",
+      "label": "postfix · dkim · sasl · mail.log",
+      "evidence": "apps/gateway-api/src/routes/smtp-provisioning.ts:1684"
+    },
+    {
+      "id": "e80",
+      "from": "delivery-reason-collector",
+      "to": "ssh-bridge",
+      "kind": "ssh",
+      "label": "trae el tail de mail.log",
+      "evidence": "apps/gateway-api/src/openclaw-delivery-reason.ts:120"
+    },
+    {
+      "id": "e90",
+      "from": "worker",
+      "to": "send-queue",
+      "kind": "file",
+      "label": "claimNext (un job)",
+      "evidence": "apps/worker/src/main.ts:59"
+    },
+    {
+      "id": "e91",
+      "from": "worker",
+      "to": "mail-policy",
+      "kind": "import",
+      "label": "evaluación fail-closed",
+      "evidence": "apps/worker/src/main.ts:78"
+    },
+    {
+      "id": "e92",
+      "from": "worker",
+      "to": "local-store",
+      "kind": "file",
+      "label": "7 stores",
+      "evidence": "apps/worker/src/main.ts:21"
+    },
+    {
+      "id": "e93",
+      "from": "worker",
+      "to": "audit-jsonl",
+      "kind": "file",
+      "label": "evento por paso",
+      "evidence": "apps/worker/src/main.ts:56"
+    },
+    {
+      "id": "e100",
+      "from": "warmup-dryrun",
+      "to": "warmup-scheduler",
+      "kind": "import",
+      "label": "runWarmupTick",
+      "evidence": "apps/warmup-engine/src/service/service.ts:50"
+    },
+    {
+      "id": "e101",
+      "from": "warmup-scheduler",
+      "to": "warmup-domain",
+      "kind": "import",
+      "label": "FSM · rampa · placement",
+      "evidence": "apps/warmup-engine/src/scheduler/scheduler.ts:109"
+    },
+    {
+      "id": "e102",
+      "from": "warmup-scheduler",
+      "to": "warmup-send-worker",
+      "kind": "import",
+      "label": "processSend",
+      "evidence": "apps/warmup-engine/src/scheduler/scheduler.ts:203"
+    },
+    {
+      "id": "e103",
+      "from": "warmup-send-worker",
+      "to": "warmup-auth-gate",
+      "kind": "import",
+      "label": "gate antes del transporte",
+      "evidence": "apps/warmup-engine/src/runtime/send-worker.ts:115"
+    },
+    {
+      "id": "e104",
+      "from": "warmup-scheduler",
+      "to": "imap-reader",
+      "kind": "imap",
+      "label": "reconcilePlacement",
+      "evidence": "apps/warmup-engine/src/scheduler/scheduler.ts:299"
+    },
+    {
+      "id": "e105",
+      "from": "imap-reader",
+      "to": "seed-inboxes",
+      "kind": "imap",
+      "label": "busca X-Delivrix-Test-Id",
+      "evidence": "apps/warmup-engine/src/reader/imap-placement-reader.ts:49"
+    },
+    {
+      "id": "e106",
+      "from": "warmup-scheduler",
+      "to": "warmup-tables",
+      "kind": "sql",
+      "label": "sends · señales · rollups",
+      "evidence": "apps/warmup-engine/src/store/pg-stores.ts:206"
+    },
+    {
+      "id": "e107",
+      "from": "warmup-send-worker",
+      "to": "smtp-nodes",
+      "kind": "smtp",
+      "label": "PostfixTransport (sin cablear)",
+      "evidence": "apps/warmup-engine/src/live/compose.ts:129"
+    },
+    {
+      "id": "e108",
+      "from": "warmup-live",
+      "to": "smtp-nodes",
+      "kind": "smtp",
+      "label": "587 STARTTLS desde mailer@",
+      "evidence": "apps/warmup-engine/src/service/live-warmup-daemon.ts:317"
+    },
+    {
+      "id": "e109",
+      "from": "warmup-live",
+      "to": "gmail-api",
+      "kind": "api",
+      "label": "medir · etiquetar · responder",
+      "evidence": "apps/warmup-engine/src/service/live-warmup-daemon.ts:200"
+    },
+    {
+      "id": "e110",
+      "from": "warmup-live",
+      "to": "warmup-tables",
+      "kind": "sql",
+      "label": "sólo warmup_activity",
+      "evidence": "apps/warmup-engine/migrations/003_activity.sql:7"
+    },
+    {
+      "id": "e111",
+      "from": "warmup-live",
+      "to": "openclaw-workspace",
+      "kind": "file",
+      "label": "credenciales SMTP cifradas",
+      "evidence": "apps/warmup-engine/src/live/smtp-credential-decrypt.ts:50"
+    },
+    {
+      "id": "e112",
+      "from": "ramp-scheduler",
+      "to": "ssh-bridge",
+      "kind": "ssh",
+      "label": "sendmail por batch",
+      "evidence": "apps/gateway-api/src/routes/warmup-ramp.ts:372"
+    },
+    {
+      "id": "e113",
+      "from": "ramp-scheduler",
+      "to": "audit-jsonl",
+      "kind": "file",
+      "label": "señal de placement",
+      "evidence": "apps/gateway-api/src/warmup-signals-source.ts:30"
+    },
+    {
+      "id": "e114",
+      "from": "route-warmup",
+      "to": "warmup-tables",
+      "kind": "sql",
+      "label": "status · trends · mailboxes",
+      "evidence": "apps/warmup-engine/src/store/pg-stores.ts:776"
+    },
+    {
+      "id": "e115",
+      "from": "smtp-nodes",
+      "to": "seed-inboxes",
+      "kind": "smtp",
+      "label": "el correo que se mide",
+      "evidence": "apps/warmup-engine/src/live/warmup-live-cycle.ts:96"
+    },
+    {
+      "id": "e83",
+      "from": "delivery-reason-collector",
+      "to": "postfix-log-parser",
+      "kind": "import",
+      "label": "parsea el tail",
+      "evidence": "apps/gateway-api/src/openclaw-delivery-reason.ts:17"
+    },
+    {
+      "id": "e84",
+      "from": "gateway-main",
+      "to": "agent-chat-bridge",
+      "kind": "import",
+      "label": "chat de reserva sin Bedrock",
+      "evidence": "apps/gateway-api/src/main.ts:815"
+    }
+  ],
+  "flows": [
+    {
+      "id": "flow-configure-smtp",
+      "title": "configure_complete_smtp — de cero a un SMTP que entrega",
+      "summary": "El flujo insignia: 14 pasos que van de un dominio que no existe a un servidor propio enviando correo autenticado y verificado. Cada paso con efecto real pasa por firma humana.",
+      "category": "provisioning",
+      "risk": "alto",
+      "status": "live",
+      "path": [
+        "bedrock-bridge",
+        "tool-use-processor",
+        "proposals-sign",
+        "skill-dispatcher",
+        "route-orchestrator-smtp",
+        "route-domains-dns",
+        "route53",
+        "route-infra",
+        "webdock",
+        "ssh-bridge",
+        "route-warmup",
+        "smtp-nodes",
+        "audit-jsonl"
+      ],
+      "steps": [
+        {
+          "n": 1,
+          "title": "suggest_safe_domain",
+          "node": "route-orchestrator-smtp",
+          "detail": "Propone un dominio disponible y sin términos vetados. Namecheap bloquea familias enteras (cripto/finanzas) que su propio checkAvailability da como libres.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:779",
+          "gate": "read-only"
+        },
+        {
+          "n": 2,
+          "title": "register_domain_route53",
+          "node": "route53",
+          "detail": "Compra el dominio. Alternativa por proveedor: register_domain_namecheap. Acá es donde aparece DomainLimitExceeded si la cuenta AWS llegó a su cuota.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:843",
+          "gate": "firma + token"
+        },
+        {
+          "n": 3,
+          "title": "wait_for_dns_propagation",
+          "node": "route-domains-dns",
+          "detail": "Espera a que el registro sea visible. Timeout de 30 min en el watchdog de rollback.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:938",
+          "gate": "read-only"
+        },
+        {
+          "n": 4,
+          "title": "create_webdock_server",
+          "node": "webdock",
+          "detail": "Crea el VPS. serverAccountId y providerId viajan por canal paralelo, fuera de params, para no alterar el inputHash de la aprobación.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:1098",
+          "gate": "firma + token"
+        },
+        {
+          "n": 5,
+          "title": "wait_server_running",
+          "node": "route-infra",
+          "detail": "Espera a que la VM levante. Modo de falla conocido: la VM queda running para el proveedor pero sin red — sólo un chequeo externo lo ve.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:1284",
+          "gate": "read-only"
+        },
+        {
+          "n": 6,
+          "title": "upsert_dns_route53",
+          "node": "route53",
+          "detail": "Escribe los registros que apuntan al servidor recién creado.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:1308",
+          "gate": "firma + token"
+        },
+        {
+          "n": 7,
+          "title": "wait_for_dns_propagation",
+          "node": "route-domains-dns",
+          "detail": "Segunda espera, ahora sobre los registros del servidor.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:1331",
+          "gate": "read-only"
+        },
+        {
+          "n": 8,
+          "title": "bind_webdock_main_domain",
+          "node": "webdock",
+          "detail": "Ata el dominio al servidor en el proveedor.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:1351",
+          "gate": "firma + token"
+        },
+        {
+          "n": 9,
+          "title": "provision_smtp_postfix",
+          "node": "ssh-bridge",
+          "detail": "Instala y configura Postfix, OpenDKIM y Dovecot por SSH sobre el nodo.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:1370",
+          "gate": "firma + token"
+        },
+        {
+          "n": 10,
+          "title": "configure_email_auth",
+          "node": "route-domains-dns",
+          "detail": "Publica SPF, DKIM (selector s2026a) y DMARC. Sin esto el nodo entrega a spam por diseño.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:429",
+          "gate": "firma + token"
+        },
+        {
+          "n": 11,
+          "title": "wait_for_dns_propagation",
+          "node": "route-domains-dns",
+          "detail": "Tercera espera: la autenticación tiene que estar visible antes de probar.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:1434",
+          "gate": "read-only"
+        },
+        {
+          "n": 12,
+          "title": "seed_warmup_pool",
+          "node": "route-warmup",
+          "detail": "Siembra el pool de warmup del nodo nuevo.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:1456",
+          "gate": "firma + token"
+        },
+        {
+          "n": 13,
+          "title": "wait_warmup_initial",
+          "node": "route-warmup",
+          "detail": "Espera la primera señal del warmup antes de intentar el envío de prueba.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:1474",
+          "gate": "read-only"
+        },
+        {
+          "n": 14,
+          "title": "send_real_email",
+          "node": "smtp-nodes",
+          "detail": "El envío de verificación. Antes corre el smoke auth gate, que reintenta hasta que la autenticación propaga en vez de fallar en seco.",
+          "evidence": "apps/gateway-api/src/routes/orchestrator-smtp.ts:1551",
+          "gate": "firma + token + auth gate"
+        }
+      ]
+    },
+    {
+      "id": "flow-approval",
+      "title": "Propuesta → firma → token → ejecución",
+      "summary": "El cuello de botella por el que pasa todo efecto real. Nueve gates antes de emitir un token de 5 minutos, y el token queda atado al dominio, al skill y al hash exacto de los inputs.",
+      "category": "seguridad",
+      "risk": "crítico",
+      "status": "live",
+      "path": [
+        "tool-use-processor",
+        "proposals-sign",
+        "security-chain",
+        "audit-chain",
+        "sqlite",
+        "skill-dispatcher",
+        "approval-guard",
+        "audit-jsonl",
+        "panel-approval-gate"
+      ],
+      "steps": [
+        {
+          "n": 1,
+          "title": "El agente propone",
+          "node": "tool-use-processor",
+          "detail": "POST /v1/agent/proposals firmado con HMAC-SHA256 sobre `${timestamp}.${rawBody}`, ventana de ±60s. Una firma inválida se audita como oc.hmac.validated.fail.",
+          "evidence": "apps/gateway-api/src/tool-use-processor.ts:571",
+          "gate": "HMAC"
+        },
+        {
+          "n": 2,
+          "title": "El agente espera",
+          "node": "tool-use-processor",
+          "detail": "Polling del status con re-chequeo del kill switch en cada vuelta. Timeout de aprobación: 300s.",
+          "evidence": "apps/gateway-api/src/tool-use-processor.ts:1091",
+          "gate": "kill switch"
+        },
+        {
+          "n": 3,
+          "title": "El humano firma",
+          "node": "panel-approval-gate",
+          "detail": "En el panel, con espera mínima de 5s y un motivo de entre 10 y 500 caracteres. No hay firma sin razón escrita.",
+          "evidence": "apps/admin-panel/src/v5/components/ApprovalGate.tsx:1",
+          "gate": "humano"
+        },
+        {
+          "n": 4,
+          "title": "Nueve gates",
+          "node": "proposals-sign",
+          "detail": "En orden: kill switch (423) → UUID válido → body válido → auth HMAC o panel local en loopback → propuesta existe, pendiente y no expirada → cadena de auditoría íntegra (503 si está rota) → binding skill↔acciones → hash del contexto → scope del plan.",
+          "evidence": "apps/gateway-api/src/routes/proposals-sign.ts:133",
+          "gate": "9 gates"
+        },
+        {
+          "n": 5,
+          "title": "Emisión del token",
+          "node": "security-chain",
+          "detail": "TTL de 5 minutos, nonce de 32 bytes, HMAC sobre el payload canonicalizado. El nonce se guarda en SQLite para que el token sea de un solo uso.",
+          "evidence": "apps/gateway-api/src/security/approval-token.ts:46",
+          "gate": "token"
+        },
+        {
+          "n": 6,
+          "title": "Queda escrito",
+          "node": "audit-chain",
+          "detail": "Se appendean oc.proposal.signed y oc.artifact.approved con el hash del token, el hash del contexto de ejecución y el prevHash de la cadena. Si hubo plan, también oc.plan.signed con el scopeHash.",
+          "evidence": "apps/gateway-api/src/routes/proposals-sign.ts:324",
+          "gate": "auditoría"
+        },
+        {
+          "n": 7,
+          "title": "Despacho",
+          "node": "skill-dispatcher",
+          "detail": "Se re-chequea el kill switch y recién ahí se despacha. El token viaja en el body. Si tarda más de 60s, responde 202 executing con un endpoint de polling.",
+          "evidence": "apps/gateway-api/src/routes/proposals-sign.ts:461",
+          "gate": "kill switch"
+        },
+        {
+          "n": 8,
+          "title": "El handler desconfía",
+          "node": "approval-guard",
+          "detail": "El handler no confía en el token: relee la aprobación de la cadena y verifica que coincida el dominio, el skill y el inputHash. Sin esto, una aprobación para un dominio se podría reusar para otro.",
+          "evidence": "apps/gateway-api/src/approval-guard.ts:27",
+          "gate": "anti confused-deputy"
+        },
+        {
+          "n": 9,
+          "title": "Anti-replay",
+          "node": "sqlite",
+          "detail": "El nonce se consume con un UPDATE condicional issued→consumed. Un segundo intento con el mismo token da token_replay_detected.",
+          "evidence": "apps/gateway-api/src/security/approval-token.ts:140",
+          "gate": "one-shot"
+        },
+        {
+          "n": 10,
+          "title": "Cierre",
+          "node": "audit-jsonl",
+          "detail": "oc.proposal.executed u oc.proposal.aborted, con el outcome redactado (se filtran claves AWS, Bearer y passwords antes de escribir).",
+          "evidence": "apps/gateway-api/src/routes/proposals-sign.ts:524",
+          "gate": "redacción"
+        }
+      ]
+    },
+    {
+      "id": "flow-agent-chat",
+      "title": "Chat con OpenClaw: del mensaje al efecto",
+      "summary": "Cómo una frase en el panel termina siendo una acción sobre infraestructura real, y las tres ramas por las que puede salir cada tool que pide el modelo.",
+      "category": "agente",
+      "risk": "alto",
+      "status": "live",
+      "path": [
+        "panel-canvas",
+        "read-boundary",
+        "gateway-main",
+        "bedrock-bridge",
+        "bedrock",
+        "tools-builder",
+        "tool-use-processor",
+        "proposals-sign",
+        "episodic-scratch",
+        "canvas-live-svc"
+      ],
+      "steps": [
+        {
+          "n": 1,
+          "title": "El mensaje entra",
+          "node": "read-boundary",
+          "detail": "Por WS (/v1/openclaw/chat/stream) o HTTP. Es una de las pocas escrituras nominadas que el borde read-only deja pasar.",
+          "evidence": "apps/admin-panel/src/shared/api/chat-client.ts:651"
+        },
+        {
+          "n": 2,
+          "title": "Contexto vivo",
+          "node": "bedrock-bridge",
+          "detail": "Antes de cada turno hace 8 GET en paralelo: overview, kill switch, canvas, últimos 10 eventos de auditoría, inventarios, sender pool y memoria grounded. Se inyecta como bloque <live_context>, truncado a 55k caracteres.",
+          "evidence": "apps/gateway-api/src/openclaw-bedrock-bridge.ts:1137"
+        },
+        {
+          "n": 3,
+          "title": "Se arma el catálogo",
+          "node": "tools-builder",
+          "detail": "45 tools, todas gateadas por tener OPENCLAW_HMAC_SECRET, más flags y credenciales por tool. Sin secreto HMAC, el agente se queda sin manos.",
+          "evidence": "apps/gateway-api/src/openclaw-tools-builder.ts:1619"
+        },
+        {
+          "n": 4,
+          "title": "Bedrock responde",
+          "node": "bedrock",
+          "detail": "Claude Sonnet 4-6 en us-east-1, Anthropic Messages API en streaming, tool_choice auto, temperature 0.3, hasta 40 iteraciones de tools por conversación.",
+          "evidence": "apps/gateway-api/src/openclaw-bedrock-bridge.ts:1004"
+        },
+        {
+          "n": 5,
+          "title": "Cuatro guardas previas",
+          "node": "tool-use-processor",
+          "detail": "Tool desconocida, tool deshabilitada, params que no validan, y kill switch fail-closed (si no puede leerlo, asume armado). También bloquea invocar subtools SMTP sueltas cuando la autonomía por plan está activa.",
+          "evidence": "apps/gateway-api/src/tool-use-processor.ts:130",
+          "gate": "fail-closed"
+        },
+        {
+          "n": 6,
+          "title": "Rama A — lectura directa",
+          "node": "tool-use-processor",
+          "detail": "17 tools de sólo lectura se ejecutan sin aprobación: inventarios, estado de DKIM, alcanzabilidad SMTP, integridad de runs, conversaciones.",
+          "evidence": "apps/gateway-api/src/tool-use-processor.ts:1318",
+          "gate": "ninguno"
+        },
+        {
+          "n": 7,
+          "title": "Rama B — memoria",
+          "node": "episodic-scratch",
+          "detail": "compact_intent guarda lo aprendido, firmado con HMAC. Exige que el intentId exista en la cadena de auditoría: no se puede compactar una intención que nunca ocurrió.",
+          "evidence": "apps/gateway-api/src/routes/openclaw-compact-intent.ts:146",
+          "gate": "HMAC + existencia en cadena"
+        },
+        {
+          "n": 8,
+          "title": "Rama C — todo lo demás",
+          "node": "proposals-sign",
+          "detail": "Cualquier tool con efecto real entra al flujo de aprobación completo. El agente propone y espera; no ejecuta.",
+          "evidence": "apps/gateway-api/src/tool-use-processor.ts:571",
+          "gate": "firma humana"
+        },
+        {
+          "n": 9,
+          "title": "Se ve en el canvas",
+          "node": "canvas-live-svc",
+          "detail": "Cada paso se proyecta al panel como tarea o artefacto. El WS sólo avisa que hubo cambio; el dato real sigue viniendo del GET.",
+          "evidence": "apps/gateway-api/src/services/canvas-live-events.ts:29"
+        }
+      ]
+    },
+    {
+      "id": "flow-warmup-engine",
+      "title": "Warmup engine v1 — el tick (dry-run)",
+      "summary": "El motor diseñado: rampa con clamps, gate de autenticación fail-closed y graduación decidida por placement real medido, no por un score interno. Hoy corre sólo contra transporte mock.",
+      "category": "warmup",
+      "risk": "medio",
+      "status": "partial",
+      "path": [
+        "warmup-dryrun",
+        "warmup-scheduler",
+        "warmup-domain",
+        "warmup-auth-gate",
+        "warmup-send-worker",
+        "imap-reader",
+        "seed-inboxes",
+        "warmup-tables"
+      ],
+      "steps": [
+        {
+          "n": 1,
+          "title": "El daemon despierta",
+          "node": "warmup-dryrun",
+          "detail": "Cada 60s. Se rehúsa a arrancar si WARMUP_TRANSPORT no es mock: el dry-run no puede convertirse en envío real por accidente.",
+          "evidence": "apps/warmup-engine/src/service/dryrun-daemon.ts:152",
+          "gate": "WARMUP_ENGINE_ENABLE"
+        },
+        {
+          "n": 2,
+          "title": "planNodeDay",
+          "node": "warmup-scheduler",
+          "detail": "Por cada nodo activo calcula la cuota del día y encola N envíos con slotKey determinista. Si el gate de auth dice que no, encola cero y anota el motivo.",
+          "evidence": "apps/warmup-engine/src/scheduler/scheduler.ts:109",
+          "gate": "auth gate"
+        },
+        {
+          "n": 3,
+          "title": "La rampa con clamps",
+          "node": "warmup-domain",
+          "detail": "cuota = min(día × incremento, límite). Después tres techos: cap de Gmail para cuentas nuevas (50/día), techo del contrato de auth, y no más de 3× la cuota de hace dos días. Fin de semana opcional a cero.",
+          "evidence": "apps/warmup-engine/src/domain/ramp.ts:67"
+        },
+        {
+          "n": 4,
+          "title": "Seeds al 10%",
+          "node": "warmup-scheduler",
+          "detail": "Un décimo de la cuota va a casillas semilla, que son las que después permiten medir. El test de placement sólo se crea si el envío se insertó nuevo — así el reintento no duplica.",
+          "evidence": "apps/warmup-engine/src/scheduler/scheduler.ts:152",
+          "gate": "idempotencia"
+        },
+        {
+          "n": 5,
+          "title": "processQueuedSends",
+          "node": "warmup-send-worker",
+          "detail": "Idempotencia primero (lo terminal no se re-procesa), después el gate, y sólo entonces el transporte. Si el gate falla, el transporte NUNCA se invoca. Tres intentos y va a dead-letter.",
+          "evidence": "apps/warmup-engine/src/runtime/send-worker.ts:106",
+          "gate": "fail-closed"
+        },
+        {
+          "n": 6,
+          "title": "Aislamiento por header",
+          "node": "warmup-send-worker",
+          "detail": "Todo mensaje de warmup lleva X-Warmup-Id con el id del nodo. El tráfico de calentamiento nunca se confunde con el de producción.",
+          "evidence": "apps/warmup-engine/src/runtime/send-worker.ts:20"
+        },
+        {
+          "n": 7,
+          "title": "Medir, no suponer",
+          "node": "imap-reader",
+          "detail": "Busca el mensaje por X-Delivrix-Test-Id en el seed. Ventana de gracia de 6h con sondeos a 2m/10m/30m/2h. Si el IMAP falla devuelve null: nunca inventa un resultado.",
+          "evidence": "apps/warmup-engine/src/reader/imap-placement-reader.ts:210",
+          "gate": "honestidad del dato"
+        },
+        {
+          "n": 8,
+          "title": "Wilson, no promedio",
+          "node": "warmup-domain",
+          "detail": "El rollup usa el lower-bound de Wilson al 95% más EWMA. Los tabs de Gmail cuentan como inbox; 'missing' tiene bucket propio y no se confunde con spam.",
+          "evidence": "apps/warmup-engine/src/domain/placement.ts:6"
+        },
+        {
+          "n": 9,
+          "title": "La FSM decide",
+          "node": "warmup-domain",
+          "detail": "Auto-pausa antes que graduar. Gradúa con ≥20 muestras, LB ≥0.80 sostenido 5 días, spam ≤2% y el peor proveedor mayor ≥0.60. Si ese último dato falta, no gradúa: fail-closed.",
+          "evidence": "apps/warmup-engine/src/domain/node-state.ts:164",
+          "gate": "placement real"
+        },
+        {
+          "n": 10,
+          "title": "Realidad de hoy",
+          "node": "warmup-tables",
+          "detail": "DEUDA: los nodos nacen 'blocked' y listActiveNodes los excluye, así que el tick planifica 0 envíos. Y el contrato de auth nunca se construye en runtime porque buildAuthReadinessContract no tiene callers. El motor está entero pero desconectado del mundo.",
+          "evidence": "apps/warmup-engine/src/service/dryrun-daemon.ts:15",
+          "gate": "no cableado"
+        }
+      ]
+    },
+    {
+      "id": "flow-warmup-live",
+      "title": "Warmup LIVE — el que sí manda correo",
+      "summary": "El ciclo que corre de verdad: envía, mide dónde cayó, rescata de spam y contesta. No pasa por el motor v1 ni por su rampa — es un camino paralelo con sus propias barreras.",
+      "category": "warmup",
+      "risk": "alto",
+      "status": "live",
+      "path": [
+        "warmup-live",
+        "openclaw-workspace",
+        "smtp-nodes",
+        "seed-inboxes",
+        "gmail-api",
+        "warmup-tables",
+        "panel-warmup-view"
+      ],
+      "steps": [
+        {
+          "n": 1,
+          "title": "Cuatro barreras antes de nada",
+          "node": "warmup-live",
+          "detail": "Apagado por defecto (WARMUP_LIVE_ENABLE), kill-file en disco que lo pausa, tope de 3 ciclos por día UTC, y piso de placement sobre las últimas 6 mediciones. Cualquiera de las cuatro lo detiene.",
+          "evidence": "apps/warmup-engine/src/service/live-warmup-daemon.ts:113",
+          "gate": "4 barreras"
+        },
+        {
+          "n": 2,
+          "title": "Descifra credenciales",
+          "node": "openclaw-workspace",
+          "detail": "Lee el inventario SMTP cifrado con AES-256-GCM, con AAD atado a dominio+host+usuario. La credencial nunca queda en claro en la base.",
+          "evidence": "apps/warmup-engine/src/live/smtp-credential-decrypt.ts:50"
+        },
+        {
+          "n": 3,
+          "title": "SEND",
+          "node": "smtp-nodes",
+          "detail": "Envía por SMTP 587 con STARTTLS desde mailer@<box>, con contenido de un banco de conversaciones curadas y rotación determinista. Sin LLM en el camino caliente.",
+          "evidence": "apps/warmup-engine/src/live/warmup-live-cycle.ts:96"
+        },
+        {
+          "n": 4,
+          "title": "MEASURE",
+          "node": "gmail-api",
+          "detail": "Hace polling de la Gmail API buscando el mensaje y clasifica por labels: INBOX, SPAM, PROMOTIONS u OTHER. Hasta 30 intentos cada 6s.",
+          "evidence": "apps/warmup-engine/src/service/live-warmup-daemon.ts:200"
+        },
+        {
+          "n": 5,
+          "title": "ENGAGE",
+          "node": "gmail-api",
+          "detail": "Si cayó en spam o promociones, lo rescata: agrega INBOX e IMPORTANT, saca SPAM y CATEGORY_PROMOTIONS. Es la señal que Google mira.",
+          "evidence": "apps/warmup-engine/src/live/warmup-live-cycle.ts:96"
+        },
+        {
+          "n": 6,
+          "title": "REPLY",
+          "node": "seed-inboxes",
+          "detail": "El seed responde al box. Una conversación bidireccional pesa más que un envío suelto.",
+          "evidence": "apps/warmup-engine/src/service/live-warmup-daemon.ts:317"
+        },
+        {
+          "n": 7,
+          "title": "Queda registrado",
+          "node": "warmup-tables",
+          "detail": "Cada etapa escribe en warmup_activity. Es lo único que este camino persiste.",
+          "evidence": "apps/warmup-engine/migrations/003_activity.sql:7"
+        },
+        {
+          "n": 8,
+          "title": "Se ve en el panel",
+          "node": "panel-warmup-view",
+          "detail": "GET /v1/warmup/activity alimenta el feed 'Actividad en vivo'.",
+          "evidence": "apps/gateway-api/src/routes/warmup-activity.ts:51"
+        },
+        {
+          "n": 9,
+          "title": "La divergencia",
+          "node": "warmup-live",
+          "detail": "DEUDA: este camino no pasa por el auth-gate, ni por la rampa, ni por la FSM del engine v1. Usa otro vocabulario de placement, otro remitente (mailer@ vs hello@) y la Gmail REST API, que el README del engine declara como no-negociable evitar. Son dos diseños conviviendo sobre la misma base.",
+          "evidence": "apps/warmup-engine/README.md:130",
+          "gate": "divergencia de diseño"
+        }
+      ]
+    },
+    {
+      "id": "flow-warmup-ramp",
+      "title": "Rampa del gateway — batches por SSH",
+      "summary": "El tercer camino de warmup: el gateway agenda batches en memoria y los envía ejecutando sendmail dentro del VPS. Con breaker por bounce y resume después de un reinicio.",
+      "category": "warmup",
+      "risk": "alto",
+      "status": "live",
+      "path": [
+        "route-warmup",
+        "ramp-scheduler",
+        "ssh-bridge",
+        "smtp-nodes",
+        "audit-jsonl",
+        "local-store"
+      ],
+      "steps": [
+        {
+          "n": 1,
+          "title": "Arranque gateado",
+          "node": "route-warmup",
+          "detail": "POST /v1/warmup/ramp/start exige WARMUP_RAMP_ENABLE y WARMUP_ENABLE_SEND en true, runner SSH presente, aprobación de menos de 15 minutos en la cadena, slug e IP del servidor, y pool de destinatarios suficiente. Si algo falta: 409 con la lista de bloqueadores.",
+          "evidence": "apps/gateway-api/src/routes/warmup-ramp.ts:702",
+          "gate": "6 bloqueadores"
+        },
+        {
+          "n": 2,
+          "title": "Se materializa el plan",
+          "node": "ramp-scheduler",
+          "detail": "Perfiles demo-fast o production-14d. El batch 0 sale inmediato y el resto queda agendado con setTimeout. Explícitamente sin BullMQ.",
+          "evidence": "apps/gateway-api/src/routes/warmup-ramp.ts:126"
+        },
+        {
+          "n": 3,
+          "title": "Cada batch, por SSH",
+          "node": "ssh-bridge",
+          "detail": "Ejecuta /usr/sbin/sendmail -t -f hello@<dominio> dentro del VPS, con timeout de 120s, y parsea stdout/stderr para inferir tasa de entrega y de rebote.",
+          "evidence": "apps/gateway-api/src/routes/warmup-ramp.ts:352"
+        },
+        {
+          "n": 4,
+          "title": "Breaker por bounce",
+          "node": "ramp-scheduler",
+          "detail": "Si el rebote supera 5%, la rampa se auto-pausa. La señal de placement se lee del último evento oc.placement.checked de la auditoría, no de un IMAP en el camino caliente.",
+          "evidence": "apps/gateway-api/src/warmup-signals-source.ts:30",
+          "gate": "auto-pausa"
+        },
+        {
+          "n": 5,
+          "title": "Sobrevive al reinicio",
+          "node": "local-store",
+          "detail": "El estado vive en warmup-progress.json y resumeRampsOnBoot re-ancla los batches pendientes respetando los offsets del plan. Un restart del gateway no pierde la rampa.",
+          "evidence": "apps/gateway-api/src/routes/warmup-ramp.ts:832"
+        },
+        {
+          "n": 6,
+          "title": "Pausar siempre puede",
+          "node": "audit-jsonl",
+          "detail": "start y resume están clasificados como acción viva y los corta el kill switch. Pause NO está en esa lista, a propósito: cortar nunca debe requerir permiso.",
+          "evidence": "apps/gateway-api/src/live-action-kill-switch.ts:44",
+          "gate": "asimetría deliberada"
+        }
+      ]
+    },
+    {
+      "id": "flow-worker-send",
+      "title": "Worker de envío clásico — todos los gates, resultado simulado",
+      "summary": "El pipeline de envío del MVP: reclama un job, lo pasa por kill switch, política, nodo y rate limit… y después simula el resultado. El SMTP real está deshabilitado en esta base.",
+      "category": "envío",
+      "risk": "bajo",
+      "status": "mock",
+      "path": [
+        "send-queue",
+        "worker",
+        "mail-policy",
+        "local-store",
+        "audit-jsonl"
+      ],
+      "steps": [
+        {
+          "n": 1,
+          "title": "Kill switch primero",
+          "node": "worker",
+          "detail": "Antes de mirar la cola evalúa el kill switch para la operación claim_send_job. Si bloquea, audita y sale con código 0.",
+          "evidence": "apps/worker/src/main.ts:39",
+          "gate": "kill switch"
+        },
+        {
+          "n": 2,
+          "title": "Reclama UN job",
+          "node": "send-queue",
+          "detail": "claimNext hace una transacción sobre runtime/send-jobs.json y lo marca processing. No es un daemon: agarra uno y el proceso termina.",
+          "evidence": "apps/worker/src/main.ts:59"
+        },
+        {
+          "n": 3,
+          "title": "Política de correo",
+          "node": "mail-policy",
+          "detail": "Clasificación, consentimiento, supresión. Fail-closed: si la evaluación tira error, el job queda bloqueado, no pasa.",
+          "evidence": "apps/worker/src/main.ts:78",
+          "gate": "fail-closed"
+        },
+        {
+          "n": 4,
+          "title": "Nodo emisor",
+          "node": "local-store",
+          "detail": "Busca un sender node disponible para ese request. Sin nodo, el job falla explícitamente con send_job.failed_no_sender_node.",
+          "evidence": "apps/worker/src/main.ts:121"
+        },
+        {
+          "n": 5,
+          "title": "Rate limit",
+          "node": "local-store",
+          "detail": "Tres cuotas diarias: por campaña (100), por dominio emisor (300) y por dominio destinatario (100), más la regla del nodo.",
+          "evidence": "apps/worker/src/main.ts:144",
+          "gate": "cuotas"
+        },
+        {
+          "n": 6,
+          "title": "No envía",
+          "node": "worker",
+          "detail": "HONESTIDAD: acá va simulateSendResult, con el log diciéndolo literal — 'SMTP is disabled in Base 1/2; generating simulated result'. El banner de arranque declara delivrix_smtp_enabled=false. El envío real de este repo pasa por otros caminos.",
+          "evidence": "apps/worker/src/main.ts:182",
+          "gate": "simulado"
+        },
+        {
+          "n": 7,
+          "title": "Todo queda auditado",
+          "node": "audit-jsonl",
+          "detail": "Cada paso deja un evento con smtpEnabled: false. La simulación no se disfraza de envío.",
+          "evidence": "apps/worker/src/main.ts:56"
+        }
+      ]
+    },
+    {
+      "id": "flow-kill-switch",
+      "title": "Kill switch — cómo se corta todo",
+      "summary": "Una sola palanca que corta 19 rutas de acción viva, chequeada en cuatro momentos distintos del camino y fail-closed cuando no se puede leer.",
+      "category": "seguridad",
+      "risk": "crítico",
+      "status": "live",
+      "path": [
+        "panel-safety",
+        "read-boundary",
+        "kill-switch",
+        "gateway-main",
+        "tool-use-processor",
+        "proposals-sign",
+        "skill-dispatcher",
+        "local-store",
+        "audit-jsonl"
+      ],
+      "steps": [
+        {
+          "n": 1,
+          "title": "Se arma desde el panel",
+          "node": "panel-safety",
+          "detail": "POST /v1/kill-switch es una de las 6 escrituras nominadas que el borde read-only permite.",
+          "evidence": "apps/admin-panel/vite.config.ts:110"
+        },
+        {
+          "n": 2,
+          "title": "Vive en un archivo",
+          "node": "local-store",
+          "detail": "runtime/kill-switch.json, con escritura atómica. Se puede armar a mano si el panel no está.",
+          "evidence": "packages/local-store/src/local-file-kill-switch-store.ts:12"
+        },
+        {
+          "n": 3,
+          "title": "Middleware global",
+          "node": "kill-switch",
+          "detail": "Clasifica 19 rutas como acción viva: registrar dominio, upsert DNS, borrar zona, configurar auth, bindear, crear VPS, borrarlo, provisionar SMTP, arrancar warmup, arrancar rampa, onboarding, Proxmox. Responde 423 y audita.",
+          "evidence": "apps/gateway-api/src/live-action-kill-switch.ts:11",
+          "gate": "423"
+        },
+        {
+          "n": 4,
+          "title": "El agente también lo mira",
+          "node": "tool-use-processor",
+          "detail": "Antes de cada tool y en cada vuelta del polling. Fail-closed: si no puede leer el estado, asume que está armado.",
+          "evidence": "apps/gateway-api/src/tool-use-processor.ts:195",
+          "gate": "fail-closed"
+        },
+        {
+          "n": 5,
+          "title": "Se re-chequea al firmar",
+          "node": "proposals-sign",
+          "detail": "Dos veces: al recibir la firma y otra vez justo antes de despachar. Armar el switch mientras una firma está en vuelo la aborta.",
+          "evidence": "apps/gateway-api/src/routes/proposals-sign.ts:420",
+          "gate": "423 + abort"
+        },
+        {
+          "n": 6,
+          "title": "Y al despachar",
+          "node": "skill-dispatcher",
+          "detail": "Cuarto chequeo, ya dentro del dispatcher.",
+          "evidence": "apps/gateway-api/src/skill-dispatcher.ts:355"
+        },
+        {
+          "n": 7,
+          "title": "Queda el rastro",
+          "node": "audit-jsonl",
+          "detail": "oc.live_action.blocked_by_kill_switch por cada corte. Se puede reconstruir qué se intentó hacer con el switch armado.",
+          "evidence": "apps/gateway-api/src/main.ts:1802"
+        }
+      ]
+    },
+    {
+      "id": "flow-audit-chain",
+      "title": "Cadena de auditoría — por qué se puede confiar en el registro",
+      "summary": "Append-only con hash encadenado desde GENESIS. Es la única parte del estado que está versionada en git, y una cadena rota bloquea las firmas.",
+      "category": "auditoría",
+      "risk": "crítico",
+      "status": "live",
+      "path": [
+        "gateway-main",
+        "audit-chain",
+        "audit-jsonl",
+        "proposals-sign",
+        "approval-guard"
+      ],
+      "steps": [
+        {
+          "n": 1,
+          "title": "Append con lock",
+          "node": "audit-chain",
+          "detail": "Toma un file lock, lee el último hash del disco, completa defaults y recién ahí escribe. Una línea JSON por evento.",
+          "evidence": "packages/local-store/src/local-file-audit-log.ts:39"
+        },
+        {
+          "n": 2,
+          "title": "El encadenado",
+          "node": "audit-chain",
+          "detail": "hash = sha256(prevHash + JSON canónico del evento con claves ordenadas y el propio hash excluido). El primero encadena contra GENESIS.",
+          "evidence": "apps/gateway-api/src/audit/hash-chain.ts:9"
+        },
+        {
+          "n": 3,
+          "title": "Ingesta desconfiada",
+          "node": "gateway-main",
+          "detail": "En la ingesta por batch se descartan los hashes que vienen de afuera, se fuerza el actor real del caller, se marca cualquier intento de impersonación y se strippea humanApproved si no hay una firma válida detrás.",
+          "evidence": "apps/gateway-api/src/audit-batch-origin.ts:24",
+          "gate": "anti-impersonación"
+        },
+        {
+          "n": 4,
+          "title": "Verificación",
+          "node": "audit-chain",
+          "detail": "Recorre la cadena entera comparando prevHash y recalculando cada hash. Reporta dónde se rompió: seq, línea, id y motivo.",
+          "evidence": "apps/gateway-api/src/audit-chain.ts:109"
+        },
+        {
+          "n": 5,
+          "title": "Bloquea firmas",
+          "node": "proposals-sign",
+          "detail": "Verificar la cadena es una de las 9 gates de la firma. Cadena rota = 503 audit_chain_broken = no se firma nada. La integridad del registro es precondición de actuar.",
+          "evidence": "apps/gateway-api/src/routes/proposals-sign.ts:247",
+          "gate": "503"
+        },
+        {
+          "n": 6,
+          "title": "Ancla firmada",
+          "node": "audit-chain",
+          "detail": "GET /v1/audit-chain/anchor devuelve una firma HMAC de headHash|headSeq|signedAt. Exige clave de al menos 32 caracteres y cadena íntegra.",
+          "evidence": "apps/gateway-api/src/audit-chain-anchor.ts:11"
+        },
+        {
+          "n": 7,
+          "title": "Cierra el círculo",
+          "node": "approval-guard",
+          "detail": "Los handlers releen la cadena para validar el token contra la aprobación registrada. El registro no es sólo evidencia: es parte del control de acceso.",
+          "evidence": "apps/gateway-api/src/approval-guard.ts:11"
+        }
+      ]
+    }
+  ],
+  "debt": [
+    {
+      "id": "debt-multiagent",
+      "title": "El runtime multi-agente de 5 seniors no está montado",
+      "node": "multi-agent-runtime",
+      "severity": "alta",
+      "detail": "6 módulos completos con matriz de autoridad, detección de ciclos, cap de tokens y pricing. Su único consumidor es su propio test. main.ts no importa nada de agents/, y los endpoints que su comentario anuncia no existen.",
+      "evidence": "apps/gateway-api/src/agents/multi-agent-runtime.ts:46",
+      "closeType": "decidir",
+      "risk": "—",
+      "cost": "una decisión",
+      "action": "DECISIÓN: ¿va al roadmap o se borra? Verificado: los tool specs son placeholders ('Dispatch real: día 4', schemas vacíos) y tools como dns_zone_create no tienen handler. Cablearlo hoy produciría agentes llamando funciones inexistentes. Si no va al roadmap, borrarlo — queda en git."
+    },
+    {
+      "id": "debt-warmup-fork",
+      "title": "Tres caminos de warmup sobre la misma base",
+      "node": "warmup-live",
+      "severity": "alta",
+      "detail": "El engine v1 (dry-run, mock, nodos blocked), el daemon LIVE (correo real, Gmail API, sólo warmup_activity) y la rampa del gateway (SSH sendmail). Vocabularios de placement distintos, remitentes distintos y sólo uno pasa por el auth-gate.",
+      "evidence": "apps/warmup-engine/README.md:130",
+      "closeType": "decidir",
+      "risk": "—",
+      "cost": "una decisión",
+      "keystone": true,
+      "unlocks": [
+        "debt-auth-contract",
+        "debt-transport"
+      ],
+      "action": "DECISIÓN BISAGRA: ¿cuál es el warmup canónico? El engine v1 nunca se desplegó (service/main.ts:46 dejó el cableado 'al deployment'); el daemon LIVE es el único con launcher y con envíos reales. Según la rama, las otras dos deudas se cierran conectando o borrando."
+    },
+    {
+      "id": "debt-auth-contract",
+      "title": "El contrato de auth del warmup nunca se construye",
+      "node": "warmup-auth-gate",
+      "severity": "alta",
+      "detail": "Los 13 checkers están implementados sobre resolvers reales, pero buildAuthReadinessContract no tiene callers en producción. Sin contrato, el gate fail-closed bloquea todo con 'contract_missing'.",
+      "evidence": "apps/warmup-engine/src/runtime/auth-contract-builder.ts:66",
+      "closeType": "conectar-o-borrar",
+      "risk": "bajo",
+      "cost": "horas",
+      "blockedBy": [
+        "debt-warmup-fork"
+      ],
+      "action": "Rama v1: llamar buildAuthReadinessContract en el composition root. Los 13 checks son LECTURAS (DNS/RBL/TLS/PTR/probes) — no escriben ni envían, y el engine hoy corre en mock, así que no puede empeorar nada. Devuelve, nodo por nodo de los 64, cuál pasaría el gate. Rama LIVE: borrar el subsistema."
+    },
+    {
+      "id": "debt-transport",
+      "title": "PostfixTransport escrito pero sin cablear",
+      "node": "warmup-send-worker",
+      "severity": "media",
+      "detail": "createWarmupTransport no tiene ningún caller. El camino del engine v1 hacia Postfix real no está conectado.",
+      "evidence": "apps/warmup-engine/src/live/compose.ts:129",
+      "closeType": "conectar-o-borrar",
+      "risk": "alto",
+      "cost": "horas",
+      "blockedBy": [
+        "debt-warmup-fork",
+        "debt-auth-contract"
+      ],
+      "action": "⚠️ NO cerrar como limpieza. Cablear createWarmupTransport quita la última barrera física que impide que el engine v1 mande correo: hoy no puede porque nada lo llama. Sólo después de decidir la rama v1 y de tener el contrato de auth funcionando."
+    },
+    {
+      "id": "debt-rollback-dup",
+      "title": "Dos implementaciones de rollback desconectadas",
+      "node": "rollback-sqlite",
+      "severity": "media",
+      "detail": "auto-rollback.ts guarda snapshots en JSON y tiene watchdogs; security/rollback-snapshot.ts hace lo mismo en SQLite con TTL de 7 días y no lo importa nadie.",
+      "evidence": "apps/gateway-api/src/security/rollback-snapshot.ts:27",
+      "closeType": "borrar",
+      "risk": "nulo",
+      "cost": "minutos",
+      "action": "Borrar apps/gateway-api/src/security/rollback-snapshot.ts. Cero importadores en producción: no cambia comportamiento. auto-rollback.ts queda como el único rollback."
+    },
+    {
+      "id": "debt-redis",
+      "title": "Redis + BullMQ figuran en la doc pero no en el código",
+      "node": "redis",
+      "severity": "media",
+      "detail": "La dirección técnica documentada dice 'Redis + BullMQ'. En el código no hay productor ni consumidor: las colas son archivos JSON y Redis sólo se pinguea para el healthcheck. Además el gateway local está apuntando al Redis de otro proyecto en el puerto 6379.",
+      "evidence": "apps/gateway-api/src/dependency-health.ts:32",
+      "closeType": "corregir-doc",
+      "risk": "nulo",
+      "cost": "minutos",
+      "action": "Corregir AGENTS.md:33: las colas son archivos JSON con lock, no Redis+BullMQ. Es la fuente de verdad que leen Codex y Claude antes de cada tarea; hoy los manda a razonar sobre un sistema que no existe."
+    },
+    {
+      "id": "debt-worker-mock",
+      "title": "El worker no envía correo",
+      "node": "worker",
+      "severity": "baja",
+      "detail": "Pasa por todos los gates y después simula el resultado. Está declarado en el código y en el banner de arranque, así que no engaña — pero el pipeline de envío 'clásico' sigue sin salida real.",
+      "evidence": "apps/worker/src/main.ts:182",
+      "closeType": "roadmap",
+      "risk": "alto",
+      "cost": "días",
+      "action": "No es deuda, es el pipeline clásico sin terminar, y está declarado en el banner de arranque. Cerrarlo = implementar envío SMTP real por un camino que nunca envió: el mayor radio de impacto de la lista. Depende de una decisión de producto, no de ingeniería."
+    }
+  ],
+  "debtPlan": {
+    "summary": "7 hallazgos que se colapsan en 2 limpiezas gratis + 2 decisiones + 1 ítem de roadmap. El orden importa: la decisión del warmup convierte dos deudas en 'conectar' o en 'borrar'.",
+    "tiers": [
+      {
+        "id": "t0",
+        "title": "Gratis y sin decisiones previas",
+        "subtitle": "Riesgo nulo, minutos, no cambian comportamiento",
+        "rationale": "Nada depende de esto y nada se rompe. Es la única categoría que se puede ejecutar sin consultar a nadie.",
+        "items": [
+          "debt-rollback-dup",
+          "debt-redis"
+        ]
+      },
+      {
+        "id": "t1",
+        "title": "Una decisión colapsa tres deudas",
+        "subtitle": "¿Cuál es el warmup canónico: el engine v1 o el daemon LIVE?",
+        "rationale": "El engine v1 está entero pero nunca se desplegó; el daemon LIVE diverge del diseño pero es el único que envía. Elegir una rama define si el contrato de auth y el transporte Postfix se conectan o se borran. Sin esa decisión, tocar cualquiera de los dos es trabajo que puede tirarse.",
+        "items": [
+          "debt-warmup-fork",
+          "debt-auth-contract",
+          "debt-transport"
+        ]
+      },
+      {
+        "id": "t2",
+        "title": "Una decisión colapsa una",
+        "subtitle": "¿El runtime multi-agente va al roadmap o se borra?",
+        "rationale": "No es deuda de mantenimiento: es una feature a medio construir. Las dos salidas honestas son terminarla o borrarla; dejarla es lo que hace que el repo se lea peor de lo que es.",
+        "items": [
+          "debt-multiagent"
+        ]
+      },
+      {
+        "id": "t3",
+        "title": "Roadmap de producto, no deuda",
+        "subtitle": "Decisión de producto, no de ingeniería",
+        "rationale": "Está declarado y no engaña a nadie. Cerrarlo es construir, con el mayor radio de impacto de toda la lista.",
+        "items": [
+          "debt-worker-mock"
+        ]
+      }
+    ],
+    "suggestedOrder": [
+      "1. T0 completo — dos limpiezas, cero riesgo, se hacen hoy.",
+      "2. Decidir el warmup canónico (T1). Es lo único que desbloquea trabajo real.",
+      "3. Si la rama es v1: conectar el contrato de auth y medir la flota ANTES de tocar el transporte.",
+      "4. Decidir el multi-agente (T2): terminarlo o borrarlo.",
+      "5. T3 queda para cuando el pipeline clásico vuelva a ser prioridad."
+    ]
+  }
+}

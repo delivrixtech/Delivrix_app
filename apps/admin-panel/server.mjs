@@ -68,11 +68,16 @@ const allowedProxyPaths = new Set([
   "/v1/devops/collector/snapshot-ingestion",
   "/v1/devops/collector/status",
   "/v1/devops/collector/supervised-plan",
+  "/v1/domains/availability",
+  "/v1/domains/owned",
+  "/v1/domains/prices",
+  "/v1/domains/suggestions",
   "/v1/hardware/physical-host",
   "/v1/hardware/telemetry/history",
   "/v1/hardware/telemetry/latest",
   "/v1/iam/roles",
   "/v1/iam/sessions",
+  "/v1/infrastructure/domain-discovery",
   "/v1/infrastructure/inventory",
   "/v1/ip-reputation/reports",
   "/v1/operational-summary",
@@ -84,6 +89,8 @@ const allowedProxyPaths = new Set([
   "/v1/openclaw/provisioning/state",
   "/v1/openclaw/readiness-signals",
   "/v1/openclaw/skills/audit",
+  "/v1/openclaw/workspace/file",
+  "/v1/openclaw/workspace/tree",
   "/v1/operating-north",
   "/v1/kill-switch",
   "/v1/mxtoolbox/daily-report",
@@ -92,7 +99,12 @@ const allowedProxyPaths = new Set([
   "/v1/sender-nodes",
   "/v1/sender-pool/status",
   "/v1/sender-pool/credentials/export",
+  "/v1/sender-pool/credentials/download-all",
   "/v1/stuck-jobs",
+  "/v1/warmup/activity",
+  "/v1/warmup/ramp/by-domain",
+  "/v1/warmup/status",
+  "/v1/warmup/trends",
   "/v1/webdock/inventory"
 ]);
 
@@ -134,11 +146,18 @@ server.on("upgrade", (request, socket, head) => {
   proxyGatewayWebSocket(request, socket, head, requestUrl);
 });
 
-server.listen(port, host, () => {
-  console.log(`admin-panel listening on http://${host}:${port}`);
-  console.log(`admin-panel proxying GET requests to ${gatewayOrigin}`);
-  console.log(`admin-panel serving static files from ${staticRoot}`);
-});
+// Solo escucha cuando se ejecuta directo (`node server.mjs`). Asi el test de paridad de
+// allowlists puede importar este modulo sin levantar un servidor.
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  server.listen(port, host, () => {
+    console.log(`admin-panel listening on http://${host}:${port}`);
+    console.log(`admin-panel proxying GET requests to ${gatewayOrigin}`);
+    console.log(`admin-panel serving static files from ${staticRoot}`);
+  });
+}
+
+// Exportado solo para el test de paridad contra READ_ENDPOINTS del read-boundary.
+export { allowedProxyPaths, allowedReadPatterns };
 
 async function proxyGatewayChatSend(request, response, requestUrl) {
   if (request.method !== "POST") {
@@ -224,10 +243,14 @@ async function proxyGatewayGet(request, response, requestUrl) {
     });
   }
 
-  const body = await upstreamResponse.text();
+  // Bytes crudos, no texto: el borde de lectura ya sirve respuestas binarias (el ZIP de
+  // download-all). Pasarlas por .text() las decodifica como UTF-8 y las re-encodea, y eso
+  // corrompe todo lo que no sea texto. Buffer round-trippea el JSON igual.
+  const body = Buffer.from(await upstreamResponse.arrayBuffer());
   const responseHeaders = {
     "content-type": upstreamResponse.headers.get("content-type") ?? "application/json; charset=utf-8",
-    "cache-control": "no-store"
+    "cache-control": "no-store",
+    "content-length": String(body.length)
   };
   const contentDisposition = upstreamResponse.headers.get("content-disposition");
   if (contentDisposition) {

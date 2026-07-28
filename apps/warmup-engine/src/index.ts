@@ -20,7 +20,6 @@ export * from "./reader/imap-placement-reader.ts";
 // --- Adapters de I/O EN VIVO (DNS/RBL/TLS + SMTP/IMAP) + composition root guarded por el flag ---
 export * from "./live/dns-adapters.ts";
 export * from "./live/mail-adapters.ts";
-export * from "./live/compose.ts";
 
 // --- Gaps v1: destinatarios engaged (A+B) + tendencia + ingesta de bounces/DSN ---
 export * from "./domain/trends.ts";
@@ -58,7 +57,6 @@ export {
   type CanSendDecision
 } from "./runtime/auth-gate.ts";
 export {
-  PostfixTransport,
   MockTransport,
   type WarmupTransport,
   type WarmupMessage,
@@ -75,14 +73,6 @@ export {
   type ProcessSendInput,
   type ProcessSendResult
 } from "./runtime/send-worker.ts";
-
-// --- Fase 1: ensamblador del contrato de auth firmado (corre checkers → AuthReadinessContract) ---
-export {
-  buildAuthReadinessContract,
-  authContractPayload,
-  PENDING_V1_CHECKS,
-  type BuildAuthContractInput
-} from "./runtime/auth-contract-builder.ts";
 
 // --- Feature flag de seguridad: el engine no arranca ni envía en deploy sin WARMUP_ENGINE_ENABLE ---
 export { warmupEngineEnabled, assertWarmupEngineEnabled, type WarmupEnv } from "./runtime/config.ts";

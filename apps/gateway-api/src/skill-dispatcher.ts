@@ -1161,7 +1161,8 @@ function createDefaultSkillHandlerMap(): Record<string, SkillHandlerEntry> {
         ...(typeof params.selector === "string" ? { selector: params.selector } : {}),
         ...(typeof params.status === "string" ? { status: params.status as "configured" | "superseded" | "retired" | "archived" } : {}),
         ...(typeof params.tlsStatus === "string" ? { tlsStatus: params.tlsStatus } : {}),
-        ...(typeof params.smtpAuthStatus === "string" ? { smtpAuthStatus: params.smtpAuthStatus as "configured" } : {})
+        ...(typeof params.smtpAuthStatus === "string" ? { smtpAuthStatus: params.smtpAuthStatus as "configured" } : {}),
+        ...(typeof params.serverIp === "string" ? { serverIp: params.serverIp } : {})
       };
       const result = await updateSmtpInventoryEntry({
         workspace: deps.workspace,

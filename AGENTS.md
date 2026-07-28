@@ -29,14 +29,28 @@ Every task should be interpreted through the project route:
 
 ## Technical direction from documentation
 
-- Backend: NestJS, Node 20, TypeScript.
-- Queues: Redis + BullMQ.
+> This list is the **direction from the thesis**, not a description of the code as it stands.
+> Two items diverge today and are marked inline. Reading them as current state means planning
+> against subsystems that do not exist. Verify against the code before acting on any of them.
+
+- Backend: NestJS, Node 20, TypeScript. — **diverges:** there is no NestJS in the repo (zero
+  references anywhere in `apps/` or `packages/`). The gateway is plain `node:http`
+  (`apps/gateway-api/src/main.ts:5`, server created at `:1602`).
+- Queues: Redis + BullMQ. — **diverges:** zero references to bullmq in the code; the only hit is
+  a comment at `apps/gateway-api/src/routes/warmup-ramp.ts:108` stating "No usa BullMQ". Queues
+  today are `LocalFileSendQueue` over a local file (`packages/queue`, wired in
+  `apps/worker/src/main.ts:21` and `apps/gateway-api/src/main.ts:124`). Redis is only pinged by
+  the health check (`apps/gateway-api/src/dependency-health.ts:46`).
 - Database: PostgreSQL.
 - Frontend: React + Tailwind CSS.
 - Sender layer: Postfix + OpenDKIM on virtualized VPS/LXC nodes.
 - Host infrastructure: Ubuntu Server 24.04 LTS + Proxmox VE 8.
 - Support services: AWS Route 53, Secrets Manager, S3. AWS does not send mail.
 - AI operations: OpenClaw agent with scheduler, skills, LLM router, action executor, immutable audit log, dry-run, verification, rollback, and kill switch.
+
+The remaining five items were **not** re-verified against the code on 2026-07-28; only the two
+marked above were. Host infrastructure in particular (Proxmox VE) cannot be verified from this
+repo at all.
 
 ## Default delivery posture
 

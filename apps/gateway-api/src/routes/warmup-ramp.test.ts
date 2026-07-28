@@ -517,3 +517,92 @@ function captureResponse(): {
     }
   };
 }
+
+// --- guard de la casilla de medicion ----------------------------------------
+//
+// La rampa manda VOLUMEN; el daemon LIVE le manda a UNA sola casilla y despues lee por Gmail
+// OAuth si cayo en INBOX o spam. Esa es la señal de placement que gatea todo el warmup v1.
+// Los dos caminos son complementarios justamente porque no comparten destinatarios: si el seed
+// entra al pool de una rampa, la rampa lo bombardea y la señal deja de significar nada.
+
+async function startRampWith(recipientPool: string[], env: Record<string, string | undefined>) {
+  const clock = new FakeClock(fixedNow);
+  const harness = await schedulerHarness({ clock });
+  await appendApproval(harness.auditLog, "artifact-ramp", "exec-ramp-http");
+  await harness.workspace.updateInventoryJson("domains.json", () => ({
+    bindings: [
+      { domain: "delivrix-ramp.com", serverSlug: "mail-delivrix-ramp", serverIp: "192.0.2.55" }
+    ]
+  }));
+  const response = captureResponse();
+  // Mismo enrutado que main.ts:2140 — la ruta lanza, el composition root mapea.
+  try {
+    await handleRampStartHttp({
+      request: requestWithJson({
+        domain: "delivrix-ramp.com",
+        serverSlug: "mail-delivrix-ramp",
+        schedule: "demo-fast" satisfies WarmupRampSchedule,
+        recipientPool,
+        actorId: "operator/juanes",
+        approvalToken: "exec-ramp-http"
+      }),
+      response: response as unknown as ServerResponse,
+      scheduler: harness.scheduler,
+      auditLog: harness.auditLog,
+      sshRunner: harness.sshRunner,
+      workspace: harness.workspace,
+      readCanvasState: () => canvasStateWithApproval("artifact-ramp", "exec-ramp-http"),
+      env: { WARMUP_ENABLE_SEND: "true", WARMUP_RAMP_ENABLE: "true", ...env },
+      now: () => clock.now()
+    });
+  } catch (error) {
+    if (!handleWarmupRampError(error, response as unknown as ServerResponse)) {
+      throw error;
+    }
+  }
+  return response;
+}
+
+test("la rampa rechaza la casilla de medicion en el recipientPool", async () => {
+  const response = await startRampWith(
+    ["a@x.com", "medicion@gmail.com", "c@x.com"],
+    { WARMUP_GMAIL_SEED_USER: "medicion@gmail.com" }
+  );
+
+  assert.equal(response.statusCode, 422);
+  assert.match(response.body, /measurement inbox/);
+});
+
+test("el guard no se saltea con los puntos y el '+' de Gmail", async () => {
+  // Gmail ignora los puntos del local part y todo lo que siga a un '+': las tres direcciones
+  // de abajo son la MISMA casilla que medicion@gmail.com. Un guard que compare strings las deja pasar.
+  for (const disfraz of ["me.dic.ion@gmail.com", "medicion+rampa@gmail.com", "me.dicion+x@googlemail.com"]) {
+    const response = await startRampWith(
+      ["a@x.com", disfraz, "c@x.com"],
+      { WARMUP_GMAIL_SEED_USER: "medicion@gmail.com" }
+    );
+    assert.equal(response.statusCode, 422, `${disfraz} deberia rebotar`);
+    assert.match(response.body, /measurement inbox/);
+  }
+});
+
+test("el guard protege la casilla real aunque el gateway no tenga la env seteada", async () => {
+  // Mismo default que live-warmup-daemon.ts:83. Sin esto el guard queda abierto por omision
+  // justo en el entorno donde nadie configuro nada.
+  const response = await startRampWith(
+    ["a@x.com", "infra.delivrix.demo@gmail.com", "c@x.com"],
+    {}
+  );
+
+  assert.equal(response.statusCode, 422);
+  assert.match(response.body, /measurement inbox/);
+});
+
+test("un pool legitimo sigue pasando", async () => {
+  const response = await startRampWith(
+    ["a@x.com", "b@x.com", "c@x.com"],
+    { WARMUP_GMAIL_SEED_USER: "medicion@gmail.com" }
+  );
+
+  assert.equal(response.statusCode, 202);
+});

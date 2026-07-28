@@ -64,6 +64,8 @@ export type OpenClawToolName =
   | "register_domain_namecheap"
   | "suggest_safe_domain"
   | "read_episodic_scratch"
+  | "semantic_remember"
+  | "semantic_recall"
   | "wait_for_dns_propagation"
   | "read_route53_domain_detail"
   | "read_route53_zone_records"
@@ -1620,6 +1622,8 @@ export function openClawToolNames(): OpenClawToolName[] {
     "register_domain_namecheap",
     "suggest_safe_domain",
     "read_episodic_scratch",
+    "semantic_remember",
+    "semantic_recall",
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
@@ -1660,6 +1664,23 @@ export function openClawToolNames(): OpenClawToolName[] {
     "configure_complete_smtp",
     "retire_infrastructure_account"
   ];
+}
+
+/**
+ * Los nombres tal como estan declarados en `toolDefinitions`.
+ *
+ * Existe para que el test pueda comprobar la PARIDAD contra `openClawToolNames()`, que es la
+ * lista que arma el catalogo que ve el modelo. Las dos se mantienen a mano y ya se
+ * desincronizaron una vez: `semantic_remember` y `semantic_recall` estaban definidas, ruteadas
+ * y con endpoint vivo, pero fuera de la lista, asi que nunca llegaron a Bedrock y el gate
+ * siguio en verde un mes (el `Record<OpenClawToolName, ...>` lo habria cazado, pero el gate es
+ * `node --test`, no `tsc`).
+ *
+ * NO derivar `openClawToolNames()` de esto: el orden de insercion del objeto difiere del de la
+ * lista, y ese orden es el que ve el modelo en cada request.
+ */
+export function openClawToolDefinitionNames(): OpenClawToolName[] {
+  return Object.keys(toolDefinitions) as OpenClawToolName[];
 }
 
 export function getOpenClawToolDefinition(toolName: string): OpenClawToolDefinition | null {

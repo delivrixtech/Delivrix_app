@@ -1,3 +1,5 @@
+import { READ_ENDPOINTS } from "./read-boundary.ts";
+
 export async function downloadSmtpCredential(domain: string): Promise<void> {
   const response = await fetch(`/v1/sender-pool/credentials/${encodeURIComponent(domain)}/download`, {
     method: "GET"
@@ -9,6 +11,28 @@ export async function downloadSmtpCredential(domain: string): Promise<void> {
   triggerDownload(
     blob,
     fileNameFromDisposition(response.headers.get("content-disposition")) ?? `smtp-credentials-${domain}.md`
+  );
+}
+
+/**
+ * Baja en un solo ZIP el .md de cada dominio configurado del pool.
+ *
+ * Un request, un evento de auditoría y un slot de rate limit — a diferencia de
+ * iterar los 70+ dominios con downloadSmtpCredential. El paquete no trae claves
+ * SSH privadas: esas se siguen bajando por dominio.
+ */
+export async function downloadAllSmtpCredentials(): Promise<void> {
+  const response = await fetch(READ_ENDPOINTS.senderPoolCredentialsBulkDownload, {
+    method: "GET"
+  });
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response));
+  }
+  const blob = await response.blob();
+  triggerDownload(
+    blob,
+    fileNameFromDisposition(response.headers.get("content-disposition")) ??
+      `smtp-credentials-${new Date().toISOString().slice(0, 10)}.zip`
   );
 }
 

@@ -2,7 +2,7 @@
 // Implementan las interfaces INYECTABLES ya definidas en el resto del engine:
 //   - SmtpAuthProbe / ImapAuthProbe (checks/liveness-checks.ts) → probes de auth (pass/fail/throw).
 //   - ImapClient (reader/imap-placement-reader.ts) → búsqueda por cabecera para el placement reader.
-//   - SmtpClient (runtime/transport.ts) → cliente de envío que consume PostfixTransport.
+//   - SmtpClient (runtime/transport.ts) → cliente de envío. Sin transporte que lo consuma hoy.
 //
 // Este archivo es el ÚNICO que acopla nodemailer/imapflow; el resto del engine sigue PURO respecto a
 // la red. El ensamblador (index/composición) los enchufa detrás del feature flag (WARMUP_ENGINE_ENABLE).
@@ -529,7 +529,7 @@ export function createGmailOAuthImapClient(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Cliente SMTP de envío (SmtpClient) — consumido por PostfixTransport.
+// Cliente SMTP de envío (SmtpClient). Sin consumidor cableado: ver nota de arriba.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Opciones de conexión del cliente SMTP de envío. */
@@ -543,7 +543,7 @@ export interface SmtpClientOptions {
 }
 
 /**
- * SmtpClient real (nodemailer) compatible con la firma `sendMail` que consume PostfixTransport.
+ * SmtpClient real (nodemailer), firma `sendMail`. Sin transporte que lo consuma hoy.
  * Resuelve el secret por referencia y crea el transporter de forma perezosa (una sola vez), luego
  * delega cada `sendMail`. `createTransport` inyectable (DI) ⇒ tests sin red.
  */
