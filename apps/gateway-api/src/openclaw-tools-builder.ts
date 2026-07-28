@@ -64,6 +64,8 @@ export type OpenClawToolName =
   | "register_domain_namecheap"
   | "suggest_safe_domain"
   | "read_episodic_scratch"
+  | "semantic_remember"
+  | "semantic_recall"
   | "wait_for_dns_propagation"
   | "read_route53_domain_detail"
   | "read_route53_zone_records"
@@ -1620,6 +1622,8 @@ export function openClawToolNames(): OpenClawToolName[] {
     "register_domain_namecheap",
     "suggest_safe_domain",
     "read_episodic_scratch",
+    "semantic_remember",
+    "semantic_recall",
     "wait_for_dns_propagation",
     "read_route53_domain_detail",
     "read_route53_zone_records",
