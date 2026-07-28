@@ -219,3 +219,74 @@ test("las instrucciones dicen que hacer en los dos casos", async () => {
   assert.match(sinId, /Sin messageId no podes usar read_delivery_reason/);
   assert.match(sinId, /no hay evidencia de entrega reciente/);
 });
+
+// --- conflicto de inventario: el nodo equivocado da un veredicto confiado y falso ----------
+
+test("detecta cuando domains.json y la credencial discrepan sobre el nodo", async () => {
+  // Medido en produccion: 5 de 59 dominios estan asi. El serverSlug alimenta LAS 5 tools,
+  // asi que sondear el nodo equivocado devuelve un resultado correcto DE OTRA MAQUINA.
+  const workspace = await workspaceWith({
+    bindings: [
+      { domain: "stale.com", serverSlug: "server60", serverIp: "192.0.2.1" },
+      { domain: "coherente.com", serverSlug: "server85", serverIp: "192.0.2.2" }
+    ],
+    smtpCredentials: [
+      { domain: "stale.com", status: "configured", serverSlug: "server85" },
+      { domain: "coherente.com", status: "configured", serverSlug: "server85" }
+    ]
+  });
+
+  const fleet = await loadWarmupFleet({ workspace });
+  const stale = fleet.domains.find((e) => e.domain === "stale.com");
+  const coherente = fleet.domains.find((e) => e.domain === "coherente.com");
+
+  assert.deepEqual(stale?.bindingConflict, { fromBindings: "server60", fromCredentials: "server85" });
+  assert.equal(coherente?.bindingConflict, undefined, "sin discrepancia no se marca nada");
+  // No se adivina cual de los dos gana: el binding se deja como estaba y se marca el conflicto.
+  assert.equal(stale?.serverSlug, "server60");
+});
+
+test("con conflicto se OMITE el messageId: no es atribuible a ningun nodo", async () => {
+  const workspace = await workspaceWith({
+    bindings: [{ domain: "stale.com", serverSlug: "server60", serverIp: "192.0.2.1" }],
+    smtpCredentials: [{ domain: "stale.com", status: "configured", serverSlug: "server85" }]
+  });
+  const auditLog = auditWith([
+    { action: "oc.smtp.real_email_sent", metadata: { messageId: "<delivrix-x@stale.com>" } }
+  ]);
+
+  const fleet = await loadWarmupFleet({ workspace, auditLog });
+  assert.equal(
+    fleet.domains[0]?.recentMessageId,
+    undefined,
+    "sin saber que nodo es, el mensaje tampoco se puede atribuir"
+  );
+});
+
+test("una credencial sin serverSlug no inventa un conflicto", async () => {
+  const workspace = await workspaceWith({
+    bindings: [{ domain: "x.com", serverSlug: "server1", serverIp: "192.0.2.1" }],
+    smtpCredentials: [{ domain: "x.com", status: "configured" }]
+  });
+
+  const fleet = await loadWarmupFleet({ workspace });
+  assert.equal(fleet.domains[0]?.bindingConflict, undefined);
+  assert.equal(fleet.domains[0]?.hasCredential, true);
+});
+
+test("las instrucciones con conflicto prohiben atribuir la medicion", async () => {
+  const texto = buildDiagnosticInstructions({
+    domain: "stale.com",
+    serverSlug: "server60",
+    serverIp: "192.0.2.1",
+    hasCredential: true,
+    bindingConflict: { fromBindings: "server60", fromCredentials: "server85" }
+  });
+
+  assert.match(texto, /EL INVENTARIO SE CONTRADICE/);
+  assert.match(texto, /server60/);
+  assert.match(texto, /server85/);
+  assert.match(texto, /indeterminado/);
+  // La frase que evita el veredicto confiado y falso.
+  assert.match(texto, /peor\s+que no tener dato/);
+});

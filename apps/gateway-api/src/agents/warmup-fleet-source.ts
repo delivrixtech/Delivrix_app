@@ -18,6 +18,18 @@ export interface FleetDomain {
   /** true si el dominio tiene una credencial SMTP `configured` en el inventario. */
   hasCredential: boolean;
   /**
+   * El `serverSlug` de `domains.json` NO coincide con el de la credencial SMTP.
+   *
+   * Medido: 5 de 59 dominios estan asi — `domains.json` quedo stale. Importa mucho mas de lo
+   * que parece: el serverSlug y el serverIp alimentan LAS 5 tools, no solo una. Sondear el nodo
+   * equivocado devuelve un resultado correcto DE OTRA MAQUINA y se lo atribuye a este dominio.
+   * Un veredicto confiado y falso es peor que un not-found.
+   *
+   * Cuando hay conflicto no se adivina: se marca, se omite el messageId, y el prompt le pide al
+   * agente cerrar en `indeterminado` declarando el conflicto.
+   */
+  bindingConflict?: { fromBindings: string; fromCredentials: string };
+  /**
    * Message-id de un envio real reciente de este dominio, si lo hay.
    *
    * `read_delivery_reason` resuelve el queue-id DESDE el message-id: sin uno concreto, la tool
@@ -69,7 +81,7 @@ interface DomainsInventory {
 }
 
 interface SmtpCredentialsInventory {
-  smtpCredentials?: Array<{ domain?: unknown; status?: unknown }>;
+  smtpCredentials?: Array<{ domain?: unknown; status?: unknown; serverSlug?: unknown }>;
 }
 
 /**
@@ -98,12 +110,21 @@ export async function loadWarmupFleet(input: LoadFleetInput): Promise<FleetSelec
     const serverIp = nonEmptyString(binding.serverIp);
     // Sin slug o sin ip, las tools de lectura no pueden ni construir su request.
     if (!domain || !serverSlug || !serverIp) continue;
-    const recentMessageId = messageIds.get(domain);
+    const credential = credentialed.get(domain);
+    // `domains.json` puede estar stale: si la credencial dice otro nodo, no adivinamos cual
+    // de los dos es el bueno — se marca el conflicto y el agente cierra en indeterminado.
+    const bindingConflict =
+      credential?.serverSlug && credential.serverSlug !== serverSlug
+        ? { fromBindings: serverSlug, fromCredentials: credential.serverSlug }
+        : undefined;
+    // Sin saber que nodo es, el messageId tampoco es atribuible: se omite a proposito.
+    const recentMessageId = bindingConflict ? undefined : messageIds.get(domain);
     usable.push({
       domain,
       serverSlug,
       serverIp,
-      hasCredential: credentialed.has(domain),
+      hasCredential: credential !== undefined,
+      ...(bindingConflict === undefined ? {} : { bindingConflict }),
       ...(recentMessageId === undefined ? {} : { recentMessageId })
     });
   }
@@ -131,15 +152,19 @@ export async function loadWarmupFleet(input: LoadFleetInput): Promise<FleetSelec
   return { domains, notFound, totalInInventory: bindings.length };
 }
 
-async function loadCredentialedDomains(workspace: OpenClawWorkspace): Promise<Set<string>> {
+async function loadCredentialedDomains(
+  workspace: OpenClawWorkspace
+): Promise<Map<string, { serverSlug: string | null }>> {
   const inventory = await workspace
     .readInventoryJson<SmtpCredentialsInventory>("smtp-credentials.json")
     .catch(() => null);
-  const out = new Set<string>();
+  const out = new Map<string, { serverSlug: string | null }>();
   for (const record of inventory?.smtpCredentials ?? []) {
     if (record.status !== "configured") continue;
     const domain = normalizeDomain(record.domain);
-    if (domain) out.add(domain);
+    // El serverSlug de la credencial es la segunda fuente: es lo que permite detectar que
+    // `domains.json` quedo desactualizado en vez de confiar en el a ciegas.
+    if (domain) out.set(domain, { serverSlug: nonEmptyString(record.serverSlug) });
   }
   return out;
 }
@@ -201,6 +226,19 @@ export function buildDiagnosticInstructions(target: FleetDomain): string {
     "en el resultado de tus tools. Distingui explicitamente entre el nodo caido o incomunicado",
     "y el correo rechazado por el destino: son dos fallas distintas y se arreglan distinto.",
     "",
+    ...(target.bindingConflict
+      ? [
+          "ATENCION — EL INVENTARIO SE CONTRADICE SOBRE QUE NODO SIRVE A ESTE DOMINIO:",
+          `  domains.json dice:      ${target.bindingConflict.fromBindings}`,
+          `  la credencial SMTP dice: ${target.bindingConflict.fromCredentials}`,
+          "",
+          "No sabemos cual es el correcto, asi que NO podes atribuirle a este dominio lo que",
+          "midas en ninguno de los dos: un resultado correcto de la maquina equivocada es peor",
+          "que no tener dato. Cerra en 'indeterminado' declarando el conflicto de inventario",
+          "como causa, y recomenda reconciliarlo antes de volver a diagnosticar.",
+          ""
+        ]
+      : []),
     target.recentMessageId
       ? "Usa el messageId de arriba con read_delivery_reason: es el motivo REAL del ultimo envio."
       : [
