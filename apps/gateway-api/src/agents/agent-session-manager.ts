@@ -16,7 +16,11 @@ import type {
 } from "../../../../packages/domain/src/index.ts";
 import { isAgentRole } from "../../../../packages/domain/src/index.ts";
 import type { BedrockToolSpec } from "../openclaw-tools-builder.ts";
-import { AGENT_DEFINITIONS, assertAgentRegistryIntegrity } from "./agent-registry.ts";
+import {
+  AGENT_DEFINITIONS,
+  assertAgentRegistryIntegrity,
+  type AgentDefinition
+} from "./agent-registry.ts";
 import type { AgentEventBus } from "./agent-event-bus.ts";
 import {
   AgentSessionError,
@@ -34,6 +38,21 @@ export interface AgentSessionManagerOptions {
   modelClientFactory: (role: AgentRole) => AgentModelClient;
   toolExecutorFactory?: (role: AgentRole) => AgentToolExecutor | undefined;
   toolSpecsForRole?: (role: AgentRole) => BedrockToolSpec[];
+  /**
+   * Definicion efectiva del agente. Default: `AGENT_DEFINITIONS[role]`.
+   *
+   * Existe porque `BedrockAgentSession` filtra cada tool_use contra
+   * `definition.toolNames` (bedrock-agent-session.ts:363), y el registry declara los nombres
+   * del diseño original — que para warmup son 8 inventados sin handler. Un modo de operacion
+   * que use las tools REALES (el abanico de diagnostico) necesita que la sesion filtre contra
+   * SU lista, o rechaza todas sus tools con `tool_out_of_scope` y reporta la sesion como
+   * completada: cero lecturas y un "todo ok" falso.
+   *
+   * Se inyecta en vez de cambiar el registry a proposito: `assertAgentRegistryIntegrity` valida
+   * conteos por rol en el constructor, y el camino conversacional del orquestador sigue usando
+   * la definicion original sin enterarse.
+   */
+  definitionForRole?: (role: AgentRole) => AgentDefinition;
   maxDelegationDepth?: number;
   now?: () => Date;
 }
@@ -50,6 +69,7 @@ export class AgentSessionManager {
   private readonly modelClientFactory: (role: AgentRole) => AgentModelClient;
   private readonly toolExecutorFactory: (role: AgentRole) => AgentToolExecutor | undefined;
   private readonly toolSpecsForRole: (role: AgentRole) => BedrockToolSpec[];
+  private readonly definitionForRole: (role: AgentRole) => AgentDefinition;
   private readonly maxDelegationDepth: number;
   private readonly now: () => Date;
   private readonly sessions = new Map<string, BedrockAgentSession>();
@@ -61,6 +81,7 @@ export class AgentSessionManager {
     this.modelClientFactory = options.modelClientFactory;
     this.toolExecutorFactory = options.toolExecutorFactory ?? (() => undefined);
     this.toolSpecsForRole = options.toolSpecsForRole ?? (() => []);
+    this.definitionForRole = options.definitionForRole ?? ((role) => AGENT_DEFINITIONS[role]);
     this.maxDelegationDepth = options.maxDelegationDepth ?? defaultMaxDelegationDepth;
     this.now = options.now ?? (() => new Date());
   }
@@ -121,7 +142,7 @@ export class AgentSessionManager {
       );
     }
 
-    const definition = AGENT_DEFINITIONS[role];
+    const definition = this.definitionForRole(role);
     const session = new BedrockAgentSession({
       definition,
       taskId: input.taskId,

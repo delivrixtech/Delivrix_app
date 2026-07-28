@@ -12,6 +12,7 @@
 // de produccion diverge y miente.
 
 import type { AgentRole } from "../../../../packages/domain/src/index.ts";
+import type { AgentDefinition } from "./agent-registry.ts";
 import type { AgentToolExecutor } from "./bedrock-agent-session.ts";
 
 /** Firma de lo que devuelve `createHttpToolUseProcessor`. */
@@ -107,10 +108,13 @@ function stringifyToolResult(result: unknown): string {
  * Las 5 tools del Warmup Senior en el abanico de diagnostico.
  *
  * Todas de LECTURA, todas habilitadas en el env canonico, ninguna pasa por ApprovalGate.
- * Deliberadamente NO estan `send_real_email` (apagada por SMTP_SEND_REAL_EMAIL_ENABLE=false)
- * ni `seed_warmup_pool` (no-op permanente: el tipo solo admite status "started" y la flota
- * entera ya lo tiene). Declarar tools que devuelven tool_disabled o idempotent_already_started
- * le enseña al modelo a llamar cosas que no hacen nada.
+ * Deliberadamente NO estan `send_real_email` (apagada por SMTP_SEND_REAL_EMAIL_ENABLE=false en
+ * el env canonico) ni `seed_warmup_pool`.
+ *
+ * CORRECCION de un comentario anterior que era falso: `seed_warmup_pool` NO es un no-op. Es
+ * idempotente solo para los dominios que YA tienen un run `started` — con un dominio sin run
+ * previo manda 3 correos por sendmail (routes/warmup.ts:219-233). La exclusion es correcta
+ * justamente por eso: es una tool de ESCRITURA que envia.
  */
 export const WARMUP_DIAGNOSTIC_TOOLS = [
   "read_smtp_reachability",
@@ -134,4 +138,22 @@ export function warmupDiagnosticToolExecutor(
 /** Alcance por rol. Hoy solo warmup: los otros 4 siguen con nombres inventados y sin handler. */
 export function diagnosticToolsForRole(role: AgentRole): readonly string[] {
   return role === "warmup" ? WARMUP_DIAGNOSTIC_TOOLS : [];
+}
+
+/**
+ * Definicion efectiva del agente para el abanico de diagnostico.
+ *
+ * `BedrockAgentSession` filtra CADA tool_use contra `definition.toolNames`
+ * (bedrock-agent-session.ts:363). El registry declara para warmup los 8 nombres del diseño
+ * original, que no tienen handler y no se solapan con las 5 reales: sin esto la sesion rechaza
+ * las 5 con `tool_out_of_scope`, no ejecuta NADA, y aun asi reporta la sesion como completada.
+ * 59 sesiones de Bedrock pagadas, cero lecturas de la flota y un "59 ok" falso.
+ *
+ * Se pasa por `definitionForRole` del manager en vez de cambiar el registry: el camino
+ * conversacional del orquestador sigue con la definicion original, y
+ * `assertAgentRegistryIntegrity` no se entera.
+ */
+export function diagnosticDefinitionFor(role: AgentRole, base: AgentDefinition): AgentDefinition {
+  const toolNames = diagnosticToolsForRole(role);
+  return toolNames.length > 0 ? { ...base, toolNames: [...toolNames] } : base;
 }
