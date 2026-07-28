@@ -89,7 +89,12 @@ test("ChatWidget renders nothing when closed and full drawer when open", async (
   assert.match(open, /Chat con OpenClaw/);
   assert.match(open, /Agente offline/);
   assert.match(open, /Sin mensajes en esta sesión/);
-  assert.match(open, /sessionKey: agent:main:operator/);
+  // El header ya no muestra el sessionKey crudo (`agent:main:operator`). No se perdio nada: es
+  // el id de la sesion DENTRO del container del agente (openclaw-ssh-bridge.ts:94,
+  // openclaw-chat.ts:227), o sea metadata interna. El repo ya habia tomado esa decision en el
+  // Canvas — canvas-v4.tsx:312 lo llama "metadata interna sin valor para el operador" y :470 lo
+  // filtra junto con msgId y actorId. El rediseno lo reemplazo por el pill de estado, que si le
+  // dice algo al operador y esta cubierto arriba.
 });
 
 test("ChatWidget renders messages and streaming state", async () => {
