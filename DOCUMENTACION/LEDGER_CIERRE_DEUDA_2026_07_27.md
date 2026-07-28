@@ -40,13 +40,24 @@ apps/admin-panel/src/v5/views/SenderPool.tsx            +32
 **Acción:** ninguna. Ningún commit de este ledger debe incluirlos. Todos los commits se hacen
 con rutas explícitas (`git commit -- <archivos>`), nunca `git commit -a` ni `git add .`.
 
-> Pendiente de Juanes: confirmar de quién son y si van a `produ` antes o después de este plan.
+**Resuelto 2026-07-28:** Juanes autorizó commitearlos **aparte**, sin mezclar. Commit `d591bcb`,
+sólo estos archivos.
+
+⚠️ **Hallazgo al commitear:** el commit inicial quedó incompleto. `routes/smtp-credentials.ts:16`
+importa `../zip-archive.ts`, y ese módulo (más su test y sus helpers) estaba **sin trackear** —
+no ignorado, nunca agregado. Los tests pasaban porque los archivos existen en el working copy,
+pero en un checkout limpio el commit no compilaba. Se enmendó `d591bcb` para incluirlos
+(8 → 11 archivos) y se rebasearon los dos commits de arriba. Respaldo del estado previo:
+rama `backup/pre-zip-fix-2026-07-28`.
+
+> Lección: `git status` marca los `??` aparte de los ` M`, y un commit por rutas explícitas
+> no avisa que falta un import. Verificar los imports del alcance contra `git ls-files`.
 
 ---
 
 ## E-01 · Catálogo de tools: reponer `semantic_remember` / `semantic_recall`
 
-**Estado:** 🟡 hecho, sin auditar · **Deuda:** `debt-semantic-tools` (cerrada) · **Riesgo:** bajo
+**Estado:** 🟡 hecho, sin auditar · **Commit:** `a906970` (2026-07-28) · **Deuda:** `debt-semantic-tools` (cerrada) · **Riesgo:** bajo
 
 Estaban definidas en `toolDefinitions`, ruteadas en `tool-use-processor` y con endpoint vivo,
 pero faltaban en el union `OpenClawToolName` y en `openClawToolNames()`, así que nunca llegaban
@@ -59,7 +70,7 @@ apps/gateway-api/src/openclaw-tools-builder.test.ts  +47   ← conteos, samples,
 apps/gateway-api/src/openclaw-bedrock-bridge.test.ts  +4   ← 36 → 38 en el payload
 ```
 
-**Verificación:** `npm test` → 2154/2154 ✅
+**Verificación:** `npm test` → 2154/2154 ✅ · revalidado post-rebase 2026-07-28: **2165/2165** ✅
 
 **Qué auditar:**
 - El diff de producción son 2 líneas repetidas en dos lugares (union + lista). Nada más.
@@ -74,7 +85,7 @@ apps/gateway-api/src/openclaw-bedrock-bridge.test.ts  +4   ← 36 → 38 en el p
 
 ## E-02 · Entregables del mapa de arquitectura
 
-**Estado:** 🟡 hecho, sin auditar · **Riesgo:** nulo (documentación, no ejecuta en producción)
+**Estado:** 🟡 hecho, sin auditar · **Commit:** `c5911be` (2026-07-28) · **Riesgo:** nulo (documentación, no ejecuta en producción)
 
 **Alcance (2 archivos nuevos):**
 ```
@@ -190,6 +201,12 @@ llamando funciones inexistentes. Las dos salidas honestas: terminarlo o borrarlo
 ## Fuera de este ledger
 
 - **`ChatWidget.test.ts` en rojo** — preexistente, verificado con `git stash`. No es de este plan.
-- **3 commits en la rama sin llegar a `produ`**: `6a87096`, `904a32e`, `0ac3d78`.
+- **6 commits en la rama sin llegar a `produ`** (2026-07-28): `6a87096`, `904a32e`, `0ac3d78`,
+  `d591bcb`, `a906970`, `c5911be`. Ninguno se pusheó; subir a `produ` es decisión aparte.
+- **`.audit/audit-events.jsonl`** queda sin commitear a propósito: es dato de runtime que appendea
+  el gateway, no un cambio de código.
+- **`apps/admin-panel/src/assets/fonts/`** (Satoshi) sin trackear. Verificado: no lo importa
+  nadie. Decidir si entra o se borra.
+- **Rama de respaldo `backup/pre-zip-fix-2026-07-28`** — borrable una vez auditado E-00.
 - **Server del mapa** en `127.0.0.1:8899` (`python3 -m http.server`). Bajar con
   `pkill -f "http.server 8899"`.
