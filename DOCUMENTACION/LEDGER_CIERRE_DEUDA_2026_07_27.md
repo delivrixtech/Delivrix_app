@@ -103,7 +103,7 @@ coincidían. El JSON va embebido en el HTML: si se edita el JSON hay que reinyec
 
 ## E-03 · Borrar el rollback muerto
 
-**Estado:** ⬜ pendiente · **Deuda:** `debt-rollback-dup` · **Riesgo:** nulo · **Costo:** minutos
+**Estado:** 🟡 hecho, sin auditar · **Commit:** `25017a4` (2026-07-28) · **Deuda:** `debt-rollback-dup` · **Riesgo:** nulo
 
 `apps/gateway-api/src/security/rollback-snapshot.ts` no tiene un solo importador en producción
 (verificado: los 2 hits eran el nombre del directorio `runtime/rollback-snapshots` usado por
@@ -131,7 +131,13 @@ Verificado antes de ejecutar:
 
 ## E-04 · Corregir `AGENTS.md`: las colas no son Redis + BullMQ
 
-**Estado:** ⬜ pendiente · **Deuda:** `debt-redis` · **Riesgo:** nulo · **Costo:** minutos
+**Estado:** 🟡 hecho, sin auditar · **Commit:** `7fde182` (2026-07-28) · **Deuda:** `debt-redis` · **Riesgo:** nulo
+
+> **Era más grande que la línea señalada.** Al verificar el resto del listado apareció una
+> segunda divergencia que el ledger no tenía: **`Backend: NestJS`** también es falso — cero
+> referencias en `apps/` y `packages/`, el gateway es `node:http` puro (`main.ts:5`, `:1602`).
+> Se marcaron las dos con evidencia y se dejó dicho que los otros cinco ítems **no** se
+> reverificaron.
 
 `AGENTS.md:33` declara `Queues: Redis + BullMQ`. En el código hay **cero** uso de bullmq —
 el único hit es un comentario en `warmup-ramp.ts:108` que dice literalmente "No usa BullMQ".
@@ -152,18 +158,81 @@ Las colas son `LocalFileSendQueue` sobre `runtime/send-jobs.json`; Redis sólo s
 
 ## E-05 · DECISIÓN: ¿cuál es el warmup canónico?
 
-**Estado:** ⬜ pendiente · **Deuda:** `debt-warmup-fork` · **No toca código**
+**Estado:** ⬜ pendiente · **Deuda:** `debt-warmup-fork` · **No toca código** ·
+**Reescrita 2026-07-28 contra el código**
 
-Es la bisagra. El engine v1 nunca se desplegó (`service/main.ts:46` dejó el cableado "al
-deployment"); el daemon LIVE es el único con launcher propio y con envíos reales.
+> El planteo anterior de esta entrada era incorrecto y llevaba a decidir mal. Decía "engine v1 vs
+> daemon LIVE, dos caminos". No son dos y no compiten como decía.
 
-| Rama | E-06 (contrato de auth) | E-07 (PostfixTransport) |
-|---|---|---|
-| **A · engine v1 es el canónico** | conectar | conectar (después de A) |
-| **B · daemon LIVE es el canónico** | borrar | borrar |
+### Lo que realmente hay
 
-**Hasta que esto se decida, E-06 y E-07 quedan congeladas.** Tocarlas antes es trabajo que
-puede tirarse entero.
+**Tres caminos de envío, cada uno con su disparador:**
+
+| # | Qué | Cómo manda | Se dispara |
+|---|---|---|---|
+| 1 | **Rampa del gateway** — `RampScheduler` en `routes/warmup-ramp.ts` | `/usr/sbin/sendmail` por SSH en el nodo (`warmup-ramp.ts:372`) | **Al arranque del gateway**: `main.ts:842` lo instancia, `main.ts:6100` llama `resumeRampsOnStartup()` |
+| 2 | **Daemon LIVE** — `service/live-warmup-daemon.ts` (344 líneas) | `nodemailer` propio (`:181` crea el transport, `:187` `sendMail`) | Launcher propio: `scripts/delivrix-warmup-live-start.sh`, `WARMUP_LIVE_ENABLE=true`, con kill-file |
+| 3 | **Daemon dry-run** — `service/dryrun-daemon.ts` (288 líneas) | Nada: asserta mock y **rehúsa arrancar** si no lo es | `scripts/delivrix-warmup-start.sh`, fuerza `WARMUP_TRANSPORT=mock` |
+
+**Y una capa de abstracción que no usa nadie**, dentro del mismo paquete:
+
+```
+apps/warmup-engine/src/runtime/transport.ts             PostfixTransport
+apps/warmup-engine/src/live/compose.ts:129              createWarmupTransport
+apps/warmup-engine/src/runtime/auth-contract-builder.ts buildAuthReadinessContract
+```
+
+Los tres están exportados desde `index.ts` y tienen **cero callers**. Lo importante: **los dos
+daemons que viven al lado tampoco los usan.** El LIVE se escribió su propio camino de envío con
+nodemailer en vez de usar `PostfixTransport`.
+
+**Corrección al planteo viejo:** "engine v1" no es un tercer desplegable compitiendo con los
+daemons. Es una capa diseñada y nunca ejercitada, que los daemons de su propio paquete esquivan.
+
+### Lo que hay que decidir
+
+Son **dos** preguntas, no una:
+
+**(a) ¿Cuál es el camino de envío canónico — la rampa (1) o el daemon LIVE (2)?**
+
+No hacen lo mismo, y esto es lo que hay que mirar antes de elegir:
+
+- La **rampa** sube volumen usando el MTA del propio nodo. Simple, y es lo único que arranca solo.
+- El **daemon LIVE** hace el warmup sofisticado: banco de conversaciones
+  (`live/warmup-content-bank.ts`), OAuth de Google (`live/google-oauth-token-provider.ts`),
+  descifrado de credenciales (`live/smtp-credential-decrypt.ts`).
+
+**Puede que sean complementarios, no rivales** — uno hace volumen y el otro placement. Si es así,
+la decisión no es "cuál gana" sino documentar el reparto y desarmar el solapamiento. **Lo que NO
+puede quedar es indefinido:** si los dos apuntan al mismo dominio, mandan los dos.
+
+> **No verificado:** si los conjuntos de destinatarios se solapan. La rampa usa
+> `pickRecipients(ramp.recipientPool, …)`; el LIVE usa el banco de conversaciones. Nadie comparó
+> los dos pools. **Esto hay que mirarlo antes de decidir**, no después.
+
+**(b) ¿La capa de abstracción se termina o se borra?**
+
+Es lo que E-06 y E-07 preguntan.
+
+| Opción | E-06 (auth contract) | E-07 (PostfixTransport) | Costo | Riesgo |
+|---|---|---|---|---|
+| **A · Borrar la capa** | borrar | borrar | mínimo | nulo — nadie la llama |
+| **B · Terminarla** | cablear | cablear | alto | **ALTO** en E-07 |
+| **C · Dejarla congelada** | nada | nada | cero | la deuda sigue creciendo |
+
+**Recomendación: A.** No por pereza — por evidencia. Los dos daemons que viven en el mismo
+paquete escribieron su propio camino en vez de usarla. Eso es la señal más fuerte que hay de que
+la abstracción no era la que hacía falta. Queda en git si algún día se quiere volver.
+
+⚠️ **Si elegís B, E-07 primero no.** Cablear `createWarmupTransport` quita la última barrera
+*física* que impide que esa capa mande correo: hoy no puede porque nada la llama.
+
+### Por qué ahora
+
+`runtime/openclaw-workspace/inventory/warmup-progress.json` tiene `ramps` **vacío**, así que el
+resume-on-boot del gateway no dispara nada. Decidir hoy no interrumpe ningún envío en curso.
+
+**Hasta que (a) y (b) se decidan, E-06 y E-07 quedan congeladas.**
 
 ---
 
