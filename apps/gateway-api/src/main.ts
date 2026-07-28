@@ -293,6 +293,7 @@ import {
   handleSmtpCredentialDownloadHttp,
   handleSmtpCredentialInventoryExportHttp
 } from "./routes/smtp-credentials.ts";
+import { resolveReadBoundaryToken } from "./routes/sensitive-read-auth.ts";
 import {
   createGatewayOnboardDomainFlowRunner,
   handleOnboardBatchHttp,
@@ -853,10 +854,13 @@ const rampScheduler = new RampScheduler({
   getWarmupSignals: createWarmupSignalsReader({ auditLog })
 });
 const gatewaySelfBaseUrl = process.env.DELIVRIX_GATEWAY_INTERNAL_BASE_URL ?? `http://${host}:${port}`;
-const sensitiveReadBoundaryToken =
-  process.env.DELIVRIX_READ_BOUNDARY_TOKEN?.trim() ||
-  process.env.DELIVRIX_OPENCLAW_TOKEN?.trim() ||
-  process.env.OPENCLAW_GATEWAY_TOKEN?.trim();
+// La cascada se mantiene (sacarla dejaria sin panel a un despliegue que solo tenga el token
+// viejo), pero deja de ser silenciosa: este borde entrega las credenciales SMTP de la flota.
+const readBoundaryTokenResolution = resolveReadBoundaryToken(process.env);
+const sensitiveReadBoundaryToken = readBoundaryTokenResolution.token;
+if (readBoundaryTokenResolution.warning) {
+  console.warn(`[read-boundary] ${readBoundaryTokenResolution.warning}`);
+}
 // Umbrales del gate CRAG de memoria grounded; falla en el arranque si el env es invalido.
 const groundedConfidenceGate = groundedConfidenceGateFromEnv();
 // Health Auto-Flag — deps compartidas entre la ruta HTTP y el hook del scan
