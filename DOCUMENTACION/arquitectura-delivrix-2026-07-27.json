@@ -35,6 +35,10 @@
     },
     "changelog": [
       {
+        "date": "2026-07-28",
+        "change": "Corregido el vecindario SSH. El nodo 'ssh-bridge' apuntaba a openclaw-ssh-bridge.ts, que es el puente de chat contra el container del agente, no el ejecutor de la flota (ese es routes/smtp-provisioning.ts). Se separo en dos nodos y se agrego delivery-reason-collector, que es el que realmente trae mail.log por SSH: postfix-log-parser.ts es una funcion pura y la arista e80 lo daba como origen del SSH."
+      },
+      {
         "date": "2026-07-27",
         "change": "Cerrado debt-semantic-tools: semantic_remember y semantic_recall repuestas en el union OpenClawToolName y en openClawToolNames(), con test de regresión. El catálogo pasa de 43 a 45 tools. Cambio en el árbol de trabajo, todavía sin mergear a produ."
       },
@@ -1216,17 +1220,19 @@
     },
     {
       "id": "ssh-bridge",
-      "label": "Puente SSH",
+      "label": "Ejecutor SSH de la flota",
       "layer": "fleet",
       "kind": "module",
-      "path": "apps/gateway-api/src/openclaw-ssh-bridge.ts",
-      "purpose": "Ejecución remota en los nodos: provisión, retrofit de SASL, sendmail de la rampa, lectura de mail.log.",
+      "path": "apps/gateway-api/src/routes/smtp-provisioning.ts",
+      "purpose": "Ejecucion remota en los nodos SMTP: provision, retrofit de SASL, sendmail de la rampa, traida del tail de mail.log.",
       "status": "live",
       "evidence": [
-        "apps/gateway-api/src/openclaw-ssh-bridge.ts:1",
-        "apps/gateway-api/src/routes/warmup-ramp.ts:365"
+        "apps/gateway-api/src/routes/smtp-provisioning.ts:734",
+        "apps/gateway-api/src/routes/smtp-provisioning.ts:1684",
+        "apps/gateway-api/src/main.ts:840",
+        "apps/gateway-api/src/routes/warmup-ramp.ts:372"
       ],
-      "notes": "También provisiona el usuario SSH 'ops' dedicado por nodo (RSA-3072 PKCS#8, cifrado, revocable) como complemento del doc de credenciales."
+      "notes": "Tambien provisiona el usuario SSH 'ops' dedicado por nodo (RSA-3072 PKCS#8, cifrado, revocable) como complemento del doc de credenciales: provisionOpsSshForNode en smtp-provisioning.ts:608. NO confundir con agent-chat-bridge, que es SSH contra el container del agente, no contra la flota."
     },
     {
       "id": "seed-inboxes",
@@ -1241,6 +1247,36 @@
         "apps/warmup-engine/src/domain/placement.ts:25"
       ],
       "notes": "Proveedores mayores que gatean la graduación: gmail, workspace, outlook, m365, yahoo. gmx y web.de se miden pero no bloquean."
+    },
+    {
+      "id": "agent-chat-bridge",
+      "label": "Puente SSH al container del agente",
+      "layer": "agent",
+      "kind": "module",
+      "path": "apps/gateway-api/src/openclaw-ssh-bridge.ts",
+      "purpose": "Habla por SSH con el container donde corre el agente OpenClaw, para chat e historial. No toca la flota SMTP.",
+      "status": "partial",
+      "evidence": [
+        "apps/gateway-api/src/openclaw-ssh-bridge.ts:4",
+        "apps/gateway-api/src/openclaw-ssh-bridge.ts:8",
+        "apps/gateway-api/src/main.ts:815",
+        "apps/gateway-api/src/main.ts:816"
+      ],
+      "notes": "Es el camino de reserva: main.ts:815 solo lo instancia si NO hay bridge de Bedrock (openClawChatBridge = openClawBedrockBridge ?? openClawSshBridge). Estaba fusionado con el ejecutor de la flota en el nodo ssh-bridge, que apuntaba a este archivo."
+    },
+    {
+      "id": "delivery-reason-collector",
+      "label": "Colector de motivo de entrega",
+      "layer": "runners",
+      "kind": "module",
+      "path": "apps/gateway-api/src/openclaw-delivery-reason.ts",
+      "purpose": "Trae el tail de mail.log de un nodo por SSH y se lo pasa al parser puro para obtener el motivo de entrega por mensaje.",
+      "status": "live",
+      "evidence": [
+        "apps/gateway-api/src/openclaw-delivery-reason.ts:120",
+        "apps/gateway-api/src/openclaw-delivery-reason.ts:17"
+      ],
+      "notes": "Este es el que hace I/O. postfix-log-parser.ts es una funcion pura: su encabezado dice explicitamente que convierte el tail en resultados 'WITHOUT OpenClaw ever touching SSH'."
     }
   ],
   "edges": [
@@ -1722,7 +1758,7 @@
       "to": "ssh-bridge",
       "kind": "import",
       "label": "provisión remota",
-      "evidence": "apps/gateway-api/src/openclaw-ssh-bridge.ts:1"
+      "evidence": "apps/gateway-api/src/routes/smtp-provisioning.ts:734"
     },
     {
       "id": "e79",
@@ -1730,15 +1766,15 @@
       "to": "smtp-nodes",
       "kind": "ssh",
       "label": "postfix · dkim · sasl · mail.log",
-      "evidence": "apps/gateway-api/src/routes/warmup-ramp.ts:365"
+      "evidence": "apps/gateway-api/src/routes/smtp-provisioning.ts:1684"
     },
     {
       "id": "e80",
-      "from": "postfix-log-parser",
+      "from": "delivery-reason-collector",
       "to": "ssh-bridge",
-      "kind": "import",
-      "label": "lee mail.log",
-      "evidence": "apps/gateway-api/src/postfix-log-parser.ts:1"
+      "kind": "ssh",
+      "label": "trae el tail de mail.log",
+      "evidence": "apps/gateway-api/src/openclaw-delivery-reason.ts:120"
     },
     {
       "id": "e90",
@@ -1874,7 +1910,7 @@
       "to": "ssh-bridge",
       "kind": "ssh",
       "label": "sendmail por batch",
-      "evidence": "apps/gateway-api/src/routes/warmup-ramp.ts:365"
+      "evidence": "apps/gateway-api/src/routes/warmup-ramp.ts:372"
     },
     {
       "id": "e113",
@@ -1899,6 +1935,22 @@
       "kind": "smtp",
       "label": "el correo que se mide",
       "evidence": "apps/warmup-engine/src/live/warmup-live-cycle.ts:96"
+    },
+    {
+      "id": "e83",
+      "from": "delivery-reason-collector",
+      "to": "postfix-log-parser",
+      "kind": "import",
+      "label": "parsea el tail",
+      "evidence": "apps/gateway-api/src/openclaw-delivery-reason.ts:17"
+    },
+    {
+      "id": "e84",
+      "from": "gateway-main",
+      "to": "agent-chat-bridge",
+      "kind": "import",
+      "label": "chat de reserva sin Bedrock",
+      "evidence": "apps/gateway-api/src/main.ts:815"
     }
   ],
   "flows": [
