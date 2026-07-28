@@ -348,3 +348,55 @@ function captureResponse(): {
     }
   };
 }
+
+test("iniciar un warmup NO borra las rampas activas del mismo archivo", async () => {
+  // warmup-progress.json es compartido: la rampa guarda `ramps` ahi
+  // (openclaw-workspace.ts:424, leido por resumeRampsOnStartup al arrancar el gateway).
+  // updateWarmupInventory devolvia un objeto con SOLO `runs`, asi que cada seed se llevaba
+  // puestas las rampas en silencio y el resume del arranque encontraba el archivo vacio.
+  const route = await routeHarness({
+    sshRunner: mockRunner({
+      run: async () => ({ stdout: "queued", stderr: "", exitCode: 0 })
+    }),
+    canvasState: canvasState([{
+      artifactId: "artifact-warmup-plan",
+      executionId: "exec-warmup-ramps",
+      approvedAt: "2026-05-28T10:59:00.000Z"
+    }])
+  });
+  await appendApproval(route.auditLog, "artifact-warmup-plan", "exec-warmup-ramps");
+  await route.workspace.updateInventoryJson("domains.json", () => ({
+    bindings: [{
+      domain: "delivrix-mail.com",
+      serverSlug: "mail-delivrix-test",
+      serverIp: "192.0.2.44"
+    }]
+  }));
+  // Estado preexistente de la rampa, en el mismo archivo.
+  await route.workspace.updateInventoryJson("warmup-progress.json", () => ({
+    ramps: [{ rampId: "ramp-viva", domain: "otro-dominio.com", state: "running" }],
+    rampEvents: [{ rampId: "ramp-viva", kind: "batch_sent" }]
+  }));
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    seedInboxes: ["seed.one@gmail.com", "seed.two@outlook.com", "seed.three@delivrix.com"],
+    actorId: "operator/juanes",
+    approvalToken: "exec-warmup-ramps",
+    taskId: "task-warmup-ramps"
+  }, { WARMUP_ENABLE_SEND: "true" });
+
+  assert.equal(response.statusCode, 200);
+
+  const inventory = await route.workspace.readInventoryJson<{
+    runs?: unknown[];
+    ramps?: Array<{ rampId: string; state: string }>;
+    rampEvents?: unknown[];
+  }>("warmup-progress.json");
+
+  assert.equal(inventory?.runs?.length, 1, "el run del seed se escribio");
+  assert.equal(inventory?.ramps?.length, 1, "la rampa activa sobrevivio al seed");
+  assert.equal(inventory?.ramps?.[0]?.rampId, "ramp-viva");
+  assert.equal(inventory?.ramps?.[0]?.state, "running");
+  assert.equal(inventory?.rampEvents?.length, 1, "los eventos de la rampa sobrevivieron");
+});

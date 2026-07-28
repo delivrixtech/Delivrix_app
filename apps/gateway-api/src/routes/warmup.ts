@@ -424,6 +424,11 @@ async function updateWarmupInventory(
   input: NonNullable<WarmupInventory["runs"]>[number]
 ): Promise<void> {
   await workspace.updateInventoryJson<WarmupInventory>("warmup-progress.json", (current) => ({
+    // El spread de `current` NO es decorativo: warmup-progress.json es compartido. La rampa
+    // guarda `ramps` en la misma clave (openclaw-workspace.ts:424, leido por
+    // resumeRampsOnStartup). Devolver solo `runs` borraba las rampas activas en silencio en
+    // cada seed, y el resume del arranque encontraba el archivo vacio.
+    ...(current ?? {}),
     runs: [
       ...(current?.runs ?? []).filter((run) => run.domain !== input.domain),
       input
