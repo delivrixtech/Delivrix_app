@@ -15,7 +15,7 @@
 // AUTH-GATE EN DRY-RUN (razonamiento): los nodos recién onboardeados nacen state='blocked'/auth_ready=false
 // (§8 fail-closed). listActiveNodes EXCLUYE 'blocked', así que en el primer dry-run el tick planifica 0
 // envíos: es honesto y esperado. Los chequeos de auth read-only (DNS/PTR) son seguros, pero SMTP_AUTH/
-// IMAP_AUTH necesitan credenciales y viven en live/compose.ts (que NO se cablea aquí). Promover un nodo a
+// IMAP_AUTH necesitan credenciales y vivían en live/compose.ts, borrado por no tener callers. Promover un nodo a
 // 'fresh' requiere ese contrato de auth verificado con secretos reales — trabajo posterior, no este entry.
 //
 // Este archivo es WIRING de deployment: NO modifica domain/scheduler/service. Sólo los compone.
