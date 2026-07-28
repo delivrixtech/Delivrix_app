@@ -267,3 +267,62 @@ test("sin corte, aborted es false y cancelled es cero", async () => {
   assert.equal(out.cancelled, 0);
   assert.equal(out.ok, 2);
 });
+
+// --- la corrida completa, con workspace real en tmp -------------------------
+
+test("runWarmupAudit devuelve el reporte completo, con conflictos y cancelados visibles", async () => {
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { OpenClawWorkspace } = await import("../openclaw-workspace.ts");
+  const { runWarmupAudit, warmupAuditDefinitionForRole } = await import("./warmup-audit-run.ts");
+
+  const dir = await mkdtemp(join(tmpdir(), "abanico-run-"));
+  const workspace = new OpenClawWorkspace({ rootDir: join(dir, "workspace") });
+  await workspace.updateInventoryJson("domains.json", () => ({
+    bindings: [
+      { domain: "sano.com", serverSlug: "server1", serverIp: "192.0.2.1" },
+      { domain: "stale.com", serverSlug: "server2", serverIp: "192.0.2.2" }
+    ]
+  }));
+  await workspace.updateInventoryJson("smtp-credentials.json", () => ({
+    smtpCredentials: [
+      { domain: "sano.com", status: "configured", serverSlug: "server1" },
+      { domain: "stale.com", status: "configured", serverSlug: "server99" }
+    ]
+  }));
+
+  const ejecutadas: string[] = [];
+  const manager = managerReal({ conDefinicionDelAbanico: true, ejecutadas });
+
+  const report = await runWarmupAudit({ sessionManager: manager, workspace, concurrency: 2 });
+
+  assert.equal(report.fleetSize, 2);
+  assert.equal(report.totalInInventory, 2);
+  assert.equal(report.ok, 2);
+  assert.equal(report.failed, 0);
+  assert.equal(report.aborted, false);
+  // El conflicto de inventario viaja al reporte, por dominio y en el agregado.
+  assert.equal(report.bindingConflicts, 1);
+  const stale = report.items.find((i) => i.domain === "stale.com");
+  assert.deepEqual(stale?.bindingConflict, { fromBindings: "server2", fromCredentials: "server99" });
+  assert.equal(stale?.status, "ok");
+  // Sin auditLog nadie tiene messageId: se declara en vez de esconderse.
+  assert.equal(report.withoutMessageId, 2);
+  assert.equal(ejecutadas.length, 2 * WARMUP_DIAGNOSTIC_TOOLS.length);
+  // Y el manager no retuvo sesiones.
+  assert.equal(manager.liveSessionCount, 0);
+});
+
+test("warmupAuditDefinitionForRole es la que evita el filtrado de las 5 tools", async () => {
+  const { warmupAuditDefinitionForRole } = await import("./warmup-audit-run.ts");
+  assert.deepEqual(
+    [...warmupAuditDefinitionForRole("warmup").toolNames].sort(),
+    [...WARMUP_DIAGNOSTIC_TOOLS].sort()
+  );
+  assert.deepEqual(
+    warmupAuditDefinitionForRole("dns").toolNames,
+    AGENT_DEFINITIONS.dns.toolNames,
+    "los otros roles intactos"
+  );
+});

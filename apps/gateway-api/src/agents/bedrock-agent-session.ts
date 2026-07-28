@@ -470,12 +470,39 @@ export class BedrockAgentSession {
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
+export interface SystemPromptFallbackNotice {
+  role: AgentRole;
+  path: string;
+  reason: string;
+}
+
+let onFallback: ((notice: SystemPromptFallbackNotice) => void) | undefined;
+
+/**
+ * Registra a quien avisarle cuando un agente cae al prompt embebido.
+ *
+ * Existe porque la degradacion era invisible: el catch se comia el error y el agente corria con
+ * dos frases genericas — sabiendo que tools tiene, sin saber que esta buscando. El operador
+ * veia sesiones "completadas" con veredictos pobres y ninguna pista del motivo.
+ */
+export function setSystemPromptFallbackReporter(
+  reporter: ((notice: SystemPromptFallbackNotice) => void) | undefined
+): void {
+  onFallback = reporter;
+}
+
 async function defaultSystemPromptLoader(definition: AgentDefinition): Promise<string> {
   try {
     const content = await readFile(definition.systemPromptPath, "utf8");
     if (content.trim()) return content;
-  } catch {
-    // Doc del día 5 aún no existe: prompt embebido del registry.
+  } catch (error) {
+    // NO silencioso: correr con el fallback de dos frases es un agente generico que no sabe
+    // que esta buscando. Es una degradacion, y el operador tiene que poder verla en el log.
+    onFallback?.({
+      role: definition.role,
+      path: definition.systemPromptPath,
+      reason: error instanceof Error ? error.message : String(error)
+    });
   }
   return definition.fallbackSystemPrompt;
 }

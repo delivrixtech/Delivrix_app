@@ -10,7 +10,7 @@
  * Spec: DOCUMENTACION/ARQUITECTURA_MULTI_AGENT_RUNTIME_2026_05_29.md
  */
 
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentRole } from "../../../../packages/domain/src/index.ts";
 import {
   AGENT_ROLES,
@@ -40,8 +40,16 @@ export interface AgentDefinition {
   maxSessionTokens: number;
 }
 
+/**
+ * Ruta al prompt, relativa a ESTE modulo y no al cwd.
+ *
+ * El gateway arranca por scripts/delivrix-gateway-start.sh; si el cwd no es la raiz del repo,
+ * un promptPath basado en process.cwd() apunta a un archivo que no existe y el agente corre
+ * con el fallback de dos frases sin que nadie se entere.
+ */
 function promptPath(fileName: string): string {
-  return join(process.cwd(), "DOCUMENTACION", fileName);
+  // agents/ -> src/ -> gateway-api/ -> apps/ -> raiz
+  return fileURLToPath(new URL(`../../../../DOCUMENTACION/${fileName}`, import.meta.url));
 }
 
 export const AGENT_DEFINITIONS: Record<AgentRole, AgentDefinition> = {
