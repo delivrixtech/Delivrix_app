@@ -392,6 +392,7 @@ import {
   handleCompactIntentHttp
 } from "./routes/openclaw-compact-intent.ts";
 import {
+  handleSemanticForgetHttp,
   handleSemanticRememberHttp,
   handleSemanticRecallHttp
 } from "./routes/openclaw-semantic-memory.ts";
@@ -2221,6 +2222,19 @@ const server = createServer(async (request, response) => {
         response,
         pool: episodicScratchPool,
         embeddingService: semanticMemoryEmbeddingService,
+        allowUnsignedLocal: process.env.NODE_ENV === "test" && process.env.OPENCLAW_MEMORY_ALLOW_UNSIGNED_LOCAL === "true",
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    // Baja de memoria semántica. NO está en el catálogo de tools y no debe estarlo: un agente que
+    // puede borrar su propia memoria puede tapar lo que escribió. Es acción de operador.
+    if (request.method === "POST" && requestUrl(request).pathname === "/v1/openclaw/memory/forget") {
+      return await handleSemanticForgetHttp({
+        request,
+        response,
+        pool: episodicScratchPool,
+        auditLog,
         allowUnsignedLocal: process.env.NODE_ENV === "test" && process.env.OPENCLAW_MEMORY_ALLOW_UNSIGNED_LOCAL === "true",
         now: () => resolveGatewayNow()
       });

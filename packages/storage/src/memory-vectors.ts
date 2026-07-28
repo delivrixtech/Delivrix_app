@@ -195,6 +195,122 @@ export async function insertMemoryVector(
   return rowToEntry(row);
 }
 
+export interface DeleteMemoryVectorsInput {
+  /** Borrado quirúrgico: los ids exactos que se van. */
+  ids?: string[];
+  /**
+   * La sesión entera. Matchea contra `metadata->'provenance'->>'actorId'`, que es la procedencia
+   * que sella el endpoint de remember. Es el caso real: encontrás una fila envenenada, mirás qué
+   * sesión la escribió, y te llevás todo lo que esa sesión dejó.
+   */
+  actorId?: string;
+  /** Devuelve qué se borraría sin borrar nada. */
+  dryRun?: boolean;
+}
+
+export interface DeletedMemoryVector {
+  id: string;
+  agentId: string;
+  memoryType: string;
+  visibility: MemoryVisibility;
+  actorId: string | null;
+  createdAt: Date;
+}
+
+export interface DeleteMemoryVectorsResult {
+  matched: DeletedMemoryVector[];
+  /** 0 cuando `dryRun` es true. */
+  deleted: number;
+  dryRun: boolean;
+}
+
+/**
+ * Da de baja filas de memoria semántica.
+ *
+ * Existe porque hasta ahora no había ninguna: ni DELETE, ni TTL, ni `expires_at`. Lo que el
+ * modelo escribía quedaba para siempre, y `semantic_recall` se lo devolvía como conocimiento
+ * propio en cualquier sesión posterior — incluido texto de terceros con instrucciones adentro.
+ *
+ * **Nunca borra en masa.** Exige `ids` o `actorId`: sin filtro tira `invalid_delete_filter` en
+ * vez de vaciar la tabla. No se expone como tool del modelo a propósito — un agente que puede
+ * borrar su propia memoria puede tapar lo que escribió.
+ */
+export async function deleteMemoryVectors(
+  pool: MemoryVectorQueryablePool,
+  input: DeleteMemoryVectorsInput
+): Promise<DeleteMemoryVectorsResult> {
+  const ids = (input.ids ?? []).map((id) => boundedText(id, "id", 1, 128));
+  const actorId =
+    input.actorId === undefined || input.actorId === null
+      ? undefined
+      : boundedText(input.actorId, "actorId", 1, 128);
+
+  if (ids.length === 0 && actorId === undefined) {
+    throw new MemoryVectorValidationError(
+      "invalid_delete_filter",
+      "deleteMemoryVectors requires ids or actorId: a blanket delete is never allowed."
+    );
+  }
+
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (ids.length > 0) {
+    params.push(ids);
+    where.push(`id = ANY($${params.length}::uuid[])`);
+  }
+  if (actorId !== undefined) {
+    params.push(actorId);
+    where.push(`metadata -> 'provenance' ->> 'actorId' = $${params.length}`);
+  }
+  const predicate = where.join(" OR ");
+
+  const selectSql = `
+      SELECT id, agent_id, memory_type, visibility,
+             metadata -> 'provenance' ->> 'actorId' AS provenance_actor_id,
+             created_at
+      FROM openclaw_memory_vectors
+      WHERE ${predicate}
+    `;
+
+  if (input.dryRun) {
+    const preview = await pool.query(selectSql, params);
+    return { matched: rowsToDeleted(preview), deleted: 0, dryRun: true };
+  }
+
+  const result = await pool.query(
+    `
+      DELETE FROM openclaw_memory_vectors
+      WHERE ${predicate}
+      RETURNING id, agent_id, memory_type, visibility,
+                metadata -> 'provenance' ->> 'actorId' AS provenance_actor_id,
+                created_at
+    `,
+    params
+  );
+  const matched = rowsToDeleted(result);
+  return { matched, deleted: matched.length, dryRun: false };
+}
+
+interface DeletedRow {
+  id: string;
+  agent_id: string;
+  memory_type: string;
+  visibility: string;
+  provenance_actor_id: string | null;
+  created_at: string | Date;
+}
+
+function rowsToDeleted(result: { rows: unknown[] }): DeletedMemoryVector[] {
+  return (result.rows as DeletedRow[]).map((row) => ({
+    id: row.id,
+    agentId: row.agent_id,
+    memoryType: row.memory_type,
+    visibility: normalizeVisibility(row.visibility),
+    actorId: row.provenance_actor_id ?? null,
+    createdAt: toDate(row.created_at)
+  }));
+}
+
 export async function semanticSearchMemoryVectors(
   pool: MemoryVectorQueryablePool,
   input: SemanticSearchInput
