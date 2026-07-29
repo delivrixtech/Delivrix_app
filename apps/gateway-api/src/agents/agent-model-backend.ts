@@ -9,8 +9,9 @@
 // a gastar plata ni a abrir SSH contra la flota por su cuenta.
 
 import type { AgentRole } from "../../../../packages/domain/src/index.ts";
-import { AgentSessionError, MockAgentModelClient, type AgentModelClient } from "./bedrock-agent-session.ts";
+import { MockAgentModelClient, type AgentModelClient } from "./bedrock-agent-session.ts";
 import { createBedrockAgentModelClient, type AgentModelDegradation } from "./bedrock-agent-model-client.ts";
+import { createLocalOpenAiAgentModelClient } from "./local-openai-agent-model-client.ts";
 import { RehearsalAgentModelClient } from "./rehearsal-agent-model-client.ts";
 
 export const AGENT_MODEL_BACKENDS = ["mock", "rehearsal", "bedrock", "local"] as const;
@@ -97,17 +98,15 @@ export function createAgentModelClientFactory(
     const cached = cache.get(role);
     if (cached) return cached;
 
-    if (resolved.backend === "local") {
-      throw new AgentSessionError(
-        "agent_local_backend_not_wired",
-        `${envKeyForRole(role)}=local pero el cliente del modelo local todavia no existe (M2, backend 2). Usa mock, rehearsal o bedrock.`
-      );
-    }
-
-    const client = createBedrockAgentModelClient({
-      env,
-      ...(input.onDegradation ? { onDegradation: input.onDegradation } : {})
-    });
+    const client = resolved.backend === "local"
+      ? createLocalOpenAiAgentModelClient({
+          env,
+          ...(input.onDegradation ? { onDegradation: input.onDegradation } : {})
+        })
+      : createBedrockAgentModelClient({
+          env,
+          ...(input.onDegradation ? { onDegradation: input.onDegradation } : {})
+        });
     cache.set(role, client);
     announce(role, resolved, client.modelId);
     return client;

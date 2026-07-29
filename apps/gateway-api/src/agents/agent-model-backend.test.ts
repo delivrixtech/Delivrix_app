@@ -59,12 +59,35 @@ test("createAgentModelClientFactory: el default construye el mock, sin credencia
   assert.equal(factory("warmup") instanceof MockAgentModelClient, true);
 });
 
-test("createAgentModelClientFactory: local falla explicito mientras no exista", () => {
+test("createAgentModelClientFactory: local sin configurar falla explicito, no en la primera llamada", () => {
   const factory = createAgentModelClientFactory({ env: { MULTI_AGENT_MODE_WARMUP: "local" } });
   assert.throws(
     () => factory("warmup"),
-    (error: unknown) => (error as { code?: string }).code === "agent_local_backend_not_wired"
+    (error: unknown) => (error as { code?: string }).code === "agent_local_base_url_missing"
   );
+});
+
+test("createAgentModelClientFactory: la decision del owner cableada — OpenClaw en Claude, warmup en la Mac", () => {
+  // Este es el reparto que se decidio: el rol que CREA infraestructura se queda en el modelo de
+  // frontera; los 59 agentes que solo LEEN van al modelo local, que no factura.
+  const factory = createAgentModelClientFactory({
+    env: {
+      MULTI_AGENT_MODE: "bedrock",
+      MULTI_AGENT_MODE_WARMUP: "local",
+      MULTI_AGENT_MODEL_ID: "us.anthropic.claude-sonnet-4-6-v1:0",
+      AWS_BEARER_TOKEN_BEDROCK: "token-de-prueba",
+      LOCAL_INFERENCE_BASE_URL: "http://100.104.216.127:1234/v1",
+      LOCAL_INFERENCE_MODEL: "qwen3-30b-a3b"
+    }
+  });
+
+  const warmup = factory("warmup");
+  assert.equal(warmup.modelId, "qwen3-30b-a3b");
+  assert.deepEqual(warmup.pricing, { inputUsdPerMillionTokens: 0, outputUsdPerMillionTokens: 0 });
+
+  const smtp = factory("smtp");
+  assert.equal(smtp.modelId, "us.anthropic.claude-sonnet-4-6-v1:0");
+  assert.equal(smtp.pricing?.inputUsdPerMillionTokens, 3);
 });
 
 test("createAgentModelClientFactory: bedrock sin credenciales falla al construir, no en la primera llamada", () => {
