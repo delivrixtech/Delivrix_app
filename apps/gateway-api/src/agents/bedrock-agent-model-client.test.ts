@@ -55,10 +55,15 @@ function streamOf(options: {
     });
     index += 1;
   }
+  // FORMA REAL DEL WIRE, y esto ya se equivoco una vez.
+  // En message_delta el `usage` va en la RAIZ y `stop_reason` va DENTRO de `delta`. El fixture
+  // anterior ponia stop_reason en la raiz, o sea que confirmaba el parser en vez de la realidad:
+  // los 20 tests pasaban en verde mientras contra Bedrock stopReason salia siempre undefined.
+  // Si se toca esta forma, se rompe el unico anclaje que este modulo tiene con la API de verdad.
   events.push({
     type: "message_delta",
-    usage: { output_tokens: options.outputTokens ?? 340 },
-    stop_reason: options.stopReason ?? "end_turn"
+    delta: { stop_reason: options.stopReason ?? "end_turn", stop_sequence: null },
+    usage: { output_tokens: options.outputTokens ?? 340 }
   });
   return events.map(chunk);
 }
@@ -282,6 +287,21 @@ test("invoke: una respuesta truncada se avisa, aunque la sesion la cierre como c
 
   assert.equal(result.stopReason, "max_tokens");
   assert.equal(degradations.some((d) => d.kind === "response_truncated"), true);
+});
+
+test("invoke: stop_reason se lee de delta, que es donde la API lo manda", async () => {
+  // Test de regresion del bug que los otros 20 no vieron porque el fixture repetia mi error.
+  // Se arma el evento a mano, sin pasar por streamOf, para que quede escrito literal.
+  const { client } = clientUnderTest(() => [
+    chunk({ type: "message_start", message: { usage: { input_tokens: 1_200 } } }),
+    chunk({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+    chunk({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "el veredicto a medio" } }),
+    chunk({ type: "message_delta", delta: { stop_reason: "max_tokens", stop_sequence: null }, usage: { output_tokens: 8_192 } })
+  ]);
+
+  const result = await client.invoke({ system: "s", messages: [{ role: "user", content: "u" }], tools: [] });
+
+  assert.equal(result.stopReason, "max_tokens", "stop_reason vive en delta, no en la raiz");
 });
 
 test("invoke: un stop_reason nuevo cierra el turno y se reporta, no se inventa", async () => {

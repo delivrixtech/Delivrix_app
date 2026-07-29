@@ -25,6 +25,8 @@ export interface WarmupAuditRunInput {
   concurrency?: number;
   /** Corta las llamadas al modelo en vuelo, no solo el despacho del proximo dominio. */
   abortSignal?: AbortSignal;
+  /** Frena el despacho del proximo dominio. Default: el `isPaused` del manager. */
+  shouldAbort?: () => boolean;
   now?: () => Date;
 }
 
@@ -48,6 +50,14 @@ export interface WarmupAuditReport {
   peakInFlight: number;
   /** Dominios cuyo veredicto se corto en max_tokens: cuentan como ok pero no concluyeron. */
   truncated: number;
+  /**
+   * Que cerebro corrio.
+   *
+   * Sin esto una corrida en `mock` —el default— es indistinguible de una real leyendo el
+   * reporte: el mock fabrica 250/120 tokens por llamada y declara precio 0, asi que sale un
+   * reporte con tokens, con costo 0 y con pricingKnown en true.
+   */
+  modelId: string;
   /** Tokens y costo de la corrida entera. Es el numero con el que se decide donde corren. */
   totals: {
     inputTokens: number;
@@ -59,13 +69,24 @@ export interface WarmupAuditReport {
   items: Array<{
     domain: string;
     serverSlug: string;
-    status: "ok" | "failed" | "cancelled";
+    /**
+     * `ok` significa que hubo veredicto.
+     *
+     * `paused` es el cap de 50.000 tokens y `exhausted` es max_iterations: los dos terminan sin
+     * diagnostico y son las sesiones mas caras de la corrida. Meterlos en `ok` —como pasaba—
+     * hacia que el reporte dijera "59 ok" con N nodos sin diagnosticar.
+     */
+    status: "ok" | "failed" | "paused" | "exhausted" | "cancelled";
     sessionId?: string;
     error?: string;
     bindingConflict?: { fromBindings: string; fromCredentials: string };
     hasMessageId: boolean;
     /** El modelo se quedo sin espacio: el veredicto de este dominio puede estar a medias. */
     truncated?: true;
+    /** El veredicto. Es lo unico que la corrida produce; sin esto no llega a ningun lado. */
+    verdict?: string;
+    inputTokens?: number;
+    outputTokens?: number;
   }>;
 }
 
@@ -100,6 +121,7 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
     invokedByRole: "supervisor",
     concurrency,
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    ...(input.shouldAbort ? { shouldAbort: input.shouldAbort } : {}),
     ...(input.now ? { now: input.now } : {})
   });
 
@@ -118,11 +140,19 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
     aborted: summary.aborted,
     peakInFlight: summary.peakInFlight,
     truncated: summary.results.filter((entry) => entry.result?.truncated).length,
+    modelId: input.sessionManager.modelIdForRole("warmup"),
     totals: {
-      inputTokens: summary.results.reduce((acc, entry) => acc + (entry.result?.inputTokens ?? 0), 0),
-      outputTokens: summary.results.reduce((acc, entry) => acc + (entry.result?.outputTokens ?? 0), 0),
+      // `spent` cubre las sesiones que TIRARON: sus tokens ya se pagaron aunque no haya result.
+      inputTokens: summary.results.reduce(
+        (acc, entry) => acc + (entry.result?.inputTokens ?? entry.spent?.inputTokens ?? 0), 0
+      ),
+      outputTokens: summary.results.reduce(
+        (acc, entry) => acc + (entry.result?.outputTokens ?? entry.spent?.outputTokens ?? 0), 0
+      ),
       estimatedCostUsd: roundUsd(
-        summary.results.reduce((acc, entry) => acc + (entry.result?.estimatedCostUsd ?? 0), 0)
+        summary.results.reduce(
+          (acc, entry) => acc + (entry.result?.estimatedCostUsd ?? entry.spent?.estimatedCostUsd ?? 0), 0
+        )
       ),
       // Basta UNA sesion con precio desconocido para que el total deje de ser el costo y pase a
       // ser un piso. Reportarlo como cerrado seria justo el tipo de numero confiado y falso que
@@ -132,14 +162,40 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
     items: summary.results.map((entry) => ({
       domain: entry.item.domain,
       serverSlug: entry.item.serverSlug,
-      status: entry.cancelled ? "cancelled" : entry.error !== undefined ? "failed" : "ok",
+      status: statusOf(entry),
       ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
       ...(entry.error ? { error: entry.error } : {}),
       ...(entry.item.bindingConflict ? { bindingConflict: entry.item.bindingConflict } : {}),
       hasMessageId: entry.item.recentMessageId !== undefined,
-      ...(entry.result?.truncated ? { truncated: true as const } : {})
+      ...(entry.result?.truncated ? { truncated: true as const } : {}),
+      // El veredicto acotado: es el producto de la corrida. Sin esto el operador recibe un
+      // conteo de exitos y ni una linea de por que cada dominio entrega o no entrega.
+      ...(entry.result ? { verdict: entry.result.resultSummary.slice(0, VERDICT_MAX_CHARS) } : {}),
+      ...(entry.result ?? entry.spent
+        ? {
+            inputTokens: entry.result?.inputTokens ?? entry.spent?.inputTokens ?? 0,
+            outputTokens: entry.result?.outputTokens ?? entry.spent?.outputTokens ?? 0
+          }
+        : {})
     }))
   };
+}
+
+/** Alcanza para un veredicto con su evidencia sin volver la respuesta HTTP inmanejable. */
+const VERDICT_MAX_CHARS = 4_000;
+
+function statusOf(entry: {
+  cancelled?: true;
+  error?: string;
+  result?: { status: "completed" | "failed" | "paused" };
+}): "ok" | "failed" | "paused" | "exhausted" | "cancelled" {
+  if (entry.cancelled) return "cancelled";
+  if (entry.error !== undefined) return "failed";
+  if (entry.result === undefined) return "failed";
+  if (entry.result.status === "completed") return "ok";
+  // `paused` es el cap de tokens; `failed` devuelto por la sesion es max_iterations. Se
+  // distinguen porque se arreglan distinto: uno pide mas presupuesto, el otro mas vueltas.
+  return entry.result.status === "paused" ? "paused" : "exhausted";
 }
 
 function roundUsd(value: number): number {

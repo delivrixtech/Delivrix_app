@@ -81,6 +81,31 @@ export interface AgentSessionManagerOptions {
  */
 export type AgentInvoker = AgentRole | "operator" | "supervisor";
 
+/**
+ * La invocacion tiro, pero la sesion ya habia gastado.
+ *
+ * Envuelve el error original conservando lo que la sesion alcanzo a consumir. Sin esto un
+ * `agent_usage_missing` o un idle-timeout en la ultima iteracion borraba de los totales todos
+ * los tokens de las iteraciones anteriores, que igual se pagaron.
+ */
+export class AgentInvocationFailed extends Error {
+  readonly sessionId: string;
+  readonly snapshot: AgentSessionSnapshot;
+
+  constructor(sessionId: string, snapshot: AgentSessionSnapshot, cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "AgentInvocationFailed";
+    this.sessionId = sessionId;
+    this.snapshot = snapshot;
+  }
+
+  /** El code del error original, para que quien discrimine por codigo siga pudiendo. */
+  get code(): string | undefined {
+    const original = this.cause;
+    return original instanceof Error ? (original as { code?: string }).code : undefined;
+  }
+}
+
 export interface InvokeAgentOptions {
   /** Rol del actor que pide la invocación. */
   invokedByRole: AgentInvoker;
@@ -206,11 +231,27 @@ export class AgentSessionManager {
     try {
       const result = await session.run(input.instructions);
       return { sessionId: session.sessionId, result };
+    } catch (error) {
+      // Los tokens que la sesion ya consumio NO desaparecen porque la invocacion tire: Bedrock
+      // ya los facturo. Si el error sale pelado, el abanico no tiene de donde sacarlos y el
+      // costo de la corrida sale por debajo del gasto real — justo el numero con el que se
+      // decide donde corren los agentes.
+      throw new AgentInvocationFailed(session.sessionId, session.snapshot(), error);
     } finally {
       // `finally` y no despues del return: si `run` tira, la sesion tambien tiene que salir del
       // Map o queda zombi reteniendo su transcript para siempre.
       this.retire(session);
     }
+  }
+
+  /**
+   * Que modelo va a correr este rol, sin arrancar una sesion.
+   *
+   * El reporte lo necesita para no ser ambiguo: una corrida en mock y una real se leen igual si
+   * el reporte no dice cual fue.
+   */
+  modelIdForRole(role: AgentRole): string {
+    return this.modelClientFactory(role).modelId;
   }
 
   /** Saca la sesion del Map y conserva solo su snapshot, con retencion acotada. */

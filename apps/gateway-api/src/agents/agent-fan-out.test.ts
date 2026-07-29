@@ -6,7 +6,7 @@ import {
   MAX_FAN_OUT_CONCURRENCY,
   runFanOut
 } from "./agent-fan-out.ts";
-import type { AgentSessionManager } from "./agent-session-manager.ts";
+import { AgentInvocationFailed, type AgentSessionManager } from "./agent-session-manager.ts";
 import type { AgentInvokeInput } from "../../../../packages/domain/src/index.ts";
 
 /**
@@ -208,4 +208,97 @@ test("onItemSettled reporta progreso sin esperar al abanico entero", async () =>
   assert.equal(vistos.length, domains.length);
   assert.deepEqual([...vistos].sort(), [...domains].sort());
   assert.equal(summary.ok, 4);
+});
+
+// --- lo que la auditoria adversarial encontro --------------------------------
+
+/** Manager que devuelve el status que se le pida, o tira con gasto ya hecho. */
+function managerWithOutcomes(outcome: (domain: string) =>
+  | { kind: "result"; status: "completed" | "failed" | "paused"; inputTokens?: number }
+  | { kind: "throw"; spentInput: number; spentOutput: number }
+): AgentSessionManager {
+  return {
+    async invokeAgent(_role: string, invoke: AgentInvokeInput) {
+      const domain = invoke.taskId.replace("audit-", "");
+      const out = outcome(domain);
+      if (out.kind === "throw") {
+        throw new AgentInvocationFailed(
+          `sess-${domain}`,
+          {
+            sessionId: `sess-${domain}`,
+            agentRole: "warmup",
+            taskId: invoke.taskId,
+            status: "failed",
+            modelId: "m",
+            startedAt: "",
+            updatedAt: "",
+            inputTokens: out.spentInput,
+            outputTokens: out.spentOutput,
+            estimatedCostUsd: 0.5
+          },
+          new Error("agent_usage_missing")
+        );
+      }
+      return {
+        sessionId: `sess-${domain}`,
+        result: {
+          status: out.status,
+          resultSummary: "veredicto",
+          inputTokens: out.inputTokens ?? 100,
+          outputTokens: 10,
+          estimatedCostUsd: 0.01,
+          pricingKnown: true
+        }
+      };
+    }
+  } as unknown as AgentSessionManager;
+}
+
+test("una sesion pausada por el cap de tokens NO cuenta como ok", async () => {
+  // invokeAgent no tira cuando la sesion se pausa por el cap de 50.000 tokens: devuelve normal.
+  // Contando por "devolvio algo", esas sesiones —las MAS caras— entraban como exito y el
+  // operador leia "59 ok, 0 failed" con nodos sin diagnosticar.
+  const summary = await runFanOut({
+    sessionManager: managerWithOutcomes((d) =>
+      d === "b.com" ? { kind: "result", status: "paused" } : { kind: "result", status: "completed" }
+    ),
+    role: "warmup",
+    items: ["a.com", "b.com", "c.com"],
+    buildInput,
+    invokedByRole: "supervisor"
+  });
+
+  assert.equal(summary.ok, 2);
+  assert.equal(summary.failed, 1);
+});
+
+test("una sesion muerta por max_iterations tampoco cuenta como ok", async () => {
+  const summary = await runFanOut({
+    sessionManager: managerWithOutcomes(() => ({ kind: "result", status: "failed" })),
+    role: "warmup",
+    items: ["a.com", "b.com"],
+    buildInput,
+    invokedByRole: "supervisor"
+  });
+
+  assert.equal(summary.ok, 0);
+  assert.equal(summary.failed, 2);
+});
+
+test("lo que gasto una sesion que tiro no se pierde: Bedrock ya lo facturo", async () => {
+  const summary = await runFanOut({
+    sessionManager: managerWithOutcomes(() => ({ kind: "throw", spentInput: 4_000, spentOutput: 300 })),
+    role: "warmup",
+    items: ["a.com"],
+    buildInput,
+    invokedByRole: "supervisor"
+  });
+
+  assert.equal(summary.ok, 0);
+  assert.deepEqual(summary.results[0]?.spent, {
+    inputTokens: 4_000,
+    outputTokens: 300,
+    estimatedCostUsd: 0.5
+  });
+  assert.equal(summary.results[0]?.sessionId, "sess-a.com");
 });

@@ -243,9 +243,9 @@ export class BedrockAgentModelClient implements AgentModelClient {
       );
     }
 
-    // Presupuesto propio por llamada: hoy la sesion NO pasa abortSignal (bedrock-agent-session.ts:315),
-    // asi que si el cliente no pone un techo, una llamada colgada cuelga la sesion, el worker del
-    // abanico y la respuesta HTTP entera.
+    // Presupuesto propio por llamada, encadenado al signal de quien llama. El de arriba corta
+    // por decision (kill switch); este corta por tiempo. Sin el techo propio, una llamada colgada
+    // cuelga la sesion, el worker del abanico y la respuesta HTTP entera.
     const budgetController = new AbortController();
     const budgetTimer = setTimeout(() => budgetController.abort(), this.callBudgetMs);
     const signal = input.abortSignal

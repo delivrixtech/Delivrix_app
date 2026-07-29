@@ -12,7 +12,8 @@
 
 import type { AgentRole } from "../../../../packages/domain/src/index.ts";
 import type { AgentInvokeInput } from "../../../../packages/domain/src/index.ts";
-import type { AgentSessionManager } from "./agent-session-manager.ts";
+import type { AgentSessionSnapshot } from "../../../../packages/domain/src/index.ts";
+import { AgentInvocationFailed, type AgentSessionManager } from "./agent-session-manager.ts";
 import type { AgentSessionResult } from "./bedrock-agent-session.ts";
 
 /**
@@ -42,6 +43,13 @@ export interface FanOutItemResult<T> {
    * exactamente la decision que va a tener que tomar leyendo el reporte.
    */
   cancelled?: true;
+  /**
+   * Lo que la sesion gasto antes de tirar.
+   *
+   * Existe solo en el camino de error: cuando hay `result`, los tokens viven ahi. Sin esto, una
+   * sesion que muere en la ultima iteracion borraba de los totales todo lo que ya se pago.
+   */
+  spent?: { inputTokens: number; outputTokens: number; estimatedCostUsd: number };
   startedAt: string;
   finishedAt: string;
 }
@@ -149,8 +157,12 @@ export async function runFanOut<T>(input: RunFanOutInput<T>): Promise<FanOutSumm
           finishedAt: now().toISOString()
         };
       } catch (error) {
+        // Aunque la invocacion tire, lo que la sesion ya gasto se conserva: Bedrock lo facturo
+        // igual y tiene que aparecer en el total de la corrida.
+        const failed = error instanceof AgentInvocationFailed ? error : undefined;
         settled = {
           item,
+          ...(failed ? { sessionId: failed.sessionId, spent: spentFrom(failed.snapshot) } : {}),
           error: error instanceof Error ? error.message : String(error),
           startedAt,
           finishedAt: now().toISOString()
@@ -183,11 +195,32 @@ export async function runFanOut<T>(input: RunFanOutInput<T>): Promise<FanOutSumm
 
   return {
     results: settledResults,
-    ok: settledResults.filter((entry) => entry.result !== undefined).length,
-    failed: settledResults.filter((entry) => entry.error !== undefined).length,
+    // `ok` es "termino con un veredicto", no "devolvio algo".
+    //
+    // invokeAgent NO tira cuando la sesion se pausa por el cap de 50.000 tokens ni cuando muere
+    // por max_iterations: devuelve normal, con status paused/failed. Contando por
+    // `result !== undefined` esas sesiones —las MAS CARAS de la corrida, porque pagaron el cap
+    // entero— entraban como exito, y el operador leia "59 ok, 0 failed" con N nodos sin
+    // diagnosticar.
+    ok: settledResults.filter((entry) => entry.result?.status === "completed").length,
+    failed: settledResults.filter(
+      (entry) => entry.error !== undefined || (entry.result !== undefined && entry.result.status !== "completed")
+    ).length,
     cancelled: settledResults.filter((entry) => entry.cancelled === true).length,
     aborted,
     peakInFlight
+  };
+}
+
+function spentFrom(snapshot: AgentSessionSnapshot): {
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number;
+} {
+  return {
+    inputTokens: snapshot.inputTokens,
+    outputTokens: snapshot.outputTokens,
+    estimatedCostUsd: snapshot.estimatedCostUsd
   };
 }
 

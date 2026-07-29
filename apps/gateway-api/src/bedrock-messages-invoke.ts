@@ -202,7 +202,20 @@ export async function invokeBedrockMessages(
         outputTokens = numberValue(parsed.usage.output_tokens) ?? outputTokens;
       }
       if (parsed.type === "message_delta") {
-        stopReason = stringValue(parsed.stop_reason) ?? stringValue(parsed.stopReason) ?? stopReason;
+        // OJO con el nivel. En message_delta el `usage` viaja en la RAIZ pero `stop_reason` viaja
+        // DENTRO de `delta`:
+        //   {"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":N}}
+        // Leerlo de la raiz —como se hacia— daba undefined en toda corrida real. El bug quedo
+        // latente durante meses porque el unico consumidor, el chat, nunca miraba stopReason;
+        // el primero que lo mira es el cliente de agentes, y sin esto su cadena `truncated`
+        // entera es codigo muerto: un veredicto cortado a la mitad se reporta como concluido.
+        // Se conserva la lectura de la raiz como respaldo: no cuesta y tolera variantes.
+        const delta = isRecord(parsed.delta) ? parsed.delta : undefined;
+        stopReason =
+          stringValue(delta?.stop_reason) ??
+          stringValue(parsed.stop_reason) ??
+          stringValue(parsed.stopReason) ??
+          stopReason;
       }
       if (parsed.type === "content_block_start" && isRecord(parsed.content_block)) {
         const index = numberValue(parsed.index) ?? currentIndex;
