@@ -1,9 +1,13 @@
 import {
   BedrockRuntimeClient,
-  InvokeModelWithResponseStreamCommand,
-  type BedrockRuntimeClientConfig,
-  type InvokeModelWithResponseStreamCommandInput
+  type BedrockRuntimeClientConfig
 } from "@aws-sdk/client-bedrock-runtime";
+import {
+  BedrockInvokeError,
+  invokeBedrockMessages,
+  type BedrockRuntimeClientLike,
+  type BedrockResponseBlock
+} from "./bedrock-messages-invoke.ts";
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -145,24 +149,13 @@ interface BedrockMessage {
   content: BedrockContentBlock[];
 }
 
+// La forma de la respuesta y la costura del cliente viven en bedrock-messages-invoke.ts.
 interface BedrockParsedResponse {
-  content: BedrockContentBlock[];
+  content: BedrockResponseBlock[];
   text: string;
   inputTokens?: number;
   outputTokens?: number;
   stopReason?: string;
-}
-
-interface BedrockStreamChunk {
-  chunk?: {
-    bytes?: Uint8Array;
-  };
-}
-
-interface BedrockRuntimeClientLike {
-  send(command: InvokeModelWithResponseStreamCommand, options?: { abortSignal?: AbortSignal }): Promise<{
-    body?: AsyncIterable<BedrockStreamChunk> | Iterable<BedrockStreamChunk>;
-  }>;
 }
 
 interface AuditSink {
@@ -1026,148 +1019,39 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
     }
   }
 
+  /**
+   * Un turno contra Bedrock.
+   *
+   * El cable vive en bedrock-messages-invoke.ts y lo comparte con el runtime de agentes: una
+   * sola implementacion del payload, el stream y el idle-timeout. Aca queda solo lo que es
+   * politica del chat — que modelo, que presupuesto de tokens, y si va temperature.
+   */
   private async invokeBedrockOnce(input: {
     messages: BedrockMessage[];
     system: string;
     tools: BedrockToolSpec[];
     signal?: AbortSignal;
   }): Promise<BedrockParsedResponse> {
-    const payload: Record<string, unknown> = {
-      anthropic_version: "bedrock-2023-05-31",
-      max_tokens: this.maxTokens,
-      system: input.system,
-      messages: input.messages
-    };
-    // `temperature` solo va en los modelos que lo aceptan. Ver modelAcceptsSamplingParams:
-    // de Opus 4.7 / Sonnet 5 en adelante el parametro fue REMOVIDO y mandarlo devuelve 400,
-    // asi que enviarlo incondicionalmente clavaba el gateway en modelos de generacion anterior.
-    if (modelAcceptsSamplingParams(this.modelId)) {
-      payload.temperature = this.temperature;
-    }
-    if (input.tools.length > 0) {
-      payload.tools = input.tools;
-      payload.tool_choice = { type: "auto" };
-    }
-    const command = new InvokeModelWithResponseStreamCommand({
-      modelId: this.modelId,
-      contentType: "application/json",
-      accept: "application/json",
-      body: JSON.stringify(payload)
-    } satisfies InvokeModelWithResponseStreamCommandInput);
-
-    // Idle-timeout: si el stream de Bedrock no entrega chunks por N ms (throttle/backoff/socket
-    // colgado), abortamos la llamada con un error claro en vez de dejar el chat en spinner infinito.
-    // El AbortController propio se encadena al signal del operador (interrupt manual sigue funcionando).
-    const idleController = new AbortController();
-    const combinedSignal = input.signal
-      ? AbortSignal.any([input.signal, idleController.signal])
-      : idleController.signal;
-    let idleTimer: ReturnType<typeof setTimeout> | undefined;
-    const armIdle = (): void => {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => idleController.abort(), this.bedrockCallIdleTimeoutMs);
-    };
-
-    const content = new Map<number, MutableBedrockContentBlock>();
-    let currentIndex = 0;
-    let inputTokens: number | undefined;
-    let outputTokens: number | undefined;
-    let stopReason: string | undefined;
-
     try {
-      armIdle();
-      const result = await this.client.send(command, { abortSignal: combinedSignal });
-
-      for await (const event of toAsyncIterable(result.body ?? [])) {
-        armIdle();
-        throwIfAborted(input.signal);
-        if (!event.chunk?.bytes) continue;
-      const parsed = parseJson(new TextDecoder().decode(event.chunk.bytes));
-      if (!isRecord(parsed)) continue;
-
-      if (parsed.type === "message_start" && isRecord(parsed.message) && isRecord(parsed.message.usage)) {
-        inputTokens = numberValue(parsed.message.usage.input_tokens) ?? inputTokens;
-      }
-      if (parsed.type === "message_delta" && isRecord(parsed.usage)) {
-        outputTokens = numberValue(parsed.usage.output_tokens) ?? outputTokens;
-      }
-      if (parsed.type === "message_delta") {
-        stopReason = stringValue(parsed.stop_reason) ?? stringValue(parsed.stopReason) ?? stopReason;
-      }
-      if (parsed.type === "content_block_start" && isRecord(parsed.content_block)) {
-        const index = numberValue(parsed.index) ?? currentIndex;
-        currentIndex = index;
-        const block = parsed.content_block;
-        if (block.type === "text") {
-          content.set(index, {
-            type: "text",
-            text: stringValue(block.text) ?? ""
-          });
-        }
-        if (block.type === "tool_use") {
-          content.set(index, {
-            type: "tool_use",
-            id: stringValue(block.id) ?? `toolu_${index}`,
-            name: stringValue(block.name) ?? "",
-            input: isRecord(block.input) ? block.input : {},
-            partialJson: ""
-          });
-        }
-      }
-      if (parsed.type === "content_block_delta" && isRecord(parsed.delta)) {
-        const index = numberValue(parsed.index) ?? currentIndex;
-        currentIndex = index;
-        if (parsed.delta.type === "text_delta") {
-          const block = content.get(index);
-          if (block?.type === "text") {
-            block.text += stringValue(parsed.delta.text) ?? "";
-          } else {
-            content.set(index, {
-              type: "text",
-              text: stringValue(parsed.delta.text) ?? ""
-            });
-          }
-        }
-        if (parsed.delta.type === "input_json_delta") {
-          const partial = stringValue(parsed.delta.partial_json) ?? "";
-          const block = content.get(index);
-          if (block?.type === "tool_use") {
-            block.partialJson += partial;
-          } else {
-            content.set(index, {
-              type: "tool_use",
-              id: `toolu_${index}`,
-              name: "",
-              input: {},
-              partialJson: partial
-            });
-          }
-        }
-      }
-    }
-
-    const blocks = [...content.entries()]
-      .sort(([left], [right]) => left - right)
-      .map(([, block]) => finalizeContentBlock(block));
-
-      return {
-        content: blocks,
-        text: blocks.filter(isTextBlock).map((block) => block.text).join(""),
-        ...(inputTokens === undefined ? {} : { inputTokens }),
-        ...(outputTokens === undefined ? {} : { outputTokens }),
-        ...(stopReason ? { stopReason } : {})
-      };
+      return await invokeBedrockMessages({
+        client: this.client,
+        modelId: this.modelId,
+        maxTokens: this.maxTokens,
+        // De Opus 4.7 / Sonnet 5 en adelante el parametro fue REMOVIDO y mandarlo devuelve 400.
+        ...(modelAcceptsSamplingParams(this.modelId) ? { temperature: this.temperature } : {}),
+        idleTimeoutMs: this.bedrockCallIdleTimeoutMs,
+        system: input.system,
+        messages: input.messages,
+        tools: input.tools,
+        ...(input.signal ? { signal: input.signal } : {})
+      });
     } catch (error) {
-      // Idle-timeout propio (no interrupt del operador) => error claro que sube por streamHistory.
-      if (idleController.signal.aborted && !(input.signal?.aborted)) {
-        throw new OpenClawBedrockBridgeError(
-          "bedrock_call_idle_timeout",
-          `Bedrock stream idle > ${this.bedrockCallIdleTimeoutMs}ms; llamada abortada.`
-        );
+      // Se re-envuelve conservando el code: streamHistory e isAbortError discriminan por
+      // OpenClawBedrockBridgeError, y la extraccion no puede cambiar lo que ve el chat.
+      if (error instanceof BedrockInvokeError) {
+        throw new OpenClawBedrockBridgeError(error.code, error.message);
       }
       throw error;
-    } finally {
-      if (idleTimer) clearTimeout(idleTimer);
     }
   }
 
@@ -1568,31 +1452,7 @@ export class OpenClawBedrockBridgeError extends Error {
   }
 }
 
-type MutableBedrockContentBlock =
-  | { type: "text"; text: string }
-  | { type: "tool_use"; id: string; name: string; input: unknown; partialJson: string };
-
-function finalizeContentBlock(block: MutableBedrockContentBlock): BedrockContentBlock {
-  if (block.type === "text") {
-    return block;
-  }
-
-  const parsedInput = block.partialJson.trim().length > 0
-    ? parseJson(block.partialJson)
-    : block.input;
-  return {
-    type: "tool_use",
-    id: block.id,
-    name: block.name,
-    input: parsedInput ?? block.input
-  };
-}
-
-function isTextBlock(block: BedrockContentBlock): block is Extract<BedrockContentBlock, { type: "text" }> {
-  return block.type === "text";
-}
-
-function isToolUseBlock(block: BedrockContentBlock): block is Extract<BedrockContentBlock, { type: "tool_use" }> {
+function isToolUseBlock(block: BedrockResponseBlock): block is Extract<BedrockResponseBlock, { type: "tool_use" }> {
   return block.type === "tool_use";
 }
 
@@ -2081,20 +1941,6 @@ function rememberToolSignatures(recentSignatures: string[], currentSignatures: s
   recentSignatures.push(...currentSignatures);
   while (recentSignatures.length > toolLoopDetectionWindow) {
     recentSignatures.shift();
-  }
-}
-
-async function* toAsyncIterable<T>(value: AsyncIterable<T> | Iterable<T>): AsyncIterable<T> {
-  for await (const item of value) {
-    yield item;
-  }
-}
-
-function parseJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
   }
 }
 
