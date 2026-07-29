@@ -64,6 +64,12 @@ export interface LoadFleetInput {
 }
 
 export interface FleetSelection {
+  /**
+   * Dominios con credencial configurada que NO tienen binding: quedan fuera del abanico.
+   *
+   * Se reporta para que una corrida de "toda la flota" no pueda mentir sobre su cobertura.
+   */
+  credentialedWithoutBinding: string[];
   domains: FleetDomain[];
   /** Dominios pedidos por `onlyDomains` que no estan en el inventario. */
   notFound: string[];
@@ -149,7 +155,17 @@ export async function loadWarmupFleet(input: LoadFleetInput): Promise<FleetSelec
     domains = domains.filter((entry) => entry.hasCredential);
   }
 
-  return { domains, notFound, totalInInventory: bindings.length };
+  // Dominios con credencial CONFIGURADA que no tienen binding: el abanico no los ve.
+  //
+  // Sin esto, una corrida "de toda la flota" salia 59/59 y se leia como cobertura completa,
+  // cuando el inventario tiene 66 credenciales configuradas. Los 7 que faltan tampoco estan en
+  // dnsZones ni en emailAuth: nunca terminaron el onboarding. NO se les inventa un binding
+  // deducido de la credencial —las dos fuentes ya se contradicen en 5 dominios y eso seria
+  // repetir el error— pero el hueco se DECLARA, que es lo que faltaba.
+  const bound = new Set(bindings.map((binding) => normalizeDomain(binding.domain)).filter(Boolean));
+  const credentialedWithoutBinding = [...credentialed.keys()].filter((domain) => !bound.has(domain)).sort();
+
+  return { domains, notFound, totalInInventory: bindings.length, credentialedWithoutBinding };
 }
 
 async function loadCredentialedDomains(

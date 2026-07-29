@@ -35,6 +35,14 @@ export interface WarmupAuditReport {
   finishedAt: string;
   /** Dominios pedidos que no existen en el inventario. */
   notFound: string[];
+  /**
+   * Dominios con credencial configurada que el abanico NO puede ver por falta de binding.
+   *
+   * Sin esto una corrida de "toda la flota" salia 59/59 y se leia como cobertura total, con 7
+   * dominios configurados afuera — y justo los mas problematicos. Un reporte que no declara lo
+   * que no miro es un reporte que miente sobre su alcance.
+   */
+  credentialedWithoutBinding: string[];
   /** Bindings leidos vs usables: delata descartes sin depender de un log. */
   totalInInventory: number;
   fleetSize: number;
@@ -161,6 +169,7 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
     startedAt,
     finishedAt: now().toISOString(),
     notFound: fleet.notFound,
+    credentialedWithoutBinding: fleet.credentialedWithoutBinding,
     totalInInventory: fleet.totalInInventory,
     fleetSize: fleet.domains.length,
     bindingConflicts: fleet.domains.filter((entry) => entry.bindingConflict).length,

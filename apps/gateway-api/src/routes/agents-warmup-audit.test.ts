@@ -157,7 +157,7 @@ test("un veredicto sin una sola sonda NO se reporta como ok", async () => {
   const { response: res, done } = response();
   const manager = {
     modelIdForRole: () => "modelo/de-prueba",
-    async invokeAgent(_role, invoke) {
+    async invokeAgent(_role: string, invoke: any) {
       return {
         sessionId: `sess-${invoke.taskId}`,
         result: {

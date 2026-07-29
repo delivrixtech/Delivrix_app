@@ -206,6 +206,11 @@ export async function handleWarmupAuditHttp(deps: WarmupAuditRouteDeps): Promise
       outputTokens: report.totals.outputTokens,
       estimatedCostUsd: report.totals.estimatedCostUsd,
       pricingKnown: report.totals.pricingKnown,
+      // Veredictos escritos sin una sola sonda: el numero a mirar antes que ninguno.
+      sinEvidencia: report.sinEvidencia,
+      paused: report.paused,
+      // Lo que la corrida NO pudo mirar, para que el alcance quede auditado y no supuesto.
+      credentialedWithoutBinding: report.credentialedWithoutBinding,
       // Los dominios con inventario contradictorio, para que el operador los reconcilie.
       conflictDomains: report.items.filter((i) => i.bindingConflict).map((i) => i.domain)
     }
