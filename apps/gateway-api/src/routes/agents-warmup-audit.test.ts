@@ -76,7 +76,8 @@ function slowManager(delayMs: number, seen: { aborted: boolean }): AgentSessionM
           inputTokens: 10,
           outputTokens: 5,
           estimatedCostUsd: 0,
-          pricingKnown: true
+          pricingKnown: true,
+          toolCallCount: 4
         }
       };
     }
@@ -147,6 +148,48 @@ test("dos abanicos a la vez no: el segundo se rechaza en vez de duplicar el gast
 
   await running;
   assert.equal((await first.done).status, 200);
+});
+
+test("un veredicto sin una sola sonda NO se reporta como ok", async () => {
+  // Medido en vivo el 2026-07-29: el modelo cerraba con cero tools en el 46% de la flota y el
+  // reporte decia ok, con lineas de "evidencia" citando sondas que nunca corrieron.
+  const seen = { aborted: false };
+  const { response: res, done } = response();
+  const manager = {
+    modelIdForRole: () => "modelo/de-prueba",
+    async invokeAgent(_role, invoke) {
+      return {
+        sessionId: `sess-${invoke.taskId}`,
+        result: {
+          status: "completed",
+          resultSummary: "veredicto: indeterminado\nevidencia:\n  - read_smtp_reachability: unknown",
+          inputTokens: 3244,
+          outputTokens: 1004,
+          estimatedCostUsd: 0,
+          pricingKnown: true,
+          toolCallCount: 0
+        }
+      };
+    }
+  } as unknown as AgentSessionManager;
+
+  await handleWarmupAuditHttp({
+    request: request({ concurrency: 2 }),
+    response: res,
+    sessionManager: manager,
+    workspace: await workspace(),
+    auditLog,
+    readBoundaryToken: TOKEN,
+    readKillSwitch: () => ({ enabled: false })
+  });
+
+  const { payload } = await done;
+  assert.equal(payload.ok, 0, "cero sondas no es un diagnostico");
+  assert.equal(payload.sinEvidencia, 2);
+  assert.equal(payload.items[0].status, "sin_evidencia");
+  assert.equal(payload.items[0].toolCallCount, 0);
+  // El veredicto se conserva: el operador tiene que poder ver QUE escribio el modelo sin sondas.
+  assert.match(payload.items[0].verdict, /indeterminado/);
 });
 
 test("el reporte trae el veredicto y que cerebro corrio, no solo un conteo", async () => {

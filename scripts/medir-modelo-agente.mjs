@@ -64,11 +64,15 @@ const TARGET = modo === "conflicto"
       bindingConflict: { fromBindings: "contabo-3-node-7", fromCredentials: "webdock-node-2" }
     }
   : {
-      domain: "filing-ops.com",
-      serverSlug: "contabo-3-node-7",
-      serverIp: "203.0.113.44",
+      // Apuntable a un nodo REAL por env, que es como se reproduce lo que paso en una corrida.
+      // Sin MSGID el prompt le dice al agente que diagnostique con 4 tools en vez de 5.
+      domain: process.env.DOMAIN ?? "filing-ops.com",
+      serverSlug: process.env.SLUG ?? "contabo-3-node-7",
+      serverIp: process.env.IP ?? "203.0.113.44",
       hasCredential: true,
-      recentMessageId: "<delivrix-abc123@filing-ops.com>"
+      ...(process.env.NO_MSGID === "1"
+        ? {}
+        : { recentMessageId: process.env.MSGID ?? "<delivrix-abc123@filing-ops.com>" })
     };
 
 async function unaSesion(etiqueta) {

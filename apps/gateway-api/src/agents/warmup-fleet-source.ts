@@ -242,9 +242,15 @@ export function buildDiagnosticInstructions(target: FleetDomain): string {
     target.recentMessageId
       ? "Usa el messageId de arriba con read_delivery_reason: es el motivo REAL del ultimo envio."
       : [
-          "Sin messageId no podes usar read_delivery_reason: esa tool resuelve el queue-id",
-          "desde el message-id. Diagnostica con las otras cuatro y deci en el veredicto que",
-          "no hay evidencia de entrega reciente para este dominio."
+          "Sin messageId NO podes usar read_delivery_reason (esa tool resuelve el queue-id desde",
+          "el message-id). Es la UNICA que se saltea. Las otras cuatro las corres igual, si o si:",
+          "  read_smtp_reachability, read_dkim_status, read_mxtoolbox_health, inspect_smtp_inventory",
+          "",
+          "No tener messageId significa que no hay evidencia de un envio reciente. NO significa que",
+          "no puedas diagnosticar: el nodo se sondea igual. Cerrar sin haber ejecutado esas cuatro",
+          "no es una respuesta valida — es un veredicto sin evidencia, que es justo lo que este",
+          "trabajo existe para evitar. Recien despues de tenerlas, deci en el veredicto que no hay",
+          "constancia de entrega reciente."
         ].join("\n"),
     "",
     "No envies correo, no arranques rampas y no modifiques nada: solo lees."

@@ -216,8 +216,15 @@ test("las instrucciones dicen que hacer en los dos casos", async () => {
   });
   assert.match(sinId, /NO HAY/);
   // Sin esto el agente pide la tool, recibe invalid_params y no sabe por que.
-  assert.match(sinId, /Sin messageId no podes usar read_delivery_reason/);
-  assert.match(sinId, /no hay evidencia de entrega reciente/);
+  assert.match(sinId, /Sin messageId NO podes usar read_delivery_reason/);
+  // Y esto es lo que se midio en vivo el 2026-07-29: la version anterior terminaba con
+  // "deci que no hay evidencia de entrega reciente", y el modelo lo leia como permiso para
+  // concluir. Cerraba con CERO tools en el 46% de la flota. Ahora las otras cuatro son
+  // obligatorias y se nombran, y cerrar sin ellas se declara invalido de forma explicita.
+  assert.match(sinId, /Es la UNICA que se saltea/);
+  assert.match(sinId, /read_smtp_reachability, read_dkim_status, read_mxtoolbox_health, inspect_smtp_inventory/);
+  assert.match(sinId, /no es una respuesta valida/);
+  assert.match(sinId, /NO significa que/);
 });
 
 // --- conflicto de inventario: el nodo equivocado da un veredicto confiado y falso ----------

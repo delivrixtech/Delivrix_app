@@ -50,6 +50,15 @@ export interface WarmupAuditReport {
   peakInFlight: number;
   /** Dominios cuyo veredicto se corto en max_tokens: cuentan como ok pero no concluyeron. */
   truncated: number;
+  /** Sesiones pausadas por el cap de tokens: terminaron sin diagnostico y son las mas caras. */
+  paused: number;
+  /**
+   * Dominios que cerraron SIN ejecutar una sola sonda.
+   *
+   * Es el numero que hay que mirar antes que ninguno: un veredicto sin evidencia se lee igual
+   * de bien que uno fundado, y solo este contador los separa.
+   */
+  sinEvidencia: number;
   /**
    * Que cerebro corrio.
    *
@@ -76,13 +85,15 @@ export interface WarmupAuditReport {
      * diagnostico y son las sesiones mas caras de la corrida. Meterlos en `ok` —como pasaba—
      * hacia que el reporte dijera "59 ok" con N nodos sin diagnosticar.
      */
-    status: "ok" | "failed" | "paused" | "exhausted" | "cancelled";
+    status: "ok" | "failed" | "paused" | "exhausted" | "cancelled" | "sin_evidencia";
     sessionId?: string;
     error?: string;
     bindingConflict?: { fromBindings: string; fromCredentials: string };
     hasMessageId: boolean;
     /** El modelo se quedo sin espacio: el veredicto de este dominio puede estar a medias. */
     truncated?: true;
+    /** Cuantas sondas corrieron. 0 con status ok seria un veredicto sobre nada. */
+    toolCallCount?: number;
     /** El veredicto. Es lo unico que la corrida produce; sin esto no llega a ningun lado. */
     verdict?: string;
     inputTokens?: number;
@@ -125,6 +136,27 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
     ...(input.now ? { now: input.now } : {})
   });
 
+  const items = summary.results.map((entry) => ({
+    domain: entry.item.domain,
+    serverSlug: entry.item.serverSlug,
+    status: statusOf(entry),
+    ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
+    ...(entry.error ? { error: entry.error } : {}),
+    ...(entry.item.bindingConflict ? { bindingConflict: entry.item.bindingConflict } : {}),
+    hasMessageId: entry.item.recentMessageId !== undefined,
+    ...(entry.result ? { toolCallCount: entry.result.toolCallCount } : {}),
+    ...(entry.result?.truncated ? { truncated: true as const } : {}),
+    // El veredicto acotado: es el producto de la corrida. Sin esto el operador recibe un
+    // conteo de exitos y ni una linea de por que cada dominio entrega o no entrega.
+    ...(entry.result ? { verdict: entry.result.resultSummary.slice(0, VERDICT_MAX_CHARS) } : {}),
+    ...(entry.result ?? entry.spent
+      ? {
+          inputTokens: entry.result?.inputTokens ?? entry.spent?.inputTokens ?? 0,
+          outputTokens: entry.result?.outputTokens ?? entry.spent?.outputTokens ?? 0
+        }
+      : {})
+  }));
+
   return {
     startedAt,
     finishedAt: now().toISOString(),
@@ -134,12 +166,16 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
     bindingConflicts: fleet.domains.filter((entry) => entry.bindingConflict).length,
     withoutMessageId: fleet.domains.filter((entry) => !entry.recentMessageId).length,
     concurrency,
-    ok: summary.ok,
-    failed: summary.failed,
-    cancelled: summary.cancelled,
+    // Derivados de los items y NO de summary.ok: el fan-out cuenta "la sesion termino", que no
+    // es lo mismo que "hubo diagnostico". Una sola fuente de verdad para el conteo y el detalle.
+    ok: items.filter((item) => item.status === "ok").length,
+    failed: items.filter((item) => item.status === "failed" || item.status === "exhausted").length,
+    cancelled: items.filter((item) => item.status === "cancelled").length,
     aborted: summary.aborted,
     peakInFlight: summary.peakInFlight,
     truncated: summary.results.filter((entry) => entry.result?.truncated).length,
+    sinEvidencia: items.filter((item) => item.status === "sin_evidencia").length,
+    paused: items.filter((item) => item.status === "paused").length,
     modelId: input.sessionManager.modelIdForRole("warmup"),
     totals: {
       // `spent` cubre las sesiones que TIRARON: sus tokens ya se pagaron aunque no haya result.
@@ -159,25 +195,7 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
       // el resto del modulo se esfuerza en evitar.
       pricingKnown: summary.results.every((entry) => entry.result === undefined || entry.result.pricingKnown)
     },
-    items: summary.results.map((entry) => ({
-      domain: entry.item.domain,
-      serverSlug: entry.item.serverSlug,
-      status: statusOf(entry),
-      ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
-      ...(entry.error ? { error: entry.error } : {}),
-      ...(entry.item.bindingConflict ? { bindingConflict: entry.item.bindingConflict } : {}),
-      hasMessageId: entry.item.recentMessageId !== undefined,
-      ...(entry.result?.truncated ? { truncated: true as const } : {}),
-      // El veredicto acotado: es el producto de la corrida. Sin esto el operador recibe un
-      // conteo de exitos y ni una linea de por que cada dominio entrega o no entrega.
-      ...(entry.result ? { verdict: entry.result.resultSummary.slice(0, VERDICT_MAX_CHARS) } : {}),
-      ...(entry.result ?? entry.spent
-        ? {
-            inputTokens: entry.result?.inputTokens ?? entry.spent?.inputTokens ?? 0,
-            outputTokens: entry.result?.outputTokens ?? entry.spent?.outputTokens ?? 0
-          }
-        : {})
-    }))
+    items
   };
 }
 
@@ -187,12 +205,20 @@ const VERDICT_MAX_CHARS = 4_000;
 function statusOf(entry: {
   cancelled?: true;
   error?: string;
-  result?: { status: "completed" | "failed" | "paused" };
-}): "ok" | "failed" | "paused" | "exhausted" | "cancelled" {
+  result?: { status: "completed" | "failed" | "paused"; toolCallCount?: number };
+}): "ok" | "failed" | "paused" | "exhausted" | "cancelled" | "sin_evidencia" {
   if (entry.cancelled) return "cancelled";
   if (entry.error !== undefined) return "failed";
   if (entry.result === undefined) return "failed";
-  if (entry.result.status === "completed") return "ok";
+  if (entry.result.status === "completed") {
+    // Un veredicto sin una sola sonda no es un diagnostico, por bien redactado que este.
+    //
+    // Esto NO es paranoia: medido el 2026-07-29 contra la flota real, el 46% de los dominios
+    // cerraba asi — cero tools, status ok, y lineas de "evidencia" citando sondas que nunca
+    // corrieron. El prompt que lo inducia se corrigio, pero el guard vive aca a proposito: los
+    // prompts derivan y un modelo distinto falla distinto. El invariante va donde va el efecto.
+    return (entry.result.toolCallCount ?? 0) === 0 ? "sin_evidencia" : "ok";
+  }
   // `paused` es el cap de tokens; `failed` devuelto por la sesion es max_iterations. Se
   // distinguen porque se arreglan distinto: uno pide mas presupuesto, el otro mas vueltas.
   return entry.result.status === "paused" ? "paused" : "exhausted";

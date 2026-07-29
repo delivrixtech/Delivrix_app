@@ -224,6 +224,14 @@ export interface AgentSessionResult {
    * respuesta cortada se lee igual que una conclusion.
    */
   truncated?: true;
+  /**
+   * Cuantas tools ejecuto la sesion.
+   *
+   * Existe porque un modelo puede cerrar SIN pedir ninguna y aun asi escribir lineas de
+   * "evidencia" citando sondas que nunca corrio. Medido el 2026-07-29: pasaba en el 46% de la
+   * flota. El texto se ve razonable; el unico dato que lo delata es este contador.
+   */
+  toolCallCount: number;
 }
 
 const defaultMaxIterations = 8;
@@ -255,6 +263,7 @@ export class BedrockAgentSession {
   private outputTokens = 0;
   private startedAt = "";
   private updatedAt = "";
+  private toolCallCount = 0;
   private lastEventType: AgentEvent["type"] | undefined;
   private failureReason: string | undefined;
 
@@ -395,6 +404,7 @@ export class BedrockAgentSession {
 
   private async dispatchToolUse(toolUse: AgentModelToolUse): Promise<string> {
     this.status = "tool_use";
+    this.toolCallCount += 1;
     await this.emit({
       type: "agent.tool_use",
       toolName: toolUse.toolName,
@@ -493,7 +503,8 @@ export class BedrockAgentSession {
       inputTokens: this.inputTokens,
       outputTokens: this.outputTokens,
       estimatedCostUsd: this.estimatedCostUsd,
-      pricingKnown: this.pricingKnown
+      pricingKnown: this.pricingKnown,
+      toolCallCount: this.toolCallCount
     };
   }
 
