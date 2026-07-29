@@ -300,10 +300,8 @@ import {
 } from "./routes/agents-warmup-audit.ts";
 import { AgentEventBus } from "./agents/agent-event-bus.ts";
 import { AgentSessionManager } from "./agents/agent-session-manager.ts";
-import {
-  MockAgentModelClient,
-  setSystemPromptFallbackReporter
-} from "./agents/bedrock-agent-session.ts";
+import { setSystemPromptFallbackReporter } from "./agents/bedrock-agent-session.ts";
+import { createAgentModelClientFactory } from "./agents/agent-model-backend.ts";
 import { diagnosticToolSpecsForRole } from "./agents/agent-tool-specs.ts";
 import { warmupDiagnosticToolExecutor } from "./agents/warmup-tool-executor.ts";
 import { warmupAuditDefinitionForRole } from "./agents/warmup-audit-run.ts";
@@ -909,11 +907,16 @@ const configureSmtpToolProcessor = createHttpToolUseProcessor({
   pollIntervalMs: positiveIntegerOrDefault(process.env.OPENCLAW_CONFIGURE_SMTP_POLL_INTERVAL_MS, 1_000),
   logger: gatewayRuntimeLog
 });
-// --- Runtime multi-agente: abanico de diagnostico (M1) ----------------------
+// --- Runtime multi-agente: abanico de diagnostico ---------------------------
 //
-// Read-only de punta a punta. El modelo es MOCK por defecto: el cliente Bedrock del agente es
-// M2 y todavia no existe, asi que sin MULTI_AGENT_MODE=bedrock esto ejercita el fan-out, el
-// executor y las 5 tools REALES contra la flota, sin llamar al modelo.
+// Read-only de punta a punta. El cerebro se elige POR ROL con MULTI_AGENT_MODE (global) y
+// MULTI_AGENT_MODE_<ROL> (override), y el default es `mock`: un despliegue sin configurar no
+// empieza a gastar ni a abrir SSH contra la flota por su cuenta.
+//
+// OJO con el default. `mock` NO ejercita nada: MockAgentModelClient sin guion devuelve end_turn
+// en la PRIMERA llamada, asi que la sesion cierra en la iteracion 0, no se ejecuta ni una tool,
+// y el reporte igual dice ok por dominio. Para ensayar el camino real de tools sin pagar modelo
+// existe `rehearsal`, que recorre las 5 tools de verdad.
 //
 // definitionForRole NO es opcional: BedrockAgentSession filtra cada tool_use contra
 // definition.toolNames, y el registry declara para warmup 8 nombres sin handler. Sin esto el
@@ -933,9 +936,38 @@ const warmupAuditToolProcessor = createHttpToolUseProcessor({
 });
 const warmupAuditSessionManager = new AgentSessionManager({
   eventBus: new AgentEventBus({ actorId: "supervisor/warmup-audit" }),
-  modelClientFactory: () => new MockAgentModelClient(),
+  modelClientFactory: createAgentModelClientFactory({
+    env: process.env,
+    onBackendResolved: ({ role, resolved, modelId }) => {
+      void gatewayRuntimeLog.info(
+        "agents.backend_resolved",
+        `El agente ${role} corre en ${resolved.backend} (${modelId}).`,
+        { role, backend: resolved.backend, source: resolved.source, modelId, invalidValue: resolved.invalidValue }
+      );
+    },
+    onDegradation: (notice) => {
+      void gatewayRuntimeLog.warn(
+        "agents.model_degradation",
+        `El modelo del agente degrado la respuesta: ${notice.detail}`,
+        { kind: notice.kind, modelId: notice.modelId }
+      );
+    }
+  }),
   toolExecutorFactory: () => warmupDiagnosticToolExecutor(warmupAuditToolProcessor),
-  toolSpecsForRole: (role) => diagnosticToolSpecsForRole(role, process.env).specs,
+  // `missing` no se descarta: una tool que el env no habilita desaparece de las specs sin aviso
+  // y el agente cierra su veredicto con menos evidencia creyendo que vio todo. Un diagnostico
+  // con 3 de 5 sondas no es un diagnostico incompleto, es uno que no sabe que lo esta.
+  toolSpecsForRole: (role) => {
+    const resolved = diagnosticToolSpecsForRole(role, process.env);
+    if (resolved.missing.length > 0) {
+      void gatewayRuntimeLog.warn(
+        "agents.tools_missing_from_catalog",
+        `El rol ${role} declara tools que el env no habilita: el agente va a diagnosticar sin ellas.`,
+        { role, missing: resolved.missing, available: resolved.specs.length }
+      );
+    }
+    return resolved.specs;
+  },
   definitionForRole: warmupAuditDefinitionForRole
 });
 
