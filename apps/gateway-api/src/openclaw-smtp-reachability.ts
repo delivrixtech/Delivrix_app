@@ -61,10 +61,22 @@ function safeTargets(targets: string[] | undefined): string[] {
 }
 
 export function buildReachabilityCommand(targets: string[]): string {
+  // `head -n 1`, NO `head -c N`.
+  //
+  // Esta era la linea que producia la falsa alarma que este archivo dice combatir. Con
+  // `head -c 120` el proceso se queda esperando 120 bytes: el banner de Gmail mide 75, no
+  // llegan mas, y `timeout 8` lo mata con rc=124 — que parseOutbound lee como "timed out" y
+  // reporta "blocked (likely provider egress filter)". Medido el 2026-07-29 sobre la flota:
+  // 10 de 10 nodos daban "bloqueado" y los 10 conectaban perfecto con `head -c 60`.
+  //
+  // Un banner SMTP es una linea terminada en CRLF. Leer UNA linea corta en cuanto llega y no
+  // depende de adivinarle el largo. La leccion es la de siempre: el probe que se cuelga no
+  // devuelve "no se", devuelve un negativo falso — y aca un negativo falso apunta al proveedor
+  // por un problema que no existe.
   const probes = targets
     .map(
       (host) =>
-        `echo "-- ${host}"; timeout 8 bash -c 'exec 3<>/dev/tcp/${host}/25 && head -c 120 <&3' 2>&1; echo "[rc=$?]"`
+        `echo "-- ${host}"; timeout 8 bash -c 'exec 3<>/dev/tcp/${host}/25 && head -n 1 <&3' 2>&1; echo "[rc=$?]"`
     )
     .join("; ");
   return [

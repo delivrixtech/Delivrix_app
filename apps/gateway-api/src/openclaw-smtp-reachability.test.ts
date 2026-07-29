@@ -134,3 +134,28 @@ test("buildReachabilityCommand probes /dev/tcp on :25 for each target", () => {
   assert.match(cmd, /## OUTBOUND/);
   assert.match(cmd, /\/dev\/tcp\/gmail-smtp-in\.l\.google\.com\/25/);
 });
+
+// --- regresion: la falsa alarma que este modulo existe para evitar, la producia el modulo ---
+
+test("el probe lee UNA LINEA, no un largo fijo: head -c cuelga y se reporta como bloqueado", () => {
+  // Medido en un nodo real el 2026-07-29: el banner de Gmail mide 75 bytes. Con `head -c 120`
+  // el proceso espera 120, no llegan, y timeout lo mata con rc=124 -> parseOutbound lo lee como
+  // "timed out" -> "blocked (likely provider egress filter)". Daba 10 de 10 nodos bloqueados
+  // cuando los 10 conectaban bien. Un negativo falso que apuntaba al proveedor.
+  const command = buildReachabilityCommand(["gmail-smtp-in.l.google.com"]);
+  assert.match(command, /head -n 1 <&3/);
+  assert.equal(/head -c \d+/.test(command), false, "head -c espera bytes que no llegan y cuelga");
+});
+
+test("un rc=124 sigue siendo bloqueado: el arreglo no ablanda la deteccion real", () => {
+  // Importa que el fix no haya vuelto ciego al probe: si de verdad se cuelga, es bloqueado.
+  const outbound = parseOutbound('-- gmail-smtp-in.l.google.com\n[rc=124]', ["gmail-smtp-in.l.google.com"]);
+  assert.equal(outbound.status, "blocked");
+});
+
+test("un banner de 75 bytes se lee como reachable", () => {
+  const real = "-- gmail-smtp-in.l.google.com\n220 mx.google.com ESMTP af79cd13be357-933e73e00fbsi308252885a.415 - gsmtp\n[rc=0]";
+  const outbound = parseOutbound(real, ["gmail-smtp-in.l.google.com"]);
+  assert.equal(outbound.status, "reachable");
+  assert.equal(outbound.reachableTarget, "gmail-smtp-in.l.google.com");
+});
