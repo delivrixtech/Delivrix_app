@@ -28,8 +28,33 @@ import {
   type AgentModelClient,
   type AgentModelInvokeInput,
   type AgentModelInvokeResult,
+  type AgentModelPricing,
   type AgentModelTurn
 } from "./bedrock-agent-session.ts";
+
+/**
+ * Precio por millon de tokens, por familia de modelo.
+ *
+ * Se busca la familia DENTRO del id porque los ids de Bedrock llevan prefijos (`anthropic.`, y
+ * perfiles cross-region como `us.`). Un modelo que no este en la tabla devuelve undefined, y
+ * eso viaja hasta el reporte como "precio desconocido" en vez de como un numero inventado: el
+ * costo de una corrida es justamente el dato con el que se decide donde corren los agentes.
+ */
+const MODEL_PRICING: ReadonlyArray<readonly [string, AgentModelPricing]> = [
+  ["claude-opus-5", { inputUsdPerMillionTokens: 5, outputUsdPerMillionTokens: 25 }],
+  ["claude-opus-4-8", { inputUsdPerMillionTokens: 5, outputUsdPerMillionTokens: 25 }],
+  ["claude-opus-4-7", { inputUsdPerMillionTokens: 5, outputUsdPerMillionTokens: 25 }],
+  ["claude-opus-4-6", { inputUsdPerMillionTokens: 5, outputUsdPerMillionTokens: 25 }],
+  ["claude-sonnet-5", { inputUsdPerMillionTokens: 3, outputUsdPerMillionTokens: 15 }],
+  ["claude-sonnet-4-6", { inputUsdPerMillionTokens: 3, outputUsdPerMillionTokens: 15 }],
+  ["claude-sonnet-4-5", { inputUsdPerMillionTokens: 3, outputUsdPerMillionTokens: 15 }],
+  ["claude-haiku-4-5", { inputUsdPerMillionTokens: 1, outputUsdPerMillionTokens: 5 }]
+];
+
+export function pricingForModel(modelId: string): AgentModelPricing | undefined {
+  const normalized = modelId.trim().toLowerCase();
+  return MODEL_PRICING.find(([family]) => normalized.includes(family))?.[1];
+}
 
 /**
  * Mas alto que los 4096 del chat a proposito.
@@ -173,6 +198,8 @@ export function isRetryableModelError(error: unknown): boolean {
 
 export class BedrockAgentModelClient implements AgentModelClient {
   readonly modelId: string;
+  /** undefined si el modelo no esta en la tabla: mejor "no se" que un numero de otro modelo. */
+  readonly pricing: AgentModelPricing | undefined;
 
   private readonly client: BedrockRuntimeClientLike;
   private readonly maxTokens: number;
@@ -189,6 +216,7 @@ export class BedrockAgentModelClient implements AgentModelClient {
     // modelId es propiedad, no algo que se resuelve en la primera llamada: la sesion lo lee en
     // agent.started y en el snapshot del panel, ambos antes de que invoke() corra.
     this.modelId = options.modelId;
+    this.pricing = pricingForModel(options.modelId);
     this.client = options.client;
     this.maxTokens = options.maxTokens ?? DEFAULT_AGENT_MAX_TOKENS;
     this.idleTimeoutMs = options.idleTimeoutMs;

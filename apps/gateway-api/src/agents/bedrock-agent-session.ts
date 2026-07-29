@@ -26,11 +26,20 @@ import type { BedrockToolSpec } from "../openclaw-tools-builder.ts";
 import type { AgentDefinition } from "./agent-registry.ts";
 import type { AgentEventBus } from "./agent-event-bus.ts";
 
-// Pricing Sonnet (spec, sección "Costos estimados"): input $3/M, output $15/M.
-const inputUsdPerMillionTokens = 3;
-const outputUsdPerMillionTokens = 15;
-
 export const MOCK_AGENT_MODEL_ID = "mock/dry-run";
+
+/**
+ * Precio del modelo que corre esta sesion.
+ *
+ * Antes estaba clavado a tarifa de Sonnet ($3/$15 por millon) para TODAS las sesiones. Eso
+ * subestimaba Opus y, sobre todo, iba a reportar dolares que nadie pago cuando el agente corra
+ * en la Mac — justo el numero con el que se decide si el modelo local conviene. El precio lo
+ * sabe quien sabe que modelo es: el cliente.
+ */
+export interface AgentModelPricing {
+  inputUsdPerMillionTokens: number;
+  outputUsdPerMillionTokens: number;
+}
 
 export interface AgentModelToolUse {
   toolUseId: string;
@@ -63,6 +72,8 @@ export interface AgentModelInvokeResult {
 /** Única frontera con Bedrock. Nada fuera de esta interfaz toca la red del modelo. */
 export interface AgentModelClient {
   modelId: string;
+  /** Ausente = precio desconocido. El costo estimado da 0 y NO significa gratis. */
+  pricing?: AgentModelPricing;
   invoke(input: AgentModelInvokeInput): Promise<AgentModelInvokeResult>;
 }
 
@@ -81,6 +92,8 @@ export interface MockAgentModelClientOptions {
 /** Cliente dry-run: determinista, sin red, sin credenciales. */
 export class MockAgentModelClient implements AgentModelClient {
   readonly modelId = MOCK_AGENT_MODEL_ID;
+  /** Sin modelo no hay gasto: el 0 aca es un hecho, no un desconocido. */
+  readonly pricing: AgentModelPricing = { inputUsdPerMillionTokens: 0, outputUsdPerMillionTokens: 0 };
   private readonly script: MockScriptStep[];
   private readonly inputTokensPerCall: number;
   private readonly outputTokensPerCall: number;
@@ -183,6 +196,14 @@ export interface BedrockAgentSessionOptions {
   /** Ejecuta tool_use dentro del scope del rol. Default: error explícito (stub día 1). */
   toolExecutor?: AgentToolExecutor;
   maxIterations?: number;
+  /**
+   * Corta la llamada al modelo en vuelo.
+   *
+   * Sin esto el kill switch solo se chequeaba ENTRE items del abanico: armarlo dejaba corriendo
+   * hasta 4 llamadas pagas hasta que terminaran solas. Con el mock daba igual porque respondia
+   * al instante; con un modelo real no.
+   */
+  abortSignal?: AbortSignal;
   now?: () => Date;
   sessionId?: string;
   systemPromptLoader?: (definition: AgentDefinition) => Promise<string>;
@@ -194,6 +215,15 @@ export interface AgentSessionResult {
   inputTokens: number;
   outputTokens: number;
   estimatedCostUsd: number;
+  /** false = no se conoce el precio del modelo; el costo de arriba es 0 y no significa gratis. */
+  pricingKnown: boolean;
+  /**
+   * El modelo se quedo sin espacio a mitad del veredicto.
+   *
+   * La sesion trata todo lo que no es tool_use como terminado, asi que sin esta marca una
+   * respuesta cortada se lee igual que una conclusion.
+   */
+  truncated?: true;
 }
 
 const defaultMaxIterations = 8;
@@ -215,6 +245,7 @@ export class BedrockAgentSession {
   private readonly tools: BedrockToolSpec[];
   private readonly toolExecutor: AgentToolExecutor;
   private readonly maxIterations: number;
+  private readonly abortSignal: AbortSignal | undefined;
   private readonly now: () => Date;
   private readonly systemPromptLoader: (definition: AgentDefinition) => Promise<string>;
 
@@ -242,6 +273,7 @@ export class BedrockAgentSession {
       error: `tool_not_wired: ${toolName} declarada pero sin dispatcher (Fase 2 día 4).`
     }));
     this.maxIterations = options.maxIterations ?? defaultMaxIterations;
+    this.abortSignal = options.abortSignal;
     this.now = options.now ?? (() => new Date());
     this.systemPromptLoader = options.systemPromptLoader ?? defaultSystemPromptLoader;
   }
@@ -259,10 +291,17 @@ export class BedrockAgentSession {
   }
 
   get estimatedCostUsd(): number {
+    const pricing = this.modelClient.pricing;
+    if (!pricing) return 0;
     return roundUsd(
-      (this.inputTokens / 1_000_000) * inputUsdPerMillionTokens +
-      (this.outputTokens / 1_000_000) * outputUsdPerMillionTokens
+      (this.inputTokens / 1_000_000) * pricing.inputUsdPerMillionTokens +
+      (this.outputTokens / 1_000_000) * pricing.outputUsdPerMillionTokens
     );
+  }
+
+  /** false = el costo de arriba es 0 porque no se conoce el precio, no porque sea gratis. */
+  get pricingKnown(): boolean {
+    return this.modelClient.pricing !== undefined;
   }
 
   snapshot(): AgentSessionSnapshot {
@@ -315,7 +354,8 @@ export class BedrockAgentSession {
       const result = await this.modelClient.invoke({
         system,
         messages: this.turns,
-        tools: this.tools
+        tools: this.tools,
+        ...(this.abortSignal ? { abortSignal: this.abortSignal } : {})
       });
       this.inputTokens += result.inputTokens;
       this.outputTokens += result.outputTokens;
@@ -333,7 +373,10 @@ export class BedrockAgentSession {
       }
 
       if (result.stopReason !== "tool_use" || result.toolUses.length === 0) {
-        return this.complete(lastText);
+        // max_tokens no es una conclusion: el modelo se quedo sin espacio. Se cierra igual —no
+        // hay nada mejor que hacer— pero marcado, para que el reporte no lo muestre como un
+        // veredicto terminado.
+        return this.complete(lastText, result.stopReason === "max_tokens");
       }
 
       const toolResults: Array<{ toolUseId: string; content: string }> = [];
@@ -402,14 +445,17 @@ export class BedrockAgentSession {
     }
   }
 
-  private async complete(resultSummary: string): Promise<AgentSessionResult> {
+  private async complete(resultSummary: string, truncated = false): Promise<AgentSessionResult> {
     this.status = "completed";
+    const summary = truncated
+      ? `[VEREDICTO CORTADO EN max_tokens — puede estar incompleto]\n${resultSummary}`
+      : resultSummary;
     await this.emit({
       type: "agent.completed",
-      resultSummary: truncate(resultSummary, 2_000),
+      resultSummary: truncate(summary, 2_000),
       auditChainHashes: []
     });
-    return this.result("completed", resultSummary);
+    return { ...this.result("completed", summary), ...(truncated ? { truncated: true as const } : {}) };
   }
 
   private async fail(reason: string, evidenceRefs: string[]): Promise<AgentSessionResult> {
@@ -446,7 +492,8 @@ export class BedrockAgentSession {
       resultSummary,
       inputTokens: this.inputTokens,
       outputTokens: this.outputTokens,
-      estimatedCostUsd: this.estimatedCostUsd
+      estimatedCostUsd: this.estimatedCostUsd,
+      pricingKnown: this.pricingKnown
     };
   }
 

@@ -23,6 +23,8 @@ export interface WarmupAuditRunInput {
   /** Subconjunto de la flota. Ausente = todos los dominios enlazados. */
   domains?: readonly string[];
   concurrency?: number;
+  /** Corta las llamadas al modelo en vuelo, no solo el despacho del proximo dominio. */
+  abortSignal?: AbortSignal;
   now?: () => Date;
 }
 
@@ -44,6 +46,16 @@ export interface WarmupAuditReport {
   cancelled: number;
   aborted: boolean;
   peakInFlight: number;
+  /** Dominios cuyo veredicto se corto en max_tokens: cuentan como ok pero no concluyeron. */
+  truncated: number;
+  /** Tokens y costo de la corrida entera. Es el numero con el que se decide donde corren. */
+  totals: {
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCostUsd: number;
+    /** false = alguna sesion corrio con un modelo sin precio conocido; el costo es un piso. */
+    pricingKnown: boolean;
+  };
   items: Array<{
     domain: string;
     serverSlug: string;
@@ -52,6 +64,8 @@ export interface WarmupAuditReport {
     error?: string;
     bindingConflict?: { fromBindings: string; fromCredentials: string };
     hasMessageId: boolean;
+    /** El modelo se quedo sin espacio: el veredicto de este dominio puede estar a medias. */
+    truncated?: true;
   }>;
 }
 
@@ -85,6 +99,7 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
     }),
     invokedByRole: "supervisor",
     concurrency,
+    ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     ...(input.now ? { now: input.now } : {})
   });
 
@@ -102,6 +117,18 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
     cancelled: summary.cancelled,
     aborted: summary.aborted,
     peakInFlight: summary.peakInFlight,
+    truncated: summary.results.filter((entry) => entry.result?.truncated).length,
+    totals: {
+      inputTokens: summary.results.reduce((acc, entry) => acc + (entry.result?.inputTokens ?? 0), 0),
+      outputTokens: summary.results.reduce((acc, entry) => acc + (entry.result?.outputTokens ?? 0), 0),
+      estimatedCostUsd: roundUsd(
+        summary.results.reduce((acc, entry) => acc + (entry.result?.estimatedCostUsd ?? 0), 0)
+      ),
+      // Basta UNA sesion con precio desconocido para que el total deje de ser el costo y pase a
+      // ser un piso. Reportarlo como cerrado seria justo el tipo de numero confiado y falso que
+      // el resto del modulo se esfuerza en evitar.
+      pricingKnown: summary.results.every((entry) => entry.result === undefined || entry.result.pricingKnown)
+    },
     items: summary.results.map((entry) => ({
       domain: entry.item.domain,
       serverSlug: entry.item.serverSlug,
@@ -109,9 +136,14 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
       ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
       ...(entry.error ? { error: entry.error } : {}),
       ...(entry.item.bindingConflict ? { bindingConflict: entry.item.bindingConflict } : {}),
-      hasMessageId: entry.item.recentMessageId !== undefined
+      hasMessageId: entry.item.recentMessageId !== undefined,
+      ...(entry.result?.truncated ? { truncated: true as const } : {})
     }))
   };
+}
+
+function roundUsd(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 /** La definicion efectiva que el manager tiene que usar para que la sesion no filtre las 5 tools. */

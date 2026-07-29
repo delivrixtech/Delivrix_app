@@ -954,6 +954,10 @@ const warmupAuditSessionManager = new AgentSessionManager({
     }
   }),
   toolExecutorFactory: () => warmupDiagnosticToolExecutor(warmupAuditToolProcessor),
+  // El default de la sesion es 8 y el diagnostico usa 5 tools: si el modelo las pide de a una y
+  // comenta entre medio son 6 vueltas, y con un reintento 8. Al pasarse, la sesion se reporta
+  // como fallida habiendo hecho el trabajo. 12 da margen sin volver infinito el loop.
+  maxIterations: 12,
   // `missing` no se descarta: una tool que el env no habilita desaparece de las specs sin aviso
   // y el agente cierra su veredicto con menos evidencia creyendo que vio todo. Un diagnostico
   // con 3 de 5 sondas no es un diagnostico incompleto, es uno que no sabe que lo esta.

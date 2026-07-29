@@ -76,6 +76,13 @@ export interface RunFanOutInput<T> {
    * de una falla real de diagnostico.
    */
   shouldAbort?: () => boolean;
+  /**
+   * Corta las llamadas al modelo que YA estan en vuelo.
+   *
+   * `shouldAbort` solo evita despachar el proximo item. Sin esto, armar el kill switch dejaba
+   * corriendo hasta `concurrency` llamadas pagas hasta que terminaran solas.
+   */
+  abortSignal?: AbortSignal;
   now?: () => Date;
   /** Se llama al cerrar cada item. Para progreso en vivo sin esperar al final. */
   onItemSettled?: (result: FanOutItemResult<T>) => void;
@@ -129,7 +136,10 @@ export async function runFanOut<T>(input: RunFanOutInput<T>): Promise<FanOutSumm
         const invoked = await input.sessionManager.invokeAgent(
           input.role,
           input.buildInput(item, index),
-          { invokedByRole: input.invokedByRole }
+          {
+            invokedByRole: input.invokedByRole,
+            ...(input.abortSignal ? { abortSignal: input.abortSignal } : {})
+          }
         );
         settled = {
           item,

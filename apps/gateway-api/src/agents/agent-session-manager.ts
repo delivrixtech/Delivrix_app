@@ -58,6 +58,14 @@ export interface AgentSessionManagerOptions {
   maxDelegationDepth?: number;
   /** Cuantos snapshots de sesiones terminadas se retienen. Default 200. */
   finishedRetention?: number;
+  /**
+   * Vueltas del loop modelo -> tools -> modelo antes de rendirse. Default de la sesion: 8.
+   *
+   * El abanico de diagnostico lo sube: son 5 tools y si el modelo las pide de a una y comenta
+   * entre medio son 6 vueltas; con un reintento, 8. Al pasarse, la sesion se reporta como
+   * `failed` habiendo hecho el trabajo.
+   */
+  maxIterations?: number;
   now?: () => Date;
 }
 
@@ -78,6 +86,8 @@ export interface InvokeAgentOptions {
   invokedByRole: AgentInvoker;
   /** Cadena de taskIds ancestros para detección de ciclos. */
   taskChain?: string[];
+  /** Corta la llamada al modelo en vuelo, no solo entre items. */
+  abortSignal?: AbortSignal;
 }
 
 export class AgentSessionManager {
@@ -87,6 +97,7 @@ export class AgentSessionManager {
   private readonly toolSpecsForRole: (role: AgentRole) => BedrockToolSpec[];
   private readonly definitionForRole: (role: AgentRole) => AgentDefinition;
   private readonly maxDelegationDepth: number;
+  private readonly maxIterations: number | undefined;
   private readonly now: () => Date;
   private readonly sessions = new Map<string, BedrockAgentSession>();
   /**
@@ -108,6 +119,7 @@ export class AgentSessionManager {
     this.toolSpecsForRole = options.toolSpecsForRole ?? (() => []);
     this.definitionForRole = options.definitionForRole ?? ((role) => AGENT_DEFINITIONS[role]);
     this.maxDelegationDepth = options.maxDelegationDepth ?? defaultMaxDelegationDepth;
+    this.maxIterations = options.maxIterations;
     this.finishedRetention = options.finishedRetention ?? defaultFinishedRetention;
     this.now = options.now ?? (() => new Date());
   }
@@ -184,6 +196,8 @@ export class AgentSessionManager {
       eventBus: this.eventBus,
       tools: this.toolSpecsForRole(role),
       toolExecutor: this.toolExecutorFactory(role),
+      ...(this.maxIterations === undefined ? {} : { maxIterations: this.maxIterations }),
+      ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
       now: this.now,
       sessionId: randomUUID()
     });

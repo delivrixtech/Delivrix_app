@@ -149,6 +149,12 @@ export async function handleWarmupAuditHttp(deps: WarmupAuditRouteDeps): Promise
       aborted: report.aborted,
       bindingConflicts: report.bindingConflicts,
       withoutMessageId: report.withoutMessageId,
+      // Veredictos cortados a mitad: cuentan como ok pero no concluyeron.
+      truncated: report.truncated,
+      inputTokens: report.totals.inputTokens,
+      outputTokens: report.totals.outputTokens,
+      estimatedCostUsd: report.totals.estimatedCostUsd,
+      pricingKnown: report.totals.pricingKnown,
       // Los dominios con inventario contradictorio, para que el operador los reconcilie.
       conflictDomains: report.items.filter((i) => i.bindingConflict).map((i) => i.domain)
     }

@@ -14,6 +14,7 @@ import type {
   AgentModelClient,
   AgentModelInvokeInput,
   AgentModelInvokeResult,
+  AgentModelPricing,
   AgentModelToolUse
 } from "./bedrock-agent-session.ts";
 
@@ -98,6 +99,8 @@ function valueForProperty(property: string, facts: DiagnosticFacts): string | un
  */
 export class RehearsalAgentModelClient implements AgentModelClient {
   readonly modelId = REHEARSAL_MODEL_ID;
+  /** Sin modelo no hay gasto. El 0 aca es un hecho medido, no un desconocido. */
+  readonly pricing: AgentModelPricing = { inputUsdPerMillionTokens: 0, outputUsdPerMillionTokens: 0 };
 
   private cursor = 0;
   private readonly executed: string[] = [];
