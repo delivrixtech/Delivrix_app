@@ -18,6 +18,38 @@ import {
 /** Default heredado del bridge: sin esto un stream colgado deja el chat en spinner (incidente 2026-07-02). */
 export const DEFAULT_BEDROCK_IDLE_TIMEOUT_MS = 90_000;
 
+/**
+ * Familias de modelo que TODAVIA aceptan `temperature` / `top_p` / `top_k`.
+ *
+ * De Claude Opus 4.7 y Sonnet 5 en adelante esos parametros fueron removidos de la API y
+ * mandarlos devuelve `400 invalid_request_error`. La lista es de lo que ACEPTA, no de lo que
+ * rechaza, a proposito: un modelo desconocido —o sea, uno mas nuevo— cae del lado de omitir.
+ * Equivocarse omitiendo cambia levemente el sampling; equivocarse mandando rompe todas las
+ * llamadas.
+ */
+const MODEL_FAMILIES_WITH_SAMPLING_PARAMS = [
+  "claude-opus-4-6",
+  "claude-opus-4-5",
+  "claude-opus-4-1",
+  "claude-opus-4-0",
+  "claude-opus-4-20",
+  "claude-sonnet-4-6",
+  "claude-sonnet-4-5",
+  "claude-sonnet-4-0",
+  "claude-sonnet-4-20",
+  "claude-haiku-4-5",
+  "claude-3-"
+] as const;
+
+/**
+ * Los ids de Bedrock llevan prefijos (`anthropic.`, y perfiles de inferencia cross-region como
+ * `us.`), asi que se busca la familia dentro del id en vez de comparar por igualdad.
+ */
+export function modelAcceptsSamplingParams(modelId: string): boolean {
+  const normalized = modelId.trim().toLowerCase();
+  return MODEL_FAMILIES_WITH_SAMPLING_PARAMS.some((family) => normalized.includes(family));
+}
+
 export type BedrockMessageRole = "user" | "assistant";
 
 export type BedrockContentBlock =
