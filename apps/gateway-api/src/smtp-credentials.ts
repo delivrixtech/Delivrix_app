@@ -230,6 +230,10 @@ export async function decryptSmtpCredentialForDownload(input: {
 export interface SmtpCredentialBulkEntry {
   record: SmtpCredentialRecord;
   password: string;
+  /** null cuando el nodo no tiene acceso ops o su clave no se pudo descifrar. */
+  sshPrivateKey: string | null;
+  /** Por que falta la clave SSH. El paquete lo DICE en vez de omitir la seccion en silencio. */
+  sshUnavailableReason?: "not_provisioned" | "ssh_decrypt_failed";
 }
 
 export interface SmtpCredentialBulkFailure {
@@ -239,11 +243,18 @@ export interface SmtpCredentialBulkFailure {
 }
 
 /**
- * Descifra todas las credenciales SMTP listas para descarga masiva.
+ * Descifra todas las credenciales SMTP listas para descarga masiva, INCLUIDO el acceso SSH ops.
  *
- * Nunca devuelve claves SSH privadas: el paquete masivo concentra demasiado
- * material sensible en un solo archivo, así que el acceso ops se sigue bajando
- * dominio por dominio con decryptSmtpCredentialForDownload.
+ * La version anterior excluia las claves SSH a proposito ("demasiado material sensible en un
+ * solo archivo") y mandaba a bajar el acceso ops dominio por dominio. Eso rompio el flujo real:
+ * el operador de bounces necesita entrar a los ~70 nodos, el bulk existe justamente para no
+ * bajar 70 archivos uno por uno, y la omision era silenciosa por dominio — el .md ni mencionaba
+ * SSH. Resultado: el operador asumio que el documento salio mal generado. Decision del owner
+ * 2026-07-29: el paquete masivo lleva el acceso completo, con la advertencia de manejo a la
+ * altura de lo que contiene.
+ *
+ * Un fallo al descifrar la clave SSH NO tumba la entrada: la credencial SMTP que si funciona
+ * se entrega igual, y el motivo queda en `sshUnavailableReason` para que el paquete lo diga.
  *
  * Los dominios que no se pueden descifrar no rompen el lote: salen en
  * `failures` para que el caller los reporte junto al resto.
@@ -270,7 +281,26 @@ export async function decryptAllSmtpCredentialsForDownload(input: {
       continue;
     }
     try {
-      entries.push({ record, password: decryptSmtpCredentialPassword(record, key) });
+      const password = decryptSmtpCredentialPassword(record, key);
+      if (!record.sshAccess) {
+        entries.push({ record, password, sshPrivateKey: null, sshUnavailableReason: "not_provisioned" });
+        continue;
+      }
+      try {
+        entries.push({
+          record,
+          password,
+          sshPrivateKey: decryptSecret(
+            record.sshAccess.privateKeyEncrypted,
+            key,
+            sshPrivateKeyAad(record.domain, record.sshAccess.user)
+          )
+        });
+      } catch {
+        // La clave SSH ilegible no puede costarle al operador la credencial SMTP que si
+        // funciona. Se entrega el SMTP y el paquete declara por que falta el acceso ops.
+        entries.push({ record, password, sshPrivateKey: null, sshUnavailableReason: "ssh_decrypt_failed" });
+      }
     } catch (error) {
       failures.push({
         domain: record.domain,
@@ -343,6 +373,10 @@ export function renderSmtpCredentialMarkdown(input: {
   password: string;
   generatedAt?: string;
   sshPrivateKey?: string | null;
+  /** Por que falta la clave SSH, para DECIRLO. La seccion nunca desaparece en silencio. */
+  sshUnavailableReason?: "not_provisioned" | "ssh_decrypt_failed";
+  /** Nombre del .pem que viaja junto a este .md (paquete masivo). */
+  sshKeyFileName?: string;
 }): string {
   const generatedAt = input.generatedAt ?? new Date().toISOString();
   const sshAccess = input.record.sshAccess;
@@ -438,8 +472,37 @@ export function renderSmtpCredentialMarkdown(input: {
     ""
   ];
 
+  // La seccion SSH SIEMPRE existe, en uno de tres estados. La version que la omitia sin aviso
+  // le costo horas a un operador real: recibio el paquete masivo, no encontro "puerto 22" en
+  // ningun dominio, y concluyo que el documento salio mal generado. Un dato que falta se
+  // declara; no se borra la seccion.
   if (includeSsh && sshAccess && input.sshPrivateKey) {
-    lines.push(...renderSshAccessSection(sshAccess, input.sshPrivateKey));
+    lines.push(...renderSshAccessSection(sshAccess, input.sshPrivateKey, input.sshKeyFileName));
+  } else if (sshAccess) {
+    lines.push(
+      "## Acceso SSH (operaciones)",
+      "",
+      "Este nodo TIENE acceso ops aprovisionado, pero la clave privada no pudo incluirse en este",
+      "documento" + (input.sshUnavailableReason === "ssh_decrypt_failed"
+        ? " (fallo el descifrado de la clave; reporta esto al operador del panel para re-aprovisionar el acceso)."
+        : "."),
+      "",
+      `- Usuario: ${sshAccess.user}`,
+      `- Host: ${sshAccess.host}`,
+      `- Puerto: ${sshAccess.port}`,
+      "",
+      "Descarga la credencial individual de este dominio desde el panel para obtener la clave.",
+      ""
+    );
+  } else {
+    lines.push(
+      "## Acceso SSH (operaciones)",
+      "",
+      "Este nodo NO tiene acceso SSH ops aprovisionado todavia. Sin esto no se puede entrar al",
+      "VPS (por ejemplo para instalar el colector de bounces). Pedile al operador del panel que",
+      "lo aprovisione (POST /v1/servers/:slug/provision-ops-ssh) y volve a bajar el documento.",
+      ""
+    );
   }
 
   return lines.join("\n");
@@ -447,9 +510,10 @@ export function renderSmtpCredentialMarkdown(input: {
 
 function renderSshAccessSection(
   sshAccess: SmtpCredentialSshAccess,
-  privateKeyPem: string
+  privateKeyPem: string,
+  keyFileName?: string
 ): string[] {
-  const keyFile = "delivrix-ops.pem";
+  const keyFile = keyFileName ?? "delivrix-ops.pem";
   const trimmedKey = privateKeyPem.endsWith("\n") ? privateKeyPem.slice(0, -1) : privateKeyPem;
   return [
     "## Acceso SSH (operaciones)",
@@ -463,7 +527,9 @@ function renderSshAccessSection(
     `- Puerto: ${sshAccess.port}`,
     `- Sudo: si (NOPASSWD)`,
     "",
-    `Guarda la clave privada como \`${keyFile}\` con permisos 600 y conecta:`,
+    keyFileName
+      ? `La clave ya viene en este paquete como \`${keyFile}\`, junto a este documento. Dale permisos 600 y conecta:`
+      : `Guarda la clave privada como \`${keyFile}\` con permisos 600 y conecta:`,
     "",
     "```bash",
     `chmod 600 ${keyFile}`,

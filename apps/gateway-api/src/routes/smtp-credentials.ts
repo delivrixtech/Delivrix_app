@@ -112,11 +112,16 @@ export async function handleSmtpCredentialDownloadHttp(
 }
 
 /**
- * Descarga masiva: un ZIP con el .md de cada dominio configurado del pool.
+ * Descarga masiva: un ZIP con el .md de cada dominio configurado del pool, MAS el acceso SSH
+ * ops de cada nodo (seccion en el .md y un .pem listo para usar junto a cada documento).
  *
  * Cuesta un solo slot de rate limit y un solo evento de auditoría, a diferencia
- * de bajar los 70+ dominios uno por uno. No incluye claves SSH privadas (ver
- * decryptAllSmtpCredentialsForDownload).
+ * de bajar los 70+ dominios uno por uno.
+ *
+ * Antes excluia las claves SSH a proposito y el .md ni mencionaba la omision: el operador de
+ * bounces recibio el paquete, no encontro acceso por puerto 22 en ningun dominio y asumio que
+ * el documento salio mal generado. Decision del owner 2026-07-29: el paquete va completo, y lo
+ * que falte (nodos sin acceso aprovisionado) se DECLARA por dominio en vez de omitirse.
  */
 export async function handleSmtpCredentialBulkDownloadHttp(
   deps: SmtpCredentialRouteDeps
@@ -164,10 +169,20 @@ export async function handleSmtpCredentialBulkDownloadHttp(
         content: renderSmtpCredentialMarkdown({
           record: entry.record,
           password: entry.password,
-          sshPrivateKey: null,
+          sshPrivateKey: entry.sshPrivateKey,
+          ...(entry.sshUnavailableReason ? { sshUnavailableReason: entry.sshUnavailableReason } : {}),
+          ...(entry.sshPrivateKey ? { sshKeyFileName: pemFileName(entry.record.domain) } : {}),
           generatedAt
         })
-      }))
+      })),
+      // El .pem aparte del .md: para 70 nodos, copiar la clave a mano desde cada markdown es
+      // exactamente el tipo de friccion que hizo fracasar la primera entrega.
+      ...entries
+        .filter((entry) => entry.sshPrivateKey !== null)
+        .map((entry) => ({
+          name: pemFileName(entry.record.domain),
+          content: entry.sshPrivateKey as string
+        }))
     ];
     if (failures.length > 0) {
       zipEntries.push({ name: "_ERRORES.md", content: renderBulkFailuresMarkdown(failures, generatedAt) });
@@ -189,7 +204,12 @@ export async function handleSmtpCredentialBulkDownloadHttp(
         credentialCount: entries.length,
         failureCount: failures.length,
         inventoryCount: total,
-        includedSshAccess: false,
+        // Veraz, no fijo: cuantas claves SSH viajan y que dominios quedaron sin acceso y por que.
+        includedSshAccess: entries.some((entry) => entry.sshPrivateKey !== null),
+        sshKeyCount: entries.filter((entry) => entry.sshPrivateKey !== null).length,
+        sshUnavailable: entries
+          .filter((entry) => entry.sshUnavailableReason)
+          .map((entry) => ({ domain: entry.record.domain, reason: entry.sshUnavailableReason })),
         archiveBytes: archive.length,
         domains: entries.map((entry) => entry.record.domain),
         credentialFingerprints: entries.map((entry) => ({
@@ -224,30 +244,43 @@ function renderBulkInventoryMarkdown(
   failures: SmtpCredentialBulkFailure[],
   generatedAt: string
 ): string {
+  const withSsh = entries.filter((entry) => entry.sshPrivateKey !== null).length;
   const lines = [
     "# Inventario de credenciales SMTP",
     "",
     `Generado: ${generatedAt}`,
     `Dominios incluidos: ${entries.length}`,
     `Dominios omitidos: ${failures.length}`,
+    `Accesos SSH ops incluidos: ${withSsh} de ${entries.length}`,
     "",
-    "Este paquete NO incluye claves SSH privadas. Para el acceso ops de un nodo,",
-    "descarga la credencial de ese dominio desde el panel.",
+    "Cada dominio trae su .md con SMTP y acceso SSH ops (usuario, host, puerto 22 y la clave",
+    "privada), mas un .pem listo para usar. La columna SSH dice que dominio quedo sin acceso",
+    "y por que, para que un faltante nunca parezca un documento mal generado.",
     "",
-    "| Dominio | Host | Usuario | Archivo |",
-    "| --- | --- | --- | --- |",
+    "| Dominio | Host | Usuario | SSH ops | Archivo |",
+    "| --- | --- | --- | --- | --- |",
     ...entries.map((entry) =>
-      `| ${entry.record.domain} | ${entry.record.host} | ${entry.record.username} | ${credentialFileName(entry.record.domain)} |`
+      `| ${entry.record.domain} | ${entry.record.host} | ${entry.record.username} | ${sshStateLabel(entry)} | ${credentialFileName(entry.record.domain)} |`
     ),
     "",
     "## Seguridad",
     "",
-    "Este archivo concentra las credenciales SMTP de todo el pool. Guardalo en un",
-    "vault aprobado, no lo pegues en chat ni tickets, y borralo del disco local",
-    "apenas termines. Si sospechas exposicion, rota las credenciales afectadas.",
+    "Este archivo concentra las credenciales SMTP de todo el pool Y las claves SSH privadas de",
+    "sus nodos: quien tenga este ZIP puede enviar correo y entrar a las maquinas. Guardalo en un",
+    "vault aprobado, compartilo solo por un canal cifrado punta a punta, no lo pegues en chat ni",
+    "tickets, y borralo del disco local apenas termines. Si sospechas exposicion, rota las",
+    "credenciales SMTP y pedi la revocacion del acceso ops de TODOS los nodos incluidos: cada",
+    "acceso es revocable por nodo sin afectar el envio.",
     ""
   ];
   return lines.join("\n");
+}
+
+function sshStateLabel(entry: SmtpCredentialBulkEntry): string {
+  if (entry.sshPrivateKey !== null) return "incluido";
+  return entry.sshUnavailableReason === "ssh_decrypt_failed"
+    ? "FALLO EL DESCIFRADO (re-aprovisionar)"
+    : "NO APROVISIONADO (pedirlo al panel)";
 }
 
 function renderBulkFailuresMarkdown(
@@ -344,6 +377,11 @@ function isValidDomain(value: string): boolean {
 
 function credentialFileName(domain: string): string {
   return `smtp-credentials-${domain.replace(/[^a-z0-9.-]/gi, "_")}.md`;
+}
+
+/** El .pem por nodo del paquete masivo. Mismo saneo que el .md para que viajen juntos. */
+function pemFileName(domain: string): string {
+  return `delivrix-ops-${domain.replace(/[^a-z0-9.-]/gi, "_")}.pem`;
 }
 
 function statusForCredentialError(code: string): number {

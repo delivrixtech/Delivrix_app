@@ -168,7 +168,12 @@ test("GET /v1/sender-pool/credentials/download-all empaqueta un .md por dominio 
   assert.equal(entries.some((entry) => entry.name === "_ERRORES.md"), false);
 });
 
-test("GET /v1/sender-pool/credentials/download-all nunca incluye la clave SSH privada", async () => {
+test("GET /v1/sender-pool/credentials/download-all incluye el acceso SSH: seccion en el .md y .pem aparte", async () => {
+  // Este test pineaba lo CONTRARIO ("nunca incluye la clave SSH privada"). Esa exclusion era
+  // una decision de seguridad razonada, pero rompio el flujo real: el operador de bounces
+  // recibio el ZIP, no encontro acceso por puerto 22 en ningun dominio y asumio que el
+  // documento salio mal generado — el aviso vivia solo en _INVENTARIO.md, no en cada .md.
+  // Decision del owner 2026-07-29: el paquete masivo va completo.
   resetSensitiveReadAuthBucketsForTests();
   const harness = await routeHarness();
   await writeConfiguredCredential(harness.workspace, { sshPrivateKey: sshPrivateKeyFixture });
@@ -189,16 +194,76 @@ test("GET /v1/sender-pool/credentials/download-all nunca incluye la clave SSH pr
 
   assert.equal(response.statusCode, 200);
   const entries = readZipEntries(response.body);
+
+  // La seccion SSH viaja dentro del .md del dominio, con puerto y clave.
   const credential = entries.find((entry) => entry.name === "smtp-credentials-delivrix-mail.com.md");
   assert.match(credential?.content ?? "", /Password: smtp-secret-password/);
-  assert.equal(credential?.content.includes("BEGIN PRIVATE KEY"), false);
-  assert.equal(credential?.content.includes("Acceso SSH (operaciones)"), false);
-  assert.match(credential?.content ?? "", /No contiene claves DKIM privadas ni acceso SSH/);
-  assert.equal(response.body.toString("utf8").includes("BEGIN PRIVATE KEY"), false);
+  assert.match(credential?.content ?? "", /## Acceso SSH \(operaciones\)/);
+  assert.match(credential?.content ?? "", /Puerto: 22/);
+  assert.match(credential?.content ?? "", /Usuario: delivrix-ops/);
+  assert.equal(credential?.content.includes("BEGIN PRIVATE KEY"), true);
+  // Y el .md apunta al .pem que viaja al lado, listo para chmod 600 + ssh -i.
+  assert.match(credential?.content ?? "", /delivrix-ops-delivrix-mail\.com\.pem/);
+
+  const pem = entries.find((entry) => entry.name === "delivrix-ops-delivrix-mail.com.pem");
+  assert.equal(pem?.content.includes("BEGIN"), true);
+
+  // El inventario declara cuantos accesos viajan.
+  const inventory = entries.find((entry) => entry.name === "_INVENTARIO.md");
+  assert.match(inventory?.content ?? "", /Accesos SSH ops incluidos: 1 de 1/);
 
   const events = await harness.auditLog.list();
-  assert.equal(events.at(-1)?.action, "oc.smtp_credential.bulk_downloaded");
-  assert.equal(events.at(-1)?.metadata?.includedSshAccess, false);
+  const audit = events.at(-1);
+  assert.equal(audit?.action, "oc.smtp_credential.bulk_downloaded");
+  assert.equal(audit?.metadata?.includedSshAccess, true);
+  assert.equal(audit?.metadata?.sshKeyCount, 1);
+  // La clave viaja en el ZIP, jamas en el log de auditoria.
+  assert.equal(JSON.stringify(audit).includes("BEGIN PRIVATE KEY"), false);
+});
+
+test("download-all: un nodo SIN acceso ops lo DICE en su .md en vez de omitir la seccion", async () => {
+  // La omision silenciosa fue exactamente lo que hizo fracasar la primera entrega: un faltante
+  // sin declarar es indistinguible de un documento mal generado.
+  resetSensitiveReadAuthBucketsForTests();
+  const harness = await routeHarness();
+  await writeConfiguredCredential(harness.workspace, { sshPrivateKey: sshPrivateKeyFixture });
+  await writeConfiguredCredential(harness.workspace, {
+    domain: "sin-ssh.com",
+    serverSlug: "mail-prod-9",
+    host: "smtp.sin-ssh.com"
+  });
+  const response = captureBinaryResponse();
+
+  await handleSmtpCredentialBulkDownloadHttp({
+    request: request("GET", "/v1/sender-pool/credentials/download-all", {
+      "x-delivrix-token": "read-token",
+      "x-operator-id": "operator/juanes"
+    }),
+    response: response as unknown as ServerResponse,
+    workspace: harness.workspace,
+    auditLog: harness.auditLog,
+    readBoundaryToken: "read-token",
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    now: () => fixedNow
+  });
+
+  assert.equal(response.statusCode, 200);
+  const entries = readZipEntries(response.body);
+
+  const sinSsh = entries.find((entry) => entry.name === "smtp-credentials-sin-ssh.com.md");
+  assert.match(sinSsh?.content ?? "", /## Acceso SSH \(operaciones\)/);
+  assert.match(sinSsh?.content ?? "", /NO tiene acceso SSH ops aprovisionado/);
+  assert.equal(sinSsh?.content.includes("BEGIN PRIVATE KEY"), false);
+  // Sin acceso no hay .pem para ese dominio.
+  assert.equal(entries.some((entry) => entry.name === "delivrix-ops-sin-ssh.com.pem"), false);
+
+  // El inventario distingue el estado por dominio y el total es veraz.
+  const inventory = entries.find((entry) => entry.name === "_INVENTARIO.md");
+  assert.match(inventory?.content ?? "", /Accesos SSH ops incluidos: 1 de 2/);
+  assert.match(inventory?.content ?? "", /NO APROVISIONADO/);
+
+  const audit = (await harness.auditLog.list()).at(-1);
+  assert.deepEqual(audit?.metadata?.sshUnavailable, [{ domain: "sin-ssh.com", reason: "not_provisioned" }]);
 });
 
 test("GET /v1/sender-pool/credentials/download-all reporta los dominios no listos sin romper el zip", async () => {

@@ -6,6 +6,7 @@ import test from "node:test";
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
 import {
   attachSshAccessToRecord,
+  decryptAllSmtpCredentialsForDownload,
   decryptSmtpCredentialForDownload,
   decryptSshPrivateKey,
   listSmtpCredentialPublicMetadata,
@@ -278,7 +279,7 @@ test("SSH ops access: cifrado en reposo, round-trip y render de la seccion SSH",
   assert.equal(JSON.stringify(metadata).includes("BEGIN PRIVATE KEY"), false);
 });
 
-test("SSH ops access: sin acceso SSH el render lo omite y conserva la nota original", () => {
+test("SSH ops access: sin acceso SSH el render LO DICE en vez de omitir la seccion", () => {
   const record = {
     domain: "no-ssh.com",
     serverSlug: null,
@@ -300,8 +301,104 @@ test("SSH ops access: sin acceso SSH el render lo omite y conserva la nota origi
     password: "pw",
     generatedAt: fixedNow.toISOString()
   });
-  assert.equal(markdown.includes("## Acceso SSH"), false);
+  // Antes la seccion desaparecia entera y el unico rastro era una nota en "Seguridad". Ese
+  // silencio hizo que el operador de bounces leyera el paquete masivo como mal generado. Un
+  // faltante se declara, con el camino para resolverlo.
+  assert.equal(markdown.includes("## Acceso SSH (operaciones)"), true);
+  assert.match(markdown, /NO tiene acceso SSH ops aprovisionado/);
+  assert.match(markdown, /provision-ops-ssh/);
+  assert.equal(markdown.includes("BEGIN PRIVATE KEY"), false);
   assert.match(markdown, /No contiene claves DKIM privadas ni acceso SSH/);
+});
+
+test("SSH ops access: acceso aprovisionado pero clave ilegible — la seccion declara el fallo con host y puerto", () => {
+  const keyPair = generateOpsSshKeyPair("delivrix-ops@fallo.com");
+  const base = {
+    domain: "fallo.com",
+    serverSlug: null,
+    host: "smtp.fallo.com",
+    username: "mailer@fallo.com",
+    status: "configured" as const,
+    ports: { submission: 587 as const, smtps: 465 as const },
+    createdAt: fixedNow.toISOString(),
+    updatedAt: fixedNow.toISOString(),
+    smtpCredentialEncrypted: {
+      algorithm: "aes-256-gcm" as const,
+      iv: "x",
+      authTag: "y",
+      ciphertext: "z"
+    }
+  };
+  const withSsh = attachSshAccessToRecord({
+    record: base,
+    env: { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey },
+    user: "delivrix-ops",
+    host: "203.0.113.99",
+    privateKeyPem: keyPair.privateKeyPem,
+    now: () => fixedNow
+  });
+  const markdown = renderSmtpCredentialMarkdown({
+    record: withSsh,
+    password: "pw",
+    sshPrivateKey: null,
+    sshUnavailableReason: "ssh_decrypt_failed",
+    generatedAt: fixedNow.toISOString()
+  });
+  assert.match(markdown, /## Acceso SSH \(operaciones\)/);
+  assert.match(markdown, /fallo el descifrado/);
+  // Los datos NO secretos del acceso viajan igual: el operador sabe a que maquina refiere.
+  assert.match(markdown, /Host: 203\.0\.113\.99/);
+  assert.match(markdown, /Puerto: 22/);
+  assert.equal(markdown.includes("BEGIN PRIVATE KEY"), false);
+});
+
+test("bulk: una clave SSH corrupta NO tumba la credencial SMTP que si funciona", async () => {
+  // El unico camino que decide esto es decryptAllSmtpCredentialsForDownload: si el descifrado
+  // SSH tirara la entrada entera a failures, el operador perderia una credencial SMTP valida
+  // por culpa de un acceso ops roto — dos problemas donde habia uno.
+  const dir = await mkdtemp(join(tmpdir(), "smtp-bulk-ssh-"));
+  const workspace = new OpenClawWorkspace({ rootDir: join(dir, "workspace") });
+  const env = { CREDENTIAL_ENCRYPTION_KEY: credentialEncryptionKey };
+
+  const material = await prepareSmtpCredential({
+    workspace,
+    env,
+    domain: "clave-rota.com",
+    serverSlug: "mail-prod-3",
+    host: "smtp.clave-rota.com",
+    now: () => fixedNow,
+    passwordFactory: () => "password-sano"
+  });
+  const configured = markSmtpCredentialConfigured(material.record, fixedNow);
+  const keyPair = generateOpsSshKeyPair("delivrix-ops@clave-rota.com");
+  const withSsh = attachSshAccessToRecord({
+    record: configured,
+    env,
+    user: "delivrix-ops",
+    host: "203.0.113.77",
+    privateKeyPem: keyPair.privateKeyPem,
+    now: () => fixedNow
+  });
+  // Se corrompe el ciphertext de la clave SSH; el del password queda intacto.
+  const corrupted = {
+    ...withSsh,
+    sshAccess: {
+      ...withSsh.sshAccess!,
+      privateKeyEncrypted: {
+        ...withSsh.sshAccess!.privateKeyEncrypted,
+        ciphertext: withSsh.sshAccess!.privateKeyEncrypted.ciphertext.slice(0, -4) + "AAAA"
+      }
+    }
+  };
+  await saveSmtpCredentialRecord(workspace, corrupted);
+
+  const { entries, failures } = await decryptAllSmtpCredentialsForDownload({ workspace, env });
+
+  assert.equal(failures.length, 0, "la clave SSH rota no puede mandar el dominio a failures");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.password, "password-sano");
+  assert.equal(entries[0]?.sshPrivateKey, null);
+  assert.equal(entries[0]?.sshUnavailableReason, "ssh_decrypt_failed");
 });
 
 test("SSH ops access: removeSshAccessFromRecord limpia el acceso (revocacion)", () => {
