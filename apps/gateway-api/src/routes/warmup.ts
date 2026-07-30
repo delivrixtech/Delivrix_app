@@ -36,6 +36,14 @@ export interface WarmupStartDependencies {
   workspace: OpenClawWorkspace;
   canvasLiveEvents?: CanvasEmitter;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
+  /**
+   * Kill switch del operador. Fail-closed: si no se puede leer, no se envia.
+   *
+   * Faltaba. `send_real_email` y `configure-smtp` SI lo reciben (main.ts:2245 y :2255), pero
+   * este camino —que tambien pone correo en la calle— no, asi que armar el freno de emergencia
+   * no detenia un seed de warmup. Es el unico envio del sistema que quedaba fuera del freno.
+   */
+  readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
   env?: Record<string, string | undefined>;
   now?: () => Date;
 }
@@ -115,6 +123,15 @@ export async function handleWarmupStartHttp(deps: WarmupStartDependencies): Prom
     maxAgeMs: approvalMaxAgeMs
   });
   const blockers: string[] = [];
+  // Fail-closed: un kill switch armado O ilegible frena el envio. Va PRIMERO en la lista
+  // porque es la razon que el operador tiene que leer antes que cualquier otra.
+  if (deps.readKillSwitch) {
+    try {
+      if ((await deps.readKillSwitch()).enabled) blockers.push("kill_switch_armed");
+    } catch {
+      blockers.push("kill_switch_unreadable");
+    }
+  }
   if (env.WARMUP_ENABLE_SEND !== "true") blockers.push("warmup_send_flag_disabled");
   if (!deps.sshRunner.isConfigured()) blockers.push("warmup_ssh_runner_missing");
   if (!approval) blockers.push("approval_not_found_or_expired");

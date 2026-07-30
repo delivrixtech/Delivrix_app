@@ -220,6 +220,7 @@ test("POST /v1/warmup/start falls back to three env seed inboxes", async () => {
 async function routeHarness(input: {
   sshRunner: SmtpSshRunner;
   canvasState: CanvasLiveStateSnapshot;
+  readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
 }) {
   const dir = await mkdtemp(join(tmpdir(), "warmup-route-"));
   const auditLog = new LocalFileAuditLog(join(dir, "audit-events.jsonl"));
@@ -248,6 +249,7 @@ async function routeHarness(input: {
           }
         },
         readCanvasState: () => input.canvasState,
+        ...(input.readKillSwitch ? { readKillSwitch: input.readKillSwitch } : {}),
         env,
         now: () => fixedNow
       });
@@ -399,4 +401,52 @@ test("iniciar un warmup NO borra las rampas activas del mismo archivo", async ()
   assert.equal(inventory?.ramps?.[0]?.rampId, "ramp-viva");
   assert.equal(inventory?.ramps?.[0]?.state, "running");
   assert.equal(inventory?.rampEvents?.length, 1, "los eventos de la rampa sobrevivieron");
+});
+
+
+// --- el kill switch tiene que cubrir TAMBIEN el envio del warmup ------------
+
+test("kill switch armado bloquea el seed de warmup: era el unico envio fuera del freno", async () => {
+  // send_real_email y configure-smtp SIEMPRE recibieron readKillSwitch (main.ts:2245,:2255).
+  // Este camino —que tambien pone correo en la calle por sendmail dentro del nodo— no, asi que
+  // armar el freno de emergencia no detenia un seed. Encontrado el 2026-07-30 auditando por que
+  // la reputacion de la flota se degrado.
+  const route = await routeHarness({
+    sshRunner: mockRunner({ isConfigured: () => false }),
+    canvasState: canvasState([]),
+    readKillSwitch: () => ({ enabled: true })
+  });
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    seedInboxes: ["a@x.com", "b@x.com", "c@x.com"],
+    actorId: "operator/juanes",
+    approvalToken: "exec-x",
+    taskId: "task-ks"
+  }, { WARMUP_ENABLE_SEND: "true" });
+
+  assert.equal(response.statusCode, 409);
+  assert.ok(
+    response.body.blockers.includes("kill_switch_armed"),
+    `el bloqueo tiene que nombrarse: ${JSON.stringify(response.body.blockers)}`
+  );
+});
+
+test("kill switch ilegible tambien frena: fail-closed, no fail-open", async () => {
+  const route = await routeHarness({
+    sshRunner: mockRunner({ isConfigured: () => false }),
+    canvasState: canvasState([]),
+    readKillSwitch: () => { throw new Error("store caido"); }
+  });
+
+  const response = await route({
+    domain: "delivrix-mail.com",
+    seedInboxes: ["a@x.com", "b@x.com", "c@x.com"],
+    actorId: "operator/juanes",
+    approvalToken: "exec-x",
+    taskId: "task-ks2"
+  }, { WARMUP_ENABLE_SEND: "true" });
+
+  assert.equal(response.statusCode, 409);
+  assert.ok(response.body.blockers.includes("kill_switch_unreadable"));
 });

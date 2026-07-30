@@ -644,6 +644,8 @@ export interface WarmupRampStartHttpDeps {
   sshRunner: SmtpSshRunner;
   workspace: OpenClawWorkspace;
   readCanvasState: () => Promise<CanvasLiveStateSnapshot> | CanvasLiveStateSnapshot;
+  /** Kill switch del operador. Fail-closed: ilegible tambien frena. */
+  readKillSwitch?: () => Promise<{ enabled: boolean }> | { enabled: boolean };
   env?: Record<string, string | undefined>;
   now?: () => Date;
 }
@@ -699,6 +701,14 @@ export async function handleRampStartHttp(deps: WarmupRampStartHttpDeps): Promis
 
   const plan = getWarmupRampPlan(schedule);
   const blockers: string[] = [];
+  // Fail-closed, y PRIMERO: una rampa es el envio mas grande del sistema. Faltaba el freno.
+  if (deps.readKillSwitch) {
+    try {
+      if ((await deps.readKillSwitch()).enabled) blockers.push("kill_switch_armed");
+    } catch {
+      blockers.push("kill_switch_unreadable");
+    }
+  }
   if (env.WARMUP_RAMP_ENABLE !== "true") blockers.push("warmup_ramp_flag_disabled");
   if (env.WARMUP_ENABLE_SEND !== "true") blockers.push("warmup_send_flag_disabled");
   if (!deps.sshRunner.isConfigured()) blockers.push("warmup_ssh_runner_missing");

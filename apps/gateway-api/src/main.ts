@@ -2075,6 +2075,8 @@ const server = createServer(async (request, response) => {
           workspace: openClawWorkspace,
           canvasLiveEvents,
           readCanvasState: () => canvasLiveEvents.snapshot(),
+          // El envio del warmup queda bajo el MISMO freno que send_real_email.
+          readKillSwitch: () => killSwitchStore.get(),
           env: process.env
         });
       } catch (error) {
@@ -2171,6 +2173,7 @@ const server = createServer(async (request, response) => {
           sshRunner: smtpSshRunner,
           workspace: openClawWorkspace,
           readCanvasState: () => canvasLiveEvents.snapshot(),
+          readKillSwitch: () => killSwitchStore.get(),
           env: process.env
         });
       } catch (error) {
