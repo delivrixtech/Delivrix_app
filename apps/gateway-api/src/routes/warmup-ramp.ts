@@ -470,6 +470,11 @@ export class RampScheduler {
       occurredAt: completedAt.toISOString()
     });
 
+    // El freno por rebote NO puede confiar en la salida de sendmail: ese camino solo ve el
+    // encolado y da bounceRate ~0 siempre, asi que el umbral del 5% nunca se alcanza. La señal
+    // valida es getWarmupSignals (mail.log del nodo, via readNodeDeliveryHealth) — si no esta
+    // cableada, este batch corrio SIN freno por rebote y hay que decirlo, no dejar un 0 que se
+    // lee como "no hubo rebotes".
     const autoPauseDecision = this.deps.autoRollbackManager?.shouldAutoPauseWarmup({
       sent: totalSent,
       bounced: totalBounced
@@ -478,6 +483,27 @@ export class RampScheduler {
       reason: "batch_bounce_rate_exceeded",
       bounceRate
     };
+    const bounceSignalMissing = !this.deps.autoRollbackManager && !this.deps.getWarmupSignals;
+    if (bounceSignalMissing) {
+      await this.deps.auditLog.append({
+        actorType: "system",
+        actorId: "system/warmup-ramp",
+        action: "oc.warmup.ramp_paused",
+        targetType: "domain",
+        targetId: ramp.domain,
+        riskLevel: "high",
+        decision: "allow",
+        humanApproved: false,
+        metadata: {
+          rampId,
+          batchIndex,
+          warning: "bounce_signal_unavailable",
+          detail:
+            "El batch corrio sin freno por rebote: sendmail -t solo encola y el rechazo real " +
+            "llega despues al mail.log. bounceRate reportado no es una medicion."
+        }
+      });
+    }
 
     // W4: cerrar el lazo — además del bounce, pausar por quejas-spam o placement
     // (caída en Spam) cuando hay señales externas. Sin getWarmupSignals el breaker
@@ -965,20 +991,30 @@ function renderBatchPayload(input: {
 }
 
 /**
- * Heurística simple para inferir delivery/bounce de la salida de sendmail.
- * sendmail con exit 0 y stderr vacío ⇒ asumimos delivered = attempted.
- * Líneas tipo `... bounced` o `... 5xx` cuentan como bounce.
+ * Lee la salida de `sendmail -t`: dice cuanto se ENCOLO, no cuanto se entrego.
+ *
+ * OJO — esto NO mide rebotes, y no puede. `sendmail -t` entrega el mensaje a la cola local y
+ * sale con codigo 0; el rechazo del destino (550-5.7.1, 554, 452) aparece MINUTOS despues en
+ * /var/log/mail.log, cuando este proceso ya termino. La version anterior buscaba /bounced|5\d{2}/
+ * en esa salida y alimentaba con eso el auto-pause del 5%: como la salida esta vacia, el
+ * bounceRate daba ~0 SIEMPRE y el freno no podia dispararse ni con la flota en llamas.
+ *
+ * El rebote real lo sabe leer `smtp-delivery-health.ts` (readNodeDeliveryHealth), que consulta
+ * el mail.log del nodo. Hasta que este cableado, esta funcion reporta lo unico que le consta
+ * —encolado si o no— y declara que la señal de rebote NO esta disponible, para que nadie lea un
+ * 0 como "no hubo rebotes".
  */
 function parseSendmailOutput(input: {
   stdout: string;
   stderr: string;
   attempted: number;
-}): { sentCount: number; bouncedCount: number } {
+}): { sentCount: number; bouncedCount: number; bounceSignalAvailable: boolean } {
   const combined = `${input.stdout}\n${input.stderr}`;
-  const bounceMatches = combined.match(/\b(bounced|5\d{2})\b/gi) ?? [];
-  const bouncedCount = Math.min(input.attempted, bounceMatches.length);
+  // Un fallo del propio sendmail (no del destino) si es visible aca y si cuenta.
+  const rejectedLocally = (combined.match(/\b(bounced|5\d{2})\b/gi) ?? []).length;
+  const bouncedCount = Math.min(input.attempted, rejectedLocally);
   const sentCount = Math.max(0, input.attempted - bouncedCount);
-  return { sentCount, bouncedCount };
+  return { sentCount, bouncedCount, bounceSignalAvailable: false };
 }
 
 async function findBoundServerSlug(
