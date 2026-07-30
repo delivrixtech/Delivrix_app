@@ -27,15 +27,39 @@ export interface NodeDeliveryStats {
   byProvider: ProviderDeliveryStats[];
 }
 
+/**
+ * La ventana que cubren los numeros de arriba.
+ *
+ * El comando lee `/var/log/mail.log*` — CON asterisco, o sea todo el log rotado, incluidos los
+ * .gz. Los totales son la acumulacion de semanas, no de hoy. Sin declarar esto, un nodo que se
+ * bloqueo hace seis dias y ya se arreglo sigue leyendose `blocked_by_provider` para siempre, y
+ * uno que se bloqueo HOY tras una semana sana se lee `healthy` porque el ratio queda diluido.
+ *
+ * Rotular estos numeros como "hoy" seria fabricar un mock el dia uno de la pantalla nueva.
+ */
+export const DELIVERY_STATS_WINDOW = "log completo retenido (no es de hoy)" as const;
+
 export type DeliveryHealthStatus =
   | "healthy"
   | "degraded"
   | "blocked_by_provider"
+  /**
+   * El correo sale pero no llega: casi todo queda diferido.
+   *
+   * Faltaba, y su ausencia era el peor agujero del modulo. `attempts` era delivered+blocked, o
+   * sea que `deferred` NO existia para el veredicto: un nodo con 920 mensajes atascados y cero
+   * entregas caia en `no_traffic` — "el nodo no registra trafico saliente" — que es exactamente
+   * lo contrario de lo que pasa. Medido en la flota el 2026-07-30: 2.193 diferidos contra 1.504
+   * entregados en un solo dia hacia Gmail.
+   */
+  | "stalled"
   | "no_traffic"
   | "unreadable";
 
 export interface DeliveryHealthVerdict {
   status: DeliveryHealthStatus;
+  /** Que periodo cubren los numeros. Nunca es "hoy". */
+  window: typeof DELIVERY_STATS_WINDOW;
   stats: NodeDeliveryStats;
   /** Proveedores donde el nodo está efectivamente cerrado. */
   blockedProviders: string[];
@@ -57,6 +81,9 @@ export interface DeliveryHealthSshRunner {
 export const BLOCKED_MIN_ATTEMPTS = 20;
 export const BLOCKED_MIN_RATIO = 0.9;
 export const DEGRADED_MIN_RATIO = 0.25;
+/** Arriba de esto, el correo no esta saliendo: la cola se acumula. */
+export const STALLED_MIN_DEFERRED_RATIO = 0.5;
+export const STALLED_MIN_ATTEMPTS = 20;
 
 /**
  * Comando de lectura. Sale SIEMPRE 0 y marca el fin de la salida: un exit distinto de
@@ -155,13 +182,42 @@ export function assessDeliveryHealth(stats: NodeDeliveryStats, selfDomain?: stri
     else if (ratio >= DEGRADED_MIN_RATIO) degradedProviders.push(p.provider);
   }
 
-  if (stats.totals.delivered + stats.totals.blocked === 0) {
-    return { status: "no_traffic", stats, blockedProviders, degradedProviders, detail: "el nodo no registra trafico saliente" };
+  // El diferido cuenta. Sin esto, un nodo que no entrega NADA porque todo se difiere se leia
+  // como "sin trafico" (si no hubo entregas) o como "sano" (si alguna paso), y en los dos casos
+  // el operador no se enteraba de que la cola crecia.
+  const totalAttempts = stats.totals.delivered + stats.totals.blocked + stats.totals.deferred;
+  const deferredRatio = totalAttempts > 0 ? stats.totals.deferred / totalAttempts : 0;
+
+  if (totalAttempts === 0) {
+    return {
+      status: "no_traffic",
+      window: DELIVERY_STATS_WINDOW,
+      stats,
+      blockedProviders,
+      degradedProviders,
+      detail: "el log no registra ni entregas ni rechazos ni diferidos en la ventana leida"
+    };
+  }
+  if (
+    stats.totals.deferred >= STALLED_MIN_ATTEMPTS &&
+    deferredRatio >= STALLED_MIN_DEFERRED_RATIO
+  ) {
+    return {
+      status: "stalled",
+      window: DELIVERY_STATS_WINDOW,
+      stats,
+      blockedProviders,
+      degradedProviders,
+      detail:
+        `${stats.totals.deferred} diferidos de ${totalAttempts} (${Math.round(deferredRatio * 100)}%): ` +
+        "el correo sale del nodo pero no llega; la cola se acumula"
+    };
   }
   if (blockedProviders.length > 0) {
     const worst = stats.byProvider.find((p) => p.provider === blockedProviders[0])!;
     return {
       status: "blocked_by_provider",
+      window: DELIVERY_STATS_WINDOW,
       stats,
       blockedProviders,
       degradedProviders,
@@ -169,9 +225,9 @@ export function assessDeliveryHealth(stats: NodeDeliveryStats, selfDomain?: stri
     };
   }
   if (degradedProviders.length > 0) {
-    return { status: "degraded", stats, blockedProviders, degradedProviders, detail: `rechazo parcial en ${degradedProviders.join(", ")}` };
+    return { status: "degraded", window: DELIVERY_STATS_WINDOW, stats, blockedProviders, degradedProviders, detail: `rechazo parcial en ${degradedProviders.join(", ")}` };
   }
-  return { status: "healthy", stats, blockedProviders, degradedProviders, detail: `${stats.totals.delivered} entregados, ${stats.totals.blocked} rechazados` };
+  return { status: "healthy", window: DELIVERY_STATS_WINDOW, stats, blockedProviders, degradedProviders, detail: `${stats.totals.delivered} entregados, ${stats.totals.blocked} rechazados` };
 }
 
 const EMPTY_STATS: NodeDeliveryStats = { totals: { delivered: 0, blocked: 0, deferred: 0 }, byProvider: [] };
@@ -198,6 +254,7 @@ export async function readNodeDeliveryHealth(input: {
     if (deliveryStatsUnreadable(result.stdout)) {
       return {
         status: "unreadable",
+        window: DELIVERY_STATS_WINDOW,
         stats: EMPTY_STATS,
         blockedProviders: [],
         degradedProviders: [],
@@ -206,12 +263,13 @@ export async function readNodeDeliveryHealth(input: {
     }
     const stats = parseDeliveryStats(result.stdout);
     if (!stats) {
-      return { status: "unreadable", stats: EMPTY_STATS, blockedProviders: [], degradedProviders: [], detail: "salida incompleta (falta ## END)" };
+      return { status: "unreadable", window: DELIVERY_STATS_WINDOW, stats: EMPTY_STATS, blockedProviders: [], degradedProviders: [], detail: "salida incompleta (falta ## END)" };
     }
     return assessDeliveryHealth(stats, input.selfDomain);
   } catch (error) {
     return {
       status: "unreadable",
+      window: DELIVERY_STATS_WINDOW,
       stats: EMPTY_STATS,
       blockedProviders: [],
       degradedProviders: [],

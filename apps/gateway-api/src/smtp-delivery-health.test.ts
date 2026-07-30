@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  DELIVERY_STATS_WINDOW,
   assessDeliveryHealth,
   buildDeliveryStatsCommand,
   parseDeliveryStats,
@@ -133,4 +134,47 @@ test("readNodeDeliveryHealth: propaga serverSlug (el runner elige usuario y sudo
   const verdict = await readNodeDeliveryHealth({ sshRunner, serverSlug: "server60", serverIp: "10.0.0.1" });
   assert.equal(verdict.status, "healthy");
   assert.deepEqual(seen, ["server60"]);
+});
+
+// --- el diferido cuenta: era el agujero mas grande del modulo ---------------
+
+test("un nodo que difiere casi todo NO es 'sin trafico' ni 'sano'", () => {
+  // Medido en la flota el 2026-07-30: 2.193 diferidos contra 1.504 entregados hacia Gmail en un
+  // solo dia, y ~14.000 mensajes atascados. `attempts` era delivered+blocked, asi que deferred
+  // no existia para el veredicto: un nodo con la cola llena y cero entregas caia en `no_traffic`
+  // — "el nodo no registra trafico saliente" — que es lo contrario exacto de lo que pasa.
+  const verdict = assessDeliveryHealth({
+    totals: { delivered: 0, blocked: 0, deferred: 920 },
+    byProvider: [{ provider: "comcast.net", delivered: 0, blocked: 0, deferred: 920 }]
+  });
+
+  assert.equal(verdict.status, "stalled");
+  assert.match(verdict.detail, /920 diferidos/);
+  assert.match(verdict.detail, /la cola se acumula/);
+});
+
+test("no_traffic queda SOLO para el log realmente vacio", () => {
+  const verdict = assessDeliveryHealth({
+    totals: { delivered: 0, blocked: 0, deferred: 0 },
+    byProvider: []
+  });
+  assert.equal(verdict.status, "no_traffic");
+  assert.match(verdict.detail, /ni diferidos/);
+});
+
+test("algo de diferido con entregas sanas NO dispara stalled", () => {
+  // 30% diferido es normal en correo: reintentos transitorios. El freno es para el 50%+.
+  const verdict = assessDeliveryHealth({
+    totals: { delivered: 700, blocked: 0, deferred: 300 },
+    byProvider: [{ provider: "gmail.com", delivered: 700, blocked: 0, deferred: 300 }]
+  });
+  assert.equal(verdict.status, "healthy");
+});
+
+test("el veredicto declara SIEMPRE que ventana cubre: nunca es 'hoy'", () => {
+  // El comando lee /var/log/mail.log* — todo el log rotado. Rotularlo "hoy" en la pantalla
+  // seria fabricar un mock nuevo.
+  const verdict = assessDeliveryHealth({ totals: { delivered: 10, blocked: 0, deferred: 0 }, byProvider: [] });
+  assert.equal(verdict.window, DELIVERY_STATS_WINDOW);
+  assert.match(verdict.window, /no es de hoy/);
 });
