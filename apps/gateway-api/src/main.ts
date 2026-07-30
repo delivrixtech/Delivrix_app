@@ -301,7 +301,7 @@ import {
 import { AgentEventBus } from "./agents/agent-event-bus.ts";
 import { AgentSessionManager } from "./agents/agent-session-manager.ts";
 import { setSystemPromptFallbackReporter } from "./agents/bedrock-agent-session.ts";
-import { createAgentModelClientFactory } from "./agents/agent-model-backend.ts";
+import { createAgentModelClientFactory, createAgentModelPreflight } from "./agents/agent-model-backend.ts";
 import { diagnosticToolSpecsForRole } from "./agents/agent-tool-specs.ts";
 import { warmupDiagnosticToolExecutor } from "./agents/warmup-tool-executor.ts";
 import { warmupAuditDefinitionForRole } from "./agents/warmup-audit-run.ts";
@@ -934,25 +934,35 @@ const warmupAuditToolProcessor = createHttpToolUseProcessor({
   readBoundaryToken: sensitiveReadBoundaryToken,
   logger: gatewayRuntimeLog
 });
+const warmupAuditModelClientFactory = createAgentModelClientFactory({
+  env: process.env,
+  onBackendResolved: ({ role, resolved, modelId }) => {
+    void gatewayRuntimeLog.info(
+      "agents.backend_resolved",
+      `El agente ${role} corre en ${resolved.backend} (${modelId}).`,
+      { role, backend: resolved.backend, source: resolved.source, modelId, invalidValue: resolved.invalidValue }
+    );
+  },
+  onDegradation: (notice) => {
+    void gatewayRuntimeLog.warn(
+      "agents.model_degradation",
+      `El modelo del agente degrado la respuesta: ${notice.detail}`,
+      { kind: notice.kind, modelId: notice.modelId }
+    );
+  }
+});
+
+/**
+ * Chequeo de vida del cerebro antes de despachar la flota. UNA llamada evita 59.
+ *
+ * Caso real del 2026-07-30: el modelo local se descargo y el abanico molio 49 dominios
+ * repitiendo el mismo HTTP 400 por cinco minutos, sin producir un diagnostico.
+ */
+const warmupAuditPreflight = createAgentModelPreflight(warmupAuditModelClientFactory);
+
 const warmupAuditSessionManager = new AgentSessionManager({
   eventBus: new AgentEventBus({ actorId: "supervisor/warmup-audit" }),
-  modelClientFactory: createAgentModelClientFactory({
-    env: process.env,
-    onBackendResolved: ({ role, resolved, modelId }) => {
-      void gatewayRuntimeLog.info(
-        "agents.backend_resolved",
-        `El agente ${role} corre en ${resolved.backend} (${modelId}).`,
-        { role, backend: resolved.backend, source: resolved.source, modelId, invalidValue: resolved.invalidValue }
-      );
-    },
-    onDegradation: (notice) => {
-      void gatewayRuntimeLog.warn(
-        "agents.model_degradation",
-        `El modelo del agente degrado la respuesta: ${notice.detail}`,
-        { kind: notice.kind, modelId: notice.modelId }
-      );
-    }
-  }),
+  modelClientFactory: warmupAuditModelClientFactory,
   toolExecutorFactory: () => warmupDiagnosticToolExecutor(warmupAuditToolProcessor),
   // El default de la sesion es 8 y el diagnostico usa 5 tools: si el modelo las pide de a una y
   // comenta entre medio son 6 vueltas, y con un reintento 8. Al pasarse, la sesion se reporta
@@ -2316,6 +2326,7 @@ const server = createServer(async (request, response) => {
         auditLog,
         readBoundaryToken: sensitiveReadBoundaryToken,
         readKillSwitch: () => killSwitchStore.get(),
+        preflight: () => warmupAuditPreflight("warmup"),
         env: process.env,
         now: () => resolveGatewayNow()
       });

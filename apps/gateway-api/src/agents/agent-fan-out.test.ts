@@ -302,3 +302,87 @@ test("lo que gasto una sesion que tiro no se pierde: Bedrock ya lo facturo", asy
   });
   assert.equal(summary.results[0]?.sessionId, "sess-a.com");
 });
+
+// --- cortacircuitos: una falla de infraestructura no se muele 59 veces ------
+
+test("cinco fallas consecutivas iguales cortan el abanico: el resto queda cancelled, no failed", async () => {
+  // Caso real del 2026-07-30: el modelo local se descargo a mitad de corrida y los 49 dominios
+  // restantes devolvieron el mismo HTTP 400 uno por uno. Cinco minutos, cero diagnosticos, y 49
+  // items marcados como si los dominios estuvieran rotos.
+  const manager = {
+    async invokeAgent(_role: string, invoke: AgentInvokeInput) {
+      throw new Error('El modelo local devolvio HTTP 400: {"error":{"message":"No models loaded"}}');
+    }
+  } as unknown as AgentSessionManager;
+
+  const summary = await runFanOut({
+    sessionManager: manager,
+    role: "warmup",
+    items: Array.from({ length: 20 }, (_, i) => `d${i}.com`),
+    buildInput,
+    invokedByRole: "supervisor",
+    concurrency: 1
+  });
+
+  assert.equal(summary.aborted, true);
+  assert.match(summary.circuitReason ?? "", /fan_out_circuit_open/);
+  // 5 se despacharon y fallaron; los 15 restantes no se tocaron.
+  assert.equal(summary.failed, 5);
+  assert.equal(summary.cancelled, 15);
+  // La distincion importa: cancelled = nadie los miro, failed = se probaron y fallaron.
+  assert.equal(summary.results[19]?.cancelled, true);
+  assert.equal(summary.results[19]?.error, undefined);
+});
+
+test("fallas de causas DISTINTAS no abren el cortacircuitos", async () => {
+  // Nodos puntualmente rotos son el caso normal del diagnostico: no pueden cortar la corrida.
+  let n = 0;
+  const manager = {
+    async invokeAgent() {
+      n += 1;
+      throw new Error(`falla distinta numero ${n}: causa_${n}`);
+    }
+  } as unknown as AgentSessionManager;
+
+  const summary = await runFanOut({
+    sessionManager: manager,
+    role: "warmup",
+    items: Array.from({ length: 12 }, (_, i) => `d${i}.com`),
+    buildInput,
+    invokedByRole: "supervisor",
+    concurrency: 1
+  });
+
+  assert.equal(summary.aborted, false);
+  assert.equal(summary.circuitReason, undefined);
+  assert.equal(summary.failed, 12, "todos se intentaron");
+});
+
+test("un exito en el medio resetea la racha", async () => {
+  let n = 0;
+  const manager = {
+    async invokeAgent(_role: string, invoke: AgentInvokeInput) {
+      n += 1;
+      if (n === 4) {
+        return {
+          sessionId: "s",
+          result: { status: "completed", resultSummary: "v", inputTokens: 1, outputTokens: 1, estimatedCostUsd: 0, pricingKnown: true, toolCallCount: 4 }
+        };
+      }
+      throw new Error("mismo error siempre: infra");
+    }
+  } as unknown as AgentSessionManager;
+
+  const summary = await runFanOut({
+    sessionManager: manager,
+    role: "warmup",
+    items: Array.from({ length: 8 }, (_, i) => `d${i}.com`),
+    buildInput,
+    invokedByRole: "supervisor",
+    concurrency: 1
+  });
+
+  // 3 fallas, 1 ok (resetea), y recien a la 5ta falla seguida corta.
+  assert.equal(summary.ok, 1);
+  assert.equal(summary.aborted, false, "el ok del medio evito el corte");
+});

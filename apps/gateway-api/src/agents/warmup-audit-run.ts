@@ -27,6 +27,14 @@ export interface WarmupAuditRunInput {
   abortSignal?: AbortSignal;
   /** Frena el despacho del proximo dominio. Default: el `isPaused` del manager. */
   shouldAbort?: () => boolean;
+  /**
+   * Chequea que el modelo responda ANTES de despachar la flota.
+   *
+   * Una llamada barata evita 59. Caso real: el modelo local se descargo y la corrida molio 49
+   * dominios repitiendo el mismo HTTP 400 — cinco minutos y ningun diagnostico. Con un backend
+   * pago, ademas, se paga cada intento.
+   */
+  preflight?: () => Promise<void>;
   now?: () => Date;
 }
 
@@ -55,6 +63,13 @@ export interface WarmupAuditReport {
   failed: number;
   cancelled: number;
   aborted: boolean;
+  /**
+   * El abanico se corto SOLO por una racha de fallas identicas.
+   *
+   * Distinto de `aborted` por kill switch: aca nadie lo paro, se paro. Los dominios que quedaron
+   * afuera salen `cancelled` — no son dominios rotos, son dominios que nadie miro.
+   */
+  circuitReason?: string;
   peakInFlight: number;
   /** Dominios cuyo veredicto se corto en max_tokens: cuentan como ok pero no concluyeron. */
   truncated: number;
@@ -125,6 +140,9 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
     ...(input.domains && input.domains.length > 0 ? { onlyDomains: input.domains } : {})
   });
 
+  // El preflight va DESPUES de cargar la flota (que es local y gratis) y ANTES de despachar.
+  if (input.preflight) await input.preflight();
+
   const concurrency = input.concurrency ?? DEFAULT_FAN_OUT_CONCURRENCY;
 
   const summary: FanOutSummary<FleetDomain> = await runFanOut({
@@ -181,6 +199,7 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
     failed: items.filter((item) => item.status === "failed" || item.status === "exhausted").length,
     cancelled: items.filter((item) => item.status === "cancelled").length,
     aborted: summary.aborted,
+    ...(summary.circuitReason ? { circuitReason: summary.circuitReason } : {}),
     peakInFlight: summary.peakInFlight,
     truncated: summary.results.filter((entry) => entry.result?.truncated).length,
     sinEvidencia: items.filter((item) => item.status === "sin_evidencia").length,

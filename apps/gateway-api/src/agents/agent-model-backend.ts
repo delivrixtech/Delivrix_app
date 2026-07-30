@@ -9,7 +9,7 @@
 // a gastar plata ni a abrir SSH contra la flota por su cuenta.
 
 import type { AgentRole } from "../../../../packages/domain/src/index.ts";
-import { MockAgentModelClient, type AgentModelClient } from "./bedrock-agent-session.ts";
+import { MOCK_AGENT_MODEL_ID, MockAgentModelClient, type AgentModelClient } from "./bedrock-agent-session.ts";
 import { createBedrockAgentModelClient, type AgentModelDegradation } from "./bedrock-agent-model-client.ts";
 import { createLocalOpenAiAgentModelClient } from "./local-openai-agent-model-client.ts";
 import { RehearsalAgentModelClient } from "./rehearsal-agent-model-client.ts";
@@ -120,3 +120,25 @@ export function createAgentModelClientFactory(
 }
 
 const REHEARSAL_ID = "rehearsal/sin-modelo";
+
+/**
+ * Chequeo de vida del cerebro: UNA llamada minima antes de despachar la flota.
+ *
+ * No alcanza con preguntarle al servidor que modelos tiene. `/v1/models` de LM Studio lista los
+ * modelos DESCARGADOS, no los CARGADOS: devolvio 200 con el modelo en la lista mientras cada
+ * inferencia fallaba con "No models loaded". El unico chequeo que no miente es inferir.
+ */
+export function createAgentModelPreflight(
+  factory: (role: AgentRole) => AgentModelClient
+): (role: AgentRole) => Promise<void> {
+  return async (role: AgentRole): Promise<void> => {
+    const client = factory(role);
+    // El mock y el ensayo no tienen backend que chequear.
+    if (client.modelId === MOCK_AGENT_MODEL_ID || client.modelId === REHEARSAL_ID) return;
+    await client.invoke({
+      system: "Chequeo de vida. Responde una sola palabra.",
+      messages: [{ role: "user", content: "ok" }],
+      tools: []
+    });
+  };
+}

@@ -35,6 +35,13 @@ export interface WarmupAuditRouteDeps {
   env?: Record<string, string | undefined>;
   /** Cada cuanto se relee el kill switch mientras la corrida esta en vuelo. Default 5s. */
   killSwitchPollMs?: number;
+  /**
+   * Chequeo de vida del modelo antes de despachar la flota. UNA llamada evita 59.
+   *
+   * Caso real: el modelo local se descargo entre corridas y el abanico molio 49 dominios
+   * repitiendo el mismo HTTP 400 durante cinco minutos, sin producir un solo diagnostico.
+   */
+  preflight?: () => Promise<void>;
   now?: () => Date;
 }
 
@@ -162,6 +169,7 @@ export async function handleWarmupAuditHttp(deps: WarmupAuditRouteDeps): Promise
       auditLog: deps.auditLog,
       ...(domains ? { domains } : {}),
       concurrency,
+      ...(deps.preflight ? { preflight: deps.preflight } : {}),
       abortSignal: abortController.signal,
       // No alcanza con cortar lo que esta en vuelo: tambien hay que dejar de despachar. El
       // default mira `isPaused` del manager, que en el abanico nadie pone en true.
@@ -169,6 +177,17 @@ export async function handleWarmupAuditHttp(deps: WarmupAuditRouteDeps): Promise
       ...(deps.now ? { now: deps.now } : {})
     });
   } catch (error) {
+    // El preflight fallando es distinto de la corrida fallando: el cerebro no esta disponible,
+    // no hay nada roto en la flota. 503 y el motivo textual, para que el operador sepa que
+    // arreglar (cargar el modelo) en vez de buscar el problema en los nodos.
+    const code = (error as { code?: string }).code;
+    if (code === "agent_local_unreachable" || code === "agent_local_http_error" || code === "agent_local_response_malformed") {
+      json(deps.response, 503, {
+        error: "agent_model_unavailable",
+        message: error instanceof Error ? error.message.slice(0, 300) : "unknown"
+      });
+      return;
+    }
     // El detalle al log del gateway; al cliente solo el codigo.
     json(deps.response, 500, {
       error: "warmup_audit_failed",
@@ -211,6 +230,7 @@ export async function handleWarmupAuditHttp(deps: WarmupAuditRouteDeps): Promise
       paused: report.paused,
       // Lo que la corrida NO pudo mirar, para que el alcance quede auditado y no supuesto.
       credentialedWithoutBinding: report.credentialedWithoutBinding,
+      ...(report.circuitReason ? { circuitReason: report.circuitReason } : {}),
       // Los dominios con inventario contradictorio, para que el operador los reconcilie.
       conflictDomains: report.items.filter((i) => i.bindingConflict).map((i) => i.domain)
     }

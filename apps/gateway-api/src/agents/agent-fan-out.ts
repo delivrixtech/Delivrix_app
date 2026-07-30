@@ -63,6 +63,13 @@ export interface FanOutSummary<T> {
   cancelled: number;
   /** true si el abanico se corto antes de despachar todos los items. */
   aborted: boolean;
+  /**
+   * Por que se abrio el cortacircuitos, si se abrio.
+   *
+   * Distinto de `aborted` por kill switch: aca el abanico se corto SOLO, porque la misma falla
+   * se repitio. El operador tiene que poder leer la diferencia.
+   */
+  circuitReason?: string;
   /** Concurrencia maxima efectivamente observada. Sirve para verificar el semaforo. */
   peakInFlight: number;
 }
@@ -94,7 +101,22 @@ export interface RunFanOutInput<T> {
   now?: () => Date;
   /** Se llama al cerrar cada item. Para progreso en vivo sin esperar al final. */
   onItemSettled?: (result: FanOutItemResult<T>) => void;
+  /**
+   * Corta el abanico despues de N fallas consecutivas con el MISMO error.
+   *
+   * Existe por un caso real: el modelo local se descargo a mitad de corrida y los 49 dominios
+   * restantes devolvieron el mismo HTTP 400 uno por uno. Moler 49 items para repetir 49 veces
+   * "no models loaded" no informa nada que no dijera el primero, y con un backend pago cada
+   * repeticion cuesta. Los items que no se despachan quedan `cancelled`, no `failed`: no son
+   * dominios rotos, son dominios que nadie miro.
+   *
+   * 0 lo desactiva. Default: 5.
+   */
+  abortAfterConsecutiveFailures?: number;
 }
+
+/** Alcanza para distinguir un nodo puntualmente roto de una falla de infraestructura. */
+export const DEFAULT_ABORT_AFTER_CONSECUTIVE_FAILURES = 5;
 
 /**
  * Corre un agente por item con concurrencia acotada.
@@ -113,10 +135,15 @@ export async function runFanOut<T>(input: RunFanOutInput<T>): Promise<FanOutSumm
   const shouldAbort =
     input.shouldAbort ?? (() => Boolean((input.sessionManager as { isPaused?: boolean }).isPaused));
 
+  const abortAfter = input.abortAfterConsecutiveFailures ?? DEFAULT_ABORT_AFTER_CONSECUTIVE_FAILURES;
   let cursor = 0;
   let inFlight = 0;
   let peakInFlight = 0;
   let aborted = false;
+  // Racha de fallas identicas: delata una falla de infraestructura, no de nodos.
+  let consecutiveFailures = 0;
+  let lastFailureKey: string | undefined;
+  let circuitReason: string | undefined;
 
   async function worker(): Promise<void> {
     for (;;) {
@@ -126,7 +153,7 @@ export async function runFanOut<T>(input: RunFanOutInput<T>): Promise<FanOutSumm
 
       // Se chequea ANTES de despachar, no despues: el objetivo del kill switch es que no
       // arranque una sesion mas, no enterarse de que arrancaron.
-      if (shouldAbort()) {
+      if (shouldAbort() || circuitReason !== undefined) {
         aborted = true;
         const at = now().toISOString();
         const settled: FanOutItemResult<T> = { item, cancelled: true, startedAt: at, finishedAt: at };
@@ -171,6 +198,23 @@ export async function runFanOut<T>(input: RunFanOutInput<T>): Promise<FanOutSumm
         inFlight -= 1;
       }
 
+      // Contabilidad del corte por racha. Se agrupa por el PREFIJO del error para que dos
+      // fallas de la misma causa cuenten juntas aunque el mensaje traiga un id distinto.
+      if (settled.error !== undefined) {
+        const key = settled.error.slice(0, 60);
+        consecutiveFailures = key === lastFailureKey ? consecutiveFailures + 1 : 1;
+        lastFailureKey = key;
+        if (abortAfter > 0 && consecutiveFailures >= abortAfter) {
+          aborted = true;
+          circuitReason =
+            `fan_out_circuit_open: ${consecutiveFailures} fallas consecutivas con el mismo error ` +
+            `("${key}"). Parece una falla de infraestructura y no de los items; el resto queda sin despachar.`;
+        }
+      } else {
+        consecutiveFailures = 0;
+        lastFailureKey = undefined;
+      }
+
       results[index] = settled;
       input.onItemSettled?.(settled);
     }
@@ -208,7 +252,8 @@ export async function runFanOut<T>(input: RunFanOutInput<T>): Promise<FanOutSumm
     ).length,
     cancelled: settledResults.filter((entry) => entry.cancelled === true).length,
     aborted,
-    peakInFlight
+    peakInFlight,
+    ...(circuitReason ? { circuitReason } : {})
   };
 }
 

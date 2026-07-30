@@ -27,6 +27,7 @@ import {
   type AgentModelTurn
 } from "./bedrock-agent-session.ts";
 import type { BedrockToolSpec } from "../openclaw-tools-builder.ts";
+import type { AgentModelDegradation } from "./bedrock-agent-model-client.ts";
 
 /**
  * Un modelo local no factura.
@@ -72,7 +73,7 @@ export interface LocalOpenAiClientOptions {
   callBudgetMs?: number;
   temperature?: number;
   fetchImpl?: typeof fetch;
-  onDegradation?: (notice: { kind: string; detail: string; modelId: string }) => void;
+  onDegradation?: (notice: AgentModelDegradation) => void;
 }
 
 /**
@@ -172,7 +173,7 @@ export class LocalOpenAiAgentModelClient implements AgentModelClient {
   private readonly callBudgetMs: number;
   private readonly temperature: number;
   private readonly fetchImpl: typeof fetch;
-  private readonly onDegradation: (notice: { kind: string; detail: string; modelId: string }) => void;
+  private readonly onDegradation: (notice: AgentModelDegradation) => void;
 
   constructor(options: LocalOpenAiClientOptions) {
     this.modelId = options.modelId;
@@ -327,7 +328,8 @@ export class LocalOpenAiAgentModelClient implements AgentModelClient {
 export interface CreateLocalClientInput {
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
-  onDegradation?: (notice: { kind: string; detail: string; modelId: string }) => void;
+  /** Mismo tipo que el cliente de Bedrock, para que la factory por rol pase el mismo callback. */
+  onDegradation?: (notice: AgentModelDegradation) => void;
 }
 
 export function createLocalOpenAiAgentModelClient(

@@ -18,6 +18,7 @@ import {
   parseDiagnosticFacts
 } from "./rehearsal-agent-model-client.ts";
 import { MockAgentModelClient } from "./bedrock-agent-session.ts";
+import type { BedrockToolSpec } from "../openclaw-tools-builder.ts";
 import { buildDiagnosticInstructions } from "./warmup-fleet-source.ts";
 
 // --- seleccion de backend --------------------------------------------------
@@ -170,12 +171,12 @@ test("argsForTool: si falta un requerido devuelve null en vez de completar con c
 
 // --- el ensayo recorre de verdad -------------------------------------------
 
-const DIAGNOSTIC_TOOLS = [
-  { name: "read_smtp_reachability", description: "", input_schema: { type: "object", properties: { serverSlug: {}, serverIp: {} }, required: ["serverSlug", "serverIp"] } },
-  { name: "read_delivery_reason", description: "", input_schema: { type: "object", properties: { serverSlug: {}, serverIp: {}, messageId: {} }, required: ["serverSlug", "serverIp", "messageId"] } },
-  { name: "read_dkim_status", description: "", input_schema: { type: "object", properties: { domain: {}, expectedSelector: {} }, required: ["domain"] } },
-  { name: "read_mxtoolbox_health", description: "", input_schema: { type: "object", properties: { target: {}, type: {} }, required: ["target"] } },
-  { name: "inspect_smtp_inventory", description: "", input_schema: { type: "object", properties: { domain: {}, serverSlug: {}, status: {} }, required: [] } }
+const DIAGNOSTIC_TOOLS: BedrockToolSpec[] = [
+  { name: "read_smtp_reachability", description: "", input_schema: { type: "object" as const, properties: { serverSlug: {}, serverIp: {} }, required: ["serverSlug", "serverIp"] } },
+  { name: "read_delivery_reason", description: "", input_schema: { type: "object" as const, properties: { serverSlug: {}, serverIp: {}, messageId: {} }, required: ["serverSlug", "serverIp", "messageId"] } },
+  { name: "read_dkim_status", description: "", input_schema: { type: "object" as const, properties: { domain: {}, expectedSelector: {} }, required: ["domain"] } },
+  { name: "read_mxtoolbox_health", description: "", input_schema: { type: "object" as const, properties: { target: {}, type: {} }, required: ["target"] } },
+  { name: "inspect_smtp_inventory", description: "", input_schema: { type: "object" as const, properties: { domain: {}, serverSlug: {}, status: {} }, required: [] } }
 ];
 
 async function walk(client: RehearsalAgentModelClient, instructions: string): Promise<{ names: string[]; finalText: string }> {
