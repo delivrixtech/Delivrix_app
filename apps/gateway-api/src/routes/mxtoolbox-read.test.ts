@@ -234,3 +234,42 @@ function createRoute(input: { url: string; token?: string }) {
     body: () => JSON.parse(chunks.join("") || "{}")
   };
 }
+
+// --- el escaneo diario tiene que mirar la FLOTA, no los nodos de ejemplo ----
+
+test("daily report escanea la flota real y NO el registry de ejemplo", async () => {
+  // El sensor apuntaba a runtime/sender-nodes.json: 11 entradas con IPs 203.0.113.x (TEST-NET-3,
+  // RFC 5737) y hosts *.example.local. Dijo "limpio" 174 veces con 0 detecciones mientras 12 IPs
+  // reales de la flota estaban en listas negras. No fallaba el chequeo: miraba otra cosa.
+  const route = createRoute({ url: "/v1/mxtoolbox/daily-report", token: "secret" });
+
+  await handleReadMxtoolboxDailyReport(route.request, route.response, {
+    adapter: mockAdapter(),
+    readBoundaryToken: "secret",
+    getFleetTargets: async () => ["217.216.51.187", "147.93.186.66"],
+    // El registry viejo sigue conectado; la flota le tiene que ganar.
+    getSenderNodes: async () => [senderNode("ejemplo", "active", "203.0.113.10", "n1.example.local")]
+  });
+
+  const body = route.body();
+  const targets = body.results.map((r: MxtoolboxHealthSummary) => r.target).sort();
+  assert.deepEqual(targets, ["147.93.186.66", "217.216.51.187"]);
+  assert.equal(
+    targets.some((t: string) => t.startsWith("203.0.113.") || t.endsWith(".example.local")),
+    false,
+    "no puede escanear IPs de documentacion"
+  );
+});
+
+test("sin flota disponible cae al registry: el escaneo no queda mudo", async () => {
+  const route = createRoute({ url: "/v1/mxtoolbox/daily-report", token: "secret" });
+
+  await handleReadMxtoolboxDailyReport(route.request, route.response, {
+    adapter: mockAdapter(),
+    readBoundaryToken: "secret",
+    getFleetTargets: async () => [],
+    getSenderNodes: async () => [senderNode("a", "active", "8.8.8.8", "mail.example.com")]
+  });
+
+  assert.equal(route.body().totalTargets, 2);
+});

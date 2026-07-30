@@ -2902,6 +2902,18 @@ const server = createServer(async (request, response) => {
         adapter: mxtoolboxAdapter,
         canvasLiveEvents,
         emitAudit: appendMxtoolboxAudit,
+        // La flota REAL, del mismo inventario que usa el abanico de diagnostico. Antes solo
+        // estaba senderNodeRegistry, que son 11 nodos de ejemplo con IPs de documentacion.
+        getFleetTargets: async () => {
+          const inventory = await openClawWorkspace
+            .readInventoryJson<{ bindings?: Array<{ serverIp?: unknown }> }>("domains.json")
+            .catch(() => null);
+          return [...new Set(
+            (inventory?.bindings ?? [])
+              .map((binding) => (typeof binding.serverIp === "string" ? binding.serverIp.trim() : ""))
+              .filter((ip) => ip.length > 0)
+          )];
+        },
         getSenderNodes: () => senderNodeRegistry.list(),
         now: () => new Date(),
         readBoundaryToken: sensitiveReadBoundaryToken,

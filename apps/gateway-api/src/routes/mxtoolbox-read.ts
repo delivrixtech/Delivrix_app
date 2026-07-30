@@ -32,6 +32,16 @@ export interface ReadMxtoolboxDeps extends SensitiveReadAuthDeps {
 
 export interface ReadMxtoolboxDailyReportDeps extends ReadMxtoolboxDeps {
   canvasLiveEvents?: CanvasLiveEvents;
+  /**
+   * IPs de la flota REAL a escanear. Es la fuente PRIMARIA.
+   *
+   * `getSenderNodes` apuntaba a runtime/sender-nodes.json, que son 11 entradas de ejemplo con
+   * IPs 203.0.113.x (TEST-NET-3, RFC 5737) y hosts *.example.local. El escaneo diario dijo
+   * "limpio" 174 veces con 0 detecciones mientras 12 IPs reales de la flota estaban listadas:
+   * el sensor no miraba la flota. Un monitor que mide lo que no importa es peor que no tenerlo,
+   * porque produce confianza.
+   */
+  getFleetTargets?: () => Promise<string[]>;
   getSenderNodes?: () => Promise<SenderNode[]>;
   recordScratch?: (report: MxtoolboxDailyReportResponse) => Promise<void>;
 }
@@ -57,7 +67,14 @@ export interface MxtoolboxDailyReportResponse {
 }
 
 const defaultCommands = ["blacklist"] as const;
-const maxDailyTargets = 50;
+/**
+ * Tope de objetivos por corrida diaria.
+ *
+ * 80 y no 50: la flota real son 59 IPs y el tope anterior habria dejado 9 sin escanear EN
+ * SILENCIO — justo el modo de falla que este arreglo viene a cerrar. Si algun dia la flota
+ * supera este numero, el truncado tiene que dejar de ser invisible.
+ */
+const maxDailyTargets = 80;
 const maxDailyCommands = 8;
 
 export async function handleReadMxtoolbox(
@@ -173,6 +190,15 @@ async function resolveTargets(
     .map((result) => result.value);
   if (explicit.length > 0) {
     return dedupe(explicit).slice(0, maxDailyTargets);
+  }
+
+  // Flota real primero. El registry de sender-nodes queda como respaldo historico.
+  const fleet = (await deps.getFleetTargets?.().catch(() => []) ?? [])
+    .map((value) => normalizeTargetParam(value))
+    .filter((result): result is { ok: true; value: string } => result.ok)
+    .map((result) => result.value);
+  if (fleet.length > 0) {
+    return dedupe(fleet).slice(0, maxDailyTargets);
   }
 
   const senderNodes = await deps.getSenderNodes?.().catch(() => []) ?? [];
