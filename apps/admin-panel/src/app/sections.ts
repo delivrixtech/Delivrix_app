@@ -43,6 +43,7 @@ export type LeafId =
   | "canvas"
   | "domains"
   | "sender-pool"
+  | "bandejas"
   | "warmup"
   | "clusters"
   | "mxtoolbox"
@@ -132,6 +133,9 @@ export const navSectionsById: Record<NavSectionId, NavDescriptor> = Object.fromE
 export const envioTabs: TabDescriptor[] = [
   { id: "sender-pool", label: "Sender Pool" },
   { id: "domains", label: "Dominios" },
+  // El inventario de la fabrica: una tabla, una fila por bandeja, y ningun numero que no venga
+  // de una medicion. Va antes de Warmup a proposito — es la pantalla de operacion diaria.
+  { id: "bandejas", label: "Bandejas" },
   { id: "warmup", label: "Warmup" },
   { id: "clusters", label: "Nodos" },
   { id: "mxtoolbox", label: "Reputación" }

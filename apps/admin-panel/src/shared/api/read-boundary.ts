@@ -23,6 +23,7 @@ export const READ_ENDPOINTS = Object.freeze({
   mxtoolboxHealth: "/v1/mxtoolbox/health",
   auditEvents: "/v1/audit-events",
   senderPoolStatus: "/v1/sender-pool/status",
+  senderPoolInventory: "/v1/sender-pool/inventory",
   senderPoolCredentialsExport: "/v1/sender-pool/credentials/export",
   senderPoolCredentialsBulkDownload: "/v1/sender-pool/credentials/download-all",
   senderNodes: "/v1/sender-nodes",
