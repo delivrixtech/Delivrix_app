@@ -66,12 +66,24 @@ export const DEGRADED_MIN_RATIO = 0.25;
 export function buildDeliveryStatsCommand(): string {
   return [
     "set -u",
+    // El lector del log, resuelto en el nodo.
+    //
+    // /var/log/mail.log es `-rw-r----- syslog:adm`: el usuario ops NO lo lee sin sudo, y el
+    // runner usa root en Contabo pero delivrixops en Webdock. Sin esto el comando salia con
+    // exit 0 y CERO lineas, que el parser leia como "no hay trafico" — en un nodo que manda
+    // 1.300 mensajes/dia. Es el mismo modo de falla que ya aparecio tres veces esta semana:
+    // el sensor no fallaba, miraba donde no habia nada.
+    //
+    // Si no se puede leer de ninguna forma, se dice: ## NOACCESS. Nunca vacio.
+    'if sudo -n test -r /var/log/mail.log 2>/dev/null; then READ="sudo -n zcat -f";' +
+      ' elif test -r /var/log/mail.log; then READ="zcat -f";' +
+      ' else echo "## NOACCESS"; READ=""; fi',
     "echo '## DELIVERED'",
-    'zcat -f /var/log/mail.log* 2>/dev/null | grep "status=sent" | grep -oE "to=<[^>]*@[^>]*>" | sed -E "s/.*@([^>]*)>/\\1/" | tr "A-Z" "a-z" | sort | uniq -c | sort -rn || true',
+    '[ -n "$READ" ] && $READ /var/log/mail.log* 2>/dev/null | grep "status=sent" | grep -oE "to=<[^>]*@[^>]*>" | sed -E "s/.*@([^>]*)>/\\1/" | tr "A-Z" "a-z" | sort | uniq -c | sort -rn || true',
     "echo '## BLOCKED'",
-    'zcat -f /var/log/mail.log* 2>/dev/null | grep "status=bounced" | grep -oE "to=<[^>]*@[^>]*>" | sed -E "s/.*@([^>]*)>/\\1/" | tr "A-Z" "a-z" | sort | uniq -c | sort -rn || true',
+    '[ -n "$READ" ] && $READ /var/log/mail.log* 2>/dev/null | grep "status=bounced" | grep -oE "to=<[^>]*@[^>]*>" | sed -E "s/.*@([^>]*)>/\\1/" | tr "A-Z" "a-z" | sort | uniq -c | sort -rn || true',
     "echo '## DEFERRED'",
-    'zcat -f /var/log/mail.log* 2>/dev/null | grep "status=deferred" | grep -oE "to=<[^>]*@[^>]*>" | sed -E "s/.*@([^>]*)>/\\1/" | tr "A-Z" "a-z" | sort | uniq -c | sort -rn || true',
+    '[ -n "$READ" ] && $READ /var/log/mail.log* 2>/dev/null | grep "status=deferred" | grep -oE "to=<[^>]*@[^>]*>" | sed -E "s/.*@([^>]*)>/\\1/" | tr "A-Z" "a-z" | sort | uniq -c | sort -rn || true',
     "echo '## END'"
   ].join("\n");
 }
@@ -93,6 +105,11 @@ function counts(text: string): Map<string, number> {
     out.set(provider, (out.get(provider) ?? 0) + Number(m[1]));
   }
   return out;
+}
+
+/** NOACCESS = no se pudo leer el log. Distinto de "no hubo trafico". */
+export function deliveryStatsUnreadable(stdout: string): boolean {
+  return stdout.includes("## NOACCESS");
 }
 
 export function parseDeliveryStats(stdout: string): NodeDeliveryStats | null {
@@ -178,6 +195,15 @@ export async function readNodeDeliveryHealth(input: {
       command: buildDeliveryStatsCommand(),
       timeoutMs: input.timeoutMs ?? 60_000
     });
+    if (deliveryStatsUnreadable(result.stdout)) {
+      return {
+        status: "unreadable",
+        stats: EMPTY_STATS,
+        blockedProviders: [],
+        degradedProviders: [],
+        detail: "sin permiso para leer /var/log/mail.log (es syslog:adm; el usuario ops necesita sudo)"
+      };
+    }
     const stats = parseDeliveryStats(result.stdout);
     if (!stats) {
       return { status: "unreadable", stats: EMPTY_STATS, blockedProviders: [], degradedProviders: [], detail: "salida incompleta (falta ## END)" };
