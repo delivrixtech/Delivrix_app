@@ -281,6 +281,7 @@ import {
   handlePlacementCheckError,
   handlePlacementCheckHttp
 } from "./routes/placement-check.ts";
+import { handleSenderInventoryHttp } from "./routes/sender-inventory-read.ts";
 import { handleSenderPoolStatusHttp } from "./routes/sender-pool-status.ts";
 import {
   handleHealthAutoFlagRun,
@@ -2320,6 +2321,16 @@ const server = createServer(async (request, response) => {
     }
 
     // Abanico de diagnostico: un agente de IA por dominio, read-only, N en paralelo.
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/sender-pool/inventory") {
+      return await handleSenderInventoryHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        now: () => resolveGatewayNow()
+      });
+    }
+
     if (request.method === "POST" && requestUrl(request).pathname === "/v1/openclaw/agents/warmup/audit") {
       return await handleWarmupAuditHttp({
         request,
