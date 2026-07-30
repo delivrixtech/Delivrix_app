@@ -297,3 +297,22 @@ test("las instrucciones con conflicto prohiben atribuir la medicion", async () =
   // La frase que evita el veredicto confiado y falso.
   assert.match(texto, /peor\s+que no tener dato/);
 });
+
+// --- abstencion correcta != veredicto vacio --------------------------------
+
+test("cero sondas CON conflicto de inventario es abstencion correcta, no falta de evidencia", async () => {
+  // Medido en la corrida completa del 2026-07-30: los 5 dominios que cerraron sin sondear eran
+  // EXACTAMENTE los 5 con conflicto. No sondear ahi es el acierto — el prompt le pide al agente
+  // que no atribuya a este dominio nada medido en un nodo que quizas no es el suyo.
+  const { statusOfForTests } = await import("./warmup-audit-run.ts");
+  const sesion = { status: "completed" as const, toolCallCount: 0 };
+
+  assert.equal(
+    statusOfForTests({ item: { bindingConflict: { fromBindings: "a", fromCredentials: "b" } }, result: sesion }),
+    "abstenido"
+  );
+  // Sin conflicto, cero sondas es un veredicto escrito sobre nada.
+  assert.equal(statusOfForTests({ item: {}, result: sesion }), "sin_evidencia");
+  // Y con sondas, es un diagnostico.
+  assert.equal(statusOfForTests({ item: {}, result: { ...sesion, toolCallCount: 4 } }), "ok");
+});

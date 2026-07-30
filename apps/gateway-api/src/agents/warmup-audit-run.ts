@@ -83,6 +83,13 @@ export interface WarmupAuditReport {
    */
   sinEvidencia: number;
   /**
+   * Dominios donde el agente se abstuvo CORRECTAMENTE por conflicto de inventario.
+   *
+   * No es lo mismo que `sinEvidencia`: aca no sondear es el acierto. Confundirlos haria que un
+   * acierto del agente se lea como una falla, y al reves.
+   */
+  abstenido: number;
+  /**
    * Que cerebro corrio.
    *
    * Sin esto una corrida en `mock` —el default— es indistinguible de una real leyendo el
@@ -108,7 +115,7 @@ export interface WarmupAuditReport {
      * diagnostico y son las sesiones mas caras de la corrida. Meterlos en `ok` —como pasaba—
      * hacia que el reporte dijera "59 ok" con N nodos sin diagnosticar.
      */
-    status: "ok" | "failed" | "paused" | "exhausted" | "cancelled" | "sin_evidencia";
+    status: "ok" | "failed" | "paused" | "exhausted" | "cancelled" | "sin_evidencia" | "abstenido";
     sessionId?: string;
     error?: string;
     bindingConflict?: { fromBindings: string; fromCredentials: string };
@@ -203,6 +210,7 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
     peakInFlight: summary.peakInFlight,
     truncated: summary.results.filter((entry) => entry.result?.truncated).length,
     sinEvidencia: items.filter((item) => item.status === "sin_evidencia").length,
+    abstenido: items.filter((item) => item.status === "abstenido").length,
     paused: items.filter((item) => item.status === "paused").length,
     modelId: input.sessionManager.modelIdForRole("warmup"),
     totals: {
@@ -230,22 +238,33 @@ export async function runWarmupAudit(input: WarmupAuditRunInput): Promise<Warmup
 /** Alcanza para un veredicto con su evidencia sin volver la respuesta HTTP inmanejable. */
 const VERDICT_MAX_CHARS = 4_000;
 
+/** Exportado solo para test: la regla que distingue un acierto de una falla. */
+export const statusOfForTests = statusOf;
+
 function statusOf(entry: {
   cancelled?: true;
   error?: string;
+  item?: { bindingConflict?: unknown };
   result?: { status: "completed" | "failed" | "paused"; toolCallCount?: number };
-}): "ok" | "failed" | "paused" | "exhausted" | "cancelled" | "sin_evidencia" {
+}): "ok" | "failed" | "paused" | "exhausted" | "cancelled" | "sin_evidencia" | "abstenido" {
   if (entry.cancelled) return "cancelled";
   if (entry.error !== undefined) return "failed";
   if (entry.result === undefined) return "failed";
   if (entry.result.status === "completed") {
-    // Un veredicto sin una sola sonda no es un diagnostico, por bien redactado que este.
+    if ((entry.result.toolCallCount ?? 0) > 0) return "ok";
+
+    // Cero sondas tiene DOS causas opuestas y meterlas en la misma bolsa borra la diferencia
+    // que mas importa.
     //
-    // Esto NO es paranoia: medido el 2026-07-29 contra la flota real, el 46% de los dominios
-    // cerraba asi — cero tools, status ok, y lineas de "evidencia" citando sondas que nunca
-    // corrieron. El prompt que lo inducia se corrigio, pero el guard vive aca a proposito: los
-    // prompts derivan y un modelo distinto falla distinto. El invariante va donde va el efecto.
-    return (entry.result.toolCallCount ?? 0) === 0 ? "sin_evidencia" : "ok";
+    // Con conflicto de inventario, no sondear es lo CORRECTO: el prompt le pide al agente que no
+    // atribuya a este dominio nada medido en un nodo que quizas no es el suyo. Abstenerse es el
+    // acierto, no la falla. Medido en la corrida completa del 2026-07-30: los 5 casos de cero
+    // sondas eran EXACTAMENTE los 5 dominios con conflicto.
+    //
+    // Sin conflicto, cero sondas es un veredicto escrito sobre nada — con lineas de "evidencia"
+    // citando sondas que nunca corrieron. Eso paso en el 46% de la flota antes de corregir el
+    // prompt, y el guard sigue aca porque los prompts derivan y otro modelo falla distinto.
+    return entry.item?.bindingConflict ? "abstenido" : "sin_evidencia";
   }
   // `paused` es el cap de tokens; `failed` devuelto por la sesion es max_iterations. Se
   // distinguen porque se arreglan distinto: uno pide mas presupuesto, el otro mas vueltas.
