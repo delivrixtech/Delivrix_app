@@ -282,6 +282,7 @@ import {
   handlePlacementCheckHttp
 } from "./routes/placement-check.ts";
 import { handleSenderInventoryHttp } from "./routes/sender-inventory-read.ts";
+import { handleSenderQuotaHttp, handleSenderQuotaUpdateHttp } from "./routes/sender-quota.ts";
 import { handleSenderPoolStatusHttp } from "./routes/sender-pool-status.ts";
 import {
   handleHealthAutoFlagRun,
@@ -2327,6 +2328,36 @@ const server = createServer(async (request, response) => {
         response,
         workspace: openClawWorkspace,
         readBoundaryToken: sensitiveReadBoundaryToken,
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    // La cuota diaria por bandeja: el numero que NFC consume. Lectura con llave dedicada
+    // (SENDER_QUOTA_API_KEY) o read-boundary; escritura fail-closed con el token del emisor.
+    if (requestUrl(request).pathname === "/v1/sender-pool/quota") {
+      return await handleSenderQuotaHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        auditLog,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        ...(process.env.SENDER_QUOTA_API_KEY ? { quotaApiKey: process.env.SENDER_QUOTA_API_KEY } : {}),
+        ...(process.env.OPENCLAW_GATEWAY_TOKEN ? { operatorToken: process.env.OPENCLAW_GATEWAY_TOKEN } : {}),
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    const senderQuotaUpdateMatch = requestUrl(request).pathname.match(/^\/v1\/sender-pool\/quota\/([^/]+)$/);
+    if (senderQuotaUpdateMatch) {
+      return await handleSenderQuotaUpdateHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        auditLog,
+        domain: decodeURIComponent(senderQuotaUpdateMatch[1]!),
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        ...(process.env.SENDER_QUOTA_API_KEY ? { quotaApiKey: process.env.SENDER_QUOTA_API_KEY } : {}),
+        ...(process.env.OPENCLAW_GATEWAY_TOKEN ? { operatorToken: process.env.OPENCLAW_GATEWAY_TOKEN } : {}),
         now: () => resolveGatewayNow()
       });
     }

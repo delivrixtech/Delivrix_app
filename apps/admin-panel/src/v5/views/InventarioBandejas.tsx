@@ -1,283 +1,375 @@
-// Inventario de bandejas: la pantalla de la fabrica.
+// La pantalla de la fabrica: una lista, tres columnas, un numero editable.
 //
-// Una sola tabla, una fila por bandeja. Reemplaza los 8 bloques de Warmup.tsx —hero explicativo,
-// KPIs, "recorrido del nodo", panel de tendencias— que hoy salen todos en cero cuando Postgres
-// se cae, con un cartel que ademas afirma algo falso.
+// DOMINIO · ESTADO · HOY PUEDE. Ese numero es el producto — es lo que NFC consume por
+// GET /v1/sender-pool/quota. El semaforo se calcula en el gateway, no se elige aca: verde solo
+// si se midio y entrega, y una bandeja roja o gris vende 0 con el motivo al lado.
 //
-// LA REGLA DEL ARCHIVO, y esta en el codigo y no en un comentario: un dato que no se midio se
-// pinta como guion gris CON EL MOTIVO PEGADO. Un cero solo se imprime si hubo denominador.
-// Esta semana aparecieron seis sensores que reportaban salud sin datos y los seis compartian la
-// misma forma: un cero que se lee como "todo bien". `Dato` hace eso imposible de escribir.
+// Version 2 tras la revision del owner sobre la v1: demasiado texto, poco practica. Un panel de
+// operacion muestra, no explica: se fueron los bloques explicativos y quedo la decision que el
+// operador toma por bandeja — cuanto le dejo enviar hoy.
+//
+// La regla de honestidad sigue intacta: un dato no medido es un guion CON MOTIVO, nunca un cero.
+// Las invisibles y los conflictos no son filas: son una linea al pie que se despliega.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Caption, Card, Eyebrow, Heading, Pill, Row } from "../../shared/ui/aivora";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
 
-type SinMedicion = "sin_binding" | "nunca_medida" | "conflicto_de_inventario";
+type SemaforoColor = "verde" | "rojo" | "gris";
 
-interface Bandeja {
+interface CuotaBandeja {
   domain: string;
   serverSlug: string | null;
-  serverIp: string | null;
+  color: SemaforoColor;
+  estado: string;
+  motivo: string | null;
+  asignada: number | null;
+  hoyPuede: number;
+  editable: boolean;
   edadDias: number | null;
-  tieneAccesoOps: boolean;
-  conflicto: { enBindings: string; enCredencial: string } | null;
-  sinMedicion: SinMedicion | null;
+  cruzados: string[];
+  cerca: string[];
 }
 
-interface Inventario {
+interface CuotaFlota {
+  medidoEn: string | null;
+  techoDiario: number;
+  bandejas: CuotaBandeja[];
   totalBandejas: number;
-  medibles: number;
-  sinBinding: string[];
+  totalHoyPuede: number;
+  fueraDeMedicion: string[];
   enConflicto: string[];
-  bandejas: Bandeja[];
   parcial: boolean;
   motivosParcial: string[];
 }
 
-/** El motivo viaja pegado al guion. Nunca se resume en "sin datos". */
-const MOTIVO: Record<SinMedicion, string> = {
-  sin_binding: "ningún sondeo la alcanza",
-  conflicto_de_inventario: "el inventario se contradice",
-  nunca_medida: "nunca se midió"
+const COLOR: Record<SemaforoColor, string> = {
+  verde: "var(--color-success, #1e8e5a)",
+  rojo: "var(--color-critical, #c0392b)",
+  gris: "var(--muted, #8a94a0)"
 };
 
-/**
- * El unico componente que puede imprimir un numero en esta pantalla.
- *
- * Tres estados y no dos: medido / cero-con-denominador / no-medido-con-motivo. La firma obliga
- * a pasar el motivo cuando el valor es null, asi que no se puede escribir por accidente una
- * celda vacia que parezca un cero.
- */
-function Dato({
-  valor,
-  motivo,
-  sufijo
-}: {
-  valor: number | string | null;
-  motivo: string;
-  sufijo?: string;
-}) {
-  if (valor === null || valor === undefined) {
-    return (
-      <span style={{ color: "var(--muted, #8a94a0)", fontVariantNumeric: "tabular-nums" }}>
-        — <span style={{ fontSize: 11 }}>{motivo}</span>
-      </span>
-    );
-  }
-  return (
-    <span style={{ fontVariantNumeric: "tabular-nums" }}>
-      {valor}
-      {sufijo ? <span style={{ opacity: 0.6, fontSize: 11 }}> {sufijo}</span> : null}
-    </span>
-  );
-}
+const GRID = "1.6fr 1.3fr 0.9fr";
 
 export default function InventarioBandejas() {
-  const [inv, setInv] = useState<Inventario | null>(null);
+  const [flota, setFlota] = useState<CuotaFlota | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [medidoHace, setMedidoHace] = useState<string | null>(null);
+
+  const cargar = async () => {
+    try {
+      const response = await fetch(READ_ENDPOINTS.senderPoolQuota, {
+        headers: { accept: "application/json" },
+        cache: "no-store"
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setFlota((await response.json()) as CuotaFlota);
+      setError(null);
+    } catch (cause) {
+      // Un fallo de carga NO deja la pantalla en cero: la deja en "no pude leer".
+      setError(cause instanceof Error ? cause.message : "no se pudo leer la cuota");
+    }
+  };
 
   useEffect(() => {
-    let vivo = true;
-    const cargar = async () => {
-      try {
-        const response = await fetch(READ_ENDPOINTS.senderPoolInventory, {
-          headers: { accept: "application/json" },
-          cache: "no-store"
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = (await response.json()) as Inventario;
-        if (!vivo) return;
-        setInv(payload);
-        setError(null);
-        setMedidoHace(new Date().toLocaleTimeString());
-      } catch (cause) {
-        if (!vivo) return;
-        // Un fallo de carga NO deja la pantalla en cero: deja la pantalla en "no pude leer".
-        setError(cause instanceof Error ? cause.message : "no se pudo leer el inventario");
-      }
-    };
     void cargar();
     const timer = setInterval(() => void cargar(), 60_000);
-    return () => {
-      vivo = false;
-      clearInterval(timer);
-    };
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (error) {
     return (
       <Card>
-        <Eyebrow>Inventario de bandejas</Eyebrow>
-        <Heading level={2}>No se pudo leer el inventario</Heading>
+        <Eyebrow>Fábrica</Eyebrow>
+        <Heading level={2}>No se pudo leer la cuota</Heading>
         <Caption>{error}</Caption>
       </Card>
     );
   }
 
-  if (!inv) {
+  if (!flota) {
     return (
       <Card>
-        <Eyebrow>Inventario de bandejas</Eyebrow>
+        <Eyebrow>Fábrica</Eyebrow>
         <Caption>Leyendo…</Caption>
       </Card>
     );
   }
 
-  const nuncaMedidas = inv.bandejas.filter((b) => b.sinMedicion === "nunca_medida").length;
-
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      {/* FRANJA 0 — el sello. Antes de cualquier numero: sobre que poblacion se habla. */}
       <Card>
-        <Eyebrow>Inventario de bandejas</Eyebrow>
+        <Eyebrow>Fábrica · cuota diaria por bandeja</Eyebrow>
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "baseline", marginTop: 4 }}>
-          <Heading level={1}>{inv.totalBandejas}</Heading>
+          <Heading level={1}>{flota.totalHoyPuede.toLocaleString("es")}</Heading>
           <Caption>
-            bandejas · <strong>{inv.medibles}</strong> medibles ·{" "}
-            <strong>{inv.sinBinding.length}</strong> sin binding ·{" "}
-            <strong>{inv.enConflicto.length}</strong> en conflicto
-            {medidoHace ? ` · leído ${medidoHace}` : null}
+            envíos/día en venta · <strong>{flota.bandejas.length}</strong> de{" "}
+            <strong>{flota.totalBandejas}</strong> bandejas en lista ·{" "}
+            {flota.medidoEn
+              ? `medido ${new Date(flota.medidoEn).toLocaleString("es")}`
+              : "la flota nunca se midió"}{" "}
+            · techo {flota.techoDiario.toLocaleString("es")}/día
           </Caption>
         </div>
-        {inv.parcial ? (
+        {flota.parcial ? (
           <div style={{ marginTop: 8 }}>
-            <Pill tone="critical">lectura parcial</Pill>{" "}
-            <Caption>{inv.motivosParcial.join(" · ")}</Caption>
+            <Pill tone="critical">lectura parcial</Pill> <Caption>{flota.motivosParcial.join(" · ")}</Caption>
           </div>
         ) : null}
       </Card>
 
-      {/* FRANJA 1 — cuatro numeros que SIEMPRE suman el total. Si no suman, hay un bug y se ve. */}
       <Card>
-        <Eyebrow>Estado</Eyebrow>
-        <div style={{ display: "flex", gap: 28, flexWrap: "wrap", marginTop: 8 }}>
-          <Bloque
-            titulo="Medibles"
-            valor={inv.medibles}
-            nota="tienen nodo asignado"
-          />
-          <Bloque
-            titulo="Sin lectura"
-            valor={nuncaMedidas}
-            nota="nunca se midieron"
-            atencion
-          />
-          <Bloque
-            titulo="En conflicto"
-            valor={inv.enConflicto.length}
-            nota="el inventario se contradice"
-            atencion={inv.enConflicto.length > 0}
-          />
-          <Bloque
-            titulo="Invisibles"
-            valor={inv.sinBinding.length}
-            nota="ningún sondeo las toca"
-            atencion={inv.sinBinding.length > 0}
-          />
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: GRID,
+            gap: 8,
+            padding: "6px 0",
+            borderBottom: "1px solid var(--line, #e6e9ee)",
+            fontSize: 11,
+            textTransform: "uppercase",
+            letterSpacing: "0.06em",
+            opacity: 0.6
+          }}
+        >
+          <span>Dominio</span>
+          <span>Estado</span>
+          <span style={{ textAlign: "right" }}>Hoy puede</span>
         </div>
+        {flota.bandejas.map((b) => (
+          <FilaBandeja key={b.domain} bandeja={b} techo={flota.techoDiario} onGuardado={cargar} />
+        ))}
       </Card>
 
-      {/* FRANJA 3 — la tabla. Riesgo primero. */}
-      <Card>
-        <Eyebrow>Bandejas</Eyebrow>
-        <div style={{ marginTop: 12 }}>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1.6fr 1fr 0.9fr 0.6fr 0.6fr 1.4fr",
-              gap: 8,
-              padding: "6px 0",
-              borderBottom: "1px solid var(--line, #e6e9ee)",
-              fontSize: 11,
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
-              opacity: 0.6
-            }}
-          >
-            <span>Dominio</span>
-            <span>Nodo</span>
-            <span>IP</span>
-            <span>Edad</span>
-            <span>SSH</span>
-            <span>Medición</span>
-          </div>
-          {inv.bandejas.map((b) => (
-            <Row key={b.domain}>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1.6fr 1fr 0.9fr 0.6fr 0.6fr 1.4fr",
-                  gap: 8,
-                  alignItems: "center",
-                  width: "100%",
-                  fontSize: 13
-                }}
-              >
-                <span style={{ fontWeight: 500 }}>{b.domain}</span>
-                <Dato valor={b.serverSlug} motivo="sin binding" />
-                <Dato valor={b.serverIp} motivo="sin binding" />
-                <Dato valor={b.edadDias} motivo="sin fecha" sufijo="d" />
-                <span>{b.tieneAccesoOps ? "sí" : <Dato valor={null} motivo="sin acceso ops" />}</span>
-                <span>
-                  {b.conflicto ? (
-                    <Pill tone="critical">
-                      {b.conflicto.enBindings} ≠ {b.conflicto.enCredencial}
-                    </Pill>
-                  ) : (
-                    <Dato valor={null} motivo={MOTIVO[b.sinMedicion ?? "nunca_medida"]} />
-                  )}
-                </span>
-              </div>
-            </Row>
-          ))}
-        </div>
-      </Card>
-
-      {/* FRANJA 4 — integridad. Los nombres, no un conteo. */}
-      {inv.sinBinding.length > 0 ? (
-        <Card>
-          <Eyebrow>Fuera de toda medición</Eyebrow>
-          <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {inv.sinBinding.map((d) => (
-              <Pill key={d} tone="warning">
-                {d}
-              </Pill>
-            ))}
-          </div>
-        </Card>
+      {flota.fueraDeMedicion.length + flota.enConflicto.length > 0 ? (
+        <PieIntegridad fueraDeMedicion={flota.fueraDeMedicion} enConflicto={flota.enConflicto} />
       ) : null}
     </div>
   );
 }
 
-function Bloque({
-  titulo,
-  valor,
-  nota,
-  atencion
+function FilaBandeja({
+  bandeja,
+  techo,
+  onGuardado
 }: {
-  titulo: string;
-  valor: number;
-  nota: string;
-  atencion?: boolean;
+  bandeja: CuotaBandeja;
+  techo: number;
+  onGuardado: () => Promise<void>;
 }) {
   return (
-    <div>
-      <Caption>{titulo}</Caption>
+    <Row>
       <div
         style={{
-          fontSize: 30,
-          fontWeight: 600,
-          fontVariantNumeric: "tabular-nums",
-          color: atencion && valor > 0 ? "var(--critical, #c0392b)" : "inherit"
+          display: "grid",
+          gridTemplateColumns: GRID,
+          gap: 8,
+          alignItems: "center",
+          width: "100%",
+          fontSize: 13
         }}
       >
-        {valor}
+        <span style={{ fontWeight: 500 }}>{bandeja.domain}</span>
+        <span>
+          <span style={{ color: COLOR[bandeja.color] }}>{bandeja.color === "gris" ? "○" : "●"}</span>{" "}
+          {bandeja.estado}
+          {bandeja.motivo ? (
+            <span style={{ display: "block", fontSize: 11, color: "var(--muted, #8a94a0)" }}>
+              {bandeja.motivo}
+            </span>
+          ) : null}
+        </span>
+        <CeldaCuota bandeja={bandeja} techo={techo} onGuardado={onGuardado} />
       </div>
-      <Caption style={{ fontSize: 11 }}>{nota}</Caption>
-    </div>
+    </Row>
+  );
+}
+
+/**
+ * La celda del numero. Tres estados:
+ *   - editable + verde: el numero que se vende hoy. Click para cambiarlo.
+ *   - editable + rojo/gris: se vende 0; la asignada queda guardada y editable para cuando vuelva.
+ *   - no editable: guion. No hay medicion sobre la que aplicar un numero.
+ */
+function CeldaCuota({
+  bandeja,
+  techo,
+  onGuardado
+}: {
+  bandeja: CuotaBandeja;
+  techo: number;
+  onGuardado: () => Promise<void>;
+}) {
+  const [editando, setEditando] = useState(false);
+  const [borrador, setBorrador] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const [errorGuardar, setErrorGuardar] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editando) inputRef.current?.focus();
+  }, [editando]);
+
+  if (!bandeja.editable) {
+    return (
+      <span style={{ textAlign: "right", color: "var(--muted, #8a94a0)", fontVariantNumeric: "tabular-nums" }}>
+        —
+      </span>
+    );
+  }
+
+  const guardar = async () => {
+    const valor = Number.parseInt(borrador, 10);
+    if (!Number.isInteger(valor) || valor < 0) {
+      setErrorGuardar("tiene que ser un entero ≥ 0");
+      return;
+    }
+    setGuardando(true);
+    setErrorGuardar(null);
+    try {
+      const response = await fetch(`/v1/sender-pool/quota/${encodeURIComponent(bandeja.domain)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ hoyPuede: valor })
+      });
+      const payload = (await response.json().catch(() => ({}))) as { error?: string; techo?: number };
+      if (!response.ok) {
+        throw new Error(
+          payload.error === "cuota_supera_techo"
+            ? `supera el techo de ${(payload.techo ?? techo).toLocaleString("es")}/día`
+            : payload.error ?? `HTTP ${response.status}`
+        );
+      }
+      setEditando(false);
+      await onGuardado();
+    } catch (cause) {
+      setErrorGuardar(cause instanceof Error ? cause.message : "no se pudo guardar");
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  if (editando) {
+    return (
+      <span style={{ textAlign: "right" }}>
+        <input
+          ref={inputRef}
+          type="number"
+          min={0}
+          max={techo}
+          value={borrador}
+          disabled={guardando}
+          onChange={(e) => setBorrador(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void guardar();
+            if (e.key === "Escape") {
+              setEditando(false);
+              setErrorGuardar(null);
+            }
+          }}
+          onBlur={() => {
+            if (!guardando && errorGuardar === null) setEditando(false);
+          }}
+          style={{
+            width: 90,
+            textAlign: "right",
+            fontVariantNumeric: "tabular-nums",
+            fontSize: 13,
+            padding: "2px 6px",
+            border: "1px solid var(--line, #e6e9ee)",
+            borderRadius: 6,
+            background: "transparent",
+            color: "inherit"
+          }}
+        />
+        {errorGuardar ? (
+          <span style={{ display: "block", fontSize: 11, color: "var(--color-critical, #c0392b)" }}>
+            {errorGuardar}
+          </span>
+        ) : null}
+      </span>
+    );
+  }
+
+  return (
+    <span style={{ textAlign: "right" }}>
+      <button
+        type="button"
+        onClick={() => {
+          setBorrador(String(bandeja.asignada ?? 0));
+          setEditando(true);
+        }}
+        title={`Editar la cuota diaria de ${bandeja.domain}`}
+        style={{
+          font: "inherit",
+          fontVariantNumeric: "tabular-nums",
+          background: "none",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+          color: "inherit",
+          borderBottom: "1px dashed var(--muted, #8a94a0)"
+        }}
+      >
+        {bandeja.hoyPuede.toLocaleString("es")}
+      </button>
+      {bandeja.color !== "verde" && bandeja.asignada !== null && bandeja.asignada > 0 ? (
+        <span style={{ display: "block", fontSize: 11, color: "var(--muted, #8a94a0)" }}>
+          asignada {bandeja.asignada.toLocaleString("es")}, frenada
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/** El pie: nombres detras de un toggle, no 8 filas de guiones en la lista. */
+function PieIntegridad({
+  fueraDeMedicion,
+  enConflicto
+}: {
+  fueraDeMedicion: string[];
+  enConflicto: string[];
+}) {
+  const [abierto, setAbierto] = useState(false);
+  const resumen = [
+    fueraDeMedicion.length > 0 ? `${fueraDeMedicion.length} fuera de medición` : null,
+    enConflicto.length > 0 ? `${enConflicto.length} en conflicto` : null
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <Card>
+      <button
+        type="button"
+        onClick={() => setAbierto((v) => !v)}
+        style={{
+          font: "inherit",
+          fontSize: 12,
+          background: "none",
+          border: "none",
+          padding: 0,
+          cursor: "pointer",
+          color: "var(--muted, #8a94a0)"
+        }}
+      >
+        {abierto ? "▾" : "▸"} {resumen}
+      </button>
+      {abierto ? (
+        <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {fueraDeMedicion.map((d) => (
+            <Pill key={d} tone="warning">
+              {d} · ningún sondeo la alcanza
+            </Pill>
+          ))}
+          {enConflicto.map((d) => (
+            <Pill key={d} tone="critical">
+              {d} · el inventario se contradice
+            </Pill>
+          ))}
+        </div>
+      ) : null}
+    </Card>
   );
 }

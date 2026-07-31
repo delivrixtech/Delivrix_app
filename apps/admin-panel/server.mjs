@@ -41,14 +41,17 @@ const allowedWritePatterns = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/reject$/,
   /^\/v1\/canvas\/artifact\/[^/]+\/approve$/,
   /^\/v1\/canvas\/artifact\/[^/]+\/reject$/,
-  /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/
+  /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/,
+  /^\/v1\/sender-pool\/quota\/[^/]+$/
 ];
 // Subconjunto de allowedWritePatterns que el gateway autentica con el token del emisor OpenClaw.
 // El proxy inyecta x-openclaw-gateway-token SOLO en estas rutas (las de proposals usan otro carril).
+// La cuota diaria por bandeja (PATCH) usa este mismo carril: escritura fail-closed del operador.
 const canvasArtifactWritePatterns = [
   /^\/v1\/canvas\/artifact\/[^/]+\/approve$/,
   /^\/v1\/canvas\/artifact\/[^/]+\/reject$/,
-  /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/
+  /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/,
+  /^\/v1\/sender-pool\/quota\/[^/]+$/
 ];
 const allowedReadPatterns = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/status$/,
@@ -99,6 +102,7 @@ const allowedProxyPaths = new Set([
   "/v1/sender-nodes",
   "/v1/sender-pool/status",
   "/v1/sender-pool/inventory",
+  "/v1/sender-pool/quota",
   "/v1/sender-pool/credentials/export",
   "/v1/sender-pool/credentials/download-all",
   "/v1/stuck-jobs",

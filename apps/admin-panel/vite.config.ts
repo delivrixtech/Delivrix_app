@@ -69,6 +69,11 @@ function isCanvasArtifactWritePath(pathname: string): boolean {
     /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/.test(pathname)
   );
 }
+// Cuota diaria por bandeja (PATCH). Mismo carril que canvas artifact: escritura del operador,
+// fail-closed en el gateway contra el token del emisor, que el proxy inyecta same-origin.
+function isSenderQuotaWritePath(pathname: string): boolean {
+  return /^\/v1\/sender-pool\/quota\/[^/]+$/.test(pathname);
+}
 const chatConversationsPath = "/v1/openclaw/chat/conversations";
 const chatHistoryPath = "/v1/openclaw/chat/history";
 // Warmup API (carril B): listado de nodos de warmup. Read-only; el selector del Sender Pool lo usa para
@@ -178,7 +183,8 @@ export default defineConfig({
             // token responde 401; el token nunca se expone al browser (inyectado sólo aquí server-side).
             if (
               openClawGatewayProxyToken &&
-              isCanvasArtifactWritePath(requestUrl.pathname) &&
+              (isCanvasArtifactWritePath(requestUrl.pathname) ||
+                isSenderQuotaWritePath(requestUrl.pathname)) &&
               !req.headers["x-openclaw-gateway-token"]
             ) {
               proxyReq.setHeader("x-openclaw-gateway-token", openClawGatewayProxyToken);
@@ -259,6 +265,9 @@ function readOnlyProxyBoundary(): Plugin {
         const isCanvasArtifactBlockPatch =
           request.method === "PATCH" &&
           /^\/v1\/canvas\/artifact\/[^/]+\/block\/[^/]+$/.test(requestUrl.pathname);
+        // La cuota diaria por bandeja: el numero que el operador edita en la lista de la fabrica.
+        const isSenderQuotaPatch =
+          request.method === "PATCH" && isSenderQuotaWritePath(requestUrl.pathname);
         // WSS upgrade del canvas-live stream (sale por el proxy normal, pero
         // el middleware lo ve como GET con header Upgrade).
         const isCanvasLiveStream =
@@ -279,6 +288,7 @@ function readOnlyProxyBoundary(): Plugin {
           isCanvasArtifactApprove ||
           isCanvasArtifactReject ||
           isCanvasArtifactBlockPatch ||
+          isSenderQuotaPatch ||
           isCanvasLiveStream
         ) {
           next();
