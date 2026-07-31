@@ -13,19 +13,28 @@ function enabledEnv(): Record<string, string | undefined> {
   };
 }
 
-test("las 5 tools del diagnostico resuelven a specs REALES, con schema", async () => {
+/**
+ * Tools de lectura que legitimamente no llevan parametros: la lista completa ES la respuesta.
+ * El guard de "properties vacio = placeholder" no aplica a estas; para ellas el placeholder se
+ * caza por la descripcion (un placeholder no trae la descripcion real del catalogo).
+ */
+const TOOLS_SIN_PARAMS = new Set(["read_sender_pool_quota"]);
+
+test("las tools del diagnostico resuelven a specs REALES, con schema", async () => {
   const { specs, missing } = diagnosticToolSpecsForRole("warmup", enabledEnv());
 
-  assert.deepEqual(missing, [], "ninguna de las 5 deberia faltar");
+  assert.deepEqual(missing, [], "ninguna deberia faltar");
   assert.equal(specs.length, WARMUP_DIAGNOSTIC_TOOLS.length);
 
   for (const spec of specs) {
     assert.equal(spec.input_schema.type, "object");
-    // Lo que hace inejecutable al placeholder: properties vacio.
-    assert.ok(
-      Object.keys(spec.input_schema.properties).length > 0,
-      `${spec.name} tiene que traer properties reales, no un schema vacio`
-    );
+    // Lo que hace inejecutable al placeholder: properties vacio (salvo las sin-params reales).
+    if (!TOOLS_SIN_PARAMS.has(spec.name)) {
+      assert.ok(
+        Object.keys(spec.input_schema.properties).length > 0,
+        `${spec.name} tiene que traer properties reales, no un schema vacio`
+      );
+    }
     assert.ok(spec.description.length > 40, `${spec.name} tiene que traer su descripcion real`);
     assert.equal(
       spec.description.includes("Dispatch real"),
@@ -74,7 +83,7 @@ test("una tool apagada por flag no llega al agente", async () => {
 
   assert.equal(specs.some((spec) => spec.name === "read_mxtoolbox_health"), false);
   assert.ok(missing.includes("read_mxtoolbox_health"));
-  assert.equal(specs.length, WARMUP_DIAGNOSTIC_TOOLS.length - 1, "las otras 4 siguen");
+  assert.equal(specs.length, WARMUP_DIAGNOSTIC_TOOLS.length - 1, "las otras 6 siguen");
 });
 
 test("los roles sin tools reales devuelven specs vacias en vez de placeholders", async () => {

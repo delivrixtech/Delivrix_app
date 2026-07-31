@@ -121,7 +121,12 @@ export const WARMUP_DIAGNOSTIC_TOOLS = [
   "read_delivery_reason",
   "read_dkim_status",
   "read_mxtoolbox_health",
-  "inspect_smtp_inventory"
+  "inspect_smtp_inventory",
+  // Los semaforos de la fabrica: el cupo fail-closed por bandeja y el detalle por receptor de
+  // la ultima corrida. Un auditor que ve la cola atascada y el umbral permanente no diagnostica
+  // "sano" un dominio que los receptores estan rechazando.
+  "read_sender_pool_quota",
+  "read_sender_measurement"
 ] as const;
 
 export function warmupDiagnosticToolExecutor(

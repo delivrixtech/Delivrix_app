@@ -151,7 +151,7 @@ test("las tools de escritura NO estan en el alcance del diagnostico", async () =
       `${prohibida} no puede estar en el abanico de diagnostico`
     );
   }
-  assert.equal(WARMUP_DIAGNOSTIC_TOOLS.length, 5);
+  assert.equal(WARMUP_DIAGNOSTIC_TOOLS.length, 7);
 });
 
 test("los roles que todavia no tienen tools reales quedan sin alcance", async () => {
