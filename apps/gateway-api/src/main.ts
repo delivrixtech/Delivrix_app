@@ -282,6 +282,7 @@ import {
   handlePlacementCheckHttp
 } from "./routes/placement-check.ts";
 import { handleSenderInventoryHttp } from "./routes/sender-inventory-read.ts";
+import { handleSenderMeasurementHttp } from "./routes/sender-measurement-read.ts";
 import { handleSenderQuotaHttp, handleSenderQuotaUpdateHttp } from "./routes/sender-quota.ts";
 import { handleSenderPoolStatusHttp } from "./routes/sender-pool-status.ts";
 import {
@@ -1579,6 +1580,8 @@ const agentPermissionMatrix: AgentPermissionEntry[] = [
   permission("read_ip_reputation_reports", "allowed_read_only"),
   permission("read_send_results", "allowed_read_only"),
   permission("read_delivery_reason", "allowed_read_only"),
+  permission("read_sender_pool_quota", "allowed_read_only"),
+  permission("read_sender_measurement", "allowed_read_only"),
   permission("read_smtp_reachability", "allowed_read_only"),
   permission("read_dkim_status", "allowed_read_only"),
   permission("read_run_state_integrity", "allowed_read_only"),
@@ -2343,6 +2346,17 @@ const server = createServer(async (request, response) => {
         readBoundaryToken: sensitiveReadBoundaryToken,
         ...(process.env.SENDER_QUOTA_API_KEY ? { quotaApiKey: process.env.SENDER_QUOTA_API_KEY } : {}),
         ...(process.env.OPENCLAW_GATEWAY_TOKEN ? { operatorToken: process.env.OPENCLAW_GATEWAY_TOKEN } : {}),
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    // La ultima medicion cruda: el detalle por receptor que alimenta read_sender_measurement.
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/sender-pool/measurement") {
+      return await handleSenderMeasurementHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        readBoundaryToken: sensitiveReadBoundaryToken,
         now: () => resolveGatewayNow()
       });
     }

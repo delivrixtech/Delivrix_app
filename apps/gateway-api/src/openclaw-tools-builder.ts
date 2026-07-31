@@ -21,6 +21,8 @@ import {
   semanticRecallParamSchema,
   readInfrastructureInventoryParamSchema,
   readWebdockServersParamSchema,
+  senderPoolQuotaParamSchema,
+  senderMeasurementParamSchema,
   reassignDomainServerParamSchema,
   reconcileDnsToLiveSmtpParamSchema,
   resolveAmbiguousDomainParamSchema,
@@ -70,6 +72,8 @@ export type OpenClawToolName =
   | "read_route53_domain_detail"
   | "read_route53_zone_records"
   | "read_delivery_reason"
+  | "read_sender_pool_quota"
+  | "read_sender_measurement"
   | "read_smtp_reachability"
   | "read_dkim_status"
   | "read_run_state_integrity"
@@ -466,6 +470,56 @@ const toolDefinitions: Record<OpenClawToolName, OpenClawToolDefinition> = {
       hmacConfigured(env) &&
       hasSshRunnerConfig(env),
     targetType: "webdock_server",
+    severity: "high"
+  },
+  read_sender_pool_quota: {
+    spec: {
+      name: "read_sender_pool_quota",
+      description: [
+        "El semaforo REAL de la flota de bandejas y su cuota diaria: la respuesta autoritativa a 'como esta la flota'.",
+        "Devuelve por bandeja: color calculado (verde=midio y entrega, rojo=cola atascada/bloqueada/umbral cruzado, gris=sin medir, calentando=rampa de warmup activa), estado, motivo, cuota asignada por el operador y hoyPuede (lo que la fabrica vende HOY, fail-closed: solo verde/calentando venden >0).",
+        "Incluye medidoEn (cuando fue la ultima medicion — declararlo al responder), techo diario, la suma total en venta, y el pie: dominios fuera de medicion y en conflicto.",
+        "Invocar ANTES de opinar sobre salud de la flota, volumenes o que dominio usar para enviar: estos semaforos vienen del mail.log censado, no de suposiciones.",
+        "Para el detalle por receptor de una bandeja (donde esta cerrada, diferidos, picos contra el umbral permanente) usar read_sender_measurement.",
+        "Lectura auditada de JSON local: no mide, no muta nada y no requiere ApprovalGate."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        required: [],
+        properties: {}
+      }
+    },
+    paramSchema: senderPoolQuotaParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "sender_pool",
+    severity: "high"
+  },
+  read_sender_measurement: {
+    spec: {
+      name: "read_sender_measurement",
+      description: [
+        "El detalle de la ultima medicion de la flota: lo que CADA receptor contesto, leido del mail.log censado de cada nodo.",
+        "Por bandeja: estado (healthy/degraded/blocked_by_provider/stalled/no_traffic/unreadable), entregados/rechazados/diferidos en la ventana, en que receptores esta cerrada (cerradoEn), y los picos diarios contra el umbral permanente de Google/Yahoo (cruzados = irreversible).",
+        "Con `domain` devuelve solo esa bandeja; sin parametros, la corrida completa.",
+        "Invocar para diagnosticar POR QUE una bandeja esta roja en read_sender_pool_quota, nunca para adivinar causas. Declarar medidoEn al citar numeros: la medicion es una foto, no tiempo real.",
+        "Un dato null significa 'no se pudo leer', NUNCA cero. Lectura auditada de JSON local: no mide, no muta nada y no requiere ApprovalGate."
+      ].join(" "),
+      input_schema: {
+        type: "object",
+        properties: {
+          domain: {
+            type: "string",
+            minLength: 4,
+            maxLength: 253,
+            description: "Opcional: dominio de la bandeja (ej corpfiling-infra.com) para el detalle de una sola."
+          }
+        },
+        required: []
+      }
+    },
+    paramSchema: senderMeasurementParamSchema,
+    enabled: (env) => hmacConfigured(env),
+    targetType: "sender_pool",
     severity: "high"
   },
   read_smtp_reachability: {
@@ -1628,6 +1682,8 @@ export function openClawToolNames(): OpenClawToolName[] {
     "read_route53_domain_detail",
     "read_route53_zone_records",
     "read_delivery_reason",
+    "read_sender_pool_quota",
+    "read_sender_measurement",
     "read_smtp_reachability",
     "read_dkim_status",
     "read_run_state_integrity",

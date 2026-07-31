@@ -216,6 +216,10 @@ function isOperationalOpenClawPrompt(normalized: string): boolean {
 // diagnóstico nunca se llega a invocar (auditado en vivo 2026-06-29).
 function isDiagnosticIntent(normalized: string): boolean {
   return (
+    // Salud de la flota / cuota diaria: viven en read_sender_pool_quota y
+    // read_sender_measurement (Bedrock). "revisa los dominios de la flota" NO es
+    // una pregunta de inventario IONOS.
+    /\b(flota|bandejas?|cuotas?|sem[aá]foros?)\b/.test(normalized) ||
     /\bdkim\b/.test(normalized) ||
     /\bselector(es)?\b/.test(normalized) ||
     /\b(spf|dmarc)\b/.test(normalized) ||

@@ -580,6 +580,27 @@ export const readInfrastructureAccountHealthParamSchema = schema<ReadInfrastruct
   return {};
 });
 
+export interface SenderPoolQuotaParams extends Record<string, unknown> {}
+
+/** Sin parametros: la lista completa ES la respuesta (58 filas compactas, el pie va aparte). */
+export const senderPoolQuotaParamSchema = schema<SenderPoolQuotaParams>((value) => {
+  object(value);
+  return {};
+});
+
+export interface SenderMeasurementParams extends Record<string, unknown> {
+  domain?: string;
+}
+
+export const senderMeasurementParamSchema = schema<SenderMeasurementParams>((value) => {
+  const input = object(value);
+  return {
+    ...(input.domain === undefined || input.domain === null || input.domain === ""
+      ? {}
+      : { domain: domain(input.domain, "domain") })
+  };
+});
+
 export const inspectSmtpInventoryParamSchema = schema<InspectSmtpInventoryParams>((value) => {
   const input = object(value);
   return {

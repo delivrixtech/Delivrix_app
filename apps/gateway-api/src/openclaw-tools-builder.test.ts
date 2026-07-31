@@ -19,6 +19,8 @@ test("buildToolsForOpenClaw returns the canonical Fase A+B1 tools when gates are
     "read_route53_domain_detail",
     "read_route53_zone_records",
     "read_delivery_reason",
+    "read_sender_pool_quota",
+    "read_sender_measurement",
     "read_smtp_reachability",
     "read_dkim_status",
     "read_run_state_integrity",
@@ -155,7 +157,7 @@ test("buildToolsForOpenClaw omits warmup seed when WARMUP_RAMP_ENABLE is off", (
     ...allEnabledEnv(),
     WARMUP_RAMP_ENABLE: "0"
   });
-  assert.equal(tools.length, 41);
+  assert.equal(tools.length, 43);
   assert.equal(tools.some((tool) => tool.name === "seed_warmup_pool"), false);
   assert.equal(tools.some((tool) => tool.name === "configure_complete_smtp"), false);
 });

@@ -329,6 +329,12 @@ function rewriteGatewayProxyPath(pathnameWithSearch: string): string {
   if (url.pathname === gatewayLogStreamPath) {
     appendTokenIfMissing(url, gatewayLogProxyToken);
   }
+  // Chat de OpenClaw: el WS upgrade exige token (isAuthorizedChatStream) y el browser no lo
+  // tiene. Sin esta inyeccion el widget queda en "Reconectando" para siempre en dev, con los
+  // mensajes encolados — el mismo patron que canvas-live y logs, que ya lo hacian.
+  if (url.pathname === chatStreamPath) {
+    appendTokenIfMissing(url, readBoundaryProxyToken);
+  }
   return `${url.pathname}${url.search}`;
 }
 

@@ -692,6 +692,41 @@ async function invokeReadOnlyToolOverHttp(input: {
     return body;
   }
 
+  if (input.input.toolName === "read_sender_pool_quota") {
+    const url = new URL(`${input.baseUrl}/v1/sender-pool/quota`);
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return body;
+  }
+
+  if (input.input.toolName === "read_sender_measurement") {
+    const url = new URL(`${input.baseUrl}/v1/sender-pool/measurement`);
+    if (typeof input.input.params.domain === "string" && input.input.params.domain) {
+      url.searchParams.set("domain", input.input.params.domain);
+    }
+    const response = await input.fetchImpl(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        ...(input.readBoundaryToken ? { "x-delivrix-token": input.readBoundaryToken } : {})
+      }
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(readOnlyToolHttpErrorMessage(response.status, body));
+    }
+    return body;
+  }
+
   if (input.input.toolName === "read_run_state_integrity") {
     const url = new URL(`${input.baseUrl}/v1/openclaw/run-state-integrity`);
     const response = await input.fetchImpl(url, {
@@ -1322,6 +1357,8 @@ function isReadOnlyToolUse(toolName: string): boolean {
     toolName === "read_route53_domain_detail" ||
     toolName === "read_route53_zone_records" ||
     toolName === "read_delivery_reason" ||
+    toolName === "read_sender_pool_quota" ||
+    toolName === "read_sender_measurement" ||
     toolName === "read_smtp_reachability" ||
     toolName === "read_dkim_status" ||
     toolName === "read_run_state_integrity" ||
