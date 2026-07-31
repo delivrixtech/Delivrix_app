@@ -21,8 +21,10 @@ clonado/
 .gateway.pid
 .audit/*.txt
 
-# Local workspace/tooling state
-.claude/
+# Local workspace/tooling state. Se ignora .claude/* (settings.local.json con secretos, worktrees)
+# PERO se versionan los skills: son ingeniería compartida del equipo, no estado local de máquina.
+.claude/*
+!.claude/skills
 .sync-backups/
 ~$*.docx
 .vercel
