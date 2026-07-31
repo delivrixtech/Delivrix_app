@@ -16,9 +16,11 @@ import {
   armarCuotaFlota,
   evaluarBandeja,
   guardarCuota,
+  rampaParaCuota,
   TECHO_ABSOLUTO,
   TECHO_DIARIO_DEFAULT,
-  resolverTecho
+  resolverTecho,
+  type RampaCuota
 } from "./sender-quota.ts";
 
 const ahora = new Date("2026-07-31T12:00:00.000Z");
@@ -120,6 +122,83 @@ test("sin trafico es gris pero editable: el numero espera a que arranque", () =>
   assert.equal(c.editable, true);
 });
 
+// ── El cable rampa → cuota ───────────────────────────────────────────────────────────────────────
+
+function rampa(overrides: Partial<RampaCuota> = {}): RampaCuota {
+  return { estado: "running", cupoHoy: 200, dia: 3, totalDias: 14, schedule: "production-14d", ...overrides };
+}
+
+test("mientras calienta, el numero lo dicta la rampa y no el operador", () => {
+  const c = evaluarBandeja(inv(), med(), 1800, TECHO, rampa());
+  assert.equal(c.color, "calentando");
+  assert.equal(c.estado, "rampa día 3/14");
+  assert.equal(c.hoyPuede, 200, "manda el cupo de la rampa, no la asignada");
+  assert.equal(c.editable, false, "el numero manual queda guardado para cuando termine");
+  assert.equal(c.asignada, 1800, "la asignada del operador no se pierde");
+});
+
+test("el techo capa a la rampa igual que al operador: dia 14 pide 50.000", () => {
+  const c = evaluarBandeja(inv(), med(), null, TECHO, rampa({ cupoHoy: 50_000, dia: 14 }));
+  assert.equal(c.hoyPuede, TECHO);
+  assert.match(c.motivo ?? "", /recortado al techo/);
+});
+
+test("rojo gana SIEMPRE, incluso a una rampa corriendo", () => {
+  const c = evaluarBandeja(inv(), med({ estado: "stalled", diferidos: 920 }), null, TECHO, rampa());
+  assert.equal(c.color, "rojo");
+  assert.equal(c.estado, "cola atascada");
+  assert.equal(c.hoyPuede, 0, "calentar encima de una cola atascada es echar gasolina");
+});
+
+test("rampa auto-pausada es roja con el motivo del freno", () => {
+  const c = evaluarBandeja(inv(), med(), null, TECHO, rampa({ estado: "auto_paused", pauseReason: "auto_bounce_rate" }));
+  assert.equal(c.color, "rojo");
+  assert.equal(c.estado, "rampa pausada");
+  assert.match(c.motivo ?? "", /auto_bounce_rate/);
+  assert.equal(c.hoyPuede, 0);
+});
+
+test("rampa pausada a mano es gris, no roja: fue una decision, no un freno", () => {
+  const c = evaluarBandeja(inv(), med(), null, TECHO, rampa({ estado: "paused" }));
+  assert.equal(c.color, "gris");
+  assert.equal(c.hoyPuede, 0);
+});
+
+test("la rampa vale sin medicion de la fabrica: la bandeja fresca aun no deja huella", () => {
+  const c = evaluarBandeja(inv(), null, null, TECHO, rampa({ cupoHoy: 50, dia: 1 }));
+  assert.equal(c.color, "calentando");
+  assert.equal(c.hoyPuede, 50, "la rampa trae su propio freno (breaker + placement)");
+});
+
+test("rampaParaCuota elige el batch vigente: el ultimo cuyo scheduledAt ya paso", () => {
+  const inicio = Date.parse("2026-07-29T00:00:00.000Z");
+  const batches = [0, 1, 2, 3].map((i) => ({
+    batchIndex: i,
+    scheduledAt: new Date(inicio + i * 86_400_000).toISOString(),
+    emailCount: [50, 100, 200, 400][i]!
+  }));
+  const r = rampaParaCuota(
+    { schedule: "production-14d", state: "running", batches },
+    new Date("2026-07-31T12:00:00.000Z") // 2.5 dias despues del inicio
+  );
+  assert.equal(r.cupoHoy, 200);
+  assert.equal(r.dia, 3);
+  assert.equal(r.totalDias, 4);
+});
+
+test("rampa que arranca en el futuro: el cupo es el del primer batch, no cero inventado", () => {
+  const r = rampaParaCuota(
+    {
+      schedule: "production-14d",
+      state: "running",
+      batches: [{ batchIndex: 0, scheduledAt: "2026-08-05T00:00:00.000Z", emailCount: 50 }]
+    },
+    ahora
+  );
+  assert.equal(r.cupoHoy, 50);
+  assert.equal(r.dia, 1);
+});
+
 test("el techo por env respeta el absoluto", () => {
   assert.equal(resolverTecho({}), TECHO_DIARIO_DEFAULT);
   assert.equal(resolverTecho({ SENDER_QUOTA_DAILY_MAX: "1000" }), 1000);
@@ -218,6 +297,51 @@ test("la lista ordena riesgo primero: rojo, verde, gris", async () => {
     ["rojo", "verde", "gris"]
   );
   assert.equal(flota.bandejas[2]?.domain, "virgen.com", "nunca medida cierra la lista");
+});
+
+test("una rampa activa en el workspace convierte la bandeja en calentando y su cupo se vende", async () => {
+  const ws = await workspaceConFlota();
+  await guardarCuota({ workspace: ws, domain: "sana.com", hoyPuede: 1200, techo: TECHO, now: () => ahora });
+  // virgen.com no tiene medicion: la rampa es exactamente para esa bandeja.
+  await ws.updateInventoryJson("warmup-progress.json", () => ({
+    ramps: [
+      {
+        rampId: "ramp-1",
+        domain: "virgen.com",
+        serverSlug: "n3",
+        serverIp: "3.3.3.3",
+        schedule: "production-14d",
+        state: "running",
+        recipientPool: [],
+        totalPlanned: 350,
+        totalSent: 150,
+        totalBounced: 0,
+        startedAt: "2026-07-29T00:00:00.000Z",
+        updatedAt: ahora.toISOString(),
+        batches: [0, 1, 2].map((i) => ({
+          batchIndex: i,
+          scheduledAt: new Date(Date.parse("2026-07-29T00:00:00.000Z") + i * 86_400_000).toISOString(),
+          emailCount: [50, 100, 200][i]!,
+          status: i < 2 ? "sent" : "running"
+        })),
+        actorId: "test",
+        approvalToken: "t"
+      }
+    ]
+  }));
+
+  const flota = await armarCuotaFlota({ workspace: ws, techo: TECHO, now: () => ahora });
+
+  const virgen = flota.bandejas.find((b) => b.domain === "virgen.com");
+  assert.equal(virgen?.color, "calentando");
+  assert.equal(virgen?.hoyPuede, 200, "el cupo del batch vigente (dia 3) se vende");
+  assert.equal(virgen?.rampa?.schedule, "production-14d");
+  assert.equal(flota.totalHoyPuede, 1400, "verde asignada (1200) + rampa (200)");
+  assert.deepEqual(
+    flota.bandejas.map((b) => b.color),
+    ["rojo", "calentando", "verde"],
+    "lo que calienta se mira a diario: entre rojo y verde"
+  );
 });
 
 test("nunca medida la flota, la respuesta lo declara en vez de inventar", async () => {

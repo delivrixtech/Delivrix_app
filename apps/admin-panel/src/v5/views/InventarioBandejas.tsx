@@ -16,7 +16,16 @@ import { useEffect, useRef, useState } from "react";
 import { Caption, Card, Eyebrow, Heading, Pill, Row } from "../../shared/ui/aivora";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
 
-type SemaforoColor = "verde" | "rojo" | "gris";
+type SemaforoColor = "verde" | "rojo" | "gris" | "calentando";
+
+interface RampaCuota {
+  estado: "running" | "paused" | "auto_paused";
+  pauseReason?: string;
+  cupoHoy: number;
+  dia: number;
+  totalDias: number;
+  schedule: string;
+}
 
 interface CuotaBandeja {
   domain: string;
@@ -30,6 +39,7 @@ interface CuotaBandeja {
   edadDias: number | null;
   cruzados: string[];
   cerca: string[];
+  rampa: RampaCuota | null;
 }
 
 interface CuotaFlota {
@@ -47,7 +57,9 @@ interface CuotaFlota {
 const COLOR: Record<SemaforoColor, string> = {
   verde: "var(--color-success, #1e8e5a)",
   rojo: "var(--color-critical, #c0392b)",
-  gris: "var(--muted, #8a94a0)"
+  gris: "var(--muted, #8a94a0)",
+  // Paleta oficial: warming es cyan, nunca ámbar.
+  calentando: "var(--color-warming, #0891b2)"
 };
 
 const GRID = "1.6fr 1.3fr 0.9fr";
@@ -212,6 +224,17 @@ function CeldaCuota({
   }, [editando]);
 
   if (!bandeja.editable) {
+    // Mientras calienta, el numero lo dicta la rampa: se muestra, pero no se edita.
+    if (bandeja.color === "calentando") {
+      return (
+        <span style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+          {bandeja.hoyPuede.toLocaleString("es")}
+          <span style={{ display: "block", fontSize: 11, color: "var(--color-warming, #0891b2)" }}>
+            dicta la rampa
+          </span>
+        </span>
+      );
+    }
     return (
       <span style={{ textAlign: "right", color: "var(--muted, #8a94a0)", fontVariantNumeric: "tabular-nums" }}>
         —

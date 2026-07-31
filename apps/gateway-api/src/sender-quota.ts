@@ -15,7 +15,7 @@
 
 import { leerInventarioFabrica, type BandejaInventario } from "./sender-inventory.ts";
 import { leerUltimaMedicion, type MedicionBandeja } from "./sender-measurement.ts";
-import type { OpenClawWorkspace } from "./openclaw-workspace.ts";
+import { getActiveRamps, type OpenClawWorkspace } from "./openclaw-workspace.ts";
 
 /** Donde viven las cuotas asignadas. Un archivo, no una tabla: no depende de Postgres. */
 export const QUOTA_FILE = "sender-quota.json";
@@ -30,7 +30,22 @@ export const QUOTA_FILE = "sender-quota.json";
 export const TECHO_DIARIO_DEFAULT = 2000;
 export const TECHO_ABSOLUTO = 4000;
 
-export type SemaforoColor = "verde" | "rojo" | "gris";
+export type SemaforoColor = "verde" | "rojo" | "gris" | "calentando";
+
+/**
+ * El cable rampa → cuota: mientras una bandeja esta en warmup, el numero lo dicta la rampa,
+ * no el operador. Es la vista que evaluarBandeja recibe de un WarmupRampRecord activo.
+ */
+export interface RampaCuota {
+  estado: "running" | "paused" | "auto_paused";
+  pauseReason?: string;
+  /** emailCount del batch vigente (el ultimo cuyo scheduledAt ya paso). */
+  cupoHoy: number;
+  /** 1-based, para mostrar "dia 3/14". */
+  dia: number;
+  totalDias: number;
+  schedule: string;
+}
 
 export interface CuotaBandeja {
   domain: string;
@@ -52,6 +67,8 @@ export interface CuotaBandeja {
   cruzados: string[];
   /** Familias arriba del 40% del umbral: aviso, no freno. */
   cerca: string[];
+  /** Rampa de warmup activa sobre esta bandeja. `null` = no esta calentando. */
+  rampa: RampaCuota | null;
 }
 
 export interface CuotaFlota {
@@ -82,16 +99,19 @@ export function resolverTecho(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 /**
- * El semaforo de UNA bandeja. Funcion pura: inventario + ultima medicion + asignada → veredicto.
+ * El semaforo de UNA bandeja. Funcion pura: inventario + medicion + rampa + asignada → veredicto.
  *
  * El orden de los casos es el orden del riesgo: primero lo que impide medir (gris), despues lo
- * medido que esta mal (rojo), y verde solo al final, cuando no quedo nada que lo desmienta.
+ * medido que esta mal (ROJO GANA SIEMPRE, incluso a una rampa corriendo — calentar encima de una
+ * cola atascada es echar gasolina), despues la rampa que dicta su cupo, y verde solo al final,
+ * cuando no quedo nada que lo desmienta.
  */
 export function evaluarBandeja(
   inv: BandejaInventario,
   med: MedicionBandeja | null,
   asignada: number | null,
-  techo: number
+  techo: number,
+  rampa: RampaCuota | null = null
 ): CuotaBandeja {
   const base = {
     domain: inv.domain,
@@ -99,7 +119,8 @@ export function evaluarBandeja(
     asignada,
     edadDias: inv.edadDias,
     cruzados: med?.cruzados ?? [],
-    cerca: med?.cerca ?? []
+    cerca: med?.cerca ?? [],
+    rampa
   };
   // La asignada nunca sale del techo vigente, aunque se haya guardado con un techo anterior.
   const tope = asignada === null ? null : Math.min(asignada, techo);
@@ -120,21 +141,49 @@ export function evaluarBandeja(
       `el inventario se contradice: ${inv.conflicto.enBindings} ≠ ${inv.conflicto.enCredencial}`
     );
   }
+
+  // Lo medido en rojo gana SIEMPRE: la rampa no exime a un nodo que los receptores rechazan.
+  if (med && med.estado !== "unreadable") {
+    if (med.cruzados.length > 0) {
+      return rojo("umbral cruzado", `cruzó el umbral permanente en ${med.cruzados.join(", ")}`);
+    }
+    if (med.estado === "stalled") {
+      return rojo("cola atascada", med.detalle || `${med.diferidos ?? "?"} mensajes diferidos`);
+    }
+    if (med.estado === "blocked_by_provider") {
+      return rojo("bloqueada", `cerrada en ${med.cerradoEn.join(", ") || "receptores"}`);
+    }
+    if (med.estado === "degraded") {
+      return rojo("rechazo parcial", med.detalle);
+    }
+  }
+
+  // El cable rampa → cuota: mientras calienta, el numero lo dicta la rampa, no el operador.
+  // Vale incluso sin medicion de la fabrica: una bandeja fresca todavia no dejo huella en el
+  // mail.log, y la rampa trae su propio freno (breaker por rebote + placement).
+  if (rampa) {
+    if (rampa.estado === "auto_paused") {
+      return rojo("rampa pausada", `auto-pausada: ${rampa.pauseReason ?? "sin motivo registrado"}`);
+    }
+    if (rampa.estado === "paused") {
+      return gris("rampa pausada", "pausada a mano");
+    }
+    // running. El techo del umbral permanente capa a la rampa igual que al operador: la curva
+    // production-14d llega a 50.000/dia, que es 10x el umbral que no se puede deshacer.
+    const cupo = Math.min(rampa.cupoHoy, techo);
+    return {
+      ...base,
+      color: "calentando",
+      estado: `rampa día ${rampa.dia}/${rampa.totalDias}`,
+      motivo: rampa.cupoHoy > techo ? `cupo ${rampa.cupoHoy} recortado al techo` : null,
+      hoyPuede: cupo,
+      // La rampa dicta: el numero manual del operador queda guardado para cuando termine.
+      editable: false
+    };
+  }
+
   if (!med) return gris("sin medir", "nunca se midió");
   if (med.estado === "unreadable") return gris("sin lectura", med.detalle);
-
-  if (med.cruzados.length > 0) {
-    return rojo("umbral cruzado", `cruzó el umbral permanente en ${med.cruzados.join(", ")}`);
-  }
-  if (med.estado === "stalled") {
-    return rojo("cola atascada", med.detalle || `${med.diferidos ?? "?"} mensajes diferidos`);
-  }
-  if (med.estado === "blocked_by_provider") {
-    return rojo("bloqueada", `cerrada en ${med.cerradoEn.join(", ") || "receptores"}`);
-  }
-  if (med.estado === "degraded") {
-    return rojo("rechazo parcial", med.detalle);
-  }
   if (med.estado === "no_traffic") {
     // Medida y legible, pero sin evidencia de entrega. Verde solo si midio Y entrega: esto es
     // gris con el numero guardado (editable) para cuando arranque.
@@ -167,6 +216,14 @@ export async function armarCuotaFlota(input: {
   const store = await input.workspace
     .readInventoryJson<QuotaStore>(QUOTA_FILE)
     .catch(() => null);
+  // Rampas de warmup activas: el cable rampa → cuota. Mismo workspace, misma regla: si no se
+  // puede leer, no hay rampa — la bandeja cae al camino normal, nunca a un cupo inventado.
+  const rampas = await getActiveRamps(input.workspace).catch(() => []);
+  const rampaPorDominio = new Map<string, RampaCuota>();
+  const ahora = input.now?.() ?? new Date();
+  for (const r of rampas) {
+    rampaPorDominio.set(r.domain.toLowerCase(), rampaParaCuota(r, ahora));
+  }
 
   const porDominio = new Map<string, MedicionBandeja>();
   for (const b of medicion?.bandejas ?? []) porDominio.set(b.domain, b);
@@ -176,12 +233,19 @@ export async function armarCuotaFlota(input: {
     // Invisibles y conflictos no son filas: van al pie por nombre (ya vienen del inventario).
     if (inv.sinMedicion === "sin_binding" || inv.conflicto) continue;
     bandejas.push(
-      evaluarBandeja(inv, porDominio.get(inv.domain) ?? null, leerAsignada(store, inv.domain), techo)
+      evaluarBandeja(
+        inv,
+        porDominio.get(inv.domain) ?? null,
+        leerAsignada(store, inv.domain),
+        techo,
+        rampaPorDominio.get(inv.domain) ?? null
+      )
     );
   }
 
-  // Riesgo primero: lo rojo pide accion, lo verde es el producto, lo gris espera medicion.
-  const orden: Record<SemaforoColor, number> = { rojo: 0, verde: 1, gris: 2 };
+  // Riesgo primero: lo rojo pide accion, lo que calienta se mira a diario, lo verde es el
+  // producto, lo gris espera medicion.
+  const orden: Record<SemaforoColor, number> = { rojo: 0, calentando: 1, verde: 2, gris: 3 };
   bandejas.sort((a, b) =>
     orden[a.color] !== orden[b.color] ? orden[a.color] - orden[b.color] : a.domain.localeCompare(b.domain)
   );
@@ -247,4 +311,32 @@ export async function guardarCuota(input: {
 function leerAsignada(store: QuotaStore | null, domain: string): number | null {
   const raw = store?.cuotas?.[domain]?.asignada;
   return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 ? raw : null;
+}
+
+/**
+ * Proyecta un WarmupRampRecord a lo que la cuota necesita: el cupo del batch VIGENTE (el ultimo
+ * cuyo scheduledAt ya paso; si la rampa arranca en el futuro, el primero). Exportada para que el
+ * test la ejercite con la curva real.
+ */
+export function rampaParaCuota(
+  record: {
+    schedule: string;
+    state: "running" | "paused" | "auto_paused" | string;
+    pauseReason?: string;
+    batches: Array<{ batchIndex: number; scheduledAt: string; emailCount: number }>;
+  },
+  ahora: Date
+): RampaCuota {
+  const pasados = record.batches.filter((b) => Date.parse(b.scheduledAt) <= ahora.getTime());
+  const vigente = pasados.length > 0 ? pasados[pasados.length - 1]! : record.batches[0];
+  const estado =
+    record.state === "paused" || record.state === "auto_paused" ? record.state : "running";
+  return {
+    estado,
+    ...(record.pauseReason ? { pauseReason: record.pauseReason } : {}),
+    cupoHoy: vigente?.emailCount ?? 0,
+    dia: (vigente?.batchIndex ?? 0) + 1,
+    totalDias: record.batches.length,
+    schedule: record.schedule
+  };
 }
