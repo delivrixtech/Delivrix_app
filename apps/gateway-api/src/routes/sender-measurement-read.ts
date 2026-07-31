@@ -66,6 +66,44 @@ export async function handleSenderMeasurementHttp(deps: SenderMeasurementRouteDe
     return;
   }
 
+  // view=agent: la corrida completa (58 bandejas con picos) supera los 4096 chars del limite de
+  // tool y se truncaba. Sin domain, el modelo recibe conteos por estado + SOLO las accionables
+  // (cruce permanente, cola atascada, bloqueo, rechazo, ilegible). Para el detalle usa ?domain=.
+  if (url.searchParams.get("view") === "agent") {
+    const conteos: Record<string, number> = {};
+    for (const b of medicion.bandejas) conteos[b.estado] = (conteos[b.estado] ?? 0) + 1;
+    // Solo {dom, estado, cruzados} — nada de cerradoEn/picos/diferidos (eso infla el JSON por
+    // encima del límite de tool). El cruce permanente SÍ viaja porque es irreversible; el resto
+    // del detalle por receptor se pide con ?domain=.
+    const MAX_FILAS = 30;
+    const todas = medicion.bandejas.filter(
+      (b) =>
+        b.cruzados.length > 0 ||
+        b.estado === "stalled" ||
+        b.estado === "blocked_by_provider" ||
+        b.estado === "degraded" ||
+        b.estado === "unreadable"
+    );
+    // Los cruces del umbral permanente van SIEMPRE primero: son irreversibles, nunca deben caer
+    // fuera del tope. El resto sigue detrás. Lo omitido se cuenta, no se oculta.
+    todas.sort((a, b) => (b.cruzados.length > 0 ? 1 : 0) - (a.cruzados.length > 0 ? 1 : 0));
+    const accionables = todas.slice(0, MAX_FILAS).map((b) => ({
+      dom: b.domain,
+      estado: b.estado,
+      cruzados: b.cruzados
+    }));
+    json(deps.response, 200, {
+      medidoEn: medicion.medidoEn,
+      leidas: medicion.leidas,
+      pedidas: medicion.pedidas,
+      conteos,
+      accionables,
+      accionablesOmitidas: Math.max(0, todas.length - MAX_FILAS),
+      nota: "resumen; usá ?domain= para el detalle por receptor (cerradoEn, diferidos, picos)"
+    });
+    return;
+  }
+
   json(deps.response, 200, medicion);
 }
 

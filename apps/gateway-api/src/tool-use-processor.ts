@@ -694,6 +694,9 @@ async function invokeReadOnlyToolOverHttp(input: {
 
   if (input.input.toolName === "read_sender_pool_quota") {
     const url = new URL(`${input.baseUrl}/v1/sender-pool/quota`);
+    // Proyeccion compacta: el crudo de 58 bandejas supera el limite de resultado de tool y se
+    // truncaba, dejando al modelo sin medidoEn/total/verdes.
+    url.searchParams.set("view", "agent");
     const response = await input.fetchImpl(url, {
       method: "GET",
       headers: {
@@ -712,6 +715,9 @@ async function invokeReadOnlyToolOverHttp(input: {
     const url = new URL(`${input.baseUrl}/v1/sender-pool/measurement`);
     if (typeof input.input.params.domain === "string" && input.input.params.domain) {
       url.searchParams.set("domain", input.input.params.domain);
+    } else {
+      // Sin domain: resumen accionable, si no la corrida entera se truncaba a JSON roto.
+      url.searchParams.set("view", "agent");
     }
     const response = await input.fetchImpl(url, {
       method: "GET",

@@ -17,6 +17,7 @@ import {
   evaluarBandeja,
   guardarCuota,
   rampaParaCuota,
+  resumirCuotaFlota,
   TECHO_ABSOLUTO,
   TECHO_DIARIO_DEFAULT,
   resolverTecho,
@@ -88,6 +89,36 @@ test("umbral permanente cruzado es rojo aunque el nodo entregue", () => {
   assert.equal(c.hoyPuede, 0);
 });
 
+test("umbral cruzado gana aunque la SALUD sea ilegible y haya rampa: no vende un dominio quemado", () => {
+  // El caso real: salud (SSH) falla → estado unreadable, pero volumen (otro SSH) leyó que cruzó
+  // Google. Gatearlo tras !== unreadable lo dejaba caer a la rampa y vender cupo. Nunca más.
+  const c = evaluarBandeja(
+    inv(),
+    med({ estado: "unreadable", cruzados: ["google"] }),
+    null,
+    TECHO,
+    rampa()
+  );
+  assert.equal(c.color, "rojo");
+  assert.equal(c.estado, "umbral cruzado");
+  assert.equal(c.hoyPuede, 0, "un dominio que cruzó el umbral permanente NO calienta");
+});
+
+test("bloqueada por el receptor es roja y vende 0", () => {
+  const c = evaluarBandeja(inv(), med({ estado: "blocked_by_provider", cerradoEn: ["yahoo.com", "aol.com"] }), 500, TECHO);
+  assert.equal(c.color, "rojo");
+  assert.equal(c.estado, "bloqueada");
+  assert.match(c.motivo ?? "", /yahoo\.com/);
+  assert.equal(c.hoyPuede, 0);
+});
+
+test("rechazo parcial (degraded) es rojo y vende 0", () => {
+  const c = evaluarBandeja(inv(), med({ estado: "degraded", detalle: "rechazo parcial en gmail.com" }), 500, TECHO);
+  assert.equal(c.color, "rojo");
+  assert.equal(c.estado, "rechazo parcial");
+  assert.equal(c.hoyPuede, 0);
+});
+
 test("sin medicion es gris y no editable: no hay sobre que aplicar el numero", () => {
   const c = evaluarBandeja(inv(), null, 100, TECHO);
   assert.equal(c.color, "gris");
@@ -128,19 +159,22 @@ function rampa(overrides: Partial<RampaCuota> = {}): RampaCuota {
   return { estado: "running", cupoHoy: 200, dia: 3, totalDias: 14, schedule: "production-14d", ...overrides };
 }
 
-test("mientras calienta, el numero lo dicta la rampa y no el operador", () => {
+test("mientras calienta, NFC vende 0: la rampa envía el volumen, no NFC encima", () => {
   const c = evaluarBandeja(inv(), med(), 1800, TECHO, rampa());
   assert.equal(c.color, "calentando");
   assert.equal(c.estado, "rampa día 3/14");
-  assert.equal(c.hoyPuede, 200, "manda el cupo de la rampa, no la asignada");
+  assert.equal(c.hoyPuede, 0, "NFC no manda su tráfico encima del de la rampa: sería doble envío");
   assert.equal(c.editable, false, "el numero manual queda guardado para cuando termine");
   assert.equal(c.asignada, 1800, "la asignada del operador no se pierde");
+  assert.equal(c.rampa?.cupoHoy, 200, "el cupo de la rampa queda visible para la pantalla");
 });
 
-test("el techo capa a la rampa igual que al operador: dia 14 pide 50.000", () => {
+test("una rampa grande NO puede cruzar el umbral vía NFC: hoyPuede sigue 0", () => {
+  // El caso que mataba el cable: rampa día 14 envía 50.000 ella misma; si NFC además consumiera
+  // hoyPuede, el dominio cruzaría el umbral permanente. hoyPuede=0 lo hace imposible.
   const c = evaluarBandeja(inv(), med(), null, TECHO, rampa({ cupoHoy: 50_000, dia: 14 }));
-  assert.equal(c.hoyPuede, TECHO);
-  assert.match(c.motivo ?? "", /recortado al techo/);
+  assert.equal(c.color, "calentando");
+  assert.equal(c.hoyPuede, 0);
 });
 
 test("rojo gana SIEMPRE, incluso a una rampa corriendo", () => {
@@ -164,10 +198,11 @@ test("rampa pausada a mano es gris, no roja: fue una decision, no un freno", () 
   assert.equal(c.hoyPuede, 0);
 });
 
-test("la rampa vale sin medicion de la fabrica: la bandeja fresca aun no deja huella", () => {
+test("la rampa se refleja sin medicion de la fabrica: la bandeja fresca aun no deja huella", () => {
   const c = evaluarBandeja(inv(), null, null, TECHO, rampa({ cupoHoy: 50, dia: 1 }));
   assert.equal(c.color, "calentando");
-  assert.equal(c.hoyPuede, 50, "la rampa trae su propio freno (breaker + placement)");
+  assert.equal(c.hoyPuede, 0, "NFC vende 0 mientras calienta; la rampa envía sus 50 ella misma");
+  assert.equal(c.rampa?.cupoHoy, 50, "el cupo de la rampa queda visible para la pantalla");
 });
 
 test("rampaParaCuota elige el batch vigente: el ultimo cuyo scheduledAt ya paso", () => {
@@ -299,7 +334,7 @@ test("la lista ordena riesgo primero: rojo, verde, gris", async () => {
   assert.equal(flota.bandejas[2]?.domain, "virgen.com", "nunca medida cierra la lista");
 });
 
-test("una rampa activa en el workspace convierte la bandeja en calentando y su cupo se vende", async () => {
+test("una rampa activa en el workspace pone la bandeja en calentando y NFC vende 0 en ella", async () => {
   const ws = await workspaceConFlota();
   await guardarCuota({ workspace: ws, domain: "sana.com", hoyPuede: 1200, techo: TECHO, now: () => ahora });
   // virgen.com no tiene medicion: la rampa es exactamente para esa bandeja.
@@ -334,14 +369,87 @@ test("una rampa activa en el workspace convierte la bandeja en calentando y su c
 
   const virgen = flota.bandejas.find((b) => b.domain === "virgen.com");
   assert.equal(virgen?.color, "calentando");
-  assert.equal(virgen?.hoyPuede, 200, "el cupo del batch vigente (dia 3) se vende");
+  assert.equal(virgen?.hoyPuede, 0, "NFC no vende sobre una bandeja que la rampa está calentando");
+  assert.equal(virgen?.rampa?.cupoHoy, 200, "el cupo del batch vigente (dia 3) queda visible");
   assert.equal(virgen?.rampa?.schedule, "production-14d");
-  assert.equal(flota.totalHoyPuede, 1400, "verde asignada (1200) + rampa (200)");
+  assert.equal(flota.totalHoyPuede, 1200, "solo la verde con asignada (1200) aporta; la rampa 0");
   assert.deepEqual(
     flota.bandejas.map((b) => b.color),
     ["rojo", "calentando", "verde"],
     "lo que calienta se mira a diario: entre rojo y verde"
   );
+});
+
+test("cruce pegajoso: una lectura de volumen fallida NO borra un cruce del umbral permanente", async () => {
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { medirFlota } = await import("./sender-measurement.ts");
+  const dir = await mkdtemp(join(tmpdir(), "sticky-"));
+  const ws = new OpenClawWorkspace({ rootDir: join(dir, "workspace") });
+
+  const salud = `## DELIVERED\n   100 gmail.com\n## BLOCKED\n## DEFERRED\n## END`;
+  const volumenCruza = `## VOLUME\n   6000 Jul 30\tgmail.com\n## END`;
+  const runner = (vol: string) => ({
+    async run(input: { command: string }) {
+      return { stdout: input.command.includes("## VOLUME") ? vol : salud, exitCode: 0 };
+    }
+  });
+
+  // Corrida 1: el volumen lee que cruzó Google (6000 > 5000).
+  const c1 = await medirFlota({
+    workspace: ws,
+    sshRunner: runner(volumenCruza),
+    bandejas: [{ domain: "quemado.com", serverSlug: "n1", serverIp: "1.1.1.1" }],
+    now: () => ahora
+  });
+  assert.deepEqual(c1.bandejas[0]?.cruzados, ["google"], "corrida 1 detecta el cruce");
+
+  // Corrida 2: la lectura de volumen falla (sin ## END) → cruzados vendría []. NO debe olvidarse.
+  const c2 = await medirFlota({
+    workspace: ws,
+    sshRunner: runner("## VOLUME\n   6000 Jul 30\tgmail.com"),
+    bandejas: [{ domain: "quemado.com", serverSlug: "n1", serverIp: "1.1.1.1" }],
+    now: () => new Date(ahora.getTime() + 86_400_000)
+  });
+  assert.deepEqual(c2.bandejas[0]?.cruzados, ["google"], "el cruce permanente sobrevive a la lectura fallida");
+});
+
+test("resumirCuotaFlota entrega la foto completa y compacta (cabe en el límite de tool)", async () => {
+  const ws = await workspaceConFlota();
+  await guardarCuota({ workspace: ws, domain: "sana.com", hoyPuede: 1200, techo: TECHO, now: () => ahora });
+  const flota = await armarCuotaFlota({ workspace: ws, techo: TECHO, now: () => ahora });
+  const resumen = resumirCuotaFlota(flota);
+
+  assert.equal(resumen.medidoEn, flota.medidoEn, "NO pierde medidoEn (lo que el crudo truncado sí perdía)");
+  assert.equal(resumen.totalHoyPuede, flota.totalHoyPuede);
+  assert.equal(resumen.conteos.verde + resumen.conteos.rojo + resumen.conteos.gris + resumen.conteos.calentando, flota.bandejas.length);
+  assert.deepEqual(resumen.vendibles, [{ dom: "sana.com", hoyPuede: 1200 }], "vendibles = verdes con cupo");
+});
+
+test("resumirCuotaFlota cabe en el límite de tool CON LA FLOTA REAL (58+ bandejas), no solo el fixture chico", () => {
+  // El fixture de 4 dominios pasaba < 4096 mientras en vivo daba 5163 — un test que no protegía
+  // nada. Esto arma 60 bandejas rojas (el peor caso: nombres largos + estado) y exige que quepa.
+  const flota: import("./sender-quota.ts").CuotaFlota = {
+    medidoEn: ahora.toISOString(),
+    techoDiario: TECHO,
+    totalHoyPuede: 0,
+    totalBandejas: 60,
+    fueraDeMedicion: Array.from({ length: 7 }, (_, i) => `dominio-invisible-numero-${i}.com`),
+    enConflicto: ["corpfiling-ops.com"],
+    parcial: false,
+    motivosParcial: [],
+    bandejas: Array.from({ length: 60 }, (_, i) =>
+      evaluarBandeja(
+        inv({ domain: `unnombredebandejabastante-largo-numero-${i}.com` }),
+        med({ estado: "blocked_by_provider", cerradoEn: ["yahoo.com", "aol.com", "bellsouth.net"] }),
+        500,
+        TECHO
+      )
+    )
+  };
+  const bytes = JSON.stringify(resumirCuotaFlota(flota)).length;
+  assert.ok(bytes < 4096, `el resumen de la flota real debe caber en 4096; midió ${bytes}`);
 });
 
 test("nunca medida la flota, la respuesta lo declara en vez de inventar", async () => {

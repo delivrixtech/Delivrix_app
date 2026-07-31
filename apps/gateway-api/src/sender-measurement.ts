@@ -169,12 +169,32 @@ export async function medirFlota(input: {
     Array.from({ length: Math.min(concurrency, input.bandejas.length) }, () => worker())
   );
 
+  const bandejas = resultados.filter(Boolean);
+
+  // CRUCE PEGAJOSO. Cruzar el umbral permanente de Google es irreversible; olvidarlo NUNCA es
+  // correcto. Pero `cruzados` viene de la lectura de VOLUMEN, que puede fallar (grep sin `## END`)
+  // y entonces se persiste `[]` — indistinguible de "midio y no cruzo". Como cada corrida
+  // sobreescribe el archivo entero, una lectura de volumen fallida borraria un cruce conocido y la
+  // fabrica venderia verde un dominio quemado para siempre. Unimos con la corrida anterior: un
+  // cruce solo se AGREGA (cuando el volumen lo lee sobre el umbral), nunca se quita.
+  const previa = await leerUltimaMedicion(input.workspace);
+  if (previa) {
+    const cruzadosPrevios = new Map<string, ProviderFamily[]>();
+    for (const b of previa.bandejas) {
+      if (b.cruzados.length > 0) cruzadosPrevios.set(b.domain, b.cruzados);
+    }
+    for (const b of bandejas) {
+      const antes = cruzadosPrevios.get(b.domain);
+      if (antes) b.cruzados = [...new Set([...b.cruzados, ...antes])];
+    }
+  }
+
   const medicion: MedicionFlota = {
     medidoEn: now().toISOString(),
     duracionMs: now().getTime() - inicio,
     pedidas: input.bandejas.length,
-    leidas: resultados.filter((r) => r && r.estado !== "unreadable").length,
-    bandejas: resultados.filter(Boolean)
+    leidas: bandejas.filter((r) => r.estado !== "unreadable").length,
+    bandejas
   };
 
   await input.workspace.updateInventoryJson<MedicionFlota>(MEASUREMENT_FILE, () => medicion);

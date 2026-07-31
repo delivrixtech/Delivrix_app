@@ -137,6 +137,24 @@ test("la llave de lectura de NFC NO alcanza para escribir cuota", async () => {
   assert.equal(response.statusCode, 401, "quien consume la cuota no puede fijarsela");
 });
 
+test("un token de operador INCORRECTO se rechaza (safeEqual fallido, no solo header ausente)", async () => {
+  const response = captureResponse();
+  await handleSenderQuotaUpdateHttp({
+    request: request({
+      method: "PATCH",
+      headers: { "x-openclaw-gateway-token": "token-equivocado" },
+      body: { hoyPuede: 100 }
+    }),
+    response: response as unknown as ServerResponse,
+    workspace: await workspaceMinimo(),
+    auditLog: auditCapture(),
+    domain: "sana.com",
+    operatorToken: TOKEN_OPERADOR,
+    now: () => ahora
+  });
+  assert.equal(response.statusCode, 401, "un token presente pero incorrecto no alcanza");
+});
+
 test("una escritura valida persiste y deja el antes/despues en el audit log", async () => {
   const ws = await workspaceMinimo();
   const audit = auditCapture();

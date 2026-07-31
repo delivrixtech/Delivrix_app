@@ -224,13 +224,15 @@ function CeldaCuota({
   }, [editando]);
 
   if (!bandeja.editable) {
-    // Mientras calienta, el numero lo dicta la rampa: se muestra, pero no se edita.
+    // Mientras calienta, NFC vende 0 (la rampa envía el volumen ella misma). Se muestra el cupo
+    // que envía la rampa para que el operador vea el progreso, pero NO es lo que NFC consume.
     if (bandeja.color === "calentando") {
+      const cupo = bandeja.rampa?.cupoHoy ?? 0;
       return (
         <span style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-          {bandeja.hoyPuede.toLocaleString("es")}
+          <span style={{ color: "var(--muted, #8a94a0)" }}>0</span>
           <span style={{ display: "block", fontSize: 11, color: "var(--color-warming, #0891b2)" }}>
-            dicta la rampa
+            la rampa envía {cupo.toLocaleString("es")}
           </span>
         </span>
       );
@@ -243,9 +245,13 @@ function CeldaCuota({
   }
 
   const guardar = async () => {
-    const valor = Number.parseInt(borrador, 10);
-    if (!Number.isInteger(valor) || valor < 0) {
-      setErrorGuardar("tiene que ser un entero ≥ 0");
+    // NO parseInt: parseInt("2.000")=2 y parseInt("1e3")=1 — el operador ve "2.000" (separador
+    // de miles de toLocaleString) y guardaría 2/día en silencio. Number() sobre el string entero
+    // exige que sea un entero limpio o falla.
+    const limpio = borrador.trim();
+    const valor = Number(limpio);
+    if (limpio === "" || !Number.isInteger(valor) || valor < 0) {
+      setErrorGuardar("tiene que ser un entero ≥ 0, sin puntos ni comas");
       return;
     }
     setGuardando(true);

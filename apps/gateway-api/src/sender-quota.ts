@@ -142,11 +142,17 @@ export function evaluarBandeja(
     );
   }
 
-  // Lo medido en rojo gana SIEMPRE: la rampa no exime a un nodo que los receptores rechazan.
+  // El umbral permanente cruzado gana ANTES que nada y NO depende de la lectura de salud:
+  // `cruzados` viene de la lectura de VOLUMEN, `estado` de la de SALUD, y son dos SSH
+  // independientes (medirBandeja). Si la salud queda `unreadable` pero el volumen alcanzo a leer
+  // que el dominio cruzo Google, sigue siendo rojo irreversible: gatearlo tras `!== unreadable`
+  // lo dejaba caer a la rampa y vender cupo sobre un dominio quemado para siempre.
+  if (med && med.cruzados.length > 0) {
+    return rojo("umbral cruzado", `cruzó el umbral permanente en ${med.cruzados.join(", ")}`);
+  }
+
+  // El resto del veredicto rojo SI depende de una lectura de salud legible.
   if (med && med.estado !== "unreadable") {
-    if (med.cruzados.length > 0) {
-      return rojo("umbral cruzado", `cruzó el umbral permanente en ${med.cruzados.join(", ")}`);
-    }
     if (med.estado === "stalled") {
       return rojo("cola atascada", med.detalle || `${med.diferidos ?? "?"} mensajes diferidos`);
     }
@@ -168,16 +174,18 @@ export function evaluarBandeja(
     if (rampa.estado === "paused") {
       return gris("rampa pausada", "pausada a mano");
     }
-    // running. El techo del umbral permanente capa a la rampa igual que al operador: la curva
-    // production-14d llega a 50.000/dia, que es 10x el umbral que no se puede deshacer.
-    const cupo = Math.min(rampa.cupoHoy, techo);
+    // running. hoyPuede para NFC es 0 mientras calienta, y es CRÍTICO que asi sea: la rampa YA
+    // envia su cupo diario ella misma (runBatch -> sendmail, warmup-ramp.ts). Si ademas NFC
+    // consumiera este numero, el dominio recibiria el volumen de la rampa MAS el de NFC — en la
+    // curva production-14d eso cruza el umbral permanente de Google, justo lo que este modulo
+    // existe para impedir. El dominio no esta warm: la produccion espera al verde. `cupoHoy`
+    // queda en `rampa` solo para que la pantalla muestre "dia X/N · la rampa envia N".
     return {
       ...base,
       color: "calentando",
       estado: `rampa día ${rampa.dia}/${rampa.totalDias}`,
-      motivo: rampa.cupoHoy > techo ? `cupo ${rampa.cupoHoy} recortado al techo` : null,
-      hoyPuede: cupo,
-      // La rampa dicta: el numero manual del operador queda guardado para cuando termine.
+      motivo: "la rampa envía el volumen; NFC espera a que esté warm",
+      hoyPuede: 0,
       editable: false
     };
   }
@@ -260,6 +268,56 @@ export async function armarCuotaFlota(input: {
     enConflicto: inventario.enConflicto,
     parcial: inventario.parcial,
     motivosParcial: inventario.motivosParcial
+  };
+}
+
+/**
+ * Proyeccion compacta para el modelo. El JSON crudo de armarCuotaFlota (58 bandejas) supera los
+ * 4096 chars del limite de resultado de tool (maxToolResultJsonChars) y se truncaba a la mitad de
+ * un objeto: el modelo veia solo las primeras filas (rojas, por el orden) y PERDIA medidoEn,
+ * techo, el total y las verdes. Esto entrega lo esencial —conteos, totales, la foto— en filas
+ * minimas que caben enteras, para que el modelo responda "como esta la flota" con datos completos.
+ */
+export function resumirCuotaFlota(flota: CuotaFlota): {
+  medidoEn: string | null;
+  techoDiario: number;
+  totalHoyPuede: number;
+  conteos: Record<SemaforoColor, number>;
+  /** Verdes con cupo > 0: exactamente lo que NFC puede usar hoy. */
+  vendibles: Array<{ dom: string; hoyPuede: number }>;
+  /** Rojas: accionable, con el estado corto. El detalle por receptor va en read_sender_measurement. */
+  problemas: Array<{ dom: string; estado: string }>;
+  /** En rampa (NFC vende 0 en ellas mientras calientan). */
+  calentando: string[];
+  /** Filas no enumeradas por el tope de tamaño. NUNCA se ocultan en silencio: se cuentan. */
+  vendiblesOmitidas: number;
+  problemasOmitidas: number;
+  fueraDeMedicion: string[];
+  enConflicto: string[];
+  parcial: boolean;
+} {
+  const conteos: Record<SemaforoColor, number> = { rojo: 0, calentando: 0, verde: 0, gris: 0 };
+  for (const b of flota.bandejas) conteos[b.color] += 1;
+
+  // Tope por lista para caber en los 4096 chars del límite de resultado de tool aun con una flota
+  // entera roja de nombres largos. Lo omitido se cuenta (nunca se trunca en silencio); los totales
+  // completos ya están en `conteos`.
+  const MAX_FILAS = 25;
+  const verdes = flota.bandejas.filter((b) => b.color === "verde" && b.hoyPuede > 0);
+  const rojas = flota.bandejas.filter((b) => b.color === "rojo");
+  return {
+    medidoEn: flota.medidoEn,
+    techoDiario: flota.techoDiario,
+    totalHoyPuede: flota.totalHoyPuede,
+    conteos,
+    vendibles: verdes.slice(0, MAX_FILAS).map((b) => ({ dom: b.domain, hoyPuede: b.hoyPuede })),
+    problemas: rojas.slice(0, MAX_FILAS).map((b) => ({ dom: b.domain, estado: b.estado })),
+    calentando: flota.bandejas.filter((b) => b.color === "calentando").map((b) => b.domain),
+    vendiblesOmitidas: Math.max(0, verdes.length - MAX_FILAS),
+    problemasOmitidas: Math.max(0, rojas.length - MAX_FILAS),
+    fueraDeMedicion: flota.fueraDeMedicion,
+    enConflicto: flota.enConflicto,
+    parcial: flota.parcial
   };
 }
 

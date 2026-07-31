@@ -1063,11 +1063,14 @@ test("OpenClawBedrockBridge loops tool_use through processor and sends tool_resu
 
   assert.equal(payloads.length, 2);
   const toolNames = (payloads[0].tools as Array<{ name: string }>).map((tool) => tool.name);
-  assert.equal(toolNames.length, 38);
+  assert.equal(toolNames.length, 40);
   assert.equal(toolNames.includes("read_episodic_scratch"), true);
   assert.equal(toolNames.includes("compact_intent"), true);
   assert.equal(toolNames.includes("semantic_remember"), true);
   assert.equal(toolNames.includes("semantic_recall"), true);
+  // Las 2 tools de percepcion de la flota tambien viajan al modelo.
+  assert.equal(toolNames.includes("read_sender_pool_quota"), true);
+  assert.equal(toolNames.includes("read_sender_measurement"), true);
   assert.equal(toolNames.includes("enable_smtp_auth"), true);
   assert.equal(toolNames.includes("read_route53_domain_detail"), true);
   assert.equal(toolNames.includes("read_delivery_reason"), true);

@@ -17,7 +17,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { AuditEvent, AuditEventInput } from "../../../../packages/domain/src/index.ts";
-import { armarCuotaFlota, guardarCuota, resolverTecho } from "../sender-quota.ts";
+import { armarCuotaFlota, guardarCuota, resolverTecho, resumirCuotaFlota } from "../sender-quota.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import { readRequestBody } from "../request-body.ts";
 import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
@@ -56,6 +56,14 @@ export async function handleSenderQuotaHttp(deps: SenderQuotaRouteDeps): Promise
     techo: deps.techo ?? resolverTecho(),
     ...(deps.now ? { now: deps.now } : {})
   });
+
+  // view=agent: proyeccion compacta para el modelo (el crudo de 58 bandejas se truncaba a los
+  // 4096 chars del limite de tool). El panel sigue recibiendo el objeto completo por defecto.
+  const url = new URL(deps.request.url ?? "/", "http://localhost");
+  if (url.searchParams.get("view") === "agent") {
+    json(deps.response, 200, resumirCuotaFlota(cuota));
+    return;
+  }
   json(deps.response, 200, cuota);
 }
 
