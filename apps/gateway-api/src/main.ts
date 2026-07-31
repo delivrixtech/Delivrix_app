@@ -281,6 +281,7 @@ import {
   handlePlacementCheckError,
   handlePlacementCheckHttp
 } from "./routes/placement-check.ts";
+import { handleSenderActivityHttp } from "./routes/sender-activity-read.ts";
 import { handleSenderInventoryHttp } from "./routes/sender-inventory-read.ts";
 import { handleSenderMeasurementHttp } from "./routes/sender-measurement-read.ts";
 import { handleSenderQuotaHttp, handleSenderQuotaUpdateHttp } from "./routes/sender-quota.ts";
@@ -2346,6 +2347,17 @@ const server = createServer(async (request, response) => {
         readBoundaryToken: sensitiveReadBoundaryToken,
         ...(process.env.SENDER_QUOTA_API_KEY ? { quotaApiKey: process.env.SENDER_QUOTA_API_KEY } : {}),
         ...(process.env.OPENCLAW_GATEWAY_TOKEN ? { operatorToken: process.env.OPENCLAW_GATEWAY_TOKEN } : {}),
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    // El feed en vivo de un nodo: eventos de envio por mensaje, leidos del mail.log por SSH.
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/sender-pool/activity") {
+      return await handleSenderActivityHttp({
+        request,
+        response,
+        sshRunner: smtpSshRunner,
+        readBoundaryToken: sensitiveReadBoundaryToken,
         now: () => resolveGatewayNow()
       });
     }
