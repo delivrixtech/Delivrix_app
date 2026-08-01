@@ -282,6 +282,7 @@ import {
   handlePlacementCheckHttp
 } from "./routes/placement-check.ts";
 import { handleSenderActivityHttp } from "./routes/sender-activity-read.ts";
+import { handleSenderAlertsHttp } from "./routes/sender-alerts-read.ts";
 import { handleSenderInventoryHttp } from "./routes/sender-inventory-read.ts";
 import { handleSenderMeasurementHttp } from "./routes/sender-measurement-read.ts";
 import { handleSenderQuotaHttp, handleSenderQuotaUpdateHttp } from "./routes/sender-quota.ts";
@@ -2347,6 +2348,17 @@ const server = createServer(async (request, response) => {
         readBoundaryToken: sensitiveReadBoundaryToken,
         ...(process.env.SENDER_QUOTA_API_KEY ? { quotaApiKey: process.env.SENDER_QUOTA_API_KEY } : {}),
         ...(process.env.OPENCLAW_GATEWAY_TOKEN ? { operatorToken: process.env.OPENCLAW_GATEWAY_TOKEN } : {}),
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    // Las alertas de la flota: destiladas de la ultima medicion. JSON local, no dispara SSH.
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/sender-pool/alerts") {
+      return await handleSenderAlertsHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        readBoundaryToken: sensitiveReadBoundaryToken,
         now: () => resolveGatewayNow()
       });
     }

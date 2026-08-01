@@ -44,6 +44,7 @@ export type LeafId =
   | "domains"
   | "sender-pool"
   | "bandejas"
+  | "en-vivo"
   | "warmup"
   | "clusters"
   | "mxtoolbox"
@@ -136,6 +137,8 @@ export const envioTabs: TabDescriptor[] = [
   // El inventario de la fabrica: una tabla, una fila por bandeja, y ningun numero que no venga
   // de una medicion. Va antes de Warmup a proposito — es la pantalla de operacion diaria.
   { id: "bandejas", label: "Bandejas" },
+  // Monitoreo en vivo: alertas de flota (rollup barato) + feed de actividad por nodo (SSH).
+  { id: "en-vivo", label: "En vivo" },
   { id: "warmup", label: "Warmup" },
   { id: "clusters", label: "Nodos" },
   { id: "mxtoolbox", label: "Reputación" }

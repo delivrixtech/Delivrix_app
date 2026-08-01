@@ -48,6 +48,7 @@ test("admin panel exposes only approved GET endpoints", () => {
     "/v1/send-results",
     "/v1/sender-nodes",
     "/v1/sender-pool/activity",
+    "/v1/sender-pool/alerts",
     "/v1/sender-pool/credentials/download-all",
     "/v1/sender-pool/credentials/export",
     "/v1/sender-pool/inventory",

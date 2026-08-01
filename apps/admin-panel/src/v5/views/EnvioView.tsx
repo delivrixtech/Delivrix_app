@@ -20,6 +20,7 @@ import { TabFallback } from "./_TabFallback.tsx";
 const SenderPoolV5 = lazy(async () => ({ default: (await import("./SenderPool.tsx")).SenderPoolV5 }));
 const DomainsV5 = lazy(async () => ({ default: (await import("./Domains.tsx")).DomainsV5 }));
 const InventarioBandejas = lazy(async () => import("./InventarioBandejas.tsx"));
+const ActividadEnVivo = lazy(async () => import("./ActividadEnVivo.tsx"));
 const WarmupV5 = lazy(async () => ({ default: (await import("./Warmup.tsx")).WarmupV5 }));
 const ClustersV5 = lazy(async () => ({ default: (await import("./Clusters.tsx")).ClustersV5 }));
 const MxtoolboxHealthV5 = lazy(async () => ({ default: (await import("./MxtoolboxHealth.tsx")).MxtoolboxHealthV5 }));
@@ -59,6 +60,11 @@ export function EnvioView({ data, activeTab, onSelectTab }: EnvioViewProps) {
         <TabsContent value="bandejas">
           <Suspense fallback={<TabFallback />}>
             <InventarioBandejas />
+          </Suspense>
+        </TabsContent>
+        <TabsContent value="en-vivo">
+          <Suspense fallback={<TabFallback />}>
+            <ActividadEnVivo />
           </Suspense>
         </TabsContent>
         <TabsContent value="warmup">
