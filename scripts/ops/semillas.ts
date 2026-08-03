@@ -94,22 +94,43 @@ async function probarSemilla(seed: WarmupSeed): Promise<{ ok: boolean; detalle: 
     return { ok: false, detalle: "imapflow no está instalado: no puedo probar el login" };
   }
 
+  const clave = descifrarSemilla(seed, process.env);
+  // Pista SIN exponer el secreto: un app password de Google tiene 16 caracteres. Si el guardado
+  // mide otra cosa, lo que se cargó no era la clave (pasa con `pbpaste` si el portapapeles tenía
+  // otra cosa en ese momento). Es la diferencia entre "la clave está mal" y "no es una clave".
+  const pista = clave.length === 16 ? "" : ` · OJO: la credencial guardada tiene ${clave.length} caracteres, un app password de Google tiene 16`;
+
   const cliente = new ImapFlow({
     host: seed.imap.host,
     port: seed.imap.port,
     secure: true,
-    auth: { user: seed.address, pass: descifrarSemilla(seed, process.env) },
+    auth: { user: seed.address, pass: clave },
     logger: false
   });
+  // Timeout duro: sin esto el probe se cuelga indefinidamente y no se sabe si es la red, la clave
+  // o el servidor. Un probe que no termina no es un probe.
+  const conTimeout = <T,>(p: Promise<T>, ms: number, que: string): Promise<T> =>
+    Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error(`timeout de ${ms / 1000}s en ${que}`)), ms))]);
   try {
-    await cliente.connect();
-    const bandeja = await cliente.mailboxOpen("INBOX");
+    await conTimeout(cliente.connect(), 25_000, "connect/login");
+    const bandeja = await conTimeout(cliente.mailboxOpen("INBOX"), 15_000, "abrir INBOX");
     await cliente.logout();
     return { ok: true, detalle: `INBOX con ${bandeja.exists} mensajes` };
   } catch (error) {
-    // El mensaje del proveedor se muestra tal cual: "AUTHENTICATIONFAILED" suele significar que
-    // falta el app password o que IMAP está deshabilitado en la cuenta.
-    return { ok: false, detalle: (error instanceof Error ? error.message : String(error)).split("\n")[0]! };
+    // imapflow tira `Error: Command failed`, que no dice NADA: el motivo real viene en propiedades
+    // aparte (responseText / serverResponseCode / authenticationFailed). Sin desarmarlas, el probe
+    // reporta un fallo mudo y el operador no sabe si es la clave, IMAP apagado o la red.
+    const e = error as { message?: string; responseText?: string; serverResponseCode?: string; authenticationFailed?: boolean; code?: string };
+    const partes = [
+      e.serverResponseCode ?? e.code,
+      e.responseText,
+      e.authenticationFailed ? "el servidor rechazó la autenticación" : null,
+      e.message
+    ].filter((p): p is string => typeof p === "string" && p.trim().length > 0);
+    // Dedup: imapflow repite el mismo texto en varias propiedades.
+    const detalle = [...new Set(partes)].join(" · ").split("\n")[0]!;
+    try { await cliente.close(); } catch { /* ya estaba cerrado */ }
+    return { ok: false, detalle: (detalle || "fallo sin detalle del servidor") + pista };
   }
 }
 
