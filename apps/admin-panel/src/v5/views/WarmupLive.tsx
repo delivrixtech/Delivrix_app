@@ -135,6 +135,8 @@ interface HiloResp {
   testId: string;
   semilla: string | null;
   mensajes: MensajeHilo[];
+  /** El otro extremo: lo que volvió a NUESTRO nodo (la respuesta de la semilla). */
+  enElNodo: { respuestas: Array<{ de: string; asunto: string; fecha: string; texto: string | null }>; motivo: string | null } | null;
   motivo: string | null;
 }
 
@@ -151,12 +153,12 @@ export default function WarmupLive() {
   const [hilo, setHilo] = useState<{ testId: string; cargando: boolean; data: HiloResp | null } | null>(null);
 
   /** Trae el correo REAL del buzón semilla. Caro (abre IMAP): solo cuando el operador lo pide. */
-  const abrirHilo = async (testId: string) => {
+  const abrirHilo = async (testId: string, domain: string) => {
     setHilo({ testId, cargando: true, data: null });
     try {
       // fetch directo y no getJson: el borde de lectura tipa el endpoint como literal exacto, y
       // acá hace falta un query param. La ruta base sigue saliendo de READ_ENDPOINTS.
-      const r = await fetch(`${READ_ENDPOINTS.warmupConversation}?testId=${encodeURIComponent(testId)}`, {
+      const r = await fetch(`${READ_ENDPOINTS.warmupConversation}?testId=${encodeURIComponent(testId)}&domain=${encodeURIComponent(domain)}`, {
         headers: { accept: "application/json" },
         cache: "no-store"
       });
@@ -165,7 +167,7 @@ export default function WarmupLive() {
     } catch (e) {
       setHilo({
         testId, cargando: false,
-        data: { testId, semilla: null, mensajes: [], motivo: e instanceof Error ? e.message : "no se pudo leer" }
+        data: { testId, semilla: null, mensajes: [], enElNodo: null, motivo: e instanceof Error ? e.message : "no se pudo leer" }
       });
     }
   };
@@ -268,7 +270,7 @@ export default function WarmupLive() {
 
 // ── El ciclo en curso: 4 etapas que se encienden en orden ────────────────────────────────────────
 
-function Ciclo({ vuelta, ahora, destacado, onVerHilo }: { vuelta: Vuelta; ahora: number; destacado: boolean; onVerHilo: (t: string) => void }) {
+function Ciclo({ vuelta, ahora, destacado, onVerHilo }: { vuelta: Vuelta; ahora: number; destacado: boolean; onVerHilo: (t: string, d: string) => void }) {
   const alcanzada = (kind: string) => Boolean(vuelta.etapas[kind]);
   const completa = alcanzada("replied");
 
@@ -284,7 +286,7 @@ function Ciclo({ vuelta, ahora, destacado, onVerHilo }: { vuelta: Vuelta; ahora:
         ) : null}
         <span style={S.hace}>{hace(vuelta.ultimo, ahora)}</span>
         {vuelta.testId ? (
-          <button type="button" style={S.verHilo} onClick={() => onVerHilo(vuelta.testId!)}>
+          <button type="button" style={S.verHilo} onClick={() => onVerHilo(vuelta.testId!, vuelta.domain)}>
             ver el correo
           </button>
         ) : null}
@@ -320,14 +322,14 @@ function SinCiclo() {
 
 // ── Fila del flujo ───────────────────────────────────────────────────────────────────────────────
 
-function Fila({ vuelta, ahora, nueva, onVerHilo }: { vuelta: Vuelta; ahora: number; nueva: boolean; onVerHilo: (t: string) => void }) {
+function Fila({ vuelta, ahora, nueva, onVerHilo }: { vuelta: Vuelta; ahora: number; nueva: boolean; onVerHilo: (t: string, d: string) => void }) {
   return (
     <div
       style={{ ...S.fila, ...(nueva ? S.filaNueva : null), cursor: vuelta.testId ? "pointer" : "default" }}
-      onClick={() => vuelta.testId && onVerHilo(vuelta.testId)}
+      onClick={() => vuelta.testId && onVerHilo(vuelta.testId, vuelta.domain)}
       role={vuelta.testId ? "button" : undefined}
       tabIndex={vuelta.testId ? 0 : undefined}
-      onKeyDown={(ev) => { if (vuelta.testId && (ev.key === "Enter" || ev.key === " ")) onVerHilo(vuelta.testId); }}
+      onKeyDown={(ev) => { if (vuelta.testId && (ev.key === "Enter" || ev.key === " ")) onVerHilo(vuelta.testId, vuelta.domain); }}
     >
       <span style={S.filaHora}>{hace(vuelta.ultimo, ahora)}</span>
       <span style={S.filaDom}>{vuelta.domain}</span>
@@ -371,6 +373,21 @@ function Hilo({ estado, onCerrar }: { estado: { testId: string; cargando: boolea
       ))}
 
       {estado.data?.motivo ? <div style={S.motivo}>{estado.data.motivo}</div> : null}
+
+      {/* El otro extremo: lo que la semilla contestó y volvió a nuestro nodo. */}
+      {estado.data?.enElNodo?.respuestas.map((r, i) => (
+        <div key={`n${i}`} style={S.msg}>
+          <div style={S.msgTop}>
+            <span style={S.msgPapel("respuesta")}>volvió al nodo</span>
+            <span style={S.msgDe}>{r.de}</span>
+            <span style={{ flex: 1 }} />
+            <span style={S.dim}>{r.fecha}</span>
+          </div>
+          <div style={S.asunto}>{r.asunto}</div>
+          {r.texto ? <pre style={S.cuerpoMsg}>{r.texto}</pre> : <span style={S.dim}>sin cuerpo legible</span>}
+        </div>
+      ))}
+      {estado.data?.enElNodo?.motivo ? <div style={S.motivo}>{estado.data.enElNodo.motivo}</div> : null}
     </div>
   );
 }

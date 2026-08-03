@@ -11,12 +11,21 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { leerHiloWarmup, type HiloWarmup, type ImapLector } from "../../../warmup-engine/src/live/imap-thread-reader.ts";
 import { descifrarSemilla, leerSemillas, semillasMedibles } from "../warmup-seeds.ts";
+import { buildLeerBuzonCommand, parsearBuzon } from "../warmup-node-mailbox.ts";
+import { leerInventarioFabrica } from "../sender-inventory.ts";
+import type { SmtpSshRunner } from "./smtp-provisioning.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
 import { authorizeSensitiveRead } from "./sensitive-read-auth.ts";
 
 export interface ConversacionResponse extends HiloWarmup {
   /** Desde qué buzón se leyó. El operador tiene que saber en qué semilla está mirando. */
   semilla: string | null;
+  /**
+   * Las respuestas que VOLVIERON a nuestro nodo. Es el otro extremo del hilo: la semilla contesta
+   * a `mailer@<dominio>` y Postfix lo entrega al buzón local. Sin esto la conversación se veía a
+   * medias y parecía que la semilla nunca respondía.
+   */
+  enElNodo: { respuestas: Array<{ de: string; asunto: string; fecha: string; texto: string | null }>; motivo: string | null } | null;
 }
 
 export async function handleWarmupConversationHttp(deps: {
@@ -25,6 +34,8 @@ export async function handleWarmupConversationHttp(deps: {
   workspace: OpenClawWorkspace;
   readBoundaryToken?: string;
   env?: Record<string, string | undefined>;
+  /** Para leer el buzón del nodo (la vuelta del hilo). Sin runner, esa mitad se declara ausente. */
+  sshRunner?: SmtpSshRunner;
   now?: () => Date;
 }): Promise<void> {
   if (deps.request.method !== "GET") {
@@ -47,6 +58,7 @@ export async function handleWarmupConversationHttp(deps: {
 
   const url = new URL(deps.request.url ?? "/", "http://local");
   const testId = (url.searchParams.get("testId") ?? "").trim();
+  const dominio = (url.searchParams.get("domain") ?? "").trim();
   if (!testId || testId.length > 120) {
     json(deps.response, 400, { error: "test_id_requerido" });
     return;
@@ -60,6 +72,7 @@ export async function handleWarmupConversationHttp(deps: {
       testId,
       semilla: null,
       mensajes: [],
+      enElNodo: await leerBuzonDelNodo(deps, dominio),
       motivo: "no hay ninguna semilla con app password: sin acceso al buzón no se puede leer el hilo"
     } satisfies ConversacionResponse);
     return;
@@ -78,14 +91,16 @@ export async function handleWarmupConversationHttp(deps: {
 
     await conTimeout(cliente.connect(), 20_000, "conectar al buzón");
     const hilo = await conTimeout(leerHiloWarmup(cliente, testId), 25_000, "leer el hilo");
-    json(deps.response, 200, { ...hilo, semilla: semilla.address } satisfies ConversacionResponse);
+    const enElNodo = await leerBuzonDelNodo(deps, dominio);
+    json(deps.response, 200, { ...hilo, semilla: semilla.address, enElNodo } satisfies ConversacionResponse);
   } catch (error) {
     // Se declara el fallo con su motivo. Un hilo vacío mudo se leería como "no hubo conversación".
     json(deps.response, 200, {
       testId,
       semilla: semilla.address,
       mensajes: [],
-      motivo: `no se pudo leer el buzón: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`
+      enElNodo: await leerBuzonDelNodo(deps, dominio),
+      motivo: `no se pudo leer el buzón semilla: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`
     } satisfies ConversacionResponse);
   } finally {
     try {
@@ -93,6 +108,43 @@ export async function handleWarmupConversationHttp(deps: {
     } catch {
       /* ya estaba cerrado */
     }
+  }
+}
+
+/**
+ * Lee el buzón del nodo por SSH: es donde aterrizan las respuestas de la semilla. Nunca lanza —
+ * esta mitad del hilo es un extra, y si falla se declara sin tumbar la otra mitad.
+ */
+async function leerBuzonDelNodo(
+  deps: { workspace: OpenClawWorkspace; sshRunner?: SmtpSshRunner },
+  dominio: string
+): Promise<ConversacionResponse["enElNodo"]> {
+  if (!dominio) return { respuestas: [], motivo: "sin dominio en la consulta: no sé qué nodo mirar" };
+  if (!deps.sshRunner?.isConfigured()) {
+    return { respuestas: [], motivo: "sin acceso SSH configurado: no se puede leer el buzón del nodo" };
+  }
+  try {
+    const inv = await leerInventarioFabrica({ workspace: deps.workspace });
+    const bandeja = inv.bandejas.find((b) => b.domain === dominio);
+    if (!bandeja?.serverIp || !bandeja.serverSlug) {
+      return { respuestas: [], motivo: `sin nodo con IP para ${dominio} en el inventario` };
+    }
+    const r = await conTimeout(
+      deps.sshRunner.run({
+        serverSlug: bandeja.serverSlug,
+        serverIp: bandeja.serverIp,
+        command: buildLeerBuzonCommand(),
+        timeoutMs: 25_000
+      }),
+      30_000,
+      "leer el buzón del nodo"
+    );
+    return parsearBuzon(r.stdout);
+  } catch (error) {
+    return {
+      respuestas: [],
+      motivo: `no se pudo leer el buzón del nodo: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`
+    };
   }
 }
 

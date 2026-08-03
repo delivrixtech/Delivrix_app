@@ -2373,6 +2373,7 @@ const server = createServer(async (request, response) => {
         response,
         workspace: openClawWorkspace,
         readBoundaryToken: sensitiveReadBoundaryToken,
+        sshRunner: smtpSshRunner,
         now: () => resolveGatewayNow()
       });
     }
