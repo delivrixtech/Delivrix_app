@@ -50,14 +50,31 @@ export const IMAP_POR_PROVEEDOR: Record<SeedProvider, { host: string; port: numb
   webde: { host: "imap.web.de", port: 993 }
 };
 
+/**
+ * Una semilla cumple DOS papeles, y solo uno necesita credencial:
+ *
+ *  - **destino** (siempre): nuestro nodo le manda correo. Para eso no hace falta ninguna clave —
+ *    alcanza con que la dirección exista. Sirve para generar tráfico y para leer el resultado en
+ *    el `mail.log` del nodo (aceptado / diferido / rechazado).
+ *  - **medición y señal** (solo con credencial): entrar al buzón para ver DÓNDE cayó (inbox,
+ *    promociones, spam) y generar la señal que calienta — abrir, marcar importante, rescatar de
+ *    spam. Sin clave esto es imposible, y el placement es lo que gatea toda la rampa en v1.
+ *
+ * Modelarlo así permite arrancar HOY con las direcciones que ya tenemos y sumarles credencial
+ * después, en vez de bloquear las pruebas hasta tener todo el pool con app passwords.
+ */
+export type SeedAuth = "none" | "imap_password" | "gmail_oauth";
+
 export interface WarmupSeed {
   address: string;
   provider: SeedProvider;
   /** Apagar una semilla NO la borra: se conserva el histórico y se puede reactivar. */
   enabled: boolean;
   imap: { host: string; port: number };
-  /** App password del buzón, cifrado. Nunca viaja ni se loguea en claro. */
-  secretEncrypted: SmtpCredentialEncryptedPayload;
+  /** Cómo se entra al buzón. `none` = solo sirve de destino, NO mide placement. */
+  auth: SeedAuth;
+  /** App password del buzón, cifrado. Ausente cuando `auth` es `none` o `gmail_oauth`. */
+  secretEncrypted?: SmtpCredentialEncryptedPayload;
   /** Para que el operador sepa qué es cada casilla dentro de seis meses. */
   notes?: string;
   addedAt: string;
@@ -92,9 +109,20 @@ export async function leerSemillas(
   return { seeds: registro.seeds, existeRegistro: true };
 }
 
-/** Las que sirven para calentar HOY: habilitadas y con credencial. */
+/** Las que sirven de DESTINO hoy: alcanza con estar habilitadas. */
 export function semillasActivas(seeds: WarmupSeed[]): WarmupSeed[] {
-  return seeds.filter((s) => s.enabled && s.secretEncrypted);
+  return seeds.filter((s) => s.enabled);
+}
+
+/**
+ * Las que además pueden MEDIR placement y generar señal (tienen cómo entrar al buzón).
+ *
+ * La diferencia con `semillasActivas` no es cosmética: mandar correo a una semilla sin credencial
+ * genera tráfico pero NO enseña nada — no sabés si cayó en inbox o en spam, y no podés rescatarlo.
+ * Quien gatee una rampa por placement tiene que mirar ESTA lista, no la otra.
+ */
+export function semillasMedibles(seeds: WarmupSeed[]): WarmupSeed[] {
+  return seeds.filter((s) => s.enabled && s.auth !== "none");
 }
 
 /**
@@ -112,10 +140,14 @@ export function elegirSemilla(seeds: WarmupSeed[], domain: string, vuelta: numbe
   return activas[idx] ?? null;
 }
 
-/** Cobertura por proveedor: sin varios proveedores no se puede saber dónde cae el correo. */
+/**
+ * Cobertura de MEDICIÓN por proveedor. Cuenta solo las que pueden medir: una semilla sin
+ * credencial no da cobertura de nada, aunque reciba correo — reportarla como cobertura sería
+ * exactamente el número falso que hace creer que estás midiendo Yahoo cuando no.
+ */
 export function coberturaPorProveedor(seeds: WarmupSeed[]): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const s of semillasActivas(seeds)) out[s.provider] = (out[s.provider] ?? 0) + 1;
+  for (const s of semillasMedibles(seeds)) out[s.provider] = (out[s.provider] ?? 0) + 1;
   return out;
 }
 
@@ -152,25 +184,33 @@ export async function agregarSemilla(input: {
   env?: Record<string, string | undefined>;
   address: string;
   provider: string;
-  secret: string;
+  /** Ausente o vacío ⇒ semilla solo-destino (`auth: "none"`): no mide placement. */
+  secret?: string;
+  /** Para la semilla Gmail que ya tiene refresh token OAuth en config/warmup-oauth.local.json. */
+  auth?: SeedAuth;
   imapHost?: string;
   imapPort?: number;
   notes?: string;
   now?: () => Date;
 }): Promise<WarmupSeed> {
-  if (!input.secret || input.secret.trim().length === 0) {
-    throw new WarmupSeedError("la semilla necesita su app password (se lee por stdin, nunca por argv)");
-  }
   const { address, provider, imap } = validarSemillaNueva(input);
-  const key = credentialEncryptionKey(input.env);
   const ahora = (input.now ?? (() => new Date()))();
+  const tieneSecreto = Boolean(input.secret && input.secret.trim().length > 0);
+  const auth: SeedAuth = input.auth ?? (tieneSecreto ? "imap_password" : "none");
+
+  if (auth === "imap_password" && !tieneSecreto) {
+    throw new WarmupSeedError("auth imap_password exige el app password (se lee por stdin, nunca por argv)");
+  }
 
   const seed: WarmupSeed = {
     address,
     provider,
     enabled: true,
     imap,
-    secretEncrypted: encryptSecret(input.secret, key, seedAad(address, provider)),
+    auth,
+    ...(tieneSecreto
+      ? { secretEncrypted: encryptSecret(input.secret!, credentialEncryptionKey(input.env), seedAad(address, provider)) }
+      : {}),
     ...(input.notes ? { notes: input.notes } : {}),
     addedAt: ahora.toISOString(),
     verifiedAt: null
@@ -219,5 +259,8 @@ export async function marcarVerificada(input: {
 
 /** Descifra el app password de una semilla. Solo para el momento de conectarse por IMAP. */
 export function descifrarSemilla(seed: WarmupSeed, env?: Record<string, string | undefined>): string {
+  if (!seed.secretEncrypted) {
+    throw new WarmupSeedError(`${seed.address} no tiene app password guardado (auth: ${seed.auth})`);
+  }
   return decryptSecret(seed.secretEncrypted, credentialEncryptionKey(env), seedAad(seed.address, seed.provider));
 }

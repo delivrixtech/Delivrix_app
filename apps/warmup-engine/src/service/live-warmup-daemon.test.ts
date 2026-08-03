@@ -4,7 +4,10 @@ import {
   resolveLiveDaemonConfig,
   decideDaemonAction,
   recentInboxRate,
-  pickBox
+  pickBox,
+  elegirSemillaDelRegistro,
+  puedeMedir,
+  type SeedDelDaemon
 } from "./live-warmup-daemon.ts";
 import type { Placement } from "../live/warmup-live-cycle.ts";
 
@@ -80,4 +83,28 @@ test("pickBox rota estable por índice", () => {
   assert.equal(pickBox(boxes, 3), "a");
   assert.equal(pickBox(boxes, 4), "b");
   assert.throws(() => pickBox([], 0));
+});
+
+// ── Semillas del registro ────────────────────────────────────────────────────────────────────────
+
+test("la rotación de semillas reparte y respeta las apagadas", () => {
+  const seeds: SeedDelDaemon[] = [
+    { address: "a@gmail.com", provider: "gmail", enabled: true, auth: "gmail_oauth" },
+    { address: "b@gmail.com", provider: "gmail", enabled: true, auth: "none" },
+    { address: "muerta@gmail.com", provider: "gmail", enabled: false, auth: "none" }
+  ];
+  const usadas = new Set<string>();
+  for (let v = 0; v < 8; v += 1) usadas.add(elegirSemillaDelRegistro(seeds, "dominio.com", v)!.address);
+  assert.deepEqual([...usadas].sort(), ["a@gmail.com", "b@gmail.com"], "la apagada nunca se usa");
+  assert.equal(elegirSemillaDelRegistro([], "x.com", 0), null, "sin semillas no se inventa una");
+});
+
+test("solo se MIDE en la semilla del refresh token: en las demás sería un dato falso", () => {
+  const oauth: SeedDelDaemon = { address: "medidora@gmail.com", provider: "gmail", enabled: true, auth: "gmail_oauth" };
+  const otra: SeedDelDaemon = { address: "otra@gmail.com", provider: "gmail", enabled: true, auth: "none" };
+  assert.equal(puedeMedir(oauth, "medidora@gmail.com"), true);
+  assert.equal(puedeMedir(oauth, "MEDIDORA@gmail.com"), true, "case-insensitive");
+  assert.equal(puedeMedir(otra, "medidora@gmail.com"), false, "sin lector no se mide");
+  // Una semilla OAuth que NO es la cuenta del token tampoco: las ops apuntan a una sola casilla.
+  assert.equal(puedeMedir({ ...oauth, address: "tercera@gmail.com" }, "medidora@gmail.com"), false);
 });

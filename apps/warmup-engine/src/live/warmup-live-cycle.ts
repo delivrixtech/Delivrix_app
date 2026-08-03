@@ -76,7 +76,12 @@ export interface RunLiveCycleDeps {
   /** Asunto final (ya con el sufijo del test-id, para trazar). */
   subject: string;
   mailer: WarmupMailer;
-  gmail: GmailOps;
+  /**
+   * `null` = esta semilla NO se puede medir (las Gmail ops están atadas a la cuenta del refresh
+   * token; buscar ahí un correo que fue a OTRA casilla devolvería "no encontrado" sobre un mensaje
+   * que sí llegó). En ese caso el ciclo envía y se detiene: enviado-sin-medir, no medido-mal.
+   */
+  gmail: GmailOps | null;
   recorder: ActivityRecorder;
   sleep: (ms: number) => Promise<void>;
   /** Intentos de polling de la medición (default 12) y espera entre intentos (default 5000ms). */
@@ -111,6 +116,13 @@ export async function runLiveCycle(deps: RunLiveCycleDeps): Promise<RunLiveCycle
   } catch (err) {
     await recorder.record({ ...base, kind: "error", subject, testId, detail: { stage: "sent", note: errMsg(err) } });
     return { cycleId, placement: null, completed: false, brokeAt: "sent" };
+  }
+
+  // Semilla sin capacidad de medición: el envío ya quedó registrado y ahí termina la vuelta. NO se
+  // devuelve placement: `null` significa "no sé", y quien gatea la rampa tiene que verlo así.
+  if (!gmail) {
+    deps.logger?.info?.(`live-cycle ${cycleId} enviado sin medición (${seedInbox} no tiene lector)`);
+    return { cycleId, placement: null, completed: false, brokeAt: "measured" };
   }
 
   // ② MEASURE (polling — Gmail puede demorar el indexado)

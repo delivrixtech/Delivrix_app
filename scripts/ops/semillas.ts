@@ -26,12 +26,13 @@ import {
   marcarSemilla,
   marcarVerificada,
   semillasActivas,
+  semillasMedibles,
   SEED_PROVIDERS,
   type WarmupSeed
 } from "../../apps/gateway-api/src/warmup-seeds.ts";
 
 const args = process.argv.slice(2);
-const BANDERAS = new Set(["--list", "--add", "--probe", "--disable", "--enable"]);
+const BANDERAS = new Set(["--list", "--add", "--probe", "--disable", "--enable", "--solo-destino"]);
 const CON_VALOR = new Set(["address", "provider", "imap-host", "imap-port", "notes"]);
 
 for (const a of args) {
@@ -63,10 +64,21 @@ async function leerSecretoPorStdin(direccion: string): Promise<string> {
   return "";
 }
 
+/** El papel importa más que el estado: una semilla solo-destino no mide nada, y hay que verlo. */
+const PAPEL: Record<string, string> = {
+  none: "solo destino",
+  imap_password: "mide (IMAP)",
+  gmail_oauth: "mide (OAuth)"
+};
+
 function filaSemilla(s: WarmupSeed): string {
   const estado = s.enabled ? "activa " : "APAGADA";
-  const verificada = s.verifiedAt ? `verificada ${new Date(s.verifiedAt).toLocaleDateString("es")}` : "SIN VERIFICAR";
-  return `  ${estado} ${s.address.padEnd(34)} ${s.provider.padEnd(10)} ${verificada}${s.notes ? ` · ${s.notes}` : ""}`;
+  const papel = (PAPEL[s.auth] ?? s.auth).padEnd(13);
+  // "SIN VERIFICAR" solo tiene sentido para las que pueden autenticar; una solo-destino no se
+  // verifica nunca, y marcarla así sería una alarma falsa permanente.
+  const verificada =
+    s.auth === "none" ? "" : s.verifiedAt ? `verificada ${new Date(s.verifiedAt).toLocaleDateString("es")}` : "SIN VERIFICAR";
+  return `  ${estado} ${s.address.padEnd(30)} ${s.provider.padEnd(10)} ${papel} ${verificada}${s.notes ? ` · ${s.notes}` : ""}`;
 }
 
 /** Login IMAP real. Es la única prueba de que la semilla sirve: el registro solo guarda intención. */
@@ -113,9 +125,13 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const puerto = flag("imap-port");
-    const secret = await leerSecretoPorStdin(address);
-    if (!secret) {
+    // --solo-destino: la semilla recibe correo pero NO mide placement. Sirve para arrancar con
+    // direcciones que todavia no tienen app password, sin bloquear las pruebas.
+    const soloDestino = args.includes("--solo-destino");
+    const secret = soloDestino ? "" : await leerSecretoPorStdin(address);
+    if (!soloDestino && !secret) {
       console.error("no llegó ningún app password por stdin. No se agregó nada.");
+      console.error("Si la querés solo como destino (sin medir placement), agregá --solo-destino.");
       process.exit(1);
     }
     const seed = await agregarSemilla({
@@ -123,12 +139,16 @@ async function main(): Promise<void> {
       env: process.env,
       address,
       provider,
-      secret,
+      ...(secret ? { secret } : {}),
       ...(flag("imap-host") ? { imapHost: flag("imap-host")! } : {}),
       ...(puerto ? { imapPort: Number.parseInt(puerto, 10) } : {}),
       ...(flag("notes") ? { notes: flag("notes")! } : {})
     });
     console.log(`\nagregada: ${seed.address} (${seed.provider}) · IMAP ${seed.imap.host}:${seed.imap.port}`);
+    if (seed.auth === "none") {
+      console.log("Queda como SOLO DESTINO: recibe correo, pero no puede decir dónde cayó ni rescatarlo de spam.");
+      return;
+    }
 
     const r = await probarSemilla(seed);
     console.log(r.ok ? `probe IMAP OK — ${r.detalle}` : `probe IMAP FALLÓ — ${r.detalle}`);
@@ -158,10 +178,27 @@ async function main(): Promise<void> {
 
   if (args.includes("--probe")) {
     const soloUna = flag("address");
-    const objetivo = soloUna ? seeds.filter((s) => s.address === soloUna.trim().toLowerCase()) : seeds;
+    // Solo se prueban las de app password. Las solo-destino no tienen con qué autenticar, y la
+    // de OAuth usa un refresh token que vive en config/warmup-oauth.local.json — probarlas por
+    // este camino daría un FALLA falso sobre semillas sanas.
+    const conAuth = seeds.filter((s) => s.auth === "imap_password");
+    const oauth = seeds.filter((s) => s.auth === "gmail_oauth");
+    if (oauth.length > 0) {
+      console.log(
+        `(${oauth.length} semilla(s) OAuth omitidas: su token está en config/warmup-oauth.local.json, ` +
+          "lo valida el daemon al arrancar, no este probe)"
+      );
+    }
+    const objetivo = soloUna ? conAuth.filter((s) => s.address === soloUna.trim().toLowerCase()) : conAuth;
+    const omitidas = seeds.filter((s) => s.auth === "none").length;
+    if (omitidas > 0) console.log(`(${omitidas} semilla(s) solo-destino omitidas: no tienen credencial que probar)`);
     if (objetivo.length === 0) {
-      console.error(soloUna ? `${soloUna} no está en el registro.` : "no hay semillas para probar.");
-      process.exit(1);
+      console.log(
+        soloUna
+          ? `${soloUna} no es una semilla con app password (o no está en el registro).`
+          : "no hay semillas con app password para probar. Agregá una con --add."
+      );
+      return;
     }
     console.log(`probando ${objetivo.length} semilla(s) por IMAP…\n`);
     let ok = 0;
@@ -191,9 +228,13 @@ async function main(): Promise<void> {
   for (const s of seeds) console.log(filaSemilla(s));
 
   const activas = semillasActivas(seeds);
+  const miden = semillasMedibles(seeds);
   const cobertura = coberturaPorProveedor(seeds);
-  console.log(`\n${activas.length} activas · cobertura: ${Object.entries(cobertura).map(([p, n]) => `${p} ${n}`).join(", ") || "ninguna"}`);
-  const sinVerificar = activas.filter((s) => !s.verifiedAt).length;
+  console.log(
+    `\n${activas.length} activas como destino · ${miden.length} pueden MEDIR placement · ` +
+      `cobertura de medición: ${Object.entries(cobertura).map(([p, n]) => `${p} ${n}`).join(", ") || "ninguna"}`
+  );
+  const sinVerificar = miden.filter((s) => !s.verifiedAt).length;
   if (sinVerificar > 0) console.log(`${sinVerificar} activa(s) SIN VERIFICAR — corré --probe antes de confiar en ellas.`);
 
   // Sin varios proveedores no se puede saber dónde cae el correo: el punto ciego se declara.

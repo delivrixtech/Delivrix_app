@@ -52,6 +52,7 @@ export interface LiveDaemonConfig {
   placementWindow: number;
   boxes: string[];
   seedInbox: string;
+  seedsPath: string;
   killFile: string;
   pollAttempts: number;
   pollDelayMs: number;
@@ -80,7 +81,11 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
     placementFloor: floatEnv(env.WARMUP_LIVE_PLACEMENT_FLOOR, 0.5),
     placementWindow: intEnv(env.WARMUP_LIVE_PLACEMENT_WINDOW, 6, 1),
     boxes,
+    // Semilla de respaldo. La fuente real es el REGISTRO (warmup-seeds.json): esta env var queda
+    // solo para el caso en que el registro no exista todavía, y para saber cuál es la que MIDE
+    // (la que tiene el refresh token OAuth de config/warmup-oauth.local.json).
     seedInbox: (env.WARMUP_GMAIL_SEED_USER ?? "infradelivrixdemo@gmail.com").trim(),
+    seedsPath: (env.WARMUP_SEEDS_FILE ?? resolve(process.cwd(), "runtime/openclaw-workspace/inventory/warmup-seeds.json")).trim(),
     killFile: (env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "runtime/warmup-live.kill")).trim(),
     // Ventana de medición amplia: Gmail puede tardar >60s en indexar el mensaje recién enviado.
     // 30 intentos × 6s = ~3min inline. (Mejora futura: medir en un pase posterior, no bloqueante.)
@@ -90,6 +95,41 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
 }
 
 // ── Decisión de gate (pura, testeable) ──────────────────────────────────────────────────────────────
+
+// ── Semillas: el registro manda ─────────────────────────────────────────────────────────────────────
+
+/** Lo que el daemon necesita de una semilla. Espeja WarmupSeed del gateway (warmup-seeds.ts). */
+export interface SeedDelDaemon {
+  address: string;
+  provider: string;
+  enabled: boolean;
+  auth: "none" | "imap_password" | "gmail_oauth";
+}
+
+/**
+ * Elige la semilla de la vuelta. MISMA rotación que el registro del gateway: por (dominio, vuelta),
+ * para que un dominio recorra todas las semillas y dos dominios no golpeen la misma en la misma
+ * vuelta. Sin esto, 58 dominios escribiéndole siempre a la misma casilla son una huella obvia.
+ */
+export function elegirSemillaDelRegistro(seeds: SeedDelDaemon[], domain: string, vuelta: number): SeedDelDaemon | null {
+  const activas = seeds.filter((s) => s.enabled);
+  if (activas.length === 0) return null;
+  let hash = 0;
+  for (const ch of domain) hash = (hash * 31 + ch.charCodeAt(0)) % 100_000;
+  return activas[Math.abs(hash + vuelta) % activas.length] ?? null;
+}
+
+/**
+ * ¿Podemos MEDIR dónde cayó este envío?
+ *
+ * Las Gmail ops del daemon están atadas a UNA cuenta (la del refresh token OAuth). Si el correo fue
+ * a otra semilla, buscar ahí devolvería "no encontrado" sobre un mensaje que sí llegó — un dato
+ * falso peor que ninguno. Así que se mide SOLO cuando la semilla elegida es la de OAuth; en las
+ * demás el envío se registra como enviado-sin-medir, que es la verdad.
+ */
+export function puedeMedir(seed: SeedDelDaemon, cuentaDeMedicion: string): boolean {
+  return seed.auth === "gmail_oauth" && seed.address.toLowerCase() === cuentaDeMedicion.toLowerCase();
+}
 
 export type DaemonAction = "inert" | "killed" | "cap-reached" | "placement-pause" | "send";
 
@@ -279,6 +319,24 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   const store = JSON.parse(await readFile(inventoryPath, "utf8")) as InventoryCredentialStore;
   const key = resolveCredentialKey(env.CREDENTIAL_ENCRYPTION_KEY);
 
+  // El REGISTRO de semillas (se agregan a mano con scripts/ops/semillas.ts). Si todavía no existe,
+  // se cae a la env var de siempre para no romper — pero se DICE, porque una sola semilla no es
+  // warmup y el operador tiene que saber que está corriendo así.
+  let semillas: SeedDelDaemon[] = [];
+  try {
+    const registro = JSON.parse(await readFile(cfg.seedsPath, "utf8")) as { seeds?: SeedDelDaemon[] };
+    semillas = Array.isArray(registro.seeds) ? registro.seeds.filter((s) => s.enabled) : [];
+  } catch {
+    semillas = [];
+  }
+  if (semillas.length === 0) {
+    semillas = [{ address: cfg.seedInbox, provider: "gmail", enabled: true, auth: "gmail_oauth" }];
+    log(`SIN REGISTRO de semillas (${cfg.seedsPath}) — uso solo ${cfg.seedInbox}. Cargá semillas con scripts/ops/semillas.ts`);
+  } else {
+    const miden = semillas.filter((s) => s.auth !== "none").length;
+    log(`semillas: ${semillas.length} activas · ${miden} pueden medir placement · destinos ${semillas.map((s) => s.address).join(", ")}`);
+  }
+
   const tokenProvider = createGoogleOAuthTokenProvider({});
   const gmail = createGmailOps(tokenProvider);
   const recorder = createPgRecorder(pg);
@@ -302,7 +360,19 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         const testId = makeTestId(stamp);
         const cycleId = "cyc-" + stamp;
         const subject = `${conversation.subject} [${testId.slice(-6)}]`;
-        log(`vuelta #${seq + 1} · ${box} → ${cfg.seedInbox} · tema ${conversation.topic}`);
+        // La semilla ROTA por (dominio, vuelta): el tráfico se reparte entre nuestras casillas en
+        // vez de caer siempre en la misma.
+        const semilla = elegirSemillaDelRegistro(semillas, box, seq) ?? {
+          address: cfg.seedInbox,
+          provider: "gmail",
+          enabled: true,
+          auth: "gmail_oauth" as const
+        };
+        const medible = puedeMedir(semilla, cfg.seedInbox);
+        log(
+          `vuelta #${seq + 1} · ${box} → ${semilla.address} · tema ${conversation.topic}` +
+            (medible ? "" : " · SIN MEDICIÓN (esta semilla no tiene con qué leer dónde cayó)")
+        );
         let mailer: WarmupMailer;
         try {
           mailer = createBoxMailer(box, store, key);
@@ -314,8 +384,13 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           continue;
         }
         const result = await runLiveCycle({
-          cycleId, testId, boxDomain: box, fromAddress: "mailer@" + box, seedInbox: cfg.seedInbox,
-          conversation, subject, mailer, gmail, recorder, sleep,
+          cycleId, testId, boxDomain: box, fromAddress: "mailer@" + box, seedInbox: semilla.address,
+          conversation, subject, mailer,
+          // Sin capacidad de medir, NO se le pasan las Gmail ops: buscar en la cuenta equivocada
+          // devolvería "no encontrado" sobre un mensaje que sí llegó, y eso alimentaría el gate de
+          // placement con un dato falso. Mejor enviado-sin-medir que medido-mal.
+          ...(medible ? { gmail } : { gmail: null }),
+          recorder, sleep,
           pollAttempts: cfg.pollAttempts, pollDelayMs: cfg.pollDelayMs,
           logger: { info: (m) => log(m), warn: (m) => log("WARN " + m) }
         });

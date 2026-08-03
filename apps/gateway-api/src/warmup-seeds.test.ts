@@ -18,6 +18,7 @@ import {
   marcarSemilla,
   marcarVerificada,
   semillasActivas,
+  semillasMedibles,
   SEEDS_FILE,
   validarSemillaNueva,
   WarmupSeedError,
@@ -40,6 +41,7 @@ function seed(overrides: Partial<WarmupSeed> = {}): WarmupSeed {
     provider: "gmail",
     enabled: true,
     imap: { host: "imap.gmail.com", port: 993 },
+    auth: "imap_password",
     secretEncrypted: { algorithm: "aes-256-gcm", iv: "x", authTag: "y", ciphertext: "z" },
     addedAt: ahora.toISOString(),
     ...overrides
@@ -83,12 +85,32 @@ test("agregar dos veces la misma dirección REEMPLAZA, no duplica", async () => 
   assert.equal(descifrarSemilla(seeds[0]!, ENV), "nueva", "gana la rotación más reciente");
 });
 
-test("una semilla sin app password se rechaza (no sirve de nada)", async () => {
+test("una semilla SIN credencial se acepta como solo-destino, pero NO mide", async () => {
+  // Es lo que permite arrancar hoy con las direcciones que ya tenemos, sin esperar app passwords.
+  const workspace = await ws();
+  const seed = await agregarSemilla({ workspace, env: ENV, address: "sin-clave@gmail.com", provider: "gmail" });
+  assert.equal(seed.auth, "none");
+  assert.equal(seed.secretEncrypted, undefined, "no se guarda un payload vacio");
+
+  const { seeds } = await leerSemillas(workspace);
+  assert.equal(semillasActivas(seeds).length, 1, "sirve de destino: le podemos mandar correo");
+  assert.equal(semillasMedibles(seeds).length, 0, "pero NO puede decir donde cayo ni rescatar de spam");
+  assert.throws(() => descifrarSemilla(seeds[0]!, ENV), /no tiene app password/);
+});
+
+test("pedir auth imap_password sin secreto se rechaza (seria una semilla rota)", async () => {
   const workspace = await ws();
   await assert.rejects(
-    () => agregarSemilla({ workspace, env: ENV, address: "a@gmail.com", provider: "gmail", secret: "" }),
+    () => agregarSemilla({ workspace, env: ENV, address: "a@gmail.com", provider: "gmail", auth: "imap_password" }),
     WarmupSeedError
   );
+});
+
+test("la semilla Gmail con OAuth mide sin app password", async () => {
+  const workspace = await ws();
+  const seed = await agregarSemilla({ workspace, env: ENV, address: "oauth@gmail.com", provider: "gmail", auth: "gmail_oauth" });
+  assert.equal(seed.auth, "gmail_oauth");
+  assert.equal(semillasMedibles([seed]).length, 1, "el refresh token vive aparte, en config/warmup-oauth.local.json");
 });
 
 test("proveedor y dirección se validan; el IMAP sale del proveedor si no se pisa", () => {
@@ -153,6 +175,12 @@ test("la cobertura por proveedor delata el punto ciego (todo Gmail = no sabés d
   assert.deepEqual(coberturaPorProveedor(soloGmail), { gmail: 2 });
   const variado = [...soloGmail, seed({ address: "c@yahoo.com", provider: "yahoo" })];
   assert.deepEqual(coberturaPorProveedor(variado), { gmail: 2, yahoo: 1 });
+});
+
+test("una semilla SIN credencial no cuenta como cobertura: mediria un numero falso", () => {
+  const soloDestino = [seed({ address: "y@yahoo.com", provider: "yahoo", auth: "none", secretEncrypted: undefined })];
+  assert.deepEqual(coberturaPorProveedor(soloDestino), {}, "recibe correo, pero no dice donde cayo");
+  assert.equal(semillasActivas(soloDestino).length, 1, "aunque si sirve de destino");
 });
 
 test("verifiedAt se sella con el probe: una semilla sin verificar se distingue", async () => {
