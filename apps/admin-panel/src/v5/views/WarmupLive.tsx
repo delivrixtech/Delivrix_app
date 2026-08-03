@@ -43,6 +43,14 @@ interface CapFlota {
   nodos: Array<{ domain: string; cap: number | null; consumidoHoy: number | null; cableado: boolean }>;
 }
 
+interface LecturaAgente {
+  generadoEn: string | null;
+  modelo: string | null;
+  lectura: string | null;
+  motivo: string | null;
+  tokens: { prompt: number; completion: number } | null;
+}
+
 interface SemillasResp {
   destinos: number;
   midiendo: number;
@@ -147,6 +155,7 @@ export default function WarmupLive() {
   const [act, setAct] = useState<ActividadWarmup | null>(null);
   const [cap, setCap] = useState<CapFlota | null>(null);
   const [semillas, setSemillas] = useState<SemillasResp | null>(null);
+  const [agente, setAgente] = useState<LecturaAgente | null>(null);
   const [error, setError] = useState<string | null>(null);
   const nuevos = useRef<Set<string>>(new Set());
   const vistos = useRef<Set<string>>(new Set());
@@ -202,10 +211,17 @@ export default function WarmupLive() {
   useEffect(() => {
     void getJson<CapFlota>(READ_ENDPOINTS.senderPoolCap).then(setCap).catch(() => {});
     void getJson<SemillasResp>(READ_ENDPOINTS.warmupSeeds).then(setSemillas).catch(() => {});
+    // El agente mira cada 10 min; el panel lo relee cada 60s (el JSON es barato, el modelo no).
+    const leerAgente = () => void getJson<LecturaAgente>(READ_ENDPOINTS.warmupMonitor).then(setAgente).catch(() => {});
+    leerAgente();
+    const ta = setInterval(leerAgente, 60_000);
     const t = setInterval(() => {
       void getJson<CapFlota>(READ_ENDPOINTS.senderPoolCap).then(setCap).catch(() => {});
     }, 60_000);
-    return () => clearInterval(t);
+    return () => {
+      clearInterval(t);
+      clearInterval(ta);
+    };
   }, []);
 
   const vueltas = useMemo(() => agruparVueltas(act?.events ?? []), [act]);
@@ -257,12 +273,7 @@ export default function WarmupLive() {
         </div>
 
         {/* ── El agente, al lado ── */}
-        <aside style={S.rail}>
-          <div style={S.railHead}>agente</div>
-          <div style={S.railBody}>
-            <p style={S.railTxt}>El chat del agente vive en el botón “Preguntar a Delivrix”, arriba a la derecha.</p>
-          </div>
-        </aside>
+        <Agente lectura={agente} ahora={ahora} />
       </div>
     </div>
   );
@@ -341,6 +352,40 @@ function Fila({ vuelta, ahora, nueva, onVerHilo }: { vuelta: Vuelta; ahora: numb
       {vuelta.placement ? <span style={S.placement(vuelta.placement)}>{vuelta.placement}</span> : null}
       {vuelta.error ? <span style={S.filaErr}>{vuelta.error}</span> : null}
     </div>
+  );
+}
+
+/**
+ * La lectura del agente que mira el warmup, sobre el modelo local de la Mac mini.
+ *
+ * Lleva SIEMPRE su fecha y el modelo que la produjo: una opinión sin autor ni momento no es
+ * evidencia, y una lectura de hace horas no puede parecer de ahora. Si el agente no pudo mirar, se
+ * dice — nunca se muestra la anterior como si fuera fresca.
+ */
+function Agente({ lectura, ahora }: { lectura: LecturaAgente | null; ahora: number }) {
+  const vieja = lectura?.generadoEn ? ahora - Date.parse(lectura.generadoEn) > 30 * 60_000 : false;
+  return (
+    <aside style={S.rail}>
+      <div style={S.railHead}>
+        <span style={S.latido(Boolean(lectura?.lectura) && !vieja)} aria-hidden />
+        agente
+        {lectura?.generadoEn ? <span style={S.agenteHace}>hace {hace(lectura.generadoEn, ahora)}</span> : null}
+      </div>
+      <div style={S.railBody}>
+        {lectura?.lectura ? (
+          <>
+            <p style={S.agenteTxt}>{lectura.lectura}</p>
+            <div style={S.agentePie}>
+              {lectura.modelo}
+              {lectura.tokens ? ` · ${lectura.tokens.completion} tokens · costo 0` : ""}
+              {vieja ? " · LECTURA VIEJA" : ""}
+            </div>
+          </>
+        ) : (
+          <p style={S.railTxt}>{lectura?.motivo ?? "leyendo…"}</p>
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -482,9 +527,18 @@ const S = {
     background: "var(--color-surface)", overflow: "hidden", position: "sticky" as const, top: 12
   } as const,
   railHead: {
+    display: "flex", alignItems: "center", gap: 8,
     fontSize: 11, letterSpacing: ".16em", textTransform: "uppercase" as const,
     color: "var(--color-text-tertiary)", fontWeight: 600,
     padding: "12px 16px", borderBottom: "1px solid var(--color-border)"
+  } as const,
+  agenteHace: { marginInlineStart: "auto", letterSpacing: 0, textTransform: "none" as const } as const,
+  agenteTxt: {
+    margin: 0, fontSize: 12.5, lineHeight: 1.6, color: "var(--color-text-primary)"
+  } as const,
+  agentePie: {
+    marginTop: 10, fontSize: 10.5, color: "var(--color-text-tertiary)",
+    fontFamily: MONO, wordBreak: "break-word" as const
   } as const,
   railBody: { padding: 16 } as const,
   railTxt: { fontSize: 12.5, color: "var(--color-text-secondary)", margin: 0 } as const,

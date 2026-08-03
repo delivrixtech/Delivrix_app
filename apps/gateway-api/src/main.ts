@@ -286,6 +286,7 @@ import { handleSenderAlertsHttp } from "./routes/sender-alerts-read.ts";
 import { handleSenderCapHttp } from "./routes/sender-cap-read.ts";
 import { handleWarmupSeedsHttp } from "./routes/warmup-seeds-read.ts";
 import { handleWarmupConversationHttp } from "./routes/warmup-conversation-read.ts";
+import { handleWarmupMonitorHttp } from "./routes/warmup-monitor-read.ts";
 import { handleSenderInventoryHttp } from "./routes/sender-inventory-read.ts";
 import { handleSenderMeasurementHttp } from "./routes/sender-measurement-read.ts";
 import { handleSenderQuotaHttp, handleSenderQuotaUpdateHttp } from "./routes/sender-quota.ts";
@@ -2358,6 +2359,17 @@ const server = createServer(async (request, response) => {
     // Las alertas de la flota: destiladas de la ultima medicion. JSON local, no dispara SSH.
     if (request.method === "GET" && requestUrl(request).pathname === "/v1/sender-pool/alerts") {
       return await handleSenderAlertsHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    // La lectura del agente que mira el warmup (modelo local). Barato: sirve el JSON persistido.
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/warmup/monitor") {
+      return await handleWarmupMonitorHttp({
         request,
         response,
         workspace: openClawWorkspace,

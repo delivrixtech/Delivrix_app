@@ -107,6 +107,7 @@ const allowedProxyPaths = new Set([
   "/v1/sender-pool/alerts",
   "/v1/sender-pool/cap",
   "/v1/warmup/conversation",
+  "/v1/warmup/monitor",
   "/v1/warmup/seeds",
   "/v1/sender-pool/credentials/export",
   "/v1/sender-pool/credentials/download-all",
