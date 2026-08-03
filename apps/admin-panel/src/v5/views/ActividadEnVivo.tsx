@@ -168,10 +168,192 @@ export default function ActividadEnVivo() {
         <KpiCard label="Nodos sin límite" value={cap ? sinLimite : "—"} icon={TriangleAlert} />
       </div>
 
+      <Semillas />
+      <BloqueosPorReceptor alerts={alerts?.alerts ?? []} />
       <LimiteFisico data={cap} error={errCap} nodos={nodos} usoDe={usoDe} sinContador={sinContador} />
       <AlertasFlota data={alerts} error={errAlerts} />
       <FeedPorNodo alerts={alerts?.alerts ?? []} />
     </div>
+  );
+}
+
+// ── Semillas ─────────────────────────────────────────────────────────────────────────────────────
+
+interface SemillaPublica {
+  address: string;
+  provider: string;
+  enabled: boolean;
+  auth: string;
+  mide: boolean;
+  verifiedAt: string | null;
+  notes: string | null;
+}
+
+interface SemillasResponse {
+  existeRegistro: boolean;
+  seeds: SemillaPublica[];
+  destinos: number;
+  midiendo: number;
+  cobertura: Record<string, number>;
+  puntoCiego: string[];
+}
+
+const PAPEL_SEMILLA: Record<string, string> = {
+  none: "solo destino",
+  imap_password: "mide (IMAP)",
+  gmail_oauth: "mide (OAuth)"
+};
+
+/**
+ * Las bandejas nuestras en los proveedores contra las que la fábrica calienta sus dominios.
+ *
+ * Lo que esta tarjeta tiene que dejar clarísimo es la diferencia entre DESTINO y MEDICIÓN: una
+ * semilla sin credencial recibe correo, pero no puede decir si cayó en inbox o en spam. Contarlas
+ * juntas daría la sensación de cobertura que no tenemos.
+ */
+function Semillas() {
+  const { data, error } = useLectura<SemillasResponse>(READ_ENDPOINTS.warmupSeeds, 60_000);
+
+  if (error) return <Aviso titulo="Semillas del warmup" texto={`No se pudo leer: ${error}`} />;
+  if (!data) return <Aviso titulo="Semillas del warmup" texto="Leyendo…" />;
+  if (!data.existeRegistro) {
+    return (
+      <Aviso
+        titulo="Semillas del warmup"
+        texto="No hay registro todavía. Agregá la primera con: scripts/ops/semillas.ts --add --address=… --provider=gmail"
+      />
+    );
+  }
+
+  return (
+    <Card style={{ padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+        <div>
+          <Eyebrow>Semillas del warmup</Eyebrow>
+          <Caption style={{ marginTop: 4 }}>
+            Bandejas nuestras en los proveedores. Se agregan a mano con <code>scripts/ops/semillas.ts</code>.
+          </Caption>
+        </div>
+        <Caption>
+          <strong>{data.destinos}</strong> destinos · <strong>{data.midiendo}</strong> pueden medir placement
+        </Caption>
+      </div>
+
+      <DataTable
+        headers={["Dirección", "Proveedor", "Papel", "Estado"]}
+        align={["left", "left", "left", "left"]}
+        rows={data.seeds.map((s) => [
+          <span style={{ color: "var(--color-text-primary)", fontWeight: 500 }}>{s.address}</span>,
+          s.provider,
+          <span style={{ color: s.mide ? "var(--color-success)" : "var(--color-text-tertiary)" }}>
+            {PAPEL_SEMILLA[s.auth] ?? s.auth}
+          </span>,
+          !s.enabled ? (
+            <Pill tone="neutral">apagada</Pill>
+          ) : s.auth === "none" ? (
+            // No se marca "sin verificar": una solo-destino no se verifica nunca y sería una
+            // alarma falsa permanente.
+            <span style={{ color: "var(--color-text-tertiary)" }}>—</span>
+          ) : s.verifiedAt ? (
+            <span style={{ color: "var(--color-success)" }}>verificada</span>
+          ) : (
+            <Pill tone="warning">sin verificar</Pill>
+          )
+        ])}
+      />
+
+      {data.puntoCiego.length > 0 ? (
+        <Caption style={{ marginTop: 12, color: "var(--color-warning)" }}>
+          Punto ciego: sin semilla que mida en {data.puntoCiego.join(", ")} — ahí no sabemos dónde cae el correo.
+        </Caption>
+      ) : null}
+    </Card>
+  );
+}
+
+// ── Bloqueos por receptor ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Los receptores que nos cierran la puerta, agrupados por familia.
+ *
+ * Existe porque "22 nodos bloqueados" sugiere una causa y una solución, y son TRES problemas con
+ * arreglos distintos: Yahoo bloquea la IP y tiene formulario de delisting (es el grupo más grande
+ * y el más recuperable), Gmail castiga la reputación del dominio y no hay trámite —solo tiempo y
+ * warmup—, y Apple rechaza por local policy. Verlos juntos hacía perder tiempo buscando un arreglo
+ * técnico para lo que solo cura el tiempo.
+ */
+const FAMILIA_RECEPTOR: Array<{ nombre: string; dominios: string[]; accion: string; recuperable: boolean }> = [
+  {
+    nombre: "Yahoo (yahoo · aol · bellsouth · att)",
+    dominios: ["yahoo.com", "aol.com", "bellsouth.net", "att.net"],
+    accion: "Bloqueo por IP. Reintentar NO sirve — hay formulario de delisting en el postmaster de Yahoo.",
+    recuperable: true
+  },
+  {
+    nombre: "Google (gmail)",
+    dominios: ["gmail.com"],
+    accion: "Reputación del DOMINIO, no de la IP ni de la autenticación. No hay trámite: baja el volumen y calentá.",
+    recuperable: false
+  },
+  {
+    nombre: "Apple (icloud · me)",
+    dominios: ["icloud.com", "me.com"],
+    accion: "Rechazo por local policy. La vía es el soporte de Apple (HT204137).",
+    recuperable: false
+  }
+];
+
+function BloqueosPorReceptor({ alerts }: { alerts: SenderAlert[] }) {
+  const bloqueadas = alerts.filter((a) => a.kind === "bloqueada");
+  if (bloqueadas.length === 0) return null;
+
+  const grupos = FAMILIA_RECEPTOR.map((f) => ({
+    ...f,
+    // El detalle de la alerta trae "cerrada en yahoo.com, aol.com": se cuentan los dominios cuyo
+    // texto menciona algún receptor de la familia.
+    afectados: bloqueadas.filter((a) => f.dominios.some((d) => a.detail.includes(d))).map((a) => a.domain)
+  })).filter((g) => g.afectados.length > 0);
+
+  if (grupos.length === 0) return null;
+
+  return (
+    <Card style={{ padding: 20 }}>
+      <Eyebrow>Bloqueos por receptor</Eyebrow>
+      <Caption style={{ marginTop: 4 }}>
+        {bloqueadas.length} bandejas cerradas, agrupadas por quién cierra: cada familia se arregla distinto.
+      </Caption>
+
+      <div style={{ marginTop: 12 }}>
+        {grupos.map((g) => (
+          <details key={g.nombre} style={{ borderTop: "1px solid var(--color-border)" }}>
+            <summary style={{ cursor: "pointer", padding: "11px 2px", display: "flex", alignItems: "center", gap: 10, fontSize: 13.5 }}>
+              <Pill tone={g.recuperable ? "warning" : "critical"}>{g.afectados.length}</Pill>
+              <span style={{ fontWeight: 500, color: "var(--color-text-primary)" }}>{g.nombre}</span>
+              {g.recuperable ? <Pill tone="success">tiene trámite</Pill> : null}
+            </summary>
+            <div style={{ paddingBottom: 10 }}>
+              <Caption style={{ marginBottom: 8 }}>{g.accion}</Caption>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {g.afectados.map((d) => (
+                  <span
+                    key={d}
+                    style={{
+                      fontSize: 12,
+                      padding: "3px 8px",
+                      borderRadius: 6,
+                      border: "1px solid var(--color-border)",
+                      color: "var(--color-text-secondary)"
+                    }}
+                  >
+                    {d}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </details>
+        ))}
+      </div>
+    </Card>
   );
 }
 

@@ -58,6 +58,7 @@ test("admin panel exposes only approved GET endpoints", () => {
     "/v1/stuck-jobs",
     "/v1/warmup/activity",
     "/v1/warmup/ramp/by-domain",
+    "/v1/warmup/seeds",
     "/v1/warmup/status",
     "/v1/warmup/trends",
     "/v1/webdock/inventory"
@@ -72,10 +73,14 @@ test("admin panel rejects endpoints outside the read boundary", () => {
 });
 
 test("admin panel has no write endpoint constants", () => {
+  // "seed" esta en la lista negra por el VERBO (sembrar datos), no por el sustantivo. El registro
+  // de semillas del warmup es un recurso de LECTURA y se exceptua de forma explicita: cualquier
+  // otro endpoint que contenga "seed" sigue bloqueado.
+  const LECTURAS_CON_SEED = new Set(["/v1/warmup/seeds"]);
   for (const endpoint of Object.values(READ_ENDPOINTS)) {
     assert.ok(!endpoint.includes("final-report"));
     assert.ok(!endpoint.includes("recover"));
-    assert.ok(!endpoint.includes("seed"));
+    assert.ok(LECTURAS_CON_SEED.has(endpoint) || !endpoint.includes("seed"));
     assert.ok(!endpoint.includes("evaluate"));
     assert.ok(!endpoint.includes("dry-run"));
     assert.ok(!endpoint.includes("manual-snapshots"));
