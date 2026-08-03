@@ -169,6 +169,17 @@ test("mientras calienta, NFC vende 0: la rampa envía el volumen, no NFC encima"
   assert.equal(c.rampa?.cupoHoy, 200, "el cupo de la rampa queda visible para la pantalla");
 });
 
+test("rampa corriendo + salud ilegible: el estado lo gana la rampa, pero sinLectura queda izado", () => {
+  // El nodo incomunicado que está calentando no puede quedar invisible: el semáforo muestra
+  // "rampa día X/N" (correcto para la cuota), y el flag lleva el motivo de la sonda a las alertas.
+  const c = evaluarBandeja(inv(), med({ estado: "unreadable", detalle: "ssh: connection timed out" }), null, TECHO, rampa());
+  assert.equal(c.estado, "rampa día 3/14", "la rampa sigue ganando el semáforo");
+  assert.equal(c.hoyPuede, 0);
+  assert.equal(c.sinLectura?.motivo, "ssh: connection timed out");
+  const legible = evaluarBandeja(inv(), med(), null, TECHO, rampa());
+  assert.equal(legible.sinLectura, null, "salud legible = sin flag");
+});
+
 test("una rampa grande NO puede cruzar el umbral vía NFC: hoyPuede sigue 0", () => {
   // El caso que mataba el cable: rampa día 14 envía 50.000 ella misma; si NFC además consumiera
   // hoyPuede, el dominio cruzaría el umbral permanente. hoyPuede=0 lo hace imposible.

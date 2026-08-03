@@ -143,16 +143,25 @@ function AlertasFlota() {
   );
 }
 
+interface InventarioNodos {
+  bandejas: Array<{ domain: string; serverSlug: string | null; serverIp: string | null }>;
+}
+
 function FeedPorNodo() {
   const [alerts, setAlerts] = useState<SenderAlert[]>([]);
+  const [nodos, setNodos] = useState<Map<string, { slug: string; ip: string }>>(new Map());
   const [slug, setSlug] = useState("");
   const [ip, setIp] = useState("");
   const [feed, setFeed] = useState<ActivityFeed | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(false);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  // La lectura SSH es lenta: al cambiar de nodo, una respuesta en vuelo del nodo anterior puede
+  // llegar después y pisar la pantalla con eventos del nodo equivocado. El contador la descarta.
+  const seq = useRef(0);
 
-  // Los nodos con alertas son los más interesantes para bucear; se ofrecen como atajo.
+  // Los nodos con alertas son los más interesantes para bucear; se ofrecen como atajo. El
+  // inventario da el dominio → slug+IP para que el chip llene el feed solo, sin pegar nada.
   useEffect(() => {
     void fetch(READ_ENDPOINTS.senderPoolAlerts, { headers: { accept: "application/json" }, cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
@@ -160,22 +169,36 @@ function FeedPorNodo() {
         if (d?.alerts) setAlerts(d.alerts);
       })
       .catch(() => {});
+    void fetch(READ_ENDPOINTS.senderPoolInventory, { headers: { accept: "application/json" }, cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: InventarioNodos | null) => {
+        if (!d?.bandejas) return;
+        const m = new Map<string, { slug: string; ip: string }>();
+        for (const b of d.bandejas) {
+          if (b.serverSlug && b.serverIp) m.set(b.domain, { slug: b.serverSlug, ip: b.serverIp });
+        }
+        setNodos(m);
+      })
+      .catch(() => {});
   }, []);
 
   const cargarFeed = useMemo(
     () => async (s: string, i: string) => {
       if (!s || !i) return;
+      const mio = ++seq.current;
       setCargando(true);
       try {
         const url = `${READ_ENDPOINTS.senderPoolActivity}?serverSlug=${encodeURIComponent(s)}&serverIp=${encodeURIComponent(i)}&limit=50`;
         const r = await fetch(url, { headers: { accept: "application/json" }, cache: "no-store" });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        setFeed((await r.json()) as ActivityFeed);
+        const payload = (await r.json()) as ActivityFeed;
+        if (seq.current !== mio) return;
+        setFeed(payload);
         setError(null);
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "no se pudo leer el nodo");
+        if (seq.current === mio) setError(cause instanceof Error ? cause.message : "no se pudo leer el nodo");
       } finally {
-        setCargando(false);
+        if (seq.current === mio) setCargando(false);
       }
     },
     []
@@ -205,9 +228,18 @@ function FeedPorNodo() {
             key={a.domain}
             type="button"
             onClick={() => {
-              // El feed necesita slug+ip; el operador los pega, o se derivan del inventario en un
-              // slice futuro. Por ahora el atajo prefila el dominio como pista.
-              setSlug(a.domain);
+              // slug+IP salen del inventario: un clic y el feed arranca. Si el inventario no
+              // conoce el nodo (sin binding), cae al comportamiento viejo: el dominio como pista.
+              const nodo = nodos.get(a.domain);
+              if (nodo) {
+                setSlug(nodo.slug);
+                setIp(nodo.ip);
+              } else {
+                // Sin binding: el dominio como pista, y la IP se LIMPIA — dejarla del nodo
+                // anterior haría poletear por SSH el nodo equivocado etiquetado como este dominio.
+                setSlug(a.domain);
+                setIp("");
+              }
             }}
             title={`Bucear en ${a.domain}`}
             style={{
@@ -217,7 +249,10 @@ function FeedPorNodo() {
               borderRadius: 8,
               cursor: "pointer",
               border: "1px solid var(--line, #e6e9ee)",
-              background: slug === a.domain ? "var(--color-warning-soft, #fef3c7)" : "transparent",
+              background:
+                slug !== "" && slug === (nodos.get(a.domain)?.slug ?? a.domain)
+                  ? "var(--color-warning-soft, #fef3c7)"
+                  : "transparent",
               color: "inherit"
             }}
           >
@@ -235,7 +270,7 @@ function FeedPorNodo() {
         />
         <input value={ip} onChange={(e) => setIp(e.target.value)} placeholder="serverIp (ej 1.2.3.4)" style={inputStyle} />
         <span style={{ fontSize: 12, color: "var(--muted, #8a94a0)" }}>
-          {cargando ? "leyendo…" : slug && ip ? "actualiza cada 15s" : "pegá slug + IP del nodo"}
+          {cargando ? "leyendo…" : slug && ip ? "actualiza cada 15s" : "tocá un chip o pegá slug + IP"}
         </span>
       </div>
 

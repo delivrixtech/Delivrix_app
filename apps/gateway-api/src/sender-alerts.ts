@@ -18,6 +18,7 @@ export type AlertKind =
   | "rampa_pausada"
   | "cola_atascada"
   | "bloqueada"
+  | "sin_lectura"
   | "rechazo_parcial"
   | "cerca_umbral";
 
@@ -71,6 +72,13 @@ export function alertasDeBandeja(b: CuotaBandeja): SenderAlert[] {
   }
   if (b.estado === "bloqueada") {
     out.push({ domain: b.domain, severity: "high", kind: "bloqueada", detail: b.motivo || "cerrada en el receptor" });
+  }
+  // La medición corrió pero el nodo no se pudo leer: la firma del modo de falla real "nodo vivo
+  // pero incomunicado" (el proveedor lo da running y solo un chequeo externo lo ve caído). Se
+  // mira el flag `sinLectura`, NO el estado: una rampa corriendo tapa el estado "sin lectura" en
+  // el semáforo, y un nodo incomunicado que está calentando es justo el que más urge mirar.
+  if (b.sinLectura) {
+    out.push({ domain: b.domain, severity: "high", kind: "sin_lectura", detail: b.sinLectura.motivo || "la medición no pudo leer el nodo" });
   }
   if (b.estado === "rechazo parcial") {
     out.push({ domain: b.domain, severity: "warning", kind: "rechazo_parcial", detail: b.motivo || "rechazo parcial" });

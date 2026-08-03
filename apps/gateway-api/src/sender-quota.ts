@@ -69,6 +69,13 @@ export interface CuotaBandeja {
   cerca: string[];
   /** Rampa de warmup activa sobre esta bandeja. `null` = no esta calentando. */
   rampa: RampaCuota | null;
+  /**
+   * La lectura de SALUD quedo ilegible (el "nodo vivo pero incomunicado"). Viaja aparte del
+   * `estado` porque el estado es lo que GANA el semaforo (una rampa corriendo lo tapa), y un
+   * nodo incomunicado tiene que alertar aunque este calentando — justo ahi es cuando mas
+   * importa. `null` = la salud se leyo (o nunca se midio, que es "sin medir", no incomunicado).
+   */
+  sinLectura: { motivo: string } | null;
 }
 
 export interface CuotaFlota {
@@ -120,7 +127,8 @@ export function evaluarBandeja(
     edadDias: inv.edadDias,
     cruzados: med?.cruzados ?? [],
     cerca: med?.cerca ?? [],
-    rampa
+    rampa,
+    sinLectura: med?.estado === "unreadable" ? { motivo: med.detalle } : null
   };
   // La asignada nunca sale del techo vigente, aunque se haya guardado con un techo anterior.
   const tope = asignada === null ? null : Math.min(asignada, techo);
