@@ -496,8 +496,13 @@ test("listRecentRollups: ORDER BY window_end DESC LIMIT $1; spam_rate con NULLIF
   const stores = createPgWarmupStores(client);
   const series = await stores.placement.listRecentRollups(30);
   const q = sql(calls[0].text);
-  assert.match(q, /FROM warmup_placement_rollups ORDER BY window_end DESC LIMIT \$1/);
-  assert.match(q, /spam_count::numeric \/ NULLIF\(samples, 0\) AS spam_rate/);
+  assert.match(q, /FROM warmup_placement_rollups r/);
+  assert.match(q, /ORDER BY r\.window_end DESC LIMIT \$1/);
+  assert.match(q, /spam_count::numeric \/ NULLIF\(r\.samples, 0\) AS spam_rate/);
+  // El filtro que impide que los fixtures @panel.test salgan como medicion real. Va en la CONSULTA
+  // y no en la vista: cualquier consumidor futuro heredaria el dato falso si se filtrara al pintar.
+  assert.match(q, /NOT EXISTS/, "los rollups de nodos fixture no pueden entrar a la serie");
+  assert.match(q, /@panel\.test/);
   assert.deepEqual(calls[0].params, [30]);
 
   assert.equal(series[0].windowEnd, "2026-07-09T00:00:00.000Z");
