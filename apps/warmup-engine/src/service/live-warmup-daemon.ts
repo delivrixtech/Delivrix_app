@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { Pool } from "pg";
+import { elegirSemilla, semillasMedibles, type SeedBase } from "../domain/seeds.ts";
 import { createPgWarmupStores, type PgClient } from "../store/pg-stores.ts";
 import { runWarmupMigrations } from "../store/warmup-migrate.ts";
 import { pickConversation, conversationCount, makeTestId } from "../live/warmup-content-bank.ts";
@@ -98,30 +99,14 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
 
 // ── Semillas: el registro manda ─────────────────────────────────────────────────────────────────────
 
-/** Lo que el daemon necesita de una semilla. Espeja WarmupSeed del gateway (warmup-seeds.ts). */
-export interface SeedDelDaemon {
-  address: string;
-  provider: string;
-  enabled: boolean;
-  auth: "none" | "imap_password" | "gmail_oauth";
-}
-
 /**
- * Elige la semilla de la vuelta. MISMA rotación que el registro del gateway: por (dominio, vuelta),
- * para que un dominio recorra todas las semillas y dos dominios no golpeen la misma en la misma
- * vuelta. Sin esto, 58 dominios escribiéndole siempre a la misma casilla son una huella obvia.
+ * La forma mínima que el daemon necesita. Las REGLAS (a quién se le manda, quién mide) viven en
+ * `domain/seeds.ts`: acá se importan, no se reescriben. Estaban duplicadas y era cuestión de tiempo
+ * que un arreglo llegara a una mitad y no a la otra.
  */
-export function elegirSemillaDelRegistro(seeds: SeedDelDaemon[], domain: string, vuelta: number): SeedDelDaemon | null {
-  // PRIORIDAD a las que miden — misma regla que el registro del gateway. Sin esto, con la mayoría
-  // de las semillas sin credencial, casi ninguna vuelta produce placement, que es justo el dato
-  // que gatea la rampa. Cazado en la primera prueba real.
-  const medibles = seeds.filter((s) => s.enabled && s.auth !== "none");
-  const activas = medibles.length > 0 ? medibles : seeds.filter((s) => s.enabled);
-  if (activas.length === 0) return null;
-  let hash = 0;
-  for (const ch of domain) hash = (hash * 31 + ch.charCodeAt(0)) % 100_000;
-  return activas[Math.abs(hash + vuelta) % activas.length] ?? null;
-}
+export type SeedDelDaemon = SeedBase;
+
+export const elegirSemillaDelRegistro = elegirSemilla;
 
 /**
  * ¿Podemos MEDIR dónde cayó este envío?
@@ -337,7 +322,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
     semillas = [{ address: cfg.seedInbox, provider: "gmail", enabled: true, auth: "gmail_oauth" }];
     log(`SIN REGISTRO de semillas (${cfg.seedsPath}) — uso solo ${cfg.seedInbox}. Cargá semillas con scripts/ops/semillas.ts`);
   } else {
-    const miden = semillas.filter((s) => s.auth !== "none").length;
+    const miden = semillasMedibles(semillas).length;
     log(`semillas: ${semillas.length} activas · ${miden} pueden medir placement · destinos ${semillas.map((s) => s.address).join(", ")}`);
   }
 
