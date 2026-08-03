@@ -54,7 +54,8 @@ import {
   Send,
   ShieldCheck,
   Sprout,
-  TrendingUp
+  TrendingUp,
+  TriangleAlert
 } from "lucide-react";
 import { getJson } from "../../shared/api/client";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
@@ -442,6 +443,11 @@ export function WarmupV5() {
         />
       </motion.div>
 
+      {/* Antes del detalle, la pregunta que el operador viene a hacerse: ¿está calentando o no? */}
+      <motion.section variants={staggerItem}>
+        <EstadoDelCalentamiento />
+      </motion.section>
+
       {/* Lo primero que ve el operador: el loop de warmup ocurriendo en tiempo real. */}
       <motion.section variants={staggerItem}>
         <WarmupActivityFeed />
@@ -728,6 +734,107 @@ function placementBadgeTone(placement: string): "success" | "warning" | "neutral
  * WarmupActivityFeed — lo primero que ve el operador: cada vuelta de calentamiento
  * ocurriendo en vivo. Self-contained (hace su propia query como WarmupTrendsPanel).
  */
+/* ============================================================
+ * EstadoDelCalentamiento — la respuesta de una sola mirada: ¿se está calentando algo AHORA?
+ *
+ * Se deriva del mismo feed de actividad (sin endpoint nuevo): qué dominios tuvieron vueltas hoy,
+ * cuántas, y —lo más importante— si esas vueltas MIDIERON dónde cayó el correo o salieron a ciegas.
+ *
+ * Ese último dato es el que no se puede esconder: sin una semilla con credencial no hay placement,
+ * y sin placement el freno automático de la rampa no tiene con qué dispararse. Un panel que
+ * mostrara "calentando" sin decir eso estaría mintiendo por omisión.
+ * ============================================================ */
+
+interface EstadoCalentamiento {
+  dominios: string[];
+  vueltasHoy: number;
+  medidas: number;
+  ultima: string | null;
+  ultimoPlacement: string | null;
+}
+
+/** Deriva el estado de hoy (UTC) desde los eventos crudos. Puro: fácil de razonar y de testear. */
+export function derivarEstadoCalentamiento(
+  events: WarmupActivityEvent[],
+  hoyUtc: string
+): EstadoCalentamiento {
+  const deHoy = events.filter((e) => e.occurredAt.slice(0, 10) === hoyUtc);
+  const ciclos = new Map<string, WarmupActivityEvent[]>();
+  for (const e of deHoy) {
+    const previo = ciclos.get(e.cycleId);
+    if (previo) previo.push(e);
+    else ciclos.set(e.cycleId, [e]);
+  }
+  const conPlacement = [...ciclos.values()].filter((evs) => evs.some((e) => e.kind === "measured" && e.placement));
+  const ordenados = [...deHoy].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
+  return {
+    dominios: [...new Set(deHoy.map((e) => e.nodeDomain))],
+    vueltasHoy: ciclos.size,
+    medidas: conPlacement.length,
+    ultima: ordenados[0]?.occurredAt ?? null,
+    ultimoPlacement: ordenados.find((e) => e.kind === "measured" && e.placement)?.placement ?? null
+  };
+}
+
+function EstadoDelCalentamiento() {
+  const { data } = useQuery({
+    queryKey: ["warmup-activity-estado"],
+    queryFn: () => getJson<WarmupActivitySnapshot>(READ_ENDPOINTS.warmupActivity),
+    refetchInterval: 30_000
+  });
+
+  const events = data?.events ?? [];
+  const hoy = new Date().toISOString().slice(0, 10);
+  const estado = derivarEstadoCalentamiento(events, hoy);
+  const calentando = estado.vueltasHoy > 0;
+  const aCiegas = calentando && estado.medidas === 0;
+
+  return (
+    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
+      <PanelHead
+        title={
+          calentando
+            ? `Calentando ${estado.dominios.length} ${estado.dominios.length === 1 ? "bandeja" : "bandejas"} hoy.`
+            : "Hoy no se calentó ninguna bandeja."
+        }
+        sub={
+          calentando
+            ? `${estado.vueltasHoy} ${estado.vueltasHoy === 1 ? "vuelta" : "vueltas"} · ${estado.medidas} con placement medido${estado.ultima ? ` · última ${new Date(estado.ultima).toLocaleTimeString("es")}` : ""}`
+            : "El daemon arranca con scripts/warmup-live-semana.sh. Sin vueltas, ninguna bandeja mejora."
+        }
+      />
+
+      {estado.dominios.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {estado.dominios.map((d) => (
+            <Pill key={d} tone="warming">
+              {d}
+            </Pill>
+          ))}
+          {estado.ultimoPlacement ? <Pill tone="success">último placement: {estado.ultimoPlacement}</Pill> : null}
+        </div>
+      ) : null}
+
+      {aCiegas ? (
+        // El aviso que no se puede omitir: está enviando, pero nadie mide dónde cae.
+        <Card style={{ padding: PAD_DEFAULT, borderColor: "var(--color-warning-border)" }} className="flex items-start gap-4">
+          <div aria-hidden="true" className="grid size-9 shrink-0 place-items-center rounded-xl bg-warning-soft text-warning">
+            <TriangleAlert className="size-4.5" strokeWidth={1.8} />
+          </div>
+          <div className="flex flex-col gap-1">
+            <MonoStrong className="text-warning">Calentando A CIEGAS: ninguna vuelta midió placement</MonoStrong>
+            <BodyText className="text-secondary">
+              Las vueltas salen, pero ninguna semilla con credencial pudo leer dónde cayó el correo, así que
+              no sabemos si entra a inbox o a spam — y el freno automático por placement no tiene con qué
+              dispararse. Se resuelve agregando un app password: <Mono>scripts/ops/semillas.ts --add</Mono>
+            </BodyText>
+          </div>
+        </Card>
+      ) : null}
+    </Card>
+  );
+}
+
 function WarmupActivityFeed() {
   const state = useWarmupActivity();
 
