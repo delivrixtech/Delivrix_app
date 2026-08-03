@@ -43,6 +43,22 @@ export function resolveCredentialKey(raw: string | undefined): Buffer {
 }
 
 /** Desencripta el password de un registro del inventario. AAD={domain,host,username}. */
+/**
+ * Descifrado GENÉRICO con AAD arbitrario. Lo usa el registro de semillas (AAD atado a
+ * address+provider), que guarda su secreto con la misma cripto pero otra etiqueta.
+ * Se mantiene acá, en el espejo, para no abrir una segunda implementación de AES en el módulo.
+ */
+export function decryptWithAad(payload: EncryptedPayload, key: Buffer, aad: Record<string, string>): string {
+  if (payload.algorithm !== ALGORITHM) throw new Error("unsupported_algorithm");
+  const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(payload.iv, "base64url"));
+  decipher.setAAD(Buffer.from(JSON.stringify(aad)));
+  decipher.setAuthTag(Buffer.from(payload.authTag, "base64url"));
+  return Buffer.concat([
+    decipher.update(Buffer.from(payload.ciphertext, "base64url")),
+    decipher.final()
+  ]).toString("utf8");
+}
+
 export function decryptInventoryCredential(record: InventoryCredentialRecord, key: Buffer): string {
   const payload = record.smtpCredentialEncrypted;
   if (payload.algorithm !== ALGORITHM) throw new Error("smtp_credential_unsupported_algorithm");

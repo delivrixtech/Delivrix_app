@@ -16,11 +16,13 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { Pool } from "pg";
 import { elegirSemilla, semillasMedibles, type SeedBase } from "../domain/seeds.ts";
+import { opsDesdeImap, type ImapClienteMinimo } from "../live/imap-placement-ops.ts";
+import { SMTP_POR_PROVEEDOR } from "../domain/seeds.ts";
 import { createPgWarmupStores, type PgClient } from "../store/pg-stores.ts";
 import { runWarmupMigrations } from "../store/warmup-migrate.ts";
 import { pickConversation, conversationCount, makeTestId } from "../live/warmup-content-bank.ts";
 import { createGoogleOAuthTokenProvider, type AccessTokenProvider } from "../live/google-oauth-token-provider.ts";
-import { resolveCredentialKey, findAndDecryptBox, type InventoryCredentialStore } from "../live/smtp-credential-decrypt.ts";
+import { resolveCredentialKey, findAndDecryptBox, decryptWithAad, type EncryptedPayload, type InventoryCredentialStore } from "../live/smtp-credential-decrypt.ts";
 import {
   runLiveCycle,
   classifyPlacement,
@@ -104,7 +106,59 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
  * `domain/seeds.ts`: acá se importan, no se reescriben. Estaban duplicadas y era cuestión de tiempo
  * que un arreglo llegara a una mitad y no a la otra.
  */
-export type SeedDelDaemon = SeedBase;
+export type SeedDelDaemon = SeedBase & {
+  /** Presentes en el registro; el daemon los necesita para abrir IMAP con esa semilla. */
+  imap?: { host: string; port: number };
+  secretEncrypted?: EncryptedPayload;
+};
+
+/** Abre el cliente IMAP de una semilla con app password. Devuelve null si le falta algo. */
+async function opsImapDeSemilla(seed: SeedDelDaemon, key: Buffer): Promise<{ ops: ReturnType<typeof opsDesdeImap>; cerrar: () => Promise<void> } | null> {
+  if (seed.auth !== "imap_password" || !seed.secretEncrypted || !seed.imap) return null;
+  const pass = decryptWithAad(seed.secretEncrypted, key, {
+    address: seed.address,
+    provider: seed.provider,
+    kind: "warmup_seed_secret"
+  });
+  const { ImapFlow } = require("imapflow") as { ImapFlow: new (o: Record<string, unknown>) => ImapClienteMinimo };
+  const cliente = new ImapFlow({
+    host: seed.imap.host,
+    port: seed.imap.port,
+    secure: true,
+    auth: { user: seed.address, pass },
+    logger: false
+  });
+  await cliente.connect();
+
+  // La RESPUESTA desde la semilla: mismo app password, SMTP del proveedor. Es la senal
+  // bidireccional — el receptor no solo recibio, contesto.
+  const smtp = SMTP_POR_PROVEEDOR[seed.provider as keyof typeof SMTP_POR_PROVEEDOR];
+  const nodemailer = require("nodemailer");
+  const transporte = smtp
+    ? nodemailer.createTransport({
+        host: smtp.host, port: smtp.port, secure: false, requireTLS: true,
+        auth: { user: seed.address, pass }
+      })
+    : null;
+  const enviador = transporte
+    ? {
+        async send(input: { from: string; to: string; subject: string; inReplyTo: string; references: string; body: string }) {
+          const info = await transporte.sendMail({
+            from: input.from, to: input.to, subject: input.subject, text: input.body,
+            inReplyTo: input.inReplyTo, references: input.references
+          });
+          return { id: String(info.messageId ?? "") };
+        }
+      }
+    : undefined;
+
+  return {
+    ops: opsDesdeImap(cliente, enviador),
+    cerrar: async () => {
+      try { await cliente.logout(); } catch { /* ya cerrado */ }
+    }
+  };
+}
 
 export const elegirSemillaDelRegistro = elegirSemilla;
 
@@ -117,6 +171,11 @@ export const elegirSemillaDelRegistro = elegirSemilla;
  * demás el envío se registra como enviado-sin-medir, que es la verdad.
  */
 export function puedeMedir(seed: SeedDelDaemon, cuentaDeMedicion: string): boolean {
+  // IMAP: cualquier semilla con app password mide, sea Gmail, Outlook o Yahoo — y su credencial no
+  // caduca sola. Es el camino que manda el diseno v1 (SMTP+IMAP, no la API del proveedor).
+  if (seed.auth === "imap_password") return true;
+  // OAuth: las Gmail ops estan atadas a UNA cuenta (la del refresh token). Si el correo fue a otra
+  // semilla, buscar ahi devolveria "no encontrado" sobre un mensaje que si llego.
   return seed.auth === "gmail_oauth" && seed.address.toLowerCase() === cuentaDeMedicion.toLowerCase();
 }
 
@@ -372,17 +431,35 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           await sleep(Math.min(cfg.intervalMs, 60_000));
           continue;
         }
+        // Las ops de medición dependen de CÓMO mide esta semilla: por IMAP (cualquier proveedor,
+        // el camino del diseño v1) o por la API de Gmail (solo la cuenta del refresh token).
+        // Sin capacidad de medir NO se pasan ops: buscar en la cuenta equivocada devolvería "no
+        // encontrado" sobre un mensaje que sí llegó, y ese dato falso alimentaría el gate de
+        // placement. Mejor enviado-sin-medir que medido-mal.
+        let opsMedicion: typeof gmail | null = medible ? gmail : null;
+        let cerrarImap: (() => Promise<void>) | null = null;
+        if (medible && semilla.auth === "imap_password") {
+          try {
+            const imap = await opsImapDeSemilla(semilla, key);
+            if (imap) {
+              opsMedicion = imap.ops as unknown as typeof gmail;
+              cerrarImap = imap.cerrar;
+            }
+          } catch (err) {
+            log(`WARN no pude abrir IMAP de ${semilla.address} (${err instanceof Error ? err.message : String(err)}) — la vuelta va sin medición`);
+            opsMedicion = null;
+          }
+        }
+
         const result = await runLiveCycle({
           cycleId, testId, boxDomain: box, fromAddress: "mailer@" + box, seedInbox: semilla.address,
           conversation, subject, mailer,
-          // Sin capacidad de medir, NO se le pasan las Gmail ops: buscar en la cuenta equivocada
-          // devolvería "no encontrado" sobre un mensaje que sí llegó, y eso alimentaría el gate de
-          // placement con un dato falso. Mejor enviado-sin-medir que medido-mal.
-          ...(medible ? { gmail } : { gmail: null }),
+          gmail: opsMedicion,
           recorder, sleep,
           pollAttempts: cfg.pollAttempts, pollDelayMs: cfg.pollDelayMs,
           logger: { info: (m) => log(m), warn: (m) => log("WARN " + m) }
         });
+        if (cerrarImap) await cerrarImap();
         log(`vuelta #${seq + 1} ${result.completed ? "COMPLETA" : "cortó en " + result.brokeAt} · placement ${result.placement ?? "-"}`);
         seq += 1;
       } else {

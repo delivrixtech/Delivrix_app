@@ -44,6 +44,20 @@ export const IMAP_POR_PROVEEDOR: Record<SeedProvider, { host: string; port: numb
   webde: { host: "imap.web.de", port: 993 }
 };
 
+/**
+ * SMTP saliente por proveedor: la semilla no solo recibe, tambien RESPONDE — y una respuesta desde
+ * el buzon del receptor es la senal bidireccional mas fuerte del warmup. Mismo app password.
+ */
+export const SMTP_POR_PROVEEDOR: Record<SeedProvider, { host: string; port: number }> = {
+  gmail: { host: "smtp.gmail.com", port: 587 },
+  workspace: { host: "smtp.gmail.com", port: 587 },
+  outlook: { host: "smtp-mail.outlook.com", port: 587 },
+  m365: { host: "smtp.office365.com", port: 587 },
+  yahoo: { host: "smtp.mail.yahoo.com", port: 587 },
+  gmx: { host: "mail.gmx.com", port: 587 },
+  webde: { host: "smtp.web.de", port: 587 }
+};
+
 /** Las que sirven de DESTINO: alcanza con estar habilitadas. */
 export function semillasActivas<T extends SeedBase>(seeds: T[]): T[] {
   return seeds.filter((s) => s.enabled);
