@@ -146,7 +146,11 @@ function createNodeStore(client: PgClient): NodeStore {
   return {
     async listActiveNodes(): Promise<WarmupNode[]> {
       const { rows } = await client.query<NodeRow>(
-        `SELECT ${NODE_COLUMNS} FROM warmup_nodes WHERE state = ANY($1) ORDER BY created_at`,
+        // Se excluyen los nodos FIXTURE del backfill (`hello@…`): la flota real usa `mailer@`.
+        // Salían por /v1/warmup/status y el panel los listaba como si fueran nuestros emisores —
+        // un universo paralelo inventado al lado del real. Misma decisión que en los rollups: el
+        // filtro va en la consulta, no en la vista, para que ningún consumidor herede el dato falso.
+        `SELECT ${NODE_COLUMNS} FROM warmup_nodes WHERE state = ANY($1) AND mailbox NOT LIKE 'hello@%' ORDER BY created_at`,
         [ACTIVE_NODE_STATES]
       );
       return rows.map(mapNode);

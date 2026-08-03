@@ -57,6 +57,7 @@ import {
   TrendingUp,
   TriangleAlert
 } from "lucide-react";
+import WarmupLive from "./WarmupLive";
 import { getJson } from "../../shared/api/client";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
 import {
@@ -395,16 +396,6 @@ function IconTile({ children }: { children: ReactNode }) {
 }
 
 /** Etiqueta "config" — marca un tope declarado (no un valor medido). Molde: Pill neutro. */
-function ConfigCaption({ children }: { children: ReactNode }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <Caption style={{ fontSize: 11 }}>{children}</Caption>
-      <Pill tone="neutral" style={{ fontSize: 10, padding: "2px 7px" }}>
-        config
-      </Pill>
-    </span>
-  );
-}
 
 /* ============================================================
  * Vista principal.
@@ -432,8 +423,8 @@ export function WarmupV5() {
       <motion.div variants={staggerItem}>
         <SectionHead
           eyebrow="Warmup engine · solo lectura"
-          title="Cómo se calientan los nodos de envío"
-          subtitle="El calentamiento como sistema en movimiento: el ciclo enviar → interactuar → responder, el recorrido de cada nodo y la puerta de placement que habilita escalar. Todo con datos reales; esta vista no dispara envíos ni pausas."
+          title="Calentamiento"
+          subtitle="Lo que está pasando ahora."
           right={
             <LivePollSide
               lastUpdateAt={state.status === "ok" ? state.lastUpdateAt : null}
@@ -443,14 +434,9 @@ export function WarmupV5() {
         />
       </motion.div>
 
-      {/* Antes del detalle, la pregunta que el operador viene a hacerse: ¿está calentando o no? */}
+      {/* LA CONSOLA. Lo que está pasando ahora, moviéndose. Todo lo demás es detalle. */}
       <motion.section variants={staggerItem}>
-        <EstadoDelCalentamiento />
-      </motion.section>
-
-      {/* Lo primero que ve el operador: el loop de warmup ocurriendo en tiempo real. */}
-      <motion.section variants={staggerItem}>
-        <WarmupActivityFeed />
+        <WarmupLive />
       </motion.section>
 
       <Body
@@ -469,10 +455,6 @@ export function WarmupV5() {
           />
         </motion.section>
       ) : null}
-
-      <motion.section variants={staggerItem}>
-        <ManualMailboxForm />
-      </motion.section>
 
       <motion.section variants={staggerItem}>
         <WarmupTrendsPanel />
@@ -776,252 +758,15 @@ export function derivarEstadoCalentamiento(
   };
 }
 
-function EstadoDelCalentamiento() {
-  const { data } = useQuery({
-    queryKey: ["warmup-activity-estado"],
-    queryFn: () => getJson<WarmupActivitySnapshot>(READ_ENDPOINTS.warmupActivity),
-    refetchInterval: 30_000
-  });
 
-  const events = data?.events ?? [];
-  const hoy = new Date().toISOString().slice(0, 10);
-  const estado = derivarEstadoCalentamiento(events, hoy);
-  const calentando = estado.vueltasHoy > 0;
-  const aCiegas = calentando && estado.medidas === 0;
-
-  return (
-    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
-      <PanelHead
-        title={
-          calentando
-            ? `Calentando ${estado.dominios.length} ${estado.dominios.length === 1 ? "bandeja" : "bandejas"} hoy.`
-            : "Hoy no se calentó ninguna bandeja."
-        }
-        sub={
-          calentando
-            ? `${estado.vueltasHoy} ${estado.vueltasHoy === 1 ? "vuelta" : "vueltas"} · ${estado.medidas} con placement medido${estado.ultima ? ` · última ${new Date(estado.ultima).toLocaleTimeString("es")}` : ""}`
-            : "El daemon arranca con scripts/warmup-live-semana.sh. Sin vueltas, ninguna bandeja mejora."
-        }
-      />
-
-      {estado.dominios.length > 0 ? (
-        <div className="flex flex-wrap gap-2">
-          {estado.dominios.map((d) => (
-            <Pill key={d} tone="warming">
-              {d}
-            </Pill>
-          ))}
-          {estado.ultimoPlacement ? <Pill tone="success">último placement: {estado.ultimoPlacement}</Pill> : null}
-        </div>
-      ) : null}
-
-      {aCiegas ? (
-        // El aviso que no se puede omitir: está enviando, pero nadie mide dónde cae.
-        <Card style={{ padding: PAD_DEFAULT, borderColor: "var(--color-warning-border)" }} className="flex items-start gap-4">
-          <div aria-hidden="true" className="grid size-9 shrink-0 place-items-center rounded-xl bg-warning-soft text-warning">
-            <TriangleAlert className="size-4.5" strokeWidth={1.8} />
-          </div>
-          <div className="flex flex-col gap-1">
-            <MonoStrong className="text-warning">Calentando A CIEGAS: ninguna vuelta midió placement</MonoStrong>
-            <BodyText className="text-secondary">
-              Las vueltas salen, pero ninguna semilla con credencial pudo leer dónde cayó el correo, así que
-              no sabemos si entra a inbox o a spam — y el freno automático por placement no tiene con qué
-              dispararse. Se resuelve agregando un app password: <Mono>scripts/ops/semillas.ts --add</Mono>
-            </BodyText>
-          </div>
-        </Card>
-      ) : null}
-    </Card>
-  );
-}
-
-function WarmupActivityFeed() {
-  const state = useWarmupActivity();
-
-  if (state.status === "loading") return <ActivityLoading />;
-  if (state.status === "error") return <ActivityUnavailable message={state.message} />;
-
-  const { events, note } = state.payload;
-  const cycles = groupActivityByCycle(events);
-
-  return (
-    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
-      <PanelHead
-        title={
-          <span className="inline-flex items-center gap-2">
-            <Activity size={15} strokeWidth={1.75} className="text-fg-subtle" />
-            Actividad en vivo
-          </span>
-        }
-        sub="Cada vuelta de calentamiento en tiempo real: envío → medición → interacción → respuesta, con el asunto de la conversación, dónde cayó (inbox/spam…) y la caja emisora → el buzón semilla."
-        right={
-          <LivePollSide lastUpdateAt={state.lastUpdateAt} isError={false} pollMs={ACTIVITY_POLL_MS} />
-        }
-      />
-
-      {note || cycles.length === 0 ? (
-        <ActivityEmpty />
-      ) : (
-        <div className="flex flex-col gap-2.5">
-          {cycles.map((cycle, i) => (
-            <ActivityCycleRow key={cycle.cycleId} cycle={cycle} index={i} />
-          ))}
-        </div>
-      )}
-    </Card>
-  );
-}
 
 /** Una vuelta: asunto + caja→semilla + tiempo relativo + placement + línea de 4 etapas. */
-function ActivityCycleRow({ cycle, index }: { cycle: WarmupCycle; index: number }) {
-  const reduce = useReducedMotion();
-  return (
-    <motion.div
-      initial={reduce ? false : { opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={reduce ? undefined : { duration: 0.28, delay: Math.min(index, 6) * 0.02 }}
-      className="flex flex-col gap-3 rounded-[14px] p-3.5"
-      style={{
-        border: "1px solid var(--color-border)",
-        // error: hairline izquierda en warning (naranja), no rojo.
-        borderLeft: cycle.hasError ? "2px solid var(--color-warning)" : "1px solid var(--color-border)"
-      }}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
-          <span className="min-w-0 truncate font-sans text-[13.5px] font-medium text-fg">
-            {cycle.subject ?? "conversación sin asunto registrado"}
-          </span>
-          <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11.5px]">
-            <MonoStrong className="text-[11.5px]">{cycle.nodeDomain || "—"}</MonoStrong>
-            <ArrowRight size={12} strokeWidth={2} className="text-fg-subtle" aria-hidden="true" />
-            <Mono className="text-fg-subtle">{cycle.seedInbox || "—"}</Mono>
-          </span>
-        </div>
-        <div className="flex flex-none flex-col items-end gap-1.5">
-          {cycle.placement ? (
-            <Pill tone={placementBadgeTone(cycle.placement)}>{cycle.placement.toLowerCase()}</Pill>
-          ) : null}
-          <Caption style={{ fontSize: 11 }}>{formatRelative(cycle.occurredAt)}</Caption>
-        </div>
-      </div>
-
-      <ActivityStageLine cycle={cycle} />
-
-      {cycle.hasError ? (
-        <div className="flex items-center gap-1.5 text-warning">
-          <AlertCircle size={13} strokeWidth={1.9} aria-hidden="true" />
-          <span className="font-sans text-[11.5px] font-medium">
-            se cortó en {cycle.brokeAtStage ? ACTIVITY_STAGE_LABEL[cycle.brokeAtStage] : "una etapa"}
-          </span>
-        </div>
-      ) : null}
-    </motion.div>
-  );
-}
 
 /** Línea compacta de las 4 etapas: encendidas en su token, apagadas en subtle, error en warning. */
-function ActivityStageLine({ cycle }: { cycle: WarmupCycle }) {
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {ACTIVITY_STAGES.map((stage, i) => {
-        const fired = cycle.stages[stage.key];
-        const broke = cycle.hasError && cycle.brokeAtStage === stage.key;
-        const Icon = broke ? AlertCircle : stage.icon;
-        const color = broke
-          ? "var(--color-warning)"
-          : fired
-          ? stage.color
-          : "var(--color-text-tertiary)";
-        const bg = broke ? "var(--color-warning-soft)" : fired ? stage.soft : "transparent";
-        const on = fired || broke;
-        return (
-          <span key={stage.key} className="inline-flex items-center gap-1.5">
-            <span
-              className="inline-flex items-center gap-1.5 rounded-full px-2 py-1"
-              style={{
-                background: bg,
-                color,
-                border: on ? "1px solid transparent" : "1px solid var(--color-border)",
-                opacity: on ? 1 : 0.6
-              }}
-            >
-              <Icon size={12} strokeWidth={2} aria-hidden="true" />
-              <span className="font-sans text-[11px] font-medium">{stage.label}</span>
-            </span>
-            {i < ACTIVITY_STAGES.length - 1 ? (
-              <ArrowRight size={12} strokeWidth={2} className="text-fg-subtle" aria-hidden="true" />
-            ) : null}
-          </span>
-        );
-      })}
-    </div>
-  );
-}
 
 /** Estado vacío honesto — nunca inventa vueltas. */
-function ActivityEmpty() {
-  return (
-    <div
-      className="flex items-start gap-4 rounded-[14px] p-4"
-      style={{ border: "1px dashed var(--color-border-strong)" }}
-    >
-      <IconTile>
-        <Activity size={16} strokeWidth={1.75} color="var(--color-text-secondary)" />
-      </IconTile>
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <Heading level={2}>Sin actividad todavía</Heading>
-        <BodyText>
-          Cuando corra una vuelta de calentamiento, cada etapa — envío → medición → interacción →
-          respuesta — aparece acá en vivo, con el asunto de la conversación y dónde cayó (inbox,
-          spam…).
-        </BodyText>
-      </div>
-    </div>
-  );
-}
 
-function ActivityLoading() {
-  return (
-    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-3">
-      <PanelHead
-        title={
-          <span className="inline-flex items-center gap-2">
-            <Activity size={15} strokeWidth={1.75} className="text-fg-subtle" />
-            Actividad en vivo
-          </span>
-        }
-      />
-      <div className="flex flex-col gap-2.5">
-        {Array.from({ length: 3 }).map((_, i) => (
-          <div key={i} className="h-16 w-full rounded-[14px] bg-surface-sunken" aria-hidden="true" />
-        ))}
-      </div>
-      <span className="sr-only">Cargando actividad del warmup engine…</span>
-    </Card>
-  );
-}
 
-function ActivityUnavailable({ message }: { message: string }) {
-  return (
-    <Card style={{ padding: PAD_RELAXED }} className="flex items-start gap-4">
-      <div
-        aria-hidden="true"
-        className="grid size-9 shrink-0 place-items-center rounded-xl bg-warning-soft text-warning"
-      >
-        <AlertCircle size={16} strokeWidth={1.75} />
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <Heading level={2}>Endpoint /v1/warmup/activity no responde</Heading>
-        <BodyText>
-          El backend todavía no expuso la actividad en vivo del warmup engine. Cuando esté
-          disponible, la lista de vueltas se llena sola, sin redeploy.
-        </BodyText>
-        <Mono className="break-all">{message}</Mono>
-      </div>
-    </Card>
-  );
-}
 
 /* ============================================================
  * Loaded — estructura principal.
@@ -1038,7 +783,7 @@ function Loaded({
   onSelectMailbox: (mailbox: SelectedMailbox) => void;
   selectedId: string | null;
 }) {
-  const { enabled, totals, byState, nodes, note } = payload;
+  const { enabled, nodes, note } = payload;
   return (
     <>
       {!enabled ? (
@@ -1054,18 +799,6 @@ function Loaded({
       ) : null}
 
       <motion.section variants={staggerItem}>
-        <WarmupLoop payload={payload} trends={trends} />
-      </motion.section>
-
-      <motion.section variants={staggerItem}>
-        <KpiStrip enabled={enabled} totals={totals} nodeCount={nodes.length} />
-      </motion.section>
-
-      <motion.section variants={staggerItem}>
-        <StateBreakdown byState={byState} />
-      </motion.section>
-
-      <motion.section variants={staggerItem}>
         {nodes.length > 0 ? (
           <NodesTable nodes={nodes} onSelectMailbox={onSelectMailbox} selectedId={selectedId} />
         ) : (
@@ -1073,9 +806,6 @@ function Loaded({
         )}
       </motion.section>
 
-      <motion.div variants={staggerItem}>
-        <FooterMeta generatedAt={payload.generatedAt} />
-      </motion.div>
     </>
   );
 }
@@ -1095,127 +825,8 @@ type ManualSubmitState =
   | { status: "done"; result: WarmupMailboxCreateResult }
   | { status: "error"; message: string };
 
-function ManualMailboxForm() {
-  const [email, setEmail] = useState("");
-  const [domain, setDomain] = useState("");
-  const [submit, setSubmit] = useState<ManualSubmitState>({ status: "idle" });
 
-  const derivedDomain = domain.trim() || email.split("@")[1]?.trim() || "";
-  const canSubmit = email.includes("@") && derivedDomain.length > 0 && submit.status !== "submitting";
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!canSubmit) return;
-    setSubmit({ status: "submitting" });
-    try {
-      const result = await postWarmupMailbox({
-        email: email.trim(),
-        domain: derivedDomain
-      });
-      setSubmit({ status: "done", result });
-      if (result.ok) {
-        setEmail("");
-        setDomain("");
-      }
-    } catch (err) {
-      setSubmit({
-        status: "error",
-        message: err instanceof Error ? err.message : "no se pudo agregar el buzón"
-      });
-    }
-  }
-
-  return (
-    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
-      <PanelHead
-        title="Agregar un buzón al warmup"
-        sub="Alta manual mínima contra POST /v1/mailboxes. El calentamiento real por envío lo hace el cliente con sus campañas."
-        right={<Mono>POST /v1/mailboxes</Mono>}
-      />
-      <form onSubmit={onSubmit} className="flex flex-col gap-3">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <ManualField label="Email del buzón" htmlFor="wm-email">
-            <input
-              id="wm-email"
-              type="email"
-              value={email}
-              onChange={(ev) => setEmail(ev.target.value)}
-              placeholder="warm@delivrix.io"
-              autoComplete="off"
-              className="h-8 w-full rounded-md border border-border bg-surface px-2.5 font-mono text-[16px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none sm:text-[12.5px]"
-            />
-          </ManualField>
-          <ManualField label="Dominio" htmlFor="wm-domain" hint="se infiere del email si se deja vacío">
-            <input
-              id="wm-domain"
-              type="text"
-              value={domain}
-              onChange={(ev) => setDomain(ev.target.value)}
-              placeholder={email.split("@")[1] ?? "delivrix.io"}
-              autoComplete="off"
-              className="h-8 w-full rounded-md border border-border bg-surface px-2.5 font-mono text-[16px] text-fg placeholder:text-fg-subtle focus:border-border-strong focus:outline-none sm:text-[12.5px]"
-            />
-          </ManualField>
-        </div>
-        <Caption style={{ fontSize: 10.5 }}>
-          La referencia SMTP (vault) la deriva el backend del id del nodo — no se carga a mano ni viaja la
-          credencial. El nodo nace <span className="font-mono">blocked</span> hasta tener contrato de auth vigente (§8).
-        </Caption>
-        <div className="flex flex-wrap items-center gap-3">
-          <Button type="submit" size="sm" disabled={!canSubmit}>
-            <Plus size={14} strokeWidth={1.75} />
-            {submit.status === "submitting" ? "Agregando…" : "Agregar al warmup"}
-          </Button>
-        </div>
-      </form>
-
-      <ManualResult submit={submit} />
-    </Card>
-  );
-}
-
-function ManualField({
-  label,
-  htmlFor,
-  hint,
-  children
-}: {
-  label: string;
-  htmlFor: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label htmlFor={htmlFor} className="flex flex-col gap-1.5">
-      <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">
-        {label}
-      </span>
-      {children}
-      {hint ? <Caption style={{ fontSize: 10.5 }}>{hint}</Caption> : null}
-    </label>
-  );
-}
-
-function ManualResult({ submit }: { submit: ManualSubmitState }) {
-  if (submit.status === "idle" || submit.status === "submitting") return null;
-  if (submit.status === "error") {
-    return (
-      <div className="flex items-center gap-2 border-t border-border pt-3">
-        <Pill tone="critical">error</Pill>
-        <Mono className="break-all">{submit.message}</Mono>
-      </div>
-    );
-  }
-  const { result } = submit;
-  return (
-    <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
-      <Pill tone="success">{result.status === "exists" ? "ya existía" : "agregado"}</Pill>
-      {result.id ? <MonoStrong className="text-[12px]">{result.id}</MonoStrong> : null}
-      {result.state ? <Pill tone="neutral">estado {result.state}</Pill> : null}
-      {result.message ? <BodyText className="text-fg-muted">{result.message}</BodyText> : null}
-    </div>
-  );
-}
 
 /* ============================================================
  * WarmupLoop — el ESQUEMA de funcionamiento como ciclo de 3 etapas.
@@ -1288,251 +899,12 @@ const STAGE_SEND: StageAccent = { color: "var(--color-warming)", soft: "var(--co
 const STAGE_ENGAGE: StageAccent = { color: "var(--color-accent)", soft: "var(--color-accent-soft)" };
 const STAGE_REPLY: StageAccent = { color: "var(--color-success)", soft: "var(--color-success-soft)" };
 
-function WarmupLoop({ payload, trends }: { payload: WarmupStatusSnapshot; trends: TrendsState }) {
-  const reduce = useReducedMotion();
-  const { enabled, totals, byState, nodes } = payload;
-
-  const trendsOk = trends.status === "ok" ? trends.payload : null;
-  const placement = trendsOk ? latestPlacement(trendsOk.placementSeries) : null;
-  const rampTarget = trendsOk ? rampTargetForPool(nodes, trendsOk.ramp) : null;
-  const signals = trendsOk?.signals ?? null;
-
-  const warm = byState.warm ?? 0;
-  const fresh = byState.fresh ?? 0;
-
-  // Movimiento sutil: el flujo "respira" salvo reduced-motion.
-  const flow = reduce
-    ? undefined
-    : { animate: { opacity: [0.35, 1, 0.35] }, transition: { duration: 2.4, repeat: Infinity, ease: "easeInOut" } };
-
-  return (
-    <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-5">
-      <PanelHead
-        title="Cómo funciona el calentamiento"
-        sub="El ciclo interno: enviamos volumen rampado → los buzones que hospedamos interactúan → responden y la reputación se acumula en cada vuelta. Las cantidades son reales."
-        right={
-          <StateBadge
-            status={enabled ? "active" : "paused"}
-            label={enabled ? "ciclo activo" : "ciclo en pausa"}
-          />
-        }
-      />
-
-      <div className="flex flex-col gap-2 lg:flex-row lg:items-stretch">
-        {/* ① SEND */}
-        <StageTile
-          n="1"
-          accent={STAGE_SEND}
-          icon={Send}
-          name="Enviamos"
-          concept="volumen rampado · DKIM/PTR alineados"
-        >
-          <StageMetric
-            value={<span className="tabular-nums">{totals.queuedSends}</span>}
-            unit="encolados"
-            hint="envíos que el motor tiene en cola ahora"
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <Pill tone="neutral">
-              <Activity size={12} strokeWidth={1.9} />
-              {totals.activeNodes} nodos activos
-            </Pill>
-            {rampTarget ? (
-              <Pill tone="warming" style={{ opacity: 0.95 }}>
-                meta ≈ {rampTarget.quota}/día · día {rampTarget.day}
-              </Pill>
-            ) : (
-              <Pill tone="neutral">meta de rampa —</Pill>
-            )}
-          </div>
-        </StageTile>
-
-        <StageConnector flow={flow} />
-
-        {/* ② ENGAGE */}
-        <StageTile
-          n="2"
-          accent={STAGE_ENGAGE}
-          icon={Inbox}
-          name="Los buzones interactúan"
-          concept="abren · responden · marcan no-spam · destacan"
-        >
-          <StageMetric
-            value={<span className="tabular-nums">{nodes.length}</span>}
-            unit={nodes.length === 1 ? "buzón" : "buzones"}
-            hint="buzones que hospedamos en la red de calentamiento"
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <Pill tone="success">
-              <CheckCircle2 size={12} strokeWidth={1.9} />
-              {warm} warm
-            </Pill>
-            <Pill tone="warming">
-              <Sprout size={12} strokeWidth={1.9} />
-              {fresh} fresh
-            </Pill>
-          </div>
-        </StageTile>
-
-        <StageConnector flow={flow} />
-
-        {/* ③ REPLY / REPUTACIÓN */}
-        <StageTile
-          n="3"
-          accent={STAGE_REPLY}
-          icon={Reply}
-          name="Responden · reputación"
-          concept="las respuestas vuelven · la reputación se acumula"
-        >
-          {placement && placement.value !== null ? (
-            <StageMetric
-              value={
-                <span className="tabular-nums" style={{ color: placementColor(placement.value) }}>
-                  {formatPercent(placement.value)}
-                </span>
-              }
-              unit="inbox"
-              hint={`placement de inbox más reciente · ${placement.samples} muestras`}
-            />
-          ) : (
-            <StageMetric
-              value={<span style={{ color: "var(--color-text-tertiary)" }}>midiendo…</span>}
-              unit=""
-              hint={
-                trends.status === "loading"
-                  ? "cargando tendencias"
-                  : "aún sin muestras de placement suficientes"
-              }
-            />
-          )}
-          <div className="flex flex-wrap items-center gap-2">
-            {placement && placement.spamRate !== null ? (
-              <Pill tone={placement.spamRate > 0 ? "critical" : "neutral"}>
-                spam {formatPercent(placement.spamRate)}
-              </Pill>
-            ) : null}
-            {signals ? (
-              <>
-                <Pill tone={signals.bounces > 0 ? "critical" : "neutral"}>bounces {signals.bounces}</Pill>
-                <Pill tone={signals.complaints > 0 ? "critical" : "neutral"}>
-                  complaints {signals.complaints}
-                </Pill>
-              </>
-            ) : (
-              <Pill tone="neutral">señales pendientes</Pill>
-            )}
-          </div>
-        </StageTile>
-      </div>
-
-      {/* cierre del loop: la reputación vuelve al SEND */}
-      <div className="flex items-center gap-2.5 border-t border-border pt-3">
-        <span
-          aria-hidden="true"
-          className="grid size-7 shrink-0 place-items-center rounded-full"
-          style={{ background: "var(--color-accent-soft)", color: "var(--color-accent)" }}
-        >
-          <motion.span
-            style={{ display: "grid", placeItems: "center" }}
-            animate={reduce ? undefined : { rotate: 360 }}
-            transition={reduce ? undefined : { duration: 9, repeat: Infinity, ease: "linear" }}
-          >
-            <Repeat size={13} strokeWidth={2} />
-          </motion.span>
-        </span>
-        <Caption style={{ fontSize: 12 }}>
-          La reputación se acumula en cada vuelta: cada pase de buenas señales calienta las IPs y
-          dominios antes de que salga tráfico real.
-        </Caption>
-      </div>
-    </Card>
-  );
-}
 
 /** Una etapa del loop. Tile con hairline dentro del Card padre (aplana card-in-card). */
-function StageTile({
-  n,
-  accent,
-  icon: Icon,
-  name,
-  concept,
-  children
-}: {
-  n: string;
-  accent: StageAccent;
-  icon: typeof Send;
-  name: string;
-  concept: string;
-  children: ReactNode;
-}) {
-  return (
-    <div
-      className="flex min-w-0 flex-1 flex-col gap-3 rounded-[14px] p-4"
-      style={{ border: "1px solid var(--color-border)", borderTop: `2px solid ${accent.color}` }}
-    >
-      <div className="flex items-center gap-2.5">
-        <span
-          aria-hidden="true"
-          className="grid size-6 shrink-0 place-items-center rounded-full text-[12px] font-semibold tabular-nums"
-          style={{ background: accent.soft, color: accent.color }}
-        >
-          {n}
-        </span>
-        <Icon size={16} strokeWidth={1.8} style={{ color: accent.color }} aria-hidden="true" />
-        <span className="min-w-0 truncate font-sans text-[13.5px] font-semibold text-fg">{name}</span>
-      </div>
-      {children}
-      <Caption style={{ fontSize: 11 }}>{concept}</Caption>
-    </div>
-  );
-}
 
 /** Número grande + unidad + hint honesto de una etapa. */
-function StageMetric({
-  value,
-  unit,
-  hint
-}: {
-  value: ReactNode;
-  unit: string;
-  hint: string;
-}) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <div className="flex items-baseline gap-1.5">
-        <span className="font-sans text-[28px] font-semibold leading-none text-fg">{value}</span>
-        {unit ? <span className="font-sans text-[12px] leading-none text-fg-subtle">{unit}</span> : null}
-      </div>
-      <Caption style={{ fontSize: 10.5 }}>{hint}</Caption>
-    </div>
-  );
-}
 
 /** Conector entre etapas: flecha → en desktop, ↓ en móvil. Flujo sutil opcional. */
-function StageConnector({
-  flow
-}: {
-  flow?: { animate: { opacity: number[] }; transition: object };
-}) {
-  return (
-    <div className="flex items-center justify-center py-1 lg:px-1 lg:py-0" aria-hidden="true">
-      <motion.span
-        className="hidden text-fg-subtle lg:inline-flex"
-        animate={flow?.animate}
-        transition={flow?.transition}
-      >
-        <ArrowRight size={18} strokeWidth={2} />
-      </motion.span>
-      <motion.span
-        className="inline-flex text-fg-subtle lg:hidden"
-        animate={flow?.animate}
-        transition={flow?.transition}
-      >
-        <ArrowDown size={18} strokeWidth={2} />
-      </motion.span>
-    </div>
-  );
-}
 
 /* ============================================================
  * KPI Strip — engine ON/OFF + totales (grid de KpiCards del molde).
@@ -1541,49 +913,6 @@ function StageConnector({
  * sparkline ni delta (nada decorativo). El estado del motor va como StateBadge.
  * ============================================================ */
 
-function KpiStrip({
-  enabled,
-  totals,
-  nodeCount
-}: {
-  enabled: boolean;
-  totals: { activeNodes: number; queuedSends: number };
-  nodeCount: number;
-}) {
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <IconTile>
-          <Flame size={18} strokeWidth={1.7} color="var(--color-text-secondary)" />
-        </IconTile>
-        <span className="font-sans text-[14px] font-medium text-fg">
-          {enabled ? "Motor activo" : "Motor inactivo"}
-        </span>
-        <StateBadge
-          status={enabled ? "active" : "paused"}
-          label={enabled ? "engine ON" : "engine OFF"}
-        />
-      </div>
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">
-        <KpiCard
-          label="Nodos activos"
-          value={totals.activeNodes}
-          icon={Activity}
-        />
-        <KpiCard
-          label="Envíos encolados"
-          value={totals.queuedSends}
-          icon={LineChart}
-        />
-        <KpiCard
-          label="Nodos en pool"
-          value={nodeCount}
-          icon={Layers}
-        />
-      </div>
-    </div>
-  );
-}
 
 /* ============================================================
  * StateBreakdown — "Recorrido del nodo": el viaje fresh → warm como un stepper, con
@@ -1600,94 +929,6 @@ const LIFECYCLE_PATH: Array<{ state: WarmupNodeState; caption: string }> = [
 // del pool activo, así que normalmente solo aparece paused; los demás se muestran si llegan.
 const LIFECYCLE_ATTENTION: WarmupNodeState[] = ["paused", "blocked", "quarantined"];
 
-function StateBreakdown({ byState }: { byState: Record<string, number> }) {
-  const total = useMemo(
-    () => Object.values(byState).reduce((a, c) => a + c, 0),
-    [byState]
-  );
-  const attention = LIFECYCLE_ATTENTION.filter((s) => (byState[s] ?? 0) > 0).map(
-    (s) => [s, byState[s]] as const
-  );
-  // Estados desconocidos (defensa): cualquiera que no esté en la ruta ni en atención.
-  const extra = Object.entries(byState).filter(
-    ([key]) =>
-      !LIFECYCLE_PATH.some((p) => p.state === key) &&
-      !LIFECYCLE_ATTENTION.includes(key as WarmupNodeState)
-  );
-
-  return (
-    // ink: stat-card. Agrupada por adyacencia bajo la banda de KpiCards (también ink)
-    // → forman la "banda superior" oscura del marco cohesivo. Sus internos salen de
-    // var(--color-*), re-escalados por .ink-card a la rampa oscura sin hex.
-    <Card ink style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
-      <PanelHead
-        title="Recorrido del nodo"
-        sub="Dónde está cada emisor en su viaje: nace fresh (midiendo) y madura a warm (confiable)."
-        right={<Caption style={{ fontSize: 12.5 }}>{total} en total</Caption>}
-      />
-
-      {total === 0 ? (
-        <Caption>Sin nodos reportados en este snapshot.</Caption>
-      ) : (
-        <>
-          {/* Ruta feliz: fresh → warm */}
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
-            {LIFECYCLE_PATH.map((stage, i) => (
-              <div key={stage.state} className="flex flex-1 items-stretch gap-2">
-                <div
-                  className="flex min-w-0 flex-1 flex-col gap-2 rounded-[14px] p-3.5"
-                  style={{ border: "1px solid var(--color-border)" }}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <StateBadge status={aivStatus(stage.state)} label={stateLabel(stage.state)} />
-                    <span
-                      className="font-sans text-[20px] font-semibold tabular-nums"
-                      style={{ color: "var(--color-text-primary)" }}
-                    >
-                      {byState[stage.state] ?? 0}
-                    </span>
-                  </div>
-                  <Caption style={{ fontSize: 11 }}>{stage.caption}</Caption>
-                </div>
-                {i < LIFECYCLE_PATH.length - 1 ? (
-                  <span
-                    className="hidden items-center text-fg-subtle sm:flex"
-                    aria-hidden="true"
-                  >
-                    <ArrowRight size={16} strokeWidth={2} />
-                  </span>
-                ) : null}
-              </div>
-            ))}
-          </div>
-
-          {/* Fuera del ciclo activo */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border pt-3">
-            <Caption style={{ fontSize: 11 }}>fuera del ciclo activo</Caption>
-            {attention.length === 0 && extra.length === 0 ? (
-              <Pill tone="success">
-                <CheckCircle2 size={12} strokeWidth={1.9} />
-                ninguno en pausa o bloqueo
-              </Pill>
-            ) : (
-              [...attention, ...extra].map(([state, count]) => (
-                <span key={state} className="inline-flex items-center gap-2">
-                  <StateBadge status={aivStatus(state)} label={stateLabel(state)} />
-                  <span
-                    className="font-sans text-[13px] font-semibold tabular-nums"
-                    style={{ color: "var(--color-text-primary)" }}
-                  >
-                    {count}
-                  </span>
-                </span>
-              ))
-            )}
-          </div>
-        </>
-      )}
-    </Card>
-  );
-}
 
 /* ============================================================
  * NodesTable — filas grid del molde (StateBadge + left-border por estado).
@@ -1892,20 +1133,6 @@ function NodesEmpty() {
  * Footer.
  * ============================================================ */
 
-function FooterMeta({ generatedAt }: { generatedAt: string }) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-      <div className="flex items-center gap-2">
-        <Mono>GET /v1/warmup/status</Mono>
-        <span
-          aria-hidden="true"
-          className="inline-block size-[3px] rounded-full bg-border-strong"
-        />
-        <Caption>snapshot {formatRelative(generatedAt)}</Caption>
-      </div>
-    </div>
-  );
-}
 
 /* ============================================================
  * Trends — 3 gráficos alimentados por GET /v1/warmup/trends.
@@ -2041,7 +1268,6 @@ function PlacementTrendCard({
           </span>
         }
         sub="El inbox % es la puerta que habilita escalar volumen: bajo el piso, la rampa se frena."
-        right={<ConfigCaption>piso ≥ {formatPercent(PLACEMENT_FLOOR)}</ConfigCaption>}
       />
 
       {last !== null ? (
@@ -2289,7 +1515,6 @@ function RampCurveCard({ ramp }: { ramp: WarmupRampPoint[] }) {
             Curva de rampa
           </span>
         }
-        right={<ConfigCaption>clamp {RAMP_CLAMP}/día</ConfigCaption>}
       />
 
       {lastQuota !== null ? (
@@ -2356,7 +1581,7 @@ function RampCurveCard({ ramp }: { ramp: WarmupRampPoint[] }) {
 
       {weeks.length > 0 ? (
         <div className="flex flex-col gap-2 border-t border-border pt-3">
-          <ConfigCaption>plan por semanas · referencia</ConfigCaption>
+          
           <div className="flex flex-wrap gap-2">
             {weeks.map((w) => (
               <div
