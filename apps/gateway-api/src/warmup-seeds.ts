@@ -132,7 +132,13 @@ export function semillasMedibles(seeds: WarmupSeed[]): WarmupSeed[] {
  * misma semilla en la misma vuelta.
  */
 export function elegirSemilla(seeds: WarmupSeed[], domain: string, vuelta: number): WarmupSeed | null {
-  const activas = semillasActivas(seeds);
+  // PRIORIDAD a las que miden. Lo cazó la primera prueba real: con 3 de 4 semillas sin credencial,
+  // la rotación mandó el correo a una que no mide y la vuelta no produjo placement — y el placement
+  // es lo que gatea toda la rampa. Una vuelta sin medición es media vuelta.
+  // El reparto no se pierde: a medida que se agreguen semillas con credencial, la rotación se
+  // abre sola entre ellas. Las solo-destino quedan de reserva por si no hay ninguna que mida.
+  const medibles = semillasMedibles(seeds);
+  const activas = medibles.length > 0 ? medibles : semillasActivas(seeds);
   if (activas.length === 0) return null;
   let hash = 0;
   for (const ch of domain) hash = (hash * 31 + ch.charCodeAt(0)) % 100_000;

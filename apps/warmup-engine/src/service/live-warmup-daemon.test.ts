@@ -87,15 +87,26 @@ test("pickBox rota estable por índice", () => {
 
 // ── Semillas del registro ────────────────────────────────────────────────────────────────────────
 
-test("la rotación de semillas reparte y respeta las apagadas", () => {
+test("la rotación PRIORIZA las que miden, y reparte entre ellas", () => {
+  // Cazado en la primera prueba real: con la mayoría de las semillas sin credencial, la rotación
+  // mandaba el correo a una que no mide y la vuelta no producía placement — el dato que gatea la
+  // rampa. Ahora las solo-destino son reserva, no sorteo.
   const seeds: SeedDelDaemon[] = [
-    { address: "a@gmail.com", provider: "gmail", enabled: true, auth: "gmail_oauth" },
-    { address: "b@gmail.com", provider: "gmail", enabled: true, auth: "none" },
+    { address: "mide@gmail.com", provider: "gmail", enabled: true, auth: "gmail_oauth" },
+    { address: "destino@gmail.com", provider: "gmail", enabled: true, auth: "none" },
     { address: "muerta@gmail.com", provider: "gmail", enabled: false, auth: "none" }
   ];
+  for (let v = 0; v < 6; v += 1) {
+    assert.equal(elegirSemillaDelRegistro(seeds, "dominio.com", v)?.address, "mide@gmail.com");
+  }
+
+  const dos: SeedDelDaemon[] = [...seeds, { address: "mide2@yahoo.com", provider: "yahoo", enabled: true, auth: "imap_password" }];
   const usadas = new Set<string>();
-  for (let v = 0; v < 8; v += 1) usadas.add(elegirSemillaDelRegistro(seeds, "dominio.com", v)!.address);
-  assert.deepEqual([...usadas].sort(), ["a@gmail.com", "b@gmail.com"], "la apagada nunca se usa");
+  for (let v = 0; v < 8; v += 1) usadas.add(elegirSemillaDelRegistro(dos, "dominio.com", v)!.address);
+  assert.deepEqual([...usadas].sort(), ["mide2@yahoo.com", "mide@gmail.com"], "reparte entre las que miden");
+
+  const soloDestino: SeedDelDaemon[] = [{ address: "d@gmail.com", provider: "gmail", enabled: true, auth: "none" }];
+  assert.equal(elegirSemillaDelRegistro(soloDestino, "x.com", 0)?.address, "d@gmail.com", "sin ninguna que mida, cae a destino");
   assert.equal(elegirSemillaDelRegistro([], "x.com", 0), null, "sin semillas no se inventa una");
 });
 

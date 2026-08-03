@@ -112,7 +112,11 @@ export interface SeedDelDaemon {
  * vuelta. Sin esto, 58 dominios escribiéndole siempre a la misma casilla son una huella obvia.
  */
 export function elegirSemillaDelRegistro(seeds: SeedDelDaemon[], domain: string, vuelta: number): SeedDelDaemon | null {
-  const activas = seeds.filter((s) => s.enabled);
+  // PRIORIDAD a las que miden — misma regla que el registro del gateway. Sin esto, con la mayoría
+  // de las semillas sin credencial, casi ninguna vuelta produce placement, que es justo el dato
+  // que gatea la rampa. Cazado en la primera prueba real.
+  const medibles = seeds.filter((s) => s.enabled && s.auth !== "none");
+  const activas = medibles.length > 0 ? medibles : seeds.filter((s) => s.enabled);
   if (activas.length === 0) return null;
   let hash = 0;
   for (const ch of domain) hash = (hash * 31 + ch.charCodeAt(0)) % 100_000;

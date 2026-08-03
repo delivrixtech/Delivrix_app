@@ -190,3 +190,27 @@ test("verifiedAt se sella con el probe: una semilla sin verificar se distingue",
   await marcarVerificada({ workspace, address: "a@gmail.com", now: () => ahora });
   assert.equal((await leerSemillas(workspace)).seeds[0]?.verifiedAt, ahora.toISOString());
 });
+
+test("la rotación PRIORIZA las que miden: una vuelta sin placement es media vuelta", () => {
+  // Lo cazó la primera prueba real: con 3 de 4 semillas sin credencial, el ciclo eligió una
+  // solo-destino y no produjo placement — el dato que gatea toda la rampa.
+  const mezcla = [
+    seed({ address: "mide@gmail.com", auth: "gmail_oauth" }),
+    seed({ address: "destino1@gmail.com", auth: "none", secretEncrypted: undefined }),
+    seed({ address: "destino2@gmail.com", auth: "none", secretEncrypted: undefined })
+  ];
+  for (let v = 0; v < 6; v += 1) {
+    assert.equal(elegirSemilla(mezcla, "dominio.com", v)?.address, "mide@gmail.com");
+  }
+
+  // Con varias que miden, el reparto vuelve solo.
+  const dos = [...mezcla, seed({ address: "mide2@yahoo.com", provider: "yahoo", auth: "imap_password" })];
+  const usadas = new Set<string>();
+  for (let v = 0; v < 8; v += 1) usadas.add(elegirSemilla(dos, "dominio.com", v)!.address);
+  assert.deepEqual([...usadas].sort(), ["mide2@yahoo.com", "mide@gmail.com"]);
+});
+
+test("sin ninguna que mida, se cae a las solo-destino (mejor volumen que nada)", () => {
+  const soloDestino = [seed({ address: "d@gmail.com", auth: "none", secretEncrypted: undefined })];
+  assert.equal(elegirSemilla(soloDestino, "x.com", 0)?.address, "d@gmail.com");
+});
