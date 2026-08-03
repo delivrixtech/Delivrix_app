@@ -21,6 +21,7 @@ import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
 
 interface EventoWarmup {
   id: string;
+  testId?: string | null;
   occurredAt: string;
   cycleId: string;
   nodeDomain: string;
@@ -81,6 +82,7 @@ function hace(iso: string, ahora: number): string {
 /** Agrupa los eventos crudos en vueltas. La vuelta es la unidad que el operador entiende. */
 export interface Vuelta {
   cycleId: string;
+  testId: string | null;
   domain: string;
   seed: string;
   subject: string | null;
@@ -96,6 +98,7 @@ export function agruparVueltas(events: EventoWarmup[]): Vuelta[] {
     const previa = mapa.get(e.cycleId);
     const vuelta: Vuelta = previa ?? {
       cycleId: e.cycleId,
+      testId: null,
       domain: e.nodeDomain,
       seed: e.seedInbox,
       subject: e.subject,
@@ -106,6 +109,8 @@ export function agruparVueltas(events: EventoWarmup[]): Vuelta[] {
     };
     vuelta.etapas[e.kind] = e;
     vuelta.ultimo = e.occurredAt;
+    // El testId es la llave para traer el correo real del buzón: sin él, la vuelta no se puede abrir.
+    if (e.testId) vuelta.testId = e.testId;
     if (e.placement) vuelta.placement = e.placement;
     // El motivo del corte se muestra: el `detail` traía el error y la vista anterior lo tiraba.
     if (e.kind === "error") {
@@ -115,6 +120,22 @@ export function agruparVueltas(events: EventoWarmup[]): Vuelta[] {
     mapa.set(e.cycleId, vuelta);
   }
   return [...mapa.values()].sort((a, b) => b.ultimo.localeCompare(a.ultimo));
+}
+
+interface MensajeHilo {
+  papel: "recibido" | "respuesta";
+  carpeta: string;
+  asunto: string;
+  de: string;
+  para: string;
+  fecha: string;
+  texto: string | null;
+}
+interface HiloResp {
+  testId: string;
+  semilla: string | null;
+  mensajes: MensajeHilo[];
+  motivo: string | null;
 }
 
 // ── Consola ──────────────────────────────────────────────────────────────────────────────────────
@@ -127,6 +148,27 @@ export default function WarmupLive() {
   const [error, setError] = useState<string | null>(null);
   const nuevos = useRef<Set<string>>(new Set());
   const vistos = useRef<Set<string>>(new Set());
+  const [hilo, setHilo] = useState<{ testId: string; cargando: boolean; data: HiloResp | null } | null>(null);
+
+  /** Trae el correo REAL del buzón semilla. Caro (abre IMAP): solo cuando el operador lo pide. */
+  const abrirHilo = async (testId: string) => {
+    setHilo({ testId, cargando: true, data: null });
+    try {
+      // fetch directo y no getJson: el borde de lectura tipa el endpoint como literal exacto, y
+      // acá hace falta un query param. La ruta base sigue saliendo de READ_ENDPOINTS.
+      const r = await fetch(`${READ_ENDPOINTS.warmupConversation}?testId=${encodeURIComponent(testId)}`, {
+        headers: { accept: "application/json" },
+        cache: "no-store"
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setHilo({ testId, cargando: false, data: (await r.json()) as HiloResp });
+    } catch (e) {
+      setHilo({
+        testId, cargando: false,
+        data: { testId, semilla: null, mensajes: [], motivo: e instanceof Error ? e.message : "no se pudo leer" }
+      });
+    }
+  };
 
   useEffect(() => {
     let vivo = true;
@@ -200,12 +242,14 @@ export default function WarmupLive() {
       <div style={S.cuerpo}>
         <div style={S.principal}>
           {/* ── El ciclo ── */}
-          {enCurso ? <Ciclo vuelta={enCurso} ahora={ahora} destacado={nuevos.current.has(enCurso.cycleId)} /> : <SinCiclo />}
+          {enCurso ? <Ciclo vuelta={enCurso} ahora={ahora} destacado={nuevos.current.has(enCurso.cycleId)} onVerHilo={abrirHilo} /> : <SinCiclo />}
+
+          {hilo ? <Hilo estado={hilo} onCerrar={() => setHilo(null)} /> : null}
 
           {/* ── Flujo ── */}
           <div style={S.flujo}>
             {vueltas.slice(1, 9).map((v) => (
-              <Fila key={v.cycleId} vuelta={v} ahora={ahora} nueva={nuevos.current.has(v.cycleId)} />
+              <Fila key={v.cycleId} vuelta={v} ahora={ahora} nueva={nuevos.current.has(v.cycleId)} onVerHilo={abrirHilo} />
             ))}
           </div>
         </div>
@@ -224,7 +268,7 @@ export default function WarmupLive() {
 
 // ── El ciclo en curso: 4 etapas que se encienden en orden ────────────────────────────────────────
 
-function Ciclo({ vuelta, ahora, destacado }: { vuelta: Vuelta; ahora: number; destacado: boolean }) {
+function Ciclo({ vuelta, ahora, destacado, onVerHilo }: { vuelta: Vuelta; ahora: number; destacado: boolean; onVerHilo: (t: string) => void }) {
   const alcanzada = (kind: string) => Boolean(vuelta.etapas[kind]);
   const completa = alcanzada("replied");
 
@@ -239,6 +283,11 @@ function Ciclo({ vuelta, ahora, destacado }: { vuelta: Vuelta; ahora: number; de
           <span style={S.placement(vuelta.placement)}>{vuelta.placement}</span>
         ) : null}
         <span style={S.hace}>{hace(vuelta.ultimo, ahora)}</span>
+        {vuelta.testId ? (
+          <button type="button" style={S.verHilo} onClick={() => onVerHilo(vuelta.testId!)}>
+            ver el correo
+          </button>
+        ) : null}
       </div>
 
       <div style={S.pista}>
@@ -271,9 +320,15 @@ function SinCiclo() {
 
 // ── Fila del flujo ───────────────────────────────────────────────────────────────────────────────
 
-function Fila({ vuelta, ahora, nueva }: { vuelta: Vuelta; ahora: number; nueva: boolean }) {
+function Fila({ vuelta, ahora, nueva, onVerHilo }: { vuelta: Vuelta; ahora: number; nueva: boolean; onVerHilo: (t: string) => void }) {
   return (
-    <div style={{ ...S.fila, ...(nueva ? S.filaNueva : null) }}>
+    <div
+      style={{ ...S.fila, ...(nueva ? S.filaNueva : null), cursor: vuelta.testId ? "pointer" : "default" }}
+      onClick={() => vuelta.testId && onVerHilo(vuelta.testId)}
+      role={vuelta.testId ? "button" : undefined}
+      tabIndex={vuelta.testId ? 0 : undefined}
+      onKeyDown={(ev) => { if (vuelta.testId && (ev.key === "Enter" || ev.key === " ")) onVerHilo(vuelta.testId); }}
+    >
       <span style={S.filaHora}>{hace(vuelta.ultimo, ahora)}</span>
       <span style={S.filaDom}>{vuelta.domain}</span>
       <div style={S.puntos}>
@@ -283,6 +338,39 @@ function Fila({ vuelta, ahora, nueva }: { vuelta: Vuelta; ahora: number; nueva: 
       </div>
       {vuelta.placement ? <span style={S.placement(vuelta.placement)}>{vuelta.placement}</span> : null}
       {vuelta.error ? <span style={S.filaErr}>{vuelta.error}</span> : null}
+    </div>
+  );
+}
+
+/** El correo REAL, leído del buzón semilla. La evidencia de que el calentamiento existe. */
+function Hilo({ estado, onCerrar }: { estado: { testId: string; cargando: boolean; data: HiloResp | null }; onCerrar: () => void }) {
+  return (
+    <div style={S.hilo}>
+      <div style={S.hiloTop}>
+        <span style={S.hiloTit}>el correo</span>
+        {estado.data?.semilla ? <span style={S.seed}>{estado.data.semilla}</span> : null}
+        <span style={{ flex: 1 }} />
+        <button type="button" style={S.cerrar} onClick={onCerrar} aria-label="cerrar">×</button>
+      </div>
+
+      {estado.cargando ? <div style={S.dim}>abriendo el buzón…</div> : null}
+
+      {estado.data?.mensajes.map((m, i) => (
+        <div key={i} style={S.msg}>
+          <div style={S.msgTop}>
+            <span style={S.msgPapel(m.papel)}>{m.papel === "recibido" ? "llegó" : "respondió"}</span>
+            <span style={S.msgDe}>{m.de}</span>
+            <span style={S.flecha}>→</span>
+            <span style={S.msgDe}>{m.para}</span>
+            <span style={{ flex: 1 }} />
+            <span style={S.carpeta(m.carpeta)}>{m.carpeta}</span>
+          </div>
+          <div style={S.asunto}>{m.asunto}</div>
+          {m.texto ? <pre style={S.cuerpoMsg}>{m.texto}</pre> : <span style={S.dim}>sin cuerpo legible</span>}
+        </div>
+      ))}
+
+      {estado.data?.motivo ? <div style={S.motivo}>{estado.data.motivo}</div> : null}
     </div>
   );
 }
@@ -382,5 +470,47 @@ const S = {
     padding: "12px 16px", borderBottom: "1px solid var(--color-border)"
   } as const,
   railBody: { padding: 16 } as const,
-  railTxt: { fontSize: 12.5, color: "var(--color-text-secondary)", margin: 0 } as const
+  railTxt: { fontSize: 12.5, color: "var(--color-text-secondary)", margin: 0 } as const,
+
+  verHilo: {
+    font: "inherit", fontSize: 11.5, padding: "3px 9px", borderRadius: 7, cursor: "pointer",
+    border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)"
+  } as const,
+  hilo: {
+    display: "grid", gap: 12, padding: 18, borderRadius: 16,
+    background: "var(--color-surface)", border: "1px solid var(--color-accent)"
+  } as const,
+  hiloTop: { display: "flex", alignItems: "center", gap: 10 } as const,
+  hiloTit: {
+    fontSize: 11, letterSpacing: ".16em", textTransform: "uppercase" as const,
+    color: "var(--color-text-tertiary)", fontWeight: 600
+  } as const,
+  cerrar: {
+    font: "inherit", fontSize: 16, lineHeight: 1, width: 24, height: 24, cursor: "pointer",
+    border: "1px solid var(--color-border)", borderRadius: 7, background: "transparent",
+    color: "var(--color-text-secondary)"
+  } as const,
+  msg: {
+    display: "grid", gap: 6, padding: 14, borderRadius: 12,
+    background: "var(--color-surface-sunken, transparent)", border: "1px solid var(--color-border)"
+  } as const,
+  msgTop: { display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, flexWrap: "wrap" as const } as const,
+  msgPapel: (p: string) => ({
+    fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "2px 7px",
+    color: p === "recibido" ? "var(--color-success)" : "var(--color-warming)",
+    background: p === "recibido"
+      ? "color-mix(in srgb, var(--color-success) 12%, transparent)"
+      : "color-mix(in srgb, var(--color-warming) 12%, transparent)"
+  }),
+  msgDe: { color: "var(--color-text-secondary)", fontFamily: MONO, fontSize: 11.5 } as const,
+  carpeta: (c: string) => ({
+    fontSize: 11, fontFamily: MONO,
+    color: /spam|junk|bulk/i.test(c) ? "var(--color-critical)" : "var(--color-text-tertiary)"
+  }),
+  asunto: { fontSize: 13.5, color: "var(--color-text-primary)", fontWeight: 500 } as const,
+  cuerpoMsg: {
+    margin: 0, fontSize: 12.5, lineHeight: 1.55, color: "var(--color-text-secondary)",
+    fontFamily: "inherit", whiteSpace: "pre-wrap" as const, wordBreak: "break-word" as const
+  } as const,
+  motivo: { fontSize: 12, color: "var(--color-text-tertiary)" } as const
 };

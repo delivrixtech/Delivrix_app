@@ -29,6 +29,7 @@ export const READ_ENDPOINTS = Object.freeze({
   senderPoolAlerts: "/v1/sender-pool/alerts",
   senderPoolCap: "/v1/sender-pool/cap",
   warmupSeeds: "/v1/warmup/seeds",
+  warmupConversation: "/v1/warmup/conversation",
   senderPoolCredentialsExport: "/v1/sender-pool/credentials/export",
   senderPoolCredentialsBulkDownload: "/v1/sender-pool/credentials/download-all",
   senderNodes: "/v1/sender-nodes",
