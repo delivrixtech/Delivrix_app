@@ -682,7 +682,7 @@ function encryptSmtpCredentialPassword(
   };
 }
 
-function encryptSecret(
+export function encryptSecret(
   plaintext: string,
   key: Buffer,
   aad: Record<string, string>
@@ -699,7 +699,7 @@ function encryptSecret(
   };
 }
 
-function decryptSecret(
+export function decryptSecret(
   payload: SmtpCredentialEncryptedPayload,
   key: Buffer,
   aad: Record<string, string>
@@ -738,7 +738,7 @@ function decryptSmtpCredentialPassword(record: SmtpCredentialRecord, key: Buffer
   ]).toString("utf8");
 }
 
-function credentialEncryptionKey(env: Record<string, string | undefined> | undefined): Buffer {
+export function credentialEncryptionKey(env: Record<string, string | undefined> | undefined): Buffer {
   const raw = env?.[keyEnvName] ?? process.env[keyEnvName];
   if (!raw || raw.trim().length === 0) {
     throw new SmtpCredentialError("credential_encryption_key_missing");
