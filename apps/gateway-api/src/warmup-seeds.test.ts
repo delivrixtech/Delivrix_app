@@ -214,3 +214,28 @@ test("sin ninguna que mida, se cae a las solo-destino (mejor volumen que nada)",
   const soloDestino = [seed({ address: "d@gmail.com", auth: "none", secretEncrypted: undefined })];
   assert.equal(elegirSemilla(soloDestino, "x.com", 0)?.address, "d@gmail.com");
 });
+
+test("Outlook y M365 con app password se RECHAZAN en el alta, no en el probe", async () => {
+  // Verificado contra la doc oficial: Microsoft retiro Basic Auth para Outlook.com personal el
+  // 16/09/2024 y lo tiene deshabilitado en todos los tenants de M365. Dejar que se guarde y falle
+  // en el probe mandaria a revisar la contrasena, y la contrasena no es el problema.
+  const workspace = await ws();
+  await assert.rejects(
+    () => agregarSemilla({ workspace, env: ENV, address: "a@outlook.com", provider: "outlook", secret: "app-password" }),
+    /Basic Auth|OAuth2/
+  );
+  await assert.rejects(
+    () => agregarSemilla({ workspace, env: ENV, address: "a@empresa.com", provider: "m365", secret: "app-password" }),
+    /Basic Auth|deshabilitado/
+  );
+  // Pero SI se pueden cargar como solo-destino: reciben correo aunque no midan.
+  const soloDestino = await agregarSemilla({ workspace, env: ENV, address: "a@outlook.com", provider: "outlook" });
+  assert.equal(soloDestino.auth, "none");
+});
+
+test("Yahoo con app password SI se acepta (es la via que sigue viva)", async () => {
+  const workspace = await ws();
+  const seed = await agregarSemilla({ workspace, env: ENV, address: "a@yahoo.com", provider: "yahoo", secret: "app-password" });
+  assert.equal(seed.auth, "imap_password");
+  assert.equal(seed.imap.host, "imap.mail.yahoo.com", "el host de DOS VIAS, no export.imap (ese no sincroniza de vuelta)");
+});

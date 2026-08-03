@@ -484,10 +484,25 @@ function createPlacementStore(client: PgClient): PlacementStore {
       // Serie global (todos los nodos), más nuevos primero. spam_rate se computa en SQL con NULLIF
       // para no dividir por cero cuando la ventana no tuvo muestras. El servicio la invierte a orden
       // cronológico para el dashboard.
+      // SE EXCLUYEN LOS FIXTURES. La Postgres de producción tiene semillas de prueba
+      // (`seed-*@panel.test`) cargadas en un backfill, y sus rollups salían por /v1/warmup/trends
+      // como si fueran medición real: el panel dibujaba 14 puntos de placement INVENTADO con toda
+      // confianza. Es la misma crisis de credibilidad por datos fabricados que ya golpeó a este
+      // panel una vez. Una serie vacía y honesta es infinitamente mejor que una serie linda y falsa.
+      //
+      // El filtro va acá y no en el panel a propósito: cualquier consumidor futuro (una tool del
+      // agente, un reporte) heredaría el dato falso si se filtrara solo en la vista.
       const { rows } = await client.query<RollupTrendRow>(
-        "SELECT window_end, inbox_wilson_lb, inbox_ewma, " +
-          "spam_count::numeric / NULLIF(samples, 0) AS spam_rate, samples " +
-          "FROM warmup_placement_rollups ORDER BY window_end DESC LIMIT $1",
+        "SELECT r.window_end, r.inbox_wilson_lb, r.inbox_ewma, " +
+          "r.spam_count::numeric / NULLIF(r.samples, 0) AS spam_rate, r.samples " +
+          "FROM warmup_placement_rollups r " +
+          // Un nodo es fixture si ALGUNA de sus pruebas de placement apunta a una semilla de test.
+          "WHERE NOT EXISTS (" +
+          "  SELECT 1 FROM warmup_placement_tests t" +
+          "  JOIN warmup_seed_accounts s ON s.id = t.seed_id" +
+          "  WHERE t.node_id = r.node_id AND s.address LIKE '%@panel.test'" +
+          ") " +
+          "ORDER BY r.window_end DESC LIMIT $1",
         [limit]
       );
       return rows.map((row) => {

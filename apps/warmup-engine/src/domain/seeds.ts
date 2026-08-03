@@ -120,11 +120,34 @@ export function normalizarDireccion(address: string): string {
   return address.trim().toLowerCase();
 }
 
+/**
+ * Proveedores donde un APP PASSWORD ya no sirve, verificado contra la documentación oficial
+ * (2026-08-03):
+ *
+ *  - **Outlook.com personal**: Microsoft retiró Basic Auth el 16/09/2024. La página oficial de
+ *    settings dice que IMAP, POP y SMTP requieren OAuth2. No hay flag para revivirlo.
+ *  - **Microsoft 365**: Basic Auth para IMAP/POP está deshabilitado en TODOS los tenants y
+ *    "nadie (ni vos ni el soporte de Microsoft) puede re-habilitarlo".
+ *
+ * Se rechaza en el alta en vez de dejar que el probe falle: el error de IMAP sería
+ * `AUTHENTICATIONFAILED`, que manda a revisar la contraseña — y la contraseña no es el problema.
+ * Esas semillas necesitan un adapter OAuth2 aparte (registro en Entra, consentimiento por buzón,
+ * rotación de refresh tokens), que es otro trabajo, no un parámetro.
+ */
+export const SIN_APP_PASSWORD: Record<string, string> = {
+  outlook:
+    "Outlook.com personal ya no acepta app password: Microsoft retiró Basic Auth el 16/09/2024 y exige OAuth2 para IMAP, POP y SMTP",
+  m365:
+    "Microsoft 365 tiene Basic Auth deshabilitado para IMAP en todos los tenants, y no se puede re-habilitar ni con soporte"
+};
+
 export function validarSemillaNueva(input: {
   address: string;
   provider: string;
   imapHost?: string;
   imapPort?: number;
+  /** Cómo se va a autenticar; sirve para rechazar combinaciones imposibles antes de guardarlas. */
+  auth?: SeedAuth;
 }): { address: string; provider: SeedProvider; imap: { host: string; port: number } } {
   const address = normalizarDireccion(input.address);
   // Validación deliberadamente simple: que tenga forma de dirección. El probe IMAP es la prueba
@@ -136,6 +159,11 @@ export function validarSemillaNueva(input: {
     throw new WarmupSeedError(`proveedor invalido: ${input.provider} (validos: ${SEED_PROVIDERS.join(", ")})`);
   }
   const provider = input.provider as SeedProvider;
+  if (input.auth === "imap_password" && SIN_APP_PASSWORD[provider]) {
+    throw new WarmupSeedError(
+      `${SIN_APP_PASSWORD[provider]}. Cargala como --solo-destino (recibe correo, no mide) hasta que exista el adapter OAuth2.`
+    );
+  }
   const porDefecto = IMAP_POR_PROVEEDOR[provider];
   const port = input.imapPort ?? porDefecto.port;
   if (!Number.isInteger(port) || port <= 0 || port > 65_535) {

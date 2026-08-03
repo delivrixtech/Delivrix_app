@@ -112,9 +112,13 @@ export async function agregarSemilla(input: {
   notes?: string;
   now?: () => Date;
 }): Promise<WarmupSeed> {
-  const { address, provider, imap } = validarSemillaNueva(input);
+  const ahoraTieneSecreto = Boolean(input.secret && input.secret.trim().length > 0);
+  const { address, provider, imap } = validarSemillaNueva({
+    ...input,
+    auth: input.auth ?? (ahoraTieneSecreto ? "imap_password" : "none")
+  });
   const ahora = (input.now ?? (() => new Date()))();
-  const tieneSecreto = Boolean(input.secret && input.secret.trim().length > 0);
+  const tieneSecreto = ahoraTieneSecreto;
   const auth: SeedAuth = input.auth ?? (tieneSecreto ? "imap_password" : "none");
 
   if (auth === "imap_password" && !tieneSecreto) {
