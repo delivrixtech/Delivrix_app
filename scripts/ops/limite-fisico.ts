@@ -18,6 +18,7 @@ import { resolverTecho, TECHO_ABSOLUTO } from "../../apps/gateway-api/src/sender
 import {
   buildDailyCapInstallPlan,
   buildDailyCapRollbackPlan,
+  buildFrenoPlan,
   buildDailyCapStatusCommand,
   CAP_MEASUREMENT_FILE,
   parseDailyCapStatus,
@@ -31,14 +32,14 @@ const args = process.argv.slice(2);
 // Un argumento que no se reconoce ABORTA. Sin esto, `--domain foo.com` (espacio en vez de `=`) se
 // ignoraba en silencio: el filtro no se aplicaba y `--apply` salía a los 58 nodos. Y `--rolback`
 // instalaba en vez de desinstalar. El typo tiene que doler antes, no después.
-const BANDERAS_SIMPLES = new Set(["--apply", "--rollback", "--status"]);
-const BANDERAS_CON_VALOR = new Set(["domain", "cap", "limit"]);
+const BANDERAS_SIMPLES = new Set(["--apply", "--rollback", "--status", "--frenar"]);
+const BANDERAS_CON_VALOR = new Set(["domain", "cap", "limit", "excepto", "cap-excepto"]);
 for (const a of args) {
   const conValor = a.startsWith("--") && a.includes("=") && BANDERAS_CON_VALOR.has(a.slice(2, a.indexOf("=")));
   if (!BANDERAS_SIMPLES.has(a) && !conValor) {
     console.error(
       `argumento no reconocido: ${a}\n` +
-        `esperados: --apply --rollback --status --domain=<dominio> --cap=<n> --limit=<n>\n` +
+        `esperados: --apply --rollback --status --frenar --domain=<dominio> --cap=<n> --limit=<n> --excepto=<dom,dom> --cap-excepto=<n>\n` +
         "No se hizo nada."
     );
     process.exit(1);
@@ -51,6 +52,17 @@ const flag = (nombre: string): string | null => {
 };
 const APLICAR = args.includes("--apply");
 const ROLLBACK = args.includes("--rollback");
+/**
+ * FRENO: escribe cap 0 en la flota, que en el policy service significa diferir TODO el correo
+ * autenticado. Sirve para cortar a un emisor externo sin tocar credenciales ni desmontar nada — y
+ * se revierte con un `--apply` normal.
+ *
+ * `--excepto` es imprescindible y no cosmético: NUESTRO warmup sale por el MISMO 587 con la misma
+ * credencial que el emisor externo, así que un freno parejo nos frenaría a nosotros. Los dominios
+ * exceptuados quedan con un cupo chico (`--cap-excepto`, default 20/día) que cubre las 3 vueltas
+ * diarias del calentamiento y sigue matando cualquier volumen de producción.
+ */
+const FRENAR = args.includes("--frenar");
 const SOLO_STATUS = args.includes("--status");
 const DOMINIO = flag("domain");
 
@@ -74,6 +86,13 @@ const LIMITE = enteroFlag("limit", 10_000);
 // El tope absoluto es el mismo de la cuota: arriba de eso el cap deja de proteger del umbral
 // permanente de Google. Se rechaza (no se recorta) para no mentirle al operador sobre lo instalado.
 const CAP = enteroFlag("cap", TECHO_ABSOLUTO) ?? resolverTecho();
+const EXCEPTO = new Set(
+  (flag("excepto") ?? "")
+    .split(",")
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean)
+);
+const CAP_EXCEPTO = enteroFlag("cap-excepto", TECHO_ABSOLUTO) ?? 20;
 
 interface Nodo {
   domain: string;
@@ -106,11 +125,25 @@ async function main(): Promise<void> {
     return;
   }
 
-  const plan: NodeCapStep[] = ROLLBACK ? buildDailyCapRollbackPlan() : buildDailyCapInstallPlan({ cap: CAP });
+  const planDe = (dominio: string): NodeCapStep[] => {
+    if (ROLLBACK) return buildDailyCapRollbackPlan();
+    if (!FRENAR) return buildDailyCapInstallPlan({ cap: CAP });
+    // Freno: 0 para todos, cupo chico para los que estamos calentando.
+    return EXCEPTO.has(dominio.toLowerCase())
+      ? buildDailyCapInstallPlan({ cap: CAP_EXCEPTO })
+      : buildFrenoPlan();
+  };
+  const plan: NodeCapStep[] = planDe(nodos[0]!.domain);
 
   if (!APLICAR) {
     console.log(
-      `DRY-RUN — ${ROLLBACK ? "QUITARÍA el límite físico de" : `pondría cap ${CAP}/día en`} ${nodos.length} nodo(s).\n` +
+      `DRY-RUN — ${
+        ROLLBACK
+          ? "QUITARÍA el límite físico de"
+          : FRENAR
+            ? `FRENARÍA (cap 0) ${nodos.length - [...EXCEPTO].filter((d) => nodos.some((n) => n.domain.toLowerCase() === d)).length} nodo(s), dejando cap ${CAP_EXCEPTO}/día en ${[...EXCEPTO].join(", ") || "ninguno"} —`
+            : `pondría cap ${CAP}/día en`
+      } ${nodos.length} nodo(s).\n` +
         "Nada se ejecutó. Agregá --apply para hacerlo de verdad.\n"
     );
     for (const n of nodos.slice(0, 5)) console.log(`  ${n.domain.padEnd(32)} ${n.serverSlug} ${n.serverIp}`);
@@ -120,7 +153,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.log(`${ROLLBACK ? "QUITANDO" : `aplicando cap ${CAP}/día`} en ${nodos.length} nodo(s)…\n`);
+  console.log(
+    `${ROLLBACK ? "QUITANDO" : FRENAR ? `FRENANDO (cap 0, excepto ${[...EXCEPTO].join(", ") || "ninguno"} con ${CAP_EXCEPTO}/día)` : `aplicando cap ${CAP}/día`} en ${nodos.length} nodo(s)…\n`
+  );
   let ok = 0;
   const fallados: Array<{ domain: string; paso: string; error: string }> = [];
 
@@ -128,8 +163,9 @@ async function main(): Promise<void> {
   // aborta la flota por un nodo caído, pero tampoco se declara éxito global.
   for (const nodo of nodos) {
     let pasoActual = "";
+    const planNodo = planDe(nodo.domain);
     try {
-      for (const paso of plan) {
+      for (const paso of planNodo) {
         pasoActual = paso.label;
         await runner.run({
           serverSlug: nodo.serverSlug,

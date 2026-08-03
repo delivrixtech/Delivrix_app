@@ -303,6 +303,30 @@ export function buildDailyCapRollbackPlan(): NodeCapStep[] {
   ];
 }
 
+/**
+ * FRENO: escribe cap 0 sin desmontar nada. En el policy service, `n >= 0` es siempre verdadero, así
+ * que TODO el correo autenticado se difiere (4xx, no 5xx: la cola del emisor retiene y reintenta,
+ * no se pierde correo). Es la forma de cortar a un emisor externo sin rotar credenciales ni
+ * apagar el servicio, y se revierte escribiendo el cupo de vuelta.
+ *
+ * No toca el cableado a propósito: el policy service sigue montado y midiendo, así que el nodo
+ * queda frenado pero observable.
+ */
+export function buildFrenoPlan(): NodeCapStep[] {
+  return [
+    {
+      label: "frenar-cap-cero",
+      command: `printf '0\\n' > ${CAP_FILE} && chmod 0644 ${CAP_FILE}`,
+      auditCommand: `write ${CAP_FILE} = 0 (freno: difiere todo el correo autenticado)`
+    },
+    {
+      label: "validate-freno",
+      command: `test "$(cat ${CAP_FILE})" = "0"`,
+      auditCommand: "validar que el cap quedó en 0"
+    }
+  ];
+}
+
 /** Lectura del estado del cap en un nodo. Read-only: no cambia nada. */
 export function buildDailyCapStatusCommand(): string {
   // El `echo` extra después de cada lectura NO es redundante: un archivo sin newline final pega su
