@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { Pool } from "pg";
 import { elegirSemilla, semillasMedibles, type SeedBase } from "../domain/seeds.ts";
+import { elegirSemillaRotada, type UsoPrevio } from "../domain/rotacion.ts";
 import { opsDesdeImap, type ImapClienteMinimo } from "../live/imap-placement-ops.ts";
 import { SMTP_POR_PROVEEDOR } from "../domain/seeds.ts";
 import { createPgWarmupStores, type PgClient } from "../store/pg-stores.ts";
@@ -228,6 +229,18 @@ async function countCyclesToday(pg: PgClient): Promise<number> {
   return Number(rows[0]?.n ?? 0);
 }
 
+/**
+ * El historial de (dominio, semilla) que usa la rotación. Sale de los envíos REALES: la rotación
+ * decide mirando lo que efectivamente pasó, no un contador en memoria que se pierde al reiniciar.
+ */
+async function historialDeEnvios(pg: PgClient, limite = 400): Promise<UsoPrevio[]> {
+  const { rows } = await pg.query<{ node_domain: string; seed_inbox: string; occurred_at: Date }>(
+    "SELECT node_domain, seed_inbox, occurred_at FROM warmup_activity WHERE kind = 'sent' ORDER BY occurred_at DESC LIMIT $1",
+    [limite]
+  );
+  return rows.map((r) => ({ domain: r.node_domain, seed: r.seed_inbox, cuando: new Date(r.occurred_at).toISOString() }));
+}
+
 /** Últimos placements medidos (para el gate). */
 async function recentPlacements(pg: PgClient, window: number): Promise<Placement[]> {
   const { rows } = await pg.query<{ placement: string | null }>(
@@ -408,9 +421,12 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         const testId = makeTestId(stamp);
         const cycleId = "cyc-" + stamp;
         const subject = `${conversation.subject} [${testId.slice(-6)}]`;
-        // La semilla ROTA por (dominio, vuelta): el tráfico se reparte entre nuestras casillas en
-        // vez de caer siempre en la misma.
-        const semilla = elegirSemillaDelRegistro(semillas, box, seq) ?? {
+        // ROTACIÓN sobre el historial REAL: no repite el par (dominio, semilla) mientras haya
+        // alternativa, reparte entre proveedores y desempata por la menos usada. Un hash de
+        // (dominio, vuelta) dejaba siempre la misma coreografía, que es la huella a evitar.
+        const historial = await historialDeEnvios(pg).catch(() => [] as UsoPrevio[]);
+        const decision = elegirSemillaRotada(semillas, box, historial);
+        const semilla = decision?.semilla ?? {
           address: cfg.seedInbox,
           provider: "gmail",
           enabled: true,
@@ -419,6 +435,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         const medible = puedeMedir(semilla, cfg.seedInbox);
         log(
           `vuelta #${seq + 1} · ${box} → ${semilla.address} · tema ${conversation.topic}` +
+            (decision ? ` · rotación: ${decision.motivo}` : "") +
             (medible ? "" : " · SIN MEDICIÓN (esta semilla no tiene con qué leer dónde cayó)")
         );
         let mailer: WarmupMailer;
