@@ -19,7 +19,10 @@ import {
   buildDailyCapInstallPlan,
   buildDailyCapRollbackPlan,
   buildDailyCapStatusCommand,
+  CAP_MEASUREMENT_FILE,
   parseDailyCapStatus,
+  type CapFlota,
+  type CapNodo,
   type NodeCapStep
 } from "../../apps/gateway-api/src/node-daily-cap.ts";
 
@@ -99,7 +102,7 @@ async function main(): Promise<void> {
   }
 
   if (SOLO_STATUS) {
-    await mostrarStatus(runner, nodos);
+    await mostrarStatus(runner, nodos, new OpenClawWorkspace(), inventario.totalBandejas - nodos.length);
     return;
   }
 
@@ -155,11 +158,13 @@ async function main(): Promise<void> {
 
 async function mostrarStatus(
   runner: ReturnType<typeof createSmtpSshRunnerFromEnv>,
-  nodos: Nodo[]
+  nodos: Nodo[],
+  workspace: OpenClawWorkspace,
+  omitidos: number
 ): Promise<void> {
   console.log(`leyendo el estado del límite en ${nodos.length} nodo(s)…\n`);
   const comando = buildDailyCapStatusCommand();
-  let conLimite = 0;
+  const leidos: CapNodo[] = [];
   let ilegibles = 0;
 
   for (const nodo of nodos) {
@@ -171,17 +176,30 @@ async function mostrarStatus(
         timeoutMs: 30_000
       });
       const s = parseDailyCapStatus(r.stdout);
-      if (s.cableado) conLimite += 1;
+      leidos.push({ ...s, domain: nodo.domain, serverSlug: nodo.serverSlug });
       const uso = s.consumidoHoy === null ? "sin contador" : `${s.consumidoHoy}/${s.cap ?? "?"}`;
       console.log(`  ${s.cableado ? "CAP " : "ABIERTO"} ${nodo.domain.padEnd(32)} ${uso}${s.motivo ? ` — ${s.motivo}` : ""}`);
     } catch (error) {
       ilegibles += 1;
-      // Fail-honest: un nodo que no responde NO se cuenta como "sin límite" ni como "con límite".
+      // Fail-honest: un nodo que no responde NO se cuenta como "sin límite" ni como "con límite",
+      // y tampoco entra al JSON: su ausencia se declara con `ilegibles`.
       console.log(`  ?      ${nodo.domain.padEnd(32)} no se pudo leer: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
     }
   }
 
-  console.log(`\n${conLimite}/${nodos.length} con límite físico; ${ilegibles} sin lectura.`);
+  const conLimite = leidos.filter((n) => n.cableado).length;
+  console.log(
+    `\n${conLimite}/${nodos.length} con límite físico; ${ilegibles} sin lectura;` +
+      ` ${omitidos} fuera del alcance (sin binding o en conflicto: NADIE los capa).`
+  );
+
+  // Persistir SOLO cuando se leyó la flota entera: un `--domain=x` guardaría un JSON de un nodo y
+  // el panel mostraría "la flota" con una sola fila. Parcial no se disfraza de completo.
+  if (!DOMINIO && LIMITE === null) {
+    const flota: CapFlota = { medidoEn: new Date().toISOString(), nodos: leidos, ilegibles, omitidos };
+    await workspace.updateInventoryJson(CAP_MEASUREMENT_FILE, () => flota);
+    console.log(`persistido en ${CAP_MEASUREMENT_FILE} (lo consumen las alertas y el panel).`);
+  }
 }
 
 main().catch((error) => {

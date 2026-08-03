@@ -320,6 +320,35 @@ export function buildDailyCapStatusCommand(): string {
   ].join("\n");
 }
 
+/**
+ * Donde queda la última lectura del cap de la flota. Mismo patrón que la medición: el SSH se paga
+ * UNA vez en la corrida, y el hot path (alertas, panel, tools) lee este JSON local — barato,
+ * siempre disponible, no se cae.
+ */
+export const CAP_MEASUREMENT_FILE = "sender-cap.json";
+
+/** Arriba de esto el nodo está por quedarse sin cupo: avisa antes de que frene. */
+export const CERCA_DEL_CAP = 0.8;
+
+export interface CapNodo extends DailyCapStatus {
+  domain: string;
+  serverSlug: string;
+}
+
+export interface CapFlota {
+  medidoEn: string;
+  /** Nodos leídos. Los que no respondieron NO figuran: su ausencia la declara `ilegibles`. */
+  nodos: CapNodo[];
+  /** Cuántos no se pudieron leer (SSH caído). Null con motivo, nunca un cero optimista. */
+  ilegibles: number;
+  /**
+   * Bandejas que el inventario descartó ANTES de intentar leerlas (sin binding, en conflicto).
+   * Se declaran porque son, por definición, dominios que NADIE está capando: omitirlos haría que
+   * el panel dijera "58 nodos" sobre una flota más grande y los diera por cubiertos.
+   */
+  omitidos: number;
+}
+
 export interface DailyCapStatus {
   /** El tope vigente en el nodo. `null` = no hay archivo de cap (o no se pudo leer). */
   cap: number | null;

@@ -283,6 +283,7 @@ import {
 } from "./routes/placement-check.ts";
 import { handleSenderActivityHttp } from "./routes/sender-activity-read.ts";
 import { handleSenderAlertsHttp } from "./routes/sender-alerts-read.ts";
+import { handleSenderCapHttp } from "./routes/sender-cap-read.ts";
 import { handleSenderInventoryHttp } from "./routes/sender-inventory-read.ts";
 import { handleSenderMeasurementHttp } from "./routes/sender-measurement-read.ts";
 import { handleSenderQuotaHttp, handleSenderQuotaUpdateHttp } from "./routes/sender-quota.ts";
@@ -2355,6 +2356,17 @@ const server = createServer(async (request, response) => {
     // Las alertas de la flota: destiladas de la ultima medicion. JSON local, no dispara SSH.
     if (request.method === "GET" && requestUrl(request).pathname === "/v1/sender-pool/alerts") {
       return await handleSenderAlertsHttp({
+        request,
+        response,
+        workspace: openClawWorkspace,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        now: () => resolveGatewayNow()
+      });
+    }
+
+    // El consumo del limite fisico por nodo. JSON local (lo persiste la corrida de limite-fisico).
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/sender-pool/cap") {
+      return await handleSenderCapHttp({
         request,
         response,
         workspace: openClawWorkspace,

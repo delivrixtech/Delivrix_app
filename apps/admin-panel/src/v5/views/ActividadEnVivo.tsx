@@ -23,6 +23,7 @@ interface SenderAlert {
 
 interface AlertsFlota {
   medidoEn: string | null;
+  capMedidoEn: string | null;
   conteos: Record<AlertSeverity, number>;
   alerts: SenderAlert[];
   parcial: boolean;
@@ -59,12 +60,180 @@ const STATUS_COLOR: Record<ActivityEvent["status"], string> = {
   deferred: "var(--color-warning, #d97706)"
 };
 
+interface CapNodo {
+  domain: string;
+  serverSlug: string;
+  cap: number | null;
+  consumidoHoy: number | null;
+  cableado: boolean;
+  motivo: string | null;
+}
+
+interface CapFlota {
+  medidoEn: string | null;
+  nodos: CapNodo[];
+  ilegibles: number;
+  omitidos?: number;
+  /** El archivo existe pero no se pudo leer: distinto de "nunca se corrió". */
+  ilegible?: string | null;
+}
+
 export default function ActividadEnVivo() {
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <AlertasFlota />
+      <LimiteFisico />
       <FeedPorNodo />
     </div>
+  );
+}
+
+/**
+ * El consumo del límite físico por nodo. Es la contracara de la cuota: la cuota dice lo que el
+ * nodo DEBERÍA poder enviar; esto dice lo que realmente entró por la puerta hoy. Cuando los dos
+ * números no se parecen, alguien no está respetando el contrato — y eso es justo lo que hay que ver.
+ *
+ * Barato: JSON local (lo persiste la corrida de límite-físico), sin SSH. Refresca cada 60s porque
+ * la fuente cambia solo cuando se corre la lectura, no en tiempo real.
+ */
+function LimiteFisico() {
+  const [data, setData] = useState<CapFlota | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let vivo = true;
+    const cargar = async () => {
+      try {
+        const r = await fetch(READ_ENDPOINTS.senderPoolCap, { headers: { accept: "application/json" }, cache: "no-store" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const payload = (await r.json()) as CapFlota;
+        // Sin este chequeo, un payload de forma inesperada revienta EN RENDER y el
+        // PanelErrorBoundary se lleva puesta la pestaña entera (alertas y feed incluidos).
+        if (!payload || !Array.isArray(payload.nodos)) throw new Error("respuesta con forma inesperada");
+        if (!vivo) return;
+        setData(payload);
+        setError(null);
+      } catch (cause) {
+        if (vivo) setError(cause instanceof Error ? cause.message : "no se pudo leer el límite físico");
+      }
+    };
+    void cargar();
+    const t = setInterval(() => void cargar(), 60_000);
+    return () => {
+      vivo = false;
+      clearInterval(t);
+    };
+  }, []);
+
+  if (error) {
+    return (
+      <Card>
+        <Eyebrow>Límite físico por nodo</Eyebrow>
+        <Caption>No se pudo leer: {error}</Caption>
+      </Card>
+    );
+  }
+  if (!data) {
+    return (
+      <Card>
+        <Eyebrow>Límite físico por nodo</Eyebrow>
+        <Caption>Leyendo…</Caption>
+      </Card>
+    );
+  }
+  if (data.medidoEn === null) {
+    return (
+      <Card>
+        <Eyebrow>Límite físico por nodo</Eyebrow>
+        <Caption>
+          {data.ilegible
+            ? `La última lectura existe pero no se pudo leer: ${data.ilegible}`
+            : "Nunca se leyó el límite de la flota."}{" "}
+          Corré <code>scripts/ops/limite-fisico.ts --status</code> para poblar esta vista.
+        </Caption>
+      </Card>
+    );
+  }
+
+  // Lo más urgente arriba: primero los que perdieron el límite, después por porcentaje consumido.
+  // `cap === 0` es uso INFINITO (el nodo difiere todo), no "desconocido": si cayera en el -1 de
+  // los ilegibles se hundiría al fondo mientras las alertas lo dan en el tope — dos vistas del
+  // mismo hecho que no coincidirían.
+  const usoDe = (n: CapNodo): number => {
+    if (n.cap === null || n.consumidoHoy === null) return -1;
+    return n.cap === 0 ? Number.POSITIVE_INFINITY : n.consumidoHoy / n.cap;
+  };
+  const ordenados = [...data.nodos].sort((a, b) => {
+    if (a.cableado !== b.cableado) return a.cableado ? 1 : -1;
+    return usoDe(b) - usoDe(a);
+  });
+  const sinLimite = data.nodos.filter((n) => !n.cableado).length;
+  const enElTope = data.nodos.filter((n) => usoDe(n) >= 1).length;
+  const totalHoy = data.nodos.reduce((s, n) => s + (n.consumidoHoy ?? 0), 0);
+  // Los `null` NO suman 0 al titular en silencio: se cuentan y se declaran, porque "sin contador"
+  // no es "no envió nada" y el número grande es el que más se lee.
+  const sinContador = data.nodos.filter((n) => n.cableado && n.consumidoHoy === null).length;
+
+  return (
+    <Card>
+      <Eyebrow>Límite físico por nodo</Eyebrow>
+      <div style={{ display: "flex", gap: 18, alignItems: "baseline", flexWrap: "wrap", marginTop: 4 }}>
+        <Heading level={1}>{totalHoy.toLocaleString("es")}</Heading>
+        <Caption>
+          mensajes aceptados hoy en {data.nodos.length} nodos ·{" "}
+          <strong style={{ color: enElTope > 0 ? "var(--color-critical, #c0392b)" : "inherit" }}>{enElTope}</strong> en el
+          tope · <strong style={{ color: sinLimite > 0 ? "var(--color-critical, #c0392b)" : "inherit" }}>{sinLimite}</strong>{" "}
+          sin límite
+          {sinContador > 0 ? ` · ${sinContador} sin contador (no suman al total)` : ""}
+          {data.ilegibles > 0 ? ` · ${data.ilegibles} sin lectura` : ""}
+          {data.omitidos ? ` · ${data.omitidos} fuera de alcance (nadie los capa)` : ""} · leído{" "}
+          {new Date(data.medidoEn).toLocaleString("es")}
+        </Caption>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        {ordenados.slice(0, 15).map((n) => {
+          const uso = usoDe(n);
+          const color =
+            !n.cableado || uso >= 1
+              ? "var(--color-critical, #c0392b)"
+              : uso >= 0.8
+                ? "var(--color-warning, #d97706)"
+                : "var(--color-success, #1e8e5a)";
+          return (
+            <Row key={n.domain}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", width: "100%", fontSize: 13 }}>
+                <span style={{ fontWeight: 500, minWidth: 220 }}>{n.domain}</span>
+                {n.cableado ? (
+                  <>
+                    <div
+                      aria-hidden
+                      style={{
+                        width: 120,
+                        height: 6,
+                        borderRadius: 3,
+                        background: "var(--line, #e6e9ee)",
+                        overflow: "hidden",
+                        flexShrink: 0
+                      }}
+                    >
+                      <div style={{ width: `${Math.min(100, Math.max(0, uso * 100))}%`, height: "100%", background: color }} />
+                    </div>
+                    <span style={{ color, fontVariantNumeric: "tabular-nums", minWidth: 110 }}>
+                      {/* Null con motivo, nunca 0: "sin contador" no es "no envió nada". */}
+                      {n.consumidoHoy === null ? "sin contador" : `${n.consumidoHoy}/${n.cap ?? "?"}`}
+                    </span>
+                  </>
+                ) : (
+                  <span style={{ color: "var(--color-critical, #c0392b)" }}>SIN LÍMITE — {n.motivo}</span>
+                )}
+              </div>
+            </Row>
+          );
+        })}
+        {ordenados.length > 15 ? <Caption style={{ marginTop: 8 }}>… y {ordenados.length - 15} nodos más por debajo.</Caption> : null}
+      </div>
+    </Card>
   );
 }
 
@@ -121,7 +290,12 @@ function AlertasFlota() {
         <Caption>
           <strong style={{ color: "var(--color-critical, #c0392b)" }}>{data.conteos.critical}</strong> críticas ·{" "}
           <strong>{data.conteos.high}</strong> altas · <strong>{data.conteos.warning}</strong> avisos
-          {data.medidoEn ? ` · medido ${new Date(data.medidoEn).toLocaleString("es")}` : " · la flota nunca se midió"}
+          {data.medidoEn ? ` · entrega medida ${new Date(data.medidoEn).toLocaleString("es")}` : " · la flota nunca se midió"}
+          {/* Son DOS corridas distintas y las alertas mezclan ambas: sin esta fecha, una lectura
+              de cap vieja se leería con la credibilidad de la medición de entrega. */}
+          {data.capMedidoEn
+            ? ` · límite leído ${new Date(data.capMedidoEn).toLocaleString("es")}`
+            : " · el límite físico nunca se leyó"}
         </Caption>
       </div>
       {data.alerts.length === 0 ? (
