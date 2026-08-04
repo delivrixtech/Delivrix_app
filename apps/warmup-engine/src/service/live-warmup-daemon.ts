@@ -342,21 +342,51 @@ async function recentPlacements(pg: PgClient, window: number): Promise<Placement
 
 function resolvePool(env: NodeJS.ProcessEnv): Pool {
   const connectionString = env.POSTGRES_URL?.trim();
-  return new Pool({
+  // pg-pool emite `error` en clientes OCIOSOS (un socket que el servidor cierra durante una espera
+  // larga). Sin listener, EventEmitter LANZA fuera de todo `await`, así que ningún try/catch lo ve y
+  // el proceso se muere entero. Es el caso normal: Postgres se reinicia mientras el daemon duerme
+  // sus 4 horas. Con listener, pg-pool descarta ese cliente y la próxima consulta abre uno nuevo.
+  const pool = new Pool({
     ...(connectionString ? { connectionString } : {}),
     application_name: "delivrix-warmup-live-daemon"
   });
+  // console.log y NO el `log` del daemon: ése se declara dentro de `startLiveWarmupDaemon` y acá no
+  // está en scope. Usarlo tiraba ReferenceError justo en el momento en que este listener tiene que
+  // salvar al proceso — peor que no tenerlo.
+  pool.on("error", (e) => console.log(`[warmup-live] WARN cliente pg ocioso descartado: ${e.message} — sigo`));
+  return pool;
 }
 
 /** Recorder que persiste en warmup_activity (mismo shape que la migración 003). */
+/**
+ * Persiste los eventos del ciclo. NO LANZA — y eso arregla tres cosas de una:
+ *
+ *  1. El daemon se moría por un hipo de Postgres. `runLiveCycle` documenta "nunca lanza", pero la
+ *     excepción salía de acá, atravesaba el ciclo entero y terminaba el proceso.
+ *  2. Peor: `warmup-live-cycle.ts` envolvía el envío en try/catch, así que un fallo al GRABAR se
+ *     reportaba como fallo al ENVIAR — se fabricaba una fila `kind:'error', stage:'sent'` sobre un
+ *     correo que el nodo sí había entregado. El registro mentía en la dirección más confusa.
+ *  3. El bloque de continuación logueaba "no pude continuar hilos" sobre un turno ya enviado.
+ *
+ * Un correo REAL que sale y no queda registrado es grave, así que se grita fuerte y con todos los
+ * datos para poder reconstruirlo a mano. Pero abortar no lo des-envía: solo agrega un daemon caído.
+ */
 function createPgRecorder(pg: PgClient): ActivityRecorder {
   return {
     async record(e: ActivityEvent): Promise<void> {
-      await pg.query(
-        "INSERT INTO warmup_activity (cycle_id, node_domain, seed_inbox, kind, placement, subject, detail, test_id)" +
-          " VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
-        [e.cycleId, e.boxDomain, e.seedInbox, e.kind, e.placement ?? null, e.subject ?? null, JSON.stringify(e.detail ?? {}), e.testId ?? null]
-      );
+      try {
+        await pg.query(
+          "INSERT INTO warmup_activity (cycle_id, node_domain, seed_inbox, kind, placement, subject, detail, test_id)" +
+            " VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+          [e.cycleId, e.boxDomain, e.seedInbox, e.kind, e.placement ?? null, e.subject ?? null, JSON.stringify(e.detail ?? {}), e.testId ?? null]
+        );
+      } catch (err) {
+        const que = e.kind === "sent" ? "CORREO ENVIADO SIN REGISTRAR" : `evento '${e.kind}' sin registrar`;
+        console.log(
+          `[warmup-live] ERROR ${que} — ${e.boxDomain} → ${e.seedInbox}` +
+            ` · testId ${e.testId ?? "-"} · ciclo ${e.cycleId}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     }
   };
 }
@@ -435,6 +465,19 @@ export interface StartLiveDaemonOptions {
   argv?: readonly string[];
   /** Override del "ahora" para tests. */
   nowSeed?: number;
+  /**
+   * COSTURA DE INYECCIÓN. Sin esto el daemon no tenía por dónde testearse: creaba su propio Pool,
+   * sus mailers y su cliente IMAP adentro, así que cualquier test tocaba Postgres, SMTP y el modelo
+   * local de verdad. Por eso el cuerpo del loop —donde vive el correo real— nunca tuvo un test.
+   *
+   * Solo se usa en tests: en producción todo esto queda `undefined` y el daemon arma lo real.
+   */
+  dobles?: {
+    pg?: PgClient & { end(): Promise<void> };
+    mailerDe?: (dominio: string) => WarmupMailer;
+    /** Migraciones: en test no hay esquema que migrar. */
+    saltearMigraciones?: boolean;
+  };
 }
 
 /**
@@ -447,19 +490,20 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   const once = argv.includes("--once") || (env.WARMUP_LIVE_ONCE ?? "").trim() === "1";
   const cfg = resolveLiveDaemonConfig(env);
   const log = (m: string): void => console.log(`[warmup-live] ${m}`);
+  const dobles = opts.dobles ?? {};
 
   if (!cfg.enabled) {
     log("INERTE — WARMUP_LIVE_ENABLE!=true. Cero correo. (Prendé el flag para calentar autónomo.)");
     return;
   }
 
-  const pool = resolvePool(env);
+  const pool = (dobles.pg as unknown as Pool | undefined) ?? resolvePool(env);
   const pg = pool as unknown as PgClient;
   const stores = createPgWarmupStores(pg);
   void stores; // reservado para futuras métricas; el daemon usa lecturas directas + recorder
 
   // Asegura la tabla de actividad (idempotente).
-  await runWarmupMigrations(pg);
+  if (!dobles.saltearMigraciones) await runWarmupMigrations(pg);
 
   // Credenciales SMTP del inventario (archivo) + clave.
   const inventoryPath = (env.WARMUP_SMTP_INVENTORY ?? resolve(process.cwd(), "runtime/openclaw-workspace/inventory/smtp-credentials.json")).trim();
@@ -501,6 +545,14 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
 
   try {
     for (;;) {
+      // UNA VUELTA FALLIDA NO MATA EL DAEMON. Sin este try, cualquier excepción —un hipo de
+      // Postgres, un IMAP que corta, un JSON corrupto— terminaba el proceso 24/7 para siempre y
+      // ningún lanzador lo levantaba. El correo dejaba de salir sin que nadie se enterara.
+      //
+      // `cerrarImap` se iza acá porque el `finally` lo necesita en scope: los `continue` de más
+      // abajo saltaban por encima del cierre y dejaban conexiones IMAP colgadas cada vuelta.
+      let cerrarImap: (() => Promise<void>) | null = null;
+      try {
       const killed = existsSync(cfg.killFile);
       const cyclesToday = await countCyclesToday(pg);
       const placements = await recentPlacements(pg, cfg.placementWindow);
@@ -638,8 +690,8 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // cuál de los dos se usó, porque un texto generado y uno enlatado no valen lo mismo.
         const enlatada = pickConversation(seq);
         const generada = await abrirConversacion({
-          baseUrl: (process.env.LOCAL_INFERENCE_BASE_URL ?? "").trim(),
-          modelo: (process.env.LOCAL_INFERENCE_MODEL ?? "").trim(),
+          baseUrl: (env.LOCAL_INFERENCE_BASE_URL ?? "").trim(),
+          modelo: (env.LOCAL_INFERENCE_MODEL ?? "").trim(),
           semilla: `${box}-${seq}`
         }).catch(() => null);
         const conversation = generada
@@ -669,7 +721,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         );
         let mailer: WarmupMailer;
         try {
-          mailer = createBoxMailer(box, store, key);
+          mailer = dobles.mailerDe ? dobles.mailerDe(box) : createBoxMailer(box, store, key);
         } catch (err) {
           log(`box ${box} sin credencial usable (${err instanceof Error ? err.message : String(err)}) — salto`);
           seq += 1;
@@ -683,7 +735,6 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // encontrado" sobre un mensaje que sí llegó, y ese dato falso alimentaría el gate de
         // placement. Mejor enviado-sin-medir que medido-mal.
         let opsMedicion: typeof gmail | null = medible ? gmail : null;
-        let cerrarImap: (() => Promise<void>) | null = null;
         let clienteImap: ImapClienteMinimo | null = null;
         if (medible && semilla.auth === "imap_password") {
           try {
@@ -775,7 +826,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
               // estamos construyendo.
               let mailerHilo: WarmupMailer;
               try {
-                mailerHilo = createBoxMailer(hiloPrevio.nodeDomain, store, key);
+                mailerHilo = dobles.mailerDe ? dobles.mailerDe(hiloPrevio.nodeDomain) : createBoxMailer(hiloPrevio.nodeDomain, store, key);
               } catch (err) {
                 log(`hilo ${marca}: sin credencial de ${hiloPrevio.nodeDomain} — ${err instanceof Error ? err.message : String(err)}`);
                 continue;
@@ -797,8 +848,8 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
               const turno = await pedirSiguienteTurno({
                 turnos,
                 asunto: hiloPrevio.subject,
-                baseUrl: (process.env.LOCAL_INFERENCE_BASE_URL ?? "").trim(),
-                modelo: (process.env.LOCAL_INFERENCE_MODEL ?? "").trim(),
+                baseUrl: (env.LOCAL_INFERENCE_BASE_URL ?? "").trim(),
+                modelo: (env.LOCAL_INFERENCE_MODEL ?? "").trim(),
                 maxTokens: 3500
               });
               if (!turno.texto) {
@@ -839,11 +890,31 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           }
         }
 
-        if (cerrarImap) await cerrarImap();
         log(`vuelta #${seq + 1} ${result.completed ? "COMPLETA" : "cortó en " + result.brokeAt} · placement ${result.placement ?? "-"}`);
         seq += 1;
       } else {
         log(`pausa (${action}: ${reason})`);
+      }
+
+      } catch (err) {
+        log(`WARN vuelta fallida, sigo: ${err instanceof Error ? err.message : String(err)}`);
+        if (once) break;
+        // INTERVALO COMPLETO, nunca un reintento rápido. Con Postgres aceptando lecturas y
+        // rechazando escrituras (disco lleno, failover parcial), el correo SALE y la fila `sent` no
+        // se escribe: el contador del día no avanza y reintentar cada minuto convertiría un
+        // parpadeo en cientos de envíos. Una barrera degradada no puede enviar más rápido que la sana.
+        await sleep(cfg.intervalMs);
+        continue;
+      } finally {
+        // El cierre del IMAP vive acá y no en el camino feliz: antes, cualquier `continue` del
+        // cuerpo se lo saltaba y la conexión quedaba abierta hasta que el proveedor la cortara.
+        if (cerrarImap) {
+          try {
+            await cerrarImap();
+          } catch {
+            // Cerrar es best-effort: si ya se cayó, insistir no aporta.
+          }
+        }
       }
 
       if (once) break;

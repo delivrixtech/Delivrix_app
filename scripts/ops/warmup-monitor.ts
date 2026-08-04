@@ -258,10 +258,13 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
 
 async function main(): Promise<void> {
   const workspace = new OpenClawWorkspace();
+  // Sin este listener, un socket ocioso que el servidor cierra durante los 10 min de espera mata
+  // el proceso entero: pg-pool emite `error` fuera de todo `await` y ningún try/catch lo ve.
   const pg = new Pool({
     ...(process.env.POSTGRES_URL ? { connectionString: process.env.POSTGRES_URL } : {}),
     application_name: "delivrix-warmup-monitor"
   });
+  pg.on("error", (e) => console.error(`[monitor] WARN cliente pg ocioso descartado: ${e.message} — sigo`));
 
   try {
     await unaVuelta(workspace, pg);
