@@ -103,8 +103,11 @@ export function mismoPendiente(a: string, b: string): boolean {
   const B = terminos(b);
   if (A.size === 0 || B.size === 0) return a.trim().toLowerCase() === b.trim().toLowerCase();
   const comunes = [...A].filter((t) => B.has(t)).length;
-  // Contenido: "outlook yahoo" ⊂ "semillas para outlook y yahoo".
-  if (comunes === Math.min(A.size, B.size)) return true;
+  // Contenido, pero NO trivial. Con `min(A,B) === 1` bastaba UN término compartido para fundir
+  // pendientes distintos: "semilla de yahoo" y "cupo de yahoo" comparten {yahoo} y se hubieran
+  // tomado por el mismo. Con dos términos mínimos, el contenido es señal; con uno, se pasa a
+  // Jaccard, que exige mayoría.
+  if (Math.min(A.size, B.size) >= 2 && comunes === Math.min(A.size, B.size)) return true;
   // O mayoría compartida, para reformulaciones que agregan y quitan a la vez.
   return comunes / new Set([...A, ...B]).size >= 0.5;
 }
@@ -150,6 +153,12 @@ export async function ejecutarAcciones(
           break;
         }
         const r = await ctx.frenarDominio(dominio, motivo);
+        if (r.antes === 0) {
+          // Ya estaba frenado: reportarlo como acción NUEVA hace creer que pasó algo que no pasó,
+          // y en el registro queda un "frené X" por vuelta sobre un nodo que no cambió nunca.
+          out.push({ accion: nombre, ejecutada: false, detalle: `${dominio} ya estaba en cap 0: no hacía falta` });
+          break;
+        }
         out.push({
           accion: nombre,
           ejecutada: true,

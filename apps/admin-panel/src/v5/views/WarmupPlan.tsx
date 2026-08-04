@@ -158,7 +158,7 @@ export default function WarmupPlan() {
       ) : (
         <div style={S.grilla}>
           {plan.dominios.map((d) => (
-            <FichaDominio key={d.dominio} d={d} />
+            <FichaDominio key={d.dominio} d={d} medicionVencida={plan.medicionCupo?.vencida ?? false} />
           ))}
         </div>
       )}
@@ -166,7 +166,7 @@ export default function WarmupPlan() {
   );
 }
 
-function FichaDominio({ d }: { d: DominioDelPlan }) {
+function FichaDominio({ d, medicionVencida }: { d: DominioDelPlan; medicionVencida: boolean }) {
   const restante = Math.max(0, d.decision.cupo - d.enviadosHoy);
   const progreso = d.decision.cupo > 0 ? Math.min(1, d.enviadosHoy / d.decision.cupo) : 0;
 
@@ -213,7 +213,16 @@ function FichaDominio({ d }: { d: DominioDelPlan }) {
         <Metrica
           rotulo="cupo del nodo"
           valor={d.cupoFisico === null ? "—" : `${d.cupoFisico}`}
-          pie={d.cupoFisico === null ? "medición vencida" : "Postfix"}
+          // "medición vencida" era falso cuando la medición estaba FRESCA y el dominio
+          // simplemente no figuraba en ella. Dos causas distintas, un solo cartel, y el operador
+          // saliendo a refrescar una medición que estaba bien.
+          pie={
+            d.cupoFisico !== null
+              ? "Postfix"
+              : medicionVencida
+                ? "medición vencida"
+                : "este nodo no está en la medición"
+          }
         />
       </div>
 

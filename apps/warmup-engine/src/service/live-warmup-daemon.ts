@@ -275,14 +275,19 @@ async function hilosParaContinuar(pg: PgClient, seed: string, cycleActual: strin
   // porque el id lleva timestamp, pero deja de serlo en cuanto cambie el formato del id.
   const { rows } = await pg.query<{ cycle_id: string; test_id: string; node_domain: string; subject: string | null; primero: Date }>(
     `SELECT * FROM (
-       SELECT DISTINCT ON (cycle_id) cycle_id, test_id, node_domain, subject, occurred_at AS primero
+       -- DISTINCT ON (test_id), no (cycle_id): el HILO es el test_id. El turno de continuación se
+       -- graba con el cycleId de la vuelta actual pero el testId del hilo viejo, así que un ciclo
+       -- cuyo envío principal FALLÓ (450 de cupo, 550 de Gmail — el caso normal de esta flota)
+       -- dejaba como único 'sent' a la continuación, y el hilo volvía a aparecer como si fuera
+       -- nuevo. Verificado contra Postgres real.
+       SELECT DISTINCT ON (test_id) cycle_id, test_id, node_domain, subject, occurred_at AS primero
          FROM warmup_activity
         WHERE kind = 'sent'
           AND seed_inbox = $1
           AND cycle_id <> $2
           AND test_id IS NOT NULL
           AND occurred_at > now() - interval '7 days'
-        ORDER BY cycle_id, occurred_at ASC
+        ORDER BY test_id, occurred_at ASC
      ) h ORDER BY h.primero DESC`,
     [seed, cycleActual]
   );
@@ -511,6 +516,28 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   // Asegura la tabla de actividad (idempotente).
   if (!dobles.saltearMigraciones) await runWarmupMigrations(pg);
 
+  // UN SOLO DAEMON. Hay dos lanzadores que no se ven entre sí (uno usa nohup+pgrep, el otro screen
+  // +pidfile), así que arrancar por el segundo con el primero vivo dejaba DOS daemons: el tope
+  // diario, el kill-file y el cupo por dominio se evalúan por separado en cada uno, o sea que todas
+  // las barreras se duplican y sale el doble de correo.
+  //
+  // El lock es de la BASE, que es lo único que los dos ven, y se libera solo al cerrar la conexión
+  // —incluso si el proceso muere de golpe—, así que no puede quedar trabado.
+  try {
+    const { rows } = await pg.query<{ ok: boolean }>("SELECT pg_try_advisory_lock(hashtext($1)) AS ok", [
+      "delivrix-warmup-live"
+    ]);
+    if (rows[0] && rows[0].ok === false) {
+      log("ya hay otro daemon LIVE corriendo (lock de la base) — salgo para no duplicar las barreras");
+      await pool.end();
+      return;
+    }
+  } catch (err) {
+    // Sin lock se sigue: perder el warmup por no poder tomar un lock sería peor que el riesgo que
+    // el lock cubre, y ese riesgo lo dispara un error del operador, no la operación normal.
+    log(`WARN no pude tomar el lock de instancia (${err instanceof Error ? err.message : String(err)}) — sigo`);
+  }
+
   // Credenciales SMTP del inventario (archivo) + clave.
   const inventoryPath = (env.WARMUP_SMTP_INVENTORY ?? rutaInventario("smtp-credentials.json")).trim();
   const store = JSON.parse(await readFile(inventoryPath, "utf8")) as InventoryCredentialStore;
@@ -684,7 +711,11 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           // siempre: con el cupo por dominio (2) menor que el tope de vueltas (3) —el caso normal
           // del arranque de la rampa— el daemon giraba ~1400 veces al día haciendo consultas y
           // enterrando los WARN reales bajo miles de líneas de log.
-          const quedaAlguno = disponibles.some((b) => (enviadosPorDominio.get(b) ?? 0) < delDia.cupo && b !== box);
+          // El cupo de ESTE box no dice nada de los otros. Con `a.com` frenado (cupo 0) y `b.com`
+          // sano con 35 de margen, la comparación `5 < 0` daba false y el daemon dormía 4 HORAS
+          // con la flota libre. Acá solo se pregunta si queda otro candidato al que intentarle; su
+          // cupo lo decide su propia vuelta.
+          const quedaAlguno = disponibles.some((b) => b !== box && !frenados.has(b));
           log(`${box} ya cumplió su cupo de hoy — se salta${quedaAlguno ? "" : " (ningún box con cupo: espero el intervalo)"}`);
           await sleep(quedaAlguno ? Math.min(cfg.intervalMs, 60_000) : cfg.intervalMs);
           continue;
@@ -874,6 +905,11 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                 log(`hilo ${marca}: no pude leer el Message-ID del hilo — no mando un "Re:" huérfano`);
                 continue;
               }
+              // El envío va con su propio try: sin él, un 450 de cupo agotado subía al catch
+              // externo como un WARN genérico y NUNCA se grababa la fila `kind:'error'` que
+              // `boxesSinCupoHoy` necesita para saltear ese nodo el resto del día. El nodo seguía
+              // recibiendo intentos que ya sabíamos que iban a rebotar.
+              try {
               await mailerHilo.send({
                 from: `mailer@${hiloPrevio.nodeDomain}`,
                 inReplyTo: ultimoId,
@@ -898,6 +934,20 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                 testId: hiloPrevio.testId,
                 detail: { turno: turnos.length + 1, motivo: turno.motivo, generado: "modelo local" }
               });
+              } catch (err) {
+                const nota = err instanceof Error ? err.message : String(err);
+                await recorder.record({
+                  cycleId,
+                  boxDomain: hiloPrevio.nodeDomain,
+                  seedInbox: semilla.address,
+                  kind: "error",
+                  subject: asuntoRe,
+                  testId: hiloPrevio.testId,
+                  detail: { stage: "sent", note: nota, origen: "continuación de hilo" }
+                });
+                log(`hilo ${marca}: el turno rebotó — ${nota.slice(0, 120)}`);
+                break;
+              }
               log(`hilo ${marca}: turno ${turnos.length + 1} enviado — "${turno.texto.slice(0, 60)}…"`);
               // Un turno por vuelta. Mandar varios de golpe sería la ráfaga que el daemon evita.
               break;

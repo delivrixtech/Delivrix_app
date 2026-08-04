@@ -41,6 +41,13 @@ interface ActividadWarmup {
 interface CapFlota {
   medidoEn: string | null;
   nodos: Array<{ domain: string; cap: number | null; consumidoHoy: number | null; cableado: boolean }>;
+  /**
+   * Nodos que NO se pudieron leer y nodos fuera de alcance. El backend los declara y el panel los
+   * descartaba: con el archivo roto o la mitad de la flota sin leer, la barra decía "flota 0 / 0
+   * hoy" — un cero que se lee como "no mandó nada" cuando en realidad es "no sé".
+   */
+  ilegibles?: number;
+  omitidos?: number;
 }
 
 interface LecturaAgente {
@@ -135,6 +142,12 @@ function campos(texto: string): Array<[string, string]> {
   // Sin formato reconocible se muestra el texto entero: una lectura sin etiquetas sigue siendo la
   // lectura, y esconderla sería peor que mostrarla fea.
   return out.length > 0 ? out : [["", texto]];
+}
+
+/** El resaltado de "nuevo" dura 90 s. Un resaltado permanente no resalta nada. */
+function esNuevo(marcas: Map<string, number>, cycleId: string, ahora: number): boolean {
+  const t = marcas.get(cycleId);
+  return t !== undefined && ahora - t < 90_000;
 }
 
 /** Fecha y hora exactas, para el `title`. Lo relativo se lee de un vistazo; lo exacto se audita. */
@@ -243,7 +256,9 @@ export default function WarmupLive() {
   const [semillas, setSemillas] = useState<SemillasResp | null>(null);
   const [agente, setAgente] = useState<LecturaAgente | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const nuevos = useRef<Set<string>>(new Set());
+  // Con marca de tiempo: antes se agregaba y no se sacaba nunca, así que a las tres horas TODO el
+  // feed estaba resaltado y el resaltado dejaba de significar "nuevo".
+  const nuevos = useRef<Map<string, number>>(new Map());
   const vistos = useRef<Set<string>>(new Set());
   const [hilo, setHilo] = useState<{ testId: string; cargando: boolean; data: HiloResp | null } | null>(null);
 
@@ -276,7 +291,7 @@ export default function WarmupLive() {
         // Marca los ciclos recién aparecidos para resaltarlos al entrar.
         for (const e of a.events ?? []) {
           if (!vistos.current.has(e.id)) {
-            if (vistos.current.size > 0) nuevos.current.add(e.cycleId);
+            if (vistos.current.size > 0) nuevos.current.set(e.cycleId, Date.now());
             vistos.current.add(e.id);
           }
         }
@@ -294,15 +309,22 @@ export default function WarmupLive() {
     };
   }, []);
 
+  const [fallos, setFallos] = useState<string[]>([]);
   useEffect(() => {
-    void getJson<CapFlota>(READ_ENDPOINTS.senderPoolCap).then(setCap).catch(() => {});
-    void getJson<SemillasResp>(READ_ENDPOINTS.warmupSeeds).then(setSemillas).catch(() => {});
+    // `.catch(() => {})` a secas dejaba la pantalla mostrando "flota 0 / 0" y "semillas —" sin
+    // distinguirlos de un estado real. Ahora cada fallo se anota y se ve arriba: el peor caso no
+    // puede parecerse a un caso normal.
+    const anotar = (que: string) => (e: unknown) =>
+      setFallos((f) => [...new Set([...f, `${que}: ${e instanceof Error ? e.message : String(e)}`])]);
+    void getJson<CapFlota>(READ_ENDPOINTS.senderPoolCap).then(setCap).catch(anotar("cupo de la flota"));
+    void getJson<SemillasResp>(READ_ENDPOINTS.warmupSeeds).then(setSemillas).catch(anotar("semillas"));
     // El agente mira cada 10 min; el panel lo relee cada 60s (el JSON es barato, el modelo no).
-    const leerAgente = () => void getJson<LecturaAgente>(READ_ENDPOINTS.warmupMonitor).then(setAgente).catch(() => {});
+    const leerAgente = () =>
+      void getJson<LecturaAgente>(READ_ENDPOINTS.warmupMonitor).then(setAgente).catch(anotar("lectura del agente"));
     leerAgente();
     const ta = setInterval(leerAgente, 60_000);
     const t = setInterval(() => {
-      void getJson<CapFlota>(READ_ENDPOINTS.senderPoolCap).then(setCap).catch(() => {});
+      void getJson<CapFlota>(READ_ENDPOINTS.senderPoolCap).then(setCap).catch(anotar("cupo de la flota"));
     }, 60_000);
     return () => {
       clearInterval(t);
@@ -330,8 +352,19 @@ export default function WarmupLive() {
     desdeUltima < 15 * 60_000 ? "activo" : desdeUltima < 2 * CADENCIA_MS ? "en pausa" : "frío";
   const vivo = pulso !== "frío";
 
+  // Lo que NO se pudo leer va arriba y visible. Un panel que degrada en silencio hace creer al
+  // operador que ve el estado actual cuando está mirando un hueco.
+  const avisos = [
+    ...(error ? [`actividad: ${error}`] : []),
+    ...fallos,
+    ...(act?.note ? [`actividad incompleta: ${act.note}`] : []),
+    ...((cap?.ilegibles ?? 0) > 0 ? [`${cap?.ilegibles} nodos del cupo no se pudieron leer: el total de abajo está incompleto`] : [])
+  ];
+
   return (
     <div style={S.consola}>
+      {avisos.length > 0 ? <div style={S.avisos}>⚠ {avisos.join(" · ")}</div> : null}
+
       {/* ── Pulso ── */}
       <div style={S.pulso}>
         <span style={S.latido(vivo)} aria-hidden />
@@ -368,14 +401,14 @@ export default function WarmupLive() {
       <div style={S.cuerpo}>
         <div style={S.principal}>
           {/* ── El ciclo ── */}
-          {enCurso ? <Ciclo vuelta={enCurso} ahora={ahora} destacado={nuevos.current.has(enCurso.cycleId)} onVerHilo={abrirHilo} /> : <SinCiclo />}
+          {enCurso ? <Ciclo vuelta={enCurso} ahora={ahora} destacado={esNuevo(nuevos.current, enCurso.cycleId, ahora)} onVerHilo={abrirHilo} /> : <SinCiclo />}
 
           {hilo ? <Hilo ahora={ahora} estado={hilo} onCerrar={() => setHilo(null)} /> : null}
 
           {/* ── Flujo ── */}
           <div style={S.flujo}>
             {agruparRepetidos(vueltas.slice(1, 12)).slice(0, 9).map((v) => (
-              <Fila key={v.cycleId} vuelta={v} ahora={ahora} nueva={nuevos.current.has(v.cycleId)} onVerHilo={abrirHilo} />
+              <Fila key={v.cycleId} vuelta={v} ahora={ahora} nueva={esNuevo(nuevos.current, v.cycleId, ahora)} onVerHilo={abrirHilo} />
             ))}
           </div>
         </div>
@@ -448,7 +481,13 @@ function Fila({ vuelta, ahora, nueva, onVerHilo }: { vuelta: Vuelta; ahora: numb
       onClick={() => vuelta.testId && onVerHilo(vuelta.testId, vuelta.domain)}
       role={vuelta.testId ? "button" : undefined}
       tabIndex={vuelta.testId ? 0 : undefined}
-      onKeyDown={(ev) => { if (vuelta.testId && (ev.key === "Enter" || ev.key === " ")) onVerHilo(vuelta.testId, vuelta.domain); }}
+      onKeyDown={(ev) => {
+        if (!vuelta.testId || (ev.key !== "Enter" && ev.key !== " ")) return;
+        // preventDefault: sin esto, Espacio abre el hilo Y scrollea la página, así que el operador
+        // pierde de vista justo lo que acaba de abrir.
+        ev.preventDefault();
+        onVerHilo(vuelta.testId, vuelta.domain);
+      }}
     >
       <span style={S.filaHora}>{hace(vuelta.ultimo, ahora)}</span>
       <span style={S.filaDom}>{vuelta.domain}</span>
@@ -517,10 +556,13 @@ function Agente({ lectura, ahora }: { lectura: LecturaAgente | null; ahora: numb
                 ))}
               </div>
             ) : null}
+            {/* "LECTURA VIEJA" sale del pie tenue: es una advertencia, no metadata. Mezclada con
+                el modelo y los tokens en el tono más apagado del sistema, se pierde justo cuando
+                más importa — el operador estaría leyendo como actual algo de hace horas. */}
+            {vieja ? <div style={S.lecturaVieja}>⚠ esta lectura es de hace más de 30 min</div> : null}
             <div style={S.agentePie}>
               {lectura.modelo}
               {lectura.tokens ? ` · ${lectura.tokens.completion} tokens · costo 0` : ""}
-              {vieja ? " · LECTURA VIEJA" : ""}
             </div>
           </>
         ) : (
@@ -640,6 +682,12 @@ const MONO = "var(--font-mono)";
 
 const S = {
   consola: { display: "grid", gap: 14 } as const,
+  avisos: {
+    padding: "8px 14px", borderRadius: 10, fontSize: 12, lineHeight: 1.45,
+    color: "var(--color-warning)",
+    background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-warning) 26%, transparent)"
+  } as const,
 
   pulso: {
     display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" as const,
@@ -739,9 +787,16 @@ const S = {
   agenteTxt: {
     margin: 0, fontSize: 12.5, lineHeight: 1.6, color: "var(--color-text-primary)"
   } as const,
+  // `text-tertiary` es el tono más tenue del sistema y se estaba usando para los textos que llevan
+  // la VERDAD ("LECTURA VIEJA", "sin mediciones aún"): justo los que no se pueden perder de vista.
   agentePie: {
     marginTop: 10, fontSize: 10.5, color: "var(--color-text-tertiary)",
     fontFamily: MONO, wordBreak: "break-word" as const
+  } as const,
+  lecturaVieja: {
+    marginTop: 10, padding: "6px 9px", borderRadius: 7, fontSize: 11, lineHeight: 1.4,
+    color: "var(--color-warning)",
+    background: "color-mix(in srgb, var(--color-warning) 9%, transparent)"
   } as const,
   railBody: { padding: 16 } as const,
   railTxt: { fontSize: 12.5, color: "var(--color-text-secondary)", margin: 0 } as const,

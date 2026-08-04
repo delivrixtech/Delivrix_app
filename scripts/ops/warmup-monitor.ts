@@ -127,7 +127,10 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
           consumidoHoy: cap.nodos.reduce((s, n) => s + (n.consumidoHoy ?? 0), 0),
           tope: cap.nodos.reduce((s, n) => s + (n.cap ?? 0), 0),
           enElTope: cap.nodos.filter((n) => n.cap && n.consumidoHoy !== null && n.consumidoHoy >= n.cap).map((n) => n.domain),
-          sinLimite: cap.nodos.filter((n) => !n.cableado).length
+          sinLimite: cap.nodos.filter((n) => !n.cableado).length,
+          // La FECHA viaja con el dato: sin ella el agente reportaba un cap de ayer como si fuera
+          // de hoy, y la regla "si un dato está viejo, decilo" no tenía con qué cumplirse.
+          medidoEn: cap.medidoEn ?? null
         }
       : null,
     flota: med
@@ -163,7 +166,14 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
       .catch(() => undefined),
     // Rechazos YA clasificados: de quién es cada freno. Pasarle la cadena cruda fue lo que llevó
     // al agente a decir "los límites diarios de Gmail" sobre nuestro propio cap de Postfix.
-    rechazos: resumirRechazos(vueltas.map((v) => v.error))
+    rechazos: resumirRechazos(vueltas.map((v) => v.error)),
+    // Los pendientes CON su id: sin esto el agente no podía cerrarlos nunca (la acción existía,
+    // pero él no veía ningún id que pasarle) y la lista solo crecía.
+    pendientesAbiertos: (
+      (await workspace.readInventoryJson<Pendiente[]>(PENDIENTES_FILE).catch(() => [])) ?? []
+    )
+      .filter((p) => !p.resueltoEn)
+      .map((p) => ({ id: p.id, que: p.que }))
   };
 }
 
@@ -182,9 +192,13 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
   // forma barata y honesta de que no lo repita — y sin esto lo repetiría cada 10 minutos, para
   // siempre, que es exactamente lo que pasó con "los límites diarios de Gmail".
   const previa = await workspace
-    .readInventoryJson<{ verificacion?: { reparos?: string[] } }>(MONITOR_FILE)
+    .readInventoryJson<{ verificacion?: { reparos?: string[] }; memoria?: string[] }>(MONITOR_FILE)
     .catch(() => null);
-  const erroresPrevios = previa?.verificacion?.reparos ?? [];
+  // ACUMULA, no reemplaza. Antes la memoria era la lectura anterior y nada más: si el agente
+  // acertaba una vuelta, los reparos quedaban en [] y el recuerdo del error se BORRABA — el mismo
+  // error volvía cada dos vueltas, para siempre. Tope de 5 (lo que el prompt muestra) y sin
+  // duplicados.
+  const erroresPrevios = [...new Set([...(previa?.memoria ?? []), ...(previa?.verificacion?.reparos ?? [])])].slice(-5);
 
   const lectura = await pedirLectura({ hechos, baseUrl, modelo, erroresPrevios });
 
@@ -259,7 +273,12 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
 
   // Se guarda SIEMPRE, con lectura o con motivo, y DESPUÉS de ejecutar: el panel tiene que poder
   // decir "el agente no pudo mirar" en vez de mostrar una lectura vieja, y tiene que ver qué hizo.
-  await workspace.updateInventoryJson(MONITOR_FILE, () => ({ ...lectura, acciones }));
+  await workspace.updateInventoryJson(MONITOR_FILE, () => ({
+    ...lectura,
+    acciones,
+    // La memoria se persiste con la lectura: es lo que va a leer la próxima vuelta.
+    memoria: [...new Set([...erroresPrevios, ...(lectura.verificacion?.reparos ?? [])])].slice(-5)
+  }));
 
   if (lectura.lectura) {
     console.log(`[${lectura.generadoEn}] ${lectura.modelo} · ${lectura.tokens?.completion ?? 0} tokens\n`);

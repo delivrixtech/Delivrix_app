@@ -24,7 +24,8 @@ export interface HechosWarmup {
     completa: boolean;
     error: string | null;
   }>;
-  cap: { consumidoHoy: number; tope: number; enElTope: string[]; sinLimite: number } | null;
+  /** `medidoEn` es obligatorio: sin la fecha, el agente reportaba un cap de ayer como si fuera de hoy. */
+  cap: { consumidoHoy: number; tope: number; enElTope: string[]; sinLimite: number; medidoEn?: string | null } | null;
   flota: { sanas: number; bloqueadas: number; atascadas: number; cruzados: string[]; cerca: string[] } | null;
   /**
    * EL PLAN: qué decidió el motor para cada dominio hoy, con su motivo. Faltaba, y por eso el
@@ -48,6 +49,12 @@ export interface HechosWarmup {
    * alcanza para desambiguar, así que ahora se desambigua antes.
    */
   rechazos?: Array<{ origen: string; cuantos: number; explicacion: string; ejemplo: string }>;
+  /**
+   * Pendientes ya abiertos, CON su id. Sin esto el agente no podía cerrarlos nunca: la acción
+   * `resolver_pendiente` existía en la lista blanca pero él no veía ningún id que pasarle, así que
+   * la lista solo crecía.
+   */
+  pendientesAbiertos?: Array<{ id: string; que: string }>;
 }
 
 export interface LecturaAgente {
@@ -94,6 +101,9 @@ const SISTEMA = [
   "  Usalo cuando un dominio está haciendo daño: cruzó el umbral permanente, o su placement se",
   "  desplomó. Es reversible.",
   "- pausar_warmup | motivo=... → frena TODO el calentamiento. Solo si el daño es general.",
+  "- resolver_pendiente | id=<id de la lista de pendientes> | motivo=... → cierra un pendiente que",
+  "  los datos muestran resuelto. Solo si los datos lo muestran: cerrar a ciegas borra trabajo del",
+  "  operador.",
   "- anotar_pendiente | dominio=<qué hace falta, en pocas palabras> | motivo=<por qué> → deja",
   "  asentado algo que vos NO podés resolver y necesita al operador (una semilla nueva, soltar",
   "  cupo, una credencial). Anotalo UNA vez: si ya lo anotaste, no lo repitas.",
@@ -128,8 +138,10 @@ export function construirPrompt(hechos: HechosWarmup, erroresPrevios: readonly s
   );
 
   if (hechos.cap) {
+    const edad = hechos.cap.medidoEn ? (Date.now() - Date.parse(hechos.cap.medidoEn)) / 3_600_000 : null;
     l.push(
-      `Límite físico: ${hechos.cap.consumidoHoy} de ${hechos.cap.tope} consumidos hoy en la flota.` +
+      `Límite físico${edad !== null && Number.isFinite(edad) ? ` (medido hace ${edad.toFixed(1)}h${edad > 12 ? ", VENCIDO" : ""})` : " (sin fecha de medición)"}: ` +
+        `${hechos.cap.consumidoHoy} de ${hechos.cap.tope} consumidos hoy en la flota.` +
         (hechos.cap.enElTope.length > 0 ? ` En el tope: ${hechos.cap.enElTope.join(", ")}.` : "") +
         (hechos.cap.sinLimite > 0 ? ` ${hechos.cap.sinLimite} nodos SIN límite puesto.` : "")
     );
@@ -163,7 +175,13 @@ export function construirPrompt(hechos: HechosWarmup, erroresPrevios: readonly s
       );
     }
   } else {
-    l.push("Decisión de hoy: no se pudo leer el plan.");
+    // Distingue "no se pudo leer" de "se leyó y no hay dominios": con el mismo texto, el agente
+    // reportaba un fallo de lectura cuando en realidad no había nada que calentar.
+    l.push(
+      hechos.plan
+        ? "Decisión de hoy: ningún dominio en calentamiento (el pool está vacío)."
+        : "Decisión de hoy: NO se pudo leer el plan."
+    );
   }
 
   // Los rechazos YA clasificados: de quién es cada freno. La cadena cruda no alcanza — con
@@ -173,6 +191,13 @@ export function construirPrompt(hechos: HechosWarmup, erroresPrevios: readonly s
     for (const r of hechos.rechazos) {
       l.push(`- ${r.cuantos}× ${r.origen}: ${r.explicacion}`);
     }
+  }
+
+  if ((hechos.pendientesAbiertos ?? []).length > 0) {
+    l.push(
+      "Pendientes que YA anotaste (no los vuelvas a anotar; cerralos con resolver_pendiente si los" +
+        ` datos muestran que se resolvieron): ${(hechos.pendientesAbiertos ?? []).map((p) => `${p.id} · ${p.que}`).join(" ; ")}`
+    );
   }
 
   if (hechos.vueltas.length === 0) {
@@ -288,7 +313,30 @@ export function verificarLectura(texto: string, hechos: HechosWarmup): LecturaEs
     }
   }
 
-  // 4. Afirmar que algo se midió cuando no hay muestra.
+  // 4. Atribuirle a un dominio conocido un cruce del umbral que los datos NO dicen. Es la
+  //    afirmación más cara del sistema, y hasta acá solo se chequeaba el CONTEO, no el nombre.
+  const cruzadosReales = new Set((hechos.flota?.cruzados ?? []).map((d) => d.toLowerCase()));
+  for (const d of cuerpo.match(/\b[a-z0-9][a-z0-9-]*\.(com|net|org|app|io|co)\b/gi) ?? []) {
+    const bajo = d.toLowerCase();
+    if (!conocidos.has(bajo)) continue;
+    const cerca = cuerpo.slice(Math.max(0, cuerpo.toLowerCase().indexOf(bajo) - 40), cuerpo.toLowerCase().indexOf(bajo) + bajo.length + 90);
+    if (/cruz\w*\s+(el\s+)?umbral|super\w*\s+(el\s+)?umbral/i.test(cerca) && !cruzadosReales.has(bajo) && !/o\s+(rozan|est[áa]n)/i.test(cerca)) {
+      out.reparos.push(`dice que ${d} cruzó el umbral y no figura entre los cruzados`);
+    }
+  }
+
+  // 5. Un porcentaje de placement citado que no coincide con ninguno de los del plan.
+  const tasas = new Set((hechos.plan ?? []).filter((p) => p.placementTasa !== null).map((p) => Math.round((p.placementTasa ?? 0) * 100)));
+  if (tasas.size > 0) {
+    for (const m of cuerpo.matchAll(/(\d{1,3})\s?%\s*(?:de\s+)?(?:placement|inbox|bandeja)|placement\s+(?:del?\s+)?(\d{1,3})\s?%/gi)) {
+      const n = Number(m[1] ?? m[2]);
+      if (Number.isFinite(n) && !tasas.has(n)) {
+        out.reparos.push(`cita un placement de ${n}% que no coincide con ninguno de los datos (${[...tasas].join("%, ")}%)`);
+      }
+    }
+  }
+
+  // 6. Afirmar que algo se midió cuando no hay muestra.
   const sinMuestra = (hechos.plan ?? []).length > 0 && (hechos.plan ?? []).every((p) => p.placementMuestra === 0);
   if (sinMuestra && /placement (del|de) \d+ ?%|\d+ ?% de (inbox|bandeja)/i.test(cuerpo)) {
     out.reparos.push("cita un placement medido cuando no hay ninguna medición");
