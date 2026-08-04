@@ -9,7 +9,7 @@
 
 import { readFile } from "node:fs/promises";
 
-import { decidirCupoDeHoy, type DecisionDiaria } from "../domain/decision-diaria.ts";
+import { decidirCupoDeHoy, esInbox, type DecisionDiaria } from "../domain/decision-diaria.ts";
 import { progresoDeCalentamiento, type UsoPrevio } from "../domain/rotacion.ts";
 import type { IsoWeekday } from "../domain/ramp.ts";
 import type { PgClient } from "../store/pg-stores.ts";
@@ -102,10 +102,25 @@ export function elegirPool(cupos: MedicionCupos, configurado: readonly string[])
 // ── Lecturas de la base ──────────────────────────────────────────────────────────────────────────
 
 /** Los placements medidos de UN dominio, del más nuevo al más viejo. */
+export const VENTANA_PLACEMENT_DIAS = 10;
+
 export async function placementsDeDominio(pg: PgClient, domain: string, ventana: number): Promise<Placement[]> {
+  // La ventana TEMPORAL es lo que le da salida al estado "frenar", y sin ella el freno era eterno:
+  //
+  //   cupo 0 → no se manda → nadie escribe un `measured` nuevo (el único escritor es el ciclo, que
+  //   ese gate acaba de saltear) → las mismas 6 filas viejas siguen siendo "las últimas 6" para
+  //   siempre → cupo 0 para siempre.
+  //
+  // Un dominio frenado un martes seguía frenado tres semanas después con la misma evidencia, y el
+  // panel mostraba "12% sobre 6 mediciones" como si fuera de hoy. Agrava que el disparo es el caso
+  // NORMAL de un dominio nuevo en Gmail, no un borde raro.
+  //
+  // Con la ventana, la evidencia vieja caduca: sin mediciones recientes la tasa es null, la
+  // decisión pasa a "sostener" con el cupo de arranque, y el dominio se vuelve a medir solo.
   const { rows } = await pg.query<{ placement: string | null }>(
     `SELECT placement FROM warmup_activity
       WHERE kind = 'measured' AND placement IS NOT NULL AND node_domain = $1
+        AND occurred_at > now() - interval '${VENTANA_PLACEMENT_DIAS} days'
       ORDER BY occurred_at DESC LIMIT $2`,
     [domain, ventana]
   );
@@ -250,7 +265,7 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
       desde: progreso?.desde ?? null,
       vueltas: progreso?.vueltas ?? 0,
       placement: {
-        tasa: placements.length > 0 ? placements.filter((p) => p === "INBOX").length / placements.length : null,
+        tasa: placements.length > 0 ? placements.filter(esInbox).length / placements.length : null,
         muestra: placements.length,
         error: errorPlacement
       },

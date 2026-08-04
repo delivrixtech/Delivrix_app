@@ -72,7 +72,7 @@ export async function handleWarmupConversationHttp(deps: {
       testId,
       semilla: null,
       mensajes: [],
-      enElNodo: await leerBuzonDelNodo(deps, dominio, testId),
+      enElNodo: await leerBuzonDelNodo(deps, dominio, testId, semilla?.address),
       motivo: "no hay ninguna semilla con app password: sin acceso al buzón no se puede leer el hilo"
     } satisfies ConversacionResponse);
     return;
@@ -91,7 +91,7 @@ export async function handleWarmupConversationHttp(deps: {
 
     await conTimeout(cliente.connect(), 20_000, "conectar al buzón");
     const hilo = await conTimeout(leerHiloWarmup(cliente, testId), 25_000, "leer el hilo");
-    const enElNodo = await leerBuzonDelNodo(deps, dominio, testId);
+    const enElNodo = await leerBuzonDelNodo(deps, dominio, testId, semilla?.address);
     json(deps.response, 200, { ...hilo, semilla: semilla.address, enElNodo } satisfies ConversacionResponse);
   } catch (error) {
     // Se declara el fallo con su motivo. Un hilo vacío mudo se leería como "no hubo conversación".
@@ -99,7 +99,7 @@ export async function handleWarmupConversationHttp(deps: {
       testId,
       semilla: semilla.address,
       mensajes: [],
-      enElNodo: await leerBuzonDelNodo(deps, dominio, testId),
+      enElNodo: await leerBuzonDelNodo(deps, dominio, testId, semilla?.address),
       motivo: `no se pudo leer el buzón semilla: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`
     } satisfies ConversacionResponse);
   } finally {
@@ -118,7 +118,14 @@ export async function handleWarmupConversationHttp(deps: {
 async function leerBuzonDelNodo(
   deps: { workspace: OpenClawWorkspace; sshRunner?: SmtpSshRunner },
   dominio: string,
-  testId: string
+  testId: string,
+  /**
+   * La semilla del hilo. Sin ella, cualquier correo que llegue al 25 del nodo con la marca del
+   * asunto se muestra como "la respuesta de la semilla". Se pasa siempre que se conozca; en el
+   * único camino donde todavía no hay semilla resuelta llega `undefined` y ahí no hay hilo que
+   * mostrar de todos modos.
+   */
+  semilla?: string
 ): Promise<ConversacionResponse["enElNodo"]> {
   if (!dominio) return { respuestas: [], motivo: "sin dominio en la consulta: no sé qué nodo mirar" };
   if (!deps.sshRunner?.isConfigured()) {
@@ -141,7 +148,7 @@ async function leerBuzonDelNodo(
       "leer el buzón del nodo"
     );
     // Solo las respuestas DE ESTE hilo: mezclar hilos sugiere una conversación que no ocurrió.
-    return respuestasDelHilo(parsearBuzon(r.stdout), testId);
+    return respuestasDelHilo(parsearBuzon(r.stdout), testId, semilla);
   } catch (error) {
     return {
       respuestas: [],

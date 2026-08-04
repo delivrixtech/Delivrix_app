@@ -77,3 +77,68 @@ test("la decisión es reproducible: mismo estado, misma decisión", () => {
   const e = { ...base, diaN: 7, placements: [...inbox(6), ...spam(2)] };
   assert.deepEqual(decidirCupoDeHoy(e), decidirCupoDeHoy(e));
 });
+
+
+// ── El guarda de la continuación de hilos ────────────────────────────────────────────────────────
+// Vivía inline en el daemon SIN un solo test, y ahí estaba el agujero más grave que encontró la
+// auditoría: la continuación mandaba correo real esquivando la decisión del día.
+
+import { puedeMandarTurno } from "./decision-diaria.ts";
+
+const decision = (over: Partial<ReturnType<typeof decidirCupoDeHoy>> = {}) => ({
+  cupo: 4, accion: "subir" as const, motivo: "test", placement: 0.9, ...over
+});
+
+test("un dominio FRENADO por placement no manda turno, aunque su nodo tenga cupo físico de sobra", () => {
+  // El bug exacto: `frenados` solo tiene los que rebotaron con 450 contra el cap FÍSICO. Un dominio
+  // con cap 20 en Postfix nunca aparece ahí, así que el guarda viejo lo dejaba pasar y seguía
+  // emitiendo un turno por vuelta mientras el log decía "frenar · cupo 0/día".
+  const r = puedeMandarTurno({
+    dominio: "d.com", rebotadosHoy: new Set(), enviadosHoy: 0,
+    decision: decision({ cupo: 0, accion: "frenar" })
+  });
+  assert.equal(r.si, false);
+  assert.match(r.motivo, /frenar/);
+});
+
+test("un dominio que ya cumplió su cupo NO recibe uno más por el camino de continuación", () => {
+  // El caso frecuente: cupo 2, ya mandó 2, y la continuación metía el tercero. Todos los días.
+  const r = puedeMandarTurno({
+    dominio: "d.com", rebotadosHoy: new Set(), enviadosHoy: 2, decision: decision({ cupo: 2 })
+  });
+  assert.equal(r.si, false);
+  assert.match(r.motivo, /van 2/);
+});
+
+test("con cupo libre, sí manda", () => {
+  const r = puedeMandarTurno({
+    dominio: "d.com", rebotadosHoy: new Set(), enviadosHoy: 1, decision: decision({ cupo: 4 })
+  });
+  assert.equal(r.si, true);
+  assert.match(r.motivo, /3 de cupo libre/);
+});
+
+test("el rebote físico sigue mandando: se chequea antes que nada", () => {
+  const r = puedeMandarTurno({
+    dominio: "d.com", rebotadosHoy: new Set(["d.com"]), enviadosHoy: 0, decision: decision({ cupo: 9 })
+  });
+  assert.equal(r.si, false);
+  assert.match(r.motivo, /rebotó hoy/);
+});
+
+// ── PROMOTIONS ───────────────────────────────────────────────────────────────────────────────────
+
+test("PROMOTIONS cuenta como bandeja: un dominio sano en la pestaña no se frena", () => {
+  // El diseño v1 (§9) dice textual que las pestañas cuentan como inbox, y placement.ts ya lo hacía
+  // así. Contarlas como fallo daba tasa 0% y FRENABA un dominio cuya evidencia era buena.
+  const p = Array.from({ length: 8 }, () => "PROMOTIONS" as const);
+  const d = decidirCupoDeHoy({ ...base, diaN: 6, placements: p });
+  assert.equal(d.placement, 1);
+  assert.equal(d.accion, "subir");
+});
+
+test("OTHER NO cuenta como bandeja: archivado o etiquetado no es aterrizar", () => {
+  const p = Array.from({ length: 8 }, () => "OTHER" as const);
+  const d = decidirCupoDeHoy({ ...base, diaN: 6, placements: p });
+  assert.equal(d.accion, "frenar");
+});

@@ -80,6 +80,7 @@ export async function ubicarMensaje(
   // idioma el nombre cambia, `mailboxOpen` falla, y "no está en spam" se vuelve indistinguible de
   // "no pude mirar en spam". Eso sería fail-open sobre el dato que gatea toda la rampa.
   let spam: string | null = null;
+  let seMiroSpam = false;
   try {
     spam = (await resolverCarpetas(cliente as unknown as ImapConLista)).spam;
   } catch {
@@ -88,6 +89,7 @@ export async function ubicarMensaje(
   for (const carpeta of spam ? [spam] : CARPETAS_SPAM) {
     try {
       await cliente.mailboxOpen(carpeta);
+      seMiroSpam = true;
       const uids = await cliente.search(criterio, { uid: true });
       if (uids && uids.length > 0) {
         return { carpeta, uid: uids[uids.length - 1]!, placement: "SPAM" };
@@ -95,6 +97,20 @@ export async function ubicarMensaje(
     } catch {
       // Carpeta inexistente en este proveedor: se salta, no es un error.
     }
+  }
+
+  // Si NINGUNA carpeta de spam se pudo abrir, no sabemos dónde cayó: se LANZA en vez de devolver
+  // null. Devolver null lo marcaba como "todavía no indexado", el ciclo no grababa medición, y esa
+  // medición perdida se leía como si nunca hubiera habido un SPAM. Con las mediciones malas
+  // desapareciendo calladas, la tasa de inbox queda cerca del 100% y la rampa SIGUE SUBIENDO sobre
+  // evidencia falsa — el único camino de todo el sistema hacia más volumen sin sustento.
+  //
+  // Hoy no dispara con la semilla Gmail (`[Gmail]/Spam` lo cubren los dos caminos); dispararía el
+  // día que se agregue una semilla Outlook en español, que es un punto ciego ya declarado.
+  if (!seMiroSpam) {
+    throw new Error(
+      "no se pudo abrir ninguna carpeta de spam en el buzón semilla: la medición sería falsa (cero mediciones es honesto, una medición perdida no)"
+    );
   }
 
   // No está en ningún lado TODAVÍA. `missing` ≠ `spam`: puede ser que aún no lo indexaron.

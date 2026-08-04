@@ -17,7 +17,7 @@ import { createRequire } from "node:module";
 import { Pool } from "pg";
 import { elegirSemilla, semillasMedibles, type SeedBase } from "../domain/seeds.ts";
 import { elegirSemillaRotada, progresoDeCalentamiento, type UsoPrevio } from "../domain/rotacion.ts";
-import { decidirCupoDeHoy, type DecisionDiaria } from "../domain/decision-diaria.ts";
+import { decidirCupoDeHoy, esInbox, puedeMandarTurno, type DecisionDiaria } from "../domain/decision-diaria.ts";
 import {
   boxesSinCupoHoy,
   elegirPool,
@@ -217,8 +217,9 @@ export interface GateInput {
 /** Tasa de inbox reciente (INBOX / total). null si no hay mediciones. */
 export function recentInboxRate(placements: readonly Placement[]): number | null {
   if (placements.length === 0) return null;
-  const inbox = placements.filter((p) => p === "INBOX").length;
-  return inbox / placements.length;
+  // Mismo criterio que la decisión por dominio: PROMOTIONS cuenta como bandeja (§9). Parchear un
+  // contador y dejar el otro con la regla vieja produce dos verdades sobre el mismo dato.
+  return placements.filter(esInbox).length / placements.length;
 }
 
 /** Decide qué hacer esta vuelta. Orden de barreras: flag → kill → tope → placement → send. */
@@ -469,15 +470,13 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   let seq = await countCyclesToday(pg); // arranca la rotación donde quedó el día
   // El pool sale de la MEDICIÓN, no de una lista escrita a mano. Con la lista fija el daemon pasó
   // el día rebotando contra 6 nodos frenados en cap 0 mientras el único con cupo real ni figuraba.
-  const capsIniciales = await leerCuposFisicos(cfg.capFile);
-  const poolElegido = elegirPool(capsIniciales, cfg.boxes);
-  cfg.boxes = poolElegido.boxes;
-  log(`pool: ${poolElegido.motivo}${poolElegido.boxes.length > 0 ? ` → ${poolElegido.boxes.join(", ")}` : ""}`);
-  if (poolElegido.boxes.length === 0) {
-    log("nada que calentar: no hay ningún nodo con cupo. Se sale (revisá el freno con limite-fisico --status).");
-    return;
-  }
-  log(`ARRANCA — box pool ${cfg.boxes.length}, intervalo ${Math.round(cfg.intervalMs / 60000)}min, piso placement ${(cfg.placementFloor * 100).toFixed(0)}%, seed ${cfg.seedInbox}`);
+  // El pool CONFIGURADO se preserva: es el respaldo, y pisarlo con el pool elegido lo perdía para
+  // siempre. Se recalcula en cada vuelta (más abajo) porque el cupo de la flota cambia: si ops
+  // corre `limite-fisico` a media semana y libera otros nodos, un pool congelado al arrancar deja
+  // al daemon girando días sin calentar nada — mientras `/v1/warmup/plan` ya muestra los nuevos.
+  const poolConfigurado = [...cfg.boxes];
+  let poolAnterior = "";
+  log(`ARRANCA — intervalo ${Math.round(cfg.intervalMs / 60000)}min, piso placement ${(cfg.placementFloor * 100).toFixed(0)}%, seed ${cfg.seedInbox} (el pool se decide en cada vuelta)`);
 
   try {
     for (;;) {
@@ -489,18 +488,37 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
       });
 
       if (action === "send") {
+        // El pool se recalcula acá, no al arrancar: la medición del cupo se relee en cada vuelta y
+        // el pool tiene que seguirla. Solo se loguea cuando CAMBIA, para no repetir la misma línea
+        // cada vuelta durante días.
+        const capsFisicos = await leerCuposFisicos(cfg.capFile);
+        const poolElegido = elegirPool(capsFisicos, poolConfigurado);
+        if (poolElegido.boxes.join(",") !== poolAnterior) {
+          poolAnterior = poolElegido.boxes.join(",");
+          log(`pool: ${poolElegido.motivo}${poolElegido.boxes.length > 0 ? ` → ${poolElegido.boxes.join(", ")}` : ""}`);
+        }
+        if (poolElegido.boxes.length === 0) {
+          // ESPERA, no `return`. Salir mataba el proceso sin supervisor que lo levante, y el caso
+          // que lo dispara es transitorio: alguien frenó la flota entera y la va a soltar. El
+          // daemon tiene que seguir vivo para enterarse.
+          log("nada que calentar: ningún nodo con cupo. Espero la próxima medición.");
+          if (once) break;
+          await sleep(cfg.intervalMs);
+          continue;
+        }
+
         // Se saltean los boxes que hoy ya rebotaron por cupo: reintentarlos es garantía de error.
         const frenados = await boxesSinCupoHoy(pg).catch(() => new Set<string>());
-        const disponibles = cfg.boxes.filter((b) => !frenados.has(b));
+        const disponibles = poolElegido.boxes.filter((b) => !frenados.has(b));
         if (disponibles.length === 0) {
-          log(`PAUSA — los ${cfg.boxes.length} boxes del pool ya agotaron su cupo diario. Nada que enviar hoy.`);
+          log(`PAUSA — los ${poolElegido.boxes.length} boxes del pool ya agotaron su cupo diario. Nada que enviar hoy.`);
           if (once) break;
           await sleep(cfg.intervalMs);
           continue;
         }
         // Solo los del POOL: listar dominios que ni siquiera se están calentando es ruido que
         // hace parecer que el daemon intentó algo con ellos.
-        const salteados = cfg.boxes.filter((b) => frenados.has(b));
+        const salteados = poolElegido.boxes.filter((b) => frenados.has(b));
         if (salteados.length > 0) {
           log(`${salteados.length} box(es) sin cupo hoy, salteados: ${salteados.join(", ")}`);
         }
@@ -515,20 +533,29 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // warmup profesional, es un temporizador. Acá el volumen sale de la evidencia de este
         // dominio: qué día de rampa lleva y cómo viene su placement. Sube si puede, baja si debe,
         // frena si hace falta — y todo queda dicho en el log.
-        const capsFisicos = await leerCuposFisicos(cfg.capFile);
+        // ISO weekday del receptor: 1 = lunes … 7 = domingo. `getUTCDay()` da 0 = domingo.
+        const isoWeekday = (((new Date().getUTCDay() + 6) % 7) + 1) as 1 | 2 | 3 | 4 | 5 | 6 | 7;
         const delDia: DecisionDiaria = decidirCupoDeHoy({
           diaN: progresoDeCalentamiento(historial, box, null)?.diasCorridos ?? 0,
           placements: await placementsDeDominio(pg, box, cfg.placementWindow).catch(() => []),
           cupoFisico: capsFisicos.vencida ? null : capsFisicos.porDominio.get(box) ?? null,
-          isoWeekday: (((new Date().getUTCDay() + 6) % 7) + 1) as 1 | 2 | 3 | 4 | 5 | 6 | 7
+          isoWeekday
         });
-        const enviadosHoyBox = (await enviosDeHoy(pg).catch(() => new Map<string, number>())).get(box) ?? 0;
+        // Un solo Map para la vuelta: lo consultan el camino principal Y el de continuación. Dos
+        // lecturas separadas se desincronizarían entre sí dentro de la misma vuelta.
+        const enviadosPorDominio = await enviosDeHoy(pg).catch(() => new Map<string, number>());
+        const enviadosHoyBox = enviadosPorDominio.get(box) ?? 0;
         log(`${box}: ${delDia.accion} · cupo ${delDia.cupo}/día (van ${enviadosHoyBox}) — ${delDia.motivo}`);
         if (enviadosHoyBox >= delDia.cupo) {
-          log(`${box} ya cumplió su cupo de hoy — se salta`);
           seq += 1;
           if (once) break;
-          await sleep(Math.min(cfg.intervalMs, 60_000));
+          // Si NINGÚN box del pool tiene cupo, se duerme el intervalo entero. Antes eran 60s
+          // siempre: con el cupo por dominio (2) menor que el tope de vueltas (3) —el caso normal
+          // del arranque de la rampa— el daemon giraba ~1400 veces al día haciendo consultas y
+          // enterrando los WARN reales bajo miles de líneas de log.
+          const quedaAlguno = disponibles.some((b) => (enviadosPorDominio.get(b) ?? 0) < delDia.cupo && b !== box);
+          log(`${box} ya cumplió su cupo de hoy — se salta${quedaAlguno ? "" : " (ningún box con cupo: espero el intervalo)"}`);
+          await sleep(quedaAlguno ? Math.min(cfg.intervalMs, 60_000) : cfg.intervalMs);
           continue;
         }
         const conversation = pickConversation(seq);
@@ -605,19 +632,44 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
               log("continuación: no hay hilos anteriores de esta semilla todavía");
             }
             for (const hiloPrevio of abiertos) {
-              // El turno sale por EL NODO DEL HILO, no por el box de esta vuelta. Reusar el mailer
-              // de la vuelta mandaría un correo con `From: mailer@dominio-A` a través del SMTP del
-              // dominio B: rompe la alineación SPF/DKIM (que es exactamente lo que estamos
-              // construyendo) y encima rebota si ese nodo está frenado.
-              if (frenados.has(hiloPrevio.nodeDomain)) {
-                log(`hilo ${hiloPrevio.testId.slice(-6)}: su nodo ${hiloPrevio.nodeDomain} no tiene cupo hoy`);
+              const marca = hiloPrevio.testId.slice(-6);
+              // El guarda vive en `puedeMandarTurno` (decision-diaria.ts) y está testeado ahí.
+              // Inline y sin test fue exactamente donde se coló el agujero: la continuación
+              // mandaba correo real esquivando la decisión del día.
+              //
+              // Sin `.catch` permisivo: si no se puede leer el estado del dominio, NO se manda. Un
+              // error de lectura jamás se convierte en permiso de enviar.
+              let cupoDelHilo: DecisionDiaria;
+              try {
+                cupoDelHilo = decidirCupoDeHoy({
+                  diaN: progresoDeCalentamiento(historial, hiloPrevio.nodeDomain, null)?.diasCorridos ?? 0,
+                  placements: await placementsDeDominio(pg, hiloPrevio.nodeDomain, cfg.placementWindow),
+                  cupoFisico: capsFisicos.vencida ? null : capsFisicos.porDominio.get(hiloPrevio.nodeDomain) ?? null,
+                  isoWeekday
+                });
+              } catch (err) {
+                log(`hilo ${marca}: no pude leer el estado de ${hiloPrevio.nodeDomain}, no mando — ${err instanceof Error ? err.message : String(err)}`);
                 continue;
               }
+              const permiso = puedeMandarTurno({
+                dominio: hiloPrevio.nodeDomain,
+                rebotadosHoy: frenados,
+                decision: cupoDelHilo,
+                enviadosHoy: enviadosPorDominio.get(hiloPrevio.nodeDomain) ?? 0
+              });
+              if (!permiso.si) {
+                log(`hilo ${marca}: no toca — ${permiso.motivo}`);
+                continue;
+              }
+
+              // El turno sale por EL NODO DEL HILO, no por el box de esta vuelta: `From:` de un
+              // dominio con el SMTP de otro rompe la alineación SPF/DKIM, que es justo lo que
+              // estamos construyendo.
               let mailerHilo: WarmupMailer;
               try {
                 mailerHilo = createBoxMailer(hiloPrevio.nodeDomain, store, key);
               } catch (err) {
-                log(`hilo ${hiloPrevio.testId.slice(-6)}: sin credencial de ${hiloPrevio.nodeDomain} — ${err instanceof Error ? err.message : String(err)}`);
+                log(`hilo ${marca}: sin credencial de ${hiloPrevio.nodeDomain} — ${err instanceof Error ? err.message : String(err)}`);
                 continue;
               }
               const hilo = await leerHiloWarmup(clienteImap as unknown as ImapLector, hiloPrevio.testId);
@@ -628,7 +680,6 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                   texto: m.texto!
                 }));
               const ultimo = hilo.mensajes.at(-1)?.fecha ?? "";
-              const marca = hiloPrevio.testId.slice(-6);
               const decision = tocaResponder({ hiloId: hiloPrevio.cycleId, turnos, ultimoMensajeEn: ultimo });
               if (!decision.si) {
                 log(`hilo ${marca}: no toca — ${decision.motivo}`);
@@ -656,7 +707,13 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                 testId: hiloPrevio.testId
               });
               await recorder.record({
-                cycleId: hiloPrevio.cycleId,
+                // El cycleId es el de ESTA vuelta, no el del hilo viejo. Con el viejo, el conteo
+                // del tope diario (COUNT DISTINCT cycle_id) fallaba en las DOS direcciones: un
+                // hilo del mismo día no gastaba presupuesto (salía correo real gratis), y uno de
+                // un día anterior contaba como una vuelta entera (tres continuaciones agotaban el
+                // día sin arrancar una sola conversación). El hilo se sigue juntando por testId,
+                // que es lo que usa el lector IMAP.
+                cycleId,
                 boxDomain: hiloPrevio.nodeDomain,
                 seedInbox: semilla.address,
                 kind: "sent",

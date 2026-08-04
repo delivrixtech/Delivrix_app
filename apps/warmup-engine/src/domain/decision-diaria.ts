@@ -36,6 +36,21 @@ export interface DecisionDiaria {
   placement: number | null;
 }
 
+/**
+ * ¿Este placement cuenta como "aterrizó en la bandeja"?
+ *
+ * PROMOTIONS sí: el diseño v1 (§9) dice textual que las pestañas cuentan como inbox, y
+ * `placement.ts` ya lo implementa así. Contarlas como fallo hacía que un dominio perfectamente
+ * sano cuyos correos caen en la pestaña Promociones diera tasa 0% y se FRENARA — sobre evidencia
+ * que en realidad era buena.
+ *
+ * OTHER no: significa archivado o movido por el usuario a una etiqueta, que no es aterrizaje en
+ * bandeja. Meterlos en la misma bolsa sería el error opuesto.
+ */
+export function esInbox(p: Placement): boolean {
+  return p === "INBOX" || p === "PROMOTIONS";
+}
+
 /** Debajo de esto el dominio está en problemas y hay que bajar el volumen. */
 export const PISO_SANO = 0.7;
 /** Debajo de esto seguir mandando profundiza el pozo: se frena. */
@@ -84,7 +99,7 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
   }
 
   const muestra = e.placements.length;
-  const tasa = muestra > 0 ? e.placements.filter((p) => p === "INBOX").length / muestra : null;
+  const tasa = muestra > 0 ? e.placements.filter(esInbox).length / muestra : null;
 
   // La rampa del diseño: lineal por día, con los clamps de §10. No se reescribe acá.
   const rampa = dailyQuota(
@@ -149,4 +164,36 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
 
 function pct(x: number): string {
   return `${Math.round(x * 100)}%`;
+}
+
+
+/**
+ * ¿Le toca a ESTE dominio mandar un turno de continuación?
+ *
+ * Existe como función aparte porque el guarda vivía inline en el daemon y no tenía un solo test —
+ * y ahí es donde la auditoría encontró el agujero más grave: el único filtro era "¿rebotó hoy
+ * contra el cap físico?", así que un dominio que la decisión del día había FRENADO por placement
+ * seguía mandando un turno por vuelta. El log decía "frenar · cupo 0/día" y el mismo dominio
+ * grababa un envío el mismo día.
+ *
+ * El caso más frecuente era todavía más simple: un dominio que ya había cumplido su cupo recibía
+ * uno más por este camino. Cupo 2 ⇒ salían 3, todos los días.
+ */
+export function puedeMandarTurno(e: {
+  dominio: string;
+  /** Dominios que hoy rebotaron con 450 contra el cap físico del nodo. */
+  rebotadosHoy: ReadonlySet<string>;
+  decision: DecisionDiaria;
+  enviadosHoy: number;
+}): { si: boolean; motivo: string } {
+  if (e.rebotadosHoy.has(e.dominio)) {
+    return { si: false, motivo: `${e.dominio} ya rebotó hoy por cupo agotado en el nodo` };
+  }
+  if (e.enviadosHoy >= e.decision.cupo) {
+    return {
+      si: false,
+      motivo: `${e.dominio} → ${e.decision.accion}, cupo ${e.decision.cupo}/día (van ${e.enviadosHoy})`
+    };
+  }
+  return { si: true, motivo: `${e.dominio} tiene ${e.decision.cupo - e.enviadosHoy} de cupo libre hoy` };
 }

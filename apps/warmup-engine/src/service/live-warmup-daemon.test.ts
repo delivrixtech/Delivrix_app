@@ -38,11 +38,18 @@ test("resolveLiveDaemonConfig: overrides del entorno", () => {
   assert.equal(cfg.seedInbox, "seed@x.com");
 });
 
-test("recentInboxRate: proporción de INBOX, null si vacío", () => {
-  assert.equal(recentInboxRate([]), null);
+test("recentInboxRate: proporción de bandeja, null si vacío", () => {
+  assert.equal(recentInboxRate([]), null, "sin muestra es null, NO 0%");
   assert.equal(recentInboxRate(["INBOX", "INBOX"]), 1);
   assert.equal(recentInboxRate(["INBOX", "SPAM"]), 0.5);
-  assert.equal(recentInboxRate(["SPAM", "PROMOTIONS"]), 0);
+  // PROMOTIONS cuenta como bandeja. Este test afirmaba lo contrario (`["SPAM","PROMOTIONS"] → 0`)
+  // y estaba fijando la regla equivocada: el diseño v1 §10 dice textual que las pestañas cuentan
+  // como inbox, y `placement.ts:33` ya lo implementaba así. Con la regla vieja, un dominio sano
+  // cuyos correos caen en la pestaña Promociones daba 0% y el gate lo pausaba.
+  assert.equal(recentInboxRate(["SPAM", "PROMOTIONS"]), 0.5);
+  assert.equal(recentInboxRate(["PROMOTIONS", "PROMOTIONS"]), 1);
+  // OTHER no: archivado o etiquetado por el usuario no es aterrizar en bandeja.
+  assert.equal(recentInboxRate(["OTHER", "INBOX"]), 0.5);
 });
 
 const base = { enabled: true, killed: false, cyclesToday: 0, maxPerDay: 3, recentPlacements: [] as Placement[], placementFloor: 0.5 };

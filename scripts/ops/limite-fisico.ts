@@ -2,6 +2,7 @@
 // El límite físico de la fábrica, aplicado sobre la flota. DRY-RUN POR DEFECTO.
 //
 //   node --env-file=config/gateway.env scripts/ops/limite-fisico.ts --status
+//   node --env-file=config/gateway.env scripts/ops/limite-fisico.ts --status --cada=6   (se queda midiendo)
 //   node --env-file=config/gateway.env scripts/ops/limite-fisico.ts --domain=x.com          (plan)
 //   node --env-file=config/gateway.env scripts/ops/limite-fisico.ts --domain=x.com --apply
 //   node --env-file=config/gateway.env scripts/ops/limite-fisico.ts --apply --limit=5
@@ -33,13 +34,13 @@ const args = process.argv.slice(2);
 // ignoraba en silencio: el filtro no se aplicaba y `--apply` salía a los 58 nodos. Y `--rolback`
 // instalaba en vez de desinstalar. El typo tiene que doler antes, no después.
 const BANDERAS_SIMPLES = new Set(["--apply", "--rollback", "--status", "--frenar"]);
-const BANDERAS_CON_VALOR = new Set(["domain", "cap", "limit", "excepto", "cap-excepto"]);
+const BANDERAS_CON_VALOR = new Set(["domain", "cap", "limit", "excepto", "cap-excepto", "cada"]);
 for (const a of args) {
   const conValor = a.startsWith("--") && a.includes("=") && BANDERAS_CON_VALOR.has(a.slice(2, a.indexOf("=")));
   if (!BANDERAS_SIMPLES.has(a) && !conValor) {
     console.error(
       `argumento no reconocido: ${a}\n` +
-        `esperados: --apply --rollback --status --frenar --domain=<dominio> --cap=<n> --limit=<n> --excepto=<dom,dom> --cap-excepto=<n>\n` +
+        `esperados: --apply --rollback --status --frenar --domain=<dominio> --cap=<n> --limit=<n> --excepto=<dom,dom> --cap-excepto=<n> --cada=<horas>\n` +
         "No se hizo nada."
     );
     process.exit(1);
@@ -93,6 +94,23 @@ const EXCEPTO = new Set(
     .filter(Boolean)
 );
 const CAP_EXCEPTO = enteroFlag("cap-excepto", TECHO_ABSOLUTO) ?? 20;
+
+/**
+ * `--cada=<horas>`: repite el `--status` para siempre, refrescando la medición.
+ *
+ * Por qué existe: la medición del cupo VENCE a las 12h (`plan-diario.ts`), y con razón — un cap
+ * viejo puede ser un 2000 que ya no está. Pero nadie la refrescaba, así que todos los días el
+ * motor de decisión del warmup se quedaba sin base para el volumen y caía a "cupo desconocido".
+ * El agujero no se veía: el sistema seguía andando, solo que decidiendo con menos información.
+ *
+ * Solo tiene sentido con `--status`: repetir un `--apply` en loop sería reinstalar el cap cada N
+ * horas sin que nadie lo pida, y eso no lo decide un flag.
+ */
+const CADA_HORAS = enteroFlag("cada", 24);
+if (CADA_HORAS !== null && !SOLO_STATUS) {
+  console.error("--cada solo se usa con --status: repetir un cambio en loop no lo decide un flag. No se hizo nada.");
+  process.exit(1);
+}
 
 interface Nodo {
   domain: string;
@@ -242,7 +260,28 @@ async function mostrarStatus(
   }
 }
 
-main().catch((error) => {
+const dormir = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+async function correr(): Promise<void> {
+  if (CADA_HORAS === null) {
+    await main();
+    return;
+  }
+  console.log(`midiendo la flota cada ${CADA_HORAS}h (Ctrl-C para salir).`);
+  for (;;) {
+    try {
+      await main();
+    } catch (error) {
+      // Una vuelta que falla NO mata el loop: la medición anterior sigue en disco con su fecha, y
+      // quien la lea ya sabe interpretar una medición vieja. Cortar acá sería peor — dejaría de
+      // haber mediciones nuevas para siempre por un error transitorio de red.
+      console.error(`vuelta fallida: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await dormir(CADA_HORAS * 60 * 60 * 1000);
+  }
+}
+
+correr().catch((error) => {
   console.error("ERROR:", error instanceof Error ? error.message : String(error));
   process.exit(1);
 });

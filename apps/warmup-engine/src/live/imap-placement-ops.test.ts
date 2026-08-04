@@ -7,14 +7,30 @@ import test from "node:test";
 
 import { CARPETAS_SPAM, generarSenal, opsDesdeImap, ubicarMensaje, type ImapClienteMinimo } from "./imap-placement-ops.ts";
 
-/** Cliente IMAP falso: un mapa carpeta → UIDs que "contienen" el mensaje buscado. */
-function clienteFalso(contenido: Record<string, number[]>, carpetasQueExisten?: string[]) {
+/**
+ * Cliente IMAP falso: un mapa carpeta → UIDs que "contienen" el mensaje buscado.
+ *
+ * `list()` NO es opcional acá aunque el tipo no lo exija. Sin él, `resolverCarpetas` lanzaba, el
+ * código caía al camino de nombres fijos `@deprecated`, y los 9 tests pasaban por ahí: se podía
+ * BORRAR ENTERA la resolución por SPECIAL-USE —el arreglo central del commit— y todo quedaba verde.
+ * Un fixture que no implementa lo que el código llama no prueba el código, prueba el fallback.
+ *
+ * `flags` mapea carpeta → SPECIAL-USE, para poder simular una cuenta en otro idioma.
+ */
+function clienteFalso(
+  contenido: Record<string, number[]>,
+  carpetasQueExisten?: string[],
+  flags: Record<string, string> = { INBOX: "\\Inbox", "[Gmail]/Spam": "\\Junk" }
+) {
   const existentes = new Set(carpetasQueExisten ?? Object.keys(contenido).concat("INBOX"));
   const acciones: string[] = [];
   let abierta = "";
   const cliente: ImapClienteMinimo = {
     async connect() {},
     async logout() {},
+    async list() {
+      return [...existentes].map((path) => ({ path, ...(flags[path] ? { specialUse: flags[path] } : {}) }));
+    },
     async mailboxOpen(nombre) {
       if (!existentes.has(nombre)) throw new Error(`no existe la carpeta ${nombre}`);
       abierta = nombre;
@@ -107,4 +123,33 @@ test("el adaptador devuelve null cuando no lo encuentra, sin actuar sobre nada",
   assert.equal(await ops.findMessage({ rfc822MessageId: "<x@y.com>", subject: "s" }), null);
   await ops.modifyLabels("0", { add: [], remove: [] });
   assert.deepEqual(acciones, [], "sin mensaje ubicado no se toca ninguna casilla");
+});
+
+
+// ── La resolución por SPECIAL-USE, que antes ningún test tocaba ─────────────────────────────────
+
+test("cuenta en OTRO IDIOMA: encuentra la carpeta de spam por su flag, no por su nombre", async () => {
+  // `Correo no deseado` no está en la lista de nombres históricos: si esto pasa, es porque se
+  // resolvió por \\Junk. Es exactamente el caso de una semilla Outlook en español.
+  const { cliente } = clienteFalso(
+    { "Correo no deseado": [7] },
+    ["INBOX", "Correo no deseado"],
+    { INBOX: "\\Inbox", "Correo no deseado": "\\Junk" }
+  );
+  const u = await ubicarMensaje(cliente, "<abc@dominio.com>");
+  assert.equal(u?.placement, "SPAM");
+  assert.equal(u?.carpeta, "Correo no deseado");
+});
+
+test("si NINGUNA carpeta de spam se puede abrir, LANZA en vez de decir 'no está'", async () => {
+  // Es el hallazgo con camino a más volumen sobre evidencia falsa: devolviendo null, la medición
+  // se perdía callada, la tasa de inbox quedaba cerca del 100% y la rampa seguía subiendo.
+  const { cliente } = clienteFalso({}, ["INBOX"], { INBOX: "\\Inbox" });
+  await assert.rejects(() => ubicarMensaje(cliente, "<abc@dominio.com>"), /medición sería falsa/);
+});
+
+test("con la carpeta de spam abierta y el mensaje ausente, sí devuelve null (todavía no indexado)", async () => {
+  // El otro lado del borde: acá SÍ miramos y no estaba. "No lo encontré" ≠ "no pude mirar".
+  const { cliente } = clienteFalso({}, ["INBOX", "[Gmail]/Spam"]);
+  assert.equal(await ubicarMensaje(cliente, "<abc@dominio.com>"), null);
 });

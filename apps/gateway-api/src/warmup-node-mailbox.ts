@@ -119,10 +119,18 @@ export interface BuzonNodo {
  * del buzón junto a CUALQUIER ciclo — se veía el correo de un hilo con la respuesta de otro, que es
  * peor que no mostrar nada: sugiere una conversación que no ocurrió.
  */
-export function respuestasDelHilo(buzon: BuzonNodo, testId: string): BuzonNodo {
+export function respuestasDelHilo(buzon: BuzonNodo, testId: string, semilla?: string): BuzonNodo {
   const marca = testId.slice(-6);
   if (!marca) return { respuestas: [], deOtrosHilos: buzon.respuestas.length, motivo: "sin marca de hilo" };
-  const propias = buzon.respuestas.filter((r) => r.asunto.includes(`[${marca}]`));
+  // Además de la marca, se exige que venga DE LA SEMILLA. La marca no es pública pero sí
+  // predecible (son los últimos dígitos del epoch en ms: ~10⁴ combinaciones), así que cualquiera
+  // que le escriba al 25 de nuestro nodo con ese asunto se mostraba en el panel como "la respuesta
+  // de la semilla", con el From que quisiera. El daño es solo de pantalla —la conversación
+  // multivuelta lee el hilo por IMAP del buzón semilla, no de acá— pero es la pantalla donde el
+  // operador verifica que el calentamiento es real, y ahí una mentira vale doble.
+  const deLaSemilla = (r: RespuestaEnNodo): boolean =>
+    !semilla || r.de.toLowerCase().includes(semilla.toLowerCase());
+  const propias = buzon.respuestas.filter((r) => r.asunto.includes(`[${marca}]`) && deLaSemilla(r));
   const otras = buzon.respuestas.length - propias.length;
   return {
     respuestas: propias,
