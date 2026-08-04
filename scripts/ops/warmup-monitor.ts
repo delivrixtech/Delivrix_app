@@ -10,10 +10,13 @@
 //
 // Corre local: costo cero, así que puede mirar siempre.
 
+import { resolve } from "node:path";
 import { Pool } from "pg";
 
 import { OpenClawWorkspace } from "../../apps/gateway-api/src/openclaw-workspace.ts";
 import { MONITOR_FILE, pedirLectura, type HechosWarmup } from "../../apps/gateway-api/src/agents/warmup-monitor.ts";
+import { resumirRechazos } from "../../apps/gateway-api/src/agents/clasificar-rechazo.ts";
+import { planDelDia } from "../../apps/warmup-engine/src/service/plan-diario.ts";
 import { CAP_MEASUREMENT_FILE, type CapFlota } from "../../apps/gateway-api/src/node-daily-cap.ts";
 import { leerSemillas, semillasActivas, semillasMedibles, puntoCiego } from "../../apps/gateway-api/src/warmup-seeds.ts";
 import { MEASUREMENT_FILE, type MedicionFlota } from "../../apps/gateway-api/src/sender-measurement.ts";
@@ -97,7 +100,31 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
           cerca: med.bandejas.filter((b) => (b.cerca ?? []).length > 0).map((b) => b.domain)
         }
       : null,
-    vueltas
+    vueltas,
+    // EL PLAN: la decisión que el motor ya tomó. Sin esto el agente opinaba sobre el volumen sin
+    // saber qué se había decidido, y proponía cosas que el sistema ya estaba haciendo.
+    plan: await planDelDia({
+      pg,
+      capFile: resolve(process.cwd(), "runtime/openclaw-workspace/inventory/sender-cap.json"),
+      poolConfigurado: [],
+      ventanaPlacement: 6
+    })
+      .then((p) =>
+        p.dominios.map((d) => ({
+          dominio: d.dominio,
+          diaN: d.diaN,
+          placementTasa: d.placement.tasa,
+          placementMuestra: d.placement.muestra,
+          cupo: d.decision.cupo,
+          accion: d.decision.accion,
+          motivo: d.decision.motivo,
+          enviadosHoy: d.enviadosHoy
+        }))
+      )
+      .catch(() => undefined),
+    // Rechazos YA clasificados: de quién es cada freno. Pasarle la cadena cruda fue lo que llevó
+    // al agente a decir "los límites diarios de Gmail" sobre nuestro propio cap de Postfix.
+    rechazos: resumirRechazos(vueltas.map((v) => v.error))
   };
 }
 
@@ -110,7 +137,17 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
   }
 
   const hechos = await reunirHechos(workspace, pg);
-  const lectura = await pedirLectura({ hechos, baseUrl, modelo });
+
+  // MEMORIA DEL AGENTE: los reparos que la verificación le encontró la vez pasada entran al
+  // prompt de esta vez. No se puede reentrenar el modelo, pero mostrarle su propio error es la
+  // forma barata y honesta de que no lo repita — y sin esto lo repetiría cada 10 minutos, para
+  // siempre, que es exactamente lo que pasó con "los límites diarios de Gmail".
+  const previa = await workspace
+    .readInventoryJson<{ verificacion?: { reparos?: string[] } }>(MONITOR_FILE)
+    .catch(() => null);
+  const erroresPrevios = previa?.verificacion?.reparos ?? [];
+
+  const lectura = await pedirLectura({ hechos, baseUrl, modelo, erroresPrevios });
 
   // Se guarda SIEMPRE, con lectura o con motivo: el panel tiene que poder decir "el agente no pudo
   // mirar" en vez de mostrar una lectura vieja como si fuera de ahora.
@@ -119,6 +156,8 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
   if (lectura.lectura) {
     console.log(`[${lectura.generadoEn}] ${lectura.modelo} · ${lectura.tokens?.completion ?? 0} tokens\n`);
     console.log(lectura.lectura);
+    const reparos = lectura.verificacion?.reparos ?? [];
+    if (reparos.length > 0) console.log(`\nREPAROS de la verificación: ${reparos.join(" · ")}`);
   } else {
     console.log(`[${lectura.generadoEn}] SIN LECTURA: ${lectura.motivo}`);
   }

@@ -47,6 +47,7 @@ interface LecturaAgente {
   generadoEn: string | null;
   modelo: string | null;
   lectura: string | null;
+  verificacion?: { ahora: string | null; porque: string | null; riesgo: string | null; falta: string | null; reparos: string[] } | null;
   motivo: string | null;
   tokens: { prompt: number; completion: number } | null;
 }
@@ -87,9 +88,92 @@ function hace(iso: string, ahora: number): string {
   return `${Math.floor(s / 86_400)}d`;
 }
 
+/**
+ * Colapsa vueltas consecutivas con el MISMO error, dejando una fila con el contador.
+ *
+ * El feed mostraba seis filas idénticas seguidas con el mismo rechazo palabra por palabra. Seis
+ * copias del mismo hecho no informan seis veces: empujan fuera de la pantalla lo que sí es
+ * distinto, y hacen que el operador deje de leer el feed. La cuenta se conserva (`×6`) porque
+ * "pasó seis veces" sí es información — lo que sobra es repetir el texto.
+ */
+export function agruparRepetidos(vueltas: Vuelta[]): Vuelta[] {
+  const out: Vuelta[] = [];
+  for (const v of vueltas) {
+    const previa = out[out.length - 1];
+    const mismoError = previa && v.error && previa.error && previa.error === v.error && previa.domain !== v.domain;
+    if (mismoError) {
+      // Se acumula sobre la primera, que es la más reciente: el contador queda arriba.
+      previa.repetidos = (previa.repetidos ?? 1) + 1;
+      continue;
+    }
+    out.push({ ...v });
+  }
+  return out;
+}
+
+/**
+ * Parte la lectura del agente en sus cuatro campos para mostrarla como tal.
+ *
+ * Tolera que falten los dos puntos: el modelo escribe "PORQUE el 75%..." tan seguido como
+ * "PORQUE: el 75%...", y no vale perder el campo por puntuación. Si no reconoce el formato,
+ * devuelve el texto entero bajo una etiqueta vacía en vez de esconderlo — una lectura sin formato
+ * sigue siendo la lectura.
+ */
+function campos(texto: string): Array<[string, string]> {
+  const ETIQUETAS = ["AHORA", "PORQUE", "RIESGO", "FALTA"];
+  const out: Array<[string, string]> = [];
+  for (const linea of texto.split("\n")) {
+    // ANCLADO al inicio de línea y sensible a mayúsculas. Sin esto, una lectura en prosa que
+    // contuviera "...porque el receptor no las procesa" se partía por ese "porque" del medio de la
+    // frase y la pantalla mostraba un solo campo con media oración. Una etiqueta es una etiqueta
+    // solo si abre la línea.
+    const m = linea.match(new RegExp(`^\\s*\\*{0,2}(${ETIQUETAS.join("|")})\\*{0,2}\\s*:?\\s+(.+)$`));
+    if (m) out.push([m[1]!.toLowerCase(), m[2]!.trim()]);
+  }
+  // Sin formato reconocible se muestra el texto entero: una lectura sin etiquetas sigue siendo la
+  // lectura, y esconderla sería peor que mostrarla fea.
+  return out.length > 0 ? out : [["", texto]];
+}
+
+/** Fecha y hora exactas, para el `title`. Lo relativo se lee de un vistazo; lo exacto se audita. */
+function fechaExacta(iso: string): string {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? new Date(t).toLocaleString("es-AR", { dateStyle: "medium", timeStyle: "medium" }) : iso;
+}
+
+/**
+ * El buzón del nodo devuelve la fecha en formato de correo (`Mon, 03 Aug 2026 23:03:56 +0000`).
+ * Mostrarla cruda, como estaba, obliga al operador a parsear un header mentalmente.
+ */
+function isoDeFechaCorreo(fecha: string): string {
+  const t = Date.parse(fecha);
+  return Number.isFinite(t) ? new Date(t).toISOString() : fecha;
+}
+
+/**
+ * Cuánto pasó entre dos mensajes del hilo. Es EL dato del calentamiento: lo que distingue una
+ * conversación de una ráfaga automática es que tenga separación humana. Sin esto en pantalla, el
+ * operador no puede verificar de un vistazo que el hilo parezca real.
+ */
+export function separacionEntre(a: string, b: string): string | null {
+  const ini = Date.parse(a);
+  const fin = Date.parse(b);
+  if (!Number.isFinite(ini) || !Number.isFinite(fin)) return null;
+  // FLOOR, no round: redondear hacia arriba convertía 30 segundos en "1 min". Y más de fondo —
+  // esta cifra existe para demostrar que el hilo tiene separación humana, así que nunca puede
+  // exagerarla: sería halagarnos con el dato que estamos tratando de probar.
+  const min = Math.floor((fin - ini) / 60_000);
+  if (min < 1) return null;
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `${h} h ${min % 60 ? `${min % 60} min` : ""}`.trim() : `${Math.floor(h / 24)} d`;
+}
+
 /** Agrupa los eventos crudos en vueltas. La vuelta es la unidad que el operador entiende. */
 export interface Vuelta {
   cycleId: string;
+  /** Cuántas vueltas seguidas compartían este mismo error. `undefined` = una sola. */
+  repetidos?: number;
   testId: string | null;
   domain: string;
   seed: string;
@@ -262,11 +346,11 @@ export default function WarmupLive() {
           {/* ── El ciclo ── */}
           {enCurso ? <Ciclo vuelta={enCurso} ahora={ahora} destacado={nuevos.current.has(enCurso.cycleId)} onVerHilo={abrirHilo} /> : <SinCiclo />}
 
-          {hilo ? <Hilo estado={hilo} onCerrar={() => setHilo(null)} /> : null}
+          {hilo ? <Hilo ahora={ahora} estado={hilo} onCerrar={() => setHilo(null)} /> : null}
 
           {/* ── Flujo ── */}
           <div style={S.flujo}>
-            {vueltas.slice(1, 9).map((v) => (
+            {agruparRepetidos(vueltas.slice(1, 12)).slice(0, 9).map((v) => (
               <Fila key={v.cycleId} vuelta={v} ahora={ahora} nueva={nuevos.current.has(v.cycleId)} onVerHilo={abrirHilo} />
             ))}
           </div>
@@ -350,7 +434,12 @@ function Fila({ vuelta, ahora, nueva, onVerHilo }: { vuelta: Vuelta; ahora: numb
         ))}
       </div>
       {vuelta.placement ? <span style={S.placement(vuelta.placement)}>{vuelta.placement}</span> : null}
-      {vuelta.error ? <span style={S.filaErr}>{vuelta.error}</span> : null}
+      {vuelta.error ? (
+        <span style={S.filaErr}>
+          {vuelta.repetidos && vuelta.repetidos > 1 ? <b style={S.repetidos}>×{vuelta.repetidos}</b> : null}
+          {vuelta.error}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -374,7 +463,22 @@ function Agente({ lectura, ahora }: { lectura: LecturaAgente | null; ahora: numb
       <div style={S.railBody}>
         {lectura?.lectura ? (
           <>
-            <p style={S.agenteTxt}>{lectura.lectura}</p>
+            {/* Las cuatro líneas se muestran como CAMPOS, no como un párrafo. El párrafo era parte
+                del problema: leído como bloque, todo pesa igual y no se distingue el hecho de la
+                consecuencia. Con etiquetas, el operador salta directo a RIESGO o a FALTA. */}
+            {campos(lectura.lectura).map(([etiqueta, texto]) => (
+              <div key={etiqueta} style={S.campo}>
+                <span style={S.campoEt(etiqueta)}>{etiqueta}</span>
+                <p style={S.campoTxt}>{texto}</p>
+              </div>
+            ))}
+            {/* Los reparos de la verificación se MUESTRAN. Si la lectura no se sostiene contra los
+                datos, el operador tiene que verlo junto a la lectura, no en un log. */}
+            {(lectura.verificacion?.reparos ?? []).length > 0 ? (
+              <div style={S.reparos}>
+                ⚠ sin respaldo en los datos: {(lectura.verificacion?.reparos ?? []).join(" · ")}
+              </div>
+            ) : null}
             <div style={S.agentePie}>
               {lectura.modelo}
               {lectura.tokens ? ` · ${lectura.tokens.completion} tokens · costo 0` : ""}
@@ -389,44 +493,95 @@ function Agente({ lectura, ahora }: { lectura: LecturaAgente | null; ahora: numb
   );
 }
 
-/** El correo REAL, leído del buzón semilla. La evidencia de que el calentamiento existe. */
-function Hilo({ estado, onCerrar }: { estado: { testId: string; cargando: boolean; data: HiloResp | null }; onCerrar: () => void }) {
+/**
+ * El correo REAL, leído del buzón semilla. La evidencia de que el calentamiento existe.
+ *
+ * Dos cosas que estaban mal y hacían que la pantalla no se pudiera leer como una conversación:
+ *
+ *  1. NO SE VEÍA LA HORA de cada mensaje. Un hilo de calentamiento sin tiempos no demuestra nada:
+ *     lo que importa es justamente que hubo ida y vuelta con separación humana. Ahora cada mensaje
+ *     lleva su hora relativa, y la exacta en el title.
+ *  2. EL ÚLTIMO MENSAJE SE REPETÍA. Lo que la semilla responde se ve dos veces: en sus Enviados
+ *     (por IMAP) y en el buzón de nuestro nodo (por SSH), porque son los dos extremos del MISMO
+ *     correo. Mostrarlos como dos mensajes distintos sugiere una conversación más larga de la que
+ *     hubo. Ahora se funden: el mensaje se muestra una vez, con una marca de que además llegó al
+ *     nodo — que es información valiosa (prueba la entrega de vuelta) pero no un turno más.
+ */
+function Hilo({
+  estado,
+  onCerrar,
+  ahora
+}: {
+  estado: { testId: string; cargando: boolean; data: HiloResp | null };
+  onCerrar: () => void;
+  ahora: number;
+}) {
+  const mensajes = estado.data?.mensajes ?? [];
+  const enNodo = estado.data?.enElNodo?.respuestas ?? [];
+
+  /** Normaliza un cuerpo para comparar: los dos extremos difieren en espacios y cortes de línea. */
+  const clave = (t: string | null | undefined): string => (t ?? "").replace(/\s+/g, " ").trim().slice(0, 120);
+  const cuerposDelHilo = new Set(mensajes.map((m) => clave(m.texto)).filter(Boolean));
+
+  // Solo las copias del nodo que NO son un mensaje ya mostrado. Las que sí, se marcan sobre el
+  // mensaje original en vez de repetirse.
+  const soloEnNodo = enNodo.filter((r) => !cuerposDelHilo.has(clave(r.texto)));
+  const confirmadasEnNodo = new Set(
+    enNodo.map((r) => clave(r.texto)).filter((k) => k && cuerposDelHilo.has(k))
+  );
+
   return (
     <div style={S.hilo}>
       <div style={S.hiloTop}>
         <span style={S.hiloTit}>el correo</span>
         {estado.data?.semilla ? <span style={S.seed}>{estado.data.semilla}</span> : null}
         <span style={{ flex: 1 }} />
+        {mensajes.length > 0 ? <span style={S.dim}>{mensajes.length} mensajes</span> : null}
         <button type="button" style={S.cerrar} onClick={onCerrar} aria-label="cerrar">×</button>
       </div>
 
       {estado.cargando ? <div style={S.dim}>abriendo el buzón…</div> : null}
 
-      {estado.data?.mensajes.map((m, i) => (
-        <div key={i} style={S.msg}>
-          <div style={S.msgTop}>
-            <span style={S.msgPapel(m.papel)}>{m.papel === "recibido" ? "llegó" : "respondió"}</span>
-            <span style={S.msgDe}>{m.de}</span>
-            <span style={S.flecha}>→</span>
-            <span style={S.msgDe}>{m.para}</span>
-            <span style={{ flex: 1 }} />
-            <span style={S.carpeta(m.carpeta)}>{m.carpeta}</span>
+      {mensajes.map((m, i) => {
+        // La separación con el mensaje anterior es EL dato del calentamiento: un ida y vuelta
+        // instantáneo no parece humano, y es lo primero que hay que poder verificar de un vistazo.
+        const previo = i > 0 ? mensajes[i - 1] : null;
+        const separacion = previo ? separacionEntre(previo.fecha, m.fecha) : null;
+        return (
+          <div key={i} style={S.msg}>
+            {separacion ? <div style={S.separacion}>{separacion} después</div> : null}
+            <div style={S.msgTop}>
+              <span style={S.msgPapel(m.papel)}>{m.papel === "recibido" ? "llegó" : "respondió"}</span>
+              <span style={S.msgDe}>{m.de}</span>
+              <span style={S.flecha}>→</span>
+              <span style={S.msgDe}>{m.para}</span>
+              <span style={{ flex: 1 }} />
+              <span style={S.msgHora} title={fechaExacta(m.fecha)}>
+                {m.fecha ? hace(m.fecha, ahora) : "sin fecha"}
+              </span>
+              <span style={S.carpeta(m.carpeta)}>{m.carpeta}</span>
+            </div>
+            <div style={S.asunto}>{m.asunto}</div>
+            {m.texto ? <pre style={S.cuerpoMsg}>{m.texto}</pre> : <span style={S.dim}>sin cuerpo legible</span>}
+            {confirmadasEnNodo.has(clave(m.texto)) ? (
+              <div style={S.confirmado}>✓ también llegó al buzón de nuestro nodo</div>
+            ) : null}
           </div>
-          <div style={S.asunto}>{m.asunto}</div>
-          {m.texto ? <pre style={S.cuerpoMsg}>{m.texto}</pre> : <span style={S.dim}>sin cuerpo legible</span>}
-        </div>
-      ))}
+        );
+      })}
 
       {estado.data?.motivo ? <div style={S.motivo}>{estado.data.motivo}</div> : null}
 
-      {/* El otro extremo: lo que la semilla contestó y volvió a nuestro nodo. */}
-      {estado.data?.enElNodo?.respuestas.map((r, i) => (
+      {/* Solo lo que está en el nodo y NO en el hilo: una respuesta que la semilla mandó y que
+          todavía no aparece del otro lado. Si se repitiera lo ya mostrado, la conversación se
+          vería más larga de lo que es. */}
+      {soloEnNodo.map((r, i) => (
         <div key={`n${i}`} style={S.msg}>
           <div style={S.msgTop}>
             <span style={S.msgPapel("respuesta")}>volvió al nodo</span>
             <span style={S.msgDe}>{r.de}</span>
             <span style={{ flex: 1 }} />
-            <span style={S.dim}>{r.fecha}</span>
+            <span style={S.msgHora} title={r.fecha}>{r.fecha ? hace(isoDeFechaCorreo(r.fecha), ahora) : "sin fecha"}</span>
           </div>
           <div style={S.asunto}>{r.asunto}</div>
           {r.texto ? <pre style={S.cuerpoMsg}>{r.texto}</pre> : <span style={S.dim}>sin cuerpo legible</span>}
@@ -566,6 +721,26 @@ const S = {
     background: "var(--color-surface-sunken, transparent)", border: "1px solid var(--color-border)"
   } as const,
   msgTop: { display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, flexWrap: "wrap" as const } as const,
+  campo: { display: "grid", gap: 3, marginBottom: 12 } as const,
+  campoEt: (et: string) => ({
+    fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase" as const, fontWeight: 600,
+    color:
+      et === "riesgo" ? "var(--color-warning)" : et === "falta" ? "var(--color-info, #0c7cb5)" : "var(--color-text-tertiary)"
+  }),
+  campoTxt: { margin: 0, fontSize: 12.5, lineHeight: 1.5, color: "var(--color-text-secondary)" } as const,
+  reparos: {
+    marginBottom: 12, padding: "8px 10px", borderRadius: 8, fontSize: 11, lineHeight: 1.45,
+    color: "var(--color-warning)",
+    background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-warning) 26%, transparent)"
+  } as const,
+  repetidos: { marginRight: 6, color: "var(--color-text-secondary)", fontVariantNumeric: "tabular-nums" as const } as const,
+  msgHora: { color: "var(--color-text-tertiary)", fontVariantNumeric: "tabular-nums" as const, cursor: "default" } as const,
+  separacion: {
+    fontSize: 10.5, color: "var(--color-text-tertiary)", letterSpacing: ".04em",
+    padding: "0 0 6px 0", display: "flex", alignItems: "center", gap: 8
+  } as const,
+  confirmado: { marginTop: 8, fontSize: 11, color: "var(--color-success)" } as const,
   msgPapel: (p: string) => ({
     fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "2px 7px",
     color: p === "recibido" ? "var(--color-success)" : "var(--color-warming)",

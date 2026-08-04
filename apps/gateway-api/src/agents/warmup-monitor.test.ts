@@ -1,0 +1,74 @@
+// Tests del agente monitor. El foco no es "¿el modelo dice cosas lindas?" sino "¿lo que dice se
+// sostiene contra los hechos?". Nacieron de una lectura real que atribuyó a Gmail un freno nuestro.
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import type { HechosWarmup } from "./warmup-monitor.ts";
+
+
+// ── Verificación de la lectura ───────────────────────────────────────────────────────────────────
+// Le pedimos en el prompt que use solo los datos dados, y aun así afirmó que el freno era de Gmail.
+// Una regla en el prompt es una intención; esto es una verificación.
+
+import { verificarLectura } from "./warmup-monitor.ts";
+
+const HECHOS_BASE: HechosWarmup = {
+  generadoEn: "2026-08-04T15:00:00.000Z",
+  semillas: { destinos: 5, midiendo: 1, puntoCiego: ["outlook"] },
+  vueltas: [{ dominio: "corpfiling-infra.com", semilla: "s@gmail.com", cuando: "2026-08-04T10:00:00Z", placement: "INBOX", completa: true, error: null }],
+  cap: { consumidoHoy: 2, tope: 20, enElTope: [], sinLimite: 0 },
+  flota: { sanas: 13, bloqueadas: 22, atascadas: 22, cruzados: [], cerca: [] },
+  plan: [{ dominio: "corpfiling-infra.com", diaN: 1, placementTasa: 0.75, placementMuestra: 4, cupo: 2, accion: "subir", motivo: "test", enviadosHoy: 2 }],
+  rechazos: [{ origen: "freno_propio", cuantos: 6, explicacion: "es NUESTRO límite de Postfix", ejemplo: "450 ..." }]
+};
+
+test("parte la lectura en sus cuatro campos", () => {
+  const v = verificarLectura(
+    "AHORA: el warmup cumplió su cupo.\nPORQUE: 2 de 2 enviados hoy.\nRIESGO: ninguno\nFALTA: nada",
+    HECHOS_BASE
+  );
+  assert.equal(v.ahora, "el warmup cumplió su cupo.");
+  assert.equal(v.riesgo, "ninguno");
+  assert.deepEqual(v.reparos, []);
+});
+
+test("CAZA el error real: atribuirle a Gmail un freno que es nuestro", () => {
+  // Textualmente lo que escribió el agente el 2026-08-04.
+  const v = verificarLectura(
+    "AHORA: está bloqueado por los límites diarios de Gmail en el nodo.\nPORQUE: 6 rechazos.\nRIESGO: ninguno\nFALTA: nada",
+    HECHOS_BASE
+  );
+  assert.ok(v.reparos.some((r) => /freno que según los datos es nuestro/.test(r)));
+});
+
+test("CAZA un dominio inventado", () => {
+  const v = verificarLectura(
+    "AHORA: falla en ejemplo-inventado.com.\nPORQUE: nada.\nRIESGO: ninguno\nFALTA: nada",
+    HECHOS_BASE
+  );
+  assert.ok(v.reparos.some((r) => r.includes("ejemplo-inventado.com")));
+});
+
+test("nombrar al proveedor como concepto NO es un reparo", () => {
+  // "el placement en Gmail" es legítimo; lo que no se puede es inventar un dominio NUESTRO.
+  const v = verificarLectura(
+    "AHORA: el placement en Gmail viene bien.\nPORQUE: 75% sobre 4.\nRIESGO: ninguno\nFALTA: nada",
+    HECHOS_BASE
+  );
+  assert.deepEqual(v.reparos, []);
+});
+
+test("CAZA un placement citado cuando no hay ninguna medición", () => {
+  const sinMuestra: HechosWarmup = { ...HECHOS_BASE, plan: [{ ...HECHOS_BASE.plan![0]!, placementTasa: null, placementMuestra: 0 }] };
+  const v = verificarLectura(
+    "AHORA: vamos con 80% de inbox.\nPORQUE: mediciones.\nRIESGO: ninguno\nFALTA: nada",
+    sinMuestra
+  );
+  assert.ok(v.reparos.some((r) => /sin.*medición|no hay ninguna medición/i.test(r)));
+});
+
+test("una respuesta en prosa suelta se marca como fuera de formato", () => {
+  const v = verificarLectura("Bueno, mirando los datos me parece que todo viene bien.", HECHOS_BASE);
+  assert.ok(v.reparos.some((r) => /formato/.test(r)));
+});
