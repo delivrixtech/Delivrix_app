@@ -8,6 +8,8 @@
 // Se lee del buzón, NO de nuestra base: si lo guardáramos al enviar estaríamos mostrando lo que
 // creemos que mandamos. Lo que importa es lo que el proveedor efectivamente entregó.
 
+import { resolverCarpetas, type ImapConLista } from "./imap-carpetas.ts";
+
 export interface MensajeDelHilo {
   /** "recibido" = lo que mandó nuestro nodo · "respuesta" = lo que contestó la semilla. */
   papel: "recibido" | "respuesta";
@@ -28,7 +30,7 @@ export interface HiloWarmup {
 }
 
 /** Lo mínimo del cliente IMAP. Inyectable ⇒ se testea sin red. */
-export interface ImapLector {
+export interface ImapLector extends ImapConLista {
   mailboxOpen(nombre: string): Promise<{ exists: number }>;
   search(criterio: Record<string, unknown>, opciones?: { uid?: boolean }): Promise<number[] | false>;
   fetchOne(
@@ -95,21 +97,30 @@ function direccion(lista?: Array<{ address?: string; name?: string }>): string {
   return primera.address ?? primera.name ?? "";
 }
 
+/**
+ * Todos los mensajes que matchean, en todas las carpetas dadas.
+ *
+ * Antes devolvía UNO solo (el último). Servía cuando un hilo eran dos mensajes; ahora que la
+ * conversación puede tener varios turnos, quedarse con el último hacía ver una charla de seis
+ * mensajes como si fuera de dos.
+ */
 async function buscarEn(
   cliente: ImapLector,
-  carpetas: string[],
+  carpetas: Array<string | null>,
   criterio: Record<string, unknown>
-): Promise<{ carpeta: string; uid: number } | null> {
+): Promise<Array<{ carpeta: string; uid: number }>> {
+  const encontrados: Array<{ carpeta: string; uid: number }> = [];
   for (const carpeta of carpetas) {
+    if (!carpeta) continue;
     try {
       await cliente.mailboxOpen(carpeta);
       const uids = await cliente.search(criterio, { uid: true });
-      if (uids && uids.length > 0) return { carpeta, uid: uids[uids.length - 1]! };
+      if (uids) for (const uid of uids) encontrados.push({ carpeta, uid });
     } catch {
       // Carpeta inexistente en este proveedor: se salta. No es un error.
     }
   }
-  return null;
+  return encontrados;
 }
 
 async function leerMensaje(
@@ -142,35 +153,44 @@ async function leerMensaje(
  */
 export async function leerHiloWarmup(cliente: ImapLector, testId: string): Promise<HiloWarmup> {
   const mensajes: MensajeDelHilo[] = [];
-  const criterio = { header: { "x-delivrix-test-id": testId } };
 
-  const entrada = await buscarEn(cliente, CARPETAS_ENTRADA, criterio);
-  if (entrada) {
-    const m = await leerMensaje(cliente, entrada.carpeta, entrada.uid, "recibido");
+  // Las carpetas se resuelven por su FLAG, no por nombre: una cuenta en español tiene
+  // `[Gmail]/Enviados` y la lista de nombres fijos no la encontraba nunca. Ver imap-carpetas.ts.
+  const carpetas = await resolverCarpetas(cliente);
+
+  // TODOS los turnos nuestros: la continuación reusa el mismo testId, así que el header los junta.
+  const nuestros = await buscarEn(cliente, [carpetas.entrada, carpetas.spam], {
+    header: { "x-delivrix-test-id": testId }
+  });
+  for (const { carpeta, uid } of nuestros) {
+    const m = await leerMensaje(cliente, carpeta, uid, "recibido");
     if (m) mensajes.push(m);
   }
 
-  // La respuesta la mandó la semilla, así que vive en sus enviados. Se busca por asunto "Re: …"
-  // del mensaje recibido, porque la respuesta NO lleva nuestro header.
-  const asuntoOriginal = mensajes[0]?.asunto;
-  if (asuntoOriginal) {
-    // Se busca por SUBJECT (subcadena, que es como funciona el SEARCH de IMAP), no por header
-    // exacto: la respuesta lleva "Re: " adelante y un match exacto nunca la encontraría.
-    const respuesta = await buscarEn(cliente, CARPETAS_ENVIADOS, { subject: asuntoOriginal });
-    if (respuesta) {
-      const m = await leerMensaje(cliente, respuesta.carpeta, respuesta.uid, "respuesta");
+  // Lo que la semilla respondió vive en SUS enviados, y no lleva nuestro header: se busca por el
+  // asunto original (SEARCH de IMAP es por subcadena, así que el "Re: " adelante no molesta).
+  const asuntoOriginal = mensajes[0]?.asunto?.replace(/^(re|rv|fwd):\s*/i, "");
+  if (asuntoOriginal && carpetas.enviados) {
+    for (const { carpeta, uid } of await buscarEn(cliente, [carpetas.enviados], { subject: asuntoOriginal })) {
+      const m = await leerMensaje(cliente, carpeta, uid, "respuesta");
       if (m) mensajes.push(m);
     }
   }
+
+  // Orden cronológico: los turnos vienen de dos carpetas distintas y se intercalan en el tiempo.
+  // Sin esto, "quién habló último" —que es lo que decide si toca responder— sale mal.
+  mensajes.sort((a, b) => (Date.parse(a.fecha) || 0) - (Date.parse(b.fecha) || 0));
 
   // Null con motivo, nunca una lista vacía muda: quien mire tiene que saber si no hay hilo porque
   // el correo no llegó, o porque todavía no lo indexaron.
   const motivo =
     mensajes.length === 0
       ? "no se encontró el mensaje en el buzón semilla (puede no haber llegado, o no estar indexado todavía)"
-      : mensajes.length === 1
-        ? "sin respuesta de la semilla todavía"
-        : null;
+      : carpetas.faltantes.includes("enviados")
+        ? "no se pudo abrir la carpeta de enviados de la semilla: puede haber respuestas que no vemos"
+        : mensajes.every((m) => m.papel === "recibido")
+          ? "sin respuesta de la semilla todavía"
+          : null;
 
   return { testId, mensajes, motivo };
 }

@@ -17,6 +17,8 @@
 import type { FoundMessage, Placement } from "./warmup-live-cycle.ts";
 
 /** Lo mínimo de un cliente IMAP que estas operaciones necesitan. Inyectable ⇒ testeable sin red. */
+import { resolverCarpetas, type ImapConLista } from "./imap-carpetas.ts";
+
 export interface ImapClienteMinimo {
   connect(): Promise<void>;
   logout(): Promise<void>;
@@ -38,6 +40,10 @@ export interface ImapClienteMinimo {
  * Los nombres de carpeta varían por proveedor: Gmail usa `[Gmail]/Spam`, Outlook y Yahoo usan
  * `Junk`. Se intentan todos y se ignoran los que no existan — un proveedor no tiene por qué tener
  * las carpetas del otro.
+ */
+/**
+ * @deprecated Se resuelve por flag SPECIAL-USE (ver imap-carpetas.ts). Queda solo como respaldo
+ * documental: una cuenta en español tiene `[Gmail]/Enviados` y ninguna lista de nombres alcanza.
  */
 export const CARPETAS_SPAM = ["[Gmail]/Spam", "Junk", "Junk Email", "Spam", "Bulk Mail"];
 
@@ -70,7 +76,16 @@ export async function ubicarMensaje(
     // Si ni INBOX abre, el problema es de conexión y lo reporta quien llama.
   }
 
-  for (const carpeta of CARPETAS_SPAM) {
+  // La carpeta de spam se resuelve por su FLAG `\\Junk`, no por nombre: en una cuenta en otro
+  // idioma el nombre cambia, `mailboxOpen` falla, y "no está en spam" se vuelve indistinguible de
+  // "no pude mirar en spam". Eso sería fail-open sobre el dato que gatea toda la rampa.
+  let spam: string | null = null;
+  try {
+    spam = (await resolverCarpetas(cliente as unknown as ImapConLista)).spam;
+  } catch {
+    // Sin LIST se cae a los nombres históricos: peor, pero mejor que no mirar.
+  }
+  for (const carpeta of spam ? [spam] : CARPETAS_SPAM) {
     try {
       await cliente.mailboxOpen(carpeta);
       const uids = await cliente.search(criterio, { uid: true });

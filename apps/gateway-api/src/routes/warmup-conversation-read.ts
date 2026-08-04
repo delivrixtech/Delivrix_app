@@ -11,7 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { leerHiloWarmup, type HiloWarmup, type ImapLector } from "../../../warmup-engine/src/live/imap-thread-reader.ts";
 import { descifrarSemilla, leerSemillas, semillasMedibles } from "../warmup-seeds.ts";
-import { buildLeerBuzonCommand, parsearBuzon } from "../warmup-node-mailbox.ts";
+import { buildLeerBuzonCommand, parsearBuzon, respuestasDelHilo } from "../warmup-node-mailbox.ts";
 import { leerInventarioFabrica } from "../sender-inventory.ts";
 import type { SmtpSshRunner } from "./smtp-provisioning.ts";
 import type { OpenClawWorkspace } from "../openclaw-workspace.ts";
@@ -72,7 +72,7 @@ export async function handleWarmupConversationHttp(deps: {
       testId,
       semilla: null,
       mensajes: [],
-      enElNodo: await leerBuzonDelNodo(deps, dominio),
+      enElNodo: await leerBuzonDelNodo(deps, dominio, testId),
       motivo: "no hay ninguna semilla con app password: sin acceso al buzón no se puede leer el hilo"
     } satisfies ConversacionResponse);
     return;
@@ -91,7 +91,7 @@ export async function handleWarmupConversationHttp(deps: {
 
     await conTimeout(cliente.connect(), 20_000, "conectar al buzón");
     const hilo = await conTimeout(leerHiloWarmup(cliente, testId), 25_000, "leer el hilo");
-    const enElNodo = await leerBuzonDelNodo(deps, dominio);
+    const enElNodo = await leerBuzonDelNodo(deps, dominio, testId);
     json(deps.response, 200, { ...hilo, semilla: semilla.address, enElNodo } satisfies ConversacionResponse);
   } catch (error) {
     // Se declara el fallo con su motivo. Un hilo vacío mudo se leería como "no hubo conversación".
@@ -99,7 +99,7 @@ export async function handleWarmupConversationHttp(deps: {
       testId,
       semilla: semilla.address,
       mensajes: [],
-      enElNodo: await leerBuzonDelNodo(deps, dominio),
+      enElNodo: await leerBuzonDelNodo(deps, dominio, testId),
       motivo: `no se pudo leer el buzón semilla: ${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`
     } satisfies ConversacionResponse);
   } finally {
@@ -117,7 +117,8 @@ export async function handleWarmupConversationHttp(deps: {
  */
 async function leerBuzonDelNodo(
   deps: { workspace: OpenClawWorkspace; sshRunner?: SmtpSshRunner },
-  dominio: string
+  dominio: string,
+  testId: string
 ): Promise<ConversacionResponse["enElNodo"]> {
   if (!dominio) return { respuestas: [], motivo: "sin dominio en la consulta: no sé qué nodo mirar" };
   if (!deps.sshRunner?.isConfigured()) {
@@ -139,7 +140,8 @@ async function leerBuzonDelNodo(
       30_000,
       "leer el buzón del nodo"
     );
-    return parsearBuzon(r.stdout);
+    // Solo las respuestas DE ESTE hilo: mezclar hilos sugiere una conversación que no ocurrió.
+    return respuestasDelHilo(parsearBuzon(r.stdout), testId);
   } catch (error) {
     return {
       respuestas: [],

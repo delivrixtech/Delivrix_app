@@ -100,6 +100,8 @@ function decodificarCuerpo(lineas: string[], encoding: string): string | null {
 
 export interface BuzonNodo {
   respuestas: RespuestaEnNodo[];
+  /** Cuántas respuestas hay en el buzón que NO son de este hilo. Se declara, no se esconde. */
+  deOtrosHilos?: number;
   /** Por qué no hay nada, o qué faltó. `null` cuando salió todo bien. */
   motivo: string | null;
 }
@@ -109,6 +111,31 @@ export interface BuzonNodo {
  * de línea. Se corta ahí, se separan headers de cuerpo por la primera línea vacía, y se toma solo
  * la primera parte del cuerpo (los correos de warmup son texto plano).
  */
+/**
+ * Filtra las respuestas de UN hilo.
+ *
+ * Cada envío lleva en el asunto un marcador `[xxxxxx]` (los últimos 6 del testId), y la respuesta
+ * arrastra ese asunto con "Re:" adelante. Sin este filtro, la pantalla mostraba la última respuesta
+ * del buzón junto a CUALQUIER ciclo — se veía el correo de un hilo con la respuesta de otro, que es
+ * peor que no mostrar nada: sugiere una conversación que no ocurrió.
+ */
+export function respuestasDelHilo(buzon: BuzonNodo, testId: string): BuzonNodo {
+  const marca = testId.slice(-6);
+  if (!marca) return { respuestas: [], deOtrosHilos: buzon.respuestas.length, motivo: "sin marca de hilo" };
+  const propias = buzon.respuestas.filter((r) => r.asunto.includes(`[${marca}]`));
+  const otras = buzon.respuestas.length - propias.length;
+  return {
+    respuestas: propias,
+    deOtrosHilos: otras,
+    motivo:
+      propias.length > 0
+        ? null
+        : otras > 0
+          ? `todavía no volvió la respuesta de este hilo (hay ${otras} de otras vueltas en el buzón)`
+          : (buzon.motivo ?? "el buzón del nodo está vacío: todavía no volvió ninguna respuesta")
+  };
+}
+
 export function parsearBuzon(stdout: string): BuzonNodo {
   const lineas = stdout.split("\n");
   if (!lineas.some((l) => l.trim() === "## END")) {

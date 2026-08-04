@@ -213,7 +213,11 @@ async function mostrarStatus(
       });
       const s = parseDailyCapStatus(r.stdout);
       leidos.push({ ...s, domain: nodo.domain, serverSlug: nodo.serverSlug });
-      const uso = s.consumidoHoy === null ? "sin contador" : `${s.consumidoHoy}/${s.cap ?? "?"}`;
+      // El CUPO se muestra siempre. Antes, sin contador del día se imprimía solo "sin contador" y
+      // el cupo instalado quedaba invisible — justo el caso en que más falta hace: un nodo con
+      // cap 0 rechaza todo con `450 daily send cap reached` y el status no daba ninguna pista.
+      const cupo = s.cap === null ? "cupo ?" : s.cap === 0 ? "FRENADO (cap 0)" : `cap ${s.cap}/día`;
+      const uso = s.consumidoHoy === null ? `${cupo}, sin contador hoy` : `${s.consumidoHoy}/${s.cap ?? "?"}`;
       console.log(`  ${s.cableado ? "CAP " : "ABIERTO"} ${nodo.domain.padEnd(32)} ${uso}${s.motivo ? ` — ${s.motivo}` : ""}`);
     } catch (error) {
       ilegibles += 1;

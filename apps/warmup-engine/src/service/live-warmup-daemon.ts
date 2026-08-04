@@ -18,6 +18,8 @@ import { Pool } from "pg";
 import { elegirSemilla, semillasMedibles, type SeedBase } from "../domain/seeds.ts";
 import { elegirSemillaRotada, type UsoPrevio } from "../domain/rotacion.ts";
 import { opsDesdeImap, type ImapClienteMinimo } from "../live/imap-placement-ops.ts";
+import { leerHiloWarmup, type ImapLector } from "../live/imap-thread-reader.ts";
+import { pedirSiguienteTurno, tocaResponder, type TurnoHilo } from "../live/continuar-conversacion.ts";
 import { SMTP_POR_PROVEEDOR } from "../domain/seeds.ts";
 import { createPgWarmupStores, type PgClient } from "../store/pg-stores.ts";
 import { runWarmupMigrations } from "../store/warmup-migrate.ts";
@@ -114,7 +116,7 @@ export type SeedDelDaemon = SeedBase & {
 };
 
 /** Abre el cliente IMAP de una semilla con app password. Devuelve null si le falta algo. */
-async function opsImapDeSemilla(seed: SeedDelDaemon, key: Buffer): Promise<{ ops: ReturnType<typeof opsDesdeImap>; cerrar: () => Promise<void> } | null> {
+async function opsImapDeSemilla(seed: SeedDelDaemon, key: Buffer): Promise<{ cliente: ImapClienteMinimo; ops: ReturnType<typeof opsDesdeImap>; cerrar: () => Promise<void> } | null> {
   if (seed.auth !== "imap_password" || !seed.secretEncrypted || !seed.imap) return null;
   const pass = decryptWithAad(seed.secretEncrypted, key, {
     address: seed.address,
@@ -154,6 +156,7 @@ async function opsImapDeSemilla(seed: SeedDelDaemon, key: Buffer): Promise<{ ops
     : undefined;
 
   return {
+    cliente,
     ops: opsDesdeImap(cliente, enviador),
     cerrar: async () => {
       try { await cliente.logout(); } catch { /* ya cerrado */ }
@@ -221,10 +224,80 @@ export function pickBox(boxes: readonly string[], cycleIndex: number): string {
 
 // ── Lecturas del estado (Postgres) ──────────────────────────────────────────────────────────────────
 
-/** Cuántas vueltas (cycle_id distintos) hubo hoy (UTC). */
+/**
+ * Los boxes que HOY no pueden mandar, según lo que el propio nodo respondió.
+ *
+ * Por qué existe: el pool tiene 6 dominios pero el freno físico (cap 0 en Postfix) deja a casi
+ * todos sin poder enviar. El daemon los seguía eligiendo por turno y quemaba 5 de cada 6 vueltas
+ * contra nodos que responden `450 4.7.1 daily send cap reached`. Eso no es solo desperdicio: cada
+ * intento fallido queda como error en el feed y ensucia la lectura del operador.
+ *
+ * La señal sale de la RESPUESTA REAL del nodo, no de un archivo de configuración aparte: si
+ * mañana el cupo cambia, el daemon se entera solo, sin que nadie sincronice nada.
+ */
+async function boxesSinCupoHoy(pg: PgClient): Promise<Set<string>> {
+  const { rows } = await pg.query<{ node_domain: string }>(
+    `SELECT DISTINCT node_domain FROM warmup_activity
+      WHERE kind = 'error'
+        AND occurred_at >= date_trunc('day', now() at time zone 'utc')
+        AND detail->>'note' ILIKE '%daily send cap reached%'`
+  );
+  return new Set(rows.map((r) => r.node_domain));
+}
+
+/** Un hilo de una vuelta anterior, candidato a que le sigamos la conversación. */
+interface HiloPrevio {
+  cycleId: string;
+  testId: string;
+  nodeDomain: string;
+  subject: string;
+}
+
+/**
+ * Los hilos recientes de ESTA semilla, del más nuevo al más viejo, sin el de la vuelta actual.
+ *
+ * Se limita a 7 días: un hilo más viejo que eso ya no es una conversación, es un desentierro — y
+ * un "Re:" sobre algo de hace dos semanas se lee raro, que es lo contrario de lo que buscamos.
+ */
+async function hilosParaContinuar(pg: PgClient, seed: string, cycleActual: string): Promise<HiloPrevio[]> {
+  // El SELECT interno se queda con el PRIMER 'sent' de cada ciclo: ahí está el asunto original,
+  // sin los "Re:" que fueron acumulando los turnos siguientes.
+  // El ORDER BY externo es por FECHA. Ordenar por cycle_id sería alfabético — parece cronológico
+  // porque el id lleva timestamp, pero deja de serlo en cuanto cambie el formato del id.
+  const { rows } = await pg.query<{ cycle_id: string; test_id: string; node_domain: string; subject: string | null; primero: Date }>(
+    `SELECT * FROM (
+       SELECT DISTINCT ON (cycle_id) cycle_id, test_id, node_domain, subject, occurred_at AS primero
+         FROM warmup_activity
+        WHERE kind = 'sent'
+          AND seed_inbox = $1
+          AND cycle_id <> $2
+          AND test_id IS NOT NULL
+          AND occurred_at > now() - interval '7 days'
+        ORDER BY cycle_id, occurred_at ASC
+     ) h ORDER BY h.primero DESC`,
+    [seed, cycleActual]
+  );
+  return rows
+    .filter((x) => x.test_id && x.subject)
+    .map((x) => ({ cycleId: x.cycle_id, testId: x.test_id, nodeDomain: x.node_domain, subject: x.subject! }));
+}
+
+/**
+ * Cuántas vueltas ENVIARON hoy (UTC).
+ *
+ * Cuenta solo los ciclos con un evento `sent`, no todos los ciclos. El tope diario existe para
+ * limitar el correo REAL que sale — un intento que el nodo rechazó no gastó reputación ni llegó a
+ * nadie, y contarlo mata el día por nada.
+ *
+ * El caso concreto que lo rompía: con 5 de 6 boxes frenados en cap 0, las 3 vueltas permitidas se
+ * consumían en rechazos y el daemon nunca llegaba al box que sí podía enviar. El calentamiento se
+ * detenía solo, en silencio, y desde afuera parecía que el tope funcionaba bien.
+ */
 async function countCyclesToday(pg: PgClient): Promise<number> {
   const { rows } = await pg.query<{ n: string | number }>(
-    "SELECT COUNT(DISTINCT cycle_id)::int AS n FROM warmup_activity WHERE occurred_at >= date_trunc('day', now())"
+    `SELECT COUNT(DISTINCT cycle_id)::int AS n FROM warmup_activity
+      WHERE occurred_at >= date_trunc('day', now())
+        AND kind = 'sent'`
   );
   return Number(rows[0]?.n ?? 0);
 }
@@ -415,7 +488,19 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
       });
 
       if (action === "send") {
-        const box = pickBox(cfg.boxes, seq);
+        // Se saltean los boxes que hoy ya rebotaron por cupo: reintentarlos es garantía de error.
+        const frenados = await boxesSinCupoHoy(pg).catch(() => new Set<string>());
+        const disponibles = cfg.boxes.filter((b) => !frenados.has(b));
+        if (disponibles.length === 0) {
+          log(`PAUSA — los ${cfg.boxes.length} boxes del pool ya agotaron su cupo diario. Nada que enviar hoy.`);
+          if (once) break;
+          await sleep(cfg.intervalMs);
+          continue;
+        }
+        if (frenados.size > 0) {
+          log(`${frenados.size} box(es) sin cupo hoy, salteados: ${[...frenados].join(", ")}`);
+        }
+        const box = pickBox(disponibles, seq);
         const conversation = pickConversation(seq);
         const stamp = `${Date.now()}-${seq}`;
         const testId = makeTestId(stamp);
@@ -455,12 +540,14 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // placement. Mejor enviado-sin-medir que medido-mal.
         let opsMedicion: typeof gmail | null = medible ? gmail : null;
         let cerrarImap: (() => Promise<void>) | null = null;
+        let clienteImap: ImapClienteMinimo | null = null;
         if (medible && semilla.auth === "imap_password") {
           try {
             const imap = await opsImapDeSemilla(semilla, key);
             if (imap) {
               opsMedicion = imap.ops as unknown as typeof gmail;
               cerrarImap = imap.cerrar;
+              clienteImap = imap.cliente;
             }
           } catch (err) {
             log(`WARN no pude abrir IMAP de ${semilla.address} (${err instanceof Error ? err.message : String(err)}) — la vuelta va sin medición`);
@@ -476,6 +563,88 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           pollAttempts: cfg.pollAttempts, pollDelayMs: cfg.pollDelayMs,
           logger: { info: (m) => log(m), warn: (m) => log("WARN " + m) }
         });
+        // ── Continuar la conversación: el turno que faltaba ───────────────────────────────────
+        //
+        // OJO con el hilo que elige: NO el de esta vuelta. El que se acaba de crear tiene la
+        // respuesta de hace segundos, y contestar al instante es justamente el patrón que no
+        // queremos. Se continúan los hilos de vueltas ANTERIORES de esta misma semilla — a los
+        // que ya les pasó el tiempo humano. Reusa la conexión IMAP que ya está abierta.
+        if (medible && semilla.auth === "imap_password" && clienteImap) {
+          try {
+            const abiertos = await hilosParaContinuar(pg, semilla.address, cycleId);
+            if (abiertos.length === 0) {
+              log("continuación: no hay hilos anteriores de esta semilla todavía");
+            }
+            for (const hiloPrevio of abiertos) {
+              // El turno sale por EL NODO DEL HILO, no por el box de esta vuelta. Reusar el mailer
+              // de la vuelta mandaría un correo con `From: mailer@dominio-A` a través del SMTP del
+              // dominio B: rompe la alineación SPF/DKIM (que es exactamente lo que estamos
+              // construyendo) y encima rebota si ese nodo está frenado.
+              if (frenados.has(hiloPrevio.nodeDomain)) {
+                log(`hilo ${hiloPrevio.testId.slice(-6)}: su nodo ${hiloPrevio.nodeDomain} no tiene cupo hoy`);
+                continue;
+              }
+              let mailerHilo: WarmupMailer;
+              try {
+                mailerHilo = createBoxMailer(hiloPrevio.nodeDomain, store, key);
+              } catch (err) {
+                log(`hilo ${hiloPrevio.testId.slice(-6)}: sin credencial de ${hiloPrevio.nodeDomain} — ${err instanceof Error ? err.message : String(err)}`);
+                continue;
+              }
+              const hilo = await leerHiloWarmup(clienteImap as unknown as ImapLector, hiloPrevio.testId);
+              const turnos: TurnoHilo[] = hilo.mensajes
+                .filter((m) => m.texto)
+                .map((m) => ({
+                  quien: m.papel === "recibido" ? ("nosotros" as const) : ("ellos" as const),
+                  texto: m.texto!
+                }));
+              const ultimo = hilo.mensajes.at(-1)?.fecha ?? "";
+              const marca = hiloPrevio.testId.slice(-6);
+              const decision = tocaResponder({ hiloId: hiloPrevio.cycleId, turnos, ultimoMensajeEn: ultimo });
+              if (!decision.si) {
+                log(`hilo ${marca}: no toca — ${decision.motivo}`);
+                continue;
+              }
+
+              const turno = await pedirSiguienteTurno({
+                turnos,
+                asunto: hiloPrevio.subject,
+                baseUrl: (process.env.LOCAL_INFERENCE_BASE_URL ?? "").trim(),
+                modelo: (process.env.LOCAL_INFERENCE_MODEL ?? "").trim(),
+                maxTokens: 3500
+              });
+              if (!turno.texto) {
+                log(`hilo ${marca}: sin turno nuevo — ${turno.motivo}`);
+                continue;
+              }
+
+              const asuntoRe = hiloPrevio.subject.startsWith("Re:") ? hiloPrevio.subject : `Re: ${hiloPrevio.subject}`;
+              await mailerHilo.send({
+                from: `mailer@${hiloPrevio.nodeDomain}`,
+                to: semilla.address,
+                subject: asuntoRe,
+                text: turno.texto,
+                testId: hiloPrevio.testId
+              });
+              await recorder.record({
+                cycleId: hiloPrevio.cycleId,
+                boxDomain: hiloPrevio.nodeDomain,
+                seedInbox: semilla.address,
+                kind: "sent",
+                subject: asuntoRe,
+                testId: hiloPrevio.testId,
+                detail: { turno: turnos.length + 1, motivo: turno.motivo, generado: "modelo local" }
+              });
+              log(`hilo ${marca}: turno ${turnos.length + 1} enviado — "${turno.texto.slice(0, 60)}…"`);
+              // Un turno por vuelta. Mandar varios de golpe sería la ráfaga que el daemon evita.
+              break;
+            }
+          } catch (err) {
+            // Continuar es un EXTRA: si falla, la vuelta principal ya está hecha y contada.
+            log(`WARN no pude continuar hilos: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+
         if (cerrarImap) await cerrarImap();
         log(`vuelta #${seq + 1} ${result.completed ? "COMPLETA" : "cortó en " + result.brokeAt} · placement ${result.placement ?? "-"}`);
         seq += 1;
