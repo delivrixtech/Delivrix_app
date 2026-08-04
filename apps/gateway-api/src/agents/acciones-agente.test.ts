@@ -118,3 +118,34 @@ test("una línea mal formada se IGNORA, no se adivina", () => {
   // Adivinar sobre una acción que toca producción es exactamente lo que no queremos.
   assert.deepEqual(extraerAcciones("ACCION:"), []);
 });
+
+// ── Dedup de pendientes reformulados ─────────────────────────────────────────────────────────────
+// Visto en producción a los diez minutos de habilitar las acciones: el agente anotó la MISMA cosa
+// tres veces con tres redacciones. Los modelos reformulan; con dedup exacto la promesa de "anotalo
+// una sola vez" se rompe el primer día.
+
+import { mismoPendiente } from "./acciones-agente.ts";
+
+test("reconoce como el mismo pendiente las tres redacciones que salieron en vivo", () => {
+  assert.equal(mismoPendiente("outlook y yahoo", "semillas para outlook y yahoo"), true);
+  assert.equal(mismoPendiente("outlook y yahoo", "outlook,yahoo"), true);
+  assert.equal(mismoPendiente("semillas para outlook y yahoo", "outlook,yahoo"), true);
+});
+
+test("NO confunde pendientes de temas distintos", () => {
+  assert.equal(mismoPendiente("semilla de yahoo", "soltar cupo en corpfiling-infra.com"), false);
+  assert.equal(mismoPendiente("semilla de outlook", "semilla de gmail"), false);
+});
+
+test("los acentos y la puntuación no crean duplicados", () => {
+  assert.equal(mismoPendiente("revisión del cupo", "revision del cupo!"), true);
+});
+
+test("dos pendientes con redacciones distintas se juntan en uno", async () => {
+  const c = ctx();
+  await ejecutarAcciones([{ accion: "anotar_pendiente", dominio: "outlook y yahoo", motivo: "punto ciego" }], c);
+  await ejecutarAcciones([{ accion: "anotar_pendiente", dominio: "semillas para outlook y yahoo", motivo: "punto ciego" }], c);
+  await ejecutarAcciones([{ accion: "anotar_pendiente", dominio: "outlook,yahoo", motivo: "punto ciego" }], c);
+  assert.equal(c.lista.length, 1, "una sola entrada, no tres");
+  assert.equal(c.lista[0]!.visto, 3);
+});

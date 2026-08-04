@@ -72,6 +72,43 @@ export interface ContextoAcciones {
   ahora?: () => Date;
 }
 
+/** Palabras que no distinguen un pendiente de otro. */
+const VACIAS = new Set(["y", "o", "de", "del", "la", "el", "los", "las", "en", "para", "un", "una", "semilla", "semillas"]);
+
+/** Quita acentos, puntuación y palabras vacías; deja el conjunto de términos que sí distinguen. */
+function terminos(texto: string): Set<string> {
+  return new Set(
+    texto
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .split(/[^a-z0-9.]+/)
+      .filter((t) => t.length > 1 && !VACIAS.has(t))
+  );
+}
+
+/**
+ * ¿Son el mismo pendiente aunque estén escritos distinto?
+ *
+ * Comparar texto exacto no alcanza, y se vio en producción a los diez minutos: el agente anotó
+ * "outlook y yahoo", "semillas para outlook y yahoo" y "outlook,yahoo" como TRES pendientes. Es la
+ * misma cosa dicha de tres formas — el modelo reformula, es lo que hacen los modelos. Con dedup
+ * exacto, la promesa de "anotalo una sola vez" se rompe el primer día.
+ *
+ * Se comparan los términos que distinguen (sin acentos, sin puntuación, sin palabras vacías): si
+ * uno está contenido en el otro, o comparten la mayoría, es el mismo pendiente.
+ */
+export function mismoPendiente(a: string, b: string): boolean {
+  const A = terminos(a);
+  const B = terminos(b);
+  if (A.size === 0 || B.size === 0) return a.trim().toLowerCase() === b.trim().toLowerCase();
+  const comunes = [...A].filter((t) => B.has(t)).length;
+  // Contenido: "outlook yahoo" ⊂ "semillas para outlook y yahoo".
+  if (comunes === Math.min(A.size, B.size)) return true;
+  // O mayoría compartida, para reformulaciones que agregan y quitan a la vez.
+  return comunes / new Set([...A, ...B]).size >= 0.5;
+}
+
 /** Máximo de acciones por lectura. Un agente que hace veinte cosas de golpe no se puede auditar. */
 export const MAX_ACCIONES_POR_VUELTA = 3;
 
@@ -144,7 +181,7 @@ export async function ejecutarAcciones(
         const lista = await ctx.pendientes.listar();
         // Mismo pendiente ⇒ se suma al contador, NO se crea otro. Sin esto, "falta una semilla de
         // Yahoo" generaría un pendiente nuevo cada 10 minutos y la lista sería inservible en un día.
-        const previo = lista.find((x) => !x.resueltoEn && x.que.toLowerCase() === que.toLowerCase());
+        const previo = lista.find((x) => !x.resueltoEn && mismoPendiente(x.que, que));
         if (previo) {
           previo.visto += 1;
           // Copia, nunca el mismo array que devolvió `listar`. Si el almacén hace
