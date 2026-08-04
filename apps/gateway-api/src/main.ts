@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve as resolvePath } from "node:path";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Pool } from "pg";
 import {
@@ -191,6 +191,7 @@ import { handleReadRunStateIntegrity } from "./routes/openclaw-run-state-integri
 import { handleWarmupStatus } from "./routes/warmup-status.ts";
 import { handleWarmupTrends } from "./routes/warmup-trends.ts";
 import { handleWarmupActivity } from "./routes/warmup-activity.ts";
+import { handleWarmupPlan } from "./routes/warmup-plan.ts";
 import {
   handleWarmupMailboxOnboard,
   handleWarmupMailboxOnboardBatch,
@@ -853,6 +854,18 @@ const warmupDbPool =
 const warmupApiKey = process.env.WARMUP_API_KEY?.trim();
 // Umbral de placement para /v1/mailboxes/warm (piso duro 0.80 en la ruta, §9).
 const warmupPlacementMin = Number(process.env.WARMUP_PLACEMENT_MIN);
+
+// Dónde vive la medición del cupo físico de la flota (la escribe `scripts/ops/limite-fisico.ts
+// --status`). El plan la lee para saber qué nodos pueden enviar; si está vencida, lo declara.
+const warmupCapFile =
+  process.env.WARMUP_CAP_FILE?.trim() ||
+  resolvePath(process.cwd(), "runtime/openclaw-workspace/inventory/sender-cap.json");
+// Pool de respaldo, usado SOLO si no hay ninguna medición del cupo. Misma env var que el daemon,
+// para que el panel y el daemon no puedan discrepar sobre qué se está calentando.
+const warmupPoolConfigurado = (process.env.WARMUP_LIVE_BOXES ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const semanticMemoryEmbeddingService = embeddingServiceFromEnv(process.env);
 const gatewayLogStream = new GatewayLogStreamService({ logPath: gatewayRuntimeLog.logPath });
 const equipoWebhookBroadcaster = new EquipoWebhookBroadcaster({
@@ -2917,6 +2930,20 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && requestUrl(request).pathname === "/v1/warmup/activity") {
       return await handleWarmupActivity(request, response, {
         pgClient: episodicScratchPool,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        now: () => new Date(),
+        logger: gatewayRuntimeLog
+      });
+    }
+
+    // EL PLAN: qué va a hacer hoy el agente con cada dominio y por qué. Es la misma función que
+    // consulta el daemon antes de actuar, no una reconstrucción — si fueran dos, el panel mostraría
+    // una decisión parecida pero distinta de la que se ejecuta.
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/warmup/plan") {
+      return await handleWarmupPlan(request, response, {
+        pgClient: episodicScratchPool,
+        capFile: warmupCapFile,
+        poolConfigurado: warmupPoolConfigurado,
         readBoundaryToken: sensitiveReadBoundaryToken,
         now: () => new Date(),
         logger: gatewayRuntimeLog

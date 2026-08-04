@@ -58,6 +58,7 @@ import {
   TriangleAlert
 } from "lucide-react";
 import WarmupLive from "./WarmupLive";
+import WarmupPlan from "./WarmupPlan";
 import { getJson } from "../../shared/api/client";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
 import {
@@ -437,6 +438,12 @@ export function WarmupV5() {
       {/* LA CONSOLA. Lo que está pasando ahora, moviéndose. Todo lo demás es detalle. */}
       <motion.section variants={staggerItem}>
         <WarmupLive />
+      </motion.section>
+
+      {/* EL PLAN. Por qué el agente manda lo que manda: día, placement medido, cupo y decisión.
+          Va justo debajo de la consola porque responde la pregunta que la consola provoca. */}
+      <motion.section variants={staggerItem}>
+        <WarmupPlan />
       </motion.section>
 
       <Body

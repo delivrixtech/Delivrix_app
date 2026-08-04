@@ -113,6 +113,7 @@ const allowedProxyPaths = new Set([
   "/v1/sender-pool/credentials/download-all",
   "/v1/stuck-jobs",
   "/v1/warmup/activity",
+  "/v1/warmup/plan",
   "/v1/warmup/ramp/by-domain",
   "/v1/warmup/status",
   "/v1/warmup/trends",

@@ -59,6 +59,7 @@ test("admin panel exposes only approved GET endpoints", () => {
     "/v1/warmup/activity",
     "/v1/warmup/conversation",
     "/v1/warmup/monitor",
+    "/v1/warmup/plan",
     "/v1/warmup/ramp/by-domain",
     "/v1/warmup/seeds",
     "/v1/warmup/status",

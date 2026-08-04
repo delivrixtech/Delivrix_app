@@ -18,6 +18,14 @@ import { Pool } from "pg";
 import { elegirSemilla, semillasMedibles, type SeedBase } from "../domain/seeds.ts";
 import { elegirSemillaRotada, progresoDeCalentamiento, type UsoPrevio } from "../domain/rotacion.ts";
 import { decidirCupoDeHoy, type DecisionDiaria } from "../domain/decision-diaria.ts";
+import {
+  boxesSinCupoHoy,
+  elegirPool,
+  enviosDeHoy,
+  historialDeEnvios,
+  leerCuposFisicos,
+  placementsDeDominio
+} from "./plan-diario.ts";
 import { opsDesdeImap, type ImapClienteMinimo } from "../live/imap-placement-ops.ts";
 import { leerHiloWarmup, type ImapLector } from "../live/imap-thread-reader.ts";
 import { pedirSiguienteTurno, tocaResponder, type TurnoHilo } from "../live/continuar-conversacion.ts";
@@ -236,26 +244,6 @@ export function pickBox(boxes: readonly string[], cycleIndex: number): string {
 
 // ── Lecturas del estado (Postgres) ──────────────────────────────────────────────────────────────────
 
-/**
- * Los boxes que HOY no pueden mandar, según lo que el propio nodo respondió.
- *
- * Por qué existe: el pool tiene 6 dominios pero el freno físico (cap 0 en Postfix) deja a casi
- * todos sin poder enviar. El daemon los seguía eligiendo por turno y quemaba 5 de cada 6 vueltas
- * contra nodos que responden `450 4.7.1 daily send cap reached`. Eso no es solo desperdicio: cada
- * intento fallido queda como error en el feed y ensucia la lectura del operador.
- *
- * La señal sale de la RESPUESTA REAL del nodo, no de un archivo de configuración aparte: si
- * mañana el cupo cambia, el daemon se entera solo, sin que nadie sincronice nada.
- */
-async function boxesSinCupoHoy(pg: PgClient): Promise<Set<string>> {
-  const { rows } = await pg.query<{ node_domain: string }>(
-    `SELECT DISTINCT node_domain FROM warmup_activity
-      WHERE kind = 'error'
-        AND occurred_at >= date_trunc('day', now() at time zone 'utc')
-        AND detail->>'note' ILIKE '%daily send cap reached%'`
-  );
-  return new Set(rows.map((r) => r.node_domain));
-}
 
 /** Un hilo de una vuelta anterior, candidato a que le sigamos la conversación. */
 interface HiloPrevio {
@@ -314,92 +302,8 @@ async function countCyclesToday(pg: PgClient): Promise<number> {
   return Number(rows[0]?.n ?? 0);
 }
 
-/**
- * El historial de (dominio, semilla) que usa la rotación. Sale de los envíos REALES: la rotación
- * decide mirando lo que efectivamente pasó, no un contador en memoria que se pierde al reiniciar.
- */
-async function historialDeEnvios(pg: PgClient, limite = 400): Promise<UsoPrevio[]> {
-  const { rows } = await pg.query<{ node_domain: string; seed_inbox: string; occurred_at: Date }>(
-    "SELECT node_domain, seed_inbox, occurred_at FROM warmup_activity WHERE kind = 'sent' ORDER BY occurred_at DESC LIMIT $1",
-    [limite]
-  );
-  return rows.map((r) => ({ domain: r.node_domain, seed: r.seed_inbox, cuando: new Date(r.occurred_at).toISOString() }));
-}
 
-/**
- * Qué dominios calienta hoy: los que tienen cupo físico > 0 según la medición vigente.
- *
- * Sin medición vigente cae al pool configurado. Se declara cuál de los dos casos ocurrió: "estoy
- * calentando los que pueden" y "estoy calentando una lista que nadie verificó" no son lo mismo, y
- * confundirlos fue el bug.
- */
-export function elegirPool(
-  configurado: readonly string[],
-  cupos: ReadonlyMap<string, number>,
-  vencido: boolean
-): { boxes: string[]; motivo: string } {
-  if (vencido || cupos.size === 0) {
-    return { boxes: [...configurado], motivo: "sin medición vigente del cupo: se usa el pool configurado" };
-  }
-  const conCupo = [...cupos.entries()].filter(([, cap]) => cap > 0).map(([d]) => d).sort();
-  if (conCupo.length === 0) {
-    return { boxes: [], motivo: `los ${cupos.size} nodos medidos están en cap 0: no hay nada que calentar` };
-  }
-  return { boxes: conCupo, motivo: `${conCupo.length} de ${cupos.size} nodos con cupo > 0` };
-}
 
-/** Cuánto vale una medición del cupo antes de considerarse vencida. */
-const CUPO_VENCE_MS = 12 * 60 * 60 * 1000;
-
-/**
- * El cupo físico instalado en cada nodo, si la medición sigue vigente.
- *
- * VENCE a propósito. El archivo de la flota se mide cuando alguien corre `limite-fisico --status`,
- * y entre una corrida y otra el cupo puede haber cambiado: hoy mismo el archivo decía 2000 en
- * nodos que en vivo estaban en 0 y en 20, porque el freno se aplicó después de medir. Una medición
- * vieja usada como verdad es peor que no tener ninguna — con `null` la rampa decide y la barrera
- * física del nodo hace lo suyo; con un 2000 fantasma se toman decisiones sobre algo que no existe.
- */
-async function cuposFisicos(ruta: string): Promise<{ porDominio: Map<string, number>; vencido: boolean }> {
-  try {
-    const j = JSON.parse(await readFile(ruta, "utf8")) as {
-      medidoEn?: string;
-      nodos?: Array<{ domain?: string; cap?: number | null }>;
-    };
-    const edad = Date.now() - Date.parse(j.medidoEn ?? "");
-    if (!Number.isFinite(edad) || edad > CUPO_VENCE_MS) return { porDominio: new Map(), vencido: true };
-    const porDominio = new Map<string, number>();
-    for (const n of j.nodos ?? []) {
-      if (n.domain && typeof n.cap === "number") porDominio.set(n.domain, n.cap);
-    }
-    return { porDominio, vencido: false };
-  } catch {
-    return { porDominio: new Map(), vencido: true };
-  }
-}
-
-/** Los placements medidos de UN dominio, del más nuevo al más viejo. */
-async function placementsDeDominio(pg: PgClient, domain: string, ventana: number): Promise<Placement[]> {
-  const { rows } = await pg.query<{ placement: string | null }>(
-    `SELECT placement FROM warmup_activity
-      WHERE kind = 'measured' AND placement IS NOT NULL AND node_domain = $1
-      ORDER BY occurred_at DESC LIMIT $2`,
-    [domain, ventana]
-  );
-  return rows
-    .map((r) => (r.placement ?? "").toUpperCase())
-    .filter((p): p is Placement => p === "INBOX" || p === "SPAM" || p === "PROMOTIONS" || p === "OTHER");
-}
-
-/** Cuántos correos de warmup ya mandó HOY este dominio. */
-async function enviosHoyDeDominio(pg: PgClient, domain: string): Promise<number> {
-  const { rows } = await pg.query<{ n: string | number }>(
-    `SELECT COUNT(*)::int AS n FROM warmup_activity
-      WHERE kind = 'sent' AND node_domain = $1 AND occurred_at >= date_trunc('day', now())`,
-    [domain]
-  );
-  return Number(rows[0]?.n ?? 0);
-}
 
 /** Últimos placements medidos (para el gate). */
 async function recentPlacements(pg: PgClient, window: number): Promise<Placement[]> {
@@ -565,8 +469,8 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   let seq = await countCyclesToday(pg); // arranca la rotación donde quedó el día
   // El pool sale de la MEDICIÓN, no de una lista escrita a mano. Con la lista fija el daemon pasó
   // el día rebotando contra 6 nodos frenados en cap 0 mientras el único con cupo real ni figuraba.
-  const capsIniciales = await cuposFisicos(cfg.capFile);
-  const poolElegido = elegirPool(cfg.boxes, capsIniciales.porDominio, capsIniciales.vencido);
+  const capsIniciales = await leerCuposFisicos(cfg.capFile);
+  const poolElegido = elegirPool(capsIniciales, cfg.boxes);
   cfg.boxes = poolElegido.boxes;
   log(`pool: ${poolElegido.motivo}${poolElegido.boxes.length > 0 ? ` → ${poolElegido.boxes.join(", ")}` : ""}`);
   if (poolElegido.boxes.length === 0) {
@@ -611,14 +515,14 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // warmup profesional, es un temporizador. Acá el volumen sale de la evidencia de este
         // dominio: qué día de rampa lleva y cómo viene su placement. Sube si puede, baja si debe,
         // frena si hace falta — y todo queda dicho en el log.
-        const capsFisicos = await cuposFisicos(cfg.capFile);
+        const capsFisicos = await leerCuposFisicos(cfg.capFile);
         const delDia: DecisionDiaria = decidirCupoDeHoy({
           diaN: progresoDeCalentamiento(historial, box, null)?.diasCorridos ?? 0,
           placements: await placementsDeDominio(pg, box, cfg.placementWindow).catch(() => []),
-          cupoFisico: capsFisicos.porDominio.get(box) ?? null,
+          cupoFisico: capsFisicos.vencida ? null : capsFisicos.porDominio.get(box) ?? null,
           isoWeekday: (((new Date().getUTCDay() + 6) % 7) + 1) as 1 | 2 | 3 | 4 | 5 | 6 | 7
         });
-        const enviadosHoyBox = await enviosHoyDeDominio(pg, box).catch(() => 0);
+        const enviadosHoyBox = (await enviosDeHoy(pg).catch(() => new Map<string, number>())).get(box) ?? 0;
         log(`${box}: ${delDia.accion} · cupo ${delDia.cupo}/día (van ${enviadosHoyBox}) — ${delDia.motivo}`);
         if (enviadosHoyBox >= delDia.cupo) {
           log(`${box} ya cumplió su cupo de hoy — se salta`);
