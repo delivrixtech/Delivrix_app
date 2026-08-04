@@ -6,7 +6,12 @@
 
 import type { WarmupConversation } from "./warmup-content-bank.ts";
 
-export type Placement = "INBOX" | "SPAM" | "PROMOTIONS" | "OTHER";
+/**
+ * Dónde terminó el correo. `MISSING` es un resultado LEGÍTIMO, no un error: el proveedor lo aceptó
+ * y no apareció en ninguna carpeta dentro de la ventana de medición — o sea, se lo tragó en
+ * silencio. Es el peor desenlace posible para la reputación y hasta hoy era el único invisible.
+ */
+export type Placement = "INBOX" | "SPAM" | "PROMOTIONS" | "OTHER" | "MISSING";
 export type CycleStage = "sent" | "measured" | "engaged" | "replied" | "error";
 
 /** Clasifica el placement a partir de los labelIds de Gmail. Puro. */
@@ -138,8 +143,22 @@ export async function runLiveCycle(deps: RunLiveCycleDeps): Promise<RunLiveCycle
     return { cycleId, placement: null, completed: false, brokeAt: "measured" };
   }
   if (!found) {
-    await recorder.record({ ...base, kind: "error", subject, testId, detail: { stage: "measured", note: "no_indexado_en_ventana" } });
-    return { cycleId, placement: null, completed: false, brokeAt: "measured" };
+    // MEDICIÓN, no error. Grabarlo como `error` lo dejaba FUERA de las ventanas de placement (que
+    // filtran `kind='measured'`), y ese silencio se leía como éxito:
+    //
+    //   un dominio en día 20 manda 40, Gmail se traga 36 y 4 llegan a INBOX
+    //     → antes: la muestra eran esos 4 INBOX, tasa 100%, acción "subir", cupo 40
+    //     → ahora: 40 mediciones, 4 inbox, tasa 10% ⇒ "frenar"
+    //
+    // Era el único camino del sistema hacia MÁS volumen sobre evidencia falsa, y el más peligroso
+    // de todos porque el correo tragado en silencio es justamente la señal de peor reputación.
+    // El diseño v1 ya contaba el missing dentro de `samples` (placement.ts): esto alinea el
+    // camino en vivo con la regla que ya estaba escrita.
+    await recorder.record({
+      ...base, kind: "measured", placement: "MISSING", subject, testId,
+      detail: { note: "no_indexado_en_ventana: el proveedor lo aceptó y no apareció en ninguna carpeta" }
+    });
+    return { cycleId, placement: "MISSING", completed: false, brokeAt: "measured" };
   }
   const placement = classifyPlacement(found.labelIds);
   await recorder.record({ ...base, kind: "measured", placement, subject, testId, detail: { labels: found.labelIds } });

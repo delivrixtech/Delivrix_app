@@ -24,7 +24,9 @@ import {
   enviosDeHoy,
   historialDeEnvios,
   leerCuposFisicos,
+  primerEnvioPorDominio,
   leerSalud,
+  VENTANA_PLACEMENT_DIAS,
   placementsDeDominio
 } from "./plan-diario.ts";
 import { opsDesdeImap, type ImapClienteMinimo } from "../live/imap-placement-ops.ts";
@@ -302,7 +304,10 @@ async function hilosParaContinuar(pg: PgClient, seed: string, cycleActual: strin
 async function countCyclesToday(pg: PgClient): Promise<number> {
   const { rows } = await pg.query<{ n: string | number }>(
     `SELECT COUNT(DISTINCT cycle_id)::int AS n FROM warmup_activity
-      WHERE occurred_at >= date_trunc('day', now())
+      -- Zona EXPLÍCITA: sin ella se trunca en la TZ de la sesión y el "día" del tope no es el
+      -- mismo día que el de los contadores por dominio. Dos ventanas distintas para la misma
+      -- palabra son dos verdades sobre cuánto se mandó hoy.
+      WHERE occurred_at >= date_trunc('day', now(), 'UTC')
         AND kind = 'sent'`
   );
   return Number(rows[0]?.n ?? 0);
@@ -311,15 +316,26 @@ async function countCyclesToday(pg: PgClient): Promise<number> {
 
 
 
-/** Últimos placements medidos (para el gate). */
+/**
+ * Últimos placements medidos, para el gate GLOBAL del daemon.
+ *
+ * La ventana temporal es lo que impide que la auto-pausa sea eterna. Sin ella:
+ *   un mal día deja las últimas 6 mediciones bajo el piso → el gate pausa → no sale correo →
+ *   nadie escribe una medición nueva (el daemon es el ÚNICO escritor de warmup_activity) → esas
+ *   mismas 6 filas siguen siendo "las últimas 6" para siempre.
+ * Es el mismo estado absorbente que ya se arregló en la decisión por dominio, un piso más arriba.
+ */
 async function recentPlacements(pg: PgClient, window: number): Promise<Placement[]> {
   const { rows } = await pg.query<{ placement: string | null }>(
-    "SELECT placement FROM warmup_activity WHERE kind = 'measured' AND placement IS NOT NULL ORDER BY occurred_at DESC LIMIT $1",
+    `SELECT placement FROM warmup_activity
+      WHERE kind = 'measured' AND placement IS NOT NULL
+        AND occurred_at > now() - interval '${VENTANA_PLACEMENT_DIAS} days'
+      ORDER BY occurred_at DESC LIMIT $1`,
     [window]
   );
   return rows
     .map((r) => (r.placement ?? "").toUpperCase())
-    .filter((p): p is Placement => p === "INBOX" || p === "SPAM" || p === "PROMOTIONS" || p === "OTHER");
+    .filter((p): p is Placement => p === "INBOX" || p === "SPAM" || p === "PROMOTIONS" || p === "OTHER" || p === "MISSING");
 }
 
 // ── Composition root del I/O real ────────────────────────────────────────────────────────────────────
@@ -515,8 +531,45 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           continue;
         }
 
-        // Se saltean los boxes que hoy ya rebotaron por cupo: reintentarlos es garantía de error.
-        const frenados = await boxesSinCupoHoy(pg).catch(() => new Set<string>());
+        // ── EL ESTADO DEL DÍA ────────────────────────────────────────────────────────────────
+        //
+        // Las tres lecturas van juntas y un fallo ABORTA LA VUELTA. Antes cada una tenía su
+        // `.catch` devolviendo un valor vacío, y eso es fail-OPEN sobre el volumen:
+        //
+        //   · boxesSinCupoHoy falla → Set vacío → ningún box aparece frenado → se le manda a un
+        //     nodo que hoy ya rebotó.
+        //   · enviosDeHoy falla     → Map vacío → "van 0" para TODOS los dominios → el cupo diario
+        //     deja de existir y se manda hasta el tope global.
+        //   · historialDeEnvios falla → sin historial → día 0 → arranca de nuevo la rampa.
+        //
+        // Los tres convierten un error de lectura en permiso de enviar, que es exactamente lo que
+        // el comentario del bloque de continuación decía que NO podía pasar. Un error de lectura
+        // solo puede terminar en "no mando", nunca en "mando lo que pueda".
+        //
+        // El disparador real no es "postgres caído" (eso revienta antes, en countCyclesToday):
+        // es un fallo POR CONSULTA — un ECONNRESET de una conexión del pool, un statement_timeout,
+        // o un cambio de esquema que rompe una sola query. Ese último es silencioso y permanente.
+        let frenados: ReadonlySet<string>;
+        let enviadosPorDominio: Map<string, number>;
+        let historial: UsoPrevio[];
+        // El día de rampa sale del PRIMER ENVÍO REAL, no del historial recortado a 400 filas: ese
+        // recorte hace que el día dependa del volumen de TODA la flota, y que RETROCEDA cuando
+        // otros dominios mandan más.
+        let primerEnvio: Map<string, string>;
+        try {
+          [frenados, enviadosPorDominio, historial, primerEnvio] = await Promise.all([
+            boxesSinCupoHoy(pg),
+            enviosDeHoy(pg),
+            historialDeEnvios(pg),
+            primerEnvioPorDominio(pg)
+          ]);
+        } catch (err) {
+          log(`no pude leer el estado del día (${err instanceof Error ? err.message : String(err)}) — NO mando esta vuelta`);
+          if (once) break;
+          await sleep(cfg.intervalMs);
+          continue;
+        }
+
         const disponibles = poolElegido.boxes.filter((b) => !frenados.has(b));
         if (disponibles.length === 0) {
           log(`PAUSA — los ${poolElegido.boxes.length} boxes del pool ya agotaron su cupo diario. Nada que enviar hoy.`);
@@ -532,10 +585,6 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         }
         const box = pickBox(disponibles, seq);
 
-        // El historial real alimenta las DOS decisiones de abajo: cuánto manda hoy este dominio, y
-        // a qué semilla le escribe.
-        const historial = await historialDeEnvios(pg).catch(() => [] as UsoPrevio[]);
-
         // ── La decisión del día para ESTE dominio ─────────────────────────────────────────────
         // Antes el tope era un número fijo e igual para todos (3/día, siempre). Eso no es un
         // warmup profesional, es un temporizador. Acá el volumen sale de la evidencia de este
@@ -543,15 +592,31 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // frena si hace falta — y todo queda dicho en el log.
         // ISO weekday del receptor: 1 = lunes … 7 = domingo. `getUTCDay()` da 0 = domingo.
         const isoWeekday = (((new Date().getUTCDay() + 6) % 7) + 1) as 1 | 2 | 3 | 4 | 5 | 6 | 7;
-        const delDia: DecisionDiaria = decidirCupoDeHoy({
-          diaN: progresoDeCalentamiento(historial, box, null)?.diasCorridos ?? 0,
-          placements: await placementsDeDominio(pg, box, cfg.placementWindow).catch(() => []),
-          cupoFisico: capsFisicos.vencida ? null : capsFisicos.porDominio.get(box) ?? null,
-          isoWeekday
-        });
-        // Un solo Map para la vuelta: lo consultan el camino principal Y el de continuación. Dos
-        // lecturas separadas se desincronizarían entre sí dentro de la misma vuelta.
-        const enviadosPorDominio = await enviosDeHoy(pg).catch(() => new Map<string, number>());
+        // El placement TAMBIÉN aborta si falla, y por la razón más fina de las cuatro: con `[]`
+        // la tasa queda `null`, que la decisión lee como "sin muestra" y responde "sostener 2" —
+        // cuando el estado real podía ser "frenar 0". Un error de lectura no puede transformar un
+        // dominio frenado en uno que manda.
+        let delDia: DecisionDiaria;
+        try {
+          delDia = decidirCupoDeHoy({
+            diaN:
+              progresoDeCalentamiento(
+                primerEnvio.has(box)
+                  ? [{ domain: box, seed: "", cuando: primerEnvio.get(box)! }, ...historial.filter((h) => h.domain === box)]
+                  : historial,
+                box,
+                null
+              )?.diasCorridos ?? 0,
+            placements: await placementsDeDominio(pg, box, cfg.placementWindow),
+            cupoFisico: capsFisicos.vencida ? null : capsFisicos.porDominio.get(box) ?? null,
+            isoWeekday
+          });
+        } catch (err) {
+          log(`no pude leer el placement de ${box} (${err instanceof Error ? err.message : String(err)}) — NO mando esta vuelta`);
+          if (once) break;
+          await sleep(cfg.intervalMs);
+          continue;
+        }
         const enviadosHoyBox = enviadosPorDominio.get(box) ?? 0;
         log(`${box}: ${delDia.accion} · cupo ${delDia.cupo}/día (van ${enviadosHoyBox}) — ${delDia.motivo}`);
         if (enviadosHoyBox >= delDia.cupo) {
@@ -642,6 +707,19 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           pollAttempts: cfg.pollAttempts, pollDelayMs: cfg.pollDelayMs,
           logger: { info: (m) => log(m), warn: (m) => log("WARN " + m) }
         });
+
+        // EL ENVÍO QUE ACABA DE SALIR GASTÓ CUPO, y el Map se leyó ANTES. Sin esta línea, la
+        // continuación de más abajo decide con la cuenta vieja y manda uno de más: con cupo 2
+        // salían 3, todos los días. Es exactamente el sobrepaso que `puedeMandarTurno` se escribió
+        // para cerrar — el guarda se movió a una función testeada, pero el DATO que le entraba
+        // seguía siendo la foto anterior al envío.
+        //
+        // `brokeAt === "sent"` es el único retorno donde `mailer.send` falló; en todos los demás
+        // caminos el envío salió y quedó grabado.
+        if (result.brokeAt !== "sent") {
+          enviadosPorDominio.set(box, enviadosHoyBox + 1);
+        }
+
         // ── Continuar la conversación: el turno que faltaba ───────────────────────────────────
         //
         // OJO con el hilo que elige: NO el de esta vuelta. El que se acaba de crear tiene la
@@ -665,7 +743,14 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
               let cupoDelHilo: DecisionDiaria;
               try {
                 cupoDelHilo = decidirCupoDeHoy({
-                  diaN: progresoDeCalentamiento(historial, hiloPrevio.nodeDomain, null)?.diasCorridos ?? 0,
+                  diaN:
+                    progresoDeCalentamiento(
+                      primerEnvio.has(hiloPrevio.nodeDomain)
+                        ? [{ domain: hiloPrevio.nodeDomain, seed: "", cuando: primerEnvio.get(hiloPrevio.nodeDomain)! }, ...historial.filter((h) => h.domain === hiloPrevio.nodeDomain)]
+                        : historial,
+                      hiloPrevio.nodeDomain,
+                      null
+                    )?.diasCorridos ?? 0,
                   placements: await placementsDeDominio(pg, hiloPrevio.nodeDomain, cfg.placementWindow),
                   cupoFisico: capsFisicos.vencida ? null : capsFisicos.porDominio.get(hiloPrevio.nodeDomain) ?? null,
                   isoWeekday

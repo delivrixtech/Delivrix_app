@@ -79,7 +79,7 @@ test("vuelta con spam: engage mueve a Principal (not-spam + important)", async (
   assert.deepEqual(sink.modified.change, { add: ["INBOX", "IMPORTANT"], remove: ["SPAM", "CATEGORY_PROMOTIONS"] });
 });
 
-test("no aparece en la ventana ⇒ error 'measured', corta la vuelta", async () => {
+test("no aparece en la ventana ⇒ MEDICIÓN 'MISSING', no un error invisible", async () => {
   const { rec, events } = recorder();
   const res = await runLiveCycle({
     cycleId: "c3", testId: "t3", boxDomain: "box.com", fromAddress: "mailer@box.com", seedInbox: "seed@g.com",
@@ -89,7 +89,13 @@ test("no aparece en la ventana ⇒ error 'measured', corta la vuelta", async () 
   });
   assert.equal(res.completed, false);
   assert.equal(res.brokeAt, "measured");
-  assert.deepEqual(events.map((e) => e.kind), ["sent", "error"]);
+  // Antes esto grababa `kind: "error"`, y ese es el punto: las ventanas de placement filtran
+  // `kind='measured'`, así que el correo que el proveedor SE TRAGA EN SILENCIO quedaba fuera de la
+  // muestra. Un dominio con 36 de 40 tragados y 4 en INBOX mostraba tasa 100% y SUBÍA de volumen.
+  // Era el único camino del sistema hacia más volumen sobre evidencia falsa.
+  assert.deepEqual(events.map((e) => e.kind), ["sent", "measured"]);
+  assert.equal(events[1]!.placement, "MISSING");
+  assert.equal(res.placement, "MISSING");
 });
 
 test("falla el envío ⇒ error 'sent', no sigue", async () => {

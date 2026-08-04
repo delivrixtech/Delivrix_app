@@ -183,14 +183,34 @@ export async function placementsDeDominio(pg: PgClient, domain: string, ventana:
   );
   return rows
     .map((r) => (r.placement ?? "").toUpperCase())
-    .filter((p): p is Placement => p === "INBOX" || p === "SPAM" || p === "PROMOTIONS" || p === "OTHER");
+    .filter((p): p is Placement => p === "INBOX" || p === "SPAM" || p === "PROMOTIONS" || p === "OTHER" || p === "MISSING");
 }
 
-/** Cuántos correos de warmup ya mandó HOY cada dominio. Una consulta para todos. */
+/**
+ * Cuántos correos de warmup ya mandó HOY cada dominio. Una consulta para todos.
+ *
+ * LA VENTANA LLEVA LA ZONA EXPLÍCITA — `date_trunc('day', now(), 'UTC')` — y eso no es cosmético.
+ * Las dos formas anteriores estaban mal de maneras distintas, y ninguna se veía porque el servidor
+ * hoy corre en Etc/UTC:
+ *
+ *   · `date_trunc('day', now())`                   trunca en la TZ de la SESIÓN.
+ *   · `date_trunc('day', now() at time zone 'utc')` devuelve un timestamp SIN zona, que Postgres
+ *      reinterpreta en la TZ de sesión al compararlo contra un timestamptz.
+ *
+ * Medido contra Postgres real, con tres filas de hoy (02:00, 07:00 y 20:00 UTC):
+ *
+ *   TZ=Etc/UTC          vieja(sesión)=3   vieja(sin zona)=3   NUEVA=3
+ *   TZ=America/Bogota   vieja(sesión)=2   vieja(sin zona)=2   NUEVA=3
+ *   TZ=Europe/Madrid    vieja(sesión)=3   vieja(sin zona)=3   NUEVA=3
+ *
+ * Bajo Bogotá se PIERDEN los envíos de entre 00:00 y 05:00 UTC. Contar de menos es la dirección
+ * peligrosa: el daemon cree que mandó menos de lo que mandó y se autoriza a mandar de más. Un
+ * cambio de TZ del contenedor despierta el bug sin tocar una línea de código.
+ */
 export async function enviosDeHoy(pg: PgClient): Promise<Map<string, number>> {
   const { rows } = await pg.query<{ node_domain: string; n: string | number }>(
     `SELECT node_domain, COUNT(*)::int AS n FROM warmup_activity
-      WHERE kind = 'sent' AND occurred_at >= date_trunc('day', now() at time zone 'utc')
+      WHERE kind = 'sent' AND occurred_at >= date_trunc('day', now(), 'UTC')
       GROUP BY node_domain`
   );
   return new Map(rows.map((r) => [r.node_domain, Number(r.n)]));
@@ -206,13 +226,37 @@ export async function boxesSinCupoHoy(pg: PgClient): Promise<Set<string>> {
   const { rows } = await pg.query<{ node_domain: string }>(
     `SELECT DISTINCT node_domain FROM warmup_activity
       WHERE kind = 'error'
-        AND occurred_at >= date_trunc('day', now() at time zone 'utc')
+        AND occurred_at >= date_trunc('day', now(), 'UTC')
         AND detail->>'note' ILIKE '%daily send cap reached%'`
   );
   return new Set(rows.map((r) => r.node_domain));
 }
 
-/** El historial de envíos, que alimenta el día de rampa y la rotación de semillas. */
+/**
+ * El PRIMER envío de cada dominio, agregado en la base.
+ *
+ * El día de rampa se calculaba del historial recortado a 400 filas de TODA la flota, y de ahí se
+ * tomaba el `occurred_at` mínimo como "el primer envío". Pero es el mínimo de lo que ENTRÓ EN EL
+ * RECORTE, no el primero real: con la flota escribiendo ~60 envíos por día, 400 filas cubren una
+ * semana, así que un dominio que calienta hace dos meses aparecía en "día 7". Y es peor que un
+ * error fijo — el día RETROCEDE cuando sube el volumen de OTROS dominios, porque el recorte se
+ * acorta. Un dominio que ayer estaba en día 12 hoy dice día 7, y la rampa baja el cupo sola.
+ *
+ * Un `MIN()` agregado no tiene recorte y no depende de nadie más.
+ */
+export async function primerEnvioPorDominio(pg: PgClient): Promise<Map<string, string>> {
+  const { rows } = await pg.query<{ node_domain: string; desde: Date }>(
+    `SELECT node_domain, MIN(occurred_at) AS desde FROM warmup_activity
+      WHERE kind = 'sent' GROUP BY node_domain`
+  );
+  return new Map(rows.map((r) => [r.node_domain, new Date(r.desde).toISOString()]));
+}
+
+/**
+ * El historial de envíos RECIENTES. Alimenta la ROTACIÓN de semillas, que necesita justamente
+ * recencia (a quién le escribió este dominio últimamente). NO sirve para el día de rampa: para eso
+ * está `primerEnvioPorDominio`, porque el recorte de 400 filas falsea el primer envío.
+ */
 export async function historialDeEnvios(pg: PgClient, limite = 400): Promise<UsoPrevio[]> {
   const { rows } = await pg.query<{ node_domain: string; seed_inbox: string; occurred_at: Date }>(
     "SELECT node_domain, seed_inbox, occurred_at FROM warmup_activity WHERE kind = 'sent' ORDER BY occurred_at DESC LIMIT $1",
@@ -312,10 +356,11 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
     return null;
   };
 
-  const [historial, enviados, rebotados] = await Promise.all([
+  const [historial, enviados, rebotados, primerEnvio] = await Promise.all([
     historialDeEnvios(input.pg).catch(anotar("historial de envíos")),
     enviosDeHoy(input.pg).catch(anotar("envíos de hoy")),
-    boxesSinCupoHoy(input.pg).catch(anotar("nodos que rebotaron hoy"))
+    boxesSinCupoHoy(input.pg).catch(anotar("nodos que rebotaron hoy")),
+    primerEnvioPorDominio(input.pg).catch(anotar("primer envío por dominio"))
   ]);
 
   // ISO weekday del receptor: 1 = lunes … 7 = domingo. `getUTCDay()` da 0 = domingo.
@@ -329,7 +374,15 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
       lecturasFallidas.push(`placement de ${dominio}: ${errorPlacement}`);
       return [] as Placement[];
     });
-    const progreso = progresoDeCalentamiento(historial ?? [], dominio, null, ahora);
+    // El día sale del PRIMER ENVÍO REAL (agregado en la base), no del historial recortado. Si esa
+    // lectura falló, se cae al historial: peor, pero mejor que perder el día entero.
+    const desdeReal = primerEnvio?.get(dominio);
+    const progreso = progresoDeCalentamiento(
+      desdeReal ? [{ domain: dominio, seed: "", cuando: desdeReal }, ...(historial ?? []).filter((h) => h.domain === dominio)] : (historial ?? []),
+      dominio,
+      null,
+      ahora
+    );
     // Para el VOLUMEN solo vale una medición fresca. Un cupo de hace 14h puede ser un 2000 que ya
     // no existe, y decidir sobre eso es decidir sobre nada.
     const cupoFisico = cupos.vencida ? null : cupos.porDominio.get(dominio) ?? null;

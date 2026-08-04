@@ -225,3 +225,41 @@ test("si TODOS quedan excluidos, el pool es vacío y DICE por qué", () => {
   assert.match(r.motivo, /2 fuera/);
   assert.match(r.motivo, /cerrado por el receptor|cola atascada/);
 });
+
+// ── La ventana de "hoy" no puede depender de la zona horaria de la sesión ────────────────────────
+//
+// Verificado contra Postgres real, con tres filas de hoy (02:00, 07:00 y 20:00 UTC):
+//
+//   TZ=Etc/UTC          vieja(sesión)=3  vieja(sin zona)=3  NUEVA=3
+//   TZ=America/Bogota   vieja(sesión)=2  vieja(sin zona)=2  NUEVA=3   ← pierde la de las 02:00
+//   TZ=Europe/Madrid    vieja(sesión)=3  vieja(sin zona)=3  NUEVA=3
+//
+// Bajo Bogotá —la zona del operador— las formas viejas PIERDEN los envíos de entre 00:00 y 05:00
+// UTC. Contar de menos es la dirección peligrosa: el daemon cree que mandó menos de lo que mandó y
+// se autoriza a mandar de más. Hoy el servidor está en Etc/UTC y el bug duerme; un cambio de TZ del
+// contenedor lo despierta sin tocar una línea de código.
+//
+// El test es de CONTRATO sobre la SQL emitida: el defecto vive en Postgres, y un cliente falso no
+// ejerce el casteo de timestamp→timestamptz que lo produce. Lo que sí se puede fijar acá es que
+// nadie vuelva a escribir la forma frágil.
+
+test("las tres ventanas de 'hoy' usan date_trunc con zona EXPLÍCITA", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const fuentes = [
+    "apps/warmup-engine/src/service/plan-diario.ts",
+    "apps/warmup-engine/src/service/live-warmup-daemon.ts"
+  ];
+  for (const f of fuentes) {
+    const src = await readFile(f, "utf8");
+    // Solo las líneas de SQL, no los comentarios que documentan las formas viejas.
+    const sql = src
+      .split("\n")
+      .filter((l) => /date_trunc/.test(l) && !/^\s*(\/\/|--|\*)/.test(l.trim()))
+      .join("\n");
+    assert.doesNotMatch(sql, /date_trunc\('day',\s*now\(\)\)/, `${f}: trunca en la TZ de la sesión`);
+    assert.doesNotMatch(sql, /at time zone 'utc'\s*\)/, `${f}: devuelve timestamp sin zona y se reinterpreta`);
+    for (const linea of sql.split("\n").filter(Boolean)) {
+      assert.match(linea, /date_trunc\('day', now\(\), 'UTC'\)/, `${f}: ventana sin zona explícita → ${linea.trim()}`);
+    }
+  }
+});

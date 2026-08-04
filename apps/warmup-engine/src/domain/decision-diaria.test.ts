@@ -142,3 +142,47 @@ test("OTHER NO cuenta como bandeja: archivado o etiquetado no es aterrizar", () 
   const d = decidirCupoDeHoy({ ...base, diaN: 6, placements: p });
   assert.equal(d.accion, "frenar");
 });
+
+// ── El invariante que junta las dos mitades ──────────────────────────────────────────────────────
+// "Un dominio con cupo N manda como máximo N correos por día, contando el ciclo principal Y la
+// continuación de hilos." Las dos mitades estaban bien por separado y el sistema igual mandaba de
+// más, porque el contador que alimentaba a la segunda era la foto ANTERIOR al envío de la primera.
+
+test("REGRESIÓN: el envío del ciclo principal cuenta para la continuación (cupo 2 ⇒ NO salen 3)", () => {
+  const enviadosPorDominio = new Map<string, number>([["d.com", 1]]);
+  const decision = decidirCupoDeHoy({
+    diaN: 1, placements: ["INBOX", "INBOX", "INBOX", "INBOX"], cupoFisico: 20, isoWeekday: 2
+  });
+  assert.equal(decision.cupo, 2, "día 1 × paso 2 = 2, que es el caso real de hoy");
+
+  // 1. El ciclo principal: van 1 de 2 ⇒ manda.
+  const antes = enviadosPorDominio.get("d.com")!;
+  assert.ok(antes < decision.cupo, "el gate del ciclo principal deja pasar");
+
+  // 2. El envío SALIÓ. Sin esta línea (que es el fix), el paso 3 decide con `antes`.
+  enviadosPorDominio.set("d.com", antes + 1);
+
+  // 3. La continuación pregunta por el MISMO dominio, en la MISMA vuelta.
+  const permiso = puedeMandarTurno({
+    dominio: "d.com",
+    rebotadosHoy: new Set(),
+    decision,
+    enviadosHoy: enviadosPorDominio.get("d.com") ?? 0
+  });
+  assert.equal(permiso.si, false, "con 2 de 2 no puede mandar el tercero");
+  assert.match(permiso.motivo, /van 2/);
+});
+
+test("y si el envío principal FALLÓ, el cupo no se gasta", () => {
+  // `brokeAt === "sent"` es el único caso en que mailer.send falló. Ahí no se incrementa, porque
+  // cobrar cupo por un correo que no salió frenaría al dominio sin motivo.
+  const enviadosPorDominio = new Map<string, number>([["d.com", 1]]);
+  const decision = decidirCupoDeHoy({
+    diaN: 1, placements: ["INBOX", "INBOX", "INBOX", "INBOX"], cupoFisico: 20, isoWeekday: 2
+  });
+  // no se incrementa
+  const permiso = puedeMandarTurno({
+    dominio: "d.com", rebotadosHoy: new Set(), decision, enviadosHoy: enviadosPorDominio.get("d.com") ?? 0
+  });
+  assert.equal(permiso.si, true, "el cupo sigue disponible porque no salió nada");
+});
