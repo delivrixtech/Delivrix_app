@@ -119,3 +119,29 @@ test("solo se MIDE en la semilla del refresh token: en las demás sería un dato
   // Una semilla OAuth que NO es la cuenta del token tampoco: las ops apuntan a una sola casilla.
   assert.equal(puedeMedir({ ...oauth, address: "tercera@gmail.com" }, "medidora@gmail.com"), false);
 });
+
+// ── Pool de calentamiento ────────────────────────────────────────────────────────────────────────
+// Lo que protege: que el daemon caliente los nodos que PUEDEN enviar. Con una lista fija pasó el
+// día rebotando contra 6 nodos en cap 0 mientras el único con cupo real ni figuraba en la lista.
+
+test("el pool sale de la medición: solo los nodos con cupo > 0", async () => {
+  const { elegirPool } = await import("./live-warmup-daemon.ts");
+  const r = elegirPool(["viejo.com"], new Map([["a.com", 20], ["b.com", 0], ["c.com", 5]]), false);
+  assert.deepEqual(r.boxes, ["a.com", "c.com"]);
+  assert.match(r.motivo, /2 de 3/);
+});
+
+test("sin medición vigente cae al pool configurado, y lo DECLARA", async () => {
+  // "calentando los que pueden" y "calentando una lista que nadie verificó" no son lo mismo.
+  const { elegirPool } = await import("./live-warmup-daemon.ts");
+  const r = elegirPool(["x.com"], new Map([["a.com", 20]]), true);
+  assert.deepEqual(r.boxes, ["x.com"]);
+  assert.match(r.motivo, /sin medición vigente/);
+});
+
+test("flota entera en cap 0: pool vacío, no un fallback que rebote", async () => {
+  const { elegirPool } = await import("./live-warmup-daemon.ts");
+  const r = elegirPool(["x.com"], new Map([["a.com", 0], ["b.com", 0]]), false);
+  assert.deepEqual(r.boxes, []);
+  assert.match(r.motivo, /no hay nada que calentar/);
+});

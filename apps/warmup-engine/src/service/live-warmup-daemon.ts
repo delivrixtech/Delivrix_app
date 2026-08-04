@@ -16,7 +16,8 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { Pool } from "pg";
 import { elegirSemilla, semillasMedibles, type SeedBase } from "../domain/seeds.ts";
-import { elegirSemillaRotada, type UsoPrevio } from "../domain/rotacion.ts";
+import { elegirSemillaRotada, progresoDeCalentamiento, type UsoPrevio } from "../domain/rotacion.ts";
+import { decidirCupoDeHoy, type DecisionDiaria } from "../domain/decision-diaria.ts";
 import { opsDesdeImap, type ImapClienteMinimo } from "../live/imap-placement-ops.ts";
 import { leerHiloWarmup, type ImapLector } from "../live/imap-thread-reader.ts";
 import { pedirSiguienteTurno, tocaResponder, type TurnoHilo } from "../live/continuar-conversacion.ts";
@@ -40,6 +41,14 @@ const require = createRequire(import.meta.url);
 
 // ── Config ────────────────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Pool de respaldo. Se usa SOLO si no hay una medición vigente del cupo de la flota.
+ *
+ * Una lista fija de dominios es exactamente lo que rompió el warmup: los 6 de acá estaban todos
+ * frenados en cap 0, el único con cupo real (`corpfiling-infra.com`) no figuraba, y el daemon
+ * pasaba el día rebotando contra nodos muertos sin que nada lo dijera. El pool de verdad sale de
+ * `elegirPool()`: los nodos que HOY pueden enviar.
+ */
 const DEFAULT_BOXES = [
   "infranationalcorp.com",
   "bizfiling-infra.com",
@@ -60,6 +69,8 @@ export interface LiveDaemonConfig {
   seedInbox: string;
   seedsPath: string;
   killFile: string;
+  /** Dónde vive la medición del cupo físico de la flota (la persiste `limite-fisico --status`). */
+  capFile: string;
   pollAttempts: number;
   pollDelayMs: number;
 }
@@ -93,6 +104,7 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
     seedInbox: (env.WARMUP_GMAIL_SEED_USER ?? "infradelivrixdemo@gmail.com").trim(),
     seedsPath: (env.WARMUP_SEEDS_FILE ?? resolve(process.cwd(), "runtime/openclaw-workspace/inventory/warmup-seeds.json")).trim(),
     killFile: (env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "runtime/warmup-live.kill")).trim(),
+    capFile: (env.WARMUP_CAP_FILE ?? resolve(process.cwd(), "runtime/openclaw-workspace/inventory/sender-cap.json")).trim(),
     // Ventana de medición amplia: Gmail puede tardar >60s en indexar el mensaje recién enviado.
     // 30 intentos × 6s = ~3min inline. (Mejora futura: medir en un pase posterior, no bloqueante.)
     pollAttempts: intEnv(env.WARMUP_LIVE_POLL_ATTEMPTS, 30, 1),
@@ -314,6 +326,81 @@ async function historialDeEnvios(pg: PgClient, limite = 400): Promise<UsoPrevio[
   return rows.map((r) => ({ domain: r.node_domain, seed: r.seed_inbox, cuando: new Date(r.occurred_at).toISOString() }));
 }
 
+/**
+ * Qué dominios calienta hoy: los que tienen cupo físico > 0 según la medición vigente.
+ *
+ * Sin medición vigente cae al pool configurado. Se declara cuál de los dos casos ocurrió: "estoy
+ * calentando los que pueden" y "estoy calentando una lista que nadie verificó" no son lo mismo, y
+ * confundirlos fue el bug.
+ */
+export function elegirPool(
+  configurado: readonly string[],
+  cupos: ReadonlyMap<string, number>,
+  vencido: boolean
+): { boxes: string[]; motivo: string } {
+  if (vencido || cupos.size === 0) {
+    return { boxes: [...configurado], motivo: "sin medición vigente del cupo: se usa el pool configurado" };
+  }
+  const conCupo = [...cupos.entries()].filter(([, cap]) => cap > 0).map(([d]) => d).sort();
+  if (conCupo.length === 0) {
+    return { boxes: [], motivo: `los ${cupos.size} nodos medidos están en cap 0: no hay nada que calentar` };
+  }
+  return { boxes: conCupo, motivo: `${conCupo.length} de ${cupos.size} nodos con cupo > 0` };
+}
+
+/** Cuánto vale una medición del cupo antes de considerarse vencida. */
+const CUPO_VENCE_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * El cupo físico instalado en cada nodo, si la medición sigue vigente.
+ *
+ * VENCE a propósito. El archivo de la flota se mide cuando alguien corre `limite-fisico --status`,
+ * y entre una corrida y otra el cupo puede haber cambiado: hoy mismo el archivo decía 2000 en
+ * nodos que en vivo estaban en 0 y en 20, porque el freno se aplicó después de medir. Una medición
+ * vieja usada como verdad es peor que no tener ninguna — con `null` la rampa decide y la barrera
+ * física del nodo hace lo suyo; con un 2000 fantasma se toman decisiones sobre algo que no existe.
+ */
+async function cuposFisicos(ruta: string): Promise<{ porDominio: Map<string, number>; vencido: boolean }> {
+  try {
+    const j = JSON.parse(await readFile(ruta, "utf8")) as {
+      medidoEn?: string;
+      nodos?: Array<{ domain?: string; cap?: number | null }>;
+    };
+    const edad = Date.now() - Date.parse(j.medidoEn ?? "");
+    if (!Number.isFinite(edad) || edad > CUPO_VENCE_MS) return { porDominio: new Map(), vencido: true };
+    const porDominio = new Map<string, number>();
+    for (const n of j.nodos ?? []) {
+      if (n.domain && typeof n.cap === "number") porDominio.set(n.domain, n.cap);
+    }
+    return { porDominio, vencido: false };
+  } catch {
+    return { porDominio: new Map(), vencido: true };
+  }
+}
+
+/** Los placements medidos de UN dominio, del más nuevo al más viejo. */
+async function placementsDeDominio(pg: PgClient, domain: string, ventana: number): Promise<Placement[]> {
+  const { rows } = await pg.query<{ placement: string | null }>(
+    `SELECT placement FROM warmup_activity
+      WHERE kind = 'measured' AND placement IS NOT NULL AND node_domain = $1
+      ORDER BY occurred_at DESC LIMIT $2`,
+    [domain, ventana]
+  );
+  return rows
+    .map((r) => (r.placement ?? "").toUpperCase())
+    .filter((p): p is Placement => p === "INBOX" || p === "SPAM" || p === "PROMOTIONS" || p === "OTHER");
+}
+
+/** Cuántos correos de warmup ya mandó HOY este dominio. */
+async function enviosHoyDeDominio(pg: PgClient, domain: string): Promise<number> {
+  const { rows } = await pg.query<{ n: string | number }>(
+    `SELECT COUNT(*)::int AS n FROM warmup_activity
+      WHERE kind = 'sent' AND node_domain = $1 AND occurred_at >= date_trunc('day', now())`,
+    [domain]
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
 /** Últimos placements medidos (para el gate). */
 async function recentPlacements(pg: PgClient, window: number): Promise<Placement[]> {
   const { rows } = await pg.query<{ placement: string | null }>(
@@ -476,7 +563,17 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   const recorder = createPgRecorder(pg);
 
   let seq = await countCyclesToday(pg); // arranca la rotación donde quedó el día
-  log(`ARRANCA — box pool ${cfg.boxes.length}, tope ${cfg.maxPerDay}/día, intervalo ${Math.round(cfg.intervalMs / 60000)}min, piso placement ${(cfg.placementFloor * 100).toFixed(0)}%, seed ${cfg.seedInbox}`);
+  // El pool sale de la MEDICIÓN, no de una lista escrita a mano. Con la lista fija el daemon pasó
+  // el día rebotando contra 6 nodos frenados en cap 0 mientras el único con cupo real ni figuraba.
+  const capsIniciales = await cuposFisicos(cfg.capFile);
+  const poolElegido = elegirPool(cfg.boxes, capsIniciales.porDominio, capsIniciales.vencido);
+  cfg.boxes = poolElegido.boxes;
+  log(`pool: ${poolElegido.motivo}${poolElegido.boxes.length > 0 ? ` → ${poolElegido.boxes.join(", ")}` : ""}`);
+  if (poolElegido.boxes.length === 0) {
+    log("nada que calentar: no hay ningún nodo con cupo. Se sale (revisá el freno con limite-fisico --status).");
+    return;
+  }
+  log(`ARRANCA — box pool ${cfg.boxes.length}, intervalo ${Math.round(cfg.intervalMs / 60000)}min, piso placement ${(cfg.placementFloor * 100).toFixed(0)}%, seed ${cfg.seedInbox}`);
 
   try {
     for (;;) {
@@ -497,10 +594,39 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           await sleep(cfg.intervalMs);
           continue;
         }
-        if (frenados.size > 0) {
-          log(`${frenados.size} box(es) sin cupo hoy, salteados: ${[...frenados].join(", ")}`);
+        // Solo los del POOL: listar dominios que ni siquiera se están calentando es ruido que
+        // hace parecer que el daemon intentó algo con ellos.
+        const salteados = cfg.boxes.filter((b) => frenados.has(b));
+        if (salteados.length > 0) {
+          log(`${salteados.length} box(es) sin cupo hoy, salteados: ${salteados.join(", ")}`);
         }
         const box = pickBox(disponibles, seq);
+
+        // El historial real alimenta las DOS decisiones de abajo: cuánto manda hoy este dominio, y
+        // a qué semilla le escribe.
+        const historial = await historialDeEnvios(pg).catch(() => [] as UsoPrevio[]);
+
+        // ── La decisión del día para ESTE dominio ─────────────────────────────────────────────
+        // Antes el tope era un número fijo e igual para todos (3/día, siempre). Eso no es un
+        // warmup profesional, es un temporizador. Acá el volumen sale de la evidencia de este
+        // dominio: qué día de rampa lleva y cómo viene su placement. Sube si puede, baja si debe,
+        // frena si hace falta — y todo queda dicho en el log.
+        const capsFisicos = await cuposFisicos(cfg.capFile);
+        const delDia: DecisionDiaria = decidirCupoDeHoy({
+          diaN: progresoDeCalentamiento(historial, box, null)?.diasCorridos ?? 0,
+          placements: await placementsDeDominio(pg, box, cfg.placementWindow).catch(() => []),
+          cupoFisico: capsFisicos.porDominio.get(box) ?? null,
+          isoWeekday: (((new Date().getUTCDay() + 6) % 7) + 1) as 1 | 2 | 3 | 4 | 5 | 6 | 7
+        });
+        const enviadosHoyBox = await enviosHoyDeDominio(pg, box).catch(() => 0);
+        log(`${box}: ${delDia.accion} · cupo ${delDia.cupo}/día (van ${enviadosHoyBox}) — ${delDia.motivo}`);
+        if (enviadosHoyBox >= delDia.cupo) {
+          log(`${box} ya cumplió su cupo de hoy — se salta`);
+          seq += 1;
+          if (once) break;
+          await sleep(Math.min(cfg.intervalMs, 60_000));
+          continue;
+        }
         const conversation = pickConversation(seq);
         const stamp = `${Date.now()}-${seq}`;
         const testId = makeTestId(stamp);
@@ -509,7 +635,6 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // ROTACIÓN sobre el historial REAL: no repite el par (dominio, semilla) mientras haya
         // alternativa, reparte entre proveedores y desempata por la menos usada. Un hash de
         // (dominio, vuelta) dejaba siempre la misma coreografía, que es la huella a evitar.
-        const historial = await historialDeEnvios(pg).catch(() => [] as UsoPrevio[]);
         const decision = elegirSemillaRotada(semillas, box, historial);
         const semilla = decision?.semilla ?? {
           address: cfg.seedInbox,
