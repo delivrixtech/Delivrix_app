@@ -314,7 +314,21 @@ export default function WarmupLive() {
   const enCurso = vueltas[0] ?? null;
   const consumido = (cap?.nodos ?? []).reduce((s, n) => s + (n.consumidoHoy ?? 0), 0);
   const tope = (cap?.nodos ?? []).reduce((s, n) => s + (n.cap ?? 0), 0);
-  const vivo = enCurso ? ahora - Date.parse(enCurso.ultimo) < 10 * 60_000 : false;
+  // EL PULSO, contra la CADENCIA REAL del daemon y no contra 10 minutos fijos.
+  //
+  // El daemon manda cada 4 horas: con el umbral de 10 min, el semáforo estaba gris el 99% del
+  // tiempo EN OPERACIÓN SANA. Un indicador que casi siempre dice "mal" no informa nada — el
+  // operador aprende a ignorarlo, y el día que de verdad esté muerto no se va a notar.
+  //
+  // Tres estados, porque "esperando el intervalo" y "daemon muerto" NO son lo mismo:
+  //   · activo   — hubo una vuelta hace poco: se está moviendo ahora.
+  //   · en pausa — dentro de la cadencia esperada: sano, esperando su turno.
+  //   · frío     — pasó más de dos cadencias sin una vuelta: algo se rompió.
+  const CADENCIA_MS = 4 * 60 * 60_000;
+  const desdeUltima = enCurso ? ahora - Date.parse(enCurso.ultimo) : Number.POSITIVE_INFINITY;
+  const pulso: "activo" | "en pausa" | "frío" =
+    desdeUltima < 15 * 60_000 ? "activo" : desdeUltima < 2 * CADENCIA_MS ? "en pausa" : "frío";
+  const vivo = pulso !== "frío";
 
   return (
     <div style={S.consola}>
@@ -324,10 +338,18 @@ export default function WarmupLive() {
         <span style={S.pulsoTxt}>
           {enCurso ? (
             <>
-              última vuelta hace <b style={S.num}>{hace(enCurso.ultimo, ahora)}</b>
+              <b style={S.pulsoEstado(pulso)}>{pulso}</b> · última vuelta hace{" "}
+              <b style={S.num}>{hace(enCurso.ultimo, ahora)}</b>
+              {pulso === "frío" ? <span style={S.dim}> (más de 8 h: revisá el daemon)</span> : null}
             </>
+          ) : act === null ? (
+            // `act === null` = todavía no volvió la primera respuesta (o falló). No es lo mismo
+            // que "no hubo vueltas", y afirmarlo sería inventar.
+            "leyendo la actividad…"
           ) : (
-            "sin vueltas registradas"
+            // "sin vueltas registradas" afirmaba algo que puede ser falso: en el primer render y
+            // ante un fallo de red no sabemos si hubo vueltas, solo que no las pudimos leer.
+            "todavía sin datos de actividad"
           )}
         </span>
         <span style={S.sep} />
@@ -630,6 +652,12 @@ const S = {
     boxShadow: vivo ? "0 0 0 4px color-mix(in srgb, var(--color-success) 18%, transparent)" : "none"
   }),
   pulsoTxt: { fontSize: 12.5, color: "var(--color-text-secondary)" } as const,
+  pulsoEstado: (p: "activo" | "en pausa" | "frío") => ({
+    color: p === "activo" ? "var(--color-success)" : p === "en pausa" ? "var(--color-text-secondary)" : "var(--color-critical)",
+    textTransform: "uppercase" as const,
+    fontSize: 10.5,
+    letterSpacing: ".07em"
+  }),
   num: { color: "var(--color-text-primary)", fontVariantNumeric: "tabular-nums" } as const,
   dim: { color: "var(--color-text-tertiary)" } as const,
   sep: { width: 1, height: 14, background: "var(--color-border)" } as const,

@@ -74,8 +74,9 @@ export default function WarmupPlan() {
           setError(null);
         }
       } catch (e) {
-        // El error se MUESTRA. Un panel que falla en silencio deja al operador creyendo que ve
-        // el estado actual cuando está mirando el de hace media hora.
+        // El error se MUESTRA, pero NO se borra lo que ya había. Un 502 pasajero del gateway
+        // vaciaba la pantalla entera: el operador perdía el plan por un parpadeo de red, que es
+        // peor que verlo con un aviso de que puede estar desactualizado.
         if (vivo) setError(e instanceof Error ? e.message : String(e));
       }
     };
@@ -87,7 +88,9 @@ export default function WarmupPlan() {
     };
   }, []);
 
-  if (error) return <div style={S.aviso}>no se pudo leer el plan: {error}</div>;
+  // Solo se reemplaza la pantalla si NO hay nada que mostrar. Con plan previo, el error va como
+  // aviso arriba y los datos siguen visibles, marcados como posiblemente viejos.
+  if (error && !plan) return <div style={S.aviso}>no se pudo leer el plan: {error}</div>;
   if (!plan) return <div style={S.dim}>leyendo el plan…</div>;
 
   return (
@@ -96,6 +99,12 @@ export default function WarmupPlan() {
         <h2 style={S.titulo}>El plan de hoy</h2>
         <span style={S.dim}>qué decidió el agente para cada dominio, y con qué evidencia</span>
       </header>
+
+      {error ? (
+        <div style={S.aviso}>
+          no se pudo refrescar ({error}) — lo de abajo es de las {new Date(plan.generadoEn).toLocaleTimeString("es-AR")}
+        </div>
+      ) : null}
 
       {plan.nota ? <div style={S.aviso}>{textoNota(plan.nota)}</div> : null}
 
@@ -190,7 +199,16 @@ function FichaDominio({ d }: { d: DominioDelPlan }) {
         <Metrica
           rotulo="hoy"
           valor={`${d.enviadosHoy}/${d.decision.cupo}`}
-          pie={restante === 0 ? "cupo cumplido" : `faltan ${restante}`}
+          // Un dominio FRENADO tiene cupo 0, y "0/0 · cupo cumplido" se lee como "terminó su
+          // trabajo del día" cuando en realidad está detenido por mal placement. Es la lectura
+          // exactamente opuesta a la verdad, en la métrica que el operador mira primero.
+          pie={
+            d.decision.cupo === 0
+              ? "frenado: no manda"
+              : restante === 0
+                ? "cupo cumplido"
+                : `faltan ${restante}`
+          }
         />
         <Metrica
           rotulo="cupo del nodo"
@@ -243,11 +261,13 @@ function textoNota(nota: string): string {
 // ── Estilos: los tokens de la casa, sin ámbar (warning = naranja) ───────────────────────────────
 
 const COLOR_ACCION: Record<Accion, string> = {
-  arrancar: "var(--color-info, #0c7cb5)",
+  arrancar: "var(--color-info)",
   subir: "var(--color-success)",
   sostener: "var(--color-text-secondary)",
   bajar: "var(--color-warning)",
-  frenar: "var(--color-danger)"
+  // --color-critical, NO --color-danger: ese token no existe en tokens.css, así que el chip del
+  // estado MÁS importante —un dominio frenado— se renderizaba sin color, sin fondo y sin borde.
+  frenar: "var(--color-critical)"
 };
 
 const S = {

@@ -275,9 +275,15 @@ export function verificarLectura(texto: string, hechos: HechosWarmup): LecturaEs
   const cruzados = hechos.flota?.cruzados.length ?? null;
   if (cruzados !== null) {
     const NUM: Record<string, number> = { un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6 };
-    const m = cuerpo.match(/\b(\d+|un|uno|una|dos|tres|cuatro|cinco|seis)\s+(?:dominios?\s+)?(?:ya\s+)?(?:lo\s+)?cruzar/i);
+    // El `(?!\s*o\s)` evita el falso positivo visto en producción: el agente escribió "5 ya
+    // cruzaron O ROZAN el umbral", que junta dos grupos en una frase y es impreciso, no inventado.
+    // La distinción importa porque un reparo BLOQUEA todas las acciones de esa vuelta, incluidas
+    // las correctas: marcar imprecisiones como falsedades entrena a desconfiar del verificador y
+    // deja al agente sin manos por un problema de redacción.
+    const m = cuerpo.match(/\b(\d+|un|uno|una|dos|tres|cuatro|cinco|seis)\s+(?:dominios?\s+)?(?:ya\s+)?(?:lo\s+)?cruzar\w*(?!\s*o\s)/i);
+    const ambiguo = /cruzar\w*\s+o\s+(rozan|est[áa]n|se acercan)/i.test(cuerpo);
     const dicho = m ? (NUM[m[1]!.toLowerCase()] ?? Number(m[1])) : null;
-    if (dicho !== null && Number.isFinite(dicho) && dicho !== cruzados) {
+    if (!ambiguo && dicho !== null && Number.isFinite(dicho) && dicho !== cruzados) {
       out.reparos.push(`dice que cruzaron ${dicho} dominios y los datos dicen ${cruzados}`);
     }
   }
