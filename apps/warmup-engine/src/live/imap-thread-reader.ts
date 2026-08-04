@@ -20,6 +20,13 @@ export interface MensajeDelHilo {
   fecha: string;
   /** Cuerpo en texto plano, recortado. `null` si no se pudo extraer. */
   texto: string | null;
+  /**
+   * El `Message-ID` del mensaje, tal cual viaja. Hace falta para ENHEBRAR el turno siguiente: una
+   * respuesta sin `In-Reply-To` es un primer contacto disfrazado de respuesta, y eso es una
+   * heurística de spam vieja y conocida — aplicada justo al correo cuyo propósito es construir
+   * reputación. `null` si no se pudo leer.
+   */
+  messageId: string | null;
 }
 
 export interface HiloWarmup {
@@ -137,6 +144,9 @@ async function leerMensaje(
   return {
     papel,
     carpeta,
+    // Del crudo y no del envelope: es el identificador exacto que el receptor va a cotejar contra
+    // el In-Reply-To del turno siguiente.
+    messageId: crudo.match(/^message-id:\s*(<[^>]+>)/im)?.[1] ?? null,
     asunto: env.subject ?? "(sin asunto)",
     de: direccion(env.from),
     para: direccion(env.to),

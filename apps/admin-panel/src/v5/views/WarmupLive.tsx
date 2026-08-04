@@ -610,7 +610,11 @@ function Hilo({
 
 // ── Estilos: pocos, con los tokens de la casa ────────────────────────────────────────────────────
 
-const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
+// El token de la casa, NO una pila de fuentes propia. El sitio usa UNA sola familia en todos los
+// roles —Inter, incluido "mono"— por decisión del 2026-07-14 (dirección Aivora): sin mezcla de
+// familias. Lo que alinea los números es `font-variant-numeric: tabular-nums`, que Inter trae.
+// Hardcodear ui-monospace metía una segunda tipografía en la única pantalla nueva del panel.
+const MONO = "var(--font-mono)";
 
 const S = {
   consola: { display: "grid", gap: 14 } as const,

@@ -403,7 +403,12 @@ function createBoxMailer(boxDomain: string, store: InventoryCredentialStore, key
     async send(input) {
       const info = await transport.sendMail({
         from: input.from, to: input.to, subject: input.subject, text: input.text,
-        headers: { "X-Delivrix-Test-Id": input.testId }
+        headers: { "X-Delivrix-Test-Id": input.testId },
+        // Enhebrado real. Un "Re:" sin estas cabeceras es un primer contacto disfrazado de
+        // respuesta, que es una heurística de spam vieja y conocida — y se la estábamos aplicando
+        // justo al correo que existe para construir reputación.
+        ...(input.inReplyTo ? { inReplyTo: input.inReplyTo } : {}),
+        ...(input.references ? { references: input.references } : {})
       });
       return { messageId: info.messageId, response: info.response };
     }
@@ -858,8 +863,20 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
               }
 
               const asuntoRe = hiloPrevio.subject.startsWith("Re:") ? hiloPrevio.subject : `Re: ${hiloPrevio.subject}`;
+              // Se enhebra contra el ÚLTIMO mensaje del hilo, y `references` lleva la cadena
+              // entera: así lo agrupan los clientes de correo y así lo verifica el receptor.
+              const idsDelHilo = hilo.mensajes.map((m) => m.messageId).filter((x): x is string => Boolean(x));
+              const ultimoId = idsDelHilo.at(-1);
+              if (!ultimoId) {
+                // Sin Message-ID no se puede enhebrar, y mandar un "Re:" huérfano es peor que no
+                // mandar: se ve como respuesta falsa justo en el correo que construye reputación.
+                log(`hilo ${marca}: no pude leer el Message-ID del hilo — no mando un "Re:" huérfano`);
+                continue;
+              }
               await mailerHilo.send({
                 from: `mailer@${hiloPrevio.nodeDomain}`,
+                inReplyTo: ultimoId,
+                references: idsDelHilo.join(" "),
                 to: semilla.address,
                 subject: asuntoRe,
                 text: turno.texto,

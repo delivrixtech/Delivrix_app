@@ -11,6 +11,8 @@
 // Corre local: costo cero, así que puede mirar siempre.
 
 import { resolve } from "node:path";
+import { writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { Pool } from "pg";
 
 import { OpenClawWorkspace } from "../../apps/gateway-api/src/openclaw-workspace.ts";
@@ -23,6 +25,8 @@ import { leerSemillas, semillasActivas, semillasMedibles, puntoCiego } from "../
 import { MEASUREMENT_FILE, type MedicionFlota } from "../../apps/gateway-api/src/sender-measurement.ts";
 
 const PENDIENTES_FILE = "warmup-pendientes.json";
+/** El MISMO kill-file que mira el daemon en cada vuelta. Se revierte con `rm`. */
+const KILL_FILE = (process.env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "runtime/warmup-live.kill")).trim();
 
 /**
  * ¿El agente puede frenar nodos por sí solo?
@@ -230,6 +234,17 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
               }
             }
           : {}),
+        // PAUSAR: el freno general. Estaba PROMETIDO en el prompt del agente y no cableado acá, o
+        // sea que era un no-op: ante un cruce masivo del umbral el modelo pedía pausar, el módulo
+        // respondía "no está habilitado en este entorno" y el warmup seguía andando. Prometerle una
+        // palanca que no existe es peor que no dársela.
+        //
+        // Va al kill-file que el daemon YA respeta en cada vuelta, y se revierte con `rm`. Por eso
+        // no necesita el flag de SSH: no toca ningún nodo.
+        pausarWarmup: async (m: string) => {
+          await writeFile(KILL_FILE, `${new Date().toISOString()} pausado por el agente: ${m}\n`, "utf8");
+        },
+        warmupPausado: async () => existsSync(KILL_FILE),
         pendientes: {
           listar: async () => (await workspace.readInventoryJson<Pendiente[]>(PENDIENTES_FILE).catch(() => [])) ?? [],
           guardar: async (p) => {

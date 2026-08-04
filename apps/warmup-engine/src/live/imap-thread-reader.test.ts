@@ -92,3 +92,26 @@ test("hilo inexistente: lista vacía CON motivo", async () => {
   assert.deepEqual(h.mensajes, []);
   assert.match(h.motivo ?? "", /no se encontró/);
 });
+
+test("expone el Message-ID de cada mensaje: sin él no se puede enhebrar el turno siguiente", async () => {
+  // Un "Re:" sin In-Reply-To es un primer contacto disfrazado de respuesta — heurística de spam
+  // vieja y conocida, aplicada justo al correo que existe para construir reputación. La asimetría
+  // lo delataba: la respuesta de la SEMILLA sí iba enhebrada y la de nuestro nodo no.
+  const b = buzon(ES, [{ carpeta: "INBOX", uid: 1, asunto: "Café? [t1]", fecha: "2026-08-04T10:00:00Z", header: "t1" }]);
+  const conCrudo: typeof b = {
+    ...b,
+    fetchOne: async (uid: string) => {
+      const r = await b.fetchOne(uid, {}, {});
+      return r ? { ...r, source: "Message-ID: <abc-123@corpfiling-infra.com>\r\nSubject: x\r\n\r\nhola" } : false;
+    }
+  };
+  const h = await leerHiloWarmup(conCrudo, "t1");
+  assert.equal(h.mensajes[0]?.messageId, "<abc-123@corpfiling-infra.com>");
+});
+
+test("sin Message-ID en el crudo devuelve null, no una cadena inventada", async () => {
+  const h = await leerHiloWarmup(buzon(ES, [
+    { carpeta: "INBOX", uid: 1, asunto: "Café? [t1]", fecha: "2026-08-04T10:00:00Z", header: "t1" }
+  ]), "t1");
+  assert.equal(h.mensajes[0]?.messageId, null);
+});

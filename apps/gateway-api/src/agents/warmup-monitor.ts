@@ -259,10 +259,14 @@ export function verificarLectura(texto: string, hechos: HechosWarmup): LecturaEs
   }
 
   // 2. La confusión que originó todo esto: atribuirle a un proveedor un freno que es NUESTRO.
-  const soloFrenoPropio =
-    (hechos.rechazos ?? []).length > 0 && (hechos.rechazos ?? []).every((r) => r.origen === "freno_propio");
-  if (soloFrenoPropio && /l[íi]mite[s]? (diario[s]?|de env[íi]o)? ?de (gmail|google|outlook|yahoo)/i.test(cuerpo)) {
-    out.reparos.push("atribuye a un proveedor un freno que según los datos es nuestro cap de Postfix");
+  // PRESENCIA, no exclusividad. Con `.every` bastaba UN solo rechazo de receptor en la ventana
+  // para desarmar el chequeo: verificado con los datos reales del 2026-08-04 (6 frenos propios + 1
+  // de receptor), la frase textual que originó todo este módulo —"está bloqueado por los límites
+  // diarios de Gmail"— volvía a pasar limpia. Y como el runner ejecuta acciones solo cuando no hay
+  // reparos, además habilitaba a actuar sobre ese razonamiento falso.
+  const hayFrenoPropio = (hechos.rechazos ?? []).some((r) => r.origen === "freno_propio");
+  if (hayFrenoPropio && /l[íi]mite[s]? (diario[s]?|de env[íi]o)? ?de (gmail|google|outlook|yahoo)/i.test(cuerpo)) {
+    out.reparos.push("atribuye a un proveedor un freno que en los datos figura como nuestro cap de Postfix");
   }
 
   // 3. El conteo de dominios que CRUZARON el umbral permanente. Es el número más caro del sistema

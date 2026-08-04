@@ -39,7 +39,7 @@ test("CAZA el error real: atribuirle a Gmail un freno que es nuestro", () => {
     "AHORA: está bloqueado por los límites diarios de Gmail en el nodo.\nPORQUE: 6 rechazos.\nRIESGO: ninguno\nFALTA: nada",
     HECHOS_BASE
   );
-  assert.ok(v.reparos.some((r) => /freno que según los datos es nuestro/.test(r)));
+  assert.ok(v.reparos.some((r) => /freno que en los datos figura como nuestro/.test(r)));
 });
 
 test("CAZA un dominio inventado", () => {
@@ -71,4 +71,36 @@ test("CAZA un placement citado cuando no hay ninguna medición", () => {
 test("una respuesta en prosa suelta se marca como fuera de formato", () => {
   const v = verificarLectura("Bueno, mirando los datos me parece que todo viene bien.", HECHOS_BASE);
   assert.ok(v.reparos.some((r) => /formato/.test(r)));
+});
+
+test("REGRESIÓN: UN solo rechazo de receptor NO desarma el chequeo de atribución", () => {
+  // La condición era `.every(origen === "freno_propio")`, así que bastaba un rechazo de receptor en
+  // la ventana para que la frase textual del 2026-08-04 volviera a pasar limpia. Y como el runner
+  // ejecuta acciones solo cuando NO hay reparos, además habilitaba a actuar sobre ese razonamiento.
+  const mezclado: HechosWarmup = {
+    ...HECHOS_BASE,
+    rechazos: [
+      { origen: "freno_propio", cuantos: 6, explicacion: "es NUESTRO límite de Postfix", ejemplo: "450 ..." },
+      { origen: "receptor", cuantos: 1, explicacion: "el receptor rechaza por política", ejemplo: "550 5.7.1" }
+    ]
+  };
+  const v = verificarLectura(
+    "AHORA: está bloqueado por los límites diarios de Gmail en el nodo.\nPORQUE: 6 rechazos.\nRIESGO: ninguno\nFALTA: nada",
+    mezclado
+  );
+  assert.ok(v.reparos.some((r) => /freno que en los datos figura como nuestro/.test(r)));
+});
+
+test("sin ningún freno propio en la ventana, nombrar los límites del proveedor NO es un reparo", () => {
+  // El otro lado del borde: si de verdad todos los rechazos son del receptor, hablar de sus límites
+  // es correcto y marcarlo sería un reparo FALSO — que bloquea todas las acciones, incluida la buena.
+  const soloReceptor: HechosWarmup = {
+    ...HECHOS_BASE,
+    rechazos: [{ origen: "receptor", cuantos: 6, explicacion: "política del receptor", ejemplo: "550 5.7.1" }]
+  };
+  const v = verificarLectura(
+    "AHORA: nos frenan los límites diarios de Gmail.\nPORQUE: 6 rechazos del receptor.\nRIESGO: ninguno\nFALTA: nada",
+    soloReceptor
+  );
+  assert.deepEqual(v.reparos, []);
 });

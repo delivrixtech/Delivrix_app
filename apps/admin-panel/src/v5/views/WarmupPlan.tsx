@@ -273,7 +273,8 @@ const S = {
     background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
     border: "1px solid color-mix(in srgb, var(--color-warning) 28%, transparent)"
   } as const,
-  codigo: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 11.5 } as const,
+  // Token de la casa: Inter en todos los roles, sin mezcla de familias.
+  codigo: { fontFamily: "var(--font-mono)", fontSize: 11.5 } as const,
   vacio: {
     padding: "18px 16px", borderRadius: 12, fontSize: 13, lineHeight: 1.55,
     color: "var(--color-text-secondary)",

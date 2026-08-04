@@ -29,7 +29,20 @@ export interface SentMail {
 
 export interface WarmupMailer {
   /** Manda el correo real desde el box (SMTP). Estampa el header X-Delivrix-Test-Id. */
-  send(input: { from: string; to: string; subject: string; text: string; testId: string }): Promise<SentMail>;
+  send(input: {
+    from: string;
+    to: string;
+    subject: string;
+    text: string;
+    testId: string;
+    /**
+     * Cabeceras de threading. Sin ellas un asunto con "Re:" es un primer contacto disfrazado de
+     * respuesta — patrón de spam clásico. La asimetría lo delataba: la respuesta que manda la
+     * SEMILLA sí iba enhebrada, y la que manda nuestro nodo no.
+     */
+    inReplyTo?: string;
+    references?: string;
+  }): Promise<SentMail>;
 }
 
 export interface FoundMessage {
