@@ -192,6 +192,7 @@ import { handleWarmupStatus } from "./routes/warmup-status.ts";
 import { handleWarmupTrends } from "./routes/warmup-trends.ts";
 import { handleWarmupActivity } from "./routes/warmup-activity.ts";
 import { handleWarmupPlan } from "./routes/warmup-plan.ts";
+import { handleWarmupPendientes } from "./routes/warmup-pendientes.ts";
 import {
   handleWarmupMailboxOnboard,
   handleWarmupMailboxOnboardBatch,
@@ -2939,6 +2940,17 @@ const server = createServer(async (request, response) => {
     // EL PLAN: qué va a hacer hoy el agente con cada dominio y por qué. Es la misma función que
     // consulta el daemon antes de actuar, no una reconstrucción — si fueran dos, el panel mostraría
     // una decisión parecida pero distinta de la que se ejecuta.
+    // LO QUE EL AGENTE LE PIDE AL OPERADOR. Vivía solo en un archivo del inventario, así que el
+    // agente estaba pidiendo cosas al vacío: una petición que nadie recibe no es una petición.
+    if (request.method === "GET" && requestUrl(request).pathname === "/v1/warmup/pendientes") {
+      return await handleWarmupPendientes(request, response, {
+        workspace: openClawWorkspace,
+        readBoundaryToken: sensitiveReadBoundaryToken,
+        now: () => new Date(),
+        logger: gatewayRuntimeLog
+      });
+    }
+
     if (request.method === "GET" && requestUrl(request).pathname === "/v1/warmup/plan") {
       return await handleWarmupPlan(request, response, {
         pgClient: episodicScratchPool,

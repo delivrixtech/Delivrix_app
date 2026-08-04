@@ -24,6 +24,7 @@ import {
   enviosDeHoy,
   historialDeEnvios,
   leerCuposFisicos,
+  leerSalud,
   placementsDeDominio
 } from "./plan-diario.ts";
 import { opsDesdeImap, type ImapClienteMinimo } from "../live/imap-placement-ops.ts";
@@ -80,6 +81,8 @@ export interface LiveDaemonConfig {
   killFile: string;
   /** Dónde vive la medición del cupo físico de la flota (la persiste `limite-fisico --status`). */
   capFile: string;
+  /** Medición de salud de la flota: saca del pool lo que no se puede calentar. */
+  saludFile: string;
   pollAttempts: number;
   pollDelayMs: number;
 }
@@ -114,6 +117,7 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
     seedsPath: (env.WARMUP_SEEDS_FILE ?? resolve(process.cwd(), "runtime/openclaw-workspace/inventory/warmup-seeds.json")).trim(),
     killFile: (env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "runtime/warmup-live.kill")).trim(),
     capFile: (env.WARMUP_CAP_FILE ?? resolve(process.cwd(), "runtime/openclaw-workspace/inventory/sender-cap.json")).trim(),
+    saludFile: (env.WARMUP_SALUD_FILE ?? resolve(process.cwd(), "runtime/openclaw-workspace/inventory/sender-measurement.json")).trim(),
     // Ventana de medición amplia: Gmail puede tardar >60s en indexar el mensaje recién enviado.
     // 30 intentos × 6s = ~3min inline. (Mejora futura: medir en un pase posterior, no bloqueante.)
     pollAttempts: intEnv(env.WARMUP_LIVE_POLL_ATTEMPTS, 30, 1),
@@ -493,7 +497,10 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         // el pool tiene que seguirla. Solo se loguea cuando CAMBIA, para no repetir la misma línea
         // cada vuelta durante días.
         const capsFisicos = await leerCuposFisicos(cfg.capFile);
-        const poolElegido = elegirPool(capsFisicos, poolConfigurado);
+        // La salud saca del pool lo que no se puede calentar: cruzado el umbral, cerrado por el
+        // receptor, o con la cola atascada. Tener cupo no es lo mismo que valer la pena.
+        const saludFlota = await leerSalud(cfg.saludFile);
+        const poolElegido = elegirPool(capsFisicos, poolConfigurado, saludFlota);
         if (poolElegido.boxes.join(",") !== poolAnterior) {
           poolAnterior = poolElegido.boxes.join(",");
           log(`pool: ${poolElegido.motivo}${poolElegido.boxes.length > 0 ? ` → ${poolElegido.boxes.join(", ")}` : ""}`);

@@ -79,24 +79,81 @@ export async function leerCuposFisicos(ruta: string, ahora: Date = new Date()): 
  * — el pool eran 6 dominios escritos a mano, los 6 frenados en cap 0, y el único con cupo real ni
  * figuraba en la lista.
  */
-export function elegirPool(cupos: MedicionCupos, configurado: readonly string[]): { boxes: string[]; motivo: string } {
+/**
+ * La salud medida de un dominio, en lo que le importa al pool.
+ *
+ * `null` = sin medición. NO se excluye por falta de dato: excluir a ciegas apagaría el warmup
+ * entero el día que la medición falte, y el efecto de incluir un dominio de más ya está acotado
+ * (rebota y el daemon lo saltea).
+ */
+export interface SaludDominio {
+  estado?: string;
+  cruzados?: readonly string[];
+}
+
+export function elegirPool(
+  cupos: MedicionCupos,
+  configurado: readonly string[],
+  /**
+   * Salud por dominio (de sender-measurement.json). Sirve para SACAR del pool lo que no tiene
+   * sentido calentar. Omitirla no rompe nada: el pool sale solo del cupo, como antes.
+   */
+  salud?: ReadonlyMap<string, SaludDominio>
+): { boxes: string[]; motivo: string } {
   if (cupos.porDominio.size === 0) {
     return {
       boxes: [...configurado],
       motivo: "sin ninguna medición del cupo: se usa el pool configurado (nadie verificó que puedan enviar)"
     };
   }
-  const conCupo = [...cupos.porDominio.entries()].filter(([, cap]) => cap > 0).map(([d]) => d).sort();
+  let conCupo = [...cupos.porDominio.entries()].filter(([, cap]) => cap > 0).map(([d]) => d).sort();
+
+  // ── Sacar lo que no tiene sentido calentar ────────────────────────────────────────────────────
+  //
+  // Tener cupo NO es lo mismo que valer la pena. El 2026-08-04, cuando 46 nodos pasaron de cap 0 a
+  // tener cupo, la medición decía que 22 estaban CERRADOS POR EL RECEPTOR, 22 con la COLA ATASCADA
+  // y uno había CRUZADO el umbral permanente. Calentar 44 de esos 46 no habría calentado nada:
+  // habría producido rebotes, ensuciado el feed y gastado el presupuesto diario del daemon en
+  // dominios que no pueden entregar.
+  //
+  // Los tres motivos, y por qué cada uno:
+  //  · cruzó el umbral permanente → es irreversible. Calentarlo no lo recupera, solo gasta cupo.
+  //  · cerrado por el receptor    → el correo no ENTRA. No se puede calentar lo que no llega.
+  //  · cola atascada              → el correo no SALE. Hay que destrabar el nodo primero.
+  //
+  // Con la medición vencida se excluye igual: el peor caso de excluir de más es calentar un dominio
+  // menos (recuperable), y el de incluir de más es quemar presupuesto en algo que no entrega.
+  const excluidos: string[] = [];
+  if (salud && salud.size > 0) {
+    const motivoDeExclusion = (d: string): string | null => {
+      const s = salud.get(d);
+      if (!s) return null; // sin medición NO se excluye: apagaría el warmup el día que falte el dato
+      if ((s.cruzados ?? []).length > 0) return "cruzó el umbral permanente";
+      if (s.estado === "blocked_by_provider") return "cerrado por el receptor";
+      if (s.estado === "stalled") return "cola atascada";
+      return null;
+    };
+    const sobreviven: string[] = [];
+    for (const d of conCupo) {
+      const motivo = motivoDeExclusion(d);
+      if (motivo) excluidos.push(`${d} (${motivo})`);
+      else sobreviven.push(d);
+    }
+    conCupo = sobreviven;
+  }
   const antiguedad = cupos.vencida
     ? ` — medición de hace ${cupos.edadHoras ?? "?"}h, VENCIDA: sirve para saber a quién intentarle, no para decidir volumen`
     : "";
+  // Los excluidos se DECLARAN, siempre. Un pool que se achica en silencio hace creer al operador
+  // que hay menos nodos con cupo de los que hay, y esconde justo el problema que hay que resolver.
+  const sacados = excluidos.length > 0 ? ` · ${excluidos.length} fuera: ${excluidos.slice(0, 4).join(", ")}${excluidos.length > 4 ? ` y ${excluidos.length - 4} más` : ""}` : "";
   if (conCupo.length === 0) {
     return {
       boxes: [],
-      motivo: `los ${cupos.porDominio.size} nodos medidos están en cap 0: no hay nada que calentar${antiguedad}`
+      motivo: `ninguno de los ${cupos.porDominio.size} nodos medidos sirve para calentar${sacados || ": están todos en cap 0"}${antiguedad}`
     };
   }
-  return { boxes: conCupo, motivo: `${conCupo.length} de ${cupos.porDominio.size} nodos con cupo > 0${antiguedad}` };
+  return { boxes: conCupo, motivo: `${conCupo.length} de ${cupos.porDominio.size} nodos aptos${sacados}${antiguedad}` };
 }
 
 // ── Lecturas de la base ──────────────────────────────────────────────────────────────────────────
@@ -164,6 +221,25 @@ export async function historialDeEnvios(pg: PgClient, limite = 400): Promise<Uso
   return rows.map((r) => ({ domain: r.node_domain, seed: r.seed_inbox, cuando: new Date(r.occurred_at).toISOString() }));
 }
 
+/**
+ * Lee la salud medida de la flota. Si no se puede leer devuelve `undefined` y el pool sale solo del
+ * cupo — degradar a "sin filtro" es preferible a apagar el warmup por no poder leer un archivo.
+ */
+export async function leerSalud(ruta: string): Promise<Map<string, SaludDominio> | undefined> {
+  try {
+    const j = JSON.parse(await readFile(ruta, "utf8")) as {
+      bandejas?: Array<{ domain?: string; estado?: string; cruzados?: string[] }>;
+    };
+    const m = new Map<string, SaludDominio>();
+    for (const b of j.bandejas ?? []) {
+      if (b.domain) m.set(b.domain, { estado: b.estado, cruzados: b.cruzados });
+    }
+    return m.size > 0 ? m : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ── El plan ──────────────────────────────────────────────────────────────────────────────────────
 
 export interface PlanDeDominio {
@@ -208,6 +284,9 @@ export interface PlanDelDia {
 export interface PlanInput {
   pg: PgClient;
   capFile: string;
+  /** Medición de salud de la flota (sender-measurement.json). Sirve para sacar del pool lo que no
+   *  se puede calentar. Opcional: sin ella el pool sale solo del cupo. */
+  saludFile?: string;
   /** Pool configurado, usado solo si la medición del cupo está vencida. */
   poolConfigurado: readonly string[];
   ventanaPlacement: number;
@@ -224,7 +303,8 @@ export interface PlanInput {
 export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
   const ahora = input.ahora ?? new Date();
   const cupos = await leerCuposFisicos(input.capFile, ahora);
-  const pool = elegirPool(cupos, input.poolConfigurado);
+  const salud = input.saludFile ? await leerSalud(input.saludFile) : undefined;
+  const pool = elegirPool(cupos, input.poolConfigurado, salud);
 
   const lecturasFallidas: string[] = [];
   const anotar = (que: string) => (e: unknown) => {

@@ -86,7 +86,9 @@ test("sin ninguna medición cae al configurado, diciendo que nadie lo verificó"
 test("flota entera en cap 0: pool VACÍO, no un fallback que rebote 58 veces", () => {
   const r = elegirPool(medicion({ porDominio: new Map([["a.com", 0], ["b.com", 0]]) }), ["configurado.com"]);
   assert.deepEqual(r.boxes, []);
-  assert.match(r.motivo, /no hay nada que calentar/);
+  // El texto cambió al agregarse la exclusión por salud: ahora distingue "todos en cap 0" de
+  // "tienen cupo pero no sirven". Los dos casos terminan en pool vacío, y el motivo dice cuál es.
+  assert.match(r.motivo, /están todos en cap 0/);
 });
 
 // ── El plan completo ─────────────────────────────────────────────────────────────────────────────
@@ -164,4 +166,62 @@ test("un nodo que rebotó hoy queda marcado", async () => {
     ahora: AHORA
   });
   assert.equal(plan.dominios[0]!.rebotoHoy, true);
+});
+
+// ── Sacar del pool lo que no se puede calentar ───────────────────────────────────────────────────
+// El 2026-08-04, 46 nodos pasaron de cap 0 a tener cupo. De esos, 22 estaban CERRADOS POR EL
+// RECEPTOR, 22 con la COLA ATASCADA y uno había CRUZADO el umbral permanente. Con el pool filtrando
+// solo por "cap > 0", el daemon habría gastado su presupuesto diario en 44 dominios que no entregan.
+
+const salud = (m: Record<string, { estado?: string; cruzados?: string[] }>) => new Map(Object.entries(m));
+
+test("un dominio que CRUZÓ el umbral permanente sale del pool: calentarlo no lo recupera", () => {
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["b.com", 20]]) }), [], salud({
+    "a.com": { estado: "healthy" },
+    "b.com": { estado: "healthy", cruzados: ["gmail"] }
+  }));
+  assert.deepEqual(r.boxes, ["a.com"]);
+  assert.match(r.motivo, /b\.com \(cruzó el umbral permanente\)/);
+});
+
+test("un dominio CERRADO POR EL RECEPTOR sale: no se puede calentar lo que no llega", () => {
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["b.com", 20]]) }), [], salud({
+    "a.com": { estado: "healthy" },
+    "b.com": { estado: "blocked_by_provider" }
+  }));
+  assert.deepEqual(r.boxes, ["a.com"]);
+});
+
+test("un dominio con la COLA ATASCADA sale: el correo no sale del nodo", () => {
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["b.com", 20]]) }), [], salud({
+    "a.com": { estado: "healthy" },
+    "b.com": { estado: "stalled" }
+  }));
+  assert.deepEqual(r.boxes, ["a.com"]);
+});
+
+test("SIN medición de salud de un dominio NO se lo excluye", () => {
+  // Excluir por falta de dato apagaría el warmup entero el día que la medición falte. El costo de
+  // incluir uno de más está acotado: rebota y el daemon lo saltea solo.
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["sin-medir.com", 20]]) }), [], salud({
+    "a.com": { estado: "healthy" }
+  }));
+  assert.deepEqual(r.boxes, ["a.com", "sin-medir.com"]);
+});
+
+test("sin archivo de salud el pool funciona igual que antes", () => {
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["b.com", 20]]) }), []);
+  assert.deepEqual(r.boxes, ["a.com", "b.com"]);
+});
+
+test("si TODOS quedan excluidos, el pool es vacío y DICE por qué", () => {
+  // Vacío mudo haría creer que no hay nodos con cupo, cuando el problema es otro y es el que hay
+  // que resolver.
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["b.com", 20]]) }), [], salud({
+    "a.com": { estado: "blocked_by_provider" },
+    "b.com": { estado: "stalled" }
+  }));
+  assert.deepEqual(r.boxes, []);
+  assert.match(r.motivo, /2 fuera/);
+  assert.match(r.motivo, /cerrado por el receptor|cola atascada/);
 });

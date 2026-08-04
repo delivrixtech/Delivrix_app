@@ -55,7 +55,8 @@ export const READ_ENDPOINTS = Object.freeze({
   warmupStatus: "/v1/warmup/status",
   warmupTrends: "/v1/warmup/trends",
   warmupActivity: "/v1/warmup/activity",
-  warmupPlan: "/v1/warmup/plan"
+  warmupPlan: "/v1/warmup/plan",
+  warmupPendientes: "/v1/warmup/pendientes"
 } as const);
 
 export type ReadEndpoint = (typeof READ_ENDPOINTS)[keyof typeof READ_ENDPOINTS];

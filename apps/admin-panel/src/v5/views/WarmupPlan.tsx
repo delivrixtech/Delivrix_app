@@ -38,19 +38,39 @@ interface PlanDelDia {
   nota?: string;
 }
 
+interface Pendiente {
+  id: string;
+  que: string;
+  porque: string;
+  visto: number;
+  diasAbierto: number | null;
+}
+interface PendientesResp {
+  abiertos: Pendiente[];
+  resueltos: Pendiente[];
+  nota?: string;
+}
+
 const REFRESCO_MS = 30_000;
 
 export default function WarmupPlan() {
   const [plan, setPlan] = useState<PlanDelDia | null>(null);
+  const [pendientes, setPendientes] = useState<PendientesResp | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let vivo = true;
     const traer = async () => {
       try {
-        const d = await getJson<PlanDelDia>(READ_ENDPOINTS.warmupPlan);
+        const [d, p] = await Promise.all([
+          getJson<PlanDelDia>(READ_ENDPOINTS.warmupPlan),
+          // Los pendientes NO tumban el plan si fallan: son dos preguntas distintas y una pantalla
+          // en blanco por el pedido secundario sería peor que no mostrar los pendientes.
+          getJson<PendientesResp>(READ_ENDPOINTS.warmupPendientes).catch(() => null)
+        ]);
         if (vivo) {
           setPlan(d);
+          setPendientes(p);
           setError(null);
         }
       } catch (e) {
@@ -100,7 +120,26 @@ export default function WarmupPlan() {
         </div>
       ) : null}
 
-      {plan.dominios.length === 0 ? (
+      {/* LO QUE EL AGENTE TE PIDE. Va ARRIBA del plan a propósito: es lo único de esta pantalla
+          que requiere que hagas algo, y enterrado abajo no lo lee nadie. Ordenado por insistencia:
+          lo que el agente volvió a detectar más veces, primero. */}
+      {(pendientes?.abiertos ?? []).length > 0 ? (
+        <div style={S.pedidos}>
+          <span style={S.pedidosTit}>el agente necesita que vos hagas esto</span>
+          {(pendientes?.abiertos ?? []).map((p) => (
+            <div key={p.id} style={S.pedido}>
+              <span style={S.pedidoQue}>{p.que}</span>
+              <span style={S.pedidoPorque}>{p.porque}</span>
+              <span style={S.pedidoMeta}>
+                {p.visto > 1 ? `lo detectó ${p.visto} veces` : "detectado una vez"}
+                {p.diasAbierto !== null ? ` · abierto hace ${p.diasAbierto === 0 ? "hoy" : `${p.diasAbierto} d`}` : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+            {plan.dominios.length === 0 ? (
         <div style={S.vacio}>
           ningún dominio en calentamiento.{" "}
           {plan.pool?.motivo.includes("cap 0")
@@ -240,6 +279,20 @@ const S = {
     color: "var(--color-text-secondary)",
     background: "var(--color-surface)", border: "1px dashed var(--color-border)"
   } as const,
+
+  pedidos: {
+    display: "grid", gap: 10, padding: "14px 16px", borderRadius: 12,
+    background: "color-mix(in srgb, var(--color-info, #0c7cb5) 7%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--color-info, #0c7cb5) 26%, transparent)"
+  } as const,
+  pedidosTit: {
+    fontSize: 10.5, letterSpacing: ".08em", textTransform: "uppercase" as const, fontWeight: 600,
+    color: "var(--color-info, #0c7cb5)"
+  } as const,
+  pedido: { display: "grid", gap: 2 } as const,
+  pedidoQue: { fontSize: 13.5, fontWeight: 600, color: "var(--color-text-primary)" } as const,
+  pedidoPorque: { fontSize: 12.5, lineHeight: 1.45, color: "var(--color-text-secondary)" } as const,
+  pedidoMeta: { fontSize: 11, color: "var(--color-text-tertiary)" } as const,
 
   grilla: { display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" } as const,
 
