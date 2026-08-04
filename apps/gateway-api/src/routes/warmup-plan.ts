@@ -25,6 +25,8 @@ export interface WarmupPlanDeps {
   pgClient: PgClient | null;
   /** Dónde vive la medición del cupo físico (la persiste `limite-fisico --status`). */
   capFile: string;
+  /** Medición de salud de la flota: saca del pool lo que no se puede calentar. */
+  saludFile?: string;
   /** Pool configurado; solo se usa si no hay ninguna medición del cupo. */
   poolConfigurado: readonly string[];
   ventanaPlacement?: number;
@@ -65,6 +67,7 @@ export async function handleWarmupPlan(
     const plan = await planDelDia({
       pg: deps.pgClient,
       capFile: deps.capFile,
+      ...(deps.saludFile ? { saludFile: deps.saludFile } : {}),
       poolConfigurado: deps.poolConfigurado,
       ventanaPlacement: deps.ventanaPlacement ?? 6,
       ahora

@@ -8,12 +8,31 @@
 // Todo lo de acá es LECTURA. No manda correo, no escribe en la base, no toca los nodos.
 
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
 import { decidirCupoDeHoy, esInbox, type DecisionDiaria } from "../domain/decision-diaria.ts";
 import { progresoDeCalentamiento, type UsoPrevio } from "../domain/rotacion.ts";
 import type { IsoWeekday } from "../domain/ramp.ts";
 import type { PgClient } from "../store/pg-stores.ts";
 import type { Placement } from "../live/warmup-live-cycle.ts";
+
+/**
+ * La ruta de un archivo del inventario del workspace de OpenClaw.
+ *
+ * NO se puede hardcodear `runtime/openclaw-workspace` relativo al cwd, y ese era el bug: el
+ * ESCRITOR (`limite-fisico --status`) resuelve la raíz con `OpenClawWorkspace`, que en cualquier
+ * plataforma que no sea darwin apunta a `/data/.openclaw/workspace`. Los tres LECTORES del cupo
+ * apuntaban a `runtime/`. En la Mac coinciden por casualidad; en el servidor real serían archivos
+ * DISTINTOS, y el plan diría "sin ninguna medición del cupo" para siempre sin que nada falle.
+ *
+ * Misma precedencia que el workspace: la env var manda, después el default por plataforma.
+ */
+export function rutaInventario(nombre: string): string {
+  const raiz =
+    process.env.OPENCLAW_WORKSPACE_DIR ??
+    (process.platform === "darwin" ? "runtime/openclaw-workspace" : "/data/.openclaw/workspace");
+  return resolve(raiz, "inventory", nombre);
+}
 
 /** Cuánto vale una medición del cupo antes de considerarse vencida. */
 export const CUPO_VENCE_MS = 12 * 60 * 60 * 1000;

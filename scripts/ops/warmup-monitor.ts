@@ -19,7 +19,7 @@ import { OpenClawWorkspace } from "../../apps/gateway-api/src/openclaw-workspace
 import { MONITOR_FILE, pedirLectura, type HechosWarmup } from "../../apps/gateway-api/src/agents/warmup-monitor.ts";
 import { resumirRechazos } from "../../apps/gateway-api/src/agents/clasificar-rechazo.ts";
 import { ejecutarAcciones, extraerAcciones, type Pendiente } from "../../apps/gateway-api/src/agents/acciones-agente.ts";
-import { planDelDia } from "../../apps/warmup-engine/src/service/plan-diario.ts";
+import { planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
 import { CAP_MEASUREMENT_FILE, type CapFlota } from "../../apps/gateway-api/src/node-daily-cap.ts";
 import { leerSemillas, semillasActivas, semillasMedibles, puntoCiego } from "../../apps/gateway-api/src/warmup-seeds.ts";
 import { MEASUREMENT_FILE, type MedicionFlota } from "../../apps/gateway-api/src/sender-measurement.ts";
@@ -144,7 +144,7 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
     // saber qué se había decidido, y proponía cosas que el sistema ya estaba haciendo.
     plan: await planDelDia({
       pg,
-      capFile: resolve(process.cwd(), "runtime/openclaw-workspace/inventory/sender-cap.json"),
+      capFile: rutaInventario("sender-cap.json"),
       poolConfigurado: [],
       ventanaPlacement: 6
     })

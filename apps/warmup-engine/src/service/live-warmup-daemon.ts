@@ -25,6 +25,7 @@ import {
   historialDeEnvios,
   leerCuposFisicos,
   primerEnvioPorDominio,
+  rutaInventario,
   leerSalud,
   VENTANA_PLACEMENT_DIAS,
   placementsDeDominio
@@ -116,10 +117,10 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
     // solo para el caso en que el registro no exista todavía, y para saber cuál es la que MIDE
     // (la que tiene el refresh token OAuth de config/warmup-oauth.local.json).
     seedInbox: (env.WARMUP_GMAIL_SEED_USER ?? "infradelivrixdemo@gmail.com").trim(),
-    seedsPath: (env.WARMUP_SEEDS_FILE ?? resolve(process.cwd(), "runtime/openclaw-workspace/inventory/warmup-seeds.json")).trim(),
+    seedsPath: (env.WARMUP_SEEDS_FILE ?? rutaInventario("warmup-seeds.json")).trim(),
     killFile: (env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "runtime/warmup-live.kill")).trim(),
-    capFile: (env.WARMUP_CAP_FILE ?? resolve(process.cwd(), "runtime/openclaw-workspace/inventory/sender-cap.json")).trim(),
-    saludFile: (env.WARMUP_SALUD_FILE ?? resolve(process.cwd(), "runtime/openclaw-workspace/inventory/sender-measurement.json")).trim(),
+    capFile: (env.WARMUP_CAP_FILE ?? rutaInventario("sender-cap.json")).trim(),
+    saludFile: (env.WARMUP_SALUD_FILE ?? rutaInventario("sender-measurement.json")).trim(),
     // Ventana de medición amplia: Gmail puede tardar >60s en indexar el mensaje recién enviado.
     // 30 intentos × 6s = ~3min inline. (Mejora futura: medir en un pase posterior, no bloqueante.)
     pollAttempts: intEnv(env.WARMUP_LIVE_POLL_ATTEMPTS, 30, 1),
@@ -511,7 +512,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   if (!dobles.saltearMigraciones) await runWarmupMigrations(pg);
 
   // Credenciales SMTP del inventario (archivo) + clave.
-  const inventoryPath = (env.WARMUP_SMTP_INVENTORY ?? resolve(process.cwd(), "runtime/openclaw-workspace/inventory/smtp-credentials.json")).trim();
+  const inventoryPath = (env.WARMUP_SMTP_INVENTORY ?? rutaInventario("smtp-credentials.json")).trim();
   const store = JSON.parse(await readFile(inventoryPath, "utf8")) as InventoryCredentialStore;
   const key = resolveCredentialKey(env.CREDENTIAL_ENCRYPTION_KEY);
 

@@ -858,11 +858,20 @@ const warmupPlacementMin = Number(process.env.WARMUP_PLACEMENT_MIN);
 
 // Dónde vive la medición del cupo físico de la flota (la escribe `scripts/ops/limite-fisico.ts
 // --status`). El plan la lee para saber qué nodos pueden enviar; si está vencida, lo declara.
+// Del WORKSPACE, no del cwd: el escritor (`limite-fisico --status`) resuelve la raíz con
+// OpenClawWorkspace, que fuera de darwin apunta a /data/.openclaw/workspace. Con la ruta relativa
+// al cwd, escritor y lector usaban archivos DISTINTOS en el servidor real y el plan decía "sin
+// ninguna medición del cupo" para siempre, sin que nada fallara.
 const warmupCapFile =
-  process.env.WARMUP_CAP_FILE?.trim() ||
-  resolvePath(process.cwd(), "runtime/openclaw-workspace/inventory/sender-cap.json");
+  process.env.WARMUP_CAP_FILE?.trim() || resolvePath(openClawWorkspace.getRootDir(), "inventory", "sender-cap.json");
+const warmupSaludFile =
+  process.env.WARMUP_SALUD_FILE?.trim() ||
+  resolvePath(openClawWorkspace.getRootDir(), "inventory", "sender-measurement.json");
 // Pool de respaldo, usado SOLO si no hay ninguna medición del cupo. Misma env var que el daemon,
-// para que el panel y el daemon no puedan discrepar sobre qué se está calentando.
+// para que el panel y el daemon no puedan discrepar sobre qué se está calentando. Va en
+// config/gateway.env, que es lo que cargan LOS DOS procesos: definirla solo en el launcher del
+// daemon la dejaba vacía acá, y el panel caía a un pool vacío sin decir por qué.
+const warmupPlacementWindow = Number.parseInt((process.env.WARMUP_LIVE_PLACEMENT_WINDOW ?? "").trim(), 10);
 const warmupPoolConfigurado = (process.env.WARMUP_LIVE_BOXES ?? "")
   .split(",")
   .map((s) => s.trim())
@@ -2955,7 +2964,11 @@ const server = createServer(async (request, response) => {
       return await handleWarmupPlan(request, response, {
         pgClient: episodicScratchPool,
         capFile: warmupCapFile,
+        saludFile: warmupSaludFile,
         poolConfigurado: warmupPoolConfigurado,
+        // La MISMA ventana que usa el daemon. Con defaults distintos, el panel mostraría una
+        // decisión calculada sobre otra muestra que la que se ejecuta.
+        ...(Number.isFinite(warmupPlacementWindow) ? { ventanaPlacement: warmupPlacementWindow } : {}),
         readBoundaryToken: sensitiveReadBoundaryToken,
         now: () => new Date(),
         logger: gatewayRuntimeLog

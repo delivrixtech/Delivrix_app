@@ -9,7 +9,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BOXES="${WARMUP_LIVE_BOXES:-corpfiling-infra.com}"   # un dominio SANO; los bloqueados no se calientan
+# Sin default acá: la fuente única es config/gateway.env, que cargan el daemon Y el gateway. Un
+# default en el launcher hacía que el daemon calentara una lista y el panel mostrara otra.
+BOXES="${WARMUP_LIVE_BOXES:?definila en config/gateway.env}"
 export WARMUP_LIVE_ENABLE=true
 export WARMUP_LIVE_BOXES="$BOXES"
 export WARMUP_LIVE_MAX_PER_DAY="${WARMUP_LIVE_MAX_PER_DAY:-3}"
