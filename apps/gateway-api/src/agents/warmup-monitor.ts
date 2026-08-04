@@ -83,7 +83,28 @@ const SISTEMA = [
   "- No repitas definiciones ni conceptos generales: el operador los conoce. Reportá ESTE momento.",
   "- No propongas algo que los datos muestran que el sistema ya está haciendo.",
   "- Si un dato falta, decí que falta. 'No se midió' es una respuesta correcta y útil.",
-  "- Si todo está bien, decilo en cuatro líneas igual. No inventes un problema para tener qué decir."
+  "- Si todo está bien, decilo en cuatro líneas igual. No inventes un problema para tener qué decir.",
+  "",
+  "PODÉS ACTUAR. Después de las cuatro líneas, agregá una línea ACCION por cada cosa que decidas",
+  "hacer (ninguna, una, o hasta tres). Formato exacto:",
+  "ACCION: <nombre> | dominio=<valor> | motivo=<por qué>",
+  "",
+  "Las únicas acciones que existen:",
+  "- frenar_dominio | dominio=<un dominio de los datos> | motivo=... → le pone cupo 0 en el nodo.",
+  "  Usalo cuando un dominio está haciendo daño: cruzó el umbral permanente, o su placement se",
+  "  desplomó. Es reversible.",
+  "- pausar_warmup | motivo=... → frena TODO el calentamiento. Solo si el daño es general.",
+  "- anotar_pendiente | dominio=<qué hace falta, en pocas palabras> | motivo=<por qué> → deja",
+  "  asentado algo que vos NO podés resolver y necesita al operador (una semilla nueva, soltar",
+  "  cupo, una credencial). Anotalo UNA vez: si ya lo anotaste, no lo repitas.",
+  "",
+  "REGLAS DE LAS ACCIONES:",
+  "- Solo podés REDUCIR (frenar, pausar) o ANOTAR. No existe ninguna acción que suba volumen, mande",
+  "  correo, o cambie configuración: si creés que hace falta algo así, usá anotar_pendiente.",
+  "- El dominio tiene que aparecer TEXTUAL en los datos que te di. Un nombre inventado se rechaza.",
+  "- Si no hay nada que hacer, no escribas ninguna línea ACCION. No actuar es la respuesta correcta",
+  "  la mayoría de las veces.",
+  "- Nunca frenes algo solo porque tiene pocos datos: falta de medición no es evidencia de daño."
 ].join("\n");
 
 /** Arma el pedido. Puro: se puede testear sin red. */
@@ -168,7 +189,12 @@ export function construirPrompt(hechos: HechosWarmup, erroresPrevios: readonly s
   }
 
   l.push("");
-  l.push("Reportá el estado en las cuatro líneas del formato. Nada más.");
+  l.push("Reportá el estado en las cuatro líneas del formato.");
+  l.push(
+    "Después, si hay algo que hacer, agregá una línea ACCION por cada cosa (máximo 3). Si lo que" +
+      " falta no lo podés resolver vos, anotalo con anotar_pendiente en vez de repetirlo. Si no hay" +
+      " nada que hacer, no escribas ninguna línea ACCION."
+  );
   return l.join("\n");
 }
 
@@ -239,7 +265,20 @@ export function verificarLectura(texto: string, hechos: HechosWarmup): LecturaEs
     out.reparos.push("atribuye a un proveedor un freno que según los datos es nuestro cap de Postfix");
   }
 
-  // 3. Afirmar que algo se midió cuando no hay muestra.
+  // 3. El conteo de dominios que CRUZARON el umbral permanente. Es el número más caro del sistema
+  //    —cruzarlo es irreversible— así que exagerarlo asusta al operador con algo que no pasó, y
+  //    minimizarlo esconde daño real. Se chequea contra la lista exacta de los hechos.
+  const cruzados = hechos.flota?.cruzados.length ?? null;
+  if (cruzados !== null) {
+    const NUM: Record<string, number> = { un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6 };
+    const m = cuerpo.match(/\b(\d+|un|uno|una|dos|tres|cuatro|cinco|seis)\s+(?:dominios?\s+)?(?:ya\s+)?(?:lo\s+)?cruzar/i);
+    const dicho = m ? (NUM[m[1]!.toLowerCase()] ?? Number(m[1])) : null;
+    if (dicho !== null && Number.isFinite(dicho) && dicho !== cruzados) {
+      out.reparos.push(`dice que cruzaron ${dicho} dominios y los datos dicen ${cruzados}`);
+    }
+  }
+
+  // 4. Afirmar que algo se midió cuando no hay muestra.
   const sinMuestra = (hechos.plan ?? []).length > 0 && (hechos.plan ?? []).every((p) => p.placementMuestra === 0);
   if (sinMuestra && /placement (del|de) \d+ ?%|\d+ ?% de (inbox|bandeja)/i.test(cuerpo)) {
     out.reparos.push("cita un placement medido cuando no hay ninguna medición");

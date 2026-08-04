@@ -48,6 +48,8 @@ interface LecturaAgente {
   modelo: string | null;
   lectura: string | null;
   verificacion?: { ahora: string | null; porque: string | null; riesgo: string | null; falta: string | null; reparos: string[] } | null;
+  /** Lo que el agente DECIDIÓ hacer, y si pudo. Sin esto es un termómetro caro. */
+  acciones?: Array<{ accion: string; ejecutada: boolean; detalle: string }>;
   motivo: string | null;
   tokens: { prompt: number; completion: number } | null;
 }
@@ -479,6 +481,20 @@ function Agente({ lectura, ahora }: { lectura: LecturaAgente | null; ahora: numb
                 ⚠ sin respaldo en los datos: {(lectura.verificacion?.reparos ?? []).join(" · ")}
               </div>
             ) : null}
+            {/* LO QUE HIZO. Es la diferencia entre un agente y un termómetro: si decidió algo,
+                tiene que verse acá, ejecutado o no, con su motivo. Una decisión que no se ve no
+                se puede corregir. */}
+            {(lectura.acciones ?? []).length > 0 ? (
+              <div style={S.acciones}>
+                <span style={S.campoEt("acciones")}>decidió</span>
+                {(lectura.acciones ?? []).map((a, i) => (
+                  <p key={i} style={S.accion(a.ejecutada)}>
+                    {a.ejecutada ? "✓ " : "· "}
+                    {a.detalle}
+                  </p>
+                ))}
+              </div>
+            ) : null}
             <div style={S.agentePie}>
               {lectura.modelo}
               {lectura.tokens ? ` · ${lectura.tokens.completion} tokens · costo 0` : ""}
@@ -722,6 +738,11 @@ const S = {
   } as const,
   msgTop: { display: "flex", alignItems: "center", gap: 8, fontSize: 11.5, flexWrap: "wrap" as const } as const,
   campo: { display: "grid", gap: 3, marginBottom: 12 } as const,
+  acciones: { display: "grid", gap: 4, marginBottom: 12, paddingTop: 10, borderTop: "1px solid var(--color-border)" } as const,
+  accion: (hecha: boolean) => ({
+    margin: 0, fontSize: 11.5, lineHeight: 1.45,
+    color: hecha ? "var(--color-success)" : "var(--color-text-tertiary)"
+  }),
   campoEt: (et: string) => ({
     fontSize: 9.5, letterSpacing: ".1em", textTransform: "uppercase" as const, fontWeight: 600,
     color:

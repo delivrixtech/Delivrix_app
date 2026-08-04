@@ -161,3 +161,97 @@ export async function pedirSiguienteTurno(input: PedirTurnoInput): Promise<Sigui
     clearTimeout(timeout);
   }
 }
+
+// ── ABRIR la conversación ────────────────────────────────────────────────────────────────────────
+//
+// El primer mensaje y la respuesta de la semilla salían de un banco de 14 conversaciones fijas,
+// repartidas entre 58 dominios. Eso es literalmente la huella que el warmup existe para no dejar:
+// un receptor que mira varios de nuestros dominios ve el mismo texto, palabra por palabra, una y
+// otra vez. Los turnos siguientes ya los escribía el modelo; el arranque no.
+//
+// El banco queda como RESPALDO —si el modelo local no está, es mejor mandar algo conocido que no
+// mandar— y siempre se declara cuál de los dos se usó. Un texto generado y uno enlatado no valen
+// lo mismo como señal, y confundirlos sería mentirse sobre la calidad del calentamiento.
+
+export interface Apertura {
+  asunto: string;
+  cuerpo: string;
+  /** De dónde salió. Se registra: un texto enlatado y uno generado no valen lo mismo. */
+  origen: "modelo" | "banco";
+  motivo: string;
+}
+
+const SISTEMA_APERTURA = [
+  "Escribís el PRIMER mensaje de una conversación cotidiana por correo entre dos personas que se",
+  "conocen. Alguien que le escribe a un conocido por algo común de la vida.",
+  "",
+  "Devolvé EXACTAMENTE dos líneas:",
+  "ASUNTO: <corto, minúscula salvo la primera, como lo escribiría una persona, sin punto final>",
+  "CUERPO: <2 a 4 oraciones, casual, español rioplatense, sin saludo formal ni firma>",
+  "",
+  "REGLAS:",
+  "- Tema COTIDIANO y concreto: un plan, una duda práctica, algo que quedó pendiente entre los dos.",
+  "- Nada de trabajo corporativo, marketing, ofertas, ni nada que parezca un envío masivo.",
+  "- No menciones correo, pruebas, sistemas ni nada técnico.",
+  "- No inventes datos que suenen a registro (números de factura, montos exactos, direcciones).",
+  "- Que termine en algo que invite a contestar: una pregunta o un pendiente."
+].join("\n");
+
+/**
+ * Le pide al modelo una conversación nueva. Si falla, quien llama cae al banco — por eso devuelve
+ * `null` con motivo en vez de inventar: un fallo silencioso que devuelve texto enlatado marcado
+ * como generado sería peor que el problema original.
+ */
+export async function abrirConversacion(input: {
+  baseUrl: string;
+  modelo: string;
+  /** Entra al prompt para que dos dominios no arranquen la misma charla el mismo día. */
+  semilla?: string;
+  fetchImpl?: typeof fetch;
+  maxTokens?: number;
+  timeoutMs?: number;
+}): Promise<Apertura | null> {
+  const control = new AbortController();
+  const timeout = setTimeout(() => control.abort(), input.timeoutMs ?? 90_000);
+  try {
+    const r = await (input.fetchImpl ?? fetch)(`${input.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      signal: control.signal,
+      body: JSON.stringify({
+        model: input.modelo,
+        messages: [
+          { role: "system", content: SISTEMA_APERTURA },
+          {
+            role: "user",
+            content: `Escribí una conversación nueva.${input.semilla ? ` Variante ${input.semilla}: que no se parezca a las anteriores.` : ""}`
+          }
+        ],
+        max_tokens: input.maxTokens ?? 2500,
+        // Alta: acá la variedad ES el objetivo. Dos aperturas parecidas entre dominios reproducen
+        // el problema del banco con más pasos.
+        temperature: 1.0
+      })
+    });
+    if (!r.ok) return null;
+    const data = (await r.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const texto = (data.choices?.[0]?.message?.content ?? "").trim();
+    if (!texto) return null;
+
+    const asunto = texto.match(/^\s*ASUNTO\s*:?\s*(.+)$/im)?.[1]?.trim();
+    const cuerpo = texto.match(/^\s*CUERPO\s*:?\s*([^]+)$/im)?.[1]?.trim();
+    // Se exige el formato: un asunto vacío o un cuerpo de una palabra sale peor que el banco.
+    if (!asunto || !cuerpo || asunto.length < 4 || cuerpo.length < 40) return null;
+
+    return {
+      asunto: asunto.replace(/^["']|["']$/g, "").slice(0, 90),
+      cuerpo: cuerpo.slice(0, 600),
+      origen: "modelo",
+      motivo: "conversación generada para esta vuelta"
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}

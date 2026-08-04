@@ -33,6 +33,7 @@ import { SMTP_POR_PROVEEDOR } from "../domain/seeds.ts";
 import { createPgWarmupStores, type PgClient } from "../store/pg-stores.ts";
 import { runWarmupMigrations } from "../store/warmup-migrate.ts";
 import { pickConversation, conversationCount, makeTestId } from "../live/warmup-content-bank.ts";
+import { abrirConversacion } from "../live/continuar-conversacion.ts";
 import { createGoogleOAuthTokenProvider, type AccessTokenProvider } from "../live/google-oauth-token-provider.ts";
 import { resolveCredentialKey, findAndDecryptBox, decryptWithAad, type EncryptedPayload, type InventoryCredentialStore } from "../live/smtp-credential-decrypt.ts";
 import {
@@ -558,7 +559,22 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           await sleep(quedaAlguno ? Math.min(cfg.intervalMs, 60_000) : cfg.intervalMs);
           continue;
         }
-        const conversation = pickConversation(seq);
+        // La conversación la escribe el MODELO. El banco de 14 textos fijos repartidos entre 58
+        // dominios era, literalmente, la huella que el warmup existe para no dejar: un receptor que
+        // mira varios de nuestros dominios ve el mismo texto palabra por palabra. Queda como
+        // respaldo —si el modelo no está, mejor mandar algo conocido que no mandar— y se registra
+        // cuál de los dos se usó, porque un texto generado y uno enlatado no valen lo mismo.
+        const enlatada = pickConversation(seq);
+        const generada = await abrirConversacion({
+          baseUrl: (process.env.LOCAL_INFERENCE_BASE_URL ?? "").trim(),
+          modelo: (process.env.LOCAL_INFERENCE_MODEL ?? "").trim(),
+          semilla: `${box}-${seq}`
+        }).catch(() => null);
+        const conversation = generada
+          ? { topic: "generado", subject: generada.asunto, body: generada.cuerpo, reply: enlatada.reply }
+          : enlatada;
+        const origenTexto: "modelo" | "banco" = generada ? "modelo" : "banco";
+        if (!generada) log("conversación del banco: el modelo local no pudo escribir una nueva");
         const stamp = `${Date.now()}-${seq}`;
         const testId = makeTestId(stamp);
         const cycleId = "cyc-" + stamp;

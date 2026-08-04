@@ -16,10 +16,45 @@ import { Pool } from "pg";
 import { OpenClawWorkspace } from "../../apps/gateway-api/src/openclaw-workspace.ts";
 import { MONITOR_FILE, pedirLectura, type HechosWarmup } from "../../apps/gateway-api/src/agents/warmup-monitor.ts";
 import { resumirRechazos } from "../../apps/gateway-api/src/agents/clasificar-rechazo.ts";
+import { ejecutarAcciones, extraerAcciones, type Pendiente } from "../../apps/gateway-api/src/agents/acciones-agente.ts";
 import { planDelDia } from "../../apps/warmup-engine/src/service/plan-diario.ts";
 import { CAP_MEASUREMENT_FILE, type CapFlota } from "../../apps/gateway-api/src/node-daily-cap.ts";
 import { leerSemillas, semillasActivas, semillasMedibles, puntoCiego } from "../../apps/gateway-api/src/warmup-seeds.ts";
 import { MEASUREMENT_FILE, type MedicionFlota } from "../../apps/gateway-api/src/sender-measurement.ts";
+
+const PENDIENTES_FILE = "warmup-pendientes.json";
+
+/**
+ * ¿El agente puede frenar nodos por sí solo?
+ *
+ * Apagado por defecto, y a propósito: frenar toca la flota de producción por SSH. Con el flag en
+ * off el agente igual DECIDE y queda registrado qué habría hecho — que es exactamente cómo se mira
+ * una semana si decide bien antes de darle la llave. Mismo patrón de dry-run que `limite-fisico`.
+ */
+const puedeFrenar = (process.env.WARMUP_AGENT_PUEDE_FRENAR ?? "").trim().toLowerCase() === "true";
+
+/** El cupo instalado hoy en el nodo de un dominio. `null` si no se pudo leer. */
+async function capActual(workspace: OpenClawWorkspace, dominio: string): Promise<number | null> {
+  const cap = await workspace.readInventoryJson<CapFlota>(CAP_MEASUREMENT_FILE).catch(() => null);
+  return cap?.nodos.find((n) => n.domain === dominio)?.cap ?? null;
+}
+
+/**
+ * Pone cap 0 en el nodo de un dominio, por el MISMO camino que usa el operador a mano
+ * (`limite-fisico.ts --frenar --apply`). Reusar el script y no reimplementar el plan SSH es
+ * deliberado: si el plan cambia, cambia para los dos, y no hay una segunda versión del freno que
+ * se quede vieja sin que nadie lo note.
+ */
+async function frenarNodo(dominio: string, motivo: string): Promise<void> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  await promisify(execFile)(
+    process.execPath,
+    ["--env-file=config/gateway.env", "--experimental-strip-types", "scripts/ops/limite-fisico.ts", `--domain=${dominio}`, "--frenar", "--apply"],
+    { cwd: process.cwd(), timeout: 120_000 }
+  );
+  console.log(`[agente] frenó ${dominio}: ${motivo}`);
+}
 
 const LOOP = process.argv.includes("--loop");
 const INTERVALO_MS = Number.parseInt(process.env.WARMUP_MONITOR_INTERVAL_MS ?? "", 10) || 10 * 60_000;
@@ -149,15 +184,73 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
 
   const lectura = await pedirLectura({ hechos, baseUrl, modelo, erroresPrevios });
 
-  // Se guarda SIEMPRE, con lectura o con motivo: el panel tiene que poder decir "el agente no pudo
-  // mirar" en vez de mostrar una lectura vieja como si fuera de ahora.
-  await workspace.updateInventoryJson(MONITOR_FILE, () => lectura);
+  // ── LAS ACCIONES ─────────────────────────────────────────────────────────────────────────────
+  // Un agente que solo informa es un termómetro caro. Acá ejecuta lo que decidió, dentro de una
+  // lista blanca cerrada de acciones que únicamente REDUCEN (frenar, pausar) o ANOTAN.
+  //
+  // Y una barrera que no está en el módulo de acciones a propósito: si la verificación le encontró
+  // reparos —dijo algo que no se sostiene contra los datos— NO se le ejecuta nada. Actuar sobre un
+  // razonamiento que ya sabemos que tiene una afirmación falsa es la peor combinación posible.
+  let acciones: Awaited<ReturnType<typeof ejecutarAcciones>> = [];
+  const reparos = lectura.verificacion?.reparos ?? [];
+  if (lectura.lectura && reparos.length === 0) {
+    const pedidas = extraerAcciones(lectura.lectura);
+    if (pedidas.length > 0) {
+      acciones = await ejecutarAcciones(pedidas, {
+        // Solo los dominios que aparecen en los hechos: un nombre alucinado no llega a ejecutarse.
+        // TODOS los dominios que aparecen en los hechos, no solo los del plan. Con la lista angosta
+        // el agente decidió correctamente frenar `bizreport-control.com` (cruzó el umbral) y se lo
+        // rechazamos por "no está en el inventario" — un rechazo FALSO, porque el dominio venía de
+        // los propios hechos que le dimos. Una barrera que bloquea decisiones correctas entrena a
+        // desconfiar de la barrera.
+        dominiosConocidos: [
+          ...new Set([
+            ...(hechos.plan ?? []).map((p) => p.dominio),
+            ...hechos.vueltas.map((v) => v.dominio),
+            ...(hechos.flota?.cruzados ?? []),
+            ...(hechos.flota?.cerca ?? []),
+            ...(hechos.cap?.enElTope ?? [])
+          ])
+        ],
+        // FRENAR toca la flota de producción por SSH (pone cap 0 en Postfix). Es reversible y solo
+        // reduce, pero sigue siendo una mutación de infraestructura, así que va detrás de un flag
+        // que el OPERADOR prende — no yo, y no por inferencia de que "quería que el agente actúe".
+        //
+        //   WARMUP_AGENT_PUEDE_FRENAR=true   en config/gateway.env
+        //
+        // Apagado, el agente igual DECIDE y lo deja registrado ("habría frenado X porque Y"), que
+        // es la forma de mirar una semana cómo decide antes de darle la llave. Es el mismo patrón
+        // de dry-run que usa `limite-fisico.ts`, por la misma razón.
+        ...(puedeFrenar
+          ? {
+              frenarDominio: async (dominio: string, motivo: string) => {
+                const antes = await capActual(workspace, dominio);
+                await frenarNodo(dominio, motivo);
+                return { antes, despues: 0 };
+              }
+            }
+          : {}),
+        pendientes: {
+          listar: async () => (await workspace.readInventoryJson<Pendiente[]>(PENDIENTES_FILE).catch(() => [])) ?? [],
+          guardar: async (p) => {
+            await workspace.updateInventoryJson(PENDIENTES_FILE, () => p);
+          }
+        }
+      });
+    }
+  } else if (lectura.lectura && reparos.length > 0) {
+    acciones = [{ accion: "(ninguna)", ejecutada: false, detalle: `no se ejecutó nada: la lectura tiene reparos (${reparos.join(" · ")})` }];
+  }
+
+  // Se guarda SIEMPRE, con lectura o con motivo, y DESPUÉS de ejecutar: el panel tiene que poder
+  // decir "el agente no pudo mirar" en vez de mostrar una lectura vieja, y tiene que ver qué hizo.
+  await workspace.updateInventoryJson(MONITOR_FILE, () => ({ ...lectura, acciones }));
 
   if (lectura.lectura) {
     console.log(`[${lectura.generadoEn}] ${lectura.modelo} · ${lectura.tokens?.completion ?? 0} tokens\n`);
     console.log(lectura.lectura);
-    const reparos = lectura.verificacion?.reparos ?? [];
     if (reparos.length > 0) console.log(`\nREPAROS de la verificación: ${reparos.join(" · ")}`);
+    for (const a of acciones) console.log(`${a.ejecutada ? "✓ HIZO" : "· no hizo"}: ${a.detalle}`);
   } else {
     console.log(`[${lectura.generadoEn}] SIN LECTURA: ${lectura.motivo}`);
   }
