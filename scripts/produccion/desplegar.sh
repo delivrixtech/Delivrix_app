@@ -62,16 +62,39 @@ salida="$(remoto "git fetch origin ${RAMA} --quiet && git merge --ff-only origin
 }
 despues="$(remoto 'git rev-parse HEAD')"
 
+# OJO: "al día en disco" NO es "al día en memoria". El chequeo de deriva de abajo corre SIEMPRE,
+# incluso cuando no hubo nada nuevo que traer — porque el caso que buscamos es justamente ese: un
+# deploy anterior movió los archivos y no llegó a reiniciar.
 if [[ "${antes}" == "${despues}" ]]; then
-  echo "· ya estaba al día — nada que reiniciar"
-  exit 0
+  echo "· el repo de producción ya estaba al día (${despues:0:8})"
+  cambios=""
+else
+  echo "· ${antes:0:8} → ${despues:0:8}"
+  cambios="$(remoto "git diff --name-only ${antes} ${despues}")"
+  echo "${cambios}" | sed 's/^/    /' | head -20
+  total="$(echo "${cambios}" | wc -l | tr -d ' ')"
+  (( total > 20 )) && echo "    … y $((total - 20)) más"
 fi
-echo "· ${antes:0:8} → ${despues:0:8}"
 
-cambios="$(remoto "git diff --name-only ${antes} ${despues}")"
-echo "${cambios}" | sed 's/^/    /' | head -20
-total="$(echo "${cambios}" | wc -l | tr -d ' ')"
-(( total > 20 )) && echo "    … y $((total - 20)) más"
+# --- deriva: ¿qué corre HOY producción, de verdad? --------------------------------------------
+# Comparar solo el delta de ESTE deploy no alcanza. Si un deploy anterior movió los archivos pero
+# no llegó a reiniciar (falló el sudo, se cortó la red), el gateway sigue en memoria con código
+# viejo y el deploy siguiente dice "nada que reiniciar" — que es verdad para su propio delta, y
+# mentira sobre el sistema. Pasó exactamente así. Se le pregunta a producción qué commit corre y
+# se agrega lo que haya quedado pendiente desde ahí.
+corriendo="$(remoto "curl -fsS --max-time 5 http://127.0.0.1:3000/health" 2>/dev/null \
+  | grep -o '"commit"[[:space:]]*:[[:space:]]*"[0-9a-f]*"' | head -1 | grep -o '[0-9a-f]\{7,\}' || true)"
+if [[ -n "${corriendo}" && "${corriendo}" != "${despues}" ]]; then
+  pendiente="$(remoto "git diff --name-only ${corriendo} ${despues} 2>/dev/null" || true)"
+  if [[ -n "${pendiente}" ]]; then
+    echo "· deriva: producción corre ${corriendo:0:8}, hay cambios sin reiniciar desde ahí"
+    cambios="${cambios}"$'\n'"${pendiente}"
+  fi
+elif [[ -z "${corriendo}" ]]; then
+  # Gateway anterior a este esquema (no reporta build) o caído: no se puede saber qué corre.
+  echo "· deriva: producción no reporta su commit — reinicio el gateway por las dudas"
+  cambios="${cambios}"$'\n'"apps/gateway-api/src/main.ts"
+fi
 
 # --- qué servicio depende de qué (lógica probada en produccion.test.sh) -----------------------
 declare -a reiniciar=()
@@ -80,7 +103,7 @@ while IFS= read -r s; do [[ -n "${s}" ]] && reiniciar+=("${s}"); done < <(
 )
 
 if [[ ${#reiniciar[@]} -eq 0 ]]; then
-  echo "· ningún servicio depende de lo que cambió — no reinicio nada"
+  echo "· nada que reiniciar: producción corre ${corriendo:0:8} y no quedó código pendiente"
   exit 0
 fi
 
