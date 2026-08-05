@@ -9,6 +9,47 @@ sesión abierta (terminal, screen, VS Code) ni de que alguien haga login.
 
 ---
 
+## 0. EJECUTADO — resultado medido (2026-08-05)
+
+La migración se hizo. Producción vive en la Mac Studio, en `/Users/Shared/delivrix`, bajo
+launchd. **La prueba de fuego pasó y estos son los números, no una impresión:**
+
+| Medición | Valor |
+|---|---|
+| Reinicio de la Studio | 16:45:01 |
+| Los 5 servicios escribiendo en sus logs | 16:45:21 — **20 segundos después** |
+| Gateway respondiendo `/health` | ~1 minuto |
+| Intervención humana | **ninguna** (sin login, sin arrancar nada) |
+| Prueba de que son servicios de sistema | **PID 331 y 334, con PPID 1 (`launchd`)** |
+| Medición del cupo tras el reinicio | re-hecha sola (0,1 h de antigüedad) |
+| Gate de tests en la Studio (Node 26) | 2615 + 125, **0 fallos** |
+| Base migrada | 22 tablas con datos, **todos los conteos iguales** a la laptop |
+
+Un PID de tres cifras solo lo tiene un proceso que arrancó con el sistema, antes de cualquier
+sesión de usuario; y `PPID 1` significa que quien lo levantó fue el sistema operativo. Con eso,
+"la Studio no se detiene" dejó de ser configuración declarada y pasó a ser un hecho medido.
+
+**Cuatro bugs del instalador, todos invisibles leyendo el código.** Aparecieron solo al correrlo
+de verdad, con sudo, en la máquina real — la misma lección que ya nos había costado la sonda del
+puerto 25 y el lock del warmup:
+
+1. `sudo` no hereda el PATH del operador ⇒ no encontraba `psql` y el mensaje culpaba a Postgres,
+   que estaba impecable y aceptando conexiones.
+2. **macOS (TCC) le prohíbe a los LaunchDaemons leer `Documents`/`Desktop`/`Downloads`**, aun del
+   propio usuario y con permisos POSIX perfectos: los 6 servicios cargaban y morían con
+   `Operation not permitted`. Por eso el repo vive en `/Users/Shared/delivrix`, y el instalador
+   ahora **se niega** a correr desde una carpeta protegida.
+3. `launchctl bootout` es asíncrono ⇒ el `bootstrap` siguiente fallaba con `Bootstrap failed: 5`.
+   El script se anunciaba idempotente y se rompía justamente al repetirlo.
+4. Exigía Postgres arriba como requisito para poder levantar Postgres: una corrida fallida dejaba
+   el sistema sin salida por la vía normal. **Un instalador no puede pedir como requisito lo que
+   él mismo produce.**
+
+Además, `pgvector` **no tiene binarios para Postgres 16** (solo 17 y 18) y la memoria semántica
+declara `embedding vector(1024)`: producción quedó en **PostgreSQL 17**.
+
+---
+
 ## 1. Quién vive dónde
 
 | Máquina | Rol | Tailscale |
