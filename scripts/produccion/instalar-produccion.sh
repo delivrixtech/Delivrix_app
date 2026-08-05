@@ -46,6 +46,25 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 # propio usuario y aunque los permisos POSIX estén perfectos. El daemon muere con "Operation not
 # permitted" y `ls -l` no muestra nada raro. Pasó en la instalación real con el repo en
 # ~/Documents: los 6 servicios cargaron y ninguno pudo arrancar.
+# ¿ESTA máquina es producción? Correr esto en la laptop de desarrollo instalaría un SEGUNDO
+# emisor de warmup 24/7 contra otra base — el único daño irreversible del sistema (duplicar el
+# volumen hacia Gmail cruza un umbral permanente). Ya pasó: el operador pegó el comando en la
+# laptop porque el `cd` a la ruta de producción falló en silencio y el script siguió igual.
+# El marcador vive en runtime/ (que está en .gitignore), así que NO viaja con el repo: hay que
+# crearlo a mano en la máquina de producción, una sola vez, a propósito.
+MARCADOR="${ROOT_DIR}/runtime/ESTA-MAQUINA-ES-PRODUCCION"
+if [[ ! -f "${MARCADOR}" ]]; then
+  echo "FATAL: esta máquina no está marcada como producción." >&2
+  echo "  host: $(hostname -s)   repo: ${ROOT_DIR}" >&2
+  echo "" >&2
+  echo "  Si de verdad ESTA es la máquina de producción (y NO la laptop de desarrollo):" >&2
+  echo "     mkdir -p \"${ROOT_DIR}/runtime\" && touch \"${MARCADOR}\"" >&2
+  echo "" >&2
+  echo "  Instalar esto en la máquina equivocada deja DOS emisores de warmup contra bases" >&2
+  echo "  distintas: duplica el volumen hacia Gmail y ese daño no se deshace." >&2
+  exit 1
+fi
+
 case "${ROOT_DIR}" in
   */Documents/*|*/Desktop/*|*/Downloads/*|*/Documents|*/Desktop|*/Downloads)
     echo "FATAL: el repo está en una carpeta protegida por macOS (${ROOT_DIR})." >&2
