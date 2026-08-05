@@ -7,22 +7,24 @@
 # necesidad cuesta una vuelta, y no hay razón para pagarla.
 set -euo pipefail
 
-STUDIO_HOST="${STUDIO_HOST:-100.87.218.46}"
-STUDIO_USER="${STUDIO_USER:-}"
+# Destino SSH: por defecto el alias `studio` de ~/.ssh/config, que ya trae usuario y llave.
+# Pasar user@ip a mano no sirve: saltea el alias y con él la IdentityFile, y el deploy muere con
+# "Permission denied (publickey)" aunque `ssh studio` funcione perfecto.
+STUDIO_SSH="${STUDIO_SSH:-studio}"
 STUDIO_DIR="${STUDIO_DIR:-/Users/Shared/delivrix}"
 RAMA="${RAMA:-produ}"
-SSH_DEST=""
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/produccion/lib.sh
 source "${ROOT_DIR}/scripts/produccion/lib.sh"
 
-if [[ -z "${STUDIO_USER}" ]]; then
-  echo "FATAL: definí STUDIO_USER (el usuario de la Studio)." >&2
-  echo "  ej:  STUDIO_USER=juanes ./scripts/produccion/desplegar.sh" >&2
+SSH_DEST="${STUDIO_SSH}"
+if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "${SSH_DEST}" true 2>/dev/null; then
+  echo "FATAL: no puedo entrar a '${SSH_DEST}' sin contraseña." >&2
+  echo "  Probá:  ssh ${SSH_DEST} whoami" >&2
+  echo "  Si usás otro destino:  STUDIO_SSH=usuario@ip ./scripts/produccion/desplegar.sh" >&2
   exit 1
 fi
-SSH_DEST="${STUDIO_USER}@${STUDIO_HOST}"
 
 # --- guarda anti doble-emisor -----------------------------------------------------------------
 # Si esta laptop todavía tiene el daemon de warmup vivo, hay DOS cerebros mandando correo contra

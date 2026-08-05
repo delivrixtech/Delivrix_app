@@ -61,7 +61,7 @@ npm test                                    # el gate: 2740 tests, tiene que dar
 git push origin produ
 
 # 4. a producción
-STUDIO_USER=delivrixstudio ./scripts/produccion/desplegar.sh
+./scripts/produccion/desplegar.sh
 
 # 5. mirarlo funcionando
 ./scripts/produccion/tunel.sh               # abre el panel de producción en tu navegador
