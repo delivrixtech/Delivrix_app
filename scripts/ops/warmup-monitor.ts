@@ -67,6 +67,22 @@ async function frenarNodo(dominio: string, motivo: string): Promise<void> {
   console.log(`[agente] frenó ${dominio}: ${motivo}`);
 }
 
+/**
+ * ¿Hay un daemon emisor vivo en esta máquina? Es el único modo honesto de saberlo desde acá: el
+ * flag que lo habilita vive en el entorno de ESE proceso, no en gateway.env. Y un daemon que
+ * arranca sin el flag sale de inmediato, así que estar vivo equivale a estar habilitado.
+ */
+async function daemonVivo(): Promise<boolean> {
+  try {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const { stdout } = await promisify(execFile)("pgrep", ["-f", "live-warmup-daemon"], { timeout: 5000 });
+    return stdout.trim().length > 0;
+  } catch {
+    return false; // pgrep sale 1 cuando no encuentra nada: no hay daemon
+  }
+}
+
 const LOOP = process.argv.includes("--loop");
 const INTERVALO_MS = Number.parseInt(process.env.WARMUP_MONITOR_INTERVAL_MS ?? "", 10) || 10 * 60_000;
 
@@ -85,12 +101,19 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
   const emisor = await (async () => {
     try {
       const cfg = resolveLiveDaemonConfig(process.env);
+      // `enabled` NO sale del entorno de ESTE proceso. WARMUP_LIVE_ENABLE se le inyecta solo al
+      // daemon (servicio.sh warmup-daemon), no vive en gateway.env: el monitor leyendo su propio
+      // entorno siempre veía false y el agente afirmaba "el emisor está inerte" con el emisor
+      // mandando. Lo detecté porque la primera corrida con este cambio dijo exactamente eso.
+      // El hecho verificable es EXTERNO: ¿hay un daemon vivo? Si arrancó sin el flag habría
+      // salido en el acto (INERTE → return), así que estar vivo ES estar habilitado.
+      const vivo = await daemonVivo();
       const [ciclosHoy, placements] = await Promise.all([
         countCyclesToday(pg as never),
         recentPlacements(pg as never, cfg.placementWindow)
       ]);
       const { action, reason } = decideDaemonAction({
-        enabled: cfg.enabled,
+        enabled: vivo,
         killed: existsSync(cfg.killFile),
         cyclesToday: ciclosHoy,
         maxPerDay: cfg.maxPerDay,
