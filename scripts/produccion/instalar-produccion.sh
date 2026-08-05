@@ -131,6 +131,33 @@ if fdesetup status 2>/dev/null | grep -q "FileVault is On"; then
   echo "   Apagalo a mano (Ajustes → Privacidad y seguridad → FileVault) o la promesa de 24/7 es falsa."
 fi
 
+# ---------------------------------------------------------------- carga de servicios
+# `bootout` es ASÍNCRONO: devuelve enseguida pero el servicio tarda en morir de verdad (postgres
+# tiene ExitTimeOut 120). Si el `bootstrap` llega antes de que el anterior termine de irse, falla
+# con "Bootstrap failed: 5: Input/output error" — y como este script es idempotente por diseño,
+# eso significa que la SEGUNDA corrida chocaba contra sí misma. Pasó en la instalación real.
+cargar() {
+  local etiqueta="com.delivrix.$1"
+  local plist="/Library/LaunchDaemons/${etiqueta}.plist"
+  launchctl bootout "system/${etiqueta}" >/dev/null 2>&1 || true
+  local i
+  for i in {1..40}; do
+    launchctl print "system/${etiqueta}" >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if launchctl print "system/${etiqueta}" >/dev/null 2>&1; then
+    echo "FATAL: ${etiqueta} sigue cargado tras 40s de bootout. Descargalo a mano:" >&2
+    echo "  sudo launchctl bootout system/${etiqueta}" >&2
+    exit 1
+  fi
+  if ! launchctl bootstrap system "${plist}" 2>/dev/null; then
+    sleep 5
+    launchctl bootstrap system "${plist}"   # si vuelve a fallar, que se vea el error real
+  fi
+  launchctl enable "system/${etiqueta}"
+  echo "· ${etiqueta}: cargado"
+}
+
 # ---------------------------------------------------------------- 2.5 Postgres como DAEMON
 # `brew services start` corrido como usuario deja un LaunchAgent en ~/Library/LaunchAgents: eso
 # arranca DESPUÉS del login. Todo el punto de este kit es no depender de que alguien inicie
@@ -181,10 +208,8 @@ cat > "/Library/LaunchDaemons/com.delivrix.postgres.plist" <<PLIST
 PLIST
 chown root:wheel /Library/LaunchDaemons/com.delivrix.postgres.plist
 chmod 644 /Library/LaunchDaemons/com.delivrix.postgres.plist
-launchctl bootout system/com.delivrix.postgres >/dev/null 2>&1 || true
-launchctl bootstrap system /Library/LaunchDaemons/com.delivrix.postgres.plist
-launchctl enable system/com.delivrix.postgres
-for _ in {1..20}; do
+cargar postgres
+for _ in {1..30}; do
   sudo -u "${OPERADOR}" env PGCONNECT_TIMEOUT=3 "${PSQL_BIN}" "${PG_URL}" -tAc 'select 1' >/dev/null 2>&1 && break
   sleep 1
 done
@@ -240,14 +265,6 @@ ${args_xml}  </array>
 </plist>
 PLIST
   chown root:wheel "${plist}"; chmod 644 "${plist}"
-}
-
-cargar() {
-  local etiqueta="com.delivrix.$1"
-  launchctl bootout "system/${etiqueta}" >/dev/null 2>&1 || true
-  launchctl bootstrap system "/Library/LaunchDaemons/${etiqueta}.plist"
-  launchctl enable "system/${etiqueta}"
-  echo "· ${etiqueta}: cargado"
 }
 
 while IFS='|' read -r nombre arg correo; do
