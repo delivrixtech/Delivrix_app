@@ -37,6 +37,11 @@ echo "   warmup:   $([[ ${CON_WARMUP} == 1 ]] && echo 'SÍ (manda correo)' || ec
 echo
 
 # ---------------------------------------------------------------- 0. requisitos
+# sudo NO hereda el PATH del operador: sin esto, `psql` (y cualquier binario de Homebrew) no
+# existe para este script aunque funcione perfecto en la sesión normal. Falló así en la primera
+# instalación real y el mensaje culpaba a Postgres, que estaba impecable.
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+
 NODE_BIN=""
 for cand in /opt/homebrew/bin/node /usr/local/bin/node; do
   [[ -x "${cand}" ]] && NODE_BIN="${cand}" && break
@@ -44,7 +49,7 @@ done
 if [[ -z "${NODE_BIN}" ]]; then
   echo "FATAL: no hay node en /opt/homebrew/bin ni /usr/local/bin." >&2
   echo "  launchd no tiene PATH ni shell de login: un node de nvm NO sirve acá." >&2
-  echo "  Instalalo con:  brew install node@22   (y enlazalo)" >&2
+  echo "  Instalalo con:  brew install node" >&2
   exit 1
 fi
 echo "· node: ${NODE_BIN} ($(${NODE_BIN} --version))"
@@ -58,14 +63,26 @@ if grep -qE '^[[:space:]]*POSTGRES_CONTAINER=[^[:space:]]' "${ROOT_DIR}/config/g
   echo "       dejalo vacío (POSTGRES_CONTAINER=) o los scripts de migración buscarán un contenedor." >&2
 fi
 
-PG_URL="$(grep -m1 -E '^[[:space:]]*POSTGRES_URL=' "${ROOT_DIR}/config/gateway.env" | cut -d= -f2-)"
-if ! sudo -u "${OPERADOR}" env PGCONNECT_TIMEOUT=5 psql "${PG_URL}" -tAc 'select 1' >/dev/null 2>&1; then
-  echo "FATAL: no puedo conectar a Postgres con POSTGRES_URL." >&2
-  echo "  En la Studio va por Homebrew (NO contenedor):  brew install postgresql@16 pgvector" >&2
-  echo "  y luego:  sudo brew services start postgresql@16" >&2
+PSQL_BIN="$(command -v psql || true)"
+if [[ -z "${PSQL_BIN}" ]]; then
+  echo "FATAL: no encuentro psql." >&2
+  echo "  En producción Postgres va por Homebrew, NO contenedor (Docker/OrbStack necesitan sesión" >&2
+  echo "  gráfica iniciada, justo la dependencia que este script elimina):" >&2
+  echo "     brew install postgresql@17 pgvector && brew services start postgresql@17" >&2
+  echo "  Ojo: pgvector solo tiene binarios para 17 y 18 — con el 16 la extensión no existe." >&2
   exit 1
 fi
-echo "· postgres: conecta ok"
+PG_URL="$(grep -m1 -E '^[[:space:]]*POSTGRES_URL=' "${ROOT_DIR}/config/gateway.env" | cut -d= -f2-)"
+if ! sudo -u "${OPERADOR}" env PGCONNECT_TIMEOUT=5 "${PSQL_BIN}" "${PG_URL}" -tAc 'select 1' >/dev/null 2>&1; then
+  echo "FATAL: psql existe (${PSQL_BIN}) pero no conecta con POSTGRES_URL." >&2
+  echo "  Probá:  brew services list | grep postgres" >&2
+  exit 1
+fi
+echo "· postgres: conecta ok ($("${PSQL_BIN}" --version))"
+if ! sudo -u "${OPERADOR}" "${PSQL_BIN}" "${PG_URL}" -tAc "select 1 from pg_extension where extname='vector'" 2>/dev/null | grep -q 1; then
+  echo "AVISO: la extensión 'vector' NO está en esta base. La memoria semántica de OpenClaw la usa" >&2
+  echo "       (embedding vector(1024)); sin ella esas consultas fallan." >&2
+fi
 
 if [[ ${SOLO_VERIFICAR} == 1 ]]; then
   echo; echo "solo verificación — no toco nada."; exit 0
@@ -96,6 +113,70 @@ if fdesetup status 2>/dev/null | grep -q "FileVault is On"; then
   echo "!! FileVault está ENCENDIDO."
   echo "   Tras cada reinicio la Mac espera una contraseña que nadie va a teclear, y NADA arranca."
   echo "   Apagalo a mano (Ajustes → Privacidad y seguridad → FileVault) o la promesa de 24/7 es falsa."
+fi
+
+# ---------------------------------------------------------------- 2.5 Postgres como DAEMON
+# `brew services start` corrido como usuario deja un LaunchAgent en ~/Library/LaunchAgents: eso
+# arranca DESPUÉS del login. Todo el punto de este kit es no depender de que alguien inicie
+# sesión. Se pasa a LaunchDaemon de sistema, y se saca el agente para que no peleen por el 5432.
+echo
+echo "== postgres como servicio de sistema =="
+PG_OPT="$(ls -d /opt/homebrew/opt/postgresql@* 2>/dev/null | sort -V | tail -1 || true)"
+if [[ -z "${PG_OPT}" || ! -x "${PG_OPT}/bin/postgres" ]]; then
+  echo "FATAL: no encuentro el postgres de Homebrew en /opt/homebrew/opt/postgresql@*" >&2
+  exit 1
+fi
+PG_NAME="$(basename "${PG_OPT}")"
+PG_DATA="/opt/homebrew/var/${PG_NAME}"
+[[ -d "${PG_DATA}" ]] || { echo "FATAL: no existe el directorio de datos ${PG_DATA}" >&2; exit 1; }
+
+AGENTE="/Users/${OPERADOR}/Library/LaunchAgents/homebrew.mxcl.${PG_NAME}.plist"
+if [[ -f "${AGENTE}" ]]; then
+  UID_OP="$(id -u "${OPERADOR}")"
+  launchctl bootout "gui/${UID_OP}/homebrew.mxcl.${PG_NAME}" >/dev/null 2>&1 || true
+  mv "${AGENTE}" "${AGENTE}.reemplazado-por-daemon"
+  echo "· agente de usuario retirado (quedaría arrancando solo tras el login)"
+  sleep 2
+fi
+
+cat > "/Library/LaunchDaemons/com.delivrix.postgres.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.delivrix.postgres</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${PG_OPT}/bin/postgres</string>
+    <string>-D</string>
+    <string>${PG_DATA}</string>
+  </array>
+  <key>UserName</key><string>${OPERADOR}</string>
+  <key>WorkingDirectory</key><string>/opt/homebrew</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ExitTimeOut</key><integer>120</integer>
+  <key>StandardOutPath</key><string>/opt/homebrew/var/log/${PG_NAME}.log</string>
+  <key>StandardErrorPath</key><string>/opt/homebrew/var/log/${PG_NAME}.log</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>LC_ALL</key><string>en_US.UTF-8</string></dict>
+</dict>
+</plist>
+PLIST
+chown root:wheel /Library/LaunchDaemons/com.delivrix.postgres.plist
+chmod 644 /Library/LaunchDaemons/com.delivrix.postgres.plist
+launchctl bootout system/com.delivrix.postgres >/dev/null 2>&1 || true
+launchctl bootstrap system /Library/LaunchDaemons/com.delivrix.postgres.plist
+launchctl enable system/com.delivrix.postgres
+for _ in {1..20}; do
+  sudo -u "${OPERADOR}" env PGCONNECT_TIMEOUT=3 "${PSQL_BIN}" "${PG_URL}" -tAc 'select 1' >/dev/null 2>&1 && break
+  sleep 1
+done
+if sudo -u "${OPERADOR}" env PGCONNECT_TIMEOUT=3 "${PSQL_BIN}" "${PG_URL}" -tAc 'select 1' >/dev/null 2>&1; then
+  echo "· com.delivrix.postgres: arriba y aceptando conexiones (${PG_NAME})"
+else
+  echo "FATAL: el daemon de postgres no acepta conexiones. Mirá /opt/homebrew/var/log/${PG_NAME}.log" >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------- 3. LaunchDaemons
