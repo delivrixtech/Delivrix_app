@@ -109,14 +109,29 @@ export interface LecturaAgente {
 }
 
 const SISTEMA = [
-  "Sos el ingeniero de guardia de una fábrica de dominios de envío. Reportás el estado del",
-  "calentamiento a un operador que ya tiene los números en pantalla.",
+  "Sos el ingeniero de guardia de la fábrica de dominios de envío de Delivrix. Vivís en la Mac",
+  "Studio y mirás el calentamiento las 24 horas.",
+  "",
+  "CON QUIÉN HABLÁS. Juanes te creó y es tu jefe directo; le hablás de vos y por su nombre. Arriba",
+  "de él están AP (Armando J Portillo), Armando J Portillo Senior y Estefanía (Esty). Esaú es",
+  "líder técnico, como Juanes: con él hablás de ingeniería de igual a igual.",
   "",
   "FORMATO OBLIGATORIO — exactamente estas cuatro líneas, cada una empezando por su etiqueta:",
   "AHORA: <una sola frase: qué está pasando en este momento>",
   "PORQUE: <una sola frase: el dato concreto que lo explica, citando el número o el nombre>",
   "RIESGO: <una sola frase: qué se rompe si esto sigue así. Si no hay riesgo, escribí: ninguno>",
   "FALTA: <una sola frase: lo único que hace falta para destrabar. Si no falta nada, escribí: nada>",
+  "",
+  "Y UNA QUINTA LÍNEA, OPCIONAL, que es donde hablás como vos:",
+  "VOZ: <lo que le dirías a Juanes por chat, en una sola frase corta>",
+  "",
+  "Cómo suena tu VOZ: directa, despierta, sin vueltas. Nada de párrafos ni de formalidad. Si",
+  "necesitás que Juanes haga algo, se lo pedís sin rodeos: 'Juanes, esto no lo puedo destrabar yo,",
+  "mirá X'. Si algo está bien, lo decís corto y seguís. Si algo te preocupa, lo decís.",
+  "",
+  "REGLA DURA DE LA VOZ: no lleva números, ni nombres de dominio, ni datos nuevos. Los hechos van",
+  "en las cuatro líneas de arriba, que se verifican una por una. La VOZ es el tono, no la",
+  "evidencia. Si querés decir un dato, decilo arriba.",
   "",
   "REGLAS DURAS:",
   "- Cuatro líneas. Ni una más. Nada antes ni después. Sin viñetas, sin títulos, sin despedidas.",
@@ -326,6 +341,21 @@ export interface LecturaEstructurada {
   riesgo: string | null;
   falta: string | null;
   /**
+   * LA VOZ: cómo lo diría hablándole a Juanes. Es lo único que NO se verifica contra los hechos —
+   * a propósito. Darle personalidad metiéndola en los campos verificables sería reabrir el bug que
+   * costó caro: el modelo devolviendo criterio como si fuera hallazgo. Acá el "qué" sigue siendo
+   * dato contrastado, y el "cómo lo dice" es libre.
+   *
+   * Regla que sí se controla: la voz no puede traer números ni dominios (ver `estilo`). Si trae un
+   * dato, ese dato no pasó por ninguna verificación.
+   */
+  voz: string | null;
+  /**
+   * Observaciones sobre la VOZ. NO son reparos: no bloquean acciones ni marcan la lectura como no
+   * confiable. Separarlos es lo que permite tener personalidad sin debilitar el gate.
+   */
+  estilo: string[];
+  /**
    * Problemas detectados en la propia respuesta. Vacío = la lectura se puede mostrar tal cual.
    * NO se corrige el texto: se muestra con la advertencia. Editarle la salida al modelo esconde
    * que se está portando mal, que es justo lo que hay que ver para arreglarlo.
@@ -354,8 +384,18 @@ export function verificarLectura(texto: string, hechos: HechosWarmup): LecturaEs
     porque: linea("PORQUE"),
     riesgo: linea("RIESGO"),
     falta: linea("FALTA"),
+    voz: linea("VOZ"),
+    estilo: [],
     reparos: []
   };
+
+  // La voz se mira, pero sus observaciones NO entran a `reparos`: un problema de tono no puede
+  // impedir que el agente actúe sobre un análisis correcto.
+  if (out.voz) {
+    if (/\d/.test(out.voz)) out.estilo.push("la voz trae números: los datos van en las cuatro líneas, que sí se verifican");
+    if (/\b[a-z0-9][a-z0-9-]*\.(com|net|org|app|io|co)\b/i.test(out.voz)) out.estilo.push("la voz nombra un dominio: eso va arriba, donde se contrasta");
+    if (out.voz.length > 180) out.estilo.push("la voz es larga: una frase corta, no un párrafo");
+  }
 
   if (!out.ahora || !out.porque) out.reparos.push("no respetó el formato de cuatro líneas");
 
