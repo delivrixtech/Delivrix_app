@@ -15,6 +15,12 @@
 /** Los hechos que el agente puede mirar. Todos vienen de mediciones reales, ninguno es opinión. */
 export interface HechosWarmup {
   generadoEn: string;
+  /**
+   * ¿El emisor está mandando, o está frenado y por qué? Faltaba, y el agente llegó a reportar
+   * "RIESGO: ninguno" con el daemon en placement-pause hacía horas. Sale de `decideDaemonAction`,
+   * la MISMA función que decide en el daemon — no de una copia que se puede quedar vieja.
+   */
+  emisor?: { estado: string; motivo: string; vueltasHoy: number; topeDiario: number } | null;
   semillas: { destinos: number; midiendo: number; puntoCiego: string[] };
   vueltas: Array<{
     dominio: string;
@@ -24,9 +30,21 @@ export interface HechosWarmup {
     completa: boolean;
     error: string | null;
   }>;
-  /** `medidoEn` es obligatorio: sin la fecha, el agente reportaba un cap de ayer como si fuera de hoy. */
-  cap: { consumidoHoy: number; tope: number; enElTope: string[]; sinLimite: number; medidoEn?: string | null } | null;
-  flota: { sanas: number; bloqueadas: number; atascadas: number; cruzados: string[]; cerca: string[] } | null;
+  /**
+   * `medidoEn` es obligatorio: sin la fecha, el agente reportaba un cap de ayer como si fuera de hoy.
+   * NO hay totales de flota: el cap de Postfix es POR NODO y sumarlos producía un "tope diario"
+   * inexistente que el agente citó como su conclusión central en 8 de 11 corridas.
+   */
+  cap: { nodosMedidos: number; nodosSinMedir: number; enElTope: string[]; sinLimite: number; medidoEn?: string | null } | null;
+  flota: {
+    sanas: number;
+    bloqueadas: number;
+    atascadas: number;
+    cruzados: string[];
+    /** EXCLUYE a los que ya cruzaron: estar en las dos listas le hacía contar el mismo dominio dos veces. */
+    cerca: string[];
+    medidoEn?: string | null;
+  } | null;
   /**
    * EL PLAN: qué decidió el motor para cada dominio hoy, con su motivo. Faltaba, y por eso el
    * agente opinaba sobre el volumen sin saber qué se había decidido — describía el pasado y
@@ -143,8 +161,14 @@ const SISTEMA = [
   "  medir, no afirmes que está lejos del umbral: decí que no se sabe.",
   "- Lo que reconstruye reputación es volumen BAJO con buena señal, no parar del todo. Un dominio",
   "  detenido no se recupera, se queda quieto.",
-  "- El tope diario de vueltas es de toda la flota, no por dominio: si hay muchos dominios en el",
-  "  pool y pocas vueltas, el problema es el reparto, no cada dominio."
+  // Se BORRÓ el criterio "el tope diario de vueltas es de toda la flota": era factualmente falso
+  // —el cap de Postfix es por nodo— y de ahí el modelo sacó la palabra "vueltas" para contar
+  // mensajes y construyó con ella su conclusión central en 8 de 11 corridas. Un criterio en prosa
+  // el modelo lo devuelve como hallazgo propio; si además es falso, lo devuelve con seguridad.
+  "- El límite físico es POR NODO. Un nodo en su tope no frena a los demás: no existe un tope de",
+  "  la flota entera, y sumar los caps de los nodos no produce uno.",
+  "- El placement es el instrumento del warmup: si un dominio tiene señal buena y muestra",
+  "  suficiente, decilo. Un dominio listo para subir volumen es un hallazgo, no solo los problemas."
 ].join("\n");
 
 /** Arma el pedido. Puro: se puede testear sin red. */
@@ -167,12 +191,27 @@ export function construirPrompt(hechos: HechosWarmup, erroresPrevios: readonly s
         : "")
   );
 
+  // EL PRIMER HECHO: ¿está mandando o no? Todo lo demás se lee distinto según la respuesta.
+  if (hechos.emisor) {
+    const e = hechos.emisor;
+    l.push(
+      e.estado === "send"
+        ? `EMISOR: ACTIVO, mandando. Vueltas hoy ${e.vueltasHoy}/${e.topeDiario}.`
+        : `EMISOR: NO ESTÁ MANDANDO (${e.estado}) — ${e.motivo}. Vueltas hoy ${e.vueltasHoy}/${e.topeDiario}.`
+    );
+  } else {
+    l.push("EMISOR: no pude leer si está mandando.");
+  }
+
   if (hechos.cap) {
     const edad = hechos.cap.medidoEn ? (Date.now() - Date.parse(hechos.cap.medidoEn)) / 3_600_000 : null;
+    // Se informa COBERTURA de la medición, no un total: el cap es por nodo y sumarlo inventaba
+    // un "tope de flota" que no existe. Y los nodos sin medir se dicen como sin medir, no como 0.
     l.push(
       `Límite físico${edad !== null && Number.isFinite(edad) ? ` (medido hace ${edad.toFixed(1)}h${edad > 12 ? ", VENCIDO" : ""})` : " (sin fecha de medición)"}: ` +
-        `${hechos.cap.consumidoHoy} de ${hechos.cap.tope} consumidos hoy en la flota.` +
-        (hechos.cap.enElTope.length > 0 ? ` En el tope: ${hechos.cap.enElTope.join(", ")}.` : "") +
+        `es un tope POR NODO, no de la flota; un nodo en su tope no frena a los demás. ` +
+        `${hechos.cap.nodosMedidos} nodos con consumo medido, ${hechos.cap.nodosSinMedir} SIN medir.` +
+        (hechos.cap.enElTope.length > 0 ? ` En su tope: ${hechos.cap.enElTope.join(", ")}.` : "") +
         (hechos.cap.sinLimite > 0 ? ` ${hechos.cap.sinLimite} nodos SIN límite puesto.` : "")
     );
   } else {
@@ -180,12 +219,14 @@ export function construirPrompt(hechos: HechosWarmup, erroresPrevios: readonly s
   }
 
   if (hechos.flota) {
+    const edadF = hechos.flota.medidoEn ? (Date.now() - Date.parse(hechos.flota.medidoEn)) / 3_600_000 : null;
     l.push(
-      `Flota medida: ${hechos.flota.sanas} entregan, ${hechos.flota.bloqueadas} cerradas por el receptor, ${hechos.flota.atascadas} con la cola atascada.` +
+      `Flota${edadF !== null && Number.isFinite(edadF) ? ` (medida hace ${edadF.toFixed(1)}h${edadF > 12 ? ", VIEJA: no la reportes como el estado de ahora" : ""})` : " (sin fecha de medición)"}: ` +
+        `${hechos.flota.sanas} entregan, ${hechos.flota.bloqueadas} cerradas por el receptor, ${hechos.flota.atascadas} con la cola atascada.` +
         (hechos.flota.cruzados.length > 0
           ? ` CRUZARON el umbral permanente (irreversible): ${hechos.flota.cruzados.join(", ")}.`
           : "") +
-        (hechos.flota.cerca.length > 0 ? ` Cerca del umbral: ${hechos.flota.cerca.join(", ")}.` : "")
+        (hechos.flota.cerca.length > 0 ? ` Cerca del umbral (ninguno de estos cruzó todavía): ${hechos.flota.cerca.join(", ")}.` : "")
     );
   } else {
     l.push("Flota: sin medición.");
@@ -438,7 +479,13 @@ export async function pedirLectura(input: PedirLecturaInput): Promise<LecturaAge
     const data = (await r.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
+      /** El modelo que REALMENTE contestó. LM Studio sirve el que tiene cargado, sin importar
+       *  cuál se pidió: pedíamos qwen3-30b y contestaba qwen3.6-35b, y el log guardaba el
+       *  solicitado. Toda discusión sobre "¿con qué cerebro pensó esto?" era sobre un dato falso. */
+      model?: string;
     };
+    // El modelo del REGISTRO es el que contestó, no el que se pidió.
+    base.modelo = data.model ?? input.modelo;
     const texto = (data.choices?.[0]?.message?.content ?? "").trim();
     if (!texto) {
       // Pasa si el presupuesto se lo comió el razonamiento: es un fallo real, no una lectura vacía.

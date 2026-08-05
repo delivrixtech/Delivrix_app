@@ -20,6 +20,12 @@ import { MONITOR_FILE, pedirLectura, type HechosWarmup } from "../../apps/gatewa
 import { resumirRechazos } from "../../apps/gateway-api/src/agents/clasificar-rechazo.ts";
 import { ejecutarAcciones, extraerAcciones, type Pendiente } from "../../apps/gateway-api/src/agents/acciones-agente.ts";
 import { planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
+import {
+  countCyclesToday,
+  decideDaemonAction,
+  recentPlacements,
+  resolveLiveDaemonConfig
+} from "../../apps/warmup-engine/src/service/live-warmup-daemon.ts";
 import { CAP_MEASUREMENT_FILE, type CapFlota } from "../../apps/gateway-api/src/node-daily-cap.ts";
 import { leerSemillas, semillasActivas, semillasMedibles, puntoCiego } from "../../apps/gateway-api/src/warmup-seeds.ts";
 import { MEASUREMENT_FILE, type MedicionFlota } from "../../apps/gateway-api/src/sender-measurement.ts";
@@ -71,6 +77,32 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
   const cap = await workspace.readInventoryJson<CapFlota>(CAP_MEASUREMENT_FILE).catch(() => null);
   const med = await workspace.readInventoryJson<MedicionFlota>(MEASUREMENT_FILE).catch(() => null);
 
+  // ¿EL EMISOR ESTÁ MANDANDO O NO? Era el hecho que más le faltaba: el agente reportó
+  // "RIESGO: ninguno" mientras el daemon llevaba horas en placement-pause. Un vigilante que no ve
+  // el interruptor de lo que vigila no puede ni vigilar ni prevenir.
+  // Se REUSA `decideDaemonAction`, la misma función que decide de verdad en el daemon: si esto se
+  // recalculara acá, el día que cambie una barrera el agente informaría un estado que no existe.
+  const emisor = await (async () => {
+    try {
+      const cfg = resolveLiveDaemonConfig(process.env);
+      const [ciclosHoy, placements] = await Promise.all([
+        countCyclesToday(pg as never),
+        recentPlacements(pg as never, cfg.placementWindow)
+      ]);
+      const { action, reason } = decideDaemonAction({
+        enabled: cfg.enabled,
+        killed: existsSync(cfg.killFile),
+        cyclesToday: ciclosHoy,
+        maxPerDay: cfg.maxPerDay,
+        recentPlacements: placements,
+        placementFloor: cfg.placementFloor
+      });
+      return { estado: action, motivo: reason, vueltasHoy: ciclosHoy, topeDiario: cfg.maxPerDay };
+    } catch {
+      return null; // sin este dato el agente sigue, pero sabiendo que no lo tiene
+    }
+  })();
+
   // Las vueltas salen de warmup_activity, que es lo único vivo y real que hay en Postgres.
   let vueltas: HechosWarmup["vueltas"] = [];
   try {
@@ -118,15 +150,21 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
 
   return {
     generadoEn: new Date().toISOString(),
+    emisor,
     semillas: {
       destinos: semillasActivas(seeds).length,
       midiendo: semillasMedibles(seeds).length,
       puntoCiego: puntoCiego(seeds)
     },
+    // NO se suman los caps de los 58 nodos. El cap de Postfix es POR NODO: un nodo en su tope no
+    // frena a los otros 57, así que "154998 vueltas de la flota" era un número que no existe en
+    // ninguna parte — y fue la conclusión central del agente en 8 de 11 corridas. Peor: 44 de los
+    // 58 nodos tienen consumidoHoy=null (sin medir) y el `?? 0` los contaba como cero, o sea que
+    // el numerador mezclaba el consumo de 14 nodos contra el tope de 58.
     cap: cap
       ? {
-          consumidoHoy: cap.nodos.reduce((s, n) => s + (n.consumidoHoy ?? 0), 0),
-          tope: cap.nodos.reduce((s, n) => s + (n.cap ?? 0), 0),
+          nodosMedidos: cap.nodos.filter((n) => n.consumidoHoy !== null).length,
+          nodosSinMedir: cap.nodos.filter((n) => n.consumidoHoy === null).length,
           enElTope: cap.nodos.filter((n) => n.cap && n.consumidoHoy !== null && n.consumidoHoy >= n.cap).map((n) => n.domain),
           sinLimite: cap.nodos.filter((n) => !n.cableado).length,
           // La FECHA viaja con el dato: sin ella el agente reportaba un cap de ayer como si fuera
@@ -140,15 +178,29 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
           bloqueadas: med.bandejas.filter((b) => b.estado === "blocked_by_provider").length,
           atascadas: med.bandejas.filter((b) => b.estado === "stalled").length,
           cruzados: med.bandejas.filter((b) => (b.cruzados ?? []).length > 0).map((b) => b.domain),
-          cerca: med.bandejas.filter((b) => (b.cerca ?? []).length > 0).map((b) => b.domain)
+          // `cerca` EXCLUYE a los que ya cruzaron: estaban en las dos listas y el agente los
+          // contaba dos veces ("cinco más están cerca" y después listaba cuatro).
+          cerca: med.bandejas
+            .filter((b) => (b.cerca ?? []).length > 0 && (b.cruzados ?? []).length === 0)
+            .map((b) => b.domain),
+          // La FECHA viaja con el dato, igual que en el cap. Sin esto el agente reportaba un
+          // retrato de hace 23 h como si fuera de ahora, 11 de 11 veces.
+          medidoEn: med.medidoEn ?? null
         }
       : null,
     vueltas,
     // EL PLAN: la decisión que el motor ya tomó. Sin esto el agente opinaba sobre el volumen sin
     // saber qué se había decidido, y proponía cosas que el sistema ya estaba haciendo.
+    // saludFile es la línea de más valor de todo el bloque: sin ella el plan traía los 51
+    // dominios del registro y el agente opinaba sobre 43 que el daemon EXCLUYE (cerrados por el
+    // receptor, con la cola atascada o ya cruzados). Esas 43 líneas eran idénticas salvo el
+    // nombre —"arrancar, cupo 2/día, día ?, SIN MEDIR"— y ahogaron la única con señal real
+    // (corpfiling-infra.com, 83% de inbox sobre 6 muestras, listo para subir): el agente no la
+    // mencionó ni una vez en 11 corridas. Con esto mira el MISMO pool que ejecuta el daemon.
     plan: await planDelDia({
       pg,
       capFile: rutaInventario("sender-cap.json"),
+      saludFile: rutaInventario("sender-measurement.json"),
       poolConfigurado: [],
       ventanaPlacement: 6
     })

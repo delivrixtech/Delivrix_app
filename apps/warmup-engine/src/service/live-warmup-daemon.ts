@@ -307,7 +307,7 @@ async function hilosParaContinuar(pg: PgClient, seed: string, cycleActual: strin
  * consumían en rechazos y el daemon nunca llegaba al box que sí podía enviar. El calentamiento se
  * detenía solo, en silencio, y desde afuera parecía que el tope funcionaba bien.
  */
-async function countCyclesToday(pg: PgClient): Promise<number> {
+export async function countCyclesToday(pg: PgClient): Promise<number> {
   const { rows } = await pg.query<{ n: string | number }>(
     `SELECT COUNT(DISTINCT cycle_id)::int AS n FROM warmup_activity
       -- Zona EXPLÍCITA: sin ella se trunca en la TZ de la sesión y el "día" del tope no es el
@@ -331,7 +331,7 @@ async function countCyclesToday(pg: PgClient): Promise<number> {
  *   mismas 6 filas siguen siendo "las últimas 6" para siempre.
  * Es el mismo estado absorbente que ya se arregló en la decisión por dominio, un piso más arriba.
  */
-async function recentPlacements(pg: PgClient, window: number): Promise<Placement[]> {
+export async function recentPlacements(pg: PgClient, window: number): Promise<Placement[]> {
   const { rows } = await pg.query<{ placement: string | null }>(
     `SELECT placement FROM warmup_activity
       WHERE kind = 'measured' AND placement IS NOT NULL
