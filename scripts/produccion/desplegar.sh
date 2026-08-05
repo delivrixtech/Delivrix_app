@@ -18,6 +18,17 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/produccion/lib.sh
 source "${ROOT_DIR}/scripts/produccion/lib.sh"
 
+# Este script EMPUJA hacia producción: corre en la laptop, no dentro de la Studio. Correrlo en la
+# máquina de producción no tiene sentido (se conectaría a sí misma) y falla con un error sobre
+# llaves SSH que no explica nada. Ya pasó dos veces con scripts de este kit: el prompt de una
+# sesión SSH abierta se parece demasiado al de la terminal local.
+if [[ -f "${ROOT_DIR}/runtime/ESTA-MAQUINA-ES-PRODUCCION" ]]; then
+  echo "FATAL: estás CORRIENDO ESTO DENTRO DE PRODUCCIÓN ($(hostname -s))." >&2
+  echo "  desplegar.sh se corre desde la LAPTOP: es el que empuja los cambios hacia acá." >&2
+  echo "  Salí de la sesión SSH (exit) y corrélo en el repo de tu laptop." >&2
+  exit 1
+fi
+
 SSH_DEST="${STUDIO_SSH}"
 if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "${SSH_DEST}" true 2>/dev/null; then
   echo "FATAL: no puedo entrar a '${SSH_DEST}' sin contraseña." >&2

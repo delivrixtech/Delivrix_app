@@ -64,7 +64,7 @@ daemons sobre la MISMA base — no cruza máquinas.
 
 ```bash
 git push origin produ
-./scripts/produccion/desplegar.sh
+./scripts/produccion/desplegar.sh      # ← EN LA LAPTOP, no dentro de la Studio
 ```
 
 Hace fetch + `merge --ff-only`, reinicia **solo** los servicios cuyos archivos cambiaron,
