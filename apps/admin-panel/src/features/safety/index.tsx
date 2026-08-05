@@ -555,6 +555,17 @@ function KillSwitchGrande({ data }: { data: DashboardData }) {
       >
         <KillStat label="responsable" value={ks.updatedBy || "sin asignar"} />
         <KillStat label="fase del norte" value={data.operatingNorth.phase || "—"} />
+        {/* Qué versión corre AHORA. Sin esto, "¿el panel que miro ya tiene el fix?" solo se
+         * contestaba entrando por SSH — y desde que producción vive en otra máquina, esa es la
+         * pregunta más frecuente. "sin declarar" es honesto: el gateway no la reportó. */}
+        <KillStat
+          label="versión"
+          value={
+            data.health.build?.version
+              ? `v${data.health.build.version}${data.health.build.commit ? ` · ${data.health.build.commit.slice(0, 7)}` : ""}`
+              : "sin declarar"
+          }
+        />
         {/* El contrato NO expone marca de última activación/uso; solo updatedAt (último
          * cambio de estado). No inventamos historial: mostramos el último cambio real
          * (o "sin registro" si el contrato no trae fecha), nunca "nunca"/"ahora". */}

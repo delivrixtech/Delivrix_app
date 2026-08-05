@@ -86,19 +86,37 @@ for s in "${reiniciar[@]}"; do
     || echo "    ${s}: no está cargado en producción (¿se instaló con --con-warmup?)"
 done
 
-# --- verificación: sin esto el deploy solo dice que envió comandos ---------------------------
+# --- verificación: que el gateway REPORTE el commit nuevo, no solo que responda ---------------
+# Antes bastaba con un "status":"ok" y se imprimía el hash que el propio script había calculado.
+# Eso es un falso verde: el `kickstart` de arriba traga su error, el proceso VIEJO sigue vivo
+# contestando ok, y el deploy declaraba desplegado un código que nadie estaba corriendo. Ahora la
+# prueba la da producción: /health devuelve build.commit, y tiene que ser el que acabamos de dejar.
 echo "· verificando…"
+verifica_commit=0
+for s in "${reiniciar[@]}"; do [[ "${s}" == "gateway" ]] && verifica_commit=1; done
+
 ok=0
+reportado=""
 for _ in {1..20}; do
-  if ssh -o BatchMode=yes "${SSH_DEST}" \
-      "curl -fsS --max-time 4 http://127.0.0.1:3000/health" 2>/dev/null \
-      | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then ok=1; break; fi
+  cuerpo="$(ssh -o BatchMode=yes "${SSH_DEST}" "curl -fsS --max-time 4 http://127.0.0.1:3000/health" 2>/dev/null || true)"
+  if printf '%s' "${cuerpo}" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+    # sin jq: puede no estar instalado en producción, y un deploy no es lugar para descubrirlo
+    reportado="$(printf '%s' "${cuerpo}" | grep -o '"commit"[[:space:]]*:[[:space:]]*"[0-9a-f]*"' | head -1 | grep -o '[0-9a-f]\{7,\}' || true)"
+    if [[ ${verifica_commit} == 0 || "${reportado}" == "${despues}" ]]; then ok=1; break; fi
+  fi
   sleep 3
 done
+
 if [[ ${ok} == 1 ]]; then
-  echo "· gateway ok en ${despues:0:8}"
+  version="$(printf '%s' "${cuerpo}" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+  echo "· producción responde ok · versión ${version:-sin declarar} · commit ${reportado:0:8}"
+elif [[ -n "${reportado}" && "${reportado}" != "${despues}" ]]; then
+  echo "FALLÓ: el gateway responde, pero sigue corriendo código VIEJO." >&2
+  echo "  esperado: ${despues:0:8}   reportado: ${reportado:0:8}" >&2
+  echo "  El kickstart no surtió efecto. Mirá:  ssh ${SSH_DEST} 'sudo launchctl print system/com.delivrix.gateway | head -20'" >&2
+  exit 1
 else
   echo "FALLÓ: el gateway no responde tras el reinicio." >&2
-  echo "  ssh ${SSH_DEST} 'tail -50 \"${STUDIO_DIR}/runtime/logs/gateway.log\"'" >&2
+  echo "  ssh ${SSH_DEST} 'tail -50 ${STUDIO_DIR}/runtime/logs/gateway.log'" >&2
   exit 1
 fi

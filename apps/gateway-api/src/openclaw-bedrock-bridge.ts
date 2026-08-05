@@ -60,6 +60,7 @@ import {
   type GatewayRuntimeLogger
 } from "./gateway-runtime-log.ts";
 import { stableStringify } from "../../../packages/storage/src/stable-stringify.ts";
+import { buildInfo } from "./build-info.ts";
 import type { OpenClawChatHistoryStore } from "./services/openclaw-chat-history-store.ts";
 
 const defaultModelRegion = "us-east-1";
@@ -1089,6 +1090,15 @@ export class OpenClawBedrockBridge implements OpenClawChatSshBridge {
       "Cita explicitamente este contexto cuando el operador te pregunte por estado del sistema.",
       "Antes de proponer o ejecutar acciones con domain/serverSlug/ip, resuelve la entidad con inventory_domains, inventory_servers, verified_facts o una read-tool. Si no aparece, abstente y pide el dato al operador.",
       "Si un campo falta, no hay hechos verificados, o un endpoint tiene _error, dilo honesto. NO inventes valores ni extraigas entidades desde timestamps/chat/audit prose.",
+      "",
+      // ARRIBA de todo a propósito: truncateLiveContext recorta desde el FINAL (ver más abajo),
+      // así que lo que tiene que sobrevivir siempre va primero. Va como DATO tipado y no como
+      // prosa: un párrafo de novedades suelto el modelo lo repite como si fuera un hallazgo suyo
+      // — ese bug ya lo pagamos una vez en el monitor del warmup.
+      "## version (qué versión de Delivrix corre AHORA)",
+      "```json",
+      stringifyLiveContext(await buildInfo(), 1600),
+      "```",
       "",
       "## inventory_domains (GET /v1/infrastructure/inventory)",
       "```json",

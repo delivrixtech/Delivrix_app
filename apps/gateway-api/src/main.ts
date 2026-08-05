@@ -426,6 +426,7 @@ import {
 import { startEpisodicScratchTtlJob } from "./episodic-scratch-ttl.ts";
 import { insertEpisodicEntry } from "../../../packages/storage/src/index.ts";
 import { OpenClawChatHistoryStore } from "./services/openclaw-chat-history-store.ts";
+import { buildInfo } from "./build-info.ts";
 import {
   canonicalSkillSlug,
   hashSkillExecutionContext,
@@ -1735,6 +1736,10 @@ const server = createServer(async (request, response) => {
       return json(response, 200, {
         status: "ok",
         service: "gateway-api",
+        // Qué versión y qué commit corre ESTA instancia. Sin esto, "¿ya tiene el fix?" solo se
+        // contestaba entrando por SSH — y con dos máquinas (laptop y Studio) eso se vuelve la
+        // pregunta más frecuente del día.
+        build: await buildInfo(),
         postgres: dependencyStatus(dependencies.postgres),
         redis: dependencyStatus(dependencies.redis),
         dependencies,

@@ -71,6 +71,8 @@ export interface HealthPayload {
   status: string;
   service: string;
   phase: string;
+  /** Qué versión y commit corre ESTA instancia (del CHANGELOG.md + git HEAD al arrancar). */
+  build?: { version: string | null; commit: string | null; changelog: string | null };
   runtimeFlags?: Record<string, string | undefined>;
   /** Codex 50876e5 — status agregado de Postgres pgvector. */
   postgres?: DependencyStatus;

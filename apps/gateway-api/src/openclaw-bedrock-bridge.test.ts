@@ -775,6 +775,16 @@ test("OpenClawBedrockBridge injects read-only live context and tolerates endpoin
   assert.match(system, /<live_context generatedAt="2026-05-29T05:00:00.000Z" grounding="inventory_and_verified_facts">/);
   assert.match(system, /## inventory_domains \(GET \/v1\/infrastructure\/inventory\)/);
   assert.match(system, /"domain": "controldelivrix\.app"/);
+
+  // El bloque de versión tiene que ir ARRIBA de todo: truncateLiveContext recorta desde el final,
+  // así que si alguien lo mueve más abajo, bajo carga el agente deja de saber qué versión corre
+  // y nadie se entera. Es lo único de este cambio que puede romperse en silencio.
+  const versionIndex = system.indexOf("## version");
+  assert.ok(versionIndex > 0, "el live_context declara la versión que corre");
+  assert.ok(
+    versionIndex < system.indexOf("## inventory_domains"),
+    "la versión va antes que el inventario: el truncado come desde el final"
+  );
   const accountsIndex = system.indexOf("## inventory_accounts");
   const serversIndex = system.indexOf("## inventory_servers");
   const killSwitchIndex = system.indexOf("## kill_switch");
