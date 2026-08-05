@@ -104,3 +104,51 @@ test("sin ningún freno propio en la ventana, nombrar los límites del proveedor
   );
   assert.deepEqual(v.reparos, []);
 });
+
+test("la VOZ se separa de los hechos: da personalidad sin debilitar el gate", () => {
+  const hechos: HechosWarmup = {
+    generadoEn: "2026-08-05T00:00:00.000Z",
+    semillas: { destinos: 2, midiendo: 1, puntoCiego: [] },
+    vueltas: [],
+    cap: null,
+    flota: null
+  };
+
+  const conVoz = verificarLectura(
+    [
+      "AHORA: el emisor está pausado.",
+      "PORQUE: el placement quedó por debajo del piso.",
+      "RIESGO: ninguno",
+      "FALTA: nada",
+      "VOZ: Juanes, esto se destraba solo cuando entren más mediciones, no toco nada."
+    ].join("\n"),
+    hechos
+  );
+  assert.equal(conVoz.reparos.length, 0, "una lectura sana con voz sigue sin reparos");
+  assert.match(conVoz.voz ?? "", /Juanes/);
+  assert.equal(conVoz.estilo.length, 0);
+
+  // Lo que NO puede pasar: que un problema de ESTILO bloquee al agente. Los reparos frenan
+  // acciones (scripts/ops/warmup-monitor.ts); el estilo no puede tener ese poder.
+  const vozConDato = verificarLectura(
+    [
+      "AHORA: el emisor está pausado.",
+      "PORQUE: el placement quedó por debajo del piso.",
+      "RIESGO: ninguno",
+      "FALTA: nada",
+      "VOZ: Juanes, tenemos 33% y eso no me gusta nada."
+    ].join("\n"),
+    hechos
+  );
+  assert.equal(vozConDato.reparos.length, 0, "el número en la voz NO es un reparo");
+  assert.equal(vozConDato.estilo.length, 1, "pero sí queda observado");
+  assert.match(vozConDato.estilo[0] ?? "", /números/);
+
+  // Y al revés: sin voz, todo sigue funcionando igual que antes.
+  const sinVoz = verificarLectura(
+    ["AHORA: todo bien.", "PORQUE: no hay señales malas.", "RIESGO: ninguno", "FALTA: nada"].join("\n"),
+    hechos
+  );
+  assert.equal(sinVoz.voz, null);
+  assert.equal(sinVoz.reparos.length, 0);
+});
