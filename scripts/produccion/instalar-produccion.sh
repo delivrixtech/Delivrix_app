@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# Convierte esta Mac en el servidor de producción de Delivrix.
+#
+# CORRE EN LA MAC STUDIO (por SSH o local), con sudo. Es idempotente: se puede repetir.
+#
+# Qué hace:
+#   1. energía: nunca dormir, encender sola tras corte de luz, reiniciar sola si se cuelga
+#   2. actualizaciones de macOS automáticas APAGADAS (la interrupción más peligrosa)
+#   3. LaunchDaemons en /Library/LaunchDaemons → arrancan SIN que nadie haga login
+#   4. watchdog cada 5 min + respaldo nocturno
+#
+# El daemon de warmup (el ÚNICO que manda correo) NO se instala por defecto: hay que pasar
+# --con-warmup, y solo DESPUÉS de apagar el stack de la laptop. Dos daemons contra bases
+# distintas duplican el volumen hacia Gmail, y ese daño es permanente.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CON_WARMUP=0
+SOLO_VERIFICAR=0
+for arg in "$@"; do
+  case "${arg}" in
+    --con-warmup) CON_WARMUP=1 ;;
+    --verificar)  SOLO_VERIFICAR=1 ;;
+    *) echo "uso: instalar-produccion.sh [--con-warmup] [--verificar]" >&2; exit 2 ;;
+  esac
+done
+
+[[ "$(id -u)" == "0" ]] || { echo "FATAL: corré con sudo." >&2; exit 1; }
+OPERADOR="${SUDO_USER:-}"
+[[ -n "${OPERADOR}" && "${OPERADOR}" != "root" ]] || { echo "FATAL: usá 'sudo' desde tu usuario normal, no root directo." >&2; exit 1; }
+GRUPO="$(id -gn "${OPERADOR}")"
+
+echo "== Delivrix producción =="
+echo "   repo:     ${ROOT_DIR}"
+echo "   operador: ${OPERADOR}"
+echo "   warmup:   $([[ ${CON_WARMUP} == 1 ]] && echo 'SÍ (manda correo)' || echo 'no (se activa con --con-warmup)')"
+echo
+
+# ---------------------------------------------------------------- 0. requisitos
+NODE_BIN=""
+for cand in /opt/homebrew/bin/node /usr/local/bin/node; do
+  [[ -x "${cand}" ]] && NODE_BIN="${cand}" && break
+done
+if [[ -z "${NODE_BIN}" ]]; then
+  echo "FATAL: no hay node en /opt/homebrew/bin ni /usr/local/bin." >&2
+  echo "  launchd no tiene PATH ni shell de login: un node de nvm NO sirve acá." >&2
+  echo "  Instalalo con:  brew install node@22   (y enlazalo)" >&2
+  exit 1
+fi
+echo "· node: ${NODE_BIN} ($(${NODE_BIN} --version))"
+
+[[ -f "${ROOT_DIR}/config/gateway.env" ]] || { echo "FATAL: falta config/gateway.env (copialo desde la laptop, permisos 600)." >&2; exit 1; }
+perm="$(stat -f %Lp "${ROOT_DIR}/config/gateway.env")"
+[[ "${perm}" == "600" ]] || { echo "· ajustando permisos de gateway.env (${perm} → 600)"; chmod 600 "${ROOT_DIR}/config/gateway.env"; }
+
+if grep -qE '^[[:space:]]*POSTGRES_CONTAINER=[^[:space:]]' "${ROOT_DIR}/config/gateway.env"; then
+  echo "AVISO: POSTGRES_CONTAINER tiene valor. En producción NO hay Docker/OrbStack:" >&2
+  echo "       dejalo vacío (POSTGRES_CONTAINER=) o los scripts de migración buscarán un contenedor." >&2
+fi
+
+PG_URL="$(grep -m1 -E '^[[:space:]]*POSTGRES_URL=' "${ROOT_DIR}/config/gateway.env" | cut -d= -f2-)"
+if ! sudo -u "${OPERADOR}" env PGCONNECT_TIMEOUT=5 psql "${PG_URL}" -tAc 'select 1' >/dev/null 2>&1; then
+  echo "FATAL: no puedo conectar a Postgres con POSTGRES_URL." >&2
+  echo "  En la Studio va por Homebrew (NO contenedor):  brew install postgresql@16 pgvector" >&2
+  echo "  y luego:  sudo brew services start postgresql@16" >&2
+  exit 1
+fi
+echo "· postgres: conecta ok"
+
+if [[ ${SOLO_VERIFICAR} == 1 ]]; then
+  echo; echo "solo verificación — no toco nada."; exit 0
+fi
+
+# ---------------------------------------------------------------- 1. energía
+echo
+echo "== energía: que nada la detenga =="
+pmset -a sleep 0            # la Mac JAMÁS duerme (el modo de falla que hoy mata todo en la laptop)
+pmset -a disksleep 0
+pmset -a displaysleep 10    # la pantalla sí, no consume nada tenerla apagada
+pmset -a autorestart 1      # se enciende sola cuando vuelve la luz
+pmset -a womp 1             # se despierta por red (Wake on LAN)
+systemsetup -setrestartfreeze on >/dev/null 2>&1 || echo "  (aviso: no pude fijar restart-on-freeze)"
+echo "· sleep 0 · autorestart 1 · restart-on-freeze on"
+
+# ---------------------------------------------------------------- 2. actualizaciones
+echo
+echo "== actualizaciones de macOS: manuales =="
+softwareupdate --schedule off >/dev/null 2>&1 || true
+for k in AutomaticCheckEnabled AutomaticDownload AutomaticallyInstallMacOSUpdates CriticalUpdateInstall; do
+  defaults write /Library/Preferences/com.apple.SoftwareUpdate "${k}" -bool false 2>/dev/null || true
+done
+echo "· automáticas apagadas — se actualiza a mano, en ventana elegida"
+
+if fdesetup status 2>/dev/null | grep -q "FileVault is On"; then
+  echo
+  echo "!! FileVault está ENCENDIDO."
+  echo "   Tras cada reinicio la Mac espera una contraseña que nadie va a teclear, y NADA arranca."
+  echo "   Apagalo a mano (Ajustes → Privacidad y seguridad → FileVault) o la promesa de 24/7 es falsa."
+fi
+
+# ---------------------------------------------------------------- 3. LaunchDaemons
+echo
+echo "== servicios =="
+mkdir -p "${ROOT_DIR}/runtime/logs" "${ROOT_DIR}/runtime/watchdog"
+chown -R "${OPERADOR}:${GRUPO}" "${ROOT_DIR}/runtime"
+chmod +x "${ROOT_DIR}/scripts/produccion/"*.sh
+
+# nombre|argumento de servicio.sh|manda correo
+SERVICIOS="gateway|gateway|no
+panel|panel|no
+warmup-monitor|warmup-monitor|no
+warmup-cupo|warmup-cupo|no
+warmup-daemon|warmup-daemon|SI"
+
+escribir_plist() {
+  local etiqueta="$1"; shift
+  local plist="/Library/LaunchDaemons/com.delivrix.${etiqueta}.plist"
+  local args_xml=""
+  for a in "$@"; do args_xml+="    <string>${a}</string>"$'\n'; done
+  cat > "${plist}" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.delivrix.${etiqueta}</string>
+  <key>ProgramArguments</key>
+  <array>
+${args_xml}  </array>
+  <key>UserName</key><string>${OPERADOR}</string>
+  <key>WorkingDirectory</key><string>${ROOT_DIR}</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>${ROOT_DIR}/runtime/logs/${etiqueta}.log</string>
+  <key>StandardErrorPath</key><string>${ROOT_DIR}/runtime/logs/${etiqueta}.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$(dirname "${NODE_BIN}"):/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>/Users/${OPERADOR}</string>
+    <key>DELIVRIX_NODE</key><string>${NODE_BIN}</string>
+  </dict>
+</dict>
+</plist>
+PLIST
+  chown root:wheel "${plist}"; chmod 644 "${plist}"
+}
+
+cargar() {
+  local etiqueta="com.delivrix.$1"
+  launchctl bootout "system/${etiqueta}" >/dev/null 2>&1 || true
+  launchctl bootstrap system "/Library/LaunchDaemons/${etiqueta}.plist"
+  launchctl enable "system/${etiqueta}"
+  echo "· ${etiqueta}: cargado"
+}
+
+while IFS='|' read -r nombre arg correo; do
+  [[ -n "${nombre}" ]] || continue
+  if [[ "${correo}" == "SI" && ${CON_WARMUP} == 0 ]]; then
+    echo "· com.delivrix.${nombre}: OMITIDO (manda correo — activalo con --con-warmup)"
+    continue
+  fi
+  escribir_plist "${nombre}" "/bin/bash" "${ROOT_DIR}/scripts/produccion/servicio.sh" "${arg}"
+  cargar "${nombre}"
+done <<< "${SERVICIOS}"
+
+# watchdog: periódico, no KeepAlive (es un script que termina)
+cat > /Library/LaunchDaemons/com.delivrix.watchdog.plist <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.delivrix.watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${ROOT_DIR}/scripts/produccion/watchdog.sh</string>
+  </array>
+  <key>UserName</key><string>root</string>
+  <key>WorkingDirectory</key><string>${ROOT_DIR}</string>
+  <key>RunAtLoad</key><true/>
+  <key>StartInterval</key><integer>300</integer>
+  <key>StandardOutPath</key><string>${ROOT_DIR}/runtime/logs/watchdog-launchd.log</string>
+  <key>StandardErrorPath</key><string>${ROOT_DIR}/runtime/logs/watchdog-launchd.log</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+</dict>
+</plist>
+PLIST
+chown root:wheel /Library/LaunchDaemons/com.delivrix.watchdog.plist
+chmod 644 /Library/LaunchDaemons/com.delivrix.watchdog.plist
+cargar watchdog
+
+# respaldo nocturno 03:30
+cat > /Library/LaunchDaemons/com.delivrix.respaldo.plist <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.delivrix.respaldo</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${ROOT_DIR}/scripts/produccion/respaldo-nocturno.sh</string>
+  </array>
+  <key>UserName</key><string>${OPERADOR}</string>
+  <key>WorkingDirectory</key><string>${ROOT_DIR}</string>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>${ROOT_DIR}/runtime/logs/respaldo.log</string>
+  <key>StandardErrorPath</key><string>${ROOT_DIR}/runtime/logs/respaldo.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>/Users/${OPERADOR}</string>
+  </dict>
+</dict>
+</plist>
+PLIST
+chown root:wheel /Library/LaunchDaemons/com.delivrix.respaldo.plist
+chmod 644 /Library/LaunchDaemons/com.delivrix.respaldo.plist
+cargar respaldo
+
+# ---------------------------------------------------------------- 4. verificación
+echo
+echo "== verificación (hasta 60s) =="
+ok_gw=0
+for _ in {1..30}; do
+  if curl -fsS --max-time 4 http://127.0.0.1:3000/health 2>/dev/null | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then ok_gw=1; break; fi
+  sleep 2
+done
+[[ ${ok_gw} == 1 ]] && echo "· gateway :3000 → ok" || echo "· gateway :3000 → NO RESPONDE (mirá runtime/logs/gateway.log)"
+
+ok_panel=0
+for _ in {1..30}; do
+  if curl -fsS --max-time 4 -o /dev/null http://127.0.0.1:5173/ 2>/dev/null; then ok_panel=1; break; fi
+  sleep 2
+done
+[[ ${ok_panel} == 1 ]] && echo "· panel :5173 → ok" || echo "· panel :5173 → NO RESPONDE (mirá runtime/logs/panel.log)"
+
+echo
+echo "servicios cargados:"
+launchctl list | grep delivrix || echo "  (ninguno — algo falló)"
+
+echo
+echo "LO QUE FALTA, Y NO LO HACE NINGÚN SCRIPT:"
+echo "  1. Reiniciar esta Mac y comprobar que TODO vuelve solo. Sin esa prueba, 24/7 es una promesa,"
+echo "     no un hecho medido."
+[[ ${CON_WARMUP} == 0 ]] && echo "  2. Apagar el stack de la laptop ANTES de instalar con --con-warmup (dos daemons = doble correo)."

@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import { Pool } from "pg";
+import { Pool, Client as PgClientDirecto } from "pg";
 import { elegirSemilla, semillasMedibles, type SeedBase } from "../domain/seeds.ts";
 import { elegirSemillaRotada, progresoDeCalentamiento, type UsoPrevio } from "../domain/rotacion.ts";
 import { decidirCupoDeHoy, esInbox, puedeMandarTurno, type DecisionDiaria } from "../domain/decision-diaria.ts";
@@ -521,21 +521,55 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   // diario, el kill-file y el cupo por dominio se evalúan por separado en cada uno, o sea que todas
   // las barreras se duplican y sale el doble de correo.
   //
-  // El lock es de la BASE, que es lo único que los dos ven, y se libera solo al cerrar la conexión
-  // —incluso si el proceso muere de golpe—, así que no puede quedar trabado.
+  // El lock es de la BASE, que es lo único que los dos ven, y se libera solo al cerrar la SESIÓN.
+  //
+  // Por eso NO puede tomarse sobre el pool: `pool.query()` presta un cliente, corre y lo devuelve;
+  // pg-pool cierra los clientes ociosos a los 10 s (idleTimeoutMillis por defecto) y al cerrarse
+  // esa conexión el lock se evapora. Como el daemon duerme minutos entre vueltas, el lock duraba
+  // ~10 s y después NO protegía nada. Va sobre un cliente DEDICADO que vive lo que vive el daemon.
+  //
+  // Con dobles inyectados (tests) NO se abre una conexión propia: hacerlo iba contra la Postgres
+  // REAL, encontraba el lock del daemon de verdad y hacía fallar tests que no hablan de locks.
+  // Un test que toca la base de producción no está probando lo que dice probar.
+  const conDobles = Boolean(dobles.pg);
+  const lockClient = conDobles
+    ? null
+    : new PgClientDirecto(
+        (env.POSTGRES_URL?.trim() ? { connectionString: env.POSTGRES_URL.trim() } : {}) as never
+      );
+  let lockVivo = false;
+  const tomarLock = async (): Promise<boolean> => {
+    const consulta = lockClient ?? pg;
+    const { rows } = await consulta.query<{ ok: boolean }>(
+      "SELECT pg_try_advisory_lock(hashtext($1)) AS ok",
+      ["delivrix-warmup-live"]
+    );
+    return rows[0]?.ok !== false;
+  };
   try {
-    const { rows } = await pg.query<{ ok: boolean }>("SELECT pg_try_advisory_lock(hashtext($1)) AS ok", [
-      "delivrix-warmup-live"
-    ]);
-    if (rows[0] && rows[0].ok === false) {
+    await lockClient?.connect();
+    // Un error del socket deja la sesión (y el lock) muerta sin que nadie se entere: el daemon
+    // seguiría enviando creyéndose único. Se marca y la revalidación de la próxima vuelta frena.
+    lockClient?.on("error", (e: Error) => {
+      lockVivo = false;
+      console.log(`[warmup-live] WARN se cayó la conexión del lock: ${e.message}`);
+    });
+    if (!(await tomarLock())) {
       log("ya hay otro daemon LIVE corriendo (lock de la base) — salgo para no duplicar las barreras");
+      await lockClient?.end().catch(() => {});
       await pool.end();
       return;
     }
+    lockVivo = true;
   } catch (err) {
-    // Sin lock se sigue: perder el warmup por no poder tomar un lock sería peor que el riesgo que
-    // el lock cubre, y ese riesgo lo dispara un error del operador, no la operación normal.
-    log(`WARN no pude tomar el lock de instancia (${err instanceof Error ? err.message : String(err)}) — sigo`);
+    // FAIL-CLOSED, al revés que antes. El comentario viejo decía que perder el warmup era peor que
+    // el riesgo del lock; los hechos dicen lo contrario: pausar no cuesta reputación (solo deja de
+    // avanzar) y duplicar el volumen puede cruzar el umbral de "bulk sender" de Gmail, que es
+    // PERMANENTE. Ante la duda, no enviar. Además, sin base el daemon no puede trabajar igual.
+    log(`FATAL no pude tomar el lock de instancia (${err instanceof Error ? err.message : String(err)}) — salgo`);
+    await lockClient?.end().catch(() => {});
+    await pool.end();
+    return;
   }
 
   // Credenciales SMTP del inventario (archivo) + clave.
@@ -586,6 +620,15 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
       // abajo saltaban por encima del cierre y dejaban conexiones IMAP colgadas cada vuelta.
       let cerrarImap: (() => Promise<void>) | null = null;
       try {
+      // REVALIDACIÓN DEL LOCK, ANTES DE DECIDIR NADA. Tomarlo al arrancar no alcanza: si la sesión
+      // se cayó (red, reinicio de Postgres, sleep de la Mac), el lock ya no existe y otro daemon
+      // pudo tomarlo. Un daemon que perdió el lock DEBE callarse, no seguir enviando.
+      if (!lockVivo || !(await tomarLock().catch(() => false))) {
+        log("perdí el lock de instancia (otro daemon lo tiene o se cayó la sesión) — salgo");
+        break;
+      }
+      lockVivo = true;
+
       const killed = existsSync(cfg.killFile);
       const cyclesToday = await countCyclesToday(pg);
       const placements = await recentPlacements(pg, cfg.placementWindow);
@@ -997,6 +1040,9 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
       await sleep(cfg.intervalMs);
     }
   } finally {
+    // El cliente del lock vive fuera del pool, así que hay que cerrarlo aparte o el proceso no
+    // termina nunca (una conexión abierta mantiene vivo el event loop).
+    await lockClient?.end().catch(() => {});
     await pool.end();
   }
 }
