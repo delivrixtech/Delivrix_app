@@ -27,6 +27,19 @@ LOG_MAX_MB="${LOG_MAX_MB:-64}"
 
 decir() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "${LOG}"; }
 
+# GRACIA DE ARRANQUE. Con RunAtLoad, launchd corre esto a los ~8 s del boot — y el gateway tarda
+# ~11 s en escuchar. Sin esta espera el watchdog confunde "todavía arrancando" con "colgado" y
+# mata al servicio que vino a proteger: en el reinicio del 2026-08-05 le mandó SIGTERM al gateway
+# a los 2 s de nacer. Peor que el reinicio de más: quema el único intento permitido por
+# REINTENTO_MIN, y el siguiente fallo REAL queda sin reintento ("no insisto, revisar a mano").
+GRACIA_ARRANQUE_S="${GRACIA_ARRANQUE_S:-90}"
+if uptime_s="$(delivrix_uptime_s "$(sysctl -n kern.boottime 2>/dev/null)")"; then
+  if (( uptime_s < GRACIA_ARRANQUE_S )); then
+    decir "gracia de arranque: la máquina tiene ${uptime_s}s (tope ${GRACIA_ARRANQUE_S}s) — no juzgo todavía"
+    exit 0
+  fi
+fi
+
 # Devuelve 0 si al servicio le toca reinicio (no lo reiniciamos hace más de REINTENTO_MIN).
 puede_reiniciar() {
   local svc="$1" stamp="${STAMP_DIR}/$1.last"
@@ -83,6 +96,24 @@ if [[ -f "${daemon_log}" ]]; then
 else
   estado+=("warmup=sin-log")
 fi
+
+# --- el respaldo: la falla que nadie ve hasta que se necesita --------------------------------
+# No es un servicio que se pueda reiniciar; es un hecho que hay que reportar. Un respaldo que
+# dejó de correr, o que quedó sin copia fuera de esta máquina, es indistinguible de todo bien
+# hasta el día del incidente.
+ultimo_resp="$(ls -1t "${ROOT_DIR}"/runtime/respaldos/delivrix-*.sql.gz 2>/dev/null | head -1 || true)"
+if [[ -z "${ultimo_resp}" ]]; then
+  estado+=("respaldo=NUNCA")
+else
+  horas_resp=$(( ( $(date +%s) - $(stat -f %m "${ultimo_resp}") ) / 3600 ))
+  if (( horas_resp >= 36 )); then
+    estado+=("respaldo=VIEJO:${horas_resp}h")
+    decir "respaldo: el más nuevo tiene ${horas_resp}h (debería correr cada noche a las 03:30)"
+  else
+    estado+=("respaldo=ok:${horas_resp}h")
+  fi
+fi
+[[ -f "${ROOT_DIR}/runtime/RESPALDO-SIN-COPIA-EXTERNA" ]] && estado+=("respaldo=SIN-COPIA-EXTERNA")
 
 # --- rotación: el log del daemon crece 24/7 y launchd no rota -------------------------------
 for f in "${LOG_DIR}"/*.log; do

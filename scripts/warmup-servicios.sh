@@ -19,6 +19,24 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ESTE SCRIPT ES DE DESARROLLO. En producción los tres servicios los maneja launchd
+# (com.delivrix.warmup-*), y acá hay dos formas de hacer daño real:
+#   · `start` levantaría un SEGUNDO emisor. Hoy el lock de la base lo corta, pero el lock no
+#     cruza máquinas ni bases: si esta copia apunta a otra Postgres, salen DOS emisores y eso
+#     duplica el volumen hacia Gmail, que es irreversible.
+#   · `stop` mata por `pgrep -f` sobre el comando — y ese patrón COINCIDE con el proceso que
+#     lanzó launchd. Alguien que cree estar parando "su" daemon apaga el de producción.
+# Por eso: si esta máquina es producción, este script no corre. Ahí se usa launchctl.
+if [[ -f "${ROOT_DIR}/runtime/ESTA-MAQUINA-ES-PRODUCCION" ]]; then
+  echo "FATAL: esta es la máquina de PRODUCCIÓN ($(hostname -s))." >&2
+  echo "  Acá los servicios del warmup los maneja launchd, no este script." >&2
+  echo "    ver:      launchctl print system/com.delivrix.warmup-daemon | head -5" >&2
+  echo "    reiniciar: sudo launchctl kickstart -k system/com.delivrix.warmup-daemon" >&2
+  echo "    apagar:    sudo launchctl bootout system/com.delivrix.warmup-daemon" >&2
+  exit 1
+fi
+
 RUNTIME_DIR="${ROOT_DIR}/runtime"
 LOG_DIR="${RUNTIME_DIR}/logs"
 PID_DIR="${RUNTIME_DIR}/pids"

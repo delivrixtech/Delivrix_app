@@ -18,6 +18,18 @@ delivrix_leer_env() {
   printf '%s' "${valor}"
 }
 
+# Segundos desde el arranque, a partir de la salida cruda de `sysctl -n kern.boottime`, que es:
+#   { sec = 1785948516, usec = 610720 } Wed Aug  5 11:48:36 2026
+# OJO con la trampa: `sed 's/.*sec = ([0-9]+).*/\1/'` es CODICIOSO y captura el usec, no el sec.
+# Devolvía 610720 y el uptime salía gigante ⇒ la gracia de arranque nunca se activaba, sin decir
+# nada. Por eso vive acá y tiene test: es un parseo que falla en silencio.
+delivrix_uptime_s() {
+  local crudo="$1" sec
+  sec="$(printf '%s' "${crudo}" | sed -E 's/^\{[[:space:]]*sec[[:space:]]*=[[:space:]]*([0-9]+).*/\1/')"
+  [[ "${sec}" =~ ^[0-9]+$ ]] || return 1
+  echo $(( $(date +%s) - sec ))
+}
+
 # Umbral de silencio del daemon, DERIVADO del intervalo real de vuelta (no un número a mano: uno
 # menor que el intervalo reinicia el daemon en bucle para siempre). 2,5 vueltas + 10 min de gracia.
 delivrix_umbral_silencio_min() {

@@ -73,6 +73,18 @@ for ms in 540000 5400000 14400000 60000; do
 done
 rm -f "${umb}"
 
+echo "uptime desde kern.boottime (el parseo que falló en silencio)"
+ahora="$(date +%s)"
+crudo="{ sec = $((ahora - 42)), usec = 610720 } Wed Aug  5 11:48:36 2026"
+u="$(delivrix_uptime_s "${crudo}")"
+chequear "toma el sec, NO el usec" "si" "$( (( u >= 40 && u <= 45 )) && echo si || echo "NO(${u})" )"
+# La regresión concreta: con un sed codicioso esto daba 610720 y la gracia nunca se activaba.
+chequear "no confunde usec con sec"  "si" "$( [[ "${u}" != "610720" ]] && echo si || echo NO )"
+crudo2="{ sec = $((ahora - 5)), usec = 1 } x"
+u2="$(delivrix_uptime_s "${crudo2}")"
+chequear "recién arrancada → uptime chico" "si" "$( (( u2 < 10 )) && echo si || echo "NO(${u2})" )"
+chequear "entrada basura → falla, no miente" "" "$(delivrix_uptime_s "no soy boottime" 2>/dev/null || true)"
+
 echo "sintaxis de los scripts"
 for s in servicio.sh instalar-produccion.sh watchdog.sh respaldo-nocturno.sh desplegar.sh lib.sh vigilar-desde-la-mini.sh tunel.sh activar-warmup.sh; do
   if bash -n "${ROOT_DIR}/scripts/produccion/${s}" 2>/dev/null; then
