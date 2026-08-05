@@ -74,7 +74,7 @@ done
 rm -f "${umb}"
 
 echo "sintaxis de los scripts"
-for s in servicio.sh instalar-produccion.sh watchdog.sh respaldo-nocturno.sh desplegar.sh lib.sh vigilar-desde-la-mini.sh; do
+for s in servicio.sh instalar-produccion.sh watchdog.sh respaldo-nocturno.sh desplegar.sh lib.sh vigilar-desde-la-mini.sh tunel.sh activar-warmup.sh; do
   if bash -n "${ROOT_DIR}/scripts/produccion/${s}" 2>/dev/null; then
     printf '  ok   %s\n' "${s}"
   else

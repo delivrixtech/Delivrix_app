@@ -14,6 +14,8 @@ Mapa visual: `DOCUMENTACION/MAPA_PRODUCCION_MAC_STUDIO_2026_08_05.html`
 | `instalar-produccion.sh` | Studio, con sudo | energía + actualizaciones + LaunchDaemons + watchdog + respaldo. Idempotente |
 | `watchdog.sh` | Studio, cada 5 min | el caso que launchd NO ve: proceso vivo pero colgado |
 | `respaldo-nocturno.sh` | Studio, 03:30 | pg_dump verificado + copia a la mini por Tailscale |
+| `activar-warmup.sh` | **la laptop** | enciende el emisor en producción (una vez) |
+| `tunel.sh` | **la laptop** | trae el panel de producción a tu navegador |
 | `desplegar.sh` | **la laptop** | produ → producción, reiniciando solo lo que cambió |
 | `vigilar-desde-la-mini.sh` | la mini, cada 10 min | mira a la Studio desde afuera y avisa; NO activa nada |
 | `lib.sh` | ambas | la lógica que puede fallar en silencio, para poder probarla |
@@ -52,8 +54,8 @@ sudo reboot
 # 3) recién ahí, apagar el stack de la laptop
 #    (en la laptop):  ./scripts/warmup-servicios.sh stop && ./scripts/delivrix-gateway-stop.sh
 
-# 4) y activar el emisor en producción
-sudo ./scripts/produccion/instalar-produccion.sh --con-warmup
+# 4) y activar el emisor en producción (DESDE LA LAPTOP)
+./scripts/produccion/activar-warmup.sh
 ```
 
 El orden de 3 y 4 **no es negociable**: dos daemons contra bases distintas duplican el volumen
