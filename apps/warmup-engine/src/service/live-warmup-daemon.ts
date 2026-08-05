@@ -958,7 +958,15 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           }
         }
 
-        log(`vuelta #${seq + 1} ${result.completed ? "COMPLETA" : "cortó en " + result.brokeAt} · placement ${result.placement ?? "-"}`);
+        // Se reporta lo MEDIDO, y aparte lo que hizo la señal. Antes se logueaba solo el valor
+        // post-señal, así que un correo que cayó en SPAM y que nosotros movimos a INBOX aparecía
+        // como "placement INBOX" — la lectura opuesta a la verdad en la línea que más se mira.
+        const medido = result.placementMedido ?? result.placement;
+        const movido = result.placementMedido && result.placement && result.placementMedido !== result.placement;
+        log(
+          `vuelta #${seq + 1} ${result.completed ? "COMPLETA" : "cortó en " + result.brokeAt}` +
+            ` · cayó en ${medido ?? "-"}${movido ? ` → lo movimos a ${result.placement}` : ""}`
+        );
         seq += 1;
       } else {
         log(`pausa (${action}: ${reason})`);

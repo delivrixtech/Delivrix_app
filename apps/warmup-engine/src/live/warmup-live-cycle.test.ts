@@ -122,3 +122,20 @@ test("ningún evento persistido filtra el password del box", async () => {
   const blob = JSON.stringify(events);
   assert.ok(!blob.includes(SECRET_PASS), "el password nunca aparece en la actividad");
 });
+
+test("el resultado distingue DÓNDE CAYÓ de dónde quedó tras la señal", async () => {
+  // El log resumen decía "COMPLETA · placement INBOX" sobre correos que habían caído en SPAM y que
+  // NOSOTROS movimos: la lectura opuesta a la verdad, en la línea que más mira el operador. La
+  // decisión siempre usó el valor medido (lee kind='measured'), así que la rampa nunca se engañó —
+  // pero el log sí.
+  const { rec, events } = recorder();
+  const res = await runLiveCycle({
+    cycleId: "c9", testId: "t9", boxDomain: "box.com", fromAddress: "mailer@box.com", seedInbox: "seed@g.com",
+    conversation: convo, subject: "Asunto [t9]",
+    mailer: fakeMailer(), gmail: fakeGmail({ id: "m9", labelIds: ["SPAM"], threadId: "th9" }),
+    recorder: rec, sleep: noSleep, pollAttempts: 1, pollDelayMs: 0
+  });
+  assert.equal(res.placementMedido, "SPAM", "cayó en spam: eso es lo que dice la reputación");
+  assert.equal(res.placement, "INBOX", "y nuestra señal lo movió, que es lo que calienta");
+  assert.equal(events.find((e) => e.kind === "measured")?.placement, "SPAM");
+});

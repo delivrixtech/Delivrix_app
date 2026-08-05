@@ -109,6 +109,16 @@ export interface RunLiveCycleDeps {
 }
 
 export interface RunLiveCycleResult {
+  /**
+   * Dónde cayó el correo SEGÚN LA MEDICIÓN, antes de que nuestra señal lo tocara. Es lo que dice
+   * la verdad sobre la reputación del dominio.
+   *
+   * Se separa de `placement` porque se estaban confundiendo: el log resumen decía
+   * "COMPLETA · placement INBOX" sobre un correo que había caído en SPAM y que NOSOTROS movimos.
+   * La decisión siempre usó el valor medido (lee `kind='measured'`), así que la rampa nunca se
+   * engañó — pero el operador leyendo el log sí, y en la línea que más mira.
+   */
+  placementMedido?: Placement | null;
   cycleId: string;
   placement: Placement | null;
   completed: boolean;
@@ -204,7 +214,7 @@ export async function runLiveCycle(deps: RunLiveCycleDeps): Promise<RunLiveCycle
     return { cycleId, placement: afterPlacement, completed: false, brokeAt: "replied" };
   }
 
-  return { cycleId, placement: afterPlacement, completed: true };
+  return { cycleId, placement: afterPlacement, placementMedido: placement, completed: true };
 }
 
 function errMsg(err: unknown): string {
