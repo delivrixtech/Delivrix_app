@@ -89,16 +89,11 @@ if [[ -z "${PSQL_BIN}" ]]; then
   exit 1
 fi
 PG_URL="$(grep -m1 -E '^[[:space:]]*POSTGRES_URL=' "${ROOT_DIR}/config/gateway.env" | cut -d= -f2-)"
-if ! sudo -u "${OPERADOR}" env PGCONNECT_TIMEOUT=5 "${PSQL_BIN}" "${PG_URL}" -tAc 'select 1' >/dev/null 2>&1; then
-  echo "FATAL: psql existe (${PSQL_BIN}) pero no conecta con POSTGRES_URL." >&2
-  echo "  Probá:  brew services list | grep postgres" >&2
-  exit 1
-fi
-echo "· postgres: conecta ok ($("${PSQL_BIN}" --version))"
-if ! sudo -u "${OPERADOR}" "${PSQL_BIN}" "${PG_URL}" -tAc "select 1 from pg_extension where extname='vector'" 2>/dev/null | grep -q 1; then
-  echo "AVISO: la extensión 'vector' NO está en esta base. La memoria semántica de OpenClaw la usa" >&2
-  echo "       (embedding vector(1024)); sin ella esas consultas fallan." >&2
-fi
+[[ -n "${PG_URL}" ]] || { echo "FATAL: config/gateway.env no define POSTGRES_URL." >&2; exit 1; }
+echo "· psql: ${PSQL_BIN} ($("${PSQL_BIN}" --version))"
+# NO se exige acá que Postgres esté ARRIBA: levantarlo es trabajo de este script (§2.5). Exigirlo
+# antes creaba un círculo — si una corrida fallida dejaba a Postgres abajo, la siguiente se negaba
+# a arrancar por la misma razón que venía a arreglar. Pasó en la instalación real.
 
 if [[ ${SOLO_VERIFICAR} == 1 ]]; then
   echo; echo "solo verificación — no toco nada."; exit 0
@@ -216,8 +211,13 @@ done
 if sudo -u "${OPERADOR}" env PGCONNECT_TIMEOUT=3 "${PSQL_BIN}" "${PG_URL}" -tAc 'select 1' >/dev/null 2>&1; then
   echo "· com.delivrix.postgres: arriba y aceptando conexiones (${PG_NAME})"
 else
-  echo "FATAL: el daemon de postgres no acepta conexiones. Mirá /opt/homebrew/var/log/${PG_NAME}.log" >&2
+  echo "FATAL: el daemon de postgres no acepta conexiones tras 30s." >&2
+  echo "  Log:  tail -30 /opt/homebrew/var/log/${PG_NAME}.log" >&2
   exit 1
+fi
+if ! sudo -u "${OPERADOR}" "${PSQL_BIN}" "${PG_URL}" -tAc "select 1 from pg_extension where extname='vector'" 2>/dev/null | grep -q 1; then
+  echo "  AVISO: la extensión 'vector' NO está en esta base. La memoria semántica de OpenClaw la" >&2
+  echo "         declara (embedding vector(1024)); sin ella esas consultas fallan." >&2
 fi
 
 # ---------------------------------------------------------------- 3. LaunchDaemons
