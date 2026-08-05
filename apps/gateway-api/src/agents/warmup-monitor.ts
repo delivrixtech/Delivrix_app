@@ -172,7 +172,11 @@ const SISTEMA = [
 ].join("\n");
 
 /** Arma el pedido. Puro: se puede testear sin red. */
-export function construirPrompt(hechos: HechosWarmup, erroresPrevios: readonly string[] = []): string {
+export function construirPrompt(
+  hechos: HechosWarmup,
+  erroresPrevios: readonly string[] = [],
+  loQueHiciste: readonly string[] = []
+): string {
   const l: string[] = [];
   // MEMORIA: los reparos que la verificación le encontró en corridas anteriores. No se puede
   // reentrenar el modelo, pero sí mostrarle en qué se equivocó — que es la forma barata y honesta
@@ -181,6 +185,15 @@ export function construirPrompt(hechos: HechosWarmup, erroresPrevios: readonly s
   if (erroresPrevios.length > 0) {
     l.push("ERRORES QUE YA COMETISTE ANTES sobre estos mismos datos. No los repitas:");
     for (const e of erroresPrevios.slice(0, 5)) l.push(`- ${e}`);
+    l.push("");
+  }
+  // LO QUE PEDISTE ANTES Y QUÉ PASÓ. Va como HECHO sobre sus propias acciones, no como consejo:
+  // "pediste X 10 veces y no se ejecutó" es un dato verificable, no un criterio que pueda repetir
+  // como hallazgo propio. Es lo único que corta el bucle de pedir siempre lo mismo.
+  if (loQueHiciste.length > 0) {
+    l.push("LO QUE YA PEDISTE, Y QUÉ PASÓ CON CADA COSA:");
+    for (const x of loQueHiciste.slice(0, 8)) l.push(x);
+    l.push("Si algo ya lo pediste y te lo negaron, NO lo vuelvas a pedir: buscá otra salida o decí qué hace falta para destrabarlo.");
     l.push("");
   }
   l.push(`Momento: ${hechos.generadoEn}`);
@@ -432,6 +445,8 @@ export interface PedirLecturaInput {
   hechos: HechosWarmup;
   /** Reparos de corridas anteriores. Es la memoria del agente: se le muestran para que no repita. */
   erroresPrevios?: readonly string[];
+  /** Qué acciones pidió antes y en qué terminaron. Ver bitacora-acciones.ts. */
+  loQueHiciste?: readonly string[];
   baseUrl: string;
   modelo: string;
   fetchImpl?: typeof fetch;
@@ -461,7 +476,7 @@ export async function pedirLectura(input: PedirLecturaInput): Promise<LecturaAge
         model: input.modelo,
         messages: [
           { role: "system", content: SISTEMA },
-          { role: "user", content: construirPrompt(input.hechos, input.erroresPrevios ?? []) }
+          { role: "user", content: construirPrompt(input.hechos, input.erroresPrevios ?? [], input.loQueHiciste ?? []) }
         ],
         // El razonamiento del modelo sale de ESTE presupuesto y se lo come casi todo: medido, un
         // "cuál es la capital de Francia" gastó 179 de 189 tokens en pensar. Con 1200 devolvía

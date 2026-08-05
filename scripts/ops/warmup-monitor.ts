@@ -19,6 +19,13 @@ import { OpenClawWorkspace } from "../../apps/gateway-api/src/openclaw-workspace
 import { MONITOR_FILE, pedirLectura, type HechosWarmup } from "../../apps/gateway-api/src/agents/warmup-monitor.ts";
 import { resumirRechazos } from "../../apps/gateway-api/src/agents/clasificar-rechazo.ts";
 import { ejecutarAcciones, extraerAcciones, type Pendiente } from "../../apps/gateway-api/src/agents/acciones-agente.ts";
+import {
+  idDe,
+  juzgar,
+  lineasParaPrompt,
+  registrar,
+  type Bitacora
+} from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
 import { planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
 import {
   countCyclesToday,
@@ -32,6 +39,9 @@ import { MEASUREMENT_FILE, type MedicionFlota } from "../../apps/gateway-api/src
 import { leerInventarioFabrica } from "../../apps/gateway-api/src/sender-inventory.ts";
 
 const PENDIENTES_FILE = "warmup-pendientes.json";
+/** Dónde vive la memoria de lo que HIZO (no de lo que dijo). Separada de MONITOR_FILE a propósito:
+ *  ese se reescribe entero en cada vuelta y ya pesa 27 KB, y el panel lo sirve completo. */
+const BITACORA_FILE = "warmup-acciones.json";
 /** El MISMO kill-file que mira el daemon en cada vuelta. Se revierte con `rm`. */
 const KILL_FILE = (process.env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "runtime/warmup-live.kill")).trim();
 
@@ -308,7 +318,12 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
   // duplicados.
   const erroresPrevios = [...new Set([...(previa?.memoria ?? []), ...(previa?.verificacion?.reparos ?? [])])].slice(-5);
 
-  const lectura = await pedirLectura({ hechos, baseUrl, modelo, erroresPrevios });
+  // LO QUE PIDIÓ ANTES Y QUÉ PASÓ. Sin esto repitió la misma acción 10 veces en 2 horas: cada
+  // vuelta arrancaba sin saber que ya la había pedido ni que se la habían negado.
+  const bitacoraPrevia = await workspace.readInventoryJson<Bitacora>(BITACORA_FILE).catch(() => null);
+  const loQueHiciste = lineasParaPrompt(bitacoraPrevia, 8);
+
+  const lectura = await pedirLectura({ hechos, baseUrl, modelo, erroresPrevios, loQueHiciste });
 
   // ── LAS ACCIONES ─────────────────────────────────────────────────────────────────────────────
   // Un agente que solo informa es un termómetro caro. Acá ejecuta lo que decidió, dentro de una
@@ -377,6 +392,51 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
     }
   } else if (lectura.lectura && reparos.length > 0) {
     acciones = [{ accion: "(ninguna)", ejecutada: false, detalle: `no se ejecutó nada: la lectura tiene reparos (${reparos.join(" · ")})` }];
+  }
+
+  // LA BITÁCORA: cada acción decidida queda registrada, se haya ejecutado o no. Las rechazadas son
+  // las que más importan — son las que el agente estaba repitiendo a ciegas.
+  if (acciones.length > 0) {
+    const cuando = lectura.generadoEn;
+    await workspace.updateInventoryJson<Bitacora>(BITACORA_FILE, (actual) => {
+      let bit = actual;
+      for (const a of acciones) {
+        if (a.accion === "(ninguna)") continue;
+        const objetivo = a.dominio ?? null;
+        bit = registrar(bit, {
+          accion: a.accion,
+          objetivo,
+          motivo: a.detalle ?? "",
+          estado: a.ejecutada ? "ejecutada" : "rechazada",
+          detalle: a.ejecutada ? null : (a.detalle ?? null),
+          // El cap de HOY es contra lo que se juzga después si el freno sirvió.
+          antes: objetivo ? { cap: hechos.cap?.enElTope.includes(objetivo) ? "en_tope" : null } : null,
+          cuando
+        });
+      }
+      return bit ?? { version: 1, entradas: [] };
+    });
+  }
+
+  // Y se JUZGA lo que se ejecutó antes: comparar el estado de entonces contra el de ahora es lo
+  // único que convierte "hice algo" en "aprendí algo".
+  if (bitacoraPrevia) {
+    const capAhora = new Map((await workspace.readInventoryJson<CapFlota>(CAP_MEASUREMENT_FILE).catch(() => null))?.nodos.map((n) => [n.domain, n.cap]) ?? []);
+    await workspace.updateInventoryJson<Bitacora>(BITACORA_FILE, (actual) => {
+      let bit = actual ?? bitacoraPrevia;
+      for (const e of bitacoraPrevia.entradas) {
+        if (e.estado !== "ejecutada" || e.veredicto || e.accion !== "frenar_dominio" || !e.objetivo) continue;
+        const cap = capAhora.get(e.objetivo);
+        bit = juzgar(bit, idDe(e.accion, e.objetivo), { cuando: lectura.generadoEn, datos: { cap } }, (_antes, despues) => {
+          const c = despues.cap;
+          if (c === undefined) return null; // sin medición nueva no se inventa un veredicto
+          return c === 0
+            ? { cuando: "", resultado: "sirvio", medido: `${e.objetivo} quedó con cupo 0 en el nodo` }
+            : { cuando: "", resultado: "no_sirvio", medido: `${e.objetivo} sigue con cupo ${String(c)}: el freno no quedó puesto` };
+        });
+      }
+      return bit;
+    });
   }
 
   // Se guarda SIEMPRE, con lectura o con motivo, y DESPUÉS de ejecutar: el panel tiene que poder
