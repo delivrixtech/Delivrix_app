@@ -81,12 +81,20 @@ if echo "${cambios}" | grep -qE '^package(-lock)?\.json$|^apps/[^/]+/package(-lo
 fi
 
 echo "· reiniciando: ${reiniciar[*]}"
+# UN solo ssh -t con UN solo sudo: reiniciar servicios de sistema exige root, y por SSH no hay
+# dónde teclear la contraseña. Con -t hay terminal, y metiendo todos los kickstart dentro de un
+# único `sudo bash -c` se pide la clave UNA vez por deploy en vez de una por servicio.
+# (Para deploys 100% desatendidos hace falta una regla en sudoers — decisión del dueño, ver
+#  DOCUMENTACION/DISCIPLINA_DE_VERSIONES_Y_DEPLOY.md §3.)
+kicks=""
 for s in "${reiniciar[@]}"; do
-  # El daemon de warmup solo está cargado si se instaló con --con-warmup.
-  ssh -o BatchMode=yes "${SSH_DEST}" "sudo launchctl kickstart -k system/com.delivrix.${s}" 2>/dev/null \
-    && echo "    ${s}: reiniciado" \
-    || echo "    ${s}: no está cargado en producción (¿se instaló con --con-warmup?)"
+  kicks+="launchctl kickstart -k system/com.delivrix.${s} && echo '    ${s}: reiniciado' || echo '    ${s}: NO se pudo (¿está cargado?)'; "
 done
+ssh -t "${SSH_DEST}" "sudo bash -c \"${kicks}\"" || {
+  echo "FALLÓ: no se pudieron reiniciar los servicios en producción." >&2
+  echo "  Producción quedó con el código NUEVO en disco y el VIEJO en memoria." >&2
+  exit 1
+}
 
 # --- verificación: que el gateway REPORTE el commit nuevo, no solo que responda ---------------
 # Antes bastaba con un "status":"ok" y se imprimía el hash que el propio script había calculado.
@@ -112,10 +120,14 @@ done
 if [[ ${ok} == 1 ]]; then
   version="$(printf '%s' "${cuerpo}" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
   echo "· producción responde ok · versión ${version:-sin declarar} · commit ${reportado:0:8}"
-elif [[ -n "${reportado}" && "${reportado}" != "${despues}" ]]; then
-  echo "FALLÓ: el gateway responde, pero sigue corriendo código VIEJO." >&2
-  echo "  esperado: ${despues:0:8}   reportado: ${reportado:0:8}" >&2
-  echo "  El kickstart no surtió efecto. Mirá:  ssh ${SSH_DEST} 'sudo launchctl print system/com.delivrix.gateway | head -20'" >&2
+elif [[ -n "${cuerpo}" ]]; then
+  echo "FALLÓ: el gateway responde, pero NO está corriendo el código que acabamos de desplegar." >&2
+  if [[ -n "${reportado}" ]]; then
+    echo "  esperado: ${despues:0:8}   reportado: ${reportado:0:8}" >&2
+  else
+    echo "  no reporta build.commit — es una versión anterior a este esquema, o no reinició." >&2
+  fi
+  echo "  Mirá:  ssh ${SSH_DEST} 'sudo launchctl print system/com.delivrix.gateway | head -20'" >&2
   exit 1
 else
   echo "FALLÓ: el gateway no responde tras el reinicio." >&2

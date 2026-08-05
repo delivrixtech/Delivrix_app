@@ -71,6 +71,20 @@ El paso 4 hace, por su cuenta: `fetch` + `merge --ff-only`, reinicia **solo** lo
 archivos cambiaron, corre `npm ci` si cambió `package.json`, y **verifica que el gateway reporte
 el commit nuevo**. Si producción sigue corriendo código viejo, el deploy **falla**.
 
+Te va a pedir **una vez** la contraseña de la Studio: reiniciar servicios de sistema exige root.
+Está agrupado para que sea un solo prompt por deploy, no uno por servicio.
+
+Si algún día querés deploys 100% desatendidos (por ejemplo desde un cron), la alternativa es una
+regla acotada en `/etc/sudoers.d/delivrix` que permita **solo** el reinicio de estos servicios:
+
+```
+delivrixstudio ALL=(root) NOPASSWD: /bin/launchctl kickstart -k system/com.delivrix.*
+```
+
+Es una decisión del dueño, no la toma el asistente: cambia la postura de seguridad de la máquina.
+El riesgo acotado es que quien tenga la llave SSH pueda reiniciar servicios de Delivrix (una
+molestia), no ejecutar cualquier cosa como root.
+
 ## 4. Las reglas que no se negocian
 
 1. **`npm test` verde antes de push.** No es opinable: el gate corre 2740 tests y cubre la política
