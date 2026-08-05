@@ -10,9 +10,11 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEST_DIR="${ROOT_DIR}/runtime/respaldos"
 LOG="${ROOT_DIR}/runtime/logs/respaldo.log"
-MINI_HOST="${MINI_HOST:-100.104.216.127}"
-MINI_USER="${MINI_USER:-$(id -un)}"
-MINI_DIR="${MINI_DIR:-~/delivrix-respaldos}"
+# Alias `mini` de ~/.ssh/config: trae usuario Y llave. Antes se armaba user@ip con `id -un`, que
+# en la Studio da "delivrixstudio" — un usuario que no existe en la mini. La copia externa fallaba
+# SIEMPRE, de forma determinista, y solo se veía como un WARN en un log que nadie abre.
+MINI_SSH="${MINI_SSH:-mini}"
+MINI_DIR="${MINI_DIR:-delivrix-respaldos}"
 RETENER="${RETENER:-7}"
 
 mkdir -p "${DEST_DIR}"
@@ -60,8 +62,8 @@ fi
 # abre es indistinguible de que todo esté bien.
 MARCA_SIN_COPIA="${ROOT_DIR}/runtime/RESPALDO-SIN-COPIA-EXTERNA"
 if scp -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new \
-     "${archivo}" "${estado}" "${MINI_USER}@${MINI_HOST}:${MINI_DIR}/" 2>>"${LOG}"; then
-  decir "copiado a la mini (${MINI_HOST}:${MINI_DIR})"
+     "${archivo}" "${estado}" "${MINI_SSH}:${MINI_DIR}/" 2>>"${LOG}"; then
+  decir "copiado a la mini (${MINI_SSH}:${MINI_DIR})"
   rm -f "${MARCA_SIN_COPIA}"
 else
   decir "WARN no pude copiar a la mini — el respaldo local existe, pero HOY no hay copia fuera de esta máquina"
