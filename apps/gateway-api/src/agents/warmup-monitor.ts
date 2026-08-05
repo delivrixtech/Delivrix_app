@@ -55,6 +55,24 @@ export interface HechosWarmup {
    * la lista solo crecía.
    */
   pendientesAbiertos?: Array<{ id: string; que: string }>;
+  /**
+   * El VECINDARIO de cada dominio del pool: cuántos nodos hay en su misma /24 y cuántos NO están
+   * sanos. Va como DATO y no como consejo en el prompt, a propósito: un criterio escrito en prosa
+   * el modelo lo repite como si fuera un hallazgo (ya pasó con "no se arregla limpiando listas"),
+   * mientras que un número al lado del dominio lo obliga a razonar sobre ESTE caso.
+   *
+   * El criterio nació midiendo: el /24 80.190.75.x tiene 13 nodos y 11 no sanos, 9 de ellos
+   * cerrados por el receptor. Un dominio sano ahí adentro empuja contra la corriente, porque los
+   * receptores evalúan reputación también por subred.
+   */
+  vecindarios?: Array<{ dominio: string; subred: string; nodos: number; noSanos: number }>;
+  /**
+   * Dominios cuyo VOLUMEN por proveedor no se pudo medir. En los 12 nodos Webdock el canal de
+   * volumen devuelve vacío, así que ahí la cercanía al umbral permanente NO está medida y un
+   * "ratio 0" no prueba nada. Sin esta marca, el agente trata una ausencia de dato como evidencia
+   * de que no hay riesgo — que es la confusión más cara del sistema.
+   */
+  sinMedirVolumen?: string[];
 }
 
 export interface LecturaAgente {
@@ -114,7 +132,19 @@ const SISTEMA = [
   "- El dominio tiene que aparecer TEXTUAL en los datos que te di. Un nombre inventado se rechaza.",
   "- Si no hay nada que hacer, no escribas ninguna línea ACCION. No actuar es la respuesta correcta",
   "  la mayoría de las veces.",
-  "- Nunca frenes algo solo porque tiene pocos datos: falta de medición no es evidencia de daño."
+  "- Nunca frenes algo solo porque tiene pocos datos: falta de medición no es evidencia de daño.",
+  "",
+  "CRITERIOS PARA DECIDIR (son para razonar, NO para reportar — no los repitas en tus cuatro líneas",
+  "salvo que el caso concreto de hoy los active):",
+  "- La reputación se evalúa también por SUBRED. Un dominio sano en una /24 donde la mayoría de sus",
+  "  vecinos está cerrada por el receptor arranca en desventaja: mirá el vecindario antes de opinar",
+  "  sobre por qué a un dominio le va mal.",
+  "- Un volumen NO MEDIDO no es un volumen bajo. Si un dominio figura entre los que no se pudieron",
+  "  medir, no afirmes que está lejos del umbral: decí que no se sabe.",
+  "- Lo que reconstruye reputación es volumen BAJO con buena señal, no parar del todo. Un dominio",
+  "  detenido no se recupera, se queda quieto.",
+  "- El tope diario de vueltas es de toda la flota, no por dominio: si hay muchos dominios en el",
+  "  pool y pocas vueltas, el problema es el reparto, no cada dominio."
 ].join("\n");
 
 /** Arma el pedido. Puro: se puede testear sin red. */
@@ -191,6 +221,18 @@ export function construirPrompt(hechos: HechosWarmup, erroresPrevios: readonly s
     for (const r of hechos.rechazos) {
       l.push(`- ${r.cuantos}× ${r.origen}: ${r.explicacion}`);
     }
+  }
+
+  if ((hechos.vecindarios ?? []).length > 0) {
+    l.push("Vecindario de cada dominio que calienta (nodos en su misma subred /24, y cuántos NO están sanos):");
+    for (const v of hechos.vecindarios ?? []) {
+      l.push(`- ${v.dominio}: subred ${v.subred}.x — ${v.nodos} nodos, ${v.noSanos} NO sanos`);
+    }
+  }
+  if ((hechos.sinMedirVolumen ?? []).length > 0) {
+    l.push(
+      `Dominios cuyo VOLUMEN por proveedor NO se pudo medir (el dato no existe, no es un cero): ${(hechos.sinMedirVolumen ?? []).join(", ")}.`
+    );
   }
 
   if ((hechos.pendientesAbiertos ?? []).length > 0) {

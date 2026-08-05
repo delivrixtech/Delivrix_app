@@ -23,6 +23,7 @@ import { planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service
 import { CAP_MEASUREMENT_FILE, type CapFlota } from "../../apps/gateway-api/src/node-daily-cap.ts";
 import { leerSemillas, semillasActivas, semillasMedibles, puntoCiego } from "../../apps/gateway-api/src/warmup-seeds.ts";
 import { MEASUREMENT_FILE, type MedicionFlota } from "../../apps/gateway-api/src/sender-measurement.ts";
+import { leerInventarioFabrica } from "../../apps/gateway-api/src/sender-inventory.ts";
 
 const PENDIENTES_FILE = "warmup-pendientes.json";
 /** El MISMO kill-file que mira el daemon en cada vuelta. Se revierte con `rm`. */
@@ -167,6 +168,38 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
     // Rechazos YA clasificados: de quién es cada freno. Pasarle la cadena cruda fue lo que llevó
     // al agente a decir "los límites diarios de Gmail" sobre nuestro propio cap de Postfix.
     rechazos: resumirRechazos(vueltas.map((v) => v.error)),
+    // EL VECINDARIO de cada dominio del pool. Se calcula acá, del inventario real + la medición:
+    // agrupar por /24 y contar cuántos vecinos NO están sanos. Es el criterio que descartó a
+    // corpregistry-ops.com (11 de 13 vecinos cerrados por el receptor) aunque él estuviera sano.
+    vecindarios: await (async () => {
+      try {
+        const inv = await leerInventarioFabrica({ workspace });
+        const estado = new Map((med?.bandejas ?? []).map((b) => [b.domain, b.estado]));
+        const por24 = new Map<string, Array<{ dominio: string; sano: boolean }>>();
+        for (const b of inv.bandejas) {
+          if (!b.serverIp) continue;
+          const s24 = b.serverIp.split(".").slice(0, 3).join(".");
+          const lista = por24.get(s24) ?? [];
+          lista.push({ dominio: b.domain, sano: estado.get(b.domain) === "healthy" });
+          por24.set(s24, lista);
+        }
+        // Solo los dominios que están calentando: el vecindario de los otros 51 es ruido.
+        const delPool = new Set((cap?.nodos ?? []).filter((n) => (n.cap ?? 0) > 0).map((n) => n.domain));
+        const out: Array<{ dominio: string; subred: string; nodos: number; noSanos: number }> = [];
+        for (const [s24, vecinos] of por24) {
+          for (const v of vecinos) {
+            if (!delPool.has(v.dominio)) continue;
+            out.push({ dominio: v.dominio, subred: s24, nodos: vecinos.length, noSanos: vecinos.filter((x) => !x.sano).length });
+          }
+        }
+        return out;
+      } catch {
+        return undefined;
+      }
+    })(),
+    // Dónde el canal de volumen no leyó. `picos` vacío = NO MEDIDO, que no es lo mismo que cero:
+    // en los 12 nodos Webdock nunca lee, y ahí la cercanía al umbral es desconocida.
+    sinMedirVolumen: (med?.bandejas ?? []).filter((b) => (b.picos ?? []).length === 0).map((b) => b.domain),
     // Los pendientes CON su id: sin esto el agente no podía cerrarlos nunca (la acción existía,
     // pero él no veía ningún id que pasarle) y la lista solo crecía.
     pendientesAbiertos: (
