@@ -262,22 +262,45 @@ async function mostrarStatus(
 
 const dormir = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** Hace cuánto se midió, según el archivo. `null` = no hay medición o no se pudo leer. */
+async function edadDeLaMedicion(): Promise<number | null> {
+  try {
+    const previa = await new OpenClawWorkspace().readInventoryJson<CapFlota>(CAP_MEASUREMENT_FILE);
+    const t = Date.parse(previa?.medidoEn ?? "");
+    return Number.isFinite(t) ? Date.now() - t : null;
+  } catch {
+    return null;
+  }
+}
+
 async function correr(): Promise<void> {
   if (CADA_HORAS === null) {
     await main();
     return;
   }
   console.log(`midiendo la flota cada ${CADA_HORAS}h (Ctrl-C para salir).`);
+  // RELOJ DE PARED, no `setTimeout` de 6 horas. En macOS los timers NO corren mientras la máquina
+  // duerme, y esto vive en la Mac del operador: medido el 2026-08-05, durmió toda la madrugada
+  // (varios "Entering Sleep state" en pmset) y la medición quedó vencida 14,6 h con el proceso
+  // vivo. Un `setTimeout(6h)` que arranca antes de dormir se despierta tarde y encima recién ahí
+  // empieza a contar de nuevo.
+  //
+  // Con un chequeo corto que compara contra la EDAD REAL del archivo, al volver de dormir la
+  // primera vuelta detecta que venció y remide enseguida.
+  const CHEQUEO_MS = 5 * 60 * 1000;
   for (;;) {
-    try {
-      await main();
-    } catch (error) {
-      // Una vuelta que falla NO mata el loop: la medición anterior sigue en disco con su fecha, y
-      // quien la lea ya sabe interpretar una medición vieja. Cortar acá sería peor — dejaría de
-      // haber mediciones nuevas para siempre por un error transitorio de red.
-      console.error(`vuelta fallida: ${error instanceof Error ? error.message : String(error)}`);
+    const edadMs = await edadDeLaMedicion();
+    if (edadMs === null || edadMs >= CADA_HORAS * 60 * 60 * 1000) {
+      try {
+        await main();
+      } catch (error) {
+        // Una vuelta que falla NO mata el loop: la medición anterior sigue en disco con su fecha, y
+        // quien la lea ya sabe interpretar una medición vieja. Cortar acá sería peor — dejaría de
+        // haber mediciones nuevas para siempre por un error transitorio de red.
+        console.error(`vuelta fallida: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
-    await dormir(CADA_HORAS * 60 * 60 * 1000);
+    await dormir(CHEQUEO_MS);
   }
 }
 
