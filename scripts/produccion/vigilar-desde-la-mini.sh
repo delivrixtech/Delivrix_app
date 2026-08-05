@@ -14,7 +14,10 @@
 # o simplemente:  */10 * * * * /ruta/vigilar-desde-la-mini.sh
 set -uo pipefail
 
-STUDIO_HOST="${STUDIO_HOST:-100.87.218.46}"
+# Alias `studio` de ~/.ssh/config en la mini: trae usuario Y llave. Con la IP pelada, ssh usa el
+# usuario local (delivrixmini), que no existe en la Studio, y el vigía reportaría "caída" una
+# máquina perfectamente viva — la peor falla posible en un vigilante.
+STUDIO_SSH="${STUDIO_SSH:-studio}"
 ESTADO="${ESTADO:-${HOME}/.delivrix-vigia}"
 LOG="${LOG:-${HOME}/delivrix-vigia.log}"
 # 3 fallos seguidos (~30 min) antes de gritar: un fallo suelto es un hipo de red, no una muerte.
@@ -40,7 +43,7 @@ fallos=0
 
 # El gateway responde /health solo en loopback de la Studio, así que se pregunta por SSH.
 # Se prueban las dos rutas: si Tailscale se cae pero la Studio vive, no es una muerte.
-salud="$(ssh -o BatchMode=yes -o ConnectTimeout=10 "${STUDIO_HOST}" \
+salud="$(ssh -o BatchMode=yes -o ConnectTimeout=10 "${STUDIO_SSH}" \
   'curl -fsS --max-time 5 http://127.0.0.1:3000/health' 2>/dev/null || true)"
 
 if printf '%s' "${salud}" | grep -q '"status"[[:space:]]*:[[:space:]]*"ok"'; then
