@@ -9,7 +9,7 @@ set -euo pipefail
 
 STUDIO_HOST="${STUDIO_HOST:-100.87.218.46}"
 STUDIO_USER="${STUDIO_USER:-}"
-STUDIO_DIR="${STUDIO_DIR:-~/Documents/delivrix app}"
+STUDIO_DIR="${STUDIO_DIR:-/Users/Shared/delivrix}"
 RAMA="${RAMA:-produ}"
 SSH_DEST=""
 

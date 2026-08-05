@@ -15,6 +15,7 @@ Mapa visual: `DOCUMENTACION/MAPA_PRODUCCION_MAC_STUDIO_2026_08_05.html`
 | `watchdog.sh` | Studio, cada 5 min | el caso que launchd NO ve: proceso vivo pero colgado |
 | `respaldo-nocturno.sh` | Studio, 03:30 | pg_dump verificado + copia a la mini por Tailscale |
 | `desplegar.sh` | **la laptop** | produ → producción, reiniciando solo lo que cambió |
+| `vigilar-desde-la-mini.sh` | la mini, cada 10 min | mira a la Studio desde afuera y avisa; NO activa nada |
 | `lib.sh` | ambas | la lógica que puede fallar en silencio, para poder probarla |
 | `produccion.test.sh` | cualquiera | `bash scripts/produccion/produccion.test.sh` |
 
@@ -26,14 +27,16 @@ Requisitos previos, a mano:
 2. **Tailscale** con la misma cuenta (la Studio ya es `100.87.218.46`).
 3. **Homebrew + node + Postgres**, NO contenedores:
    ```
-   brew install node postgresql@16 pgvector
-   sudo brew services start postgresql@16
+   brew install node postgresql@17 pgvector
+   brew services start postgresql@17
    ```
    Docker/OrbStack corre como app de usuario y necesita sesión iniciada — justo la dependencia
    que este kit elimina. Por eso Postgres va nativo.
 4. **FileVault apagado.** Con FileVault, tras cada reinicio la Mac espera una contraseña que
    nadie va a teclear y no arranca nada. La promesa de 24/7 sería falsa.
-5. El repo clonado en `~/Documents/delivrix app`, rama `produ`, con `config/gateway.env`
+5. El repo clonado en **`/Users/Shared/delivrix`** (NO en `~/Documents`: macOS le prohíbe a los
+   LaunchDaemons leer Documents/Desktop/Downloads y mueren con `Operation not permitted`),
+   rama `produ`, con `config/gateway.env`
    copiado (permisos 600) y **`POSTGRES_CONTAINER=` vacío**.
 6. Datos migrados: `pg_dump` desde la laptop → `pg_restore`/`psql` en la Studio.
 
@@ -94,7 +97,7 @@ curl -s localhost:5173/v1/warmup/plan          # el pool del día
 - **No hace failover automático a la mini.** Es deliberado: en warmup, enviar dos veces es peor
   que estar pausado. Pausar no cuesta reputación; duplicar puede cruzar un umbral permanente. El
   relevo se activa a mano (§7 del documento de arquitectura).
-- **No protege contra que se caiga la casa.** Studio y mini comparten luz, router e ISP. Eso lo
-  atacan un UPS y, más adelante, el bastión de Tampa.
+- **No protege contra que se caiga el sitio.** El sitio de Miami tiene generadores, así que la
+  luz no es el riesgo; lo compartido es la RED y la ubicación. Eso lo ataca Tampa, no un UPS.
 - **No reemplaza mirar los logs.** El watchdog reinicia lo que no responde y lo deja escrito;
   no diagnostica por qué.

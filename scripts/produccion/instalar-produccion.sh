@@ -42,6 +42,22 @@ echo
 # instalación real y el mensaje culpaba a Postgres, que estaba impecable.
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
+# macOS (TCC) le prohíbe a los LaunchDaemons leer Documents/Desktop/Downloads, incluso del
+# propio usuario y aunque los permisos POSIX estén perfectos. El daemon muere con "Operation not
+# permitted" y `ls -l` no muestra nada raro. Pasó en la instalación real con el repo en
+# ~/Documents: los 6 servicios cargaron y ninguno pudo arrancar.
+case "${ROOT_DIR}" in
+  */Documents/*|*/Desktop/*|*/Downloads/*|*/Documents|*/Desktop|*/Downloads)
+    echo "FATAL: el repo está en una carpeta protegida por macOS (${ROOT_DIR})." >&2
+    echo "  Un LaunchDaemon NO puede leer Documents, Desktop ni Downloads: arranca y muere con" >&2
+    echo "  'Operation not permitted' sin que los permisos del archivo digan nada." >&2
+    echo "  Movelo fuera de ahí, por ejemplo:" >&2
+    echo "     mv \"${ROOT_DIR}\" /Users/Shared/delivrix" >&2
+    echo "  y volvé a correr este script desde la ruta nueva." >&2
+    exit 1
+    ;;
+esac
+
 NODE_BIN=""
 for cand in /opt/homebrew/bin/node /usr/local/bin/node; do
   [[ -x "${cand}" ]] && NODE_BIN="${cand}" && break
