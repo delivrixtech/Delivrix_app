@@ -461,8 +461,19 @@ export function verificarLectura(texto: string, hechos: HechosWarmup): LecturaEs
     }
   }
 
-  // 5. Un porcentaje de placement citado que no coincide con ninguno de los del plan.
+  // 5. Un porcentaje de placement citado que no coincide con ninguno de los que le dimos.
+  //
+  // OJO: las tasas válidas NO son solo las del plan. El hecho `emisor` trae su propio porcentaje
+  // en el motivo ("inbox 33% < piso 50%") y viene de decideDaemonAction, o sea que es tan real
+  // como cualquier otro. Sin incluirlo, el verificador marcaba como inventado un número que
+  // nosotros mismos le pasamos — un reparo FALSO. Y un reparo falso hace dos daños: le bloquea
+  // las manos al agente (con reparos no ejecuta nada) y entrena al operador a ignorar los reparos,
+  // que es lo contrario de para qué existen. Pasó en producción el 2026-08-06.
   const tasas = new Set((hechos.plan ?? []).filter((p) => p.placementTasa !== null).map((p) => Math.round((p.placementTasa ?? 0) * 100)));
+  for (const m of (hechos.emisor?.motivo ?? "").matchAll(/(\d{1,3})\s?%/g)) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n)) tasas.add(n);
+  }
   if (tasas.size > 0) {
     for (const m of cuerpo.matchAll(/(\d{1,3})\s?%\s*(?:de\s+)?(?:placement|inbox|bandeja)|placement\s+(?:del?\s+)?(\d{1,3})\s?%/gi)) {
       const n = Number(m[1] ?? m[2]);

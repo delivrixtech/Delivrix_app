@@ -152,3 +152,39 @@ test("la VOZ se separa de los hechos: da personalidad sin debilitar el gate", ()
   assert.equal(sinVoz.voz, null);
   assert.equal(sinVoz.reparos.length, 0);
 });
+
+test("no marca como inventado un porcentaje que le dimos nosotros en el estado del emisor", () => {
+  // Reparo FALSO visto en producción el 2026-08-06: el hecho `emisor` trae su propio porcentaje
+  // ("inbox 33% < piso 50%") y el verificador solo comparaba contra las tasas del plan. Marcaba
+  // como inventado un dato propio — y con reparos el agente NO ejecuta nada, así que un reparo
+  // falso le corta las manos y encima entrena al operador a ignorar los reparos.
+  const hechos: HechosWarmup = {
+    generadoEn: "2026-08-06T00:00:00.000Z",
+    emisor: { estado: "placement-pause", motivo: "inbox 33% < piso 50%", vueltasHoy: 0, topeDiario: 14 },
+    semillas: { destinos: 6, midiendo: 2, puntoCiego: [] },
+    vueltas: [],
+    cap: null,
+    flota: null,
+    plan: [{ dominio: "a.com", diaN: 1, placementTasa: 0.83, placementMuestra: 6, cupo: 2, accion: "sostener", motivo: "m", enviadosHoy: 0 }]
+  };
+
+  const citaElEmisor = verificarLectura(
+    [
+      "AHORA: el emisor está pausado con el inbox en 33%.",
+      "PORQUE: el piso es 50% y no lo alcanza.",
+      "RIESGO: ninguno",
+      "FALTA: nada"
+    ].join("\n"),
+    hechos
+  );
+  assert.deepEqual(citaElEmisor.reparos, [], "33% y 50% vienen del propio hecho emisor");
+
+  // Y sigue atajando lo que SÍ es inventado. (La forma "placement del N%" es una de las que el
+  // chequeo reconoce; no cubre todas las redacciones posibles, y eso es previo a este arreglo.)
+  const inventado = verificarLectura(
+    ["AHORA: llegamos a un placement del 91%.", "PORQUE: mejoró.", "RIESGO: ninguno", "FALTA: nada"].join("\n"),
+    hechos
+  );
+  assert.equal(inventado.reparos.length, 1);
+  assert.match(inventado.reparos[0] ?? "", /91%/);
+});
