@@ -39,9 +39,17 @@ export interface MedicionBandeja {
   /** Nunca `healthy` por defecto: si no se pudo leer, el estado lo dice. */
   estado: DeliveryHealthStatus;
   detalle: string;
-  /** Que ventana cubren los numeros de entrega. Nunca es "hoy". */
+  /** Que ventana cubren los numeros de entrega, en los dias que se leyeron de verdad. */
   ventana: string;
   entregados: number | null;
+  /**
+   * Mensajes trabados en la cola del nodo AHORA (no en la ventana). `null` = no se pudo leer.
+   *
+   * Opcional a proposito: los fixtures de sender-quota, sender-alerts y la ruta de lectura arman
+   * este objeto a mano, y obligarlos a declarar un campo que no les importa habria sido tocar tres
+   * archivos ajenos para no ganar nada.
+   */
+  encolados?: number | null;
   rechazados: number | null;
   diferidos: number | null;
   /** Receptores donde el nodo esta efectivamente cerrado. */
@@ -106,6 +114,9 @@ export async function medirBandeja(input: {
     ventana: salud.window,
     // null y no 0 cuando no se pudo leer: es la regla de toda la pantalla.
     entregados: leyoSalud ? salud.stats.totals.delivered : null,
+    // La cola viaja al archivo porque es la unica senal de "esta atascado AHORA": los totales de la
+    // ventana dicen que paso, no que esta pasando. Sin esto el operador solo veia el veredicto.
+    encolados: leyoSalud ? salud.encolados : null,
     rechazados: leyoSalud ? salud.stats.totals.blocked : null,
     diferidos: leyoSalud ? salud.stats.totals.deferred : null,
     cerradoEn: salud.blockedProviders,
@@ -154,6 +165,7 @@ export async function medirFlota(input: {
           detalle: error instanceof Error ? error.message : "fallo la medicion",
           ventana: "sin lectura",
           entregados: null,
+          encolados: null,
           rechazados: null,
           diferidos: null,
           cerradoEn: [],

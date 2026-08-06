@@ -34,6 +34,13 @@ chequear "cupo"                    "warmup-cupo"                                
 # así que nadie la corría: el 2026-08-06 el archivo tenía 35h y el agente elegía el pool con una
 # foto de anteayer. Ahora es un servicio, y como tal tiene que reiniciarse cuando cambia su código.
 chequear "salud de la flota"       "flota-salud"                                          "$(mapa 'scripts/ops/medir-flota.ts')"
+# El sensor de la flota vive en apps/gateway-api pero lo ejecuta flota-salud. Sin esto se despliega
+# el código y la flota se sigue midiendo con el viejo: el 2026-08-06 el diff cambió el criterio de
+# salud y el mapeo devolvió solo "gateway warmup-daemon", así que el daemon iba a filtrar el pool con
+# la regla nueva sobre un sender-measurement.json escrito por la regla vieja. El mapeo dice en su
+# comentario "ante la duda reinicia de MÁS"; acá reiniciaba de menos.
+chequear "sensor de la flota"      "flota-salud gateway"                                  "$(mapa 'apps/gateway-api/src/sender-measurement.ts')"
+chequear "salud de entrega"        "flota-salud gateway"                                  "$(mapa 'apps/gateway-api/src/smtp-delivery-health.ts')"
 chequear "packages toca todo"      "flota-salud gateway panel warmup-cupo warmup-daemon warmup-monitor" "$(mapa 'packages/queue/src/index.ts')"
 chequear "config toca todo"        "flota-salud gateway panel warmup-cupo warmup-daemon warmup-monitor" "$(mapa 'config/gateway.env')"
 chequear "doc no toca nada"        ""                                                     "$(mapa 'DOCUMENTACION/algo.md')"

@@ -173,11 +173,17 @@ test("un nodo que rebotó hoy queda marcado", async () => {
 // RECEPTOR, 22 con la COLA ATASCADA y uno había CRUZADO el umbral permanente. Con el pool filtrando
 // solo por "cap > 0", el daemon habría gastado su presupuesto diario en 44 dominios que no entregan.
 
-const salud = (m: Record<string, { estado?: string; cruzados?: string[] }>) => new Map(Object.entries(m));
+// `entregados` entró con la ventana acotada: es la señal positiva reciente sin la cual un dominio no
+// es "sano" sino "no sé". Los casos viejos no lo declaran a propósito — así este mismo helper prueba
+// que un archivo de una medición anterior, sin el campo, tampoco alcanza para entrar.
+const salud = (m: Record<string, { estado?: string; cruzados?: string[]; entregados?: number | null }>) =>
+  new Map(Object.entries(m));
 
 test("un dominio que CRUZÓ el umbral permanente sale del pool: calentarlo no lo recupera", () => {
   const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["b.com", 20]]) }), [], salud({
-    "a.com": { estado: "healthy" },
+    // El control sano declara `entregados`: desde que el pool exige una señal positiva reciente, un
+    // "healthy" sin una sola entrega leída tampoco entra, y sin esto el test probaría otra cosa.
+    "a.com": { estado: "healthy", entregados: 12 },
     "b.com": { estado: "healthy", cruzados: ["gmail"] }
   }));
   assert.deepEqual(r.boxes, ["a.com"]);
@@ -186,7 +192,9 @@ test("un dominio que CRUZÓ el umbral permanente sale del pool: calentarlo no lo
 
 test("un dominio CERRADO POR EL RECEPTOR sale: no se puede calentar lo que no llega", () => {
   const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["b.com", 20]]) }), [], salud({
-    "a.com": { estado: "healthy" },
+    // El control sano declara `entregados`: desde que el pool exige una señal positiva reciente, un
+    // "healthy" sin una sola entrega leída tampoco entra, y sin esto el test probaría otra cosa.
+    "a.com": { estado: "healthy", entregados: 12 },
     "b.com": { estado: "blocked_by_provider" }
   }));
   assert.deepEqual(r.boxes, ["a.com"]);
@@ -194,19 +202,119 @@ test("un dominio CERRADO POR EL RECEPTOR sale: no se puede calentar lo que no ll
 
 test("un dominio con la COLA ATASCADA sale: el correo no sale del nodo", () => {
   const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["b.com", 20]]) }), [], salud({
-    "a.com": { estado: "healthy" },
+    // El control sano declara `entregados`: desde que el pool exige una señal positiva reciente, un
+    // "healthy" sin una sola entrega leída tampoco entra, y sin esto el test probaría otra cosa.
+    "a.com": { estado: "healthy", entregados: 12 },
     "b.com": { estado: "stalled" }
   }));
   assert.deepEqual(r.boxes, ["a.com"]);
 });
 
-test("SIN medición de salud de un dominio NO se lo excluye", () => {
-  // Excluir por falta de dato apagaría el warmup entero el día que la medición falte. El costo de
-  // incluir uno de más está acotado: rebota y el daemon lo saltea solo.
+test("SIN medición del dominio NO entra: el pool no se llena con 'no sé'", () => {
+  // Este test decía lo contrario, y el razonamiento era: "excluir por falta de dato apagaría el
+  // warmup entero el día que la medición falte, y el costo de incluir uno de más está acotado
+  // porque rebota y el daemon lo saltea solo".
+  //
+  // Se invirtió, y el incidente original sigue cubierto por otro camino: si el archivo entero no se
+  // puede leer, `leerSalud` devuelve undefined, no se aplica ningún filtro y el pool sale solo del
+  // cupo — es el test de acá abajo, "sin archivo de salud el pool funciona igual que antes". Lo que
+  // cambia es solo el dominio AUSENTE de un archivo que SÍ se leyó, y ese caso no es "sano".
+  //
+  // El costo tampoco estaba tan acotado: un rebote gasta una vuelta del presupuesto diario del
+  // daemon, que es global para toda la flota.
   const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["sin-medir.com", 20]]) }), [], salud({
-    "a.com": { estado: "healthy" }
+    "a.com": { estado: "healthy", entregados: 12 }
   }));
-  assert.deepEqual(r.boxes, ["a.com", "sin-medir.com"]);
+  assert.deepEqual(r.boxes, ["a.com"]);
+  assert.match(r.motivo, /sin-medir\.com \(sin medición: no sé si entrega\)/);
+});
+
+test("un dominio RECIÉN COMPRADO puede entrar al pool, o la fábrica no fabrica", () => {
+  // EL DEFECTO QUE ESTE TEST PREVIENE (2026-08-06, encontrado por QA antes del merge):
+  //
+  // `no_traffic` excluía del pool, y un nodo recién provisionado tiene el mail.log vacío ⇒ totales
+  // 0/0/0 ⇒ `no_traffic` ⇒ excluido ⇒ nunca manda ⇒ sigue en `no_traffic`. Trampa cerrada, y en
+  // silencio: el dominio no aparecía en el pool y no saltaba ninguna alerta, solo una línea en el
+  // motivo del daemon. Para una empresa cuyo producto ES una fábrica de dominios, eso rompe el
+  // onboarding entero. Y es la MISMA FORMA del bug que este ticket vino a matar ("un nodo que se
+  // destrabó hace días queda condenado para siempre"), corrida de eje.
+  //
+  // El segundo camino a la misma trampa ya estaba vivo en producción: cualquier dominio que quede
+  // fuera del pool más días que la ventana (cap 0, una medición fallida, un fin de semana flojo)
+  // pierde sus entregas, cae en `no_traffic` y se vuelve inelegible para siempre.
+  // controlnationalcorp.com estaba exactamente ahí el día de la medición.
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["dominio-nuevo.com", 20]]) }), [], salud({
+    "a.com": { estado: "healthy", entregados: 12 },
+    "dominio-nuevo.com": { estado: "no_traffic", entregados: 0 }
+  }));
+  assert.deepEqual(r.boxes, ["a.com", "dominio-nuevo.com"]);
+  // Y se DECLARA que entra sin señal positiva: el daemon reparte una vuelta por dominio, así que un
+  // pool lleno de nodos que nunca mandaron le saca presupuesto a los que calientan bien. Sin el
+  // número en la misma línea, "el pool creció" se lee como buena noticia.
+  assert.match(r.motivo, /1 sin tráfico todavía, entran a arrancar: dominio-nuevo\.com/);
+});
+
+test("`no_traffic` NO tapa las cuatro razones reales para no calentar", () => {
+  // La contracara del test de arriba: dejar entrar al nodo nuevo no puede abrir la puerta al roto.
+  // Ninguno de estos cuatro depende de que el nodo haya mandado algo en la ventana — `cruzados` es
+  // pegajoso a propósito (cruzar el umbral permanente de Google es irreversible y sender-measurement
+  // lo arrastra de la medición anterior), y cerrado/atascado/ilegible son estados, no ausencias.
+  const r = elegirPool(
+    medicion({ porDominio: new Map([["cruzado.com", 20], ["cerrado.com", 20], ["atascado.com", 20], ["ciego.com", 20]]) }),
+    [],
+    salud({
+      // El caso filoso: cruzó el umbral Y no tiene tráfico. Si `no_traffic` se evaluara primero,
+      // entraría al pool un dominio quemado para siempre.
+      "cruzado.com": { estado: "no_traffic", cruzados: ["gmail"], entregados: 0 },
+      "cerrado.com": { estado: "blocked_by_provider", entregados: 0 },
+      "atascado.com": { estado: "stalled", entregados: 0 },
+      // `unreadable` es lo que devuelve el sensor cuando el nodo escribe la fecha en un formato que
+      // no entiende: da 0/0/0 igual que un nodo nuevo, y NO puede confundirse con uno.
+      "ciego.com": { estado: "unreadable", entregados: null }
+    })
+  );
+  assert.deepEqual(r.boxes, []);
+  assert.match(r.motivo, /cruzado\.com \(cruzó el umbral permanente\)/);
+  assert.match(r.motivo, /ciego\.com \(sin lectura de entregas: no sé\)/);
+});
+
+test("'healthy' con CERO entregas en la ventana NO entra: sin señal positiva es 'no sé'", () => {
+  // Con la ventana acotada, `healthy` dejó de significar "entrega bien" y pasó a significar "no
+  // encontré nada malo en N días" — y para un nodo que no mandó casi nada, eso es no haber medido.
+  // Un nodo sin UNA sola entrega reciente no está probado como sano.
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["b.com", 20]]) }), [], salud({
+    "a.com": { estado: "healthy", entregados: 12 },
+    "b.com": { estado: "healthy", entregados: 0 }
+  }));
+  assert.deepEqual(r.boxes, ["a.com"]);
+  assert.match(r.motivo, /b\.com \(ninguna entrega en la ventana\)/);
+});
+
+test("'healthy' con entregas ILEGIBLES (null) NO entra, y el motivo lo distingue de cero", () => {
+  // Hoy un nodo cuyo log no se pudo leer entra al pool. Va separado del caso de arriba a propósito:
+  // lo que lee el operador es distinto y la acción también — "ninguna entrega" se arregla mandando,
+  // "sin lectura" se arregla arreglando el acceso al log (es el mail.log syslog:adm que necesita
+  // sudo, el mismo agujero que dejó al sensor mirando donde no había nada).
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["b.com", 20]]) }), [], salud({
+    "a.com": { estado: "healthy", entregados: 12 },
+    "b.com": { estado: "healthy", entregados: null }
+  }));
+  assert.deepEqual(r.boxes, ["a.com"]);
+  assert.match(r.motivo, /b\.com \(sin lectura de entregas: no sé\)/);
+});
+
+test("con al menos una entrega en la ventana SÍ entra, y los excluidos se DECLARAN", () => {
+  // Un pool que se achica en silencio hace creer al operador que hay menos nodos con cupo de los que
+  // hay y esconde justo el problema que hay que resolver: es lo que pasó el 2026-08-04 con los 46
+  // nodos que pasaron de cap 0 a tener cupo.
+  const r = elegirPool(medicion({ porDominio: new Map([["a.com", 20], ["b.com", 20], ["c.com", 20]]) }), [], salud({
+    "a.com": { estado: "healthy", entregados: 3 },
+    "b.com": { estado: "healthy", entregados: 39 },
+    "c.com": { estado: "healthy", entregados: 0 }
+  }));
+  assert.deepEqual(r.boxes, ["a.com", "b.com"]);
+  assert.match(r.motivo, /2 de 3 nodos aptos/);
+  assert.match(r.motivo, /1 fuera: c\.com \(ninguna entrega en la ventana\)/);
 });
 
 test("sin archivo de salud el pool funciona igual que antes", () => {

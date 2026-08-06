@@ -100,15 +100,26 @@ export async function leerCuposFisicos(ruta: string, ahora: Date = new Date()): 
  */
 /**
  * La salud medida de un dominio, en lo que le importa al pool.
- *
- * `null` = sin medición. NO se excluye por falta de dato: excluir a ciegas apagaría el warmup
- * entero el día que la medición falte, y el efecto de incluir un dominio de más ya está acotado
- * (rebota y el daemon lo saltea).
  */
 export interface SaludDominio {
   estado?: string;
   cruzados?: readonly string[];
+  /**
+   * Entregas reales (`status=sent`) dentro de la ventana medida. `null` = no se pudo leer el log,
+   * que NO es cero. Ausente = el archivo es de una medición vieja que todavía no traía el campo.
+   */
+  entregados?: number | null;
 }
+
+/**
+ * Entregas reales dentro de la ventana que hacen falta para entrar al pool.
+ *
+ * Es constante y no un `> 0` escrito a mano porque es CALIBRACIÓN, no una verdad: los 6 nodos del
+ * pool de hoy mandaron entre 4 y 39 correos en 7 días, y casi todo ese tráfico lo generó el propio
+ * warmup — o sea que el sensor se confirma con nuestros propios envíos. Hoy está en su valor más
+ * permisivo; si resulta que una sola entrega no alcanza para creerle a un nodo, se sube acá.
+ */
+export const MIN_ENTREGAS_EN_VENTANA = 1;
 
 export function elegirPool(
   cupos: MedicionCupos,
@@ -140,23 +151,70 @@ export function elegirPool(
   //  · cerrado por el receptor    → el correo no ENTRA. No se puede calentar lo que no llega.
   //  · cola atascada              → el correo no SALE. Hay que destrabar el nodo primero.
   //
+  // El motivo que se agregó al acotar la ventana del sensor de salud:
+  //  · ninguna entrega en la ventana → un nodo QUE MANDÓ y no logró UNA sola entrega no es sano, es
+  //    "no sé", y el pool no se llena con "no sé". Incluye al que no se pudo leer, que hoy entraba.
+  //
+  // Y el que NO excluye, que es la contracara: `no_traffic` LIMPIO entra. Ver abajo.
+  //
   // Con la medición vencida se excluye igual: el peor caso de excluir de más es calentar un dominio
   // menos (recuperable), y el de incluir de más es quemar presupuesto en algo que no entrega.
   const excluidos: string[] = [];
+  const arrancando: string[] = [];
   if (salud && salud.size > 0) {
     const motivoDeExclusion = (d: string): string | null => {
       const s = salud.get(d);
-      if (!s) return null; // sin medición NO se excluye: apagaría el warmup el día que falte el dato
+      // Esta línea decía lo contrario: "sin medición NO se excluye, porque excluir por falta de dato
+      // apagaría el warmup el día que la medición falte". Se invirtió, y el incidente que protegía
+      // sigue cubierto por OTRO camino: si el archivo entero no se puede leer, `leerSalud` devuelve
+      // `undefined`, el guard de arriba no aplica ningún filtro y el pool sale solo del cupo, igual
+      // que antes (hay un test propio de eso). Lo único que cambia es el dominio AUSENTE de un
+      // archivo que sí se leyó — y eso no es "sano", es "no sé".
+      if (!s) return "sin medición: no sé si entrega";
       if ((s.cruzados ?? []).length > 0) return "cruzó el umbral permanente";
       if (s.estado === "blocked_by_provider") return "cerrado por el receptor";
       if (s.estado === "stalled") return "cola atascada";
+      // `no_traffic` NO excluye, y esta línea es la que impide que la fábrica deje de fabricar.
+      //
+      // Un dominio recién comprado tiene el mail.log vacío ⇒ totales 0/0/0 ⇒ `no_traffic`. Cuando
+      // eso excluía, la trampa se cerraba sola: no entraba al pool ⇒ no mandaba nunca ⇒ seguía en
+      // `no_traffic`. Un dominio nuevo no podía recibir su primer correo de warmup, en silencio, y
+      // sin una sola alerta. Es la MISMA forma del bug que este ticket vino a matar ("un nodo que se
+      // destrabó hace días queda condenado para siempre"), corrida de eje.
+      //
+      // El segundo camino a la misma trampa ya estaba vivo: cualquier dominio que quede fuera del
+      // pool más días que la ventana (cap 0, una medición fallida, un fin de semana flojo) pierde
+      // sus entregas y se vuelve inelegible para siempre. controlnationalcorp.com estaba ahí.
+      //
+      // Y no es un agujero, porque las cuatro razones para NO calentar ya se evaluaron ARRIBA y
+      // ninguna depende de la ventana: `cruzados` es PEGAJOSO (sender-measurement lo arrastra de la
+      // medición anterior a propósito, cruzar el umbral es irreversible), y cerrado/atascado son
+      // estados, no ausencias. Lo que llega hasta acá con `no_traffic` es un nodo del que el log se
+      // leyó bien y no dijo nada malo: eso no es un nodo enfermo, es un nodo NUEVO — y es el
+      // candidato natural a arrancar. Si en realidad está roto, el primer correo lo demuestra y la
+      // medición siguiente lo saca; el costo de averiguarlo es UNA vuelta.
+      //
+      // Ojo con la lectura ciega: si el nodo escribe la fecha en un formato que el corte por día no
+      // reconoce, también da 0/0/0. Eso NO llega acá como `no_traffic` — readNodeDeliveryHealth lo
+      // devuelve `unreadable` justamente para que no se confunda con un nodo nuevo.
+      if (s.estado === "no_traffic") return null;
+      // `unreadable` no necesita rama propia: cae acá, con un motivo más honesto que el estado.
+      if (s.entregados === null || s.entregados === undefined) return "sin lectura de entregas: no sé";
+      if (s.entregados < MIN_ENTREGAS_EN_VENTANA) return "ninguna entrega en la ventana";
       return null;
     };
     const sobreviven: string[] = [];
     for (const d of conCupo) {
       const motivo = motivoDeExclusion(d);
       if (motivo) excluidos.push(`${d} (${motivo})`);
-      else sobreviven.push(d);
+      else {
+        sobreviven.push(d);
+        // Los que entran SIN una señal positiva se cuentan aparte. El daemon reparte una vuelta por
+        // dominio: si mañana entran treinta nodos que nunca mandaron, los que hoy calientan bien se
+        // llevan una fracción del presupuesto. Que la dilución se vea en la misma línea que el pool
+        // es lo que la vuelve corregible; sin el número, "el pool creció" se lee como buena noticia.
+        if (salud.get(d)?.estado === "no_traffic") arrancando.push(d);
+      }
     }
     conCupo = sobreviven;
   }
@@ -166,13 +224,14 @@ export function elegirPool(
   // Los excluidos se DECLARAN, siempre. Un pool que se achica en silencio hace creer al operador
   // que hay menos nodos con cupo de los que hay, y esconde justo el problema que hay que resolver.
   const sacados = excluidos.length > 0 ? ` · ${excluidos.length} fuera: ${excluidos.slice(0, 4).join(", ")}${excluidos.length > 4 ? ` y ${excluidos.length - 4} más` : ""}` : "";
+  const nuevos = arrancando.length > 0 ? ` · ${arrancando.length} sin tráfico todavía, entran a arrancar: ${arrancando.slice(0, 4).join(", ")}${arrancando.length > 4 ? ` y ${arrancando.length - 4} más` : ""}` : "";
   if (conCupo.length === 0) {
     return {
       boxes: [],
       motivo: `ninguno de los ${cupos.porDominio.size} nodos medidos sirve para calentar${sacados || ": están todos en cap 0"}${antiguedad}`
     };
   }
-  return { boxes: conCupo, motivo: `${conCupo.length} de ${cupos.porDominio.size} nodos aptos${sacados}${antiguedad}` };
+  return { boxes: conCupo, motivo: `${conCupo.length} de ${cupos.porDominio.size} nodos aptos${sacados}${nuevos}${antiguedad}` };
 }
 
 // ── Lecturas de la base ──────────────────────────────────────────────────────────────────────────
@@ -291,11 +350,11 @@ export async function historialDeEnvios(pg: PgClient, limite = 400): Promise<Uso
 export async function leerSalud(ruta: string): Promise<Map<string, SaludDominio> | undefined> {
   try {
     const j = JSON.parse(await readFile(ruta, "utf8")) as {
-      bandejas?: Array<{ domain?: string; estado?: string; cruzados?: string[] }>;
+      bandejas?: Array<{ domain?: string; estado?: string; cruzados?: string[]; entregados?: number | null }>;
     };
     const m = new Map<string, SaludDominio>();
     for (const b of j.bandejas ?? []) {
-      if (b.domain) m.set(b.domain, { estado: b.estado, cruzados: b.cruzados });
+      if (b.domain) m.set(b.domain, { estado: b.estado, cruzados: b.cruzados, entregados: b.entregados });
     }
     return m.size > 0 ? m : undefined;
   } catch {
