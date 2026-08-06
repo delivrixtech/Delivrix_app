@@ -44,6 +44,10 @@ export interface Aviso {
   pideRespuesta: boolean;
 }
 
+// Los textos NO empiezan con "Juanes,": la mención <@ID> se agrega afuera (es la que hace sonar
+// el móvil) y la voz del modelo ya lo nombra. Con las tres cosas juntas salía "Juanes, hice esto:
+// X. Juanes, mirá...", que es como habla un robot, no una persona.
+
 /** Cada cuánto, como mucho, se repite un aviso del mismo tipo. Evita el goteo. */
 const SILENCIO_MIN = 60;
 
@@ -65,7 +69,7 @@ export function decidirSiHablar(
   // 1. NO PUDO MIRAR. Un vigilante ciego tiene que decirlo: es lo único peor que una mala noticia.
   if (estado.sinLectura) {
     return {
-      texto: `Juanes, no pude leer el estado: ${estado.sinLectura}. Si sigue así en la próxima vuelta, algo está roto.`,
+      texto: `No pude leer el estado: ${estado.sinLectura}. Si sigue así en la próxima vuelta, algo está roto.`,
       motivo: "sin lectura",
       pideRespuesta: false
     };
@@ -75,7 +79,7 @@ export function decidirSiHablar(
   //    operador tiene que saber que quedó mudo de manos, no solo de boca.
   if (estado.reparos.length > 0) {
     return {
-      texto: `Juanes, me trabé: dije algo que no cuadra con los datos (${estado.reparos[0]}), así que no toqué nada. Mejor mirá vos.`,
+      texto: `Me trabé: dije algo que no cuadra con los datos (${estado.reparos[0]}), así que no toqué nada. Mejor miralo vos.`,
       motivo: "reparos en la verificación",
       pideRespuesta: true
     };
@@ -100,7 +104,7 @@ export function decidirSiHablar(
   const trabado = estado.acciones.find((a) => !a.ejecutada && a.accion !== "(ninguna)" && a.accion !== "(tope)");
   if (trabado && firma(estado) !== mem.ultimaFirma) {
     return {
-      texto: `Juanes, quise ${trabado.accion}${trabado.objetivo ? ` ${trabado.objetivo}` : ""} y no pude: ${trabado.detalle}. ¿Lo resolvés vos?`,
+      texto: `Quise ${trabado.accion}${trabado.objetivo ? ` ${trabado.objetivo}` : ""} y no pude: ${trabado.detalle}. ¿Lo resolvés vos?`,
       motivo: "acción trabada",
       pideRespuesta: true
     };
@@ -112,8 +116,8 @@ export function decidirSiHablar(
     const arrancó = estado.emisor === "send";
     return {
       texto: arrancó
-        ? `Juanes, el emisor arrancó, ya está mandando. ${estado.voz ?? ""}`.trim()
-        : `Juanes, el emisor se frenó (${estado.emisor}). ${estado.voz ?? estado.ahora ?? ""}`.trim(),
+        ? `El emisor arrancó, ya está mandando. ${estado.voz ?? ""}`.trim()
+        : `El emisor se frenó (${estado.emisor}). ${estado.voz ?? estado.ahora ?? ""}`.trim(),
       motivo: `el emisor pasó de ${mem.ultimoEmisor ?? "desconocido"} a ${estado.emisor}`,
       pideRespuesta: false
     };
@@ -124,7 +128,7 @@ export function decidirSiHablar(
   //    hay un riesgo declarado, para no convertirla en ruido periódico.
   const min = mem.ultimoAviso ? (Date.parse(ahoraISO) - Date.parse(mem.ultimoAviso)) / 60_000 : Infinity;
   if (min >= SILENCIO_MIN * 4 && estado.riesgo && estado.riesgo.toLowerCase() !== "ninguno") {
-    return { texto: `Juanes, sigo acá. ${estado.voz ?? estado.riesgo}`.trim(), motivo: "señal de vida con riesgo abierto", pideRespuesta: false };
+    return { texto: `Sigo acá. ${estado.voz ?? estado.riesgo}`.trim(), motivo: "señal de vida con riesgo abierto", pideRespuesta: false };
   }
   return null;
 }

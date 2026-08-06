@@ -69,7 +69,7 @@ test("si quiso actuar y NO pudo, pide decisión — pero UNA sola vez", () => {
 test("si no pudo mirar, lo dice: un vigilante ciego tiene que avisar", () => {
   const a = decidirSiHablar(base({ sinLectura: "fetch failed" }), null, T(10));
   assert.ok(a);
-  assert.match(a.texto, /no pude leer/);
+  assert.match(a.texto, /No pude leer/);
 });
 
 test("si dijo algo que no se sostiene, avisa que quedó SIN MANOS", () => {
@@ -93,7 +93,7 @@ test("la señal de vida solo sale con riesgo abierto, nunca como ruido periódic
   assert.equal(decidirSiHablar(base({ riesgo: "ninguno" }), mem, T(10)), null, "sin riesgo, silencio");
   const conRiesgo = decidirSiHablar(base({ riesgo: "la rampa se estanca" }), mem, T(10));
   assert.ok(conRiesgo);
-  assert.match(conRiesgo.texto, /sigo acá/);
+  assert.match(conRiesgo.texto, /Sigo acá/);
 });
 
 test("sin credenciales no revienta: informa y sigue", async () => {

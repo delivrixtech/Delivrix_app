@@ -15,14 +15,28 @@ const snapshot = (over: Partial<LecturaAgente> = {}): LecturaAgente =>
     ...over
   }) as LecturaAgente;
 
-test("la voz prohíbe lo que la vuelve un chatbot", () => {
-  // Lo que define una voz en un modelo de 35B no son los adjetivos: son las prohibiciones.
-  for (const prohibido of ["Buena pregunta", "¿Algo más?", "Espero que ayude", "básicamente"]) {
-    assert.ok(VOZ.includes(prohibido), `la voz tiene que prohibir explícitamente "${prohibido}"`);
+test("la voz acusa recibo antes de trabajar", () => {
+  // El reclamo textual del jefe: "si se coloca a trabajar con una orden que le estoy dando, que
+  // responda, que diga al menos ok, trabajando". Quedarse mudo mientras trabaja parece ignorarlo.
+  assert.match(VOZ, /CONTESTÁ PRIMERO/);
+  assert.match(VOZ, /voy|me pongo/, "tiene ejemplos concretos de cómo acusar recibo");
+  assert.match(VOZ, /CUANDO TERMINÁS ALGO, DECILO/);
+});
+
+test("la voz es cálida, pero se pone plana cuando el tema es serio", () => {
+  // Un agente que le pone 🎉 a una caída no es simpático: es que no entendió.
+  assert.match(VOZ, /emoji está bien cuando suma/);
+  assert.match(VOZ, /EL TONO SE PONE PLANO/);
+  assert.match(VOZ, /nunca en una mala noticia/);
+});
+
+test("la voz sigue prohibiendo lo que la vuelve un call center", () => {
+  for (const prohibido of ["¿Algo más?", "Espero que ayude", "básicamente"]) {
+    assert.ok(VOZ.includes(prohibido), `tiene que prohibir explícitamente "${prohibido}"`);
   }
-  assert.ok(VOZ.includes("CERO signos de exclamación"));
   assert.ok(VOZ.includes("Juanes"), "sabe con quién habla");
-  assert.ok(/güey|rioplatense/.test(VOZ), "prohíbe los regionalismos de otros países");
+  assert.ok(/güey|coño/.test(VOZ), "prohíbe los regionalismos de otros países");
+  assert.match(VOZ, /NO PROMETAS LO QUE NO PODÉS HACER/, "la regla que evita el 'ajusto la tasa'");
 });
 
 test("si la última lectura tiene reparos, avisar es OBLIGATORIO", () => {
@@ -65,7 +79,8 @@ test("marca lo que el modelo afirmó y no estaba en el contexto", () => {
   const limpia = revisarRespuesta("Juanes, sigue pausado por el 33% de inbox.", ctx);
   assert.deepEqual(limpia, [], "lo que sí está en el contexto no se marca");
 
-  assert.ok(revisarRespuesta("Listo!", ctx).some((o) => o.includes("exclamación")));
+  // Las exclamaciones YA NO se observan: la voz nueva las permite cuando hay entusiasmo real.
+  assert.deepEqual(revisarRespuesta("Listo, ya quedó", ctx), []);
 });
 
 test("el chat NO manda herramientas al modelo: es la barrera contra la inyección", async () => {
