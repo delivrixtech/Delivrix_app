@@ -67,6 +67,25 @@ export interface ResultadoAccion {
    */
   objetivo?: string | null;
   ejecutada: boolean;
+  /**
+   * ¿Falló por algo que se arregla SOLO en la próxima vuelta?
+   *
+   * Distingue las dos formas de no ejecutar, que se venían tratando igual y no son lo mismo:
+   *
+   *  · POLÍTICA — "no está en el inventario", "no está habilitado", "el receptor lo tiene
+   *    cerrado". Requiere que alguien decida o configure algo. Vale interrumpir a un humano.
+   *  · TRANSITORIO — un SSH que se cayó, Postgres reiniciándose, un timeout. Nadie tiene que
+   *    hacer nada: en diez minutos se reintenta y sale.
+   *
+   * El 2026-08-06, mientras el operador corría el instalador, Postgres se recargó por doce
+   * segundos y el agente le mandó dos "@Juanes Quise medir_dominio X y no pude: ECONNREFUSED
+   * 127.0.0.1:5432. ¿Lo resolvés vos?" — con mención, o sea sonándole el móvil. No había nada que
+   * resolver: para cuando leyó el mensaje ya estaba arreglado.
+   *
+   * Un agente que pide ayuda ante cada parpadeo de infraestructura no es cuidadoso: es ruido con
+   * forma de urgencia, y gasta la única señal que sirve para lo que sí importa.
+   */
+  reintentable?: boolean;
   /** Qué pasó, en castellano. Va al registro y a la pantalla. */
   detalle: string;
   antes?: unknown;
@@ -299,7 +318,7 @@ export async function ejecutarAcciones(
         try {
           r = await ctx.frenarDominio(dominio, motivo);
         } catch (e) {
-          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude frenar ${dominio}: ${e instanceof Error ? e.message : String(e)}` });
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude frenar ${dominio}: ${e instanceof Error ? e.message : String(e)}` });
           break;
         }
         if (r.antes === 0) {
@@ -365,7 +384,7 @@ export async function ejecutarAcciones(
         try {
           cupo = await ctx.leerCupoNodo(dominio);
         } catch (e) {
-          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude leer el nodo, así que no suelto: ${e instanceof Error ? e.message : String(e)}` });
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude leer el nodo, así que no suelto: ${e instanceof Error ? e.message : String(e)}` });
           break;
         }
         if (cupo.cap === null) {
@@ -384,7 +403,7 @@ export async function ejecutarAcciones(
         try {
           diag = await ctx.diagnosticarDominio(dominio);
         } catch (e) {
-          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude diagnosticar, así que no suelto: ${e instanceof Error ? e.message : String(e)}` });
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude diagnosticar, así que no suelto: ${e instanceof Error ? e.message : String(e)}` });
           break;
         }
         if (diag.bloqueanPor.length > 0) {
@@ -405,7 +424,7 @@ export async function ejecutarAcciones(
         try {
           medida = await ctx.medirDominio(dominio);
         } catch (e) {
-          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude medirlo, así que no suelto: ${e instanceof Error ? e.message : String(e)}` });
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude medirlo, así que no suelto: ${e instanceof Error ? e.message : String(e)}` });
           break;
         }
         if (medida.muestra >= MUESTRA_PARA_JUZGAR && medida.tasaInbox !== null && medida.tasaInbox < PISO_PARA_SOLTAR) {
@@ -424,7 +443,7 @@ export async function ejecutarAcciones(
         try {
           s = await ctx.soltarDominio(dominio, CAP_AL_SOLTAR, motivo);
         } catch (e) {
-          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude soltar ${dominio}: ${e instanceof Error ? e.message : String(e)}` });
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude soltar ${dominio}: ${e instanceof Error ? e.message : String(e)}` });
           break;
         }
         const historia =
@@ -528,7 +547,7 @@ export async function ejecutarAcciones(
             despues: r.cap
           });
         } catch (e) {
-          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude leer el nodo: ${e instanceof Error ? e.message : String(e)}` });
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude leer el nodo: ${e instanceof Error ? e.message : String(e)}` });
         }
         break;
       }
@@ -556,7 +575,7 @@ export async function ejecutarAcciones(
             detalle: `${dominio}: ${d.estado}, ${d.entregados} entregados / ${d.rechazados} rechazados.${quien}${flojo} ${d.detalle}`.trim()
           });
         } catch (e) {
-          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude diagnosticar: ${e instanceof Error ? e.message : String(e)}` });
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude diagnosticar: ${e instanceof Error ? e.message : String(e)}` });
         }
         break;
       }
@@ -592,7 +611,7 @@ export async function ejecutarAcciones(
             despues: m.tasaInbox
           });
         } catch (e) {
-          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude medirlo: ${e instanceof Error ? e.message : String(e)}` });
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude medirlo: ${e instanceof Error ? e.message : String(e)}` });
         }
         break;
       }

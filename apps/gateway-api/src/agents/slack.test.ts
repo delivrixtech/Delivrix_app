@@ -175,3 +175,48 @@ test("MIRAR no dispara un mensaje: solo lo que cambia la infraestructura", () =>
   assert.match(a.texto, /frenar_dominio z\.com/);
   assert.ok(!a.texto.includes("medir_dominio"), "no mezcla lo que miró con lo que hizo");
 });
+
+test("un parpadeo de infraestructura NO se convierte en '¿lo resolvés vos?'", () => {
+  // Ocurrió tal cual el 2026-08-06: mientras el operador corría el instalador, Postgres se recargó
+  // doce segundos y el agente le mandó dos "@Juanes Quise medir_dominio X y no pude: ECONNREFUSED
+  // 127.0.0.1:5432. ¿Lo resolvés vos?" — con mención, sonándole el móvil, sobre algo que ya estaba
+  // arreglado antes de que lo leyera.
+  const parpadeo = base({
+    emisor: "send",
+    acciones: [
+      { accion: "medir_dominio", objetivo: "a.com", ejecutada: false, reintentable: true, detalle: "no pude medirlo: connect ECONNREFUSED 127.0.0.1:5432" }
+    ]
+  });
+  const mem: MemoriaSlack = { ultimoEmisor: "send", ultimoAviso: T(9), ultimaFirma: null };
+  assert.equal(decidirSiHablar(parpadeo, mem, T(10)), null);
+
+  // Un SSH caído al frenar tampoco: se reintenta en la vuelta siguiente.
+  const ssh = base({
+    emisor: "send",
+    acciones: [{ accion: "frenar_dominio", objetivo: "z.com", ejecutada: false, reintentable: true, detalle: "no pude frenar z.com: timeout" }]
+  });
+  assert.equal(decidirSiHablar(ssh, mem, T(10)), null);
+});
+
+test("pero lo que SÍ necesita un humano sigue interrumpiendo", () => {
+  // La contracara: bajar el ruido solo sirve si lo que de verdad requiere una decisión llega.
+  const mem: MemoriaSlack = { ultimoEmisor: "send", ultimoAviso: T(9), ultimaFirma: null };
+  const bloqueado = base({
+    emisor: "send",
+    acciones: [{ accion: "soltar_dominio", objetivo: "z.com", ejecutada: false, detalle: "rechazada: soltar no está habilitado en este entorno" }]
+  });
+  const a = decidirSiHablar(bloqueado, mem, T(10));
+  assert.ok(a, "una falta de permiso no se arregla sola: hay que avisarle");
+  assert.equal(a.pideRespuesta, true);
+});
+
+test("si falla una mano que solo MIRA, no se pide nada", () => {
+  // Sin datos esta vuelta el agente tiene menos información, no un problema que delegar. Vale
+  // incluso si el fallo no vino marcado como reintentable.
+  const mem: MemoriaSlack = { ultimoEmisor: "send", ultimoAviso: T(9), ultimaFirma: null };
+  const miroYFallo = base({
+    emisor: "send",
+    acciones: [{ accion: "diagnosticar_dominio", objetivo: "a.com", ejecutada: false, detalle: "rechazada: diagnosticar no está habilitado" }]
+  });
+  assert.equal(decidirSiHablar(miroYFallo, mem, T(10)), null);
+});

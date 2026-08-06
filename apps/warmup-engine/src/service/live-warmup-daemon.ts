@@ -695,8 +695,23 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
     semillas = [];
   }
   if (semillas.length === 0) {
+    // EL RESPALDO ES UNA TRAMPA SILENCIOSA, y hay que decirlo cuando se usa.
+    //
+    // Esta semilla se declara `gmail_oauth`, así que `puedeMedir` la da por buena y el daemon cree
+    // que puede medir dónde cayó cada correo. Pero el refresh token de esa cuenta lleva días
+    // muerto (verificado el 2026-08-06): cada vuelta mandaría el correo y la medición fallaría, y
+    // el sistema quedaría enviando A CIEGAS creyendo que mide — que es peor que no medir, porque
+    // el freno por placement necesita mediciones para existir y sin ellas nunca frena.
+    //
+    // No se cambia el comportamiento (seguir mandando es mejor que no arrancar) pero se GRITA:
+    // este camino solo se toma si warmup-seeds.json desapareció o quedó ilegible, o sea que ya
+    // hay algo roto que mirar.
     semillas = [{ address: cfg.seedInbox, provider: "gmail", enabled: true, auth: "gmail_oauth" }];
-    log(`SIN REGISTRO de semillas (${cfg.seedsPath}) — uso solo ${cfg.seedInbox}. Cargá semillas con scripts/ops/semillas.ts`);
+    log(
+      `SIN REGISTRO de semillas (${cfg.seedsPath}) — caigo a ${cfg.seedInbox} por OAuth. ` +
+        `OJO: si ese refresh token está caducado la medición de placement va a fallar en silencio y ` +
+        `el freno por placement deja de existir. Cargá semillas con scripts/ops/semillas.ts.`
+    );
   } else {
     const miden = semillasMedibles(semillas).length;
     log(`semillas: ${semillas.length} activas · ${miden} pueden medir placement · destinos ${semillas.map((s) => s.address).join(", ")}`);

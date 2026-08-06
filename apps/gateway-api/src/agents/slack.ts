@@ -14,7 +14,8 @@ export interface EstadoParaSlack {
   /** El estado del emisor: send | placement-pause | killed | cap-reached | inert. */
   emisor: string | null;
   /** Las acciones que decidió esta vuelta, con si se ejecutaron. */
-  acciones: Array<{ accion: string; objetivo?: string | null; ejecutada: boolean; detalle: string }>;
+  /** `reintentable` = falló por algo que se arregla solo (SSH caído, Postgres reiniciando). */
+  acciones: Array<{ accion: string; objetivo?: string | null; ejecutada: boolean; reintentable?: boolean; detalle: string }>;
   /** Reparos de la verificación: si los hay, el agente dijo algo que no se sostiene. */
   reparos: string[];
   /** Por qué no hubo lectura, si no la hubo. */
@@ -150,7 +151,27 @@ export function decidirSiHablar(
   // 4. QUISO ACTUAR Y NO PUDO. Es el pedido de decisión: el agente ve algo, no tiene la llave, y
   //    necesita a un humano. Se avisa UNA vez por cosa, no cada 10 minutos (eso ya pasó: 10
   //    mensajes idénticos en 2 horas serían 10 mensajes idénticos en Slack).
-  const trabado = estado.acciones.find((a) => !a.ejecutada && a.accion !== "(ninguna)" && a.accion !== "(tope)");
+  //
+  //    DOS EXCLUSIONES, las dos aprendidas en producción el 2026-08-06:
+  //
+  //    · REINTENTABLE. Un SSH caído, Postgres reiniciándose, un timeout: no hay nada que resolver,
+  //      en diez minutos se reintenta y sale. Mientras el operador corría el instalador, Postgres
+  //      se recargó doce segundos y el agente le mandó dos "@Juanes ... ECONNREFUSED. ¿Lo resolvés
+  //      vos?" — con mención, sonándole el móvil, sobre algo que ya estaba arreglado antes de que
+  //      lo leyera.
+  //    · MIRAR. Si falla una mano pasiva, el agente simplemente no tiene ese dato esta vuelta.
+  //      Eso no es un pedido de decisión: es un turno con menos información.
+  //
+  //    Lo que SÍ queda: "no está habilitado", "no está en el inventario", "el receptor lo tiene
+  //    cerrado". Ahí alguien tiene que decidir o configurar algo, y por eso vale interrumpirlo.
+  const trabado = estado.acciones.find(
+    (a) =>
+      !a.ejecutada &&
+      !a.reintentable &&
+      !CONTABLES.has(a.accion) &&
+      a.accion !== "(ninguna)" &&
+      a.accion !== "(tope)"
+  );
   if (trabado && firma(estado) !== mem.ultimaFirma) {
     return {
       texto: `Quise ${trabado.accion}${trabado.objetivo ? ` ${trabado.objetivo}` : ""} y no pude: ${trabado.detalle}. ¿Lo resolvés vos?`,

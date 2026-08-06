@@ -58,6 +58,23 @@ const SLACK_FILE = "warmup-slack.json";
 const CHAT_FILE = "warmup-chat.json";
 /** Lo que el jefe YA decidió. Gana sobre cualquier hecho que lo contradiga. */
 const DECISIONES_FILE = "decisiones-del-jefe.json";
+/**
+ * ¿Este mensaje lo escribió JUANES, o solo alguien del canal?
+ *
+ * La diferencia importa porque `ordenadoPorElJefe` relaja el alcance del freno: con él, el agente
+ * puede frenar un dominio SANO —algo que por su cuenta no puede hacer— y pausar el warmup entero.
+ * Estaba fijo en `true` para cualquiera que escribiera. Que hoy el canal tenga una sola persona no
+ * es un control de acceso, es una coincidencia: el día que entre Esaú o Estefanía heredan la
+ * autoridad del dueño sin que nadie lo haya decidido.
+ *
+ * Sin la variable configurada devuelve `false`: alcance acotado para todos. Es la dirección
+ * correcta de fallo — una variable mal puesta deja al agente con MENOS permiso, nunca con más.
+ */
+function esElJefe(usuario: string | undefined): boolean {
+  const jefe = process.env.SLACK_JUANES_USER_ID?.trim();
+  return Boolean(jefe && usuario && usuario.trim() === jefe);
+}
+
 /** El MISMO kill-file que mira el daemon en cada vuelta. Se revierte con `rm`. */
 const KILL_FILE = (process.env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "runtime/warmup-live.kill")).trim();
 
@@ -690,7 +707,15 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
     const memPrevia = await workspace.readInventoryJson<MemoriaSlack>(SLACK_FILE).catch(() => null);
     const estadoSlack = {
       emisor: hechos.emisor?.estado ?? null,
-      acciones: acciones.map((a) => ({ accion: a.accion, objetivo: a.objetivo ?? null, ejecutada: a.ejecutada, detalle: a.detalle })),
+      // `reintentable` viaja: es lo que distingue "necesito que decidas algo" de "se cayó el SSH y
+      // lo reintento en diez minutos". Sin él, cada parpadeo de infraestructura le sonaba el móvil.
+      acciones: acciones.map((a) => ({
+        accion: a.accion,
+        objetivo: a.objetivo ?? null,
+        ejecutada: a.ejecutada,
+        ...(a.reintentable ? { reintentable: true } : {}),
+        detalle: a.detalle
+      })),
       reparos,
       sinLectura: lectura.lectura ? null : lectura.motivo,
       voz: lectura.verificacion?.voz ?? null,
@@ -879,7 +904,16 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
         // realmente frenado, que haya alguien del otro lado, que su historia no lo desaconseje.
         // Ninguna autoridad cambia si Yahoo le tiene la puerta cerrada, así que soltarlo ahí sería
         // igual de inútil viniendo de él. Si quiere forzarlo, el camino es la consola, no el agente.
-        ordenadoPorElJefe: true,
+        //
+        // Y "el jefe" es JUANES, no cualquiera que escriba en el canal. Esto estaba fijo en `true`:
+        // el día que entre Esaú o Estefanía —o cualquiera con acceso al workspace— tendrían el
+        // alcance de freno relajado y podrían pausar el warmup entero pidiéndoselo por chat. Que
+        // hoy el canal tenga una sola persona no es un control, es una coincidencia.
+        //
+        // Sin SLACK_JUANES_USER_ID configurado se cae a `false`: alcance acotado para todos. Es la
+        // dirección correcta de fallo — con la variable mal puesta el agente decide con MENOS
+        // permiso, no con más.
+        ordenadoPorElJefe: esElJefe(m.usuario),
         // LOS QUEMADOS, también acá. `ordenadoPorElJefe` relaja el alcance del FRENO —que existe
         // para acotar al modelo— pero esta lista se usa además en la otra dirección: un dominio que
         // cruzó el umbral permanente no se suelta, y eso no lo levanta ninguna autoridad porque no

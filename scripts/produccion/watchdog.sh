@@ -23,6 +23,9 @@ DAEMON_MAX_SILENCIO_MIN="${DAEMON_MAX_SILENCIO_MIN:-$(delivrix_umbral_silencio_m
 # El agente mira cada 10 min y además escribe cada 20s por el chat de Slack. 45 min de silencio no
 # es "está pensando": está muerto o colgado. Fijo y no derivado: su cadencia no sale de gateway.env.
 MONITOR_MAX_SILENCIO_MIN="${MONITOR_MAX_SILENCIO_MIN:-45}"
+# El respaldo corre a las 03:30. Con 36h, un fallo de esta madrugada se reportaba al mediodía del
+# día SIGUIENTE: dos noches sin copia antes de que alguien lo supiera. 27h avisa la misma mañana.
+RESPALDO_MAX_HORAS="${RESPALDO_MAX_HORAS:-27}"
 # Nunca dos kickstarts al mismo servicio en menos de esto: si algo está roto de verdad,
 # reiniciarlo cada 5 min no lo arregla y sí llena el disco de logs.
 REINTENTO_MIN="${REINTENTO_MIN:-15}"
@@ -130,7 +133,11 @@ if [[ -z "${ultimo_resp}" ]]; then
   estado+=("respaldo=NUNCA")
 else
   horas_resp=$(( ( $(date +%s) - $(stat -f %m "${ultimo_resp}") ) / 3600 ))
-  if (( horas_resp >= 36 )); then
+  # 36h era demasiado tarde: el respaldo corre a las 03:30, así que un fallo de esta madrugada no
+  # se reportaba hasta el mediodía del día siguiente — con DOS noches sin copia antes de que
+  # alguien se enterara. 27h da margen para que la corrida termine (tarda minutos) y avisa la misma
+  # mañana, cuando todavía se puede lanzar a mano.
+  if (( horas_resp >= RESPALDO_MAX_HORAS )); then
     estado+=("respaldo=VIEJO:${horas_resp}h")
     decir "respaldo: el más nuevo tiene ${horas_resp}h (debería correr cada noche a las 03:30)"
   else
