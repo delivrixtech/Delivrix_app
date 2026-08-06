@@ -8,7 +8,7 @@
 // riesgo: primero lo irreversible (el umbral permanente de Google), después lo que frena hoy, al
 // final lo que solo avisa.
 
-import { armarCuotaFlota, resolverTecho, type CuotaBandeja } from "./sender-quota.ts";
+import { TECHO_ABSOLUTO, armarCuotaFlota, resolverTecho, type CuotaBandeja } from "./sender-quota.ts";
 import { CAP_MEASUREMENT_FILE, CERCA_DEL_CAP, type CapFlota, type CapNodo } from "./node-daily-cap.ts";
 import type { OpenClawWorkspace } from "./openclaw-workspace.ts";
 
@@ -24,6 +24,7 @@ export type AlertKind =
   | "cerca_umbral"
   | "cap_alcanzado"
   | "cerca_del_cap"
+  | "cap_ilegal"
   | "sin_limite_fisico";
 
 export interface SenderAlert {
@@ -136,6 +137,36 @@ export function alertasDeCap(nodo: CapNodo, opciones: { contadorDelDia?: boolean
         severity: "high",
         kind: "sin_limite_fisico",
         detail: "cap ilegible en el nodo: el policy service está difiriendo TODO el correo"
+      }
+    ];
+  }
+  // Un cap arriba del techo que este sistema sabe instalar lo escribió algo de AFUERA, y es el
+  // agujero por donde se pierde lo único irreversible del proyecto. Medido el 2026-08-06 en
+  // sender-cap.json (medidoEn 14:56:59.863Z, 58 nodos): 10 nodos con cap 15000 y `cableado: true`,
+  // contra un TECHO_ABSOLUTO de 4000 que el propio código se NIEGA a instalar — `node-daily-cap.ts`
+  // tira error si le piden más. `grep -rn "15000\|15_000"` sobre apps/ scripts/ packages/ no
+  // encuentra ni un lugar donde este sistema escriba ese número: ningún código nuestro lo puso.
+  //
+  // De esos 10, ocho YA están clasificados como bulk sender permanente por Google; el noveno,
+  // `infranationalreport.com`, está a 0,93 del umbral con la puerta de Gmail todavía ABIERTA, o sea
+  // a un día malo de ser irrecuperable. Y el parser devolvía `{cap: 15000, motivo: null}` sobre eso:
+  // "todo bien". Es el mismo modo de falla del 2026-08-04, cuando 46 nodos aparecieron con caps por
+  // dominio que nadie de este lado escribió, y sigue vivo.
+  //
+  // `critical` y no `high`: la disciplina de este archivo reserva `critical` para lo irreversible, y
+  // una puerta 3,75x más ancha que el techo es el habilitador directo de lo irreversible.
+  //
+  // Corta y devuelve, igual que las dos ramas de arriba, y va ANTES de las de consumo: un nodo así
+  // tiene UN problema y no es cuán lleno está el día. Por la misma razón va antes del corte por
+  // `contadorDelDia`: el cap no caduca con el día, igual que `sin_limite_fisico`. `cap_alcanzado`
+  // vuelve solo cuando el cap se corrige.
+  if (nodo.cap > TECHO_ABSOLUTO) {
+    return [
+      {
+        domain: nodo.domain,
+        severity: "critical",
+        kind: "cap_ilegal",
+        detail: `cap ${nodo.cap} en el nodo y el techo de este sistema es ${TECHO_ABSOLUTO}: lo puso algo de afuera, el nodo puede cruzar el umbral permanente de Google en un día`
       }
     ];
   }

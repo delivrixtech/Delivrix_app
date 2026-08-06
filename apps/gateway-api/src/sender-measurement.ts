@@ -11,6 +11,7 @@
 // DECLARA cuando fue; nunca se queda esperando una corrida para poder mostrar algo.
 
 import {
+  BLOCKED_MIN_ATTEMPTS,
   readNodeDeliveryHealth,
   type DeliveryHealthSshRunner,
   type DeliveryHealthStatus
@@ -54,6 +55,28 @@ export interface MedicionBandeja {
   diferidos: number | null;
   /** Receptores donde el nodo esta efectivamente cerrado. */
   cerradoEn: string[];
+  /**
+   * Entregados/rechazados/diferidos POR RECEPTOR. Opcional, igual que `encolados` y por el mismo
+   * motivo: hay fixtures que arman este objeto a mano.
+   *
+   * El clasificador YA calculaba esto (`NodeDeliveryStats.byProvider`) y el persistidor lo tiraba
+   * entero: al archivo iban los totales globales y `cerradoEn`, o sea QUIEN cierra pero no CUANTO.
+   * Dos consecuencias medidas el 2026-08-06, con 36 de 58 bandejas cerradas por el receptor:
+   *
+   *   1. Nadie podia decir cuanto correo seguia entregando cada una por las OTRAS puertas, que es
+   *      justo el numero que decide si frenarla cuesta correo de cliente o no cuesta nada. La
+   *      decision se tomaba a ciegas sobre 36 nodos.
+   *   2. El punto ciego peor: el bloqueo se detecta SOLO por rebotes 5xx (`blocked/attempts >= 0,9`),
+   *      y Yahoo tipicamente DIFIERE con 4xx. Un diferido no alimenta `cerradoEn`. Sin el diferido
+   *      POR receptor, un bloqueo de Yahoo es literalmente invisible en este archivo — y asi fue
+   *      como "Yahoo no aparece en ninguna de las 58" se leyo como "Yahoo no nos bloquea", que es
+   *      ausencia de instrumento, no evidencia.
+   *
+   * NO se persiste `degradadoEn`: `degradedProviders` es `blocked/(delivered+blocked) >= 0,25`,
+   * derivable de estas tres columnas por cualquier lector. Dos representaciones del mismo hecho es
+   * la que se desincroniza.
+   */
+  porReceptor?: Array<{ receptor: string; entregados: number; rechazados: number; diferidos: number }>;
   /** Pico diario de mensajes UNICOS contra el umbral publicado, por familia de receptor. */
   picos: Array<{
     familia: ProviderFamily;
@@ -120,6 +143,25 @@ export async function medirBandeja(input: {
     rechazados: leyoSalud ? salud.stats.totals.blocked : null,
     diferidos: leyoSalud ? salud.stats.totals.deferred : null,
     cerradoEn: salud.blockedProviders,
+    // El filtro por BLOCKED_MIN_ATTEMPTS no es cosmetico: acota el TAMANO del archivo. `byProvider`
+    // trae una fila por dominio receptor visto, sin techo — 58 bandejas por cientos de receptores
+    // inflarian el JSON que el panel sirve entero. 20 es exactamente el minimo de intentos que el
+    // propio clasificador exige para emitir un veredicto, asi que abajo de eso no hay decision que
+    // tomar. Se reusa la constante en vez de inventar un numero, para que no se puedan separar.
+    //
+    // Y suma los DIFERIDOS al conteo del filtro, aunque el clasificador no los cuente para su
+    // `attempts`: si no, el receptor que solo difiere —el caso Yahoo, el que este campo existe para
+    // destapar— quedaria filtrado por el mismo punto ciego que vino a arreglar.
+    porReceptor: leyoSalud
+      ? salud.stats.byProvider
+          .filter((p) => p.delivered + p.blocked + p.deferred >= BLOCKED_MIN_ATTEMPTS)
+          .map((p) => ({
+            receptor: p.provider,
+            entregados: p.delivered,
+            rechazados: p.blocked,
+            diferidos: p.deferred
+          }))
+      : [],
     picos: volumen.status === "ok"
       ? volumen.peakByFamily.map((p) => ({
           familia: p.family,

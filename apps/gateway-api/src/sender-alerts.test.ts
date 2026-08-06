@@ -9,7 +9,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { OpenClawWorkspace } from "./openclaw-workspace.ts";
-import type { CuotaBandeja } from "./sender-quota.ts";
+import { TECHO_ABSOLUTO, type CuotaBandeja } from "./sender-quota.ts";
 import { MEASUREMENT_FILE, type MedicionFlota } from "./sender-measurement.ts";
 import { alertasDeBandeja, alertasDeCap, armarAlertasFlota } from "./sender-alerts.ts";
 import { CAP_MEASUREMENT_FILE, type CapFlota, type CapNodo } from "./node-daily-cap.ts";
@@ -146,6 +146,45 @@ test("cableado pero con el cap ILEGIBLE alerta alto: difiere el 100% y nadie se 
   assert.equal(a.length, 1);
   assert.equal(a[0]?.severity, "high");
   assert.match(a[0]?.detail ?? "", /difiriendo TODO/);
+});
+
+test("un cap ARRIBA DEL TECHO es crítico: lo escribió algo de afuera", () => {
+  // INCIDENTE QUE FIJA (2026-08-06, sender-cap.json de producción, medidoEn 14:56:59.863Z, 58 nodos):
+  // 10 nodos con cap 15000 y `cableado: true`, contra un TECHO_ABSOLUTO de 4000 que el propio código
+  // se NIEGA a instalar (`node-daily-cap.ts` tira error si le piden más). `grep -rn "15000"` sobre
+  // apps/ scripts/ packages/ no encuentra un solo lugar donde este sistema escriba ese número.
+  //
+  // De esos 10, ocho ya están clasificados como bulk sender PERMANENTE por Google; el noveno,
+  // `infranationalreport.com`, está a 0,93 del umbral con la puerta de Gmail todavía abierta — a un
+  // día malo de ser irrecuperable. Y `alertasDeCap` sobre ese 15000 devolvía [] o, con el día lleno,
+  // un `cap_alcanzado` que suena a "trabajó bien". Mismo modo de falla que el 2026-08-04, cuando 46
+  // nodos aparecieron con caps por dominio que ningún código de este lado escribió.
+  const a = alertasDeCap(capNodo({ cap: 15000, consumidoHoy: 100 }));
+  assert.equal(a.length, 1, "un nodo así tiene UN problema, y no es cuán lleno está el día");
+  assert.equal(a[0]?.severity, "critical", "critical se reserva para lo irreversible, y esto lo habilita");
+  assert.equal(a[0]?.kind, "cap_ilegal");
+  assert.match(a[0]?.detail ?? "", /15000/);
+  assert.match(a[0]?.detail ?? "", /4000/);
+});
+
+test("el borde EXACTO del techo es legal, y el cap ilegal no caduca con el día", () => {
+  // Mismo borde que ya fija node-daily-cap.test.ts: `> TECHO_ABSOLUTO`, no `>=`. 4000 se instala.
+  assert.deepEqual(
+    alertasDeCap(capNodo({ cap: TECHO_ABSOLUTO, consumidoHoy: 0 })).filter((x) => x.kind === "cap_ilegal"),
+    []
+  );
+  assert.equal(alertasDeCap(capNodo({ cap: TECHO_ABSOLUTO + 1, consumidoHoy: 0 }))[0]?.kind, "cap_ilegal");
+  // El contador se reinicia a medianoche UTC; el CAP no. Una lectura de ayer no puede afirmar
+  // consumo, pero la puerta de 15.000 sigue abierta hoy — igual que `sin_limite_fisico`.
+  assert.equal(
+    alertasDeCap(capNodo({ cap: 15000, consumidoHoy: null }), { contadorDelDia: false })[0]?.kind,
+    "cap_ilegal"
+  );
+  // Y el orden de las ramas no se toca: sin límite físico gana, porque no hay puerta que medir.
+  assert.equal(
+    alertasDeCap(capNodo({ cap: 15000, cableado: false, motivo: "falta la restriction" }))[0]?.kind,
+    "sin_limite_fisico"
+  );
 });
 
 test("sin contador NO se inventa un porcentaje", () => {

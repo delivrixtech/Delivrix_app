@@ -6,6 +6,10 @@
 // el unico anclaje de este modulo con la realidad.
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -53,8 +57,71 @@ test("el comando deduplica ANTES de contar: mensajes, no intentos", () => {
     "el dedup tiene que ir antes del conteo, o cuenta reintentos"
   );
   // El queue-id se saca por patron: un $5 se rompe en silencio si cambia el prefijo de syslog.
-  assert.match(command, /\[0-9A-Fa-f\]\{6,\}/);
+  //
+  // ANTES esta linea afirmaba `/\[0-9A-Fa-f\]\{6,\}/`, o sea que fijaba EL BUG como si fuera la
+  // regla. Ese patron hexadecimal pierde los queue-id base-52 (`4bXyZ9Qm2Rz1kT`) que escriben los
+  // nodos con `enable_long_queue_ids`. El modulo hermano ya lo habia descubierto y lo dejo por
+  // escrito apuntando a ESTE archivo — ver `smtp-delivery-health.ts:194-196`, textual: "El queue-id
+  // se saca con [^ :]+ y NO con el [0-9A-Fa-f]{6,} del modulo de volumen". Se arreglo alla y aca
+  // quedo, con un test verde custodiandolo.
+  assert.match(command, /\[\^ :\]\+/);
   assert.match(command, /## END/, "el marcador de fin distingue 'no hay trafico' de 'no pude leer'");
+});
+
+test("EL SENSOR DEL UMBRAL PERMANENTE TIENE QUE VER LOS 12 NODOS WEBDOCK", async (t) => {
+  // El unico test que corre por el camino de produccion: se ejecuta con bash el MISMO string que se
+  // manda por SSH, contra archivos de verdad. Es la leccion del fixture de Bedrock — un test escrito
+  // sobre mi suposicion de como se ve la salida comparte el error con el codigo y no salva de nada.
+  // Mismo harness y mismo motivo que `smtp-delivery-health.test.ts:199`.
+  //
+  // INCIDENTE QUE FIJA (2026-08-06, medido en sender-measurement.json de produccion, medidoEn
+  // 19:24:16.459Z, 58/58 leidas): exactamente 12 bandejas con `picos: []`, y son exactamente las 12
+  // con slug `serverNN`, o sea los 12 Webdock; las 46 `contabo-*` traen picos. O sea que el sensor
+  // del unico dano irreversible del proyecto estaba CIEGO en el 21% de la flota. El caso que lo
+  // prueba: `corpdocfiling-ledger.com` (server68) con 20.425 entregados en 5 dias, 6.516 encolados,
+  // cap 15000 y `cruzados: []` — que el panel y el agente leian como "no cruzo". Y dos de las 12,
+  // `annualfilings-control.com` y `corpfiling-infra.com`, estaban `healthy`: dentro del pool del
+  // warmup, calentandose sin que nadie pudiera saber si ya estaban quemadas.
+  const dir = await mkdtemp(path.join(tmpdir(), "delivrix-volumen-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  await writeFile(path.join(dir, "mail.log"), [
+    // (1) Contabo: syslog + queue-id hexadecimal. Lo unico que el comando viejo sabia contar.
+    "Aug  6 01:02:03 nodo postfix/smtp[1234]: 9F8E7D6C5B: to=<uno@gmail.com>, relay=gmail-smtp-in.l.google.com[142.250.1.27]:25, delay=1.9, status=sent (250 2.0.0 OK)",
+    // (2) Webdock: ISO-8601. El formato de los 12 ciegos.
+    "2026-08-06T01:02:03.123456+00:00 nodo postfix/smtp[999]: 1122334455: to=<dos@gmail.com>, relay=gmail-smtp-in.l.google.com[142.250.1.27]:25, delay=2.1, status=sent (250 2.0.0 OK)",
+    // (3) EL DEDUP: mismo queue-id, mismo dia, mismo destino que (2), otro microsegundo. UN mensaje.
+    "2026-08-06T04:44:44.987654+00:00 nodo postfix/smtp[999]: 1122334455: to=<dos@gmail.com>, relay=gmail-smtp-in.l.google.com[142.250.1.27]:25, delay=9.9, status=deferred (connect timeout)",
+    // (4) queue-id base-52 (`enable_long_queue_ids`): el patron hexadecimal lo perdia.
+    "Aug  6 01:05:00 nodo postfix/smtp[1234]: 4bXyZ9Qm2Rz1kT: to=<tres@yahoo.com>, relay=mta7.am0.yahoodns.net[67.195.204.79]:25, delay=3.3, status=sent (250 ok dirdel)",
+    ""
+  ].join("\n"), "utf8");
+
+  const salida = execFileSync("bash", ["-c", buildProviderVolumeCommand(dir)], { encoding: "utf8" });
+  const perDay = parseProviderVolume(salida);
+  assert.ok(perDay, "salida sin ## END: el comando se rompio");
+
+  const iso = perDay!.find((e) => e.day === "2026-08-06" && e.family === "google");
+  assert.ok(iso, "las lineas ISO-8601 de los 12 Webdock tienen que contarse; el comando viejo daba CERO aca");
+
+  // LA ASERCION QUE MAS IMPORTA. Si el timestamp entrara al grupo capturado, la clave del `sort -u`
+  // llevaria microsegundos, cada linea seria unica, el dedup moriria y contariamos INTENTOS en vez
+  // de MENSAJES: 4,3x de inflado medido en un nodo real. En `corpdocfiling-ledger.com`, con 20.425
+  // entregas, eso reportaria "cruzo el umbral de 5.000" estando al 23% — el peor error posible,
+  // porque el sensor mentiria hacia el lado que dispara acciones que no se deshacen.
+  assert.equal(iso!.messages, 1, "dos lineas del MISMO queue-id son UN mensaje, no dos intentos");
+
+  assert.equal(
+    perDay!.find((e) => e.day === "2026-08-06")?.messages,
+    1,
+    "el dia ISO no puede traer el timestamp adentro: partiria un dia en miles de claves"
+  );
+  assert.equal(
+    perDay!.find((e) => e.family === "yahoo_aol")?.messages,
+    1,
+    "queue-id base-52 (enable_long_queue_ids): el patron hexadecimal lo perdia"
+  );
+  assert.equal(perDay!.find((e) => e.day === "Aug 6" && e.family === "google")?.messages, 1);
 });
 
 // --- parseo ----------------------------------------------------------------

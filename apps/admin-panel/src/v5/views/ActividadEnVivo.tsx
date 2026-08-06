@@ -82,6 +82,7 @@ const KIND_LABEL: Record<string, string> = {
   umbral_cruzado: "Cruzó el umbral permanente",
   cap_alcanzado: "Tocó el cupo diario",
   cerca_del_cap: "Cerca del cupo diario",
+  cap_ilegal: "Cupo por encima del techo",
   sin_limite_fisico: "Sin límite físico",
   bloqueada: "Cerrada en el receptor",
   cola_atascada: "Cola atascada",

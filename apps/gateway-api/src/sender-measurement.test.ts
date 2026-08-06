@@ -85,6 +85,57 @@ test("el pico contra el umbral permanente viaja con la medicion", async () => {
   assert.deepEqual(m.cruzados, []);
 });
 
+test("porReceptor SOBREVIVE a la persistencia y esta ACOTADO", async () => {
+  // INCIDENTE QUE FIJA (2026-08-06): 36 de 58 bandejas cerradas por el receptor, y el archivo solo
+  // guardaba QUIEN cierra (`cerradoEn`) mas los totales globales. El clasificador YA calculaba
+  // `byProvider` y el persistidor lo tiraba entero. Dos cosas quedaban sin respuesta:
+  //   · cuanto correo seguia entregando cada bandeja por las OTRAS puertas, que es lo unico que
+  //     dice si frenarla cuesta correo de cliente. La decision se tomaba a ciegas sobre 36 nodos.
+  //   · si Yahoo o Apple estaban difiriendo: el bloqueo se detecta SOLO por rebotes 5xx y Yahoo
+  //     tipicamente DIFIERE con 4xx, que no alimenta `cerradoEn`. Asi "Yahoo no aparece en ninguna
+  //     de las 58" se leyo como "Yahoo no nos bloquea" — ausencia de instrumento, no evidencia.
+  // La forma real de una de las 36: cerrada en Google (195 rechazos sobre 200 intentos = 97%) pero
+  // entregando 400 por Comcast. Ese 400 es el numero que decide si frenarla cuesta correo o no.
+  const SALIDA = `## DELIVERED
+      5 gmail.com
+    400 comcast.net
+      1 diminuto.com
+## BLOCKED
+    195 gmail.com
+      2 diminuto.com
+## DEFERRED
+    300 yahoo.com
+## END`;
+
+  const m = await medirBandeja({
+    sshRunner: runner((c) => (c.includes("## VOLUME") ? VOLUMEN : SALIDA)),
+    domain: "x.com",
+    serverSlug: "n1",
+    serverIp: "1.2.3.4"
+  });
+
+  const gmail = m.porReceptor?.find((p) => p.receptor === "gmail.com");
+  assert.deepEqual(gmail, { receptor: "gmail.com", entregados: 5, rechazados: 195, diferidos: 0 });
+  // La pregunta que antes no se podia contestar sobre ninguna de las 36: cuanto sigue entregando
+  // por las OTRAS puertas. `cerradoEn` decia "gmail.com" y los totales decian 405 entregados, pero
+  // nada decia que esos 405 eran casi todos de Comcast.
+  assert.deepEqual(
+    m.porReceptor?.find((p) => p.receptor === "comcast.net"),
+    { receptor: "comcast.net", entregados: 400, rechazados: 0, diferidos: 0 }
+  );
+
+  // EL CASO YAHOO, el que motiva todo el campo: rechazados 0 y aun asi tiene que estar. Un receptor
+  // que solo difiere es invisible para `cerradoEn` por definicion.
+  const yahoo = m.porReceptor?.find((p) => p.receptor === "yahoo.com");
+  assert.deepEqual(yahoo, { receptor: "yahoo.com", entregados: 0, rechazados: 0, diferidos: 300 });
+  assert.deepEqual(m.cerradoEn, ["gmail.com"], "yahoo difiere: NO figura como cerrado, y esa es la trampa");
+
+  // El filtro por BLOCKED_MIN_ATTEMPTS (20) no es cosmetico: `byProvider` no tiene techo de filas y
+  // 58 bandejas por cientos de receptores inflarian el JSON que el panel sirve entero. Abajo de 20
+  // intentos el propio clasificador se niega a emitir veredicto, asi que no hay decision que tomar.
+  assert.equal(m.porReceptor?.find((p) => p.receptor === "diminuto.com"), undefined, "3 intentos no entran");
+});
+
 test("la medicion declara su cobertura: pedidas vs leidas", async () => {
   const dir = await mkdtemp(join(tmpdir(), "medicion-"));
   const ws = new OpenClawWorkspace({ rootDir: join(dir, "workspace") });

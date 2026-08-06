@@ -30,6 +30,12 @@ import { decidirSiHablar, mandarASlack, recordarAviso, type MemoriaSlack } from 
 import { acusarRecibo, agruparParaContestar, avanzar, dondeResponder, estadoVacio, leerHilo, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
 import { extraerRecordar, responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
 import {
+  anotar as anotarConversacion,
+  anotarReaccion,
+  lineasParaPrompt as memoriaParaPrompt,
+  type MemoriaConversacion
+} from "../../apps/gateway-api/src/agents/memoria-conversacion.ts";
+import {
   lineasParaPrompt as decisionesParaPrompt,
   recordar as recordarDecision,
   type Decisiones
@@ -68,6 +74,14 @@ const CHAT_FILE = "warmup-chat.json";
  * es la forma más barata de perder una hora persiguiendo un fantasma.
  */
 const MS_ENTRE_LECTURAS_DE_CHAT = 6_000;
+
+/**
+ * LA MEMORIA DE LO QUE SE HABLÓ. Hasta hoy warmup-chat.json guardaba SOLO un cursor: cada
+ * conversación se olvidaba apenas se contestaba, y por eso el agente contestó cuatro veces casi lo
+ * mismo en el hilo ...393 entre las 03:28 y las 03:31 — no tenía forma de saber qué acababa de
+ * decir. Techo estructural de ~25 KB (40 intercambios FIFO + 12 temas), no una promesa.
+ */
+const CONVERSACION_FILE = "warmup-conversacion.json";
 
 /** Lo que el jefe YA decidió. Gana sobre cualquier hecho que lo contradiga. */
 const DECISIONES_FILE = "decisiones-del-jefe.json";
@@ -861,6 +875,14 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
   const snapshot = await workspace.readInventoryJson<Awaited<ReturnType<typeof pedirLectura>>>(MONITOR_FILE).catch(() => null);
   const bitacora = await workspace.readInventoryJson<Bitacora>(BITACORA_FILE).catch(() => null);
   const decisiones = await workspace.readInventoryJson<Decisiones>(DECISIONES_FILE).catch(() => null);
+  // LA REACCIÓN DEL JEFE la escribe él, no el agente: su próximo mensaje es la etiqueta de si la
+  // respuesta anterior sirvió ("dale" = conforme, volver a preguntar = insiste, "como que no" =
+  // corrige). Se anota ANTES de contestar, con lo que acaba de llegar.
+  let memoria = await workspace.readInventoryJson<MemoriaConversacion>(CONVERSACION_FILE).catch(() => null);
+  for (const p of mensajes) {
+    memoria = anotarReaccion(memoria, { texto: p.texto, cuando: new Date(Number(p.ts) * 1000).toISOString() });
+  }
+  await workspace.updateInventoryJson<MemoriaConversacion>(CONVERSACION_FILE, () => memoria as MemoriaConversacion);
 
   // UNA RESPUESTA POR CONVERSACIÓN, no una por mensaje.
   //
@@ -899,7 +921,11 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
         hilo: hilo.length > 0 ? hilo : [{ quien: "jefe", texto: m.texto }],
         snapshot: snapshot ?? null,
         loQueHiciste: accionesParaPrompt(bitacora, 6),
-        decisiones: decisionesParaPrompt(decisiones)
+        decisiones: decisionesParaPrompt(decisiones),
+        // LO QUE YA DIJO EN ESTE HILO y lo que el jefe pregunta seguido. Entra como HECHO CITADO,
+        // nunca como consejo: un criterio en prosa el modelo lo devuelve como hallazgo propio, y
+        // este proyecto ya se quemó dos veces con eso.
+        memoria: memoriaParaPrompt(memoria, dondeResponder(m), new Date().toISOString())
       },
       baseUrl,
       modelo,
@@ -1068,6 +1094,33 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
     // thread_ts: contesta DENTRO del hilo. Sin esto la conversación se parte en pedazos.
     await mandarASlack({ texto: paraSlack, motivo: "respuesta al jefe", pideRespuesta: false }, { token, canal, threadTs: dondeResponder(m) });
     console.log(`[chat] respondí en el hilo ${dondeResponder(m)}: ${r.texto.slice(0, 70)}`);
+
+    // QUEDA REGISTRADO. Es la diferencia entre un agente que acumula y uno que redescubre: sin
+    // esto, en el turno siguiente no sabe qué acaba de decir —y por eso contestó cuatro veces casi
+    // lo mismo en el hilo ...393— ni cuántas veces le preguntaron ya la misma cosa.
+    //
+    // La PREGUNTA que se guarda es la más específica de la tanda, no la última: cuando el jefe
+    // escribe "Hey / respondeme / necesito el informe / Respondeme,", lo que quería está en la
+    // tercera. Guardar la última enseñaría que le interesa el tema "Respondeme".
+    // Y `observaciones` es el campo que más se gana el lugar: `revisarRespuesta` ya detecta cada
+    // número y dominio que el modelo afirmó sin tenerlo en el contexto, y hasta hoy se imprimía en
+    // el log y se tiraba. Es señal de invención, gratis, ya calculada.
+    const masEspecifica = tanda.mensajes.reduce((a, b) => (b.texto.length > a.texto.length ? b : a), tanda.mensajes[0]!);
+    memoria = anotarConversacion(memoria, {
+      ts: m.ts,
+      hilo: dondeResponder(m),
+      quien: m.usuario,
+      cuando: new Date(Number(m.ts) * 1000).toISOString(),
+      pregunta: masEspecifica.texto,
+      respuesta: cuerpo,
+      tardoSeg: Math.max(0, Math.round(Date.now() / 1000 - Number(m.ts))),
+      fallo: null,
+      inventadas: r.observaciones.length
+      // `acciones` estaba en el diseño y el módulo no lo implementó. No lo agrego acá: la bitácora
+      // (warmup-acciones.json) ya registra QUÉ hizo con su veredicto, y duplicar el dato en dos
+      // memorias es la forma más segura de que algún día se contradigan.
+    });
+    await workspace.updateInventoryJson<MemoriaConversacion>(CONVERSACION_FILE, () => memoria as MemoriaConversacion);
   }
 }
 

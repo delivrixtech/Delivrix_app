@@ -33,8 +33,14 @@ export function vacias(): Decisiones {
   return { version: 1, items: [] };
 }
 
-/** Normaliza para comparar: sin acentos, sin puntuación, en minúsculas. */
-function clave(texto: string): string {
+/**
+ * Normaliza para comparar: sin acentos, sin puntuación, en minúsculas.
+ *
+ * Exportada para que memoria-conversacion.ts agrupe con la MISMA normalización que usa `esLaMisma`
+ * por dentro. Una copia local se desincroniza y el agrupamiento empieza a contradecir a la
+ * comparación: dos textos caerían en grupos distintos y `esLaMisma` diría que son el mismo.
+ */
+export function clave(texto: string): string {
   return texto
     .toLowerCase()
     .normalize("NFD")

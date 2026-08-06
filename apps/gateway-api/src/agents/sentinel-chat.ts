@@ -144,6 +144,11 @@ export const VOZ = [
 export interface ContextoChat {
   /** Lo que el jefe ya decidió. Ver decisiones-del-jefe.ts. */
   decisiones?: readonly string[];
+  /**
+   * Lo que ya pasó en esta conversación: contadores y citas textuales, armados en
+   * memoria-conversacion.ts. NUNCA consejos — ver el comentario en construirContexto.
+   */
+  memoria?: readonly string[];
   /** El hilo tal como está en Slack: el almacén es Slack, acá solo se cita. */
   hilo: Array<{ quien: "jefe" | "vos"; texto: string }>;
   /** La última lectura VERIFICADA del otro carril. Es la única fuente de hechos del chat. */
@@ -181,6 +186,21 @@ export function construirContexto(ctx: ContextoChat, ahoraISO: string): string {
   if (ctx.decisiones && ctx.decisiones.length > 0) {
     l.push("");
     for (const d of ctx.decisiones) l.push(d);
+  }
+
+  // LO QUE YA SE HABLÓ va acá y no pegado al bloque de arriba, aunque pegarlo hubiera sido una
+  // línea menos de diff. Una decisión es algo que el jefe zanjó; un contador —"te lo preguntó 9
+  // veces"— es una costumbre que se midió sola. Mezclarlos le pondría al jefe en la boca algo que
+  // no dijo, y el orden ES el argumento: la decisión zanjada le gana a la costumbre, y la
+  // costumbre le gana al mensaje suelto que acaba de llegar (la conversación va al final).
+  //
+  // Las líneas llegan armadas y NO se les agrega nada acá: ni cabecera, ni "tenelo en cuenta", ni
+  // una conclusión. Este proyecto ya se quemó dos veces con lo mismo — un criterio escrito en
+  // prosa dentro del prompt vuelve como si fuera un hallazgo propio del modelo, y si además es
+  // falso vuelve con seguridad. Un hecho contado no se discute; un consejo se recicla.
+  if (ctx.memoria && ctx.memoria.length > 0) {
+    l.push("");
+    for (const x of ctx.memoria) l.push(x);
   }
 
   if (ctx.loQueHiciste.length > 0) {
@@ -237,6 +257,20 @@ export async function responder(input: {
 }): Promise<RespuestaChat> {
   const ahora = (input.now ?? (() => new Date()))().toISOString();
   const contexto = construirContexto(input.contexto, ahora);
+  // EL DETECTOR NO SE VERIFICA CONTRA SÍ MISMO.
+  //
+  // revisarRespuesta marca todo número de dos o más dígitos que no esté en el texto que se le
+  // pasa. Las líneas de memoria traen justamente eso: conteos ("· 9 veces") y minutos ("hace 12
+  // min"). Si entraran al texto de verificación lo BLANQUEARÍAN — el modelo recicla un número de
+  // una conversación de anteayer, lo afirma como estado de hoy, y el detector lo da por
+  // respaldado porque lo encuentra… en la memoria que él mismo acaba de leer.
+  //
+  // Eso deja ciega la única métrica de no-daño que tiene este paquete: si al agregar memoria las
+  // invenciones suben, la memoria está funcionando como material para inventar y se revierte. Se
+  // verifica contra el contexto SIN memoria, así que un número que solo vive ahí se marca como
+  // invención — que es lo correcto: ya no vale como hecho de hoy.
+  // construirContexto es puro y es armar strings; llamarlo dos veces no cuesta nada.
+  const verificable = construirContexto({ ...input.contexto, memoria: [] }, ahora);
   const doFetch = input.fetchImpl ?? fetch;
   const control = new AbortController();
   const timeout = setTimeout(() => control.abort(), input.timeoutMs ?? 180_000);
@@ -275,7 +309,7 @@ export async function responder(input: {
     const texto = (data.choices?.[0]?.message?.content ?? "").trim();
     const tokens = { prompt: data.usage?.prompt_tokens ?? 0, completion: data.usage?.completion_tokens ?? 0 };
     if (!texto) return { texto: null, motivo: "el modelo devolvió texto vacío (el razonamiento se comió el presupuesto)", modelo: data.model ?? input.modelo, observaciones: [], tokens };
-    return { texto, motivo: null, modelo: data.model ?? input.modelo, observaciones: revisarRespuesta(texto, contexto), tokens };
+    return { texto, motivo: null, modelo: data.model ?? input.modelo, observaciones: revisarRespuesta(texto, verificable), tokens };
   } catch (e) {
     const abortado = e instanceof Error && e.name === "AbortError";
     return { texto: null, motivo: abortado ? "el modelo tardó demasiado" : e instanceof Error ? e.message : String(e), modelo: input.modelo, observaciones: [], tokens: null };

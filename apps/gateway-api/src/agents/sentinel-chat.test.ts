@@ -163,6 +163,81 @@ test("el kill switch sigue siendo del operador", () => {
   assert.match(VOZ, /despausar el emisor/, "está en la lista de lo que NO puede prometer");
 });
 
+/** Lo que una línea de memoria NO puede decir nunca: si aconseja, el modelo lo devuelve como suyo. */
+const IMPERATIVOS = /\b(deberías|tenés que|hay que|conviene|revisá|respondé|hacé|mejorá|contestá)\b/i;
+
+test("la memoria entra al prompt sin inflarlo, sin aconsejar y en su lugar", () => {
+  // Las dos veces que este proyecto se quemó fue igual: alguien agregó al prompt un criterio en
+  // prosa, el modelo lo devolvió como hallazgo propio, y siendo falso lo devolvió con seguridad.
+  // Por eso el techo va en un assert y no en una intención — 6 líneas de dato más la vacía que las
+  // separa, y ni una palabra que el sistema ponga de su cosecha alrededor.
+  const base = {
+    decisiones: ["- no vas a tener semillas de outlook por ahora"],
+    hilo: [{ quien: "jefe" as const, texto: "como vamos ?" }],
+    snapshot: snapshot(),
+    loQueHiciste: []
+  };
+  const T = "2026-08-06T02:30:00.000Z";
+  const memoria = [
+    "LO QUE TE PREGUNTA SEGUIDO — contado en los últimos 14 días:",
+    '- "Hey, como vamos ?" · 4 veces',
+    '- "puedes resolverlo tu mismo ?" · 3 veces',
+    "LO QUE YA DIJISTE EN ESTE HILO (hace 3 min):",
+    '- "estoy mirando la cola de ese nodo"',
+    '- "corpfiling-infra.com quedó en cupo 20"'
+  ];
+
+  const sin = construirContexto(base, T).split("\n");
+  const con = construirContexto({ ...base, memoria }, T).split("\n");
+  assert.ok(con.length - sin.length <= 7, `la memoria agregó ${con.length - sin.length} líneas, el techo es 7`);
+
+  // Se miran las líneas NUEVAS, no las que el test escribió: lo que se está cuidando es que
+  // construirContexto no le cuelgue una cabecera con consejo ("tenelo en cuenta", "respondé más
+  // rápido"). El día que alguien la agregue, este test se pone rojo y lo cuenta.
+  for (const l of con.filter((x) => !sin.includes(x))) {
+    assert.doesNotMatch(l, IMPERATIVOS, `una línea de memoria no puede dar órdenes: "${l}"`);
+  }
+
+  // El orden es el argumento, así que se assertea: decisión zanjada > costumbre medida > hilo suelto.
+  const donde = (re: RegExp) => con.findIndex((x) => re.test(x));
+  assert.ok(donde(/DECISIONES YA TOMADAS/) < donde(/LO QUE TE PREGUNTA SEGUIDO/), "las decisiones van primero");
+  assert.ok(donde(/LO QUE TE PREGUNTA SEGUIDO/) < donde(/LA CONVERSACIÓN/), "la memoria va antes del hilo");
+});
+
+test("un número que solo está en la memoria NO cuenta como respaldado", async () => {
+  // La memoria trae conteos ("· 47 veces"). Si el texto contra el que se verifica los incluyera,
+  // el modelo podría reciclar un número de anteayer, afirmarlo como estado de hoy, y el detector
+  // lo daría por bueno porque lo encuentra en la memoria que él mismo acaba de leer. Eso deja
+  // ciega la métrica de no-daño de este paquete (baseline medido en producción: 3 líneas
+  // "[chat] observaciones" en warmup-monitor.log; si sube, la memoria se revierte).
+  const memoria = ['- "Como vamos ?" · 47 veces'];
+  const ctx = { hilo: [{ quien: "jefe" as const, texto: "como vamos ?" }], snapshot: snapshot(), loQueHiciste: [], memoria };
+  const fake = (async () => ({
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: "Hoy hay 47 dominios entregando." } }], model: "m", usage: {} })
+  })) as never;
+
+  const r = await responder({
+    contexto: ctx,
+    baseUrl: "http://x/v1",
+    modelo: "m",
+    fetchImpl: fake,
+    now: () => new Date("2026-08-06T02:30:00.000Z")
+  });
+  assert.ok(
+    r.observaciones.some((o) => o.includes("47")),
+    `el 47 tenía que quedar marcado como invención, salió: ${JSON.stringify(r.observaciones)}`
+  );
+
+  // Y esto prueba que el arreglo es el que hace el trabajo: verificando contra el contexto COMPLETO
+  // —como se hacía antes— el 47 queda blanqueado y no se marca nada.
+  assert.deepEqual(
+    revisarRespuesta("Hoy hay 47 dominios entregando.", construirContexto(ctx, "2026-08-06T02:30:00.000Z")),
+    [],
+    "si esto deja de dar vacío, el 47 dejó de estar en la memoria y el test ya no prueba nada"
+  );
+});
+
 test("la voz le dice que varios mensajes seguidos son UNA conversación", () => {
   // El reclamo textual del jefe, después de recibir seis respuestas casi idénticas: "que no sea
   // tan repetitivo, más bien que él mismo pueda entender la conversación... se volvió repetitivo e

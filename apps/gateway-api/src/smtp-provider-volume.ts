@@ -70,7 +70,14 @@ export function providerFamilyFor(recipientDomain: string): ProviderFamily {
 }
 
 export interface ProviderDayVolume {
-  /** `Jul 30`, tal como lo escribe syslog. El log no trae año. */
+  /**
+   * El día tal como lo escribe el nodo: `Jul 30` en los 46 Contabo (syslog, sin año) y `2026-08-06`
+   * en los 12 Webdock (ISO-8601). Es un rótulo de pantalla, no una clave que se compare entre nodos.
+   *
+   * No se normaliza a propósito: unificar pediría inventarle el año al syslog, que es exactamente el
+   * parser que `smtp-delivery-health.ts:87` decidió no escribir (ahí el año lo cierra el `find
+   * -mtime`, o sea el sistema de archivos). Dos formatos honestos antes que uno adivinado.
+   */
   day: string;
   family: ProviderFamily;
   /** Mensajes UNICOS, deduplicados por queue-id. */
@@ -88,13 +95,40 @@ export interface NodeVolumeReport {
 }
 
 /**
+ * El prefijo de fecha de una linea de entrega, en los DOS formatos que escribe la flota.
+ *
+ * `Aug  6` (syslog, los 46 nodos Contabo) y `2026-08-06` (ISO-8601, los 12 Webdock). Vive suelto
+ * porque el grep y el sed de abajo tienen que usar EXACTAMENTE el mismo: si divergen, uno filtra
+ * lineas que el otro no sabe partir y el resultado es cero sin error.
+ */
+const PREFIJO_DIA = "([A-Za-z]{3} +[0-9]+|[0-9]{4}-[0-9]{2}-[0-9]{2})";
+
+/**
  * Comando que corre en el nodo.
  *
  * Dedup por (dia, queue-id, dominio) con `sort -u` ANTES de contar: ahi esta la diferencia entre
  * mensajes e intentos. El queue-id se extrae por patron y no por posicion de campo, porque el
  * prefijo de syslog cambia entre distribuciones y un `$5` se rompe en silencio.
+ *
+ * ESTE SENSOR ESTUVO CIEGO EN 12 DE 58 NODOS, y era el sensor del unico dano que no se deshace.
+ * Medido en produccion el 2026-08-06 (sender-measurement.json, medidoEn 19:24:16.459Z, 58/58
+ * leidas): exactamente 12 bandejas con `picos: []`, y son exactamente las 12 con slug `serverNN`,
+ * o sea los 12 Webdock. Entre ellas `corpdocfiling-ledger.com` (server68) con 20.425 entregados en
+ * 5 dias, cap 15000 y `cruzados: []` — que el panel y el agente leian como "no cruzo". Y dos de las
+ * 12, `annualfilings-control.com` y `corpfiling-infra.com`, estaban `healthy`: dentro del pool del
+ * warmup, calentandose sin que nadie pudiera saber si ya estaban quemadas.
+ *
+ * Los dos filtros que lo dejaban en cero, cada uno suficiente por si solo:
+ *   1. Exigia fecha syslog (`^[A-Za-z]{3} +[0-9]+`) y los 12 Webdock escriben ISO-8601.
+ *   2. Exigia queue-id hexadecimal (`[0-9A-Fa-f]{6,}`) y los nodos con `enable_long_queue_ids`
+ *      escriben base-52 (`4bXyZ9Qm2Rz1kT`). El modulo hermano ya lo habia arreglado y lo dejo por
+ *      escrito senalando a ESTE archivo: ver `smtp-delivery-health.ts:194-196`.
+ *
+ * `logDir` existe SOLO para que el test corra este mismo string con bash contra un directorio de
+ * fixtures; en produccion nadie lo pasa. Es el mismo mecanismo (y la misma leccion del fixture de
+ * Bedrock) que `buildDeliveryStatsCommand`: una pipeline de shell solo se prueba corriendola.
  */
-export function buildProviderVolumeCommand(): string {
+export function buildProviderVolumeCommand(logDir = "/var/log"): string {
   return [
     "set -u",
     // El lector del log, resuelto en el nodo.
@@ -106,15 +140,31 @@ export function buildProviderVolumeCommand(): string {
     // el sensor no fallaba, miraba donde no habia nada.
     //
     // Si no se puede leer de ninguna forma, se dice: ## NOACCESS. Nunca vacio.
-    'if sudo -n test -r /var/log/mail.log 2>/dev/null; then READ="sudo -n zcat -f";' +
-      ' elif test -r /var/log/mail.log; then READ="zcat -f";' +
+    `if sudo -n test -r ${logDir}/mail.log 2>/dev/null; then READ="sudo -n zcat -f";` +
+      ` elif test -r ${logDir}/mail.log; then READ="zcat -f";` +
       ' else echo "## NOACCESS"; READ=""; fi',
     "echo '## VOLUME'",
     [
-      '[ -n "$READ" ] && $READ /var/log/mail.log* 2>/dev/null',
+      // El asterisco (todo lo rotado) es CORRECTO aca, y a proposito distinto del modulo de salud,
+      // que se acoto a 5 dias. La salud pregunta "¿esta atascado HOY?"; esto pregunta "¿alguna vez
+      // cruzo el umbral?", y cruzarlo es permanente. Una ventana corta convertiria un dominio
+      // quemado en un dominio limpio con solo esperar.
+      `[ -n "$READ" ] && $READ ${logDir}/mail.log* 2>/dev/null`,
       // Solo lineas de entrega con destinatario: cada una lleva dia, queue-id y dominio.
-      "| grep -oE '^[A-Za-z]{3} +[0-9]+ .*\\]: [0-9A-Fa-f]{6,}: to=<[^>]*@[^>]*>'",
-      "| sed -E 's/^([A-Za-z]{3} +[0-9]+).*\\]: ([0-9A-Fa-f]{6,}): to=<[^>]*@([^>]*)>/\\1\\t\\2\\t\\3/'",
+      `| grep -oE '^${PREFIJO_DIA}[^ ]* .*\\]: [^ :]+: to=<[^>]*@[^>]*>'`,
+      // DOS DETALLES QUE NO SE PUEDEN EQUIVOCAR EN ESTE sed:
+      //
+      // 1. El `[^ ]*` va DESPUES del parentesis de la fecha, o sea que `T19:24:16.459123+00:00`
+      //    queda FUERA del grupo capturado. Si el timestamp entrara al grupo, la clave del
+      //    `sort -u` llevaria microsegundos, cada linea seria unica, el dedup moriria y
+      //    contariamos INTENTOS en vez de MENSAJES: 4,3x de inflado medido (ver cabecera). En el
+      //    nodo de 20.425 entregas eso reportaria "cruzo el umbral" estando al 23% — el peor error
+      //    posible, porque miente hacia el lado que dispara acciones irreversibles.
+      // 2. Los separadores del reemplazo son TABULADORES REALES (el `\t` de este template literal
+      //    emite el caracter). GNU sed —el de los nodos— interpreta un `\t` de dos caracteres;
+      //    BSD sed —el de esta Mac, donde corre el gate— NO, y devolveria una `t` literal. Un tab
+      //    real anda en los dos. Misma trampa documentada en `smtp-delivery-health.ts:200-203`.
+      `| sed -E 's/^${PREFIJO_DIA}[^ ]* .*\\]: ([^ :]+): to=<[^>]*@([^>]*)>/\\1\t\\2\t\\3/'`,
       // Un mensaje a un destino cuenta UNA vez por dia, sin importar cuantas veces se reintento.
       "| sort -u",
       "| awk -F'\\t' '{print $1 \"\\t\" tolower($3)}'",
@@ -136,8 +186,12 @@ export function parseProviderVolume(stdout: string): ProviderDayVolume[] | null 
 
   const acc = new Map<string, number>();
   for (const raw of body.split("\n")) {
-    // `   42 Jul 30<TAB>gmail.com`
-    const match = /^\s*(\d+)\s+([A-Za-z]{3}\s+\d+)\s+(\S+)\s*$/.exec(raw.replace(/\t/g, " "));
+    // `   42 Jul 30<TAB>gmail.com` (Contabo) o `   42 2026-08-06<TAB>gmail.com` (Webdock).
+    //
+    // La alternativa ISO no es cosmetica: sin ella el nodo mandaba bien las lineas y el HOST las
+    // descartaba igual, o sea que arreglar el comando y olvidarse de aca dejaba los 12 Webdock
+    // exactamente igual de ciegos.
+    const match = /^\s*(\d+)\s+([A-Za-z]{3}\s+\d+|\d{4}-\d{2}-\d{2})\s+(\S+)\s*$/.exec(raw.replace(/\t/g, " "));
     if (!match) continue;
     const [, count, day, domain] = match;
     const family = providerFamilyFor(domain!);
