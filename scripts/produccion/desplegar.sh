@@ -115,20 +115,51 @@ if echo "${cambios}" | grep -qE '^package(-lock)?\.json$|^apps/[^/]+/package(-lo
 fi
 
 echo "· reiniciando: ${reiniciar[*]}"
-# UN solo ssh -t con UN solo sudo: reiniciar servicios de sistema exige root, y por SSH no hay
-# dónde teclear la contraseña. Con -t hay terminal, y metiendo todos los kickstart dentro de un
-# único `sudo bash -c` se pide la clave UNA vez por deploy en vez de una por servicio.
-# (Para deploys 100% desatendidos hace falta una regla en sudoers — decisión del dueño, ver
-#  DOCUMENTACION/DISCIPLINA_DE_VERSIONES_Y_DEPLOY.md §3.)
-kicks=""
-for s in "${reiniciar[@]}"; do
-  kicks+="launchctl kickstart -k system/com.delivrix.${s} && echo '    ${s}: reiniciado' || echo '    ${s}: NO se pudo (¿está cargado?)'; "
-done
-ssh -t "${SSH_DEST}" "sudo bash -c \"${kicks}\"" || {
-  echo "FALLÓ: no se pudieron reiniciar los servicios en producción." >&2
-  echo "  Producción quedó con el código NUEVO en disco y el VIEJO en memoria." >&2
-  exit 1
-}
+# Reiniciar servicios de sistema exige root, y hay dos caminos según cómo esté la máquina.
+#
+# DESATENDIDO (si está la regla de /etc/sudoers.d/delivrix-deploy): un `sudo -n` por servicio.
+# Tiene que ser el comando EXACTO que la regla autoriza —`/bin/launchctl kickstart -k …`— y ahí
+# estuvo el error que costó el primer deploy sin clave: el script envolvía todo en
+# `sudo bash -c "launchctl …"`, que para sudoers es OTRO comando (bash), no launchctl. La regla
+# no matcheaba y pedía contraseña igual. Una regla de sudoers autoriza un comando literal, no lo
+# que ese comando termine ejecutando.
+#
+# CON CLAVE (sin la regla): se cae al `ssh -t` con UN solo `sudo bash -c` agrupando todos los
+# kickstart, para teclear la contraseña una vez por deploy en vez de una por servicio.
+#
+# Se prueba primero el desatendido con `sudo -n` (nunca pide clave: falla y listo). Así el mismo
+# script sirve en las dos máquinas sin configurar nada.
+# `sudo -l <comando>` PREGUNTA si ese comando está autorizado, sin ejecutarlo — y hay que
+# preguntarle por el comando EXACTO de la regla. Probar con otro (`launchctl print`, por ejemplo)
+# devuelve "no autorizado" aunque la regla esté perfectamente instalada, porque efectivamente ese
+# otro comando no lo está.
+if ssh "${SSH_DEST}" "sudo -n -l /bin/launchctl kickstart -k system/com.delivrix.gateway >/dev/null 2>&1"; then
+  fallo=0
+  for s in "${reiniciar[@]}"; do
+    if ssh "${SSH_DEST}" "sudo -n /bin/launchctl kickstart -k system/com.delivrix.${s}" 2>/dev/null; then
+      echo "    ${s}: reiniciado"
+    else
+      echo "    ${s}: NO se pudo (¿está cargado?)" >&2
+      fallo=1
+    fi
+  done
+  [ "${fallo}" -eq 0 ] || {
+    echo "FALLÓ: al menos un servicio no se pudo reiniciar." >&2
+    echo "  Producción quedó con el código NUEVO en disco y el VIEJO en memoria." >&2
+    exit 1
+  }
+else
+  echo "  (sin regla de sudoers: va a pedir la contraseña una vez — ver deploy-sin-clave.sh)"
+  kicks=""
+  for s in "${reiniciar[@]}"; do
+    kicks+="launchctl kickstart -k system/com.delivrix.${s} && echo '    ${s}: reiniciado' || echo '    ${s}: NO se pudo (¿está cargado?)'; "
+  done
+  ssh -t "${SSH_DEST}" "sudo bash -c \"${kicks}\"" || {
+    echo "FALLÓ: no se pudieron reiniciar los servicios en producción." >&2
+    echo "  Producción quedó con el código NUEVO en disco y el VIEJO en memoria." >&2
+    exit 1
+  }
+fi
 
 # --- verificación: que el gateway REPORTE el commit nuevo, no solo que responda ---------------
 # Antes bastaba con un "status":"ok" y se imprimía el hash que el propio script había calculado.
