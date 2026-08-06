@@ -28,7 +28,12 @@ import {
 } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
 import { decidirSiHablar, mandarASlack, recordarAviso, type MemoriaSlack } from "../../apps/gateway-api/src/agents/slack.ts";
 import { avanzar, dondeResponder, estadoVacio, leerHilo, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
-import { responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
+import { extraerRecordar, responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
+import {
+  lineasParaPrompt as decisionesParaPrompt,
+  recordar as recordarDecision,
+  type Decisiones
+} from "../../apps/gateway-api/src/agents/decisiones-del-jefe.ts";
 import { lineasParaPrompt as accionesParaPrompt } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
 import { planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
 import {
@@ -50,6 +55,8 @@ const BITACORA_FILE = "warmup-acciones.json";
 const SLACK_FILE = "warmup-slack.json";
 /** Hasta dónde leyó el chat. El cursor ES el dedupe: sin él, al reiniciar re-contesta todo. */
 const CHAT_FILE = "warmup-chat.json";
+/** Lo que el jefe YA decidió. Gana sobre cualquier hecho que lo contradiga. */
+const DECISIONES_FILE = "decisiones-del-jefe.json";
 /** El MISMO kill-file que mira el daemon en cada vuelta. Se revierte con `rm`. */
 const KILL_FILE = (process.env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "runtime/warmup-live.kill")).trim();
 
@@ -331,7 +338,17 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
   const bitacoraPrevia = await workspace.readInventoryJson<Bitacora>(BITACORA_FILE).catch(() => null);
   const loQueHiciste = lineasParaPrompt(bitacoraPrevia, 8);
 
-  const lectura = await pedirLectura({ hechos, baseUrl, modelo, erroresPrevios, loQueHiciste });
+  const decisionesJefe = await workspace.readInventoryJson<Decisiones>(DECISIONES_FILE).catch(() => null);
+  const lectura = await pedirLectura({
+    hechos,
+    baseUrl,
+    modelo,
+    erroresPrevios,
+    loQueHiciste,
+    // Lo que el jefe ya zanjó. Sin esto, el agente le vuelve a pedir cada 10 minutos lo mismo que
+    // ya le dijo que no va a tener.
+    decisiones: decisionesParaPrompt(decisionesJefe)
+  });
 
   // ── LAS ACCIONES ─────────────────────────────────────────────────────────────────────────────
   // Un agente que solo informa es un termómetro caro. Acá ejecuta lo que decidió, dentro de una
@@ -571,6 +588,7 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
 
   const snapshot = await workspace.readInventoryJson<Awaited<ReturnType<typeof pedirLectura>>>(MONITOR_FILE).catch(() => null);
   const bitacora = await workspace.readInventoryJson<Bitacora>(BITACORA_FILE).catch(() => null);
+  const decisiones = await workspace.readInventoryJson<Decisiones>(DECISIONES_FILE).catch(() => null);
 
   for (const m of mensajes) {
     // EL HILO COMPLETO. Sin esto le llegaba UN mensaje suelto y arrancaba de cero cada turno: por
@@ -581,7 +599,8 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
         // Slack ES el almacén del hilo. Si por lo que sea no se pudo leer, al menos va este turno.
         hilo: hilo.length > 0 ? hilo : [{ quien: "jefe", texto: m.texto }],
         snapshot: snapshot ?? null,
-        loQueHiciste: accionesParaPrompt(bitacora, 6)
+        loQueHiciste: accionesParaPrompt(bitacora, 6),
+        decisiones: decisionesParaPrompt(decisiones)
       },
       baseUrl,
       modelo,
@@ -592,6 +611,17 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
       continue;
     }
     if (r.observaciones.length > 0) console.log(`[chat] observaciones: ${r.observaciones.join(" · ")}`);
+
+    // ¿EL JEFE DECIDIÓ ALGO? Se guarda y a partir del turno siguiente entra en los DOS carriles.
+    // Es lo que corta el "ya te lo dije y no entendés": una decisión no es un dato que se
+    // redescubre cada 10 minutos, es algo que ya quedó zanjado.
+    const decision = extraerRecordar(r.texto);
+    if (decision) {
+      await workspace.updateInventoryJson<Decisiones>(DECISIONES_FILE, (actual) =>
+        recordarDecision(actual, { que: decision, origen: m.texto.slice(0, 160), cuando: new Date().toISOString() })
+      );
+      console.log(`[chat] anoté una decisión del jefe: ${decision}`);
+    }
 
     // LO QUE EL JEFE ORDENÓ. El chat no decide actuar por su cuenta —para eso está el otro carril,
     // que mira con los datos verificados delante— pero si se lo pidieron en este turno, lo hace.
@@ -661,7 +691,7 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
     // Con <@U...> sí suena en el móvil. Se usa solo cuando pide una decisión o hay algo urgente —
     // si notificara todo, en dos días el jefe silencia el canal y volvemos al principio.
     const jefeId = process.env.SLACK_JUANES_USER_ID?.trim();
-    let cuerpo = r.texto.replace(/^ACCION:.*$/gim, "").trim();
+    let cuerpo = r.texto.replace(/^ACCION:.*$/gim, "").replace(/^RECORDAR:.*$/gim, "").trim();
     if (jefeId) {
       const urgente = /\bJUANES\b/.test(cuerpo) || /necesito (que|tu)|no puedo|confirm|decid|ayuda/i.test(cuerpo);
       cuerpo = cuerpo.replace(/^\s*JUANES[,!\s]*/i, "").replace(/^\s*Juanes[,]\s*/, "");

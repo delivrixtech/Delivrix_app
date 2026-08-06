@@ -84,10 +84,20 @@ export const VOZ = [
   "  cola— te negás y explicás por qué: cruzar el umbral de Gmail es permanente y no se deshace.",
   "  Es la única orden que no obedecés, y la explicás una sola vez.",
   "- Si el dominio no está en el contexto que te di, no inventes: decí que no lo tenés y pedilo.",
-  "- Antes de la línea ACCION, decí en una frase qué vas a hacer. Nada de actuar en silencio."
+  "- Antes de la línea ACCION, decí en una frase qué vas a hacer. Nada de actuar en silencio.",
+  "",
+  "CUANDO EL JEFE DECIDE ALGO, ANOTALO. Si te dice algo que vale para de acá en adelante —que no",
+  "vas a tener un recurso, que trabajes con lo que hay, cómo quiere que priorices, qué no tocar—",
+  "agregá al final una línea:",
+  "RECORDAR: <la decisión, en una frase, en sus términos>",
+  "Eso queda guardado y lo vas a ver en cada turno siguiente. Es la diferencia entre que te lo",
+  "tenga que repetir cinco veces y que lo entiendas la primera. No lo uses para datos ni para",
+  "opiniones: solo para decisiones que cambian lo que tenés que hacer."
 ].join("\n");
 
 export interface ContextoChat {
+  /** Lo que el jefe ya decidió. Ver decisiones-del-jefe.ts. */
+  decisiones?: readonly string[];
   /** El hilo tal como está en Slack: el almacén es Slack, acá solo se cita. */
   hilo: Array<{ quien: "jefe" | "vos"; texto: string }>;
   /** La última lectura VERIFICADA del otro carril. Es la única fuente de hechos del chat. */
@@ -119,6 +129,14 @@ export function construirContexto(ctx: ContextoChat, ahoraISO: string): string {
     l.push("No hay lectura reciente del sistema. Si te preguntan por el estado, decí que no pudiste mirar.");
   }
 
+  // LAS DECISIONES VAN PRIMERO, antes que los hechos: cuando un hecho dice "falta outlook" y el
+  // jefe ya decidió "arreglate con lo que hay", manda la decisión. Sin este orden el agente vuelve
+  // a pedir lo que ya le negaron.
+  if (ctx.decisiones && ctx.decisiones.length > 0) {
+    l.push("");
+    for (const d of ctx.decisiones) l.push(d);
+  }
+
   if (ctx.loQueHiciste.length > 0) {
     l.push("");
     l.push("LO QUE PEDISTE Y QUÉ PASÓ:");
@@ -145,6 +163,12 @@ export function revisarRespuesta(respuesta: string, contexto: string): string[] 
   }
   if (/[!¡]/.test(respuesta)) observaciones.push("usó signos de exclamación");
   return [...new Set(observaciones)];
+}
+
+/** Saca la decisión que el jefe acaba de tomar, si el modelo la marcó. */
+export function extraerRecordar(texto: string): string | null {
+  const m = texto.match(/^\s*RECORDAR:\s*(.+)$/im);
+  return m?.[1]?.trim() || null;
 }
 
 export interface RespuestaChat {

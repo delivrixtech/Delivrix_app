@@ -195,7 +195,8 @@ export const SISTEMA = [
 export function construirPrompt(
   hechos: HechosWarmup,
   erroresPrevios: readonly string[] = [],
-  loQueHiciste: readonly string[] = []
+  loQueHiciste: readonly string[] = [],
+  decisiones: readonly string[] = []
 ): string {
   const l: string[] = [];
   // MEMORIA: los reparos que la verificación le encontró en corridas anteriores. No se puede
@@ -214,6 +215,12 @@ export function construirPrompt(
     l.push("LO QUE YA PEDISTE, Y QUÉ PASÓ CON CADA COSA:");
     for (const x of loQueHiciste.slice(0, 8)) l.push(x);
     l.push("Si algo ya lo pediste y te lo negaron, NO lo vuelvas a pedir: buscá otra salida o decí qué hace falta para destrabarlo.");
+    l.push("");
+  }
+  // Las decisiones del jefe van ANTES que los hechos: si un hecho dice "falta una semilla en
+  // outlook" y el jefe ya dijo "arreglate con las dos que hay", manda lo que decidió el jefe.
+  if (decisiones.length > 0) {
+    for (const d of decisiones) l.push(d);
     l.push("");
   }
   l.push(`Momento: ${hechos.generadoEn}`);
@@ -503,6 +510,8 @@ export interface PedirLecturaInput {
   erroresPrevios?: readonly string[];
   /** Qué acciones pidió antes y en qué terminaron. Ver bitacora-acciones.ts. */
   loQueHiciste?: readonly string[];
+  /** Lo que el jefe ya decidió. Gana sobre los hechos que lo contradigan. */
+  decisiones?: readonly string[];
   baseUrl: string;
   modelo: string;
   /**
@@ -547,7 +556,7 @@ export async function pedirLectura(input: PedirLecturaInput): Promise<LecturaAge
         model: input.modelo,
         messages: [
           { role: "system", content: SISTEMA },
-          { role: "user", content: construirPrompt(input.hechos, input.erroresPrevios ?? [], input.loQueHiciste ?? []) }
+          { role: "user", content: construirPrompt(input.hechos, input.erroresPrevios ?? [], input.loQueHiciste ?? [], input.decisiones ?? []) }
         ],
         // El razonamiento del modelo sale de ESTE presupuesto y se lo come casi todo: medido, un
         // "cuál es la capital de Francia" gastó 179 de 189 tokens en pensar. Con 1200 devolvía

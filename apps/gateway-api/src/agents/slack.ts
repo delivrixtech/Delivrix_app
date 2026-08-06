@@ -83,10 +83,15 @@ export function decidirSiHablar(
 
   // 3. ACTUÓ. Si tocó la infraestructura, se dice siempre: una mano que se mueve en silencio es
   //    exactamente lo que no queremos de un agente autónomo.
-  const hizo = estado.acciones.filter((a) => a.ejecutada);
+  // Solo lo que TOCÓ la infraestructura. Anotar o cerrar un pendiente es contabilidad interna, no
+  // una acción: anunciarla llena el canal de mensajes que parecen respuestas y no vienen a cuento.
+  // Visto en vivo: el jefe preguntó "¿seguís calentando las bandejas?" y lo que apareció fue
+  // "hice esto: anotar_pendiente p-3-levantar-pausa-emisor", que ni contesta ni le importa a nadie.
+  const CONTABLES = new Set(["anotar_pendiente", "resolver_pendiente"]);
+  const hizo = estado.acciones.filter((a) => a.ejecutada && !CONTABLES.has(a.accion));
   if (hizo.length > 0) {
     const l = hizo.map((a) => `${a.accion}${a.objetivo ? ` ${a.objetivo}` : ""}`).join(", ");
-    return { texto: `Juanes, hice esto: ${l}. ${estado.voz ?? ""}`.trim(), motivo: "ejecutó una acción", pideRespuesta: false };
+    return { texto: `${estado.voz ?? ""} Hice esto: ${l}.`.trim(), motivo: "ejecutó una acción", pideRespuesta: false };
   }
 
   // 4. QUISO ACTUAR Y NO PUDO. Es el pedido de decisión: el agente ve algo, no tiene la llave, y
