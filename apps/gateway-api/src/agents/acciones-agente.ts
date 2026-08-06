@@ -313,10 +313,31 @@ export async function ejecutarAcciones(
           out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: soltar no está habilitado en este entorno" });
           break;
         }
-        // Las tres verificaciones NO son opcionales: si falta el instrumento para comprobar una
+        // Las verificaciones NO son opcionales: si falta el instrumento para comprobar una
         // condición, no se suelta. Un chequeo que no se puede hacer no es un chequeo que pasa.
         if (!ctx.leerCupoNodo || !ctx.diagnosticarDominio || !ctx.medirDominio) {
           out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: sin con qué verificar las condiciones, no se suelta nada" });
+          break;
+        }
+
+        // ── (0) DAÑO CONSUMADO: nunca vuelve ────────────────────────────────────────────────────
+        //
+        // `frenablesConDanio` es la lista de dominios que cruzaron el umbral permanente de Google o
+        // ya están en su tope. Se usa para decidir a quién SÍ puede frenar el modelo por su cuenta;
+        // acá se usa al revés, que es el mismo hecho leído en la otra dirección: si un dominio está
+        // ahí, lo irreversible ya ocurrió y devolverle cupo no lo recupera — solo gasta envíos y lo
+        // empuja más adentro.
+        //
+        // Va PRIMERO y a propósito: es el único rechazo que no depende de leer nada por SSH, así
+        // que un dominio quemado se rechaza aunque toda la infraestructura de chequeo esté caída.
+        // Y no lo levanta ni una orden del jefe: la autoridad no deshace un umbral permanente.
+        if (ctx.frenablesConDanio?.some((d) => d.toLowerCase() === dominio)) {
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: false,
+            detalle: `rechazada: ${dominio} ya cruzó el umbral permanente o está en su tope. Eso no se deshace enviando — devolverle cupo solo gasta envíos.`
+          });
           break;
         }
 

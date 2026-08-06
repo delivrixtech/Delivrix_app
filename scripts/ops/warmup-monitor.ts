@@ -820,6 +820,14 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
         // Ninguna autoridad cambia si Yahoo le tiene la puerta cerrada, así que soltarlo ahí sería
         // igual de inútil viniendo de él. Si quiere forzarlo, el camino es la consola, no el agente.
         ordenadoPorElJefe: true,
+        // LOS QUEMADOS, también acá. `ordenadoPorElJefe` relaja el alcance del FRENO —que existe
+        // para acotar al modelo— pero esta lista se usa además en la otra dirección: un dominio que
+        // cruzó el umbral permanente no se suelta, y eso no lo levanta ninguna autoridad porque no
+        // es una regla, es un hecho del mundo. Sin esta línea, el mismo dominio que el carril
+        // automático rechaza se podría soltar pidiéndoselo por Slack.
+        frenablesConDanio: [
+          ...new Set([...(snapshot?.hechos?.flota?.cruzados ?? []), ...(snapshot?.hechos?.cap?.enElTope ?? [])])
+        ],
         // IR A MIRAR: ninguna muta nada, así que van siempre disponibles.
         leerCupoNodo: leerCupoDelNodo,
         diagnosticarDominio: diagnosticarUnDominio,

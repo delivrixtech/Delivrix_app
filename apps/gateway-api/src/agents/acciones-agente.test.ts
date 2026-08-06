@@ -433,3 +433,36 @@ test("medir: distingue 'nunca se midió' de '0% de bandeja'", async () => {
   assert.match(cero[0]!.detalle, /0% de bandeja sobre 4 mediciones/);
   assert.match(cero[0]!.detalle, /día 2 de rampa/);
 });
+
+test("soltar: un dominio QUEMADO no vuelve nunca, ni por orden del jefe", async () => {
+  // El hueco que casi se escapa: cruzar el umbral permanente de Google NO aparece como "el
+  // receptor te bloquea" —el correo sigue entrando, solo que a spam para siempre— así que los
+  // chequeos por SSH lo dejaban pasar. Es el peor caso posible de soltar: gastar envíos en un daño
+  // que ya es irreversible, empujándolo más adentro.
+  const c = ctxSoltar({ frenablesConDanio: ["listo.com"] });
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "ya descansó bastante" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /umbral permanente/);
+  assert.deepEqual(c.soltados, []);
+
+  // Ni siquiera si lo ordena Juanes: su autoridad puede levantar los límites que existen para
+  // acotar al MODELO, no un hecho físico del mundo.
+  const conOrden = ctxSoltar({ frenablesConDanio: ["listo.com"], ordenadoPorElJefe: true });
+  const r2 = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "soltalo igual" }], conOrden);
+  assert.equal(r2[0]!.ejecutada, false);
+  assert.deepEqual(conOrden.soltados, []);
+});
+
+test("soltar: el rechazo por daño consumado NO necesita SSH", async () => {
+  // Va primero justamente para esto: si la infraestructura de chequeo está caída, un dominio
+  // quemado tiene que rechazarse igual. Fallar hacia "no sé, mejor lo suelto" sería el peor
+  // fail-open del sistema.
+  const c = ctxSoltar({
+    frenablesConDanio: ["listo.com"],
+    leerCupoNodo: async () => { throw new Error("ssh caído"); },
+    diagnosticarDominio: async () => { throw new Error("ssh caído"); }
+  });
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "x" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /umbral permanente/, "rechaza por el motivo real, no por el error de SSH");
+});
