@@ -790,20 +790,27 @@ function ejecutarMaestro(): void {
 }
 
 let chatCorriendo = false;
-async function tickChat(workspace: OpenClawWorkspace, botUserId: string | null): Promise<void> {
+// `pg` viaja como parámetro y no se toma del alcance de main(): esa fue exactamente la falla.
+// Al cablear medir_dominio en este carril escribí `medirUnDominio(pg)` con un `pg` que no existe
+// acá, y el typecheck que corrí apuntaba a un tsconfig.json inexistente, así que nadie lo vio.
+// En producción el efecto era mudo y caro: apenas el modelo decidía ejecutar UNA acción, el objeto
+// de contexto se armaba, `pg` tiraba ReferenceError, la excepción subía hasta el catch del tick —
+// y la respuesta ya generada nunca se publicaba. El cursor de Slack, en cambio, SÍ había avanzado.
+// O sea: el jefe preguntaba, el agente pensaba 40 segundos, y del otro lado no aparecía nada.
+async function tickChat(workspace: OpenClawWorkspace, pg: Pool, botUserId: string | null): Promise<void> {
   // NO SE SOLAPAN. El tick es cada 20 s pero el modelo tarda 30-60 s en contestar: sin este
   // candado, el siguiente tick lee los MISMOS mensajes (el cursor todavía no avanzó) y el jefe
   // recibe la misma respuesta dos veces. Pasó en la primera corrida real, verificado en el hilo.
   if (chatCorriendo) return;
   chatCorriendo = true;
   try {
-    await tickChatInterno(workspace, botUserId);
+    await tickChatInterno(workspace, pg, botUserId);
   } finally {
     chatCorriendo = false;
   }
 }
 
-async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string | null): Promise<void> {
+async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId: string | null): Promise<void> {
   const token = process.env.SLACK_BOT_TOKEN?.trim();
   const canal = process.env.SLACK_CANAL?.trim();
   // EL CEREBRO DEL CHAT: si hay Kimi, se usa Kimi. Conversar es esporádico —solo cuando el jefe
@@ -890,6 +897,15 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
     // Es su canal privado y él es el dueño de la fábrica: negarse sería tratarlo como al modelo.
     const pedidas = extraerAcciones(r.texto);
     let hechas: string[] = [];
+    // EJECUTAR NO PUEDE COSTAR LA RESPUESTA. Sin este try, cualquier excepción de acá abajo —una
+    // referencia rota al armar el contexto, un SSH que revienta, el workspace sin permisos— sube
+    // hasta el catch del tick y se lleva puesta la contestación YA GENERADA, mientras el cursor de
+    // Slack ya avanzó. El jefe pregunta, el agente piensa cuarenta segundos, y del otro lado no
+    // aparece nada: el fallo más caro es el que no se ve.
+    //
+    // Pasó exactamente así el 2026-08-06 con un `pg` fuera de alcance en este mismo bloque.
+    // Contestar es lo primero; ejecutar es lo segundo. Si lo segundo falla, se dice y se sigue.
+    try {
     if (pedidas.length > 0) {
       const res = await ejecutarAcciones(pedidas, {
         dominiosConocidos: [
@@ -982,6 +998,14 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
         return bit ?? { version: 1, entradas: [] };
       });
     }
+    } catch (e) {
+      // El fallo se CUENTA, no se traga: va como una línea más de resultado, junto a la respuesta
+      // que sí se generó. Que el jefe lea "no pude ejecutar X: <motivo>" es infinitamente mejor
+      // que un silencio, y además es la señal que hace visible un bug como el del `pg`.
+      const motivo = e instanceof Error ? e.message : String(e);
+      hechas.push(`no pude ejecutar lo que decidí: ${motivo}`);
+      console.error(`[chat] ejecutar acciones falló (contesto igual): ${motivo}`);
+    }
 
     // La línea ACCION es maquinaria, no conversación: se saca del texto que ve el jefe y en su
     // lugar va el RESULTADO. Mostrarle la sintaxis interna sería ruido.
@@ -1036,7 +1060,7 @@ async function main(): Promise<void> {
       console.log(`escuchando Slack cada 20s (soy ${botUserId}).`);
       setInterval(() => {
         // Una vuelta de chat que falla NO puede tumbar al vigilante: es lo accesorio, no lo central.
-        void tickChat(workspace, botUserId).catch((e) =>
+        void tickChat(workspace, pg, botUserId).catch((e) =>
           console.error(`[chat] vuelta fallida: ${e instanceof Error ? e.message : String(e)}`)
         );
         // 6s y no 20s. Los 20 eran TIEMPO MUERTO PURO: el jefe escribía y en el peor caso pasaban

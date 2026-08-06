@@ -11,7 +11,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test scripts/db/*.test.mjs packages/domain/src/*.test.ts packages/domain/src/runbooks/*.test.ts packages/adapters/src/*.test.ts packages/local-store/src/*.test.ts packages/queue/src/*.test.ts packages/storage/src/*.test.ts packages/local-store/src/*.test.ts apps/gateway-api/src/*.test.ts apps/gateway-api/src/**/*.test.ts apps/worker/src/*.test.ts apps/warmup-engine/src/**/*.test.ts apps/admin-panel/src/shared/api/read-boundary-proxy-parity.test.ts && npm run test:admin",
+    "test": "npm run typecheck:scripts && node --test scripts/db/*.test.mjs scripts/ops/*.test.ts packages/domain/src/*.test.ts packages/domain/src/runbooks/*.test.ts packages/adapters/src/*.test.ts packages/local-store/src/*.test.ts packages/queue/src/*.test.ts packages/storage/src/*.test.ts packages/local-store/src/*.test.ts apps/gateway-api/src/*.test.ts apps/gateway-api/src/**/*.test.ts apps/worker/src/*.test.ts apps/warmup-engine/src/**/*.test.ts apps/admin-panel/src/shared/api/read-boundary-proxy-parity.test.ts && npm run test:admin",
     "test:admin": "npm --workspace @delivrix/admin-panel run check",
     "dev:gateway": "node apps/gateway-api/src/main.ts",
     "dev:worker": "node apps/worker/src/main.ts",
@@ -20,7 +20,8 @@
     "serve:admin": "npm --workspace @delivrix/admin-panel run serve",
     "db:migrate": "node scripts/db/migrate.mjs",
     "db:seed": "node scripts/db/seed.mjs",
-    "db:reset": "node scripts/db/reset.mjs"
+    "db:reset": "node scripts/db/reset.mjs",
+    "typecheck:scripts": "bash scripts/produccion/typecheck-scripts.sh"
   },
   "workspaces": [
     "apps/*",

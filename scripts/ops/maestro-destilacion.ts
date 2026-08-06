@@ -2,8 +2,12 @@
 // EL MAESTRO: junta material verificado para que el modelo propio aprenda de Delivrix.
 //
 //   node --env-file=config/gateway.env --experimental-strip-types scripts/ops/maestro-destilacion.ts
-//   ... --loop            corre cada N minutos junto con el agente
-//   ... --dataset         exporta lo juntado a JSONL listo para mlx-tune
+//   ... --dataset         exporta lo juntado a runtime/destilacion/{train,valid}.jsonl
+//
+// NO tiene --loop. Lo decía este encabezado y no existe en el código: la repetición la da el
+// agente, que lanza este script como proceso aparte en cada vuelta (warmup-monitor.ts,
+// `ejecutarMaestro`). Documentar una bandera que no está manda al operador a buscar por qué "no
+// anda" algo que nunca se escribió.
 //
 // LA IDEA. Kimi K3 (2,8B de parámetros, 1M de contexto) mira los MISMOS hechos que el modelo local
 // y responde. Su respuesta pasa por `verificarLectura`, la misma verificación que hoy le bloquea
@@ -48,8 +52,14 @@ export interface Corpus {
 }
 
 /**
- * Convierte el corpus al formato que mlx-tune espera para SFT: una línea JSON por ejemplo, con
- * `messages` estilo chat. Es puro: se puede probar sin llamar a ningún modelo.
+ * Convierte el corpus a JSONL de SFT: una línea JSON por ejemplo, con `messages` estilo chat.
+ * Es puro: se puede probar sin llamar a ningún modelo.
+ *
+ * OJO, el formato NO está validado contra la herramienta real. Este encabezado decía "el formato
+ * que mlx-tune espera" y `mlx-tune` no existe: el entrenador es `mlx_lm.lora`, y al 2026-08-06 no
+ * está instalado ni en la Studio ni en la máquina de desarrollo (`import mlx` → ModuleNotFoundError).
+ * O sea que hasta hoy nadie cargó este archivo con nada. Un comentario que promete compatibilidad
+ * es una intención; el día que se entrene, esa es la primera prueba a correr.
  */
 export function aJsonl(corpus: Corpus, sistema: string): string {
   return corpus.ejemplos
@@ -123,10 +133,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  // DOS MAESTROS, no uno. Kimi K3 y Claude por Bedrock miran los MISMOS hechos y responden por
-  // separado. Enseñan cosas distintas: cada uno tiene sus sesgos, y un alumno que solo copia a un
-  // maestro hereda sus manías. Además queda medido cuál produce más material que pasa el filtro —
-  // ese número, con el tiempo, dice cuál enseña mejor sobre NUESTRO dominio.
+  // HOY HAY UN SOLO MAESTRO: Kimi K3. La lista existe porque la idea es tener DOS —cada modelo
+  // tiene sus manías y un alumno que copia a uno solo las hereda enteras—, pero la rama de
+  // Bedrock nunca se escribió acá. Lo que falta es CÓDIGO, no credenciales: gateway.env ya trae
+  // AWS_BEDROCK_REGION / MODEL_ID / ACCESS_KEY_ID / SECRET_ACCESS_KEY, que hoy consume el puente
+  // de OpenClaw. Medido el 2026-08-06: los 17 ejemplos del corpus son 17 de 17 de kimi-k3, o sea
+  // que lo que se destila es el sesgo de un modelo, no el promedio de dos. Cablearlo es gasto
+  // nuevo por token y lo decide el operador; hasta entonces esto se lee como lo que es: una voz.
   const maestros: Array<{ nombre: string; baseUrl: string; modelo: string; apiKey: string; temperatura: number }> = [];
   const kimi = process.env.KIMI_API_KEY?.trim();
   if (kimi) {

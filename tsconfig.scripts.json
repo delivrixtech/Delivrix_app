@@ -1,0 +1,22 @@
+{
+  "//": "Chequeo de tipos de scripts/ops — el que faltaba. Sin él, un identificador SIN DEFINIR en",
+  "//2": "warmup-monitor.ts llegó a producción y dejó mudo al agente cada vez que decidía actuar:",
+  "//3": "el objeto de contexto tiraba ReferenceError, la excepción se comía la respuesta ya generada,",
+  "//4": "y el cursor de Slack igual avanzaba. El typecheck que yo creía correr apuntaba a un",
+  "//5": "tsconfig.json que no existe en la raíz, así que devolvía verde sin mirar un solo archivo.",
+  "//6": "Los TS7006/TS7016 quedan fuera (noImplicitAny off): el objetivo acá es cazar referencias",
+  "//7": "rotas y firmas que no cierran, no imponer tipado estricto a scripts que hoy no lo tienen.",
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2022",
+    "lib": ["es2023"],
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "noImplicitAny": false
+  },
+  "include": ["scripts/ops/**/*.ts", "scripts/db/**/*.ts"]
+}

@@ -83,13 +83,22 @@ function filaSemilla(s: WarmupSeed): string {
 
 /** Login IMAP real. Es la única prueba de que la semilla sirve: el registro solo guarda intención. */
 async function probarSemilla(seed: WarmupSeed): Promise<{ ok: boolean; detalle: string }> {
-  let ImapFlow: new (opciones: Record<string, unknown>) => {
+  // La forma mínima que este script usa de imapflow. `close()` va incluido: se llama en el catch
+  // para no dejar la sesión colgada cuando el login falla, y faltaba en el tipo — el typecheck de
+  // scripts/ lo destapó el día que se puso a mirar de verdad.
+  //
+  // El `as` es deliberado y acotado: imapflow no trae tipos, así que declarar la forma que
+  // usamos y afirmarla en el import es más honesto que un `any` suelto — si mañana alguien llama
+  // a un método que no está acá, el typecheck lo dice.
+  type ClienteImap = {
     connect(): Promise<void>;
     logout(): Promise<void>;
+    close(): Promise<void>;
     mailboxOpen(nombre: string): Promise<{ exists: number }>;
   };
+  let ImapFlow: new (opciones: Record<string, unknown>) => ClienteImap;
   try {
-    ({ ImapFlow } = await import("imapflow"));
+    ({ ImapFlow } = (await import("imapflow")) as unknown as { ImapFlow: new (o: Record<string, unknown>) => ClienteImap });
   } catch {
     return { ok: false, detalle: "imapflow no está instalado: no puedo probar el login" };
   }
