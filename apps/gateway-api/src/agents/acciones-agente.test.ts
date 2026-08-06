@@ -149,3 +149,55 @@ test("dos pendientes con redacciones distintas se juntan en uno", async () => {
   assert.equal(c.lista.length, 1, "una sola entrada, no tres");
   assert.equal(c.lista[0]!.visto, 3);
 });
+
+test("el freno tiene ALCANCE: solo donde el daño ya está hecho", async () => {
+  // Un dominio sano frenado por decisión del modelo cuesta calentamiento real. Uno que ya cruzó
+  // el umbral permanente no tiene nada que perder. La diferencia no puede quedar librada al juicio
+  // del modelo: es una barrera.
+  const frenados: string[] = [];
+  const ctx = {
+    dominiosConocidos: ["sano.com", "cruzado.com"],
+    frenablesConDanio: ["cruzado.com"],
+    frenarDominio: async (d: string) => {
+      frenados.push(d);
+      return { antes: 50, despues: 0 };
+    }
+  };
+
+  const sobreSano = await ejecutarAcciones(
+    [{ accion: "frenar_dominio", dominio: "sano.com", motivo: "me parece" }],
+    ctx as never
+  );
+  assert.equal(sobreSano[0]?.ejecutada, false, "un dominio sano NO se frena solo");
+  assert.match(sobreSano[0]?.detalle ?? "", /no cruzó el umbral/);
+  assert.match(sobreSano[0]?.detalle ?? "", /pendiente/, "le dice cuál es la salida correcta");
+  assert.deepEqual(frenados, [], "no llegó a tocar la flota");
+
+  const sobreCruzado = await ejecutarAcciones(
+    [{ accion: "frenar_dominio", dominio: "cruzado.com", motivo: "cruzó el umbral permanente" }],
+    ctx as never
+  );
+  assert.equal(sobreCruzado[0]?.ejecutada, true, "donde el daño ya está hecho, sí actúa");
+  assert.deepEqual(frenados, ["cruzado.com"]);
+
+  // Sin alcance declarado se mantiene el comportamiento previo (tests y dry-run).
+  const sinAlcance = await ejecutarAcciones(
+    [{ accion: "frenar_dominio", dominio: "sano.com", motivo: "m" }],
+    { dominiosConocidos: ["sano.com"], frenarDominio: async () => ({ antes: 10, despues: 0 }) } as never
+  );
+  assert.equal(sinAlcance[0]?.ejecutada, true);
+});
+
+test("cada acción deja su SUJETO, o la bitácora no sirve", async () => {
+  // Sin `objetivo`, "frenar A" y "frenar B" colapsan en la misma entrada de la bitácora: `veces`
+  // sube por acciones distintas y el veredicto se le aplica al dominio equivocado.
+  const r = await ejecutarAcciones(
+    [
+      { accion: "frenar_dominio", dominio: "a.com", motivo: "m" },
+      { accion: "frenar_dominio", dominio: "fantasma.com", motivo: "m" }
+    ],
+    { dominiosConocidos: ["a.com"], frenarDominio: async () => ({ antes: 5, despues: 0 }) } as never
+  );
+  assert.equal(r[0]?.objetivo, "a.com", "la ejecutada dice sobre qué");
+  assert.equal(r[1]?.objetivo, "fantasma.com", "la RECHAZADA también: es la que más se repite");
+});

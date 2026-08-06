@@ -34,6 +34,13 @@ export interface AccionPedida {
 
 export interface ResultadoAccion {
   accion: string;
+  /**
+   * SOBRE QUÉ se decidió: dominio, id de pendiente, o null si es global (pausar_warmup).
+   * Sin este campo la bitácora no tiene sujeto y colapsa "frenar A" con "frenar B" en la misma
+   * entrada: `veces` sube por acciones distintas y el veredicto se le aplica al dominio
+   * equivocado. Una memoria sin sujeto es peor que no tener memoria.
+   */
+  objetivo?: string | null;
   ejecutada: boolean;
   /** Qué pasó, en castellano. Va al registro y a la pantalla. */
   detalle: string;
@@ -59,6 +66,16 @@ export interface Pendiente {
 export interface ContextoAcciones {
   /** Dominios que existen de verdad. Una acción sobre algo fuera de esta lista se rechaza. */
   dominiosConocidos: readonly string[];
+  /**
+   * El ALCANCE del freno: los únicos dominios donde el agente puede poner cap 0 por sí solo.
+   * Son los que ya tienen daño consumado (cruzaron el umbral permanente) o a los que el receptor
+   * ya les cerró la puerta. Ahí frenar solo puede ayudar.
+   *
+   * `undefined` = sin restricción (compatibilidad con los tests y con el modo dry-run). Ponerlo
+   * en producción es lo que convierte "puede frenar cualquiera de los 58" en "puede frenar donde
+   * ya no hay nada que perder".
+   */
+  frenablesConDanio?: readonly string[];
   /** Pone cap 0 en el nodo del dominio. Reversible con un `--apply` normal. */
   frenarDominio?: (dominio: string, motivo: string) => Promise<{ antes: number | null; despues: number }>;
   /** Crea el kill-file: el daemon deja de mandar en la próxima vuelta. Reversible con `rm`. */
@@ -135,7 +152,7 @@ export async function ejecutarAcciones(
     const motivo = (p.motivo ?? "").trim();
 
     if (!motivo) {
-      out.push({ accion: nombre, ejecutada: false, detalle: "rechazada: toda acción exige un motivo" });
+      out.push({ accion: nombre, objetivo: p.dominio ?? p.id ?? null, ejecutada: false, detalle: "rechazada: toda acción exige un motivo" });
       continue;
     }
 
@@ -145,22 +162,36 @@ export async function ejecutarAcciones(
         // El dominio tiene que EXISTIR. Sin esto, un nombre alucinado por el modelo se convertiría
         // en una llamada SSH contra vaya a saber qué.
         if (!ctx.dominiosConocidos.some((d) => d.toLowerCase() === dominio)) {
-          out.push({ accion: nombre, ejecutada: false, detalle: `rechazada: "${p.dominio}" no está en el inventario` });
+          out.push({ accion: nombre, objetivo: p.dominio ?? null, ejecutada: false, detalle: `rechazada: "${p.dominio}" no está en el inventario` });
+          break;
+        }
+        // ALCANCE: solo se frena donde el daño YA está hecho o el receptor YA cerró la puerta.
+        // Frenar un dominio cruzado solo puede ayudar —lo irreversible ya ocurrió—; frenar uno
+        // SANO cuesta calentamiento real y lo decide el operador, no el modelo. Si el agente
+        // quiere frenar uno sano, la salida es anotar_pendiente, no ejecutar.
+        if (ctx.frenablesConDanio && !ctx.frenablesConDanio.some((d) => d.toLowerCase() === dominio)) {
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: false,
+            detalle: `rechazada: ${dominio} no cruzó el umbral ni está frenado por el receptor — frenar un dominio sano cuesta calentamiento y lo decide el operador. Anotalo como pendiente.`
+          });
           break;
         }
         if (!ctx.frenarDominio) {
-          out.push({ accion: nombre, ejecutada: false, detalle: "rechazada: frenar no está habilitado en este entorno" });
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: frenar no está habilitado en este entorno" });
           break;
         }
         const r = await ctx.frenarDominio(dominio, motivo);
         if (r.antes === 0) {
           // Ya estaba frenado: reportarlo como acción NUEVA hace creer que pasó algo que no pasó,
           // y en el registro queda un "frené X" por vuelta sobre un nodo que no cambió nunca.
-          out.push({ accion: nombre, ejecutada: false, detalle: `${dominio} ya estaba en cap 0: no hacía falta` });
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `${dominio} ya estaba en cap 0: no hacía falta` });
           break;
         }
         out.push({
           accion: nombre,
+          objetivo: dominio,
           ejecutada: true,
           detalle: `${dominio} frenado (cap ${r.antes ?? "?"} → ${r.despues}) — ${motivo}`,
           antes: r.antes,
@@ -171,17 +202,17 @@ export async function ejecutarAcciones(
 
       case "pausar_warmup": {
         if (!ctx.pausarWarmup) {
-          out.push({ accion: nombre, ejecutada: false, detalle: "rechazada: pausar no está habilitado en este entorno" });
+          out.push({ accion: nombre, objetivo: null, ejecutada: false, detalle: "rechazada: pausar no está habilitado en este entorno" });
           break;
         }
         // Idempotente: si ya estaba pausado no se reporta como una acción nueva. Un registro que
         // dice "pausé el warmup" tres veces seguidas hace creer que pasó algo tres veces.
         if (await ctx.warmupPausado?.()) {
-          out.push({ accion: nombre, ejecutada: false, detalle: "el warmup ya estaba pausado: no hacía falta" });
+          out.push({ accion: nombre, objetivo: null, ejecutada: false, detalle: "el warmup ya estaba pausado: no hacía falta" });
           break;
         }
         await ctx.pausarWarmup(motivo);
-        out.push({ accion: nombre, ejecutada: true, detalle: `warmup pausado — ${motivo}` });
+        out.push({ accion: nombre, objetivo: null, ejecutada: true, detalle: `warmup pausado — ${motivo}` });
         break;
       }
 
@@ -198,7 +229,7 @@ export async function ejecutarAcciones(
           // aliasing fácil de escribir sin darse cuenta, y el resultado sería perder la lista
           // entera de pendientes en silencio.
           await ctx.pendientes.guardar([...lista]);
-          out.push({ accion: nombre, ejecutada: false, detalle: `ya estaba anotado (visto ${previo.visto} veces): ${que}` });
+          out.push({ accion: nombre, objetivo: previo.id, ejecutada: false, detalle: `ya estaba anotado (visto ${previo.visto} veces): ${que}` });
           break;
         }
         const nuevo: Pendiente = {
@@ -209,7 +240,7 @@ export async function ejecutarAcciones(
           visto: 1
         };
         await ctx.pendientes.guardar([...lista, nuevo]);
-        out.push({ accion: nombre, ejecutada: true, detalle: `pendiente anotado: ${que}`, despues: nuevo.id });
+        out.push({ accion: nombre, objetivo: nuevo.id, ejecutada: true, detalle: `pendiente anotado: ${que}`, despues: nuevo.id });
         break;
       }
 
@@ -218,19 +249,19 @@ export async function ejecutarAcciones(
         const lista = await ctx.pendientes.listar();
         const item = lista.find((x) => x.id === id && !x.resueltoEn);
         if (!item) {
-          out.push({ accion: nombre, ejecutada: false, detalle: `rechazada: no hay pendiente abierto con id "${id}"` });
+          out.push({ accion: nombre, objetivo: id ?? null, ejecutada: false, detalle: `rechazada: no hay pendiente abierto con id "${id}"` });
           break;
         }
         item.resueltoEn = ahora.toISOString();
         await ctx.pendientes.guardar([...lista]);
-        out.push({ accion: nombre, ejecutada: true, detalle: `pendiente resuelto: ${item.que} — ${motivo}` });
+        out.push({ accion: nombre, objetivo: item.id, ejecutada: true, detalle: `pendiente resuelto: ${item.que} — ${motivo}` });
         break;
       }
 
       default:
         // Lista blanca cerrada: lo que no está, no existe. Y se DICE, para que se vea si el modelo
         // está pidiendo cosas que no puede hacer (señal de que el prompt necesita trabajo).
-        out.push({ accion: nombre, ejecutada: false, detalle: `rechazada: "${nombre}" no es una acción permitida` });
+        out.push({ accion: nombre, objetivo: null, ejecutada: false, detalle: `rechazada: "${nombre}" no es una acción permitida` });
     }
   }
 

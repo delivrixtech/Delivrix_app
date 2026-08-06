@@ -353,6 +353,13 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
             ...(hechos.cap?.enElTope ?? [])
           ])
         ],
+        // EL ALCANCE DEL FRENO: solo donde el daño YA está hecho. Un dominio que cruzó el umbral
+        // permanente no tiene nada más que perder, y uno al que el receptor ya le cerró la puerta
+        // tampoco está calentando. Frenar ahí solo puede ayudar. Frenar un dominio SANO cuesta
+        // calentamiento real y es una decisión del operador — para eso está anotar_pendiente.
+        frenablesConDanio: [
+          ...new Set([...(hechos.flota?.cruzados ?? []), ...(hechos.cap?.enElTope ?? [])])
+        ],
         // FRENAR toca la flota de producción por SSH (pone cap 0 en Postfix). Es reversible y solo
         // reduce, pero sigue siendo una mutación de infraestructura, así que va detrás de un flag
         // que el OPERADOR prende — no yo, y no por inferencia de que "quería que el agente actúe".
@@ -402,7 +409,7 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
       let bit = actual;
       for (const a of acciones) {
         if (a.accion === "(ninguna)") continue;
-        const objetivo = a.dominio ?? null;
+        const objetivo = a.objetivo ?? null;
         bit = registrar(bit, {
           accion: a.accion,
           objetivo,
@@ -410,7 +417,7 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
           estado: a.ejecutada ? "ejecutada" : "rechazada",
           detalle: a.ejecutada ? null : (a.detalle ?? null),
           // El cap de HOY es contra lo que se juzga después si el freno sirvió.
-          antes: objetivo ? { cap: hechos.cap?.enElTope.includes(objetivo) ? "en_tope" : null } : null,
+          antes: typeof a.antes === "number" ? { cap: a.antes } : null,
           cuando
         });
       }
