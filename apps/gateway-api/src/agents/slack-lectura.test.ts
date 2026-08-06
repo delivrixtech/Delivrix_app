@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { avanzar, dondeResponder, esParaContestar, estadoVacio, leerNuevos } from "./slack-lectura.ts";
+import { avanzar, dondeResponder, esParaContestar, estadoVacio, leerNuevos, acusarRecibo } from "./slack-lectura.ts";
 
 test("NO se contesta a sí mismo — el bucle infinito más fácil de escribir", () => {
   // Los mensajes propios traen bot_id pero NO siempre subtype "bot_message": filtrar por subtype
@@ -107,4 +107,32 @@ test("un mensaje del jefe con 'responder también al canal' SE LEE", () => {
   // Y un broadcast del PROPIO bot sigue sin contar: el filtro de subtype no puede abrirle la puerta.
   assert.equal(esParaContestar({ ts: "1", text: "hola", bot_id: "B123", subtype: "thread_broadcast" }, "U0BNCHPTPH8"), false);
   assert.equal(esParaContestar({ ts: "1", text: "hola", user: "U0BNCHPTPH8", subtype: "thread_broadcast" }, "U0BNCHPTPH8"), false);
+});
+
+test("el acuse de recibo no puede tumbar ni demorar la respuesta", async () => {
+  // El modelo tarda ~34s. El 👀 existe para que el jefe sepa que su mensaje llegó mientras tanto:
+  // "no pasó nada" es indistinguible de "el agente está caído". Pero un acuse es cortesía y la
+  // respuesta es el trabajo — si Slack rechaza la reacción, no puede impedir que conteste.
+  const ok = (async () => ({ json: async () => ({ ok: true }) })) as never;
+  assert.equal(await acusarRecibo({ token: "t", canal: "c", fetchImpl: ok }, "1785992301.007749"), true);
+
+  const rechaza = (async () => ({ json: async () => ({ ok: false, error: "already_reacted" }) })) as never;
+  assert.equal(await acusarRecibo({ token: "t", canal: "c", fetchImpl: rechaza }, "1"), false, "informa, no lanza");
+
+  const rota = (async () => { throw new Error("red caída"); }) as never;
+  assert.equal(await acusarRecibo({ token: "t", canal: "c", fetchImpl: rota }, "1"), false, "una red caída no explota");
+});
+
+test("el acuse va al MENSAJE, no al hilo", async () => {
+  // reactions.add necesita el ts del mensaje concreto. Mandarle el thread_ts pondría el 👀 en el
+  // primer mensaje del hilo —uno viejo— y el jefe no vería nada sobre lo que acaba de escribir.
+  let cuerpo: Record<string, unknown> = {};
+  const espia = (async (_u: string, init: { body: string }) => {
+    cuerpo = JSON.parse(init.body) as Record<string, unknown>;
+    return { json: async () => ({ ok: true }) };
+  }) as never;
+  await acusarRecibo({ token: "t", canal: "C123", fetchImpl: espia }, "1785992301.007749");
+  assert.equal(cuerpo.timestamp, "1785992301.007749");
+  assert.equal(cuerpo.channel, "C123");
+  assert.equal(cuerpo.name, "eyes");
 });

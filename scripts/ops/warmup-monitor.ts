@@ -27,7 +27,7 @@ import {
   type Bitacora
 } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
 import { decidirSiHablar, mandarASlack, recordarAviso, type MemoriaSlack } from "../../apps/gateway-api/src/agents/slack.ts";
-import { avanzar, dondeResponder, estadoVacio, leerHilo, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
+import { acusarRecibo, avanzar, dondeResponder, estadoVacio, leerHilo, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
 import { extraerRecordar, responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
 import {
   lineasParaPrompt as decisionesParaPrompt,
@@ -832,6 +832,12 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
   const decisiones = await workspace.readInventoryJson<Decisiones>(DECISIONES_FILE).catch(() => null);
 
   for (const m of mensajes) {
+    // 👀 ANTES DE PENSAR. El modelo tarda ~34s y el 87% de eso lo pasa razonando; durante ese rato
+    // el jefe no tiene ninguna señal de que su mensaje llegó, y "no pasó nada" es indistinguible
+    // de "el agente está caído". El emoji cuesta 200ms y no gasta un turno del modelo.
+    // No se espera (`void`): un acuse que demore la respuesta es peor que no tenerlo.
+    void acusarRecibo({ token, canal, botUserId }, m.ts).catch(() => undefined);
+
     // EL HILO COMPLETO. Sin esto le llegaba UN mensaje suelto y arrancaba de cero cada turno: por
     // eso "no entendía". No era el modelo — era que no tenía la conversación delante.
     const hilo = await leerHilo({ token, canal, botUserId }, dondeResponder(m));
@@ -1033,7 +1039,15 @@ async function main(): Promise<void> {
         void tickChat(workspace, botUserId).catch((e) =>
           console.error(`[chat] vuelta fallida: ${e instanceof Error ? e.message : String(e)}`)
         );
-      }, 20_000);
+        // 6s y no 20s. Los 20 eran TIEMPO MUERTO PURO: el jefe escribía y en el peor caso pasaban
+        // 20 segundos antes de que el agente siquiera leyera. Medido de punta a punta, una
+        // respuesta tardaba 35-55s, y de eso ~10 de promedio era esta espera — un tercio de la
+        // demora sin ninguna contrapartida.
+        //
+        // El costo es despreciable: `conversations.history` con `oldest` es de los endpoints más
+        // baratos de Slack (tier 3, 50+/min) y acá quedan 10/min. Lo caro es el modelo, y eso no
+        // cambia con el intervalo porque solo se llama cuando HAY un mensaje nuevo.
+      }, 6_000);
     } else {
       console.log("sin token de Slack o sin poder identificarme: el chat queda apagado.");
     }

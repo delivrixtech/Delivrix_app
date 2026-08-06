@@ -106,6 +106,34 @@ async function slackGet(
 }
 
 /**
+ * ACUSE DE RECIBO INMEDIATO: le pone 👀 al mensaje apenas lo lee.
+ *
+ * El modelo tarda ~34s en contestar y el 87% de eso lo pasa razonando. Durante esos 34 segundos el
+ * jefe no tiene ninguna señal de que su mensaje llegó — y "no pasó nada" es indistinguible de "el
+ * agente está caído", que es exactamente la duda que lo hizo desconfiar del bot antes.
+ *
+ * Un emoji tarda ~200ms y no cuesta un turno del modelo. Es la diferencia entre esperar sabiendo y
+ * esperar sin saber; el reclamo textual era "que diga al menos ok, trabajando".
+ *
+ * Falla suave a propósito: si Slack rechaza la reacción (ya estaba puesta, permiso faltante), eso
+ * NO puede impedir que conteste. Un acuse es cortesía; la respuesta es el trabajo.
+ */
+export async function acusarRecibo(cfg: CfgLectura, ts: string, emoji = "eyes"): Promise<boolean> {
+  const doFetch = cfg.fetchImpl ?? fetch;
+  try {
+    const r = await doFetch("https://slack.com/api/reactions.add", {
+      method: "POST",
+      headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ channel: cfg.canal, timestamp: ts, name: emoji })
+    });
+    const j = (await r.json()) as { ok?: boolean };
+    return j.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Trae lo que el jefe escribió y todavía no se contestó: mensajes nuevos del canal + respuestas
  * nuevas en los hilos que siguen vivos.
  */
