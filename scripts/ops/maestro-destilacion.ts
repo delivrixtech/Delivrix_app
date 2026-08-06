@@ -116,15 +116,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  const apiKey = process.env.KIMI_API_KEY?.trim();
-  const baseUrl = process.env.KIMI_BASE_URL?.trim() || "https://api.moonshot.ai/v1";
-  const modelo = process.env.KIMI_MODEL?.trim() || "kimi-k3";
-  if (!apiKey) {
-    console.error("falta KIMI_API_KEY en el entorno. Sin maestro no hay material que juntar.");
-    process.exitCode = 1;
-    return;
-  }
-
   const hechos = await reunirHechosDelUltimoRegistro(workspace);
   if (!hechos) {
     console.error("no hay hechos de la última corrida del agente: corré primero warmup-monitor.ts");
@@ -132,14 +123,53 @@ async function main(): Promise<void> {
     return;
   }
 
-  // El maestro razona MUCHO (K3 es un modelo de razonamiento y eso sale del mismo presupuesto).
-  // Medido con 10 tokens: 7 se fueron en razonar y la respuesta salió vacía.
-  // temperatura 1: K3 rechaza cualquier otra con HTTP 400. Configurable por si el maestro cambia.
-  const temperatura = Number.parseFloat(process.env.KIMI_TEMPERATURA ?? "1");
-  const lectura = await pedirLectura({ hechos, baseUrl, modelo, apiKey, maxTokens: 8000, timeoutMs: 300_000, temperatura });
+  // DOS MAESTROS, no uno. Kimi K3 y Claude por Bedrock miran los MISMOS hechos y responden por
+  // separado. Enseñan cosas distintas: cada uno tiene sus sesgos, y un alumno que solo copia a un
+  // maestro hereda sus manías. Además queda medido cuál produce más material que pasa el filtro —
+  // ese número, con el tiempo, dice cuál enseña mejor sobre NUESTRO dominio.
+  const maestros: Array<{ nombre: string; baseUrl: string; modelo: string; apiKey: string; temperatura: number }> = [];
+  const kimi = process.env.KIMI_API_KEY?.trim();
+  if (kimi) {
+    maestros.push({
+      nombre: "kimi",
+      baseUrl: process.env.KIMI_BASE_URL?.trim() || "https://api.moonshot.ai/v1",
+      modelo: process.env.KIMI_MODEL?.trim() || "kimi-k3",
+      apiKey: kimi,
+      // K3 rechaza cualquier temperatura que no sea 1 con HTTP 400.
+      temperatura: Number.parseFloat(process.env.KIMI_TEMPERATURA ?? "1")
+    });
+  }
+  if (maestros.length === 0) {
+    console.error("no hay ningún maestro configurado (falta KIMI_API_KEY). Sin maestro no hay material.");
+    process.exitCode = 1;
+    return;
+  }
+
+  for (const m of maestros) {
+    await unMaestro(workspace, hechos, m);
+  }
+}
+
+/** Le pide una lectura a UN maestro, la verifica, y la guarda solo si pasó. */
+async function unMaestro(
+  workspace: OpenClawWorkspace,
+  hechos: HechosWarmup,
+  m: { nombre: string; baseUrl: string; modelo: string; apiKey: string; temperatura: number }
+): Promise<void> {
+  // Los maestros RAZONAN antes de contestar y el razonamiento sale del mismo presupuesto: medido
+  // con 10 tokens, 7 se fueron en razonar y la respuesta salió vacía.
+  const lectura = await pedirLectura({
+    hechos,
+    baseUrl: m.baseUrl,
+    modelo: m.modelo,
+    apiKey: m.apiKey,
+    maxTokens: 8000,
+    timeoutMs: 300_000,
+    temperatura: m.temperatura
+  });
 
   if (!lectura.lectura) {
-    console.log(`[maestro] sin respuesta: ${lectura.motivo}`);
+    console.log(`[maestro ${m.nombre}] sin respuesta: ${lectura.motivo}`);
     return;
   }
 
@@ -147,6 +177,7 @@ async function main(): Promise<void> {
   // equivoca no enseña: se descarta.
   const v = verificarLectura(lectura.lectura, hechos);
   const paso = v.reparos.length === 0;
+  const modelo = m.modelo;
 
   await workspace.updateInventoryJson<Corpus>(CORPUS, (actual) => {
     const c = actual ?? { version: 1 as const, ejemplos: [], descartados: 0 };
@@ -171,8 +202,8 @@ async function main(): Promise<void> {
   const c = await workspace.readInventoryJson<Corpus>(CORPUS).catch(() => null);
   console.log(
     paso
-      ? `[maestro] ✓ ejemplo guardado (${lectura.modelo}, ${lectura.tokens?.completion ?? 0} tokens) · corpus: ${c?.ejemplos.length ?? 0} · descartados: ${c?.descartados ?? 0}`
-      : `[maestro] ✗ DESCARTADO, el maestro se equivocó: ${v.reparos.join(" · ")} · corpus: ${c?.ejemplos.length ?? 0} · descartados: ${c?.descartados ?? 0}`
+      ? `[maestro ${m.nombre}] ✓ ejemplo guardado (${lectura.modelo}, ${lectura.tokens?.completion ?? 0} tokens) · corpus: ${c?.ejemplos.length ?? 0} · descartados: ${c?.descartados ?? 0}`
+      : `[maestro ${m.nombre}] ✗ DESCARTADO, se equivocó: ${v.reparos.join(" · ")} · corpus: ${c?.ejemplos.length ?? 0} · descartados: ${c?.descartados ?? 0}`
   );
 }
 

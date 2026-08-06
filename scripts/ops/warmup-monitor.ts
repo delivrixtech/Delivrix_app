@@ -508,6 +508,29 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
  * no se importa ejecutarAcciones ni se le pasan herramientas al modelo, así que el techo de daño de
  * una inyección por Slack es "dijo una tontería", no "frenó un nodo".
  */
+/**
+ * Lanza al maestro como proceso aparte. Aparte y no en línea: hablar con una API paga tarda
+ * minutos, y el vigilante no puede quedarse esperando ni morirse si esa llamada falla.
+ */
+function ejecutarMaestro(): void {
+  if (!process.env.KIMI_API_KEY?.trim()) return;
+  void (async () => {
+    try {
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        ["--env-file=config/gateway.env", "--experimental-strip-types", "scripts/ops/maestro-destilacion.ts"],
+        { cwd: process.cwd(), timeout: 600_000 }
+      );
+      const linea = stdout.split("\n").filter((l) => l.includes("[maestro")).join(" | ");
+      if (linea) console.log(linea);
+    } catch (e) {
+      console.log(`[maestro] no pudo correr: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  })();
+}
+
 let chatCorriendo = false;
 async function tickChat(workspace: OpenClawWorkspace, botUserId: string | null): Promise<void> {
   // NO SE SOLAPAN. El tick es cada 20 s pero el modelo tarda 30-60 s en contestar: sin este
@@ -682,6 +705,14 @@ async function main(): Promise<void> {
       console.log("sin token de Slack o sin poder identificarme: el chat queda apagado.");
     }
 
+    // EL MAESTRO, enganchado a la guardia. Corre DESPUÉS de cada vuelta del agente, sobre los
+    // MISMOS hechos que el agente acaba de mirar — que es la única forma de que la comparación
+    // signifique algo. Sin esto el corpus solo crecía cuando alguien lo corría a mano, o sea nunca.
+    // Es un proceso aparte a propósito: una llamada a una API paga que tarda minutos no puede
+    // demorar ni tumbar al vigilante.
+    const MAESTRO_CADA = Number.parseInt(process.env.MAESTRO_CADA_VUELTAS ?? "3", 10) || 3;
+    let vueltasDesdeMaestro = 0;
+
     console.log(`\nmirando cada ${Math.round(INTERVALO_MS / 60000)} min. Ctrl-C para parar.`);
     for (;;) {
       await new Promise((r) => setTimeout(r, INTERVALO_MS));
@@ -690,6 +721,14 @@ async function main(): Promise<void> {
       } catch (error) {
         // Una vuelta que falla no puede matar el monitor: se reporta y se sigue mirando.
         console.error("vuelta fallida:", error instanceof Error ? error.message : String(error));
+      }
+
+      // Cada N vueltas, los maestros miran lo mismo y su respuesta se guarda SI pasa la
+      // verificación. No en cada vuelta: costaría tokens de API 144 veces por día para material
+      // que se repite (los hechos cambian poco entre vueltas de 10 min).
+      if (++vueltasDesdeMaestro >= MAESTRO_CADA) {
+        vueltasDesdeMaestro = 0;
+        void ejecutarMaestro();
       }
     }
   } finally {
