@@ -270,3 +270,44 @@ test("un nodo ilegible NO se reporta como frenado", async () => {
   assert.equal(roto[0]?.ejecutada, false);
   assert.match(roto[0]?.detalle ?? "", /no pude leer el nodo/);
 });
+
+test("diagnosticar_dominio: dice QUIÉN lo rechaza, que es lo que nadie leía", async () => {
+  // La lección más cara del proyecto: 38 de 64 nodos estaban cerrados en Gmail mientras el chequeo
+  // de listas negras decía "0 blacklist". La evidencia llevaba semanas en el mail.log de cada
+  // máquina. Esta mano la lee.
+  const r = await ejecutarAcciones(
+    [{ accion: "diagnosticar_dominio", dominio: "x.com", motivo: "quiero saber por qué no entrega" }],
+    {
+      dominiosConocidos: ["x.com"],
+      diagnosticarDominio: async () => ({
+        estado: "blocked_by_provider",
+        bloqueanPor: ["gmail.com"],
+        degradadoEn: ["yahoo.com"],
+        entregados: 12,
+        rechazados: 430,
+        detalle: "550-5.7.1 unsolicited mail"
+      })
+    } as never
+  );
+  assert.equal(r[0]?.ejecutada, true);
+  assert.match(r[0]?.detalle ?? "", /CERRADO en: gmail\.com/, "dice quién, no solo que está mal");
+  assert.match(r[0]?.detalle ?? "", /Rechazo parcial en: yahoo\.com/);
+  assert.match(r[0]?.detalle ?? "", /12 entregados \/ 430 rechazados/);
+  assert.match(r[0]?.detalle ?? "", /5\.7\.1/, "trae el motivo real del receptor");
+});
+
+test("un dominio inventado no llega a abrir SSH, ni para diagnosticar", async () => {
+  let llamado = false;
+  const r = await ejecutarAcciones(
+    [{ accion: "diagnosticar_dominio", dominio: "fantasma.com", motivo: "m" }],
+    {
+      dominiosConocidos: ["real.com"],
+      diagnosticarDominio: async () => {
+        llamado = true;
+        return { estado: "ok", bloqueanPor: [], degradadoEn: [], entregados: 0, rechazados: 0, detalle: "" };
+      }
+    } as never
+  );
+  assert.equal(r[0]?.ejecutada, false);
+  assert.equal(llamado, false, "ni siquiera se intentó la conexión");
+});

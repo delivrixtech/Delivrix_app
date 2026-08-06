@@ -19,6 +19,9 @@ import {
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
 const providerFilter = (args.find((a) => a.startsWith("--provider=")) ?? "").slice("--provider=".length) || null;
+// --domain=X: mirar UN nodo en vez de los 58. Lo agregó el agente: preguntar por un dominio
+// concreto tarda segundos, barrer la flota entera tarda minutos y abre 58 sesiones SSH.
+const domainFilter = (args.find((a) => a.startsWith("--domain=")) ?? "").slice("--domain=".length).trim().toLowerCase() || null;
 const concurrency = Number.parseInt((args.find((a) => a.startsWith("--concurrency=")) ?? "").slice("--concurrency=".length), 10) || 8;
 
 interface Node { domain: string; serverSlug: string; serverIp: string }
@@ -51,6 +54,7 @@ async function main(): Promise<void> {
   const byDomain = new Map<string, Node>();
   for (const s of inventory?.servers ?? []) {
     if (s.status !== "configured" || !s.domain || !s.serverSlug || !s.serverIp) continue;
+    if (domainFilter && s.domain.toLowerCase() !== domainFilter) continue;
     byDomain.set(s.domain, { domain: s.domain, serverSlug: s.serverSlug, serverIp: s.serverIp });
   }
   const nodes = [...byDomain.values()];

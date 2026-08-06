@@ -100,6 +100,25 @@ export interface ContextoAcciones {
    * medición está vencida.
    */
   leerCupoNodo?: (dominio: string) => Promise<{ cap: number | null; consumidoHoy: number | null; motivo?: string | null }>;
+  /**
+   * DIAGNOSTICAR un dominio: leer el mail.log de su nodo y ver QUIÉN lo está rechazando y por qué.
+   *
+   * Es la respuesta a "por qué este dominio no entrega", que hoy el agente no podía contestar: veía
+   * un estado (`blocked_by_provider`) sin saber quién ni con qué motivo. Y es la lección más cara
+   * del proyecto: el 2026-07-25 se descubrió que 38 de 64 nodos estaban cerrados en Gmail mientras
+   * el chequeo de listas negras decía "0 blacklist". La evidencia llevaba SEMANAS en los logs de
+   * cada máquina y nadie la leía.
+   *
+   * PASIVO: lee logs, no manda un solo correo. Por eso no lleva flag.
+   */
+  diagnosticarDominio?: (dominio: string) => Promise<{
+    estado: string;
+    bloqueanPor: string[];
+    degradadoEn: string[];
+    entregados: number;
+    rechazados: number;
+    detalle: string;
+  }>;
   /** Pone cap 0 en el nodo del dominio. Reversible con un `--apply` normal. */
   frenarDominio?: (dominio: string, motivo: string) => Promise<{ antes: number | null; despues: number }>;
   /** Crea el kill-file: el daemon deja de mandar en la próxima vuelta. Reversible con `rm`. */
@@ -311,6 +330,34 @@ export async function ejecutarAcciones(
           });
         } catch (e) {
           out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude leer el nodo: ${e instanceof Error ? e.message : String(e)}` });
+        }
+        break;
+      }
+
+      case "diagnosticar_dominio": {
+        // POR QUÉ no entrega. Lee el mail.log del nodo: quién lo rechaza y con qué motivo. Pasivo,
+        // no manda correo, así que tampoco lleva flag.
+        const dominio = (p.dominio ?? "").trim().toLowerCase();
+        if (!ctx.dominiosConocidos.some((d) => d.toLowerCase() === dominio)) {
+          out.push({ accion: nombre, objetivo: p.dominio ?? null, ejecutada: false, detalle: `rechazada: "${p.dominio}" no está en el inventario` });
+          break;
+        }
+        if (!ctx.diagnosticarDominio) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: diagnosticar no está habilitado en este entorno" });
+          break;
+        }
+        try {
+          const d = await ctx.diagnosticarDominio(dominio);
+          const quien = d.bloqueanPor.length > 0 ? ` CERRADO en: ${d.bloqueanPor.join(", ")}.` : "";
+          const flojo = d.degradadoEn.length > 0 ? ` Rechazo parcial en: ${d.degradadoEn.join(", ")}.` : "";
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: true,
+            detalle: `${dominio}: ${d.estado}, ${d.entregados} entregados / ${d.rechazados} rechazados.${quien}${flojo} ${d.detalle}`.trim()
+          });
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude diagnosticar: ${e instanceof Error ? e.message : String(e)}` });
         }
         break;
       }

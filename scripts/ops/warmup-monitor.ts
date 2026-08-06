@@ -124,6 +124,48 @@ async function leerCupoDelNodo(dominio: string): Promise<{ cap: number | null; c
 }
 
 /**
+ * DIAGNOSTICA un dominio: lee el mail.log de su nodo y devuelve quién lo rechaza y por qué.
+ * Pasivo — no manda un solo correo. Reusa deliverability-health.ts, el mismo camino del operador.
+ */
+async function diagnosticarUnDominio(dominio: string): Promise<{
+  estado: string;
+  bloqueanPor: string[];
+  degradadoEn: string[];
+  entregados: number;
+  rechazados: number;
+  detalle: string;
+}> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    ["--env-file=config/gateway.env", "--experimental-strip-types", "scripts/ops/deliverability-health.ts", `--domain=${dominio}`, "--json"],
+    { cwd: process.cwd(), timeout: 120_000, maxBuffer: 8 * 1024 * 1024 }
+  );
+  const filas = JSON.parse(stdout) as Array<{
+    node?: { domain?: string };
+    verdict?: {
+      status?: string;
+      blockedProviders?: string[];
+      degradedProviders?: string[];
+      detail?: string;
+      stats?: { total?: { delivered?: number; blocked?: number } };
+    };
+  }>;
+  const f = filas.find((x) => x.node?.domain?.toLowerCase() === dominio.toLowerCase()) ?? filas[0];
+  if (!f?.verdict) throw new Error(`sin datos de ${dominio} (¿está en el inventario con nodo asignado?)`);
+  const v = f.verdict;
+  return {
+    estado: v.status ?? "desconocido",
+    bloqueanPor: v.blockedProviders ?? [],
+    degradadoEn: v.degradedProviders ?? [],
+    entregados: v.stats?.total?.delivered ?? 0,
+    rechazados: v.stats?.total?.blocked ?? 0,
+    detalle: (v.detail ?? "").slice(0, 200)
+  };
+}
+
+/**
  * ¿Hay un daemon emisor vivo en esta máquina? Es el único modo honesto de saberlo desde acá: el
  * flag que lo habilita vive en el entorno de ESE proceso, no en gateway.env. Y un daemon que
  * arranca sin el flag sale de inmediato, así que estar vivo equivale a estar habilitado.
@@ -419,6 +461,7 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
         // Leer el nodo NO muta nada: va habilitado siempre, sin flag. Es la mano que le permite
         // dejar de opinar sobre una foto y pasar a mirar.
         leerCupoNodo: leerCupoDelNodo,
+        diagnosticarDominio: diagnosticarUnDominio,
         // FRENAR toca la flota de producción por SSH (pone cap 0 en Postfix). Es reversible y solo
         // reduce, pero sigue siendo una mutación de infraestructura, así que va detrás de un flag
         // que el OPERADOR prende — no yo, y no por inferencia de que "quería que el agente actúe".
@@ -691,8 +734,9 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
         // MODELO. Todo lo demás —dominio real, motivo, idempotencia, nada que aumente el envío—
         // sigue igual de duro.
         ordenadoPorElJefe: true,
-        // IR A MIRAR: no muta nada, así que va siempre disponible.
+        // IR A MIRAR: ninguna de las dos muta nada, así que van siempre disponibles.
         leerCupoNodo: leerCupoDelNodo,
+        diagnosticarDominio: diagnosticarUnDominio,
         ...(puedeFrenar
           ? {
               frenarDominio: async (dominio: string, motivo: string) => {
