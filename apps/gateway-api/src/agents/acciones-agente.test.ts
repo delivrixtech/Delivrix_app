@@ -236,3 +236,37 @@ test("lo que NO se destraba ni con orden del jefe: un dominio que no existe", as
   assert.equal(r[0]?.ejecutada, false);
   assert.match(r[0]?.detalle ?? "", /no está en el inventario/);
 });
+
+test("leer_cupo_nodo: la mano que le permite IR A VER en vez de opinar sobre una foto", async () => {
+  // Sin ella el agente afirmó "bizreport-control.com sigue con cupo 255" leyendo un archivo de
+  // horas, cuando el nodo real ya estaba en 0 porque él mismo lo había frenado.
+  const r = await ejecutarAcciones(
+    [{ accion: "leer_cupo_nodo", dominio: "x.com", motivo: "quiero confirmar antes de afirmar" }],
+    {
+      dominiosConocidos: ["x.com"],
+      leerCupoNodo: async () => ({ cap: 0, consumidoHoy: null })
+    } as never
+  );
+  assert.equal(r[0]?.ejecutada, true);
+  assert.match(r[0]?.detalle ?? "", /FRENADO \(cupo 0\)/);
+  assert.equal(r[0]?.objetivo, "x.com");
+});
+
+test("un nodo ilegible NO se reporta como frenado", async () => {
+  // Si "no pude leer" se mostrara como 0, el agente concluiría que su freno funcionó cuando en
+  // realidad no sabe nada. Ausencia de dato no es evidencia.
+  const r = await ejecutarAcciones(
+    [{ accion: "leer_cupo_nodo", dominio: "x.com", motivo: "m" }],
+    { dominiosConocidos: ["x.com"], leerCupoNodo: async () => ({ cap: null, consumidoHoy: null }) } as never
+  );
+  assert.match(r[0]?.detalle ?? "", /no se pudo leer el cupo/);
+  assert.ok(!/FRENADO/.test(r[0]?.detalle ?? ""));
+
+  // Y si el nodo está incomunicado, la acción falla honestamente en vez de inventar.
+  const roto = await ejecutarAcciones(
+    [{ accion: "leer_cupo_nodo", dominio: "x.com", motivo: "m" }],
+    { dominiosConocidos: ["x.com"], leerCupoNodo: async () => { throw new Error("ssh timeout"); } } as never
+  );
+  assert.equal(roto[0]?.ejecutada, false);
+  assert.match(roto[0]?.detalle ?? "", /no pude leer el nodo/);
+});

@@ -93,6 +93,37 @@ async function frenarNodo(dominio: string, motivo: string): Promise<void> {
 }
 
 /**
+ * VA A MIRAR el cupo real de un nodo, ahora, por SSH. No escribe nada.
+ *
+ * Es lo que le faltaba para dejar de afirmar sobre una foto vieja: el agente dijo
+ * "bizreport-control.com sigue con cupo 255" leyendo sender-cap.json de horas, cuando el nodo
+ * real ya estaba en 0 porque él mismo lo había frenado.
+ *
+ * Se reusa `limite-fisico.ts --status`, el MISMO camino que usa el operador a mano: si el plan
+ * SSH cambia, cambia para los dos y no hay una segunda versión que se quede vieja.
+ */
+async function leerCupoDelNodo(dominio: string): Promise<{ cap: number | null; consumidoHoy: number | null; motivo?: string | null }> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    ["--env-file=config/gateway.env", "--experimental-strip-types", "scripts/ops/limite-fisico.ts", `--domain=${dominio}`, "--status"],
+    { cwd: process.cwd(), timeout: 90_000 }
+  );
+  // La línea del status trae "FRENADO (cap 0)" o "cap N/día". Se parsea de la salida real y no se
+  // reimplementa el comando: una segunda implementación del parseo es una segunda verdad.
+  const linea = stdout.split("\n").find((l) => l.includes(dominio)) ?? "";
+  const frenado = /FRENADO \(cap 0\)/.test(linea);
+  const mCap = linea.match(/cap (\d+)\/día/);
+  const mUso = linea.match(/(\d+)\/(\d+|\?)/);
+  return {
+    cap: frenado ? 0 : mCap ? Number(mCap[1]) : null,
+    consumidoHoy: /sin contador hoy/.test(linea) ? null : mUso ? Number(mUso[1]) : null,
+    motivo: /no se pudo|error/i.test(linea) ? linea.trim().slice(0, 120) : null
+  };
+}
+
+/**
  * ¿Hay un daemon emisor vivo en esta máquina? Es el único modo honesto de saberlo desde acá: el
  * flag que lo habilita vive en el entorno de ESE proceso, no en gateway.env. Y un daemon que
  * arranca sin el flag sale de inmediato, así que estar vivo equivale a estar habilitado.
@@ -385,6 +416,9 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
         frenablesConDanio: [
           ...new Set([...(hechos.flota?.cruzados ?? []), ...(hechos.cap?.enElTope ?? [])])
         ],
+        // Leer el nodo NO muta nada: va habilitado siempre, sin flag. Es la mano que le permite
+        // dejar de opinar sobre una foto y pasar a mirar.
+        leerCupoNodo: leerCupoDelNodo,
         // FRENAR toca la flota de producción por SSH (pone cap 0 en Postfix). Es reversible y solo
         // reduce, pero sigue siendo una mutación de infraestructura, así que va detrás de un flag
         // que el OPERADOR prende — no yo, y no por inferencia de que "quería que el agente actúe".
@@ -453,7 +487,21 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
   // Y se JUZGA lo que se ejecutó antes: comparar el estado de entonces contra el de ahora es lo
   // único que convierte "hice algo" en "aprendí algo".
   if (bitacoraPrevia) {
-    const capAhora = new Map((await workspace.readInventoryJson<CapFlota>(CAP_MEASUREMENT_FILE).catch(() => null))?.nodos.map((n) => [n.domain, n.cap]) ?? []);
+    // EL VEREDICTO SE PREGUNTA AL NODO, no al archivo. sender-cap.json puede tener horas, y juzgar
+    // un freno contra una foto vieja produce el veredicto falso "no sirvió" sobre un freno que sí
+    // quedó puesto — o peor, el agente repitiéndole al jefe un cupo que ya no existe.
+    const pendientesDeJuicio = bitacoraPrevia.entradas.filter(
+      (e) => e.estado === "ejecutada" && !e.veredicto && e.accion === "frenar_dominio" && e.objetivo
+    );
+    const capAhora = new Map<string, number | null>();
+    for (const e of pendientesDeJuicio.slice(0, 3)) {
+      try {
+        const r = await leerCupoDelNodo(e.objetivo as string);
+        capAhora.set(e.objetivo as string, r.cap);
+      } catch {
+        // Nodo incomunicado: NO se inventa un veredicto. Queda sin juzgar para la próxima vuelta.
+      }
+    }
     await workspace.updateInventoryJson<Bitacora>(BITACORA_FILE, (actual) => {
       let bit = actual ?? bitacoraPrevia;
       for (const e of bitacoraPrevia.entradas) {
@@ -643,6 +691,8 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
         // MODELO. Todo lo demás —dominio real, motivo, idempotencia, nada que aumente el envío—
         // sigue igual de duro.
         ordenadoPorElJefe: true,
+        // IR A MIRAR: no muta nada, así que va siempre disponible.
+        leerCupoNodo: leerCupoDelNodo,
         ...(puedeFrenar
           ? {
               frenarDominio: async (dominio: string, motivo: string) => {

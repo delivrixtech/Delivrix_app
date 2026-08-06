@@ -88,6 +88,18 @@ export interface ContextoAcciones {
    * volumen de envío. Eso último es irreversible y no hay autoridad que lo destrabe.
    */
   ordenadoPorElJefe?: boolean;
+  /**
+   * IR A MIRAR el cupo de un nodo AHORA, por SSH, en vez de creerle a un archivo.
+   *
+   * Es la mano que más le faltaba y no muta nada. Sin ella el agente afirmaba "bizreport-control.com
+   * sigue con cupo 255" leyendo un sender-cap.json de horas, cuando el nodo real ya estaba en 0
+   * porque él mismo lo había frenado. No es que mintiera: es que no tenía forma de ir a ver.
+   *
+   * Solo LEE. No persiste el resultado en sender-cap.json a propósito: escribir la lectura de UN
+   * nodo estampa una fecha fresca sobre los 57 caps viejos y el sistema deja de saber que su
+   * medición está vencida.
+   */
+  leerCupoNodo?: (dominio: string) => Promise<{ cap: number | null; consumidoHoy: number | null; motivo?: string | null }>;
   /** Pone cap 0 en el nodo del dominio. Reversible con un `--apply` normal. */
   frenarDominio?: (dominio: string, motivo: string) => Promise<{ antes: number | null; despues: number }>;
   /** Crea el kill-file: el daemon deja de mandar en la próxima vuelta. Reversible con `rm`. */
@@ -267,6 +279,39 @@ export async function ejecutarAcciones(
         item.resueltoEn = ahora.toISOString();
         await ctx.pendientes.guardar([...lista]);
         out.push({ accion: nombre, objetivo: item.id, ejecutada: true, detalle: `pendiente resuelto: ${item.que} — ${motivo}` });
+        break;
+      }
+
+      case "leer_cupo_nodo": {
+        // IR A MIRAR. No muta nada, así que no lleva flag: la única mano que el agente puede usar
+        // libremente. Existe porque sin ella afirmaba sobre archivos de horas — dijo
+        // "bizreport-control.com sigue con cupo 255" cuando el nodo real ya estaba en 0 por su
+        // propio freno. No mentía: no tenía forma de ir a ver.
+        const dominio = (p.dominio ?? "").trim().toLowerCase();
+        if (!ctx.dominiosConocidos.some((d) => d.toLowerCase() === dominio)) {
+          out.push({ accion: nombre, objetivo: p.dominio ?? null, ejecutada: false, detalle: `rechazada: "${p.dominio}" no está en el inventario` });
+          break;
+        }
+        if (!ctx.leerCupoNodo) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: leer el nodo no está habilitado en este entorno" });
+          break;
+        }
+        try {
+          const r = await ctx.leerCupoNodo(dominio);
+          // "no se pudo leer" NUNCA se reporta como 0: un nodo ilegible parecería frenado y el
+          // agente concluiría que su freno funcionó cuando en realidad no sabe nada.
+          const cupo = r.cap === null ? "no se pudo leer el cupo" : r.cap === 0 ? "FRENADO (cupo 0)" : `cupo ${r.cap}/día`;
+          const uso = r.consumidoHoy === null ? "sin contador hoy" : `${r.consumidoHoy} enviados hoy`;
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: true,
+            detalle: `${dominio}: ${cupo}, ${uso}${r.motivo ? ` — ${r.motivo}` : ""}`,
+            despues: r.cap
+          });
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude leer el nodo: ${e instanceof Error ? e.message : String(e)}` });
+        }
         break;
       }
 
