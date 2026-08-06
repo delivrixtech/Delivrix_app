@@ -5,7 +5,7 @@
 # launchd hace nativo: relanzar si muere, recordar el PID, rotar el log, limpiar el puerto. En
 # producción esa gimnasia sobra — launchd es el supervisor. Acá queda SOLO el entorno y el exec.
 #
-# Uso: servicio.sh gateway|panel|warmup-daemon|warmup-monitor|warmup-cupo
+# Uso: servicio.sh gateway|panel|warmup-daemon|warmup-monitor|warmup-cupo|flota-salud
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -55,6 +55,16 @@ case "${1:-}" in
       scripts/ops/limite-fisico.ts --status --cada=6
     ;;
 
+  # LA SALUD DE LA FLOTA. Decide qué dominios entran al pool del warmup (saca los cerrados por el
+  # receptor, los de cola atascada y los que cruzaron el umbral) y la lista que el agente puede
+  # frenar y nunca soltar. Salía de una corrida MANUAL, así que nadie la corría: el 2026-08-06 el
+  # archivo tenía 35 horas y el agente decidía el pool con una foto de anteayer.
+  # Cada 6h, igual que el cupo. Es pasiva: lee mail.log por SSH, no manda correo.
+  flota-salud)
+    exec "${NODE_BIN}" --env-file="${ENV_FILE}" --experimental-strip-types \
+      scripts/ops/medir-flota.ts --cada=6
+    ;;
+
   panel)
     # El proxy de Vite lee los tokens del ENTORNO (no de --env-file). Misma cadena de fallback
     # que vite.config.ts: si el token efectivo falta, el WS queda en "reconnecting" perpetuo.
@@ -93,7 +103,7 @@ case "${1:-}" in
     ;;
 
   *)
-    echo "uso: servicio.sh gateway|panel|warmup-daemon|warmup-monitor|warmup-cupo" >&2
+    echo "uso: servicio.sh gateway|panel|warmup-daemon|warmup-monitor|warmup-cupo|flota-salud" >&2
     exit 2
     ;;
 esac

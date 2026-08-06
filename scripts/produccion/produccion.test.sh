@@ -30,8 +30,12 @@ chequear "panel solo"              "panel"                                      
 chequear "warmup toca daemon+gw"   "gateway warmup-daemon"                                "$(mapa 'apps/warmup-engine/src/service/live-warmup-daemon.ts')"
 chequear "monitor"                 "warmup-monitor"                                       "$(mapa 'scripts/ops/warmup-monitor.ts')"
 chequear "cupo"                    "warmup-cupo"                                          "$(mapa 'scripts/ops/limite-fisico.ts')"
-chequear "packages toca todo"      "gateway panel warmup-cupo warmup-daemon warmup-monitor" "$(mapa 'packages/queue/src/index.ts')"
-chequear "config toca todo"        "gateway panel warmup-cupo warmup-daemon warmup-monitor" "$(mapa 'config/gateway.env')"
+# La salud de la flota decide QUÉ DOMINIOS entran al pool del warmup. Salía de una corrida manual,
+# así que nadie la corría: el 2026-08-06 el archivo tenía 35h y el agente elegía el pool con una
+# foto de anteayer. Ahora es un servicio, y como tal tiene que reiniciarse cuando cambia su código.
+chequear "salud de la flota"       "flota-salud"                                          "$(mapa 'scripts/ops/medir-flota.ts')"
+chequear "packages toca todo"      "flota-salud gateway panel warmup-cupo warmup-daemon warmup-monitor" "$(mapa 'packages/queue/src/index.ts')"
+chequear "config toca todo"        "flota-salud gateway panel warmup-cupo warmup-daemon warmup-monitor" "$(mapa 'config/gateway.env')"
 chequear "doc no toca nada"        ""                                                     "$(mapa 'DOCUMENTACION/algo.md')"
 chequear "sin duplicados"          "gateway warmup-daemon"                                "$(mapa 'apps/warmup-engine/a.ts
 apps/warmup-engine/b.ts

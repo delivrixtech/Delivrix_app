@@ -251,6 +251,7 @@ SERVICIOS="gateway|gateway|no
 panel|panel|no
 warmup-monitor|warmup-monitor|no
 warmup-cupo|warmup-cupo|no
+flota-salud|flota-salud|no
 warmup-daemon|warmup-daemon|SI"
 
 escribir_plist() {

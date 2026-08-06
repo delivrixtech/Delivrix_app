@@ -19,6 +19,34 @@ const concurrency =
   Number.parseInt((args.find((a) => a.startsWith("--concurrency=")) ?? "").slice("--concurrency=".length), 10) ||
   MEASUREMENT_CONCURRENCY;
 
+/**
+ * `--cada=<horas>`: repite la medición para siempre, igual que `limite-fisico --status --cada`.
+ *
+ * Por qué existe: sender-measurement.json decide QUÉ DOMINIOS ENTRAN AL POOL del warmup (saca los
+ * cerrados por el receptor, los de cola atascada y los que cruzaron el umbral) y también la lista
+ * de dominios que el agente puede frenar y nunca soltar. Todo eso salía de una corrida MANUAL, así
+ * que nadie la corría: el 2026-08-06 a las 06:18 UTC el archivo tenía 35 horas, y el propio agente
+ * lo levantó como su queja principal — "operamos con datos de la flota que tienen más de treinta
+ * horas". Tenía razón.
+ *
+ * El agujero no se ve desde afuera: el sistema sigue andando, solo que eligiendo el pool con una
+ * foto de anteayer. Un dominio que se destrabó ayer sigue excluido, y uno que se cerró ayer sigue
+ * recibiendo calentamiento que no llega a ninguna parte.
+ *
+ * Es PASIVA —lee el mail.log de cada nodo por SSH, no manda un solo correo— así que repetirla no
+ * tiene costo de reputación. Lo único que cuesta es tiempo de SSH contra la flota.
+ */
+const cadaHoras = (() => {
+  const crudo = (args.find((a) => a.startsWith("--cada=")) ?? "").slice("--cada=".length);
+  if (!crudo) return null;
+  const n = Number.parseInt(crudo, 10);
+  if (!/^\d+$/.test(crudo) || !Number.isInteger(n) || n <= 0 || n > 24) {
+    console.error(`--cada=${crudo} inválido: se espera un entero entre 1 y 24. No se hizo nada.`);
+    process.exit(1);
+  }
+  return n;
+})();
+
 async function main(): Promise<void> {
   const runner = createSmtpSshRunnerFromEnv(process.env);
   if (!runner.isConfigured()) {
@@ -62,7 +90,25 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error("ERROR:", error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (cadaHoras === null) {
+  main().catch((error) => {
+    console.error("ERROR:", error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+} else {
+  // En bucle, un error NO mata el proceso: la flota tiene 58 nodos por SSH y que uno falle es
+  // normal. Salir dejaría el archivo congelado hasta que alguien lo note — que es exactamente el
+  // modo de falla que este bucle vino a eliminar. Se loguea y se reintenta en el próximo turno.
+  const dormir = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  void (async () => {
+    console.log(`midiendo la flota cada ${cadaHoras}h. Ctrl-C para parar.`);
+    for (;;) {
+      try {
+        await main();
+      } catch (error) {
+        console.error("ERROR en esta corrida (sigo vivo):", error instanceof Error ? error.message : String(error));
+      }
+      await dormir(cadaHoras * 3_600_000);
+    }
+  })();
+}

@@ -51,12 +51,13 @@ delivrix_servicios_afectados() {
     [[ -n "${f}" ]] || continue
     case "${f}" in
       packages/*|config/*|package.json|package-lock.json|scripts/produccion/servicio.sh|scripts/produccion/lib.sh)
-        _sumar gateway panel warmup-daemon warmup-monitor warmup-cupo ;;
+        _sumar gateway panel warmup-daemon warmup-monitor warmup-cupo flota-salud ;;
       apps/gateway-api/*)            _sumar gateway ;;
       apps/admin-panel/*)            _sumar panel ;;
       apps/warmup-engine/*)          _sumar warmup-daemon gateway ;;
       scripts/ops/warmup-monitor.ts) _sumar warmup-monitor ;;
       scripts/ops/limite-fisico.ts)  _sumar warmup-cupo ;;
+      scripts/ops/medir-flota.ts)    _sumar flota-salud ;;
     esac
   done
   local s
