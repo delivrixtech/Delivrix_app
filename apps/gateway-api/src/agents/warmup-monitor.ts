@@ -108,7 +108,12 @@ export interface LecturaAgente {
   verificacion?: LecturaEstructurada | null;
 }
 
-const SISTEMA = [
+/**
+ * El system prompt del agente. Se EXPORTA porque el dataset de destilación tiene que entrenarse
+ * con el mismo: si el maestro responde bajo un prompt y el alumno se entrena bajo otro, se le
+ * enseña a contestar una pregunta que nunca le van a hacer.
+ */
+export const SISTEMA = [
   "Sos el ingeniero de guardia de la fábrica de dominios de envío de Delivrix. Vivís en la Mac",
   "Studio y mirás el calentamiento las 24 horas.",
   "",
@@ -500,6 +505,12 @@ export interface PedirLecturaInput {
   loQueHiciste?: readonly string[];
   baseUrl: string;
   modelo: string;
+  /**
+   * Bearer para APIs que lo piden (Kimi/Moonshot, OpenAI, cualquiera compatible). La mini con
+   * LM Studio NO lo pide, y por eso hasta hoy no se mandaba: sin este campo, apuntar el agente a
+   * un proveedor pago era imposible aunque su API fuera la misma.
+   */
+  apiKey?: string;
   fetchImpl?: typeof fetch;
   /** Generoso a propósito: este modelo razona, y el razonamiento consume del mismo presupuesto. */
   maxTokens?: number;
@@ -521,7 +532,10 @@ export async function pedirLectura(input: PedirLecturaInput): Promise<LecturaAge
   try {
     const r = await doFetch(`${input.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(input.apiKey ? { authorization: `Bearer ${input.apiKey}` } : {})
+      },
       signal: control.signal,
       body: JSON.stringify({
         model: input.modelo,
