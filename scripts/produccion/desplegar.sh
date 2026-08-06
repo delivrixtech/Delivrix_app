@@ -138,8 +138,16 @@ if ssh "${SSH_DEST}" "sudo -n -l /bin/launchctl kickstart -k system/com.delivrix
   for s in "${reiniciar[@]}"; do
     if ssh "${SSH_DEST}" "sudo -n /bin/launchctl kickstart -k system/com.delivrix.${s}" 2>/dev/null; then
       echo "    ${s}: reiniciado"
+    elif ! ssh "${SSH_DEST}" "test -f /Library/LaunchDaemons/com.delivrix.${s}.plist"; then
+      # Servicio NUEVO que todavía no está instalado. Es un caso distinto de "el reinicio falló", y
+      # confundirlos manda al operador a depurar un servicio caído que en realidad nunca existió.
+      # Instalar un plist escribe en /Library/LaunchDaemons: eso es root de verdad y NO lo cubre la
+      # regla de sudoers del deploy, así que pide la clave una vez — a propósito.
+      echo "    ${s}: NO ESTÁ INSTALADO todavía." >&2
+      echo "      → corré:  ssh -t ${SSH_DEST} 'cd /Users/Shared/delivrix && sudo bash scripts/produccion/instalar-produccion.sh'" >&2
+      fallo=1
     else
-      echo "    ${s}: NO se pudo (¿está cargado?)" >&2
+      echo "    ${s}: NO se pudo reiniciar (está instalado pero el kickstart falló)" >&2
       fallo=1
     fi
   done
