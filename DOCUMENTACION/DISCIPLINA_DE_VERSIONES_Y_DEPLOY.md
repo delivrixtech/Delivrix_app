@@ -87,7 +87,7 @@ bash scripts/produccion/deploy-sin-clave.sh     # una sola vez
 
 Instala **exactamente** esto y nada más:
 
-```
+```text
 delivrixstudio ALL=(root) NOPASSWD: /bin/launchctl kickstart -k system/com.delivrix.*
 ```
 
