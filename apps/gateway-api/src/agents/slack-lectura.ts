@@ -138,6 +138,34 @@ export async function leerNuevos(
   return { mensajes: out.sort((a, b) => a.ts.localeCompare(b.ts)), error: null };
 }
 
+/**
+ * EL HILO COMPLETO, tal como está en Slack. No se reconstruye ni se guarda: Slack ES el almacén.
+ *
+ * Sin esto el agente recibía UN solo mensaje por turno y arrancaba de cero cada vez — por eso
+ * "no entendía": no es que fuera tonto, es que no tenía la conversación delante. Visto en vivo:
+ * el jefe le dijo "te entrego las semillas mañana" y en el turno siguiente le contestó como si
+ * nunca lo hubiera leído.
+ */
+export async function leerHilo(
+  cfg: CfgLectura,
+  threadTs: string,
+  limite = 20
+): Promise<Array<{ quien: "jefe" | "vos"; texto: string }>> {
+  try {
+    const r = await slackGet(cfg, "conversations.replies", { ts: threadTs, limit: String(limite) });
+    if (!r.ok) return [];
+    return (r.messages ?? [])
+      .map((m) => m as Record<string, unknown>)
+      .filter((m) => typeof m.text === "string" && String(m.text).trim().length > 0)
+      .map((m) => ({
+        quien: (m.bot_id || (cfg.botUserId && m.user === cfg.botUserId) ? "vos" : "jefe") as "jefe" | "vos",
+        texto: String(m.text)
+      }));
+  } catch {
+    return [];
+  }
+}
+
 /** El user_id del propio bot, para no contestarse. Se pide una vez al arrancar. */
 export async function miUserId(cfg: { token: string; fetchImpl?: typeof fetch }): Promise<string | null> {
   try {

@@ -27,7 +27,7 @@ import {
   type Bitacora
 } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
 import { decidirSiHablar, mandarASlack, recordarAviso, type MemoriaSlack } from "../../apps/gateway-api/src/agents/slack.ts";
-import { avanzar, dondeResponder, estadoVacio, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
+import { avanzar, dondeResponder, estadoVacio, leerHilo, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
 import { responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
 import { lineasParaPrompt as accionesParaPrompt } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
 import { planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
@@ -525,8 +525,13 @@ async function tickChat(workspace: OpenClawWorkspace, botUserId: string | null):
 async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string | null): Promise<void> {
   const token = process.env.SLACK_BOT_TOKEN?.trim();
   const canal = process.env.SLACK_CANAL?.trim();
-  const baseUrl = process.env.LOCAL_INFERENCE_BASE_URL?.trim();
-  const modelo = process.env.LOCAL_INFERENCE_MODEL?.trim();
+  // EL CEREBRO DEL CHAT: si hay Kimi, se usa Kimi. Conversar es esporádico —solo cuando el jefe
+  // escribe— así que el costo es trivial, y la diferencia con el 35B local es enorme en entender
+  // el hilo y no divagar. El modelo local sigue siendo el de la GUARDIA, que corre 144 veces por
+  // día y ahí sí el costo mandaría.
+  const kimiKey = process.env.KIMI_API_KEY?.trim();
+  const baseUrl = kimiKey ? (process.env.KIMI_BASE_URL?.trim() || "https://api.moonshot.ai/v1") : process.env.LOCAL_INFERENCE_BASE_URL?.trim();
+  const modelo = kimiKey ? (process.env.KIMI_MODEL?.trim() || "kimi-k3") : process.env.LOCAL_INFERENCE_MODEL?.trim();
   if (!token || !canal || !baseUrl || !modelo) return;
 
   const estado = (await workspace.readInventoryJson<EstadoLectura>(CHAT_FILE).catch(() => null)) ?? estadoVacio();
@@ -545,15 +550,19 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
   const bitacora = await workspace.readInventoryJson<Bitacora>(BITACORA_FILE).catch(() => null);
 
   for (const m of mensajes) {
+    // EL HILO COMPLETO. Sin esto le llegaba UN mensaje suelto y arrancaba de cero cada turno: por
+    // eso "no entendía". No era el modelo — era que no tenía la conversación delante.
+    const hilo = await leerHilo({ token, canal, botUserId }, dondeResponder(m));
     const r = await responder({
       contexto: {
-        // El hilo NO se reconstruye: Slack es el almacén. Acá va el turno que hay que contestar.
-        hilo: [{ quien: "jefe", texto: m.texto }],
+        // Slack ES el almacén del hilo. Si por lo que sea no se pudo leer, al menos va este turno.
+        hilo: hilo.length > 0 ? hilo : [{ quien: "jefe", texto: m.texto }],
         snapshot: snapshot ?? null,
         loQueHiciste: accionesParaPrompt(bitacora, 6)
       },
       baseUrl,
-      modelo
+      modelo,
+      ...(kimiKey ? { apiKey: kimiKey, temperatura: 1 } : {})
     });
     if (!r.texto) {
       console.log(`[chat] sin respuesta para "${m.texto.slice(0, 40)}": ${r.motivo}`);
@@ -625,7 +634,17 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
 
     // La línea ACCION es maquinaria, no conversación: se saca del texto que ve el jefe y en su
     // lugar va el RESULTADO. Mostrarle la sintaxis interna sería ruido.
-    const paraSlack = [r.texto.replace(/^ACCION:.*$/gim, "").trim(), ...hechas].filter(Boolean).join("\n");
+    // LA MENCIÓN. "Juanes," en texto plano es una palabra más para Slack: no genera notificación.
+    // Con <@U...> sí suena en el móvil. Se usa solo cuando pide una decisión o hay algo urgente —
+    // si notificara todo, en dos días el jefe silencia el canal y volvemos al principio.
+    const jefeId = process.env.SLACK_JUANES_USER_ID?.trim();
+    let cuerpo = r.texto.replace(/^ACCION:.*$/gim, "").trim();
+    if (jefeId) {
+      const urgente = /\bJUANES\b/.test(cuerpo) || /necesito (que|tu)|no puedo|confirm|decid|ayuda/i.test(cuerpo);
+      cuerpo = cuerpo.replace(/^\s*JUANES[,!\s]*/i, "").replace(/^\s*Juanes[,]\s*/, "");
+      cuerpo = urgente ? `<@${jefeId}> ${cuerpo}` : cuerpo;
+    }
+    const paraSlack = [cuerpo, ...hechas].filter(Boolean).join("\n");
     // thread_ts: contesta DENTRO del hilo. Sin esto la conversación se parte en pedazos.
     await mandarASlack({ texto: paraSlack, motivo: "respuesta al jefe", pideRespuesta: false }, { token, canal, threadTs: dondeResponder(m) });
     console.log(`[chat] respondí en el hilo ${dondeResponder(m)}: ${r.texto.slice(0, 70)}`);
