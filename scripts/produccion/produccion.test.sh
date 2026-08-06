@@ -89,8 +89,63 @@ u2="$(delivrix_uptime_s "${crudo2}")"
 chequear "recién arrancada → uptime chico" "si" "$( (( u2 < 10 )) && echo si || echo "NO(${u2})" )"
 chequear "entrada basura → falla, no miente" "" "$(delivrix_uptime_s "no soy boottime" 2>/dev/null || true)"
 
+echo "arranque en frío: marca ISO → epoch"
+# BSD `date -j -f` ACEPTA los milisegundos pero se queja por stderr en cada llamada; en un log de
+# verificación ese ruido se lee como si el chequeo estuviera roto. Por eso se recortan.
+ref=1785968693   # el boot real de la Studio: 2026-08-05T22:24:53Z
+iso="$(date -u -r ${ref} +%Y-%m-%dT%H:%M:%SZ)"
+chequear "ida y vuelta"            "${ref}" "$(delivrix_iso_a_epoch "${iso}")"
+chequear "con milisegundos"        "${ref}" "$(delivrix_iso_a_epoch "${iso%Z}.287Z")"
+chequear "sin Z"                   "${ref}" "$(delivrix_iso_a_epoch "${iso%Z}")"
+chequear "basura → falla, no miente" "" "$(delivrix_iso_a_epoch "no soy una fecha" 2>/dev/null || true)"
+chequear "vacío → falla"           ""       "$(delivrix_iso_a_epoch "" 2>/dev/null || true)"
+
+echo "arranque en frío: primera línea posterior al boot"
+# LA REGRESIÓN QUE ESTO EVITA: los logs sobreviven al reinicio. Sin comparar contra el boot, una
+# línea del arranque ANTERIOR se toma como prueba del actual y el verificador da verde sobre una
+# máquina que no levantó nada — que es exactamente la falla que vino a detectar.
+fx="$(mktemp)"
+cat > "${fx}" <<'LOG'
+2026-08-05T10:00:00.000Z [info] event=gateway.started (arranque VIEJO, de antes del boot)
+[2026-08-06T09:00:00Z] watchdog previo al boot
+2026-08-06T18:30:11.500Z [info] event=gateway.started (éste sí)
+2026-08-06T19:00:00.000Z [info] event=gateway.started (posterior, no es el primero)
+LOG
+chequear "toma la primera POSTERIOR"  "2026-08-06T18:30:11" "$(delivrix_primera_marca_iso '2026-08-06T18:00:00' < "${fx}")"
+chequear "corte anterior a todo"      "2026-08-05T10:00:00" "$(delivrix_primera_marca_iso '2026-01-01T00:00:00' < "${fx}")"
+chequear "todas viejas → vacío"       ""                    "$(delivrix_primera_marca_iso '2027-01-01T00:00:00' < "${fx}")"
+chequear "formato [ISO] del watchdog" "2026-08-06T09:00:00" "$(delivrix_primera_marca_iso '2026-08-06T00:00:00' < "${fx}")"
+chequear "sin marcas → vacío"         ""                    "$(printf 'linea sin fecha\n' | delivrix_primera_marca_iso '2026-08-06T00:00:00')"
+rm -f "${fx}"
+
+echo "arranque en frío: veredicto por servicio"
+# Tres resultados, nunca dos. "No pude comprobarlo" NO es "está bien": el 2026-07-29 una sonda que
+# se colgaba devolvió "bloqueado" falso en 10 de 10 nodos y se diagnosticó medio día un problema
+# que no existía. Acá el falso positivo sería peor: dar por buena una máquina que no arrancó.
+boot=1785968693
+chequear "artefacto posterior al boot" "ok 120"     "$(delivrix_veredicto_artefacto ${boot} $((boot + 120)))"
+chequear "artefacto anterior → FALLA"  "FALLA -60"  "$(delivrix_veredicto_artefacto ${boot} $((boot - 60)))"
+chequear "artefacto ausente → NO SÉ"   "NOSE -"     "$(delivrix_veredicto_artefacto ${boot} '')"
+chequear "medidoEn ilegible → NO SÉ"   "NOSE -"     "$(delivrix_veredicto_artefacto ${boot} 'no-es-epoch')"
+chequear "boot ilegible → NO SÉ"       "NOSE -"     "$(delivrix_veredicto_artefacto '' $((boot + 5)))"
+# warmup-cupo: limite-fisico.ts remide solo si la medición previa tiene ≥6h, así que tras un
+# reinicio un servicio PERFECTO puede pasar hasta 6h sin escribir. Sin esta tolerancia el operador
+# ve rojo en algo sano y aprende a ignorar el rojo — peor que no tener verificador.
+ahora="$(date +%s)"
+seis_h=21600
+chequear "cupo viejo, <6h y arrancó → tolerado" "ok-tolerado -2600" \
+  "$(delivrix_veredicto_artefacto $((ahora - 1000)) $((ahora - 3600)) ${seis_h} si)"
+chequear "cupo viejo y >6h → FALLA"             "FALLA -24000" \
+  "$(delivrix_veredicto_artefacto $((ahora - 1000)) $((ahora - 25000)) ${seis_h} si)"
+# La tolerancia NO puede tapar un servicio que ni arrancó: si no hay línea de arranque, un archivo
+# fresco es de la corrida ANTERIOR al reinicio y el servicio está muerto.
+chequear "cupo viejo sin arranque → FALLA"      "FALLA -2600" \
+  "$(delivrix_veredicto_artefacto $((ahora - 1000)) $((ahora - 3600)) ${seis_h} no)"
+chequear "la tolerancia no cambia un ok"        "ok 300" \
+  "$(delivrix_veredicto_artefacto ${boot} $((boot + 300)) ${seis_h} si)"
+
 echo "sintaxis de los scripts"
-for s in servicio.sh instalar-produccion.sh watchdog.sh respaldo-nocturno.sh desplegar.sh lib.sh vigilar-desde-la-mini.sh tunel.sh activar-warmup.sh; do
+for s in servicio.sh instalar-produccion.sh watchdog.sh respaldo-nocturno.sh desplegar.sh lib.sh vigilar-desde-la-mini.sh tunel.sh activar-warmup.sh verificar-arranque-en-frio.sh; do
   if bash -n "${ROOT_DIR}/scripts/produccion/${s}" 2>/dev/null; then
     printf '  ok   %s\n' "${s}"
   else
@@ -99,4 +154,16 @@ for s in servicio.sh instalar-produccion.sh watchdog.sh respaldo-nocturno.sh des
 done
 
 echo
+# --- la guarda anti doble-emisor tiene que ser PRECISA ------------------------------------------
+# El 2026-08-06 el patrón `-f "live-warmup-daemon"` matcheó un `npm test` —su glob incluye
+# apps/warmup-engine/**— y bloqueó un deploy legítimo con un FATAL sobre un emisor inexistente.
+# Una guarda que grita en falso es una guarda que alguien termina comentando, y esta protege de lo
+# único irreversible del proyecto: dos emisores duplicando volumen hacia Gmail.
+echo "guarda anti doble-emisor"
+patron="$(grep -o 'pgrep -f "[^"]*"' "${ROOT_DIR}/scripts/produccion/desplegar.sh" | head -1 | sed 's/pgrep -f "//; s/"$//')"
+chequear "no matchea un npm test" "no" \
+  "$(echo 'sh -c npm run typecheck:scripts && node --test apps/warmup-engine/src/**/*.test.ts' | grep -qE "${patron}" && echo si || echo no)"
+chequear "sí matchea el daemon real" "si" \
+  "$(echo '/opt/homebrew/bin/node --env-file=config/gateway.env --experimental-strip-types apps/warmup-engine/src/service/live-warmup-daemon.ts' | grep -qE "${patron}" && echo si || echo no)"
+
 if (( fallos == 0 )); then echo "TODO OK"; else echo "${fallos} FALLA(S)"; exit 1; fi

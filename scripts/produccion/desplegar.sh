@@ -40,7 +40,18 @@ fi
 # --- guarda anti doble-emisor -----------------------------------------------------------------
 # Si esta laptop todavía tiene el daemon de warmup vivo, hay DOS cerebros mandando correo contra
 # bases distintas. El lock de la base no cruza máquinas: no hay nada que lo impida salvo esto.
-if pgrep -f "live-warmup-daemon" >/dev/null 2>&1; then
+#
+# EL PATRÓN TIENE QUE SER EL DAEMON, NO LA PALABRA. Con `-f "live-warmup-daemon"` a secas, cualquier
+# proceso que MENCIONE esa cadena en su línea de comando cuenta como emisor vivo — y `npm test` la
+# menciona, porque su glob incluye apps/warmup-engine/**. Resultado real el 2026-08-06: correr los
+# tests bloqueó un deploy legítimo con un FATAL sobre un emisor que no existía.
+#
+# No es un detalle cosmético: una guarda que grita en falso es una guarda que alguien termina
+# comentando, y esta protege de lo único irreversible del proyecto (dos emisores duplicando volumen
+# a Gmail cruzan el umbral permanente). Que sea PRECISA es lo que la mantiene creíble.
+#
+# Se ancla al entrypoint real del daemon, con su extensión, que es lo que ejecuta node de verdad.
+if pgrep -f "live-warmup-daemon\.ts" >/dev/null 2>&1; then
   echo "FATAL: esta laptop tiene el daemon de warmup CORRIENDO." >&2
   echo "  Dos daemons contra bases distintas duplican el volumen hacia Gmail, y ese daño es" >&2
   echo "  permanente. Apagalo primero:  ./scripts/warmup-servicios.sh stop" >&2
