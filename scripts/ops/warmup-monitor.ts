@@ -350,6 +350,12 @@ async function reunirHechos(workspace: OpenClawWorkspace, pg: Pool): Promise<Hec
           nodosMedidos: cap.nodos.filter((n) => n.consumidoHoy !== null).length,
           nodosSinMedir: cap.nodos.filter((n) => n.consumidoHoy === null).length,
           enElTope: cap.nodos.filter((n) => n.cap && n.consumidoHoy !== null && n.consumidoHoy >= n.cap).map((n) => n.domain),
+          // LOS FRENADOS: cap 0. Faltaban por completo, y sin ellos la mano de soltar era decorativa
+          // — los dominios frenados no están en el plan (el pool excluye cap 0) ni en las vueltas
+          // (no mandan), así que NINGUNO llegaba a `dominiosConocidos` y `soltar_dominio` los
+          // rechazaba a todos con "no está en el inventario". El agente tenía la palanca y no tenía
+          // a quién aplicársela.
+          frenados: cap.nodos.filter((n) => n.cap === 0).map((n) => n.domain),
           sinLimite: cap.nodos.filter((n) => !n.cableado).length,
           // La FECHA viaja con el dato: sin ella el agente reportaba un cap de ayer como si fuera
           // de hoy, y la regla "si un dato está viejo, decilo" no tenía con qué cumplirse.
@@ -511,7 +517,10 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
             ...hechos.vueltas.map((v) => v.dominio),
             ...(hechos.flota?.cruzados ?? []),
             ...(hechos.flota?.cerca ?? []),
-            ...(hechos.cap?.enElTope ?? [])
+            ...(hechos.cap?.enElTope ?? []),
+            // LOS FRENADOS son el sujeto entero de soltar_dominio. Sin esta línea la acción existía
+            // y no alcanzaba a nadie: ninguno de ellos aparece en el plan ni en las vueltas.
+            ...(hechos.cap?.frenados ?? [])
           ])
         ],
         // EL ALCANCE DEL FRENO: solo donde el daño YA está hecho. Un dominio que cruzó el umbral
@@ -675,7 +684,7 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
     } else {
       console.log("[slack] silencio: nada cambió y no hay nada que pedir");
     }
-    await workspace.updateInventoryJson<MemoriaSlack>(SLACK_FILE, (m) => recordarAviso(estadoSlack, hablo, lectura.generadoEn, m));
+    await workspace.updateInventoryJson<MemoriaSlack>(SLACK_FILE, (m) => recordarAviso(estadoSlack, hablo, lectura.generadoEn, m, aviso));
   } catch (e) {
     // Slack NUNCA puede tumbar al agente que vigila la fábrica.
     console.log(`[slack] error al decidir/enviar: ${e instanceof Error ? e.message : String(e)}`);
@@ -808,7 +817,8 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
             ...(snapshot?.hechos?.vueltas ?? []).map((v) => v.dominio),
             ...(snapshot?.hechos?.flota?.cruzados ?? []),
             ...(snapshot?.hechos?.flota?.cerca ?? []),
-            ...(snapshot?.hechos?.cap?.enElTope ?? [])
+            ...(snapshot?.hechos?.cap?.enElTope ?? []),
+            ...(snapshot?.hechos?.cap?.frenados ?? [])
           ])
         ],
         // La orden vino de un humano: se relaja el alcance del freno, que existe para acotar al
@@ -913,7 +923,18 @@ async function main(): Promise<void> {
   pg.on("error", (e) => console.error(`[monitor] WARN cliente pg ocioso descartado: ${e.message} — sigo`));
 
   try {
-    await unaVuelta(workspace, pg);
+    // La PRIMERA vuelta no puede tumbar el proceso. El bucle en régimen ya tenía su catch, pero
+    // esta no, y ahí está la diferencia entre "se perdió una ronda" y "el vigilante no vuelve":
+    // si falla acá, `main().catch(→ process.exit(1))` mata el proceso, launchd lo relanza a los
+    // 10s con exactamente el mismo estado de entrada, y vuelve a fallar. Bucle de crash con el
+    // agente mudo toda la noche.
+    //
+    // En modo `--once` sí importa que se note el fallo: ahí el código de salida ES el resultado.
+    await (LOOP
+      ? unaVuelta(workspace, pg).catch((e: unknown) =>
+          console.error(`[monitor] primera vuelta fallida: ${e instanceof Error ? e.message : String(e)} — sigo vivo, reintento en el ciclo`)
+        )
+      : unaVuelta(workspace, pg));
     if (!LOOP) return;
 
     // EL CHAT arranca acá, en el MISMO proceso: ya vive 24/7 bajo launchd con KeepAlive. Un

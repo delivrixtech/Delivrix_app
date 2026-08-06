@@ -42,7 +42,19 @@ export function esParaContestar(
 ): boolean {
   if (!m.ts || !m.text) return false;
   if (m.bot_id) return false; // cualquier bot, incluido él mismo
-  if (m.subtype) return false; // joins, cambios de tema, archivos: no son conversación
+  // SUBTYPE: lista blanca, no rechazo total.
+  //
+  // Rechazar todo subtype dejaba sordo al agente ante la forma MÁS natural de escribirle: contestar
+  // dentro de un hilo con "también enviar al canal", que Slack marca `thread_broadcast`. No es
+  // teoría — se comió dos mensajes reales de Juanes la noche del 2026-08-05 ("Ok, muestrame." y
+  // "Pero ya tenemos 2 semillas configuradas..."), y él no vio ningún error: para él Sentinel
+  // simplemente lo ignoró. Es el mismo bug que motivó escribir este archivo, sobreviviendo en otra
+  // forma. El segundo camino de lectura (conversations.replies) tampoco lo rescataba: el mensaje
+  // conserva el subtype ahí también.
+  //
+  // `file_share` entra por lo mismo: mandar una captura CON texto es conversación, y el operador
+  // manda capturas todo el tiempo.
+  if (m.subtype && m.subtype !== "thread_broadcast" && m.subtype !== "file_share") return false;
   if (botUserId && m.user === botUserId) return false; // él mismo, por si acaso
   return m.text.trim().length > 0;
 }

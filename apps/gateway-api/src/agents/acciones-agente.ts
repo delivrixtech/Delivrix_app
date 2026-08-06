@@ -285,7 +285,23 @@ export async function ejecutarAcciones(
           out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: frenar no está habilitado en este entorno" });
           break;
         }
-        const r = await ctx.frenarDominio(dominio, motivo);
+        // El SSH puede fallar, y si la excepción escapa de acá se lleva puesto al agente entero.
+        // `limite-fisico.ts` sale con código 1 cuando algún nodo falla —o simplemente tarda más de
+        // 120s— y `promisify(execFile)` convierte eso en un rechazo. Sin este catch, el throw sube
+        // hasta `main().catch(→ process.exit(1))`, launchd relanza a los 10s, el prompt de entrada
+        // es idéntico porque no se persistió nada, el modelo vuelve a pedir lo mismo y vuelve a
+        // morir: bucle de crash con el vigilante mudo toda la noche. Y el watchdog no lo mira.
+        //
+        // Las tres manos pasivas ya tenían su try/catch; estas dos —las que mutan— eran los únicos
+        // awaits desnudos del switch. Que la acción falle tiene que ser un renglón en el informe,
+        // nunca la caída del proceso que la pidió.
+        let r: { antes: number | null; despues: number };
+        try {
+          r = await ctx.frenarDominio(dominio, motivo);
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude frenar ${dominio}: ${e instanceof Error ? e.message : String(e)}` });
+          break;
+        }
         if (r.antes === 0) {
           // Ya estaba frenado: reportarlo como acción NUEVA hace creer que pasó algo que no pasó,
           // y en el registro queda un "frené X" por vuelta sobre un nodo que no cambió nunca.
@@ -402,7 +418,15 @@ export async function ejecutarAcciones(
           break;
         }
 
-        const s = await ctx.soltarDominio(dominio, CAP_AL_SOLTAR, motivo);
+        // Mismo blindaje que frenar, y por la misma razón: un SSH que falla no puede matar al
+        // agente. Ver el comentario largo en frenar_dominio.
+        let s: { antes: number | null; despues: number };
+        try {
+          s = await ctx.soltarDominio(dominio, CAP_AL_SOLTAR, motivo);
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude soltar ${dominio}: ${e instanceof Error ? e.message : String(e)}` });
+          break;
+        }
         const historia =
           medida.muestra === 0
             ? "sin mediciones previas (arranca de cero)"

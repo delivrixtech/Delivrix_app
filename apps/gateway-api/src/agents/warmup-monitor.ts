@@ -35,7 +35,19 @@ export interface HechosWarmup {
    * NO hay totales de flota: el cap de Postfix es POR NODO y sumarlos producía un "tope diario"
    * inexistente que el agente citó como su conclusión central en 8 de 11 corridas.
    */
-  cap: { nodosMedidos: number; nodosSinMedir: number; enElTope: string[]; sinLimite: number; medidoEn?: string | null } | null;
+  cap: {
+    nodosMedidos: number;
+    nodosSinMedir: number;
+    enElTope: string[];
+    /**
+     * Los que están en cap 0. Sin esta lista la mano de soltar era decorativa: un dominio frenado
+     * no aparece en el plan (el pool excluye cap 0) ni en las vueltas (no manda), así que ninguno
+     * llegaba a `dominiosConocidos` y `soltar_dominio` los rechazaba con "no está en el inventario".
+     */
+    frenados?: string[];
+    sinLimite: number;
+    medidoEn?: string | null;
+  } | null;
   flota: {
     sanas: number;
     bloqueadas: number;
@@ -273,6 +285,10 @@ export function construirPrompt(
         `es un tope POR NODO, no de la flota; un nodo en su tope no frena a los demás. ` +
         `${hechos.cap.nodosMedidos} nodos con consumo medido, ${hechos.cap.nodosSinMedir} SIN medir.` +
         (hechos.cap.enElTope.length > 0 ? ` En su tope: ${hechos.cap.enElTope.join(", ")}.` : "") +
+        ((hechos.cap.frenados ?? []).length > 0
+          ? ` FRENADOS (cupo 0, no están calentando): ${(hechos.cap.frenados ?? []).join(", ")}.` +
+            " Sobre estos podés usar medir_dominio y diagnosticar_dominio, y soltar_dominio si alguno califica."
+          : "") +
         (hechos.cap.sinLimite > 0 ? ` ${hechos.cap.sinLimite} nodos SIN límite puesto.` : "")
     );
   } else {

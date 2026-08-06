@@ -466,3 +466,28 @@ test("soltar: el rechazo por daño consumado NO necesita SSH", async () => {
   assert.equal(r[0]!.ejecutada, false);
   assert.match(r[0]!.detalle, /umbral permanente/, "rechaza por el motivo real, no por el error de SSH");
 });
+
+test("si el SSH revienta, la excepción NO se escapa: el agente sigue vivo", async () => {
+  // Era el hallazgo más grave de la auditoría de la noche del 2026-08-06. `limite-fisico.ts` sale
+  // con código 1 cuando un nodo falla —o simplemente tarda más de 120s— y promisify(execFile) lo
+  // convierte en rechazo. Frenar y soltar eran los ÚNICOS awaits desnudos del switch, así que el
+  // throw subía hasta main().catch(→ process.exit(1)): launchd relanza a los 10s, el prompt de
+  // entrada es idéntico porque no se persistió nada, el modelo vuelve a pedir lo mismo y vuelve a
+  // morir. Bucle de crash con el vigilante mudo toda la noche, y el watchdog ni lo mira.
+  const revienta = async () => { throw new Error("Command failed: limite-fisico.ts --frenar --apply"); };
+
+  const f = await ejecutarAcciones(
+    [{ accion: "frenar_dominio", dominio: "a.com", motivo: "cruzó el umbral" }],
+    ctx({ dominiosConocidos: ["a.com"], frenarDominio: revienta as never })
+  );
+  assert.equal(f[0]!.ejecutada, false);
+  assert.match(f[0]!.detalle, /no pude frenar a\.com/);
+  assert.match(f[0]!.detalle, /Command failed/, "el motivo real llega al informe, no se traga");
+
+  const s = await ejecutarAcciones(
+    [{ accion: "soltar_dominio", dominio: "listo.com", motivo: "ya está" }],
+    ctxSoltar({ soltarDominio: revienta as never })
+  );
+  assert.equal(s[0]!.ejecutada, false);
+  assert.match(s[0]!.detalle, /no pude soltar listo\.com/);
+});

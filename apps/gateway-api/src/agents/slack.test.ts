@@ -115,3 +115,33 @@ test("sin credenciales no revienta: informa y sigue", async () => {
   );
   assert.equal(okey.ok, true);
 });
+
+test("un problema que dura toda la noche NO son 48 mensajes idénticos", () => {
+  // Corriendo cada 10 min, las razones que avisan sobre una CONDICIÓN QUE PERSISTE (el modelo
+  // caído, una lectura con reparos) no miraban la memoria: un problema que dura la noche llenaba
+  // Slack antes del desayuno. El daño real no es la molestia — es que entrena al operador a
+  // ignorar el canal por el que tiene que llegar lo urgente.
+  const ciego = base({ sinLectura: "fetch failed" });
+  const primero = decidirSiHablar(ciego, null, T(1));
+  assert.ok(primero, "la primera vez sí avisa");
+
+  const mem = recordarAviso(ciego, true, T(1), null, primero);
+  assert.equal(decidirSiHablar(ciego, mem, T(2)), null, "una hora después, callado");
+  assert.equal(decidirSiHablar(ciego, mem, T(6)), null, "cinco horas después, todavía callado");
+
+  // Pero callarse para siempre tampoco sirve: si a las 4am quedó ciego, a las 8 hay que saberlo.
+  const alRato = decidirSiHablar(ciego, mem, T(8));
+  assert.ok(alRato, "a las 7 horas lo repite: sigue roto y hay que enterarse");
+});
+
+test("dos condiciones distintas no se tapan entre sí", () => {
+  // Guardando solo la firma del ESTADO, un aviso por reparos silenciaba al de sin-lectura y al
+  // revés, porque el estado subyacente puede ser el mismo. Cada razón lleva su etiqueta.
+  const conReparos = base({ reparos: ["dice que x.com cruzó y no figura"] });
+  const a1 = decidirSiHablar(conReparos, null, T(1));
+  assert.ok(a1);
+  const mem = recordarAviso(conReparos, true, T(1), null, a1);
+
+  const ciego = base({ sinLectura: "modelo caído" });
+  assert.ok(decidirSiHablar(ciego, mem, T(2)), "otra condición SÍ se avisa aunque sea a los minutos");
+});

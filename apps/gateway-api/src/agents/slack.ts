@@ -42,6 +42,11 @@ export interface Aviso {
   motivo: string;
   /** true si necesita que un humano conteste. */
   pideRespuesta: boolean;
+  /**
+   * Qué se guarda como "esto ya lo dije". Por defecto es la firma del estado; las razones que
+   * avisan sobre una CONDICIÓN QUE PERSISTE la etiquetan con su motivo para no pisarse entre sí.
+   */
+  firma?: string;
 }
 
 // Los textos NO empiezan con "Juanes,": la mención <@ID> se agrega afuera (es la que hace sonar
@@ -50,6 +55,13 @@ export interface Aviso {
 
 /** Cada cuánto, como mucho, se repite un aviso del mismo tipo. Evita el goteo. */
 const SILENCIO_MIN = 60;
+
+/**
+ * Cada cuánto se REPITE un aviso sobre una condición que sigue igual (el modelo caído, una lectura
+ * con reparos). Una vez por turno de sueño: ni 48 mensajes idénticos antes del desayuno, ni un
+ * silencio eterno sobre algo que sigue roto.
+ */
+const HORAS_PARA_REPETIR = 6;
 
 function firma(e: EstadoParaSlack): string {
   return [e.emisor, e.acciones.map((a) => `${a.accion}:${a.objetivo ?? ""}:${a.ejecutada}`).join(","), e.sinLectura ? "sin-lectura" : ""].join("|");
@@ -66,22 +78,45 @@ export function decidirSiHablar(
 ): Aviso | null {
   const mem = memoria ?? { ultimoEmisor: null, ultimoAviso: null, ultimaFirma: null };
 
+  /**
+   * ¿Ya dije esto mismo, y hace poco?
+   *
+   * Las razones 1 y 2 avisan sobre CONDICIONES QUE PERSISTEN —el modelo caído, una lectura que no
+   * cuadra— y no miraban la memoria. Corriendo cada 10 minutos, un problema que dura la noche son
+   * 48 mensajes idénticos antes del desayuno, y el efecto real no es que moleste: es que entrena
+   * al operador a ignorar el canal, justo el canal por el que tiene que llegar lo urgente.
+   *
+   * Callarse para siempre tampoco sirve: si a las 4am el agente quedó ciego, a las 8 hay que
+   * seguir sabiéndolo. Así que se repite, pero cada 6 horas — una vez por turno de sueño, no una
+   * cada diez minutos.
+   */
+  const yaLoDije = (etiqueta: string): boolean => {
+    if (mem.ultimaFirma !== `${etiqueta}|${firma(estado)}`) return false;
+    if (!mem.ultimoAviso) return false;
+    const horas = (Date.parse(ahoraISO) - Date.parse(mem.ultimoAviso)) / 3_600_000;
+    return Number.isFinite(horas) && horas < HORAS_PARA_REPETIR;
+  };
+
   // 1. NO PUDO MIRAR. Un vigilante ciego tiene que decirlo: es lo único peor que una mala noticia.
   if (estado.sinLectura) {
+    if (yaLoDije("sin-lectura")) return null;
     return {
       texto: `No pude leer el estado: ${estado.sinLectura}. Si sigue así en la próxima vuelta, algo está roto.`,
       motivo: "sin lectura",
-      pideRespuesta: false
+      pideRespuesta: false,
+      firma: `sin-lectura|${firma(estado)}`
     };
   }
 
   // 2. DIJO ALGO QUE NO SE SOSTIENE. Se avisa porque, con reparos, el agente NO ejecuta nada: el
   //    operador tiene que saber que quedó mudo de manos, no solo de boca.
   if (estado.reparos.length > 0) {
+    if (yaLoDije("reparos")) return null;
     return {
       texto: `Me trabé: dije algo que no cuadra con los datos (${estado.reparos[0]}), así que no toqué nada. Mejor miralo vos.`,
       motivo: "reparos en la verificación",
-      pideRespuesta: true
+      pideRespuesta: true,
+      firma: `reparos|${firma(estado)}`
     };
   }
 
@@ -134,14 +169,22 @@ export function decidirSiHablar(
 }
 
 /** Actualiza la memoria después de hablar (o de callarse). */
-export function recordarAviso(estado: EstadoParaSlack, hablo: boolean, ahoraISO: string, memoria: MemoriaSlack | null): MemoriaSlack {
+export function recordarAviso(
+  estado: EstadoParaSlack,
+  hablo: boolean,
+  ahoraISO: string,
+  memoria: MemoriaSlack | null,
+  aviso?: Aviso | null
+): MemoriaSlack {
   const mem = memoria ?? { ultimoEmisor: null, ultimoAviso: null, ultimaFirma: null };
   return {
     // El emisor se recuerda SIEMPRE, se haya hablado o no: si no, el primer cambio después de un
     // silencio se reportaría contra un estado viejísimo.
     ultimoEmisor: estado.emisor ?? mem.ultimoEmisor,
     ultimoAviso: hablo ? ahoraISO : mem.ultimoAviso,
-    ultimaFirma: hablo ? firma(estado) : mem.ultimaFirma
+    // La firma del AVISO manda sobre la del estado: dos razones distintas pueden tener el mismo
+    // estado, y guardar solo el estado hacía que una tapara a la otra.
+    ultimaFirma: hablo ? (aviso?.firma ?? firma(estado)) : mem.ultimaFirma
   };
 }
 

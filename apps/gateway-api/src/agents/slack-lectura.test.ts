@@ -90,3 +90,21 @@ test("si Slack falla, lo dice y no inventa mensajes", async () => {
   assert.deepEqual(mensajes, []);
   assert.equal(error, "not_in_channel");
 });
+
+test("un mensaje del jefe con 'responder también al canal' SE LEE", () => {
+  // Rechazar todo `subtype` dejaba sordo al agente ante la forma más natural de escribirle desde
+  // el móvil. Se comió dos mensajes reales de Juanes la noche del 2026-08-05 ("Ok, muestrame." y
+  // "Pero ya tenemos 2 semillas configuradas...") y él nunca vio un error: para él, Sentinel lo
+  // ignoró. Mismo bug que motivó este archivo, sobreviviendo en otra forma.
+  assert.equal(
+    esParaContestar({ ts: "1785989349.433769", text: "Ok, muestrame.", user: "U0BAQSXJJLW", subtype: "thread_broadcast" }, "U0BNCHPTPH8"),
+    true
+  );
+  // Una captura CON texto también es conversación: el operador manda capturas todo el tiempo.
+  assert.equal(esParaContestar({ ts: "1", text: "mirá esto", user: "U0BAQSXJJLW", subtype: "file_share" }, "U0BNCHPTPH8"), true);
+  // Lo que NO es conversación sigue afuera.
+  assert.equal(esParaContestar({ ts: "1", text: "se unió al canal", user: "U0BAQSXJJLW", subtype: "channel_join" }, "U0BNCHPTPH8"), false);
+  // Y un broadcast del PROPIO bot sigue sin contar: el filtro de subtype no puede abrirle la puerta.
+  assert.equal(esParaContestar({ ts: "1", text: "hola", bot_id: "B123", subtype: "thread_broadcast" }, "U0BNCHPTPH8"), false);
+  assert.equal(esParaContestar({ ts: "1", text: "hola", user: "U0BNCHPTPH8", subtype: "thread_broadcast" }, "U0BNCHPTPH8"), false);
+});
