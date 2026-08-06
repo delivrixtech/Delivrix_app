@@ -159,7 +159,12 @@ export async function responder(input: {
         ],
         // SIN herramientas, a propósito y explícito: es la barrera que hace que una inyección de
         // prompt por Slack no pueda terminar en una acción sobre producción.
-        max_tokens: input.maxTokens ?? 2500,
+        // 6000, no 2500: Qwen3.6 RAZONA antes de contestar y el razonamiento sale de este mismo
+        // presupuesto. Medido en producción: con 2500, la primera respuesta salió VACÍA y las dos
+        // siguientes quedaron cortadas a mitad de frase ("...apenas el p"). Es la tercera vez que
+        // este sistema tropieza con lo mismo; el número generoso es más barato que la respuesta
+        // truncada, que además parece un bug del agente y no del presupuesto.
+        max_tokens: input.maxTokens ?? 6000,
         temperature: input.temperatura ?? 0.7
       })
     });

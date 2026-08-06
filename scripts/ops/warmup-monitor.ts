@@ -508,7 +508,21 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
  * no se importa ejecutarAcciones ni se le pasan herramientas al modelo, así que el techo de daño de
  * una inyección por Slack es "dijo una tontería", no "frenó un nodo".
  */
+let chatCorriendo = false;
 async function tickChat(workspace: OpenClawWorkspace, botUserId: string | null): Promise<void> {
+  // NO SE SOLAPAN. El tick es cada 20 s pero el modelo tarda 30-60 s en contestar: sin este
+  // candado, el siguiente tick lee los MISMOS mensajes (el cursor todavía no avanzó) y el jefe
+  // recibe la misma respuesta dos veces. Pasó en la primera corrida real, verificado en el hilo.
+  if (chatCorriendo) return;
+  chatCorriendo = true;
+  try {
+    await tickChatInterno(workspace, botUserId);
+  } finally {
+    chatCorriendo = false;
+  }
+}
+
+async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string | null): Promise<void> {
   const token = process.env.SLACK_BOT_TOKEN?.trim();
   const canal = process.env.SLACK_CANAL?.trim();
   const baseUrl = process.env.LOCAL_INFERENCE_BASE_URL?.trim();
@@ -522,6 +536,10 @@ async function tickChat(workspace: OpenClawWorkspace, botUserId: string | null):
     return;
   }
   if (mensajes.length === 0) return;
+
+  // El cursor avanza ANTES de contestar. Si la respuesta falla se pierde ese turno, y está bien:
+  // en una conversación, repetir lo mismo dos veces es peor que quedarse callado una.
+  await workspace.updateInventoryJson<EstadoLectura>(CHAT_FILE, () => avanzar(estado, mensajes, new Date().toISOString()));
 
   const snapshot = await workspace.readInventoryJson<Awaited<ReturnType<typeof pedirLectura>>>(MONITOR_FILE).catch(() => null);
   const bitacora = await workspace.readInventoryJson<Bitacora>(BITACORA_FILE).catch(() => null);
@@ -546,8 +564,6 @@ async function tickChat(workspace: OpenClawWorkspace, botUserId: string | null):
     await mandarASlack({ texto: r.texto, motivo: "respuesta al jefe", pideRespuesta: false }, { token, canal, threadTs: dondeResponder(m) });
     console.log(`[chat] respondí en el hilo ${dondeResponder(m)}: ${r.texto.slice(0, 70)}`);
   }
-
-  await workspace.updateInventoryJson<EstadoLectura>(CHAT_FILE, () => avanzar(estado, mensajes, new Date().toISOString()));
 }
 
 async function main(): Promise<void> {
