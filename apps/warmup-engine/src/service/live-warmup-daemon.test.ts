@@ -10,6 +10,7 @@ import {
   type SeedDelDaemon
 } from "./live-warmup-daemon.ts";
 import type { Placement } from "../live/warmup-live-cycle.ts";
+import { esInbox } from "../domain/decision-diaria.ts";
 
 test("resolveLiveDaemonConfig: defaults conservadores + OFF por defecto", () => {
   const cfg = resolveLiveDaemonConfig({} as NodeJS.ProcessEnv);
@@ -43,25 +44,64 @@ const de = (dominio: string, ...ps: Placement[]) => ps.map((placement) => ({ dom
 
 test("recentInboxRate: proporción de bandeja, null si vacío", () => {
   assert.equal(recentInboxRate([]), null, "sin muestra es null, NO 0%");
-  assert.deepEqual(recentInboxRate(de("a.com", "INBOX", "INBOX")), { tasa: 1, muestra: 2 });
-  assert.equal(recentInboxRate(de("a.com", "INBOX", "SPAM"))?.tasa, 0.5);
+  assert.deepEqual(recentInboxRate(de("a.com", "INBOX", "INBOX", "INBOX", "INBOX")), { tasa: 1, muestra: 4, dominios: 1 });
+  assert.equal(recentInboxRate(de("a.com", "INBOX", "INBOX", "SPAM", "SPAM"))?.tasa, 0.5);
   // PROMOTIONS cuenta como bandeja. Este test afirmaba lo contrario (`["SPAM","PROMOTIONS"] → 0`)
   // y estaba fijando la regla equivocada: el diseño v1 §10 dice textual que las pestañas cuentan
   // como inbox, y `placement.ts:33` ya lo implementaba así. Con la regla vieja, un dominio sano
   // cuyos correos caen en la pestaña Promociones daba 0% y el gate lo pausaba.
-  assert.equal(recentInboxRate(de("a.com", "SPAM", "PROMOTIONS"))?.tasa, 0.5);
-  assert.equal(recentInboxRate(de("a.com", "PROMOTIONS", "PROMOTIONS"))?.tasa, 1);
+  assert.equal(recentInboxRate(de("a.com", "SPAM", "SPAM", "PROMOTIONS", "PROMOTIONS"))?.tasa, 0.5);
+  assert.equal(recentInboxRate(de("a.com", "PROMOTIONS", "PROMOTIONS", "PROMOTIONS", "PROMOTIONS"))?.tasa, 1);
   // OTHER no: archivado o etiquetado por el usuario no es aterrizar en bandeja.
-  assert.equal(recentInboxRate(de("a.com", "OTHER", "INBOX"))?.tasa, 0.5);
+  assert.equal(recentInboxRate(de("a.com", "OTHER", "OTHER", "INBOX", "INBOX"))?.tasa, 0.5);
 });
 
 test("recentInboxRate: lo que midió un dominio que hoy NO puede enviar no cuenta", () => {
   // Sin esto, frenar al dominio culpable no destrababa a los sanos: sus muestras seguían pesando
   // en el promedio de la flota y el freno global quedaba puesto igual.
-  const mezcla = [...de("sano.com", "INBOX", "INBOX"), ...de("frenado.com", "SPAM", "SPAM")];
+  const mezcla = [
+    ...de("sano.com", "INBOX", "INBOX", "INBOX", "INBOX"),
+    ...de("frenado.com", "SPAM", "SPAM", "SPAM", "SPAM")
+  ];
   assert.equal(recentInboxRate(mezcla)?.tasa, 0.5, "sin filtro, el frenado arrastra al sano");
-  assert.deepEqual(recentInboxRate(mezcla, new Set(["sano.com"])), { tasa: 1, muestra: 2 });
+  assert.deepEqual(recentInboxRate(mezcla, new Set(["sano.com"])), { tasa: 1, muestra: 4, dominios: 1 });
   assert.equal(recentInboxRate(mezcla, new Set(["nadie.com"])), null, "si ninguno cuenta, es null");
+});
+
+test("recentInboxRate: un dominio SIN historia no entra al promedio de la flota", () => {
+  // Los números REALES de producción, medidos a las 02:00 del 2026-08-06, justo después de que el
+  // warmup volviera a arrancar. El promedio crudo da 45% y habría vuelto a pausar todo en la
+  // vuelta siguiente — el arreglo anterior compraba UNA vuelta y nada más.
+  const real = [
+    ...de("corpfiling-infra.com", "INBOX", "INBOX", "INBOX", "INBOX", "INBOX", "SPAM"),
+    ...de("annualcorp-infra.com", "SPAM", "SPAM"),
+    ...de("nationalfiling-infra.com", "MISSING"),
+    ...de("annualfilings-ops.com", "SPAM"),
+    ...de("annualfilings-control.com", "SPAM")
+  ];
+  assert.equal(real.length, 11);
+
+  const r = recentInboxRate(real);
+  assert.equal(r?.dominios, 1, "solo corpfiling-infra.com tiene 4+ mediciones propias");
+  assert.equal(r?.muestra, 6);
+  assert.ok((r?.tasa ?? 0) > 0.8, `el promedio pasa a ser el del dominio con historia (dio ${r?.tasa})`);
+
+  // Cuatro dominios recién arrancados aportaban 5 muestras de día 0 y hundían a uno que va al 83%.
+  const crudo = real.filter((p) => esInbox(p.placement)).length / real.length;
+  assert.ok(crudo < 0.5, `el promedio crudo era ${Math.round(crudo * 100)}%: eso es lo que frenaba todo`);
+});
+
+test("recentInboxRate: cuando los nuevos JUNTAN historia, sí pesan", () => {
+  // El umbral no es una excusa permanente: en cuanto un dominio llega a 4 mediciones propias entra
+  // al promedio con todo su peso. Si de verdad viene mal, el freno de catástrofe dispara.
+  const conHistoria = [
+    ...de("bueno.com", "INBOX", "INBOX", "INBOX", "INBOX", "INBOX", "INBOX"),
+    ...de("malo.com", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM")
+  ];
+  const r = recentInboxRate(conHistoria);
+  assert.equal(r?.dominios, 2);
+  assert.equal(r?.muestra, 12);
+  assert.equal(r?.tasa, 0.5);
 });
 
 const base = {
@@ -98,10 +138,10 @@ test("gate: sin mediciones aún ⇒ no bloquea por placement (envía)", () => {
 });
 
 test("gate: con muestra chica NO apaga la fábrica entera", () => {
-  // El caso REAL del 2026-08-06, con los datos de producción: el warmup llevaba horas parado con
-  // "inbox 33% < piso 50%", y esas seis mediciones eran el único dominio que venía calentando bien
-  // (2/2) contra cuatro muestras sueltas de cuatro dominios que recién arrancaban. Que un dominio
-  // nuevo caiga en spam el primer día es lo normal, no una degradación de la flota.
+  // El caso REAL del 2026-08-06: el warmup llevaba horas parado con "inbox 33% < piso 50%", y esas
+  // seis mediciones eran el único dominio que venía calentando bien (2/2) contra cuatro muestras
+  // sueltas de cuatro dominios que recién arrancaban. Que un dominio nuevo caiga en spam el primer
+  // día es lo normal, no una degradación de la flota.
   const real = [
     ...de("nationalfiling-infra.com", "MISSING"),
     ...de("corpfiling-infra.com", "INBOX", "INBOX"),
@@ -109,10 +149,9 @@ test("gate: con muestra chica NO apaga la fábrica entera", () => {
     ...de("annualfilings-control.com", "SPAM"),
     ...de("annualcorp-infra.com", "SPAM")
   ];
-  const r = recentInboxRate(real);
-  assert.equal(r?.muestra, 6);
-  assert.ok((r?.tasa ?? 1) < 0.5, "la tasa SIGUE siendo baja: no se tocó el cálculo, se tocó cuándo manda");
-  assert.equal(decideDaemonAction({ ...base, recentPlacements: real }).action, "send", "6 mediciones no alcanzan para apagar 58 nodos");
+  // Ni siquiera hay un dominio con historia suficiente: no hay sobre qué afirmar nada de la flota.
+  assert.equal(recentInboxRate(real), null);
+  assert.equal(decideDaemonAction({ ...base, recentPlacements: real }).action, "send", "6 mediciones sueltas no apagan 58 nodos");
 });
 
 test("gate: el freno global no puede ser un candado", () => {
@@ -120,8 +159,8 @@ test("gate: el freno global no puede ser un candado", () => {
   // única salida era un humano a mano. Con el filtro por elegibles, frenar al dominio culpable
   // destraba a los sanos en la vuelta siguiente — que es lo que el agente ya sabe hacer solo.
   const mezcla = [
-    ...de("culpable.com", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM"),
-    ...de("sano.com", "INBOX", "INBOX")
+    ...de("culpable.com", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM"),
+    ...de("sano.com", "INBOX", "INBOX", "INBOX", "INBOX")
   ];
   assert.equal(decideDaemonAction({ ...base, recentPlacements: mezcla }).action, "placement-pause");
   assert.equal(

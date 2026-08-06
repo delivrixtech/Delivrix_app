@@ -245,6 +245,35 @@ export interface PlacementDeDominio {
  */
 export const MIN_MUESTRA_FLOTA = 10;
 
+/**
+ * Cuántas mediciones propias necesita UN dominio para que sus resultados entren en el promedio de
+ * la flota.
+ *
+ * Sin esto, subir la muestra mínima solo compraba una vuelta. Los números reales, medidos a las
+ * 02:00 del 2026-08-06 justo después de que el warmup volviera a arrancar:
+ *
+ *   corpfiling-infra.com        5 de 6  → 83%
+ *   annualcorp-infra.com        0 de 2
+ *   nationalfiling-infra.com    0 de 1
+ *   annualfilings-ops.com       0 de 1
+ *   annualfilings-control.com   0 de 1
+ *                              ─────────
+ *   flota                       5 de 11 → 45%  ⇒ pausa
+ *
+ * Cuatro dominios recién arrancados aportan cinco muestras de día 0 y hunden a uno que va al 83%.
+ * Promediar dominios en etapas distintas de la rampa no mide nada: un dominio nuevo cae en spam
+ * porque es nuevo, no porque la flota se esté degradando, y esa es justamente la condición que el
+ * calentamiento existe para revertir.
+ *
+ * Con este umbral, el promedio de la flota se calcula solo sobre los dominios que YA tienen
+ * historia. Los nuevos calientan bajo el freno FINO —`decidirCupoDeHoy`, que les da 2/día hasta
+ * juntar 4 mediciones— y recién entran al promedio general cuando lo que midieron significa algo.
+ *
+ * Es el mismo número que `MUESTRA_PARA_JUZGAR` en las acciones del agente, y por la misma razón:
+ * abajo de cuatro mediciones no hay con qué juzgar a un dominio.
+ */
+export const MIN_MUESTRAS_POR_DOMINIO = 4;
+
 export interface GateInput {
   enabled: boolean;
   killed: boolean;
@@ -270,12 +299,27 @@ export interface GateInput {
 export function recentInboxRate(
   placements: readonly PlacementDeDominio[],
   elegibles?: ReadonlySet<string>
-): { tasa: number; muestra: number } | null {
-  const cuentan = elegibles ? placements.filter((p) => elegibles.has(p.dominio)) : [...placements];
+): { tasa: number; muestra: number; dominios: number } | null {
+  const delPool = elegibles ? placements.filter((p) => elegibles.has(p.dominio)) : [...placements];
+
+  // Solo entran al promedio los dominios CON HISTORIA. Un dominio en sus primeras mediciones no es
+  // evidencia sobre el estado de la flota — es evidencia de que acaba de empezar.
+  const porDominio = new Map<string, PlacementDeDominio[]>();
+  for (const p of delPool) {
+    const ya = porDominio.get(p.dominio);
+    if (ya) ya.push(p);
+    else porDominio.set(p.dominio, [p]);
+  }
+  const cuentan = [...porDominio.values()].filter((ps) => ps.length >= MIN_MUESTRAS_POR_DOMINIO).flat();
   if (cuentan.length === 0) return null;
+
   // Mismo criterio que la decisión por dominio: PROMOTIONS cuenta como bandeja (§9). Parchear un
   // contador y dejar el otro con la regla vieja produce dos verdades sobre el mismo dato.
-  return { tasa: cuentan.filter((p) => esInbox(p.placement)).length / cuentan.length, muestra: cuentan.length };
+  return {
+    tasa: cuentan.filter((p) => esInbox(p.placement)).length / cuentan.length,
+    muestra: cuentan.length,
+    dominios: new Set(cuentan.map((p) => p.dominio)).size
+  };
 }
 
 /** Decide qué hacer esta vuelta. Orden de barreras: flag → kill → tope → placement → send. */
@@ -292,7 +336,9 @@ export function decideDaemonAction(input: GateInput): { action: DaemonAction; re
   if (r !== null && r.muestra >= MIN_MUESTRA_FLOTA && r.tasa < input.placementFloor) {
     return {
       action: "placement-pause",
-      reason: `inbox ${(r.tasa * 100).toFixed(0)}% < piso ${(input.placementFloor * 100).toFixed(0)}% sobre ${r.muestra} mediciones de los nodos activos`
+      reason:
+        `inbox ${(r.tasa * 100).toFixed(0)}% < piso ${(input.placementFloor * 100).toFixed(0)}% ` +
+        `sobre ${r.muestra} mediciones de ${r.dominios} dominio(s) con historia`
     };
   }
   return { action: "send", reason: "ok" };
