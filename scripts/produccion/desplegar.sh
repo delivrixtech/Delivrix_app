@@ -192,7 +192,17 @@ done
 
 if [[ ${ok} == 1 ]]; then
   version="$(printf '%s' "${cuerpo}" | grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
-  echo "· producción responde ok · versión ${version:-sin declarar} · commit ${reportado:0:8}"
+  if [[ ${verifica_commit} == 1 ]]; then
+    echo "· producción responde ok · versión ${version:-sin declarar} · commit ${reportado:0:8}"
+  else
+    # El gateway NO se reinició porque su código no cambió, así que sigue reportando el commit con
+    # el que arrancó. Decir "commit <viejo>" a secas se lee como "producción quedó atrasada" —y no
+    # es cierto— así que se dice cuál es cuál. Un mensaje ambiguo en un deploy manda a depurar algo
+    # que funciona, que es la forma más cara de tener razón.
+    echo "· producción responde ok · versión ${version:-sin declarar}"
+    echo "  desplegado: ${despues:0:8} (${#reiniciar[@]} servicio(s) reiniciados)"
+    echo "  el gateway sigue en ${reportado:0:8} y está BIEN: no cambió código suyo, no se reinició."
+  fi
 elif [[ -n "${cuerpo}" ]]; then
   echo "FALLÓ: el gateway responde, pero NO está corriendo el código que acabamos de desplegar." >&2
   if [[ -n "${reportado}" ]]; then
