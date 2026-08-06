@@ -66,7 +66,37 @@ export async function handleWarmupConversationHttp(deps: {
 
   const { seeds } = await leerSemillas(deps.workspace);
   // Solo las que tienen app password: la de OAuth usa otro camino y las solo-destino no abren buzón.
-  const semilla = semillasMedibles(seeds).find((s) => s.auth === "imap_password");
+  const conBuzon = semillasMedibles(seeds).filter((s) => s.auth === "imap_password");
+
+  // LA SEMILLA QUE DE VERDAD RECIBIÓ ESTE CORREO.
+  //
+  // Antes se agarraba la PRIMERA con app password, sin mirar a quién se le había mandado. Con una
+  // sola semilla —como estaba en local cuando esto se escribió— acertaba siempre. Con la flota
+  // rotando entre varias, el gateway abría el buzón equivocado, no encontraba el mensaje, y
+  // devolvía "no se encontró el mensaje en el buzón semilla (puede no haber llegado)". O sea: un
+  // correo entregado se mostraba como un correo perdido, y la pantalla de conversación —que es
+  // toda la evidencia del warmup— quedaba vacía en producción.
+  //
+  // Verificado el 2026-08-06: la vuelta de statefilings-control.com fue a flomia33193@gmail.com y
+  // el endpoint la buscaba en trazosvercel@gmail.com.
+  const pedida = (url.searchParams.get("seed") ?? "").trim().toLowerCase();
+  const semilla = pedida ? conBuzon.find((s) => s.address.toLowerCase() === pedida) : conBuzon[0];
+
+  // Si pidieron una semilla concreta y no la tenemos con buzón, se DICE. Caer a otra en silencio
+  // es peor que no contestar: leería el buzón de al lado y llamaría a eso "no llegó".
+  if (pedida && !semilla) {
+    json(deps.response, 200, {
+      testId,
+      semilla: null,
+      mensajes: [],
+      enElNodo: await leerBuzonDelNodo(deps, dominio, testId, undefined),
+      motivo: conBuzon.some((s) => s.address.toLowerCase() === pedida)
+        ? `la semilla ${pedida} existe pero no tiene app password: no se puede abrir su buzón`
+        : `este correo fue a ${pedida}, y esa semilla no está registrada con app password. Sin acceso a ESE buzón no se puede leer el hilo (mirar otro diría "no llegó" sobre un correo que sí llegó).`
+    } satisfies ConversacionResponse);
+    return;
+  }
+
   if (!semilla) {
     json(deps.response, 200, {
       testId,

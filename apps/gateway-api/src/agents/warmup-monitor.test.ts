@@ -11,7 +11,7 @@ import type { HechosWarmup } from "./warmup-monitor.ts";
 // Le pedimos en el prompt que use solo los datos dados, y aun así afirmó que el freno era de Gmail.
 // Una regla en el prompt es una intención; esto es una verificación.
 
-import { verificarLectura } from "./warmup-monitor.ts";
+import { SISTEMA, verificarLectura } from "./warmup-monitor.ts";
 
 const HECHOS_BASE: HechosWarmup = {
   generadoEn: "2026-08-04T15:00:00.000Z",
@@ -187,4 +187,24 @@ test("no marca como inventado un porcentaje que le dimos nosotros en el estado d
   );
   assert.equal(inventado.reparos.length, 1);
   assert.match(inventado.reparos[0] ?? "", /91%/);
+});
+
+test("el prompt le prohíbe pedirle a Juanes lo que puede hacer solo", () => {
+  // El reclamo textual, después de una noche entera de mensajes: "me está pidiendo resolver ciertas
+  // cosas, que él mismo puede resolver... más que decirme errores sobre errores, que vaya
+  // aprendiendo a cómo resolverlos".
+  const p = SISTEMA.replace(/\s+/g, " ");
+  assert.match(p, /NO LE PIDAS A JUANES LO QUE PODÉS HACER VOS/);
+  assert.match(p, /MOLESTALO SOLO SI SE CUMPLEN LAS DOS/, "el criterio de escalada es explícito");
+  assert.match(p, /es grave AHORA, y vos no tenés herramienta para resolverlo/);
+  // Y le da los ejemplos concretos que separan un caso del otro: sin ellos la regla es abstracta
+  // y el modelo la cumple a medias.
+  assert.match(p, /leelo.*diagnosticalo.*medilo/s);
+  assert.match(p, /no es un mensaje: es un pendiente/);
+});
+
+test("la VOZ por defecto cuenta lo que hizo, no pide permiso", () => {
+  const p = SISTEMA.replace(/\s+/g, " ");
+  assert.match(p, /Por defecto la VOZ cuenta LO QUE HICISTE/);
+  assert.match(p, /si está ahí, es tuyo y no se pide permiso/);
 });

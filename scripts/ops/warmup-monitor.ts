@@ -70,10 +70,32 @@ const KILL_FILE = (process.env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "
  */
 const puedeFrenar = (process.env.WARMUP_AGENT_PUEDE_FRENAR ?? "").trim().toLowerCase() === "true";
 
-/** El cupo instalado hoy en el nodo de un dominio. `null` si no se pudo leer. */
+/** El cupo instalado hoy en el nodo de un dominio, según el ARCHIVO de medición. Puede tener horas. */
 async function capActual(workspace: OpenClawWorkspace, dominio: string): Promise<number | null> {
   const cap = await workspace.readInventoryJson<CapFlota>(CAP_MEASUREMENT_FILE).catch(() => null);
   return cap?.nodos.find((n) => n.domain === dominio)?.cap ?? null;
+}
+
+/**
+ * El cupo REAL del nodo, leído por SSH, justo antes de tocarlo.
+ *
+ * Es el "antes" que se usa para decidir si la acción hizo algo (`antes === 0` ⇒ ya estaba frenado,
+ * no se reporta como acción nueva). Leerlo del archivo era un bug con consecuencia visible: el
+ * archivo se refresca cada 6h, así que el agente frenó bizreport-control.com una y otra vez toda
+ * la noche del 2026-08-06 —el nodo ya estaba en 0 desde la primera— y cada intento le mandaba a
+ * Juanes un "el freno no pegó, mirá el nodo". El nodo estaba perfecto; la foto era vieja.
+ *
+ * Si el SSH falla se cae al archivo: un "antes" impreciso es peor que uno bueno, pero mucho mejor
+ * que no poder frenar un dominio porque no se pudo leer su cupo.
+ */
+async function capAntesDeTocar(workspace: OpenClawWorkspace, dominio: string): Promise<number | null> {
+  try {
+    const vivo = await leerCupoDelNodo(dominio);
+    if (vivo.cap !== null) return vivo.cap;
+  } catch {
+    /* el SSH puede fallar; abajo se cae al archivo */
+  }
+  return capActual(workspace, dominio);
 }
 
 /**
@@ -546,7 +568,7 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
         ...(puedeSoltar
           ? {
               soltarDominio: async (dominio: string, cap: number, motivo: string) => {
-                const antes = await capActual(workspace, dominio);
+                const antes = await capAntesDeTocar(workspace, dominio);
                 await soltarNodo(dominio, cap, motivo);
                 return { antes, despues: cap };
               }
@@ -564,7 +586,7 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
         ...(puedeFrenar
           ? {
               frenarDominio: async (dominio: string, motivo: string) => {
-                const antes = await capActual(workspace, dominio);
+                const antes = await capAntesDeTocar(workspace, dominio);
                 await frenarNodo(dominio, motivo);
                 return { antes, despues: 0 };
               }
@@ -789,6 +811,21 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
     });
     if (!r.texto) {
       console.log(`[chat] sin respuesta para "${m.texto.slice(0, 40)}": ${r.motivo}`);
+      // NO SE PUEDE CALLAR ACÁ. El cursor ya avanzó (a propósito: repetir una respuesta es peor
+      // que perder un turno), así que sin este aviso el mensaje del jefe se evapora y él no ve
+      // nada — ni una respuesta, ni un error. Le queda la impresión de que lo ignoró, que es
+      // exactamente el problema que este carril vino a resolver.
+      //
+      // El aviso va al MISMO hilo donde escribió, y falla suave: si Slack también está caído, se
+      // pierde igual, pero eso ya es la máquina entera incomunicada, no un silencio elegido.
+      await mandarASlack(
+        {
+          texto: `Te leí pero no pude contestarte: ${r.motivo ?? "el modelo no respondió"}. Volvé a escribirme y lo intento de nuevo.`,
+          motivo: "el modelo del chat no respondió",
+          pideRespuesta: false
+        },
+        { token, canal, threadTs: dondeResponder(m) }
+      ).catch(() => undefined);
       continue;
     }
     if (r.observaciones.length > 0) console.log(`[chat] observaciones: ${r.observaciones.join(" · ")}`);
@@ -845,7 +882,7 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
         ...(puedeSoltar
           ? {
               soltarDominio: async (dominio: string, cap: number, motivo: string) => {
-                const antes = await capActual(workspace, dominio);
+                const antes = await capAntesDeTocar(workspace, dominio);
                 await soltarNodo(dominio, cap, motivo);
                 return { antes, despues: cap };
               }
@@ -854,7 +891,7 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
         ...(puedeFrenar
           ? {
               frenarDominio: async (dominio: string, motivo: string) => {
-                const antes = await capActual(workspace, dominio);
+                const antes = await capAntesDeTocar(workspace, dominio);
                 await frenarNodo(dominio, motivo);
                 return { antes, despues: 0 };
               }

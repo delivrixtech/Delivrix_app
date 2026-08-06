@@ -263,12 +263,17 @@ export default function WarmupLive() {
   const [hilo, setHilo] = useState<{ testId: string; cargando: boolean; data: HiloResp | null } | null>(null);
 
   /** Trae el correo REAL del buzón semilla. Caro (abre IMAP): solo cuando el operador lo pide. */
-  const abrirHilo = async (testId: string, domain: string) => {
+  //
+  // `seed` NO es opcional en la práctica: sin ella el gateway abre la PRIMERA semilla con app
+  // password y busca el mensaje ahí. Con una sola semilla —como era en local— acertaba siempre;
+  // con la flota rotando entre varias, mira el buzón equivocado y devuelve "no se encontró el
+  // mensaje", que se lee como si el correo no hubiera llegado. Cada vuelta sabe a qué buzón fue.
+  const abrirHilo = async (testId: string, domain: string, seed: string) => {
     setHilo({ testId, cargando: true, data: null });
     try {
       // fetch directo y no getJson: el borde de lectura tipa el endpoint como literal exacto, y
       // acá hace falta un query param. La ruta base sigue saliendo de READ_ENDPOINTS.
-      const r = await fetch(`${READ_ENDPOINTS.warmupConversation}?testId=${encodeURIComponent(testId)}&domain=${encodeURIComponent(domain)}`, {
+      const r = await fetch(`${READ_ENDPOINTS.warmupConversation}?testId=${encodeURIComponent(testId)}&domain=${encodeURIComponent(domain)}&seed=${encodeURIComponent(seed)}`, {
         headers: { accept: "application/json" },
         cache: "no-store"
       });
@@ -422,7 +427,7 @@ export default function WarmupLive() {
 
 // ── El ciclo en curso: 4 etapas que se encienden en orden ────────────────────────────────────────
 
-function Ciclo({ vuelta, ahora, destacado, onVerHilo }: { vuelta: Vuelta; ahora: number; destacado: boolean; onVerHilo: (t: string, d: string) => void }) {
+function Ciclo({ vuelta, ahora, destacado, onVerHilo }: { vuelta: Vuelta; ahora: number; destacado: boolean; onVerHilo: (t: string, d: string, s: string) => void }) {
   const alcanzada = (kind: string) => Boolean(vuelta.etapas[kind]);
   const completa = alcanzada("replied");
 
@@ -438,7 +443,7 @@ function Ciclo({ vuelta, ahora, destacado, onVerHilo }: { vuelta: Vuelta; ahora:
         ) : null}
         <span style={S.hace}>{hace(vuelta.ultimo, ahora)}</span>
         {vuelta.testId ? (
-          <button type="button" style={S.verHilo} onClick={() => onVerHilo(vuelta.testId!, vuelta.domain)}>
+          <button type="button" style={S.verHilo} onClick={() => onVerHilo(vuelta.testId!, vuelta.domain, vuelta.seed)}>
             ver el correo
           </button>
         ) : null}
@@ -474,11 +479,11 @@ function SinCiclo() {
 
 // ── Fila del flujo ───────────────────────────────────────────────────────────────────────────────
 
-function Fila({ vuelta, ahora, nueva, onVerHilo }: { vuelta: Vuelta; ahora: number; nueva: boolean; onVerHilo: (t: string, d: string) => void }) {
+function Fila({ vuelta, ahora, nueva, onVerHilo }: { vuelta: Vuelta; ahora: number; nueva: boolean; onVerHilo: (t: string, d: string, s: string) => void }) {
   return (
     <div
       style={{ ...S.fila, ...(nueva ? S.filaNueva : null), cursor: vuelta.testId ? "pointer" : "default" }}
-      onClick={() => vuelta.testId && onVerHilo(vuelta.testId, vuelta.domain)}
+      onClick={() => vuelta.testId && onVerHilo(vuelta.testId, vuelta.domain, vuelta.seed)}
       role={vuelta.testId ? "button" : undefined}
       tabIndex={vuelta.testId ? 0 : undefined}
       onKeyDown={(ev) => {
@@ -486,7 +491,7 @@ function Fila({ vuelta, ahora, nueva, onVerHilo }: { vuelta: Vuelta; ahora: numb
         // preventDefault: sin esto, Espacio abre el hilo Y scrollea la página, así que el operador
         // pierde de vista justo lo que acaba de abrir.
         ev.preventDefault();
-        onVerHilo(vuelta.testId, vuelta.domain);
+        onVerHilo(vuelta.testId, vuelta.domain, vuelta.seed);
       }}
     >
       <span style={S.filaHora}>{hace(vuelta.ultimo, ahora)}</span>

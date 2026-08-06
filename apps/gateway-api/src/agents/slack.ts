@@ -126,7 +126,21 @@ export function decidirSiHablar(
   // una acción: anunciarla llena el canal de mensajes que parecen respuestas y no vienen a cuento.
   // Visto en vivo: el jefe preguntó "¿seguís calentando las bandejas?" y lo que apareció fue
   // "hice esto: anotar_pendiente p-3-levantar-pausa-emisor", que ni contesta ni le importa a nadie.
-  const CONTABLES = new Set(["anotar_pendiente", "resolver_pendiente"]);
+  // MIRAR NO ES ACTUAR. La noche del 2026-08-06 el agente mandó ~25 mensajes mientras el operador
+  // dormía, y casi todos terminaban en "Hice esto: medir_dominio X, diagnosticar_dominio Y" — o
+  // sea, avisando que había ido a mirar. Las manos pasivas no tocan nada: anunciarlas es el mismo
+  // ruido que anunciar anotar_pendiente, que ya habíamos sacado por esto mismo.
+  //
+  // Y el daño no es la molestia: darle más ojos al agente hacía que hablara MÁS, así que cada
+  // mejora en su autonomía empeoraba el canal. Se anuncia lo que CAMBIA la infraestructura —
+  // frenar, soltar, pausar— y nada más.
+  const CONTABLES = new Set([
+    "anotar_pendiente",
+    "resolver_pendiente",
+    "leer_cupo_nodo",
+    "diagnosticar_dominio",
+    "medir_dominio"
+  ]);
   const hizo = estado.acciones.filter((a) => a.ejecutada && !CONTABLES.has(a.accion));
   if (hizo.length > 0) {
     const l = hizo.map((a) => `${a.accion}${a.objetivo ? ` ${a.objetivo}` : ""}`).join(", ");

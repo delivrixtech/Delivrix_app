@@ -145,3 +145,33 @@ test("dos condiciones distintas no se tapan entre sí", () => {
   const ciego = base({ sinLectura: "modelo caído" });
   assert.ok(decidirSiHablar(ciego, mem, T(2)), "otra condición SÍ se avisa aunque sea a los minutos");
 });
+
+test("MIRAR no dispara un mensaje: solo lo que cambia la infraestructura", () => {
+  // La noche del 2026-08-06 el agente mandó ~25 mensajes mientras el operador dormía, y casi todos
+  // terminaban en "Hice esto: medir_dominio X, diagnosticar_dominio Y" — avisando que había ido a
+  // mirar. El efecto perverso: cada ojo nuevo que le dábamos lo hacía hablar MÁS, así que mejorar
+  // su autonomía empeoraba el canal.
+  const mem: MemoriaSlack = { ultimoEmisor: "send", ultimoAviso: T(9), ultimaFirma: null };
+  const soloMiro = base({
+    emisor: "send",
+    acciones: [
+      { accion: "medir_dominio", objetivo: "a.com", ejecutada: true, detalle: "83% sobre 6" },
+      { accion: "diagnosticar_dominio", objetivo: "b.com", ejecutada: true, detalle: "healthy" },
+      { accion: "leer_cupo_nodo", objetivo: "c.com", ejecutada: true, detalle: "cupo 20" }
+    ]
+  });
+  assert.equal(decidirSiHablar(soloMiro, mem, T(10)), null, "ir a mirar no es noticia");
+
+  // Pero lo que TOCA la flota se sigue diciendo siempre, en la misma vuelta.
+  const ademasToco = base({
+    emisor: "send",
+    acciones: [
+      { accion: "medir_dominio", objetivo: "a.com", ejecutada: true, detalle: "83%" },
+      { accion: "frenar_dominio", objetivo: "z.com", ejecutada: true, detalle: "cap 255 → 0" }
+    ]
+  });
+  const a = decidirSiHablar(ademasToco, mem, T(10));
+  assert.ok(a);
+  assert.match(a.texto, /frenar_dominio z\.com/);
+  assert.ok(!a.texto.includes("medir_dominio"), "no mezcla lo que miró con lo que hizo");
+});
