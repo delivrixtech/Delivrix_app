@@ -514,6 +514,12 @@ export interface PedirLecturaInput {
   fetchImpl?: typeof fetch;
   /** Generoso a propósito: este modelo razona, y el razonamiento consume del mismo presupuesto. */
   maxTokens?: number;
+  /**
+   * 0.3 para el modelo local: queremos consistencia, no creatividad. PERO no todos los proveedores
+   * la aceptan — Kimi K3 responde HTTP 400 con "only 1 is allowed for this model". "Compatible con
+   * OpenAI" no quiere decir "acepta los mismos valores".
+   */
+  temperatura?: number;
   timeoutMs?: number;
   now?: () => Date;
 }
@@ -550,7 +556,7 @@ export async function pedirLectura(input: PedirLecturaInput): Promise<LecturaAge
         // los datos antes de escribirla) y a 3500 devolvía vacío. Medido: 3759 de completion en
         // una corrida real. El razonamiento sale de este mismo presupuesto.
         max_tokens: input.maxTokens ?? 6000,
-        temperature: 0.3
+        temperature: input.temperatura ?? 0.3
       })
     });
     if (!r.ok) {

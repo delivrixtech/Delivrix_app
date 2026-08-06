@@ -134,7 +134,9 @@ async function main(): Promise<void> {
 
   // El maestro razona MUCHO (K3 es un modelo de razonamiento y eso sale del mismo presupuesto).
   // Medido con 10 tokens: 7 se fueron en razonar y la respuesta salió vacía.
-  const lectura = await pedirLectura({ hechos, baseUrl, modelo, apiKey, maxTokens: 8000, timeoutMs: 300_000 });
+  // temperatura 1: K3 rechaza cualquier otra con HTTP 400. Configurable por si el maestro cambia.
+  const temperatura = Number.parseFloat(process.env.KIMI_TEMPERATURA ?? "1");
+  const lectura = await pedirLectura({ hechos, baseUrl, modelo, apiKey, maxTokens: 8000, timeoutMs: 300_000, temperatura });
 
   if (!lectura.lectura) {
     console.log(`[maestro] sin respuesta: ${lectura.motivo}`);
