@@ -560,8 +560,74 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
       continue;
     }
     if (r.observaciones.length > 0) console.log(`[chat] observaciones: ${r.observaciones.join(" · ")}`);
+
+    // LO QUE EL JEFE ORDENÓ. El chat no decide actuar por su cuenta —para eso está el otro carril,
+    // que mira con los datos verificados delante— pero si se lo pidieron en este turno, lo hace.
+    // Es su canal privado y él es el dueño de la fábrica: negarse sería tratarlo como al modelo.
+    const pedidas = extraerAcciones(r.texto);
+    let hechas: string[] = [];
+    if (pedidas.length > 0) {
+      const res = await ejecutarAcciones(pedidas, {
+        dominiosConocidos: [
+          ...new Set([
+            ...(snapshot?.hechos?.plan ?? []).map((p) => p.dominio),
+            ...(snapshot?.hechos?.vueltas ?? []).map((v) => v.dominio),
+            ...(snapshot?.hechos?.flota?.cruzados ?? []),
+            ...(snapshot?.hechos?.flota?.cerca ?? []),
+            ...(snapshot?.hechos?.cap?.enElTope ?? [])
+          ])
+        ],
+        // La orden vino de un humano: se relaja el alcance del freno, que existe para acotar al
+        // MODELO. Todo lo demás —dominio real, motivo, idempotencia, nada que aumente el envío—
+        // sigue igual de duro.
+        ordenadoPorElJefe: true,
+        ...(puedeFrenar
+          ? {
+              frenarDominio: async (dominio: string, motivo: string) => {
+                const antes = await capActual(workspace, dominio);
+                await frenarNodo(dominio, motivo);
+                return { antes, despues: 0 };
+              }
+            }
+          : {}),
+        pausarWarmup: async (m: string) => {
+          await writeFile(KILL_FILE, `${new Date().toISOString()} pausado por orden del jefe: ${m}\n`, "utf8");
+        },
+        warmupPausado: async () => existsSync(KILL_FILE),
+        pendientes: {
+          listar: async () => (await workspace.readInventoryJson<Pendiente[]>(PENDIENTES_FILE).catch(() => [])) ?? [],
+          guardar: async (p) => {
+            await workspace.updateInventoryJson(PENDIENTES_FILE, () => p);
+          }
+        }
+      });
+      hechas = res.map((a) => `${a.ejecutada ? "hecho" : "no pude"}: ${a.detalle}`);
+      for (const a of res) console.log(`[chat] ${a.ejecutada ? "✓ EJECUTÓ" : "· no ejecutó"}: ${a.detalle}`);
+      // Queda en la MISMA bitácora que el otro carril: una acción es una acción, no importa quién
+      // la pidió, y el veredicto de si sirvió se juzga igual.
+      await workspace.updateInventoryJson<Bitacora>(BITACORA_FILE, (actual) => {
+        let bit = actual;
+        for (const a of res) {
+          if (a.accion === "(ninguna)" || a.accion === "(tope)") continue;
+          bit = registrar(bit, {
+            accion: a.accion,
+            objetivo: a.objetivo ?? null,
+            motivo: `pedido por el jefe: ${m.texto.slice(0, 80)}`,
+            estado: a.ejecutada ? "ejecutada" : "rechazada",
+            detalle: a.ejecutada ? null : a.detalle,
+            antes: typeof a.antes === "number" ? { cap: a.antes } : null,
+            cuando: new Date().toISOString()
+          });
+        }
+        return bit ?? { version: 1, entradas: [] };
+      });
+    }
+
+    // La línea ACCION es maquinaria, no conversación: se saca del texto que ve el jefe y en su
+    // lugar va el RESULTADO. Mostrarle la sintaxis interna sería ruido.
+    const paraSlack = [r.texto.replace(/^ACCION:.*$/gim, "").trim(), ...hechas].filter(Boolean).join("\n");
     // thread_ts: contesta DENTRO del hilo. Sin esto la conversación se parte en pedazos.
-    await mandarASlack({ texto: r.texto, motivo: "respuesta al jefe", pideRespuesta: false }, { token, canal, threadTs: dondeResponder(m) });
+    await mandarASlack({ texto: paraSlack, motivo: "respuesta al jefe", pideRespuesta: false }, { token, canal, threadTs: dondeResponder(m) });
     console.log(`[chat] respondí en el hilo ${dondeResponder(m)}: ${r.texto.slice(0, 70)}`);
   }
 }

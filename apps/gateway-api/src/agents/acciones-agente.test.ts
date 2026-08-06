@@ -201,3 +201,38 @@ test("cada acción deja su SUJETO, o la bitácora no sirve", async () => {
   assert.equal(r[0]?.objetivo, "a.com", "la ejecutada dice sobre qué");
   assert.equal(r[1]?.objetivo, "fantasma.com", "la RECHAZADA también: es la que más se repite");
 });
+
+test("si el JEFE lo ordena, el alcance del freno se relaja — pero solo ese", async () => {
+  // El alcance existe para acotar al MODELO: que no decida frenar un dominio sano por su cuenta.
+  // Si Juanes lo ordena por su canal privado, es su fábrica y su decisión; negarse sería tratarlo
+  // como si fuera el modelo.
+  const frenados: string[] = [];
+  const base = {
+    dominiosConocidos: ["sano.com"],
+    frenablesConDanio: ["otro.com"],
+    frenarDominio: async (d: string) => {
+      frenados.push(d);
+      return { antes: 40, despues: 0 };
+    }
+  };
+
+  const porElModelo = await ejecutarAcciones([{ accion: "frenar_dominio", dominio: "sano.com", motivo: "m" }], base as never);
+  assert.equal(porElModelo[0]?.ejecutada, false, "el modelo solo, no");
+
+  const porElJefe = await ejecutarAcciones(
+    [{ accion: "frenar_dominio", dominio: "sano.com", motivo: "me lo pidió Juanes" }],
+    { ...base, ordenadoPorElJefe: true } as never
+  );
+  assert.equal(porElJefe[0]?.ejecutada, true, "ordenado por el jefe, sí");
+  assert.deepEqual(frenados, ["sano.com"]);
+});
+
+test("lo que NO se destraba ni con orden del jefe: un dominio que no existe", async () => {
+  // El alcance es criterio; que el dominio EXISTA es un hecho. Una orden no puede crear un nodo.
+  const r = await ejecutarAcciones(
+    [{ accion: "frenar_dominio", dominio: "fantasma.com", motivo: "dale" }],
+    { dominiosConocidos: ["real.com"], ordenadoPorElJefe: true, frenarDominio: async () => ({ antes: 1, despues: 0 }) } as never
+  );
+  assert.equal(r[0]?.ejecutada, false);
+  assert.match(r[0]?.detalle ?? "", /no está en el inventario/);
+});

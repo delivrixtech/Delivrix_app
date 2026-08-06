@@ -76,6 +76,18 @@ export interface ContextoAcciones {
    * ya no hay nada que perder".
    */
   frenablesConDanio?: readonly string[];
+  /**
+   * ¿Esta acción la ORDENÓ el jefe explícitamente por chat, o la decidió el modelo solo?
+   *
+   * Cambia UNA sola cosa: el alcance del freno. Ese alcance existe porque el MODELO no debería
+   * decidir frenar un dominio sano — pero si Juanes lo ordena, es su fábrica y su decisión, y
+   * negarse sería tratarlo como si fuera el modelo.
+   *
+   * Lo que NO cambia nunca, lo ordene quien lo ordene: el dominio tiene que existir en los datos,
+   * el motivo es obligatorio, la idempotencia se respeta, y NINGUNA acción puede aumentar el
+   * volumen de envío. Eso último es irreversible y no hay autoridad que lo destrabe.
+   */
+  ordenadoPorElJefe?: boolean;
   /** Pone cap 0 en el nodo del dominio. Reversible con un `--apply` normal. */
   frenarDominio?: (dominio: string, motivo: string) => Promise<{ antes: number | null; despues: number }>;
   /** Crea el kill-file: el daemon deja de mandar en la próxima vuelta. Reversible con `rm`. */
@@ -169,7 +181,7 @@ export async function ejecutarAcciones(
         // Frenar un dominio cruzado solo puede ayudar —lo irreversible ya ocurrió—; frenar uno
         // SANO cuesta calentamiento real y lo decide el operador, no el modelo. Si el agente
         // quiere frenar uno sano, la salida es anotar_pendiente, no ejecutar.
-        if (ctx.frenablesConDanio && !ctx.frenablesConDanio.some((d) => d.toLowerCase() === dominio)) {
+        if (!ctx.ordenadoPorElJefe && ctx.frenablesConDanio && !ctx.frenablesConDanio.some((d) => d.toLowerCase() === dominio)) {
           out.push({
             accion: nombre,
             objetivo: dominio,
