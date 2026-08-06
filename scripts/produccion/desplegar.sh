@@ -49,7 +49,18 @@ fi
 
 echo "== desplegando ${RAMA} → ${SSH_DEST} =="
 
-remoto() { ssh -o BatchMode=yes -o ConnectTimeout=15 "${SSH_DEST}" "cd \"${STUDIO_DIR}\" && $1"; }
+# El PATH va EXPLÍCITO. Un `ssh host 'comando'` abre un shell NO interactivo, que en macOS no lee
+# el perfil del usuario: Homebrew no está en el PATH y `npm`, `node` y `psql` simplemente "no
+# existen". Se descubrió con un deploy que murió en `npm ci` con "command not found: npm" sobre una
+# máquina donde npm está perfectamente instalado — y es la misma trampa que ya había mordido antes
+# con `sudo`, que tampoco hereda el PATH.
+#
+# Falló seguro, eso sí: el script no reinició nada y producción se quedó con la versión vieja, que
+# funcionaba. Fallar hacia "no toco nada" es lo que hace que un deploy roto no sea un incidente.
+remoto() {
+  ssh -o BatchMode=yes -o ConnectTimeout=15 "${SSH_DEST}" \
+    "export PATH=/opt/homebrew/bin:/usr/local/bin:\$PATH; cd \"${STUDIO_DIR}\" && $1"
+}
 
 antes="$(remoto 'git rev-parse HEAD')"
 echo "· producción está en ${antes:0:8}"
