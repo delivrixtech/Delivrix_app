@@ -836,16 +836,27 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
   if (!token || !canal || !baseUrl || !modelo) return;
 
   const estado = (await workspace.readInventoryJson<EstadoLectura>(CHAT_FILE).catch(() => null)) ?? estadoVacio();
-  const { mensajes, error } = await leerNuevos({ token, canal, botUserId }, estado);
+  const { mensajes, error, ultimoVisto } = await leerNuevos({ token, canal, botUserId }, estado);
   if (error) {
     console.log(`[chat] no pude leer Slack: ${error}`);
     return;
   }
-  if (mensajes.length === 0) return;
+  if (mensajes.length === 0) {
+    // EL CURSOR AVANZA IGUAL. Si esta pasada leyó mensajes pero ninguno era contestable —los del
+    // propio bot, por ejemplo— y el cursor se quedara quieto, la vuelta siguiente relee exactamente
+    // los mismos y no sale nunca de ahí. Es el candado que dejó sordo al agente el 2026-08-06: sus
+    // ~25 avisos nocturnos llenaron la ventana de 20 y los seis mensajes del jefe quedaron del otro
+    // lado, sin ser vistos jamás.
+    if (ultimoVisto && (!estado.cursorTs || ultimoVisto > estado.cursorTs)) {
+      await workspace.updateInventoryJson<EstadoLectura>(CHAT_FILE, () => avanzar(estado, [], new Date().toISOString(), ultimoVisto));
+      console.log(`[chat] nada que contestar; el cursor salta a ${ultimoVisto} (leí solo mensajes míos o de sistema)`);
+    }
+    return;
+  }
 
   // El cursor avanza ANTES de contestar. Si la respuesta falla se pierde ese turno, y está bien:
   // en una conversación, repetir lo mismo dos veces es peor que quedarse callado una.
-  await workspace.updateInventoryJson<EstadoLectura>(CHAT_FILE, () => avanzar(estado, mensajes, new Date().toISOString()));
+  await workspace.updateInventoryJson<EstadoLectura>(CHAT_FILE, () => avanzar(estado, mensajes, new Date().toISOString(), ultimoVisto));
 
   const snapshot = await workspace.readInventoryJson<Awaited<ReturnType<typeof pedirLectura>>>(MONITOR_FILE).catch(() => null);
   const bitacora = await workspace.readInventoryJson<Bitacora>(BITACORA_FILE).catch(() => null);

@@ -136,3 +136,53 @@ test("el acuse va al MENSAJE, no al hilo", async () => {
   assert.equal(cuerpo.channel, "C123");
   assert.equal(cuerpo.name, "eyes");
 });
+
+test("el cursor avanza aunque NO haya nada que contestar — o el agente queda sordo", () => {
+  // EL BUG del 2026-08-06, tal cual pasó. `conversations.history` con `oldest` pagina hacia
+  // ADELANTE y devuelve los N más VIEJOS que quedan. El agente había mandado ~25 avisos durante la
+  // noche; esos 20 llenaron la ventana, se filtraron todos por ser suyos, la lista salió vacía —
+  // y como el cursor solo avanzaba con mensajes contestables, se quedó clavado. Cada 6 segundos
+  // releía la MISMA pared. Los seis mensajes del jefe estaban del otro lado y nunca los vio.
+  // Los ts van con la forma REAL de Slack (epoch.microsegundos, ancho fijo). Importa: todo el
+  // módulo los ordena como STRINGS, y eso solo es correcto porque son de ancho fijo. Con valores
+  // de juguete como "50" y "100" el test miente —"50" > "100" es verdadero comparando strings— y
+  // habría fijado la regla al revés.
+  const estado: EstadoLectura = { cursorTs: "1785993125.485049", hilosActivos: [], ultimaLecturaOk: null };
+
+  const clavado = avanzar(estado, [], "2026-08-06T18:00:00.000Z");
+  assert.equal(clavado.cursorTs, "1785993125.485049", "sin ultimoVisto no puede saltar: no inventa");
+
+  const salta = avanzar(estado, [], "2026-08-06T18:00:00.000Z", "1786020618.219029");
+  assert.equal(salta.cursorTs, "1786020618.219029", "leyó hasta ahí aunque nada fuera contestable");
+
+  // Y nunca retrocede: un ultimoVisto viejo no puede hacer que se reprocese lo ya contestado.
+  assert.equal(avanzar(estado, [], "t", "1785000000.000000").cursorTs, "1785993125.485049");
+});
+
+test("con mensajes contestables, el cursor cubre TODO lo leído, no solo lo contestado", () => {
+  // Si en la misma tanda vienen un mensaje del jefe (ts 200) y después tres del bot (hasta 400),
+  // dejar el cursor en 200 hace que la vuelta siguiente relea los tres del bot. Con pocos no
+  // importa; con veinte, es la pared otra vez.
+  const estado: EstadoLectura = { cursorTs: "1785993125.485049", hilosActivos: [], ultimaLecturaOk: null };
+  const delJefe = [{ ts: "1786034865.923579", thread_ts: "1786034865.923579", texto: "hola", usuario: "U0BAQSXJJLW" }];
+  assert.equal(avanzar(estado, delJefe, "t", "1786041326.793579").cursorTs, "1786041326.793579");
+  // Sin ultimoVisto sigue funcionando como antes: el contrato viejo no se rompe.
+  assert.equal(avanzar(estado, delJefe, "t").cursorTs, "1786034865.923579");
+});
+
+test("leerNuevos informa hasta dónde LEYÓ, no solo qué contestó", async () => {
+  const soloDelBot = {
+    ok: true,
+    messages: [
+      { ts: "1786015275.299129", text: "Juanes, revisá los cupos", bot_id: "B123" },
+      { ts: "1786020618.219029", text: "Juanes, el freno no pegó", bot_id: "B123" }
+    ]
+  };
+  const fake = (async () => ({ json: async () => soloDelBot })) as never;
+  const r = await leerNuevos(
+    { token: "t", canal: "c", botUserId: "U0BNCHPTPH8", fetchImpl: fake },
+    { cursorTs: "1785993125.485049", hilosActivos: [], ultimaLecturaOk: null }
+  );
+  assert.equal(r.mensajes.length, 0, "ninguno es contestable");
+  assert.equal(r.ultimoVisto, "1786020618.219029", "pero leyó hasta ahí, y el cursor tiene que poder saltar");
+});

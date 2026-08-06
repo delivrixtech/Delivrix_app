@@ -70,9 +70,23 @@ export function dondeResponder(m: MensajeSlack): string {
 }
 
 /** Avanza el cursor y la lista de hilos vivos. Puro: la persistencia es de quien llama. */
-export function avanzar(estado: EstadoLectura, nuevos: readonly MensajeSlack[], ahoraISO: string): EstadoLectura {
-  if (nuevos.length === 0) return { ...estado, ultimaLecturaOk: ahoraISO };
-  const masNuevo = nuevos.reduce((max, m) => (m.ts > max ? m.ts : max), estado.cursorTs ?? "0");
+export function avanzar(
+  estado: EstadoLectura,
+  nuevos: readonly MensajeSlack[],
+  ahoraISO: string,
+  /**
+   * El ts más nuevo LEÍDO en esta pasada, contestable o no. Sin él, una tanda entera de mensajes
+   * propios dejaba el cursor clavado y la ventana se releía igual para siempre — el jefe podía
+   * escribir cada seis segundos del otro lado de esa pared y no lo veía nunca.
+   */
+  ultimoVisto?: string | null
+): EstadoLectura {
+  if (nuevos.length === 0) {
+    const salto = ultimoVisto && (!estado.cursorTs || ultimoVisto > estado.cursorTs) ? ultimoVisto : estado.cursorTs;
+    return { ...estado, cursorTs: salto ?? null, ultimaLecturaOk: ahoraISO };
+  }
+  const base = ultimoVisto && ultimoVisto > (estado.cursorTs ?? "0") ? ultimoVisto : estado.cursorTs ?? "0";
+  const masNuevo = nuevos.reduce((max, m) => (m.ts > max ? m.ts : max), base);
   const hilos = new Map(estado.hilosActivos.map((h) => [h.thread_ts, h]));
   for (const m of nuevos) {
     const t = dondeResponder(m);
@@ -140,10 +154,28 @@ export async function acusarRecibo(cfg: CfgLectura, ts: string, emoji = "eyes"):
 export async function leerNuevos(
   cfg: CfgLectura,
   estado: EstadoLectura
-): Promise<{ mensajes: MensajeSlack[]; error: string | null }> {
+): Promise<{ mensajes: MensajeSlack[]; error: string | null; ultimoVisto: string | null }> {
   const out: MensajeSlack[] = [];
   const vistos = new Set<string>();
+  /**
+   * EL TS MÁS NUEVO QUE PASÓ POR ACÁ, se pueda contestar o no.
+   *
+   * Sin esto el cursor era un candado. `conversations.history` con `oldest` pagina HACIA ADELANTE
+   * desde el cursor y devuelve los N más VIEJOS que quedan; si esos N son todos mensajes del
+   * propio bot, se filtran, la lista sale vacía, el cursor no avanza — y en la vuelta siguiente se
+   * lee exactamente la misma pared. Para siempre.
+   *
+   * Pasó en producción el 2026-08-06: el agente había mandado ~25 avisos durante la noche, esos 20
+   * llenaron la ventana, y los seis mensajes del jefe quedaron del otro lado. Escribía cada seis
+   * segundos y nunca los veía. Su propio ruido lo dejó sordo.
+   *
+   * Lo que se filtró NO se pierde por avanzar: un mensaje del bot, un join o un cambio de tema no
+   * van a volverse contestables más tarde. El cursor tiene que medir lo LEÍDO, no lo contestado.
+   */
+  let ultimoVisto: string | null = null;
   const agregar = (m: Record<string, unknown>, threadPorDefecto?: string): void => {
+    const tsCrudo = typeof m.ts === "string" ? m.ts : null;
+    if (tsCrudo && (ultimoVisto === null || tsCrudo > ultimoVisto)) ultimoVisto = tsCrudo;
     if (!esParaContestar(m as never, cfg.botUserId ?? null)) return;
     const ts = String(m.ts);
     if (vistos.has(ts)) return;
@@ -162,7 +194,7 @@ export async function leerNuevos(
       limit: "20",
       ...(estado.cursorTs ? { oldest: estado.cursorTs } : {})
     });
-    if (!hist.ok) return { mensajes: [], error: hist.error ?? "conversations.history sin ok" };
+    if (!hist.ok) return { mensajes: [], error: hist.error ?? "conversations.history sin ok", ultimoVisto: null };
     for (const m of hist.messages ?? []) agregar(m as Record<string, unknown>);
 
     // Las respuestas DENTRO de un hilo no aparecen en history: hay que pedirlas por hilo.
@@ -172,10 +204,10 @@ export async function leerNuevos(
       for (const m of rep.messages ?? []) agregar(m as Record<string, unknown>, h.thread_ts);
     }
   } catch (e) {
-    return { mensajes: [], error: e instanceof Error ? e.message : String(e) };
+    return { mensajes: [], error: e instanceof Error ? e.message : String(e), ultimoVisto: null };
   }
 
-  return { mensajes: out.sort((a, b) => a.ts.localeCompare(b.ts)), error: null };
+  return { mensajes: out.sort((a, b) => a.ts.localeCompare(b.ts)), error: null, ultimoVisto };
 }
 
 /**
