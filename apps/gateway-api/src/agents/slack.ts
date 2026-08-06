@@ -139,7 +139,7 @@ export function recordarAviso(estado: EstadoParaSlack, hablo: boolean, ahoraISO:
 /** Manda el mensaje. Falla suave: que Slack esté caído no puede tumbar al agente. */
 export async function mandarASlack(
   aviso: Aviso,
-  cfg: { token?: string; canal?: string; fetchImpl?: typeof fetch }
+  cfg: { token?: string; canal?: string; threadTs?: string; fetchImpl?: typeof fetch }
 ): Promise<{ ok: boolean; motivo: string | null }> {
   if (!cfg.token || !cfg.canal) return { ok: false, motivo: "sin SLACK_BOT_TOKEN o SLACK_CANAL" };
   const doFetch = cfg.fetchImpl ?? fetch;
@@ -147,7 +147,9 @@ export async function mandarASlack(
     const r = await doFetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
       headers: { "content-type": "application/json; charset=utf-8", authorization: `Bearer ${cfg.token}` },
-      body: JSON.stringify({ channel: cfg.canal, text: aviso.texto })
+      // threadTs: contestar DENTRO del hilo. Sin esto cada respuesta abre un mensaje suelto y la
+      // conversación queda partida — que es literalmente "el agente se pierde".
+      body: JSON.stringify({ channel: cfg.canal, text: aviso.texto, ...(cfg.threadTs ? { thread_ts: cfg.threadTs } : {}) })
     });
     const data = (await r.json()) as { ok?: boolean; error?: string };
     return data.ok ? { ok: true, motivo: null } : { ok: false, motivo: data.error ?? "slack respondió sin ok" };

@@ -27,6 +27,9 @@ import {
   type Bitacora
 } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
 import { decidirSiHablar, mandarASlack, recordarAviso, type MemoriaSlack } from "../../apps/gateway-api/src/agents/slack.ts";
+import { avanzar, dondeResponder, estadoVacio, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
+import { responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
+import { lineasParaPrompt as accionesParaPrompt } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
 import { planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
 import {
   countCyclesToday,
@@ -45,6 +48,8 @@ const PENDIENTES_FILE = "warmup-pendientes.json";
 const BITACORA_FILE = "warmup-acciones.json";
 /** La memoria de lo que YA le dijo a Juanes: sin esto repetiría el mismo aviso cada 10 minutos. */
 const SLACK_FILE = "warmup-slack.json";
+/** Hasta dónde leyó el chat. El cursor ES el dedupe: sin él, al reiniciar re-contesta todo. */
+const CHAT_FILE = "warmup-chat.json";
 /** El MISMO kill-file que mira el daemon en cada vuelta. Se revierte con `rm`. */
 const KILL_FILE = (process.env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "runtime/warmup-live.kill")).trim();
 
@@ -497,6 +502,54 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
   }
 }
 
+/**
+ * EL CARRIL DE LA CONVERSACIÓN. Corre cada 20 s dentro del mismo proceso residente: no hace falta
+ * un segundo servicio, y la separación que importa no es de proceso sino de CAMINO DE CÓDIGO — acá
+ * no se importa ejecutarAcciones ni se le pasan herramientas al modelo, así que el techo de daño de
+ * una inyección por Slack es "dijo una tontería", no "frenó un nodo".
+ */
+async function tickChat(workspace: OpenClawWorkspace, botUserId: string | null): Promise<void> {
+  const token = process.env.SLACK_BOT_TOKEN?.trim();
+  const canal = process.env.SLACK_CANAL?.trim();
+  const baseUrl = process.env.LOCAL_INFERENCE_BASE_URL?.trim();
+  const modelo = process.env.LOCAL_INFERENCE_MODEL?.trim();
+  if (!token || !canal || !baseUrl || !modelo) return;
+
+  const estado = (await workspace.readInventoryJson<EstadoLectura>(CHAT_FILE).catch(() => null)) ?? estadoVacio();
+  const { mensajes, error } = await leerNuevos({ token, canal, botUserId }, estado);
+  if (error) {
+    console.log(`[chat] no pude leer Slack: ${error}`);
+    return;
+  }
+  if (mensajes.length === 0) return;
+
+  const snapshot = await workspace.readInventoryJson<Awaited<ReturnType<typeof pedirLectura>>>(MONITOR_FILE).catch(() => null);
+  const bitacora = await workspace.readInventoryJson<Bitacora>(BITACORA_FILE).catch(() => null);
+
+  for (const m of mensajes) {
+    const r = await responder({
+      contexto: {
+        // El hilo NO se reconstruye: Slack es el almacén. Acá va el turno que hay que contestar.
+        hilo: [{ quien: "jefe", texto: m.texto }],
+        snapshot: snapshot ?? null,
+        loQueHiciste: accionesParaPrompt(bitacora, 6)
+      },
+      baseUrl,
+      modelo
+    });
+    if (!r.texto) {
+      console.log(`[chat] sin respuesta para "${m.texto.slice(0, 40)}": ${r.motivo}`);
+      continue;
+    }
+    if (r.observaciones.length > 0) console.log(`[chat] observaciones: ${r.observaciones.join(" · ")}`);
+    // thread_ts: contesta DENTRO del hilo. Sin esto la conversación se parte en pedazos.
+    await mandarASlack({ texto: r.texto, motivo: "respuesta al jefe", pideRespuesta: false }, { token, canal, threadTs: dondeResponder(m) });
+    console.log(`[chat] respondí en el hilo ${dondeResponder(m)}: ${r.texto.slice(0, 70)}`);
+  }
+
+  await workspace.updateInventoryJson<EstadoLectura>(CHAT_FILE, () => avanzar(estado, mensajes, new Date().toISOString()));
+}
+
 async function main(): Promise<void> {
   const workspace = new OpenClawWorkspace();
   // Sin este listener, un socket ocioso que el servidor cierra durante los 10 min de espera mata
@@ -510,6 +563,23 @@ async function main(): Promise<void> {
   try {
     await unaVuelta(workspace, pg);
     if (!LOOP) return;
+
+    // EL CHAT arranca acá, en el MISMO proceso: ya vive 24/7 bajo launchd con KeepAlive. Un
+    // segundo servicio sería otro plist, otro log, otro lock y otro modo de falla, para nada. La
+    // separación que importa es de camino de código, no de proceso: `tickChat` no importa
+    // ejecutarAcciones ni le pasa herramientas al modelo.
+    const botUserId = await miUserId({ token: process.env.SLACK_BOT_TOKEN ?? "" });
+    if (botUserId) {
+      console.log(`escuchando Slack cada 20s (soy ${botUserId}).`);
+      setInterval(() => {
+        // Una vuelta de chat que falla NO puede tumbar al vigilante: es lo accesorio, no lo central.
+        void tickChat(workspace, botUserId).catch((e) =>
+          console.error(`[chat] vuelta fallida: ${e instanceof Error ? e.message : String(e)}`)
+        );
+      }, 20_000);
+    } else {
+      console.log("sin token de Slack o sin poder identificarme: el chat queda apagado.");
+    }
 
     console.log(`\nmirando cada ${Math.round(INTERVALO_MS / 60000)} min. Ctrl-C para parar.`);
     for (;;) {
