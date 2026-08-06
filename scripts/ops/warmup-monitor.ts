@@ -27,7 +27,7 @@ import {
   type Bitacora
 } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
 import { decidirSiHablar, mandarASlack, recordarAviso, type MemoriaSlack } from "../../apps/gateway-api/src/agents/slack.ts";
-import { acusarRecibo, avanzar, dondeResponder, estadoVacio, leerHilo, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
+import { acusarRecibo, agruparParaContestar, avanzar, dondeResponder, estadoVacio, leerHilo, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
 import { extraerRecordar, responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
 import {
   lineasParaPrompt as decisionesParaPrompt,
@@ -862,16 +862,37 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
   const bitacora = await workspace.readInventoryJson<Bitacora>(BITACORA_FILE).catch(() => null);
   const decisiones = await workspace.readInventoryJson<Decisiones>(DECISIONES_FILE).catch(() => null);
 
-  for (const m of mensajes) {
-    // 👀 ANTES DE PENSAR. El modelo tarda ~34s y el 87% de eso lo pasa razonando; durante ese rato
-    // el jefe no tiene ninguna señal de que su mensaje llegó, y "no pasó nada" es indistinguible
-    // de "el agente está caído". El emoji cuesta 200ms y no gasta un turno del modelo.
+  // UNA RESPUESTA POR CONVERSACIÓN, no una por mensaje.
+  //
+  // Antes esto era `for (const m of mensajes)`, y el 2026-08-06 mostró por qué está mal: el agente
+  // volvió de unas horas sordo con SEIS mensajes encima —"Hey", "como vamos?", "respondeme",
+  // "necesito el informe"— y contestó los seis por separado, con seis variantes de la misma frase.
+  // La queja del jefe fue exacta: "se volvió repetitivo e imbécil". Nadie contesta seis veces a
+  // "¿estás ahí?" preguntado de seis formas.
+  const tandas = agruparParaContestar(mensajes);
+  if (tandas.length < mensajes.length) {
+    console.log(`[chat] ${mensajes.length} mensajes → ${tandas.length} respuesta(s): los junté para no repetirme`);
+  }
+
+  for (const tanda of tandas) {
+    const m = tanda.mensajes[tanda.mensajes.length - 1]!;
+    // 👀 ANTES DE PENSAR, y en TODOS los de la tanda: cada uno de esos mensajes espera señal de que
+    // llegó. El modelo tarda ~34s y el 87% de eso lo pasa razonando; "no pasó nada" es
+    // indistinguible de "el agente está caído". Cuesta 200ms y no gasta un turno del modelo.
     // No se espera (`void`): un acuse que demore la respuesta es peor que no tenerlo.
-    void acusarRecibo({ token, canal, botUserId }, m.ts).catch(() => undefined);
+    for (const p of tanda.mensajes) void acusarRecibo({ token, canal, botUserId }, p.ts).catch(() => undefined);
 
     // EL HILO COMPLETO. Sin esto le llegaba UN mensaje suelto y arrancaba de cero cada turno: por
     // eso "no entendía". No era el modelo — era que no tenía la conversación delante.
-    const hilo = await leerHilo({ token, canal, botUserId }, dondeResponder(m));
+    const delHilo = await leerHilo({ token, canal, botUserId }, dondeResponder(m));
+    // Y ADEMÁS los otros mensajes de la tanda, que son mensajes SUELTOS del canal y por lo tanto no
+    // están en ningún hilo: sin esto el modelo vería el último ("Respondeme,") sin las cuatro veces
+    // que preguntó antes, y contestaría un saludo en vez del informe que le venían pidiendo.
+    const otros = tanda.mensajes
+      .slice(0, -1)
+      .filter((p) => dondeResponder(p) !== dondeResponder(m))
+      .map((p) => ({ quien: "jefe" as const, texto: p.texto }));
+    const hilo = [...otros, ...delHilo];
     const r = await responder({
       contexto: {
         // Slack ES el almacén del hilo. Si por lo que sea no se pudo leer, al menos va este turno.

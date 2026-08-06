@@ -162,3 +162,15 @@ test("el kill switch sigue siendo del operador", () => {
   // manda correo no se delega. Es lo único que se le niega en las dos direcciones.
   assert.match(VOZ, /despausar el emisor/, "está en la lista de lo que NO puede prometer");
 });
+
+test("la voz le dice que varios mensajes seguidos son UNA conversación", () => {
+  // El reclamo textual del jefe, después de recibir seis respuestas casi idénticas: "que no sea
+  // tan repetitivo, más bien que él mismo pueda entender la conversación... se volvió repetitivo e
+  // imbécil". El agrupamiento en código le da los mensajes juntos; esto le dice qué hacer con
+  // ellos, que es la otra mitad — sin esta línea vería cuatro turnos y contestaría al último.
+  const v = seguido(VOZ);
+  assert.match(v, /ES UNA SOLA CONVERSACIÓN/);
+  assert.match(v, /es una persona esperando que le contestes/);
+  assert.match(v, /el mensaje más específico y no el último/, "lo que quería, no lo que dijo al final");
+  assert.match(v, /Nunca una respuesta por mensaje/);
+});

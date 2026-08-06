@@ -252,3 +252,58 @@ export async function miUserId(cfg: { token: string; fetchImpl?: typeof fetch })
     return null;
   }
 }
+
+/** Una tanda de mensajes que merecen UNA sola respuesta. */
+export interface TandaDeMensajes {
+  /** Dónde contestar: el hilo, o el mensaje más nuevo si son sueltos del canal. */
+  donde: string;
+  /** Los mensajes de la tanda, del más viejo al más nuevo. */
+  mensajes: MensajeSlack[];
+}
+
+/**
+ * AGRUPA LO QUE SE CONTESTA JUNTO — y esta función existe por una queja textual del jefe:
+ * "se volvió repetitivo e imbécil".
+ *
+ * Qué pasó el 2026-08-06. El agente estuvo sordo unas horas (el cursor se había clavado detrás de
+ * una pared de sus propios mensajes). Cuando se destrabó tenía SEIS mensajes encima —"Hey", "como
+ * vamos?", "respondeme", "Necesito que me des informe"— y los contestó UNO POR UNO, en seis hilos
+ * distintos, con seis variantes de la misma frase: "Aquí ando", "Qué más, acá ando", "Acá estoy",
+ * "Dale, acá va el estado". Seis respuestas a la MISMA pregunta hecha de seis formas.
+ *
+ * Una persona que vuelve y encuentra seis "¿estás ahí?" contesta una vez. Eso es lo que hace esto.
+ *
+ * EL CRITERIO, y por qué es este: todo lo que quedó PENDIENTE EN LA MISMA LECTURA se debe junto.
+ * No importa si son de hace un minuto o de hace tres horas — si el agente no pudo contestar
+ * ninguno, todos son la misma deuda, y quien escribió cuatro veces seguidas quería una respuesta,
+ * no cuatro. Las respuestas DENTRO de un hilo sí se separan por hilo: ahí el jefe eligió a
+ * propósito dónde hablar, y mezclar dos hilos rompería las dos conversaciones.
+ *
+ * Puro y testeable: la red no entra acá.
+ */
+export function agruparParaContestar(mensajes: readonly MensajeSlack[]): TandaDeMensajes[] {
+  const ordenados = [...mensajes].sort((a, b) => a.ts.localeCompare(b.ts));
+  const porHilo = new Map<string, MensajeSlack[]>();
+  const sueltos: MensajeSlack[] = [];
+
+  for (const m of ordenados) {
+    // Un mensaje SUELTO del canal tiene thread_ts === ts (o vacío): no es una conversación que el
+    // jefe eligió, es un mensaje más en el canal. Los que sí viven en un hilo se agrupan por hilo.
+    if (!m.thread_ts || m.thread_ts === m.ts) sueltos.push(m);
+    else {
+      const ya = porHilo.get(m.thread_ts);
+      if (ya) ya.push(m);
+      else porHilo.set(m.thread_ts, [m]);
+    }
+  }
+
+  const tandas: TandaDeMensajes[] = [...porHilo.entries()].map(([donde, ms]) => ({ donde, mensajes: ms }));
+
+  // Todos los sueltos son UNA tanda, y se contesta en el más NUEVO: es donde el jefe está mirando.
+  if (sueltos.length > 0) {
+    tandas.push({ donde: sueltos[sueltos.length - 1]!.ts, mensajes: sueltos });
+  }
+
+  // Del más viejo al más nuevo: si hay varias tandas, se contesta en el orden en que preguntó.
+  return tandas.sort((a, b) => (a.mensajes[0]?.ts ?? "").localeCompare(b.mensajes[0]?.ts ?? ""));
+}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { avanzar, dondeResponder, esParaContestar, estadoVacio, leerNuevos, acusarRecibo } from "./slack-lectura.ts";
+import { agruparParaContestar, avanzar, dondeResponder, esParaContestar, estadoVacio, leerNuevos, acusarRecibo } from "./slack-lectura.ts";
 
 test("NO se contesta a sí mismo — el bucle infinito más fácil de escribir", () => {
   // Los mensajes propios traen bot_id pero NO siempre subtype "bot_message": filtrar por subtype
@@ -185,4 +185,52 @@ test("leerNuevos informa hasta dónde LEYÓ, no solo qué contestó", async () =
   );
   assert.equal(r.mensajes.length, 0, "ninguno es contestable");
   assert.equal(r.ultimoVisto, "1786020618.219029", "pero leyó hasta ahí, y el cursor tiene que poder saltar");
+});
+
+test("seis 'hey, ¿estás?' seguidos son UNA conversación, no seis", () => {
+  // El caso REAL del 2026-08-06, con los ts de producción. El agente estuvo sordo unas horas;
+  // cuando se destrabó tenía estos seis encima y los contestó UNO POR UNO, con seis variantes de
+  // la misma frase. La queja textual del jefe: "se volvió repetitivo e imbécil". Tenía razón.
+  const suyos = [
+    { ts: "1786034865.923579", thread_ts: "1786034865.923579", texto: "Respondeme, como vamos ?", usuario: "U0BAQSXJJLW" },
+    { ts: "1786035635.341669", thread_ts: "1786035635.341669", texto: "Hey,", usuario: "U0BAQSXJJLW" },
+    { ts: "1786035636.980829", thread_ts: "1786035636.980829", texto: "respondeme", usuario: "U0BAQSXJJLW" },
+    { ts: "1786035649.984039", thread_ts: "1786035649.984039", texto: "Necesito que me des informe de como vas", usuario: "U0BAQSXJJLW" },
+    { ts: "1786041247.058819", thread_ts: "1786041247.058819", texto: "Hey, como vamos ?", usuario: "U0BAQSXJJLW" },
+    { ts: "1786041326.793579", thread_ts: "1786041326.793579", texto: "Respondeme,", usuario: "U0BAQSXJJLW" }
+  ];
+  const tandas = agruparParaContestar(suyos);
+  assert.equal(tandas.length, 1, "seis mensajes sueltos = UNA respuesta");
+  assert.equal(tandas[0]!.mensajes.length, 6, "y el modelo los ve TODOS, para entender qué le están pidiendo");
+  assert.equal(tandas[0]!.donde, "1786041326.793579", "contesta en el más nuevo: es donde el jefe está mirando");
+});
+
+test("los hilos NO se mezclan: ahí el jefe eligió dónde hablar", () => {
+  // Agrupar por deuda no puede pisar la decisión de conversar aparte. Dos hilos son dos temas.
+  const mezcla = [
+    { ts: "1786041000.000100", thread_ts: "1786040000.000000", texto: "y lo del cupo?", usuario: "U0BAQSXJJLW" },
+    { ts: "1786041100.000100", thread_ts: "1786039000.000000", texto: "seguís con el freno?", usuario: "U0BAQSXJJLW" },
+    { ts: "1786041200.000100", thread_ts: "1786041200.000100", texto: "hey", usuario: "U0BAQSXJJLW" }
+  ];
+  const tandas = agruparParaContestar(mezcla);
+  assert.equal(tandas.length, 3, "dos hilos distintos + los sueltos");
+  const hilos = tandas.map((t) => t.donde).sort();
+  assert.deepEqual(hilos, ["1786039000.000000", "1786040000.000000", "1786041200.000100"]);
+});
+
+test("dos mensajes en el MISMO hilo también se contestan juntos", () => {
+  const mismoHilo = [
+    { ts: "1786041000.000100", thread_ts: "1786040000.000000", texto: "y el cupo?", usuario: "U0BAQSXJJLW" },
+    { ts: "1786041010.000100", thread_ts: "1786040000.000000", texto: "perdón, me refiero al de hoy", usuario: "U0BAQSXJJLW" }
+  ];
+  const t = agruparParaContestar(mismoHilo);
+  assert.equal(t.length, 1);
+  assert.equal(t[0]!.mensajes.length, 2, "la aclaración va junto con la pregunta, no aparte");
+  assert.equal(t[0]!.donde, "1786040000.000000");
+});
+
+test("sin mensajes no hay tandas, y una sola pregunta sigue siendo una", () => {
+  assert.deepEqual(agruparParaContestar([]), []);
+  const uno = [{ ts: "1786041200.000100", thread_ts: "1786041200.000100", texto: "hola", usuario: "U" }];
+  assert.equal(agruparParaContestar(uno).length, 1);
 });
