@@ -20,6 +20,9 @@ GATEWAY_URL="${GATEWAY_HEALTH_URL:-http://127.0.0.1:3000/health}"
 PANEL_URL="${PANEL_URL:-http://127.0.0.1:5173/}"
 # El daemon escribe una vez por vuelta; el umbral se DERIVA del intervalo real (ver lib.sh).
 DAEMON_MAX_SILENCIO_MIN="${DAEMON_MAX_SILENCIO_MIN:-$(delivrix_umbral_silencio_min "${ROOT_DIR}/config/gateway.env")}"
+# El agente mira cada 10 min y además escribe cada 20s por el chat de Slack. 45 min de silencio no
+# es "está pensando": está muerto o colgado. Fijo y no derivado: su cadencia no sale de gateway.env.
+MONITOR_MAX_SILENCIO_MIN="${MONITOR_MAX_SILENCIO_MIN:-45}"
 # Nunca dos kickstarts al mismo servicio en menos de esto: si algo está roto de verdad,
 # reiniciarlo cada 5 min no lo arregla y sí llena el disco de logs.
 REINTENTO_MIN="${REINTENTO_MIN:-15}"
@@ -95,6 +98,27 @@ if [[ -f "${daemon_log}" ]]; then
   fi
 else
   estado+=("warmup=sin-log")
+fi
+
+# --- el AGENTE: nadie vigilaba al vigilante --------------------------------------------------
+# Sentinel es el que mira la fábrica y el único que habla con el operador. Si se cae, su silencio
+# es idéntico a "todo bien" — que es exactamente la falla que él existe para evitar, aplicada a
+# él mismo. Y tiene un modo de muerte real: hasta hoy una excepción de SSH lo tiraba y launchd lo
+# relanzaba en bucle. Mismo criterio que el daemon: vivo se demuestra ESCRIBIENDO.
+#
+# Su ciclo es de 10 min y además escribe cada 20s por el chat de Slack, así que un silencio largo
+# no es "está pensando": está muerto o colgado.
+monitor_log="${LOG_DIR}/warmup-monitor.log"
+if [[ -f "${monitor_log}" ]]; then
+  silencio_mon=$(( ( $(date +%s) - $(stat -f %m "${monitor_log}") ) / 60 ))
+  if (( silencio_mon >= MONITOR_MAX_SILENCIO_MIN )); then
+    reiniciar warmup-monitor "sin escribir hace ${silencio_mon}min (tope ${MONITOR_MAX_SILENCIO_MIN})"
+    estado+=("agente=MUDO:${silencio_mon}min")
+  else
+    estado+=("agente=ok:${silencio_mon}min")
+  fi
+else
+  estado+=("agente=sin-log")
 fi
 
 # --- el respaldo: la falla que nadie ve hasta que se necesita --------------------------------

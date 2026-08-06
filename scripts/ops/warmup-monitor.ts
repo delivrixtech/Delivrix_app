@@ -700,7 +700,20 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
     const aviso = decidirSiHablar(estadoSlack, memPrevia, lectura.generadoEn);
     let hablo = false;
     if (aviso) {
-      const r = await mandarASlack(aviso, { token: process.env.SLACK_BOT_TOKEN, canal: process.env.SLACK_CANAL });
+      // LA MENCIÓN, en el carril que de verdad la necesita.
+      //
+      // `pideRespuesta` se venía calculando —es el "esto no lo puedo resolver yo, te necesito"— y
+      // no se usaba en ninguna parte: el aviso salía como texto plano, que para Slack es una
+      // palabra más y no notifica nada. O sea que el único mensaje capaz de despertar a Juanes era
+      // justamente el que no sonaba.
+      //
+      // Ahora que el canal se calla para todo lo demás (mirar ya no avisa, y las condiciones que
+      // persisten se repiten cada 6h), la mención vuelve a significar algo: si suena, es porque el
+      // agente se quedó sin herramientas.
+      const jefeId = process.env.SLACK_JUANES_USER_ID?.trim();
+      const conMencion =
+        aviso.pideRespuesta && jefeId ? { ...aviso, texto: `<@${jefeId}> ${aviso.texto}` } : aviso;
+      const r = await mandarASlack(conMencion, { token: process.env.SLACK_BOT_TOKEN, canal: process.env.SLACK_CANAL });
       hablo = r.ok;
       console.log(r.ok ? `[slack] ${aviso.texto}` : `[slack] NO enviado (${r.motivo}) — habría dicho: ${aviso.texto}`);
     } else {
