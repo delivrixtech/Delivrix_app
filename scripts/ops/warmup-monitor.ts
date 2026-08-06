@@ -26,6 +26,7 @@ import {
   registrar,
   type Bitacora
 } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
+import { decidirSiHablar, mandarASlack, recordarAviso, type MemoriaSlack } from "../../apps/gateway-api/src/agents/slack.ts";
 import { planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
 import {
   countCyclesToday,
@@ -42,6 +43,8 @@ const PENDIENTES_FILE = "warmup-pendientes.json";
 /** Dónde vive la memoria de lo que HIZO (no de lo que dijo). Separada de MONITOR_FILE a propósito:
  *  ese se reescribe entero en cada vuelta y ya pesa 27 KB, y el panel lo sirve completo. */
 const BITACORA_FILE = "warmup-acciones.json";
+/** La memoria de lo que YA le dijo a Juanes: sin esto repetiría el mismo aviso cada 10 minutos. */
+const SLACK_FILE = "warmup-slack.json";
 /** El MISMO kill-file que mira el daemon en cada vuelta. Se revierte con `rm`. */
 const KILL_FILE = (process.env.WARMUP_LIVE_KILL_FILE ?? resolve(process.cwd(), "runtime/warmup-live.kill")).trim();
 
@@ -454,6 +457,35 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
     // La memoria se persiste con la lectura: es lo que va a leer la próxima vuelta.
     memoria: [...new Set([...erroresPrevios, ...(lectura.verificacion?.reparos ?? [])])].slice(-5)
   }));
+
+  // ── SLACK ────────────────────────────────────────────────────────────────────────────────────
+  // Corre SIEMPRE, aunque no haya token: así se ve en el log qué habría dicho y cuándo se habría
+  // callado, que es la única forma de calibrar el criterio antes de conectarlo de verdad.
+  try {
+    const memPrevia = await workspace.readInventoryJson<MemoriaSlack>(SLACK_FILE).catch(() => null);
+    const estadoSlack = {
+      emisor: hechos.emisor?.estado ?? null,
+      acciones: acciones.map((a) => ({ accion: a.accion, objetivo: a.objetivo ?? null, ejecutada: a.ejecutada, detalle: a.detalle })),
+      reparos,
+      sinLectura: lectura.lectura ? null : lectura.motivo,
+      voz: lectura.verificacion?.voz ?? null,
+      ahora: lectura.verificacion?.ahora ?? null,
+      riesgo: lectura.verificacion?.riesgo ?? null
+    };
+    const aviso = decidirSiHablar(estadoSlack, memPrevia, lectura.generadoEn);
+    let hablo = false;
+    if (aviso) {
+      const r = await mandarASlack(aviso, { token: process.env.SLACK_BOT_TOKEN, canal: process.env.SLACK_CANAL });
+      hablo = r.ok;
+      console.log(r.ok ? `[slack] ${aviso.texto}` : `[slack] NO enviado (${r.motivo}) — habría dicho: ${aviso.texto}`);
+    } else {
+      console.log("[slack] silencio: nada cambió y no hay nada que pedir");
+    }
+    await workspace.updateInventoryJson<MemoriaSlack>(SLACK_FILE, (m) => recordarAviso(estadoSlack, hablo, lectura.generadoEn, m));
+  } catch (e) {
+    // Slack NUNCA puede tumbar al agente que vigila la fábrica.
+    console.log(`[slack] error al decidir/enviar: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   if (lectura.lectura) {
     console.log(`[${lectura.generadoEn}] ${lectura.modelo} · ${lectura.tokens?.completion ?? 0} tokens\n`);
