@@ -35,7 +35,8 @@ import {
   type Decisiones
 } from "../../apps/gateway-api/src/agents/decisiones-del-jefe.ts";
 import { lineasParaPrompt as accionesParaPrompt } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
-import { planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
+import { placementsDeDominio, planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
+import { esInbox } from "../../apps/warmup-engine/src/domain/decision-diaria.ts";
 import {
   countCyclesToday,
   decideDaemonAction,
@@ -93,6 +94,33 @@ async function frenarNodo(dominio: string, motivo: string): Promise<void> {
 }
 
 /**
+ * ¿El agente puede SOLTAR nodos por sí solo?
+ *
+ * Separado de `PUEDE_FRENAR` a propósito, y no por simetría: frenar solo REDUCE, soltar AUMENTA
+ * volumen. Son riesgos de naturaleza distinta y el operador tiene que poder darle uno sin el otro.
+ */
+const puedeSoltar = (process.env.WARMUP_AGENT_PUEDE_SOLTAR ?? "").trim().toLowerCase() === "true";
+
+/**
+ * SUELTA un nodo frenado instalando un cupo chico, por el MISMO camino del operador a mano
+ * (`limite-fisico.ts --domain=X --cap=N --apply`).
+ *
+ * El cupo llega como parámetro pero NO lo elige el modelo: viene de `CAP_AL_SOLTAR`, una constante.
+ * Las condiciones que habilitan la llamada se verificaron antes en `acciones-agente.ts`, contra la
+ * infraestructura viva y no contra lo que el agente cree.
+ */
+async function soltarNodo(dominio: string, cap: number, motivo: string): Promise<void> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  await promisify(execFile)(
+    process.execPath,
+    ["--env-file=config/gateway.env", "--experimental-strip-types", "scripts/ops/limite-fisico.ts", `--domain=${dominio}`, `--cap=${cap}`, "--apply"],
+    { cwd: process.cwd(), timeout: 120_000 }
+  );
+  console.log(`[agente] soltó ${dominio} con cupo ${cap}: ${motivo}`);
+}
+
+/**
  * VA A MIRAR el cupo real de un nodo, ahora, por SSH. No escribe nada.
  *
  * Es lo que le faltaba para dejar de afirmar sobre una foto vieja: el agente dijo
@@ -122,6 +150,41 @@ async function leerCupoDelNodo(dominio: string): Promise<{ cap: number | null; c
     motivo: /no se pudo|error/i.test(linea) ? linea.trim().slice(0, 120) : null
   };
 }
+
+/**
+ * MIDE un dominio contra la base: dónde viene cayendo su correo y en qué día de rampa está.
+ *
+ * Existe por un agujero preciso: los hechos ya traen el placement de cada dominio, pero SOLO de los
+ * que están en el pool. Un dominio frenado o excluido no aparece en ninguna parte del contexto — y
+ * son exactamente los que hay que evaluar para decidir si vuelven. El agente quedaba a ciegas justo
+ * en los casos que importaban.
+ *
+ * Reusa `placementsDeDominio`, la MISMA lectura que usa el motor para decidir volumen: si el
+ * criterio cambia, cambia para los dos.
+ */
+function medirUnDominio(pg: Pool) {
+  return async (dominio: string): Promise<{ tasaInbox: number | null; muestra: number; diaN: number | null; ultimaMedicion: string | null }> => {
+    const placements = await placementsDeDominio(pg, dominio, VENTANA_MEDIDA_DOMINIO);
+    const { rows } = await pg.query<{ ultima: Date | null; primera: Date | null }>(
+      `SELECT max(occurred_at) FILTER (WHERE kind = 'measured' AND placement IS NOT NULL) AS ultima,
+              min(occurred_at) FILTER (WHERE kind = 'sent')                               AS primera
+         FROM warmup_activity WHERE lower(node_domain) = lower($1)`,
+      [dominio]
+    );
+    const primera = rows[0]?.primera ?? null;
+    return {
+      tasaInbox: placements.length > 0 ? placements.filter(esInbox).length / placements.length : null,
+      muestra: placements.length,
+      // El día de rampa sale del PRIMER ENVÍO REAL de este dominio. `null` cuando nunca mandó, que
+      // no es lo mismo que "día 0": uno nunca arrancó, el otro arrancó hoy.
+      diaN: primera ? Math.floor((Date.now() - primera.getTime()) / 86_400_000) : null,
+      ultimaMedicion: rows[0]?.ultima ? (rows[0].ultima as Date).toISOString().slice(0, 16).replace("T", " ") : null
+    };
+  };
+}
+
+/** Ventana de mediciones para juzgar UN dominio. Más ancha que la del gate: acá se busca historia. */
+const VENTANA_MEDIDA_DOMINIO = 10;
 
 /**
  * DIAGNOSTICA un dominio: lee el mail.log de su nodo y devuelve quién lo rechaza y por qué.
@@ -462,6 +525,24 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
         // dejar de opinar sobre una foto y pasar a mirar.
         leerCupoNodo: leerCupoDelNodo,
         diagnosticarDominio: diagnosticarUnDominio,
+        medirDominio: medirUnDominio(pg),
+        // SOLTAR: la única acción que aumenta volumen, detrás de su PROPIO flag —
+        //
+        //   WARMUP_AGENT_PUEDE_SOLTAR=true   en config/gateway.env
+        //
+        // separado de PUEDE_FRENAR y no por simetría: frenar solo reduce, soltar aumenta. El
+        // operador tiene que poder dar uno sin el otro. Las condiciones (nodo realmente en cap 0,
+        // nadie bloqueándolo, historia propia que no lo desaconseje) se verifican en
+        // `acciones-agente.ts` contra la infraestructura viva, y el cupo es una constante.
+        ...(puedeSoltar
+          ? {
+              soltarDominio: async (dominio: string, cap: number, motivo: string) => {
+                const antes = await capActual(workspace, dominio);
+                await soltarNodo(dominio, cap, motivo);
+                return { antes, despues: cap };
+              }
+            }
+          : {}),
         // FRENAR toca la flota de producción por SSH (pone cap 0 en Postfix). Es reversible y solo
         // reduce, pero sigue siendo una mutación de infraestructura, así que va detrás de un flag
         // que el OPERADOR prende — no yo, y no por inferencia de que "quería que el agente actúe".
@@ -731,12 +812,27 @@ async function tickChatInterno(workspace: OpenClawWorkspace, botUserId: string |
           ])
         ],
         // La orden vino de un humano: se relaja el alcance del freno, que existe para acotar al
-        // MODELO. Todo lo demás —dominio real, motivo, idempotencia, nada que aumente el envío—
-        // sigue igual de duro.
+        // MODELO. Todo lo demás —dominio real, motivo, idempotencia— sigue igual de duro.
+        //
+        // SOLTAR NO SE RELAJA, y es a propósito: sus tres condiciones no protegen del modelo, que
+        // sería lo que la orden del jefe podría levantar. Protegen de la realidad — que el nodo esté
+        // realmente frenado, que haya alguien del otro lado, que su historia no lo desaconseje.
+        // Ninguna autoridad cambia si Yahoo le tiene la puerta cerrada, así que soltarlo ahí sería
+        // igual de inútil viniendo de él. Si quiere forzarlo, el camino es la consola, no el agente.
         ordenadoPorElJefe: true,
-        // IR A MIRAR: ninguna de las dos muta nada, así que van siempre disponibles.
+        // IR A MIRAR: ninguna muta nada, así que van siempre disponibles.
         leerCupoNodo: leerCupoDelNodo,
         diagnosticarDominio: diagnosticarUnDominio,
+        medirDominio: medirUnDominio(pg),
+        ...(puedeSoltar
+          ? {
+              soltarDominio: async (dominio: string, cap: number, motivo: string) => {
+                const antes = await capActual(workspace, dominio);
+                await soltarNodo(dominio, cap, motivo);
+                return { antes, despues: cap };
+              }
+            }
+          : {}),
         ...(puedeFrenar
           ? {
               frenarDominio: async (dominio: string, motivo: string) => {

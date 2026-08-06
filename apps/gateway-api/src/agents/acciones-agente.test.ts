@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ejecutarAcciones, extraerAcciones, MAX_ACCIONES_POR_VUELTA, type ContextoAcciones, type Pendiente } from "./acciones-agente.ts";
+import { CAP_AL_SOLTAR, ejecutarAcciones, extraerAcciones, MAX_ACCIONES_POR_VUELTA, type ContextoAcciones, type Pendiente } from "./acciones-agente.ts";
 
 const AHORA = new Date("2026-08-04T17:00:00.000Z");
 
@@ -310,4 +310,126 @@ test("un dominio inventado no llega a abrir SSH, ni para diagnosticar", async ()
   );
   assert.equal(r[0]?.ejecutada, false);
   assert.equal(llamado, false, "ni siquiera se intentó la conexión");
+});
+
+// ── SOLTAR: la única acción que aumenta volumen ─────────────────────────────────────────────────
+//
+// Hasta hoy el agente solo sabía reducir, y esa asimetría tenía un costo real: cada dominio listo
+// para arrancar esperaba a que un humano lo soltara a mano. Lo que hace que soltar sea seguro no es
+// que el modelo elija bien —es que el modelo casi no elige: propone el candidato, el código
+// verifica contra la infraestructura viva, y el cupo es una constante que él no puede tocar.
+
+/** Contexto de soltar con todo en verde; cada test rompe UNA condición. */
+function ctxSoltar(over: Partial<ContextoAcciones> = {}): ContextoAcciones & { soltados: Array<[string, number]> } {
+  const soltados: Array<[string, number]> = [];
+  return {
+    soltados,
+    dominiosConocidos: ["listo.com"],
+    ahora: () => AHORA,
+    leerCupoNodo: async () => ({ cap: 0, consumidoHoy: null }),
+    diagnosticarDominio: async () => ({ estado: "ok", bloqueanPor: [], degradadoEn: [], entregados: 10, rechazados: 0, detalle: "" }),
+    medirDominio: async () => ({ tasaInbox: null, muestra: 0, diaN: null, ultimaMedicion: null }),
+    soltarDominio: async (d, cap) => { soltados.push([d, cap]); return { antes: 0, despues: cap }; },
+    pendientes: { listar: async () => [], guardar: async () => {} },
+    ...over
+  } as never;
+}
+
+test("soltar: con todo en verde suelta — y el cupo NO lo elige el modelo", async () => {
+  const c = ctxSoltar();
+  // El modelo pide un cupo enorme en el motivo: no tiene por dónde entrar. `cap` es constante.
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "soltalo con cupo 5000" }], c);
+  assert.equal(r[0]!.ejecutada, true);
+  assert.deepEqual(c.soltados, [["listo.com", CAP_AL_SOLTAR]]);
+  assert.match(r[0]!.detalle, /cupo 20\/día/);
+  assert.match(r[0]!.detalle, /sin mediciones previas/, "dice que arranca de cero, no inventa un 0%");
+});
+
+test("soltar: si el receptor le tiene la puerta cerrada, NO suelta", async () => {
+  // Soltar contra una puerta cerrada no calienta: produce rebotes, y los rebotes son lo que empuja
+  // al umbral permanente de Google. Es estrictamente peor que no hacer nada.
+  const c = ctxSoltar({
+    diagnosticarDominio: async () => ({ estado: "blocked_by_provider", bloqueanPor: ["Yahoo", "Gmail"], degradadoEn: [], entregados: 0, rechazados: 40, detalle: "" })
+  });
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "ya descansó" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.deepEqual(c.soltados, []);
+  assert.match(r[0]!.detalle, /Yahoo, Gmail/);
+});
+
+test("soltar: si ya estaba suelto, no lo reporta como acción", async () => {
+  const c = ctxSoltar({ leerCupoNodo: async () => ({ cap: 20, consumidoHoy: 3 }) });
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "x" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /ya está suelto/);
+  assert.deepEqual(c.soltados, []);
+});
+
+test("soltar: un nodo ILEGIBLE no se trata como frenado", async () => {
+  // La trampa: `cap: null` es "no sé", y confundirlo con 0 haría soltar un nodo que quizá ya estaba
+  // enviando. Un dato ausente nunca puede valer como permiso.
+  const c = ctxSoltar({ leerCupoNodo: async () => ({ cap: null, consumidoHoy: null }) });
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "x" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /no suelto a ciegas/i);
+});
+
+test("soltar: con historia propia mala, no vuelve", async () => {
+  const c = ctxSoltar({ medirDominio: async () => ({ tasaInbox: 0.2, muestra: 5, diaN: 3, ultimaMedicion: "2026-08-05" }) });
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "démosle otra" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /20% de bandeja sobre 5/);
+});
+
+test("soltar: poca muestra NO bloquea — si no, es el mismo candado de la flota", async () => {
+  // Un dominio con 1 sola medición mala no tiene historia: es un dominio nuevo. Exigirle evidencia
+  // que solo puede conseguir enviando es exactamente el candado que paralizó la flota entera.
+  const c = ctxSoltar({ medirDominio: async () => ({ tasaInbox: 0, muestra: 1, diaN: 0, ultimaMedicion: "2026-08-05" }) });
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "recién arranca" }], c);
+  assert.equal(r[0]!.ejecutada, true);
+  assert.deepEqual(c.soltados, [["listo.com", CAP_AL_SOLTAR]]);
+});
+
+test("soltar: sin con qué verificar, NO suelta", async () => {
+  // Un chequeo que no se puede hacer no es un chequeo que pasa. Si falta el instrumento de una sola
+  // condición, la acción no ocurre.
+  for (const falta of ["leerCupoNodo", "diagnosticarDominio", "medirDominio"] as const) {
+    const c = ctxSoltar({ [falta]: undefined });
+    const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "x" }], c);
+    assert.equal(r[0]!.ejecutada, false, `sin ${falta} no puede soltar`);
+    assert.match(r[0]!.detalle, /no se suelta nada/);
+  }
+});
+
+test("soltar: si el chequeo REVIENTA, tampoco suelta", async () => {
+  const c = ctxSoltar({ diagnosticarDominio: async () => { throw new Error("ssh timeout"); } });
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "x" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /ssh timeout/);
+  assert.deepEqual(c.soltados, []);
+});
+
+test("soltar: un dominio inventado no llega ni al primer chequeo", async () => {
+  const c = ctxSoltar();
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "inventado.com", motivo: "x" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /no está en el inventario/);
+  assert.deepEqual(c.soltados, []);
+});
+
+test("medir: distingue 'nunca se midió' de '0% de bandeja'", async () => {
+  // Colapsar ausencia de dato con dato malo es la confusión más cara del sistema: el agente ya
+  // trató un "no medido" como evidencia de que no había riesgo.
+  const nunca = await ejecutarAcciones(
+    [{ accion: "medir_dominio", dominio: "listo.com", motivo: "ver si está para volver" }],
+    ctxSoltar()
+  );
+  assert.match(nunca[0]!.detalle, /todavía no se midió nunca/);
+
+  const cero = await ejecutarAcciones(
+    [{ accion: "medir_dominio", dominio: "listo.com", motivo: "ver" }],
+    ctxSoltar({ medirDominio: async () => ({ tasaInbox: 0, muestra: 4, diaN: 2, ultimaMedicion: "2026-08-05" }) })
+  );
+  assert.match(cero[0]!.detalle, /0% de bandeja sobre 4 mediciones/);
+  assert.match(cero[0]!.detalle, /día 2 de rampa/);
 });

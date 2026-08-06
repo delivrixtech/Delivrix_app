@@ -3,6 +3,8 @@ import test from "node:test";
 import { construirContexto, responder, revisarRespuesta, VOZ } from "./sentinel-chat.ts";
 import type { LecturaAgente } from "./warmup-monitor.ts";
 
+const seguido = (t: string) => t.replace(/\s+/g, " ");
+
 const snapshot = (over: Partial<LecturaAgente> = {}): LecturaAgente =>
   ({
     generadoEn: "2026-08-06T02:00:00.000Z",
@@ -122,4 +124,41 @@ test("registra el modelo que CONTESTÓ, no el que se pidió", async () => {
   })) as never;
   const r = await responder({ contexto: { hilo: [], snapshot: null, loQueHiciste: [] }, baseUrl: "http://x/v1", modelo: "pedido-distinto", fetchImpl: fake });
   assert.equal(r.modelo, "qwen/qwen3.6-35b-a3b");
+});
+
+test("la voz le exige ir a mirar antes de preguntar", () => {
+  // El reclamo textual del jefe: "no me gusta que siga tan dependiente de nosotros, depende de mi,
+  // luego de ti". Tener manos pasivas no alcanza si el prompt no le dice que las use ANTES de
+  // pedir. Un agente con ojos que igual pregunta es un agente que no sabe que tiene ojos.
+  assert.match(VOZ, /NO LE PIDAS A JUANES LO QUE PODÉS IR A VER VOS/);
+  assert.match(VOZ, /MIRAR ES GRATIS/);
+  assert.match(VOZ, /volverte inútil/, "le dice el costo, no solo la regla");
+});
+
+test("la voz no lo deja declararse incapaz de lo que sí puede", () => {
+  // La falla espejo de prometer de más. Con las manos nuevas es la más probable: el modelo
+  // aprendió "solo puedo reducir" y lo va a seguir diciendo sobre acciones que ahora tiene.
+  assert.match(VOZ, /TAMPOCO TE QUEDES CORTO/);
+  // El prompt va cortado a mano en líneas de ~100, así que una frase puede quedar partida al
+  // medio. Buscar sobre el texto sin cortes evita que reacomodar un renglón rompa un test que no
+  // tiene nada que ver con lo que se cambió.
+  assert.match(seguido(VOZ), /Leé la lista antes de declararte incapaz/);
+});
+
+test("la lista de manos incluye soltar, y con sus condiciones", () => {
+  // Que exista la acción no alcanza: si el prompt no dice que un rechazo del gate es información
+  // y no un error suyo, el modelo lo lee como falla propia y deja de intentarlo.
+  assert.match(VOZ, /soltar_dominio/);
+  assert.match(VOZ, /El cupo no lo elegís vos/);
+  assert.match(seguido(VOZ), /no un error tuyo/);
+  assert.match(VOZ, /medir_dominio/);
+  // Y la contradicción vieja tiene que estar muerta: el prompt decía textual que "soltar el cupo"
+  // no existía. Un dato falso en el prompt es exactamente lo que lo hacía afirmar falsedades.
+  assert.ok(!VOZ.includes('no existe "ajustar la tasa" ni "soltar el cupo"'), "esa frase ya es falsa");
+});
+
+test("el kill switch sigue siendo del operador", () => {
+  // Puede pausar (crear el kill-file) pero NO despausar: la última palabra sobre si la fábrica
+  // manda correo no se delega. Es lo único que se le niega en las dos direcciones.
+  assert.match(VOZ, /despausar el emisor/, "está en la lista de lo que NO puede prometer");
 });

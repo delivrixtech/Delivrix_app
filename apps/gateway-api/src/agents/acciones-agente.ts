@@ -22,7 +22,32 @@
 // con su motivo. Repetir "falta una semilla de Yahoo" cada 10 minutos durante una semana no es
 // insistencia, es ruido que entrena a ignorar al agente.
 
-export type NombreAccion = "frenar_dominio" | "pausar_warmup" | "anotar_pendiente" | "resolver_pendiente";
+export type NombreAccion =
+  | "frenar_dominio"
+  | "soltar_dominio"
+  | "pausar_warmup"
+  | "anotar_pendiente"
+  | "resolver_pendiente"
+  | "leer_cupo_nodo"
+  | "diagnosticar_dominio"
+  | "medir_dominio";
+
+/**
+ * El cupo con el que vuelve un dominio soltado. NO lo elige el modelo, y esa es toda la seguridad
+ * de la acción: es el mismo número que el operador usa a mano como `--cap-excepto`, elegido porque
+ * cubre las 3 vueltas diarias del calentamiento y mata cualquier volumen de producción.
+ *
+ * Si el agente se equivoca de candidato, el daño máximo es un dominio mandando 20 correos al día
+ * que no debería. Con un cupo elegido por el modelo, el daño máximo sería el umbral permanente de
+ * Google — irreversible. La diferencia entera está en que este número es una constante.
+ */
+export const CAP_AL_SOLTAR = 20;
+
+/** Cuántas mediciones propias hacen falta para que la historia de un dominio pese en su contra. */
+export const MUESTRA_PARA_JUZGAR = 3;
+
+/** Debajo de esta tasa de bandeja, un dominio con historia suficiente no vuelve al pool. */
+export const PISO_PARA_SOLTAR = 0.5;
 
 /** Lo que el agente pidió hacer. Sale del modelo, así que se trata como entrada no confiable. */
 export interface AccionPedida {
@@ -119,8 +144,43 @@ export interface ContextoAcciones {
     rechazados: number;
     detalle: string;
   }>;
+  /**
+   * MEDIR un dominio: dónde viene cayendo su correo y en qué día de rampa está.
+   *
+   * Los hechos ya traen el placement de cada dominio… pero solo de los que están EN EL POOL. Un
+   * dominio frenado o excluido no aparece — y son exactamente los que hay que evaluar para volver
+   * a soltarlos. El agente quedaba opinando a ciegas sobre los únicos casos que importaban.
+   *
+   * PASIVO: lee la base, no manda un solo correo. Por eso no lleva flag.
+   */
+  medirDominio?: (dominio: string) => Promise<{
+    tasaInbox: number | null;
+    muestra: number;
+    diaN: number | null;
+    ultimaMedicion: string | null;
+  }>;
   /** Pone cap 0 en el nodo del dominio. Reversible con un `--apply` normal. */
   frenarDominio?: (dominio: string, motivo: string) => Promise<{ antes: number | null; despues: number }>;
+  /**
+   * SOLTAR un dominio frenado: instala un cupo chico para que vuelva a calentar.
+   *
+   * Es la única acción del agente que AUMENTA volumen, y por eso es la que más cuidado lleva. La
+   * asimetría que arregla es real: hasta hoy solo sabía reducir — frenar, pausar, anotar — y cada
+   * dominio listo para arrancar tenía que esperar a que un humano lo soltara a mano.
+   *
+   * Lo que la vuelve segura NO es que el modelo decida bien. Es que el modelo no decide casi nada:
+   *
+   *  · el CUPO no lo elige él. Es la constante `CAP_AL_SOLTAR`, la misma que usa el operador a
+   *    mano como `--cap-excepto`: alcanza para las 3 vueltas diarias del calentamiento y mata
+   *    cualquier volumen de producción. El modelo no puede pedir "soltalo en 5000".
+   *  · las CONDICIONES se verifican en código contra la infraestructura viva, no contra lo que él
+   *    cree: el nodo tiene que estar realmente en cap 0, ningún receptor puede tenerle la puerta
+   *    cerrada, y si ya tiene mediciones no pueden ser malas.
+   *
+   * O sea: él elige el CANDIDATO, el código dice si califica, y el cupo es fijo. El peor caso de
+   * que se equivoque es un dominio calentando 20 correos al día de más.
+   */
+  soltarDominio?: (dominio: string, cap: number, motivo: string) => Promise<{ antes: number | null; despues: number }>;
   /** Crea el kill-file: el daemon deja de mandar en la próxima vuelta. Reversible con `rm`. */
   pausarWarmup?: (motivo: string) => Promise<void>;
   /** ¿Ya está pausado? Para no reportar como acción algo que ya estaba hecho. */
@@ -243,6 +303,100 @@ export async function ejecutarAcciones(
         break;
       }
 
+      case "soltar_dominio": {
+        const dominio = (p.dominio ?? "").trim().toLowerCase();
+        if (!ctx.dominiosConocidos.some((d) => d.toLowerCase() === dominio)) {
+          out.push({ accion: nombre, objetivo: p.dominio ?? null, ejecutada: false, detalle: `rechazada: "${p.dominio}" no está en el inventario` });
+          break;
+        }
+        if (!ctx.soltarDominio) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: soltar no está habilitado en este entorno" });
+          break;
+        }
+        // Las tres verificaciones NO son opcionales: si falta el instrumento para comprobar una
+        // condición, no se suelta. Un chequeo que no se puede hacer no es un chequeo que pasa.
+        if (!ctx.leerCupoNodo || !ctx.diagnosticarDominio || !ctx.medirDominio) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: sin con qué verificar las condiciones, no se suelta nada" });
+          break;
+        }
+
+        // ── (1) ¿ESTÁ frenado de verdad? ────────────────────────────────────────────────────────
+        // Contra el nodo vivo, no contra el archivo. Es la lección del 2026-08-05: el agente afirmó
+        // "cupo 255" leyendo un sender-cap.json de horas sobre un nodo que él mismo había puesto
+        // en 0. Soltar algo que ya estaba suelto sería subirle el cupo a un dominio que ya andaba.
+        let cupo: { cap: number | null; consumidoHoy: number | null };
+        try {
+          cupo = await ctx.leerCupoNodo(dominio);
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude leer el nodo, así que no suelto: ${e instanceof Error ? e.message : String(e)}` });
+          break;
+        }
+        if (cupo.cap === null) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `${dominio}: no pude confirmar el cupo actual. No suelto a ciegas.` });
+          break;
+        }
+        if (cupo.cap > 0) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `${dominio} ya está suelto (cap ${cupo.cap}): no hacía falta` });
+          break;
+        }
+
+        // ── (2) ¿Hay alguien del otro lado? ─────────────────────────────────────────────────────
+        // Soltar contra una puerta cerrada no calienta: produce rebotes, y los rebotes son
+        // exactamente lo que empuja al umbral permanente. Es peor que no hacer nada.
+        let diag: { bloqueanPor: string[]; estado: string };
+        try {
+          diag = await ctx.diagnosticarDominio(dominio);
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude diagnosticar, así que no suelto: ${e instanceof Error ? e.message : String(e)}` });
+          break;
+        }
+        if (diag.bloqueanPor.length > 0) {
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: false,
+            detalle: `rechazada: ${dominio} lo tiene cerrado ${diag.bloqueanPor.join(", ")}. Soltarlo ahí solo produce rebotes — hay que destrabar al receptor primero.`
+          });
+          break;
+        }
+
+        // ── (3) ¿Su propia historia lo desaconseja? ─────────────────────────────────────────────
+        // Sin mediciones SÍ se suelta: un dominio nuevo no tiene historia y esperar evidencia que
+        // solo puede aparecer enviando es el mismo candado que paralizó la flota. Con mediciones
+        // suficientes y malas, no: eso ya es evidencia, y dice que no está listo.
+        let medida: { tasaInbox: number | null; muestra: number; diaN: number | null };
+        try {
+          medida = await ctx.medirDominio(dominio);
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude medirlo, así que no suelto: ${e instanceof Error ? e.message : String(e)}` });
+          break;
+        }
+        if (medida.muestra >= MUESTRA_PARA_JUZGAR && medida.tasaInbox !== null && medida.tasaInbox < PISO_PARA_SOLTAR) {
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: false,
+            detalle: `rechazada: ${dominio} viene ${Math.round(medida.tasaInbox * 100)}% de bandeja sobre ${medida.muestra} mediciones. No está para volver todavía.`
+          });
+          break;
+        }
+
+        const s = await ctx.soltarDominio(dominio, CAP_AL_SOLTAR, motivo);
+        const historia =
+          medida.muestra === 0
+            ? "sin mediciones previas (arranca de cero)"
+            : `${Math.round((medida.tasaInbox ?? 0) * 100)}% de bandeja sobre ${medida.muestra} mediciones`;
+        out.push({
+          accion: nombre,
+          objetivo: dominio,
+          ejecutada: true,
+          detalle: `${dominio} soltado con cupo ${s.despues}/día (estaba en ${s.antes ?? 0}) — ${historia}, nadie se lo bloquea. ${motivo}`,
+          antes: s.antes,
+          despues: s.despues
+        });
+        break;
+      }
+
       case "pausar_warmup": {
         if (!ctx.pausarWarmup) {
           out.push({ accion: nombre, objetivo: null, ejecutada: false, detalle: "rechazada: pausar no está habilitado en este entorno" });
@@ -358,6 +512,42 @@ export async function ejecutarAcciones(
           });
         } catch (e) {
           out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude diagnosticar: ${e instanceof Error ? e.message : String(e)}` });
+        }
+        break;
+      }
+
+      case "medir_dominio": {
+        // DÓNDE viene cayendo su correo y en qué día de rampa está. Los hechos ya traen esto, pero
+        // SOLO de los dominios del pool — y los que hay que evaluar para soltar están justamente
+        // fuera. Pasivo: consulta la base, no manda correo.
+        const dominio = (p.dominio ?? "").trim().toLowerCase();
+        if (!ctx.dominiosConocidos.some((d) => d.toLowerCase() === dominio)) {
+          out.push({ accion: nombre, objetivo: p.dominio ?? null, ejecutada: false, detalle: `rechazada: "${p.dominio}" no está en el inventario` });
+          break;
+        }
+        if (!ctx.medirDominio) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: medir no está habilitado en este entorno" });
+          break;
+        }
+        try {
+          const m = await ctx.medirDominio(dominio);
+          // "sin mediciones" y "0% de bandeja" son cosas MUY distintas y se dicen distinto: la
+          // primera es ausencia de dato, la segunda es un dato malo. Colapsarlas es la confusión
+          // más cara del sistema.
+          const tasa =
+            m.muestra === 0
+              ? "todavía no se midió nunca"
+              : `${Math.round((m.tasaInbox ?? 0) * 100)}% de bandeja sobre ${m.muestra} mediciones`;
+          const dia = m.diaN === null ? "sin día de rampa (no arrancó)" : `día ${m.diaN} de rampa`;
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: true,
+            detalle: `${dominio}: ${tasa}, ${dia}${m.ultimaMedicion ? `, última medición ${m.ultimaMedicion}` : ""}`,
+            despues: m.tasaInbox
+          });
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `no pude medirlo: ${e instanceof Error ? e.message : String(e)}` });
         }
         break;
       }

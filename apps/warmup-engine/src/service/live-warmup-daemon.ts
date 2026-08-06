@@ -213,21 +213,69 @@ export function puedeMedir(seed: SeedDelDaemon, cuentaDeMedicion: string): boole
 
 export type DaemonAction = "inert" | "killed" | "cap-reached" | "placement-pause" | "send";
 
+/** Una medición con su dueño. Sin el dominio no se puede saber de quién es la culpa. */
+export interface PlacementDeDominio {
+  dominio: string;
+  placement: Placement;
+}
+
+/**
+ * Cuántas mediciones necesita la FLOTA para que el freno global pueda dispararse.
+ *
+ * El 2026-08-06 el warmup llevaba horas parado con este motivo: "inbox 33% < piso 50%". Las seis
+ * mediciones de la ventana eran estas —
+ *
+ *   corpfiling-infra.com      INBOX      annualfilings-ops.com      SPAM
+ *   corpfiling-infra.com      INBOX      annualfilings-control.com  SPAM
+ *   nationalfiling-infra.com  MISSING    annualcorp-infra.com       SPAM
+ *
+ * — o sea: el único dominio que venía calentando bien (2/2 en la ventana, 5/6 en la semana) estaba
+ * frenado por CUATRO muestras sueltas, una por dominio, de dominios que recién arrancaban. Que un
+ * dominio nuevo caiga en spam el primer día no es una señal de que la flota se degradó: es lo que
+ * pasa siempre, y es justo lo que el calentamiento existe para revertir.
+ *
+ * Peor: el freno era un candado. Parado no se mide, sin medir la tasa no cambia, y sin que la tasa
+ * cambie no se destraba. Solo salía si un humano lo sacaba a mano — exactamente la dependencia que
+ * el agente vino a eliminar.
+ *
+ * El freno POR DOMINIO (`decidirCupoDeHoy`) ya hace el trabajo fino con las mediciones de cada
+ * dominio, y ese sí es el estadístico correcto. Este freno global queda para lo que debería haber
+ * sido siempre: el corte de catástrofe. Y un corte de catástrofe con seis filas no mide nada, así
+ * que ahora exige muestra suficiente antes de poder apagar la fábrica entera.
+ */
+export const MIN_MUESTRA_FLOTA = 10;
+
 export interface GateInput {
   enabled: boolean;
   killed: boolean;
   cyclesToday: number;
   maxPerDay: number;
-  recentPlacements: Placement[];
+  recentPlacements: readonly PlacementDeDominio[];
   placementFloor: number;
+  /**
+   * Los dominios que HOY pueden enviar (el pool ya elegido). Lo que midió un dominio frenado no es
+   * evidencia sobre lo que va a pasar si mandamos ahora: si el dominio está fuera, su historia sale
+   * del cálculo. Sin esto, frenar el dominio culpable no destrababa la flota, porque sus muestras
+   * seguían pesando en el promedio.
+   *
+   * `undefined` = no filtrar (tests y compatibilidad).
+   */
+  elegibles?: ReadonlySet<string>;
 }
 
-/** Tasa de inbox reciente (INBOX / total). null si no hay mediciones. */
-export function recentInboxRate(placements: readonly Placement[]): number | null {
-  if (placements.length === 0) return null;
+/**
+ * Tasa de inbox reciente (INBOX / total) de los dominios que hoy pueden enviar.
+ * `null` si no hay mediciones que cuenten.
+ */
+export function recentInboxRate(
+  placements: readonly PlacementDeDominio[],
+  elegibles?: ReadonlySet<string>
+): { tasa: number; muestra: number } | null {
+  const cuentan = elegibles ? placements.filter((p) => elegibles.has(p.dominio)) : [...placements];
+  if (cuentan.length === 0) return null;
   // Mismo criterio que la decisión por dominio: PROMOTIONS cuenta como bandeja (§9). Parchear un
   // contador y dejar el otro con la regla vieja produce dos verdades sobre el mismo dato.
-  return placements.filter(esInbox).length / placements.length;
+  return { tasa: cuentan.filter((p) => esInbox(p.placement)).length / cuentan.length, muestra: cuentan.length };
 }
 
 /** Decide qué hacer esta vuelta. Orden de barreras: flag → kill → tope → placement → send. */
@@ -237,9 +285,15 @@ export function decideDaemonAction(input: GateInput): { action: DaemonAction; re
   if (input.cyclesToday >= input.maxPerDay) {
     return { action: "cap-reached", reason: `tope diario ${input.cyclesToday}/${input.maxPerDay}` };
   }
-  const rate = recentInboxRate(input.recentPlacements);
-  if (rate !== null && rate < input.placementFloor) {
-    return { action: "placement-pause", reason: `inbox ${(rate * 100).toFixed(0)}% < piso ${(input.placementFloor * 100).toFixed(0)}%` };
+  const r = recentInboxRate(input.recentPlacements, input.elegibles);
+  // Sin muestra suficiente NO se apaga la fábrica. El freno fino por dominio sigue gobernando el
+  // volumen de cada uno; este solo existe para cortar una degradación de toda la flota, y para
+  // afirmar eso hacen falta datos, no seis filas.
+  if (r !== null && r.muestra >= MIN_MUESTRA_FLOTA && r.tasa < input.placementFloor) {
+    return {
+      action: "placement-pause",
+      reason: `inbox ${(r.tasa * 100).toFixed(0)}% < piso ${(input.placementFloor * 100).toFixed(0)}% sobre ${r.muestra} mediciones de los nodos activos`
+    };
   }
   return { action: "send", reason: "ok" };
 }
@@ -331,17 +385,24 @@ export async function countCyclesToday(pg: PgClient): Promise<number> {
  *   mismas 6 filas siguen siendo "las últimas 6" para siempre.
  * Es el mismo estado absorbente que ya se arregló en la decisión por dominio, un piso más arriba.
  */
-export async function recentPlacements(pg: PgClient, window: number): Promise<Placement[]> {
-  const { rows } = await pg.query<{ placement: string | null }>(
-    `SELECT placement FROM warmup_activity
+export async function recentPlacements(pg: PgClient, window: number): Promise<PlacementDeDominio[]> {
+  // La ventana que se pasa es la POR DOMINIO (6). Usarla como límite de filas de toda la flota era
+  // el error de fondo: con 58 dominios, "las últimas 6 filas" no es una ventana, es una lotería —
+  // un solo dominio que mide cinco veces la llena entera. El corte real es TEMPORAL (los mismos 10
+  // días del resto del sistema); el límite de filas queda solo como tope de memoria.
+  const { rows } = await pg.query<{ node_domain: string; placement: string | null }>(
+    `SELECT node_domain, placement FROM warmup_activity
       WHERE kind = 'measured' AND placement IS NOT NULL
         AND occurred_at > now() - interval '${VENTANA_PLACEMENT_DIAS} days'
       ORDER BY occurred_at DESC LIMIT $1`,
-    [window]
+    [Math.max(window, 200)]
   );
-  return rows
-    .map((r) => (r.placement ?? "").toUpperCase())
-    .filter((p): p is Placement => p === "INBOX" || p === "SPAM" || p === "PROMOTIONS" || p === "OTHER" || p === "MISSING");
+  const valido = (p: string): p is Placement =>
+    p === "INBOX" || p === "SPAM" || p === "PROMOTIONS" || p === "OTHER" || p === "MISSING";
+  return rows.flatMap((r) => {
+    const p = (r.placement ?? "").toUpperCase();
+    return valido(p) ? [{ dominio: (r.node_domain ?? "").toLowerCase(), placement: p }] : [];
+  });
 }
 
 // ── Composition root del I/O real ────────────────────────────────────────────────────────────────────
@@ -632,23 +693,36 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
       const killed = existsSync(cfg.killFile);
       const cyclesToday = await countCyclesToday(pg);
       const placements = await recentPlacements(pg, cfg.placementWindow);
+
+      // El pool se calcula ANTES de decidir, no adentro del `send`. Dos razones, y las dos se
+      // pagaron caro:
+      //  · el freno global necesita saber quién puede enviar hoy — si no, las muestras de un
+      //    dominio ya frenado siguen pesando y frenar al culpable no destraba a los sanos;
+      //  · con el pool adentro del `send`, durante una pausa el log no decía NADA del pool, así
+      //    que el operador no podía ver qué correría si se destrabara.
+      // Se recalcula cada vuelta porque la medición del cupo se relee cada vuelta, y solo se loguea
+      // cuando CAMBIA, para no repetir la misma línea durante días.
+      const capsFisicos = await leerCuposFisicos(cfg.capFile);
+      // La salud saca del pool lo que no se puede calentar: cruzado el umbral, cerrado por el
+      // receptor, o con la cola atascada. Tener cupo no es lo mismo que valer la pena.
+      const saludFlota = await leerSalud(cfg.saludFile);
+      const poolElegido = elegirPool(capsFisicos, poolConfigurado, saludFlota);
+      if (poolElegido.boxes.join(",") !== poolAnterior) {
+        poolAnterior = poolElegido.boxes.join(",");
+        log(`pool: ${poolElegido.motivo}${poolElegido.boxes.length > 0 ? ` → ${poolElegido.boxes.join(", ")}` : ""}`);
+      }
+
       const { action, reason } = decideDaemonAction({
-        enabled: cfg.enabled, killed, cyclesToday, maxPerDay: cfg.maxPerDay, recentPlacements: placements, placementFloor: cfg.placementFloor
+        enabled: cfg.enabled,
+        killed,
+        cyclesToday,
+        maxPerDay: cfg.maxPerDay,
+        recentPlacements: placements,
+        placementFloor: cfg.placementFloor,
+        elegibles: new Set(poolElegido.boxes.map((b) => b.toLowerCase()))
       });
 
       if (action === "send") {
-        // El pool se recalcula acá, no al arrancar: la medición del cupo se relee en cada vuelta y
-        // el pool tiene que seguirla. Solo se loguea cuando CAMBIA, para no repetir la misma línea
-        // cada vuelta durante días.
-        const capsFisicos = await leerCuposFisicos(cfg.capFile);
-        // La salud saca del pool lo que no se puede calentar: cruzado el umbral, cerrado por el
-        // receptor, o con la cola atascada. Tener cupo no es lo mismo que valer la pena.
-        const saludFlota = await leerSalud(cfg.saludFile);
-        const poolElegido = elegirPool(capsFisicos, poolConfigurado, saludFlota);
-        if (poolElegido.boxes.join(",") !== poolAnterior) {
-          poolAnterior = poolElegido.boxes.join(",");
-          log(`pool: ${poolElegido.motivo}${poolElegido.boxes.length > 0 ? ` → ${poolElegido.boxes.join(", ")}` : ""}`);
-        }
         if (poolElegido.boxes.length === 0) {
           // ESPERA, no `return`. Salir mataba el proceso sin supervisor que lo levante, y el caso
           // que lo dispara es transitorio: alguien frenó la flota entera y la va a soltar. El

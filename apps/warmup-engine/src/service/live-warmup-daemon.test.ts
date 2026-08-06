@@ -38,21 +38,40 @@ test("resolveLiveDaemonConfig: overrides del entorno", () => {
   assert.equal(cfg.seedInbox, "seed@x.com");
 });
 
+/** Azúcar para leer los tests: todas las mediciones del mismo dominio salvo que se diga otra cosa. */
+const de = (dominio: string, ...ps: Placement[]) => ps.map((placement) => ({ dominio, placement }));
+
 test("recentInboxRate: proporción de bandeja, null si vacío", () => {
   assert.equal(recentInboxRate([]), null, "sin muestra es null, NO 0%");
-  assert.equal(recentInboxRate(["INBOX", "INBOX"]), 1);
-  assert.equal(recentInboxRate(["INBOX", "SPAM"]), 0.5);
+  assert.deepEqual(recentInboxRate(de("a.com", "INBOX", "INBOX")), { tasa: 1, muestra: 2 });
+  assert.equal(recentInboxRate(de("a.com", "INBOX", "SPAM"))?.tasa, 0.5);
   // PROMOTIONS cuenta como bandeja. Este test afirmaba lo contrario (`["SPAM","PROMOTIONS"] → 0`)
   // y estaba fijando la regla equivocada: el diseño v1 §10 dice textual que las pestañas cuentan
   // como inbox, y `placement.ts:33` ya lo implementaba así. Con la regla vieja, un dominio sano
   // cuyos correos caen en la pestaña Promociones daba 0% y el gate lo pausaba.
-  assert.equal(recentInboxRate(["SPAM", "PROMOTIONS"]), 0.5);
-  assert.equal(recentInboxRate(["PROMOTIONS", "PROMOTIONS"]), 1);
+  assert.equal(recentInboxRate(de("a.com", "SPAM", "PROMOTIONS"))?.tasa, 0.5);
+  assert.equal(recentInboxRate(de("a.com", "PROMOTIONS", "PROMOTIONS"))?.tasa, 1);
   // OTHER no: archivado o etiquetado por el usuario no es aterrizar en bandeja.
-  assert.equal(recentInboxRate(["OTHER", "INBOX"]), 0.5);
+  assert.equal(recentInboxRate(de("a.com", "OTHER", "INBOX"))?.tasa, 0.5);
 });
 
-const base = { enabled: true, killed: false, cyclesToday: 0, maxPerDay: 3, recentPlacements: [] as Placement[], placementFloor: 0.5 };
+test("recentInboxRate: lo que midió un dominio que hoy NO puede enviar no cuenta", () => {
+  // Sin esto, frenar al dominio culpable no destrababa a los sanos: sus muestras seguían pesando
+  // en el promedio de la flota y el freno global quedaba puesto igual.
+  const mezcla = [...de("sano.com", "INBOX", "INBOX"), ...de("frenado.com", "SPAM", "SPAM")];
+  assert.equal(recentInboxRate(mezcla)?.tasa, 0.5, "sin filtro, el frenado arrastra al sano");
+  assert.deepEqual(recentInboxRate(mezcla, new Set(["sano.com"])), { tasa: 1, muestra: 2 });
+  assert.equal(recentInboxRate(mezcla, new Set(["nadie.com"])), null, "si ninguno cuenta, es null");
+});
+
+const base = {
+  enabled: true,
+  killed: false,
+  cyclesToday: 0,
+  maxPerDay: 3,
+  recentPlacements: [] as { dominio: string; placement: Placement }[],
+  placementFloor: 0.5
+};
 
 test("gate: flag OFF ⇒ inert (por encima de todo)", () => {
   assert.equal(decideDaemonAction({ ...base, enabled: false }).action, "inert");
@@ -67,15 +86,49 @@ test("gate: tope diario alcanzado ⇒ cap-reached", () => {
   assert.equal(decideDaemonAction({ ...base, cyclesToday: 2 }).action, "send");
 });
 
-test("gate: placement bajo el piso ⇒ placement-pause", () => {
-  const bad: Placement[] = ["SPAM", "SPAM", "INBOX"]; // inbox 33% < 50%
+test("gate: placement bajo el piso, CON muestra suficiente ⇒ placement-pause", () => {
+  const bad = de("x.com", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "INBOX", "INBOX", "INBOX"); // 30%
   assert.equal(decideDaemonAction({ ...base, recentPlacements: bad }).action, "placement-pause");
-  const ok: Placement[] = ["INBOX", "INBOX", "SPAM"]; // 66% > 50%
+  const ok = de("x.com", "INBOX", "INBOX", "INBOX", "INBOX", "INBOX", "INBOX", "SPAM", "SPAM", "SPAM", "SPAM"); // 60%
   assert.equal(decideDaemonAction({ ...base, recentPlacements: ok }).action, "send");
 });
 
 test("gate: sin mediciones aún ⇒ no bloquea por placement (envía)", () => {
   assert.equal(decideDaemonAction({ ...base, recentPlacements: [] }).action, "send");
+});
+
+test("gate: con muestra chica NO apaga la fábrica entera", () => {
+  // El caso REAL del 2026-08-06, con los datos de producción: el warmup llevaba horas parado con
+  // "inbox 33% < piso 50%", y esas seis mediciones eran el único dominio que venía calentando bien
+  // (2/2) contra cuatro muestras sueltas de cuatro dominios que recién arrancaban. Que un dominio
+  // nuevo caiga en spam el primer día es lo normal, no una degradación de la flota.
+  const real = [
+    ...de("nationalfiling-infra.com", "MISSING"),
+    ...de("corpfiling-infra.com", "INBOX", "INBOX"),
+    ...de("annualfilings-ops.com", "SPAM"),
+    ...de("annualfilings-control.com", "SPAM"),
+    ...de("annualcorp-infra.com", "SPAM")
+  ];
+  const r = recentInboxRate(real);
+  assert.equal(r?.muestra, 6);
+  assert.ok((r?.tasa ?? 1) < 0.5, "la tasa SIGUE siendo baja: no se tocó el cálculo, se tocó cuándo manda");
+  assert.equal(decideDaemonAction({ ...base, recentPlacements: real }).action, "send", "6 mediciones no alcanzan para apagar 58 nodos");
+});
+
+test("gate: el freno global no puede ser un candado", () => {
+  // Parado no se mide, sin medir la tasa no cambia, y sin que la tasa cambie no se destraba: la
+  // única salida era un humano a mano. Con el filtro por elegibles, frenar al dominio culpable
+  // destraba a los sanos en la vuelta siguiente — que es lo que el agente ya sabe hacer solo.
+  const mezcla = [
+    ...de("culpable.com", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM", "SPAM"),
+    ...de("sano.com", "INBOX", "INBOX")
+  ];
+  assert.equal(decideDaemonAction({ ...base, recentPlacements: mezcla }).action, "placement-pause");
+  assert.equal(
+    decideDaemonAction({ ...base, recentPlacements: mezcla, elegibles: new Set(["sano.com"]) }).action,
+    "send",
+    "sacado el culpable del pool, el sano vuelve a calentar sin que nadie toque nada"
+  );
 });
 
 test("gate: orden de precedencia flag > kill > cap > placement", () => {
