@@ -74,16 +74,34 @@ el commit nuevo**. Si producción sigue corriendo código viejo, el deploy **fal
 Te va a pedir **una vez** la contraseña de la Studio: reiniciar servicios de sistema exige root.
 Está agrupado para que sea un solo prompt por deploy, no uno por servicio.
 
-Si algún día querés deploys 100% desatendidos (por ejemplo desde un cron), la alternativa es una
-regla acotada en `/etc/sudoers.d/delivrix` que permita **solo** el reinicio de estos servicios:
+Esa contraseña es **la última dependencia humana de todo el sistema**. Todo lo demás corre solo:
+launchd levanta los servicios al arrancar la Studio, el watchdog los repone si se caen, el respaldo
+corre de noche, y el agente vigila y actúa cada 10 minutos. Pero el código nuevo se queda esperando
+a que alguien esté despierto y conectado.
+
+Para cortarla hay un script que instala una regla acotada en `/etc/sudoers.d/delivrix-deploy`:
+
+```bash
+bash scripts/produccion/deploy-sin-clave.sh     # una sola vez
+```
+
+Instala **exactamente** esto y nada más:
 
 ```
 delivrixstudio ALL=(root) NOPASSWD: /bin/launchctl kickstart -k system/com.delivrix.*
 ```
 
+Valida la sintaxis con `visudo -cf` **antes** de mover el archivo a su lugar (un sudoers roto deja
+la máquina sin poder usar `sudo`, ni siquiera para arreglarlo) y después comprueba con `sudo -n`
+que de verdad quedó sin contraseña, en vez de descubrirlo en el primer deploy nocturno.
+
 Es una decisión del dueño, no la toma el asistente: cambia la postura de seguridad de la máquina.
-El riesgo acotado es que quien tenga la llave SSH pueda reiniciar servicios de Delivrix (una
-molestia), no ejecutar cualquier cosa como root.
+Dicho sin adornos — **quien tenga la llave SSH puede reiniciar los servicios de Delivrix sin
+contraseña**. Eso es una molestia (el warmup pierde unos segundos y vuelve), no un root arbitrario:
+el comando está anclado con ruta absoluta y el comodín solo alcanza a `com.delivrix.*`, así que no
+habilita instalar, leer archivos ajenos ni tocar ningún otro servicio.
+
+Se revierte borrando el archivo: `ssh studio 'sudo rm /etc/sudoers.d/delivrix-deploy'`.
 
 ## 4. Las reglas que no se negocian
 
