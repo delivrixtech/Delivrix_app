@@ -56,6 +56,19 @@ const BITACORA_FILE = "warmup-acciones.json";
 const SLACK_FILE = "warmup-slack.json";
 /** Hasta dónde leyó el chat. El cursor ES el dedupe: sin él, al reiniciar re-contesta todo. */
 const CHAT_FILE = "warmup-chat.json";
+/**
+ * Cada cuánto lee Slack el carril de chat.
+ *
+ * Eran 20s y era TIEMPO MUERTO PURO: el jefe escribía y en el peor caso pasaban 20 segundos antes
+ * de que el agente siquiera leyera. Medido de punta a punta, una respuesta tarda 35-55s y de eso
+ * ~10 de promedio era esta espera.
+ *
+ * Es una CONSTANTE y el log la imprime, en vez de un número escrito a mano en el mensaje: ese
+ * texto decía "cada 20s" después de bajarlo a 6 — un log que miente sobre su propia configuración
+ * es la forma más barata de perder una hora persiguiendo un fantasma.
+ */
+const MS_ENTRE_LECTURAS_DE_CHAT = 6_000;
+
 /** Lo que el jefe YA decidió. Gana sobre cualquier hecho que lo contradiga. */
 const DECISIONES_FILE = "decisiones-del-jefe.json";
 /**
@@ -1057,7 +1070,7 @@ async function main(): Promise<void> {
     // ejecutarAcciones ni le pasa herramientas al modelo.
     const botUserId = await miUserId({ token: process.env.SLACK_BOT_TOKEN ?? "" });
     if (botUserId) {
-      console.log(`escuchando Slack cada 20s (soy ${botUserId}).`);
+      console.log(`escuchando Slack cada ${MS_ENTRE_LECTURAS_DE_CHAT / 1000}s (soy ${botUserId}).`);
       setInterval(() => {
         // Una vuelta de chat que falla NO puede tumbar al vigilante: es lo accesorio, no lo central.
         void tickChat(workspace, pg, botUserId).catch((e) =>
@@ -1071,7 +1084,7 @@ async function main(): Promise<void> {
         // El costo es despreciable: `conversations.history` con `oldest` es de los endpoints más
         // baratos de Slack (tier 3, 50+/min) y acá quedan 10/min. Lo caro es el modelo, y eso no
         // cambia con el intervalo porque solo se llama cuando HAY un mensaje nuevo.
-      }, 6_000);
+      }, MS_ENTRE_LECTURAS_DE_CHAT);
     } else {
       console.log("sin token de Slack o sin poder identificarme: el chat queda apagado.");
     }
