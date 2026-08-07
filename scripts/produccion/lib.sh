@@ -123,6 +123,15 @@ delivrix_servicios_afectados() {
       # primer patrón que matchea.
       apps/gateway-api/src/sender-measurement.ts|apps/gateway-api/src/smtp-delivery-health.ts)
         _sumar gateway flota-salud ;;
+      # EL AGENTE VIVE EN gateway-api PERO CORRE EN EL MONITOR. Los prompts (SISTEMA, VOZ), las
+      # manos y las memorias están en apps/gateway-api/src/agents/, y quien los ejecuta 24/7 es
+      # scripts/ops/warmup-monitor.ts — un proceso aparte. Con la regla genérica de abajo, cambiar
+      # un prompt reiniciaba SOLO el gateway y el agente seguía razonando con el texto viejo hasta
+      # que le tocara reiniciar por otra cosa: desplegado en disco, inerte en memoria.
+      #
+      # Se descubrió al devolverle la línea de revisar_reputacion al prompt: el deploy dijo
+      # "reiniciando: gateway" y el agente no se enteró de que tenía ojos nuevos.
+      apps/gateway-api/src/agents/*)  _sumar gateway warmup-monitor ;;
       apps/gateway-api/*)            _sumar gateway ;;
       apps/admin-panel/*)            _sumar panel ;;
       apps/warmup-engine/*)          _sumar warmup-daemon gateway ;;

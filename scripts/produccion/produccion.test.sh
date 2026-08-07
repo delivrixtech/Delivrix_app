@@ -173,4 +173,12 @@ chequear "no matchea un npm test" "no" \
 chequear "sí matchea el daemon real" "si" \
   "$(echo '/opt/homebrew/bin/node --env-file=config/gateway.env --experimental-strip-types apps/warmup-engine/src/service/live-warmup-daemon.ts' | grep -qE "${patron}" && echo si || echo no)"
 
+echo "el agente corre en el monitor, no solo en el gateway"
+# Cambiar un prompt y reiniciar solo el gateway deja al agente razonando con el texto viejo: el
+# código está en apps/gateway-api/src/agents/ pero lo ejecuta scripts/ops/warmup-monitor.ts.
+chequear "un prompt del agente reinicia el monitor" "gateway warmup-monitor" \
+  "$(mapa 'apps/gateway-api/src/agents/warmup-monitor.ts')"
+chequear "una ruta del gateway NO reinicia el monitor" "gateway" \
+  "$(mapa 'apps/gateway-api/src/routes/health.ts')"
+
 if (( fallos == 0 )); then echo "TODO OK"; else echo "${fallos} FALLA(S)"; exit 1; fi
