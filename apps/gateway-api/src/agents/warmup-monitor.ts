@@ -239,15 +239,22 @@ export const SISTEMA = [
   "  dónde viene cayendo su correo y en qué día de rampa está. Pasivo. Sirve sobre todo para los",
   "  dominios que NO figuran en el plan de arriba: de esos no tenés ningún dato, y son justamente",
   "  los que hay que evaluar para ver si están listos para volver.",
-  // ACÁ IBA `revisar_reputacion`, Y SE SACÓ. El `case` existe en acciones-agente.ts, pero NADIE
-  // produce `ctx.revisarReputacion` en runtime: el único `ejecutarAcciones` real es el de
-  // scripts/ops/warmup-monitor.ts y no la pasa. Anunciada, el modelo la pedía y le volvía
-  // "rechazada: revisar reputación no está habilitado en este entorno" — la mano prometida y no
-  // cableada que este proyecto pagó dos veces. No es hipotético: con `frenar` pasó exactamente eso,
-  // 26 rechazos de "no está habilitado" en 5 horas sobre el mismo dominio.
+  // `revisar_reputacion` VUELVE, y la historia de esta línea vale contarla porque es el proceso
+  // funcionando. El equipo que escribió el módulo lo dejó sin cablear; el auditor lo detectó y
+  // SACÓ la línea del prompt en vez de dejar una promesa suelta —la falla que este repo ya había
+  // pagado dos veces, con 26 rechazos de "frenar no está habilitado" en 5 horas sobre el mismo
+  // dominio— y además dejó el test de contrato que exige las dos mitades. Después se cableó la
+  // capacidad en el orquestador, así que la condición se cumple y la línea entra.
   //
-  // La línea vuelve el día que el orquestador pase la capacidad, y hay un test de contrato
-  // (warmup-monitor.test.ts) que falla si se anuncia una mano que el orquestador no cablea.
+  // Va SIN la advertencia de "puede no estar habilitada" a propósito: es pasiva (DNS + una consulta
+  // de listas) y se cablea sin flag, así que siempre está. El test de contrato verifica justamente
+  // eso: si algún día quedara detrás de un flag, exige que esta línea lo diga.
+  "- revisar_reputacion | dominio=<uno del inventario> | motivo=... → mira la reputación de su IP y",
+  "  su dominio: listas negras, SPF, DKIM, DMARC y el PTR. Pasiva, no manda correo ni cambia nada.",
+  "  Usala antes de soltar un dominio y cuando quieras saber si una IP está limpia.",
+  "  DOS AVISOS que cambian cómo se lee el resultado: una lista negra LIMPIA no significa que estés",
+  "  entregando —el 2026-07-25 había 38 nodos cerrados en Gmail con cero detecciones de blacklist—,",
+  "  y si un chequeo no se pudo hacer devuelve \"no sé\", que NO es lo mismo que \"limpio\".",
   "- soltar_dominio | dominio=<uno frenado> | motivo=... → le devuelve un cupo CHICO para que vuelva",
   "  a calentar. Es la única acción que sube volumen y la única que puede hacer daño de verdad, así",
   "  que antes de pedirla mirá: medir_dominio para saber su historia y diagnosticar_dominio para",

@@ -117,11 +117,16 @@ export const VOZ = [
   "- medir_dominio | dominio=<cualquier dominio real> | motivo=... → dónde viene cayendo su correo y",
   "  en qué día de rampa está. Pasivo. Sirve sobre todo para los dominios que no figuran en el",
   "  contexto: de esos no sabés nada, y son los que hay que evaluar para ver si están listos.",
-  // ACÁ IBA `revisar_reputacion`, y se saca por lo mismo que en SISTEMA: el `case` existe pero
-  // ningún llamador produce `ctx.revisarReputacion`, así que pedirla devuelve "no está habilitado en
-  // este entorno". Por chat es todavía peor que en la guardia — el jefe le pide que revise listas
-  // negras, el agente dice que va, y vuelve con un rechazo. Vuelve cuando esté cableada; el test de
-  // contrato de warmup-monitor.test.ts no deja anunciarla antes.
+  // `revisar_reputacion` VUELVE acá también, ahora que el orquestador la cablea en los dos carriles.
+  // Por chat importa más que en la guardia: es la pregunta que el jefe hace de frente —"¿cómo está
+  // la reputación de X?", "¿estamos en alguna lista negra?"— y hasta hoy la contestaba de memoria o
+  // no la contestaba. Ahora va a mirar.
+  "- revisar_reputacion | dominio=<uno del inventario> | motivo=... → mira listas negras, SPF, DKIM,",
+  "  DMARC y el PTR de su IP y su dominio. Pasiva: no manda correo ni cambia nada, usala cuando",
+  "  quieras y sin pedir permiso.",
+  "  Dos cosas que cambian cómo se lee: una lista negra LIMPIA no quiere decir que estemos",
+  "  entregando —hubo 38 nodos cerrados en Gmail con cero blacklists— y un chequeo que no se pudo",
+  "  hacer vuelve como \"no sé\", que no es \"limpio\". Decilo como viene, no lo redondees.",
   "- soltar_dominio | dominio=<uno frenado> | motivo=... → le devuelve un cupo CHICO para que vuelva",
   "  a calentar. Es la única que sube volumen. El cupo no lo elegís vos, es fijo, y antes de",
   "  ejecutarla el sistema verifica solo tres cosas contra los nodos vivos: que esté realmente",

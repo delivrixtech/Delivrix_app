@@ -504,19 +504,28 @@ function lineaDeLaAccion(prompt: string, accion: string): string {
   return cont.join(" ");
 }
 
-test("revisar_reputacion NO se anuncia mientras no esté cableada, y el case sigue listo", async () => {
-  // El caso concreto que disparó el contrato de arriba. `revisarReputacion` no tiene un solo
-  // productor en runtime, así que las tres líneas salieron de los DOS prompts. El `case` se queda:
-  // el día que el orquestador pase la capacidad, vuelven las líneas y este test cambia de sentido.
-  assert.ok(!SISTEMA.includes("- revisar_reputacion |"), "la guardia no puede prometer lo que no tiene");
-  assert.ok(!VOZ.includes("- revisar_reputacion |"), "y el chat menos: ahí el jefe se la pide de frente");
+test("revisar_reputacion ya está cableada, así que SÍ se anuncia — y sigue rechazando limpio sin ella", async () => {
+  // ESTE TEST CAMBIÓ DE SENTIDO, y esa es la señal de que el proceso funcionó. Nació afirmando que
+  // la mano NO se anunciaba, porque el equipo que escribió el módulo la dejó sin productor en
+  // runtime y el auditor —con razón— prefirió sacar la línea del prompt antes que dejar una
+  // promesa suelta. Su propio comentario decía: "el día que el orquestador pase la capacidad,
+  // vuelven las líneas y este test cambia de sentido". Ese día es hoy: el orquestador la cablea en
+  // los dos carriles, sin flag, así que la línea volvió.
+  //
+  // Lo que se fija ahora es el estado bueno, no el transitorio: anunciada Y cableada. El contrato
+  // general (el test de arriba) es el que impide que se vuelvan a separar.
+  assert.ok(SISTEMA.includes("- revisar_reputacion |"), "la guardia tiene los ojos y tiene que saberlo");
+  assert.match(SISTEMA, /una lista negra LIMPIA no significa que estés/, "con la lección del 2026-07-25 pegada");
+
+  // Y el rechazo limpio sigue vivo para el entorno que NO la cablee (los tests, el dry-run): una
+  // mano ausente se declara, nunca se simula.
   const r = await ejecutarAcciones([{ accion: "revisar_reputacion", dominio: "a.com", motivo: "x" }], {
     dominiosConocidos: ["a.com"],
     diagnosticarDominio: async () => ({ estado: "ok", bloqueanPor: [], degradadoEn: [], entregados: 1, rechazados: 0, detalle: "" }),
     pendientes: { listar: async () => [], guardar: async () => {} }
   } as never);
   assert.equal(r[0]!.ejecutada, false);
-  assert.match(r[0]!.detalle, /no está habilitado en este entorno/, "el case existe y rechaza limpio");
+  assert.match(r[0]!.detalle, /no está habilitado en este entorno/);
 });
 
 test("el prompt ya no lleva el criterio en prosa", () => {
