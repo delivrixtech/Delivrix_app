@@ -54,6 +54,7 @@ import { lineasParaPrompt as accionesParaPrompt } from "../../apps/gateway-api/s
 import { flotaAtribuida, placementsDeDominio, planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
 import { esInbox } from "../../apps/warmup-engine/src/domain/decision-diaria.ts";
 import {
+  barridoDeReputacion,
   ordenDelBarrido,
   REPUTACION_FILE,
   revisarReputacionDe,
@@ -244,6 +245,49 @@ async function leerCupoDelNodo(dominio: string): Promise<{ cap: number | null; c
 }
 
 /**
+ * EL BARRIDO DIARIO DE REPUTACIÓN — la mitad B del encargo, y sin esto no existe.
+ *
+ * Las reglas de daño que miran reputación (una IP listada, o el patrón "listas limpias PERO el
+ * receptor cerrado") leen `hechos.reputacion`, y ese campo sale de este archivo. Si nadie lo
+ * escribe, el campo queda AUSENTE y esas reglas dan silencio para siempre: cableadas, testeadas y
+ * mudas. Es exactamente la clase de falla que este repo ya pagó tres veces.
+ *
+ * UNA VEZ POR DÍA y no por vuelta: son 58 dominios contra DNS y una API con cuota. El presupuesto
+ * de listas lo administra `barridoDeReputacion`; lo que sobra pasa sin listas y sale rotulado
+ * "no-se", que es la verdad y no "limpio".
+ *
+ * El ORDEN importa tanto como el barrido: primero los que HOY calientan —ahí una lista negra cambia
+ * lo que hacemos esta tarde— después los que están cerca del umbral, y al final el resto. Con
+ * cuota corta, el orden decide qué se mide de verdad.
+ */
+async function correrBarridoDeReputacion(
+  workspace: OpenClawWorkspace,
+  hechos: HechosWarmup,
+  inventario: { bandejas?: Array<{ domain?: string; serverIp?: string | null }> } | null
+): Promise<void> {
+  const revisarUno = revisarReputacionDelDominio(inventario);
+  const todos = (inventario?.bandejas ?? []).map((b) => b.domain ?? "").filter(Boolean);
+  if (todos.length === 0) return;
+
+  const archivo = await barridoDeReputacion({
+    orden: ordenDelBarrido({
+      todos,
+      calientanHoy: (hechos.plan ?? []).map((p) => p.dominio),
+      cerca: hechos.flota?.cerca ?? []
+    }),
+    // `conListas:false` NO consulta MXToolbox: el dominio igual se mide en DNS, SPF, DKIM y PTR, y
+    // su casilla de listas sale "no-se". Gastar la cuota en los últimos de la lista dejaría sin
+    // medir justo a los que están calentando.
+    revisar: async (dominio, conListas) => revisarUno(dominio, conListas),
+    log: (linea) => console.log(`[reputacion] ${linea}`)
+  });
+  await workspace.updateInventoryJson<ArchivoReputacion>(REPUTACION_FILE, () => archivo);
+  console.log(
+    `[reputacion] barrido: ${archivo.dominios.length} dominios · ${archivo.cuota.gastadas}/${archivo.cuota.presupuesto} consultas de listas · ${archivo.cuota.sinConsultar} sin listas`
+  );
+}
+
+/**
  * LA MANO DE REPUTACIÓN, cableada de verdad.
  *
  * Existía el módulo (`reputacion.ts`), existía la acción en la lista blanca, y NO estaba enganchada:
@@ -263,7 +307,11 @@ async function leerCupoDelNodo(dominio: string): Promise<{ cap: number | null; c
  */
 function revisarReputacionDelDominio(inventario: { bandejas?: Array<{ domain?: string; serverIp?: string | null }> } | null) {
   const mx = createMxtoolboxAdapterFromEnv(process.env);
-  return async (dominio: string) => {
+  // `conListas` por defecto en true: la mano del agente (revisar_reputacion) siempre las consulta,
+  // porque es un pedido puntual sobre UN dominio. El barrido, en cambio, lo pasa en false cuando se
+  // le acabó el presupuesto de cuota: ahí el dominio igual se mide en DNS, SPF, DKIM y PTR, y su
+  // casilla de listas sale "no-se" — que es la verdad, y no "limpio".
+  return async (dominio: string, conListas = true) => {
     const dns = await import("node:dns/promises");
     const b = (inventario?.bandejas ?? []).find((x) => (x.domain ?? "").toLowerCase() === dominio.toLowerCase());
     return revisarReputacionDe({
@@ -275,6 +323,7 @@ function revisarReputacionDelDominio(inventario: { bandejas?: Array<{ domain?: s
       reverse: (ip) => dns.reverse(ip),
       resolve4: (host) => dns.resolve4(host),
       blacklist: async (ip) => {
+        if (!conListas) return { estado: "error" as const, listas: [] };
         if (!mx) return { estado: "error" as const, listas: [] };
         const r = await mx.lookup({ target: ip, command: "blacklist" });
         const est = r.summary?.status;
@@ -858,6 +907,26 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
     memoria: [...new Set([...erroresPrevios, ...(lectura.verificacion?.reparos ?? [])])].slice(-5)
   }));
 
+  // EL BARRIDO DE REPUTACIÓN, una vez por día UTC. La marca vive en el propio archivo
+  // (`medidoEn`), así que sobrevive a los reinicios sin estado nuevo — y hubo 17 reinicios en 29 h,
+  // o sea que un contador en memoria no habría corrido nunca.
+  //
+  // `void`: son 58 dominios contra DNS y una API con cuota, y esta vuelta no puede esperarlo. Su
+  // resultado entra en la vuelta SIGUIENTE, que para un dato que se mide una vez al día es
+  // exactamente igual de fresco.
+  try {
+    const repPrevia = await workspace.readInventoryJson<ArchivoReputacion>(REPUTACION_FILE).catch(() => null);
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (!repPrevia?.medidoEn || repPrevia.medidoEn.slice(0, 10) !== hoy) {
+      const inv = await leerInventarioFabrica({ workspace }).catch(() => null);
+      void correrBarridoDeReputacion(workspace, hechos, inv).catch((e) =>
+        console.error(`[reputacion] barrido fallido: ${e instanceof Error ? e.message : String(e)}`)
+      );
+    }
+  } catch (e) {
+    console.error(`[reputacion] no pude decidir si barrer: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
   // ── CUMPLIR LO PROMETIDO ─────────────────────────────────────────────────────────────────────
   //
   // LA QUEJA MÁS GRAVE DEL JEFE, y la única que rompe confianza: "me dice que ahora me busca, o me
@@ -948,10 +1017,16 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
       // EL MOTIVO EN EL LOG, en las dos ramas. Es la única auditoría posible del canal: sin él no
       // se puede contar cuántos mensajes salieron por avance y cuántos por problema, que es
       // exactamente el número que dice si el péndulo quedó centrado.
+      // LAS TRES ETIQUETAS, y las tres hacen falta. `motivo` dice qué cambió, `clase` dice por qué
+      // vale interrumpir (decision/dano/ceguera) y `regla` dice cuál de la lista cerrada lo
+      // produjo. Sin las tres, `sentinel-audit.ts` no puede recontar el canal — y ese recuento es
+      // todo el instrumento que impide la próxima vuelta al círculo: sin él, dentro de dos semanas
+      // nadie va a poder decir si mejoró o si volvimos a construir ruido con buenas intenciones.
+      const etiquetas = `clase=${aviso.clase} regla=${aviso.regla} motivo=${aviso.motivo}`;
       console.log(
         r.ok
-          ? `[slack] motivo=${aviso.motivo} · ${aviso.texto}`
-          : `[slack] NO enviado (${r.motivo}) · motivo=${aviso.motivo} — habría dicho: ${aviso.texto}`
+          ? `[slack] ${etiquetas} · ${aviso.texto}`
+          : `[slack] NO enviado (${r.motivo}) · ${etiquetas} — habría dicho: ${aviso.texto}`
       );
     } else {
       // "No salió" NUNCA puede ser indistinguible de "se perdió". Si el tope diario tapó avances
