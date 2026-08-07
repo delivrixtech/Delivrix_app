@@ -409,6 +409,73 @@ const ETIQUETA: Record<string, string> = {
 const valorLegible = (v: string | number | null): string => (v === null ? "sin medir" : String(v));
 
 /**
+ * LA MISMA VERDAD, DICHA COMO LA DIRÍA UNA PERSONA.
+ *
+ * El texto de un avance era la tupla cruda: "el placement de opscorpfiling.com: SPAM → INBOX.".
+ * Correcto, concreto, imposible de alucinar… y escrito como una línea de log. El reclamo del jefe,
+ * textual: "busco que me converse de manera más natural, como una persona real, no como si fuera
+ * un bot re técnico que solo habla de cosas que él solo entiende".
+ *
+ * Lo que NO se hace para arreglarlo, y es deliberado: meter al modelo acá. La razón 7 existe
+ * justamente porque los hechos tienen que salir aunque el modelo esté caído — `reunirHechos` corre
+ * antes que `pedirLectura`, y la tarde que el jefe se quedó sin noticias fue una tarde con el
+ * modelo devolviendo vacío. Una frase generada es una frase que puede no llegar.
+ *
+ * Así que la naturalidad se escribe UNA vez, acá, por transición. Sigue siendo una plantilla pura
+ * sobre la tupla `(campo, objeto, antes, después)`, sigue siendo recalculable desde los dos
+ * retratos, y no puede decir nada que la tupla no diga. Lo único que cambia es que se entiende.
+ *
+ * Y el tono no es cosmético: un SPAM→INBOX es una buena noticia y un INBOX→SPAM es un aviso. La
+ * misma plantilla plana para los dos hacía que el jefe tuviera que decodificar cuál era cuál.
+ */
+function fraseHumana(campo: string, objeto: string, antes: string, despues: string): string {
+  const d = objeto || "la flota";
+
+  if (campo === "placement") {
+    if (despues === "INBOX" && antes === "SPAM") return `${d} entró en bandeja — venía cayendo en spam.`;
+    if (despues === "SPAM" && antes === "INBOX") return `ojo con ${d}: se fue a spam, venía entrando en bandeja.`;
+    if (despues === "INBOX") return `${d} está entrando en bandeja${antes === "sin medir" ? " — primera medición" : ""}.`;
+    if (despues === "SPAM") return `${d} está cayendo en spam.`;
+    // MISSING y OTHER no se disfrazan de nada: son "no llegó" y "no sé dónde cayó".
+    if (despues === "MISSING") return `no encontré el correo de ${d} en la semilla: no llegó.`;
+    return `el correo de ${d} cayó en ${despues.toLowerCase()}.`;
+  }
+
+  if (campo === "plan.accion") {
+    if (despues === "subir") return `le subo el volumen a ${d}: viene bien.`;
+    if (despues === "bajar") return `le bajo el volumen a ${d}.`;
+    if (despues === "frenar") return `freno ${d}.`;
+    if (despues === "arrancar") return `arranco con ${d}.`;
+    return `${d} se queda como está por ahora.`;
+  }
+
+  if (campo === "plan.diaN") {
+    return `${d} cumplió el día ${despues} de calentamiento.`;
+  }
+
+  if (campo === "plan.enPool") {
+    return despues === "sí" || despues === "true"
+      ? `${d} volvió a calentar.`
+      : `${d} dejó de calentar.`;
+  }
+
+  if (campo === "cap.frenados") {
+    const n = Number(despues);
+    const m = Number(antes);
+    if (Number.isFinite(n) && Number.isFinite(m)) {
+      return n > m ? `quedaron ${n} dominios frenados (eran ${m}).` : `ya son ${n} los dominios sueltos que estaban frenados (eran ${m}).`;
+    }
+  }
+
+  if (campo === "flota.sanas") return `las bandejas sanas pasaron de ${antes} a ${despues}.`;
+  if (campo === "flota.bloqueadas") return `las bandejas bloqueadas pasaron de ${antes} a ${despues}.`;
+
+  // Sin plantilla propia se cae a la forma vieja: explícita y sin adornos. Preferible a inventar
+  // una frase para un campo que nadie pensó todavía.
+  return `${ETIQUETA[campo] ?? campo}${objeto ? ` de ${objeto}` : ""}: ${antes} → ${despues}.`;
+}
+
+/**
  * ¿Hay algo que valga la pena decir? `null` = silencio, que es la respuesta correcta la mayoría
  * de las veces.
  */
@@ -462,9 +529,9 @@ export function decidirSiHablar(
     // no se puede saber cuánto se calló no se puede calibrar. Y se llaman "cambios", no "avances":
     // adentro de esa cuenta puede ir una caída a SPAM, y rotular una regresión como avance es
     // fabricar una buena noticia.
-    const extra = tapados > 0 ? ` Además: ${tapados} ${tapados === 1 ? "cambio menor" : "cambios menores"}.` : "";
+    const extra = tapados > 0 ? ` (y ${tapados} ${tapados === 1 ? "cambio menor más" : "cambios menores más"})` : "";
     return {
-      texto: `${ETIQUETA[campo] ?? campo}${objeto ? ` de ${objeto}` : ""}: ${antes} → ${despues}.${extra}`,
+      texto: `${fraseHumana(campo, objeto, antes, despues)}${extra}`,
       // El motivo va al log y es RECALCULABLE desde los dos snapshots: `novedad plan.diaN
       // corpfiling-infra.com 3→4`. Sin esto no se puede separar ruido de señal con un comando.
       motivo: `novedad ${campo}${objeto ? ` ${objeto}` : ""} ${antes}→${despues}`,
@@ -565,10 +632,19 @@ export function decidirSiHablar(
   //
   //    Lo que SÍ queda: "no está habilitado", "no está en el inventario", "el receptor lo tiene
   //    cerrado". Ahí alguien tiene que decidir o configurar algo, y por eso vale interrumpirlo.
+  // Y TAMPOCO ESCALA UN ERROR SUYO. "no es una acción permitida" y "no está en el inventario" son
+  // deslices del modelo —un nombre mal escrito, un dominio alucinado—, no decisiones que el jefe
+  // pueda tomar. Salió a Slack tal cual: "Quise diagnosticar_dominio_bizregistry-ops.com y no pude.
+  // ¿Lo resolvés vos?". No hay nada que resolver del otro lado, y preguntarlo gasta la única señal
+  // que sirve para lo que sí lo necesita.
+  const errorPropio = (d: string): boolean =>
+    /no es una acción permitida|no está en el inventario|toda acción exige un motivo/i.test(d);
+
   const trabado = estado.acciones.find(
     (a) =>
       !a.ejecutada &&
       !a.reintentable &&
+      !errorPropio(a.detalle) &&
       !CONTABLES.has(a.accion) &&
       a.accion !== "(ninguna)" &&
       a.accion !== "(tope)"

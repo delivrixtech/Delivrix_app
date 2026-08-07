@@ -42,6 +42,23 @@ export type NombreAccion =
  * que no debería. Con un cupo elegido por el modelo, el daño máximo sería el umbral permanente de
  * Google — irreversible. La diferencia entera está en que este número es una constante.
  */
+/**
+ * Los nombres válidos, en un Set. Existe para que `extraerAcciones` pueda TOLERAR el desliz de
+ * escribir el objeto pegado al nombre; el switch de abajo sigue siendo la única lista blanca que
+ * decide qué se ejecuta.
+ */
+export const ACCIONES_VALIDAS: ReadonlySet<string> = new Set<NombreAccion>([
+  "frenar_dominio",
+  "soltar_dominio",
+  "pausar_warmup",
+  "anotar_pendiente",
+  "resolver_pendiente",
+  "leer_cupo_nodo",
+  "diagnosticar_dominio",
+  "medir_dominio",
+  "revisar_reputacion"
+]);
+
 export const CAP_AL_SOLTAR = 20;
 
 /** Cuántas mediciones propias hacen falta para que la historia de un dominio pese en su contra. */
@@ -925,11 +942,34 @@ export function extraerAcciones(texto: string): AccionPedida[] {
     const m = linea.match(/^\s*ACCION\s*:\s*(\S.*)$/i);
     if (!m) continue;
     const partes = m[1]!.split("|").map((s) => s.trim());
-    const accion = partes[0]?.toLowerCase().replace(/\s+/g, "_") ?? "";
+    let accion = partes[0]?.toLowerCase().replace(/\s+/g, "_") ?? "";
     if (!accion) continue;
+
+    // EL DESLIZ QUE LE COSTÓ UN MENSAJE AL JEFE. El modelo escribió
+    // `ACCION: diagnosticar_dominio bizregistry-ops.com | motivo=…` —el dominio pegado al nombre en
+    // vez de en su campo— y como acá los espacios se vuelven guiones bajos, la acción quedó
+    // "diagnosticar_dominio_bizregistry-ops.com". Rechazada por no existir, y de ahí salió a Slack
+    // un "Quise diagnosticar_dominio_bizregistry-ops.com y no pude. ¿Lo resolvés vos?": el agente
+    // le pidió ayuda al jefe por SU PROPIO error de sintaxis.
+    //
+    // Se tolera, no se castiga. La intención es inequívoca —el nombre de la acción es exacto y lo
+    // que sigue es su objeto— así que se separa y sigue el camino normal, con todas sus
+    // validaciones intactas: el dominio igual tiene que existir en el inventario.
+    let pegado: string | undefined;
+    if (!ACCIONES_VALIDAS.has(accion)) {
+      for (const valida of ACCIONES_VALIDAS) {
+        if (accion.startsWith(`${valida}_`)) {
+          pegado = accion.slice(valida.length + 1).replace(/_/g, " ").trim();
+          accion = valida;
+          break;
+        }
+      }
+    }
     const campo = (nombre: string): string | undefined =>
       partes.slice(1).find((p) => p.toLowerCase().startsWith(`${nombre}=`))?.slice(nombre.length + 1).trim();
-    out.push({ accion, dominio: campo("dominio"), motivo: campo("motivo"), id: campo("id") });
+    // El campo explícito manda sobre el pegado: si el modelo escribió las dos formas, la que
+    // eligió a propósito gana.
+    out.push({ accion, dominio: campo("dominio") ?? pegado, motivo: campo("motivo"), id: campo("id") });
   }
   return out;
 }

@@ -412,7 +412,7 @@ test("diez novedades en una vuelta son UN mensaje, y el sobrante se cuenta", () 
   const muchas = Array.from({ length: 10 }, (_, i) => N(`plan:d${i}.com.diaN`, i + 1));
   const a = decidirSiHablar(base({ emisor: "send", novedades: muchas }), memBase(), T(10));
   assert.ok(a);
-  assert.match(a.texto, /Además: 9 cambios menores\./);
+  assert.match(a.texto, /y 9 cambios menores más/);
   assert.equal(a.pideRespuesta, false, "un avance no interrumpe a nadie");
 });
 
@@ -491,7 +491,7 @@ test("el enfriamiento es POR CLAVE: un flap no tapa el evento de otro dominio", 
   const a = decidirSiHablar(flap, memBase(), T(10));
   const mem = recordarAviso(flap, true, T(10), memBase(), a);
   const otro = base({ emisor: "send", novedades: [N("placement:annualfilings-control.com", "INBOX", "SPAM")] });
-  assert.match(decidirSiHablar(otro, mem, T(10.1))?.texto ?? "", /SPAM → INBOX/);
+  assert.match(decidirSiHablar(otro, mem, T(10.1))?.texto ?? "", /entró en bandeja/);
 });
 
 test("sale la novedad IMPORTANTE, no la primera de la lista", () => {
@@ -504,7 +504,7 @@ test("sale la novedad IMPORTANTE, no la primera de la lista", () => {
   );
   assert.ok(a);
   assert.match(a.motivo, /^novedad cap\.frenados 44→45/);
-  assert.match(a.texto, /los dominios frenados: 44 → 45\./);
+  assert.match(a.texto, /quedaron 45 dominios frenados \(eran 44\)/);
 });
 
 test("el motivo es RECALCULABLE: campo, objeto y los dos valores", () => {
@@ -516,9 +516,16 @@ test("el motivo es RECALCULABLE: campo, objeto y los dos valores", () => {
     T(10)
   );
   assert.ok(a);
+  // EL MOTIVO sigue siendo la tupla cruda: es lo que va al LOG y lo que permite reproducir el
+  // aviso desde los dos retratos con un comando. Eso NO se toca.
   assert.equal(a.motivo, "novedad plan.diaN corpfiling-infra.com 3→4");
-  assert.equal(a.texto, "el día de rampa de corpfiling-infra.com: 3 → 4.");
-  assert.ok(!/Sigo acá|todo tranquilo/.test(a.texto), "el avance NO lleva la voz del modelo: lleva el número");
+  // EL TEXTO, en cambio, es el que lee una persona. Era "el día de rampa de X: 3 → 4." —correcto y
+  // escrito como una línea de log. El reclamo del jefe fue textual: "que me converse de manera más
+  // natural, no como un bot re técnico". La plantilla sigue siendo pura y sin modelo; lo único que
+  // cambió es que se entiende.
+  assert.equal(a.texto, "corpfiling-infra.com cumplió el día 4 de calentamiento.");
+  assert.ok(!/Sigo acá|todo tranquilo/.test(a.texto), "el avance NO lleva la voz del modelo: lleva el hecho");
+  assert.ok(a.texto.includes("4"), "y el número sigue estando: natural no es vago");
 });
 
 test("un valor que no se midió se dice 'sin medir', jamás 0", () => {
@@ -530,7 +537,7 @@ test("un valor que no se midió se dice 'sin medir', jamás 0", () => {
     T(10)
   );
   assert.ok(a);
-  assert.match(a.texto, /el placement de corp-delivery\.com: sin medir → INBOX\./);
+  assert.match(a.texto, /corp-delivery\.com está entrando en bandeja — primera medición/);
 });
 
 test("un avance NO resucita el pedido de decisión que ya se hizo", () => {
@@ -673,8 +680,8 @@ test("una CAÍDA a SPAM le gana a todo, y lo tapado no se llama 'avance'", () =>
     T(10)
   );
   assert.ok(a);
-  assert.match(a.texto, /el placement de corpfiling-infra\.com: INBOX → SPAM\./);
-  assert.match(a.texto, /Además: 2 cambios menores\./, "no son 'avances': ahí adentro puede ir otra caída");
+  assert.match(a.texto, /ojo con corpfiling-infra\.com: se fue a spam/);
+  assert.match(a.texto, /y 2 cambio/, "no son 'avances': ahí adentro puede ir otra caída");
 });
 
 test("con el modelo caído YA AVISADO, la fábrica se sigue contando", () => {
@@ -693,14 +700,14 @@ test("con el modelo caído YA AVISADO, la fábrica se sigue contando", () => {
   const conNovedad = { ...ciego, novedades: [N("placement:annualfilings-control.com", "INBOX", "SPAM")] };
   const a = decidirSiHablar(conNovedad, mem, T(2));
   assert.ok(a, "pero el SPAM→INBOX sale igual: no depende del modelo");
-  assert.match(a.texto, /el placement de annualfilings-control\.com: SPAM → INBOX\./);
+  assert.match(a.texto, /annualfilings-control\.com entró en bandeja/);
 
   // Lo mismo con una lectura con reparos: el error es del MODELO, la aritmética de los hechos no.
   const conReparos = base({ reparos: ["el 33% no sale de ningún dato"], novedades: [N("cap.frenados", 7, 8)] });
   const r1 = decidirSiHablar(conReparos, null, T(1));
   assert.ok(r1);
   const mem2 = recordarAviso(conReparos, true, T(1), null, r1);
-  assert.match(decidirSiHablar(conReparos, mem2, T(2))?.texto ?? "", /los dominios frenados: 8 → 7\./);
+  assert.match(decidirSiHablar(conReparos, mem2, T(2))?.texto ?? "", /ya son 7 los dominios sueltos que estaban frenados \(eran 8\)/);
 });
 
 
@@ -726,7 +733,7 @@ test("una acción ejecutada NO se traga el SPAM→INBOX de la misma vuelta", () 
   );
   assert.ok(a);
   assert.match(a.texto, /soltar_dominio corp-delivery\.com/, "la acción sigue saliendo");
-  assert.match(a.texto, /SPAM → INBOX/, "y el avance viaja con ella, en el MISMO mensaje");
+  assert.match(a.texto, /entró en bandeja/, "y el avance viaja con ella, en el MISMO mensaje");
   // El motivo tiene que llevar los dos: el log es la única auditoría del canal, y un avance sin
   // motivo propio no se puede reproducir desde el diff.
   assert.match(a.motivo, /ejecutó una acción \+novedad placement annualfilings-control\.com SPAM→INBOX/);
@@ -742,12 +749,12 @@ test("una acción trabada y un cambio de emisor tampoco se lo tragan", () => {
     memBase(),
     T(10)
   );
-  assert.match(trabada?.texto ?? "", /SPAM → INBOX/);
+  assert.match(trabada?.texto ?? "", /entró en bandeja/);
   assert.equal(trabada?.pideRespuesta, true, "sigue siendo un pedido de decisión");
 
   const emisor = decidirSiHablar(base({ emisor: "send", novedades: [SUBIO] }), memBase({ ultimoEmisor: "placement-pause" }), T(10));
   assert.match(emisor?.texto ?? "", /El emisor arrancó/);
-  assert.match(emisor?.texto ?? "", /SPAM → INBOX/);
+  assert.match(emisor?.texto ?? "", /entró en bandeja/);
 });
 
 test("el avance pegado COBRA el presupuesto y entra al enfriamiento", () => {
@@ -765,4 +772,32 @@ test("el avance pegado COBRA el presupuesto y entra al enfriamiento", () => {
   assert.equal(decidirSiHablar(base({ emisor: "placement-pause", novedades: [SUBIO] }), mem, T(10.5)), null, "y no vuelve suelto");
   // Un aviso PEGADO sí corre el reloj de los problemas: el mensaje que salió es el de la otra razón.
   assert.equal(mem.ultimoAviso, T(10));
+});
+
+test("un error de sintaxis SUYO no se le pregunta al jefe", () => {
+  // Salió a Slack tal cual el 2026-08-07: "Quise diagnosticar_dominio_bizregistry-ops.com y no
+  // pude: rechazada, no es una acción permitida. ¿Lo resolvés vos?". El modelo había pegado el
+  // dominio al nombre de la acción. No hay nada que el jefe pueda resolver ahí, y preguntarlo gasta
+  // la única señal que sirve para lo que sí necesita una decisión suya.
+  const mem: MemoriaSlack = { ultimoEmisor: "send", ultimoAviso: T(9), ultimaFirma: null };
+  const suyo = base({
+    emisor: "send",
+    acciones: [{ accion: "diagnosticar_dominio_bizregistry-ops.com", ejecutada: false, detalle: 'rechazada: "diagnosticar_dominio_bizregistry-ops.com" no es una acción permitida' }]
+  });
+  assert.equal(decidirSiHablar(suyo, mem, T(10)), null);
+
+  const inventado = base({
+    emisor: "send",
+    acciones: [{ accion: "frenar_dominio", objetivo: "nope.com", ejecutada: false, detalle: 'rechazada: "nope.com" no está en el inventario' }]
+  });
+  assert.equal(decidirSiHablar(inventado, mem, T(10)), null, "un dominio alucinado tampoco es problema del jefe");
+
+  // Pero una falta de PERMISO sigue interrumpiendo: eso sí lo resuelve él y solo él.
+  const permiso = base({
+    emisor: "send",
+    acciones: [{ accion: "soltar_dominio", objetivo: "x.com", ejecutada: false, detalle: "rechazada: soltar no está habilitado en este entorno" }]
+  });
+  const a = decidirSiHablar(permiso, mem, T(10));
+  assert.ok(a);
+  assert.equal(a.pideRespuesta, true);
 });

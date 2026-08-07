@@ -839,3 +839,24 @@ test("reputación: la mano REAL encaja en la acción, no una forma que inventé 
   assert.equal(r[0]!.ejecutada, true);
   assert.match(r[0]!.detalle, /listo\.com \(80\.190\.75\.10\): listas negras sin detecciones · auth SPF ok, DKIM ok, DMARC ok, PTR ok · receptor: CERRADO en Gmail/);
 });
+
+test("el dominio pegado al nombre de la acción se tolera, no se le pasa el problema al jefe", () => {
+  // Ocurrió tal cual en producción: el modelo escribió
+  //   ACCION: diagnosticar_dominio bizregistry-ops.com | motivo=...
+  // y como el parser convierte espacios en guiones bajos, la acción quedó
+  // "diagnosticar_dominio_bizregistry-ops.com". Rechazada por inexistente, y de ahí salió a Slack
+  // "Quise diagnosticar_dominio_bizregistry-ops.com y no pude. ¿Lo resolvés vos?" — el agente le
+  // pidió ayuda al jefe por SU PROPIO error de sintaxis.
+  const [a] = extraerAcciones("ACCION: diagnosticar_dominio bizregistry-ops.com | motivo=ver quién lo cierra");
+  assert.equal(a!.accion, "diagnosticar_dominio");
+  assert.equal(a!.dominio, "bizregistry-ops.com");
+  assert.equal(a!.motivo, "ver quién lo cierra");
+
+  // El campo explícito gana sobre el pegado: si escribió las dos formas, manda la que eligió.
+  const [b] = extraerAcciones("ACCION: frenar_dominio pegado.com | dominio=elegido.com | motivo=x");
+  assert.equal(b!.dominio, "elegido.com");
+
+  // Y lo que NO es un desliz sigue rechazándose: un nombre inventado no se parece a ninguna acción.
+  const [c] = extraerAcciones("ACCION: borrar_todo_ya | motivo=porque sí");
+  assert.equal(c!.accion, "borrar_todo_ya", "no se fuerza a la acción más parecida: eso sería adivinar");
+});
