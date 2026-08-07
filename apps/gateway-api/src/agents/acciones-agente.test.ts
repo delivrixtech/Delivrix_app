@@ -5,7 +5,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CAP_AL_SOLTAR, ejecutarAcciones, extraerAcciones, MAX_ACCIONES_POR_VUELTA, type ContextoAcciones, type Pendiente } from "./acciones-agente.ts";
+import {
+  CAP_AL_SOLTAR,
+  ejecutarAcciones,
+  extraerAcciones,
+  MAX_ACCIONES_POR_VUELTA,
+  porQueNoVuelve,
+  type ContextoAcciones,
+  type Pendiente,
+  type ReputacionLeida
+} from "./acciones-agente.ts";
+import { revisarReputacionDe } from "./reputacion.ts";
 
 const AHORA = new Date("2026-08-04T17:00:00.000Z");
 
@@ -325,6 +335,16 @@ function ctxSoltar(over: Partial<ContextoAcciones> = {}): ContextoAcciones & { s
   return {
     soltados,
     dominiosConocidos: ["listo.com"],
+    // "TODO EN VERDE" INCLUYE HABER LEÍDO LA MEDICIÓN DE FLOTA. Antes este helper no traía el campo
+    // y los tests pasaban igual, porque `undefined` se colapsaba a "no cruzó" — o sea que la suite
+    // entera de soltar corría por el camino que fallaba abierto sin que nadie lo viera.
+    //
+    // Y DESPUÉS traía `[]`, que fue peor: el helper declaraba "la lista vacía dice se leyó y nadie
+    // cruzó", pero `[]` es TRUTHY, así que la suite volvió a correr por el mismo camino y el
+    // arreglo se declaró hecho estando abierto. La lista de acá es NO VACÍA a propósito y trae un
+    // dominio ajeno, que es la forma exacta que tiene producción (9 dominios cruzados, ninguno de
+    // ellos el candidato).
+    frenablesConDanio: ["quemado-ajeno.com"],
     ahora: () => AHORA,
     leerCupoNodo: async () => ({ cap: 0, consumidoHoy: null }),
     diagnosticarDominio: async () => ({ estado: "ok", bloqueanPor: [], degradadoEn: [], entregados: 10, rechazados: 0, detalle: "" }),
@@ -453,6 +473,77 @@ test("soltar: un dominio QUEMADO no vuelve nunca, ni por orden del jefe", async 
   assert.deepEqual(conOrden.soltados, []);
 });
 
+test("soltar: SIN la medición de flota no se suelta NADA — el gate del umbral no falla abierto", async () => {
+  // EL AGUJERO: `frenablesConDanio` sale de `hechos.flota?.cruzados ?? []`, y `hechos.flota` se lee
+  // con un `.catch(() => null)`. Un sender-measurement.json ilegible —o a medio escribir durante un
+  // deploy, que es exactamente lo que está pasando hoy en el carril de al lado— dejaba la lista sin
+  // el campo, `Boolean(undefined)` daba false, y un dominio que cruzó el umbral PERMANENTE de Google
+  // volvía al pool con cupo 20. Con WARMUP_AGENT_PUEDE_SOLTAR=true prendido en producción.
+  //
+  // El comentario del switch decía que este rechazo "no depende de leer nada por SSH, así que un
+  // dominio quemado se rechaza aunque toda la infraestructura de chequeo esté caída". Era cierto a
+  // medias: no depende del SSH, pero sí de un archivo JSON. Ahora el "no sé" no habilita.
+  const c = ctxSoltar({ frenablesConDanio: undefined });
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "está listo" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /no sé si cruzó el umbral permanente/);
+  assert.deepEqual(c.soltados, [], "ni un solo dominio sale al pool sin esa medición");
+
+  // Y tampoco lo levanta una orden del jefe: no se sabe si cruzó, y eso no lo decide la autoridad.
+  const conOrden = ctxSoltar({ frenablesConDanio: undefined, ordenadoPorElJefe: true });
+  const r2 = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "soltalo igual" }], conOrden);
+  assert.equal(r2[0]!.ejecutada, false);
+  assert.deepEqual(conOrden.soltados, []);
+});
+
+test("soltar: la LISTA VACÍA tampoco habilita — es la forma que produce el orquestador cuando no pudo leer la flota", async () => {
+  // EL MISMO AGUJERO, SEGUNDA VUELTA, y la razón por la que el arreglo anterior no cerró nada:
+  // `[]` es TRUTHY en JavaScript. El único productor real es
+  // scripts/ops/warmup-monitor.ts:596 (guardia) y :1015 (chat):
+  //     frenablesConDanio: [...new Set([...(hechos.flota?.cruzados ?? []), ...(hechos.cap?.enElTope ?? [])])]
+  // Un spread SIEMPRE devuelve array. Con `sender-measurement.json` ilegible —se lee con
+  // `.catch(() => null)`, y `hechos.flota` queda en null— eso da `[]`, no `undefined`. O sea que el
+  // test de arriba cubría el ÚNICO valor que producción NO puede emitir, y el valor que sí emite
+  // pasaba derecho: reproducido con `ejecutarAcciones` real ⇒ `ejecutada: true`, cupo 20 sobre
+  // bizreport-control.com, con WARMUP_AGENT_PUEDE_SOLTAR=true prendido en producción.
+  //
+  // Y el prompt no mentía: `lineasDeFrenados` con flota null ya decía "umbral permanente: sin dato"
+  // mientras el gate, en silencio, decía "no cruzó". El agente leía la verdad y el código no.
+  const c = ctxSoltar({ frenablesConDanio: [] });
+  const r = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "está listo" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /no sé si cruzó el umbral permanente/);
+  assert.deepEqual(c.soltados, [], "una lista vacía es 'no se pudo leer', no 'nadie cruzó'");
+
+  const conOrden = ctxSoltar({ frenablesConDanio: [], ordenadoPorElJefe: true });
+  const r2 = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "soltalo igual" }], conOrden);
+  assert.equal(r2[0]!.ejecutada, false);
+  assert.deepEqual(conOrden.soltados, []);
+
+  // Y `null` explícito, que es la forma que el orquestador TIENE que empezar a emitir.
+  const nulo = ctxSoltar({ frenablesConDanio: null as never });
+  const r3 = await ejecutarAcciones([{ accion: "soltar_dominio", dominio: "listo.com", motivo: "está listo" }], nulo);
+  assert.equal(r3[0]!.ejecutada, false);
+  assert.deepEqual(nulo.soltados, []);
+});
+
+test("frenar: ese mismo `null` no puede ABRIR el alcance del freno", async () => {
+  // La trampa de admitir tres estados en un campo que usan DOS acciones en direcciones opuestas.
+  // El alcance del freno se rechaza con `[]` (lista leída, este dominio no tiene daño). Si `null`
+  // cayera en el mismo `if (ctx.frenablesConDanio && …)`, sería falsy ⇒ "sin restricción" ⇒ el
+  // modelo podría frenar CUALQUIERA de los 58 justo cuando no se pudo leer la flota. O sea: el
+  // arreglo del gate de soltar abriría el del freno.
+  const c = ctx({ dominiosConocidos: ["sano.com"], frenablesConDanio: null as never, frenarDominio: async () => ({ antes: 20, despues: 0 }) });
+  const r = await ejecutarAcciones([{ accion: "frenar_dominio", dominio: "sano.com", motivo: "me parece" }], c);
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /no se pudo leer la medición de la flota/);
+
+  // `undefined` sigue significando "este entorno no restringe" (dry-run y tests): no cambia.
+  const libre = ctx({ dominiosConocidos: ["sano.com"], frenarDominio: async () => ({ antes: 20, despues: 0 }) });
+  const r2 = await ejecutarAcciones([{ accion: "frenar_dominio", dominio: "sano.com", motivo: "x" }], libre);
+  assert.equal(r2[0]!.ejecutada, true);
+});
+
 test("soltar: el rechazo por daño consumado NO necesita SSH", async () => {
   // Va primero justamente para esto: si la infraestructura de chequeo está caída, un dominio
   // quemado tiene que rechazarse igual. Fallar hacia "no sé, mejor lo suelto" sería el peor
@@ -490,4 +581,261 @@ test("si el SSH revienta, la excepción NO se escapa: el agente sigue vivo", asy
   );
   assert.equal(s[0]!.ejecutada, false);
   assert.match(s[0]!.detalle, /no pude soltar listo\.com/);
+});
+
+// ── porQueNoVuelve ─────────────────────────────────────────────────────────────────────────────
+//
+// La regla vive en UNA función y se exporta para que el prompt le muestre al agente la condición YA
+// EVALUADA al lado de cada dominio frenado. Estos tests fijan que la función y el switch no puedan
+// divergir: si dijeran cosas distintas, el agente vería un candidato que el código después rechaza.
+
+test("porQueNoVuelve: los 7 vírgenes califican — cero mediciones NO es historia mala", async () => {
+  // Los 7 nodos vírgenes (bizregistry-ops.com y compañía) están en cap 0 con tráfico cero. Sin
+  // enviar nunca, su salud queda en `no_traffic` para siempre: si la falta de historia bloqueara,
+  // el candado no se abre jamás.
+  assert.equal(porQueNoVuelve({ cruzado: false, bloqueanPor: [], muestra: 0, tasaInbox: null }), null);
+  // Poca muestra tampoco juzga: una sola medición mala es ruido, no evidencia.
+  assert.equal(porQueNoVuelve({ cruzado: false, bloqueanPor: [], muestra: 2, tasaInbox: 0 }), null);
+  // Muestra suficiente y tasa desconocida: "no medido" y "cero" no son lo mismo.
+  assert.equal(porQueNoVuelve({ cruzado: false, bloqueanPor: [], muestra: 9, tasaInbox: null }), null);
+});
+
+test("porQueNoVuelve: 'no sé si cruzó' NO es 'no cruzó', y gana sobre todo lo demás", async () => {
+  // Los TRES estados. El prompt ya decía honestamente "umbral permanente: sin dato" mientras el gate
+  // decía en silencio "no cruzó": la misma lección de "no medido ≠ cero" aplicada a la mitad.
+  const m = porQueNoVuelve({ cruzado: null, bloqueanPor: [], muestra: 0, tasaInbox: null });
+  assert.match(m ?? "", /no sé si cruzó el umbral permanente/);
+  // Ni con un expediente impecable: sin ese dato no hay veredicto posible.
+  assert.notEqual(porQueNoVuelve({ cruzado: null, bloqueanPor: [], muestra: 20, tasaInbox: 1 }), null);
+});
+
+test("porQueNoVuelve: el umbral permanente gana sobre todo lo demás", async () => {
+  // bizreport-control.com cruzó el umbral el 2026-07-31. Ese hecho no lo deshace enviando, y por
+  // eso se evalúa PRIMERO: se rechaza aunque no se pueda leer ni un solo nodo por SSH.
+  const m = porQueNoVuelve({ cruzado: true, bloqueanPor: ["Gmail"], muestra: 20, tasaInbox: 0.9 });
+  assert.match(m ?? "", /umbral permanente/);
+});
+
+test("porQueNoVuelve: receptor cerrado y historia mala, cada uno con su motivo", async () => {
+  assert.match(porQueNoVuelve({ cruzado: false, bloqueanPor: ["Yahoo", "Gmail"], muestra: 0, tasaInbox: null }) ?? "", /cerrado Yahoo, Gmail/);
+  assert.match(porQueNoVuelve({ cruzado: false, bloqueanPor: [], muestra: 5, tasaInbox: 0.2 }) ?? "", /20% de bandeja sobre 5 mediciones/);
+  // El piso es 0.5 y no se copia en ningún otro lado: justo encima, califica.
+  assert.equal(porQueNoVuelve({ cruzado: false, bloqueanPor: [], muestra: 5, tasaInbox: 0.6 }), null);
+});
+
+test("porQueNoVuelve dice EXACTAMENTE lo que rechaza el switch", async () => {
+  // Si divergen, el agente ve un candidato que el código después niega — o peor, no ve uno que sí
+  // podía soltar. Se compara el texto real de la acción contra el de la función.
+  const cerrado = await ejecutarAcciones(
+    [{ accion: "soltar_dominio", dominio: "listo.com", motivo: "x" }],
+    ctxSoltar({ diagnosticarDominio: async () => ({ estado: "blocked_by_provider", bloqueanPor: ["Yahoo"], degradadoEn: [], entregados: 0, rechazados: 9, detalle: "" }) })
+  );
+  assert.equal(cerrado[0]!.detalle, `rechazada: listo.com ${porQueNoVuelve({ cruzado: false, bloqueanPor: ["Yahoo"], muestra: 0, tasaInbox: null })}`);
+
+  const historia = await ejecutarAcciones(
+    [{ accion: "soltar_dominio", dominio: "listo.com", motivo: "x" }],
+    ctxSoltar({ medirDominio: async () => ({ tasaInbox: 0.2, muestra: 5, diaN: 3, ultimaMedicion: "2026-08-05" }) })
+  );
+  assert.equal(historia[0]!.detalle, `rechazada: listo.com ${porQueNoVuelve({ cruzado: false, bloqueanPor: [], muestra: 5, tasaInbox: 0.2 })}`);
+});
+
+// ── revisar_reputacion ─────────────────────────────────────────────────────────────────────────
+
+const REPUTACION_LIMPIA: ReputacionLeida = {
+  dominio: "listo.com",
+  ip: "80.190.75.10",
+  blacklist: { estado: "ok", detalle: "sin detecciones" },
+  spf: { estado: "ok", detalle: "SPF con -all" },
+  dkim: { estado: "ok", detalle: "DKIM válido en s2026a" },
+  dmarc: { estado: "ok", detalle: "DMARC p=quarantine" },
+  ptr: { estado: "ok", detalle: "PTR mail.listo.com confirmado" }
+};
+
+function ctxReputacion(over: Partial<ContextoAcciones> = {}): ContextoAcciones {
+  return {
+    dominiosConocidos: ["listo.com"],
+    ahora: () => AHORA,
+    revisarReputacion: async () => REPUTACION_LIMPIA,
+    // GMAIL CERRADO con las IPs limpias: es la medición real del 2026-07-25.
+    diagnosticarDominio: async () => ({
+      estado: "blocked_by_provider",
+      bloqueanPor: ["Gmail"],
+      degradadoEn: [],
+      entregados: 0,
+      rechazados: 41,
+      detalle: "550-5.7.1 unsolicited mail"
+    }),
+    pendientes: { listar: async () => [], guardar: async () => {} },
+    ...over
+  } as never;
+}
+
+test("reputación: la lista negra limpia NUNCA sale sin el estado del receptor", async () => {
+  // LA MEDICIÓN QUE JUSTIFICA ESTA REGLA: el 2026-07-25, 38 de 64 nodos estaban rechazados por
+  // Gmail con 550-5.7.1 "unsolicited" y TODAS sus IPs limpias en listas negras. Son dos señales
+  // distintas y la primera sola produce confianza falsa — ese error costó un mes.
+  const r = await ejecutarAcciones([{ accion: "revisar_reputacion", dominio: "listo.com", motivo: "no entrega y quiero saber por qué" }], ctxReputacion());
+  assert.equal(r[0]!.ejecutada, true);
+  assert.match(r[0]!.detalle, /sin detecciones/, "la primera señal está");
+  assert.match(r[0]!.detalle, /receptor: CERRADO en Gmail/, "y la segunda al lado, en la misma frase");
+  // La forma estructural: si el texto dice que no hay detecciones, el receptor aparece SIEMPRE.
+  if (/sin detecciones|limpi/i.test(r[0]!.detalle)) assert.match(r[0]!.detalle, /receptor:/);
+});
+
+test("reputación: los 7 vírgenes NO reciben un 'nadie se lo bloquea' sobre cero evidencia", async () => {
+  // LA SEGUNDA SEÑAL TAMBIÉN PUEDE SER FALSA. `diagnosticarUnDominio` devuelve `no_traffic` con los
+  // contadores en 0 para los 7 nodos vírgenes (filing-ops.com y compañía) — que son justamente el
+  // caso de uso de soltar_dominio — y el ternario publicaba "nadie se lo bloquea (0 entregados / 0
+  // rechazados)". O sea: la mitad que existe para que "listas negras limpias" no se lea como verde
+  // afirmaba lo verde sobre un nodo que nunca mandó un correo. "No medido" y "cero" otra vez.
+  const r = await ejecutarAcciones(
+    [{ accion: "revisar_reputacion", dominio: "listo.com", motivo: "¿está listo para arrancar?" }],
+    ctxReputacion({
+      diagnosticarDominio: async () => ({ estado: "no_traffic", bloqueanPor: [], degradadoEn: [], entregados: 0, rechazados: 0, detalle: "" })
+    })
+  );
+  assert.equal(r[0]!.ejecutada, true, "es un dato útil: se publica, pero diciendo lo que es");
+  assert.match(r[0]!.detalle, /sin evidencia propia/);
+  assert.match(r[0]!.detalle, /nunca mandó, así que no sabemos si lo aceptan/);
+  assert.doesNotMatch(r[0]!.detalle, /nadie se lo bloquea/, "eso sería afirmar algo sobre cero mediciones");
+});
+
+test("reputación: un mail.log ILEGIBLE no es un mail.log limpio", async () => {
+  // `readNodeDeliveryHealth` devuelve `unreadable` con los contadores en 0 cuando el SSH falló o las
+  // fechas no se entienden. Con el ternario viejo salía "unreadable, nadie se lo bloquea (0/0)" y
+  // con `ejecutada: true`: un chequeo que falló disfrazado de medición limpia. Es el probe colgado
+  // del 2026-07-29 otra vez, en otro archivo.
+  let consultas = 0;
+  const r = await ejecutarAcciones(
+    [{ accion: "revisar_reputacion", dominio: "listo.com", motivo: "x" }],
+    ctxReputacion({
+      diagnosticarDominio: async () => ({ estado: "unreadable", bloqueanPor: [], degradadoEn: [], entregados: 0, rechazados: 0, detalle: "" }),
+      revisarReputacion: async () => { consultas += 1; return REPUTACION_LIMPIA; }
+    })
+  );
+  assert.equal(r[0]!.ejecutada, false);
+  assert.equal(r[0]!.reintentable, true, "un SSH caído se arregla solo: no vale despertar a nadie");
+  assert.doesNotMatch(r[0]!.detalle, /sin detecciones|nadie se lo bloquea/);
+  assert.equal(consultas, 0, "y no se gasta cuota de MXToolbox en algo que no se va a poder publicar");
+});
+
+test("reputación: sin el instrumento del receptor, la acción se RECHAZA", async () => {
+  // Mismo criterio que soltar_dominio: un chequeo que no se puede hacer no es un chequeo que pasa.
+  // Acá además evita gastar cuota de API en una lectura que no se va a poder publicar entera.
+  let consultas = 0;
+  const r = await ejecutarAcciones(
+    [{ accion: "revisar_reputacion", dominio: "listo.com", motivo: "x" }],
+    ctxReputacion({ diagnosticarDominio: undefined, revisarReputacion: async () => { consultas += 1; return REPUTACION_LIMPIA; } })
+  );
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /una lista negra limpia no dice nada/);
+  assert.equal(consultas, 0, "no se gasta cuota en algo que no se va a poder reportar");
+});
+
+test("reputación: un chequeo colgado dice 'no sé', y NO lo da por bueno", async () => {
+  // La lección del probe con `head -c`: rc=124 se reportó como "bloqueado" en 10 de 10 nodos que
+  // estaban bien. Un instrumento que no contesta no puede producir un veredicto en ninguna dirección.
+  const r = await ejecutarAcciones(
+    [{ accion: "revisar_reputacion", dominio: "listo.com", motivo: "x" }],
+    ctxReputacion({
+      revisarReputacion: async () => ({ ...REPUTACION_LIMPIA, blacklist: { estado: "no-se", detalle: "no respondió en 15000 ms" } })
+    })
+  );
+  assert.equal(r[0]!.ejecutada, false);
+  assert.equal(r[0]!.reintentable, true, "un timeout se arregla solo: no vale interrumpir a un humano");
+  assert.match(r[0]!.detalle, /no sé si está listado/i);
+  assert.doesNotMatch(r[0]!.detalle, /sin detecciones|limpi/i);
+});
+
+test("reputación: la API que falla es TRANSITORIA, no una decisión pendiente", async () => {
+  // El incidente del 2026-08-06: Postgres se recargó doce segundos y el agente le mencionó al jefe
+  // dos veces algo que ya estaba resuelto cuando lo leyó. Un parpadeo de infraestructura no es una
+  // pregunta para un humano.
+  const r = await ejecutarAcciones(
+    [{ accion: "revisar_reputacion", dominio: "listo.com", motivo: "x" }],
+    ctxReputacion({ revisarReputacion: async () => { throw new Error("ECONNRESET api.mxtoolbox.com"); } })
+  );
+  assert.equal(r[0]!.ejecutada, false);
+  assert.equal(r[0]!.reintentable, true);
+  assert.match(r[0]!.detalle, /ECONNRESET/);
+
+  // Y lo mismo si el que se cae es el lado del receptor.
+  const sinReceptor = await ejecutarAcciones(
+    [{ accion: "revisar_reputacion", dominio: "listo.com", motivo: "x" }],
+    ctxReputacion({ diagnosticarDominio: async () => { throw new Error("ssh timeout"); } })
+  );
+  assert.equal(sinReceptor[0]!.reintentable, true);
+});
+
+test("reputación: sin IP no se inventa un veredicto, y NO es reintentable", async () => {
+  // Falta el binding en el inventario: eso lo arregla una persona, no el tiempo. Distinguirlo del
+  // parpadeo es lo que hace que la mención al jefe signifique algo.
+  const r = await ejecutarAcciones(
+    [{ accion: "revisar_reputacion", dominio: "listo.com", motivo: "x" }],
+    ctxReputacion({ revisarReputacion: async () => ({ ...REPUTACION_LIMPIA, ip: null, blacklist: { estado: "no-se", detalle: "no sé de qué IP hablamos" }, ptr: { estado: "no-se", detalle: "no sé de qué IP hablamos" } }) })
+  );
+  assert.equal(r[0]!.ejecutada, false);
+  assert.equal(r[0]!.reintentable, undefined, "no se arregla solo: hay que tocar el inventario");
+  assert.match(r[0]!.detalle, /no sé de qué IP hablamos/);
+});
+
+test("reputación: la auth rota se nombra con su detalle, no con un color", async () => {
+  const r = await ejecutarAcciones(
+    [{ accion: "revisar_reputacion", dominio: "listo.com", motivo: "x" }],
+    ctxReputacion({
+      revisarReputacion: async () => ({
+        ...REPUTACION_LIMPIA,
+        dkim: { estado: "mal", detalle: "DKIM presente pero REVOCADO (p= vacío)" },
+        ptr: { estado: "no-se", detalle: "no pude consultar el PTR: ESERVFAIL" }
+      }),
+      diagnosticarDominio: async () => ({ estado: "healthy", bloqueanPor: [], degradadoEn: [], entregados: 27, rechazados: 0, detalle: "" })
+    })
+  );
+  assert.match(r[0]!.detalle, /DKIM MAL \(DKIM presente pero REVOCADO/);
+  assert.match(r[0]!.detalle, /PTR no sé \(no pude consultar el PTR: ESERVFAIL\)/);
+  assert.match(r[0]!.detalle, /receptor: healthy, nadie se lo bloquea \(27 entregados \/ 0 rechazados\)/);
+});
+
+test("reputación: un dominio inventado no llega a consultar nada", async () => {
+  let consultas = 0;
+  const r = await ejecutarAcciones(
+    [{ accion: "revisar_reputacion", dominio: "inventado.com", motivo: "x" }],
+    ctxReputacion({ revisarReputacion: async () => { consultas += 1; return REPUTACION_LIMPIA; } })
+  );
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /no está en el inventario/);
+  assert.equal(consultas, 0);
+});
+
+test("reputación: sin la mano cableada, se dice — no se ejecuta en silencio", async () => {
+  const r = await ejecutarAcciones([{ accion: "revisar_reputacion", dominio: "listo.com", motivo: "x" }], ctxReputacion({ revisarReputacion: undefined }));
+  assert.equal(r[0]!.ejecutada, false);
+  assert.match(r[0]!.detalle, /no está habilitado en este entorno/);
+});
+
+test("reputación: la mano REAL encaja en la acción, no una forma que inventé en un fixture", async () => {
+  // Verificar por el camino de producción. El proyecto ya pagó esta lección: un fixture escrito
+  // desde mi suposición del wire de Bedrock ocultó que `stop_reason` nunca se leía — el test y el
+  // código compartían el error. Acá la acción se ejecuta contra `revisarReputacionDe` de verdad.
+  const r = await ejecutarAcciones(
+    [{ accion: "revisar_reputacion", dominio: "listo.com", motivo: "quiero ver por qué no entrega" }],
+    ctxReputacion({
+      revisarReputacion: (dominio) =>
+        revisarReputacionDe({
+          dominio,
+          ip: "80.190.75.10",
+          resolveTxt: async (f) => {
+            if (f === "listo.com") return [["v=spf1 ip4:80.190.75.10 -all"]];
+            if (f === "_dmarc.listo.com") return [["v=DMARC1; p=quarantine"]];
+            if (f === "s2026a._domainkey.listo.com") return [["v=DKIM1; k=rsa; p=MIIBIjANBg"]];
+            throw Object.assign(new Error("nope"), { code: "ENOTFOUND" });
+          },
+          reverse: async () => ["mail.listo.com"],
+          resolve4: async () => ["80.190.75.10"],
+          blacklist: async () => ({ estado: "clean", listas: [] })
+        })
+    })
+  );
+  assert.equal(r[0]!.ejecutada, true);
+  assert.match(r[0]!.detalle, /listo\.com \(80\.190\.75\.10\): listas negras sin detecciones · auth SPF ok, DKIM ok, DMARC ok, PTR ok · receptor: CERRADO en Gmail/);
 });

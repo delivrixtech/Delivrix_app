@@ -127,6 +127,24 @@ const PREFIJO_DIA = "([A-Za-z]{3} +[0-9]+|[0-9]{4}-[0-9]{2}-[0-9]{2})";
  * `logDir` existe SOLO para que el test corra este mismo string con bash contra un directorio de
  * fixtures; en produccion nadie lo pasa. Es el mismo mecanismo (y la misma leccion del fixture de
  * Bedrock) que `buildDeliveryStatsCommand`: una pipeline de shell solo se prueba corriendola.
+ *
+ * ── ESTE SENSOR NO SE ATRIBUYE. ES EL ÚNICO. ────────────────────────────────────────────────────
+ *
+ * El 2026-08-06 el módulo hermano (`smtp-delivery-health.ts`) aprendió a separar NUESTRO correo del
+ * de NFC —el otro producto que inyecta por los mismos 58 nodos— porque estaba midiendo reputación
+ * ajena y llamándola nuestra: 791.300 mensajes de ellos contra 222 nuestros. La orden del operador
+ * fue "aislar y olvidar esos datos". ACÁ NO SE AÍSLA NADA, y es a propósito.
+ *
+ * El receptor no clasifica por quién inyectó: Google y Yahoo cuentan por DOMINIO y por IP. Los
+ * ~15.000 mensajes/día que NFC saca por NUESTROS dominios cuentan ENTEROS contra el umbral de
+ * 5.000/día, y cruzarlo clasifica el dominio como bulk sender de forma PERMANENTE, sin apelación.
+ * Filtrar por queue-id o por `sasl_username` acá dejaría todos los picos en cero y todos los
+ * dominios "limpios" — apagaría el único sensor del único daño del sistema que no se deshace,
+ * justo mientras el daño sigue ocurriendo. `bizreport-control.com` ya cruzó ese umbral y no hay
+ * forma de volver atrás.
+ *
+ * O sea: si alguien vuelve con "aislá y olvidá los datos de NFC", esto es lo que NO se aísla. Hay un
+ * test que lo fija por el string del comando, para que el filtro no se pueda agregar por descuido.
  */
 export function buildProviderVolumeCommand(logDir = "/var/log"): string {
   return [

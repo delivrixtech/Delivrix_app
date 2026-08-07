@@ -1361,8 +1361,23 @@ export async function getWarmupRampByDomain(
     headers: { accept: "application/json" },
     cache: "no-store"
   });
-  if (response.status === 404) return null;
-  const payload = (await response.json().catch(() => ({}))) as Partial<{ message: string }>;
+  const payload = (await response.json().catch(() => ({}))) as Partial<{ message: string; error: string }>;
+  if (response.status === 404) {
+    // DOS 404 distintos llegaban acá y los dos se leían como "no hay ramp":
+    //   · el del gateway (`ramp_not_found`) = medición: este dominio no tiene rampa. Es `null`.
+    //   · el del proxy del panel (`unknown_read_endpoint`) = NO PUDE LEER, porque el path con el
+    //     segmento del dominio no estaba en el allowlist. Verificado por curl: vía :5173 daba
+    //     unknown_read_endpoint mientras el gateway respondía ramp_not_found.
+    // Aplastar el segundo contra `null` dejaba la fila expandida sin renderizar nada —ni el panel
+    // del ramp ni el "Iniciar warmup"— y sin un solo cartel de error. Ausencia de dato no es
+    // evidencia de ausencia de rampa.
+    if (payload.error === "ramp_not_found") return null;
+    throw new Error(
+      typeof payload.message === "string"
+        ? payload.message
+        : `No se pudo leer el ramp de ${domain}: ${payload.error ?? `HTTP 404 en ${url}`}`
+    );
+  }
   if (!response.ok) {
     throw new Error(
       typeof payload.message === "string" ? payload.message : `GET ${url} failed.`

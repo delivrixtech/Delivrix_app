@@ -238,6 +238,80 @@ test("un número que solo está en la memoria NO cuenta como respaldado", async 
   );
 });
 
+test("LA FUGA: el chat puede nombrar los frenados y los pendientes, con su id", () => {
+  // La promesa y el guardrail se estaban peleando, y ganaba el guardrail. VOZ ofrece
+  // `soltar_dominio | dominio=<uno frenado>` y `resolver_pendiente | id=<id>`, pero ninguno de los
+  // dos llegaba al contexto: viven en snapshot.hechos, que se recibía entero y no se leía. Medido en
+  // producción: 7 de los 8 frenados (los 7 vírgenes) eran INNOMBRABLES, y `revisarRespuesta` marca
+  // como invención todo dominio que no esté en el contexto — o sea que si el modelo acertaba, se le
+  // marcaba como inventado. Eso explica el único intento de soltar en 31 entradas de bitácora.
+  const hechos = {
+    generadoEn: "2026-08-06T02:00:00.000Z",
+    semillas: { destinos: 2, midiendo: 1, puntoCiego: [] },
+    vueltas: [],
+    cap: {
+      nodosMedidos: 14, nodosSinMedir: 44, enElTope: [], sinLimite: 0,
+      frenados: ["filing-ops.com", "bizreport-control.com"],
+      frenadosDetalle: [
+        { dominio: "filing-ops.com", cruzado: false, bloqueanPor: [], muestra: 0, tasaInbox: null },
+        { dominio: "bizreport-control.com", cruzado: true, bloqueanPor: [], muestra: 6, tasaInbox: 0.83 }
+      ]
+    },
+    flota: null,
+    pendientesAbiertos: [{ id: "p-3-semilla-outlook", que: "hace falta una semilla en Outlook" }]
+  } as never;
+
+  const ctx = construirContexto(
+    { hilo: [{ quien: "jefe", texto: "¿hay alguno para soltar?" }], snapshot: snapshot({ hechos }), loQueHiciste: [] },
+    "2026-08-06T02:30:00.000Z"
+  );
+  assert.match(ctx, /filing-ops\.com: califica para soltar_dominio/);
+  // El id EXACTO: `resolver_pendiente` lo exige textual, así que sin él la acción es inalcanzable.
+  assert.match(ctx, /p-3-semilla-outlook/);
+
+  // El efecto lateral que cierra el círculo: al estar en el contexto, dejan de marcarse como
+  // invención. Antes, nombrar el dominio correcto era un hallazgo del verificador.
+  assert.deepEqual(revisarRespuesta("Dale, suelto filing-ops.com y cierro p-3-semilla-outlook.", ctx), []);
+  // Y el quemado sigue sin poder presentarse como candidato, lo pida quien lo pida.
+  assert.ok(!/bizreport-control\.com: califica/.test(ctx));
+});
+
+test("sin hechos en el snapshot, el contexto queda exactamente como estaba", () => {
+  // El chat NO mide nada por su cuenta: si el otro carril no dejó hechos, acá no se inventa una
+  // sección vacía ni una lista de frenados que nadie leyó.
+  const ctx = construirContexto({ hilo: [{ quien: "jefe", texto: "hola" }], snapshot: snapshot(), loQueHiciste: [] }, "2026-08-06T02:30:00.000Z");
+  assert.ok(!ctx.includes("FRENADOS"));
+  assert.ok(!ctx.includes("PENDIENTES ABIERTOS"));
+});
+
+test("tardoMs mide el modelo, no la cola — y también cuando el turno falla", async () => {
+  // El único número de latencia que había (`tardoSeg`, en el orquestador) es la EDAD del mensaje del
+  // jefe: incluye la espera de lectura de Slack y las horas en que el agente estuvo sordo. Con ese
+  // instrumento, elegir entre subir el timeout, bajar max_tokens o achicar el contexto es tirar una
+  // moneda — y hoy 56 de los 65 turnos sin respuesta son "el modelo tardó demasiado".
+  let ms = Date.parse("2026-08-06T02:30:00.000Z");
+  const reloj = () => new Date(ms);
+  const lento = (async () => {
+    ms += 34_000; // la latencia medida de Kimi K3 en producción
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "listo" } }], model: "k3", usage: {} }) };
+  }) as never;
+
+  const r = await responder({ contexto: { hilo: [], snapshot: null, loQueHiciste: [] }, baseUrl: "http://x/v1", modelo: "m", fetchImpl: lento, now: reloj });
+  assert.equal(r.tardoMs, 34_000);
+
+  // Y los que FALLAN también se miden: si solo se midieran los que salen, la ventana quedaría
+  // sesgada justo hacia los rápidos, que son los que no tienen el problema.
+  ms = Date.parse("2026-08-06T02:30:00.000Z");
+  const muere = (async () => {
+    ms += 180_000;
+    throw Object.assign(new Error("abortado"), { name: "AbortError" });
+  }) as never;
+  const f = await responder({ contexto: { hilo: [], snapshot: null, loQueHiciste: [] }, baseUrl: "http://x/v1", modelo: "m", fetchImpl: muere, now: reloj });
+  assert.equal(f.texto, null);
+  assert.match(f.motivo ?? "", /tardó demasiado/);
+  assert.equal(f.tardoMs, 180_000);
+});
+
 test("la voz le dice que varios mensajes seguidos son UNA conversación", () => {
   // El reclamo textual del jefe, después de recibir seis respuestas casi idénticas: "que no sea
   // tan repetitivo, más bien que él mismo pueda entender la conversación... se volvió repetitivo e
@@ -248,4 +322,61 @@ test("la voz le dice que varios mensajes seguidos son UNA conversación", () => 
   assert.match(v, /es una persona esperando que le contestes/);
   assert.match(v, /el mensaje más específico y no el último/, "lo que quería, no lo que dijo al final");
   assert.match(v, /Nunca una respuesta por mensaje/);
+});
+
+test("EL CHAT VE LOS HECHOS, no solo la prosa de la guardia", async () => {
+  // LA FUGA GRANDE. `hechos.plan`, `hechos.vueltas`, `hechos.flota` y `hechos.emisor` llegaban en el
+  // snapshot y NO entraban a construirContexto: lo único que veía el chat era la lectura en prosa de
+  // la guardia, que escribe los números en letras ("seis entregando, treinta y seis cerradas").
+  // Resultado medido: `revisarRespuesta` marcaba como INVENTADO todo lo que el agente contestaba
+  // bien — "cita el número 36", "cita el número 83", "nombra corpfiling-infra.com, que no está en el
+  // contexto" — sobre datos que sí estaban en el snapshot. Y `ejecutarAcciones` del chat SÍ aceptaba
+  // esos dominios (los saca de plan/vueltas): la capa de acción los daba por válidos y el guardrail
+  // por inventados. Un guardrail que marca la verdad entrena al operador a ignorar los reparos.
+  const ctx = construirContexto(
+    {
+      hilo: [{ quien: "jefe", texto: "¿cómo vamos?" }],
+      snapshot: snapshot({
+        hechos: {
+          generadoEn: "2026-08-06T02:00:00.000Z",
+          emisor: { estado: "send", motivo: "ok", vueltasHoy: 11, topeDiario: 14 },
+          semillas: { destinos: 4, midiendo: 1, puntoCiego: [] },
+          vueltas: [{ dominio: "corpfiling-infra.com", semilla: "s@gmail.com", cuando: "2026-08-06T01:00:00Z", placement: "INBOX", completa: true, error: null }],
+          cap: null,
+          flota: {
+            sanas: 6,
+            bloqueadas: 36,
+            atascadas: 9,
+            cruzados: ["bizreport-control.com"],
+            // `cerca` es el resto de la fuga, y el que quedó abierto la primera vez: son los
+            // dominios que la guardia MIDE cada tick, o sea de los que el agente habla todo el día.
+            cerca: ["controlcontrolledger.com", "corpfiling-outbound.com", "corp-delivery.com"]
+          },
+          plan: [{ dominio: "corpfiling-infra.com", diaN: 4, placementTasa: 0.83, placementMuestra: 6, cupo: 20, accion: "subir", motivo: "la rampa avanza", enviadosHoy: 2 }]
+        } as never
+      }),
+      loQueHiciste: []
+    },
+    "2026-08-06T02:30:00.000Z"
+  );
+  // EN DÍGITOS, que es lo que compara el detector.
+  assert.match(ctx, /FLOTA: 6 entregan, 36 cerradas por el receptor, 9 con la cola atascada/);
+  assert.match(ctx, /CRUZARON el umbral permanente: bizreport-control\.com/);
+  assert.match(ctx, /corpfiling-infra\.com: subir, cupo 20\/día \(lleva 2\) · día 4 · placement 83% sobre 6/);
+  assert.match(ctx, /vueltas hoy 11\/14/);
+  assert.match(ctx, /cayó en INBOX/);
+
+  // Y la prueba de que la fuga se cerró: la respuesta típica del log de hoy ya NO sale marcada.
+  const respuesta = "Vamos bien: 6 entregando y 36 cerradas. corpfiling-infra.com va en día 4 con 83% de bandeja sobre 6 mediciones.";
+  assert.deepEqual(revisarRespuesta(respuesta, ctx), []);
+
+  // LA MITAD QUE FALTABA. Corrido sobre los 6 intercambios REALES guardados en producción, el
+  // arreglo anterior bajaba las marcas de invención de 4 a 3 — y las 3 que quedaban son estos tres
+  // dominios, todos de `flota.cerca`. Un guardrail que marca la verdad como invención entrena al
+  // operador a ignorar los reparos, que es textual el modo de falla que el arreglo decía matar.
+  assert.match(ctx, /CERCA del umbral \(ninguno lo cruzó\): controlcontrolledger\.com, corpfiling-outbound\.com, corp-delivery\.com/);
+  assert.deepEqual(
+    revisarRespuesta("controlcontrolledger.com, corpfiling-outbound.com y corp-delivery.com vienen cerca del umbral.", ctx),
+    []
+  );
 });

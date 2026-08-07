@@ -10,7 +10,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { decidirCupoDeHoy, esInbox, type DecisionDiaria } from "../domain/decision-diaria.ts";
+import { decidirCupoDeHoy, esInbox, rampaDesdeEnv, type DecisionDiaria } from "../domain/decision-diaria.ts";
 import { progresoDeCalentamiento, type UsoPrevio } from "../domain/rotacion.ts";
 import type { IsoWeekday } from "../domain/ramp.ts";
 import type { PgClient } from "../store/pg-stores.ts";
@@ -130,13 +130,18 @@ export function elegirPool(
    */
   salud?: ReadonlyMap<string, SaludDominio>
 ): { boxes: string[]; motivo: string } {
-  if (cupos.porDominio.size === 0) {
-    return {
-      boxes: [...configurado],
-      motivo: "sin ninguna medición del cupo: se usa el pool configurado (nadie verificó que puedan enviar)"
-    };
-  }
-  let conCupo = [...cupos.porDominio.entries()].filter(([, cap]) => cap > 0).map(([d]) => d).sort();
+  // SIN MEDICIÓN DEL CUPO SE SIGUE SABIENDO QUIÉN NO SIRVE. El return temprano estaba ARRIBA del
+  // filtro de salud, así que un `sender-cap.json` ilegible (`leerCuposFisicos` tiene un catch que
+  // traga todo y devuelve el mapa vacío) metía al pool a los quemados, a los cerrados por el
+  // receptor y a los de cola atascada — verificado: los CUATRO entraban. Y encima con `vencida:true`
+  // el `cupoFisico` viaja en `null`, o sea que la rampa gobierna sola y sin la pared del nodo.
+  //
+  // Son dos archivos distintos: no poder leer el CUPO no borra la medición de SALUD. Lo único que
+  // se pierde es cuánto manda cada uno, no cuáles no pueden mandar.
+  const sinMedicion = cupos.porDominio.size === 0;
+  let conCupo = sinMedicion
+    ? [...configurado]
+    : [...cupos.porDominio.entries()].filter(([, cap]) => cap > 0).map(([d]) => d).sort();
 
   // ── Sacar lo que no tiene sentido calentar ────────────────────────────────────────────────────
   //
@@ -218,20 +223,24 @@ export function elegirPool(
     }
     conCupo = sobreviven;
   }
-  const antiguedad = cupos.vencida
-    ? ` — medición de hace ${cupos.edadHoras ?? "?"}h, VENCIDA: sirve para saber a quién intentarle, no para decidir volumen`
-    : "";
+  const antiguedad = sinMedicion
+    ? " — SIN ninguna medición del cupo: nadie verificó cuánto puede mandar cada uno"
+    : cupos.vencida
+      ? ` — medición de hace ${cupos.edadHoras ?? "?"}h, VENCIDA: sirve para saber a quién intentarle, no para decidir volumen`
+      : "";
   // Los excluidos se DECLARAN, siempre. Un pool que se achica en silencio hace creer al operador
   // que hay menos nodos con cupo de los que hay, y esconde justo el problema que hay que resolver.
   const sacados = excluidos.length > 0 ? ` · ${excluidos.length} fuera: ${excluidos.slice(0, 4).join(", ")}${excluidos.length > 4 ? ` y ${excluidos.length - 4} más` : ""}` : "";
   const nuevos = arrancando.length > 0 ? ` · ${arrancando.length} sin tráfico todavía, entran a arrancar: ${arrancando.slice(0, 4).join(", ")}${arrancando.length > 4 ? ` y ${arrancando.length - 4} más` : ""}` : "";
+  const universo = sinMedicion ? configurado.length : cupos.porDominio.size;
+  const deQue = sinMedicion ? "nodos del pool configurado" : "nodos medidos";
   if (conCupo.length === 0) {
     return {
       boxes: [],
-      motivo: `ninguno de los ${cupos.porDominio.size} nodos medidos sirve para calentar${sacados || ": están todos en cap 0"}${antiguedad}`
+      motivo: `ninguno de los ${universo} ${deQue} sirve para calentar${sacados || ": están todos en cap 0"}${antiguedad}`
     };
   }
-  return { boxes: conCupo, motivo: `${conCupo.length} de ${cupos.porDominio.size} nodos aptos${sacados}${nuevos}${antiguedad}` };
+  return { boxes: conCupo, motivo: `${conCupo.length} de ${universo} ${deQue} aptos${sacados}${nuevos}${antiguedad}` };
 }
 
 // ── Lecturas de la base ──────────────────────────────────────────────────────────────────────────
@@ -413,6 +422,8 @@ export interface PlanInput {
   poolConfigurado: readonly string[];
   ventanaPlacement: number;
   ahora?: Date;
+  /** De dónde salen las palancas de la rampa. Default `process.env`; es la costura para el test. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -443,6 +454,13 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
 
   // ISO weekday del receptor: 1 = lunes … 7 = domingo. `getUTCDay()` da 0 = domingo.
   const isoWeekday = (((ahora.getUTCDay() + 6) % 7) + 1) as IsoWeekday;
+  // LAS MISMAS DOS PALANCAS QUE USA EL DAEMON. Sin esta línea, `decidirCupoDeHoy` caía a sus
+  // defaults internos (40 y 2) mientras el daemon pasaba lo que dice gateway.env: el día que
+  // alguien escriba WARMUP_RAMPA_LIMITE_DIARIO=200, salen 200 por dominio y esta función —o sea
+  // /v1/warmup/plan, el panel, y `hechos.plan`, que es lo que el agente le reporta al jefe por
+  // Slack— sigue anunciando 40 con toda seguridad. El sobre de volumen se vuelve invisible justo
+  // en el instante en que se usa.
+  const rampa = rampaDesdeEnv(input.env ?? process.env);
 
   const dominios: PlanDeDominio[] = [];
   for (const dominio of pool.boxes) {
@@ -468,7 +486,9 @@ export async function planDelDia(input: PlanInput): Promise<PlanDelDia> {
       diaN: progreso?.diasCorridos ?? 0,
       placements,
       cupoFisico,
-      isoWeekday
+      isoWeekday,
+      limiteDiario: rampa.limiteDiario,
+      pasoPorDia: rampa.pasoPorDia
     });
     dominios.push({
       dominio,

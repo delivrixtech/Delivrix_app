@@ -85,16 +85,32 @@ class FakeClock {
 }
 
 /**
- * Drena la cola de microtasks + macrotasks reales (incluido el thread pool
- * de libuv que sirve fs.promises) para que toda la cadena de awaits del
- * scheduler se complete antes de leer estado.
+ * Drena la cola de microtasks + macrotasks reales (incluido el thread pool de libuv que sirve
+ * fs.promises) para que toda la cadena de awaits del scheduler se complete antes de leer estado.
  *
- * NOTA: usamos `setTimeout(resolve, 0)` real porque `fs.promises.writeFile`
- * usa el thread pool, no la microtask queue.
+ * ANTES ERAN 30 `setTimeout(resolve, 0)` A CIEGAS, y eso volvía NO DETERMINISTA al gate entero.
+ * `RampScheduler` corre los batches con `void this.runBatch(...)` —fire-and-forget, no hay promesa
+ * que esperar— y cada batch termina escribiendo el estado con `fs.promises.writeFile`, que sale por
+ * el thread pool. Con la máquina libre, 30 ticks alcanzaban; bajo la carga de `npm test` completo,
+ * no: el batch quedaba en `pending` y el test moría con `'pending' !== 'sent'`. Medido: el archivo
+ * aislado pasa 3 de 3, y el gate completo dio EXIT=1 en 1 de 2 corridas — o sea que ningún
+ * "0 fallos" de este repo era verificable mientras esto siguiera contando ticks.
+ *
+ * Ahora se espera LA CONDICIÓN, no un número: se cede el control hasta que libuv no tenga ninguna
+ * petición de archivo en vuelo (`FSReqPromise`/`FSReqCallback` en `process.getActiveResourcesInfo()`)
+ * durante varias vueltas seguidas. Las vueltas limpias en fila son necesarias porque una escritura
+ * encadena la siguiente por microtask: con una sola vuelta se saldría en el hueco entre dos.
+ *
+ * El tope de tiempo NO es un margen de seguridad: es para que un cuelgue se vea como una aserción
+ * que falla y no como un test colgado. Un chequeo que se cuelga no dice "no sé".
  */
 async function drain(): Promise<void> {
-  for (let i = 0; i < 30; i++) {
+  const limite = Date.now() + 5_000;
+  let limpias = 0;
+  while (limpias < 5 && Date.now() < limite) {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const enVuelo = process.getActiveResourcesInfo().some((r) => r.startsWith("FSReq"));
+    limpias = enVuelo ? 0 : limpias + 1;
   }
 }
 

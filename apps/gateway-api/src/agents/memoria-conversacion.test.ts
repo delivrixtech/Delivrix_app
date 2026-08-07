@@ -43,7 +43,11 @@ test("REPLAY: el patrón que el jefe intuye existe en los datos y sale sin model
   // Si esto cambia, el patrón se está calculando distinto de como se midió — y la primera línea del
   // prompt pasaría a citar un grupo que nadie verificó.
   const grupos = agrupar(JEFE.map((m) => m.texto));
-  assert.equal(grupos.length, 18, "18 grupos sobre los 32 mensajes del jefe");
+  // Era 18 hasta que `esTema` dejó de abrir tema con los cierres de cortesía. El que se fue es uno
+  // solo y está nombrado abajo: "Ok, estare atento.". Bajar el número sin decir cuál se fue sería
+  // acomodar el test al código.
+  assert.equal(grupos.length, 17, "17 grupos sobre los 32 mensajes del jefe");
+  assert.ok(!grupos.flat().includes("Ok, estare atento."), "el único que salió al arreglar los cierres");
   assert.deepEqual(grupos[0], [
     "Como vamos ?",
     "Hola, buenos dias. Como vamos ??? cuantas bandejas ya se estan calentando ?",
@@ -82,11 +86,11 @@ test("el orden de clasificarReaccion: conforme ANTES que ping", () => {
   assert.equal(clasificarReaccion("Como vamos ?", "Y que sugieres?"), null);
 });
 
-test("detecta las respuestas casi idénticas del hilo del incidente", () => {
-  // El jefe lo describió textual: "se volvió repetitivo e imbécil". Fueron 4 respuestas casi
-  // iguales entre las 03:28 y las 03:31 del 2026-08-06. Se cuenta en el momento de anotar porque el
-  // FIFO de 40 recorta las viejas: las 73 respuestas del bot son 17 h de canal.
-  const repetidas: string[] = [];
+/** Corre las 73 respuestas del bot por `anotar` y devuelve, de las que quedaron marcadas, su ts y
+ *  su hilo. Se cuenta en el momento de anotar porque el FIFO de 40 recorta las viejas: las 73
+ *  respuestas son 17 h de canal. */
+function repetidasDelCanal(): Array<{ ts: string; hilo: string }> {
+  const out: Array<{ ts: string; hilo: string }> = [];
   let mem = memoriaVacia();
   for (const m of BOT) {
     mem = anotar(mem, {
@@ -94,10 +98,131 @@ test("detecta las respuestas casi idénticas del hilo del incidente", () => {
       cuando: iso(m.ts), tardoSeg: 1, fallo: null, inventadas: 0
     });
     const ultimo = mem.intercambios[mem.intercambios.length - 1] as Intercambio;
-    if (ultimo.ts === m.ts && ultimo.repetida) repetidas.push(m.hilo);
+    if (ultimo.ts === m.ts && ultimo.repetida) out.push({ ts: m.ts, hilo: m.hilo });
   }
-  assert.equal(repetidas.length, 4, "4 repetidas sobre las 73 respuestas del bot");
-  assert.equal(repetidas.filter((h) => h === "1785983393.674239").length, 3, "3 son del hilo del incidente");
+  return out;
+}
+
+test("detecta las respuestas casi idénticas del hilo del incidente", () => {
+  // El jefe lo describió textual: "se volvió repetitivo e imbécil". Fueron 4 respuestas casi
+  // iguales entre las 03:28 y las 03:31 del 2026-08-06, tres de ellas en el hilo ...393.
+  // El total pasó de 4 a 12 al sacar el filtro de hilo y bajar el umbral a UMBRAL_REPETIDA: las 8
+  // nuevas se listan en el test de abajo y todas son repeticiones de verdad.
+  const repetidas = repetidasDelCanal();
+  assert.equal(repetidas.length, 12, "12 repetidas sobre las 73 respuestas del bot");
+  assert.equal(repetidas.filter((r) => r.hilo === "1785983393.674239").length, 3, "3 son del hilo del incidente");
+});
+
+test("EL INCIDENTE DE LAS 09:28: ocho respuestas iguales en OCHO hilos distintos", () => {
+  // El caso que el detector NO veía, y es el que el jefe sufrió. Entre las 09:28:52 y las 09:34:35
+  // del 2026-08-06 el agente fue contestando hilos viejos de a uno con la MISMA foto ("seis
+  // calentando, ocho frenados, nueve cruzaron, el freno de bizreport-control.com no pegó"),
+  // redactada distinto cada vez. Ocho respuestas, ocho hilos, 5,7 minutos.
+  //
+  // Las dos cegueras eran acumulativas y ninguna sola alcanzaba: (1) el guard `p.hilo === e.hilo`
+  // las daba todas de hilos distintos, y (2) aun sacándolo, su solapamiento real medido va de 0,19
+  // a 0,53, o sea que el 0,6 de `esLaMisma` daba CERO igual. Verificado: 0 de 8 con el código de
+  // ayer, en los dos escenarios.
+  const rafaga = BOT.filter((m) => Number(m.ts) >= 1786042132 && Number(m.ts) <= 1786042476);
+  assert.equal(rafaga.length, 8, "la ráfaga son 8 mensajes");
+  assert.equal(new Set(rafaga.map((m) => m.hilo)).size, 8, "en 8 hilos distintos");
+  assert.ok(Number(rafaga[7]!.ts) - Number(rafaga[0]!.ts) < 600, "y dentro de la ventana de 10 min");
+
+  const marcados = new Set(repetidasDelCanal().map((r) => r.ts));
+  const cazados = rafaga.filter((m) => marcados.has(m.ts)).length;
+  assert.ok(cazados >= 4, `al menos 4 de las 8 tienen que quedar marcadas, quedaron ${cazados}`);
+
+  // El otro lado del borde: la PRIMERA de la ráfaga no puede estar marcada. Decir "esto ya lo
+  // dijiste" sobre lo primero que se dijo es un falso positivo, y un detector que se dispara solo
+  // entrena a ignorarlo — la misma lección que los reparos falsos del verificador.
+  assert.ok(!marcados.has(rafaga[0]!.ts), "la primera de la ráfaga no es repetición de nada");
+});
+
+test("un aviso enlatado repetido textual se caza, aunque sea corto", () => {
+  // El aviso "te leí pero no pude contestarte" es corto y sale siempre igual. Con pocas palabras
+  // largas el solapamiento no sirve (min(|A|,|B|) es tan chico que un 0,4 lo alcanza cualquier par),
+  // así que ahí se exige texto normalizado idéntico. Es la repetición que la memoria vino a matar:
+  // sin esto el agente puede mandarlo indefinidamente sin que nada lo cuente.
+  const aviso = "Juanes, te leí pero no pude contestarte.";
+  let m = memoriaVacia();
+  m = anotar(m, { ts: "1", hilo: "h1", quien: "U1", pregunta: "Como vamos ?", respuesta: aviso, cuando: T, tardoSeg: 5, fallo: null, inventadas: 0 });
+  m = anotar(m, { ts: "2", hilo: "h2", quien: "U1", pregunta: "Hola?", respuesta: aviso, cuando: "2026-08-06T12:02:00.000Z", tardoSeg: 5, fallo: null, inventadas: 0 });
+  assert.equal(m.intercambios[0]?.repetida, false, "el primero no repite nada");
+  assert.equal(m.intercambios[1]?.repetida, true, "el segundo sí, aunque sea otro hilo");
+
+  // Y dos avisos cortos DISTINTOS no se confunden entre sí: sin el guard de texto exacto,
+  // "no pude contestarte" y "no pude leer el estado" comparten vocabulario suficiente para que el
+  // divisor chico los junte.
+  let n = memoriaVacia();
+  n = anotar(n, { ts: "1", hilo: "h1", quien: "U1", pregunta: "?", respuesta: "Juanes, no pude leer el estado.", cuando: T, tardoSeg: 5, fallo: null, inventadas: 0 });
+  n = anotar(n, { ts: "2", hilo: "h2", quien: "U1", pregunta: "?", respuesta: aviso, cuando: "2026-08-06T12:02:00.000Z", tardoSeg: 5, fallo: null, inventadas: 0 });
+  assert.equal(n.intercambios[1]?.repetida, false, "otro aviso no es el mismo aviso");
+});
+
+test("un cierre de cortesía NO abre tema", () => {
+  // Los cuatro son textuales del canal. `esTema` solo exigía 2 palabras largas, así que "Ok, si
+  // cambia algo o si tienes dudas, avisame." abría tema — y el MISMO texto `clasificarReaccion` lo
+  // devuelve como "conforme": el módulo se contradecía. En el archivo real de producción 2 de los 4
+  // temas guardados son cierres, y con MIN_VECES=3 eran los primeros en llegar al prompt.
+  const cierres = [
+    "Ok, si cambia algo o si tienes dudas, avisame.",
+    "Listo, gracias por avisarme entonces",
+    "dale perfecto quedo atento a eso",
+    "Ok, bien!"
+  ];
+  for (const c of cierres) {
+    assert.ok(!esTema(c), `"${c}" es un cierre, no un tema`);
+    assert.equal(clasificarReaccion("", c), "conforme", `y clasificarReaccion ya lo sabía: "${c}"`);
+  }
+  // Una pregunta de verdad sigue abriendo tema: el arreglo no puede comerse el caso útil.
+  assert.ok(esTema("Como vamos con el placement de las bandejas"));
+
+  // Y ACÁ ESTUVO EL PRECIO DEL PRIMER ARREGLO, que era peor que el problema: delegar en
+  // `clasificarReaccion` metía su regex `^(ok|dale|listo|gracias|…)\b`, un ancla al ARRANQUE que no
+  // mira lo que sigue. Y el prompt de VOZ le enseña al agente que Juanes habla exactamente así
+  // ("podés usar listo, dale, de una, hágale"). Resultado medido: 6 de estos 7 pedidos daban
+  // `false`, o sea que la memoria de temas —lo que el informe de 14 días usa para decidir si este
+  // paquete se queda— quedaba ciega a casi todo lo que el jefe pide. Se cambió "el agente aprende
+  // el tema avisame" por "el agente no aprende nada".
+  const pedidos = [
+    "Dale, subí el cupo de corpfiling-infra.com a 40 y avisame cómo viene el placement",
+    "Listo, ahora revisá los 7 dominios vírgenes y decime cuál conviene soltar primero",
+    "Ok pero por qué bizreport-control.com sigue frenado si las listas negras están limpias",
+    "Gracias, igual quiero que revises el placement de annualfilings-ops.com esta semana",
+    "Bien, pero la cola de statefilings-control.com sigue atascada, mirala",
+    "Perfecto, ahora mostrame el diagnóstico de los nodos que rechaza Yahoo",
+    // Sin prefijo cortés, el vocabulario de cierre NO descuenta: "cambia" acá sí abre tema.
+    "Cambia el cupo de corpfiling-infra.com a 40"
+  ];
+  for (const p of pedidos) assert.ok(esTema(p), `"${p}" es un PEDIDO del jefe, no un cierre`);
+
+  // Y en anotar: tres cierres seguidos no dejan ni un tema.
+  let m = memoriaVacia();
+  cierres.slice(0, 3).forEach((c, i) => {
+    m = anotar(m, { ts: `c${i}`, hilo: `h${i}`, quien: "U1", pregunta: c, respuesta: `dale ${i}`, cuando: new Date(Date.parse(T) + i * 3_600_000).toISOString(), tardoSeg: 5, fallo: null, inventadas: 0 });
+  });
+  assert.equal(m.temas.length, 0, "un cierre de cortesía no es una costumbre que valga la pena contarle");
+});
+
+test("la reacción se le atribuye a quien la escribió, no al último que preguntó", () => {
+  // El campo `quien` existe en Intercambio justamente para esto y no se estaba usando. Hoy el canal
+  // tiene una persona y eso es una coincidencia, no un control: el día que entre Esaú, un "no,
+  // pero..." suyo queda anotado como que Juanes corrigió la respuesta que le dieron a Juanes.
+  // Barato ahora, imposible de reconstruir después.
+  let m = memoriaVacia();
+  m = anotar(m, { ts: "1", hilo: "h", quien: "JUANES", pregunta: "Como vamos con las bandejas", respuesta: "seis calentando", cuando: T, tardoSeg: 5, fallo: null, inventadas: 0 });
+  m = anotarReaccion(m, { texto: "No, pero eso no es lo que te pregunté", cuando: "2026-08-06T12:05:00.000Z", quien: "ESAU" });
+  assert.equal(m.intercambios[0]?.reaccion, null, "Esaú no corrige la respuesta que era para Juanes");
+
+  m = anotarReaccion(m, { texto: "No, pero eso no es lo que te pregunté", cuando: "2026-08-06T12:06:00.000Z", quien: "JUANES" });
+  assert.equal(m.intercambios[0]?.reaccion, "corrige");
+
+  // Sin `quien` se comporta EXACTAMENTE como hoy: es lo que permite que el orquestador lo cablee
+  // después sin que este cambio le rompa nada mientras tanto.
+  let n = memoriaVacia();
+  n = anotar(n, { ts: "1", hilo: "h", quien: "JUANES", pregunta: "Como vamos con las bandejas", respuesta: "seis calentando", cuando: T, tardoSeg: 5, fallo: null, inventadas: 0 });
+  n = anotarReaccion(n, { texto: "Ok!", cuando: "2026-08-06T12:05:00.000Z" });
+  assert.equal(n.intercambios[0]?.reaccion, "conforme");
 });
 
 test("un turno fallido no se marca como repetido ni abre tema", () => {
@@ -189,7 +314,7 @@ test("TECHO: nunca más de 6 líneas y ninguna da una orden", () => {
   const l = lineasParaPrompt(m, "hilo-actual", T);
   assert.ok(l.length > 0, "con datos sí emite");
   assert.ok(l.length <= 6, `nunca más de 6 líneas (fueron ${l.length})`);
-  assert.match(l[0] as string, /LO QUE YA DIJISTE EN ESTE HILO \(hace 3 min\)/);
+  assert.match(l[0] as string, /LO ÚLTIMO QUE DIJISTE \(hace 3 min, en este hilo\)/);
   assert.match(l.join("\n"), /LO QUE TE PREGUNTA SEGUIDO/);
   for (const x of l) {
     assert.doesNotMatch(x, /\b(deberías|tenés que|hay que|conviene|revisá|respondé|hacé|mejorá|contestá)\b/, `orden en: ${x}`);

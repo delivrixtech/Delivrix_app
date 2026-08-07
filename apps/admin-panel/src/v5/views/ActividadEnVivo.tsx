@@ -16,6 +16,17 @@ import { Ban, Gauge, ShieldAlert, TriangleAlert } from "lucide-react";
 
 import { Caption, Card, DataTable, Eyebrow, KpiCard, Pill, Row, SectionHead } from "../../shared/ui/aivora";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
+import { ProcedenciaBadge } from "../../shared/ui/ProcedenciaBadge";
+import { agruparBloqueos } from "../../shared/lib/bloqueos-receptor";
+import {
+  TECHO_ABSOLUTO,
+  estadoDeCupo,
+  medicionEsDeHoy,
+  ordenarPorRiesgo,
+  resumenCupo,
+  usoDelCupo,
+  type NodoCupo
+} from "../../shared/lib/flota-cupo";
 
 type AlertSeverity = "critical" | "high" | "warning";
 
@@ -34,13 +45,9 @@ interface AlertsFlota {
   parcial: boolean;
 }
 
-interface CapNodo {
-  domain: string;
+/** Misma forma que `NodoCupo` del módulo compartido, más el slug que solo usa esta vista. */
+interface CapNodo extends NodoCupo {
   serverSlug: string;
-  cap: number | null;
-  consumidoHoy: number | null;
-  cableado: boolean;
-  motivo: string | null;
 }
 
 interface CapFlota {
@@ -55,6 +62,12 @@ interface CapFlota {
 interface ActivityEvent {
   at: string;
   queueId: string | null;
+  /**
+   * A quién iba. Se pinta SOLO el dominio del destinatario, nunca la parte local: por estos nodos
+   * pasa el correo de clientes de otro producto y publicar sus direcciones en nuestro panel es
+   * peor que no mostrarlas. Pero el dominio hay que mostrarlo: sin él, el operador no puede notar
+   * que los 50 eventos del feed van a terceros y ninguno a nuestras semillas.
+   */
   recipient: string;
   provider: string;
   status: "sent" | "bounced" | "deferred";
@@ -132,17 +145,20 @@ export default function ActividadEnVivo() {
   const { data: alerts, error: errAlerts } = useLectura<AlertsFlota>(READ_ENDPOINTS.senderPoolAlerts, 30_000);
   const { data: cap, error: errCap } = useLectura<CapFlota>(READ_ENDPOINTS.senderPoolCap, 60_000);
 
-  const nodos = Array.isArray(cap?.nodos) ? cap.nodos : [];
-  // `cap === 0` es uso INFINITO (difiere todo), no "desconocido": si cayera en el -1 de los
-  // ilegibles se hundiría al fondo mientras las alertas lo dan en el tope.
-  const usoDe = (n: CapNodo): number => {
-    if (n.cap === null || n.consumidoHoy === null) return -1;
-    return n.cap === 0 ? Number.POSITIVE_INFINITY : n.consumidoHoy / n.cap;
-  };
-  const totalHoy = nodos.reduce((s, n) => s + (n.consumidoHoy ?? 0), 0);
-  const enElTope = nodos.filter((n) => usoDe(n) >= 1).length;
-  const sinLimite = nodos.filter((n) => !n.cableado).length;
-  const sinContador = nodos.filter((n) => n.cableado && n.consumidoHoy === null).length;
+  const nodos: CapNodo[] = Array.isArray(cap?.nodos) ? cap.nodos : [];
+  // Las cuatro cuentas viven en shared/lib/flota-cupo.ts con su test: cap 0 se evalúa antes que el
+  // contador, un cap ilegal se mide contra el techo del sistema, los nulls no suman cero, y "sin
+  // límite" incluye a los que nadie alcanzó.
+  const resumen = resumenCupo(nodos, {
+    omitidos: cap?.omitidos ?? 0,
+    ilegibles: cap?.ilegibles ?? 0
+  });
+  // Una lectura de OTRO día no está vieja: está MAL (el contador se reinicia a medianoche UTC).
+  // El KPI decía "hoy" igual. Pasa de verdad cuando la Mac se duerme y la medición vence.
+  const capEsDeHoy = medicionEsDeHoy(cap?.medidoEn, new Date());
+  const etiquetaConsumo = capEsDeHoy
+    ? "Inyectado hoy en los nodos"
+    : `Inyectado el ${cap?.medidoEn ? new Date(cap.medidoEn).toLocaleDateString("es") : "—"}`;
 
   return (
     <div style={{ display: "grid", gap: 20 }}>
@@ -157,21 +173,52 @@ export default function ActividadEnVivo() {
         }
       />
 
+      {/* De quién es el correo que produjo TODO lo de esta pantalla. El clasificador de salud y el
+          contador del policy service leen el mismo mail.log sin filtrar quién inyectó. */}
+      <ProcedenciaBadge />
+
       {/* Los titulares. Números que se leen de un vistazo, no enterrados en una lista. */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 }}>
+        {/* El rótulo decía "Aceptados hoy por la flota" sobre 95.952 mensajes. Dos mentiras en una
+            frase: (1) "aceptados" se lee como "el receptor los aceptó" y es "el nodo los admitió
+            para inyectar" —el 100% de la muestra del feed de ese mismo nodo estaba en deferred—;
+            (2) "de la flota" sugiere que es nuestro, y es el contador del policy service de
+            Postfix en 587/465 con SASL: el warmup inyecta con `sendmail -t`, que por diseño ese
+            contador NO ve. Con WARMUP_LIVE_MAX_PER_DAY=14 vueltas por día para TODA la flota,
+            95.952 es aritméticamente imposible que sea nuestro. */}
         <KpiCard
-          label="Aceptados hoy por la flota"
-          value={cap ? totalHoy.toLocaleString("es") : "—"}
+          label={etiquetaConsumo}
+          value={cap ? resumen.consumido.toLocaleString("es") : "—"}
+          suffix={cap ? ` en ${resumen.medidos} de ${resumen.totalNodos} nodos` : undefined}
           icon={Gauge}
         />
-        <KpiCard label="Nodos en el tope" value={cap ? enElTope : "—"} icon={Ban} />
+        <KpiCard
+          label="Nodos en el tope"
+          value={cap ? resumen.enElTope : "—"}
+          suffix={cap && resumen.frenados > 0 ? ` · ${resumen.frenados} frenados` : undefined}
+          icon={Ban}
+        />
         <KpiCard label="Alertas críticas" value={alerts ? alerts.conteos.critical : "—"} icon={ShieldAlert} />
-        <KpiCard label="Nodos sin límite" value={cap ? sinLimite : "—"} icon={TriangleAlert} />
+        <KpiCard
+          label="Nodos sin límite"
+          value={cap ? resumen.sinLimite : "—"}
+          suffix={cap && (cap.omitidos ?? 0) > 0 ? ` · ${cap.omitidos} fuera de alcance` : undefined}
+          icon={TriangleAlert}
+        />
       </div>
+      <Caption>
+        {cap
+          ? `El primer número es TODO el correo que entró por el camino autenticado del nodo, incluido el del otro inquilino — no es volumen del warmup.${
+              resumen.sinContador > 0
+                ? ` ${resumen.sinContador} nodos no tienen contador del día y NO suman al total.`
+                : ""
+            }`
+          : "Leyendo el cupo de la flota…"}
+      </Caption>
 
       <Semillas />
       <BloqueosPorReceptor alerts={alerts?.alerts ?? []} />
-      <LimiteFisico data={cap} error={errCap} nodos={nodos} usoDe={usoDe} sinContador={sinContador} />
+      <LimiteFisico data={cap} error={errCap} nodos={nodos} sinContador={resumen.sinContador} />
       <AlertasFlota data={alerts} error={errAlerts} />
       <FeedPorNodo alerts={alerts?.alerts ?? []} />
     </div>
@@ -246,8 +293,11 @@ function Semillas() {
         rows={data.seeds.map((s) => [
           <span style={{ color: "var(--color-text-primary)", fontWeight: 500 }}>{s.address}</span>,
           s.provider,
+          // El papel sale de `mide`, no de `auth`: una semilla APAGADA con auth gmail_oauth
+          // mostraba igual "mide (OAuth)" y lo único que la diferenciaba era el color gris. El
+          // color no puede ser el único portador de un hecho.
           <span style={{ color: s.mide ? "var(--color-success)" : "var(--color-text-tertiary)" }}>
-            {PAPEL_SEMILLA[s.auth] ?? s.auth}
+            {s.mide ? (PAPEL_SEMILLA[s.auth] ?? s.auth) : s.enabled ? "solo destino" : "no mide (apagada)"}
           </span>,
           !s.enabled ? (
             <Pill tone="neutral">apagada</Pill>
@@ -277,44 +327,16 @@ function Semillas() {
 /**
  * Los receptores que nos cierran la puerta, agrupados por familia.
  *
- * Existe porque "22 nodos bloqueados" sugiere una causa y una solución, y son TRES problemas con
- * arreglos distintos: Yahoo bloquea la IP y tiene formulario de delisting (es el grupo más grande
- * y el más recuperable), Gmail castiga la reputación del dominio y no hay trámite —solo tiempo y
- * warmup—, y Apple rechaza por local policy. Verlos juntos hacía perder tiempo buscando un arreglo
- * técnico para lo que solo cura el tiempo.
+ * El agrupamiento (y su test) vive en shared/lib/bloqueos-receptor.ts: la lista tenía 3 familias y
+ * lo que no caía en ninguna DESAPARECÍA en silencio — de 35 bandejas cerradas los grupos sumaban
+ * 34 bajo un encabezado que decía 35, y la que faltaba era la de Microsoft, que la tarjeta de
+ * semillas de esta misma pantalla declara punto ciego.
  */
-const FAMILIA_RECEPTOR: Array<{ nombre: string; dominios: string[]; accion: string; recuperable: boolean }> = [
-  {
-    nombre: "Yahoo (yahoo · aol · bellsouth · att)",
-    dominios: ["yahoo.com", "aol.com", "bellsouth.net", "att.net"],
-    accion: "Bloqueo por IP. Reintentar NO sirve — hay formulario de delisting en el postmaster de Yahoo.",
-    recuperable: true
-  },
-  {
-    nombre: "Google (gmail)",
-    dominios: ["gmail.com"],
-    accion: "Reputación del DOMINIO, no de la IP ni de la autenticación. No hay trámite: baja el volumen y calentá.",
-    recuperable: false
-  },
-  {
-    nombre: "Apple (icloud · me)",
-    dominios: ["icloud.com", "me.com"],
-    accion: "Rechazo por local policy. La vía es el soporte de Apple (HT204137).",
-    recuperable: false
-  }
-];
-
 function BloqueosPorReceptor({ alerts }: { alerts: SenderAlert[] }) {
   const bloqueadas = alerts.filter((a) => a.kind === "bloqueada");
   if (bloqueadas.length === 0) return null;
 
-  const grupos = FAMILIA_RECEPTOR.map((f) => ({
-    ...f,
-    // El detalle de la alerta trae "cerrada en yahoo.com, aol.com": se cuentan los dominios cuyo
-    // texto menciona algún receptor de la familia.
-    afectados: bloqueadas.filter((a) => f.dominios.some((d) => a.detail.includes(d))).map((a) => a.domain)
-  })).filter((g) => g.afectados.length > 0);
-
+  const grupos = agruparBloqueos(bloqueadas);
   if (grupos.length === 0) return null;
 
   return (
@@ -323,6 +345,10 @@ function BloqueosPorReceptor({ alerts }: { alerts: SenderAlert[] }) {
       <Caption style={{ marginTop: 4 }}>
         {bloqueadas.length} bandejas cerradas, agrupadas por quién cierra: cada familia se arregla distinto.
       </Caption>
+      {/* El veredicto "cerrada" sale de un grep sobre mail.log sin filtrar quién inyectó. */}
+      <div style={{ marginTop: 6 }}>
+        <ProcedenciaBadge />
+      </div>
 
       <div style={{ marginTop: 12 }}>
         {grupos.map((g) => (
@@ -364,13 +390,11 @@ function LimiteFisico({
   data,
   error,
   nodos,
-  usoDe,
   sinContador
 }: {
   data: CapFlota | null;
   error: string | null;
   nodos: CapNodo[];
-  usoDe: (n: CapNodo) => number;
   sinContador: number;
 }) {
   const [verTodos, setVerTodos] = useState(false);
@@ -390,38 +414,49 @@ function LimiteFisico({
     );
   }
 
-  const ordenados = [...nodos].sort((a, b) => {
-    if (a.cableado !== b.cableado) return a.cableado ? 1 : -1;
-    return usoDe(b) - usoDe(a);
-  });
+  // Orden por RIESGO, no por porcentaje: lo ilegal y lo frenado arriba, lo no medible abajo.
+  const ordenados = ordenarPorRiesgo(nodos) as CapNodo[];
   const visibles = verTodos ? ordenados : ordenados.slice(0, 10);
 
   const filas = visibles.map((n) => {
-    const uso = usoDe(n);
+    const estado = estadoDeCupo(n);
+    const uso = usoDelCupo(n);
+    // Un cap por encima del techo del sistema es CRÍTICO aunque el porcentaje dé bajo: con la
+    // barra midiendo contra el propio cap ilegal, 11.065/15000 daba 0,74 y el nodo se pintaba
+    // verde mientras la tarjeta de alertas de esta misma pantalla lo marcaba cap_ilegal/critical.
     const color =
-      !n.cableado || uso >= 1
+      estado === "ilegal" || estado === "frenado" || estado === "sin_limite" || (uso !== null && uso >= 1)
         ? "var(--color-critical)"
-        : uso >= 0.8
+        : uso !== null && uso >= 0.8
           ? "var(--color-warning)"
-          : "var(--color-success)";
+          : uso === null
+            ? "var(--color-text-tertiary)"
+            : "var(--color-success)";
+    const barra = (
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ flex: 1, minWidth: 90, maxWidth: 180, height: 6, borderRadius: 3, background: "var(--color-border)", overflow: "hidden" }}>
+          <div style={{ width: `${Math.min(100, Math.max(0, (uso ?? 0) * 100))}%`, height: "100%", background: color }} />
+        </div>
+      </div>
+    );
     return [
       <span style={{ color: "var(--color-text-primary)", fontWeight: 500 }}>{n.domain}</span>,
-      n.cableado ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ flex: 1, minWidth: 90, maxWidth: 180, height: 6, borderRadius: 3, background: "var(--color-border)", overflow: "hidden" }}>
-            <div style={{ width: `${Math.min(100, Math.max(0, uso * 100))}%`, height: "100%", background: color }} />
-          </div>
-        </div>
-      ) : (
+      estado === "sin_limite" ? (
         <Pill tone="critical">sin límite</Pill>
+      ) : estado === "frenado" ? (
+        <Pill tone="critical">frenado: difiere todo</Pill>
+      ) : estado === "ilegal" ? (
+        <Pill tone="critical">cap {n.cap} sobre el techo {TECHO_ABSOLUTO}</Pill>
+      ) : (
+        barra
       ),
       // Null con motivo, nunca 0: "sin contador" NO es "no envió nada".
-      n.cableado ? (
+      estado === "sin_limite" ? (
+        <span style={{ color: "var(--color-critical)" }}>{n.motivo}</span>
+      ) : (
         <span style={{ color, fontWeight: 500 }}>
           {n.consumidoHoy === null ? "sin contador" : `${n.consumidoHoy.toLocaleString("es")} / ${n.cap ?? "?"}`}
         </span>
-      ) : (
-        <span style={{ color: "var(--color-critical)" }}>{n.motivo}</span>
       )
     ];
   });
@@ -500,6 +535,9 @@ function AlertasFlota({ data, error }: { data: AlertsFlota | null; error: string
         <div>
           <Eyebrow>Alertas de flota</Eyebrow>
           <Caption style={{ marginTop: 4 }}>Lo que necesita acción, agrupado por tipo. Tocá un grupo para ver los dominios.</Caption>
+          <div style={{ marginTop: 6 }}>
+            <ProcedenciaBadge />
+          </div>
         </div>
         <Caption>
           <strong style={{ color: "var(--color-critical)" }}>{data.conteos.critical}</strong> críticas ·{" "}
@@ -555,8 +593,15 @@ function AlertasFlota({ data, error }: { data: AlertsFlota | null; error: string
 
 // ── Feed por nodo (SSH, bajo demanda) ────────────────────────────────────────────────────────────
 
+/** El dominio del destinatario, sin la parte local. `""` si no hay arroba. */
+function dominioDe(recipient: string): string {
+  const i = recipient.lastIndexOf("@");
+  return i >= 0 ? `@${recipient.slice(i + 1)}` : "—";
+}
+
 function FeedPorNodo({ alerts }: { alerts: SenderAlert[] }) {
   const [nodosInv, setNodosInv] = useState<Map<string, { slug: string; ip: string }>>(new Map());
+  const [errorInv, setErrorInv] = useState<string | null>(null);
   const [slug, setSlug] = useState("");
   const [ip, setIp] = useState("");
   const [feed, setFeed] = useState<ActivityFeed | null>(null);
@@ -575,8 +620,13 @@ function FeedPorNodo({ alerts }: { alerts: SenderAlert[] }) {
         const m = new Map<string, { slug: string; ip: string }>();
         for (const b of d.bandejas) if (b.serverSlug && b.serverIp) m.set(b.domain, { slug: b.serverSlug, ip: b.serverIp });
         setNodosInv(m);
+        setErrorInv(null);
       })
-      .catch(() => {});
+      // El catch estaba VACÍO en un archivo cuyo encabezado promete "un fallo de carga NO deja la
+      // pantalla en cero, deja 'no pude leer'". Sin inventario, cada chip caía al fallback
+      // slug=dominio/ip="" y el clic no llamaba a nada: el chip se iluminaba como seleccionado,
+      // no aparecía error, y la leyenda seguía diciendo "tocá un chip".
+      .catch((e: unknown) => setErrorInv(e instanceof Error ? e.message : "no se pudo leer el inventario"));
   }, []);
 
   const cargarFeed = useMemo(
@@ -620,11 +670,28 @@ function FeedPorNodo({ alerts }: { alerts: SenderAlert[] }) {
       <Caption style={{ marginTop: 4 }}>
         Lectura viva del mail.log por SSH (más cara que lo de arriba: un nodo a la vez, refresca cada 15s).
       </Caption>
+      {/* El comando hace grep de status=(sent|bounced|deferred) SIN filtro de emisor y el evento
+          normalizado no trae origen, así que este feed no puede distinguir nuestro correo del del
+          otro inquilino — y hasta que exista la separación por queue-id ↔ sasl_username, la
+          pantalla tiene que decirlo. Comprobado en vivo sobre corpannualinfra.com: 50/50 eventos
+          deferred hacia dominios de terceros en 23 segundos, ninguno a nuestras semillas. */}
+      <div style={{ marginTop: 8 }}>
+        <Pill tone="warning">
+          este feed es TODO el correo del nodo, no solo el del warmup
+        </Pill>
+      </div>
+
+      {errorInv ? (
+        <Caption style={{ marginTop: 10, color: "var(--color-critical)" }}>
+          No pude leer el inventario ({errorInv}): los chips no resuelven a nodo. Pegá slug + IP a mano.
+        </Caption>
+      ) : null}
 
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 12 }}>
         {conAlerta.map((a) => {
           const nodo = nodosInv.get(a.domain);
-          const activo = slug !== "" && slug === (nodo?.slug ?? a.domain);
+          // Sin IP el clic no dispara nada: el chip no puede marcarse activo como si lo hubiera.
+          const activo = slug !== "" && ip !== "" && slug === (nodo?.slug ?? a.domain);
           return (
             <button
               key={a.domain}
@@ -682,14 +749,18 @@ function FeedPorNodo({ alerts }: { alerts: SenderAlert[] }) {
               <Caption>El mail.log actual no registra entregas ahora mismo.</Caption>
             ) : (
               <DataTable
-                headers={["Momento", "Estado", "Proveedor", "Código", "DSN"]}
-                align={["left", "left", "left", "right", "right"]}
+                headers={["Momento", "Estado", "Destino", "Proveedor", "Código", "DSN"]}
+                align={["left", "left", "left", "left", "right", "right"]}
                 rows={feed.events
                   .slice()
                   .reverse()
                   .map((e) => [
                     <span style={{ color: "var(--color-text-tertiary)" }}>{e.at}</span>,
                     <span style={{ color: STATUS_COLOR[e.status], fontWeight: 500 }}>{e.status}</span>,
+                    // Solo el dominio del destinatario: sin esta columna el operador no podía
+                    // notar que los 50 eventos iban a terceros. Con la parte local sería publicar
+                    // direcciones de clientes de otro producto en nuestro panel.
+                    <span style={{ color: "var(--color-text-secondary)" }}>{dominioDe(e.recipient)}</span>,
                     e.provider,
                     e.code ?? "—",
                     e.dsn ?? ""

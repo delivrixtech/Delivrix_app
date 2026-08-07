@@ -7,16 +7,23 @@
  * eyebrow+h1 light, AdvisorCard para OpenClaw. Colores 100% desde tokens
  * (var(--color-*)); cero hex hardcodeado.
  *
- * Disciplina de DATOS:
- *   - Cap mensual $50 USD (config real hardcoded); el consumo del mes es REAL,
- *     derivado del audit chain vía `computeWalletTransactions` (mismo cálculo
- *     que el Wallet de Sender Pool). Cero gasto inventado.
- *   - Compra real bloqueada (`PURCHASE_ENABLED=false`, config real) · la UI lo
- *     muestra semánticamente en el strip de guardrails y en cada CTA.
- *   - WHOIS privacy config real hardcoded true.
- *   - Precio real de Route53 por TLD; sin comparativas fabricadas.
- *   - Sin scoring fabricado: el heurístico anterior (scoreFor) se eliminó por no
- *     reflejar dato real. Los KPIs y gráficas sólo muestran series/valores reales.
+ * Disciplina de DATOS (reescrita el 2026-08-06: los "guardrails de config real" NO eran reales):
+ *   - El cap mensual NO se muestra: era un literal de $50 en este archivo mientras el backend
+ *     enforcea 700 (Route53) y 100 (Namecheap), y era el denominador del "Cap restante", del KPI
+ *     "Cap consumido" y del semáforo Saludable/Vigilar/Excedido. Un gasto legítimo de $60 pintaba
+ *     "Cap restante: $-10 · Excedido" con el guardrail real intacto. Ningún endpoint de lectura
+ *     publica esos caps, así que la pantalla dice que no están publicados.
+ *   - El estado de la compra real sale de GET /health → runtimeFlags, uno por registrador. Estaba
+ *     hardcodeado en `false` ("Bloqueada") mientras producción tenía los DOS flags en true: un
+ *     guardrail de gasto irreversible mostrado al revés.
+ *   - El gasto del mes NO se afirma: se calculaba sobre las últimas 50 FILAS de la cadena.
+ *   - Precio real de Route53 por TLD, consultando los TLD que efectivamente aparecen en las
+ *     propuestas (antes la lista era fija en com/net/io/co y la card decía "sin precio publicado"
+ *     de un .org que Route53 SÍ cotiza — una afirmación sobre el proveedor derivada de una
+ *     consulta que nunca hicimos).
+ *   - Un fallo de AWS se muestra como fallo: el gateway atrapa el error y responde 200 con lista
+ *     vacía marcando `source.responseOk=false`, así que sin leer ese campo una caída de AWS se
+ *     leía como "probá un seed más específico".
  *   - Una sola `HumanNote` (en el AdvisorCard OpenClaw).
  *
  * Endpoints (read-only · features 5104fd9 + ff622f9):
@@ -33,7 +40,6 @@ import { motion, useReducedMotion } from "framer-motion";
 import {
   ArrowRight,
   CheckCircle2,
-  ExternalLink,
   Globe,
   Lock,
   Rocket,
@@ -41,7 +47,6 @@ import {
   Search,
   ShieldCheck,
   Sparkles,
-  TrendingUp,
   TriangleAlert
 } from "lucide-react";
 import { getJson, getJsonWithQuery, type AuditEventsPayload } from "../../shared/api/client";
@@ -117,11 +122,17 @@ function HumanNote({ children, style }: { children: ReactNode; style?: CSSProper
  * Constants — guardrails de config REAL para la Fase 1.
  * ============================================================ */
 
-const MONTHLY_CAP_USD = 50;
-const PURCHASE_ENABLED = false;
-const WHOIS_PRIVACY_ENABLED = true;
-const RUNBOOK_PATH = "DOCUMENTACION/runbooks-demo-viernes/flip-purchase-flag.sh";
+/**
+ * TLDs que se consultan cuando todavía no hay propuestas.
+ *
+ * Antes era LA lista, fija, y las sugerencias de Route53 devuelven .org/.info/.me/.biz (6 de 10
+ * para el seed "delivrix"): el precio salía undefined y la card afirmaba "sin precio publicado"
+ * sobre TLDs que Route53 sí cotiza (org 16, info 30, me 31, biz 26 USD). Ahora es solo el
+ * arranque: `tldsAConsultar` agrega los que de verdad aparecen.
+ */
 const DEFAULT_TLDS = ["com", "net", "io", "co"];
+/** Filas de la cadena que se leen. Ver `useMovimientosEnVentana`: es una ventana, no un mes. */
+const AUDIT_WINDOW_ROWS = 50;
 const POLL_PRICES_MS = 5 * 60_000;
 const POLL_OWNED_MS = 60_000;
 const POLL_WALLET_MS = 30_000;
@@ -149,20 +160,39 @@ interface DomainPrice {
   currency: string | null;
 }
 
+/**
+ * La procedencia que las CUATRO rutas de dominios devuelven y que la vista no declaraba.
+ *
+ * El gateway atrapa los errores de AWS y responde 200 con lista vacía marcando
+ * `responseOk: false` (domains.ts:82-93 y :128-137). Sin leer esto, `isError` nunca se prendía y
+ * lo que veía el operador ante una caída de AWS era "OpenClaw no encontró sugerencias para X.
+ * Probá un seed más específico": la pantalla le echaba la culpa a su búsqueda.
+ */
+interface DiscoverySource {
+  provider: string;
+  kind: "live" | "mock";
+  region: string;
+  responseOk: boolean;
+  errorReason?: string;
+}
+
 interface AvailabilityResponse {
   domain: string;
   availability: DomainAvailabilityStatus;
   available: boolean;
   checkedAt: string;
+  source?: DiscoverySource;
 }
 
 interface SuggestionsResponse {
   seed: string;
   suggestions: DomainSuggestion[];
+  source?: DiscoverySource;
 }
 
 interface PricesResponse {
   prices: DomainPrice[];
+  source?: DiscoverySource;
 }
 
 /* ============================================================
@@ -178,12 +208,13 @@ function useDebounced<T>(value: T, ms: number): T {
   return debounced;
 }
 
-function usePrices() {
+function usePrices(tlds: string[]) {
+  const lista = tlds.join(",");
   return useQuery({
-    queryKey: ["v5", "domains", "prices", DEFAULT_TLDS.join(",")],
+    queryKey: ["v5", "domains", "prices", lista],
     queryFn: () =>
       getJsonWithQuery<PricesResponse>(READ_ENDPOINTS.domainPrices, {
-        tlds: DEFAULT_TLDS.join(",")
+        tlds: lista
       }),
     refetchInterval: POLL_PRICES_MS,
     staleTime: POLL_PRICES_MS / 2,
@@ -194,7 +225,7 @@ function usePrices() {
 function useOwnedCount() {
   return useQuery({
     queryKey: ["v5", "domains", "owned"],
-    queryFn: () => getJson<{ domains: unknown[] }>(READ_ENDPOINTS.ownedDomains),
+    queryFn: () => getJson<{ domains: unknown[]; source?: DiscoverySource }>(READ_ENDPOINTS.ownedDomains),
     refetchInterval: POLL_OWNED_MS,
     staleTime: POLL_OWNED_MS / 2,
     retry: false
@@ -202,27 +233,65 @@ function useOwnedCount() {
 }
 
 /**
- * Consumo REAL del cap mensual: suma `costUsd` de los eventos de registro de
- * dominio del mes en curso (mismo cálculo que el Wallet de Sender Pool). Si no
- * hay eventos de compra, el gasto es 0 real (Fase 1 no ejecuta compras).
+ * Si la compra real está habilitada, según el GATEWAY.
+ *
+ * `const PURCHASE_ENABLED = false` pintaba "Compra real: Bloqueada" con badge BLOCKED mientras la
+ * Studio tenía AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE=true y NAMECHEAP_ENABLE_PURCHASE=true, y
+ * /health ya los publicaba. Es el guardrail de un gasto irreversible mostrado al revés, y el dato
+ * verdadero estaba a una propiedad de distancia.
+ *
+ * Un flag que no venga NO es "bloqueada": es "no publicado por el gateway".
  */
-function useMonthlySpent() {
+function useComprasHabilitadas() {
+  const query = useQuery({
+    queryKey: ["v5", "domains", "health-flags"],
+    queryFn: () => getJson<{ runtimeFlags?: Record<string, string | undefined> }>(READ_ENDPOINTS.health),
+    refetchInterval: POLL_OWNED_MS,
+    staleTime: POLL_OWNED_MS / 2,
+    retry: false
+  });
+  const flag = (nombre: string): boolean | null => {
+    if (!query.data) return null;
+    const raw = query.data.runtimeFlags?.[nombre];
+    if (raw === undefined) return null;
+    return raw === "true";
+  };
+  return {
+    route53: flag("AWS_ROUTE53_DOMAINS_ENABLE_PURCHASE"),
+    namecheap: flag("NAMECHEAP_ENABLE_PURCHASE")
+  };
+}
+
+/**
+ * Movimientos de compra que aparecen en la ventana leída de la cadena de auditoría.
+ *
+ * NO es el gasto del mes y ya no se presenta como tal: el panel pide las últimas
+ * AUDIT_WINDOW_ROWS FILAS y recién después filtra por mes. Medido: un alta de dominio escribe ~5
+ * eventos, así que una sesión de ~10 altas empuja sus propias primeras compras fuera de la ventana
+ * mientras la plata ya se gastó — y el KPI lo mostraba como gasto CONFIRMADO.
+ */
+function useMovimientosEnVentana() {
   const query = useQuery({
     queryKey: ["v5", "domains", "wallet"],
     queryFn: () =>
-      getJsonWithQuery<AuditEventsPayload>(READ_ENDPOINTS.auditEvents, { limit: 50 }),
+      getJsonWithQuery<AuditEventsPayload>(READ_ENDPOINTS.auditEvents, { limit: AUDIT_WINDOW_ROWS }),
     refetchInterval: POLL_WALLET_MS,
     staleTime: POLL_WALLET_MS / 2,
     retry: 1
   });
-  const spent = computeWalletTransactions(query.data?.events ?? []).reduce(
-    (sum, t) => sum + t.amount,
-    0
-  );
-  // `isLoading` = primera carga sin dato; `isError` = tras `retry:1` la query cayó.
-  // En ambos casos el `spent=0` NO está confirmado y el consumidor debe tratarlo
-  // como "sin dato" en vez de renderizarlo como gasto real $0 / cap saludable.
-  return { spent, isLoading: query.isLoading, isError: query.isError };
+  const movimientos = computeWalletTransactions(query.data?.events ?? []);
+  return { movimientos, isLoading: query.isLoading, isError: query.isError };
+}
+
+/** Las propuestas que de verdad esperan una firma. Devuelve [] en producción hoy. */
+function usePropuestasPendientes() {
+  return useQuery({
+    queryKey: ["v5", "domains", "proposals"],
+    queryFn: () => getJson<unknown[]>(READ_ENDPOINTS.openClawProposals),
+    refetchInterval: POLL_OWNED_MS,
+    staleTime: POLL_OWNED_MS / 2,
+    retry: false
+  });
 }
 
 function useAvailability(query: string) {
@@ -295,16 +364,23 @@ export function DomainsV5() {
   const seed = useMemo(() => seedFromQuery(submitted), [submitted]);
   const availability = useAvailability(submitted);
   const suggestions = useSuggestions(seed);
-  const prices = usePrices();
+  // Los TLD a cotizar salen de lo que las sugerencias devuelven, no de una lista fija.
+  const tldsAConsultar = useMemo(() => {
+    const vistos = new Set(DEFAULT_TLDS);
+    for (const s of suggestions.data?.suggestions ?? []) {
+      const t = tldOf(s.domain);
+      if (t) vistos.add(t);
+    }
+    const propio = tldOf(submitted);
+    if (propio) vistos.add(propio);
+    return [...vistos];
+  }, [suggestions.data?.suggestions, submitted]);
+  const prices = usePrices(tldsAConsultar);
   const owned = useOwnedCount();
-  const {
-    spent: spentThisMonth,
-    isLoading: walletLoading,
-    isError: walletError
-  } = useMonthlySpent();
-  // El gasto solo es dato real cuando la query resolvió sin error. Mientras carga
-  // o si el audit chain cayó, `spentThisMonth` (=0) NO está confirmado.
-  const spentKnown = !walletLoading && !walletError;
+  const compras = useComprasHabilitadas();
+  const propuestas = usePropuestasPendientes();
+  const pendientesDeFirma = Array.isArray(propuestas.data) ? propuestas.data.length : 0;
+  const { movimientos, isLoading: walletLoading, isError: walletError } = useMovimientosEnVentana();
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -316,14 +392,29 @@ export function DomainsV5() {
     submitted,
     availability: availability.data,
     suggestions: suggestions.data?.suggestions ?? [],
-    prices: prices.data?.prices ?? []
+    prices: prices.data?.prices ?? [],
+    tldsConsultados: tldsAConsultar
   });
 
-  const ownedCount = Array.isArray(owned.data?.domains) ? owned.data!.domains.length : 0;
+  // "Dominios en cartera" imprimía un 0 duro mientras cargaba y de forma PERMANENTE si la query
+  // fallaba — y como el gateway se traga los errores de AWS y responde 200 con `domains: []`, en
+  // el modo de falla más probable `isError` ni se prendía. Ahora: `null` = no medido ⇒ "—".
+  const ownedOk = owned.data?.source ? owned.data.source.responseOk : !owned.isError;
+  const ownedCount =
+    owned.data && ownedOk && Array.isArray(owned.data.domains) ? owned.data.domains.length : null;
   const availableCount = proposals.filter((p) => p.availability === "AVAILABLE").length;
-  const spentRemaining = spentKnown ? MONTHLY_CAP_USD - spentThisMonth : null;
-  const capPct = spentKnown ? (spentThisMonth / MONTHLY_CAP_USD) * 100 : null;
-  const proposalsError = availability.isError || suggestions.isError;
+  const movimientosEnVentana = movimientos.reduce((sum, t) => sum + (t.amount ?? 0), 0);
+  // Un 200 con lista vacía y responseOk=false es un FALLO, no un resultado vacío.
+  const proposalsError =
+    availability.isError ||
+    suggestions.isError ||
+    availability.data?.source?.responseOk === false ||
+    suggestions.data?.source?.responseOk === false;
+  const proposalsErrorReason =
+    availability.data?.source?.errorReason ??
+    suggestions.data?.source?.errorReason ??
+    (availability.error instanceof Error ? availability.error.message : null) ??
+    (suggestions.error instanceof Error ? suggestions.error.message : null);
   // `prefers-reduced-motion`: al arrancar en el estado final (`initial={false}`) los
   // hijos heredan animate sin entrada escalonada → nada de fade/slide. (§8 doc, DoD F).
   const reduce = useReducedMotion();
@@ -339,15 +430,17 @@ export function DomainsV5() {
         <SectionHead
           eyebrow="DISCOVER & PROPOSE"
           title="Buscar, valorar y proponer dominios."
-          subtitle="Discover/propose vía AWS Route53 Domains con precio real por TLD · sin compra real (Fase 2 tras doble aprobación humana)."
+          subtitle="Búsqueda de dominios contra AWS Route53 Domains, con precio real por TLD. El alta la ejecuta el gateway detrás de una firma del operador."
           right={
             <Card ink style={{ padding: "10px 14px", textAlign: "right" }}>
-              <Eyebrow>Cap restante</Eyebrow>
+              <Eyebrow>Movimientos leídos</Eyebrow>
               <div style={{ fontSize: 15, fontWeight: 600, color: "var(--color-text-primary)", marginTop: 4, fontVariantNumeric: "tabular-nums" }}>
-                {spentRemaining != null ? `$${spentRemaining.toFixed(0)} USD` : "—"}
+                {walletError ? "—" : walletLoading ? "…" : `$${movimientosEnVentana.toFixed(0)} USD`}
               </div>
               <Caption style={walletError ? { color: "var(--color-critical)" } : undefined}>
-                {walletError ? "audit chain sin datos" : walletLoading ? "cargando consumo…" : `de $${MONTHLY_CAP_USD} mensual`}
+                {walletError
+                  ? "audit chain sin datos"
+                  : `en las últimas ${AUDIT_WINDOW_ROWS} filas de la cadena · no es el mes`}
               </Caption>
             </Card>
           }
@@ -359,20 +452,20 @@ export function DomainsV5() {
         variants={staggerItem}
         style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))", gap: 20 }}
       >
-        <KpiCard
-          label="Cap consumido"
-          value={spentKnown ? `$${spentThisMonth.toFixed(0)}` : "—"}
-          suffix={` / $${MONTHLY_CAP_USD}`}
-          icon={ShieldCheck}
-        />
-        <KpiCard label="Dominios en cartera" value={ownedCount} icon={Globe} />
+        {/* Sin denominador no hay porcentaje: el cap real vive en env, por registrador, y ningún
+            endpoint de lectura lo publica. Antes esta card decía "$0 / $50" con el $50 inventado. */}
+        <KpiCard label="Gasto del mes" value="no medido" icon={ShieldCheck} />
+        {/* "Registrados en Route53", no "en cartera": el endpoint devuelve 60 y el inventario de
+            producción tiene 68 (64 route53 + 4 namecheap). Los de Namecheap son estructuralmente
+            invisibles acá, así que el rótulo tiene que decir qué registrador está contando. */}
+        <KpiCard label="Registrados en Route53" value={ownedCount ?? "—"} icon={Globe} />
         <KpiCard label="Propuestas" value={proposals.length} icon={Sparkles} />
         <KpiCard label="Disponibles ahora" value={availableCount} icon={CheckCircle2} />
       </motion.section>
 
-      {/* Guardrails — CONFIG REAL, etiquetada como tal. */}
+      {/* Guardrails — lo que el gateway declara, no lo que este archivo suponía. */}
       <motion.section variants={staggerItem}>
-        <GuardrailStrip capPct={capPct} walletError={walletError} />
+        <GuardrailStrip compras={compras} />
       </motion.section>
 
       {/* Discover */}
@@ -406,6 +499,7 @@ export function DomainsV5() {
           proposals={proposals}
           loading={availability.isFetching || suggestions.isFetching}
           error={proposalsError}
+          errorReason={proposalsErrorReason}
           onRetry={() => {
             void availability.refetch();
             void suggestions.refetch();
@@ -414,9 +508,14 @@ export function DomainsV5() {
         />
       </motion.section>
 
-      {availableCount > 0 ? (
+      {/* El banner decía "N propuestas esperan aprobación humana" donde N eran los resultados
+          AVAILABLE de la búsqueda: escribir "delivrix" hacía que la pantalla afirmara que 10
+          propuestas esperaban la firma del operador con el ApprovalGate VACÍO
+          (/v1/openclaw/proposals devuelve [] en producción). Ahora cuenta propuestas de verdad,
+          y si no hay ninguna el banner no se renderiza. */}
+      {pendientesDeFirma > 0 ? (
         <motion.div variants={staggerItem}>
-          <AdvisorOpenClaw count={availableCount} />
+          <AdvisorOpenClaw count={pendientesDeFirma} />
         </motion.div>
       ) : null}
 
@@ -431,38 +530,32 @@ export function DomainsV5() {
  * GuardrailStrip — config real (topes / flags) mostrada con StateBadge.
  * ============================================================ */
 
-function GuardrailStrip({ capPct, walletError }: { capPct: number | null; walletError: boolean }) {
-  // El cap NO es un estado de warmup: no reusar el molde StateBadge para una caución
-  // de PRESUPUESTO. `paused` traería ámbar + glifo Pause (§3/§9 ámbar = SOLO PAUSED;
-  // §4/§8 el ícono es señal redundante de estado → "pausa" se lee mal si nada está
-  // pausado) y `quarantined` prestaría ShieldAlert (glifo de cuarentena). Los umbrales
-  // van como Pill semántico con ícono propio de budget (TrendingUp = trepando al tope,
-  // TriangleAlert = tope cruzado). Los no-umbral (saludable/sin dato/cargando) sí son
-  // estados legítimos y se quedan en StateBadge neutro/verde.
-  const capBadge: ReactNode = walletError ? (
-    <StateBadge status="retired" label="Sin datos" /> // neutral: unknown ≠ warning
-  ) : capPct == null ? (
-    <StateBadge status="READY" label="Cargando…" />
-  ) : capPct >= 95 ? (
-    <Pill tone="critical">
-      <TriangleAlert size={12.5} strokeWidth={2} />
-      Excedido
-    </Pill>
-  ) : capPct >= 80 ? (
-    <Pill tone="critical">
-      <TrendingUp size={12.5} strokeWidth={2} />
-      Vigilar
-    </Pill>
-  ) : (
-    <StateBadge status="active" label="Saludable" />
-  );
+function GuardrailStrip({ compras }: { compras: { route53: boolean | null; namecheap: boolean | null } }) {
+  // El cap mensual YA NO figura: era un literal de $50 rotulado "config real" mientras el backend
+  // enforcea 700 (Route53, domains-purchase.ts:423) y 100 (Namecheap,
+  // domains-namecheap-purchase.ts:193), y ningún endpoint de lectura publica esos valores.
+  // Mostrar un denominador inventado como si fuera configuración es peor que no mostrarlo.
+  const badgeCompra = (flag: boolean | null) =>
+    flag === null ? (
+      <StateBadge status="retired" label="No publicado" />
+    ) : flag ? (
+      // Compra real ENCENDIDA = gasto irreversible posible. Se pinta como lo que es.
+      <Pill tone="critical">
+        <TriangleAlert size={12.5} strokeWidth={2} />
+        Habilitada
+      </Pill>
+    ) : (
+      <StateBadge status="BLOCKED" label="Bloqueada" />
+    );
+  const valorCompra = (flag: boolean | null) =>
+    flag === null ? "no publicado por el gateway" : flag ? "Habilitada" : "Bloqueada";
 
   return (
     <Card ink style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
       <CardHead
         title="Guardrails"
-        subtitle="Configuración real de la Fase 1 · no editable desde el panel"
-        right={<Eyebrow>config</Eyebrow>}
+        subtitle="Lo que el gateway declara en /health · no editable desde el panel"
+        right={<Eyebrow>gateway</Eyebrow>}
       />
       <div
         style={{
@@ -475,28 +568,26 @@ function GuardrailStrip({ capPct, walletError }: { capPct: number | null; wallet
       >
         <GuardrailItem
           label="Cap mensual"
-          value={`$${MONTHLY_CAP_USD} USD`}
-          badge={capBadge}
+          value="no publicado"
+          badge={<StateBadge status="retired" label="Sin dato" />}
         />
         <GuardrailItem
           label="WHOIS privacy"
-          value={WHOIS_PRIVACY_ENABLED ? "Activada" : "Desactivada"}
-          badge={<StateBadge status={WHOIS_PRIVACY_ENABLED ? "active" : "quarantined"} label="Forzado" />}
+          value="Activada"
+          // "Forzado" era falso: el backend usa `?? true` (skill-schemas.ts:421,
+          // domains-namecheap-purchase.ts:97, y el adapter con `opts.privacyProtection ?? true`).
+          // Un caller puede mandar false y la compra sale sin privacy.
+          badge={<StateBadge status="active" label="Default, no forzado" />}
         />
         <GuardrailItem
-          label="Aprobación"
-          value="1 firma operador"
-          badge={<StateBadge status="active" label="Exigido" />}
+          label="Compra real · Route53"
+          value={valorCompra(compras.route53)}
+          badge={badgeCompra(compras.route53)}
         />
         <GuardrailItem
-          label="Compra real"
-          value={PURCHASE_ENABLED ? "Habilitada" : "Bloqueada"}
-          badge={
-            <StateBadge
-              status={PURCHASE_ENABLED ? "paused" : "BLOCKED"}
-              label={PURCHASE_ENABLED ? "Demo on" : "Bloqueada"}
-            />
-          }
+          label="Compra real · Namecheap"
+          value={valorCompra(compras.namecheap)}
+          badge={badgeCompra(compras.namecheap)}
         />
       </div>
     </Card>
@@ -548,9 +639,12 @@ function DiscoverForm({
 
   return (
     <Card style={{ padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* "cada consulta queda firmada en audit chain" era falso: el gateway solo escribe el evento
+          si el request trae el header x-openclaw-skill-invocation, y el cliente del panel manda
+          únicamente `accept`. Medido: 0 eventos oc.domains.discover sobre 2121 de la cadena. */}
       <CardHead
         title="Sugerir con OpenClaw"
-        subtitle="Escribe un dominio completo o una keyword · cada consulta queda firmada en audit chain"
+        subtitle="Escribe un dominio completo o una keyword · esta búsqueda es solo lectura y no queda firmada"
       />
       <form onSubmit={onSubmit} className="flex flex-col gap-3 sm:flex-row sm:items-stretch">
         <label
@@ -620,7 +714,9 @@ function DiscoverForm({
           )}
         </Caption>
         <span style={{ flex: 1 }} aria-hidden="true" />
-        <MetaTag>cache 5 min</MetaTag>
+        {/* Se fue "cache 5 min": el TTL del adapter envuelve SOLO listInventory (los dominios
+            propios). checkAvailability, getSuggestions y listPrices pegan a AWS en cada llamada,
+            y el chip estaba justo al lado de las dos cosas que no describe. */}
         <MetaTag>read-only</MetaTag>
       </div>
     </Card>
@@ -654,6 +750,9 @@ interface ProposalRow {
   tld: string;
   availability: DomainAvailabilityStatus | null;
   route53Price: DomainPrice | undefined;
+  /** ¿Le preguntamos el precio de este TLD a Route53? Sin esto, "no consultado" y "el proveedor
+   *  no publica precio" se veían idénticos — y el segundo es una afirmación sobre el proveedor. */
+  precioConsultado: boolean;
   source: "submitted" | "suggestion";
 }
 
@@ -661,12 +760,15 @@ function ProposalsList({
   proposals,
   loading,
   error,
+  errorReason,
   onRetry,
   submitted
 }: {
   proposals: ProposalRow[];
   loading: boolean;
   error: boolean;
+  /** El motivo que el gateway devuelve en `source.errorReason` cuando AWS falla con un 200. */
+  errorReason: string | null;
   onRetry: () => void;
   submitted: string;
 }) {
@@ -708,8 +810,14 @@ function ProposalsList({
               No se pudo consultar Route53
             </div>
             <BodySm>
-              La búsqueda de disponibilidad o sugerencias para <MonoCode>{submitted}</MonoCode> falló
-              (error de red o del endpoint). Esto no significa que no haya candidatos.
+              La búsqueda de disponibilidad o sugerencias para <MonoCode>{submitted}</MonoCode> falló.
+              Esto no significa que no haya candidatos, y no es culpa del seed.
+              {errorReason ? (
+                <>
+                  {" "}
+                  Motivo del proveedor: <MonoCode>{errorReason}</MonoCode>
+                </>
+              ) : null}
             </BodySm>
             <div style={{ marginTop: 4 }}>
               <Button variant="ghost" size="sm" onClick={onRetry}>
@@ -782,7 +890,7 @@ function ProposalCard({ proposal }: { proposal: ProposalRow }) {
 
   const requestApproval = () =>
     sendIntent(
-      `Prepará la propuesta de registro de ${proposal.domain} en Route53 (WHOIS privacy activada, cap mensual $${MONTHLY_CAP_USD}). No ejecutes la compra: dejala firmada en el ApprovalGate para revisión humana.`,
+      `Prepará la propuesta de registro de ${proposal.domain} en Route53 (WHOIS privacy activada). No ejecutes la compra: dejala firmada en el ApprovalGate para revisión humana, y decime el cap mensual vigente del registrador antes de que firme.`,
       `domains:request-approval:${proposal.domain}`
     );
 
@@ -807,15 +915,30 @@ function ProposalCard({ proposal }: { proposal: ProposalRow }) {
           paddingTop: 14
         }}
       >
+        {/* "sin precio publicado" era una afirmación sobre Route53 derivada de una consulta que
+            nunca hicimos: la lista de TLD estaba fija en com/net/io/co y las sugerencias devuelven
+            .org/.info/.me/.biz, que Route53 SÍ cotiza (16/30/31/26 USD medidos). */}
         <PriceColumn
           label="Registro Route53"
           value={registrationLabel}
-          hint={proposal.route53Price ? currency : "sin precio publicado"}
+          hint={
+            proposal.route53Price
+              ? currency
+              : proposal.precioConsultado
+                ? "Route53 no publica precio para este TLD"
+                : "no consultado"
+          }
         />
         <PriceColumn
           label="Renovación Route53"
           value={renewalLabel}
-          hint={proposal.route53Price?.renewal != null ? `${currency}/año` : "sin precio publicado"}
+          hint={
+            proposal.route53Price?.renewal != null
+              ? `${currency}/año`
+              : proposal.precioConsultado
+                ? "Route53 no publica renovación para este TLD"
+                : "no consultado"
+          }
         />
       </div>
 
@@ -873,8 +996,8 @@ function AdvisorOpenClaw({ count }: { count: number }) {
         <div style={{ borderLeft: "2px solid transparent", borderImage: `${aivoraGradient} 1`, paddingLeft: 12, display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontSize: 15, fontWeight: 500, color: "var(--color-text-primary)" }}>
             {count === 1
-              ? "1 propuesta espera aprobación humana"
-              : `${count} propuestas esperan aprobación humana`}
+              ? "1 propuesta espera la firma del operador"
+              : `${count} propuestas esperan la firma del operador`}
           </div>
           <Body>
             La compra real queda detrás de ApprovalGate con una firma humana. Cuando firmes la
@@ -918,19 +1041,13 @@ function AdvisorOpenClaw({ count }: { count: number }) {
  * ============================================================ */
 
 function FooterStrip() {
+  // Se fue el "Runbook · DOCUMENTACION/runbooks-demo-viernes/flip-purchase-flag.sh": el link era
+  // un <a href="#"> que no iba a ningún lado, y el script que nombraba edita un `.env.local` que
+  // no existe en el host de producción (el gateway carga config/gateway.env). Su propio comentario
+  // decía que el cap es $50, contradiciendo el 700 real. Un operador que siguiera ese footer para
+  // apagar la compra real no apagaba nada. El estado de los flags ya se lee arriba, de /health.
   return (
     <Card ink style={{ padding: "14px 20px", display: "flex", flexWrap: "wrap", alignItems: "center", columnGap: 20, rowGap: 8 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <Eyebrow>Runbook</Eyebrow>
-        <a
-          href="#"
-          style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-text-secondary)", minWidth: 0, wordBreak: "break-all" }}
-        >
-          {RUNBOOK_PATH}
-          <ExternalLink size={10} strokeWidth={1.75} />
-        </a>
-      </div>
-      <span aria-hidden="true" style={{ width: 3, height: 3, borderRadius: "50%", background: "var(--color-border-strong)" }} />
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <Eyebrow>Endpoint</Eyebrow>
         <MonoCode>GET {READ_ENDPOINTS.domainAvailability}</MonoCode>
@@ -948,9 +1065,11 @@ function buildProposals(args: {
   availability: AvailabilityResponse | undefined;
   suggestions: DomainSuggestion[];
   prices: DomainPrice[];
+  tldsConsultados: string[];
 }): ProposalRow[] {
-  const { submitted, availability, suggestions, prices } = args;
+  const { submitted, availability, suggestions, prices, tldsConsultados } = args;
   const priceByTld = new Map(prices.map((p) => [p.tld.toLowerCase(), p]));
+  const consultados = new Set(tldsConsultados.map((t) => t.toLowerCase()));
   const rows: ProposalRow[] = [];
   const seen = new Set<string>();
 
@@ -961,6 +1080,7 @@ function buildProposals(args: {
       tld,
       availability: availability.availability,
       route53Price: priceByTld.get(tld),
+      precioConsultado: consultados.has(tld),
       source: "submitted"
     });
     seen.add(availability.domain);
@@ -975,6 +1095,7 @@ function buildProposals(args: {
       tld,
       availability: s.availability,
       route53Price: priceByTld.get(tld),
+      precioConsultado: consultados.has(tld),
       source: "suggestion"
     });
   }

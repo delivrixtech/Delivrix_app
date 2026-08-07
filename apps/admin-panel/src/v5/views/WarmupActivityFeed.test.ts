@@ -1,10 +1,22 @@
+// Test del agrupamiento de eventos en VUELTAS del feed en vivo.
+//
+// Antes este archivo hacía SSR de Warmup.tsx para testear `groupActivityByCycle`, una función
+// exportada que la pantalla no renderizaba desde hacía tiempo: tests verdes sobre código muerto,
+// que es peor que no tener test — dan cobertura aparente sobre lo que no se ejecuta. La función
+// que de verdad arma las vueltas que ve el operador es `agruparVueltas` de WarmupLive.tsx, y es la
+// que se fija acá.
+//
+// Carga el módulo por vite: `node --test` no sabe leer .tsx, y correrlo con `cwd` dentro de
+// apps/admin-panel da un falso rojo (ERR_LOAD_URL).
+
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { createServer, type ViteDevServer } from "vite";
 
 /* Contrato local del evento (mirror del backend) para armar fixtures tipados. */
-interface WarmupActivityEvent {
+interface EventoWarmup {
   id: string;
+  testId?: string | null;
   occurredAt: string;
   cycleId: string;
   nodeDomain: string;
@@ -13,34 +25,27 @@ interface WarmupActivityEvent {
   placement: string | null;
   subject: string | null;
   detail: Record<string, unknown>;
-  testId: string | null;
 }
 
-type StageKey = "sent" | "measured" | "engaged" | "replied";
-
-interface WarmupCycle {
+interface Vuelta {
   cycleId: string;
+  testId: string | null;
+  domain: string;
+  seed: string;
   subject: string | null;
-  nodeDomain: string;
-  seedInbox: string;
-  occurredAt: string;
-  stages: Record<StageKey, boolean>;
+  ultimo: string;
+  etapas: Record<string, EventoWarmup | undefined>;
   placement: string | null;
-  hasError: boolean;
-  brokeAtStage: StageKey | null;
-  eventCount: number;
+  error: string | null;
 }
 
-interface WarmupModule {
-  groupActivityByCycle: (
-    events: WarmupActivityEvent[] | null | undefined,
-    limit?: number
-  ) => WarmupCycle[];
+interface LiveModule {
+  agruparVueltas: (events: EventoWarmup[]) => Vuelta[];
 }
 
 let server: ViteDevServer | null = null;
 
-async function boot(): Promise<ViteDevServer> {
+async function cargar(): Promise<LiveModule> {
   server ??= await createServer({
     configFile: false,
     root: process.cwd(),
@@ -48,130 +53,65 @@ async function boot(): Promise<ViteDevServer> {
     server: { hmr: false, middlewareMode: true, ws: false },
     appType: "custom"
   });
-  return server;
-}
-
-async function loadWarmup(): Promise<WarmupModule> {
-  return (await boot()).ssrLoadModule("/src/v5/views/Warmup.tsx") as Promise<WarmupModule>;
+  return server.ssrLoadModule("/src/v5/views/WarmupLive.tsx") as Promise<LiveModule>;
 }
 
 after(async () => {
   await server?.close();
 });
 
-/* Helper: evento con defaults sanos, sobreescribibles por test. */
-function ev(over: Partial<WarmupActivityEvent>): WarmupActivityEvent {
-  return {
-    id: over.id ?? "e",
-    occurredAt: over.occurredAt ?? "2026-07-20T10:00:00Z",
-    cycleId: over.cycleId ?? "c1",
-    nodeDomain: over.nodeDomain ?? "infranationalcorp.com",
-    seedInbox: over.seedInbox ?? "infradelivrixdemo@gmail.com",
-    kind: over.kind ?? "sent",
-    placement: over.placement ?? null,
-    subject: over.subject ?? null,
-    detail: over.detail ?? {},
-    testId: over.testId ?? null
-  };
-}
-
-/* ---------------- entrada vacía / basura ---------------- */
-
-test("groupActivityByCycle: entrada vacía o basura ⇒ []", async () => {
-  const { groupActivityByCycle } = await loadWarmup();
-  assert.deepEqual(groupActivityByCycle([]), []);
-  assert.deepEqual(groupActivityByCycle(null), []);
-  assert.deepEqual(groupActivityByCycle(undefined), []);
-  assert.deepEqual(groupActivityByCycle(42 as unknown as WarmupActivityEvent[]), []);
+const ev = (over: Partial<EventoWarmup>): EventoWarmup => ({
+  id: over.id ?? "e1",
+  occurredAt: over.occurredAt ?? "2026-08-06T10:00:00.000Z",
+  cycleId: over.cycleId ?? "c1",
+  nodeDomain: over.nodeDomain ?? "corpfiling-infra.com",
+  seedInbox: over.seedInbox ?? "semilla@gmail.com",
+  kind: over.kind ?? "sent",
+  placement: over.placement ?? null,
+  subject: over.subject ?? null,
+  detail: over.detail ?? {},
+  ...(over.testId !== undefined ? { testId: over.testId } : {})
 });
 
-/* ---------------- agrupación + etapas + placement + asunto ---------------- */
-
-test("groupActivityByCycle: agrupa por cycleId, detecta las 4 etapas y levanta placement/asunto/caja→semilla", async () => {
-  const { groupActivityByCycle } = await loadWarmup();
-  const cycles = groupActivityByCycle([
-    ev({ id: "1", cycleId: "c1", kind: "sent", subject: "¿seguimos mañana?", occurredAt: "2026-07-20T10:00:00Z" }),
-    ev({ id: "2", cycleId: "c1", kind: "measured", placement: "INBOX", occurredAt: "2026-07-20T10:01:00Z" }),
-    ev({ id: "3", cycleId: "c1", kind: "engaged", occurredAt: "2026-07-20T10:02:00Z" }),
-    ev({ id: "4", cycleId: "c1", kind: "replied", occurredAt: "2026-07-20T10:03:00Z" })
+test("una vuelta junta sus etapas y se ordena por el evento más reciente", async () => {
+  const { agruparVueltas } = await cargar();
+  const vueltas = agruparVueltas([
+    ev({ id: "a", cycleId: "vieja", occurredAt: "2026-08-06T08:00:00.000Z" }),
+    ev({ id: "b", cycleId: "nueva", occurredAt: "2026-08-06T10:00:00.000Z", subject: "hola" }),
+    ev({ id: "c", cycleId: "nueva", occurredAt: "2026-08-06T10:05:00.000Z", kind: "measured", placement: "INBOX" })
   ]);
-  assert.equal(cycles.length, 1);
-  const c = cycles[0];
-  assert.equal(c.cycleId, "c1");
-  assert.deepEqual(c.stages, { sent: true, measured: true, engaged: true, replied: true });
-  assert.equal(c.placement, "INBOX");
-  assert.equal(c.subject, "¿seguimos mañana?");
-  assert.equal(c.nodeDomain, "infranationalcorp.com");
-  assert.equal(c.seedInbox, "infradelivrixdemo@gmail.com");
-  assert.equal(c.occurredAt, "2026-07-20T10:03:00Z"); // etapa más reciente del ciclo
-  assert.equal(c.eventCount, 4);
-  assert.equal(c.hasError, false);
-  assert.equal(c.brokeAtStage, null);
+
+  assert.deepEqual(vueltas.map((v) => v.cycleId), ["nueva", "vieja"]);
+  assert.equal(vueltas[0]!.ultimo, "2026-08-06T10:05:00.000Z");
+  assert.ok(vueltas[0]!.etapas.sent && vueltas[0]!.etapas.measured, "las dos etapas del ciclo entran a la misma vuelta");
+  assert.equal(vueltas[0]!.placement, "INBOX");
 });
 
-test("groupActivityByCycle: placement prefiere la etapa de medición sobre otras", async () => {
-  const { groupActivityByCycle } = await loadWarmup();
-  const [c] = groupActivityByCycle([
-    ev({ id: "1", cycleId: "c1", kind: "sent", placement: "OTHER" }),
-    ev({ id: "2", cycleId: "c1", kind: "measured", placement: "SPAM" })
+test("el motivo del corte se conserva: un error sin motivo no puede verse como una vuelta sana", async () => {
+  // La vista anterior tiraba el `detail` del evento de error y la vuelta quedaba idéntica a una
+  // normal. El operador veía una vuelta incompleta sin saber dónde se cortó ni por qué.
+  const { agruparVueltas } = await cargar();
+  const [vuelta] = agruparVueltas([
+    ev({ id: "a", kind: "sent" }),
+    ev({ id: "b", kind: "error", occurredAt: "2026-08-06T10:01:00.000Z", detail: { stage: "envio", note: "450 daily send cap reached" } })
   ]);
-  assert.equal(c.placement, "SPAM");
+
+  assert.equal(vuelta!.error, "envio: 450 daily send cap reached");
 });
 
-/* ---------------- orden + cap ---------------- */
-
-test("groupActivityByCycle: ordena vueltas más-reciente-primero y capa en `limit`", async () => {
-  const { groupActivityByCycle } = await loadWarmup();
-  const events: WarmupActivityEvent[] = [];
-  for (let i = 0; i < 15; i += 1) {
-    events.push(
-      ev({
-        id: `s${i}`,
-        cycleId: `c${i}`,
-        kind: "sent",
-        occurredAt: `2026-07-20T${String(i).padStart(2, "0")}:00:00Z`
-      })
-    );
-  }
-  const cycles = groupActivityByCycle(events); // limit por defecto = 12
-  assert.equal(cycles.length, 12);
-  assert.equal(cycles[0].cycleId, "c14"); // el más reciente primero
-  assert.equal(cycles[11].cycleId, "c3");
-  assert.equal(groupActivityByCycle(events, 3).length, 3); // limit explícito
-});
-
-/* ---------------- error: se cortó en <etapa> ---------------- */
-
-test("groupActivityByCycle: error ⇒ hasError y brokeAtStage = primera etapa faltante", async () => {
-  const { groupActivityByCycle } = await loadWarmup();
-  const [c] = groupActivityByCycle([
-    ev({ id: "1", cycleId: "c1", kind: "sent" }),
-    ev({ id: "2", cycleId: "c1", kind: "measured", placement: "INBOX" }),
-    ev({ id: "3", cycleId: "c1", kind: "error" })
+test("el testId sobrevive aunque llegue en una etapa posterior", async () => {
+  // Sin testId la vuelta no se puede abrir para traer el correo real del buzón: si se perdiera al
+  // fusionar las etapas, el botón "ver hilo" quedaría muerto sin decir por qué.
+  const { agruparVueltas } = await cargar();
+  const [vuelta] = agruparVueltas([
+    ev({ id: "a", kind: "sent", testId: null }),
+    ev({ id: "b", kind: "measured", occurredAt: "2026-08-06T10:02:00.000Z", testId: "t-123" })
   ]);
-  assert.equal(c.hasError, true);
-  assert.equal(c.brokeAtStage, "engaged"); // sent+measured OK ⇒ se cortó en engaged
-  assert.deepEqual(c.stages, { sent: true, measured: true, engaged: false, replied: false });
+
+  assert.equal(vuelta!.testId, "t-123");
 });
 
-test("groupActivityByCycle: error con detail.stage explícito usa esa etapa", async () => {
-  const { groupActivityByCycle } = await loadWarmup();
-  const [c] = groupActivityByCycle([
-    ev({ id: "1", cycleId: "c1", kind: "sent" }),
-    ev({ id: "2", cycleId: "c1", kind: "error", detail: { stage: "sent" } })
-  ]);
-  assert.equal(c.hasError, true);
-  assert.equal(c.brokeAtStage, "sent");
-});
-
-/* ---------------- defensa: eventos sin cycleId ---------------- */
-
-test("groupActivityByCycle: descarta eventos sin cycleId sin lanzar", async () => {
-  const { groupActivityByCycle } = await loadWarmup();
-  const cycles = groupActivityByCycle([
-    ev({ id: "1", cycleId: "", kind: "sent" }),
-    ev({ id: "2", cycleId: "c1", kind: "sent" })
-  ]);
-  assert.equal(cycles.length, 1);
-  assert.equal(cycles[0].cycleId, "c1");
+test("entrada vacía devuelve lista vacía, no explota", async () => {
+  const { agruparVueltas } = await cargar();
+  assert.deepEqual(agruparVueltas([]), []);
 });

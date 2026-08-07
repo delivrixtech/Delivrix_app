@@ -1,84 +1,47 @@
 /**
- * v5 Warmup — el warmup-engine como SISTEMA EN MOVIMIENTO (read-only).
+ * v5 Warmup — la pestaña de calentamiento (read-only).
  *
- * No es una tabla de metadata: la vista visualiza el ESQUEMA de funcionamiento del
- * calentamiento — el "loop interno" de 3 etapas (① SEND → ② ENGAGE → ③ REPLY /
- * reputación que se acumula en cada vuelta) — anotado con AGREGADOS REALES de los
- * dos endpoints read-only:
- *   · GET /v1/warmup/status → enabled, totals {activeNodes, queuedSends}, byState,
- *     nodes[{ mailbox, domain, state, dayIndex, authReady, placementScore? }].
- *   · GET /v1/warmup/trends → placementSeries (inboxWilsonLb/inboxEwma/spamRate),
- *     perProvider, ramp (curva de referencia), signals {bounces, complaints}.
- * NO dispara nada — cada arranque/pausa de ramp vive en otras superficies gated.
+ * Estructura real, después de la limpieza del 2026-08-06:
+ *   1. WarmupLive  — la consola: las vueltas que están pasando, desde warmup_activity (tráfico
+ *      NUESTRO y solo nuestro).
+ *   2. WarmupPlan  — la decisión del día por dominio: día, placement medido con su muestra, cupo
+ *      y motivo. Sale de `planDelDia`, la MISMA función que consulta el daemon antes de actuar.
+ *   3. Banners de /v1/warmup/status (engine off / nota de degradación).
+ *   4. Tendencias de /v1/warmup/trends.
  *
- * Secciones (narrativa funcional):
- *   1. WarmupLoop — el ciclo de 3 etapas con sus cantidades reales (hero).
- *   2. KPI strip + Recorrido del nodo (fresh→warm, con paused/blocked fuera del ciclo).
- *   3. Nodos en warmup — dónde está cada emisor en su viaje (mailbox/día/auth/placement).
- *   4. Placement gate — inbox % vs el piso 0.80 (la puerta que habilita escalar).
- *   5. Curva + plan de rampa por semanas, colocación por proveedor.
+ * La cabecera anterior describía secciones 1 y 2 —"WarmupLoop" y "KPI strip + Recorrido del
+ * nodo"— que ya no existían: quedaban los bloques de comentario huérfanos y ~15 identificadores
+ * declarados y nunca usados. Peor, WarmupActivityFeed.test.ts hacía SSR de este archivo para
+ * testear `groupActivityByCycle`, código que la pantalla no renderizaba: tests verdes sobre nada.
  *
- * Diseño: molde oficial "Aivora" (shared/ui/aivora) — Card radius 18 + hairline,
- * KpiCard tile+número tabular, StateBadge dot+icono, SectionHead eyebrow+h1 light.
- * Color SOLO por tokens var(--color-*), CERO hex. La referencia usa ÁMBAR para el
- * SEND; acá el SEND va en warming/cyan (paleta oficial SIN ámbar): SEND=warming,
- * ENGAGE=acento, REPLY=success. Iconos lucide. Movimiento sutil y respetuoso de
- * prefers-reduced-motion (useReducedMotion).
+ * Advertencia sobre la mitad de abajo: las tendencias cuelgan de las tablas del motor v1
+ * (warmup_placement_rollups, warmup_signals) que NADIE escribe en producción — su único escritor
+ * es runWarmupTick, y a eso solo lo llama el dryrun-daemon. Por eso las "señales de daño" no
+ * muestran número (los que había eran del backfill de fixtures) y la curva de rampa está rotulada
+ * "referencia teórica · no medido" en pantalla, no solo en un comentario.
  *
- * Anti-mock: cada cifra sale del backend; no hay conteos ni series inventadas. Si un
- * dato aún no existe (p.ej. un nodo fresh sin placementScore, o trends sin serie), se
- * muestra "midiendo…/pendiente", nunca un número falso. Los TOPES de config
- * (PLACEMENT_FLOOR, RAMP_CLAMP) van etiquetados "config" (declarados, no medidos).
- *
- * Wiring: la vista hace sus dos queries. No requiere props del shell.
+ * Anti-mock: cada cifra sale del backend; no hay conteos ni series inventadas. Si un dato no
+ * existe se dice "no medido", nunca un número falso.
  */
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { motion, useReducedMotion } from "framer-motion";
+import { motion } from "framer-motion";
 import {
   Activity,
   AlertCircle,
-  ArrowDown,
-  ArrowRight,
   BarChart3,
-  CheckCircle2,
-  Flame,
-  Inbox,
   LineChart,
-  Layers,
   PauseCircle,
-  Plus,
-  Reply,
-  Repeat,
-  Send,
   ShieldCheck,
-  Sprout,
-  TrendingUp,
-  TriangleAlert
+  TrendingUp
 } from "lucide-react";
 import WarmupLive from "./WarmupLive";
 import WarmupPlan from "./WarmupPlan";
 import { getJson } from "../../shared/api/client";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
-import {
-  postWarmupMailbox,
-  type WarmupMailboxCreateResult
-} from "../../shared/api/warmup-mailboxes-client";
-import { WarmupMailboxLog } from "./WarmupMailboxLog";
 import { staggerContainer, staggerItem } from "../lib/motion";
-import {
-  Button,
-  Caption,
-  Card,
-  Heading,
-  KpiCard,
-  Pill,
-  SectionHead,
-  StateBadge,
-  stateColor,
-  stateNeedsLeftBorder
-} from "../../shared/ui/aivora";
+import { Caption, Card, Heading, Pill, SectionHead, StateBadge } from "../../shared/ui/aivora";
 
 /* ============================================================
  * Texto del molde — helpers locales token-aware.
@@ -99,14 +62,6 @@ function BodyText({ className, children }: { className?: string; children: React
 
 function Mono({ className, children }: { className?: string; children: ReactNode }) {
   return <span className={cx("font-mono text-[11px] leading-[1.5] text-fg-muted", className)}>{children}</span>;
-}
-
-function MonoStrong({ className, children }: { className?: string; children: ReactNode }) {
-  return (
-    <span className={cx("font-mono text-[12px] font-medium leading-[1.4] tabular-nums text-fg", className)}>
-      {children}
-    </span>
-  );
 }
 
 /* ============================================================
@@ -233,38 +188,6 @@ function useWarmupTrends(): TrendsState {
   }
   if (query.data) return { status: "ok", payload: query.data };
   return { status: "loading" };
-}
-
-/* ============================================================
- * Estado helpers — mapeo al StateBadge del molde + copy por estado.
- *
- * StateBadge (aivora) resuelve icono/color/soft desde su STATE_MAP. Los estados
- * del warmup-engine llegan en minúscula; los mapeamos a las claves canónicas del
- * molde para heredar el mismo tratamiento visual (dot + icono + token semántico).
- * ============================================================ */
-
-const AIV_STATE: Record<WarmupNodeState, string> = {
-  fresh: "FRESH",
-  warm: "WARM",
-  paused: "PAUSED",
-  blocked: "BLOCKED",
-  quarantined: "QUARANTINED"
-};
-
-const STATE_LABEL: Record<WarmupNodeState, string> = {
-  fresh: "fresh",
-  warm: "warm",
-  paused: "paused",
-  blocked: "blocked",
-  quarantined: "quarantined"
-};
-
-function aivStatus(state: string): string {
-  return AIV_STATE[state as WarmupNodeState] ?? state;
-}
-
-function stateLabel(state: string): string {
-  return STATE_LABEL[state as WarmupNodeState] ?? state;
 }
 
 /* ============================================================
@@ -402,18 +325,15 @@ function IconTile({ children }: { children: ReactNode }) {
  * Vista principal.
  * ============================================================ */
 
-/** Buzón seleccionado para ver su historial (carril C). */
-interface SelectedMailbox {
-  id: string;
-  mailbox: string;
-}
-
+// El selector de buzón se fue con NodesTable: su única entrada era un clic en una fila de esa
+// tabla, que en producción nunca renderizaba (warmup_nodes está vacía para el warmup vivo). El
+// componente WarmupMailboxLog y su test siguen en el repo, listos para cuando haya una entrada
+// real; lo que se borró es el estado muerto que lo hacía parecer alcanzable.
 export function WarmupV5() {
   const state = useWarmupStatus();
   // El loop combina agregados de AMBOS endpoints. react-query deduplica por queryKey,
   // así que WarmupTrendsPanel reusa esta misma lectura sin un fetch extra.
   const trends = useWarmupTrends();
-  const [selected, setSelected] = useState<SelectedMailbox | null>(null);
   return (
     <motion.div
       variants={staggerContainer}
@@ -446,22 +366,7 @@ export function WarmupV5() {
         <WarmupPlan />
       </motion.section>
 
-      <Body
-        state={state}
-        trends={trends}
-        onSelectMailbox={setSelected}
-        selectedId={selected?.id ?? null}
-      />
-
-      {selected ? (
-        <motion.section variants={staggerItem}>
-          <WarmupMailboxLog
-            mailboxId={selected.id}
-            mailbox={selected.mailbox}
-            onClose={() => setSelected(null)}
-          />
-        </motion.section>
-      ) : null}
+      <Body state={state} trends={trends} />
 
       <motion.section variants={staggerItem}>
         <WarmupTrendsPanel />
@@ -470,17 +375,7 @@ export function WarmupV5() {
   );
 }
 
-function Body({
-  state,
-  trends,
-  onSelectMailbox,
-  selectedId
-}: {
-  state: FetchState;
-  trends: TrendsState;
-  onSelectMailbox: (mailbox: SelectedMailbox) => void;
-  selectedId: string | null;
-}) {
+function Body({ state, trends }: { state: FetchState; trends: TrendsState }) {
   if (state.status === "loading") {
     return (
       <motion.div variants={staggerItem}>
@@ -495,14 +390,7 @@ function Body({
       </motion.div>
     );
   }
-  return (
-    <Loaded
-      payload={state.payload}
-      trends={trends}
-      onSelectMailbox={onSelectMailbox}
-      selectedId={selectedId}
-    />
-  );
+  return <Loaded payload={state.payload} trends={trends} />;
 }
 
 function LivePollSide({
@@ -528,269 +416,21 @@ function LivePollSide({
 }
 
 /* ============================================================
- * Actividad en vivo — el loop de warmup ocurriendo, vuelta por vuelta.
+ * Actividad en vivo: BORRADA de este archivo.
  *
- * GET /v1/warmup/activity (read-only): eventos de cada ciclo (una "vuelta") con sus
- * 4 etapas — ① envío → ② medición → ③ interacción → ④ respuesta — anotadas con el
- * asunto cotidiano, el placement medido, la caja emisora → el buzón semilla. Poll más
- * rápido (8s) que el resto de la vista para que se sienta VIVO. Anti-mock estricto: sin
- * eventos (o con `note`) → estado vacío honesto, nunca vueltas inventadas. Sin ámbar:
- * envío=warming, interacción=acento, respuesta=success, medición=neutral, error=warning.
+ * `groupActivityByCycle` + sus tipos (WarmupActivityEvent/WarmupCycle/ACTIVITY_STAGES/…) eran un
+ * export que la pantalla no renderizaba: quien muestra el feed es WarmupLive.tsx con
+ * `agruparVueltas`. Peor, WarmupActivityFeed.test.ts hacía SSR de este archivo para testear la
+ * función muerta — cobertura verde sobre código que nunca se ejecuta. El test se reapuntó a
+ * `agruparVueltas`, que es la función que sí corre.
  * ============================================================ */
-
-interface WarmupActivityEvent {
-  id: string;
-  occurredAt: string;
-  cycleId: string;
-  nodeDomain: string;
-  seedInbox: string;
-  kind: "sent" | "measured" | "engaged" | "replied" | "error";
-  placement: string | null;
-  subject: string | null;
-  detail: Record<string, unknown>;
-  testId: string | null;
-}
-
-interface WarmupActivitySnapshot {
-  generatedAt: string;
-  events: WarmupActivityEvent[];
-  note?: string; // p.ej. "postgres_unavailable" cuando degrada — se trata como feed vacío
-}
-
-const ACTIVITY_STAGE_ORDER = ["sent", "measured", "engaged", "replied"] as const;
-type ActivityStageKey = (typeof ACTIVITY_STAGE_ORDER)[number];
-
-/** Una vuelta de calentamiento: las 4 etapas de UN ciclo, con su asunto/placement. */
-export interface WarmupCycle {
-  cycleId: string;
-  subject: string | null;
-  nodeDomain: string;
-  seedInbox: string;
-  occurredAt: string; // etapa más reciente del ciclo (orden + tiempo relativo)
-  stages: Record<ActivityStageKey, boolean>;
-  placement: string | null;
-  hasError: boolean;
-  brokeAtStage: ActivityStageKey | null;
-  eventCount: number;
-}
-
-function toTime(iso: string): number {
-  const t = new Date(iso).getTime();
-  return Number.isFinite(t) ? t : 0;
-}
-
-/**
- * Agrupa eventos por cycleId en "vueltas". Pura y testeable: detecta qué etapas
- * dispararon, levanta el placement medido (prefiere la etapa de medición), marca si
- * hubo error y en qué etapa se cortó, y ordena las vueltas más-reciente-primero (cap
- * en `limit`). Entrada vacía/basura o eventos sin cycleId ⇒ se descartan sin lanzar.
- */
-export function groupActivityByCycle(
-  events: WarmupActivityEvent[] | null | undefined,
-  limit = 12
-): WarmupCycle[] {
-  if (!Array.isArray(events) || events.length === 0) return [];
-
-  const groups = new Map<string, WarmupActivityEvent[]>();
-  for (const ev of events) {
-    if (!ev || typeof ev.cycleId !== "string" || ev.cycleId.length === 0) continue;
-    const list = groups.get(ev.cycleId) ?? [];
-    list.push(ev);
-    groups.set(ev.cycleId, list);
-  }
-
-  const cycles: WarmupCycle[] = [];
-  for (const [cycleId, list] of groups) {
-    const stages: Record<ActivityStageKey, boolean> = {
-      sent: false,
-      measured: false,
-      engaged: false,
-      replied: false
-    };
-    let placement: string | null = null;
-    let subject: string | null = null;
-    let nodeDomain = "";
-    let seedInbox = "";
-    let occurredAt = "";
-    let hasError = false;
-    let errorDetailStage: ActivityStageKey | null = null;
-
-    for (const ev of list) {
-      if (ev.kind === "error") {
-        hasError = true;
-        const s = ev.detail?.stage;
-        if (typeof s === "string" && (ACTIVITY_STAGE_ORDER as readonly string[]).includes(s)) {
-          errorDetailStage = s as ActivityStageKey;
-        }
-      } else if (ev.kind in stages) {
-        stages[ev.kind as ActivityStageKey] = true;
-      }
-      // placement: preferir la etapa de medición; si no, cualquier placement no nulo.
-      if (ev.placement && (ev.kind === "measured" || placement === null)) {
-        placement = ev.placement;
-      }
-      if (!subject && typeof ev.subject === "string" && ev.subject.length > 0) subject = ev.subject;
-      if (!nodeDomain && ev.nodeDomain) nodeDomain = ev.nodeDomain;
-      if (!seedInbox && ev.seedInbox) seedInbox = ev.seedInbox;
-      if (!occurredAt || toTime(ev.occurredAt) > toTime(occurredAt)) occurredAt = ev.occurredAt;
-    }
-
-    const brokeAtStage = hasError
-      ? errorDetailStage ?? ACTIVITY_STAGE_ORDER.find((k) => !stages[k]) ?? null
-      : null;
-
-    cycles.push({
-      cycleId,
-      subject,
-      nodeDomain,
-      seedInbox,
-      occurredAt,
-      stages,
-      placement,
-      hasError,
-      brokeAtStage,
-      eventCount: list.length
-    });
-  }
-
-  cycles.sort((a, b) => toTime(b.occurredAt) - toTime(a.occurredAt));
-  return cycles.slice(0, Math.max(0, limit));
-}
-
-const ACTIVITY_POLL_MS = 8_000; // poll más rápido que POLL_MS (30s) → sensación de "en vivo".
-
-type ActivityState =
-  | { status: "loading" }
-  | { status: "ok"; payload: WarmupActivitySnapshot; lastUpdateAt: number }
-  | { status: "error"; message: string };
-
-function useWarmupActivity(): ActivityState {
-  const query = useQuery({
-    queryKey: ["v5", "warmup", "activity"],
-    queryFn: () => getJson<WarmupActivitySnapshot>(READ_ENDPOINTS.warmupActivity),
-    refetchInterval: ACTIVITY_POLL_MS,
-    refetchIntervalInBackground: false,
-    staleTime: ACTIVITY_POLL_MS / 2
-  });
-
-  if (query.isLoading) return { status: "loading" };
-  if (query.isError) {
-    return {
-      status: "error",
-      message:
-        query.error instanceof Error
-          ? query.error.message
-          : "no se pudo obtener la actividad del warmup"
-    };
-  }
-  if (query.data) return { status: "ok", payload: query.data, lastUpdateAt: query.dataUpdatedAt };
-  return { status: "loading" };
-}
-
-/* Etapas del feed — color por token, SIN ámbar (envío=warming, medición=neutral,
- * interacción=acento, respuesta=success). Icono lucide por etapa. */
-interface ActivityStageMeta {
-  key: ActivityStageKey;
-  label: string;
-  icon: typeof Send;
-  color: string;
-  soft: string;
-}
-
-const ACTIVITY_STAGES: ActivityStageMeta[] = [
-  { key: "sent", label: "envío", icon: Send, color: "var(--color-warming)", soft: "var(--color-warming-soft)" },
-  { key: "measured", label: "medición", icon: BarChart3, color: "var(--color-text-secondary)", soft: "var(--color-neutral-soft)" },
-  { key: "engaged", label: "interacción", icon: Activity, color: "var(--color-accent)", soft: "var(--color-accent-soft)" },
-  { key: "replied", label: "respuesta", icon: Reply, color: "var(--color-success)", soft: "var(--color-success-soft)" }
-];
-
-const ACTIVITY_STAGE_LABEL: Record<ActivityStageKey, string> = {
-  sent: "envío",
-  measured: "medición",
-  engaged: "interacción",
-  replied: "respuesta"
-};
-
-/** Tono del badge de placement: INBOX=success, SPAM=warning, resto (PROMOTIONS/OTHER)=neutral. */
-function placementBadgeTone(placement: string): "success" | "warning" | "neutral" {
-  const p = placement.toUpperCase();
-  if (p === "INBOX") return "success";
-  if (p === "SPAM") return "warning";
-  return "neutral";
-}
-
-/**
- * WarmupActivityFeed — lo primero que ve el operador: cada vuelta de calentamiento
- * ocurriendo en vivo. Self-contained (hace su propia query como WarmupTrendsPanel).
- */
-/* ============================================================
- * EstadoDelCalentamiento — la respuesta de una sola mirada: ¿se está calentando algo AHORA?
- *
- * Se deriva del mismo feed de actividad (sin endpoint nuevo): qué dominios tuvieron vueltas hoy,
- * cuántas, y —lo más importante— si esas vueltas MIDIERON dónde cayó el correo o salieron a ciegas.
- *
- * Ese último dato es el que no se puede esconder: sin una semilla con credencial no hay placement,
- * y sin placement el freno automático de la rampa no tiene con qué dispararse. Un panel que
- * mostrara "calentando" sin decir eso estaría mintiendo por omisión.
- * ============================================================ */
-
-interface EstadoCalentamiento {
-  dominios: string[];
-  vueltasHoy: number;
-  medidas: number;
-  ultima: string | null;
-  ultimoPlacement: string | null;
-}
-
-/** Deriva el estado de hoy (UTC) desde los eventos crudos. Puro: fácil de razonar y de testear. */
-export function derivarEstadoCalentamiento(
-  events: WarmupActivityEvent[],
-  hoyUtc: string
-): EstadoCalentamiento {
-  const deHoy = events.filter((e) => e.occurredAt.slice(0, 10) === hoyUtc);
-  const ciclos = new Map<string, WarmupActivityEvent[]>();
-  for (const e of deHoy) {
-    const previo = ciclos.get(e.cycleId);
-    if (previo) previo.push(e);
-    else ciclos.set(e.cycleId, [e]);
-  }
-  const conPlacement = [...ciclos.values()].filter((evs) => evs.some((e) => e.kind === "measured" && e.placement));
-  const ordenados = [...deHoy].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
-  return {
-    dominios: [...new Set(deHoy.map((e) => e.nodeDomain))],
-    vueltasHoy: ciclos.size,
-    medidas: conPlacement.length,
-    ultima: ordenados[0]?.occurredAt ?? null,
-    ultimoPlacement: ordenados.find((e) => e.kind === "measured" && e.placement)?.placement ?? null
-  };
-}
-
-
-
-/** Una vuelta: asunto + caja→semilla + tiempo relativo + placement + línea de 4 etapas. */
-
-/** Línea compacta de las 4 etapas: encendidas en su token, apagadas en subtle, error en warning. */
-
-/** Estado vacío honesto — nunca inventa vueltas. */
-
-
 
 /* ============================================================
  * Loaded — estructura principal.
  * ============================================================ */
 
-function Loaded({
-  payload,
-  trends,
-  onSelectMailbox,
-  selectedId
-}: {
-  payload: WarmupStatusSnapshot;
-  trends: TrendsState;
-  onSelectMailbox: (mailbox: SelectedMailbox) => void;
-  selectedId: string | null;
-}) {
-  const { enabled, nodes, note } = payload;
+function Loaded({ payload }: { payload: WarmupStatusSnapshot; trends: TrendsState }) {
+  const { enabled, note } = payload;
   return (
     <>
       {!enabled ? (
@@ -805,236 +445,25 @@ function Loaded({
         </motion.div>
       ) : null}
 
-      <motion.section variants={staggerItem}>
-        {nodes.length > 0 ? (
-          <NodesTable nodes={nodes} onSelectMailbox={onSelectMailbox} selectedId={selectedId} />
-        ) : (
-          <NodesEmpty />
-        )}
-      </motion.section>
-
     </>
   );
 }
 
 /* ============================================================
- * Carga manual — form mínimo → POST /v1/mailboxes (Warmup API).
+ * NodesTable / NodesEmpty: BORRADOS.
  *
- * UI mínima (el grueso vive en warmup-mailboxes-client). Idempotente del lado
- * del backend: reintentar el mismo email no duplica ni resetea el estado. La
- * referencia SMTP (vault) la deriva el backend del id del nodo; no se carga a mano
- * ni viaja la credencial. Tolera exists/error con gracia.
- * ============================================================ */
-
-type ManualSubmitState =
-  | { status: "idle" }
-  | { status: "submitting" }
-  | { status: "done"; result: WarmupMailboxCreateResult }
-  | { status: "error"; message: string };
-
-
-
-
-/* ============================================================
- * WarmupLoop — el ESQUEMA de funcionamiento como ciclo de 3 etapas.
+ * Colgaban de `warmup_nodes`, una tabla que el warmup vivo NO escribe (su único escritor es
+ * runWarmupTick, y a eso solo lo llama el dryrun-daemon). En producción el endpoint devolvía
+ * `nodes: []` y la pantalla decía "Sin nodos en warmup" mientras 6 dominios estaban calentando
+ * según /v1/warmup/plan. No inventaba datos —eso estaba bien— pero AFIRMABA un vacío falso, y su
+ * mensaje ("Cuando se registre un ramp, sus nodos aparecen acá") prometía un mecanismo que no es
+ * el que corre.
  *
- * Traduce el "Internal Warmup Loop" de la referencia a la narrativa del panel:
- *   ① SEND    — nuestros nodos SMTP empujan volumen rampado (queuedSends, activeNodes,
- *               meta de rampa de referencia según el día del pool).
- *   ② ENGAGE  — los buzones que hospedamos actúan como usuarios reales (abren, responden,
- *               marcan no-spam). Cantidad = pool de nodos; warm = confiables, fresh = midiendo.
- *   ③ REPLY   — las respuestas y señales vuelven; la reputación se acumula. Placement de
- *   /REPUTACIÓN  inbox más reciente (trends) vs el piso; spam rate y señales de daño.
- *
- * Anti-mock: SEND/ENGAGE salen de /status (siempre presentes). REPLY depende de /trends;
- * si trends carga o no tiene serie, la etapa muestra "midiendo…", nunca un número falso.
- * Sin ámbar: SEND=warming(cyan), ENGAGE=acento, REPLY=success. Movimiento sutil,
- * respeta prefers-reduced-motion.
+ * No se reescribió contra /v1/warmup/plan porque esa pantalla YA existe y va más arriba en esta
+ * misma vista: WarmupPlan.tsx muestra, por dominio del pool real, el día, el placement medido con
+ * su tamaño de muestra, el cupo y la decisión con su motivo. Dos tablas de lo mismo se
+ * desincronizan; la que se queda es la que sale de la función que consulta el daemon.
  * ============================================================ */
-
-/** Último punto REAL de placement (wilsonLb, o ewma como fallback) recorriendo hacia atrás. */
-function latestPlacement(series: WarmupPlacementPoint[]): {
-  value: number | null;
-  spamRate: number | null;
-  samples: number;
-} {
-  for (let i = series.length - 1; i >= 0; i -= 1) {
-    const p = series[i];
-    const v =
-      typeof p.inboxWilsonLb === "number"
-        ? p.inboxWilsonLb
-        : typeof p.inboxEwma === "number"
-        ? p.inboxEwma
-        : null;
-    if (v !== null && Number.isFinite(v)) {
-      return {
-        value: v,
-        spamRate: typeof p.spamRate === "number" ? p.spamRate : null,
-        samples: p.samples
-      };
-    }
-  }
-  return { value: null, spamRate: null, samples: 0 };
-}
-
-/**
- * Meta de rampa del pool: mapea el día más avanzado del pool contra la curva de
- * referencia (ramp de /trends). Es un agregado DERIVADO de dos datos reales
- * (node.dayIndex + curva de referencia), etiquetado como "referencia" — no medido.
- */
-function rampTargetForPool(
-  nodes: WarmupNode[],
-  ramp: WarmupRampPoint[]
-): { day: number; quota: number } | null {
-  if (nodes.length === 0 || ramp.length === 0) return null;
-  const maxDay = Math.max(...nodes.map((n) => n.dayIndex));
-  const sorted = [...ramp].sort((a, b) => a.dayIndex - b.dayIndex);
-  let match = sorted[0];
-  for (const p of sorted) {
-    if (p.dayIndex <= maxDay) match = p;
-    else break;
-  }
-  return { day: maxDay, quota: match.quota };
-}
-
-interface StageAccent {
-  color: string; // token del acento de la etapa
-  soft: string; // token soft para el chip del número de etapa
-}
-
-const STAGE_SEND: StageAccent = { color: "var(--color-warming)", soft: "var(--color-warming-soft)" };
-const STAGE_ENGAGE: StageAccent = { color: "var(--color-accent)", soft: "var(--color-accent-soft)" };
-const STAGE_REPLY: StageAccent = { color: "var(--color-success)", soft: "var(--color-success-soft)" };
-
-
-/** Una etapa del loop. Tile con hairline dentro del Card padre (aplana card-in-card). */
-
-/** Número grande + unidad + hint honesto de una etapa. */
-
-/** Conector entre etapas: flecha → en desktop, ↓ en móvil. Flujo sutil opcional. */
-
-/* ============================================================
- * KPI Strip — engine ON/OFF + totales (grid de KpiCards del molde).
- *
- * DATOS REALES: los KPIs no traen serie histórica ni baseline, así que van sin
- * sparkline ni delta (nada decorativo). El estado del motor va como StateBadge.
- * ============================================================ */
-
-
-/* ============================================================
- * StateBreakdown — "Recorrido del nodo": el viaje fresh → warm como un stepper, con
- * los estados fuera del ciclo activo (paused/blocked/quarantined) a un lado. Reencuadra
- * el desglose por estado como una LÍNEA DE VIDA, no un conteo plano. Datos: byState.
- * ============================================================ */
-
-// La ruta feliz del calentamiento: nace midiendo (fresh) y madura a confiable (warm).
-const LIFECYCLE_PATH: Array<{ state: WarmupNodeState; caption: string }> = [
-  { state: "fresh", caption: "recién ingresado · midiendo señales" },
-  { state: "warm", caption: "señales sostenidas · emisor confiable" }
-];
-// Estados que SALEN del ciclo activo (atención). El backend excluye blocked/quarantined
-// del pool activo, así que normalmente solo aparece paused; los demás se muestran si llegan.
-const LIFECYCLE_ATTENTION: WarmupNodeState[] = ["paused", "blocked", "quarantined"];
-
-
-/* ============================================================
- * NodesTable — filas grid del molde (StateBadge + left-border por estado).
- * ============================================================ */
-
-const NODE_COLS = "minmax(0,1.6fr) auto auto auto auto";
-
-function NodesTable({
-  nodes,
-  onSelectMailbox,
-  selectedId
-}: {
-  nodes: WarmupNode[];
-  onSelectMailbox: (mailbox: SelectedMailbox) => void;
-  selectedId: string | null;
-}) {
-  return (
-    <Card className="overflow-hidden">
-      <div style={{ padding: `${PAD_RELAXED}px ${PAD_RELAXED}px 14px` }}>
-        <PanelHead
-          title="Dónde está cada emisor"
-          sub="El viaje de cada nodo: mailbox, dominio, etapa, día de rampa, readiness de auth y placement. Clic en una fila para ver su historial."
-          right={<Caption style={{ fontSize: 12.5 }}>{nodes.length} en el pool</Caption>}
-        />
-      </div>
-      <div className="overflow-x-auto">
-        <div style={{ minWidth: 640 }}>
-          <div
-            className="grid items-center gap-3 border-b border-border px-5 py-2"
-            style={{
-              gridTemplateColumns: NODE_COLS,
-              fontSize: 11,
-              letterSpacing: ".05em",
-              textTransform: "uppercase",
-              color: "var(--color-text-tertiary)"
-            }}
-          >
-            <span>Mailbox</span>
-            <span style={{ textAlign: "right" }}>Estado</span>
-            <span style={{ textAlign: "right" }}>Día</span>
-            <span style={{ textAlign: "right" }}>Auth</span>
-            <span style={{ textAlign: "right" }}>Placement</span>
-          </div>
-          {nodes.map((node) => {
-            const status = aivStatus(node.state);
-            const lb = stateNeedsLeftBorder(status);
-            const isSel = selectedId === node.id;
-            return (
-              <button
-                key={node.id}
-                type="button"
-                onClick={() => onSelectMailbox({ id: node.id, mailbox: node.mailbox })}
-                aria-selected={isSel}
-                className="grid w-full items-center gap-3 border-b border-border px-5 py-3 text-left transition-colors hover:bg-surface-sunken aria-selected:bg-surface-sunken"
-                style={{
-                  gridTemplateColumns: NODE_COLS,
-                  borderLeft: lb ? `2px solid ${stateColor(status)}` : "2px solid transparent"
-                }}
-              >
-                <span className="min-w-0">
-                  <MonoStrong className="block truncate text-[12.5px] text-fg">{node.mailbox}</MonoStrong>
-                  <span className="block truncate font-sans text-[11.5px] text-fg-subtle">
-                    {node.domain}
-                  </span>
-                </span>
-                <span style={{ justifySelf: "end" }}>
-                  <StateBadge status={status} label={stateLabel(node.state)} />
-                </span>
-                <span style={{ justifySelf: "end" }}>
-                  <Pill tone="neutral">día {node.dayIndex}</Pill>
-                </span>
-                <span style={{ justifySelf: "end" }}>
-                  {node.authReady ? (
-                    <Pill tone="success">lista</Pill>
-                  ) : (
-                    <Pill tone="warning">pendiente</Pill>
-                  )}
-                </span>
-                <span style={{ justifySelf: "end" }}>
-                  {typeof node.placementScore === "number" ? (
-                    <span
-                      className="font-sans text-[13px] font-semibold tabular-nums"
-                      style={{ color: placementColor(node.placementScore) }}
-                      title={`placement score ${node.placementScore.toFixed(2)}`}
-                    >
-                      {formatPercent(node.placementScore)}
-                    </span>
-                  ) : (
-                    <Mono className="text-fg-subtle">sin dato</Mono>
-                  )}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    </Card>
-  );
-}
 
 /* ============================================================
  * Banners — engine off / note.
@@ -1119,23 +548,6 @@ function BackendUnavailable({ message }: { message: string }) {
   );
 }
 
-function NodesEmpty() {
-  return (
-    <Card style={{ padding: PAD_RELAXED }} className="flex items-start gap-4">
-      <IconTile>
-        <Flame size={16} strokeWidth={1.75} color="var(--color-text-secondary)" />
-      </IconTile>
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <Heading level={2}>Sin nodos en warmup</Heading>
-        <BodyText>
-          El engine no reporta nodos en calentamiento en este snapshot. Cuando se
-          registre un ramp, sus nodos aparecen acá.
-        </BodyText>
-      </div>
-    </Card>
-  );
-}
-
 /* ============================================================
  * Footer.
  * ============================================================ */
@@ -1206,8 +618,12 @@ function WarmupTrendsPanel() {
 
 function TrendsLoaded({ payload }: { payload: WarmupTrends }) {
   const { placementSeries, perProvider, ramp, signals, note } = payload;
-  const isEmpty =
-    placementSeries.length === 0 && perProvider.length === 0 && ramp.length === 0;
+  // `ramp` es una CONSTANTE de configuración (un perfil sintético que el backend arma igual para
+  // cualquier flota), así que nunca puede desmentir la ausencia de mediciones: con los 30 puntos
+  // que trae siempre, `isEmpty` daba false y el banner "Sin datos de tendencia todavía" era
+  // inalcanzable. Verificado en producción: serie vacía + proveedores vacíos + sin nota, y el
+  // operador veía gráficos sin una sola línea que dijera que no hay medición detrás.
+  const isEmpty = placementSeries.length === 0 && perProvider.length === 0;
 
   return (
     <div className="flex flex-col gap-5">
@@ -1261,7 +677,6 @@ function PlacementTrendCard({
   const first = points.length > 0 ? points[0].v : null;
   const delta = last !== null && first !== null ? last - first : null;
   const refY = scaleY(PLACEMENT_FLOOR);
-  const overFloor = last !== null ? last >= PLACEMENT_FLOOR : null;
 
   return (
     // El placement es la PUERTA (gate): mientras el inbox % esté bajo el piso, la rampa
@@ -1299,11 +714,13 @@ function PlacementTrendCard({
               {formatDeltaPp(delta)}
             </span>
           ) : null}
-          {overFloor !== null ? (
-            <Pill tone={overFloor ? "success" : placementTone(last) === "critical" ? "critical" : "warning"}>
-              {overFloor ? "sobre el piso · escala habilitada" : "bajo el piso · escala frenada"}
-            </Pill>
-          ) : null}
+          {/* Se fue el pill "sobre el piso · escala habilitada / bajo el piso · escala frenada":
+              declaraba un gate global de 0.80 sobre una serie de TODA la flota, con el umbral
+              copiado a mano en este archivo. El freno real es POR DOMINIO y por evidencia
+              (decidirCupoDeHoy exige un mínimo de mediciones en ventana temporal), y ya hubo un
+              incidente por confundir un umbral global con la puerta real. La decisión que sí
+              frena se muestra arriba, en el plan del día (decision.accion + decision.motivo). */}
+          <Pill tone="neutral">referencia de flota · el freno se decide por dominio</Pill>
         </div>
       ) : (
         <Caption>Sin serie de placement en este snapshot.</Caption>
@@ -1353,15 +770,17 @@ function PlacementTrendCard({
         </svg>
       ) : null}
 
+      {/* Las pills "señales de daño · bounces 2 · complaints 1" pintaban FIXTURES como daño real:
+          las 3 filas de warmup_signals que producían esos números pertenecen a
+          hello@annualfilings-infra.com, un nodo del backfill — el mismo tipo de nodo que
+          listActiveNodes descarta (pg-stores.ts:153, `hello@%`) y cuyos rollups el filtro
+          @panel.test descarta (pg-stores.ts:498-509). `countRecent` es la ÚNICA lectura de la
+          familia que quedó sin filtro anti-fixture. Y de fondo: nada del camino en producción
+          escribe warmup_signals — la fuente viva de rebotes es warmup_activity kind='error'.
+          Hasta que el backend filtre y mida, acá no va un número. */}
       <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
         <Caption style={{ fontSize: 11 }}>señales de daño</Caption>
-        <Pill tone={signals.bounces > 0 ? "critical" : "neutral"}>
-          bounces <span className="font-sans font-semibold tabular-nums">{signals.bounces}</span>
-        </Pill>
-        <Pill tone={signals.complaints > 0 ? "critical" : "neutral"}>
-          complaints{" "}
-          <span className="font-sans font-semibold tabular-nums">{signals.complaints}</span>
-        </Pill>
+        <Pill tone="neutral">sin señales medidas</Pill>
       </div>
     </Card>
   );
@@ -1515,6 +934,11 @@ function RampCurveCard({ ramp }: { ramp: WarmupRampPoint[] }) {
 
   return (
     <Card style={{ padding: PAD_RELAXED }} className="flex flex-col gap-4">
+      {/* Este número gigante ("50 envíos/día") NO es de nadie: el backend arma un perfil de
+          referencia sintético (dailyLimit 50, +2 por día) idéntico para cualquier flota, que no
+          corresponde a ningún nodo ni a ninguna decisión. El plan real de hoy es cupo 2 u 8 por
+          dominio con tope global de 14 vueltas/día, y se muestra arriba en "El plan del día". La
+          palabra "referencia" aparecía solo en los comentarios del código; ahora está en pantalla. */}
       <PanelHead
         title={
           <span className="inline-flex items-center gap-2">
@@ -1522,14 +946,17 @@ function RampCurveCard({ ramp }: { ramp: WarmupRampPoint[] }) {
             Curva de rampa
           </span>
         }
+        right={<Pill tone="neutral">referencia teórica · no medido</Pill>}
       />
 
       {lastQuota !== null ? (
         <div className="flex items-baseline gap-1.5">
-          <span className="font-sans text-[32px] font-semibold leading-none tabular-nums text-fg">
+          <span className="font-sans text-[32px] font-semibold leading-none tabular-nums text-fg-subtle">
             {lastQuota}
           </span>
-          <span className="font-sans text-[12px] leading-none text-fg-subtle">envíos/día</span>
+          <span className="font-sans text-[12px] leading-none text-fg-subtle">
+            envíos/día del perfil teórico · el cupo que se ejecuta está en el plan del día
+          </span>
         </div>
       ) : (
         <Caption>Sin curva de rampa en este snapshot.</Caption>

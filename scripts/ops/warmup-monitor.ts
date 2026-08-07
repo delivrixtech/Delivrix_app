@@ -43,6 +43,8 @@ import {
 import { lineasParaPrompt as accionesParaPrompt } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
 import { placementsDeDominio, planDelDia, rutaInventario } from "../../apps/warmup-engine/src/service/plan-diario.ts";
 import { esInbox } from "../../apps/warmup-engine/src/domain/decision-diaria.ts";
+import { revisarReputacionDe } from "../../apps/gateway-api/src/agents/reputacion.ts";
+import { createMxtoolboxAdapterFromEnv } from "../../packages/adapters/src/mxtoolbox-adapter.ts";
 import {
   countCyclesToday,
   decideDaemonAction,
@@ -214,6 +216,50 @@ async function leerCupoDelNodo(dominio: string): Promise<{ cap: number | null; c
     cap: frenado ? 0 : mCap ? Number(mCap[1]) : null,
     consumidoHoy: /sin contador hoy/.test(linea) ? null : mUso ? Number(mUso[1]) : null,
     motivo: /no se pudo|error/i.test(linea) ? linea.trim().slice(0, 120) : null
+  };
+}
+
+/**
+ * LA MANO DE REPUTACIÓN, cableada de verdad.
+ *
+ * Existía el módulo (`reputacion.ts`), existía la acción en la lista blanca, y NO estaba enganchada:
+ * o sea, el prompt le prometía al modelo una palanca que respondía "no está habilitado". Es la
+ * falla que este repo ya pagó dos veces —pausar_warmup fue un no-op durante semanas— y la que el
+ * brief del equipo prohibía explícitamente. La dejo cableada acá.
+ *
+ * Los cuatro insumos van desde AFUERA porque el módulo no lee un solo archivo ni abre una sola
+ * conexión por su cuenta: así se puede testear entero sin red. DNS sale de node:dns, y las listas
+ * negras del adaptador de MXToolbox que el gateway ya usa para la pestaña Reputación.
+ *
+ * LO QUE NO SE HACE, Y ES LO IMPORTANTE: si MXToolbox no está configurado, la consulta devuelve
+ * `estado: "error"`, nunca `"clean"`. El 2026-07-25 este sistema tenía 38 nodos cerrados en Gmail
+ * mientras el chequeo de blacklists decía "0" — y alguien leyó ese cero como "está limpio". Una
+ * lista negra que no se pudo consultar es un "no sé"; disfrazarlo de limpio es fabricar evidencia
+ * sobre lo único que puede quemar una IP sin aviso.
+ */
+function revisarReputacionDelDominio(inventario: { bandejas?: Array<{ domain?: string; serverIp?: string | null }> } | null) {
+  const mx = createMxtoolboxAdapterFromEnv(process.env);
+  return async (dominio: string) => {
+    const dns = await import("node:dns/promises");
+    const b = (inventario?.bandejas ?? []).find((x) => (x.domain ?? "").toLowerCase() === dominio.toLowerCase());
+    return revisarReputacionDe({
+      dominio,
+      // Sin binding no hay IP, y eso NO es un caso raro: hay dominios con credencial y sin nodo.
+      // Sale como "no sé" desde el módulo, que ya lo distingue de "limpio".
+      ip: b?.serverIp ?? null,
+      resolveTxt: (fqdn) => dns.resolveTxt(fqdn),
+      reverse: (ip) => dns.reverse(ip),
+      resolve4: (host) => dns.resolve4(host),
+      blacklist: async (ip) => {
+        if (!mx) return { estado: "error" as const, listas: [] };
+        const r = await mx.lookup({ target: ip, command: "blacklist" });
+        const est = r.summary?.status;
+        return {
+          estado: est === "clean" || est === "warning" || est === "listed" ? est : ("error" as const),
+          listas: [...(r.summary?.failedChecks ?? []), ...(r.summary?.warningChecks ?? [])]
+        };
+      }
+    });
   };
 }
 
@@ -601,6 +647,12 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
         leerCupoNodo: leerCupoDelNodo,
         diagnosticarDominio: diagnosticarUnDominio,
         medirDominio: medirUnDominio(pg),
+        // REPUTACIÓN: la mano que el operador pidió "sin excusas". Es pasiva —DNS + una consulta de
+        // listas negras— así que no lleva flag. El inventario se lee acá y no adentro del módulo:
+        // sin la IP del nodo no hay listas negras ni PTR que mirar, y eso sale como "no sé".
+        revisarReputacion: revisarReputacionDelDominio(
+          await leerInventarioFabrica({ workspace }).catch(() => null)
+        ),
         // SOLTAR: la única acción que aumenta volumen, detrás de su PROPIO flag —
         //
         //   WARMUP_AGENT_PUEDE_SOLTAR=true   en config/gateway.env
@@ -1019,6 +1071,11 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
         leerCupoNodo: leerCupoDelNodo,
         diagnosticarDominio: diagnosticarUnDominio,
         medirDominio: medirUnDominio(pg),
+        // Misma mano en el carril del chat: si Juanes pregunta "¿cómo está la reputación de X?",
+        // tiene que poder ir a mirarla en vez de contestar de memoria.
+        revisarReputacion: revisarReputacionDelDominio(
+          await leerInventarioFabrica({ workspace }).catch(() => null)
+        ),
         ...(puedeSoltar
           ? {
               soltarDominio: async (dominio: string, cap: number, motivo: string) => {

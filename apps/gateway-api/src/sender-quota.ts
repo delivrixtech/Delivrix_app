@@ -200,6 +200,22 @@ export function evaluarBandeja(
 
   if (!med) return gris("sin medir", "nunca se midió");
   if (med.estado === "unreadable") return gris("sin lectura", med.detalle);
+  // El nodo movió correo y NADA de eso es nuestro: no hay muestra propia, así que no hay veredicto.
+  //
+  // Sin esta rama el estado caía al `return` verde de abajo, o sea que el estado que significa
+  // "no tengo con qué opinar" salía "entrega" con la cuota entera servida. Medido el 2026-08-06
+  // contra la medición de producción (58 bandejas) y el libro real (7 dominios con envío nuestro en
+  // 7 días): al cablear `leerLibroPropio` en medir-flota, 36 bandejas quedan `no_own_traffic` — y
+  // son EXACTAMENTE las 36 que hoy están rojas "bloqueada", las que NFC quemó
+  // (annualcorp-control.com, annualfiling-relay.com, infranationalreport.com…). Todas pasaban de
+  // roja a verde con una sola línea de cambio en el script.
+  //
+  // Gris y NO editable, a diferencia de `no_traffic`: sobre un dominio del que no medimos ni un
+  // mensaje propio no hay número que el operador pueda asignar con fundamento, y dejarlo editable
+  // es cargar el cupo que se sirve solo el día que una muestra de un mensaje lo ponga verde.
+  if (med.estado === "no_own_traffic") {
+    return gris("sin muestra propia", med.detalle);
+  }
   if (med.estado === "no_traffic") {
     // Medida y legible, pero sin evidencia de entrega. Verde solo si midio Y entrega: esto es
     // gris con el numero guardado (editable) para cuando arranque.

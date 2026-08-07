@@ -129,10 +129,73 @@ export function esPing(texto: string): boolean {
  * codicioso mete "Ok, es bien." dentro del grupo del mensaje de las semillas, porque comparten
  * "bien" y el divisor de `esLaMisma` es min(1, N) = 1 ⇒ 1.0. El "conforme" más claro del día se
  * contaba como tema.
+ *
+ * Y UN CIERRE DE CORTESÍA TAMPOCO ES UN TEMA. La guarda de 2 palabras largas no alcanzaba: "Ok, si
+ * cambia algo o si tienes dudas, avisame." tiene cinco, así que abría tema — y el MISMO texto
+ * `clasificarReaccion` lo devuelve como "conforme". El módulo se contradecía a sí mismo. En el
+ * archivo real de producción 2 de los 4 temas guardados son cierres, y con MIN_VECES=3 iban a ser
+ * lo primero en llegar al prompt: el agente aprendiendo que a Juanes le interesa el tema "avisame".
+ *
+ * PERO DELEGAR EN `clasificarReaccion` FUE PEOR QUE EL PROBLEMA. Su regex es `^(ok|dale|listo|
+ * gracias|perfecto|…)\b`: un ancla al ARRANQUE de la frase que no mira lo que sigue. Y el prompt de
+ * VOZ le enseña al agente que Juanes habla justo así ("podés usar listo, dale, de una, hágale").
+ * Medido sobre 7 pedidos realistas, 6 daban `false`: "Dale, subí el cupo de corpfiling-infra.com a
+ * 40 y avisame cómo viene el placement", "Listo, ahora revisá los 7 dominios vírgenes…", "Ok pero
+ * por qué bizreport-control.com sigue frenado…". O sea que la memoria de temas —lo que el informe
+ * de 14 días usa para decidir si este paquete se queda— quedaba ciega a casi todo lo que el jefe
+ * pide. Cambiamos "el agente aprende el tema avisame" por "el agente no aprende nada".
+ *
+ * EL CIERRE ES LA FRASE ENTERA, NO SU PRIMERA PALABRA. Así que el arranque cortés se SACA y se
+ * juzga lo que queda; y el vocabulario de cierre (`CIERRE`) descuenta solo en los mensajes que
+ * abren con cortesía. Esa restricción no es cosmética: "cambia" y "tienes" no dicen nada dentro de
+ * "Ok, si cambia algo…", pero "Cambia el cupo a 40" es un pedido de verdad y ahí tienen que contar.
  */
 export function esTema(texto: string): boolean {
-  return !esPing(texto) && largas(texto).size >= 2;
+  if (esPing(texto)) return false;
+  const n = norm(texto);
+  const abreCortes = ARRANQUE_CORTES.test(n);
+  // Se sacan TODOS los arranques encadenados: "Dale, gracias, estare atento" lleva dos.
+  let resto = n;
+  while (ARRANQUE_CORTES.test(resto)) resto = resto.replace(ARRANQUE_CORTES, "").trim();
+  const utiles = [...largas(resto)].filter((w) => !abreCortes || !CIERRE.has(w));
+  return utiles.length >= 2;
 }
+
+/** El arranque cortés, tal cual lo detecta `clasificarReaccion`. Misma lista, un solo lugar. */
+const ARRANQUE_CORTES = /^(ok|okay|dale|listo|gracias|perfecto|de una|entendido|bien)\b/;
+
+/**
+ * Palabras que NO abren un tema cuando el mensaje ya arrancó con cortesía: son el resto de la
+ * fórmula de despedida. Salen de los 4 cierres textuales del canal, no de imaginarlos:
+ * "Ok, si cambia algo o si tienes dudas, avisame." · "Dale, gracias, estare atento." ·
+ * "Listo, gracias!" · "Perfecto, gracias."
+ */
+const CIERRE = new Set([
+  "gracias",
+  "avisame",
+  "avisarme",
+  "avisar",
+  "avisas",
+  "avises",
+  "aviso",
+  "entonces",
+  "quedo",
+  "dudas",
+  "duda",
+  "estare",
+  "atento",
+  "atenta",
+  // OJO con lo que NO entra: "pendiente", "cupo", "placement" y cualquier término del dominio. Un
+  // "Dale, resolvé el pendiente 3" tiene que seguir siendo un tema.
+  "algo",
+  "nada",
+  "cambia",
+  "tienes",
+  "tenes",
+  "cualquier",
+  "cosa",
+  "saludos"
+]);
 
 /**
  * Cómo le cayó la respuesta. La etiqueta la escribe el jefe con su mensaje siguiente.
@@ -148,11 +211,46 @@ export function clasificarReaccion(
   textoNuevo: string
 ): "conforme" | "insiste" | "corrige" | null {
   const n = norm(textoNuevo);
-  if (/^(ok|okay|dale|listo|gracias|perfecto|de una|entendido|bien)\b/.test(n)) return "conforme";
+  if (ARRANQUE_CORTES.test(n)) return "conforme";
   if (esPing(textoNuevo)) return "insiste";
   if (esLaMisma(preguntaPrevia, textoNuevo)) return "insiste";
   if (/^(no|pero|como que|que no)\b/.test(n)) return "corrige";
   return null;
+}
+
+/**
+ * Solapamiento mínimo de vocabulario para que dos RESPUESTAS del agente cuenten como la misma.
+ *
+ * 0,4 y no el 0,6 de `esLaMisma`, y son dos preguntas distintas a propósito. `esLaMisma` decide si
+ * dos frases del jefe son la misma decisión: frases cortas, donde exigir poco junta cosas ajenas.
+ * Acá se compara el párrafo que el agente acaba de escribir contra el que escribió hace tres
+ * minutos, sobre 200 caracteres y 15-23 palabras de contenido.
+ *
+ * El número sale de MEDIR el incidente, no de elegirlo: las ocho respuestas del 2026-08-06 entre
+ * las 09:28 y las 09:34 dicen exactamente lo mismo (seis calentando, ocho frenados, nueve cruzaron,
+ * el freno de bizreport-control.com no pegó) redactadas distinto cada vez, y su solapamiento real
+ * va de 0,19 a 0,53 — o sea que a 0,6 el detector daba CERO. Corrido sobre las 73 respuestas del
+ * canal, 0,4 marca 12 y las 12 son repeticiones de verdad.
+ */
+export const UMBRAL_REPETIDA = 0.4;
+/** Debajo de esto el divisor min(|A|,|B|) hace que dos frases cortas compartan "cualquier cosa". */
+const MIN_LARGAS_PARA_SOLAPAR = 8;
+
+/**
+ * ¿El agente está diciendo otra vez lo mismo? PURO y exportado para poder fijarlo con el incidente.
+ *
+ * Con pocas palabras de contenido se exige texto normalizado IDÉNTICO, no solapamiento: con 3 o 4
+ * palabras, min(|A|,|B|) es tan chico que un 0,4 lo alcanza cualquier par de frases. Y es el caso
+ * que importa para los avisos enlatados ("te leí pero no pude contestarte"), que son cortos y se
+ * repiten textuales.
+ */
+export function esLaMismaRespuesta(a: string, b: string): boolean {
+  const A = largas(a);
+  const B = largas(b);
+  if (A.size < MIN_LARGAS_PARA_SOLAPAR || B.size < MIN_LARGAS_PARA_SOLAPAR) return norm(a) === norm(b);
+  let comunes = 0;
+  for (const w of A) if (B.has(w)) comunes++;
+  return comunes / Math.min(A.size, B.size) >= UMBRAL_REPETIDA;
 }
 
 /** Anota una conversación contestada. Dedupe por `ts`: si el tick se repite, el registro ya está. */
@@ -167,17 +265,22 @@ export function anotar(
   const respuesta = String(e.respuesta ?? "").slice(0, MAX_TEXTO);
   const t = msDe(e.cuando, Date.now());
 
-  // La detección directa del incidente de las 4 respuestas casi idénticas del hilo ...393. Sin el
-  // guard de respuesta vacía, `esLaMisma("", "")` da true y CADA turno fallido quedaría marcado
-  // como repetido — justo los que no dijeron nada.
+  // La detección de las respuestas casi idénticas. Sin el guard de respuesta vacía, `esLaMisma("", "")`
+  // da true y CADA turno fallido quedaría marcado como repetido — justo los que no dijeron nada.
+  //
+  // SIN FILTRAR POR HILO, y es la misma corrección que `anotarReaccion` ya había hecho a propósito
+  // más abajo. El detector se escribió mirando el incidente de las 03:28 (cuatro respuestas dentro
+  // del hilo ...393) y por eso el filtro parecía inofensivo; el incidente de las 09:28 del MISMO día
+  // fueron ocho respuestas casi idénticas en OCHO hilos distintos en 5,7 minutos — el agente
+  // contestando de a uno los hilos viejos con la misma foto — y el filtro las daba todas nuevas.
+  // La repetición la sufre el jefe, que lee el canal entero, no el hilo.
   const repetida =
     respuesta !== "" &&
     base.intercambios.some(
       (p) =>
-        p.hilo === e.hilo &&
         p.respuesta !== "" &&
         Math.abs(t - msDe(p.cuando, 0)) <= MS_REPETIDA &&
-        esLaMisma(p.respuesta, respuesta)
+        esLaMismaRespuesta(p.respuesta, respuesta)
     );
 
   base.intercambios.push({ ...e, pregunta, respuesta, repetida, reaccion: null });
@@ -224,10 +327,17 @@ function ultimaVista(t: Tema, porDefecto: number): number {
  * SIN FILTRAR POR HILO, y esa es la corrección medida: buscando dentro del mismo hilo da
  * insiste = 0, porque el jefe reclama con un mensaje SUELTO del canal mientras el bot le contesta
  * adentro del hilo ("Hola?" a las 03:29 mientras respondía el ...393 entre 03:28 y 03:31).
+ *
+ * PERO SÍ POR AUTOR. El campo `quien` existe en `Intercambio` exactamente para esto y no se estaba
+ * usando: sin él, un "no, pero..." de Esaú se anota como que JUANES corrigió la respuesta que le
+ * dieron a Juanes. Hoy el canal tiene una persona, así que no se nota — y eso es una coincidencia,
+ * no un control. El día que entre el segundo, el dato queda mal y es imposible de reconstruir.
+ * `quien` es opcional para no romper al llamador que todavía no lo pasa: sin él se comporta igual
+ * que hoy, y eso se dice acá en vez de dejarlo como sorpresa.
  */
 export function anotarReaccion(
   mem: MemoriaConversacion | null,
-  msg: { texto: string; cuando: string }
+  msg: { texto: string; cuando: string; quien?: string }
 ): MemoriaConversacion {
   const base = clonar(mem);
   const t = msDe(msg.cuando, Date.now());
@@ -236,6 +346,7 @@ export function anotarReaccion(
   for (let i = 0; i < base.intercambios.length; i++) {
     const e = base.intercambios[i] as Intercambio;
     if (e.reaccion !== null || e.respuesta === "") continue;
+    if (msg.quien !== undefined && e.quien !== msg.quien) continue;
     const c = msDe(e.cuando, 0);
     if (c > mejor) {
       mejor = c;
@@ -274,16 +385,22 @@ export function lineasParaPrompt(
   // A) La línea que hace el trabajo: es la foto que le faltaba cuando contestó 4 veces casi lo
   //    mismo en el hilo ...393. Va SOLA, sin consejo pegado — VOZ ya dice "no repetís". Un hecho no
   //    se discute; un consejo el modelo lo recicla como hallazgo propio.
+  //
+  //    YA NO SE FILTRA POR HILO, por el mismo motivo que `anotar`: el otro incidente del 2026-08-06
+  //    fueron ocho respuestas iguales en ocho hilos distintos en 5,7 minutos, y con el filtro puesto
+  //    esta línea salía VACÍA en cada una de las ocho — justo cuando servía. El hilo no desaparece:
+  //    se dice en la línea, porque "lo dije en otro hilo" y "lo dije acá" no son lo mismo para el
+  //    modelo que está por contestar.
   let ultima: Intercambio | null = null;
   for (const i of m.intercambios) {
-    if (i.hilo !== hiloActual || i.respuesta === "") continue;
+    if (i.respuesta === "") continue;
     const c = msDe(i.cuando, 0);
     if (ahora - c > MS_REPETIDA || ahora < c) continue;
     if (!ultima || c > msDe(ultima.cuando, 0)) ultima = i;
   }
   if (ultima) {
     const min = Math.max(0, Math.round((ahora - msDe(ultima.cuando, ahora)) / 60_000));
-    l.push(`LO QUE YA DIJISTE EN ESTE HILO (hace ${min} min):`);
+    l.push(`LO ÚLTIMO QUE DIJISTE (hace ${min} min, ${ultima.hilo === hiloActual ? "en este hilo" : "en otro hilo"}):`);
     l.push(`- "${ultima.respuesta.slice(0, MAX_CITA)}"`);
   }
 

@@ -30,7 +30,8 @@ export type NombreAccion =
   | "resolver_pendiente"
   | "leer_cupo_nodo"
   | "diagnosticar_dominio"
-  | "medir_dominio";
+  | "medir_dominio"
+  | "revisar_reputacion";
 
 /**
  * El cupo con el que vuelve un dominio soltado. NO lo elige el modelo, y esa es toda la seguridad
@@ -48,6 +49,89 @@ export const MUESTRA_PARA_JUZGAR = 3;
 
 /** Debajo de esta tasa de bandeja, un dominio con historia suficiente no vuelve al pool. */
 export const PISO_PARA_SOLTAR = 0.5;
+
+/**
+ * ¿Por qué este dominio frenado NO puede volver al pool? Devuelve el motivo, o `null` si califica.
+ *
+ * Es la MISMA regla que ejecuta `soltar_dominio` —abajo la llama tres veces, una por cada dato que
+ * va consiguiendo— y existe como función aparte por una razón medida: en 31 entradas de la bitácora
+ * hubo UN solo intento de soltar, contra bizreport-control.com, justo el único dominio quemado.
+ * Mientras tanto 7 nodos vírgenes que califican de sobra llevan semanas en cap 0.
+ *
+ * El motivo no es que el modelo sea tonto: es que las condiciones vivían en PROSA dentro del prompt
+ * ("soltar_dominio si alguno califica"), así que tenía que adivinar cuál calificaba. Y este
+ * proyecto ya pagó dos veces la misma lección: un criterio escrito en prosa el modelo lo devuelve
+ * como hallazgo propio, y si es falso lo devuelve con seguridad. Las condiciones tienen que
+ * llegarle YA EVALUADAS, como dato al lado de cada dominio.
+ *
+ * Por eso se exporta: quien arma el prompt (warmup-monitor.ts) llama a ESTA función, no reescribe
+ * los umbrales. Si divergieran, el agente vería candidatos que el código después rechaza — una
+ * promesa que se rompe al ejecutarla, que es peor que no haberla hecho.
+ */
+export function porQueNoVuelve(d: {
+  /**
+   * Cruzó el umbral permanente de Google o está en su tope. Irreversible.
+   *
+   * TRES estados, y `null` —"no se pudo mirar"— es uno de ellos. Con dos estados el gate FALLABA
+   * ABIERTO por el camino más banal que hay: quien produce este dato lo lee de
+   * `sender-measurement.json` con un `.catch(() => null)`, así que un archivo ilegible (o a medio
+   * escribir durante un deploy) llegaba acá como lista vacía ⇒ `cruzado: false` ⇒ un dominio que
+   * cruzó el umbral PERMANENTE volvía al pool con cupo 20. Reproducido: con la lista poblada el
+   * rechazo sale; con la lista vacía salía `ejecutada: true, cap 20` sobre bizreport-control.com.
+   *
+   * OJO al llamador: quien traduce una lista a este campo tiene que mapear la lista VACÍA a `null`,
+   * no a `false`. `[]` es truthy en JavaScript y ese detalle se llevó puesto el primer intento de
+   * arreglo — ver el comentario largo del tramo (0) en `soltar_dominio`.
+   *
+   * El prompt ya decía la verdad ("umbral permanente: sin dato") mientras el gate decía en silencio
+   * "no cruzó". Es la lección de "no medido ≠ cero" aplicada a la mitad.
+   */
+  cruzado: boolean | null;
+  /** Receptores que hoy le tienen la puerta cerrada. */
+  bloqueanPor: readonly string[];
+  /** Mediciones propias de placement. 0 = nunca se midió, que NO es lo mismo que 0% de bandeja. */
+  muestra: number;
+  tasaInbox: number | null;
+}): string | null {
+  if (d.cruzado === null)
+    return "no se pudo leer la medición de la flota: no sé si cruzó el umbral permanente, y eso no se da por bueno.";
+  if (d.cruzado) return "ya cruzó el umbral permanente o está en su tope. Eso no se deshace enviando — devolverle cupo solo gasta envíos.";
+  // SIN IMPERATIVO, y no es cosmético: esta cadena la cita textual `lineasDeFrenados` dentro del
+  // prompt, donde hay una prohibición dura de dar órdenes (hay un test con regex). Decía "hay que
+  // destrabar al receptor primero" y entraba al prompt tal cual: el modelo devuelve un consejo del
+  // prompt como si fuera hallazgo propio, que es la lección que este proyecto ya pagó dos veces.
+  if (d.bloqueanPor.length > 0)
+    return `lo tiene cerrado ${d.bloqueanPor.join(", ")}. Soltarlo ahí produce rebotes mientras el receptor siga cerrado.`;
+  // Sin mediciones SÍ califica: un dominio nuevo no tiene historia, y exigir evidencia que solo
+  // puede aparecer enviando es el candado que tuvo la flota entera parada.
+  if (d.muestra >= MUESTRA_PARA_JUZGAR && d.tasaInbox !== null && d.tasaInbox < PISO_PARA_SOLTAR)
+    return `viene ${Math.round(d.tasaInbox * 100)}% de bandeja sobre ${d.muestra} mediciones. No está para volver todavía.`;
+  return null;
+}
+
+/**
+ * Una señal de reputación. TRES estados, y "no-se" es uno de ellos.
+ *
+ * No hay un cuarto estado implícito donde un chequeo que no se pudo hacer se lea como uno que pasó:
+ * el 2026-07-29 un probe colgado reportó 10 de 10 nodos bloqueados estando bien, y el 2026-07-25 un
+ * "0 blacklist" convivió con 38 nodos cerrados en Gmail. Ausencia de dato no es evidencia de nada.
+ */
+export interface ChequeoReputacion {
+  estado: "ok" | "mal" | "no-se";
+  detalle: string;
+}
+
+/** Lo que devuelve la mano de reputación. La produce `reputacion.ts`; acá solo se declara. */
+export interface ReputacionLeida {
+  dominio: string;
+  /** `null` = el dominio no tiene nodo asignado. Sin IP no hay listas negras ni PTR que mirar. */
+  ip: string | null;
+  blacklist: ChequeoReputacion;
+  spf: ChequeoReputacion;
+  dkim: ChequeoReputacion;
+  dmarc: ChequeoReputacion;
+  ptr: ChequeoReputacion;
+}
 
 /** Lo que el agente pidió hacer. Sale del modelo, así que se trata como entrada no confiable. */
 export interface AccionPedida {
@@ -119,7 +203,7 @@ export interface ContextoAcciones {
    * en producción es lo que convierte "puede frenar cualquiera de los 58" en "puede frenar donde
    * ya no hay nada que perder".
    */
-  frenablesConDanio?: readonly string[];
+  frenablesConDanio?: readonly string[] | null;
   /**
    * ¿Esta acción la ORDENÓ el jefe explícitamente por chat, o la decidió el modelo solo?
    *
@@ -178,6 +262,26 @@ export interface ContextoAcciones {
     diaN: number | null;
     ultimaMedicion: string | null;
   }>;
+  /**
+   * REVISAR LA REPUTACIÓN: listas negras de su IP y su autenticación (SPF, DKIM, DMARC, PTR).
+   *
+   * Es lo que el operador pidió textual el 2026-08-06 y el agente no tenía de ninguna forma: sus
+   * hechos no traen una sola clave de blacklist ni de auth, y el escaneo diario de MXToolbox nunca
+   * corrió aunque la llave está paga. El instrumento estaba comprado y apagado.
+   *
+   * PASIVO: consulta DNS y una API de solo lectura. No manda correo ni cambia nada.
+   *
+   * OJO con lo que NO es: un semáforo. El resultado nunca sale solo — el case lo publica junto con
+   * el estado del receptor, porque una lista negra limpia no significa que estés entregando.
+   *
+   * PRESUPUESTO DE CUOTA, porque la API se paga y hay 58 nodos: UNA consulta de MXToolbox por
+   * invocación (solo listas negras; SPF/DKIM/DMARC/PTR salen de node:dns y cuestan cero). Con
+   * MAX_ACCIONES_POR_VUELTA=3 y un tick cada 10 minutos, el techo del carril de guardia es 3×144 =
+   * 432 consultas/día, y en la práctica muchísimo menos porque el agente no pide tres reputaciones
+   * por vuelta. El llamador comparte UNA instancia del adapter para que su caché
+   * (MXTOOLBOX_CACHE_TTL_MS) evite pagar dos veces la misma IP en la misma ventana.
+   */
+  revisarReputacion?: (dominio: string) => Promise<ReputacionLeida>;
   /** Pone cap 0 en el nodo del dominio. Reversible con un `--apply` normal. */
   frenarDominio?: (dominio: string, motivo: string) => Promise<{ antes: number | null; despues: number }>;
   /**
@@ -291,7 +395,24 @@ export async function ejecutarAcciones(
         // Frenar un dominio cruzado solo puede ayudar —lo irreversible ya ocurrió—; frenar uno
         // SANO cuesta calentamiento real y lo decide el operador, no el modelo. Si el agente
         // quiere frenar uno sano, la salida es anotar_pendiente, no ejecutar.
-        if (!ctx.ordenadoPorElJefe && ctx.frenablesConDanio && !ctx.frenablesConDanio.some((d) => d.toLowerCase() === dominio)) {
+        //
+        // `null` NO es `undefined` acá, y la diferencia importa desde que el campo admite los tres
+        // estados: `undefined` es "este entorno no restringe" (dry-run, tests) y sigue dejando
+        // pasar; `null` es "no pude leer la medición de la flota", y ahí no hay con qué verificar el
+        // alcance. Sin esta distinción, el mismo `null` que cierra el gate de soltar ABRIRÍA el del
+        // freno —de `[]` (rechaza todo) pasaría a "sin restricción" (acepta todo)— o sea que el
+        // arreglo de un lado sería el agujero del otro.
+        const alcance = ctx.frenablesConDanio;
+        if (!ctx.ordenadoPorElJefe && alcance === null) {
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: false,
+            detalle: `rechazada: no se pudo leer la medición de la flota, así que no sé si ${dominio} tiene daño. Frenar sin saberlo puede costar calentamiento sano.`
+          });
+          break;
+        }
+        if (!ctx.ordenadoPorElJefe && alcance && !alcance.some((d) => d.toLowerCase() === dominio)) {
           out.push({
             accion: nombre,
             objetivo: dominio,
@@ -364,15 +485,46 @@ export async function ejecutarAcciones(
         // empuja más adentro.
         //
         // Va PRIMERO y a propósito: es el único rechazo que no depende de leer nada por SSH, así
-        // que un dominio quemado se rechaza aunque toda la infraestructura de chequeo esté caída.
+        // que un dominio quemado se rechaza aunque el SSH y Postgres estén caídos.
         // Y no lo levanta ni una orden del jefe: la autoridad no deshace un umbral permanente.
-        if (ctx.frenablesConDanio?.some((d) => d.toLowerCase() === dominio)) {
-          out.push({
-            accion: nombre,
-            objetivo: dominio,
-            ejecutada: false,
-            detalle: `rechazada: ${dominio} ya cruzó el umbral permanente o está en su tope. Eso no se deshace enviando — devolverle cupo solo gasta envíos.`
-          });
+        //
+        // Pero SÍ depende de que alguien haya leído la medición de la flota, y ahí estuvo el
+        // agujero DOS VECES seguidas. Primero fue `Boolean(ctx.frenablesConDanio?.some(...))`, que
+        // colapsaba "el campo no vino" con "no está en la lista". Se cambió por
+        // `ctx.frenablesConDanio ? some() : null`… y NO cerró nada, porque en JavaScript `[]` ES
+        // TRUTHY: el único productor real (scripts/ops/warmup-monitor.ts) arma este campo con
+        // `[...new Set([...(hechos.flota?.cruzados ?? []), ...])]`, y un spread SIEMPRE devuelve
+        // array. Con `sender-measurement.json` ilegible —se lee con `.catch(() => null)`— la lista
+        // llegaba VACÍA, `some()` daba `false`, y bizreport-control.com, que cruzó el umbral
+        // PERMANENTE de Google, salía con cupo 20. Reproducido contra `ejecutarAcciones` real:
+        // `frenablesConDanio: []` ⇒ `ejecutada: true`. El arreglo anterior solo protegía la forma
+        // `undefined`, que producción no puede producir.
+        //
+        // Por eso acá la LISTA VACÍA TAMBIÉN es "no sé". Es deliberadamente conservador: hoy no se
+        // puede distinguir "leí la flota y nadie cruzó" de "no pude leer la flota", porque el
+        // productor codifica las dos como `[]`. Entre las dos lecturas se elige la que falla
+        // cerrado — el costo máximo es que un dominio virgen espere, y el del otro lado es
+        // irreversible.
+        //
+        // ponytail: techo conocido — con la flota legítimamente sin ningún dominio cruzado,
+        // `soltar_dominio` queda bloqueado (hoy no pasa: hay 9 cruzados). Se levanta el día que
+        // scripts/ops/warmup-monitor.ts pase `hechos.flota ? [...new Set([...])] : null` en sus dos
+        // `ejecutarAcciones` (~:596 guardia y ~:1015 chat); ahí `[]` vuelve a significar "leí y
+        // ninguno" y esta línea puede volver a `!= null`.
+        //
+        // Las tres condiciones salen de `porQueNoVuelve`, no de acá: es la misma función que se le
+        // muestra al agente al lado de cada dominio frenado. Se la llama en TRES tramos —uno por
+        // cada dato que se va consiguiendo— para no gastar un SSH ni una consulta a Postgres en un
+        // dominio que ya se rechazó, y para que el orden de los rechazos no cambie. En los tramos
+        // 2 y 3 `cruzado` va en `false` porque ESTE tramo ya lo verificó, no porque se suponga.
+        const quemado = porQueNoVuelve({
+          cruzado: ctx.frenablesConDanio?.length ? ctx.frenablesConDanio.some((d) => d.toLowerCase() === dominio) : null,
+          bloqueanPor: [],
+          muestra: 0,
+          tasaInbox: null
+        });
+        if (quemado) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `rechazada: ${dominio} ${quemado}` });
           break;
         }
 
@@ -406,13 +558,9 @@ export async function ejecutarAcciones(
           out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude diagnosticar, así que no suelto: ${e instanceof Error ? e.message : String(e)}` });
           break;
         }
-        if (diag.bloqueanPor.length > 0) {
-          out.push({
-            accion: nombre,
-            objetivo: dominio,
-            ejecutada: false,
-            detalle: `rechazada: ${dominio} lo tiene cerrado ${diag.bloqueanPor.join(", ")}. Soltarlo ahí solo produce rebotes — hay que destrabar al receptor primero.`
-          });
+        const cerrado = porQueNoVuelve({ cruzado: false, bloqueanPor: diag.bloqueanPor, muestra: 0, tasaInbox: null });
+        if (cerrado) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `rechazada: ${dominio} ${cerrado}` });
           break;
         }
 
@@ -427,13 +575,14 @@ export async function ejecutarAcciones(
           out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude medirlo, así que no suelto: ${e instanceof Error ? e.message : String(e)}` });
           break;
         }
-        if (medida.muestra >= MUESTRA_PARA_JUZGAR && medida.tasaInbox !== null && medida.tasaInbox < PISO_PARA_SOLTAR) {
-          out.push({
-            accion: nombre,
-            objetivo: dominio,
-            ejecutada: false,
-            detalle: `rechazada: ${dominio} viene ${Math.round(medida.tasaInbox * 100)}% de bandeja sobre ${medida.muestra} mediciones. No está para volver todavía.`
-          });
+        const historiaMala = porQueNoVuelve({
+          cruzado: false,
+          bloqueanPor: [],
+          muestra: medida.muestra,
+          tasaInbox: medida.tasaInbox
+        });
+        if (historiaMala) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: `rechazada: ${dominio} ${historiaMala}` });
           break;
         }
 
@@ -613,6 +762,133 @@ export async function ejecutarAcciones(
         } catch (e) {
           out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude medirlo: ${e instanceof Error ? e.message : String(e)}` });
         }
+        break;
+      }
+
+      case "revisar_reputacion": {
+        // LISTAS NEGRAS DE SU IP + SU AUTENTICACIÓN, junto con quién lo está rechazando. Pasivo:
+        // consulta DNS y una API de lectura, no manda un solo correo. Por eso no lleva flag.
+        const dominio = (p.dominio ?? "").trim().toLowerCase();
+        if (!ctx.dominiosConocidos.some((d) => d.toLowerCase() === dominio)) {
+          out.push({ accion: nombre, objetivo: p.dominio ?? null, ejecutada: false, detalle: `rechazada: "${p.dominio}" no está en el inventario` });
+          break;
+        }
+        if (!ctx.revisarReputacion) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, detalle: "rechazada: revisar reputación no está habilitado en este entorno" });
+          break;
+        }
+        // ── LA REGLA DE LAS DOS SEÑALES ─────────────────────────────────────────────────────────
+        //
+        // Una lista negra limpia NO significa que estás entregando. El 2026-07-25 se midió: 38 de
+        // 64 nodos rechazados por Gmail con 550-5.7.1 "unsolicited" y TODAS sus IPs limpias en
+        // listas negras. Es reputación interna del receptor, invisible para MXToolbox. Publicar la
+        // primera señal sola produce exactamente la confianza falsa que costó ese mes.
+        //
+        // Por eso la regla está acá y no en el prompt: sin el instrumento del receptor, la acción
+        // se RECHAZA. Mismo criterio que soltar_dominio — un chequeo que no se puede hacer no es un
+        // chequeo que pasa. Y como consecuencia estructural, la palabra "limpio" no puede aparecer
+        // en un detalle de esta acción sin la cláusula del receptor al lado: no hay camino.
+        if (!ctx.diagnosticarDominio) {
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: false,
+            detalle: "rechazada: sin el estado del receptor, una lista negra limpia no dice nada. No reporto reputación sola."
+          });
+          break;
+        }
+        // El receptor PRIMERO: es gratis (lee logs) y si falla no se gastó una consulta de la API,
+        // que es finita y se comparte entre 58 nodos.
+        let diagRep: { estado: string; bloqueanPor: string[]; degradadoEn: string[]; entregados: number; rechazados: number };
+        try {
+          diagRep = await ctx.diagnosticarDominio(dominio);
+        } catch (e) {
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude leer al receptor, así que no reporto reputación: ${e instanceof Error ? e.message : String(e)}` });
+          break;
+        }
+        // UN LOG QUE NO SE PUDO LEER NO ES UN LOG LIMPIO. `readNodeDeliveryHealth` devuelve
+        // `unreadable` con los contadores en 0 cuando el SSH falló o las fechas no se entienden — y
+        // el ternario de abajo leía esos ceros como "nadie se lo bloquea (0 entregados / 0
+        // rechazados)". O sea: la mitad que existe para que "listas negras limpias" no se lea como
+        // verde, afirmaba lo verde sobre cero evidencia. Es exactamente el probe colgado del
+        // 2026-07-29 que reportó 10 de 10 nodos bloqueados: un chequeo que falla se disfraza de
+        // medición.
+        //
+        // Va ANTES de la consulta a MXToolbox a propósito: sin el receptor la acción no sale igual,
+        // así que gastar cuota sería tirarla. Y sale `reintentable`, que es lo que es: un SSH caído
+        // se arregla solo en la próxima vuelta y no amerita despertar a nadie.
+        if (diagRep.estado === "unreadable" || diagRep.estado === "desconocido") {
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: false,
+            reintentable: true,
+            detalle: `${dominio}: no pude leer el registro de correo del nodo (${diagRep.estado}), así que no reporto reputación — una lista negra limpia sin el estado del receptor no dice nada.`
+          });
+          break;
+        }
+        let rep: ReputacionLeida;
+        try {
+          rep = await ctx.revisarReputacion(dominio);
+        } catch (e) {
+          // TRANSITORIO, no política: un parpadeo de la API o del DNS se arregla solo en la próxima
+          // vuelta. Marcarlo como falla dura le suena el móvil al jefe por nada — es el incidente
+          // del 2026-08-06, cuando Postgres se recargó doce segundos y el agente lo mencionó dos
+          // veces por algo que ya estaba resuelto cuando lo leyó.
+          out.push({ accion: nombre, objetivo: dominio, ejecutada: false, reintentable: true, detalle: `no pude revisar la reputación de ${dominio}: ${e instanceof Error ? e.message : String(e)}` });
+          break;
+        }
+        if (rep.ip === null) {
+          // POLÍTICA, no transitorio: falta el binding en el inventario y eso lo arregla alguien.
+          // Y no se reporta como "sin detecciones": no se consultó nada.
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: false,
+            detalle: `${dominio}: no sé de qué IP hablamos — no tiene nodo asignado en el inventario, así que no hay listas negras ni PTR que consultar. Hay que arreglar el binding primero.`
+          });
+          break;
+        }
+        if (rep.blacklist.estado === "no-se") {
+          // Un chequeo que se cuelga o falla devuelve "no sé", nunca un veredicto. Es la lección del
+          // probe con `head -c` que reportó 10 de 10 nodos bloqueados estando bien: el negativo
+          // falso se disfraza de medición.
+          out.push({
+            accion: nombre,
+            objetivo: dominio,
+            ejecutada: false,
+            reintentable: true,
+            detalle: `${dominio} (${rep.ip}): no pude consultar las listas negras (${rep.blacklist.detalle}). No sé si está listado y no lo voy a dar por bueno.`
+          });
+          break;
+        }
+        const sello = (etiqueta: string, c: ChequeoReputacion): string =>
+          c.estado === "ok" ? `${etiqueta} ok` : `${etiqueta} ${c.estado === "mal" ? "MAL" : "no sé"} (${c.detalle})`;
+        const receptor =
+          diagRep.bloqueanPor.length > 0
+            ? `CERRADO en ${diagRep.bloqueanPor.join(", ")}`
+            : diagRep.degradadoEn.length > 0
+              ? `rechazo parcial en ${diagRep.degradadoEn.join(", ")}`
+              : // CERO ENTREGAS + CERO RECHAZOS NO ES "nadie se lo bloquea": es que nadie lo probó.
+                // Es el estado de los 7 nodos vírgenes, que son justamente el caso de uso de
+                // soltar_dominio — o sea que la frase optimista salía sobre los dominios donde más
+                // caro se paga creerla. "No medido" y "cero" otra vez, en el módulo escrito para no
+                // confundirlos.
+                diagRep.entregados + diagRep.rechazados === 0
+                ? `${diagRep.estado}, sin evidencia propia (0 entregados / 0 rechazados en la ventana): nunca mandó, así que no sabemos si lo aceptan`
+                : `${diagRep.estado}, nadie se lo bloquea (${diagRep.entregados} entregados / ${diagRep.rechazados} rechazados)`;
+        out.push({
+          accion: nombre,
+          objetivo: dominio,
+          ejecutada: true,
+          // UNA sola frase con las dos señales. Separarlas en dos renglones sería lo mismo que
+          // publicar la primera sola: el que lee se queda con la que confirma lo que ya creía.
+          detalle:
+            `${dominio} (${rep.ip}): listas negras ${rep.blacklist.detalle} · auth ` +
+            `${[sello("SPF", rep.spf), sello("DKIM", rep.dkim), sello("DMARC", rep.dmarc), sello("PTR", rep.ptr)].join(", ")}` +
+            ` · receptor: ${receptor}`,
+          despues: rep.blacklist.estado
+        });
         break;
       }
 

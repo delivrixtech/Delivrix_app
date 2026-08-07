@@ -153,6 +153,41 @@ test("sin trafico es gris pero editable: el numero espera a que arranque", () =>
   assert.equal(c.editable, true);
 });
 
+test("el estado que significa 'no sé' NO vende cupo: sin muestra propia es gris, jamas verde", () => {
+  // El defecto que este test fija, medido el 2026-08-06: `no_own_traffic` no tenia rama y caia al
+  // `return` verde final. Sobre la medicion real de produccion (58 bandejas) mas el libro real
+  // (7 dominios con envio nuestro en 7 dias), cablear la atribucion deja 36 bandejas en
+  // `no_own_traffic` — EXACTAMENTE las 36 que hoy estan rojas "bloqueada", las que quemo el otro
+  // inquilino. Las 36 pasaban a verde "entrega" sirviendo su asignada entera.
+  //
+  // El numero del nodo va en `ajeno` a proposito: es el caso peor, un nodo que movio 20.293
+  // entregas y 3.617 rechazos que NO son nuestros. Nada de eso puede empujar el semaforo.
+  const c = evaluarBandeja(
+    inv(),
+    med({
+      estado: "no_own_traffic",
+      detalle: "el nodo movió 23910 mensajes en la ventana y ninguno es nuestro (0 envíos en nuestro libro)",
+      entregados: 0,
+      rechazados: 0,
+      diferidos: 0,
+      ajeno: { entregados: 20293, rechazados: 3617, diferidos: 12 },
+      atribucion: { modo: "nuestro", queueIds: 0, descartados: 0 }
+    }),
+    2000,
+    TECHO
+  );
+  assert.equal(c.color, "gris", "no sé nunca es verde");
+  assert.equal(c.estado, "sin muestra propia");
+  assert.equal(c.hoyPuede, 0, "la fabrica no vende cupo sobre reputacion que no midio");
+  assert.equal(
+    c.editable,
+    false,
+    "no hay numero que asignar sobre un dominio del que no medimos ni un mensaje propio"
+  );
+  assert.equal(c.asignada, 2000, "lo que el operador asigno no se pierde, solo no se sirve");
+});
+
+
 // ── El cable rampa → cuota ───────────────────────────────────────────────────────────────────────
 
 function rampa(overrides: Partial<RampaCuota> = {}): RampaCuota {
@@ -323,6 +358,39 @@ test("la cuota guardada se sirve por hoyPuede solo en la bandeja verde", async (
   assert.equal(flota.totalHoyPuede, 1200, "la suma solo cuenta lo verde");
 });
 
+test("sin muestra propia la flota entera deja de vender: totalHoyPuede no la cuenta", async () => {
+  // Cruza el borde del modulo a proposito. `no_own_traffic` estaba probado nueve veces en
+  // smtp-delivery-health.test.ts y sender-measurement.test.ts, y CERO en este archivo: por eso el
+  // gate paso entero en verde mientras el estado que significa "no se" servia la cuota completa.
+  // El estado se prueba donde DECIDE, no solo donde se emite.
+  const ws = await workspaceConFlota();
+  await guardarCuota({ workspace: ws, domain: "sana.com", hoyPuede: 1200, techo: TECHO, now: () => ahora });
+  // La MISMA bandeja que el test de arriba sirve a 1200, ahora sin una sola muestra nuestra.
+  await ws.updateInventoryJson<MedicionFlota>(MEASUREMENT_FILE, (cur) => ({
+    ...cur!,
+    bandejas: cur!.bandejas.map((b) =>
+      b.domain === "sana.com"
+        ? {
+            ...b,
+            estado: "no_own_traffic" as const,
+            detalle: "el nodo movió 23910 mensajes en la ventana y ninguno es nuestro",
+            entregados: 0,
+            rechazados: 0,
+            diferidos: 0,
+            ajeno: { entregados: 20293, rechazados: 3617, diferidos: 12 }
+          }
+        : b
+    )
+  }));
+
+  const flota = await armarCuotaFlota({ workspace: ws, techo: TECHO, now: () => ahora });
+  const sana = flota.bandejas.find((b) => b.domain === "sana.com");
+  assert.equal(sana?.color, "gris");
+  assert.equal(sana?.estado, "sin muestra propia");
+  assert.equal(sana?.hoyPuede, 0, "los 1200 asignados no se sirven sin medicion propia detras");
+  assert.equal(flota.totalHoyPuede, 0, "la fabrica no vende un solo mensaje sobre reputacion ajena");
+});
+
 test("invisibles y conflictos no son filas: van al pie por nombre", async () => {
   const ws = await workspaceConFlota();
   const flota = await armarCuotaFlota({ workspace: ws, techo: TECHO, now: () => ahora });
@@ -399,7 +467,7 @@ test("cruce pegajoso: una lectura de volumen fallida NO borra un cruce del umbra
   const dir = await mkdtemp(join(tmpdir(), "sticky-"));
   const ws = new OpenClawWorkspace({ rootDir: join(dir, "workspace") });
 
-  const salud = `## DELIVERED\n   100 gmail.com\n## BLOCKED\n## DEFERRED\n## END`;
+  const salud = `## DELIVERED\n   100 gmail.com\n## OWN_DELIVERED\n   100 gmail.com\n## BLOCKED\n## OWN_BLOCKED\n## DEFERRED\n## OWN_DEFERRED\n## END`;
   const volumenCruza = `## VOLUME\n   6000 Jul 30\tgmail.com\n## END`;
   const runner = (vol: string) => ({
     async run(input: { command: string }) {
@@ -412,6 +480,7 @@ test("cruce pegajoso: una lectura de volumen fallida NO borra un cruce del umbra
     workspace: ws,
     sshRunner: runner(volumenCruza),
     bandejas: [{ domain: "quemado.com", serverSlug: "n1", serverIp: "1.1.1.1" }],
+    libro: "todo",
     now: () => ahora
   });
   assert.deepEqual(c1.bandejas[0]?.cruzados, ["google"], "corrida 1 detecta el cruce");
@@ -421,6 +490,7 @@ test("cruce pegajoso: una lectura de volumen fallida NO borra un cruce del umbra
     workspace: ws,
     sshRunner: runner("## VOLUME\n   6000 Jul 30\tgmail.com"),
     bandejas: [{ domain: "quemado.com", serverSlug: "n1", serverIp: "1.1.1.1" }],
+    libro: "todo",
     now: () => new Date(ahora.getTime() + 86_400_000)
   });
   assert.deepEqual(c2.bandejas[0]?.cruzados, ["google"], "el cruce permanente sobrevive a la lectura fallida");

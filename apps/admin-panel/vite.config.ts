@@ -92,7 +92,10 @@ const allowedReadPatterns: RegExp[] = [
   /^\/v1\/infrastructure\/accounts\/[^/]+\/[^/]+\/smtp-health$/,
   /^\/v1\/sender-pool\/credentials\/[^/]+\/download$/,
   // Warmup API (carril B): historial por buzón. Read-only; el proxy inyecta auth same-origin.
-  /^\/v1\/mailboxes\/[^/]+\/events$/
+  /^\/v1\/mailboxes\/[^/]+\/events$/,
+  // Ramp por dominio. Faltaba el segmento del dominio: solo estaba el path base, así que el proxy
+  // devolvía 404 unknown_read_endpoint y el cliente lo leía como "este dominio no tiene rampa".
+  /^\/v1\/warmup\/ramp\/by-domain\/[^/]+$/
 ];
 
 /**

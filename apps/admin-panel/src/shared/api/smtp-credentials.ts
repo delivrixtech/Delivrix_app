@@ -18,8 +18,13 @@ export async function downloadSmtpCredential(domain: string): Promise<void> {
  * Baja en un solo ZIP el .md de cada dominio configurado del pool.
  *
  * Un request, un evento de auditoría y un slot de rate limit — a diferencia de
- * iterar los 70+ dominios con downloadSmtpCredential. El paquete no trae claves
- * SSH privadas: esas se siguen bajando por dominio.
+ * iterar los 70+ dominios con downloadSmtpCredential.
+ *
+ * OJO: el paquete SÍ INCLUYE la clave privada SSH de cada nodo, como .pem suelto además de la
+ * sección del .md (smtp-credentials.ts:178-186 en el gateway, y su propio test lo afirma). Este
+ * comentario decía lo contrario, igual que el tooltip y el toast del panel: en producción son 64
+ * claves privadas, y un operador que creyera el cartel podía compartir el ZIP pensando que solo
+ * llevaba credenciales SMTP. Tratarlo como secreto.
  */
 export async function downloadAllSmtpCredentials(): Promise<void> {
   const response = await fetch(READ_ENDPOINTS.senderPoolCredentialsBulkDownload, {

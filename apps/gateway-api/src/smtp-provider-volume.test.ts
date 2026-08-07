@@ -226,3 +226,35 @@ test("el comando resuelve el lector con sudo y declara si no puede", () => {
   assert.match(command, /sudo -n test -r \/var\/log\/mail\.log/);
   assert.match(command, /## NOACCESS/, "no poder leer se dice, no se deja vacio");
 });
+
+// ── LA REGLA CONTRARIA: ESTE SENSOR NO SE ATRIBUYE ──────────────────────────────────────────────
+
+test("el volumen cuenta TODO el trafico del nodo, tambien el del otro inquilino", async (t) => {
+  // INCIDENTE QUE PREVIENE (2026-08-06): el modulo hermano aprendio a separar NUESTRO correo del de
+  // NFC porque estaba midiendo reputacion ajena y llamandola nuestra (791.300 mensajes de ellos
+  // contra 222 nuestros). La orden fue "aislar y olvidar esos datos". ACA NO.
+  //
+  // El receptor no clasifica por quien inyecto: Google cuenta por DOMINIO y por IP. Los ~15.000
+  // mensajes/dia que NFC saca por NUESTROS dominios cuentan ENTEROS contra el umbral de 5.000/dia, y
+  // cruzarlo clasifica el dominio como bulk sender de forma PERMANENTE, sin apelacion. Filtrar aca
+  // dejaria todos los picos en cero y todos los dominios "limpios" justo en el unico dano que no se
+  // deshace: `bizreport-control.com` ya cruzo ese umbral y no hay vuelta atras.
+  //
+  // Dos aserciones, porque una sola no alcanza: la del STRING impide que alguien agregue el filtro
+  // por descuido; la del FIXTURE prueba que 5.100 mensajes ajenos en un dia siguen disparando la
+  // alarma.
+  const command = buildProviderVolumeCommand();
+  assert.equal(/queued as|sasl_username|OWN_/.test(command), false, "ni un filtro de atribucion en este comando");
+
+  const dir = await mkdtemp(path.join(tmpdir(), "delivrix-umbral-nfc-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // 5.100 mensajes en UN dia hacia Gmail, todos inyectados por el otro producto desde EC2.
+  await writeFile(path.join(dir, "mail.log"), Array.from({ length: 5_100 }, (_, i) =>
+    `Aug  6 09:00:00 nodo postfix/smtp[1713359]: NFC${String(i).padStart(7, "0")}: to=<cliente${i}@gmail.com>, relay=gmail-smtp-in.l.google.com[142.251.179.27]:25, status=sent (250 2.0.0 OK)`
+  ).join("\n") + "\n", "utf8");
+
+  const salida = execFileSync("bash", ["-c", buildProviderVolumeCommand(dir)], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+  const report = assessProviderVolume(parseProviderVolume(salida)!);
+  assert.deepEqual(report.overThreshold, ["google"], "el umbral se cruzo, lo haya inyectado quien lo haya inyectado");
+  assert.equal(report.peakByFamily[0]?.messages, 5_100);
+});

@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { Caption, Card, Eyebrow, Heading, Pill, Row } from "../../shared/ui/aivora";
 import { READ_ENDPOINTS } from "../../shared/api/read-boundary";
+import { ProcedenciaBadge, type Atribucion } from "../../shared/ui/ProcedenciaBadge";
 
 type SemaforoColor = "verde" | "rojo" | "gris" | "calentando";
 
@@ -40,6 +41,37 @@ interface CuotaBandeja {
   cruzados: string[];
   cerca: string[];
   rampa: RampaCuota | null;
+  /**
+   * El "nodo vivo pero incomunicado": la medición corrió y no pudo leer el nodo.
+   *
+   * Viaja aparte del estado a propósito y el backend lo dice textual: una rampa corriendo TAPA el
+   * estado "sin lectura" en el semáforo, y un nodo incomunicado que está calentando es justo el
+   * que más urge mirar. La vista ni lo declaraba: el día que un nodo se quede incomunicado
+   * mientras calienta, se veía en cyan como si todo anduviera.
+   */
+  sinLectura?: { motivo: string } | null;
+  /**
+   * Tamaño de la muestra sobre la que se emitió el veredicto. Opcional porque hoy el endpoint no
+   * lo manda: cuando falta, la fila lo DICE en vez de que un verde de 3 mensajes se vea igual que
+   * uno de 20.000. El clasificador exige 20 intentos para animarse a decir "bloqueada" pero
+   * "healthy" es el fallthrough final: con 1 entrega ya es verde y habilita cuota hasta 2.000/día.
+   */
+  entregados?: number | null;
+  rechazados?: number | null;
+  /** De quién es el correo que produjo el veredicto (lote A). Ausente = no declarada. */
+  atribucion?: Atribucion | null;
+}
+
+/** Lo que se usa de GET /v1/sender-pool/cap: el techo que Postfix aplica de verdad en el nodo. */
+interface CapNodo {
+  domain: string;
+  cap: number | null;
+  consumidoHoy: number | null;
+  cableado: boolean;
+}
+interface CapFlota {
+  medidoEn: string | null;
+  nodos: CapNodo[];
 }
 
 interface CuotaFlota {
@@ -62,10 +94,23 @@ const COLOR: Record<SemaforoColor, string> = {
   calentando: "var(--color-warming, #0891b2)"
 };
 
-const GRID = "1.6fr 1.3fr 0.9fr";
+// El binding (nodo) y la edad entran a la grilla: sin el nodo no se puede ver que 11 de 13
+// bandejas del mismo /24 están caídas por la misma subred, que es el patrón que ya nos mordió.
+const GRID = "1.5fr 0.9fr 1.3fr 0.9fr";
+
+/**
+ * A las cuántas horas una medición deja de servir para decidir.
+ *
+ * El resto del sistema usa 12h (y /v1/warmup/plan ya devuelve `medicionCupo.vencida`). Acá la
+ * fecha se mostraba sin marca de vencimiento y el operador tenía que hacer la resta mental
+ * mientras la pantalla seguía pintando verdes y rojos con la misma tinta.
+ */
+const MEDICION_VENCE_HORAS = 12;
 
 export default function InventarioBandejas() {
   const [flota, setFlota] = useState<CuotaFlota | null>(null);
+  const [cap, setCap] = useState<CapFlota | null>(null);
+  const [capError, setCapError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const cargar = async () => {
@@ -81,6 +126,29 @@ export default function InventarioBandejas() {
       // Un fallo de carga NO deja la pantalla en cero: la deja en "no pude leer".
       setError(cause instanceof Error ? cause.message : "no se pudo leer la cuota");
     }
+    // El cupo FÍSICO del nodo, que es el que manda. El titular decía "200 envíos/día en venta"
+    // sobre un nodo con cap de Postfix 20/día (medido 2026-08-06 20:59, 8 ya consumidos): 10× lo
+    // que el nodo deja pasar. La medición que lo contradice vivía en el mismo workspace y nunca
+    // se cruzaba. Si esta lectura falla, la celda lo dice — no se asume el techo de política.
+    try {
+      const r = await fetch(READ_ENDPOINTS.senderPoolCap, {
+        headers: { accept: "application/json" },
+        cache: "no-store"
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setCap((await r.json()) as CapFlota);
+      setCapError(null);
+    } catch (cause) {
+      setCapError(cause instanceof Error ? cause.message : "no se pudo leer el cupo físico");
+    }
+  };
+
+  /** El techo real de hoy para una bandeja: `null` = el cupo físico no se pudo medir. */
+  const topeFisico = (domain: string): number | null => {
+    const nodo = cap?.nodos.find((n) => n.domain === domain);
+    if (!nodo || !nodo.cableado || nodo.cap === null) return null;
+    if (nodo.consumidoHoy === null) return nodo.cap;
+    return Math.max(0, nodo.cap - nodo.consumidoHoy);
   };
 
   useEffect(() => {
@@ -109,26 +177,57 @@ export default function InventarioBandejas() {
     );
   }
 
+  // El titular ya no es la suma de la política: es la suma de lo que los nodos DEJAN pasar hoy.
+  // Las bandejas cuyo cupo físico no se pudo medir no se suman con su número de política: se
+  // cuentan aparte y se declaran, porque asumirlas sería volver a vender 200 sobre un cap de 20.
+  const vendibles = flota.bandejas.reduce(
+    (acc, b) => {
+      const tope = topeFisico(b.domain);
+      if (tope === null) return { ...acc, sinCap: acc.sinCap + 1 };
+      return { ...acc, total: acc.total + Math.min(b.hoyPuede, tope) };
+    },
+    { total: 0, sinCap: 0 }
+  );
+  const edadHoras = flota.medidoEn
+    ? (Date.now() - Date.parse(flota.medidoEn)) / 3_600_000
+    : null;
+  const medicionVencida = edadHoras !== null && edadHoras > MEDICION_VENCE_HORAS;
+
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <Card>
         <Eyebrow>Fábrica · cuota diaria por bandeja</Eyebrow>
         <div style={{ display: "flex", gap: 18, flexWrap: "wrap", alignItems: "baseline", marginTop: 4 }}>
-          <Heading level={1}>{flota.totalHoyPuede.toLocaleString("es")}</Heading>
+          <Heading level={1}>{vendibles.total.toLocaleString("es")}</Heading>
           <Caption>
-            envíos/día en venta · <strong>{flota.bandejas.length}</strong> de{" "}
+            envíos/día que los nodos dejan pasar hoy · <strong>{flota.bandejas.length}</strong> de{" "}
             <strong>{flota.totalBandejas}</strong> bandejas en lista ·{" "}
             {flota.medidoEn
               ? `medido ${new Date(flota.medidoEn).toLocaleString("es")}`
               : "la flota nunca se midió"}{" "}
-            · techo {flota.techoDiario.toLocaleString("es")}/día
+            · techo de política {flota.techoDiario.toLocaleString("es")}/día
           </Caption>
         </div>
-        {flota.parcial ? (
-          <div style={{ marginTop: 8 }}>
-            <Pill tone="critical">lectura parcial</Pill> <Caption>{flota.motivosParcial.join(" · ")}</Caption>
-          </div>
-        ) : null}
+        <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <ProcedenciaBadge atribucion={flota.bandejas[0]?.atribucion ?? null} />
+          {medicionVencida ? (
+            <Pill tone="warning">
+              medición vencida · {Math.round(edadHoras ?? 0)}h (el umbral son {MEDICION_VENCE_HORAS}h)
+            </Pill>
+          ) : null}
+          {vendibles.sinCap > 0 ? (
+            <Pill tone="warning">
+              {vendibles.sinCap} sin cupo físico medido · no suman al total
+            </Pill>
+          ) : null}
+          {capError ? <Pill tone="critical">cupo físico: {capError}</Pill> : null}
+          {flota.parcial ? (
+            <>
+              <Pill tone="critical">lectura parcial</Pill>{" "}
+              <Caption>{flota.motivosParcial.join(" · ")}</Caption>
+            </>
+          ) : null}
+        </div>
       </Card>
 
       <Card>
@@ -146,11 +245,18 @@ export default function InventarioBandejas() {
           }}
         >
           <span>Dominio</span>
+          <span>Nodo</span>
           <span>Estado</span>
           <span style={{ textAlign: "right" }}>Hoy puede</span>
         </div>
         {flota.bandejas.map((b) => (
-          <FilaBandeja key={b.domain} bandeja={b} techo={flota.techoDiario} onGuardado={cargar} />
+          <FilaBandeja
+            key={b.domain}
+            bandeja={b}
+            techo={flota.techoDiario}
+            topeFisico={topeFisico(b.domain)}
+            onGuardado={cargar}
+          />
         ))}
       </Card>
 
@@ -164,12 +270,23 @@ export default function InventarioBandejas() {
 function FilaBandeja({
   bandeja,
   techo,
+  topeFisico,
   onGuardado
 }: {
   bandeja: CuotaBandeja;
   techo: number;
+  topeFisico: number | null;
   onGuardado: () => Promise<void>;
 }) {
+  // El tamaño de la muestra detrás del veredicto. Sin esto, un verde de 3 mensajes en 5 días se ve
+  // exactamente igual que uno de 20.000, y el clasificador es asimétrico: exige 20 intentos para
+  // decir "bloqueada" pero "healthy" es su fallthrough final.
+  const muestra =
+    typeof bandeja.entregados === "number"
+      ? `${bandeja.entregados.toLocaleString("es")} entregados${
+          typeof bandeja.rechazados === "number" ? `, ${bandeja.rechazados.toLocaleString("es")} rechazos` : ""
+        }`
+      : null;
   return (
     <Row>
       <div
@@ -182,17 +299,47 @@ function FilaBandeja({
           fontSize: 13
         }}
       >
-        <span style={{ fontWeight: 500 }}>{bandeja.domain}</span>
+        <span>
+          <span style={{ fontWeight: 500 }}>{bandeja.domain}</span>
+          {/* Familias arriba del 40% del umbral permanente de Google. Llegaba en el payload para
+              16 de 58 bandejas y no se pintaba en ningún lado: una al 90% del umbral irreversible
+              se veía idéntica a una al 1%. Cruzarlo no se deshace nunca. */}
+          {bandeja.cruzados.length > 0 ? (
+            <span style={{ display: "block", fontSize: 11, color: COLOR.rojo }}>
+              cruzó el umbral permanente en {bandeja.cruzados.join(", ")}
+            </span>
+          ) : bandeja.cerca.length > 0 ? (
+            <span style={{ display: "block", fontSize: 11, color: "var(--color-warning, #b26a00)" }}>
+              cerca del umbral permanente en {bandeja.cerca.join(", ")}
+            </span>
+          ) : null}
+        </span>
+        <span style={{ fontSize: 11, color: "var(--muted, #8a94a0)" }}>
+          {bandeja.serverSlug ?? "sin nodo"}
+          {bandeja.edadDias !== null ? (
+            <span style={{ display: "block" }}>{bandeja.edadDias} días</span>
+          ) : null}
+        </span>
         <span>
           <span style={{ color: COLOR[bandeja.color] }}>{bandeja.color === "gris" ? "○" : "●"}</span>{" "}
           {bandeja.estado}
+          <span style={{ display: "block", fontSize: 11, color: "var(--muted, #8a94a0)" }}>
+            {muestra ?? "tamaño de muestra no declarado por el gateway"}
+          </span>
           {bandeja.motivo ? (
             <span style={{ display: "block", fontSize: 11, color: "var(--muted, #8a94a0)" }}>
               {bandeja.motivo}
             </span>
           ) : null}
+          {/* El nodo incomunicado alerta SIEMPRE, aunque la bandeja esté calentando: la rampa tapa
+              el estado en el semáforo y es justo ahí cuando más importa. */}
+          {bandeja.sinLectura ? (
+            <span style={{ display: "block", fontSize: 11, color: COLOR.rojo }}>
+              nodo incomunicado: {bandeja.sinLectura.motivo}
+            </span>
+          ) : null}
         </span>
-        <CeldaCuota bandeja={bandeja} techo={techo} onGuardado={onGuardado} />
+        <CeldaCuota bandeja={bandeja} techo={techo} topeFisico={topeFisico} onGuardado={onGuardado} />
       </div>
     </Row>
   );
@@ -207,10 +354,13 @@ function FilaBandeja({
 function CeldaCuota({
   bandeja,
   techo,
+  topeFisico,
   onGuardado
 }: {
   bandeja: CuotaBandeja;
   techo: number;
+  /** Lo que el Postfix del nodo deja pasar hoy. `null` = no se pudo medir. */
+  topeFisico: number | null;
   onGuardado: () => Promise<void>;
 }) {
   const [editando, setEditando] = useState(false);
@@ -227,12 +377,16 @@ function CeldaCuota({
     // Mientras calienta, NFC vende 0 (la rampa envía el volumen ella misma). Se muestra el cupo
     // que envía la rampa para que el operador vea el progreso, pero NO es lo que NFC consume.
     if (bandeja.color === "calentando") {
-      const cupo = bandeja.rampa?.cupoHoy ?? 0;
+      // `?? 0` decía "la rampa envía 0" como si fuera un cupo medido cuando el registro llegaba
+      // sin batches. Es el mismo molde de fabricar un cero: si no hay cupo, se dice.
+      const cupo = bandeja.rampa?.cupoHoy;
       return (
         <span style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
           <span style={{ color: "var(--muted, #8a94a0)" }}>0</span>
           <span style={{ display: "block", fontSize: 11, color: "var(--color-warming, #0891b2)" }}>
-            la rampa envía {cupo.toLocaleString("es")}
+            {typeof cupo === "number"
+              ? `la rampa envía ${cupo.toLocaleString("es")}`
+              : "cupo de la rampa sin determinar"}
           </span>
         </span>
       );
@@ -326,7 +480,10 @@ function CeldaCuota({
       <button
         type="button"
         onClick={() => {
-          setBorrador(String(bandeja.asignada ?? 0));
+          // Arranca VACÍO cuando `asignada` es null: prellenar "0" convertía un Enter sin tipear
+          // en "asignada 0", que es justo la distinción que todo el módulo mantiene a propósito
+          // (`asignada` es number|null para separar "nunca se asignó" de "asignada 0").
+          setBorrador(bandeja.asignada === null ? "" : String(bandeja.asignada));
           setEditando(true);
         }}
         title={`Editar la cuota diaria de ${bandeja.domain}`}
@@ -341,8 +498,17 @@ function CeldaCuota({
           borderBottom: "1px dashed var(--muted, #8a94a0)"
         }}
       >
-        {bandeja.hoyPuede.toLocaleString("es")}
+        {(topeFisico === null ? bandeja.hoyPuede : Math.min(bandeja.hoyPuede, topeFisico)).toLocaleString("es")}
       </button>
+      {topeFisico === null ? (
+        <span style={{ display: "block", fontSize: 11, color: "var(--color-warning, #b26a00)" }}>
+          cupo físico del nodo sin medir
+        </span>
+      ) : topeFisico < bandeja.hoyPuede ? (
+        <span style={{ display: "block", fontSize: 11, color: "var(--color-warning, #b26a00)" }}>
+          el nodo solo deja pasar {topeFisico.toLocaleString("es")} hoy
+        </span>
+      ) : null}
       {bandeja.color !== "verde" && bandeja.asignada !== null && bandeja.asignada > 0 ? (
         <span style={{ display: "block", fontSize: 11, color: "var(--muted, #8a94a0)" }}>
           asignada {bandeja.asignada.toLocaleString("es")}, frenada

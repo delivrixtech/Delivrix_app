@@ -6,7 +6,9 @@ import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  COLA_ATASCADA_MIN,
   DELIVERY_STATS_WINDOW,
+  MAX_QUEUE_IDS,
   assessDeliveryHealth,
   buildDeliveryStatsCommand,
   parseDeliveryStats,
@@ -14,31 +16,52 @@ import {
   parseQueueSize,
   prefijosDeDias,
   readNodeDeliveryHealth,
-  type DeliveryHealthSshRunner
+  sanearIds,
+  type DeliveryHealthSshRunner,
+  type NodeDeliveryStats
 } from "./smtp-delivery-health.ts";
 
 /** El "hoy" de los fixtures. Fijo para que la ventana por fecha no dependa del día del calendario. */
 const HOY = new Date("2026-08-06T12:00:00Z");
 
+type Filas = Array<[number, string]>;
+
+/**
+ * Salida sintética del nodo. Cuando no se declara `own`, el fixture es modo "todo": lo propio ES el
+ * total, que es exactamente lo que devuelve el comando cuando se lo corre sin queue-ids.
+ */
 function stdout(input: {
-  delivered?: Array<[number, string]>;
-  blocked?: Array<[number, string]>;
-  deferred?: Array<[number, string]>;
+  delivered?: Filas;
+  blocked?: Filas;
+  deferred?: Filas;
+  own?: { delivered?: Filas; blocked?: Filas; deferred?: Filas };
   truncated?: boolean;
+  /** Simula la salida de una versión vieja del comando: sin las secciones propias. */
+  sinOwn?: boolean;
 }): string {
-  const block = (rows?: Array<[number, string]>): string =>
-    (rows ?? []).map(([n, d]) => `   ${n} ${d}`).join("\n");
+  const block = (rows?: Filas): string => (rows ?? []).map(([n, d]) => `   ${n} ${d}`).join("\n");
+  const own = input.own ?? { delivered: input.delivered, blocked: input.blocked, deferred: input.deferred };
+  const par = (nombre: string, total?: Filas, propio?: Filas): string[] =>
+    input.sinOwn
+      ? [`## ${nombre}`, block(total)]
+      : [`## ${nombre}`, block(total), `## OWN_${nombre}`, block(propio)];
+
   const lines = [
-    "## DELIVERED", block(input.delivered),
-    "## BLOCKED", block(input.blocked),
-    "## DEFERRED", block(input.deferred)
+    ...par("DELIVERED", input.delivered, own.delivered),
+    ...par("BLOCKED", input.blocked, own.blocked),
+    ...par("DEFERRED", input.deferred, own.deferred)
   ];
   if (!input.truncated) lines.push("## END");
   return `${lines.join("\n")}\n`;
 }
 
+/** Lo NUESTRO del fixture, que es lo único que decide el veredicto. */
+function propio(input: Parameters<typeof stdout>[0]): NodeDeliveryStats {
+  return parseDeliveryStats(stdout(input))!.propio;
+}
+
 test("buildDeliveryStatsCommand: solo lee, no envia, y marca el fin", () => {
-  const command = buildDeliveryStatsCommand();
+  const command = buildDeliveryStatsCommand("todo");
   assert.match(command, /mail\.log/);
   assert.match(command, /## END/);
   assert.equal(/set -e/.test(command), false);
@@ -47,10 +70,10 @@ test("buildDeliveryStatsCommand: solo lee, no envia, y marca el fin", () => {
 });
 
 test("parseDeliveryStats: agrega por proveedor y totaliza", () => {
-  const stats = parseDeliveryStats(stdout({
+  const stats = propio({
     delivered: [[706, "gmail.com"], [140, "yahoo.com"]],
     blocked: [[3, "gmail.com"]]
-  }))!;
+  });
   assert.equal(stats.totals.delivered, 846);
   assert.equal(stats.totals.blocked, 3);
   assert.equal(stats.byProvider[0]!.provider, "gmail.com");
@@ -64,36 +87,34 @@ test("parseDeliveryStats: salida truncada ⇒ null (no se inventa salud)", () =>
 // El caso real de corp-delivery.com: entrega perfecto en yahoo/aol mientras Gmail lo
 // rechaza en el 100% de los intentos. Un promedio global lo habria dado sano.
 test("assessDeliveryHealth: cerrado en un proveedor aunque el resto entregue bien", () => {
-  const verdict = assessDeliveryHealth(parseDeliveryStats(stdout({
+  const verdict = assessDeliveryHealth(propio({
     delivered: [[1483, "yahoo.com"], [416, "aol.com"], [4, "gmail.com"]],
     blocked: [[3883, "gmail.com"]]
-  }))!);
+  }));
   assert.equal(verdict.status, "blocked_by_provider");
   assert.deepEqual(verdict.blockedProviders, ["gmail.com"]);
   assert.match(verdict.detail, /gmail\.com/);
 });
 
 test("assessDeliveryHealth: nodo sano con volumen real a gmail", () => {
-  const verdict = assessDeliveryHealth(parseDeliveryStats(stdout({
+  const verdict = assessDeliveryHealth(propio({
     delivered: [[706, "gmail.com"], [140, "yahoo.com"], [35, "aol.com"]]
-  }))!);
+  }));
   assert.equal(verdict.status, "healthy");
   assert.deepEqual(verdict.blockedProviders, []);
 });
 
 test("assessDeliveryHealth: rechazo parcial ⇒ degraded", () => {
-  const verdict = assessDeliveryHealth(parseDeliveryStats(stdout({
+  const verdict = assessDeliveryHealth(propio({
     delivered: [[60, "gmail.com"]],
     blocked: [[40, "gmail.com"]]
-  }))!);
+  }));
   assert.equal(verdict.status, "degraded");
   assert.deepEqual(verdict.degradedProviders, ["gmail.com"]);
 });
 
 test("assessDeliveryHealth: pocos intentos no alcanzan para acusar bloqueo", () => {
-  const verdict = assessDeliveryHealth(parseDeliveryStats(stdout({
-    blocked: [[3, "gmail.com"]]
-  }))!);
+  const verdict = assessDeliveryHealth(propio({ blocked: [[3, "gmail.com"]] }));
   assert.equal(verdict.status, "healthy");
   assert.deepEqual(verdict.blockedProviders, []);
 });
@@ -101,26 +122,26 @@ test("assessDeliveryHealth: pocos intentos no alcanzan para acusar bloqueo", () 
 // Los nodos MAS sanos aparecian "cerrados en su propio dominio": son los rebotes que
 // Postfix se manda a si mismo (postmaster, notificaciones de no-entrega), no un proveedor.
 test("assessDeliveryHealth: los rebotes al propio dominio no cuentan como bloqueo", () => {
-  const stats = parseDeliveryStats(stdout({
+  const stats = propio({
     delivered: [[4944, "gmail.com"]],
     blocked: [[120, "infranationalreport.com"]]
-  }))!;
+  });
   assert.equal(assessDeliveryHealth(stats).status, "blocked_by_provider");
   assert.equal(assessDeliveryHealth(stats, "infranationalreport.com").status, "healthy");
 });
 
 test("assessDeliveryHealth: excluir el propio dominio no tapa un bloqueo real de proveedor", () => {
-  const stats = parseDeliveryStats(stdout({
+  const stats = propio({
     delivered: [[500, "yahoo.com"]],
     blocked: [[300, "gmail.com"], [40, "propio.com"]]
-  }))!;
+  });
   const verdict = assessDeliveryHealth(stats, "propio.com");
   assert.equal(verdict.status, "blocked_by_provider");
   assert.deepEqual(verdict.blockedProviders, ["gmail.com"]);
 });
 
 test("assessDeliveryHealth: sin trafico ⇒ no_traffic, no 'sano'", () => {
-  const verdict = assessDeliveryHealth(parseDeliveryStats(stdout({}))!);
+  const verdict = assessDeliveryHealth(propio({}));
   assert.equal(verdict.status, "no_traffic");
 });
 
@@ -129,7 +150,7 @@ test("readNodeDeliveryHealth: SSH que falla ⇒ unreadable, nunca healthy", asyn
   const sshRunner: DeliveryHealthSshRunner = {
     run: async () => { throw new Error("SSH command failed with exit 255.\nPermission denied (publickey)."); }
   };
-  const verdict = await readNodeDeliveryHealth({ sshRunner, serverSlug: "server60", serverIp: "10.0.0.1" });
+  const verdict = await readNodeDeliveryHealth({ sshRunner, serverSlug: "server60", serverIp: "10.0.0.1", propios: "todo" });
   assert.equal(verdict.status, "unreadable");
   assert.match(verdict.detail, /lectura fallida/);
 });
@@ -142,7 +163,7 @@ test("readNodeDeliveryHealth: propaga serverSlug (el runner elige usuario y sudo
       return { stdout: stdout({ delivered: [[100, "gmail.com"]] }), exitCode: 0 };
     }
   };
-  const verdict = await readNodeDeliveryHealth({ sshRunner, serverSlug: "server60", serverIp: "10.0.0.1" });
+  const verdict = await readNodeDeliveryHealth({ sshRunner, serverSlug: "server60", serverIp: "10.0.0.1", propios: "todo" });
   assert.equal(verdict.status, "healthy");
   assert.deepEqual(seen, ["server60"]);
 });
@@ -238,8 +259,8 @@ test("el comando REAL contra un log de fixture: reintentos y rotados viejos no c
   // El reloj va FIJO. Las líneas del fixture están fechadas "Aug  6", y desde que la ventana corta
   // por la fecha de la LÍNEA el test dependería del día en que se corre: verde hoy, rojo el 12 de
   // agosto. Un test que solo pasa una semana al año no es un test.
-  const salida = execFileSync("bash", ["-c", buildDeliveryStatsCommand(5, dir, HOY)], { encoding: "utf8" });
-  const stats = parseDeliveryStats(salida)!;
+  const salida = execFileSync("bash", ["-c", buildDeliveryStatsCommand("todo", 5, dir, HOY)], { encoding: "utf8" });
+  const stats = parseDeliveryStats(salida)!.total;
 
   assert.equal(parseLineasSinFecha(salida), 0, "las 3 formas de la flota tienen que ser fechas reconocidas");
   assert.equal(stats.totals.delivered, 3, "las 3 entregas, en los 3 formatos de la flota");
@@ -286,8 +307,8 @@ test("el MISMO insumo da el MISMO veredicto, mueva el rotado su mtime a donde lo
   const veredictos = [1, 4, 6].map((diasDesdeLaRotacion) => {
     const t0 = new Date(HOY.getTime() - diasDesdeLaRotacion * 86_400_000);
     utimesSync(rotado, t0, t0);
-    const salida = execFileSync("bash", ["-c", buildDeliveryStatsCommand(5, dir, HOY)], { encoding: "utf8" });
-    const stats = parseDeliveryStats(salida)!;
+    const salida = execFileSync("bash", ["-c", buildDeliveryStatsCommand("todo", 5, dir, HOY)], { encoding: "utf8" });
+    const stats = parseDeliveryStats(salida)!.total;
     return { diasDesdeLaRotacion, ...assessDeliveryHealth(stats, undefined, { encolados: 0 }) };
   });
 
@@ -323,12 +344,12 @@ test("un formato de fecha que el sensor no entiende se dice `unreadable`, no 'no
     `[1754500000.${i}] nodo postfix/smtp[1234]: AA${i}: to=<z${i}@gmail.com>, status=sent (250 ok)`
   ).join("\n") + "\n", "utf8");
 
-  const salida = execFileSync("bash", ["-c", buildDeliveryStatsCommand(5, dir, HOY)], { encoding: "utf8" });
-  assert.equal(parseDeliveryStats(salida)!.totals.delivered, 0, "el corte por día no las ve (por eso hace falta el seguro)");
+  const salida = execFileSync("bash", ["-c", buildDeliveryStatsCommand("todo", 5, dir, HOY)], { encoding: "utf8" });
+  assert.equal(parseDeliveryStats(salida)!.total.totals.delivered, 0, "el corte por día no las ve (por eso hace falta el seguro)");
   assert.equal(parseLineasSinFecha(salida), 7);
 
   const sshRunner: DeliveryHealthSshRunner = { run: async () => ({ stdout: salida, exitCode: 0 }) };
-  const verdict = await readNodeDeliveryHealth({ sshRunner, serverSlug: "server60", serverIp: "10.0.0.1" });
+  const verdict = await readNodeDeliveryHealth({ sshRunner, serverSlug: "server60", serverIp: "10.0.0.1", propios: "todo" });
   assert.equal(verdict.status, "unreadable");
   assert.match(verdict.detail, /no es syslog ni ISO-8601/);
 });
@@ -348,24 +369,35 @@ test("assessDeliveryHealth: la cola de AHORA manda sobre el log limpio", () => {
   assert.equal(verdict.encolados, 9457);
 });
 
-test("TODO veredicto declara la cola, incluso cuando no la pudo leer", () => {
+test("TODO veredicto declara la cola, la procedencia y lo ajeno", () => {
   // Bug encontrado midiendo la flota de verdad, no en el fixture: cinco de los seis `return` de
-  // assessDeliveryHealth se habían quedado sin el campo nuevo. Como corremos con
-  // --experimental-strip-types no hay chequeo de tipos en tiempo de ejecución, así que `encolados`
-  // salía `undefined`, JSON.stringify borraba la clave, y sender-measurement.json quedó con el dato
-  // en 49 de 58 nodos — justo el sensor que vino a decir si el nodo está atascado AHORA.
+  // assessDeliveryHealth se habían quedado sin el campo nuevo (`encolados`). Como corremos con
+  // --experimental-strip-types no hay chequeo de tipos en tiempo de ejecución, así que salía
+  // `undefined`, JSON.stringify borraba la clave, y sender-measurement.json quedó con el dato en 49
+  // de 58 nodos — justo el sensor que vino a decir si el nodo está atascado AHORA.
   // `undefined` es peor que `null`: `null` dice "no sé", `undefined` ni siquiera aparece.
+  //
+  // Con `ajenos` y `atribucion` el riesgo se triplicaba, así que ahora los siete veredictos salen de
+  // un solo armador. Este test cubre los siete, incluido el nuevo `no_own_traffic`.
   const casos: Array<[string, ReturnType<typeof assessDeliveryHealth>]> = [
     ["no_traffic", assessDeliveryHealth({ totals: { delivered: 0, blocked: 0, deferred: 0 }, byProvider: [] }, undefined, { encolados: 3 })],
+    ["no_own_traffic", assessDeliveryHealth(
+      { totals: { delivered: 0, blocked: 0, deferred: 0 }, byProvider: [] },
+      undefined,
+      { encolados: 3, modo: "nuestro", total: { totals: { delivered: 90, blocked: 10, deferred: 0 }, byProvider: [] } }
+    )],
     ["stalled por log", assessDeliveryHealth({ totals: { delivered: 0, blocked: 0, deferred: 920 }, byProvider: [] }, undefined, { encolados: 3 })],
-    ["blocked", assessDeliveryHealth(parseDeliveryStats(stdout({ delivered: [[4, "gmail.com"]], blocked: [[3883, "gmail.com"]] }))!, undefined, { encolados: 3 })],
-    ["degraded", assessDeliveryHealth(parseDeliveryStats(stdout({ delivered: [[60, "gmail.com"]], blocked: [[40, "gmail.com"]] }))!, undefined, { encolados: 3 })],
-    ["healthy", assessDeliveryHealth(parseDeliveryStats(stdout({ delivered: [[100, "gmail.com"]] }))!, undefined, { encolados: 3 })],
-    ["sin lectura de cola", assessDeliveryHealth(parseDeliveryStats(stdout({ delivered: [[100, "gmail.com"]] }))!)]
+    ["stalled por cola", assessDeliveryHealth({ totals: { delivered: 10, blocked: 0, deferred: 0 }, byProvider: [] }, undefined, { encolados: COLA_ATASCADA_MIN })],
+    ["blocked", assessDeliveryHealth(propio({ delivered: [[4, "gmail.com"]], blocked: [[3883, "gmail.com"]] }), undefined, { encolados: 3 })],
+    ["degraded", assessDeliveryHealth(propio({ delivered: [[60, "gmail.com"]], blocked: [[40, "gmail.com"]] }), undefined, { encolados: 3 })],
+    ["healthy", assessDeliveryHealth(propio({ delivered: [[100, "gmail.com"]] }), undefined, { encolados: 3 })],
+    ["sin lectura de cola", assessDeliveryHealth(propio({ delivered: [[100, "gmail.com"]] }))]
   ];
   for (const [nombre, v] of casos) {
     assert.ok("encolados" in v, `${nombre} no declara encolados`);
     assert.notEqual(v.encolados, undefined, `${nombre} dejó encolados en undefined`);
+    assert.notEqual(v.ajenos, undefined, `${nombre} dejó ajenos en undefined`);
+    assert.notEqual(v.atribucion, undefined, `${nombre} no declara de quién es el tráfico que midió`);
   }
 });
 
@@ -373,9 +405,170 @@ test("parseQueueSize: no poder leer la cola es 'no sé', jamás cero", () => {
   // El 2026-07-29 un probe que se colgaba devolvió "bloqueado" falso en 10 de 10 nodos: un sensor
   // que no puede leer tiene que decir "no sé". Al revés, un cero inventado sobre un nodo con 15.693
   // mensajes atascados lo manda derecho al pool del calentamiento.
-  const conQueue = (cuerpo: string): string => `## DELIVERED\n## BLOCKED\n## DEFERRED\n## QUEUE\n${cuerpo}\n## END\n`;
+  const conQueue = (cuerpo: string): string =>
+    `## DELIVERED\n## OWN_DELIVERED\n## BLOCKED\n## OWN_BLOCKED\n## DEFERRED\n## OWN_DEFERRED\n## QUEUE\n${cuerpo}\n## END\n`;
   assert.equal(parseQueueSize(conQueue("Mail queue is empty")), 0);
   assert.equal(parseQueueSize(conQueue("")), null);
   assert.equal(parseQueueSize(conQueue("postqueue: fatal: Queue report unavailable")), null);
   assert.equal(parseQueueSize(conQueue("-- 107250 Kbytes in 15710 Requests.")), 15710);
+});
+
+// ── NUESTRO CORREO vs EL DE NFC ─────────────────────────────────────────────────────────────────
+//
+// Por los mismos 58 nodos pasa el correo de NFC: otro producto, otros clientes, que inyecta por 587
+// con SASL igual que nosotros y con el MISMO usuario. Hasta el 2026-08-06 este módulo contaba todo
+// junto: 791.300 mensajes de ellos contra 222 nuestros en la flota entera (0,028%).
+
+test("el comando REAL separa nuestro correo del del otro inquilino, por queue-id", async (t) => {
+  // INCIDENTE QUE FIJA: annualcorp-control.com se publicaba como "cerrado en gmail: 136 rechazos
+  // sobre 137 intentos" — y 135 de esos rechazos eran de NFC. El veredicto que frenaba el dominio
+  // no describía nuestra reputación: describía la de otro producto.
+  //
+  // Corre con bash el mismo string que se manda por SSH: la separación pasa DENTRO del awk del nodo,
+  // así que probarla con un stdout inventado no probaría nada (la lección del fixture de Bedrock).
+  const dir = await mkdtemp(path.join(tmpdir(), "delivrix-nfc-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const nfc = Array.from({ length: 25 }, (_, i) =>
+    `Aug  6 09:${String(i % 60).padStart(2, "0")}:00 nodo postfix/smtp[1713359]: NFC${String(i).padStart(7, "0")}: to=<cliente${i}@gmail.com>, relay=gmail-smtp-in.l.google.com[142.251.179.27]:25, dsn=5.7.1, status=bounced (550-5.7.1 Gmail has detected that this message is likely unsolicited mail)`
+  );
+  // Los tres nuestros, con la forma real del queue-id que devuelve Postfix (verificada contra
+  // producción: "250 2.0.0 Ok: queued as B7CA03F69F").
+  const nuestros = ["B7CA03F69F", "C921D46D53", "42F6C3F69D"];
+  await writeFile(path.join(dir, "mail.log"), [
+    ...nfc,
+    `Aug  6 10:00:00 nodo postfix/smtp[306271]: ${nuestros[0]}: to=<semilla1@gmail.com>, relay=gmail-smtp-in.l.google.com[142.250.1.27]:25, delay=1.9, status=sent (250 2.0.0 OK)`,
+    `Aug  6 10:01:00 nodo postfix/smtp[306271]: ${nuestros[1]}: to=<semilla2@gmail.com>, relay=gmail-smtp-in.l.google.com[142.250.1.27]:25, delay=2.0, status=sent (250 2.0.0 OK)`,
+    `Aug  6 10:02:00 nodo postfix/smtp[306271]: ${nuestros[2]}: to=<semilla3@gmail.com>, relay=gmail-smtp-in.l.google.com[142.251.179.27]:25, dsn=5.7.1, status=bounced (550-5.7.1 likely unsolicited mail)`,
+    ""
+  ].join("\n"), "utf8");
+
+  const salida = execFileSync("bash", ["-c", buildDeliveryStatsCommand(nuestros, 5, dir, HOY)], { encoding: "utf8" });
+  const { total, propio: mio } = parseDeliveryStats(salida)!;
+
+  assert.deepEqual(total.totals, { delivered: 2, blocked: 26, deferred: 0 }, "el nodo entero: los 25 de NFC más el nuestro");
+  assert.deepEqual(mio.totals, { delivered: 2, blocked: 1, deferred: 0 }, "lo NUESTRO son 3 mensajes, no 28");
+
+  const verdict = assessDeliveryHealth(mio, undefined, {
+    encolados: 0, total, modo: "nuestro", queueIds: nuestros.length
+  });
+  assert.notEqual(verdict.status, "blocked_by_provider", "3 intentos nuestros no alcanzan para acusar a Gmail de cerrarnos");
+  assert.deepEqual(verdict.stats.totals, { delivered: 2, blocked: 1, deferred: 0 });
+  assert.deepEqual(verdict.ajenos.totals, { delivered: 0, blocked: 25, deferred: 0 }, "lo de NFC se ve, pero aparte");
+  assert.equal(verdict.atribucion.modo, "nuestro");
+});
+
+test("el nodo movió correo y nada es nuestro ⇒ no_own_traffic, JAMÁS no_traffic", async (t) => {
+  // INCIDENTE QUE PREVIENE: `no_traffic` ENTRA al pool del warmup a propósito (plan-diario.ts:200,
+  // "un nodo nuevo es el candidato natural a arrancar"). Al separar el tráfico, 63 de 64 nodos
+  // quedan sin muestra propia; si eso devolviera `no_traffic`, 63 nodos que NFC ya quemó se leerían
+  // como dominios recién comprados y el pool habría saltado de 6 a ~63 — repartiendo las 14 vueltas
+  // del día entre nodos que nunca calentamos.
+  const dir = await mkdtemp(path.join(tmpdir(), "delivrix-ajeno-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, "mail.log"), Array.from({ length: 25 }, (_, i) =>
+    `Aug  6 09:00:0${i % 10} nodo postfix/smtp[1713359]: NFC${String(i).padStart(7, "0")}: to=<cliente${i}@gmail.com>, relay=gmail-smtp-in.l.google.com[142.251.179.27]:25, status=bounced (550-5.7.1 likely unsolicited mail)`
+  ).join("\n") + "\n", "utf8");
+
+  const salida = execFileSync("bash", ["-c", buildDeliveryStatsCommand([], 5, dir, HOY)], { encoding: "utf8" });
+  const { total, propio: mio } = parseDeliveryStats(salida)!;
+  assert.equal(total.totals.blocked, 25);
+  assert.equal(mio.totals.blocked, 0);
+
+  const verdict = assessDeliveryHealth(mio, undefined, { encolados: 0, total, modo: "nuestro", queueIds: 0 });
+  assert.equal(verdict.status, "no_own_traffic");
+  assert.notEqual(verdict.status, "no_traffic");
+  assert.match(verdict.detail, /ninguno es nuestro/);
+});
+
+test("log genuinamente vacío ⇒ no_traffic, aunque no haya un solo envío nuestro", async (t) => {
+  // La otra mitad de la regla, y la que impide que la fábrica deje de fabricar: un dominio recién
+  // comprado tiene el mail.log vacío y TIENE que poder recibir su primer correo de warmup. La
+  // trampa que documenta plan-diario.ts:177-195 no se reabre con este cambio.
+  const dir = await mkdtemp(path.join(tmpdir(), "delivrix-vacio-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(path.join(dir, "mail.log"), "", "utf8");
+
+  const salida = execFileSync("bash", ["-c", buildDeliveryStatsCommand([], 5, dir, HOY)], { encoding: "utf8" });
+  const { total, propio: mio } = parseDeliveryStats(salida)!;
+  const verdict = assessDeliveryHealth(mio, undefined, { encolados: 0, total, modo: "nuestro", queueIds: 0 });
+  assert.equal(verdict.status, "no_traffic", "vacío es vacío: dominio nuevo, no 'sin muestra propia'");
+});
+
+test("una salida sin las secciones OWN es ilegible, nunca ceros", async () => {
+  // Este módulo ya se quemó TRES veces con la misma forma: "comando que devuelve vacío" leído como
+  // "no hay tráfico". Un `## OWN_*` ausente leído como cero convertiría cada nodo de la flota en
+  // `no_own_traffic` de una, en silencio, y el archivo que publica el panel se llenaría de "sin
+  // muestra propia" sin que nadie sospeche del parser.
+  const vieja = stdout({ delivered: [[100, "gmail.com"]], sinOwn: true });
+  assert.equal(parseDeliveryStats(vieja), null, "sin ## OWN_* no se puede leer");
+
+  const sshRunner: DeliveryHealthSshRunner = { run: async () => ({ stdout: vieja, exitCode: 0 }) };
+  const verdict = await readNodeDeliveryHealth({ sshRunner, serverSlug: "s1", serverIp: "1.2.3.4", propios: ["B7CA03F69F"] });
+  assert.equal(verdict.status, "unreadable");
+  assert.match(verdict.detail, /OWN/);
+});
+
+test("BORDE DE CONFIANZA: los queue-ids de la base no pueden inyectar shell", () => {
+  // Estos ids salen de una columna JSON de Postgres (`warmup_activity.detail->>'smtp'`) y terminan
+  // DENTRO de una línea de shell que corre por SSH como root en 58 nodos de producción. Entre esos
+  // dos puntos no hay ninguna otra validación: la lista blanca es la única.
+  const sucios = ["ok1234", "a';rm -rf /", "$(id)", "con espacio"];
+  const { ok, descartados } = sanearIds(sucios);
+  assert.deepEqual(ok, ["ok1234"]);
+  assert.equal(descartados, 3, "lo que no matchea se DESCARTA, no se escapa");
+
+  const command = buildDeliveryStatsCommand(sucios, 5, "/var/log", HOY);
+  // El único lugar donde viajan los ids es el `-v ids='...'` del awk: se verifica ahí, y no con un
+  // `includes` sobre todo el comando, porque el comando contiene un `$(find ...)` legítimo.
+  const idsEnElComando = [...command.matchAll(/-v ids='([^']*)'/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(idsEnElComando)], ["ok1234"], "solo el id sano llega al nodo");
+  assert.equal(command.includes("rm -rf"), false);
+  assert.equal(command.includes("$(id)"), false);
+  assert.equal(command.includes("con espacio"), false);
+
+  // Y las dos formas legítimas de queue-id de la flota SÍ pasan: hex corto y base-52 de
+  // `enable_long_queue_ids`. Una lista blanca que perdiera la segunda dejaría esos nodos sin libro,
+  // o sea en `no_own_traffic` para siempre.
+  assert.deepEqual(sanearIds(["B7CA03F69F", "4bXyZ9Qm2Rz1kT", "B7CA03F69F"]).ok, ["B7CA03F69F", "4bXyZ9Qm2Rz1kT"]);
+});
+
+test("la cola atascada NUNCA se atribuye: es física y compartida", async () => {
+  // Los 15.693 mensajes trabados los puso NFC, pero la cola es UNA sola: nuestro correo tampoco sale
+  // de ese nodo. Preguntar "¿de quién son los mensajes trabados?" es la pregunta equivocada. Por eso
+  // la rama de la cola va PRIMERA y no mira la atribución.
+  const salida =
+    `## DELIVERED\n## OWN_DELIVERED\n## BLOCKED\n  900 gmail.com\n## OWN_BLOCKED\n` +
+    `## DEFERRED\n## OWN_DEFERRED\n## QUEUE\n-- 107250 Kbytes in 15693 Requests.\n## END\n`;
+  const sshRunner: DeliveryHealthSshRunner = { run: async () => ({ stdout: salida, exitCode: 0 }) };
+  const verdict = await readNodeDeliveryHealth({ sshRunner, serverSlug: "s1", serverIp: "1.2.3.4", propios: [] });
+  assert.equal(verdict.status, "stalled", "sin muestra propia, pero la cola física manda igual");
+  assert.equal(verdict.encolados, 15693);
+});
+
+test("un libro absurdamente grande no se atribuye a ciegas", async () => {
+  // Nuestro máximo real por nodo y ventana, medido contra la base de producción, es 13. Si el libro
+  // trae 40x eso, algo cambió de régimen y nadie lo previó: se dice `unreadable` en vez de armar una
+  // línea de shell de 50 KB con datos de una columna JSON.
+  const ids = Array.from({ length: MAX_QUEUE_IDS + 1 }, (_, i) => `Q${String(i).padStart(9, "0")}`);
+  let corrio = false;
+  const sshRunner: DeliveryHealthSshRunner = { run: async () => { corrio = true; return { stdout: "", exitCode: 0 }; } };
+  const verdict = await readNodeDeliveryHealth({ sshRunner, serverSlug: "s1", serverIp: "1.2.3.4", propios: ids });
+  assert.equal(verdict.status, "unreadable");
+  assert.match(verdict.detail, /no atribuyo a ciegas/);
+  assert.equal(corrio, false, "ni siquiera se abre la sesión SSH");
+});
+
+test("modo 'todo': lo propio ES el total y el veredicto lo declara", async () => {
+  // `scripts/ops/deliverability-health.ts` diagnostica la MÁQUINA, no nuestra reputación, y para eso
+  // el número correcto es el del nodo entero. Lo que no puede pasar es que ese número se lea después
+  // como nuestro: por eso `atribucion.modo` viaja en el veredicto y se persiste.
+  const sshRunner: DeliveryHealthSshRunner = {
+    run: async () => ({ stdout: stdout({ delivered: [[900, "gmail.com"]], own: {} }), exitCode: 0 })
+  };
+  const verdict = await readNodeDeliveryHealth({ sshRunner, serverSlug: "s1", serverIp: "1.2.3.4", propios: "todo" });
+  assert.equal(verdict.status, "healthy");
+  assert.equal(verdict.stats.totals.delivered, 900, "en modo todo NO se resta nada, aunque el fixture traiga OWN vacío");
+  assert.deepEqual(verdict.ajenos.totals, { delivered: 0, blocked: 0, deferred: 0 });
+  assert.equal(verdict.atribucion.modo, "todo");
 });

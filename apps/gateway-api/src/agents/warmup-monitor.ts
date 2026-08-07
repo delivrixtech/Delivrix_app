@@ -12,6 +12,32 @@
 //      no es evidencia.
 //   4. Si la mini no responde, se DECLARA. Nunca se sirve una lectura vieja como si fuera de ahora.
 
+// El veredicto de "¿este frenado puede volver?" se PIDE, no se reescribe. `porQueNoVuelve` es la
+// misma función que ejecuta `soltar_dominio`, con los mismos umbrales (MUESTRA_PARA_JUZGAR,
+// PISO_PARA_SOLTAR) viviendo en un solo módulo. Si acá se copiaran, el prompt le mostraría al agente
+// candidatos que el gate después rechaza: una promesa que se rompe al ejecutarla, que es peor que
+// no haberla hecho.
+import { porQueNoVuelve } from "./acciones-agente.ts";
+
+/**
+ * Un dominio frenado (cap 0) con las tres condiciones de `soltar_dominio` ya evaluadas.
+ *
+ * `null` NO es `false` en ninguno de estos campos: es "no se miró". La confusión entre las dos
+ * cosas es la más cara del sistema (el 2026-07-25, 38 nodos estaban cerrados en Gmail con CERO
+ * detecciones de blacklist, y alguien leyó ese cero como "está limpio"). Por eso cada campo
+ * distingue los tres estados y las líneas del prompt los dicen con palabras distintas.
+ */
+export interface FrenadoDetalle {
+  dominio: string;
+  /** ¿Está en `flota.cruzados`? `null` = no se pudo leer la medición de flota. */
+  cruzado: boolean | null;
+  /** Receptores que hoy lo rechazan. `[]` = ninguno; `null` = NO se diagnosticó. */
+  bloqueanPor: readonly string[] | null;
+  /** Mediciones propias de placement. `null` = no se miró; `0` = se miró y no hay ninguna. */
+  muestra: number | null;
+  tasaInbox: number | null;
+}
+
 /** Los hechos que el agente puede mirar. Todos vienen de mediciones reales, ninguno es opinión. */
 export interface HechosWarmup {
   generadoEn: string;
@@ -43,8 +69,26 @@ export interface HechosWarmup {
      * Los que están en cap 0. Sin esta lista la mano de soltar era decorativa: un dominio frenado
      * no aparece en el plan (el pool excluye cap 0) ni en las vueltas (no manda), así que ninguno
      * llegaba a `dominiosConocidos` y `soltar_dominio` los rechazaba con "no está en el inventario".
+     *
+     * Sigue siendo `string[]` porque es la lista que arma `dominiosConocidos` en el orquestador
+     * (scripts/ops/warmup-monitor.ts, dos sitios). El detalle evaluado viaja al lado, en
+     * `frenadosDetalle`. Son dos campos y no uno a propósito acotado: el productor vive en
+     * scripts/, que este lote no toca. Cuando el orquestador escriba los dos desde el mismo filtro,
+     * esto colapsa a un solo campo.
      */
     frenados?: string[];
+    /**
+     * Los mismos frenados, pero con las condiciones de `soltar_dominio` YA EVALUADAS por quien
+     * produce los hechos (`porQueNoVuelve` de acciones-agente.ts).
+     *
+     * Por qué el veredicto viene calculado y no se explica en el prompt: hasta hoy la lista de
+     * frenados iba con la frase "…y soltar_dominio si alguno califica", o sea el CRITERIO en prosa.
+     * Este proyecto ya pagó dos veces lo mismo — un criterio en párrafo el modelo lo devuelve como
+     * hallazgo propio, y si es falso lo devuelve con seguridad. El resultado medido: en 31 entradas
+     * de bitácora hubo UN solo intento de soltar, y fue contra bizreport-control.com, justo el que
+     * cruzó el umbral permanente. Adivinó, en vez de mirar. Ahora mira.
+     */
+    frenadosDetalle?: readonly FrenadoDetalle[];
     sinLimite: number;
     medidoEn?: string | null;
   } | null;
@@ -173,6 +217,13 @@ export const SISTEMA = [
   "- frenar_dominio | dominio=<un dominio de los datos> | motivo=... → le pone cupo 0 en el nodo.",
   "  Usalo cuando un dominio está haciendo daño: cruzó el umbral permanente, o su placement se",
   "  desplomó. Es reversible.",
+  // EL AVISO NO ES DECORATIVO. `frenarDominio` vive detrás de WARMUP_AGENT_PUEDE_FRENAR y el flag
+  // está APAGADO por defecto, así que en muchos entornos la mano no existe. Prometida plana, el
+  // modelo la pide y le vuelve "no está habilitado": medido en el log de producción, 26 rechazos en
+  // 5 horas sobre 31 pedidos del MISMO dominio. Decírselo de entrada convierte el rechazo en un
+  // dato en vez de un bucle. Hay un test de contrato que exige esta línea mientras siga bajo flag.
+  "  Puede no estar habilitada en este entorno: si te vuelve rechazada por eso, es un dato para",
+  "  contar, no un error tuyo — no la repitas.",
   "- pausar_warmup | motivo=... → frena TODO el calentamiento. Solo si el daño es general.",
   "- resolver_pendiente | id=<id de la lista de pendientes> | motivo=... → cierra un pendiente que",
   "  los datos muestran resuelto. Solo si los datos lo muestran: cerrar a ciegas borra trabajo del",
@@ -188,20 +239,30 @@ export const SISTEMA = [
   "  dónde viene cayendo su correo y en qué día de rampa está. Pasivo. Sirve sobre todo para los",
   "  dominios que NO figuran en el plan de arriba: de esos no tenés ningún dato, y son justamente",
   "  los que hay que evaluar para ver si están listos para volver.",
+  // ACÁ IBA `revisar_reputacion`, Y SE SACÓ. El `case` existe en acciones-agente.ts, pero NADIE
+  // produce `ctx.revisarReputacion` en runtime: el único `ejecutarAcciones` real es el de
+  // scripts/ops/warmup-monitor.ts y no la pasa. Anunciada, el modelo la pedía y le volvía
+  // "rechazada: revisar reputación no está habilitado en este entorno" — la mano prometida y no
+  // cableada que este proyecto pagó dos veces. No es hipotético: con `frenar` pasó exactamente eso,
+  // 26 rechazos de "no está habilitado" en 5 horas sobre el mismo dominio.
+  //
+  // La línea vuelve el día que el orquestador pase la capacidad, y hay un test de contrato
+  // (warmup-monitor.test.ts) que falla si se anuncia una mano que el orquestador no cablea.
   "- soltar_dominio | dominio=<uno frenado> | motivo=... → le devuelve un cupo CHICO para que vuelva",
   "  a calentar. Es la única acción que sube volumen y la única que puede hacer daño de verdad, así",
   "  que antes de pedirla mirá: medir_dominio para saber su historia y diagnosticar_dominio para",
   "  saber si hay alguien del otro lado. El cupo no lo elegís vos, es fijo.",
   "  Se rechaza sola si el nodo no está frenado, si algún receptor lo tiene cerrado, o si sus",
   "  mediciones dicen que todavía no está. Un rechazo ahí es información, no un error tuyo.",
+  "  Puede no estar habilitada en este entorno; si te vuelve por eso, no la repitas.",
   "- anotar_pendiente | dominio=<qué hace falta, en pocas palabras> | motivo=<por qué> → deja",
   "  asentado algo que vos NO podés resolver y necesita al operador (una semilla nueva, una",
   "  credencial). Anotalo UNA vez: si ya lo anotaste, no lo repitas.",
   "",
   "REGLAS DE LAS ACCIONES:",
-  "- Podés REDUCIR (frenar, pausar), MIRAR (leer, diagnosticar, medir), SOLTAR un dominio frenado, y",
-  "  ANOTAR. No existe ninguna acción que mande correo ni cambie configuración: si hace falta algo",
-  "  así, usá anotar_pendiente.",
+  "- Podés REDUCIR (frenar, pausar), MIRAR (leer, diagnosticar, medir), SOLTAR",
+  "  un dominio frenado, y ANOTAR. No existe ninguna acción que mande correo ni cambie",
+  "  configuración: si hace falta algo así, usá anotar_pendiente.",
   "- MIRAR ES GRATIS Y ACTUAR NO. Las tres manos pasivas no tocan nada: usalas sin pedir permiso y",
   "  sin anunciarlo. Antes de afirmar algo sobre un dominio concreto, andá a mirarlo. Antes de",
   "  proponer frenar o soltar, averiguá primero. Un dato de hace horas no es el estado de ahora.",
@@ -242,6 +303,109 @@ export const SISTEMA = [
   "- El placement es el instrumento del warmup: si un dominio tiene señal buena y muestra",
   "  suficiente, decilo. Un dominio listo para subir volumen es un hallazgo, no solo los problemas."
 ].join("\n");
+
+/**
+ * Las líneas de los dominios frenados, para los DOS carriles: el prompt de la guardia y el contexto
+ * del chat. Una sola función porque cuando cada carril armaba su propia lista terminaban diciendo
+ * cosas distintas sobre el mismo dominio — y acá el chat directamente no los nombraba nunca.
+ *
+ * PROHIBIDO en toda línea: imperativos ("deberías", "hay que", "conviene"). Hay un test con regex.
+ * Cada línea cita datos guardados y nada más; el juicio lo pone `porQueNoVuelve`, no el texto.
+ */
+export function lineasDeFrenados(
+  cap: HechosWarmup["cap"] | undefined,
+  /**
+   * La medición de flota, SOLO para llenar `cruzado`. Es el dato que estaba a dos campos de
+   * distancia y la función no miraba: nadie escribe `frenadosDetalle` todavía, así que las ocho
+   * líneas salían enteras en "sin dato" mientras `hechos.flota.cruzados` traía la lista exacta de
+   * los que cruzaron el umbral permanente — justo la condición que rechazó a bizreport-control.com.
+   * No cuesta ni un SSH ni una consulta: ya venía en el mismo snapshot.
+   *
+   * `null`/ausente = la medición no se pudo leer, y entonces `cruzado` queda en `null` = "no sé".
+   * Nunca en `false`: ver el gate de `porQueNoVuelve`.
+   */
+  flota?: HechosWarmup["flota"]
+): string[] {
+  const detalle = cap?.frenadosDetalle ?? [];
+  const nombres = cap?.frenados ?? [];
+  if (detalle.length === 0 && nombres.length === 0) return [];
+
+  // Fallback honesto mientras el orquestador no escriba `frenadosDetalle`: se listan igual, pero
+  // TODO queda en "sin evaluar". Nunca en "califica" — inventar un veredicto que nadie calculó es
+  // exactamente la mano prometida y no cableada que este proyecto ya pagó dos veces.
+  const filas: readonly FrenadoDetalle[] =
+    detalle.length > 0
+      ? detalle
+      : nombres.map((d) => ({ dominio: d, cruzado: null, bloqueanPor: null, muestra: null, tasaInbox: null }));
+
+  const cruzados = flota ? new Set(flota.cruzados.map((d) => d.toLowerCase())) : null;
+  const cuerpo: string[] = [];
+  let evaluadas = 0;
+  for (const f of filas) {
+    // El detalle manda si vino; si no, se completa con la flota. Sin flota queda `null` = "no sé".
+    const cruzado = f.cruzado ?? (cruzados ? cruzados.has(f.dominio.toLowerCase()) : null);
+    // Con un dato en `null` NO se llama a `porQueNoVuelve` con un relleno: pasarle `bloqueanPor: []`
+    // cuando nadie diagnosticó sería afirmar "ningún receptor lo rechaza" sobre algo que no se miró,
+    // y ahí está el error más caro de este sistema (el 2026-07-25: 38 nodos cerrados en Gmail con
+    // CERO detecciones de blacklist, y ese cero leído como "limpio").
+    //
+    // La excepción es `cruzado === true`: esa condición gana sola y no necesita a las otras dos.
+    const evaluable = cruzado === true || (f.bloqueanPor !== null && f.muestra !== null);
+    const motivo = evaluable
+      ? porQueNoVuelve({ cruzado, bloqueanPor: f.bloqueanPor ?? [], muestra: f.muestra ?? 0, tasaInbox: f.tasaInbox })
+      : undefined;
+    if (motivo !== undefined) evaluadas++;
+    const veredicto =
+      motivo === undefined
+        ? "todavía no se evaluó si puede volver"
+        : motivo === null
+          ? "califica para soltar_dominio"
+          : `no vuelve: ${motivo}`;
+    const umbral =
+      cruzado === null
+        ? "umbral permanente: sin dato"
+        : cruzado
+          ? "cruzó el umbral permanente"
+          : "no cruzó el umbral permanente";
+    const receptor =
+      f.bloqueanPor === null
+        ? "receptores: sin diagnosticar"
+        : f.bloqueanPor.length === 0
+          ? "receptores: ninguno lo rechaza"
+          : `lo rechazan: ${f.bloqueanPor.join(", ")}`;
+    const placement =
+      f.muestra === null
+        ? "placement propio: sin medir"
+        : f.tasaInbox === null
+          ? `placement propio: ${f.muestra} mediciones, sin tasa`
+          : `placement propio ${Math.round(f.tasaInbox * 100)}% sobre ${f.muestra} mediciones`;
+    cuerpo.push(`- ${f.dominio}: ${veredicto} · ${umbral} · ${receptor} · ${placement}`);
+  }
+  // EL ENCABEZADO NO PUEDE AFIRMAR MÁS DE LO QUE HAY DEBAJO. Decía "las condiciones de
+  // soltar_dominio ya evaluadas contra los nodos" mientras las ocho líneas salían en "sin dato": una
+  // afirmación falsa dentro del prompt, y de las caras — el agente lee que el trabajo ya está hecho
+  // y no vuelve a mirar.
+  //
+  // EL PRIMER ARREGLO NO ALCANZÓ, y el estado real de producción es justamente el caso que dejó
+  // pasar: el guard era `algunoEvaluado` (ALGUNA fila), y bizreport-control.com saca veredicto solo
+  // —está en `flota.cruzados`, el atajo `cruzado === true` no necesita ni SSH ni Postgres— así que
+  // UNA fila daba vuelta el encabezado a "ya evaluadas" mientras las otras SIETE decían "todavía no
+  // se evaluó · receptores: sin diagnosticar · placement propio: sin medir". Verificado contra el
+  // warmup-monitor.json real de las 23:45Z: 1 de 8.
+  //
+  // Por eso son TRES encabezados y el del medio lleva el número: un "3 de 8" no se puede leer como
+  // "está hecho". El agente tiene que poder distinguir "ya lo miré y no califica" de "todavía nadie
+  // lo miró", que es exactamente la diferencia entre los 7 vírgenes y el dominio quemado.
+  const total = filas.length;
+  return [
+    evaluadas === total
+      ? "FRENADOS (cupo 0, no están calentando). Al lado de cada uno, las condiciones de soltar_dominio ya evaluadas contra los nodos:"
+      : evaluadas === 0
+        ? "FRENADOS (cupo 0, no están calentando). Sus condiciones de soltar_dominio TODAVÍA NO se evaluaron:"
+        : `FRENADOS (cupo 0, no están calentando). ${evaluadas} de ${total} con sus condiciones de soltar_dominio evaluadas; a los otros ${total - evaluadas} todavía no los miró nadie:`,
+    ...cuerpo
+  ];
+}
 
 /** Arma el pedido. Puro: se puede testear sin red. */
 export function construirPrompt(
@@ -304,15 +468,21 @@ export function construirPrompt(
         `es un tope POR NODO, no de la flota; un nodo en su tope no frena a los demás. ` +
         `${hechos.cap.nodosMedidos} nodos con consumo medido, ${hechos.cap.nodosSinMedir} SIN medir.` +
         (hechos.cap.enElTope.length > 0 ? ` En su tope: ${hechos.cap.enElTope.join(", ")}.` : "") +
-        ((hechos.cap.frenados ?? []).length > 0
-          ? ` FRENADOS (cupo 0, no están calentando): ${(hechos.cap.frenados ?? []).join(", ")}.` +
-            " Sobre estos podés usar medir_dominio y diagnosticar_dominio, y soltar_dominio si alguno califica."
-          : "") +
         (hechos.cap.sinLimite > 0 ? ` ${hechos.cap.sinLimite} nodos SIN límite puesto.` : "")
     );
   } else {
     l.push("Límite físico: sin lectura.");
   }
+
+  // Los frenados salen del renglón del cap y pasan a tener una línea por dominio, con su veredicto
+  // ya calculado. Antes iban como una enumeración seguida de "…y soltar_dominio si alguno califica"
+  // —el criterio en PROSA— y el resultado medido fue que en 31 entradas de bitácora hubo un solo
+  // intento de soltar, contra el único dominio que había cruzado el umbral permanente.
+  //
+  // La flota va como segundo argumento y no es un detalle: es de donde sale `cruzado`. Sin ella las
+  // ocho líneas salían en "umbral permanente: sin dato" con la lista de cruzados a dos campos de
+  // distancia en el mismo objeto.
+  for (const x of lineasDeFrenados(hechos.cap, hechos.flota)) l.push(x);
 
   if (hechos.flota) {
     const edadF = hechos.flota.medidoEn ? (Date.now() - Date.parse(hechos.flota.medidoEn)) / 3_600_000 : null;

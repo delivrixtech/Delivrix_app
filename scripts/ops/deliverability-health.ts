@@ -66,6 +66,10 @@ async function main(): Promise<void> {
       sshRunner: runner,
       serverSlug: node.serverSlug,
       serverIp: node.serverIp,
+      // Este script diagnostica la MÁQUINA, no nuestra reputación: acá el número correcto es el del
+      // nodo entero, incluido el correo del otro inquilino (NFC). Para ver SOLO lo nuestro está
+      // `medir-flota`, que atribuye por queue-id contra warmup_activity.
+      propios: "todo",
       selfDomain: node.domain
     })
   }));

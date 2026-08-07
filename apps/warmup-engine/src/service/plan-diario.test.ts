@@ -9,6 +9,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { decidirCupoDeHoy, rampaDesdeEnv } from "../domain/decision-diaria.ts";
 import { elegirPool, leerCuposFisicos, planDelDia, type MedicionCupos } from "./plan-diario.ts";
 
 const AHORA = new Date("2026-08-04T15:00:00.000Z");
@@ -83,6 +84,31 @@ test("sin ninguna medición cae al configurado, diciendo que nadie lo verificó"
   assert.match(r.motivo, /nadie verificó/);
 });
 
+test("sin sender-cap.json el filtro de SALUD se aplica igual: no entran los quemados ni los cerrados", () => {
+  // EL RETURN TEMPRANO ESTABA ARRIBA DEL FILTRO. `leerCuposFisicos` tiene un catch que traga todo y
+  // devuelve el mapa vacío, así que un sender-cap.json ilegible metía al pool a los quemados, a los
+  // cerrados por el receptor y a los de cola atascada — los CUATRO entraban. Y encima con
+  // `vencida: true` el `cupoFisico` viaja en null, o sea que la rampa gobierna sola y sin la pared
+  // del nodo: hasta hoy eso topaba en 40/día por el default, pero con WARMUP_RAMPA_LIMITE_DIARIO
+  // configurable pasa a ser lo que el operador escriba.
+  //
+  // Son DOS archivos distintos: no poder leer el CUPO no borra la medición de SALUD. Lo único que
+  // se pierde es cuánto manda cada uno, no cuáles no pueden mandar.
+  const r = elegirPool(
+    medicion({ porDominio: new Map(), vencida: true, medidoEn: null, edadHoras: null }),
+    ["quemado.com", "cerrado.com", "atascado.com", "sano.com"],
+    salud({
+      "quemado.com": { estado: "healthy", cruzados: ["gmail"], entregados: 5 },
+      "cerrado.com": { estado: "blocked_by_provider", entregados: 0 },
+      "atascado.com": { estado: "stalled", entregados: 0 },
+      "sano.com": { estado: "healthy", entregados: 5 }
+    })
+  );
+  assert.deepEqual(r.boxes, ["sano.com"]);
+  assert.match(r.motivo, /quemado\.com \(cruzó el umbral permanente\)/);
+  assert.match(r.motivo, /SIN ninguna medición del cupo/, "y sigue declarando que nadie verificó el volumen");
+});
+
 test("flota entera en cap 0: pool VACÍO, no un fallback que rebote 58 veces", () => {
   const r = elegirPool(medicion({ porDominio: new Map([["a.com", 0], ["b.com", 0]]) }), ["configurado.com"]);
   assert.deepEqual(r.boxes, []);
@@ -128,6 +154,39 @@ test("el plan cuenta el mismo cuento que el daemon: día, placement, cupo y deci
   assert.equal(d.enviadosHoy, 1);
   assert.equal(d.cupoFisico, 20);
   assert.equal(d.decision.accion, "subir");
+});
+
+test("las palancas de la rampa: el plan y el daemon dan EL MISMO número", async () => {
+  // LA DIVERGENCIA QUE ESTO CIERRA: `decidirCupoDeHoy` acepta `limiteDiario`/`pasoPorDia` desde el
+  // primer día; el daemon las pasaba (live-warmup-daemon.ts:1076 y :1238) y `planDelDia` no, así
+  // que se quedaba con los `?? 40` y `?? 2` de adentro. Hoy no se nota porque las env vars están
+  // ausentes — y el mismo lote que dejó la divergencia SHIPEÓ la palanca que la abre. El día que
+  // alguien escriba WARMUP_RAMPA_LIMITE_DIARIO=200 en gateway.env, el daemon manda hasta 200/día
+  // por dominio y /v1/warmup/plan (el panel) y `hechos.plan` (lo que el agente le REPORTA al jefe
+  // por Slack) siguen diciendo 40. No es cosmético: es el único número por el que el operador se
+  // entera de cuánto sale, y el agente lo afirmaría con seguridad estando mal.
+  const env = { WARMUP_RAMPA_LIMITE_DIARIO: "200", WARMUP_RAMPA_PASO_POR_DIA: "50" };
+  const args = {
+    pg: pgFalso({ medidos: ["INBOX", "INBOX", "INBOX", "INBOX"], historial: ["2026-08-02T10:00:00Z", "2026-08-03T10:00:00Z"] }),
+    capFile: archivoCap(AHORA.toISOString(), [{ domain: "a.com", cap: 2000 }]),
+    poolConfigurado: [],
+    ventanaPlacement: 6,
+    ahora: AHORA
+  };
+  const conPalanca = await planDelDia({ ...args, env });
+  const sinPalanca = await planDelDia({ ...args, env: {} });
+
+  // El número que el daemon calcularía para el mismo dominio, con la MISMA función.
+  const d = conPalanca.dominios[0]!;
+  const delDaemon = decidirCupoDeHoy({
+    diaN: d.diaN ?? 0,
+    placements: ["INBOX", "INBOX", "INBOX", "INBOX"],
+    cupoFisico: d.cupoFisico,
+    isoWeekday: 2, // 2026-08-04 es martes
+    ...rampaDesdeEnv(env)
+  });
+  assert.equal(d.decision.cupo, delDaemon.cupo, "el panel y el daemon no pueden decir números distintos");
+  assert.notEqual(d.decision.cupo, sinPalanca.dominios[0]!.decision.cupo, "y la palanca tiene que mover algo, si no el test no prueba nada");
 });
 
 test("con la medición VENCIDA el plan decide con cupo desconocido, no con el número viejo", async () => {
@@ -313,7 +372,7 @@ test("con al menos una entrega en la ventana SÍ entra, y los excluidos se DECLA
     "c.com": { estado: "healthy", entregados: 0 }
   }));
   assert.deepEqual(r.boxes, ["a.com", "b.com"]);
-  assert.match(r.motivo, /2 de 3 nodos aptos/);
+  assert.match(r.motivo, /2 de 3 nodos medidos aptos/);
   assert.match(r.motivo, /1 fuera: c\.com \(ninguna entrega en la ventana\)/);
 });
 

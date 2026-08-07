@@ -55,7 +55,10 @@ const canvasArtifactWritePatterns = [
 ];
 const allowedReadPatterns = [
   /^\/v1\/openclaw\/proposals\/[^/]+\/status$/,
-  /^\/v1\/sender-pool\/credentials\/[^/]+\/download$/
+  /^\/v1\/sender-pool\/credentials\/[^/]+\/download$/,
+  // Ramp por dominio: el path base ya estaba, faltaba el segmento del dominio. Sin esto el panel
+  // servido por server.mjs lee un 404 del proxy y lo confunde con "no hay rampa".
+  /^\/v1\/warmup\/ramp\/by-domain\/[^/]+$/
 ];
 
 const allowedProxyPaths = new Set([

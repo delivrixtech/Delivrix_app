@@ -9,13 +9,33 @@
 //
 // Se persiste porque una medicion cuesta ~59 sesiones SSH. La pantalla lee lo ultimo medido y
 // DECLARA cuando fue; nunca se queda esperando una corrida para poder mostrar algo.
+//
+// ── DE QUIÉN ES EL CORREO QUE MEDIMOS ────────────────────────────────────────────────────────────
+//
+// Por los MISMOS nodos pasa el correo de NFC: otro producto, otros clientes, que inyectan por SMTP
+// 587 con SASL. Hasta el 2026-08-06 el clasificador contaba TODA línea `status=` del mail.log sin
+// mirar quién inyectó el mensaje. Sobre la flota eso es 791.300 mensajes de NFC contra 222 nuestros
+// (0,028%): el 99,97% de la evidencia con la que se declaraba healthy/blocked/stalled era
+// reputación que quemó otro producto, publicada como medición NUESTRA acá, en
+// `GET /v1/sender-measurement`, en la tool `read_sender_measurement` del agente y en el panel.
+//
+// Los números que lo delatan, medidos ese día: en infranationalreport.com el panel decía 20.295
+// entregados y 3.617 rechazados en 5 días — lo nuestro eran 6 entregados y 1 rechazado. En
+// annualcorp-control.com el panel decía "cerrado en gmail: 136 rechazos sobre 137 intentos": 135
+// eran de NFC y 1 nuestro.
+//
+// La separación se hace por NUESTRO PROPIO LIBRO (`leerLibroPropio`), no por heurística sobre el
+// log. Ver `ModoAtribucion` en smtp-delivery-health.ts para por qué el discriminante obvio
+// (sasl_username, remitente, sendmail vs 587) NO funciona.
 
 import {
   BLOCKED_MIN_ATTEMPTS,
   readNodeDeliveryHealth,
   type DeliveryHealthSshRunner,
-  type DeliveryHealthStatus
+  type DeliveryHealthStatus,
+  type ModoAtribucion
 } from "./smtp-delivery-health.ts";
+import type { PgClient } from "../../warmup-engine/src/store/pg-stores.ts";
 import {
   readNodeProviderVolume,
   type ProviderFamily,
@@ -34,6 +54,77 @@ export const MEASUREMENT_FILE = "sender-measurement.json";
  */
 export const MEASUREMENT_CONCURRENCY = 4;
 
+/**
+ * NUESTRO LIBRO DE ENVÍOS, el único discriminante que no depende de lo que haga el otro inquilino.
+ *
+ * `queueIdsPorDominio`: los queue-ids que Postfix nos devolvió al aceptar cada mensaje
+ * ("250 2.0.0 Ok: queued as B7CA03F69F"), agrupados por dominio en minúsculas. Identificación
+ * POSITIVA: nuestro = está acá; todo lo demás = no nuestro. Lo que no se puede atribuir cae del
+ * lado seguro — sub-contamos lo nuestro, nunca lo inflamos.
+ *
+ * `ultimoEnvioPorDominio`: SIN ventana, a propósito. No es para atribuir, es para que el pool del
+ * warmup pueda distinguir "nunca le mandamos nada" de "le mandamos, pero hace más de N días". Sin
+ * esa distinción se abre un deadlock: un dominio que se queda sin vueltas pierde su muestra propia,
+ * queda `no_own_traffic`, lo sacan del pool, y sin pool no vuelve a mandar nunca — el warmup se
+ * apaga solo. La ventana la fija `dias`; la historia no tiene ventana.
+ */
+export interface LibroPropio {
+  queueIdsPorDominio: Map<string, string[]>;
+  ultimoEnvioPorDominio: Map<string, string>;
+}
+
+/**
+ * Lee el libro de la base. NO ATRAPA ERRORES A PROPÓSITO: si esto tira, la corrida entera se cae y
+ * `sender-measurement.json` queda como estaba.
+ *
+ * Devolver un libro vacío ante un fallo de Postgres sería la peor falla posible del módulo:
+ * atribuiría CERO mensajes nuestros en los 58 nodos, la flota entera pasaría a `no_own_traffic`, y
+ * el archivo publicaría eso como si lo hubiera medido. Un archivo viejo con su `medidoEn`
+ * envejecido — que el panel ya sabe mostrar — es infinitamente mejor que uno nuevo con una
+ * atribución inventada.
+ */
+export async function leerLibroPropio(pg: PgClient, dias: number): Promise<LibroPropio> {
+  // `dias + 2` y no `dias`: `maximal_queue_lifetime = 2d` (postconf -n del nodo), así que un
+  // mensaje que encolamos ANTES del borde de la ventana sigue escribiendo líneas `status=` DENTRO
+  // de ella — sus reintentos. Sin el margen, esos rebotes nuestros se contarían como de NFC.
+  // Y de paso acota el reúso de queue-id, que medido en el nodo de más volumen es 2 de 61.241
+  // (0,003%) sobre TODO el log retenido y exactamente 0 dentro de la ventana de 5 días.
+  const ventana = await pg.query<{ node_domain: string; smtp: string | null }>(
+    "SELECT node_domain, detail->>'smtp' AS smtp FROM warmup_activity" +
+      " WHERE kind = 'sent' AND occurred_at >= now() - make_interval(days => $1)" +
+      " AND detail->>'smtp' ILIKE '%queued as %'",
+    [dias + 2]
+  );
+  const historia = await pg.query<{ node_domain: string; ultimo: Date | string }>(
+    "SELECT node_domain, MAX(occurred_at) AS ultimo FROM warmup_activity WHERE kind = 'sent' GROUP BY node_domain"
+  );
+
+  const queueIdsPorDominio = new Map<string, string[]>();
+  for (const row of ventana.rows) {
+    // Formato real de producción, verificado el 2026-08-06 contra la Postgres del Studio:
+    // `250 2.0.0 Ok: queued as C921D46D53`. El `[A-Za-z0-9]{4,20}` cubre también el base-52 de los
+    // nodos con `enable_long_queue_ids`; atarse al hex dejaría esos nodos sin libro y por lo tanto
+    // en `no_own_traffic` para siempre.
+    const m = /queued as ([A-Za-z0-9]{4,20})/i.exec(row.smtp ?? "");
+    if (!m) continue;
+    const dominio = row.node_domain.trim().toLowerCase();
+    const ids = queueIdsPorDominio.get(dominio);
+    if (ids) ids.push(m[1]!);
+    else queueIdsPorDominio.set(dominio, [m[1]!]);
+  }
+
+  const ultimoEnvioPorDominio = new Map<string, string>();
+  for (const row of historia.rows) {
+    if (!row.ultimo) continue;
+    ultimoEnvioPorDominio.set(
+      row.node_domain.trim().toLowerCase(),
+      row.ultimo instanceof Date ? row.ultimo.toISOString() : String(row.ultimo)
+    );
+  }
+
+  return { queueIdsPorDominio, ultimoEnvioPorDominio };
+}
+
 export interface MedicionBandeja {
   domain: string;
   serverSlug: string;
@@ -42,6 +133,12 @@ export interface MedicionBandeja {
   detalle: string;
   /** Que ventana cubren los numeros de entrega, en los dias que se leyeron de verdad. */
   ventana: string;
+  /**
+   * ENTREGADOS/RECHAZADOS/DIFERIDOS/porReceptor/cerradoEn SON SOLO NUESTROS desde el 2026-08-06
+   * (o del nodo entero si `atribucion.modo === "todo"`). Son justo los campos que leen
+   * `plan-diario` y `sender-quota`, así que es acá donde el cambio tiene que morder: decidir el
+   * pool del warmup y vender cupo con la reputación que quemó NFC era el defecto.
+   */
   entregados: number | null;
   /**
    * Mensajes trabados en la cola del nodo AHORA (no en la ventana). `null` = no se pudo leer.
@@ -77,7 +174,36 @@ export interface MedicionBandeja {
    * la que se desincroniza.
    */
   porReceptor?: Array<{ receptor: string; entregados: number; rechazados: number; diferidos: number }>;
-  /** Pico diario de mensajes UNICOS contra el umbral publicado, por familia de receptor. */
+  /**
+   * Cómo se separó el tráfico. `"nuestro"` = solo lo que figura en `warmup_activity` por queue-id;
+   * `"todo"` = el nodo entero, sin atribuir. `descartados` son ids del libro que no pasaron el
+   * saneo — correo nuestro que vamos a contar como ajeno, y por eso se publica en vez de callarse.
+   *
+   * Opcional por el mismo motivo que `encolados` y `porReceptor`: los fixtures de sender-quota,
+   * sender-alerts y la ruta de lectura arman `MedicionBandeja` a mano, y obligarlos a declarar un
+   * campo que no les importa sería tocar tres archivos ajenos para no ganar nada. Quien lo consuma
+   * tiene que tratar la AUSENCIA como "el gateway no declaró procedencia", nunca como "es nuestro".
+   */
+  atribucion?: { modo: "nuestro" | "todo"; queueIds: number; descartados: number };
+  /** Lo que movió el nodo y NO es nuestro (el otro inquilino). Se MUESTRA; jamás entra al veredicto. */
+  ajeno?: { entregados: number | null; rechazados: number | null; diferidos: number | null };
+  /**
+   * Último envío NUESTRO por este dominio, sin ventana. `null` = nunca le mandamos nada.
+   *
+   * Existe para el pool del warmup, no para la pantalla: es lo único que distingue "el nodo está
+   * quemado por NFC y nosotros nunca lo tocamos" de "lo veníamos calentando y se quedó sin vueltas".
+   * Al segundo hay que dejarlo volver o el warmup se apaga solo; al primero, onboardearlo es una
+   * DECISIÓN del operador, no el efecto lateral de un sensor.
+   */
+  ultimoEnvioNuestro?: string | null;
+  /**
+   * Pico diario de mensajes UNICOS contra el umbral publicado, por familia de receptor.
+   *
+   * `picos`, `cruzados` y `cerca` NO SE ATRIBUYEN, y eso es deliberado: ver la nota de
+   * `smtp-provider-volume.ts`. El receptor cuenta por DOMINIO y por IP, no por quién inyectó, así
+   * que los ~15.000 mensajes/día de NFC que salen de nuestros dominios cuentan enteros contra el
+   * umbral permanente de Google. Filtrarlos apagaría el único sensor del daño que no se deshace.
+   */
   picos: Array<{
     familia: ProviderFamily;
     dia: string;
@@ -111,12 +237,17 @@ export async function medirBandeja(input: {
   domain: string;
   serverSlug: string;
   serverIp: string;
+  /** Queue-ids nuestros en este nodo, o `"todo"` para no atribuir. Requerido: es una decisión. */
+  propios: ModoAtribucion;
+  /** Último envío nuestro a este dominio, sin ventana. `null` = nunca le mandamos. */
+  ultimoEnvioNuestro?: string | null;
 }): Promise<MedicionBandeja> {
   const [salud, volumen] = await Promise.all([
     readNodeDeliveryHealth({
       sshRunner: input.sshRunner,
       serverSlug: input.serverSlug,
       serverIp: input.serverIp,
+      propios: input.propios,
       // Los rebotes del propio dominio son bounce processing, no un bloqueo del receptor.
       selfDomain: input.domain
     }),
@@ -142,6 +273,18 @@ export async function medirBandeja(input: {
     encolados: leyoSalud ? salud.encolados : null,
     rechazados: leyoSalud ? salud.stats.totals.blocked : null,
     diferidos: leyoSalud ? salud.stats.totals.deferred : null,
+    atribucion: salud.atribucion,
+    // Lo del otro inquilino viaja al archivo para que la pantalla pueda explicar POR QUÉ un dominio
+    // está quemado sin que ese número entre en ninguna decisión. `null` cuando no se leyó, igual
+    // que los nuestros: un cero acá diría "el nodo está vacío", que es lo contrario del caso.
+    ajeno: leyoSalud
+      ? {
+          entregados: salud.ajenos.totals.delivered,
+          rechazados: salud.ajenos.totals.blocked,
+          diferidos: salud.ajenos.totals.deferred
+        }
+      : { entregados: null, rechazados: null, diferidos: null },
+    ultimoEnvioNuestro: input.ultimoEnvioNuestro ?? null,
     cerradoEn: salud.blockedProviders,
     // El filtro por BLOCKED_MIN_ATTEMPTS no es cosmetico: acota el TAMANO del archivo. `byProvider`
     // trae una fila por dominio receptor visto, sin techo — 58 bandejas por cientos de receptores
@@ -181,8 +324,22 @@ export async function medirFlota(input: {
   workspace: OpenClawWorkspace;
   sshRunner: RunnerMedicion;
   bandejas: ReadonlyArray<{ domain: string; serverSlug: string; serverIp: string }>;
+  /**
+   * El libro de `leerLibroPropio`, o `"todo"` para no atribuir.
+   *
+   * `"todo"` es SOLO para fixtures y para el diagnóstico de máquina
+   * (`scripts/ops/deliverability-health.ts`), y se persiste como tal en `atribucion.modo` para que
+   * nadie lea esos números como nuestros. Requerido y sin default: quien corre la medición decide
+   * de qué reputación está hablando.
+   */
+  libro: LibroPropio | "todo";
   concurrency?: number;
   now?: () => Date;
+  /**
+   * `false` mide y devuelve sin tocar el archivo. Es el modo con el que el operador mira el
+   * antes/después ANTES de dejar que una corrida normal reescriba la medición de producción.
+   */
+  persistir?: boolean;
 }): Promise<MedicionFlota> {
   const now = input.now ?? (() => new Date());
   const inicio = now().getTime();
@@ -196,8 +353,21 @@ export async function medirFlota(input: {
       const index = cursor++;
       if (index >= input.bandejas.length) return;
       const target = input.bandejas[index]!;
+      const dominio = target.domain.trim().toLowerCase();
+      // Las dos búsquedas van FUERA del try, y no es cosmético: si tiran, tienen que tirar acá y no
+      // adentro del `catch`. Una excepción dentro del manejador de errores mata el worker sin
+      // escribir el resultado, `Promise.allSettled` se la come, y la bandeja DESAPARECE de la
+      // flota — ni siquiera como `unreadable`. Es la peor forma de fallar de este módulo: no miente
+      // sobre un nodo, lo borra.
+      //
+      // Un dominio SIN entrada en el libro recibe `[]`, no `"todo"`. Es la diferencia entre "no le
+      // mandamos nada, así que nada del log es nuestro" y "contá todo como nuestro": el fallback
+      // silencioso a "todo" sobre un dominio sin envíos devolvería exactamente el bug que este
+      // cambio arregla, y justo en los nodos donde más ruido de NFC hay.
+      const propios = input.libro === "todo" ? "todo" : (input.libro.queueIdsPorDominio.get(dominio) ?? []);
+      const ultimoEnvioNuestro = input.libro === "todo" ? null : (input.libro.ultimoEnvioPorDominio.get(dominio) ?? null);
       try {
-        resultados[index] = await medirBandeja({ sshRunner: input.sshRunner, ...target });
+        resultados[index] = await medirBandeja({ sshRunner: input.sshRunner, ...target, propios, ultimoEnvioNuestro });
       } catch (error) {
         // Una bandeja que revienta no tumba la corrida, y NO se cuenta como sana.
         resultados[index] = {
@@ -210,6 +380,8 @@ export async function medirFlota(input: {
           encolados: null,
           rechazados: null,
           diferidos: null,
+          ajeno: { entregados: null, rechazados: null, diferidos: null },
+          ultimoEnvioNuestro,
           cerradoEn: [],
           picos: [],
           cruzados: [],
@@ -251,7 +423,9 @@ export async function medirFlota(input: {
     bandejas
   };
 
-  await input.workspace.updateInventoryJson<MedicionFlota>(MEASUREMENT_FILE, () => medicion);
+  if (input.persistir !== false) {
+    await input.workspace.updateInventoryJson<MedicionFlota>(MEASUREMENT_FILE, () => medicion);
+  }
   return medicion;
 }
 

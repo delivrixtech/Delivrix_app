@@ -17,7 +17,14 @@ import { createRequire } from "node:module";
 import { Pool, Client as PgClientDirecto } from "pg";
 import { elegirSemilla, semillasMedibles, type SeedBase } from "../domain/seeds.ts";
 import { elegirSemillaRotada, progresoDeCalentamiento, type UsoPrevio } from "../domain/rotacion.ts";
-import { decidirCupoDeHoy, esInbox, puedeMandarTurno, type DecisionDiaria } from "../domain/decision-diaria.ts";
+import {
+  decidirCupoDeHoy,
+  esInbox,
+  puedeMandarTurno,
+  rampaDesdeEnv,
+  TECHO_DURO_POR_DOMINIO,
+  type DecisionDiaria
+} from "../domain/decision-diaria.ts";
 import {
   boxesSinCupoHoy,
   elegirPool,
@@ -88,10 +95,34 @@ export interface LiveDaemonConfig {
   saludFile: string;
   pollAttempts: number;
   pollDelayMs: number;
+  /**
+   * Las dos palancas de la RAMPA por dominio. Existían en `EntradaDecision` desde el primer día y
+   * NINGÚN llamador las pasaba: vivían como `?? 40` y `?? 2` dentro de la función, o sea que mover
+   * el techo de un dominio exigía tocar código y desplegar. Ahora salen del entorno con el mismo
+   * fail-closed que el resto — y con las env vars ausentes, que es el estado de hoy, el
+   * comportamiento no cambia en un solo correo (los defaults son exactamente esos 40 y 2).
+   */
+  limiteDiario: number;
+  pasoPorDia: number;
 }
 
+/**
+ * Entero del entorno, FAIL-CLOSED: basura (vacío, texto, negativo, por debajo del mínimo) cae al
+ * default conservador en vez de propagar un NaN que después se compara con `>=` y da false siempre.
+ *
+ * OJO con una lectura equivocada que ya vi hacer: `WARMUP_LIVE_MAX_PER_DAY=0` NO frena el daemon.
+ * Cero está por debajo del mínimo, así que cae al default (3) y el daemon manda MÁS que lo escrito.
+ * Para frenar existen el kill-file y WARMUP_LIVE_ENABLE=false, que son las dos barreras que sí
+ * están hechas para eso.
+ */
 function intEnv(raw: string | undefined, fallback: number, min: number): number {
-  const n = Number((raw ?? "").trim());
+  const t = (raw ?? "").trim();
+  // AUSENTE Y VACÍO SON LO MISMO, y hay que decirlo explícito: `Number("")` es 0. Mientras todos los
+  // mínimos fueron 1 eso no se notaba (el 0 quedaba por debajo y caía al default igual), pero apenas
+  // una palanca acepta 0 como orden legítima —las dos de la rampa— un `WARMUP_RAMPA_LIMITE_DIARIO=`
+  // sin valor pasaba a congelar la rampa como si alguien lo hubiera pedido.
+  if (t.length === 0) return fallback;
+  const n = Number(t);
   return Number.isFinite(n) && n >= min ? Math.floor(n) : fallback;
 }
 
@@ -124,8 +155,68 @@ export function resolveLiveDaemonConfig(env: NodeJS.ProcessEnv): LiveDaemonConfi
     // Ventana de medición amplia: Gmail puede tardar >60s en indexar el mensaje recién enviado.
     // 30 intentos × 6s = ~3min inline. (Mejora futura: medir en un pase posterior, no bloqueante.)
     pollAttempts: intEnv(env.WARMUP_LIVE_POLL_ATTEMPTS, 30, 1),
-    pollDelayMs: intEnv(env.WARMUP_LIVE_POLL_DELAY_MS, 6000, 100)
+    pollDelayMs: intEnv(env.WARMUP_LIVE_POLL_DELAY_MS, 6000, 100),
+    // Los defaults son los que hoy están hardcodeados dentro de `decidirCupoDeHoy` (`?? 40`, `?? 2`):
+    // con las env vars ausentes el número que sale es idéntico al de antes de este cambio.
+    //
+    // MÍNIMO 0, no 1, y es la diferencia entre respetar al operador y contradecirlo. Con min=1, un
+    // `WARMUP_RAMPA_LIMITE_DIARIO=0` escrito a propósito para congelar la rampa caía al default y el
+    // dominio mandaba 40/día: el número escrito por el operador se descartaba en silencio y salía
+    // MÁS que lo pedido. En `WARMUP_LIVE_MAX_PER_DAY` eso es tolerable —para frenar están el
+    // kill-file y el flag— pero estas dos gobiernan el volumen POR DOMINIO, que es el eje donde vive
+    // el umbral irreversible de Google. La basura no numérica sigue cayendo al default.
+    // Resueltas por `rampaDesdeEnv` (domain/decision-diaria.ts) y NO acá con `intEnv`: son las
+    // únicas dos palancas que también necesita `planDelDia` —el panel y lo que el agente le reporta
+    // al jefe— y tenerlas en dos lados es justo cómo se abrió la divergencia que esto cierra.
+    ...rampaDesdeEnv(env)
   };
+}
+
+/**
+ * La línea ARRANCA — dice la ARITMÉTICA del sobre de volumen, no tres números sueltos.
+ *
+ * La trampa que cierra: el tope diario y el intervalo están ACOPLADOS y eso no estaba escrito en
+ * ningún lado. Con el intervalo de 90 min de producción entran 16 ciclos en un día UTC, así que
+ * subir WARMUP_LIVE_MAX_PER_DAY de 14 a 50 no agrega un solo correo. El que lo sube mira el log,
+ * no ve nada distinto, y se queda creyendo que aumentó el volumen. Pura: se testea sin arrancar nada.
+ */
+export function lineaDeArranque(
+  cfg: Pick<LiveDaemonConfig, "maxPerDay" | "intervalMs" | "placementFloor" | "seedInbox" | "limiteDiario" | "pasoPorDia">
+): string {
+  const ciclosPosibles = Math.floor(86_400_000 / cfg.intervalMs);
+  const aviso =
+    cfg.maxPerDay > ciclosPosibles
+      ? ` — OJO: el tope de ${cfg.maxPerDay} NO se puede alcanzar, el intervalo solo permite ${ciclosPosibles}:` +
+        " subirlo sin bajar el intervalo no agrega un correo"
+      : "";
+  return (
+    `ARRANCA — tope ${cfg.maxPerDay} vueltas/día · intervalo ${Math.round(cfg.intervalMs / 60000)}min ⇒ ` +
+    `${ciclosPosibles} ciclos/día posibles${aviso}` +
+    ` · rampa por dominio hasta ${cfg.limiteDiario}/día (+${cfg.pasoPorDia}/día), techo duro ${TECHO_DURO_POR_DOMINIO}/día` +
+    ` · piso placement ${(cfg.placementFloor * 100).toFixed(0)}% · seed ${cfg.seedInbox} (el pool se decide en cada vuelta)`
+  );
+}
+
+/**
+ * La línea de semillas — dice en QUÉ PROVEEDORES se mide, no solo cuántas semillas miden.
+ *
+ * "2 pueden medir" suena a cobertura y hoy las dos son Gmail: el placement de toda la flota se lee
+ * en UN solo receptor, y el criterio "repartir entre proveedores" de `elegirSemillaRotada` no puede
+ * ejecutarse nunca. Outlook y Yahoo —que son justamente los que más nos bloquean— son punto ciego,
+ * y con el conteo pelado eso no se ve.
+ */
+export function lineaDeSemillas(semillas: readonly SeedBase[]): string {
+  const miden = semillasMedibles([...semillas]);
+  const proveedores = [...new Set(miden.map((s) => s.provider))].sort();
+  const alerta =
+    proveedores.length <= 1
+      ? ` — se mide en UN SOLO receptor (${proveedores[0] ?? "ninguno"}): lo que pase en los otros es punto ciego`
+      : "";
+  return (
+    `semillas: ${semillas.length} activas · ${miden.length} miden placement en ` +
+    `${proveedores.length > 0 ? proveedores.join("+") : "ningún proveedor"}${alerta}` +
+    ` · destinos ${semillas.map((s) => s.address).join(", ")}`
+  );
 }
 
 // ── Decisión de gate (pura, testeable) ──────────────────────────────────────────────────────────────
@@ -274,6 +365,23 @@ export const MIN_MUESTRA_FLOTA = 10;
  */
 export const MIN_MUESTRAS_POR_DOMINIO = 4;
 
+/**
+ * Cuántos DOMINIOS distintos tienen que aportar antes de que el freno global pueda apagar la flota.
+ *
+ * `MIN_MUESTRA_FLOTA` arregló la mitad del problema y dejó la otra en pie: exige 10 mediciones pero
+ * no exige que vengan de más de un dominio. Hoy, en producción, las 10 que cuentan son las 10 de
+ * corpfiling-infra.com — el único con historia suficiente. O sea que si ESE dominio saca seis SPAM
+ * seguidos, la tasa cae bajo el piso y se apaga el warmup de los 58 nodos por la evidencia de uno.
+ *
+ * Es el mismo error de forma que el comentario de MIN_MUESTRA_FLOTA dice haber arreglado, corrido
+ * de eje: de "pocas muestras" a "muchas muestras de un solo dueño". Un corte de CATÁSTROFE afirma
+ * algo sobre la flota, y un dominio no es la flota — para eso ya está el freno fino
+ * (`decidirCupoDeHoy`), que con sus propias mediciones lo baja o lo frena a él solo.
+ *
+ * `recentInboxRate` ya venía calculando `dominios` desde el arreglo anterior y nadie lo miraba.
+ */
+export const MIN_DOMINIOS_FLOTA = 2;
+
 export interface GateInput {
   enabled: boolean;
   killed: boolean;
@@ -333,7 +441,12 @@ export function decideDaemonAction(input: GateInput): { action: DaemonAction; re
   // Sin muestra suficiente NO se apaga la fábrica. El freno fino por dominio sigue gobernando el
   // volumen de cada uno; este solo existe para cortar una degradación de toda la flota, y para
   // afirmar eso hacen falta datos, no seis filas.
-  if (r !== null && r.muestra >= MIN_MUESTRA_FLOTA && r.tasa < input.placementFloor) {
+  if (
+    r !== null &&
+    r.muestra >= MIN_MUESTRA_FLOTA &&
+    r.dominios >= MIN_DOMINIOS_FLOTA &&
+    r.tasa < input.placementFloor
+  ) {
     return {
       action: "placement-pause",
       reason:
@@ -341,7 +454,23 @@ export function decideDaemonAction(input: GateInput): { action: DaemonAction; re
         `sobre ${r.muestra} mediciones de ${r.dominios} dominio(s) con historia`
     };
   }
-  return { action: "send", reason: "ok" };
+  // EL MOTIVO DEL "send" DEJA DE SER "ok", Y ESO ES EL ARREGLO.
+  //
+  // Con `MIN_DOMINIOS_FLOTA` puesto, hoy en producción el freno global NO PUEDE dispararse: hace
+  // falta que DOS dominios junten 4 mediciones propias cada uno, y las 10 que cuentan son las 10 de
+  // corpfiling-infra.com. Verificado: 100 mediciones TODAS en SPAM de un solo dominio devuelven
+  // "send". La condición es correcta —un dominio no es la flota, y el freno fino ya lo baja a él
+  // solo— pero un gate que no puede evaluarse tiene que DECIRLO: si no, "no se disparó" se lee como
+  // "se evaluó y dio bien", que es la confusión más cara de este sistema. El daemon lo imprime.
+  const cobertura =
+    r === null
+      ? "freno global INACTIVO: ningún dominio con 4+ mediciones propias todavía"
+      : r.dominios < MIN_DOMINIOS_FLOTA
+        ? `freno global INACTIVO: solo ${r.dominios} dominio(s) con historia (hacen falta ${MIN_DOMINIOS_FLOTA})`
+        : r.muestra < MIN_MUESTRA_FLOTA
+          ? `freno global INACTIVO: ${r.muestra} mediciones (hacen falta ${MIN_MUESTRA_FLOTA})`
+          : `freno global evaluado: inbox ${(r.tasa * 100).toFixed(0)}% sobre ${r.muestra} mediciones de ${r.dominios} dominios`;
+  return { action: "send", reason: cobertura };
 }
 
 /** Rotación estable de boxes por índice de vuelta. */
@@ -349,6 +478,41 @@ export function pickBox(boxes: readonly string[], cycleIndex: number): string {
   if (boxes.length === 0) throw new Error("no boxes configured");
   const i = ((cycleIndex % boxes.length) + boxes.length) % boxes.length;
   return boxes[i] as string;
+}
+
+/**
+ * A QUÉ BOX le toca esta vuelta, y quiénes quedan como candidatos.
+ *
+ * `agotados` es lo que faltaba. El daemon preguntaba `disponibles.some(b => b !== box &&
+ * !frenados.has(b))` para decidir si dormir 60 s o el intervalo entero — pero `disponibles` se
+ * había construido tres líneas antes como `poolElegido.boxes.filter(b => !frenados.has(b))`, así
+ * que el `!frenados.has(b)` era siempre true y la expresión era, literalmente,
+ * `disponibles.length > 1`. Preguntaba si queda OTRO box, no si queda otro box CON CUPO.
+ *
+ * Con los 6 del pool agotados desde media tarde —el caso normal, porque el cupo por dominio (2) es
+ * menor que el tope de vueltas— la respuesta era siempre "sí, quedan otros", el daemon dormía 60 s,
+ * volvía a elegir a otro agotado, y así ~1.400 vueltas por día × 7 consultas contra Postgres. Es
+ * exactamente la patología que el comentario de esa misma línea decía haber arreglado. De rebote
+ * mantenía el watchdog en verde solo, porque el giro en caliente fabricaba la frescura del log.
+ *
+ * Efecto secundario buscado: sacar a los agotados de la rotación hace que `pickBox` deje de
+ * repartir plano por índice. Con los chicos ya agotados, las vueltas que quedan van al que todavía
+ * tiene cupo en vez de gastarse en saltear a los que no.
+ *
+ * Pura: el daemon la usa para elegir Y para preguntar si queda alguien. Que sean la MISMA función
+ * es el punto — la pregunta y la elección tienen que responder con el mismo criterio, y el bug de
+ * arriba fue exactamente que no lo hacían.
+ */
+export function elegirBoxDeLaVuelta(e: {
+  pool: readonly string[];
+  /** Los que hoy rebotaron con 450 contra el cap físico del nodo. */
+  rebotadosHoy: ReadonlySet<string>;
+  /** Los que ya cumplieron su cupo del día (foto del día UTC en curso). */
+  agotados: ReadonlySet<string>;
+  seq: number;
+}): { box: string | null; disponibles: string[] } {
+  const disponibles = e.pool.filter((b) => !e.rebotadosHoy.has(b) && !e.agotados.has(b));
+  return { box: disponibles.length > 0 ? pickBox(disponibles, e.seq) : null, disponibles };
 }
 
 // ── Lecturas del estado (Postgres) ──────────────────────────────────────────────────────────────────
@@ -713,8 +877,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         `el freno por placement deja de existir. Cargá semillas con scripts/ops/semillas.ts.`
     );
   } else {
-    const miden = semillasMedibles(semillas).length;
-    log(`semillas: ${semillas.length} activas · ${miden} pueden medir placement · destinos ${semillas.map((s) => s.address).join(", ")}`);
+    log(lineaDeSemillas(semillas));
   }
 
   const tokenProvider = createGoogleOAuthTokenProvider({});
@@ -730,7 +893,26 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
   // al daemon girando días sin calentar nada — mientras `/v1/warmup/plan` ya muestra los nuevos.
   const poolConfigurado = [...cfg.boxes];
   let poolAnterior = "";
-  log(`ARRANCA — intervalo ${Math.round(cfg.intervalMs / 60000)}min, piso placement ${(cfg.placementFloor * 100).toFixed(0)}%, seed ${cfg.seedInbox} (el pool se decide en cada vuelta)`);
+  log(lineaDeArranque(cfg));
+
+  // LOS QUE YA CUMPLIERON SU CUPO HOY. Sin esta memoria el daemon volvía a elegirlos vuelta tras
+  // vuelta, cada 60 s, hasta el cambio de día (ver `elegirBoxDeLaVuelta`). Es una FOTO del día UTC
+  // en curso y se descarta en dos casos, los dos reales:
+  //   · cambia el día UTC ⇒ todos vuelven a la rotación con su cupo nuevo;
+  //   · cambia el pool ⇒ hubo medición nueva del cupo físico o de la salud. El 2026-08-04, 46 nodos
+  //     pasaron de cap 0 a valores reales a las 19:01 UTC: un nodo marcado agotado con cap 0 a la
+  //     mañana tiene que poder volver a trabajar esa misma tarde, no al otro día.
+  //
+  // POR QUÉ ES SEGURO recordarlo el resto del día, que es la pregunta obvia: el cupo de un dominio
+  // sale de su día de rampa, de SUS mediciones y de su cap físico. El día no cambia dentro del día;
+  // el cap está cubierto por el clear de arriba; y las mediciones propias solo crecen cuando ESE
+  // dominio manda — cosa que no va a pasar, porque está agotado. Además la marca se pone DESPUÉS de
+  // recalcular su cupo con los datos frescos de esa vuelta, así que el salto de "sostener 2" a la
+  // rampa completa (el que ocurre al juntar la cuarta medición) ya quedó contemplado antes de
+  // marcarlo. Lo único que queda afuera es una medición vieja que caduque de la ventana de 10 días
+  // a media tarde: eso espera al cambio de día, y son diez días de espera contra unas horas más.
+  const agotados = new Set<string>();
+  let diaDeAgotados = "";
 
   try {
     for (;;) {
@@ -751,6 +933,15 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
       }
       lockVivo = true;
 
+      // El cupo es POR DÍA UTC, así que la foto de agotados también. Misma zona explícita que
+      // `countCyclesToday` y `enviosDeHoy`: dos ventanas distintas para la palabra "hoy" son dos
+      // verdades sobre cuánto se mandó.
+      const hoyUtc = new Date().toISOString().slice(0, 10);
+      if (hoyUtc !== diaDeAgotados) {
+        agotados.clear();
+        diaDeAgotados = hoyUtc;
+      }
+
       const killed = existsSync(cfg.killFile);
       const cyclesToday = await countCyclesToday(pg);
       const placements = await recentPlacements(pg, cfg.placementWindow);
@@ -770,6 +961,9 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
       const poolElegido = elegirPool(capsFisicos, poolConfigurado, saludFlota);
       if (poolElegido.boxes.join(",") !== poolAnterior) {
         poolAnterior = poolElegido.boxes.join(",");
+        // El pool cambió ⇒ hay medición nueva del cupo o de la salud, así que la foto de agotados
+        // es vieja: un nodo que marcamos agotado con cap 0 puede tener cupo real ahora mismo.
+        agotados.clear();
         log(`pool: ${poolElegido.motivo}${poolElegido.boxes.length > 0 ? ` → ${poolElegido.boxes.join(", ")}` : ""}`);
       }
 
@@ -784,6 +978,10 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
       });
 
       if (action === "send") {
+        // El motivo del `send` se IMPRIME. Es la única forma de distinguir "el corte de catástrofe
+        // se evaluó y la flota está bien" de "el corte de catástrofe no se puede evaluar" — y hasta
+        // acá las dos se veían igual: silencio. Ver decideDaemonAction.
+        log(`gate: ${reason}`);
         if (poolElegido.boxes.length === 0) {
           // ESPERA, no `return`. Salir mataba el proceso sin supervisor que lo levante, y el caso
           // que lo dispara es transitorio: alguien frenó la flota entera y la va a soltar. El
@@ -833,8 +1031,13 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           continue;
         }
 
-        const disponibles = poolElegido.boxes.filter((b) => !frenados.has(b));
-        if (disponibles.length === 0) {
+        const elegido = elegirBoxDeLaVuelta({
+          pool: poolElegido.boxes,
+          rebotadosHoy: frenados,
+          agotados,
+          seq
+        });
+        if (elegido.box === null) {
           log(`PAUSA — los ${poolElegido.boxes.length} boxes del pool ya agotaron su cupo diario. Nada que enviar hoy.`);
           if (once) break;
           await sleep(cfg.intervalMs);
@@ -846,7 +1049,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         if (salteados.length > 0) {
           log(`${salteados.length} box(es) sin cupo hoy, salteados: ${salteados.join(", ")}`);
         }
-        const box = pickBox(disponibles, seq);
+        const box = elegido.box;
 
         // ── La decisión del día para ESTE dominio ─────────────────────────────────────────────
         // Antes el tope era un número fijo e igual para todos (3/día, siempre). Eso no es un
@@ -872,7 +1075,9 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
               )?.diasCorridos ?? 0,
             placements: await placementsDeDominio(pg, box, cfg.placementWindow),
             cupoFisico: capsFisicos.vencida ? null : capsFisicos.porDominio.get(box) ?? null,
-            isoWeekday
+            isoWeekday,
+            limiteDiario: cfg.limiteDiario,
+            pasoPorDia: cfg.pasoPorDia
           });
         } catch (err) {
           log(`no pude leer el placement de ${box} (${err instanceof Error ? err.message : String(err)}) — NO mando esta vuelta`);
@@ -884,6 +1089,8 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
         log(`${box}: ${delDia.accion} · cupo ${delDia.cupo}/día (van ${enviadosHoyBox}) — ${delDia.motivo}`);
         if (enviadosHoyBox >= delDia.cupo) {
           seq += 1;
+          // SE RECUERDA. Sin esto la rotación lo volvía a elegir cada 60 s hasta el cambio de día.
+          agotados.add(box);
           if (once) break;
           // Si NINGÚN box del pool tiene cupo, se duerme el intervalo entero. Antes eran 60s
           // siempre: con el cupo por dominio (2) menor que el tope de vueltas (3) —el caso normal
@@ -891,11 +1098,17 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
           // enterrando los WARN reales bajo miles de líneas de log.
           // El cupo de ESTE box no dice nada de los otros. Con `a.com` frenado (cupo 0) y `b.com`
           // sano con 35 de margen, la comparación `5 < 0` daba false y el daemon dormía 4 HORAS
-          // con la flota libre. Acá solo se pregunta si queda otro candidato al que intentarle; su
-          // cupo lo decide su propia vuelta.
-          const quedaAlguno = disponibles.some((b) => b !== box && !frenados.has(b));
-          log(`${box} ya cumplió su cupo de hoy — se salta${quedaAlguno ? "" : " (ningún box con cupo: espero el intervalo)"}`);
-          await sleep(quedaAlguno ? Math.min(cfg.intervalMs, 60_000) : cfg.intervalMs);
+          // con la flota libre. Se pregunta con la MISMA función que elige, y sobre `agotados` ya
+          // actualizado: la pregunta anterior era `disponibles.length > 1`, o sea "¿queda otro
+          // box?" en vez de "¿queda otro box con cupo?", y con el pool agotado siempre decía sí.
+          const siguiente = elegirBoxDeLaVuelta({
+            pool: poolElegido.boxes,
+            rebotadosHoy: frenados,
+            agotados,
+            seq
+          });
+          log(`${box} ya cumplió su cupo de hoy — se salta${siguiente.box ? "" : " (ningún box con cupo: espero el intervalo)"}`);
+          await sleep(siguiente.box ? Math.min(cfg.intervalMs, 60_000) : cfg.intervalMs);
           continue;
         }
         // La conversación la escribe el MODELO. El banco de 14 textos fijos repartidos entre 58
@@ -1007,7 +1220,12 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
               // Sin `.catch` permisivo: si no se puede leer el estado del dominio, NO se manda. Un
               // error de lectura jamás se convierte en permiso de enviar.
               let cupoDelHilo: DecisionDiaria;
+              // Se IZA la lectura que ya se hacía adentro de `decidirCupoDeHoy`: son las mediciones
+              // PROPIAS de este dominio, y `puedeMandarTurno` las necesita para no gastarle su
+              // último envío del día en un "Re:" que no mide nada. Misma consulta, una sola vez.
+              let propias: Placement[];
               try {
+                propias = await placementsDeDominio(pg, hiloPrevio.nodeDomain, cfg.placementWindow);
                 cupoDelHilo = decidirCupoDeHoy({
                   diaN:
                     progresoDeCalentamiento(
@@ -1017,9 +1235,11 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                       hiloPrevio.nodeDomain,
                       null
                     )?.diasCorridos ?? 0,
-                  placements: await placementsDeDominio(pg, hiloPrevio.nodeDomain, cfg.placementWindow),
+                  placements: propias,
                   cupoFisico: capsFisicos.vencida ? null : capsFisicos.porDominio.get(hiloPrevio.nodeDomain) ?? null,
-                  isoWeekday
+                  isoWeekday,
+                  limiteDiario: cfg.limiteDiario,
+                  pasoPorDia: cfg.pasoPorDia
                 });
               } catch (err) {
                 log(`hilo ${marca}: no pude leer el estado de ${hiloPrevio.nodeDomain}, no mando — ${err instanceof Error ? err.message : String(err)}`);
@@ -1029,7 +1249,12 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                 dominio: hiloPrevio.nodeDomain,
                 rebotadosHoy: frenados,
                 decision: cupoDelHilo,
-                enviadosHoy: enviadosPorDominio.get(hiloPrevio.nodeDomain) ?? 0
+                enviadosHoy: enviadosPorDominio.get(hiloPrevio.nodeDomain) ?? 0,
+                medicionesPropias: propias.length,
+                // El hilo sale de una consulta por SEMILLA, no del pool: sin esta línea, un dominio
+                // que la salud excluyó (umbral cruzado, receptor cerrado, cola atascada) seguía
+                // mandando un "Re:" real por vuelta.
+                enElPool: poolElegido.boxes.includes(hiloPrevio.nodeDomain)
               });
               if (!permiso.si) {
                 log(`hilo ${marca}: no toca — ${permiso.motivo}`);
@@ -1088,7 +1313,7 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
               // `boxesSinCupoHoy` necesita para saltear ese nodo el resto del día. El nodo seguía
               // recibiendo intentos que ya sabíamos que iban a rebotar.
               try {
-              await mailerHilo.send({
+              const enviado = await mailerHilo.send({
                 from: `mailer@${hiloPrevio.nodeDomain}`,
                 inReplyTo: ultimoId,
                 references: idsDelHilo.join(" "),
@@ -1110,7 +1335,16 @@ export async function startLiveWarmupDaemon(opts: StartLiveDaemonOptions = {}): 
                 kind: "sent",
                 subject: asuntoRe,
                 testId: hiloPrevio.testId,
-                detail: { turno: turnos.length + 1, motivo: turno.motivo, generado: "modelo local" }
+                // `smtp` NO es decorado: es lo que nos hace visibles en nuestro propio libro.
+                // `leerLibroPropio` busca los envíos por `detail->>'smtp' ILIKE '%queued as %'`, así
+                // que un turno grabado sin la respuesta de Postfix no deja queue-id y la medición lo
+                // atribuye al OTRO inquilino. Medido el 2026-08-06 contra la Postgres de producción:
+                // de 36 filas `kind='sent'` en 7 días, 12 no tenían `smtp` — las 12 continuaciones,
+                // el 33% de nuestro correo — y se concentran en los dominios que de verdad calientan
+                // (corpfiling-infra.com, 6 de 19). Mismo bug de forma que ya pasó dos veces en este
+                // loop: un segundo camino de envío que no replica lo que hace el primero
+                // (warmup-live-cycle.ts, ① SEND).
+                detail: { smtp: enviado.response, turno: turnos.length + 1, motivo: turno.motivo, generado: "modelo local" }
               });
               } catch (err) {
                 const nota = err instanceof Error ? err.message : String(err);

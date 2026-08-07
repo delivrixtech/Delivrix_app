@@ -9,7 +9,8 @@
 //   · las etapas del ciclo, que se encienden en orden a medida que ocurren;
 //   · el flujo de eventos, que entra por arriba;
 //   · el consumo del cupo de la flota.
-// El warmup hace 3 vueltas por día: no hay animación permanente que fingir. Lo que late es el
+// El warmup hace unas pocas vueltas por día (el tope global es WARMUP_LIVE_MAX_PER_DAY, hoy 14
+// para TODA la flota, no por dominio): no hay animación permanente que fingir. Lo que late es el
 // tiempo desde el último hecho real, que es justamente el dato que dice si esto sigue vivo.
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -51,6 +52,8 @@ interface CapFlota {
 }
 
 interface LecturaAgente {
+  /** Cadencia configurada del daemon (WARMUP_LIVE_INTERVAL_MS). `null` = no configurada. */
+  cadenciaMs?: number | null;
   generadoEn: string | null;
   modelo: string | null;
   lectura: string | null;
@@ -339,8 +342,17 @@ export default function WarmupLive() {
 
   const vueltas = useMemo(() => agruparVueltas(act?.events ?? []), [act]);
   const enCurso = vueltas[0] ?? null;
-  const consumido = (cap?.nodos ?? []).reduce((s, n) => s + (n.consumidoHoy ?? 0), 0);
-  const tope = (cap?.nodos ?? []).reduce((s, n) => s + (n.cap ?? 0), 0);
+  // El consumo de la flota, sin aplastar los no medidos contra cero.
+  //
+  // `n.consumidoHoy ?? 0` sumaba como CERO 42 de los 58 nodos y el resultado se mostraba como si
+  // fuera el consumo completo ("flota 123.149 / 154.743 hoy"). El único aviso existente se
+  // disparaba con `ilegibles > 0`, que vale 0, así que nunca aparecía. Es el patrón que la casa
+  // prohíbe: un no-medido convertido en cero dentro de un total que se lee como completo.
+  const nodosCap = cap?.nodos ?? [];
+  const conContador = nodosCap.filter((n) => n.consumidoHoy !== null);
+  const consumido = conContador.reduce((s, n) => s + (n.consumidoHoy ?? 0), 0);
+  const tope = nodosCap.reduce((s, n) => s + (n.cap ?? 0), 0);
+  const sinContador = nodosCap.length - conContador.length;
   // EL PULSO, contra la CADENCIA REAL del daemon y no contra 10 minutos fijos.
   //
   // El daemon manda cada 4 horas: con el umbral de 10 min, el semáforo estaba gris el 99% del
@@ -351,11 +363,21 @@ export default function WarmupLive() {
   //   · activo   — hubo una vuelta hace poco: se está moviendo ahora.
   //   · en pausa — dentro de la cadencia esperada: sano, esperando su turno.
   //   · frío     — pasó más de dos cadencias sin una vuelta: algo se rompió.
-  const CADENCIA_MS = 4 * 60 * 60_000;
+  // La cadencia sale del BACKEND (/v1/warmup/monitor → cadenciaMs), no de una constante copiada:
+  // estaba clavada en 4h contra un WARMUP_LIVE_INTERVAL_MS real de 1,5h, así que el umbral de
+  // "frío" caía a las 8h y un daemon muerto hacía 7 horas se mostraba "en pausa" con el latido
+  // verde. Sin cadencia configurada no se juzga el pulso: se dice que no se puede.
+  const cadenciaMs = typeof agente?.cadenciaMs === "number" && agente.cadenciaMs > 0 ? agente.cadenciaMs : null;
   const desdeUltima = enCurso ? ahora - Date.parse(enCurso.ultimo) : Number.POSITIVE_INFINITY;
-  const pulso: "activo" | "en pausa" | "frío" =
-    desdeUltima < 15 * 60_000 ? "activo" : desdeUltima < 2 * CADENCIA_MS ? "en pausa" : "frío";
-  const vivo = pulso !== "frío";
+  const pulso: "activo" | "en pausa" | "frío" | "sin cadencia" =
+    cadenciaMs === null
+      ? "sin cadencia"
+      : desdeUltima < 15 * 60_000
+        ? "activo"
+        : desdeUltima < 2 * cadenciaMs
+          ? "en pausa"
+          : "frío";
+  const vivo = pulso === "activo" || pulso === "en pausa";
 
   // Lo que NO se pudo leer va arriba y visible. Un panel que degrada en silencio hace creer al
   // operador que ve el estado actual cuando está mirando un hueco.
@@ -378,7 +400,14 @@ export default function WarmupLive() {
             <>
               <b style={S.pulsoEstado(pulso)}>{pulso}</b> · última vuelta hace{" "}
               <b style={S.num}>{hace(enCurso.ultimo, ahora)}</b>
-              {pulso === "frío" ? <span style={S.dim}> (más de 8 h: revisá el daemon)</span> : null}
+              {pulso === "frío" && cadenciaMs !== null ? (
+                <span style={S.dim}>
+                  {" "}
+                  (más de {Math.round((2 * cadenciaMs) / 3_600_000)} h sin una vuelta: revisá el daemon)
+                </span>
+              ) : pulso === "sin cadencia" ? (
+                <span style={S.dim}> (el gateway no publica la cadencia: no puedo juzgar el pulso)</span>
+              ) : null}
             </>
           ) : act === null ? (
             // `act === null` = todavía no volvió la primera respuesta (o falló). No es lo mismo
@@ -391,9 +420,18 @@ export default function WarmupLive() {
           )}
         </span>
         <span style={S.sep} />
+        {/* Este número NO es volumen del warmup: es el contador de submissions SASL del nodo, o
+            sea TODO el correo que entró por el camino autenticado — hoy casi enteramente del otro
+            inquilino. El warmup inyecta con `sendmail -t`, que ese contador ni ve. Mostrarlo con
+            la etiqueta "flota" al lado de "última vuelta hace X" hacía leer volumen ajeno como
+            propio. */}
         <span style={S.pulsoTxt}>
-          flota <b style={S.num}>{consumido.toLocaleString("es")}</b>
-          <span style={S.dim}> / {tope.toLocaleString("es")} hoy</span>
+          nodos <b style={S.num}>{consumido.toLocaleString("es")}</b>
+          <span style={S.dim}>
+            {" "}
+            / {tope.toLocaleString("es")} hoy · todo el correo del nodo, no solo el warmup
+            {sinContador > 0 ? ` · ${sinContador} de ${nodosCap.length} sin contador` : ""}
+          </span>
         </span>
         <span style={S.sep} />
         <span style={S.pulsoTxt}>
@@ -705,8 +743,16 @@ const S = {
     boxShadow: vivo ? "0 0 0 4px color-mix(in srgb, var(--color-success) 18%, transparent)" : "none"
   }),
   pulsoTxt: { fontSize: 12.5, color: "var(--color-text-secondary)" } as const,
-  pulsoEstado: (p: "activo" | "en pausa" | "frío") => ({
-    color: p === "activo" ? "var(--color-success)" : p === "en pausa" ? "var(--color-text-secondary)" : "var(--color-critical)",
+  // "sin cadencia" es un cuarto estado: no sé si está vivo. No se pinta ni verde ni rojo.
+  pulsoEstado: (p: "activo" | "en pausa" | "frío" | "sin cadencia") => ({
+    color:
+      p === "activo"
+        ? "var(--color-success)"
+        : p === "en pausa"
+          ? "var(--color-text-secondary)"
+          : p === "sin cadencia"
+            ? "var(--color-text-tertiary)"
+            : "var(--color-critical)",
     textTransform: "uppercase" as const,
     fontSize: 10.5,
     letterSpacing: ".07em"

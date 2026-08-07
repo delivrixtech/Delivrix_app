@@ -10,7 +10,7 @@
 //   · Solo CITA el snapshot que el otro carril ya verificó. No mide nada por su cuenta.
 // El techo de daño de una alucinación o una inyección acá es "dijo una tontería en el chat".
 
-import type { LecturaAgente } from "./warmup-monitor.ts";
+import { lineasDeFrenados, type LecturaAgente } from "./warmup-monitor.ts";
 
 /**
  * LA VOZ.
@@ -98,7 +98,11 @@ export const VOZ = [
   "ACCION: <nombre> | dominio=<valor> | motivo=<por qué>",
   "",
   "Tu lista completa:",
+  // El aviso del flag, igual que en SISTEMA y por el mismo incidente (26 rechazos de "frenar no
+  // está habilitado" en 5 horas). Por chat es peor: el jefe la pide de frente y el agente le dice
+  // que va. Hay un test de contrato que exige esta línea mientras la mano viva detrás del flag.
   "- frenar_dominio | dominio=<uno del contexto> | motivo=... → le pone cupo 0 al nodo.",
+  "  Puede no estar habilitada en este entorno: si te vuelve por eso, decilo y no la repitas.",
   "- pausar_warmup | motivo=... → frena TODO el calentamiento.",
   "- anotar_pendiente | dominio=<qué hace falta> | motivo=... → lo deja anotado.",
   "- resolver_pendiente | id=<id> | motivo=... → cierra un pendiente.",
@@ -113,15 +117,21 @@ export const VOZ = [
   "- medir_dominio | dominio=<cualquier dominio real> | motivo=... → dónde viene cayendo su correo y",
   "  en qué día de rampa está. Pasivo. Sirve sobre todo para los dominios que no figuran en el",
   "  contexto: de esos no sabés nada, y son los que hay que evaluar para ver si están listos.",
+  // ACÁ IBA `revisar_reputacion`, y se saca por lo mismo que en SISTEMA: el `case` existe pero
+  // ningún llamador produce `ctx.revisarReputacion`, así que pedirla devuelve "no está habilitado en
+  // este entorno". Por chat es todavía peor que en la guardia — el jefe le pide que revise listas
+  // negras, el agente dice que va, y vuelve con un rechazo. Vuelve cuando esté cableada; el test de
+  // contrato de warmup-monitor.test.ts no deja anunciarla antes.
   "- soltar_dominio | dominio=<uno frenado> | motivo=... → le devuelve un cupo CHICO para que vuelva",
   "  a calentar. Es la única que sube volumen. El cupo no lo elegís vos, es fijo, y antes de",
   "  ejecutarla el sistema verifica solo tres cosas contra los nodos vivos: que esté realmente",
   "  frenado, que ningún receptor lo tenga cerrado, y que su propia historia no lo desaconseje.",
   "  Si te la rechaza, eso es un dato para contar, no un error tuyo.",
+  "  Puede no estar habilitada en este entorno; si te vuelve por eso, decilo y no la repitas.",
   "",
-  "MIRAR ES GRATIS. Las tres manos pasivas (leer, diagnosticar, medir) no tocan nada y no necesitan",
-  "que nadie te autorice: usalas cuando dudes, y usalas ANTES de afirmar. Preguntarle a Juanes algo",
-  "que podés ir a ver vos mismo es la forma más rápida de volverte inútil.",
+  "MIRAR ES GRATIS. Las tres manos pasivas (leer, diagnosticar, medir) no",
+  "tocan nada y no necesitan que nadie te autorice: usalas cuando dudes, y usalas ANTES de afirmar.",
+  "Preguntarle a Juanes algo que podés ir a ver vos mismo es la forma más rápida de volverte inútil.",
   "",
   "REGLAS DE LA EJECUCIÓN:",
   "- Las manos que MUTAN (frenar, pausar, soltar) solo si te lo pidieron en este turno. Para actuar",
@@ -178,6 +188,77 @@ export function construirContexto(ctx: ContextoChat, ahoraISO: string): string {
     }
   } else {
     l.push("No hay lectura reciente del sistema. Si te preguntan por el estado, decí que no pudiste mirar.");
+  }
+
+  // LA FUGA QUE ROMPÍA LAS DOS PROMESAS DE LA VOZ, y no era del modelo.
+  //
+  // VOZ le ofrece `soltar_dominio | dominio=<uno frenado>` y `resolver_pendiente | id=<id>`, pero
+  // el contexto del chat no traía ni un frenado ni un id: los dos viven en `snapshot.hechos`, que
+  // llegaba entero y no se leía. Y `revisarRespuesta` marca como invención todo dominio que no esté
+  // en el contexto, así que si el modelo nombraba uno se le marcaba como inventado — la promesa y
+  // el guardrail peleándose, ganando el guardrail. Medido: 7 de los 8 frenados (los 7 vírgenes) eran
+  // INNOMBRABLES para el chat, y `resolver_pendiente` exige el id exacto, que nunca veía.
+  //
+  // Se leen del snapshot, que es el único carril que ya verificó esos hechos: el chat no mide nada.
+  //
+  // Y LA FUGA GRANDE, que es la misma de forma: `plan`, `vueltas`, `flota` y `emisor` viven en ese
+  // mismo `snapshot.hechos` y tampoco entraban. El jefe pregunta "¿cómo vamos?" y el agente tiene
+  // que contestar con la PROSA de la lectura de la guardia, que escribe los números en letras
+  // ("seis entregando, treinta y seis cerradas"). Resultado medido: `revisarRespuesta` marcaba como
+  // inventado todo lo que contestaba bien — "cita el número 36", "cita el número 83", "nombra
+  // corpfiling-infra.com, que no está en el contexto" — sobre datos que SÍ estaban en el snapshot.
+  // Un guardrail que marca la verdad como invención entrena al operador a ignorar los reparos.
+  //
+  // Van EN DÍGITOS a propósito, por eso mismo: el detector compara literales.
+  const h = s?.hechos;
+  const delSistema = [
+    ...(h?.emisor
+      ? [`EMISOR: ${h.emisor.estado === "send" ? "mandando" : `NO manda (${h.emisor.estado}) — ${h.emisor.motivo}`} · vueltas hoy ${h.emisor.vueltasHoy}/${h.emisor.topeDiario}`]
+      : []),
+    ...(h?.flota
+      ? [
+          `FLOTA: ${h.flota.sanas} entregan, ${h.flota.bloqueadas} cerradas por el receptor, ${h.flota.atascadas} con la cola atascada` +
+            (h.flota.cruzados.length > 0 ? ` · CRUZARON el umbral permanente: ${h.flota.cruzados.join(", ")}` : ""),
+          // `cerca` FALTABA, y es la lista de la que el agente habla todo el día: son los dominios
+          // que mide cada tick. Medido sobre las 6 respuestas reales guardadas en producción,
+          // `revisarRespuesta` bajaba de 4 marcas de invención a 3 — y las 3 que quedaban
+          // (controlcontrolledger.com, corpfiling-outbound.com, corp-delivery.com) estaban TODAS en
+          // `hechos.flota.cerca`. O sea que el guardrail marcaba la verdad como invención, que es
+          // textual lo que entrena al operador a ignorar los reparos. `construirPrompt` del monitor
+          // ya la traía; es la misma información, tiene que estar en los dos carriles.
+          ...(h.flota.cerca.length > 0
+            ? [`CERCA del umbral (ninguno lo cruzó): ${h.flota.cerca.join(", ")}`]
+            : [])
+        ]
+      : []),
+    ...((h?.plan ?? []).length > 0
+      ? [
+          "CALENTANDO HOY (dominio · cupo · día de rampa · placement):",
+          ...(h?.plan ?? []).map(
+            (p) =>
+              `- ${p.dominio}: ${p.accion}, cupo ${p.cupo}/día (lleva ${p.enviadosHoy}) · día ${p.diaN ?? "?"} · ` +
+              (p.placementTasa === null
+                ? `placement SIN MEDIR (${p.placementMuestra} mediciones)`
+                : `placement ${Math.round(p.placementTasa * 100)}% sobre ${p.placementMuestra}`)
+          )
+        ]
+      : []),
+    ...((h?.vueltas ?? []).length > 0
+      ? [
+          "ÚLTIMAS VUELTAS:",
+          ...(h?.vueltas ?? [])
+            .slice(0, 6)
+            .map((v) => `- ${v.cuando} · ${v.dominio} → ${v.semilla} · ${v.placement ? `cayó en ${v.placement}` : "sin placement medido"}`)
+        ]
+      : []),
+    ...lineasDeFrenados(h?.cap, h?.flota),
+    ...((h?.pendientesAbiertos ?? []).length > 0
+      ? [`PENDIENTES ABIERTOS (id · qué): ${(h?.pendientesAbiertos ?? []).map((p) => `${p.id} · ${p.que}`).join(" ; ")}`]
+      : [])
+  ];
+  if (delSistema.length > 0) {
+    l.push("");
+    for (const x of delSistema) l.push(x);
   }
 
   // LAS DECISIONES VAN PRIMERO, antes que los hechos: cuando un hecho dice "falta outlook" y el
@@ -242,6 +323,20 @@ export interface RespuestaChat {
   modelo: string;
   observaciones: string[];
   tokens: { prompt: number; completion: number } | null;
+  /**
+   * Cuánto tardó EL MODELO, cronometrado alrededor del fetch. Instrumentación pura: no cambia una
+   * sola decisión.
+   *
+   * Existe porque el único número de latencia que había —`tardoSeg`, en el orquestador— es la EDAD
+   * del mensaje del jefe: incluye la espera de lectura de Slack y las horas en que el agente estuvo
+   * sordo. Con ese instrumento, elegir entre subir el timeout, bajar max_tokens o achicar el
+   * contexto es tirar una moneda. Medido hoy en el log: 65 turnos sin respuesta contra 38
+   * respondidos, y 56 de esos 65 son "el modelo tardó demasiado".
+   *
+   * Va en TODOS los caminos de salida, incluidos los que fallan: si solo se midieran los que salen,
+   * la ventana quedaría sesgada justo hacia los rápidos, que son los que no tienen el problema.
+   */
+  tardoMs: number;
 }
 
 export async function responder(input: {
@@ -255,7 +350,8 @@ export async function responder(input: {
   fetchImpl?: typeof fetch;
   now?: () => Date;
 }): Promise<RespuestaChat> {
-  const ahora = (input.now ?? (() => new Date()))().toISOString();
+  const reloj = input.now ?? (() => new Date());
+  const ahora = reloj().toISOString();
   const contexto = construirContexto(input.contexto, ahora);
   // EL DETECTOR NO SE VERIFICA CONTRA SÍ MISMO.
   //
@@ -274,6 +370,10 @@ export async function responder(input: {
   const doFetch = input.fetchImpl ?? fetch;
   const control = new AbortController();
   const timeout = setTimeout(() => control.abort(), input.timeoutMs ?? 180_000);
+  // El cronómetro arranca PEGADO al fetch, después de armar el contexto: lo que se quiere medir es
+  // el modelo, no nuestro armado de strings.
+  const t0 = reloj().getTime();
+  const tardo = (): number => Math.max(0, reloj().getTime() - t0);
 
   try {
     const r = await doFetch(`${input.baseUrl.replace(/\/$/, "")}/chat/completions`, {
@@ -300,7 +400,7 @@ export async function responder(input: {
         temperature: input.temperatura ?? 0.7
       })
     });
-    if (!r.ok) return { texto: null, motivo: `el modelo respondió HTTP ${r.status}`, modelo: input.modelo, observaciones: [], tokens: null };
+    if (!r.ok) return { texto: null, motivo: `el modelo respondió HTTP ${r.status}`, modelo: input.modelo, observaciones: [], tokens: null, tardoMs: tardo() };
     const data = (await r.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -308,11 +408,11 @@ export async function responder(input: {
     };
     const texto = (data.choices?.[0]?.message?.content ?? "").trim();
     const tokens = { prompt: data.usage?.prompt_tokens ?? 0, completion: data.usage?.completion_tokens ?? 0 };
-    if (!texto) return { texto: null, motivo: "el modelo devolvió texto vacío (el razonamiento se comió el presupuesto)", modelo: data.model ?? input.modelo, observaciones: [], tokens };
-    return { texto, motivo: null, modelo: data.model ?? input.modelo, observaciones: revisarRespuesta(texto, verificable), tokens };
+    if (!texto) return { texto: null, motivo: "el modelo devolvió texto vacío (el razonamiento se comió el presupuesto)", modelo: data.model ?? input.modelo, observaciones: [], tokens, tardoMs: tardo() };
+    return { texto, motivo: null, modelo: data.model ?? input.modelo, observaciones: revisarRespuesta(texto, verificable), tokens, tardoMs: tardo() };
   } catch (e) {
     const abortado = e instanceof Error && e.name === "AbortError";
-    return { texto: null, motivo: abortado ? "el modelo tardó demasiado" : e instanceof Error ? e.message : String(e), modelo: input.modelo, observaciones: [], tokens: null };
+    return { texto: null, motivo: abortado ? "el modelo tardó demasiado" : e instanceof Error ? e.message : String(e), modelo: input.modelo, observaciones: [], tokens: null, tardoMs: tardo() };
   } finally {
     clearTimeout(timeout);
   }

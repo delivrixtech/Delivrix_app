@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  RefreshCw, Search, ShieldAlert, CircleCheck, TriangleAlert, Ban, Gauge,
+  RefreshCw, Search, ShieldAlert, CircleCheck, TriangleAlert, Ban,
   type LucideIcon,
 } from "lucide-react";
 import { getJsonWithQuery, READ_ENDPOINTS } from "../../shared/api/client";
@@ -27,6 +27,13 @@ interface MxtoolboxHealthSummary {
   status: MxtoolboxStatus;
   failedChecks: string[];
   warningChecks: string[];
+  /**
+   * OJO: cuando la llamada a MXToolbox FALLA (HTTP no-ok, excepción, timeout de 10s), el backend
+   * rellena estos dos con 0 y descarta `lookup.source` entero, así que el `errorMessage` que el
+   * adapter sí calcula nunca llega. En pantalla eso se veía como "0 passed" + "0 timeouts" +
+   * subtítulo "consulta live" — indistinguible de una medición real que dio cero. Por eso la vista
+   * NO los imprime cuando `status === "error"`: un check que no corrió no tiene contadores.
+   */
   passedCount: number;
   timeoutCount: number;
   rawRef: string;
@@ -44,6 +51,8 @@ interface MxtoolboxDailyReportResponse {
   summary: Record<MxtoolboxStatus, number>;
   results: MxtoolboxHealthSummary[];
   criticalAlerts: MxtoolboxHealthSummary[];
+  /** El backend lo devuelve, pero su parser no lee el formato real de /Usage: llega sin números.
+   *  Se deja declarado (viene en el payload) y NO se pinta: ver el KPI borrado más abajo. */
   usage?: {
     used?: number;
     limit?: number;
@@ -52,7 +61,14 @@ interface MxtoolboxDailyReportResponse {
   };
 }
 
-const lookupTypes = ["blacklist", "smtp", "mx", "spf", "dkim", "dmarc", "ptr"] as const;
+/**
+ * Sin "dkim": la ruta acepta un parámetro `selector` que este formulario nunca expone ni manda, y
+ * un lookup DKIM sin selector falla siempre en MXToolbox. Probado contra producción con
+ * corpfiling-infra.com: devuelve status error con "0 passed". O sea que el camino más corto para
+ * fabricar un dato en esta pantalla era un control del propio formulario. Vuelve cuando el form
+ * pida el selector (la flota usa s2026a) y lo mande como &selector=.
+ */
+const lookupTypes = ["blacklist", "smtp", "mx", "spf", "dmarc", "ptr"] as const;
 
 /* mxtoolbox status → clave visual del StateBadge del molde (color/ícono §4), con el
  * término real de mxtoolbox como label. No hay estilo nuevo: se reusa el primitivo.
@@ -113,7 +129,11 @@ export function MxtoolboxHealthV5() {
   const daily = useQuery({
     queryKey: ["mxtoolbox", "daily-report"],
     queryFn: () => getJsonWithQuery<MxtoolboxDailyReportResponse>(READ_ENDPOINTS.mxtoolboxDailyReport, {}),
-    refetchInterval: 120_000,
+    // Sin poll automático: cada llamada a /v1/mxtoolbox/daily-report emite un evento
+    // oc.mxtoolbox.blacklist_detected riskLevel:high POR alerta crítica (hoy 10) más un
+    // oc.action.now al canvas. Con la pestaña abierta y refetch cada 120s eso eran ~300 eventos
+    // high por hora sobre las MISMAS 10 IPs, y una tarjeta "acción ahora" cada 2 minutos. El
+    // operador refresca cuando quiere con el botón; la pantalla no escribe sola.
     staleTime: 60_000
   });
 
@@ -137,14 +157,14 @@ export function MxtoolboxHealthV5() {
 
   const summary = daily.data?.summary;
   const criticalAlerts = daily.data?.criticalAlerts ?? [];
-  const usage = daily.data?.usage;
-
   /* Sin reporte real → "—" (nunca ceros fabricados que parezcan "todo limpio"). */
   const kpis: { key: string; label: string; value: number | string; icon: LucideIcon }[] = [
     { key: "clean", label: "Clean", value: summary?.clean ?? "—", icon: CircleCheck },
     { key: "warning", label: "Warning", value: summary?.warning ?? "—", icon: TriangleAlert },
     { key: "listed", label: "Listed", value: summary?.listed ?? "—", icon: ShieldAlert },
-    { key: "error", label: "Error", value: summary?.error ?? "—", icon: Ban },
+    // "Error" acá significa SIEMPRE "no se pudo medir el objetivo", nunca "el objetivo tiene un
+    // problema" — el status `listed` es el que dice que hay problema. El rótulo lo dice ahora.
+    { key: "error", label: "No se pudo medir", value: summary?.error ?? "—", icon: Ban },
   ];
 
   return (
@@ -174,7 +194,7 @@ export function MxtoolboxHealthV5() {
       <SectionHead
         eyebrow="MXToolbox · Read-only"
         title="Salud · Blacklist"
-        subtitle="Diagnóstico de reputación y DNS para IPs y dominios del sender pool autorizado. El panel consume solo contratos GET del Gateway."
+        subtitle="Diagnóstico de reputación y DNS de la flota. OJO: este GET no es inocuo — cada lectura del reporte diario escribe eventos de auditoría riskLevel:high (uno por alerta crítica) y una tarjeta de canvas, así que la cronología refleja cuándo alguien tuvo la pestaña abierta, no cuándo se detectó el problema."
         right={
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <span style={cellFaint}>
@@ -206,20 +226,23 @@ export function MxtoolboxHealthV5() {
         {kpis.map((k) => (
           <KpiCard key={k.key} label={k.label} value={k.value} icon={k.icon} />
         ))}
-        <KpiCard
-          label="Quota restante"
-          value={usage?.remaining ?? "—"}
-          suffix={usage?.limit ? `/ ${usage.limit}` : undefined}
-          icon={Gauge}
-        />
+        {/* Se fue el KPI "Quota restante": era una ranura de medición IMPOSIBLE de llenar. El
+            parser del adapter busca Used/Usage/Current/Consumed y Limit/Maximum/Max/Total, y la
+            API real de /Usage devuelve NetworkRequests/NetworkMax y DnsRequests/DnsMax — el objeto
+            `usage` llega solo con rawRef y checkedAt, así que la tarjeta mostró "—" desde siempre y
+            para siempre. Vuelve cuando el adapter mapee los campos que la API sí devuelve
+            (remaining = NetworkMax − NetworkRequests). Duele el doble porque es justo el KPI que
+            avisaría del consumo: cada refresco frío dispara 59 lookups de red. */}
       </div>
 
       {criticalAlerts.length > 0 ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {/* El backend filtra únicamente `status === "listed"`: los objetivos en estado error
+              (14 en producción) jamás aparecen acá, y el texto afirmaba que los incluía. */}
           <SectionHead
             eyebrow="Reputación"
             title="Alertas críticas"
-            subtitle={`${criticalAlerts.length} objetivo(s) en lista negra o con error de check`}
+            subtitle={`${criticalAlerts.length} objetivo(s) en lista negra`}
           />
           <Card style={{ overflow: "hidden" }}>
             {criticalAlerts.map((alert, i) => (
@@ -330,7 +353,7 @@ export function MxtoolboxHealthV5() {
                   ? errorMessage(daily.error)
                   : daily.isLoading || lookup.isLoading
                     ? "Consultando los contratos GET del Gateway."
-                    : "El Gateway no encontró sender nodes activos o warming para escanear."}
+                    : "El Gateway no resolvió objetivos para escanear. La fuente primaria son los bindings del inventario de la fábrica (domains.json), NO el registro de sender nodes: si esa lectura falla, el reporte cae en silencio a un registro de fixtures con IPs de documentación."}
               </div>
             </div>
           ) : (
@@ -367,23 +390,32 @@ export function MxtoolboxHealthV5() {
                       {row.command}
                     </Pill>
                     <span><StateBadge status={STATUS_BADGE[row.status]} label={row.status} /></span>
+                    {/* Un check que NO CORRIÓ no tiene contadores: el backend rellena 0 en el
+                        path de fallo, así que "0 passed" se leía como una medición que dio cero.
+                        El operador tiene que poder distinguir "lo medí y salió mal" de "no lo
+                        pude medir". */}
                     <span style={{ ...truncate, ...cellMuted }}>
-                      {row.failedChecks.length > 0
-                        ? row.failedChecks.join(", ")
-                        : row.warningChecks.length > 0
-                          ? row.warningChecks.join(", ")
-                          : `${row.passedCount} passed`}
+                      {row.status === "error"
+                        ? "no se pudo medir"
+                        : row.failedChecks.length > 0
+                          ? row.failedChecks.join(", ")
+                          : row.warningChecks.length > 0
+                            ? row.warningChecks.join(", ")
+                            : `${row.passedCount} passed`}
                     </span>
                     {/* ámbar reservado a warning/paused (§4): un timeout>0 se enfatiza con
                      * peso/primario neutro, nunca con color de estado. */}
                     <span
                       style={{
                         ...monoCell, textAlign: "right", fontSize: 13,
-                        fontWeight: row.timeoutCount > 0 ? 600 : 400,
-                        color: row.timeoutCount > 0 ? "var(--color-text-primary)" : "var(--color-text-tertiary)",
+                        fontWeight: row.status !== "error" && row.timeoutCount > 0 ? 600 : 400,
+                        color:
+                          row.status !== "error" && row.timeoutCount > 0
+                            ? "var(--color-text-primary)"
+                            : "var(--color-text-tertiary)",
                       }}
                     >
-                      {row.timeoutCount}
+                      {row.status === "error" ? "—" : row.timeoutCount}
                     </span>
                     <span style={{ ...truncate, ...monoCell, fontSize: 11.5, color: "var(--color-text-tertiary)" }}>{row.rawRef.slice(0, 12)}</span>
                     <span style={{ ...cellFaint, textAlign: "right" }}>{formatDateTime(row.checkedAt)}</span>

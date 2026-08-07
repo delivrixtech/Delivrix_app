@@ -67,7 +67,11 @@ async function main(): Promise<void> {
       `con concurrencia ${concurrency}...`
   );
 
-  const flota = await medirFlota({ workspace, sshRunner: runner, bandejas: medibles, concurrency });
+  // `libro: "todo"` = todavía NO se atribuye: los números que se persisten siguen siendo los del
+  // nodo entero, con el correo de NFC adentro. Es el estado SEGURO mientras se cablea el libro
+  // (`leerLibroPropio` sobre POSTGRES_URL): no cambia ni un veredicto de producción, y lo declara —
+  // `atribucion.modo: "todo"` viaja al archivo, así que quien lo lea sabe que no está atribuido.
+  const flota = await medirFlota({ workspace, sshRunner: runner, bandejas: medibles, concurrency, libro: "todo" });
 
   const porEstado = new Map<string, number>();
   for (const b of flota.bandejas) porEstado.set(b.estado, (porEstado.get(b.estado) ?? 0) + 1);

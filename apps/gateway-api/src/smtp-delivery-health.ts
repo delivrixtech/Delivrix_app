@@ -120,13 +120,42 @@ export type DeliveryHealthStatus =
    */
   | "stalled"
   | "no_traffic"
+  /**
+   * El nodo movió correo y NADA de eso es nuestro.
+   *
+   * No es `no_traffic` (el log no está vacío) ni `blocked_by_provider` (no medimos NUESTRA
+   * entrega): es "no sé", y tiene que existir como estado propio o el "no sé" se disfraza del
+   * estado equivocado.
+   *
+   * QUÉ PASABA SIN ESTE ESTADO, medido el 2026-08-06: al separar el tráfico de NFC, 63 de 64 nodos
+   * quedan por debajo de los 20 intentos que exigen BLOCKED_MIN_ATTEMPTS y STALLED_MIN_ATTEMPTS.
+   * Si esos 63 devolvieran `no_traffic`, se leerían como dominios recién comprados — y `no_traffic`
+   * ENTRA al pool del warmup A PROPÓSITO (plan-diario.ts:200, "un nodo nuevo es el candidato
+   * natural a arrancar"). El pool habría saltado de 6 a ~63 y las 14 vueltas del día se habrían
+   * repartido entre nodos que NFC ya quemó. Filtrar el ruido sin este estado era peor que no
+   * filtrarlo.
+   */
+  | "no_own_traffic"
   | "unreadable";
 
 export interface DeliveryHealthVerdict {
   status: DeliveryHealthStatus;
   /** Qué periodo cubren los numeros, en los días que se leyeron de verdad. */
   window: string;
+  /**
+   * LO NUESTRO — o el nodo entero cuando `atribucion.modo === "todo"`. Es lo único que decide el
+   * veredicto. No se renombra a propósito: `scripts/ops/deliverability-health.ts` y el panel lo
+   * leen por este nombre, y una migración de nombre en el mismo commit que cambia la semántica
+   * esconde el cambio que importa.
+   */
   stats: NodeDeliveryStats;
+  /**
+   * Lo que movió el nodo y NO es nuestro (el otro inquilino). Se MUESTRA — es el contexto que
+   * explica por qué un dominio está quemado — pero NUNCA entra al veredicto.
+   */
+  ajenos: NodeDeliveryStats;
+  /** Cómo se separó, y cuánto libro había para separarlo. Sin esto nadie puede auditar el número. */
+  atribucion: { modo: "nuestro" | "todo"; queueIds: number; descartados: number };
   /**
    * Mensajes en la cola de Postfix AHORA, no en la ventana. `null` = no se pudo leer, que NO es
    * cero: un cero inventado sobre un nodo con 15.693 mensajes trabados lo manda derecho al pool.
@@ -167,9 +196,77 @@ export const STALLED_MIN_ATTEMPTS = 20;
 export const COLA_ATASCADA_MIN = 500;
 
 /**
+ * A QUIÉN se le atribuye el tráfico del log.
+ *
+ * `readonly string[]` = los queue-ids de NUESTROS envíos, sacados de `warmup_activity`. Todo lo que
+ * no esté en esa lista es del otro inquilino.
+ * `"todo"` = no se atribuye nada, los números son del nodo entero. Es lo correcto para un
+ * diagnóstico de máquina (`scripts/ops/deliverability-health.ts`), y una mentira para un veredicto
+ * de NUESTRA reputación.
+ *
+ * POR QUÉ EXISTE ESTA DECISIÓN, con el número: por los mismos 58 nodos SMTP pasa el correo de NFC,
+ * otro producto con otros clientes, que inyecta por 587 con SASL. Medido el 2026-08-06 sobre el log
+ * retenido de los 64 nodos: 791.300 mensajes de NFC contra 222 nuestros (0,028%). O sea que el
+ * 99,97% de la evidencia con la que este módulo declaraba `healthy` / `blocked_by_provider` /
+ * `stalled` era reputación que quemó otro producto, publicada como medición nuestra en
+ * `sender-measurement.json`, en `GET /v1/sender-measurement`, en la tool `read_sender_measurement`
+ * del agente y en el panel.
+ *
+ * Y OJO CON EL DISCRIMINANTE, porque el obvio NO funciona: no alcanza con mirar `sasl_username` ni
+ * el remitente. Los dos inquilinos autentican con el MISMO buzón (`mailer@<dominio>`) — medido en
+ * nationalfiling-infra.com: 22.597 mensajes de NFC y 2 nuestros, todos con
+ * `sasl_username=mailer@nationalfiling-infra.com`. Tampoco sirve "el warmup entra por sendmail
+ * local": ese es el camino VIEJO (30 mensajes en toda la flota, último uso 31/07); el daemon que
+ * corre hoy entra por 587 con SASL igual que NFC. Y el `client=` (EC2 = NFC) es una observación de
+ * hoy, no una garantía: si NFC muda su emisor, deja de discriminar en silencio y sin error.
+ *
+ * Lo único robusto es NUESTRO PROPIO LIBRO: la respuesta 250 de Postfix trae el queue-id
+ * ("250 2.0.0 Ok: queued as B7CA03F69F") y el daemon ya la guarda. La identificación es POSITIVA
+ * — nuestro = está en el libro; todo lo demás = no nuestro — así que no depende de ninguna decisión
+ * de NFC, y lo que no se puede atribuir cae del lado seguro (sub-cuenta lo nuestro, nunca lo
+ * infla).
+ */
+export type ModoAtribucion = readonly string[] | "todo";
+
+/**
+ * Techo de queue-ids que se mandan dentro del comando. Nuestro máximo real por nodo y ventana,
+ * medido contra la base de producción el 2026-08-06, es 13. 500 es dos órdenes de margen.
+ *
+ * Arriba de eso NO se atribuye a ciegas: se devuelve `unreadable`. Un libro que creció 40x es un
+ * cambio de régimen que nadie previó (¿el warmup se disparó? ¿alguien mezcló dominios?), y seguir
+ * armando una línea de shell de 50 KB con datos que vienen de una columna JSON no es "degradarse
+ * con gracia", es adivinar.
+ */
+export const MAX_QUEUE_IDS = 500;
+
+/**
+ * BORDE DE CONFIANZA. Estos ids salen de `warmup_activity.detail->>'smtp'`, una columna JSON de
+ * Postgres, y terminan DENTRO de una línea de shell que corre por SSH en 58 nodos de producción.
+ * Entre esos dos puntos no hay ninguna otra validación: esta es la única.
+ *
+ * `[A-Za-z0-9]{4,20}` es exactamente la forma de un queue-id de Postfix en la flota: hex corto
+ * (`B7CA03F69F`) y base-52 de `enable_long_queue_ids` (`4bXyZ9Qm2Rz1kT`). Cualquier cosa con
+ * comilla, `;`, `$(`, espacio o `|` no matchea y se DESCARTA — no se escapa, no se cita, se tira.
+ * Escapar es una lista de casos que alguien olvida; una lista blanca de dos clases de caracteres no
+ * tiene casos que olvidar.
+ *
+ * `descartados` se devuelve y viaja al veredicto a propósito: un id que se cae es correo nuestro
+ * que vamos a contar como ajeno, y eso tiene que ser visible, no silencioso.
+ */
+export function sanearIds(ids: readonly string[]): { ok: string[]; descartados: number } {
+  const ok = [...new Set(ids.filter((s) => /^[A-Za-z0-9]{4,20}$/.test(s)))];
+  return { ok, descartados: ids.length - ok.length };
+}
+
+/**
  * Comando de lectura. Sale SIEMPRE 0 y marca el fin de la salida: un exit distinto de
  * cero lo convierte el runner en excepción, y ahí "no pude leer" se disfrazaría de
  * "no hay problemas". Misma regla que el probe de propiedad.
+ *
+ * `propios` va PRIMERO y sin default: la atribución es una decisión, no una opción. Un default
+ * silencioso ("si no me decís, cuento todo") es exactamente la forma en que vuelve el bug que este
+ * cambio arregla — nadie escribe `propios: "todo"` por error, pero todos se olvidan de un campo
+ * opcional.
  *
  * `logDir` existe SOLO para que el test pueda correr este mismo comando de verdad contra un
  * directorio de fixtures: en producción nadie lo pasa. Es la lección del fixture de Bedrock — un
@@ -177,10 +274,15 @@ export const COLA_ATASCADA_MIN = 500;
  * salva de nada; este corre por el camino de producción.
  */
 export function buildDeliveryStatsCommand(
+  propios: ModoAtribucion,
   dias = DELIVERY_STATS_WINDOW_DAYS,
   logDir = "/var/log",
   ahora = new Date()
 ): string {
+  // En modo "todo" no se manda ni un id: el awk cuenta el total y la sección OWN sale vacía, y es
+  // TypeScript el que después iguala propio = total. Cero ramas nuevas dentro del shell, que es
+  // donde no hay tipos ni tests unitarios que sostengan una bifurcación.
+  const idsAwk = propios === "todo" ? "" : sanearIds(propios).ok.join(" ");
   // El corte por DÍA, aplicado a la línea. Va primero en el pipe porque es el que más descarta.
   const enVentana = `grep -E "^(${prefijosDeDias(dias, ahora).join("|")})"`;
   // Un mensaje cuenta UNA vez, no una por reintento.
@@ -194,14 +296,28 @@ export function buildDeliveryStatsCommand(
   // El queue-id se saca con `[^ :]+` y NO con el `[0-9A-Fa-f]{6,}` del módulo de volumen: medido
   // contra el fixture, el patrón hex pierde `4bXyZ9Qm2Rz1kT`, que es la forma que tienen los nodos
   // con `enable_long_queue_ids` (base-52). Copiar el hex habría dejado el sensor en cero justo ahí.
-  const pipeline = (status: string): string =>
+  //
+  // LA MISMA PASADA CUENTA DOS VECES: total del nodo y lo NUESTRO. No se agrega ni un `zcat` más
+  // (ya son cuatro pasadas sobre los .gz de un nodo que puede tener 60.000 mensajes retenidos); el
+  // awk del final lleva dos acumuladores y emite él mismo el marcador de la sección propia.
+  //
+  // El `END` de awk corre AUNQUE NO ENTRE NI UNA LÍNEA, así que el marcador `## OWN_*` existe
+  // siempre que el comando haya llegado a correr. Esa garantía es la que le permite al parser tratar
+  // su AUSENCIA como "no entiendo esta salida" en vez de como "no hay nada nuestro" — la diferencia
+  // entre `unreadable` y convertir la flota entera en `no_own_traffic` sin que nadie se entere.
+  const pipeline = (status: string, seccionPropia: string): string =>
     `[ -n "$READ" ] && $READ $LOGS 2>/dev/null | ${enVentana} | grep "status=${status}"` +
     " | grep -oE '\\]: [^ :]+: to=<[^>]*@[^>]*>'" +
     // OJO: el separador del sed es un TABULADOR REAL (el `\t` de este literal de JS emite el
     // carácter). El sed de BSD — el de esta Mac, donde corre el test de integración — no interpreta
     // `\t` en el reemplazo y devolvería una `t` literal; el de GNU sí. Un tab real anda en los dos.
     ` | sed -E 's/^\\]: ([^ :]+): to=<[^>]*@([^>]*)>/\\1\t\\2/'` +
-    " | sort -u | awk -F'\\t' '{print tolower($2)}' | sort | uniq -c | sort -rn || true";
+    " | sort -u" +
+    ` | awk -F'\\t' -v ids='${idsAwk}' '` +
+      'BEGIN{n=split(ids,a," ");for(i=1;i<=n;i++)m[a[i]]=1}' +
+      "{p=tolower($2);t[p]++;if($1 in m)o[p]++}" +
+      `END{for(p in t)printf "%d %s\\n",t[p],p;print "## ${seccionPropia}";for(p in o)printf "%d %s\\n",o[p],p}'` +
+    " || true";
 
   return [
     "set -u",
@@ -251,11 +367,11 @@ export function buildDeliveryStatsCommand(
     "echo '## SINFECHA'",
     `[ -n "$READ" ] && $READ ${logDir}/mail.log 2>/dev/null | grep 'status=' | grep -cvE '^([A-Z][a-z][a-z] [ 0-9][0-9] |[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T)' || true`,
     "echo '## DELIVERED'",
-    pipeline("sent"),
+    pipeline("sent", "OWN_DELIVERED"),
     "echo '## BLOCKED'",
-    pipeline("bounced"),
+    pipeline("bounced", "OWN_BLOCKED"),
     "echo '## DEFERRED'",
-    pipeline("deferred"),
+    pipeline("deferred", "OWN_DEFERRED"),
     // La respuesta DIRECTA a "¿está atascado HOY?": una línea, sin fechas, sin parser, sin escanear
     // un solo log. El log dice qué pasó en la ventana; la cola dice qué está pasando ahora mismo.
     // Si postqueue no existe o no se puede correr no imprime nada, y eso se lee como "no sé" —
@@ -320,12 +436,11 @@ export function parseQueueSize(stdout: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
-export function parseDeliveryStats(stdout: string): NodeDeliveryStats | null {
-  if (!stdout.includes("## END")) return null; // salida truncada: no inventamos
-  const delivered = counts(section(stdout, "DELIVERED"));
-  const blocked = counts(section(stdout, "BLOCKED"));
-  const deferred = counts(section(stdout, "DEFERRED"));
-
+function armar(
+  delivered: Map<string, number>,
+  blocked: Map<string, number>,
+  deferred: Map<string, number>
+): NodeDeliveryStats {
   const providers = new Set([...delivered.keys(), ...blocked.keys(), ...deferred.keys()]);
   const byProvider = [...providers]
     .map((provider) => ({
@@ -344,6 +459,67 @@ export function parseDeliveryStats(stdout: string): NodeDeliveryStats | null {
 }
 
 /**
+ * Parte la salida en las DOS lecturas: el nodo entero y lo nuestro.
+ *
+ * FAIL-HONEST DOBLE. Sin `## END` devuelve `null` como siempre (salida truncada). Y si falta
+ * CUALQUIERA de los tres `## OWN_*` también devuelve `null`, aunque el resto esté perfecto: una
+ * sección propia ausente no son cero mensajes nuestros, es una salida que no sabemos leer.
+ *
+ * Por qué esa rama vale su propio `return`: leerla como cero convertiría cada nodo de la flota en
+ * `no_own_traffic` de una, en silencio y sin un solo error — y el archivo que publica el panel se
+ * llenaría de "sin muestra propia" sin que nadie sospeche del parser. Este módulo ya se quemó TRES
+ * veces con la misma forma exacta: "comando que devuelve vacío" leído como "no hay tráfico".
+ */
+export function parseDeliveryStats(
+  stdout: string
+): { total: NodeDeliveryStats; propio: NodeDeliveryStats } | null {
+  if (!stdout.includes("## END")) return null; // salida truncada: no inventamos
+  for (const s of ["OWN_DELIVERED", "OWN_BLOCKED", "OWN_DEFERRED"]) {
+    if (!stdout.includes(`## ${s}`)) return null;
+  }
+  return {
+    total: armar(
+      counts(section(stdout, "DELIVERED")),
+      counts(section(stdout, "BLOCKED")),
+      counts(section(stdout, "DEFERRED"))
+    ),
+    propio: armar(
+      counts(section(stdout, "OWN_DELIVERED")),
+      counts(section(stdout, "OWN_BLOCKED")),
+      counts(section(stdout, "OWN_DEFERRED"))
+    )
+  };
+}
+
+/**
+ * `total - propio`, por receptor y en los totales. Nunca negativo: si el propio superara al total
+ * (imposible por construcción — la sección OWN es un subconjunto de la misma pasada) el clamp evita
+ * publicar un número que no significa nada.
+ */
+function restar(total: NodeDeliveryStats, propio: NodeDeliveryStats): NodeDeliveryStats {
+  const mio = new Map(propio.byProvider.map((p) => [p.provider, p]));
+  const menos = (a: number, b: number): number => Math.max(0, a - b);
+  return {
+    totals: {
+      delivered: menos(total.totals.delivered, propio.totals.delivered),
+      blocked: menos(total.totals.blocked, propio.totals.blocked),
+      deferred: menos(total.totals.deferred, propio.totals.deferred)
+    },
+    byProvider: total.byProvider
+      .map((p) => {
+        const m = mio.get(p.provider);
+        return {
+          provider: p.provider,
+          delivered: menos(p.delivered, m?.delivered ?? 0),
+          blocked: menos(p.blocked, m?.blocked ?? 0),
+          deferred: menos(p.deferred, m?.deferred ?? 0)
+        };
+      })
+      .filter((p) => p.delivered + p.blocked + p.deferred > 0)
+  };
+}
+
+/**
  * `selfDomain` se excluye del veredicto: los rebotes a la propia máquina (avisos a
  * postmaster, notificaciones de no-entrega que Postfix se manda a sí mismo) no son un
  * bloqueo de proveedor. Sin esta exclusión, los nodos MÁS sanos aparecían "cerrados"
@@ -352,10 +528,28 @@ export function parseDeliveryStats(stdout: string): NodeDeliveryStats | null {
 export function assessDeliveryHealth(
   stats: NodeDeliveryStats,
   selfDomain?: string,
-  extra?: { encolados?: number | null; ventana?: string }
+  extra?: {
+    encolados?: number | null;
+    ventana?: string;
+    /**
+     * Lo que movió el nodo ENTERO. Ausente = `stats` ya es el total (modo "todo"), que es lo
+     * honesto para un llamador que no atribuyó nada.
+     */
+    total?: NodeDeliveryStats;
+    modo?: "nuestro" | "todo";
+    queueIds?: number;
+    descartados?: number;
+  }
 ): DeliveryHealthVerdict {
   const ventana = extra?.ventana ?? DELIVERY_STATS_WINDOW;
   const encolados = extra?.encolados ?? null;
+  const total = extra?.total ?? stats;
+  const ajenos = restar(total, stats);
+  const atribucion = {
+    modo: extra?.modo ?? "todo",
+    queueIds: extra?.queueIds ?? 0,
+    descartados: extra?.descartados ?? 0
+  } as const;
   const blockedProviders: string[] = [];
   const degradedProviders: string[] = [];
   const self = selfDomain?.trim().toLowerCase().replace(/\.$/, "");
@@ -385,16 +579,26 @@ export function assessDeliveryHealth(
   // Y es de UNA SOLA DIRECCIÓN: la cola solo puede EMPEORAR el veredicto. No existe la inversa
   // ("cola limpia veta el stalled del log"), que marcaría sano a un nodo cuyo diferido deduplicado
   // sigue arriba del 50%. Lo que libera nodos es el dedup, no la cola.
+  // UN SOLO armador para los siete veredictos, en vez de siete objetos literales.
+  //
+  // No es cosmético: el 2026-08-06, al agregar `encolados`, cinco de los seis `return` se quedaron
+  // sin el campo nuevo. Como corremos con --experimental-strip-types no hay chequeo en tiempo de
+  // ejecución, así que salía `undefined`, JSON.stringify borraba la clave, y sender-measurement.json
+  // quedó sin el dato en 49 de 58 nodos. Este cambio agrega DOS campos más (`ajenos`, `atribucion`)
+  // y multiplicaría por tres la misma trampa. Con un armador, olvidarse ya no es posible.
+  const veredicto = (status: DeliveryHealthStatus, detail: string): DeliveryHealthVerdict => ({
+    status, window: ventana, stats, ajenos, atribucion, encolados, blockedProviders, degradedProviders, detail
+  });
+
   if (encolados !== null && encolados >= COLA_ATASCADA_MIN) {
-    return {
-      status: "stalled",
-      window: ventana,
-      stats,
-      encolados,
-      blockedProviders,
-      degradedProviders,
-      detail: `${encolados} mensajes en la cola AHORA (postqueue): el correo no está saliendo del nodo`
-    };
+    // Y ESTA RAMA NO SE ATRIBUYE NUNCA, ni cuando el modo es "nuestro". La cola de Postfix es FÍSICA
+    // y COMPARTIDA: si el nodo tiene 15.693 mensajes trabados porque NFC los inyectó, nuestro correo
+    // tampoco sale de ahí. Preguntar "¿de quién son los mensajes trabados?" es la pregunta
+    // equivocada; la correcta es "¿sale correo de este nodo?", y la respuesta es no.
+    return veredicto(
+      "stalled",
+      `${encolados} mensajes en la cola AHORA (postqueue): el correo no está saliendo del nodo`
+    );
   }
 
   // El diferido cuenta. Sin esto, un nodo que no entrega NADA porque todo se difiere se leia
@@ -402,50 +606,43 @@ export function assessDeliveryHealth(
   // el operador no se enteraba de que la cola crecia.
   const totalAttempts = stats.totals.delivered + stats.totals.blocked + stats.totals.deferred;
   const deferredRatio = totalAttempts > 0 ? stats.totals.deferred / totalAttempts : 0;
+  const attemptsDelNodo = total.totals.delivered + total.totals.blocked + total.totals.deferred;
 
+  // El orden de estas dos ramas es el que separa "no sé" de "nodo nuevo", y no es intercambiable.
+  if (totalAttempts === 0 && attemptsDelNodo > 0) {
+    return veredicto(
+      "no_own_traffic",
+      `el nodo movió ${attemptsDelNodo} mensajes en la ventana y ninguno es nuestro ` +
+        `(${atribucion.queueIds} envíos en nuestro libro): sin muestra propia no hay veredicto`
+    );
+  }
   if (totalAttempts === 0) {
-    return {
-      status: "no_traffic",
-      window: ventana,
-      stats,
-      encolados,
-      blockedProviders,
-      degradedProviders,
-      detail: "el log no registra ni entregas ni rechazos ni diferidos en la ventana leida"
-    };
+    // Log genuinamente vacío. La semántica queda INTACTA: un dominio recién comprado no dejó huella
+    // en ningún mail.log y tiene que poder recibir su primer correo de warmup. Es la trampa que
+    // documenta plan-diario.ts:177-195 y este cambio no la reabre.
+    return veredicto("no_traffic", "el log no registra ni entregas ni rechazos ni diferidos en la ventana leida");
   }
   if (
     stats.totals.deferred >= STALLED_MIN_ATTEMPTS &&
     deferredRatio >= STALLED_MIN_DEFERRED_RATIO
   ) {
-    return {
-      status: "stalled",
-      window: ventana,
-      stats,
-      encolados,
-      blockedProviders,
-      degradedProviders,
-      detail:
-        `${stats.totals.deferred} diferidos de ${totalAttempts} (${Math.round(deferredRatio * 100)}%): ` +
+    return veredicto(
+      "stalled",
+      `${stats.totals.deferred} diferidos de ${totalAttempts} (${Math.round(deferredRatio * 100)}%): ` +
         "el correo sale del nodo pero no llega; la cola se acumula"
-    };
+    );
   }
   if (blockedProviders.length > 0) {
     const worst = stats.byProvider.find((p) => p.provider === blockedProviders[0])!;
-    return {
-      status: "blocked_by_provider",
-      window: ventana,
-      stats,
-      encolados,
-      blockedProviders,
-      degradedProviders,
-      detail: `cerrado en ${blockedProviders.join(", ")} (${worst.provider}: ${worst.blocked} rechazos sobre ${worst.delivered + worst.blocked} intentos)`
-    };
+    return veredicto(
+      "blocked_by_provider",
+      `cerrado en ${blockedProviders.join(", ")} (${worst.provider}: ${worst.blocked} rechazos sobre ${worst.delivered + worst.blocked} intentos)`
+    );
   }
   if (degradedProviders.length > 0) {
-    return { status: "degraded", window: ventana, stats, encolados, blockedProviders, degradedProviders, detail: `rechazo parcial en ${degradedProviders.join(", ")}` };
+    return veredicto("degraded", `rechazo parcial en ${degradedProviders.join(", ")}`);
   }
-  return { status: "healthy", window: ventana, stats, encolados, blockedProviders, degradedProviders, detail: `${stats.totals.delivered} entregados, ${stats.totals.blocked} rechazados` };
+  return veredicto("healthy", `${stats.totals.delivered} entregados, ${stats.totals.blocked} rechazados`);
 }
 
 const EMPTY_STATS: NodeDeliveryStats = { totals: { delivered: 0, blocked: 0, deferred: 0 }, byProvider: [] };
@@ -458,6 +655,12 @@ export async function readNodeDeliveryHealth(input: {
   sshRunner: DeliveryHealthSshRunner;
   serverSlug: string;
   serverIp: string;
+  /**
+   * REQUERIDO, sin default. Los queue-ids de nuestros envíos a ESTE nodo en la ventana, o `"todo"`
+   * para no atribuir. Es la decisión más consecuente del módulo — de qué reputación estamos
+   * hablando — y un campo opcional es un campo que alguien no completa.
+   */
+  propios: ModoAtribucion;
   /** Dominio del propio nodo: sus rebotes internos no cuentan como bloqueo. */
   selfDomain?: string;
   /** Días de log a mirar. Por defecto la perilla del entorno. */
@@ -469,53 +672,62 @@ export async function readNodeDeliveryHealth(input: {
   // proceso, que es justo la medición que decide si este cambio se mergea.
   const dias = input.dias ?? DELIVERY_STATS_WINDOW_DAYS;
   const ventana = ventanaDeclarada(dias);
+  const modo = input.propios === "todo" ? "todo" : "nuestro";
+  const saneados = input.propios === "todo" ? { ok: [] as string[], descartados: 0 } : sanearIds(input.propios);
+  const atribucion = { modo, queueIds: saneados.ok.length, descartados: saneados.descartados } as const;
+  const ilegible = (detail: string, encolados: number | null = null): DeliveryHealthVerdict => ({
+    status: "unreadable",
+    window: ventana,
+    stats: EMPTY_STATS,
+    ajenos: EMPTY_STATS,
+    atribucion,
+    encolados,
+    blockedProviders: [],
+    degradedProviders: [],
+    detail
+  });
+
+  if (saneados.ok.length > MAX_QUEUE_IDS) {
+    return ilegible(
+      `${saneados.ok.length} queue-ids en la ventana (tope ${MAX_QUEUE_IDS}): el libro creció más de ` +
+        "lo previsto, no atribuyo a ciegas"
+    );
+  }
+
   try {
     const result = await input.sshRunner.run({
       serverSlug: input.serverSlug,
       serverIp: input.serverIp,
-      command: buildDeliveryStatsCommand(dias),
+      command: buildDeliveryStatsCommand(input.propios, dias),
       timeoutMs: input.timeoutMs ?? 60_000
     });
     if (deliveryStatsUnreadable(result.stdout)) {
-      return {
-        status: "unreadable",
-        window: ventana,
-        stats: EMPTY_STATS,
-        encolados: null,
-        blockedProviders: [],
-        degradedProviders: [],
-        detail: "sin permiso para leer /var/log/mail.log (es syslog:adm; el usuario ops necesita sudo)"
-      };
+      return ilegible("sin permiso para leer /var/log/mail.log (es syslog:adm; el usuario ops necesita sudo)");
     }
     const stats = parseDeliveryStats(result.stdout);
     if (!stats) {
-      return { status: "unreadable", window: ventana, stats: EMPTY_STATS, encolados: null, blockedProviders: [], degradedProviders: [], detail: "salida incompleta (falta ## END)" };
+      return ilegible("salida incompleta (falta ## END o alguna sección ## OWN_*)");
     }
     // Un nodo que escribe la fecha en un tercer formato queda fuera del corte por día y devuelve
     // cero de todo. Cero se lee `no_traffic`, y `no_traffic` limpio ENTRA al pool desde el arreglo
     // del onboarding: sin esta rama, un nodo ciego se calentaría creyendo que es nuevo.
     const sinFecha = parseLineasSinFecha(result.stdout);
     if (sinFecha !== null && sinFecha > 0) {
-      return {
-        status: "unreadable",
-        window: ventana,
-        stats: EMPTY_STATS,
-        encolados: parseQueueSize(result.stdout),
-        blockedProviders: [],
-        degradedProviders: [],
-        detail: `${sinFecha} líneas de entrega con una fecha que no es syslog ni ISO-8601: el corte por día no las ve, así que los totales no valen`
-      };
+      return ilegible(
+        `${sinFecha} líneas de entrega con una fecha que no es syslog ni ISO-8601: el corte por día no las ve, así que los totales no valen`,
+        parseQueueSize(result.stdout)
+      );
     }
-    return assessDeliveryHealth(stats, input.selfDomain, { encolados: parseQueueSize(result.stdout), ventana });
+    // En modo "todo" el propio ES el total: no hay nada que restar y `ajenos` queda en cero. Sin
+    // este `?:` el mismo objeto viajaría dos veces y el veredicto diría "0 nuestros de N" sobre un
+    // llamador que nunca pidió atribuir.
+    return assessDeliveryHealth(modo === "todo" ? stats.total : stats.propio, input.selfDomain, {
+      encolados: parseQueueSize(result.stdout),
+      ventana,
+      total: stats.total,
+      ...atribucion
+    });
   } catch (error) {
-    return {
-      status: "unreadable",
-      window: ventana,
-      stats: EMPTY_STATS,
-      encolados: null,
-      blockedProviders: [],
-      degradedProviders: [],
-      detail: `lectura fallida: ${error instanceof Error ? error.message : String(error)}`
-    };
+    return ilegible(`lectura fallida: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

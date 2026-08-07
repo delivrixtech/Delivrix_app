@@ -17,7 +17,9 @@ test("wallet transactions use metadata.costUsd and targetId fallback", () => {
     auditEvent({
       id: "audit-b",
       occurredAt: "2026-06-10T10:00:00.000Z",
-      action: "register_domain_route53.success",
+      // La acción REAL del alta por Namecheap. La lista vieja trackeaba
+      // "register_domain_route53.success", que no la emite nadie en el repo, y se perdía esta.
+      action: "oc.domain.register",
       targetId: "target-ignored.com",
       metadata: { costUsd: 9, domain: "metadata-domain.com" }
     }),
@@ -39,10 +41,30 @@ test("wallet transactions use metadata.costUsd and targetId fallback", () => {
 
   const transactions = computeWalletTransactions(events, now);
 
-  assert.deepEqual(transactions.map((tx) => tx.id), ["audit-b", "audit-a"]);
-  assert.equal(transactions[0]?.domain, "metadata-domain.com");
-  assert.equal(transactions[1]?.domain, "target-domain.com");
-  assert.equal(transactions.reduce((sum, tx) => sum + tx.amount, 0), 21.34);
+  // La compra sin costUsd ya NO desaparece: viaja con amount null para que la vista la muestre
+  // como "costo no registrado" en vez de borrarla de la lista de movimientos.
+  assert.deepEqual(transactions.map((tx) => tx.id), ["audit-legacy-payload", "audit-b", "audit-a"]);
+  assert.equal(transactions[0]?.amount, null);
+  assert.equal(transactions[1]?.domain, "metadata-domain.com");
+  assert.equal(transactions[2]?.domain, "target-domain.com");
+  assert.equal(transactions.reduce((sum, tx) => sum + (tx.amount ?? 0), 0), 21.34);
+});
+
+test("una accion que el gateway ya no emite no cuenta como compra", () => {
+  // register_domain_route53.success no existe en el repo: si vuelve a aparecer en la whitelist,
+  // este test lo caza antes de que el wallet invente un movimiento.
+  const transactions = computeWalletTransactions(
+    [
+      auditEvent({
+        id: "audit-fantasma",
+        occurredAt: "2026-06-10T10:00:00.000Z",
+        action: "register_domain_route53.success",
+        metadata: { costUsd: 9 }
+      })
+    ],
+    new Date("2026-06-15T12:00:00.000Z")
+  );
+  assert.deepEqual(transactions, []);
 });
 
 test("enable SMTP auth intent asks OpenClaw for one approved domain without executing inline", () => {

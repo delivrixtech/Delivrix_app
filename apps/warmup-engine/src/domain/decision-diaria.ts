@@ -60,6 +60,55 @@ export const MUESTRA_MINIMA = 4;
 /** Con qué volumen arranca un dominio sin historial. */
 export const CUPO_ARRANQUE = 2;
 
+/**
+ * EL TECHO QUE NINGÚN CAMINO PASA. Por dominio y por día UTC.
+ *
+ * No sale de una preferencia: Google clasifica como "bulk sender" al dominio que cruza 5.000/día a
+ * destinatarios personales, y esa clasificación es PERMANENTE — no la deshace ningún warmup, y los
+ * 59 dominios de la flota todavía son "dominios nuevos", condición que se pierde una sola vez. El
+ * techo recomendado es 2.000/día por dominio, o sea menos de la mitad del umbral irreversible.
+ *
+ * Por qué es una constante y NO una env var: un techo que se sube con una variable de entorno no es
+ * un techo, es un default. Las palancas que sí se configuran (`limiteDiario`, `pasoPorDia`) viven
+ * arriba de éste y él las clampea. Hoy no cambia un solo correo — la rampa por defecto topa en 40 —
+ * y ese es el punto: existe para el día en que alguien escriba 9000 en gateway.env.
+ */
+export const TECHO_DURO_POR_DOMINIO = 2000;
+
+/** Los defaults de la rampa. Viven acá porque `decidirCupoDeHoy` los aplica cuando nadie los pasa. */
+export const RAMPA_LIMITE_DIARIO_DEFAULT = 40;
+export const RAMPA_PASO_POR_DIA_DEFAULT = 2;
+
+/**
+ * Las dos palancas de la rampa, resueltas del entorno. UNA sola función para los DOS llamadores.
+ *
+ * Existe por una divergencia medida: el daemon las pasaba (`cfg.limiteDiario`) y `planDelDia` —que
+ * es lo que ve el panel en `/v1/warmup/plan` y lo que el agente le REPORTA al jefe por Slack— no,
+ * así que se quedaba con los `?? 40` y `?? 2` de adentro. Hoy coinciden solo porque las env vars
+ * están ausentes; el día que alguien escriba `WARMUP_RAMPA_LIMITE_DIARIO=200` en gateway.env, el
+ * daemon manda hasta 200/día por dominio y el panel sigue anunciando 40. Y el volumen que sale es
+ * el único número por el que el operador puede enterarse de cuánto está enviando la fábrica.
+ *
+ * Vive en `domain/` y no en el daemon a propósito: `plan-diario` ya importa de acá, y sacarla del
+ * servicio evitaría el import circular (daemon → plan-diario → daemon).
+ *
+ * FAIL-CLOSED igual que `intEnv`: vacío o basura cae al default. Mínimo 0 y no 1 — un
+ * `WARMUP_RAMPA_LIMITE_DIARIO=0` escrito a propósito congela la rampa, y descartarlo en silencio
+ * haría salir MÁS de lo que el operador pidió.
+ */
+export function rampaDesdeEnv(env: NodeJS.ProcessEnv): { limiteDiario: number; pasoPorDia: number } {
+  const leer = (raw: string | undefined, fallback: number): number => {
+    const t = (raw ?? "").trim();
+    if (t.length === 0) return fallback;
+    const n = Number(t);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+  };
+  return {
+    limiteDiario: leer(env.WARMUP_RAMPA_LIMITE_DIARIO, RAMPA_LIMITE_DIARIO_DEFAULT),
+    pasoPorDia: leer(env.WARMUP_RAMPA_PASO_POR_DIA, RAMPA_PASO_POR_DIA_DEFAULT)
+  };
+}
+
 export interface EntradaDecision {
   /** Día de calentamiento de ESTE dominio (1 = el día que mandó por primera vez). 0 = nunca mandó. */
   diaN: number;
@@ -104,8 +153,8 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
   // La rampa del diseño: lineal por día, con los clamps de §10. No se reescribe acá.
   const rampa = dailyQuota(
     {
-      dailyLimit: e.limiteDiario ?? 40,
-      increaseByDay: e.pasoPorDia ?? 2,
+      dailyLimit: e.limiteDiario ?? RAMPA_LIMITE_DIARIO_DEFAULT,
+      increaseByDay: e.pasoPorDia ?? RAMPA_PASO_POR_DIA_DEFAULT,
       dayIndex: e.diaN,
       weekdaysOnly: false
     },
@@ -116,14 +165,19 @@ export function decidirCupoDeHoy(e: EntradaDecision): DecisionDiaria {
   const contra = (n: number, accion: AccionDiaria, motivo: string): DecisionDiaria => {
     // El techo físico se aplica AL FINAL, sobre cualquier decisión. Es la única regla que no
     // admite excepción: pasarla no sube el volumen, solo produce rechazos.
-    const cupo = pared === null ? n : Math.min(n, pared);
+    const conPared = pared === null ? n : Math.min(n, pared);
+    // Y encima de todo, el techo IRREVERSIBLE. El del nodo protege de rechazos; éste protege de
+    // algo que no tiene vuelta atrás (ver TECHO_DURO_POR_DOMINIO). Va último a propósito: es el
+    // único que nada puede levantar, ni la rampa configurada ni una orden.
+    const cupo = Math.min(conPared, TECHO_DURO_POR_DOMINIO);
     const extra =
       pared === null
         ? " (cupo del nodo desconocido: gobierna la rampa, y el propio Postfix frena si nos pasamos)"
-        : cupo < n
+        : conPared < n
           ? ` (recortado por el cupo del nodo: ${pared}/día)`
           : "";
-    return { cupo, accion, motivo: motivo + extra, placement: tasa };
+    const techo = cupo < conPared ? ` (clampeado por el techo duro: ${TECHO_DURO_POR_DOMINIO}/día por dominio)` : "";
+    return { cupo, accion, motivo: motivo + extra + techo, placement: tasa };
   };
 
   if (e.diaN <= 0) {
@@ -185,15 +239,79 @@ export function puedeMandarTurno(e: {
   rebotadosHoy: ReadonlySet<string>;
   decision: DecisionDiaria;
   enviadosHoy: number;
+  /**
+   * Las mediciones PROPIAS de este dominio en la ventana. Obligatorio a propósito: con un default
+   * generoso, el llamador que se olvide de pasarlo desactiva la regla de abajo sin enterarse.
+   */
+  medicionesPropias: number;
+  /**
+   * ¿Está en el pool que `elegirPool` armó para hoy? Obligatorio por la misma razón que el campo de
+   * arriba: un default permisivo apaga el filtro sin que nadie se entere.
+   */
+  enElPool: boolean;
 }): { si: boolean; motivo: string } {
+  // LA EXCLUSIÓN POR SALUD TAMBIÉN VALE PARA LA CONTINUACIÓN.
+  //
+  // `elegirPool` saca a los que cruzaron el umbral permanente, a los que el receptor tiene cerrados
+  // y a los que tienen la cola atascada. La continuación no lo miraba: `hilosParaContinuar` busca
+  // por SEMILLA y ventana de 7 días, así que un dominio excluido por cualquiera de esas tres razones
+  // —con cap > 0 y un hilo abierto— seguía mandando un "Re:" REAL por vuelta, por su propio nodo.
+  // Verificado: `elegirPool` deja fuera a quemado.com por haber cruzado el umbral y
+  // `puedeMandarTurno` le decía "tiene 20 de cupo libre hoy".
+  //
+  // Va PRIMERO porque es la condición más cara de saltear: las otras cuestan un correo de más, ésta
+  // le da volumen a un dominio que el sistema ya decidió no calentar.
+  if (!e.enElPool) {
+    return {
+      si: false,
+      motivo: `${e.dominio} no está en el pool de hoy (la medición de salud lo excluyó): no se continúan hilos de un dominio que no se está calentando`
+    };
+  }
   if (e.rebotadosHoy.has(e.dominio)) {
     return { si: false, motivo: `${e.dominio} ya rebotó hoy por cupo agotado en el nodo` };
   }
-  if (e.enviadosHoy >= e.decision.cupo) {
+  // El techo irreversible TAMBIÉN acá, y no por simetría: `decision` es un objeto, y este camino lo
+  // acepta de quien sea. Clampear solo en `decidirCupoDeHoy` dejaba abierto el único paso que no
+  // pasa por ella — un `DecisionDiaria` armado a mano (una orden, un endpoint, un test) con cupo
+  // 9999 habría mandado 9999 turnos. Un techo con una puerta al lado no es un techo.
+  const cupo = Math.min(e.decision.cupo, TECHO_DURO_POR_DOMINIO);
+  if (e.enviadosHoy >= cupo) {
     return {
       si: false,
-      motivo: `${e.dominio} → ${e.decision.accion}, cupo ${e.decision.cupo}/día (van ${e.enviadosHoy})`
+      motivo: `${e.dominio} → ${e.decision.accion}, cupo ${cupo}/día (van ${e.enviadosHoy})`
     };
   }
-  return { si: true, motivo: `${e.dominio} tiene ${e.decision.cupo - e.enviadosHoy} de cupo libre hoy` };
+  // EL TURNO DE CONTINUACIÓN NO SE COME LA MEDICIÓN DEL DÍA.
+  //
+  // Un dominio nuevo tiene cupo 2/día y necesita MUESTRA_MINIMA mediciones PROPIAS para que la
+  // rampa lo deje subir. El envío principal (`runLiveCycle`) mide dónde cayó; el turno de
+  // continuación solo graba `sent` y no mide nada — no hay paso de medición en ese camino.
+  //
+  // Medido en producción el 2026-08-06: de 18 envíos, 11 principales y 7 continuaciones, y tres de
+  // los cinco dominios nuevos (annualfilings-control.com, annualfilings-ops.com,
+  // statefilings-control.com) gastaron 1 de sus 2 envíos en un "Re:". Se quedaron con UNA medición
+  // en el día: juntan las 4 en cuatro días en vez de dos. No cuesta un correo más — es el mismo
+  // volumen mejor gastado.
+  //
+  // Se acota a los que todavía no juntaron muestra: apenas la tienen, vuelven a continuar hilos.
+  // Aplicarla a toda la flota le sacaría la mitad de la conversación a corpfiling-infra.com, que
+  // hoy hace 4 continuaciones con 83% de bandeja — y la conversación multivuelta también construye
+  // reputación.
+  //
+  // LA CONDICIÓN ES "todavía no junté muestra", A SECAS. La primera versión decía
+  // `medicionesPropias < MUESTRA_MINIMA && enviadosHoy + 1 >= cupo`, o sea que solo atajaba el
+  // ÚLTIMO envío del día — y con cupo 2 y 0 enviados el "Re:" salía igual, que es justo el caso
+  // medido: `hilosParaContinuar` devuelve hilos de cualquier dominio de la semilla en 7 días, así
+  // que el turno cae rutinariamente en un dominio que todavía no mandó hoy y le come la PRIMERA de
+  // sus dos oportunidades. annualfilings-control.com se quedó en 1 continuación, 1 principal, 1
+  // medición: la mitad del día gastada en un turno que no mide nada.
+  if (e.medicionesPropias < MUESTRA_MINIMA) {
+    return {
+      si: false,
+      motivo:
+        `${e.dominio} tiene ${e.medicionesPropias} de ${MUESTRA_MINIMA} mediciones propias: sus ${cupo} envíos del día ` +
+        `van al ciclo principal, que MIDE dónde cayó — el "Re:" no mide nada`
+    };
+  }
+  return { si: true, motivo: `${e.dominio} tiene ${cupo - e.enviadosHoy} de cupo libre hoy` };
 }

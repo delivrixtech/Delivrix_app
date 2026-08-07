@@ -36,6 +36,16 @@ export async function handleWarmupMonitorHttp(deps: {
     return;
   }
 
+  // La cadencia CONFIGURADA del daemon, para que el panel no la adivine.
+  //
+  // El semáforo de vida de la consola tenía la cadencia copiada a mano en 4h y declaraba "frío"
+  // recién a las 8h, mientras producción corre con WARMUP_LIVE_INTERVAL_MS=5400000 (1,5h).
+  // Consecuencia medida: un daemon muerto hacía 7 horas se mostraba "en pausa" con el latido en
+  // VERDE, o sea sano. El panel había copiado el DEFAULT del código, no el valor real. `null` =
+  // no está configurado, y entonces la pantalla dice que no puede juzgar el pulso.
+  const raw = Number.parseInt(process.env.WARMUP_LIVE_INTERVAL_MS ?? "", 10);
+  const cadenciaMs = Number.isFinite(raw) && raw > 0 ? raw : null;
+
   const lectura = await deps.workspace.readInventoryJson<LecturaAgente>(MONITOR_FILE).catch(() => null);
   if (!lectura) {
     json(deps.response, 200, {
@@ -44,11 +54,12 @@ export async function handleWarmupMonitorHttp(deps: {
       lectura: null,
       motivo: "el agente todavía no miró: corré scripts/ops/warmup-monitor.ts --loop",
       tokens: null,
-      hechos: null
+      hechos: null,
+      cadenciaMs
     });
     return;
   }
-  json(deps.response, 200, lectura);
+  json(deps.response, 200, { ...lectura, cadenciaMs });
 }
 
 function json(response: ServerResponse, statusCode: number, payload: unknown): void {
