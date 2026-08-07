@@ -9,6 +9,47 @@
 // FALLÓ y no puede resolverlo. Si todo sigue igual, se calla.
 //
 // `decidirSiHablar` es pura y testeable. Mandar es aparte.
+//
+// EL PÉNDULO, y por qué existe la razón 7. El arreglo del 2026-08-06 (sacar las manos pasivas del
+// disparador, repetir cada 6 h las condiciones que persisten) bajó los ~25 mensajes de una noche
+// — y de paso lo dejó mudo. Medido sobre las últimas ~8 h de producción de ese día, 45 vueltas de
+// guardia: habló 3 veces, "Sigo acá…" a las 19:02, "No pude leer el estado" a las 21:00 y "Sigo
+// acá…" a las 01:01. Dos rellenos y un error. En esa MISMA ventana la base registró 14 eventos
+// reales (5 sent, 3 measured INBOX, 3 engaged, 3 replied), incluidos dos INBOX de
+// annualfilings-control.com a las 20:00 y 21:00. A las 01:10 el jefe escribió "No me has dicho
+// nada en toda la tarde …".
+//
+// El diagnóstico no es que las seis razones estén mal: es que las SEIS miran el estado del AGENTE
+// (qué hizo, qué no pudo, si vio) y NINGUNA mira el estado de la FÁBRICA. Por eso se lo pudo dejar
+// mudo sin violar ninguna regla — 0 de 38 avisos en 24 h nombraron un porcentaje, una muestra, un
+// día de rampa o un INBOX.
+//
+// La razón 7 suma eso, con el único criterio que se puede auditar con un comando: un mensaje
+// proactivo vale si y solo si se puede escribir como (campo, objeto, antes, después) y esa tupla
+// se puede RECALCULAR desde los dos últimos snapshots. Si no se puede escribir así, no sale —
+// aunque sea interesante. La lista de campos es CERRADA a propósito: un criterio en prosa el
+// modelo lo devuelve como hallazgo propio, y este proyecto ya lo pagó dos veces.
+//
+// EL CIERRE DE UNA PROMESA NO PASA POR ACÁ, y estuvo un rato. La idea era "el canal tiene que tener
+// UN número", así que la promesa viajaba pegada al aviso de la guardia. No cumplía ninguna de sus
+// dos metas: (a) pegada perdía el `hilo` donde se prometió y el motivo pasaba a ser el del otro
+// aviso, o sea el "Te dije que te avisaba…" aparecía en el canal suelto como pie de página de
+// "Hice esto: soltar_dominio corp-delivery.com"; y (b) cuando viajaba sola NO consultaba el
+// presupuesto —solo incrementaba el contador— así que el tope de 10 no la frenaba nunca. Ahora el
+// cierre lo manda quien cablea, en su propio hilo, y su freno vive en promesas.ts (ver
+// MINUTOS_ENTRE_DISCULPAS). Una respuesta dentro de un hilo no suena el canal: no compite con esto.
+
+import type { HechosWarmup } from "./warmup-monitor.ts";
+
+/** Un cambio entre las dos últimas lecturas verificadas. Es la unidad de "avance". */
+export interface Novedad {
+  /** La clave del mapa de campos observables, ej. `plan:corpfiling-infra.com.diaN`. */
+  clave: string;
+  /** El dominio, cuando el campo es de un dominio. `""` para los globales (cap./flota.). */
+  objeto: string;
+  antes: string | number | null;
+  despues: string | number | null;
+}
 
 export interface EstadoParaSlack {
   /** El estado del emisor: send | placement-pause | killed | cap-reached | inert. */
@@ -24,7 +65,18 @@ export interface EstadoParaSlack {
   voz: string | null;
   /** Las cuatro líneas verificadas, por si hay que dar contexto. */
   ahora: string | null;
+  /**
+   * QUEDA SIN USO EN ESTE MÓDULO desde que se borró la señal de vida (era su única condición).
+   * No se saca del contrato a propósito: lo llena el orquestador, que es de otro lote, y un campo
+   * de más no rompe nada mientras que sacarlo obliga a tocar un archivo que hoy no se toca.
+   */
   riesgo: string | null;
+  /**
+   * Lo que CAMBIÓ en la fábrica desde la vuelta anterior. Lo calcula el orquestador con
+   * `novedades(camposObservables(hechosPrevios), camposObservables(hechosAhora))`. Opcional: sin
+   * esto el agente se comporta exactamente como antes (silencio), que es el fail-closed correcto.
+   */
+  novedades?: readonly Novedad[];
 }
 
 export interface MemoriaSlack {
@@ -34,6 +86,27 @@ export interface MemoriaSlack {
   ultimoAviso: string | null;
   /** Hash simple de lo último dicho, para no repetir la misma frase. */
   ultimaFirma: string | null;
+  /**
+   * Los tres campos del presupuesto de avances. OPCIONALES a propósito: el warmup-slack.json que
+   * hay en producción no los tiene, y si fueran obligatorios el primer despliegue leería una
+   * memoria "inválida" y el agente se olvidaría del último emisor — o sea, anunciaría un cambio
+   * del emisor que no ocurrió, en su primer mensaje.
+   */
+  avancesHoy?: number;
+  /** Día UTC (YYYY-MM-DD) al que corresponde `avancesHoy`. Si no es hoy, el contador vale 0. */
+  diaAvances?: string;
+  /**
+   * Cuándo se habló por última vez de CADA clave (clave → ISO). Es el dedupe de la razón 7.
+   *
+   * Era un solo slot con identidad `clave=valorNuevo`, y contra un valor que OSCILA nunca coincidía
+   * con el anterior: A→B→A→B no deduplica nada. El freno que quedaba era el tope diario, y es el
+   * freno equivocado — un flap se come los 10 avances del día y tapa el evento real. Los candidatos
+   * no son teóricos: `flota.sanas`/`flota.bloqueadas` van y vienen con el modo de falla "nodo vivo
+   * pero incomunicado" ya documentado, y `plan:<d>.accion` cruza PISO_CRITICO=0,35 con solo pasar
+   * de 2/6 a 3/6 de muestra. Simulado con `cap.frenados` oscilando 8↔7: 20 mensajes en 24 h.
+   * Por clave y con enfriamiento, un flap da 1 mensaje por hora en vez de 1 por vuelta.
+   */
+  novedadesRecientes?: Record<string, string>;
 }
 
 export interface Aviso {
@@ -48,14 +121,20 @@ export interface Aviso {
    * avisan sobre una CONDICIÓN QUE PERSISTE la etiquetan con su motivo para no pisarse entre sí.
    */
   firma?: string;
+  /**
+   * La clave del avance que va en este mensaje, sea el mensaje entero (razón 7) o PEGADO al final
+   * de otra razón. Lo lee `recordarAviso` para cobrar el presupuesto y para anotar el enfriamiento.
+   *
+   * Existe porque el avance viaja pegado y la `firma` ya está ocupada por la razón que lo lleva: sin
+   * un campo aparte, un SPAM→INBOX que sale pegado a "Hice esto: soltar_dominio" no dejaría rastro
+   * y podría volver a salir solo en la vuelta siguiente.
+   */
+  avance?: string;
 }
 
 // Los textos NO empiezan con "Juanes,": la mención <@ID> se agrega afuera (es la que hace sonar
 // el móvil) y la voz del modelo ya lo nombra. Con las tres cosas juntas salía "Juanes, hice esto:
 // X. Juanes, mirá...", que es como habla un robot, no una persona.
-
-/** Cada cuánto, como mucho, se repite un aviso del mismo tipo. Evita el goteo. */
-const SILENCIO_MIN = 60;
 
 /**
  * Cada cuánto se REPITE un aviso sobre una condición que sigue igual (el modelo caído, una lectura
@@ -67,6 +146,267 @@ const HORAS_PARA_REPETIR = 6;
 function firma(e: EstadoParaSlack): string {
   return [e.emisor, e.acciones.map((a) => `${a.accion}:${a.objetivo ?? ""}:${a.ejecutada}`).join(","), e.sinLectura ? "sin-lectura" : ""].join("|");
 }
+
+// ── LOS CAMPOS OBSERVABLES ───────────────────────────────────────────────────────────────────────
+//
+// El vocabulario compartido: un mapa plano de (clave → valor) sobre el que se hace un diff. Todo
+// lo que el agente puede anunciar como avance vive acá adentro y NADA más. La lista es cerrada por
+// construcción, no por un filtro: un campo que no está en este mapa NO PUEDE producir novedad,
+// pase lo que pase con los hechos.
+//
+// Por qué cerrada. Son 58 dominios; sin lista, cualquier campo que se menee produce mensaje y en
+// una vuelta mala se reconstruyen los ~25 mensajes de la noche del 2026-08-06 con mejor excusa.
+// Y la otra mitad de la razón es la lección que este proyecto ya pagó dos veces: un criterio
+// escrito en prosa ("avisá cuando algo mejore") el modelo lo devuelve como hallazgo propio, y si
+// es falso lo devuelve con seguridad.
+//
+// EXCLUIDO A PROPÓSITO: `emisor.estado`. Ya lo cubre la razón 5, que además está exenta del
+// presupuesto y es la noticia más importante que el agente puede dar. Meterlo acá lo duplicaría y
+// encima le comería el cupo diario de avances a un cambio real.
+
+/**
+ * El retrato de la fábrica reducido a lo que vale la pena anunciar. Puro.
+ *
+ * `previos` ES EL RETRATO QUE SE GUARDÓ EN DISCO LA VUELTA PASADA — el valor que devolvió esta
+ * misma función y que quien cablea persistió. **No** es `camposObservables(hechosPrevios, {})`.
+ * Recalcularlo desde los hechos anteriores lo deja sin el arrastre y devuelve el agujero entero:
+ *
+ * `hechos.vueltas` sale de una query `LIMIT 8` sobre los ciclos GLOBALES del warmup. Con 6 dominios
+ * y ~14 ciclos por día, la fila de un dominio se cae de esa ventana en horas y su clave
+ * `placement:` DESAPARECE del retrato. Sin arrastre, cuando vuelve a medir la clave REAPARECE: hoy
+ * eso es SILENCIO (`novedades` no cuenta las claves que aparecen), o sea que se pierde el SPAM→INBOX
+ * de un dominio que él mismo midió 18 h antes — la mejor noticia que puede dar la fábrica. Medido
+ * sobre los 19 ciclos reales del 2026-08-06: 2 de 12 avisos del día son exactamente ese caso
+ * (annualfilings-control.com y annualfilings-ops.com). Con el retrato persistido salen bien.
+ *
+ * Y no alcanza con cablearlo bien una vez: el proceso se reinició 17 veces en 29 h, así que un mapa
+ * que solo vive en memoria vuelve a arrancar vacío. Va en disco, en la misma vuelta que los hechos.
+ *
+ * El segundo parámetro es OBLIGATORIO y sin default para que la decisión sea de quien cablea. `{}`
+ * es legítimo (primera vuelta de una instalación nueva) y su precio es silencio, nunca un dato
+ * inventado — ver el fail-closed de `novedades`.
+ */
+export function camposObservables(
+  hechos: HechosWarmup | null,
+  previos: Record<string, string | number | null>
+): Record<string, string | number | null> {
+  const m: Record<string, string | number | null> = {};
+  // Solo `placement:`. Los demás campos salen del plan y del inventario, que traen SIEMPRE la fila
+  // de cada dominio: si una de esas claves falta es porque la lectura se cayó, y arrastrarla haría
+  // exactamente lo contrario de lo que queremos — daría por vigente un dato que nadie pudo leer.
+  for (const [k, v] of Object.entries(previos ?? {})) if (k.startsWith("placement:")) m[k] = v;
+  if (!hechos) return m;
+
+  for (const p of hechos.plan ?? []) {
+    m[`plan:${p.dominio}.accion`] = p.accion;
+    m[`plan:${p.dominio}.diaN`] = p.diaN;
+    // `enPool` sale del CUPO, no de estar en la lista: `decidirCupoDeHoy` deja al dominio en el
+    // plan con cupo 0 y acción "frenar" cuando el nodo está frenado en Postfix. O sea que "se
+    // soltó" y "dejó de calentar" se leen acá, y no en la desaparición de una fila.
+    m[`plan:${p.dominio}.enPool`] = p.cupo > 0 ? "si" : "no";
+    // NO SE OBSERVA `placementMuestra`, y es a propósito. Es `placements.length`: un contador
+    // MONÓTONO que sube con cada medición (~14/día, el techo del daemon) y que además es el
+    // denominador de un avance, no un avance. Estaba en el mapa y en la última posición de la
+    // prioridad, así que ganaba la vuelta cada vez que no cambiaba nada más —o sea la mayoría de las
+    // vueltas— y se comía el presupuesto diario con "las muestras de placement de X: 3 → 4",
+    // dejando tapado el evento real de las 20:00. Medido contra el retrato real de producción: 6 de
+    // las 32 claves eran esto.
+  }
+
+  // EL PLACEMENT NO ENTRA CORREO POR CORREO: entra la medición MÁS RECIENTE de cada dominio, así
+  // que dos INBOX seguidos son el mismo valor y no hablan dos veces. Medido: contar cada correo
+  // daba 14 avisos/día (el tope físico del daemon); esto da 8 — y las 8 incluyen el SPAM→INBOX de
+  // annualfilings-control.com de las 00:01Z, que es el evento exacto que el jefe se perdió.
+  //
+  // `placement: null` se SALTEA. Una vuelta sin placement es "todavía no se midió", y no medido no
+  // es cero: escribirlo como valor haría que la primera medición real se leyera como un cambio
+  // desde un dato que nunca existió.
+  const masReciente = new Map<string, number>();
+  for (const v of hechos.vueltas ?? []) {
+    if (!v.placement) continue;
+    const t = Date.parse(v.cuando);
+    const cuando = Number.isFinite(t) ? t : 0;
+    const previa = masReciente.get(v.dominio);
+    if (previa !== undefined && cuando <= previa) continue;
+    masReciente.set(v.dominio, cuando);
+    m[`placement:${v.dominio}`] = v.placement;
+  }
+
+  // `frenados` es opcional en HechosWarmup: si no viene, NO se escribe 0. Un `?? 0` acá diría
+  // "cero dominios frenados" sobre un dato que nadie midió, que es la confusión más cara del
+  // sistema (el 2026-07-25, 38 nodos cerrados en Gmail con CERO detecciones de blacklist, y
+  // alguien leyó ese cero como "está limpio").
+  if (hechos.cap && Array.isArray(hechos.cap.frenados)) m["cap.frenados"] = hechos.cap.frenados.length;
+  if (hechos.flota) {
+    m["flota.sanas"] = hechos.flota.sanas;
+    m["flota.bloqueadas"] = hechos.flota.bloqueadas;
+  }
+  return m;
+}
+
+/** Separa la clave en (campo legible, objeto). Los dominios tienen puntos: por eso no se parte por el primero. */
+function parteClave(clave: string): { campo: string; objeto: string } {
+  // `placement:` no lleva sufijo de campo, y partir por el último punto le comería el TLD
+  // ("placement.com" de dominio "corpfiling-infra"). Caso aparte y explícito.
+  if (clave.startsWith("placement:")) return { campo: "placement", objeto: clave.slice("placement:".length) };
+  const i = clave.indexOf(":");
+  if (i < 0) return { campo: clave, objeto: "" };
+  const resto = clave.slice(i + 1);
+  const j = resto.lastIndexOf(".");
+  if (j < 0) return { campo: clave.slice(0, i), objeto: resto };
+  return { campo: `${clave.slice(0, i)}.${resto.slice(j + 1)}`, objeto: resto.slice(0, j) };
+}
+
+/**
+ * Qué cambió entre las dos últimas lecturas. Puro: es un diff de dos mapas, y por eso todo aviso
+ * de avance se puede RECALCULAR después desde los snapshots guardados. Un aviso que no se puede
+ * reproducir desde el diff es ruido por definición.
+ */
+export function novedades(
+  previos: Record<string, string | number | null>,
+  ahora: Record<string, string | number | null>
+): Novedad[] {
+  // MAPA PREVIO VACÍO = SILENCIO. Es el fail-closed: en una instalación fresca (o si el snapshot
+  // anterior no se pudo leer) TODO sería "nuevo" y el agente abriría con treinta avisos.
+  if (Object.keys(previos).length === 0) return [];
+
+  const out: Novedad[] = [];
+  for (const [clave, despues] of Object.entries(ahora)) {
+    // UNA CLAVE QUE APARECE NUNCA ES NOVEDAD. Ninguna, tampoco `placement:`.
+    //
+    // Aparecer casi siempre significa que la lectura ANTERIOR falló, no que pasó algo: en el
+    // orquestador `plan` sale de `planDelDia(...).catch(() => undefined)` y `cap`/`flota` de
+    // `readInventoryJson(...).catch(() => null)`, así que un tropiezo borra la sección entera y al
+    // volver declararía 24 "avances" de golpe.
+    //
+    // `placement:` estaba exceptuado —"aparecer ES el evento, la primera medición"— y esa excepción
+    // fabricaba mensajes. `hechos.vueltas` es una ventana `LIMIT 8` sobre los ciclos GLOBALES: con 6
+    // dominios y ~14 ciclos por día, la fila de un dominio se cae de la ventana en horas, su clave
+    // desaparece del retrato, y cuando vuelve a medir se anuncia "sin medir → INBOX" sobre un
+    // dominio que él mismo midió 18 h antes. Reproducido sobre los 19 ciclos reales del 2026-08-06:
+    // de 12 avisos simulados, 2 eran esto —annualfilings-control.com y annualfilings-ops.com, los
+    // dos con SPAM medido esa madrugada— y encima degradaban la MEJOR noticia que da la fábrica
+    // (SPAM→INBOX) a una primera medición.
+    //
+    // El arrastre de `camposObservables(hechos, previos)` tapa el agujero **si y solo si** quien
+    // cablea persiste el retrato en vez de recalcularlo. Esta línea es lo que hace que el precio de
+    // NO persistirlo sea silencio y no una mentira: sin el retrato guardado el SPAM→INBOX se pierde,
+    // con él sale bien, y en ningún caso se afirma un dato que nadie midió. Ausencia de dato no es
+    // evidencia de nada — es la misma lección que "no medido" ≠ "cero".
+    if (!Object.prototype.hasOwnProperty.call(previos, clave)) continue;
+    const antes = previos[clave] ?? null;
+    if (antes === despues) continue;
+    const { objeto } = parteClave(clave);
+    out.push({ clave, objeto, antes, despues: despues ?? null });
+  }
+  // Una clave que DESAPARECE nunca es novedad, por el mismo motivo simétrico: el modo de falla más
+  // probable es que no se pudo leer, y "no lo pude leer" ya tiene su propia razón (la 1).
+  return out;
+}
+
+// ── EL PRESUPUESTO DE AVANCES ────────────────────────────────────────────────────────────────────
+
+/** Un aviso de avance por vuelta. El resto se cuenta y sale en la misma línea, nunca en silencio. */
+const MAX_AVANCES_POR_VUELTA = 1;
+/**
+ * Tope diario. Sale de la tasa medida (10 avances en 21,6 h sobre 28 snapshots reales) y del techo
+ * físico: el daemon no puede pasar de 14 vueltas por día y hay 6 dominios en el pool. En un día
+ * normal no tira nada — es un fusible contra la tormenta, no un filtro de lo normal. Va en CÓDIGO
+ * y no en config a propósito: un tope de ruido que se puede subir por variable de entorno a las
+ * 3am deja de ser un tope.
+ */
+const MAX_AVANCES_POR_DIA = 10;
+/**
+ * Cuánto tiene que pasar para volver a hablar de LA MISMA CLAVE, aunque el valor sea otro.
+ *
+ * El dedupe era por `clave=valorNuevo` y contra un valor que oscila no deduplica nunca: A→B→A→B da
+ * un mensaje por vuelta. Simulado con `cap.frenados` yendo 8↔7 cada 10 minutos: 20 mensajes en 24 h,
+ * diez de ellos textualmente idénticos. Una hora de enfriamiento lo baja a 1 por hora sin tocar el
+ * caso normal —un dominio no cambia de escalón dos veces en una hora— y devuelve el tope diario a
+ * su papel de fusible en vez de ser el único freno.
+ */
+const MINUTOS_ENTRE_AVANCES_MISMA_CLAVE = 60;
+
+/** Orden de importancia. Sale la de más arriba; las demás se cuentan. */
+const PRIORIDAD: readonly RegExp[] = [
+  /^(cap\.frenados|plan:.+\.enPool)$/, // un dominio que se soltó o dejó de calentar
+  /^placement:/,
+  /^plan:.+\.accion$/,
+  /^plan:.+\.diaN$/,
+  /^flota\./
+];
+
+/** Dónde cae el correo cuando la noticia es MALA. `OTHER` no entra: es ambiguo y no se sabe leer. */
+const PLACEMENT_MALO = new Set(["SPAM", "MISSING"]);
+
+function rango(n: Novedad): number {
+  // UNA CAÍDA VA PRIMERO, aunque sea del mismo campo que una mejora. Con el orden por clave sola,
+  // un dominio que se cae de INBOX a SPAM competía con `cap.frenados` y PERDÍA: contra el retrato
+  // real del 2026-08-06 con seis cambios en una vuelta, salía "los dominios frenados: 8 → 7" y el
+  // INBOX→SPAM de corpfiling-infra.com terminaba contado adentro de "Además: 5 cambios menores".
+  // Una regresión rotulada como avance y encima tapada es el peor mensaje que puede mandar el canal.
+  if (n.clave.startsWith("placement:") && PLACEMENT_MALO.has(String(n.despues))) return -1;
+  const i = PRIORIDAD.findIndex((re) => re.test(n.clave));
+  return i < 0 ? PRIORIDAD.length : i;
+}
+
+const PREFIJO_NOVEDAD = "novedad|";
+
+function diaUTC(iso: string): string {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : "";
+}
+
+/**
+ * ¿Ya se habló de esta clave hace menos de `MINUTOS_ENTRE_AVANCES_MISMA_CLAVE`?
+ *
+ * Un reloj ilegible NO enfría: fail-open a propósito, y es la única dirección honesta acá. Un
+ * `ahoraISO` que no parsea significa que el sistema está roto de otra forma; callar todos los
+ * avances por eso sería reproducir el régimen mudo de la queja 2 por un error de formato.
+ */
+function enfriando(recientes: Record<string, string> | undefined, clave: string, ahoraISO: string): boolean {
+  const t = Date.parse(recientes?.[clave] ?? "");
+  const ahora = Date.parse(ahoraISO);
+  if (!Number.isFinite(t) || !Number.isFinite(ahora)) return false;
+  return ahora - t < MINUTOS_ENTRE_AVANCES_MISMA_CLAVE * 60_000;
+}
+
+/**
+ * Cuál de los avances sale y cuántos quedan tapados. Se exporta para que el orquestador pueda
+ * LOGUEAR los tapados cuando el tope diario se come todo: si no, "no sale" sería "se perdió en
+ * silencio", que es justo lo que no queremos poder decir del canal.
+ */
+export function presupuestoDeAvances(
+  novs: readonly Novedad[],
+  memoria: MemoriaSlack | null,
+  ahoraISO: string
+): { elegida: Novedad | null; tapados: number } {
+  const dia = diaUTC(ahoraISO);
+  const yaHoy = memoria?.diaAvances === dia ? (memoria.avancesHoy ?? 0) : 0;
+  // DEDUPE POR CLAVE Y CON ENFRIAMIENTO, no por `clave=valor`. Por construcción el diff contra el
+  // snapshot previo no repite; esto cubre las dos formas en que igual repetía: que el snapshot no se
+  // haya guardado, y —la cara— un valor que OSCILA, contra el que `clave=valor` nunca coincide con
+  // el anterior. La firma vieja (acciones + emisor + sinLectura) tampoco lo cubría: dos vueltas
+  // seguidas con la misma novedad dan firmas distintas si cambió cualquier acción.
+  const frescas = novs.filter((n) => !enfriando(memoria?.novedadesRecientes, n.clave, ahoraISO));
+  if (frescas.length === 0) return { elegida: null, tapados: 0 };
+  if (yaHoy >= MAX_AVANCES_POR_DIA) return { elegida: null, tapados: frescas.length };
+  const orden = [...frescas].sort((a, b) => rango(a) - rango(b));
+  return { elegida: orden[0] ?? null, tapados: Math.max(0, orden.length - MAX_AVANCES_POR_VUELTA) };
+}
+
+const ETIQUETA: Record<string, string> = {
+  placement: "el placement",
+  "plan.accion": "el plan",
+  "plan.diaN": "el día de rampa",
+  "plan.enPool": "el calentamiento",
+  "cap.frenados": "los dominios frenados",
+  "flota.sanas": "las bandejas sanas",
+  "flota.bloqueadas": "las bandejas bloqueadas"
+};
+
+/** `null` se escribe "sin medir", NUNCA 0. No medido y cero no son lo mismo. */
+const valorLegible = (v: string | number | null): string => (v === null ? "sin medir" : String(v));
 
 /**
  * ¿Hay algo que valga la pena decir? `null` = silencio, que es la respuesta correcta la mayoría
@@ -98,9 +438,67 @@ export function decidirSiHablar(
     return Number.isFinite(horas) && horas < HORAS_PARA_REPETIR;
   };
 
+  /**
+   * LA RAZÓN 7, en una función porque hay que llegar a ella por TRES caminos.
+   *
+   * Es una plantilla pura sobre los hechos: no usa `voz`, no llama a ningún modelo. Y los hechos
+   * están frescos aunque el modelo esté caído — `reunirHechos` corre ANTES de `pedirLectura`, y
+   * `pedirLectura` devuelve los mismos hechos en todos sus caminos de fallo.
+   *
+   * Pero las razones 1 y 2 hacían `return null` adentro de su `yaLoDije(...)`, así que con el modelo
+   * caído (o con una lectura con reparos) el agente quedaba mudo sobre la FÁBRICA hasta 6 horas
+   * seguidas. Es literalmente la tarde del 2026-08-06: "No pude leer el estado" a las 21:00 y a la
+   * 01:10 el jefe escribiendo "No me has dicho nada en toda la tarde" — con dos INBOX de
+   * annualfilings-control.com en la base en el medio. O sea: el arreglo de la queja 2 se apagaba
+   * solo justo en el escenario que originó la queja 2.
+   */
+  const avanceDeLaFabrica = (): Aviso | null => {
+    const { elegida, tapados } = presupuestoDeAvances(estado.novedades ?? [], mem, ahoraISO);
+    if (!elegida) return null;
+    const { campo, objeto } = parteClave(elegida.clave);
+    const antes = valorLegible(elegida.antes);
+    const despues = valorLegible(elegida.despues);
+    // El sobrante se CUENTA y sale en la misma línea. Nunca se pierde en silencio: un canal donde
+    // no se puede saber cuánto se calló no se puede calibrar. Y se llaman "cambios", no "avances":
+    // adentro de esa cuenta puede ir una caída a SPAM, y rotular una regresión como avance es
+    // fabricar una buena noticia.
+    const extra = tapados > 0 ? ` Además: ${tapados} ${tapados === 1 ? "cambio menor" : "cambios menores"}.` : "";
+    return {
+      texto: `${ETIQUETA[campo] ?? campo}${objeto ? ` de ${objeto}` : ""}: ${antes} → ${despues}.${extra}`,
+      // El motivo va al log y es RECALCULABLE desde los dos snapshots: `novedad plan.diaN
+      // corpfiling-infra.com 3→4`. Sin esto no se puede separar ruido de señal con un comando.
+      motivo: `novedad ${campo}${objeto ? ` ${objeto}` : ""} ${antes}→${despues}`,
+      firma: PREFIJO_NOVEDAD,
+      avance: elegida.clave,
+      pideRespuesta: false
+    };
+  };
+
+  /**
+   * EL AVANCE VIAJA PEGADO AL MENSAJE QUE YA SALE. Un mensaje por vuelta, cero pérdidas.
+   *
+   * Las razones 1 y 2 ya devolvían `avanceDeLaFabrica()` cuando se callaban por repetidas, pero las
+   * 3, 4 y 5 hacían `return` a secas: si esa vuelta hubo una acción ejecutada, una acción trabada o
+   * un cambio de emisor, el SPAM→INBOX no salía. Y el snapshot se pisa en la misma vuelta, así que
+   * el diff se consumía: la vuelta siguiente ya no lo veía. Silencio permanente, sin quedar contado
+   * ni en `tapados` — literalmente "0 mensajes en un día donde pasaron cosas buenas".
+   *
+   * El motivo del avance se CONCATENA al del otro aviso porque el log es lo único con lo que se
+   * puede separar señal de ruido con un comando, y un avance que sale sin motivo propio no se puede
+   * auditar. El cobro del presupuesto va por `avance`, no por `firma`: la firma la necesita la
+   * razón que lo lleva para su propio `yaLoDije`.
+   */
+  const conAvance = (a: Aviso): Aviso => {
+    const av = avanceDeLaFabrica();
+    if (!av) return a;
+    return { ...a, texto: `${a.texto}\n${av.texto}`, motivo: `${a.motivo} +${av.motivo}`, avance: av.avance };
+  };
+
   // 1. NO PUDO MIRAR. Un vigilante ciego tiene que decirlo: es lo único peor que una mala noticia.
   if (estado.sinLectura) {
-    if (yaLoDije("sin-lectura")) return null;
+    // Ya avisado hace menos de 6 h ⇒ no se repite, pero la fábrica se sigue mirando: la razón 7 no
+    // depende del modelo, así que un modelo caído no puede ser motivo para callarla.
+    if (yaLoDije("sin-lectura")) return avanceDeLaFabrica();
     return {
       texto: `No pude leer el estado: ${estado.sinLectura}. Si sigue así en la próxima vuelta, algo está roto.`,
       motivo: "sin lectura",
@@ -112,7 +510,10 @@ export function decidirSiHablar(
   // 2. DIJO ALGO QUE NO SE SOSTIENE. Se avisa porque, con reparos, el agente NO ejecuta nada: el
   //    operador tiene que saber que quedó mudo de manos, no solo de boca.
   if (estado.reparos.length > 0) {
-    if (yaLoDije("reparos")) return null;
+    // Mismo criterio que la 1: los reparos son del MODELO, y la razón 7 es aritmética sobre los
+    // hechos. Callar el SPAM→INBOX de un dominio porque el modelo dijo una tontería es castigar al
+    // jefe por un error del agente.
+    if (yaLoDije("reparos")) return avanceDeLaFabrica();
     return {
       texto: `Me trabé: dije algo que no cuadra con los datos (${estado.reparos[0]}), así que no toqué nada. Mejor miralo vos.`,
       motivo: "reparos en la verificación",
@@ -145,7 +546,7 @@ export function decidirSiHablar(
   const hizo = estado.acciones.filter((a) => a.ejecutada && !CONTABLES.has(a.accion));
   if (hizo.length > 0) {
     const l = hizo.map((a) => `${a.accion}${a.objetivo ? ` ${a.objetivo}` : ""}`).join(", ");
-    return { texto: `${estado.voz ?? ""} Hice esto: ${l}.`.trim(), motivo: "ejecutó una acción", pideRespuesta: false };
+    return conAvance({ texto: `${estado.voz ?? ""} Hice esto: ${l}.`.trim(), motivo: "ejecutó una acción", pideRespuesta: false });
   }
 
   // 4. QUISO ACTUAR Y NO PUDO. Es el pedido de decisión: el agente ve algo, no tiene la llave, y
@@ -173,33 +574,47 @@ export function decidirSiHablar(
       a.accion !== "(tope)"
   );
   if (trabado && firma(estado) !== mem.ultimaFirma) {
-    return {
+    return conAvance({
       texto: `Quise ${trabado.accion}${trabado.objetivo ? ` ${trabado.objetivo}` : ""} y no pude: ${trabado.detalle}. ¿Lo resolvés vos?`,
       motivo: "acción trabada",
       pideRespuesta: true
-    };
+    });
   }
 
   // 5. CAMBIÓ EL ESTADO DEL EMISOR. Que arranque o que se frene es la noticia más importante que
   //    puede dar, y la única que vale por sí sola aunque no haya nada que hacer.
   if (estado.emisor && estado.emisor !== mem.ultimoEmisor) {
     const arrancó = estado.emisor === "send";
-    return {
+    return conAvance({
       texto: arrancó
         ? `El emisor arrancó, ya está mandando. ${estado.voz ?? ""}`.trim()
         : `El emisor se frenó (${estado.emisor}). ${estado.voz ?? estado.ahora ?? ""}`.trim(),
       motivo: `el emisor pasó de ${mem.ultimoEmisor ?? "desconocido"} a ${estado.emisor}`,
       pideRespuesta: false
-    };
+    });
   }
 
-  // 6. Nada cambió y no hay nada que hacer: SILENCIO. Es la respuesta correcta casi siempre.
-  //    Excepción: si hace mucho que no dice nada, una señal de vida corta — pero solo si además
-  //    hay un riesgo declarado, para no convertirla en ruido periódico.
-  const min = mem.ultimoAviso ? (Date.parse(ahoraISO) - Date.parse(mem.ultimoAviso)) / 60_000 : Infinity;
-  if (min >= SILENCIO_MIN * 4 && estado.riesgo && estado.riesgo.toLowerCase() !== "ninguno") {
-    return { texto: `Sigo acá. ${estado.voz ?? estado.riesgo}`.trim(), motivo: "señal de vida con riesgo abierto", pideRespuesta: false };
-  }
+  // 7. LA FÁBRICA AVANZÓ. Las seis razones de arriba miran al AGENTE; esta es la única que mira la
+  //    FÁBRICA, y por eso el arreglo anterior lo pudo dejar mudo sin violar ninguna regla.
+  //
+  //    El texto es una PLANTILLA con el campo, el objeto y los dos valores. NO lleva la `voz` del
+  //    modelo, a diferencia de las razones 3 y 5: la voz es lo que producía "Sigo acá. Ya los estoy
+  //    evaluando…" sin un solo dato, y además es por donde se fugan las promesas (9 de 136 líneas
+  //    VOZ del monitor prometen volver). Acá se anuncia un número o no se anuncia nada.
+  //
+  //    `pideRespuesta: false` SIEMPRE: un avance no interrumpe a nadie. La mención es del carril de
+  //    "me quedé sin herramientas", y compartirla la devaluaría.
+  const avance = avanceDeLaFabrica();
+  if (avance) return avance;
+
+  // 8. Nada cambió y no hay nada que hacer: SILENCIO. Es la respuesta correcta casi siempre.
+  //
+  //    ACÁ VIVÍA LA SEÑAL DE VIDA ("Sigo acá. <voz>" cada 4 h con un riesgo abierto) y se BORRÓ.
+  //    Fue 2 de los 3 avisos de las últimas 8 h del régimen mudo y no decía absolutamente nada:
+  //    "Sigo acá. Ya los estoy evaluando…". Parece un reporte y no lo es, que es peor que el
+  //    silencio — el jefe la leyó como "todo en orden" y a las 01:10 escribió "No me has dicho nada
+  //    en toda la tarde". Con la razón 7 cableada queda sin trabajo: si hay algo que decir se dice
+  //    con número, y si no lo hay el silencio es honesto.
   return null;
 }
 
@@ -212,10 +627,47 @@ export function recordarAviso(
   aviso?: Aviso | null
 ): MemoriaSlack {
   const mem = memoria ?? { ultimoEmisor: null, ultimoAviso: null, ultimaFirma: null };
+  // El emisor se recuerda SIEMPRE, se haya hablado o no: si no, el primer cambio después de un
+  // silencio se reportaría contra un estado viejísimo.
+  const base = { ...mem, ultimoEmisor: estado.emisor ?? mem.ultimoEmisor };
+
+  // EL AVANCE SE COBRA POR `avance`, NO POR LA FIRMA. Sale por dos caminos —solo (razón 7) o pegado
+  // al final de otra razón— y en el segundo la `firma` está ocupada por la razón que lo lleva. Con
+  // el cobro atado a la firma, un SPAM→INBOX que viaja pegado a "Hice esto: soltar_dominio" no
+  // dejaba rastro: ni contaba en el presupuesto ni entraba al enfriamiento, así que podía volver a
+  // salir solo en la vuelta siguiente.
+  const cobrado = (() => {
+    if (!hablo || !aviso?.avance) return {};
+    const dia = diaUTC(ahoraISO);
+    return {
+      avancesHoy: (base.diaAvances === dia ? (base.avancesHoy ?? 0) : 0) + 1,
+      diaAvances: dia,
+      // Se PODAN las claves ya frías al escribir. Son 58 dominios × 4 campos: sin la poda el mapa
+      // crece hasta ~230 entradas en un JSON que `updateInventoryJson` re-serializa entero bajo
+      // lock cada 10 minutos, y las entradas viejas no deciden nada (ya no enfrían).
+      novedadesRecientes: {
+        ...Object.fromEntries(Object.entries(base.novedadesRecientes ?? {}).filter(([k]) => enfriando(base.novedadesRecientes, k, ahoraISO))),
+        [aviso.avance]: ahoraISO
+      }
+    };
+  })();
+
+  // UN AVANCE SOLO NO TOCA EL RELOJ DE LOS PROBLEMAS. Los avisos de la razón 7 llevan su propia
+  // memoria (enfriamiento + contador diario) y dejan `ultimoAviso`/`ultimaFirma` intactos. No es
+  // prolijidad:
+  //  · Si pisaran `ultimaFirma`, la razón 4 volvería a mandar "Quise X y no pude, ¿lo resolvés
+  //    vos?" en la vuelta siguiente, porque compara la firma del estado contra la última guardada.
+  //    Es literalmente el bug de los 10 mensajes idénticos en 2 horas, reabierto por la puerta de
+  //    atrás.
+  //  · Si pisaran `ultimoAviso`, un avance cada tanto correría para adelante el reloj de las 6 h y
+  //    un problema que persiste (el modelo caído) se dejaría de repetir. El goteo y el olvido son
+  //    dos problemas distintos y tienen dos relojes distintos.
+  // Un avance PEGADO sí los toca, y tiene que hacerlo: el mensaje que salió es el de la otra razón.
+  if (hablo && aviso?.firma?.startsWith(PREFIJO_NOVEDAD)) return { ...base, ...cobrado };
+
   return {
-    // El emisor se recuerda SIEMPRE, se haya hablado o no: si no, el primer cambio después de un
-    // silencio se reportaría contra un estado viejísimo.
-    ultimoEmisor: estado.emisor ?? mem.ultimoEmisor,
+    ...base,
+    ...cobrado,
     ultimoAviso: hablo ? ahoraISO : mem.ultimoAviso,
     // La firma del AVISO manda sobre la del estado: dos razones distintas pueden tener el mismo
     // estado, y guardar solo el estado hacía que una tapara a la otra.
@@ -233,6 +685,10 @@ export async function mandarASlack(
   try {
     const r = await doFetch("https://slack.com/api/chat.postMessage", {
       method: "POST",
+      // TIMEOUT. Sin esto un POST colgado deja al agente mudo sin decir por qué, que es el modo de
+      // falla más caro que tiene: indistinguible de "no había nada que decir". Es una línea de la
+      // stdlib y el catch de abajo ya la convierte en un motivo legible.
+      signal: AbortSignal.timeout(15_000),
       headers: { "content-type": "application/json; charset=utf-8", authorization: `Bearer ${cfg.token}` },
       // threadTs: contestar DENTRO del hilo. Sin esto cada respuesta abre un mensaje suelto y la
       // conversación queda partida — que es literalmente "el agente se pierde".

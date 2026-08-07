@@ -234,3 +234,34 @@ test("sin mensajes no hay tandas, y una sola pregunta sigue siendo una", () => {
   const uno = [{ ts: "1786041200.000100", thread_ts: "1786041200.000100", texto: "hola", usuario: "U" }];
   assert.equal(agruparParaContestar(uno).length, 1);
 });
+
+test("un GET a Slack que se cuelga vence solo: no deja al agente mudo hasta el reinicio", async () => {
+  // EL MODO DE FALLA INVISIBLE. Los tres fetch de este archivo no llevaban `signal` en ninguna
+  // forma, y un `fetch` sin timeout no vence NUNCA: la vuelta del chat quedaba colgada adentro de
+  // `leerNuevos` sosteniendo el candado `chatCorriendo`, sin imprimir una línea y sin error. Para el
+  // jefe eso se ve idéntico a "el agente volvió a estar sordo" — el bug que este archivo vino a
+  // matar. Y lo peor: sin timeout, "nunca pasó" y "pasó y no lo vimos" son indistinguibles.
+  //
+  // El falso honra la señal como lo hace `fetch` de verdad: si no la honrara, este test probaría el
+  // falso y no el arreglo.
+  let recibioSeñal = false;
+  const cuelga = ((_u: string, init: { signal?: AbortSignal }) =>
+    new Promise((_ok, rechazar) => {
+      recibioSeñal = init.signal instanceof AbortSignal;
+      // El temporizador de `AbortSignal.timeout` está unref'd: no sostiene el event loop por sí
+      // solo. En producción lo sostiene el socket del fetch de verdad; acá hay que imitarlo, o el
+      // proceso se vacía antes de que la señal alcance a dispararse y el test miente.
+      const socket = setTimeout(() => undefined, 5_000);
+      init.signal?.addEventListener("abort", () => {
+        clearTimeout(socket);
+        rechazar(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+      });
+    })) as never;
+
+  const t0 = Date.now();
+  const r = await leerNuevos({ token: "t", canal: "C1", fetchImpl: cuelga, timeoutMs: 30 }, estadoVacio());
+  assert.ok(recibioSeñal, "sin signal el GET se cuelga para siempre");
+  assert.notEqual(r.error, null, "un chequeo que se cuelga es un error que se ve, no un silencio");
+  assert.deepEqual(r.mensajes, [], "y no inventa mensajes");
+  assert.ok(Date.now() - t0 < 5_000, "venció por su cuenta, no por el timeout del test");
+});

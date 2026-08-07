@@ -86,6 +86,20 @@ async function main(): Promise<void> {
     `latencia jefe→respuesta: mediana ${r.latencia.mediana} · p90 ${r.latencia.p90} · máx ${r.latencia.max} min` +
       `   (baseline: 1,8 / 108 / 126 — tampoco es de la memoria; está acá para poder descontarla)`
   );
+  // EL NÚMERO CON EL QUE SE ELIGE EL TIMEOUT DEL CHAT, y hasta hoy no existía: se estaba eligiendo a
+  // ojo. Ojo con confundirlo con el de arriba — ese incluye la espera de lectura de Slack y las
+  // horas en que el agente estuvo sordo (máximo 126 MINUTOS), este es el fetch al modelo. Nunca se
+  // promedian.
+  //
+  // Con menos de 20 muestras no se imprime percentil: un p95 sobre 3 turnos es un número redondo que
+  // parece medido, y este informe existe justamente para no fabricar eso. Se dice cuántas van.
+  console.log(
+    r.modelo.n >= 20
+      ? `latencia DEL MODELO: p50 ${r.modelo.p50} · p95 ${r.modelo.p95} · máx ${r.modelo.max} s sobre ${r.modelo.n} turnos` +
+          `   (con esto se elige TIMEOUT_PRIMER_INTENTO, hoy 120 s. Referencia sin instrumento: p50 declarado 52 s, máx observado 171 s)`
+      : `latencia DEL MODELO: ${r.modelo.n} turno(s) con tardoMs — MUESTRA INSUFICIENTE para un percentil (hacen falta 20).` +
+          `   Hasta que llegue, TIMEOUT_PRIMER_INTENTO=120 s se sostiene en el máximo observado de 171 s, no en un p95 medido.`
+  );
   // Los conformes van como contador de contexto y nunca solos como "esta respuesta estuvo bien":
   // "Ok!" tanto puede ser "entendí" como "ya fue, dejalo". Un `insiste` es evidencia dura porque
   // el jefe volvió a escribir; un `conforme` es débil. Y `sin evidencia` no es aprobación: es que

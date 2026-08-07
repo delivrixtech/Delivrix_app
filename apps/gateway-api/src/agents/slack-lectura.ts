@@ -99,11 +99,28 @@ export function avanzar(
   return { cursorTs: masNuevo, hilosActivos: activos, ultimaLecturaOk: ahoraISO };
 }
 
+/**
+ * EL MODO DE FALLA INVISIBLE: un GET a Slack que se cuelga deja el chat mudo hasta el reinicio.
+ *
+ * Los tres fetch de este archivo no tenían `signal` en ninguna forma. Un `fetch` sin timeout no
+ * vence nunca, así que la vuelta del chat quedaba colgada adentro de `leerNuevos` sosteniendo el
+ * candado `chatCorriendo` — sin imprimir una sola línea, sin error, sin nada. Para el jefe eso se ve
+ * IDÉNTICO a "el agente volvió a estar sordo", que es el bug que este archivo vino a matar.
+ *
+ * Lo peor no es que pase: es que hoy "nunca pasó" y "pasó y no lo vimos" son indistinguibles.
+ * Ausencia de dato no es evidencia de que esté bien. Con timeout, colgarse imprime un error.
+ *
+ * 15 s es holgado para una API que responde en ~200 ms. `timeoutMs` es el mismo seam de test que
+ * `fetchImpl`: sin él, probar esto costaría 15 segundos de gate.
+ */
+export const TIMEOUT_SLACK_MS = 15_000;
+
 export interface CfgLectura {
   token: string;
   canal: string;
   botUserId?: string | null;
   fetchImpl?: typeof fetch;
+  timeoutMs?: number;
 }
 
 async function slackGet(
@@ -114,7 +131,8 @@ async function slackGet(
   const doFetch = cfg.fetchImpl ?? fetch;
   const q = new URLSearchParams({ channel: cfg.canal, ...params }).toString();
   const r = await doFetch(`https://slack.com/api/${metodo}?${q}`, {
-    headers: { authorization: `Bearer ${cfg.token}` }
+    headers: { authorization: `Bearer ${cfg.token}` },
+    signal: AbortSignal.timeout(cfg.timeoutMs ?? TIMEOUT_SLACK_MS)
   });
   return (await r.json()) as { ok: boolean; messages?: unknown[]; error?: string };
 }
@@ -138,7 +156,10 @@ export async function acusarRecibo(cfg: CfgLectura, ts: string, emoji = "eyes"):
     const r = await doFetch("https://slack.com/api/reactions.add", {
       method: "POST",
       headers: { authorization: `Bearer ${cfg.token}`, "content-type": "application/json; charset=utf-8" },
-      body: JSON.stringify({ channel: cfg.canal, timestamp: ts, name: emoji })
+      body: JSON.stringify({ channel: cfg.canal, timestamp: ts, name: emoji }),
+      // Se llama con `void`, así que colgarse no frena la respuesta — pero deja una promesa viva por
+      // cada mensaje, para siempre. Con timeout, muere sola y el catch la convierte en `false`.
+      signal: AbortSignal.timeout(cfg.timeoutMs ?? TIMEOUT_SLACK_MS)
     });
     const j = (await r.json()) as { ok?: boolean };
     return j.ok === true;
@@ -238,13 +259,20 @@ export async function leerHilo(
   }
 }
 
-/** El user_id del propio bot, para no contestarse. Se pide una vez al arrancar. */
-export async function miUserId(cfg: { token: string; fetchImpl?: typeof fetch }): Promise<string | null> {
+/**
+ * El user_id del propio bot, para no contestarse. Se pide una vez al arrancar.
+ *
+ * Con timeout por lo mismo que los otros dos, pero acá es peor: se llama en el ARRANQUE, así que un
+ * fetch colgado no dejaba arrancar el daemon entero — y sin bot id el filtro de "no me contesto a mí
+ * mismo" pierde una de sus dos mitades.
+ */
+export async function miUserId(cfg: { token: string; fetchImpl?: typeof fetch; timeoutMs?: number }): Promise<string | null> {
   try {
     const doFetch = cfg.fetchImpl ?? fetch;
     const r = await doFetch("https://slack.com/api/auth.test", {
       method: "POST",
-      headers: { authorization: `Bearer ${cfg.token}` }
+      headers: { authorization: `Bearer ${cfg.token}` },
+      signal: AbortSignal.timeout(cfg.timeoutMs ?? TIMEOUT_SLACK_MS)
     });
     const d = (await r.json()) as { ok?: boolean; user_id?: string };
     return d.ok ? (d.user_id ?? null) : null;

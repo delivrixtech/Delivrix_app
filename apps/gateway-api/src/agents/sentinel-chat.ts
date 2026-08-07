@@ -153,7 +153,37 @@ export const VOZ = [
   "tener un recurso, con qué trabajar, qué priorizar, qué no tocar— agregá al final:",
   "RECORDAR: <la decisión, en una frase, en sus términos>",
   "Eso queda guardado y lo vas a ver en cada turno. Es la diferencia entre que te lo repita cinco",
-  "veces y que lo entiendas la primera."
+  "veces y que lo entiendas la primera.",
+  "",
+  // LA PROMESA QUE NADIE ANOTABA. Medido en el log de producción del 2026-08-06: 7 de 42 respuestas
+  // del chat prometen volver —"Apenas caiga la lectura te traigo el estado real de…", "Apenas
+  // caigan los resultados actúo y te dejo el resumen listo", "Dale Juanes, aquí quedo de guardia.
+  // Apenas se mueva algo con las mediciones… te escribo de una"— y ninguna se cumplió. Ninguna
+  // PODÍA cumplirse: el carril del chat contesta y no persiste un solo rastro, y el de la guardia,
+  // que sí corre cada 10 minutos, no tenía forma de enterarse.
+  //
+  // Se pide un MARCADOR POSITIVO, igual que ACCION: y RECORDAR: (los dos producen entradas reales
+  // en producción). NO hay detector por regex sobre la prosa: un heurístico calibrado sobre 7
+  // textos abre promesas falsas, y una promesa falsa termina en un mensaje al jefe citando un dato
+  // que nunca pidió. El costo honesto de esta decisión: si el modelo no emite la línea, no se
+  // registra nada y quedamos como hoy — sin regresión, pero sin arreglo. Por eso el orquestador
+  // cuenta cuántas emite: si en 48 h no emitió ninguna, el problema es este prompt, no el mecanismo.
+  "SI VAS A ESPERAR UN DATO, DECILO CON LA LÍNEA. Nunca escribas \"te aviso\", \"apenas caiga te",
+  "digo\" ni \"quedo de guardia\" sin agregar al final:",
+  "PROMETI: <qué le vas a avisar> | espero=<el campo que estás esperando>",
+  "Esa línea es la ÚNICA forma de que ese aviso exista de verdad. Sin ella, prometiste y nadie lo",
+  "anotó: el jefe se queda esperando algo que no quedó guardado en ninguna parte.",
+  // La lista va como DATO —valores literales, uno al lado del otro— y no como explicación de qué es
+  // un campo. Es la lección que este proyecto ya pagó dos veces: un criterio escrito en prosa
+  // dentro del prompt vuelve como hallazgo propio del modelo, y si es falso vuelve con seguridad.
+  // ESTA LISTA Y `camposObservables` SON LA MISMA LISTA, y hay un test que las cruza. Tenía
+  // `medicion:<dominio>`, que NO existe en los hechos: toda promesa con ese disparador solo podía
+  // vencer, o sea una disculpa automática garantizada a las 6 h. Es la lección de "una mano
+  // prometida en el prompt y no cableada" por cuarta vez, esta vez sobre un CAMPO. Y al revés:
+  // `plan:<dominio>.enPool` sí se observa —es "se soltó / dejó de calentar"— y no se ofrecía.
+  "Lo que podés poner en espero=, y nada más:",
+  "placement:<dominio> · plan:<dominio>.accion · plan:<dominio>.diaN · plan:<dominio>.enPool ·",
+  "cap.frenados · flota.sanas · flota.bloqueadas"
 ].join("\n");
 
 export interface ContextoChat {
@@ -322,7 +352,82 @@ export function extraerRecordar(texto: string): string | null {
   return m?.[1]?.trim() || null;
 }
 
+/**
+ * Saca la promesa que el agente acaba de hacer, si la marcó. Calcado de `extraerRecordar` a
+ * propósito: misma forma, mismo partido por "|", misma tolerancia.
+ *
+ * SIN MARCADOR NO HAY PROMESA, y eso es una decisión, no un descuido. El modelo prometió 7 veces
+ * en prosa el 2026-08-06 ("Apenas caiga la lectura te traigo el estado real de…") y detectar eso
+ * por regex es calibrar sobre 7 casos: cada falso positivo es un mensaje al jefe sobre un dato que
+ * él nunca pidió, y el ruido es exactamente la queja 2. Acá se falla en silencio, que es el fallo
+ * correcto: quedamos como hoy, sin regresión.
+ *
+ * El acento se acepta (PROMETI y PROMETÍ) porque el modelo escribe en castellano y va a tildarlo:
+ * un marcador que se pierde por una tilde es el mismo agujero con otra cara.
+ */
+export function extraerPromesa(texto: string): { que: string; esperando: string | null } | null {
+  const m = texto.match(/^\s*PROMET[IÍ]:\s*(.+)$/im);
+  if (!m?.[1]) return null;
+  const partes = m[1].split("|").map((p) => p.trim());
+  const que = partes[0] ?? "";
+  if (!que) return null;
+  // `espero=` puede venir o no: una promesa sin campo que esperar SIGUE siendo una promesa (se
+  // anota y solo puede vencer). Perderla porque el modelo olvidó la segunda mitad sería castigar
+  // al jefe por un error del modelo.
+  const esperando =
+    partes
+      .slice(1)
+      .map((p) => /^espero\s*=\s*(.+)$/i.exec(p)?.[1]?.trim())
+      .find((v): v is string => Boolean(v)) ?? null;
+  return { que, esperando };
+}
+
+/** Los marcadores que VOZ le pide al modelo. El test de contrato los saca de acá. */
+export const MARCADORES: readonly string[] = ["ACCION", "RECORDAR", "PROMET[IÍ]"];
+
+/**
+ * Saca del texto las líneas que son MAQUINARIA, no conversación. Mostrarle al jefe "PROMETI: … |
+ * espero=placement:x.com" es ruido y encima delata el andamiaje.
+ *
+ * Existe como función y no como tres `.replace` en el orquestador porque cada marcador nuevo se
+ * olvidaba de limpiar en algún lado: ACCION: y RECORDAR: se limpian en un solo sitio del carril del
+ * chat, y el aviso de fallo —otro camino que también publica— nunca limpió nada.
+ *
+ * `soloEstos` acota la limpieza a los marcadores que YA se consumieron. Lo usa `responder` para el
+ * suyo: ACCION y RECORDAR los lee el orquestador de `texto`, así que ahí no se pueden sacar todavía.
+ */
+export function limpiarMaquinaria(texto: string, soloEstos?: readonly string[]): string {
+  return texto.replace(new RegExp(`^[ \\t]*(${(soloEstos ?? MARCADORES).join("|")}):.*$`, "gim"), "").trim();
+}
+
+/**
+ * ¿Prometió volver en PROSA, sin la línea? Instrumento, no detector: no crea ninguna promesa.
+ *
+ * La apuesta de este paquete es que el modelo emita el marcador cuando VOZ se lo pide. La tasa
+ * empírica del OTRO marcador que se le pide igual —RECORDAR— es 2 de 42 respuestas, y las 5 promesas
+ * medidas en producción están las 5 en prosa. Con esto la apuesta se puede MEDIR en 48 h en vez de
+ * desplegarse a ciegas: si el contador sube y las promesas anotadas siguen en cero, el problema es
+ * el prompt y hay que abrir la promesa desde la prosa (con el costo de los falsos positivos, que es
+ * un mensaje al jefe sobre un dato que nunca pidió).
+ *
+ * Las tres formas salen de los textos textuales del log del 2026-08-06, no de imaginar cómo hablaría.
+ */
+export function prometioEnProsa(texto: string): boolean {
+  return /te (aviso|escribo|digo|traigo)|apenas (caiga|caigan|se mueva|mida)|quedo (de guardia|encima|atento)/i.test(texto);
+}
+
 export interface RespuestaChat {
+  /**
+   * Lo que contestó, SIN la línea `PROMETI:` — ese marcador ya viene consumido en `promesa`.
+   *
+   * Por qué se limpia acá y no en quien publica: el único consumidor real de este módulo publica
+   * `r.texto` después de dos `.replace` escritos a mano (`ACCION:` y `RECORDAR:`), y el marcador
+   * nuevo no estaba en esa lista — o sea que la línea salía CRUDA a Slack. Es el mismo modo de falla
+   * que este proyecto ya pagó tres veces: el prompt vivo y el andamiaje sin limpiar. La regla que
+   * lo cierra: el módulo que INVENTA un marcador y lo CONSUME es el que lo saca del texto, y nadie
+   * más se tiene que enterar. ACCION y RECORDAR siguen viajando en `texto` porque los lee el
+   * orquestador, y ahí sí los limpia él.
+   */
   texto: string | null;
   motivo: string | null;
   modelo: string;
@@ -340,9 +445,60 @@ export interface RespuestaChat {
    *
    * Va en TODOS los caminos de salida, incluidos los que fallan: si solo se midieran los que salen,
    * la ventana quedaría sesgada justo hacia los rápidos, que son los que no tienen el problema.
+   *
+   * MIDE EL ÚLTIMO INTENTO, el que produjo este resultado — no la suma. Es el número que sirve para
+   * elegir el timeout; si hubo espera previa lo dice `intentos`.
    */
   tardoMs: number;
+  /**
+   * 1 o 2. No es decorativo: sin esto, un turno salvado por el reintento y uno que salió a la
+   * primera se ven iguales en el log, y no hay forma de saber si el seguro se está usando.
+   */
+  intentos: number;
+  /**
+   * `finish_reason` del modelo. Con esto se distingue "se cortó por tiempo" de "se cortó por
+   * presupuesto", que es la confusión que hubo que resolver a mano con 4 llamadas pagas: una
+   * pregunta exigente reventó los 6000 tokens RAZONANDO (5.997 de razonamiento, 171 s, 0
+   * caracteres de respuesta) y eso se veía igual que un timeout de red.
+   */
+  finishReason: string | null;
+  /**
+   * `usage.completion_tokens_details.reasoning_tokens`. La otra mitad de lo mismo: es el número que
+   * probó que la palanca era `reasoning_effort` y no el timeout (325 tokens con "low" contra 5.997
+   * sin él). null cuando el modelo no llegó a contestar o no reporta el detalle.
+   */
+  reasoningTokens: number | null;
+  /**
+   * La promesa que acaba de hacer, ya extraída del texto. `null` = no marcó ninguna.
+   *
+   * Quien cablea la anota con `anotarPromesa`; NO tiene que volver a parsear `texto`, que ya no la
+   * trae.
+   */
+  promesa: { que: string; esperando: string | null } | null;
+  /** Prometió volver en prosa y no marcó la línea. Solo para el log: no crea ninguna promesa. */
+  prometioSinMarcar: boolean;
 }
+
+/**
+ * LOS DOS TIMEOUTS DEL CHAT, en código y no en config.
+ *
+ * El primero corto a propósito: un reintento con el timeout largo en los dos intentos deja al jefe
+ * hasta 6 minutos sin nada, y el reintento se cobraría la paciencia que vino a salvar. El segundo
+ * cubre la cola vieja (el máximo real medido contra Kimi es 171 s). Peor caso 270 s, con el 👀 ya
+ * puesto antes de pensar.
+ *
+ * EL PRIMERO ESTÁ EN 120 s Y NO EN 60 PORQUE TODAVÍA NO HAY CON QUÉ ELEGIRLO. El único número de
+ * latencia que existe hoy —`tardoSeg`— es la EDAD del mensaje del jefe, no lo que tardó el modelo:
+ * incluye la espera de lectura de Slack y las horas que el agente estuvo sordo. `tardoMs` recién se
+ * empieza a guardar ahora, así que el p95 real no existe. Con un p50 declarado de 52 s y un máximo
+ * medido de 171 s, 60 s vencería cerca de la mitad de los turnos BUENOS: dos llamadas pagas y un
+ * minuto más de espera en turnos que hoy contestan bien. 120 s queda arriba del p50 y abajo del
+ * máximo: el reintento sigue siendo un seguro y no un peaje. Con 24 h de `tardoMs` en el informe
+ * (p50/p95), este número se vuelve a elegir con el dato — no a ojo.
+ */
+export const TIMEOUT_PRIMER_INTENTO = 120_000;
+export const TIMEOUT_SEGUNDO_INTENTO = 150_000;
+export const TIMEOUTS_CHAT: readonly number[] = [TIMEOUT_PRIMER_INTENTO, TIMEOUT_SEGUNDO_INTENTO];
 
 export async function responder(input: {
   contexto: ContextoChat;
@@ -351,7 +507,20 @@ export async function responder(input: {
   apiKey?: string;
   temperatura?: number;
   maxTokens?: number;
-  timeoutMs?: number;
+  /**
+   * LA PALANCA MEDIDA, y por eso NO tiene default.
+   *
+   * Kimi K3 corre a ~29,5 ms/token: con `max_tokens: 6000` el presupuesto y el timeout de 180 s son
+   * la misma pared, a 8,6 s de distancia. Una pregunta exigente la revienta razonando (5.997 tokens
+   * de razonamiento, 171.346 ms, 0 caracteres). Con `reasoning_effort: "low"`: 33.182 ms (−81%),
+   * 325 tokens de razonamiento (−95%), finish `stop`, 2.490 caracteres de respuesta.
+   *
+   * Sin default porque el otro carril —la guardia, 144 corridas por día— usa el modelo LOCAL de LM
+   * Studio, que no está probado con este parámetro. Lo pasa el orquestador SOLO cuando hay
+   * KIMI_API_KEY. Si algún día la API lo ignora, un parámetro ignorado devuelve exactamente el
+   * comportamiento de hoy, que es el fallo correcto.
+   */
+  reasoningEffort?: string;
   fetchImpl?: typeof fetch;
   now?: () => Date;
 }): Promise<RespuestaChat> {
@@ -373,52 +542,125 @@ export async function responder(input: {
   // construirContexto es puro y es armar strings; llamarlo dos veces no cuesta nada.
   const verificable = construirContexto({ ...input.contexto, memoria: [] }, ahora);
   const doFetch = input.fetchImpl ?? fetch;
-  const control = new AbortController();
-  const timeout = setTimeout(() => control.abort(), input.timeoutMs ?? 180_000);
-  // El cronómetro arranca PEGADO al fetch, después de armar el contexto: lo que se quiere medir es
-  // el modelo, no nuestro armado de strings.
-  const t0 = reloj().getTime();
-  const tardo = (): number => Math.max(0, reloj().getTime() - t0);
 
-  try {
-    const r = await doFetch(`${input.baseUrl.replace(/\/$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(input.apiKey ? { authorization: `Bearer ${input.apiKey}` } : {})
-      },
-      signal: control.signal,
-      body: JSON.stringify({
-        model: input.modelo,
-        messages: [
-          { role: "system", content: VOZ },
-          { role: "user", content: contexto }
-        ],
-        // SIN herramientas, a propósito y explícito: es la barrera que hace que una inyección de
-        // prompt por Slack no pueda terminar en una acción sobre producción.
-        // 6000, no 2500: Qwen3.6 RAZONA antes de contestar y el razonamiento sale de este mismo
-        // presupuesto. Medido en producción: con 2500, la primera respuesta salió VACÍA y las dos
-        // siguientes quedaron cortadas a mitad de frase ("...apenas el p"). Es la tercera vez que
-        // este sistema tropieza con lo mismo; el número generoso es más barato que la respuesta
-        // truncada, que además parece un bug del agente y no del presupuesto.
-        max_tokens: input.maxTokens ?? 6000,
-        temperature: input.temperatura ?? 0.7
-      })
-    });
-    if (!r.ok) return { texto: null, motivo: `el modelo respondió HTTP ${r.status}`, modelo: input.modelo, observaciones: [], tokens: null, tardoMs: tardo() };
-    const data = (await r.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
-      model?: string;
-    };
-    const texto = (data.choices?.[0]?.message?.content ?? "").trim();
-    const tokens = { prompt: data.usage?.prompt_tokens ?? 0, completion: data.usage?.completion_tokens ?? 0 };
-    if (!texto) return { texto: null, motivo: "el modelo devolvió texto vacío (el razonamiento se comió el presupuesto)", modelo: data.model ?? input.modelo, observaciones: [], tokens, tardoMs: tardo() };
-    return { texto, motivo: null, modelo: data.model ?? input.modelo, observaciones: revisarRespuesta(texto, verificable), tokens, tardoMs: tardo() };
-  } catch (e) {
-    const abortado = e instanceof Error && e.name === "AbortError";
-    return { texto: null, motivo: abortado ? "el modelo tardó demasiado" : e instanceof Error ? e.message : String(e), modelo: input.modelo, observaciones: [], tokens: null, tardoMs: tardo() };
-  } finally {
-    clearTimeout(timeout);
+  type Salida = { res: Omit<RespuestaChat, "intentos">; reintentable: boolean };
+
+  /** Un turno que no produjo texto no promete nada. Va en los tres caminos de fallo. */
+  const SIN_TEXTO = { promesa: null, prometioSinMarcar: false } as const;
+
+  const unIntento = async (timeoutMs: number): Promise<Salida> => {
+    // UN AbortController POR INTENTO, no uno compartido. Con uno solo, el segundo intento saldría
+    // con la señal ya abortada del primero y moriría instantáneamente: el reintento existiría en el
+    // código y no en la realidad.
+    const control = new AbortController();
+    const timeout = setTimeout(() => control.abort(), timeoutMs);
+    // El cronómetro arranca PEGADO al fetch, después de armar el contexto: lo que se quiere medir es
+    // el modelo, no nuestro armado de strings.
+    const t0 = reloj().getTime();
+    const tardo = (): number => Math.max(0, reloj().getTime() - t0);
+
+    try {
+      const r = await doFetch(`${input.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(input.apiKey ? { authorization: `Bearer ${input.apiKey}` } : {})
+        },
+        signal: control.signal,
+        body: JSON.stringify({
+          model: input.modelo,
+          messages: [
+            { role: "system", content: VOZ },
+            { role: "user", content: contexto }
+          ],
+          // SIN herramientas, a propósito y explícito: es la barrera que hace que una inyección de
+          // prompt por Slack no pueda terminar en una acción sobre producción.
+          // 6000, no 2500: Qwen3.6 RAZONA antes de contestar y el razonamiento sale de este mismo
+          // presupuesto. Medido en producción: con 2500, la primera respuesta salió VACÍA y las dos
+          // siguientes quedaron cortadas a mitad de frase ("...apenas el p"). Es la tercera vez que
+          // este sistema tropieza con lo mismo; el número generoso es más barato que la respuesta
+          // truncada, que además parece un bug del agente y no del presupuesto.
+          max_tokens: input.maxTokens ?? 6000,
+          temperature: input.temperatura ?? 0.7,
+          // Solo si vino: el modelo local de la guardia no está probado con este parámetro y un
+          // default lo mandaría también ahí el día que alguien reuse esta función.
+          ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {})
+        })
+      });
+      if (!r.ok) {
+        return {
+          res: { texto: null, motivo: `el modelo respondió HTTP ${r.status}`, modelo: input.modelo, observaciones: [], tokens: null, tardoMs: tardo(), finishReason: null, reasoningTokens: null, ...SIN_TEXTO },
+          // Un 4xx vuelve a fallar igual: reintentarlo cuesta 150 s de espera del jefe y una
+          // llamada paga de más. Los 5xx sí, que son los que se arreglan solos.
+          reintentable: r.status >= 500
+        };
+      }
+      const data = (await r.json()) as {
+        choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number; completion_tokens_details?: { reasoning_tokens?: number } };
+        model?: string;
+      };
+      const texto = (data.choices?.[0]?.message?.content ?? "").trim();
+      const tokens = { prompt: data.usage?.prompt_tokens ?? 0, completion: data.usage?.completion_tokens ?? 0 };
+      const finishReason = data.choices?.[0]?.finish_reason ?? null;
+      const reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens ?? null;
+      if (!texto) {
+        return {
+          res: { texto: null, motivo: "el modelo devolvió texto vacío (el razonamiento se comió el presupuesto)", modelo: data.model ?? input.modelo, observaciones: [], tokens, tardoMs: tardo(), finishReason, reasoningTokens, ...SIN_TEXTO },
+          // NO SE REINTENTA, y esto se midió: el texto vacío es el mismo fallo que el timeout con
+          // otro nombre —el razonamiento se comió el presupuesto— y con los mismos parámetros
+          // produce exactamente lo mismo la segunda vez. La palanca es `reasoning_effort`, no
+          // insistir. Reintentar acá sería pagar dos veces por la misma respuesta vacía.
+          reintentable: false
+        };
+      }
+      // EL MARCADOR SE CONSUME Y SE SACA ACÁ MISMO. Quien publica no tiene por qué enterarse de que
+      // existe: mientras lo supiera solo el prompt, la línea salía cruda a Slack.
+      const promesa = extraerPromesa(texto);
+      const limpio = limpiarMaquinaria(texto, ["PROMET[IÍ]"]);
+      // Si lo único que emitió fue el marcador, no contestó nada: publicar la línea sola sería
+      // mandarle al jefe el andamiaje pelado. Se dice por qué, que es distinto de "no respondió".
+      if (!limpio) {
+        return {
+          res: { texto: null, motivo: "el modelo solo emitió maquinaria, sin una línea de conversación", modelo: data.model ?? input.modelo, observaciones: [], tokens, tardoMs: tardo(), finishReason, reasoningTokens, promesa, prometioSinMarcar: false },
+          reintentable: false
+        };
+      }
+      return {
+        res: {
+          texto: limpio,
+          motivo: null,
+          modelo: data.model ?? input.modelo,
+          // Se verifica el texto LIMPIO: la línea del marcador trae el nombre del dominio otra vez y
+          // haría contar dos veces la misma "invención" (o taparla, que es peor).
+          observaciones: revisarRespuesta(limpio, verificable),
+          tokens,
+          tardoMs: tardo(),
+          finishReason,
+          reasoningTokens,
+          promesa,
+          prometioSinMarcar: !promesa && prometioEnProsa(limpio)
+        },
+        reintentable: false
+      };
+    } catch (e) {
+      const abortado = e instanceof Error && e.name === "AbortError";
+      return {
+        res: { texto: null, motivo: abortado ? "el modelo tardó demasiado" : e instanceof Error ? e.message : String(e), modelo: input.modelo, observaciones: [], tokens: null, tardoMs: tardo(), finishReason: null, reasoningTokens: null, ...SIN_TEXTO },
+        // Tiempo o red: es justo lo que un reintento salva. Los 65 turnos muertos del 2026-08-06
+        // están todos en una sola sesión y las 22 siguientes dieron 35 respuestas con 0 fallos, así
+        // que esto es un SEGURO contra el día que Kimi se degrade, no la reparación de algo roto.
+        reintentable: true
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  let ultima: Salida | null = null;
+  for (let i = 0; i < TIMEOUTS_CHAT.length; i++) {
+    ultima = await unIntento(TIMEOUTS_CHAT[i]!);
+    if (!ultima.reintentable) return { ...ultima.res, intentos: i + 1 };
   }
+  return { ...ultima!.res, intentos: TIMEOUTS_CHAT.length };
 }

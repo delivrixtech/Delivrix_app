@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { construirContexto, responder, revisarRespuesta, VOZ } from "./sentinel-chat.ts";
-import type { LecturaAgente } from "./warmup-monitor.ts";
+import {
+  construirContexto,
+  extraerPromesa,
+  limpiarMaquinaria,
+  responder,
+  revisarRespuesta,
+  TIMEOUT_PRIMER_INTENTO,
+  TIMEOUT_SEGUNDO_INTENTO,
+  TIMEOUTS_CHAT,
+  VOZ
+} from "./sentinel-chat.ts";
+import { camposObservables } from "./slack.ts";
+import type { HechosWarmup, LecturaAgente } from "./warmup-monitor.ts";
 
 const seguido = (t: string) => t.replace(/\s+/g, " ");
 
@@ -379,4 +390,328 @@ test("EL CHAT VE LOS HECHOS, no solo la prosa de la guardia", async () => {
     revisarRespuesta("controlcontrolledger.com, corpfiling-outbound.com y corp-delivery.com vienen cerca del umbral.", ctx),
     []
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// LA BOCA: un agente que no habla no tiene problema de conciencia, tiene problema de boca.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/** El turno mínimo, para no repetir el objeto en cada test de reintento. */
+const turno = { hilo: [{ quien: "jefe" as const, texto: "¿cómo vamos?" }], snapshot: null, loQueHiciste: [] };
+const abortar = (): never => {
+  throw Object.assign(new Error("abortado"), { name: "AbortError" });
+};
+
+test("un reintento SALVA el turno cuando el modelo se cuelga la primera vez", async () => {
+  // El agujero real de la queja 3: no había NINGÚN reintento en el carril del chat. Los 65 turnos
+  // muertos del 2026-08-06 caen todos en una sola sesión y las 22 siguientes dieron 35 respuestas
+  // con 0 fallos, así que esto es el seguro contra el día que Kimi se degrade — no la reparación de
+  // un incendio prendido. Sin él, cada cuelgue es un mensaje del jefe que se evapora.
+  let n = 0;
+  const primeroMuere = (async () => {
+    n++;
+    if (n === 1) abortar();
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "listo Juanes, voy" } }], model: "k3", usage: {} }) };
+  }) as never;
+
+  const r = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: primeroMuere });
+  assert.equal(r.texto, "listo Juanes, voy");
+  assert.equal(r.intentos, 2, "el segundo intento es el que contestó");
+  assert.equal(n, 2);
+});
+
+test("con los dos intentos muertos hay UN solo resultado de fallo, no dos", async () => {
+  // El camino de fallo publica "Te leí pero no pude contestarte" en el hilo. Si el reintento
+  // devolviera dos resultados —o el orquestador viera dos fallos— ese aviso se duplicaría, y ese es
+  // el generador de ruido de la queja 2 escondido del lado del chat: en la ventana mala fueron hasta
+  // 65 mensajes al hilo por 5 preguntas reales.
+  let n = 0;
+  const siempreMuere = (async () => {
+    n++;
+    abortar();
+  }) as never;
+
+  const r = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: siempreMuere });
+  assert.equal(r.texto, null);
+  assert.match(r.motivo ?? "", /tardó demasiado/);
+  assert.equal(r.intentos, 2);
+  assert.equal(n, 2, "DOS intentos, no tres: el tope está en el código y no se sube por config");
+});
+
+test("un HTTP 4xx NO se reintenta; un 5xx sí", async () => {
+  // Un 4xx (clave vencida, modelo inexistente, body inválido) vuelve a fallar igual: reintentarlo
+  // cuesta 150 s más de espera del jefe y una llamada paga de más sobre algo que ya sabemos cómo
+  // termina. Los 5xx son los que se arreglan solos.
+  let n = 0;
+  const cuatro = (async () => {
+    n++;
+    return { ok: false, status: 401 };
+  }) as never;
+  const r = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: cuatro });
+  assert.equal(r.intentos, 1);
+  assert.equal(n, 1, "no se gasta una segunda llamada paga en un error que va a volver igual");
+
+  let m = 0;
+  const cinco = (async () => {
+    m++;
+    return { ok: false, status: 502 };
+  }) as never;
+  const r2 = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: cinco });
+  assert.equal(r2.intentos, 2);
+  assert.equal(m, 2);
+});
+
+test("el texto vacío NO se reintenta: es el mismo fallo con otro nombre", async () => {
+  // Medido contra la API real: la respuesta vacía es el razonamiento comiéndose el presupuesto
+  // (5.997 tokens de razonamiento, 0 caracteres de respuesta). Con los mismos parámetros, la segunda
+  // llamada produce exactamente lo mismo. La palanca es `reasoning_effort`, no insistir — reintentar
+  // acá sería pagar dos veces por la misma respuesta vacía.
+  let n = 0;
+  const vacio = (async () => {
+    n++;
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "" }, finish_reason: "length" }], usage: { completion_tokens: 5997, completion_tokens_details: { reasoning_tokens: 5997 } } }) };
+  }) as never;
+  const r = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: vacio });
+  assert.equal(r.texto, null);
+  assert.equal(r.intentos, 1);
+  assert.equal(n, 1);
+});
+
+test("el primer intento va con el timeout CORTO, y cada intento con su propia señal", async () => {
+  // Dos reglas en un test porque son la misma decisión. (1) Si los dos intentos usaran el timeout
+  // largo, el reintento le cobraría al jefe hasta 6 minutos de espera: se cobraría la paciencia que
+  // vino a salvar. (2) Si los dos compartieran un AbortController, el segundo saldría con la señal
+  // YA abortada del primero y moriría al instante — el reintento existiría en el código y no en la
+  // realidad, que es la peor forma de tener un seguro.
+  assert.ok(TIMEOUT_PRIMER_INTENTO < TIMEOUT_SEGUNDO_INTENTO, "el primero es el corto");
+  assert.deepEqual([...TIMEOUTS_CHAT], [TIMEOUT_PRIMER_INTENTO, TIMEOUT_SEGUNDO_INTENTO]);
+  assert.equal(TIMEOUTS_CHAT.length, 2, "el tope de intentos ES el largo de este array, y vive en código");
+
+  const señales: AbortSignal[] = [];
+  let n = 0;
+  const espia = (async (_u: string, init: { signal: AbortSignal }) => {
+    señales.push(init.signal);
+    assert.equal(init.signal.aborted, false, "un intento no puede salir con la señal ya vencida");
+    n++;
+    if (n === 1) abortar();
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }], usage: {} }) };
+  }) as never;
+  await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: espia });
+  assert.equal(señales.length, 2);
+  assert.notEqual(señales[0], señales[1], "una señal por intento");
+});
+
+test("reasoning_effort viaja SOLO cuando se pide", async () => {
+  // La palanca medida contra la API real: con "low", 33.182 ms en vez de 171.346 (−81%) y 325 tokens
+  // de razonamiento en vez de 5.997 (−95%), con finish `stop` y 2.490 caracteres de respuesta.
+  // Pero sin default, a propósito: la guardia corre 144 veces por día contra el modelo LOCAL de LM
+  // Studio, que no está probado con este parámetro. Mandárselo sin querer sería estrenar un
+  // parámetro no probado en el carril que vigila la fábrica.
+  const cuerpos: Array<Record<string, unknown>> = [];
+  const espia = (async (_u: string, init: { body: string }) => {
+    cuerpos.push(JSON.parse(init.body) as Record<string, unknown>);
+    return { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }], usage: {} }) };
+  }) as never;
+
+  await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: espia });
+  assert.equal("reasoning_effort" in cuerpos[0]!, false, "sin pedirlo NO viaja: el modelo local no lo tiene probado");
+
+  await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: espia, reasoningEffort: "low" });
+  assert.equal(cuerpos[1]!.reasoning_effort, "low");
+  // Y max_tokens NO se toca: bajarlo es cómo se reintrodujo el bug de 2500 (respuesta vacía y dos
+  // cortadas a mitad de frase). La palanca es el razonamiento, no el presupuesto.
+  assert.equal(cuerpos[1]!.max_tokens, 6000);
+});
+
+test("los CUATRO caminos de salida vienen instrumentados, no solo el que sale bien", async () => {
+  // El sesgo ya está medido: el único p50 persistido hoy es 52 s sobre 7 turnos que TODOS salieron
+  // bien, y el máximo real medido contra la API es 171 s. Si solo se instrumentan los que responden,
+  // el p50 queda pegado a los rápidos — justo los que no tienen el problema — y elegir entre subir
+  // el timeout, bajar max_tokens o achicar el contexto vuelve a ser tirar una moneda.
+  //
+  // Y `finishReason` + `reasoningTokens` son los que distinguen "se cortó por tiempo" de "se cortó
+  // por presupuesto": esa confusión hubo que resolverla a mano con 4 llamadas pagas.
+  const completo = (r: Record<string, unknown>, donde: string): void => {
+    for (const campo of ["tardoMs", "intentos", "finishReason", "reasoningTokens"]) {
+      assert.ok(campo in r, `${donde}: falta ${campo}`);
+    }
+    assert.equal(typeof r.tardoMs, "number", `${donde}: tardoMs`);
+    assert.equal(typeof r.intentos, "number", `${donde}: intentos`);
+  };
+
+  const ok = (async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: "listo" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 100, completion_tokens: 400, completion_tokens_details: { reasoning_tokens: 325 } }
+    })
+  })) as never;
+  const a = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: ok });
+  completo(a as never, "ok");
+  assert.equal(a.finishReason, "stop");
+  assert.equal(a.reasoningTokens, 325);
+
+  const http = (async () => ({ ok: false, status: 400 })) as never;
+  completo((await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: http })) as never, "HTTP != 2xx");
+
+  const vacio = (async () => ({
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: "" }, finish_reason: "length" }], usage: { completion_tokens_details: { reasoning_tokens: 5997 } } })
+  })) as never;
+  const c = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: vacio });
+  completo(c as never, "texto vacío");
+  // La distinción que costó 4 llamadas pagas: acá NO se cortó por tiempo, se cortó por presupuesto.
+  assert.equal(c.finishReason, "length");
+  assert.equal(c.reasoningTokens, 5997);
+
+  const muere = (async () => abortar()) as never;
+  completo((await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: muere })) as never, "abort");
+});
+
+test("una promesa solo existe si el modelo la MARCA — la prosa no cuenta", async () => {
+  // Los 7 textos reales del log del 2026-08-06 prometen en prosa y ninguno se cumplió. La tentación
+  // es detectarlos por regex; se descarta a propósito: un heurístico calibrado sobre 7 casos abre
+  // promesas falsas, y una promesa falsa termina en un mensaje al jefe citando un dato que él nunca
+  // pidió — o sea, arreglar la queja 1 fabricando la queja 2.
+  const conMarcador =
+    "Dale Juanes, quedo de guardia. Apenas se mueva algo con las mediciones te escribo de una.\n" +
+    "PROMETI: te aviso del placement de corp-delivery.com | espero=placement:corp-delivery.com";
+  assert.deepEqual(extraerPromesa(conMarcador), {
+    que: "te aviso del placement de corp-delivery.com",
+    esperando: "placement:corp-delivery.com"
+  });
+
+  // Textual del log de producción, SIN la línea: no se inventa una promesa.
+  assert.equal(extraerPromesa("Apenas caiga la lectura te traigo el estado real de la flota."), null);
+  assert.equal(extraerPromesa("Apenas caigan los resultados actúo y te digo."), null);
+
+  // Con tilde también: el modelo escribe en castellano y va a tildarlo. Un marcador que se pierde
+  // por una tilde es el mismo agujero con otra cara.
+  assert.equal(extraerPromesa("PROMETÍ: te aviso | espero=cap.frenados")?.esperando, "cap.frenados");
+  // Sin `espero=` SIGUE siendo promesa: se anota y solo podrá vencer. Perderla porque el modelo
+  // olvidó la segunda mitad sería castigar al jefe por un error del modelo.
+  assert.deepEqual(extraerPromesa("PROMETI: te traigo el resumen"), { que: "te traigo el resumen", esperando: null });
+});
+
+test("la línea PROMETI no llega a Slack, igual que ACCION y RECORDAR", async () => {
+  // Mostrarle al jefe la sintaxis interna es ruido y encima delata el andamiaje. Va en la misma
+  // función que los otros dos marcadores porque el olvido histórico fue justo ese: cada marcador
+  // nuevo se limpiaba en un solo camino y el otro lo publicaba crudo.
+  const bruto = [
+    "Listo Juanes, lo miro.",
+    "ACCION: leer_cupo_nodo | dominio=corp-delivery.com | motivo=confirmar el cupo",
+    "RECORDAR: no hay semillas de outlook por ahora",
+    "PROMETI: te aviso del placement | espero=placement:corp-delivery.com"
+  ].join("\n");
+  assert.equal(limpiarMaquinaria(bruto), "Listo Juanes, lo miro.");
+  assert.equal(limpiarMaquinaria("  PROMETÍ: te aviso | espero=cap.frenados\nDale."), "Dale.", "aunque venga indentada o con tilde");
+  assert.equal(limpiarMaquinaria("Todo bien por acá."), "Todo bien por acá.");
+});
+
+test("la voz pide el marcador de promesa y da la lista CERRADA de campos", () => {
+  // 5 de 42 respuestas del chat prometieron volver y ninguna volvió, porque nada las anotaba. Este
+  // bloque es la mitad del arreglo que vive en el prompt; la otra la ejecuta la guardia.
+  const v = seguido(VOZ);
+  assert.match(v, /PROMETI: <qué le vas a avisar> \| espero=<el campo que estás esperando>/);
+  assert.match(v, /SI VAS A ESPERAR UN DATO, DECILO CON LA LÍNEA/);
+  assert.match(v, /prometiste y nadie lo anotó/, "le dice el costo, no solo la regla");
+  // La lista va como DATO. Un criterio en prosa el modelo lo devuelve como hallazgo propio, y este
+  // proyecto ya se quemó dos veces con eso.
+  for (const campo of ["placement:<dominio>", "plan:<dominio>.diaN", "cap.frenados", "flota.bloqueadas"]) {
+    assert.ok(v.includes(campo), `la lista de espero= tiene que traer ${campo} literal`);
+  }
+});
+
+test("EL CONTRATO DE espero=: todo campo que ofrece la VOZ lo tiene que producir camposObservables", () => {
+  // La cuarta vez de la misma lección, esta vez sobre un CAMPO y no sobre una mano: VOZ ofrecía
+  // `medicion:<dominio>` y `camposObservables` no produce esa clave NUNCA (un grep daba una sola
+  // línea en todo el repo: la del prompt). Toda promesa con ese disparador solo podía vencer, o sea
+  // una disculpa automática a las 6 h — y como el modelo re-promete cada vez que el jefe pregunta,
+  // la misma disculpa renaciendo con reloj nuevo. Las dos listas se cruzan acá o se vuelven a
+  // separar solas.
+  const DOMINIO = "corpfiling-infra.com";
+  const hechos = {
+    generadoEn: "2026-08-06T20:00:00.000Z",
+    semillas: { destinos: 5, midiendo: 1, puntoCiego: [] },
+    vueltas: [{ dominio: DOMINIO, semilla: "s@gmail.com", cuando: "2026-08-06T19:00:00Z", placement: "SPAM", completa: true, error: null }],
+    cap: { nodosMedidos: 14, nodosSinMedir: 44, enElTope: [], frenados: ["a.com"], sinLimite: 0 },
+    flota: { sanas: 13, bloqueadas: 22, atascadas: 22, cruzados: [], cerca: [] },
+    plan: [{ dominio: DOMINIO, diaN: 3, placementTasa: 0.83, placementMuestra: 6, cupo: 4, accion: "sostener", motivo: "x", enviadosHoy: 2 }]
+  } as unknown as HechosWarmup;
+  const produce = camposObservables(hechos, {});
+
+  const lista = VOZ.slice(VOZ.indexOf("Lo que podés poner en espero=")).split("\n").slice(1).join(" ");
+  const ofrecidos = lista
+    .split("·")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  assert.ok(ofrecidos.length >= 6, `la lista de espero= no se pudo leer del prompt (leí ${ofrecidos.length})`);
+
+  for (const campo of ofrecidos) {
+    const clave = campo.replace("<dominio>", DOMINIO);
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(produce, clave),
+      `VOZ ofrece "${campo}" y camposObservables no lo produce nunca: una promesa con ese disparador SOLO puede vencer. ` +
+        `O se cablea el campo, o se saca la línea del prompt. Produce: ${Object.keys(produce).join(", ")}`
+    );
+  }
+});
+
+test("la promesa se CONSUME en el módulo: nunca sale por texto", async () => {
+  // El agujero que quedaba abierto: VOZ le pide la línea al modelo y el único que publica la
+  // respuesta la limpiaba con dos `.replace` escritos a mano (ACCION y RECORDAR), así que `PROMETI:
+  // … | espero=placement:x.com` salía CRUDO a Slack. La regla que lo cierra: el módulo que inventa
+  // un marcador y lo consume es el que lo saca del texto — quien publica no se tiene que enterar.
+  const conPromesa = (async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [
+        {
+          message: {
+            content:
+              "Dale Juanes, quedo encima.\n" +
+              "ACCION: medir_dominio | dominio=corp-delivery.com | motivo=ver dónde cae\n" +
+              "PROMETI: te aviso del placement de corp-delivery.com | espero=placement:corp-delivery.com"
+          },
+          finish_reason: "stop"
+        }
+      ],
+      usage: {}
+    })
+  })) as never;
+
+  const r = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: conPromesa });
+  assert.ok(!/PROMET/i.test(r.texto ?? ""), `la línea del marcador llegó al texto publicable: ${r.texto}`);
+  assert.match(r.texto ?? "", /ACCION: medir_dominio/, "ACCION sí sigue en el texto: la lee y la limpia el orquestador");
+  assert.deepEqual(r.promesa, {
+    que: "te aviso del placement de corp-delivery.com",
+    esperando: "placement:corp-delivery.com"
+  });
+  assert.equal(r.prometioSinMarcar, false);
+});
+
+test("prometer en PROSA se cuenta, no se convierte en promesa", async () => {
+  // La apuesta de este paquete es que el modelo emita el marcador. La tasa del otro marcador que se
+  // le pide igual (RECORDAR) es 2 de 42 respuestas, y las 5 promesas medidas están las 5 en prosa.
+  // Con este contador la apuesta se puede medir en 48 h en vez de desplegarse a ciegas: si sube y
+  // las promesas anotadas siguen en cero, el problema es el prompt. No crea ninguna promesa — un
+  // heurístico calibrado sobre 5 textos abre promesas falsas, y una promesa falsa es un mensaje al
+  // jefe sobre un dato que nunca pidió.
+  const enProsa = (async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{ message: { content: "Dale Juanes, aquí quedo de guardia. Apenas se mueva algo con las mediciones te escribo de una." } }],
+      usage: {}
+    })
+  })) as never;
+  const r = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: enProsa });
+  assert.equal(r.promesa, null, "sin marcador no se anota nada: quedamos como hoy, sin regresión");
+  assert.equal(r.prometioSinMarcar, true, "pero queda contado");
+
+  const sinPrometer = (async () => ({
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: "El emisor está pausado y el placement viene en 33%." } }], usage: {} })
+  })) as never;
+  const s = await responder({ contexto: turno, baseUrl: "http://x/v1", modelo: "m", fetchImpl: sinPrometer });
+  assert.equal(s.prometioSinMarcar, false, "una respuesta que no promete nada no cuenta como promesa perdida");
 });

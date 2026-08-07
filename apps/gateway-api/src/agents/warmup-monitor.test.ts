@@ -12,7 +12,7 @@ import type { HechosWarmup } from "./warmup-monitor.ts";
 // Una regla en el prompt es una intención; esto es una verificación.
 
 import { ejecutarAcciones, extraerAcciones } from "./acciones-agente.ts";
-import { VOZ } from "./sentinel-chat.ts";
+import { limpiarMaquinaria, responder, VOZ } from "./sentinel-chat.ts";
 import { construirPrompt, lineasDeFrenados, SISTEMA, verificarLectura, type FrenadoDetalle } from "./warmup-monitor.ts";
 
 const HECHOS_BASE: HechosWarmup = {
@@ -535,4 +535,44 @@ test("el prompt ya no lleva el criterio en prosa", () => {
   });
   assert.ok(!p.includes("si alguno califica"), "esa frase es el criterio en prosa que hay que matar");
   assert.match(p, /filing-ops\.com: califica para soltar_dominio/);
+});
+
+test("EL CONTRATO: ningún marcador que VOZ le pide al modelo se publica crudo", async () => {
+  // LA MISMA LECCIÓN QUE LAS MANOS, pero sobre los MARCADORES. El test de arriba solo mira acciones
+  // (`- <accion> |`), así que no vio lo que pasó con el marcador nuevo: VOZ le pide al modelo
+  // `PROMETI: <qué> | espero=<campo>` y le dice que esa línea es la única forma de que el aviso
+  // exista, mientras el único consumidor real de VOZ limpiaba el texto con dos `.replace` escritos a
+  // mano —`^ACCION:` y `^RECORDAR:`— y nada más. Resultado: el andamiaje pelado saliendo a Slack.
+  //
+  // Se acepta cualquiera de los dos caminos, porque los dos cierran el agujero: que el módulo
+  // CONSUMA el marcador y lo saque del texto (lo que hace hoy `responder` con PROMETI), o que el
+  // orquestador lo limpie antes de publicar (lo que hace con ACCION y RECORDAR, que él sí lee).
+  //
+  // SOLO VOZ, no SISTEMA: los marcadores de SISTEMA (AHORA/PORQUE/RIESGO/FALTA) son la ESTRUCTURA de
+  // la lectura, la parsea `verificarLectura` y lo que se publica de ahí son campos ya extraídos,
+  // nunca el texto crudo del modelo.
+  const { readFile } = await import("node:fs/promises");
+  const orquestador = sinComentarios(await readFile(new URL("../../../../scripts/ops/warmup-monitor.ts", import.meta.url), "utf8"));
+
+  const marcadores = VOZ.match(/^[A-ZÁÉÍÓÚ]{4,}(?=:\s*<)/gm) ?? [];
+  assert.ok(marcadores.length >= 3, `no se pudieron leer los marcadores de VOZ (leí ${marcadores.length})`);
+
+  for (const marcador of marcadores) {
+    const linea = `${marcador}: lo que sea | campo=valor`;
+    assert.equal(limpiarMaquinaria(`Dale Juanes.\n${linea}`), "Dale Juanes.", `limpiarMaquinaria no conoce ${marcador}`);
+
+    const fetchImpl = (async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: `Dale Juanes.\n${linea}` } }], usage: {} })
+    })) as never;
+    const r = await responder({ contexto: { hilo: [], snapshot: null, loQueHiciste: [] }, baseUrl: "http://x/v1", modelo: "m", fetchImpl });
+    if (!new RegExp(`^${marcador}:`, "im").test(r.texto ?? "")) continue; // el módulo ya lo consumió
+
+    assert.ok(
+      /\blimpiarMaquinaria\s*\(/.test(orquestador) || new RegExp(`\\^${marcador}:`).test(orquestador),
+      `VOZ le pide al modelo la línea "${marcador}:", esa línea sobrevive en RespuestaChat.texto y ` +
+        `scripts/ops/warmup-monitor.ts publica ese texto sin sacarla: el jefe va a ver el andamiaje. ` +
+        `O el orquestador llama a limpiarMaquinaria, o el marcador se consume en el módulo, o se saca del prompt.`
+    );
+  }
 });

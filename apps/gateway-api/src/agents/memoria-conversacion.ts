@@ -32,6 +32,20 @@ export interface Intercambio {
   respuesta: string;
   cuando: string;
   tardoSeg: number;
+  /**
+   * Lo que tardó EL MODELO en el último intento (`RespuestaChat.tardoMs`). No es lo mismo que
+   * `tardoSeg`, y confundirlos es cómo se elige un timeout con el número equivocado: `tardoSeg` es
+   * la EDAD del mensaje del jefe —incluye la espera de lectura de Slack y las horas que el agente
+   * estuvo sordo— y por eso su máximo medido es de 126 MINUTOS. Nunca se promedian juntos.
+   *
+   * OPCIONAL porque los registros que ya están en producción no lo tienen: exigirlo dejaría la
+   * memoria vieja como inválida. Un registro sin el campo no entra al percentil, no cuenta como 0.
+   */
+  tardoMs?: number;
+  /** 1 o 2. Sin esto, un turno salvado por el reintento y uno que salió a la primera se ven iguales. */
+  intentos?: number;
+  /** `finish_reason`: separa "se cortó por tiempo" de "se cortó por presupuesto de tokens". */
+  finishReason?: string | null;
   /** `r.motivo` cuando no salió texto. Hoy eso solo vive en el log y hay que grepearlo: 65 fallos
    *  contra 30 respuestas. Guardarlo convierte un grep frágil en un contador. */
   fallo: string | null;
@@ -307,12 +321,47 @@ export function anotar(
   base.intercambios = base.intercambios.filter((i) => msDe(i.cuando, t) >= limite);
   base.temas = base.temas.filter((x) => ultimaVista(x, t) >= limite);
   if (base.intercambios.length > MAX_INTERCAMBIOS) {
-    base.intercambios = base.intercambios.slice(-MAX_INTERCAMBIOS);
+    // AL RECORTAR SE TIRAN PRIMERO LOS TURNOS FALLIDOS. El cupo es uno solo y los fallos entran al
+    // mismo balde que las preguntas contestadas: cargando el warmup-conversacion.json REAL de
+    // producción (7 intercambios) y metiéndole los 65 fallos del 2026-08-06, quedaban 40 entradas y
+    // las 40 eran fallos — los 7 reales desaparecidos. O sea que una racha de timeouts borra
+    // exactamente la memoria que existe para que el agente no arranque de cero cada turno, y la
+    // borra justo el día que peor está funcionando.
+    //
+    // Se tiran los MÁS VIEJOS primero, así que `fallosSeguidos` —que mira el final del hilo— sigue
+    // contando bien la racha en curso.
+    const sobran = base.intercambios.length - MAX_INTERCAMBIOS;
+    const tirar = new Set(base.intercambios.filter((i) => i.fallo !== null).slice(0, sobran).map((i) => i.ts));
+    if (tirar.size > 0) base.intercambios = base.intercambios.filter((i) => !tirar.has(i.ts));
+    // Si aun así sobran (más de 40 turnos BUENOS), manda el FIFO de siempre.
+    if (base.intercambios.length > MAX_INTERCAMBIOS) base.intercambios = base.intercambios.slice(-MAX_INTERCAMBIOS);
   }
   if (base.temas.length > MAX_TEMAS) {
     base.temas = [...base.temas].sort((a, b) => ultimaVista(b, t) - ultimaVista(a, t)).slice(0, MAX_TEMAS);
   }
   return base;
+}
+
+/**
+ * Cuántos turnos SEGUIDOS falló en este hilo (0 = el último salió bien).
+ *
+ * El incidente, medido el 2026-08-06: los 65 turnos sin respuesta no son 65 preguntas, son 5. La
+ * misma pregunta se reintentó hasta 23 veces —"Como que no lo puedes hacer?" ×23, "Hola?" ×13,
+ * "???" ×12— y cada intento publicaba su propio "Te leí pero no pude contestarte". Veintitrés
+ * disculpas idénticas en el mismo hilo no informan de nada: enseñan que el canal es ruido, que es
+ * exactamente lo que este paquete vino a arreglar.
+ *
+ * Se cuenta ACÁ y no en quien publica porque la memoria es lo único que sobrevive al reinicio del
+ * proceso — y esa sesión del 2026-08-06 arrancó dos veces en 15 minutos.
+ */
+export function fallosSeguidos(mem: MemoriaConversacion | null, hilo: string): number {
+  const es = clonar(mem).intercambios.filter((e) => e.hilo === hilo);
+  let n = 0;
+  for (let i = es.length - 1; i >= 0; i--) {
+    if ((es[i] as Intercambio).fallo === null) break;
+    n++;
+  }
+  return n;
 }
 
 function ultimaVista(t: Tema, porDefecto: number): number {
@@ -442,6 +491,7 @@ export function resumen(
   inventadas: number;
   fallos: number;
   latencia: { mediana: number; p90: number; max: number };
+  modelo: { n: number; p50: number; p95: number; max: number };
   temas: Array<{ cita: string; veces: number; ultimaVez: string }>;
 } {
   const m = clonar(mem);
@@ -454,6 +504,18 @@ export function resumen(
   // de tokens y timeout del cliente, no memoria.
   const mins = es.filter((e) => e.fallo === null).map((e) => Number(e.tardoSeg) / 60).filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
   const pct = (p: number): number => (mins.length === 0 ? 0 : redondear(mins[Math.min(mins.length - 1, Math.max(0, Math.ceil(p * mins.length) - 1))] as number));
+
+  // LA LATENCIA DEL MODELO, que es la que sirve para elegir el timeout del chat — y la que no
+  // existía. Va SOBRE `tardoMs` y en segundos, separada de la de arriba: mezclarlas daría un número
+  // que no mide nada (una incluye horas de agente sordo). Entran los FALLIDOS también, a propósito:
+  // un timeout es el dato más caro de la distribución y sacarlo sesga la ventana hacia los rápidos,
+  // que son justamente los que no tienen el problema.
+  //
+  // `n` va al lado del percentil porque un p95 sobre 3 muestras no es un p95: con el instrumento
+  // recién cableado el informe tiene que poder decir "todavía no sé" en vez de un número redondo.
+  const segs = es.map((e) => Number(e.tardoMs)).filter((n) => Number.isFinite(n) && n > 0).map((n) => n / 1000).sort((a, b) => a - b);
+  const pctModelo = (p: number): number =>
+    segs.length === 0 ? 0 : redondear(segs[Math.min(segs.length - 1, Math.max(0, Math.ceil(p * segs.length) - 1))] as number);
 
   const ahora = msDe(ahoraISO, Date.now());
   const desde = ahora - DIAS_VENTANA * DIA;
@@ -469,6 +531,7 @@ export function resumen(
     inventadas: es.reduce((a, e) => a + (Number(e.inventadas) || 0), 0),
     fallos: es.filter((e) => e.fallo !== null).length,
     latencia: { mediana: pct(0.5), p90: pct(0.9), max: mins.length === 0 ? 0 : redondear(mins[mins.length - 1] as number) },
+    modelo: { n: segs.length, p50: pctModelo(0.5), p95: pctModelo(0.95), max: segs.length === 0 ? 0 : redondear(segs[segs.length - 1] as number) },
     temas: m.temas
       .map((t) => {
         const v = Array.isArray(t.vistas) ? t.vistas : [];

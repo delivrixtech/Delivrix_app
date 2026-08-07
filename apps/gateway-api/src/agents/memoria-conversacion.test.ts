@@ -8,6 +8,7 @@ import {
   clasificarReaccion,
   esPing,
   esTema,
+  fallosSeguidos,
   lineasParaPrompt,
   memoriaVacia,
   resumen,
@@ -236,6 +237,46 @@ test("un turno fallido no se marca como repetido ni abre tema", () => {
   assert.equal(m.temas.length, 0, "un turno que ni salió no es evidencia de que el tema le importe");
 });
 
+test("UNA RACHA DE FALLOS NO BORRA LA MEMORIA DE LA CONVERSACIÓN", () => {
+  // El cupo es uno solo y los fallos entraban al mismo balde que las preguntas contestadas: con los
+  // 7 intercambios reales del warmup-conversacion.json de producción y los 65 fallos medidos el
+  // 2026-08-06, quedaban 40 entradas y las 40 eran fallos. O sea que una racha de timeouts borra
+  // exactamente la memoria que existe para que el agente no arranque de cero cada turno, y la borra
+  // el día que peor está funcionando. Hoy no se ve porque el orquestador hace `continue` antes de
+  // anotar el fallo; el cableado de los turnos fallidos lo destapa.
+  let m = memoriaVacia();
+  for (let i = 0; i < 7; i++) {
+    m = anotar(m, {
+      ts: `real-${i}`,
+      hilo: "h",
+      quien: "U1",
+      pregunta: `Como vamos con el placement de la bandeja ${i}`,
+      respuesta: `van ${i} calentando`,
+      cuando: new Date(Date.parse(T) + i * 60_000).toISOString(),
+      tardoSeg: 10,
+      fallo: null,
+      inventadas: 0
+    });
+  }
+  for (let i = 0; i < 65; i++) {
+    m = anotar(m, {
+      ts: `fallo-${i}`,
+      hilo: "h",
+      quien: "U1",
+      pregunta: "Hola?",
+      respuesta: "",
+      cuando: new Date(Date.parse(T) + (10 + i) * 60_000).toISOString(),
+      tardoSeg: 90,
+      fallo: "el modelo tardó demasiado",
+      inventadas: 0
+    });
+  }
+  assert.equal(m.intercambios.filter((i) => i.fallo === null).length, 7, "las 7 preguntas reales sobreviven");
+  // Y el contador de la racha en curso sigue sirviendo: se tiran los fallos MÁS VIEJOS, no los del
+  // final, así que quien decide si publicar la disculpa lee el número correcto.
+  assert.ok(fallosSeguidos(m, "h") > 0, "la racha en curso se sigue viendo");
+});
+
 test("la reacción se busca sin filtrar por hilo", () => {
   // Corrección MEDIDA: buscando dentro del mismo hilo da insiste = 0, porque el jefe reclama con un
   // mensaje SUELTO del canal mientras el bot le contesta adentro del hilo ("Hola?" a las 03:29
@@ -390,4 +431,82 @@ test("resumen: los seis números del informe salen de los registros, no del log"
   // La latencia se calcula SOLO sobre los que no fallaron: un turno que ni salió no midió nada.
   assert.equal(r.latencia.max, 100, "100 min, y el fallido de 4 min no entra");
   assert.equal(r.latencia.mediana, 2);
+});
+
+test("la latencia DEL MODELO es otro número, y los turnos fallidos SÍ entran", () => {
+  // El instrumento que faltaba para elegir el timeout del chat. `tardoSeg` es la EDAD del mensaje
+  // del jefe —incluye la espera de lectura de Slack y las horas que el agente estuvo sordo, máximo
+  // medido 126 MINUTOS— y con ese número elegir entre subir el timeout, bajar max_tokens o achicar
+  // el contexto es tirar una moneda. Y los timeouts entran al percentil a propósito: son el dato más
+  // caro de la distribución, y sacarlos la sesga justo hacia los rápidos, que son los que no tienen
+  // el problema.
+  let m = memoriaVacia();
+  const filas: Array<[string, string | null, number]> = [
+    ["1", null, 30_000],
+    ["2", null, 45_000],
+    ["3", "el modelo tardó demasiado", 171_000],
+    ["4", null, 52_000]
+  ];
+  for (const [ts, fallo, ms] of filas) {
+    m = anotar(m, {
+      ts,
+      hilo: "h1",
+      quien: "U1",
+      pregunta: `pregunta numero ${ts} sobre bandejas`,
+      respuesta: fallo ? "" : `respuesta ${ts}`,
+      cuando: new Date(Date.parse(T) + Number(ts) * 1000).toISOString(),
+      tardoSeg: 60,
+      tardoMs: ms,
+      intentos: fallo ? 2 : 1,
+      fallo,
+      inventadas: 0
+    });
+  }
+  const r = resumen(m, T);
+  assert.equal(r.modelo.n, 4, "los cuatro, incluido el que se colgó");
+  assert.equal(r.modelo.p50, 45);
+  assert.equal(r.modelo.max, 171);
+  assert.notEqual(r.modelo.p50, r.latencia.mediana, "no es el mismo número que la latencia del jefe");
+});
+
+test("los registros VIEJOS sin tardoMs no entran al percentil (ni cuentan como 0)", () => {
+  // El campo es opcional porque en producción ya hay intercambios guardados sin él. Meterlos como 0
+  // haría un p50 de 0 s y el timeout se elegiría con un número inventado: "no medido" y "cero" no
+  // son lo mismo, que es la confusión más cara de este sistema.
+  let m = memoriaVacia();
+  m = anotar(m, { ts: "1", hilo: "h1", quien: "U1", pregunta: "una pregunta larga sobre bandejas", respuesta: "ok", cuando: T, tardoSeg: 60, fallo: null, inventadas: 0 });
+  const r = resumen(m, T);
+  assert.equal(r.modelo.n, 0);
+  assert.equal(r.intercambios, 1, "pero el intercambio sí cuenta para todo lo demás");
+});
+
+test("fallosSeguidos cuenta los turnos muertos POR HILO", () => {
+  // Los 65 turnos sin respuesta del 2026-08-06 son 5 preguntas, no 65: la misma se reintentó hasta
+  // 23 veces —"Como que no lo puedes hacer?" ×23— y cada intento publicó su propio "Te leí pero no
+  // pude contestarte". Veintitrés disculpas idénticas en el mismo hilo no informan de nada: enseñan
+  // que el canal es ruido.
+  let m = memoriaVacia();
+  const nuevo = (ts: string, hilo: string, fallo: string | null) =>
+    (m = anotar(m, {
+      ts,
+      hilo,
+      quien: "U1",
+      pregunta: `pregunta numero ${ts} sobre las bandejas`,
+      respuesta: fallo ? "" : "listo",
+      cuando: new Date(Date.parse(T) + Number(ts) * 1000).toISOString(),
+      tardoSeg: 10,
+      fallo,
+      inventadas: 0
+    }));
+
+  nuevo("1", "h1", "el modelo tardó demasiado");
+  nuevo("2", "h1", "el modelo tardó demasiado");
+  nuevo("3", "h2", "el modelo tardó demasiado");
+  assert.equal(fallosSeguidos(m, "h1"), 2);
+  assert.equal(fallosSeguidos(m, "h2"), 1);
+  assert.equal(fallosSeguidos(m, "h3"), 0, "un hilo sin historia no arrastra fallos ajenos");
+
+  nuevo("4", "h1", null);
+  assert.equal(fallosSeguidos(m, "h1"), 0, "una respuesta buena corta la racha");
+  assert.equal(fallosSeguidos(null, "h1"), 0);
 });

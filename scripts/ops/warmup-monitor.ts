@@ -26,12 +26,22 @@ import {
   registrar,
   type Bitacora
 } from "../../apps/gateway-api/src/agents/bitacora-acciones.ts";
-import { decidirSiHablar, mandarASlack, recordarAviso, type MemoriaSlack } from "../../apps/gateway-api/src/agents/slack.ts";
+import {
+  camposObservables,
+  decidirSiHablar,
+  mandarASlack,
+  novedades,
+  presupuestoDeAvances,
+  recordarAviso,
+  type MemoriaSlack
+} from "../../apps/gateway-api/src/agents/slack.ts";
+import { anotarPromesa, revisarPromesas, type Promesa } from "../../apps/gateway-api/src/agents/promesas.ts";
 import { acusarRecibo, agruparParaContestar, avanzar, dondeResponder, estadoVacio, leerHilo, leerNuevos, miUserId, type EstadoLectura } from "../../apps/gateway-api/src/agents/slack-lectura.ts";
-import { extraerRecordar, responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
+import { extraerRecordar, limpiarMaquinaria, responder } from "../../apps/gateway-api/src/agents/sentinel-chat.ts";
 import {
   anotar as anotarConversacion,
   anotarReaccion,
+  fallosSeguidos,
   lineasParaPrompt as memoriaParaPrompt,
   type MemoriaConversacion
 } from "../../apps/gateway-api/src/agents/memoria-conversacion.ts";
@@ -57,6 +67,15 @@ import { MEASUREMENT_FILE, type MedicionFlota } from "../../apps/gateway-api/src
 import { leerInventarioFabrica } from "../../apps/gateway-api/src/sender-inventory.ts";
 
 const PENDIENTES_FILE = "warmup-pendientes.json";
+/**
+ * LAS PROMESAS, en su propio archivo y no dentro de warmup-pendientes.json.
+ *
+ * No es prolijidad: los pendientes se escriben con `() => p` desde los DOS carriles —o sea,
+ * pisando el archivo entero con la lista que cada uno tenía en memoria— así que meter las promesas
+ * ahí garantiza perder escrituras cuando la guardia y el chat coinciden. Archivo aparte, dueño
+ * aparte.
+ */
+const PROMESAS_FILE = "warmup-promesas.json";
 /** Dónde vive la memoria de lo que HIZO (no de lo que dijo). Separada de MONITOR_FILE a propósito:
  *  ese se reescribe entero en cada vuelta y ya pesa 27 KB, y el panel lo sirve completo. */
 const BITACORA_FILE = "warmup-acciones.json";
@@ -579,7 +598,19 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
   // forma barata y honesta de que no lo repita — y sin esto lo repetiría cada 10 minutos, para
   // siempre, que es exactamente lo que pasó con "los límites diarios de Gmail".
   const previa = await workspace
-    .readInventoryJson<{ verificacion?: { reparos?: string[] }; memoria?: string[] }>(MONITOR_FILE)
+    .readInventoryJson<{
+      generadoEn?: string;
+      verificacion?: { reparos?: string[] };
+      memoria?: string[];
+      /**
+       * EL RETRATO de la vuelta anterior, no sus hechos. Es lo que permite decir "esto cambió".
+       *
+       * Se persiste el retrato y NO se reconstruye desde `previa.hechos` por una razón medida: los
+       * hechos traen las vueltas con LIMIT 8, así que un dominio que no entró en esa ventana
+       * aparecería "sin medir" y el diff lo leería como "sin medir → INBOX". Fabricaría avances.
+       */
+      campos?: Record<string, string | number | null>;
+    }>(MONITOR_FILE)
     .catch(() => null);
   // ACUMULA, no reemplaza. Antes la memoria era la lectura anterior y nada más: si el agente
   // acertaba una vuelta, los reparos quedaban en [] y el recuerdo del error se BORRABA — el mismo
@@ -616,6 +647,12 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
   if (lectura.lectura && reparos.length === 0) {
     const pedidas = extraerAcciones(lectura.lectura);
     if (pedidas.length > 0) {
+      // EJECUTAR NO PUEDE COSTAR LA VUELTA. El carril del chat ya tenía este guard; la guardia no.
+      // Sin él, una acción que revienta —un SSH caído al armar el contexto, el workspace sin
+      // permisos— sube y se lleva puestos el snapshot del panel, la decisión de hablar y la memoria
+      // de reparos. El fallo se CUENTA como una acción más y NO va marcado reintentable: un disco
+      // lleno o un permiso faltante no se arreglan solos en diez minutos.
+      try {
       acciones = await ejecutarAcciones(pedidas, {
         // Solo los dominios que aparecen en los hechos: un nombre alucinado no llega a ejecutarse.
         // TODOS los dominios que aparecen en los hechos, no solo los del plan. Con la lista angosta
@@ -706,6 +743,11 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
           }
         }
       });
+      } catch (e) {
+        const motivo = e instanceof Error ? e.message : String(e);
+        acciones = [{ accion: "(ninguna)", ejecutada: false, detalle: `no pude ejecutar lo que decidí: ${motivo}` }];
+        console.error(`[agente] ejecutar acciones falló (sigo la vuelta): ${motivo}`);
+      }
     }
   } else if (lectura.lectura && reparos.length > 0) {
     acciones = [{ accion: "(ninguna)", ejecutada: false, detalle: `no se ejecutó nada: la lectura tiene reparos (${reparos.join(" · ")})` }];
@@ -772,12 +814,55 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
 
   // Se guarda SIEMPRE, con lectura o con motivo, y DESPUÉS de ejecutar: el panel tiene que poder
   // decir "el agente no pudo mirar" en vez de mostrar una lectura vieja, y tiene que ver qué hizo.
+  // EL RETRATO Y EL DIFF. Orden crítico: `previa` se leyó ARRIBA y acá se pisa MONITOR_FILE. Si
+  // alguna vez la escritura se mueve por encima de la lectura, el diff se compara contra sí mismo
+  // y el agente no vuelve a contar un avance nunca — mudo otra vez, sin que ningún test lo note.
+  const camposAntes = previa?.campos ?? {};
+  const camposAhora = camposObservables(hechos, camposAntes);
+
   await workspace.updateInventoryJson(MONITOR_FILE, () => ({
     ...lectura,
     acciones,
+    campos: camposAhora,
     // La memoria se persiste con la lectura: es lo que va a leer la próxima vuelta.
     memoria: [...new Set([...erroresPrevios, ...(lectura.verificacion?.reparos ?? [])])].slice(-5)
   }));
+
+  // ── CUMPLIR LO PROMETIDO ─────────────────────────────────────────────────────────────────────
+  //
+  // LA QUEJA MÁS GRAVE DEL JEFE, y la única que rompe confianza: "me dice que ahora me busca, o me
+  // va a decir algo, y no actúa, se queda mudo". Medido: 7 de 42 respuestas del chat prometen
+  // volver —"Apenas caiga la lectura te traigo el estado real", "Apenas se mueva algo te escribo de
+  // una"— y ninguna se cumplió. Ninguna PODÍA: el chat contestaba y no persistía la promesa, y esta
+  // guardia, que sí corre cada 10 minutos, no tenía forma de enterarse. Dos cerebros que no se
+  // hablaban.
+  //
+  // Va ANTES del bloque de Slack y con su PROPIA llamada, no pegado al aviso de la guardia. Pegado
+  // perdía el hilo donde se prometió —el cumplimiento aparecía suelto en el canal como pie de
+  // página de otra cosa— y no consultaba el presupuesto. Cumplir es contestar, no avisar: va sin
+  // mención y sin pedir respuesta, para que no le suene el móvil a las 4am.
+  let avisoPromesa: { texto: string; motivo: string; hilo?: string | null } | null = null;
+  try {
+    await workspace.updateInventoryJson<Promesa[]>(PROMESAS_FILE, (actual) => {
+      const r = revisarPromesas(actual ?? [], camposAntes, camposAhora, lectura.generadoEn, previa?.generadoEn ?? null);
+      avisoPromesa = r.aviso;
+      return r.lista;
+    });
+    if (avisoPromesa) {
+      const env = await mandarASlack(
+        { texto: avisoPromesa.texto, motivo: avisoPromesa.motivo, pideRespuesta: false },
+        {
+          token: process.env.SLACK_BOT_TOKEN,
+          canal: process.env.SLACK_CANAL,
+          ...(avisoPromesa.hilo ? { threadTs: avisoPromesa.hilo } : {})
+        }
+      );
+      console.log(`[promesa] motivo=${avisoPromesa.motivo} ok=${env.ok} · ${avisoPromesa.texto}`);
+    }
+  } catch (e) {
+    // Una promesa que no se pudo cerrar no puede tumbar la vuelta ni tapar el aviso de la guardia.
+    console.error(`[promesa] no pude revisar promesas: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   // ── SLACK ────────────────────────────────────────────────────────────────────────────────────
   // Corre SIEMPRE, aunque no haya token: así se ve en el log qué habría dicho y cuándo se habría
@@ -799,7 +884,13 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
       sinLectura: lectura.lectura ? null : lectura.motivo,
       voz: lectura.verificacion?.voz ?? null,
       ahora: lectura.verificacion?.ahora ?? null,
-      riesgo: lectura.verificacion?.riesgo ?? null
+      riesgo: lectura.verificacion?.riesgo ?? null,
+      // LO QUE CAMBIÓ EN LA FÁBRICA. Las seis razones viejas miran el estado del AGENTE —qué hizo,
+      // qué no pudo, si pudo ver— y ninguna mira el de la FÁBRICA. Por eso se lo pudo dejar mudo
+      // sin violar ninguna regla: en 8 horas habló 3 veces (dos rellenos y un error) mientras la
+      // base registraba 14 eventos reales, dos de ellos INBOX. Y a la 1:10 el jefe escribió "no me
+      // has dicho nada en toda la tarde".
+      novedades: novedades(camposAntes, camposAhora)
     };
     const aviso = decidirSiHablar(estadoSlack, memPrevia, lectura.generadoEn);
     let hablo = false;
@@ -819,9 +910,24 @@ async function unaVuelta(workspace: OpenClawWorkspace, pg: Pool): Promise<void> 
         aviso.pideRespuesta && jefeId ? { ...aviso, texto: `<@${jefeId}> ${aviso.texto}` } : aviso;
       const r = await mandarASlack(conMencion, { token: process.env.SLACK_BOT_TOKEN, canal: process.env.SLACK_CANAL });
       hablo = r.ok;
-      console.log(r.ok ? `[slack] ${aviso.texto}` : `[slack] NO enviado (${r.motivo}) — habría dicho: ${aviso.texto}`);
+      // EL MOTIVO EN EL LOG, en las dos ramas. Es la única auditoría posible del canal: sin él no
+      // se puede contar cuántos mensajes salieron por avance y cuántos por problema, que es
+      // exactamente el número que dice si el péndulo quedó centrado.
+      console.log(
+        r.ok
+          ? `[slack] motivo=${aviso.motivo} · ${aviso.texto}`
+          : `[slack] NO enviado (${r.motivo}) · motivo=${aviso.motivo} — habría dicho: ${aviso.texto}`
+      );
     } else {
-      console.log("[slack] silencio: nada cambió y no hay nada que pedir");
+      // "No salió" NUNCA puede ser indistinguible de "se perdió". Si el tope diario tapó avances
+      // reales, el log lo dice: es el único modo de saber que el presupuesto quedó corto antes de
+      // que el jefe lo note por ausencia.
+      const presupuesto = presupuestoDeAvances(estadoSlack.novedades, memPrevia, lectura.generadoEn);
+      console.log(
+        presupuesto.tapados > 0
+          ? `[slack] silencio: ${presupuesto.tapados} avance(s) tapados por el tope diario`
+          : "[slack] silencio: nada cambió y no hay nada que pedir"
+      );
     }
     await workspace.updateInventoryJson<MemoriaSlack>(SLACK_FILE, (m) => recordarAviso(estadoSlack, hablo, lectura.generadoEn, m, aviso));
   } catch (e) {
@@ -981,10 +1087,40 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
       },
       baseUrl,
       modelo,
-      ...(kimiKey ? { apiKey: kimiKey, temperatura: 1 } : {})
+      // `reasoningEffort: "low"` SOLO con Kimi: es un modelo de razonamiento y el 87% de su
+      // generación se iba en pensar. El modelo local no está probado con ese parámetro, así que no
+      // se le manda — una palanca sin medir en el carril que corre 144 veces por día es cara.
+      ...(kimiKey ? { apiKey: kimiKey, temperatura: 1, reasoningEffort: "low" } : {})
     });
     if (!r.texto) {
-      console.log(`[chat] sin respuesta para "${m.texto.slice(0, 40)}": ${r.motivo}`);
+      console.log(
+        `[${new Date().toISOString()}] [chat] sin respuesta para "${m.texto.slice(0, 40)}": ${r.motivo} ` +
+          `tardoMs=${r.tardoMs} modelo=${r.modelo} intentos=${r.intentos} finish=${r.finishReason ?? "-"}`
+      );
+      // EL TURNO MUERTO SE ANOTA. El campo `fallo` existía en el módulo de memoria, el informe lo
+      // contaba, y este camino hacía `continue` antes de escribirlo: dos de cada tres turnos eran
+      // invisibles para la memoria y el informe los daba como cero. Un contador que solo cuenta los
+      // éxitos no es un contador.
+      const masEsp = tanda.mensajes.reduce((a, b) => (b.texto.length > a.texto.length ? b : a), tanda.mensajes[0]!);
+      const yaSeDisculpo = fallosSeguidos(memoria, dondeResponder(m)) > 0;
+      memoria = anotarConversacion(memoria, {
+        ts: m.ts,
+        hilo: dondeResponder(m),
+        quien: m.usuario,
+        cuando: new Date(Number(m.ts) * 1000).toISOString(),
+        pregunta: masEsp.texto,
+        respuesta: "",
+        tardoSeg: Math.max(0, Math.round(Date.now() / 1000 - Number(m.ts))),
+        fallo: r.motivo,
+        inventadas: 0
+      });
+      await workspace.updateInventoryJson<MemoriaConversacion>(CONVERSACION_FILE, () => memoria as MemoriaConversacion);
+      if (yaSeDisculpo) {
+        // UNA disculpa por racha. En la ventana mala fueron 23 idénticas en el mismo hilo por UNA
+        // sola pregunta: el mensaje que existe para no dejarlo colgado se volvió el ruido.
+        console.log("[chat] ya me disculpé en este hilo y sigo sin poder: no lo repito");
+        continue;
+      }
       // NO SE PUEDE CALLAR ACÁ. El cursor ya avanzó (a propósito: repetir una respuesta es peor
       // que perder un turno), así que sin este aviso el mensaje del jefe se evapora y él no ve
       // nada — ni una respuesta, ni un error. Le queda la impresión de que lo ignoró, que es
@@ -1149,8 +1285,27 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
     }
     const paraSlack = [cuerpo, ...hechas].filter(Boolean).join("\n");
     // thread_ts: contesta DENTRO del hilo. Sin esto la conversación se parte en pedazos.
-    await mandarASlack({ texto: paraSlack, motivo: "respuesta al jefe", pideRespuesta: false }, { token, canal, threadTs: dondeResponder(m) });
-    console.log(`[chat] respondí en el hilo ${dondeResponder(m)}: ${r.texto.slice(0, 70)}`);
+    const env = await mandarASlack(
+      { texto: paraSlack, motivo: "respuesta al jefe", pideRespuesta: false },
+      { token, canal, threadTs: dondeResponder(m) }
+    );
+    console.log(
+      (env.ok
+        ? `[${new Date().toISOString()}] [chat] respondí en el hilo ${dondeResponder(m)}: ${r.texto.slice(0, 70)}`
+        : `[${new Date().toISOString()}] [chat] NO enviado (${env.motivo}) en el hilo ${dondeResponder(m)}`) +
+        ` tardoMs=${r.tardoMs} modelo=${r.modelo} intentos=${r.intentos} finish=${r.finishReason ?? "-"}`
+    );
+
+    // LA PROMESA QUEDA ANOTADA. Es la mitad que faltaba de la queja más grave: el agente prometía
+    // volver y no había dónde apuntarlo, así que la guardia —que sí corre cada 10 min— no podía
+    // cumplir algo de lo que nunca se enteraba. `responder()` ya extrae el marcador; acá se
+    // persiste, con el HILO donde se prometió para poder contestar ahí y no suelto en el canal.
+    if (r.promesa) {
+      await workspace.updateInventoryJson<Promesa[]>(PROMESAS_FILE, (actual) =>
+        anotarPromesa(actual ?? [], { que: r.promesa!.que, hilo: dondeResponder(m), esperando: r.promesa!.esperando }, new Date().toISOString())
+      );
+      console.log(`[chat] anoté una promesa: "${r.promesa.que}" esperando ${r.promesa.esperando ?? "(sin disparador)"}`);
+    }
 
     // QUEDA REGISTRADO. Es la diferencia entre un agente que acumula y uno que redescubre: sin
     // esto, en el turno siguiente no sabe qué acaba de decir —y por eso contestó cuatro veces casi
@@ -1172,7 +1327,13 @@ async function tickChatInterno(workspace: OpenClawWorkspace, pg: Pool, botUserId
       respuesta: cuerpo,
       tardoSeg: Math.max(0, Math.round(Date.now() / 1000 - Number(m.ts))),
       fallo: null,
-      inventadas: r.observaciones.length
+      inventadas: r.observaciones.length,
+      // Los números del turno, para que el informe pueda sacar p50/p95 sobre lo que tardó el
+      // MODELO (tardoMs) y no sobre lo que el mensaje esperó en la cola (tardoSeg). Mezclarlos
+      // contamina la medición justo en la dirección que hace parecer que el modelo es el problema.
+      tardoMs: r.tardoMs,
+      intentos: r.intentos,
+      finishReason: r.finishReason
       // `acciones` estaba en el diseño y el módulo no lo implementó. No lo agrego acá: la bitácora
       // (warmup-acciones.json) ya registra QUÉ hizo con su veredicto, y duplicar el dato en dos
       // memorias es la forma más segura de que algún día se contradigan.
